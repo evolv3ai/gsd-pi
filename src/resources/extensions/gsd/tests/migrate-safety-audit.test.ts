@@ -19,7 +19,7 @@ import {
   archiveLegacyPlanningDirectory,
   verifyMigrationProjection,
 } from "../migrate/audit.ts";
-import { executeMigrationWrite, importWrittenMigrationToDb } from "../migrate/command.ts";
+import { assertMigrationDbReadiness, executeMigrationWrite, importWrittenMigrationToDb } from "../migrate/command.ts";
 import { writeGSDDirectory } from "../migrate/writer.ts";
 import { closeDatabase, getArtifact } from "../gsd-db.ts";
 import type { GSDProject } from "../migrate/types.ts";
@@ -219,6 +219,24 @@ test("executeMigrationWrite records audit artifacts and verifies DB-backed proje
     assert.ok(getArtifact("migration/manifest.json"), "migration manifest imported as DB artifact");
     assert.deepEqual(result.verification.db, { milestones: 1, slices: 1, tasks: 1 });
     assert.deepEqual(result.verification.markdown, { milestones: 1, slices: 1, tasks: 1 });
+    assert.equal(result.verification.dbReadiness.registry, 1, "migrated DB is readable by deriveState");
+    assert.notEqual(result.verification.dbReadiness.phase, "not-checked", "readiness gate ran before audit");
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("assertMigrationDbReadiness fails loud when deriveState cannot see migrated rows", async () => {
+  const base = makeBase("gsd-migrate-db-readiness-");
+  try {
+    const project = projectFixture();
+    const preview = generatePreview(project);
+    await writeGSDDirectory(project, base);
+
+    await assert.rejects(
+      () => assertMigrationDbReadiness(base, preview),
+      /migration DB readiness failed/,
+    );
   } finally {
     cleanup(base);
   }

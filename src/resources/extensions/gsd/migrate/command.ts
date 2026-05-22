@@ -27,7 +27,7 @@ import type { MigrationPreview, WrittenFiles } from "./writer.js";
 import { ensureDbOpen } from "../bootstrap/dynamic-tools.js";
 import { clearArtifacts, clearDecisions, clearRequirements, clearEngineHierarchy, transaction } from "../gsd-db.js";
 import { migrateFromMarkdown } from "../md-importer.js";
-import { invalidateStateCache } from "../state.js";
+import { deriveState, invalidateStateCache } from "../state.js";
 import {
   archiveLegacyPlanningDirectory,
   verifyMigrationProjection,
@@ -100,6 +100,25 @@ export async function importWrittenMigrationToDb(
   return counts;
 }
 
+export async function assertMigrationDbReadiness(
+  targetRoot: string,
+  preview: MigrationPreview,
+): Promise<{ phase: string; registry: number }> {
+  invalidateStateCache();
+  const state = await deriveState(targetRoot);
+  const dbUnavailable = state.blockers.some((blocker) => blocker.includes("DB unavailable"));
+  if (dbUnavailable) {
+    throw new Error(`migration DB readiness failed: ${state.blockers.join("; ")}`);
+  }
+  if (state.registry.length !== preview.milestoneCount) {
+    throw new Error(`migration DB readiness failed: registry ${state.registry.length}/${preview.milestoneCount}`);
+  }
+  return {
+    phase: state.phase,
+    registry: state.registry.length,
+  };
+}
+
 export async function executeMigrationWrite(
   sourcePath: string,
   targetRoot: string,
@@ -114,6 +133,7 @@ export async function executeMigrationWrite(
     const legacyArchive = await archiveLegacyPlanningDirectory(sourcePath, targetRoot);
     const imported = await importWrittenMigrationToDb(targetRoot, preview);
     const verification = await verifyMigrationProjection(targetRoot, preview);
+    verification.dbReadiness = await assertMigrationDbReadiness(targetRoot, preview);
     const audit = await writeMigrationAudit({
       sourcePath,
       targetRoot,
