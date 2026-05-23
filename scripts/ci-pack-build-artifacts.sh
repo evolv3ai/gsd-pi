@@ -15,6 +15,10 @@ paths=(dist)
 for pkg_dist in packages/*/dist; do
   [ -d "$pkg_dist" ] && paths+=("$pkg_dist")
 done
+# dist/web is produced by build:web-host (required for validate-pack / npm pack).
+if [ -d dist/web ]; then
+  paths+=(dist/web)
+fi
 
 tar czf "$OUT" "${paths[@]}"
 echo "ci-pack-build-artifacts: packed ${#paths[@]} path(s) into ${OUT} ($(du -h "$OUT" | cut -f1))"

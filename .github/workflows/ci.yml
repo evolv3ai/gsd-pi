@@ -96,6 +96,22 @@ jobs:
       - name: Build core
         run: npm run build:core
 
+      - name: Install web host dependencies
+        run: npm --prefix web ci
+
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: web/.next/cache
+          key: nextjs-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}-${{ hashFiles('web/app/**', 'web/components/**', 'web/lib/**', 'web/hooks/**') }}
+          restore-keys: |
+            nextjs-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}-
+            nextjs-${{ runner.os }}-
+
+      # validate-pack requires dist/web/standalone/server.js in the tarball (package.json files).
+      - name: Build web host
+        run: npm run build:web-host
+
       - name: Pack build artifacts
         run: bash scripts/ci-pack-build-artifacts.sh
 
@@ -105,24 +121,6 @@ jobs:
           name: ci-build-artifacts
           path: ci-build-artifacts.tar.gz
           retention-days: 1
-
-      - name: Install web host dependencies
-        if: needs.fast-gates.outputs.web-changed == 'true'
-        run: npm --prefix web ci
-
-      - name: Cache Next.js build
-        if: needs.fast-gates.outputs.web-changed == 'true'
-        uses: actions/cache@v4
-        with:
-          path: web/.next/cache
-          key: nextjs-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}-${{ hashFiles('web/app/**', 'web/components/**', 'web/lib/**', 'web/hooks/**') }}
-          restore-keys: |
-            nextjs-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}-
-            nextjs-${{ runner.os }}-
-
-      - name: Build web host
-        if: needs.fast-gates.outputs.web-changed == 'true'
-        run: npm run build:web-host
 
       - name: Typecheck extensions
         run: npm run typecheck:extensions

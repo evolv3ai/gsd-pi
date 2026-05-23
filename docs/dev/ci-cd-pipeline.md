@@ -100,7 +100,7 @@ docker run --rm -v $(pwd):/workspace ghcr.io/open-gsd/gsd-pi:latest --version
 
 - **Skipped when doc/metadata only:** `build`, `test-*`, `integration-tests`, `e2e`, `docker-e2e`, `windows-portability`
 - **Still runs:** `fast-gates` (all security and policy scans)
-- **`web-changed`:** gates `build:web-host` inside `build` (core still builds)
+- **`web-changed`:** reserved for future path gating (web host always builds in `build` because `validate-pack` requires `dist/web/standalone/server.js`)
 
 ### Prompt Injection Scan
 
