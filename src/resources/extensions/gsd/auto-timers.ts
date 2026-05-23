@@ -114,7 +114,7 @@ export function startUnitSupervision(sctx: SupervisionContext): void {
   // If the task has an est: annotation, use it to extend the hard and soft timeouts
   // so longer tasks don't get prematurely timed out.
   let taskEstimate = sctx.taskEstimate;
-  if (!taskEstimate && unitType === "task" && isDbAvailable()) {
+  if (!taskEstimate && unitType === "execute-task" && isDbAvailable()) {
     // Look up the task estimate from the DB (#2243).
     try {
       if (s.currentMilestoneId) {
