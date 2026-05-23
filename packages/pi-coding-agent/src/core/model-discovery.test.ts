@@ -142,3 +142,25 @@ describe("supportsDiscoveryForApi", () => {
 		assert.equal(supportsDiscoveryForApi(undefined), false);
 	});
 });
+
+describe("OpenRouter discovery URL handling", () => {
+	it("does not duplicate /api/v1 when baseUrl already includes it", async () => {
+		const adapter = getDiscoveryAdapter("openrouter");
+		const prevFetch = globalThis.fetch;
+		let requestedUrl = "";
+		globalThis.fetch = (async (input: string | URL | Request) => {
+			requestedUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+			return new Response(JSON.stringify({ data: [] }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		}) as typeof globalThis.fetch;
+
+		try {
+			await adapter.fetchModels("test-key", "https://openrouter.ai/api/v1");
+			assert.equal(requestedUrl, "https://openrouter.ai/api/v1/models");
+		} finally {
+			globalThis.fetch = prevFetch;
+		}
+	});
+});

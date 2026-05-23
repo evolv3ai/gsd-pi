@@ -610,6 +610,23 @@ export function parseOldRequirements(content: string): PlanningRequirement[] {
       continue;
     }
 
+    const emojiReqMatch = line.match(/^-\s+(✅|✓|⏳|✗)\s+([A-Z][A-Z0-9]*-\d+|R\d+)\s*:\s*(.+)$/i);
+    if (emojiReqMatch) {
+      flushReq();
+      const marker = emojiReqMatch[1];
+      const id = emojiReqMatch[2].trim();
+      const desc = emojiReqMatch[3].trim();
+      const status = marker === '✗' ? 'rejected' : marker === '⏳' ? 'active' : 'validated';
+      requirements.push({
+        id,
+        title: desc,
+        status,
+        description: desc,
+        raw: line,
+      });
+      continue;
+    }
+
     // Description or metadata within a requirement
     if (currentReq) {
       currentRaw.push(line);

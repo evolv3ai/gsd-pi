@@ -30,10 +30,14 @@ test("deriveState reports the last completed milestone when all milestone slices
   const base = mkdtempSync(join(tmpdir(), "gsd-smart-entry-complete-"));
   try {
     writeCompleteMilestone(base);
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "M001", title: "Complete Milestone", status: "complete" });
+    insertSlice({ id: "S01", milestoneId: "M001", title: "Done slice", status: "complete", risk: "low", depends: [] });
     const state = await deriveState(base);
     assert.equal(state.phase, "complete");
     assert.equal(state.lastCompletedMilestone?.id, "M001");
   } finally {
+    closeDatabase();
     rmSync(base, { recursive: true, force: true });
   }
 });

@@ -251,9 +251,11 @@ describe("metrics lock retry sleep (M3 follow-up)", () => {
       `Elapsed: ${elapsed}ms`,
     );
 
-    // Should complete very quickly (no artificial delay).
+    // Should complete without artificial lock-retry delay. The filesystem can
+    // still be slow under process-isolated unit runs, so keep this threshold
+    // loose and rely on the sleepy-retry counter for the real contract.
     assert.ok(
-      elapsed < 200,
+      elapsed < 500,
       `Stale-lock recovery should complete quickly, took ${elapsed}ms`,
     );
   });

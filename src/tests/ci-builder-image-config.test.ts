@@ -11,12 +11,10 @@ import { parse } from "yaml";
 const BUILDER_IMAGE = "ghcr.io/open-gsd/gsd-ci-builder";
 
 test("publish workflows use the builder image produced by pipeline", () => {
-  const devPublish = readWorkflow("dev-publish.yml");
-  const nextPublish = readWorkflow("next-publish.yml");
+  const prereleasePublish = readWorkflow("prerelease-publish.yml");
   const pipeline = readWorkflow("pipeline.yml");
 
-  assert.equal(devPublish.jobs["dev-publish"].container.image, `${BUILDER_IMAGE}:latest`);
-  assert.equal(nextPublish.jobs["next-publish"].container.image, `${BUILDER_IMAGE}:latest`);
+  assert.equal(prereleasePublish.jobs["prerelease-publish"].container.image, `${BUILDER_IMAGE}:latest`);
 
   const buildStep = pipeline.jobs["update-builder"].steps.find((step: { name?: string }) => (
     step.name === "Build and push CI builder image"

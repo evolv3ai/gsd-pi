@@ -45,9 +45,10 @@ test("initResources creates node_modules symlink in agent dir", async (t) => {
   const { initResources } = await import("../resource-loader.ts");
   const tmp = mkdtempSync(join(tmpdir(), "gsd-symlink-"));
   const fakeAgentDir = join(tmp, "agent");
+  const fakeSkillsDir = join(tmp, "skills");
 
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
-  initResources(fakeAgentDir);
+  initResources(fakeAgentDir, fakeSkillsDir);
 
   const nodeModulesPath = join(fakeAgentDir, "node_modules");
   // Use lstatSync instead of existsSync — existsSync follows the symlink and
@@ -65,9 +66,10 @@ test("initResources replaces a real directory blocking node_modules with a symli
   const { initResources } = await import("../resource-loader.ts");
   const tmp = mkdtempSync(join(tmpdir(), "gsd-symlink-realdir-"));
   const fakeAgentDir = join(tmp, "agent");
+  const fakeSkillsDir = join(tmp, "skills");
 
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
-  initResources(fakeAgentDir);
+  initResources(fakeAgentDir, fakeSkillsDir);
 
   const nodeModulesPath = join(fakeAgentDir, "node_modules");
 
@@ -79,7 +81,7 @@ test("initResources replaces a real directory blocking node_modules with a symli
   assert.equal(statBefore.isSymbolicLink(), false, "should be a real directory before fix");
   assert.equal(statBefore.isDirectory(), true, "should be a real directory before fix");
 
-  initResources(fakeAgentDir);
+  initResources(fakeAgentDir, fakeSkillsDir);
 
   const statAfter = lstatSync(nodeModulesPath);
   assert.equal(statAfter.isSymbolicLink(), true, "should be a symlink after re-init");

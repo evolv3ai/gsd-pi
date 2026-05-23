@@ -124,6 +124,10 @@ function parseOpenAICompatibleModel(rawModel: Record<string, unknown>): Discover
 	};
 }
 
+function stripTrailingOpenAIPathPrefix(baseUrl: string): string {
+	return baseUrl.replace(/\/api\/v1\/?$/, "").replace(/\/v1\/?$/, "");
+}
+
 class OpenAIDiscoveryAdapter implements ProviderDiscoveryAdapter {
 	provider: string;
 	supportsDiscovery = true;
@@ -182,7 +186,8 @@ class OpenRouterDiscoveryAdapter implements ProviderDiscoveryAdapter {
 	supportsDiscovery = true;
 
 	async fetchModels(apiKey: string, baseUrl?: string): Promise<DiscoveredModel[]> {
-		const url = `${baseUrl ?? "https://openrouter.ai"}/api/v1/models`;
+		const origin = stripTrailingOpenAIPathPrefix(baseUrl ?? "https://openrouter.ai");
+		const url = `${origin}/api/v1/models`;
 		const response = await fetchWithTimeout(url, {
 			headers: { Authorization: `Bearer ${apiKey}` },
 		});

@@ -40,6 +40,11 @@ export interface MigrationPreview {
   decisions: {
     total: number;
   };
+  migrationInputs?: {
+    milestonePhaseDirs: number;
+    decisions: number;
+    seeds: number;
+  };
   milestoneCount: number;
   totalSlices: number;
   totalTasks: number;

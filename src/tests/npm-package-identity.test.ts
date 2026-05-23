@@ -3,27 +3,10 @@
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 
-function findRepoRoot(start: string): string {
-	let dir = start;
-	for (let i = 0; i < 10; i++) {
-		try {
-			const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
-			if (pkg.name === "@opengsd/gsd-pi" && pkg.workspaces) return dir;
-		} catch {
-			// Keep walking.
-		}
-		const parent = resolve(dir, "..");
-		if (parent === dir) break;
-		dir = parent;
-	}
-	throw new Error(`Could not locate repo root from ${start}`);
-}
-
-const projectRoot = findRepoRoot(dirname(fileURLToPath(import.meta.url)));
+const projectRoot = process.cwd();
 
 function readPackageJson(path: string): { name?: string; optionalDependencies?: Record<string, string> } {
 	return JSON.parse(readFileSync(join(projectRoot, path), "utf8"));
