@@ -844,6 +844,9 @@ export function registerHooks(
     // subagent dispatch. Closes the b23 bug class where a discuss-milestone
     // turn used the host Edit tool to modify user source files.
     const dash = getAutoRuntimeSnapshot();
+
+    // ScheduleWakeup is registered by the GSD extension so auto-mode can
+    // continue the same unit session after long external waits.
     const guidedUnit = getGuidedUnitContext(discussionBasePath);
     const activeUnitType = dash.currentUnit?.type ?? guidedUnit?.unitType;
     if (activeUnitType) {

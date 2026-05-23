@@ -91,6 +91,16 @@ The sidecar unit types now have distinct manifest behavior: `triage-captures` ru
 
 Writes outside those allowed paths, unsafe bash commands, and subagent dispatch from non-dispatch planning units are blocked with a hard policy error instead of relying on prompt compliance. In `planning-dispatch` units, prompts steer the parent agent toward read-only specialists such as `scout`, `planner`, `researcher`, `reviewer`, `security`, or `tester`; implementation-tier agents still belong in `execute-task`.
 
+### ScheduleWakeup Continuations
+
+`ScheduleWakeup` is an auto-mode tool for long external waits inside `execute-task` units. It keeps the same unit session alive by scheduling a delayed follow-up prompt instead of ending the unit as incomplete.
+
+- Use it when a task kicked off external work (for example CI, deploy, or async jobs) and needs a later poll.
+- Include a concrete follow-up prompt that says what to check and what artifact to write when done.
+- Re-arm it on each poll turn while the external process is still running.
+
+Auto mode consumes the scheduled wakeup only for the same `basePath + unitType + unitId`, waits the requested delay, and then dispatches the follow-up prompt in the same session. For safety, wakeups are bounded per unit; hitting the cap stops the unit with a timeout-style cancellation.
+
 ### Pre-Dispatch Runtime Blocks
 
 Before auto mode launches a unit, the orchestration pipeline now enforces runtime invariants in this order: reconcile state, choose the next unit, compile the unit tool contract, validate the worktree or unit root, then persist the runtime transition. A failure in any pre-dispatch step returns a `blocked` result and records the block before a worker session starts.
