@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { runFinalize } from "../auto/phases.ts";
+import { resolveDispatchRecoveryAttempts, runFinalize } from "../auto/phases.ts";
 import { AutoSession } from "../auto/session.ts";
 import { readUnitRuntimeRecord, writeUnitRuntimeRecord } from "../unit-runtime.ts";
 import { captureRootDirtySnapshot } from "../root-write-leak-guard.ts";
@@ -24,6 +24,26 @@ function initRepo(root: string): void {
   runGit(root, ["add", "."]);
   runGit(root, ["commit", "-m", "chore: init"]);
 }
+
+test("resolveDispatchRecoveryAttempts preserves cross-session recovery attempts before in-session recovery", () => {
+  const recoveryCounts = new Map<string, number>();
+
+  assert.equal(
+    resolveDispatchRecoveryAttempts(recoveryCounts, "execute-task", "M001/S01/T01"),
+    undefined,
+  );
+});
+
+test("resolveDispatchRecoveryAttempts resets after recovery ran in the current session", () => {
+  const recoveryCounts = new Map<string, number>([
+    ["execute-task/M001/S01/T01", 1],
+  ]);
+
+  assert.equal(
+    resolveDispatchRecoveryAttempts(recoveryCounts, "execute-task", "M001/S01/T01"),
+    0,
+  );
+});
 
 async function runSuccessfulFinalize(s: AutoSession) {
   const unit = s.currentUnit;
