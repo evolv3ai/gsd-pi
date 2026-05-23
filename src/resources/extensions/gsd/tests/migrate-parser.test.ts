@@ -525,6 +525,80 @@ subsystem: "api"
     }
 });
 
+test('Milestone phase directories, decisions, and seeds are parsed', async () => {
+    const base = createFixtureBase();
+    try {
+      const planning = createPlanningDir(base);
+
+      const milestonesDir = join(planning, 'milestones');
+      mkdirSync(join(milestonesDir, 'v1.0-phases', '01-foundation'), { recursive: true });
+      mkdirSync(join(milestonesDir, 'v2.0-phases', '01-polish'), { recursive: true });
+
+      writeFileSync(join(milestonesDir, 'v1.0-ROADMAP.md'), `# v1.0 Roadmap
+
+## Phases
+
+- [x] 01 — Foundation
+`);
+      writeFileSync(join(milestonesDir, 'v1.0-REQUIREMENTS.md'), `# v1 Requirements
+
+## Validated
+
+- ✅ NET-01: Network baseline is validated
+`);
+      writeFileSync(join(milestonesDir, 'v1.0-phases', '01-foundation', '01-PLAN.md'), `---
+phase: "01-foundation"
+plan: "01"
+---
+
+<objective>Build the foundation.</objective>
+`);
+      writeFileSync(join(milestonesDir, 'v1.0-phases', '01-foundation', '01-SUMMARY.md'), `---
+phase: "01-foundation"
+plan: "01"
+completed: "2026-05-01"
+---
+
+# Foundation summary
+`);
+      writeFileSync(join(milestonesDir, 'v2.0-ROADMAP.md'), `# v2.0 Roadmap
+
+## Phases
+
+- [ ] 01 — Polish
+`);
+      writeFileSync(join(milestonesDir, 'v2.0-phases', '01-polish', '01-PLAN.md'), `---
+phase: "01-polish"
+plan: "01"
+---
+
+<objective>Polish the migration.</objective>
+`);
+
+      mkdirSync(join(planning, 'decisions'), { recursive: true });
+      writeFileSync(join(planning, 'decisions', '2026-05-11-parser-shape.md'), '# Parser Shape\n\nPrefer milestone-local phases.');
+
+      mkdirSync(join(planning, 'seeds'), { recursive: true });
+      writeFileSync(join(planning, 'seeds', 'SEED-001-feature.md'), '# Feature Seed\n\nSeed content.');
+
+      const project = await parsePlanningDirectory(planning);
+
+      assert.deepStrictEqual(project.milestones.length, 2, 'milestone dirs: two legacy milestones parsed');
+      assert.deepStrictEqual(project.milestones[0]?.id, 'v1.0', 'milestone dirs: first legacy ID preserved in parser');
+      assert.ok(project.milestones[0]?.roadmap !== null, 'milestone dirs: roadmap content parsed');
+      assert.ok(project.milestones[0]?.requirements !== null, 'milestone dirs: requirements content parsed');
+      assert.ok('01-foundation' in (project.milestones[0]?.phases ?? {}), 'milestone dirs: v1 phase dir parsed');
+      assert.ok(project.milestones[0]?.phases['01-foundation']?.plans['01'] !== undefined, 'milestone dirs: short plan filename parsed');
+      assert.ok(project.milestones[0]?.phases['01-foundation']?.summaries['01'] !== undefined, 'milestone dirs: short summary filename parsed');
+      assert.deepStrictEqual(project.decisions.length, 1, 'decisions dir: decision file parsed');
+      assert.deepStrictEqual(project.decisions[0]?.fileName, '2026-05-11-parser-shape.md', 'decisions dir: filename preserved');
+      assert.deepStrictEqual(project.seeds.length, 1, 'seeds dir: seed file parsed');
+      assert.deepStrictEqual(project.seeds[0]?.fileName, 'SEED-001-feature.md', 'seeds dir: filename preserved');
+    } finally {
+      cleanup(base);
+    }
+});
+
   // ─── Test 6: Summary file with YAML frontmatter ───────────────────────
 
 test('Summary file with YAML frontmatter', async () => {

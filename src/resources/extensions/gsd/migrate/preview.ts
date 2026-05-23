@@ -46,6 +46,7 @@ export function generatePreview(project: GSDProject): MigrationPreview {
     decisions: {
       total: countCanonicalDecisionRows(project.decisionsContent),
     },
+    migrationInputs: project.migrationInputs,
     milestoneCount: project.milestones.length,
     totalSlices,
     totalTasks,

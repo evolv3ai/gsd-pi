@@ -2,13 +2,21 @@
 // Pre-flight checks for minimum viable .planning directory.
 // Pure functions, zero Pi dependencies — uses only Node built-ins + exported helpers.
 
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { ValidationResult, ValidationIssue, ValidationSeverity } from './types.js';
 
 function issue(file: string, severity: ValidationSeverity, message: string): ValidationIssue {
   return { file, severity, message };
+}
+
+function isDir(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -48,6 +56,22 @@ export async function validatePlanningDirectory(path: string): Promise<Validatio
 
   if (!existsSync(join(path, 'phases')) || !statSync(join(path, 'phases')).isDirectory()) {
     issues.push(issue('phases/', 'warning', 'phases/ directory not found — no phase data will be parsed'));
+  }
+
+  const milestonesDir = join(path, 'milestones');
+  if (isDir(milestonesDir)) {
+    const milestonePhaseDirs = readdirSync(milestonesDir).filter((entry) => isDir(join(milestonesDir, entry)) && /-phases$/i.test(entry));
+    if (milestonePhaseDirs.length > 0) {
+      issues.push(issue('milestones/', 'warning', `${milestonePhaseDirs.length} milestone phase dir(s) will be migrated`));
+    }
+  }
+
+  if (isDir(join(path, 'decisions'))) {
+    issues.push(issue('decisions/', 'warning', 'decisions/ files will be migrated into DECISIONS.md'));
+  }
+
+  if (isDir(join(path, 'seeds'))) {
+    issues.push(issue('seeds/', 'warning', 'seeds/ files will be preserved in the migration legacy archive'));
   }
 
   const hasFatal = issues.some(i => i.severity === 'fatal');

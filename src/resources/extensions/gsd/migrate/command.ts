@@ -164,8 +164,11 @@ function formatPreviewStats(preview: MigrationPreview): string {
   ];
   if (preview.requirements.total > 0) {
     lines.push(
-      `- Requirements: ${preview.requirements.total} (${preview.requirements.validated} validated, ${preview.requirements.active} active, ${preview.requirements.deferred} deferred)`,
+      `- Requirements: ${preview.requirements.total} (${preview.requirements.validated} validated, ${preview.requirements.active} active, ${preview.requirements.deferred} deferred, ${preview.requirements.outOfScope} out of scope)`,
     );
+  }
+  if (preview.migrationInputs) {
+    lines.push(`- Legacy inputs: ${preview.migrationInputs.milestonePhaseDirs} milestone phase dir(s), ${preview.migrationInputs.decisions} decision file(s), ${preview.migrationInputs.seeds} seed file(s)`);
   }
   return lines.join("\n");
 }
@@ -268,8 +271,11 @@ export async function handleMigrate(
 
   if (preview.requirements.total > 0) {
     lines.push(
-      `Requirements: ${preview.requirements.total} (${preview.requirements.validated} validated, ${preview.requirements.active} active, ${preview.requirements.deferred} deferred)`,
+      `Requirements: ${preview.requirements.total} (${preview.requirements.validated} validated, ${preview.requirements.active} active, ${preview.requirements.deferred} deferred, ${preview.requirements.outOfScope} out of scope)`,
     );
+  }
+  if (preview.migrationInputs) {
+    lines.push(`Legacy inputs: ${preview.migrationInputs.milestonePhaseDirs} milestone phase dir(s), ${preview.migrationInputs.decisions} decision file(s), ${preview.migrationInputs.seeds} seed file(s)`);
   }
 
   const targetGsdExists = existsSync(gsdRoot(targetRoot));

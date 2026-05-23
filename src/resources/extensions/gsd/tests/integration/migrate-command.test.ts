@@ -16,7 +16,7 @@ import {
 } from '../../migrate/index.ts';
 import { importWrittenMigrationToDb } from '../../migrate/command.ts';
 import { deriveState } from '../../state.ts';
-import { closeDatabase, getDecisionById, getRequirementCounts } from '../../gsd-db.ts';
+import { closeDatabase, getDecisionById, getRequirementById, getRequirementCounts } from '../../gsd-db.ts';
 import { describe, test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -62,6 +62,22 @@ const SAMPLE_REQUIREMENTS_LEGACY_IDS = `# Requirements
 - [ ] **OUTPUT-FORMAT**: Output matches GSD format.
 - [ ] **IMPORT-DB**: Migration imports requirements into the DB.
 - [ ] **STATUS-WIDGET**: Status can query migrated requirements.
+`;
+
+const SAMPLE_REQUIREMENTS_CATEGORICAL_IDS = `# Requirements
+
+## Validated
+
+- ✅ NET-01: Network baseline is validated.
+- ✓ OBF-10: Obfuscation compatibility is code-complete.
+
+## Active
+
+- ⏳ WIZARD-04: Wizard migration is still active.
+
+## Out of Scope
+
+- ✗ DEPR-01: Deprecated path is intentionally rejected.
 `;
 
 const SAMPLE_STATE = `# State
@@ -325,6 +341,7 @@ test('Full pipeline: parse → transform → preview → write → deriveState',
       // (e) Write
       const result = await writeGSDDirectory(project, writeTarget);
       assert.ok(result.paths.length > 0, 'pipeline: files written');
+      await importWrittenMigrationToDb(writeTarget, preview);
 
       // Key files exist
       const gsd = join(writeTarget, '.gsd');
@@ -350,6 +367,7 @@ test('Full pipeline: parse → transform → preview → write → deriveState',
       assert.ok(state.progress!.tasks !== undefined, 'pipeline: deriveState has tasks progress');
 
     } finally {
+      closeDatabase();
       rmSync(base, { recursive: true, force: true });
       rmSync(writeTarget, { recursive: true, force: true });
     }
@@ -381,6 +399,66 @@ test('Full pipeline: legacy requirement IDs import into DB with canonical IDs', 
       assert.deepStrictEqual(imported.requirements, 4, 'legacy-reqs: DB import count matches preview');
       assert.ok(getDecisionById('D001') !== null, 'legacy-reqs: migrated decision is queryable');
       assert.deepStrictEqual(counts.total, 4, 'legacy-reqs: DB stores all migrated requirements');
+    } finally {
+      closeDatabase();
+      rmSync(base, { recursive: true, force: true });
+      rmSync(writeTarget, { recursive: true, force: true });
+    }
+});
+
+test('Full pipeline: milestone phase dirs and categorical requirements import into DB', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'gsd-cmd-milestone-dirs-'));
+    const planning = join(base, '.planning');
+    const writeTarget = mkdtempSync(join(tmpdir(), 'gsd-cmd-milestone-dirs-write-'));
+    try {
+      mkdirSync(join(planning, 'milestones', 'v1.0-phases', '01-foundation'), { recursive: true });
+      mkdirSync(join(planning, 'milestones', 'v2.0-phases', '01-polish'), { recursive: true });
+      mkdirSync(join(planning, 'decisions'), { recursive: true });
+      mkdirSync(join(planning, 'seeds'), { recursive: true });
+
+      writeFileSync(join(planning, 'PROJECT.md'), SAMPLE_PROJECT);
+      writeFileSync(join(planning, 'REQUIREMENTS.md'), SAMPLE_REQUIREMENTS_CATEGORICAL_IDS);
+      writeFileSync(join(planning, 'milestones', 'v1.0-ROADMAP.md'), `# v1.0 Roadmap
+
+## Phases
+
+- [x] 01 — Foundation
+`);
+      writeFileSync(join(planning, 'milestones', 'v1.0-phases', '01-foundation', '01-PLAN.md'), SAMPLE_PLAN_10_01.replaceAll('10-foundation', '01-foundation'));
+      writeFileSync(join(planning, 'milestones', 'v1.0-phases', '01-foundation', '01-SUMMARY.md'), SAMPLE_SUMMARY_10_01.replaceAll('10-foundation', '01-foundation'));
+      writeFileSync(join(planning, 'milestones', 'v2.0-ROADMAP.md'), `# v2.0 Roadmap
+
+## Phases
+
+- [ ] 01 — Polish
+`);
+      writeFileSync(join(planning, 'milestones', 'v2.0-phases', '01-polish', '01-PLAN.md'), SAMPLE_PLAN_20_01.replaceAll('20-features', '01-polish'));
+      writeFileSync(join(planning, 'decisions', '2026-05-11-parser-shape.md'), '# Parser Shape\n\nPrefer milestone-local phases.');
+      writeFileSync(join(planning, 'seeds', 'SEED-001-feature.md'), '# Feature Seed\n\nSeed content.');
+
+      const parsed = await parsePlanningDirectory(planning);
+      const project = transformToGSD(parsed);
+      const preview = generatePreview(project);
+
+      assert.deepStrictEqual(preview.milestoneCount, 2, 'milestone dirs pipeline: preview milestone count');
+      assert.deepStrictEqual(preview.totalSlices, 2, 'milestone dirs pipeline: preview slice count');
+      assert.deepStrictEqual(preview.totalTasks, 2, 'milestone dirs pipeline: preview task count');
+      assert.deepStrictEqual(preview.decisions.total, 1, 'milestone dirs pipeline: decision file counted');
+      assert.deepStrictEqual(preview.requirements.total, 4, 'milestone dirs pipeline: categorical requirements counted');
+      assert.deepStrictEqual(preview.requirements.outOfScope, 1, 'milestone dirs pipeline: rejected requirement counted out-of-scope');
+      assert.deepStrictEqual(preview.migrationInputs?.seeds, 1, 'milestone dirs pipeline: seed count visible');
+
+      await writeGSDDirectory(project, writeTarget);
+      const imported = await importWrittenMigrationToDb(writeTarget, preview);
+      const counts = getRequirementCounts();
+
+      assert.deepStrictEqual(imported.hierarchy.milestones, 2, 'milestone dirs pipeline: DB imports two milestones');
+      assert.deepStrictEqual(imported.hierarchy.slices, 2, 'milestone dirs pipeline: DB imports two slices');
+      assert.deepStrictEqual(imported.hierarchy.tasks, 2, 'milestone dirs pipeline: DB imports two tasks');
+      assert.deepStrictEqual(imported.decisions, 1, 'milestone dirs pipeline: DB imports decision file row');
+      assert.deepStrictEqual(imported.requirements, 4, 'milestone dirs pipeline: DB import matches categorical requirement preview');
+      assert.ok(getRequirementById('NET-01') !== null, 'milestone dirs pipeline: categorical requirement ID queryable');
+      assert.deepStrictEqual(counts.outOfScope, 1, 'milestone dirs pipeline: rejected requirement persists as out-of-scope');
     } finally {
       closeDatabase();
       rmSync(base, { recursive: true, force: true });
