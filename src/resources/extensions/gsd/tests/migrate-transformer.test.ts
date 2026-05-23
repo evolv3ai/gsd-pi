@@ -36,6 +36,8 @@ function emptyProject(overrides: Partial<PlanningProject> = {}): PlanningProject
     quickTasks: [],
     milestones: [],
     research: [],
+    decisions: [],
+    seeds: [],
     validation: { valid: true, issues: [] },
     ...overrides,
   };
@@ -245,6 +247,47 @@ test('Scenario 2: Multi-milestone', () => {
   assert.ok(result.milestones[1]?.title.length > 0, 'multi: M002 has title');
 });
 
+test('Scenario 2b: Milestone directory layout drives canonical M output with legacy provenance', () => {
+  const plan01 = makePlan('01');
+  const project = emptyProject({
+    milestones: [
+      {
+        id: 'v1.0',
+        requirements: '# v1 Requirements',
+        roadmap: '# v1 Roadmap',
+        phases: {
+          '01-foundation': makePhase('01-foundation', 1, 'foundation', {
+            plans: { '01': { ...plan01, frontmatter: { ...plan01.frontmatter, phase: '01-foundation' } } },
+            summaries: { '01': makeSummary('01') },
+          }),
+        },
+        extraFiles: [],
+      },
+      {
+        id: 'v2.0',
+        requirements: null,
+        roadmap: '# v2 Roadmap',
+        phases: {
+          '01-polish': makePhase('01-polish', 1, 'polish', {
+            plans: { '01': { ...plan01, frontmatter: { ...plan01.frontmatter, phase: '01-polish' } } },
+          }),
+        },
+        extraFiles: [],
+      },
+    ],
+  });
+
+  const result = transformToGSD(project);
+
+  assert.deepStrictEqual(result.milestones.length, 2, 'milestone dirs: two GSD milestones');
+  assert.deepStrictEqual(result.milestones.map((m) => m.id), ['M001', 'M002'], 'milestone dirs: canonical GSD IDs');
+  assert.ok(result.milestones[0]?.title.includes('v1.0'), 'milestone dirs: legacy ID visible in title');
+  assert.deepStrictEqual(result.milestones[0]?.slices.length, 1, 'milestone dirs: first milestone has one slice');
+  assert.deepStrictEqual(result.milestones[0]?.slices[0]?.tasks.length, 1, 'milestone dirs: first slice has task');
+  assert.deepStrictEqual(result.milestones[0]?.slices[0]?.done, true, 'milestone dirs: summary marks slice done');
+  assert.deepStrictEqual(result.migrationInputs?.milestonePhaseDirs, 2, 'milestone dirs: preview metadata counts phase dirs');
+});
+
 // ─── Scenario 3: Decimal Phase Ordering (1, 2, 2.1, 2.2, 3 → S01–S05) ──
 
 test('Scenario 3: Decimal phase ordering', () => {
@@ -399,6 +442,22 @@ test('Scenario 6: Requirements classification', () => {
   assert.deepStrictEqual(result.requirements[0]?.primarySlice, 'none yet', 'requirements: default primarySlice');
 });
 
+test('Scenario 6b: Categorical requirement IDs and rejected status are preserved', () => {
+  const project = emptyProject({
+    requirements: [
+      makeRequirement('NET-01', 'Bench validated networking', 'validated'),
+      makeRequirement('OBF-10', 'Rejected obfuscation path', 'rejected'),
+    ],
+  });
+
+  const result = transformToGSD(project);
+
+  assert.deepStrictEqual(result.requirements.map((req) => req.id), ['NET-01', 'OBF-10'], 'categorical reqs: IDs preserved');
+  assert.deepStrictEqual(result.requirements[0]?.status, 'validated', 'categorical reqs: validated status preserved');
+  assert.deepStrictEqual(result.requirements[1]?.status, 'out-of-scope', 'categorical reqs: rejected maps to out-of-scope');
+  assert.ok(!result.requirements[0]?.description.includes('Legacy ID:'), 'categorical reqs: no legacy ID fallback');
+});
+
 // ─── Scenario 7: Empty Phase (no plans → slice with 0 tasks) ───────────────
 
 test('Scenario 7: Empty phase', () => {
@@ -539,8 +598,8 @@ test('Scenario 11: Requirements edge cases', () => {
   assert.deepStrictEqual(result.requirements[2]?.id, 'R005', 'req-edge: existing id preserved');
   assert.deepStrictEqual(result.requirements[2]?.status, 'active', 'req-edge: unknown status normalized to active');
   assert.deepStrictEqual(result.requirements[3]?.status, 'deferred', 'req-edge: uppercase DEFERRED normalized');
-  assert.deepStrictEqual(result.requirements[4]?.id, 'R003', 'req-edge: non-R legacy id gets next canonical id');
-  assert.ok(result.requirements[4]?.description.includes('Legacy ID: AUTH-7'), 'req-edge: original legacy id is preserved in description');
+  assert.deepStrictEqual(result.requirements[4]?.id, 'AUTH-7', 'req-edge: categorical legacy id is preserved');
+  assert.ok(!result.requirements[4]?.description.includes('Legacy ID: AUTH-7'), 'req-edge: categorical legacy id is not duplicated in description');
 });
 
 // ─── Scenario 12: Vision derivation ────────────────────────────────────────
