@@ -521,6 +521,22 @@ async function runOAuthFlow(
             return result as string
           }
         : undefined,
+      onDeviceCode: async (info) => {
+        p.log.info(`${pc.dim('Code:')} ${pc.cyan(info.userCode)}`)
+        p.log.info(`${pc.dim('URL:')} ${pc.cyan(info.verificationUri)}`)
+        openBrowser(info.verificationUri)
+      },
+      onSelect: async (prompt) => {
+        const result = await p.select({
+          message: prompt.message,
+          options: prompt.options.map((option) => ({
+            value: option.id,
+            label: option.label,
+          })),
+        })
+        if (p.isCancel(result)) return prompt.options[0]?.id
+        return result as string
+      },
     }
 
     await authStorage.login(providerId as LoginProviderId, loginCallbacks)

@@ -386,10 +386,10 @@ async function applyCompactionThresholdOverride(ctx: ExtensionContext): Promise<
     const raw = prefs?.preferences.context_management?.compaction_threshold_percent;
     const value =
       typeof raw === "number" && Number.isFinite(raw) && raw >= 0.5 && raw <= 0.95 ? raw : 0.6;
-    ctx.setCompactionThresholdOverride(value);
+    ctx.setCompactionThresholdOverride?.(value);
   } catch {
     // Non-fatal: use conservative default when preferences cannot be loaded.
-    ctx.setCompactionThresholdOverride(0.6);
+    ctx.setCompactionThresholdOverride?.(0.6);
   }
 }
 

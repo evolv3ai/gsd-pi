@@ -757,7 +757,8 @@ export async function buildResourceLoader(
   agentDir: string,
   options: BuildResourceLoaderOptions = {},
 ): Promise<DefaultResourceLoaderType> {
-  const { DefaultResourceLoader, sortExtensionPaths } = await loadPiCodingAgentModule()
+  const { DefaultResourceLoader } = await loadPiCodingAgentModule()
+  const { sortExtensionPaths } = await import('./extension-sort.js')
   const registry = loadRegistry()
   const piAgentDir = join(homedir(), '.pi', 'agent')
   const piExtensionsDir = join(piAgentDir, 'extensions')
@@ -776,6 +777,7 @@ export async function buildResourceLoader(
 
   return new DefaultResourceLoader({
     agentDir,
+    cwd: process.cwd(),
     additionalExtensionPaths,
     bundledExtensionKeys: bundledKeys,
     extensionPathsTransform: (paths: string[]) => {
@@ -791,7 +793,7 @@ export async function buildResourceLoader(
 
       return {
         paths: sortedPaths,
-        diagnostics: warnings.map((w) => w.message),
+        diagnostics: warnings.map((w: { message: string }) => w.message),
       }
     },
   } as ConstructorParameters<typeof DefaultResourceLoader>[0])

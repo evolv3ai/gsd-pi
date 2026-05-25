@@ -18,8 +18,7 @@
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import { truncateHead, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES } from "@gsd/pi-coding-agent";
 import { Text } from "@gsd/pi-tui";
-import { Type } from "@sinclair/typebox";
-import { StringEnum } from "@gsd/pi-ai";
+import { StringEnum, Type } from "@gsd/pi-ai";
 
 import { LRUTTLCache } from "./cache.js";
 import { fetchWithRetryTimed, HttpError, classifyError, type RateLimitInfo } from "./http.js";
