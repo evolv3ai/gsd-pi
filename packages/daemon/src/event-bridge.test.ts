@@ -90,7 +90,7 @@ function createMockSession(overrides?: Partial<ManagedSession>): ManagedSession 
 
 const DEFAULT_CONFIG: DaemonConfig = {
   discord: {
-    token: 'test-token',
+    token: 'dummy',
     guild_id: 'guild-1',
     owner_id: 'owner-1',
     dm_on_blocker: false,
