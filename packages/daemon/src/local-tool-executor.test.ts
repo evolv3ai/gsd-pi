@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -62,6 +62,65 @@ test("local tool executor forwards cloud blocker resolution", async () => {
 
   assert.deepEqual(resolved, { sessionId: "session-1", response: "continue" });
   assert.deepEqual(result, { content: [{ type: "text", text: JSON.stringify({ resolved: true }, null, 2) }] });
+});
+
+test("local tool executor returns status payload with progress counters", async () => {
+  const startedAt = Date.now() - 1234;
+  const executor = new LocalToolExecutor({
+    getSession: (sessionId: string) => sessionId === "session-1"
+      ? {
+          sessionId,
+          status: "running",
+          events: [
+            { type: "message" },
+            { type: "tool_use" },
+            { type: "tool_execution_start" },
+          ],
+          pendingBlocker: null,
+          cost: { totalCost: 0, tokens: { input: 0, output: 0 } },
+          startTime: startedAt,
+        }
+      : undefined,
+  } as unknown as SessionManager, async () => []);
+
+  const result = await executor.execute("gsd_status", { sessionId: "session-1" });
+  const text = (result as { content: Array<{ text: string }> }).content[0]!.text;
+  const status = JSON.parse(text) as { status: string; progress: { eventCount: number; toolCalls: number } };
+
+  assert.equal(status.status, "running");
+  assert.deepEqual(status.progress, { eventCount: 3, toolCalls: 2 });
+});
+
+test("local tool executor returns gsd_query project-state payload", async () => {
+  const projectDir = mkdtempSync(join(tmpdir(), "gsd-query-project-"));
+  const gsdDir = join(projectDir, ".gsd");
+  mkdirSync(join(gsdDir, "milestones", "M001"), { recursive: true });
+  writeFileSync(join(gsdDir, "STATE.md"), "state text");
+  writeFileSync(join(gsdDir, "PROJECT.md"), "project text");
+  writeFileSync(join(gsdDir, "REQUIREMENTS.md"), "requirements text");
+  writeFileSync(join(gsdDir, "milestones", "M001", "M001-ROADMAP.md"), "roadmap text");
+
+  const project: ProjectInfo = {
+    name: "query-project",
+    path: projectDir,
+    markers: ["git"],
+    lastModified: Date.now(),
+  };
+  const executor = new LocalToolExecutor({} as SessionManager, async () => [project]);
+
+  const result = await executor.execute("gsd_query", { projectDir });
+  const text = (result as { content: Array<{ text: string }> }).content[0]!.text;
+  const query = JSON.parse(text) as {
+    state: string;
+    project: string;
+    requirements: string;
+    milestones: Array<{ id: string; hasRoadmap: boolean; hasSummary: boolean }>;
+  };
+
+  assert.equal(query.state, "state text");
+  assert.equal(query.project, "project text");
+  assert.equal(query.requirements, "requirements text");
+  assert.deepEqual(query.milestones, [{ id: "M001", hasRoadmap: true, hasSummary: false }]);
 });
 
 test("local tool executor forwards unified graph tool modes", async () => {

@@ -16,6 +16,7 @@ export class CloudRuntime {
   private socket: WebSocket | undefined;
   private heartbeat: ReturnType<typeof setInterval> | undefined;
   private reconnect: ReturnType<typeof setTimeout> | undefined;
+  private readonly inFlight = new Map<string, GatewayMessage>();
   private stopped = false;
 
   constructor(
@@ -33,6 +34,7 @@ export class CloudRuntime {
     this.stopped = true;
     if (this.reconnect) clearTimeout(this.reconnect);
     if (this.heartbeat) clearInterval(this.heartbeat);
+    this.inFlight.clear();
     this.socket?.close();
   }
 
@@ -94,14 +96,44 @@ export class CloudRuntime {
     } catch {
       return;
     }
+    if (message.type === "cancel" && message.requestId) {
+      void this.cancelInFlight(message.requestId);
+      return;
+    }
     if (message.type !== "tool_call" || !message.requestId || !message.toolName) return;
+    this.inFlight.set(message.requestId, message);
     try {
       const result = await this.executor.execute(message.toolName, message.args ?? {}, message.projectAlias);
+      if (!this.inFlight.has(message.requestId)) return;
       this.send({ type: "tool_result", requestId: message.requestId, result });
     } catch (err) {
+      if (!this.inFlight.has(message.requestId)) return;
       this.send({
         type: "tool_result",
         requestId: message.requestId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      this.inFlight.delete(message.requestId);
+    }
+  }
+
+  private async cancelInFlight(requestId: string): Promise<void> {
+    const pending = this.inFlight.get(requestId);
+    if (!pending) return;
+    this.inFlight.delete(requestId);
+    try {
+      if (typeof pending.args?.sessionId === "string") {
+        await this.executor.execute("gsd_cancel", { sessionId: pending.args.sessionId }, pending.projectAlias);
+        return;
+      }
+      const projectDir = typeof pending.args?.projectDir === "string" ? pending.args.projectDir : pending.projectAlias;
+      if (projectDir) {
+        await this.executor.execute("gsd_cancel", { projectDir });
+      }
+    } catch (err) {
+      this.logger.warn("cloud runtime cancel failed", {
+        requestId,
         error: err instanceof Error ? err.message : String(err),
       });
     }

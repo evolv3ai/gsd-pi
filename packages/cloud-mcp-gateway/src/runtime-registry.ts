@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type WebSocket from "ws";
+import WebSocket from "ws";
 import type {
   CloudProjectRecord,
   GatewayToRuntimeMessage,
@@ -212,7 +212,7 @@ export class RuntimeRegistry {
   }
 
   private send(runtime: RuntimeConnection, message: GatewayToRuntimeMessage): void {
-    if (runtime.socket.readyState !== runtime.socket.OPEN) {
+    if (runtime.socket.readyState !== WebSocket.OPEN) {
       throw new Error(`Local GSD Runtime is offline: ${runtime.runtimeId}`);
     }
     runtime.socket.send(JSON.stringify(message));

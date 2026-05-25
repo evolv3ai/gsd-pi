@@ -4,7 +4,6 @@ import { test } from "node:test";
 import { RuntimeRegistry } from "./runtime-registry.js";
 
 class FakeSocket extends EventEmitter {
-  readonly OPEN = 1;
   readyState = 1;
   sent: unknown[] = [];
   send(payload: string): void {

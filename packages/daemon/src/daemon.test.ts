@@ -10,6 +10,7 @@ import { dirname } from 'node:path';
 import { resolveConfigPath, loadConfig, validateConfig } from './config.js';
 import { Logger } from './logger.js';
 import { Daemon } from './daemon.js';
+import { CloudRuntime } from './cloud-runtime.js';
 import { SessionManager } from './session-manager.js';
 import type { DaemonConfig, LogEntry } from './types.js';
 
@@ -25,6 +26,50 @@ afterEach(() => {
     const d = cleanupDirs.pop()!;
     if (existsSync(d)) rmSync(d, { recursive: true, force: true });
   }
+});
+
+it('cloud runtime handles gateway cancel for in-flight requests', async () => {
+  let finishTool!: (value: unknown) => void;
+  const calls: Array<{ toolName: string; args: Record<string, unknown>; projectAlias?: string }> = [];
+  const executor = {
+    execute: (toolName: string, args: Record<string, unknown>, projectAlias?: string) => {
+      calls.push({ toolName, args, projectAlias });
+      if (toolName === 'gsd_cancel') return Promise.resolve({ content: [] });
+      return new Promise((resolve) => {
+        finishTool = resolve;
+      });
+    },
+    advertisedProjects: async () => [],
+  };
+  const sent: unknown[] = [];
+  const runtime = new CloudRuntime(
+    { gateway_url: 'ws://127.0.0.1:1', device_token: 'token', runtime_id: 'runtime' },
+    executor as never,
+    { info: () => undefined, warn: () => undefined, error: () => undefined, debug: () => undefined } as never,
+  );
+  (runtime as unknown as { socket: { readyState: number; send: (payload: string) => void } }).socket = {
+    readyState: 1,
+    send: (payload: string) => sent.push(JSON.parse(payload) as unknown),
+  };
+
+  const running = (runtime as unknown as { handleMessage: (text: string) => Promise<void> }).handleMessage(JSON.stringify({
+    type: 'tool_call',
+    requestId: 'request-1',
+    toolName: 'gsd_progress',
+    args: { projectDir: '/project' },
+  }));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  await (runtime as unknown as { handleMessage: (text: string) => Promise<void> }).handleMessage(JSON.stringify({
+    type: 'cancel',
+    requestId: 'request-1',
+  }));
+  finishTool({ late: true });
+  await running;
+
+  assert.deepEqual(calls.map((call) => call.toolName), ['gsd_progress', 'gsd_cancel']);
+  assert.deepEqual(calls[1], { toolName: 'gsd_cancel', args: { projectDir: '/project' }, projectAlias: undefined });
+  assert.deepEqual(sent, []);
 });
 
 // ---------- config ----------
