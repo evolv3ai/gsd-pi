@@ -1,12 +1,33 @@
 import { describe, expect, it } from "vitest";
-import { convertTools } from "../src/providers/google-shared.ts";
-import type { Tool } from "../src/types.ts";
+import { convertMessages, convertTools } from "../src/providers/google-shared.ts";
+import type { Context, Model, Tool } from "../src/types.ts";
 
 function makeTool(parameters: Record<string, unknown>): Tool {
 	return {
 		name: "test_tool",
 		description: "A test tool",
 		parameters: parameters as Tool["parameters"],
+	};
+}
+
+function makeGoogleModel(overrides: Partial<Model<"google-generative-ai">>): Model<"google-generative-ai"> {
+	return {
+		id: "gemini-3-pro",
+		name: "Test model",
+		api: "google-generative-ai",
+		provider: "google",
+		baseUrl: "",
+		reasoning: false,
+		input: ["text", "image"],
+		cost: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+		},
+		contextWindow: 1024,
+		maxTokens: 1024,
+		...overrides,
 	};
 }
 
@@ -416,5 +437,71 @@ describe("google-shared convertTools", () => {
 			type: "object",
 			additionalProperties: true,
 		});
+	});
+});
+
+describe("google-shared convertMessages", () => {
+	it("keeps tool result images outside functionResponse for non-Gemini models", () => {
+		const model = makeGoogleModel({
+			id: "claude-sonnet-4-5",
+			provider: "google-antigravity",
+		});
+		const context: Context = {
+			messages: [
+				{
+					role: "toolResult",
+					toolCallId: "call-1",
+					toolName: "screenshot",
+					content: [
+						{ type: "text", text: "captured" },
+						{ type: "image", mimeType: "image/png", data: "abc123" },
+					],
+					isError: false,
+					timestamp: 0,
+				},
+			],
+		};
+
+		const contents = convertMessages(model, context);
+
+		expect(contents).toHaveLength(2);
+		expect(contents[0]?.parts?.[0]?.functionResponse).toMatchObject({
+			name: "screenshot",
+			response: { output: "captured" },
+			id: "call-1",
+		});
+		expect(contents[0]?.parts?.[0]?.functionResponse).not.toHaveProperty("parts");
+		expect(contents[1]?.parts).toEqual([
+			{ text: "Tool result image:" },
+			{ inlineData: { mimeType: "image/png", data: "abc123" } },
+		]);
+	});
+
+	it("drops user image parts for text-only models", () => {
+		const model = makeGoogleModel({
+			id: "text-only-model",
+			input: ["text"],
+		});
+		const context: Context = {
+			messages: [
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "describe this" },
+						{ type: "image", mimeType: "image/png", data: "abc123" },
+					],
+					timestamp: 0,
+				},
+			],
+		};
+
+		const contents = convertMessages(model, context);
+
+		expect(contents).toEqual([
+			{
+				role: "user",
+				parts: [{ text: "describe this" }],
+			},
+		]);
 	});
 });

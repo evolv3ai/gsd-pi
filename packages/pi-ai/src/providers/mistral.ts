@@ -4,7 +4,7 @@ import type { Mistral } from "@mistralai/mistralai";
 import type { RequestOptions } from "@mistralai/mistralai/lib/sdks.js";
 import type {
 	ChatCompletionStreamRequest,
-	ChatCompletionStreamRequestMessage,
+	ChatCompletionStreamRequestMessages,
 	CompletionEvent,
 	ContentChunk,
 	FunctionTool,
@@ -455,8 +455,8 @@ function toFunctionTools(tools: Tool[]): Array<FunctionTool & { type: "function"
 	}));
 }
 
-function toChatMessages(messages: Message[], supportsImages: boolean): ChatCompletionStreamRequestMessage[] {
-	const result: ChatCompletionStreamRequestMessage[] = [];
+function toChatMessages(messages: Message[], supportsImages: boolean): ChatCompletionStreamRequestMessages[] {
+	const result: ChatCompletionStreamRequestMessages[] = [];
 
 	for (const msg of messages) {
 		if (msg.role === "user") {
@@ -511,7 +511,7 @@ function toChatMessages(messages: Message[], supportsImages: boolean): ChatCompl
 				});
 			}
 
-			const assistantMessage: ChatCompletionStreamRequestMessage = { role: "assistant" };
+			const assistantMessage: ChatCompletionStreamRequestMessages = { role: "assistant" };
 			if (contentParts.length > 0) assistantMessage.content = contentParts;
 			if (toolCalls.length > 0) assistantMessage.toolCalls = toolCalls;
 			if (contentParts.length > 0 || toolCalls.length > 0) result.push(assistantMessage);

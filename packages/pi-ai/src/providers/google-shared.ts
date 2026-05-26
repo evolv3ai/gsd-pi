@@ -82,7 +82,7 @@ function supportsMultimodalFunctionResponse(modelId: string): boolean {
 	if (geminiMajorVersion !== undefined) {
 		return geminiMajorVersion >= 3;
 	}
-	return true;
+	return false;
 }
 
 /**
@@ -105,7 +105,10 @@ export function convertMessages<T extends GoogleApiType>(model: Model<T>, contex
 					parts: [{ text: sanitizeSurrogates(msg.content) }],
 				});
 			} else {
-				const parts: Part[] = msg.content.map((item) => {
+				const supportedContent = model.input.includes("image")
+					? msg.content
+					: msg.content.filter((item) => item.type === "text");
+				const parts: Part[] = supportedContent.map((item) => {
 					if (item.type === "text") {
 						return { text: sanitizeSurrogates(item.text) };
 					} else {

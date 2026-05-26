@@ -199,6 +199,7 @@ async function pauseForProviderModelRejection(
     basePath?: string;
     blockReason: string;
     blockNotify: string;
+    shouldBlockModel?: boolean;
     switchedNotify: (label: string) => void;
     buildPauseDetail: () => string;
   },
@@ -212,11 +213,12 @@ async function pauseForProviderModelRejection(
     basePath,
     blockReason,
     blockNotify,
+    shouldBlockModel = true,
     switchedNotify,
     buildPauseDetail,
   } = options;
 
-  if (basePath && rejectedProvider && rejectedId) {
+  if (shouldBlockModel && basePath && rejectedProvider && rejectedId) {
     try {
       blockModel(basePath, rejectedProvider, rejectedId, rawErrorMsg || blockReason);
       ctx.ui.notify(blockNotify, "warning");
@@ -609,7 +611,8 @@ export async function handleAgentEnd(
     }
 
     // ── 1a2. Model-error: provider rejected the request payload for this model.
-    //        Block, try fallbacks, then pause with prefs guidance.
+    //        Try fallbacks, then pause with prefs guidance. Do not persistently
+    //        block the model: payload/schema bugs may be fixed without changing models.
     if (cls.kind === "model-error") {
       const dash = getAutoDashboardData();
       const rejectedProvider = ctx.model?.provider;
@@ -635,8 +638,9 @@ export async function handleAgentEnd(
         basePath: dash.basePath,
         blockReason: "invalid request for model",
         blockNotify: rejectedProvider && rejectedId
-          ? `Blocked ${rejectedProvider}/${rejectedId} after provider request rejection.`
+          ? `Provider rejected ${rejectedProvider}/${rejectedId} request.`
           : "Provider rejected the current model request.",
+        shouldBlockModel: false,
         switchedNotify: (label) => {
           ctx.ui.notify(`Switched to ${label} after provider request rejection.`, "warning");
         },
