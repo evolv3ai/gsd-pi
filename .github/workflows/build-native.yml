@@ -309,12 +309,32 @@ jobs:
           TAG_FLAG: ${{ steps.version-check.outputs.tag_flag }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
+          wait_for_workspace_package() {
+            PACKAGE="$1"
+            DELAY=5
+            for attempt in $(seq 1 5); do
+              PUBLISHED=$(npm view "${PACKAGE}@${VERSION}" version 2>/dev/null || echo "")
+              if [ "${PUBLISHED}" = "${VERSION}" ]; then
+                echo "  ✓ ${PACKAGE}@${VERSION} visible on npm (attempt ${attempt})"
+                return 0
+              fi
+              if [ "$attempt" = "5" ]; then
+                echo "::error::${PACKAGE}@${VERSION} not visible on npm after 5 attempts"
+                exit 1
+              fi
+              echo "  Attempt ${attempt}: ${PACKAGE}@${VERSION} not visible yet, retrying in ${DELAY}s..."
+              sleep "$DELAY"
+              DELAY=$((DELAY * 2))
+              if [ "$DELAY" -gt 30 ]; then DELAY=30; fi
+            done
+          }
           for workspace in @opengsd/contracts @opengsd/rpc-client @opengsd/mcp-server; do
             if npm view "${workspace}@${VERSION}" version >/dev/null 2>&1; then
               echo "${workspace}@${VERSION} already published, skipping"
               continue
             fi
             npm publish --workspace "${workspace}" --ignore-scripts ${TAG_FLAG}
+            wait_for_workspace_package "${workspace}"
           done
 
       - name: Publish main package
