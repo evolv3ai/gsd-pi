@@ -53,6 +53,18 @@ function renderToolCollapsed(
 }
 
 describe("ToolExecutionComponent", () => {
+	test("matches pending invocations after normalizing equivalent path aliases", () => {
+		const component = new ToolExecutionComponent(
+			"read",
+			{ filePath: "README.md" },
+			{},
+			undefined,
+			{ requestRender() {} } as any,
+		);
+
+		assert.equal(component.matchesInvocation("read", { path: "README.md" }), true);
+	});
+
 	test("renders framed header with running status while tool is partial", () => {
 		const rendered = renderToolCollapsed("mcp__demo__do_thing", { ok: true });
 

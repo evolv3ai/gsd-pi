@@ -308,6 +308,46 @@ function stableJsonStringify(value: unknown): string {
 	});
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function tryParseJsonValue(value: string): unknown {
+	const trimmed = value.trim();
+	if (!trimmed.startsWith("[") && !trimmed.startsWith("{")) {
+		return value;
+	}
+	try {
+		return JSON.parse(trimmed);
+	} catch {
+		return value;
+	}
+}
+
+function normalizeComparableArgs(toolName: string, args: unknown): unknown {
+	if (!isRecord(args)) return args;
+	const normalized = { ...args };
+	if (toolName === "read" || toolName === "write" || toolName === "edit") {
+		if (normalized.path === undefined) {
+			const alias = normalized.filePath ?? normalized.file_path ?? normalized.file;
+			if (typeof alias === "string" && alias.length > 0) {
+				normalized.path = alias;
+				delete normalized.filePath;
+				delete normalized.file_path;
+				delete normalized.file;
+			}
+		}
+	}
+	if (toolName === "subagent") {
+		for (const key of ["tasks", "chain"] as const) {
+			if (typeof normalized[key] === "string") {
+				normalized[key] = tryParseJsonValue(normalized[key]);
+			}
+		}
+	}
+	return normalized;
+}
+
 export interface ToolExecutionOptions {
 	showImages?: boolean; // default: true (only used if terminal supports images)
 }
@@ -364,7 +404,10 @@ export class ToolExecutionComponent extends Container {
 	matchesInvocation(toolName: string, args: unknown): boolean {
 		const other = typeof toolName === "string" ? toolName.toLowerCase() : "";
 		if (this.normalizedToolName !== other) return false;
-		return stableJsonStringify(this.args ?? null) === stableJsonStringify(args ?? null);
+		return (
+			stableJsonStringify(normalizeComparableArgs(this.normalizedToolName, this.args) ?? null) ===
+			stableJsonStringify(normalizeComparableArgs(other, args) ?? null)
+		);
 	}
 
 	/** True while the tool call is still running (no final result yet). */
