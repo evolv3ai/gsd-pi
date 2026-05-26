@@ -43,6 +43,45 @@ let renderedSegments: RenderedSegment[] = [];
 // claude-code MCP pruning can remove stale provisional text later.
 let orphanedSegments: RenderedSegment[] = [];
 
+function findPendingToolByInvocation(
+	pendingTools: Map<string, ToolExecutionComponent>,
+	toolName: string,
+	args: unknown,
+): ToolExecutionComponent | undefined {
+	for (const component of pendingTools.values()) {
+		if (!component.isInFlight()) continue;
+		if (component.matchesInvocation(toolName, args)) {
+			return component;
+		}
+	}
+	return undefined;
+}
+
+function registerPendingToolComponent(
+	host: InteractiveModeStateHost,
+	toolCallId: string,
+	toolName: string,
+	args: unknown,
+	createComponent: () => ToolExecutionComponent,
+): { component: ToolExecutionComponent; created: boolean } {
+	const existing = host.pendingTools.get(toolCallId);
+	if (existing) {
+		return { component: existing, created: false };
+	}
+
+	const matched = findPendingToolByInvocation(host.pendingTools, toolName, args);
+	if (matched) {
+		host.pendingTools.set(toolCallId, matched);
+		return { component: matched, created: false };
+	}
+
+	const component = createComponent();
+	component.setExpanded(host.toolOutputExpanded);
+	host.chatContainer.addChild(component);
+	host.pendingTools.set(toolCallId, component);
+	return { component, created: true };
+}
+
 function startLoadingAnimation(host: InteractiveModeStateHost): void {
 	if (host.pendingWorkingMessage === null) {
 		host.loadingAnimation = undefined;
@@ -451,33 +490,36 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 				for (let i = lastProcessedContentIndex; i < contentBlocks.length; i++) {
 					const content = contentBlocks[i];
 					if (content.type === "toolCall") {
-						if (!host.pendingTools.has(content.id)) {
-							const component = new ToolExecutionComponent(
-								content.name,
-								content.arguments,
-								{ showImages: host.settingsManager.getShowImages() },
-								host.getRegisteredToolDefinition(content.name),
-								host.ui,
-							);
-							component.setExpanded(host.toolOutputExpanded);
-							host.chatContainer.addChild(component);
-							host.pendingTools.set(content.id, component);
-						} else {
-							host.pendingTools.get(content.id)?.updateArgs(content.arguments);
-						}
+						const { component } = registerPendingToolComponent(
+							host,
+							content.id,
+							content.name,
+							content.arguments,
+							() =>
+								new ToolExecutionComponent(
+									content.name,
+									content.arguments,
+									{ showImages: host.settingsManager.getShowImages() },
+									host.getRegisteredToolDefinition(content.name),
+									host.ui,
+								),
+						);
+						component.updateArgs(content.arguments);
 					} else if (content.type === "serverToolUse") {
-						if (!host.pendingTools.has(content.id)) {
-							const component = new ToolExecutionComponent(
-								content.name,
-								content.input ?? {},
-								{ showImages: host.settingsManager.getShowImages() },
-								undefined,
-								host.ui,
-							);
-							component.setExpanded(host.toolOutputExpanded);
-							host.chatContainer.addChild(component);
-							host.pendingTools.set(content.id, component);
-						}
+						registerPendingToolComponent(
+							host,
+							content.id,
+							content.name,
+							content.input ?? {},
+							() =>
+								new ToolExecutionComponent(
+									content.name,
+									content.input ?? {},
+									{ showImages: host.settingsManager.getShowImages() },
+									undefined,
+									host.ui,
+								),
+						);
 					} else if (content.type === "webSearchResult") {
 						const component = host.pendingTools.get(content.toolUseId);
 						if (component) {
@@ -911,22 +953,27 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 			host.ui.requestRender();
 			break;
 
-		case "tool_execution_start":
-			if (!host.pendingTools.has(event.toolCallId)) {
-				const component = new ToolExecutionComponent(
-					event.toolName,
-					event.args,
-					{ showImages: host.settingsManager.getShowImages() },
-					host.getRegisteredToolDefinition(event.toolName),
-					host.ui,
-				);
-				component.setExpanded(host.toolOutputExpanded);
-				host.chatContainer.addChild(component);
-				host.pendingTools.set(event.toolCallId, component);
+		case "tool_execution_start": {
+			const { component, created } = registerPendingToolComponent(
+				host,
+				event.toolCallId,
+				event.toolName,
+				event.args,
+				() =>
+					new ToolExecutionComponent(
+						event.toolName,
+						event.args,
+						{ showImages: host.settingsManager.getShowImages() },
+						host.getRegisteredToolDefinition(event.toolName),
+						host.ui,
+					),
+			);
+			if (created) {
 				renderedSegments.push({ kind: "tool", contentIndex: Number.MAX_SAFE_INTEGER, component });
-				host.ui.requestRender();
 			}
+			host.ui.requestRender();
 			break;
+		}
 
 		case "tool_execution_update": {
 			const component = host.pendingTools.get(event.toolCallId);

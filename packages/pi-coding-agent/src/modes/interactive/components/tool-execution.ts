@@ -347,6 +347,18 @@ export class ToolExecutionComponent extends Container {
 		return typeof this.toolName === "string" ? this.toolName.toLowerCase() : "";
 	}
 
+	/** Match pending tool calls when stream adapters disagree on toolCallId. */
+	matchesInvocation(toolName: string, args: unknown): boolean {
+		const other = typeof toolName === "string" ? toolName.toLowerCase() : "";
+		if (this.normalizedToolName !== other) return false;
+		return JSON.stringify(this.args ?? null) === JSON.stringify(args ?? null);
+	}
+
+	/** True while the tool call is still running (no final result yet). */
+	isInFlight(): boolean {
+		return this.isPartial || !this.result;
+	}
+
 	constructor(
 		toolName: string,
 		args: any,

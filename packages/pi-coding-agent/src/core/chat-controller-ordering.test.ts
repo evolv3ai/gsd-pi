@@ -1143,6 +1143,64 @@ test("chat-controller rolls up low-signal direct tool execution events on agent_
 	assert.match(host.chatContainer.children[0].render(120).join("\n"), /Setup \/ shell 3 actions/);
 });
 
+test("chat-controller merges tool_execution_start and message_update when toolCallIds differ", async () => {
+	(globalThis as any)[Symbol.for("@gsd/pi-coding-agent:theme")] = {
+		fg: (_key: string, text: string) => text,
+		bg: (_key: string, text: string) => text,
+		bold: (text: string) => text,
+		italic: (text: string) => text,
+		truncate: (text: string) => text,
+	};
+
+	const host = createHost();
+	host.getMarkdownThemeWithSettings = () => ({});
+	host.toolOutputExpanded = true;
+
+	const toolBlock = { type: "toolCall", id: "content-id", name: "bash", arguments: { command: "git status" } };
+	const content = [toolBlock];
+	const result = {
+		content: [{ type: "text", text: "On branch milestone/M003-mx79kt\nnothing to commit, working tree clean" }],
+		details: { cwd: "~/github/test-apps/123/.gsd/worktrees" },
+	};
+
+	await handleAgentEvent(host, { type: "message_start", message: makeAssistant([]) } as any);
+	await handleAgentEvent(host, {
+		type: "tool_execution_start",
+		toolCallId: "exec-id",
+		toolName: "bash",
+		args: { command: "git status" },
+	} as any);
+	await handleAgentEvent(host, {
+		type: "message_update",
+		message: makeAssistant(content),
+		assistantMessageEvent: {
+			type: "toolcall_end",
+			contentIndex: 0,
+			toolCall: { ...toolBlock, externalResult: { ...result, isError: false } },
+			partial: makeAssistant(content),
+		},
+	} as any);
+
+	assert.equal(host.chatContainer.children.length, 1, "mismatched ids must not mount two tool components mid-stream");
+
+	await handleAgentEvent(host, {
+		type: "tool_execution_end",
+		toolCallId: "exec-id",
+		isError: false,
+		result,
+	} as any);
+	await handleAgentEvent(host, { type: "message_end", message: makeAssistant(content) } as any);
+
+	assert.equal(host.chatContainer.children.length, 1, "message_end must keep a single bash tool component");
+	const rendered = host.chatContainer.children[0].render(120).join("\n");
+	assert.equal(
+		(rendered.match(/On branch milestone\/M003-mx79kt/g) ?? []).length,
+		1,
+		`bash output must not duplicate in render:\n${rendered}`,
+	);
+	assert.equal((rendered.match(/╭─ BASH/g) ?? []).length, 1, "bash card header must appear once");
+});
+
 // Regression test for issue #4144: interleaved text/tool content must render in content[] index order.
 // Stream: [text "A", toolCall T1, text "B", toolCall T2, text "C"]
 // Expected chatContainer order: textRun(A), toolExec(T1), textRun(B), toolExec(T2), textRun(C)
