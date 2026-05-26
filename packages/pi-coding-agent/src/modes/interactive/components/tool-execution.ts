@@ -295,6 +295,19 @@ function formatCompactArgs(args: unknown, expanded: boolean): string {
 	return lines.slice(0, maxLines).join("\n") + "\n...";
 }
 
+function stableJsonStringify(value: unknown): string {
+	return JSON.stringify(value, (_key, nestedValue) => {
+		if (nestedValue == null || typeof nestedValue !== "object" || Array.isArray(nestedValue)) {
+			return nestedValue;
+		}
+		return Object.fromEntries(
+			Object.keys(nestedValue as Record<string, unknown>)
+				.sort()
+				.map((key) => [key, (nestedValue as Record<string, unknown>)[key]]),
+		);
+	});
+}
+
 export interface ToolExecutionOptions {
 	showImages?: boolean; // default: true (only used if terminal supports images)
 }
@@ -351,7 +364,7 @@ export class ToolExecutionComponent extends Container {
 	matchesInvocation(toolName: string, args: unknown): boolean {
 		const other = typeof toolName === "string" ? toolName.toLowerCase() : "";
 		if (this.normalizedToolName !== other) return false;
-		return JSON.stringify(this.args ?? null) === JSON.stringify(args ?? null);
+		return stableJsonStringify(this.args ?? null) === stableJsonStringify(args ?? null);
 	}
 
 	/** True while the tool call is still running (no final result yet). */

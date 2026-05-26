@@ -1156,7 +1156,7 @@ test("chat-controller merges tool_execution_start and message_update when toolCa
 	host.getMarkdownThemeWithSettings = () => ({});
 	host.toolOutputExpanded = true;
 
-	const toolBlock = { type: "toolCall", id: "content-id", name: "bash", arguments: { command: "git status" } };
+	const toolBlock = { type: "toolCall", id: "content-id", name: "bash", arguments: { timeout: 30, command: "git status" } };
 	const content = [toolBlock];
 	const result = {
 		content: [{ type: "text", text: "On branch milestone/M003-mx79kt\nnothing to commit, working tree clean" }],
@@ -1168,7 +1168,7 @@ test("chat-controller merges tool_execution_start and message_update when toolCa
 		type: "tool_execution_start",
 		toolCallId: "exec-id",
 		toolName: "bash",
-		args: { command: "git status" },
+		args: { command: "git status", timeout: 30 },
 	} as any);
 	await handleAgentEvent(host, {
 		type: "message_update",
