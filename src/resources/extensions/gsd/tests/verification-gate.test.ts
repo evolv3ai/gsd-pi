@@ -60,6 +60,15 @@ describe("verification-gate: discovery", () => {
     assert.equal(result.source, "task-plan");
   });
 
+  test("discoverCommands accepts task plan verify pipelines", () => {
+    const result = discoverCommands({
+      taskPlanVerify: "npm test | tail -5",
+      cwd: tmp,
+    });
+    assert.deepStrictEqual(result.commands, ["npm test | tail -5"]);
+    assert.equal(result.source, "task-plan");
+  });
+
   test("discoverCommands strips interpreter prefixes from task plan verify commands", () => {
     const result = discoverCommands({
       taskPlanVerify: "bash: ls scripts/hooks/\npython3: python3 -m pytest tests/ -q",
@@ -270,7 +279,7 @@ describe("verification-gate: discovery", () => {
     assert.deepStrictEqual(result.commands, ["! grep 'needle' file.txt", "npm run test"]);
   });
 
-  test("taskPlanVerify rejects piped pytest command", () => {
+  test("taskPlanVerify rejects redirected pytest command", () => {
     const result = discoverCommands({
       taskPlanVerify: "python3 -m pytest tests/ -q --tb=short 2>&1 | tail -5",
       cwd: tmp,
@@ -677,9 +686,14 @@ test("isLikelyCommand: bash negation with known command is accepted", () => {
   assert.equal(isLikelyCommand("! grep needle file.txt"), true);
 });
 
-test("validateVerificationCommand rejects shell control syntax", () => {
+test("validateVerificationCommand allows shell pipelines", () => {
   assert.deepEqual(validateVerificationCommand("python3 -m pytest tests/ -q --tb=short").ok, true);
-  const result = validateVerificationCommand("python3 -m pytest tests/ -q --tb=short 2>&1 | tail -5");
+  const result = validateVerificationCommand("python3 -m pytest tests/ -q --tb=short | tail -5");
+  assert.equal(result.ok, true);
+});
+
+test("validateVerificationCommand rejects shell control syntax", () => {
+  const result = validateVerificationCommand("python3 -m pytest tests/ -q --tb=short > output.log");
   assert.equal(result.ok, false);
   if (!result.ok) {
     assert.match(result.reason, /shell control syntax/);

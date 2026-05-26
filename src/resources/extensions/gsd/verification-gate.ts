@@ -247,7 +247,7 @@ export function formatFailureContext(result: VerificationResult): string {
 // ─── Gate Execution ─────────────────────────────────────────────────────────
 
 /** Characters that indicate shell control syntax when unquoted in a command string. */
-const UNQUOTED_SHELL_CONTROL_CHARS = new Set([";", "|", "<", ">"]);
+const UNQUOTED_SHELL_CONTROL_CHARS = new Set([";", "<", ">"]);
 const EXIT_CODE_ECHO_SUFFIX = /^;\s*echo\s+(?:"exit:\$\?"|'exit:\$\?'|exit:\$\?)\s*$/;
 
 function isAllowedExitCodeEchoSuffix(suffix: string): boolean {
@@ -280,6 +280,9 @@ function hasUnsafeShellSyntax(cmd: string): boolean {
     if (ch === "\"" && !inSingle) {
       inDouble = !inDouble;
       continue;
+    }
+    if (!inSingle && !inDouble && ch === "|" && cmd[i + 1] === "|") {
+      return true;
     }
     if (!inSingle && !inDouble && UNQUOTED_SHELL_CONTROL_CHARS.has(ch)) {
       if (ch === ";" && isAllowedExitCodeEchoSuffix(cmd.slice(i))) {
@@ -371,7 +374,7 @@ export function isLikelyCommand(cmd: string): boolean {
  */
 export function validateVerificationCommand(cmd: string): { ok: true } | { ok: false; reason: string } {
   if (hasUnsafeShellSyntax(cmd)) {
-    return { ok: false, reason: "contains shell control syntax such as pipes, `||` fallbacks, redirects, semicolons, backticks, or command substitution" };
+    return { ok: false, reason: "contains shell control syntax such as `||` fallbacks, redirects, semicolons, backticks, or command substitution" };
   }
   if (!isLikelyCommand(cmd)) {
     return { ok: false, reason: "does not look like a runnable command" };
