@@ -36,7 +36,7 @@ jobs:
   fast-gates:
     name: fast-gates
     timeout-minutes: 8
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       heavy-code-changed: ${{ steps.classify.outputs.heavy-code-changed }}
       web-changed: ${{ steps.classify.outputs.web-changed }}
@@ -44,9 +44,22 @@ jobs:
       windows-e2e-changed: ${{ steps.classify.outputs.windows-e2e-changed }}
       docker-changed: ${{ steps.classify.outputs.docker-changed }}
     steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
+      - name: Checkout repository without GITHUB_TOKEN
+        shell: bash
+        env:
+          FETCH_DEPTH: '0'
+        run: |
+          set -euo pipefail
+          git init "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+          git -c protocol.version=2 fetch --no-tags --prune origin \
+            '+refs/heads/*:refs/remotes/origin/*' \
+            '+refs/tags/*:refs/tags/*' \
+            "+${GITHUB_REF}:refs/checkout-ref"
+          git checkout --force --detach "$GITHUB_SHA"
 
       - name: Prepare diff base for scans
         env:
@@ -79,10 +92,23 @@ jobs:
     timeout-minutes: 45
     needs: [fast-gates]
     if: needs.fast-gates.outputs.heavy-code-changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
 
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout repository without GITHUB_TOKEN
+        shell: bash
+        env:
+          FETCH_DEPTH: '1'
+        run: |
+          set -euo pipefail
+          git init "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+          git -c protocol.version=2 fetch --no-tags --prune --depth="$FETCH_DEPTH" origin \
+            "+${GITHUB_REF}:refs/checkout-ref"
+          git checkout --force --detach "$GITHUB_SHA"
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -129,10 +155,23 @@ jobs:
     timeout-minutes: 20
     needs: [fast-gates, build]
     if: needs.fast-gates.outputs.heavy-code-changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
 
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout repository without GITHUB_TOKEN
+        shell: bash
+        env:
+          FETCH_DEPTH: '1'
+        run: |
+          set -euo pipefail
+          git init "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+          git -c protocol.version=2 fetch --no-tags --prune --depth="$FETCH_DEPTH" origin \
+            "+${GITHUB_REF}:refs/checkout-ref"
+          git checkout --force --detach "$GITHUB_SHA"
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -155,10 +194,23 @@ jobs:
     timeout-minutes: 15
     needs: [fast-gates, build]
     if: needs.fast-gates.outputs.heavy-code-changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
 
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout repository without GITHUB_TOKEN
+        shell: bash
+        env:
+          FETCH_DEPTH: '1'
+        run: |
+          set -euo pipefail
+          git init "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+          git -c protocol.version=2 fetch --no-tags --prune --depth="$FETCH_DEPTH" origin \
+            "+${GITHUB_REF}:refs/checkout-ref"
+          git checkout --force --detach "$GITHUB_SHA"
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -185,10 +237,23 @@ jobs:
           (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/test')) ||
         (github.event_name == 'workflow_dispatch' && inputs.run_coverage)
       )
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
 
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout repository without GITHUB_TOKEN
+        shell: bash
+        env:
+          FETCH_DEPTH: '1'
+        run: |
+          set -euo pipefail
+          git init "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+          git -c protocol.version=2 fetch --no-tags --prune --depth="$FETCH_DEPTH" origin \
+            "+${GITHUB_REF}:refs/checkout-ref"
+          git checkout --force --detach "$GITHUB_SHA"
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -209,10 +274,23 @@ jobs:
     timeout-minutes: 25
     needs: [fast-gates, build]
     if: needs.fast-gates.outputs.heavy-code-changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
 
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout repository without GITHUB_TOKEN
+        shell: bash
+        env:
+          FETCH_DEPTH: '1'
+        run: |
+          set -euo pipefail
+          git init "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+          git -c protocol.version=2 fetch --no-tags --prune --depth="$FETCH_DEPTH" origin \
+            "+${GITHUB_REF}:refs/checkout-ref"
+          git checkout --force --detach "$GITHUB_SHA"
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -238,10 +316,23 @@ jobs:
     timeout-minutes: 15
     needs: [fast-gates, build]
     if: needs.fast-gates.outputs.heavy-code-changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
 
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout repository without GITHUB_TOKEN
+        shell: bash
+        env:
+          FETCH_DEPTH: '1'
+        run: |
+          set -euo pipefail
+          git init "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+          git -c protocol.version=2 fetch --no-tags --prune --depth="$FETCH_DEPTH" origin \
+            "+${GITHUB_REF}:refs/checkout-ref"
+          git checkout --force --detach "$GITHUB_SHA"
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -276,10 +367,23 @@ jobs:
     if: >-
       needs.fast-gates.outputs.heavy-code-changed == 'true' &&
       needs.fast-gates.outputs.docker-changed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
 
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout repository without GITHUB_TOKEN
+        shell: bash
+        env:
+          FETCH_DEPTH: '1'
+        run: |
+          set -euo pipefail
+          git init "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+          git -c protocol.version=2 fetch --no-tags --prune --depth="$FETCH_DEPTH" origin \
+            "+${GITHUB_REF}:refs/checkout-ref"
+          git checkout --force --detach "$GITHUB_SHA"
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -303,10 +407,23 @@ jobs:
       needs.fast-gates.outputs.heavy-code-changed == 'true' &&
       (needs.fast-gates.outputs.portability-changed == 'true' ||
        needs.fast-gates.outputs.windows-e2e-changed == 'true')
-    runs-on: windows-latest
+    runs-on: blacksmith-4vcpu-windows-2025
 
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout repository without GITHUB_TOKEN
+        shell: bash
+        env:
+          FETCH_DEPTH: '1'
+        run: |
+          set -euo pipefail
+          git init "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+          git -c protocol.version=2 fetch --no-tags --prune --depth="$FETCH_DEPTH" origin \
+            "+${GITHUB_REF}:refs/checkout-ref"
+          git checkout --force --detach "$GITHUB_SHA"
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
