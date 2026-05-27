@@ -168,10 +168,11 @@ function main() {
 					0 && ok
 			}
 			if (vitestFiles.length > 0) {
+				const vitestBin = join(REPO_ROOT, 'node_modules', 'vitest', 'vitest.mjs')
 				ok =
 					runCommand(
-						'npx',
-						['vitest', 'run', '--config', join(pkg.path, 'vitest.config.ts'), ...vitestFiles],
+						process.execPath,
+						[vitestBin, 'run', '--config', join(pkg.path, 'vitest.config.ts'), ...vitestFiles],
 						pkg.path,
 						`${pkg.packageName} (vitest)`,
 					) === 0 && ok
