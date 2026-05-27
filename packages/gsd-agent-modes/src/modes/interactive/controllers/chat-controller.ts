@@ -147,7 +147,7 @@ export function isRedundantDiscussRestatement(priorText: string, newText: string
 	const next = newText.trim();
 	if (!prior || !next) return false;
 	if (!textInvitesUserReply(prior)) return false;
-	if (!DISCUSS_RESTATE_RE.test(next) && !/\?/m.test(next)) return false;
+	if (!DISCUSS_RESTATE_RE.test(next)) return false;
 	if (next.length > prior.length * 1.1) return false;
 	return next.length <= prior.length || next.length < 900;
 }

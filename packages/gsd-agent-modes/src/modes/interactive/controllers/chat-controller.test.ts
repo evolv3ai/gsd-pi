@@ -50,6 +50,12 @@ test("isRedundantDiscussRestatement: keeps genuinely new follow-up questions", (
 	assert.equal(isRedundantDiscussRestatement(prior, next), false);
 });
 
+test("isRedundantDiscussRestatement: keeps short new follow-up questions", () => {
+	const prior = "What do you want to build for M006?";
+	const next = "I found 3 modules. Should I add docs?";
+	assert.equal(isRedundantDiscussRestatement(prior, next), false);
+});
+
 test("findLatestPinnableText: empty content returns empty string", () => {
 	assert.equal(findLatestPinnableText([]), "");
 });
