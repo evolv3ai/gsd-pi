@@ -121,3 +121,20 @@ test("isUnmergedMilestoneAllowedCommand permits inspection and explicit recovery
   assert.equal(isUnmergedMilestoneAllowedCommand("dispatch complete-milestone"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("dispatch complete-milestone M008"), true);
 });
+
+test("isUnmergedMilestoneAllowedCommand blocks direct dispatch aliases", () => {
+  const aliases = [
+    "execute-task",
+    "research-milestone",
+    "plan-slice",
+    "plan-milestone",
+    "research-slice",
+    "complete-slice",
+    "validate-milestone",
+    "complete-milestone",
+  ];
+
+  for (const alias of aliases) {
+    assert.equal(isUnmergedMilestoneAllowedCommand(alias), false, alias);
+  }
+});

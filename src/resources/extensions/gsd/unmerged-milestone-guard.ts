@@ -30,6 +30,14 @@ const BLOCKED_COMMANDS = new Set([
   "new-milestone",
   "new-project",
   "do",
+  "execute-task",
+  "research-milestone",
+  "plan-slice",
+  "plan-milestone",
+  "research-slice",
+  "complete-slice",
+  "validate-milestone",
+  "complete-milestone",
 ]);
 
 function isRuntimePath(path: string): boolean {
