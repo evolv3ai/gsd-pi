@@ -1752,6 +1752,35 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
         const hasExpectedArtifact = resolveExpectedArtifactPath(s.currentUnit.type, s.currentUnit.id, verificationBasePath) !== null;
         if (hasExpectedArtifact) {
           const retryKey = `${s.currentUnit.type}:${s.currentUnit.id}`;
+          if (
+            s.currentUnit.type === "complete-slice" &&
+            (
+              agentEndMessagesIncludeSuccessfulToolResult(opts?.agentEndMessages, "gsd_task_reopen") ||
+              agentEndMessagesIncludeToolCall(opts?.agentEndMessages, "gsd_task_reopen") ||
+              agentEndMessagesMentionTool(opts?.agentEndMessages, "gsd_task_reopen") ||
+              unitActivityMentionsTool(s.basePath, s.currentUnit.type, s.currentUnit.id, "gsd_task_reopen") ||
+              unitActivityMentionsTool(s.canonicalProjectRoot, s.currentUnit.type, s.currentUnit.id, "gsd_task_reopen") ||
+              agentEndMessagesIncludeSuccessfulToolResult(opts?.agentEndMessages, "gsd_replan_slice") ||
+              agentEndMessagesIncludeToolCall(opts?.agentEndMessages, "gsd_replan_slice") ||
+              agentEndMessagesMentionTool(opts?.agentEndMessages, "gsd_replan_slice") ||
+              unitActivityMentionsTool(s.basePath, s.currentUnit.type, s.currentUnit.id, "gsd_replan_slice") ||
+              unitActivityMentionsTool(s.canonicalProjectRoot, s.currentUnit.type, s.currentUnit.id, "gsd_replan_slice")
+            )
+          ) {
+            s.pendingVerificationRetry = null;
+            s.verificationRetryCount.delete(retryKey);
+            s.verificationRetryFailureHashes.delete(retryKey);
+            debugLog("postUnit", {
+              phase: "artifact-verify-complete-slice-handoff",
+              unitType: s.currentUnit.type,
+              unitId: s.currentUnit.id,
+            });
+            ctx.ui.notify(
+              `complete-slice ${s.currentUnit.id} intentionally handed off via reopen/replan; continuing orchestration instead of retrying closeout.`,
+              "warning",
+            );
+            return "continue";
+          }
           const verificationFailureMarker = resolveVerificationFailureMarkerPath(s.currentUnit.type, s.currentUnit.id, s.basePath);
           if (verificationFailureMarker && existsSync(verificationFailureMarker)) {
             s.pendingVerificationRetry = null;
