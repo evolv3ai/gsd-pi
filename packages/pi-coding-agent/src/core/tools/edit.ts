@@ -52,10 +52,6 @@ const editSchema = Type.Object(
 );
 
 export type EditToolInput = Static<typeof editSchema>;
-type LegacyEditToolInput = EditToolInput & {
-	oldText?: unknown;
-	newText?: unknown;
-};
 
 export interface EditToolDetails {
 	/** Display-oriented diff of the changes made */
@@ -97,7 +93,7 @@ function prepareEditArguments(input: unknown): EditToolInput {
 
 	const args = input as Record<string, unknown>;
 
-	// Some models (Opus 4.6, GLM-5.1) send edits as a JSON string instead of an array
+	// Some models (Opus 4.6, GLM-5.1) send edits as a JSON string instead of an array.
 	if (typeof args.edits === "string") {
 		try {
 			const parsed = JSON.parse(args.edits);
@@ -105,44 +101,15 @@ function prepareEditArguments(input: unknown): EditToolInput {
 		} catch {}
 	}
 
-	const legacy = args as LegacyEditToolInput & {
-		old_string?: unknown;
-		new_string?: unknown;
-		file_path?: unknown;
-		replace_all?: unknown;
-		replaceAll?: unknown;
-	};
-	const oldText =
-		typeof legacy.oldText === "string"
-			? legacy.oldText
-			: typeof legacy.old_string === "string"
-				? legacy.old_string
-				: undefined;
-	const newText =
-		typeof legacy.newText === "string"
-			? legacy.newText
-			: typeof legacy.new_string === "string"
-				? legacy.new_string
-				: undefined;
+	const oldText = typeof args.oldText === "string" ? args.oldText : undefined;
+	const newText = typeof args.newText === "string" ? args.newText : undefined;
 	if (typeof oldText !== "string" || typeof newText !== "string") {
 		return args as EditToolInput;
 	}
 
-	const edits = Array.isArray(legacy.edits) ? [...legacy.edits] : [];
+	const edits = Array.isArray(args.edits) ? [...args.edits] : [];
 	edits.push({ oldText, newText });
-	const {
-		oldText: _oldText,
-		newText: _newText,
-		old_string: _oldString,
-		new_string: _newString,
-		file_path: _filePath,
-		replace_all: _replaceAll,
-		replaceAll: _replaceAllCamel,
-		...rest
-	} = legacy;
-	if (typeof rest.path !== "string" && typeof _filePath === "string") {
-		rest.path = _filePath;
-	}
+	const { oldText: _oldText, newText: _newText, ...rest } = args;
 	return { ...rest, edits } as EditToolInput;
 }
 

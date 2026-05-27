@@ -53,7 +53,8 @@ export class UserMessageComponent extends Container {
 
 	override render(width: number): string[] {
 		const emitOsc133Zones = shouldEmitOsc133Zones();
-		const cacheKey = `${width}:${this.renderVersion}:${emitOsc133Zones ? 1 : 0}:${this.followsAssistant ? 1 : 0}`;
+		const cacheKey =
+			`${width}:${this.renderVersion}:${emitOsc133Zones ? 1 : 0}:${this.followsAssistant ? 1 : 0}:${this.continuesToAssistant ? 1 : 0}`;
 		const cached = this.renderCache.get(cacheKey);
 		if (cached) return cached;
 

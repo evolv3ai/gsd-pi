@@ -66,7 +66,3 @@ export function reconcileChatTurnConnections(children: readonly unknown[]): void
 export function connectAssistantToPrecedingUser(children: readonly unknown[]): boolean {
 	return chatTurnFollowsUser(children);
 }
-
-export function connectUserToPrecedingAssistant(children: readonly unknown[]): boolean {
-	return chatTurnFollowsAssistant(children);
-}

@@ -82,6 +82,16 @@ describe("UserMessageComponent connected rail", () => {
 		assert.doesNotMatch(plain, /╰─{4,}/, `connected user turns should omit the closing rule:\n${plain}`);
 	});
 
+	test("keeps connected-state renders in separate cache entries", () => {
+		const component = new UserMessageComponent("follow-up");
+		const closed = component.render(80).map((line) => stripVTControlCharacters(line)).join("\n");
+		(component as unknown as { continuesToAssistant: boolean }).continuesToAssistant = true;
+		const open = component.render(80).map((line) => stripVTControlCharacters(line)).join("\n");
+
+		assert.match(closed, /╰─{4,}/);
+		assert.doesNotMatch(open, /╰─{4,}/, `connected user turns should not reuse a closed cached render:\n${open}`);
+	});
+
 	test("starts flush at the card top rule", () => {
 		const component = new UserMessageComponent("hello");
 		const plain = component.render(80).map((line) => stripVTControlCharacters(line));
