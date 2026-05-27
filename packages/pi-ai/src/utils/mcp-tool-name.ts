@@ -5,7 +5,7 @@ export function parseMcpToolName(name: string): { server: string; tool: string }
 	if (!name.startsWith("mcp__")) return null;
 	const rest = name.slice("mcp__".length);
 	const delim = rest.indexOf("__");
-	if (delim <= 0 || delim === rest.length - 2) return null;
+	if (delim <= 0 || delim + 2 >= rest.length) return null;
 	return { server: rest.slice(0, delim), tool: rest.slice(delim + 2) };
 }
 
