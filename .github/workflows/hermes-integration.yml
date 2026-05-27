@@ -1,0 +1,67 @@
+# Hermes × GSD integration contract tests (Python plugin + gsd read CLI)
+name: Hermes Integration
+
+on:
+  pull_request:
+    paths:
+      - 'integrations/hermes/**'
+      - 'src/read-cli.ts'
+      - 'src/cli.ts'
+      - 'src/help-text.ts'
+      - 'packages/mcp-server/**'
+      - 'docs/dev/hermes-integration-plan.md'
+      - 'docs/dev/architecture.md'
+      - '.github/workflows/hermes-integration.yml'
+  push:
+    branches:
+      - feat/hermes-integration
+      - main
+    paths:
+      - 'integrations/hermes/**'
+      - 'src/read-cli.ts'
+      - 'src/cli.ts'
+      - 'src/help-text.ts'
+      - 'packages/mcp-server/**'
+      - 'docs/dev/hermes-integration-plan.md'
+      - 'docs/dev/architecture.md'
+      - '.github/workflows/hermes-integration.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract-tests:
+    name: contract-tests
+    timeout-minutes: 20
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build core (gsd read CLI + dist/loader.js)
+        run: npm run build:core
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Hermes plugin (editable)
+        run: pip install -e "integrations/hermes[dev]"
+
+      - name: Run Hermes contract tests
+        env:
+          GSD_LOADER_PATH: ${{ github.workspace }}/dist/loader.js
+        run: cd integrations/hermes && python -m pytest tests/ -q
