@@ -759,6 +759,25 @@ describe('createMcpServer tool registration', () => {
     assert.equal(session.status, 'cancelled');
   });
 
+  it('cancelSessionByDir supports Hermes gsd_cancel_by_project flow', async () => {
+    const projectDir = resolve('/tmp/hermes-cancel-by-project');
+    const mockClient = new MockRpcClient({ cwd: projectDir, args: [] });
+    const managed: ManagedSession = {
+      sessionId: 'hermes-sess',
+      projectDir,
+      status: 'running',
+      client: mockClient as any,
+      events: [],
+      pendingBlocker: null,
+      cost: { totalCost: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
+      startTime: Date.now(),
+    };
+    sm._putSession(projectDir, managed);
+    await sm.cancelSessionByDir(projectDir);
+    assert.equal(managed.status, 'cancelled');
+    assert.ok(mockClient.aborted);
+  });
+
   it('buildAskUserQuestionsElicitRequest adds None of the above note field for single-select questions', () => {
     const request = buildAskUserQuestionsElicitRequest([
       {
