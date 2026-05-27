@@ -41,7 +41,7 @@ import { validateArtifact } from "./schemas/validate.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from "node:fs";
 import { logWarning, logError } from "./workflow-logger.js";
 import { dirname, join } from "node:path";
-import { hasImplementationArtifacts } from "./auto-recovery.js";
+import { hasImplementationArtifacts } from "./milestone-implementation-evidence.js";
 import {
   buildDiscussMilestonePrompt,
   buildDiscussProjectPrompt,
@@ -91,7 +91,7 @@ import { nativeHasChanges, nativeIsRepo, _resetHasChangesCache } from "./native-
 import { debugLog, isDebugEnabled } from "./debug-logger.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
 import { resolveWorktreeProjectRoot } from "./worktree-root.js";
-import { listUnmergedGitPaths } from "./git-conflict-state.js";
+import { probeGitConflictState } from "./git-conflict-state.js";
 import { runTurnGitAction } from "./git-service.js";
 import { parseUnitId } from "./unit-id.js";
 
@@ -165,21 +165,21 @@ export interface DispatchRule {
   match: (ctx: DispatchContext) => Promise<DispatchAction | null>;
 }
 
-function commitPendingMilestoneCloseoutChanges(basePath: string, mid: string): DispatchAction | null {
+export function commitPendingMilestoneCloseoutChanges(basePath: string, mid: string): DispatchAction | null {
   if (!nativeIsRepo(basePath)) return null;
 
-  const conflictedPaths = listUnmergedGitPaths(basePath);
-  if (conflictedPaths === null) {
+  const conflictProbe = probeGitConflictState(basePath);
+  if (conflictProbe.status === "unknown") {
     return {
       action: "stop",
       reason: `Cannot complete milestone ${mid}: failed to evaluate unresolved Git conflicts. Resolve Git/worktree state manually before closing.`,
       level: "error",
     };
   }
-  if (conflictedPaths.length > 0) {
+  if (conflictProbe.status === "dirty" && conflictProbe.unmerged.length > 0) {
     return {
       action: "stop",
-      reason: `Cannot complete milestone ${mid}: unresolved Git conflicts detected in ${conflictedPaths.join(", ")}. Resolve conflicts before closing.`,
+      reason: `Cannot complete milestone ${mid}: unresolved Git conflicts detected in ${conflictProbe.unmerged.join(", ")}. Resolve conflicts before closing.`,
       level: "error",
     };
   }
@@ -222,7 +222,7 @@ export type DeepStageGate =
   | { status: "pending"; stage: DeepProjectStage; reason: string }
   | { status: "blocked"; stage: DeepProjectStage; reason: string };
 
-async function readUatGateVerdict(
+export async function readUatGateVerdict(
   basePath: string,
   mid: string,
   sliceId: string,
@@ -367,7 +367,7 @@ function hasMilestonePassedDiscuss(basePath: string, mid: string): boolean {
  * Excludes skipped slices (intentionally summary-less) and legacy-complete
  * slices whose DB status is authoritative even without on-disk SUMMARY (#3620).
  */
-function findMissingSummaries(basePath: string, mid: string): string[] {
+export function findMissingSummaries(basePath: string, mid: string): string[] {
   if (!isDbAvailable()) return [];
   const slices = getMilestoneSlices(mid);
   // Skipped slices never produce SUMMARYs; legacy-complete slices may lack them
@@ -1567,156 +1567,9 @@ export const DISPATCH_RULES: DispatchRule[] = [
   },
   {
     name: "completing-milestone → complete-milestone",
-    match: async ({ state, mid, midTitle, basePath, prefs }) => {
-      if (state.phase !== "completing-milestone") return null;
-
-      // Defense-in-depth (#4324): skip dispatch if the DB already marks
-      // this milestone as complete. Prevents re-enqueue when the legacy
-      // filesystem state-derivation path runs (e.g. transient DB
-      // unavailability) and produces a stale completing-milestone phase.
-      if (isDbAvailable()) {
-        const milestone = getMilestone(mid);
-        if (milestone && isClosedStatus(milestone.status)) {
-          return { action: "skip" };
-        }
-      }
-
-      const closeoutGitStop = commitPendingMilestoneCloseoutChanges(basePath, mid);
-      if (closeoutGitStop) return closeoutGitStop;
-
-      // Safety guard (#6132): when UAT dispatch is enabled, enforce a PASS
-      // verdict for each closed slice before milestone closure.
-      if (prefs?.uat_dispatch) {
-        let closedSliceIds: string[];
-        if (isDbAvailable()) {
-          closedSliceIds = getMilestoneSlices(mid)
-            .filter(s => isClosedStatus(s.status))
-            .map(s => s.id);
-        } else {
-          const roadmapFile = resolveMilestoneFile(basePath, mid, "ROADMAP");
-          const roadmapContent = roadmapFile ? await loadFile(roadmapFile) : null;
-          if (!roadmapContent) {
-            return {
-              action: "stop",
-              reason: `Cannot complete milestone ${mid}: unable to verify UAT verdicts because ROADMAP is unavailable while DB is not accessible.`,
-              level: "warning",
-            };
-          }
-          const roadmap = parseRoadmap(roadmapContent);
-          closedSliceIds = roadmap.slices.filter(s => s.done).map(s => s.id);
-        }
-
-        for (const sliceId of closedSliceIds) {
-          const result = await readUatGateVerdict(basePath, mid, sliceId);
-          if (!result) {
-            return {
-              action: "stop",
-              reason: `Cannot complete milestone ${mid}: missing UAT PASS verdict for ${sliceId}. Manual UAT sign-off (PASS) is required before milestone closure.`,
-              level: "warning",
-            };
-          }
-          const { verdict, uatType } = result;
-          if (!isAcceptableUatVerdict(verdict, uatType)) {
-            return {
-              action: "stop",
-              reason: `Cannot complete milestone ${mid}: UAT verdict for ${sliceId} is "${verdict}". Manual UAT sign-off (PASS) is required before milestone closure.`,
-              level: "warning",
-            };
-          }
-        }
-      }
-
-      // Safety guard (#2675, #5747, #5920): block completion when VALIDATION
-      // verdict is anything other than pass. The state machine treats these
-      // verdicts as terminal, but completing-milestone should NOT proceed —
-      // remediation or human attention is needed.
-      const validationFile = resolveMilestoneFile(basePath, mid, "VALIDATION");
-      if (validationFile) {
-        const validationContent = await loadFile(validationFile);
-        if (validationContent) {
-          const verdict = extractVerdict(validationContent);
-          if (verdict !== "pass") {
-            return {
-              action: "stop",
-              reason: `Cannot complete milestone ${mid}: VALIDATION verdict is "${verdict}". Address the validation findings and re-run validation, or run \`/gsd verdict pass --rationale "..."\` to override.`,
-              level: "warning",
-            };
-          }
-        }
-      }
-
-      // Safety guard (#1368): verify all roadmap slices have SUMMARY files.
-      const missingSlices = findMissingSummaries(basePath, mid);
-      if (missingSlices.length > 0) {
-        return {
-          action: "stop",
-          reason: `Cannot complete milestone ${mid}: slices ${missingSlices.join(", ")} are missing SUMMARY files. Run /gsd doctor to diagnose.`,
-          level: "error",
-        };
-      }
-
-      // Safety signal (#1703, #5097): detect milestones with only .gsd/
-      // artifacts. This no longer hard-blocks completion because some
-      // milestones are intentionally planning/documentation-only.
-      const artifactCheck = hasImplementationArtifacts(basePath, mid);
-      if (artifactCheck === "absent") {
-        logWarning("dispatch", `Milestone ${mid} has no implementation files outside .gsd/ — continuing complete-milestone dispatch (planning-only/documentation-only milestone).`);
-      }
-      if (artifactCheck === "unknown") {
-        logWarning("dispatch", `Implementation artifact check inconclusive for ${mid} — proceeding (git context unavailable)`);
-      }
-
-      // Verification class compliance: if operational verification was planned,
-      // ensure the validation output documents it before allowing completion.
-      try {
-        if (isDbAvailable()) {
-          const milestone = getMilestone(mid);
-          if (milestone?.verification_operational &&
-              !isVerificationNotApplicable(milestone.verification_operational)) {
-            const validationPath = resolveMilestoneFile(basePath, mid, "VALIDATION");
-            if (validationPath) {
-              const validationContent = await loadFile(validationPath);
-              if (validationContent) {
-                // Allow completion when validation was intentionally skipped by
-                // preference/budget profile (#3399, #3344).
-                const skippedByMarker = /^skip_validation:\s*true$/im.test(validationContent);
-                const skippedByPreference = /skip(?:ped)?[\s\-]+(?:by|per|due to)\s+(?:preference|budget|profile)/i.test(validationContent);
-                const skippedByTrivialVariant = /trivial-scope pipeline variant/i.test(validationContent);
-
-                // Accept either the structured template format (table with MET/N/A/SATISFIED)
-                // or prose evidence patterns the validation agent may emit.
-                const structuredMatch =
-                  validationContent.includes("Operational") &&
-                  (validationContent.includes("MET") || validationContent.includes("N/A") || validationContent.includes("SATISFIED") || validationContent.includes("DEFERRED"));
-                const proseMatch =
-                  /[Oo]perational[\s\S]{0,500}?(?:✅|pass|verified|confirmed|met|complete|true|yes|addressed|covered|satisfied|partially|deferred|n\/a|not[\s-]+applicable)/i.test(validationContent);
-                const hasOperationalCheck =
-                  skippedByMarker ||
-                  skippedByPreference ||
-                  skippedByTrivialVariant ||
-                  structuredMatch ||
-                  proseMatch;
-                if (!hasOperationalCheck) {
-                  return {
-                    action: "stop" as const,
-                    reason: `Milestone ${mid} has planned operational verification ("${milestone.verification_operational.substring(0, 100)}") but the validation output does not address it. Re-run validation with verification class awareness, or update the validation to document operational compliance.`,
-                    level: "warning" as const,
-                  };
-                }
-              }
-            }
-          }
-        }
-      } catch (err) { /* fall through — don't block on DB errors */
-        logWarning("dispatch", `verification class check failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-
-      return {
-        action: "dispatch",
-        unitType: "complete-milestone",
-        unitId: mid,
-        prompt: await buildCompleteMilestonePrompt(mid, midTitle, basePath),
-      };
+    match: async (ctx) => {
+      const { evaluateCompleteMilestoneDispatch } = await import("./milestone-closeout.js");
+      return evaluateCompleteMilestoneDispatch(ctx);
     },
   },
   {

@@ -8,7 +8,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { GIT_NO_PROMPT_ENV } from "./git-constants.js";
 import { runTurnGitAction, type TurnGitActionMode, type TurnGitActionResult } from "./git-service.js";
 import { _getAdapter, upsertTurnGitTransaction } from "./gsd-db.js";
-import { listUnmergedGitPaths } from "./git-conflict-state.js";
+import { probeGitConflictState } from "./git-conflict-state.js";
 import { parseUnitId } from "./unit-id.js";
 
 export interface CloseoutFailureRecord {
@@ -197,12 +197,12 @@ export function getCloseoutManualResolveBlocker(basePath: string): string | null
     }
   }
 
-  const unmerged = listUnmergedGitPaths(basePath);
-  if (unmerged === null) {
+  const conflictProbe = probeGitConflictState(basePath);
+  if (conflictProbe.status === "unknown") {
     return `Could not inspect git conflicts in ${basePath}.`;
   }
-  if (unmerged.length > 0) {
-    return `Unmerged paths remain in ${basePath}: ${unmerged.slice(0, 5).join(", ")}`;
+  if (conflictProbe.status === "dirty" && conflictProbe.unmerged.length > 0) {
+    return `Unmerged paths remain in ${basePath}: ${conflictProbe.unmerged.slice(0, 5).join(", ")}`;
   }
 
   const status = runGit(basePath, ["status", "--porcelain"]);

@@ -52,6 +52,7 @@ import {
   normalizeWorktreePathForCompare,
   resolveWorktreeProjectRoot,
 } from "./worktree-root.js";
+import { autoResolveSafeConflictPaths } from "./git-conflict-resolve.js";
 import { MergeConflictError, createDraftPR, readIntegrationBranch, resolveMilestoneIntegrationBranch, RUNTIME_EXCLUSION_PATHS } from "./git-service.js";
 import { buildPrEvidence } from "./pr-evidence.js";
 import { debugLog } from "./debug-logger.js";
@@ -2195,24 +2196,12 @@ export function mergeMilestoneToMain(
       // from real code conflicts. GSD state files diverge between branches
       // during normal operation. Build artifacts are machine-generated and
       // regenerable. Both are safe to accept from the milestone branch.
-      const autoResolvable = conflictedFiles.filter(isSafeToAutoResolve);
-      const codeConflicts = conflictedFiles.filter(
-        (f) => !isSafeToAutoResolve(f),
+      const { resolved: autoResolved, remaining: codeConflicts } = autoResolveSafeConflictPaths(
+        originalBasePath_,
+        conflictedFiles,
       );
-
-      // Auto-resolve safe conflicts by accepting the milestone branch version
-      if (autoResolvable.length > 0) {
-        for (const safeFile of autoResolvable) {
-          try {
-            nativeCheckoutTheirs(originalBasePath_, [safeFile]);
-            nativeAddPaths(originalBasePath_, [safeFile]);
-          } catch (e) {
-            // If checkout --theirs fails, try removing the file from the merge
-            // (it's a runtime file that shouldn't be committed anyway)
-            logWarning("worktree", `checkout --theirs failed for ${safeFile}, removing: ${(e as Error).message}`);
-            nativeRmForce(originalBasePath_, [safeFile]);
-          }
-        }
+      if (autoResolved.length > 0) {
+        logWarning("worktree", `auto-resolved safe merge conflicts: ${autoResolved.join(", ")}`);
       }
 
       // If there are still real code conflicts, escalate

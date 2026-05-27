@@ -19,7 +19,7 @@ import { join } from "node:path";
 import { GIT_NO_PROMPT_ENV } from "./git-constants.js";
 import { logWarning } from "./workflow-logger.js";
 import { nativeHasChanges } from "./native-git-bridge.js";
-import { listUnmergedGitPaths } from "./git-conflict-state.js";
+import { probeGitConflictState } from "./git-conflict-state.js";
 
 const WINDOWS_RESERVED_BASENAMES = new Set([
   "con",
@@ -353,8 +353,8 @@ export function preflightCleanRoot(
     return { stashPushed: false, summary: "" };
   }
 
-  const conflictedPaths = listUnmergedGitPaths(basePath);
-  if (conflictedPaths === null) {
+  const conflictProbe = probeGitConflictState(basePath);
+  if (conflictProbe.status === "unknown") {
     const msg =
       `Unable to verify unresolved Git conflicts before milestone ${milestoneId} merge. ` +
       `Resolve Git/worktree state manually before resuming auto-mode.`;
@@ -367,7 +367,8 @@ export function preflightCleanRoot(
       summary: msg,
     };
   }
-  if (conflictedPaths.length > 0) {
+  if (conflictProbe.status === "dirty" && conflictProbe.unmerged.length > 0) {
+    const conflictedPaths = conflictProbe.unmerged;
     const msg =
       `Working tree has unresolved Git conflicts before milestone ${milestoneId} merge: ` +
       `${conflictedPaths.join(", ")}. Resolve these files manually before resuming auto-mode.`;

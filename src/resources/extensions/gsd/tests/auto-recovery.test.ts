@@ -16,6 +16,16 @@ import { parseRoadmap } from "../parsers-legacy.ts";
 import { invalidateAllCaches } from "../cache.ts";
 import { deriveState, invalidateStateCache } from "../state.ts";
 import { writeIntegrationBranch } from "../git-service.ts";
+import { loadSyncMapping } from "../../github-sync/mapping.ts";
+import {
+  _resetConfigCache,
+  _setGhCloseOverridesForTest,
+} from "../../github-sync/sync.ts";
+import {
+  _resetGhCache,
+  _setGhAvailableForTest,
+  _setGhRateLimitOkForTest,
+} from "../../github-sync/cli.ts";
 
 const tmpDirs: string[] = [];
 
@@ -289,7 +299,7 @@ test("refreshRecoveryDbForArtifact treats missing execute-task DB rows as fatal 
   });
 });
 
-test("refreshRecoveryDbForArtifact closes complete-milestone DB row when artifacts exist but DB is stale (#5568)", () => {
+test("refreshRecoveryDbForArtifact closes complete-milestone DB row when artifacts exist but DB is stale (#5568)", async () => {
   const base = mkdtempSync(join(tmpdir(), "auto-recovery-complete-ms-"));
   mkdirSync(join(base, ".gsd"), { recursive: true });
   openDatabase(join(base, ".gsd", "gsd.db"));
@@ -344,11 +354,52 @@ test("refreshRecoveryDbForArtifact closes complete-milestone DB row when artifac
   runGit(base, ["add", "feature.ts"]);
   runGit(base, ["commit", "-m", "feat: implementation evidence"]);
   writeFileSync(join(base, ".gsd", "integration-branch"), "main\n");
+  writeFileSync(
+    join(base, ".gsd", "PREFERENCES.md"),
+    ["---", "version: 1", "github:", "  enabled: true", "  repo: owner/repo", "---"].join("\n"),
+    "utf-8",
+  );
+  writeFileSync(
+    join(base, ".gsd", "github-sync.json"),
+    JSON.stringify({
+      version: 1,
+      repo: "owner/repo",
+      milestones: {
+        M001: {
+          issueNumber: 42,
+          ghMilestoneNumber: 7,
+          lastSyncedAt: "2025-01-01T00:00:00Z",
+          state: "open",
+        },
+      },
+      slices: {},
+      tasks: {},
+    }, null, 2),
+    "utf-8",
+  );
+
+  _resetGhCache();
+  _resetConfigCache();
+  _setGhAvailableForTest(true);
+  _setGhRateLimitOkForTest(true);
+  _setGhCloseOverridesForTest({
+    closeIssue: () => ({ ok: true }),
+    closeMilestone: () => ({ ok: true }),
+  });
 
   const result = refreshRecoveryDbForArtifact("complete-milestone", "M001", base);
 
   assert.deepEqual(result, { ok: true });
   assert.equal(getMilestone("M001")?.status, "complete");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const mapping = loadSyncMapping(base);
+  assert.equal(mapping?.milestones.M001?.state, "closed");
+
+  _setGhCloseOverridesForTest(null);
+  _setGhAvailableForTest(null);
+  _setGhRateLimitOkForTest(null);
+  _resetGhCache();
+  _resetConfigCache();
 });
 
 test("refreshRecoveryDbForArtifact fails closed for complete-milestone without implementation evidence", () => {

@@ -31,6 +31,8 @@ export interface SyncEntityRecord {
 
 export interface MilestoneSyncRecord extends SyncEntityRecord {
   ghMilestoneNumber: number;
+  /** Set when a close attempt fails so a later sync can retry. */
+  lastSyncError?: string;
 }
 
 export interface SliceSyncRecord extends SyncEntityRecord {
