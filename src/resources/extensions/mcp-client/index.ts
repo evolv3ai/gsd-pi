@@ -21,7 +21,7 @@ import {
 } from "@gsd/pi-coding-agent";
 import { Text } from "@gsd/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { Client } from "@modelcontextprotocol/sdk/client";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { buildHttpTransportOpts } from "./auth.js";

@@ -187,7 +187,12 @@
     "@gsd/pi-ai",
     "@gsd/pi-coding-agent",
     "@gsd/pi-tui",
-    "undici"
+    "@modelcontextprotocol/sdk",
+    "minimatch",
+    "picomatch",
+    "proper-lockfile",
+    "undici",
+    "yaml"
   ],
   "devDependencies": {
     "@types/node": "^24.12.0",
@@ -223,6 +228,11 @@
     "@gsd/pi-ai",
     "@gsd/pi-coding-agent",
     "@gsd/pi-tui",
-    "undici"
+    "@modelcontextprotocol/sdk",
+    "minimatch",
+    "picomatch",
+    "proper-lockfile",
+    "undici",
+    "yaml"
   ]
 }

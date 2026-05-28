@@ -314,11 +314,11 @@ try {
     process.exit(1);
   }
 
-  // --- Global install smoke (catches empty node_modules/undici placeholder on npm -g) ---
-  console.log('==> Testing global install (undici resolution)...');
+  // --- Global install smoke (npx path: --ignore-scripts, then repair) ---
+  console.log('==> Testing global install (--ignore-scripts, bundled deps + repair)...');
   const globalPrefix = mkdtempSync(join(tmpdir(), 'validate-pack-global-'));
   try {
-    execFileSync(getNpmCommand(), ['install', '-g', tarball, '--prefix', globalPrefix], {
+    execFileSync(getNpmCommand(), ['install', '-g', tarball, '--ignore-scripts', '--prefix', globalPrefix], {
       encoding: 'utf8',
       shell: process.platform === 'win32',
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -335,12 +335,52 @@ try {
       maxBuffer: DEFAULT_MAX_BUFFER,
     }).trim();
     const globalRoot = join(globalNodeModules, '@opengsd', 'gsd-pi');
-    const globalUndiciPkg = join(globalRoot, 'node_modules', 'undici', 'package.json');
-    if (!existsSync(globalUndiciPkg)) {
-      console.log('ERROR: Global install left node_modules/undici unresolved.');
-      console.log(`    Expected: ${globalUndiciPkg}`);
+
+    const bundledExternalDeps = [
+      '@modelcontextprotocol/sdk',
+      'minimatch',
+      'picomatch',
+      'proper-lockfile',
+      'undici',
+      'yaml',
+    ];
+    for (const dep of bundledExternalDeps) {
+      const segments = dep.startsWith('@') ? dep.split('/') : [dep];
+      const pkgJsonPath = join(globalRoot, 'node_modules', ...segments, 'package.json');
+      if (!existsSync(pkgJsonPath)) {
+        console.log(`ERROR: Global --ignore-scripts install left bundled dep unresolved: ${dep}`);
+        console.log(`    Expected: ${pkgJsonPath}`);
+        process.exit(1);
+      }
+    }
+
+    const linkScript = join(globalRoot, 'scripts', 'link-workspace-packages.cjs');
+    execFileSync(process.execPath, [linkScript], {
+      cwd: globalRoot,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 30000,
+      maxBuffer: DEFAULT_MAX_BUFFER,
+    });
+    execFileSync(getNpmCommand(), ['install', '--ignore-scripts'], {
+      cwd: globalRoot,
+      encoding: 'utf8',
+      shell: process.platform === 'win32',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      maxBuffer: DEFAULT_MAX_BUFFER,
+      env: {
+        ...process.env,
+        npm_config_cache: npmCacheDir,
+      },
+    });
+
+    const globalOpenaiIndex = join(globalRoot, 'node_modules', 'openai', 'index.js');
+    if (!existsSync(globalOpenaiIndex)) {
+      console.log('ERROR: Global install left node_modules/openai unresolved after repair.');
+      console.log(`    Expected: ${globalOpenaiIndex}`);
       process.exit(1);
     }
+
     execFileSync(
       process.execPath,
       [
@@ -356,7 +396,37 @@ try {
         maxBuffer: DEFAULT_MAX_BUFFER,
       },
     );
-    console.log('    Global install resolves undici for pi-coding-agent.');
+    execFileSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `await import(${JSON.stringify('@modelcontextprotocol/sdk/client/index.js')}); await import('yaml'); await import('minimatch');`,
+      ],
+      {
+        cwd: globalRoot,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 15000,
+        maxBuffer: DEFAULT_MAX_BUFFER,
+      },
+    );
+    execFileSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `await import(${JSON.stringify('file://' + join(globalRoot, 'node_modules', '@gsd', 'pi-ai', 'dist', 'providers', 'openai-responses.js').replace(/\\/g, '/'))});`,
+      ],
+      {
+        cwd: globalPrefix,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 15000,
+        maxBuffer: DEFAULT_MAX_BUFFER,
+      },
+    );
+    console.log('    Global --ignore-scripts install keeps bundled deps and repair resolves openai/pi-ai.');
   } catch (err) {
     console.log('ERROR: Global install smoke test failed.');
     if (err.stdout) console.log(err.stdout);
