@@ -9,7 +9,13 @@ import { createRequire } from "node:module";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
-const { RELEASE_WORKSPACE_PACKAGE_DIRS, syncVersionSurfaces } = require("../lib/version-sync.cjs");
+const { RELEASE_WORKSPACE_PACKAGE_DIRS, resolveEngineOptionalDependencyVersion, syncVersionSurfaces } = require("../lib/version-sync.cjs");
+
+test("resolveEngineOptionalDependencyVersion keeps dev publishes on stable engine packages", () => {
+  assert.equal(resolveEngineOptionalDependencyVersion("1.0.2-dev.adee50b"), "1.0.2");
+  assert.equal(resolveEngineOptionalDependencyVersion("1.0.2"), "1.0.2");
+  assert.equal(resolveEngineOptionalDependencyVersion("1.0.2-next.3"), "1.0.2-next.3");
+});
 
 test("version sync includes cloud-mcp-gateway so dev stamps keep workspace links", () => {
   assert.ok(

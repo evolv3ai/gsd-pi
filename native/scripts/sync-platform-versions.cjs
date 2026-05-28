@@ -9,6 +9,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { resolveEngineOptionalDependencyVersion } = require("../../scripts/lib/version-sync.cjs");
 
 const rootDir = path.resolve(__dirname, "..", "..");
 const npmDir = path.resolve(__dirname, "..", "npm");
@@ -16,8 +17,14 @@ const npmDir = path.resolve(__dirname, "..", "npm");
 const rootPkgPath = path.join(rootDir, "package.json");
 const rootPkg = JSON.parse(fs.readFileSync(rootPkgPath, "utf-8"));
 const version = rootPkg.version;
+const optionalDependencyVersion = resolveEngineOptionalDependencyVersion(version);
 
 console.log(`[sync-platform-versions] Syncing to version ${version}`);
+if (optionalDependencyVersion !== version) {
+  console.log(
+    `[sync-platform-versions] optionalDependencies pinned to stable engine version ${optionalDependencyVersion}`,
+  );
+}
 
 const platformPackages = [
   "darwin-arm64",
@@ -46,10 +53,10 @@ for (const platform of platformPackages) {
   }
 
   const dependencyName = `@opengsd/engine-${platform}`;
-  if (rootPkg.optionalDependencies?.[dependencyName] !== version) {
+  if (rootPkg.optionalDependencies?.[dependencyName] !== optionalDependencyVersion) {
     rootPkg.optionalDependencies = rootPkg.optionalDependencies || {};
-    rootPkg.optionalDependencies[dependencyName] = version;
-    console.log(`  root optionalDependencies.${dependencyName}: ${version}`);
+    rootPkg.optionalDependencies[dependencyName] = optionalDependencyVersion;
+    console.log(`  root optionalDependencies.${dependencyName}: ${optionalDependencyVersion}`);
   }
 }
 

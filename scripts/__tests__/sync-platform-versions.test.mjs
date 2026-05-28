@@ -5,13 +5,18 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-test("sync-platform-versions keeps root native optional dependencies exact", () => {
+test("sync-platform-versions keeps dev optionalDependencies on stable engine semver", () => {
   const script = readFileSync("native/scripts/sync-platform-versions.cjs", "utf8");
 
-  assert.match(script, /optionalDependencies/);
-  assert.match(script, /`@opengsd\/engine-\$\{platform\}`/);
-  assert.doesNotMatch(script, /range specifiers/);
-  assert.doesNotMatch(script, />=/);
+  assert.match(script, /resolveEngineOptionalDependencyVersion/);
+  assert.match(script, /optionalDependencyVersion/);
+});
+
+test("verify-native-platform-packages checks pinned optionalDependency versions", () => {
+  const script = readFileSync("scripts/verify-native-platform-packages.mjs", "utf8");
+
+  assert.match(script, /optionalDependencies\[name\]/);
+  assert.doesNotMatch(script, /\$\{name\}@\$\{version\}/);
 });
 
 test("prepublish verifies matching native platform packages before publishing main package", () => {

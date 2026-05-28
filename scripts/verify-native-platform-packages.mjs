@@ -4,7 +4,6 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 const pkg = JSON.parse(readFileSync("package.json", "utf8"));
-const version = pkg.version;
 const optionalDependencies = pkg.optionalDependencies ?? {};
 const enginePackages = Object.keys(optionalDependencies)
   .filter((name) => name.startsWith("@opengsd/engine-"))
@@ -19,7 +18,8 @@ const allowAnyVersion = process.argv.includes("--any-version");
 const missing = [];
 
 for (const name of enginePackages) {
-  const spec = allowAnyVersion ? name : `${name}@${version}`;
+  const pinnedVersion = optionalDependencies[name];
+  const spec = allowAnyVersion ? name : `${name}@${pinnedVersion}`;
   const result = spawnSync("npm", ["view", spec, "version"], {
     encoding: "utf8",
     shell: process.platform === "win32",

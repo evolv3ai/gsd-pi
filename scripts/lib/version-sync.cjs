@@ -44,6 +44,15 @@ const INTERNAL_PACKAGE_NAMES = new Set([
 
 const NATIVE_CRATE_NAMES = new Set(["gsd-ast", "gsd-engine", "gsd-grep"]);
 
+/** Dev publishes reuse stable @opengsd/engine-* packages already on npm. */
+function resolveEngineOptionalDependencyVersion(rootVersion) {
+  const devMatch = rootVersion.match(/^(\d+\.\d+\.\d+)-dev\.[0-9a-f]+$/i);
+  if (devMatch) {
+    return devMatch[1];
+  }
+  return rootVersion;
+}
+
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
@@ -206,12 +215,13 @@ function verifyVersionSync(root) {
   verifyLockfile(root, expectedVersion, issues);
 
   const rootPkg = readJson(path.join(root, "package.json"));
+  const expectedOptionalDepVersion = resolveEngineOptionalDependencyVersion(expectedVersion);
   for (const platformDir of PLATFORM_PACKAGE_DIRS) {
     const platform = platformDir.replace("native/npm/", "");
     const depName = `@opengsd/engine-${platform}`;
     const pinned = rootPkg.optionalDependencies?.[depName];
-    if (pinned !== undefined && pinned !== expectedVersion) {
-      issues.push(`package.json optionalDependencies.${depName} is ${pinned}, expected ${expectedVersion}`);
+    if (pinned !== undefined && pinned !== expectedOptionalDepVersion) {
+      issues.push(`package.json optionalDependencies.${depName} is ${pinned}, expected ${expectedOptionalDepVersion}`);
     }
   }
 
@@ -231,6 +241,7 @@ function verifyVersionSync(root) {
 module.exports = {
   PLATFORM_PACKAGE_DIRS,
   RELEASE_WORKSPACE_PACKAGE_DIRS,
+  resolveEngineOptionalDependencyVersion,
   syncVersionSurfaces,
   verifyVersionSync,
 };
