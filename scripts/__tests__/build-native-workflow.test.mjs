@@ -11,6 +11,10 @@ const workflow = YAML.parse(
 );
 const publishJob = workflow.jobs.publish;
 
+test("build-native publish uses GitHub-hosted runners for npm provenance", () => {
+  assert.equal(publishJob["runs-on"], "ubuntu-latest");
+});
+
 test("build-native exposes platform_packages_only bootstrap input", () => {
   const input = workflow.on.workflow_dispatch.inputs.platform_packages_only;
 
