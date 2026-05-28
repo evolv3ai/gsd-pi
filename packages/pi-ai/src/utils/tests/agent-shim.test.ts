@@ -91,6 +91,6 @@ describe("createAgentShimResult", () => {
 		});
 		assert.ok(result.content[0]?.text.includes("inline"));
 		assert.equal(result.details.agent, "scout");
-		assert.ok(result.details.task.includes("Scout codebase"));
+		assert.ok(result.details.task?.includes("Scout codebase"));
 	});
 });
