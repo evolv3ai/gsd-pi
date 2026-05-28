@@ -63,6 +63,7 @@ import {
   getLatestAssessmentByScope,
   getPendingGateCountForTurn,
 } from './gsd-db.js';
+import { formatCompletePhaseNextAction, countUnmappedActiveRequirements } from './requirements-backlog.js';
 import type { MilestoneRow } from './db-milestone-artifact-rows.js';
 import type { SliceRow, TaskRow } from './db-task-slice-rows.js';
 
@@ -595,10 +596,8 @@ function handleNoActiveMilestone(
   }
 
   const lastEntry = registry[registry.length - 1];
-  const activeReqs = requirements.active ?? 0;
-  const completionNote = activeReqs > 0
-    ? `All milestones complete. ${activeReqs} active requirement${activeReqs === 1 ? '' : 's'} in REQUIREMENTS.md ${activeReqs === 1 ? 'has' : 'have'} not been mapped to a milestone.`
-    : 'All milestones complete.';
+  const unmappedActive = countUnmappedActiveRequirements();
+  const completionNote = formatCompletePhaseNextAction(unmappedActive);
   return {
     activeMilestone: null,
     lastCompletedMilestone: lastEntry ? { id: lastEntry.id, title: lastEntry.title } : null,
@@ -1279,10 +1278,8 @@ export async function _deriveStateImpl(
     }
     // All milestones complete
     const lastEntry = registry[registry.length - 1];
-    const activeReqs = requirements.active ?? 0;
-    const completionNote = activeReqs > 0
-      ? `All milestones complete. ${activeReqs} active requirement${activeReqs === 1 ? '' : 's'} in REQUIREMENTS.md ${activeReqs === 1 ? 'has' : 'have'} not been mapped to a milestone.`
-      : 'All milestones complete.';
+    const unmappedActive = countUnmappedActiveRequirements();
+    const completionNote = formatCompletePhaseNextAction(unmappedActive);
     return {
       activeMilestone: null,
       lastCompletedMilestone: lastEntry ? { id: lastEntry.id, title: lastEntry.title } : null,

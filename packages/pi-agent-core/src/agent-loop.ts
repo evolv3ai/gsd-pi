@@ -6,7 +6,12 @@
 import {
 	type AssistantMessage,
 	type Context,
+	createAgentShimResult,
+	createToolSearchShimResult,
 	EventStream,
+	isAgentToolName,
+	isEmptyPathToolArguments,
+	isToolSearchToolName,
 	streamSimple,
 	type ToolResultMessage,
 	validateToolArguments,
@@ -630,10 +635,50 @@ async function prepareToolCall(
 ): Promise<PreparedToolCall | ImmediateToolCallOutcome> {
 	const tool = resolveAgentTool(currentContext.tools, toolCall.name);
 	if (!tool) {
+		if (isToolSearchToolName(toolCall.name)) {
+			return {
+				kind: "immediate",
+				result: createToolSearchShimResult(toolCall.arguments),
+				isError: false,
+			};
+		}
+		if (isAgentToolName(toolCall.name)) {
+			return {
+				kind: "immediate",
+				result: createAgentShimResult(toolCall.arguments),
+				isError: false,
+			};
+		}
 		return {
 			kind: "immediate",
 			result: createErrorToolResult(`Tool ${toolCall.name} not found`),
 			isError: true,
+		};
+	}
+
+	const externalResult = toolCall.externalResult;
+	if (externalResult) {
+		return {
+			kind: "immediate",
+			result: {
+				content:
+					externalResult.content && externalResult.content.length > 0
+						? (externalResult.content as AgentToolResult<any>["content"])
+						: [{ type: "text", text: "" }],
+				details: externalResult.details ?? {},
+			},
+			isError: externalResult.isError ?? false,
+		};
+	}
+
+	if (isEmptyPathToolArguments(tool.name, toolCall.arguments)) {
+		return {
+			kind: "immediate",
+			result: {
+				content: [{ type: "text", text: "Skipped tool call with no file path." }],
+				details: {},
+			},
+			isError: false,
 		};
 	}
 

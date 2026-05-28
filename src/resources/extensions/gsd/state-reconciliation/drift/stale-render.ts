@@ -6,6 +6,9 @@
 // had zero callers in production code — wiring it through
 // reconcileBeforeDispatch closes that gap.
 
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+
 import {
   detectStaleRenders,
   renderPlanCheckboxes,
@@ -13,7 +16,8 @@ import {
   renderSliceSummary,
   renderTaskSummary,
 } from "../../markdown-renderer.js";
-import { getMilestone } from "../../gsd-db.js";
+import { getMilestone, getSlice, setSliceSummaryMd } from "../../gsd-db.js";
+import { buildSliceFileName } from "../../paths.js";
 import type { GSDState } from "../../types.js";
 import { logWarning } from "../../workflow-logger.js";
 import type { DriftContext, DriftHandler, DriftRecord } from "../types.js";
@@ -127,7 +131,15 @@ async function repairStaleRenderFromBasePath(
         `stale-render drift: slice summary path missing milestone/slice segments: ${record.renderPath}`,
       );
     }
-    await renderSliceSummary(basePath, pathMatch[1], pathMatch[2]);
+    const milestoneId = pathMatch[1];
+    const sliceId = pathMatch[2];
+    const slice = getSlice(milestoneId, sliceId);
+    const uatPath = join(dirname(record.renderPath), buildSliceFileName(sliceId, "UAT"));
+    // renderSliceSummary writes both artifacts, so clear deleted UAT first.
+    if (slice?.full_uat_md && !existsSync(uatPath)) {
+      setSliceSummaryMd(milestoneId, sliceId, slice.full_summary_md ?? "", "");
+    }
+    await renderSliceSummary(basePath, milestoneId, sliceId);
     return;
   }
 
@@ -138,8 +150,17 @@ async function repairStaleRenderFromBasePath(
         `stale-render drift: UAT path missing milestone/slice segments: ${record.renderPath}`,
       );
     }
-    // renderSliceSummary handles both SUMMARY and UAT.
-    await renderSliceSummary(basePath, pathMatch[1], pathMatch[2]);
+    // When UAT.md is removed from disk, mirror that intent by clearing stale
+    // persisted UAT content instead of rehydrating it back onto disk.
+    const milestoneId = pathMatch[1];
+    const sliceId = pathMatch[2];
+    const slice = getSlice(milestoneId, sliceId);
+    if (!slice) {
+      throw new Error(
+        `stale-render drift: missing slice for UAT clear ${milestoneId}/${sliceId}`,
+      );
+    }
+    setSliceSummaryMd(milestoneId, sliceId, slice.full_summary_md ?? "", "");
     return;
   }
 

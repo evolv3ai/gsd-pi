@@ -16,6 +16,10 @@ import { gsdRoot } from "../paths.js";
 import { fileURLToPath } from "node:url";
 import { showNextAction } from "../../shared/tui.js";
 import {
+  notifyMigrateNeedsInteractiveMenu,
+  requiresInteractiveMenu,
+} from "../command-feedback.js";
+import {
   validatePlanningDirectory,
   parsePlanningDirectory,
   transformToGSD,
@@ -286,6 +290,11 @@ export async function handleMigrate(
   }
 
   // ── Confirmation via showNextAction ────────────────────────────────────────
+  if (requiresInteractiveMenu(ctx, false)) {
+    notifyMigrateNeedsInteractiveMenu(ctx, "migration confirmation needs an interactive menu");
+    return;
+  }
+
   const choice = await showNextAction(ctx, {
     title: "Migration preview",
     summary: lines,

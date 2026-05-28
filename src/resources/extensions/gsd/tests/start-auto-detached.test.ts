@@ -332,3 +332,28 @@ test("prepareForUnit skips worktree safety when isolation is not worktree (#6154
     "prepareForUnit should bypass worktree safety validation outside worktree isolation mode",
   );
 });
+
+test("discuss-to-auto handoff defaults to step mode unless explicitly disabled", () => {
+  const guidedFlowSrc = readGsdFile("guided-flow.ts");
+  const workflowSrc = readGsdFile("commands/handlers/workflow.ts");
+
+  assert.ok(
+    !guidedFlowSrc.includes("step: false"),
+    "guided-flow must not hardcode step: false on pending auto-start entries",
+  );
+  assert.match(
+    guidedFlowSrc,
+    /scheduleAutoStartAfterIdle\(ctx, pi, basePath, false, \{ step: step \?\? true \}\)/,
+    "checkAutoStartAfterDiscuss should default missing step flags to step mode",
+  );
+  assert.match(
+    guidedFlowSrc,
+    /const stepMode = options\?\.step \?\? true;/,
+    "showSmartEntry should default to step mode",
+  );
+  assert.match(
+    workflowSrc,
+    /await showSmartEntry\(ctx, pi, basePath, \{ step: true \}\);/,
+    "new-milestone/new-project entrypoints should preserve step mode",
+  );
+});

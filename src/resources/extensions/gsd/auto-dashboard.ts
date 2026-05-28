@@ -109,6 +109,8 @@ export interface CompletionDashboardSnapshot {
   completedSlices?: number | null;
   totalSlices?: number | null;
   allMilestonesComplete?: boolean;
+  unmappedActiveRequirements?: number;
+  requirementsBacklogPreview?: string[];
   basePath?: string | null;
 }
 
@@ -1099,12 +1101,23 @@ export function setCompletionProgressWidget(
 
       lines.push("");
       const nextAction = snapshot.allMilestonesComplete
-        ? "Review the roll-up, then start a new milestone when ready."
+        ? snapshot.unmappedActiveRequirements && snapshot.unmappedActiveRequirements > 0
+          ? `Review ${snapshot.unmappedActiveRequirements} unmapped active requirement${snapshot.unmappedActiveRequirements === 1 ? "" : "s"}, then start a new milestone when ready.`
+          : "Review the roll-up, then start a new milestone when ready."
         : "Review the roll-up, inspect status, or continue to the next milestone.";
       const commands = snapshot.allMilestonesComplete
-        ? ["/gsd status for overview", "/gsd visualize to inspect", "/gsd notifications for history", "/gsd start for new work"]
+        ? snapshot.unmappedActiveRequirements && snapshot.unmappedActiveRequirements > 0
+          ? ["/gsd to review requirements backlog", "/gsd status for overview", "/gsd visualize to inspect", "/gsd start for new work"]
+          : ["/gsd status for overview", "/gsd visualize to inspect", "/gsd notifications for history", "/gsd start for new work"]
         : ["/gsd status for overview", "/gsd visualize to inspect", "/gsd notifications for history", "/gsd auto for next milestone"];
       add(`${theme.fg("success", "Next")} ${theme.fg("text", nextAction)}`);
+      if ((snapshot.requirementsBacklogPreview?.length ?? 0) > 0) {
+        lines.push("");
+        add(theme.fg("accent", "Requirements backlog"));
+        for (const line of snapshot.requirementsBacklogPreview ?? []) {
+          add(`  ${theme.fg("text", line)}`);
+        }
+      }
       add(theme.fg("dim", commands.join("  ·  ")));
 
       const location = snapshot.basePath ? theme.fg("dim", snapshot.basePath) : "";

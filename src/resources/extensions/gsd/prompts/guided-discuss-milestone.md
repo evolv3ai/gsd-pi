@@ -41,6 +41,8 @@ Ask **1–3 questions per round**. Target one focus at a time:
 
 **Never fabricate or simulate user input.** Never generate fake transcript markers like `[User]`, `[Human]`, or `User:`. Ask one question round, then wait for the user's actual response before continuing.
 
+**Single user-facing message (NON-BYPASSABLE):** After investigation, send **one** assistant message that contains your questions (and at most a short recap — 2-3 sentences, not a feature catalog). **End the turn there.** Do not send a second message that restates the same ask ("what do you want M00X to be?", "before I can write the context file…", etc.). If you already asked, stop — do not elaborate in a follow-up message in the same turn.
+
 **If `{{structuredQuestionsAvailable}}` is `true`:** use `ask_user_questions` exactly once per turn with 1-3 question objects. Keep labels short (3-5 words). In `complex` mode, multi-choice questions MUST offer **3 or 4 concrete, researched options** plus **"Other — let me discuss"**; options must be grounded in the investigation, not placeholders. In `simple` mode, 2 options is fine for binary alternatives. Binary depth-check/wrap-up gates are exempt. If the user chooses "Other — let me discuss" or gives a long freeform answer, switch to plain-text follow-up before resuming structured questions.
 
 **If `{{structuredQuestionsAvailable}}` is `false`:** ask questions in plain text. Keep each round to 1–3 focused questions. Wait for answers before asking the next round.

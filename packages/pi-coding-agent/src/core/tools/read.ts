@@ -36,6 +36,15 @@ interface CompactReadClassification {
 
 const COMPACT_RESOURCE_FILE_NAMES = new Set(["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]);
 
+/** Max read output lines shown in the TUI when tool cards are collapsed (errors only). */
+export const READ_TUI_COLLAPSED_MAX_LINES = 10;
+/** Expanded read output is intentionally uncapped in the TUI. */
+export const READ_TUI_EXPANDED_MAX_LINES = Number.POSITIVE_INFINITY;
+
+export function getReadTuiMaxDisplayLines(expanded: boolean): number {
+	return expanded ? READ_TUI_EXPANDED_MAX_LINES : READ_TUI_COLLAPSED_MAX_LINES;
+}
+
 /**
  * Pluggable operations for the read tool.
  * Override these to delegate file reading to remote systems (for example SSH).
@@ -182,7 +191,7 @@ function formatReadResult(
 	const lang = rawPath ? getLanguageFromPath(rawPath) : undefined;
 	const renderedLines = lang ? highlightCode(replaceTabs(output), lang) : output.split("\n");
 	const lines = trimTrailingEmptyLines(renderedLines);
-	const maxLines = options.expanded ? lines.length : 10;
+	const maxLines = getReadTuiMaxDisplayLines(options.expanded);
 	const displayLines = lines.slice(0, maxLines);
 	const remaining = lines.length - maxLines;
 	let text = `\n${displayLines.map((line) => (lang ? replaceTabs(line) : theme.fg("toolOutput", replaceTabs(line)))).join("\n")}`;

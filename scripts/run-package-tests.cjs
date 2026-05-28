@@ -39,6 +39,12 @@ function findDistTestFiles(pkgDir) {
 	return selectPackageTestFiles(distTestPkg, join(pkgDir, 'dist'))
 }
 
+function findPiAiPackageTestFiles(pkgDir) {
+	const fromPkgDist = findTestFiles(join(pkgDir, 'dist'))
+	if (fromPkgDist.length > 0) return fromPkgDist
+	return findDistTestFiles(pkgDir)
+}
+
 function commandExists(command, args = ['--version']) {
 	const result = spawnSync(command, args, { stdio: 'ignore' })
 	return result.status === 0 || result.status === 1
@@ -155,6 +161,32 @@ function main() {
 	let failureCount = 0
 
 	for (const pkg of packages) {
+		if (pkg.packageName === '@gsd/pi-ai') {
+			const files = findPiAiPackageTestFiles(pkg.path)
+			const vitestOnly = /(?:^|[\\/])(agent-shim|mcp-tool-name|tool-search-shim)\.test\.js$/i
+			const vitestFiles = files.filter((file) => vitestOnly.test(file))
+			const nodeTestFiles = files.filter((file) => !vitestOnly.test(file))
+			let ok = true
+			process.stderr.write(`\nRunning ${pkg.packageName} package tests...\n`)
+			if (nodeTestFiles.length > 0) {
+				ok =
+					runCommand(process.execPath, ['--test', ...nodeTestFiles], REPO_ROOT, `${pkg.packageName} (node:test)`) ===
+					0 && ok
+			}
+			if (vitestFiles.length > 0) {
+				const vitestBin = join(REPO_ROOT, 'node_modules', 'vitest', 'vitest.mjs')
+				ok =
+					runCommand(
+						process.execPath,
+						[vitestBin, 'run', '--config', join(pkg.path, 'vitest.config.ts'), ...vitestFiles],
+						pkg.path,
+						`${pkg.packageName} (vitest)`,
+					) === 0 && ok
+			}
+			if (!ok) failureCount += 1
+			continue
+		}
+
 		if (pkg.packageName === '@gsd/native') {
 			if (!hasNativeAddon() && !commandExists('cargo')) {
 				process.stderr.write(

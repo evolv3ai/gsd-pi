@@ -40,36 +40,63 @@ function withEnv(values: Partial<Record<(typeof ENV_KEYS)[number], string | unde
 	}
 }
 
-describe("UserMessageComponent open surface", () => {
-	test("renders a user message as a copy-clean open surface", () => {
+describe("UserMessageComponent connected rail", () => {
+	test("renders a user message like GSD with a lighter blue connected card", () => {
 		const component = new UserMessageComponent(
 			"Can we make the transcript feel like chat?",
 			undefined,
 			1,
 			"date-time-iso",
 		);
-		const joined = component
+		const plain = component
 			.render(100)
 			.map((line) => stripVTControlCharacters(line))
-			.join("\n");
+			.join("\n")
+			.split("\n");
 
+		const joined = plain.join("\n");
 		assert.match(joined, /YOU/);
 		assert.match(joined, /feel like chat/);
 		assert.match(joined, /╭─ YOU/);
 		assert.match(joined, /╰/);
 		assert.doesNotMatch(joined, /[│┃]/, "user content lines must not use side rail glyphs");
-		assert.ok(
-			joined.split("\n").some((line) => line.includes("YOU") && line.includes("─")),
-			`expected a titled top rule carrying the YOU label:\n${joined}`,
-		);
-		const plain = joined.split("\n");
 		const topRuleIndex = plain.findIndex((line) => line.includes("YOU") && line.includes("─"));
 		const contentIndex = plain.findIndex((line) => line.includes("feel like chat"));
 		assert.ok(contentIndex > topRuleIndex, `expected content after the top rule:\n${joined}`);
-		assert.ok(plain[topRuleIndex]?.startsWith("    "), `user turn should be indented:\n${joined}`);
-		assert.ok(plain[contentIndex].startsWith("       "), `user content should keep inner padding:\n${joined}`);
-		assert.equal(plain[contentIndex].length, 100, `user content row should fill the bubble background:\n${joined}`);
-		assert.doesNotMatch(plain[contentIndex], /[│┃╭╮╰╯]/, `content line must stay copy-clean:\n${joined}`);
+		assert.ok(plain[topRuleIndex]?.startsWith("    ╭─ YOU"), `user turn should indent for the connected bridge:\n${joined}`);
+		assert.ok(plain[contentIndex]?.startsWith("       "), `user content should keep inner padding:\n${joined}`);
+		assert.equal(plain[contentIndex]?.length, 100, `user content row should fill the card interior:\n${joined}`);
+		assert.match(plain[contentIndex] ?? "", /^    /, `user background should not bleed into the rail gutter:\n${joined}`);
+		assert.doesNotMatch(plain[contentIndex] ?? "", /[│┃╭╮╰╯]/, `content line must stay copy-clean:\n${joined}`);
+	});
+
+	test("opens the bottom when the next assistant turn will bridge", () => {
+		const component = new UserMessageComponent("follow-up");
+		component.setContinuesToAssistant(true);
+		const plain = component
+			.render(80)
+			.map((line) => stripVTControlCharacters(line))
+			.join("\n");
+
+		assert.match(plain, /╭─ YOU/);
+		assert.doesNotMatch(plain, /╰─{4,}/, `connected user turns should omit the closing rule:\n${plain}`);
+	});
+
+	test("keeps connected-state renders in separate cache entries", () => {
+		const component = new UserMessageComponent("follow-up");
+		const closed = component.render(80).map((line) => stripVTControlCharacters(line)).join("\n");
+		(component as unknown as { continuesToAssistant: boolean }).continuesToAssistant = true;
+		const open = component.render(80).map((line) => stripVTControlCharacters(line)).join("\n");
+
+		assert.match(closed, /╰─{4,}/);
+		assert.doesNotMatch(open, /╰─{4,}/, `connected user turns should not reuse a closed cached render:\n${open}`);
+	});
+
+	test("starts flush at the card top rule", () => {
+		const component = new UserMessageComponent("hello");
+		const plain = component.render(80).map((line) => stripVTControlCharacters(line));
+
+		assert.ok(plain[0]?.includes("╭─ YOU"), `user turn should start on the card top rule:\n${plain.join("\n")}`);
 	});
 
 	test("does not inject OSC 133 zones for unsupported terminals", () => {

@@ -16,11 +16,12 @@
 import assert from "node:assert/strict";
 import { describe, it, before } from "node:test";
 
-import { Container, Text } from "@gsd/pi-tui";
+import { Container, Spacer, Text } from "@gsd/pi-tui";
 import stripAnsi from "strip-ansi";
 
 import { initTheme, theme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { renderBlockingErrorBanner, renderExtensionNotifyInChat, shouldRenderExtensionNotifyInChat } from "../interactive-mode.js";
+import { showExtensionNotify } from "../interactive-extension-dialogs.js";
 import { DynamicBorder } from "./dynamic-border.js";
 import { ToolExecutionComponent } from "./tool-execution.js";
 
@@ -31,6 +32,29 @@ before(() => {
 });
 
 describe("Extension warning notifications", () => {
+	it("route through showWarning when showExtensionNotify is used", () => {
+		const chat = new Container();
+		const warnings: string[] = [];
+		const host = {
+			chatContainer: chat,
+			blockingErrorContainer: new Container(),
+			lastBlockingError: undefined,
+			showWarning(message: string) {
+				warnings.push(message);
+				chat.addChild(new Spacer(1));
+				chat.addChild(new Text(theme.fg("warning", `Warning: ${message}`), 1, 0));
+			},
+		};
+
+		showExtensionNotify(host, "picker unavailable — use /gsd discuss M001", "warning");
+
+		assert.deepEqual(warnings, ["picker unavailable — use /gsd discuss M001"]);
+		assert.match(
+			chat.render(100).map(stripAnsi).join("\n"),
+			/picker unavailable — use \/gsd discuss M001/,
+		);
+	});
+
 	it("do not render into chat output", () => {
 		assert.equal(shouldRenderExtensionNotifyInChat("warning"), false);
 		assert.equal(shouldRenderExtensionNotifyInChat("error"), true);

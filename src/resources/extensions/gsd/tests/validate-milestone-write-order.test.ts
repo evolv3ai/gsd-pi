@@ -368,4 +368,50 @@ describe("handleValidateMilestone write ordering (#2725)", () => {
     assert.ok(!("error" in result), `unexpected error: ${"error" in result ? result.error : ""}`);
     assert.equal(result.verdict, "pass");
   });
+
+  it("ignores slice full_uat_md planning text for browser requirement detection", async () => {
+    base = makeTmpBase();
+    const dbPath = join(base, ".gsd", "gsd.db");
+    openDatabase(dbPath);
+    insertMilestone({
+      id: "M001",
+      planning: {
+        successCriteria: [
+          "CLI command exits zero",
+          "Unit tests pass",
+        ],
+        verificationUat: "Run CLI checks and inspect logs.",
+      },
+    });
+    insertSlice({
+      id: "S01",
+      milestoneId: "M001",
+      demo: "Run npm test and npm run build.",
+    });
+
+    const adapter = _getAdapter()!;
+    adapter.prepare(
+      `UPDATE slices SET full_uat_md = :uat WHERE milestone_id = 'M001' AND id = 'S01'`,
+    ).run({
+      ":uat": [
+        "# S01 UAT",
+        "",
+        "Current zero-warning state is a snapshot after cleanup.",
+        "Reload service and verify visible logs in CLI output.",
+        "DOM snapshot checks are optional in unit tests.",
+      ].join("\n"),
+    });
+
+    const result = await handleValidateMilestone(
+      {
+        ...VALID_PARAMS,
+        verificationClasses:
+          `${VALID_PARAMS.verificationClasses}\n- UAT: CLI-only checks complete`,
+      },
+      base,
+    );
+
+    assert.ok(!("error" in result), `unexpected error: ${"error" in result ? result.error : ""}`);
+    assert.equal(result.verdict, "pass");
+  });
 });

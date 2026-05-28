@@ -217,6 +217,29 @@ test('cleanupQuickBranch: no-op without pending state', async () => {
     rmSync(repo, { recursive: true, force: true });
 });
 
+test('cleanupQuickBranch: infers return state from current gsd/quick branch', async () => {
+    const repo = createTestRepo();
+    const origCwd = process.cwd();
+    try {
+      run("git checkout -b gsd/quick/1-fix-typo", repo);
+      writeFileSync(join(repo, "feature.txt"), "quick work\n");
+      run("git add feature.txt", repo);
+      run('git commit -m "test: quick work"', repo);
+
+      process.chdir(repo);
+      const { cleanupQuickBranch } = await import("../../quick.ts");
+      const result = cleanupQuickBranch();
+
+      assert.ok(result, "returns true when quick branch can be inferred");
+      assert.deepStrictEqual(getCurrentBranch(repo), "main", "returns to main");
+      assert.throws(() => run("git rev-parse --verify gsd/quick/1-fix-typo", repo));
+      assert.match(run("git log -1 --oneline", repo), /quick\(Q1\): fix-typo/);
+    } finally {
+      process.chdir(origCwd);
+      rmSync(repo, { recursive: true, force: true });
+    }
+});
+
   // ═══════════════════════════════════════════════════════════════════════
   // End-to-end: quick branch does NOT contaminate integration branch
   // ═══════════════════════════════════════════════════════════════════════

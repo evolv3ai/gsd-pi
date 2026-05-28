@@ -3,9 +3,8 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 
 import { handleGSDCommand } from "../commands/dispatcher.ts";
@@ -17,6 +16,7 @@ import {
   openDatabase,
 } from "../gsd-db.ts";
 import { invalidateStateCache } from "../state.ts";
+import { cleanup, makeTempRepo } from "./test-utils.ts";
 
 interface NotifyCall {
   message: string;
@@ -30,13 +30,9 @@ interface SentMessage {
 }
 
 function makeBase(): string {
-  const base = mkdtempSync(join(tmpdir(), `gsd-dispatch-block-${randomUUID()}-`));
+  const base = makeTempRepo(`gsd-dispatch-block-${randomUUID()}-`);
   mkdirSync(join(base, ".gsd"), { recursive: true });
   return base;
-}
-
-function cleanup(base: string): void {
-  try { rmSync(base, { recursive: true, force: true }); } catch { /* swallow */ }
 }
 
 function makeMockCtx(base: string): {

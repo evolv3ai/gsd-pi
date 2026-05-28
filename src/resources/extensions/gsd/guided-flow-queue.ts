@@ -8,6 +8,10 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent";
 import { showNextAction } from "../shared/tui.js";
+import {
+  isInteractiveCommandContext,
+  notifyQueueHubNeedsInteractiveMenu,
+} from "./command-feedback.js";
 import { setQueuePhaseActive } from "./index.js";
 import { loadFile } from "./files.js";
 import { loadPrompt, inlineTemplate } from "./prompt-loader.js";
@@ -71,6 +75,12 @@ export async function showQueue(
 
   // ── If multiple pending milestones, show queue management hub ──────
   if (pendingMilestones.length > 1) {
+    if (!isInteractiveCommandContext(ctx)) {
+      notifyQueueHubNeedsInteractiveMenu(ctx, "this session has no interactive menu");
+      await showQueueAdd(ctx, pi, basePath, state);
+      return;
+    }
+
     const summaryParts = [`${completeCount} complete, ${pendingMilestones.length} pending.`];
     if (parkedCount > 0) summaryParts.push(`${parkedCount} parked.`);
 

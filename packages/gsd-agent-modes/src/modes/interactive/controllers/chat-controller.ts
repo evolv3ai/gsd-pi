@@ -5,7 +5,7 @@ import { Loader, Markdown, Spacer, Text } from "@gsd/pi-tui";
 import type { InteractiveModeEvent, InteractiveModeStateHost } from "../interactive-mode-state.js";
 import { theme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { AssistantMessageComponent } from "../components/assistant-message.js";
-import { chatTurnFollowsUser } from "../components/chat-turn-connect.js";
+import { chatTurnFollowsUser, reconcileChatTurnConnections } from "../components/chat-turn-connect.js";
 import {
 	ToolExecutionComponent,
 	ToolPhaseSummaryComponent,
@@ -29,6 +29,8 @@ type RenderedSegment =
 		endIndex: number;
 		contentType: "text" | "thinking";
 		component: AssistantMessageComponent;
+		/** Snapshot for redundant sub-turn detection after content[] shrinks. */
+		cachedText?: string;
 	}
 	| { kind: "tool"; contentIndex: number; component: ToolExecutionComponent }
 	| { kind: "tool-summary"; component: ToolPhaseSummaryComponent; phases: ToolExecutionPhase[] };
@@ -123,6 +125,143 @@ function getVisibleTextLikeBlockType(block: any): "text" | "thinking" | undefine
 	if (block?.type === "text" && typeof block.text === "string" && block.text.trim().length > 0) return "text";
 	if (block?.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim().length > 0) return "thinking";
 	return undefined;
+}
+
+/** True when assistant prose is handing off to the user (question or explicit invite). */
+export function textInvitesUserReply(text: string): boolean {
+	const trimmed = text.trim();
+	if (!trimmed) return false;
+	if (/\?(?:\s|$)/m.test(trimmed)) return true;
+	return /\b(?:what do you want|what's on your mind|let me know|tell me what|help me understand)\b/i.test(trimmed);
+}
+
+const DISCUSS_RESTATE_RE =
+	/\b(?:what do you want|what should we|before i can write|context file|placeholder name|need to understand what|what(?:'s| is) (?:on your mind|the next)|help me understand what you want)\b/i;
+
+/**
+ * Claude Code can emit a second text sub-turn that restates the same milestone
+ * discuss ask. Drop it when the prior sub-turn already invited a user reply.
+ */
+export function isRedundantDiscussRestatement(priorText: string, newText: string): boolean {
+	const prior = priorText.trim();
+	const next = newText.trim();
+	if (!prior || !next) return false;
+	if (!textInvitesUserReply(prior)) return false;
+	if (!DISCUSS_RESTATE_RE.test(next)) return false;
+	if (next.length > prior.length * 1.1) return false;
+	return next.length <= prior.length || next.length < 900;
+}
+
+function getTextFromContentBlocks(blocks: Array<any>, startIndex: number, endIndex: number): string {
+	const parts: string[] = [];
+	for (let i = startIndex; i <= endIndex && i < blocks.length; i++) {
+		const block = blocks[i];
+		if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
+			parts.push(block.text.trim());
+		}
+	}
+	return parts.join("\n\n");
+}
+
+function filterRedundantDiscussTextRuns(
+	desired: DesiredSegment[],
+	blocks: Array<any>,
+): DesiredSegment[] {
+	const textRuns = desired.filter(
+		(seg): seg is Extract<DesiredSegment, { kind: "text-run" }> =>
+			seg.kind === "text-run" && seg.contentType === "text",
+	);
+	if (textRuns.length < 2) return desired;
+
+	const skipStarts = new Set<number>();
+	let lastKeptText: string | undefined;
+	for (const seg of textRuns) {
+		const text = getTextFromContentBlocks(blocks, seg.startIndex, seg.endIndex);
+		if (lastKeptText && isRedundantDiscussRestatement(lastKeptText, text)) {
+			skipStarts.add(seg.startIndex);
+		} else {
+			lastKeptText = text;
+		}
+	}
+
+	return desired.filter(
+		(seg) => !(seg.kind === "text-run" && seg.contentType === "text" && skipStarts.has(seg.startIndex)),
+	);
+}
+
+function extractAssistantText(msg: { content?: unknown }): string {
+	if (!msg) return "";
+	const content = msg.content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	const parts: string[] = [];
+	for (const block of content) {
+		if (!block || typeof block !== "object") continue;
+		if ((block as { type?: string }).type === "text" && typeof (block as { text?: string }).text === "string") {
+			parts.push((block as { text: string }).text);
+		}
+	}
+	return parts.join("\n");
+}
+
+function latestPriorUserFacingText(
+	orphaned: RenderedSegment[],
+	rendered: RenderedSegment[],
+): string | undefined {
+	const runs = [...orphaned, ...rendered].filter(
+		(seg): seg is Extract<RenderedSegment, { kind: "text-run" }> =>
+			seg.kind === "text-run" && seg.contentType === "text",
+	);
+	return runs.at(-1)?.cachedText;
+}
+
+/**
+ * Walk session history backward for the previous assistant prose block, skipping
+ * toolResult rows. Used when Claude Code emits a second assistant message
+ * (new timestamp) after tools in the same prompt.
+ */
+export function priorAssistantTextFromSession(
+	messages: Array<{ role?: string; content?: unknown }>,
+	opts?: { skipLastAssistant?: boolean },
+): string | undefined {
+	let assistantFromEnd = 0;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (!message) continue;
+		if (message.role === "user") return undefined;
+		if (message.role === "toolResult") continue;
+		if (message.role === "assistant") {
+			const text = extractAssistantText(message).trim();
+			if (!text) continue;
+			if (opts?.skipLastAssistant) {
+				assistantFromEnd += 1;
+				if (assistantFromEnd === 1) continue;
+			}
+			return text;
+		}
+	}
+	return undefined;
+}
+
+function shouldSuppressRedundantHandoffText(
+	sessionMessages: Array<{ role?: string; content?: unknown }>,
+	currentText: string,
+	orphaned: RenderedSegment[],
+	rendered: RenderedSegment[],
+): boolean {
+	const next = currentText.trim();
+	if (!next) return false;
+
+	const priorInline = latestPriorUserFacingText(orphaned, rendered);
+	if (priorInline && isRedundantDiscussRestatement(priorInline, next)) {
+		return true;
+	}
+
+	const last = sessionMessages[sessionMessages.length - 1];
+	const skipLastAssistant =
+		last?.role === "assistant" && extractAssistantText(last).trim() === next;
+	const priorSession = priorAssistantTextFromSession(sessionMessages, { skipLastAssistant });
+	return !!(priorSession && isRedundantDiscussRestatement(priorSession, next));
 }
 
 function buildDesiredSegments(
@@ -600,7 +739,7 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 					// Only prune provisional pre-tool prose after post-tool prose exists,
 					// so MCP tool-only windows do not blank the assistant content.
 					const shouldDropPreToolProse = isClaudeCodeProvider && hasMcpToolBlock && hasPostToolText;
-					const desired = buildDesiredSegments(blocks, {
+					let desired = buildDesiredSegments(blocks, {
 						shouldSkipTextBlock: (block: any, index: number) => {
 							if (!shouldDropPreToolProse || firstToolIdx < 0 || index >= firstToolIdx) return false;
 							if (getVisibleTextLikeBlockType(block) !== "text") return false;
@@ -608,6 +747,7 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 							return !/\?\s*$/.test(textValue.trim());
 						},
 					});
+					desired = filterRedundantDiscussTextRuns(desired, blocks);
 
 					// Claude Code MCP can emit provisional pre-tool prose that gets
 					// superseded by post-tool output. Prune stale text-run segments so
@@ -678,8 +818,20 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 								(s) => s.kind === "text-run" && s.startIndex === seg.startIndex && s.contentType === seg.contentType,
 							);
 							if (!existing) {
+								const segmentText = getTextFromContentBlocks(blocks, seg.startIndex, seg.endIndex);
+								if (
+									shouldSuppressRedundantHandoffText(
+										host.session.messages,
+										segmentText,
+										orphanedSegments,
+										renderedSegments,
+									)
+								) {
+									continue;
+								}
 								const connectedToUser =
 									renderedSegments.filter((s) => s.kind === "text-run").length === 0 &&
+									orphanedSegments.filter((s) => s.kind === "text-run").length === 0 &&
 									chatTurnFollowsUser(host.chatContainer.children);
 								const comp = new AssistantMessageComponent(
 									undefined,
@@ -696,8 +848,10 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 									endIndex: seg.endIndex,
 									contentType: seg.contentType,
 									component: comp,
+									cachedText: segmentText,
 								});
 								host.streamingComponent = comp;
+								reconcileChatTurnConnections(host.chatContainer.children);
 							}
 						}
 					}
@@ -714,6 +868,7 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 								seg.endIndex = d.endIndex;
 								seg.component.setRange({ startIndex: seg.startIndex, endIndex: seg.endIndex });
 							}
+							seg.cachedText = getTextFromContentBlocks(blocks, seg.startIndex, seg.endIndex);
 							seg.component.updateContent(host.streamingMessage);
 						}
 					}
@@ -828,6 +983,12 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 							(host.streamingMessage.stopReason === "aborted" || host.streamingMessage.stopReason === "error")
 							&& !hasAssistantToolBlocks(host.streamingMessage)
 						);
+					const suppressRedundantHandoff = shouldSuppressRedundantHandoffText(
+						host.session.messages,
+						extractAssistantText(host.streamingMessage),
+						orphanedSegments,
+						renderedSegments,
+					);
 
 					// The final message_end payload can contain additional text/thinking
 					// blocks that never arrived via message_update (e.g. SDK result
@@ -835,7 +996,10 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 					// ranges/components don't keep stale partial indices.
 					if (renderedSegments.length > 0) {
 						const finalBlocks = host.streamingMessage.content;
-						const desired = buildDesiredSegments(finalBlocks);
+						const desired = filterRedundantDiscussTextRuns(
+							buildDesiredSegments(finalBlocks),
+							finalBlocks,
+						);
 
 						const toolComponentsById = new Map<string, ToolExecutionComponent>();
 						for (const [toolId, component] of host.pendingTools.entries()) {
@@ -904,6 +1068,18 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 								connectedToUser,
 							);
 							comp.updateContent(host.streamingMessage);
+							const segmentText = getTextFromContentBlocks(finalBlocks, seg.startIndex, seg.endIndex);
+							if (
+								suppressRedundantHandoff ||
+								shouldSuppressRedundantHandoffText(
+									host.session.messages,
+									segmentText,
+									orphanedSegments,
+									renderedSegments,
+								)
+							) {
+								continue;
+							}
 							host.chatContainer.addChild(comp);
 							renderedSegments.push({
 								kind: "text-run",
@@ -911,26 +1087,30 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 								endIndex: seg.endIndex,
 								contentType: seg.contentType,
 								component: comp,
+								cachedText: segmentText,
 							});
 							host.streamingComponent = comp;
 						}
+						reconcileChatTurnConnections(host.chatContainer.children);
 					}
 
-					if (!host.streamingComponent && shouldRenderAssistant) {
+					if (!host.streamingComponent && shouldRenderAssistant && !suppressRedundantHandoff) {
+						const connectedToUser = chatTurnFollowsUser(host.chatContainer.children);
 						host.streamingComponent = new AssistantMessageComponent(
 							undefined,
 							host.hideThinkingBlock,
 							host.getMarkdownThemeWithSettings(),
 							timestampFormat,
 							undefined,
-							chatTurnFollowsUser(host.chatContainer.children),
+							connectedToUser,
 						);
-					host.chatContainer.addChild(host.streamingComponent);
-				}
-				if (host.streamingComponent) {
-					host.streamingComponent.setShowMetadata(true);
-					host.streamingComponent.updateContent(host.streamingMessage);
-				}
+						host.chatContainer.addChild(host.streamingComponent);
+						reconcileChatTurnConnections(host.chatContainer.children);
+					}
+					if (host.streamingComponent) {
+						host.streamingComponent.setShowMetadata(true);
+						host.streamingComponent.updateContent(host.streamingMessage);
+					}
 
 				if (host.streamingMessage.stopReason === "aborted" || host.streamingMessage.stopReason === "error") {
 					if (!errorMessage) {

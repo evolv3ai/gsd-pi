@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parseToolSearchSelectQuery } from "../bootstrap/tool-search-shim.ts";
+import { parseToolSearchSelectQuery } from "@gsd/pi-ai";
 
 test("parseToolSearchSelectQuery extracts MCP tool name", () => {
   assert.equal(

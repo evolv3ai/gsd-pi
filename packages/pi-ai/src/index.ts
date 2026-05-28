@@ -49,6 +49,7 @@ export * from "./utils/typebox-helpers.js";
 export * from "./utils/repair-tool-json.js";
 export * from "./utils/normalize-tool-arguments.js";
 export * from "./utils/validation.js";
+export * from "./utils/tool-shims.js";
 export {
 	getProviderCapabilities,
 	getRegisteredApis,

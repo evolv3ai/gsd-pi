@@ -55,3 +55,20 @@ export function getContextPauseAction(
   const threshold = thresholdPercent <= 1 ? thresholdPercent * 100 : thresholdPercent;
   return usage >= threshold ? "pause" : "none";
 }
+
+/** Normalize compaction_threshold_percent pref (0.5–0.95 ratio) to a 0–100 scale. */
+export function resolveCompactionThresholdPercent(raw: number | undefined): number {
+  const value =
+    typeof raw === "number" && Number.isFinite(raw) && raw >= 0.5 && raw <= 0.95 ? raw : 0.6;
+  return value <= 1 ? value * 100 : value;
+}
+
+export function shouldRerootStepSessionForContext(
+  contextPercent: number | null | undefined,
+  compactionThresholdPercent?: number,
+): boolean {
+  return getContextPauseAction(
+    contextPercent,
+    resolveCompactionThresholdPercent(compactionThresholdPercent),
+  ) === "pause";
+}

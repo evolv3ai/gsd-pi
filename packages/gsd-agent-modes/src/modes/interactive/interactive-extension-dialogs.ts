@@ -279,6 +279,11 @@ export function showExtensionNotify(host: InteractiveModeDelegateHost, message: 
 		}
 		const result = renderExtensionNotifyInChat(host.chatContainer, message, type);
 		if (!result.rendered) {
+			// Warnings are intentionally excluded from the dim status-card path
+			// but must still be visible — route them through the warning renderer.
+			if (type === "warning") {
+				host.showWarning(message);
+			}
 			return;
 		}
 		if (result.statusSpacer && result.statusText) {

@@ -420,16 +420,4 @@ export default function (pi: ExtensionAPI) {
 		searchCache.clear();
 		docCache.clear();
 	});
-
-	// ── Startup notification ─────────────────────────────────────────────────
-
-	pi.on("session_start", async (_event, ctx) => {
-		if (!getApiKey()) {
-			ctx.ui.notify(
-				"Context7: No CONTEXT7_API_KEY set. Using free tier (1000 req/month limit). " +
-				"Set CONTEXT7_API_KEY for higher limits.",
-				"warning",
-			);
-		}
-	});
 }

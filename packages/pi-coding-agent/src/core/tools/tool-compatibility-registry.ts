@@ -23,6 +23,7 @@ const BUILTIN_TOOLS: Record<string, ToolCompatibility> = {
   lsp: {},
   hashline_edit: {},
   hashline_read: {},
+  ToolSearch: {},
 };
 
 // Pre-populate registry with built-in tools

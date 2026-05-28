@@ -62,6 +62,10 @@ import { isClosedStatus } from "../status-guards.js";
 import { setRuntimeKv } from "../db/runtime-kv.js";
 import { getLatestForUnit } from "../db/unit-dispatches.js";
 import { reconcileBeforeSpawn } from "../state-reconciliation.js";
+import {
+  countUnmappedActiveRequirements,
+  formatCompletePhaseNextAction,
+} from "../requirements-backlog.js";
 import type { MinimalModelRegistry } from "../context-budget.js";
 import type { PostflightResult, PreflightResult } from "../clean-root-preflight.js";
 import { ensurePlanV2Graph, isEmptyPlanV2GraphResult, isMissingFinalizedContextResult } from "../uok/plan-v2.js";
@@ -1234,19 +1238,21 @@ export async function runPreDispatch(
         if (stop) return stop;
         // PR creation (auto_pr) is handled inside mergeMilestoneToMain (#2302)
       }
+      const unmappedActive = countUnmappedActiveRequirements();
+      const completionStopReason = formatCompletePhaseNextAction(unmappedActive);
       deps.sendDesktopNotification(
         "GSD",
-        "All milestones complete!",
+        unmappedActive > 0 ? "All milestones complete — requirements backlog remains" : "All milestones complete!",
         "success",
         "milestone",
         basename(s.originalBasePath || s.basePath),
       );
       deps.logCmuxEvent(
         prefs,
-        "All milestones complete.",
+        completionStopReason,
         "success",
       );
-      await deps.stopAuto(ctx, pi, "All milestones complete", {
+      await deps.stopAuto(ctx, pi, completionStopReason, {
         completionWidget: {
           milestoneId: s.currentMilestoneId,
           milestoneTitle: midTitle,

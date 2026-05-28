@@ -28,6 +28,7 @@ export class AssistantMessageComponent extends Container {
 	private range?: ContentRange;
 	private showMetadata: boolean;
 	private connectedToUser: boolean;
+	private continuesToUser = false;
 	private renderCache = new RenderCache();
 	private renderVersion = 0;
 
@@ -90,6 +91,18 @@ export class AssistantMessageComponent extends Container {
 		} else {
 			this.clearRenderCache();
 		}
+	}
+
+	setContinuesToUser(value: boolean): void {
+		if (this.continuesToUser === value) return;
+		this.continuesToUser = value;
+		this.clearRenderCache();
+	}
+
+	setConnectedToUser(value: boolean): void {
+		if (this.connectedToUser === value) return;
+		this.connectedToUser = value;
+		this.clearRenderCache();
 	}
 
 	updateContent(message: AssistantMessage): void {
@@ -179,7 +192,9 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	override render(width: number): string[] {
-		const cached = this.renderCache.get(`${width}:${this.renderVersion}`);
+		const cached = this.renderCache.get(
+			`${width}:${this.renderVersion}:${this.connectedToUser ? 1 : 0}:${this.continuesToUser ? 1 : 0}`,
+		);
 		if (cached) return cached;
 
 		const frameWidth = Math.max(20, width);
@@ -194,8 +209,12 @@ export class AssistantMessageComponent extends Container {
 			label: "GSD",
 			meta: metaParts.length > 0 ? `· ${metaParts.join(" · ")}` : undefined,
 			connected: this.connectedToUser,
+			continuesToUser: this.continuesToUser,
 		});
-		return this.renderCache.set(`${width}:${this.renderVersion}`, rendered.length > 0 ? ["", ...rendered] : rendered);
+		return this.renderCache.set(
+			`${width}:${this.renderVersion}:${this.connectedToUser ? 1 : 0}:${this.continuesToUser ? 1 : 0}`,
+			this.connectedToUser || rendered.length === 0 ? rendered : ["", ...rendered],
+		);
 	}
 
 	private clearRenderCache(): void {

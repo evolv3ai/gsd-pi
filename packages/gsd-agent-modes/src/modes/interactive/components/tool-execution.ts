@@ -19,6 +19,7 @@ import stripAnsi from "strip-ansi";
 import type { ToolDefinition, ToolRenderContext } from "@gsd/pi-coding-agent/core/extensions/types.js";
 import { computeEditDiff, type EditDiffError, type EditDiffResult } from "@gsd/pi-coding-agent/core/tools/edit-diff.js";
 import { allTools } from "@gsd/pi-coding-agent/core/tools/index.js";
+import { getReadTuiMaxDisplayLines } from "@gsd/pi-coding-agent/core/tools/read.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@gsd/pi-coding-agent/core/tools/truncate.js";
 import { convertToPng } from "@gsd/pi-coding-agent/utils/image-convert.js";
 import { sanitizeBinaryOutput } from "@gsd/pi-coding-agent/utils/shell.js";
@@ -1146,7 +1147,7 @@ export class ToolExecutionComponent extends Container {
 				const lang = rawPath ? getLanguageFromPath(rawPath) : undefined;
 				const lines = lang ? highlightCode(replaceTabs(output), lang) : output.split("\n");
 
-				const maxLines = this.expanded ? lines.length : 10;
+				const maxLines = getReadTuiMaxDisplayLines(this.expanded);
 				const displayLines = lines.slice(0, maxLines);
 				const remaining = lines.length - maxLines;
 

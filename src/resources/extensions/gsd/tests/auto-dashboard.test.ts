@@ -300,7 +300,7 @@ test("setCompletionProgressWidget keeps terminal all-complete handoff in progres
       milestoneId: "M007",
       milestoneTitle: "Live Text Search",
       oneLiner: "Completed the milestone.",
-      reason: "All milestones complete",
+      reason: "All milestones complete. 8 active requirements in REQUIREMENTS.md have not been mapped to a milestone.",
       startedAt: Date.now() - 2_000,
       totalCost: 31.06,
       totalTokens: 3_600_000,
@@ -308,6 +308,11 @@ test("setCompletionProgressWidget keeps terminal all-complete handoff in progres
       completedSlices: 1,
       totalSlices: 1,
       allMilestonesComplete: true,
+      unmappedActiveRequirements: 8,
+      requirementsBacklogPreview: [
+        "  • R001: Example requirement",
+        "  • …and 7 more",
+      ],
       basePath: "/project/root",
     },
   );
@@ -325,7 +330,9 @@ test("setCompletionProgressWidget keeps terminal all-complete handoff in progres
   );
   const output = component.render(120).join("\n");
   assert.match(output, /All milestones complete/);
-  assert.match(output, /Review the roll-up/);
+  assert.match(output, /Review 8 unmapped active requirements/);
+  assert.match(output, /Requirements backlog/);
+  assert.match(output, /\/gsd to review requirements backlog/);
   assert.doesNotMatch(output, /\/gsd auto to resume/);
 });
 

@@ -330,19 +330,22 @@ export function startUnitSupervision(sctx: SupervisionContext): void {
     if (!contextUsage || contextUsage.percent == null) return;
     const rawPercent = contextUsage.percent;
     if (rawPercent > 150) {
-      logWarning("timer", `[continue-here] ignoring implausible context percent: ${rawPercent}`);
-      return;
+      logWarning(
+        "timer",
+        `[continue-here] critical context over-limit: ${rawPercent.toFixed(1)}% — forcing wrap-up`,
+      );
     }
-    const contextPercent = Math.max(0, Math.min(100, rawPercent));
-    if (contextPercent < continueHereThreshold) return;
+    const shouldWrapUp = rawPercent >= continueHereThreshold || rawPercent > 100;
+    if (!shouldWrapUp) return;
 
     writeUnitRuntimeRecord(s.basePath, unitType, unitId, s.currentUnit!.startedAt, {
       continueHereFired: true,
     });
 
+    const displayPercent = rawPercent.toFixed(1);
     if (s.verbose) {
       ctx.ui.notify(
-        `Context at ${contextPercent}% (threshold: ${continueHereThreshold}%) — sending wrap-up signal.`,
+        `Context at ${displayPercent}% (threshold: ${continueHereThreshold}%) — sending wrap-up signal.`,
         "info",
       );
     }
@@ -355,7 +358,7 @@ export function startUnitSupervision(sctx: SupervisionContext): void {
         display: s.verbose,
         content: [
           "**CONTEXT BUDGET WARNING — wrap up this unit now.**",
-          `Context window is at ${contextPercent}% (threshold: ${continueHereThreshold}%).`,
+          `Context window is at ${displayPercent}% (threshold: ${continueHereThreshold}%).`,
           "The next unit needs a fresh context to work effectively. Wrap up now:",
           "1. Finish any in-progress file writes",
           "2. Write or update the required durable artifacts (summary, checkboxes)",

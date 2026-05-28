@@ -1,6 +1,6 @@
 import { FAKE_MODEL, FAKE_MODEL_ID, FAKE_PROVIDER } from "./models/fake-model.js";
 import { MODELS } from "./models.generated.js";
-import type { Api, KnownProvider, Model, ModelThinkingLevel, Usage } from "./types.js";
+import type { Api, Model, ModelThinkingLevel, Usage } from "./types.js";
 
 const modelRegistry: Map<string, Map<string, Model<Api>>> = new Map();
 
@@ -20,12 +20,15 @@ if (process.env.GSD_FAKE_LLM_TRANSCRIPT) {
 	modelRegistry.set(FAKE_PROVIDER, providerModels);
 }
 
+/** Providers present in the generated catalog (may be a subset of KnownProvider). */
+export type GeneratedProvider = keyof typeof MODELS;
+
 type ModelApi<
-	TProvider extends KnownProvider,
+	TProvider extends GeneratedProvider,
 	TModelId extends keyof (typeof MODELS)[TProvider],
 > = (typeof MODELS)[TProvider][TModelId] extends { api: infer TApi } ? (TApi extends Api ? TApi : never) : never;
 
-export function getModel<TProvider extends KnownProvider, TModelId extends keyof (typeof MODELS)[TProvider]>(
+export function getModel<TProvider extends GeneratedProvider, TModelId extends keyof (typeof MODELS)[TProvider]>(
 	provider: TProvider,
 	modelId: TModelId,
 ): Model<ModelApi<TProvider, TModelId>> {
@@ -33,11 +36,11 @@ export function getModel<TProvider extends KnownProvider, TModelId extends keyof
 	return providerModels?.get(modelId as string) as Model<ModelApi<TProvider, TModelId>>;
 }
 
-export function getProviders(): KnownProvider[] {
-	return Array.from(modelRegistry.keys()) as KnownProvider[];
+export function getProviders(): GeneratedProvider[] {
+	return Array.from(modelRegistry.keys()) as GeneratedProvider[];
 }
 
-export function getModels<TProvider extends KnownProvider>(
+export function getModels<TProvider extends GeneratedProvider>(
 	provider: TProvider,
 ): Model<ModelApi<TProvider, keyof (typeof MODELS)[TProvider]>>[] {
 	const models = modelRegistry.get(provider);

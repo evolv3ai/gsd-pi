@@ -45,8 +45,13 @@ test("buildMinimalGsdToolSet deduplicates preserved and minimal tools", () => {
 test("buildMinimalGsdToolSet does not reintroduce provider-filtered GSD tools", () => {
   const result = buildMinimalGsdToolSet(["bash", "read", "memory_query"]);
 
-  assert.deepEqual(result, ["bash", "read", "memory_query"]);
+  assert.deepEqual(result, ["bash", "read", "memory_query", "ToolSearch"]);
   assert.ok(!result.includes("gsd_exec"));
+});
+
+test("buildMinimalGsdToolSet always preserves ToolSearch shim", () => {
+  const result = buildMinimalGsdToolSet(["bash", "read"]);
+  assert.ok(result.includes("ToolSearch"));
 });
 
 test("buildMinimalAutoGsdToolSet keeps unit-specific completion tools without aliases", () => {
@@ -88,8 +93,11 @@ test("buildMinimalAutoGsdToolSet keeps only the auto base non-GSD tools", () => 
     "bg_shell",
     "browser_wait_for",
     "edit",
+    "find",
     "glob",
     "grep",
+    "fetch_page",
+    "search-the-web",
     "lsp",
     "ls",
     "mac_find",
@@ -111,7 +119,30 @@ test("buildMinimalAutoGsdToolSet keeps only the auto base non-GSD tools", () => 
   assert.ok(!result.includes("browser_wait_for"));
   assert.ok(!result.includes("lsp"));
   assert.ok(!result.includes("mac_find"));
-  assert.ok(!result.includes("subagent"));
+  assert.ok(result.includes("subagent"));
+});
+
+test("buildMinimalAutoGsdToolSet re-injects registered base tools filtered from the active set", () => {
+  const registered = [
+    "bash",
+    "read",
+    "grep",
+    "find",
+    "fetch_page",
+    "search-the-web",
+    "gsd_task_complete",
+    "memory_query",
+  ];
+  const result = buildMinimalAutoGsdToolSet(
+    ["bash", "read", "gsd_task_complete", "memory_query"],
+    "execute-task",
+    registered,
+  );
+
+  assert.ok(result.includes("grep"));
+  assert.ok(result.includes("find"));
+  assert.ok(result.includes("fetch_page"));
+  assert.ok(result.includes("search-the-web"));
 });
 
 test("buildMinimalAutoGsdToolSet preserves browser tools for run-uat", () => {
@@ -244,8 +275,32 @@ test("buildMinimalGsdWorkflowToolSet keeps workflow GSD tools but drops broad no
   assert.ok(!result.includes("browser_wait_for"));
   assert.ok(!result.includes("lsp"));
   assert.ok(!result.includes("mac_find"));
-  assert.ok(!result.includes("subagent"));
+  assert.ok(result.includes("subagent"));
   assert.ok(!result.includes("gsd_graph"));
+});
+
+test("buildMinimalGsdWorkflowToolSet pulls investigation tools from registered names", () => {
+  const result = buildMinimalGsdWorkflowToolSet(
+    ["bash", "read", "write", "gsd_summary_save"],
+    ["bash", "read", "write", "grep", "find", "ls", "gsd_summary_save"],
+  );
+
+  assert.ok(result.includes("grep"));
+  assert.ok(result.includes("find"));
+  assert.ok(result.includes("ls"));
+});
+
+test("buildRequestScopedGsdToolSet keeps grep for guided discuss-milestone requests", () => {
+  const result = buildRequestScopedGsdToolSet(
+    ["bash", "read", "write", "gsd_summary_save"],
+    [{ customType: "gsd-discuss" }],
+    ["bash", "read", "write", "grep", "find", "ls", "gsd_summary_save", "gsd_requirement_update"],
+    "discuss-milestone",
+  );
+
+  assert.ok(result?.includes("grep"));
+  assert.ok(result?.includes("gsd_requirement_update"));
+  assert.ok(!result?.includes("gsd_task_complete"));
 });
 
 test("buildRequestScopedGsdToolSet scopes queued workflow custom-message requests", () => {

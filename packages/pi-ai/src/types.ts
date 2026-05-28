@@ -251,6 +251,12 @@ export interface ToolCall {
 	name: string;
 	arguments: Record<string, any>;
 	thoughtSignature?: string; // Google-specific: opaque signature for reusing thought context
+	/** Result from an externally executed tool (e.g. Claude Code SDK). Skips local dispatch. */
+	externalResult?: {
+		content?: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+		details?: Record<string, unknown>;
+		isError?: boolean;
+	};
 }
 
 /** GSD compat: server-side tool invocation block (e.g. web search). */

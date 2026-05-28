@@ -46,6 +46,7 @@ describe("#2883: tool invocation error tracking on AutoSession", () => {
 
 import {
   isDeterministicPolicyError,
+  isPendingUserApprovalGateError,
   isToolInvocationError,
   isQueuedUserMessageSkip,
 } from "../auto-tool-tracking.ts";
@@ -137,8 +138,9 @@ describe("#2883: isToolInvocationError classification", () => {
     const result = shouldBlockPendingGateInSnapshot(snapshot, "write", "M001", false);
 
     assert.equal(result.block, true);
-    assert.equal(isDeterministicPolicyError(result.reason ?? ""), true);
-    assert.equal(isToolInvocationError(result.reason ?? ""), true);
+    assert.equal(isPendingUserApprovalGateError(result.reason ?? ""), true);
+    assert.equal(isDeterministicPolicyError(result.reason ?? ""), false);
+    assert.equal(isToolInvocationError(result.reason ?? ""), false);
   });
 
   test("detects queue-mode policy blocks for raw write/edit/bash tools", () => {

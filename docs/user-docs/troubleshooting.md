@@ -209,9 +209,16 @@ If recovery still fails, repair runtime state instead of manually deleting indiv
 
 ### Git merge conflicts
 
-**Symptoms:** Worktree merge fails on `.gsd/` files.
+**Symptoms:** `/gsd` commands are blocked, or auto mode pauses/stops with unresolved Git conflicts.
 
-**Fix:** GSD auto-resolves conflicts on `.gsd/` runtime files. For content conflicts in code files, the LLM is given an opportunity to resolve them via a fix-merge session. If that fails, manual resolution is needed.
+**What happens:** Before most `/gsd` commands run, GSD probes the project root (and the active milestone worktree when present) for unmerged paths, conflict markers (`git diff --check`), and stale merge/rebase state. It auto-heals safe paths (`.gsd/` runtime files and build artifacts), aborts stale merge state when there are no unmerged paths, then blocks if product code conflicts remain.
+
+**Fix:**
+- Resolve remaining conflicts in your source files, then run `/gsd doctor`.
+- While conflicts remain, these commands still run: `/gsd doctor`, `/gsd closeout …`, and `/gsd dispatch complete-milestone …`.
+- Re-run your original command after `git status` is clean.
+
+Auto mode **pauses** on product conflicts after heal; it **stops** when Git state cannot be verified (fail-closed probe).
 
 ### Auto mode stops before merge with preflight conflict/overlap errors
 

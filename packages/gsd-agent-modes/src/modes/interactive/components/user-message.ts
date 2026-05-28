@@ -5,7 +5,7 @@ import { Container, Markdown, type MarkdownTheme } from "@gsd/pi-tui";
 import { getMarkdownTheme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { RenderCache } from "./render-cache.js";
 import { formatTimestamp, type TimestampFormat } from "./timestamp.js";
-import { TRANSCRIPT_CARD_INDENT, renderUserRail } from "./transcript-design.js";
+import { renderUserRail, TRANSCRIPT_CARD_INDENT } from "./transcript-design.js";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -22,6 +22,7 @@ function shouldEmitOsc133Zones(): boolean {
 export class UserMessageComponent extends Container {
 	private timestamp: number | undefined;
 	private timestampFormat: TimestampFormat;
+	private continuesToAssistant = false;
 	private renderCache = new RenderCache();
 	private renderVersion = 0;
 
@@ -37,9 +38,15 @@ export class UserMessageComponent extends Container {
 		this.clearRenderCache();
 	}
 
+	setContinuesToAssistant(value: boolean): void {
+		if (this.continuesToAssistant === value) return;
+		this.continuesToAssistant = value;
+		this.clearRenderCache();
+	}
+
 	override render(width: number): string[] {
 		const emitOsc133Zones = shouldEmitOsc133Zones();
-		const cacheKey = `${width}:${this.renderVersion}:${emitOsc133Zones ? 1 : 0}`;
+		const cacheKey = `${width}:${this.renderVersion}:${emitOsc133Zones ? 1 : 0}:${this.continuesToAssistant ? 1 : 0}`;
 		const cached = this.renderCache.get(cacheKey);
 		if (cached) return cached;
 
@@ -53,15 +60,16 @@ export class UserMessageComponent extends Container {
 		const framed = renderUserRail(lines, frameWidth, {
 			label: "You",
 			meta,
+			continuesToAssistant: this.continuesToAssistant,
 		});
 		if (framed.length === 0) {
 			return framed;
 		}
-		const out = ["", ...framed];
+		const out = framed;
 		if (!emitOsc133Zones) {
 			return this.renderCache.set(cacheKey, out);
 		}
-		const firstFrameLine = 1;
+		const firstFrameLine = 0;
 		const lastFrameLine = out.length - 1;
 		out[firstFrameLine] = OSC133_ZONE_START + out[firstFrameLine];
 		out[lastFrameLine] = out[lastFrameLine] + OSC133_ZONE_END;

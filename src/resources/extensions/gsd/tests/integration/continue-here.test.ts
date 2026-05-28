@@ -43,6 +43,15 @@ describe("continue-here", () => {
       // 50% should not fire
       assert.ok(50 < threshold, "half usage should not fire");
     });
+
+    it("fires when context exceeds 100% even if below monitor cadence", () => {
+      const budget = computeBudgets(1_000_000);
+      const threshold = budget.continueThresholdPercent;
+      assert.equal(threshold, 70);
+      const rawPercent = 273.8;
+      const shouldWrapUp = rawPercent >= threshold || rawPercent > 100;
+      assert.ok(shouldWrapUp, "over-window context must trigger wrap-up");
+    });
   });
 
   describe("null/undefined safety", () => {

@@ -11,7 +11,7 @@
 | `/gsd stop` | Stop auto mode gracefully |
 | `/gsd pause` | Pause auto-mode (preserves state, `/gsd auto` to resume) |
 | `/gsd steer` | Hard-steer plan documents during execution |
-| `/gsd discuss` | Discuss architecture and decisions (works alongside auto mode) |
+| `/gsd discuss` | Discuss architecture and decisions (stop auto-mode first with `/gsd stop`) |
 | `/gsd status` | Open workflow visualizer |
 | `/gsd widget` | Cycle dashboard widget: full / small / min / off |
 | `/gsd queue` | Queue and reorder future milestones (`pending`, `queued`, and legacy `planned`; safe during auto mode) |

@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { enableDebug } from "../../debug-logger.js";
 import { getAutoDashboardData, isAutoActive, isAutoPaused, pauseAuto, startAutoDetached, stopAuto, stopAutoRemote } from "../../auto.js";
 import { handleRate } from "../../commands-rate.js";
+import { setSessionModelOverride } from "../../session-model-override.js";
 import { guardRemoteSession, projectRoot } from "../context.js";
 import { findMilestoneIds } from "../../milestone-id-utils.js";
 
@@ -42,6 +43,25 @@ function parseYoloFlag(trimmed: string): { yoloSeedFile: string | null; rest: st
 
   const rest = trimmed.replace(match[0], "").replace(/\s+/g, " ").trim();
   return { yoloSeedFile: filePath, rest };
+}
+
+/**
+ * Parse --model flag from the auto command string.
+ * Supports: `/gsd auto --model provider/model` and `/gsd auto --model "provider/model"`
+ */
+export function parseModelFlag(input: string): { modelQuery: string | null; rest: string } {
+  const modelRe = /(?:--model)\s+("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\S+)/;
+  const match = input.match(modelRe);
+  if (!match) return { modelQuery: null, rest: input };
+
+  let modelQuery = match[1];
+  if ((modelQuery.startsWith('"') && modelQuery.endsWith('"')) ||
+      (modelQuery.startsWith("'") && modelQuery.endsWith("'"))) {
+    modelQuery = modelQuery.slice(1, -1);
+  }
+
+  const rest = input.replace(match[0], "").replace(/\s+/g, " ").trim();
+  return { modelQuery: modelQuery.trim() || null, rest };
 }
 
 /**
@@ -89,7 +109,8 @@ export async function handleAutoCommand(trimmed: string, ctx: ExtensionCommandCo
   }
 
   if (trimmed === "auto" || trimmed.startsWith("auto ")) {
-    const { yoloSeedFile, rest: afterYolo } = parseYoloFlag(trimmed);
+    const { modelQuery, rest: afterModel } = parseModelFlag(trimmed);
+    const { yoloSeedFile, rest: afterYolo } = parseYoloFlag(afterModel);
     const { milestoneId, rest: afterMilestone } = parseMilestoneTarget(afterYolo);
     const verboseMode = afterMilestone.includes("--verbose");
     const debugMode = afterMilestone.includes("--debug");
@@ -104,6 +125,24 @@ export async function handleAutoCommand(trimmed: string, ctx: ExtensionCommandCo
       if (!allIds.includes(milestoneId)) {
         ctx.ui.notify(`Milestone ${milestoneId} does not exist. Available: ${allIds.join(", ") || "(none)"}`, "error");
         return true;
+      }
+    }
+
+    if (modelQuery) {
+      const { resolveModelId } = await import("../../auto-model-selection.js");
+      const availableModels = ctx.modelRegistry.getAvailable();
+      const targetModel = resolveModelId(modelQuery, availableModels, ctx.model?.provider);
+      if (!targetModel) {
+        ctx.ui.notify(`Model "${modelQuery}" not found. Use an exact provider/model or model ID.`, "warning");
+        return true;
+      }
+
+      const sessionId = ctx.sessionManager?.getSessionId?.();
+      if (sessionId) {
+        setSessionModelOverride(sessionId, {
+          provider: targetModel.provider,
+          id: targetModel.id,
+        });
       }
     }
 

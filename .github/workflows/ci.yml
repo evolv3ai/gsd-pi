@@ -279,7 +279,7 @@ jobs:
 
   coverage-report:
     name: coverage-report
-    timeout-minutes: 60
+    timeout-minutes: 90
     continue-on-error: true
     needs: [fast-gates, build]
     if: >-

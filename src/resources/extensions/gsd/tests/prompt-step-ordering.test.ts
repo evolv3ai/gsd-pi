@@ -89,6 +89,35 @@ describe('register-hooks session_before_compact (#3696)', () => {
     }
   });
 
+  test('registered hook allows compaction during auto when context is critically high', async () => {
+    const handlers = new Map<string, Function>();
+    registerHooks({
+      on(event: string, handler: Function) {
+        handlers.set(event, handler);
+      },
+    } as any, []);
+
+    const compact = handlers.get('session_before_compact');
+    assert.ok(compact, 'session_before_compact hook should be registered');
+
+    _setAutoActiveForTest(true);
+    const base = mkdtempSync(join(tmpdir(), 'gsd-compact-critical-'));
+    try {
+      const result = await compact(
+        { preparation: { messagesToSummarize: [{ role: 'user', content: 'hello' }], turnPrefixMessages: [] } },
+        {
+          cwd: base,
+          ui: { notify() {}, setWidget() {} },
+          getContextUsage: () => ({ percent: 120, tokens: 1_200_000, contextWindow: 1_000_000 }),
+        },
+      );
+      assert.notDeepEqual(result, { cancel: true });
+    } finally {
+      _setAutoActiveForTest(false);
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   test('registered hook cancels empty compaction input defensively (#109)', async () => {
     const handlers = new Map<string, Function>();
     registerHooks({

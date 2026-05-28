@@ -22,6 +22,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { killChildProcess } from "./child-process-guard.ts";
 
 const projectRoot = process.cwd();
 const loaderPath = join(projectRoot, "dist", "loader.js");
@@ -68,7 +69,7 @@ function runGsd(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
+      killChildProcess(child, "SIGTERM");
     }, timeoutMs);
 
     child.on("close", (code) => {
@@ -105,7 +106,7 @@ function spawnGsd(
 
   const timer = setTimeout(() => {
     timedOut = true;
-    child.kill("SIGTERM");
+    killChildProcess(child, "SIGTERM");
   }, timeoutMs);
 
   const result = new Promise<RunResult>((resolve) => {

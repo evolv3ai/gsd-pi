@@ -16,6 +16,7 @@ import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmS
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createGunzip } from "node:zlib";
+import { killChildProcess } from "./child-process-guard.ts";
 
 const projectRoot = process.cwd();
 
@@ -219,7 +220,7 @@ test("gsd launches and loads extensions without errors", async () => {
 
     // Give it 5s to start up
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
+      killChildProcess(child, "SIGTERM");
     }, 5000);
 
     child.on("close", () => {

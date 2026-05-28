@@ -87,7 +87,11 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
           rationale: "pre-dispatch health gate blocked dispatch",
           findings: gate.reason,
         });
-        const blocked: AutoAdvanceResult = { kind: "blocked", reason: gate.reason, action: "pause" };
+        const blocked: AutoAdvanceResult = {
+          kind: "blocked",
+          reason: gate.reason,
+          action: gate.action ?? "pause",
+        };
         await this.deps.runtime.journalTransition({ name: "advance-blocked", reason: blocked.reason });
         await this.deps.health.postAdvanceRecord(blocked);
         return blocked;

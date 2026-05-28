@@ -3,8 +3,58 @@ import test from "node:test";
 import { Container } from "@gsd/pi-tui";
 import stripAnsi from "strip-ansi";
 
-import { findLatestPinnableText, handleAgentEvent } from "./chat-controller.js";
+import {
+	findLatestPinnableText,
+	handleAgentEvent,
+	isRedundantDiscussRestatement,
+	priorAssistantTextFromSession,
+	textInvitesUserReply,
+} from "./chat-controller.js";
 import { initTheme } from "@gsd/pi-coding-agent/theme/theme.js";
+
+test("textInvitesUserReply: detects question handoff", () => {
+	assert.equal(textInvitesUserReply("What do you want to build for M006?"), true);
+	assert.equal(textInvitesUserReply("Let me write the context file now."), false);
+});
+
+test("isRedundantDiscussRestatement: drops second milestone ask sub-turn", () => {
+	const prior = [
+		"You have a neo-brutalist todo app with five milestones done.",
+		"What do you want to build for M006?",
+		"What's on your mind?",
+	].join("\n");
+	const next = [
+		"I see M006 was created with a placeholder name.",
+		"Before I can write the context file, what do you want M006 to be?",
+	].join("\n");
+	assert.equal(isRedundantDiscussRestatement(prior, next), true);
+});
+
+test("priorAssistantTextFromSession: skips tool results and newest assistant", () => {
+	const prior = [
+		"What do you want M006 to do?",
+		"What's driving this?",
+	].join("\n");
+	const messages = [
+		{ role: "user", content: "start" },
+		{ role: "assistant", content: [{ type: "text", text: prior }] },
+		{ role: "toolResult", content: [{ type: "text", text: "ok" }] },
+		{ role: "assistant", content: [{ type: "text", text: "What do you want M006 to be?" }] },
+	];
+	assert.equal(priorAssistantTextFromSession(messages, { skipLastAssistant: true }), prior);
+});
+
+test("isRedundantDiscussRestatement: keeps genuinely new follow-up questions", () => {
+	const prior = "Should we add keyboard shortcuts or recurring tasks for M006?";
+	const next = "Also, do you want this milestone to include a backend or stay local-only?";
+	assert.equal(isRedundantDiscussRestatement(prior, next), false);
+});
+
+test("isRedundantDiscussRestatement: keeps short new follow-up questions", () => {
+	const prior = "What do you want to build for M006?";
+	const next = "I found 3 modules. Should I add docs?";
+	assert.equal(isRedundantDiscussRestatement(prior, next), false);
+});
 
 test("findLatestPinnableText: empty content returns empty string", () => {
 	assert.equal(findLatestPinnableText([]), "");

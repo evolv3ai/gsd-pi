@@ -34,6 +34,10 @@ import { formatDuration } from "../shared/format-utils.js";
 import { getAutoWorktreePath } from "./auto-worktree.js";
 import { loadEffectiveGSDPreferences, loadGlobalGSDPreferences, getGlobalGSDPreferencesPath } from "./preferences.js";
 import { showNextAction } from "../shared/tui.js";
+import {
+  isInteractiveCommandContext,
+  notifyForensicsNeedsInteractiveMenu,
+} from "./command-feedback.js";
 import { ensurePreferencesFile, serializePreferencesToFrontmatter } from "./commands-prefs-wizard.js";
 import { summarizeWorktreeTelemetry, percentile, type WorktreeTelemetrySummary } from "./worktree-telemetry.js";
 import { homedir } from "node:os";
@@ -203,6 +207,10 @@ export async function handleForensics(
 
   let problemDescription = args.trim();
   if (!problemDescription) {
+    if (!isInteractiveCommandContext(ctx)) {
+      notifyForensicsNeedsInteractiveMenu(ctx, "problem description required");
+      return;
+    }
     problemDescription = await ctx.ui.input(
       "Describe what went wrong:",
       "e.g. auto-mode got stuck on task T03",
@@ -218,6 +226,12 @@ export async function handleForensics(
   let dedupEnabled = effectivePrefs?.forensics_dedup === true;
 
   if (effectivePrefs?.forensics_dedup === undefined) {
+    if (!isInteractiveCommandContext(ctx)) {
+      ctx.ui.notify(
+        "Duplicate detection skipped in this session. Set forensics_dedup in .gsd/PREFERENCES.md to enable.",
+        "info",
+      );
+    } else {
     const choice = await showNextAction(ctx, {
       title: "Duplicate detection available",
       summary: ["Before filing a GitHub issue, forensics can search existing issues and PRs to avoid duplicates.", "This uses additional AI tokens for analysis."],
@@ -231,6 +245,7 @@ export async function handleForensics(
     if (choice === "enable") {
       await writeForensicsDedupPref(ctx, true);
       dedupEnabled = true;
+    }
     }
   }
 

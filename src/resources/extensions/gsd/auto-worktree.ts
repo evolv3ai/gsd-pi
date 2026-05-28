@@ -52,6 +52,7 @@ import {
   normalizeWorktreePathForCompare,
   resolveWorktreeProjectRoot,
 } from "./worktree-root.js";
+import { autoResolveSafeConflictPaths } from "./git-conflict-resolve.js";
 import { MergeConflictError, createDraftPR, readIntegrationBranch, resolveMilestoneIntegrationBranch, RUNTIME_EXCLUSION_PATHS } from "./git-service.js";
 import { buildPrEvidence } from "./pr-evidence.js";
 import { debugLog } from "./debug-logger.js";
@@ -217,6 +218,12 @@ function hasConflictMarkers(filePath: string): boolean {
   } catch {
     return false;
   }
+}
+
+function gsdJsonlFilesWithConflictMarkers(basePath: string): string[] {
+  return nativeLsFiles(basePath, ".gsd/*.jsonl").filter((f) =>
+    hasConflictMarkers(join(basePath, f)),
+  );
 }
 
 /**
@@ -1112,21 +1119,34 @@ export function checkoutBranchWithStashGuard(
     try {
       popStashByRef(basePath, stashMarker);
     } catch (popErr) {
+      const msg = popErr instanceof Error ? popErr.message : String(popErr);
+      const stderr = popErr && typeof popErr === "object"
+        ? (popErr as { stderr?: unknown }).stderr
+        : undefined;
+      const stderrText = typeof stderr === "string"
+        ? stderr
+        : stderr instanceof Uint8Array
+          ? Buffer.from(stderr).toString("utf-8")
+          : "";
+      const stashPopMessage = `${stderrText}\n${msg}`.trim();
       const alreadyExists = stashAlreadyExistsFilesFromError(popErr);
       const gsdAlreadyExists = alreadyExists.filter((f) => f.startsWith(".gsd/"));
       const nonGsdAlreadyExists = alreadyExists.filter((f) => !f.startsWith(".gsd/"));
-      const stashPopMessage = popErr instanceof Error ? popErr.message : String(popErr);
       const isUntrackedRestoreFailure = stashPopMessage.includes("could not restore untracked files from stash");
       const stashRefForDrop = stashRefFromError(popErr);
       const nonGsdUnmerged = nativeConflictFiles(basePath).filter((f) => !f.startsWith(".gsd/"));
+      const gsdContentConflicts = isUntrackedRestoreFailure
+        ? gsdJsonlFilesWithConflictMarkers(basePath)
+        : [];
+      const gsdConflictFiles = [...new Set([...gsdAlreadyExists, ...gsdContentConflicts])];
 
       if (
         isUntrackedRestoreFailure &&
-        gsdAlreadyExists.length > 0 &&
+        gsdConflictFiles.length > 0 &&
         nonGsdAlreadyExists.length === 0 &&
         nonGsdUnmerged.length === 0
       ) {
-        for (const f of gsdAlreadyExists) {
+        for (const f of gsdConflictFiles) {
           execFileSync("git", ["checkout", "HEAD", "--", f], {
             cwd: basePath,
             stdio: ["ignore", "pipe", "pipe"],
@@ -1151,12 +1171,10 @@ export function checkoutBranchWithStashGuard(
         return;
       }
 
-      const msg = popErr instanceof Error ? popErr.message : String(popErr);
       const wrapped = new Error(
         `checkout to '${branch}' succeeded but stash restore failed; working tree changes remain in the stash list. Original error: ${msg}`,
       );
-      const ref = stashRefForDrop;
-      if (ref) (wrapped as { stashRef?: string }).stashRef = ref;
+      if (stashRefForDrop) (wrapped as { stashRef?: string }).stashRef = stashRefForDrop;
       throw wrapped;
     }
   }
@@ -2195,24 +2213,12 @@ export function mergeMilestoneToMain(
       // from real code conflicts. GSD state files diverge between branches
       // during normal operation. Build artifacts are machine-generated and
       // regenerable. Both are safe to accept from the milestone branch.
-      const autoResolvable = conflictedFiles.filter(isSafeToAutoResolve);
-      const codeConflicts = conflictedFiles.filter(
-        (f) => !isSafeToAutoResolve(f),
+      const { resolved: autoResolved, remaining: codeConflicts } = autoResolveSafeConflictPaths(
+        originalBasePath_,
+        conflictedFiles,
       );
-
-      // Auto-resolve safe conflicts by accepting the milestone branch version
-      if (autoResolvable.length > 0) {
-        for (const safeFile of autoResolvable) {
-          try {
-            nativeCheckoutTheirs(originalBasePath_, [safeFile]);
-            nativeAddPaths(originalBasePath_, [safeFile]);
-          } catch (e) {
-            // If checkout --theirs fails, try removing the file from the merge
-            // (it's a runtime file that shouldn't be committed anyway)
-            logWarning("worktree", `checkout --theirs failed for ${safeFile}, removing: ${(e as Error).message}`);
-            nativeRmForce(originalBasePath_, [safeFile]);
-          }
-        }
+      if (autoResolved.length > 0) {
+        logWarning("worktree", `auto-resolved safe merge conflicts: ${autoResolved.join(", ")}`);
       }
 
       // If there are still real code conflicts, escalate
@@ -2286,11 +2292,7 @@ export function mergeMilestoneToMain(
       // Untracked-file restore failures can leave marker conflicts in tracked
       // .gsd JSONL files without producing `U` status entries.
       if (isUntrackedRestoreFailure) {
-        for (const f of nativeLsFiles(originalBasePath_, ".gsd/*.jsonl")) {
-          if (hasConflictMarkers(join(originalBasePath_, f))) {
-            gsdContentConflicts.push(f);
-          }
-        }
+        gsdContentConflicts.push(...gsdJsonlFilesWithConflictMarkers(originalBasePath_));
       }
       const gsdConflictFiles = [...new Set([...gsdUU, ...gsdContentConflicts])];
 

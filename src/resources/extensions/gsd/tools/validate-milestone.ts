@@ -109,7 +109,6 @@ async function browserEvidenceGateRequiresAttention(
       slice.demo,
       slice.goal,
       slice.success_criteria,
-      slice.full_uat_md,
     ]),
   ]);
   if (!hasBrowserRequiredText(requirementText)) return false;

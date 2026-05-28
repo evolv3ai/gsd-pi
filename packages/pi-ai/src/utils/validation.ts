@@ -292,6 +292,7 @@ export function validateToolCall(tools: Tool[], toolCall: ToolCall): any {
  */
 export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
 	const args = structuredClone(toolCall.arguments);
+	normalizeToolArguments(tool.name, args);
 	Value.Convert(tool.parameters, args);
 
 	const validator = getValidator(tool.parameters);

@@ -35,9 +35,22 @@ function connectedRuleFill(width: number, indent = TRANSCRIPT_CARD_INDENT): stri
 	return "─".repeat(Math.max(16, Math.min(40, width - indent - 1)));
 }
 
-export function renderChatTurnBridge(width: number, fromIndent = TRANSCRIPT_CARD_INDENT): string[] {
-	const bridge = indentSpaces(fromIndent + 2) + "╰──────╮";
-	return [padLine(theme.fg("borderAccent", bridge), width)];
+export function renderChatTurnBridge(
+	width: number,
+	fromIndent = TRANSCRIPT_CARD_INDENT,
+	railColor: ThemeColor = "borderAccent",
+): string[] {
+	const bridge = indentSpaces(fromIndent) + "╰──────╮";
+	return [padLine(theme.fg(railColor, bridge), width)];
+}
+
+/** Bridge from a left-pegged assistant turn down into the next indented user turn. */
+export function renderChatTurnBridgeToUser(
+	width: number,
+	railColor: ThemeColor = "border",
+): string[] {
+	const bridge = "╰──────╮";
+	return [padLine(theme.fg(railColor, bridge), width)];
 }
 
 export function renderConnectedCard(
@@ -50,6 +63,7 @@ export function renderConnectedCard(
 		railColor?: ThemeColor;
 		titleColor?: ThemeColor;
 		bodyBg?: ThemeBg;
+		closeBottom?: boolean;
 	} = {},
 ): string[] {
 	const indent = opts.indent ?? TRANSCRIPT_CARD_INDENT;
@@ -75,15 +89,19 @@ export function renderConnectedCard(
 		}
 	}
 	const paintBody = (line: string) => {
-		const body = prefix + "   " + line;
-		return opts.bodyBg ? theme.bg(opts.bodyBg, body) : body;
+		const innerWidth = Math.max(1, width - indent);
+		const inner = padRight(truncateToWidth("   " + line, innerWidth, ""), innerWidth);
+		const painted = opts.bodyBg ? theme.bg(opts.bodyBg, inner) : inner;
+		return prefix + painted;
 	};
 	const bodySource = trimOuterBlankLines(bodyLines);
 	const out = [padLine(topLine, width)];
 	for (const line of bodySource) {
-		out.push(padLine(paintBody(line), width));
+		out.push(paintBody(line));
 	}
-	out.push(padLine(prefix + rail("╰" + connectedRuleFill(width, indent)), width));
+	if (opts.closeBottom !== false) {
+		out.push(padLine(prefix + rail("╰" + connectedRuleFill(width, indent)), width));
+	}
 	return out;
 }
 
@@ -254,7 +272,13 @@ export function renderChatFrame(
 export function renderAssistantRail(
 	lines: string[],
 	width: number,
-	opts: { label?: string; meta?: string; railColor?: ThemeColor; connected?: boolean } = {},
+	opts: {
+		label?: string;
+		meta?: string;
+		railColor?: ThemeColor;
+		connected?: boolean;
+		continuesToUser?: boolean;
+	} = {},
 ): string[] {
 	const railColor = opts.railColor ?? "borderAccent";
 	const source = trimOuterBlankLines(lines);
@@ -265,15 +289,22 @@ export function renderAssistantRail(
 		titleRight,
 		railColor,
 		bodyBg: "customMessageBg",
+		closeBottom: !opts.continuesToUser,
 	});
-	if (!opts.connected) return card;
-	return [...renderChatTurnBridge(width), ...card];
+	let result = card;
+	if (opts.connected) {
+		result = [...renderChatTurnBridge(width, TRANSCRIPT_CARD_INDENT), ...result];
+	}
+	if (opts.continuesToUser) {
+		result = [...result, ...renderChatTurnBridgeToUser(width)];
+	}
+	return result;
 }
 
 export function renderUserRail(
 	lines: string[],
 	width: number,
-	opts: { label?: string; meta?: string },
+	opts: { label?: string; meta?: string; continuesToAssistant?: boolean },
 ): string[] {
 	const source = trimOuterBlankLines(lines);
 	const body = (source.length > 0 ? source : [""]).map((line) => theme.fg("userMessageText", line));
@@ -284,6 +315,7 @@ export function renderUserRail(
 		railColor: "border",
 		titleColor: "border",
 		bodyBg: "userMessageBg",
+		closeBottom: !opts.continuesToAssistant,
 	});
 }
 

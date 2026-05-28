@@ -2,7 +2,7 @@
 
 Ask: "What's the vision?" once, then use the reply as vision input.
 
-**Special handling:** If the user message is status, branch state, clarification, or any other non-project-description, treat it as vision input and proceed instead of repeating "What's the vision?".
+**Special handling:** If the **user's** message is status, branch state, clarification, or any other non-project-description, treat it as vision input and proceed instead of repeating "What's the vision?" Do **not** treat the system preamble above (e.g. "New milestone M00X.") as vision input — wait for the user.
 
 ## Reflection Step
 
@@ -12,7 +12,7 @@ After the user describes the idea, **do not ask questions yet**. Reflect first:
 3. Scope honesty: "Here's what I'm hearing:" plus major capability bullets.
 4. Plain-text correction invite: "Here's my read. Correct anything important I missed."
 
-Do not skip this or combine it with the first question round.
+Do not skip this or combine it with the first question round. **End your turn after the reflection invite** — do not ask Layer 1+ questions in the same turn. Wait for the user's response before any question round.
 
 ## Vision Mapping
 

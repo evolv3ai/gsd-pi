@@ -106,7 +106,7 @@ export interface WorktreeAdapter {
 
 export type HealthGateResult =
   | { kind: "pass"; fixesApplied?: readonly string[] }
-  | { kind: "fail"; reason: string }
+  | { kind: "fail"; reason: string; action?: "pause" | "stop" }
   | { kind: "threw"; error: unknown };
 
 export interface HealthAdapter {

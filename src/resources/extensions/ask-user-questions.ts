@@ -27,6 +27,7 @@ interface LocalResultDetails {
 	questions: Question[];
 	response: RoundResult | null;
 	cancelled: boolean;
+	interrupted?: boolean;
 }
 
 interface RemoteResultDetails {
@@ -179,10 +180,11 @@ const OTHER_OPTION_LABEL = "None of the above";
 function errorResult(
 	message: string,
 	questions: Question[] = [],
+	options?: { interrupted?: boolean },
 ): { content: { type: "text"; text: string }[]; details: AskUserQuestionsDetails } {
 	return {
 		content: [{ type: "text", text: sanitizeError(message) }],
-		details: { questions, response: null, cancelled: true },
+		details: { questions, response: null, cancelled: true, interrupted: options?.interrupted === true },
 	};
 }
 
@@ -299,7 +301,7 @@ export default function AskUserQuestions(pi: ExtensionAPI) {
 			}
 
 			// Delegate to shared interview UI
-			const result = await showInterviewRound(params.questions, {}, ctx as any);
+			const result = await showInterviewRound(params.questions, { signal }, ctx as any);
 
 			// RPC mode fallback: custom() returns undefined, so showInterviewRound
 			// may return undefined. Fall back to sequential ctx.ui.select() calls.
@@ -364,9 +366,20 @@ export default function AskUserQuestions(pi: ExtensionAPI) {
 			// Check if cancelled (empty answers = user exited)
 			const hasAnswers = Object.keys(result.answers).length > 0;
 			if (!hasAnswers) {
+				const interrupted = signal?.aborted === true;
 				return {
-					content: [{ type: "text", text: "ask_user_questions was cancelled before receiving a response" }],
-					details: { questions: params.questions, response: null, cancelled: true } satisfies LocalResultDetails,
+					content: [{
+						type: "text",
+						text: interrupted
+							? "ask_user_questions was interrupted before receiving a response"
+							: "ask_user_questions was cancelled before receiving a response",
+					}],
+					details: {
+						questions: params.questions,
+						response: null,
+						cancelled: true,
+						interrupted,
+					} satisfies LocalResultDetails,
 				};
 			}
 
@@ -450,7 +463,12 @@ export default function AskUserQuestions(pi: ExtensionAPI) {
 			}
 
 			if (details.cancelled || !details.response) {
-				return new Text(theme.fg("warning", "Cancelled"), 0, 0);
+				const interrupted = "interrupted" in details && details.interrupted === true;
+				return new Text(
+					theme.fg("warning", interrupted ? "Interrupted" : "Cancelled"),
+					0,
+					0,
+				);
 			}
 
 			const lines: string[] = [];

@@ -13,14 +13,13 @@ import type { ExtensionContext } from "@gsd/pi-coding-agent";
 
 import { getErrorMessage } from "../../error-utils.js";
 import {
-  nativeAddPaths,
-  nativeCheckoutTheirs,
   nativeCommit,
   nativeConflictFiles,
   nativeMergeAbort,
   nativeRebaseAbort,
   nativeResetHard,
 } from "../../native-git-bridge.js";
+import { autoResolveSafeConflictPaths, isSafeToAutoResolve } from "../../git-conflict-resolve.js";
 import type { GSDState } from "../../types.js";
 import { logError, logWarning } from "../../workflow-logger.js";
 import { isGsdWorktreePath } from "../../worktree-root.js";
@@ -300,37 +299,31 @@ function reconcileMergeStateCore(
       return "blocked";
     }
   } else {
-    // Still conflicted — try auto-resolving .gsd/ state file conflicts (#530)
-    const gsdConflicts = conflictedFiles.filter((f) => f.startsWith(".gsd/"));
-    const codeConflicts = conflictedFiles.filter((f) => !f.startsWith(".gsd/"));
+    // Still conflicted — try auto-resolving safe paths (.gsd/ + artifacts, #530)
+    const safeConflicts = conflictedFiles.filter(isSafeToAutoResolve);
+    const codeConflicts = conflictedFiles.filter((f) => !isSafeToAutoResolve(f));
 
-    if (gsdConflicts.length > 0 && codeConflicts.length === 0) {
-      let resolved = true;
-      try {
-        nativeCheckoutTheirs(basePath, gsdConflicts);
-        nativeAddPaths(basePath, gsdConflicts);
-      } catch (e) {
-        logError(
-          "recovery",
-          `auto-resolve .gsd/ conflicts failed: ${(e as Error).message}`,
-        );
-        resolved = false;
-      }
+    if (safeConflicts.length > 0 && codeConflicts.length === 0) {
+      const { resolved: autoResolved, remaining } = autoResolveSafeConflictPaths(
+        basePath,
+        safeConflicts,
+      );
+      let resolved = remaining.length === 0 && autoResolved.length > 0;
       if (resolved) {
         try {
           nativeCommit(
             basePath,
-            "chore: auto-resolve .gsd/ state file conflicts",
+            "chore: auto-resolve safe state file conflicts",
           );
           removeMergeStateFiles(basePath);
           notify(
-            `Auto-resolved ${gsdConflicts.length} .gsd/ state file conflict(s) from prior merge.`,
+            `Auto-resolved ${autoResolved.length} safe conflict path(s) from prior merge.`,
             "info",
           );
         } catch (e) {
           logError(
             "recovery",
-            `auto-commit .gsd/ conflict resolution failed: ${(e as Error).message}`,
+            `auto-commit safe conflict resolution failed: ${(e as Error).message}`,
           );
           resolved = false;
         }

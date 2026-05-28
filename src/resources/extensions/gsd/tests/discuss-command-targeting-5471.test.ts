@@ -34,7 +34,7 @@ describe("discuss command targeting (#5471)", () => {
   test("handles whitespace and preserves positional parsing behavior", () => {
     assert.deepEqual(_parseDiscussArgsForTest("   M014   "), { target: "M014", error: null });
     assert.deepEqual(_parseDiscussArgsForTest(""), { target: null, error: null });
-    assert.deepEqual(_parseDiscussArgsForTest("m014"), { target: "m014", error: null });
+    assert.deepEqual(_parseDiscussArgsForTest("m014"), { target: "M014", error: null });
     assert.deepEqual(_parseDiscussArgsForTest("M014/S03/extra"), { target: "M014/S03/extra", error: null });
   });
 });

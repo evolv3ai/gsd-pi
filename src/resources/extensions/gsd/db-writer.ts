@@ -11,6 +11,7 @@
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import type { Decision, Requirement } from './types.js';
+import { summarizeRequirementsCoverage } from './requirements-backlog.js';
 import { resolveGsdRootFile } from './paths.js';
 import { saveFile } from './files.js';
 import { GSDError, GSD_STALE_STATE, GSD_IO_ERROR } from './errors.js';
@@ -185,16 +186,16 @@ export function generateRequirementsMd(requirements: Requirement[]): string {
   lines.push('');
 
   // Coverage Summary
-  const activeCount = byStatus.get('active')?.length ?? 0;
+  const coverage = summarizeRequirementsCoverage(requirements);
   const validatedReqs = byStatus.get('validated') ?? [];
   const validatedIds = validatedReqs.map(r => r.id).join(', ');
 
   lines.push('## Coverage Summary');
   lines.push('');
-  lines.push(`- Active requirements: ${activeCount}`);
-  lines.push(`- Mapped to slices: ${activeCount}`);
+  lines.push(`- Active requirements: ${coverage.active}`);
+  lines.push(`- Mapped to slices: ${coverage.mappedToSlice}`);
   lines.push(`- Validated: ${validatedReqs.length}${validatedIds ? ` (${validatedIds})` : ''}`);
-  lines.push(`- Unmapped active requirements: 0`);
+  lines.push(`- Unmapped active requirements: ${coverage.unmappedActive}`);
 
   return lines.join('\n') + '\n';
 }

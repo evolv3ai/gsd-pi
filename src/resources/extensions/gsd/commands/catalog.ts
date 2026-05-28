@@ -14,7 +14,7 @@ export interface GsdCommandDefinition {
 type CompletionMap = Record<string, readonly GsdCommandDefinition[]>;
 
 export const GSD_COMMAND_DESCRIPTION =
-  "GSD — Git Ship Done: /gsd help|start|templates|next|auto|stop|pause|status|widget|visualize|brief|report|queue|quick|discuss|capture|triage|dispatch|verdict|history|undo|undo-task|reset-slice|rate|skip|export|cleanup|closeout|model|mode|prefs|config|keys|hooks|run-hook|skill-health|doctor|debug|logs|forensics|changelog|migrate|remote|steer|knowledge|new-milestone|new-project|parallel|cmux|park|unpark|init|setup|onboarding|inspect|extensions|update|upgrade|fast|mcp|rethink|workflow|codebase|notifications|ship|do|session-report|backlog|pr-branch|add-tests|scan|language|worktree|eval-review";
+  "GSD — Git Ship Done: /gsd help|start|templates|next|auto|stop|pause|status|widget|visualize|brief|report|queue|quick|discuss|capture|triage|dispatch|verdict|history|undo|undo-task|reset-slice|rate|skip|export|cleanup|closeout|model|mode|prefs|config|keys|hooks|run-hook|skill-health|doctor|debug|logs|forensics|changelog|migrate|remote|steer|knowledge|memory|new-milestone|new-project|parallel|cmux|park|unpark|init|setup|onboarding|inspect|extensions|update|upgrade|fast|mcp|rethink|workflow|codebase|notifications|ship|do|session-report|backlog|pr-branch|add-tests|scan|language|worktree|eval-review";
 
 export const TOP_LEVEL_SUBCOMMANDS: readonly GsdCommandDefinition[] = [
   { cmd: "help", desc: "Categorized command reference with descriptions" },
@@ -65,6 +65,7 @@ export const TOP_LEVEL_SUBCOMMANDS: readonly GsdCommandDefinition[] = [
   { cmd: "steer", desc: "Hard-steer plan documents during execution" },
   { cmd: "inspect", desc: "Show SQLite DB diagnostics" },
   { cmd: "knowledge", desc: "Add persistent project knowledge (rule, pattern, or lesson)" },
+  { cmd: "memory", desc: "Query/forget project memories" },
   { cmd: "new-milestone", desc: "Create a milestone from a specification document (headless)" },
   { cmd: "new-project", desc: "Bootstrap a new project (use --deep for staged project-level discovery)" },
   { cmd: "parallel", desc: "Parallel milestone orchestration (start, status, stop, merge, watch)" },

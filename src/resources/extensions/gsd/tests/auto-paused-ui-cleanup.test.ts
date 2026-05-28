@@ -326,10 +326,62 @@ test("cleanupAfterLoopExit preserves step-mode surface and worktree session afte
       false,
       "step-mode cleanup must not replace the progress surface with idle health",
     );
-    assert.deepEqual(newSessionWorkspaces, [], "step-mode cleanup must not re-root the visible command session");
+    assert.deepEqual(newSessionWorkspaces, [], "step-mode cleanup must not re-root when context is below threshold");
     assert.equal(restoreCalls, 0, "step-mode cleanup must not restore out of the active worktree");
     assert.equal(autoSession.active, false);
     assert.equal(autoSession.preserveStepSurfaceAfterLoopExit, false);
+    assert.equal(autoSession.basePath, worktree);
+    assert.equal(realpathSync(process.cwd()), realpathSync(worktree));
+  } finally {
+    autoSession.reset();
+    process.chdir(previousCwd);
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("cleanupAfterLoopExit re-roots step-mode session when context exceeds compaction threshold", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-step-reroot-"));
+  const worktree = join(base, ".gsd", "worktrees", "M001");
+  const previousCwd = process.cwd();
+  const newSessionWorkspaces: string[] = [];
+  const notifyMessages: string[] = [];
+
+  t.mock.method(WorktreeLifecycle.prototype, "restoreToProjectRoot", function () {});
+
+  mkdirSync(worktree, { recursive: true });
+  process.chdir(worktree);
+  autoSession.reset();
+  autoSession.active = true;
+  autoSession.paused = false;
+  autoSession.stepMode = true;
+  autoSession.preserveStepSurfaceAfterLoopExit = true;
+  autoSession.basePath = worktree;
+  autoSession.originalBasePath = base;
+  autoSession.cmdCtx = {
+    getContextUsage: () => ({ percent: 72, tokens: 720_000, contextWindow: 1_000_000 }),
+    newSession: async ({ workspaceRoot }: { workspaceRoot: string }) => {
+      newSessionWorkspaces.push(workspaceRoot);
+      return { cancelled: false };
+    },
+  } as any;
+
+  try {
+    await cleanupAfterLoopExit({
+      hasUI: true,
+      ui: {
+        setStatus: () => {},
+        setWidget: () => {},
+        setHeader: () => {},
+        notify: (_msg: string) => notifyMessages.push(_msg),
+      },
+    } as any);
+
+    assert.deepEqual(newSessionWorkspaces, [worktree], "hot step-mode cleanup should re-root in the active worktree");
+    assert.equal(
+      notifyMessages.some((msg) => msg.includes("Fresh session ready for /gsd next")),
+      true,
+      "step-mode reroot should notify the user",
+    );
     assert.equal(autoSession.basePath, worktree);
     assert.equal(realpathSync(process.cwd()), realpathSync(worktree));
   } finally {

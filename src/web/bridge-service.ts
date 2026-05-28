@@ -1549,9 +1549,22 @@ export class BridgeService {
     }
     this.pendingRequests.clear();
     if (this.process) {
+      const proc = this.process;
       this.process.removeAllListeners();
-      this.process.kill("SIGTERM");
       this.process = null;
+      proc.kill("SIGTERM");
+      await new Promise<void>((resolve) => {
+        const forceKill = setTimeout(() => {
+          if (proc.exitCode === null && proc.signalCode === null) {
+            proc.kill("SIGKILL");
+          }
+          resolve();
+        }, 2_000);
+        proc.once("exit", () => {
+          clearTimeout(forceKill);
+          resolve();
+        });
+      });
     }
     this.snapshot.phase = "idle";
     this.snapshot.connectionCount = 0;
@@ -2159,15 +2172,18 @@ export async function collectSelectiveLiveStatePayload(
   const env = deps.env ?? process.env;
   const config = resolveBridgeRuntimeConfig(env, projectCwd);
   const bridge = projectCwd ? getProjectBridgeServiceForCwd(projectCwd) : getProjectBridgeService();
+  const uniqueDomains = [...new Set(domains)];
+  const needsBridgeRpc = uniqueDomains.some((domain) => domain !== "resumable_sessions");
 
-  try {
-    await bridge.ensureStarted();
-  } catch {
-    // Selective live state still returns the latest bridge failure snapshot for inspection.
+  if (needsBridgeRpc) {
+    try {
+      await bridge.ensureStarted();
+    } catch {
+      // Selective live state still returns the latest bridge failure snapshot for inspection.
+    }
   }
 
   const bridgeSnapshot = bridge.getSnapshot();
-  const uniqueDomains = [...new Set(domains)];
   const payload: BridgeSelectiveLiveStatePayload = {
     bridge: bridgeSnapshot,
   };

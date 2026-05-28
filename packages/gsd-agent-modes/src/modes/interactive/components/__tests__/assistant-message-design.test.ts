@@ -9,7 +9,7 @@ import type { AssistantMessage } from "@gsd/pi-ai";
 import { initTheme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { AssistantMessageComponent } from "../assistant-message.js";
 import { formatTimestamp } from "../timestamp.js";
-import { renderAssistantRail } from "../transcript-design.js";
+import { renderAssistantRail, renderUserRail } from "../transcript-design.js";
 
 initTheme("dark", false);
 
@@ -64,10 +64,59 @@ describe("AssistantMessageComponent open surface", () => {
 		} as unknown as AssistantMessage;
 
 		const component = new AssistantMessageComponent(message, true, undefined, "date-time-iso", undefined, true);
-		const joined = component.render(80).map((line) => stripAnsi(line)).join("\n");
+		const plain = component.render(80).map((line) => stripAnsi(line));
+		const joined = plain.join("\n");
 
 		assert.match(joined, /╰──────╮/);
 		assert.match(joined, /╭─ GSD/);
+		const bridge = plain.find((line) => line.includes("╰──────╮"));
+		assert.ok(bridge?.startsWith("    ╰──────╮"), `bridge should align with the user rail indent:\n${joined}`);
+	});
+
+	test("connects an indented user card to a left-pegged assistant card", () => {
+		const user = renderUserRail(["hi"], 80, { label: "You", continuesToAssistant: true }).map((line) =>
+			stripAnsi(line),
+		);
+		const assistant = renderAssistantRail(["Hey there"], 80, { label: "GSD", connected: true }).map((line) =>
+			stripAnsi(line),
+		);
+		const joined = [...user, ...assistant].join("\n");
+		const bridge = assistant.find((line) => line.includes("╰──────╮"));
+
+		assert.doesNotMatch(user.join("\n"), /╰─{4,}/, `user card should stay open for the bridge:\n${joined}`);
+		assert.ok(bridge?.startsWith("    ╰──────╮"), `bridge should drop from the user rail:\n${joined}`);
+		assert.equal(assistant[0], bridge, `connected assistant should start on the bridge with no spacer:\n${joined}`);
+		assert.ok(assistant.some((line) => line.startsWith("╭─ GSD")), `assistant should stay left-pegged:\n${joined}`);
+	});
+
+	test("connects a left-pegged assistant card down into the next user turn", () => {
+		const assistant = renderAssistantRail(["Hey there"], 80, { label: "GSD", continuesToUser: true }).map((line) =>
+			stripAnsi(line),
+		);
+		const user = renderUserRail(["follow up"], 80, { label: "You" }).map((line) => stripAnsi(line));
+		const joined = [...assistant, ...user].join("\n");
+		const bridge = assistant[assistant.length - 1];
+
+		assert.doesNotMatch(assistant.slice(0, -1).join("\n"), /╰─{4,}/, `assistant card should stay open:\n${joined}`);
+		assert.match(bridge ?? "", /╰──────╮/, `assistant should end on a bridge:\n${joined}`);
+		assert.ok(bridge?.startsWith("╰──────╮"), `bridge should start at the assistant rail:\n${joined}`);
+		assert.ok(user[0]?.startsWith("    ╭─ YOU"), `next user turn should attach flush:\n${joined}`);
+	});
+
+	test("renders a full connected chat turn cycle without spacer lines", () => {
+		const user1 = renderUserRail(["hi"], 80, { label: "You", continuesToAssistant: true }).map((line) =>
+			stripAnsi(line),
+		);
+		const assistant1 = renderAssistantRail(["Hello"], 80, { label: "GSD", connected: true, continuesToUser: true }).map(
+			(line) => stripAnsi(line),
+		);
+		const user2 = renderUserRail(["follow up"], 80, { label: "You", continuesToAssistant: true }).map((line) =>
+			stripAnsi(line),
+		);
+		const assistant2 = renderAssistantRail(["Sure"], 80, { label: "GSD", connected: true }).map((line) => stripAnsi(line));
+		const joined = [...user1, ...assistant1, ...user2, ...assistant2];
+
+		assert.equal(joined.filter((line) => line.trim() === "").length, 0, `connected turns should not insert blank lines:\n${joined.join("\n")}`);
 	});
 
 	test("can render a connector only when explicitly requested", () => {

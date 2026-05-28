@@ -13,6 +13,7 @@ import {
   loadDebugSession,
   updateDebugSession,
 } from "../debug-session-store.ts";
+import { cleanup, makeTempRepo } from "./test-utils.ts";
 
 interface DispatchCall {
   payload: any;
@@ -32,6 +33,7 @@ function createMockPiWithDispatch() {
 }
 
 interface MockCtx {
+  hasUI: boolean;
   notifications: Array<{ message: string; level: string }>;
   ui: {
     notify: (message: string, level: string) => void;
@@ -41,7 +43,7 @@ interface MockCtx {
 }
 
 function makeBase(): string {
-  const base = mkdtempSync(join(tmpdir(), "gsd-debug-lifecycle-int-"));
+  const base = makeTempRepo("gsd-debug-lifecycle-int-");
   mkdirSync(join(base, ".gsd"), { recursive: true });
   return base;
 }
@@ -49,6 +51,7 @@ function makeBase(): string {
 function createMockCtx(): MockCtx {
   const notifications: Array<{ message: string; level: string }> = [];
   return {
+    hasUI: true,
     notifications,
     ui: {
       notify(message: string, level: string) {

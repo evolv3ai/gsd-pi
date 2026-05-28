@@ -112,10 +112,10 @@ export async function checkMarkdownHierarchyAgainstDb(
     markdown,
     beforeDb,
     afterDb: beforeDb,
-    recoveryCommand: "gsd recover",
+    recoveryCommand: "/gsd recover",
     message:
       `Markdown planning artifacts (${markdown.milestones}M/${markdown.slices}S/${markdown.tasks}T) ` +
       `do not match the authoritative DB (${beforeDb.milestones}M/${beforeDb.slices}S/${beforeDb.tasks}T). ` +
-      "Runtime startup will not import markdown automatically; run explicit GSD recovery if markdown should repopulate the database.",
+      "Runtime startup will not import markdown automatically; run `/gsd recover` if markdown should repopulate the database.",
   };
 }

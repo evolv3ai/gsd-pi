@@ -225,6 +225,19 @@ describe("ToolExecutionComponent", () => {
 		assert.doesNotMatch(rendered, /hidden body output/);
 	});
 
+	test("shows all expanded read output lines", () => {
+		const output = Array.from({ length: 50 }, (_, index) => `line-${index + 1}`).join("\n");
+		const rendered = renderTool(
+			"read",
+			{ path: "big.txt" },
+			{ content: [{ type: "text", text: output }], isError: false },
+		);
+
+		assert.match(rendered, /line-1/);
+		assert.match(rendered, /line-50/);
+		assert.doesNotMatch(rendered, /more lines/);
+	});
+
 	test("renders compact edit rows with target metadata", () => {
 		const rendered = renderToolCollapsed(
 			"edit",
