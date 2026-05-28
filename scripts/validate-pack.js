@@ -285,6 +285,35 @@ try {
     process.exit(1);
   }
 
+  // --- Verify installer CLI surface ---
+  console.log('==> Verifying installer CLI...');
+  const installScriptPath = join(installedRoot, 'scripts', 'install.js');
+  const installDepsPath = join(installedRoot, 'scripts', 'install', 'deps.js');
+  if (!existsSync(installDepsPath)) {
+    console.log('ERROR: Modular installer deps missing after install.');
+    console.log(`    Expected: ${installDepsPath}`);
+    process.exit(1);
+  }
+  try {
+    const helpOutput = execFileSync(process.execPath, [installScriptPath, '--help'], {
+      cwd: installDir,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 15000,
+      maxBuffer: DEFAULT_MAX_BUFFER,
+    });
+    if (!helpOutput.includes('--yes')) {
+      console.log('ERROR: install.js --help missing --yes flag documentation.');
+      process.exit(1);
+    }
+    console.log('    install.js --help OK');
+  } catch (err) {
+    console.log('ERROR: install.js --help failed after install.');
+    if (err.stdout) console.log(err.stdout);
+    if (err.stderr) console.log(err.stderr);
+    process.exit(1);
+  }
+
   // --- Global install smoke (catches empty node_modules/undici placeholder on npm -g) ---
   console.log('==> Testing global install (undici resolution)...');
   const globalPrefix = mkdtempSync(join(tmpdir(), 'validate-pack-global-'));
@@ -299,7 +328,13 @@ try {
         npm_config_cache: npmCacheDir,
       },
     });
-    const globalRoot = join(globalPrefix, 'lib', 'node_modules', '@opengsd', 'gsd-pi');
+    const globalNodeModules = execFileSync(getNpmCommand(), ['root', '-g', '--prefix', globalPrefix], {
+      encoding: 'utf8',
+      shell: process.platform === 'win32',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      maxBuffer: DEFAULT_MAX_BUFFER,
+    }).trim();
+    const globalRoot = join(globalNodeModules, '@opengsd', 'gsd-pi');
     const globalUndiciPkg = join(globalRoot, 'node_modules', 'undici', 'package.json');
     if (!existsSync(globalUndiciPkg)) {
       console.log('ERROR: Global install left node_modules/undici unresolved.');
