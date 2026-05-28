@@ -22,8 +22,8 @@ function esc(value: string | number | null | undefined): string {
     .replace(/"/g, "&quot;");
 }
 
-function buildDonutSvg(systemTokens: number, conversationTokens: number, remaining: number): string {
-  const total = Math.max(systemTokens + conversationTokens + remaining, 1);
+function buildDonutSvg(systemTokens: number, conversationTokens: number, otherTokens: number, remaining: number): string {
+  const total = Math.max(systemTokens + conversationTokens + otherTokens + remaining, 1);
   const radius = 54;
   const stroke = 16;
   const center = 70;
@@ -32,6 +32,7 @@ function buildDonutSvg(systemTokens: number, conversationTokens: number, remaini
   const segments = [
     { value: systemTokens, color: "#5e6ad2", label: "System" },
     { value: conversationTokens, color: "#3ecf8e", label: "History" },
+    { value: otherTokens, color: "#f59e0b", label: "Other" },
     { value: remaining, color: "#2b2e38", label: "Free" },
   ].filter((segment) => segment.value > 0);
 
@@ -89,6 +90,7 @@ function renderSkillChips(names: string[], loaded: Set<string>, tone: "available
 export function buildContextChartHtml(report: ContextBreakdownReport): string {
   const totals = getContextChartTotals(report);
   const chartTotal = Math.max(totals.inContext, totals.estimated, 1);
+  const otherTokens = Math.max(0, totals.inContext - totals.estimated);
   const loaded = new Set(report.skills.loaded);
   const generated = new Date().toISOString();
 
@@ -140,13 +142,14 @@ body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 var(--font)}
 <body>
 <div class="wrap">
   <section class="hero">
-    <div>${buildDonutSvg(totals.systemTokens, totals.conversationTokens, totals.remaining)}</div>
+    <div>${buildDonutSvg(totals.systemTokens, totals.conversationTokens, otherTokens, totals.remaining)}</div>
     <div>
       <h1>Context Breakdown</h1>
       <div class="meta">${report.modelLabel ? esc(report.modelLabel) : "No model"} · Generated ${esc(generated)}</div>
       <div class="legend">
         <span><i class="dot" style="background:#5e6ad2"></i>System ${esc(formatTokenCount(totals.systemTokens))}</span>
         <span><i class="dot" style="background:#3ecf8e"></i>History ${esc(formatTokenCount(totals.conversationTokens))}</span>
+        ${otherTokens > 0 ? `<span><i class="dot" style="background:#f59e0b"></i>Other ${esc(formatTokenCount(otherTokens))}</span>` : ""}
         <span><i class="dot" style="background:#2b2e38;border:1px solid #3b3f4c"></i>Free ${esc(formatTokenCount(totals.remaining))}</span>
       </div>
       <div class="stat-grid">

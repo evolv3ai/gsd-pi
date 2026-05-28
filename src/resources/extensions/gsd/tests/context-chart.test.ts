@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 
 import type { SessionEntry } from "@gsd/pi-coding-agent";
 
+import type { ContextBreakdownReport } from "../commands-context.ts";
 import { buildContextChartHtml, writeContextChartHtml } from "../context-chart-html.ts";
 import { formatContextChartText, getContextChartTotals } from "../context-overlay.ts";
 import { buildContextBreakdown } from "../commands-context.ts";
@@ -69,6 +70,22 @@ test("buildContextChartHtml renders donut and bar chart markup", () => {
   assert.match(html, /Conversation history/);
   assert.match(html, /class="bar-row"/);
   assert.match(html, /chip-loaded/);
+});
+
+test("buildContextChartHtml accounts for model-reported overhead in donut", () => {
+  const report: ContextBreakdownReport = {
+    modelLabel: "model",
+    contextUsage: { tokens: 80, contextWindow: 200, percent: 40 },
+    systemSections: [{ label: "System", tokens: 50 }],
+    conversationSections: [{ label: "History", tokens: 10 }],
+    skills: { available: [], loaded: [], prefer: [], avoid: [] },
+    subagentSpawns: 0,
+  };
+
+  const html = buildContextChartHtml(report);
+
+  assert.match(html, /Other — 20/);
+  assert.match(html, /Free — 120/);
 });
 
 test("writeContextChartHtml saves under .gsd/reports", () => {
