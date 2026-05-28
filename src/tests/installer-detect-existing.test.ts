@@ -1,8 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtemp, writeFile, chmod, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { delimiter, join } from 'node:path'
 import {
   parseInstalledVersion,
   compareActions,
+  detectInstalledVersion,
 } from '../../scripts/install/detect-existing.js'
 
 test('parseInstalledVersion reads direct dependency entry', () => {
@@ -46,4 +50,30 @@ test('compareActions returns fresh when not installed', () => {
     compareActions({ installed: null, yesMode: false }),
     'fresh',
   )
+})
+
+test('detectInstalledVersion parses npm list wrapper output', async () => {
+  const binDir = await mkdtemp(join(tmpdir(), 'gsd-npm-'))
+  const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+  const npmPath = join(binDir, npmBin)
+  const npmListJson = '{"dependencies":{"@opengsd/gsd-pi":{"version":"2.14.0"}}}'
+  const script = process.platform === 'win32'
+    ? `@echo off\r\necho ${npmListJson}\r\n`
+    : `#!/usr/bin/env sh\nprintf '%s\\n' '${npmListJson}'\n`
+  const originalPath = process.env.PATH
+
+  try {
+    await writeFile(npmPath, script, { mode: 0o755 })
+    if (process.platform !== 'win32') await chmod(npmPath, 0o755)
+    process.env.PATH = [binDir, originalPath].filter(Boolean).join(delimiter)
+
+    assert.equal(await detectInstalledVersion(), '2.14.0')
+  } finally {
+    if (originalPath === undefined) {
+      delete process.env.PATH
+    } else {
+      process.env.PATH = originalPath
+    }
+    await rm(binDir, { recursive: true, force: true })
+  }
 })

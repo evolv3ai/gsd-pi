@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'child_process'
+import { execFileSync } from 'child_process'
 import { delimiter } from 'path'
 import { createRequire } from 'module'
 import { dirname, join } from 'path'
@@ -42,6 +42,10 @@ function runNpm(args) {
   }).trim()
 }
 
+export function execGitCommand(cmd, args) {
+  return execFileSync(cmd, args, { stdio: 'ignore' })
+}
+
 export function getGlobalBinDir() {
   const prefix = runNpm(['prefix', '-g'])
   return join(prefix, 'bin')
@@ -64,9 +68,7 @@ export function checkPrereqs({ isLocal, log }) {
   }
   log?.step?.('Node.js', `v${process.versions.node}`)
 
-  const gitOk = requireGit((cmd, args) => {
-    spawnSync(cmd, args, { stdio: 'ignore' })
-  })
+  const gitOk = requireGit(execGitCommand)
   if (!gitOk) {
     process.stderr.write(
       '\nError: GSD requires git but it was not found on PATH.\n\n' +

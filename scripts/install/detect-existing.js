@@ -42,7 +42,7 @@ export async function detectInstalledVersion() {
       shell: process.platform === 'win32',
     })
     const json = JSON.parse(raw)
-    return parseInstalledVersion(json.dependencies || json)
+    return parseInstalledVersion(json)
   } catch {
     return null
   }

@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { isPathConfigured } from '../../scripts/install/prereqs.js'
+import * as prereqs from '../../scripts/install/prereqs.js'
+
+const { isPathConfigured } = prereqs
 
 test('isPathConfigured matches exact bin directory on PATH', () => {
   assert.equal(
@@ -21,5 +23,13 @@ test('isPathConfigured is case-insensitive on Windows', { skip: process.platform
   assert.equal(
     isPathConfigured('C:\\Users\\me\\AppData\\Roaming\\npm', 'c:\\users\\me\\appdata\\roaming\\npm'),
     true,
+  )
+})
+
+test('git prerequisite executor throws when git command is unavailable', () => {
+  assert.equal(typeof prereqs.execGitCommand, 'function')
+  assert.throws(
+    () => prereqs.execGitCommand('__gsd_missing_git__', ['--version']),
+    /ENOENT|not found|spawn/,
   )
 })
