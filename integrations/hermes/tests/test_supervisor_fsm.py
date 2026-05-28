@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 from open_gsd_hermes.binding import SessionBindStore
 from open_gsd_hermes.commands import GsdCommandRouter
 from open_gsd_hermes.config import GsdConfig
+from open_gsd_hermes.gsd_client import McpProtocolError
 from open_gsd_hermes.notifications import NotificationService
 from open_gsd_hermes.supervisor import SupervisorContext, SupervisorFsm, SupervisorState
 from open_gsd_hermes.types import (
@@ -50,6 +51,28 @@ class MockSupervisor:
     def stop(self) -> None:
         self.stopped = True
         self.calls.append("stop")
+
+
+def build_router(tmp_path, client, supervisor=None, ctx=None):
+    project_dir = tmp_path / "project"
+    (project_dir / ".gsd").mkdir(parents=True, exist_ok=True)
+    if supervisor is None:
+        supervisor = MockSupervisor()
+    if ctx is None:
+        ctx = SupervisorContext()
+    stored: list[SupervisorContext] = []
+    router = GsdCommandRouter(
+        GsdConfig(default_project=str(project_dir)),
+        client,
+        SessionBindStore(),
+        supervisor,  # type: ignore[arg-type]
+        lambda: "session-key",
+        lambda: BindingContext(),
+        lambda: ctx,
+        stored.append,
+        lambda: (None, None),
+    )
+    return router, project_dir, supervisor, ctx, stored
 
 
 def test_supervisor_restart_keeps_abandoned_thread_stop_event_set() -> None:
@@ -138,6 +161,76 @@ def test_auto_resets_session_specific_supervisor_context(tmp_path) -> None:
     assert ctx.last_status is None
     assert ctx.pending_blocker_id is None
     assert not ctx.notified_terminal
+
+
+def test_status_returns_friendly_message_when_mcp_progress_fails(tmp_path) -> None:
+    client = MagicMock()
+    client.progress.side_effect = McpProtocolError("sidecar unavailable")
+    router, _project_dir, _supervisor, _ctx, _stored = build_router(tmp_path, client)
+
+    result = asyncio.run(router._cmd_status([]))
+
+    assert result == "GSD status unavailable: sidecar unavailable"
+
+
+def test_auto_returns_friendly_message_when_mcp_execute_fails(tmp_path) -> None:
+    supervisor = MockSupervisor()
+    client = MagicMock()
+    client.execute.side_effect = McpProtocolError("sidecar unavailable")
+    router, _project_dir, _supervisor, _ctx, _stored = build_router(
+        tmp_path, client, supervisor=supervisor
+    )
+
+    result = asyncio.run(router._cmd_auto([]))
+
+    assert result == "Could not start GSD auto mode: sidecar unavailable"
+    assert supervisor.calls == []
+
+
+def test_auto_rejects_missing_session_id_in_mcp_response(tmp_path) -> None:
+    supervisor = MockSupervisor()
+    client = MagicMock()
+    client.execute.return_value = {}
+    router, _project_dir, _supervisor, ctx, _stored = build_router(
+        tmp_path, client, supervisor=supervisor
+    )
+
+    result = asyncio.run(router._cmd_auto([]))
+
+    assert result == "Could not start GSD auto mode: missing session ID"
+    assert supervisor.calls == []
+    assert ctx.session_id is None
+    assert ctx.state == SupervisorState.IDLE
+
+
+def test_cancel_stops_supervisor_when_mcp_cancel_fails(tmp_path) -> None:
+    supervisor = MockSupervisor()
+    client = MagicMock()
+    client.cancel_by_project.side_effect = McpProtocolError("sidecar unavailable")
+    router, _project_dir, _supervisor, ctx, stored = build_router(
+        tmp_path, client, supervisor=supervisor
+    )
+
+    result = asyncio.run(router._cmd_cancel([]))
+
+    assert result == "Cancel request failed: sidecar unavailable"
+    assert supervisor.calls == ["stop"]
+    assert ctx.state == SupervisorState.CANCELLED
+    assert stored == [ctx]
+
+
+def test_reply_returns_friendly_message_when_mcp_resolve_fails(tmp_path) -> None:
+    client = MagicMock()
+    client.resolve_blocker.side_effect = McpProtocolError("sidecar unavailable")
+    ctx = SupervisorContext(session_id="s1", project_dir="/tmp/project")
+    router, _project_dir, _supervisor, _ctx, _stored = build_router(
+        tmp_path, client, ctx=ctx
+    )
+
+    result = asyncio.run(router._cmd_reply(["hello"]))
+
+    assert result == "Could not send blocker response: sidecar unavailable"
+    client.invalidate_cache.assert_not_called()
 
 
 def test_supervisor_detects_blocker() -> None:

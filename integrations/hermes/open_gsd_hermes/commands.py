@@ -105,6 +105,8 @@ class GsdCommandRouter:
             return format_snapshot(progress)
         except BindingError as e:
             return str(e)
+        except Exception as e:
+            return f"GSD status unavailable: {e}"
 
     async def _cmd_auto(self, _rest: list[str]) -> str:
         try:
@@ -113,8 +115,13 @@ class GsdCommandRouter:
             )
         except BindingError as e:
             return str(e)
-        result = self._client.execute(project_dir)
+        try:
+            result = self._client.execute(project_dir)
+        except Exception as e:
+            return f"Could not start GSD auto mode: {e}"
         session_id = result.get("sessionId") or result.get("session_id")
+        if not session_id:
+            return "Could not start GSD auto mode: missing session ID"
         self._supervisor.stop()
         ctx = self._get_supervisor_ctx()
         ctx.session_id = session_id
@@ -136,14 +143,20 @@ class GsdCommandRouter:
             )
         except BindingError as e:
             return str(e)
-        if ctx.session_id:
-            self._client.cancel(session_id=ctx.session_id, project_dir=project_dir)
+        try:
+            if ctx.session_id:
+                self._client.cancel(session_id=ctx.session_id, project_dir=project_dir)
+            else:
+                self._client.cancel_by_project(project_dir)
+        except Exception as e:
+            result = f"Cancel request failed: {e}"
         else:
-            self._client.cancel_by_project(project_dir)
-        self._supervisor.stop()
-        ctx.state = SupervisorState.CANCELLED
-        self._set_supervisor_ctx(ctx)
-        return "Cancel requested."
+            result = "Cancel requested."
+        finally:
+            self._supervisor.stop()
+            ctx.state = SupervisorState.CANCELLED
+            self._set_supervisor_ctx(ctx)
+        return result
 
     async def _cmd_reply(self, rest: list[str]) -> str:
         if not rest:
@@ -152,6 +165,9 @@ class GsdCommandRouter:
         ctx = self._get_supervisor_ctx()
         if not ctx.session_id:
             return "No active GSD session. Run `/gsd auto` first."
-        self._client.resolve_blocker(ctx.session_id, text)
-        self._client.invalidate_cache(ctx.project_dir)
+        try:
+            self._client.resolve_blocker(ctx.session_id, text)
+            self._client.invalidate_cache(ctx.project_dir)
+        except Exception as e:
+            return f"Could not send blocker response: {e}"
         return "Blocker response sent."
