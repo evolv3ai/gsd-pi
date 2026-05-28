@@ -60,6 +60,11 @@ test("npm publish supports token auth fallback for prerelease", () => {
   );
 });
 
+test("publish jobs use GitHub-hosted runners for npm provenance", () => {
+  assert.equal(workflow.jobs["prerelease-publish"]["runs-on"], "ubuntu-latest");
+  assert.equal(workflow.jobs["prod-release"]["runs-on"], "ubuntu-latest");
+});
+
 test("main package publish verifies native engine packages first", () => {
   const prereleaseSteps = workflow.jobs["prerelease-publish"].steps;
   const prereleaseVerify = prereleaseSteps.find(
