@@ -78,7 +78,7 @@ def register(ctx: PluginContext) -> None:
 
     ctx.register_hook(
         "pre_llm_call",
-        make_pre_llm_call_handler(config, client, get_binding_ctx),
+        make_pre_llm_call_handler(config, client, router._binding_ctx),
     )
     ctx.register_command("gsd", router.handle)
 

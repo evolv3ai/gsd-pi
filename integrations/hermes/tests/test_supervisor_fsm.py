@@ -235,7 +235,7 @@ def test_supervisor_terminal_status_takes_precedence_over_pending_blocker() -> N
     )
     client = MockClient()
     client._status = SessionStatus(
-        status="completed",
+        status="Completed",
         pending_blocker={"id": "b1", "question": "Approve deploy?"},
     )
     stored: list[SupervisorContext] = []

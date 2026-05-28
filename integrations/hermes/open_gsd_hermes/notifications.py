@@ -59,9 +59,10 @@ class NotificationService:
         self.send(f"📋 GSD: {message}", kind="transition")
 
     def notify_terminal(self, status: str, error: str | None = None) -> None:
-        if status in ("complete", "completed", "done"):
+        normalized_status = status.lower()
+        if normalized_status in ("complete", "completed", "done"):
             self.send("✅ GSD auto mode finished.", kind="complete")
-        elif status == "cancelled":
+        elif normalized_status == "cancelled":
             self.send("⏹ GSD session cancelled.", kind="complete")
         else:
             msg = f"❌ GSD session {status}"
