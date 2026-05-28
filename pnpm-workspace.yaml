@@ -7,6 +7,10 @@ autoInstallPeers: true
 strictPeerDependencies: false
 engineStrict: true
 
+# npm registry rejects tarballs containing hard-linked files (E415). pnpm hard-links
+# by default; copy mode breaks those links so bundledDependencies pack cleanly.
+packageImportMethod: copy
+
 # Keep dist-test and compiled workspace imports resolvable from the repo root.
 publicHoistPattern:
   - '*'
