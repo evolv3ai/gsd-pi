@@ -103,7 +103,9 @@ test("isUnmergedMilestoneAllowedCommand permits inspection and explicit recovery
   assert.equal(isUnmergedMilestoneAllowedCommand(""), false);
   assert.equal(isUnmergedMilestoneAllowedCommand("auto"), false);
   assert.equal(isUnmergedMilestoneAllowedCommand("next"), false);
+  assert.equal(isUnmergedMilestoneAllowedCommand("parallel start"), false);
   assert.equal(isUnmergedMilestoneAllowedCommand("start"), false);
+  assert.equal(isUnmergedMilestoneAllowedCommand("workflow run release"), false);
   assert.equal(isUnmergedMilestoneAllowedCommand("do mark all complete"), false);
   assert.equal(isUnmergedMilestoneAllowedCommand("status"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("forensics"), true);
