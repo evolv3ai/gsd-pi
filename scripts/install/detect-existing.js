@@ -1,6 +1,14 @@
 /**
  * Parse @opengsd/gsd-pi version from `npm list -g --json` output.
  */
+
+import { createRequire } from 'module'
+import { dirname, join } from 'path'
+import { fileURLToPath } from 'url'
+
+const require = createRequire(import.meta.url)
+const { GSD_PI_BRAND } = require(join(dirname(fileURLToPath(import.meta.url)), '..', 'lib', 'logo.cjs'))
+
 export function parseInstalledVersion(npmListJson) {
   if (!npmListJson || typeof npmListJson !== 'object') return null
 
@@ -50,7 +58,7 @@ export async function detectInstalledVersion() {
 
 export async function promptExistingAction({ installedVersion, targetVersion, clack: p }) {
   const choice = await p.select({
-    message: `GSD-PI v${targetVersion} installer — you have v${installedVersion} installed`,
+    message: `${GSD_PI_BRAND} v${targetVersion} installer — you have v${installedVersion} installed`,
     options: [
       { value: 'upgrade', label: `Upgrade to v${targetVersion}` },
       { value: 'reconfigure', label: 'Reconfigure provider settings' },

@@ -14,7 +14,7 @@ import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { AuthStorage } from '@gsd/pi-coding-agent'
-import { renderGsdPiLogo, GSD_WEBSITE } from './logo.js'
+import { renderGsdPiLogo, GSD_PI_BRAND, GSD_WEBSITE } from './logo.js'
 import { agentDir } from './app-paths.js'
 import { isClaudeCliReady } from './claude-cli-check.js'
 import {
@@ -300,7 +300,7 @@ export async function runOnboarding(
   // ── Intro ─────────────────────────────────────────────────────────────────
   if (opts.showIntro !== false) {
     process.stderr.write(renderGsdPiLogo(pc.cyan))
-    process.stderr.write(`  ${pc.dim}${GSD_WEBSITE}${pc.reset}\n\n`)
+    process.stderr.write(`  ${pc.bold}${GSD_PI_BRAND}${pc.reset}  ${pc.dim}${GSD_WEBSITE}${pc.reset}\n\n`)
     p.intro(pc.bold('Welcome to GSD — let\'s get you set up'))
   }
 

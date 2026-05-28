@@ -75,7 +75,7 @@ import { resolveBundledResourcesDirFromPackageRoot } from './bundled-resource-pa
 import { discoverExtensionEntryPaths } from './extension-discovery.js'
 import { loadRegistry, readManifestFromEntryPath, isExtensionEnabled } from './extension-registry.js'
 import { applyLoaderCliEntrypointEnv } from './loader-entrypoint.js'
-import { renderGsdPiLogo, GSD_WEBSITE } from './logo.js'
+import { renderGsdPiLogo, GSD_PI_BRAND, GSD_WEBSITE } from './logo.js'
 
 // pkg/ is a shim directory: contains gsd's piConfig (package.json) and pi's
 // theme assets (dist/modes/interactive/theme/) without a src/ directory.
@@ -96,12 +96,13 @@ if (!existsSync(appRoot)) {
   const cyan  = '\x1b[36m'
   const green = '\x1b[32m'
   const dim   = '\x1b[2m'
+  const bold  = '\x1b[1m'
   const reset = '\x1b[0m'
   const colorCyan = (s: string) => `${cyan}${s}${reset}`
   process.stderr.write(
     renderGsdPiLogo(colorCyan) +
     '\n' +
-    `  Git Ship Done ${dim}v${gsdVersion}${reset}\n` +
+    `  ${bold}${GSD_PI_BRAND}${reset} ${dim}Git Ship Done · v${gsdVersion}${reset}\n` +
     `  ${dim}${GSD_WEBSITE}${reset}\n` +
     `  ${green}Welcome.${reset} Setting up your environment...\n\n`
   )

@@ -15,13 +15,18 @@ function capture(opts: Parameters<typeof printWelcomeScreen>[0]): string {
   const original = process.stderr.write.bind(process.stderr)
   ;(process.stderr as any).write = (chunk: string) => { chunks.push(chunk); return true }
   const origIsTTY = (process.stderr as any).isTTY
+  const origColumns = (process.stderr as any).columns
   ;(process.stderr as any).isTTY = true
+  if (opts.width == null && origColumns == null) {
+    ;(process.stderr as any).columns = 120
+  }
 
   try {
     printWelcomeScreen(opts)
   } finally {
     ;(process.stderr as any).write = original
     ;(process.stderr as any).isTTY = origIsTTY
+    ;(process.stderr as any).columns = origColumns
   }
 
   return chunks.join('')
@@ -32,11 +37,12 @@ function strip(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, '')
 }
 
-test('renders OGSD block logo', () => {
+test('renders GSD-Pi block logo', () => {
   const out = strip(capture({ version: '1.0.0' }))
-  assert.ok(out.includes('██████╗  ██████╗ ███████╗██████╗'), 'logo top row missing')
-  assert.ok(out.includes('██║   ██║██║  ███╗███████╗██║  ██║'), 'logo middle row missing')
-  assert.ok(out.includes('╚██████╔╝╚██████╔╝███████║██████╔╝'), 'logo bottom row missing')
+  assert.ok(out.includes('██████╗ ███████╗██████╗  ─  ██████╗ ██╗'), 'logo top row missing')
+  assert.ok(out.includes('██║  ███╗███████╗██║  ██║    ██████╔╝██║'), 'logo middle row missing')
+  assert.ok(out.includes('╚██████╔╝███████║██████╔╝    ██║     ██║'), 'logo bottom row missing')
+  assert.ok(out.includes('GSD-Pi'), 'GSD-Pi brand label missing')
 })
 
 test('renders version', () => {
@@ -157,16 +163,16 @@ test('Project row does not truncate short milestone text', (t) => {
   assert.ok(!projectLine!.includes('…'), 'short title should not be truncated')
 })
 
-test('command-center renders one OGSD block logo with a full-width closing rule', (t) => {
+test('command-center renders one GSD-Pi block logo with a full-width closing rule', (t) => {
   const origColumns = process.stderr.columns
   ;(process.stderr as any).columns = 250
   t.after(() => { ;(process.stderr as any).columns = origColumns })
 
   const out = strip(capture({ version: '1.0.0' }))
   const lines = out.split('\n')
-  assert.equal(lines.filter(l => l.includes('██████╗  ██████╗ ███████╗██████╗')).length, 1, 'expected one OGSD logo top row')
-  assert.equal(lines.filter(l => l.includes('██║   ██║██║  ███╗███████╗██║  ██║')).length, 1, 'expected one OGSD logo middle row')
-  assert.equal(lines.filter(l => l.includes('╚██████╔╝╚██████╔╝███████║██████╔╝')).length, 1, 'expected one OGSD logo bottom row')
+  assert.equal(lines.filter(l => l.includes('██████╗ ███████╗██████╗  ─  ██████╗ ██╗')).length, 1, 'expected one GSD-Pi logo top row')
+  assert.equal(lines.filter(l => l.includes('██║  ███╗███████╗██║  ██║    ██████╔╝██║')).length, 1, 'expected one GSD-Pi logo middle row')
+  assert.equal(lines.filter(l => l.includes('╚██████╔╝███████║██████╔╝    ██║     ██║')).length, 1, 'expected one GSD-Pi logo bottom row')
   // Exactly one closing rule, spanning the terminal width (columns - 1 = 249).
   const ruleLines = lines.filter(l => /^─+$/.test(l.trim()))
   assert.equal(ruleLines.length, 1, 'expected exactly one closing rule line')

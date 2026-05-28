@@ -1,23 +1,14 @@
 /**
- * Shared GSD-Pi block-letter ASCII logo.
- *
- * Single source of truth — imported by:
- *   - scripts/install (via dist/logo.js / scripts/lib/logo.cjs)
- *   - src/loader.ts, src/onboarding.ts
+ * Shared GSD-Pi branding — re-exports wordmark from resources/shared and
+ * adds render helpers for loader, onboarding, and installer surfaces.
  */
+
+import { GSD_PI_BRAND, GSD_PI_LOGO } from './resources/shared/gsd-pi-logo.js'
+
+export { GSD_PI_BRAND, GSD_PI_LOGO }
 
 /** Project website — shown in installer, loader, and onboarding surfaces. */
 export const GSD_WEBSITE = 'https://opengsd.net'
-
-/** Raw GSD-Pi wordmark lines — no ANSI codes, no leading newline. */
-export const GSD_PI_LOGO: readonly string[] = [
-  '  ██████╗ ███████╗██████╗   ██████╗ ██╗',
-  ' ██╔════╝ ██╔════╝██╔══██╗  ██╔══██╗██║',
-  ' ██║  ███╗███████╗██║  ██║  ██████╔╝██║',
-  ' ██║   ██║╚════██║██║  ██║  ██╔═══╝ ██║',
-  ' ╚██████╔╝███████║██████╔╝  ██║     ██║',
-  '  ╚═════╝ ╚══════╝╚═════╝   ╚═╝     ╚═╝',
-]
 
 /** @deprecated Use GSD_PI_LOGO */
 export const GSD_LOGO: readonly string[] = GSD_PI_LOGO
