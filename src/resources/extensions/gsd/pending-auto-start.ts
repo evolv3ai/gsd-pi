@@ -15,6 +15,7 @@ export interface PendingAutoStartEntry {
   readyRejectCount?: number;
   scope: MilestoneScope;
   planBlockedRecoveryCount: number;
+  r3bRecoveryCount: number;
 }
 
 export interface PendingAutoStartInput {
@@ -51,6 +52,7 @@ export function setPendingAutoStart(basePath: string, entry: PendingAutoStartInp
   pendingAutoStartMap.set(basePath, {
     createdAt: Date.now(),
     planBlockedRecoveryCount: 0,
+    r3bRecoveryCount: 0,
     ...entry,
     scope,
     ctx: entry.ctx,
