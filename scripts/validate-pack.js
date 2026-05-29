@@ -105,22 +105,45 @@ try {
   npmCacheDir = mkdtempSync(join(tmpdir(), 'validate-pack-npm-cache-'));
   mkdirSync(npmCacheDir, { recursive: true });
 
-  // --- Guard: linkable workspace external dependencies must be declared on the root ---
-  // @gsd/* (and @opengsd/*) workspace packages are NOT published to the public
-  // registry. They ship inside this tarball under packages/*/dist and are symlinked
-  // into node_modules at postinstall (link-workspace-packages.cjs) — they are no
-  // longer bundled, and they are no longer listed in the root's dependencies
-  // (prepack-resolve-workspace.cjs strips them). Their EXTERNAL (registry) deps must
-  // therefore be declared on the root package so `npm install` and the installer's
-  // `npm install --ignore-scripts` repair materialize them; the linked workspace packages
-  // then resolve those externals by walking up to the root node_modules.
-  console.log('==> Checking linkable workspace external dependency coverage on root...');
   const rootPkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
-  const rootExternalDeps = new Set(Object.keys(rootPkg.dependencies || {}));
 
   function isInternalWorkspaceDep(dep) {
     return dep.startsWith('@gsd/') || dep.startsWith('@opengsd/') || dep.startsWith('@earendil-works/');
   }
+
+  // --- Guard: no `workspace:` protocol in the published dependency fields ---
+  // `npm publish` builds the registry manifest (packument) from package.json read
+  // BEFORE the `prepack` hook runs, so a `prepack`-time rewrite/strip lands in the
+  // TARBALL but NOT in the published metadata that consumers resolve against. Any
+  // `workspace:` range left in dependencies/optionalDependencies/peerDependencies
+  // therefore leaks to the registry and breaks `npm install` with EUNSUPPORTEDPROTOCOL.
+  // Internal @gsd/@opengsd packages must NOT appear in these fields at all — they ship
+  // under packages/*/dist and are symlinked at postinstall (link-workspace-packages.cjs).
+  console.log('==> Checking for workspace: protocol leaks in published dependency fields...');
+  const workspaceLeaks = [];
+  for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+    for (const [dep, range] of Object.entries(rootPkg[field] || {})) {
+      if (String(range).startsWith('workspace:')) workspaceLeaks.push(`${field}.${dep}=${range}`);
+    }
+  }
+  if (workspaceLeaks.length) {
+    console.log('ERROR: root package.json has workspace: ranges that will leak to the published registry manifest:');
+    for (const leak of workspaceLeaks) console.log(`    ${leak}`);
+    console.log('    Remove internal workspace packages from these fields (they ship via files + postinstall link).');
+    process.exit(1);
+  }
+  console.log('    No workspace: protocol leaks in published dependency fields.');
+
+  // --- Guard: linkable workspace external dependencies must be declared on the root ---
+  // @gsd/* (and @opengsd/*) workspace packages are NOT published to the public
+  // registry and are NOT root dependencies. They ship inside this tarball under
+  // packages/*/dist and are symlinked into node_modules at postinstall
+  // (link-workspace-packages.cjs). Their EXTERNAL (registry) deps must therefore be
+  // declared on the root package so `npm install` and the installer's
+  // `npm install --ignore-scripts` repair materialize them; the linked workspace
+  // packages then resolve those externals by walking up to the root node_modules.
+  console.log('==> Checking linkable workspace external dependency coverage on root...');
+  const rootExternalDeps = new Set(Object.keys(rootPkg.dependencies || {}));
 
   const missingExternal = new Map();
   for (const ws of getLinkablePackages()) {

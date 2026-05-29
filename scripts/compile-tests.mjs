@@ -9,7 +9,7 @@
  * Usage: node scripts/compile-tests.mjs
  */
 
-import { cp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync, symlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -216,6 +216,29 @@ export function isCompileCacheFresh(cache, fingerprint, distTestExists) {
   );
 }
 
+export async function ensureDistTestNodeModules(root = ROOT, distTestDir = DIST_TEST_DIR) {
+  const distNodeModules = join(distTestDir, 'node_modules');
+  let nodeModulesStat = null;
+  try {
+    nodeModulesStat = await lstat(distNodeModules);
+  } catch {
+    // Missing is fine; the symlink will be created below.
+  }
+
+  if (nodeModulesStat?.isSymbolicLink()) return false;
+
+  await mkdir(distTestDir, { recursive: true });
+  if (nodeModulesStat) {
+    await rm(distNodeModules, { recursive: true, force: true });
+  }
+  symlinkSync(
+    join(root, 'node_modules'),
+    distNodeModules,
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
+  return true;
+}
+
 async function collectInputEntries(root, files) {
   const unique = [...new Set(files.map(file => resolve(file)))].sort();
   const entries = [];
@@ -325,6 +348,7 @@ async function main() {
   const cache = await readCache();
   const distTestExists = existsSync(DIST_TEST_DIR);
   if (isCompileCacheFresh(cache, fingerprint, distTestExists)) {
+    await ensureDistTestNodeModules();
     const elapsedMs = Date.now() - start;
     logMetrics({
       cacheHit: true,
@@ -476,10 +500,7 @@ async function main() {
   // Ensure dist-test/node_modules exists so resource-loader.ts (which computes
   // packageRoot from import.meta.url) resolves gsdNodeModules to a real path.
   // Without this, initResources creates dangling symlinks in test environments.
-  const distNodeModules = join(DIST_TEST_DIR, 'node_modules');
-  if (!existsSync(distNodeModules)) {
-    symlinkSync(join(ROOT, 'node_modules'), distNodeModules);
-  }
+  await ensureDistTestNodeModules();
 
   const elapsedMs = Date.now() - start;
   await writeCache(fingerprint, {
