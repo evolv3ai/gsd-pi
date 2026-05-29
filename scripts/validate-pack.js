@@ -89,6 +89,18 @@ function seedGlobalDependencyFromLocal(globalRoot, globalNodeModules, localPacka
   return true;
 }
 
+function findPackedWorkspaceProtocolLeaks(packedPaths) {
+  const leaks = [];
+  for (const packedPath of packedPaths) {
+    if (!packedPath.endsWith('package.json')) continue;
+    const localPath = join(ROOT, packedPath);
+    if (!existsSync(localPath)) continue;
+    const content = readFileSync(localPath, 'utf8');
+    if (content.includes('workspace:')) leaks.push(packedPath);
+  }
+  return leaks;
+}
+
 try {
   npmCacheDir = mkdtempSync(join(tmpdir(), 'validate-pack-npm-cache-'));
   mkdirSync(npmCacheDir, { recursive: true });
@@ -185,6 +197,7 @@ try {
   const allPackedPaths = packEntry.files.map((entry) => entry.path);
   const pnpmStorePaths = allPackedPaths.filter((p) => p.startsWith('node_modules/.pnpm/'));
   const nestedNmPaths = allPackedPaths.filter((p) => /^packages\/[^/]+\/node_modules\//.test(p));
+  const workspaceProtocolLeaks = findPackedWorkspaceProtocolLeaks(allPackedPaths);
   const bloatErrors = [];
   if (entryCount > MAX_ENTRY_COUNT) {
     bloatErrors.push(`entry count ${entryCount} exceeds ${MAX_ENTRY_COUNT} (pnpm store or nested node_modules likely leaked)`);
@@ -198,8 +211,11 @@ try {
   if (nestedNmPaths.length > 0) {
     bloatErrors.push(`${nestedNmPaths.length} packages/*/node_modules/* entries packed (e.g. ${nestedNmPaths[0]}) — files[] is shipping workspace node_modules`);
   }
+  if (workspaceProtocolLeaks.length > 0) {
+    bloatErrors.push(`${workspaceProtocolLeaks.length} packed package.json file(s) still contain workspace: protocol ranges (e.g. ${workspaceProtocolLeaks[0]})`);
+  }
   if (bloatErrors.length) {
-    console.log('ERROR: Tarball bloat guard tripped:');
+    console.log('ERROR: Tarball guard tripped:');
     for (const e of bloatErrors) console.log(`    ${e}`);
     console.log('    See package.json "files" and workspace package outputs.');
     process.exit(1);
