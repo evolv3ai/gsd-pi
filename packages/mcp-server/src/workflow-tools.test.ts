@@ -918,6 +918,44 @@ describe("workflow MCP tools", () => {
     }
   });
 
+  it("gsd_task_complete accepts step-mode evidence when verification summary is omitted", async () => {
+    const base = makeTmpBase();
+    try {
+      mkdirSync(join(base, ".gsd", "milestones", "M001", "slices", "S01"), { recursive: true });
+      writeFileSync(
+        join(base, ".gsd", "milestones", "M001", "slices", "S01", "S01-PLAN.md"),
+        "# S01\n\n- [ ] **T01: Demo** `est:5m`\n",
+      );
+
+      const server = makeMockServer();
+      registerWorkflowTools(server as any);
+      const taskTool = server.tools.find((t) => t.name === "gsd_task_complete");
+      assert.ok(taskTool, "task tool should be registered");
+
+      const taskResult = await taskTool!.handler({
+        projectDir: base,
+        taskId: "T01",
+        sliceId: "S01",
+        milestoneId: "M001",
+        oneLiner: "Completed task",
+        narrative: "Did the work",
+        verificationEvidence: [
+          { command: "npm test", exitCode: 0, verdict: "pass", durationMs: 1234 },
+        ],
+      });
+
+      assert.match((taskResult as any).content[0].text as string, /Completed task T01/);
+      const db = _getAdapter();
+      assert.ok(db, "DB should be open after tool completion");
+      const row = db!.prepare(
+        "SELECT verification_result FROM tasks WHERE milestone_id = ? AND slice_id = ? AND id = ?",
+      ).get("M001", "S01", "T01") as Record<string, unknown> | undefined;
+      assert.match(String(row?.verification_result), /`npm test` exited 0 \(pass\)/);
+    } finally {
+      cleanup(base);
+    }
+  });
+
   it("#4477 gsd_task_complete forwards every schema field to the executor (regression for destructure-rebuild bug class)", async () => {
     // Locks in the class-fix from PR #4477 review: handleTaskComplete previously
     // destructured args into a hand-listed set of fields and rebuilt the call

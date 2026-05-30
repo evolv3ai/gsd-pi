@@ -212,7 +212,7 @@ type WorkflowToolExecutors = {
       milestoneId: string;
       oneLiner: string;
       narrative: string;
-      verification: string;
+      verification?: string;
       deviations?: string;
       knownIssues?: string;
       keyFiles?: string[];
@@ -1449,7 +1449,7 @@ const taskCompleteParams = {
   milestoneId: nonEmptyString("milestoneId").describe("Milestone ID (e.g. M001)"),
   oneLiner: z.string().describe("One-line summary of what was accomplished"),
   narrative: z.string().describe("Detailed narrative of what happened during the task"),
-  verification: z.string().describe("What was verified and how"),
+  verification: z.string().optional().describe("What was verified and how. If omitted, the executor derives this from verificationEvidence when possible."),
   deviations: z.string().optional().describe("Deviations from the task plan"),
   knownIssues: z.string().optional().describe("Known issues discovered but not fixed"),
   keyFiles: z.array(z.string()).optional().describe("List of key files created or modified"),

@@ -306,13 +306,47 @@ export interface TaskCompleteParams {
   milestoneId: string;
   oneLiner: string;
   narrative: string;
-  verification: string;
+  verification?: string;
   deviations?: string;
   knownIssues?: string;
   keyFiles?: string[];
   keyDecisions?: string[];
   blockerDiscovered?: boolean;
   verificationEvidence?: VerificationEvidenceInput[];
+}
+
+type NormalizedVerificationEvidence = {
+  command: string;
+  exitCode: number;
+  verdict: string;
+  durationMs: number;
+};
+
+function normalizeVerificationEvidence(
+  evidence: VerificationEvidenceInput[] | undefined,
+): NormalizedVerificationEvidence[] {
+  return (evidence ?? []).map((entry) =>
+    typeof entry === "string"
+      ? { command: entry, exitCode: -1, verdict: "unknown (coerced from string)", durationMs: 0 }
+      : entry,
+  );
+}
+
+function deriveVerificationSummary(
+  evidence: NormalizedVerificationEvidence[],
+): string | null {
+  if (evidence.length === 0) return null;
+
+  const rendered = evidence.slice(0, 3).map((entry) => {
+    const command = entry.command.trim() || "(unspecified command)";
+    const verdict = entry.verdict.trim() || "recorded";
+    return `\`${command}\` exited ${entry.exitCode} (${verdict})`;
+  });
+  const suffix = evidence.length > rendered.length
+    ? `; ${evidence.length - rendered.length} more check(s) recorded`
+    : "";
+
+  return `Verification evidence recorded: ${rendered.join("; ")}${suffix}.`;
 }
 
 export type CompleteMilestoneExecutorParams = Partial<CompleteMilestoneParams> & Record<string, unknown>;
@@ -350,9 +384,27 @@ export async function executeTaskComplete(
   }
   try {
     const coerced = { ...params };
-    coerced.verificationEvidence = (params.verificationEvidence ?? []).map((v) =>
-      typeof v === "string" ? { command: v, exitCode: -1, verdict: "unknown (coerced from string)", durationMs: 0 } : v,
-    );
+    const verificationEvidence = normalizeVerificationEvidence(params.verificationEvidence);
+    coerced.verificationEvidence = verificationEvidence;
+
+    const verification = typeof params.verification === "string" ? params.verification.trim() : "";
+    if (verification.length === 0) {
+      const derived = deriveVerificationSummary(verificationEvidence);
+      if (derived) {
+        coerced.verification = derived;
+      } else if (params.blockerDiscovered === true) {
+        coerced.verification = "Not run: blocker discovered before verification.";
+      } else {
+        return {
+          content: [{
+            type: "text",
+            text: "Error completing task: verification is required unless verificationEvidence is provided or blockerDiscovered is true.",
+          }],
+          details: { operation: "complete_task", error: "verification_required" },
+          isError: true,
+        };
+      }
+    }
 
     const result = await handleCompleteTask(coerced as any, basePath);
     if ("error" in result) {
