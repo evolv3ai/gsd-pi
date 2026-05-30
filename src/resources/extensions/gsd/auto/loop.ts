@@ -106,6 +106,7 @@ import {
 import { handleCustomEngineReconcile } from "./workflow-custom-engine-reconcile.js";
 import { handleCustomEngineReconcileOutcome } from "./workflow-custom-engine-reconcile-outcome.js";
 import { formatLeaseConflictNotice } from "./lease-conflict-notice.js";
+import { setAutoOutcomeWidget, unitVerb } from "../auto-dashboard.js";
 
 /**
  * Returns true if workerId is an active worker in this project whose OS
@@ -834,6 +835,27 @@ export async function autoLoop(
           },
         });
         if (reconcileFlow.action === "break") break;
+        if (s.stepMode) {
+          if (ctx.hasUI) {
+            ctx.ui.setWidget?.("gsd-progress", undefined);
+            setAutoOutcomeWidget(ctx, {
+              status: "step",
+              title: "Step complete",
+              detail: `Completed ${unitVerb(iterData.unitType)} ${iterData.unitId}.`,
+              unitLabel: `${unitVerb(iterData.unitType)} ${iterData.unitId}`,
+              nextAction: "Advance one step, or resume automatic mode.",
+              commands: ["/gsd next", "/gsd auto", "/gsd status for overview"],
+              startedAt: s.autoStartTime,
+            });
+          }
+          ctx.ui.setStatus("gsd-auto", "next");
+          ctx.ui.notify(
+            `Step complete: ${unitVerb(iterData.unitType)} ${iterData.unitId}. Run /gsd next for the next step, or /gsd auto to continue automatically.`,
+            "info",
+          );
+          s.preserveStepSurfaceAfterLoopExit = true;
+          break;
+        }
         continue;
       }
 
