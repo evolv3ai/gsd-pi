@@ -4,10 +4,11 @@
  * Shows current LLM context window usage and session token totals.
  */
 
-import type { ExtensionCommandContext, ContextUsage, SessionEntry } from "@gsd/pi-coding-agent";
+import type { ExtensionCommandContext, ContextUsage, SessionEntry, Theme } from "@gsd/pi-coding-agent";
 
 import { formatCost, formatPercent, formatTokenCount } from "./metrics.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
+import { renderDialogFrame, renderKeyHints } from "./tui/render-kit.js";
 
 export interface SessionTokenTotals {
   input: number;
@@ -160,6 +161,48 @@ export function formatUsageReport(options: {
   return lines.join("\n");
 }
 
+async function showUsageDialog(
+  ctx: ExtensionCommandContext,
+  reportText: string,
+): Promise<boolean | undefined> {
+  return ctx.ui.custom<boolean>((_tui, theme: Theme, _kb, done) => {
+    let cachedLines: string[] | undefined;
+    let cachedWidth: number | undefined;
+
+    function render(width: number): string[] {
+      if (cachedLines && cachedWidth === width) return cachedLines;
+
+      const contentWidth = Math.max(1, width - 4);
+      const body = reportText.split("\n");
+      if (body[0] === "Context Usage") body.shift();
+      while (body[0] === "") body.shift();
+
+      cachedLines = renderDialogFrame(theme, "Context Usage", body, width, {
+        footer: renderKeyHints(theme, ["any key close"], contentWidth),
+      });
+      cachedWidth = width;
+      return cachedLines;
+    }
+
+    return {
+      render,
+      invalidate: () => {
+        cachedLines = undefined;
+        cachedWidth = undefined;
+      },
+      handleInput: () => done(true),
+    };
+  }, {
+    overlay: true,
+    overlayOptions: {
+      width: "70%",
+      minWidth: 64,
+      maxHeight: "80%",
+      anchor: "center",
+    },
+  });
+}
+
 export async function handleUsage(args: string, ctx: ExtensionCommandContext): Promise<void> {
   const contextUsage = ctx.getContextUsage?.();
   const sessionTotals = scanSessionTokenTotals(ctx.sessionManager.getEntries());
@@ -187,8 +230,16 @@ export async function handleUsage(args: string, ctx: ExtensionCommandContext): P
     return;
   }
 
-  ctx.ui.notify(
-    formatUsageReport({ modelLabel, contextUsage, sessionTotals }),
-    "info",
-  );
+  const reportText = formatUsageReport({ modelLabel, contextUsage, sessionTotals });
+
+  if (ctx.hasUI) {
+    try {
+      const result = await showUsageDialog(ctx, reportText);
+      if (result !== undefined) return;
+    } catch {
+      // Fall back to text notify below when custom overlays are unavailable.
+    }
+  }
+
+  ctx.ui.notify(reportText, "info");
 }

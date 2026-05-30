@@ -3,10 +3,10 @@
  * Simple text input component for extensions.
  */
 
-import { Container, type Focusable, getEditorKeybindings, Input, Spacer, Text, type TUI } from "@gsd/pi-tui";
+import { type Focusable, getEditorKeybindings, Input, Spacer, Text, type TUI } from "@gsd/pi-tui";
 import { theme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { CountdownTimer } from "./countdown-timer.js";
-import { DynamicBorder } from "./dynamic-border.js";
+import { DialogContainer, splitDialogTitle } from "./dialog-container.js";
 import { keyHint } from "./keybinding-hints.js";
 
 export interface ExtensionInputOptions {
@@ -15,11 +15,10 @@ export interface ExtensionInputOptions {
 	secure?: boolean;
 }
 
-export class ExtensionInputComponent extends Container implements Focusable {
+export class ExtensionInputComponent extends DialogContainer implements Focusable {
 	private input: Input;
 	private onSubmitCallback: (value: string) => void;
 	private onCancelCallback: () => void;
-	private titleText: Text;
 	private baseTitle: string;
 	private countdown: CountdownTimer | undefined;
 
@@ -40,24 +39,26 @@ export class ExtensionInputComponent extends Container implements Focusable {
 		onCancel: () => void,
 		opts?: ExtensionInputOptions,
 	) {
-		super();
+		const dialogTitle = splitDialogTitle(title);
+		super(dialogTitle.title);
 
 		this.onSubmitCallback = onSubmit;
 		this.onCancelCallback = onCancel;
-		this.baseTitle = title;
+		this.baseTitle = dialogTitle.title;
 
-		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
-
-		this.titleText = new Text(theme.fg("accent", title), 1, 0);
-		this.addChild(this.titleText);
-		this.addChild(new Spacer(1));
+		for (const detail of dialogTitle.detailLines) {
+			this.addChild(new Text(theme.fg("text", detail), 1, 0));
+		}
+		if (dialogTitle.detailLines.length > 0) {
+			this.addChild(new Spacer(1));
+		}
 
 		if (opts?.timeout && opts.timeout > 0 && opts.tui) {
 			this.countdown = new CountdownTimer(
 				opts.timeout,
 				opts.tui,
-				(s) => this.titleText.setText(theme.fg("accent", `${this.baseTitle} (${s}s)`)),
+				(s) => this.setDialogTitle(`${this.baseTitle} (${s}s)`),
 				() => this.onCancelCallback(),
 			);
 		}
@@ -71,7 +72,6 @@ export class ExtensionInputComponent extends Container implements Focusable {
 		this.addChild(new Spacer(1));
 		this.addChild(new Text(`${keyHint("selectConfirm", "submit")}  ${keyHint("selectCancel", "cancel")}`, 1, 0));
 		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder());
 	}
 
 	handleInput(keyData: string): void {

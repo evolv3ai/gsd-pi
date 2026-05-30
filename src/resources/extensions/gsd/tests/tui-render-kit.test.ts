@@ -5,8 +5,10 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
 import { visibleWidth } from "@gsd/pi-tui";
+import { assertFullOuterBorder } from "./tui-border-assertions.ts";
 import {
   padRightVisible,
+  renderDialogFrame,
   renderFrame,
   renderKeyHints,
   renderPanel,
@@ -58,6 +60,18 @@ describe("tui render kit", () => {
     for (const width of [3, 40, 80]) {
       assertWidth(renderFrame(theme, ["row", "long ".repeat(40)], width), width);
     }
+  });
+
+  test("renderDialogFrame draws a full titled modal border with footer", () => {
+    const lines = renderDialogFrame(theme, "Dialog", ["row", "long ".repeat(40)], 40, {
+      footer: renderKeyHints(theme, ["esc close"], 36),
+    });
+    assertWidth(lines, 40);
+    assertFullOuterBorder(lines, 40);
+    assert.match(lines[0] ?? "", /^╭─ Dialog ─+╮$/);
+    assert.ok(lines.some((line) => line.startsWith("│") && line.endsWith("│")));
+    assert.ok(lines.some((line) => line.startsWith("├") && line.endsWith("┤")));
+    assert.match(lines.at(-1) ?? "", /^╰─+╯$/);
   });
 
   test("renderPanel stays within width and draws no vertical borders", () => {

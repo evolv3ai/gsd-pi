@@ -3,11 +3,11 @@
  */
 
 import type { Theme, ThemeColor } from "@gsd/pi-coding-agent";
-import { matchesKey, Key, truncateToWidth, visibleWidth } from "@gsd/pi-tui";
+import { matchesKey, Key, truncateToWidth } from "@gsd/pi-tui";
 
 import type { ContextBreakdownReport, ContextSectionBreakdown } from "./commands-context.js";
 import { formatTokenCount } from "./metrics.js";
-import { renderProgressBar, rightAlign } from "./tui/render-kit.js";
+import { renderDialogFrame, renderKeyHints, renderProgressBar, rightAlign } from "./tui/render-kit.js";
 
 const SECTION_COLORS: ThemeColor[] = ["accent", "success", "warning", "borderAccent", "text"];
 
@@ -70,6 +70,7 @@ export class GSDContextOverlay {
   private onClose: () => void;
   private report: ContextBreakdownReport;
   private cachedLines?: string[];
+  private cachedWidth?: number;
   private scrollOffset = 0;
   private disposed = false;
 
@@ -87,6 +88,7 @@ export class GSDContextOverlay {
 
   invalidate(): void {
     this.cachedLines = undefined;
+    this.cachedWidth = undefined;
   }
 
   dispose(): void {
@@ -125,24 +127,22 @@ export class GSDContextOverlay {
   }
 
   render(width: number): string[] {
-    if (this.cachedLines) return this.cachedLines;
+    if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
 
     const theme = this.theme;
-    const w = Math.max(width, 60);
+    const w = Math.max(1, width);
+    const contentWidth = Math.max(1, w - 4);
     const totals = getContextChartTotals(this.report);
     const chartTotal = Math.max(totals.inContext, totals.estimated, 1);
     const lines: string[] = [];
 
-    lines.push(theme.bold(theme.fg("accent", " Context Breakdown ")));
-    lines.push(theme.fg("muted", "─".repeat(w)));
-
     if (this.report.modelLabel) {
-      lines.push(rightAlign(theme.fg("muted", "Model"), theme.fg("text", this.report.modelLabel), w));
+      lines.push(rightAlign(theme.fg("muted", "Model"), theme.fg("text", this.report.modelLabel), contentWidth));
     }
 
     lines.push("");
     if (totals.window != null) {
-      const usageBarWidth = Math.max(20, w - 28);
+      const usageBarWidth = Math.max(8, contentWidth - 28);
       const usageBar = renderProgressBar(theme, totals.inContext, totals.window, usageBarWidth, {
         filledColor: totals.inContext / totals.window > 0.85 ? "warning" : "accent",
       });
@@ -151,7 +151,7 @@ export class GSDContextOverlay {
       lines.push(`  ${theme.fg("muted", "Estimated")} ${theme.fg("text", formatTokenCount(chartTotal))}`);
     }
 
-    const splitWidth = Math.max(16, Math.floor((w - 8) / 2));
+    const splitWidth = Math.max(8, Math.floor((contentWidth - 8) / 2));
     const systemBar = renderProgressBar(theme, totals.systemTokens, chartTotal, splitWidth, { filledColor: "accent" });
     const convBar = renderProgressBar(theme, totals.conversationTokens, chartTotal, splitWidth, { filledColor: "success" });
     lines.push("");
@@ -160,11 +160,11 @@ export class GSDContextOverlay {
 
     lines.push("");
     lines.push(theme.bold(theme.fg("accent", "  System prompt")));
-    lines.push(...renderSectionBars(theme, this.report.systemSections, chartTotal, w, 22));
+    lines.push(...renderSectionBars(theme, this.report.systemSections, chartTotal, contentWidth, 22));
 
     lines.push("");
     lines.push(theme.bold(theme.fg("accent", "  Conversation")));
-    lines.push(...renderSectionBars(theme, this.report.conversationSections, chartTotal, w, 22));
+    lines.push(...renderSectionBars(theme, this.report.conversationSections, chartTotal, contentWidth, 22));
 
     lines.push("");
     lines.push(theme.bold(theme.fg("accent", "  Skills")));
@@ -172,7 +172,7 @@ export class GSDContextOverlay {
     if (skills.available.length > 0) {
       lines.push(`    ${theme.fg("muted", "Available")} ${theme.fg("text", `${skills.available.length}`)}`);
       const preview = skills.available.slice(0, 8).join(", ");
-      lines.push(truncateToWidth(`      ${preview}${skills.available.length > 8 ? "…" : ""}`, w));
+      lines.push(truncateToWidth(`      ${preview}${skills.available.length > 8 ? "…" : ""}`, contentWidth));
     } else {
       lines.push(theme.fg("dim", "    none in prompt"));
     }
@@ -187,13 +187,18 @@ export class GSDContextOverlay {
     lines.push(theme.bold(theme.fg("accent", "  Agents")));
     lines.push(`    ${theme.fg("muted", "Subagent spawns")} ${theme.fg("text", String(this.report.subagentSpawns))}`);
 
-    lines.push("");
-    lines.push(theme.fg("muted", `  ${"─".repeat(Math.max(0, w - 4))}`));
-    lines.push(theme.fg("muted", "  esc/q close  │  ↑↓ scroll  │  /gsd context --open for browser chart"));
-
-    const maxScroll = Math.max(0, lines.length - 24);
+    const terminalRows = process.stdout.rows || 32;
+    const maxBodyRows = Math.max(8, Math.min(lines.length, terminalRows - 8));
+    const maxScroll = Math.max(0, lines.length - maxBodyRows);
     this.scrollOffset = Math.min(this.scrollOffset, maxScroll);
-    this.cachedLines = lines.slice(this.scrollOffset);
+    const visible = lines.slice(this.scrollOffset, this.scrollOffset + maxBodyRows);
+    const footer = renderKeyHints(theme, ["esc/q close", "↑↓ scroll", "/gsd context --open"], contentWidth);
+
+    this.cachedLines = renderDialogFrame(theme, "Context Breakdown", visible, w, {
+      footer,
+      scroll: { offset: this.scrollOffset, visibleRows: maxBodyRows, totalRows: lines.length },
+    });
+    this.cachedWidth = width;
     return this.cachedLines;
   }
 }

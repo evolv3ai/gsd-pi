@@ -14,6 +14,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { GSDVisualizerOverlay, TAB_COUNT } from "../visualizer-overlay.ts";
+import { assertFullOuterBorder } from "./tui-border-assertions.ts";
 
 function makeTui() {
   const renders: number[] = [];
@@ -50,7 +51,11 @@ test("overlay renders 10 tabs (Progress, Timeline, Deps, Metrics, Health, Agent,
   overlay.loading = true; // body shows loading text, but tab bar renders regardless
 
   // Use a very wide terminal so the tab bar is not truncated.
-  const lines = overlay.render(200).map(stripAnsi);
+  const rawLines = overlay.render(200);
+  assertFullOuterBorder(rawLines, 200);
+  const lines = rawLines.map(stripAnsi);
+  assert.match(lines[0] ?? "", /^╭─ GSD Visualizer /);
+  assert.match(lines.at(-1) ?? "", /^╰─+╯$/);
   const tabBar = lines.find((l) => l.includes("Progress") && l.includes("Export"));
   assert.ok(tabBar, `expected a tab-bar line containing all labels, got:\n${lines.slice(0, 5).join("\n")}`);
   for (const label of ["Progress", "Timeline", "Deps", "Metrics", "Health", "Agent", "Changes", "Knowledge", "Captures", "Export"]) {

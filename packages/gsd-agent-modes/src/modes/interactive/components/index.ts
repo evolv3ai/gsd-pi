@@ -8,6 +8,7 @@ export { CompactionSummaryMessageComponent } from "./compaction-summary-message.
 export { CustomEditor } from "./custom-editor.js";
 export { CustomMessageComponent } from "./custom-message.js";
 export { DaxnutsComponent } from "./daxnuts.js";
+export { DialogContainer } from "./dialog-container.js";
 export { type RenderDiffOptions, renderDiff } from "./diff.js";
 export { DynamicBorder } from "./dynamic-border.js";
 export { ExtensionEditorComponent } from "./extension-editor.js";

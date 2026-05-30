@@ -10,6 +10,7 @@
 import type { Theme } from "@gsd/pi-coding-agent";
 import { matchesKey, Key, truncateToWidth } from "@gsd/pi-tui";
 
+import { renderDialogFrame, renderKeyHints } from "./tui/render-kit.js";
 import {
   loadEffectiveGSDPreferences,
   loadGlobalGSDPreferences,
@@ -231,6 +232,7 @@ export class GSDConfigOverlay {
   private onClose: () => void;
   private sections: ConfigSection[];
   private cachedLines?: string[];
+  private cachedWidth?: number;
   private scrollOffset = 0;
   private disposed = false;
 
@@ -247,6 +249,7 @@ export class GSDConfigOverlay {
 
   invalidate(): void {
     this.cachedLines = undefined;
+    this.cachedWidth = undefined;
   }
 
   dispose(): void {
@@ -286,15 +289,12 @@ export class GSDConfigOverlay {
   }
 
   render(width: number): string[] {
-    if (this.cachedLines) return this.cachedLines;
+    if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
 
     const t = this.theme;
-    const w = Math.max(width, 50);
+    const w = Math.max(1, width);
+    const contentWidth = Math.max(1, w - 4);
     const allLines: string[] = [];
-
-    // Header
-    allLines.push(t.bold(t.fg("accent", " GSD Configuration ")));
-    allLines.push(t.fg("muted", "\u2500".repeat(w)));
 
     // Find max label width for alignment
     let maxLabel = 0;
@@ -306,26 +306,29 @@ export class GSDConfigOverlay {
     const labelPad = Math.min(maxLabel + 2, 24);
 
     for (const section of this.sections) {
-      allLines.push("");
+      if (allLines.length > 0) allLines.push("");
       allLines.push(t.bold(t.fg("accent", `  ${section.title}`)));
 
       for (const row of section.rows) {
         const label = t.fg("muted", `    ${row.label.padEnd(labelPad)}`);
         const value = row.accent ? t.bold(row.value) : row.value;
-        allLines.push(truncateToWidth(`${label}${value}`, w));
+        allLines.push(truncateToWidth(`${label}${value}`, contentWidth));
       }
     }
 
-    allLines.push("");
-    allLines.push(t.fg("muted", `  ${"\u2500".repeat(w - 4)}`));
-    allLines.push(t.fg("muted", "  esc/q close  \u2502  \u2191\u2193/jk scroll  \u2502  /gsd prefs to edit"));
-
     // Apply scroll
-    const maxScroll = Math.max(0, allLines.length - 20);
+    const terminalRows = process.stdout.rows || 32;
+    const maxBodyRows = Math.max(8, Math.min(allLines.length, terminalRows - 8));
+    const maxScroll = Math.max(0, allLines.length - maxBodyRows);
     this.scrollOffset = Math.min(this.scrollOffset, maxScroll);
-    const visible = allLines.slice(this.scrollOffset);
+    const visible = allLines.slice(this.scrollOffset, this.scrollOffset + maxBodyRows);
+    const footer = renderKeyHints(t, ["esc/q close", "\u2191\u2193/jk scroll", "/gsd prefs to edit"], contentWidth);
 
-    this.cachedLines = visible;
-    return visible;
+    this.cachedLines = renderDialogFrame(t, "GSD Configuration", visible, w, {
+      footer,
+      scroll: { offset: this.scrollOffset, visibleRows: maxBodyRows, totalRows: allLines.length },
+    });
+    this.cachedWidth = width;
+    return this.cachedLines;
   }
 }

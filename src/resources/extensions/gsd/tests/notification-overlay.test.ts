@@ -11,6 +11,7 @@ import { visibleWidth } from "@gsd/pi-tui";
 import { appendNotification, initNotificationStore, _resetNotificationStore } from "../notification-store.ts";
 import { GSDNotificationOverlay, notificationOverlayOptions } from "../notification-overlay.ts";
 import { wrapVisibleText } from "../tui/render-kit.ts";
+import { assertFullOuterBorder } from "./tui-border-assertions.ts";
 
 const fakeTheme = {
   fg: (_color: string, text: string) => text,
@@ -92,7 +93,11 @@ describe("notification overlay — wrapText", () => {
     t.after(() => overlay.dispose());
 
     for (const width of [40, 80, 120]) {
-      assertLinesFit(overlay.render(width), width);
+      const rendered = overlay.render(width);
+      assertLinesFit(rendered, width);
+      assertFullOuterBorder(rendered, width);
+      assert.match(rendered[0] ?? "", /^╭─ Notifications /);
+      assert.match(rendered.at(-1) ?? "", /^╰─+╯$/);
       overlay.invalidate();
     }
   });

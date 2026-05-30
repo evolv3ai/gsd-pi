@@ -8,6 +8,7 @@ import {
   scanSessionTokenTotals,
   handleUsage,
 } from "../commands-usage.ts";
+import { assertFullOuterBorder } from "./tui-border-assertions.ts";
 
 const TS = 1;
 
@@ -107,4 +108,37 @@ test("handleUsage emits JSON when --json is passed", async () => {
   assert.equal(parsed.model, "claude-code/claude-sonnet-4-6");
   assert.equal(parsed.contextUsage.tokens, 10_000);
   assert.equal(parsed.sessionTotals.input, 0);
+});
+
+test("handleUsage renders interactive usage output inside a full border", async () => {
+  let renderFn: ((width: number) => string[]) | undefined;
+  const messages: string[] = [];
+  const ctx = {
+    hasUI: true,
+    model: { provider: "claude-code", id: "claude-sonnet-4-6", contextWindow: 200_000 },
+    getContextUsage: () => ({ tokens: 10_000, contextWindow: 200_000, percent: 5 }),
+    sessionManager: { getEntries: () => [] },
+    ui: {
+      custom: async (factory: any) => {
+        const theme = {
+          fg: (_color: string, text: string) => text,
+          bold: (text: string) => text,
+        };
+        const component = factory({ requestRender: () => {} }, theme, {}, () => {});
+        renderFn = component.render;
+        return true;
+      },
+      notify(message: string) {
+        messages.push(message);
+      },
+    },
+  };
+
+  await handleUsage("", ctx as any);
+
+  assert.equal(messages.length, 0, "interactive usage should use the dialog instead of notify");
+  assert.ok(renderFn, "render function should have been captured");
+  const lines = renderFn!(80);
+  assertFullOuterBorder(lines, 80);
+  assert.match(lines.join("\n"), /claude-code\/claude-sonnet-4-6/);
 });

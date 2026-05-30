@@ -10,6 +10,7 @@ import type { ContextBreakdownReport } from "../commands-context.ts";
 import { buildContextChartHtml, writeContextChartHtml } from "../context-chart-html.ts";
 import { formatContextChartText, getContextChartTotals } from "../context-overlay.ts";
 import { buildContextBreakdown } from "../commands-context.ts";
+import { assertFullOuterBorder } from "./tui-border-assertions.ts";
 
 const TS = 1;
 
@@ -102,4 +103,12 @@ test("formatContextChartText includes chart sections", () => {
   assert.match(text, /System prompt/);
   assert.match(text, /Conversation/);
   assert.match(text, /█/);
+});
+
+test("formatContextChartText renders the context dialog inside a full border", () => {
+  const lines = formatContextChartText(SAMPLE_REPORT, 80).split("\n");
+  assertFullOuterBorder(lines, 80);
+  assert.match(lines[0] ?? "", /^╭─ Context Breakdown /);
+  assert.ok(lines.some((line) => line.startsWith("│")), "body rows should have side borders");
+  assert.match(lines.at(-1) ?? "", /^╰─+╯$/);
 });

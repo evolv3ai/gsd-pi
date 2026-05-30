@@ -44,6 +44,7 @@
 import type { ExtensionCommandContext } from "@gsd/pi-coding-agent";
 import { type Theme } from "@gsd/pi-coding-agent";
 import { Key, matchesKey, type TUI } from "@gsd/pi-tui";
+import { renderSharedDialogFrame } from "./dialog-frame.js";
 import { makeUI } from "./ui.js";
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -142,14 +143,14 @@ export async function showNextAction(
 
 		function render(width: number): string[] {
 			if (cachedLines) return cachedLines;
-			const ui = makeUI(theme, width);
+			const contentWidth = Math.max(1, width - 4);
+			const ui = makeUI(theme, contentWidth);
 			const lines: string[] = [];
 			const push = (...rows: string[][]) => { for (const r of rows) lines.push(...r); };
 
 			// ── Header — uses success colour to signal completion ────────────
 			// Note: next-action intentionally uses "success" for its bar/title
 			// to distinguish it from regular accent-coloured screens.
-			push(ui.bar());
 			push(ui.blank());
 			push(ui.header(`  ✓  ${opts.title}`));
 
@@ -192,11 +193,10 @@ export async function showNextAction(
 
 			// ── Footer ────────────────────────────────────────────────────────
 			const numHint = allActions.map((_, i) => `${i + 1}`).join("/");
-			push(ui.hints([`↑/↓ to choose`, `${numHint} to quick-select`, `enter to confirm`]));
-			push(ui.bar());
+			const footer = ui.hints([`↑/↓ to choose`, `${numHint} to quick-select`, `enter to confirm`])[0] ?? "";
 
-			cachedLines = lines;
-			return lines;
+			cachedLines = renderSharedDialogFrame(theme, "GSD Next Action", lines, width, { footer });
+			return cachedLines;
 		}
 
 		return { render, invalidate: () => { cachedLines = undefined; }, handleInput };

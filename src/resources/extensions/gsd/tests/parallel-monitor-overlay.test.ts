@@ -5,6 +5,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import { visibleWidth } from "@gsd/pi-tui";
+import { assertFullOuterBorder } from "./tui-border-assertions.ts";
 
 function assertLinesFit(lines: string[], width: number): void {
   for (const line of lines) {
@@ -51,6 +52,9 @@ describe("parallel-monitor-overlay", () => {
     const joined = lines.join("\n");
     assert.ok(joined.includes("Parallel Monitor"), "should include title");
     assert.ok(joined.includes("No parallel workers found"), "should show empty state");
+    assertFullOuterBorder(lines, 80);
+    assert.match(lines[0] ?? "", /^╭─ GSD Parallel Monitor /);
+    assert.match(lines.at(-1) ?? "", /^╰─+╯$/);
 
     // Dispose should not throw
     overlay.dispose();
@@ -105,7 +109,9 @@ describe("parallel-monitor-overlay", () => {
     );
 
     for (const width of [40, 80, 120]) {
-      assertLinesFit(overlay.render(width), width);
+      const lines = overlay.render(width);
+      assertLinesFit(lines, width);
+      assertFullOuterBorder(lines, width);
       overlay.invalidate();
     }
 

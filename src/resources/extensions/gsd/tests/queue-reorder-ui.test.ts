@@ -2,6 +2,7 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
 import { showQueueReorder } from "../queue-reorder-ui.ts";
+import { assertFullOuterBorder } from "./tui-border-assertions.ts";
 
 const fakeTheme = {
   fg: (_color: string, text: string) => text,
@@ -43,6 +44,9 @@ describe("queue-reorder-ui", () => {
       const joined = lastRender.join("\n");
       assert.ok(joined.includes("M016"), "selected item should stay visible after scrolling");
       assert.ok(lastRender.length <= 16, `overlay should fit terminal max-height, got ${lastRender.length}`);
+      assertFullOuterBorder(lastRender, 100);
+      assert.match(lastRender[0] ?? "", /^╭─ Queue Reorder /);
+      assert.match(lastRender.at(-1) ?? "", /^╰─+╯$/);
     } finally {
       if (originalRowsDescriptor) {
         Object.defineProperty(process.stdout, "rows", originalRowsDescriptor);
