@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { probeGitConflictState } from "../git-conflict-state.js";
 import { ensureWorkspaceGitReadyForPath } from "../workspace-git-preflight.js";
 import { isWorkspaceGitAllowedCommand } from "../workspace-git-guard.js";
-import { cleanup, git, makeTempRepo } from "./test-utils.ts";
+import { cleanup, git, makeTempDir, makeTempRepo } from "./test-utils.ts";
 
 function seedGsdConflict(base: string): void {
   mkdirSync(join(base, ".gsd"), { recursive: true });
@@ -55,6 +55,21 @@ test("probeGitConflictState reports clean repo", () => {
   try {
     const result = probeGitConflictState(base);
     assert.equal(result.status, "clean");
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("ensureWorkspaceGitReadyForPath allows fresh non-git project setup folders", async () => {
+  const base = makeTempDir("gsd-ws-git-non-repo-");
+  try {
+    mkdirSync(join(base, ".gsd"), { recursive: true });
+
+    const probe = probeGitConflictState(base);
+    assert.equal(probe.status, "clean");
+
+    const ready = await ensureWorkspaceGitReadyForPath(base);
+    assert.equal(ready.ok, true);
   } finally {
     cleanup(base);
   }

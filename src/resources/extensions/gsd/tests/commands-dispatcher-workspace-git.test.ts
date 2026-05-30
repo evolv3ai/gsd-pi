@@ -3,11 +3,11 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { getWorkspaceGitBlockMessageForBase } from "../workspace-git-guard.js";
-import { cleanup, git, makeTempRepo } from "./test-utils.ts";
+import { cleanup, git, makeTempDir, makeTempRepo } from "./test-utils.ts";
 
 function seedProductConflict(base: string): void {
   writeFileSync(join(base, "app.ts"), "root\n");
@@ -36,6 +36,19 @@ test("getWorkspaceGitBlockMessageForBase blocks auto when product conflicts rema
     assert.ok(blocked);
     assert.match(blocked, /blocked until Git conflicts/i);
     assert.match(blocked, /app\.ts/);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("getWorkspaceGitBlockMessageForBase does not block project setup in non-git folders", async () => {
+  const base = makeTempDir("gsd-dispatch-ws-git-new-project-");
+  try {
+    mkdirSync(join(base, ".gsd"), { recursive: true });
+
+    assert.equal(await getWorkspaceGitBlockMessageForBase(base, ""), null);
+    assert.equal(await getWorkspaceGitBlockMessageForBase(base, "init"), null);
+    assert.equal(await getWorkspaceGitBlockMessageForBase(base, "new-project"), null);
   } finally {
     cleanup(base);
   }

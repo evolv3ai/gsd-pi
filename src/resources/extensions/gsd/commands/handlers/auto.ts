@@ -208,7 +208,15 @@ export async function handleAutoCommand(trimmed: string, ctx: ExtensionCommandCo
 
   if (trimmed === "") {
     if (!(await guardRemoteSession(ctx, pi))) return true;
-    if (await hasUnresolvedCloseoutBlocker(ctx, projectRoot())) return true;
+    const basePath = projectRoot();
+    const { hasGsdBootstrapArtifacts } = await import("../../detection.js");
+    const { gsdRoot } = await import("../../paths.js");
+    if (!hasGsdBootstrapArtifacts(gsdRoot(basePath))) {
+      const { showSmartEntry } = await import("../../guided-flow.js");
+      await showSmartEntry(ctx, pi, basePath, { step: true });
+      return true;
+    }
+    if (await hasUnresolvedCloseoutBlocker(ctx, basePath)) return true;
     const { showGsdHome } = await import("../../gsd-command-home.js");
     await showGsdHome(ctx, pi, projectRoot());
     return true;

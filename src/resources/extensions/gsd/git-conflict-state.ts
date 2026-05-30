@@ -3,7 +3,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { autoResolveSafeConflictPaths } from "./git-conflict-resolve.js";
 import { GIT_NO_PROMPT_ENV } from "./git-constants.js";
@@ -12,6 +12,21 @@ import { logWarning } from "./workflow-logger.js";
 
 function splitZeroDelimited(output: string): string[] {
   return output.split("\0").filter(Boolean);
+}
+
+function hasGitMarker(basePath: string): boolean {
+  try {
+    let dir = resolve(basePath);
+    for (let i = 0; i < 30; i++) {
+      if (existsSync(join(dir, ".git"))) return true;
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  } catch {
+    // Fall through to the git probes, which will report unknown on failure.
+  }
+  return false;
 }
 
 export function listUnmergedGitPaths(basePath: string): string[] | null {
@@ -75,6 +90,15 @@ export interface GitConflictProbeResult {
 }
 
 export function probeGitConflictState(basePath: string): GitConflictProbeResult {
+  if (!hasGitMarker(basePath)) {
+    return {
+      status: "clean",
+      unmerged: [],
+      checkFailures: [],
+      mergeStateBlockers: [],
+    };
+  }
+
   const unmerged = listUnmergedGitPaths(basePath);
   if (unmerged === null) {
     return {
