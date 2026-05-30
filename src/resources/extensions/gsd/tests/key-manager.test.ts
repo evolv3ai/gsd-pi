@@ -10,9 +10,10 @@ import {
   formatKeyDashboard,
   formatTestResults,
   runKeyDoctor,
-  formatDoctorFindings,
-  PROVIDER_REGISTRY,
-} from "../key-manager.ts";
+	  formatDoctorFindings,
+	  PROVIDER_REGISTRY,
+	  getProviderAuthMode,
+	} from "../key-manager.ts";
 
 function makeAuth(data: Record<string, any> = {}): AuthStorage {
   return AuthStorage.inMemory(data);
@@ -74,6 +75,12 @@ test("describeCredential describes an API key with masked value", () => {
 
 test("describeCredential describes an empty API key", () => {
   assert.equal(describeCredential({ type: "api_key", key: "" }), "empty key");
+});
+
+test("describeCredential describes external CLI sentinels without calling them API keys", () => {
+  const provider = PROVIDER_REGISTRY.find((p) => p.id === "claude-code");
+  assert.ok(provider);
+  assert.equal(describeCredential({ type: "api_key", key: "cli" }, provider), "external CLI");
 });
 
 test("describeCredential describes an OAuth token with expiry", () => {
@@ -149,7 +156,19 @@ test("PROVIDER_REGISTRY includes claude-code as a first-class LLM provider (#454
   const entry = PROVIDER_REGISTRY.find((p) => p.id === "claude-code");
   assert.ok(entry, "claude-code must be in PROVIDER_REGISTRY");
   assert.equal(entry!.category, "llm");
-  assert.ok(entry!.hasOAuth, "claude-code uses OAuth (CLI auth)");
+  assert.equal(getProviderAuthMode(entry!), "externalCli");
+});
+
+test("PROVIDER_REGISTRY classifies only Copilot and Codex as browser OAuth LLM providers", () => {
+  const modes = Object.fromEntries(
+    PROVIDER_REGISTRY.filter((p) => p.category === "llm").map((p) => [p.id, getProviderAuthMode(p)]),
+  );
+  assert.equal(modes.anthropic, "apiKey");
+  assert.equal(modes["github-copilot"], "browserOAuth");
+  assert.equal(modes["openai-codex"], "browserOAuth");
+  assert.equal(modes["claude-code"], "externalCli");
+  assert.equal(modes["google-gemini-cli"], "externalCli");
+  assert.equal(modes["google-antigravity"], "externalCli");
 });
 
 test("PROVIDER_REGISTRY includes all tool/search providers", () => {

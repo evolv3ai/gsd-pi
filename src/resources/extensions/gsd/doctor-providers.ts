@@ -16,7 +16,7 @@ import { delimiter, join } from "node:path";
 import { AuthStorage } from "@gsd/pi-coding-agent";
 import { getEnvApiKey } from "@gsd/pi-ai";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
-import { getAuthPath, PROVIDER_REGISTRY, type ProviderCategory } from "./key-manager.js";
+import { getAuthPath, PROVIDER_REGISTRY, supportsBrowserOAuth, type ProviderCategory } from "./key-manager.js";
 import { homedir } from "node:os";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -42,11 +42,10 @@ export interface ProviderCheckResult {
 
 /**
  * Providers that use external CLI authentication (not API keys).
- * These are always considered "found" — the host CLI handles auth.
+ * When explicitly selected, the provider's own CLI/session owns auth.
  */
 const CLI_AUTH_PROVIDERS = new Set([
   "claude-code",
-  "openai-codex",
   "google-gemini-cli",
   "google-antigravity",
 ]);
@@ -156,26 +155,30 @@ interface KeyLookup {
  * Map of CLI provider IDs to their binary names on disk.
  * Used for lightweight binary-presence checks (PATH scan, no subprocess).
  */
-const CLI_BINARY_MAP: Record<string, string> = {
-  "claude-code": "claude",
-  "openai-codex": "codex",
-  "google-gemini-cli": "gemini",
-  "google-antigravity": "antigravity",
+const CLI_BINARY_MAP: Record<string, string[]> = {
+  "claude-code": ["claude", "claude-code"],
+  "google-gemini-cli": ["gemini"],
+  "google-antigravity": ["agy"],
 };
+
+const CLI_AUTH_PATH_CHECK_PROVIDERS = new Set([
+  "google-gemini-cli",
+  "google-antigravity",
+]);
 
 /**
  * Check if a CLI provider's binary exists anywhere in PATH.
  * Fast filesystem scan — no subprocess, no network, sub-1ms.
  */
 function isCliBinaryInPath(providerId: string): boolean {
-  const binary = CLI_BINARY_MAP[providerId];
-  if (!binary) return false;
+  const binaries = CLI_BINARY_MAP[providerId];
+  if (!binaries) return false;
 
   const pathDirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
 
   // On Windows, command shims are commonly installed as .cmd/.exe/.bat/.com.
   // Scan PATHEXT candidates in addition to the bare binary name.
-  const executableNames: string[] = [binary];
+  const executableNames: string[] = [...binaries];
   if (process.platform === "win32") {
     const rawPathExt = process.env.PATHEXT
       ?.split(";")
@@ -185,9 +188,11 @@ function isCliBinaryInPath(providerId: string): boolean {
       ext.startsWith(".") ? ext.toLowerCase() : `.${ext.toLowerCase()}`,
     );
     const defaultExt = [".exe", ".cmd", ".bat", ".com"];
-    for (const ext of [...normalizedPathExt, ...defaultExt]) {
-      const candidate = `${binary}${ext}`;
-      if (!executableNames.includes(candidate)) executableNames.push(candidate);
+    for (const binary of binaries) {
+      for (const ext of [...normalizedPathExt, ...defaultExt]) {
+        const candidate = `${binary}${ext}`;
+        if (!executableNames.includes(candidate)) executableNames.push(candidate);
+      }
     }
   }
 
@@ -224,12 +229,6 @@ function hasModelsJsonApiKey(providerId: string): boolean {
 function resolveKey(providerId: string): KeyLookup {
   const info = PROVIDER_REGISTRY.find(p => p.id === providerId);
 
-  // claude-code never stores credentials in auth.json — GSD delegates entirely to
-  // the local CLI binary. Presence of the binary in PATH is the only signal.
-  if (providerId === "claude-code") {
-    return { found: isCliBinaryInPath("claude-code"), source: "env", backedOff: false };
-  }
-
   if (providerId === "anthropic-vertex" && process.env.ANTHROPIC_VERTEX_PROJECT_ID) {
     return { found: true, source: "env", backedOff: false };
   }
@@ -242,9 +241,15 @@ function resolveKey(providerId: string): KeyLookup {
       const creds = auth.getCredentialsForProvider(providerId);
       if (creds.length > 0) {
         // Filter out empty placeholder keys (from skipped onboarding)
-        const hasRealKey = creds.some(c =>
-          c.type === "oauth" || (c.type === "api_key" && (c as { key?: string }).key)
-        );
+        const hasRealKey = creds.some(c => {
+          if (c.type === "oauth") return true;
+          if (c.type !== "api_key") return false;
+
+          const key = (c as { key?: string }).key?.trim();
+          if (!key) return false;
+
+          return !(CLI_AUTH_PROVIDERS.has(providerId) && key === "cli");
+        });
         if (hasRealKey) {
           return {
             found: true,
@@ -275,6 +280,12 @@ function resolveKey(providerId: string): KeyLookup {
     return { found: true, source: "models.json", backedOff: false };
   }
 
+  // Cross-provider routes can use a local CLI when it is installed. Explicit
+  // external CLI provider selections are handled in checkLlmProviders() below.
+  if (CLI_AUTH_PROVIDERS.has(providerId) && isCliBinaryInPath(providerId)) {
+    return { found: true, source: "env", backedOff: false };
+  }
+
   return { found: false, source: "none", backedOff: false };
 }
 
@@ -285,15 +296,32 @@ function checkLlmProviders(): ProviderCheckResult[] {
   const results: ProviderCheckResult[] = [];
 
   for (const providerId of required) {
-    // CLI-authenticated providers don't need API keys — skip key check
+    // CLI-authenticated providers don't need API keys. The provider's own
+    // request path validates CLI sessions when it is used.
     if (CLI_AUTH_PROVIDERS.has(providerId)) {
       const info = PROVIDER_REGISTRY.find(p => p.id === providerId);
+      const label = info?.label ?? providerId;
+      if (CLI_AUTH_PATH_CHECK_PROVIDERS.has(providerId) && !isCliBinaryInPath(providerId)) {
+        const binaries = CLI_BINARY_MAP[providerId]?.map(binary => `\`${binary}\``).join(" or ");
+        results.push({
+          name: providerId,
+          label,
+          category: "llm",
+          status: "error",
+          message: `${label} — CLI not found`,
+          detail: binaries
+            ? `Install ${label} and ensure ${binaries} is on PATH`
+            : `Install ${label} and ensure its CLI is on PATH`,
+          required: true,
+        });
+        continue;
+      }
       results.push({
         name: providerId,
-        label: info?.label ?? providerId,
+        label,
         category: "llm",
         status: "ok",
-        message: `${info?.label ?? providerId} — CLI auth (no key needed)`,
+        message: `${label} — CLI auth (no key needed)`,
         required: true,
       });
       continue;
@@ -333,7 +361,7 @@ function checkLlmProviders(): ProviderCheckResult[] {
         message: `${label} — not configured`,
         detail: providerId === "anthropic-vertex"
           ? "Set ANTHROPIC_VERTEX_PROJECT_ID and authenticate with Google ADC"
-          : info?.hasOAuth
+          : info && supportsBrowserOAuth(info)
           ? `Run /gsd keys to authenticate`
           : `Set ${envVar} or run /gsd keys`,
         required: true,

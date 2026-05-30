@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 
 import { getEnvApiKey } from "../../packages/pi-ai/src/env-api-keys.ts";
 import type { OAuthAuthInfo, OAuthPrompt, OAuthProviderInterface } from "../../packages/pi-ai/dist/oauth.js";
@@ -169,17 +170,16 @@ type ProviderFlowRuntime = {
  * provider in this list. Reordering entries changes which provider wins when
  * multiple are configured simultaneously — do so intentionally.
  *
- * ExternalCli providers (those with `supportsExternalCli: true`) are always
- * treated as configured by the onboarding service regardless of auth-file
- * contents, so placing them higher in the list gives them higher precedence.
+ * ExternalCli providers (those with `supportsExternalCli: true`) are treated
+ * as configured only when their official CLI command is present on PATH.
  */
 const REQUIRED_PROVIDER_CATALOG: RequiredProviderCatalogEntry[] = [
   { id: "anthropic", label: "Anthropic (Claude)", supportsApiKey: true, supportsOAuth: false, recommended: true },
   { id: "openai", label: "OpenAI", supportsApiKey: true, supportsOAuth: false },
   { id: "github-copilot", label: "GitHub Copilot", supportsApiKey: false, supportsOAuth: true },
   { id: "openai-codex", label: "ChatGPT Plus/Pro (Codex Subscription)", supportsApiKey: false, supportsOAuth: true },
-  { id: "google-gemini-cli", label: "Google Cloud Code Assist (Gemini CLI)", supportsApiKey: false, supportsOAuth: true },
-  { id: "google-antigravity", label: "Antigravity (Gemini 3, Claude, GPT-OSS)", supportsApiKey: false, supportsOAuth: true },
+  { id: "google-gemini-cli", label: "Google Gemini CLI", supportsApiKey: false, supportsOAuth: false, supportsExternalCli: true },
+  { id: "google-antigravity", label: "Antigravity (Gemini 3, Claude, GPT-OSS)", supportsApiKey: false, supportsOAuth: false, supportsExternalCli: true },
   { id: "google", label: "Google (Gemini API)", supportsApiKey: true, supportsOAuth: false },
   { id: "groq", label: "Groq", supportsApiKey: true, supportsOAuth: false },
   { id: "xai", label: "xAI (Grok)", supportsApiKey: true, supportsOAuth: false },
@@ -228,21 +228,29 @@ const OPTIONAL_SECTION_CATALOG: OptionalSectionCatalogEntry[] = [
 
 /**
  * ExternalCli providers authenticate through a local CLI tool rather than
- * storing credentials in GSD. They are always treated as "configured" by the
- * onboarding service — if the binary is missing, inference will fail at
- * runtime (the correct place to surface that error).
+ * storing credentials in GSD. They are configured only when their official CLI
+ * command is on PATH; provider-specific login state is validated at request time.
  *
- * **Sync requirement:** This set must stay in sync with `CLI_AUTH_PROVIDERS`
+ * **Sync requirement:** This map must stay in sync with `CLI_AUTH_PROVIDERS`
  * in `src/resources/extensions/gsd/doctor-providers.ts`. If a new ExternalCli
  * provider is added to one set but not the other, onboarding will silently
  * mis-classify it (treating it as unconfigured or vice-versa).
  */
-const CLI_AUTH_PROVIDER_IDS = new Set([
-  "claude-code",
+const CLI_AUTH_PROVIDERS = new Map<string, string[]>([
+  ["claude-code", ["claude", "claude-code"]],
+  ["google-gemini-cli", ["gemini"]],
+  ["google-antigravity", ["agy"]],
 ]);
 
+function isCommandInPath(command: string): boolean {
+  const resolver = process.platform === "win32" ? "where" : "which";
+  const result = spawnSync(resolver, [command], { stdio: "ignore" });
+  return result.status === 0;
+}
+
 function defaultIsExternalCliProvider(id: string): boolean {
-  return CLI_AUTH_PROVIDER_IDS.has(id);
+  const commands = CLI_AUTH_PROVIDERS.get(id);
+  return Boolean(commands?.some(isCommandInPath));
 }
 
 let onboardingServiceOverrides: Partial<OnboardingServiceDeps> | null = null;
@@ -306,10 +314,13 @@ function resolveCredentialSource(
   getEnvApiKeyFn: GetEnvApiKeyFn,
   isExternalCliProviderFn: (id: string) => boolean,
 ): OnboardingCredentialSource | null {
-  // ExternalCli providers authenticate through a local CLI — no credentials
-  // are stored in GSD. Treat them as always configured.
   if (isExternalCliProviderFn(providerId)) {
     return "external_cli";
+  }
+  // ExternalCli providers authenticate through a local CLI. Stored "cli"
+  // sentinels only remember selection and must not bypass PATH readiness.
+  if (CLI_AUTH_PROVIDERS.has(providerId)) {
+    return null;
   }
   if (hasStoredCredentialValue(authStorage, providerId)) {
     return "auth_file";

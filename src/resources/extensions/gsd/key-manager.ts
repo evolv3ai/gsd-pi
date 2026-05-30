@@ -22,6 +22,7 @@ import { gsdHome } from "./gsd-home.js";
 // ─── Provider Registry ─────────────────────────────────────────────────────────
 
 export type ProviderCategory = "llm" | "tool" | "search" | "remote";
+export type ProviderAuthMode = "apiKey" | "browserOAuth" | "externalCli" | "cloudIdentity" | "none";
 
 export interface ProviderInfo {
   id: string;
@@ -29,24 +30,24 @@ export interface ProviderInfo {
   category: ProviderCategory;
   envVar?: string;
   prefixes?: string[];
-  hasOAuth?: boolean;
+  authMode?: ProviderAuthMode;
   dashboardUrl?: string;
 }
 
 export const PROVIDER_REGISTRY: ProviderInfo[] = [
   // LLM Providers
-  { id: "anthropic",        label: "Anthropic (Claude)",      category: "llm", envVar: "ANTHROPIC_API_KEY",      prefixes: ["sk-ant-"], hasOAuth: true, dashboardUrl: "console.anthropic.com" },
+  { id: "anthropic",        label: "Anthropic (Claude)",      category: "llm", envVar: "ANTHROPIC_API_KEY",      prefixes: ["sk-ant-"], authMode: "apiKey", dashboardUrl: "console.anthropic.com" },
   // Claude Code CLI: routes through the local `claude` binary — no API key,
   // authentication is handled by the CLI's own OAuth flow.
   // Referenced by doctor-providers.ts, auto-model-selection.ts, and others;
   // must be in the canonical registry so all consumers see the same catalog.
   // See: https://github.com/open-gsd/gsd-pi/issues/4541
-  { id: "claude-code",      label: "Claude Code CLI",         category: "llm",                                   hasOAuth: true },
+  { id: "claude-code",      label: "Claude Code CLI",         category: "llm",                                   authMode: "externalCli" },
   { id: "openai",           label: "OpenAI",                  category: "llm", envVar: "OPENAI_API_KEY",         prefixes: ["sk-"],     dashboardUrl: "platform.openai.com/api-keys" },
-  { id: "github-copilot",   label: "GitHub Copilot",          category: "llm", envVar: "GITHUB_TOKEN",           hasOAuth: true },
-  { id: "openai-codex",     label: "ChatGPT Plus/Pro (Codex)",category: "llm",                                   hasOAuth: true },
-  { id: "google-gemini-cli",label: "Google Gemini CLI",       category: "llm",                                   hasOAuth: true },
-  { id: "google-antigravity",label: "Antigravity",            category: "llm",                                   hasOAuth: true },
+  { id: "github-copilot",   label: "GitHub Copilot",          category: "llm", envVar: "GITHUB_TOKEN",           authMode: "browserOAuth" },
+  { id: "openai-codex",     label: "ChatGPT Plus/Pro (Codex)",category: "llm",                                   authMode: "browserOAuth" },
+  { id: "google-gemini-cli",label: "Google Gemini CLI",       category: "llm",                                   authMode: "externalCli" },
+  { id: "google-antigravity",label: "Antigravity",            category: "llm",                                   authMode: "externalCli" },
   { id: "google",           label: "Google (Gemini)",         category: "llm", envVar: "GEMINI_API_KEY",         dashboardUrl: "aistudio.google.com/apikey" },
   { id: "groq",             label: "Groq",                    category: "llm", envVar: "GROQ_API_KEY",           dashboardUrl: "console.groq.com" },
   { id: "xai",              label: "xAI (Grok)",              category: "llm", envVar: "XAI_API_KEY",            dashboardUrl: "console.x.ai" },
@@ -77,6 +78,21 @@ export const PROVIDER_REGISTRY: ProviderInfo[] = [
 
 // ─── Utilities ──────────────────────────────────────────────────────────────────
 
+export function getProviderAuthMode(provider: ProviderInfo): ProviderAuthMode {
+  return provider.authMode ?? "apiKey";
+}
+
+export function supportsBrowserOAuth(provider: ProviderInfo): boolean {
+  return getProviderAuthMode(provider) === "browserOAuth";
+}
+
+export function supportsStoredApiKey(provider: ProviderInfo): boolean {
+  const mode = getProviderAuthMode(provider);
+  if (mode === "externalCli" || mode === "cloudIdentity" || mode === "none") return false;
+  if (mode === "browserOAuth") return Boolean(provider.envVar || provider.prefixes?.length);
+  return true;
+}
+
 /**
  * Mask an API key for display: show first 4 + last 4 chars.
  * Keys shorter than 12 chars show only first 2 + last 2.
@@ -104,10 +120,13 @@ export function formatDuration(ms: number): string {
 /**
  * Describe a credential's type and status.
  */
-export function describeCredential(cred: AuthCredential): string {
+export function describeCredential(cred: AuthCredential, provider?: ProviderInfo): string {
   if (cred.type === "api_key") {
     const apiCred = cred as ApiKeyCredential;
     if (!apiCred.key) return "empty key";
+    if (apiCred.key === "cli" && provider && getProviderAuthMode(provider) === "externalCli") {
+      return "external CLI";
+    }
     return `API key (${maskKey(apiCred.key)})`;
   }
   if (cred.type === "oauth") {
@@ -171,7 +190,7 @@ export function getAllKeyStatuses(auth: AuthStorage): KeyStatus[] {
       const desc =
         creds.length > 1
           ? `${creds.length} keys (round-robin)`
-          : describeCredential(firstCred);
+          : describeCredential(firstCred, provider);
       return {
         provider,
         configured: true,
@@ -289,9 +308,28 @@ export async function handleAddKey(
     provider = PROVIDER_REGISTRY[idx];
   }
 
-  // If OAuth is available, offer choice
-  if (provider.hasOAuth) {
-    const methods = ["API key", "Browser login (OAuth)"];
+  const authMode = getProviderAuthMode(provider);
+  if (authMode === "externalCli") {
+    ctx.ui.notify(
+      `${provider.label} is authenticated by its own local CLI. ` +
+      `Sign in with that CLI first, then run /login to activate it in GSD.`,
+      "info",
+    );
+    return false;
+  }
+
+  if (authMode === "cloudIdentity") {
+    ctx.ui.notify(
+      `${provider.label} uses cloud identity credentials. Configure the provider's cloud CLI or environment, then restart GSD.`,
+      "info",
+    );
+    return false;
+  }
+
+  if (supportsBrowserOAuth(provider)) {
+    const methods = supportsStoredApiKey(provider)
+      ? ["API token/key", "Browser login (OAuth)"]
+      : ["Browser login (OAuth)"];
     const method = await ctx.ui.select(
       `${provider.label} — how do you want to authenticate?`,
       methods,
@@ -306,6 +344,11 @@ export async function handleAddKey(
       );
       return false;
     }
+  }
+
+  if (!supportsStoredApiKey(provider)) {
+    ctx.ui.notify(`${provider.label} does not accept a GSD-stored API key. Use /login.`, "info");
+    return false;
   }
 
   // API key input
@@ -387,7 +430,7 @@ export async function handleRemoveKey(
 
   // Multi-key handling
   if (creds.length > 1) {
-    const options = creds.map((c, i) => `[${i + 1}] ${describeCredential(c)}`);
+    const options = creds.map((c, i) => `[${i + 1}] ${describeCredential(c, provider)}`);
     options.push("Remove all");
 
     const choice = await ctx.ui.select(
@@ -411,7 +454,7 @@ export async function handleRemoveKey(
   } else {
     const confirmed = await ctx.ui.confirm(
       "Remove key?",
-      `Remove ${describeCredential(creds[0])} for ${provider.label}?`,
+      `Remove ${describeCredential(creds[0], provider)} for ${provider.label}?`,
     );
     if (!confirmed) return false;
     auth.remove(provider.id);
