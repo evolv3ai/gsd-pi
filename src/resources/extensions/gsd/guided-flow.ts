@@ -1358,7 +1358,7 @@ function buildHeadlessDiscussPrompt(nextId: string, seedContext: string, _basePa
  * Run preparation phase if enabled, then build the discuss prompt.
  * Preparation analyzes the codebase and prior context, injecting the results
  * as supplementary context into the standard discuss template. The discuss
- * template drives the conversation (asks "What's the vision?" first), while
+ * template drives the conversation with a variable vision opener, while
  * the preparation briefs give the agent grounding in the existing codebase.
  *
  * @param ctx - Extension command context with UI for progress notifications
