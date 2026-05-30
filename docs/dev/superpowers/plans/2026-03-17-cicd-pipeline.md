@@ -136,7 +136,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install GSD globally — version is controlled by the build arg
 ARG GSD_VERSION=latest
-RUN npm install -g gsd-pi@${GSD_VERSION}
+RUN npm install -g @opengsd/gsd-pi@${GSD_VERSION}
 
 # Default working directory for user projects
 WORKDIR /workspace
@@ -227,14 +227,14 @@ if (failed > 0) process.exit(1);
 // tests/smoke/test-version.ts
 // Verifies that `gsd --version` outputs valid semver-like string.
 // When GSD_SMOKE_BINARY is set (CI), uses that binary directly.
-// Otherwise falls back to npx gsd-pi.
+// Otherwise falls back to npx @opengsd/gsd-pi.
 
 import { execFileSync } from "child_process";
 
 const bin = process.env.GSD_SMOKE_BINARY;
 const output = bin
   ? execFileSync(bin, ["--version"], { encoding: "utf8", timeout: 30_000 }).trim()
-  : execFileSync("npx", ["gsd-pi", "--version"], { encoding: "utf8", timeout: 30_000 }).trim();
+  : execFileSync("npx", ["@opengsd/gsd-pi", "--version"], { encoding: "utf8", timeout: 30_000 }).trim();
 
 if (!/^\d+\.\d+\.\d+/.test(output)) {
   console.error(`Unexpected version output: "${output}"`);
@@ -255,7 +255,7 @@ import { execFileSync } from "child_process";
 const bin = process.env.GSD_SMOKE_BINARY;
 const output = bin
   ? execFileSync(bin, ["--help"], { encoding: "utf8", timeout: 30_000 })
-  : execFileSync("npx", ["gsd-pi", "--help"], { encoding: "utf8", timeout: 30_000 });
+  : execFileSync("npx", ["@opengsd/gsd-pi", "--help"], { encoding: "utf8", timeout: 30_000 });
 
 const requiredKeywords = ["gsd", "usage"];
 for (const keyword of requiredKeywords) {
@@ -283,7 +283,7 @@ const tmp = mkdtempSync(join(tmpdir(), "gsd-smoke-init-"));
 
 try {
   const bin = process.env.GSD_SMOKE_BINARY;
-  const args = bin ? [bin, "init"] : ["npx", "gsd-pi", "init"];
+  const args = bin ? [bin, "init"] : ["npx", "@opengsd/gsd-pi", "init"];
   execFileSync(args[0], args.slice(1), {
     encoding: "utf8",
     cwd: tmp,
@@ -1037,7 +1037,7 @@ jobs:
         run: |
           mkdir /tmp/smoke-test && cd /tmp/smoke-test
           npm init -y
-          npm install gsd-pi@dev
+          npm install @opengsd/gsd-pi@dev
           npx gsd --version
 
   # ─── TEST STAGE ────────────────────────────────────────────
@@ -1059,7 +1059,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Install published dev package globally
-        run: npm install -g gsd-pi@dev
+        run: npm install -g @opengsd/gsd-pi@dev
 
       - name: Install dev dependencies for test runners
         run: npm ci
@@ -1073,7 +1073,7 @@ jobs:
         run: npm run test:fixtures
 
       - name: Promote to @next
-        run: npm dist-tag add gsd-pi@${{ needs.dev-publish.outputs.dev-version }} next
+        run: npm dist-tag add @opengsd/gsd-pi@${{ needs.dev-publish.outputs.dev-version }} next
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -1117,7 +1117,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
       - name: Promote to @latest
-        run: npm dist-tag add gsd-pi@${{ needs.dev-publish.outputs.dev-version }} latest
+        run: npm dist-tag add @opengsd/gsd-pi@${{ needs.dev-publish.outputs.dev-version }} latest
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -1140,7 +1140,7 @@ jobs:
         run: |
           mkdir /tmp/prod-smoke && cd /tmp/prod-smoke
           npm init -y
-          npm install gsd-pi@latest
+          npm install @opengsd/gsd-pi@latest
           npx gsd --version
 
   # ─── CI BUILDER IMAGE (conditional) ────────────────────────
@@ -1222,7 +1222,7 @@ jobs:
 
       - name: Remove old dev versions
         run: |
-          VERSIONS=$(npm view gsd-pi versions --json 2>/dev/null || echo "[]")
+          VERSIONS=$(npm view @opengsd/gsd-pi versions --json 2>/dev/null || echo "[]")
 
           DEV_VERSIONS=$(echo "$VERSIONS" | node -e "
             const stdin = require('fs').readFileSync('/dev/stdin', 'utf8');
@@ -1242,7 +1242,7 @@ jobs:
           THIRTY_DAYS_MS=2592000000
 
           for VERSION in $DEV_VERSIONS; do
-            PUBLISH_TIME=$(npm view "gsd-pi@$VERSION" time --json 2>/dev/null || echo "")
+            PUBLISH_TIME=$(npm view "@opengsd/gsd-pi@$VERSION" time --json 2>/dev/null || echo "")
 
             if [ -n "$PUBLISH_TIME" ]; then
               AGE_MS=$(node -e "
@@ -1251,10 +1251,10 @@ jobs:
               " 2>/dev/null || echo "0")
 
               if [ "$AGE_MS" -gt "$THIRTY_DAYS_MS" ]; then
-                echo "Unpublishing gsd-pi@$VERSION"
-                npm unpublish "gsd-pi@$VERSION" || echo "Failed to unpublish $VERSION"
+                echo "Unpublishing @opengsd/gsd-pi@$VERSION"
+                npm unpublish "@opengsd/gsd-pi@$VERSION" || echo "Failed to unpublish $VERSION"
               else
-                echo "Keeping gsd-pi@$VERSION (within 30 days)"
+                echo "Keeping @opengsd/gsd-pi@$VERSION (within 30 days)"
               fi
             fi
           done

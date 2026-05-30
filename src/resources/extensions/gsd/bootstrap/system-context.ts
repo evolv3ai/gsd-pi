@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: System prompt and hidden context bootstrap for GSD sessions.
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
@@ -81,7 +81,7 @@ function buildBundledSkillsTable(): string {
     rows.push(`| ${trigger} | \`${resolution.resolvedPath}\` |`);
   }
   if (rows.length === 0) {
-    return "*No bundled skills found. Install skills to `~/.agents/skills/` or `~/.claude/skills/`.*";
+    return "*No bundled skills found. Install or sync skills to `~/.gsd/agent/skills/`, `~/.agents/skills/`, or `~/.claude/skills/`.*";
   }
   return `| Trigger | Skill to load |\n|---|---|\n${rows.join("\n")}`;
 }

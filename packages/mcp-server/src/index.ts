@@ -1,9 +1,10 @@
 /**
- * @gsd-build/mcp-server — MCP server for GSD orchestration and project state.
+ * @opengsd/mcp-server — MCP server for GSD orchestration and project state.
  */
 
 export { SessionManager } from './session-manager.js';
 export { createMcpServer } from './server.js';
+export { registerWorkflowTools, WORKFLOW_TOOL_NAMES } from './workflow-tools.js';
 export type {
   SessionStatus,
   ManagedSession,

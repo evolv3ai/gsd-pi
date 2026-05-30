@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Auto-mode orchestration, session lifecycle, and stop handling.
 /**
  * GSD Auto Mode — Fresh Session Per Unit
@@ -20,6 +20,11 @@ import type {
 } from "@gsd/pi-coding-agent";
 
 import { deriveState } from "./state.js";
+import {
+  buildRequirementsBacklogSummaryLines,
+  countUnmappedActiveRequirements,
+  getUnmappedActiveRequirements,
+} from "./requirements-backlog.js";
 import { parseUnitId } from "./unit-id.js";
 import type { GSDState } from "./types.js";
 import {
@@ -85,6 +90,8 @@ import {
   getNewBudgetAlertLevel,
   getBudgetEnforcementAction,
   getContextPauseAction,
+  resolveCompactionThresholdPercent,
+  shouldRerootStepSessionForContext,
 } from "./auto-budget.js";
 import {
   markToolStart as _markToolStart,
@@ -217,6 +224,7 @@ import { CMUX_CHANNELS, type CmuxLogLevel } from "../shared/cmux-events.js";
 import { ensureDbOpen } from "./bootstrap/dynamic-tools.js";
 import { getValidationBlockMessageForBase } from "./validation-block-guard.js";
 import { getUnmergedMilestoneBlockMessageForBase } from "./unmerged-milestone-guard.js";
+import { clearSessionModelOverride } from "./session-model-override.js";
 
 function makeCmuxEmitters(pi: ExtensionAPI) {
   return {
@@ -241,7 +249,7 @@ import { bootstrapAutoSession, openProjectDbIfPresent, type BootstrapDeps } from
 import { initHealthWidget } from "./health-widget.js";
 import { runLegacyAutoLoop, runUokKernelLoop } from "./auto/loop.js";
 import { resolveAgentEnd, resolveAgentEndCancelled, _resetPendingResolve, isSessionSwitchInFlight } from "./auto/resolve.js";
-import type { LoopDeps, StopAutoOptions } from "./auto/loop-deps.js";
+import type { LoopDeps, PauseAutoOptions, PauseAutoUnitIdentity, StopAutoOptions } from "./auto/loop-deps.js";
 import type { ErrorContext } from "./auto/types.js";
 import { runAutoLoopWithUok } from "./uok/kernel.js";
 import { resolveUokFlags } from "./uok/flags.js";
@@ -350,6 +358,13 @@ export function formatAutoStopNotificationPrefix(reason?: string | null): string
   const displayReason = formatAutoStopDisplayReason(reason);
   const prefix = isBlockedStopReason(reason) ? "Auto-mode blocked" : "Auto-mode stopped";
   return displayReason ? `${prefix} — ${displayReason}` : prefix;
+}
+
+function clearSessionModelOverrideForCommandSession(ctx?: ExtensionContext | null): void {
+  const sessionId =
+    s.cmdCtx?.sessionManager?.getSessionId?.() ??
+    ctx?.sessionManager?.getSessionId?.();
+  if (sessionId) clearSessionModelOverride(sessionId);
 }
 
 /**
@@ -636,6 +651,8 @@ export {
   getNewBudgetAlertLevel,
   getBudgetEnforcementAction,
   getContextPauseAction,
+  resolveCompactionThresholdPercent,
+  shouldRerootStepSessionForContext,
 } from "./auto-budget.js";
 
 function closeOutSignalInterruptedUnit(currentBasePath: string): void {
@@ -1039,6 +1056,23 @@ function currentUnitLabel(): string | null {
   return `${unitVerb(s.currentUnit.type)} ${s.currentUnit.id}`;
 }
 
+export function capturePauseAutoUnitIdentity(): PauseAutoUnitIdentity | null {
+  if (!s.currentUnit) return null;
+  return {
+    type: s.currentUnit.type,
+    id: s.currentUnit.id,
+    startedAt: s.currentUnit.startedAt,
+  };
+}
+
+function pauseAutoUnitIdentityMatches(expected: PauseAutoUnitIdentity | null): boolean {
+  if (!s.currentUnit) return expected === null;
+  return expected !== null &&
+    s.currentUnit.type === expected.type &&
+    s.currentUnit.id === expected.id &&
+    s.currentUnit.startedAt === expected.startedAt;
+}
+
 function setLifecycleOutcome(
   ctx: ExtensionContext | undefined,
   input: {
@@ -1122,6 +1156,59 @@ export async function rerootCommandSession(
   }
 }
 
+/**
+ * After a completed step-mode unit, reclaim context headroom when usage is at
+ * or above the compaction threshold. Writes a context-mode snapshot first, then
+ * re-roots the visible command session while leaving the NEXT progress surface.
+ */
+export async function maybeRerootStepSessionForHighContext(
+  ctx: ExtensionContext,
+  workspaceRoot: string,
+  cmdCtx: Pick<ExtensionCommandContext, "getContextUsage" | "newSession"> | null | undefined,
+  originalBasePath?: string | null,
+): Promise<{ rerooted: boolean }> {
+  if (!cmdCtx) return { rerooted: false };
+
+  const contextPercent = cmdCtx.getContextUsage?.()?.percent;
+  const { loadEffectiveGSDPreferences } = await import("./preferences.js");
+  const prefs = loadEffectiveGSDPreferences(workspaceRoot);
+  const compactionThreshold = prefs?.preferences.context_management?.compaction_threshold_percent;
+
+  if (!shouldRerootStepSessionForContext(contextPercent, compactionThreshold)) {
+    return { rerooted: false };
+  }
+
+  const { resolveWorktreeProjectRoot } = await import("./worktree-root.js");
+  const snapshotBase = resolveWorktreeProjectRoot(workspaceRoot, originalBasePath);
+  const { writeContextModeCompactionSnapshot } = await import("./context-mode-snapshot.js");
+  await writeContextModeCompactionSnapshot(snapshotBase);
+
+  const displayPercent = (contextPercent as number).toFixed(1);
+  const thresholdDisplay = resolveCompactionThresholdPercent(compactionThreshold).toFixed(0);
+  const result = await rerootCommandSession(cmdCtx, workspaceRoot);
+  if (result.status === "ok") {
+    ctx.ui.notify(
+      `Step complete — context at ${displayPercent}% (threshold: ${thresholdDisplay}%). Fresh session ready for /gsd next.`,
+      "info",
+    );
+    return { rerooted: true };
+  }
+  if (result.status === "cancelled") {
+    logWarning(
+      "engine",
+      "step-boundary session re-root was cancelled",
+      { file: "auto.ts", basePath: workspaceRoot },
+    );
+  } else if (result.status === "failed") {
+    logWarning(
+      "engine",
+      `step-boundary session re-root failed: ${result.error ?? "unknown"}`,
+      { file: "auto.ts", basePath: workspaceRoot },
+    );
+  }
+  return { rerooted: false };
+}
+
 export async function cleanupAfterLoopExit(ctx: ExtensionContext): Promise<void> {
   const preserveStepSurface = s.preserveStepSurfaceAfterLoopExit;
   const preserveCompletionSurface = s.completionStopInProgress;
@@ -1133,6 +1220,7 @@ export async function cleanupAfterLoopExit(ctx: ExtensionContext): Promise<void>
   stopAutoCommandPolling();
   restoreProjectRootEnv();
   restoreMilestoneLockEnv();
+  if (!preservePausedSurface) clearSessionModelOverrideForCommandSession(ctx);
 
   // Clear crash lock and release session lock so the next `/gsd next` does
   // not see a stale lock with the current PID and treat it as a "remote"
@@ -1186,6 +1274,13 @@ export async function cleanupAfterLoopExit(ctx: ExtensionContext): Promise<void>
       logWarning("engine", "post-loop session re-root was cancelled", { file: "auto.ts", basePath: s.originalBasePath });
     } else if (result.status === "failed") {
       logWarning("engine", `post-loop session re-root failed: ${result.error ?? "unknown"}`, { file: "auto.ts", basePath: s.originalBasePath });
+    }
+  }
+
+  if (preserveStepSurface && s.cmdCtx) {
+    const workspaceRoot = s.basePath || s.originalBasePath;
+    if (workspaceRoot) {
+      await maybeRerootStepSessionForHighContext(ctx, workspaceRoot, s.cmdCtx, s.originalBasePath);
     }
   }
 }
@@ -1522,7 +1617,7 @@ export async function stopAuto(
     try {
       if (!preserveCompletionSurface) {
         const ledger = getLedger();
-        const isAllComplete = reason === "All milestones complete";
+        const isAllComplete = (reason ?? "").startsWith("All milestones complete");
         const isMilestoneComplete = /^Milestone\s+\S+\s+complete$/i.test(reason ?? "");
         const notificationPrefix = isAllComplete
           ? "All milestones complete"
@@ -1568,6 +1663,16 @@ export async function stopAuto(
       const contextUsage = s.cmdCtx?.getContextUsage?.();
       const milestoneId = completionMilestoneId;
       const rollup = loadMilestoneCompletionRollup(s.originalBasePath || s.basePath, milestoneId);
+      const unmappedActiveRequirements = options.completionWidget.allMilestonesComplete
+        ? countUnmappedActiveRequirements()
+        : 0;
+      const requirementsBacklogPreview = unmappedActiveRequirements > 0
+        ? buildRequirementsBacklogSummaryLines(
+          unmappedActiveRequirements,
+          getUnmappedActiveRequirements(),
+          3,
+        ).slice(1)
+        : undefined;
       setCompletionProgressWidget(ctx, {
         milestoneId,
         milestoneTitle: options.completionWidget.milestoneTitle ?? rollup.milestoneTitle,
@@ -1593,6 +1698,8 @@ export async function stopAuto(
         completedSlices,
         totalSlices,
         allMilestonesComplete: options.completionWidget.allMilestonesComplete,
+        unmappedActiveRequirements,
+        requirementsBacklogPreview,
         basePath: s.originalBasePath || s.basePath || null,
       });
       if (process.env.GSD_HEADLESS === "1") {
@@ -1715,7 +1822,7 @@ export async function stopAuto(
     // Drop the active-tool baseline so a subsequent /gsd auto run on the
     // same `pi` instance recaptures from the live tool set rather than
     // restoring this session's snapshot and silently undoing any tool
-    // changes the user made between sessions (#4959 / CodeRabbit).
+    // changes the user made between sessions (#4959).
     if (pi) clearToolBaseline(pi);
 
     try {
@@ -1723,6 +1830,8 @@ export async function stopAuto(
     } catch (err) {
       debugLog("stop-orchestration-stop", { error: err instanceof Error ? err.message : String(err) });
     }
+
+    clearSessionModelOverrideForCommandSession(ctx);
 
     // Reset all session state in one call
     s.resetAfterStop({ preserveCompletionSurface });
@@ -1760,9 +1869,21 @@ export async function pauseAuto(
   ctx?: ExtensionContext,
   _pi?: ExtensionAPI,
   _errorContext?: ErrorContext,
+  options: PauseAutoOptions = {},
 ): Promise<void> {
   if (!s.active) return;
+  if (
+    Object.prototype.hasOwnProperty.call(options, "expectedCurrentUnit") &&
+    !pauseAutoUnitIdentityMatches(options.expectedCurrentUnit ?? null)
+  ) {
+    debugLog("pause-auto-stale-unit-guard", {
+      expectedCurrentUnit: options.expectedCurrentUnit ?? null,
+      currentUnit: s.currentUnit,
+    });
+    return;
+  }
   s.active = false;
+  s.paused = true;
   clearUnitTimeout();
   stopAutoCommandPolling();
 
@@ -1851,18 +1972,18 @@ export async function pauseAuto(
 
   if (s.workerId) {
     try {
+      if (s.currentMilestoneId && s.milestoneLeaseToken) {
+        releaseMilestoneLease(s.workerId, s.currentMilestoneId, s.milestoneLeaseToken);
+      }
       markWorkerStopping(s.workerId);
     } catch (err) {
       logWarning("engine", `pause worker cleanup failed: ${getErrorMessage(err)}`, { file: "auto.ts" });
     }
     s.workerId = null;
+    s.milestoneLeaseToken = null;
   }
 
   deregisterSigtermHandler();
-
-  // Unblock pending unitPromise so autoLoop exits cleanly (#1799)
-  resolveAgentEnd({ messages: [] });
-  _resetPendingResolve();
 
   try {
     await s.orchestration?.stop("pause");
@@ -1870,7 +1991,6 @@ export async function pauseAuto(
     debugLog("pause-orchestration-stop", { error: err instanceof Error ? err.message : String(err) });
   }
 
-  s.paused = true;
   deactivateGSD();
   restoreProjectRootEnv();
   restoreMilestoneLockEnv();
@@ -2232,6 +2352,7 @@ export function createWiredAutoOrchestrationModule(
           return {
             kind: "fail",
             reason: gate.reason ?? "Pre-dispatch health check failed — run /gsd doctor for details.",
+            action: gate.severity ?? "pause",
           };
         } catch (error) {
           return { kind: "threw", error };
@@ -2522,7 +2643,7 @@ export async function startAuto(
   // leaves the last provider-trimmed active tools in place, so clearing here
   // would let the next selectAndApplyModel recapture that already-narrowed
   // set as the new baseline — exactly the cross-unit poisoning this PR is
-  // fixing (#4959 / CodeRabbit Major).  The pre-pause baseline survives in
+  // fixing (#4959).  The pre-pause baseline survives in
   // the WeakMap keyed by `pi`.
   if (!s.paused) clearToolBaseline(pi);
 

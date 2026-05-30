@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const { mkdirSync, cpSync, copyFileSync, readdirSync } = require('fs');
+const { existsSync, mkdirSync, cpSync, copyFileSync, readdirSync } = require('fs');
 const { join } = require('path');
 
 /**
@@ -32,24 +32,36 @@ function copyDirRecursive(src, dest, filter) {
   }
 }
 
-// Theme assets
-mkdirSync('dist/modes/interactive/theme', { recursive: true });
-safeCpSync('src/modes/interactive/theme', 'dist/modes/interactive/theme', {
-  recursive: true,
-  filter: (s) => !s.endsWith('.ts'),
-});
+function copyIfExists(src, dest, options) {
+  if (!existsSync(src)) return;
+  safeCpSync(src, dest, options);
+}
 
-// Export HTML templates and vendor files
-mkdirSync('dist/core/export-html/vendor', { recursive: true });
-safeCpSync('src/core/export-html/template.html', 'dist/core/export-html/template.html');
-safeCpSync('src/core/export-html/template.css', 'dist/core/export-html/template.css');
-safeCpSync('src/core/export-html/template.js', 'dist/core/export-html/template.js');
-safeCpSync('src/core/export-html/vendor', 'dist/core/export-html/vendor', {
-  recursive: true,
-  filter: (s) => !s.endsWith('.ts'),
-});
+// Theme assets (GSD seam: src/theme, not modes/interactive/theme)
+const themeSrc = 'src/theme';
+const themeDest = 'dist/theme';
+if (existsSync(themeSrc)) {
+  mkdirSync(themeDest, { recursive: true });
+  safeCpSync(themeSrc, themeDest, {
+    recursive: true,
+    filter: (s) => !s.endsWith('.ts'),
+  });
+}
+
+// Export HTML lives in @gsd/agent-core after ADR-010 seam
+const exportHtmlSrc = 'src/core/export-html';
+if (existsSync(exportHtmlSrc)) {
+  mkdirSync('dist/core/export-html/vendor', { recursive: true });
+  copyIfExists('src/core/export-html/template.html', 'dist/core/export-html/template.html');
+  copyIfExists('src/core/export-html/template.css', 'dist/core/export-html/template.css');
+  copyIfExists('src/core/export-html/template.js', 'dist/core/export-html/template.js');
+  copyIfExists('src/core/export-html/vendor', 'dist/core/export-html/vendor', {
+    recursive: true,
+    filter: (s) => !s.endsWith('.ts'),
+  });
+}
 
 // LSP defaults
 mkdirSync('dist/core/lsp', { recursive: true });
-safeCpSync('src/core/lsp/defaults.json', 'dist/core/lsp/defaults.json');
-safeCpSync('src/core/lsp/lsp.md', 'dist/core/lsp/lsp.md');
+copyIfExists('src/core/lsp/defaults.json', 'dist/core/lsp/defaults.json');
+copyIfExists('src/core/lsp/lsp.md', 'dist/core/lsp/lsp.md');

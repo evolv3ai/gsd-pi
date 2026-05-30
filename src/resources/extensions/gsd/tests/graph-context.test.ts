@@ -7,7 +7,7 @@
  *   Group 3: Node formatting (description, confidence, no-description)
  *
  * Testing strategy:
- *   @gsd-build/mcp-server is dynamically imported inside inlineGraphSubgraph().
+ *   @opengsd/mcp-server is dynamically imported inside inlineGraphSubgraph().
  *   Because node:test (v22) does not support mock.module() without the
  *   --experimental-test-module-mocks flag (not enabled in test:unit), we
  *   exercise the real graphQuery/graphStatus functions by controlling the

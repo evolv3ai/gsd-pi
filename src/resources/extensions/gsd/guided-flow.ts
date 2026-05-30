@@ -9,8 +9,14 @@
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@gsd/pi-coding-agent";
 import type { GSDState } from "./types.js";
 import { showNextAction } from "../shared/tui.js";
+import {
+  notifyDiscussNeedsInteractiveMenu,
+  notifySmartEntryNeedsInteractiveMenu,
+  requiresInteractiveMenu,
+  isInteractiveCommandContext,
+} from "./command-feedback.js";
 import { loadFile, saveFile } from "./files.js";
-import { isDbAvailable, getMilestone, getMilestoneSlices } from "./gsd-db.js";
+import { isDbAvailable, getMilestone, getMilestoneSlices, insertMilestone } from "./gsd-db.js";
 import { parseRoadmapSlices } from "./roadmap-slices.js";
 import { loadPrompt, inlineTemplate } from "./prompt-loader.js";
 import {
@@ -53,10 +59,22 @@ import { showProjectInit, offerMigration } from "./init-wizard.js";
 import { validateDirectory } from "./validate-directory.js";
 import { showConfirm } from "../shared/tui.js";
 import { debugLog } from "./debug-logger.js";
-import { findMilestoneIds, clearReservedMilestoneIds } from "./milestone-ids.js";
+import { findMilestoneIds, clearReservedMilestoneIds, normalizeDiscussTarget } from "./milestone-ids.js";
 import { nextMilestoneIdReserved } from "./milestone-id-reservation.js";
 export { nextMilestoneIdReserved } from "./milestone-id-reservation.js";
 import { parkMilestone, discardMilestone } from "./milestone-actions.js";
+import {
+  buildCloseoutMenuActions,
+  buildIdleMenuSummary,
+  getPrimaryCloseoutRecommendation,
+  handleCloseoutChoice,
+  loadCloseoutContext,
+} from "./closeout-wizard.js";
+import {
+  buildRequirementsBacklogDiscussContext,
+  countUnmappedActiveRequirements,
+  showRequirementsBacklogReview,
+} from "./requirements-backlog.js";
 import { selectAndApplyModel } from "./auto-model-selection.js";
 import { DISCUSS_TOOLS_ALLOWLIST } from "./constants.js";
 import {
@@ -196,9 +214,57 @@ async function runQuickTaskChoice(ctx: ExtensionCommandContext, pi: ExtensionAPI
   await handleQuick(task, ctx, pi);
 }
 
-function isNonInteractiveContext(ctx: ExtensionCommandContext): boolean {
-  if (!ctx.hasUI) return true;
-  return process.env.GSD_HEADLESS === "1" || process.env.GSD_WEB_BRIDGE_TUI === "1";
+export interface LaunchNextMilestoneDiscussOptions {
+  /** When true, force backlog-aware discuss even if no unmapped requirements remain. */
+  mapRequirementsBacklog?: boolean;
+}
+
+async function dispatchDiscussForNextMilestoneWithBacklog(
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI,
+  basePath: string,
+  nextId: string,
+): Promise<void> {
+  const backlogContext = buildRequirementsBacklogDiscussContext(nextId);
+  const discussMilestoneTemplates = inlineTemplate("context", "Context");
+  const structuredQuestionsAvailable = getStructuredQuestionsAvailability(pi, ctx);
+  const basePrompt = loadPrompt("guided-discuss-milestone", {
+    workingDirectory: basePath,
+    milestoneId: nextId,
+    milestoneTitle: `New milestone ${nextId}`,
+    inlinedTemplates: discussMilestoneTemplates,
+    structuredQuestionsAvailable,
+    commitInstruction: buildDocsCommitInstruction(`docs(${nextId}): milestone context from discuss`),
+    fastPathInstruction: [
+      "> **Requirements backlog active.**",
+      "> Map unmapped active requirements to this milestone before finalizing context.",
+      "> Confirm ownership with the user when scope is ambiguous.",
+    ].join("\n"),
+  });
+  const prompt = backlogContext ? `${basePrompt}\n\n${backlogContext}` : basePrompt;
+  await dispatchWorkflow(pi, prompt, "gsd-discuss", ctx, "discuss-milestone", { basePath });
+}
+
+export async function launchNextMilestoneDiscuss(
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI,
+  basePath: string,
+  stepMode: boolean,
+  options: LaunchNextMilestoneDiscussOptions = {},
+): Promise<void> {
+  const milestoneIds = findMilestoneIds(basePath);
+  const uniqueMilestoneIds = !!loadEffectiveGSDPreferences()?.preferences?.unique_milestone_ids;
+  const nextId = nextMilestoneIdReserved(milestoneIds, uniqueMilestoneIds, basePath);
+  const hasUnmappedBacklog = countUnmappedActiveRequirements() > 0;
+  const useBacklogDiscuss = options.mapRequirementsBacklog === true || hasUnmappedBacklog;
+
+  if (useBacklogDiscuss) {
+    setPendingAutoStart(basePath, { ctx, pi, basePath, milestoneId: nextId, step: stepMode });
+    await dispatchDiscussForNextMilestoneWithBacklog(ctx, pi, basePath, nextId);
+    return;
+  }
+
+  await dispatchNewMilestoneDiscuss(ctx, pi, basePath, nextId, stepMode, `New milestone ${nextId}.`);
 }
 
 /**
@@ -695,6 +761,40 @@ export function checkAutoStartAfterDiscuss(lookupBasePath?: string): boolean {
       }
       if (manifestHasMilestone) {
         logWarning("guided", `R3b: getMilestone(${milestoneId}) returned null but manifest has the row — treating as stale read`);
+      } else if (contextFile) {
+        // R3b-recovery: CONTEXT.md is on disk but gsd_plan_milestone was never called
+        // (likely blocked by the depth-verification gate re-firing on post-verification
+        // text). Auto-register as "queued" so Gate 1b can pick it up and retry
+        // gsd_plan_milestone on the next checkAutoStartAfterDiscuss call.
+        if (entry.r3bRecoveryCount >= MAX_PLAN_BLOCKED_RECOVERIES) {
+          logWarning(
+            "guided",
+            `R3b: milestone ${milestoneId} DB-row recovery limit reached ` +
+            `(${entry.r3bRecoveryCount}/${MAX_PLAN_BLOCKED_RECOVERIES}); escalating to user`,
+          );
+          ctx.ui.notify(
+            `Milestone ${milestoneId}: DB row recovery failed ${entry.r3bRecoveryCount} times. ` +
+            `Re-run /gsd to reset the recovery counter, or run /gsd-debug to diagnose without resetting.`,
+            "error",
+          );
+          return false;
+        }
+        logWarning(
+          "guided",
+          `R3b: ${milestoneId} has CONTEXT.md but no DB row — inserting placeholder "queued" row ` +
+          `for Gate 1b recovery (attempt ${entry.r3bRecoveryCount + 1}/${MAX_PLAN_BLOCKED_RECOVERIES})`,
+        );
+        try {
+          insertMilestone({ id: milestoneId, title: milestoneId, status: "queued" });
+        } catch (e) {
+          logWarning("guided", `R3b: insertMilestone failed: ${(e as Error).message}`);
+        }
+        entry.r3bRecoveryCount += 1;
+        ctx.ui.notify(
+          `Milestone ${milestoneId}: context file exists but DB row was missing — recovering. Retrying gsd_plan_milestone.`,
+          "warning",
+        );
+        return false;
       } else {
         ctx.ui.notify(
           `Milestone ${milestoneId}: discuss artifacts on disk but no DB row exists. ` +
@@ -711,7 +811,7 @@ export function checkAutoStartAfterDiscuss(lookupBasePath?: string): boolean {
   deletePendingAutoStart(basePath);
   ctx.ui.notify(`Milestone ${milestoneId} ready.`, "success");
   if (entry.startAuto !== false) {
-    scheduleAutoStartAfterIdle(ctx, pi, basePath, false, { step });
+    scheduleAutoStartAfterIdle(ctx, pi, basePath, false, { step: step ?? true });
   }
   return true;
 }
@@ -1267,6 +1367,40 @@ function buildHeadlessDiscussPrompt(nextId: string, seedContext: string, _basePa
  * @param basePath - Root directory of the project
  * @returns The discuss prompt string
  */
+async function buildDiscussPreparationContext(
+  ctx: ExtensionCommandContext,
+  basePath: string,
+  mode: "greenfield" | "milestone" = "greenfield",
+): Promise<string> {
+  const prefs = loadEffectiveGSDPreferences()?.preferences ?? {};
+  if (prefs.discuss_preparation === false) return "";
+
+  try {
+    const prepResult = await runPreparation(basePath, ctx.ui, {
+      discuss_preparation: prefs.discuss_preparation,
+      discuss_web_research: prefs.discuss_web_research,
+      discuss_depth: prefs.discuss_depth,
+    });
+
+    if (!prepResult.enabled) return "";
+
+    const codebaseBrief = prepResult.codebaseBrief || formatCodebaseBrief(prepResult.codebase);
+    const priorContextBrief = prepResult.priorContextBrief || formatPriorContextBrief(prepResult.priorContext);
+    const parts: string[] = [];
+    if (codebaseBrief) parts.push(`### Codebase Brief\n\n${codebaseBrief}`);
+    if (priorContextBrief) parts.push(`### Prior Context Brief\n\n${priorContextBrief}`);
+    if (parts.length === 0) return "";
+
+    const guidance = mode === "milestone"
+      ? "Use these findings as background only — they describe what already exists, NOT what the user wants next. After investigation, send **one** message: a short recap (at most 2-3 sentences) plus 1-3 focused questions, then **stop**. Do not dump a feature-menu brainstorm or send a second message restating the same question."
+      : "Use these findings as background context — they describe what already exists, NOT what the user wants to build. Always ask the user what they want to build first.";
+    return `\n\n## Preparation Context\n\nThe system analyzed the codebase before this discussion. ${guidance}\n\n${parts.join("\n\n")}`;
+  } catch (err) {
+    logWarning("guided", `preparation failed, proceeding without context: ${(err as Error).message}`);
+    return "";
+  }
+}
+
 async function prepareAndBuildDiscussPrompt(
   ctx: ExtensionCommandContext,
   pi: ExtensionAPI,
@@ -1274,37 +1408,53 @@ async function prepareAndBuildDiscussPrompt(
   preamble: string,
   basePath: string,
 ): Promise<string> {
-  const prefs = loadEffectiveGSDPreferences()?.preferences ?? {};
+  const preparationContext = await buildDiscussPreparationContext(ctx, basePath);
+  return buildDiscussPrompt(nextId, preamble, basePath, pi, ctx, preparationContext);
+}
 
-  // Run preparation if enabled (default: true) — results are injected as
-  // supplementary context into the standard discuss prompt, NOT as a
-  // replacement template. The discuss prompt always leads with "What's the
-  // vision?" so the user defines the scope, not the codebase analysis.
-  let preparationContext = "";
-  if (prefs.discuss_preparation !== false) {
-    try {
-      const prepResult = await runPreparation(basePath, ctx.ui, {
-        discuss_preparation: prefs.discuss_preparation,
-        discuss_web_research: prefs.discuss_web_research,
-        discuss_depth: prefs.discuss_depth,
-      });
+/**
+ * Start discussion for a newly reserved milestone ID.
+ * Greenfield (no milestone dirs yet) uses discuss.md (vision + project artifacts).
+ * Established projects use guided-discuss-milestone so we do not re-run vision/reflection.
+ */
+async function dispatchNewMilestoneDiscuss(
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI,
+  basePath: string,
+  nextId: string,
+  stepMode: boolean,
+  greenfieldPreamble?: string,
+): Promise<void> {
+  setPendingAutoStart(basePath, { ctx, pi, basePath, milestoneId: nextId, step: stepMode });
 
-      if (prepResult.enabled) {
-        const codebaseBrief = prepResult.codebaseBrief || formatCodebaseBrief(prepResult.codebase);
-        const priorContextBrief = prepResult.priorContextBrief || formatPriorContextBrief(prepResult.priorContext);
-        const parts: string[] = [];
-        if (codebaseBrief) parts.push(`### Codebase Brief\n\n${codebaseBrief}`);
-        if (priorContextBrief) parts.push(`### Prior Context Brief\n\n${priorContextBrief}`);
-        if (parts.length > 0) {
-          preparationContext = `\n\n## Preparation Context\n\nThe system analyzed the codebase before this discussion. Use these findings as background context — they describe what already exists, NOT what the user wants to build. Always ask the user what they want to build first.\n\n${parts.join("\n\n")}`;
-        }
-      }
-    } catch (err) {
-      logWarning("guided", `preparation failed, proceeding without context: ${(err as Error).message}`);
-    }
+  const isGreenfield = findMilestoneIds(basePath).length === 0;
+  if (isGreenfield) {
+    const prompt = await prepareAndBuildDiscussPrompt(
+      ctx,
+      pi,
+      nextId,
+      greenfieldPreamble
+        ?? `New project, milestone ${nextId}. Do NOT read or explore .gsd/ — it's empty scaffolding.`,
+      basePath,
+    );
+    await dispatchWorkflow(pi, prompt, "gsd-run", ctx, "discuss-milestone", { basePath });
+    return;
   }
 
-  return buildDiscussPrompt(nextId, preamble, basePath, pi, ctx, preparationContext);
+  const preparationContext = await buildDiscussPreparationContext(ctx, basePath, "milestone");
+  const discussMilestoneTemplates = inlineTemplate("context", "Context");
+  const structuredQuestionsAvailable = getStructuredQuestionsAvailability(pi, ctx);
+  let prompt = loadPrompt("guided-discuss-milestone", {
+    workingDirectory: basePath,
+    milestoneId: nextId,
+    milestoneTitle: `New milestone ${nextId}`,
+    inlinedTemplates: discussMilestoneTemplates,
+    structuredQuestionsAvailable,
+    commitInstruction: buildDocsCommitInstruction(`docs(${nextId}): milestone context from discuss`),
+    fastPathInstruction: "",
+  });
+  if (preparationContext) prompt += preparationContext;
+  await dispatchWorkflow(pi, prompt, "gsd-discuss", ctx, "discuss-milestone", { basePath });
 }
 
 /**
@@ -1370,6 +1520,7 @@ export async function showHeadlessMilestoneCreation(
     pi,
     basePath,
     milestoneId: nextId,
+    step: true,
     startAuto: options.startAutoAfterReady !== false,
   });
 
@@ -1384,6 +1535,26 @@ export async function showHeadlessMilestoneCreation(
 
 
 // ─── Discuss Flow ─────────────────────────────────────────────────────────────
+
+type DiscussNormSlice = { id: string; done: boolean; title: string };
+
+/** Prefer DB slice rows; fall back to ROADMAP parsing when the DB is empty (#2892). */
+async function loadDiscussNormSlices(basePath: string, mid: string): Promise<DiscussNormSlice[]> {
+  let normSlices: DiscussNormSlice[] = [];
+  if (isDbAvailable()) {
+    normSlices = getMilestoneSlices(mid).map(s => ({ id: s.id, done: s.status === "complete", title: s.title }));
+  }
+  if (normSlices.length === 0) {
+    const roadmapFile = resolveMilestoneFile(basePath, mid, "ROADMAP");
+    const roadmapContent = roadmapFile ? await loadFile(roadmapFile) : null;
+    if (roadmapContent) {
+      normSlices = parseRoadmapSlices(roadmapContent).map(s => ({ id: s.id, done: s.done, title: s.title }));
+    }
+  }
+  return normSlices;
+}
+
+export const _loadDiscussNormSlicesForTest = loadDiscussNormSlices;
 
 /**
  * Build a rich inlined-context prompt for discussing a specific slice.
@@ -1498,6 +1669,12 @@ export async function showDiscuss(
     return;
   }
 
+  const target = options?.target?.trim() ? normalizeDiscussTarget(options.target.trim()) : undefined;
+  if (requiresInteractiveMenu(ctx, !!target)) {
+    notifyDiscussNeedsInteractiveMenu(ctx, "this session has no interactive menu");
+    return;
+  }
+
   // Ensure DB is open before deriving state (#5837).
   const { ensureDbOpen } = await import("./bootstrap/dynamic-tools.js");
   await ensureDbOpen(basePath);
@@ -1521,7 +1698,6 @@ export async function showDiscuss(
     logWarning("guided", `STATE.md rebuild failed: ${(err as Error).message}`);
   }
 
-  const target = options?.target?.trim();
   if (target) {
     const slash = target.indexOf("/");
     if (slash > 0) {
@@ -1532,10 +1708,8 @@ export async function showDiscuss(
         ctx.ui.notify(`Milestone ${mid} is not discussable.`, "warning");
         return;
       }
-      const slices = isDbAvailable()
-        ? getMilestoneSlices(mid).map(s => ({ id: s.id, done: s.status === "complete", title: s.title }))
-        : [];
-      const chosen = slices.find((s) => s.id === sid);
+      const slices = await loadDiscussNormSlices(basePath, mid);
+      const chosen = slices.find((s) => s.id.toUpperCase() === sid.toUpperCase());
       if (!chosen) {
         ctx.ui.notify(`Slice ${target} was not found in discussable slices.`, "warning");
         return;
@@ -1619,12 +1793,12 @@ export async function showDiscuss(
       const seed = draftContent
         ? `${basePrompt}\n\n## Prior Discussion (Draft Seed)\n\n${draftContent}`
         : basePrompt;
-      setPendingAutoStart(basePath, { ctx, pi, basePath, milestoneId: mid, step: false });
+      setPendingAutoStart(basePath, { ctx, pi, basePath, milestoneId: mid, step: true });
       await dispatchWorkflow(pi, seed, "gsd-discuss", ctx, "discuss-milestone", { basePath });
     } else if (choice === "discuss_fresh") {
       const discussMilestoneTemplates = inlineTemplate("context", "Context");
       const structuredQuestionsAvailable = getStructuredQuestionsAvailability(pi, ctx);
-      setPendingAutoStart(basePath, { ctx, pi, basePath, milestoneId: mid, step: false });
+      setPendingAutoStart(basePath, { ctx, pi, basePath, milestoneId: mid, step: true });
       await dispatchWorkflow(pi, loadPrompt("guided-discuss-milestone", {
         workingDirectory: basePath,
         milestoneId: mid, milestoneTitle, inlinedTemplates: discussMilestoneTemplates, structuredQuestionsAvailable,
@@ -1637,9 +1811,18 @@ export async function showDiscuss(
       const milestoneIds = findMilestoneIds(basePath);
       const uniqueMilestoneIds = !!loadEffectiveGSDPreferences()?.preferences?.unique_milestone_ids;
       const nextId = nextMilestoneIdReserved(milestoneIds, uniqueMilestoneIds, basePath);
-      setPendingAutoStart(basePath, { ctx, pi, basePath, milestoneId: nextId, step: false });
-      await dispatchWorkflow(pi, await prepareAndBuildDiscussPrompt(ctx, pi, nextId, `New milestone ${nextId}.`, basePath), "gsd-run", ctx, "discuss-milestone", { basePath });
+      await dispatchNewMilestoneDiscuss(ctx, pi, basePath, nextId, true, `New milestone ${nextId}.`);
     }
+    return;
+  }
+
+  // Pre-planning milestones have no slice roadmap yet — route to milestone-level discuss.
+  if (state.phase === "pre-planning") {
+    ctx.ui.notify(
+      `Discuss — starting milestone interview for ${mid}: ${milestoneTitle}…`,
+      "info",
+    );
+    await dispatchDiscussForMilestone(ctx, pi, basePath, mid, milestoneTitle, {});
     return;
   }
 
@@ -1651,20 +1834,7 @@ export async function showDiscuss(
     return;
   }
 
-  // Normalize slices: prefer DB, fall back to parser
-  type NormSlice = { id: string; done: boolean; title: string };
-  let normSlices: NormSlice[];
-  if (isDbAvailable()) {
-    normSlices = getMilestoneSlices(mid).map(s => ({ id: s.id, done: s.status === "complete", title: s.title }));
-  } else {
-    normSlices = [];
-  }
-  // DB is open but returned zero slices despite a roadmap existing —
-  // the DB may be empty due to WAL loss or truncation (see #2815, #2892).
-  // Fall back to roadmap parsing to prevent false "all complete" exit.
-  if (normSlices.length === 0 && roadmapContent) {
-    normSlices = parseRoadmapSlices(roadmapContent).map(s => ({ id: s.id, done: s.done, title: s.title }));
-  }
+  const normSlices = await loadDiscussNormSlices(basePath, mid);
   const pendingSlices = normSlices.filter(s => !s.done);
 
   if (pendingSlices.length === 0) {
@@ -1676,6 +1846,11 @@ export async function showDiscuss(
     ctx.ui.notify("All slices are complete — nothing to discuss.", "info");
     return;
   }
+
+  ctx.ui.notify(
+    `Discuss — ${mid}: ${milestoneTitle}. Choose a slice from the menu below (↑/↓, Enter).`,
+    "info",
+  );
 
   // Loop: show picker, dispatch discuss, repeat until "not_yet"
   while (true) {
@@ -1960,7 +2135,7 @@ async function handleMilestoneActions(
   milestoneTitle: string,
   options?: { step?: boolean },
 ): Promise<boolean> {
-  const stepMode = options?.step;
+  const stepMode = options?.step ?? true;
   const choice = await showNextAction(ctx, {
     title: `Milestone Actions — ${milestoneId}`,
     summary: [`${milestoneId}: ${milestoneTitle}`],
@@ -2037,11 +2212,7 @@ async function handleMilestoneActions(
     const milestoneIds = findMilestoneIds(basePath);
     const uniqueMilestoneIds = !!loadEffectiveGSDPreferences()?.preferences?.unique_milestone_ids;
     const nextId = nextMilestoneIdReserved(milestoneIds, uniqueMilestoneIds, basePath);
-    setPendingAutoStart(basePath, { ctx, pi, basePath, milestoneId: nextId, step: stepMode });
-    await dispatchWorkflow(pi, await prepareAndBuildDiscussPrompt(ctx, pi, nextId,
-      `New milestone ${nextId}.`,
-      basePath
-    ), "gsd-run", ctx, "discuss-milestone", { basePath });
+    await dispatchNewMilestoneDiscuss(ctx, pi, basePath, nextId, stepMode, `New milestone ${nextId}.`);
     return true;
   }
 
@@ -2055,7 +2226,7 @@ export async function showSmartEntry(
   basePath: string,
   options?: { step?: boolean },
 ): Promise<void> {
-  const stepMode = options?.step;
+  const stepMode = options?.step ?? true;
 
   // ── Clear stale milestone ID reservations from previous cancelled sessions ──
   // Reservations only need to survive within a single /gsd interaction.
@@ -2194,7 +2365,7 @@ export async function showSmartEntry(
       if (result.action === "recovery-required") {
         ctx.ui.notify(
           result.message ??
-            `Markdown planning artifacts do not match the authoritative DB. Run \`${result.recoveryCommand ?? "gsd recover"}\` to import markdown explicitly.`,
+            `Markdown planning artifacts do not match the authoritative DB. Run \`${result.recoveryCommand ?? "/gsd recover"}\` to import markdown explicitly.`,
           "warning",
         );
       }
@@ -2236,6 +2407,9 @@ export async function showSmartEntry(
 
   const planV2GateDecision = runPlanV2Gate(ctx, basePath, state);
   if (planV2GateDecision === "block") return;
+
+  const closeout = await loadCloseoutContext(basePath);
+  const primaryCloseout = getPrimaryCloseoutRecommendation(closeout);
 
   if (!state.activeMilestone?.id) {
     // Guard: if a discuss session is already in flight, don't re-inject the prompt.
@@ -2295,44 +2469,55 @@ export async function showSmartEntry(
     if (isFirst) {
       // First ever — skip wizard, just ask directly
       ctx.ui.setStatus("gsd-step", "New Milestone · answer the questions above to plan");
-      setPendingAutoStart(basePath, { ctx, pi, basePath, milestoneId: nextId, step: stepMode });
-      await dispatchWorkflow(pi, await prepareAndBuildDiscussPrompt(ctx, pi, nextId,
+      await dispatchNewMilestoneDiscuss(
+        ctx,
+        pi,
+        basePath,
+        nextId,
+        stepMode,
         `New project, milestone ${nextId}. Do NOT read or explore .gsd/ — it's empty scaffolding.`,
-        basePath
-      ), "gsd-run", ctx, "discuss-milestone", { basePath });
+      );
     } else {
-      if (isNonInteractiveContext(ctx)) {
-        ctx.ui.notify(`Auto-mode stopped — ${state.nextAction || "No active milestone."}`, "info");
+      if (!isInteractiveCommandContext(ctx)) {
+        notifySmartEntryNeedsInteractiveMenu(ctx, "milestone menu needs an interactive session");
         return;
       }
       const choice = await showNextAction(ctx, {
-        title: "GSD — Get Shit Done",
-        summary: ["No active milestone."],
+        title: "GSD — Git Ship Done",
+        summary: buildIdleMenuSummary(state, closeout),
         actions: [
+          ...buildCloseoutMenuActions(closeout),
+          ...(state.phase === "complete" ? [{
+            id: "status",
+            label: "Review status",
+            description: "Open the live run dashboard. For shipped work, use /gsd visualize.",
+            recommended: false,
+          }] : []),
+          {
+            id: "new_milestone",
+            label: state.phase === "complete" ? "Start new milestone" : "Create next milestone",
+            description: "Define a larger body of work with planning artifacts.",
+            recommended: primaryCloseout === null,
+          },
           {
             id: "quick_task",
             label: "Quick task",
             description: "For small bounded work, run /gsd quick <task> or /gsd do <task>.",
-            recommended: true,
-          },
-          {
-            id: "new_milestone",
-            label: "Create next milestone",
-            description: "Define a larger body of work with planning artifacts.",
+            recommended: false,
           },
         ],
         notYetMessage: "Run /gsd when ready.",
       });
 
-      if (choice === "quick_task") {
+      if (await handleCloseoutChoice(ctx, basePath, choice, closeout)) return;
+      if (choice === "status") {
+        const { fireStatusViaCommand } = await import("./commands.js");
+        await fireStatusViaCommand(ctx);
+      } else if (choice === "quick_task") {
         await runQuickTaskChoice(ctx, pi);
       } else if (choice === "new_milestone") {
         ctx.ui.setStatus("gsd-step", "New Milestone · answer the questions above to plan");
-        setPendingAutoStart(basePath, { ctx, pi, basePath, milestoneId: nextId, step: stepMode });
-        await dispatchWorkflow(pi, await prepareAndBuildDiscussPrompt(ctx, pi, nextId,
-          `New milestone ${nextId}.`,
-          basePath
-        ), "gsd-run", ctx, "discuss-milestone", { basePath });
+        await dispatchNewMilestoneDiscuss(ctx, pi, basePath, nextId, stepMode, `New milestone ${nextId}.`);
       }
     }
     return;
@@ -2361,46 +2546,54 @@ export async function showSmartEntry(
 
   // ── All milestones complete → New milestone ──────────────────────────
   if (state.phase === "complete") {
-    if (isNonInteractiveContext(ctx)) {
-      ctx.ui.notify("Auto-mode stopped — all milestones complete.", "info");
+    if (!isInteractiveCommandContext(ctx)) {
+      notifySmartEntryNeedsInteractiveMenu(ctx, "all milestones are complete");
       return;
     }
+    const unmappedActive = countUnmappedActiveRequirements();
     const choice = await showNextAction(ctx, {
-      title: `GSD — ${milestoneId}: ${milestoneTitle}`,
-      summary: ["All milestones complete."],
+      title: "GSD — All milestones complete",
+      summary: buildIdleMenuSummary(state, closeout),
       actions: [
+        ...buildCloseoutMenuActions(closeout),
+        ...(unmappedActive > 0 ? [{
+          id: "review_requirements_backlog",
+          label: "Review requirements backlog",
+          description: `Inspect ${unmappedActive} unmapped active requirement${unmappedActive === 1 ? "" : "s"} before starting new work.`,
+          recommended: primaryCloseout === null,
+        }] : []),
         {
-          id: "quick_task",
-          label: "Quick task",
-          description: "Do a small bounded task without opening a milestone.",
-          recommended: true,
+          id: "status",
+          label: "Review status",
+          description: "Open the live run dashboard. For shipped work, use /gsd visualize.",
+          recommended: false,
         },
         {
           id: "new_milestone",
           label: "Start new milestone",
           description: "Define and plan the next milestone.",
+          recommended: primaryCloseout === null && unmappedActive === 0,
         },
         {
-          id: "status",
-          label: "View status",
-          description: "Review what was built.",
+          id: "quick_task",
+          label: "Quick task",
+          description: "Do a small bounded task without opening a milestone.",
+          recommended: false,
         },
       ],
       notYetMessage: "Run /gsd when ready.",
     });
 
+    if (await handleCloseoutChoice(ctx, basePath, choice, closeout)) return;
     if (choice === "quick_task") {
       await runQuickTaskChoice(ctx, pi);
+    } else if (choice === "review_requirements_backlog") {
+      const reviewChoice = await showRequirementsBacklogReview(ctx, basePath);
+      if (reviewChoice === "new_milestone") {
+        await launchNextMilestoneDiscuss(ctx, pi, basePath, stepMode, { mapRequirementsBacklog: true });
+      }
     } else if (choice === "new_milestone") {
-      const milestoneIds = findMilestoneIds(basePath);
-      const uniqueMilestoneIds = !!loadEffectiveGSDPreferences()?.preferences?.unique_milestone_ids;
-      const nextId = nextMilestoneIdReserved(milestoneIds, uniqueMilestoneIds, basePath);
-
-      setPendingAutoStart(basePath, { ctx, pi, basePath, milestoneId: nextId, step: stepMode });
-      await dispatchWorkflow(pi, await prepareAndBuildDiscussPrompt(ctx, pi, nextId,
-        `New milestone ${nextId}.`,
-        basePath
-      ), "gsd-run", ctx, "discuss-milestone", { basePath });
+      await launchNextMilestoneDiscuss(ctx, pi, basePath, stepMode);
     } else if (choice === "status") {
       const { fireStatusViaCommand } = await import("./commands.js");
       await fireStatusViaCommand(ctx);
@@ -2465,11 +2658,7 @@ export async function showSmartEntry(
       const milestoneIds = findMilestoneIds(basePath);
       const uniqueMilestoneIds = !!loadEffectiveGSDPreferences()?.preferences?.unique_milestone_ids;
       const nextId = nextMilestoneIdReserved(milestoneIds, uniqueMilestoneIds, basePath);
-      setPendingAutoStart(basePath, { ctx, pi, basePath, milestoneId: nextId, step: stepMode });
-      await dispatchWorkflow(pi, await prepareAndBuildDiscussPrompt(ctx, pi, nextId,
-        `New milestone ${nextId}.`,
-        basePath
-      ), "gsd-run", ctx, "discuss-milestone", { basePath });
+      await dispatchNewMilestoneDiscuss(ctx, pi, basePath, nextId, stepMode, `New milestone ${nextId}.`);
     }
     return;
   }
@@ -2483,8 +2672,8 @@ export async function showSmartEntry(
       actions: [
         {
           id: "status",
-          label: "View status",
-          description: "Review the blocker and current milestone state.",
+          label: "Fix or recover",
+          description: "Review the blocker and recovery commands for the active milestone.",
           recommended: true,
         },
         {
@@ -2531,24 +2720,26 @@ export async function showSmartEntry(
       const hasContext = !!(contextFile && await loadFile(contextFile));
 
       const actions = [
-        {
-          id: "quick_task",
-          label: "Quick task instead",
-          description: "Use this when the work is small and should not become a milestone.",
-          recommended: true,
-        },
+        ...buildCloseoutMenuActions(closeout),
         {
           id: "plan",
           label: "Create roadmap",
           description: hasContext
             ? "Context captured. Decompose into slices with a boundary map."
             : "Decompose the milestone into slices with a boundary map.",
+          recommended: primaryCloseout === null,
         },
         ...(!hasContext ? [{
           id: "discuss",
           label: "Discuss first",
           description: "Capture decisions on gray areas before planning.",
         }] : []),
+        {
+          id: "quick_task",
+          label: "Quick task instead",
+          description: "Use this when the work is small and should not become a milestone.",
+          recommended: false,
+        },
         {
           id: "skip_milestone",
           label: "Skip — create new milestone",
@@ -2568,6 +2759,7 @@ export async function showSmartEntry(
         notYetMessage: "Run /gsd when ready.",
       });
 
+      if (await handleCloseoutChoice(ctx, basePath, choice, closeout)) return;
       if (choice === "quick_task") {
         await runQuickTaskChoice(ctx, pi);
       } else if (choice === "plan") {
@@ -2594,11 +2786,7 @@ export async function showSmartEntry(
         const milestoneIds = findMilestoneIds(basePath);
         const uniqueMilestoneIds = !!loadEffectiveGSDPreferences()?.preferences?.unique_milestone_ids;
         const nextId = nextMilestoneIdReserved(milestoneIds, uniqueMilestoneIds, basePath);
-        setPendingAutoStart(basePath, { ctx, pi, basePath, milestoneId: nextId, step: stepMode });
-        await dispatchWorkflow(pi, await prepareAndBuildDiscussPrompt(ctx, pi, nextId,
-          `New milestone ${nextId}.`,
-          basePath
-        ), "gsd-run", ctx, "discuss-milestone", { basePath });
+        await dispatchNewMilestoneDiscuss(ctx, pi, basePath, nextId, stepMode, `New milestone ${nextId}.`);
       } else if (choice === "discard_milestone") {
         const confirmed = await showConfirm(ctx, {
           title: "Discard milestone?",

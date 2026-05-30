@@ -120,7 +120,8 @@ export async function showNextAction(
 
 	// Headless/non-interactive guard: avoid emitting interactive select requests
 	// in contexts where no human can answer (no UI, RPC/headless shims).
-	if (!isInteractiveUIContext(ctx)) {
+	if (!isInteractiveCommandContext(ctx)) {
+		notifyCommandMenuUnavailable(ctx, opts.title, opts.notYetMessage);
 		return "not_yet";
 	}
 
@@ -209,12 +210,32 @@ export async function showNextAction(
 			return `${a.label}${tag}: ${a.description}`;
 		});
 		const selected = await ctx.ui.select(opts.title, labels);
-		if (selected === undefined || selected === null) return "not_yet";
+		if (selected === undefined || selected === null) {
+			notifyCommandMenuUnavailable(ctx, opts.title, opts.notYetMessage);
+			return "not_yet";
+		}
 		const idx = labels.indexOf(selected as string);
 		return idx >= 0 ? allActions[idx].id : "not_yet";
 	}
 
 	return result;
+}
+
+/** True when the session can render interactive GSD menus (TUI with UI bound). */
+export function isInteractiveCommandContext(ctx: ExtensionCommandContext): boolean {
+	return isInteractiveUIContext(ctx);
+}
+
+function notifyCommandMenuUnavailable(
+	ctx: ExtensionCommandContext,
+	commandLabel: string,
+	notYetMessage?: string,
+): void {
+	const hint = notYetMessage?.trim() || "Run the command again from the GSD TUI.";
+	ctx.ui.notify(
+		`${commandLabel} menu could not be shown in this session.\n${hint}`,
+		"warning",
+	);
 }
 
 function isInteractiveUIContext(ctx: ExtensionCommandContext): boolean {

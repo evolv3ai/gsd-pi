@@ -19,7 +19,7 @@ import { logWarning } from "./workflow-logger.js";
 import { resolveUokFlags } from "./uok/flags.js";
 import { applyModelPolicyFilter } from "./uok/model-policy.js";
 import { isModelBlocked } from "./blocked-models.js";
-import { getRequiredWorkflowToolsForAutoUnit } from "./workflow-mcp.js";
+import { getRequiredWorkflowToolsForAutoUnit, isWorkflowMcpSurfaceTool } from "./workflow-mcp.js";
 
 /**
  * Thrown when the model-policy gate rejects every candidate model for a unit
@@ -88,6 +88,148 @@ const TOOL_BASELINE = new WeakMap<object, string[]>();
  */
 export function clearToolBaseline(pi: ExtensionAPI | object): void {
   TOOL_BASELINE.delete(pi as unknown as object);
+}
+
+/**
+ * Models eligible for the pre-dispatch policy gate. Prefer registry-available
+ * models; when that list is empty (common after worktree resume before registry
+ * refresh), fall back to the live session / auto-start / pinned models that are
+ * still request-ready.
+ */
+function getRegistryAllModels(registry: ExtensionContext["modelRegistry"]): Model<Api>[] {
+  if (typeof registry.getAll === "function") {
+    return registry.getAll();
+  }
+  return registry.getAvailable();
+}
+
+function buildModelPolicyCandidates(
+  ctx: ExtensionContext,
+  autoModeStartModel: { provider: string; id: string } | null,
+  sessionModelOverride?: { provider: string; id: string },
+): Model<Api>[] {
+  const available = ctx.modelRegistry.getAvailable();
+  if (available.length > 0) return available;
+
+  const registry = ctx.modelRegistry;
+  const all = getRegistryAllModels(registry);
+  const candidates: Model<Api>[] = [];
+  const seen = new Set<string>();
+
+  const tryAdd = (provider: string | undefined, id: string | undefined) => {
+    if (!provider || !id) return;
+    const key = `${provider.toLowerCase()}/${id.toLowerCase()}`;
+    if (seen.has(key)) return;
+    if (!registry.isProviderRequestReady(provider)) return;
+    seen.add(key);
+    const match = all.find((m) => m.provider === provider && m.id === id);
+    if (match) {
+      candidates.push(match);
+      return;
+    }
+    if (ctx.model?.provider === provider && ctx.model?.id === id) {
+      candidates.push(ctx.model);
+    }
+  };
+
+  tryAdd(ctx.model?.provider, ctx.model?.id);
+  tryAdd(autoModeStartModel?.provider, autoModeStartModel?.id);
+  tryAdd(sessionModelOverride?.provider, sessionModelOverride?.id);
+
+  return candidates;
+}
+
+/** Include configured primary/fallback IDs from the full registry, not only getAvailable(). */
+function augmentModelPolicyCandidates(
+  ctx: ExtensionContext,
+  candidates: Model<Api>[],
+  modelConfig: PreferredModelConfig,
+): Model<Api>[] {
+  const registry = ctx.modelRegistry;
+  const all = getRegistryAllModels(registry);
+  const seen = new Set(candidates.map((m) => `${m.provider.toLowerCase()}/${m.id.toLowerCase()}`));
+  const augmented = [...candidates];
+
+  const tryAdd = (modelId: string | undefined) => {
+    if (!modelId) return;
+    const resolved = resolveModelId(modelId, all, ctx.model?.provider);
+    if (!resolved) return;
+    const key = `${resolved.provider.toLowerCase()}/${resolved.id.toLowerCase()}`;
+    if (seen.has(key)) return;
+    if (!registry.isProviderRequestReady(resolved.provider)) return;
+    seen.add(key);
+    augmented.push(resolved);
+  };
+
+  tryAdd(modelConfig.primary);
+  for (const fallback of modelConfig.fallbacks) tryAdd(fallback);
+
+  return augmented;
+}
+
+/** Pi-native tools only — workflow MCP tools use transport checks instead. */
+function requiredPiToolsForModelPolicy(unitType: string): string[] {
+  return getRequiredWorkflowToolsForAutoUnit(unitType).filter((tool) => !isWorkflowMcpSurfaceTool(tool));
+}
+
+function buildPolicyEligibleFallbackOrder(
+  ctx: ExtensionContext,
+  routingEligibleModels: Model<Api>[],
+  autoModeStartModel: { provider: string; id: string } | null,
+): Model<Api>[] {
+  const ordered: Model<Api>[] = [];
+  const seen = new Set<string>();
+  const add = (model: Model<Api> | undefined) => {
+    if (!model) return;
+    const key = `${model.provider.toLowerCase()}/${model.id.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    ordered.push(model);
+  };
+
+  add(ctx.model ?? undefined);
+  if (autoModeStartModel) {
+    add(resolveModelId(
+      `${autoModeStartModel.provider}/${autoModeStartModel.id}`,
+      routingEligibleModels,
+      ctx.model?.provider,
+    ));
+    add(resolveModelId(autoModeStartModel.id, routingEligibleModels, ctx.model?.provider));
+  }
+  for (const model of routingEligibleModels) add(model);
+  return ordered;
+}
+
+function buildModelPolicyBlockReasons(
+  policyDenyReasons: Array<{ provider: string; modelId: string; reason: string }>,
+  availableModels: Model<Api>[],
+  routingEligibleModels: Model<Api>[],
+  modelsToTry: string[],
+): Array<{ provider: string; modelId: string; reason: string }> {
+  if (policyDenyReasons.length > 0) return policyDenyReasons;
+  if (availableModels.length === 0) {
+    return [{
+      provider: "(registry)",
+      modelId: "(none)",
+      reason: "no authenticated providers in model registry — run /gsd login or set provider API keys, then verify with /model",
+    }];
+  }
+  if (routingEligibleModels.length === 0) {
+    return [{
+      provider: "(registry)",
+      modelId: "(none)",
+      reason: "no candidate models passed model policy",
+    }];
+  }
+  const eligibleSummary = routingEligibleModels
+    .slice(0, 4)
+    .map((m) => `${m.provider}/${m.id}`)
+    .join(", ");
+  return [{
+    provider: "(config)",
+    modelId: modelsToTry.join(", ") || "(none)",
+    reason: `configured model(s) did not resolve against policy-eligible registry [${eligibleSummary}]`,
+  }];
 }
 
 function restoreToolBaseline(pi: ExtensionAPI): void {
@@ -230,7 +372,12 @@ export async function selectAndApplyModel(
   if (isAutoMode) restoreToolBaseline(pi);
 
   if (modelConfig) {
-    const availableModels = ctx.modelRegistry.getAvailable();
+    let availableModels = buildModelPolicyCandidates(
+      ctx,
+      autoModeStartModel,
+      effectiveSessionModelOverride,
+    );
+    availableModels = augmentModelPolicyCandidates(ctx, availableModels, modelConfig);
     const modelPolicyTraceId = `model:${ctx.sessionManager.getSessionId()}:${Date.now()}`;
     const modelPolicyTurnId = `${unitType}:${unitId}`;
     let policyAllowedModelKeys: Set<string> | null = null;
@@ -269,7 +416,7 @@ export async function selectAndApplyModel(
       // into a layering violation that throws before dispatch.  The smaller
       // workflow-required subset reflects what the unit actually needs; soft
       // adaptation post-selection still trims provider-incompatible tools.
-      const requiredTools = getRequiredWorkflowToolsForAutoUnit(unitType);
+      const requiredTools = requiredPiToolsForModelPolicy(unitType);
       const policy = applyModelPolicyFilter(
         availableModels,
         {
@@ -279,7 +426,9 @@ export async function selectAndApplyModel(
           unitType,
           taskMetadata: taskMetadataForPolicy,
           currentProvider: ctx.model?.provider,
-          allowCrossProvider: routingConfig.cross_provider !== false,
+          allowCrossProvider: modelConfig.source === "explicit"
+            ? true
+            : routingConfig.cross_provider !== false,
           requiredTools,
         },
       );
@@ -291,7 +440,14 @@ export async function selectAndApplyModel(
         .filter((d) => !d.allowed)
         .map((d) => ({ provider: d.provider, modelId: d.modelId, reason: d.reason }));
       if (routingEligibleModels.length === 0) {
-        throw new ModelPolicyDispatchBlockedError(unitType, unitId, policyDenyReasons);
+        throw new ModelPolicyDispatchBlockedError(
+          unitType,
+          unitId,
+          buildModelPolicyBlockReasons(policyDenyReasons, availableModels, routingEligibleModels, [
+            effectiveModelConfig.primary,
+            ...effectiveModelConfig.fallbacks,
+          ]),
+        );
       }
     }
 
@@ -570,12 +726,39 @@ export async function selectAndApplyModel(
     }
 
     if (uokFlags.modelPolicy && policyAllowedModelKeys && !attemptedPolicyEligible) {
-      throw new ModelPolicyDispatchBlockedError(unitType, unitId, policyDenyReasons);
+      for (const model of buildPolicyEligibleFallbackOrder(ctx, routingEligibleModels, autoModeStartModel)) {
+        const key = `${model.provider.toLowerCase()}/${model.id.toLowerCase()}`;
+        if (!policyAllowedModelKeys.has(key)) continue;
+        if (isModelBlocked(basePath, model.provider, model.id)) continue;
+        const ok = await pi.setModel(model, { persist: false });
+        if (!ok) continue;
+        appliedModel = model;
+        reapplyThinkingLevel(pi, autoModeStartThinkingLevel);
+        attemptedPolicyEligible = true;
+        if (verbose) {
+          ctx.ui.notify(
+            `Model policy: configured model unavailable; using ${model.provider}/${model.id}`,
+            "info",
+          );
+        }
+        break;
+      }
+      if (!attemptedPolicyEligible) {
+        throw new ModelPolicyDispatchBlockedError(
+          unitType,
+          unitId,
+          buildModelPolicyBlockReasons(policyDenyReasons, availableModels, routingEligibleModels, modelsToTry),
+        );
+      }
     }
   } else if (autoModeStartModel) {
     // No model preference for this unit type — re-apply the model captured
     // at auto-mode start to prevent bleed from shared global settings.json (#650).
-    const availableModels = ctx.modelRegistry.getAvailable();
+    const availableModels = buildModelPolicyCandidates(
+      ctx,
+      autoModeStartModel,
+      effectiveSessionModelOverride,
+    );
     const startBlocked = isModelBlocked(basePath, autoModeStartModel.provider, autoModeStartModel.id);
     if (startBlocked) {
       ctx.ui.notify(

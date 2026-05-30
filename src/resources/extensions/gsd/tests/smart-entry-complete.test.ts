@@ -1,4 +1,4 @@
-// GSD-2 — Guided smart entry complete-state behavior tests.
+// gsd-pi — Guided smart entry complete-state behavior tests.
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -30,10 +30,14 @@ test("deriveState reports the last completed milestone when all milestone slices
   const base = mkdtempSync(join(tmpdir(), "gsd-smart-entry-complete-"));
   try {
     writeCompleteMilestone(base);
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "M001", title: "Complete Milestone", status: "complete" });
+    insertSlice({ id: "S01", milestoneId: "M001", title: "Done slice", status: "complete", risk: "low", depends: [] });
     const state = await deriveState(base);
     assert.equal(state.phase, "complete");
     assert.equal(state.lastCompletedMilestone?.id, "M001");
   } finally {
+    closeDatabase();
     rmSync(base, { recursive: true, force: true });
   }
 });
@@ -65,10 +69,11 @@ test("showSmartEntry stops instead of opening next-action choices when complete 
       base,
     );
 
-    assert.deepEqual(notifications.at(-1), {
-      message: "Auto-mode stopped — All milestones complete.",
-      level: "info",
-    });
+    const last = notifications.at(-1);
+    assert.equal(last?.level, "warning");
+    assert.match(last?.message ?? "", /milestone menu needs an interactive session/i);
+    assert.match(last?.message ?? "", /\/gsd discuss M001/i);
+    assert.match(last?.message ?? "", /\/gsd new-milestone/i);
   } finally {
     closeDatabase();
     rmSync(base, { recursive: true, force: true });

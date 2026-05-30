@@ -1,4 +1,4 @@
-// GSD-2 + scripts/lib/workspace-manifest.cjs — single source of truth for linkable @gsd/* packages
+// gsd-pi + scripts/lib/workspace-manifest.cjs — single source of truth for linkable @gsd/* packages
 'use strict'
 
 const { readdirSync, readFileSync, existsSync, statSync } = require('fs')
@@ -11,11 +11,11 @@ const PACKAGES_DIR = join(REPO_ROOT, 'packages')
  * Returns the canonical list of linkable workspace packages.
  *
  * A package is "linkable" if its `package.json` contains:
- *   { "gsd": { "linkable": true, "scope": "@gsd" | "@gsd-build", "name": "<pkgname>" } }
+ *   { "gsd": { "linkable": true, "scope": "@gsd" | "@opengsd", "name": "<pkgname>" } }
  *
  * Each returned entry has:
  *   - dir: directory name under packages/ (e.g. "gsd-agent-core")
- *   - scope: "@gsd" or "@gsd-build"
+ *   - scope: "@gsd" or "@opengsd"
  *   - name: unscoped package name (e.g. "agent-core")
  *   - packageName: scoped name (e.g. "@gsd/agent-core")
  *   - path: absolute path to package directory
@@ -49,9 +49,9 @@ function getLinkablePackages() {
 				`${pkgJsonPath}: "gsd.linkable" is true but "gsd.scope" or "gsd.name" is missing.`
 			)
 		}
-		if (gsd.scope !== '@gsd' && gsd.scope !== '@gsd-build') {
+		if (gsd.scope !== '@gsd' && gsd.scope !== '@opengsd') {
 			throw new Error(
-				`${pkgJsonPath}: "gsd.scope" must be "@gsd" or "@gsd-build" (got "${gsd.scope}").`
+				`${pkgJsonPath}: "gsd.scope" must be "@gsd" or "@opengsd" (got "${gsd.scope}").`
 			)
 		}
 		const expectedName = `${gsd.scope}/${gsd.name}`
@@ -73,7 +73,7 @@ function getLinkablePackages() {
 	return out
 }
 
-/** Returns only packages in the `@gsd` scope (excludes `@gsd-build`). */
+/** Returns only packages in the `@gsd` scope (excludes `@opengsd`). */
 function getCorePackages() {
 	return getLinkablePackages().filter((p) => p.scope === '@gsd')
 }

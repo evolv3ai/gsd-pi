@@ -1,8 +1,8 @@
-// GSD2 TUI Tests - Built-in terminal theme palette coverage.
+// gsd-pi TUI Tests - Built-in terminal theme palette coverage.
 import test from "node:test";
 import assert from "node:assert/strict";
 
-const { builtinThemes } = await import("../../packages/pi-coding-agent/src/modes/interactive/theme/themes.ts");
+const { builtinThemes } = await import("../../packages/pi-coding-agent/src/theme/themes.ts");
 
 test("tui-classic built-in theme preserves legacy PR palette tokens", () => {
   assert.ok("tui-classic" in builtinThemes, "tui-classic should be available as a built-in theme");

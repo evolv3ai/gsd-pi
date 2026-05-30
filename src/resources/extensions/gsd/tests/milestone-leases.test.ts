@@ -1,4 +1,4 @@
-// gsd-2 + Milestone leases tests (Phase B coordination — fencing semantics)
+// gsd-pi + Milestone leases tests (Phase B coordination — fencing semantics)
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -58,7 +58,7 @@ test("second claim by different worker is rejected while lease is held", (t) => 
   insertMilestone({ id: "M001", title: "Test", status: "active" });
 
   const w1 = registerAutoWorker({ projectRootRealpath: base });
-  const w2 = registerAutoWorker({ projectRootRealpath: base });
+  const w2 = registerAutoWorker({ projectRootRealpath: join(base, "other-project") });
   const first = claimMilestoneLease(w1, "M001");
   assert.equal(first.ok, true);
 
@@ -68,6 +68,30 @@ test("second claim by different worker is rejected while lease is held", (t) => 
     assert.equal(second.error, "held_by");
     assert.equal(second.byWorker, w1);
   }
+});
+
+test("claim by another worker row from the same live process is re-entrant", (t) => {
+  const base = makeBase();
+  t.after(() => cleanup(base));
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M001", title: "Test", status: "active" });
+
+  const w1 = registerAutoWorker({ projectRootRealpath: base });
+  const w2 = registerAutoWorker({ projectRootRealpath: base });
+  const first = claimMilestoneLease(w1, "M001");
+  assert.equal(first.ok, true);
+
+  const second = claimMilestoneLease(w2, "M001");
+  assert.equal(second.ok, true);
+  if (second.ok) {
+    assert.equal(second.token, 2, "same-process re-entry increments the fencing token");
+  }
+
+  const row = getMilestoneLease("M001");
+  assert.ok(row);
+  assert.equal(row!.worker_id, w2);
+  assert.equal(row!.fencing_token, 2);
+  assert.equal(row!.status, "held");
 });
 
 test("releaseMilestoneLease frees the lease for takeover", (t) => {

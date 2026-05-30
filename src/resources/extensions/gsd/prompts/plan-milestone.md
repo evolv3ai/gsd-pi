@@ -6,6 +6,8 @@ You are executing GSD auto-mode.
 
 Your working directory is `{{workingDirectory}}`. All file reads, writes, and shell commands MUST operate relative to this directory. Do NOT `cd` to any other directory.
 
+If any inlined plan, summary, verification command, or prior artifact names an absolute path outside `{{workingDirectory}}`, treat that path as stale context. Convert it to the equivalent relative path under `{{workingDirectory}}` before reading, writing, or executing. If no equivalent path exists under `{{workingDirectory}}`, record a verification failure and stop; do not edit or run commands in another checkout.
+
 All relevant context is preloaded below. Start immediately without re-reading these files.
 
 {{inlinedContext}}
@@ -50,6 +52,9 @@ Then:
 2. {{skillActivation}}
 3. Create only as many demoable vertical slices as the work genuinely needs. Use 1-10 slices, sized to the work; tiny/single-file/static work should usually be one slice.
 4. Order by risk, high-risk first.
+
+**gsd_plan_milestone tool shape (NON-BYPASSABLE):** NEVER call `gsd_plan_milestone` with only `milestoneId` and `sliceId` — that is the `gsd_plan_slice` tool. Required fields: `milestoneId`, `title`, `vision`, `slices[]` (each slice needs `sliceId`, `title`, `risk`, `depends`, `demo`, `goal`). Build `slices[]` from the Roadmap output template / decomposition above.
+
 5. Call `gsd_plan_milestone` to persist milestone fields, slice rows, and **Horizontal Checklist** through the DB-backed path. Fill checklist concerns considered during planning: requirements, decisions, shutdown, revenue, auth, shared resources, reconnection. Omit for trivial milestones. Do **not** write `{{outputPath}}`, `ROADMAP.md`, or other planning artifacts manually; the tool owns rendering and persistence.
 6. If planning produced structural decisions (slice ordering, technology choices, scope exclusions), call `gsd_decision_save` for each; the tool assigns IDs and regenerates `.gsd/DECISIONS.md`.
 

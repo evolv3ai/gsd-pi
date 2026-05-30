@@ -14,7 +14,7 @@ import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { AuthStorage } from '@gsd/pi-coding-agent'
-import { renderLogo } from './logo.js'
+import { renderGsdPiLogo, GSD_PI_BRAND, GSD_WEBSITE } from './logo.js'
 import { agentDir } from './app-paths.js'
 import { isClaudeCliReady } from './claude-cli-check.js'
 import {
@@ -298,8 +298,11 @@ export async function runOnboarding(
   }
 
   // ── Intro ─────────────────────────────────────────────────────────────────
-  if (opts.showIntro !== false) {
-    process.stderr.write(renderLogo(pc.cyan))
+  if (opts.showIntro !== false && process.env.GSD_SUPPRESS_LOGO !== '1') {
+    process.stderr.write(renderGsdPiLogo(pc.cyan))
+    process.stderr.write(`  ${pc.bold(GSD_PI_BRAND)}  ${pc.dim(GSD_WEBSITE)}\n\n`)
+    p.intro(pc.bold('Welcome to GSD — let\'s get you set up'))
+  } else if (opts.showIntro !== false) {
     p.intro(pc.bold('Welcome to GSD — let\'s get you set up'))
   }
 
@@ -521,6 +524,22 @@ async function runOAuthFlow(
             return result as string
           }
         : undefined,
+      onDeviceCode: async (info) => {
+        p.log.info(`${pc.dim('Code:')} ${pc.cyan(info.userCode)}`)
+        p.log.info(`${pc.dim('URL:')} ${pc.cyan(info.verificationUri)}`)
+        openBrowser(info.verificationUri)
+      },
+      onSelect: async (prompt) => {
+        const result = await p.select({
+          message: prompt.message,
+          options: prompt.options.map((option) => ({
+            value: option.id,
+            label: option.label,
+          })),
+        })
+        if (p.isCancel(result)) return prompt.options[0]?.id
+        return result as string
+      },
     }
 
     await authStorage.login(providerId as LoginProviderId, loginCallbacks)

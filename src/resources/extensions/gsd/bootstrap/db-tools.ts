@@ -1,19 +1,33 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Registers DB-backed GSD workflow tools and compatibility aliases.
-import { Type } from "@sinclair/typebox";
+import { Type, StringEnum } from "@gsd/pi-ai";
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import { Text } from "@gsd/pi-tui";
 
 import { loadEffectiveGSDPreferences } from "../preferences.js";
-import { ensureDbOpen, resolveCtxCwd } from "./dynamic-tools.js";
+import { ensureDbOpen, resolveCtxCwd, resolveWorkflowToolBasePath } from "./dynamic-tools.js";
+import { importWorkflowExecutorsModule } from "../workflow-mcp.js";
 import { loadWriteGateSnapshot, shouldBlockRootArtifactSaveInSnapshot } from "./write-gate.js";
-import { StringEnum } from "@gsd/pi-ai";
 import { logError } from "../workflow-logger.js";
 import { getErrorMessage } from "../error-utils.js";
 import { incrementLegacyTelemetry } from "../legacy-telemetry.js";
+import { prepareSaveGateResultArguments } from "../tools/save-gate-result-args.js";
 
 async function loadWorkflowExecutors(): Promise<typeof import("../tools/workflow-tool-executors.js")> {
-  return import("../tools/workflow-tool-executors.js");
+  return importWorkflowExecutorsModule();
+}
+
+function formatWorkflowToolLoadError(err: unknown): {
+  content: Array<{ type: "text"; text: string }>;
+  details: { operation: string; error: string };
+  isError: true;
+} {
+  const msg = getErrorMessage(err);
+  return {
+    content: [{ type: "text", text: `Error: ${msg}` }],
+    details: { operation: "workflow_tool_load", error: msg },
+    isError: true,
+  };
 }
 
 
@@ -60,6 +74,14 @@ function requirementRootWriteGuard(operation: string, basePath: string): { conte
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- result shape varies by tool
 function readDetails(result: any): any {
   return result?.details ?? result?.structuredContent;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- result shape varies by tool
+function formatToolErrorText(result: any, details: any): string {
+  const message = details?.error
+    ?? result?.content?.find((entry: { type?: string; text?: string }) => entry.type === "text")?.text
+    ?? "unknown";
+  return typeof message === "string" && message.startsWith("Error") ? message : `Error: ${message}`;
 }
 
 export function registerDbTools(pi: ExtensionAPI): void {
@@ -123,11 +145,9 @@ export function registerDbTools(pi: ExtensionAPI): void {
       rationale: Type.String({ description: "Why this choice was made" }),
       revisable: Type.Optional(Type.String({ description: "Whether this can be revisited (default: 'Yes')" })),
       when_context: Type.Optional(Type.String({ description: "When/context for the decision (e.g. milestone ID)" })),
-      made_by: Type.Optional(Type.Union([
-        Type.Literal("human"),
-        Type.Literal("agent"),
-        Type.Literal("collaborative"),
-      ], { description: "Who made this decision: 'human' (user directed), 'agent' (LLM decided autonomously), or 'collaborative' (discussed and agreed). Default: 'agent'" })),
+      made_by: Type.Optional(StringEnum(["human", "agent", "collaborative"], {
+        description: "Who made this decision: 'human' (user directed), 'agent' (LLM decided autonomously), or 'collaborative' (discussed and agreed). Default: 'agent'",
+      })),
     }),
     execute: decisionSaveExecute,
     renderCall(args: any, theme: any) {
@@ -140,7 +160,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     renderResult(result: any, _options: any, theme: any) {
       const d = readDetails(result);
       if (result.isError || d?.error) {
-        return new Text(theme.fg("error", `Error: ${d?.error ?? "unknown"}`), 0, 0);
+        return new Text(theme.fg("error", formatToolErrorText(result, d)), 0, 0);
       }
       let text = theme.fg("success", `Decision ${d?.id ?? ""} saved`);
       if (d?.id) text += theme.fg("dim", ` → DECISIONS.md`);
@@ -221,7 +241,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     renderResult(result: any, _options: any, theme: any) {
       const d = readDetails(result);
       if (result.isError || d?.error) {
-        return new Text(theme.fg("error", `Error: ${d?.error ?? "unknown"}`), 0, 0);
+        return new Text(theme.fg("error", formatToolErrorText(result, d)), 0, 0);
       }
       let text = theme.fg("success", `Requirement ${d?.id ?? ""} updated`);
       text += theme.fg("dim", ` → REQUIREMENTS.md`);
@@ -324,7 +344,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     renderResult(result: any, _options: any, theme: any) {
       const d = readDetails(result);
       if (result.isError || d?.error) {
-        return new Text(theme.fg("error", `Error: ${d?.error ?? "unknown"}`), 0, 0);
+        return new Text(theme.fg("error", formatToolErrorText(result, d)), 0, 0);
       }
       let text = theme.fg("success", `Requirement ${d?.id ?? ""} saved`);
       text += theme.fg("dim", ` → REQUIREMENTS.md`);
@@ -338,8 +358,15 @@ export function registerDbTools(pi: ExtensionAPI): void {
   // ─── gsd_summary_save (formerly gsd_save_summary) ──────────────────────
 
   const summarySaveExecute = async (_toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
-    const { executeSummarySave } = await loadWorkflowExecutors();
-    return executeSummarySave(params, resolveCtxCwd(_ctx));
+    try {
+      const { executeSummarySave } = await loadWorkflowExecutors();
+      return await executeSummarySave(params, resolveWorkflowToolBasePath(_ctx, params));
+    } catch (err) {
+      return {
+        ...formatWorkflowToolLoadError(err),
+        details: { operation: "save_summary", error: getErrorMessage(err) },
+      };
+    }
   };
 
   const summarySaveTool = {
@@ -375,7 +402,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     renderResult(result: any, _options: any, theme: any) {
       const d = readDetails(result);
       if (result.isError || d?.error) {
-        return new Text(theme.fg("error", `Error: ${d?.error ?? "unknown"}`), 0, 0);
+        return new Text(theme.fg("error", formatToolErrorText(result, d)), 0, 0);
       }
       let text = theme.fg("success", `${d?.artifact_type ?? "Artifact"} saved`);
       if (d?.path) text += theme.fg("dim", ` → ${d.path}`);
@@ -465,7 +492,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     renderResult(result: any, _options: any, theme: any) {
       const d = readDetails(result);
       if (result.isError || d?.error) {
-        return new Text(theme.fg("error", `Error: ${d?.error ?? "unknown"}`), 0, 0);
+        return new Text(theme.fg("error", formatToolErrorText(result, d)), 0, 0);
       }
       let text = theme.fg("success", `Generated ${d?.id ?? "ID"}`);
       if (d?.source === "reserved") text += theme.fg("dim", " (reserved)");
@@ -480,7 +507,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
 
   const planMilestoneExecute = async (_toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
     const { executePlanMilestone } = await loadWorkflowExecutors();
-    return executePlanMilestone(params, resolveCtxCwd(_ctx));
+    return executePlanMilestone(params, resolveWorkflowToolBasePath(_ctx, params));
   };
 
   const planMilestoneTool = {
@@ -491,6 +518,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     promptSnippet: "Plan a milestone via DB write + roadmap render + cache invalidation",
     promptGuidelines: [
       "Use gsd_plan_milestone for milestone planning instead of writing ROADMAP.md directly.",
+      "Requires milestoneId, title, vision, and slices[] — never pass only milestoneId + sliceId (that is gsd_plan_slice).",
       "Keep parameters flat and provide the full milestone planning payload, including slices.",
       "Milestone and slice titles must not contain forward slash (/), en dash, or em dash characters.",
       "The tool validates input, writes milestone and slice planning data transactionally, renders ROADMAP.md from DB, and clears both state and parse caches after success.",
@@ -551,7 +579,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
 
   const planSliceExecute = async (_toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
     const { executePlanSlice } = await loadWorkflowExecutors();
-    return executePlanSlice(params, resolveCtxCwd(_ctx));
+    return executePlanSlice(params, resolveWorkflowToolBasePath(_ctx, params));
   };
 
   const planSliceTool = {
@@ -675,7 +703,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
 
   const taskCompleteExecute = async (_toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
     const { executeTaskComplete } = await loadWorkflowExecutors();
-    return executeTaskComplete(params, resolveCtxCwd(_ctx));
+    return executeTaskComplete(params, resolveWorkflowToolBasePath(_ctx, params));
   };
 
   const taskCompleteTool = {
@@ -721,16 +749,13 @@ export function registerDbTools(pi: ExtensionAPI): void {
         }),
       }, { description: "ADR-011 Phase 2: optional escalation payload. Only honored when phases.mid_execution_escalation is true." })),
       verificationEvidence: Type.Optional(Type.Array(
-        Type.Union([
-          Type.Object({
-            command: Type.String({ description: "Verification command that was run" }),
-            exitCode: Type.Number({ description: "Exit code of the command" }),
-            verdict: Type.String({ description: "Pass/fail verdict (e.g. '✅ pass', '❌ fail')" }),
-            durationMs: Type.Number({ description: "Duration of the command in milliseconds" }),
-          }),
-          Type.String({ description: "Fallback: verification summary string" }),
-        ]),
-        { description: "Array of verification evidence entries" },
+        Type.Object({
+          command: Type.String({ description: "Verification command that was run" }),
+          exitCode: Type.Number({ description: "Exit code of the command" }),
+          verdict: Type.String({ description: "Pass/fail verdict (e.g. '✅ pass', '❌ fail')" }),
+          durationMs: Type.Number({ description: "Duration of the command in milliseconds" }),
+        }),
+        { description: "Array of verification evidence entries (structured objects only)" },
       )),
       // Single-writer v3 audit trail (Stream 2): caller-provided actor identity + causation.
       actorName: Type.Optional(Type.String({ description: "Caller-provided actor identity for the audit trail (e.g. 'executor-01', 'gsd-orchestrator')" })),
@@ -746,7 +771,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
 
   const sliceCompleteExecute = async (_toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
     const { executeSliceComplete } = await loadWorkflowExecutors();
-    return executeSliceComplete(params, resolveCtxCwd(_ctx));
+    return executeSliceComplete(params, resolveWorkflowToolBasePath(_ctx, params));
   };
 
   const sliceCompleteTool = {
@@ -775,70 +800,47 @@ export function registerDbTools(pi: ExtensionAPI): void {
       deviations: Type.Optional(Type.String({ description: "Deviations from the slice plan, or 'None.'" })),
       knownLimitations: Type.Optional(Type.String({ description: "Known limitations or gaps, or 'None.'" })),
       followUps: Type.Optional(Type.String({ description: "Follow-up work discovered during execution, or 'None.'" })),
-      keyFiles: Type.Optional(Type.Union([Type.Array(Type.String()), Type.String()], { description: "Key files created or modified" })),
-      keyDecisions: Type.Optional(Type.Union([Type.Array(Type.String()), Type.String()], { description: "Key decisions made during this slice" })),
-      patternsEstablished: Type.Optional(Type.Union([Type.Array(Type.String()), Type.String()], { description: "Patterns established by this slice" })),
-      observabilitySurfaces: Type.Optional(Type.Union([Type.Array(Type.String()), Type.String()], { description: "Observability surfaces added" })),
-      provides: Type.Optional(Type.Union([Type.Array(Type.String()), Type.String()], { description: "What this slice provides to downstream slices" })),
-      requirementsSurfaced: Type.Optional(Type.Union([Type.Array(Type.String()), Type.String()], { description: "New requirements surfaced" })),
-      drillDownPaths: Type.Optional(Type.Union([Type.Array(Type.String()), Type.String()], { description: "Paths to task summaries for drill-down" })),
-      affects: Type.Optional(Type.Union([Type.Array(Type.String()), Type.String()], { description: "Downstream slices affected" })),
+      keyFiles: Type.Optional(Type.Array(Type.String(), { description: "Key files created or modified" })),
+      keyDecisions: Type.Optional(Type.Array(Type.String(), { description: "Key decisions made during this slice" })),
+      patternsEstablished: Type.Optional(Type.Array(Type.String(), { description: "Patterns established by this slice" })),
+      observabilitySurfaces: Type.Optional(Type.Array(Type.String(), { description: "Observability surfaces added" })),
+      provides: Type.Optional(Type.Array(Type.String(), { description: "What this slice provides to downstream slices" })),
+      requirementsSurfaced: Type.Optional(Type.Array(Type.String(), { description: "New requirements surfaced" })),
+      drillDownPaths: Type.Optional(Type.Array(Type.String(), { description: "Paths to task summaries for drill-down" })),
+      affects: Type.Optional(Type.Array(Type.String(), { description: "Downstream slices affected" })),
       requirementsAdvanced: Type.Optional(Type.Array(
-        Type.Union([
-          Type.Object({
-            id: Type.String({ description: "Requirement ID" }),
-            how: Type.String({ description: "How it was advanced" }),
-          }),
-          Type.String({ description: "Fallback: 'ID — how' string" }),
-        ]),
+        Type.Object({
+          id: Type.String({ description: "Requirement ID" }),
+          how: Type.String({ description: "How it was advanced" }),
+        }),
         { description: "Requirements advanced by this slice" },
       )),
       requirementsValidated: Type.Optional(Type.Array(
-        Type.Union([
-          Type.Object({
-            id: Type.String({ description: "Requirement ID" }),
-            proof: Type.String({ description: "What proof validates it" }),
-          }),
-          Type.Object({
-            id: Type.String({ description: "Requirement ID" }),
-            how: Type.String({ description: "Alias accepted for proof (normalized internally)" }),
-          }),
-          Type.String({ description: "Fallback: 'ID — proof' string" }),
-        ]),
+        Type.Object({
+          id: Type.String({ description: "Requirement ID" }),
+          proof: Type.String({ description: "What proof validates it" }),
+        }),
         { description: "Requirements validated by this slice" },
       )),
       requirementsInvalidated: Type.Optional(Type.Array(
-        Type.Union([
-          Type.Object({
-            id: Type.String({ description: "Requirement ID" }),
-            what: Type.String({ description: "What changed" }),
-          }),
-          Type.Object({
-            id: Type.String({ description: "Requirement ID" }),
-            how: Type.String({ description: "Alias accepted for what (normalized internally)" }),
-          }),
-          Type.String({ description: "Fallback: 'ID — what' string" }),
-        ]),
+        Type.Object({
+          id: Type.String({ description: "Requirement ID" }),
+          what: Type.String({ description: "What changed" }),
+        }),
         { description: "Requirements invalidated or re-scoped" },
       )),
       filesModified: Type.Optional(Type.Array(
-        Type.Union([
-          Type.Object({
-            path: Type.String({ description: "File path" }),
-            description: Type.String({ description: "What changed" }),
-          }),
-          Type.String({ description: "Fallback: file path string" }),
-        ]),
+        Type.Object({
+          path: Type.String({ description: "File path" }),
+          description: Type.String({ description: "What changed" }),
+        }),
         { description: "Files modified with descriptions" },
       )),
       requires: Type.Optional(Type.Array(
-        Type.Union([
-          Type.Object({
-            slice: Type.String({ description: "Dependency slice ID" }),
-            provides: Type.String({ description: "What was consumed from it" }),
-          }),
-          Type.String({ description: "Fallback: slice ID string" }),
-        ]),
+        Type.Object({
+          slice: Type.String({ description: "Dependency slice ID" }),
+          provides: Type.String({ description: "What was consumed from it" }),
+        }),
         { description: "Upstream slice dependencies consumed" },
       )),
       // Single-writer v3 audit trail (Stream 2): caller-provided actor identity + causation.
@@ -947,7 +949,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
 
   const milestoneCompleteExecute = async (_toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
     const { executeCompleteMilestone } = await loadWorkflowExecutors();
-    return executeCompleteMilestone(params, resolveCtxCwd(_ctx));
+    return executeCompleteMilestone(params, resolveWorkflowToolBasePath(_ctx, params));
   };
 
   const milestoneCompleteTool = {
@@ -993,7 +995,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
 
   const milestoneValidateExecute = async (_toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
     const { executeValidateMilestone } = await loadWorkflowExecutors();
-    return executeValidateMilestone(params, resolveCtxCwd(_ctx));
+    return executeValidateMilestone(params, resolveWorkflowToolBasePath(_ctx, params));
   };
 
   const milestoneValidateTool = {
@@ -1033,7 +1035,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
 
   const replanSliceExecute = async (_toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
     const { executeReplanSlice } = await loadWorkflowExecutors();
-    return executeReplanSlice(params, resolveCtxCwd(_ctx));
+    return executeReplanSlice(params, resolveWorkflowToolBasePath(_ctx, params));
   };
 
   const replanSliceTool = {
@@ -1084,7 +1086,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
 
   const reassessRoadmapExecute = async (_toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
     const { executeReassessRoadmap } = await loadWorkflowExecutors();
-    return executeReassessRoadmap(params, resolveCtxCwd(_ctx));
+    return executeReassessRoadmap(params, resolveWorkflowToolBasePath(_ctx, params));
   };
 
   const reassessRoadmapTool = {
@@ -1343,7 +1345,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
 
   const saveGateResultExecute = async (_toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
     const { executeSaveGateResult } = await loadWorkflowExecutors();
-    return executeSaveGateResult(params, resolveCtxCwd(_ctx));
+    return executeSaveGateResult(params, resolveWorkflowToolBasePath(_ctx, params));
   };
 
   const saveGateResultTool = {
@@ -1369,6 +1371,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
       rationale: Type.String({ description: "One-sentence justification" }),
       findings: Type.Optional(Type.String({ description: "Detailed markdown findings" })),
     }),
+    prepareArguments: prepareSaveGateResultArguments,
     execute: saveGateResultExecute,
     renderCall(args: any, theme: any) {
       let text = theme.fg("toolTitle", theme.bold("save_gate_result "));

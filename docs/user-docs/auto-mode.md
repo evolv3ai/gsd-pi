@@ -40,7 +40,7 @@ The SQLite database is the runtime source of truth for milestones, slices, tasks
 
 Markdown files in `.gsd/` are rendered projections for review, prompts, and git-friendly history. `.gsd/DECISIONS.md` is projected from architecture memories, and the Patterns/Lessons sections of `.gsd/KNOWLEDGE.md` are projected from memory rows; editing those projections does not override the database unless a command imports or saves the change through GSD. The Rules section of `KNOWLEDGE.md` remains manually authored and is preserved separately.
 
-In worktree mode, the project-root database remains authoritative runtime state, while artifact/projection writes render under the active worktree-local `.gsd/`. Those worktree markdown projections are not treated as runtime state fallbacks. If the database is unavailable, runtime state derivation refuses to silently rebuild from markdown. The legacy markdown derivation path is only enabled when `GSD_ALLOW_MARKDOWN_DERIVE_FALLBACK=1`, which exists for tests and explicit recovery scenarios.
+In worktree mode, the project-root database remains authoritative runtime state, while artifact/projection writes render under the active worktree-local `.gsd/`. Those worktree markdown projections are not treated as runtime state fallbacks. If the database is unavailable, runtime state derivation refuses to silently rebuild from markdown. Use explicit recovery/import commands, or run `/gsd migrate` when markdown is the intended source.
 
 ### Single-Host Runtime Constraint
 
@@ -91,6 +91,16 @@ The sidecar unit types now have distinct manifest behavior: `triage-captures` ru
 
 Writes outside those allowed paths, unsafe bash commands, and subagent dispatch from non-dispatch planning units are blocked with a hard policy error instead of relying on prompt compliance. In `planning-dispatch` units, prompts steer the parent agent toward read-only specialists such as `scout`, `planner`, `researcher`, `reviewer`, `security`, or `tester`; implementation-tier agents still belong in `execute-task`.
 
+### ScheduleWakeup Continuations
+
+`ScheduleWakeup` is an auto-mode tool for long external waits inside `execute-task` units. It keeps the same unit session alive by scheduling a delayed follow-up prompt instead of ending the unit as incomplete.
+
+- Use it when a task kicked off external work (for example CI, deploy, or async jobs) and needs a later poll.
+- Include a concrete follow-up prompt that says what to check and what artifact to write when done.
+- Re-arm it on each poll turn while the external process is still running.
+
+Auto mode consumes the scheduled wakeup only for the same `basePath + unitType + unitId`, waits the requested delay, and then dispatches the follow-up prompt in the same session. For safety, wakeups are bounded per unit; hitting the cap stops the unit with a timeout-style cancellation.
+
 ### Pre-Dispatch Runtime Blocks
 
 Before auto mode launches a unit, the orchestration pipeline now enforces runtime invariants in this order: reconcile state, choose the next unit, compile the unit tool contract, validate the worktree or unit root, then persist the runtime transition. A failure in any pre-dispatch step returns a `blocked` result and records the block before a worker session starts.
@@ -104,7 +114,7 @@ Common block reasons and operator actions:
 | `missing-closeout-tool` | A closeout unit such as task, slice, milestone, UAT, or gate completion has no required workflow tool available. | Restore the missing `gsd_*` workflow tool registration or update the unit manifest/tool contract so the unit can durably save its result. |
 | `root-missing` / `root-not-directory` | A source-writing unit would run from a missing or invalid unit root. | Recreate or repair the milestone worktree/root, or clear an incorrect `GSD_UNIT_ROOT`, before launching another source-writing unit. |
 | `git-metadata-missing` | A source-writing unit root exists but is not a git worktree or repository root. | Run the unit from the project root or milestone worktree with valid `.git` metadata; recreate the worktree if it was deleted or partially copied. |
-| `preflight-unmerged-conflicts` | Milestone merge preflight found unresolved Git conflict stages in the working tree. | Resolve conflicts manually (`git status`, fix files, stage resolutions), then run `/gsd auto` to resume. |
+| `preflight-unmerged-conflicts` | Milestone merge preflight found unresolved Git conflict stages in the working tree (shared with the global workspace git gate). | Resolve conflicts manually (`git status`, fix files, stage resolutions), then run `/gsd auto` to resume. Auto mode **pauses** on pre-dispatch health gate product conflicts; an unrecoverable git probe **stops** the loop. |
 | `preflight-dirty-overlap` | Milestone merge preflight found local dirty files that overlap files changed by the milestone branch. | Commit or stash your local edits manually, or move them out of the way, then rerun `/gsd auto`. |
 
 Recovery classification now treats deterministic policy, tool-schema, stale-worker, and invalid-worktree failures as non-transient stops. Provider failures still use provider-specific transient classification and may retry automatically, while verification drift and unknown runtime failures escalate for inspection because repeating the same dispatch can preserve the drift.
@@ -201,6 +211,8 @@ Auto mode also tracks consecutive dispatch-claim skips with reason `already-acti
 
 After each unit, GSD verifies that the expected artifact exists on disk. If the artifact is missing, auto mode re-dispatches the unit with explicit failure context and records an `artifact-verification-retry` journal event.
 
+`reactive-execute` batches are handled differently after the retry cap. If dispatched tasks are still missing `T##-SUMMARY.md` files, GSD writes a slice-level `S##-REACTIVE-BLOCKER.md` sentinel, marks summary-present tasks complete, marks missing-summary tasks skipped, and advances the workflow. The sentinel prevents the same slice from launching another reactive batch; review the skipped tasks before relying on downstream slice or milestone artifacts.
+
 For `run-uat`, existence alone is not sufficient: a pre-existing `S##-ASSESSMENT.md` only counts as completed when it contains a canonical verdict field (for example frontmatter `verdict: PASS | FAIL | PARTIAL`). If the file exists but has no verdict, artifact verification fails and `run-uat` is redispatched.
 
 Artifact verification retries are capped at 3 attempts. If the expected artifact is still missing after those retries, GSD pauses auto mode with an "Artifact still missing..." error instead of relying on loop detection or an unbounded dispatch counter.
@@ -275,7 +287,7 @@ verification_max_retries: 2    # max retry attempts (default: 2)
 
 Failures trigger auto-fix retries — the agent sees the verification output and attempts to fix the issues before advancing. This ensures code quality gates are enforced mechanically, not by LLM compliance.
 
-Commands must be directly runnable checks such as `npm run lint`, `npm run test`, or `python3 -m pytest`. GSD rejects shell composition and control syntax in verification commands, including pipes, redirects, semicolons, backticks, and command substitution, so a piped command like `python3 -m pytest 2>&1 | tail -5` must be replaced with the underlying test command.
+Commands must be directly runnable checks such as `npm run lint`, `npm run test`, or `python3 -m pytest`. GSD supports single shell pipelines with `|`, so commands like `python3 -m pytest | tail -5` are valid. Logical OR fallbacks (`||`) are rejected, and GSD also rejects redirects (`>` and `<`), semicolons, backticks, and command substitution because verification is run as a controlled command list, not as an arbitrary shell program.
 
 If you do not configure commands and the task plan does not provide a `verify` command, GSD attempts project discovery. It checks `package.json` scripts first, then Python pytest markers through the `python-project` discovery source: test files under `tests/`, `pytest.ini`, or pytest configuration in `pyproject.toml`.
 

@@ -1,0 +1,14 @@
+name: Cache Next.js build
+description: Restore or save web/.next/cache keyed by web lockfile and source hashes.
+
+runs:
+  using: composite
+  steps:
+    - name: Cache Next.js build
+      uses: actions/cache@v5
+      with:
+        path: web/.next/cache
+        key: nextjs-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('web/app/**', 'web/components/**', 'web/lib/**', 'web/hooks/**') }}
+        restore-keys: |
+          nextjs-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}-
+          nextjs-${{ runner.os }}-

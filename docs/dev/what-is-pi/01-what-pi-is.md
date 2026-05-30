@@ -9,8 +9,8 @@ Pi is a **terminal-native coding agent harness**. It sits between you and an LLM
 
 **The one-liner:** Pi is a minimal, aggressively extensible coding agent that runs in your terminal, works with any major LLM provider, and lets you adapt it to your workflow instead of adapting to it.
 
-**Repository:** [github.com/badlogic/pi-mono](https://github.com/badlogic/pi-mono)  
-**Package:** `@mariozechner/pi-coding-agent`  
+**Repository:** [github.com/earendil-works/pi](https://github.com/earendil-works/pi) (formerly `badlogic/pi-mono`)  
+**Package:** `@earendil-works/pi-coding-agent` (vendored in GSD as `@gsd/pi-coding-agent`)  
 **Website:** [shittycodingagent.ai](https://shittycodingagent.ai)
 
 ---

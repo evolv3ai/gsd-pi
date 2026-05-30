@@ -1,6 +1,6 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Provider equality guardrail tests for ADR-012.
-// gsd-2: provider-equality guardrail test (ADR-012)
+// gsd-pi: provider-equality guardrail test (ADR-012)
 //
 // Purpose: prevent regressions of bug class #4478 — gating API-shape-dependent
 // behavior on `model.provider === "<transport>"` instead of `model.api`.
@@ -24,10 +24,23 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const REPO_ROOT = new URL("../..", import.meta.url).pathname;
+/** Real repo root — not dist-test/ (compile-tests mirrors package.json there). */
+function findRepoRoot(start: string): string {
+	let dir = start;
+	for (let i = 0; i < 12; i++) {
+		if (existsSync(join(dir, ".git"))) return dir;
+		const parent = resolve(dir, "..");
+		if (parent === dir) break;
+		dir = parent;
+	}
+	throw new Error(`Could not locate repo root (no .git found) from ${start}`);
+}
+
+const REPO_ROOT = findRepoRoot(dirname(fileURLToPath(import.meta.url)));
 
 // Transports known to be confusable with API shape. Extend this list as new
 // Anthropic-/OpenAI-/Gemini-fronting transports are added to the codebase.
@@ -57,25 +70,21 @@ const PROVIDER_EQ_RE = new RegExp(
 // path plus a one-line justification. Update ADR-012's "When `provider`
 // comparison is still correct" section when adding to this list.
 const ALLOWED_FILES: Record<string, string> = {
-  // Fallback source is the plain `anthropic` transport (routes to claude-code).
-  "packages/pi-coding-agent/src/core/retry-handler.ts":
-    "transport-specific fallback source (ADR-012)",
-
   // Claude-Code-specific SDK hooks (OAuth prep, streaming buffer sizing).
-  "packages/pi-coding-agent/src/core/sdk.ts":
+  "packages/gsd-agent-core/src/sdk.ts":
     "claude-code-specific SDK behavior",
-  "packages/pi-coding-agent/src/modes/interactive/controllers/chat-controller.ts":
+  "packages/gsd-agent-modes/src/modes/interactive/controllers/chat-controller.ts":
     "claude-code-specific streaming UI",
-  "packages/pi-coding-agent/src/modes/interactive/components/assistant-message.ts":
+  "packages/gsd-agent-modes/src/modes/interactive/components/assistant-message.ts":
     "claude-code-specific message rendering",
 
   // GitHub Copilot transport-specific request/auth transforms.
   "packages/pi-ai/src/utils/oauth/github-copilot.ts":
     "github-copilot OAuth-specific model shaping",
-  "packages/pi-ai/src/providers/openai-shared.ts":
-    "github-copilot-specific header injection",
   "packages/pi-ai/src/providers/anthropic.ts":
     "github-copilot-specific header injection on Anthropic transport",
+  "packages/pi-ai/src/providers/openai-responses.ts":
+    "github-copilot-specific header injection",
 
   // Transport-specific model-ID quirks (OpenRouter Anthropic IDs, OpenAI
   // custom-model-ID length cap, Copilot-specific headers).

@@ -2,20 +2,14 @@
  * Extension system for lifecycle events and custom tools.
  */
 
-export type { ExtensionManifest } from "./extension-manifest.js";
-export { readManifest, readManifestFromEntryPath } from "./extension-manifest.js";
-export type { SortResult, SortWarning } from "./extension-sort.js";
-export { sortExtensionPaths } from "./extension-sort.js";
-export type { SlashCommandInfo, SlashCommandLocation, SlashCommandSource } from "../slash-commands.js";
+export type { SlashCommandInfo, SlashCommandSource } from "../slash-commands.js";
+export type { SourceInfo } from "../source-info.js";
 export {
 	createExtensionRuntime,
 	discoverAndLoadExtensions,
-	getUntrustedExtensionPaths,
 	importExtensionModule,
-	isProjectTrusted,
 	loadExtensionFromFactory,
 	loadExtensions,
-	trustProject,
 } from "./loader.js";
 export type {
 	ExtensionErrorListener,
@@ -27,20 +21,14 @@ export type {
 } from "./runner.js";
 export { ExtensionRunner } from "./runner.js";
 export type {
-	AgentEndEvent,
-	AgentStartEvent,
-	// Re-exports
-	AgentToolResult,
-	AgentToolUpdateCallback,
-	// App keybindings (for custom editors)
-	AppAction,
-	// Events - Tool (ToolCallEvent types)
-	BashToolCallEvent,
-	BashToolResultEvent,
-	BeforeAgentStartEvent,
-	BeforeAgentStartEventResult,
+	AdjustToolSetEvent,
+	AdjustToolSetResult,
+	BashTransformEvent,
+	BashTransformEventResult,
 	BeforeCommitEvent,
 	BeforeCommitEventResult,
+	BeforeModelSelectEvent,
+	BeforeModelSelectResult,
 	BeforePrEvent,
 	BeforePrEventResult,
 	BeforePushEvent,
@@ -49,19 +37,45 @@ export type {
 	BeforeVerifyEventResult,
 	BudgetThresholdEvent,
 	BudgetThresholdEventResult,
-	BeforeProviderRequestEvent,
-	BeforeProviderRequestEventResult,
 	CommitEvent,
+	MilestoneEndEvent,
+	MilestoneStartEvent,
 	NotificationEvent,
 	PrOpenedEvent,
 	PushEvent,
+	SessionEndEvent,
+	SessionForkEvent,
+	SessionSwitchEvent,
+	StopEvent,
+	ToolCompatibility,
+	ToolFormatValidationErrorEvent,
+	ToolFormatValidationErrorEventResult,
+	ToolPreparationErrorsTurnEvent,
+	ToolPreparationErrorsTurnEventResult,
+	UnitEndEvent,
+	UnitStartEvent,
 	VerifyFailure,
 	VerifyResultEvent,
+	AfterProviderResponseEvent,
+	AgentEndEvent,
+	AgentStartEvent,
+	// Re-exports
+	AgentToolResult,
+	AgentToolUpdateCallback,
+	AppendEntryHandler,
+	// App keybindings (for custom editors)
+	AppKeybinding,
+	AutocompleteProviderFactory,
+	// Events - Tool (ToolCallEvent types)
+	BashToolCallEvent,
+	BashToolResultEvent,
+	BeforeAgentStartEvent,
+	BeforeAgentStartEventResult,
+	BeforeProviderRequestEvent,
+	BeforeProviderRequestEventResult,
+	BuildSystemPromptOptions,
 	// Context
 	CompactOptions,
-	// Events - Adjust Tool Set (ADR-005)
-	AdjustToolSetEvent,
-	AdjustToolSetResult,
 	// Events - Agent
 	ContextEvent,
 	// Event Results
@@ -69,6 +83,7 @@ export type {
 	ContextUsage,
 	CustomToolCallEvent,
 	CustomToolResultEvent,
+	EditorFactory,
 	EditToolCallEvent,
 	EditToolResultEvent,
 	ExecOptions,
@@ -95,6 +110,10 @@ export type {
 	ExtensionWidgetOptions,
 	FindToolCallEvent,
 	FindToolResultEvent,
+	GetActiveToolsHandler,
+	GetAllToolsHandler,
+	GetCommandsHandler,
+	GetThinkingLevelHandler,
 	GrepToolCallEvent,
 	GrepToolResultEvent,
 	// Events - Input
@@ -117,19 +136,18 @@ export type {
 	// Provider Registration
 	ProviderConfig,
 	ProviderModelConfig,
-	LifecycleHookContext,
-	LifecycleHookHandler,
-	LifecycleHookMap,
-	LifecycleHookPhase,
-	LifecycleHookScope,
 	ReadToolCallEvent,
 	ReadToolResultEvent,
 	// Commands
 	RegisteredCommand,
 	RegisteredTool,
+	ReplacedSessionContext,
+	ResolvedCommand,
 	// Events - Resources
 	ResourcesDiscoverEvent,
 	ResourcesDiscoverResult,
+	SendMessageHandler,
+	SendUserMessageHandler,
 	SessionBeforeCompactEvent,
 	SessionBeforeCompactResult,
 	SessionBeforeForkEvent,
@@ -139,25 +157,25 @@ export type {
 	SessionBeforeTreeEvent,
 	SessionBeforeTreeResult,
 	SessionCompactEvent,
-	SessionDirectoryEvent,
-	SessionDirectoryHandler,
-	SessionDirectoryResult,
 	SessionEvent,
-	SessionForkEvent,
 	SessionShutdownEvent,
 	// Events - Session
 	SessionStartEvent,
-	SessionSwitchEvent,
 	SessionTreeEvent,
+	SetActiveToolsHandler,
+	SetLabelHandler,
+	SetModelHandler,
+	SetThinkingLevelHandler,
 	TerminalInputHandler,
 	// Events - Tool
 	ToolCallEvent,
 	ToolCallEventResult,
 	// Tools
-	ToolCompatibility,
 	ToolDefinition,
 	// Events - Tool Execution
 	ToolExecutionEndEvent,
+	// Tool execution mode
+	ToolExecutionMode,
 	ToolExecutionStartEvent,
 	ToolExecutionUpdateEvent,
 	ToolInfo,
@@ -170,17 +188,26 @@ export type {
 	// Events - User Bash
 	UserBashEvent,
 	UserBashEventResult,
-	BashTransformEvent,
-	BashTransformEventResult,
 	WidgetPlacement,
+	WorkingIndicatorOptions,
 	WriteToolCallEvent,
 	WriteToolResultEvent,
+	LifecycleHookContext,
+	LifecycleHookHandler,
+	LifecycleHookMap,
+	LifecycleHookPhase,
+	LifecycleHookScope,
 } from "./types.js";
 // Type guards
-export { isToolCallEventType, isToolResultEventType } from "./types.js";
 export {
-	wrapRegisteredTool,
-	wrapRegisteredTools,
-	wrapToolsWithExtensions,
-	wrapToolWithExtensions,
-} from "./wrapper.js";
+	defineTool,
+	isBashToolResult,
+	isEditToolResult,
+	isFindToolResult,
+	isGrepToolResult,
+	isLsToolResult,
+	isReadToolResult,
+	isToolCallEventType,
+	isWriteToolResult,
+} from "./types.js";
+export { wrapRegisteredTool, wrapRegisteredTools } from "./wrapper.js";

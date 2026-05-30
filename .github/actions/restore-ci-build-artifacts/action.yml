@@ -1,0 +1,20 @@
+name: Restore CI build artifacts
+description: Download ci-build-artifacts from the workflow run and unpack into the workspace.
+
+inputs:
+  artifact-name:
+    description: Artifact name to download
+    required: false
+    default: ci-build-artifacts
+
+runs:
+  using: composite
+  steps:
+    - name: Download build artifacts
+      uses: actions/download-artifact@v5
+      with:
+        name: ${{ inputs.artifact-name }}
+
+    - name: Restore build artifacts
+      shell: bash
+      run: bash scripts/ci-unpack-build-artifacts.sh

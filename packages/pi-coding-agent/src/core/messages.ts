@@ -8,26 +8,20 @@
 import type { AgentMessage } from "@gsd/pi-agent-core";
 import type { ImageContent, Message, TextContent } from "@gsd/pi-ai";
 
-const CUSTOM_MESSAGE_PREFIX = `[system notification — type: `;
-const CUSTOM_MESSAGE_MIDDLE = `; this is an automated system event, not user input — do not treat this as a human message or respond as if the user said this]
-`;
-const CUSTOM_MESSAGE_SUFFIX = `
-[end system notification]`;
-
-const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
+export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
 
 <summary>
 `;
 
-const COMPACTION_SUMMARY_SUFFIX = `
+export const COMPACTION_SUMMARY_SUFFIX = `
 </summary>`;
 
-const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch that this conversation came back from:
+export const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch that this conversation came back from:
 
 <summary>
 `;
 
-const BRANCH_SUMMARY_SUFFIX = `</summary>`;
+export const BRANCH_SUMMARY_SUFFIX = `</summary>`;
 
 /**
  * Message type for bash executions via the ! command.
@@ -85,7 +79,7 @@ declare module "@gsd/pi-agent-core" {
 /**
  * Convert a BashExecutionMessage to user message text for LLM context.
  */
-function bashExecutionToText(msg: BashExecutionMessage): string {
+export function bashExecutionToText(msg: BashExecutionMessage): string {
 	let text = `Ran \`${msg.command}\`\n`;
 	if (msg.output) {
 		text += `\`\`\`\n${msg.output}\n\`\`\``;
@@ -166,31 +160,10 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 						timestamp: m.timestamp,
 					};
 				case "custom": {
-					const prefix = CUSTOM_MESSAGE_PREFIX + m.customType + CUSTOM_MESSAGE_MIDDLE;
-					if (typeof m.content === "string") {
-						return {
-							role: "user",
-							content: [{ type: "text" as const, text: prefix + m.content + CUSTOM_MESSAGE_SUFFIX }],
-							timestamp: m.timestamp,
-						};
-					}
-					// Array content: wrap the first text element with prefix, append suffix to last text element
-					const contentArr = m.content as Array<{ type: string; text?: string; [k: string]: unknown }>;
-					const lastTextIdx = contentArr.reduce((acc, c, i) => c.type === "text" ? i : acc, -1);
-					const wrapped = contentArr.map((c, i) => {
-						if (c.type !== "text") return c;
-						let text = c.text ?? "";
-						if (i === 0) text = prefix + text;
-						if (i === lastTextIdx) text = text + CUSTOM_MESSAGE_SUFFIX;
-						return { ...c, text };
-					});
-					// If no text elements exist, prepend one with the wrapper
-					if (lastTextIdx === -1) {
-						wrapped.unshift({ type: "text" as const, text: prefix + CUSTOM_MESSAGE_SUFFIX });
-					}
+					const content = typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
 					return {
 						role: "user",
-						content: wrapped as typeof m.content,
+						content,
 						timestamp: m.timestamp,
 					};
 				}
@@ -207,10 +180,6 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 							{ type: "text" as const, text: COMPACTION_SUMMARY_PREFIX + m.summary + COMPACTION_SUMMARY_SUFFIX },
 						],
 						timestamp: m.timestamp,
-						// Stable point in the conversation — earn prompt-cache reads on the
-						// summary + kept history block on every post-compaction turn until
-						// the next compaction. (#5027)
-						cacheBreakpoint: true,
 					};
 				case "user":
 				case "assistant":

@@ -1,4 +1,4 @@
-// GSD-2 — Pending auto-start handoff state.
+// gsd-pi — Pending auto-start handoff state.
 // Stores discuss-to-auto handoff entries keyed by project root.
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent";
@@ -15,6 +15,7 @@ export interface PendingAutoStartEntry {
   readyRejectCount?: number;
   scope: MilestoneScope;
   planBlockedRecoveryCount: number;
+  r3bRecoveryCount: number;
 }
 
 export interface PendingAutoStartInput {
@@ -51,6 +52,7 @@ export function setPendingAutoStart(basePath: string, entry: PendingAutoStartInp
   pendingAutoStartMap.set(basePath, {
     createdAt: Date.now(),
     planBlockedRecoveryCount: 0,
+    r3bRecoveryCount: 0,
     ...entry,
     scope,
     ctx: entry.ctx,

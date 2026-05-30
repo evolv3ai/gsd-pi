@@ -6,7 +6,7 @@
  * All business logic lives in the pipeline modules (S01–S03).
  *
  * After a successful write, offers a read-only review that audits the output
- * for GSD-2 standards compliance.
+ * for gsd-pi standards compliance.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent";
@@ -15,6 +15,10 @@ import { join, dirname } from "node:path";
 import { gsdRoot } from "../paths.js";
 import { fileURLToPath } from "node:url";
 import { showNextAction } from "../../shared/tui.js";
+import {
+  notifyMigrateNeedsInteractiveMenu,
+  requiresInteractiveMenu,
+} from "../command-feedback.js";
 import {
   validatePlanningDirectory,
   parsePlanningDirectory,
@@ -27,7 +31,7 @@ import type { MigrationPreview, WrittenFiles } from "./writer.js";
 import { ensureDbOpen } from "../bootstrap/dynamic-tools.js";
 import { clearArtifacts, clearDecisions, clearRequirements, clearEngineHierarchy, transaction } from "../gsd-db.js";
 import { migrateFromMarkdown } from "../md-importer.js";
-import { invalidateStateCache } from "../state.js";
+import { deriveState, invalidateStateCache } from "../state.js";
 import {
   archiveLegacyPlanningDirectory,
   verifyMigrationProjection,
@@ -100,6 +104,25 @@ export async function importWrittenMigrationToDb(
   return counts;
 }
 
+export async function assertMigrationDbReadiness(
+  targetRoot: string,
+  preview: MigrationPreview,
+): Promise<{ phase: string; registry: number }> {
+  invalidateStateCache();
+  const state = await deriveState(targetRoot);
+  const dbUnavailable = state.blockers.some((blocker) => blocker.includes("DB unavailable"));
+  if (dbUnavailable) {
+    throw new Error(`migration DB readiness failed: ${state.blockers.join("; ")}`);
+  }
+  if (state.registry.length !== preview.milestoneCount) {
+    throw new Error(`migration DB readiness failed: registry ${state.registry.length}/${preview.milestoneCount}`);
+  }
+  return {
+    phase: state.phase,
+    registry: state.registry.length,
+  };
+}
+
 export async function executeMigrationWrite(
   sourcePath: string,
   targetRoot: string,
@@ -114,6 +137,7 @@ export async function executeMigrationWrite(
     const legacyArchive = await archiveLegacyPlanningDirectory(sourcePath, targetRoot);
     const imported = await importWrittenMigrationToDb(targetRoot, preview);
     const verification = await verifyMigrationProjection(targetRoot, preview);
+    verification.dbReadiness = await assertMigrationDbReadiness(targetRoot, preview);
     const audit = await writeMigrationAudit({
       sourcePath,
       targetRoot,
@@ -144,8 +168,11 @@ function formatPreviewStats(preview: MigrationPreview): string {
   ];
   if (preview.requirements.total > 0) {
     lines.push(
-      `- Requirements: ${preview.requirements.total} (${preview.requirements.validated} validated, ${preview.requirements.active} active, ${preview.requirements.deferred} deferred)`,
+      `- Requirements: ${preview.requirements.total} (${preview.requirements.validated} validated, ${preview.requirements.active} active, ${preview.requirements.deferred} deferred, ${preview.requirements.outOfScope} out of scope)`,
     );
+  }
+  if (preview.migrationInputs) {
+    lines.push(`- Legacy inputs: ${preview.migrationInputs.milestonePhaseDirs} milestone phase dir(s), ${preview.migrationInputs.decisions} decision file(s), ${preview.migrationInputs.seeds} seed file(s)`);
   }
   return lines.join("\n");
 }
@@ -248,8 +275,11 @@ export async function handleMigrate(
 
   if (preview.requirements.total > 0) {
     lines.push(
-      `Requirements: ${preview.requirements.total} (${preview.requirements.validated} validated, ${preview.requirements.active} active, ${preview.requirements.deferred} deferred)`,
+      `Requirements: ${preview.requirements.total} (${preview.requirements.validated} validated, ${preview.requirements.active} active, ${preview.requirements.deferred} deferred, ${preview.requirements.outOfScope} out of scope)`,
     );
+  }
+  if (preview.migrationInputs) {
+    lines.push(`Legacy inputs: ${preview.migrationInputs.milestonePhaseDirs} milestone phase dir(s), ${preview.migrationInputs.decisions} decision file(s), ${preview.migrationInputs.seeds} seed file(s)`);
   }
 
   const targetGsdExists = existsSync(gsdRoot(targetRoot));
@@ -260,6 +290,11 @@ export async function handleMigrate(
   }
 
   // ── Confirmation via showNextAction ────────────────────────────────────────
+  if (requiresInteractiveMenu(ctx, false)) {
+    notifyMigrateNeedsInteractiveMenu(ctx, "migration confirmation needs an interactive menu");
+    return;
+  }
+
   const choice = await showNextAction(ctx, {
     title: "Migration preview",
     summary: lines,
@@ -315,7 +350,7 @@ export async function handleMigrate(
       `Legacy source archived at ${execution.legacyArchive.archivePath}`,
       `Migration audit written at ${execution.audit.migrationPath}`,
       "",
-      "The agent can now review the migrated output against GSD-2 standards —",
+      "The agent can now review the migrated output against gsd-pi standards —",
       "checking structure, content quality, deriveState() round-trip, and",
       "requirement statuses. The review is read-only by default.",
     ],

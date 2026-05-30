@@ -40,6 +40,10 @@ export interface PlanningProject {
   milestones: PlanningMilestone[];
   /** Research files from top-level research/ directory */
   research: PlanningResearch[];
+  /** Decision files from decisions/ directory */
+  decisions: PlanningDecision[];
+  /** Seed files from seeds/ directory */
+  seeds: PlanningSeed[];
   /** Validation result from pre-flight checks */
   validation: ValidationResult;
 }
@@ -198,6 +202,20 @@ export interface PlanningResearch {
   content: string;
 }
 
+export interface PlanningDecision {
+  /** File name */
+  fileName: string;
+  /** Raw content */
+  content: string;
+}
+
+export interface PlanningSeed {
+  /** File name */
+  fileName: string;
+  /** Raw content */
+  content: string;
+}
+
 // ─── Config ────────────────────────────────────────────────────────────────
 
 export interface PlanningConfig {
@@ -231,6 +249,8 @@ export interface PlanningMilestone {
   requirements: string | null;
   /** Roadmap file content, null if missing */
   roadmap: string | null;
+  /** Per-milestone phase directories keyed by full directory name */
+  phases: Record<string, PlanningPhase>;
   /** Any other files */
   extraFiles: PlanningPhaseFile[];
 }
@@ -257,7 +277,7 @@ export interface PlanningPhaseFile {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GSD Output Types — produced by transformer, consumed by writer (S03)
-// Mirror GSD-2 runtime shapes so deriveState() works on migrated output.
+// Mirror gsd-pi runtime shapes so deriveState() works on migrated output.
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface GSDProject {
@@ -267,6 +287,14 @@ export interface GSDProject {
   requirements: GSDRequirement[];
   /** Empty or pass-through from old project key decisions */
   decisionsContent: string;
+  /** Counts surfaced in preview/audit for legacy inputs that used to be skipped. */
+  migrationInputs?: GSDMigrationInputs;
+}
+
+export interface GSDMigrationInputs {
+  milestonePhaseDirs: number;
+  decisions: number;
+  seeds: number;
 }
 
 export interface GSDMilestone {

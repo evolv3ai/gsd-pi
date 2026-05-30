@@ -3,7 +3,7 @@
  * Rebuild the Next.js web host only when web source files are newer than the
  * staged standalone build. Skips the build when nothing has changed.
  *
- * Also self-heals a missing/incomplete web dependency install so `npm run gsd:web`
+ * Also self-heals a missing/incomplete web dependency install so `pnpm run gsd:web`
  * doesn't fail with bare `next` command-not-found errors.
  *
  * Exit codes:
@@ -83,8 +83,8 @@ function ensureWebBuildDependencies() {
     return
   }
 
-  console.log('[gsd] Web build dependencies are missing or incomplete — running npm --prefix web ci...')
-  execSync('npm --prefix web ci', { cwd: root, stdio: 'inherit' })
+  console.log('[gsd] Web build dependencies are missing or incomplete — running pnpm install...')
+  execSync('pnpm install --frozen-lockfile', { cwd: root, stdio: 'inherit' })
 }
 
 const sourceMtime = Math.max(newestMtime(webRoot), newestMtime(srcRoot))
@@ -103,7 +103,7 @@ if (builtMtime === 0) {
 
 try {
   ensureWebBuildDependencies()
-  execSync('npm run build:web-host', { cwd: root, stdio: 'inherit' })
+  execSync('pnpm run build:web-host', { cwd: root, stdio: 'inherit' })
 } catch (err) {
   console.error('[gsd] Web build failed:', err.message)
   process.exit(1)

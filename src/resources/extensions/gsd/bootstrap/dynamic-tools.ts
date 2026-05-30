@@ -1,8 +1,8 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Registers workspace-aware dynamic filesystem and shell tools.
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@gsd/pi-coding-agent";
@@ -10,6 +10,8 @@ import { createBashTool, createEditTool, createReadTool, createWriteTool } from 
 import { DEFAULT_BASH_TIMEOUT_SECS } from "../constants.js";
 import { setLogBasePath, logWarning } from "../workflow-logger.js";
 import { resolveGsdPathContract } from "../paths.js";
+import { getAutoWorktreePath } from "../auto-worktree.js";
+import { resolveWorktreeProjectRoot } from "../worktree-root.js";
 
 export function safeWorkspaceCwd(): string {
   try {
@@ -27,6 +29,39 @@ export function resolveCtxCwd(ctx?: unknown): string {
     if (existsSync(cwd)) return cwd;
   }
   return safeWorkspaceCwd();
+}
+
+/**
+ * Base path for workflow MCP tools. Mirrors packages/mcp-server parseWorkflowArgs:
+ * route writes to `<project>/.gsd/worktrees/<milestoneId>/` when that worktree exists.
+ */
+export function resolveWorkflowToolBasePath(
+  ctx?: unknown,
+  scope?: { milestone_id?: string },
+): string {
+  const cwd = resolveCtxCwd(ctx);
+  const projectRoot = resolveWorktreeProjectRoot(cwd);
+  const milestoneId = scope?.milestone_id?.trim();
+  if (milestoneId) {
+    const worktree = getAutoWorktreePath(projectRoot, milestoneId);
+    if (worktree) return worktree;
+  } else {
+    const worktreesDir = join(projectRoot, ".gsd", "worktrees");
+    if (existsSync(worktreesDir)) {
+      try {
+        const live = readdirSync(worktreesDir)
+          .map((name) => join(worktreesDir, name))
+          .filter((p) => existsSync(join(p, ".git")));
+        if (live.length === 1) return live[0]!;
+      } catch (err) {
+        logWarning(
+          "bootstrap",
+          `resolveWorkflowToolBasePath: failed to scan worktrees: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+  return cwd;
 }
 
 /**

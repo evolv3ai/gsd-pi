@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Validate-milestone tool handler for GSD workflow quality gates.
 
 /**
@@ -109,7 +109,6 @@ async function browserEvidenceGateRequiresAttention(
       slice.demo,
       slice.goal,
       slice.success_criteria,
-      slice.full_uat_md,
     ]),
   ]);
   if (!hasBrowserRequiredText(requirementText)) return false;

@@ -1,7 +1,7 @@
 import type { DefaultResourceLoader as DefaultResourceLoaderType } from '@gsd/pi-coding-agent'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
-import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync, readlinkSync, readdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compareSemver } from './update-check.js'
@@ -20,7 +20,7 @@ function loadPiCodingAgentModule(): Promise<PiCodingAgentModule> {
 // Resolve resources directory — prefer dist/resources/ (stable, set at build time)
 // over src/resources/ (live working tree, changes with git branch).
 //
-// Why this matters: with `npm link`, src/resources/ points into the gsd-2 repo's
+// Why this matters: with `npm link`, src/resources/ points into the gsd-pi repo's
 // working tree. Switching branches there changes src/resources/ for ALL projects
 // that use gsd — causing stale/broken extensions to be synced to ~/.gsd/agent/.
 // dist/resources/ is populated by the build step (`npm run copy-resources`) and
@@ -352,47 +352,63 @@ function copyDirRecursive(src: string, dest: string): void {
  * them without requiring every call site to use jiti.
  *
  * Layout differences by install method:
- * - Source/monorepo: packageRoot/node_modules has everything → simple symlink
- * - npm/bun global: deps hoisted to dirname(packageRoot), including @gsd/* → simple symlink
- * - pnpm global: external deps hoisted, but @gsd/* stays in packageRoot/node_modules
- *   → merged directory with symlinks from both roots (#3529, #3564)
+ * - Source/monorepo: packageRoot/node_modules has everything -> simple symlink
+ * - Global install (npm/bun/pnpm): merge the nearest ancestor node_modules
+ *   with packageRoot/node_modules so both hoisted deps like yaml and
+ *   package-local deps like @sinclair/typebox resolve (#3529, #3564).
  */
 function ensureNodeModulesSymlink(agentDir: string): void {
   const agentNodeModules = join(agentDir, 'node_modules')
-  const internalNodeModules = join(packageRoot, 'node_modules')
-  const hoistedNodeModules = dirname(packageRoot)
-  const isGlobalInstall = basename(hoistedNodeModules) === 'node_modules'
+  const { internalNodeModules, hoistedNodeModules } = resolvePackageNodeModulesLayout(packageRoot)
 
-  if (!isGlobalInstall) {
+  if (!hoistedNodeModules) {
     // Source/monorepo: internal node_modules has everything
     reconcileSymlink(agentNodeModules, internalNodeModules)
     return
   }
 
-  // Global install: check if workspace scopes (@gsd/*) are hoisted.
-  // npm/bun hoist everything; pnpm keeps workspace packages internal.
-  if (!hasMissingWorkspaceScopes(hoistedNodeModules, internalNodeModules)) {
-    // Everything is hoisted — simple symlink to parent node_modules
-    reconcileSymlink(agentNodeModules, hoistedNodeModules)
-    return
-  }
-
-  // pnpm-style layout: create a real directory merging both roots
+  // Global install: always merge hoisted + package-local node_modules.
+  // npm often keeps runtime deps (e.g. @sinclair/typebox) package-local even when
+  // @gsd/* scopes are hoisted — a hoisted-only symlink breaks extension imports.
   reconcileMergedNodeModules(agentNodeModules, hoistedNodeModules, internalNodeModules)
 }
 
-/** Check if any @gsd* scopes exist in internal but not in hoisted node_modules */
+export function resolvePackageNodeModulesLayout(root: string): {
+  internalNodeModules: string
+  hoistedNodeModules: string | null
+} {
+  return {
+    internalNodeModules: join(root, 'node_modules'),
+    hoistedNodeModules: findNearestNodeModulesAncestor(root),
+  }
+}
+
+export function findNearestNodeModulesAncestor(startPath: string): string | null {
+  let current = resolve(startPath)
+  while (true) {
+    if (basename(current) === 'node_modules') return current
+    const parent = dirname(current)
+    if (parent === current) return null
+    current = parent
+  }
+}
+
+/** Check if any GSD workspace scopes exist in internal but not in hoisted node_modules */
 export function hasMissingWorkspaceScopes(hoisted: string, internal: string): boolean {
   if (!existsSync(internal)) return false
   try {
     for (const entry of readdirSync(internal, { withFileTypes: true })) {
-      if (entry.isDirectory() && entry.name.startsWith('@gsd') &&
+      if (entry.isDirectory() && isGsdWorkspaceScope(entry.name) &&
           !existsSync(join(hoisted, entry.name))) {
         return true
       }
     }
   } catch { /* non-fatal */ }
   return false
+}
+
+function isGsdWorkspaceScope(scope: string): boolean {
+  return scope === '@gsd' || scope === '@gsd-build' || scope === '@opengsd'
 }
 
 /** Ensure a symlink at `link` points to `target`, fixing stale/wrong entries */
@@ -572,11 +588,8 @@ function pruneRemovedBundledExtensions(
  *
  * - extensions/ → ~/.gsd/agent/extensions/   (overwrite when version changes)
  * - agents/     → ~/.gsd/agent/agents/        (overwrite when version changes)
+ * - skills/     → ~/.gsd/agent/skills/        (overwrite when version changes)
  * - GSD-WORKFLOW.md → ~/.gsd/agent/GSD-WORKFLOW.md (fallback for env var miss)
- *
- * Skills are NOT synced here. They are installed by the user via the
- * skills.sh CLI (`npx skills add <repo>`) into ~/.agents/skills/ — the
- * industry-standard Agent Skills ecosystem directory.
  *
  * Skips the copy when the managed-resources.json version matches the current
  * GSD version, avoiding ~128ms of synchronous cpSync on every startup.
@@ -585,12 +598,13 @@ function pruneRemovedBundledExtensions(
  *
  * Inspectable: `ls ~/.gsd/agent/extensions/`
  */
-export function initResources(agentDir: string, skillsDir: string = join(homedir(), '.agents', 'skills')): void {
+export function initResources(agentDir: string, skillsDir: string = join(agentDir, 'skills')): void {
   mkdirSync(agentDir, { recursive: true })
 
   const currentVersion = getBundledGsdVersion()
   const manifest = readManagedResourceManifest(agentDir)
   const extensionsDir = join(agentDir, 'extensions')
+  const usingManagedSkillsDir = resolve(skillsDir) === resolve(join(agentDir, 'skills'))
 
   // Always prune root-level extension files that were removed from the bundle.
   // This is cheap (a few existence checks + at most one rmSync) and must run
@@ -604,9 +618,12 @@ export function initResources(agentDir: string, skillsDir: string = join(homedir
   // extensions fail to resolve @gsd/* packages, rendering GSD non-functional.
   ensureNodeModulesSymlink(agentDir)
 
-  // Migrate legacy skills on every launch (not gated by manifest) so that
-  // partial-failure retries don't wait for a version bump.
-  migrateSkillsToEcosystemDir(agentDir)
+  // Reclaim exact bundled skill copies from ~/.agents/skills/ on every launch
+  // so existing installs are cleaned up even when the managed-resource manifest
+  // is current. Ambiguous/user-modified copies are left untouched.
+  if (usingManagedSkillsDir) {
+    cleanupBundledSkillsFromEcosystemDir()
+  }
 
   // Skip the full copy when both version AND content fingerprint match.
   // Version-only checks miss same-version content changes (npm link dev workflow,
@@ -641,107 +658,52 @@ export function initResources(agentDir: string, skillsDir: string = join(homedir
   ensureRegistryEntries(join(agentDir, 'extensions'))
 }
 
-// ─── Legacy Skill Migration ──────────────────────────────────────────────────────
+// ─── Bundled Skill Ecosystem Cleanup ─────────────────────────────────────────────
 
-/**
- * One-time migration: copy user-customized skills from the old
- * ~/.gsd/agent/skills/ directory into ~/.agents/skills/.
- *
- * The migration is conservative:
- *  - Only skill directories containing a SKILL.md are considered.
- *  - Copies, does not move — the old directory stays intact so downgrading
- *    to a pre-migration GSD version still works.
- *  - Collision-safe — if a skill name already exists in the target, the
- *    existing ecosystem skill wins (user may have already installed a newer
- *    version via skills.sh).
- *  - Writes a `.migrated-to-agents` marker inside the legacy directory so
- *    the migration runs at most once.
- */
-function migrateSkillsToEcosystemDir(agentDir: string): void {
-  const legacyDir = join(agentDir, 'skills')
-  const markerPath = join(legacyDir, '.migrated-to-agents')
+function cleanupBundledSkillsFromEcosystemDir(): void {
+  const bundledSkillsDir = join(resourcesDir, 'skills')
+  const ecosystemDir = join(homedir(), '.agents', 'skills')
+  if (!existsSync(bundledSkillsDir) || !existsSync(ecosystemDir)) return
 
-  // Already migrated or no legacy dir — nothing to do
-  if (!existsSync(legacyDir)) return
+  for (const entry of readdirSync(bundledSkillsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    const sourcePath = join(bundledSkillsDir, entry.name)
+    const targetPath = join(ecosystemDir, entry.name)
+    if (!existsSync(targetPath)) continue
 
-  // Atomic marker check — 'wx' fails if file already exists, preventing races
-  // when two GSD processes start simultaneously.
-  let markerFd: number
-  try {
-    markerFd = openSync(markerPath, 'wx')
-  } catch {
-    return // marker already exists (another process won the race, or already migrated)
-  }
-
-  try {
-    const ecosystemDir = join(homedir(), '.agents', 'skills')
-    mkdirSync(ecosystemDir, { recursive: true })
-
-    const entries = readdirSync(legacyDir, { withFileTypes: true })
-    let migrated = 0
-    let candidates = 0
-    for (const entry of entries) {
-      // Handle both real directories and symlinks pointing to directories
-      const isDir = entry.isDirectory()
-      const isSymlink = entry.isSymbolicLink()
-      if (!isDir && !isSymlink) continue
-
-      const sourcePath = join(legacyDir, entry.name)
-
-      // For symlinks, verify the target is a directory
-      if (isSymlink) {
-        try {
-          const stat = statSync(sourcePath)
-          if (!stat.isDirectory()) continue
-        } catch {
-          continue // broken symlink — skip
-        }
+    try {
+      if (lstatSync(targetPath).isSymbolicLink()) continue
+      if (directoriesHaveExactFileContents(sourcePath, targetPath)) {
+        makeTreeWritable(targetPath)
+        rmSync(targetPath, { recursive: true, force: true })
+      } else if (process.env.GSD_RESOURCE_LOADER_DEBUG === '1') {
+        console.warn(
+          `[GSD] Leaving ambiguous skill collision in ${targetPath}; ` +
+          `the bundled copy will be used from ~/.gsd/agent/skills/${entry.name}.`,
+        )
       }
-
-      const skillMd = join(sourcePath, 'SKILL.md')
-      if (!existsSync(skillMd)) continue
-
-      const target = join(ecosystemDir, entry.name)
-      if (existsSync(target)) continue // ecosystem version wins
-
-      candidates++
-      try {
-        if (isSymlink) {
-          // Recreate the symlink in the ecosystem directory using an absolute
-          // target. Relative symlinks would resolve from the new parent dir
-          // (~/.agents/skills/) instead of the original (~/.gsd/agent/skills/),
-          // pointing to the wrong location.
-          const rawTarget = readlinkSync(sourcePath)
-          const absTarget = resolve(dirname(sourcePath), rawTarget)
-          symlinkSync(absTarget, target)
-        } else {
-          cpSync(sourcePath, target, { recursive: true })
-        }
-        migrated++
-      } catch {
-        // non-fatal — skip this skill
-      }
+    } catch {
+      // Non-fatal: never let cleanup of the shared ecosystem dir block startup.
     }
-
-    // If any skills failed to copy, remove the marker so migration retries
-    // on the next launch.  This keeps the legacy dir as fallback until every
-    // skill has been successfully migrated.
-    if (migrated < candidates) {
-      try { closeSync(markerFd); markerFd = -1 } catch { /* non-fatal */ }
-      try { unlinkSync(markerPath) } catch { /* non-fatal */ }
-      return
-    }
-
-    // Write migration info to the marker
-    try { writeFileSync(markerFd, `Migrated ${migrated} skill(s) to ${ecosystemDir} on ${new Date().toISOString()}\n`) } catch { /* non-fatal */ }
-  } catch {
-    // can't create ecosystem dir or read legacy dir — close fd first (required on Windows
-    // where unlinkSync fails on open handles), then remove marker so we retry next launch
-    try { closeSync(markerFd); markerFd = -1 } catch { /* non-fatal */ }
-    try { unlinkSync(markerPath) } catch { /* non-fatal */ }
-  } finally {
-    if (markerFd !== -1) { try { closeSync(markerFd) } catch { /* non-fatal */ } }
   }
+}
+
+function directoriesHaveExactFileContents(sourceDir: string, targetDir: string): boolean {
+  const sourceFiles = collectRelativeFiles(sourceDir)
+  const targetFiles = collectRelativeFiles(targetDir)
+  if (sourceFiles.size !== targetFiles.size) return false
+
+  for (const relPath of sourceFiles) {
+    if (!targetFiles.has(relPath)) return false
+    const sourcePath = join(sourceDir, relPath)
+    const targetPath = join(targetDir, relPath)
+    try {
+      if (!readFileSync(sourcePath).equals(readFileSync(targetPath))) return false
+    } catch {
+      return false
+    }
+  }
+  return true
 }
 
 export function hasStaleCompiledExtensionSiblings(extensionsDir: string, sourceDir: string = bundledExtensionsDir): boolean {
@@ -807,7 +769,8 @@ export async function buildResourceLoader(
   agentDir: string,
   options: BuildResourceLoaderOptions = {},
 ): Promise<DefaultResourceLoaderType> {
-  const { DefaultResourceLoader, sortExtensionPaths } = await loadPiCodingAgentModule()
+  const { DefaultResourceLoader } = await loadPiCodingAgentModule()
+  const { sortExtensionPaths } = await import('./extension-sort.js')
   const registry = loadRegistry()
   const piAgentDir = join(homedir(), '.pi', 'agent')
   const piExtensionsDir = join(piAgentDir, 'extensions')
@@ -826,6 +789,7 @@ export async function buildResourceLoader(
 
   return new DefaultResourceLoader({
     agentDir,
+    cwd: process.cwd(),
     additionalExtensionPaths,
     bundledExtensionKeys: bundledKeys,
     extensionPathsTransform: (paths: string[]) => {
@@ -841,7 +805,7 @@ export async function buildResourceLoader(
 
       return {
         paths: sortedPaths,
-        diagnostics: warnings.map((w) => w.message),
+        diagnostics: warnings.map((w: { message: string }) => w.message),
       }
     },
   } as ConstructorParameters<typeof DefaultResourceLoader>[0])

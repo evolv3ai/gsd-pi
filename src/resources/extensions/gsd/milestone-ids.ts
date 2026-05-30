@@ -17,6 +17,34 @@ import { getErrorMessage } from "./error-utils.js";
 /** Matches both classic `M001` and unique `M001-abc123` formats (anchored). */
 export const MILESTONE_ID_RE = /^M\d{3}(?:-[a-z0-9]{6})?$/;
 
+function normalizeDiscussMilestoneId(id: string): string {
+  const m = id.trim().match(/^m(\d{3})(?:-([a-z0-9]{6}))?$/i);
+  if (!m) return id.trim();
+  return m[2] ? `M${m[1]}-${m[2].toLowerCase()}` : `M${m[1]}`;
+}
+
+function normalizeDiscussSliceId(id: string): string {
+  const m = id.trim().match(/^s(\d{2})$/i);
+  if (!m) return id.trim();
+  return `S${m[1]}`;
+}
+
+/** Canonicalize milestone/slice IDs from `/gsd discuss` targeting args. */
+export function normalizeDiscussTarget(target: string): string {
+  const trimmed = target.trim();
+  if (!trimmed) return trimmed;
+  const slash = trimmed.indexOf("/");
+  if (slash <= 0) return normalizeDiscussMilestoneId(trimmed);
+  const mid = normalizeDiscussMilestoneId(trimmed.slice(0, slash));
+  const rest = trimmed.slice(slash + 1);
+  const nextSlash = rest.indexOf("/");
+  if (nextSlash > 0) {
+    const sid = normalizeDiscussSliceId(rest.slice(0, nextSlash));
+    return `${mid}/${sid}${rest.slice(nextSlash)}`;
+  }
+  return `${mid}/${normalizeDiscussSliceId(rest)}`;
+}
+
 // ─── Parsing & Extraction ───────────────────────────────────────────────────
 
 /** Extract the trailing sequential number from a milestone ID. Returns 0 for non-matches. */

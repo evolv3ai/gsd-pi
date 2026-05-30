@@ -10,6 +10,7 @@ import type {
   PlanningRoadmapMilestone,
   PlanningResearch,
   PlanningRequirement,
+  PlanningMilestone,
   GSDProject,
   GSDMilestone,
   GSDSlice,
@@ -19,6 +20,7 @@ import type {
   GSDTaskSummaryData,
   GSDBoundaryEntry,
 } from './types.js';
+import { parseOldRequirements } from './parsers.js';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -241,18 +243,22 @@ function buildMilestoneFromEntries(
 
 const VALID_STATUSES = new Set(['active', 'validated', 'deferred']);
 const COMPLETE_ALIASES = new Set(['complete', 'completed', 'done', 'shipped']);
+const OUT_OF_SCOPE_ALIASES = new Set(['rejected', 'reject', 'out-of-scope', 'out of scope']);
 
-function normalizeStatus(status: string): 'active' | 'validated' | 'deferred' {
+function normalizeStatus(status: string): 'active' | 'validated' | 'deferred' | 'out-of-scope' {
   const lower = status.toLowerCase().trim();
   if (VALID_STATUSES.has(lower)) return lower as 'active' | 'validated' | 'deferred';
   if (COMPLETE_ALIASES.has(lower)) return 'validated';
+  if (OUT_OF_SCOPE_ALIASES.has(lower)) return 'out-of-scope';
   return 'active';
 }
 
 function normalizeRequirementId(id: string): string | null {
-  const match = id.trim().match(/^R(\d+)$/i);
-  if (!match) return null;
-  return `R${match[1].padStart(3, '0')}`;
+  const trimmed = id.trim().toUpperCase();
+  const rMatch = trimmed.match(/^R(\d+)$/);
+  if (rMatch) return `R${rMatch[1].padStart(3, '0')}`;
+  if (/^[A-Z][A-Z0-9]*-\d+$/.test(trimmed)) return trimmed;
+  return null;
 }
 
 function mapRequirements(reqs: PlanningRequirement[]): GSDRequirement[] {
@@ -302,6 +308,16 @@ function mapRequirements(reqs: PlanningRequirement[]): GSDRequirement[] {
   });
 }
 
+function collectRequirements(parsed: PlanningProject): PlanningRequirement[] {
+  const requirements = [...parsed.requirements];
+  for (const milestone of parsed.milestones) {
+    if (milestone.requirements) {
+      requirements.push(...parseOldRequirements(milestone.requirements));
+    }
+  }
+  return requirements;
+}
+
 // ─── Project-Level Derivation ──────────────────────────────────────────────
 
 function deriveVision(parsed: PlanningProject): string {
@@ -327,6 +343,10 @@ function deriveVision(parsed: PlanningProject): string {
 function deriveDecisions(parsed: PlanningProject): string {
   // Extract key decisions from phase summaries if available
   const decisions: string[] = [];
+  const decisionFiles = [...parsed.decisions].sort((a, b) => a.fileName.localeCompare(b.fileName));
+  for (const decision of decisionFiles) {
+    decisions.push(extractDecisionTitle(decision.fileName, decision.content));
+  }
   for (const phase of Object.values(parsed.phases)) {
     for (const summary of Object.values(phase.summaries)) {
       const kd = summary.frontmatter['key-decisions'] ?? [];
@@ -354,16 +374,66 @@ function deriveDecisions(parsed: PlanningProject): string {
   return lines.join('\n') + '\n';
 }
 
+function extractDecisionTitle(fileName: string, content: string): string {
+  const heading = content.split('\n').find((line) => /^#\s+/.test(line.trim()));
+  if (heading) return heading.replace(/^#\s+/, '').trim();
+  return fileName.replace(/\.md$/i, '').replace(/^\d{4}-\d{2}-\d{2}-/, '').replace(/-/g, ' ');
+}
+
+function buildMilestoneFromLegacyMilestone(source: PlanningMilestone, index: number): GSDMilestone {
+  const entries: PlanningRoadmapEntry[] = [];
+  if (source.roadmap) {
+    entries.push(...parseRoadmapEntries(source.roadmap));
+  }
+
+  const phases = source.phases;
+  if (entries.length === 0) {
+    for (const phase of Object.values(phases).sort((a, b) => a.number - b.number)) {
+      entries.push({
+        number: phase.number,
+        title: phase.slug,
+        done: Object.keys(phase.summaries).length > 0,
+        raw: '',
+      });
+    }
+  }
+
+  const title = `${source.id} Migration`;
+  return buildMilestoneFromEntries(milestoneId(index + 1), title, entries, phases, []);
+}
+
+function parseRoadmapEntries(content: string): PlanningRoadmapEntry[] {
+  const entries: PlanningRoadmapEntry[] = [];
+  for (const line of content.split('\n')) {
+    const match = line.match(/^-\s+\[([ xX])\]\s+(\d+(?:\.\d+)?)\s+[—–-]\s+(.+)$/);
+    if (!match) continue;
+    entries.push({
+      number: Number(match[2]),
+      title: match[3].trim(),
+      done: match[1].toLowerCase() === 'x',
+      raw: line,
+    });
+  }
+  return entries;
+}
+
 // ─── Main Entry Point ──────────────────────────────────────────────────────
 
 export function transformToGSD(parsed: PlanningProject): GSDProject {
   const milestones: GSDMilestone[] = [];
 
   const roadmap = parsed.roadmap;
+  const legacyMilestonesWithPhases = parsed.milestones.filter((milestone) => Object.keys(milestone.phases).length > 0);
+  const hasMilestoneDirectories = legacyMilestonesWithPhases.length > 0;
   const isMultiMilestone = roadmap !== null && roadmap.milestones.length > 0;
   const hasFlatPhases = roadmap !== null && roadmap.phases.length > 0;
 
-  if (isMultiMilestone) {
+  if (hasMilestoneDirectories) {
+    const sorted = [...legacyMilestonesWithPhases].sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true, sensitivity: 'base' }));
+    for (let mi = 0; mi < sorted.length; mi++) {
+      milestones.push(buildMilestoneFromLegacyMilestone(sorted[mi], mi));
+    }
+  } else if (isMultiMilestone) {
     // Multi-milestone mode: each roadmap milestone section → one GSDMilestone
     for (let mi = 0; mi < roadmap!.milestones.length; mi++) {
       const rm = roadmap!.milestones[mi];
@@ -405,7 +475,12 @@ export function transformToGSD(parsed: PlanningProject): GSDProject {
   return {
     milestones,
     projectContent: parsed.project ?? '',
-    requirements: mapRequirements(parsed.requirements),
+    requirements: mapRequirements(collectRequirements(parsed)),
     decisionsContent: deriveDecisions(parsed),
+    migrationInputs: {
+      milestonePhaseDirs: parsed.milestones.filter((milestone) => Object.keys(milestone.phases).length > 0).length,
+      decisions: parsed.decisions.length,
+      seeds: parsed.seeds.length,
+    },
   };
 }

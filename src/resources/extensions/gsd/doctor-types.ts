@@ -1,4 +1,4 @@
-// GSD-2 doctor report types
+// gsd-pi doctor report types
 export type DoctorSeverity = "info" | "warning" | "error";
 export type DoctorIssueCode =
   | "invalid_preferences"
@@ -87,7 +87,8 @@ export type DoctorIssueCode =
   | "db_unavailable"
   | "projection_drift"
   // Milestone filesystem/DB drift (#4996)
-  | "orphan_milestone_dir";
+  | "orphan_milestone_dir"
+  | "orphan_milestone_db";
 
 /**
  * Issue codes that represent global or completion-critical state.

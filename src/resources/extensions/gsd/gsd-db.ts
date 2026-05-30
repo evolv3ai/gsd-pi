@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: GSD database facade, schema, migrations, and single-writer write API.
 // GSD Database Abstraction Layer
 // Provides a SQLite database with provider fallback chain:
@@ -90,13 +90,30 @@ import { ensureColumn, getCurrentSchemaVersion, recordSchemaVersion } from "./db
 import { rowToSlice, rowToTask, type SliceRow, type TaskRow } from "./db-task-slice-rows.js";
 import { createDbTransactionRunner } from "./db-transaction.js";
 import { ensureVerificationEvidenceDedupIndex } from "./db-verification-evidence-schema.js";
-import { createSqliteProviderLoader, suppressSqliteWarning, type DbProviderName, type SqliteFallbackOpen } from "./db-provider.js";
+import {
+  BETTER_SQLITE3_PACKAGE,
+  createSqliteProviderLoader,
+  suppressSqliteWarning,
+  type DbProviderName,
+  type SqliteFallbackOpen,
+} from "./db-provider.js";
 // Type-only import to avoid a circular runtime dep. The runtime side of
 // workflow-manifest.ts depends on this file, but the StateManifest type is
 // pure structure with no runtime coupling.
 import type { StateManifest } from "./workflow-manifest.js";
 
-const _require = createRequire(import.meta.url);
+let _gsdRequire: ReturnType<typeof createRequire> | null | undefined;
+
+function getGsdRequire(): ReturnType<typeof createRequire> | null {
+  if (_gsdRequire !== undefined) return _gsdRequire;
+  try {
+    _gsdRequire = createRequire(import.meta.url);
+  } catch {
+    _gsdRequire = null;
+  }
+  return _gsdRequire;
+}
+
 type ProviderName = DbProviderName;
 
 export type { ArtifactRow, MilestoneRow } from "./db-milestone-artifact-rows.js";
@@ -104,7 +121,16 @@ export type { ActiveTaskSummary, IdStatusSummary, TaskStatusCounts } from "./db-
 export type { SliceRow, TaskRow } from "./db-task-slice-rows.js";
 
 const providerLoader = createSqliteProviderLoader({
-  requireModule: (id: string) => _require(id),
+  tryRequireNodeSqlite: () => {
+    const req = getGsdRequire();
+    if (!req) throw new Error("unavailable");
+    return req("node:sqlite");
+  },
+  tryRequireBetterSqlite3: () => {
+    const req = getGsdRequire();
+    if (!req) throw new Error("unavailable");
+    return req(BETTER_SQLITE3_PACKAGE);
+  },
   suppressSqliteWarning,
   nodeVersion: process.versions.node,
   writeStderr: (message: string) => process.stderr.write(message),

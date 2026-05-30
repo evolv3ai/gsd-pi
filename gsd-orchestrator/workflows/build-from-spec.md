@@ -4,7 +4,7 @@ End-to-end workflow: take a product idea or specification, produce working softw
 
 ## Prerequisites
 
-- `gsd` CLI installed (`npm install -g gsd-pi`)
+- `gsd` CLI installed (`npm install -g @opengsd/gsd-pi`)
 - A directory for the project (can be empty)
 - Git initialized in the directory
 

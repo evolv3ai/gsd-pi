@@ -1,52 +1,41 @@
 /**
  * Extension loader - loads TypeScript extension modules using jiti.
  *
- * Uses @mariozechner/jiti fork with virtualModules support for compiled Bun binaries.
  */
 
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
-import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createJiti } from "@mariozechner/jiti";
 import * as _bundledPiAgentCore from "@gsd/pi-agent-core";
 import * as _bundledPiAi from "@gsd/pi-ai";
 import * as _bundledPiAiOauth from "@gsd/pi-ai/oauth";
 import type { KeyId } from "@gsd/pi-tui";
 import * as _bundledPiTui from "@gsd/pi-tui";
+import { createJiti } from "@mariozechner/jiti";
 // Static imports of packages that extensions may use.
 // These MUST be static so Bun bundles them into the compiled binary.
 // The virtualModules option then makes them available to extensions.
-import * as _bundledTypebox from "@sinclair/typebox";
-import * as _bundledYaml from "yaml";
-import * as _bundledMcpClient from "@modelcontextprotocol/sdk/client";
-import * as _bundledMcpStdio from "@modelcontextprotocol/sdk/client/stdio.js";
-import * as _bundledMcpStreamableHttp from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import * as _bundledMcpSse from "@modelcontextprotocol/sdk/client/sse.js";
-import * as _bundledMcpServer from "@modelcontextprotocol/sdk/server";
-import * as _bundledMcpServerStdio from "@modelcontextprotocol/sdk/server/stdio.js";
-import * as _bundledMcpServerSse from "@modelcontextprotocol/sdk/server/sse.js";
-import * as _bundledMcpServerStreamableHttp from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import * as _bundledMcpTypes from "@modelcontextprotocol/sdk/types.js";
-import { getAgentDir, isBunBinary } from "../../config.js";
+import * as _bundledTypebox from "typebox";
+import * as _bundledTypeboxCompile from "typebox/compile";
+import * as _bundledTypeboxValue from "typebox/value";
+import * as _bundledSinclairTypeboxCompiler from "@sinclair/typebox/compiler";
+import { CONFIG_DIR_NAME, getAgentDir, isBunBinary } from "../../config.js";
 // NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
 // avoiding a circular dependency. Extensions can import from @gsd/pi-coding-agent.
 import * as _bundledPiCodingAgent from "../../index.js";
+import { resolvePath } from "../../utils/paths.js";
 import { createEventBus, type EventBus } from "../event-bus.js";
 import type { ExecOptions } from "../exec.js";
 import { execCommand } from "../exec.js";
-import { getUntrustedExtensionPaths } from "./project-trust.js";
-export { isProjectTrusted, trustProject, getUntrustedExtensionPaths } from "./project-trust.js";
+import { createSyntheticSourceInfo } from "../source-info.js";
 import { registerToolCompatibility } from "../tools/tool-compatibility-registry.js";
-import { mergeExtensionEntryPaths } from "./extension-discovery.js";
-import { sortExtensionPaths } from "./extension-sort.js";
 import type {
 	Extension,
 	ExtensionAPI,
 	ExtensionFactory,
-	LifecycleHookHandler,
 	ExtensionRuntime,
+	LifecycleHookHandler,
 	LoadExtensionsResult,
 	MessageRenderer,
 	ProviderConfig,
@@ -54,255 +43,40 @@ import type {
 	ToolDefinition,
 } from "./types.js";
 
-/**
- * Statically imported modules for Bun binary virtualModules.
- * Maps specifier -> module object for subpaths that must be available in compiled binaries.
- */
-const STATIC_BUNDLED_MODULES: Record<string, unknown> = {
+/** Modules available to extensions via virtualModules (for compiled Bun binary) */
+const VIRTUAL_MODULES: Record<string, unknown> = {
+	typebox: _bundledTypebox,
+	"typebox/compile": _bundledTypeboxCompile,
+	"typebox/value": _bundledTypeboxValue,
 	"@sinclair/typebox": _bundledTypebox,
+	"@sinclair/typebox/compile": _bundledTypeboxCompile,
+	"@sinclair/typebox/compiler": _bundledSinclairTypeboxCompiler,
+	"@sinclair/typebox/value": _bundledTypeboxValue,
 	"@gsd/pi-agent-core": _bundledPiAgentCore,
 	"@gsd/pi-tui": _bundledPiTui,
 	"@gsd/pi-ai": _bundledPiAi,
 	"@gsd/pi-ai/oauth": _bundledPiAiOauth,
 	"@gsd/pi-coding-agent": _bundledPiCodingAgent,
-	"yaml": _bundledYaml,
-	"@modelcontextprotocol/sdk/client": _bundledMcpClient,
-	"@modelcontextprotocol/sdk/client/stdio": _bundledMcpStdio,
-	"@modelcontextprotocol/sdk/client/stdio.js": _bundledMcpStdio,
-	"@modelcontextprotocol/sdk/client/streamableHttp": _bundledMcpStreamableHttp,
-	"@modelcontextprotocol/sdk/client/streamableHttp.js": _bundledMcpStreamableHttp,
-	"@modelcontextprotocol/sdk/client/sse": _bundledMcpSse,
-	"@modelcontextprotocol/sdk/client/sse.js": _bundledMcpSse,
-	"@modelcontextprotocol/sdk/server": _bundledMcpServer,
-	"@modelcontextprotocol/sdk/server/stdio": _bundledMcpServerStdio,
-	"@modelcontextprotocol/sdk/server/stdio.js": _bundledMcpServerStdio,
-	"@modelcontextprotocol/sdk/server/sse": _bundledMcpServerSse,
-	"@modelcontextprotocol/sdk/server/sse.js": _bundledMcpServerSse,
-	"@modelcontextprotocol/sdk/server/streamableHttp": _bundledMcpServerStreamableHttp,
-	"@modelcontextprotocol/sdk/server/streamableHttp.js": _bundledMcpServerStreamableHttp,
-	"@modelcontextprotocol/sdk/types": _bundledMcpTypes,
-	"@modelcontextprotocol/sdk/types.js": _bundledMcpTypes,
-	// Aliases for external PI ecosystem packages that import from the original scope
-	"@mariozechner/pi-agent-core": _bundledPiAgentCore,
-	"@mariozechner/pi-tui": _bundledPiTui,
-	"@mariozechner/pi-ai": _bundledPiAi,
-	"@mariozechner/pi-ai/oauth": _bundledPiAiOauth,
-	"@mariozechner/pi-coding-agent": _bundledPiCodingAgent,
 };
 
-/** Modules available to extensions via virtualModules (for compiled Bun binary) */
-const VIRTUAL_MODULES: Record<string, unknown> = { ...STATIC_BUNDLED_MODULES };
-
 const require = createRequire(import.meta.url);
-const EXTENSION_TIMING_ENABLED = process.env.GSD_STARTUP_TIMING === "1" || process.env.PI_TIMING === "1";
-
-/**
- * Bundled npm packages whose subpath exports should be auto-resolved for extensions.
- * Each package listed here will have its `exports` field read from package.json,
- * and all subpath exports will be registered as jiti aliases (Node.js mode) so that
- * extensions can import any standard subpath without hitting jiti's CJS double-resolve bug.
- */
-const BUNDLED_PACKAGES_WITH_EXPORTS = [
-	"@modelcontextprotocol/sdk",
-	"yaml",
-];
-
-/**
- * Read a package's `exports` field and return alias entries mapping
- * specifiers (e.g. `@modelcontextprotocol/sdk/server`) to resolved file paths.
- *
- * Handles:
- * - Explicit subpath exports: `./client` -> `@pkg/client`
- * - Wildcard exports (`./*`): scans the package's dist directory for actual files
- * - Both `.js`-suffixed and bare specifiers for each subpath
- */
-function resolveSubpathExports(packageName: string): Record<string, string> {
-	const aliases: Record<string, string> = {};
-
-	let packageJsonPath: string;
-	try {
-		// Resolve the package's root directory via its package.json
-		packageJsonPath = require.resolve(`${packageName}/package.json`);
-	} catch {
-		// Package doesn't allow importing package.json via exports — find it manually
-		try {
-			const anyEntry = require.resolve(packageName);
-			// Walk up from the resolved entry to find package.json
-			let dir = path.dirname(anyEntry);
-			while (dir !== path.dirname(dir)) {
-				const candidate = path.join(dir, "package.json");
-				if (fs.existsSync(candidate)) {
-					try {
-						const pkg = JSON.parse(fs.readFileSync(candidate, "utf-8"));
-						if (pkg.name === packageName) {
-							packageJsonPath = candidate;
-							break;
-						}
-					} catch {
-						// not valid JSON, keep walking
-					}
-				}
-				dir = path.dirname(dir);
-			}
-		} catch {
-			return aliases;
-		}
-		if (!packageJsonPath!) return aliases;
-	}
-
-	let pkg: { exports?: Record<string, unknown> };
-	try {
-		pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8"));
-	} catch {
-		return aliases;
-	}
-
-	const exports = pkg.exports;
-	if (!exports || typeof exports !== "object") return aliases;
-
-	const packageDir = path.dirname(packageJsonPath);
-
-	for (const [subpath, target] of Object.entries(exports)) {
-		if (subpath === ".") continue; // Root export handled by static imports
-
-		// Handle wildcard exports like "./*"
-		if (subpath.includes("*")) {
-			resolveWildcardExports(packageName, packageDir, subpath, target, aliases);
-			continue;
-		}
-
-		// Explicit subpath: "./client" -> "@pkg/client"
-		const specifier = `${packageName}/${subpath.replace(/^\.\//, "")}`;
-
-		try {
-			const resolved = require.resolve(specifier);
-			aliases[specifier] = resolved;
-
-			// Add .js-suffixed variant if the specifier doesn't already end in .js
-			if (!specifier.endsWith(".js")) {
-				const jsSpecifier = `${specifier}.js`;
-				try {
-					const jsResolved = require.resolve(jsSpecifier);
-					aliases[jsSpecifier] = jsResolved;
-				} catch {
-					// .js variant doesn't resolve — that's fine
-				}
-			}
-
-			// Add bare variant (without .js) if it ends in .js
-			if (specifier.endsWith(".js")) {
-				const bareSpecifier = specifier.slice(0, -3);
-				try {
-					const bareResolved = require.resolve(bareSpecifier);
-					aliases[bareSpecifier] = bareResolved;
-				} catch {
-					// bare variant doesn't resolve — that's fine
-				}
-			}
-		} catch {
-			// Subpath doesn't resolve — skip it
-		}
-	}
-
-	return aliases;
-}
-
-/**
- * Resolve wildcard export patterns (e.g. `./*`) by scanning the package's
- * file structure to find all matching files and generate alias entries.
- */
-function resolveWildcardExports(
-	packageName: string,
-	packageDir: string,
-	subpathPattern: string,
-	target: unknown,
-	aliases: Record<string, string>,
-): void {
-	// Extract the target directory pattern from the export target
-	// e.g. { "require": "./dist/cjs/*" } -> "dist/cjs"
-	let targetDir: string | null = null;
-
-	if (typeof target === "string") {
-		targetDir = target.replace(/\/\*$/, "").replace(/^\.\//, "");
-	} else if (target && typeof target === "object") {
-		const targetObj = target as Record<string, unknown>;
-		// Prefer "require" for CJS compatibility with jiti, fall back to "import"
-		const resolved = targetObj.require ?? targetObj.import ?? targetObj.default;
-		if (typeof resolved === "string") {
-			targetDir = resolved.replace(/\/\*$/, "").replace(/^\.\//, "");
-		}
-	}
-
-	if (!targetDir) return;
-
-	const fullTargetDir = path.join(packageDir, targetDir);
-	if (!fs.existsSync(fullTargetDir)) return;
-
-	// Scan for .js files and generate specifiers
-	const subpathPrefix = subpathPattern.replace(/\/?\*$/, "").replace(/^\.\//, "");
-	scanDirForExports(packageName, fullTargetDir, subpathPrefix, aliases);
-}
-
-/**
- * Recursively scan a directory for .js files and register them as aliases.
- */
-function scanDirForExports(
-	packageName: string,
-	dir: string,
-	relativePath: string,
-	aliases: Record<string, string>,
-): void {
-	let entries: fs.Dirent[];
-	try {
-		entries = fs.readdirSync(dir, { withFileTypes: true });
-	} catch {
-		return;
-	}
-
-	for (const entry of entries) {
-		const entryRelative = relativePath ? `${relativePath}/${entry.name}` : entry.name;
-
-		if (entry.isDirectory()) {
-			// Skip examples/test directories — extensions don't need them
-			if (entry.name === "examples" || entry.name === "__tests__" || entry.name === "test") continue;
-			scanDirForExports(packageName, path.join(dir, entry.name), entryRelative, aliases);
-		} else if (entry.name.endsWith(".js") && !entry.name.endsWith(".d.js")) {
-			const filePath = path.join(dir, entry.name);
-			const specifier = `${packageName}/${entryRelative}`;
-			// Only add if not already covered by an explicit export
-			if (!(specifier in aliases)) {
-				aliases[specifier] = filePath;
-			}
-			// Also add bare (no .js) variant
-			const bareSpecifier = specifier.replace(/\.js$/, "");
-			if (!(bareSpecifier in aliases)) {
-				aliases[bareSpecifier] = filePath;
-			}
-		}
-	}
-}
-
-function logExtensionTiming(extensionPath: string, ms: number, outcome: "loaded" | "failed"): void {
-	if (!EXTENSION_TIMING_ENABLED) return;
-	console.error(`[startup] extension ${outcome}: ${extensionPath} (${ms}ms)`);
-}
 
 /**
  * Get aliases for jiti (used in Node.js/development mode).
  * In Bun binary mode, virtualModules is used instead.
  */
 let _aliases: Record<string, string> | null = null;
+
 function getAliases(): Record<string, string> {
 	if (_aliases) return _aliases;
 
 	const __dirname = path.dirname(fileURLToPath(import.meta.url));
 	const packageIndex = path.resolve(__dirname, "../..", "index.js");
 
-	const typeboxEntry = require.resolve("@sinclair/typebox");
-	const typeboxRoot = typeboxEntry.replace(/[\\/]build[\\/]cjs[\\/]index\.js$/, "");
-
-	const yamlEntry = require.resolve("yaml");
-	const yamlRoot = yamlEntry.replace(/[\\/]dist[\\/]index\.js$/, "");
+	const typeboxEntry = require.resolve("typebox");
+	const typeboxCompileEntry = require.resolve("typebox/compile");
+	const typeboxValueEntry = require.resolve("typebox/value");
+	const sinclairTypeboxCompilerEntry = require.resolve("@sinclair/typebox/compiler");
 
 	const packagesRoot = path.resolve(__dirname, "../../../../");
 	const resolveWorkspaceOrImport = (workspaceRelativePath: string, specifier: string): string => {
@@ -313,39 +87,44 @@ function getAliases(): Record<string, string> {
 		return fileURLToPath(import.meta.resolve(specifier));
 	};
 
-	// Auto-discover subpath exports from bundled npm packages.
-	// This ensures extensions can import any standard subpath (e.g. @modelcontextprotocol/sdk/server)
-	// without hitting jiti's CJS double-resolve bug.
-	const autoDiscovered: Record<string, string> = {};
-	for (const packageName of BUNDLED_PACKAGES_WITH_EXPORTS) {
-		const subpathAliases = resolveSubpathExports(packageName);
-		Object.assign(autoDiscovered, subpathAliases);
-	}
+	const piCodingAgentEntry = packageIndex;
+
+	const mcpClientEntry = require.resolve("@modelcontextprotocol/sdk/client/index.js");
+	const mcpStdioEntry = require.resolve("@modelcontextprotocol/sdk/client/stdio.js");
+	const mcpStreamableHttpEntry = require.resolve("@modelcontextprotocol/sdk/client/streamableHttp.js");
+	const mcpAuthEntry = require.resolve("@modelcontextprotocol/sdk/client/auth.js");
+	const yamlEntry = require.resolve("yaml");
+	const minimatchEntry = require.resolve("minimatch");
+	const properLockfileEntry = require.resolve("proper-lockfile");
+	const picomatchEntry = require.resolve("picomatch");
 
 	_aliases = {
-		// Auto-discovered subpath exports (lowest priority — overridden by manual entries below)
-		...autoDiscovered,
-		// Manual entries for workspace packages and packages needing special resolution
-		"@gsd/pi-coding-agent": packageIndex,
-		"@gsd/pi-agent-core": resolveWorkspaceOrImport("agent/dist/index.js", "@gsd/pi-agent-core"),
-		"@gsd/pi-tui": resolveWorkspaceOrImport("tui/dist/index.js", "@gsd/pi-tui"),
-		"@gsd/pi-ai": resolveWorkspaceOrImport("ai/dist/index.js", "@gsd/pi-ai"),
-		"@gsd/pi-ai/oauth": resolveWorkspaceOrImport("ai/dist/oauth.js", "@gsd/pi-ai/oauth"),
-		"@sinclair/typebox": typeboxRoot,
-		"yaml": yamlRoot,
-		// Aliases for external PI ecosystem packages that import from the original scope
-		"@mariozechner/pi-coding-agent": packageIndex,
-		"@mariozechner/pi-agent-core": resolveWorkspaceOrImport("agent/dist/index.js", "@gsd/pi-agent-core"),
-		"@mariozechner/pi-tui": resolveWorkspaceOrImport("tui/dist/index.js", "@gsd/pi-tui"),
-		"@mariozechner/pi-ai": resolveWorkspaceOrImport("ai/dist/index.js", "@gsd/pi-ai"),
-		"@mariozechner/pi-ai/oauth": resolveWorkspaceOrImport("ai/dist/oauth.js", "@gsd/pi-ai/oauth"),
+		"@gsd/pi-coding-agent": piCodingAgentEntry,
+		"@gsd/pi-agent-core": resolveWorkspaceOrImport("pi-agent-core/dist/index.js", "@gsd/pi-agent-core"),
+		"@gsd/pi-tui": resolveWorkspaceOrImport("pi-tui/dist/index.js", "@gsd/pi-tui"),
+		"@gsd/pi-ai": resolveWorkspaceOrImport("pi-ai/dist/index.js", "@gsd/pi-ai"),
+		"@gsd/pi-ai/oauth": resolveWorkspaceOrImport("pi-ai/dist/oauth.js", "@gsd/pi-ai/oauth"),
+		"@gsd/agent-core": resolveWorkspaceOrImport("gsd-agent-core/dist/index.js", "@gsd/agent-core"),
+		"@gsd/agent-modes": resolveWorkspaceOrImport("gsd-agent-modes/dist/index.js", "@gsd/agent-modes"),
+		typebox: typeboxEntry,
+		"typebox/compile": typeboxCompileEntry,
+		"typebox/value": typeboxValueEntry,
+		"@sinclair/typebox": typeboxEntry,
+		"@sinclair/typebox/compile": typeboxCompileEntry,
+		"@sinclair/typebox/compiler": sinclairTypeboxCompilerEntry,
+		"@sinclair/typebox/value": typeboxValueEntry,
+		"@modelcontextprotocol/sdk/client": mcpClientEntry,
+		"@modelcontextprotocol/sdk/client/index.js": mcpClientEntry,
+		"@modelcontextprotocol/sdk/client/stdio.js": mcpStdioEntry,
+		"@modelcontextprotocol/sdk/client/streamableHttp.js": mcpStreamableHttpEntry,
+		"@modelcontextprotocol/sdk/client/auth.js": mcpAuthEntry,
+		yaml: yamlEntry,
+		minimatch: minimatchEntry,
+		"proper-lockfile": properLockfileEntry,
+		picomatch: picomatchEntry,
 	};
 
 	return _aliases;
-}
-
-function getJitiOptions() {
-	return isBunBinary ? { virtualModules: VIRTUAL_MODULES, tryNative: false } : { alias: getAliases() };
 }
 
 const _moduleImporters = new Map<string, ReturnType<typeof createJiti>>();
@@ -355,7 +134,7 @@ function getModuleImporter(parentModuleUrl: string) {
 	if (!importer) {
 		importer = createJiti(parentModuleUrl, {
 			moduleCache: true,
-			...getJitiOptions(),
+			...(isBunBinary ? { virtualModules: VIRTUAL_MODULES, tryNative: false } : { alias: getAliases() }),
 		});
 		_moduleImporters.set(parentModuleUrl, importer);
 	}
@@ -368,29 +147,11 @@ export async function importExtensionModule<T = unknown>(parentModuleUrl: string
 	return importer.import(resolvedPath) as Promise<T>;
 }
 
-const UNICODE_SPACES = /[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g;
-
-function normalizeUnicodeSpaces(str: string): string {
-	return str.replace(UNICODE_SPACES, " ");
-}
-
-function expandPath(p: string): string {
-	const normalized = normalizeUnicodeSpaces(p);
-	if (normalized.startsWith("~/")) {
-		return path.join(os.homedir(), normalized.slice(2));
+export function registerExtensionBundledModules(modules: Record<string, unknown>): void {
+	for (const [specifier, mod] of Object.entries(modules)) {
+		VIRTUAL_MODULES[specifier] = mod;
 	}
-	if (normalized.startsWith("~")) {
-		return path.join(os.homedir(), normalized.slice(1));
-	}
-	return normalized;
-}
-
-function resolvePath(extPath: string, cwd: string): string {
-	const expanded = expandPath(extPath);
-	if (path.isAbsolute(expanded)) {
-		return expanded;
-	}
-	return path.resolve(cwd, expanded);
+	_aliases = null;
 }
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
@@ -403,11 +164,16 @@ export function createExtensionRuntime(): ExtensionRuntime {
 	const notInitialized = () => {
 		throw new Error("Extension runtime not initialized. Action methods cannot be called during extension loading.");
 	};
+	const state: { staleMessage?: string } = {};
+	const assertActive = () => {
+		if (state.staleMessage) {
+			throw new Error(state.staleMessage);
+		}
+	};
 
 	const runtime: ExtensionRuntime = {
 		sendMessage: notInitialized,
 		sendUserMessage: notInitialized,
-		retryLastTurn: notInitialized,
 		appendEntry: notInitialized,
 		setSessionName: notInitialized,
 		getSessionName: notInitialized,
@@ -415,28 +181,34 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		getActiveTools: notInitialized,
 		getAllTools: notInitialized,
 		setActiveTools: notInitialized,
-		getVisibleSkills: notInitialized,
-		setVisibleSkills: notInitialized,
 		// registerTool() is valid during extension load; refresh is only needed post-bind.
 		refreshTools: () => {},
 		getCommands: notInitialized,
 		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
 		getThinkingLevel: notInitialized,
 		setThinkingLevel: notInitialized,
+		retryLastTurn: notInitialized,
+		getVisibleSkills: () => undefined,
+		setVisibleSkills: () => {},
+		emitBeforeModelSelect: async () => undefined,
+		emitAdjustToolSet: async () => undefined,
+		emitExtensionEvent: async () => undefined,
 		flagValues: new Map(),
 		pendingProviderRegistrations: [],
+		assertActive,
+		invalidate: (message) => {
+			state.staleMessage ??=
+				message ??
+				"This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().";
+		},
 		// Pre-bind: queue registrations so bindCore() can flush them once the
 		// model registry is available. bindCore() replaces both with direct calls.
-		registerProvider: (name, config) => {
-			runtime.pendingProviderRegistrations.push({ name, config });
+		registerProvider: (name, config, extensionPath = "<unknown>") => {
+			runtime.pendingProviderRegistrations.push({ name, config, extensionPath });
 		},
 		unregisterProvider: (name) => {
 			runtime.pendingProviderRegistrations = runtime.pendingProviderRegistrations.filter((r) => r.name !== name);
 		},
-		// Stubs replaced by ExtensionRunner at construction time via bindEmitMethods().
-		emitBeforeModelSelect: async () => undefined,
-		emitAdjustToolSet: async () => undefined,
-		emitExtensionEvent: async () => undefined,
 	};
 
 	return runtime;
@@ -456,41 +228,52 @@ function createExtensionAPI(
 	const api = {
 		// Registration methods - write to extension
 		on(event: string, handler: HandlerFn): void {
+			runtime.assertActive();
 			const list = extension.handlers.get(event) ?? [];
 			list.push(handler);
 			extension.handlers.set(event, list);
 		},
 
 		registerTool(tool: ToolDefinition): void {
+			runtime.assertActive();
 			extension.tools.set(tool.name, {
 				definition: tool,
-				extensionPath: extension.path,
+				sourceInfo: extension.sourceInfo,
 			});
-			// ADR-005: auto-register tool compatibility metadata
 			if (tool.compatibility) {
 				registerToolCompatibility(tool.name, tool.compatibility);
 			}
 			runtime.refreshTools();
 		},
 
-		registerCommand(name: string, options: Omit<RegisteredCommand, "name">): void {
-			extension.commands.set(name, { name, ...options });
-		},
-
 		registerBeforeInstall(handler: LifecycleHookHandler): void {
+			runtime.assertActive();
+			extension.lifecycleHooks ??= { beforeInstall: [], afterInstall: [], beforeRemove: [], afterRemove: [] };
 			extension.lifecycleHooks.beforeInstall.push(handler);
 		},
-
 		registerAfterInstall(handler: LifecycleHookHandler): void {
+			runtime.assertActive();
+			extension.lifecycleHooks ??= { beforeInstall: [], afterInstall: [], beforeRemove: [], afterRemove: [] };
 			extension.lifecycleHooks.afterInstall.push(handler);
 		},
-
 		registerBeforeRemove(handler: LifecycleHookHandler): void {
+			runtime.assertActive();
+			extension.lifecycleHooks ??= { beforeInstall: [], afterInstall: [], beforeRemove: [], afterRemove: [] };
 			extension.lifecycleHooks.beforeRemove.push(handler);
 		},
-
 		registerAfterRemove(handler: LifecycleHookHandler): void {
+			runtime.assertActive();
+			extension.lifecycleHooks ??= { beforeInstall: [], afterInstall: [], beforeRemove: [], afterRemove: [] };
 			extension.lifecycleHooks.afterRemove.push(handler);
+		},
+
+		registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "sourceInfo">): void {
+			runtime.assertActive();
+			extension.commands.set(name, {
+				name,
+				sourceInfo: extension.sourceInfo,
+				...options,
+			});
 		},
 
 		registerShortcut(
@@ -500,6 +283,7 @@ function createExtensionAPI(
 				handler: (ctx: import("./types.js").ExtensionContext) => Promise<void> | void;
 			},
 		): void {
+			runtime.assertActive();
 			extension.shortcuts.set(shortcut, { shortcut, extensionPath: extension.path, ...options });
 		},
 
@@ -507,6 +291,7 @@ function createExtensionAPI(
 			name: string,
 			options: { description?: string; type: "boolean" | "string"; default?: boolean | string },
 		): void {
+			runtime.assertActive();
 			extension.flags.set(name, { name, extensionPath: extension.path, ...options });
 			if (options.default !== undefined && !runtime.flagValues.has(name)) {
 				runtime.flagValues.set(name, options.default);
@@ -514,102 +299,126 @@ function createExtensionAPI(
 		},
 
 		registerMessageRenderer<T>(customType: string, renderer: MessageRenderer<T>): void {
+			runtime.assertActive();
 			extension.messageRenderers.set(customType, renderer as MessageRenderer);
 		},
 
 		// Flag access - checks extension registered it, reads from runtime
 		getFlag(name: string): boolean | string | undefined {
+			runtime.assertActive();
 			if (!extension.flags.has(name)) return undefined;
 			return runtime.flagValues.get(name);
 		},
 
 		// Action methods - delegate to shared runtime
 		sendMessage(message, options): void {
+			runtime.assertActive();
 			runtime.sendMessage(message, options);
 		},
 
 		sendUserMessage(content, options): void {
+			runtime.assertActive();
 			runtime.sendUserMessage(content, options);
 		},
 
-		retryLastTurn(): void {
-			runtime.retryLastTurn();
-		},
-
 		appendEntry(customType: string, data?: unknown): void {
+			runtime.assertActive();
 			runtime.appendEntry(customType, data);
 		},
 
 		setSessionName(name: string): void {
+			runtime.assertActive();
 			runtime.setSessionName(name);
 		},
 
 		getSessionName(): string | undefined {
+			runtime.assertActive();
 			return runtime.getSessionName();
 		},
 
 		setLabel(entryId: string, label: string | undefined): void {
+			runtime.assertActive();
 			runtime.setLabel(entryId, label);
 		},
 
 		exec(command: string, args: string[], options?: ExecOptions) {
+			runtime.assertActive();
 			return execCommand(command, args, options?.cwd ?? cwd, options);
 		},
 
 		getActiveTools(): string[] {
+			runtime.assertActive();
 			return runtime.getActiveTools();
 		},
 
 		getAllTools() {
+			runtime.assertActive();
 			return runtime.getAllTools();
 		},
 
 		setActiveTools(toolNames: string[]): void {
+			runtime.assertActive();
 			runtime.setActiveTools(toolNames);
 		},
 
-		getVisibleSkills(): string[] | undefined {
-			return runtime.getVisibleSkills();
-		},
-
-		setVisibleSkills(skillNames: string[] | undefined): void {
-			runtime.setVisibleSkills(skillNames);
-		},
-
 		getCommands() {
+			runtime.assertActive();
 			return runtime.getCommands();
 		},
 
-		setModel(model) {
-			return runtime.setModel(model);
+		setModel(model, options?) {
+			runtime.assertActive();
+			return runtime.setModel(model, options);
 		},
 
 		getThinkingLevel() {
+			runtime.assertActive();
 			return runtime.getThinkingLevel();
 		},
 
 		setThinkingLevel(level) {
+			runtime.assertActive();
 			runtime.setThinkingLevel(level);
 		},
 
-		registerProvider(name: string, config: ProviderConfig) {
-			runtime.registerProvider(name, config);
+		retryLastTurn() {
+			runtime.assertActive();
+			runtime.retryLastTurn();
 		},
 
-		unregisterProvider(name: string) {
-			runtime.unregisterProvider(name);
+		getVisibleSkills() {
+			runtime.assertActive();
+			return runtime.getVisibleSkills();
 		},
 
-		async emitBeforeModelSelect(event: Omit<import("./types.js").BeforeModelSelectEvent, "type">): Promise<import("./types.js").BeforeModelSelectResult | undefined> {
+		setVisibleSkills(skillNames) {
+			runtime.assertActive();
+			runtime.setVisibleSkills(skillNames);
+		},
+
+		emitBeforeModelSelect(event) {
+			runtime.assertActive();
 			return runtime.emitBeforeModelSelect(event);
 		},
 
-		async emitAdjustToolSet(event: Omit<import("./types.js").AdjustToolSetEvent, "type">): Promise<import("./types.js").AdjustToolSetResult | undefined> {
+		emitAdjustToolSet(event) {
+			runtime.assertActive();
 			return runtime.emitAdjustToolSet(event);
 		},
 
-		async emitExtensionEvent(event: import("./types.js").ExtensionEvent): Promise<unknown> {
+		emitExtensionEvent(event) {
+			runtime.assertActive();
 			return runtime.emitExtensionEvent(event);
+		},
+
+		registerProvider(name: string, config: ProviderConfig) {
+			runtime.assertActive();
+			runtime.registerProvider(name, config, extension.path);
+		},
+
+		unregisterProvider(name: string) {
+			runtime.assertActive();
+			runtime.unregisterProvider(name, extension.path);
 		},
 
 		events: eventBus,
@@ -618,215 +427,40 @@ function createExtensionAPI(
 	return api;
 }
 
-/**
- * Heuristic patterns that indicate TypeScript syntax in a source file.
- * Used to detect when a .js file accidentally contains TypeScript code
- * and provide a helpful error message instead of a cryptic parse failure.
- */
-const TS_SYNTAX_PATTERNS: RegExp[] = [
-	// Variable type annotations: const name: string, let count: number
-	/\b(?:const|let|var)\s+\w+\s*:\s*(?:string|number|boolean|any|void|never|unknown|object|bigint|symbol|undefined|null)\b/,
-	// Parameter type annotations: (api: ExtensionAPI)
-	/\(\s*\w+\s*:\s*[A-Z]\w*/,
-	// Return type annotations: ): Promise<void> {  or  ): string =>
-	/\)\s*:\s*(?:Promise|string|number|boolean|void|any|never|unknown)\b/,
-	// Interface declarations
-	/\binterface\s+[A-Z]\w*\s*(?:<[^>]*>)?\s*\{/,
-	// Type alias declarations
-	/\btype\s+[A-Z]\w*\s*(?:<[^>]*>)?\s*=/,
-	// Angle-bracket type assertions: <Type>value
-	/(?:as\s+\w+(?:<[^>]*>)?)\s*[;,)\]}]/,
-	// Generic type parameters on functions: function foo<T>
-	/\bfunction\s+\w+\s*<[^>]+>/,
-	// Enum declarations
-	/\benum\s+[A-Z]\w*\s*\{/,
-];
-
-/**
- * Check whether a source string likely contains TypeScript syntax.
- * This is a heuristic — it may produce false positives for unusual JS,
- * but is tuned to catch the most common TS-in-JS mistakes.
- */
-export function containsTypeScriptSyntax(source: string): boolean {
-	return TS_SYNTAX_PATTERNS.some((pattern) => pattern.test(source));
-}
-
-/**
- * Shared jiti instance for loading extension modules.
- *
- * Before this fix (#2108), each extension created a NEW jiti instance with
- * `moduleCache: false`, causing shared dependencies (e.g. @gsd/pi-agent-core)
- * to be recompiled for every extension — turning a ~3s parallel load into a
- * ~15-30s serial compilation bottleneck.
- *
- * Using a single shared instance with `moduleCache: true` means shared modules
- * are compiled once and reused across all extensions.
- */
-let _extensionLoaderJiti: ReturnType<typeof createJiti> | null = null;
-// Tracks every extension-module path that jiti has compiled through the shared
-// singleton so resetExtensionLoaderCache() can also evict Node's global
-// require.cache entries for those modules. jiti stores compiled modules under
-// `nativeRequire.cache[filename]` when `moduleCache: true`, so a new singleton
-// still returns the stale cached module on re-import without this eviction.
-const _loadedExtensionPaths = new Set<string>();
-const _extensionRequire = createRequire(import.meta.url);
-
-/**
- * Reset the shared jiti singleton so the next call to getExtensionLoaderJiti()
- * creates a fresh instance.  This prevents memory leaks in long-running daemon
- * processes (every loaded module stays cached forever) and ensures stale modules
- * are not returned when extension source changes on disk.
- *
- * #3616: resetting the singleton alone is insufficient — jiti stores compiled
- * modules in Node's global require.cache when `moduleCache: true`, which is
- * shared across singletons. We also evict cached entries for every extension
- * path we've previously loaded so the next import recompiles from disk.
- */
-export function resetExtensionLoaderCache(): void {
-	_extensionLoaderJiti = null;
-	// Build a set of exact cache keys we expect (raw path, resolved path,
-	// realpath) AND a set of (basename, containing-directory) pairs so we
-	// can also catch entries that jiti/Node wrote under a canonicalized
-	// form (Windows drive-letter case, separator swap, UNC prefix, symlink
-	// resolution). require.cache is shared across all createRequire
-	// instances for CJS, so iterating any instance's cache covers jiti's
-	// internal `nativeRequire.cache` writes.
-	const exact = new Set<string>();
-	const signatures = new Set<string>();
-	const makeSignature = (p: string): string => {
-		const normalized = p.replace(/\\/g, "/").toLowerCase();
-		const slash = normalized.lastIndexOf("/");
-		const base = slash >= 0 ? normalized.slice(slash + 1) : normalized;
-		// Use the trailing two path segments as the signature — unique
-		// enough to avoid collisions in typical filesystems while tolerating
-		// drive-letter / separator variations that differ in the prefix.
-		const parent = slash >= 0 ? normalized.slice(0, slash) : "";
-		const parentSlash = parent.lastIndexOf("/");
-		const parentSeg = parentSlash >= 0 ? parent.slice(parentSlash + 1) : parent;
-		return `${parentSeg}/${base}`;
-	};
-	for (const raw of _loadedExtensionPaths) {
-		exact.add(raw);
-		try {
-			exact.add(_extensionRequire.resolve(raw));
-		} catch {
-			// unresolvable — fall through; signature scan may still hit it
-		}
-		try {
-			exact.add(fs.realpathSync(raw));
-		} catch {
-			// file may have been deleted already; ignore
-		}
-		signatures.add(makeSignature(raw));
-	}
-	for (const key of Object.keys(_extensionRequire.cache)) {
-		if (exact.has(key) || signatures.has(makeSignature(key))) {
-			try {
-				delete _extensionRequire.cache[key];
-			} catch {
-				// require.cache is best-effort; ignore failures (e.g. frozen cache).
-			}
-		}
-	}
-	_loadedExtensionPaths.clear();
-}
-
-function getExtensionLoaderJiti() {
-	if (!_extensionLoaderJiti) {
-		_extensionLoaderJiti = createJiti(import.meta.url, {
-			moduleCache: true,
-			...getJitiOptions(),
-		});
-	}
-	return _extensionLoaderJiti;
-}
-
 async function loadExtensionModule(extensionPath: string) {
-	// Pre-compiled extension loading: if the source is .ts and a sibling .js
-	// file exists with matching or newer mtime, use native import() to skip
-	// jiti JIT compilation entirely.  This is the biggest startup win for
-	// bundled extensions that have already been built.
-	if (extensionPath.endsWith(".ts")) {
-		const jsPath = extensionPath.replace(/\.ts$/, ".js");
-		try {
-			const [tsStat, jsStat] = [fs.statSync(extensionPath), fs.statSync(jsPath)];
-			if (jsStat.mtimeMs >= tsStat.mtimeMs) {
-				const module = await import(jsPath);
-				const factory = (module.default ?? module) as ExtensionFactory;
-				return typeof factory !== "function" ? undefined : factory;
-			}
-		} catch {
-			// .js file doesn't exist or stat failed — fall through to jiti
-		}
-	}
-
-	const jiti = getExtensionLoaderJiti();
+	const jiti = createJiti(import.meta.url, {
+		moduleCache: false,
+		// In Bun binary: use virtualModules for bundled packages (no filesystem resolution)
+		// Also disable tryNative so jiti handles ALL imports (not just the entry point)
+		// In Node.js/dev: use aliases to resolve to node_modules paths
+		...(isBunBinary ? { virtualModules: VIRTUAL_MODULES, tryNative: false } : { alias: getAliases() }),
+	});
 
 	const module = await jiti.import(extensionPath, { default: true });
-	_loadedExtensionPaths.add(extensionPath);
 	const factory = module as ExtensionFactory;
 	return typeof factory !== "function" ? undefined : factory;
-}
-
-/**
- * Check whether a module path belongs to a non-extension library that should
- * be silently skipped rather than reported as an error.
- *
- * A directory is a non-extension library when its package.json has a "pi"
- * manifest that declares no extensions (e.g. `"pi": {}`). This is the
- * opt-out convention used by shared libraries like cmux that live inside
- * the extensions/ directory but are not extensions themselves.
- *
- * This serves as a defense-in-depth check: even if the upstream discovery
- * layers fail to filter out the library, the loader itself will not emit
- * a spurious error.
- */
-function isNonExtensionLibrary(resolvedPath: string): boolean {
-	// Walk up from the resolved file to find the nearest package.json
-	let dir = path.dirname(resolvedPath);
-	const root = path.parse(dir).root;
-	while (dir !== root) {
-		const packageJsonPath = path.join(dir, "package.json");
-		if (fs.existsSync(packageJsonPath)) {
-			try {
-				const content = fs.readFileSync(packageJsonPath, "utf-8");
-				const pkg = JSON.parse(content);
-				if (pkg.pi && typeof pkg.pi === "object") {
-					// Has a pi manifest — check if it declares any extensions
-					const extensions = pkg.pi.extensions;
-					if (!Array.isArray(extensions) || extensions.length === 0) {
-						return true;
-					}
-				}
-			} catch {
-				// Malformed package.json — not a known library
-			}
-			break;
-		}
-		dir = path.dirname(dir);
-	}
-	return false;
 }
 
 /**
  * Create an Extension object with empty collections.
  */
 function createExtension(extensionPath: string, resolvedPath: string): Extension {
+	const source =
+		extensionPath.startsWith("<") && extensionPath.endsWith(">")
+			? extensionPath.slice(1, -1).split(":")[0] || "temporary"
+			: "local";
+	const baseDir = extensionPath.startsWith("<") ? undefined : path.dirname(resolvedPath);
+
 	return {
 		path: extensionPath,
 		resolvedPath,
+		sourceInfo: createSyntheticSourceInfo(extensionPath, { source, baseDir }),
 		handlers: new Map(),
 		tools: new Map(),
 		messageRenderers: new Map(),
 		commands: new Map(),
 		flags: new Map(),
 		shortcuts: new Map(),
-		lifecycleHooks: {
-			beforeInstall: [],
-			afterInstall: [],
-			beforeRemove: [],
-			afterRemove: [],
-		},
 	};
 }
 
@@ -836,64 +470,21 @@ async function loadExtension(
 	eventBus: EventBus,
 	runtime: ExtensionRuntime,
 ): Promise<{ extension: Extension | null; error: string | null }> {
-	const resolvedPath = resolvePath(extensionPath, cwd);
-	const start = Date.now();
+	const resolvedPath = resolvePath(extensionPath, cwd, { normalizeUnicodeSpaces: true });
 
 	try {
 		const factory = await loadExtensionModule(resolvedPath);
 		if (!factory) {
-			// Defense-in-depth: if the module is inside a directory that has
-			// explicitly opted out of extension loading via its pi manifest,
-			// silently skip it instead of reporting a spurious error.
-			if (isNonExtensionLibrary(resolvedPath)) {
-				return { extension: null, error: null };
-			}
-			logExtensionTiming(extensionPath, Date.now() - start, "failed");
-
-			// Check if a .js file contains TypeScript syntax
-			if (resolvedPath.endsWith(".js")) {
-				try {
-					const source = fs.readFileSync(resolvedPath, "utf-8");
-					if (containsTypeScriptSyntax(source)) {
-						return {
-							extension: null,
-							error: `Extension file "${extensionPath}" appears to contain TypeScript syntax but has a .js extension. Rename it to .ts so the loader can compile it.`,
-						};
-					}
-				} catch {
-					// Could not read file — fall through to generic error
-				}
-			}
-
 			return { extension: null, error: `Extension does not export a valid factory function: ${extensionPath}` };
 		}
 
 		const extension = createExtension(extensionPath, resolvedPath);
 		const api = createExtensionAPI(extension, runtime, cwd, eventBus);
 		await factory(api);
-		logExtensionTiming(extensionPath, Date.now() - start, "loaded");
 
 		return { extension, error: null };
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
-		logExtensionTiming(extensionPath, Date.now() - start, "failed");
-
-		// Check if a .js file contains TypeScript syntax — the parse error from
-		// jiti/Node is often cryptic, so surface a clearer diagnostic.
-		if (resolvedPath.endsWith(".js")) {
-			try {
-				const source = fs.readFileSync(resolvedPath, "utf-8");
-				if (containsTypeScriptSyntax(source)) {
-					return {
-						extension: null,
-						error: `Extension file "${extensionPath}" appears to contain TypeScript syntax but has a .js extension. Rename it to .ts so the loader can compile it.`,
-					};
-				}
-			} catch {
-				// Could not read file — fall through to generic error
-			}
-		}
-
 		return { extension: null, error: `Failed to load extension: ${message}` };
 	}
 }
@@ -909,30 +500,31 @@ export async function loadExtensionFromFactory(
 	extensionPath = "<inline>",
 ): Promise<Extension> {
 	const extension = createExtension(extensionPath, extensionPath);
-	const api = createExtensionAPI(extension, runtime, cwd, eventBus);
+	const resolvedCwd = resolvePath(cwd);
+	const api = createExtensionAPI(extension, runtime, resolvedCwd, eventBus);
 	await factory(api);
 	return extension;
 }
 
 /**
  * Load extensions from paths.
- *
- * Paths are expected to be topologically sorted by caller (see sortExtensionPaths).
- * Factories are awaited sequentially so a dependency's factory fully initializes
- * (registers tools, commands, hooks on `pi`) before any dependent's factory runs.
  */
 export async function loadExtensions(paths: string[], cwd: string, eventBus?: EventBus): Promise<LoadExtensionsResult> {
+	const extensions: Extension[] = [];
+	const errors: Array<{ path: string; error: string }> = [];
+	const resolvedCwd = resolvePath(cwd);
 	const resolvedEventBus = eventBus ?? createEventBus();
 	const runtime = createExtensionRuntime();
 
-	const extensions: Extension[] = [];
-	const errors: Array<{ path: string; error: string }> = [];
-
 	for (const extPath of paths) {
-		const { extension, error } = await loadExtension(extPath, cwd, resolvedEventBus, runtime);
+		const { extension, error } = await loadExtension(extPath, resolvedCwd, resolvedEventBus, runtime);
+
 		if (error) {
 			errors.push({ path: extPath, error });
-		} else if (extension) {
+			continue;
+		}
+
+		if (extension) {
 			extensions.push(extension);
 		}
 	}
@@ -940,7 +532,6 @@ export async function loadExtensions(paths: string[], cwd: string, eventBus?: Ev
 	return {
 		extensions,
 		errors,
-		warnings: [],
 		runtime,
 	};
 }
@@ -973,8 +564,10 @@ function isExtensionFile(name: string): boolean {
  * Resolve extension entry points from a directory.
  *
  * Checks for:
- * 1. package.json with "pi.extensions" field -> returns declared paths
- * 2. index.ts or index.js -> returns the index file
+ * 1. package.json with a "pi" object is authoritative:
+ *    - "pi.extensions" entries -> returns declared paths
+ *    - missing/empty "pi.extensions" -> returns [] (library opt-out)
+ * 2. index.ts or index.js -> returns the index file only when no "pi" object exists
  *
  * Returns resolved paths or null if no entry points found.
  */
@@ -984,11 +577,8 @@ function resolveExtensionEntries(dir: string): string[] | null {
 	if (fs.existsSync(packageJsonPath)) {
 		const manifest = readPiManifest(packageJsonPath);
 		if (manifest) {
-			// When a pi manifest exists, it is authoritative — don't fall through
-			// to index.ts/index.js auto-detection. This allows library directories
-			// (like cmux) to opt out by declaring "pi": {} with no extensions.
 			if (!manifest.extensions?.length) {
-				return null;
+				return [];
 			}
 			const entries: string[] = [];
 			for (const extPath of manifest.extensions) {
@@ -997,7 +587,9 @@ function resolveExtensionEntries(dir: string): string[] | null {
 					entries.push(resolvedExtPath);
 				}
 			}
-			return entries.length > 0 ? entries : null;
+			if (entries.length > 0) {
+				return entries;
+			}
 		}
 	}
 
@@ -1060,11 +652,6 @@ function discoverExtensionsInDir(dir: string): string[] {
 
 /**
  * Discover and load extensions from standard locations.
- *
- * @deprecated Use DefaultResourceLoader.reload() instead — this function is
- * not called in the GSD loading flow. Extension discovery happens through
- * DefaultPackageManager.resolve() → addAutoDiscoveredResources(). Kept for
- * backwards compatibility with direct pi-coding-agent consumers.
  */
 export async function discoverAndLoadExtensions(
 	configuredPaths: string[],
@@ -1072,6 +659,8 @@ export async function discoverAndLoadExtensions(
 	agentDir: string = getAgentDir(),
 	eventBus?: EventBus,
 ): Promise<LoadExtensionsResult> {
+	const resolvedCwd = resolvePath(cwd);
+	const resolvedAgentDir = resolvePath(agentDir);
 	const allPaths: string[] = [];
 	const seen = new Set<string>();
 
@@ -1085,33 +674,17 @@ export async function discoverAndLoadExtensions(
 		}
 	};
 
-	// 1. Project-local extensions: cwd/.pi/extensions/
-	// Only loaded when the project path has been explicitly trusted (TOFU model).
-	const localExtDir = path.join(cwd, ".pi", "extensions");
-	const localDiscovered = discoverExtensionsInDir(localExtDir);
-	if (localDiscovered.length > 0) {
-		const untrusted = getUntrustedExtensionPaths(cwd, localDiscovered, agentDir);
-		if (untrusted.length > 0) {
-			process.stderr.write(
-				`[pi] Skipping ${untrusted.length} project-local extension(s) in ${localExtDir} — project not trusted. Use trustProject() to enable.\n`,
-			);
-		}
-		const trusted = localDiscovered.filter((p) => !untrusted.includes(p));
-		addPaths(trusted);
-	}
+	// 1. Project-local extensions: cwd/${CONFIG_DIR_NAME}/extensions/
+	const localExtDir = path.join(resolvedCwd, CONFIG_DIR_NAME, "extensions");
+	addPaths(discoverExtensionsInDir(localExtDir));
 
 	// 2. Global extensions: agentDir/extensions/
-	const globalExtDir = path.join(agentDir, "extensions");
-	// 2b. Installed extensions: ~/.gsd/extensions/ merged with bundled (D-14, D-15)
-	// Discovery handles ID-based merge — loader stays dumb.
-	const installedExtDir = path.join(path.dirname(agentDir), "extensions");
-	const globalPaths = discoverExtensionsInDir(globalExtDir);
-	const mergedPaths = mergeExtensionEntryPaths(globalPaths, installedExtDir);
-	addPaths(mergedPaths);
+	const globalExtDir = path.join(resolvedAgentDir, "extensions");
+	addPaths(discoverExtensionsInDir(globalExtDir));
 
 	// 3. Explicitly configured paths
 	for (const p of configuredPaths) {
-		const resolved = resolvePath(p, cwd);
+		const resolved = resolvePath(p, resolvedCwd, { normalizeUnicodeSpaces: true });
 		if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
 			// Check for package.json with pi manifest or index.ts
 			const entries = resolveExtensionEntries(resolved);
@@ -1127,13 +700,5 @@ export async function discoverAndLoadExtensions(
 		addPaths([resolved]);
 	}
 
-	// Topological sort: ensure declared dependencies load first (D-06, D-07)
-	const { sortedPaths, warnings: sortWarnings } = sortExtensionPaths(allPaths)
-	// Emit warnings to stderr immediately — loader runs before ctx.ui is ready (D-08)
-	for (const w of sortWarnings) {
-		process.stderr.write(`[gsd] ${w.message}\n`)
-	}
-	const result = await loadExtensions(sortedPaths, cwd, eventBus)
-	result.warnings.push(...sortWarnings)
-	return result
+	return loadExtensions(allPaths, resolvedCwd, eventBus);
 }

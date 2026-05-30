@@ -1,5 +1,5 @@
 /**
- * GSD-2 native TS↔Rust ABI smoke.
+ * gsd-pi native TS↔Rust ABI smoke.
  *
  * Loads `@gsd/native` from a fresh node:test worker and exercises a few
  * core entrypoints — grep (ripgrep), xxHash32, fuzzyFind, glob. Catches:
@@ -58,22 +58,28 @@ describe("native TS↔Rust ABI smoke", () => {
 			t.skip(loaded.reason);
 			return;
 		}
-		const { xxHash32, xxHash32Fallback } = loaded.mod;
+		const { xxHash32, xxHash32Fallback, isNativeAddonLoaded } = loaded.mod as NativeShape & {
+			isNativeAddonLoaded?: () => boolean;
+		};
+		if (typeof isNativeAddonLoaded === "function" && !isNativeAddonLoaded()) {
+			t.skip("@opengsd/engine-* optional dependency not installed — JS fallback only");
+			return;
+		}
 		const input = "the quick brown fox jumps over the lazy dog";
 
-		const native = xxHash32(input, 0);
+		const nativeHash = xxHash32(input, 0);
 		const fallback = xxHash32Fallback(input, 0);
 
-		assert.equal(typeof native, "number", "native xxHash32 should return a number");
+		assert.equal(typeof nativeHash, "number", "native xxHash32 should return a number");
 		// The cross-check is the real invariant: native and JS fallback must
 		// agree for the same input. If the prebuilt binary is stale or the
 		// ABI has drifted, this will diverge.
 		assert.equal(
-			native,
+			nativeHash,
 			fallback,
-			`native xxHash32 must match JS fallback. native=0x${native.toString(16)} fallback=0x${fallback.toString(16)}`,
+			`native xxHash32 must match JS fallback. native=0x${nativeHash.toString(16)} fallback=0x${fallback.toString(16)}`,
 		);
-		assert.notEqual(native, 0, "hash should not be zero for non-empty input");
+		assert.notEqual(nativeHash, 0, "hash should not be zero for non-empty input");
 	});
 
 	test("searchContent finds matches in an in-memory buffer", async (t) => {
@@ -82,9 +88,15 @@ describe("native TS↔Rust ABI smoke", () => {
 			t.skip(loaded.reason);
 			return;
 		}
-		const { searchContent } = loaded.mod;
+		const { searchContent, isNativeAddonLoaded } = loaded.mod as NativeShape & {
+			isNativeAddonLoaded?: () => boolean;
+		};
 		if (typeof searchContent !== "function") {
 			t.skip("@gsd/native.searchContent not exported in this build");
+			return;
+		}
+		if (typeof isNativeAddonLoaded === "function" && !isNativeAddonLoaded()) {
+			t.skip("@opengsd/engine-* optional dependency not installed — JS fallback only");
 			return;
 		}
 

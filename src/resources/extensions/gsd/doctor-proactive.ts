@@ -18,7 +18,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { gsdRoot, resolveGsdRootFile } from "./paths.js";
 import { readCrashLock, isLockProcessAlive, clearLock } from "./crash-recovery.js";
-import { abortAndReset } from "./git-self-heal.js";
 import { rebuildState } from "./doctor.js";
 import { deriveState } from "./state.js";
 import { resolveMilestoneIntegrationBranch } from "./git-service.js";
@@ -26,7 +25,7 @@ import { nativeIsRepo, nativeHasChanges, nativeLastCommitEpoch, nativeGetCurrent
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 import { runEnvironmentChecks } from "./doctor-environment.js";
 import { ensureDbOpen } from "./bootstrap/dynamic-tools.js";
-import { listUnmergedGitPaths } from "./git-conflict-state.js";
+import { ensureWorkspaceGitReady } from "./workspace-git-preflight.js";
 
 // ── Health Score Tracking ──────────────────────────────────────────────────
 
@@ -202,6 +201,8 @@ export interface PreDispatchHealthResult {
   issues: string[];
   /** Whether fix was applied. */
   fixesApplied: string[];
+  /** Auto loop action when blocked (unknown probe → stop). */
+  severity?: "pause" | "stop";
 }
 
 /**
@@ -216,16 +217,18 @@ export interface PreDispatchHealthResult {
 export async function preDispatchHealthGate(basePath: string): Promise<PreDispatchHealthResult> {
   const issues: string[] = [];
   const fixesApplied: string[] = [];
-  const unmergedPaths = nativeIsRepo(basePath) ? listUnmergedGitPaths(basePath) : [];
-  if (unmergedPaths === null) {
-    issues.push("Failed to evaluate unresolved Git conflicts. Resolve Git/worktree state manually before resuming auto-mode.");
-    return { proceed: false, reason: issues[0], issues, fixesApplied };
-  }
 
-  if (unmergedPaths.length > 0) {
-    issues.push(
-      `Unresolved Git conflicts: ${unmergedPaths.join(", ")}. Resolve these files manually before resuming auto-mode.`,
-    );
+  const gitReady = await ensureWorkspaceGitReady(basePath);
+  fixesApplied.push(...gitReady.fixesApplied);
+  if (!gitReady.ok) {
+    issues.push(gitReady.reason);
+    return {
+      proceed: false,
+      reason: gitReady.reason,
+      issues,
+      fixesApplied,
+      severity: gitReady.severity === "unrecoverable" ? "stop" : "pause",
+    };
   }
 
   // ── Stale crash lock blocks dispatch ──
@@ -240,32 +243,6 @@ export async function preDispatchHealthGate(basePath: string): Promise<PreDispat
       // Auto-clear it since we're about to dispatch anyway
       clearLock(basePath);
       fixesApplied.push("cleared stale auto.lock before dispatch");
-    }
-  } catch {
-    // Non-fatal
-  }
-
-  // ── Corrupt merge/rebase state blocks dispatch ──
-  // Dispatching a unit with MERGE_HEAD present will cause git operations to fail.
-  try {
-    const gitDir = join(basePath, ".git");
-    if (existsSync(gitDir)) {
-      const blockers = ["MERGE_HEAD", "rebase-apply", "rebase-merge"].filter(
-        f => existsSync(join(gitDir, f)),
-      );
-      if (blockers.length > 0 && unmergedPaths.length > 0) {
-        issues.push(
-          `Corrupt git state: ${blockers.join(", ")} with unresolved conflicts. Resolve conflicts manually before running /gsd doctor fix.`,
-        );
-      } else if (blockers.length > 0) {
-        // Try to auto-heal
-        try {
-          const result = abortAndReset(basePath);
-          fixesApplied.push(`pre-dispatch: cleaned merge state (${result.cleaned.join(", ")})`);
-        } catch {
-          issues.push(`Corrupt git state: ${blockers.join(", ")}. Run /gsd doctor fix.`);
-        }
-      }
     }
   } catch {
     // Non-fatal
@@ -326,7 +303,7 @@ export async function preDispatchHealthGate(basePath: string): Promise<PreDispat
       const snapshotsEnabled = prefs.git?.snapshots !== false;
       const thresholdMinutes = prefs.stale_commit_threshold_minutes ?? 30;
 
-      if (snapshotsEnabled && thresholdMinutes > 0 && unmergedPaths.length === 0 && nativeHasChanges(basePath)) {
+      if (snapshotsEnabled && thresholdMinutes > 0 && nativeHasChanges(basePath)) {
         const branch = nativeGetCurrentBranch(basePath);
         const lastEpoch = nativeLastCommitEpoch(basePath, branch || "HEAD");
         const nowEpoch = Math.floor(Date.now() / 1000);
@@ -372,6 +349,7 @@ export async function preDispatchHealthGate(basePath: string): Promise<PreDispat
       reason: `Pre-dispatch health check failed:\n${issues.map(i => `  - ${i}`).join("\n")}\nRun /gsd doctor fix to resolve.`,
       issues,
       fixesApplied,
+      severity: "pause",
     };
   }
 

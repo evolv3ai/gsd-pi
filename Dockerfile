@@ -1,3 +1,24 @@
+# Open GSD - Docker images
+# File Purpose: Define runtime and CI builder container images.
+
+# ──────────────────────────────────────────────
+# CI Builder
+# Image: ghcr.io/open-gsd/gsd-ci-builder
+# Used by: publish workflows that need Rust and Linux cross-compilers
+# ──────────────────────────────────────────────
+FROM node:24-bookworm AS builder
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc-aarch64-linux-gnu \
+    g++-aarch64-linux-gnu \
+    && rustup target add aarch64-unknown-linux-gnu \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN node --version && rustc --version && cargo --version
+
 # ──────────────────────────────────────────────
 # Runtime
 # Image: ghcr.io/open-gsd/gsd-pi
@@ -12,7 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install GSD globally — version is controlled by the build arg
 ARG GSD_VERSION=latest
-RUN npm install -g gsd-pi@${GSD_VERSION}
+RUN npm install -g @opengsd/gsd-pi@${GSD_VERSION}
 
 # Default working directory for user projects
 WORKDIR /workspace
@@ -27,7 +48,7 @@ CMD ["--help"]
 # instead of pulling from npm. Lets `tests/e2e/docker/` exercise the actual
 # runtime container produced by this branch's code.
 # Build with:  docker build --target runtime-local \
-#                --build-arg TARBALL=gsd-pi-<version>.tgz -t gsd-pi:local .
+#                --build-arg TARBALL=opengsd-gsd-pi-<version>.tgz -t gsd-pi:local .
 # The tarball must be in the build context (created by `npm pack`).
 # ──────────────────────────────────────────────
 FROM node:24-slim AS runtime-local
@@ -55,15 +76,15 @@ RUN npm install -g --ignore-scripts /tmp/gsd-pi.tgz \
     && rm /tmp/gsd-pi.tgz \
     && echo "--- /usr/local/bin ---" \
     && ls -la /usr/local/bin | grep -i gsd || echo "(no gsd entries in /usr/local/bin)" \
-    && echo "--- /usr/local/lib/node_modules/gsd-pi ---" \
-    && ls -la /usr/local/lib/node_modules/gsd-pi 2>/dev/null | head -10 \
-    && test -f /usr/local/lib/node_modules/gsd-pi/dist/loader.js \
-    && node /usr/local/lib/node_modules/gsd-pi/dist/loader.js --version
+    && echo "--- /usr/local/lib/node_modules/@opengsd/gsd-pi ---" \
+    && ls -la /usr/local/lib/node_modules/@opengsd/gsd-pi 2>/dev/null | head -10 \
+    && test -f /usr/local/lib/node_modules/@opengsd/gsd-pi/dist/loader.js \
+    && node /usr/local/lib/node_modules/@opengsd/gsd-pi/dist/loader.js --version
 
 WORKDIR /workspace
 
 # Invoke the loader directly. Avoids any dependency on the npm bin shim
 # being placed correctly in /usr/local/bin (which is platform/prefix
 # dependent and has been the source of spurious exit-127 failures).
-ENTRYPOINT ["node", "/usr/local/lib/node_modules/gsd-pi/dist/loader.js"]
+ENTRYPOINT ["node", "/usr/local/lib/node_modules/@opengsd/gsd-pi/dist/loader.js"]
 CMD ["--help"]

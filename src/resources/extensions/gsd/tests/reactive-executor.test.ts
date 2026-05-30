@@ -16,6 +16,7 @@ import {
 import { validatePreferences } from "../preferences-validation.ts";
 import type { ReactiveExecutionState } from "../types.ts";
 import { parseUnitId } from "../unit-id.ts";
+import { resolveDispatch } from "../auto-dispatch.ts";
 
 // ─── Preference Validation ────────────────────────────────────────────────
 
@@ -171,6 +172,68 @@ test("reactive dispatch requires enabled config and multiple ready tasks", async
     const selected = chooseNonConflictingSubset(ready, graph, 2, new Set());
     assert.equal(selected.length, 2);
     assert.deepEqual(selected, ["T01", "T02"]);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("reactive dispatch falls through when slice has REACTIVE-BLOCKER", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "gsd-reactive-blocker-dispatch-"));
+  try {
+    const sliceDir = join(repo, ".gsd", "milestones", "M001", "slices", "S01");
+    const tasksDir = join(sliceDir, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeFileSync(
+      join(sliceDir, "S01-PLAN.md"),
+      [
+        "# S01: Test Slice",
+        "",
+        "## Tasks",
+        "",
+        "- [ ] **T01: First**",
+        "- [ ] **T02: Second**",
+        "- [ ] **T03: Third**",
+        "",
+      ].join("\n"),
+    );
+    for (const tid of ["T01", "T02", "T03"]) {
+      writeFileSync(
+        join(tasksDir, `${tid}-PLAN.md`),
+        [
+          `# ${tid}`,
+          "",
+          "## Inputs",
+          "",
+          `- \`src/${tid}.input\``,
+          "",
+          "## Expected Output",
+          "",
+          `- \`src/${tid}.output\``,
+        ].join("\n"),
+      );
+    }
+    writeFileSync(join(sliceDir, "S01-REACTIVE-BLOCKER.md"), "# BLOCKER\n");
+
+    const action = await resolveDispatch({
+      basePath: repo,
+      mid: "M001",
+      midTitle: "Milestone",
+      state: {
+        phase: "executing",
+        activeMilestone: { id: "M001", title: "Milestone", status: "active" },
+        activeSlice: { id: "S01", title: "Test Slice" },
+        activeTask: { id: "T01", title: "First" },
+        registry: [],
+        blockers: [],
+      } as any,
+      prefs: { reactive_execution: { enabled: true, max_parallel: 3 } } as any,
+    });
+
+    assert.notEqual(
+      action.action === "dispatch" ? action.unitType : null,
+      "reactive-execute",
+      "reactive blocker should prevent another reactive batch dispatch",
+    );
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

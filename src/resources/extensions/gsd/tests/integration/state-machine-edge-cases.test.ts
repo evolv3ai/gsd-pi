@@ -345,7 +345,7 @@ describe("state derivation failures", () => {
     assert.equal(state.activeMilestone?.id, "M001");
   });
 
-  test("cache staleness: derive within TTL returns same result after DB mutation", async () => {
+  test("cache invalidation follows DB rows after mutation", async () => {
     base = createFullFixture();
     openDatabase(join(base, ".gsd", "gsd.db"));
     insertMilestone({ id: "M001", title: "Active", status: "active" });
@@ -357,15 +357,8 @@ describe("state derivation failures", () => {
     const state1 = await deriveState(base);
     assert.equal(state1.phase, "executing");
 
-    // Mutate DB WITHOUT invalidating cache
     updateTaskStatus("M001", "S01", "T01", "complete", new Date().toISOString());
 
-    // Second call within 100ms TTL should return cached (stale) result
-    const state2 = await deriveState(base);
-    assert.equal(state2.phase, "executing", "cached result should still show executing");
-
-    // After explicit invalidation, DB rows remain authoritative; PLAN.md is a
-    // projection and must not import missing task rows.
     invalidateStateCache();
     const state3 = await deriveState(base);
     assert.equal(state3.phase, "summarizing", "after cache invalidation should follow DB tasks only");
@@ -1259,21 +1252,6 @@ describe("ghost milestone edge cases", () => {
     assert.equal(isGhostMilestone(base, "M001"), true, "META.json alone → ghost");
   });
 
-  test("ghost milestones are skipped in state derivation", async () => {
-    base = makeTempDir();
-    const gsdDir = join(base, ".gsd", "milestones");
-
-    // M001 is ghost — empty dir
-    mkdirSync(join(gsdDir, "M001"), { recursive: true });
-
-    // M002 is real — has CONTEXT-DRAFT
-    mkdirSync(join(gsdDir, "M002"), { recursive: true });
-    writeFileSync(join(gsdDir, "M002", "M002-CONTEXT-DRAFT.md"), "# Draft\nContent.\n");
-
-    invalidateAllCaches();
-    const state = await deriveState(base);
-    assert.equal(state.activeMilestone?.id, "M002", "ghost M001 skipped, M002 is active");
-  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────

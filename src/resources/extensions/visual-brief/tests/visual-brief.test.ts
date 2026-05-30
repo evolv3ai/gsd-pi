@@ -1,15 +1,15 @@
-// GSD-2 + Visual Brief command tests
+// gsd-pi + Visual Brief command tests
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readManifest } from "@gsd/pi-coding-agent";
 import {
 	createVisualBriefArtifactPolicy,
 	formatArtifactPolicy,
 	getVisualBriefOutputDir,
 } from "../artifact-policy.ts";
+import { readManifest } from "../../../../extension-registry.ts";
 import {
 	getVisualBriefModeProfile,
 	VISUAL_BRIEF_PAGE_RULES,

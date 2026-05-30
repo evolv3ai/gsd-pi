@@ -1,4 +1,4 @@
-// GSD-2 + metrics.ts: token & cost tracking for auto-mode units
+// gsd-pi + metrics.ts: token & cost tracking for auto-mode units
 /**
  * GSD Metrics — Token & Cost Tracking
  *
@@ -743,6 +743,11 @@ export function formatCost(cost: number): string {
   if (n < 0.01) return `$${n.toFixed(4)}`;
   if (n < 1) return `$${n.toFixed(3)}`;
   return `$${n.toFixed(2)}`;
+}
+
+export function formatPercent(percent: number): string {
+  if (percent >= 10) return percent.toFixed(1);
+  return percent.toFixed(2);
 }
 
 // ─── Budget Prediction ────────────────────────────────────────────────────────

@@ -29,13 +29,13 @@ Every merged PR is immediately installable:
 
 ```bash
 # Latest dev build (bleeding edge, every merged PR)
-npx gsd-pi@dev
+npx @opengsd/gsd-pi@dev
 
 # Test candidate (passed smoke + fixture tests)
-npx gsd-pi@next
+npx @opengsd/gsd-pi@next
 
 # Stable production release
-npx gsd-pi@latest    # or just: npx gsd-pi
+npx @opengsd/gsd-pi@latest    # or just: npx @opengsd/gsd-pi
 ```
 
 ### Using Docker
@@ -51,10 +51,10 @@ docker run --rm -v $(pwd):/workspace ghcr.io/open-gsd/gsd-pi:latest --version
 ### Checking if a Fix Landed
 
 1. Find the PR's merge commit SHA (first 7 chars)
-2. Check if it's in `@dev`: `npm view gsd-pi@dev version`
+2. Check if it's in `@dev`: `npm view @opengsd/gsd-pi@dev version`
    - If the version ends in `-dev.<your-sha>`, your PR is in dev
-3. Check if it promoted to `@next`: `npm view gsd-pi@next version`
-4. Check if it's in production: `npm view gsd-pi@latest version`
+3. Check if it promoted to `@next`: `npm view @opengsd/gsd-pi@next version`
+4. Check if it's in production: `npm view @opengsd/gsd-pi@latest version`
 
 ## For Maintainers
 
@@ -63,37 +63,53 @@ docker run --rm -v $(pwd):/workspace ghcr.io/open-gsd/gsd-pi:latest --version
 | Workflow | File | Trigger | Purpose |
 |----------|------|---------|---------|
 | CI | `ci.yml` | PR + push to main | Build, test, typecheck — **gate for all promotions** |
-| Prerelease Publish | `prerelease-publish.yml` | Manual dispatch | Publish approved `@dev` or `@next` prereleases |
+| NPM Publish | `npm-publish.yml` | Manual dispatch | Publish approved `@dev`, `@next`, or `@latest` releases |
 | Release Pipeline | `pipeline.yml` | After CI succeeds on main | Three-stage promotion |
 | Native Binaries | `build-native.yml` | `v*` tags | Cross-compile platform binaries |
 | Dev Cleanup | `cleanup-dev-versions.yml` | Weekly (Monday 06:00 UTC) | Unpublish `-dev.` versions older than 30 days |
 | Agent Workflow Guard | `agent-workflow-guard.yml` | PR changes to workflow files | Blocks workflow diffs that expand `allowed_non_write_users` |
-| AI Triage | `ai-triage.yml` | Issues: opened/edited/reopened; PRs: opened/synchronize/reopened; trusted `issue_comment` with `/rerun-triage` | Automated classification and normalized triage labels for issues/PRs |
+| AI Triage | `ai-triage.yml` | Issues: opened/edited/reopened; PRs: opened/reopened; trusted `issue_comment` with `/rerun-triage` | Automated classification (not on every push) |
 | Issue Dedupe | `issue-dedupe.yml` | Opened/edited/reopened issues + manual dispatch | Posts likely duplicate candidates once per issue |
 | Issue Lifecycle | `issue-lifecycle.yml` | Label changes + schedule + manual dispatch | Adds lifecycle guidance comments and sweeps stale `needs-info` issues |
 
 **CI optimization (v2.38):** GitHub Actions minutes were reduced ~60-70% (~10k → ~3-4k/month) through workflow consolidation and caching improvements.
 
+**CI refactor (2026-05):** Single `fast-gates` job, build-once artifact fan-out, parallel test jobs, PR coverage moved to main push only. Local parity: `verify:fast`, `verify:pr` (fast loop), **`verify:merge`** (PR blocking). See [Test confidence stack](./test-confidence-stack.md).
+
 **Pipeline optimization (v2.41):**
-- **Shallow clones** — CI lint and build jobs use `fetch-depth: 1` or `fetch-depth: 2` instead of full history, saving ~30-60s per job
-- **npm cache in pipeline** — prerelease verification and prod-release use `cache: 'npm'` on setup-node, saving ~1-2 min per job on repeat runs
+- **Shallow clones** — downstream jobs use shallow checkout + shared build artifacts
+- **npm cache in pipeline** — prerelease verification and production release use `cache: 'npm'` on setup-node, saving ~1-2 min per job on repeat runs
 - **Exponential backoff** — npm registry propagation waits in `build-native.yml` replaced hardcoded `sleep 30` + fixed 15s retries with exponential backoff (5s → 10s → 20s → 30s cap), typically finishing in <15s when the registry is fast
 - **Security hardening** — pipeline.yml moved `${{ }}` expressions from `run:` blocks to `env:` variables to prevent command injection vectors
+
+### CI job tiers
+
+See [Test confidence stack](./test-confidence-stack.md) for the code-area → runner → local command map.
+
+| Tier | Job(s) | When | Blocks merge? |
+|------|--------|------|---------------|
+| Fast gates | `fast-gates` | Every PR/push (secrets, docs injection, skill refs, PR policy, tier-map drift) | Yes |
+| Build | `build` | `heavy-code-changed=true` — compile once, upload `ci-build-artifacts` | Yes |
+| Tests (parallel) | `test-unit`, `test-packages`, `integration-tests`, `e2e` | After `build`; restore artifacts, no `build:core` repeat | Yes |
+| Coverage | `test-coverage` | Push to `main`/`dev`/`test` only (not PRs); or `workflow_dispatch` with `run_coverage` | Yes on main pipeline |
+| Platform | `docker-e2e`, `windows-portability` | Path-gated; use artifacts instead of rebuilding | Yes when triggered |
+| Platform (warn) | Windows e2e smoke step inside `windows-portability` | `windows-e2e-changed=true` | **No** (`continue-on-error: true`) |
+
+**Local before review:** `npm run verify:merge` — sequential parity with PR blocking jobs above (except path-gated platform jobs).
+
+**Branch protection:** Required checks should include `fast-gates`, `build`, `test-unit`, `test-packages`, `integration-tests`, and `e2e` when you want full merge confidence.
+
 ### Build-Relevant Change Detection
 
-CI classifies changed files before the expensive jobs run. Changes that do not
-touch build, runtime, test, package, web, native, Docker, or TypeScript config
-paths skip the build/test matrix.
+`scripts/ci-classify-changes.sh` (run inside `fast-gates`) classifies the diff before expensive jobs run.
 
-- **Skipped:** `build`, `integration-tests`, `e2e`, `docker-e2e`, and `windows-portability`
-- **Still runs:** `lint` (secret scanning, `.gsd/` check), `docs-check` (prompt injection scan)
+- **Skipped when doc/metadata only:** `build`, `test-*`, `integration-tests`, `e2e`, `docker-e2e`, `windows-portability`
+- **Still runs:** `fast-gates` (all security and policy scans)
+- **`web-changed`:** reserved for future path gating (web host always builds in `build` because `validate-pack` requires `dist/web/standalone/server.js`)
 
-This saves CI minutes on documentation and metadata-only PRs while still
-enforcing security checks.
+### Prompt Injection Scan
 
-### Prompt Injection Scan (v2.41)
-
-The `docs-check` job runs `scripts/docs-prompt-injection-scan.sh` on every PR that touches markdown files. It scans documentation prose (excluding fenced code blocks) for patterns that could manipulate LLM behavior when docs are ingested as context:
+`fast-gates` runs `scripts/docs-prompt-injection-scan.sh` against the PR merge base (`CI_DIFF_REF`, not hardcoded `origin/main`). It scans documentation prose (excluding fenced code blocks) for patterns that could manipulate LLM behavior when docs are ingested as context:
 
 - **System prompt markers** — `<system-prompt>`, `<|im_start|>system`, `[SYSTEM]:`
 - **Role/instruction overrides** — `ignore previous instructions`, `you are now`, `new instructions:`
@@ -120,7 +136,7 @@ The pipeline only triggers after `ci.yml` passes. Key gating tests include:
 ### Approving a Prod Release
 
 1. A version reaches the Test stage automatically
-2. In GitHub Actions, the `prod-release` job will show "Waiting for review"
+2. In GitHub Actions, run **NPM Publish** with `channel=latest`; the `prod-release` job will show "Waiting for review"
 3. Click **Review deployments** → select `prod` → **Approve**
 4. The version is promoted to `@latest` and a GitHub Release is created
 
@@ -133,7 +149,7 @@ If a broken version reaches production:
 
 ```bash
 # Roll back npm
-npm dist-tag add gsd-pi@<previous-good-version> latest
+npm dist-tag add @opengsd/gsd-pi@<previous-good-version> latest
 
 # Roll back Docker
 docker pull ghcr.io/open-gsd/gsd-pi:<previous-good-version>
@@ -147,14 +163,52 @@ For `@dev` or `@next` rollbacks, the next successful merge will overwrite the ta
 
 | Setting | Value |
 |---------|-------|
+| npm Trusted Publisher workflow filename | `npm-publish.yml` (for `@opengsd/gsd-pi` only) |
 | Environment: `dev` | No protection rules |
 | Environment: `test` | No protection rules |
 | Environment: `prod` | Required reviewers: maintainers |
-| Secret: `NPM_TOKEN` | All environments |
+| Secret: `NPM_TOKEN` | Not required for trusted publishing; set for token-fallback bootstrap (`build-native.yml` → `publish_auth=token`) |
 | Secret: `ANTHROPIC_API_KEY` | Prod environment only |
 | Secret: `OPENAI_API_KEY` | Prod environment only |
 | Variable: `RUN_LIVE_TESTS` | `false` (set to `true` to enable live LLM tests) |
 | GHCR | Enabled for the `open-gsd` org |
+
+### npm Trusted Publishing (all packages)
+
+npm [trusted publishing](https://docs.npmjs.com/trusted-publishers) binds each package to a single GitHub Actions workflow filename. It can only be configured **after** a package already exists on npm — you cannot set it up for packages that return 404.
+
+#### First-time packages (bootstrap with token)
+
+Use this when any `@opengsd/engine-*` package is missing from npm (today: `@opengsd/engine-darwin-x64`, `@opengsd/engine-linux-x64-gnu`).
+
+1. Create an npm [automation token](https://www.npmjs.com/settings/opengsd/tokens) with **Publish** access to the `@opengsd` scope (must be allowed to create new packages under the org).
+2. Add the token as repository secret **`NPM_TOKEN`** (GitHub → repo → Settings → Secrets and variables → Actions).
+3. Run [Build Native Binaries](https://github.com/open-gsd/gsd-pi/actions/workflows/build-native.yml):
+   - `publish`: **true**
+   - `platform_packages_only`: **true**
+   - `publish_auth`: **token** ← required for packages that do not exist yet
+4. Confirm all five packages resolve: `npm view @opengsd/engine-darwin-x64 version` (and the other four).
+5. **Then** configure trusted publishing on each package (table below).
+6. Re-run **NPM Publish** with the desired channel.
+
+The publish step skips packages already on npm and attempts all five platforms before failing, so one error does not leave the rest unpublished.
+
+#### Trusted publishing (after first publish)
+
+Configure **every** package on [npm package settings](https://www.npmjs.com/settings/opengsd/packages) → package → **Publishing access** → **Trusted Publisher**:
+
+| npm package | Trusted Publisher workflow |
+|-------------|---------------------------|
+| `@opengsd/gsd-pi` | `npm-publish.yml` |
+| `@opengsd/engine-darwin-arm64` | `build-native.yml` |
+| `@opengsd/engine-darwin-x64` | `build-native.yml` |
+| `@opengsd/engine-linux-x64-gnu` | `build-native.yml` |
+| `@opengsd/engine-linux-arm64-gnu` | `build-native.yml` |
+| `@opengsd/engine-win32-x64-msvc` | `build-native.yml` |
+
+For all packages: repository **`open-gsd/gsd-pi`**, environment **(none)**.
+
+After trusted publishing is configured, use `publish_auth=trusted` (default) for routine native publishes.
 
 ### Docker Images
 

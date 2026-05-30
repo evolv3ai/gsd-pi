@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Tests for host-owned auto-mode verification verdict policy.
 
 import test from "node:test";
@@ -24,6 +24,17 @@ test("execute-task fails closed when no host-owned checks are discovered", () =>
   assert.equal(verdict.reason, "no-host-checks");
   assert.equal(verdict.retryable, false);
   assert.match(verdict.failureContext, /No runnable host-owned verification command/);
+});
+
+test("execute-task passes when non-runnable task-plan prose is the verification source", () => {
+  const verdict = decideVerificationVerdict(
+    "execute-task",
+    makeResult({ discoverySource: "task-plan-prose" }),
+  );
+
+  assert.equal(verdict.passed, true);
+  assert.equal(verdict.reason, "passed");
+  assert.equal(verdict.retryable, false);
 });
 
 test("non execute-task units preserve no-check pass semantics", () => {

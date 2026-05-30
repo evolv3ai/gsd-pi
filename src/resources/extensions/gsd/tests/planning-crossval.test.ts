@@ -3,7 +3,7 @@
 // Each test seeds planning data into DB via insert functions, renders markdown via
 // renderers, parses back via existing parsers, and asserts field-by-field parity.
 
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -52,7 +52,7 @@ function cleanup(base: string): void {
 
 console.log('\n=== planning-crossval Test 1: ROADMAP round-trip parity ===');
 {
-  const base = createFixtureBase();
+  const base = realpathSync(createFixtureBase());
   const dbPath = join(base, '.gsd', 'gsd.db');
   openDatabase(dbPath);
   try {
@@ -296,6 +296,127 @@ console.log('\n=== planning-crossval Test 3: Sequence ordering parity ===');
       assertEq(parsedSlices[i].done, dbSlices[i].status === 'complete', `T3: round-trip slice[${i}].done`);
       assertEq(parsedSlices[i].title, dbSlices[i].title, `T3: round-trip slice[${i}].title`);
     }
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Test 4: ROADMAP renders into worktree projection root
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n=== planning-crossval Test 4: ROADMAP worktree projection path ===');
+{
+  const base = createFixtureBase();
+  const worktreeBase = join(base, '.gsd', 'worktrees', 'M001');
+  const worktreeGsd = join(worktreeBase, '.gsd');
+  const projectRoadmapPath = join(base, '.gsd', 'milestones', 'M001', 'M001-ROADMAP.md');
+  const worktreeRoadmapPath = join(worktreeGsd, 'milestones', 'M001', 'M001-ROADMAP.md');
+  const dbPath = join(base, '.gsd', 'gsd.db');
+
+  openDatabase(dbPath);
+  try {
+    scaffoldDirs(base, 'M001', []);
+    mkdirSync(join(worktreeGsd, 'milestones', 'M001'), { recursive: true });
+    writeFileSync(projectRoadmapPath, '# stale project roadmap\n');
+
+    insertMilestone({
+      id: 'M001',
+      title: 'Worktree Projection',
+      status: 'active',
+      planning: { vision: 'Render into the projection root.' },
+    });
+
+    insertSlice({
+      id: 'S01',
+      milestoneId: 'M001',
+      title: 'Projected Slice',
+      status: 'complete',
+      risk: 'low',
+      demo: 'Projection updated.',
+      sequence: 1,
+    });
+
+    const rendered = await renderRoadmapFromDb(worktreeBase, 'M001');
+
+    assertEq(rendered.roadmapPath, worktreeRoadmapPath, 'T4: roadmap path uses worktree projection');
+    assertTrue(existsSync(worktreeRoadmapPath), 'T4: worktree roadmap exists');
+    assertEq(readFileSync(projectRoadmapPath, 'utf-8'), '# stale project roadmap\n', 'T4: project roadmap remains stale');
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Test 5: ROADMAP renderer preserves existing projection file path
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n=== planning-crossval Test 5: ROADMAP existing projection file path ===');
+{
+  const base = createFixtureBase();
+  const worktreeBase = join(base, '.gsd', 'worktrees', 'M001');
+  const worktreeGsd = join(worktreeBase, '.gsd');
+  const worktreeRoadmapPath = join(worktreeGsd, 'milestones', 'M001', 'M001-ROADMAP.md');
+  const dbPath = join(base, '.gsd', 'gsd.db');
+  const originalCwd = process.cwd();
+
+  openDatabase(dbPath);
+  try {
+    process.chdir(base);
+    mkdirSync(join(worktreeGsd, 'milestones', 'M001'), { recursive: true });
+    writeFileSync(worktreeRoadmapPath, '# stale worktree roadmap\n');
+
+    insertMilestone({
+      id: 'M001',
+      title: 'Existing Projection',
+      status: 'active',
+      planning: { vision: 'Overwrite the existing projected roadmap.' },
+    });
+
+    const rendered = await renderRoadmapFromDb(worktreeBase, 'M001');
+
+    assertEq(rendered.roadmapPath, worktreeRoadmapPath, 'T5: existing roadmap path remains absolute');
+    assertTrue(existsSync(worktreeRoadmapPath), 'T5: worktree roadmap still exists');
+  } finally {
+    process.chdir(originalCwd);
+    closeDatabase();
+    cleanup(base);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Test 6: ROADMAP renderer resolves descriptor-named projection milestone dirs
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n=== planning-crossval Test 6: ROADMAP descriptor projection dir ===');
+{
+  const base = createFixtureBase();
+  const worktreeBase = join(base, '.gsd', 'worktrees', 'M001');
+  const worktreeGsd = join(worktreeBase, '.gsd');
+  const descriptorMilestoneDir = join(worktreeGsd, 'milestones', 'M001-DESCRIPTOR');
+  const descriptorRoadmapPath = join(descriptorMilestoneDir, 'M001-ROADMAP.md');
+  const bareMilestoneDir = join(worktreeGsd, 'milestones', 'M001');
+  const dbPath = join(base, '.gsd', 'gsd.db');
+
+  openDatabase(dbPath);
+  try {
+    mkdirSync(descriptorMilestoneDir, { recursive: true });
+    writeFileSync(descriptorRoadmapPath, '# stale descriptor roadmap\n');
+
+    insertMilestone({
+      id: 'M001',
+      title: 'Descriptor Projection',
+      status: 'active',
+      planning: { vision: 'Render into the descriptor-named milestone dir.' },
+    });
+
+    const rendered = await renderRoadmapFromDb(worktreeBase, 'M001');
+
+    assertEq(rendered.roadmapPath, descriptorRoadmapPath, 'T6: roadmap path uses descriptor milestone dir');
+    assertTrue(existsSync(descriptorRoadmapPath), 'T6: descriptor roadmap exists');
+    assertEq(existsSync(bareMilestoneDir), false, 'T6: bare duplicate milestone dir is not created');
   } finally {
     closeDatabase();
     cleanup(base);

@@ -2,11 +2,13 @@
   "compilerOptions": {
     "target": "ES2024",
     "module": "Node16",
-    "lib": ["ES2024"],
+    "lib": [
+      "ES2024"
+    ],
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "incremental": true,
+    "incremental": false,
     "forceConsistentCasingInFileNames": true,
     "declaration": true,
     "declarationMap": true,
@@ -19,10 +21,17 @@
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
     "useDefineForClassFields": false,
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "outDir": "./dist",
     "rootDir": "./src"
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
 }

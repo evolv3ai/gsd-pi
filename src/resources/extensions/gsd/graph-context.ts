@@ -128,12 +128,12 @@ async function resolveGraphApi(): Promise<GraphApi> {
 
   resolvedGraphApi = true;
   try {
-    const imported = await import("@gsd-build/mcp-server");
+    const imported = await import("@opengsd/mcp-server");
     if (isGraphApi(imported)) {
       cachedGraphApi = imported;
       return cachedGraphApi;
     }
-    logWarning("prompt", "@gsd-build/mcp-server graph exports unavailable; using local graph fallback");
+    logWarning("prompt", "@opengsd/mcp-server graph exports unavailable; using local graph fallback");
   } catch {
     // Fall back to local reader implementation.
   }
@@ -150,7 +150,7 @@ async function resolveGraphApi(): Promise<GraphApi> {
  * the result as an inlined context block.
  *
  * Returns null when:
- * - @gsd-build/mcp-server fails to import
+ * - @opengsd/mcp-server fails to import
  * - graph.json does not exist (graphQuery already handles this gracefully)
  * - query returns zero nodes
  *

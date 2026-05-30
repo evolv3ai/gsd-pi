@@ -17,7 +17,8 @@ import { join } from 'node:path'
 import { resolve } from 'node:path'
 import { ChildProcess } from 'node:child_process'
 
-import { RpcClient, SessionManager } from '@gsd/pi-coding-agent'
+import { RpcClient } from '@gsd/agent-modes'
+import { SessionManager } from '@gsd/pi-coding-agent'
 import type { SessionInfo } from '@gsd/pi-coding-agent'
 import { getProjectSessionsDir } from './project-sessions.js'
 import { loadAndValidateAnswerFile, AnswerInjector } from './headless-answers.js'
@@ -311,9 +312,11 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
 
   // Load answer injection file
   let injector: AnswerInjector | undefined
+  let answerFilePath: string | undefined
   if (options.answers) {
     try {
-      const answerFile = loadAndValidateAnswerFile(resolve(options.answers))
+      answerFilePath = resolve(options.answers)
+      const answerFile = loadAndValidateAnswerFile(answerFilePath)
       injector = new AnswerInjector(answerFile)
       if (!options.json) {
         process.stderr.write(`[headless] Loaded answer file: ${options.answers}\n`)
@@ -431,6 +434,9 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   }
   // Signal headless mode to the GSD extension (skips UAT human pause, etc.)
   clientOptions.env = { ...(clientOptions.env as Record<string, string> || {}), GSD_HEADLESS: '1' }
+  if (answerFilePath) {
+    clientOptions.env = { ...(clientOptions.env as Record<string, string> || {}), GSD_HEADLESS_ANSWERS_PATH: answerFilePath }
+  }
   // Propagate --bare to the child process
   if (options.bare) {
     clientOptions.args = [...((clientOptions.args as string[]) || []), '--bare']

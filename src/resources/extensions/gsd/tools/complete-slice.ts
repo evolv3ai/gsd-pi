@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Complete-slice tool handler for GSD workflow state and summaries.
 
 /**
@@ -27,6 +27,8 @@ import {
   setSliceSummaryMd,
   saveGateResult,
   getPendingGatesForTurn,
+  getMilestoneSlices,
+  updateMilestoneStatus,
 } from "../gsd-db.js";
 import { getGatesForTurn } from "../gate-registry.js";
 import { gsdProjectionRoot, clearPathCache, resolveMilestoneFile } from "../paths.js";
@@ -384,6 +386,15 @@ export async function handleCompleteSlice(
       insertSlice({ id: params.sliceId, milestoneId: params.milestoneId, title: params.sliceTitle || params.sliceId });
     }
     updateSliceStatus(params.milestoneId, params.sliceId, "complete", completedAt);
+
+    const updatedSlices = getMilestoneSlices(params.milestoneId);
+    if (
+      milestone?.status === "planned" &&
+      updatedSlices.length > 0 &&
+      updatedSlices.every((s) => isClosedStatus(s.status))
+    ) {
+      updateMilestoneStatus(params.milestoneId, "active");
+    }
   });
 
   if (duplicateComplete) {
@@ -537,7 +548,7 @@ export async function handleCompleteSlice(
   // eslint-disable-next-line @typescript-eslint/no-floating-promises
   (async () => {
     try {
-      const graphMod = await import("@gsd-build/mcp-server") as unknown as Partial<{
+      const graphMod = await import("@opengsd/mcp-server") as unknown as Partial<{
         buildGraph: (dir: string) => Promise<{ nodes: unknown[]; edges: unknown[]; builtAt: string }>;
         writeGraph: (gsdRoot: string, graph: unknown) => Promise<void>;
         resolveGsdRoot: (basePath: string) => string;
@@ -547,7 +558,7 @@ export async function handleCompleteSlice(
         || typeof graphMod.writeGraph !== "function"
         || typeof graphMod.resolveGsdRoot !== "function"
       ) {
-        throw new Error("graph helpers unavailable from @gsd-build/mcp-server");
+        throw new Error("graph helpers unavailable from @opengsd/mcp-server");
       }
       const g = await graphMod.buildGraph(artifactBasePath);
       await graphMod.writeGraph(graphMod.resolveGsdRoot(artifactBasePath), g);

@@ -1,18 +1,23 @@
 {
   "name": "@gsd-extensions/google-search",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Web search via Google with AI-synthesized answers and source citations",
   "type": "module",
-  "keywords": ["pi-package", "gsd-extension"],
+  "keywords": [
+    "pi-package",
+    "gsd-extension"
+  ],
   "gsd": {
     "extension": true
   },
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   },
   "peerDependencies": {
-    "@gsd/pi-coding-agent": "*",
-    "@gsd/pi-tui": "*"
+    "@gsd/pi-coding-agent": "workspace:*",
+    "@gsd/pi-tui": "workspace:*"
   },
   "dependencies": {
     "@google/genai": "^1.40.0",

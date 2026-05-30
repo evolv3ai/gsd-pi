@@ -225,6 +225,44 @@ test("projection renders Patterns + Lessons from memories", () => {
   }
 });
 
+test("projection excludes superseded knowledge memories", () => {
+  const base = makeTmpBase();
+  try {
+    writeKnowledgeMd(base, FIXTURE);
+    backfillKnowledgeToMemories(base);
+
+    const adapter = _getAdapter();
+    assert.ok(adapter);
+    adapter
+      .prepare(
+        `INSERT INTO memories (
+          id, category, content, confidence, source_unit_type, source_unit_id,
+          created_at, updated_at, superseded_by, hit_count, scope, tags, structured_fields, last_hit_at
+        ) VALUES (
+          'MEM999', 'pattern', 'legacy duplicate', 0.8, NULL, NULL,
+          '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 'MEM001', 0,
+          'project', '[]', :sf, NULL
+        )`,
+      )
+      .run({
+        ':sf': JSON.stringify({
+          sourceKnowledgeId: 'P001',
+          pattern: 'stale pattern content',
+          where: 'old/path',
+          notes: 'stale',
+        }),
+      });
+
+    renderKnowledgeProjection(base);
+    const rendered = readFileSync(knowledgeMdPath(base), "utf-8");
+
+    assert.match(rendered, /\| P001 \| Repository pattern \| services\/ \| guards \|/);
+    assert.ok(!rendered.includes("stale pattern content"), "superseded duplicate must not be projected");
+  } finally {
+    cleanup(base);
+  }
+});
+
 test("projection is idempotent when nothing has changed", () => {
   const base = makeTmpBase();
   try {

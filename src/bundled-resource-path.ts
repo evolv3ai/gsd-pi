@@ -48,13 +48,9 @@ export function resolveBundledGsdExtensionModule(
   fileExists: FileExists = existsSync,
 ): string {
   const packageRoot = resolvePackageRoot(importUrl);
-  const distResources = join(packageRoot, "dist", "resources");
-  const jsFile = moduleFile.replace(/\.ts$/, ".js");
-  const distModule = join(distResources, "extensions", "gsd", jsFile);
-  if (hasCompleteBundledResources(distResources, fileExists) && fileExists(distModule)) {
-    return distModule;
-  }
-
+  // Extension modules are loaded via jiti from raw TypeScript. Compiled dist/*.js
+  // copies pull @gsd/* through CJS require, which cannot load the ESM workspace
+  // packages that dist-test mirrors — always use the source .ts entry.
   const tsFile = moduleFile.replace(/\.js$/, ".ts");
   return join(packageRoot, "src", "resources", "extensions", "gsd", tsFile);
 }

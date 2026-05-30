@@ -31,6 +31,10 @@
 - **Worktree State Projection module**: module that owns the direction-and-rules of state file flow between project root and auto-worktree. Encodes the bug-hardened invariants (additive milestone copy, ASSESSMENT verdict overwrite, completed-units forward-sync, WAL/SHM cleanup) that `syncProjectRootToWorktree` and `syncStateToProjectRoot` carry today.
 - **Recovery Classification module**: module that maps provider, tool, policy, git, worktree, runtime, and reconciliation-drift failures to a Recovery decision.
 - **Tool Contract module**: module that keeps Unit prompts, tool schemas, tool policy, and pre-dispatch validation aligned.
+- **Cloud MCP Gateway**: a cloud-hosted MCP endpoint that mirrors the GSD MCP tool surface and routes calls to a connected Local GSD Runtime. It stores routing metadata only, not source files or `.gsd` artifacts.
+- **Local GSD Runtime**: a user-controlled daemon process that owns project files, `.gsd` state, provider credentials, git worktrees, and actual GSD execution while maintaining an outbound connection to the Cloud MCP Gateway.
+- **Device Token**: a revocable credential issued during cloud pairing that authorizes one Local GSD Runtime to connect to the Cloud MCP Gateway for a single user account.
+- **Project Alias**: the stable, user-facing name a Local GSD Runtime advertises for a local project so cloud MCP clients do not need to know absolute local paths.
 - **DriftRecord**: typed, machine-actionable signal of a single drift instance. Discriminated union over drift kinds; carries the identifiers (e.g., milestone id, slice id) the matching repair needs.
 - **Drift repair**: idempotent function that resolves one `DriftRecord`. Repairs are owned by the State Reconciliation Module's `drift/` folder; owning modules retain raw primitives (DB writes, file IO) but not the detection-and-repair composition.
 - **Reconciliation pass**: one cycle of derive → detect drift → apply repairs → re-derive, performed by `reconcileBeforeDispatch`. Capped at 2 passes per call; loops only when the prior pass fully succeeded but new drift surfaces in the re-derive.

@@ -13,16 +13,33 @@ export function resolve(specifier, context, nextResolve) {
   //    source itself) must resolve to the TypeScript source entrypoint.
   if (specifier === "../../packages/pi-coding-agent/src/index.js") {
     specifier = new URL("packages/pi-coding-agent/src/index.ts", ROOT).href;
-  } else if (specifier === "@gsd/pi-coding-agent") {
+  } else if (specifier === "@gsd/pi-coding-agent" || specifier === "@earendil-works/pi-coding-agent") {
     specifier = new URL("packages/pi-coding-agent/src/index.ts", ROOT).href;
-  } else if (specifier === "@gsd/pi-ai/oauth") {
+  } else if (specifier.startsWith("@gsd/pi-coding-agent/") || specifier.startsWith("@earendil-works/pi-coding-agent/")) {
+    const subpath = specifier.replace(/^@[^/]+\/pi-coding-agent\//, "").replace(/\.js$/, ".ts");
+    specifier = new URL(`packages/pi-coding-agent/src/${subpath}`, ROOT).href;
+  } else if (specifier === "@earendil-works/pi-ai/oauth" || specifier === "@gsd/pi-ai/oauth") {
     specifier = new URL("packages/pi-ai/src/utils/oauth/index.ts", ROOT).href;
-  } else if (specifier === "@gsd/pi-ai") {
+  } else if (
+    specifier === "@earendil-works/pi-ai" ||
+    specifier === "@gsd/pi-ai" ||
+    specifier === "@earendil-works/pi-ai/dist/index.js" ||
+    specifier === "@gsd/pi-ai/dist/index.js"
+  ) {
     specifier = new URL("packages/pi-ai/src/index.ts", ROOT).href;
-  } else if (specifier === "@gsd/pi-agent-core") {
-    specifier = new URL("packages/pi-agent-core/src/index.ts", ROOT).href;
-  } else if (specifier === "@gsd/pi-tui") {
+  } else if (specifier.startsWith("@earendil-works/pi-ai/") || specifier.startsWith("@gsd/pi-ai/")) {
+    const subpath = specifier.replace(/^@[^/]+\/pi-ai\//, "").replace(/\.js$/, ".ts");
+    specifier = new URL(`packages/pi-ai/src/${subpath}`, ROOT).href;
+  } else if (specifier === "@earendil-works/pi-tui" || specifier === "@gsd/pi-tui") {
     specifier = new URL("packages/pi-tui/src/index.ts", ROOT).href;
+  } else if (specifier.startsWith("@earendil-works/pi-tui/") || specifier.startsWith("@gsd/pi-tui/")) {
+    const subpath = specifier.replace(/^@[^/]+\/pi-tui\//, "").replace(/\.js$/, ".ts");
+    specifier = new URL(`packages/pi-tui/src/${subpath}`, ROOT).href;
+  } else if (specifier === "@earendil-works/pi-agent-core" || specifier === "@gsd/pi-agent-core") {
+    specifier = new URL("packages/pi-agent-core/src/index.ts", ROOT).href;
+  } else if (specifier.startsWith("@earendil-works/pi-agent-core/") || specifier.startsWith("@gsd/pi-agent-core/")) {
+    const subpath = specifier.replace(/^@[^/]+\/pi-agent-core\//, "").replace(/\.js$/, ".ts");
+    specifier = new URL(`packages/pi-agent-core/src/${subpath}`, ROOT).href;
   } else if (specifier === "@gsd/native") {
     specifier = new URL("packages/native/src/index.ts", ROOT).href;
   } else if (specifier.startsWith("@gsd/native/")) {
@@ -30,19 +47,37 @@ export function resolve(specifier, context, nextResolve) {
     const subpath = specifier.slice("@gsd/native/".length);
     specifier = new URL(`packages/native/src/${subpath}/index.ts`, ROOT).href;
   }
-  // 2. Redirect packages/*/dist/ → packages/*/src/ with .js→.ts for strip-types
-  //    Also handles local imports — skip rewrite for dist/ paths that are real compiled artifacts.
-
+  // 2. Broken/partial dist artifacts (e.g. jiti CJS) may still import ./foo.ts — map to src/.
+  else if (
+    context.parentURL &&
+    context.parentURL.includes('/packages/') &&
+    context.parentURL.includes('/dist/') &&
+    (specifier.startsWith('./') || specifier.startsWith('../')) &&
+    (specifier.endsWith('.ts') || specifier.endsWith('.js'))
+  ) {
+    const srcParent = context.parentURL.replace(/\/dist\//, '/src/');
+    const srcSpec = specifier.replace(/\.js$/, '.ts');
+    specifier = new URL(srcSpec, srcParent).href;
+  }
+  // 3. Redirect packages/*/src/ relative .js → .ts for strip-types
   else if (specifier.endsWith('.js') && (specifier.startsWith('./') || specifier.startsWith('../'))) {
-    if (context.parentURL && context.parentURL.includes('/src/')) {
+    if (
+      context.parentURL &&
+      context.parentURL.startsWith(ROOT.href) &&
+      !context.parentURL.includes('/node_modules/') &&
+      context.parentURL.includes('/src/')
+    ) {
       if (specifier.includes('/dist/')) {
         specifier = specifier.replace('/dist/', '/src/').replace(/\.js$/, '.ts');
       } else {
-        specifier = specifier.replace(/\.js$/, '.ts');
+        const candidate = new URL(specifier.replace(/\.js$/, '.ts'), context.parentURL);
+        if (existsSync(fileURLToPath(candidate))) {
+          specifier = candidate.href;
+        }
       }
     }
   }
-  // 3. Extensionless relative imports from web/ (Next.js convention).
+  // 4. Extensionless relative imports from web/ (Next.js convention).
   //    Transpiled .tsx files emit extensionless imports — try .ts then .tsx.
   else if (
     (specifier.startsWith('./') || specifier.startsWith('../')) &&
@@ -65,6 +100,17 @@ export function resolve(specifier, context, nextResolve) {
 }
 
 export function load(url, context, nextLoad) {
+  // jiti/CJS may still enter through stale packages/*/dist/index.js — redirect to src.
+  if (url.includes('/packages/pi-ai/dist/index.js')) {
+    url = url.replace('/dist/index.js', '/src/index.ts');
+  } else if (url.includes('/packages/pi-coding-agent/dist/index.js')) {
+    url = url.replace('/dist/index.js', '/src/index.ts');
+  } else if (url.includes('/packages/pi-agent-core/dist/index.js')) {
+    url = url.replace('/dist/index.js', '/src/index.ts');
+  } else if (url.includes('/packages/pi-tui/dist/index.js')) {
+    url = url.replace('/dist/index.js', '/src/index.ts');
+  }
+
   // Node's --experimental-strip-types handles plain .ts but not .tsx and not
   // all TypeScript syntax used by workspace packages (parameter properties,
   // decorators, etc.). Transpile all workspace package source files and .tsx

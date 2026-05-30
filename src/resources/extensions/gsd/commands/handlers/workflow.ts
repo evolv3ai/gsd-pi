@@ -12,7 +12,7 @@ import { deriveState } from "../../state.js";
 import { isParked, parkMilestone, unparkMilestone } from "../../milestone-actions.js";
 import { loadEffectiveGSDPreferences } from "../../preferences.js";
 import { setPlanningDepth } from "../../planning-depth.js";
-import { nextMilestoneId } from "../../milestone-ids.js";
+import { nextMilestoneId, normalizeDiscussTarget } from "../../milestone-ids.js";
 import { findMilestoneIds } from "../../guided-flow.js";
 import { currentDirectoryRoot, projectRoot } from "../context.js";
 import { createRun, listRuns } from "../../run-manager.js";
@@ -55,7 +55,7 @@ function parseDiscussArgs(args: string): { target: string | null; error: string 
   if (!trimmed) return { target: null, error: null };
   const tokens = trimmed.split(/\s+/).filter(Boolean);
   if (tokens.length === 1 && !tokens[0].startsWith("--")) {
-    return { target: tokens[0], error: null };
+    return { target: normalizeDiscussTarget(tokens[0]), error: null };
   }
   const milestoneFlag = tokens.indexOf("--milestone");
   const sliceFlag = tokens.indexOf("--slice");
@@ -73,7 +73,7 @@ function parseDiscussArgs(args: string): { target: string | null; error: string 
     if (target.includes("/")) {
       return { target: null, error: "Invalid --milestone value. Usage: /gsd discuss --milestone M014" };
     }
-    return { target, error: null };
+    return { target: normalizeDiscussTarget(target), error: null };
   }
   if (sliceFlag >= 0) {
     const target = tokens[sliceFlag + 1];
@@ -83,7 +83,7 @@ function parseDiscussArgs(args: string): { target: string | null; error: string 
     if (!target.includes("/")) {
       return { target: null, error: "Invalid --slice value. Usage: /gsd discuss --slice M014/S03" };
     }
-    return { target, error: null };
+    return { target: normalizeDiscussTarget(target), error: null };
   }
   return { target: null, error: `Unknown discuss arguments: "${trimmed}"` };
 }
@@ -602,7 +602,7 @@ export async function handleWorkflowCommand(trimmed: string, ctx: ExtensionComma
       });
     } else {
       const { showSmartEntry } = await import("../../guided-flow.js");
-      await showSmartEntry(ctx, pi, basePath);
+      await showSmartEntry(ctx, pi, basePath, { step: true });
     }
     return true;
   }
@@ -618,7 +618,7 @@ export async function handleWorkflowCommand(trimmed: string, ctx: ExtensionComma
       ctx.ui.notify("Deep planning mode enabled (.gsd/PREFERENCES.md updated).", "info");
     }
     const { showSmartEntry } = await import("../../guided-flow.js");
-    await showSmartEntry(ctx, pi, basePath);
+    await showSmartEntry(ctx, pi, basePath, { step: true });
     return true;
   }
   if (trimmed === "start" || trimmed.startsWith("start ")) {

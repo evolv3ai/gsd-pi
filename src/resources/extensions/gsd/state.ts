@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Runtime state derivation from GSD workflow database and legacy files.
 // GSD Extension — State Derivation
 // DB-authoritative runtime derivation with explicit legacy filesystem fallback.
@@ -49,7 +49,6 @@ import { logWarning } from './workflow-logger.js';
 import { extractVerdict } from './verdict-parser.js';
 import { detectPendingEscalation } from './escalation.js';
 import { isTerminalMilestoneSummaryContent } from './milestone-summary-classifier.js';
-import { incrementLegacyTelemetry } from './legacy-telemetry.js';
 
 import {
   isDbAvailable,
@@ -64,6 +63,7 @@ import {
   getLatestAssessmentByScope,
   getPendingGateCountForTurn,
 } from './gsd-db.js';
+import { formatCompletePhaseNextAction, countUnmappedActiveRequirements } from './requirements-backlog.js';
 import type { MilestoneRow } from './db-milestone-artifact-rows.js';
 import type { SliceRow, TaskRow } from './db-task-slice-rows.js';
 
@@ -227,9 +227,9 @@ const CACHE_TTL_MS = 100;
 let _stateCache: StateCache | null = null;
 
 // ── Telemetry counters for derive-path observability ────────────────────────
-let _telemetry = { dbDeriveCount: 0, markdownDeriveCount: 0 };
+let _telemetry = { dbDeriveCount: 0 };
 export function getDeriveTelemetry() { return { ..._telemetry }; }
-export function resetDeriveTelemetry() { _telemetry = { dbDeriveCount: 0, markdownDeriveCount: 0 }; }
+export function resetDeriveTelemetry() { _telemetry = { dbDeriveCount: 0 }; }
 
 async function loadRecentDecisions(basePath: string): Promise<string[]> {
   const decisionsPath = resolveGsdRootFile(basePath, "DECISIONS");
@@ -352,8 +352,8 @@ export interface DeriveStateOptions {
  * STATE.md is a rendered cache of this output.
  *
  * When DB is available, queries milestone/slice/task tables directly.
- * Legacy filesystem parsing is available only through an explicit opt-in for
- * tests/recovery flows; runtime must not silently infer state from markdown.
+ * Runtime must not silently infer state from markdown. Use explicit recovery
+ * or `/gsd migrate` when markdown is the intended source.
  */
 export async function deriveState(
   basePath: string,
@@ -379,21 +379,14 @@ export async function deriveState(
   const stopTimer = debugTime("derive-state-impl");
   let result: GSDState;
 
-  // DB-backed derivation is authoritative whenever the DB is open.
-  // Markdown fallback is explicit-only; runtime degrade must not infer state
-  // from ROADMAP.md, PLAN.md, SUMMARY.md, REQUIREMENTS.md, or flag files.
+  // DB-backed derivation is authoritative whenever the DB is open. Runtime
+  // degrade must not infer state from ROADMAP.md, PLAN.md, SUMMARY.md,
+  // REQUIREMENTS.md, or flag files.
   if (isDbAvailable()) {
     const stopDbTimer = debugTime("derive-state-db");
     result = await deriveStateFromDb(basePath, opts?.projectRootForReads ?? basePath);
     stopDbTimer({ phase: result.phase, milestone: result.activeMilestone?.id });
     _telemetry.dbDeriveCount++;
-  } else if (process.env.GSD_ALLOW_MARKDOWN_DERIVE_FALLBACK === "1") {
-    if (wasDbOpenAttempted()) {
-      logWarning("state", "DB unavailable — using explicit legacy filesystem state derivation");
-    }
-    result = await _deriveStateImpl(basePath, opts);
-    _telemetry.markdownDeriveCount++;
-    incrementLegacyTelemetry("legacy.markdownFallbackUsed");
   } else {
     if (wasDbOpenAttempted()) {
       logWarning("state", "DB unavailable — refusing implicit markdown state derivation");
@@ -405,7 +398,7 @@ export async function deriveState(
       phase: "pre-planning",
       recentDecisions: [],
       blockers: ["DB unavailable — runtime markdown state derivation is disabled"],
-      nextAction: "Open or create the canonical GSD database before deriving workflow state.",
+      nextAction: "Open or create the canonical GSD database before deriving workflow state. If this project only has markdown state, run /gsd migrate explicitly.",
       registry: [],
       requirements: { active: 0, validated: 0, deferred: 0, outOfScope: 0, blocked: 0, total: 0 },
       progress: { milestones: { done: 0, total: 0 } },
@@ -603,10 +596,8 @@ function handleNoActiveMilestone(
   }
 
   const lastEntry = registry[registry.length - 1];
-  const activeReqs = requirements.active ?? 0;
-  const completionNote = activeReqs > 0
-    ? `All milestones complete. ${activeReqs} active requirement${activeReqs === 1 ? '' : 's'} in REQUIREMENTS.md ${activeReqs === 1 ? 'has' : 'have'} not been mapped to a milestone.`
-    : 'All milestones complete.';
+  const unmappedActive = countUnmappedActiveRequirements();
+  const completionNote = formatCompletePhaseNextAction(unmappedActive);
   return {
     activeMilestone: null,
     lastCompletedMilestone: lastEntry ? { id: lastEntry.id, title: lastEntry.title } : null,
@@ -1287,10 +1278,8 @@ export async function _deriveStateImpl(
     }
     // All milestones complete
     const lastEntry = registry[registry.length - 1];
-    const activeReqs = requirements.active ?? 0;
-    const completionNote = activeReqs > 0
-      ? `All milestones complete. ${activeReqs} active requirement${activeReqs === 1 ? '' : 's'} in REQUIREMENTS.md ${activeReqs === 1 ? 'has' : 'have'} not been mapped to a milestone.`
-      : 'All milestones complete.';
+    const unmappedActive = countUnmappedActiveRequirements();
+    const completionNote = formatCompletePhaseNextAction(unmappedActive);
     return {
       activeMilestone: null,
       lastCompletedMilestone: lastEntry ? { id: lastEntry.id, title: lastEntry.title } : null,

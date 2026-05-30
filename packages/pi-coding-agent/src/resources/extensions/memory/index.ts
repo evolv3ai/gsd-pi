@@ -56,7 +56,7 @@ export default function memoryExtension(api: ExtensionAPI): void {
 
 	let memorySettings: MemorySettingsResolved;
 	try {
-		const sm = SettingsManager.create();
+		const sm = SettingsManager.create(process.cwd());
 		memorySettings = sm.getMemorySettings();
 	} catch {
 		memorySettings = {

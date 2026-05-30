@@ -318,7 +318,7 @@ function parseJsonlLines(output: string): JsonlEvent[] {
 async function main(): Promise<void> {
   const __filename = fileURLToPath(import.meta.url);
   const __dirname = dirname(__filename);
-  // Resolve gsd-2 repo root (6 levels up from tests/integration/)
+  // Resolve gsd-pi repo root (6 levels up from tests/integration/)
   const repoRoot = join(__dirname, "..", "..", "..", "..", "..", "..");
 
   console.log("=== GSD Headless Command Integration Test ===\n");
@@ -407,9 +407,19 @@ async function main(): Promise<void> {
     let stderrBuf = "";
     let settled = false;
 
+    const resolveTsPath = join(repoRoot, "src/resources/extensions/gsd/tests/resolve-ts.mjs");
     const child = spawn("node", [loaderPath, "headless", "--json", "next"], {
       cwd: fixtureDir,
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        NODE_OPTIONS: [
+          process.env.NODE_OPTIONS,
+          `--import ${resolveTsPath}`,
+          "--experimental-strip-types",
+        ]
+          .filter(Boolean)
+          .join(" "),
+      },
       stdio: ["ignore", "pipe", "pipe"],
     });
 

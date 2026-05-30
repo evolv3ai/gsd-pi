@@ -211,7 +211,7 @@ verification_max_retries: 2    # max retry attempts
 
 If verification fails, the AI sees the output and attempts to fix the issues before advancing. This ensures quality gates are enforced mechanically.
 
-Commands must be directly runnable checks such as `npm run lint`, `npm run test`, or `python3 -m pytest`. GSD rejects shell composition and control syntax in verification commands, including pipes, redirects, semicolons, backticks, and command substitution, so a piped command like `python3 -m pytest 2>&1 | tail -5` must be replaced with the underlying test command.
+Commands must be directly runnable checks such as `npm run lint`, `npm run test`, or `python3 -m pytest`. GSD supports single shell pipelines with `|`, so commands like `python3 -m pytest | tail -5` are valid. Logical OR fallbacks (`||`) are rejected, and GSD also rejects redirects (`>` and `<`), semicolons, backticks, and command substitution because verification is run as a controlled command list, not as an arbitrary shell program.
 
 If no verification commands are configured and the task plan does not provide a `verify` command, GSD attempts project discovery. It checks `package.json` scripts first, then Python pytest markers through the `python-project` discovery source: a `tests/` directory containing files that match `test_*.py` or `*_test.py` at any nested depth, `pytest.ini`, or pytest configuration sections in `pyproject.toml` such as `[tool.pytest.ini_options]`; equivalent pytest markers under `[tool.pytest]`, `[tool.pytest.*]`, `[pytest]`, or `[tool:pytest]` are also treated as explicit pytest evidence.
 
@@ -228,6 +228,10 @@ Auto mode pauses before each slice, showing the plan for your approval before bu
 ## Stuck Detection
 
 GSD uses sliding-window analysis to detect stuck loops — not just "same unit dispatched twice" but also cycles like A→B→A→B. On detection, GSD retries once with a diagnostic prompt. If it fails again, auto mode stops with details so you can intervene.
+
+## Artifact Verification Retries
+
+After each unit, GSD verifies the expected artifact and retries missing artifacts with explicit failure context. `reactive-execute` batches use a terminal recovery after the retry cap: if dispatched tasks are still missing `T##-SUMMARY.md` files, GSD writes `S##-REACTIVE-BLOCKER.md`, marks summary-present tasks complete, marks missing-summary tasks skipped, and advances. Review skipped tasks before relying on downstream artifacts.
 
 ## Cost Tracking
 

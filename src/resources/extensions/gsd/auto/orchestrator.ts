@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Auto Orchestration module implementation and ADR-015 invariant pipeline owner.
 
 import type { AutoAdvanceResult, AutoOrchestrationModule, AutoOrchestratorDeps, AutoSessionContext, AutoStatus } from "./contracts.js";
@@ -87,7 +87,11 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
           rationale: "pre-dispatch health gate blocked dispatch",
           findings: gate.reason,
         });
-        const blocked: AutoAdvanceResult = { kind: "blocked", reason: gate.reason, action: "pause" };
+        const blocked: AutoAdvanceResult = {
+          kind: "blocked",
+          reason: gate.reason,
+          action: gate.action ?? "pause",
+        };
         await this.deps.runtime.journalTransition({ name: "advance-blocked", reason: blocked.reason });
         await this.deps.health.postAdvanceRecord(blocked);
         return blocked;

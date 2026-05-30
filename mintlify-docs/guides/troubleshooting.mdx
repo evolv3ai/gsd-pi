@@ -16,10 +16,59 @@ It checks file structure, referential integrity, completion state consistency, g
 ## Common issues
 
 <AccordionGroup>
+  <Accordion title="Upgrade from older gsd-pi installs">
+    **Symptoms:** `gsd` exits with a version or managed-resource mismatch, or an old global `gsd-pi` install still shadows the new package.
+
+    **npm fix:**
+    ```bash
+    npm uninstall -g gsd-pi
+    rm -f ~/.gsd/.update-check ~/.gsd/agent/managed-resources.json
+    npm install -g @opengsd/gsd-pi@latest
+    ```
+
+    **Move from old npm to pnpm:**
+    ```bash
+    npm uninstall -g gsd-pi @opengsd/gsd-pi
+    rm -f ~/.gsd/.update-check ~/.gsd/agent/managed-resources.json
+    pnpm setup
+    exec $SHELL -l
+    pnpm add -g @opengsd/gsd-pi@latest
+    command -v gsd
+    gsd --version
+    ```
+
+    If the old package was installed with `sudo npm install -g`, use `sudo npm uninstall -g gsd-pi` first. pnpm can only remove packages that pnpm installed.
+  </Accordion>
+
+  <Accordion title="pnpm global bin directory is not in PATH">
+    **Cause:** pnpm refuses global package operations until its configured global bin directory is available in your shell.
+
+    **Fix:**
+    ```bash
+    pnpm setup
+    exec $SHELL -l
+    pnpm remove -g @opengsd/gsd-pi
+    ```
+
+    For a one-terminal workaround on macOS/Linux:
+    ```bash
+    export PATH="/path/from/pnpm-error:$PATH"
+    pnpm remove -g @opengsd/gsd-pi
+    ```
+
+    Replace the path with the exact global bin directory from your pnpm error message.
+  </Accordion>
+
   <Accordion title="Auto mode loops on the same unit">
     **Cause:** Stale cache after a crash, or the LLM didn't produce the expected artifact.
 
     **Fix:** Run `/gsd doctor` to repair state, then `/gsd auto`.
+  </Accordion>
+
+  <Accordion title="Reactive execute writes S##-REACTIVE-BLOCKER.md">
+    **Cause:** A parallel `reactive-execute` batch exhausted artifact retries while one or more dispatched tasks were still missing `T##-SUMMARY.md`.
+
+    **Fix:** Inspect `S##-REACTIVE-BLOCKER.md` and the skipped task list. GSD marks tasks with summaries complete, marks missing-summary tasks skipped, and advances instead of pausing or re-dispatching the same batch.
   </Accordion>
 
   <Accordion title="Auto mode stops with 'Loop detected'">
@@ -57,7 +106,7 @@ It checks file structure, referential integrity, completion state consistency, g
     source ~/.zshrc
     ```
 
-    **Workaround:** `npx gsd-pi` or `$(npm prefix -g)/bin/gsd`
+    **Workaround:** `npx @opengsd/gsd-pi` or `$(npm prefix -g)/bin/gsd`
   </Accordion>
 
   <Accordion title="Provider errors during auto mode">

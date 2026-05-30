@@ -14,7 +14,15 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
-  serverExternalPackages: ['@gsd/native', 'node-pty'],
+  serverExternalPackages: [
+    '@gsd/native',
+    '@gsd/pi-ai',
+    '@gsd/pi-agent-core',
+    '@gsd/pi-coding-agent',
+    '@gsd/agent-core',
+    'node-pty',
+    'proper-lockfile',
+  ],
   // NodeNext-style .js extension imports in src/ must resolve to .ts source.
   // Turbopack doesn't support extensionAlias, so builds use --webpack flag.
   webpack: (config, { isServer }) => {
@@ -31,11 +39,20 @@ const nextConfig = {
       // a simple object entry so `require("node:module")` passes through.
       config.externals.push({
         'node:module': 'commonjs node:module',
+        'node:fs': 'commonjs node:fs',
+        'node:os': 'commonjs node:os',
+        'node:path': 'commonjs node:path',
         // @gsd/native is a native addon loaded via runtime require().
         // serverExternalPackages handles the top-level import, but webpack
         // still tries to resolve the bare specifier inside files traced from
         // src/ (outside web/). Explicitly externalize it.
         '@gsd/native': 'commonjs @gsd/native',
+      });
+      config.externals.push(({ request }, callback) => {
+        if (typeof request === 'string' && request.startsWith('node:')) {
+          return callback(null, `commonjs ${request}`);
+        }
+        callback();
       });
     }
     return config;

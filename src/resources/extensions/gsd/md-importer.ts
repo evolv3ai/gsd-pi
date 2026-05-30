@@ -175,8 +175,8 @@ export function parseRequirementsSections(content: string): Requirement[] {
       continue;
     }
 
-    // Check for requirement heading (### RXXX — Title)
-    const reqMatch = line.match(/^###\s+(R\d+)\s*[—–-]\s*(.+)/);
+    // Check for requirement heading (### RXXX — Title or ### NET-01 — Title)
+    const reqMatch = line.match(/^###\s+([A-Z][A-Z0-9]*-\d+|R\d+)\s*[—–-]\s*(.+)/i);
     if (reqMatch) {
       flushReq();
       if (currentSectionStatus !== null) {

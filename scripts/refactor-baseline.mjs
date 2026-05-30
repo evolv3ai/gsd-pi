@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Read-only baseline metrics harness for the long-running refactor program.
 
 import { createHash } from "node:crypto";
@@ -28,7 +28,7 @@ const DEFAULT_CONTEXT_FILES = [
 const CONTRACT_SURFACES = [
   {
     surface: "runtime",
-    path: "packages/pi-coding-agent/src/modes/rpc/rpc-types.ts",
+    path: "packages/gsd-agent-modes/src/modes/rpc/rpc-types.ts",
   },
   {
     surface: "rpcClient",
@@ -85,7 +85,6 @@ export const BASELINE_REQUIRED_METRICS = [
   "process.prBodiesMissingTests",
   "process.docsConflictCount",
   "process.shipPathCount",
-  "legacy.markdownFallbackUsed",
   "legacy.workflowEngineUsed",
   "legacy.uokFallbackUsed",
   "legacy.mcpAliasUsed",
@@ -183,7 +182,6 @@ export async function collectBaseline(root, commandSpecs = []) {
     testCompile: testCompileMetrics,
     process: processMetrics,
     legacy: {
-      markdownFallbackUsed: 0,
       workflowEngineUsed: 0,
       uokFallbackUsed: 0,
       mcpAliasUsed: 0,
@@ -320,7 +318,7 @@ export async function collectContractsMetrics(root) {
     surfaces.push({
       ...surface,
       exists: true,
-      usesSharedContracts: content.includes("@gsd-build/contracts"),
+      usesSharedContracts: content.includes("@opengsd/contracts"),
       legacyTypeImports: countLegacyContractImports(content),
     });
   }
@@ -478,7 +476,6 @@ export function buildMetricIndex(report) {
     "process.prBodiesMissingTests": report.process?.prBodiesMissingTests ?? 0,
     "process.docsConflictCount": report.process?.docsConflictCount ?? 0,
     "process.shipPathCount": report.process?.shipPathCount ?? 0,
-    "legacy.markdownFallbackUsed": report.legacy?.markdownFallbackUsed ?? 0,
     "legacy.workflowEngineUsed": report.legacy?.workflowEngineUsed ?? 0,
     "legacy.uokFallbackUsed": report.legacy?.uokFallbackUsed ?? 0,
     "legacy.mcpAliasUsed": report.legacy?.mcpAliasUsed ?? 0,
@@ -584,7 +581,7 @@ export function countLegacyContractImports(value) {
     value,
     /(?:packages\/pi-coding-agent\/src\/modes\/rpc\/rpc-types|src\/modes\/rpc\/rpc-types)/g,
   );
-  const importPattern = /import\s+type\s+\{([^}]+)\}\s+from\s+["']@gsd-build\/rpc-client["']/g;
+  const importPattern = /import\s+type\s+\{([^}]+)\}\s+from\s+["']@opengsd\/rpc-client["']/g;
   for (const match of value.matchAll(importPattern)) {
     const names = match[1]
       .split(",")
@@ -643,7 +640,7 @@ export async function timeCommand(root, spec) {
 
 export function renderSummary(report) {
   const lines = [
-    "GSD-2 Refactor Baseline",
+    "gsd-pi Refactor Baseline",
     `Generated: ${report.generatedAt}`,
     `Root: ${report.root}`,
     `Schema version: ${report.schemaVersion}`,
@@ -685,7 +682,6 @@ export function renderSummary(report) {
     `- shipping paths: ${report.process?.shipPathCount ?? 0}`,
     "",
     "Legacy metrics",
-    `- markdown fallback used: ${report.legacy?.markdownFallbackUsed ?? 0}`,
     `- workflow engine used: ${report.legacy?.workflowEngineUsed ?? 0}`,
     `- UOK fallback used: ${report.legacy?.uokFallbackUsed ?? 0}`,
     `- MCP alias used: ${report.legacy?.mcpAliasUsed ?? 0}`,

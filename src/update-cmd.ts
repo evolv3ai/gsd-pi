@@ -1,9 +1,16 @@
 import { execSync } from 'node:child_process'
+import { agentDir as defaultAgentDir } from './app-paths.js'
+import { initResources } from './resource-loader.js'
 import { compareSemver, fetchLatestVersionFromRegistry, resolveInstallCommand } from './update-check.js'
 
 const NPM_PACKAGE = '@opengsd/gsd-pi'
 
-export async function runUpdate(): Promise<void> {
+interface RunUpdateOptions {
+  agentDir?: string
+  skillsDir?: string
+}
+
+export async function runUpdate(options: RunUpdateOptions = {}): Promise<void> {
   const current = process.env.GSD_VERSION || '0.0.0'
   const bold = '\x1b[1m'
   const dim = '\x1b[2m'
@@ -24,6 +31,7 @@ export async function runUpdate(): Promise<void> {
 
   if (compareSemver(latest, current) <= 0) {
     process.stdout.write(`${green}Already up to date.${reset}\n`)
+    initResources(options.agentDir ?? defaultAgentDir, options.skillsDir)
     return
   }
 

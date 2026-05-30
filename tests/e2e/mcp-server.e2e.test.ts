@@ -1,7 +1,7 @@
 /**
- * GSD-2 MCP server real-process e2e (3-tool starter).
+ * gsd-pi MCP server real-process e2e (3-tool starter).
  *
- * Spawns the @gsd-build/mcp-server CLI (`packages/mcp-server/dist/cli.js`)
+ * Spawns the @opengsd/mcp-server CLI (`packages/mcp-server/dist/cli.js`)
  * as a subprocess via the MCP SDK's StdioClientTransport, connects a real
  * Client over stdio JSON-RPC, and exercises 3 high-traffic read-only
  * tools end-to-end:

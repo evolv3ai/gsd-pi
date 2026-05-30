@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: ADR-017 contract tests for drift-driven State Reconciliation.
 // Covers sketch-flag (#5700), merge-state (#5701), stale-render (#5702),
 // stale-worker (#5703), unregistered-milestone (#5704), roadmap-divergence
@@ -545,6 +545,36 @@ test("ADR-017 (#5702): stale-render detector reason strings match repair contrac
   ].sort());
 });
 
+test("ADR-017 (#5702): missing UAT.md clears stale full_uat_md from DB", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-adr017-clear-uat-"));
+  const sliceDir = join(base, ".gsd", "milestones", "M001", "slices", "S01");
+  mkdirSync(sliceDir, { recursive: true });
+  t.after(() => {
+    try { closeDatabase(); } catch { /* noop */ }
+    rmTreeQuiet(base);
+  });
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  clearRendererCaches();
+  insertMilestone({ id: "M001", title: "Test", status: "active" });
+  insertSlice({ id: "S01", milestoneId: "M001", title: "Slice", status: "complete" });
+  setSliceSummaryMd("M001", "S01", "# S01 Summary\n", "# S01 UAT\nLegacy planning text\n");
+
+  const result = await reconcileBeforeDispatch(base, {
+    invalidateStateCache: () => {},
+    deriveState: async () => makeState(),
+  });
+  assert.equal(result.ok, true);
+
+  const updated = getSlice("M001", "S01");
+  assert.equal(updated?.full_uat_md ?? "", "", "full_uat_md should be cleared after UAT deletion");
+  assert.equal(
+    existsSync(join(sliceDir, "S01-UAT.md")),
+    false,
+    "UAT.md should not be recreated while clearing stale UAT content",
+  );
+});
+
 // ─── #5703: stale-worker drift ───────────────────────────────────────────────
 
 const DEAD_PID = 999_999_999; // far above any realistic system PID; process.kill(pid, 0) → ESRCH
@@ -658,7 +688,7 @@ test("ADR-017 (#5704): unregistered-milestone drift fails closed without importi
       assert.equal(err.failures[0]?.drift.kind, "unregistered-milestone");
       assert.match(String(err.failures[0]?.cause), /M042/);
       assert.match(String(err.failures[0]?.cause), /markdown projection/);
-      assert.match(String(err.failures[0]?.cause), /recovery\/migration/);
+      assert.match(String(err.failures[0]?.cause), /\/gsd recover/);
       return true;
     },
   );

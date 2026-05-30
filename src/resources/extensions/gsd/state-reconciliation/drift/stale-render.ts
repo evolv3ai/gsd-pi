@@ -1,10 +1,13 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: ADR-017 stale-render drift handler. Relocated from
 // markdown-renderer.ts as part of issue #5702. detectStaleRenders stays in
 // markdown-renderer.ts (it's a useful diagnostic primitive on its own); only
 // the detect+repair composition moves here. The previous repairStaleRenders
 // had zero callers in production code — wiring it through
 // reconcileBeforeDispatch closes that gap.
+
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 import {
   detectStaleRenders,
@@ -13,6 +16,8 @@ import {
   renderSliceSummary,
   renderTaskSummary,
 } from "../../markdown-renderer.js";
+import { getMilestone, getSlice, setSliceSummaryMd } from "../../gsd-db.js";
+import { buildSliceFileName } from "../../paths.js";
 import type { GSDState } from "../../types.js";
 import { logWarning } from "../../workflow-logger.js";
 import type { DriftContext, DriftHandler, DriftRecord } from "../types.js";
@@ -56,6 +61,29 @@ function isRepairableStaleRenderReason(reason: string): boolean {
   );
 }
 
+function resolveRoadmapMilestoneIdFromPath(normPath: string): string {
+  const milestoneMatch = normPath.match(/milestones\/([^/]+)\//);
+  if (!milestoneMatch) {
+    throw new Error(
+      `stale-render drift: roadmap path missing milestone segment: ${normPath}`,
+    );
+  }
+
+  const fileMatch = normPath.match(/(?:^|\/)([^/]+)-ROADMAP\.md$/i);
+  const candidates = [
+    fileMatch?.[1],
+    milestoneMatch[1],
+    fileMatch?.[1]?.match(/^(M\d+)/i)?.[1],
+    milestoneMatch[1].match(/^(M\d+)/i)?.[1],
+  ].filter((candidate): candidate is string => !!candidate);
+
+  for (const candidate of candidates) {
+    if (getMilestone(candidate)) return candidate;
+  }
+
+  return fileMatch?.[1] ?? milestoneMatch[1];
+}
+
 async function repairStaleRenderFromBasePath(
   record: StaleRenderDrift,
   basePath: string,
@@ -64,13 +92,10 @@ async function repairStaleRenderFromBasePath(
   const reason = record.reason;
 
   if (reason.includes("in roadmap")) {
-    const milestoneMatch = normPath.match(/milestones\/([^/]+)\//);
-    if (!milestoneMatch) {
-      throw new Error(
-        `stale-render drift: roadmap path missing milestone segment: ${record.renderPath}`,
-      );
-    }
-    await renderRoadmapFromDb(basePath, milestoneMatch[1]);
+    await renderRoadmapFromDb(
+      basePath,
+      resolveRoadmapMilestoneIdFromPath(normPath),
+    );
     return;
   }
 
@@ -106,7 +131,15 @@ async function repairStaleRenderFromBasePath(
         `stale-render drift: slice summary path missing milestone/slice segments: ${record.renderPath}`,
       );
     }
-    await renderSliceSummary(basePath, pathMatch[1], pathMatch[2]);
+    const milestoneId = pathMatch[1];
+    const sliceId = pathMatch[2];
+    const slice = getSlice(milestoneId, sliceId);
+    const uatPath = join(dirname(record.renderPath), buildSliceFileName(sliceId, "UAT"));
+    // renderSliceSummary writes both artifacts, so clear deleted UAT first.
+    if (slice?.full_uat_md && !existsSync(uatPath)) {
+      setSliceSummaryMd(milestoneId, sliceId, slice.full_summary_md ?? "", "");
+    }
+    await renderSliceSummary(basePath, milestoneId, sliceId);
     return;
   }
 
@@ -117,8 +150,17 @@ async function repairStaleRenderFromBasePath(
         `stale-render drift: UAT path missing milestone/slice segments: ${record.renderPath}`,
       );
     }
-    // renderSliceSummary handles both SUMMARY and UAT.
-    await renderSliceSummary(basePath, pathMatch[1], pathMatch[2]);
+    // When UAT.md is removed from disk, mirror that intent by clearing stale
+    // persisted UAT content instead of rehydrating it back onto disk.
+    const milestoneId = pathMatch[1];
+    const sliceId = pathMatch[2];
+    const slice = getSlice(milestoneId, sliceId);
+    if (!slice) {
+      throw new Error(
+        `stale-render drift: missing slice for UAT clear ${milestoneId}/${sliceId}`,
+      );
+    }
+    setSliceSummaryMd(milestoneId, sliceId, slice.full_summary_md ?? "", "");
     return;
   }
 

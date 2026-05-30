@@ -7,14 +7,14 @@ import { pathToFileURL } from "node:url";
 import { resolveTypeStrippingFlag, resolveSubprocessModule, buildSubprocessPrefixArgs } from "./ts-subprocess-flags.ts";
 import { safePackageRootFromImportUrl } from "./safe-import-meta-resolve.ts";
 
-import type { AgentSessionEvent, SessionStateChangeReason } from "../../packages/pi-coding-agent/src/core/agent-session.ts";
+import type { AgentSessionEvent, SessionStateChangeReason } from "@gsd/agent-core";
 import type {
   RpcCommand,
   RpcExtensionUIRequest,
   RpcExtensionUIResponse,
   RpcResponse,
   RpcSessionState,
-} from "@gsd-build/contracts";
+} from "@opengsd/contracts";
 import type {
   WorkspaceIndex as GSDWorkspaceIndex,
   WorkspaceMilestoneTarget as GSDWorkspaceMilestoneTarget,
@@ -683,13 +683,21 @@ let bridgeServiceOverrides: Partial<BridgeServiceDeps> | null = null;
 const projectBridgeRegistry = new Map<string, BridgeService>();
 const workspaceIndexCache = new Map<string, WorkspaceIndexCacheEntry>();
 
+function resolveSessionManagerModulePath(packageRoot: string, checkExists: typeof existsSync): string {
+  const candidates = [
+    join(packageRoot, "packages", "pi-coding-agent", "dist", "core", "session-manager.js"),
+    join(packageRoot, "dist-test", "packages", "pi-coding-agent", "src", "core", "session-manager.js"),
+  ];
+  for (const candidate of candidates) {
+    if (checkExists(candidate)) return candidate;
+  }
+  throw new Error(`session manager module not found; checked=${candidates.join(", ")}`);
+}
+
 async function loadSessionBrowserSessionsViaChildProcess(config: BridgeRuntimeConfig): Promise<SessionInfo[]> {
   const deps = getBridgeDeps();
-  const sessionManagerModulePath = join(config.packageRoot, "packages", "pi-coding-agent", "dist", "core", "session-manager.js");
   const checkExists = deps.existsSync ?? existsSync;
-  if (!checkExists(sessionManagerModulePath)) {
-    throw new Error(`session manager module not found; checked=${sessionManagerModulePath}`);
-  }
+  const sessionManagerModulePath = resolveSessionManagerModulePath(config.packageRoot, checkExists);
 
   const script = [
     'const { pathToFileURL } = await import("node:url");',
@@ -706,6 +714,12 @@ async function loadSessionBrowserSessionsViaChildProcess(config: BridgeRuntimeCo
         cwd: config.packageRoot,
         env: {
           ...(deps.env ?? process.env),
+          NODE_OPTIONS: [
+            deps.env?.NODE_OPTIONS,
+            `--import ${join(config.packageRoot, "src/resources/extensions/gsd/tests/resolve-ts.mjs")}`,
+          ]
+            .filter(Boolean)
+            .join(" "),
           GSD_SESSION_MANAGER_MODULE: sessionManagerModulePath,
           GSD_SESSION_BROWSER_CWD: config.projectCwd,
           GSD_SESSION_BROWSER_DIR: config.projectSessionsDir,
@@ -746,11 +760,8 @@ async function appendSessionInfoViaChildProcess(
   name: string,
 ): Promise<void> {
   const deps = getBridgeDeps();
-  const sessionManagerModulePath = join(config.packageRoot, "packages", "pi-coding-agent", "dist", "core", "session-manager.js");
   const checkExists = deps.existsSync ?? existsSync;
-  if (!checkExists(sessionManagerModulePath)) {
-    throw new Error(`session manager module not found; checked=${sessionManagerModulePath}`);
-  }
+  const sessionManagerModulePath = resolveSessionManagerModulePath(config.packageRoot, checkExists);
 
   const script = [
     'const { pathToFileURL } = await import("node:url");',
@@ -767,6 +778,12 @@ async function appendSessionInfoViaChildProcess(
         cwd: config.packageRoot,
         env: {
           ...(deps.env ?? process.env),
+          NODE_OPTIONS: [
+            deps.env?.NODE_OPTIONS,
+            `--import ${join(config.packageRoot, "src/resources/extensions/gsd/tests/resolve-ts.mjs")}`,
+          ]
+            .filter(Boolean)
+            .join(" "),
           GSD_SESSION_MANAGER_MODULE: sessionManagerModulePath,
           GSD_SESSION_BROWSER_DIR: config.projectSessionsDir,
           GSD_TARGET_SESSION_PATH: sessionPath,
@@ -1532,9 +1549,22 @@ export class BridgeService {
     }
     this.pendingRequests.clear();
     if (this.process) {
+      const proc = this.process;
       this.process.removeAllListeners();
-      this.process.kill("SIGTERM");
       this.process = null;
+      proc.kill("SIGTERM");
+      await new Promise<void>((resolve) => {
+        const forceKill = setTimeout(() => {
+          if (proc.exitCode === null && proc.signalCode === null) {
+            proc.kill("SIGKILL");
+          }
+          resolve();
+        }, 2_000);
+        proc.once("exit", () => {
+          clearTimeout(forceKill);
+          resolve();
+        });
+      });
     }
     this.snapshot.phase = "idle";
     this.snapshot.connectionCount = 0;
@@ -2142,15 +2172,18 @@ export async function collectSelectiveLiveStatePayload(
   const env = deps.env ?? process.env;
   const config = resolveBridgeRuntimeConfig(env, projectCwd);
   const bridge = projectCwd ? getProjectBridgeServiceForCwd(projectCwd) : getProjectBridgeService();
+  const uniqueDomains = [...new Set(domains)];
+  const needsBridgeRpc = uniqueDomains.some((domain) => domain !== "resumable_sessions");
 
-  try {
-    await bridge.ensureStarted();
-  } catch {
-    // Selective live state still returns the latest bridge failure snapshot for inspection.
+  if (needsBridgeRpc) {
+    try {
+      await bridge.ensureStarted();
+    } catch {
+      // Selective live state still returns the latest bridge failure snapshot for inspection.
+    }
   }
 
   const bridgeSnapshot = bridge.getSnapshot();
-  const uniqueDomains = [...new Set(domains)];
   const payload: BridgeSelectiveLiveStatePayload = {
     bridge: bridgeSnapshot,
   };

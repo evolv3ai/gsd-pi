@@ -51,7 +51,7 @@ test("discuss workflow scopes tools for the queued turn and restores the full to
     // discuss allowlist: gsd_summary_save and gsd_plan_milestone (the latter
     // is needed for the discuss.md output phase — see DISCUSS_TOOLS_ALLOWLIST).
     // gsd_task_complete and the broad shell_exec tool are scoped out.
-    assert.deepEqual(sentTools, ["gsd_summary_save", "gsd_plan_milestone"]);
+    assert.deepEqual(sentTools, ["gsd_summary_save", "gsd_plan_milestone", "ToolSearch"]);
     assert.deepEqual(activeTools, originalTools);
     assert.equal(triggerTurn, true);
   } finally {

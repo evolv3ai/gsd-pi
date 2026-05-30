@@ -1,4 +1,4 @@
-// GSD-2 + scripts/run-package-tests.cjs — run `node --test` across every linkable workspace package
+// gsd-pi + scripts/run-package-tests.cjs — run `node --test` across every linkable workspace package
 'use strict'
 
 const { spawnSync } = require('child_process')
@@ -6,8 +6,8 @@ const { existsSync, readdirSync } = require('fs')
 const { join, relative } = require('path')
 const { getLinkablePackages, REPO_ROOT } = require('./lib/workspace-manifest.cjs')
 
-function getNpmCommand() {
-	return process.platform === 'win32' ? 'npm.cmd' : 'npm'
+function getPnpmCommand() {
+	return process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
 }
 
 function findTestFiles(dir) {
@@ -28,8 +28,7 @@ function findTestFiles(dir) {
 function selectPackageTestFiles(distTestPkg, pkgDist) {
 	const fromCompiledSrc = findTestFiles(join(distTestPkg, 'src'))
 	if (fromCompiledSrc.length > 0) return fromCompiledSrc
-	const fromDistTest = findTestFiles(distTestPkg)
-	if (fromDistTest.length > 0) return fromDistTest
+	if (existsSync(distTestPkg)) return []
 	// Fall back to package-local build outputs when test:compile does not cover a package yet.
 	return findTestFiles(pkgDist)
 }
@@ -164,7 +163,7 @@ function main() {
 			}
 			process.stderr.write(`\nRunning ${pkg.packageName} package tests via workspace script...\n`)
 			if (
-				runPackageScript(getNpmCommand(), ['run', 'test', '-w', pkg.packageName], REPO_ROOT, pkg.packageName) !==
+				runPackageScript(getPnpmCommand(), ['--filter', pkg.packageName, 'run', 'test'], REPO_ROOT, pkg.packageName) !==
 				0
 			) {
 				failureCount += 1
@@ -194,4 +193,5 @@ if (require.main === module) {
 module.exports = {
 	findTestFiles,
 	selectPackageTestFiles,
+	findDistTestFiles,
 }

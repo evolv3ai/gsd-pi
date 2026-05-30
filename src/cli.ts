@@ -33,11 +33,23 @@ import { applyRtkProcessEnv, GSD_RTK_DISABLED_ENV, isTruthy } from './rtk-shared
 import type { EnsureRtkResult } from './rtk.js'
 
 type PiCodingAgentModule = typeof import('@gsd/pi-coding-agent')
+type AgentCoreModule = typeof import('@gsd/agent-core')
+type AgentModesModule = typeof import('@gsd/agent-modes')
 
 let piCodingAgentModulePromise: Promise<PiCodingAgentModule> | undefined
+let agentCoreModulePromise: Promise<AgentCoreModule> | undefined
+let agentModesModulePromise: Promise<AgentModesModule> | undefined
 
 function loadPiCodingAgentModule(): Promise<PiCodingAgentModule> {
   return (piCodingAgentModulePromise ??= import('@gsd/pi-coding-agent'))
+}
+
+function loadAgentCoreModule(): Promise<AgentCoreModule> {
+  return (agentCoreModulePromise ??= import('@gsd/agent-core'))
+}
+
+function loadAgentModesModule(): Promise<AgentModesModule> {
+  return (agentModesModulePromise ??= import('@gsd/agent-modes'))
 }
 
 // ---------------------------------------------------------------------------
@@ -243,7 +255,7 @@ if (shouldBypassManagedResourceMismatchGate(cliFlags.messages[0])) {
 // ---------------------------------------------------------------------------
 if (cliFlags.messages[0] === 'graph') {
   const sub = cliFlags.messages[1]
-  const { buildGraph, writeGraph, graphStatus, graphQuery, graphDiff, resolveGsdRoot } = await import('@gsd-build/mcp-server')
+  const { buildGraph, writeGraph, graphStatus, graphQuery, graphDiff, resolveGsdRoot } = await import('@opengsd/mcp-server')
 
   const projectDir = process.cwd()
   const gsdRoot = resolveGsdRoot(projectDir)
@@ -501,6 +513,24 @@ function flushPendingProviderRegistrations(resourceLoader: DefaultResourceLoader
   runtime.pendingProviderRegistrations = []
 }
 
+/** Providers like Ollama register on session_start; probe them for --list-models. */
+async function probeDeferredProvidersForListModels(modelRegistry: ModelRegistryInstance): Promise<void> {
+  try {
+    const { probeAndRegister } = await import('./resources/extensions/ollama/index.js')
+    const pi = {
+      registerProvider(name: string, config: Parameters<ModelRegistryInstance['registerProvider']>[1]) {
+        modelRegistry.registerProvider(name, config)
+      },
+      unregisterProvider(name: string) {
+        modelRegistry.unregisterProvider(name)
+      },
+    }
+    await probeAndRegister(pi as Parameters<typeof probeAndRegister>[0])
+  } catch {
+    // Non-fatal — local Ollama is optional.
+  }
+}
+
 // `gsd auto [args...]` with piped stdin/stdout — shorthand for
 // `gsd headless auto [args...]` (#2732). Keep terminal TTY launches in the
 // interactive path so Warp/iTerm/Terminal retain foreground ownership.
@@ -541,11 +571,9 @@ const {
   ModelRegistry,
   SettingsManager,
   SessionManager,
-  createAgentSession,
-  InteractiveMode,
-  runPrintMode,
-  runRpcMode,
 } = await loadPiCodingAgentModule()
+const { createAgentSession } = await loadAgentCoreModule()
+const { InteractiveMode, runPrintMode, runRpcMode } = await loadAgentModesModule()
 markStartup('loadPiCodingAgent')
 
 // Pi's tool bootstrap can mis-detect already-installed fd/rg on some systems
@@ -563,7 +591,7 @@ migratePiCredentials(authStorage)
 const { resolveModelsJsonPath } = await import('./models-resolver.js')
 const modelsJsonPath = resolveModelsJsonPath()
 
-const modelRegistry = new ModelRegistry(authStorage, modelsJsonPath)
+const modelRegistry = ModelRegistry.create(authStorage, modelsJsonPath)
 markStartup('ModelRegistry')
 const settingsManager = SettingsManager.create(process.cwd(), agentDir)
 applySecurityOverrides(settingsManager)
@@ -603,51 +631,24 @@ if (!isPrintMode && process.stdout.columns && process.stdout.columns < 40) {
 if (cliFlags.listModels !== undefined) {
   exitIfManagedResourcesAreNewer(agentDir)
   initResources(agentDir)
-  const listModelsLoader = new DefaultResourceLoader({
+  const { prepareModelRegistryForListing } = await import('@gsd/agent-modes/cli/prepare-model-registry.js')
+  const { listModels } = await import('@gsd/agent-modes/cli/list-models.js')
+  await prepareModelRegistryForListing(modelRegistry, {
     agentDir,
+    cwd: process.cwd(),
     additionalExtensionPaths: cliFlags.extensions.length > 0 ? cliFlags.extensions : undefined,
+    afterLoad: async (registry) => {
+      await probeDeferredProvidersForListModels(registry)
+      try {
+        const { resolveDisabledModelProvidersFromPreferences } = await import('./resources/extensions/gsd/preferences.js')
+        registry.setDisabledModelProviders(resolveDisabledModelProvidersFromPreferences())
+      } catch {
+        // Non-fatal: list all ready providers when preferences cannot be loaded.
+      }
+    },
   })
-  await listModelsLoader.reload()
-  flushPendingProviderRegistrations(listModelsLoader, modelRegistry)
-
-  const models = modelRegistry.getAvailable()
-  if (models.length === 0) {
-    console.log('No models available. Set API keys in environment variables.')
-    process.exit(0)
-  }
-
   const searchPattern = typeof cliFlags.listModels === 'string' ? cliFlags.listModels : undefined
-  let filtered = models
-  if (searchPattern) {
-    const q = searchPattern.toLowerCase()
-    filtered = models.filter((m) => `${m.provider} ${m.id} ${m.name}`.toLowerCase().includes(q))
-  }
-
-  // Sort by name descending (newest first), then provider, then id
-  filtered.sort((a, b) => {
-    const nameCmp = b.name.localeCompare(a.name)
-    if (nameCmp !== 0) return nameCmp
-    const provCmp = a.provider.localeCompare(b.provider)
-    if (provCmp !== 0) return provCmp
-    return a.id.localeCompare(b.id)
-  })
-
-  const fmt = (n: number) => n >= 1_000_000 ? `${n / 1_000_000}M` : n >= 1_000 ? `${n / 1_000}K` : `${n}`
-  const rows = filtered.map((m) => [
-    m.provider,
-    m.id,
-    m.name,
-    fmt(m.contextWindow),
-    fmt(m.maxTokens),
-    m.reasoning ? 'yes' : 'no',
-  ])
-  const hdrs = ['provider', 'model', 'name', 'context', 'max-out', 'thinking']
-  const widths = hdrs.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)))
-  const pad = (s: string, w: number) => s.padEnd(w)
-  console.log(hdrs.map((h, i) => pad(h, widths[i])).join('  '))
-  for (const row of rows) {
-    console.log(row.map((c, i) => pad(c, widths[i])).join('  '))
-  }
+  await listModels(modelRegistry, { searchPattern })
   process.exit(0)
 }
 
@@ -687,8 +688,9 @@ if (isPrintMode) {
   markStartup('initResources')
   const resourceLoader = new DefaultResourceLoader({
     agentDir,
+    cwd: process.cwd(),
     additionalExtensionPaths: cliFlags.extensions.length > 0 ? cliFlags.extensions : undefined,
-    appendSystemPrompt,
+    appendSystemPrompt: appendSystemPrompt ? [appendSystemPrompt] : undefined,
   })
   await resourceLoader.reload()
   markStartup('resourceLoader.reload')
@@ -706,7 +708,6 @@ if (isPrintMode) {
     settingsManager,
     sessionManager,
     resourceLoader,
-    isClaudeCodeReady: () => modelRegistry.isProviderRequestReady('claude-code'),
   })
   markStartup('createAgentSession')
 
@@ -830,7 +831,6 @@ const { session, extensionsResult, modelFallbackMessage: interactiveFallbackMsg 
   settingsManager,
   sessionManager,
   resourceLoader,
-  isClaudeCodeReady: () => modelRegistry.isProviderRequestReady('claude-code'),
 })
 markStartup('createAgentSession')
 

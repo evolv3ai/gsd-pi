@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Shared prompt fixture definitions for Phase 0 characterization and Phase 2 reduction targets.
 
 export const promptGoldenUnits = [
@@ -27,7 +27,7 @@ export const promptGoldenUnits = [
   },
   {
     unitType: "complete-slice",
-    phase2StartChars: 12412,
+    phase2StartChars: 12520,
     requiredMarkers: [
       "UNIT: Complete Slice S01",
       "Inlined Context",

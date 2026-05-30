@@ -23,7 +23,6 @@ import { getNextFallbackModel } from "../preferences.ts";
 // Zero-import module — imported by path rather than through the package
 // barrel to avoid pulling the full AgentSession / @gsd/pi-ai dep graph into
 // this unit test (see #4837).
-import { RETRYABLE_ERROR_RE } from "../../../../../packages/pi-coding-agent/src/core/retryable-error-regex.ts";
 import { streamOpenAICodexResponses } from "../../../../../packages/pi-ai/src/providers/openai-codex-responses.ts";
 
 // ── classifyError ────────────────────────────────────────────────────────────
@@ -708,27 +707,24 @@ test("classifyError: 'context window' with 'exceed' is transient server", () => 
   assert.equal(result.kind, "server");
 });
 
-// ── agent-session retryable regex handles server_error (#1166) ──────────────
+// ── provider retry classification handles server_error (#1166) ──────────────
 
-test("agent-session retryable error regex matches server_error (underscore)", () => {
-  // Import the real regex from the retry-handler so this test can never
-  // silently drift from runtime behaviour. The regex must match both
-  // "server error" (space) and "server_error" (underscore) to properly
-  // classify Codex streaming errors as retryable.
-  // "temporarily backed off" is intentionally excluded — see #3429 / #4837.
+test("classifyError treats server_error/internal_error variants as transient server failures", () => {
+  const retryableMessages = [
+    "Codex server_error: An error occurred",
+    "server error occurred",
+    "internal_error: something went wrong",
+    "internal error",
+  ];
 
-  // server_error (with underscore — Codex streaming error format)
-  assert.ok(RETRYABLE_ERROR_RE.test("Codex server_error: An error occurred"));
-  // server error (with space — traditional HTTP error format)
-  assert.ok(RETRYABLE_ERROR_RE.test("server error occurred"));
-  // internal_error (with underscore)
-  assert.ok(RETRYABLE_ERROR_RE.test("internal_error: something went wrong"));
-  // internal error (with space)
-  assert.ok(RETRYABLE_ERROR_RE.test("internal error"));
-  // non-retryable errors must not match
-  assert.ok(!RETRYABLE_ERROR_RE.test("model not found"));
-  // "temporarily backed off" must NOT be matched (intentional exclusion #3429)
-  assert.ok(!RETRYABLE_ERROR_RE.test("temporarily backed off"));
+  for (const message of retryableMessages) {
+    const result = classifyError(message);
+    assert.ok(isTransient(result), `${message} should be treated as transient`);
+    assert.equal(result.kind, "server");
+  }
+
+  assert.notEqual(classifyError("model not found").kind, "server");
+  assert.notEqual(classifyError("temporarily backed off").kind, "server");
 });
 
 test("exhausted retry errors are not deferred back to core retry handling", () => {

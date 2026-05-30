@@ -18,6 +18,81 @@ It checks:
 
 ## Common Issues
 
+### Upgrade from older gsd-pi installs
+
+**Symptoms:** `gsd` exits with a version or managed-resource mismatch, or an old global `gsd-pi` install still shadows the new package.
+
+**Fix:** Clear stale local update/resource state, then install the scoped package:
+
+macOS / Linux:
+
+```bash
+sudo npm uninstall -g gsd-pi
+rm -f ~/.gsd/.update-check ~/.gsd/agent/managed-resources.json
+sudo npm install -g @opengsd/gsd-pi@latest
+```
+
+To move from the old npm global package to a pnpm global install:
+
+```bash
+npm uninstall -g gsd-pi @opengsd/gsd-pi
+rm -f ~/.gsd/.update-check ~/.gsd/agent/managed-resources.json
+pnpm setup
+exec $SHELL -l
+pnpm add -g @opengsd/gsd-pi@latest
+command -v gsd
+gsd --version
+```
+
+If the old npm package was installed with `sudo`, use `sudo npm uninstall -g gsd-pi` for that first uninstall step. pnpm can only remove packages that pnpm installed.
+
+Windows PowerShell:
+
+```powershell
+Remove-Item "$env:USERPROFILE\.gsd\.update-check" -Force -ErrorAction SilentlyContinue
+Remove-Item "$env:USERPROFILE\.gsd\agent\managed-resources.json" -Force -ErrorAction SilentlyContinue
+npm install -g @opengsd/gsd-pi@latest
+```
+
+Windows Command Prompt:
+
+```bat
+del "%USERPROFILE%\.gsd\.update-check" 2>nul
+del "%USERPROFILE%\.gsd\agent\managed-resources.json" 2>nul
+npm install -g @opengsd/gsd-pi@latest
+```
+
+Or run the installer from the new package on any OS:
+
+```bash
+npx @opengsd/gsd-pi@latest
+```
+
+After that, routine upgrades use `gsd upgrade`, `gsd update`, or `/gsd update` in a session.
+
+### pnpm says the global bin directory is not in PATH
+
+**Symptoms:** `pnpm add -g`, `pnpm remove -g`, or another pnpm global command fails with `The configured global bin directory ... is not in PATH`.
+
+**Cause:** pnpm refuses global package operations until its global bin directory is configured in your shell.
+
+**Fix:**
+
+```bash
+pnpm setup
+exec $SHELL -l
+pnpm remove -g @opengsd/gsd-pi
+```
+
+For a one-terminal workaround on macOS/Linux, add the directory from the error to `PATH` before retrying:
+
+```bash
+export PATH="/path/from/pnpm-error:$PATH"
+pnpm remove -g @opengsd/gsd-pi
+```
+
+Replace the path with the exact global bin directory from your pnpm error message.
+
 ### Auto mode loops on the same unit
 
 **Symptoms:** The same unit (e.g., `research-slice` or `plan-slice`) dispatches repeatedly, then auto mode pauses with an "Artifact still missing..." error after 3 artifact verification retries.
@@ -27,6 +102,14 @@ It checks:
 - The LLM didn't produce the expected artifact file
 
 **Fix:** Run `/gsd doctor` to repair state, then resume with `/gsd auto`. If the issue persists, check that the expected artifact file exists on disk.
+
+### Reactive execute writes `S##-REACTIVE-BLOCKER.md`
+
+**Symptoms:** A parallel `reactive-execute` batch finishes with a warning that GSD wrote a reactive blocker and advanced, with summary-present tasks marked complete and missing-summary tasks skipped.
+
+**Cause:** The batch exhausted artifact verification retries while one or more dispatched tasks were still missing `T##-SUMMARY.md`. Instead of pausing or re-dispatching the same parallel batch forever, GSD writes `S##-REACTIVE-BLOCKER.md`, reconciles any tasks that did write summaries as complete, marks missing-summary tasks skipped, and continues.
+
+**Fix:** Inspect the blocker file and skipped task list. If skipped work is still required, reopen or re-plan those tasks before depending on later slice or milestone artifacts.
 
 ### Auto mode stops with "Loop detected"
 
@@ -87,9 +170,11 @@ It checks:
 
 ### `command not found: gsd` after install
 
-**Symptoms:** `npm install -g gsd-pi` succeeds but `gsd` isn't found.
+**Symptoms:** `npm install -g @opengsd/gsd-pi@latest` succeeds but `gsd` isn't found.
 
 **Cause:** npm's global bin directory isn't in your shell's `$PATH`.
+
+**Prevention:** The guided installer (`npx @opengsd/gsd-pi@latest`) checks PATH during setup and warns before you hit this error.
 
 **Fix:**
 
@@ -103,14 +188,14 @@ echo 'export PATH="$(npm prefix -g)/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-**Workaround:** Run `npx gsd-pi` or `$(npm prefix -g)/bin/gsd` directly.
+**Workaround:** Run `npx @opengsd/gsd-pi@latest` or `$(npm prefix -g)/bin/gsd` directly.
 
 **Common causes:**
 - **Homebrew Node** — `/opt/homebrew/bin` should be in PATH but sometimes isn't if Homebrew init is missing from your shell profile
 - **Version manager (nvm, fnm, mise)** — global bin is version-specific; ensure your version manager initializes in your shell config
 - **oh-my-zsh** — the `gitfast` plugin aliases `gsd` to `git svn dcommit`. Check with `alias gsd` and unalias if needed
 
-### `npm install -g gsd-pi` fails
+### `npm install -g @opengsd/gsd-pi@latest` fails
 
 **Common causes:**
 - Missing workspace packages — fixed in v2.10.4+
@@ -163,9 +248,16 @@ If recovery still fails, repair runtime state instead of manually deleting indiv
 
 ### Git merge conflicts
 
-**Symptoms:** Worktree merge fails on `.gsd/` files.
+**Symptoms:** `/gsd` commands are blocked, or auto mode pauses/stops with unresolved Git conflicts.
 
-**Fix:** GSD auto-resolves conflicts on `.gsd/` runtime files. For content conflicts in code files, the LLM is given an opportunity to resolve them via a fix-merge session. If that fails, manual resolution is needed.
+**What happens:** Before most `/gsd` commands run, GSD probes the project root (and the active milestone worktree when present) for unmerged paths, conflict markers (`git diff --check`), and stale merge/rebase state. It auto-heals safe paths (`.gsd/` runtime files and build artifacts), aborts stale merge state when there are no unmerged paths, then blocks if product code conflicts remain.
+
+**Fix:**
+- Resolve remaining conflicts in your source files, then run `/gsd doctor`.
+- While conflicts remain, these commands still run: `/gsd doctor`, `/gsd closeout …`, and `/gsd dispatch complete-milestone …`.
+- Re-run your original command after `git status` is clean.
+
+Auto mode **pauses** on product conflicts after heal; it **stops** when Git state cannot be verified (fail-closed probe).
 
 ### Auto mode stops before merge with preflight conflict/overlap errors
 
@@ -451,9 +543,9 @@ For non-TTY environments (CI, cron, scripted automation), v2.79 adds `gsd headle
 
 **Symptoms:** Pre-execution checks fail with `Unsafe or non-runnable Verify command`, often for a command that works in an interactive shell.
 
-**Cause:** GSD only accepts mechanically executable verification commands. Shell control syntax such as pipes (`|`), redirects (`>` or `<`), semicolons, backticks, and command substitution (`$(...)`) is rejected so verification cannot hide failures by trimming or reshaping output.
+**Cause:** GSD only accepts mechanically executable verification commands. Single shell pipelines with `|` are supported, but logical OR fallbacks (`||`), redirects (`>` or `<`), semicolons, backticks, and command substitution (`$(...)`) are rejected so verification cannot hide failures or run arbitrary shell programs.
 
-**Fix:** Put the direct check in the verify field or `verification_commands`. For example, use `python3 -m pytest tests -q --tb=short` instead of `python3 -m pytest tests -q --tb=short 2>&1 | tail -5`.
+**Fix:** Put a direct check or single pipeline in the verify field or `verification_commands`. For example, `python3 -m pytest tests -q --tb=short | tail -5` is valid, but `python3 -m pytest tests -q --tb=short 2>&1 | tail -5` is rejected because it uses a redirect.
 
 ## LSP (Language Server Protocol)
 

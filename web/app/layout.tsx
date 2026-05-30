@@ -5,7 +5,7 @@ import './globals.css'
 
 export const metadata: Metadata = {
   title: 'GSD',
-  description: 'The evolution of Get Shit Done — now a real coding agent. One command. Walk away. Come back to a built project.',
+  description: 'The evolution of Git Ship Done — now a real coding agent. One command. Walk away. Come back to a built project.',
   applicationName: 'GSD',
   icons: {
     icon: [

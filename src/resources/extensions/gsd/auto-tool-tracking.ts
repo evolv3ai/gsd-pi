@@ -149,8 +149,17 @@ export const DETERMINISTIC_POLICY_ERROR_STRINGS = [
  * were not deduplicated at merge — this consolidated form preserves both
  * matchers under a single export.
  */
+/** Depth-verification gates that still need explicit user confirmation. */
+export function isPendingUserApprovalGateError(errorMsg: string): boolean {
+  if (!errorMsg) return false;
+  return /Discussion gate "[^"]+" has not been confirmed by the user/.test(errorMsg)
+    || /approval gate "[^"]+" is still pending/.test(errorMsg)
+    || /Waiting for depth confirmation on gate "/.test(errorMsg);
+}
+
 export function isDeterministicPolicyError(errorMsg: string): boolean {
   if (!errorMsg) return false;
+  if (isPendingUserApprovalGateError(errorMsg)) return false;
   return DETERMINISTIC_POLICY_ERROR_RE.test(errorMsg)
     || DETERMINISTIC_POLICY_ERROR_STRINGS.some(s => errorMsg.includes(s));
 }

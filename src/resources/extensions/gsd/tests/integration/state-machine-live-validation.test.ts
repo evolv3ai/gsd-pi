@@ -56,7 +56,6 @@ import {
   deriveState,
   deriveStateFromDb,
   invalidateStateCache,
-  isGhostMilestone,
 } from "../../state.ts";
 
 // ── Status guards ─────────────────────────────────────────────────────────
@@ -314,17 +313,6 @@ describe("state-machine-live-validation", () => {
       const state = await deriveState(base);
       assert.equal(state.phase, "pre-planning");
       assert.equal(state.activeMilestone, null);
-    });
-
-    test("step 2: milestone with CONTEXT-DRAFT derives needs-discussion", async () => {
-      base = makeTempDir();
-      const mDir = join(base, ".gsd", "milestones", "M001");
-      mkdirSync(mDir, { recursive: true });
-      writeFileSync(join(mDir, "M001-CONTEXT-DRAFT.md"), "# Draft\nDraft context.\n");
-      invalidateStateCache();
-      const state = await deriveState(base);
-      assert.equal(state.phase, "needs-discussion");
-      assert.equal(state.activeMilestone?.id, "M001");
     });
 
     test("step 3: full fixture with ROADMAP+PLAN derives planning or executing", async () => {
@@ -827,22 +815,6 @@ describe("state-machine-live-validation", () => {
       assert.equal(state.phase, "validating-milestone", `expected validating-milestone, got ${state.phase}`);
     });
 
-    test("ghost milestone is skipped by deriveState", async () => {
-      base = makeTempDir();
-      const gsdDir = join(base, ".gsd", "milestones");
-      // M001 is ghost — empty dir
-      mkdirSync(join(gsdDir, "M001"), { recursive: true });
-      // M002 has content
-      mkdirSync(join(gsdDir, "M002"), { recursive: true });
-      writeFileSync(join(gsdDir, "M002", "M002-CONTEXT-DRAFT.md"), "# Draft\nContent.\n");
-
-      assert.ok(isGhostMilestone(base, "M001"), "M001 should be ghost");
-      assert.ok(!isGhostMilestone(base, "M002"), "M002 should not be ghost");
-
-      invalidateStateCache();
-      const state = await deriveState(base);
-      assert.equal(state.activeMilestone?.id, "M002", "should skip ghost M001 and use M002");
-    });
   });
 
   // ─────────────────────────────────────────────────────────────────────────

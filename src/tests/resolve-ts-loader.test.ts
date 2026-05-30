@@ -34,17 +34,17 @@ test("resolve-ts loader rewrites direct pi-coding-agent source entry import to .
 })
 
 test("resolve-ts loader transpiles pi-coding-agent source files that strip-only mode cannot parse", async () => {
-  const orchestratorUrl = new URL(
-    "../../packages/pi-coding-agent/src/core/compaction-orchestrator.ts",
+  const agentUrl = new URL(
+    "../../packages/pi-agent-core/src/agent.ts",
     import.meta.url,
   ).href
 
-  const loaded = await loadWithTestLoader(orchestratorUrl, {}, async () => {
+  const loaded = await loadWithTestLoader(agentUrl, {}, async () => {
     throw new Error("expected pi-coding-agent source to be transpiled before nextLoad")
   })
 
   assert.equal(loaded.format, "module")
   assert.equal(loaded.shortCircuit, true)
-  assert.match(loaded.source, /constructor\(_deps\)/, "transpiled constructor should be valid JavaScript")
-  assert.doesNotMatch(loaded.source, /private readonly _deps/, "TypeScript parameter property syntax should be removed")
+  assert.match(loaded.source, /class Agent/, "transpiled source should include the Agent class")
+  assert.doesNotMatch(loaded.source, /private readonly listeners/, "TypeScript field modifiers should be removed")
 })

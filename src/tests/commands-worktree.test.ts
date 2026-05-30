@@ -1,11 +1,11 @@
-// GSD-2 — Unit tests for /gsd worktree formatter and dispatcher
+// gsd-pi — Unit tests for /gsd worktree formatter and dispatcher
 import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
   formatWorktreeList,
   type WorktreeStatus,
-} from "../../dist/resources/extensions/gsd/commands-worktree.js";
+} from "../resources/extensions/gsd/commands-worktree.js";
 
 function mkStatus(over: Partial<WorktreeStatus>): WorktreeStatus {
   const name = over.name ?? "feat-x";

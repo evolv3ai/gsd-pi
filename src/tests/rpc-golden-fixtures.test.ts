@@ -1,11 +1,11 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Characterization tests for shared RPC golden fixture records.
 
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
-import { attachJsonlLineReader, serializeJsonLine } from "../../packages/pi-coding-agent/src/modes/rpc/jsonl.ts";
+import { attachJsonlLineReader, serializeJsonLine } from "../../packages/gsd-agent-modes/src/modes/rpc/jsonl.ts";
 import {
   rpcGoldenCommands,
   rpcGoldenEvents,

@@ -1,11 +1,10 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Dispatcher regression tests for validation-blocked milestones.
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 
 import { handleGSDCommand } from "../commands/dispatcher.ts";
@@ -17,6 +16,7 @@ import {
   openDatabase,
 } from "../gsd-db.ts";
 import { invalidateStateCache } from "../state.ts";
+import { cleanup, makeTempRepo } from "./test-utils.ts";
 
 interface NotifyCall {
   message: string;
@@ -30,13 +30,9 @@ interface SentMessage {
 }
 
 function makeBase(): string {
-  const base = mkdtempSync(join(tmpdir(), `gsd-dispatch-block-${randomUUID()}-`));
+  const base = makeTempRepo(`gsd-dispatch-block-${randomUUID()}-`);
   mkdirSync(join(base, ".gsd"), { recursive: true });
   return base;
-}
-
-function cleanup(base: string): void {
-  try { rmSync(base, { recursive: true, force: true }); } catch { /* swallow */ }
 }
 
 function makeMockCtx(base: string): {
@@ -135,6 +131,7 @@ test("dispatcher blocks workflow-advancing aliases while validation is blocked",
     "do mark all complete",
     "dispatch complete",
     "workflow resume",
+    "workflow release-checklist",
   ];
 
   for (const command of blockedCommands) {
@@ -169,6 +166,27 @@ test("dispatcher still allows recovery commands while validation is blocked", as
     assert.equal(calls.length, 1);
     assert.equal(calls[0].kind, "info");
     assert.match(calls[0].message, /GSD/);
+    assert.doesNotMatch(calls[0].message, /cannot run/);
+  } finally {
+    closeDatabase();
+    invalidateStateCache();
+    cleanup(base);
+  }
+});
+
+test("dispatcher allows diagnostic and knowledge commands while validation is blocked", async () => {
+  const base = makeBase();
+  try {
+    seedValidationBlockedMilestone(base);
+    const { ctx, calls } = makeMockCtx(base);
+    const { pi, messages } = makeMockPi();
+
+    await handleGSDCommand("capture investigating validation false positive", ctx, pi);
+
+    assert.equal(messages.length, 0);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].kind, "info");
+    assert.match(calls[0].message, /Captured:/);
     assert.doesNotMatch(calls[0].message, /cannot run/);
   } finally {
     closeDatabase();

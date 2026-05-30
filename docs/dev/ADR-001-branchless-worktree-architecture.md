@@ -3,7 +3,7 @@
 **Status:** Superseded
 **Date:** 2026-03-15
 **Superseded:** 2026-05-08 by the ADR-016 trio (worktree lifecycle split, fail-closed safety, phase-2 design) and ADR-017 (drift-driven state reconciliation)
-**Deciders:** Lex Christopherson
+**Deciders:** Open GSD
 **Advisors:** Claude Opus 4.6, Gemini 2.5 Pro, GPT-5.4 (Codex)
 
 > **Superseded — read this first.** The DB-authoritative runtime model took the place of this ADR's primary motivation (`.gsd/` merge conflicts, planning-artifact visibility): the project-root database is canonical, markdown files are projections, and cross-branch state clobbering is no longer the failure mode this ADR was trying to fix. The remaining worktree concerns (lifecycle ownership, fail-closed source-writing, drift repair) were consolidated by **ADR-014** (deep Auto Orchestration), **ADR-015** (runtime invariant modules), the **ADR-016 trio** (worktree lifecycle/projection split, fail-closed safety), and **ADR-017** (drift-driven reconciliation). Slice branches inside milestone worktrees were retained. The historical analysis below is preserved for context; the decisions in §Decision were not adopted.

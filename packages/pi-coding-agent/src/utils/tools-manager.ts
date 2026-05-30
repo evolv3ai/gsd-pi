@@ -1,15 +1,15 @@
 import chalk from "chalk";
-import { spawnSync } from "child_process";
-import extractZip from "extract-zip";
+import { type SpawnSyncReturns, spawnSync } from "child_process";
 import { chmodSync, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "fs";
 import { arch, platform } from "os";
 import { join } from "path";
 import { Readable } from "stream";
-import { finished } from "stream/promises";
+import { pipeline } from "stream/promises";
 import { APP_NAME, getBinDir } from "../config.js";
 
 const TOOLS_DIR = getBinDir();
-const NETWORK_TIMEOUT_MS = 10000;
+const NETWORK_TIMEOUT_MS = 10_000;
+const DOWNLOAD_TIMEOUT_MS = 120_000;
 
 function isOfflineModeEnabled(): boolean {
 	const value = process.env.PI_OFFLINE;
@@ -21,6 +21,7 @@ interface ToolConfig {
 	name: string;
 	repo: string; // GitHub repo (e.g., "sharkdp/fd")
 	binaryName: string; // Name of the binary inside the archive
+	systemBinaryNames?: string[]; // Alternative system command names to try before downloading
 	tagPrefix: string; // Prefix for tags (e.g., "v" for v1.0.0, "" for 1.0.0)
 	getAssetName: (version: string, plat: string, architecture: string) => string | null;
 }
@@ -30,6 +31,7 @@ const TOOLS: Record<string, ToolConfig> = {
 		name: "fd",
 		repo: "sharkdp/fd",
 		binaryName: "fd",
+		systemBinaryNames: ["fd", "fdfind"],
 		tagPrefix: "v",
 		getAssetName: (version, plat, architecture) => {
 			if (plat === "darwin") {
@@ -80,7 +82,7 @@ function commandExists(cmd: string): boolean {
 }
 
 // Get the path to a tool (system-wide or in our tools dir)
-function getToolPath(tool: "fd" | "rg"): string | null {
+export function getToolPath(tool: "fd" | "rg"): string | null {
 	const config = TOOLS[tool];
 	if (!config) return null;
 
@@ -91,8 +93,11 @@ function getToolPath(tool: "fd" | "rg"): string | null {
 	}
 
 	// Check system PATH - if found, just return the command name (it's in PATH)
-	if (commandExists(config.binaryName)) {
-		return config.binaryName;
+	const systemBinaryNames = config.systemBinaryNames ?? [config.binaryName];
+	for (const systemBinaryName of systemBinaryNames) {
+		if (commandExists(systemBinaryName)) {
+			return systemBinaryName;
+		}
 	}
 
 	return null;
@@ -116,7 +121,7 @@ async function getLatestVersion(repo: string): Promise<string> {
 // Download a file from URL
 async function downloadFile(url: string, dest: string): Promise<void> {
 	const response = await fetch(url, {
-		signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS),
+		signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
 	});
 
 	if (!response.ok) {
@@ -128,7 +133,7 @@ async function downloadFile(url: string, dest: string): Promise<void> {
 	}
 
 	const fileStream = createWriteStream(dest);
-	await finished(Readable.fromWeb(response.body as any).pipe(fileStream));
+	await pipeline(Readable.fromWeb(response.body as any), fileStream);
 }
 
 function findBinaryRecursively(rootDir: string, binaryFileName: string): string | null {
@@ -153,6 +158,85 @@ function findBinaryRecursively(rootDir: string, binaryFileName: string): string 
 	return null;
 }
 
+function formatSpawnFailure(result: SpawnSyncReturns<Buffer>): string {
+	if (result.error?.message) {
+		return result.error.message;
+	}
+	const stderr = result.stderr?.toString().trim();
+	if (stderr) {
+		return stderr;
+	}
+	const stdout = result.stdout?.toString().trim();
+	if (stdout) {
+		return stdout;
+	}
+	return `exit status ${result.status ?? "unknown"}`;
+}
+
+function runExtractionCommand(command: string, args: string[]): string | null {
+	const result = spawnSync(command, args, { stdio: "pipe" });
+	if (!result.error && result.status === 0) {
+		return null;
+	}
+	return `${command}: ${formatSpawnFailure(result)}`;
+}
+
+function extractTarGzArchive(archivePath: string, extractDir: string, assetName: string): void {
+	const failure = runExtractionCommand("tar", ["xzf", archivePath, "-C", extractDir]);
+	if (failure) {
+		throw new Error(`Failed to extract ${assetName}: ${failure}`);
+	}
+}
+
+function getWindowsTarCommand(): string {
+	const systemRoot = process.env.SystemRoot ?? process.env.WINDIR;
+	if (systemRoot) {
+		const systemTar = join(systemRoot, "System32", "tar.exe");
+		if (existsSync(systemTar)) {
+			return systemTar;
+		}
+	}
+	return "tar.exe";
+}
+
+function extractZipArchive(archivePath: string, extractDir: string, assetName: string): void {
+	const failures: string[] = [];
+
+	if (platform() === "win32") {
+		// Windows ships bsdtar as tar.exe, which supports zip files. Prefer the
+		// System32 binary over Git Bash's GNU tar, which does not handle zip archives.
+		const tarFailure = runExtractionCommand(getWindowsTarCommand(), ["xf", archivePath, "-C", extractDir]);
+		if (!tarFailure) return;
+		failures.push(tarFailure);
+
+		const script =
+			"& { param($archive, $destination) $ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath $archive -DestinationPath $destination -Force }";
+		const powershellFailure = runExtractionCommand("powershell.exe", [
+			"-NoLogo",
+			"-NoProfile",
+			"-NonInteractive",
+			"-ExecutionPolicy",
+			"Bypass",
+			"-Command",
+			script,
+			archivePath,
+			extractDir,
+		]);
+		if (!powershellFailure) return;
+		failures.push(powershellFailure);
+	} else {
+		const unzipFailure = runExtractionCommand("unzip", ["-q", archivePath, "-d", extractDir]);
+		if (!unzipFailure) return;
+		failures.push(unzipFailure);
+
+		const tarFailure = runExtractionCommand("tar", ["xf", archivePath, "-C", extractDir]);
+		if (!tarFailure) return;
+		failures.push(tarFailure);
+	}
+
+	throw new Error(`Failed to extract ${assetName}: ${failures.join("; ")}`);
+}
+
 // Download and install a tool
 async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 	const config = TOOLS[tool];
@@ -162,7 +246,10 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 	const architecture = arch();
 
 	// Get latest version
-	const version = await getLatestVersion(config.repo);
+	let version = await getLatestVersion(config.repo);
+	if (tool === "fd" && plat === "darwin" && architecture === "x64") {
+		version = "10.3.0";
+	}
 
 	// Get asset name for this platform
 	const assetName = config.getAssetName(version, plat, architecture);
@@ -191,13 +278,9 @@ async function downloadTool(tool: "fd" | "rg"): Promise<string> {
 
 	try {
 		if (assetName.endsWith(".tar.gz")) {
-			const extractResult = spawnSync("tar", ["xzf", archivePath, "-C", extractDir], { stdio: "pipe" });
-			if (extractResult.error || extractResult.status !== 0) {
-				const errMsg = extractResult.error?.message ?? extractResult.stderr?.toString().trim() ?? "unknown error";
-				throw new Error(`Failed to extract ${assetName}: ${errMsg}`);
-			}
+			extractTarGzArchive(archivePath, extractDir, assetName);
 		} else if (assetName.endsWith(".zip")) {
-			await extractZip(archivePath, { dir: extractDir });
+			extractZipArchive(archivePath, extractDir, assetName);
 		} else {
 			throw new Error(`Unsupported archive format: ${assetName}`);
 		}

@@ -1,4 +1,4 @@
-// GSD-2 — #4780: slice-summary excerpts replace full inlining in
+// gsd-pi — #4780: slice-summary excerpts replace full inlining in
 // buildCompleteMilestonePrompt. Verify (a) the excerpt helper emits
 // frontmatter fields + section heads + on-demand path, (b) the closer
 // prompt lists all slice SUMMARY paths under "On-demand Slice Summaries",
@@ -196,13 +196,13 @@ test("#4780 excerpt: missing file reports not-found fallback", async (t) => {
   assert.match(out, /not found — file does not exist yet/);
 });
 
-test("#4780 excerpt: section bodies are capped (coderabbit review)", async (t) => {
+test("#4780 excerpt: section bodies are capped", async (t) => {
   const base = createBase();
   t.after(() => cleanup(base));
   invalidateAllCaches();
 
   // Long Follow-ups section (~4.8KB) would balloon the excerpt without
-  // the cap — regression coverage for the coderabbit finding on #4908.
+  // the cap — regression coverage for #4908.
   const longFollowUps = "A verbose follow-up bullet that keeps restating the same point. ".repeat(60);
   const content = [
     "---",

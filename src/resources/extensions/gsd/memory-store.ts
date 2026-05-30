@@ -638,6 +638,41 @@ function doCreateMemory(
   const seq = row['seq'] as number;
   const realId = `MEM${String(seq).padStart(3, '0')}`;
   rewriteMemoryId(placeholder, realId);
+
+  const sourceKnowledgeId =
+    fields.structuredFields &&
+    typeof fields.structuredFields['sourceKnowledgeId'] === 'string' &&
+    fields.structuredFields['sourceKnowledgeId'].length > 0
+      ? (fields.structuredFields['sourceKnowledgeId'] as string)
+      : null;
+
+  if (sourceKnowledgeId) {
+    const priorRows = adapter
+      .prepare(
+        `SELECT id, structured_fields
+         FROM memories
+         WHERE category = :category
+           AND superseded_by IS NULL
+           AND structured_fields IS NOT NULL
+           AND id <> :newId`,
+      )
+      .all({ ':category': fields.category, ':newId': realId }) as Array<{
+      id: string;
+      structured_fields: string | null;
+    }>;
+
+    for (const prior of priorRows) {
+      if (!prior.structured_fields) continue;
+      try {
+        const parsed = JSON.parse(prior.structured_fields) as Record<string, unknown>;
+        if (parsed['sourceKnowledgeId'] === sourceKnowledgeId) {
+          supersedeMemoryRow(prior.id, realId, now);
+        }
+      } catch {
+        // Ignore malformed legacy structured_fields during supersession scan.
+      }
+    }
+  }
   return realId;
 }
 

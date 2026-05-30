@@ -4,8 +4,9 @@ name: PR Risk Report
 # pull-requests: write even for cross-fork PRs. We never execute code
 # from the fork — changed files are fetched via the GitHub API only.
 on:
+  # Risk comment on open/reopen; synchronize is handled by fast-gates + build in ci.yml.
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened, reopened]
 
 permissions:
   contents: read
@@ -65,7 +66,7 @@ jobs:
           body-includes: PR Risk Report
 
       - name: Post or update risk comment
-        uses: peter-evans/create-or-update-comment@v4
+        uses: peter-evans/create-or-update-comment@v5
         with:
           comment-id: ${{ steps.find-comment.outputs.comment-id }}
           issue-number: ${{ github.event.pull_request.number }}

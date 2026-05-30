@@ -1,11 +1,15 @@
-// GSD-2 — ADR-005 Phase 3b: ProviderSwitchObserver Tests
+// gsd-pi — ADR-005 Phase 3b: ProviderSwitchObserver Tests
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { setProviderSwitchObserver, type ProviderSwitchReport } from "@gsd/pi-ai";
+import {
+  setProviderSwitchObserver,
+  transformMessagesWithReport,
+  type ProviderSwitchReport,
+} from "../../../../../packages/pi-ai/src/providers/transform-messages.ts";
 
 import { autoSession } from "../auto-runtime-state.ts";
 import {
@@ -89,8 +93,6 @@ test("non-empty report increments the in-memory counter", () => {
 });
 
 test("end-to-end: transformMessagesWithReport fires the observer and updates stats + notifications", async () => {
-  const { transformMessagesWithReport } = await import("@gsd/pi-ai");
-
   const { basePath, cleanup } = withTempBasePath();
   try {
     initNotificationStore(basePath);
@@ -150,8 +152,6 @@ test("end-to-end: transformMessagesWithReport fires the observer and updates sta
 });
 
 test("end-to-end: audit event is emitted when an auto trace is active", async () => {
-  const { transformMessagesWithReport } = await import("@gsd/pi-ai");
-
   const { basePath, cleanup } = withTempBasePath();
   try {
     initNotificationStore(basePath);
@@ -211,8 +211,6 @@ test("end-to-end: audit event is emitted when an auto trace is active", async ()
 });
 
 test("empty report does not bump counter or emit a notification", async () => {
-  const { transformMessagesWithReport } = await import("@gsd/pi-ai");
-
   const { basePath, cleanup } = withTempBasePath();
   try {
     initNotificationStore(basePath);

@@ -1,9 +1,9 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Tests workflow MCP launch config, tool surface, and stdio elicitation behavior.
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -16,6 +16,7 @@ import {
   getWorkflowTransportSupportError,
   getRequiredWorkflowToolsForAutoUnit,
   getRequiredWorkflowToolsForGuidedUnit,
+  resolveWorkflowMcpProjectRoot,
   supportsStructuredQuestions,
   usesWorkflowMcpTransport,
 } from "../workflow-mcp.ts";
@@ -31,6 +32,13 @@ function extractElicitPayload(request: unknown): ElicitPayload {
   const payload = (request as { params?: unknown }).params ?? request;
   return payload as ElicitPayload;
 }
+
+test("resolveWorkflowMcpProjectRoot maps milestone worktree cwd to project root", () => {
+  const projectRoot = "/tmp/my-project";
+  const worktree = join(projectRoot, ".gsd", "worktrees", "M002-abc");
+  assert.equal(resolveWorkflowMcpProjectRoot(worktree), projectRoot);
+  assert.equal(resolveWorkflowMcpProjectRoot(projectRoot), projectRoot);
+});
 
 test("guided execute-task requires canonical task completion tool", () => {
   assert.deepEqual(getRequiredWorkflowToolsForGuidedUnit("execute-task"), ["gsd_task_complete"]);
@@ -177,7 +185,7 @@ test("detectWorkflowMcpLaunchConfig resolves the bundled server from GSD_BIN_PAT
   assert.deepEqual(launch, {
     name: "gsd-workflow",
     command: process.execPath,
-    args: [cliPath],
+    args: [realpathSync(cliPath)],
     cwd: worktreeRoot,
     env: launch?.env,
   });
@@ -187,6 +195,44 @@ test("detectWorkflowMcpLaunchConfig resolves the bundled server from GSD_BIN_PAT
   assert.equal(launch?.env?.GSD_WORKFLOW_PROJECT_ROOT, worktreeRoot);
   assert.match(launch?.env?.GSD_WORKFLOW_EXECUTORS_MODULE ?? "", /workflow-tool-executors\.(js|ts)$/);
   assert.match(launch?.env?.GSD_WORKFLOW_WRITE_GATE_MODULE ?? "", /write-gate\.(js|ts)$/);
+});
+
+test("detectWorkflowMcpLaunchConfig resolves the bundled server from a symlinked GSD_BIN_PATH", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "gsd-workflow-symlink-root-"));
+  const binDir = mkdtempSync(join(tmpdir(), "gsd-workflow-symlink-bin-"));
+  const worktreeRoot = mkdtempSync(join(tmpdir(), "gsd-workflow-symlink-wt-"));
+  const cliPath = join(repoRoot, "packages", "mcp-server", "dist", "cli.js");
+  const devCliPath = join(repoRoot, "scripts", "dev-cli.js");
+  const symlinkPath = join(binDir, "gsd");
+
+  mkdirSync(join(repoRoot, "packages", "mcp-server", "dist"), { recursive: true });
+  mkdirSync(join(repoRoot, "scripts"), { recursive: true });
+  writeFileSync(cliPath, "#!/usr/bin/env node\n", "utf-8");
+  writeFileSync(devCliPath, "#!/usr/bin/env node\n", "utf-8");
+  symlinkSync(devCliPath, symlinkPath);
+
+  try {
+    const launch = detectWorkflowMcpLaunchConfig(worktreeRoot, {
+      GSD_BIN_PATH: symlinkPath,
+    });
+
+    assert.ok(launch, "expected a launch config when GSD_BIN_PATH is a symlink");
+    assert.deepEqual(launch, {
+      name: "gsd-workflow",
+      command: process.execPath,
+      args: [realpathSync(cliPath)],
+      cwd: worktreeRoot,
+      env: launch?.env,
+    });
+    assert.equal(launch?.env?.GSD_CLI_PATH, symlinkPath);
+    assert.equal(launch?.env?.GSD_BIN_PATH, symlinkPath);
+    assert.equal(launch?.env?.GSD_PERSIST_WRITE_GATE_STATE, "1");
+    assert.equal(launch?.env?.GSD_WORKFLOW_PROJECT_ROOT, worktreeRoot);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(binDir, { recursive: true, force: true });
+    rmSync(worktreeRoot, { recursive: true, force: true });
+  }
 });
 
 test("detectWorkflowMcpLaunchConfig resolves the bundled server relative to the installed GSD package", () => {

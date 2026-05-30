@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Host-owned verification verdict policy for auto-mode units.
 
 import type { VerificationResult as VerificationGateResult } from "./types.js";
@@ -19,6 +19,15 @@ export function decideVerificationVerdict(
   unitType: string,
   result: VerificationGateResult,
 ): VerificationVerdict {
+  if (unitType === "execute-task" && result.discoverySource === "task-plan-prose" && result.checks.length === 0) {
+    return {
+      passed: true,
+      reason: "passed",
+      retryable: false,
+      failureContext: "",
+    };
+  }
+
   if (unitType === "execute-task" && result.discoverySource === "none" && result.checks.length === 0) {
     return {
       passed: false,

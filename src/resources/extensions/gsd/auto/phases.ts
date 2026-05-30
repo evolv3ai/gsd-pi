@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Auto-loop pipeline phases, merge closeout, and finalize handling.
 /**
  * auto/phases.ts — Pipeline phases for the auto-loop.
@@ -62,6 +62,10 @@ import { isClosedStatus } from "../status-guards.js";
 import { setRuntimeKv } from "../db/runtime-kv.js";
 import { getLatestForUnit } from "../db/unit-dispatches.js";
 import { reconcileBeforeSpawn } from "../state-reconciliation.js";
+import {
+  countUnmappedActiveRequirements,
+  formatCompletePhaseNextAction,
+} from "../requirements-backlog.js";
 import type { MinimalModelRegistry } from "../context-budget.js";
 import type { PostflightResult, PreflightResult } from "../clean-root-preflight.js";
 import { ensurePlanV2Graph, isEmptyPlanV2GraphResult, isMissingFinalizedContextResult } from "../uok/plan-v2.js";
@@ -77,6 +81,7 @@ import {
   getRequiredWorkflowToolsForAutoUnit,
   supportsStructuredQuestions,
 } from "../workflow-mcp.js";
+import type { DispatchAction } from "../auto-dispatch.js";
 import { resolveManifest } from "../unit-context-manifest.js";
 import { createWorktreeSafetyModule, type WorktreeSafetyResult } from "../worktree-safety.js";
 import { isSuspiciousGhostCompletion } from "../auto-unit-closeout.js";
@@ -91,6 +96,16 @@ import {
 
 export const STUCK_WINDOW_SIZE = 6;
 const STUCK_RECOVERY_ATTEMPTS_KEY = "stuck_recovery_attempts";
+
+export function resolveDispatchRecoveryAttempts(
+  unitRecoveryCount: Map<string, number>,
+  unitType: string,
+  unitId: string,
+): number | undefined {
+  return (unitRecoveryCount.get(`${unitType}/${unitId}`) ?? 0) > 0
+    ? 0
+    : undefined;
+}
 
 // ─── Path Comparison Helper ───────────────────────────────────────────────
 /** Compare two paths for physical identity, tolerating trailing slashes and symlinks. */
@@ -844,6 +859,7 @@ export async function runPreDispatch(
 
   // Pre-dispatch health gate
   try {
+    const expectedCurrentUnit = null;
     const healthGate = await deps.preDispatchHealthGate(s.basePath);
     if (healthGate.fixesApplied.length > 0) {
       ctx.ui.notify(
@@ -864,7 +880,7 @@ export async function runPreDispatch(
         healthGate.reason || "Pre-dispatch health check failed — run /gsd doctor for details.",
         "error",
       );
-      await deps.pauseAuto(ctx, pi);
+      await deps.pauseAuto(ctx, pi, undefined, { expectedCurrentUnit });
       debugLog("autoLoop", { phase: "exit", reason: "health-gate-failed" });
       return { action: "break", reason: "health-gate-failed" };
     }
@@ -1222,19 +1238,21 @@ export async function runPreDispatch(
         if (stop) return stop;
         // PR creation (auto_pr) is handled inside mergeMilestoneToMain (#2302)
       }
+      const unmappedActive = countUnmappedActiveRequirements();
+      const completionStopReason = formatCompletePhaseNextAction(unmappedActive);
       deps.sendDesktopNotification(
         "GSD",
-        "All milestones complete!",
+        unmappedActive > 0 ? "All milestones complete — requirements backlog remains" : "All milestones complete!",
         "success",
         "milestone",
         basename(s.originalBasePath || s.basePath),
       );
       deps.logCmuxEvent(
         prefs,
-        "All milestones complete.",
+        completionStopReason,
         "success",
       );
-      await deps.stopAuto(ctx, pi, "All milestones complete", {
+      await deps.stopAuto(ctx, pi, completionStopReason, {
         completionWidget: {
           milestoneId: s.currentMilestoneId,
           milestoneTitle: midTitle,
@@ -1384,6 +1402,13 @@ export async function runPreDispatch(
 
 // ─── runDispatch ──────────────────────────────────────────────────────────────
 
+function isUnhandledPhaseWarning(dispatchResult: DispatchAction): dispatchResult is Extract<DispatchAction, { action: "stop" }> {
+  return dispatchResult.action === "stop" &&
+    dispatchResult.level === "warning" &&
+    dispatchResult.matchedRule === "<no-match>" &&
+    /^Unhandled phase "/.test(dispatchResult.reason);
+}
+
 /**
  * Phase 3: Dispatch resolution — resolve next unit, stuck detection, pre-dispatch hooks.
  * Returns break/continue to control the loop, or next with IterationData on success.
@@ -1412,7 +1437,7 @@ export async function runDispatch(
       }) ? "true" : "false";
 
   debugLog("autoLoop", { phase: "dispatch-resolve", iteration: ic.iteration });
-  const dispatchResult = await deps.resolveDispatch({
+  let dispatchResult = await deps.resolveDispatch({
     basePath: s.basePath,
     mid,
     midTitle,
@@ -1424,6 +1449,30 @@ export async function runDispatch(
     sessionProvider: ctx.model?.provider,
     modelRegistry: ctx.modelRegistry as MinimalModelRegistry | undefined,
   });
+  if (isUnhandledPhaseWarning(dispatchResult)) {
+    deps.invalidateAllCaches();
+    const freshState = await deps.deriveState(s.canonicalProjectRoot);
+    const freshMid = freshState.activeMilestone?.id ?? mid;
+    const freshMidTitle = freshState.activeMilestone?.title ?? freshMid ?? midTitle;
+    debugLog("autoLoop", {
+      phase: "dispatch-unhandled-phase-retry",
+      iteration: ic.iteration,
+      stalePhase: state.phase,
+      freshPhase: freshState.phase,
+    });
+    dispatchResult = await deps.resolveDispatch({
+      basePath: s.basePath,
+      mid: freshMid,
+      midTitle: freshMidTitle,
+      state: freshState,
+      prefs,
+      session: s,
+      structuredQuestionsAvailable,
+      sessionContextWindow: ctx.model?.contextWindow,
+      sessionProvider: ctx.model?.provider,
+      modelRegistry: ctx.modelRegistry as MinimalModelRegistry | undefined,
+    });
+  }
 
   if (dispatchResult.action === "stop") {
     deps.emitJournalEvent({ ts: new Date().toISOString(), flowId: ic.flowId, seq: ic.nextSeq(), eventType: "dispatch-stop", rule: dispatchResult.matchedRule, data: { reason: dispatchResult.reason } });
@@ -2023,7 +2072,7 @@ export async function runUnitPhase(
   const nextDispatchCount = (s.unitDispatchCount.get(dispatchKey) ?? 0) + 1;
 
   // Status bar (widget + preconditions deferred until after model selection — see #2899)
-  ctx.ui.setStatus("gsd-auto", "auto");
+  ctx.ui.setStatus("gsd-auto", s.stepMode ? "next" : "auto");
   if (mid)
     deps.updateSliceProgressCache(s.basePath, mid, state.activeSlice?.id);
 
@@ -2261,7 +2310,7 @@ export async function runUnitPhase(
       lastProgressAt: unitStartedAt,
       progressCount: 0,
       lastProgressKind: "dispatch",
-      recoveryAttempts: 0, // Reset so re-dispatched units get full recovery budget (#2322)
+      recoveryAttempts: resolveDispatchRecoveryAttempts(s.unitRecoveryCount, unitType, unitId),
     },
   );
 

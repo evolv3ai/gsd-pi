@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Browser slash command parity tests for built-in and GSD command routing.
 import test from "node:test"
 import assert from "node:assert/strict"
@@ -25,6 +25,7 @@ const EXPECTED_BUILTIN_OUTCOMES = new Map<string, "rpc" | "surface" | "reject">(
   ["model", "surface"],
   ["scoped-models", "reject"],
   ["export", "surface"],
+  ["import", "reject"],
   ["share", "reject"],
   ["copy", "reject"],
   ["name", "surface"],
@@ -32,18 +33,14 @@ const EXPECTED_BUILTIN_OUTCOMES = new Map<string, "rpc" | "surface" | "reject">(
   ["changelog", "reject"],
   ["hotkeys", "reject"],
   ["fork", "surface"],
+  ["clone", "reject"],
   ["tree", "reject"],
-  ["provider", "reject"],
   ["login", "surface"],
   ["logout", "surface"],
   ["new", "rpc"],
   ["compact", "surface"],
   ["resume", "surface"],
   ["reload", "reject"],
-  ["thinking", "surface"],
-  ["edit-mode", "reject"],
-  ["terminal", "reject"],
-  ["tui", "reject"],
   ["quit", "reject"],
 ])
 
@@ -54,11 +51,9 @@ const DEFERRED_BROWSER_REJECTS = [
   "changelog",
   "hotkeys",
   "tree",
-  "provider",
+  "import",
+  "clone",
   "reload",
-  "edit-mode",
-  "terminal",
-  "tui",
   "quit",
 ] as const
 

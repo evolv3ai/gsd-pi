@@ -21,6 +21,7 @@ import { existsSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
+import { killChildProcess } from "./child-process-guard.ts";
 
 const projectRoot = process.cwd();
 const loaderPath = join(projectRoot, "dist", "loader.js");
@@ -73,7 +74,7 @@ function runGsd(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
+      killChildProcess(child, "SIGTERM");
     }, timeoutMs);
 
     child.on("close", (code) => {
@@ -192,7 +193,7 @@ test("gsd update --help outputs help and exits 0", async () => {
 // ---------------------------------------------------------------------------
 
 test("gsd --list-models runs without crashing", async () => {
-  const result = await runGsd(["--list-models"]);
+  const result = await runGsd(["--list-models"], 20_000);
 
   assert.ok(!result.timedOut, "gsd --list-models should exit within the timeout");
   assert.strictEqual(result.code, 0, `expected exit 0, got ${result.code}`);

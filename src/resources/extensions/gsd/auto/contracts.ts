@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Auto Orchestration module interfaces and ADR-015 invariant adapter contracts.
 
 import type { GSDState } from "../types.js";
@@ -106,7 +106,7 @@ export interface WorktreeAdapter {
 
 export type HealthGateResult =
   | { kind: "pass"; fixesApplied?: readonly string[] }
-  | { kind: "fail"; reason: string }
+  | { kind: "fail"; reason: string; action?: "pause" | "stop" }
   | { kind: "threw"; error: unknown };
 
 export interface HealthAdapter {

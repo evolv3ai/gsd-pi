@@ -1,4 +1,4 @@
-// GSD-2 + Regression tests for deterministic policy error classification (#4973)
+// gsd-pi + Regression tests for deterministic policy error classification (#4973)
 //
 // When gsd_summary_save returns context_write_blocked (a deterministic write-gate
 // rejection), the retry controller must NOT re-dispatch with escalating model tiers.
@@ -25,6 +25,7 @@ import { randomUUID } from "node:crypto";
 
 import {
   isDeterministicPolicyError,
+  isPendingUserApprovalGateError,
   DETERMINISTIC_POLICY_ERROR_STRINGS,
 } from "../auto-tool-tracking.ts";
 import { AutoSession } from "../auto/session.ts";
@@ -116,6 +117,18 @@ describe("Test 5 — isDeterministicPolicyError classifier (#4973)", () => {
 
   test("returns false for empty string", () => {
     assert.strictEqual(isDeterministicPolicyError(""), false);
+  });
+
+  test("excludes pending user-approval gate messages from deterministic classification", () => {
+    assert.strictEqual(
+      isPendingUserApprovalGateError('Waiting for depth confirmation on gate "depth_verification_M001_confirm".'),
+      true,
+    );
+    assert.strictEqual(
+      isDeterministicPolicyError('Waiting for depth confirmation on gate "depth_verification_M001_confirm".'),
+      false,
+      "pending approval gate messages must pause auto instead of advancing via blocker placeholder",
+    );
   });
 
   test("DETERMINISTIC_POLICY_ERROR_STRINGS list is non-empty and contains context_write_blocked entry", () => {

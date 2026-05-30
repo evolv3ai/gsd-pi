@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Pure budget and context guard decisions for GSD auto-mode.
 /**
  * Budget alert level tracking and enforcement for auto-mode.
@@ -54,4 +54,21 @@ export function getContextPauseAction(
   const usage = contextPercent <= 1 ? contextPercent * 100 : contextPercent;
   const threshold = thresholdPercent <= 1 ? thresholdPercent * 100 : thresholdPercent;
   return usage >= threshold ? "pause" : "none";
+}
+
+/** Normalize compaction_threshold_percent pref (0.5–0.95 ratio) to a 0–100 scale. */
+export function resolveCompactionThresholdPercent(raw: number | undefined): number {
+  const value =
+    typeof raw === "number" && Number.isFinite(raw) && raw >= 0.5 && raw <= 0.95 ? raw : 0.6;
+  return value <= 1 ? value * 100 : value;
+}
+
+export function shouldRerootStepSessionForContext(
+  contextPercent: number | null | undefined,
+  compactionThresholdPercent?: number,
+): boolean {
+  return getContextPauseAction(
+    contextPercent,
+    resolveCompactionThresholdPercent(compactionThresholdPercent),
+  ) === "pause";
 }

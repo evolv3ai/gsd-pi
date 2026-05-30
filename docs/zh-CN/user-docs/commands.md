@@ -11,7 +11,7 @@
 | `/gsd stop` | 优雅地停止自动模式 |
 | `/gsd pause` | 暂停自动模式（保留状态，可用 `/gsd auto` 恢复） |
 | `/gsd steer` | 在执行过程中强制修改 plan 文档 |
-| `/gsd discuss` | 讨论架构和决策（可与自动模式并行使用） |
+| `/gsd discuss` | 讨论架构和决策（需先用 `/gsd stop` 停止自动模式） |
 | `/gsd status` | 进度仪表板 |
 | `/gsd widget` | 循环切换仪表板组件：full / small / min / off |
 | `/gsd queue` | 给未来 milestones 排队和重排（自动模式中也安全） |

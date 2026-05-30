@@ -1,4 +1,4 @@
-// GSD2 - Claude Code stream adapter regression tests
+// gsd-pi - Claude Code stream adapter regression tests
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -527,7 +527,7 @@ describe("stream-adapter — Claude Code external tool results", () => {
 		// it carries the structured payload (extracted separately into `details`)
 		// and must NOT appear in the visible `content` array — otherwise the
 		// renderer stringifies the JSON pseudo-block and shows it next to the
-		// actual tool output. See PR #4477 review (CodeRabbit, post-fix-round).
+		// actual tool output. See PR #4477 review (post-fix-round).
 		const message: SDKUserMessage = {
 			type: "user",
 			session_id: "sess-1",
@@ -790,6 +790,19 @@ describe("stream-adapter — session persistence (#2859)", () => {
 		assert.equal(options.effort, "xhigh");
 	});
 
+	test("buildSdkOptions enables context-1m beta for opus-4-8", () => {
+		const opts = buildSdkOptions("claude-opus-4-8", "test");
+		assert.ok(
+			Array.isArray(opts.betas) && opts.betas.includes("context-1m-2025-08-07"),
+			"claude-opus-4-8 should have context-1m beta enabled for 1M token context window",
+		);
+	});
+
+	test("buildSdkOptions passes xhigh reasoning natively for opus-4-8", () => {
+		const options = buildSdkOptions("claude-opus-4-8", "test", undefined, { reasoning: "xhigh" });
+		assert.equal(options.effort, "xhigh");
+	});
+
 	test("buildSdkOptions omits effort when reasoning is undefined (#3917)", () => {
 		const options = buildSdkOptions("claude-sonnet-4-6", "test");
 		assert.equal("effort" in options, false);
@@ -874,8 +887,10 @@ describe("stream-adapter — session persistence (#2859)", () => {
 			GSD_WORKFLOW_MCP_ENV: JSON.stringify({ GSD_CLI_PATH: "/tmp/gsd" }),
 			GSD_WORKFLOW_MCP_CWD: "/tmp/project",
 		});
+		const originalCwd = process.cwd();
+		const emptyDir = mkdtempSync(join(tmpdir(), "claude-mcp-inject-"));
 		try {
-
+			process.chdir(emptyDir);
 			const options = buildSdkOptions("claude-sonnet-4-20250514", "test");
 			const mcpServers = options.mcpServers as Record<string, any>;
 			assert.ok(mcpServers?.["gsd-workflow"], "expected gsd-workflow server config");
@@ -900,6 +915,8 @@ describe("stream-adapter — session persistence (#2859)", () => {
 				"mcp__gsd-workflow__*",
 			]);
 		} finally {
+			process.chdir(originalCwd);
+			rmSync(emptyDir, { recursive: true, force: true });
 			restore();
 		}
 	});
@@ -1011,6 +1028,34 @@ describe("stream-adapter — session persistence (#2859)", () => {
 			} else {
 				process.env.GSD_CLI_PATH = prevCliPath;
 			}
+		}
+	});
+
+	test("buildSdkOptions discovers project .mcp.json when session cwd is a milestone worktree", () => {
+		const restore = setWorkflowMcpEnv({
+			GSD_WORKFLOW_MCP_COMMAND: "node",
+			GSD_WORKFLOW_MCP_NAME: "gsd-workflow",
+			GSD_WORKFLOW_MCP_ARGS: JSON.stringify(["packages/mcp-server/dist/cli.js"]),
+			GSD_WORKFLOW_MCP_ENV: JSON.stringify({ GSD_CLI_PATH: "/tmp/gsd" }),
+		});
+		const originalCwd = process.cwd();
+		const projectDir = mkdtempSync(join(tmpdir(), "claude-mcp-worktree-"));
+		const worktreeDir = join(projectDir, ".gsd", "worktrees", "M002-test");
+		try {
+			mkdirSync(worktreeDir, { recursive: true });
+			writeFileSync(
+				join(projectDir, ".mcp.json"),
+				JSON.stringify({ mcpServers: { "gsd-workflow": { command: "node", args: ["cli.js"] } } }),
+			);
+			process.chdir(projectDir);
+			const options = buildSdkOptions("claude-sonnet-4-20250514", "test", undefined, { cwd: worktreeDir });
+			assert.equal(options.mcpServers, undefined, "should not inject when project root already declares workflow MCP");
+			const allowedTools = options.allowedTools as string[];
+			assert.ok(allowedTools.includes("mcp__gsd-workflow__*"), "worktree cwd must still allow workflow MCP tools from project config");
+		} finally {
+			process.chdir(originalCwd);
+			rmSync(projectDir, { recursive: true, force: true });
+			restore();
 		}
 	});
 
@@ -1181,6 +1226,96 @@ describe("stream-adapter — MCP elicitation bridge", () => {
 				platform: ["Web", "Mobile"],
 			},
 		});
+	});
+
+	test("createClaudeCodeElicitationHandler applies headless answers before UI prompts", async () => {
+		const tmp = mkdtempSync(join(tmpdir(), "gsd-headless-answers-"));
+		const previous = process.env.GSD_HEADLESS_ANSWERS_PATH;
+		try {
+			const answersPath = join(tmp, "answers.json");
+			writeFileSync(answersPath, JSON.stringify({
+				questions: {
+					storage_scope: "Cloud-synced",
+					platform: ["Desktop", "Mobile"],
+				},
+				defaults: { strategy: "first_option" },
+			}));
+			process.env.GSD_HEADLESS_ANSWERS_PATH = answersPath;
+
+			let customCalls = 0;
+			const handler = createClaudeCodeElicitationHandler({
+				custom: async () => {
+					customCalls++;
+					return undefined;
+				},
+				select: async () => {
+					throw new Error("select should not be called when headless answers match");
+				},
+			} as any);
+			assert.ok(handler);
+
+			const result = await handler!(askUserQuestionsRequest, { signal: new AbortController().signal });
+			assert.equal(customCalls, 0);
+			assert.deepEqual(result, {
+				action: "accept",
+				content: {
+					storage_scope: "Cloud-synced",
+					platform: ["Desktop", "Mobile"],
+				},
+			});
+		} finally {
+			if (previous === undefined) delete process.env.GSD_HEADLESS_ANSWERS_PATH;
+			else process.env.GSD_HEADLESS_ANSWERS_PATH = previous;
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	test("createClaudeCodeElicitationHandler defaults dynamic depth gate IDs to the first option", async () => {
+		const tmp = mkdtempSync(join(tmpdir(), "gsd-headless-gate-answers-"));
+		const previous = process.env.GSD_HEADLESS_ANSWERS_PATH;
+		try {
+			const answersPath = join(tmp, "answers.json");
+			writeFileSync(answersPath, JSON.stringify({
+				questions: {
+					depth_verification_M001: "Proceed with planning (Recommended)",
+				},
+				defaults: { strategy: "first_option" },
+			}));
+			process.env.GSD_HEADLESS_ANSWERS_PATH = answersPath;
+
+			const handler = createClaudeCodeElicitationHandler({ custom: async () => undefined } as any);
+			assert.ok(handler);
+			const result = await handler!({
+				serverName: "gsd-workflow",
+				message: "Please answer the following question(s).",
+				mode: "form" as const,
+				requestedSchema: {
+					type: "object" as const,
+					properties: {
+						depth_verification_m001_confirm: {
+							type: "string",
+							title: "Depth",
+							description: "Proceed with this headless milestone plan?",
+							oneOf: [
+								{ const: "Yes, you got it (Recommended)", title: "Yes, you got it (Recommended)" },
+								{ const: "Not yet", title: "Not yet" },
+							],
+						},
+					},
+				},
+			}, { signal: new AbortController().signal });
+
+			assert.deepEqual(result, {
+				action: "accept",
+				content: {
+					depth_verification_m001_confirm: "Yes, you got it (Recommended)",
+				},
+			});
+		} finally {
+			if (previous === undefined) delete process.env.GSD_HEADLESS_ANSWERS_PATH;
+			else process.env.GSD_HEADLESS_ANSWERS_PATH = previous;
+			rmSync(tmp, { recursive: true, force: true });
+		}
 	});
 
 	test("createClaudeCodeElicitationHandler falls back to dialog prompts when custom UI is unavailable", async () => {
@@ -2069,7 +2204,7 @@ describe("buildBashPermissionPattern", () => {
 
 	test("chained commands — extracts pattern from the meaningful segment", () => {
 		assert.equal(buildBashPermissionPattern("cd /foo && gh pr list --limit 5"), "Bash(gh pr list:*)");
-		assert.equal(buildBashPermissionPattern("cd C:/Users/djeff/repos/gsd-2 && gh pr list --limit 5"), "Bash(gh pr list:*)");
+		assert.equal(buildBashPermissionPattern("cd C:/Users/djeff/repos/gsd-pi && gh pr list --limit 5"), "Bash(gh pr list:*)");
 		assert.equal(buildBashPermissionPattern("cd /tmp && git push origin main"), "Bash(git push:*)");
 		assert.equal(buildBashPermissionPattern("export FOO=1 && npm install lodash"), "Bash(npm install:*)");
 		assert.equal(buildBashPermissionPattern("mkdir -p out; docker ps -a"), "Bash(docker ps:*)");
@@ -2078,7 +2213,7 @@ describe("buildBashPermissionPattern", () => {
 
 	test("skips trailing || true / || : error suppressors", () => {
 		assert.equal(
-			buildBashPermissionPattern("cd C:/Users/djeff/repos/gsd-2 && gh pr create --dry-run --title \"test\" --body \"test\" 2>&1 || true"),
+			buildBashPermissionPattern("cd C:/Users/djeff/repos/gsd-pi && gh pr create --dry-run --title \"test\" --body \"test\" 2>&1 || true"),
 			"Bash(gh pr create:*)",
 		);
 		assert.equal(buildBashPermissionPattern("gh pr list || true"), "Bash(gh pr list:*)");
@@ -2341,7 +2476,7 @@ describe("bashCommandMatchesSavedRules — compound command bypass", () => {
 			setupSettings(["Bash(gh pr create:*)"]);
 			setCwd(tempDir);
 			assert.equal(
-				bashCommandMatchesSavedRules('cd C:/Users/djeff/repos/gsd-2 && gh pr create --dry-run --title "test" --body "test" 2>&1 || true'),
+				bashCommandMatchesSavedRules('cd C:/Users/djeff/repos/gsd-pi && gh pr create --dry-run --title "test" --body "test" 2>&1 || true'),
 				true,
 			);
 			assert.equal(

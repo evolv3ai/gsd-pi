@@ -66,7 +66,13 @@ function seedSlice(milestoneId: string, sliceId: string, status: string): void {
   ).run(milestoneId, sliceId, `Slice ${sliceId}`, status, new Date().toISOString());
 }
 
-function writeValidation(base: string, milestoneId: string, verdict: string, round = 0): string {
+function writeValidation(
+  base: string,
+  milestoneId: string,
+  verdict: string,
+  round = 0,
+  verificationClasses?: string,
+): string {
   const milestoneDir = join(base, ".gsd", "milestones", milestoneId);
   mkdirSync(milestoneDir, { recursive: true });
   const path = join(milestoneDir, `${milestoneId}-VALIDATION.md`);
@@ -93,6 +99,13 @@ function writeValidation(base: string, milestoneId: string, verdict: string, rou
     "## Requirement Coverage",
     "All requirements covered.",
     "",
+    ...(verificationClasses
+      ? [
+        "## Verification Class Compliance",
+        verificationClasses,
+        "",
+      ]
+      : []),
     "## Verdict Rationale",
     `Initial verdict was ${verdict}.`,
     "",
@@ -265,6 +278,39 @@ test("handleVerdict pass override flips verdict and preserves sections", async (
     assert.ok(
       calls.some((c) => c.kind === "success" && /needs-attention.*->.*pass/.test(c.message)),
       `expected success notification, got: ${JSON.stringify(calls)}`,
+    );
+  } finally {
+    closeDatabase();
+    invalidateStateCache();
+    cleanup(base);
+  }
+});
+
+test("handleVerdict reports downgraded effective verdict after validation gates", async () => {
+  const base = makeBase();
+  try {
+    openTestDb(base);
+    seedMilestone("M001", "Browser-gated Milestone");
+    seedSlice("M001", "S01", "complete");
+    const db = _getAdapter();
+    assert.ok(db, "DB should be open");
+    db.prepare("UPDATE milestones SET verification_uat = ? WHERE id = ?")
+      .run("Browser UAT: click the primary button and verify visible text.", "M001");
+    const validationPath = writeValidation(base, "M001", "needs-attention", 0, "UAT: PASS");
+
+    const { ctx, calls } = makeMockCtx();
+    await handleVerdict("pass --milestone M001", ctx, base);
+
+    const rewritten = readFileSync(validationPath, "utf-8");
+    assert.match(rewritten, /^verdict: needs-attention$/m, "browser gate should downgrade pass");
+    assert.ok(
+      calls.some((c) => c.kind === "warning" &&
+        /requested: pass, effective: needs-attention/.test(c.message)),
+      `expected downgraded effective verdict warning, got: ${JSON.stringify(calls)}`,
+    );
+    assert.ok(
+      !calls.some((c) => c.kind === "success" && /->.*pass/.test(c.message)),
+      `must not report pass when effective verdict stayed needs-attention: ${JSON.stringify(calls)}`,
     );
   } finally {
     closeDatabase();

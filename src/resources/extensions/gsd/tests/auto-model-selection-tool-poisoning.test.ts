@@ -34,6 +34,7 @@ import {
   ModelPolicyDispatchBlockedError,
   clearToolBaseline,
 } from "../auto-model-selection.js";
+import { applyModelPolicyFilter } from "../uok/model-policy.js";
 import {
   registerToolCompatibility,
   resetToolCompatibilityRegistry,
@@ -104,15 +105,27 @@ function makeRecordingPi(initialActiveTools: string[]): RecordingPi {
   } as RecordingPi;
 }
 
-function makeCtx(availableModels: Array<{ id: string; provider: string; api: string }>) {
+function makeCtx(
+  availableModels: Array<{ id: string; provider: string; api: string }>,
+  sessionModel?: { id: string; provider: string; api: string },
+) {
+  const session = sessionModel ?? availableModels[0];
+  const allModels = [...availableModels];
+  if (session && !allModels.some((m) => m.provider === session.provider && m.id === session.id)) {
+    allModels.push(session);
+  }
   return {
     modelRegistry: {
       getAvailable: () => availableModels,
+      getAll: () => allModels,
+      isProviderRequestReady: () => true,
       getProviderAuthMode: () => "apiKey",
     },
     sessionManager: { getSessionId: () => "test-session" },
     ui: { notify: () => {} },
-    model: { provider: availableModels[0]?.provider, id: availableModels[0]?.id, api: availableModels[0]?.api },
+    model: session
+      ? { provider: session.provider, id: session.id, api: session.api }
+      : undefined,
   } as any;
 }
 
@@ -128,7 +141,7 @@ test("vacuous-truth (a): unit type with empty workflow-required tools → dispat
   try {
     // `refine-slice` is not in the getRequiredWorkflowToolsForAutoUnit switch
     // → returns []. Exercises the empty-requiredTools branch in
-    // applyModelPolicyFilter (CodeRabbit Minor: existing test used
+    // applyModelPolicyFilter (existing test used
     // gate-evaluate which has non-empty required tools and never hit this path).
     //
     // PREFERENCES with tier_models is required so resolvePreferredModelConfig
@@ -268,68 +281,26 @@ test("cross-unit poisoning: prior unit narrowing must not deny next unit's eligi
 
 // ─── 3a. Genuinely-impossible: tool-compatibility denial path ────────────────
 //
-// Exercises the real `getRequiredWorkflowToolsForAutoUnit` →
-// `filterToolsForProvider` path that #4959 was about (CodeRabbit Minor:
-// existing 3b test used cross-provider denial which never hit this path).
-// Registers `gsd_plan_slice` as `producesImages: true`, then offers only an
-// `ollama-chat` candidate (which has `imageToolResults: false`) — the
-// workflow-required tool is incompatible with the candidate's API, so the
-// policy filter denies the model with a `tool policy denied (...)` reason.
-test("genuinely-impossible (a): workflow tool incompatible with candidate API → typed error names tool + api", async () => {
-  const env = makeTempProject();
+// Workflow MCP tools (gsd_*) are excluded from the pi tool-compat gate in
+// selectAndApplyModel; this pins the underlying filter so deny reasons stay
+// actionable when a pi-native required tool is incompatible with the API.
+test("genuinely-impossible (a): pi-native required tool incompatible with candidate API → deny reason names tool + api", async () => {
+  registerToolCompatibility("gsd_save_gate_result", { producesImages: true });
   try {
-    // Register the workflow tool as image-producing for the duration of this
-    // test. afterEach() resets the registry below.
-    registerToolCompatibility("gsd_plan_slice", { producesImages: true });
+    const candidates = [{ id: "ollama-llama-3", provider: "ollama", api: "ollama-chat" }];
+    const { eligible, decisions } = applyModelPolicyFilter(candidates, {
+      basePath: "/tmp",
+      traceId: "test-trace",
+      requiredTools: ["gsd_save_gate_result"],
+    });
 
-    // PREFERENCES needs tier_models so resolvePreferredModelConfig returns a
-    // non-undefined modelConfig — without that, selectAndApplyModel skips the
-    // entire policy block and we never reach the tool-compat denial path.
-    writeFileSync(
-      join(env.dir, ".gsd", "PREFERENCES.md"),
-      ["---", "dynamic_routing:", "  enabled: true", "  tier_models:", "    heavy: ollama/ollama-llama-3", "---"].join("\n"),
-      "utf-8",
-    );
-
-    const availableModels = [
-      { id: "ollama-llama-3", provider: "ollama", api: "ollama-chat" },
-    ];
-    const pi = makeRecordingPi(["gsd_plan_slice"]);
-    clearToolBaseline(pi as unknown as object);
-
-    const ctx = makeCtx(availableModels);
-    // Same provider as candidate so the cross-provider gate doesn't fire —
-    // we want this denial to come from tool-compatibility, not provider mismatch.
-    ctx.model = { provider: "ollama", id: "ollama-llama-3", api: "ollama-chat" };
-
-    let thrown: unknown;
-    try {
-      await selectAndApplyModel(
-        ctx,
-        pi as any,
-        "plan-slice",
-        "s1",
-        env.dir,
-        undefined,
-        false,
-        { provider: "ollama", id: "ollama-llama-3" },
-        undefined,
-        true,
-      );
-    } catch (e) {
-      thrown = e;
-    }
-
-    assert.ok(thrown instanceof ModelPolicyDispatchBlockedError, "should throw ModelPolicyDispatchBlockedError");
-    const err = thrown as ModelPolicyDispatchBlockedError;
-    assert.equal(err.unitType, "plan-slice");
-    assert.match(err.message, /tool policy denied/, "throw must surface the tool-compatibility deny reason");
-    assert.match(err.message, /gsd_plan_slice/, "throw must name the incompatible tool");
-    assert.match(err.message, /ollama-chat/, "throw must name the api for which the tool was filtered");
+    assert.equal(eligible.length, 0);
+    assert.equal(decisions.length, 1);
+    assert.match(decisions[0]!.reason, /tool policy denied/);
+    assert.match(decisions[0]!.reason, /gsd_save_gate_result/);
+    assert.match(decisions[0]!.reason, /ollama-chat/);
   } finally {
     resetToolCompatibilityRegistry();
-    env.restoreEnv();
-    env.cleanup();
   }
 });
 
@@ -509,7 +480,7 @@ test("error carries deny reason fragment from applyModelPolicyFilter", async () 
   }
 });
 
-// ─── 6. Lifecycle: clearToolBaseline forces recapture (CodeRabbit Major) ─────
+// ─── 6. Lifecycle: clearToolBaseline forces recapture (#4959) ─────
 //
 // The WeakMap baseline is keyed per `pi` instance, but auto sessions are NOT
 // 1:1 with `pi` instances — a single `pi` can host multiple `/gsd auto` runs

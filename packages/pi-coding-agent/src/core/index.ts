@@ -2,44 +2,22 @@
  * Core modules shared between all run modes.
  */
 
-export {
-	AgentSession,
-	type AgentSessionConfig,
-	type AgentSessionEvent,
-	type AgentSessionEventListener,
-	type ModelCycleResult,
-	type PromptOptions,
-	type SessionStats,
-} from "./agent-session.js";
-export { type BashExecutorOptions, type BashResult, executeBash, executeBashWithOperations } from "./bash-executor.js";
-export { FallbackResolver, type FallbackResult } from "./fallback-resolver.js";
-export type { CompactionResult } from "./compaction/index.js";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.js";
-export {
-	createHooksRunner,
-	isProjectHooksTrusted,
-	type HookInvocation,
-	type HookName,
-	type HookScope,
-	type HookStdoutResult,
-	type HooksRunner,
-	type HooksRunnerOptions,
-} from "./hooks-runner.js";
-
-// Extensions system
 export {
 	type AgentEndEvent,
 	type AgentStartEvent,
 	type AgentToolResult,
 	type AgentToolUpdateCallback,
 	type BeforeAgentStartEvent,
+	type BeforeAgentStartEventResult,
+	type BuildSystemPromptOptions,
 	type ContextEvent,
+	defineTool,
 	discoverAndLoadExtensions,
 	type ExecOptions,
 	type ExecResult,
 	type Extension,
 	type ExtensionAPI,
-	type ExtensionManifest,
 	type ExtensionCommandContext,
 	type ExtensionContext,
 	type ExtensionError,
@@ -58,23 +36,16 @@ export {
 	type SessionBeforeSwitchEvent,
 	type SessionBeforeTreeEvent,
 	type SessionCompactEvent,
-	type SessionForkEvent,
 	type SessionShutdownEvent,
 	type SessionStartEvent,
-	type SessionSwitchEvent,
 	type SessionTreeEvent,
 	type ToolCallEvent,
-	readManifest,
-	readManifestFromEntryPath,
-	type SortResult,
-	type SortWarning,
-	sortExtensionPaths,
+	type ToolCallEventResult,
 	type ToolDefinition,
 	type ToolRenderResultOptions,
 	type ToolResultEvent,
 	type TurnEndEvent,
 	type TurnStartEvent,
-	wrapToolsWithExtensions,
+	type WorkingIndicatorOptions,
 } from "./extensions/index.js";
-
-export { ContextualTips, type TipContext } from "./contextual-tips.js";
+export { createSyntheticSourceInfo } from "./source-info.js";

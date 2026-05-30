@@ -1,51 +1,124 @@
-import { parseStreamingJson as nativeParseStreamingJson } from "@gsd/native";
-import { hasXmlParameterTags, hasYamlBulletLists, repairToolJson } from "./repair-tool-json.js";
+import { parse as partialParse } from "partial-json";
+
+const VALID_JSON_ESCAPES = new Set(['"', "\\", "/", "b", "f", "n", "r", "t", "u"]);
+
+function isControlCharacter(char: string): boolean {
+	const codePoint = char.codePointAt(0);
+	return codePoint !== undefined && codePoint >= 0x00 && codePoint <= 0x1f;
+}
+
+function escapeControlCharacter(char: string): string {
+	switch (char) {
+		case "\b":
+			return "\\b";
+		case "\f":
+			return "\\f";
+		case "\n":
+			return "\\n";
+		case "\r":
+			return "\\r";
+		case "\t":
+			return "\\t";
+		default:
+			return `\\u${char.codePointAt(0)?.toString(16).padStart(4, "0") ?? "0000"}`;
+	}
+}
+
+/**
+ * Repairs malformed JSON string literals by:
+ * - escaping raw control characters inside strings
+ * - doubling backslashes before invalid escape characters
+ */
+export function repairJson(json: string): string {
+	let repaired = "";
+	let inString = false;
+
+	for (let index = 0; index < json.length; index++) {
+		const char = json[index];
+
+		if (!inString) {
+			repaired += char;
+			if (char === '"') {
+				inString = true;
+			}
+			continue;
+		}
+
+		if (char === '"') {
+			repaired += char;
+			inString = false;
+			continue;
+		}
+
+		if (char === "\\") {
+			const nextChar = json[index + 1];
+			if (nextChar === undefined) {
+				repaired += "\\\\";
+				continue;
+			}
+
+			if (nextChar === "u") {
+				const unicodeDigits = json.slice(index + 2, index + 6);
+				if (/^[0-9a-fA-F]{4}$/.test(unicodeDigits)) {
+					repaired += `\\u${unicodeDigits}`;
+					index += 5;
+					continue;
+				}
+			}
+
+			if (VALID_JSON_ESCAPES.has(nextChar)) {
+				repaired += `\\${nextChar}`;
+				index += 1;
+				continue;
+			}
+
+			repaired += "\\\\";
+			continue;
+		}
+
+		repaired += isControlCharacter(char) ? escapeControlCharacter(char) : char;
+	}
+
+	return repaired;
+}
+
+export function parseJsonWithRepair<T>(json: string): T {
+	try {
+		return JSON.parse(json) as T;
+	} catch (error) {
+		const repairedJson = repairJson(json);
+		if (repairedJson !== json) {
+			return JSON.parse(repairedJson) as T;
+		}
+		throw error;
+	}
+}
 
 /**
  * Attempts to parse potentially incomplete JSON during streaming.
  * Always returns a valid object, even if the JSON is incomplete.
  *
- * Uses the native Rust streaming JSON parser for performance.
- * Falls back to YAML bullet-list repair when the native parser
- * returns an empty object from input that contains YAML-style
- * bullet lists copied from template formatting (#2660).
- *
  * @param partialJson The partial JSON string from streaming
  * @returns Parsed object or empty object if parsing fails
  */
-export function parseStreamingJson<T = any>(partialJson: string | undefined): T {
+export function parseStreamingJson<T = Record<string, unknown>>(partialJson: string | undefined): T {
 	if (!partialJson || partialJson.trim() === "") {
 		return {} as T;
 	}
 
-	// Fast path: try native streaming parser first
-	const result = nativeParseStreamingJson<T>(partialJson);
-
-	// XML parameter tags can be trapped inside otherwise valid JSON strings,
-	// so run repair before trusting the native parse result.
-	if (hasXmlParameterTags(partialJson)) {
+	try {
+		return parseJsonWithRepair<T>(partialJson);
+	} catch {
 		try {
-			return JSON.parse(repairToolJson(partialJson)) as T;
+			const result = partialParse(partialJson);
+			return (result ?? {}) as T;
 		} catch {
-			// Fall through to the native parser result on incomplete partials
+			try {
+				const result = partialParse(repairJson(partialJson));
+				return (result ?? {}) as T;
+			} catch {
+				return {} as T;
+			}
 		}
 	}
-
-	// If the native parser returned a non-empty result, use it.
-	// Only attempt repair when the result is empty AND the input
-	// contains YAML bullet patterns (avoids unnecessary work).
-	if (
-		result &&
-		typeof result === "object" &&
-		Object.keys(result as object).length === 0 &&
-		hasYamlBulletLists(partialJson)
-	) {
-		try {
-			return JSON.parse(repairToolJson(partialJson)) as T;
-		} catch {
-			// Repair failed — return the empty object from native parser
-		}
-	}
-
-	return result;
 }

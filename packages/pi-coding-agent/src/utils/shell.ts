@@ -1,10 +1,12 @@
 import { existsSync } from "node:fs";
 import { delimiter } from "node:path";
 import { spawn, spawnSync } from "child_process";
-import { getBinDir, getSettingsPath } from "../config.js";
-import { SettingsManager } from "../core/settings-manager.js";
+import { getBinDir } from "../config.js";
 
-let cachedShellConfig: { shell: string; args: string[] } | null = null;
+export interface ShellConfig {
+	shell: string;
+	args: string[];
+}
 
 /**
  * Find bash executable on PATH (cross-platform)
@@ -13,7 +15,11 @@ function findBashOnPath(): string | null {
 	if (process.platform === "win32") {
 		// Windows: Use 'where' and verify file exists (where can return non-existent paths)
 		try {
-			const result = spawnSync("where", ["bash.exe"], { encoding: "utf-8", timeout: 5000 });
+			const result = spawnSync("where", ["bash.exe"], {
+				encoding: "utf-8",
+				timeout: 5000,
+				windowsHide: true,
+			});
 			if (result.status === 0 && result.stdout) {
 				const firstMatch = result.stdout.trim().split(/\r?\n/)[0];
 				if (firstMatch && existsSync(firstMatch)) {
@@ -42,29 +48,19 @@ function findBashOnPath(): string | null {
 }
 
 /**
- * Get shell configuration based on platform.
+ * Resolve shell configuration based on platform and an optional explicit shell path.
  * Resolution order:
- * 1. User-specified shellPath in settings.json
+ * 1. User-specified shellPath
  * 2. On Windows: Git Bash in known locations, then bash on PATH
  * 3. On Unix: /bin/bash, then bash on PATH, then fallback to sh
  */
-export function getShellConfig(): { shell: string; args: string[] } {
-	if (cachedShellConfig) {
-		return cachedShellConfig;
-	}
-
-	const settings = SettingsManager.create();
-	const customShellPath = settings.getShellPath();
-
+export function getShellConfig(customShellPath?: string): ShellConfig {
 	// 1. Check user-specified shell path
 	if (customShellPath) {
 		if (existsSync(customShellPath)) {
-			cachedShellConfig = { shell: customShellPath, args: ["-c"] };
-			return cachedShellConfig;
+			return { shell: customShellPath, args: ["-c"] };
 		}
-		throw new Error(
-			`Custom shell path not found: ${customShellPath}\nPlease update shellPath in ${getSettingsPath()}`,
-		);
+		throw new Error(`Custom shell path not found: ${customShellPath}`);
 	}
 
 	if (process.platform === "win32") {
@@ -81,52 +77,36 @@ export function getShellConfig(): { shell: string; args: string[] } {
 
 		for (const path of paths) {
 			if (existsSync(path)) {
-				cachedShellConfig = { shell: path, args: ["-c"] };
-				return cachedShellConfig;
+				return { shell: path, args: ["-c"] };
 			}
 		}
 
 		// 3. Fallback: search bash.exe on PATH (Cygwin, MSYS2, WSL, etc.)
 		const bashOnPath = findBashOnPath();
 		if (bashOnPath) {
-			cachedShellConfig = { shell: bashOnPath, args: ["-c"] };
-			return cachedShellConfig;
+			return { shell: bashOnPath, args: ["-c"] };
 		}
 
 		throw new Error(
 			`No bash shell found. Options:\n` +
 				`  1. Install Git for Windows: https://git-scm.com/download/win\n` +
 				`  2. Add your bash to PATH (Cygwin, MSYS2, etc.)\n` +
-				`  3. Set shellPath in ${getSettingsPath()}\n\n` +
+				"  3. Set shellPath in settings.json\n\n" +
 				`Searched Git Bash in:\n${paths.map((p) => `  ${p}`).join("\n")}`,
 		);
 	}
 
 	// Unix: try /bin/bash, then bash on PATH, then fallback to sh
 	if (existsSync("/bin/bash")) {
-		cachedShellConfig = { shell: "/bin/bash", args: ["-c"] };
-		return cachedShellConfig;
+		return { shell: "/bin/bash", args: ["-c"] };
 	}
 
 	const bashOnPath = findBashOnPath();
 	if (bashOnPath) {
-		cachedShellConfig = { shell: bashOnPath, args: ["-c"] };
-		return cachedShellConfig;
+		return { shell: bashOnPath, args: ["-c"] };
 	}
 
-	cachedShellConfig = { shell: "sh", args: ["-c"] };
-	return cachedShellConfig;
-}
-
-/**
- * On Windows + Git Bash, rewrite Windows-style NUL redirects to /dev/null.
- * Git Bash doesn't recognize NUL as a device name and creates a literal file
- * that is undeletable due to NUL being a reserved Windows device name.
- * No-op on non-Windows platforms.
- */
-export function sanitizeCommand(command: string): string {
-	if (process.platform !== "win32") return command;
-	return command.replace(/(\d*>>?) *\bNUL\b(?=\s|;|\||&|\)|$)/gi, "$1 /dev/null");
+	return { shell: "sh", args: ["-c"] };
 }
 
 export function getShellEnv(): NodeJS.ProcessEnv {
@@ -141,6 +121,51 @@ export function getShellEnv(): NodeJS.ProcessEnv {
 		...process.env,
 		[pathKey]: updatedPath,
 	};
+}
+
+/** GSD compat: normalize Windows NUL redirects for bash compatibility. */
+export function sanitizeCommand(command: string): string {
+	if (process.platform !== "win32") return command;
+
+	const isDigit = (char: string | undefined): boolean => Boolean(char && char >= "0" && char <= "9");
+	const isBoundary = (char: string | undefined): boolean =>
+		char === undefined || char === " " || char === "\t" || char === ";" || char === "|" || char === "&" || char === ")";
+
+	let output = "";
+	for (let index = 0; index < command.length; ) {
+		let cursor = index;
+		while (isDigit(command[cursor])) {
+			cursor++;
+		}
+		if (command[cursor] !== ">") {
+			output += command[index]!;
+			index++;
+			continue;
+		}
+
+		cursor++;
+		if (command[cursor] === ">") {
+			cursor++;
+		}
+
+		const redirectToken = command.slice(index, cursor);
+		let valueStart = cursor;
+		while (command[valueStart] === " ") {
+			valueStart++;
+		}
+
+		const value = command.slice(valueStart, valueStart + 3);
+		if (value.toLowerCase() === "nul" && isBoundary(command[valueStart + 3])) {
+			output += `${redirectToken} /dev/null`;
+			index = valueStart + 3;
+			continue;
+		}
+
+		output += command[index]!;
+		index++;
+	}
+
+	return output;
 }
 
 /**
@@ -184,6 +209,27 @@ export function sanitizeBinaryOutput(str: string): string {
 }
 
 /**
+ * Detached child processes must be tracked so they can be killed on parent
+ * shutdown signals (SIGHUP/SIGTERM).
+ */
+const trackedDetachedChildPids = new Set<number>();
+
+export function trackDetachedChildPid(pid: number): void {
+	trackedDetachedChildPids.add(pid);
+}
+
+export function untrackDetachedChildPid(pid: number): void {
+	trackedDetachedChildPids.delete(pid);
+}
+
+export function killTrackedDetachedChildren(): void {
+	for (const pid of trackedDetachedChildPids) {
+		killProcessTree(pid);
+	}
+	trackedDetachedChildPids.clear();
+}
+
+/**
  * Kill a process and all its children (cross-platform)
  */
 export function killProcessTree(pid: number): void {
@@ -192,6 +238,8 @@ export function killProcessTree(pid: number): void {
 		try {
 			spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
 				stdio: "ignore",
+				detached: true,
+				windowsHide: true,
 			});
 		} catch {
 			// Ignore errors if taskkill fails

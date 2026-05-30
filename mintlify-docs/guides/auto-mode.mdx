@@ -112,6 +112,10 @@ Auto mode persists worker state, unit-dispatch state, and paused-session metadat
 
 A sliding-window analysis detects stuck loops — catching cycles like A→B→A→B as well as single-unit repeats. On detection, GSD retries once with a diagnostic prompt. If it fails again, auto mode stops with the exact file it expected.
 
+### Artifact verification retries
+
+After each unit, GSD verifies the expected artifact and retries missing artifacts with explicit failure context. `reactive-execute` batches use a terminal recovery after the retry cap: if dispatched tasks are still missing `T##-SUMMARY.md` files, GSD writes `S##-REACTIVE-BLOCKER.md`, marks summary-present tasks complete, marks missing-summary tasks skipped, and advances. Review skipped tasks before relying on downstream artifacts.
+
 ### Consecutive dispatch blocker
 
 Auto mode also enforces a same-unit consecutive dispatch cap for `complete-milestone`, `validate-milestone`, and `research-slice`. The loop allows two consecutive dispatches of the same unit in the same phase and stops before a third attempt with a repeat-cap warning that instructs you to run `/gsd resume` after intervention.

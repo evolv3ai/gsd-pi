@@ -33,33 +33,43 @@ let _loadedSuccessfully = false;
 function loadNative(): Record<string, unknown> {
   const errors: string[] = [];
 
-  // 1. Try the platform-specific npm optional dependency
-  const packageSuffix = platformPackageMap[platformTag];
-  if (packageSuffix) {
+  if (process.env.GSD_NATIVE_DISABLE === "1") {
+    errors.push("disabled by GSD_NATIVE_DISABLE=1");
+  } else {
+    // 1. Try the platform-specific npm optional dependency
+    const packageSuffix = platformPackageMap[platformTag];
+    if (packageSuffix) {
+      try {
+        const loaded = _require(`@opengsd/engine-${packageSuffix}`) as Record<string, unknown>;
+        _loadedSuccessfully = true;
+        return loaded;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        errors.push(`@opengsd/engine-${packageSuffix}: ${message}`);
+      }
+    }
+
+    // 2. Try local release build (native/addon/gsd_engine.{platform}.node)
+    const releasePath = path.join(addonDir, `gsd_engine.${platformTag}.node`);
     try {
-      _loadedSuccessfully = true; return _require(`@opengsd/engine-${packageSuffix}`) as Record<string, unknown>;
+      const loaded = _require(releasePath) as Record<string, unknown>;
+      _loadedSuccessfully = true;
+      return loaded;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      errors.push(`@opengsd/engine-${packageSuffix}: ${message}`);
+      errors.push(`${releasePath}: ${message}`);
     }
-  }
 
-  // 2. Try local release build (native/addon/gsd_engine.{platform}.node)
-  const releasePath = path.join(addonDir, `gsd_engine.${platformTag}.node`);
-  try {
-    _loadedSuccessfully = true; return _require(releasePath) as Record<string, unknown>;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    errors.push(`${releasePath}: ${message}`);
-  }
-
-  // 3. Try local dev build (native/addon/gsd_engine.dev.node)
-  const devPath = path.join(addonDir, "gsd_engine.dev.node");
-  try {
-    _loadedSuccessfully = true; return _require(devPath) as Record<string, unknown>;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    errors.push(`${devPath}: ${message}`);
+    // 3. Try local dev build (native/addon/gsd_engine.dev.node)
+    const devPath = path.join(addonDir, "gsd_engine.dev.node");
+    try {
+      const loaded = _require(devPath) as Record<string, unknown>;
+      _loadedSuccessfully = true;
+      return loaded;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      errors.push(`${devPath}: ${message}`);
+    }
   }
 
   const details = errors.map((e) => `  - ${e}`).join("\n");
@@ -80,6 +90,11 @@ function loadNative(): Record<string, unknown> {
       };
     },
   });
+}
+
+/** True when a real `.node` addon was loaded (not the throw-on-call proxy). */
+export function isNativeAddonLoaded(): boolean {
+  return _loadedSuccessfully;
 }
 
 export const native = loadNative() as {

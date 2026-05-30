@@ -1,47 +1,29 @@
-import type { Api, AssistantMessage, Message, Model, ToolCall, ToolResultMessage } from "../types.js";
+import type {
+	Api,
+	AssistantMessage,
+	ImageContent,
+	Message,
+	Model,
+	TextContent,
+	ToolCall,
+	ToolResultMessage,
+} from "../types.js";
 
-/**
- * Report of context transformations during a cross-provider switch (ADR-005 Phase 3).
- * Tracks what was lost or downgraded when replaying conversation history to a different provider.
- */
 export interface ProviderSwitchReport {
-	/** API of the messages being transformed from */
 	fromApi: string;
-	/** API of the target model */
 	toApi: string;
-	/** Number of thinking blocks completely dropped (redacted/encrypted, cross-model) */
 	thinkingBlocksDropped: number;
-	/** Number of thinking blocks downgraded from structured to plain text */
 	thinkingBlocksDowngraded: number;
-	/** Number of tool call IDs that were remapped/normalized */
 	toolCallIdsRemapped: number;
-	/** Number of synthetic tool results inserted for orphaned tool calls */
 	syntheticToolResultsInserted: number;
-	/** Number of thought signatures dropped (Google-specific opaque context) */
 	thoughtSignaturesDropped: number;
 }
 
-/** Observer invoked once per non-empty cross-provider transform (ADR-005). */
 export type ProviderSwitchObserver = (report: ProviderSwitchReport) => void;
 
 let providerSwitchObserver: ProviderSwitchObserver | undefined;
 
-/**
- * Register a single observer that receives every non-empty ProviderSwitchReport
- * produced by `transformMessagesWithReport`. Pass `undefined` to clear.
- *
- * Single-subscriber by design — one host (GSD) owns telemetry. The observer
- * runs synchronously after the verbose-stderr log; errors are swallowed so a
- * misbehaving observer cannot break a stream.
- */
-export function setProviderSwitchObserver(observer: ProviderSwitchObserver | undefined): void {
-	providerSwitchObserver = observer;
-}
-
-/**
- * Create an empty provider switch report.
- */
-export function createEmptyReport(fromApi: string, toApi: string): ProviderSwitchReport {
+function makeEmptyReport(fromApi: string, toApi: string): ProviderSwitchReport {
 	return {
 		fromApi,
 		toApi,
@@ -53,10 +35,7 @@ export function createEmptyReport(fromApi: string, toApi: string): ProviderSwitc
 	};
 }
 
-/**
- * Check if a provider switch report has any non-zero transformations.
- */
-export function hasTransformations(report: ProviderSwitchReport): boolean {
+function hasReportChanges(report: ProviderSwitchReport): boolean {
 	return (
 		report.thinkingBlocksDropped > 0 ||
 		report.thinkingBlocksDowngraded > 0 ||
@@ -66,44 +45,63 @@ export function hasTransformations(report: ProviderSwitchReport): boolean {
 	);
 }
 
-/**
- * Create a report, run transformMessages, and log if non-empty.
- * Convenience wrapper for provider adapters (ADR-005).
- */
-export function transformMessagesWithReport<TApi extends Api>(
-	messages: Message[],
-	model: Model<TApi>,
-	normalizeToolCallId?: (id: string, model: Model<TApi>, source: AssistantMessage) => string,
-	sourceApi?: string,
-): Message[] {
-	const report = createEmptyReport(sourceApi ?? "unknown", model.api);
-	const result = transformMessages(messages, model, normalizeToolCallId, report);
-	if (hasTransformations(report)) {
-		logProviderSwitchReport(report);
-		if (providerSwitchObserver) {
-			try {
-				providerSwitchObserver(report);
-			} catch {
-				// Observer must not break the stream.
-			}
-		}
+export function setProviderSwitchObserver(observer: ProviderSwitchObserver | undefined): void {
+	providerSwitchObserver = observer;
+}
+
+export function notifyProviderSwitchObserver(report: ProviderSwitchReport): void {
+	try {
+		providerSwitchObserver?.(report);
+	} catch {
+		// Observer errors must not break streaming.
 	}
+}
+
+const NON_VISION_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)";
+const NON_VISION_TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)";
+
+function replaceImagesWithPlaceholder(content: (TextContent | ImageContent)[], placeholder: string): TextContent[] {
+	const result: TextContent[] = [];
+	let previousWasPlaceholder = false;
+
+	for (const block of content) {
+		if (block.type === "image") {
+			if (!previousWasPlaceholder) {
+				result.push({ type: "text", text: placeholder });
+			}
+			previousWasPlaceholder = true;
+			continue;
+		}
+
+		result.push(block);
+		previousWasPlaceholder = block.text === placeholder;
+	}
+
 	return result;
 }
 
-/** Log a non-empty ProviderSwitchReport as a debug-level warning. */
-function logProviderSwitchReport(report: ProviderSwitchReport): void {
-	const parts: string[] = [`Provider switch ${report.fromApi} → ${report.toApi}:`];
-	if (report.thinkingBlocksDropped > 0) parts.push(`${report.thinkingBlocksDropped} thinking blocks dropped`);
-	if (report.thinkingBlocksDowngraded > 0) parts.push(`${report.thinkingBlocksDowngraded} thinking blocks downgraded`);
-	if (report.toolCallIdsRemapped > 0) parts.push(`${report.toolCallIdsRemapped} tool call IDs remapped`);
-	if (report.syntheticToolResultsInserted > 0) parts.push(`${report.syntheticToolResultsInserted} synthetic tool results inserted`);
-	if (report.thoughtSignaturesDropped > 0) parts.push(`${report.thoughtSignaturesDropped} thought signatures dropped`);
-	// Use process.stderr for debug output — this is observable in verbose/debug modes
-	// without polluting stdout which may be used for structured output (RPC/MCP).
-	if (process.env.GSD_VERBOSE === "1" || process.env.PI_VERBOSE === "1") {
-		process.stderr.write(`[provider-switch] ${parts.join(", ")}\n`);
+function downgradeUnsupportedImages<TApi extends Api>(messages: Message[], model: Model<TApi>): Message[] {
+	if (model.input.includes("image")) {
+		return messages;
 	}
+
+	return messages.map((msg) => {
+		if (msg.role === "user" && Array.isArray(msg.content)) {
+			return {
+				...msg,
+				content: replaceImagesWithPlaceholder(msg.content, NON_VISION_USER_IMAGE_PLACEHOLDER),
+			};
+		}
+
+		if (msg.role === "toolResult") {
+			return {
+				...msg,
+				content: replaceImagesWithPlaceholder(msg.content, NON_VISION_TOOL_IMAGE_PLACEHOLDER),
+			};
+		}
+
+		return msg;
+	});
 }
 
 /**
@@ -115,13 +113,23 @@ export function transformMessages<TApi extends Api>(
 	messages: Message[],
 	model: Model<TApi>,
 	normalizeToolCallId?: (id: string, model: Model<TApi>, source: AssistantMessage) => string,
-	report?: ProviderSwitchReport,
+): Message[] {
+	return transformMessagesWithReport(messages, model, normalizeToolCallId);
+}
+
+export function transformMessagesWithReport<TApi extends Api>(
+	messages: Message[],
+	model: Model<TApi>,
+	normalizeToolCallId?: (id: string, model: Model<TApi>, source: AssistantMessage) => string,
+	sourceApi?: string,
 ): Message[] {
 	// Build a map of original tool call IDs to normalized IDs
 	const toolCallIdMap = new Map<string, string>();
+	const imageAwareMessages = downgradeUnsupportedImages(messages, model);
+	const report = makeEmptyReport(sourceApi ?? model.api, model.api);
 
-	// First pass: transform messages (thinking blocks, tool call ID normalization)
-	const transformed = messages.map((msg) => {
+	// First pass: transform messages (unsupported image downgrade, thinking blocks, tool call ID normalization)
+	const transformed = imageAwareMessages.map((msg) => {
 		// User messages pass through unchanged
 		if (msg.role === "user") {
 			return msg;
@@ -149,20 +157,18 @@ export function transformMessages<TApi extends Api>(
 					// Redacted thinking is opaque encrypted content, only valid for the same model.
 					// Drop it for cross-model to avoid API errors.
 					if (block.redacted) {
-						if (!isSameModel && report) report.thinkingBlocksDropped++;
+						if (!isSameModel) {
+							report.thinkingBlocksDropped += 1;
+						}
 						return isSameModel ? block : [];
 					}
 					// For same model: keep thinking blocks with signatures (needed for replay)
 					// even if the thinking text is empty (OpenAI encrypted reasoning)
 					if (isSameModel && block.thinkingSignature) return block;
 					// Skip empty thinking blocks, convert others to plain text
-					if (!block.thinking || block.thinking.trim() === "") {
-						if (!isSameModel && report) report.thinkingBlocksDropped++;
-						return [];
-					}
+					if (!block.thinking || block.thinking.trim() === "") return [];
 					if (isSameModel) return block;
-					// Downgrade: structured thinking → plain text
-					if (report) report.thinkingBlocksDowngraded++;
+					report.thinkingBlocksDowngraded += 1;
 					return {
 						type: "text" as const,
 						text: block.thinking,
@@ -184,7 +190,7 @@ export function transformMessages<TApi extends Api>(
 					if (!isSameModel && toolCall.thoughtSignature) {
 						normalizedToolCall = { ...toolCall };
 						delete (normalizedToolCall as { thoughtSignature?: string }).thoughtSignature;
-						if (report) report.thoughtSignaturesDropped++;
+						report.thoughtSignaturesDropped += 1;
 					}
 
 					if (!isSameModel && normalizeToolCallId) {
@@ -192,7 +198,7 @@ export function transformMessages<TApi extends Api>(
 						if (normalizedId !== toolCall.id) {
 							toolCallIdMap.set(toolCall.id, normalizedId);
 							normalizedToolCall = { ...normalizedToolCall, id: normalizedId };
-							if (report) report.toolCallIdsRemapped++;
+							report.toolCallIdsRemapped += 1;
 						}
 					}
 
@@ -215,29 +221,32 @@ export function transformMessages<TApi extends Api>(
 	const result: Message[] = [];
 	let pendingToolCalls: ToolCall[] = [];
 	let existingToolResultIds = new Set<string>();
+	const insertSyntheticToolResults = () => {
+		if (pendingToolCalls.length > 0) {
+			for (const tc of pendingToolCalls) {
+				if (!existingToolResultIds.has(tc.id)) {
+					report.syntheticToolResultsInserted += 1;
+					result.push({
+						role: "toolResult",
+						toolCallId: tc.id,
+						toolName: tc.name,
+						content: [{ type: "text", text: "No result provided" }],
+						isError: true,
+						timestamp: Date.now(),
+					} as ToolResultMessage);
+				}
+			}
+			pendingToolCalls = [];
+			existingToolResultIds = new Set();
+		}
+	};
 
 	for (let i = 0; i < transformed.length; i++) {
 		const msg = transformed[i];
 
 		if (msg.role === "assistant") {
 			// If we have pending orphaned tool calls from a previous assistant, insert synthetic results now
-			if (pendingToolCalls.length > 0) {
-				for (const tc of pendingToolCalls) {
-					if (!existingToolResultIds.has(tc.id)) {
-						result.push({
-							role: "toolResult",
-							toolCallId: tc.id,
-							toolName: tc.name,
-							content: [{ type: "text", text: "No result provided" }],
-							isError: true,
-							timestamp: Date.now(),
-						} as ToolResultMessage);
-						if (report) report.syntheticToolResultsInserted++;
-					}
-				}
-				pendingToolCalls = [];
-				existingToolResultIds = new Set();
-			}
+			insertSyntheticToolResults();
 
 			// Skip errored/aborted assistant messages entirely.
 			// These are incomplete turns that shouldn't be replayed:
@@ -262,27 +271,18 @@ export function transformMessages<TApi extends Api>(
 			result.push(msg);
 		} else if (msg.role === "user") {
 			// User message interrupts tool flow - insert synthetic results for orphaned calls
-			if (pendingToolCalls.length > 0) {
-				for (const tc of pendingToolCalls) {
-					if (!existingToolResultIds.has(tc.id)) {
-						result.push({
-							role: "toolResult",
-							toolCallId: tc.id,
-							toolName: tc.name,
-							content: [{ type: "text", text: "No result provided" }],
-							isError: true,
-							timestamp: Date.now(),
-						} as ToolResultMessage);
-						if (report) report.syntheticToolResultsInserted++;
-					}
-				}
-				pendingToolCalls = [];
-				existingToolResultIds = new Set();
-			}
+			insertSyntheticToolResults();
 			result.push(msg);
 		} else {
 			result.push(msg);
 		}
+	}
+
+	// If the conversation ends with unresolved tool calls, synthesize results now.
+	insertSyntheticToolResults();
+
+	if (hasReportChanges(report)) {
+		notifyProviderSwitchObserver(report);
 	}
 
 	return result;

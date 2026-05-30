@@ -1,15 +1,21 @@
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { setKittyProtocolActive } from "./keys.js";
 import { StdinBuffer } from "./stdin-buffer.js";
 
 const cjsRequire = createRequire(import.meta.url);
 
+const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
+const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
+const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0;\x07";
+
 /**
  * Minimal terminal interface for TUI
  */
 export interface Terminal {
-	// Whether stdout is a real TTY (false for pipes, e.g. RPC bridge processes)
+	// Whether the terminal is interactive
 	readonly isTTY: boolean;
 
 	// Start the terminal with input and resize handlers
@@ -50,43 +56,52 @@ export interface Terminal {
 
 	// Title operations
 	setTitle(title: string): void; // Set terminal window title
+
+	// Progress indicator (OSC 9;4)
+	setProgress(active: boolean): void;
 }
 
 /**
  * Real terminal using process.stdin/stdout
  */
 export class ProcessTerminal implements Terminal {
-	private static _vtHandles: { GetConsoleMode: any; SetConsoleMode: any; handle: any } | null = null;
 	private wasRaw = false;
-	private started = false;
-	private readonly processExitHandler = () => {
-		this.stop();
-	};
 	private inputHandler?: (data: string) => void;
 	private resizeHandler?: () => void;
 	private _kittyProtocolActive = false;
 	private _modifyOtherKeysActive = false;
 	private stdinBuffer?: StdinBuffer;
 	private stdinDataHandler?: (data: string) => void;
-	private writeLogPath = process.env.PI_TUI_WRITE_LOG || "";
-
-	get isTTY(): boolean {
-		return !!process.stdout.isTTY;
-	}
+	private progressInterval?: ReturnType<typeof setInterval>;
+	private writeLogPath = (() => {
+		const env = process.env.PI_TUI_WRITE_LOG || "";
+		if (!env) return "";
+		try {
+			if (fs.statSync(env).isDirectory()) {
+				const now = new Date();
+				const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}-${String(now.getSeconds()).padStart(2, "0")}`;
+				return path.join(env, `tui-${ts}-${process.pid}.log`);
+			}
+		} catch {
+			// Not an existing directory - use as-is (file path)
+		}
+		return env;
+	})();
 
 	get kittyProtocolActive(): boolean {
 		return this._kittyProtocolActive;
 	}
 
+	get isTTY(): boolean {
+		return Boolean(process.stdout.isTTY);
+	}
+
 	start(onInput: (data: string) => void, onResize: () => void): void {
-		// Non-TTY stdout (pipe) — skip TUI initialization entirely.
-		// RPC bridge processes communicate via JSON, not terminal escape codes.
-		// Without this guard, the render loop burns 500%+ CPU. (issue #3095)
 		if (!this.isTTY) {
+			this.inputHandler = onInput;
+			this.resizeHandler = onResize;
 			return;
 		}
-		if (this.started) return;
-		this.started = true;
 
 		this.inputHandler = onInput;
 		this.resizeHandler = onResize;
@@ -121,7 +136,6 @@ export class ProcessTerminal implements Terminal {
 		// The query handler intercepts input temporarily, then installs the user's handler
 		// See: https://sw.kovidgoyal.net/kitty/keyboard-protocol/
 		this.queryAndEnableKittyProtocol();
-		process.once("exit", this.processExitHandler);
 	}
 
 	/**
@@ -133,10 +147,7 @@ export class ProcessTerminal implements Terminal {
 	 * to handle the case where the response arrives split across multiple events.
 	 */
 	private setupStdinBuffer(): void {
-		// 50ms matches xterm's default escapeCodeTimeout and gives enough headroom
-		// for escape sequences that arrive split across multiple stdin data events
-		// (e.g. \x1b arriving separately from [D due to event loop latency).
-		this.stdinBuffer = new StdinBuffer({ timeout: 50 });
+		this.stdinBuffer = new StdinBuffer({ timeout: 10 });
 
 		// Kitty protocol response pattern: \x1b[?<flags>u
 		const kittyResponsePattern = /^\x1b\[\?(\d+)u$/;
@@ -213,25 +224,30 @@ export class ProcessTerminal implements Terminal {
 	private enableWindowsVTInput(): void {
 		if (process.platform !== "win32") return;
 		try {
-			if (!ProcessTerminal._vtHandles) {
-				const koffi = cjsRequire("koffi");
-				const k32 = koffi.load("kernel32.dll");
-				const GetStdHandle = k32.func("void* __stdcall GetStdHandle(int)");
-				const GetConsoleMode = k32.func("bool __stdcall GetConsoleMode(void*, _Out_ uint32_t*)");
-				const SetConsoleMode = k32.func("bool __stdcall SetConsoleMode(void*, uint32_t)");
-				const STD_INPUT_HANDLE = -10;
-				const handle = GetStdHandle(STD_INPUT_HANDLE);
-				ProcessTerminal._vtHandles = { GetConsoleMode, SetConsoleMode, handle };
-			}
-			const ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200;
-			const { GetConsoleMode, SetConsoleMode, handle } = ProcessTerminal._vtHandles;
-			const mode = new Uint32Array(1);
-			GetConsoleMode(handle, mode);
-			if (!(mode[0]! & ENABLE_VIRTUAL_TERMINAL_INPUT)) {
-				SetConsoleMode(handle, mode[0]! | ENABLE_VIRTUAL_TERMINAL_INPUT);
+			const arch = process.arch;
+			if (arch !== "x64" && arch !== "arm64") return;
+
+			// Dynamic require so non-Windows and bundled/browser paths never load the
+			// native helper. In the npm package native/ is next to dist/; in compiled
+			// binary archives native/ is copied next to the executable.
+			const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+			const nativePath = path.join("native", "win32", "prebuilds", `win32-${arch}`, "win32-console-mode.node");
+			const candidates = [
+				path.join(moduleDir, "..", nativePath),
+				path.join(moduleDir, nativePath),
+				path.join(path.dirname(process.execPath), nativePath),
+			];
+			for (const modulePath of candidates) {
+				try {
+					const helper = cjsRequire(modulePath) as { enableVirtualTerminalInput?: () => boolean };
+					helper.enableVirtualTerminalInput?.();
+					return;
+				} catch {
+					// Try the next possible packaging location.
+				}
 			}
 		} catch {
-			// koffi not available — Shift+Tab won't be distinguishable from Tab
+			// Native helper not available — Shift+Tab won't be distinguishable from Tab.
 		}
 	}
 
@@ -274,9 +290,9 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	stop(): void {
-		if (!this.started) return;
-		this.started = false;
-		process.removeListener("exit", this.processExitHandler);
+		if (this.clearProgressInterval()) {
+			process.stdout.write(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
+		}
 
 		// Disable bracketed paste mode
 		process.stdout.write("\x1b[?2004l");
@@ -332,11 +348,11 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	get columns(): number {
-		return process.stdout.columns || 80;
+		return process.stdout.columns || Number(process.env.COLUMNS) || 80;
 	}
 
 	get rows(): number {
-		return process.stdout.rows || 24;
+		return process.stdout.rows || Number(process.env.LINES) || 24;
 	}
 
 	moveBy(lines: number): void {
@@ -373,5 +389,28 @@ export class ProcessTerminal implements Terminal {
 	setTitle(title: string): void {
 		// OSC 0;title BEL - set terminal window title
 		process.stdout.write(`\x1b]0;${title}\x07`);
+	}
+
+	setProgress(active: boolean): void {
+		if (active) {
+			// OSC 9;4;3 - indeterminate progress
+			process.stdout.write(TERMINAL_PROGRESS_ACTIVE_SEQUENCE);
+			if (!this.progressInterval) {
+				this.progressInterval = setInterval(() => {
+					process.stdout.write(TERMINAL_PROGRESS_ACTIVE_SEQUENCE);
+				}, TERMINAL_PROGRESS_KEEPALIVE_MS);
+			}
+		} else {
+			this.clearProgressInterval();
+			// OSC 9;4;0 - clear progress
+			process.stdout.write(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
+		}
+	}
+
+	private clearProgressInterval(): boolean {
+		if (!this.progressInterval) return false;
+		clearInterval(this.progressInterval);
+		this.progressInterval = undefined;
+		return true;
 	}
 }

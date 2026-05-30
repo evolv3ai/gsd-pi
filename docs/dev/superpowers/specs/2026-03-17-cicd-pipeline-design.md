@@ -6,7 +6,7 @@ A three-stage promotion pipeline for GSD 2 that moves merged PRs through Dev →
 
 ## Goals
 
-1. Every merged PR is immediately installable via `npx gsd-pi@dev`
+1. Every merged PR is immediately installable via `npx @opengsd/gsd-pi@dev`
 2. Verified builds auto-promote to `@next` for early adopters
 3. Production releases require manual approval and optional live-LLM validation
 4. CI builds are fast and reproducible via pre-built Docker builder image
@@ -33,8 +33,8 @@ A three-stage promotion pipeline for GSD 2 that moves merged PRs through Dev →
 │  STAGE: DEV                          Environment: dev        │
 │                                                              │
 │  1. Version stamp: <current>-dev.<short-sha>                 │
-│  2. npm publish gsd-pi@<version>-dev.<sha> --tag dev         │
-│  3. Smoke test: npx gsd-pi@dev --version                    │
+│  2. npm publish @opengsd/gsd-pi@<version>-dev.<sha> --tag dev│
+│  3. Smoke test: npx @opengsd/gsd-pi@dev --version           │
 │                                                              │
 │  Note: Build/test/typecheck already ran in ci.yml            │
 │  Docker: Build CI builder image (only if Dockerfile changed) │
@@ -43,13 +43,13 @@ A three-stage promotion pipeline for GSD 2 that moves merged PRs through Dev →
 ┌──────────────────────────────────────────────────────────────┐
 │  STAGE: TEST                         Environment: test       │
 │                                                              │
-│  1. Install gsd-pi@dev from registry                         │
+│  1. Install @opengsd/gsd-pi@dev from registry                │
 │  2. CLI smoke tests (--version, init, help, config)          │
 │  3. Dry-run fixture suite (recorded LLM conversations)       │
 │     - Agent session replay with fixture provider             │
 │     - Tool use round-trips verified                          │
 │     - Extension loading validated                            │
-│  4. npm dist-tag add gsd-pi@<version> next                   │
+│  4. npm dist-tag add @opengsd/gsd-pi@<version> next          │
 │                                                              │
 │  Docker: Build + push runtime image to GHCR as :next         │
 └──────────────────────────┬──────────────────────────────────┘
@@ -61,7 +61,7 @@ A three-stage promotion pipeline for GSD 2 that moves merged PRs through Dev →
 │     - Gated behind workflow input flag                       │
 │     - Uses ANTHROPIC_API_KEY / OPENAI_API_KEY secrets        │
 │     - Budget-capped: small models, short conversations       │
-│  2. npm dist-tag add gsd-pi@<version> latest                 │
+│  2. npm dist-tag add @opengsd/gsd-pi@<version> latest        │
 │  3. GitHub Release created with changelog                    │
 │  4. Docker: tag runtime image as :latest + :v<version>       │
 │  5. Post-publish smoke test against @latest                  │
@@ -80,7 +80,7 @@ The `-dev.` prerelease identifier is distinct from the existing `-next.` convent
 
 ### Native Binary Strategy for Dev Publishes
 
-Dev versions (`@dev` tag) use the native binaries from the most recent stable `build-native.yml` release. The `optionalDependencies` in `package.json` use `>=` ranges, so a `-dev.` version of `gsd-pi` resolves the latest stable `@gsd-build/engine-*` packages from the registry.
+Dev versions (`@dev` tag) use the native binaries from the most recent stable `build-native.yml` release. The `optionalDependencies` in `package.json` use `>=` ranges, so a `-dev.` version of `gsd-pi` resolves the latest stable `@opengsd/engine-*` packages from the registry.
 
 If a PR modifies Rust native crate code (`native/` directory), the dev publish will bundle stale native binaries. This is acceptable because:
 - Native crate changes are infrequent and always accompanied by a `v*` tag release
@@ -105,9 +105,9 @@ Policy:
 
 | Failure | Impact | Recovery |
 |---------|--------|----------|
-| Dev publish succeeds, smoke test fails | Broken version on `@dev` tag | Next successful merge overwrites `@dev`. Manual fix: `npm dist-tag add gsd-pi@<last-good> dev` |
-| Test stage fails after promoting to `@next` | Broken version on `@next` tag | Manual: `npm dist-tag add gsd-pi@<last-good> next`. `@latest` is never affected. |
-| Prod promotion publishes `@latest` then found broken | Broken production release | Manual: `npm dist-tag add gsd-pi@<previous-stable> latest` and `docker tag ghcr.io/open-gsd/gsd-pi:<previous> latest && docker push`. Post-mortem required. |
+| Dev publish succeeds, smoke test fails | Broken version on `@dev` tag | Next successful merge overwrites `@dev`. Manual fix: `npm dist-tag add @opengsd/gsd-pi@<last-good> dev` |
+| Test stage fails after promoting to `@next` | Broken version on `@next` tag | Manual: `npm dist-tag add @opengsd/gsd-pi@<last-good> next`. `@latest` is never affected. |
+| Prod promotion publishes `@latest` then found broken | Broken production release | Manual: `npm dist-tag add @opengsd/gsd-pi@<previous-stable> latest` and `docker tag ghcr.io/open-gsd/gsd-pi:<previous> latest && docker push`. Post-mortem required. |
 | Docker push succeeds, npm dist-tag fails | Images and npm out of sync | Re-run the failed job (GitHub Actions retry). Images are tagged by version so stale tags are harmless. |
 | GHCR push fails | No Docker image for this version | Non-blocking — npm publish is the primary distribution. Docker image can be rebuilt manually. |
 
@@ -281,7 +281,7 @@ Committed to repo under `tests/fixtures/recordings/`. Each fixture is 5-50KB of 
 
 ### Dev Version Cleanup
 
-Old `-dev.` versions accumulate on npm with every merged PR. A scheduled workflow (`cleanup-dev-versions.yml`) runs weekly and unpublishes dev versions older than 30 days via `npm unpublish gsd-pi@<old-dev-version>`. This prevents registry bloat while keeping recent dev versions available.
+Old `-dev.` versions accumulate on npm with every merged PR. A scheduled workflow (`cleanup-dev-versions.yml`) runs weekly and unpublishes dev versions older than 30 days via `npm unpublish @opengsd/gsd-pi@<old-dev-version>`. This prevents registry bloat while keeping recent dev versions available.
 
 ## New Files & Scripts
 
@@ -348,7 +348,7 @@ All test files use `.ts` with `--experimental-strip-types` for consistency with 
 
 ## Success Criteria
 
-1. A merged PR is installable via `npx gsd-pi@dev` within 15 minutes (assumes warm CI builder image cache)
+1. A merged PR is installable via `npx @opengsd/gsd-pi@dev` within 15 minutes (assumes warm CI builder image cache)
 2. Fixture replay tests complete in under 60 seconds with zero API calls
 3. The full Dev → Test promotion completes without human intervention
 4. Prod promotion is blocked until a maintainer explicitly approves

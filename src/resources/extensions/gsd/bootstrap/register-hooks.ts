@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Registers GSD extension runtime hooks and token-saving tool policies.
 
 import { existsSync } from "node:fs";
@@ -7,18 +7,20 @@ import { pathToFileURL } from "node:url";
 
 import type { ExtensionAPI, ExtensionContext } from "@gsd/pi-coding-agent";
 import { isToolCallEventType } from "@gsd/pi-coding-agent";
+import { ALWAYS_PRESERVED_SHIM_TOOL_NAMES } from "@gsd/pi-ai";
 
 import type { GSDEcosystemBeforeAgentStartHandler } from "../ecosystem/gsd-extension-api.js";
 import { updateSnapshot } from "../ecosystem/gsd-extension-api.js";
 
 import { buildMilestoneFileName, resolveMilestonePath, resolveSliceFile, resolveSlicePath } from "../paths.js";
-import { canonicalToolName, clearDiscussionFlowState, isDepthConfirmationAnswer, isQueuePhaseActive, markApprovalGateVerified, markDepthVerified, resetWriteGateState, shouldBlockContextWrite, shouldBlockPlanningUnit, shouldBlockQueueExecution, shouldBlockWorktreeWrite, isGateQuestionId, setPendingGate, clearPendingGate, getPendingGate, shouldBlockPendingGate, shouldBlockPendingGateBash, extractDepthVerificationMilestoneId } from "./write-gate.js";
+import { canonicalToolName, clearDiscussionFlowState, isDepthConfirmationAnswer, isMilestoneDepthVerified, isQueuePhaseActive, markApprovalGateVerified, markDepthVerified, resetWriteGateState, shouldBlockContextWrite, shouldBlockPlanningUnit, shouldBlockQueueExecution, shouldBlockWorktreeWrite, isGateQuestionId, setPendingGate, clearPendingGate, getPendingGate, shouldBlockPendingGate, shouldBlockPendingGateBash, extractDepthVerificationMilestoneId } from "./write-gate.js";
 import { resolveManifest } from "../unit-context-manifest.js";
 import { isBlockedStateFile, isBashWriteToStateFile, BLOCKED_WRITE_ERROR } from "../write-intercept.js";
 import { loadFile, saveFile, formatContinue } from "../files.js";
 import { clearToolInvocationError, getAutoRuntimeSnapshot, isAutoActive, isAutoPaused, markToolEnd, markToolStart, recordToolInvocationError } from "../auto-runtime-state.js";
 
 import { checkToolCallLoop, resetToolCallLoopGuard } from "./tool-call-loop-guard.js";
+import { maybePauseAutoForApprovalGate, resetPendingGatePauseGuard } from "./pending-gate-pause.js";
 import { saveActivityLog } from "../activity-log.js";
 import { recordToolCall as safetyRecordToolCall, recordToolResult as safetyRecordToolResult, saveEvidenceToDisk } from "../safety/evidence-collector.js";
 import { parseUnitId } from "../unit-id.js";
@@ -32,6 +34,7 @@ import { extractSubagentAgentClasses } from "./subagent-input.js";
 import { approvalGateIdForUnit, isExplicitApprovalResponse, shouldPauseForUserApprovalQuestion } from "../user-input-boundary.js";
 import { resolveSkillManifest } from "../skill-manifest.js";
 import { getGuidedUnitContext } from "../guided-unit-context.js";
+import { registerPlanMilestoneSchemaRecovery } from "./plan-milestone-schema-recovery.js";
 
 let approvalQuestionAbortInFlight = false;
 
@@ -127,12 +130,21 @@ export const MINIMAL_AUTO_BASE_TOOL_NAMES = [
   "bash",
   "bg_shell",
   "edit",
+  "find",
   "glob",
   "grep",
+  "fetch_page",
+  "search-the-web",
   "ls",
   "read",
+  "subagent",
   "write",
+  "ToolSearch",
 ] as const;
+
+function withPreservedShimTools(toolNames: readonly string[]): string[] {
+  return [...new Set([...toolNames, ...ALWAYS_PRESERVED_SHIM_TOOL_NAMES])];
+}
 
 const RUN_UAT_BROWSER_TOOL_NAMES = [
   "browser_navigate",
@@ -231,30 +243,50 @@ function resolveScopedToolNames(
 export function buildMinimalGsdToolSet(activeToolNames: readonly string[]): string[] {
   const preserved = activeToolNames.filter((name) => !isGsdManagedTool(name));
   const minimal = resolveScopedToolNames(activeToolNames, MINIMAL_GSD_TOOL_NAMES);
-  return [...new Set([...preserved, ...minimal])];
+  return withPreservedShimTools([...new Set([...preserved, ...minimal])]);
 }
 
 export function buildMinimalAutoGsdToolSet(
   activeToolNames: readonly string[],
   unitType: string | undefined,
+  registeredToolNames: readonly string[] = activeToolNames,
 ): string[] {
   const unitTools = unitType ? AUTO_UNIT_SCOPED_TOOLS[unitType] ?? [] : [];
   const autoBaseTools = new Set<string>(MINIMAL_AUTO_BASE_TOOL_NAMES);
-  const preserved = activeToolNames.filter((name) => autoBaseTools.has(name));
-  const scoped = resolveScopedToolNames(activeToolNames, [...MINIMAL_GSD_TOOL_NAMES, ...unitTools]);
-  return [...new Set([...preserved, ...scoped])];
+  const availableBaseTools = registeredToolNames.filter((name) => autoBaseTools.has(name));
+  const preserved = [...new Set([
+    ...activeToolNames.filter((name) => autoBaseTools.has(name)),
+    ...availableBaseTools,
+  ])];
+  const scoped = resolveScopedToolNames(
+    [...activeToolNames, ...registeredToolNames],
+    [...MINIMAL_GSD_TOOL_NAMES, ...unitTools],
+  );
+  return withPreservedShimTools([...new Set([...preserved, ...scoped])]);
 }
 
-export function buildMinimalGsdWorkflowToolSet(activeToolNames: readonly string[]): string[] {
+export function buildMinimalGsdWorkflowToolSet(
+  activeToolNames: readonly string[],
+  registeredToolNames: readonly string[] = activeToolNames,
+): string[] {
   const autoBaseTools = new Set<string>(MINIMAL_AUTO_BASE_TOOL_NAMES);
-  const preserved = activeToolNames.filter((name) => autoBaseTools.has(name));
-  const scoped = resolveScopedToolNames(activeToolNames, WORKFLOW_GSD_TOOL_NAMES);
-  return [...new Set([...preserved, ...scoped])];
+  const availableBaseTools = registeredToolNames.filter((name) => autoBaseTools.has(name));
+  const preserved = [...new Set([
+    ...activeToolNames.filter((name) => autoBaseTools.has(name)),
+    ...availableBaseTools,
+  ])];
+  const scoped = resolveScopedToolNames(
+    [...activeToolNames, ...registeredToolNames],
+    WORKFLOW_GSD_TOOL_NAMES,
+  );
+  return withPreservedShimTools([...new Set([...preserved, ...scoped])]);
 }
 
 export function buildRequestScopedGsdToolSet(
   activeToolNames: readonly string[],
   requestCustomMessages: readonly { customType?: string }[] | undefined,
+  registeredToolNames: readonly string[] = activeToolNames,
+  guidedUnitType?: string,
 ): string[] | undefined {
   for (let index = (requestCustomMessages?.length ?? 0) - 1; index >= 0; index--) {
     const currentCustomType = requestCustomMessages?.[index]?.customType;
@@ -264,7 +296,10 @@ export function buildRequestScopedGsdToolSet(
       currentCustomType === "gsd-doctor-heal" ||
       currentCustomType === "gsd-triage"
     ) {
-      return buildMinimalGsdWorkflowToolSet(activeToolNames);
+      if (guidedUnitType) {
+        return buildMinimalAutoGsdToolSet(activeToolNames, guidedUnitType, registeredToolNames);
+      }
+      return buildMinimalGsdWorkflowToolSet(activeToolNames, registeredToolNames);
     }
   }
   return undefined;
@@ -284,13 +319,27 @@ export interface ScopedGsdWorkflowState {
   restoreVisibleSkills: boolean;
 }
 
-type GsdWorkflowScopeApi = Pick<ExtensionAPI, "getActiveTools" | "setActiveTools"> & Partial<Pick<ExtensionAPI, "getVisibleSkills" | "setVisibleSkills">>;
+type GsdWorkflowScopeApi = Pick<ExtensionAPI, "getActiveTools" | "setActiveTools"> & Partial<Pick<ExtensionAPI, "getAllTools" | "getVisibleSkills" | "setVisibleSkills">>;
+
+function resolveRegisteredToolNames(
+  pi: Pick<ExtensionAPI, "getActiveTools"> & Partial<Pick<ExtensionAPI, "getAllTools">>,
+  fallback: readonly string[],
+): string[] {
+  if (typeof pi.getAllTools === "function") {
+    return pi.getAllTools().map((tool) => tool.name);
+  }
+  return [...fallback];
+}
 
 function applyMinimalGsdToolSurface(pi: ExtensionAPI): void {
   if (isFullGsdToolSurfaceRequested()) return;
   const dash = getAutoRuntimeSnapshot();
   if (dash.active && dash.currentUnit) {
-    pi.setActiveTools(buildMinimalAutoGsdToolSet(pi.getActiveTools(), dash.currentUnit.type));
+    pi.setActiveTools(buildMinimalAutoGsdToolSet(
+      pi.getActiveTools(),
+      dash.currentUnit.type,
+      resolveRegisteredToolNames(pi, pi.getActiveTools()),
+    ));
     return;
   }
   if (!isGeneralGsdToolScopingRequested()) return;
@@ -303,9 +352,10 @@ export function scopeGsdWorkflowToolsForDispatch(
 ): ScopedGsdWorkflowState | null {
   if (isFullGsdToolSurfaceRequested()) return null;
   const current = pi.getActiveTools();
+  const registeredToolNames = resolveRegisteredToolNames(pi, current);
   const scoped = unitType
-    ? buildMinimalAutoGsdToolSet(current, unitType)
-    : buildMinimalGsdWorkflowToolSet(current);
+    ? buildMinimalAutoGsdToolSet(current, unitType, registeredToolNames)
+    : buildMinimalGsdWorkflowToolSet(current, registeredToolNames);
   const toolsChanged = !(scoped.length === current.length && scoped.every((name, index) => name === current[index]));
   const skillManifest = resolveSkillManifest(unitType);
   const canScopeSkills = skillManifest !== null && pi.getVisibleSkills && pi.setVisibleSkills;
@@ -385,10 +435,10 @@ async function applyCompactionThresholdOverride(ctx: ExtensionContext): Promise<
     const raw = prefs?.preferences.context_management?.compaction_threshold_percent;
     const value =
       typeof raw === "number" && Number.isFinite(raw) && raw >= 0.5 && raw <= 0.95 ? raw : 0.6;
-    ctx.setCompactionThresholdOverride(value);
+    ctx.setCompactionThresholdOverride?.(value);
   } catch {
     // Non-fatal: use conservative default when preferences cannot be loaded.
-    ctx.setCompactionThresholdOverride(0.6);
+    ctx.setCompactionThresholdOverride?.(0.6);
   }
 }
 
@@ -410,6 +460,17 @@ function activateDeferredApprovalGate(basePath: string): void {
   if (deferredApprovalGate?.basePath !== basePath) return;
   setPendingGate(deferredApprovalGate.gateId, basePath);
   deferredApprovalGate = null;
+}
+
+function extractGateQuestionId(input: unknown): string | undefined {
+  const questions: Array<{ id?: unknown }> = (input as { questions?: unknown })?.questions as Array<{ id?: unknown }> ?? [];
+  const match = questions.find((question) => typeof question?.id === "string" && isGateQuestionId(question.id));
+  return typeof match?.id === "string" ? match.id : undefined;
+}
+
+function isApprovalGateBlocking(basePath: string): boolean {
+  return Boolean(getPendingGate(basePath))
+    || (deferredApprovalGate?.basePath === basePath);
 }
 
 function isContextDraftSummarySave(toolName: string, input: unknown): boolean {
@@ -446,36 +507,19 @@ function initSessionNotifications(ctx: ExtensionContext): void {
   initNotificationWidget(ctx);
 }
 
-async function writeContextModeCompactionSnapshot(basePath: string): Promise<void> {
-  try {
-    const { loadEffectiveGSDPreferences } = await import("../preferences.js");
-    const { isContextModeEnabled } = await import("../preferences-types.js");
-    const prefs = loadEffectiveGSDPreferences(basePath);
-    if (!isContextModeEnabled(prefs?.preferences)) return;
+async function prepareWorkflowMcpForHookContext(
+  ctx: ExtensionContext,
+  basePath: string,
+): Promise<void> {
+  // Skip MCP auto-prep when running inside an auto-worktree. The worktree
+  // already has .mcp.json from createAutoWorktree, and re-running the writer
+  // post-chdir rewrites the file mid-run (non-idempotent due to cwd-relative
+  // CLI path resolution), dirtying the tree and breaking the milestone merge.
+  const { isInAutoWorktree } = await import("../auto-worktree.js");
+  if (isInAutoWorktree(basePath)) return;
 
-    const { writeCompactionSnapshot } = await import("../compaction-snapshot.js");
-    const { ensureDbOpen } = await import("./dynamic-tools.js");
-    await ensureDbOpen(basePath);
-
-    let activeContext: string | null = null;
-    try {
-      const state = await deriveGsdState(basePath);
-      if (state.activeMilestone && state.activeSlice && state.activeTask) {
-        activeContext =
-          `Active: ${state.activeMilestone.id} / ${state.activeSlice.id} / ${state.activeTask.id}` +
-          (state.activeTask.title ? ` - ${state.activeTask.title}` : "");
-      }
-    } catch {
-      /* non-fatal */
-    }
-
-    writeCompactionSnapshot(basePath, { activeContext });
-  } catch (err) {
-    safetyLogWarning(
-      "context-mode",
-      `failed to write compaction snapshot: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
+  const { prepareWorkflowMcpForProject } = await import("../workflow-mcp-auto-prep.js");
+  prepareWorkflowMcpForProject(ctx, basePath);
 }
 
 export function registerHooks(
@@ -485,6 +529,8 @@ export function registerHooks(
   // ADR-005 Phase 3b: surface pi-ai ProviderSwitchReport via audit, notification, and counter.
   // Idempotent — only the first registerHooks call installs.
   void import("../provider-switch-observer.js").then((m) => m.installProviderSwitchObserver());
+
+  registerPlanMilestoneSchemaRecovery(pi);
 
   pi.on("session_start", async (_event, ctx) => {
     const basePath = contextBasePath(ctx);
@@ -501,12 +547,7 @@ export function registerHooks(
     await syncServiceTierStatus(ctx);
     await applyDisabledModelProviderPolicy(ctx);
     await applyCompactionThresholdOverride(ctx);
-    // Skip MCP auto-prep when running inside an auto-worktree (see session_switch below).
-    const { isInAutoWorktree } = await import("../auto-worktree.js");
-    if (!isInAutoWorktree(basePath)) {
-      const { prepareWorkflowMcpForProject } = await import("../workflow-mcp-auto-prep.js");
-      prepareWorkflowMcpForProject(ctx, basePath);
-    }
+    await prepareWorkflowMcpForHookContext(ctx, basePath);
 
     // Apply show_token_cost preference (#1515)
     try {
@@ -532,15 +573,7 @@ export function registerHooks(
     await syncServiceTierStatus(ctx);
     await applyDisabledModelProviderPolicy(ctx);
     await applyCompactionThresholdOverride(ctx);
-    // Skip MCP auto-prep when running inside an auto-worktree. The worktree
-    // already has .mcp.json from createAutoWorktree, and re-running the writer
-    // post-chdir rewrites the file mid-run (non-idempotent due to cwd-relative
-    // CLI path resolution), dirtying the tree and breaking the milestone merge.
-    const { isInAutoWorktree } = await import("../auto-worktree.js");
-    if (!isInAutoWorktree(basePath)) {
-      const { prepareWorkflowMcpForProject } = await import("../workflow-mcp-auto-prep.js");
-      prepareWorkflowMcpForProject(ctx, basePath);
-    }
+    await prepareWorkflowMcpForHookContext(ctx, basePath);
     await loadToolApiKeysForSession();
     if (!isAutoActive()) {
       ctx.ui.setWidget("gsd-progress", undefined);
@@ -553,6 +586,7 @@ export function registerHooks(
   });
 
   pi.on("before_agent_start", async (event, ctx: ExtensionContext) => {
+    resetPendingGatePauseGuard();
     applyMinimalGsdToolSurface(pi);
 
     // Wait for ecosystem loader to finish (no-op after first turn).
@@ -575,6 +609,11 @@ export function registerHooks(
       }
     }
     clearDeferredApprovalGate(beforeAgentBasePath);
+
+    // session_start can fire before the active provider has settled. By
+    // before_agent_start, Claude Code CLI sessions should get the same
+    // project MCP config that /gsd mcp init would write.
+    await prepareWorkflowMcpForHookContext(ctx, beforeAgentBasePath);
 
     // GSD's own context injection (existing behavior — unchanged).
     const { buildBeforeAgentStartResult } = await import("./system-context.js");
@@ -623,12 +662,20 @@ export function registerHooks(
   pi.on("agent_end", async (event, ctx: ExtensionContext) => {
     approvalQuestionAbortInFlight = false;
     resetToolCallLoopGuard();
+    resetPendingGatePauseGuard();
     await resetAskUserQuestionsTurnCache();
     const { handleAgentEnd } = await import("./agent-end-recovery.js");
+    const agentEndBasePath = contextBasePath(ctx);
     try {
       await handleAgentEnd(pi, event, ctx);
     } finally {
-      activateDeferredApprovalGate(contextBasePath(ctx));
+      activateDeferredApprovalGate(agentEndBasePath);
+      await maybePauseAutoForApprovalGate(
+        ctx,
+        pi,
+        isApprovalGateBlocking(agentEndBasePath),
+        "Depth confirmation is waiting for your answer — pausing auto-mode.",
+      );
     }
   });
 
@@ -649,17 +696,35 @@ export function registerHooks(
     }
   });
 
-  pi.on("session_before_compact", async (_event, ctx) => {
+  pi.on("session_before_compact", async (event, ctx) => {
     const basePath = contextBasePath(ctx);
     // Context Mode is default-on. Write the resumable snapshot before any
     // active-auto cancel return so auto sessions still leave re-entry context.
+    const { writeContextModeCompactionSnapshot } = await import("../context-mode-snapshot.js");
     await writeContextModeCompactionSnapshot(basePath);
 
-    // Only cancel compaction while auto-mode is actively running.
-    // Paused auto-mode should allow compaction — the user may be doing
-    // interactive work (#3165).
-    if (isAutoActive()) {
+    const prep = event?.preparation;
+    if (prep && prep.messagesToSummarize?.length === 0 && prep.turnPrefixMessages?.length === 0) {
+      ctx.ui.notify(
+        "Skipped compaction because there was no conversation history to summarize; history preserved.",
+        "warning",
+      );
       return { cancel: true };
+    }
+
+    // Only cancel compaction while auto-mode is actively running and context
+    // still has headroom. At ~90%+ the session is at risk of overflow/truncation;
+    // allow compaction (with CONTINUE checkpoint below) instead of growing unbounded.
+    if (isAutoActive()) {
+      const usage = ctx.getContextUsage?.();
+      const contextPercent = usage?.percent;
+      if (contextPercent == null || contextPercent < 90) {
+        return { cancel: true };
+      }
+      ctx.ui.notify(
+        `Context at ${contextPercent.toFixed(1)}% — compacting during auto-mode to recover headroom.`,
+        "warning",
+      );
     }
     const { ensureDbOpen } = await import("./dynamic-tools.js");
     await ensureDbOpen(basePath);
@@ -737,7 +802,15 @@ export function registerHooks(
     if (!shouldPauseForUserApprovalQuestion(unitType, [event.message])) return;
 
     const gateId = approvalGateIdForUnit(unitType, unitId);
-    if (gateId) deferApprovalGate(gateId, contextBasePath(ctx));
+    if (gateId) {
+      // Skip the gate if this milestone is already depth-verified — the approval
+      // pattern matched again on post-verification text (a false-positive re-trigger).
+      // Without this guard, the second firing blocks gsd_plan_milestone in the same
+      // turn and leaves CONTEXT.md on disk with no DB row (#discuss-milestone-no-db).
+      const gateMilestoneId = extractDepthVerificationMilestoneId(gateId);
+      if (gateMilestoneId && isMilestoneDepthVerified(gateMilestoneId, contextBasePath(ctx))) return;
+      deferApprovalGate(gateId, contextBasePath(ctx));
+    }
 
     approvalQuestionAbortInFlight = true;
     ctx.ui.notify(
@@ -783,16 +856,26 @@ export function registerHooks(
       event.input,
       discussionBasePath,
     );
-    if (deferredGateGuard.block) return deferredGateGuard;
+    if (deferredGateGuard.block) {
+      if (ctx) {
+        await maybePauseAutoForApprovalGate(
+          ctx,
+          pi,
+          isApprovalGateBlocking(discussionBasePath),
+          "Depth confirmation is waiting for your answer — pausing auto-mode.",
+        );
+      }
+      return deferredGateGuard;
+    }
 
-    // ── Discussion gate enforcement: track pending gate questions ─────────
-    // Only gate-shaped ask_user_questions calls should block execution.
-    // The gate stays pending until the user selects the approval option.
+    // ── Discussion gate enforcement: defer gate arming until execution ─────
+    // Same-turn CONTEXT-DRAFT persistence can finish after the question is shown.
+    // The durable pending gate activates at tool_execution_start (or agent_end for
+    // streamed text approval questions).
     if (toolName === "ask_user_questions") {
-      const questions: any[] = (event.input as any)?.questions ?? [];
-      const questionId = questions.find((question) => typeof question?.id === "string" && isGateQuestionId(question.id))?.id;
+      const questionId = extractGateQuestionId(event.input);
       if (typeof questionId === "string") {
-        setPendingGate(questionId, discussionBasePath);
+        deferApprovalGate(questionId, discussionBasePath);
       }
     }
 
@@ -808,7 +891,17 @@ export function registerHooks(
           isQueuePhaseActive(discussionBasePath),
           discussionBasePath,
         );
-        if (bashGuard.block) return bashGuard;
+        if (bashGuard.block) {
+          if (ctx) {
+            await maybePauseAutoForApprovalGate(
+              ctx,
+              pi,
+              true,
+              "Depth confirmation is waiting for your answer — pausing auto-mode.",
+            );
+          }
+          return bashGuard;
+        }
       } else {
         const gateGuard = shouldBlockPendingGate(
           toolName,
@@ -816,7 +909,17 @@ export function registerHooks(
           isQueuePhaseActive(discussionBasePath),
           discussionBasePath,
         );
-        if (gateGuard.block) return gateGuard;
+        if (gateGuard.block) {
+          if (ctx) {
+            await maybePauseAutoForApprovalGate(
+              ctx,
+              pi,
+              true,
+              "Depth confirmation is waiting for your answer — pausing auto-mode.",
+            );
+          }
+          return gateGuard;
+        }
       }
     }
 
@@ -844,6 +947,9 @@ export function registerHooks(
     // subagent dispatch. Closes the b23 bug class where a discuss-milestone
     // turn used the host Edit tool to modify user source files.
     const dash = getAutoRuntimeSnapshot();
+
+    // ScheduleWakeup is registered by the GSD extension so auto-mode can
+    // continue the same unit session after long external waits.
     const guidedUnit = getGuidedUnitContext(discussionBasePath);
     const activeUnitType = dash.currentUnit?.type ?? guidedUnit?.unitType;
     if (activeUnitType) {
@@ -997,12 +1103,25 @@ export function registerHooks(
         // the gate when the user replies with an approval keyword), but the
         // structured re-ask is more deterministic and gives the user a clear UI.
         resetToolCallLoopGuard();
+        const interrupted = details?.interrupted === true;
+        if (ctx) {
+          await maybePauseAutoForApprovalGate(
+            ctx,
+            pi,
+            true,
+            interrupted
+              ? "Depth confirmation was interrupted — pausing auto-mode until you respond."
+              : "Depth confirmation is waiting for your answer — pausing auto-mode.",
+          );
+        }
         return {
           content: [{
             type: "text" as const,
             text: [
-              `HARD BLOCK: approval gate "${currentPendingGate}" is still pending.`,
-              "No user response was received for the confirmation question.",
+              `Waiting for depth confirmation on gate "${currentPendingGate}".`,
+              interrupted
+                ? "The confirmation question was interrupted before a response was recorded."
+                : "No user response was received for the confirmation question.",
               "Do not infer approval from earlier or prior messages.",
               "Do not proceed, write files, save artifacts, or call other tools.",
               `Re-call ask_user_questions with the same gate question id ("${currentPendingGate}") and wait for the user's response.`,
@@ -1018,6 +1137,7 @@ export function registerHooks(
             const milestoneIdFromGate = extractDepthVerificationMilestoneId(currentPendingGate);
             if (milestoneIdFromGate) markDepthVerified(milestoneIdFromGate, basePath);
             clearPendingGate(basePath);
+            clearDeferredApprovalGate(basePath);
           }
         }
       }
@@ -1036,6 +1156,7 @@ export function registerHooks(
           markApprovalGateVerified(question.id, basePath);
           markDepthVerified(inferredMilestoneId, basePath);
           clearPendingGate(basePath);
+          clearDeferredApprovalGate(basePath);
         }
         break;
       }
@@ -1073,7 +1194,16 @@ export function registerHooks(
     await saveFile(discussionPath, existing + lines.join("\n"));
   });
 
-  pi.on("tool_execution_start", async (event) => {
+  pi.on("tool_execution_start", async (event, ctx) => {
+    const basePath = contextBasePath(ctx);
+    const toolName = canonicalToolName(event.toolName);
+    if (toolName === "ask_user_questions") {
+      const questionId = extractGateQuestionId(event.args);
+      if (typeof questionId === "string") {
+        setPendingGate(questionId, basePath);
+        clearDeferredApprovalGate(basePath);
+      }
+    }
     if (!isAutoActive()) return;
     markToolStart(event.toolCallId, event.toolName);
   });
@@ -1187,13 +1317,26 @@ export function registerHooks(
     if (isFullGsdToolSurfaceRequested()) return undefined;
     const removed = new Set(event.filteredTools);
     const providerCompatible = event.activeToolNames.filter((name) => !removed.has(name));
-    const requestScoped = buildRequestScopedGsdToolSet(providerCompatible, event.requestCustomMessages);
+    const registeredToolNames = resolveRegisteredToolNames(pi, event.activeToolNames);
+    const guidedUnit = getGuidedUnitContext();
+    const requestScoped = buildRequestScopedGsdToolSet(
+      providerCompatible,
+      event.requestCustomMessages,
+      registeredToolNames,
+      guidedUnit?.unitType,
+    );
     if (requestScoped) {
       return { toolNames: requestScoped };
     }
     const dash = getAutoRuntimeSnapshot();
     if (dash.active && dash.currentUnit) {
-      return { toolNames: buildMinimalAutoGsdToolSet(providerCompatible, dash.currentUnit.type) };
+      return {
+        toolNames: buildMinimalAutoGsdToolSet(
+          providerCompatible,
+          dash.currentUnit.type,
+          resolveRegisteredToolNames(pi, event.activeToolNames),
+        ),
+      };
     }
     if (isGeneralGsdToolScopingRequested()) {
       return { toolNames: buildMinimalGsdToolSet(providerCompatible) };

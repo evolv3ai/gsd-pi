@@ -6,6 +6,8 @@ import {
   getBudgetEnforcementAction,
   getContextPauseAction,
   getNewBudgetAlertLevel,
+  resolveCompactionThresholdPercent,
+  shouldRerootStepSessionForContext,
 } from "../auto.js";
 
 test("getBudgetAlertLevel returns the expected threshold bucket", () => {
@@ -59,4 +61,17 @@ test("getContextPauseAction pauses at or above a percentage threshold", () => {
   assert.equal(getContextPauseAction(95, 0), "none");
   assert.equal(getContextPauseAction(0.75, 75), "pause");
   assert.equal(getContextPauseAction(0.8, 0.75), "pause");
+});
+
+test("resolveCompactionThresholdPercent defaults to 60 and accepts ratio prefs", () => {
+  assert.equal(resolveCompactionThresholdPercent(undefined), 60);
+  assert.equal(resolveCompactionThresholdPercent(0.75), 75);
+  assert.equal(resolveCompactionThresholdPercent(0.4), 60);
+});
+
+test("shouldRerootStepSessionForContext uses compaction threshold pref", () => {
+  assert.equal(shouldRerootStepSessionForContext(59.9, 0.6), false);
+  assert.equal(shouldRerootStepSessionForContext(60, 0.6), true);
+  assert.equal(shouldRerootStepSessionForContext(273.8, 0.6), true);
+  assert.equal(shouldRerootStepSessionForContext(undefined, 0.6), false);
 });

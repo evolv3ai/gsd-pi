@@ -9,6 +9,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { resolveEngineOptionalDependencyVersion } = require("../../scripts/lib/version-sync.cjs");
 
 const rootDir = path.resolve(__dirname, "..", "..");
 const npmDir = path.resolve(__dirname, "..", "npm");
@@ -16,8 +17,14 @@ const npmDir = path.resolve(__dirname, "..", "npm");
 const rootPkgPath = path.join(rootDir, "package.json");
 const rootPkg = JSON.parse(fs.readFileSync(rootPkgPath, "utf-8"));
 const version = rootPkg.version;
+const optionalDependencyVersion = resolveEngineOptionalDependencyVersion(version);
 
 console.log(`[sync-platform-versions] Syncing to version ${version}`);
+if (optionalDependencyVersion !== version) {
+  console.log(
+    `[sync-platform-versions] optionalDependencies pinned to stable engine version ${optionalDependencyVersion}`,
+  );
+}
 
 const platformPackages = [
   "darwin-arm64",
@@ -27,7 +34,9 @@ const platformPackages = [
   "win32-x64-msvc",
 ];
 
-// Update each platform package.json
+// Update each platform package.json and keep the root package pinned to the
+// same engine version. Native ABI mismatches should fail before publish, not
+// install an older platform package at runtime.
 for (const platform of platformPackages) {
   const pkgPath = path.join(npmDir, platform, "package.json");
   if (!fs.existsSync(pkgPath)) {
@@ -42,12 +51,15 @@ for (const platform of platformPackages) {
   } else {
     console.log(`  ${platform}: already ${version}`);
   }
+
+  const dependencyName = `@opengsd/engine-${platform}`;
+  if (rootPkg.optionalDependencies?.[dependencyName] !== optionalDependencyVersion) {
+    rootPkg.optionalDependencies = rootPkg.optionalDependencies || {};
+    rootPkg.optionalDependencies[dependencyName] = optionalDependencyVersion;
+    console.log(`  root optionalDependencies.${dependencyName}: ${optionalDependencyVersion}`);
+  }
 }
 
-// Skip updating root optionalDependencies — they use a >=2.10.2 range
-// intentionally so that npm can fall back to the latest available
-// platform binary when the exact version hasn't been published yet
-// (e.g. main package published before native CI finishes).
-console.log("  root optionalDependencies: using range specifiers (not updating)");
+fs.writeFileSync(rootPkgPath, JSON.stringify(rootPkg, null, 2) + "\n");
 
 console.log("[sync-platform-versions] Done.");

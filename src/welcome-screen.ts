@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Startup welcome screen rendering for the GSD terminal experience.
 
 /**
@@ -15,14 +15,7 @@ import os from 'node:os'
 import chalk from 'chalk'
 import stripAnsi from 'strip-ansi'
 
-const OGSD_LOGO: readonly string[] = [
-  '  ██████╗  ██████╗ ███████╗██████╗ ',
-  ' ██╔═══██╗██╔════╝ ██╔════╝██╔══██╗',
-  ' ██║   ██║██║  ███╗███████╗██║  ██║',
-  ' ██║   ██║██║   ██║╚════██║██║  ██║',
-  ' ╚██████╔╝╚██████╔╝███████║██████╔╝',
-  '  ╚═════╝  ╚═════╝ ╚══════╝╚═════╝ ',
-]
+import { GSD_PI_BRAND, GSD_PI_LOGO } from './logo.js'
 
 interface GsdState {
   milestone?: string
@@ -121,7 +114,7 @@ export function buildWelcomeScreenLines(opts: WelcomeScreenOptions): string[] {
 
   // Narrow terminal fallback
   if (termWidth < 70) {
-    return ['', `  Get Shit Done v${version}`, `  ${shortCwd}`, '']
+    return ['', `  Git Ship Done v${version}`, `  ${shortCwd}`, '']
   }
 
   const toolParts: string[] = []
@@ -133,13 +126,13 @@ export function buildWelcomeScreenLines(opts: WelcomeScreenOptions): string[] {
   if (remoteChannel)                  toolParts.push(`${remoteChannel.charAt(0).toUpperCase() + remoteChannel.slice(1)} ✓`)
 
   const innerWidth = Math.max(1, termWidth - 2)
-  const logoWidth = Math.max(...OGSD_LOGO.map((line) => visLen(line)))
+  const logoWidth = Math.max(...GSD_PI_LOGO.map((line) => visLen(line)))
   // Plain spaces, not a `│` divider — a vertical bar would be dragged into
   // every copied logo row.
   const divider = '   '
   const panelWidth = innerWidth - logoWidth - visLen(divider)
   if (panelWidth < 34) {
-    return ['', `  Get Shit Done v${version}`, `  ${shortCwd}`, '']
+    return ['', `  Git Ship Done v${version}`, `  ${shortCwd}`, '']
   }
 
   // "Welcome back" context lines — GSD state if available, else hint.
@@ -168,7 +161,7 @@ export function buildWelcomeScreenLines(opts: WelcomeScreenOptions): string[] {
   const value = (s: string) => chalk.hex('#dce4f2')(s)
   const accent = (s: string) => chalk.hex('#8db7ff')(s)
   const panelRows = [
-    rightAlign(`${accent('GSD')} ${chalk.bold(value('Project Console'))}`, chalk.dim(`v${version}`), panelWidth),
+    rightAlign(`${accent(GSD_PI_BRAND)} ${chalk.bold(value('Project Console'))}`, chalk.dim(`v${version}`), panelWidth),
     rightAlign(`${label('Project')} ${value(projectText)}`, `${label('Command')} ${accent(commandText)}`, panelWidth),
     rightAlign(`${label('Workspace')} ${value(shortCwd)}`, `${label('Mode')} ${value(modeText)}`, panelWidth),
     rightAlign(`${label('MCP')} ${chalk.dim(mcpText)}`, `${label('Status')} ${value(state?.milestone ? 'active' : 'idle')}`, panelWidth),
@@ -180,8 +173,8 @@ export function buildWelcomeScreenLines(opts: WelcomeScreenOptions): string[] {
   // No outer box: logo + panel are indented, with a single closing rule. Every
   // content line is plain text, so terminal selection copies cleanly.
   const out: string[] = ['']
-  for (let i = 0; i < OGSD_LOGO.length; i++) {
-    const logo = rpad(chalk.hex('#a7ba78')(OGSD_LOGO[i]), logoWidth)
+  for (let i = 0; i < GSD_PI_LOGO.length; i++) {
+    const logo = rpad(chalk.hex('#a7ba78')(GSD_PI_LOGO[i]), logoWidth)
     out.push('  ' + clampVisible(`${logo}${divider}${panelRows[i] ?? ''}`, termWidth - 2))
   }
   out.push(chalk.hex('#a7ba78')('─'.repeat(Math.max(0, termWidth))))

@@ -1,4 +1,4 @@
-// gsd-2 + Milestone leases with fencing tokens (DB-backed coordination, Phase B)
+// gsd-pi + Milestone leases with fencing tokens (DB-backed coordination, Phase B)
 //
 // One worker at a time may hold a lease on a given milestone. Leases carry a
 // monotonic fencing token that increments on every successful takeover, so
@@ -123,10 +123,13 @@ export function claimMilestoneLease(
     }
 
     // Step 2: takeover. Conditional UPDATE — only succeeds if the existing
-    // lease is expired or explicitly released. Fencing token is incremented
-    // by SQL (`fencing_token + 1`) so the new holder's token monotonically
-    // exceeds the prior holder's. db.changes() === 1 confirms the takeover
-    // actually happened (vs. losing the race to another worker).
+    // lease is expired/released, or if the claimant is a re-entrant worker row
+    // for the same live host/PID/project. The latter prevents a single
+    // orchestrator process from blocking on its own previous worker token.
+    // Fencing token is incremented by SQL (`fencing_token + 1`) so the new
+    // holder's token monotonically exceeds the prior holder's. db.changes()
+    // === 1 confirms the takeover actually happened (vs. losing the race to
+    // another worker).
     const updateResult = db.prepare(
       `UPDATE milestone_leases
        SET worker_id = :worker_id,
@@ -136,7 +139,18 @@ export function claimMilestoneLease(
            status = 'held'
        WHERE milestone_id = :milestone_id
          AND (status IN ('expired','released')
-              OR datetime(expires_at) < datetime('now'))`,
+              OR datetime(expires_at) < datetime('now')
+              OR EXISTS (
+                SELECT 1
+                FROM workers holder
+                JOIN workers claimant ON claimant.worker_id = :worker_id
+                WHERE holder.worker_id = milestone_leases.worker_id
+                  AND holder.status = 'active'
+                  AND claimant.status = 'active'
+                  AND holder.host = claimant.host
+                  AND holder.pid = claimant.pid
+                  AND holder.project_root_realpath = claimant.project_root_realpath
+              ))`,
     ).run({
       ":milestone_id": milestoneId,
       ":worker_id": workerId,

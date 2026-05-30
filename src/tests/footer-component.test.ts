@@ -1,11 +1,11 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Regression tests for the interactive terminal footer renderer.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { FooterComponent } from "../../packages/pi-coding-agent/src/modes/interactive/components/footer.ts";
-import { initTheme } from "../../packages/pi-coding-agent/src/modes/interactive/theme/theme.ts";
+import { FooterComponent } from "../../packages/gsd-agent-modes/src/modes/interactive/components/footer.ts";
+import { initTheme } from "../../packages/pi-coding-agent/src/theme/theme.ts";
 
 initTheme("dark", false);
 

@@ -86,6 +86,7 @@ function setupProjectWithSkill(): string {
   // buildSkillActivationBlock treats it as "installed".
   loadSkills({
     cwd: base,
+    agentDir: join(base, ".agent"),
     includeDefaults: false,
     skillPaths: [join(base, ".agents", "skills")],
   });

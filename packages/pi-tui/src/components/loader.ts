@@ -1,81 +1,90 @@
 import type { TUI } from "../tui.js";
 import { Text } from "./text.js";
 
+export interface LoaderIndicatorOptions {
+	/** Animation frames. Use an empty array to hide the indicator. */
+	frames?: string[];
+	/** Frame interval in milliseconds for animated indicators. */
+	intervalMs?: number;
+}
+
+const DEFAULT_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const DEFAULT_INTERVAL_MS = 80;
+
 /**
- * Loader component that updates every 80ms with spinning animation.
- * Frame rotation is isolated from message text to avoid invalidating
- * Text's render cache (wrapTextWithAnsi, visibleWidth) on every tick.
+ * Loader component that updates with an optional spinning animation.
  */
 export class Loader extends Text {
-	private frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+	private frames = [...DEFAULT_FRAMES];
+	private intervalMs = DEFAULT_INTERVAL_MS;
 	private currentFrame = 0;
 	private intervalId: NodeJS.Timeout | null = null;
 	private ui: TUI | null = null;
-	private _lastMessage: string = "";
+	private renderIndicatorVerbatim = false;
+	private spinnerColorFn: (str: string) => string;
+	private messageColorFn: (str: string) => string;
+	private message: string = "Loading...";
 
 	constructor(
 		ui: TUI,
-		private spinnerColorFn: (str: string) => string,
-		private messageColorFn: (str: string) => string,
-		private message: string = "Loading...",
+		spinnerColorFn: (str: string) => string,
+		messageColorFn: (str: string) => string,
+		message: string = "Loading...",
+		indicator?: LoaderIndicatorOptions,
 	) {
 		super("", 1, 0);
 		this.ui = ui;
-		this.start();
+		this.spinnerColorFn = spinnerColorFn;
+		this.messageColorFn = messageColorFn;
+		this.message = message;
+		this.setIndicator(indicator);
 	}
 
 	render(width: number): string[] {
-		// Only update Text content when message actually changes —
-		// frame rotation is prepended below without touching the cache
-		if (this.message !== this._lastMessage) {
-			this.setText(this.messageColorFn(this.message));
-			this._lastMessage = this.message;
-		}
-		const messageLines = super.render(width);
-		// Shallow copy so we don't mutate cachedLines from Text
-		const result = ["", ...messageLines];
-		// Prepend spinner frame to first content line
-		if (result.length > 1) {
-			const frame = this.frames[this.currentFrame];
-			result[1] = this.spinnerColorFn(frame) + " " + result[1];
-		}
-		return result;
+		return ["", ...super.render(width)];
 	}
 
-	start() {
-		if (this.intervalId) {
-			clearInterval(this.intervalId);
-		}
-		this.currentFrame = 0;
-		this.intervalId = setInterval(() => {
-			this.currentFrame = (this.currentFrame + 1) % this.frames.length;
-			if (this.ui) {
-				this.ui.requestRender();
-			}
-		}, 80);
-		// The loader animation is purely cosmetic — it must never keep the Node
-		// event loop alive on its own (otherwise a process can hang on exit).
-		this.intervalId.unref?.();
-		// Trigger initial render
-		if (this.ui) {
-			this.ui.requestRender();
-		}
+	start(): void {
+		this.updateDisplay();
+		this.restartAnimation();
 	}
 
-	stop() {
+	stop(): void {
 		if (this.intervalId) {
 			clearInterval(this.intervalId);
 			this.intervalId = null;
 		}
 	}
 
-	dispose() {
-		this.stop();
-		this.ui = null;
+	setMessage(message: string): void {
+		this.message = message;
+		this.updateDisplay();
 	}
 
-	setMessage(message: string) {
-		this.message = message;
+	setIndicator(indicator?: LoaderIndicatorOptions): void {
+		this.renderIndicatorVerbatim = indicator !== undefined;
+		this.frames = indicator?.frames !== undefined ? [...indicator.frames] : [...DEFAULT_FRAMES];
+		this.intervalMs = indicator?.intervalMs && indicator.intervalMs > 0 ? indicator.intervalMs : DEFAULT_INTERVAL_MS;
+		this.currentFrame = 0;
+		this.start();
+	}
+
+	private restartAnimation(): void {
+		this.stop();
+		if (this.frames.length <= 1) {
+			return;
+		}
+		this.intervalId = setInterval(() => {
+			this.currentFrame = (this.currentFrame + 1) % this.frames.length;
+			this.updateDisplay();
+		}, this.intervalMs);
+	}
+
+	private updateDisplay(): void {
+		const frame = this.frames[this.currentFrame] ?? "";
+		const renderedFrame = this.renderIndicatorVerbatim ? frame : this.spinnerColorFn(frame);
+		const indicator = frame.length > 0 ? `${renderedFrame} ` : "";
+		this.setText(`${indicator}${this.messageColorFn(this.message)}`);
 		if (this.ui) {
 			this.ui.requestRender();
 		}

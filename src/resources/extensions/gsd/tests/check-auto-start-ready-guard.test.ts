@@ -1,4 +1,4 @@
-// GSD-2 + Regression tests for checkAutoStartAfterDiscuss "ready" notify guard (R3b)
+// gsd-pi + Regression tests for checkAutoStartAfterDiscuss "ready" notify guard (R3b)
 //
 // Belt-and-suspenders: even when CONTEXT.md and STATE.md exist on disk, the
 // "Milestone X ready." success notify must not fire when the milestone DB row
@@ -21,6 +21,7 @@ import {
   openDatabase,
   closeDatabase,
   insertMilestone,
+  getMilestone,
 } from "../gsd-db.ts";
 import {
   clearDiscussionFlowState,
@@ -91,7 +92,7 @@ describe("checkAutoStartAfterDiscuss ready-notify DB guard (R3b)", () => {
     }
   });
 
-  test("does not announce 'ready' when the milestone DB row is absent", () => {
+  test("does not announce 'ready' when the milestone DB row is absent — recovers via Gate 1b", () => {
     base = mkBase();
     // Open a fresh in-memory DB but DO NOT insertMilestone for M001.
     openDatabase(":memory:");
@@ -113,15 +114,16 @@ describe("checkAutoStartAfterDiscuss ready-notify DB guard (R3b)", () => {
     );
     assert.equal(successReady, undefined, "must not announce 'ready' when DB row missing");
 
-    // An error notify must explain the missing DB row
-    const errorNotify = cap.notifies.find((n) => n.level === "error");
-    assert.ok(errorNotify, "must emit an error notify when the DB row is missing");
-    assert.match(
-      errorNotify!.msg,
-      /no DB row exists/i,
-      "error notify must mention the missing DB row",
-    );
-    assert.match(errorNotify!.msg, /M001/, "error notify must mention the milestone id");
+    // When CONTEXT.md is on disk the R3b path recovers: it inserts a placeholder
+    // "queued" row (so Gate 1b can retry gsd_plan_milestone) and emits a warning.
+    const recovered = getMilestone("M001");
+    assert.ok(recovered, "R3b recovery must insert a placeholder 'queued' DB row");
+    assert.equal(recovered!.status, "queued", "placeholder row must have status 'queued'");
+
+    const warnNotify = cap.notifies.find((n) => n.level === "warning");
+    assert.ok(warnNotify, "must emit a warning notify during R3b recovery");
+    assert.match(warnNotify!.msg, /M001/, "warning must mention the milestone id");
+    assert.match(warnNotify!.msg, /recovering/i, "warning must mention recovery");
   });
 
   test("announces 'ready' when DB row exists", () => {

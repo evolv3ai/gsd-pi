@@ -1,7 +1,9 @@
 import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+type WorkflowExecutorsModule = typeof import("./tools/workflow-tool-executors.js");
 
 export interface WorkflowMcpLaunchConfig {
   name: string;
@@ -21,8 +23,29 @@ export interface WorkflowCapabilityOptions {
   activeTools?: string[];
 }
 
+/** Session cwd may be a milestone worktree; MCP config and server discovery use the project root. */
+export function resolveWorkflowMcpProjectRoot(sessionCwd: string): string {
+  let resolved: string;
+  try {
+    resolved = realpathSync(resolve(sessionCwd));
+  } catch {
+    resolved = resolve(sessionCwd);
+  }
+
+  const worktreesMarker = `${sep}.gsd${sep}worktrees${sep}`;
+  const markerIndex = resolved.indexOf(worktreesMarker);
+  if (markerIndex > 0) {
+    return resolved.slice(0, markerIndex);
+  }
+
+  return resolved;
+}
+
 const MCP_WORKFLOW_TOOL_SURFACE = new Set([
   "ask_user_questions",
+  "gsd_capture_thought",
+  "gsd_memory_query",
+  "gsd_memory_graph",
   "gsd_decision_save",
   "gsd_exec",
   "gsd_exec_search",
@@ -64,6 +87,11 @@ const MCP_WORKFLOW_TOOL_SURFACE = new Set([
   "gsd_validate_milestone",
 ]);
 
+/** Workflow MCP tools are validated by transport compatibility, not pi tool-compat profiles. */
+export function isWorkflowMcpSurfaceTool(toolName: string): boolean {
+  return MCP_WORKFLOW_TOOL_SURFACE.has(toolName);
+}
+
 function parseLookupOutput(output: Buffer | string): string {
   return output
     .toString()
@@ -91,18 +119,36 @@ function lookupCommand(command: string, platform: NodeJS.Platform = process.plat
   }
 }
 
-function findWorkflowCliFromAncestorPath(startPath: string): string | null {
-  let current = resolve(startPath);
+function findGsdPiRepoRoot(startPath: string): string | null {
+  let current: string;
+  try {
+    current = realpathSync(resolve(startPath));
+  } catch {
+    current = resolve(startPath);
+  }
 
   while (true) {
-    const candidate = resolve(current, "packages", "mcp-server", "dist", "cli.js");
-    if (existsSync(candidate)) return candidate;
+    const distCli = resolve(current, "packages", "mcp-server", "dist", "cli.js");
+    if (existsSync(distCli)) return current;
 
     const parent = dirname(current);
     if (parent === current) break;
     current = parent;
   }
 
+  return null;
+}
+
+function findWorkflowCliFromAncestorPath(startPath: string): string | null {
+  const repoRoot = findGsdPiRepoRoot(startPath);
+  if (!repoRoot) return null;
+  return resolve(repoRoot, "packages", "mcp-server", "dist", "cli.js");
+}
+
+function firstExistingPath(candidates: string[]): string | null {
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
   return null;
 }
 
@@ -118,59 +164,106 @@ function getBundledWorkflowMcpCliPath(env: NodeJS.ProcessEnv): string | null {
     if (candidate) return candidate;
   }
 
-  const candidates = [
-    resolve(fileURLToPath(new URL("../../../../packages/mcp-server/src/cli.ts", import.meta.url))),
-    resolve(fileURLToPath(new URL("../../../../../packages/mcp-server/src/cli.ts", import.meta.url))),
-    resolve(fileURLToPath(new URL("../../../../packages/mcp-server/dist/cli.js", import.meta.url))),
-    resolve(fileURLToPath(new URL("../../../../../packages/mcp-server/dist/cli.js", import.meta.url))),
-  ];
-
-  for (const bundledCli of candidates) {
-    if (existsSync(bundledCli)) return bundledCli;
+  const repoRoot = findGsdPiRepoRoot(dirname(fileURLToPath(import.meta.url)));
+  if (repoRoot) {
+    const fromRepo = firstExistingPath([
+      resolve(repoRoot, "packages", "mcp-server", "dist", "cli.js"),
+      resolve(repoRoot, "packages", "mcp-server", "src", "cli.ts"),
+    ]);
+    if (fromRepo) return fromRepo;
   }
 
-  return null;
+  return firstExistingPath([
+    resolve(fileURLToPath(new URL("../../../../packages/mcp-server/dist/cli.js", import.meta.url))),
+    resolve(fileURLToPath(new URL("../../../../../packages/mcp-server/dist/cli.js", import.meta.url))),
+    resolve(fileURLToPath(new URL("../../../../packages/mcp-server/src/cli.ts", import.meta.url))),
+    resolve(fileURLToPath(new URL("../../../../../packages/mcp-server/src/cli.ts", import.meta.url))),
+  ]);
 }
 
-function getBundledWorkflowExecutorModulePath(): string | null {
+export function getBundledWorkflowExecutorModulePath(): string | null {
+  const repoRoot = findGsdPiRepoRoot(dirname(fileURLToPath(import.meta.url)));
   const candidates = [
+    ...(repoRoot
+      ? [
+          resolve(repoRoot, "dist", "resources", "extensions", "gsd", "tools", "workflow-tool-executors.js"),
+          resolve(repoRoot, "dist-test", "src", "resources", "extensions", "gsd", "tools", "workflow-tool-executors.ts"),
+          resolve(repoRoot, "src", "resources", "extensions", "gsd", "tools", "workflow-tool-executors.ts"),
+        ]
+      : []),
     resolve(fileURLToPath(new URL("./tools/workflow-tool-executors.js", import.meta.url))),
     resolve(fileURLToPath(new URL("../../../../dist/resources/extensions/gsd/tools/workflow-tool-executors.js", import.meta.url))),
     resolve(fileURLToPath(new URL("./tools/workflow-tool-executors.ts", import.meta.url))),
   ];
 
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
+  return firstExistingPath(candidates);
+}
+
+function workflowExecutorModuleImportUrl(modulePath: string): string {
+  if (modulePath.startsWith("file:")) return modulePath;
+  return pathToFileURL(resolve(modulePath)).href;
+}
+
+function isWorkflowExecutorsModule(value: unknown): value is WorkflowExecutorsModule {
+  return Boolean(value && typeof value === "object" && typeof (value as WorkflowExecutorsModule).executeSummarySave === "function");
+}
+
+/** Load workflow-tool-executors for in-process tools and MCP bridge env wiring. */
+export async function importWorkflowExecutorsModule(): Promise<WorkflowExecutorsModule> {
+  const attempts: string[] = [];
+  const candidates: string[] = [];
+  const explicit = process.env.GSD_WORKFLOW_EXECUTORS_MODULE?.trim();
+  if (explicit) candidates.push(explicit);
+  const bundled = getBundledWorkflowExecutorModulePath();
+  if (bundled) candidates.push(bundled);
+  candidates.push(
+    resolve(fileURLToPath(new URL("./tools/workflow-tool-executors.js", import.meta.url))),
+    resolve(fileURLToPath(new URL("./tools/workflow-tool-executors.ts", import.meta.url))),
+  );
+
+  for (const candidate of [...new Set(candidates)]) {
+    try {
+      const loaded = await import(workflowExecutorModuleImportUrl(candidate));
+      if (isWorkflowExecutorsModule(loaded)) return loaded;
+      attempts.push(`${candidate} (module shape mismatch)`);
+    } catch (err) {
+      attempts.push(`${candidate} (${err instanceof Error ? err.message : String(err)})`);
+    }
   }
 
-  return null;
+  throw new Error(
+    "Unable to load GSD workflow-tool-executors module. " +
+    "Run from a GSD checkout, set GSD_WORKFLOW_EXECUTORS_MODULE, or run /gsd mcp init. " +
+    `Attempts: ${attempts.join("; ")}`,
+  );
 }
 
 function getBundledWorkflowWriteGateModulePath(): string | null {
+  const repoRoot = findGsdPiRepoRoot(dirname(fileURLToPath(import.meta.url)));
   const candidates = [
+    ...(repoRoot
+      ? [
+          resolve(repoRoot, "dist", "resources", "extensions", "gsd", "bootstrap", "write-gate.js"),
+          resolve(repoRoot, "src", "resources", "extensions", "gsd", "bootstrap", "write-gate.ts"),
+        ]
+      : []),
     resolve(fileURLToPath(new URL("./bootstrap/write-gate.js", import.meta.url))),
     resolve(fileURLToPath(new URL("../../../../dist/resources/extensions/gsd/bootstrap/write-gate.js", import.meta.url))),
     resolve(fileURLToPath(new URL("./bootstrap/write-gate.ts", import.meta.url))),
   ];
 
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
-  }
-
-  return null;
+  return firstExistingPath(candidates);
 }
 
 function getResolveTsHookPath(): string | null {
-  const candidates = [
+  const repoRoot = findGsdPiRepoRoot(dirname(fileURLToPath(import.meta.url)));
+  return firstExistingPath([
+    ...(repoRoot
+      ? [resolve(repoRoot, "src", "resources", "extensions", "gsd", "tests", "resolve-ts.mjs")]
+      : []),
     resolve(fileURLToPath(new URL("./tests/resolve-ts.mjs", import.meta.url))),
     resolve(fileURLToPath(new URL("../../../../src/resources/extensions/gsd/tests/resolve-ts.mjs", import.meta.url))),
-  ];
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
-  }
-
-  return null;
+  ]);
 }
 
 function mergeNodeOptions(existing: string | undefined, additions: string[]): string | undefined {

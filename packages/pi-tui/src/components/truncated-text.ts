@@ -1,5 +1,3 @@
-// GSD-2 + packages/pi-tui/src/components/truncated-text.ts - Single-line text component with width-aware truncation.
-
 import type { Component } from "../tui.js";
 import { truncateToWidth, visibleWidth } from "../utils.js";
 
@@ -53,12 +51,7 @@ export class TruncatedText implements Component {
 		// Pad line to exactly width characters
 		const lineVisibleWidth = visibleWidth(lineWithPadding);
 		const paddingNeeded = Math.max(0, width - lineVisibleWidth);
-		let finalLine = lineWithPadding + " ".repeat(paddingNeeded);
-		if (visibleWidth(finalLine) > width) {
-			finalLine = truncateToWidth(finalLine, width, "");
-		}
-		const finalPaddingNeeded = Math.max(0, width - visibleWidth(finalLine));
-		finalLine += " ".repeat(finalPaddingNeeded);
+		const finalLine = lineWithPadding + " ".repeat(paddingNeeded);
 
 		result.push(finalLine);
 

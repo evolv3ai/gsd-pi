@@ -17,7 +17,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { registerDbTools } from "../bootstrap/db-tools.ts";
-import { Value } from "@sinclair/typebox/value";
+import AjvModule from "ajv";
+
+const Ajv = (AjvModule as any).default || AjvModule;
 
 function makeMockPi() {
   const tools: any[] = [];
@@ -40,6 +42,12 @@ function getRequiredProps(tool: any): string[] {
 
 function getProps(tool: any): string[] {
   return Object.keys(tool.parameters.properties ?? {});
+}
+
+function validateSchema(tool: any, value: unknown): string[] {
+  const ajv = new Ajv({ strict: false });
+  const validate = ajv.compile(tool.parameters);
+  return validate(value) ? [] : (validate.errors ?? []).map((e: any) => `${e.instancePath || "/"}: ${e.message}`);
 }
 
 // ─── Stream 2: actor identity exposure on 8 mutating workflow tools ─────────
@@ -95,8 +103,8 @@ test("gsd_task_reopen — validates with only milestoneId/sliceId/taskId", () =>
   const tool = getTool("gsd_task_reopen");
   assert.ok(tool);
   const minimal = { milestoneId: "M001", sliceId: "S01", taskId: "T01" };
-  const errors = [...Value.Errors(tool.parameters, minimal)];
-  assert.strictEqual(errors.length, 0, `core params should validate; got: ${errors.map(e => `${e.path}: ${e.message}`).join(", ")}`);
+  const errors = validateSchema(tool, minimal);
+  assert.strictEqual(errors.length, 0, `core params should validate; got: ${errors.join(", ")}`);
 });
 
 test("gsd_task_reopen — accepts reason + actor fields", () => {
@@ -110,24 +118,24 @@ test("gsd_task_reopen — accepts reason + actor fields", () => {
     actorName: "executor-01",
     triggerReason: "post-completion verification failure",
   };
-  const errors = [...Value.Errors(tool.parameters, full)];
-  assert.strictEqual(errors.length, 0, `full payload should validate; got: ${errors.map(e => `${e.path}: ${e.message}`).join(", ")}`);
+  const errors = validateSchema(tool, full);
+  assert.strictEqual(errors.length, 0, `full payload should validate; got: ${errors.join(", ")}`);
 });
 
 test("gsd_slice_reopen — validates with only milestoneId/sliceId", () => {
   const tool = getTool("gsd_slice_reopen");
   assert.ok(tool);
   const minimal = { milestoneId: "M001", sliceId: "S01" };
-  const errors = [...Value.Errors(tool.parameters, minimal)];
-  assert.strictEqual(errors.length, 0, `core params should validate; got: ${errors.map(e => `${e.path}: ${e.message}`).join(", ")}`);
+  const errors = validateSchema(tool, minimal);
+  assert.strictEqual(errors.length, 0, `core params should validate; got: ${errors.join(", ")}`);
 });
 
 test("gsd_milestone_reopen — validates with only milestoneId", () => {
   const tool = getTool("gsd_milestone_reopen");
   assert.ok(tool);
   const minimal = { milestoneId: "M001" };
-  const errors = [...Value.Errors(tool.parameters, minimal)];
-  assert.strictEqual(errors.length, 0, `core params should validate; got: ${errors.map(e => `${e.path}: ${e.message}`).join(", ")}`);
+  const errors = validateSchema(tool, minimal);
+  assert.strictEqual(errors.length, 0, `core params should validate; got: ${errors.join(", ")}`);
 });
 
 // ─── MCP_WORKFLOW_TOOL_SURFACE includes the reopen tools ─────────────────────

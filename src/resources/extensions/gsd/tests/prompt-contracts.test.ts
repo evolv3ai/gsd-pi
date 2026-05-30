@@ -246,6 +246,18 @@ test("complete-slice prompt keeps source fixes in execution units", () => {
   assert.doesNotMatch(prompt, /Fix failures before marking done/i);
 });
 
+test("complete-slice prompt binds all file operations to workingDirectory", () => {
+  const prompt = readPrompt("complete-slice");
+  assert.match(prompt, /Your working directory is `\{\{workingDirectory\}\}`/);
+  assert.match(prompt, /All file reads, writes, and shell commands MUST operate relative to this directory/);
+});
+
+test("complete-slice prompt disambiguates task-specific regressions from inherited failures", () => {
+  const prompt = readPrompt("complete-slice");
+  assert.match(prompt, /pre-task verification evidence shows it was absent before that task ran/i);
+  assert.match(prompt, /failures present before the task ran/i);
+});
+
 test("complete-slice prompt instructs writing summary and UAT files before tool call", () => {
   const prompt = readPrompt("complete-slice");
   assert.match(prompt, /\{\{sliceSummaryPath\}\}/);
@@ -283,6 +295,16 @@ test("plan-milestone prompt references DB-backed planning tool and explicitly fo
   const prompt = readPrompt("plan-milestone");
   assert.match(prompt, /gsd_plan_milestone/);
   assert.match(prompt, /Do \*\*not\*\* write `?\{\{outputPath\}\}`?, `?ROADMAP\.md`?, or other planning artifacts manually/i);
+  assert.match(prompt, /NEVER call `gsd_plan_milestone` with only `milestoneId` and `sliceId`/);
+  assert.match(prompt, /gsd_plan_slice/);
+});
+
+test("discuss prompts forbid gsd_plan_milestone slice-only tool args", () => {
+  for (const name of ["discuss", "discuss-headless"] as const) {
+    const prompt = readPrompt(name);
+    assert.match(prompt, /NEVER call `gsd_plan_milestone` with only `milestoneId` and `sliceId`/);
+    assert.match(prompt, /title`, `vision`, `slices\[\]/);
+  }
 });
 
 test("plan-slice prompt no longer frames direct PLAN writes as the source of truth", () => {

@@ -26,6 +26,39 @@ export type {
   SearchResult,
 };
 
+function searchContentFallback(
+  content: Buffer | Uint8Array,
+  options: SearchOptions,
+): SearchResult {
+  const text = Buffer.from(content).toString("utf8");
+  const lines = text.split("\n");
+  const flags = `${options.ignoreCase ? "i" : ""}${options.multiline ? "m" : ""}`;
+  const re = new RegExp(options.pattern, flags);
+  const maxCount = options.maxCount ?? Number.POSITIVE_INFINITY;
+  const matches: SearchMatch[] = [];
+  let matchCount = 0;
+  let limitReached = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    if (!re.test(line)) continue;
+    matchCount++;
+    if (matches.length < maxCount) {
+      matches.push({
+        lineNumber: i + 1,
+        line,
+        contextBefore: [],
+        contextAfter: [],
+        truncated: false,
+      });
+    } else {
+      limitReached = true;
+    }
+  }
+
+  return { matches, matchCount, limitReached };
+}
+
 /**
  * Search in-memory content for a regex pattern.
  *
@@ -35,7 +68,11 @@ export function searchContent(
   content: Buffer | Uint8Array,
   options: SearchOptions,
 ): SearchResult {
-  return native.search(content, options) as SearchResult;
+  try {
+    return native.search(content, options) as SearchResult;
+  } catch {
+    return searchContentFallback(content, options);
+  }
 }
 
 /**

@@ -1,81 +1,37 @@
-// Core session management
-
 // Config paths
-export { getAgentDir, VERSION } from "./config.js";
-export {
-	AgentSession,
-	type AgentSessionConfig,
-	type AgentSessionEvent,
-	type AgentSessionEventListener,
-	type ModelCycleResult,
-	type ParsedSkillBlock,
-	type PromptOptions,
-	parseSkillBlock,
-	type SessionStats,
-} from "./core/agent-session.js";
+export { getAgentDir, VERSION, APP_NAME } from "./config.js";
 // Auth and model registry
 export {
 	type ApiKeyCredential,
 	type AuthCredential,
+	type AuthStatus,
 	AuthStorage,
 	type AuthStorageBackend,
 	FileAuthStorageBackend,
 	InMemoryAuthStorageBackend,
 	type OAuthCredential,
 } from "./core/auth-storage.js";
-// Compaction
-export {
-	type BranchPreparation,
-	type BranchSummaryResult,
-	type CollectEntriesResult,
-	type CompactionResult,
-	type CutPointResult,
-	calculateContextTokens,
-	collectEntriesForBranchSummary,
-	compact,
-	DEFAULT_COMPACTION_SETTINGS,
-	estimateTokens,
-	type FileOperations,
-	findCutPoint,
-	findTurnStartIndex,
-	type GenerateBranchSummaryOptions,
-	generateBranchSummary,
-	generateSummary,
-	getLastAssistantUsage,
-	prepareBranchEntries,
-	serializeConversation,
-	shouldCompact,
-} from "./core/compaction/index.js";
 export { createEventBus, type EventBus, type EventBusController } from "./core/event-bus.js";
 // Extension system
 export type {
-	AdjustToolSetEvent,
-	AdjustToolSetResult,
 	AgentEndEvent,
 	AgentStartEvent,
 	AgentToolResult,
 	AgentToolUpdateCallback,
-	AppAction,
+	AppKeybinding,
+	AutocompleteProviderFactory,
 	BashToolCallEvent,
 	BeforeAgentStartEvent,
-	BeforeCommitEvent,
-	BeforeCommitEventResult,
-	BeforePrEvent,
-	BeforePrEventResult,
-	BeforePushEvent,
-	BeforePushEventResult,
-	BeforeVerifyEvent,
-	BeforeVerifyEventResult,
-	BudgetThresholdEvent,
-	BudgetThresholdEventResult,
+	BeforeAgentStartEventResult,
 	BeforeProviderRequestEvent,
 	BeforeProviderRequestEventResult,
-	CommitEvent,
-	NotificationEvent,
-	PrOpenedEvent,
-	PushEvent,
+	BeforeCommitEventResult,
+	BeforePrEventResult,
+	BeforePushEventResult,
+	BeforeVerifyEventResult,
+	BudgetThresholdEventResult,
 	VerifyFailure,
-	VerifyResultEvent,
+	BuildSystemPromptOptions,
 	CompactOptions,
 	ContextEvent,
 	ContextUsage,
@@ -86,7 +42,6 @@ export type {
 	Extension,
 	ExtensionActions,
 	ExtensionAPI,
-	ExtensionManifest,
 	ExtensionCommandContext,
 	ExtensionCommandContextActions,
 	ExtensionContext,
@@ -113,68 +68,59 @@ export type {
 	MessageRenderOptions,
 	ProviderConfig,
 	ProviderModelConfig,
-	LifecycleHookContext,
-	LifecycleHookHandler,
-	LifecycleHookMap,
-	LifecycleHookPhase,
-	LifecycleHookScope,
 	ReadToolCallEvent,
 	RegisteredCommand,
 	RegisteredTool,
+	ResolvedCommand,
 	SessionBeforeCompactEvent,
 	SessionBeforeForkEvent,
 	SessionBeforeSwitchEvent,
 	SessionBeforeTreeEvent,
 	SessionCompactEvent,
-	SessionForkEvent,
 	SessionShutdownEvent,
 	SessionStartEvent,
-	SessionSwitchEvent,
 	SessionTreeEvent,
 	SlashCommandInfo,
-	SlashCommandLocation,
 	SlashCommandSource,
+	SourceInfo,
 	TerminalInputHandler,
 	ToolCallEvent,
-	ToolCompatibility,
+	ToolCallEventResult,
 	ToolDefinition,
+	ToolCompatibility,
+	ToolExecutionMode,
 	ToolInfo,
-	SortResult,
-	SortWarning,
 	ToolRenderResultOptions,
 	ToolResultEvent,
 	TurnEndEvent,
 	TurnStartEvent,
 	UserBashEvent,
 	UserBashEventResult,
-	BashTransformEvent,
-	BashTransformEventResult,
 	WidgetPlacement,
+	WorkingIndicatorOptions,
 	WriteToolCallEvent,
 } from "./core/extensions/index.js";
 export {
 	createExtensionRuntime,
+	defineTool,
 	discoverAndLoadExtensions,
 	ExtensionRunner,
 	importExtensionModule,
+	isBashToolResult,
+	isEditToolResult,
+	isFindToolResult,
+	isGrepToolResult,
+	isLsToolResult,
+	isReadToolResult,
 	isToolCallEventType,
-	isToolResultEventType,
-	readManifest,
-	readManifestFromEntryPath,
-	sortExtensionPaths,
+	isWriteToolResult,
 	wrapRegisteredTool,
 	wrapRegisteredTools,
-	wrapToolsWithExtensions,
-	wrapToolWithExtensions,
 } from "./core/extensions/index.js";
 // Footer data provider (git branch + extension statuses - data not otherwise available to extensions)
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.js";
 export { convertToLlm } from "./core/messages.js";
-export { ModelDiscoveryCache } from "./core/discovery-cache.js";
-export type { DiscoveredModel, DiscoveryResult, ProviderDiscoveryAdapter } from "./core/model-discovery.js";
-export { getDiscoverableProviders, getDiscoveryAdapter } from "./core/model-discovery.js";
 export { ModelRegistry } from "./core/model-registry.js";
-export { ModelsJsonWriter } from "./core/models-json-writer.js";
 export type {
 	PackageManager,
 	PathMetadata,
@@ -187,29 +133,7 @@ export { DefaultPackageManager } from "./core/package-manager.js";
 export type { PackageCommand, PackageCommandOptions, PackageCommandRunnerOptions, PackageCommandRunnerResult } from "./core/package-commands.js";
 export { getPackageCommandUsage, parsePackageCommand, runPackageCommand } from "./core/package-commands.js";
 export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.js";
-export { DefaultResourceLoader } from "./core/resource-loader.js";
-export { RETRYABLE_ERROR_RE } from "./core/retryable-error-regex.js";
-// SDK for programmatic usage
-export {
-	type CreateAgentSessionOptions,
-	type CreateAgentSessionResult,
-	CredentialCooldownError,
-	// Factory
-	createAgentSession,
-	createBashTool,
-	// Tool factories (for custom cwd)
-	createCodingTools,
-	createEditTool,
-	createFindTool,
-	createGrepTool,
-	createLsTool,
-	createReadOnlyTools,
-	createReadTool,
-	createWriteTool,
-	type PromptTemplate,
-	// Pre-built tools (use process.cwd())
-	readOnlyTools,
-} from "./core/sdk.js";
+export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.js";
 export {
 	type BranchSummaryEntry,
 	buildSessionContext,
@@ -233,28 +157,15 @@ export {
 	type SessionMessageEntry,
 	type ThinkingLevelChangeEntry,
 } from "./core/session-manager.js";
-// Blob and artifact storage
-export { BlobStore, isBlobRef, parseBlobRef, externalizeImageData, resolveImageData } from "./core/blob-store.js";
-export { ArtifactManager } from "./core/artifact-manager.js";
 export {
-	type AsyncSettings,
 	type CompactionSettings,
 	type ImageSettings,
-	type MemorySettings,
 	type PackageSource,
 	type RetrySettings,
 	SettingsManager,
-	type TaskIsolationSettings,
 } from "./core/settings-manager.js";
-export {
-	SAFE_COMMAND_PREFIXES,
-	setAllowedCommandPrefixes,
-	getAllowedCommandPrefixes,
-} from "./core/resolve-config-value.js";
 // Skills
 export {
-	ECOSYSTEM_SKILLS_DIR,
-	ECOSYSTEM_PROJECT_SKILLS_DIR,
 	formatSkillsForPrompt,
 	getLoadedSkills,
 	type LoadSkillsFromDirOptions,
@@ -264,50 +175,51 @@ export {
 	type Skill,
 	type SkillFrontmatter,
 } from "./core/skills.js";
+export { createSyntheticSourceInfo } from "./core/source-info.js";
 // Tools
 export {
-	type BashInterceptorRule,
 	type BashOperations,
 	type BashSpawnContext,
 	type BashSpawnHook,
 	type BashToolDetails,
 	type BashToolInput,
 	type BashToolOptions,
-	bashTool,
-	rewriteBackgroundCommand,
-	checkBashInterception,
-	type CompiledInterceptor,
-	compileInterceptor,
-	DEFAULT_BASH_INTERCEPTOR_RULES,
-	codingTools,
+	createBashTool,
+	createBashToolDefinition,
+	createEditTool,
+	createEditToolDefinition,
+	createFindToolDefinition,
+	createGrepToolDefinition,
+	createLocalBashOperations,
+	createLsTool,
+	createLsToolDefinition,
+	createReadTool,
+	createReadToolDefinition,
+	createWriteTool,
+	createWriteToolDefinition,
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
 	type EditOperations,
 	type EditToolDetails,
 	type EditToolInput,
 	type EditToolOptions,
-	editTool,
 	type FindOperations,
 	type FindToolDetails,
 	type FindToolInput,
 	type FindToolOptions,
-	findTool,
 	formatSize,
 	type GrepOperations,
 	type GrepToolDetails,
 	type GrepToolInput,
 	type GrepToolOptions,
-	grepTool,
 	type LsOperations,
 	type LsToolDetails,
 	type LsToolInput,
 	type LsToolOptions,
-	lsTool,
 	type ReadOperations,
 	type ReadToolDetails,
 	type ReadToolInput,
 	type ReadToolOptions,
-	readTool,
 	type ToolsOptions,
 	type TruncationOptions,
 	type TruncationResult,
@@ -317,91 +229,15 @@ export {
 	type WriteOperations,
 	type WriteToolInput,
 	type WriteToolOptions,
-	writeTool,
-	// Hashline edit mode tools
-	hashlineEditTool,
-	hashlineReadTool,
-	hashlineCodingTools,
-	createHashlineEditTool,
-	createHashlineReadTool,
-	createHashlineCodingTools,
-	type HashlineEditInput,
-	type HashlineEditToolDetails,
-	type HashlineEditToolOptions,
-	type HashlineReadToolDetails,
-	type HashlineReadToolInput,
-	type HashlineReadToolOptions,
-	// Tool compatibility registry (ADR-005)
-	registerToolCompatibility,
-	getToolCompatibility,
-	getAllToolCompatibility,
-	registerMcpToolCompatibility,
-	resetToolCompatibilityRegistry,
+	withFileMutationQueue,
 } from "./core/tools/index.js";
-// Main entry point
-export { main } from "./main.js";
-// Run modes for programmatic SDK usage
 export {
-	InteractiveMode,
-	type InteractiveModeOptions,
-	type PrintModeOptions,
-	runPrintMode,
-	runRpcMode,
-	type ModelInfo,
-	RpcClient,
-	type RpcClientOptions,
-	type RpcEventListener,
-	type RpcCommand,
-	type RpcInitResult,
-	type RpcProtocolVersion,
-	type RpcResponse,
-	type RpcSessionState,
-	type RpcV2Event,
-} from "./modes/index.js";
-// RPC JSONL utilities
-export { attachJsonlLineReader, serializeJsonLine } from "./modes/rpc/jsonl.js";
-// UI components for extensions
-export {
-	ArminComponent,
-	AssistantMessageComponent,
-	appKey,
-	appKeyHint,
-	BashExecutionComponent,
-	BorderedLoader,
-	BranchSummaryMessageComponent,
-	CompactionSummaryMessageComponent,
-	CustomEditor,
-	CustomMessageComponent,
-	DynamicBorder,
-	ExtensionEditorComponent,
-	ExtensionInputComponent,
-	ExtensionSelectorComponent,
-	editorKey,
-	FooterComponent,
-	keyHint,
-	LoginDialogComponent,
-	ModelSelectorComponent,
-	OAuthSelectorComponent,
-	ProviderManagerComponent,
-	type RenderDiffOptions,
-	rawKeyHint,
-	renderDiff,
-	SessionSelectorComponent,
-	type SettingsCallbacks,
-	type SettingsConfig,
-	SettingsSelectorComponent,
-	ShowImagesSelectorComponent,
-	SkillInvocationMessageComponent,
-	ThemeSelectorComponent,
-	ThinkingSelectorComponent,
-	ToolExecutionComponent,
-	type ToolExecutionOptions,
-	TreeSelectorComponent,
-	truncateToVisualLines,
-	UserMessageComponent,
-	UserMessageSelectorComponent,
-	type VisualTruncateResult,
-} from "./modes/interactive/components/index.js";
+	getAllToolCompatibility,
+	getToolCompatibility,
+	registerMcpToolCompatibility,
+	registerToolCompatibility,
+	resetToolCompatibilityRegistry,
+} from "./core/tools/tool-compatibility-registry.js";
 // Theme utilities for custom tools and extensions
 export {
 	getLanguageFromPath,
@@ -412,11 +248,35 @@ export {
 	initTheme,
 	Theme,
 	type ThemeColor,
-} from "./modes/interactive/theme/theme.js";
+} from "./theme/theme.js";
 // Clipboard utilities
 export { copyToClipboard } from "./utils/clipboard.js";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.js";
+export { formatDimensionNote, type ResizedImage, resizeImage } from "./utils/image-resize.js";
 // Shell utilities
 export { getShellConfig, sanitizeCommand } from "./utils/shell.js";
-// Cross-platform path display
+export {
+	SAFE_COMMAND_PREFIXES,
+	getAllowedCommandPrefixes,
+	setAllowedCommandPrefixes,
+} from "./core/resolve-config-value.js";
+
+// GSD-specific exports (protected during upstream vendoring)
+export { FallbackResolver } from "./core/fallback-resolver.js";
+export {
+	prepareLifecycleHooks,
+	runLifecycleHooks,
+	readManifestRuntimeDeps,
+	collectRuntimeDependencies,
+	verifyRuntimeDependencies,
+	resolveLocalSourcePath,
+} from "./core/lifecycle-hooks.js";
+export {
+	BlobStore,
+	externalizeImageData,
+	isBlobRef,
+	parseBlobRef,
+	resolveImageData,
+} from "./core/blob-store.js";
+export { ArtifactManager } from "./core/artifact-manager.js";
 export { toPosixPath } from "./utils/path-display.js";

@@ -65,14 +65,14 @@ import type {
   SessionManageResponse,
 } from "./session-browser-contract"
 import { authFetch, appendAuthParam } from "./auth"
-import { ContextualTips } from "../../packages/pi-coding-agent/src/core/contextual-tips.ts"
+import { ContextualTips } from "@gsd/agent-core/contextual-tips.js"
 import type {
   WorkspaceIndex,
   WorkspaceScopeTarget,
   WorkspaceSliceTarget,
   WorkspaceValidationIssue,
 } from "../../src/shared/workspace-types.ts"
-import type { RpcExtensionUIRequest } from "@gsd-build/contracts"
+import type { RpcExtensionUIRequest } from "@opengsd/contracts"
 
 export type WorkspaceStatus = "idle" | "loading" | "ready" | "error" | "unauthenticated"
 export type WorkspaceConnectionState =

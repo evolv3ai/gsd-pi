@@ -105,6 +105,13 @@ function replayEvents(events: WorkflowEvent[]): void {
         updateTaskStatus(milestoneId, sliceId, taskId, "in-progress", event.ts);
         break;
       }
+      case "skip_task": {
+        const milestoneId = p["milestoneId"] as string;
+        const sliceId = p["sliceId"] as string;
+        const taskId = p["taskId"] as string;
+        updateTaskStatus(milestoneId, sliceId, taskId, "skipped", event.ts);
+        break;
+      }
       case "report_blocker": {
         const milestoneId = p["milestoneId"] as string;
         const sliceId = p["sliceId"] as string;
@@ -236,6 +243,7 @@ export function extractEntityKey(
   switch (cmd) {
     case "complete_task":
     case "start_task":
+    case "skip_task":
     case "report_blocker":
     case "record_verification":
     case "plan_task":

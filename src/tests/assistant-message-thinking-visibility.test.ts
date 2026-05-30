@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { AssistantMessageComponent } from "../../packages/pi-coding-agent/src/modes/interactive/components/assistant-message.ts";
+import { AssistantMessageComponent } from "../../packages/gsd-agent-modes/src/modes/interactive/components/assistant-message.ts";
 
 function firstRenderedMarkdown(component: AssistantMessageComponent): any {
   return (component as any).contentContainer.children[0];

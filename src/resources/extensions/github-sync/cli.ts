@@ -48,6 +48,18 @@ export function _resetGhCache(): void {
   _ghAvailable = null;
 }
 
+/** Force gh availability result (for testing). Pass null to use real detection. */
+export function _setGhAvailableForTest(available: boolean | null): void {
+  _ghAvailable = available;
+}
+
+let _rateLimitOkOverride: boolean | null = null;
+
+/** Force rate-limit check result (for testing). Pass null to use real API probe. */
+export function _setGhRateLimitOkForTest(ok: boolean | null): void {
+  _rateLimitOkOverride = ok;
+}
+
 // ─── Rate Limit Check ───────────────────────────────────────────────────────
 
 let _rateLimitCheckedAt = 0;
@@ -55,6 +67,7 @@ let _rateLimitOk = true;
 const RATE_LIMIT_CHECK_INTERVAL_MS = 300_000; // 5 minutes
 
 export function ghHasRateLimit(cwd: string): boolean {
+  if (_rateLimitOkOverride !== null) return _rateLimitOkOverride;
   const now = Date.now();
   if (now - _rateLimitCheckedAt < RATE_LIMIT_CHECK_INTERVAL_MS) return _rateLimitOk;
   _rateLimitCheckedAt = now;

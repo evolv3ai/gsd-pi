@@ -1,4 +1,4 @@
-// GSD-2 + Workspace handle: single source of truth for path resolution per milestone
+// gsd-pi + Workspace handle: single source of truth for path resolution per milestone
 
 import { join, resolve } from "node:path";
 import { type GsdPathContract, resolveGsdPathContract, normalizeRealPath } from "./paths.js";
@@ -71,10 +71,11 @@ export function createWorkspace(rawBasePath: string): GsdWorkspace {
 
 /**
  * Bind a milestoneId to a workspace, producing an immutable MilestoneScope
- * with path-returning closures that resolve via the authoritative projectGsd.
+ * with path-returning closures for DB-authoritative project state.
  *
- * All milestone-content paths route to contract.projectGsd (canonical),
- * since that is the authoritative source of truth regardless of worktree mode.
+ * These scope paths intentionally route to contract.projectGsd. In-flight
+ * markdown artifact readers outside this scope use the projection-aware
+ * resolvers in paths.ts so worktree units can see worktree-local projections.
  */
 export function scopeMilestone(workspace: GsdWorkspace, milestoneId: string): MilestoneScope {
   const { contract } = workspace;

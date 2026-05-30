@@ -6,7 +6,7 @@ import {
 } from "../auto-supervisor.ts";
 
 /**
- * Tests for signal handler registration (SIGTERM, SIGHUP, SIGINT).
+ * Tests for signal handler registration (SIGTERM, SIGHUP, SIGINT, SIGBREAK).
  *
  * Validates that registerSigtermHandler installs handlers on all three
  * signals and deregisterSigtermHandler removes them from all three.
@@ -14,11 +14,12 @@ import {
  * SIGHUP and SIGINT handlers.
  */
 
-test("registerSigtermHandler installs handlers on SIGTERM, SIGHUP, and SIGINT", () => {
+test("registerSigtermHandler installs handlers on SIGTERM, SIGHUP, SIGINT, and SIGBREAK", () => {
   const before = {
     SIGTERM: process.listenerCount("SIGTERM"),
     SIGHUP: process.listenerCount("SIGHUP"),
     SIGINT: process.listenerCount("SIGINT"),
+    SIGBREAK: process.listenerCount("SIGBREAK"),
   };
 
   const handler = registerSigtermHandler("/tmp/test-signal-handlers", null);
@@ -38,18 +39,24 @@ test("registerSigtermHandler installs handlers on SIGTERM, SIGHUP, and SIGINT", 
     before.SIGINT + 1,
     "SIGINT listener should be added",
   );
+  assert.equal(
+    process.listenerCount("SIGBREAK"),
+    before.SIGBREAK + 1,
+    "SIGBREAK listener should be added",
+  );
 
   // Clean up
   deregisterSigtermHandler(handler);
 });
 
-test("deregisterSigtermHandler removes handlers from all three signals", () => {
+test("deregisterSigtermHandler removes handlers from all cleanup signals", () => {
   const handler = registerSigtermHandler("/tmp/test-signal-handlers", null);
 
   const during = {
     SIGTERM: process.listenerCount("SIGTERM"),
     SIGHUP: process.listenerCount("SIGHUP"),
     SIGINT: process.listenerCount("SIGINT"),
+    SIGBREAK: process.listenerCount("SIGBREAK"),
   };
 
   deregisterSigtermHandler(handler);
@@ -69,6 +76,11 @@ test("deregisterSigtermHandler removes handlers from all three signals", () => {
     during.SIGINT - 1,
     "SIGINT listener should be removed",
   );
+  assert.equal(
+    process.listenerCount("SIGBREAK"),
+    during.SIGBREAK - 1,
+    "SIGBREAK listener should be removed",
+  );
 });
 
 test("registerSigtermHandler deregisters previous handler from all signals", () => {
@@ -76,6 +88,7 @@ test("registerSigtermHandler deregisters previous handler from all signals", () 
     SIGTERM: process.listenerCount("SIGTERM"),
     SIGHUP: process.listenerCount("SIGHUP"),
     SIGINT: process.listenerCount("SIGINT"),
+    SIGBREAK: process.listenerCount("SIGBREAK"),
   };
 
   const handler1 = registerSigtermHandler("/tmp/test-signal-handlers", null);
@@ -96,6 +109,11 @@ test("registerSigtermHandler deregisters previous handler from all signals", () 
     process.listenerCount("SIGINT"),
     before.SIGINT + 1,
     "SIGINT should have exactly one handler after re-registration",
+  );
+  assert.equal(
+    process.listenerCount("SIGBREAK"),
+    before.SIGBREAK + 1,
+    "SIGBREAK should have exactly one handler after re-registration",
   );
 
   // Clean up

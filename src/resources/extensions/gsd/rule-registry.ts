@@ -169,7 +169,7 @@ export class RuleRegistry {
     }
 
     // Check if any hooks are configured for this unit type
-    const hooks = resolvePostUnitHooks().filter(h =>
+    const hooks = resolvePostUnitHooks(basePath).filter(h =>
       h.after.includes(completedUnitType),
     );
     if (hooks.length === 0) return null;
@@ -237,7 +237,7 @@ export class RuleRegistry {
 
   private _handleHookCompletion(basePath: string): HookDispatchResult | null {
     const hook = this.activeHook!;
-    const hooks = resolvePostUnitHooks();
+    const hooks = resolvePostUnitHooks(basePath);
     const config = hooks.find(h => h.name === hook.hookName);
 
     // Check if retry was requested via retry_on artifact
@@ -284,7 +284,7 @@ export class RuleRegistry {
       return { action: "proceed", prompt, firedHooks: [] };
     }
 
-    const hooks = resolvePreDispatchHooks().filter(h =>
+    const hooks = resolvePreDispatchHooks(basePath).filter(h =>
       h.before.includes(unitType),
     );
     if (hooks.length === 0) {
@@ -476,7 +476,7 @@ export class RuleRegistry {
     unitId: string,
     basePath: string,
   ): HookDispatchResult | null {
-    const hook = resolvePostUnitHooks().find(h => h.name === hookName);
+    const hook = resolvePostUnitHooks(basePath).find(h => h.name === hookName);
     if (!hook) {
       console.error(`[triggerHookManually] Hook "${hookName}" not found in post_unit_hooks`);
       return null;

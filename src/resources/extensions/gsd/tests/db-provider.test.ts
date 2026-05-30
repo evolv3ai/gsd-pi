@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Tests for SQLite provider loading and fallback behavior.
 
 import { describe, test } from "node:test";
@@ -24,9 +24,11 @@ class FakeBetterDatabase {
 function createDeps(overrides: Partial<SqliteProviderDeps> = {}): SqliteProviderDeps & { stderr: string[] } {
   const stderr: string[] = [];
   return {
-    requireModule(id: string): unknown {
-      if (id === "node:sqlite") return { DatabaseSync: FakeNodeDatabase };
-      throw new Error(`unexpected module: ${id}`);
+    tryRequireNodeSqlite(): unknown {
+      return { DatabaseSync: FakeNodeDatabase };
+    },
+    tryRequireBetterSqlite3(): unknown {
+      throw new Error("better-sqlite3 unavailable");
     },
     suppressSqliteWarning(): void {},
     nodeVersion: "22.0.0",
@@ -51,10 +53,11 @@ describe("db-provider", () => {
 
   test("falls back to better-sqlite3 when node:sqlite is unavailable", () => {
     const loader = createSqliteProviderLoader(createDeps({
-      requireModule(id: string): unknown {
-        if (id === "node:sqlite") throw new Error("node sqlite unavailable");
-        if (id === "better-sqlite3") return FakeBetterDatabase;
-        throw new Error(`unexpected module: ${id}`);
+      tryRequireNodeSqlite(): unknown {
+        throw new Error("node sqlite unavailable");
+      },
+      tryRequireBetterSqlite3(): unknown {
+        return FakeBetterDatabase;
       },
     }));
 
@@ -67,7 +70,10 @@ describe("db-provider", () => {
 
   test("reports provider unavailability with a Node version hint below Node 22", () => {
     const deps = createDeps({
-      requireModule(): unknown {
+      tryRequireNodeSqlite(): unknown {
+        throw new Error("unavailable");
+      },
+      tryRequireBetterSqlite3(): unknown {
         throw new Error("unavailable");
       },
       nodeVersion: "20.11.1",
@@ -84,10 +90,11 @@ describe("db-provider", () => {
 
   test("opens better-sqlite3 fallback without committing it until requested", () => {
     const loader = createSqliteProviderLoader(createDeps({
-      requireModule(id: string): unknown {
-        if (id === "node:sqlite") return { DatabaseSync: FakeNodeDatabase };
-        if (id === "better-sqlite3") return { default: FakeBetterDatabase };
-        throw new Error(`unexpected module: ${id}`);
+      tryRequireNodeSqlite(): unknown {
+        return { DatabaseSync: FakeNodeDatabase };
+      },
+      tryRequireBetterSqlite3(): unknown {
+        return { default: FakeBetterDatabase };
       },
     }));
 

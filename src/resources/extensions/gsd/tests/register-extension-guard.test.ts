@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
 import { handleRecoverableExtensionProcessError } from "../bootstrap/register-extension.ts";
@@ -94,7 +94,17 @@ test("handleRecoverableExtensionProcessError leaves unrelated errors unhandled",
   assert.equal(handled, false);
 });
 
-test("handleRecoverableExtensionProcessError swallows EPIPE, warns, and writes crash log when stdout is alive", () => {
+test("handleRecoverableExtensionProcessError leaves ECONNRESET network errors unhandled", () => {
+  const handled = handleRecoverableExtensionProcessError(
+    Object.assign(new Error("socket hang up"), {
+      code: "ECONNRESET",
+      syscall: "read",
+    }),
+  );
+  assert.equal(handled, false);
+});
+
+test("handleRecoverableExtensionProcessError swallows EPIPE without writing a crash log", () => {
   const tmpHome = join(tmpdir(), `gsd-epipe-test-${randomUUID()}`);
   const origHome = process.env.GSD_HOME;
   process.env.GSD_HOME = tmpHome;
@@ -116,11 +126,67 @@ test("handleRecoverableExtensionProcessError swallows EPIPE, warns, and writes c
     assert.equal(handled, true);
     assert.match(stderr, /swallowed EPIPE/);
     const crashDir = join(tmpHome, "crash");
-    assert.equal(existsSync(crashDir), true);
-    assert.equal(readdirSync(crashDir).some((f) => f.endsWith(".log")), true);
+    assert.equal(existsSync(crashDir), false);
   } finally {
     process.stderr.write = originalWrite;
     process.env.GSD_HOME = origHome;
     rmSync(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test("handleRecoverableExtensionProcessError swallows dead transport control write errors", () => {
+  let stderr = "";
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderr += String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+
+  try {
+    const handled = handleRecoverableExtensionProcessError(
+      new Error("ProcessTransport is not ready for writing"),
+    );
+    assert.equal(handled, true);
+    assert.match(stderr, /swallowed dead transport control write/);
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+});
+
+test("handleRecoverableExtensionProcessError swallows write EOF without code", () => {
+  let stderr = "";
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderr += String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+
+  try {
+    const handled = handleRecoverableExtensionProcessError(
+      new Error("write EOF"),
+    );
+    assert.equal(handled, true);
+    assert.match(stderr, /swallowed write EOF/);
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+});
+
+test("handleRecoverableExtensionProcessError swallows read EOF without code", () => {
+  let stderr = "";
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderr += String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+
+  try {
+    const handled = handleRecoverableExtensionProcessError(
+      new Error("read EOF"),
+    );
+    assert.equal(handled, true);
+    assert.match(stderr, /swallowed read EOF/);
+  } finally {
+    process.stderr.write = originalWrite;
   }
 });

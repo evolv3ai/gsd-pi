@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Auto-loop execution, dispatch, recovery, and cancellation regression tests.
 
 import test, { mock } from "node:test";
@@ -21,6 +21,7 @@ import {
   isSessionSwitchAbortGraceActive,
 } from "../auto/resolve.js";
 import { runUnit, shouldDeferUnitFailsafeTimeout } from "../auto/run-unit.js";
+import { scheduleAutoWakeup, _resetAutoWakeupsForTest } from "../auto/schedule-wakeup.js";
 import { writeUnitRuntimeRecord, readUnitRuntimeRecord } from "../unit-runtime.js";
 import { autoLoop } from "../auto/loop.js";
 import { runDispatch, runUnitPhase } from "../auto/phases.js";
@@ -53,11 +54,14 @@ async function drainMicrotasks(turns = 20): Promise<void> {
 async function waitForMicrotasks(
   condition: () => boolean,
   label: string,
-  turns = 500,
+  turns = 5000,
 ): Promise<void> {
   for (let i = 0; i < turns; i++) {
     if (condition()) return;
     await Promise.resolve();
+    if (i % 25 === 24) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
   }
   assert.fail(`Timed out waiting for ${label}`);
 }
@@ -185,6 +189,61 @@ test("resolveAgentEnd resolves a pending runUnit promise", async () => {
   const result = await resultPromise;
   assert.equal(result.status, "completed");
   assert.deepEqual(result.event, event);
+});
+
+test("runUnit honors ScheduleWakeup by continuing the same unit session", async () => {
+  _resetPendingResolve();
+  _resetAutoWakeupsForTest();
+
+  const ctx = {
+    ...makeMockCtx(),
+    ui: {
+      notify: () => {},
+      setStatus: () => {},
+      setWorkingMessage: () => {},
+    },
+    sessionManager: {
+      getEntries: () => [],
+    },
+    modelRegistry: {
+      getProviderAuthMode: () => undefined,
+      isProviderRequestReady: () => true,
+    },
+  } as any;
+  const pi = makeMockPi();
+  const s = makeMockSession();
+  const firstEvent = makeEvent([{ role: "assistant", content: "submitted job" }]);
+  const secondEvent = makeEvent([{ role: "assistant", content: "job finished" }]);
+
+  const resultPromise = runUnit(
+    ctx,
+    pi,
+    s,
+    "execute-task",
+    "M001/S01/T01",
+    "submit external job",
+  );
+
+  await waitForMicrotasks(() => pi.calls.length === 1, "initial unit dispatch");
+  scheduleAutoWakeup({
+    basePath: s.basePath,
+    unitType: "execute-task",
+    unitId: "M001/S01/T01",
+    delayMs: 0,
+    prompt: "check external job and write the task summary if complete",
+    reason: "poll external job",
+    createdAt: Date.now(),
+  });
+  resolveAgentEnd(firstEvent);
+
+  await waitForMicrotasks(() => pi.calls.length === 2, "scheduled wakeup dispatch");
+  assert.equal((pi.calls[1] as any[])[0].content, "check external job and write the task summary if complete");
+  resolveAgentEnd(secondEvent);
+
+  const result = await resultPromise;
+  assert.equal(result.status, "completed");
+  assert.deepEqual(result.event, secondEvent);
+  assert.equal(pi.calls.length, 2);
 });
 
 test("runUnit suppresses the global working-message loader for auto dashboard runs", async () => {
@@ -2450,8 +2509,8 @@ test("autoLoop handles verification retry by continuing loop", async (t) => {
       },
       postUnitPostVerification: async () => {
         deps.callLog.push("postUnitPostVerification");
-        // After the retry cycle completes, deactivate
-        s.active = false;
+        // After the retry cycle completes, deactivate.
+        if (verifyCallCount >= 2) s.active = false;
         return "continue" as const;
       },
     });
@@ -2622,6 +2681,62 @@ test("autoLoop pauses instead of stopping for warning-level dispatch stop", asyn
   );
 });
 
+test("autoLoop retries warning-level unhandled phase with fresh state before pausing", async () => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  const pi = makeMockPi();
+  const s = makeLoopSession();
+  const states = [
+    {
+      phase: "planning",
+      activeMilestone: { id: "M001", title: "Test", status: "active" },
+      activeSlice: null,
+      activeTask: null,
+      registry: [{ id: "M001", status: "active" }],
+      blockers: [],
+    },
+    {
+      phase: "executing",
+      activeMilestone: { id: "M001", title: "Test", status: "active" },
+      activeSlice: { id: "S01", title: "Slice 1" },
+      activeTask: { id: "T01" },
+      registry: [{ id: "M001", status: "active" }],
+      blockers: [],
+    },
+  ];
+  const seenPhases: string[] = [];
+  let deriveCalls = 0;
+
+  const deps = makeMockDeps({
+    deriveState: async () => states[Math.min(deriveCalls++, states.length - 1)] as any,
+    resolveDispatch: async (dctx) => {
+      seenPhases.push(dctx.state.phase);
+      if (dctx.state.phase === "planning") {
+        return {
+          action: "stop" as const,
+          reason: 'Unhandled phase "planning" — run /gsd doctor to diagnose.',
+          level: "warning" as const,
+          matchedRule: "<no-match>",
+        };
+      }
+      return {
+        action: "stop" as const,
+        reason: "fresh state reached terminal stop",
+        level: "info" as const,
+      };
+    },
+  });
+
+  await autoLoop(ctx, pi, s, deps);
+
+  assert.deepEqual(seenPhases, ["planning", "executing"]);
+  assert.equal(deriveCalls, 2, "unhandled warning should re-derive state once");
+  assert.equal(deps.callLog.includes("pauseAuto"), false);
+  assert.equal(deps.callLog.includes("stopAuto"), true);
+});
+
 // #2474: error-level dispatch stop should still hard-stop
 test("autoLoop hard-stops for error-level dispatch stop", async (t) => {
   _resetPendingResolve();
@@ -2651,6 +2766,41 @@ test("autoLoop hard-stops for error-level dispatch stop", async (t) => {
   assert.ok(
     !deps.callLog.includes("pauseAuto"),
     "error-level stop should NOT call pauseAuto",
+  );
+});
+
+test("autoLoop closes journal iteration on pre-dispatch health-gate break", async () => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  const pi = makeMockPi();
+  const s = makeLoopSession();
+  const journalEvents: Array<{ eventType: string; data?: any }> = [];
+  let pauseOptions: unknown;
+
+  const deps = makeMockDeps({
+    preDispatchHealthGate: async () => ({
+      proceed: false,
+      reason: "health gate failed",
+      fixesApplied: [],
+    }),
+    pauseAuto: async (_ctx, _pi, _errorContext, options) => {
+      pauseOptions = options;
+      deps.callLog.push("pauseAuto");
+    },
+    emitJournalEvent: (event: any) => {
+      journalEvents.push(event);
+    },
+  });
+
+  await autoLoop(ctx, pi, s, deps);
+
+  assert.equal(deps.callLog.includes("pauseAuto"), true);
+  assert.deepEqual(pauseOptions, { expectedCurrentUnit: null });
+  assert.ok(
+    journalEvents.some((event) => event.eventType === "iteration-end" && event.data?.reason === "pre-dispatch-break"),
+    "pre-dispatch break must close the started iteration",
   );
 });
 
@@ -5445,7 +5595,7 @@ test("autoLoop classifies ModelPolicyDispatchBlockedError as blocked, not a retr
   // Capture onTurnResult to assert blocked-unit identity is propagated to
   // the uokObserver. Without the fix, observedUnitType/Id are unset because
   // the throw happens inside dispatch before the success-path assignments
-  // at loop.ts:453/631/647 (#4959 / CodeRabbit Minor).
+  // at loop.ts:453/631/647 (#4959).
   const turnResults: Array<{ unitType?: string; unitId?: string; status: string }> = [];
 
   const deps = makeMockDeps({
@@ -5495,7 +5645,7 @@ test("autoLoop classifies ModelPolicyDispatchBlockedError as blocked, not a retr
 
   // Blocked-unit identity must reach uokObserver.onTurnResult — the typed
   // error already carries it, the loop must thread it into observedUnitType/Id
-  // before finishTurn is called (#4959 / CodeRabbit Minor).
+  // before finishTurn is called (#4959).
   const pausedTurn = turnResults.find(r => r.status === "paused");
   assert.ok(pausedTurn, "uokObserver should observe a paused turn for the blocked unit");
   assert.equal(pausedTurn!.unitType, "research-slice", "onTurnResult must receive the blocked unitType from the typed error");

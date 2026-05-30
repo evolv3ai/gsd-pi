@@ -1,4 +1,4 @@
-// @gsd-build/mcp-server + alias-telemetry.test — coverage for #5031.
+// @opengsd/mcp-server + alias-telemetry.test — coverage for #5031.
 // `logAliasUsage` must:
 //   - emit one valid JSON line per call to stderr with the documented shape
 //   - never throw, even if stderr.write fails (telemetry must not break MCP)

@@ -76,23 +76,20 @@ export function xxHash32Fallback(input: string, seed: number): number {
   return xxHash32JS(input, seed);
 }
 
-// Resolve once at module load: prefer native, fall back to JS.
-const _xxHash32Impl: (input: string, seed: number) => number =
-  typeof native.xxHash32 === "function"
-    ? (input, seed) => native.xxHash32(input, seed)
-    : xxHash32JS;
-
 /**
  * Compute xxHash32 of a UTF-8 string.
  *
  * Uses the native Rust implementation when available; falls back to a
- * pure-JS implementation if the loaded native addon does not export
- * `xxHash32` (e.g. an older build).
+ * pure-JS implementation if the addon is missing or throws on call.
  *
  * @param input  The string to hash (encoded as UTF-8 internally).
  * @param seed   32-bit seed value.
  * @returns      32-bit unsigned hash.
  */
 export function xxHash32(input: string, seed: number): number {
-  return _xxHash32Impl(input, seed);
+  try {
+    return native.xxHash32(input, seed);
+  } catch {
+    return xxHash32JS(input, seed);
+  }
 }

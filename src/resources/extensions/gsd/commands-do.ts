@@ -30,6 +30,8 @@ const ROUTES: Route[] = [
   { keywords: ["capture", "note", "idea", "thought", "remember"], command: "capture" },
   { keywords: ["inspect", "database", "sqlite", "db state"], command: "inspect" },
   { keywords: ["knowledge", "rule", "pattern", "lesson"], command: "knowledge" },
+  { keywords: ["context usage", "context window", "how much context", "token usage", "tokens used"], command: "usage" },
+  { keywords: ["context breakdown", "what is using context", "skills in context", "agents in context"], command: "context" },
   { keywords: ["session report", "session summary", "cost summary", "how much"], command: "session-report" },
   { keywords: ["backlog", "parking lot", "later", "someday"], command: "backlog" },
   { keywords: ["pr branch", "clean branch", "filter commits"], command: "pr-branch" },

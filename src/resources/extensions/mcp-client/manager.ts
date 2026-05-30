@@ -1,11 +1,11 @@
 /**
- * GSD-2 — Shared MCP connection management.
+ * gsd-pi — Shared MCP connection management.
  *
  * File Purpose: Reads, writes, and tests user-configured MCP server entries
  * for runtime tools, TUI commands, and app settings surfaces.
  */
 
-import { Client } from "@modelcontextprotocol/sdk/client";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";

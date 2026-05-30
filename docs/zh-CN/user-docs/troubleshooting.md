@@ -45,7 +45,7 @@
 
 ### 安装后出现 `command not found: gsd`
 
-**症状：** `npm install -g gsd-pi` 成功，但系统找不到 `gsd`。
+**症状：** `npm install -g @opengsd/gsd-pi` 成功，但系统找不到 `gsd`。
 
 **原因：** npm 的全局 bin 目录没有加入 shell 的 `$PATH`。
 
@@ -61,7 +61,7 @@ echo 'export PATH="$(npm prefix -g)/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-**临时方案：** 直接执行 `npx gsd-pi`，或使用 `$(npm prefix -g)/bin/gsd`。
+**临时方案：** 直接执行 `npx @opengsd/gsd-pi`，或使用 `$(npm prefix -g)/bin/gsd`。
 
 **常见原因：**
 
@@ -69,7 +69,7 @@ source ~/.zshrc
 - **版本管理器（nvm、fnm、mise）**：全局 bin 路径是按版本区分的，需确保版本管理器正确初始化
 - **oh-my-zsh**：`gitfast` 插件会把 `gsd` alias 到 `git svn dcommit`。可通过 `alias gsd` 检查，并在需要时取消 alias
 
-### `npm install -g gsd-pi` 失败
+### `npm install -g @opengsd/gsd-pi` 失败
 
 **常见原因：**
 
@@ -122,9 +122,16 @@ rm -rf "$(dirname .gsd)/.gsd.lock"
 
 ### Git merge 冲突
 
-**症状：** Worktree merge 在 `.gsd/` 文件上失败。
+**症状：** 大多数 `/gsd` 命令被拦截，或自动模式因未解决的 Git 冲突而暂停/停止。
 
-**解决：** GSD 会自动解决 `.gsd/` 运行时文件上的冲突。对于代码文件的内容冲突，LLM 会先获得一次 fix-merge 会话进行自动修复；若失败，则需要手动解决。
+**机制：** 在多数 `/gsd` 命令执行前，GSD 会探测项目根目录（以及存在时的活跃 milestone worktree）中的未合并路径、冲突标记（`git diff --check`）和残留的 merge/rebase 状态。它会自动修复安全路径（`.gsd/` 运行时文件与构建产物），在无未合并路径时中止陈旧的 merge 状态，若仍存在产品代码冲突则拦截。
+
+**解决：**
+- 手动解决源代码中的冲突后运行 `/gsd doctor`。
+- 冲突未清空前仍可使用：`/gsd doctor`、`/gsd closeout …`、`/gsd dispatch complete-milestone …`。
+- 待 `git status` 干净后重试原命令。
+
+自动模式在 heal 后若仍有产品冲突会**暂停**；若无法验证 Git 状态（探测失败）则**停止**（fail-closed）。
 
 ### Pre-dispatch 提示 milestone integration branch 已不存在
 

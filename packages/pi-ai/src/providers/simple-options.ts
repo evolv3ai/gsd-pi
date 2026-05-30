@@ -1,30 +1,19 @@
 import type { Api, Model, SimpleStreamOptions, StreamOptions, ThinkingBudgets, ThinkingLevel } from "../types.js";
 
-/**
- * Compute the default maxTokens for a model when no explicit value is provided.
- *
- * The 32 k cap is retained only for native Anthropic models (api === "anthropic-messages")
- * where the Anthropic API historically rejected higher values. Defaults also
- * leave at least half the context window available for prompts.
- */
-export function defaultMaxTokens(model: Model<Api>): number {
-	const contextCappedMaxTokens = Math.max(1, Math.floor(model.contextWindow / 2));
-	if (model.api === "anthropic-messages") {
-		return Math.min(model.maxTokens, 32000, contextCappedMaxTokens);
-	}
-	return Math.min(model.maxTokens, contextCappedMaxTokens);
-}
-
-export function buildBaseOptions(model: Model<Api>, options?: SimpleStreamOptions, apiKey?: string): StreamOptions {
+export function buildBaseOptions(_model: Model<Api>, options?: SimpleStreamOptions, apiKey?: string): StreamOptions {
 	return {
 		temperature: options?.temperature,
-		maxTokens: options?.maxTokens || defaultMaxTokens(model),
+		maxTokens: options?.maxTokens,
 		signal: options?.signal,
 		apiKey: apiKey || options?.apiKey,
+		transport: options?.transport,
 		cacheRetention: options?.cacheRetention,
 		sessionId: options?.sessionId,
 		headers: options?.headers,
 		onPayload: options?.onPayload,
+		onResponse: options?.onResponse,
+		timeoutMs: options?.timeoutMs,
+		maxRetries: options?.maxRetries,
 		maxRetryDelayMs: options?.maxRetryDelayMs,
 		metadata: options?.metadata,
 	};
@@ -35,7 +24,8 @@ export function clampReasoning(effort: ThinkingLevel | undefined): Exclude<Think
 }
 
 export function adjustMaxTokensForThinking(
-	baseMaxTokens: number,
+	// Undefined means no explicit caller cap. Use the model cap and fit thinking inside it.
+	baseMaxTokens: number | undefined,
 	modelMaxTokens: number,
 	reasoningLevel: ThinkingLevel,
 	customBudgets?: ThinkingBudgets,
@@ -51,7 +41,8 @@ export function adjustMaxTokensForThinking(
 	const minOutputTokens = 1024;
 	const level = clampReasoning(reasoningLevel)!;
 	let thinkingBudget = budgets[level]!;
-	const maxTokens = Math.min(baseMaxTokens + thinkingBudget, modelMaxTokens);
+	const maxTokens =
+		baseMaxTokens === undefined ? modelMaxTokens : Math.min(baseMaxTokens + thinkingBudget, modelMaxTokens);
 
 	if (maxTokens <= thinkingBudget) {
 		thinkingBudget = Math.max(0, maxTokens - minOutputTokens);

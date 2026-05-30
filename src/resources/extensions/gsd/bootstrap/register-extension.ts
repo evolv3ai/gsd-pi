@@ -1,4 +1,4 @@
-// GSD2 — Extension registration: wires all GSD tools, commands, and hooks into pi
+// gsd-pi — Extension registration: wires all GSD tools, commands, and hooks into pi
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent";
 
@@ -10,7 +10,9 @@ import { registerDynamicTools } from "./dynamic-tools.js";
 import { registerExecTools } from "./exec-tools.js";
 import { registerJournalTools } from "./journal-tools.js";
 import { registerMemoryTools } from "./memory-tools.js";
+import { registerToolSearchShim } from "./tool-search-shim.js";
 import { registerQueryTools } from "./query-tools.js";
+import { registerScheduleWakeupTool } from "./schedule-wakeup-tool.js";
 import { registerHooks } from "./register-hooks.js";
 import { registerShortcuts } from "./register-shortcuts.js";
 import { writeCrashLog } from "./crash-log.js";
@@ -25,15 +27,27 @@ import { initCmuxEventListeners } from "../../cmux/index.js";
 
 export { writeCrashLog } from "./crash-log.js";
 
+function isPipeClosedError(err: Error): boolean {
+  const errno = (err as NodeJS.ErrnoException).code;
+  if (errno === "EPIPE") return true;
+  const message = err.message;
+  return message === "write EOF" || message === "read EOF";
+}
+
 export function handleRecoverableExtensionProcessError(err: Error): boolean {
-  if ((err as NodeJS.ErrnoException).code === "EPIPE") {
-    writeCrashLog(err, "EPIPE");
+  if (err.message.includes("ProcessTransport is not ready for writing")) {
+    process.stderr.write(`[gsd] swallowed dead transport control write: ${err.message}\n`);
+    return true;
+  }
+  if (isPipeClosedError(err)) {
+    const code = (err as NodeJS.ErrnoException).code;
+    const tag = code ?? err.message;
     const stdoutGone = process.stdout.destroyed || process.stdout.writableEnded;
     if (stdoutGone) {
       process.exit(0);
     }
     process.stderr.write(
-      `[gsd] swallowed EPIPE (syscall=${(err as NodeJS.ErrnoException).syscall ?? "?"}); see ~/.gsd/crash/ for details\n`,
+      `[gsd] swallowed ${tag} (syscall=${(err as NodeJS.ErrnoException).syscall ?? "?"})\n`,
     );
     return true;
   }
@@ -114,6 +128,17 @@ export function registerGsdExtension(pi: ExtensionAPI): void {
     },
   });
 
+  // ToolSearch is a compatibility stub — register early so it stays in the
+  // active tool set even when later bootstrap steps fail partially.
+  try {
+    registerToolSearchShim(pi);
+  } catch (err) {
+    logWarning(
+      "bootstrap",
+      `Failed to register tool-search-shim: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   // Wrap non-critical registrations individually so one failure
   // doesn't prevent the others from loading.
   const nonCriticalRegistrations: Array<[string, () => void]> = [
@@ -123,6 +148,7 @@ export function registerGsdExtension(pi: ExtensionAPI): void {
     ["query-tools", () => registerQueryTools(pi)],
     ["memory-tools", () => registerMemoryTools(pi)],
     ["exec-tools", () => registerExecTools(pi)],
+    ["schedule-wakeup-tool", () => registerScheduleWakeupTool(pi)],
     ["shortcuts", () => registerShortcuts(pi)],
     // cmux is a library (no pi), so gsd sets up the event listeners on its
     // behalf using the shared event channel contract. Registration is

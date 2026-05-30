@@ -64,7 +64,7 @@ export interface OrchestratorDeps {
 // System Prompt
 // ---------------------------------------------------------------------------
 
-const SYSTEM_PROMPT = `You are GSD Control — a concise, capable orchestrator for managing GSD (Get Shit Done) coding agent sessions via Discord.
+const SYSTEM_PROMPT = `You are GSD Control — a concise, capable orchestrator for managing GSD (Git Ship Done) coding agent sessions via Discord.
 
 You have tools to list projects, start sessions, get status, stop sessions, and inspect session details. Use them to fulfill the user's requests.
 

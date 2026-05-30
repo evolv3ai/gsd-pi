@@ -503,7 +503,7 @@ run("version skew is detected and named in stderr", () => {
     mkdirSync(join(fakeHome, ".gsd", "agent"), { recursive: true });
     writeFileSync(
       join(fakeHome, ".gsd", "agent", "managed-resources.json"),
-      JSON.stringify({ gsdVersion: "999.0.0" }),
+      JSON.stringify({ gsdVersion: "999.0.0", packageName: "@opengsd/gsd-pi" }),
     );
 
     const result = gsd([], dir, { HOME: fakeHome });
@@ -512,8 +512,7 @@ run("version skew is detected and named in stderr", () => {
     const stderr = result.stderr;
     const hitVersionSkew =
       stderr.includes("999.0.0") ||
-      /version\s*(skew|mismatch)/i.test(stderr) ||
-      /managed-resources/i.test(stderr);
+      /version\s*mismatch/i.test(stderr);
     assert(
       hitVersionSkew,
       `expected stderr to mention version skew / 999.0.0 / managed-resources; got: ${stderr.slice(0, 400)}`,

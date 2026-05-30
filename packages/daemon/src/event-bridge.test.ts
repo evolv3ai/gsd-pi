@@ -12,8 +12,8 @@ import { EventEmitter } from 'node:events';
 import { EventBridge } from './event-bridge.js';
 import type { EventBridgeOptions, BridgeClient } from './event-bridge.js';
 import type { PendingBlocker, ManagedSession, DaemonConfig, SessionStatus } from './types.js';
-import type { RpcClient } from '@gsd-build/rpc-client';
-import type { RpcExtensionUIRequest, SdkAgentEvent } from '@gsd-build/contracts';
+import type { RpcClient } from '@opengsd/rpc-client';
+import type { RpcExtensionUIRequest, SdkAgentEvent } from '@opengsd/contracts';
 
 // ---------------------------------------------------------------------------
 // Mock factories
@@ -90,7 +90,7 @@ function createMockSession(overrides?: Partial<ManagedSession>): ManagedSession 
 
 const DEFAULT_CONFIG: DaemonConfig = {
   discord: {
-    token: 'test-token',
+    token: 'dummy',
     guild_id: 'guild-1',
     owner_id: 'owner-1',
     dm_on_blocker: false,

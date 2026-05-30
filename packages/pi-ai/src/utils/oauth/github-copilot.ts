@@ -4,26 +4,15 @@
 
 import { getModels } from "../../models.js";
 import type { Api, Model } from "../../types.js";
-import type { OAuthCredentials, OAuthLoginCallbacks, OAuthProviderInterface } from "./types.js";
+import { pollOAuthDeviceCodeFlow } from "./device-code.js";
+import type { OAuthCredentials, OAuthDeviceCodeInfo, OAuthLoginCallbacks, OAuthProviderInterface } from "./types.js";
 
 type CopilotCredentials = OAuthCredentials & {
 	enterpriseUrl?: string;
-	/** Model limits from the /models API, keyed by model ID */
-	modelLimits?: Record<string, { contextWindow: number; maxTokens: number }>;
 };
 
-// GitHub Copilot OAuth Client ID
-//
-// NOTE: This credential is public in the source code. It should NOT be
-// obfuscated because security scanners flag obfuscated data as potentially
-// malicious (see: https://socket.dev/npm/package/gsd-pi/alerts/2.70.1?alert_name=obfuscatedFile)
-//
-// GitHub's device flow for public clients (CLI/desktop apps) does not use
-// a client secret - only the client ID is required. This is standard OAuth
-// for public clients and is intentionally public.
-//
-// See: https://docs.github.com/en/developers/apps/building-oauth-apps/authorizing-oauth-apps
-const CLIENT_ID = "Iv1.b507a08c87ecfe98";
+const decode = (s: string) => atob(s);
+const CLIENT_ID = decode("SXYxLmI1MDdhMDhjODdlY2ZlOTg=");
 
 const COPILOT_HEADERS = {
 	"User-Agent": "GitHubCopilotChat/0.35.0",
@@ -36,7 +25,7 @@ type DeviceCodeResponse = {
 	device_code: string;
 	user_code: string;
 	verification_uri: string;
-	interval: number;
+	interval?: number;
 	expires_in: number;
 };
 
@@ -49,7 +38,6 @@ type DeviceTokenSuccessResponse = {
 type DeviceTokenErrorResponse = {
 	error: string;
 	error_description?: string;
-	interval?: number;
 };
 
 export function normalizeDomain(input: string): string | null {
@@ -101,10 +89,7 @@ export function getGitHubCopilotBaseUrl(token?: string, enterpriseDomain?: strin
 }
 
 async function fetchJson(url: string, init: RequestInit): Promise<unknown> {
-	const response = await fetch(url, {
-		...init,
-		signal: init.signal ?? AbortSignal.timeout(30_000),
-	});
+	const response = await fetch(url, init);
 	if (!response.ok) {
 		const text = await response.text();
 		throw new Error(`${response.status} ${response.statusText}: ${text}`);
@@ -118,10 +103,10 @@ async function startDeviceFlow(domain: string): Promise<DeviceCodeResponse> {
 		method: "POST",
 		headers: {
 			Accept: "application/json",
-			"Content-Type": "application/json",
+			"Content-Type": "application/x-www-form-urlencoded",
 			"User-Agent": "GitHubCopilotChat/0.35.0",
 		},
-		body: JSON.stringify({
+		body: new URLSearchParams({
 			client_id: CLIENT_ID,
 			scope: "read:user",
 		}),
@@ -141,7 +126,7 @@ async function startDeviceFlow(domain: string): Promise<DeviceCodeResponse> {
 		typeof deviceCode !== "string" ||
 		typeof userCode !== "string" ||
 		typeof verificationUri !== "string" ||
-		typeof interval !== "number" ||
+		(interval !== undefined && typeof interval !== "number") ||
 		typeof expiresIn !== "number"
 	) {
 		throw new Error("Invalid device code response fields");
@@ -156,83 +141,48 @@ async function startDeviceFlow(domain: string): Promise<DeviceCodeResponse> {
 	};
 }
 
-/**
- * Sleep that can be interrupted by an AbortSignal
- */
-function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
-	return new Promise((resolve, reject) => {
-		if (signal?.aborted) {
-			reject(new Error("Login cancelled"));
-			return;
-		}
-
-		const timeout = setTimeout(resolve, ms);
-
-		signal?.addEventListener(
-			"abort",
-			() => {
-				clearTimeout(timeout);
-				reject(new Error("Login cancelled"));
-			},
-			{ once: true },
-		);
-	});
-}
-
-async function pollForGitHubAccessToken(
-	domain: string,
-	deviceCode: string,
-	intervalSeconds: number,
-	expiresIn: number,
-	signal?: AbortSignal,
-) {
+async function pollForGitHubAccessToken(domain: string, device: DeviceCodeResponse, signal?: AbortSignal) {
 	const urls = getUrls(domain);
-	const deadline = Date.now() + expiresIn * 1000;
-	let intervalMs = Math.max(1000, Math.floor(intervalSeconds * 1000));
+	return pollOAuthDeviceCodeFlow({
+		intervalSeconds: device.interval,
+		expiresInSeconds: device.expires_in,
+		signal,
+		poll: async () => {
+			const raw = await fetchJson(urls.accessTokenUrl, {
+				method: "POST",
+				headers: {
+					Accept: "application/json",
+					"Content-Type": "application/x-www-form-urlencoded",
+					"User-Agent": "GitHubCopilotChat/0.35.0",
+				},
+				body: new URLSearchParams({
+					client_id: CLIENT_ID,
+					device_code: device.device_code,
+					grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+				}),
+			});
 
-	while (Date.now() < deadline) {
-		if (signal?.aborted) {
-			throw new Error("Login cancelled");
-		}
-
-		const raw = await fetchJson(urls.accessTokenUrl, {
-			method: "POST",
-			headers: {
-				Accept: "application/json",
-				"Content-Type": "application/json",
-				"User-Agent": "GitHubCopilotChat/0.35.0",
-			},
-			body: JSON.stringify({
-				client_id: CLIENT_ID,
-				device_code: deviceCode,
-				grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-			}),
-		});
-
-		if (raw && typeof raw === "object" && typeof (raw as DeviceTokenSuccessResponse).access_token === "string") {
-			return (raw as DeviceTokenSuccessResponse).access_token;
-		}
-
-		if (raw && typeof raw === "object" && typeof (raw as DeviceTokenErrorResponse).error === "string") {
-			const err = (raw as DeviceTokenErrorResponse).error;
-			if (err === "authorization_pending") {
-				await abortableSleep(intervalMs, signal);
-				continue;
+			if (raw && typeof raw === "object" && typeof (raw as DeviceTokenSuccessResponse).access_token === "string") {
+				return { status: "complete", accessToken: (raw as DeviceTokenSuccessResponse).access_token };
 			}
 
-			if (err === "slow_down") {
-				intervalMs += 5000;
-				await abortableSleep(intervalMs, signal);
-				continue;
+			if (raw && typeof raw === "object" && typeof (raw as DeviceTokenErrorResponse).error === "string") {
+				const { error, error_description: description } = raw as DeviceTokenErrorResponse;
+				if (error === "authorization_pending") {
+					return { status: "pending" };
+				}
+
+				if (error === "slow_down") {
+					return { status: "slow_down" };
+				}
+
+				const descriptionSuffix = description ? `: ${description}` : "";
+				return { status: "failed", message: `Device flow failed: ${error}${descriptionSuffix}` };
 			}
 
-			throw new Error(`Device flow failed: ${err}`);
-		}
-
-		await abortableSleep(intervalMs, signal);
-	}
-
-	throw new Error("Device flow timed out");
+			return { status: "failed", message: "Invalid device token response" };
+		},
+	});
 }
 
 /**
@@ -291,7 +241,6 @@ async function enableGitHubCopilotModel(token: string, modelId: string, enterpri
 				"x-interaction-type": "chat-policy",
 			},
 			body: JSON.stringify({ state: "enabled" }),
-			signal: AbortSignal.timeout(30_000),
 		});
 		return response.ok;
 	} catch {
@@ -317,57 +266,16 @@ async function enableAllGitHubCopilotModels(
 	);
 }
 
-async function fetchCopilotModelLimits(
-	token: string,
-	enterpriseDomain?: string,
-): Promise<Record<string, { contextWindow: number; maxTokens: number }>> {
-	const baseUrl = getGitHubCopilotBaseUrl(token, enterpriseDomain);
-	try {
-		const response = await fetch(`${baseUrl}/models`, {
-			headers: {
-				Accept: "application/json",
-				Authorization: `Bearer ${token}`,
-				"X-GitHub-Api-Version": "2025-05-01",
-				...COPILOT_HEADERS,
-			},
-			signal: AbortSignal.timeout(30_000),
-		});
-		if (!response.ok) return {};
-		const data = (await response.json()) as {
-			data?: Array<{
-				id: string;
-				capabilities?: {
-					limits?: {
-						max_context_window_tokens?: number;
-						max_output_tokens?: number;
-					};
-				};
-			}>;
-		};
-		const limits: Record<string, { contextWindow: number; maxTokens: number }> = {};
-		for (const m of data.data || []) {
-			const ctx = m.capabilities?.limits?.max_context_window_tokens;
-			const out = m.capabilities?.limits?.max_output_tokens;
-			if (typeof ctx === "number" && typeof out === "number" && ctx > 0 && out > 0 && Number.isFinite(ctx) && Number.isFinite(out)) {
-				limits[m.id] = { contextWindow: ctx, maxTokens: out };
-			}
-		}
-		return limits;
-	} catch {
-		return {};
-	}
-}
-
 /**
  * Login with GitHub Copilot OAuth (device code flow)
  *
- * @param options.onAuth - Callback with URL and optional instructions (user code)
+ * @param options.onDeviceCode - Callback with URL and user code
  * @param options.onPrompt - Callback to prompt user for input
  * @param options.onProgress - Optional progress callback
  * @param options.signal - Optional AbortSignal for cancellation
  */
 export async function loginGitHubCopilot(options: {
-	onAuth: (url: string, instructions?: string) => void;
+	onDeviceCode: (info: OAuthDeviceCodeInfo) => void;
 	onPrompt: (prompt: { message: string; placeholder?: string; allowEmpty?: boolean }) => Promise<string>;
 	onProgress?: (message: string) => void;
 	signal?: AbortSignal;
@@ -390,28 +298,19 @@ export async function loginGitHubCopilot(options: {
 	const domain = enterpriseDomain || "github.com";
 
 	const device = await startDeviceFlow(domain);
-	options.onAuth(device.verification_uri, `Enter code: ${device.user_code}`);
+	options.onDeviceCode({
+		userCode: device.user_code,
+		verificationUri: device.verification_uri,
+		intervalSeconds: device.interval,
+		expiresInSeconds: device.expires_in,
+	});
 
-	const githubAccessToken = await pollForGitHubAccessToken(
-		domain,
-		device.device_code,
-		device.interval,
-		device.expires_in,
-		options.signal,
-	);
+	const githubAccessToken = await pollForGitHubAccessToken(domain, device, options.signal);
 	const credentials = await refreshGitHubCopilotToken(githubAccessToken, enterpriseDomain ?? undefined);
 
 	// Enable all models after successful login
 	options.onProgress?.("Enabling models...");
 	await enableAllGitHubCopilotModels(credentials.access, enterpriseDomain ?? undefined);
-
-	// Fetch real model limits from the Copilot API
-	options.onProgress?.("Fetching model limits...");
-	const modelLimits = await fetchCopilotModelLimits(credentials.access, enterpriseDomain ?? undefined);
-	if (Object.keys(modelLimits).length > 0) {
-		(credentials as CopilotCredentials).modelLimits = modelLimits;
-	}
-
 	return credentials;
 }
 
@@ -421,7 +320,7 @@ export const githubCopilotOAuthProvider: OAuthProviderInterface = {
 
 	async login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
 		return loginGitHubCopilot({
-			onAuth: (url, instructions) => callbacks.onAuth({ url, instructions }),
+			onDeviceCode: callbacks.onDeviceCode,
 			onPrompt: callbacks.onPrompt,
 			onProgress: callbacks.onProgress,
 			signal: callbacks.signal,
@@ -430,16 +329,7 @@ export const githubCopilotOAuthProvider: OAuthProviderInterface = {
 
 	async refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
 		const creds = credentials as CopilotCredentials;
-		const refreshed = await refreshGitHubCopilotToken(creds.refresh, creds.enterpriseUrl);
-		try {
-			const modelLimits = await fetchCopilotModelLimits(refreshed.access, creds.enterpriseUrl);
-			if (Object.keys(modelLimits).length > 0) {
-				(refreshed as CopilotCredentials).modelLimits = modelLimits;
-			}
-		} catch {
-			// Model limits fetch is best-effort; don't block token refresh
-		}
-		return refreshed;
+		return refreshGitHubCopilotToken(creds.refresh, creds.enterpriseUrl);
 	},
 
 	getApiKey(credentials: OAuthCredentials): string {
@@ -450,21 +340,6 @@ export const githubCopilotOAuthProvider: OAuthProviderInterface = {
 		const creds = credentials as CopilotCredentials;
 		const domain = creds.enterpriseUrl ? (normalizeDomain(creds.enterpriseUrl) ?? undefined) : undefined;
 		const baseUrl = getGitHubCopilotBaseUrl(creds.access, domain);
-		const limits = creds.modelLimits;
-		const availableModelIds = limits ? new Set(Object.keys(limits)) : null;
-		const shouldFilterByAvailability = !!availableModelIds && availableModelIds.size > 0;
-		return models.flatMap((m) => {
-			if (m.provider !== "github-copilot") return m;
-			if (shouldFilterByAvailability && !availableModelIds.has(m.id)) return [];
-			const modelLimits = limits?.[m.id];
-			return {
-				...m,
-				baseUrl,
-				...(modelLimits && {
-					contextWindow: modelLimits.contextWindow,
-					maxTokens: modelLimits.maxTokens,
-				}),
-			};
-		});
+		return models.map((m) => (m.provider === "github-copilot" ? { ...m, baseUrl } : m));
 	},
 };

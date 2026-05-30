@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-import { resolvePreferredModelConfig, resolveModelId, selectAndApplyModel } from "../auto-model-selection.js";
+import { ModelPolicyDispatchBlockedError, resolvePreferredModelConfig, resolveModelId, selectAndApplyModel } from "../auto-model-selection.js";
 
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -214,6 +214,88 @@ test("selectAndApplyModel honors explicit phase models without downgrading (#361
     assert.equal(result.routing, null, "explicit phase models should not record a routing downgrade");
     assert.equal(result.appliedModel?.provider, "anthropic");
     assert.equal(result.appliedModel?.id, "claude-opus-4-6");
+  } finally {
+    process.chdir(originalCwd);
+    if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = originalGsdHome;
+    rmSync(tempProject, { recursive: true, force: true });
+    rmSync(tempGsdHome, { recursive: true, force: true });
+  }
+});
+
+test("selectAndApplyModel lets explicit unit models bypass stale cross-provider lock (#116)", async () => {
+  const originalCwd = process.cwd();
+  const originalGsdHome = process.env.GSD_HOME;
+  const tempProject = makeTempDir("gsd-explicit-cross-provider-project-");
+  const tempGsdHome = makeTempDir("gsd-explicit-cross-provider-home-");
+  const setModelCalls: string[] = [];
+
+  try {
+    mkdirSync(join(tempProject, ".gsd"), { recursive: true });
+    writeFileSync(
+      join(tempProject, ".gsd", "PREFERENCES.md"),
+      [
+        "---",
+        "models:",
+        "  research:",
+        "    model: claude-opus-4-7",
+        "    provider: claude-code",
+        "    fallbacks:",
+        "      - deepseek/deepseek-v4-pro-20260423",
+        "dynamic_routing:",
+        "  enabled: true",
+        "  cross_provider: false",
+        "uok:",
+        "  model_policy:",
+        "    enabled: true",
+        "---",
+      ].join("\n"),
+      "utf-8",
+    );
+    process.env.GSD_HOME = tempGsdHome;
+    process.chdir(tempProject);
+
+    const availableModels = [
+      { id: "gpt-5.5", provider: "openai-codex", api: "responses" },
+      { id: "claude-opus-4-7", provider: "claude-code", api: "anthropic-messages" },
+      { id: "deepseek-v4-pro-20260423", provider: "deepseek", api: "openai-chat" },
+    ];
+
+    let thrown: unknown;
+    try {
+      await selectAndApplyModel(
+        {
+          modelRegistry: { getAvailable: () => availableModels },
+          sessionManager: { getSessionId: () => "test-session" },
+          ui: { notify: () => {} },
+          model: { provider: "openai-codex", id: "gpt-5.5", api: "responses" },
+        } as any,
+        {
+          setModel: async (model: { provider: string; id: string }) => {
+            setModelCalls.push(`${model.provider}/${model.id}`);
+            return true;
+          },
+          emitBeforeModelSelect: async () => undefined,
+          getActiveTools: () => [],
+          emitAdjustToolSet: async () => undefined,
+          setActiveTools: () => {},
+        } as any,
+        "research-slice",
+        "M014-veveb9/parallel-research",
+        tempProject,
+        undefined,
+        false,
+        { provider: "openai-codex", id: "gpt-5.5" },
+        undefined,
+        true,
+      );
+    } catch (e) {
+      thrown = e;
+    }
+
+    assert.ok(!(thrown instanceof ModelPolicyDispatchBlockedError), "explicit research config must not be blocked by stale provider");
+    if (thrown) throw thrown;
+    assert.deepEqual(setModelCalls, ["claude-code/claude-opus-4-7"]);
   } finally {
     process.chdir(originalCwd);
     if (originalGsdHome === undefined) delete process.env.GSD_HOME;

@@ -36,6 +36,8 @@ const ROUTES: Route[] = [
   { keywords: ["visualize", "viz", "graph", "chart", "show graph"], command: "visualize" },
   { keywords: ["capture", "note", "idea", "thought", "remember"], command: "capture" },
   { keywords: ["inspect", "database", "sqlite", "db state"], command: "inspect" },
+  { keywords: ["context usage", "context window", "how much context", "token usage", "tokens used"], command: "usage" },
+  { keywords: ["context breakdown", "what is using context", "skills in context", "agents in context"], command: "context" },
   { keywords: ["session report", "session summary", "cost summary", "how much"], command: "session-report" },
   { keywords: ["backlog", "parking lot", "later", "someday"], command: "backlog" },
   { keywords: ["add tests", "write tests", "generate tests", "test coverage"], command: "add-tests" },
@@ -138,6 +140,18 @@ test("/gsd do: routes 'session report' to session-report", () => {
   const match = matchRoute("show me the session report");
   assert.ok(match);
   assert.equal(match.command, "session-report");
+});
+
+test("/gsd do: routes 'context usage' to usage", () => {
+  const match = matchRoute("what is my context usage");
+  assert.ok(match);
+  assert.equal(match.command, "usage");
+});
+
+test("/gsd do: routes 'context breakdown' to context", () => {
+  const match = matchRoute("show me a context breakdown");
+  assert.ok(match);
+  assert.equal(match.command, "context");
 });
 
 test("/gsd do: routes 'diagnose issue' to debug (not doctor)", () => {

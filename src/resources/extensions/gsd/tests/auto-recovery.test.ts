@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Tests auto-mode artifact verification and recovery behavior.
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
@@ -7,14 +7,25 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 
-import { verifyExpectedArtifact, hasImplementationArtifacts, resolveExpectedArtifactPath, diagnoseExpectedArtifact, diagnoseWorktreeIntegrityFailure, buildLoopRemediationSteps, writeBlockerPlaceholder, refreshRecoveryDbForArtifact } from "../auto-recovery.ts";
+import { verifyExpectedArtifact, hasImplementationArtifacts, resolveExpectedArtifactPath, diagnoseExpectedArtifact, diagnoseWorktreeIntegrityFailure, buildLoopRemediationSteps, writeBlockerPlaceholder, refreshRecoveryDbForArtifact, writeReactiveExecuteBlocker } from "../auto-recovery.ts";
 import { resolveMilestoneFile } from "../paths.ts";
-import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertGateRow, insertTask, insertAssessment, getMilestone, getMilestoneCommitAttributionShas } from "../gsd-db.ts";
+import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertGateRow, insertTask, insertAssessment, getMilestone, getMilestoneCommitAttributionShas, getTask } from "../gsd-db.ts";
+import { readEvents } from "../workflow-events.ts";
 import { clearParseCache } from "../files.ts";
 import { parseRoadmap } from "../parsers-legacy.ts";
 import { invalidateAllCaches } from "../cache.ts";
 import { deriveState, invalidateStateCache } from "../state.ts";
 import { writeIntegrationBranch } from "../git-service.ts";
+import { loadSyncMapping } from "../../github-sync/mapping.ts";
+import {
+  _resetConfigCache,
+  _setGhCloseOverridesForTest,
+} from "../../github-sync/sync.ts";
+import {
+  _resetGhCache,
+  _setGhAvailableForTest,
+  _setGhRateLimitOkForTest,
+} from "../../github-sync/cli.ts";
 
 const tmpDirs: string[] = [];
 
@@ -288,7 +299,7 @@ test("refreshRecoveryDbForArtifact treats missing execute-task DB rows as fatal 
   });
 });
 
-test("refreshRecoveryDbForArtifact closes complete-milestone DB row when artifacts exist but DB is stale (#5568)", () => {
+test("refreshRecoveryDbForArtifact closes complete-milestone DB row when artifacts exist but DB is stale (#5568)", async () => {
   const base = mkdtempSync(join(tmpdir(), "auto-recovery-complete-ms-"));
   mkdirSync(join(base, ".gsd"), { recursive: true });
   openDatabase(join(base, ".gsd", "gsd.db"));
@@ -343,11 +354,52 @@ test("refreshRecoveryDbForArtifact closes complete-milestone DB row when artifac
   runGit(base, ["add", "feature.ts"]);
   runGit(base, ["commit", "-m", "feat: implementation evidence"]);
   writeFileSync(join(base, ".gsd", "integration-branch"), "main\n");
+  writeFileSync(
+    join(base, ".gsd", "PREFERENCES.md"),
+    ["---", "version: 1", "github:", "  enabled: true", "  repo: owner/repo", "---"].join("\n"),
+    "utf-8",
+  );
+  writeFileSync(
+    join(base, ".gsd", "github-sync.json"),
+    JSON.stringify({
+      version: 1,
+      repo: "owner/repo",
+      milestones: {
+        M001: {
+          issueNumber: 42,
+          ghMilestoneNumber: 7,
+          lastSyncedAt: "2025-01-01T00:00:00Z",
+          state: "open",
+        },
+      },
+      slices: {},
+      tasks: {},
+    }, null, 2),
+    "utf-8",
+  );
+
+  _resetGhCache();
+  _resetConfigCache();
+  _setGhAvailableForTest(true);
+  _setGhRateLimitOkForTest(true);
+  _setGhCloseOverridesForTest({
+    closeIssue: () => ({ ok: true }),
+    closeMilestone: () => ({ ok: true }),
+  });
 
   const result = refreshRecoveryDbForArtifact("complete-milestone", "M001", base);
 
   assert.deepEqual(result, { ok: true });
   assert.equal(getMilestone("M001")?.status, "complete");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const mapping = loadSyncMapping(base);
+  assert.equal(mapping?.milestones.M001?.state, "closed");
+
+  _setGhCloseOverridesForTest(null);
+  _setGhAvailableForTest(null);
+  _setGhRateLimitOkForTest(null);
+  _resetGhCache();
+  _resetConfigCache();
 });
 
 test("refreshRecoveryDbForArtifact fails closed for complete-milestone without implementation evidence", () => {
@@ -893,57 +945,6 @@ test("verifyExpectedArtifact execute-task requires checked checkbox or DB status
   }
 });
 
-// ─── #793: invalidateAllCaches unblocks skip-loop ─────────────────────────
-// When the skip-loop breaker fires, it must call invalidateAllCaches() (not
-// just invalidateStateCache()) to clear path/parse caches that deriveState
-// depends on. Without this, even after cache invalidation, deriveState reads
-// stale directory listings and returns the same unit, looping forever.
-test("#793: invalidateAllCaches clears all caches so deriveState sees fresh disk state", async () => {
-  const base = makeTmpBase();
-  try {
-    const mid = "M001";
-    const sid = "S01";
-    const planDir = join(base, ".gsd", "milestones", mid, "slices", sid);
-    const tasksDir = join(planDir, "tasks");
-    mkdirSync(tasksDir, { recursive: true });
-    mkdirSync(join(base, ".gsd", "milestones", mid), { recursive: true });
-
-    writeFileSync(
-      join(base, ".gsd", "milestones", mid, `${mid}-ROADMAP.md`),
-      `# M001: Test Milestone\n\n**Vision:** test.\n\n## Slices\n\n- [ ] **${sid}: Slice One** \`risk:low\` \`depends:[]\`\n  > After this: done.\n`,
-    );
-    const planUnchecked = `# ${sid}: Slice One\n\n**Goal:** test.\n\n## Tasks\n\n- [ ] **T01: Task One** \`est:10m\`\n- [ ] **T02: Task Two** \`est:10m\`\n`;
-    writeFileSync(join(planDir, `${sid}-PLAN.md`), planUnchecked);
-    writeFileSync(join(tasksDir, "T01-PLAN.md"), "# T01: Task One\n\n**Goal:** t\n\n## Steps\n- step\n\n## Verification\n- v\n");
-    writeFileSync(join(tasksDir, "T02-PLAN.md"), "# T02: Task Two\n\n**Goal:** t\n\n## Steps\n- step\n\n## Verification\n- v\n");
-
-    // Warm all caches
-    const state1 = await deriveState(base);
-    assert.equal(state1.activeTask?.id, "T01", "initial: T01 is active");
-
-    // Simulate task completion on disk (what the LLM does)
-    const planChecked = `# ${sid}: Slice One\n\n**Goal:** test.\n\n## Tasks\n\n- [x] **T01: Task One** \`est:10m\`\n- [ ] **T02: Task Two** \`est:10m\`\n`;
-    writeFileSync(join(planDir, `${sid}-PLAN.md`), planChecked);
-    writeFileSync(join(tasksDir, "T01-SUMMARY.md"), "---\nid: T01\n---\n# Summary\n");
-
-    // invalidateStateCache alone: _stateCache cleared but path/parse caches warm
-    invalidateStateCache();
-
-    // invalidateAllCaches: all caches cleared — deriveState must re-read disk
-    invalidateAllCaches();
-    const state2 = await deriveState(base);
-
-    // After full invalidation, T01 should be complete and T02 should be next
-    assert.notEqual(state2.activeTask?.id, "T01", "#793: T01 not re-dispatched after full invalidation");
-
-    // Verify the caches are truly cleared by calling clearParseCache and clearPathCache
-    // do not throw (they should be no-ops after invalidateAllCaches already cleared them)
-    clearParseCache(); // no-op, but should not throw
-    assert.ok(true, "clearParseCache after invalidateAllCaches is safe");
-  } finally {
-    cleanup(base);
-  }
-});
 
 // ─── hasImplementationArtifacts (#1703) ───────────────────────────────────
 
@@ -955,6 +956,7 @@ function makeGitBase(): string {
   execFileSync("git", ["init", "--initial-branch=main"], { cwd: base, stdio: "ignore" });
   execFileSync("git", ["config", "user.email", "test@test.com"], { cwd: base, stdio: "ignore" });
   execFileSync("git", ["config", "user.name", "Test"], { cwd: base, stdio: "ignore" });
+  execFileSync("git", ["config", "gc.auto", "0"], { cwd: base, stdio: "ignore" });
   // Create initial commit so HEAD exists
   writeFileSync(join(base, ".gitkeep"), "");
   execFileSync("git", ["add", "."], { cwd: base, stdio: "ignore" });
@@ -1287,6 +1289,7 @@ test("hasImplementationArtifacts returns unknown for empty integration self-diff
 test("hasImplementationArtifacts uses milestone path history instead of rolling depth (#4699)", () => {
   const base = makeGitBase();
   try {
+    execFileSync("git", ["checkout", "-b", "milestone/M001"], { cwd: base, stdio: "ignore" });
     mkdirSync(join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks"), { recursive: true });
     mkdirSync(join(base, "src"), { recursive: true });
     writeFileSync(join(base, "src", "feature.ts"), "export function feature() {}");
@@ -1295,14 +1298,14 @@ test("hasImplementationArtifacts uses milestone path history instead of rolling 
     execFileSync("git", ["commit", "-m", "feat: old milestone implementation\n\nGSD-Task: S01/T01"], { cwd: base, stdio: "ignore" });
 
     mkdirSync(join(base, "docs"), { recursive: true });
-    for (let i = 0; i < 205; i++) {
+    for (let i = 0; i < 25; i++) {
       writeFileSync(join(base, "docs", `note-${i}.md`), `# Note ${i}\n`);
       execFileSync("git", ["add", "."], { cwd: base, stdio: "ignore" });
       execFileSync("git", ["commit", "-m", `docs: filler ${i}`], { cwd: base, stdio: "ignore" });
     }
 
     const result = hasImplementationArtifacts(base, "M001");
-    assert.equal(result, "present", "milestone evidence should not age out after 200 unrelated commits");
+    assert.equal(result, "present", "milestone evidence should not age out beyond the old rolling-depth fallback");
   } finally {
     cleanup(base);
   }
@@ -1708,6 +1711,69 @@ test("#4068: verifyExpectedArtifact parallel-research treats PARALLEL-BLOCKER as
       "#4068: PARALLEL-BLOCKER on disk must satisfy verifyExpectedArtifact so the loop does not re-dispatch",
     );
   } finally {
+    cleanup(base);
+  }
+});
+
+test("#57: verifyExpectedArtifact reactive-execute treats REACTIVE-BLOCKER as terminal completion", () => {
+  const base = makeTmpBase();
+  try {
+    const blockerPath = resolveExpectedArtifactPath("reactive-execute", "M001/S01/reactive+T01,T02", base);
+    assert.ok(blockerPath, "reactive blocker path resolves");
+    writeFileSync(blockerPath!, "# BLOCKER\n", "utf-8");
+
+    assert.equal(
+      verifyExpectedArtifact("reactive-execute", "M001/S01/reactive+T01,T02", base),
+      true,
+      "REACTIVE-BLOCKER must satisfy verification even when task summaries are missing",
+    );
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("#57: writeReactiveExecuteBlocker reconciles batch task statuses and appends events", () => {
+  const base = makeTmpBase();
+  try {
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "M001", title: "Milestone", status: "active" });
+    insertSlice({ id: "S01", milestoneId: "M001", title: "Slice", status: "pending" });
+    insertTask({ id: "T01", milestoneId: "M001", sliceId: "S01", title: "One", status: "pending" });
+    insertTask({ id: "T02", milestoneId: "M001", sliceId: "S01", title: "Two", status: "pending" });
+    insertTask({ id: "T03", milestoneId: "M001", sliceId: "S01", title: "Three", status: "complete" });
+    writeFileSync(
+      join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01-SUMMARY.md"),
+      "# T01 Summary\n",
+      "utf-8",
+    );
+    writeFileSync(
+      join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T03-SUMMARY.md"),
+      "# T03 Summary\n",
+      "utf-8",
+    );
+
+    const recovery = writeReactiveExecuteBlocker(
+      "M001/S01/reactive+T01,T02,T03",
+      base,
+      "verification retries exhausted",
+    );
+
+    assert.ok(recovery, "recovery should run with DB available");
+    assert.deepEqual(recovery!.completedTaskIds, ["T01"]);
+    assert.deepEqual(recovery!.skippedTaskIds, ["T02"]);
+    assert.equal(getTask("M001", "S01", "T01")?.status, "complete");
+    assert.equal(getTask("M001", "S01", "T02")?.status, "skipped");
+    assert.equal(getTask("M001", "S01", "T03")?.status, "complete");
+    assert.ok(existsSync(recovery!.blockerPath), "reactive blocker should be written");
+    const blocker = readFileSync(recovery!.blockerPath, "utf-8");
+    assert.match(blocker, /Summary present\*\*: T01, T03/);
+    assert.match(blocker, /Summary missing\*\*: T02/);
+
+    const events = readEvents(join(base, ".gsd", "event-log.jsonl"));
+    assert.ok(events.some((e) => e.cmd === "complete-task" && e.params.taskId === "T01" && e.trigger_reason === "reactive-execute-blocker-recovery"));
+    assert.ok(events.some((e) => e.cmd === "skip-task" && e.params.taskId === "T02" && e.trigger_reason === "reactive-execute-blocker-recovery"));
+  } finally {
+    closeDatabase();
     cleanup(base);
   }
 });

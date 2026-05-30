@@ -247,6 +247,29 @@ test('md-importer: parseRequirementsSections', () => {
   assert.deepStrictEqual(r040?.class, 'anti-feature', 'R040 class');
 });
 
+test('md-importer: parseRequirementsSections accepts categorical requirement IDs', () => {
+  const content = `# Requirements
+
+## Validated
+
+### NET-01 — Bench validated networking
+- Status: validated
+- Description: Network path has been validated.
+
+## Out of Scope
+
+### OBF-10 — Rejected obfuscation path
+- Status: out-of-scope
+- Description: This path was intentionally rejected.
+`;
+
+  const reqs = parseRequirementsSections(content);
+
+  assert.deepStrictEqual(reqs.map((req) => req.id), ['NET-01', 'OBF-10'], 'categorical reqs: IDs parsed');
+  assert.deepStrictEqual(reqs[0]?.status, 'validated', 'categorical reqs: validated status');
+  assert.deepStrictEqual(reqs[1]?.status, 'out-of-scope', 'categorical reqs: out-of-scope status');
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // md-importer: migrateFromMarkdown orchestrator
 // ═══════════════════════════════════════════════════════════════════════════

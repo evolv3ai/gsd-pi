@@ -124,6 +124,36 @@ test('memory-store: supersede', () => {
   closeDatabase();
 });
 
+test('memory-store: createMemory supersedes prior active row for same sourceKnowledgeId in category', () => {
+  openDatabase(':memory:');
+
+  const first = createMemory({
+    category: 'pattern',
+    content: 'old pattern row',
+    structuredFields: { sourceKnowledgeId: 'P005', pattern: 'old' },
+  });
+  const second = createMemory({
+    category: 'pattern',
+    content: 'new pattern row',
+    structuredFields: { sourceKnowledgeId: 'P005', pattern: 'new' },
+  });
+
+  assert.equal(first, 'MEM001');
+  assert.equal(second, 'MEM002');
+
+  const adapter = _getAdapter()!;
+  const oldRow = adapter
+    .prepare('SELECT superseded_by FROM memories WHERE id = :id')
+    .get({ ':id': first }) as { superseded_by: string | null } | undefined;
+  assert.equal(oldRow?.superseded_by, second, 'older row should be superseded by the newly inserted row');
+
+  const active = getActiveMemories();
+  assert.equal(active.length, 1);
+  assert.equal(active[0]?.id, second);
+
+  closeDatabase();
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // memory-store: ranked query ordering
 // ═══════════════════════════════════════════════════════════════════════════

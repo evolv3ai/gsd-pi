@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Behavior tests for the state-aware /gsd home menu.
 
 import test from "node:test";
@@ -36,15 +36,18 @@ function action(model: ReturnType<typeof buildGsdHomeModel>, id: string) {
   return match;
 }
 
-test("/gsd home keeps the stable five user-intent choices", () => {
+test("/gsd home keeps the stable user-intent choices", () => {
   const model = buildGsdHomeModel(baseState());
 
   assert.deepEqual(
     model.actions.map((candidate) => candidate.label),
     [
+      "Merge quick task",
+      "Merge milestone",
       "Continue one step",
       "Run automatically",
       "Review status",
+      "Review requirements backlog",
       "Fix or recover",
       "Start or configure",
     ],
@@ -74,7 +77,29 @@ test("/gsd home makes blockers the top state and disables advancing choices", ()
   assert.match(action(model, "continue_step").description, /Unavailable/);
 });
 
-test("/gsd home recommends start/configure after all milestones complete", () => {
+test("/gsd home recommends merge quick when a quick branch is stranded", () => {
+  const model = buildGsdHomeModel(baseState({
+    activeMilestone: null,
+    activeSlice: null,
+    activeTask: null,
+    phase: "complete",
+    nextAction: "All milestones complete.",
+  }), {
+    strandedQuick: {
+      quickBranch: "gsd/quick/1-fix-typo",
+      originalBranch: "main",
+      taskNum: 1,
+      slug: "fix-typo",
+    },
+    unmergedMilestones: [],
+  });
+
+  assert.equal(action(model, "finish_quick").recommended, true);
+  assert.equal(action(model, "finish_quick").enabled, true);
+  assert.match(model.summary[0], /Quick task Q1/);
+});
+
+test("/gsd home recommends start or configure after all milestones complete", () => {
   const model = buildGsdHomeModel(baseState({
     activeMilestone: null,
     activeSlice: null,
@@ -87,6 +112,7 @@ test("/gsd home recommends start/configure after all milestones complete", () =>
   }));
 
   assert.equal(action(model, "start_configure").recommended, true);
+  assert.equal(action(model, "review_status").recommended, false);
   assert.equal(action(model, "continue_step").enabled, false);
   assert.equal(action(model, "run_auto").enabled, false);
   assert.match(model.summary.join("\n"), /All milestones complete/);
@@ -123,6 +149,8 @@ test("showGsdHome renders the five-slot home text without an interactive TUI", a
 
     const message = notifications.at(-1)?.message ?? "";
     assert.match(message, /GSD — What now\?/);
+    assert.match(message, /Merge quick task/);
+    assert.match(message, /Merge milestone/);
     assert.match(message, /Continue one step/);
     assert.match(message, /Run automatically/);
     assert.match(message, /Review status/);

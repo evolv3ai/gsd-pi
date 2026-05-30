@@ -13,7 +13,7 @@ import { join } from "node:path";
 const ROOT = process.cwd();
 
 /** Canonical Discord invite for the GSD community. */
-const VALID_INVITE = "https://discord.com/invite/nKXTsAcmbT";
+const VALID_INVITE = "https://discord.gg/8NnkKuepmQ";
 
 /** Files that contain user-facing Discord invite links. */
 const FILES_WITH_INVITE_LINKS: string[] = [

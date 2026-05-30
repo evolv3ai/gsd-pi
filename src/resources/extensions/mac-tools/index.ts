@@ -13,8 +13,7 @@
  */
 
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
-import { StringEnum } from "@gsd/pi-ai";
-import { Type } from "@sinclair/typebox";
+import { StringEnum, Type } from "@gsd/pi-ai";
 import { execFileSync } from "node:child_process";
 import { statSync, readdirSync } from "node:fs";
 import path from "node:path";

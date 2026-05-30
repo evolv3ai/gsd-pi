@@ -10,6 +10,10 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { showNextAction } from "../shared/tui.js";
+import {
+  notifyInitNeedsInteractiveMenu,
+  requiresInteractiveMenu,
+} from "./command-feedback.js";
 import { nativeIsRepo, nativeInit, nativeAddAll, nativeCommit, nativeDetectMainBranch } from "./native-git-bridge.js";
 import { ensureGitignore, untrackRuntimeFiles } from "./gitignore.js";
 import { gsdRoot } from "./paths.js";
@@ -71,6 +75,11 @@ export async function showProjectInit(
   basePath: string,
   detection: ProjectDetection,
 ): Promise<InitWizardResult> {
+  if (requiresInteractiveMenu(ctx, false)) {
+    notifyInitNeedsInteractiveMenu(ctx, "this session has no interactive menu");
+    return { completed: false, bootstrapped: false };
+  }
+
   const signals = detection.projectSignals;
   const prefs = { ...DEFAULT_PREFS };
 

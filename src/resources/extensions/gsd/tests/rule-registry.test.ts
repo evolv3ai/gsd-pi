@@ -5,6 +5,9 @@
 
 import assert from 'node:assert/strict';
 import { test, describe, beforeEach } from "node:test";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   RuleRegistry,
   getRegistry,
@@ -381,6 +384,63 @@ describe("RuleRegistry", () => {
     const result = registry.evaluatePreDispatch("execute-task", "M001/S01/T01", "original prompt", "/tmp/test");
     assert.deepStrictEqual(result.action, "proceed", "proceeds when no hooks");
     assert.deepStrictEqual(result.prompt, "original prompt", "prompt unchanged");
+  });
+
+  test("hook evaluation loads preferences from explicit basePath when cwd is an isolated worktree", () => {
+    const originalCwd = process.cwd();
+    const originalGsdHome = process.env.GSD_HOME;
+    const projectRoot = mkdtempSync(join(tmpdir(), "gsd-hook-base-"));
+    const worktreeRoot = mkdtempSync(join(tmpdir(), "gsd-hook-worktree-"));
+    const tempGsdHome = mkdtempSync(join(tmpdir(), "gsd-hook-home-"));
+
+    try {
+      mkdirSync(join(projectRoot, ".gsd"), { recursive: true });
+      writeFileSync(
+        join(projectRoot, ".gsd", "PREFERENCES.md"),
+        [
+          "---",
+          "version: 1",
+          "pre_dispatch_hooks:",
+          "  - name: policy-prepend",
+          "    before: [complete-slice]",
+          "    action: modify",
+          "    prepend: POLICY TEXT HERE",
+          "post_unit_hooks:",
+          "  - name: review-after-task",
+          "    after: [execute-task]",
+          "    prompt: Review {taskId}",
+          "---",
+        ].join("\n"),
+        "utf-8",
+      );
+
+      process.env.GSD_HOME = tempGsdHome;
+      process.chdir(worktreeRoot);
+
+      const registry = new RuleRegistry([]);
+      const preResult = registry.evaluatePreDispatch(
+        "complete-slice",
+        "M001/S01",
+        "original prompt",
+        projectRoot,
+      );
+
+      assert.deepStrictEqual(preResult.action, "proceed");
+      assert.ok(preResult.prompt?.startsWith("POLICY TEXT HERE"), "pre-dispatch hook prepends policy text");
+      assert.deepStrictEqual(preResult.firedHooks, ["policy-prepend"]);
+
+      const postResult = registry.evaluatePostUnit("execute-task", "M001/S01/T01", projectRoot);
+      assert.notEqual(postResult, null, "post-unit hook dispatches from basePath preferences");
+      assert.deepStrictEqual(postResult!.hookName, "review-after-task");
+      assert.equal(postResult!.prompt.includes("Review T01"), true);
+    } finally {
+      process.chdir(originalCwd);
+      if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+      else process.env.GSD_HOME = originalGsdHome;
+      rmSync(projectRoot, { recursive: true, force: true });
+      rmSync(worktreeRoot, { recursive: true, force: true });
+      rmSync(tempGsdHome, { recursive: true, force: true });
+    }
   });
 
   // ── matchedRule provenance (S02 journal support) ───────────────────

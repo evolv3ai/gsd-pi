@@ -17,7 +17,7 @@ import { buildVisualBriefPrompt, parseVisualBriefArgs, VISUAL_BRIEF_USAGE } from
 
 export function showHelp(ctx: ExtensionCommandContext, args = ""): void {
   const summaryLines = [
-    "GSD — Get Shit Done\n",
+    "GSD — Git Ship Done\n",
     "QUICK START",
     "  /gsd start <tpl>   Start a workflow template",
     "  /gsd               Open the state-aware home menu",
@@ -42,6 +42,8 @@ export function showHelp(ctx: ExtensionCommandContext, args = ""): void {
     "  /gsd rethink        Conversational project reorganization",
     "",
     "OBSERVABILITY",
+    "  /gsd usage          Current LLM context window usage and session tokens",
+    "  /gsd context        Context breakdown chart (skills, injections, history)",
     "  /gsd logs           Browse activity and debug logs",
     "  /gsd debug          Create/list/continue persistent debug sessions",
     "",
@@ -59,7 +61,7 @@ export function showHelp(ctx: ExtensionCommandContext, args = ""): void {
   ];
 
   const fullLines = [
-    "GSD — Get Shit Done\n",
+    "GSD — Git Ship Done\n",
     "WORKFLOW",
     "  /gsd start <tpl>   Start a workflow template (bugfix, spike, feature, hotfix, etc.)",
     "  /gsd templates     List available workflow templates  [info <name>]",
@@ -87,6 +89,8 @@ export function showHelp(ctx: ExtensionCommandContext, args = ""): void {
     "  /gsd history        View execution history  [--cost] [--phase] [--model] [N]",
     "  /gsd changelog      Show categorized release notes  [version]",
     `  /gsd notifications  View persistent notification history  [clear|tail|filter]  (${formattedShortcutPair("notifications")})`,
+    "  /gsd usage          Current LLM context window usage and session tokens  [--json]",
+    "  /gsd context        Context breakdown chart  [--open|--text|--json]",
     "  /gsd logs           Browse activity logs, debug logs, and metrics  [debug|tail|clear]",
     "  /gsd debug          Create/list/continue persistent debug sessions",
     "",
@@ -105,6 +109,7 @@ export function showHelp(ctx: ExtensionCommandContext, args = ""): void {
     "",
     "PROJECT KNOWLEDGE",
     "  /gsd knowledge <type> <text>   Add a rule to KNOWLEDGE.md or capture a pattern/lesson to memories",
+    "  /gsd memory         Query/forget project memories",
     "  /gsd codebase [generate|update|stats]   Manage the CODEBASE.md cache used in prompt context",
     "",
     "SHIPPING & BACKLOG",
@@ -508,6 +513,16 @@ export async function handleCoreCommand(
   }
   if (trimmed === "cmux" || trimmed.startsWith("cmux ")) {
     await handleCmux(trimmed.replace(/^cmux\s*/, "").trim(), ctx);
+    return true;
+  }
+  if (trimmed === "usage" || trimmed.startsWith("usage ")) {
+    const { handleUsage } = await import("../../commands-usage.js");
+    await handleUsage(trimmed.replace(/^usage\s*/, "").trim(), ctx);
+    return true;
+  }
+  if (trimmed === "context" || trimmed.startsWith("context ")) {
+    const { handleContext } = await import("../../commands-context.js");
+    await handleContext(trimmed.replace(/^context\s*/, "").trim(), ctx, projectRoot());
     return true;
   }
   if (trimmed === "show-config") {

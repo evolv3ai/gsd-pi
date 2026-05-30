@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Routes /gsd commands through global guards and command handlers.
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent";
@@ -17,6 +17,7 @@ import {
   getUnmergedMilestoneBlockMessageForBase,
   isUnmergedMilestoneAllowedCommand,
 } from "../unmerged-milestone-guard.js";
+import { getWorkspaceGitBlockMessageForBase } from "../workspace-git-guard.js";
 import { clearFreshGsdRunSurfaces, isFreshGsdWorkCommand } from "../fresh-run-ui.js";
 
 function emitVisibleCommandBlock(
@@ -57,6 +58,11 @@ export async function handleGSDCommand(
         clearFreshGsdRunSurfaces(ctx);
       }
       const base = projectRoot();
+      const workspaceGitBlocked = await getWorkspaceGitBlockMessageForBase(base, trimmed);
+      if (workspaceGitBlocked) {
+        emitVisibleCommandBlock(ctx, pi, workspaceGitBlocked);
+        return true;
+      }
       if (!isUnmergedMilestoneAllowedCommand(trimmed)) {
         const blockedMessage = await getUnmergedMilestoneBlockMessageForBase(base, trimmed);
         if (blockedMessage) {

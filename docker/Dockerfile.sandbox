@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install GSD globally — version controlled via build arg
 ARG GSD_VERSION=latest
-RUN npm install -g gsd-pi@${GSD_VERSION}
+RUN npm install -g @opengsd/gsd-pi@${GSD_VERSION}
 
 # Create non-root user for sandbox isolation
 RUN groupadd --gid 1000 gsd \

@@ -16,8 +16,8 @@
 import { execSync } from 'node:child_process';
 import { basename, resolve } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { RpcClient } from '@gsd-build/rpc-client';
-import type { RpcCostUpdateEvent, RpcExtensionUIRequest, RpcInitResult, SdkAgentEvent } from '@gsd-build/contracts';
+import { RpcClient } from '@opengsd/rpc-client';
+import type { RpcCostUpdateEvent, RpcExtensionUIRequest, RpcInitResult, SdkAgentEvent } from '@opengsd/contracts';
 import type {
   ManagedSession,
   StartSessionOptions,
@@ -235,6 +235,12 @@ export class SessionManager extends EventEmitter {
     session.unsubscribe?.();
 
     this.logger.info('session cancelled', { sessionId, projectDir: session.projectDir });
+  }
+
+  async cancelSessionByDir(projectDir: string): Promise<void> {
+    const session = this.getSessionByDir(projectDir);
+    if (!session) throw new Error(`Session not found for projectDir: ${projectDir}`);
+    await this.cancelSession(session.sessionId);
   }
 
   /**

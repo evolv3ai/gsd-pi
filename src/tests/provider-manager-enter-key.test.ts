@@ -1,8 +1,8 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { ProviderManagerComponent } from "../../packages/pi-coding-agent/src/modes/interactive/components/provider-manager.ts";
-import { initTheme } from "../../packages/pi-coding-agent/src/modes/interactive/theme/theme.ts";
+import { ProviderManagerComponent } from "../../packages/gsd-agent-modes/src/modes/interactive/components/provider-manager.ts";
+import { initTheme } from "../../packages/pi-coding-agent/src/theme/theme.ts";
 
 initTheme("dark", false);
 

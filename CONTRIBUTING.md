@@ -1,8 +1,8 @@
-# Contributing to GSD-2
+# Contributing to gsd-pi
 
-We're glad you're here. GSD-2 is an open project and contributions are welcome across the entire codebase. We hold a high bar for what gets merged — not to be gatekeepers, but because every change ships to real users and stability matters.
+We're glad you're here. gsd-pi is an open project and contributions are welcome across the entire codebase. We hold a high bar for what gets merged — not to be gatekeepers, but because every change ships to real users and stability matters.
 
-Read [VISION.md](VISION.md) before contributing. It defines what GSD-2 is, what it isn't, and what we won't accept.
+Read [VISION.md](VISION.md) before contributing. It defines what gsd-pi is, what it isn't, and what we won't accept.
 
 ## Before you start
 
@@ -13,7 +13,7 @@ Read [VISION.md](VISION.md) before contributing. It defines what GSD-2 is, what 
 
 ### First-time contributors
 
-We are not a fan of drive-by first-time contributions. If this is your first PR to GSD-2, you **must** open an issue first describing the problem or feature, wait for a maintainer response, and link the issue in your PR. First-time PRs that show up with no prior issue will be closed without review. This is not optional — it exists because triaging unsolicited code from unknown contributors is more expensive than the contribution is worth.
+We are not a fan of drive-by first-time contributions. If this is your first PR to gsd-pi, you **must** open an issue first describing the problem or feature, wait for a maintainer response, and link the issue in your PR. First-time PRs that show up with no prior issue will be closed without review. This is not optional — it exists because triaging unsolicited code from unknown contributors is more expensive than the contribution is worth.
 
 Once you have one merged PR, this requirement no longer applies to you.
 
@@ -22,34 +22,42 @@ Once you have one merged PR, this requirement no longer applies to you.
 ### One-time setup (after cloning)
 
 ```bash
-npm ci                              # Install dependencies — MUST run first
-npm run secret-scan:install-hook    # Install git hooks — run once
+pnpm install --frozen-lockfile      # Install dependencies — MUST run first
+pnpm run secret-scan:install-hook   # Install git hooks — run once
 ```
 
-`npm ci` creates workspace symlinks in `node_modules/@gsd/*` and `node_modules/@gsd-build/*` pointing to `packages/`. These are required for builds and tests to resolve packages correctly.
+`pnpm install` creates workspace symlinks in `node_modules/@gsd/*` and `node_modules/@opengsd/*` pointing to `packages/`. These are required for builds and tests to resolve packages correctly.
 
-Run `npm run secret-scan:install-hook` once after cloning. It installs a pre-commit hook that blocks commits containing hardcoded secrets or credentials. Conventional Commits format is validated by CI on push.
+Run `pnpm run secret-scan:install-hook` once after cloning. It installs a pre-commit hook that blocks commits containing hardcoded secrets or credentials. Conventional Commits format is validated by CI on push.
 
 ### Day-to-day development
 
 ```bash
-npm run build    # Build
-npm test         # Run tests
+pnpm run build    # Build
+pnpm test         # Run tests
 ```
 
-If `npm run build` fails after running tests (e.g. `Cannot find module '@gsd/*'` errors), run `npm ci` first to restore workspace symlinks, then try again.
+If `pnpm run build` fails after running tests (e.g. `Cannot find module '@gsd/*'` errors), run `pnpm install --frozen-lockfile` first to restore workspace symlinks, then try again.
 
 ### Before pushing
 
+CI is tiered to match local scripts. See [Test confidence stack](docs/dev/test-confidence-stack.md) for the full map.
+
 ```bash
-npm run verify:pr    # Local preflight: build:core → typecheck:extensions → test:unit
+pnpm run verify:fast    # ~1–3 min: same scans as CI fast-gates (secrets, docs injection, skill refs)
+pnpm run verify:pr      # ~5–15 min: fast inner loop — build:core → typecheck:extensions → test:unit
+pnpm run verify:merge   # ~20–40 min: CI PR blocking parity (build, all test jobs, validate-pack)
+pnpm run verify:full    # Alias for verify:merge
+pnpm run audit:test-confidence   # Inventory report: runners, tiers, thin areas
 ```
 
-If `verify:pr` fails after running tests (e.g. `Cannot find module '@gsd/*'` errors), run `npm ci` first to restore workspace symlinks, then try again.
+Run `verify:fast` on every push. While iterating, `verify:pr` is enough for a quick check. **Before requesting review** on a PR that touches `src/`, `packages/`, or tests, run **`verify:merge`** — a passing `verify:pr` alone does not match what CI requires to merge.
+
+If `verify:pr` fails after running tests (e.g. `Cannot find module '@gsd/*'` errors), run `pnpm install --frozen-lockfile` first to restore workspace symlinks, then try again.
 
 ### Cross-platform note
 
-GSD-2 runs on macOS, Linux, and Windows:
+gsd-pi runs on macOS, Linux, and Windows:
 
 - **Git hooks** are executed by Git's bundled shell, so they work from any terminal (CMD, PowerShell, Git Bash).
 - **Shell scripts** in `scripts/` use `#!/usr/bin/env bash`. On Windows, Git may convert these to CRLF line endings, which breaks the shebang. If you hit shebang errors when running lint scripts locally, create a `.gitattributes` file in the repo root with `*.sh text eol=lf` to force LF checkout. Do not commit this file.
@@ -91,7 +99,7 @@ git fetch origin
 git rebase origin/main
 ```
 
-CI must pass before your PR will be reviewed. Run `npm run verify:pr` locally before pushing to catch issues early.
+CI must pass before your PR will be reviewed. Run `pnpm run verify:fast` on every push and `pnpm run verify:merge` before requesting review on code changes.
 
 ## Working with GSD (team workflow)
 
@@ -140,7 +148,7 @@ If this is a non-trivial change, explain the design and any alternatives you con
 ### Requirements
 
 - **CI must pass.** If your PR breaks tests, fix them before requesting review.
-- **Run `npm run verify:pr` locally before pushing.** See [Local development](#local-development) for setup.
+- **Run `pnpm run verify:merge` locally before requesting review.** Use `verify:pr` only as a fast inner loop. See [Local development](#local-development) and [Test confidence stack](docs/dev/test-confidence-stack.md).
 - **One concern per PR.** A bug fix is a bug fix. A feature is a feature. Don't bundle unrelated changes.
 - **No drive-by formatting.** Don't reformat code you didn't change. Don't reorder imports in files you're not modifying.
 - **Link issues when relevant.** Not mandatory for every PR, but if an issue exists, reference it.
@@ -260,7 +268,7 @@ Reading a diff is not the same as verifying a change. Our review standard is exe
 **What reviewers do:**
 
 1. **Check out the branch** — check out the PR branch locally (or in a worktree). Don't review from the diff view alone.
-2. **Build the branch** — run `npm run build`. A diff that doesn't compile is not reviewable.
+2. **Build the branch** — run `pnpm run build`. A diff that doesn't compile is not reviewable.
 3. **Run the test suite** — run `npm test`. CI status is a signal, not a substitute for local verification.
 4. **Trace root cause for bug fixes** — confirm the diff addresses the root cause described in the issue, not just the symptom.
 5. **Check for a regression test** — bug fixes must include a test that would have caught the original bug. If it's absent, the fix is incomplete.
@@ -385,7 +393,7 @@ test("handles null input", () => {
 });
 ```
 
-PRs containing source-grep tests will be sent back. CI enforces this via `scripts/check-source-grep-tests.sh` (wired into the `lint` job) — it scans changed test files for `readFileSync` / `readFile` calls whose path argument points into `src/` or `packages/`. If the code under test is genuinely hard to invoke (e.g., a build script, a CLI entry point), invoke it as a subprocess and assert on its real output — not on its source text.
+PRs containing source-grep tests will be sent back. CI enforces this via `scripts/check-source-grep-tests.sh` (wired into the `fast-gates` job) — it scans changed test files for `readFileSync` / `readFile` calls whose path argument points into `src/` or `packages/`. If the code under test is genuinely hard to invoke (e.g., a build script, a CLI entry point), invoke it as a subprocess and assert on its real output — not on its source text.
 
 The narrow exception: tests that legitimately verify *file structure* as the actual product (e.g., a code generator's output, a config-file linter, a script that produces a manifest). In those cases the file contents *are* the behavior. Opt out with a same-line or preceding-line marker:
 
@@ -397,9 +405,9 @@ assert.match(generated, /export const ROUTES =/);
 
 The reason becomes part of the diff and is visible at review. If you're not sure whether your case qualifies, it doesn't.
 
-### Three recurring defect classes (CodeRabbit themes)
+### Three recurring defect classes
 
-CI enforces three specific patterns that have caused real bugs in merged PRs (see issue #4931). All three are checked by `scripts/check-coderabbit-themes.mjs`.
+These patterns have caused real bugs in merged PRs (see issue #4931). Watch for them in review.
 
 **1. `Statement#get()` returns `undefined`, not `null`.** better-sqlite3's `Statement#get(…)` returns `undefined` when no row matches. A `!== null` guard passes for `undefined` too (`undefined !== null` is `true`), so the guard is always truthy and downstream property access crashes.
 
@@ -441,8 +449,6 @@ await done;
 // ✅ CORRECT
 "test:tokens": "node --experimental-strip-types --test studio/test/tokens.test.mjs"
 ```
-
-**Opt-out marker**: `// allow-coderabbit-theme: <reason>` on the same or preceding line, same convention as `allow-source-grep:`. The reason appears in the diff.
 
 ## Security
 

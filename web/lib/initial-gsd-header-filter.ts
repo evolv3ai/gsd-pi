@@ -6,7 +6,7 @@ export type InitialGsdHeaderFilterResult =
 const MIN_LOGO_LINES = 6
 const MAX_HEADER_PROBE_LINES = 16
 const MAX_HEADER_PROBE_CHARS = 4096
-const TITLE_PATTERN = /Get Shit Done v\d+\.\d+\.\d+/i
+const TITLE_PATTERN = /Git Ship Done v\d+\.\d+\.\d+/i
 
 interface IndexedVisibleText {
   plainText: string

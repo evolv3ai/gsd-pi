@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Auto-mode worktree lifecycle, merge, and cleanup management.
 
 /**
@@ -52,12 +52,14 @@ import {
   normalizeWorktreePathForCompare,
   resolveWorktreeProjectRoot,
 } from "./worktree-root.js";
+import { autoResolveSafeConflictPaths } from "./git-conflict-resolve.js";
 import { MergeConflictError, createDraftPR, readIntegrationBranch, resolveMilestoneIntegrationBranch, RUNTIME_EXCLUSION_PATHS } from "./git-service.js";
 import { buildPrEvidence } from "./pr-evidence.js";
 import { debugLog } from "./debug-logger.js";
 import { logWarning, logError } from "./workflow-logger.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 import { MILESTONE_ID_RE } from "./milestone-ids.js";
+import { runWorktreePostCreateHook } from "./worktree-post-create-hook.js";
 import {
   nativeGetCurrentBranch,
   nativeDetectMainBranch,
@@ -217,6 +219,12 @@ function hasConflictMarkers(filePath: string): boolean {
   } catch {
     return false;
   }
+}
+
+function gsdJsonlFilesWithConflictMarkers(basePath: string): string[] {
+  return nativeLsFiles(basePath, ".gsd/*.jsonl").filter((f) =>
+    hasConflictMarkers(join(basePath, f)),
+  );
 }
 
 /**
@@ -905,62 +913,7 @@ export function syncWorktreeStateBack(
 ): { synced: string[] } {
   return _finalizeProjectionForMergeImpl(mainBasePath, worktreePath, milestoneId);
 }
-// ─── Worktree Post-Create Hook (#597) ────────────────────────────────────────
-
-/**
- * Run the user-configured post-create hook script after worktree creation.
- * The script receives SOURCE_DIR and WORKTREE_DIR as environment variables.
- * Failure is non-fatal — returns the error message or null on success.
- *
- * Reads the hook path from git.worktree_post_create in preferences.
- * Pass hookPath directly to bypass preference loading (useful for testing).
- */
-export function runWorktreePostCreateHook(
-  sourceDir: string,
-  worktreeDir: string,
-  hookPath?: string,
-): string | null {
-  if (hookPath === undefined) {
-    const prefs = loadEffectiveGSDPreferences()?.preferences?.git;
-    hookPath = prefs?.worktree_post_create;
-  }
-  if (!hookPath) return null;
-
-  // Resolve relative paths against the source project root.
-  // On Windows, convert 8.3 short paths (e.g. RUNNER~1) to long paths
-  // so execFileSync can locate the file correctly.
-  let resolved = isAbsolute(hookPath) ? hookPath : join(sourceDir, hookPath);
-  if (!existsSync(resolved)) {
-    return `Worktree post-create hook not found: ${resolved}`;
-  }
-  if (process.platform === "win32") {
-    try { resolved = realpathSync.native(resolved); } catch (err) { /* keep original */
-      logWarning("worktree", `realpath failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  try {
-    // .bat/.cmd files on Windows require shell mode — execFileSync cannot
-    // spawn them directly (EINVAL).
-    const needsShell = process.platform === "win32" && /\.(bat|cmd)$/i.test(resolved);
-    execFileSync(resolved, [], {
-      cwd: worktreeDir,
-      env: {
-        ...process.env,
-        SOURCE_DIR: sourceDir,
-        WORKTREE_DIR: worktreeDir,
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-      encoding: "utf-8",
-      timeout: 30_000, // 30 second timeout
-      shell: needsShell,
-    });
-    return null;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return `Worktree post-create hook failed: ${msg}`;
-  }
-}
+export { runWorktreePostCreateHook } from "./worktree-post-create-hook.js";
 
 // ─── Auto-Worktree Branch Naming ───────────────────────────────────────────
 
@@ -1113,11 +1066,61 @@ export function checkoutBranchWithStashGuard(
       popStashByRef(basePath, stashMarker);
     } catch (popErr) {
       const msg = popErr instanceof Error ? popErr.message : String(popErr);
+      const stderr = popErr && typeof popErr === "object"
+        ? (popErr as { stderr?: unknown }).stderr
+        : undefined;
+      const stderrText = typeof stderr === "string"
+        ? stderr
+        : stderr instanceof Uint8Array
+          ? Buffer.from(stderr).toString("utf-8")
+          : "";
+      const stashPopMessage = `${stderrText}\n${msg}`.trim();
+      const alreadyExists = stashAlreadyExistsFilesFromError(popErr);
+      const gsdAlreadyExists = alreadyExists.filter((f) => f.startsWith(".gsd/"));
+      const nonGsdAlreadyExists = alreadyExists.filter((f) => !f.startsWith(".gsd/"));
+      const isUntrackedRestoreFailure = stashPopMessage.includes("could not restore untracked files from stash");
+      const stashRefForDrop = stashRefFromError(popErr);
+      const nonGsdUnmerged = nativeConflictFiles(basePath).filter((f) => !f.startsWith(".gsd/"));
+      const gsdContentConflicts = isUntrackedRestoreFailure
+        ? gsdJsonlFilesWithConflictMarkers(basePath)
+        : [];
+      const gsdConflictFiles = [...new Set([...gsdAlreadyExists, ...gsdContentConflicts])];
+
+      if (
+        isUntrackedRestoreFailure &&
+        gsdConflictFiles.length > 0 &&
+        nonGsdAlreadyExists.length === 0 &&
+        nonGsdUnmerged.length === 0
+      ) {
+        for (const f of gsdConflictFiles) {
+          execFileSync("git", ["checkout", "HEAD", "--", f], {
+            cwd: basePath,
+            stdio: ["ignore", "pipe", "pipe"],
+            encoding: "utf-8",
+          });
+          nativeAddPaths(basePath, [f]);
+        }
+
+        if (stashRefForDrop) {
+          try {
+            execFileSync("git", ["stash", "drop", stashRefForDrop], {
+              cwd: basePath,
+              stdio: ["ignore", "pipe", "pipe"],
+              encoding: "utf-8",
+            });
+          } catch (err) { /* stash may already be consumed */
+            logWarning("worktree", `git stash drop failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        } else {
+          logWarning("worktree", "recorded stash entry could not be resolved; skipping automatic drop");
+        }
+        return;
+      }
+
       const wrapped = new Error(
         `checkout to '${branch}' succeeded but stash restore failed; working tree changes remain in the stash list. Original error: ${msg}`,
       );
-      const ref = (popErr as { stashRef?: string } | null)?.stashRef;
-      if (ref) (wrapped as { stashRef?: string }).stashRef = ref;
+      if (stashRefForDrop) (wrapped as { stashRef?: string }).stashRef = stashRefForDrop;
       throw wrapped;
     }
   }
@@ -2156,24 +2159,12 @@ export function mergeMilestoneToMain(
       // from real code conflicts. GSD state files diverge between branches
       // during normal operation. Build artifacts are machine-generated and
       // regenerable. Both are safe to accept from the milestone branch.
-      const autoResolvable = conflictedFiles.filter(isSafeToAutoResolve);
-      const codeConflicts = conflictedFiles.filter(
-        (f) => !isSafeToAutoResolve(f),
+      const { resolved: autoResolved, remaining: codeConflicts } = autoResolveSafeConflictPaths(
+        originalBasePath_,
+        conflictedFiles,
       );
-
-      // Auto-resolve safe conflicts by accepting the milestone branch version
-      if (autoResolvable.length > 0) {
-        for (const safeFile of autoResolvable) {
-          try {
-            nativeCheckoutTheirs(originalBasePath_, [safeFile]);
-            nativeAddPaths(originalBasePath_, [safeFile]);
-          } catch (e) {
-            // If checkout --theirs fails, try removing the file from the merge
-            // (it's a runtime file that shouldn't be committed anyway)
-            logWarning("worktree", `checkout --theirs failed for ${safeFile}, removing: ${(e as Error).message}`);
-            nativeRmForce(originalBasePath_, [safeFile]);
-          }
-        }
+      if (autoResolved.length > 0) {
+        logWarning("worktree", `auto-resolved safe merge conflicts: ${autoResolved.join(", ")}`);
       }
 
       // If there are still real code conflicts, escalate
@@ -2247,11 +2238,7 @@ export function mergeMilestoneToMain(
       // Untracked-file restore failures can leave marker conflicts in tracked
       // .gsd JSONL files without producing `U` status entries.
       if (isUntrackedRestoreFailure) {
-        for (const f of nativeLsFiles(originalBasePath_, ".gsd/*.jsonl")) {
-          if (hasConflictMarkers(join(originalBasePath_, f))) {
-            gsdContentConflicts.push(f);
-          }
-        }
+        gsdContentConflicts.push(...gsdJsonlFilesWithConflictMarkers(originalBasePath_));
       }
       const gsdConflictFiles = [...new Set([...gsdUU, ...gsdContentConflicts])];
 
@@ -2492,7 +2479,7 @@ export function mergeMilestoneToMain(
             milestoneTitle,
             changeType: "feat",
             summaries: completedSlices.map((slice) => `### ${slice.id}\n${slice.title}`),
-            testsRun: ["Auto-created after milestone merge. Run `npm run verify:pr` before marking this draft ready."],
+            testsRun: ["Auto-created after milestone merge. Run `npm run verify:merge` before marking this draft ready."],
             rollbackNotes: ["Close the draft PR or revert the merge commit if review finds a behavior regression."],
             how: "Generated by git.auto_pr after the milestone branch was pushed and merged locally.",
           });

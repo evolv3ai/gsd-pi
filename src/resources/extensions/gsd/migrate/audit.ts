@@ -1,4 +1,4 @@
-// GSD-2 - /gsd migrate audit helpers.
+// gsd-pi - /gsd migrate audit helpers.
 // File Purpose: Legacy archive, migration manifest, and projection verification support.
 
 import { cpSync, existsSync, readFileSync } from "node:fs";
@@ -28,6 +28,10 @@ export interface LegacyArchiveResult {
 export interface MigrationProjectionVerification {
   markdown: HierarchyCounts;
   db: HierarchyCounts;
+  dbReadiness: {
+    phase: string;
+    registry: number;
+  };
   rendered: number;
   skipped: number;
   errors: string[];
@@ -84,7 +88,7 @@ export async function archiveLegacyPlanningDirectory(
     sourcePath,
     archivePath: relToGsd(targetRoot, archivePath),
     strategy: "full-source-copy",
-    note: "Full .planning source copied so legacy content without a GSD-2 field is not lost.",
+    note: "Full .planning source copied so legacy content without a gsd-pi field is not lost.",
   };
 
   await saveFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -125,6 +129,7 @@ export async function verifyMigrationProjection(
   return {
     markdown,
     db,
+    dbReadiness: { phase: "not-checked", registry: 0 },
     rendered: render.rendered,
     skipped: render.skipped,
     errors,
@@ -156,6 +161,7 @@ function formatMigrationMarkdown(input: MigrationAuditInput): string {
     "",
     `- DB: ${input.verification.db.milestones}M/${input.verification.db.slices}S/${input.verification.db.tasks}T`,
     `- Markdown: ${input.verification.markdown.milestones}M/${input.verification.markdown.slices}S/${input.verification.markdown.tasks}T`,
+    `- DB readiness: ${input.verification.dbReadiness.phase} (${input.verification.dbReadiness.registry} milestone(s) visible)`,
     `- Rendered: ${input.verification.rendered}`,
     `- Skipped: ${input.verification.skipped}`,
     "",

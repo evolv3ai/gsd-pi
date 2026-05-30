@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Auto Orchestration module contract and ADR-015 invariant sequence tests.
 
 import test from "node:test";
@@ -131,6 +131,24 @@ test("advance() returns blocked when health gate denies", async () => {
   assert.equal(result.reason, "doctor-block");
   assert.equal(result.action, "pause");
   assert.ok(calls.includes("gate:pre-dispatch-health-gate:manual-attention"));
+});
+
+test("advance() stops auto when health gate reports unrecoverable git probe", async () => {
+  const { deps } = makeDeps({
+    health: {
+      checkResourcesStale: () => null,
+      async preAdvanceGate() {
+        return { kind: "fail", reason: "Could not verify git conflict state", action: "stop" };
+      },
+      async postAdvanceRecord() {},
+    },
+  });
+  const orchestrator = createAutoOrchestrator(deps);
+
+  const result = await orchestrator.advance();
+
+  assertBlockedResult(result);
+  assert.equal(result.action, "stop");
 });
 
 test("advance() returns blocked pause when resources are stale", async () => {

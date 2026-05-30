@@ -37,10 +37,21 @@ export interface StopAutoOptions {
   preserveCompletedMilestoneBranch?: boolean;
 }
 
+export type PauseAutoUnitIdentity = {
+  type: string;
+  id: string;
+  startedAt: number;
+};
+
+export interface PauseAutoOptions {
+  expectedCurrentUnit?: PauseAutoUnitIdentity | null;
+}
+
 type PauseAutoFn = (
   ctx?: ExtensionContext,
   pi?: ExtensionAPI,
   errorContext?: ErrorContext,
+  options?: PauseAutoOptions,
 ) => Promise<void>;
 
 /**

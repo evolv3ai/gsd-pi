@@ -1,4 +1,4 @@
-# GSD-2 Prompt ↔ Database Combined Map
+# gsd-pi Prompt ↔ Database Combined Map
 
 > How each prompt in the pipeline reads and writes the database, and which DB state drives which prompt to fire.
 
@@ -97,7 +97,7 @@ Each row = one prompt file. Columns show which DB tables it touches and how.
 |--------|----------|-----------|----------------------|
 | `execute-task` | tasks, slices, milestones, memories, quality_gates | tasks (UPDATE status, narrative, summary), verification_evidence (INSERT), memories (hit_count++) | T##-SUMMARY.md; S##-PLAN.md checkbox |
 | `guided-resume-task` | tasks, slices | tasks (UPDATE status, summary), verification_evidence (INSERT) | T##-SUMMARY.md |
-| `reactive-execute` | tasks | tasks (via N× execute-task subagents) | T##-SUMMARY.md × N |
+| `reactive-execute` | tasks | tasks (via N× execute-task subagents; recovery may mark summary-present tasks complete and missing-summary tasks skipped) | T##-SUMMARY.md × N; S##-REACTIVE-BLOCKER.md when batch summaries remain missing after retries |
 | `quick-task` | — | — (no DB; writes summaryPath directly) | {{summaryPath}} |
 
 ### Quality Gate Phase
@@ -173,7 +173,8 @@ S##-CONTEXT present AND
 
 slices WHERE is_sketch = 1                         → refine-slice
 
-tasks WHERE status='pending' AND count ≥ 3         → reactive-execute (parallel)
+tasks WHERE status='pending' AND count ≥ 3 AND no S##-REACTIVE-BLOCKER
+                                                       → reactive-execute (parallel)
 
 tasks WHERE status='pending' AND count < 3         → execute-task (sequential)
 

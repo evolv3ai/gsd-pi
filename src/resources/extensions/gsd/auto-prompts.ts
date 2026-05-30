@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Builds GSD auto-mode unit prompts and pre-dispatch checks.
 
 /**
@@ -670,7 +670,7 @@ export async function buildSliceSummaryExcerpt(
       lines.push(`**Key files:** ${files.join(", ")}${more}`);
     }
 
-    // Cap section bodies (coderabbit review on #4908): if any of these
+    // Cap section bodies (#4908): if any of these
     // narrative sections balloon, excerpt mode still inflates and
     // undermines the token-reduction goal. 800 chars (~200 tokens) is
     // enough to carry intent; the closer agent Reads the full file when

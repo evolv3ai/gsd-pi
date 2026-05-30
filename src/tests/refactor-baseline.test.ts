@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Tests for the long-running refactor baseline metrics harness.
 
 import assert from "node:assert/strict";
@@ -117,7 +117,6 @@ test("collectBaseline returns the phase-zero report shape", async () => {
   assert.equal(report.metrics["process.prBodiesMissingTests"], 0);
   assert.equal(report.metrics["process.docsConflictCount"], 0);
   assert.equal(report.metrics["process.shipPathCount"], 3);
-  assert.equal(report.metrics["legacy.markdownFallbackUsed"], 0);
   assert.equal(report.metrics["legacy.workflowEngineUsed"], 0);
   assert.equal(report.metrics["legacy.uokFallbackUsed"], 0);
   assert.equal(report.metrics["legacy.mcpAliasUsed"], 0);
@@ -157,7 +156,6 @@ test("buildMetricIndex includes workspace and command metrics", () => {
       shipPathCount: 3,
     },
     legacy: {
-      markdownFallbackUsed: 1,
       workflowEngineUsed: 2,
       uokFallbackUsed: 3,
       mcpAliasUsed: 4,
@@ -185,7 +183,6 @@ test("buildMetricIndex includes workspace and command metrics", () => {
   assert.equal(metrics["testCompile.fileCount"], 17);
   assert.equal(metrics["process.prGeneratorConsumers"], 3);
   assert.equal(metrics["process.shipPathCount"], 3);
-  assert.equal(metrics["legacy.markdownFallbackUsed"], 1);
   assert.equal(metrics["legacy.workflowEngineUsed"], 2);
   assert.equal(metrics["legacy.uokFallbackUsed"], 3);
   assert.equal(metrics["legacy.mcpAliasUsed"], 4);
@@ -331,13 +328,13 @@ test("countMatches counts non-overlapping pattern matches", () => {
 test("countLegacyContractImports ignores rpc-client implementation types", () => {
   assert.equal(
     countLegacyContractImports(`
-      import type { RpcClient } from "@gsd-build/rpc-client";
-      import type { SdkAgentEvent, RpcCostUpdateEvent } from "@gsd-build/rpc-client";
+      import type { RpcClient } from "@opengsd/rpc-client";
+      import type { SdkAgentEvent, RpcCostUpdateEvent } from "@opengsd/rpc-client";
     `),
     2,
   );
   assert.equal(
-    countLegacyContractImports('import type { RpcClientOptions } from "@gsd-build/rpc-client";'),
+    countLegacyContractImports('import type { RpcClientOptions } from "@opengsd/rpc-client";'),
     0,
   );
 });
@@ -356,7 +353,7 @@ test("renderSummary includes key sections for human inspection", async () => {
   const report = await collectBaseline(root);
   const summary = renderSummary(report);
 
-  assert.match(summary, /GSD-2 Refactor Baseline/);
+  assert.match(summary, /gsd-pi Refactor Baseline/);
   assert.match(summary, /Schema version: 1/);
   assert.match(summary, /Prompt metrics/);
   assert.match(summary, /dist-test metrics/);
@@ -427,7 +424,7 @@ async function writeProcessMetricFixtures(root: string): Promise<void> {
 
 async function writeContractsSurfaceFixtures(root: string): Promise<void> {
   const files = [
-    "packages/pi-coding-agent/src/modes/rpc/rpc-types.ts",
+    "packages/gsd-agent-modes/src/modes/rpc/rpc-types.ts",
     "packages/rpc-client/src/rpc-types.ts",
     "packages/mcp-server/src/types.ts",
     "src/web/bridge-service.ts",
@@ -436,7 +433,7 @@ async function writeContractsSurfaceFixtures(root: string): Promise<void> {
   ];
   for (const file of files) {
     await mkdir(dirname(join(root, file)), { recursive: true });
-    await writeFile(join(root, file), 'import type { RpcCommand } from "@gsd-build/contracts";\n');
+    await writeFile(join(root, file), 'import type { RpcCommand } from "@opengsd/contracts";\n');
   }
 }
 

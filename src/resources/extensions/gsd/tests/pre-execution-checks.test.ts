@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Unit tests for pre-execution validation checks.
 
 /**
@@ -916,6 +916,25 @@ describe("checkVerificationCommands", () => {
     assert.equal(results[0]?.category, "tool");
     assert.equal(results[0]?.blocking, true);
     assert.match(results[0]?.message ?? "", /shell control syntax/);
+  });
+
+  test("accepts quoted grep metacharacters and exit-code echo suffixes", () => {
+    const results = checkVerificationCommands([
+      createTask({
+        id: "T01",
+        verify: 'grep -q "| " output.md',
+      }),
+      createTask({
+        id: "T02",
+        verify: "grep -c '^## SectionA\\|^### Sub1\\|^### Sub2' notes.md",
+      }),
+      createTask({
+        id: "T03",
+        verify: 'python3 tools/check-status.py; echo "exit:$?"',
+      }),
+    ]);
+
+    assert.deepEqual(results, []);
   });
 });
 
@@ -1884,7 +1903,7 @@ describe("checkTaskOrdering false positive for pre-execution refs (#4071)", () =
   });
 
   test("pending-first then completed-later: completed replaces pending in fileCreators (#4572)", () => {
-    // Regression for CodeRabbit Major finding on PR #4572:
+    // Regression for PR #4572:
     // fileCreators only stored the FIRST task for a given path. If a PENDING task at
     // array index 1 was registered first, and a COMPLETED task at array index 2 also
     // declared the same output path, the completed entry was discarded. Line ~529 then

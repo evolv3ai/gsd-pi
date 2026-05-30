@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { parseMilestoneTarget } from "../commands/handlers/auto.js";
+import { parseMilestoneTarget, parseModelFlag } from "../commands/handlers/auto.js";
 
 describe("parseMilestoneTarget", () => {
   it("extracts a simple milestone ID", () => {
@@ -57,5 +57,25 @@ describe("parseMilestoneTarget", () => {
   it("does not match bare numbers without M prefix", () => {
     const result = parseMilestoneTarget("auto 016");
     assert.equal(result.milestoneId, null);
+  });
+});
+
+describe("parseModelFlag", () => {
+  it("extracts provider/model from --model", () => {
+    const result = parseModelFlag("auto --model openrouter/openai/gpt-5.4");
+    assert.equal(result.modelQuery, "openrouter/openai/gpt-5.4");
+    assert.equal(result.rest, "auto");
+  });
+
+  it("extracts quoted model values", () => {
+    const result = parseModelFlag('auto --model "openrouter/openai/gpt-5.4" --verbose');
+    assert.equal(result.modelQuery, "openrouter/openai/gpt-5.4");
+    assert.equal(result.rest, "auto --verbose");
+  });
+
+  it("returns null when --model is absent", () => {
+    const result = parseModelFlag("auto --verbose M003");
+    assert.equal(result.modelQuery, null);
+    assert.equal(result.rest, "auto --verbose M003");
   });
 });

@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-import { getEnvApiKey } from "../../packages/pi-ai/src/web-runtime-env-api-keys.ts";
+import { getEnvApiKey } from "../../packages/pi-ai/src/env-api-keys.ts";
 import {
   getOAuthProvider,
   getOAuthProviders,

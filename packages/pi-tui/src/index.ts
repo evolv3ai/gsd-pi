@@ -1,7 +1,6 @@
-// Project/App: GSD-2
-// File Purpose: Public exports for the pi-tui package.
+// Core TUI interfaces and classes
 
-// Style primitives
+// Style primitives (GSD)
 export {
 	style,
 	TerminalStyle,
@@ -10,10 +9,12 @@ export {
 	type TerminalStyleSpec,
 	type TerminalTone,
 } from "./style.js";
+
 // Autocomplete support
 export {
 	type AutocompleteItem,
 	type AutocompleteProvider,
+	type AutocompleteSuggestions,
 	CombinedAutocompleteProvider,
 	type SlashCommand,
 } from "./autocomplete.js";
@@ -23,9 +24,15 @@ export { CancellableLoader } from "./components/cancellable-loader.js";
 export { Editor, type EditorOptions, type EditorTheme } from "./components/editor.js";
 export { Image, type ImageOptions, type ImageTheme } from "./components/image.js";
 export { Input } from "./components/input.js";
-export { Loader } from "./components/loader.js";
+export { Loader, type LoaderIndicatorOptions } from "./components/loader.js";
 export { type DefaultTextStyle, Markdown, type MarkdownTheme } from "./components/markdown.js";
-export { type SelectItem, SelectList, type SelectListTheme } from "./components/select-list.js";
+export {
+	type SelectItem,
+	SelectList,
+	type SelectListLayoutOptions,
+	type SelectListTheme,
+	type SelectListTruncatePrimaryContext,
+} from "./components/select-list.js";
 export { type SettingItem, SettingsList, type SettingsListTheme } from "./components/settings-list.js";
 export { Spacer } from "./components/spacer.js";
 export { Text } from "./components/text.js";
@@ -38,15 +45,27 @@ export { type FuzzyMatch, fuzzyFilter, fuzzyMatch } from "./fuzzy.js";
 export {
 	DEFAULT_EDITOR_KEYBINDINGS,
 	type EditorAction,
-	type EditorKeybindingsConfig,
 	EditorKeybindingsManager,
 	getEditorKeybindings,
 	setEditorKeybindings,
+} from "./editor-keybindings.js";
+export {
+	getKeybindings,
+	type Keybinding,
+	type KeybindingConflict,
+	type KeybindingDefinition,
+	type KeybindingDefinitions,
+	type Keybindings,
+	type KeybindingsConfig,
+	KeybindingsManager,
+	setKeybindings,
+	TUI_KEYBINDINGS,
 } from "./keybindings.js";
 // Keyboard input handling
 export {
 	decodeKittyPrintable,
 	isKeyRelease,
+	isKeyRepeat,
 	isKittyProtocolActive,
 	Key,
 	type KeyEventType,
@@ -71,13 +90,19 @@ export {
 	encodeKitty,
 	getCapabilities,
 	getCellDimensions,
+	getGifDimensions,
 	getImageDimensions,
+	getJpegDimensions,
+	getPngDimensions,
+	getWebpDimensions,
+	hyperlink,
 	type ImageDimensions,
 	type ImageProtocol,
 	type ImageRenderOptions,
 	imageFallback,
 	renderImage,
 	resetCapabilitiesCache,
+	setCapabilities,
 	setCellDimensions,
 	type TerminalCapabilities,
 } from "./terminal-image.js";
@@ -95,4 +120,4 @@ export {
 	TUI,
 } from "./tui.js";
 // Utilities
-export { alignRight, padRight, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "./utils.js";
+export { truncateToWidth, visibleWidth, wrapTextWithAnsi, padRight, alignRight } from "./utils.js";

@@ -14,6 +14,7 @@ Simplified Chinese translation: [`zh-CN/`](./zh-CN/).
 | [Auto Mode](./user-docs/auto-mode.md) | How autonomous execution works — the state machine, crash recovery, and steering |
 | [Commands Reference](./user-docs/commands.md) | All commands, keyboard shortcuts, and CLI flags |
 | [Remote Questions](./user-docs/remote-questions.md) | Discord and Slack integration for headless auto-mode |
+| [Cloud MCP Gateway](./user-docs/cloud-mcp-gateway.md) | Run a gateway, pair a local runtime, and connect remote MCP clients |
 | [Configuration](./user-docs/configuration.md) | Preferences, model selection, git settings, and token profiles |
 | [Provider Setup](./user-docs/providers.md) | Step-by-step setup for OpenRouter, Ollama, LM Studio, vLLM, and all supported providers |
 | [Custom Models](./user-docs/custom-models.md) | Advanced model configuration — models.json schema, compat flags, overrides |

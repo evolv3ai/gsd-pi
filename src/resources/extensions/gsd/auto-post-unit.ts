@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Auto-mode post-unit git, verification, projection, and hook processing.
 /**
  * Post-unit processing for auto-loop — auto-commit, doctor run,
@@ -43,6 +43,7 @@ import {
   writeBlockerPlaceholder,
   diagnoseExpectedArtifact,
   diagnoseWorktreeIntegrityFailure,
+  writeReactiveExecuteBlocker,
 } from "./auto-recovery.js";
 import { regenerateIfMissing } from "./workflow-projections.js";
 import { WorktreeStateProjection } from "./worktree-state-projection.js";
@@ -62,6 +63,10 @@ import {
 import { hasPendingCaptures, loadPendingCaptures, revertExecutorResolvedCaptures } from "./captures.js";
 import { debugLog } from "./debug-logger.js";
 import { runSafely } from "./auto-utils.js";
+import {
+  isMilestoneCloseoutSettled,
+  runMilestoneCloseoutGitHub,
+} from "./milestone-closeout.js";
 import type { AutoSession, SidecarItem } from "./auto/session.js";
 import { getEvidence, clearEvidenceFromDisk } from "./safety/evidence-collector.js";
 import { validateFileChanges } from "./safety/file-change-validator.js";
@@ -79,6 +84,7 @@ import { UokGateRunner } from "./uok/gate-runner.js";
 import { writeTurnGitTransaction } from "./uok/gitops.js";
 import { isClosedStatus } from "./status-guards.js";
 import { detectAbandonMilestone } from "./abandon-detect.js";
+import { getPendingGate } from "./bootstrap/write-gate.js";
 import { isDeterministicPolicyError } from "./auto-tool-tracking.js";
 import { formatConnectedStepStack, formatPostUnitStatusCard } from "./auto-status-message.js";
 import {
@@ -105,6 +111,12 @@ const MAX_VERIFICATION_RETRIES = 3;
 /** Keep failure toasts short while still showing concrete examples. */
 const MAX_NOTIFICATION_DETAILS = 3;
 const NOTIFICATION_BULLET = "•";
+
+export function resolveCloseoutGitAction(
+  uokFlags: ReturnType<typeof resolveUokFlags>,
+): TurnGitActionMode | null {
+  return uokFlags.gitops ? uokFlags.gitopsTurnAction : null;
+}
 
 function agentEndMessagesIncludeToolCall(messages: unknown[] | undefined, toolName: string): boolean {
   if (!Array.isArray(messages)) return false;
@@ -178,6 +190,27 @@ function unitActivityMentionsTool(basePath: string, unitType: string, unitId: st
   return false;
 }
 
+function completeSliceReopenReplanHandoffDetected(
+  s: AutoSession,
+  agentEndMessages: unknown[] | undefined,
+): boolean {
+  if (s.currentUnit?.type !== "complete-slice") return false;
+  const unitType = s.currentUnit.type;
+  const unitId = s.currentUnit.id;
+  return (
+    agentEndMessagesIncludeSuccessfulToolResult(agentEndMessages, "gsd_task_reopen") ||
+    agentEndMessagesIncludeToolCall(agentEndMessages, "gsd_task_reopen") ||
+    agentEndMessagesMentionTool(agentEndMessages, "gsd_task_reopen") ||
+    unitActivityMentionsTool(s.basePath, unitType, unitId, "gsd_task_reopen") ||
+    unitActivityMentionsTool(s.canonicalProjectRoot, unitType, unitId, "gsd_task_reopen") ||
+    agentEndMessagesIncludeSuccessfulToolResult(agentEndMessages, "gsd_replan_slice") ||
+    agentEndMessagesIncludeToolCall(agentEndMessages, "gsd_replan_slice") ||
+    agentEndMessagesMentionTool(agentEndMessages, "gsd_replan_slice") ||
+    unitActivityMentionsTool(s.basePath, unitType, unitId, "gsd_replan_slice") ||
+    unitActivityMentionsTool(s.canonicalProjectRoot, unitType, unitId, "gsd_replan_slice")
+  );
+}
+
 function formatPreExecutionCheckDetail(check: PreExecutionCheckJSON): string {
   const category = check.category?.trim() || "unknown category";
   const target = check.target?.trim() || "unknown target";
@@ -216,8 +249,6 @@ function formatPreExecutionRetryContext(input: {
   ].join("\n");
 }
 
-const COMPLETE_MILESTONE_DB_SETTLE_MS = 1500;
-const COMPLETE_MILESTONE_DB_SETTLE_POLL_MS = 100;
 const GIT_ACTION_FAILURE_LOG_REL_PATH = ".gsd/git-action-failures.log";
 const DEFAULT_PER_UNIT_COST_CAP_USD = 5.0;
 const MAX_PRE_EXEC_RETRIES = 2;
@@ -388,17 +419,16 @@ async function buildTaskCommitContextForUnit(
   };
 }
 
-async function waitForMilestoneDbClose(mid: string): Promise<boolean> {
-  const deadline = Date.now() + COMPLETE_MILESTONE_DB_SETTLE_MS;
-  while (Date.now() < deadline) {
-    if (!isDbAvailable()) return false;
-    const milestone = getMilestone(mid);
-    if (milestone && isClosedStatus(milestone.status)) return true;
-    await new Promise((resolve) => setTimeout(resolve, COMPLETE_MILESTONE_DB_SETTLE_POLL_MS));
-  }
-  return false;
+async function runPostUnitGitHubSyncIfNeeded(
+  basePath: string,
+  unit: NonNullable<AutoSession["currentUnit"]>,
+): Promise<void> {
+  if (unit.type === "complete-milestone") return;
+  await runSafely("postUnit", "github-sync", async () => {
+    const { runGitHubSync } = await import("../github-sync/sync.js");
+    await runGitHubSync(basePath, unit.type, unit.id);
+  });
 }
-
 
 /** Enqueue a sidecar item (hook, triage, or quick-task) for the main loop to
  *  drain via runUnit. Logs the enqueue event and notifies the UI. */
@@ -847,6 +877,12 @@ export async function autoCommitUnit(
   ctx?: ExtensionContext,
 ): Promise<string | null> {
   try {
+    const prefs = loadEffectiveGSDPreferences()?.preferences;
+    const uokFlags = resolveUokFlags(prefs);
+    if (!uokFlags.gitops) {
+      return null;
+    }
+
     let taskContext: TaskCommitContext | undefined;
 
     if (unitType === "execute-task") {
@@ -886,12 +922,22 @@ async function runCloseoutGitAction(
   const { s, ctx, pi, pauseAuto } = pctx;
   const prefs = loadEffectiveGSDPreferences()?.preferences;
   const uokFlags = resolveUokFlags(prefs);
-  const turnAction: TurnGitActionMode = uokFlags.gitops ? uokFlags.gitopsTurnAction : "commit";
+  const turnAction = resolveCloseoutGitAction(uokFlags);
   const traceId = s.currentTraceId ?? `turn:${unit.startedAt}`;
   const turnId = s.currentTurnId ?? `${unit.type}/${unit.id}/${unit.startedAt}`;
 
   s.lastGitActionFailure = null;
   s.lastGitActionStatus = null;
+
+  if (!turnAction) {
+    debugLog("postUnit", {
+      phase: "git-action-skipped",
+      reason: "gitops-disabled",
+      unitType: unit.type,
+      unitId: unit.id,
+    });
+    return "continue";
+  }
 
   try {
     let taskContext: TaskCommitContext | undefined;
@@ -1034,12 +1080,6 @@ async function runCloseoutGitAction(
       return "dispatched";
     }
   }
-
-  // GitHub sync (non-blocking, opt-in)
-  await runSafely("postUnit", "github-sync", async () => {
-    const { runGitHubSync } = await import("../github-sync/sync.js");
-    await runGitHubSync(s.basePath, unit.type, unit.id);
-  });
 
   return "continue";
 }
@@ -1502,12 +1542,10 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
           try {
             const { milestone: mid } = parseUnitId(s.currentUnit.id);
             if (mid) {
-              const settled = await waitForMilestoneDbClose(mid);
+              const settled = await isMilestoneCloseoutSettled(mid, verificationBasePath);
               if (settled) {
-                triggerArtifactVerified = verifyExpectedArtifact(s.currentUnit.type, s.currentUnit.id, verificationBasePath);
-                if (triggerArtifactVerified) {
-                  invalidateAllCaches();
-                }
+                triggerArtifactVerified = true;
+                invalidateAllCaches();
               }
             }
           } catch (e) {
@@ -1674,6 +1712,21 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
         s.lastToolInvocationError = null;
         await pauseAuto(ctx, pi);
         return "dispatched";
+      } else if (!triggerArtifactVerified && getPendingGate(verificationBasePath)) {
+        const pendingGateId = getPendingGate(verificationBasePath);
+        debugLog("postUnit", {
+          phase: "artifact-verify-pending-depth-gate",
+          unitType: s.currentUnit.type,
+          unitId: s.currentUnit.id,
+          pendingGateId,
+        });
+        ctx.ui.notify(
+          `${s.currentUnit.type} ${s.currentUnit.id} is waiting for depth confirmation (${pendingGateId}) — pausing auto-mode.`,
+          "info",
+        );
+        s.lastToolInvocationError = null;
+        await pauseAuto(ctx, pi);
+        return "dispatched";
       } else if (!triggerArtifactVerified && s.lastToolInvocationError && isDeterministicPolicyError(s.lastToolInvocationError)) {
         const retryKey = `${s.currentUnit.type}:${s.currentUnit.id}`;
         debugLog("postUnit", { phase: "deterministic-policy-error-placeholder", unitType: s.currentUnit.type, unitId: s.currentUnit.id, error: s.lastToolInvocationError });
@@ -1706,6 +1759,24 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
         );
         await pauseAuto(ctx, pi);
         return "dispatched";
+      } else if (
+        !triggerArtifactVerified &&
+        completeSliceReopenReplanHandoffDetected(s, opts?.agentEndMessages)
+      ) {
+        const retryKey = `${s.currentUnit.type}:${s.currentUnit.id}`;
+        s.pendingVerificationRetry = null;
+        s.verificationRetryCount.delete(retryKey);
+        s.verificationRetryFailureHashes.delete(retryKey);
+        debugLog("postUnit", {
+          phase: "artifact-verify-complete-slice-handoff",
+          unitType: s.currentUnit.type,
+          unitId: s.currentUnit.id,
+        });
+        ctx.ui.notify(
+          `complete-slice ${s.currentUnit.id} intentionally handed off via reopen/replan; continuing orchestration instead of retrying closeout.`,
+          "warning",
+        );
+        return "continue";
       } else if (!triggerArtifactVerified && !isDbAvailable()) {
         debugLog("postUnit", { phase: "artifact-verify-skip-db-unavailable", unitType: s.currentUnit.type, unitId: s.currentUnit.id });
         const dbSkipDiag = diagnoseExpectedArtifact(s.currentUnit.type, s.currentUnit.id, verificationBasePath);
@@ -1804,6 +1875,32 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
             s.lastUnitAgentEndMessages,
           );
           if (attempt > MAX_ARTIFACT_VERIFICATION_RETRIES) {
+            if (s.currentUnit.type === "reactive-execute") {
+              const recovery = writeReactiveExecuteBlocker(
+                s.currentUnit.id,
+                verificationBasePath,
+                failureDetails,
+              );
+              if (recovery) {
+                s.pendingVerificationRetry = null;
+                s.verificationRetryCount.delete(retryKey);
+                s.verificationRetryFailureHashes.delete(retryKey);
+                invalidateAllCaches();
+                debugLog("postUnit", {
+                  phase: "reactive-execute-blocker-recovery",
+                  unitType: s.currentUnit.type,
+                  unitId: s.currentUnit.id,
+                  blockerPath: recovery.blockerPath,
+                  completedTaskIds: recovery.completedTaskIds,
+                  skippedTaskIds: recovery.skippedTaskIds,
+                });
+                ctx.ui.notify(
+                  `${failureDetails} Wrote reactive blocker and advanced: ${recovery.completedTaskIds.length} complete, ${recovery.skippedTaskIds.length} skipped.`,
+                  "warning",
+                );
+                return "continue";
+              }
+            }
             s.exhaustedVerificationUnits.add(retryKey);
             debugLog("postUnit", { phase: "artifact-verify-exhausted", unitType: s.currentUnit.type, unitId: s.currentUnit.id, attempt });
             ctx.ui.notify(
@@ -1837,10 +1934,21 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
         }
         s.verificationRetryCount.delete(retryKey);
         s.verificationRetryFailureHashes.delete(retryKey);
+
+        if (s.currentUnit.type === "complete-milestone") {
+          const { milestone: mid } = parseUnitId(s.currentUnit.id);
+          if (mid) {
+            await runMilestoneCloseoutGitHub(s.basePath, mid);
+          }
+        }
       }
     } else {
       // Hook unit completed — no additional processing needed
     }
+  }
+
+  if (s.currentUnit && !s.currentUnit.type.startsWith("hook/")) {
+    await runPostUnitGitHubSyncIfNeeded(s.basePath, s.currentUnit);
   }
 
   return "continue";

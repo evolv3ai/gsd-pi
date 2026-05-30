@@ -649,8 +649,8 @@ export function renderPreferencesForSystemPrompt(preferences: GSDPreferences, re
  * Resolve enabled post-unit hooks from effective preferences.
  * Returns an empty array when no hooks are configured.
  */
-export function resolvePostUnitHooks(): PostUnitHookConfig[] {
-  const prefs = loadEffectiveGSDPreferences();
+export function resolvePostUnitHooks(basePath?: string): PostUnitHookConfig[] {
+  const prefs = loadEffectiveGSDPreferences(basePath);
   return (prefs?.preferences.post_unit_hooks ?? [])
     .filter(h => h.enabled !== false);
 }
@@ -659,8 +659,8 @@ export function resolvePostUnitHooks(): PostUnitHookConfig[] {
  * Resolve enabled pre-dispatch hooks from effective preferences.
  * Returns an empty array when no hooks are configured.
  */
-export function resolvePreDispatchHooks(): PreDispatchHookConfig[] {
-  const prefs = loadEffectiveGSDPreferences();
+export function resolvePreDispatchHooks(basePath?: string): PreDispatchHookConfig[] {
+  const prefs = loadEffectiveGSDPreferences(basePath);
   return (prefs?.preferences.pre_dispatch_hooks ?? [])
     .filter(h => h.enabled !== false);
 }

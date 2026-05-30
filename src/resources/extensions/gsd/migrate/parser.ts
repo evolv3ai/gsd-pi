@@ -23,6 +23,8 @@ import type {
   PlanningQuickTask,
   PlanningMilestone,
   PlanningResearch,
+  PlanningDecision,
+  PlanningSeed,
   PlanningPhaseFile,
 } from './types.js';
 
@@ -73,9 +75,11 @@ function parseQuickDir(dirName: string): { number: number; slug: string } | null
 
 /** Plan file pattern: NN-NN-PLAN.md (e.g. 29-01-PLAN.md) or NN-NNb-PLAN.md. */
 const PLAN_RE = /^(\d+(?:\.\d+)?)-(\d+[a-z]?)-PLAN\.md$/i;
+const SHORT_PLAN_RE = /^(\d+[a-z]?)-PLAN\.md$/i;
 
 /** Summary file pattern: NN-NN-SUMMARY.md (e.g. 29-01-SUMMARY.md) or NN-NNb-SUMMARY.md. */
 const SUMMARY_RE = /^(\d+(?:\.\d+)?)-(\d+[a-z]?)-SUMMARY\.md$/i;
+const SHORT_SUMMARY_RE = /^(\d+[a-z]?)-SUMMARY\.md$/i;
 
 /** Research file pattern: contains RESEARCH (case-insensitive) */
 const RESEARCH_RE = /research/i;
@@ -103,17 +107,17 @@ function scanPhaseDirectory(phaseDir: string, dirName: string, parsed: ReturnTyp
     // Skip directories within phase dirs
     if (isDir(entryPath)) continue;
 
-    const planMatch = entry.match(PLAN_RE);
+    const planMatch = entry.match(PLAN_RE) ?? entry.match(SHORT_PLAN_RE);
     if (planMatch) {
-      const planNumber = planMatch[2];
+      const planNumber = planMatch[2] ?? planMatch[1];
       const content = readFileSync(entryPath, 'utf-8');
       phase.plans[planNumber] = parseOldPlan(content, entry, planNumber);
       continue;
     }
 
-    const summaryMatch = entry.match(SUMMARY_RE);
+    const summaryMatch = entry.match(SUMMARY_RE) ?? entry.match(SHORT_SUMMARY_RE);
     if (summaryMatch) {
-      const planNumber = summaryMatch[2];
+      const planNumber = summaryMatch[2] ?? summaryMatch[1];
       const content = readFileSync(entryPath, 'utf-8');
       phase.summaries[planNumber] = parseOldSummary(content, entry, planNumber);
       continue;
@@ -184,19 +188,37 @@ function scanMilestonesDirectory(msDir: string): PlanningMilestone[] {
   if (entries.length === 0) return [];
 
   // Group files by milestone ID prefix (e.g. "v2.2" from "v2.2-ROADMAP.md")
-  const grouped = new Map<string, { requirements: string | null; roadmap: string | null; extraFiles: PlanningPhaseFile[] }>();
+  const grouped = new Map<string, { requirements: string | null; roadmap: string | null; phases: Record<string, PlanningPhase>; extraFiles: PlanningPhaseFile[] }>();
+
+  function ensureMilestone(id: string) {
+    if (!grouped.has(id)) grouped.set(id, { requirements: null, roadmap: null, phases: {}, extraFiles: [] });
+    return grouped.get(id)!;
+  }
 
   for (const entry of entries) {
     const entryPath = join(msDir, entry);
-    if (isDir(entryPath)) continue;
+    if (isDir(entryPath)) {
+      const phasesMatch = entry.match(/^(.+)-phases$/i);
+      if (!phasesMatch) continue;
+      const ms = ensureMilestone(phasesMatch[1]);
+      const phaseDirs = listDir(entryPath).sort();
+      for (const dirName of phaseDirs) {
+        if (dirName.startsWith('.')) continue;
+        const dirPath = join(entryPath, dirName);
+        if (!isDir(dirPath)) continue;
+        const parsed = parsePhaseDir(dirName);
+        if (!parsed) continue;
+        ms.phases[dirName] = scanPhaseDirectory(dirPath, dirName, parsed);
+      }
+      continue;
+    }
 
     // Extract milestone ID: everything before the first dash-followed-by-uppercase or common suffix
     const idMatch = entry.match(/^(.+?)-(ROADMAP|REQUIREMENTS|SUMMARY)\.md$/i);
     if (idMatch) {
       const id = idMatch[1];
       const type = idMatch[2].toUpperCase();
-      if (!grouped.has(id)) grouped.set(id, { requirements: null, roadmap: null, extraFiles: [] });
-      const ms = grouped.get(id)!;
+      const ms = ensureMilestone(id);
       const content = readFileSync(entryPath, 'utf-8');
 
       if (type === 'REQUIREMENTS') ms.requirements = content;
@@ -206,9 +228,9 @@ function scanMilestonesDirectory(msDir: string): PlanningMilestone[] {
       // Non-standard file — try to extract ID from filename
       const simpleMatch = entry.match(/^(.+?)\./);
       const id = simpleMatch ? simpleMatch[1] : entry;
-      if (!grouped.has(id)) grouped.set(id, { requirements: null, roadmap: null, extraFiles: [] });
+      const ms = ensureMilestone(id);
       const content = readFileSync(entryPath, 'utf-8');
-      grouped.get(id)!.extraFiles.push({ fileName: entry, content });
+      ms.extraFiles.push({ fileName: entry, content });
     }
   }
 
@@ -216,6 +238,7 @@ function scanMilestonesDirectory(msDir: string): PlanningMilestone[] {
     id,
     requirements: data.requirements,
     roadmap: data.roadmap,
+    phases: data.phases,
     extraFiles: data.extraFiles,
   }));
 }
@@ -234,6 +257,28 @@ function scanResearchDirectory(researchDir: string): PlanningResearch[] {
   }
 
   return research;
+}
+
+function scanDecisionDirectory(decisionsDir: string): PlanningDecision[] {
+  return scanFlatMarkdownDirectory(decisionsDir);
+}
+
+function scanSeedDirectory(seedsDir: string): PlanningSeed[] {
+  return scanFlatMarkdownDirectory(seedsDir);
+}
+
+function scanFlatMarkdownDirectory<T extends PlanningPhaseFile>(dir: string): T[] {
+  const entries = listDir(dir).sort();
+  const files: T[] = [];
+
+  for (const entry of entries) {
+    const entryPath = join(dir, entry);
+    if (isDir(entryPath)) continue;
+    const content = readFileSync(entryPath, 'utf-8');
+    files.push({ fileName: entry, content } as T);
+  }
+
+  return files;
 }
 
 // ─── Main Orchestrator ─────────────────────────────────────────────────────
@@ -307,6 +352,12 @@ export async function parsePlanningDirectory(path: string): Promise<PlanningProj
   const researchDir = join(path, 'research');
   const research = isDir(researchDir) ? scanResearchDirectory(researchDir) : [];
 
+  const decisionsDir = join(path, 'decisions');
+  const decisions = isDir(decisionsDir) ? scanDecisionDirectory(decisionsDir) : [];
+
+  const seedsDir = join(path, 'seeds');
+  const seeds = isDir(seedsDir) ? scanSeedDirectory(seedsDir) : [];
+
   return {
     path,
     project,
@@ -318,6 +369,8 @@ export async function parsePlanningDirectory(path: string): Promise<PlanningProj
     quickTasks,
     milestones,
     research,
+    decisions,
+    seeds,
     validation,
   };
 }

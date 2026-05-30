@@ -1,20 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { GSD_PI_LOGO } from "../../dist/logo.js";
 
 const { filterInitialGsdHeader } = await import("../../web/lib/initial-gsd-header-filter.ts");
 
-const GSD_LOGO_LINES = [
-  "   ██████╗ ███████╗██████╗ ",
-  "  ██╔════╝ ██╔════╝██╔══██╗",
-  "  ██║  ███╗███████╗██║  ██║",
-  "  ██║   ██║╚════██║██║  ██║",
-  "  ╚██████╔╝███████║██████╔╝",
-  "   ╚═════╝ ╚══════╝╚═════╝ ",
-] as const;
+const GSD_LOGO_LINES = GSD_PI_LOGO;
 
 test("filterInitialGsdHeader strips a plain startup banner and keeps real terminal content", () => {
   const warning = "Warning: Google Search is not configured.";
-  const raw = [...GSD_LOGO_LINES, "  Get Shit Done v2.33.1", "", warning].join("\n");
+  const raw = [...GSD_LOGO_LINES, "  Git Ship Done v2.33.1", "", warning].join("\n");
 
   const result = filterInitialGsdHeader(raw);
 
@@ -33,7 +27,7 @@ test("filterInitialGsdHeader strips ANSI-colored startup banner output", () => {
 
   const raw =
     GSD_LOGO_LINES.map((line) => `${cyan}${line}${reset}\r\n`).join("") +
-    `  ${bold}Get Shit Done${boldReset} ${dim}v2.33.1${dimReset}\r\n\r\n` +
+    `  ${bold}Git Ship Done${boldReset} ${dim}v2.33.1${dimReset}\r\n\r\n` +
     warning;
 
   const result = filterInitialGsdHeader(raw);

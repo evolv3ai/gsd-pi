@@ -55,6 +55,21 @@ import {
   formatSummaryComment,
 } from "./templates.js";
 
+type GhCloseIssue = typeof ghCloseIssue;
+type GhCloseMilestone = typeof ghCloseMilestone;
+
+let _ghCloseIssueImpl: GhCloseIssue = ghCloseIssue;
+let _ghCloseMilestoneImpl: GhCloseMilestone = ghCloseMilestone;
+
+/** Test hook: override gh close calls (reset with null). */
+export function _setGhCloseOverridesForTest(overrides: {
+  closeIssue?: GhCloseIssue;
+  closeMilestone?: GhCloseMilestone;
+} | null): void {
+  _ghCloseIssueImpl = overrides?.closeIssue ?? ghCloseIssue;
+  _ghCloseMilestoneImpl = overrides?.closeMilestone ?? ghCloseMilestone;
+}
+
 // ─── Entry Point ────────────────────────────────────────────────────────────
 
 /**
@@ -448,31 +463,92 @@ async function syncSliceComplete(
   debugLog("github-sync", { phase: "slice-completed", mid, sid, pr: sliceRecord.prNumber });
 }
 
-async function syncMilestoneComplete(
+/**
+ * Close the GitHub tracking issue and milestone for a completed GSD milestone.
+ * Only marks the sync mapping closed when both API calls succeed.
+ */
+export function closeMilestoneOnGitHub(
   basePath: string,
   mapping: SyncMapping,
-  config: GitHubSyncConfig,
   mid: string,
-): Promise<void> {
+): boolean {
   const record = getMilestoneRecord(mapping, mid);
-  if (!record || record.state === "closed") return;
+  if (!record || record.state === "closed") return false;
 
-  // Close tracking issue
-  ghCloseIssue(
+  const issueResult = _ghCloseIssueImpl(
     basePath,
     mapping.repo,
     record.issueNumber,
     `Milestone ${mid} completed.`,
   );
+  if (!issueResult.ok) {
+    record.lastSyncError = issueResult.error ?? "failed to close tracking issue";
+    record.lastSyncedAt = new Date().toISOString();
+    setMilestoneRecord(mapping, mid, record);
+    debugLog("github-sync", { phase: "milestone-close-issue-failed", mid, error: record.lastSyncError });
+    return false;
+  }
 
-  // Close GitHub milestone
-  ghCloseMilestone(basePath, mapping.repo, record.ghMilestoneNumber);
+  const milestoneResult = _ghCloseMilestoneImpl(basePath, mapping.repo, record.ghMilestoneNumber);
+  if (!milestoneResult.ok) {
+    record.lastSyncError = milestoneResult.error ?? "failed to close GitHub milestone";
+    record.lastSyncedAt = new Date().toISOString();
+    setMilestoneRecord(mapping, mid, record);
+    debugLog("github-sync", { phase: "milestone-close-gh-milestone-failed", mid, error: record.lastSyncError });
+    return false;
+  }
 
+  delete record.lastSyncError;
   record.state = "closed";
   record.lastSyncedAt = new Date().toISOString();
   setMilestoneRecord(mapping, mid, record);
-
   debugLog("github-sync", { phase: "milestone-completed", mid });
+  return true;
+}
+
+/**
+ * Idempotent post-closeout GitHub sync for a completed milestone.
+ * Loads config/mapping, closes remote entities, and persists mapping on success.
+ */
+export async function finalizeMilestoneGitHubSync(basePath: string, mid: string): Promise<void> {
+  try {
+    const config = loadGitHubSyncConfig(basePath);
+    if (!config?.enabled) return;
+    if (!ghIsAvailable()) {
+      debugLog("github-sync", { skip: "gh CLI not available", mid });
+      return;
+    }
+
+    const repo = config.repo ?? resolveRepo(basePath);
+    if (!repo) {
+      debugLog("github-sync", { skip: "could not detect repo", mid });
+      return;
+    }
+
+    if (!ghHasRateLimit(basePath)) {
+      debugLog("github-sync", { skip: "rate limit low", mid });
+      return;
+    }
+
+    const mapping = loadSyncMapping(basePath) ?? createEmptyMapping(repo);
+    mapping.repo = repo;
+    const record = getMilestoneRecord(mapping, mid);
+    if (!record || record.state === "closed") return;
+
+    closeMilestoneOnGitHub(basePath, mapping, mid);
+    saveSyncMapping(basePath, mapping);
+  } catch (err) {
+    debugLog("github-sync", { error: String(err) });
+  }
+}
+
+async function syncMilestoneComplete(
+  basePath: string,
+  mapping: SyncMapping,
+  _config: GitHubSyncConfig,
+  mid: string,
+): Promise<void> {
+  closeMilestoneOnGitHub(basePath, mapping, mid);
 }
 
 // ─── Bootstrap ──────────────────────────────────────────────────────────────

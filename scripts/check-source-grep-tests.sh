@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GSD-2 — Reject source-grep tests
+# gsd-pi — Reject source-grep tests
 # Copyright (c) 2026 Jeremy McSpadden <jeremy@fluxlabs.net>
 #
 # Fails CI if a PR adds or modifies a test file that reads a source file with
@@ -52,8 +52,8 @@ while IFS= read -r FILE; do
 
   # grep with line numbers; allow opt-out via marker on the same line OR the
   # immediately preceding line.
-  while IFS=: read -r LINENO MATCH; do
-    [ -z "$LINENO" ] && continue
+  while IFS=: read -r LINE_NO MATCH; do
+    [ -z "$LINE_NO" ] && continue
 
     # Same-line escape hatch
     if echo "$MATCH" | grep -q 'allow-source-grep:'; then
@@ -61,7 +61,7 @@ while IFS= read -r FILE; do
     fi
 
     # Previous-line escape hatch
-    PREV_LINE=$((LINENO - 1))
+    PREV_LINE=$((LINE_NO - 1))
     if [ "$PREV_LINE" -gt 0 ]; then
       PREV=$(sed -n "${PREV_LINE}p" "$FILE")
       if echo "$PREV" | grep -q 'allow-source-grep:'; then
@@ -69,7 +69,7 @@ while IFS= read -r FILE; do
       fi
     fi
 
-    OFFENDERS+="${FILE}:${LINENO}: ${MATCH}"$'\n'
+    OFFENDERS+="${FILE}:${LINE_NO}: ${MATCH}"$'\n'
   done < <(grep -nE "$READ_SOURCE_RE" "$FILE" || true)
 done <<< "$TEST_FILES"
 

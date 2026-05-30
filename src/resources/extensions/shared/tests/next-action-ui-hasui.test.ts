@@ -1,4 +1,4 @@
-// GSD2 — Regression test for next-action-ui ctx.hasUI short-circuit (bare /gsd lockup)
+// gsd-pi — Regression test for next-action-ui ctx.hasUI short-circuit (bare /gsd lockup)
 
 /**
  * Regression test for the bare /gsd lockup investigated in
@@ -22,10 +22,14 @@ describe("showNextAction ctx.hasUI guard (#5125 lockup root protection)", () => 
   it("returns 'not_yet' immediately when ctx.hasUI is false (no UI calls)", async () => {
     let customCalled = 0;
     let selectCalled = 0;
+    const notifications: Array<{ message: string; type: string }> = [];
 
     const ctx = {
       hasUI: false,
       ui: {
+        notify: (message: string, type: string) => {
+          notifications.push({ message, type });
+        },
         custom: async () => {
           customCalled++;
           return undefined as never;
@@ -48,6 +52,8 @@ describe("showNextAction ctx.hasUI guard (#5125 lockup root protection)", () => 
     assert.equal(result, "not_yet", "should short-circuit to safe default");
     assert.equal(customCalled, 0, "ctx.ui.custom must not be called when hasUI is false");
     assert.equal(selectCalled, 0, "ctx.ui.select must not be called when hasUI is false");
+    assert.equal(notifications.length, 1, "should warn when menu cannot be shown");
+    assert.match(notifications[0]!.message, /menu could not be shown/);
   });
 
   it("uses ctx.ui.select fallback when ctx.hasUI is true and custom returns undefined", async () => {
@@ -84,11 +90,15 @@ describe("showNextAction ctx.hasUI guard (#5125 lockup root protection)", () => 
   it("returns 'not_yet' immediately when UI mode is rpc even if ctx.hasUI is true", async () => {
     let customCalled = 0;
     let selectCalled = 0;
+    const notifications: Array<{ message: string; type: string }> = [];
 
     const ctx = {
       hasUI: true,
       ui: {
         mode: "rpc",
+        notify: (message: string, type: string) => {
+          notifications.push({ message, type });
+        },
         custom: async () => {
           customCalled++;
           return undefined as never;
@@ -111,6 +121,7 @@ describe("showNextAction ctx.hasUI guard (#5125 lockup root protection)", () => 
     assert.equal(result, "not_yet", "rpc-backed UI is non-interactive for next-action");
     assert.equal(customCalled, 0, "ctx.ui.custom must not be called in rpc mode");
     assert.equal(selectCalled, 0, "ctx.ui.select must not be called in rpc mode");
+    assert.equal(notifications.length, 1, "should warn when rpc mode blocks menu");
   });
 
   it("returns the resolved id when ctx.ui.custom completes normally", async () => {

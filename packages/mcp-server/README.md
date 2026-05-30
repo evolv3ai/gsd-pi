@@ -1,4 +1,4 @@
-# @gsd-build/mcp-server
+# @opengsd/mcp-server
 
 MCP server exposing GSD orchestration tools for Claude Code, Cursor, and other MCP-compatible clients.
 
@@ -13,7 +13,7 @@ This package now exposes two tool surfaces:
 ## Installation
 
 ```bash
-npm install @gsd-build/mcp-server
+npm install @opengsd/mcp-server
 ```
 
 Or with the monorepo workspace:
@@ -253,12 +253,12 @@ Remote secrets pushed by `secure_env_collect` to Vercel or Convex are not hydrat
 
 ```
 ┌─────────────────┐     stdio      ┌──────────────────┐
-│  MCP Client     │ ◄────────────► │  @gsd-build/mcp-server │
+│  MCP Client     │ ◄────────────► │  @opengsd/mcp-server │
 │  (Claude Code,  │    JSON-RPC    │                  │
 │   Cursor, etc.) │                │  SessionManager  │
 └─────────────────┘                │       │          │
                                    │       ▼          │
-                                   │  @gsd-build/rpc-client │
+                                   │  @opengsd/rpc-client │
                                    │       │          │
                                    │       ▼          │
                                    │  GSD CLI (child  │
@@ -266,9 +266,9 @@ Remote secrets pushed by `secure_env_collect` to Vercel or Convex are not hydrat
                                    └──────────────────┘
 ```
 
-- **@gsd-build/mcp-server** — MCP protocol adapter. Translates MCP tool calls into SessionManager operations.
+- **@opengsd/mcp-server** — MCP protocol adapter. Translates MCP tool calls into SessionManager operations.
 - **SessionManager** — Manages RpcClient lifecycle. One session per project directory. Tracks events in a ring buffer (last 50), detects blockers, accumulates cost.
-- **@gsd-build/rpc-client** — Low-level RPC client that spawns and communicates with the GSD CLI process via JSON-RPC over stdio.
+- **@opengsd/rpc-client** — Low-level RPC client that spawns and communicates with the GSD CLI process via JSON-RPC over stdio.
 
 ## License
 

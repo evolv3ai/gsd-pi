@@ -231,7 +231,6 @@ With this configuration, a Haiku-4-5 subagent sees only `gsd-workflow` and `goog
 | `GSD_PROJECT_ID` | (auto-hash) | Override the automatic project identity hash. Per-project state goes to `$GSD_HOME/projects/<GSD_PROJECT_ID>/` instead of the computed hash. Useful for CI/CD or sharing state across clones of the same repo. (v2.39) |
 | `GSD_STATE_DIR` | `$GSD_HOME` | Per-project state root. Controls where `projects/<repo-hash>/` directories are created. Takes precedence over `GSD_HOME` for project state. |
 | `GSD_CODING_AGENT_DIR` | `$GSD_HOME/agent` | Agent directory containing managed resources, extensions, and auth. Takes precedence over `GSD_HOME` for agent paths. |
-| `GSD_ALLOW_MARKDOWN_DERIVE_FALLBACK` | (unset) | Set to literal `1` only for tests or explicit recovery workflows that must derive state from rendered markdown when the database is unavailable. Normal runtime treats the database as authoritative and refuses silent markdown fallback. |
 | `GSD_ALLOWED_COMMAND_PREFIXES` | (built-in list) | Comma-separated command prefixes allowed for `!command` value resolution. Overrides `allowedCommandPrefixes` in settings.json. See [Custom Models — Command Allowlist](custom-models.md#command-allowlist). |
 | `GSD_FETCH_ALLOWED_URLS` | (none) | Comma-separated hostnames exempted from `fetch_page` URL blocking. Overrides `fetchAllowedUrls` in settings.json. See [URL Blocking](#url-blocking-fetch_page). |
 | `PI_DISABLE_SYNC_OUTPUT` | (unset) | Set to literal `1` to disable synchronized terminal output mode in the TUI on non-Windows platforms. By default synchronized output is enabled on macOS/Linux and always disabled on Windows. |
@@ -556,7 +555,7 @@ verification_max_retries: 2       # max retry attempts (default: 2)
 
 Verification commands must be simple executable commands. Shell piping (`|`) is supported, but logical OR (`||`) is rejected. GSD also rejects redirects (`>` and `<`), semicolons, backticks, and command substitution (`$(...)`) because verification is run as a controlled command list, not as an arbitrary shell program.
 
-For task-level `verify` commands (`taskPlanVerify`), GSD splits command chains on `&&` and validates each segment independently. On Unix-like systems, commands run with `set -o pipefail` semantics, so any failing stage in a pipeline causes the verification command to fail.
+For task-level `verify` commands (`taskPlanVerify`), GSD splits checks on newlines. `&&` chains stay within a single shell invocation, so commands such as `cd path && npm test` preserve directory context.
 
 When `verification_commands` is empty and no task-level `verify` command is available, GSD can auto-discover project checks. JavaScript projects use `package.json` scripts in this order: `typecheck`, `lint`, `test`. Python projects use the `python-project` discovery source and run `python3 -m pytest` when GSD finds files matching pytest's default test file patterns (`test_*.py` or `*_test.py`) under `tests/` or an explicit pytest configuration marker: `pytest.ini`, `[tool.pytest]`, `[tool.pytest.*]`, `[pytest]`, or `[tool:pytest]` in `pyproject.toml`.
 
@@ -918,7 +917,7 @@ prefer_skills:
 avoid_skills: []
 ```
 
-Skills can be bare names (looked up in `~/.agents/skills/` and `.agents/skills/`) or absolute paths.
+Skills can be bare names (looked up in priority order from `~/.gsd/agent/skills/`, `~/.agents/skills/`, `.agents/skills/`, then Claude compatibility skill directories) or absolute paths.
 
 ### `skill_rules`
 

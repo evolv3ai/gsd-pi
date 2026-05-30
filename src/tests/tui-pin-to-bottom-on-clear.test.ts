@@ -1,4 +1,4 @@
-// GSD-2 — TUI pin-to-bottom regression test
+// gsd-pi — TUI pin-to-bottom regression test
 //
 // When the TUI does a full redraw with clear (`\x1b[2J`), the rendered block
 // must be anchored so its last line lands at the terminal's bottom row. Before
@@ -225,13 +225,13 @@ describe("TUI pin-to-bottom on clear", () => {
   });
 
   it("re-anchors tall shrinks with a visible-region edit without ghost-line leakage", () => {
-    // CodeRabbit follow-up to PR #6131: the existing tall-shrink test only
+    // Follow-up to PR #6131: the existing tall-shrink test only
     // exercises the pure-shrink path (`firstChanged >= newLines.length`).
     // This test covers the mixed case — shrink AND a visible-region rewrite
     // — to confirm the renderer does not emit a full clear and does not leak
     // ghost-line `\r\n\x1b[2K` sequences past the viewport bottom (which is
     // what the `!clampedToViewport` + `ghostLinesVisible` gating at
-    // tui.ts:972 protects against). Sizes use the literal CodeRabbit ratio
+    // tui.ts:972 protects against). Sizes use the literal ratio from that review
     // (3:1.5) but scaled up so both buffers stay > height — on a 20-row
     // terminal the 20→10 literal scenario flows through the short-block
     // full-render path instead, which is by design and would emit \x1b[2J.

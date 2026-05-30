@@ -15,7 +15,6 @@ import {
 	type StopReason,
 	type ToolCall,
 } from "@gsd/pi-ai";
-import { ZERO_USAGE } from "./agent-loop.js";
 
 // Create stream class matching ProxyMessageEventStream
 class ProxyMessageEventStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
@@ -47,7 +46,7 @@ export type ProxyAssistantMessageEvent =
 	| { type: "toolcall_end"; contentIndex: number }
 	| {
 			type: "done";
-			reason: Extract<StopReason, "stop" | "length" | "toolUse" | "pauseTurn">;
+			reason: Extract<StopReason, "stop" | "length" | "toolUse">;
 			usage: AssistantMessage["usage"];
 	  }
 	| {
@@ -57,7 +56,23 @@ export type ProxyAssistantMessageEvent =
 			usage: AssistantMessage["usage"];
 	  };
 
-export interface ProxyStreamOptions extends SimpleStreamOptions {
+type ProxySerializableStreamOptions = Pick<
+	SimpleStreamOptions,
+	| "temperature"
+	| "maxTokens"
+	| "reasoning"
+	| "cacheRetention"
+	| "sessionId"
+	| "headers"
+	| "metadata"
+	| "transport"
+	| "thinkingBudgets"
+	| "maxRetryDelayMs"
+>;
+
+export interface ProxyStreamOptions extends ProxySerializableStreamOptions {
+	/** Local abort signal for the proxy request */
+	signal?: AbortSignal;
 	/** Auth token for the proxy server */
 	authToken: string;
 	/** Proxy server URL (e.g., "https://genai.example.com") */
@@ -83,7 +98,22 @@ export interface ProxyStreamOptions extends SimpleStreamOptions {
  * });
  * ```
  */
-function streamProxy(model: Model<any>, context: Context, options: ProxyStreamOptions): ProxyMessageEventStream {
+function buildProxyRequestOptions(options: ProxyStreamOptions): ProxySerializableStreamOptions {
+	return {
+		temperature: options.temperature,
+		maxTokens: options.maxTokens,
+		reasoning: options.reasoning,
+		cacheRetention: options.cacheRetention,
+		sessionId: options.sessionId,
+		headers: options.headers,
+		metadata: options.metadata,
+		transport: options.transport,
+		thinkingBudgets: options.thinkingBudgets,
+		maxRetryDelayMs: options.maxRetryDelayMs,
+	};
+}
+
+export function streamProxy(model: Model<any>, context: Context, options: ProxyStreamOptions): ProxyMessageEventStream {
 	const stream = new ProxyMessageEventStream();
 
 	(async () => {
@@ -95,7 +125,14 @@ function streamProxy(model: Model<any>, context: Context, options: ProxyStreamOp
 			api: model.api,
 			provider: model.provider,
 			model: model.id,
-			usage: { ...ZERO_USAGE, cost: { ...ZERO_USAGE.cost } },
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
 			timestamp: Date.now(),
 		};
 
@@ -121,11 +158,7 @@ function streamProxy(model: Model<any>, context: Context, options: ProxyStreamOp
 				body: JSON.stringify({
 					model,
 					context,
-					options: {
-						temperature: options.temperature,
-						maxTokens: options.maxTokens,
-						reasoning: options.reasoning,
-					},
+					options: buildProxyRequestOptions(options),
 				}),
 				signal: options.signal,
 			});

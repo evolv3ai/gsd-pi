@@ -38,10 +38,11 @@ export interface DiscoveredCommands {
 
 /** Package.json script keys to probe, in order. */
 const PACKAGE_SCRIPT_KEYS = ["typecheck", "lint", "test"] as const;
+const INTERPRETER_PREFIX_RE = /^(bash|sh|zsh|node|python3?|ts-node|tsx):\s*/;
 
 /**
  * Discover verification commands using the first-non-empty-wins strategy (D003):
- *   1. Task plan verify field (split on && and newlines)
+ *   1. Task plan verify field (split on newlines)
  *   2. Explicit preference commands
  *   3. package.json scripts (typecheck, lint, test)
  *   4. Python pytest project markers
@@ -49,13 +50,30 @@ const PACKAGE_SCRIPT_KEYS = ["typecheck", "lint", "test"] as const;
  *   6. None found
  */
 export function discoverCommands(options: DiscoverCommandsOptions): DiscoveredCommands {
+  const taskPlanVerify = options.taskPlanVerify && options.taskPlanVerify.trim()
+    ? options.taskPlanVerify
+    : undefined;
+  let hasTaskPlanProse = false;
+  let hasUnsafeTaskPlanCommand = false;
+
   // 1. Task plan verify field (commands are untrusted — sanitize)
-  if (options.taskPlanVerify && options.taskPlanVerify.trim()) {
-    const commands = options.taskPlanVerify
-      .split(/&&|\r?\n/)
+  if (taskPlanVerify) {
+    const commands: string[] = [];
+    const candidates = taskPlanVerify
+      .split(/\r?\n/)
       .map(c => c.trim())
-      .filter(Boolean)
-      .filter(c => sanitizeCommand(c) !== null);
+      .filter(Boolean);
+    for (const candidate of candidates) {
+      const normalized = candidate.replace(INTERPRETER_PREFIX_RE, "").trim();
+      const validation = validateVerificationCommand(normalized);
+      if (validation.ok) {
+        commands.push(normalized);
+      } else if (validation.reason === "does not look like a runnable command") {
+        hasTaskPlanProse = true;
+      } else {
+        hasUnsafeTaskPlanCommand = true;
+      }
+    }
     if (commands.length > 0) {
       return { commands, source: "task-plan" };
     }
@@ -101,6 +119,10 @@ export function discoverCommands(options: DiscoverCommandsOptions): DiscoveredCo
   const nodeTestCommand = discoverNodeTestFileCommand(options.cwd);
   if (nodeTestCommand) {
     return { commands: [nodeTestCommand], source: "node-test-file" };
+  }
+
+  if (hasTaskPlanProse && !hasUnsafeTaskPlanCommand) {
+    return { commands: [], source: "task-plan-prose" };
   }
 
   // 6. Nothing found
@@ -225,7 +247,12 @@ export function formatFailureContext(result: VerificationResult): string {
 // ─── Gate Execution ─────────────────────────────────────────────────────────
 
 /** Characters that indicate shell control syntax when unquoted in a command string. */
-const UNQUOTED_SHELL_CONTROL_CHARS = new Set([";", "|", "<", ">"]);
+const UNQUOTED_SHELL_CONTROL_CHARS = new Set([";", "<", ">"]);
+const EXIT_CODE_ECHO_SUFFIX = /^;\s*echo\s+(?:"exit:\$\?"|'exit:\$\?'|exit:\$\?)\s*$/;
+
+function isAllowedExitCodeEchoSuffix(suffix: string): boolean {
+  return EXIT_CODE_ECHO_SUFFIX.test(suffix);
+}
 
 /** Returns true when command text contains unquoted shell control syntax. */
 function hasUnsafeShellSyntax(cmd: string): boolean {
@@ -236,7 +263,8 @@ function hasUnsafeShellSyntax(cmd: string): boolean {
   let inDouble = false;
   let escaped = false;
 
-  for (const ch of cmd) {
+  for (let i = 0; i < cmd.length; i += 1) {
+    const ch = cmd[i];
     if (escaped) {
       escaped = false;
       continue;
@@ -253,7 +281,13 @@ function hasUnsafeShellSyntax(cmd: string): boolean {
       inDouble = !inDouble;
       continue;
     }
+    if (!inSingle && !inDouble && ch === "|" && cmd[i + 1] === "|") {
+      return true;
+    }
     if (!inSingle && !inDouble && UNQUOTED_SHELL_CONTROL_CHARS.has(ch)) {
+      if (ch === ";" && isAllowedExitCodeEchoSuffix(cmd.slice(i))) {
+        return hasUnsafeShellSyntax(cmd.slice(0, i).trim());
+      }
       return true;
     }
   }
@@ -340,18 +374,12 @@ export function isLikelyCommand(cmd: string): boolean {
  */
 export function validateVerificationCommand(cmd: string): { ok: true } | { ok: false; reason: string } {
   if (hasUnsafeShellSyntax(cmd)) {
-    return { ok: false, reason: "contains shell control syntax such as pipes, `||` fallbacks, redirects, semicolons, backticks, or command substitution" };
+    return { ok: false, reason: "contains shell control syntax such as `||` fallbacks, redirects, semicolons, backticks, or command substitution" };
   }
   if (!isLikelyCommand(cmd)) {
     return { ok: false, reason: "does not look like a runnable command" };
   }
   return { ok: true };
-}
-
-function sanitizeCommand(cmd: string): string | null {
-  const validation = validateVerificationCommand(cmd);
-  if (!validation.ok) return null;
-  return cmd;
 }
 
 export interface RunVerificationGateOptions {
@@ -383,6 +411,8 @@ function mergeDiscoverySource(
     "task-plan",
     "package-json",
     "python-project",
+    "node-test-file",
+    "task-plan-prose",
   ];
   for (const source of precedence) {
     if (sources.includes(source)) return source;

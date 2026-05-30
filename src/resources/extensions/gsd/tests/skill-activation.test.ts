@@ -28,7 +28,12 @@ function writeSkill(base: string, name: string, description: string): void {
 }
 
 function loadOnlyTestSkills(base: string): void {
-  loadSkills({ cwd: base, includeDefaults: false, skillPaths: [join(base, "skills")] });
+  loadSkills({
+    cwd: base,
+    agentDir: join(base, ".agent"),
+    includeDefaults: false,
+    skillPaths: [join(base, "skills")],
+  });
 }
 
 function writeProjectPreferences(base: string, preferences: string): void {

@@ -31,7 +31,7 @@ version: 1
 # Model selection
 models:
   research: claude-sonnet-4-6
-  planning: claude-opus-4-7
+  planning: claude-opus-4-8
   execution: claude-sonnet-4-6
   completion: claude-sonnet-4-6
 
@@ -82,7 +82,7 @@ Per-phase model selection. See [Choosing a Model](../getting-started/choosing-a-
 models:
   research: claude-sonnet-4-6
   planning:
-    model: claude-opus-4-7
+    model: claude-opus-4-8
     fallbacks:
       - openrouter/z-ai/glm-5
   execution: claude-sonnet-4-6
@@ -163,7 +163,7 @@ verification_max_retries: 2       # max attempts (default: 2)
 
 Verification commands must be simple executable commands. Shell piping (`|`) is supported, but logical OR (`||`) is rejected. GSD also rejects redirects (`>` and `<`), semicolons, backticks, and command substitution (`$(...)`) because verification is run as a controlled command list, not as an arbitrary shell program.
 
-For task-level `verify` commands (`taskPlanVerify`), GSD splits command chains on `&&` and validates each segment independently. On Unix-like systems, commands run with `set -o pipefail` semantics, so any failing stage in a pipeline causes the verification command to fail.
+For task-level `verify` commands (`taskPlanVerify`), GSD splits checks on newlines. `&&` chains stay within a single shell invocation, so commands such as `cd path && npm test` preserve directory context.
 
 When `verification_commands` is empty and no task-level `verify` command is available, GSD can auto-discover project checks. JavaScript projects use `package.json` scripts in this order: `typecheck`, `lint`, `test`. Python projects use the `python-project` discovery source and run `python3 -m pytest` when GSD finds explicit pytest evidence: `pytest.ini`, a pytest configuration section in `pyproject.toml` such as `[tool.pytest.ini_options]`, or files matching pytest's default test file patterns (`test_*.py` or `*_test.py`) under `tests/`.
 

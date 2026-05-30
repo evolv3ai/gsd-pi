@@ -1,4 +1,4 @@
-# GSD-2 Prompt System Map
+# gsd-pi Prompt System Map
 
 > Complete dependency graph of all prompts, how they're loaded, assembled, dispatched, and how they chain into each other.
 
@@ -197,7 +197,7 @@ guided-resume-task  (if task was interrupted)
 | Prompt | Purpose | Key Tools Called |
 |--------|---------|-----------------|
 | `execute-task.md` | Execute a single task. Inlines full context stack. | `memory_query`, `gsd_task_complete` |
-| `reactive-execute.md` | Dispatch all ready tasks in parallel subagents. Records failures only when no summary left. | `subagent` × N |
+| `reactive-execute.md` | Dispatch all ready tasks in parallel subagents. When batch summaries remain missing after retries, writes a slice blocker and reconciles summary-present tasks complete while marking missing-summary tasks skipped. | `subagent` × N |
 | `guided-resume-task.md` | Resume interrupted task. Reads `{{sliceId}}-CONTINUE.md` for continuation context. | `gsd_task_complete` |
 | `quick-task.md` | Lightweight task outside milestone structure. No DB tools. | writes `{{summaryPath}}` directly |
 
@@ -309,7 +309,7 @@ STATE.md
               │              │ writes S##-PLAN.md + T##-PLAN.md
               │              │
               ├── [task]  reactive-execute ──────────► N× subagent (execute-task)
-              │    OR                                     │ writes T##-SUMMARY.md
+              │    OR                                     │ writes T##-SUMMARY.md or S##-REACTIVE-BLOCKER.md
               ├── [task]  execute-task                    │
               │              │ reads T##-PLAN.md, S##-PLAN.md excerpt
               │              │ writes T##-SUMMARY.md
@@ -481,7 +481,7 @@ Priority  Rule                                          Fires When
 21        planning → plan-slice                         slice CONTEXT done, PLAN missing
 22        evaluating-gates → gate-evaluate              gates pending evaluation
 23        replanning-slice → replan-slice               slice in 'replanning' phase
-24        executing → reactive-execute (parallel)       ≥3 tasks ready (parallel mode)
+24        executing → reactive-execute (parallel)       ≥3 tasks ready (parallel mode), no reactive blocker
 25        executing → execute-task (recover plan)       task plan missing — recover via plan-slice
 26        executing → execute-task                      1–2 tasks ready (sequential mode)
 27        validating-milestone → validate-milestone     all slices closed, not yet validated

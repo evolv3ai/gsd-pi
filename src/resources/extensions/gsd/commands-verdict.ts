@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Handles manual milestone validation verdict overrides.
 
 import type { ExtensionCommandContext } from "@gsd/pi-coding-agent";
@@ -95,6 +95,13 @@ function extractSection(content: string, heading: string): string | undefined {
   const m = ("\n" + content).match(re);
   if (!m) return undefined;
   return m[1].replace(/\s+$/, "");
+}
+
+function extractEffectiveVerdict(resultDetails: Record<string, unknown>, fallback: ValidationVerdict): ValidationVerdict {
+  const verdict = resultDetails.verdict;
+  return typeof verdict === "string" && isValidMilestoneVerdict(verdict)
+    ? verdict
+    : fallback;
 }
 
 export function parseValidationFile(content: string): ParsedValidation {
@@ -215,12 +222,20 @@ export async function handleVerdict(
   }
 
   const prevVerdict = current.verdict ?? "unknown";
-  ctx.ui.notify(
-    `Milestone ${milestoneId} verdict: ${prevVerdict} -> ${parsed.verdict} (${existingValidation.source})`,
-    "success",
-  );
+  const effectiveVerdict = extractEffectiveVerdict(result.details, parsed.verdict);
+  if (effectiveVerdict !== parsed.verdict) {
+    ctx.ui.notify(
+      `Milestone ${milestoneId} verdict requested: ${parsed.verdict}, effective: ${effectiveVerdict} (${existingValidation.source})`,
+      "warning",
+    );
+  } else {
+    ctx.ui.notify(
+      `Milestone ${milestoneId} verdict: ${prevVerdict} -> ${effectiveVerdict} (${existingValidation.source})`,
+      "success",
+    );
+  }
 
-  if (parsed.verdict === "needs-remediation") {
+  if (effectiveVerdict === "needs-remediation") {
     ctx.ui.notify(
       "Follow up with gsd_reassess_roadmap to add remediation slices, then re-run /gsd auto.",
       "info",

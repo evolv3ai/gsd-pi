@@ -1,4 +1,4 @@
-// @gsd-build/mcp-server — Environment variable write utilities
+// @opengsd/mcp-server — Environment variable write utilities
 //
 // Shared helpers for writing env vars to .env files, detecting project
 // destinations, and checking existing keys. Used by secure_env_collect

@@ -1,4 +1,4 @@
-// GSD2 - Claude Code CLI provider stream adapter
+// gsd-pi - Claude Code CLI provider stream adapter
 /**
  * Stream adapter: bridges the Claude Agent SDK into GSD's streamSimple contract.
  *
@@ -27,7 +27,7 @@ import { homedir } from "node:os";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { PartialMessageBuilder, ZERO_USAGE, mapUsage } from "./partial-builder.js";
-import { buildWorkflowMcpServers } from "../gsd/workflow-mcp.js";
+import { buildWorkflowMcpServers, resolveWorkflowMcpProjectRoot } from "../gsd/workflow-mcp.js";
 import { loadProjectGSDPreferences } from "../gsd/preferences.js";
 import { discoverMcpServerNames, computeMcpDisallowedTools } from "../gsd/mcp-filter.js";
 import { showInterviewRound, type Question, type RoundResult } from "../shared/tui.js";
@@ -128,6 +128,11 @@ interface SdkElicitationResult {
 /** A TUI `Question` extended with an optional note-field ID for "None of the above" free-text capture. */
 interface ParsedElicitationQuestion extends Question {
 	noteFieldId?: string;
+}
+
+interface HeadlessAnswersFile {
+	questions?: Record<string, string | string[]>;
+	defaults?: { strategy?: "first_option" | "cancel" };
 }
 
 /** Descriptor for a single free-text input field parsed from an SDK elicitation form schema. */
@@ -344,9 +349,10 @@ export function buildPromptFromContext(context: Context): string {
 			"You are running inside Claude Code. Use these exact tool names — do not use lowercase or pi-native names:\n" +
 			"- Shell commands: 'Bash' (not 'bash')\n" +
 			"- File operations: 'Read', 'Write', 'Edit', 'Glob', 'Grep' (PascalCase, not lowercase)\n" +
-			"- GSD workflow tools (gsd_exec, gsd_slice_complete, gsd_task_complete, gsd_plan_slice, etc.) " +
+			"- GSD workflow tools (gsd_exec, gsd_slice_complete, gsd_task_complete, gsd_plan_slice, gsd_save_gate_result, etc.) " +
 			"are MCP tools — call them as mcp__gsd-workflow__<tool_name> " +
-			"(e.g. mcp__gsd-workflow__gsd_exec, mcp__gsd-workflow__gsd_slice_complete)\n" +
+			"(e.g. mcp__gsd-workflow__gsd_exec, mcp__gsd-workflow__gsd_save_gate_result)\n" +
+			"- ToolSearch is NOT available — never use it to discover tools; invoke the MCP tool directly\n" +
 			"</tool_context>",
 	);
 
@@ -501,6 +507,99 @@ function readElicitationChoices(options: SdkElicitationRequestOption[] | undefin
 	return options
 		.map((option) => (typeof option?.const === "string" ? option.const : typeof option?.title === "string" ? option.title : ""))
 		.filter((option): option is string => option.length > 0);
+}
+
+let cachedHeadlessAnswersPath: string | undefined;
+let cachedHeadlessAnswers: HeadlessAnswersFile | null | undefined;
+
+function loadHeadlessAnswers(env: NodeJS.ProcessEnv = process.env): HeadlessAnswersFile | null {
+	const filePath = env.GSD_HEADLESS_ANSWERS_PATH?.trim();
+	if (!filePath) return null;
+	if (cachedHeadlessAnswersPath === filePath) return cachedHeadlessAnswers ?? null;
+
+	cachedHeadlessAnswersPath = filePath;
+	cachedHeadlessAnswers = null;
+	try {
+		const parsed = JSON.parse(readFileSync(filePath, "utf-8")) as unknown;
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+		cachedHeadlessAnswers = parsed as HeadlessAnswersFile;
+		return cachedHeadlessAnswers;
+	} catch {
+		return null;
+	}
+}
+
+function normalizeHeadlessQuestionId(id: string): string {
+	return id.trim().toLowerCase().replace(/[-\s]+/g, "_").replace(/_confirm$/, "");
+}
+
+function findHeadlessAnswer(
+	answers: Record<string, string | string[]> | undefined,
+	questionId: string,
+): string | string[] | undefined {
+	if (!answers) return undefined;
+	const normalizedQuestionId = normalizeHeadlessQuestionId(questionId);
+
+	for (const [key, answer] of Object.entries(answers)) {
+		if (normalizeHeadlessQuestionId(key) === normalizedQuestionId) return answer;
+	}
+
+	for (const [key, answer] of Object.entries(answers)) {
+		const normalizedKey = normalizeHeadlessQuestionId(key);
+		if (normalizedQuestionId.startsWith(`${normalizedKey}_`) || normalizedKey.startsWith(`${normalizedQuestionId}_`)) {
+			return answer;
+		}
+	}
+
+	return undefined;
+}
+
+function answerValueForQuestion(
+	question: ParsedElicitationQuestion,
+	answers: HeadlessAnswersFile,
+): string | string[] | undefined {
+	const explicit = findHeadlessAnswer(answers.questions, question.id);
+	if (explicit !== undefined) return explicit;
+
+	const strategy = answers.defaults?.strategy ?? "first_option";
+	if (strategy === "cancel") return undefined;
+	return question.allowMultiple ? [question.options[0]?.label ?? ""] : question.options[0]?.label;
+}
+
+function answerElicitationFromHeadlessAnswers(
+	questions: ParsedElicitationQuestion[],
+	answers: HeadlessAnswersFile | null,
+): SdkElicitationResult | null {
+	if (!answers) return null;
+	if (answers.defaults?.strategy === "cancel" && !answers.questions) return { action: "cancel" };
+
+	const content: Record<string, string | string[]> = {};
+	for (const question of questions) {
+		const rawAnswer = answerValueForQuestion(question, answers);
+		if (rawAnswer === undefined) return { action: "cancel" };
+
+		const labels = new Set(question.options.map((option) => option.label));
+		if (question.allowMultiple) {
+			const selected = (Array.isArray(rawAnswer) ? rawAnswer : [rawAnswer]).filter((value) => labels.has(value));
+			if (selected.length > 0) {
+				content[question.id] = selected;
+				continue;
+			}
+			if ((answers.defaults?.strategy ?? "first_option") === "cancel") return { action: "cancel" };
+			content[question.id] = [question.options[0]?.label ?? ""];
+			continue;
+		}
+
+		const selected = Array.isArray(rawAnswer) ? rawAnswer[0] : rawAnswer;
+		if (typeof selected === "string" && labels.has(selected)) {
+			content[question.id] = selected;
+			continue;
+		}
+		if ((answers.defaults?.strategy ?? "first_option") === "cancel") return { action: "cancel" };
+		content[question.id] = question.options[0]?.label ?? "";
+	}
+
+	return { action: "accept", content };
 }
 
 /** Parse an SDK elicitation request into structured multiple-choice questions, or null if the schema is unsupported. */
@@ -1213,6 +1312,9 @@ export function createClaudeCodeElicitationHandler(
 
 		const questions = parseAskUserQuestionsElicitation(request);
 		if (questions) {
+			const headlessAnswer = answerElicitationFromHeadlessAnswers(questions, loadHeadlessAnswers());
+			if (headlessAnswer) return headlessAnswer;
+
 			const interviewResult = await showInterviewRound(questions, { signal }, { ui } as any).catch(() => undefined);
 			if (interviewResult && Object.keys(interviewResult.answers).length > 0) {
 				return {
@@ -1297,13 +1399,15 @@ export async function resolveClaudePermissionMode(
 // NOTE: These helpers intentionally mirror @gsd/pi-ai anthropic-shared
 // behavior so this extension remains typecheck-stable even when the published
 // @gsd/pi-ai barrel lags behind monorepo source exports.
-/** Return true for model IDs that support the adaptive thinking API (Opus 4.6/4.7, Sonnet 4.6/4.7, Haiku 4.5). */
+/** Return true for model IDs that support the adaptive thinking API (Opus 4.6/4.7/4.8, Sonnet 4.6/4.7, Haiku 4.5). */
 function modelSupportsAdaptiveThinking(modelId: string): boolean {
 	return (
 		modelId.includes("opus-4-6")
 		|| modelId.includes("opus-4.6")
 		|| modelId.includes("opus-4-7")
 		|| modelId.includes("opus-4.7")
+		|| modelId.includes("opus-4-8")
+		|| modelId.includes("opus-4.8")
 		|| modelId.includes("sonnet-4-6")
 		|| modelId.includes("sonnet-4.6")
 		|| modelId.includes("sonnet-4-7")
@@ -1324,7 +1428,12 @@ function mapThinkingLevelToAnthropicEffort(level: ThinkingLevel | undefined, mod
 		case "high":
 			return "high";
 		case "xhigh":
-			if (modelId.includes("opus-4-7") || modelId.includes("opus-4.7")) return "xhigh";
+			if (
+				modelId.includes("opus-4-7")
+				|| modelId.includes("opus-4.7")
+				|| modelId.includes("opus-4-8")
+				|| modelId.includes("opus-4.8")
+			) return "xhigh";
 			if (modelId.includes("opus-4-6") || modelId.includes("opus-4.6")) return "max";
 			return "high";
 		default:
@@ -1351,15 +1460,18 @@ export function buildSdkOptions(
 ): Record<string, unknown> {
 	const { reasoning, cwd, ...sdkExtraOptions } = extraOptions;
 	const sdkCwd = typeof cwd === "string" && cwd.trim().length > 0 ? cwd : process.cwd();
-	const mcpServers = buildWorkflowMcpServers(sdkCwd);
+	// Claude Code runs in the milestone worktree for file/shell work, but workflow MCP
+	// config (.mcp.json) and server discovery live at the project root.
+	const projectRoot = resolveWorkflowMcpProjectRoot(sdkCwd);
+	const mcpServers = buildWorkflowMcpServers(projectRoot);
 	const permissionMode = overrides?.permissionMode ?? "bypassPermissions";
 
-	const preferences = loadProjectGSDPreferences(sdkCwd);
+	const preferences = loadProjectGSDPreferences(projectRoot);
 	const mcpConfig = preferences?.preferences.claude_code_mcp;
 	const workflowServerName = mcpServers ? Object.keys(mcpServers)[0] : undefined;
 
 	// Always discover project MCPs — needed for both duplicate detection and filtering.
-	const discovered = discoverMcpServerNames(sdkCwd);
+	const discovered = discoverMcpServerNames(projectRoot);
 
 	// If the workflow MCP is already declared in the project's .mcp.json or
 	// .claude/settings.json, do not inject it again via mcpServers. Passing the
@@ -1429,7 +1541,13 @@ export function buildSdkOptions(
 		disallowedTools,
 		...(allowedTools.length > 0 ? { allowedTools } : {}),
 		...(filteredMcpServers ? { mcpServers: filteredMcpServers } : {}),
-		betas: (modelId.includes("sonnet") || modelId.includes("opus-4-7") || modelId.includes("opus-4.7")) ? ["context-1m-2025-08-07"] : [],
+		betas: (
+			modelId.includes("sonnet")
+			|| modelId.includes("opus-4-7")
+			|| modelId.includes("opus-4.7")
+			|| modelId.includes("opus-4-8")
+			|| modelId.includes("opus-4.8")
+		) ? ["context-1m-2025-08-07"] : [],
 		...(thinkingConfig ?? {}),
 		...(effort ? { effort } : {}),
 		...sdkExtraOptions,
@@ -1523,7 +1641,7 @@ function extractStructuredDetailsFromBlock(block: Record<string, unknown>): Reco
  * (extracted separately by `extractStructuredDetailsFromBlock`) and must NOT
  * leak into the visible content rendered to the user — otherwise the renderer
  * stringifies the JSON pseudo-block and shows it next to the actual tool
- * output. See PR #4477 review (CodeRabbit, post-fix-round).
+ * output. See PR #4477 review (post-fix-round).
  */
 function isStructuredContentPseudoBlock(item: unknown): boolean {
 	if (!item || typeof item !== "object") return false;

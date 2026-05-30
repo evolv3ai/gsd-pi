@@ -21,6 +21,12 @@ describe("discuss incremental persistence (#2152)", () => {
     assert.match(content, /gsd_summary_save/, "should use gsd_summary_save tool");
   });
 
+  test("milestone discuss prompt requires one user-facing message before waiting", () => {
+    const content = readFileSync(join(promptsDir, "guided-discuss-milestone.md"), "utf-8");
+    assert.match(content, /Single user-facing message/i);
+    assert.match(content, /Do not send a second message/i);
+  });
+
   test("slice discuss prompt includes CONTEXT-DRAFT save instruction", () => {
     const content = readFileSync(join(promptsDir, "guided-discuss-slice.md"), "utf-8");
     assert.match(content, /CONTEXT-DRAFT/, "should mention CONTEXT-DRAFT");

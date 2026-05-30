@@ -1,4 +1,4 @@
-// GSD-2 + src/resources/extensions/gsd/tests/session-switch-abort-misclassification.test.ts
+// gsd-pi + src/resources/extensions/gsd/tests/session-switch-abort-misclassification.test.ts
 // Regression: session-transition aborts must not be classified as user cancellations.
 
 import test from "node:test";
@@ -13,7 +13,13 @@ import {
 } from "../bootstrap/agent-end-recovery.js";
 import { _setAutoActiveForTest } from "../auto.js";
 import { shouldIgnoreAgentEndForActiveUnit } from "../auto/unit-runner-events.js";
-import { _resetPendingResolve, _setCurrentResolve } from "../auto/resolve.js";
+import {
+  _consumePendingSwitchCancellation,
+  _resetPendingResolve,
+  _setCurrentResolve,
+  _setSessionSwitchInFlight,
+  resolveAgentEndCancelled,
+} from "../auto/resolve.js";
 import type { ErrorContext } from "../auto/types.js";
 
 test.afterEach(() => {
@@ -45,9 +51,9 @@ test("user-abort message during session-switch is dropped (not propagated as can
   assert.equal(cancelledWith, null, "proxy user-abort during session-switch must not propagate cancellation");
 });
 
-test("genuine stopReason='aborted' with errorMessage during session-switch still propagates", () => {
-  // Regression guard for prior behavior: genuine aborts with diagnostic content
-  // continue to surface as cancellations so transient-pause recovery can run.
+test("aborted with errorMessage during session-switch is dropped instead of queued", () => {
+  // The abort belongs to the old session being torn down by newSession().
+  // Queueing it as pending cancellation kills the freshly-dispatched unit.
   let cancelledWith: { message: string; category: string; isTransient?: boolean } | null = null;
   const resolveCancelled = (ctx: ErrorContext) => {
     cancelledWith = ctx;
@@ -63,11 +69,22 @@ test("genuine stopReason='aborted' with errorMessage during session-switch still
     resolveCancelled,
   );
 
-  assert.deepEqual(cancelledWith, {
-    message: "stream torn down mid-flight",
-    category: "aborted",
-    isTransient: true,
-  });
+  assert.equal(cancelledWith, null);
+});
+
+test("aborted with errorMessage during session-switch does not cancel the next unit", () => {
+  _setSessionSwitchInFlight(true);
+
+  _handleSessionSwitchAgentEnd(
+    {
+      stopReason: "aborted",
+      errorMessage: "stream torn down mid-flight",
+      content: [{ type: "text", text: "partial output" }],
+    },
+    resolveAgentEndCancelled,
+  );
+
+  assert.equal(_consumePendingSwitchCancellation(), null);
 });
 
 test("Claude Code stream-aborted placeholder during session-switch is dropped", () => {

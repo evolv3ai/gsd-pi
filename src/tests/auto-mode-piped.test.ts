@@ -34,7 +34,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const root = pathToFileURL(process.cwd() + '/').href
 const modules = new Map([
   ['stub:pi-coding-agent', \`
-    export class AuthStorage {}
+    export class AuthStorage {
+      getCredentialsForProvider() { return [] }
+      areAllCredentialsBackedOff() { return false }
+    }
     export const DEFAULT_MAX_BYTES = 0
     export const DEFAULT_MAX_LINES = 0
     export function createBashTool() {}
@@ -90,9 +93,9 @@ const modules = new Map([
 ])
 
 export async function resolve(specifier, context, nextResolve) {
-  if (specifier === '@gsd/pi-coding-agent') return { url: 'stub:pi-coding-agent', shortCircuit: true }
-  if (specifier === '@gsd/pi-ai' || specifier === '@gsd/pi-ai/oauth') return { url: 'stub:pi-ai', shortCircuit: true }
-  if (specifier === '@gsd/pi-tui') return { url: 'stub:pi-tui', shortCircuit: true }
+  if (specifier.startsWith('@gsd/pi-coding-agent')) return { url: 'stub:pi-coding-agent', shortCircuit: true }
+  if (specifier.startsWith('@gsd/pi-ai')) return { url: 'stub:pi-ai', shortCircuit: true }
+  if (specifier.startsWith('@gsd/pi-tui')) return { url: 'stub:pi-tui', shortCircuit: true }
   if (specifier === 'chalk') return { url: 'stub:chalk', shortCircuit: true }
   if (specifier === './headless.js' && context.parentURL?.endsWith('/src/cli.ts')) {
     return { url: 'stub:headless', shortCircuit: true }

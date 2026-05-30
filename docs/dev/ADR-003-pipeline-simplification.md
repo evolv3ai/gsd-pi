@@ -2,7 +2,7 @@
 
 **Status:** Proposed
 **Date:** 2026-03-18
-**Deciders:** Lex Christopherson
+**Deciders:** Open GSD
 **Related:** ADR-001 (branchless worktree architecture), ADR-002 (external state directory)
 **Audited by:** Claude Opus 4.6, OpenAI Codex — findings incorporated below.
 

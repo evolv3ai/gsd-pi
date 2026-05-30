@@ -15,13 +15,25 @@ on:
           - "false"
           - "true"
       publish_auth:
-        description: "npm publish auth mode"
+        description: "npm auth: token creates packages not on npm yet; trusted after first publish"
         required: false
         default: "trusted"
         type: choice
         options:
           - "trusted"
           - "token"
+      platform_packages_only:
+        description: "Publish @opengsd/engine-* only (skip @opengsd/gsd-pi; use to bootstrap missing platform packages)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+      platform_version:
+        description: "Publish engine packages at this semver (defaults to package.json version; use before prod release when main is not bumped yet)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -42,7 +54,7 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             platform: linux-x64-gnu
-          - os: ubuntu-latest
+          - os: blacksmith-4vcpu-ubuntu-2404-arm
             target: aarch64-unknown-linux-gnu
             platform: linux-arm64-gnu
             cross: true
@@ -101,7 +113,7 @@ jobs:
           copy native\target\${{ matrix.target }}\release\gsd_engine.dll artifacts\gsd_engine.node
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: native-${{ matrix.platform }}
           path: artifacts/gsd_engine.node
@@ -110,18 +122,22 @@ jobs:
   publish:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true'
-    # npm trusted publishing requires GitHub-hosted runners for OIDC.
+    # npm trusted publishing + provenance require GitHub-hosted runners (not Blacksmith).
     runs-on: ubuntu-latest
     name: Publish platform packages
 
     steps:
       - uses: actions/checkout@v6
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.1
+
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
-          package-manager-cache: false
+          cache: pnpm
 
       - name: Verify npm publish toolchain
         run: |
@@ -137,7 +153,7 @@ jobs:
           fi
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: artifacts
 
@@ -152,10 +168,29 @@ jobs:
       - name: Sync platform package versions
         run: node native/scripts/sync-platform-versions.cjs
 
+      - name: Apply platform version override
+        if: github.event.inputs.platform_version != ''
+        env:
+          PLATFORM_VERSION: ${{ github.event.inputs.platform_version }}
+        run: |
+          for platform in darwin-arm64 darwin-x64 linux-x64-gnu linux-arm64-gnu win32-x64-msvc; do
+            node -e "
+              const fs = require('fs');
+              const path = 'native/npm/${platform}/package.json';
+              const pkg = JSON.parse(fs.readFileSync(path, 'utf8'));
+              pkg.version = process.env.PLATFORM_VERSION;
+              fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + '\n');
+            "
+          done
+          echo "Engine packages set to version ${PLATFORM_VERSION}"
+
       - name: Detect prerelease version
         id: version-check
         run: |
-          VERSION=$(node -p "require('./package.json').version")
+          VERSION="${{ github.event.inputs.platform_version || '' }}"
+          if [ -z "$VERSION" ]; then
+            VERSION=$(node -p "require('./package.json').version")
+          fi
           if echo "$VERSION" | grep -q '-next\.'; then
             echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
             echo "tag_flag=--tag next" >> "$GITHUB_OUTPUT"
@@ -166,29 +201,57 @@ jobs:
             echo "Stable release: ${VERSION} → publishing with --tag latest"
           fi
 
+      - name: Require token auth for packages not on npm yet
+        if: github.event.inputs.publish_auth != 'token'
+        run: |
+          MISSING=()
+          for platform in darwin-arm64 darwin-x64 linux-x64-gnu linux-arm64-gnu win32-x64-msvc; do
+            PKG="@opengsd/engine-${platform}"
+            if ! npm view "${PKG}" name >/dev/null 2>&1; then
+              MISSING+=("${PKG}")
+            fi
+          done
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ github.event.inputs.platform_packages_only }}" != "true" ]; then
+            for pkg in @opengsd/contracts @opengsd/rpc-client @opengsd/mcp-server; do
+              if ! npm view "${pkg}" name >/dev/null 2>&1; then
+                MISSING+=("${pkg}")
+              fi
+            done
+          fi
+          if [ "${#MISSING[@]}" -gt 0 ]; then
+            echo "::error::These npm packages do not exist on npm yet:"
+            for pkg in "${MISSING[@]}"; do
+              echo "::error::  - ${pkg}"
+            done
+            echo "::error::Trusted publishing is configured after first publish. Re-run with publish_auth=token and NPM_TOKEN set (see docs/dev/ci-cd-pipeline.md)."
+            exit 1
+          fi
+
+      - name: Verify NPM_TOKEN is configured for token bootstrap
+        if: github.event.inputs.publish_auth == 'token'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN}" ]; then
+            echo "::error::publish_auth=token requires the NPM_TOKEN repository secret."
+            echo "::error::Create an npm automation token with publish access to @opengsd, add it as NPM_TOKEN, then re-run."
+            exit 1
+          fi
+          npm whoami
+
       - name: Publish platform packages
         env:
           NODE_AUTH_TOKEN: ${{ github.event.inputs.publish_auth == 'token' && secrets.NPM_TOKEN || '' }}
-        run: |
-          for platform in darwin-arm64 darwin-x64 linux-x64-gnu linux-arm64-gnu win32-x64-msvc; do
-            echo "Publishing @opengsd/engine-${platform}..."
-            cd "native/npm/${platform}"
-            if OUTPUT=$(npm publish --access public ${{ steps.version-check.outputs.tag_flag }} 2>&1); then
-              echo "$OUTPUT"
-            else
-              if echo "$OUTPUT" | grep -q "cannot publish over the previously published"; then
-                echo "Already published, skipping"
-              else
-                echo "::error::Failed to publish ${platform}: $OUTPUT"
-                exit 1
-              fi
-            fi
-            cd "$GITHUB_WORKSPACE"
-          done
+          TAG_FLAG: ${{ steps.version-check.outputs.tag_flag }}
+          ENGINE_VERSION: ${{ github.event.inputs.platform_version || '' }}
+        run: bash scripts/publish-engine-packages.sh
 
       - name: Verify platform packages are published
         run: |
-          VERSION=$(node -p "require('./package.json').version")
+          VERSION="${{ github.event.inputs.platform_version || '' }}"
+          if [ -z "$VERSION" ]; then
+            VERSION=$(node -p "require('./package.json').version")
+          fi
           echo "Verifying platform packages at version ${VERSION}..."
           # Exponential backoff: 5s, 10s, 20s, 30s, 30s (max 5 attempts, ~95s worst case vs fixed 30s + single check)
           DELAY=5
@@ -226,21 +289,67 @@ jobs:
           done
 
       - name: Install dependencies
-        run: npm ci --omit=optional
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform_packages_only != 'true'
+        run: |
+          pnpm install --lockfile-only
+          pnpm install --frozen-lockfile --no-optional
 
       - name: Build
-        run: npm run build
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform_packages_only != 'true'
+        run: pnpm run build
 
       - name: Verify dist exists
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform_packages_only != 'true'
         run: test -s dist/loader.js || { echo "::error::dist/loader.js missing or empty after build"; exit 1; }
 
       - name: Validate package is installable
-        run: npm run validate-pack
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform_packages_only != 'true'
+        run: pnpm run validate-pack
+
+      - name: Publish workspace packages
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform_packages_only != 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ github.event.inputs.publish_auth == 'token' && secrets.NPM_TOKEN || '' }}
+          TAG_FLAG: ${{ steps.version-check.outputs.tag_flag }}
+        run: |
+          node scripts/prepack-resolve-workspace.cjs
+          trap 'node scripts/postpack-restore-workspace.cjs' EXIT
+          VERSION=$(node -p "require('./package.json').version")
+          wait_for_workspace_package() {
+            PACKAGE="$1"
+            DELAY=5
+            for attempt in $(seq 1 5); do
+              PUBLISHED=$(npm view "${PACKAGE}@${VERSION}" version 2>/dev/null || echo "")
+              if [ "${PUBLISHED}" = "${VERSION}" ]; then
+                echo "  ✓ ${PACKAGE}@${VERSION} visible on npm (attempt ${attempt})"
+                return 0
+              fi
+              if [ "$attempt" = "5" ]; then
+                echo "::error::${PACKAGE}@${VERSION} not visible on npm after 5 attempts"
+                exit 1
+              fi
+              echo "  Attempt ${attempt}: ${PACKAGE}@${VERSION} not visible yet, retrying in ${DELAY}s..."
+              sleep "$DELAY"
+              DELAY=$((DELAY * 2))
+              if [ "$DELAY" -gt 30 ]; then DELAY=30; fi
+            done
+          }
+          for workspace in @opengsd/contracts @opengsd/rpc-client @opengsd/mcp-server; do
+            if npm view "${workspace}@${VERSION}" version >/dev/null 2>&1; then
+              echo "${workspace}@${VERSION} already published, skipping"
+              continue
+            fi
+            npm publish --workspace "${workspace}" --ignore-scripts ${TAG_FLAG}
+            wait_for_workspace_package "${workspace}"
+          done
 
       - name: Publish main package
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform_packages_only != 'true'
         env:
           NODE_AUTH_TOKEN: ${{ github.event.inputs.publish_auth == 'token' && secrets.NPM_TOKEN || '' }}
         run: |
+          node scripts/prepack-resolve-workspace.cjs
+          trap 'node scripts/postpack-restore-workspace.cjs' EXIT
           # --ignore-scripts: skip prepublishOnly since we built explicitly above
           if OUTPUT=$(npm publish --ignore-scripts ${{ steps.version-check.outputs.tag_flag }} 2>&1); then
             echo "$OUTPUT"
@@ -254,6 +363,7 @@ jobs:
           fi
 
       - name: Post-publish smoke test
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform_packages_only != 'true'
         run: |
           VERSION=$(node -p "require('./package.json').version")
           TMPDIR=$(mktemp -d)
@@ -305,8 +415,34 @@ jobs:
           echo "::error::Smoke test failed — @opengsd/gsd-pi@${VERSION} not installable"
           exit 1
 
+      - name: Post-publish MCP server smoke test
+        if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform_packages_only != 'true'
+        run: |
+          set -o pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          TMPDIR=$(mktemp -d)
+          cd "$TMPDIR"
+          npm init -y > /dev/null 2>&1
+
+          echo "Installing @opengsd/mcp-server@${VERSION}..."
+          DELAY=5
+          for attempt in 1 2 3; do
+            if npm install "@opengsd/mcp-server@${VERSION}" 2>&1 | tee /tmp/mcp-install-output.txt; then
+              test -x node_modules/.bin/gsd-mcp-server || { echo "::error::gsd-mcp-server bin missing"; exit 1; }
+              node -e "import('@opengsd/mcp-server').then((mod) => { if (!Object.keys(mod).length) throw new Error('empty @opengsd/mcp-server exports'); })"
+              echo "Published MCP server package is functional"
+              exit 0
+            fi
+            echo "MCP server install attempt ${attempt}/3 failed, retrying in ${DELAY}s..."
+            cat /tmp/mcp-install-output.txt
+            sleep "$DELAY"
+            DELAY=$((DELAY * 2))
+          done
+          echo "::error::Smoke test failed — @opengsd/mcp-server@${VERSION} not installable"
+          exit 1
+
       - name: Verify dist-tag after publish
-        if: steps.version-check.outputs.is_prerelease == 'false'
+        if: (github.event_name != 'workflow_dispatch' || github.event.inputs.platform_packages_only != 'true') && steps.version-check.outputs.is_prerelease == 'false'
         run: |
           VERSION=$(node -p "require('./package.json').version")
           echo "Verifying npm dist-tag 'latest' points to ${VERSION}..."

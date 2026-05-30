@@ -9,6 +9,9 @@ export type OAuthCredentials = {
 
 export type OAuthProviderId = string;
 
+/** @deprecated Use OAuthProviderId instead */
+export type OAuthProvider = OAuthProviderId;
+
 export type OAuthPrompt = {
 	message: string;
 	placeholder?: string;
@@ -20,11 +23,31 @@ export type OAuthAuthInfo = {
 	instructions?: string;
 };
 
+export type OAuthDeviceCodeInfo = {
+	userCode: string;
+	verificationUri: string;
+	intervalSeconds?: number;
+	expiresInSeconds?: number;
+};
+
+export type OAuthSelectOption = {
+	id: string;
+	label: string;
+};
+
+export type OAuthSelectPrompt = {
+	message: string;
+	options: OAuthSelectOption[];
+};
+
 export interface OAuthLoginCallbacks {
 	onAuth: (info: OAuthAuthInfo) => void;
+	onDeviceCode: (info: OAuthDeviceCodeInfo) => void;
 	onPrompt: (prompt: OAuthPrompt) => Promise<string>;
 	onProgress?: (message: string) => void;
 	onManualCodeInput?: () => Promise<string>;
+	/** Show an interactive selector and return the selected option id, or undefined on cancel. */
+	onSelect: (prompt: OAuthSelectPrompt) => Promise<string | undefined>;
 	signal?: AbortSignal;
 }
 
@@ -46,4 +69,11 @@ export interface OAuthProviderInterface {
 
 	/** Optional: modify models for this provider (e.g., update baseUrl) */
 	modifyModels?(models: Model<Api>[], credentials: OAuthCredentials): Model<Api>[];
+}
+
+/** @deprecated Use OAuthProviderInterface instead */
+export interface OAuthProviderInfo {
+	id: OAuthProviderId;
+	name: string;
+	available: boolean;
 }

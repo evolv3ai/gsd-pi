@@ -119,7 +119,7 @@ export function getThemesDir(): string {
 	// Theme is in modes/interactive/theme/ relative to src/ or dist/
 	const packageDir = getPackageDir();
 	const srcOrDist = existsSync(join(packageDir, "src")) ? "src" : "dist";
-	return join(packageDir, srcOrDist, "modes", "interactive", "theme");
+	return join(packageDir, srcOrDist, "theme");
 }
 
 /**

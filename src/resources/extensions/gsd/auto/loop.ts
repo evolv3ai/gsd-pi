@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Main auto-mode execution loop.
 /**
  * auto/loop.ts — Main auto-mode execution loop.
@@ -106,6 +106,7 @@ import {
 import { handleCustomEngineReconcile } from "./workflow-custom-engine-reconcile.js";
 import { handleCustomEngineReconcileOutcome } from "./workflow-custom-engine-reconcile-outcome.js";
 import { formatLeaseConflictNotice } from "./lease-conflict-notice.js";
+import { setAutoOutcomeWidget, unitVerb } from "../auto-dashboard.js";
 
 /**
  * Returns true if workerId is an active worker in this project whose OS
@@ -834,6 +835,27 @@ export async function autoLoop(
           },
         });
         if (reconcileFlow.action === "break") break;
+        if (s.stepMode) {
+          if (ctx.hasUI) {
+            ctx.ui.setWidget?.("gsd-progress", undefined);
+            setAutoOutcomeWidget(ctx, {
+              status: "step",
+              title: "Step complete",
+              detail: `Completed ${unitVerb(iterData.unitType)} ${iterData.unitId}.`,
+              unitLabel: `${unitVerb(iterData.unitType)} ${iterData.unitId}`,
+              nextAction: "Advance one step, or resume automatic mode.",
+              commands: ["/gsd next", "/gsd auto", "/gsd status for overview"],
+              startedAt: s.autoStartTime,
+            });
+          }
+          ctx.ui.setStatus("gsd-auto", "next");
+          ctx.ui.notify(
+            `Step complete: ${unitVerb(iterData.unitType)} ${iterData.unitId}. Run /gsd next for the next step, or /gsd auto to continue automatically.`,
+            "info",
+          );
+          s.preserveStepSurfaceAfterLoopExit = true;
+          break;
+        }
         continue;
       }
 
@@ -908,6 +930,11 @@ export async function autoLoop(
           phaseReporter.report("pre-dispatch", preDispatchResult.action);
           if (preDispatchResult.action === "break") {
             finishTurn("stopped", "manual-attention", "pre-dispatch-break");
+            finishIncompleteIteration({
+              status: "stopped",
+              reason: "pre-dispatch-break",
+              failureClass: "manual-attention",
+            });
             break;
           }
           if (preDispatchResult.action === "continue") {
@@ -1303,7 +1330,7 @@ export async function autoLoop(
         // Carry the blocked unit identity into the turn-result observer:
         // the throw originated inside dispatch, so observedUnitType/Id were
         // not assigned by the success path at lines 453/631/647 — but the
-        // typed error already names the unit (#4959 / CodeRabbit).
+        // typed error already names the unit (#4959).
         observedUnitType = loopErr.unitType;
         observedUnitId = loopErr.unitId;
         await deps.pauseAuto(ctx, pi);

@@ -8,9 +8,7 @@
  * Never returns partial lines (except bash tail truncation edge case).
  */
 
-import { TRUNCATE_DEFAULT_MAX_LINES } from "../constants.js";
-
-export const DEFAULT_MAX_LINES = TRUNCATE_DEFAULT_MAX_LINES;
+export const DEFAULT_MAX_LINES = 2000;
 export const DEFAULT_MAX_BYTES = 50 * 1024; // 50KB
 export const GREP_MAX_LINE_LENGTH = 500; // Max chars per grep match line
 
@@ -46,6 +44,17 @@ export interface TruncationOptions {
 	maxBytes?: number;
 }
 
+function splitLinesForCounting(content: string): string[] {
+	if (content.length === 0) {
+		return [];
+	}
+	const lines = content.split("\n");
+	if (content.endsWith("\n")) {
+		lines.pop();
+	}
+	return lines;
+}
+
 /**
  * Format bytes as human-readable size.
  */
@@ -71,7 +80,7 @@ export function truncateHead(content: string, options: TruncationOptions = {}): 
 	const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
 
 	const totalBytes = Buffer.byteLength(content, "utf-8");
-	const lines = content.split("\n");
+	const lines = splitLinesForCounting(content);
 	const totalLines = lines.length;
 
 	// Check if no truncation needed
@@ -161,7 +170,7 @@ export function truncateTail(content: string, options: TruncationOptions = {}): 
 	const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
 
 	const totalBytes = Buffer.byteLength(content, "utf-8");
-	const lines = content.split("\n");
+	const lines = splitLinesForCounting(content);
 	const totalLines = lines.length;
 
 	// Check if no truncation needed

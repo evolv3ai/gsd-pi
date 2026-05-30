@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: SQLite provider loading and fallback helpers for the GSD database facade.
 
 export type DbProviderName = "node:sqlite" | "better-sqlite3";
@@ -6,7 +6,8 @@ export type DbProviderName = "node:sqlite" | "better-sqlite3";
 export const BETTER_SQLITE3_PACKAGE = ["better", "sqlite3"].join("-");
 
 export interface SqliteProviderDeps {
-  requireModule(id: string): unknown;
+  tryRequireNodeSqlite(): unknown;
+  tryRequireBetterSqlite3(): unknown;
   suppressSqliteWarning(): void;
   nodeVersion: string;
   writeStderr(message: string): void;
@@ -62,7 +63,7 @@ export class SqliteProviderLoader {
 
     try {
       this.deps.suppressSqliteWarning();
-      const mod = this.deps.requireModule("node:sqlite") as NodeSqliteModule;
+      const mod = this.deps.tryRequireNodeSqlite() as NodeSqliteModule;
       if (mod.DatabaseSync) {
         this.providerModule = mod;
         this.providerName = "node:sqlite";
@@ -133,7 +134,7 @@ export class SqliteProviderLoader {
 
   private loadBetterSqliteModule(): (new (path: string) => unknown) | null {
     try {
-      const mod = this.deps.requireModule(BETTER_SQLITE3_PACKAGE) as BetterSqliteModule;
+      const mod = this.deps.tryRequireBetterSqlite3() as BetterSqliteModule;
       if (typeof mod === "function") return mod;
       if (mod && typeof mod.default === "function") return mod.default;
     } catch {

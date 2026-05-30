@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Run focused source tests for changed src files.
 
 import { existsSync } from 'node:fs';
@@ -159,7 +159,7 @@ function main() {
   }
 
   const distTests = selection.tests.map(toDistTestPath);
-  const compile = spawnSync('npm', ['run', 'test:compile'], {
+  const compile = spawnSync('pnpm', ['run', 'test:compile'], {
     cwd: ROOT,
     stdio: 'inherit',
     shell: process.platform === 'win32',

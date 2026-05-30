@@ -60,7 +60,7 @@ const NETWORK_RE = /network|ECONNRESET|ETIMEDOUT|ECONNREFUSED|socket hang up|fet
 // Context overflow errors (context window/length exceeded) should be treated as server-class
 // transient errors so auto-mode can retry with reduced budget or fall back to a larger-context model.
 // See: https://github.com/open-gsd/gsd-pi/issues/4528
-const SERVER_RE = /internal(?: server)?[ _-]?error|500|502|503|overloaded|server_error|api_error|service.?unavailable|context (?:window|length) exceed|context window exceed/i;
+const SERVER_RE = /internal(?: server)?[ _-]?error|server[ _-]?error|500|502|503|overloaded|server_error|api_error|service.?unavailable|context (?:window|length) exceed|context window exceed/i;
 // ECONNRESET/ECONNREFUSED are in NETWORK_RE (same-model retry first).
 const CONNECTION_RE = /terminated|connection.?(?:refused|error)|other side closed|EPIPE|network.?(?:is\s+)?unavailable|stream_exhausted(?:_without_result)?/i;
 // Catch-all for V8 JSON.parse errors: all modern variants end with "in JSON at position \d+".
@@ -68,6 +68,11 @@ const CONNECTION_RE = /terminated|connection.?(?:refused|error)|other side close
 const STREAM_RE = /in JSON at position \d+|Unexpected end of JSON|SyntaxError.*JSON/i;
 const RESET_DELAY_RE = /reset in (\d+)s/i;
 const TOOL_SCHEMA_RE = /schema overload|consecutive tool validation failures/i;
+// Provider rejected the request shape for the selected model (400 bad request,
+// grammar limits, etc.). Not transient — try a different model/fallback.
+// Context-window 400s stay in SERVER_RE (checked earlier).
+const MODEL_ERROR_RE =
+  /\b400\b.*\binvalid argument\b|\binvalid argument\b.*\b400\b|grammar is too complex|\b400\b.*\binvalid params\b(?!.*context)|invalid json payload.*unknown name ["'](?:const|patternProperties)["']|input_schema: JSON schema is invalid/i;
 
 // Provider-side model entitlement rejection: the SDK accepted the model switch,
 // but the provider refused at request time because the current account/plan/tier
@@ -91,7 +96,8 @@ const UNSUPPORTED_MODEL_SCOPE_RE = /\b(?:account|plan|tier|subscription)\b/i;
  *  4. Stream truncation (malformed JSON from mid-stream cut)
  *  5. Server (500/502/503, overloaded, server_error)
  *  6. Connection (terminated, ECONNREFUSED, EPIPE, other side closed)
- *  7. Unknown
+ *  7. Model error (400 invalid argument / payload rejected for this model)
+ *  8. Unknown
  */
 export function classifyError(errorMsg: string, retryAfterMs?: number): ErrorClass {
   // Tool-schema overload from repeated invalid tool args in preparation phase.
@@ -154,7 +160,12 @@ export function classifyError(errorMsg: string, retryAfterMs?: number): ErrorCla
     return { kind: "connection", retryAfterMs: retryAfterMs ?? 15_000 };
   }
 
-  // 7. Unknown
+  // 7. Model/payload errors — wrong model or incompatible request for provider
+  if (MODEL_ERROR_RE.test(errorMsg)) {
+    return { kind: "model-error" };
+  }
+
+  // 8. Unknown
   return { kind: "unknown" };
 }
 

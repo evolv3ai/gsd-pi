@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Project/App: GSD-2
+ * Project/App: gsd-pi
  * File Purpose: Compile source and test files into reusable dist-test artifacts.
  *
  * Compile all TypeScript source + test files to dist-test/ using esbuild.
@@ -9,7 +9,7 @@
  * Usage: node scripts/compile-tests.mjs
  */
 
-import { cp, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync, symlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -82,7 +82,8 @@ const ASSET_SKIP_DIRS = new Set(['node_modules', 'integration']);
  * esbuild compiled .js output already lands in dist-test, so we just
  * overlay the asset files on top.
  */
-async function copyAssets(srcDir, destDir) {
+async function copyAssets(srcDir, destDir, options = {}) {
+  const { skipFile } = options;
   let entries;
   try {
     entries = await readdir(srcDir, { withFileTypes: true });
@@ -94,12 +95,99 @@ async function copyAssets(srcDir, destDir) {
     const srcPath = join(srcDir, entry.name);
     const destPath = join(destDir, entry.name);
     if (entry.isDirectory()) {
-      await copyAssets(srcPath, destPath);
+      await copyAssets(srcPath, destPath, options);
     } else {
+      if (skipFile?.(srcPath, entry.name)) continue;
+      if (entry.name.endsWith('.js')) {
+        const tsSibling = srcPath.replace(/\.js$/, '.ts');
+        if (existsSync(tsSibling)) continue;
+      }
       await mkdir(destDir, { recursive: true });
       await cp(srcPath, destPath, { force: true });
     }
   }
+}
+
+async function removeStaleMirroredFiles(distDir, srcDir, options = {}) {
+  const { rm } = await import('node:fs/promises');
+  const testOnly = options.testOnly ?? false;
+  let staleCleaned = 0;
+  let distEntries;
+  try {
+    distEntries = await readdir(distDir, { withFileTypes: true });
+  } catch {
+    return staleCleaned;
+  }
+
+  for (const entry of distEntries) {
+    const distPath = join(distDir, entry.name);
+    const srcPath = join(srcDir, entry.name);
+    if (entry.isDirectory()) {
+      staleCleaned += await removeStaleMirroredFiles(distPath, srcPath, options);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    if (testOnly && !entry.name.match(/\.test\.(js|ts)$/)) continue;
+    // Preserve non-compiled assets copied from src (json, md, yaml, etc.)
+    if (existsSync(srcPath)) continue;
+    const stem = entry.name.replace(/\.(js|ts|mjs)$/, '');
+    const hasTsSrc = existsSync(join(srcDir, stem + '.ts'));
+    const hasMjsSrc = existsSync(join(srcDir, stem + '.mjs'));
+    const hasTsxSrc = existsSync(join(srcDir, stem + '.tsx'));
+    if (!hasTsSrc && !hasMjsSrc && !hasTsxSrc) {
+      await rm(distPath);
+      staleCleaned++;
+    }
+  }
+
+  return staleCleaned;
+}
+
+function isCompiledTestArtifact(filePath) {
+  const normalized = filePath.replaceAll('\\', '/');
+  return (
+    normalized.includes('/__tests__/') ||
+    /\.test\.(?:c|m)?js(?:\.map)?$/.test(normalized) ||
+    /\.test\.d\.ts(?:\.map)?$/.test(normalized)
+  );
+}
+
+async function removePathIfExists(path) {
+  if (!existsSync(path)) return 0;
+  await rm(path, { recursive: true, force: true });
+  return 1;
+}
+
+async function removeCompiledTestArtifacts(dir) {
+  let removed = 0;
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return removed;
+  }
+
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === '__tests__') {
+        await rm(full, { recursive: true, force: true });
+        removed++;
+      } else {
+        removed += await removeCompiledTestArtifacts(full);
+      }
+    } else if (entry.isFile() && isCompiledTestArtifact(full)) {
+      await rm(full, { force: true });
+      removed++;
+    }
+  }
+
+  return removed;
+}
+
+/** @deprecated alias */
+async function removeStaleCompiledTests(distDir, srcDir) {
+  return removeStaleMirroredFiles(distDir, srcDir, { testOnly: true });
 }
 
 export function buildCompileFingerprint(entries) {
@@ -126,6 +214,29 @@ export function isCompileCacheFresh(cache, fingerprint, distTestExists) {
     cache.schemaVersion === CACHE_SCHEMA_VERSION &&
     cache.hash === fingerprint.hash,
   );
+}
+
+export async function ensureDistTestNodeModules(root = ROOT, distTestDir = DIST_TEST_DIR) {
+  const distNodeModules = join(distTestDir, 'node_modules');
+  let nodeModulesStat = null;
+  try {
+    nodeModulesStat = await lstat(distNodeModules);
+  } catch {
+    // Missing is fine; the symlink will be created below.
+  }
+
+  if (nodeModulesStat?.isSymbolicLink()) return false;
+
+  await mkdir(distTestDir, { recursive: true });
+  if (nodeModulesStat) {
+    await rm(distNodeModules, { recursive: true, force: true });
+  }
+  symlinkSync(
+    join(root, 'node_modules'),
+    distNodeModules,
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
+  return true;
 }
 
 async function collectInputEntries(root, files) {
@@ -213,7 +324,13 @@ async function main() {
     ? await collectFiles(vscodeExtensionSrc)
     : [];
 
-  const entryPoints = [...srcFiles, ...packageFiles, ...webLibFiles, ...extensionFiles, ...vscodeExtensionFiles];
+  const entryPoints = [
+    ...srcFiles,
+    ...packageFiles,
+    ...webLibFiles,
+    ...extensionFiles,
+    ...vscodeExtensionFiles,
+  ];
 
   const inputFiles = [
     ...await collectAllFiles(join(ROOT, 'src')),
@@ -231,6 +348,7 @@ async function main() {
   const cache = await readCache();
   const distTestExists = existsSync(DIST_TEST_DIR);
   if (isCompileCacheFresh(cache, fingerprint, distTestExists)) {
+    await ensureDistTestNodeModules();
     const elapsedMs = Date.now() - start;
     logMetrics({
       cacheHit: true,
@@ -279,6 +397,7 @@ async function main() {
     await copyAssets(
       join(packagesDir, entry.name, 'dist'),
       join(DIST_TEST_DIR, 'packages', entry.name, 'dist'),
+      { skipFile: isCompiledTestArtifact },
     );
     const pkgJsonPath = join(packagesDir, entry.name, 'package.json');
     if (existsSync(pkgJsonPath)) {
@@ -341,42 +460,47 @@ async function main() {
   }
 
   // Remove stale compiled test files: dist-test entries whose source no longer exists
-  // in a non-integration source directory (e.g. test moved to integration/).
+  // in the corresponding source directory (e.g. test moved or deleted).
   // Only cleans *.test.js and *.test.ts files to avoid touching non-test outputs.
-  const { rm } = await import('node:fs/promises');
   const testDirsToClean = [
     [join(DIST_TEST_DIR, 'src', 'tests'), join(ROOT, 'src', 'tests')],
-    [join(DIST_TEST_DIR, 'src', 'resources', 'extensions', 'gsd', 'tests'),
-     join(ROOT, 'src', 'resources', 'extensions', 'gsd', 'tests')],
+    [
+      join(DIST_TEST_DIR, 'src', 'resources', 'extensions', 'gsd', 'tests'),
+      join(ROOT, 'src', 'resources', 'extensions', 'gsd', 'tests'),
+    ],
   ];
+  for (const entry of pkgEntries) {
+    if (!entry.isDirectory()) continue;
+    testDirsToClean.push([
+      join(DIST_TEST_DIR, 'packages', entry.name, 'src'),
+      join(ROOT, 'packages', entry.name, 'src'),
+    ]);
+  }
   let staleCleaned = 0;
   for (const [distDir, srcDir] of testDirsToClean) {
-    let distEntries;
-    try { distEntries = await readdir(distDir, { withFileTypes: true }); } catch { continue; }
-    for (const entry of distEntries) {
-      if (!entry.isFile()) continue;
-      if (!entry.name.match(/\.test\.(js|ts)$/)) continue;
-      const stem = entry.name.replace(/\.(js|ts)$/, '');
-      // Source could be .ts or .mjs (esbuild compiles both to .js)
-      const hasTsSrc = existsSync(join(srcDir, stem + '.ts'));
-      const hasMjsSrc = existsSync(join(srcDir, stem + '.mjs'));
-      if (!hasTsSrc && !hasMjsSrc) {
-        await rm(join(distDir, entry.name));
-        staleCleaned++;
-      }
-    }
+    staleCleaned += await removeStaleMirroredFiles(distDir, srcDir, { testOnly: true });
+  }
+  for (const entry of pkgEntries) {
+    if (!entry.isDirectory()) continue;
+    staleCleaned += await removeStaleMirroredFiles(
+      join(DIST_TEST_DIR, 'packages', entry.name, 'src'),
+      join(packagesDir, entry.name, 'src'),
+    );
+    staleCleaned += await removePathIfExists(
+      join(DIST_TEST_DIR, 'packages', entry.name, 'test'),
+    );
+    staleCleaned += await removeCompiledTestArtifacts(
+      join(DIST_TEST_DIR, 'packages', entry.name, 'dist'),
+    );
   }
   if (staleCleaned > 0) {
-    console.log(`Removed ${staleCleaned} stale compiled test files from dist-test/`);
+    console.log(`Removed ${staleCleaned} stale mirrored files from dist-test/`);
   }
 
   // Ensure dist-test/node_modules exists so resource-loader.ts (which computes
   // packageRoot from import.meta.url) resolves gsdNodeModules to a real path.
   // Without this, initResources creates dangling symlinks in test environments.
-  const distNodeModules = join(DIST_TEST_DIR, 'node_modules');
-  if (!existsSync(distNodeModules)) {
-    symlinkSync(join(ROOT, 'node_modules'), distNodeModules);
-  }
+  await ensureDistTestNodeModules();
 
   const elapsedMs = Date.now() - start;
   await writeCache(fingerprint, {

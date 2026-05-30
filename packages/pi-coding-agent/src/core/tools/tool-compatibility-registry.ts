@@ -1,4 +1,4 @@
-// GSD-2 — Tool Compatibility Registry (ADR-005 Phase 2)
+// gsd-pi — Tool Compatibility Registry (ADR-005 Phase 2)
 // Maps tool names to their provider compatibility metadata.
 // Used by the model router to filter tools incompatible with the selected provider.
 
@@ -23,6 +23,7 @@ const BUILTIN_TOOLS: Record<string, ToolCompatibility> = {
   lsp: {},
   hashline_edit: {},
   hashline_read: {},
+  ToolSearch: {},
 };
 
 // Pre-populate registry with built-in tools
@@ -31,11 +32,9 @@ for (const [name, compat] of Object.entries(BUILTIN_TOOLS)) {
 }
 
 // ─── MCP Tool Defaults ─────────────────────────────────────────────────────
-// MCP tools may use complex schemas. Default to cautious compatibility.
-
-const MCP_TOOL_DEFAULTS: ToolCompatibility = {
-  schemaFeatures: ["patternProperties"],
-};
+// MCP tools may use complex schemas. Metadata is retained for diagnostics;
+// Google providers sanitize patternProperties/const at wire time instead of pre-filtering.
+const MCP_TOOL_DEFAULTS: ToolCompatibility = {};
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 

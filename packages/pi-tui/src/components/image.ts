@@ -1,5 +1,7 @@
 import {
+	allocateImageId,
 	getCapabilities,
+	getCellDimensions,
 	getImageDimensions,
 	type ImageDimensions,
 	imageFallback,
@@ -26,11 +28,10 @@ export class Image implements Component {
 	private theme: ImageTheme;
 	private options: ImageOptions;
 	private imageId?: number;
-	private dimensionsResolved = false;
-	private onDimensionsResolved?: () => void;
 
 	private cachedLines?: string[];
 	private cachedWidth?: number;
+	private onDimensionsResolved?: (dimensions: ImageDimensions) => void;
 
 	constructor(
 		base64Data: string,
@@ -43,28 +44,8 @@ export class Image implements Component {
 		this.mimeType = mimeType;
 		this.theme = theme;
 		this.options = options;
-		this.dimensions = dimensions || { widthPx: 800, heightPx: 600 };
-		this.dimensionsResolved = !!dimensions;
+		this.dimensions = dimensions || getImageDimensions(base64Data, mimeType) || { widthPx: 800, heightPx: 600 };
 		this.imageId = options.imageId;
-
-		if (!dimensions) {
-			getImageDimensions(base64Data).then((dims) => {
-				if (dims) {
-					this.dimensions = dims;
-					this.dimensionsResolved = true;
-					this.invalidate();
-					this.onDimensionsResolved?.();
-				}
-			});
-		}
-	}
-
-	/**
-	 * Register a callback invoked when async dimension parsing completes.
-	 * Useful for triggering a re-render after the Image updates its layout.
-	 */
-	setOnDimensionsResolved(cb: () => void): void {
-		this.onDimensionsResolved = cb;
 	}
 
 	/** Get the Kitty image ID used by this image (if any). */
@@ -72,9 +53,15 @@ export class Image implements Component {
 		return this.imageId;
 	}
 
-	/** Get the resolved image dimensions (for caching across recreations). */
-	getDimensions(): ImageDimensions | undefined {
-		return this.dimensionsResolved ? this.dimensions : undefined;
+	/** Get rendered dimensions (GSD compat). */
+	getDimensions(): ImageDimensions {
+		return this.dimensions;
+	}
+
+	/** Register callback when async dimension resolution completes (GSD compat). */
+	setOnDimensionsResolved(callback: (dimensions: ImageDimensions) => void): void {
+		this.onDimensionsResolved = callback;
+		callback(this.dimensions);
 	}
 
 	invalidate(): void {
@@ -87,15 +74,23 @@ export class Image implements Component {
 			return this.cachedLines;
 		}
 
-		const maxWidth = Math.min(width - 2, this.options.maxWidthCells ?? 60);
+		const maxWidth = Math.max(1, Math.min(width - 2, this.options.maxWidthCells ?? 60));
+		const cellDimensions = getCellDimensions();
+		const defaultMaxHeight = Math.max(1, Math.ceil((maxWidth * cellDimensions.widthPx) / cellDimensions.heightPx));
+		const maxHeight = this.options.maxHeightCells ?? defaultMaxHeight;
 
 		const caps = getCapabilities();
 		let lines: string[];
 
 		if (caps.images) {
+			if (caps.images === "kitty" && this.imageId === undefined) {
+				this.imageId = allocateImageId();
+			}
 			const result = renderImage(this.base64Data, this.dimensions, {
 				maxWidthCells: maxWidth,
+				maxHeightCells: maxHeight,
 				imageId: this.imageId,
+				moveCursor: false,
 			});
 
 			if (result) {
@@ -104,16 +99,28 @@ export class Image implements Component {
 					this.imageId = result.imageId;
 				}
 
-				// Return `rows` lines so TUI accounts for image height
-				// First (rows-1) lines are empty (TUI clears them)
-				// Last line: move cursor back up, then output image sequence
-				lines = [];
-				for (let i = 0; i < result.rows - 1; i++) {
-					lines.push("");
+				if (caps.images === "kitty") {
+					// For Kitty: C=1 prevents cursor movement.
+					// Don't need the cursor movement.
+					lines = [result.sequence];
+
+					// Return `rows` lines so TUI accounts for image height.
+					for (let i = 0; i < result.rows - 1; i++) {
+						lines.push("");
+					}
+				} else {
+					// Return `rows` lines so TUI accounts for image height.
+					// First (rows-1) lines are empty and cleared before the image is drawn.
+					// Last line: move cursor back up, draw the image, then move back down
+					// so TUI cursor accounting stays inside the scroll area.
+					lines = [];
+					for (let i = 0; i < result.rows - 1; i++) {
+						lines.push("");
+					}
+					const rowOffset = result.rows - 1;
+					const moveUp = rowOffset > 0 ? `\x1b[${rowOffset}A` : "";
+					lines.push(moveUp + result.sequence);
 				}
-				// Move cursor up to first row, then output image
-				const moveUp = result.rows > 1 ? `\x1b[${result.rows - 1}A` : "";
-				lines.push(moveUp + result.sequence);
 			} else {
 				const fallback = imageFallback(this.mimeType, this.dimensions, this.options.filename);
 				lines = [this.theme.fallbackColor(fallback)];

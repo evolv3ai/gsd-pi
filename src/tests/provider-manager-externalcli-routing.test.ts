@@ -15,9 +15,9 @@
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
 
-import { initTheme } from "../../packages/pi-coding-agent/src/modes/interactive/theme/theme.ts";
+import { initTheme } from "../../packages/pi-coding-agent/src/theme/theme.ts";
 
-const { InteractiveMode } = await import("../../packages/pi-coding-agent/src/modes/interactive/interactive-mode.ts");
+const { InteractiveMode } = await import("../../packages/gsd-agent-modes/src/modes/interactive/interactive-mode.ts");
 
 initTheme("dark", false);
 

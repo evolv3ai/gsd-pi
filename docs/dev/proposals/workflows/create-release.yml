@@ -58,7 +58,7 @@ jobs:
 
           ### Checklist
           - [ ] All targeted fixes merged to \`release/${{ inputs.version }}\`
-          - [ ] RC published and smoke-tested (\`npm i gsd-pi@rc\`)
+          - [ ] RC published and smoke-tested (\`npm i @opengsd/gsd-pi@rc\`)
           - [ ] CHANGELOG reviewed
           - [ ] Production deployment approved
 

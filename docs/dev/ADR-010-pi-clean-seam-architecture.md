@@ -1,6 +1,6 @@
 # ADR-010: Pi Clean Seam Architecture
 
-**Status:** Proposed
+**Status:** Accepted (Phase 1 implemented)
 **Date:** 2026-04-14
 **Deciders:** Tom Boucher
 **PRD:** [PRD-pi-clean-seam-refactor.md](./PRD-pi-clean-seam-refactor.md)
@@ -9,7 +9,7 @@
 
 ## Context
 
-GSD vendors four packages from [pi-mono](https://github.com/badlogic/pi-mono) (an open-source coding agent framework) by copying their source directly into `/packages/`:
+GSD vendors four packages from [earendil-works/pi](https://github.com/earendil-works/pi) (formerly `badlogic/pi-mono`, an open-source coding agent framework) by copying their source directly into `/packages/`:
 
 | Package | Role | Current version |
 |---|---|---|
@@ -234,7 +234,7 @@ Steps 2-5 are scoped to known files. No archaeology required.
 
 ### Neutral
 
-- End-user install experience (`npm install -g gsd-pi@latest`) is unchanged
+- End-user install experience (`npm install -g @opengsd/gsd-pi@latest`) is unchanged
 - Extension authors see no change — the extension API surface remains in `@gsd/pi-coding-agent`
 - GSD packages continue to use pi types directly — no new abstraction layer
 
@@ -269,3 +269,19 @@ The migration should proceed in this order to maintain a working build at each s
 7. **Verify** — full build, existing tests pass, `gsd --version` works
 
 The pi update to v0.67.2 (and the deprecated API migration) can be done as a follow-on once the clean seam is in place, since that work will be dramatically simpler with the new structure.
+
+---
+
+## Amendment (2026-05-26): Documented overlay, not pristine upstream
+
+Phase 2 shipped **seam extraction + v0.75.5 vendor + GSD shims** together. Production regressions showed that **undocumented deltas** in `packages/pi-*` (especially provider/tool-schema paths) were lost on vendor overwrite and were not caught by `build:pi` / `verify:pi-boundary` / smoke tests alone.
+
+**Revised rule:** Vendored pi packages are **upstream + allowlisted overlay**. GSD may modify `packages/pi-*` only when:
+
+1. The change is listed in [pi-upstream.md](./pi-upstream.md) patch inventory and `scripts/pi-upstream.json` `patchAllowlist`
+2. Provider-related changes include **golden B** regression tests (see [pi-overlay-execution-plan.md](./pi-overlay-execution-plan.md))
+3. CI passes `verify:pi-patches` for any touched pi-* paths
+
+GSD business logic still belongs in `@gsd/agent-core` and `@gsd/agent-modes`. The overlay is for **compatibility shims** (provider conversion, TUI keybindings, extension loader, discovery) that cannot live in extensions alone.
+
+**Execution plan:** [pi-overlay-execution-plan.md](./pi-overlay-execution-plan.md)

@@ -56,7 +56,28 @@ describe("verification-gate: discovery", () => {
       taskPlanVerify: "npm run lint && npm run test",
       cwd: tmp,
     });
-    assert.deepStrictEqual(result.commands, ["npm run lint", "npm run test"]);
+    assert.deepStrictEqual(result.commands, ["npm run lint && npm run test"]);
+    assert.equal(result.source, "task-plan");
+  });
+
+  test("discoverCommands accepts task plan verify pipelines", () => {
+    const result = discoverCommands({
+      taskPlanVerify: "npm test | tail -5",
+      cwd: tmp,
+    });
+    assert.deepStrictEqual(result.commands, ["npm test | tail -5"]);
+    assert.equal(result.source, "task-plan");
+  });
+
+  test("discoverCommands strips interpreter prefixes from task plan verify commands", () => {
+    const result = discoverCommands({
+      taskPlanVerify: "bash: ls scripts/hooks/\npython3: python3 -m pytest tests/ -q",
+      cwd: tmp,
+    });
+    assert.deepStrictEqual(result.commands, [
+      "ls scripts/hooks/",
+      "python3 -m pytest tests/ -q",
+    ]);
     assert.equal(result.source, "task-plan");
   });
 
@@ -159,6 +180,15 @@ describe("verification-gate: discovery", () => {
     assert.equal(result.source, "task-plan");
   });
 
+  test("taskPlanVerify preserves cd context in && chains", () => {
+    const result = discoverCommands({
+      taskPlanVerify: "cd /tmp/project/subdir && uv run pytest tests/ -q --tb=short",
+      cwd: tmp,
+    });
+    assert.deepStrictEqual(result.commands, ["cd /tmp/project/subdir && uv run pytest tests/ -q --tb=short"]);
+    assert.equal(result.source, "task-plan");
+  });
+
   test("whitespace-only preference commands fall through", () => {
     writeFileSync(
       join(tmp, "package.json"),
@@ -202,12 +232,12 @@ describe("verification-gate: discovery", () => {
     assert.deepStrictEqual(result.commands, ["npm run test"]);
   });
 
-  test("prose taskPlanVerify with no package.json → source none", () => {
+  test("prose taskPlanVerify with no fallback checks → source task-plan-prose", () => {
     const result = discoverCommands({
-      taskPlanVerify: "Verify the output matches expected format and all fields are present",
+      taskPlanVerify: "Grep: pattern=Chart.yaml path=argocd-apps/ returns non-empty",
       cwd: tmp,
     });
-    assert.equal(result.source, "none");
+    assert.equal(result.source, "task-plan-prose");
     assert.deepStrictEqual(result.commands, []);
   });
 
@@ -217,12 +247,12 @@ describe("verification-gate: discovery", () => {
       cwd: tmp,
     });
     assert.equal(result.source, "task-plan");
-    assert.deepStrictEqual(result.commands, ["npm run lint", "npm run test"]);
+    assert.deepStrictEqual(result.commands, ["npm run lint && npm run test"]);
   });
 
-  test("mixed prose and commands in taskPlanVerify — only commands kept", () => {
+  test("mixed prose and commands in newline-delimited taskPlanVerify — only commands kept", () => {
     const result = discoverCommands({
-      taskPlanVerify: "Check that everything works && npm run test",
+      taskPlanVerify: "Check that everything works\nnpm run test",
       cwd: tmp,
     });
     // "Check that everything works" is prose (starts with capital, 4+ words)
@@ -249,7 +279,7 @@ describe("verification-gate: discovery", () => {
     assert.deepStrictEqual(result.commands, ["! grep 'needle' file.txt", "npm run test"]);
   });
 
-  test("taskPlanVerify rejects piped pytest command", () => {
+  test("taskPlanVerify rejects redirected pytest command", () => {
     const result = discoverCommands({
       taskPlanVerify: "python3 -m pytest tests/ -q --tb=short 2>&1 | tail -5",
       cwd: tmp,
@@ -656,9 +686,14 @@ test("isLikelyCommand: bash negation with known command is accepted", () => {
   assert.equal(isLikelyCommand("! grep needle file.txt"), true);
 });
 
-test("validateVerificationCommand rejects shell control syntax", () => {
+test("validateVerificationCommand allows shell pipelines", () => {
   assert.deepEqual(validateVerificationCommand("python3 -m pytest tests/ -q --tb=short").ok, true);
-  const result = validateVerificationCommand("python3 -m pytest tests/ -q --tb=short 2>&1 | tail -5");
+  const result = validateVerificationCommand("python3 -m pytest tests/ -q --tb=short | tail -5");
+  assert.equal(result.ok, true);
+});
+
+test("validateVerificationCommand rejects shell control syntax", () => {
+  const result = validateVerificationCommand("python3 -m pytest tests/ -q --tb=short > output.log");
   assert.equal(result.ok, false);
   if (!result.ok) {
     assert.match(result.reason, /shell control syntax/);
@@ -668,6 +703,17 @@ test("validateVerificationCommand rejects shell control syntax", () => {
 test("validateVerificationCommand allows semicolons inside quoted python -c code", () => {
   const result = validateVerificationCommand("uv run python3 -c \"import yaml; yaml.safe_load('x: 1')\"");
   assert.equal(result.ok, true);
+});
+
+test("validateVerificationCommand allows grep patterns with quoted pipes", () => {
+  assert.equal(validateVerificationCommand('grep -q "| " output.md').ok, true);
+  assert.equal(validateVerificationCommand("grep -c '^## SectionA\\|^### Sub1\\|^### Sub2' notes.md").ok, true);
+});
+
+test("validateVerificationCommand allows exit-code echo diagnostic suffix", () => {
+  assert.equal(validateVerificationCommand('python3 tools/check-status.py; echo "exit:$?"').ok, true);
+  assert.equal(validateVerificationCommand("python3 tools/check-status.py; echo 'exit:$?'").ok, true);
+  assert.equal(validateVerificationCommand("python3 tools/check-status.py; echo exit:$?").ok, true);
 });
 
 test("validateVerificationCommand rejects shell operators after single-quote backslash desync patterns", () => {
@@ -680,6 +726,14 @@ test("validateVerificationCommand rejects shell operators after single-quote bac
 
 test("validateVerificationCommand rejects logical OR fallback syntax", () => {
   const result = validateVerificationCommand("npm test || true");
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.match(result.reason, /shell control syntax/);
+  }
+});
+
+test("validateVerificationCommand rejects arbitrary semicolon command chaining", () => {
+  const result = validateVerificationCommand("python3 tools/check-status.py; rm -rf output");
   assert.equal(result.ok, false);
   if (!result.ok) {
     assert.match(result.reason, /shell control syntax/);

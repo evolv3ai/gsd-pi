@@ -1,4 +1,4 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Registers packaged workflow tools exposed by the GSD MCP server.
 
 /**
@@ -10,7 +10,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
-import { WORKFLOW_TOOL_NAMES as CONTRACT_WORKFLOW_TOOL_NAMES } from "@gsd-build/contracts";
+import { WORKFLOW_TOOL_NAMES as CONTRACT_WORKFLOW_TOOL_NAMES } from "@opengsd/contracts";
 
 import { logAliasUsage } from "./alias-telemetry.js";
 
@@ -1922,7 +1922,15 @@ export function registerWorkflowTools(realServer: McpToolServer): void {
     "Save a quality gate result to the GSD database.",
     saveGateResultParams,
     async (args: Record<string, unknown>) => {
-      const parsed = parseWorkflowArgs(saveGateResultSchema, args);
+      const { prepareSaveGateResultArguments } = await importLocalModule<{
+        prepareSaveGateResultArguments: (raw: unknown) => unknown;
+      }>("../../../src/resources/extensions/gsd/tools/save-gate-result-args.js");
+      const prepared = prepareSaveGateResultArguments(args);
+      const record =
+        prepared !== null && typeof prepared === "object" && !Array.isArray(prepared)
+          ? (prepared as Record<string, unknown>)
+          : {};
+      const parsed = parseWorkflowArgs(saveGateResultSchema, record);
       return handleSaveGateResult(parsed.projectDir, parsed);
     },
   );

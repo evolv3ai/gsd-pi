@@ -12,11 +12,14 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
+import { QUICK_BRANCH_RE } from "./branch-patterns.js";
 import { loadPrompt } from "./prompt-loader.js";
 import { gsdRoot } from "./paths.js";
 import { GitServiceImpl, runGit } from "./git-service.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
+import { nativeBranchExists, nativeDetectMainBranch, nativeDiffNumstat } from "./native-git-bridge.js";
 import { nativeHasStagedChanges } from "./native-git-bridge.js";
+import { resolveUokFlags } from "./uok/flags.js";
 
 interface QuickReturnState {
   basePath: string;
@@ -75,6 +78,81 @@ function ensureQuickDir(basePath: string, taskNum: number, slug: string): string
   const taskDir = join(quickDir, `${taskNum}-${slug}`);
   mkdirSync(taskDir, { recursive: true });
   return taskDir;
+}
+
+function isRuntimePath(path: string): boolean {
+  return path === ".gsd" || path.startsWith(".gsd/");
+}
+
+export function parseQuickBranchName(branch: string): { taskNum: number; slug: string } | null {
+  if (!QUICK_BRANCH_RE.test(branch)) return null;
+  const rest = branch.slice("gsd/quick/".length);
+  const match = rest.match(/^(\d+)-(.+)$/);
+  if (!match) return null;
+  return { taskNum: Number.parseInt(match[1], 10), slug: match[2] };
+}
+
+function resolveQuickReturnTargetBranch(basePath: string): string | null {
+  try {
+    const detected = nativeDetectMainBranch(basePath);
+    if (detected && nativeBranchExists(basePath, detected)) return detected;
+  } catch {
+    // Fall through to conventional branch names.
+  }
+  for (const candidate of ["main", "master"]) {
+    if (nativeBranchExists(basePath, candidate)) return candidate;
+  }
+  return null;
+}
+
+function quickBranchHasProductDiff(basePath: string, originalBranch: string, quickBranch: string): boolean {
+  return nativeDiffNumstat(basePath, originalBranch, quickBranch)
+    .map((entry) => entry.path)
+    .some((path) => path && !isRuntimePath(path));
+}
+
+export function inferQuickReturnFromBranch(basePath: string): QuickReturnState | null {
+  try {
+    const gitPrefs = loadEffectiveGSDPreferences(basePath)?.preferences?.git ?? {};
+    const git = new GitServiceImpl(basePath, gitPrefs);
+    const quickBranch = git.getCurrentBranch();
+    const parsed = parseQuickBranchName(quickBranch);
+    if (!parsed) return null;
+
+    const originalBranch = resolveQuickReturnTargetBranch(basePath);
+    if (!originalBranch || originalBranch === quickBranch) return null;
+    if (!quickBranchHasProductDiff(basePath, originalBranch, quickBranch)) return null;
+
+    return {
+      basePath,
+      originalBranch,
+      quickBranch,
+      taskNum: parsed.taskNum,
+      slug: parsed.slug,
+      description: parsed.slug.replace(/-/g, " "),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export interface StrandedQuickBranch {
+  quickBranch: string;
+  originalBranch: string;
+  taskNum: number;
+  slug: string;
+}
+
+export function detectStrandedQuickBranch(basePath: string): StrandedQuickBranch | null {
+  if (existsSync(quickReturnStatePath(basePath))) return null;
+  const inferred = inferQuickReturnFromBranch(basePath);
+  if (!inferred) return null;
+  return {
+    quickBranch: inferred.quickBranch,
+    originalBranch: inferred.originalBranch,
+    taskNum: inferred.taskNum,
+    slug: inferred.slug,
+  };
 }
 
 function isPathInside(parent: string, child: string): boolean {
@@ -144,6 +222,12 @@ function readPendingReturn(basePath: string): QuickReturnState | null {
     // No persisted quick-return state
   }
 
+  const inferred = inferQuickReturnFromBranch(basePath);
+  if (inferred) {
+    pendingQuickReturn = inferred;
+    return inferred;
+  }
+
   return null;
 }
 
@@ -158,6 +242,11 @@ function hasStagedChanges(basePath: string): boolean {
   return nativeHasStagedChanges(basePath);
 }
 
+function isGitOpsEnabled(): boolean {
+  const prefs = loadEffectiveGSDPreferences()?.preferences;
+  return resolveUokFlags(prefs).gitops;
+}
+
 export function cleanupQuickBranch(basePath = process.cwd()): boolean {
   const state = readPendingReturn(basePath);
   if (!state) return false;
@@ -165,6 +254,10 @@ export function cleanupQuickBranch(basePath = process.cwd()): boolean {
   const repoPath = state.basePath;
   const gitPrefs = loadEffectiveGSDPreferences()?.preferences?.git ?? {};
   const git = new GitServiceImpl(repoPath, gitPrefs);
+  if (!isGitOpsEnabled()) {
+    clearPendingReturn(repoPath);
+    return false;
+  }
 
   if (git.getCurrentBranch() === state.quickBranch) {
     try {
@@ -233,7 +326,7 @@ export async function handleQuick(
   let originalBranch = git.getCurrentBranch();
 
   const { getIsolationMode } = await import("./preferences.js");
-  const usesBranch = getIsolationMode() !== "none";
+  const usesBranch = getIsolationMode() !== "none" && isGitOpsEnabled();
 
   let branchCreated = false;
   if (usesBranch) {
@@ -242,7 +335,9 @@ export async function handleQuick(
       if (current !== branchName) {
         // Auto-commit any dirty state before switching
         try {
-          git.autoCommit("quick-task", `Q${taskNum}`, []);
+          if (isGitOpsEnabled()) {
+            git.autoCommit("quick-task", `Q${taskNum}`, []);
+          }
         } catch { /* nothing to commit — fine */ }
 
         runGit(basePath, ["checkout", "-b", branchName]);

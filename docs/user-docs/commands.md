@@ -11,7 +11,7 @@
 | `/gsd stop` | Stop auto mode gracefully |
 | `/gsd pause` | Pause auto-mode (preserves state, `/gsd auto` to resume) |
 | `/gsd steer` | Hard-steer plan documents during execution |
-| `/gsd discuss` | Discuss architecture and decisions (works alongside auto mode) |
+| `/gsd discuss` | Discuss architecture and decisions (stop auto-mode first with `/gsd stop`) |
 | `/gsd status` | Open workflow visualizer |
 | `/gsd widget` | Cycle dashboard widget: full / small / min / off |
 | `/gsd queue` | Queue and reorder future milestones (`pending`, `queued`, and legacy `planned`; safe during auto mode) |
@@ -420,6 +420,20 @@ gsd --mode mcp
 ```
 
 The server registers all tools from the agent session and maps MCP `tools/list` and `tools/call` requests to GSD tool definitions. It runs until the transport closes.
+
+## Cloud MCP Gateway Runtime
+
+`gsd-cloud-mcp-gateway` starts an HTTP gateway for remote MCP clients. `gsd-daemon cloud` pairs and connects a local runtime to that gateway.
+
+```bash
+GSD_CLOUD_USER_TOKEN="replace-with-a-long-random-token" gsd-cloud-mcp-gateway --port 8787
+gsd-daemon cloud status
+gsd-daemon cloud pair --gateway "https://gateway.example.com" --code "PAIRING_CODE" --runtime-name "Laptop"
+gsd-daemon cloud connect --verbose
+gsd-daemon cloud disconnect
+```
+
+See [Cloud MCP Gateway](./cloud-mcp-gateway.md) for the full operator setup flow, token model, ports, and failure modes.
 
 ## In-Session Update
 

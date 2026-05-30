@@ -1,28 +1,5 @@
 import { existsSync } from "node:fs";
-import { createRequire } from "node:module";
-import { join } from "node:path";
-
-// The file-lock module is loaded in both CJS builds and ESM sources. Under ESM
-// the bare `require` identifier is not defined, so we always go through
-// createRequire. We try the current module's resolution context first and fall
-// back to the installed gsd-pi package if we are running from a consumer
-// project that does not hoist proper-lockfile.
-const localRequire = createRequire(import.meta.url);
-
-function _require(name: string): any {
-  try {
-    return localRequire(name);
-  } catch {
-    try {
-      const gsdPiRequire = createRequire(
-        join(process.cwd(), "node_modules", "@opengsd", "gsd-pi", "index.js"),
-      );
-      return gsdPiRequire(name);
-    } catch {
-      return null;
-    }
-  }
-}
+import lockfile from "proper-lockfile";
 
 export type OnLocked = "fail" | "skip";
 
@@ -55,7 +32,6 @@ function sleepSync(ms: number): void {
 }
 
 function acquireLockSyncWithRetry(
-  lockfile: any,
   filePath: string,
   retries: number,
   stale: number,
@@ -78,9 +54,6 @@ export function withFileLockSync<T>(
   fn: () => T,
   opts: FileLockOptions = {},
 ): T {
-  const lockfile = _require("proper-lockfile");
-  if (!lockfile) return fn();
-
   if (!existsSync(filePath)) return fn();
 
   const retries = opts.retries ?? DEFAULT_RETRIES;
@@ -88,7 +61,7 @@ export function withFileLockSync<T>(
   const onLocked: OnLocked = opts.onLocked ?? "fail";
 
   try {
-    const release = acquireLockSyncWithRetry(lockfile, filePath, retries, stale);
+    const release = acquireLockSyncWithRetry(filePath, retries, stale);
     try {
       return fn();
     } finally {
@@ -107,9 +80,6 @@ export async function withFileLock<T>(
   fn: () => Promise<T> | T,
   opts: FileLockOptions = {},
 ): Promise<T> {
-  const lockfile = _require("proper-lockfile");
-  if (!lockfile) return await fn();
-
   if (!existsSync(filePath)) return await fn();
 
   const retries = opts.retries ?? DEFAULT_RETRIES;

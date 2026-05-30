@@ -1,7 +1,7 @@
-// Project/App: GSD-2
+// Project/App: gsd-pi
 // File Purpose: Display helpers for shared RPC contract payloads in the VS Code extension.
 
-import type { BashResult, SessionStats } from "@gsd-build/contracts" with { "resolution-mode": "import" };
+import type { BashResult, SessionStats } from "@opengsd/contracts" with { "resolution-mode": "import" };
 
 export interface ContextUsageDisplay {
 	percent: number | null;

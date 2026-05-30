@@ -21,8 +21,22 @@ You are evaluating **quality gates in parallel** for this slice. Each gate is an
 ## Execution Protocol
 
 1. **Dispatch all gates** using `subagent` in parallel mode. Each subagent prompt is provided below.
+   Pass `tasks` as a **JSON array**, not a string. Example shape:
+
+   ```json
+   {
+     "tasks": [
+       { "agent": "tester", "task": "<Q3 prompt from below>" },
+       { "agent": "tester", "task": "<Q4 prompt from below>" }
+     ]
+   }
+   ```
+
 2. **Wait for all subagents** to complete.
 3. **Verify each gate wrote its result** by checking that `gsd_save_gate_result` was called for each gate ID.
+   - Call it **directly** — do **not** use `ToolSearch` (it is not available in GSD).
+   - Inside Claude Code use `mcp__gsd-workflow__gsd_save_gate_result`; otherwise use `gsd_save_gate_result`.
+   - Always pass all required fields (camelCase): `milestoneId`, `sliceId`, `gateId`, `verdict`, `rationale`. Never call with an empty `{}` object.
 4. **Report the batch outcome** — which gates passed, which flagged concerns, and which were omitted as not applicable.
 
 Gate agents may return `verdict: "omitted"` if the gate question is not applicable to this slice (e.g., no auth surface for Q3, no existing requirements touched for Q4). This is expected for simple slices.
