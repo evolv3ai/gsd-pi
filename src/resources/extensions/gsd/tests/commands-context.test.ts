@@ -156,9 +156,11 @@ test("handleContext writes open reports under the command project root", async (
   process.chdir(processProject);
   try {
     const binDir = mkdtempSync(join(tmpdir(), "gsd-context-bin-"));
-    const xdgOpen = join(binDir, "xdg-open");
-    writeFileSync(xdgOpen, "#!/bin/sh\nexit 0\n");
-    chmodSync(xdgOpen, 0o755);
+    for (const opener of ["open", "xdg-open"]) {
+      const openerPath = join(binDir, opener);
+      writeFileSync(openerPath, "#!/bin/sh\nexit 0\n");
+      chmodSync(openerPath, 0o755);
+    }
     process.env.PATH = `${binDir}:${originalPath ?? ""}`;
 
     const notifications: string[] = [];
