@@ -218,7 +218,14 @@ import {
   deregisterSigtermHandler as _deregisterSigtermHandler,
   detectWorkingTreeActivity,
 } from "./auto-supervisor.js";
-import { isDbAvailable, getMilestone, getMilestoneSlices } from "./gsd-db.js";
+import {
+  isDbAvailable,
+  getMilestone,
+  getMilestoneSlices,
+  getSlice,
+  getTask,
+  refreshOpenDatabaseFromDisk,
+} from "./gsd-db.js";
 import { markLatestActiveForWorkerCanceled } from "./db/unit-dispatches.js";
 import { writeUnitRuntimeRecord } from "./unit-runtime.js";
 import { countPendingCaptures } from "./captures.js";
@@ -2070,6 +2077,25 @@ export function createWiredDispatchAdapter(
   dispatchBasePath: string,
   session?: AutoSession,
 ): DispatchAdapter {
+  function getAlreadyClosedDispatchReason(unitType: string, unitId: string): string | null {
+    if (!isDbAvailable()) return null;
+    refreshOpenDatabaseFromDisk();
+    const { milestone, slice, task } = parseUnitId(unitId);
+    if (unitType === "execute-task" && milestone && slice && task) {
+      const row = getTask(milestone, slice, task);
+      return row && isClosedStatus(row.status)
+        ? `execute-task ${unitId} is already ${row.status}`
+        : null;
+    }
+    if (unitType === "complete-slice" && milestone && slice) {
+      const row = getSlice(milestone, slice);
+      return row && isClosedStatus(row.status)
+        ? `complete-slice ${unitId} is already ${row.status}`
+        : null;
+    }
+    return null;
+  }
+
   return {
     async decideNextUnit(input) {
       const state = input.stateSnapshot;
@@ -2109,6 +2135,15 @@ export function createWiredDispatchAdapter(
       const pendingRetry = session?.pendingVerificationRetryDispatch;
       if (session && pendingRetry) {
         session.pendingVerificationRetryDispatch = null;
+        const alreadyClosedReason = getAlreadyClosedDispatchReason(
+          pendingRetry.unitType,
+          pendingRetry.unitId,
+        );
+        if (alreadyClosedReason) {
+          session.pendingOrchestrationDispatch = null;
+          session.pendingVerificationRetry = null;
+          return { kind: "skipped", reason: alreadyClosedReason };
+        }
         session.pendingOrchestrationDispatch = pendingRetry;
         return {
           unitType: pendingRetry.unitType,
@@ -2145,6 +2180,14 @@ export function createWiredDispatchAdapter(
           kind: "skipped",
           reason: action.matchedRule ?? "dispatch-skip",
         };
+      }
+      const alreadyClosedReason = getAlreadyClosedDispatchReason(action.unitType, action.unitId);
+      if (alreadyClosedReason) {
+        if (session) {
+          session.pendingOrchestrationDispatch = null;
+          session.pendingVerificationRetry = null;
+        }
+        return { kind: "skipped", reason: alreadyClosedReason };
       }
       if (session) {
         const pending: PendingOrchestrationDispatch = {
