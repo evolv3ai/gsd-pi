@@ -68,7 +68,7 @@ import {
   runMilestoneCloseoutGitHub,
 } from "./milestone-closeout.js";
 import type { AutoSession, SidecarItem } from "./auto/session.js";
-import { getEvidence, clearEvidenceFromDisk } from "./safety/evidence-collector.js";
+import { getEvidence, clearEvidenceFromDisk, isExecutionToolName } from "./safety/evidence-collector.js";
 import { validateFileChanges } from "./safety/file-change-validator.js";
 import { crossReferenceEvidence, type ClaimedEvidence } from "./safety/evidence-cross-ref.js";
 import { validateContent } from "./safety/content-validator.js";
@@ -488,12 +488,6 @@ export function _shouldDispatchQuickTaskForTest(
     state.pendingQuickTasks.length > 0 &&
     !!state.currentUnit &&
     state.currentUnit.type !== "quick-task";
-}
-
-function isExecutionToolName(name: unknown): boolean {
-  if (typeof name !== "string") return false;
-  const normalized = name.trim().toLowerCase();
-  return normalized === "bash" || normalized === "gsd_exec";
 }
 
 export function _hasExecutionToolCallsInSessionForTest(entries: readonly unknown[]): boolean {
@@ -1470,11 +1464,11 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
                       suppressedWarning: "evidence-empty-but-session-has-exec-calls",
                     });
                   } else {
-                    logWarning("safety", `evidence mismatch: ${missingCommandMismatches.length} claimed command(s) not found in bash calls`);
-                  ctx.ui.notify(
-                    `Safety: task ${sTid} claimed ${missingCommandMismatches.length} command(s) not found in recorded bash calls`,
-                    "warning",
-                  );
+                    logWarning("safety", `evidence mismatch: ${missingCommandMismatches.length} claimed command(s) not found in recorded execution calls`);
+                    ctx.ui.notify(
+                      `Safety: task ${sTid} claimed ${missingCommandMismatches.length} command(s) not found in recorded execution calls`,
+                      "warning",
+                    );
                   }
                 }
 
