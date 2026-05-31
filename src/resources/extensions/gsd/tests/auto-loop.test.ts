@@ -1799,6 +1799,11 @@ test("autoLoop dev path dispatches orchestration.advance results without legacy 
   const ctx = makeMockCtx();
   ctx.ui.setStatus = () => {};
   ctx.sessionManager = { getSessionFile: () => "/tmp/session.json" };
+  ctx.modelRegistry = {
+    getAvailable: () => [{ provider: "test", id: "hook-model" }],
+    getProviderAuthMode: () => undefined,
+    isProviderRequestReady: () => true,
+  };
   const pi = makeMockPi();
   const stateSnapshot = {
     phase: "executing",
@@ -1810,6 +1815,7 @@ test("autoLoop dev path dispatches orchestration.advance results without legacy 
   } as any;
   let advanceCalls = 0;
   const finalizedUnits: string[] = [];
+  const journalEvents: any[] = [];
   let s: any;
   s = makeLoopSession({
     currentMilestoneId: "M002",
@@ -1847,6 +1853,15 @@ test("autoLoop dev path dispatches orchestration.advance results without legacy 
       deps.callLog.push("resolveDispatch");
       throw new Error("legacy resolveDispatch must not run when orchestration is wired");
     },
+    runPreDispatchHooks: () => ({
+      firedHooks: ["complete-slice-policies"],
+      action: "proceed",
+      prompt: "hooked prompt",
+      model: "hook-model",
+    }),
+    emitJournalEvent: (entry: any) => {
+      journalEvents.push(entry);
+    },
     postUnitPostVerification: async () => {
       deps.callLog.push("postUnitPostVerification");
       s.active = false;
@@ -1867,11 +1882,24 @@ test("autoLoop dev path dispatches orchestration.advance results without legacy 
   );
   assert.equal(
     (pi.calls[0] as any[])[0].content,
-    "advance prompt",
-    "runUnit should receive the dispatch prompt captured by advance()",
+    "hooked prompt",
+    "runUnit should receive the dispatch prompt after pre-dispatch hooks",
+  );
+  assert.deepEqual(
+    pi.setModelCalls.map((call: any[]) => call[0]),
+    [
+      { provider: "test", id: "hook-model" },
+      { provider: "test", id: "hook-model" },
+    ],
+    "proceed hooks should apply model overrides before dispatch",
   );
   assert.deepEqual(finalizedUnits, ["execute-task:M002/S03/T05"]);
   assert.equal(s.pendingOrchestrationDispatch, null, "pending dispatch should be one-shot");
+  assert.equal(
+    journalEvents.filter((entry) => entry.eventType === "pre-dispatch-hook").length,
+    1,
+    "hook dispatch should emit one pre-dispatch-hook journal event",
+  );
 });
 
 test("autoLoop pauses once when orchestration reports reconciliation drift error", async () => {
