@@ -176,6 +176,11 @@ function isWorkflowAliasTool(toolName: string): boolean {
   return WORKFLOW_ALIAS_TOOL_NAMES.has(canonicalToolName(toolName));
 }
 
+/** True for the ~58 Playwright browser tools (browser_navigate, browser_click, …). */
+function isBrowserTool(toolName: string): boolean {
+  return canonicalToolName(toolName).startsWith("browser_");
+}
+
 /**
  * True when any message in the request is driven by a GSD workflow command
  * (customType starting "gsd-"). Plain interactive chat has none, and is scoped
@@ -354,6 +359,16 @@ export function isFullGsdToolSurfaceRequested(): boolean {
 
 function isGeneralGsdToolScopingRequested(): boolean {
   return process.env.PI_GSD_MINIMAL_TOOLS === "1";
+}
+
+/**
+ * Whether the ~58-tool Playwright browser surface (~7K tokens) should be
+ * advertised in interactive sessions. Off by default — browser tools stay
+ * registered/callable (so auto run-uat, which scopes them in explicitly, is
+ * unaffected) but are dropped from the model-facing surface until opted in.
+ */
+function isBrowserToolSurfaceRequested(): boolean {
+  return process.env.PI_GSD_BROWSER_TOOLS === "1";
 }
 
 export interface ScopedGsdWorkflowState {
@@ -1372,10 +1387,16 @@ export function registerHooks(
     const compatible = event.activeToolNames.filter((name) => !removed.has(name));
     // Always drop backwards-compatibility workflow aliases from the advertised
     // surface; they remain registered/callable but never cost schema tokens.
-    const providerCompatible = compatible.filter((name) => !isWorkflowAliasTool(name));
-    const aliasesDropped = providerCompatible.length !== compatible.length;
+    // Drop the heavy browser surface too unless explicitly opted in — it stays
+    // registered, so auto run-uat (which scopes browser tools in from the full
+    // registry) still works. Both filters are skipped under full-tools mode.
+    const dropBrowser = !isFullGsdToolSurfaceRequested() && !isBrowserToolSurfaceRequested();
+    const providerCompatible = compatible.filter(
+      (name) => !isWorkflowAliasTool(name) && !(dropBrowser && isBrowserTool(name)),
+    );
+    const surfaceReduced = providerCompatible.length !== compatible.length;
     if (isFullGsdToolSurfaceRequested()) {
-      return aliasesDropped ? { toolNames: providerCompatible } : undefined;
+      return surfaceReduced ? { toolNames: providerCompatible } : undefined;
     }
     const registeredToolNames = resolveRegisteredToolNames(pi, event.activeToolNames);
     const guidedUnit = getGuidedUnitContext();
@@ -1409,6 +1430,6 @@ export function registerHooks(
     if (!requestHasGsdCustomType(event.requestCustomMessages)) {
       return { toolNames: buildMinimalGsdToolSet(providerCompatible) };
     }
-    return aliasesDropped ? { toolNames: providerCompatible } : undefined;
+    return surfaceReduced ? { toolNames: providerCompatible } : undefined;
   });
 }

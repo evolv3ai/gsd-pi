@@ -98,6 +98,24 @@ test("buildMinimalAutoGsdToolSet keeps unit-specific completion tools without al
   assert.ok(!result.includes("gsd_complete_slice"));
 });
 
+test("buildMinimalAutoGsdToolSet re-resolves run-uat browser tools from the registry when dropped from the active set", () => {
+  // B2 drops the browser surface from the advertised interactive set, but the
+  // tools stay registered. run-uat must still get them: resolution reads the
+  // full registry, not just the (browser-stripped) active set.
+  const active = ["ask_user_questions", "bash", "read", "gsd_summary_save"];
+  const registered = [
+    ...active,
+    "browser_navigate",
+    "browser_click",
+    "browser_snapshot_refs",
+    "gsd_exec",
+  ];
+  const result = buildMinimalAutoGsdToolSet(active, "run-uat", registered);
+  assert.ok(result.includes("browser_navigate"), "run-uat needs browser_navigate");
+  assert.ok(result.includes("browser_click"), "run-uat needs browser_click");
+  assert.ok(result.includes("gsd_summary_save"));
+});
+
 test("buildMinimalAutoGsdToolSet keeps only the auto base non-GSD tools", () => {
   const result = buildMinimalAutoGsdToolSet([
     "ask_user_questions",
