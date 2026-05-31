@@ -184,21 +184,6 @@ importers:
       '@mariozechner/clipboard':
         specifier: 0.3.6
         version: 0.3.6
-      '@opengsd/engine-darwin-arm64':
-        specifier: 1.0.2
-        version: 1.0.2
-      '@opengsd/engine-darwin-x64':
-        specifier: 1.0.2
-        version: 1.0.2
-      '@opengsd/engine-linux-arm64-gnu':
-        specifier: 1.0.2
-        version: 1.0.2
-      '@opengsd/engine-linux-x64-gnu':
-        specifier: 1.0.2
-        version: 1.0.2
-      '@opengsd/engine-win32-x64-msvc':
-        specifier: 1.0.2
-        version: 1.0.2
       fsevents:
         specifier: ~2.3.3
         version: 2.3.3
@@ -380,13 +365,13 @@ importers:
     dependencies:
       '@anthropic-ai/sdk':
         specifier: 0.91.1
-        version: 0.91.1(zod@4.4.3)
+        version: 0.91.1(zod@3.25.76)
       '@aws-sdk/client-bedrock-runtime':
         specifier: 3.1048.0
         version: 3.1048.0
       '@google/genai':
         specifier: 1.52.0
-        version: 1.52.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))
+        version: 1.52.0(@modelcontextprotocol/sdk@1.29.0(zod@3.25.76))
       '@mistralai/mistralai':
         specifier: 2.2.1
         version: 2.2.1
@@ -401,7 +386,7 @@ importers:
         version: 7.0.6
       openai:
         specifier: 6.26.0
-        version: 6.26.0(ws@8.21.0)(zod@4.4.3)
+        version: 6.26.0(ws@8.21.0)(zod@3.25.76)
       partial-json:
         specifier: 0.1.7
         version: 0.1.7
@@ -1924,31 +1909,6 @@ packages:
   '@nolyfill/is-core-module@1.0.39':
     resolution: {integrity: sha512-nn5ozdjYQpUCZlWGuxcJY/KpxkWQs4DcbMCmKojjyrYDEAGy4Ce19NN4v5MduafTwJlbKc99UA8YhSVqq9yPZA==}
     engines: {node: '>=12.4.0'}
-
-  '@opengsd/engine-darwin-arm64@1.0.2':
-    resolution: {integrity: sha512-9MR6V9YwLKhYrk4AKNWbFxqluA7InBtY8oiB+a92XIMBGN6ZvVn3VaC1jqsuylf4exv08ozEsP/AKoffG4OQXQ==}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@opengsd/engine-darwin-x64@1.0.2':
-    resolution: {integrity: sha512-H8ZfZBzouQYSOUrk09G5DqMOK4pMyP8zBg1wGd9rchsT3orDfhRG9IzUnFIgU/6rWBgqM1K+5slD5JF5Elrh5A==}
-    cpu: [x64]
-    os: [darwin]
-
-  '@opengsd/engine-linux-arm64-gnu@1.0.2':
-    resolution: {integrity: sha512-h9lveRIgWA/LlYsV39SoFgPUkJJNtLl/gZfN08DErEtr/Mb3ZDa0C1/WPMOI4XVahkrD8yYCjXGcrDMS11MmeQ==}
-    cpu: [arm64]
-    os: [linux]
-
-  '@opengsd/engine-linux-x64-gnu@1.0.2':
-    resolution: {integrity: sha512-tBE3/pklHky59FQK+KjYr/ch7uG6rtnkPlcr+EOv6jVoLEIqlVxa/M+5vNdCB4BtPjhPsRrLLiz3xtwu+bRb3g==}
-    cpu: [x64]
-    os: [linux]
-
-  '@opengsd/engine-win32-x64-msvc@1.0.2':
-    resolution: {integrity: sha512-DQw9vJZKmi6bksWy0BnebIMHLj2r0q0XuHC7foS2lcmTocRpkKfXWDnM9Ii2X/rnP5jAHKskQh3rLq1JvaMR7w==}
-    cpu: [x64]
-    os: [win32]
 
   '@pkgjs/parseargs@0.11.0':
     resolution: {integrity: sha512-+1VkjdD0QBLPodGrJUeqarH8VAIvQODIbwh9XpP5Syisf7YoQgsJKPNFoqqLQlu+VQ/tVSshMR6loPMn8U+dPg==}
@@ -6434,6 +6394,12 @@ snapshots:
     optionalDependencies:
       zod: 4.4.3
 
+  '@anthropic-ai/sdk@0.91.1(zod@3.25.76)':
+    dependencies:
+      json-schema-to-ts: 3.1.1
+    optionalDependencies:
+      zod: 3.25.76
+
   '@anthropic-ai/sdk@0.91.1(zod@4.4.3)':
     dependencies:
       json-schema-to-ts: 3.1.1
@@ -7319,6 +7285,19 @@ snapshots:
 
   '@floating-ui/utils@0.2.11': {}
 
+  '@google/genai@1.52.0(@modelcontextprotocol/sdk@1.29.0(zod@3.25.76))':
+    dependencies:
+      google-auth-library: 10.6.2
+      p-retry: 4.6.2
+      protobufjs: 7.6.1
+      ws: 8.21.0
+    optionalDependencies:
+      '@modelcontextprotocol/sdk': 1.29.0(zod@3.25.76)
+    transitivePeerDependencies:
+      - bufferutil
+      - supports-color
+      - utf-8-validate
+
   '@google/genai@1.52.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))':
     dependencies:
       google-auth-library: 10.6.2
@@ -7635,6 +7614,29 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
+  '@modelcontextprotocol/sdk@1.29.0(zod@3.25.76)':
+    dependencies:
+      '@hono/node-server': 1.19.14(hono@4.12.23)
+      ajv: 8.20.0
+      ajv-formats: 3.0.1(ajv@8.20.0)
+      content-type: 1.0.5
+      cors: 2.8.6
+      cross-spawn: 7.0.6
+      eventsource: 3.0.7
+      eventsource-parser: 3.1.0
+      express: 5.2.1
+      express-rate-limit: 8.5.2(express@5.2.1)
+      hono: 4.12.23
+      jose: 6.2.3
+      json-schema-typed: 8.0.2
+      pkce-challenge: 5.0.1
+      raw-body: 3.0.2
+      zod: 3.25.76
+      zod-to-json-schema: 3.25.2(zod@3.25.76)
+    transitivePeerDependencies:
+      - supports-color
+    optional: true
+
   '@modelcontextprotocol/sdk@1.29.0(zod@4.4.3)':
     dependencies:
       '@hono/node-server': 1.19.14(hono@4.12.23)
@@ -7709,21 +7711,6 @@ snapshots:
       fastq: 1.20.1
 
   '@nolyfill/is-core-module@1.0.39': {}
-
-  '@opengsd/engine-darwin-arm64@1.0.2':
-    optional: true
-
-  '@opengsd/engine-darwin-x64@1.0.2':
-    optional: true
-
-  '@opengsd/engine-linux-arm64-gnu@1.0.2':
-    optional: true
-
-  '@opengsd/engine-linux-x64-gnu@1.0.2':
-    optional: true
-
-  '@opengsd/engine-win32-x64-msvc@1.0.2':
-    optional: true
 
   '@pkgjs/parseargs@0.11.0':
     optional: true
@@ -11554,6 +11541,11 @@ snapshots:
       oniguruma-parser: 0.12.2
       regex: 6.1.0
       regex-recursion: 6.0.2
+
+  openai@6.26.0(ws@8.21.0)(zod@3.25.76):
+    optionalDependencies:
+      ws: 8.21.0
+      zod: 3.25.76
 
   openai@6.26.0(ws@8.21.0)(zod@4.4.3):
     optionalDependencies:
