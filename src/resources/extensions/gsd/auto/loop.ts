@@ -957,12 +957,12 @@ export async function autoLoop(
             if (preDispatchResult.unitType) {
               iterData.unitType = preDispatchResult.unitType;
             }
-            if (preDispatchResult.model) {
-              iterData.hookModelOverride = preDispatchResult.model;
-            }
           } else if (preDispatchResult.prompt) {
             iterData.prompt = preDispatchResult.prompt;
             iterData.finalPrompt = preDispatchResult.prompt;
+          }
+          if (preDispatchResult.model) {
+            iterData.hookModelOverride = preDispatchResult.model;
           }
           s.pendingOrchestrationDispatch = null;
           phaseReporter.report("dispatch", "next", {

@@ -1773,6 +1773,11 @@ test("autoLoop dev path dispatches orchestration.advance results without legacy 
   const ctx = makeMockCtx();
   ctx.ui.setStatus = () => {};
   ctx.sessionManager = { getSessionFile: () => "/tmp/session.json" };
+  ctx.modelRegistry = {
+    getAvailable: () => [{ provider: "test", id: "hook-model" }],
+    getProviderAuthMode: () => undefined,
+    isProviderRequestReady: () => true,
+  };
   const pi = makeMockPi();
   const stateSnapshot = {
     phase: "executing",
@@ -1826,6 +1831,7 @@ test("autoLoop dev path dispatches orchestration.advance results without legacy 
       firedHooks: ["complete-slice-policies"],
       action: "proceed",
       prompt: "hooked prompt",
+      model: "hook-model",
     }),
     emitJournalEvent: (entry: any) => {
       journalEvents.push(entry);
@@ -1852,6 +1858,14 @@ test("autoLoop dev path dispatches orchestration.advance results without legacy 
     (pi.calls[0] as any[])[0].content,
     "hooked prompt",
     "runUnit should receive the dispatch prompt after pre-dispatch hooks",
+  );
+  assert.deepEqual(
+    pi.setModelCalls.map((call: any[]) => call[0]),
+    [
+      { provider: "test", id: "hook-model" },
+      { provider: "test", id: "hook-model" },
+    ],
+    "proceed hooks should apply model overrides before dispatch",
   );
   assert.deepEqual(finalizedUnits, ["execute-task:M002/S03/T05"]);
   assert.equal(s.pendingOrchestrationDispatch, null, "pending dispatch should be one-shot");
