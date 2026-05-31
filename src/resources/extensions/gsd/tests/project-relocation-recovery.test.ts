@@ -204,6 +204,32 @@ describe("project-relocation-recovery (#2750)", () => {
     rmSync(repo, { recursive: true, force: true });
   });
 
+  test("local-only repo does not warn when origin remote is missing", () => {
+    const repo = realpathSync(mkdtempSync(join(tmpdir(), "gsd-reloc-no-origin-")));
+    initRepo(repo);
+
+    const warnings: unknown[][] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args);
+    };
+
+    try {
+      repoIdentity(repo);
+      externalGsdRoot(repo);
+      ensureGsdSymlink(repo);
+    } finally {
+      console.warn = originalWarn;
+      rmSync(repo, { recursive: true, force: true });
+    }
+
+    assert.deepStrictEqual(
+      warnings,
+      [],
+      "missing origin must be treated as local-only repo, not a git failure",
+    );
+  });
+
   test("local-only repo recovers state via .gsd-id marker after move", () => {
     const repoA = realpathSync(mkdtempSync(join(tmpdir(), "gsd-reloc-local-a-")));
     initRepo(repoA);

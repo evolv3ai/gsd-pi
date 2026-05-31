@@ -202,6 +202,17 @@ function getRemoteUrl(basePath: string): string | null {
       timeout: 5_000,
     }).trim();
   } catch (error) {
+    const status = typeof error === "object" && error !== null && "status" in error
+      ? (error as { status?: number }).status
+      : undefined;
+    if (status === 1) {
+      try {
+        if (existsSync(join(resolveGitCommonDir(basePath), "config"))) return "";
+      } catch {
+        // Fall through to report unknown git/config failures.
+      }
+    }
+
     // Keep transient git failures distinct from "no remote configured".
     console.warn(`[GSD] repo-identity: failed to resolve remote.origin.url for ${basePath}:`, error);
     return null;
