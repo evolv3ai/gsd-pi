@@ -178,6 +178,7 @@ const AUTO_UNIT_SCOPED_TOOLS: Record<string, readonly string[]> = {
     "gsd_plan_milestone",
     "gsd_milestone_generate_id",
   ],
+  "discuss-slice": ["gsd_summary_save", "gsd_decision_save"],
   "validate-milestone": ["gsd_validate_milestone", "gsd_reassess_roadmap", "subagent"],
   "complete-milestone": ["gsd_complete_milestone", "subagent"],
   "research-slice": ["gsd_summary_save", "gsd_decision_save"],
