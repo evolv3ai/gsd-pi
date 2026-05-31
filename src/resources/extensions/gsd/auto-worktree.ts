@@ -59,6 +59,7 @@ import { debugLog } from "./debug-logger.js";
 import { logWarning, logError } from "./workflow-logger.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 import { MILESTONE_ID_RE } from "./milestone-ids.js";
+import { runWorktreePostCreateHook } from "./worktree-post-create-hook.js";
 import {
   nativeGetCurrentBranch,
   nativeDetectMainBranch,
@@ -912,62 +913,7 @@ export function syncWorktreeStateBack(
 ): { synced: string[] } {
   return _finalizeProjectionForMergeImpl(mainBasePath, worktreePath, milestoneId);
 }
-// ─── Worktree Post-Create Hook (#597) ────────────────────────────────────────
-
-/**
- * Run the user-configured post-create hook script after worktree creation.
- * The script receives SOURCE_DIR and WORKTREE_DIR as environment variables.
- * Failure is non-fatal — returns the error message or null on success.
- *
- * Reads the hook path from git.worktree_post_create in preferences.
- * Pass hookPath directly to bypass preference loading (useful for testing).
- */
-export function runWorktreePostCreateHook(
-  sourceDir: string,
-  worktreeDir: string,
-  hookPath?: string,
-): string | null {
-  if (hookPath === undefined) {
-    const prefs = loadEffectiveGSDPreferences()?.preferences?.git;
-    hookPath = prefs?.worktree_post_create;
-  }
-  if (!hookPath) return null;
-
-  // Resolve relative paths against the source project root.
-  // On Windows, convert 8.3 short paths (e.g. RUNNER~1) to long paths
-  // so execFileSync can locate the file correctly.
-  let resolved = isAbsolute(hookPath) ? hookPath : join(sourceDir, hookPath);
-  if (!existsSync(resolved)) {
-    return `Worktree post-create hook not found: ${resolved}`;
-  }
-  if (process.platform === "win32") {
-    try { resolved = realpathSync.native(resolved); } catch (err) { /* keep original */
-      logWarning("worktree", `realpath failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  try {
-    // .bat/.cmd files on Windows require shell mode — execFileSync cannot
-    // spawn them directly (EINVAL).
-    const needsShell = process.platform === "win32" && /\.(bat|cmd)$/i.test(resolved);
-    execFileSync(resolved, [], {
-      cwd: worktreeDir,
-      env: {
-        ...process.env,
-        SOURCE_DIR: sourceDir,
-        WORKTREE_DIR: worktreeDir,
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-      encoding: "utf-8",
-      timeout: 30_000, // 30 second timeout
-      shell: needsShell,
-    });
-    return null;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return `Worktree post-create hook failed: ${msg}`;
-  }
-}
+export { runWorktreePostCreateHook } from "./worktree-post-create-hook.js";
 
 // ─── Auto-Worktree Branch Naming ───────────────────────────────────────────
 

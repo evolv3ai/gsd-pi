@@ -21,7 +21,6 @@ import {
 	ToolResultStatus,
 } from "@aws-sdk/client-bedrock-runtime";
 import { NodeHttpHandler } from "@smithy/node-http-handler";
-import type { DocumentType } from "@smithy/types";
 import { calculateCost } from "../models.js";
 import type {
 	Api,
@@ -481,12 +480,18 @@ function getModelMatchCandidates(modelId: string, modelName?: string): string[] 
 
 function supportsAdaptiveThinking(modelId: string, modelName?: string): boolean {
 	const candidates = getModelMatchCandidates(modelId, modelName);
-	return candidates.some((s) => s.includes("opus-4-6") || s.includes("opus-4-7") || s.includes("sonnet-4-6"));
+	return candidates.some(
+		(s) =>
+			s.includes("opus-4-6") ||
+			s.includes("opus-4-7") ||
+			s.includes("opus-4-8") ||
+			s.includes("sonnet-4-6"),
+	);
 }
 
 function supportsNativeXhighEffort(model: Model<"bedrock-converse-stream">): boolean {
 	const candidates = getModelMatchCandidates(model.id, model.name);
-	return candidates.some((s) => s.includes("opus-4-7"));
+	return candidates.some((s) => s.includes("opus-4-7") || s.includes("opus-4-8"));
 }
 
 function mapThinkingLevelToEffort(
@@ -785,7 +790,7 @@ function convertToolConfig(
 		toolSpec: {
 			name: tool.name,
 			description: tool.description,
-			inputSchema: { json: tool.parameters as unknown as DocumentType },
+			inputSchema: { json: tool.parameters as any }, // TypeBox already generates JSON Schema
 		},
 	}));
 

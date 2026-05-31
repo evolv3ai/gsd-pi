@@ -173,6 +173,15 @@ export async function handleCompleteTask(
   if (!params.milestoneId || typeof params.milestoneId !== "string" || params.milestoneId.trim() === "") {
     return { error: "milestoneId is required and must be a non-empty string" };
   }
+  if (!params.oneLiner || typeof params.oneLiner !== "string" || params.oneLiner.trim() === "") {
+    return { error: "oneLiner is required and must be a non-empty string" };
+  }
+  if (!params.narrative || typeof params.narrative !== "string" || params.narrative.trim() === "") {
+    return { error: "narrative is required and must be a non-empty string" };
+  }
+  if (!params.verification || typeof params.verification !== "string" || params.verification.trim() === "") {
+    return { error: "verification is required and must be a non-empty string" };
+  }
 
   const artifactBasePath = resolveCanonicalMilestoneRoot(basePath, params.milestoneId);
 

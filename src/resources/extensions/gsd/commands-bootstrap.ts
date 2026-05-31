@@ -31,6 +31,8 @@ const TOP_LEVEL_SUBCOMMANDS = [
   { cmd: "skill-health", desc: "Skill lifecycle dashboard" },
   { cmd: "doctor", desc: "Runtime health checks with auto-fix" },
   { cmd: "logs", desc: "Browse activity logs, debug logs, and metrics" },
+  { cmd: "usage", desc: "Current LLM context window usage and session token totals" },
+  { cmd: "context", desc: "Context breakdown chart (skills, injections, history)" },
   { cmd: "forensics", desc: "Examine execution logs" },
   { cmd: "init", desc: "Project init wizard" },
   { cmd: "setup", desc: "Global setup status and configuration" },

@@ -27,9 +27,11 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import {
+  findNearestNodeModulesAncestor,
   hasMissingWorkspaceScopes,
   mergedFingerprint,
   reconcileMergedNodeModules,
+  resolvePackageNodeModulesLayout,
 } from "../resource-loader.ts";
 
 // The real module captures packageRoot at load time — the merged-node-modules
@@ -90,6 +92,54 @@ test("initResources replaces a real directory blocking node_modules with a symli
 // --- Unit tests for pnpm-style merged node_modules (#3564) ---
 // These exercise the real reconcileMergedNodeModules helper against
 // test-controlled hoisted/internal directories.
+
+test("global layout detection handles scoped package installs", (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-scoped-global-layout-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  const hoisted = join(tmp, "lib", "node_modules");
+  const scopedPackageRoot = join(hoisted, "@opengsd", "gsd-pi");
+  mkdirSync(scopedPackageRoot, { recursive: true });
+
+  assert.equal(
+    findNearestNodeModulesAncestor(scopedPackageRoot),
+    hoisted,
+    "scoped packages should resolve the hoisted node_modules above the scope directory",
+  );
+  assert.deepEqual(resolvePackageNodeModulesLayout(scopedPackageRoot), {
+    internalNodeModules: join(scopedPackageRoot, "node_modules"),
+    hoistedNodeModules: hoisted,
+  });
+});
+
+test("global layout detection handles unscoped package installs", (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-unscoped-global-layout-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  const hoisted = join(tmp, "lib", "node_modules");
+  const packageRoot = join(hoisted, "gsd-pi");
+  mkdirSync(packageRoot, { recursive: true });
+
+  assert.equal(findNearestNodeModulesAncestor(packageRoot), hoisted);
+  assert.deepEqual(resolvePackageNodeModulesLayout(packageRoot), {
+    internalNodeModules: join(packageRoot, "node_modules"),
+    hoistedNodeModules: hoisted,
+  });
+});
+
+test("source layout detection keeps monorepo installs on package-local node_modules", (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-source-layout-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  const packageRoot = join(tmp, "open-gsd", "gsd-pi");
+  mkdirSync(packageRoot, { recursive: true });
+
+  assert.equal(findNearestNodeModulesAncestor(packageRoot), null);
+  assert.deepEqual(resolvePackageNodeModulesLayout(packageRoot), {
+    internalNodeModules: join(packageRoot, "node_modules"),
+    hoistedNodeModules: null,
+  });
+});
 
 test("pnpm layout: merged node_modules contains entries from both hoisted and internal", (t) => {
   const tmp = mkdtempSync(join(tmpdir(), "gsd-pnpm-merge-"));

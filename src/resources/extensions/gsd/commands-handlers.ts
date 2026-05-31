@@ -26,6 +26,7 @@ import { isAutoActive, checkRemoteAutoSession } from "./auto.js";
 import { getAutoWorktreePath } from "./auto-worktree.js";
 import { currentDirectoryRoot, projectRoot } from "./commands/context.js";
 import { loadPrompt } from "./prompt-loader.js";
+import { isPnpmInstall } from "../../shared/package-manager-detection.js";
 import {
   buildDoctorHealIssuePayload,
   buildDoctorHealSummary,
@@ -57,6 +58,7 @@ function isBunInstall(argv1: string | undefined = process.argv[1]): boolean {
 
 function resolveInstallCommand(pkg: string): string {
   if (isBunInstall()) return `bun add -g ${pkg}`;
+  if (isPnpmInstall()) return `pnpm add -g ${pkg}`;
   return `npm install -g ${pkg}`;
 }
 

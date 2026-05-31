@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import type { DoctorIssue } from "./doctor-types.js";
 import { isDbAvailable, _getAdapter } from "./gsd-db.js";
+import { isAfter, latestExplicitReopenAt } from "./milestone-reopen-events.js";
 import { resolveGsdPathContract, resolveMilestoneFile } from "./paths.js";
 import { deriveState } from "./state.js";
 import { readEvents } from "./workflow-events.js";
@@ -150,6 +151,104 @@ export async function checkEngineHealth(
         }
       } catch {
         // Non-fatal — duplicate ID check failed
+      }
+
+      // e. Completed milestone dispatch history but DB reopened without an explicit reopen event.
+      try {
+        const reopened = adapter
+          .prepare(
+            `SELECT m.id, m.status, ud.started_at, ud.ended_at
+             FROM milestones m
+             JOIN unit_dispatches ud ON ud.milestone_id = m.id
+             WHERE m.status NOT IN ('complete', 'done', 'skipped', 'closed')
+               AND ud.unit_type = 'complete-milestone'
+               AND ud.unit_id = m.id
+               AND ud.status = 'completed'
+               AND ud.id = (
+                 SELECT latest.id
+                 FROM unit_dispatches latest
+                 WHERE latest.milestone_id = m.id
+                   AND latest.unit_type = 'complete-milestone'
+                   AND latest.unit_id = m.id
+                   AND latest.status = 'completed'
+                 ORDER BY COALESCE(latest.ended_at, latest.started_at) DESC, latest.id DESC
+                 LIMIT 1
+               )
+             ORDER BY m.id`,
+          )
+          .all() as Array<{ id: string; status: string; started_at: string | null; ended_at: string | null }>;
+
+        for (const row of reopened) {
+          const completedAt = row.ended_at ?? row.started_at ?? null;
+          const reopenAt = latestExplicitReopenAt(basePath, row.id);
+          if (reopenAt && (!completedAt || Date.parse(reopenAt) > Date.parse(completedAt))) continue;
+          issues.push({
+            severity: "error",
+            code: "completed_milestone_reopened",
+            scope: "milestone",
+            unitId: row.id,
+            message: `Milestone ${row.id} has completed complete-milestone dispatch history but DB status is ${row.status}. Explicitly reopen or recover before planning it again.`,
+            fixable: false,
+          });
+        }
+      } catch {
+        // Non-fatal — completed-milestone reopen check failed
+      }
+
+      // f. Completion artifacts disagree with open DB hierarchy rows.
+      try {
+        const rows = adapter
+          .prepare(
+            `SELECT a.path, a.artifact_type, a.milestone_id, a.slice_id, a.task_id, a.imported_at,
+                    m.status AS milestone_status,
+                    s.status AS slice_status,
+                    t.status AS task_status,
+                    (SELECT COUNT(*) FROM tasks tt WHERE tt.milestone_id = a.milestone_id AND tt.slice_id = a.slice_id) AS task_count
+             FROM artifacts a
+             JOIN milestones m ON m.id = a.milestone_id
+             LEFT JOIN slices s ON s.milestone_id = a.milestone_id AND s.id = a.slice_id
+             LEFT JOIN tasks t ON t.milestone_id = a.milestone_id AND t.slice_id = a.slice_id AND t.id = a.task_id
+             WHERE a.artifact_type = 'SUMMARY'
+               AND m.status NOT IN ('complete', 'done', 'skipped', 'closed')`,
+          )
+          .all() as Array<{
+            path: string;
+            milestone_id: string;
+            slice_id: string | null;
+            task_id: string | null;
+            imported_at: string | null;
+            slice_status: string | null;
+            task_status: string | null;
+            task_count: number;
+          }>;
+
+        const seen = new Set<string>();
+        for (const row of rows) {
+          const reopenAt = latestExplicitReopenAt(basePath, row.milestone_id);
+          if (!isAfter(row.imported_at, reopenAt)) continue;
+          const isSliceSummary = row.slice_id && !row.task_id && row.slice_status && !["complete", "done", "skipped", "closed"].includes(row.slice_status);
+          const isTaskSummary = row.slice_id && row.task_id && (!row.task_status || !["complete", "done", "skipped", "closed"].includes(row.task_status));
+          const isTaskArtifactWithoutDbTasks = row.slice_id && row.task_id && Number(row.task_count) === 0;
+          if (!isSliceSummary && !isTaskSummary && !isTaskArtifactWithoutDbTasks) continue;
+
+          const unitId = row.task_id
+            ? `${row.milestone_id}/${row.slice_id}/${row.task_id}`
+            : row.slice_id
+              ? `${row.milestone_id}/${row.slice_id}`
+              : row.milestone_id;
+          if (seen.has(unitId)) continue;
+          seen.add(unitId);
+          issues.push({
+            severity: "error",
+            code: "artifact_db_status_divergence",
+            scope: row.task_id ? "task" : row.slice_id ? "slice" : "milestone",
+            unitId,
+            message: `Completion artifact ${row.path} exists while DB state for ${unitId} is still open or missing. Runtime will not import it silently; run explicit recovery/repair after review.`,
+            fixable: false,
+          });
+        }
+      } catch {
+        // Non-fatal — artifact/DB status drift check failed
       }
     }
   } catch {

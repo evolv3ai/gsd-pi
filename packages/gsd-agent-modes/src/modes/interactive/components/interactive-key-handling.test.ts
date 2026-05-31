@@ -1,18 +1,21 @@
 // gsd-pi + packages/pi-coding-agent/src/modes/interactive/components/interactive-key-handling.test.ts - Interactive component key handling regressions.
 
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import {
 	EditorKeybindingsManager,
 	setEditorKeybindings,
 	setKittyProtocolActive,
 	TUI,
+	visibleWidth,
 	type EditorTheme,
 	type Terminal,
 } from "@gsd/pi-tui";
 import { KeybindingsManager } from "@gsd/agent-core";
 import { initTheme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { CustomEditor } from "./custom-editor.js";
+import { ExtensionEditorComponent } from "./extension-editor.js";
 import { ExtensionInputComponent } from "./extension-input.js";
 import { ExtensionSelectorComponent } from "./extension-selector.js";
 
@@ -46,6 +49,22 @@ const editorTheme: EditorTheme = {
 		noMatch: (text) => text,
 	},
 };
+
+function assertFullOuterBorder(lines: string[], width: number): void {
+	assert.ok(lines.length >= 2, "dialog must include top and bottom borders");
+	for (const [index, line] of lines.entries()) {
+		assert.equal(visibleWidth(line), width, `line ${index} must fill dialog width`);
+	}
+	const top = stripVTControlCharacters(lines[0] ?? "");
+	const bottom = stripVTControlCharacters(lines.at(-1) ?? "");
+	assert.match(top, /^[╭┌].*[╮┐]$/);
+	assert.match(bottom, /^[╰└].*[╯┘]$/);
+	for (let index = 1; index < lines.length - 1; index++) {
+		const line = stripVTControlCharacters(lines[index] ?? "");
+		assert.match(line, /^[│┃├]/, `line ${index} missing left border: ${line}`);
+		assert.match(line, /[│┃┤]$/, `line ${index} missing right border: ${line}`);
+	}
+}
 
 describe("interactive component key handling", () => {
 	beforeEach(() => {
@@ -105,6 +124,20 @@ describe("interactive component key handling", () => {
 		selector.handleInput("\r");
 
 		assert.equal(selected, "beta");
+	});
+
+	it("extension selector, input, and editor render full dialog borders", () => {
+		const width = 80;
+		const tui = new TUI(makeTerminal());
+		const components = [
+			new ExtensionSelectorComponent("Pick\nChoose one", ["alpha", "beta"], () => {}, () => {}),
+			new ExtensionInputComponent("Input\nType a value", "placeholder", () => {}, () => {}),
+			new ExtensionEditorComponent(tui, KeybindingsManager.inMemory(), "Editor\nWrite details", "", () => {}, () => {}),
+		];
+
+		for (const component of components) {
+			assertFullOuterBorder(component.render(width), width);
+		}
 	});
 
 	it("custom editor treats the legacy alt-enter sequence as newline outside kitty mode", () => {

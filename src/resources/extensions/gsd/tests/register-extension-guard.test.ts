@@ -134,6 +134,72 @@ test("handleRecoverableExtensionProcessError swallows EPIPE without writing a cr
   }
 });
 
+test("handleRecoverableExtensionProcessError tolerates stderr.write throwing EPIPE (re-entry guard)", () => {
+  // process.stderr.write itself can EPIPE; safeStderr() must swallow it so the
+  // handler doesn't re-enter the EPIPE branch and loop forever.
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = (() => {
+    throw Object.assign(new Error("stderr broken pipe"), {
+      code: "EPIPE",
+      syscall: "write",
+    });
+  }) as typeof process.stderr.write;
+
+  try {
+    const handled = handleRecoverableExtensionProcessError(
+      Object.assign(new Error("broken pipe"), {
+        code: "EPIPE",
+        syscall: "write",
+      }),
+    );
+    assert.equal(handled, true);
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+});
+
+// #181: Windows surfaces a closed pipe mid-write as `Error: write EOF` (or
+// `read EOF`) with no `code` set. Both are the same logical condition as POSIX
+// EPIPE and must be swallowed, else they escape to the uncaught-exception path
+// and crash auto-mode workers. These non-storm cases run before the storm test
+// below so the shared storm counter stays under threshold. ECONNRESET is
+// intentionally NOT in this set — see the dedicated "leaves ECONNRESET network
+// errors unhandled" test above.
+test("handleRecoverableExtensionProcessError swallows Windows 'write EOF' (no code)", () => {
+  let stderr = "";
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderr += String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+
+  try {
+    // Mirror the real Windows error: message "write EOF", no `code`, no `syscall`.
+    const handled = handleRecoverableExtensionProcessError(new Error("write EOF"));
+    assert.equal(handled, true);
+    assert.match(stderr, /swallowed write EOF/);
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+});
+
+test("handleRecoverableExtensionProcessError swallows 'read EOF' (no code)", () => {
+  let stderr = "";
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderr += String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+
+  try {
+    const handled = handleRecoverableExtensionProcessError(new Error("read EOF"));
+    assert.equal(handled, true);
+    assert.match(stderr, /swallowed read EOF/);
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+});
+
 test("handleRecoverableExtensionProcessError swallows dead transport control write errors", () => {
   let stderr = "";
   const originalWrite = process.stderr.write.bind(process.stderr);
@@ -153,7 +219,16 @@ test("handleRecoverableExtensionProcessError swallows dead transport control wri
   }
 });
 
-test("handleRecoverableExtensionProcessError swallows write EOF without code", () => {
+test("handleRecoverableExtensionProcessError leaves a plain EOF-substring error unhandled", () => {
+  // Guard against over-matching: only the exact "write EOF"/"read EOF" messages
+  // are the Windows pipe-closed signature; an unrelated error must not be eaten.
+  const handled = handleRecoverableExtensionProcessError(new Error("could not write EOF marker to log"));
+  assert.equal(handled, false);
+});
+
+test("handleRecoverableExtensionProcessError exits on EPIPE storm (>100 within 10s)", () => {
+  // After the storm threshold, the pipe is gone for good — handler must exit
+  // cleanly instead of swallowing forever in a tight CPU loop.
   let stderr = "";
   const originalWrite = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: string | Uint8Array) => {
@@ -161,18 +236,38 @@ test("handleRecoverableExtensionProcessError swallows write EOF without code", (
     return true;
   }) as typeof process.stderr.write;
 
+  const originalExit = process.exit;
+  const exitCalls: Array<number | undefined> = [];
+  process.exit = ((code?: number) => {
+    exitCalls.push(code);
+    // Don't actually exit; just record the call.
+    return undefined as never;
+  }) as typeof process.exit;
+
   try {
-    const handled = handleRecoverableExtensionProcessError(
-      new Error("write EOF"),
+    const err = Object.assign(new Error("broken pipe"), {
+      code: "EPIPE",
+      syscall: "write",
+    });
+    // Fire well above the 100-event threshold inside the 10s window.
+    for (let i = 0; i < 150; i++) {
+      handleRecoverableExtensionProcessError(err);
+    }
+    assert.ok(
+      exitCalls.length > 0,
+      `expected process.exit to be called during EPIPE storm, got ${exitCalls.length} calls`,
     );
-    assert.equal(handled, true);
-    assert.match(stderr, /swallowed write EOF/);
+    assert.equal(exitCalls[0], 0);
+    assert.match(stderr, /EPIPE storm/);
   } finally {
     process.stderr.write = originalWrite;
+    process.exit = originalExit;
   }
 });
 
-test("handleRecoverableExtensionProcessError swallows read EOF without code", () => {
+test("handleRecoverableExtensionProcessError exits on a Windows 'write EOF' storm too (#181)", () => {
+  // The storm counter is shared across all pipe-closed encodings, so a runaway
+  // Windows `write EOF` loop must trip the same clean-exit guard as EPIPE.
   let stderr = "";
   const originalWrite = process.stderr.write.bind(process.stderr);
   process.stderr.write = ((chunk: string | Uint8Array) => {
@@ -180,13 +275,23 @@ test("handleRecoverableExtensionProcessError swallows read EOF without code", ()
     return true;
   }) as typeof process.stderr.write;
 
+  const originalExit = process.exit;
+  const exitCalls: Array<number | undefined> = [];
+  process.exit = ((code?: number) => {
+    exitCalls.push(code);
+    return undefined as never;
+  }) as typeof process.exit;
+
   try {
-    const handled = handleRecoverableExtensionProcessError(
-      new Error("read EOF"),
-    );
-    assert.equal(handled, true);
-    assert.match(stderr, /swallowed read EOF/);
+    const err = new Error("write EOF");
+    for (let i = 0; i < 150; i++) {
+      handleRecoverableExtensionProcessError(err);
+    }
+    assert.ok(exitCalls.length > 0, "expected process.exit during write EOF storm");
+    assert.equal(exitCalls[0], 0);
+    assert.match(stderr, /write EOF storm/);
   } finally {
     process.stderr.write = originalWrite;
+    process.exit = originalExit;
   }
 });

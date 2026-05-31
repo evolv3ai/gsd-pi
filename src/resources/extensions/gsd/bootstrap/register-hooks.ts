@@ -13,7 +13,7 @@ import type { GSDEcosystemBeforeAgentStartHandler } from "../ecosystem/gsd-exten
 import { updateSnapshot } from "../ecosystem/gsd-extension-api.js";
 
 import { buildMilestoneFileName, resolveMilestonePath, resolveSliceFile, resolveSlicePath } from "../paths.js";
-import { canonicalToolName, clearDiscussionFlowState, isDepthConfirmationAnswer, isQueuePhaseActive, markApprovalGateVerified, markDepthVerified, resetWriteGateState, shouldBlockContextWrite, shouldBlockPlanningUnit, shouldBlockQueueExecution, shouldBlockWorktreeWrite, isGateQuestionId, setPendingGate, clearPendingGate, getPendingGate, shouldBlockPendingGate, shouldBlockPendingGateBash, extractDepthVerificationMilestoneId } from "./write-gate.js";
+import { canonicalToolName, clearDiscussionFlowState, isDepthConfirmationAnswer, isMilestoneDepthVerified, isQueuePhaseActive, markApprovalGateVerified, markDepthVerified, resetWriteGateState, shouldBlockContextWrite, shouldBlockPlanningUnit, shouldBlockQueueExecution, shouldBlockWorktreeWrite, isGateQuestionId, setPendingGate, clearPendingGate, getPendingGate, shouldBlockPendingGate, shouldBlockPendingGateBash, extractDepthVerificationMilestoneId } from "./write-gate.js";
 import { resolveManifest } from "../unit-context-manifest.js";
 import { isBlockedStateFile, isBashWriteToStateFile, BLOCKED_WRITE_ERROR } from "../write-intercept.js";
 import { loadFile, saveFile, formatContinue } from "../files.js";
@@ -507,6 +507,21 @@ function initSessionNotifications(ctx: ExtensionContext): void {
   initNotificationWidget(ctx);
 }
 
+async function prepareWorkflowMcpForHookContext(
+  ctx: ExtensionContext,
+  basePath: string,
+): Promise<void> {
+  // Skip MCP auto-prep when running inside an auto-worktree. The worktree
+  // already has .mcp.json from createAutoWorktree, and re-running the writer
+  // post-chdir rewrites the file mid-run (non-idempotent due to cwd-relative
+  // CLI path resolution), dirtying the tree and breaking the milestone merge.
+  const { isInAutoWorktree } = await import("../auto-worktree.js");
+  if (isInAutoWorktree(basePath)) return;
+
+  const { prepareWorkflowMcpForProject } = await import("../workflow-mcp-auto-prep.js");
+  prepareWorkflowMcpForProject(ctx, basePath);
+}
+
 export function registerHooks(
   pi: ExtensionAPI,
   ecosystemHandlers: GSDEcosystemBeforeAgentStartHandler[],
@@ -532,12 +547,7 @@ export function registerHooks(
     await syncServiceTierStatus(ctx);
     await applyDisabledModelProviderPolicy(ctx);
     await applyCompactionThresholdOverride(ctx);
-    // Skip MCP auto-prep when running inside an auto-worktree (see session_switch below).
-    const { isInAutoWorktree } = await import("../auto-worktree.js");
-    if (!isInAutoWorktree(basePath)) {
-      const { prepareWorkflowMcpForProject } = await import("../workflow-mcp-auto-prep.js");
-      prepareWorkflowMcpForProject(ctx, basePath);
-    }
+    await prepareWorkflowMcpForHookContext(ctx, basePath);
 
     // Apply show_token_cost preference (#1515)
     try {
@@ -563,15 +573,7 @@ export function registerHooks(
     await syncServiceTierStatus(ctx);
     await applyDisabledModelProviderPolicy(ctx);
     await applyCompactionThresholdOverride(ctx);
-    // Skip MCP auto-prep when running inside an auto-worktree. The worktree
-    // already has .mcp.json from createAutoWorktree, and re-running the writer
-    // post-chdir rewrites the file mid-run (non-idempotent due to cwd-relative
-    // CLI path resolution), dirtying the tree and breaking the milestone merge.
-    const { isInAutoWorktree } = await import("../auto-worktree.js");
-    if (!isInAutoWorktree(basePath)) {
-      const { prepareWorkflowMcpForProject } = await import("../workflow-mcp-auto-prep.js");
-      prepareWorkflowMcpForProject(ctx, basePath);
-    }
+    await prepareWorkflowMcpForHookContext(ctx, basePath);
     await loadToolApiKeysForSession();
     if (!isAutoActive()) {
       ctx.ui.setWidget("gsd-progress", undefined);
@@ -607,6 +609,11 @@ export function registerHooks(
       }
     }
     clearDeferredApprovalGate(beforeAgentBasePath);
+
+    // session_start can fire before the active provider has settled. By
+    // before_agent_start, Claude Code CLI sessions should get the same
+    // project MCP config that /gsd mcp init would write.
+    await prepareWorkflowMcpForHookContext(ctx, beforeAgentBasePath);
 
     let systemPrompt = event.systemPrompt;
     const { hasSkillSnapshot, refreshCatalogForNewSkills } = await import("../skill-discovery.js");
@@ -807,7 +814,15 @@ export function registerHooks(
     if (!shouldPauseForUserApprovalQuestion(unitType, [event.message])) return;
 
     const gateId = approvalGateIdForUnit(unitType, unitId);
-    if (gateId) deferApprovalGate(gateId, contextBasePath(ctx));
+    if (gateId) {
+      // Skip the gate if this milestone is already depth-verified — the approval
+      // pattern matched again on post-verification text (a false-positive re-trigger).
+      // Without this guard, the second firing blocks gsd_plan_milestone in the same
+      // turn and leaves CONTEXT.md on disk with no DB row (#discuss-milestone-no-db).
+      const gateMilestoneId = extractDepthVerificationMilestoneId(gateId);
+      if (gateMilestoneId && isMilestoneDepthVerified(gateMilestoneId, contextBasePath(ctx))) return;
+      deferApprovalGate(gateId, contextBasePath(ctx));
+    }
 
     approvalQuestionAbortInFlight = true;
     ctx.ui.notify(

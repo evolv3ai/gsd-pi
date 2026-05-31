@@ -5,10 +5,80 @@
 import type { OAuthProviderId } from "@gsd/pi-ai";
 import { getAuthPath } from "@gsd/pi-coding-agent/config.js";
 import { LoginDialogComponent } from "./components/login-dialog.js";
-import { OAuthSelectorComponent } from "./components/oauth-selector.js";
+import { type AuthSelectorProvider, OAuthSelectorComponent } from "./components/oauth-selector.js";
 import type { InteractiveModeDelegateHost } from "./interactive-mode-delegate-host.js";
 
+const BLOCKED_BROWSER_OAUTH_PROVIDERS = new Set(["anthropic"]);
+
+function isBrowserOAuthProviderAllowed(providerId: string): boolean {
+	return !BLOCKED_BROWSER_OAUTH_PROVIDERS.has(providerId);
+}
+
+function uniqueProviders(providers: AuthSelectorProvider[]): AuthSelectorProvider[] {
+	const seen = new Set<string>();
+	const unique: AuthSelectorProvider[] = [];
+	for (const provider of providers) {
+		if (seen.has(provider.id)) continue;
+		seen.add(provider.id);
+		unique.push(provider);
+	}
+	return unique;
+}
+
+function formatAuthStatus(status: { source?: string; label?: string } | undefined): string | undefined {
+	if (!status?.source) return undefined;
+	if (status.source === "stored") return "✓ configured";
+	if (status.source === "environment" && status.label) return `✓ env: ${status.label}`;
+	if (status.source === "runtime" && status.label) return `✓ ${status.label}`;
+	if (status.source === "models_json_command") return "✓ command in models.json";
+	if (status.source === "models_json_key") return "✓ key in models.json";
+	if (status.source === "fallback") return "✓ configured";
+	return undefined;
+}
+
+export function buildLoginProviderOptions(host: InteractiveModeDelegateHost): AuthSelectorProvider[] {
+	const modelRegistry = host.session.modelRegistry;
+	const oauthProviders = modelRegistry.authStorage
+		.getOAuthProviders()
+		.filter((provider) => isBrowserOAuthProviderAllowed(provider.id));
+	const oauthProviderIds = new Set(oauthProviders.map((provider) => provider.id));
+	const modelProviderIds = Array.from(new Set(modelRegistry.getAll().map((model) => model.provider))).sort();
+
+	const externalCliProviders = modelProviderIds
+		.filter((providerId) => modelRegistry.getProviderAuthMode(providerId) === "externalCli")
+		.map((providerId) => ({
+			id: providerId,
+			name: modelRegistry.getProviderDisplayName(providerId),
+			authType: "external_cli" as const,
+			statusLabel: modelRegistry.isProviderRequestReady(providerId) ? "✓ ready" : undefined,
+		}));
+
+	const apiKeyProviders = modelProviderIds
+		.filter((providerId) => modelRegistry.getProviderAuthMode(providerId) === "apiKey")
+		.filter((providerId) => !oauthProviderIds.has(providerId))
+		.map((providerId) => ({
+			id: providerId,
+			name: modelRegistry.getProviderDisplayName(providerId),
+			authType: "api_key" as const,
+			statusLabel: formatAuthStatus(modelRegistry.getProviderAuthStatus(providerId)),
+		}));
+
+	const browserOAuthProviders = oauthProviders.map((provider) => ({
+		...provider,
+		authType: "oauth" as const,
+		statusLabel: formatAuthStatus(modelRegistry.getProviderAuthStatus(provider.id)),
+	}));
+
+	return uniqueProviders([
+		...externalCliProviders,
+		...apiKeyProviders,
+		...browserOAuthProviders,
+	]);
+}
+
 export async function showOAuthSelector(host: InteractiveModeDelegateHost, mode: "login" | "logout"): Promise<void> {
+	const loginProviders = mode === "login" ? buildLoginProviderOptions(host) : undefined;
+
 	if (mode === "logout") {
 		const providers = host.session.modelRegistry.authStorage.list();
 		const loggedInProviders = providers.filter(
@@ -29,7 +99,7 @@ export async function showOAuthSelector(host: InteractiveModeDelegateHost, mode:
 
 				const handleAsync = async () => {
 					if (mode === "login") {
-						await host.showLoginDialog(providerId);
+						await handleLoginProviderSelection(host, providerId);
 					} else {
 						const providerInfo = host.session.modelRegistry.authStorage
 							.getOAuthProviders()
@@ -68,12 +138,101 @@ export async function showOAuthSelector(host: InteractiveModeDelegateHost, mode:
 				done();
 				host.ui.requestRender();
 			},
+			loginProviders,
 		);
 		return { component: selector, focus: selector };
 	});
 }
 
+export async function handleLoginProviderSelection(host: InteractiveModeDelegateHost, providerId: string): Promise<void> {
+	const modelRegistry = host.session.modelRegistry;
+	const authMode = modelRegistry.getProviderAuthMode(providerId);
+
+	if (authMode === "externalCli") {
+		await activateExternalCliProvider(host, providerId);
+		return;
+	}
+
+	const oauthProvider = modelRegistry.authStorage.getOAuthProviders().find((provider) => provider.id === providerId);
+	if (oauthProvider && isBrowserOAuthProviderAllowed(providerId)) {
+		await host.showLoginDialog(providerId);
+		return;
+	}
+
+	await showApiKeyLoginDialog(host, providerId);
+}
+
+async function activateExternalCliProvider(host: InteractiveModeDelegateHost, providerId: string): Promise<void> {
+	const modelRegistry = host.session.modelRegistry;
+	const providerName = modelRegistry.getProviderDisplayName(providerId);
+
+	if (!modelRegistry.isProviderRequestReady(providerId)) {
+		host.showError(`${providerName} is not ready. Run the provider's own login command, then try /login again.`);
+		return;
+	}
+
+	modelRegistry.authStorage.set(providerId, { type: "api_key", key: "cli" });
+	modelRegistry.refresh();
+	await host.updateAvailableProviderCount();
+
+	const targetModel = modelRegistry.getAvailable().find((model) => model.provider === providerId);
+	if (targetModel) {
+		await host.session.setModel(targetModel);
+		host.showStatus(`Using ${providerName}: ${providerId}/${targetModel.id}`);
+	} else {
+		host.showStatus(`${providerName} is ready. Use /model to choose a model.`);
+	}
+}
+
+async function showApiKeyLoginDialog(host: InteractiveModeDelegateHost, providerId: string): Promise<void> {
+	const providerName = host.session.modelRegistry.getProviderDisplayName(providerId);
+	const dialog = new LoginDialogComponent(host.ui, providerId, (_success, _message) => {}, providerName);
+
+	host.editorContainer.clear();
+	host.editorContainer.addChild(dialog);
+	host.ui.setFocus(dialog);
+	host.ui.requestRender();
+
+	const restoreEditor = () => {
+		dialog.dispose();
+		host.editorContainer.clear();
+		host.editorContainer.addChild(host.editor);
+		host.ui.setFocus(host.editor);
+		host.ui.requestRender();
+	};
+
+	try {
+		const apiKey = (await dialog.showPrompt(`Paste your ${providerName} API key:`)).trim();
+		if (!apiKey) {
+			throw new Error("API key is required");
+		}
+
+		host.session.modelRegistry.authStorage.set(providerId, { type: "api_key", key: apiKey });
+		restoreEditor();
+		host.session.modelRegistry.refresh();
+		await host.updateAvailableProviderCount();
+
+		const targetModel = host.session.modelRegistry.getAvailable().find((model) => model.provider === providerId);
+		if (targetModel) {
+			await host.session.setModel(targetModel);
+		}
+
+		host.showStatus(`Saved ${providerName} API key to ${getAuthPath()}`);
+	} catch (error: unknown) {
+		restoreEditor();
+		const errorMsg = error instanceof Error ? error.message : String(error);
+		if (errorMsg !== "Login cancelled" && !errorMsg.includes("Superseded") && !errorMsg.includes("disposed")) {
+			host.showError(`Failed to save ${providerName} API key: ${errorMsg}`);
+		}
+	}
+}
+
 export async function showLoginDialog(host: InteractiveModeDelegateHost, providerId: string): Promise<void> {
+	if (!isBrowserOAuthProviderAllowed(providerId)) {
+		await showApiKeyLoginDialog(host, providerId);
+		return;
+	}
+
 	const providerInfo = host.session.modelRegistry.authStorage.getOAuthProviders().find((p) => p.id === providerId);
 	const providerName = providerInfo?.name || providerId;
 	const usesCallbackServer = providerInfo?.usesCallbackServer ?? false;

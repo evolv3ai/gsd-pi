@@ -5,11 +5,20 @@
 import { createRequire } from 'module'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
+import { detectPackageManager } from './npm-global.js'
 
 const require = createRequire(import.meta.url)
 const { GSD_PI_BRAND } = require(join(dirname(fileURLToPath(import.meta.url)), '..', 'lib', 'logo.cjs'))
 
 export function parseInstalledVersion(npmListJson) {
+  if (Array.isArray(npmListJson)) {
+    for (const entry of npmListJson) {
+      const found = parseInstalledVersion(entry)
+      if (found) return found
+    }
+    return null
+  }
+
   if (!npmListJson || typeof npmListJson !== 'object') return null
 
   const direct = npmListJson.dependencies?.['@opengsd/gsd-pi']?.version
@@ -30,6 +39,10 @@ export function parseInstalledVersion(npmListJson) {
   return walk(npmListJson)
 }
 
+function getPackageManagerBin(packageManager) {
+  return process.platform === 'win32' ? `${packageManager}.cmd` : packageManager
+}
+
 /**
  * Decide install action for non-interactive or pre-prompt routing.
  */
@@ -39,11 +52,12 @@ export function compareActions({ installed, yesMode }) {
   return 'prompt'
 }
 
-export async function detectInstalledVersion() {
+export async function detectInstalledVersion(options = {}) {
   const { execFileSync } = await import('child_process')
-  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
+  const packageManager = options.packageManager ?? detectPackageManager()
+  const bin = getPackageManagerBin(packageManager)
   try {
-    const raw = execFileSync(npm, ['list', '-g', '@opengsd/gsd-pi', '--json'], {
+    const raw = execFileSync(bin, ['list', '-g', '@opengsd/gsd-pi', '--json'], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 30_000,

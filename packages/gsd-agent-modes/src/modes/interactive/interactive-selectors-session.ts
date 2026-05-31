@@ -24,6 +24,7 @@ import {
   handleModelCommand as handleModelCommandController,
   updateAvailableProviderCount as updateAvailableProviderCountController,
 } from "./controllers/model-controller.js";
+import { handleLoginProviderSelection } from "./interactive-selectors-auth.js";
 import type { InteractiveModeDelegateHost } from "./interactive-mode-delegate-host.js";
 
 export function showUserMessageSelector(host: InteractiveModeDelegateHost): void {
@@ -281,21 +282,8 @@ export function showProviderManager(host: InteractiveModeDelegateHost): void {
 					host.ui.requestRender();
 				},
 				async (provider: string) => {
-					// Enter key → auth setup for selected provider (#3579).
-					// Only OAuth providers support the login dialog flow.
-					// externalCli providers (e.g. claude-code) authenticate through
-					// their own CLI — sending them to the OAuth dialog produces
-					// "Unknown OAuth provider: claude-code" (#4548).
-					const isOAuthProvider = host.session.modelRegistry.authStorage
-						.getOAuthProviders()
-						.some((p) => p.id === provider);
-					if (!isOAuthProvider) {
-						done();
-						host.showStatus(`${provider} uses external CLI auth — use /model to select a model or run the provider's own auth command.`);
-						return;
-					}
 					done();
-					await host.showLoginDialog(provider);
+					await handleLoginProviderSelection(host, provider);
 				},
 			);
 			return { component, focus: component };

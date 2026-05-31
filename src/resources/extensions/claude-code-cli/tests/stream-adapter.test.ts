@@ -790,6 +790,19 @@ describe("stream-adapter — session persistence (#2859)", () => {
 		assert.equal(options.effort, "xhigh");
 	});
 
+	test("buildSdkOptions enables context-1m beta for opus-4-8", () => {
+		const opts = buildSdkOptions("claude-opus-4-8", "test");
+		assert.ok(
+			Array.isArray(opts.betas) && opts.betas.includes("context-1m-2025-08-07"),
+			"claude-opus-4-8 should have context-1m beta enabled for 1M token context window",
+		);
+	});
+
+	test("buildSdkOptions passes xhigh reasoning natively for opus-4-8", () => {
+		const options = buildSdkOptions("claude-opus-4-8", "test", undefined, { reasoning: "xhigh" });
+		assert.equal(options.effort, "xhigh");
+	});
+
 	test("buildSdkOptions omits effort when reasoning is undefined (#3917)", () => {
 		const options = buildSdkOptions("claude-sonnet-4-6", "test");
 		assert.equal("effort" in options, false);

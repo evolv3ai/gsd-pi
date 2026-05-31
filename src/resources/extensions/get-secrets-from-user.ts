@@ -13,6 +13,7 @@ import { resolve } from "node:path";
 import type { ExtensionAPI, Theme } from "@gsd/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth, wrapTextWithAnsi } from "@gsd/pi-tui";
 import { Type } from "@sinclair/typebox";
+import { renderSharedDialogFrame } from "./shared/dialog-frame.js";
 import { makeUI } from "./shared/tui.js";
 import { maskEditorLine, type ProgressStatus } from "./shared/mod.js";
 import { parseSecretsManifest, formatSecretsManifest } from "./gsd/files.js";
@@ -41,6 +42,10 @@ function maskPreview(value: string): string {
 	if (!value) return "";
 	if (value.length <= 8) return "*".repeat(value.length);
 	return `${value.slice(0, 4)}${"*".repeat(Math.max(4, value.length - 8))}${value.slice(-4)}`;
+}
+
+function dialogContentWidth(width: number): number {
+	return width < 4 ? Math.max(1, width) : Math.max(1, width - 4);
 }
 
 function shellEscapeSingle(value: string): string {
@@ -168,10 +173,10 @@ async function collectOneSecret(
 
 		function render(width: number): string[] {
 			if (cachedLines) return cachedLines;
+			const contentWidth = dialogContentWidth(width);
 			const lines: string[] = [];
-			const add = (s: string) => lines.push(truncateToWidth(s, width));
+			const add = (s: string) => lines.push(truncateToWidth(s, contentWidth));
 
-			add(theme.fg("accent", "─".repeat(width)));
 			add(theme.fg("dim", ` Page ${pageIndex + 1}/${totalPages} · Secure Env Setup`));
 			lines.push("");
 
@@ -187,7 +192,7 @@ async function collectOneSecret(
 				for (let g = 0; g < guidance.length; g++) {
 					const prefix = `  ${g + 1}. `;
 					const step = guidance[g] as string;
-					const wrappedLines = wrapTextWithAnsi(step, width - 4);
+					const wrappedLines = wrapTextWithAnsi(step, Math.max(1, contentWidth - 4));
 					for (let w = 0; w < wrappedLines.length; w++) {
 						const indent = w === 0 ? prefix : " ".repeat(prefix.length);
 						lines.push(theme.fg("dim", `${indent}${wrappedLines[w]}`));
@@ -205,16 +210,15 @@ async function collectOneSecret(
 
 			// Editor
 			add(theme.fg("muted", " Enter value:"));
-			for (const line of editor.render(width - 2)) {
+			for (const line of editor.render(Math.max(1, contentWidth - 2))) {
 				add(theme.fg("text", maskEditorLine(line)));
 			}
 
 			lines.push("");
-			add(theme.fg("dim", ` enter to confirm  |  ctrl+s or esc to skip  |  esc cancels`));
-			add(theme.fg("accent", "─".repeat(width)));
+			const footer = theme.fg("dim", " enter to confirm  |  ctrl+s or esc to skip  |  esc cancels");
 
-			cachedLines = lines;
-			return lines;
+			cachedLines = renderSharedDialogFrame(theme, "Secure Env Setup", lines, width, { footer });
+			return cachedLines;
 		}
 
 		return {
@@ -286,13 +290,11 @@ export async function showSecretsSummary(
 		function render(width: number): string[] {
 			if (cachedLines) return cachedLines;
 
-			const ui = makeUI(theme, width);
+			const contentWidth = dialogContentWidth(width);
+			const ui = makeUI(theme, contentWidth);
 			const lines: string[] = [];
 			const push = (...rows: string[][]) => { for (const r of rows) lines.push(...r); };
 
-			push(ui.bar());
-			push(ui.blank());
-			push(ui.header("  Secrets Summary"));
 			push(ui.blank());
 
 			for (const entry of entries) {
@@ -314,11 +316,10 @@ export async function showSecretsSummary(
 			}
 
 			push(ui.blank());
-			push(ui.hints(["any key to continue"]));
-			push(ui.bar());
+			const footer = ui.hints(["any key to continue"])[0] ?? "";
 
-			cachedLines = lines;
-			return lines;
+			cachedLines = renderSharedDialogFrame(theme, "Secrets Summary", lines, width, { footer });
+			return cachedLines;
 		}
 
 		return {

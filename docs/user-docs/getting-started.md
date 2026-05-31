@@ -39,6 +39,14 @@ Alternative — direct global install from the scoped npm package:
 npm install -g @opengsd/gsd-pi@latest
 ```
 
+Using pnpm globally:
+
+```bash
+pnpm setup
+exec $SHELL -l
+pnpm add -g @opengsd/gsd-pi@latest
+```
+
 Non-interactive install (CI/scripts):
 
 ```bash
@@ -58,6 +66,8 @@ npm prefix -g
 ```
 
 Add that directory's `bin` folder to your shell profile, then open a new terminal.
+
+For pnpm installs, pnpm may fail global commands with `The configured global bin directory ... is not in PATH`. Run `pnpm setup`, restart your shell, then retry the pnpm command.
 
 ## Upgrade GSD Pi
 

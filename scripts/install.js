@@ -71,6 +71,7 @@ if (HAS_HELP) {
 
   ${colors.yellow}Usage:${colors.reset}
     npx @opengsd/gsd-pi@latest              Install GSD-Pi globally (recommended)
+    pnpm dlx @opengsd/gsd-pi@latest         Install GSD-Pi globally with pnpm
     npx @opengsd/gsd-pi@latest --local      Install to current project (advanced)
 
   ${colors.yellow}Options:${colors.reset}

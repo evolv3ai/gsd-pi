@@ -8,7 +8,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
-	Container,
 	Editor,
 	type EditorOptions,
 	type Focusable,
@@ -19,10 +18,10 @@ import {
 } from "@gsd/pi-tui";
 import type { KeybindingsManager } from "@gsd/agent-core";
 import { getEditorTheme, theme } from "@gsd/pi-coding-agent/theme/theme.js";
-import { DynamicBorder } from "./dynamic-border.js";
+import { DialogContainer, splitDialogTitle } from "./dialog-container.js";
 import { appKeyHint, keyHint } from "./keybinding-hints.js";
 
-export class ExtensionEditorComponent extends Container implements Focusable {
+export class ExtensionEditorComponent extends DialogContainer implements Focusable {
 	private editor: Editor;
 	private onSubmitCallback: (value: string) => void;
 	private onCancelCallback: () => void;
@@ -47,20 +46,21 @@ export class ExtensionEditorComponent extends Container implements Focusable {
 		onCancel: () => void,
 		options?: EditorOptions,
 	) {
-		super();
+		const dialogTitle = splitDialogTitle(title);
+		super(dialogTitle.title);
 
 		this.tui = tui;
 		this.keybindings = keybindings;
 		this.onSubmitCallback = onSubmit;
 		this.onCancelCallback = onCancel;
 
-		// Add top border
-		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
-
-		// Add title
-		this.addChild(new Text(theme.fg("accent", title), 1, 0));
-		this.addChild(new Spacer(1));
+		for (const detail of dialogTitle.detailLines) {
+			this.addChild(new Text(theme.fg("text", detail), 1, 0));
+		}
+		if (dialogTitle.detailLines.length > 0) {
+			this.addChild(new Spacer(1));
+		}
 
 		// Create editor
 		this.editor = new Editor(tui, getEditorTheme(), options);
@@ -87,9 +87,6 @@ export class ExtensionEditorComponent extends Container implements Focusable {
 		this.addChild(new Text(hint, 1, 0));
 
 		this.addChild(new Spacer(1));
-
-		// Add bottom border
-		this.addChild(new DynamicBorder());
 	}
 
 	handleInput(keyData: string): void {

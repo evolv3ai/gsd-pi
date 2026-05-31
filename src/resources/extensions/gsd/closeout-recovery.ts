@@ -205,7 +205,12 @@ export function getCloseoutManualResolveBlocker(basePath: string): string | null
     return `Unmerged paths remain in ${basePath}: ${conflictProbe.unmerged.slice(0, 5).join(", ")}`;
   }
 
-  const status = runGit(basePath, ["status", "--porcelain"]);
+  let status: string;
+  try {
+    status = runGit(basePath, ["status", "--porcelain"]);
+  } catch {
+    return `Could not inspect git status in ${basePath}.`;
+  }
   if (status) {
     return `Working tree still has uncommitted changes in ${basePath}. Commit, stash, or run /gsd closeout retry first.`;
   }

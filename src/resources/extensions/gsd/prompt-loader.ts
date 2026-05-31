@@ -22,6 +22,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { logWarning } from "./workflow-logger.js";
 import { gsdHome } from "./gsd-home.js";
+import { chooseVisionAskVariant } from "./vision-ask.js";
 
 type ExistsFn = (path: string) => boolean;
 
@@ -184,6 +185,7 @@ export function loadPrompt(name: string, vars: Record<string, string> = {}): str
     planTemplatePath: join(getTemplatesDir(), "plan.md"),
     taskPlanTemplatePath: join(getTemplatesDir(), "task-plan.md"),
     taskSummaryTemplatePath: join(getTemplatesDir(), "task-summary.md"),
+    visionAsk: chooseVisionAskVariant(),
     skillActivation: "If a `GSD Skill Preferences` block is present in system context, use it and the `<available_skills>` catalog in your system prompt to decide which skills to load and follow for this unit, without relaxing required verification or artifact rules.",
     ...vars,
   };

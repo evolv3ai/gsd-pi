@@ -104,6 +104,12 @@ test("ci workflow checkout does not depend on actor-scoped GitHub token auth", (
   }
 });
 
+test("ci workflow opts into Node 24 actions runtime", () => {
+  const workflow = YAML.parse(readFileSync(".github/workflows/ci.yml", "utf8"));
+
+  assert.equal(workflow.env.FORCE_JAVASCRIPT_ACTIONS_TO_NODE24, "true");
+});
+
 test("native Linux ARM64 build matrix uses a Rust target triple", () => {
   const workflow = YAML.parse(readFileSync(".github/workflows/build-native.yml", "utf8"));
   const entries = workflow.jobs.build.strategy.matrix.include;

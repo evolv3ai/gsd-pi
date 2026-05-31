@@ -151,3 +151,85 @@ export function renderFrame(
   lines.push(border("╰" + "─".repeat(width - 2) + "╯"));
   return lines.map((line) => safeLine(line, width, ""));
 }
+
+export interface DialogFrameOptions {
+  borderColor?: string;
+  paddingX?: number;
+  footer?: string | string[];
+  scroll?: {
+    offset: number;
+    visibleRows: number;
+    totalRows: number;
+    trackOffset?: number;
+    trackRows?: number;
+  };
+}
+
+function renderTitledTopBorder(
+  theme: ThemeLike,
+  title: string,
+  width: number,
+  border: (text: string) => string,
+): string {
+  const trimmedTitle = title.trim();
+  if (!trimmedTitle || width < 10) {
+    return border("╭" + "─".repeat(width - 2) + "╮");
+  }
+
+  const maxTitleWidth = Math.max(0, width - 7);
+  const safeTitle = safeLine(trimmedTitle, maxTitleWidth);
+  const fill = Math.max(0, width - visibleWidth(safeTitle) - 5);
+  return border("╭─ ") + theme.bold(theme.fg("accent", safeTitle)) + border(" " + "─".repeat(fill) + "╮");
+}
+
+export function renderDialogFrame(
+  theme: ThemeLike,
+  title: string,
+  inner: string[],
+  width: number,
+  options: DialogFrameOptions = {},
+): string[] {
+  if (width < 4) return inner.map((line) => safeLine(line, width));
+
+  const borderColor = options.borderColor ?? "borderAccent";
+  const paddingX = Math.max(0, options.paddingX ?? 1);
+  const contentWidth = Math.max(0, width - 2 - paddingX * 2);
+  const border = (text: string) => theme.fg(borderColor, text);
+  const pad = " ".repeat(paddingX);
+  const lines = [renderTitledTopBorder(theme, title, width, border)];
+
+  const scroll = options.scroll;
+  const bodyRows = inner.length;
+  const trackOffset = Math.max(0, Math.min(scroll?.trackOffset ?? 0, bodyRows));
+  const trackRows = Math.max(0, Math.min(scroll?.trackRows ?? bodyRows, bodyRows - trackOffset));
+  const scrollable = !!scroll && scroll.totalRows > scroll.visibleRows && trackRows > 0;
+  const thumbLen = scrollable
+    ? Math.max(1, Math.round((scroll.visibleRows / scroll.totalRows) * trackRows))
+    : 0;
+  const maxThumbStart = Math.max(0, trackRows - thumbLen);
+  const maxScrollOffset = scrollable ? Math.max(1, scroll.totalRows - scroll.visibleRows) : 1;
+  const thumbStart = scrollable
+    ? trackOffset + Math.min(maxThumbStart, Math.round((scroll.offset / maxScrollOffset) * maxThumbStart))
+    : -1;
+
+  for (let i = 0; i < inner.length; i++) {
+    const line = inner[i] ?? "";
+    const rightBorder = scrollable && i >= thumbStart && i < thumbStart + thumbLen ? "┃" : "│";
+    lines.push(border("│") + pad + padRightVisible(line, contentWidth) + pad + border(rightBorder));
+  }
+
+  const footer = Array.isArray(options.footer)
+    ? options.footer
+    : options.footer
+      ? [options.footer]
+      : [];
+  if (footer.length > 0) {
+    lines.push(border("├" + "─".repeat(width - 2) + "┤"));
+    for (const line of footer) {
+      lines.push(border("│") + pad + padRightVisible(line, contentWidth) + pad + border("│"));
+    }
+  }
+
+  lines.push(border("╰" + "─".repeat(width - 2) + "╯"));
+  return lines.map((line) => safeLine(line, width, ""));
+}

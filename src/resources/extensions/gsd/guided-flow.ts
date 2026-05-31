@@ -16,7 +16,7 @@ import {
   isInteractiveCommandContext,
 } from "./command-feedback.js";
 import { loadFile, saveFile } from "./files.js";
-import { isDbAvailable, getMilestone, getMilestoneSlices } from "./gsd-db.js";
+import { isDbAvailable, getMilestone, getMilestoneSlices, insertMilestone } from "./gsd-db.js";
 import { parseRoadmapSlices } from "./roadmap-slices.js";
 import { loadPrompt, inlineTemplate } from "./prompt-loader.js";
 import {
@@ -761,6 +761,40 @@ export function checkAutoStartAfterDiscuss(lookupBasePath?: string): boolean {
       }
       if (manifestHasMilestone) {
         logWarning("guided", `R3b: getMilestone(${milestoneId}) returned null but manifest has the row — treating as stale read`);
+      } else if (contextFile) {
+        // R3b-recovery: CONTEXT.md is on disk but gsd_plan_milestone was never called
+        // (likely blocked by the depth-verification gate re-firing on post-verification
+        // text). Auto-register as "queued" so Gate 1b can pick it up and retry
+        // gsd_plan_milestone on the next checkAutoStartAfterDiscuss call.
+        if (entry.r3bRecoveryCount >= MAX_PLAN_BLOCKED_RECOVERIES) {
+          logWarning(
+            "guided",
+            `R3b: milestone ${milestoneId} DB-row recovery limit reached ` +
+            `(${entry.r3bRecoveryCount}/${MAX_PLAN_BLOCKED_RECOVERIES}); escalating to user`,
+          );
+          ctx.ui.notify(
+            `Milestone ${milestoneId}: DB row recovery failed ${entry.r3bRecoveryCount} times. ` +
+            `Re-run /gsd to reset the recovery counter, or run /gsd-debug to diagnose without resetting.`,
+            "error",
+          );
+          return false;
+        }
+        logWarning(
+          "guided",
+          `R3b: ${milestoneId} has CONTEXT.md but no DB row — inserting placeholder "queued" row ` +
+          `for Gate 1b recovery (attempt ${entry.r3bRecoveryCount + 1}/${MAX_PLAN_BLOCKED_RECOVERIES})`,
+        );
+        try {
+          insertMilestone({ id: milestoneId, title: milestoneId, status: "queued" });
+        } catch (e) {
+          logWarning("guided", `R3b: insertMilestone failed: ${(e as Error).message}`);
+        }
+        entry.r3bRecoveryCount += 1;
+        ctx.ui.notify(
+          `Milestone ${milestoneId}: context file exists but DB row was missing — recovering. Retrying gsd_plan_milestone.`,
+          "warning",
+        );
+        return false;
       } else {
         ctx.ui.notify(
           `Milestone ${milestoneId}: discuss artifacts on disk but no DB row exists. ` +
@@ -1323,7 +1357,7 @@ function buildHeadlessDiscussPrompt(nextId: string, seedContext: string, _basePa
  * Run preparation phase if enabled, then build the discuss prompt.
  * Preparation analyzes the codebase and prior context, injecting the results
  * as supplementary context into the standard discuss template. The discuss
- * template drives the conversation (asks "What's the vision?" first), while
+ * template drives the conversation with a variable vision opener, while
  * the preparation briefs give the agent grounding in the existing codebase.
  *
  * @param ctx - Extension command context with UI for progress notifications

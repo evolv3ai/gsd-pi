@@ -65,6 +65,13 @@ test("publish jobs use GitHub-hosted runners for npm provenance", () => {
   assert.equal(workflow.jobs["prod-release"]["runs-on"], "ubuntu-latest");
 });
 
+test("npm publish opts into Node 24 actions runtime and quiet npm install noise", () => {
+  assert.equal(workflow.env.FORCE_JAVASCRIPT_ACTIONS_TO_NODE24, "true");
+  assert.equal(workflow.env.NPM_CONFIG_AUDIT, "false");
+  assert.equal(workflow.env.NPM_CONFIG_FUND, "false");
+  assert.equal(workflow.env.NPM_CONFIG_LOGLEVEL, "error");
+});
+
 test("main package publish verifies native engine packages first", () => {
   const prereleaseSteps = workflow.jobs["prerelease-publish"].steps;
   const prereleaseVerify = prereleaseSteps.find(
@@ -92,4 +99,46 @@ test("main package publish verifies native engine packages first", () => {
   assert.ok(prodVerify, "production publish must verify native packages");
   assert.match(prodVerify.run, /npm run verify:native-platform-packages/);
   assert.ok(prodVerifyIndex > -1 && prodVerifyIndex < prodPublishIndex);
+});
+
+test("main package publish validates tarball before publishing", () => {
+  const prereleaseSteps = workflow.jobs["prerelease-publish"].steps;
+  const prereleaseValidate = prereleaseSteps.find(
+    (step) => step.name === "Validate package is installable",
+  );
+  const prereleasePublishIndex = prereleaseSteps.findIndex(
+    (step) => step.name === "Publish @${{ github.event.inputs.channel }}",
+  );
+
+  assert.ok(prereleaseValidate, "prerelease publish must run validate-pack");
+  assert.match(prereleaseValidate.run, /pnpm run validate-pack/);
+  assert.ok(prereleaseSteps.indexOf(prereleaseValidate) < prereleasePublishIndex);
+
+  const prodSteps = workflow.jobs["prod-release"].steps;
+  const prodValidate = prodSteps.find(
+    (step) => step.name === "Validate package is installable",
+  );
+  const prodPublishIndex = prodSteps.findIndex(
+    (step) => step.name === "Publish release to npm @latest",
+  );
+
+  assert.ok(prodValidate, "production publish must run validate-pack");
+  assert.match(prodValidate.run, /pnpm run validate-pack/);
+  assert.ok(prodSteps.indexOf(prodValidate) < prodPublishIndex);
+});
+
+test("main package publish uses explicit prepack and disables npm lifecycle reruns", () => {
+  const prereleasePublish = workflow.jobs["prerelease-publish"].steps.find(
+    (step) => step.name === "Publish @${{ github.event.inputs.channel }}",
+  );
+  assert.match(prereleasePublish.run, /prepack-resolve-workspace\.cjs/);
+  assert.match(prereleasePublish.run, /postpack-restore-workspace\.cjs/);
+  assert.match(prereleasePublish.run, /npm publish --ignore-scripts --tag "\$\{CHANNEL\}"/);
+
+  const prodPublish = workflow.jobs["prod-release"].steps.find(
+    (step) => step.name === "Publish release to npm @latest",
+  );
+  assert.match(prodPublish.run, /prepack-resolve-workspace\.cjs/);
+  assert.match(prodPublish.run, /postpack-restore-workspace\.cjs/);
+  assert.match(prodPublish.run, /npm publish --ignore-scripts --tag latest/);
 });

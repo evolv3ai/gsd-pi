@@ -32,6 +32,20 @@ rm -f ~/.gsd/.update-check ~/.gsd/agent/managed-resources.json
 sudo npm install -g @opengsd/gsd-pi@latest
 ```
 
+To move from the old npm global package to a pnpm global install:
+
+```bash
+npm uninstall -g gsd-pi @opengsd/gsd-pi
+rm -f ~/.gsd/.update-check ~/.gsd/agent/managed-resources.json
+pnpm setup
+exec $SHELL -l
+pnpm add -g @opengsd/gsd-pi@latest
+command -v gsd
+gsd --version
+```
+
+If the old npm package was installed with `sudo`, use `sudo npm uninstall -g gsd-pi` for that first uninstall step. pnpm can only remove packages that pnpm installed.
+
 Windows PowerShell:
 
 ```powershell
@@ -55,6 +69,29 @@ npx @opengsd/gsd-pi@latest
 ```
 
 After that, routine upgrades use `gsd upgrade`, `gsd update`, or `/gsd update` in a session.
+
+### pnpm says the global bin directory is not in PATH
+
+**Symptoms:** `pnpm add -g`, `pnpm remove -g`, or another pnpm global command fails with `The configured global bin directory ... is not in PATH`.
+
+**Cause:** pnpm refuses global package operations until its global bin directory is configured in your shell.
+
+**Fix:**
+
+```bash
+pnpm setup
+exec $SHELL -l
+pnpm remove -g @opengsd/gsd-pi
+```
+
+For a one-terminal workaround on macOS/Linux, add the directory from the error to `PATH` before retrying:
+
+```bash
+export PATH="/path/from/pnpm-error:$PATH"
+pnpm remove -g @opengsd/gsd-pi
+```
+
+Replace the path with the exact global bin directory from your pnpm error message.
 
 ### Auto mode loops on the same unit
 

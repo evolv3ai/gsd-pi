@@ -31,6 +31,17 @@ function overrideHomeEnv(homeDir: string): () => void {
   };
 }
 
+function hasSyncedResourceFile(rootDir: string, relativePathWithoutExtension: string): boolean {
+  return existsSync(join(rootDir, `${relativePathWithoutExtension}.js`)) ||
+    existsSync(join(rootDir, `${relativePathWithoutExtension}.ts`));
+}
+
+function bundledSharedDir(): string {
+  return existsSync(join(process.cwd(), "dist", "resources", "shared"))
+    ? join(process.cwd(), "dist", "resources", "shared")
+    : join(process.cwd(), "src", "resources", "shared");
+}
+
 test("getExtensionKey normalizes top-level .ts and .js entry names to the same key", async () => {
   const { getExtensionKey } = await import("../resource-loader.ts");
   const extensionsDir = "/tmp/extensions";
@@ -217,6 +228,77 @@ test("initResources syncs bundled skills to the GSD agent dir by default", async
   );
 });
 
+test("initResources syncs top-level shared resources used by extension imports", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-resource-loader-shared-"));
+  const fakeAgentDir = join(tmp, ".gsd", "agent");
+
+  t.after(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const { initResources } = await import("../resource-loader.ts");
+  initResources(fakeAgentDir, join(tmp, "skills"));
+
+  assert.equal(
+    hasSyncedResourceFile(join(fakeAgentDir, "shared"), "gsd-pi-logo"),
+    true,
+    "top-level resources/shared files must sync under ~/.gsd/agent/shared",
+  );
+  assert.equal(
+    hasSyncedResourceFile(join(fakeAgentDir, "shared"), "package-manager-detection"),
+    true,
+    "extension imports like ../../shared/package-manager-detection.js must resolve after fresh install",
+  );
+});
+
+test("initResources resyncs when current manifest is missing top-level shared resources", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-resource-loader-shared-stale-"));
+  const fakeAgentDir = join(tmp, ".gsd", "agent");
+
+  t.after(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const {
+    computeResourceFingerprint,
+    hasMissingBundledResourceFiles,
+    initResources,
+  } = await import("../resource-loader.ts");
+  initResources(fakeAgentDir, join(tmp, "skills"));
+
+  rmSync(join(fakeAgentDir, "shared"), { recursive: true, force: true });
+  const packageVersion = JSON.parse(
+    readFileSync(join(process.cwd(), "package.json"), "utf-8"),
+  ).version;
+  writeFileSync(
+    join(fakeAgentDir, "managed-resources.json"),
+    JSON.stringify({
+      gsdVersion: process.env.GSD_VERSION && process.env.GSD_VERSION !== "0.0.0"
+        ? process.env.GSD_VERSION
+        : packageVersion,
+      packageName: "@opengsd/gsd-pi",
+      contentHash: computeResourceFingerprint(),
+    }),
+  );
+
+  assert.equal(
+    hasMissingBundledResourceFiles(
+      join(fakeAgentDir, "shared"),
+      bundledSharedDir(),
+    ),
+    true,
+    "test setup should simulate a current manifest with missing shared files",
+  );
+
+  initResources(fakeAgentDir, join(tmp, "skills"));
+
+  assert.equal(
+    hasSyncedResourceFile(join(fakeAgentDir, "shared"), "package-manager-detection"),
+    true,
+    "current managed-resource manifests must not skip missing top-level shared files",
+  );
+});
+
 test("initResources removes exact bundled skill orphans from the ecosystem dir", async (t) => {
   const tmp = mkdtempSync(join(tmpdir(), "gsd-resource-loader-skills-clean-"));
   const fakeAgentDir = join(tmp, ".gsd", "agent");
@@ -251,8 +333,17 @@ test("initResources leaves ambiguous ecosystem skill name collisions in place", 
   const ecosystemLintDir = join(tmp, ".agents", "skills", "lint");
   const ecosystemLintFile = join(ecosystemLintDir, "SKILL.md");
   const restoreHomeEnv = overrideHomeEnv(tmp);
+  const originalWarn = console.warn;
+  const originalResourceLoaderDebug = process.env.GSD_RESOURCE_LOADER_DEBUG;
+  const warnings: unknown[][] = [];
+
+  delete process.env.GSD_RESOURCE_LOADER_DEBUG;
+  console.warn = (...args: unknown[]) => { warnings.push(args); };
 
   t.after(() => {
+    console.warn = originalWarn;
+    if (originalResourceLoaderDebug === undefined) delete process.env.GSD_RESOURCE_LOADER_DEBUG;
+    else process.env.GSD_RESOURCE_LOADER_DEBUG = originalResourceLoaderDebug;
     restoreHomeEnv();
     rmSync(tmp, { recursive: true, force: true });
   });
@@ -266,6 +357,11 @@ test("initResources leaves ambiguous ecosystem skill name collisions in place", 
   const { initResources } = await import("../resource-loader.ts");
   initResources(fakeAgentDir);
 
+  assert.deepEqual(
+    warnings,
+    [],
+    "ambiguous user-owned skill collisions should not warn during normal startup",
+  );
   assert.equal(
     readFileSync(ecosystemLintFile, "utf-8"),
     "---\nname: lint\ndescription: User-owned lint skill.\n---\n\n# Custom lint\n",

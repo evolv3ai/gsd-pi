@@ -1,5 +1,5 @@
 import type { Theme } from "@gsd/pi-coding-agent";
-import { truncateToWidth, visibleWidth, matchesKey, Key } from "@gsd/pi-tui";
+import { visibleWidth, matchesKey, Key } from "@gsd/pi-tui";
 import { loadVisualizerData, type VisualizerData } from "./visualizer-data.js";
 import {
   renderProgressView,
@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { writeExportFile } from "./export.js";
 import { gsdRoot } from "./paths.js";
 import { stripAnsi } from "../shared/mod.js";
+import { renderDialogFrame, renderKeyHints } from "./tui/render-kit.js";
 
 export const TAB_COUNT = 10;
 const TAB_LABELS = [
@@ -500,8 +501,7 @@ export class GSDVisualizerOverlay {
 
     // Apply scroll
     const viewportHeight = Math.max(5, process.stdout.rows ? process.stdout.rows - 8 : 24);
-    const chromeHeight = 2;
-    const visibleContentRows = Math.max(1, viewportHeight - chromeHeight);
+    const visibleContentRows = Math.max(1, viewportHeight - 4);
     this.lastVisibleRows = visibleContentRows;
     const totalLines = content.length;
     const maxScroll = Math.max(0, content.length - visibleContentRows);
@@ -509,46 +509,18 @@ export class GSDVisualizerOverlay {
     const offset = this.scrollOffsets[this.activeTab];
     const visibleContent = content.slice(offset, offset + visibleContentRows);
 
-    const lines = this.wrapInBox(visibleContent, width, offset, visibleContentRows, totalLines);
-
-    // Footer hint
-    const hint = th.fg("dim", "Tab/Shift+Tab/1-9,0 switch \u00b7 / filter \u00b7 PgUp/PgDn scroll \u00b7 ? help \u00b7 esc close");
-    const hintVis = visibleWidth(hint);
-    const hintPad = Math.max(0, Math.floor((width - hintVis) / 2));
-    lines.push(" ".repeat(hintPad) + hint);
+    const footer = renderKeyHints(
+      th,
+      ["Tab/Shift+Tab/1-9,0 switch", "/ filter", "PgUp/PgDn scroll", "? help", "esc close"],
+      Math.max(1, width - 4),
+    );
+    const lines = renderDialogFrame(th, "GSD Visualizer", visibleContent, width, {
+      footer,
+      scroll: { offset, visibleRows: visibleContentRows, totalRows: totalLines },
+    });
 
     this.cachedWidth = width;
     this.cachedLines = lines;
-    return lines;
-  }
-
-  private wrapInBox(inner: string[], width: number, offset?: number, visibleRows?: number, totalLines?: number): string[] {
-    const th = this.theme;
-    const border = (s: string) => th.fg("borderAccent", s);
-    const innerWidth = width - 4;
-    const lines: string[] = [];
-    lines.push(border("\u256d" + "\u2500".repeat(width - 2) + "\u256e"));
-
-    // Compute scroll indicator positions
-    const scrollable = totalLines !== undefined && visibleRows !== undefined && totalLines > visibleRows;
-    let thumbStart = -1;
-    let thumbLen = 0;
-    const innerRows = inner.length;
-    if (scrollable && innerRows > 0 && totalLines! > 0) {
-      thumbStart = Math.round(((offset ?? 0) / totalLines!) * innerRows);
-      thumbLen = Math.max(1, Math.round((visibleRows! / totalLines!) * innerRows));
-    }
-
-    for (let i = 0; i < inner.length; i++) {
-      const line = inner[i];
-      const truncated = truncateToWidth(line, innerWidth);
-      const padWidth = Math.max(0, innerWidth - visibleWidth(truncated));
-      const rightBorder = scrollable && i >= thumbStart && i < thumbStart + thumbLen
-        ? border("\u2503")
-        : border("\u2502");
-      lines.push(border("\u2502") + " " + truncated + " ".repeat(padWidth) + " " + rightBorder);
-    }
-    lines.push(border("\u2570" + "\u2500".repeat(width - 2) + "\u256f"));
     return lines;
   }
 

@@ -11,9 +11,9 @@
 import type { ExtensionContext } from "@gsd/pi-coding-agent";
 import { type Theme } from "@gsd/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth, type TUI } from "@gsd/pi-tui";
-import { makeUI } from "../shared/tui.js";
 import { GLYPH } from "../shared/mod.js";
 import { validateQueueOrder, type DependencyValidation } from "./queue-order.js";
+import { renderDialogFrame, renderKeyHints } from "./tui/render-kit.js";
 
 export interface ReorderItem {
   id: string;
@@ -45,6 +45,7 @@ export async function showQueueReorder(
     let grabbed = false;
     let scrollOffset = 0;
     let cachedLines: string[] | undefined;
+    let cachedWidth: number | undefined;
     let validation: DependencyValidation;
 
     // Mutable deps map — tracks removals during this session
@@ -66,6 +67,7 @@ export async function showQueueReorder(
 
     function refresh() {
       cachedLines = undefined;
+      cachedWidth = undefined;
       tui.requestRender();
     }
 
@@ -151,17 +153,15 @@ export async function showQueueReorder(
     }
 
     function render(width: number): string[] {
-      if (cachedLines) return cachedLines;
+      if (cachedLines && cachedWidth === width) return cachedLines;
 
-      const ui = makeUI(theme, width);
+      const contentWidth = Math.max(1, width - 4);
       const lines: string[] = [];
       const queueRows: string[] = [];
-      const push = (...rows: string[][]) => { for (const r of rows) lines.push(...r); };
-      const add = (s: string) => truncateToWidth(s, width);
+      const add = (s: string) => truncateToWidth(s, contentWidth);
       let cursorQueueRow = 0;
 
-      const headerText = grabbed ? "  Queue Reorder — Moving Item" : "  Queue Reorder";
-      push(ui.bar(), ui.blank(), ui.header(headerText), ui.blank());
+      const headerText = grabbed ? "Queue Reorder - Moving Item" : "Queue Reorder";
 
       // Completed milestones (dimmed)
       if (completed.length > 0) {
@@ -170,7 +170,7 @@ export async function showQueueReorder(
           const label = m.title && m.title !== m.id ? `${m.id}  ${m.title}` : m.id;
           lines.push(add(`    ${theme.fg("dim", `${GLYPH.statusDone} ${label}`)}`));
         }
-        push(ui.blank());
+        lines.push("");
       }
 
       // Pending milestones
@@ -223,7 +223,7 @@ export async function showQueueReorder(
       // Removed deps feedback
       const trailingLines: string[] = [];
       if (removedDeps.length > 0) {
-        trailingLines.push(...ui.blank());
+        trailingLines.push("");
         for (const r of removedDeps) {
           trailingLines.push(add(`  ${theme.fg("success", `${GLYPH.statusDone} Removed: ${r.milestone} depends_on ${r.dep}`)}`));
         }
@@ -232,11 +232,9 @@ export async function showQueueReorder(
       // Circular warning
       const circ = validation.violations.find(v => v.type === 'circular');
       if (circ) {
-        trailingLines.push(...ui.blank());
+        trailingLines.push("");
         trailingLines.push(add(`  ${theme.fg("error", `${GLYPH.statusWarning} ${circ.message}`)}`));
       }
-
-      trailingLines.push(...ui.blank());
 
       // Hints — context-sensitive based on grab state
       const hints: string[] = [];
@@ -256,10 +254,9 @@ export async function showQueueReorder(
       }
       hints.push("esc");
 
-      trailingLines.push(...ui.hints(hints), ...ui.bar());
-
       const maxOverlayRows = Math.max(10, process.stdout.rows ? Math.floor(process.stdout.rows * 0.8) : 24);
-      const availableQueueRows = Math.max(1, maxOverlayRows - lines.length - trailingLines.length);
+      const frameRows = 4;
+      const availableQueueRows = Math.max(1, maxOverlayRows - frameRows - lines.length - trailingLines.length);
       const maxScroll = Math.max(0, queueRows.length - availableQueueRows);
       if (cursorQueueRow < scrollOffset) {
         scrollOffset = cursorQueueRow;
@@ -268,13 +265,25 @@ export async function showQueueReorder(
       }
       scrollOffset = Math.min(Math.max(scrollOffset, 0), maxScroll);
 
-      lines.push(...queueRows.slice(scrollOffset, scrollOffset + availableQueueRows), ...trailingLines);
+      const queueStartRow = lines.length;
+      const visibleQueueRows = queueRows.slice(scrollOffset, scrollOffset + availableQueueRows);
+      lines.push(...visibleQueueRows, ...trailingLines);
 
-      cachedLines = lines;
-      return lines;
+      cachedLines = renderDialogFrame(theme, headerText, lines, width, {
+        footer: renderKeyHints(theme, hints, contentWidth),
+        scroll: {
+          offset: scrollOffset,
+          visibleRows: availableQueueRows,
+          totalRows: queueRows.length,
+          trackOffset: queueStartRow,
+          trackRows: visibleQueueRows.length,
+        },
+      });
+      cachedWidth = width;
+      return cachedLines;
     }
 
-    return { render, invalidate: () => { cachedLines = undefined; }, handleInput };
+    return { render, invalidate: () => { cachedLines = undefined; cachedWidth = undefined; }, handleInput };
   }, {
     overlay: true,
     overlayOptions: { width: "70%", minWidth: 50, maxHeight: "80%", anchor: "center" },

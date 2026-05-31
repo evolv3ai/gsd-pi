@@ -107,7 +107,7 @@ test("before_provider_request injects web_search for claude models even without 
 
   // NO model_select fired — simulates session restore where modelsAreEqual suppresses the event
   const payload: Record<string, unknown> = {
-    model: "claude-opus-4-6",
+    model: "claude-opus-4-8",
     tools: [
       { name: "bash", type: "custom" },
       { name: "search-the-web", type: "function" },
@@ -146,6 +146,36 @@ test("before_provider_request does NOT inject for non-claude models", async () =
   assert.equal(result, undefined, "Should not modify non-claude payload");
   const tools = payload.tools as any[];
   assert.equal(tools.length, 1, "Should not add tools to non-claude payload");
+});
+
+test("before_provider_request does NOT inject stale Anthropic state into OpenAI payloads", async () => {
+  const pi = createMockPI();
+  registerNativeSearchHooks(pi);
+
+  await pi.fire("model_select", {
+    type: "model_select",
+    model: { provider: "anthropic", api: "anthropic-messages", name: "claude-sonnet-4-6" },
+    previousModel: undefined,
+    source: "set",
+  });
+
+  const payload: Record<string, unknown> = {
+    model: "gpt-5.4",
+    tools: [{ name: "bash", type: "function" }],
+  };
+
+  const result = await pi.fire("before_provider_request", {
+    type: "before_provider_request",
+    payload,
+  });
+
+  assert.equal(result, undefined, "Should not modify OpenAI payload with stale Anthropic state");
+  const tools = payload.tools as any[];
+  assert.equal(tools.length, 1, "Should not inject web_search for OpenAI payload");
+  assert.ok(
+    !tools.some((t: any) => t.type === "web_search_20250305"),
+    "web_search_20250305 must NOT be present in OpenAI Responses requests"
+  );
 });
 
 test("before_provider_request does NOT inject for claude model on non-Anthropic provider", async () => {
@@ -319,13 +349,13 @@ test("before_provider_request does not double-inject", async () => {
 
   await pi.fire("model_select", {
     type: "model_select",
-    model: { provider: "anthropic", api: "anthropic-messages", name: "claude-opus-4-6" },
+    model: { provider: "anthropic", api: "anthropic-messages", name: "claude-opus-4-8" },
     previousModel: undefined,
     source: "set",
   });
 
   const payload: Record<string, unknown> = {
-    model: "claude-opus-4-6-20250514",
+    model: "claude-opus-4-8",
     tools: [{ type: "web_search_20250305", name: "web_search" }],
   };
 
@@ -1053,6 +1083,50 @@ test("stripThinkingFromHistory removes redacted_thinking too", () => {
 
   assert.equal(messages[1].content.length, 1);
   assert.equal(messages[1].content[0].type, "text");
+});
+
+test("stripThinkingFromHistory preserves complete native search assistant blocks", () => {
+  const messages: any[] = [
+    { role: "user", content: "search" },
+    {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "need search", signature: "sig1" },
+        { type: "server_tool_use", id: "srv1", name: "web_search", input: { query: "gsd" } },
+        { type: "web_search_tool_result", tool_use_id: "srv1", content: [] },
+        { type: "text", text: "response" },
+      ],
+    },
+    { role: "user", content: "next" },
+  ];
+
+  stripThinkingFromHistory(messages);
+
+  assert.equal(messages[1].content.length, 4);
+  assert.equal(messages[1].content[0].type, "thinking");
+  assert.equal(messages[1].content[1].type, "server_tool_use");
+  assert.equal(messages[1].content[2].type, "web_search_tool_result");
+});
+
+test("stripThinkingFromHistory strips thinking from partial native search blocks", () => {
+  const messages: any[] = [
+    { role: "user", content: "search" },
+    {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "need search", signature: "sig1" },
+        { type: "server_tool_use", id: "srv1", name: "web_search", input: { query: "gsd" } },
+        { type: "text", text: "interrupted" },
+      ],
+    },
+    { role: "user", content: "next" },
+  ];
+
+  stripThinkingFromHistory(messages);
+
+  assert.equal(messages[1].content.length, 2);
+  assert.equal(messages[1].content[0].type, "server_tool_use");
+  assert.equal(messages[1].content[1].type, "text");
 });
 
 test("stripThinkingFromHistory strips even single assistant message", () => {

@@ -112,6 +112,27 @@ const MAX_VERIFICATION_RETRIES = 3;
 const MAX_NOTIFICATION_DETAILS = 3;
 const NOTIFICATION_BULLET = "•";
 
+function isParallelResearchUnit(unitType: string, unitId: string): boolean {
+  return unitType === "research-slice" && unitId.endsWith("/parallel-research");
+}
+
+export function maybeWriteParallelResearchCostSpikeBlocker(
+  unitType: string,
+  unitId: string,
+  basePath: string,
+  unitCostUsd: number,
+  rollingAvgUsd: number,
+): string | null {
+  if (!isParallelResearchUnit(unitType, unitId)) return null;
+  return writeBlockerPlaceholder(
+    unitType,
+    unitId,
+    basePath,
+    `Parallel slice research cost spike detected (${unitCostUsd.toFixed(2)} vs avg ${rollingAvgUsd.toFixed(2)}). ` +
+      "Skipping the aggregate sentinel so dispatch can fall back to per-slice research.",
+  );
+}
+
 export function resolveCloseoutGitAction(
   uokFlags: ReturnType<typeof resolveUokFlags>,
 ): TurnGitActionMode | null {
@@ -1591,7 +1612,7 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
       if (!triggerArtifactVerified) {
         try {
           const { milestone: mid, slice: sid } = parseUnitId(s.currentUnit.id);
-          if (mid && sid) {
+          if (mid && sid && !isParallelResearchUnit(s.currentUnit.type, s.currentUnit.id)) {
             // Phase C: write to the canonical project root (#5236 scope)
             // so non-symlinked worktrees no longer maintain a separate
             // local .gsd/ projection. copyPlanningArtifacts has been
@@ -1860,8 +1881,17 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
               );
               return "continue";
             }
+            const parallelBlocker = maybeWriteParallelResearchCostSpikeBlocker(
+              s.currentUnit.type,
+              s.currentUnit.id,
+              verificationBasePath,
+              unitCostUsd,
+              rollingAvgUsd,
+            );
             ctx.ui.notify(
-              `Unit ${s.currentUnit.id} cost spike detected (${unitCostUsd.toFixed(2)} vs avg ${rollingAvgUsd.toFixed(2)}) — pausing auto-mode.`,
+              parallelBlocker
+                ? `Unit ${s.currentUnit.id} cost spike detected (${unitCostUsd.toFixed(2)} vs avg ${rollingAvgUsd.toFixed(2)}) — wrote parallel blocker and pausing auto-mode.`
+                : `Unit ${s.currentUnit.id} cost spike detected (${unitCostUsd.toFixed(2)} vs avg ${rollingAvgUsd.toFixed(2)}) — pausing auto-mode.`,
               "error",
             );
             await pauseAuto(ctx, pi);

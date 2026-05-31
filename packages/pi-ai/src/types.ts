@@ -265,6 +265,7 @@ export interface ServerToolUse {
 	id: string;
 	name: string;
 	input: unknown;
+	caller?: unknown;
 	externalResult?: {
 		content?: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
 		details?: Record<string, unknown>;
@@ -277,6 +278,7 @@ export interface WebSearchResult {
 	type: "webSearchResult";
 	toolUseId: string;
 	content: unknown;
+	caller?: unknown;
 }
 
 /** GSD compat alias for {@link ServerToolUse}. */

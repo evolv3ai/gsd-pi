@@ -4,6 +4,8 @@ Discuss milestone {{milestoneId}} ("{{milestoneTitle}}"). Identify real gray are
 
 **Structured questions available: {{structuredQuestionsAvailable}}**
 
+**Conversation opener:** For the first user-facing question round, if you need a broad starting question, use: "{{visionAsk}}" Pair it with investigation-shaped follow-ups. Keep the tone natural and easy to answer, like an assistant/developer helping the user shape the next piece of work.
+
 {{inlinedTemplates}}
 
 ---

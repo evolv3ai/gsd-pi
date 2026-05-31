@@ -108,7 +108,7 @@ Only when `findMilestoneIds(basePath).length === 0`:
 
 ```mermaid
 flowchart TD
-  V["What's the vision?"] --> W1[Wait]
+  V["Variable vision opener"] --> W1[Wait]
   W1 --> R["Reflection: Here's my read…"] --> W2[Wait]
   W2 --> VM["Vision mapping"]
   VM --> L1["Layer 1 Scope + gate"] --> L2["Layer 2 Architecture + gate"]
@@ -116,7 +116,7 @@ flowchart TD
   L4 --> ART["PROJECT, REQUIREMENTS, CONTEXT, ROADMAP, plan tools"]
 ```
 
-Prompt hardening in `discuss.md`: preamble is not vision input; end turn after reflection before Layer 1 questions.
+Prompt hardening in `discuss.md`: the first opener is selected from conversational variants, preamble is not vision input, and the turn ends after reflection before Layer 1 questions.
 
 ## Double-bubble failure mode (UI)
 

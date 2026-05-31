@@ -14,7 +14,7 @@ export interface GsdCommandDefinition {
 type CompletionMap = Record<string, readonly GsdCommandDefinition[]>;
 
 export const GSD_COMMAND_DESCRIPTION =
-  "GSD — Git Ship Done: /gsd help|start|templates|next|auto|stop|pause|status|widget|visualize|brief|report|queue|quick|discuss|capture|triage|dispatch|verdict|history|undo|undo-task|reset-slice|rate|skip|export|cleanup|closeout|model|mode|prefs|config|keys|hooks|run-hook|skill-health|doctor|debug|logs|forensics|changelog|migrate|remote|steer|knowledge|memory|new-milestone|new-project|parallel|cmux|park|unpark|init|setup|onboarding|inspect|extensions|update|upgrade|fast|mcp|rethink|workflow|codebase|notifications|ship|do|session-report|backlog|pr-branch|add-tests|scan|language|worktree|eval-review";
+  "GSD — Git Ship Done: /gsd help|start|templates|next|auto|stop|pause|status|widget|visualize|brief|report|queue|quick|discuss|capture|triage|dispatch|verdict|history|undo|undo-task|reset-slice|rate|skip|export|cleanup|closeout|model|mode|prefs|config|keys|hooks|run-hook|skill-health|doctor|debug|logs|forensics|changelog|migrate|remote|steer|knowledge|memory|new-milestone|new-project|parallel|cmux|park|unpark|init|setup|onboarding|inspect|extensions|update|upgrade|fast|mcp|rethink|workflow|codebase|notifications|ship|do|usage|context|session-report|backlog|pr-branch|add-tests|scan|language|worktree|eval-review";
 
 export const TOP_LEVEL_SUBCOMMANDS: readonly GsdCommandDefinition[] = [
   { cmd: "help", desc: "Categorized command reference with descriptions" },
@@ -55,6 +55,8 @@ export const TOP_LEVEL_SUBCOMMANDS: readonly GsdCommandDefinition[] = [
   { cmd: "notifications", desc: "View, filter, and clear persistent notification history" },
   { cmd: "doctor", desc: "Runtime health checks with auto-fix" },
   { cmd: "logs", desc: "Browse activity logs, debug logs, and metrics" },
+  { cmd: "usage", desc: "Current LLM context window usage and session token totals" },
+  { cmd: "context", desc: "Context breakdown chart (skills, injections, history)" },
   { cmd: "debug", desc: "Create and inspect persistent /gsd debug sessions" },
   { cmd: "forensics", desc: "Examine execution logs" },
   { cmd: "init", desc: "Project init wizard — detect, configure, bootstrap .gsd/" },
@@ -308,6 +310,14 @@ const NESTED_COMPLETIONS: CompletionMap = {
   "session-report": [
     { cmd: "--json", desc: "Machine-readable JSON output" },
     { cmd: "--save", desc: "Save report to .gsd/reports/" },
+  ],
+  usage: [
+    { cmd: "--json", desc: "Machine-readable JSON output" },
+  ],
+  context: [
+    { cmd: "--open", desc: "Open a browser chart saved to .gsd/reports/" },
+    { cmd: "--text", desc: "Plain-text breakdown" },
+    { cmd: "--json", desc: "Machine-readable JSON output" },
   ],
   backlog: [
     { cmd: "add", desc: "Add item to backlog" },

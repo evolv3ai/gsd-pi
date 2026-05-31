@@ -39,6 +39,12 @@ permissions:
   packages: write
   pull-requests: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  NPM_CONFIG_AUDIT: "false"
+  NPM_CONFIG_FUND: "false"
+  NPM_CONFIG_LOGLEVEL: "error"
+
 jobs:
   prerelease-publish:
     name: Publish @${{ github.event.inputs.channel }}
@@ -65,16 +71,21 @@ jobs:
       - name: Mark workspace safe for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.1
+
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-          package-manager-cache: false
+          cache: pnpm
         env:
           NODE_AUTH_TOKEN: ${{ github.event.inputs.publish_auth == 'token' && secrets.NPM_TOKEN || '' }}
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Verify npm publish toolchain
         run: |
@@ -92,24 +103,21 @@ jobs:
           fi
           npm whoami
 
-      - name: Install web host dependencies
-        run: npm --prefix web ci
-
       - uses: ./.github/actions/cache-nextjs
 
       - name: Build core
-        run: npm run build:core
+        run: pnpm run build:core
 
       - name: Build web host
-        run: npm run build:web-host
+        run: pnpm run build:web-host
 
       - name: Stamp prerelease version and sync platform packages
         id: stamp
         env:
           VERSION_CHANNEL: ${{ github.event.inputs.channel }}
         run: |
-          npm run pipeline:version-stamp
-          npm run sync-platform-versions
+          pnpm run pipeline:version-stamp
+          pnpm run sync-platform-versions
           echo "version=$(node -e 'process.stdout.write(require("./package.json").version)')" >> "$GITHUB_OUTPUT"
 
       - name: Smoke test
@@ -117,10 +125,13 @@ jobs:
           chmod +x dist/loader.js
           GSD_SMOKE_BINARY="$(pwd)/dist/loader.js"
           export GSD_SMOKE_BINARY
-          npm run test:smoke
+          pnpm run test:smoke
 
       - name: Verify native platform packages exist
-        run: npm run verify:native-platform-packages
+        run: pnpm run verify:native-platform-packages
+
+      - name: Validate package is installable
+        run: pnpm run validate-pack
 
       - name: Publish @${{ github.event.inputs.channel }}
         env:
@@ -138,7 +149,9 @@ jobs:
             echo "::error::Move the tag manually if intended: npm dist-tag add @opengsd/gsd-pi@${VERSION} ${CHANNEL}"
             exit 1
           fi
-          npm publish --tag "${CHANNEL}"
+          trap 'node scripts/postpack-restore-workspace.cjs' EXIT
+          node scripts/prepack-resolve-workspace.cjs
+          npm publish --ignore-scripts --tag "${CHANNEL}"
           echo "Verifying @opengsd/gsd-pi@${VERSION} is reachable on npm..."
           for i in 1 2 3 4 5; do
             npm view "@opengsd/gsd-pi@${VERSION}" version 2>/dev/null && echo "Confirmed: @opengsd/gsd-pi@${VERSION} is live." && exit 0
@@ -158,11 +171,16 @@ jobs:
         with:
           ref: ${{ github.event.inputs.ref != '' && github.event.inputs.ref || (github.event.inputs.channel == 'next' && 'next' || 'main') }}
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.1
+
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-          cache: "npm"
+          cache: pnpm
 
       - name: Install published @opengsd/gsd-pi@${{ github.event.inputs.channel }} globally (with registry propagation retry)
         env:
@@ -182,16 +200,16 @@ jobs:
         run: |
           GSD_SMOKE_BINARY=$(which gsd)
           export GSD_SMOKE_BINARY
-          npm run test:smoke
+          pnpm run test:smoke
 
       - name: Install repo dependencies (for regression harness)
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Run live regression tests (against installed binary)
         run: |
           GSD_SMOKE_BINARY=$(which gsd)
           export GSD_SMOKE_BINARY
-          npm run test:live-regression
+          pnpm run test:live-regression
 
       - name: Warn on verify failure
         if: failure()
@@ -216,14 +234,19 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.RELEASE_PAT }}
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.1
+
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
-          package-manager-cache: false
+          cache: pnpm
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Verify trusted publishing toolchain
         run: |
@@ -234,7 +257,7 @@ jobs:
 
       - name: Run live LLM tests (optional)
         continue-on-error: true
-        run: npm run test:live || echo "::warning::Live LLM tests failed - non-blocking, but worth investigating"
+        run: pnpm run test:live || echo "::warning::Live LLM tests failed - non-blocking, but worth investigating"
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -259,7 +282,7 @@ jobs:
           node -e "require('./package.json')" && \
           node -e "require('./packages/pi-coding-agent/package.json')" && \
           node -e "require('./pkg/package.json')" && \
-          npm run verify:version-sync && \
+          pnpm run verify:version-sync && \
           echo "All package.json files are valid"
 
       - name: Update CHANGELOG.md
@@ -271,32 +294,37 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json web/package-lock.json CHANGELOG.md native/Cargo.toml native/Cargo.lock native/npm/*/package.json pkg/package.json packages/*/package.json extensions/google-search/package.json
+          git add package.json pnpm-lock.yaml CHANGELOG.md native/Cargo.toml native/Cargo.lock native/npm/*/package.json pkg/package.json packages/*/package.json extensions/google-search/package.json
           git commit -m "release: v${RELEASE_VERSION}"
           git pull --rebase origin main
           git tag "v${RELEASE_VERSION}"
 
       - name: Build release
-        run: npm run build
+        run: pnpm run build
 
       - name: Run live regression tests (against release build)
         run: |
           chmod +x dist/loader.js
           GSD_SMOKE_BINARY="$(pwd)/dist/loader.js"
           export GSD_SMOKE_BINARY
-          npm run test:live-regression
+          pnpm run test:live-regression
 
       - name: Verify native platform packages for release version
-        run: npm run verify:native-platform-packages
+        run: pnpm run verify:native-platform-packages
+
+      - name: Validate package is installable
+        run: pnpm run validate-pack
 
       - name: Publish release to npm @latest
         env:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
         run: |
-          if OUTPUT=$(npm publish 2>&1); then
+          trap 'node scripts/postpack-restore-workspace.cjs' EXIT
+          node scripts/prepack-resolve-workspace.cjs
+          if OUTPUT=$(npm publish --ignore-scripts --tag latest 2>&1); then
             echo "$OUTPUT"
           else
-            if echo "$OUTPUT" | grep -q "cannot publish over the previously published"; then
+            if echo "$OUTPUT" | grep -q "cannot publish over the previously published\|You cannot publish over"; then
               echo "::error::Version ${RELEASE_VERSION} already exists. Trusted publishing only authenticates npm publish, not dist-tag mutation."
               echo "::error::Promote manually if intended: npm dist-tag add @opengsd/gsd-pi@${RELEASE_VERSION} latest"
               exit 1
@@ -305,6 +333,14 @@ jobs:
               exit 1
             fi
           fi
+          echo "Verifying @opengsd/gsd-pi@${RELEASE_VERSION} is reachable on npm..."
+          for i in 1 2 3 4 5; do
+            npm view "@opengsd/gsd-pi@${RELEASE_VERSION}" version 2>/dev/null && echo "Confirmed: @opengsd/gsd-pi@${RELEASE_VERSION} is live." && exit 0
+            echo "Attempt $i: not yet visible - waiting 10s..."
+            sleep 10
+          done
+          echo "::error::Publish step succeeded but @opengsd/gsd-pi@${RELEASE_VERSION} is not reachable on npm after 50s. Check trusted publishing and registry propagation."
+          exit 1
 
       - name: Push release commit and tag
         env:

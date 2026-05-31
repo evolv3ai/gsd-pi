@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  getCloseoutManualResolveBlocker,
   listUnresolvedCloseoutFailures,
   markLatestCloseoutFailureResolved,
   retryLatestCloseoutFailure,
@@ -96,6 +97,20 @@ test("closeout manual resolve refuses a dirty worktree", () => {
     assert.equal(listUnresolvedCloseoutFailures().length, 1);
   } finally {
     closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("closeout manual resolve blocks non-git project roots without throwing", () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-closeout-recovery-non-git-"));
+  try {
+    mkdirSync(join(base, ".gsd"), { recursive: true });
+
+    assert.equal(
+      getCloseoutManualResolveBlocker(base),
+      `Could not inspect git status in ${base}.`,
+    );
+  } finally {
     rmSync(base, { recursive: true, force: true });
   }
 });

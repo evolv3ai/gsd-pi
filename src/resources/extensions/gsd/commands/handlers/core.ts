@@ -42,6 +42,8 @@ export function showHelp(ctx: ExtensionCommandContext, args = ""): void {
     "  /gsd rethink        Conversational project reorganization",
     "",
     "OBSERVABILITY",
+    "  /gsd usage          Current LLM context window usage and session tokens",
+    "  /gsd context        Context breakdown chart (skills, injections, history)",
     "  /gsd logs           Browse activity and debug logs",
     "  /gsd debug          Create/list/continue persistent debug sessions",
     "",
@@ -87,6 +89,8 @@ export function showHelp(ctx: ExtensionCommandContext, args = ""): void {
     "  /gsd history        View execution history  [--cost] [--phase] [--model] [N]",
     "  /gsd changelog      Show categorized release notes  [version]",
     `  /gsd notifications  View persistent notification history  [clear|tail|filter]  (${formattedShortcutPair("notifications")})`,
+    "  /gsd usage          Current LLM context window usage and session tokens  [--json]",
+    "  /gsd context        Context breakdown chart  [--open|--text|--json]",
     "  /gsd logs           Browse activity logs, debug logs, and metrics  [debug|tail|clear]",
     "  /gsd debug          Create/list/continue persistent debug sessions",
     "",
@@ -509,6 +513,16 @@ export async function handleCoreCommand(
   }
   if (trimmed === "cmux" || trimmed.startsWith("cmux ")) {
     await handleCmux(trimmed.replace(/^cmux\s*/, "").trim(), ctx);
+    return true;
+  }
+  if (trimmed === "usage" || trimmed.startsWith("usage ")) {
+    const { handleUsage } = await import("../../commands-usage.js");
+    await handleUsage(trimmed.replace(/^usage\s*/, "").trim(), ctx);
+    return true;
+  }
+  if (trimmed === "context" || trimmed.startsWith("context ")) {
+    const { handleContext } = await import("../../commands-context.js");
+    await handleContext(trimmed.replace(/^context\s*/, "").trim(), ctx, projectRoot());
     return true;
   }
   if (trimmed === "show-config") {

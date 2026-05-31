@@ -2072,7 +2072,7 @@ export async function runUnitPhase(
   const nextDispatchCount = (s.unitDispatchCount.get(dispatchKey) ?? 0) + 1;
 
   // Status bar (widget + preconditions deferred until after model selection — see #2899)
-  ctx.ui.setStatus("gsd-auto", "auto");
+  ctx.ui.setStatus("gsd-auto", s.stepMode ? "next" : "auto");
   if (mid)
     deps.updateSliceProgressCache(s.basePath, mid, state.activeSlice?.id);
 

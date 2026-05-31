@@ -3,6 +3,11 @@
 // the catalog. Tests can override per-call via ReconciliationDeps.registry.
 
 import { completionTimestampHandler } from "./drift/completion.js";
+import {
+  artifactDbStatusDivergenceHandler,
+  completedMilestoneReopenedHandler,
+  diskSliceIdDivergenceHandler,
+} from "./drift/artifact-db.js";
 import { mergeStateHandler } from "./drift/merge-state.js";
 import { unregisteredMilestoneHandler } from "./drift/project-md.js";
 import { roadmapDivergenceHandler } from "./drift/roadmap.js";
@@ -22,6 +27,9 @@ export const DRIFT_REGISTRY: ReadonlyArray<DriftHandler<any>> = [
   staleRenderHandler,
   staleWorkerHandler,
   unregisteredMilestoneHandler,
+  diskSliceIdDivergenceHandler,
   roadmapDivergenceHandler,
+  completedMilestoneReopenedHandler,
+  artifactDbStatusDivergenceHandler,
   completionTimestampHandler,
 ];

@@ -5,7 +5,7 @@
  * Creates node_modules/@gsd/* and node_modules/@opengsd/* symlinks pointing
  * to shipped packages/* directories.
  *
- * During development, npm workspaces creates these automatically. But in the
+ * During development, pnpm workspaces creates these automatically. But in the
  * published tarball, workspace packages are shipped under packages/ (via the
  * "files" field) and the @gsd/* imports in compiled code need node_modules/@gsd/*
  * to resolve. This script bridges the gap.
@@ -21,9 +21,12 @@ const { resolve, join } = require('path')
 const { getLinkablePackages, REPO_ROOT } = require('./lib/workspace-manifest.cjs')
 
 /**
- * npm global installs can leave an empty node_modules/undici placeholder while the
- * bundled @gsd/pi-coding-agent copy (without nested deps) still imports undici.
- * Seed root undici from the shipped packages/pi-coding-agent copy when needed.
+ * Global installs (or npm install -g --ignore-scripts) can leave empty
+ * node_modules/* placeholders while the bundled @gsd/pi-coding-agent copy
+ * (without nested deps) still imports undici. install/deps.js may run
+ * `npm install --ignore-scripts` in packageRoot to materialize hoisted deps
+ * (openai, partial-json, …). This helper seeds root undici from the shipped
+ * packages/pi-coding-agent copy when that repair has not run yet.
  */
 function ensureRootUndici() {
   const rootUndiciDir = join(REPO_ROOT, 'node_modules', 'undici')

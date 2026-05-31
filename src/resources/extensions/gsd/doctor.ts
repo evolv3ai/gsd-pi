@@ -514,6 +514,7 @@ export async function runGSDDoctor(basePath: string, options?: { fix?: boolean; 
           try {
             if (!lstatSync(join(slicesDir, entry)).isDirectory()) continue;
           } catch { continue; }
+          if (entry === "parallel-research") continue;
           if (!knownSliceIds.has(entry)) {
             issues.push({
               severity: "warning",

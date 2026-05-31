@@ -16,6 +16,30 @@ export type DriftRecord =
   | { kind: "unregistered-milestone"; milestoneId: string }
   | { kind: "roadmap-divergence"; milestoneId: string; sliceId?: string }
   | {
+      kind: "disk-slice-id-divergence";
+      milestoneId: string;
+      sliceId: string;
+      sliceDir: string;
+      disposition: "delete-empty" | "quarantine-scaffold" | "block-meaningful";
+      reason: string;
+    }
+  | {
+      kind: "artifact-db-status-divergence";
+      milestoneId: string;
+      sliceId?: string;
+      taskId?: string;
+      artifactType: string;
+      artifactPath?: string;
+      dbStatus?: string;
+      reason: string;
+    }
+  | {
+      kind: "completed-milestone-reopened";
+      milestoneId: string;
+      dbStatus: string;
+      completedDispatchAt?: string | null;
+    }
+  | {
       kind: "missing-completion-timestamp";
       entity: "task" | "slice" | "milestone";
       ids: string[];

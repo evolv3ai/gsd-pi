@@ -70,7 +70,10 @@ export function resolve(specifier, context, nextResolve) {
       if (specifier.includes('/dist/')) {
         specifier = specifier.replace('/dist/', '/src/').replace(/\.js$/, '.ts');
       } else {
-        specifier = specifier.replace(/\.js$/, '.ts');
+        const candidate = new URL(specifier.replace(/\.js$/, '.ts'), context.parentURL);
+        if (existsSync(fileURLToPath(candidate))) {
+          specifier = candidate.href;
+        }
       }
     }
   }

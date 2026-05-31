@@ -16,7 +16,33 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { visibleWidth } from "@gsd/pi-tui";
 import type { SecretsManifest, SecretsManifestEntry } from "../types.ts";
+
+const ANSI_PATTERN = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+
+function stripAnsi(text: string): string {
+	return text.replace(ANSI_PATTERN, "");
+}
+
+function assertFullOuterBorder(lines: string[], width: number): void {
+	assert.ok(lines.length >= 2, "dialog must include top and bottom borders");
+
+	for (const [index, line] of lines.entries()) {
+		assert.equal(visibleWidth(line), width, `line ${index} must fill dialog width`);
+	}
+
+	const top = stripAnsi(lines[0] ?? "");
+	const bottom = stripAnsi(lines.at(-1) ?? "");
+	assert.match(top, /^╭.*╮$/, `top border missing full corners: ${top}`);
+	assert.match(bottom, /^╰.*╯$/, `bottom border missing full corners: ${bottom}`);
+
+	for (let index = 1; index < lines.length - 1; index++) {
+		const line = stripAnsi(lines[index] ?? "");
+		assert.match(line, /^[│├]/, `line ${index} missing left border: ${line}`);
+		assert.match(line, /[│┤]$/, `line ${index} missing right border: ${line}`);
+	}
+}
 
 // Dynamic imports for files.ts functions to avoid cascading failure
 // when paths.js isn't available (files.ts statically imports paths.js)
@@ -300,6 +326,7 @@ test("showSecretsSummary: produces lines with correct status glyphs for each ent
 
 	assert.ok(renderFn, "render function should have been captured from factory");
 	const lines = renderFn!(80);
+	assertFullOuterBorder(lines, 80);
 
 	// Verify each key appears in the output
 	const output = lines.join("\n");
@@ -341,6 +368,7 @@ test("showSecretsSummary: existing keys shown with distinct status indicator", a
 
 	assert.ok(renderFn, "render function should have been captured");
 	const lines = renderFn!(80);
+	assertFullOuterBorder(lines, 80);
 	const output = lines.join("\n");
 
 	assert.ok(output.includes("NEW_KEY"), "should include NEW_KEY");
@@ -380,6 +408,7 @@ test("collectOneSecret: guidance lines appear in render output when guidance is 
 
 	assert.ok(renderFn, "render function should have been captured");
 	const lines = renderFn!(80);
+	assertFullOuterBorder(lines, 80);
 	const output = lines.join("\n");
 
 	// Verify guidance steps appear in the output
@@ -417,6 +446,7 @@ test("collectOneSecret: guidance lines wrap long URLs instead of truncating", as
 	assert.ok(renderFn, "render function should have been captured");
 	// Render at narrow width to force wrapping
 	const lines = renderFn!(50);
+	assertFullOuterBorder(lines, 50);
 	const output = lines.join("\n");
 
 	// The full URL should be present (wrapped, not truncated)
@@ -449,6 +479,7 @@ test("collectOneSecret: no guidance provided — render output has no guidance s
 
 	assert.ok(renderFn, "render function should have been captured");
 	const lines = renderFn!(80);
+	assertFullOuterBorder(lines, 80);
 	const output = lines.join("\n");
 
 	// Should include the key name and hint but no numbered guidance steps

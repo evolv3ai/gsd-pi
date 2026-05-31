@@ -5,14 +5,32 @@ description: "Install GSD, configure your LLM provider, and run your first auton
 
 ## Install
 
+Recommended guided installer:
+
 ```bash
-npm install -g @opengsd/gsd-pi
+npx @opengsd/gsd-pi@latest
+```
+
+Direct npm install:
+
+```bash
+npm install -g @opengsd/gsd-pi@latest
+```
+
+Direct pnpm install:
+
+```bash
+pnpm setup
+exec $SHELL -l
+pnpm add -g @opengsd/gsd-pi@latest
 ```
 
 Requires Node.js 22+ and Git.
 
 <Note>
 **`command not found: gsd`?** Your shell may not have npm's global bin directory in `$PATH`. Run `npm prefix -g` to find it, then add `$(npm prefix -g)/bin` to your PATH. See [troubleshooting](/guides/troubleshooting) for details.
+
+For pnpm installs, run `pnpm setup` and restart your shell if pnpm says its global bin directory is not in `PATH`.
 </Note>
 
 GSD checks for updates every 24 hours. Update in-session with `/gsd update`.
