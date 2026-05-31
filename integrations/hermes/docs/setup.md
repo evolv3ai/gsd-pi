@@ -93,7 +93,8 @@ Use a **dedicated test channel** (not `#general`). Invite the Hermes bot.
 2. Add to `~/.hermes/gsd.yaml` under `bindings.slack` **or** skip and use `/gsd bind` only.
 3. Ensure the Hermes Slack app has slash-command / message permissions for that channel.
 
-**Session key shape (notifications):** `agent:main:slack:{chat_type}:{channel_id}`  
+**Session key shape (notifications):** `agent:main:slack:{chat_type}:{channel_id}`
+
 Supervisor push uses `ctx.dispatch_tool("send_message", …)` — **not** `inject_message`.
 
 ### Slack checklist

@@ -68,7 +68,9 @@ export function drainStreams(): void {
   gate.activeStreams.clear();
 }
 
-// ── SIGTERM / beforeExit drain path (idempotent) ───────────────────────────
+// ── SIGTERM drain path (idempotent) ────────────────────────────────────────
+// Do not drain on beforeExit: route tests and serverless runtimes can quiesce
+// while an SSE stream is still valid, which would inject a phantom shutdown.
 
 function handleForcedExit(): void {
   drainStreams();
@@ -88,12 +90,10 @@ const hotModule =
 
 if (!gate.handlersRegistered) {
   process.on("SIGTERM", handleForcedExit);
-  process.on("beforeExit", handleForcedExit);
   gate.handlersRegistered = true;
 
   hotModule?.dispose(() => {
     process.off("SIGTERM", handleForcedExit);
-    process.off("beforeExit", handleForcedExit);
     gate.handlersRegistered = false;
   });
 }

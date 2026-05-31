@@ -1157,7 +1157,9 @@ export class ToolExecutionComponent extends Container {
 						.map((line: string) => (lang ? replaceTabs(line) : theme.fg("toolOutput", replaceTabs(line))))
 						.join("\n");
 				if (remaining > 0) {
-					text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("expandTools", "to expand")})`;
+					text += this.expanded
+						? theme.fg("muted", `\n... (${remaining} more lines hidden from display)`)
+						: `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("expandTools", "to expand")})`;
 				}
 
 				const truncation = this.result.details?.truncation;

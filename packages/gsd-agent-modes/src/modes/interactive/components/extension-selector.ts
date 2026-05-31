@@ -8,7 +8,7 @@
 import { Container, getEditorKeybindings, matchesKey, Spacer, Text, type TUI } from "@gsd/pi-tui";
 import { theme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { CountdownTimer } from "./countdown-timer.js";
-import { DynamicBorder } from "./dynamic-border.js";
+import { DialogContainer, splitDialogTitle } from "./dialog-container.js";
 import { selectorFooter } from "./keybinding-hints.js";
 
 /** Prefix that marks an option as a non-selectable group header. */
@@ -19,13 +19,12 @@ export interface ExtensionSelectorOptions {
 	timeout?: number;
 }
 
-export class ExtensionSelectorComponent extends Container {
+export class ExtensionSelectorComponent extends DialogContainer {
 	private options: string[];
 	private selectedIndex = 0;
 	private listContainer: Container;
 	private onSelectCallback: (option: string) => void;
 	private onCancelCallback: () => void;
-	private titleText: Text;
 	private baseTitle: string;
 	private countdown: CountdownTimer | undefined;
 
@@ -36,25 +35,27 @@ export class ExtensionSelectorComponent extends Container {
 		onCancel: () => void,
 		opts?: ExtensionSelectorOptions,
 	) {
-		super();
+		const dialogTitle = splitDialogTitle(title);
+		super(dialogTitle.title);
 
 		this.options = options;
 		this.onSelectCallback = onSelect;
 		this.onCancelCallback = onCancel;
-		this.baseTitle = title;
+		this.baseTitle = dialogTitle.title;
 
-		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));
-
-		this.titleText = new Text(theme.fg("accent", title), 1, 0);
-		this.addChild(this.titleText);
-		this.addChild(new Spacer(1));
+		for (const detail of dialogTitle.detailLines) {
+			this.addChild(new Text(theme.fg("text", detail), 1, 0));
+		}
+		if (dialogTitle.detailLines.length > 0) {
+			this.addChild(new Spacer(1));
+		}
 
 		if (opts?.timeout && opts.timeout > 0 && opts.tui) {
 			this.countdown = new CountdownTimer(
 				opts.timeout,
 				opts.tui,
-				(s) => this.titleText.setText(theme.fg("accent", `${this.baseTitle} (${s}s)`)),
+				(s) => this.setDialogTitle(`${this.baseTitle} (${s}s)`),
 				() => this.onCancelCallback(),
 			);
 		}
@@ -70,7 +71,6 @@ export class ExtensionSelectorComponent extends Container {
 			),
 		);
 		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder());
 
 		// Start on the first selectable (non-separator) item
 		this.selectedIndex = this.nextSelectable(0, 1);

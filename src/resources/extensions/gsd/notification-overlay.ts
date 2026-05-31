@@ -15,7 +15,7 @@ import {
 import { formattedShortcutPair } from "./shortcut-defs.js";
 import {
   padRightVisible,
-  renderFrame,
+  renderDialogFrame,
   renderKeyHints,
   rightAlign,
   wrapVisibleText,
@@ -200,13 +200,20 @@ export class GSDNotificationOverlay {
       availableRows,
       Math.max(1, Math.floor((terminalRows * OVERLAY_MAX_HEIGHT_PERCENT) / 100)),
     );
-    const maxVisibleRows = Math.max(5, overlayRows - 2);
+    const maxVisibleRows = Math.max(5, overlayRows - 4);
     const visibleContentRows = Math.min(content.length, maxVisibleRows);
     const maxScroll = Math.max(0, content.length - visibleContentRows);
     this.scrollOffset = Math.min(this.scrollOffset, maxScroll);
     const visibleContent = content.slice(this.scrollOffset, this.scrollOffset + visibleContentRows);
-
-    const lines = renderFrame(this.theme, visibleContent, width);
+    const footer = renderKeyHints(
+      this.theme,
+      ["↑/↓ scroll", "f filter", "c clear", `Esc/${formattedShortcutPair("notifications")} close`],
+      Math.max(1, width - 4),
+    );
+    const lines = renderDialogFrame(this.theme, "Notifications", visibleContent, width, {
+      footer,
+      scroll: { offset: this.scrollOffset, visibleRows: visibleContentRows, totalRows: content.length },
+    });
 
     this.cachedWidth = width;
     this.cachedLines = lines;
@@ -256,8 +263,6 @@ export class GSDNotificationOverlay {
     const blank = () => row("");
     const hr = () => row(th.fg("dim", "─".repeat(contentWidth)));
 
-    // Header
-    const title = th.fg("accent", th.bold("Notifications"));
     const filterLabel = this.filter === "all"
       ? th.fg("dim", "all")
       : th.fg(
@@ -269,15 +274,11 @@ export class GSDNotificationOverlay {
       );
     const count = `${this.filteredEntries.length} entries`;
     lines.push(row(rightAlign(
-      `${title}  ${th.fg("dim", "filter:")} ${filterLabel}`,
+      `${th.fg("dim", "filter:")} ${filterLabel}`,
       th.fg("dim", count),
       contentWidth,
     )));
     lines.push(hr());
-
-    // Controls
-    const closeShortcut = formattedShortcutPair("notifications");
-    lines.push(row(renderKeyHints(th, ["↑/↓ scroll", "f filter", "c clear", `Esc/${closeShortcut} close`], contentWidth)));
     lines.push(blank());
 
     // Entries

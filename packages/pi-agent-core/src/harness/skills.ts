@@ -1,3 +1,9 @@
+/**
+ * Harness-local skill loader for pi-agent-core tests and scratch scripts.
+ *
+ * GSD production loads skills via `@gsd/pi-coding-agent` / ResourceLoader.
+ * Do not delete this module — harness tests depend on ExecutionEnv-based loading.
+ */
 import ignore from "ignore";
 import { parse } from "yaml";
 import { type ExecutionEnv, type FileInfo, type Result, type Skill, toError } from "./types.js";

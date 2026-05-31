@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import stripAnsi from "strip-ansi";
 import { ToolExecutionComponent, ToolPhaseSummaryComponent, type ToolExecutionPhase } from "../tool-execution.js";
 import { initTheme } from "@gsd/pi-coding-agent/theme/theme.js";
+import { READ_TUI_EXPANDED_MAX_LINES } from "@gsd/pi-coding-agent/core/tools/read.js";
 
 initTheme("dark", false);
 
@@ -225,8 +226,8 @@ describe("ToolExecutionComponent", () => {
 		assert.doesNotMatch(rendered, /hidden body output/);
 	});
 
-	test("shows all expanded read output lines", () => {
-		const output = Array.from({ length: 50 }, (_, index) => `line-${index + 1}`).join("\n");
+	test("truncates expanded read output lines to the display cap", () => {
+		const output = Array.from({ length: READ_TUI_EXPANDED_MAX_LINES + 2 }, (_, index) => `line-${index + 1}`).join("\n");
 		const rendered = renderTool(
 			"read",
 			{ path: "big.txt" },
@@ -234,8 +235,9 @@ describe("ToolExecutionComponent", () => {
 		);
 
 		assert.match(rendered, /line-1/);
-		assert.match(rendered, /line-50/);
-		assert.doesNotMatch(rendered, /more lines/);
+		assert.match(rendered, new RegExp(`line-${READ_TUI_EXPANDED_MAX_LINES}\\b`));
+		assert.doesNotMatch(rendered, new RegExp(`line-${READ_TUI_EXPANDED_MAX_LINES + 1}\\b`));
+		assert.match(rendered, /2 more lines hidden from display/);
 	});
 
 	test("renders compact edit rows with target metadata", () => {

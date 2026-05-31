@@ -68,7 +68,7 @@ import {
   runMilestoneCloseoutGitHub,
 } from "./milestone-closeout.js";
 import type { AutoSession, SidecarItem } from "./auto/session.js";
-import { getEvidence, clearEvidenceFromDisk } from "./safety/evidence-collector.js";
+import { getEvidence, clearEvidenceFromDisk, isExecutionToolName } from "./safety/evidence-collector.js";
 import { validateFileChanges } from "./safety/file-change-validator.js";
 import { crossReferenceEvidence, type ClaimedEvidence } from "./safety/evidence-cross-ref.js";
 import { validateContent } from "./safety/content-validator.js";
@@ -111,6 +111,27 @@ const MAX_VERIFICATION_RETRIES = 3;
 /** Keep failure toasts short while still showing concrete examples. */
 const MAX_NOTIFICATION_DETAILS = 3;
 const NOTIFICATION_BULLET = "•";
+
+function isParallelResearchUnit(unitType: string, unitId: string): boolean {
+  return unitType === "research-slice" && unitId.endsWith("/parallel-research");
+}
+
+export function maybeWriteParallelResearchCostSpikeBlocker(
+  unitType: string,
+  unitId: string,
+  basePath: string,
+  unitCostUsd: number,
+  rollingAvgUsd: number,
+): string | null {
+  if (!isParallelResearchUnit(unitType, unitId)) return null;
+  return writeBlockerPlaceholder(
+    unitType,
+    unitId,
+    basePath,
+    `Parallel slice research cost spike detected (${unitCostUsd.toFixed(2)} vs avg ${rollingAvgUsd.toFixed(2)}). ` +
+      "Skipping the aggregate sentinel so dispatch can fall back to per-slice research.",
+  );
+}
 
 export function resolveCloseoutGitAction(
   uokFlags: ReturnType<typeof resolveUokFlags>,
@@ -202,13 +223,45 @@ function completeSliceReopenReplanHandoffDetected(
     agentEndMessagesIncludeToolCall(agentEndMessages, "gsd_task_reopen") ||
     agentEndMessagesMentionTool(agentEndMessages, "gsd_task_reopen") ||
     unitActivityMentionsTool(s.basePath, unitType, unitId, "gsd_task_reopen") ||
-    unitActivityMentionsTool(s.canonicalProjectRoot, unitType, unitId, "gsd_task_reopen") ||
+    unitActivityMentionsTool(s.canonicalProjectRoot, unitType, unitId, "gsd_task_reopen")
+  );
+}
+
+function completeSliceReplanSignalDetected(
+  s: AutoSession,
+  agentEndMessages: unknown[] | undefined,
+): boolean {
+  if (s.currentUnit?.type !== "complete-slice") return false;
+  return (
     agentEndMessagesIncludeSuccessfulToolResult(agentEndMessages, "gsd_replan_slice") ||
     agentEndMessagesIncludeToolCall(agentEndMessages, "gsd_replan_slice") ||
     agentEndMessagesMentionTool(agentEndMessages, "gsd_replan_slice") ||
-    unitActivityMentionsTool(s.basePath, unitType, unitId, "gsd_replan_slice") ||
-    unitActivityMentionsTool(s.canonicalProjectRoot, unitType, unitId, "gsd_replan_slice")
+    unitActivityMentionsTool(s.basePath, s.currentUnit.type, s.currentUnit.id, "gsd_replan_slice") ||
+    unitActivityMentionsTool(s.canonicalProjectRoot, s.currentUnit.type, s.currentUnit.id, "gsd_replan_slice")
   );
+}
+
+function completeSliceValidReplanOutcomeDetected(
+  s: AutoSession,
+  agentEndMessages: unknown[] | undefined,
+): boolean {
+  if (s.currentUnit?.type !== "complete-slice") return false;
+  const { milestone: mid, slice: sid } = parseUnitId(s.currentUnit.id);
+  if (!mid || !sid) return false;
+
+  if (!completeSliceReplanSignalDetected(s, agentEndMessages)) return false;
+
+  const replanPath = resolveSliceFile(s.basePath, mid, sid, "REPLAN");
+  const canonicalReplanPath = resolveSliceFile(s.canonicalProjectRoot, mid, sid, "REPLAN");
+  const hasReplanArtifact = (
+    Boolean(replanPath && existsSync(replanPath)) ||
+    Boolean(canonicalReplanPath && existsSync(canonicalReplanPath))
+  );
+  if (!hasReplanArtifact) return false;
+
+  if (!isDbAvailable()) return true;
+  const slice = getSlice(mid, sid);
+  return Boolean(slice && !isClosedStatus(slice.status));
 }
 
 function formatPreExecutionCheckDetail(check: PreExecutionCheckJSON): string {
@@ -467,12 +520,6 @@ export function _shouldDispatchQuickTaskForTest(
     state.pendingQuickTasks.length > 0 &&
     !!state.currentUnit &&
     state.currentUnit.type !== "quick-task";
-}
-
-function isExecutionToolName(name: unknown): boolean {
-  if (typeof name !== "string") return false;
-  const normalized = name.trim().toLowerCase();
-  return normalized === "bash" || normalized === "gsd_exec";
 }
 
 export function _hasExecutionToolCallsInSessionForTest(entries: readonly unknown[]): boolean {
@@ -1449,11 +1496,11 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
                       suppressedWarning: "evidence-empty-but-session-has-exec-calls",
                     });
                   } else {
-                    logWarning("safety", `evidence mismatch: ${missingCommandMismatches.length} claimed command(s) not found in bash calls`);
-                  ctx.ui.notify(
-                    `Safety: task ${sTid} claimed ${missingCommandMismatches.length} command(s) not found in recorded bash calls`,
-                    "warning",
-                  );
+                    logWarning("safety", `evidence mismatch: ${missingCommandMismatches.length} claimed command(s) not found in recorded execution calls`);
+                    ctx.ui.notify(
+                      `Safety: task ${sTid} claimed ${missingCommandMismatches.length} command(s) not found in recorded execution calls`,
+                      "warning",
+                    );
                   }
                 }
 
@@ -1591,7 +1638,7 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
       if (!triggerArtifactVerified) {
         try {
           const { milestone: mid, slice: sid } = parseUnitId(s.currentUnit.id);
-          if (mid && sid) {
+          if (mid && sid && !isParallelResearchUnit(s.currentUnit.type, s.currentUnit.id)) {
             // Phase C: write to the canonical project root (#5236 scope)
             // so non-symlinked worktrees no longer maintain a separate
             // local .gsd/ projection. copyPlanningArtifacts has been
@@ -1777,7 +1824,29 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
           "warning",
         );
         return "continue";
-      } else if (!triggerArtifactVerified && !isDbAvailable()) {
+      } else if (
+        !triggerArtifactVerified &&
+        completeSliceValidReplanOutcomeDetected(s, opts?.agentEndMessages)
+      ) {
+        const retryKey = `${s.currentUnit.type}:${s.currentUnit.id}`;
+        s.pendingVerificationRetry = null;
+        s.verificationRetryCount.delete(retryKey);
+        s.verificationRetryFailureHashes.delete(retryKey);
+        debugLog("postUnit", {
+          phase: "artifact-verify-complete-slice-replan-outcome",
+          unitType: s.currentUnit.type,
+          unitId: s.currentUnit.id,
+        });
+        ctx.ui.notify(
+          `complete-slice ${s.currentUnit.id} produced a valid replan outcome; continuing orchestration instead of retrying closeout.`,
+          "warning",
+        );
+        return "continue";
+      } else if (
+        !triggerArtifactVerified &&
+        !isDbAvailable() &&
+        !completeSliceReplanSignalDetected(s, opts?.agentEndMessages)
+      ) {
         debugLog("postUnit", { phase: "artifact-verify-skip-db-unavailable", unitType: s.currentUnit.type, unitId: s.currentUnit.id });
         const dbSkipDiag = diagnoseExpectedArtifact(s.currentUnit.type, s.currentUnit.id, verificationBasePath);
         ctx.ui.notify(
@@ -1860,8 +1929,17 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
               );
               return "continue";
             }
+            const parallelBlocker = maybeWriteParallelResearchCostSpikeBlocker(
+              s.currentUnit.type,
+              s.currentUnit.id,
+              verificationBasePath,
+              unitCostUsd,
+              rollingAvgUsd,
+            );
             ctx.ui.notify(
-              `Unit ${s.currentUnit.id} cost spike detected (${unitCostUsd.toFixed(2)} vs avg ${rollingAvgUsd.toFixed(2)}) — pausing auto-mode.`,
+              parallelBlocker
+                ? `Unit ${s.currentUnit.id} cost spike detected (${unitCostUsd.toFixed(2)} vs avg ${rollingAvgUsd.toFixed(2)}) — wrote parallel blocker and pausing auto-mode.`
+                : `Unit ${s.currentUnit.id} cost spike detected (${unitCostUsd.toFixed(2)} vs avg ${rollingAvgUsd.toFixed(2)}) — pausing auto-mode.`,
               "error",
             );
             await pauseAuto(ctx, pi);
@@ -2030,6 +2108,11 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
           `Hook requested retry of ${trigger.unitType} ${trigger.unitId} — resetting task state.`,
           "info",
         );
+
+        await s.orchestration?.retryActiveUnit({
+          unitType: trigger.unitType,
+          unitId: trigger.unitId,
+        });
 
         // ── State reset: undo the completion so deriveState re-derives the unit ──
         try {

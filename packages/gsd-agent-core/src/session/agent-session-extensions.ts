@@ -20,6 +20,10 @@ import type { ExtensionBindings, ToolDefinitionEntry } from "./agent-session-typ
 import type { SessionStartEvent } from "@gsd/pi-coding-agent/core/extensions/index.js";
 import type { AgentSessionHost } from "./agent-session-host.js";
 
+function normalizeSkillFilterName(name: string): string {
+	return name.trim().toLowerCase();
+}
+
 export class AgentSessionExtensionsModule {
 	constructor(readonly host: AgentSessionHost) {}
 
@@ -209,15 +213,14 @@ export class AgentSessionExtensionsModule {
 
 		runner.bindCore(
 			{
-				sendMessage: (message, options) => {
+				sendMessage: (message, options) =>
 					this.host.sendCustomMessage(message, options).catch((err) => {
 						runner.emitError({
 							extensionPath: "<runtime>",
 							event: "send_message",
 							error: err instanceof Error ? err.message : String(err),
 						});
-					});
-				},
+					}),
 				sendUserMessage: (content, options) => {
 					this.host.sendUserMessage(content, options).catch((err) => {
 						runner.emitError({
@@ -258,6 +261,7 @@ export class AgentSessionExtensionsModule {
 				getVisibleSkills: () => this.host._visibleSkillNames,
 				setVisibleSkills: (skillNames) => {
 					this.host._visibleSkillNames = skillNames;
+					this.refreshSystemPromptForVisibleSkills();
 				},
 				emitBeforeModelSelect: (event) => this.host._extensionRunner.emitBeforeModelSelect(event),
 				emitAdjustToolSet: (event) => this.host._extensionRunner.emitAdjustToolSet(event),
@@ -532,8 +536,20 @@ export class AgentSessionExtensionsModule {
 			selectedTools: validToolNames,
 			toolSnippets,
 			promptGuidelines,
+			skillFilter: (skill) => {
+				const visible = this.host._visibleSkillNames;
+				if (visible === undefined) return true;
+				const skillName = normalizeSkillFilterName(skill.name);
+				return visible.some((name) => normalizeSkillFilterName(name) === skillName);
+			},
 		};
 		return buildSystemPrompt(this.host._baseSystemPromptOptions);
+	}
+
+	private refreshSystemPromptForVisibleSkills(): void {
+		const toolNames = this.getActiveToolNames();
+		this.host._baseSystemPrompt = this.rebuildSystemPrompt(toolNames);
+		this.host.agent.state.systemPrompt = this.host._baseSystemPrompt;
 	}
 
 	getActiveToolNames(): string[] {

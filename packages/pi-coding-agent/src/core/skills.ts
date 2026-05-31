@@ -393,6 +393,9 @@ export interface LoadSkillsOptions {
 /**
  * Load skills from all configured locations.
  * Returns skills and any validation diagnostics.
+ *
+ * Name collisions: the first skill loaded for a given name wins. When paths
+ * come from PackageManager, project resources precede user/bundled paths.
  */
 export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 	const { agentDir, skillPaths, includeDefaults } = options;

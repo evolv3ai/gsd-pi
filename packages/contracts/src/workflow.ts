@@ -174,6 +174,14 @@ export const WORKFLOW_TOOL_CONTRACTS = [
 		auditEvent: "workflow.milestone.status",
 	},
 	{
+		canonicalName: "gsd_checkpoint_db",
+		aliases: [],
+		schemaId: "workflow.database.checkpoint",
+		executorId: "executeCheckpointDb",
+		writePolicy: "read",
+		auditEvent: "workflow.database.checkpoint",
+	},
+	{
 		canonicalName: "gsd_journal_query",
 		aliases: [],
 		schemaId: "workflow.journal.query",
@@ -235,3 +243,17 @@ export const WORKFLOW_TOOL_NAMES = WORKFLOW_TOOL_CONTRACTS.flatMap((tool) => [
 	tool.canonicalName,
 	...tool.aliases,
 ]) as readonly string[];
+
+/** Canonical tool names only (excludes backwards-compatibility aliases). */
+export const CANONICAL_WORKFLOW_TOOL_NAMES = WORKFLOW_TOOL_CONTRACTS.map(
+	(tool) => tool.canonicalName,
+) as readonly string[];
+
+/**
+ * Backwards-compatibility alias names (each forwards to a canonical twin).
+ * These are kept callable but excluded from the advertised tool surface by
+ * default to save tokens — see registerWorkflowTools({ advertiseAliases }).
+ */
+export const WORKFLOW_TOOL_ALIAS_NAMES = WORKFLOW_TOOL_CONTRACTS.flatMap(
+	(tool) => tool.aliases,
+) as readonly string[];

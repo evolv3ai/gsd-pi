@@ -83,11 +83,14 @@ export type DoctorIssueCode =
   | "db_orphaned_task"
   | "db_orphaned_slice"
   | "db_done_task_no_summary"
+  | "artifact_db_status_divergence"
+  | "completed_milestone_reopened"
   | "db_duplicate_id"
   | "db_unavailable"
   | "projection_drift"
   // Milestone filesystem/DB drift (#4996)
-  | "orphan_milestone_dir";
+  | "orphan_milestone_dir"
+  | "orphan_milestone_db";
 
 /**
  * Issue codes that represent global or completion-critical state.

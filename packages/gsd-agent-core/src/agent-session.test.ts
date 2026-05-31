@@ -1,6 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { parseSkillBlock } from "./agent-session.ts";
+import { AgentSessionExtensionsModule } from "./session/agent-session-extensions.ts";
 
 describe("parseSkillBlock", () => {
   test("parses a valid skill block with trailing user message", () => {
@@ -23,3 +24,43 @@ Please review the patch.`;
     assert.equal(parseSkillBlock('<skill name="x" location="y">missing close'), null);
   });
 });
+
+describe("AgentSessionExtensionsModule", () => {
+  test("matches visible skills case-insensitively when rebuilding the prompt", () => {
+    const host = {
+      _cwd: "/tmp/project",
+      _toolRegistry: new Map([["read", {}]]),
+      _toolPromptSnippets: new Map(),
+      _toolPromptGuidelines: new Map(),
+      _visibleSkillNames: ["review-skill"],
+      resourceLoader: {
+        getSystemPrompt: () => undefined,
+        getAppendSystemPrompt: () => [],
+        getSkills: () => ({
+          skills: [
+            makeSkill("Review-Skill"),
+            makeSkill("other-skill"),
+          ],
+        }),
+        getAgentsFiles: () => ({ agentsFiles: [] }),
+      },
+    };
+
+    const prompt = new AgentSessionExtensionsModule(host as any).rebuildSystemPrompt(["read"]);
+
+    assert.match(prompt, /<name>Review-Skill<\/name>/);
+    assert.doesNotMatch(prompt, /<name>other-skill<\/name>/);
+  });
+});
+
+function makeSkill(name: string) {
+  return {
+    name,
+    description: `${name} description`,
+    filePath: `/skills/${name}/SKILL.md`,
+    baseDir: `/skills/${name}`,
+    sourceInfo: { kind: "test" },
+    source: "test",
+    disableModelInvocation: false,
+  };
+}

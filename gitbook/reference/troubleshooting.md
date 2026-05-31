@@ -12,6 +12,49 @@ It checks file structure, roadmap ↔ slice ↔ task consistency, completion sta
 
 ## Common Issues
 
+### Upgrade from older gsd-pi installs
+
+An old global `gsd-pi` install can shadow the new scoped package.
+
+**npm fix:**
+```bash
+npm uninstall -g gsd-pi
+rm -f ~/.gsd/.update-check ~/.gsd/agent/managed-resources.json
+npm install -g @opengsd/gsd-pi@latest
+```
+
+**Move from old npm to pnpm:**
+```bash
+npm uninstall -g gsd-pi @opengsd/gsd-pi
+rm -f ~/.gsd/.update-check ~/.gsd/agent/managed-resources.json
+pnpm setup
+exec $SHELL -l
+pnpm add -g @opengsd/gsd-pi@latest
+command -v gsd
+gsd --version
+```
+
+If the old package was installed with `sudo npm install -g`, use `sudo npm uninstall -g gsd-pi` first. pnpm can only remove packages that pnpm installed.
+
+### pnpm global bin directory is not in PATH
+
+pnpm global commands fail with `The configured global bin directory ... is not in PATH`.
+
+**Fix:**
+```bash
+pnpm setup
+exec $SHELL -l
+pnpm remove -g @opengsd/gsd-pi
+```
+
+For a one-terminal workaround on macOS/Linux:
+```bash
+export PATH="/path/from/pnpm-error:$PATH"
+pnpm remove -g @opengsd/gsd-pi
+```
+
+Replace the path with the exact global bin directory from your pnpm error message.
+
 ### Auto mode loops on the same unit
 
 The same unit dispatches repeatedly.
@@ -33,6 +76,8 @@ A unit failed to produce its expected artifact twice.
 ### `command not found: gsd` after install
 
 npm's global bin directory isn't in `$PATH`.
+
+For pnpm installs, use `pnpm setup`, restart your shell, and retry the pnpm command.
 
 **Fix:**
 ```bash

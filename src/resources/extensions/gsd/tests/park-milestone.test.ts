@@ -19,6 +19,7 @@ import {
   openDatabase,
 } from "../gsd-db.ts";
 import { createWorktree } from "../worktree-manager.ts";
+import { _resetLogs, drainLogs, setStderrLoggingEnabled } from "../workflow-logger.ts";
 
 // ─── Fixture Helpers ───────────────────────────────────────────────────────
 
@@ -190,7 +191,9 @@ test('getActiveMilestoneId skips parked', async () => {
   // ─── Test 10: discardMilestone removes directory ──────────────────────
 test('discardMilestone removes directory', async () => {
     const base = createFixtureBase();
+    const previousStderr = setStderrLoggingEnabled(false);
     try {
+      _resetLogs();
       createMilestone(base, 'M001', { withRoadmap: true });
       clearCaches();
 
@@ -200,7 +203,13 @@ test('discardMilestone removes directory', async () => {
       const success = discardMilestone(base, 'M001');
       assert.ok(success, 'discardMilestone returns true');
       assert.ok(!existsSync(mDir), 'milestone dir removed after discard');
+      const logs = drainLogs();
+      assert.ok(
+        logs.some((entry) => entry.message.includes('discardMilestone DB cleanup skipped for M001: database unavailable')),
+        'discardMilestone warns when DB cleanup is skipped',
+      );
     } finally {
+      setStderrLoggingEnabled(previousStderr);
       cleanup(base);
     }
 });
@@ -255,6 +264,31 @@ test('discardMilestone removes DB rows, worktree, and milestone branch', () => {
       assert.equal(getSliceTasks('M001', 'S01').length, 0, 'task rows removed from DB');
       assert.ok(!existsSync(wt.path), 'worktree removed after discard');
       assert.ok(!run('git branch', base).includes('milestone/M001'), 'milestone branch removed after discard');
+    } finally {
+      cleanup(base);
+    }
+});
+
+test('discardMilestone removes DB rows when milestone directory is already missing', () => {
+    const base = createFixtureBase();
+    try {
+      createMilestone(base, 'M001', { withRoadmap: true });
+      clearCaches();
+
+      assert.ok(openDatabase(join(base, '.gsd', 'gsd.db')), 'database opens');
+      insertMilestone({ id: 'M001', title: 'Discard me', status: 'active' });
+      insertSlice({ milestoneId: 'M001', id: 'S01', title: 'Only slice', status: 'pending' });
+      insertTask({ milestoneId: 'M001', sliceId: 'S01', id: 'T01', title: 'Only task', status: 'pending' });
+
+      const mDir = join(base, '.gsd', 'milestones', 'M001');
+      rmSync(mDir, { recursive: true, force: true });
+      assert.ok(!existsSync(mDir), 'milestone dir removed before discard');
+
+      const success = discardMilestone(base, 'M001');
+      assert.ok(success, 'discardMilestone returns true when DB cleanup succeeds');
+      assert.equal(getMilestone('M001'), null, 'milestone row removed from DB');
+      assert.equal(getMilestoneSlices('M001').length, 0, 'slice rows removed from DB');
+      assert.equal(getSliceTasks('M001', 'S01').length, 0, 'task rows removed from DB');
     } finally {
       cleanup(base);
     }

@@ -25,7 +25,8 @@ describe("AssistantMessageComponent open surface", () => {
 		} as unknown as AssistantMessage;
 
 		const component = new AssistantMessageComponent(message, true);
-		const plain = component.render(80).map((line) => stripAnsi(line));
+		const raw = component.render(80);
+		const plain = raw.map((line) => stripAnsi(line));
 		const joined = plain.join("\n");
 
 		assert.match(joined, /GSD/);
@@ -49,7 +50,8 @@ describe("AssistantMessageComponent open surface", () => {
 			/^ {10,}/,
 			`assistant content should not preserve the old outer rail indent:\n${joined}`,
 		);
-		assert.equal(plain[contentIndex].length, 80, `assistant content row should fill the bubble background:\n${joined}`);
+		assert.doesNotMatch(raw[contentIndex] ?? "", /\x1b\[48[;:]/, "assistant content rows should not paint a background");
+		assert.equal(plain[contentIndex].length, 80, `assistant content row should fill the card interior:\n${joined}`);
 		assert.doesNotMatch(plain[contentIndex], /[│┃╭╮╰╯]/, `content line must stay copy-clean:\n${joined}`);
 	});
 

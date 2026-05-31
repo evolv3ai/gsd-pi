@@ -332,7 +332,7 @@ export async function runGSDDoctor(basePath: string, options?: { fix?: boolean; 
     return true;
   };
 
-  const prefs = loadEffectiveGSDPreferences();
+  const prefs = loadEffectiveGSDPreferences(basePath);
   if (prefs) {
     const prefIssues = validatePreferenceShape(prefs.preferences);
     for (const issue of prefIssues) {
@@ -514,13 +514,18 @@ export async function runGSDDoctor(basePath: string, options?: { fix?: boolean; 
           try {
             if (!lstatSync(join(slicesDir, entry)).isDirectory()) continue;
           } catch { continue; }
+          if (entry === "parallel-research") continue;
           if (!knownSliceIds.has(entry)) {
+            const quarantineExample = `.gsd/quarantine/milestones/${milestoneId}/slices/${entry}-manual-review`;
             issues.push({
               severity: "warning",
               code: "orphaned_slice_directory",
               scope: "milestone",
               unitId: milestoneId,
-              message: `Directory "${entry}" exists in ${milestoneId}/slices/ but is not referenced in the roadmap`,
+              message:
+                `Directory "${entry}" exists in ${milestoneId}/slices/ but is not referenced in the roadmap or DB. ` +
+                `Review it; if stale, move or delete it. To preserve it, move it under ${quarantineExample}. ` +
+                "If it contains work to keep, copy or merge that content into a DB-backed slice before resuming.",
               file: `${relMilestonePath(basePath, milestoneId)}/slices/${entry}`,
               fixable: false,
             });

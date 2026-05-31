@@ -428,5 +428,23 @@ describe("skills", () => {
 			expect(collisionWarnings).toHaveLength(1);
 			expect(collisionWarnings[0].message).toContain("name collision");
 		});
+
+		it("should keep the first loaded path on name collision (project before bundled)", () => {
+			const emptyAgentDir = resolve(__dirname, "fixtures/empty-agent");
+			const emptyCwd = resolve(__dirname, "fixtures/empty-cwd");
+			const projectPath = join(collisionFixturesDir, "first");
+			const bundledPath = join(collisionFixturesDir, "second");
+
+			const { skills, diagnostics } = loadSkills({
+				agentDir: emptyAgentDir,
+				cwd: emptyCwd,
+				skillPaths: [projectPath, bundledPath],
+				includeDefaults: false,
+			});
+
+			expect(skills).toHaveLength(1);
+			expect(skills[0].filePath).toContain("first");
+			expect(diagnostics.some((d: ResourceDiagnostic) => d.type === "collision")).toBe(true);
+		});
 	});
 });

@@ -1,8 +1,10 @@
 {{preamble}}
 
-Ask: "What's the vision?" once, then use the reply as vision input.
+Ask exactly this once: "{{visionAsk}}" Then use the user's reply as vision input.
 
-**Special handling:** If the **user's** message is status, branch state, clarification, or any other non-project-description, treat it as vision input and proceed instead of repeating "What's the vision?" Do **not** treat the system preamble above (e.g. "New milestone M00X.") as vision input — wait for the user.
+The opener is intentionally variable so GSD feels alive across project starts. Keep it natural, easy to answer, and assistant/developer shaped: plain language, light guidance, no corporate wording, no roleplay.
+
+**Special handling:** If the **user's** message is status, branch state, clarification, or any other non-project-description, treat it as vision input and proceed instead of repeating the opener. Do **not** treat the system preamble above (e.g. "New milestone M00X.") as vision input — wait for the user.
 
 ## Reflection Step
 

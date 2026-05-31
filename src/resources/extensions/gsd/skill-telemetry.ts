@@ -6,15 +6,12 @@
  * "actively loaded" skills (read via tool calls during execution).
  *
  * Data flow:
- *   1. At dispatch, captureAvailableSkills() records skills from the system prompt
+ *   1. At dispatch, captureAvailableSkills(names) records catalog skill names
  *   2. During execution, recordSkillRead() tracks explicit SKILL.md reads
  *   3. At unit completion, getAndClearSkills() returns the loaded list for metrics
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
-import { gsdHome } from "./gsd-home.js";
-import { homedir } from "node:os";
+import { getInstalledSkillNames } from "./skills.js";
 
 // ─── In-memory state ──────────────────────────────────────────────────────────
 
@@ -28,17 +25,10 @@ const activelyLoadedSkills = new Set<string>();
 
 /**
  * Capture the list of available skill names at dispatch time.
- * Called before each unit starts.
+ * Callers should pass names from resourceLoader / {@link getInstalledSkillNames}.
  */
-export function captureAvailableSkills(): void {
-  const gsdSkillsDir = join(gsdHome(), "agent", "skills");
-  const skillsDir = join(homedir(), ".agents", "skills");
-  const claudeSkillsDir = join(homedir(), ".claude", "skills");
-  const gsdNames = listSkillNames(gsdSkillsDir);
-  const names = listSkillNames(skillsDir);
-  const claudeNames = listSkillNames(claudeSkillsDir);
-  const all = new Set([...gsdNames, ...names, ...claudeNames]);
-  availableSkills = [...all];
+export function captureAvailableSkills(skillNames: string[]): void {
+  availableSkills = [...skillNames];
   activelyLoadedSkills.clear();
 }
 
@@ -104,17 +94,7 @@ export function detectStaleSkills(
   const lastUsed = getSkillLastUsed(units);
   const cutoff = Date.now() - (thresholdDays * 24 * 60 * 60 * 1000);
   const stale: string[] = [];
-
-  // Check all installed skills, not just those with usage data
-  const gsdSkillsDir = join(gsdHome(), "agent", "skills");
-  const skillsDir = join(homedir(), ".agents", "skills");
-  const claudeSkillsDir = join(homedir(), ".claude", "skills");
-  const installedSet = new Set([
-    ...listSkillNames(gsdSkillsDir),
-    ...listSkillNames(skillsDir),
-    ...listSkillNames(claudeSkillsDir),
-  ]);
-  const installed = [...installedSet];
+  const installed = getInstalledSkillNames();
 
   for (const skill of installed) {
     const lastTs = lastUsed.get(skill);
@@ -124,18 +104,4 @@ export function detectStaleSkills(
   }
 
   return stale;
-}
-
-// ─── Internals ────────────────────────────────────────────────────────────────
-
-function listSkillNames(skillsDir: string): string[] {
-  if (!existsSync(skillsDir)) return [];
-  try {
-    return readdirSync(skillsDir, { withFileTypes: true })
-      .filter(d => d.isDirectory() && !d.name.startsWith("."))
-      .filter(d => existsSync(join(skillsDir, d.name, "SKILL.md")))
-      .map(d => d.name);
-  } catch {
-    return [];
-  }
 }

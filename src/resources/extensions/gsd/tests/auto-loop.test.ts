@@ -191,6 +191,32 @@ test("resolveAgentEnd resolves a pending runUnit promise", async () => {
   assert.deepEqual(result.event, event);
 });
 
+test("runUnit clears scoped skill visibility after a manifest-scoped unit completes", async () => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  const pi = makeMockPi();
+  const skillVisibilityCalls: Array<string[] | undefined> = [];
+  let visibleSkills: string[] | undefined;
+  pi.setVisibleSkills = (names: string[] | undefined) => {
+    visibleSkills = names;
+    skillVisibilityCalls.push(names);
+  };
+  const s = makeMockSession();
+
+  const resultPromise = runUnit(ctx, pi, s, "plan-slice", "M001/S01", "prompt");
+
+  await new Promise((r) => setTimeout(r, 10));
+  assert.ok(Array.isArray(visibleSkills), "unit dispatch should scope skills before the turn starts");
+
+  resolveAgentEnd(makeEvent());
+
+  const result = await resultPromise;
+  assert.equal(result.status, "completed");
+  assert.equal(visibleSkills, undefined);
+  assert.equal(skillVisibilityCalls.at(-1), undefined);
+});
+
 test("runUnit honors ScheduleWakeup by continuing the same unit session", async () => {
   _resetPendingResolve();
   _resetAutoWakeupsForTest();
@@ -1773,6 +1799,11 @@ test("autoLoop dev path dispatches orchestration.advance results without legacy 
   const ctx = makeMockCtx();
   ctx.ui.setStatus = () => {};
   ctx.sessionManager = { getSessionFile: () => "/tmp/session.json" };
+  ctx.modelRegistry = {
+    getAvailable: () => [{ provider: "test", id: "hook-model" }],
+    getProviderAuthMode: () => undefined,
+    isProviderRequestReady: () => true,
+  };
   const pi = makeMockPi();
   const stateSnapshot = {
     phase: "executing",
@@ -1784,6 +1815,7 @@ test("autoLoop dev path dispatches orchestration.advance results without legacy 
   } as any;
   let advanceCalls = 0;
   const finalizedUnits: string[] = [];
+  const journalEvents: any[] = [];
   let s: any;
   s = makeLoopSession({
     currentMilestoneId: "M002",
@@ -1821,6 +1853,15 @@ test("autoLoop dev path dispatches orchestration.advance results without legacy 
       deps.callLog.push("resolveDispatch");
       throw new Error("legacy resolveDispatch must not run when orchestration is wired");
     },
+    runPreDispatchHooks: () => ({
+      firedHooks: ["complete-slice-policies"],
+      action: "proceed",
+      prompt: "hooked prompt",
+      model: "hook-model",
+    }),
+    emitJournalEvent: (entry: any) => {
+      journalEvents.push(entry);
+    },
     postUnitPostVerification: async () => {
       deps.callLog.push("postUnitPostVerification");
       s.active = false;
@@ -1841,11 +1882,115 @@ test("autoLoop dev path dispatches orchestration.advance results without legacy 
   );
   assert.equal(
     (pi.calls[0] as any[])[0].content,
-    "advance prompt",
-    "runUnit should receive the dispatch prompt captured by advance()",
+    "hooked prompt",
+    "runUnit should receive the dispatch prompt after pre-dispatch hooks",
+  );
+  assert.deepEqual(
+    pi.setModelCalls.map((call: any[]) => call[0]),
+    [
+      { provider: "test", id: "hook-model" },
+      { provider: "test", id: "hook-model" },
+    ],
+    "proceed hooks should apply model overrides before dispatch",
   );
   assert.deepEqual(finalizedUnits, ["execute-task:M002/S03/T05"]);
   assert.equal(s.pendingOrchestrationDispatch, null, "pending dispatch should be one-shot");
+  assert.equal(
+    journalEvents.filter((entry) => entry.eventType === "pre-dispatch-hook").length,
+    1,
+    "hook dispatch should emit one pre-dispatch-hook journal event",
+  );
+});
+
+test("autoLoop pauses once when orchestration reports reconciliation drift error", async () => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  ctx.sessionManager = { getSessionFile: () => "/tmp/session.json" };
+  const pi = makeMockPi();
+  let advanceCalls = 0;
+  const s = makeLoopSession({
+    currentMilestoneId: "M002",
+    orchestration: {
+      start: async () => ({ kind: "stopped" as const, reason: "unused" }),
+      advance: async () => {
+        advanceCalls++;
+        return {
+          kind: "error" as const,
+          reason: "Reconciliation drift: Reconciliation repair failed in pass 0",
+        };
+      },
+      completeActiveUnit: async () => {},
+      retryActiveUnit: async () => {},
+      resume: async () => ({ kind: "stopped" as const, reason: "unused" }),
+      stop: async () => ({ kind: "stopped" as const, reason: "unused" }),
+      getStatus: () => ({ phase: "error" as const, transitionCount: 1 }),
+    },
+  });
+
+  const deps = makeMockDeps({
+    resolveDispatch: async () => {
+      deps.callLog.push("resolveDispatch");
+      throw new Error("legacy resolveDispatch must not run after orchestration error");
+    },
+  });
+
+  await autoLoop(ctx, pi, s, deps);
+
+  assert.equal(advanceCalls, 1, "orchestration error must not be retried in the same loop");
+  assert.ok(deps.callLog.includes("pauseAuto"), "orchestration error should pause auto-mode");
+  assert.equal(
+    deps.callLog.includes("resolveDispatch"),
+    false,
+    "orchestration error must not fall back to legacy dispatch",
+  );
+  assert.equal(s.pendingOrchestrationDispatch, null, "no orchestration dispatch should remain pending");
+});
+
+test("autoLoop retries next iteration when orchestration reports paused", async () => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  ctx.sessionManager = { getSessionFile: () => "/tmp/session.json" };
+  const pi = makeMockPi();
+  let advanceCalls = 0;
+  const s = makeLoopSession({
+    currentMilestoneId: "M002",
+    orchestration: {
+      start: async () => ({ kind: "stopped" as const, reason: "unused" }),
+      advance: async () => {
+        advanceCalls++;
+        return advanceCalls === 1
+          ? { kind: "paused" as const, reason: "provider transient; retry" }
+          : { kind: "stopped" as const, reason: "done retrying" };
+      },
+      completeActiveUnit: async () => {},
+      retryActiveUnit: async () => {},
+      resume: async () => ({ kind: "stopped" as const, reason: "unused" }),
+      stop: async () => ({ kind: "stopped" as const, reason: "unused" }),
+      getStatus: () => ({ phase: "running" as const, transitionCount: advanceCalls }),
+    },
+  });
+
+  const deps = makeMockDeps({
+    resolveDispatch: async () => {
+      deps.callLog.push("resolveDispatch");
+      throw new Error("legacy resolveDispatch must not run after orchestration paused");
+    },
+  });
+
+  await autoLoop(ctx, pi, s, deps);
+
+  assert.equal(advanceCalls, 2, "orchestration paused should retry on the next loop iteration");
+  assert.equal(deps.callLog.includes("pauseAuto"), false, "orchestration paused should not pause auto-mode");
+  assert.equal(
+    deps.callLog.includes("resolveDispatch"),
+    false,
+    "orchestration paused must not fall back to legacy dispatch",
+  );
+  assert.equal(s.pendingOrchestrationDispatch, null, "no orchestration dispatch should remain pending");
 });
 
 test("autoLoop consumes pending orchestration dispatch without advancing twice", async () => {
@@ -4453,6 +4598,101 @@ test("autoLoop rejects execute-task with 0 tool calls as hallucinated (#1833)", 
   );
 });
 
+test("runUnitPhase retries 0-tool units with ordinary network-related assistant text", async (t) => {
+  _resetPendingResolve();
+
+  const basePath = mkdtempSync(join(tmpdir(), "gsd-zero-tool-network-text-"));
+  t.after(() => {
+    rmSync(basePath, { recursive: true, force: true });
+  });
+
+  const ctx = {
+    ...makeMockCtx(),
+    ui: {
+      notify: () => {},
+      setStatus: () => {},
+      setWorkingMessage: () => {},
+    },
+    sessionManager: {
+      getEntries: () => [],
+    },
+    modelRegistry: {
+      getProviderAuthMode: () => undefined,
+      isProviderRequestReady: () => true,
+    },
+  } as any;
+  const pi = {
+    ...makeMockPi(),
+    sendMessage: () => {
+      queueMicrotask(() => resolveAgentEnd(makeEvent([
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Error: I'll investigate the network error handling next." },
+          ],
+        },
+      ])));
+    },
+  } as any;
+  const s = makeLoopSession({
+    basePath,
+    canonicalProjectRoot: basePath,
+    originalBasePath: basePath,
+  });
+  const mockLedger = {
+    version: 1,
+    projectStartedAt: Date.now(),
+    units: [] as any[],
+  };
+  const deps = makeMockDeps({
+    closeoutUnit: async () => {
+      mockLedger.units.push({
+        type: "execute-task",
+        id: "M001/S01/T01",
+        startedAt: s.currentUnit?.startedAt ?? Date.now(),
+        toolCalls: 0,
+        assistantMessages: 1,
+        tokens: { input: 100, output: 20, total: 120, cacheRead: 0, cacheWrite: 0 },
+        cost: 0.01,
+      });
+    },
+    getLedger: () => mockLedger,
+  });
+  let seq = 0;
+
+  const result = await runUnitPhase(
+    { ctx, pi, s, deps, prefs: undefined, iteration: 1, flowId: "flow-zero-tool-network-text", nextSeq: () => ++seq },
+    {
+      unitType: "execute-task",
+      unitId: "M001/S01/T01",
+      prompt: "do work",
+      finalPrompt: "do work",
+      pauseAfterUatDispatch: false,
+      state: {
+        phase: "executing",
+        activeMilestone: { id: "M001", title: "Milestone" },
+        activeSlice: { id: "S01", title: "Slice" },
+        activeTask: { id: "T01", title: "Task" },
+        registry: [{ id: "M001", title: "Milestone", status: "active" }],
+        recentDecisions: [],
+        blockers: [],
+        nextAction: "",
+        progress: { milestones: { done: 0, total: 1 } },
+        requirements: { active: 0, validated: 0, deferred: 0, outOfScope: 0, blocked: 0, total: 0 },
+      } as any,
+      mid: "M001",
+      midTitle: "Milestone",
+      isRetry: false,
+      previousTier: undefined,
+    },
+    { recentUnits: [{ key: "execute-task/M001/S01/T01" }], stuckRecoveryAttempts: 0, consecutiveFinalizeTimeouts: 0 },
+  );
+
+  assert.equal(result.action, "retry");
+  assert.equal((result as any).reason, "zero-tool-calls");
+  assert.equal(deps.callLog.includes("pauseAuto"), false);
+});
+
 test("autoLoop pauses user-driven deep question instead of flagging 0 tool calls", async () => {
   _resetPendingResolve();
 
@@ -4638,6 +4878,92 @@ test("autoLoop rejects complete-slice with 0 tool calls as context-exhausted (#2
     1,
     "zero-tool retry should bypass finalize on the failed iteration",
   );
+});
+
+test("autoLoop pauses on zero-tool-call rate-limit assistant messages instead of immediate retry", async (t) => {
+  _resetPendingResolve();
+
+  const basePath = mkdtempSync(join(tmpdir(), "gsd-zero-tool-rate-limit-"));
+  t.after(() => {
+    _resetPendingResolve();
+    rmSync(basePath, { recursive: true, force: true });
+  });
+
+  const originalSetTimeout = globalThis.setTimeout;
+  const timers: Array<{ fn: () => void; delay: number }> = [];
+  globalThis.setTimeout = ((fn: () => void, delay?: number) => {
+    timers.push({ fn, delay: delay ?? 0 });
+    return 0 as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
+
+  try {
+    const ctx = makeMockCtx();
+    ctx.ui.setStatus = () => {};
+    const notifications: string[] = [];
+    ctx.ui.notify = (msg: string) => { notifications.push(msg); };
+    ctx.sessionManager = { getSessionFile: () => "/tmp/session.json" };
+    ctx.modelRegistry = {
+      getProviderAuthMode: () => undefined,
+      isProviderRequestReady: () => true,
+    };
+    const pi = makeMockPi();
+    const s = makeLoopSession({
+      basePath,
+      canonicalProjectRoot: basePath,
+      originalBasePath: basePath,
+    });
+
+    const mockLedger = {
+      version: 1,
+      projectStartedAt: Date.now(),
+      units: [] as any[],
+    };
+
+    const deps = makeMockDeps({
+      closeoutUnit: async () => {
+        mockLedger.units.push({
+          type: "execute-task",
+          id: "M001/S01/T01",
+          startedAt: s.currentUnit?.startedAt ?? Date.now(),
+          toolCalls: 0,
+          assistantMessages: 1,
+          tokens: { input: 100, output: 100, total: 200, cacheRead: 0, cacheWrite: 0 },
+          cost: 0.05,
+        });
+      },
+      getLedger: () => mockLedger,
+    });
+
+    const loopPromise = autoLoop(ctx as any, pi as any, s, deps);
+
+    await new Promise((r) => originalSetTimeout(r, 50));
+    resolveAgentEnd(makeEvent([
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "You've hit your limit · resets Jun 1 at 8am" }],
+      },
+    ]));
+
+    await loopPromise;
+
+    assert.equal(deps.callLog.includes("pauseAuto"), true);
+    assert.ok(
+      timers.some((timer) => timer.delay === 60_000),
+      "rate-limit message should schedule delayed auto-resume instead of immediate retry",
+    );
+    assert.ok(
+      notifications.some((msg) => msg.includes("Auto-resuming in 60s")),
+      "rate-limit pause should announce delayed resume",
+    );
+    assert.ok(
+      !notifications.some((msg) => msg.includes("context exhaustion")),
+      "rate-limit message should not be classified as context exhaustion",
+    );
+    const deriveCount = deps.callLog.filter((entry) => entry === "deriveState").length;
+    assert.equal(deriveCount, 1, "loop should pause after first iteration instead of redispatching");
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+  }
 });
 
 // ─── Worktree health check (#1833) ────────────────────────────────────────

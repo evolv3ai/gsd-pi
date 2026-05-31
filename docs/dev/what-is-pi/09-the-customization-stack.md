@@ -47,11 +47,16 @@ On-demand capability packages following the [Agent Skills standard](https://agen
 /skill:pdf-tools extract file.pdf  # With arguments
 ```
 
-**Placement:**
-- `~/.gsd/agent/skills/` (GSD bundled, highest priority)
-- `~/.agents/skills/` (global — shared across all agents)
-- `.agents/skills/` (project, searched up to git root)
-- `~/.claude/skills/` and `.claude/skills/` (Claude Code compatibility, lower priority)
+**Placement (catalog load order — first path wins on name collision):**
+- `.gsd/skills/` and `.agents/skills/` (project — highest precedence in the loader)
+- `~/.gsd/agent/skills/` (GSD bundled defaults)
+- `~/.agents/skills/` (global ecosystem)
+- `~/.claude/skills/` and `.claude/skills/` (Claude Code compatibility, lower precedence)
+
+**Preference reference resolution** (bare skill names in `PREFERENCES.md`) scans
+`~/.gsd/agent/skills/` before ecosystem directories so bundled GSD skills win
+when resolving preference refs — even though a project-local skill with the same
+name would appear in the `<available_skills>` catalog instead.
 
 **Skill structure:**
 ```

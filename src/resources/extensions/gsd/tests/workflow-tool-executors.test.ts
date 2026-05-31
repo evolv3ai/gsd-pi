@@ -108,6 +108,34 @@ test("executeSummarySave persists artifact and returns computed path", async () 
   }
 });
 
+test("executeSummarySave mirrors milestone artifacts into the active worktree projection", async () => {
+  const base = makeTmpBase();
+  const worktree = join(base, ".gsd", "worktrees", "M001");
+  try {
+    mkdirSync(join(worktree, ".gsd"), { recursive: true });
+    writeFileSync(join(worktree, ".git"), "gitdir: ../../../.git/worktrees/M001\n");
+    openTestDb(base);
+
+    const result = await inProjectDir(worktree, () => executeSummarySave({
+      milestone_id: "M001",
+      slice_id: "S02",
+      artifact_type: "RESEARCH",
+      content: "# S02 Research\n\ncanonical and worktree",
+    }, worktree));
+
+    assert.equal(result.details.operation, "save_summary");
+    const relPath = "milestones/M001/slices/S02/S02-RESEARCH.md";
+    const projectPath = join(base, ".gsd", relPath);
+    const worktreePath = join(worktree, ".gsd", relPath);
+    assert.equal(existsSync(projectPath), true, "canonical artifact should be written");
+    assert.equal(existsSync(worktreePath), true, "active worktree projection should be mirrored");
+    assert.match(readFileSync(worktreePath, "utf-8"), /S02 Research/);
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
 test("executeTaskComplete coerces string verificationEvidence entries", async () => {
   const base = makeTmpBase();
   try {
@@ -142,6 +170,60 @@ test("executeTaskComplete coerces string verificationEvidence entries", async ()
 
     const summaryPath = String(result.details.summaryPath);
     assert.ok(existsSync(summaryPath), "task summary should be written to disk");
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executeTaskComplete derives missing verification from evidence", async () => {
+  const base = makeTmpBase();
+  try {
+    openTestDb(base);
+    const planDir = join(base, ".gsd", "milestones", "M001", "slices", "S01");
+    mkdirSync(planDir, { recursive: true });
+    writeFileSync(join(planDir, "S01-PLAN.md"), "# S01\n\n- [ ] **T01: Demo** `est:5m`\n");
+
+    const result = await inProjectDir(base, () => executeTaskComplete({
+      milestoneId: "M001",
+      sliceId: "S01",
+      taskId: "T01",
+      oneLiner: "Completed task",
+      narrative: "Did the work",
+      verificationEvidence: [
+        { command: "npm test", exitCode: 0, verdict: "pass", durationMs: 1234 },
+      ],
+    }, base));
+
+    assert.equal(result.details.operation, "complete_task");
+    const db = _getAdapter();
+    assert.ok(db, "DB should be open");
+    const row = db!.prepare(
+      "SELECT verification_result FROM tasks WHERE milestone_id = ? AND slice_id = ? AND id = ?",
+    ).get("M001", "S01", "T01") as Record<string, unknown> | undefined;
+
+    assert.match(String(row?.verification_result), /Verification evidence recorded/);
+    assert.match(String(row?.verification_result), /`npm test` exited 0 \(pass\)/);
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executeTaskComplete returns a tool error when verification cannot be derived", async () => {
+  const base = makeTmpBase();
+  try {
+    openTestDb(base);
+    const result = await inProjectDir(base, () => executeTaskComplete({
+      milestoneId: "M001",
+      sliceId: "S01",
+      taskId: "T01",
+      oneLiner: "Completed task",
+      narrative: "Did the work",
+    }, base));
+
+    assert.equal(result.isError, true);
+    assert.match(String(result.content[0]?.text), /verification is required/);
   } finally {
     closeDatabase();
     cleanup(base);

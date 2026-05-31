@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { VISION_ASK_VARIANTS } from "../vision-ask.ts";
 
 test("guided milestone prompt renders compact interview and context guidance", async (t) => {
   const previousGsdHome = process.env.GSD_HOME;
@@ -31,6 +32,11 @@ test("guided milestone prompt renders compact interview and context guidance", a
 
   assert.match(prompt, /M001 context written/);
   assert.match(prompt, /Project Shape/);
+  assert.ok(
+    VISION_ASK_VARIANTS.some((opener) => prompt.includes(opener)),
+    "prompt should render a conversational opener variant",
+  );
+  assert.doesNotMatch(prompt, /\{\{visionAsk\}\}/);
   assert.match(prompt, /default to `complex`/i);
   assert.match(prompt, /3 or 4 concrete, researched options/);
   assert.match(prompt, /"Other — let me discuss"/);

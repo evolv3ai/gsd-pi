@@ -94,6 +94,7 @@ import { resolveWorktreeProjectRoot } from "./worktree-root.js";
 import { probeGitConflictState } from "./git-conflict-state.js";
 import { runTurnGitAction } from "./git-service.js";
 import { parseUnitId } from "./unit-id.js";
+import { resolveExpectedArtifactPath } from "./auto-artifact-paths.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -130,6 +131,15 @@ export interface DispatchContext {
   modelRegistry?: MinimalModelRegistry;
   /** Session model provider, used for provider-specific effective context windows. */
   sessionProvider?: string;
+}
+
+function resolveExistingExpectedArtifact(
+  unitType: string,
+  unitId: string,
+  basePath: string,
+): string | null {
+  const artifactPath = resolveExpectedArtifactPath(unitType, unitId, basePath);
+  return artifactPath && existsSync(artifactPath) ? artifactPath : null;
 }
 
 type ReassessmentChecker = typeof checkNeedsReassessment;
@@ -971,13 +981,17 @@ export const DISPATCH_RULES: DispatchRule[] = [
       if (await getMilestonePipelineVariant(mid) === "trivial") return null;
 
       // Load roadmap to find all slices
-      const roadmapFile = resolveMilestoneFile(basePath, mid, "ROADMAP");
+      const roadmapFile =
+        resolveExistingExpectedArtifact("plan-milestone", mid, basePath) ??
+        resolveMilestoneFile(basePath, mid, "ROADMAP");
       const roadmapContent = roadmapFile ? await loadFile(roadmapFile) : null;
       if (!roadmapContent) return null;
       const roadmap = parseRoadmap(roadmapContent);
 
       // Find slices that need research (no RESEARCH file, dependencies done)
-      const milestoneResearchFile = resolveMilestoneFile(basePath, mid, "RESEARCH");
+      const milestoneResearchFile =
+        resolveExistingExpectedArtifact("research-milestone", mid, basePath) ??
+        resolveMilestoneFile(basePath, mid, "RESEARCH");
       const researchReadySlices: Array<{ id: string; title: string }> = [];
 
       for (const slice of roadmap.slices) {
@@ -985,10 +999,10 @@ export const DISPATCH_RULES: DispatchRule[] = [
         // Skip S01 when milestone research exists
         if (milestoneResearchFile && slice.id === "S01") continue;
         // Skip if already has research
-        if (resolveSliceFile(basePath, mid, slice.id, "RESEARCH")) continue;
+        if (resolveExistingExpectedArtifact("research-slice", `${mid}/${slice.id}`, basePath)) continue;
         // Skip if dependencies aren't done (check for SUMMARY files)
         const depsComplete = (slice.depends ?? []).every((depId) =>
-          !!resolveSliceFile(basePath, mid, depId, "SUMMARY"),
+          !!resolveExistingExpectedArtifact("complete-slice", `${mid}/${depId}`, basePath),
         );
         if (!depsComplete) continue;
 
@@ -1001,7 +1015,9 @@ export const DISPATCH_RULES: DispatchRule[] = [
       // #4414: If a previous parallel-research attempt escalated to a blocker
       // placeholder, skip this rule and fall through to per-slice research
       // (or other rules) rather than re-dispatching the same failing unit.
-      const parallelBlocker = resolveMilestoneFile(basePath, mid, "PARALLEL-BLOCKER");
+      const parallelBlocker =
+        resolveExistingExpectedArtifact("research-slice", `${mid}/parallel-research`, basePath) ??
+        resolveMilestoneFile(basePath, mid, "PARALLEL-BLOCKER");
       if (parallelBlocker) return null;
 
       return {
@@ -1030,15 +1046,19 @@ export const DISPATCH_RULES: DispatchRule[] = [
       if (!state.activeSlice) return missingSliceStop(mid, state.phase);
       const sid = state.activeSlice!.id;
       const sTitle = state.activeSlice!.title;
-      const researchFile = resolveSliceFile(basePath, mid, sid, "RESEARCH");
+      const researchFile =
+        resolveExistingExpectedArtifact("research-slice", `${mid}/${sid}`, basePath) ??
+        resolveSliceFile(basePath, mid, sid, "RESEARCH");
       if (researchFile) return null; // has research, fall through
       // Skip slice research for S01 when milestone research already exists —
       // the milestone research already covers the same ground for the first slice.
-      const milestoneResearchFile = resolveMilestoneFile(
-        basePath,
-        mid,
-        "RESEARCH",
-      );
+      const milestoneResearchFile =
+        resolveExistingExpectedArtifact("research-milestone", mid, basePath) ??
+        resolveMilestoneFile(
+          basePath,
+          mid,
+          "RESEARCH",
+        );
       if (milestoneResearchFile && sid === "S01") return null; // fall through to plan-slice
       return {
         action: "dispatch",

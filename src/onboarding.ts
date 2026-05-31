@@ -14,9 +14,10 @@ import { execFile } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { AuthStorage } from '@gsd/pi-coding-agent'
-import { renderLogo } from './logo.js'
+import { renderGsdPiLogo, GSD_PI_BRAND, GSD_WEBSITE } from './logo.js'
 import { agentDir } from './app-paths.js'
 import { isClaudeCliReady } from './claude-cli-check.js'
+import { isAntigravityCliReady, isGeminiCliReady } from './resources/extensions/google-cli/readiness.js'
 import {
   markOnboardingComplete,
   markStepCompleted,
@@ -298,8 +299,11 @@ export async function runOnboarding(
   }
 
   // ── Intro ─────────────────────────────────────────────────────────────────
-  if (opts.showIntro !== false) {
-    process.stderr.write(renderLogo(pc.cyan))
+  if (opts.showIntro !== false && process.env.GSD_SUPPRESS_LOGO !== '1') {
+    process.stderr.write(renderGsdPiLogo(pc.cyan))
+    process.stderr.write(`  ${pc.bold(GSD_PI_BRAND)}  ${pc.dim(GSD_WEBSITE)}\n\n`)
+    p.intro(pc.bold('Welcome to GSD — let\'s get you set up'))
+  } else if (opts.showIntro !== false) {
     p.intro(pc.bold('Welcome to GSD — let\'s get you set up'))
   }
 
@@ -406,8 +410,20 @@ export async function runLlmStep(p: ClackModule, pc: PicoModule, authStorage: Au
     )
   }
 
+  if (isGeminiCliReady()) {
+    authOptions.push(
+      { value: 'gemini-cli', label: 'Use Google Gemini CLI', hint: 'uses your existing Gemini CLI session' },
+    )
+  }
+
+  if (isAntigravityCliReady()) {
+    authOptions.push(
+      { value: 'antigravity-cli', label: 'Use Antigravity CLI', hint: 'uses your existing Antigravity session' },
+    )
+  }
+
   authOptions.push(
-    { value: 'browser', label: 'Sign in with your browser', hint: 'GitHub Copilot, ChatGPT, Google, etc.' },
+    { value: 'browser', label: 'Sign in with your browser', hint: 'GitHub Copilot or ChatGPT/Codex' },
     { value: 'api-key', label: 'Paste an API key', hint: 'from your provider dashboard' },
     { value: 'skip', label: 'Skip for now', hint: 'use /login inside GSD later' },
   )
@@ -431,6 +447,22 @@ export async function runLlmStep(p: ClackModule, pc: PicoModule, authStorage: Au
     return true
   }
 
+  if (method === 'gemini-cli') {
+    p.log.success('Google Gemini CLI detected — routing through local CLI')
+    p.log.info('Your Gemini CLI session will be used for inference. No API key needed.')
+    authStorage.set('google-gemini-cli', { type: 'api_key', key: 'cli' })
+    persistDefaultProvider('google-gemini-cli')
+    return true
+  }
+
+  if (method === 'antigravity-cli') {
+    p.log.success('Antigravity CLI detected — routing through local CLI')
+    p.log.info('Your Antigravity session will be used for inference. No API key needed.')
+    authStorage.set('google-antigravity', { type: 'api_key', key: 'cli' })
+    persistDefaultProvider('google-antigravity')
+    return true
+  }
+
   // ── Step 2: Which provider? ──────────────────────────────────────────────
   if (method === 'browser') {
     // Anthropic OAuth is removed from browser auth — it violates Anthropic TOS for
@@ -439,12 +471,10 @@ export async function runLlmStep(p: ClackModule, pc: PicoModule, authStorage: Au
     const provider = await p.select({
       message: 'Choose provider',
       options: [
-        { value: 'github-copilot', label: 'GitHub Copilot' },
-        { value: 'openai-codex', label: 'ChatGPT Plus/Pro (Codex)' },
-        { value: 'google-gemini-cli', label: 'Google Gemini CLI' },
-        { value: 'google-antigravity', label: 'Antigravity (Gemini 3, Claude, GPT-OSS)' },
-      ],
-    })
+	        { value: 'github-copilot', label: 'GitHub Copilot' },
+	        { value: 'openai-codex', label: 'ChatGPT Plus/Pro (Codex)' },
+	      ],
+	    })
     if (p.isCancel(provider)) return false
     return await runOAuthFlow(p, pc, authStorage, provider as string, oauthMap)
   }

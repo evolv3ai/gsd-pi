@@ -14,6 +14,12 @@ describe("getSupportedThinkingLevels", () => {
 		expect(getSupportedThinkingLevels(model!)).toContain("xhigh");
 	});
 
+	it("includes xhigh for Anthropic Opus 4.8 on anthropic-messages API", () => {
+		const model = getModel("anthropic", "claude-opus-4-8");
+		expect(model).toBeDefined();
+		expect(getSupportedThinkingLevels(model!)).toContain("xhigh");
+	});
+
 	it("does not include xhigh for non-Opus Anthropic models", () => {
 		const model = getModel("anthropic", "claude-sonnet-4-5");
 		expect(model).toBeDefined();

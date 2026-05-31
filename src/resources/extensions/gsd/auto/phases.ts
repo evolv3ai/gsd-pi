@@ -19,6 +19,7 @@ import {
   type PostUnitContext,
   type PreVerificationOpts,
 } from "../auto-post-unit.js";
+import { lastAssistantText } from "../user-input-boundary.js";
 import type { Phase } from "../types.js";
 import {
   MAX_RECOVERY_CHARS,
@@ -93,9 +94,24 @@ import {
   detectRootWriteLeak,
   formatRootWriteLeakMessage,
 } from "../root-write-leak-guard.js";
+import { classifyError, isTransient } from "../error-classifier.js";
 
 export const STUCK_WINDOW_SIZE = 6;
 const STUCK_RECOVERY_ATTEMPTS_KEY = "stuck_recovery_attempts";
+const ZERO_TOOL_PROVIDER_ERROR_PREFIX_RE =
+  /^(?:api error(?::|$|\s*\()|provider error(?::|$|\s*\()|request failed\b|(?:http\s*)?(?:429|500|502|503)\b|\b(?:econnreset|etimedout|econnrefused|epipe)\b|socket hang up\b|fetch failed\b|(?:network|connection|server) error(?::|$)|connection (?:reset|refused)(?::|$|\s+by\b)|dns\b.*(?:fail|error|timeout)|unexpected eof\b|stream idle timeout\b|partial response received\b|stream_exhausted\b|terminated(?::|$)|(?:connection|stream|request)\b.{0,40}\bterminated\b|other side closed\b|rate.?limit(?:ed| exceeded| reached| error)|too many requests\b|you(?:'ve| have) hit your limit\b|usage limit\b|out of extra usage\b|service.?unavailable\b|internal(?: server)? error(?::|$)|internal(?:[_-]server)?[_-]error\b|server[_-]error\b|(?:provider|server|api|model|codex|claude|openai|anthropic|gemini)\b.{0,80}\boverloaded\b|overloaded\b.{0,80}\b(?:provider|server|api|model)\b|context (?:window|length) exceed|context window exceed)/i;
+const ZERO_TOOL_PROVIDER_ERROR_SIGNAL_RE =
+  /(?:\b(?:http|status(?: code)?|code|error:)\s*(?:429|500|502|503)\b|\b(?:api|provider) error\s*[:(]?\s*(?:429|500|502|503)\b|\b(?:typeerror|error):\s*(?:fetch failed\b|socket hang up\b|terminated(?::|$)|connection (?:reset|refused)(?::|$|\s+by\b)|(?:network|connection|server) error(?::|$)|stream idle timeout\b|partial response received\b|unexpected eof\b)|\b(?:server_error|api_error|stream_exhausted(?:_without_result)?)\b|\b(?:econnreset|etimedout|econnrefused|epipe)\b|context (?:window|length) exceed|context window exceed)/i;
+
+function classifyZeroToolProviderMessage(message: string): ReturnType<typeof classifyError> | null {
+  const firstLine = message.trim().split(/\r?\n/, 1)[0]?.trim() ?? "";
+  if (
+    !firstLine ||
+    (!ZERO_TOOL_PROVIDER_ERROR_PREFIX_RE.test(firstLine) &&
+      !ZERO_TOOL_PROVIDER_ERROR_SIGNAL_RE.test(firstLine))
+  ) return null;
+  return classifyError(firstLine);
+}
 
 export function resolveDispatchRecoveryAttempts(
   unitRecoveryCount: Map<string, number>,
@@ -567,6 +583,7 @@ async function restorePreflightStashOrStop(
 export async function _runMilestoneMergeWithStashRestore(
   ic: IterationContext,
   milestoneId: string,
+  options: { preserveCloseoutTranscript?: boolean } = {},
 ): Promise<{ action: "break"; reason: string } | null> {
   const { ctx, pi, s, deps } = ic;
 
@@ -581,6 +598,7 @@ export async function _runMilestoneMergeWithStashRestore(
       : `Pre-merge dirty working tree overlaps milestone ${milestoneId}`;
     await deps.stopAuto(ctx, pi, reason, {
       preserveCompletedMilestoneBranch: true,
+      preserveCloseoutTranscript: options.preserveCloseoutTranscript,
     });
     return {
       action: "break",
@@ -661,6 +679,7 @@ export async function _runMilestoneMergeWithStashRestore(
 export async function _runMilestoneMergeOnceWithStashRestore(
   ic: IterationContext,
   milestoneId: string,
+  options: { preserveCloseoutTranscript?: boolean } = {},
 ): Promise<{ action: "break"; reason: string } | null> {
   if (ic.s.milestoneMergedInPhases) {
     debugLog("autoLoop", {
@@ -670,7 +689,7 @@ export async function _runMilestoneMergeOnceWithStashRestore(
     });
     return null;
   }
-  return _runMilestoneMergeWithStashRestore(ic, milestoneId);
+  return _runMilestoneMergeWithStashRestore(ic, milestoneId, options);
 }
 
 async function emitCancelledUnitEnd(
@@ -2072,7 +2091,7 @@ export async function runUnitPhase(
   const nextDispatchCount = (s.unitDispatchCount.get(dispatchKey) ?? 0) + 1;
 
   // Status bar (widget + preconditions deferred until after model selection — see #2899)
-  ctx.ui.setStatus("gsd-auto", "auto");
+  ctx.ui.setStatus("gsd-auto", s.stepMode ? "next" : "auto");
   if (mid)
     deps.updateSliceProgressCache(s.basePath, mid, state.activeSlice?.id);
 
@@ -2637,6 +2656,36 @@ export async function runUnitPhase(
         (u: { type: string; id: string; startedAt: number; toolCalls: number }) => u.type === unitType && u.id === unitId && u.startedAt === _resolveCurrentUnitStartedAtForTest(s.currentUnit),
       );
       if (lastUnit && lastUnit.toolCalls === 0) {
+        const lastAssistantMessage = lastAssistantText(s.lastUnitAgentEndMessages);
+        const providerMessageClass = classifyZeroToolProviderMessage(lastAssistantMessage);
+        if (providerMessageClass && isTransient(providerMessageClass)) {
+          const retryAfterMs = "retryAfterMs" in providerMessageClass ? providerMessageClass.retryAfterMs : 15_000;
+          await pauseAutoForProviderError(
+            ctx.ui,
+            ` for ${unitType} ${unitId}`,
+            () => deps.pauseAuto(ctx, pi),
+            {
+              isRateLimit: providerMessageClass.kind === "rate-limit",
+              isTransient: true,
+              retryAfterMs,
+              resume: () => {
+                void resumeAutoAfterProviderDelay(pi, ctx).catch((err) => {
+                  logWarning("engine", `Provider error auto-resume failed: ${err instanceof Error ? err.message : String(err)}`);
+                });
+              },
+            },
+          );
+          await emitCancelledUnitEnd(ic, unitType, unitId, unitStartSeq, {
+            message: lastAssistantMessage.slice(0, 200),
+            category: "provider",
+            isTransient: true,
+            retryAfterMs,
+          });
+          return {
+            action: "break",
+            reason: providerMessageClass.kind === "rate-limit" ? "rate-limit" : "api-timeout",
+          };
+        }
         if (USER_DRIVEN_DEEP_UNITS.has(unitType) && isAwaitingUserInput(s.lastUnitAgentEndMessages ?? undefined)) {
           debugLog("runUnitPhase", {
             phase: "zero-tool-calls-awaiting-user-input",
@@ -3017,7 +3066,9 @@ export async function runFinalize(
   }
 
   if (preUnitSnapshot?.type === "complete-milestone" && s.currentMilestoneId) {
-    const stop = await _runMilestoneMergeOnceWithStashRestore(ic, s.currentMilestoneId);
+    const stop = await _runMilestoneMergeOnceWithStashRestore(ic, s.currentMilestoneId, {
+      preserveCloseoutTranscript: true,
+    });
     if (stop) {
       clearFinalizingUnit();
       return stop;

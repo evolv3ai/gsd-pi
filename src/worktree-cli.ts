@@ -36,6 +36,7 @@ const gsdExtensionPath = (...segments: string[]) =>
 
 // Lazily-loaded extension modules (loaded once on first use via jiti)
 let _ext: ExtensionModules | null = null
+let _mergeExt: MergeModules | null = null
 
 interface ExtensionModules {
   createWorktree: (basePath: string, name: string) => { path: string; branch: string }
@@ -50,9 +51,12 @@ interface ExtensionModules {
   nativeHasChanges: (path: string) => boolean
   nativeDetectMainBranch: (basePath: string) => string
   nativeCommitCountBetween: (basePath: string, from: string, to: string) => number
+  resolveWorktreeProjectRoot: (basePath: string) => string
+}
+
+interface MergeModules {
   inferCommitType: (name: string) => string
   autoCommitCurrentBranch: (wtPath: string, reason: string, name: string) => void
-  resolveWorktreeProjectRoot: (basePath: string) => string
 }
 
 interface WorktreeDiff {
@@ -72,7 +76,7 @@ interface WorktreeManagerModule {
   worktreePath: ExtensionModules['worktreePath']
 }
 
-interface AutoWorktreeModule {
+interface WorktreePostCreateHookModule {
   runWorktreePostCreateHook: ExtensionModules['runWorktreePostCreateHook']
 }
 
@@ -83,11 +87,14 @@ interface NativeGitBridgeModule {
 }
 
 interface GitServiceModule {
-  inferCommitType: ExtensionModules['inferCommitType']
+  inferCommitType: MergeModules['inferCommitType']
 }
 
 interface WorktreeModule {
-  autoCommitCurrentBranch: ExtensionModules['autoCommitCurrentBranch']
+  autoCommitCurrentBranch: MergeModules['autoCommitCurrentBranch']
+}
+
+interface WorktreeRootModule {
   resolveWorktreeProjectRoot: ExtensionModules['resolveWorktreeProjectRoot']
 }
 
@@ -103,12 +110,11 @@ function logDebugFailure(scope: string, error: unknown): void {
 
 async function loadExtensionModules(): Promise<ExtensionModules> {
   if (_ext) return _ext
-  const [wtMgr, autoWt, gitBridge, gitSvc, wt] = await Promise.all([
+  const [wtMgr, hook, gitBridge, wtRoot] = await Promise.all([
     jiti.import(gsdExtensionPath('worktree-manager.ts'), {}) as Promise<WorktreeManagerModule>,
-    jiti.import(gsdExtensionPath('auto-worktree.ts'), {}) as Promise<AutoWorktreeModule>,
+    jiti.import(gsdExtensionPath('worktree-post-create-hook.ts'), {}) as Promise<WorktreePostCreateHookModule>,
     jiti.import(gsdExtensionPath('native-git-bridge.ts'), {}) as Promise<NativeGitBridgeModule>,
-    jiti.import(gsdExtensionPath('git-service.ts'), {}) as Promise<GitServiceModule>,
-    jiti.import(gsdExtensionPath('worktree.ts'), {}) as Promise<WorktreeModule>,
+    jiti.import(gsdExtensionPath('worktree-root.ts'), {}) as Promise<WorktreeRootModule>,
   ])
   _ext = {
     createWorktree: wtMgr.createWorktree,
@@ -119,15 +125,26 @@ async function loadExtensionModules(): Promise<ExtensionModules> {
     diffWorktreeNumstat: wtMgr.diffWorktreeNumstat,
     worktreeBranchName: wtMgr.worktreeBranchName,
     worktreePath: wtMgr.worktreePath,
-    runWorktreePostCreateHook: autoWt.runWorktreePostCreateHook,
+    runWorktreePostCreateHook: hook.runWorktreePostCreateHook,
     nativeHasChanges: gitBridge.nativeHasChanges,
     nativeDetectMainBranch: gitBridge.nativeDetectMainBranch,
     nativeCommitCountBetween: gitBridge.nativeCommitCountBetween,
-    inferCommitType: gitSvc.inferCommitType,
-    autoCommitCurrentBranch: wt.autoCommitCurrentBranch,
-    resolveWorktreeProjectRoot: wt.resolveWorktreeProjectRoot,
+    resolveWorktreeProjectRoot: wtRoot.resolveWorktreeProjectRoot,
   }
   return _ext
+}
+
+async function loadMergeModules(): Promise<MergeModules> {
+  if (_mergeExt) return _mergeExt
+  const [gitSvc, wt] = await Promise.all([
+    jiti.import(gsdExtensionPath('git-service.ts'), {}) as Promise<GitServiceModule>,
+    jiti.import(gsdExtensionPath('worktree.ts'), {}) as Promise<WorktreeModule>,
+  ])
+  _mergeExt = {
+    inferCommitType: gitSvc.inferCommitType,
+    autoCommitCurrentBranch: wt.autoCommitCurrentBranch,
+  }
+  return _mergeExt
 }
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -243,6 +260,7 @@ async function handleMerge(basePath: string, args: string[]): Promise<void> {
 }
 
 async function doMerge(ext: ExtensionModules, basePath: string, name: string): Promise<void> {
+  const mergeExt = await loadMergeModules()
   const worktrees = ext.listWorktrees(basePath)
   const wt = worktrees.find(w => w.name === name)
   if (!wt) {
@@ -262,14 +280,14 @@ async function doMerge(ext: ExtensionModules, basePath: string, name: string): P
   // Auto-commit dirty work before merge
   if (status.uncommitted) {
     try {
-      ext.autoCommitCurrentBranch(wt.path, 'worktree-merge', name)
+      mergeExt.autoCommitCurrentBranch(wt.path, 'worktree-merge', name)
       process.stderr.write(chalk.dim('  Auto-committed dirty work before merge.\n'))
     } catch (error) {
       process.stderr.write(chalk.yellow(`  Auto-commit before merge failed: ${toErrorMessage(error)}\n`))
     }
   }
 
-  const commitType = ext.inferCommitType(name)
+  const commitType = mergeExt.inferCommitType(name)
   const commitMessage = `${commitType}: merge worktree ${name}\n\nGSD-Worktree: ${name}`
 
   process.stderr.write(`\nMerging ${chalk.bold.cyan(name)} → ${chalk.magenta(ext.nativeDetectMainBranch(basePath))}\n`)

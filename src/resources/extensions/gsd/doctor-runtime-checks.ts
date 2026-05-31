@@ -3,7 +3,7 @@ import { basename, dirname, join } from "node:path";
 
 import type { DoctorIssue, DoctorIssueCode } from "./doctor-types.js";
 import { cleanNumberedGsdVariants } from "./repo-identity.js";
-import { milestonesDir, gsdRoot, resolveGsdRootFile } from "./paths.js";
+import { milestonesDir, gsdRoot, resolveGsdRootFile, resolveMilestonePath } from "./paths.js";
 import { deriveState, isGhostMilestone, isReusableGhostMilestone } from "./state.js";
 import { saveFile } from "./files.js";
 import { nativeIsRepo, nativeForEachRef, nativeUpdateRef } from "./native-git-bridge.js";
@@ -15,6 +15,7 @@ import { readAllSessionStatuses, isSessionStale, removeSessionStatus } from "./s
 import { recoverFailedMigration } from "./migrate-external.js";
 import { splitCompletedKey } from "./forensics.js";
 import { findMilestoneIds } from "./milestone-ids.js";
+import { getAllMilestones, isDbAvailable } from "./gsd-db.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 
 const MAX_UAT_ATTEMPTS = 3;
@@ -736,6 +737,30 @@ export async function checkRuntimeHealth(
     }
   } catch {
     // Non-fatal — orphan milestone directory check failed
+  }
+
+  // ── Orphan milestone DB rows (DB present, filesystem missing) ─────────
+  // A milestone row without a corresponding milestone directory can keep
+  // stale milestones "active" and trigger unwanted continuation behavior.
+  try {
+    if (isDbAvailable()) {
+      for (const milestone of getAllMilestones()) {
+        if (milestone.status === "queued") continue;
+        if (!resolveMilestonePath(basePath, milestone.id)) {
+          issues.push({
+            severity: "warning",
+            code: "orphan_milestone_db",
+            scope: "milestone",
+            unitId: milestone.id,
+            message: `Orphan milestone DB row: ${milestone.id} — DB row exists but milestone directory is missing from disk. This can cause stale milestone continuation.`,
+            file: `.gsd/gsd.db`,
+            fixable: false,
+          });
+        }
+      }
+    }
+  } catch {
+    // Non-fatal — orphan milestone DB row check failed
   }
 }
 

@@ -690,6 +690,21 @@ describe('createMcpServer tool registration', () => {
     assert.equal(typeof session.startTime, 'number');
   });
 
+  it('gsd_status accepts omitted sessionId when exactly one session is tracked', async () => {
+    const sessionId = await sm.startSession('/tmp/tool-status-infer', { cliPath: '/usr/bin/gsd' });
+    const { server } = await createMcpServer(sm);
+    const statusTool = (server as any)._registeredTools?.gsd_status;
+
+    assert.ok(statusTool, 'gsd_status should be registered');
+    assert.equal(statusTool.inputSchema.safeParse({ sessionId: undefined }).success, true);
+
+    const result = await statusTool.handler({});
+    const payload = JSON.parse(result.content[0].text);
+    assert.equal(payload.sessionId, sessionId);
+    assert.equal(payload.projectDir, resolve('/tmp/tool-status-infer'));
+    assert.equal(payload.status, 'running');
+  });
+
   it('gsd_resolve_blocker flow returns error when no blocker', async () => {
     const sessionId = await sm.startSession('/tmp/tool-resolve', { cliPath: '/usr/bin/gsd' });
     await assert.rejects(

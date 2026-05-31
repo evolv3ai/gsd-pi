@@ -14,6 +14,7 @@ import {
   type SkillsPolicy,
   type UnitContextManifest,
 } from "../unit-context-manifest.ts";
+import { resolveSkillManifest } from "../skill-manifest.ts";
 import {
   ALLOWED_PLANNING_DISPATCH_AGENTS,
   shouldBlockPlanningUnit,
@@ -144,6 +145,23 @@ test("#4782 phase 1: skills policy shapes are valid discriminated-union members"
         void _exhaustive;
         assert.fail(`manifest "${unitType}" has unrecognized skills.mode`);
       }
+    }
+  }
+});
+
+test("#4782 phase 1b: allowlist skills policy matches skill-manifest resolver", () => {
+  for (const unitType of KNOWN_UNIT_TYPES) {
+    const manifest = UNIT_MANIFESTS[unitType];
+    const allowlist = resolveSkillManifest(unitType);
+    if (allowlist) {
+      assert.strictEqual(manifest.skills.mode, "allowlist", unitType);
+      assert.deepEqual(
+        [...(manifest.skills as Extract<SkillsPolicy, { mode: "allowlist" }>).skills].sort(),
+        [...allowlist].sort(),
+        unitType,
+      );
+    } else {
+      assert.notStrictEqual(manifest.skills.mode, "allowlist", unitType);
     }
   }
 });

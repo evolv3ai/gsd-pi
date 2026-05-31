@@ -745,6 +745,11 @@ export function formatCost(cost: number): string {
   return `$${n.toFixed(2)}`;
 }
 
+export function formatPercent(percent: number): string {
+  if (percent >= 10) return percent.toFixed(1);
+  return percent.toFixed(2);
+}
+
 // ─── Budget Prediction ────────────────────────────────────────────────────────
 
 /**

@@ -11,7 +11,7 @@ import { nativeHasChanges } from "./native-git-bridge.js";
 // ─── Signal Handling ─────────────────────────────────────────────────────────
 
 /** Signals that should trigger lock cleanup on process termination. */
-const CLEANUP_SIGNALS: NodeJS.Signals[] = ["SIGTERM", "SIGHUP", "SIGINT"];
+const CLEANUP_SIGNALS: NodeJS.Signals[] = ["SIGTERM", "SIGHUP", "SIGINT", "SIGBREAK"];
 
 /** Module-level reference to the last registered handler, used as a safety net
  *  to prevent handler accumulation if the caller neglects to pass previousHandler. */

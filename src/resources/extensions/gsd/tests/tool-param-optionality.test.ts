@@ -235,11 +235,15 @@ test("gsd_task_complete — enrichment arrays are optional", () => {
     "milestoneId",
     "oneLiner",
     "narrative",
-    "verification",
   ];
   for (const field of coreRequired) {
     assert.ok(required.has(field), `core field "${field}" must be required`);
   }
+
+  assert.ok(
+    !required.has("verification"),
+    "verification must be optional at the schema layer so step-mode can recover when verificationEvidence is present",
+  );
 
   // Enrichment fields must be optional
   const enrichmentFields = [
@@ -270,6 +274,25 @@ test("gsd_task_complete — validates with only core params", () => {
 
   const errors = validateSchema(tool, minimalParams);
   assert.strictEqual(errors.length, 0, `Minimal params should validate but got errors: ${errors.join(", ")}`);
+});
+
+test("gsd_task_complete — accepts evidence-only verification at schema layer", () => {
+  const tool = getTool("gsd_task_complete");
+  assert.ok(tool, "gsd_task_complete must be registered");
+
+  const params = {
+    taskId: "T01",
+    sliceId: "S01",
+    milestoneId: "M001",
+    oneLiner: "Implemented the feature",
+    narrative: "Created the module and wired it up.",
+    verificationEvidence: [
+      { command: "npm test", exitCode: 0, verdict: "pass", durationMs: 1234 },
+    ],
+  };
+
+  const errors = validateSchema(tool, params);
+  assert.strictEqual(errors.length, 0, `Evidence-only params should validate but got errors: ${errors.join(", ")}`);
 });
 
 // ─── gsd_complete_milestone: enrichment arrays must be optional ──────────────

@@ -97,4 +97,20 @@ describe("gsd_doctor orphan milestone directory check (#4996)", () => {
     const orphan = issues.find(i => i.code === "orphan_milestone_dir" && i.unitId === "M003");
     assert.ok(!orphan, "queued DB row must block orphan report (in-flight race protection)");
   });
+
+  it("(e) DB milestone row with missing milestone directory is reported as orphan_milestone_db", async () => {
+    base = makeBase();
+    const dbPath = join(base, ".gsd", "gsd.db");
+    openDatabase(dbPath);
+    insertMilestone({ id: "M004", status: "active" });
+
+    const issues: DoctorIssue[] = [];
+    const fixes: string[] = [];
+    await checkRuntimeHealth(base, issues, fixes, () => false);
+
+    const orphan = issues.find(i => i.code === "orphan_milestone_db" && i.unitId === "M004");
+    assert.ok(orphan, "missing milestone directory with DB row should be reported");
+    assert.equal(orphan?.severity, "warning");
+    assert.equal(orphan?.fixable, false);
+  });
 });

@@ -288,7 +288,6 @@ export function renderAssistantRail(
 		indent: 0,
 		titleRight,
 		railColor,
-		bodyBg: "customMessageBg",
 		closeBottom: !opts.continuesToUser,
 	});
 	let result = card;
@@ -314,7 +313,6 @@ export function renderUserRail(
 		titleRight,
 		railColor: "border",
 		titleColor: "border",
-		bodyBg: "userMessageBg",
 		closeBottom: !opts.continuesToAssistant,
 	});
 }

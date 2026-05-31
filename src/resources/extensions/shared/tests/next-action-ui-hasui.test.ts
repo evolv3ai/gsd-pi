@@ -15,8 +15,26 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
+import { visibleWidth } from "@gsd/pi-tui";
 
 import { showNextAction } from "../next-action-ui.js";
+
+function assertFullOuterBorder(lines: string[], width: number): void {
+  assert.ok(lines.length >= 2, "dialog must include top and bottom borders");
+  for (const [index, line] of lines.entries()) {
+    assert.equal(visibleWidth(line), width, `line ${index} must fill dialog width`);
+  }
+  const top = stripVTControlCharacters(lines[0] ?? "");
+  const bottom = stripVTControlCharacters(lines.at(-1) ?? "");
+  assert.match(top, /^[╭┌].*[╮┐]$/);
+  assert.match(bottom, /^[╰└].*[╯┘]$/);
+  for (let index = 1; index < lines.length - 1; index++) {
+    const line = stripVTControlCharacters(lines[index] ?? "");
+    assert.match(line, /^[│┃├]/, `line ${index} missing left border: ${line}`);
+    assert.match(line, /[│┃┤]$/, `line ${index} missing right border: ${line}`);
+  }
+}
 
 describe("showNextAction ctx.hasUI guard (#5125 lockup root protection)", () => {
   it("returns 'not_yet' immediately when ctx.hasUI is false (no UI calls)", async () => {
@@ -151,5 +169,42 @@ describe("showNextAction ctx.hasUI guard (#5125 lockup root protection)", () => 
 
     assert.equal(result, "beta", "TUI selection should be returned verbatim");
     assert.equal(selectCalled, 0, "ctx.ui.select fallback must NOT fire when custom returns a value");
+  });
+
+  it("renders the interactive next-action menu inside a full border", async () => {
+    let rendered: string[] = [];
+    const theme = {
+      fg: (_color: string, text: string) => text,
+      bold: (text: string) => text,
+    };
+
+    const ctx = {
+      hasUI: true,
+      ui: {
+        custom: async (factory: any) => {
+          let resolved: string | undefined;
+          const component = factory({ requestRender() {} }, theme, null, (value: string) => {
+            resolved = value;
+          });
+          rendered = component.render(80);
+          component.handleInput("\r");
+          return resolved as never;
+        },
+        select: async () => undefined,
+      },
+    };
+
+    const result = await showNextAction(ctx as any, {
+      title: "GSD — test",
+      summary: ["summary"],
+      actions: [
+        { id: "alpha", label: "Alpha", description: "first", recommended: true },
+        { id: "beta", label: "Beta", description: "second" },
+      ],
+    });
+
+    assert.equal(result, "alpha");
+    assertFullOuterBorder(rendered, 80);
+    assert.match(stripVTControlCharacters(rendered[0] ?? ""), /GSD Next Action/);
   });
 });

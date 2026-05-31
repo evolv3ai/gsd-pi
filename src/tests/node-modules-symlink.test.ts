@@ -27,9 +27,11 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import {
+  findNearestNodeModulesAncestor,
   hasMissingWorkspaceScopes,
   mergedFingerprint,
   reconcileMergedNodeModules,
+  resolvePackageNodeModulesLayout,
 } from "../resource-loader.ts";
 
 // The real module captures packageRoot at load time — the merged-node-modules
@@ -91,6 +93,54 @@ test("initResources replaces a real directory blocking node_modules with a symli
 // These exercise the real reconcileMergedNodeModules helper against
 // test-controlled hoisted/internal directories.
 
+test("global layout detection handles scoped package installs", (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-scoped-global-layout-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  const hoisted = join(tmp, "lib", "node_modules");
+  const scopedPackageRoot = join(hoisted, "@opengsd", "gsd-pi");
+  mkdirSync(scopedPackageRoot, { recursive: true });
+
+  assert.equal(
+    findNearestNodeModulesAncestor(scopedPackageRoot),
+    hoisted,
+    "scoped packages should resolve the hoisted node_modules above the scope directory",
+  );
+  assert.deepEqual(resolvePackageNodeModulesLayout(scopedPackageRoot), {
+    internalNodeModules: join(scopedPackageRoot, "node_modules"),
+    hoistedNodeModules: hoisted,
+  });
+});
+
+test("global layout detection handles unscoped package installs", (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-unscoped-global-layout-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  const hoisted = join(tmp, "lib", "node_modules");
+  const packageRoot = join(hoisted, "gsd-pi");
+  mkdirSync(packageRoot, { recursive: true });
+
+  assert.equal(findNearestNodeModulesAncestor(packageRoot), hoisted);
+  assert.deepEqual(resolvePackageNodeModulesLayout(packageRoot), {
+    internalNodeModules: join(packageRoot, "node_modules"),
+    hoistedNodeModules: hoisted,
+  });
+});
+
+test("source layout detection keeps monorepo installs on package-local node_modules", (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-source-layout-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  const packageRoot = join(tmp, "open-gsd", "gsd-pi");
+  mkdirSync(packageRoot, { recursive: true });
+
+  assert.equal(findNearestNodeModulesAncestor(packageRoot), null);
+  assert.deepEqual(resolvePackageNodeModulesLayout(packageRoot), {
+    internalNodeModules: join(packageRoot, "node_modules"),
+    hoistedNodeModules: null,
+  });
+});
+
 test("pnpm layout: merged node_modules contains entries from both hoisted and internal", (t) => {
   const tmp = mkdtempSync(join(tmpdir(), "gsd-pnpm-merge-"));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
@@ -134,6 +184,33 @@ test("pnpm layout: merged node_modules contains entries from both hoisted and in
   // @gsd points to internal, not hoisted (internal overlay precedence)
   const gsdTarget = readlinkSync(join(agentNodeModules, "@gsd"));
   assert.equal(gsdTarget, join(internal, "@gsd"), "@gsd should point to internal node_modules");
+});
+
+test("npm global layout: internal-only @sinclair/typebox is included in merged agent node_modules", (t) => {
+  // Regression: npm global installs hoist @gsd/* but keep @sinclair/typebox
+  // package-local. A hoisted-only symlink made extension imports fail with
+  // "Cannot find package '@sinclair/typebox'".
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-npm-global-sinclair-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  const hoisted = join(tmp, "node_modules");
+  const pkgRoot = join(hoisted, realPackageRootBasename);
+  const internal = join(pkgRoot, "node_modules");
+  const agentNodeModules = join(tmp, "agent", "node_modules");
+
+  mkdirSync(join(hoisted, "yaml"), { recursive: true });
+  mkdirSync(join(hoisted, "@gsd", "pi-coding-agent"), { recursive: true });
+  mkdirSync(pkgRoot, { recursive: true });
+  mkdirSync(join(internal, "@sinclair", "typebox"), { recursive: true });
+
+  reconcileMergedNodeModules(agentNodeModules, hoisted, internal);
+
+  assert.ok(
+    existsSync(join(agentNodeModules, "@sinclair", "typebox")),
+    "@sinclair/typebox should resolve from internal node_modules",
+  );
+  assert.ok(existsSync(join(agentNodeModules, "yaml")), "hoisted yaml should resolve");
+  assert.ok(existsSync(join(agentNodeModules, "@gsd")), "hoisted @gsd should resolve");
 });
 
 test("pnpm layout: non-@gsd internal deps (e.g. @anthropic-ai) are included in merged dir", (t) => {

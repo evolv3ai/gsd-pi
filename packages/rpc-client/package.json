@@ -1,6 +1,6 @@
 {
   "name": "@opengsd/rpc-client",
-  "version": "1.0.2",
+  "version": "1.1.1",
   "description": "Standalone RPC client SDK for GSD — zero internal dependencies",
   "license": "MIT",
   "gsd": {
@@ -30,11 +30,11 @@
     "!dist/**/*.test.*"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json --incremental false",
+    "build": "node ../../scripts/clean-package-dist.cjs && tsc -p tsconfig.json --incremental false",
     "test": "node --test dist/rpc-client.test.js"
   },
   "dependencies": {
-    "@opengsd/contracts": "^1.0.2"
+    "@opengsd/contracts": "workspace:*"
   },
   "engines": {
     "node": ">=22.0.0"

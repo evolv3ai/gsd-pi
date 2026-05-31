@@ -14,7 +14,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -78,4 +78,48 @@ test("#2942: injected existsFn — milestones/ alone is enough", () => {
   const existsFn = (p: string) =>
     p === "/proj/.gsd" || p === "/proj/.gsd/milestones";
   assert.equal(hasGsdBootstrapArtifacts("/proj/.gsd", existsFn), true);
+});
+
+test("bare /gsd routes zombie .gsd folders to project init before closeout/db checks", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-zombie-bare-command-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  mkdirSync(join(base, ".gsd", "runtime"), { recursive: true });
+
+  const previousCwd = process.cwd();
+  const previousGsdHome = process.env.GSD_HOME;
+  const previousProjectRoot = process.env.GSD_PROJECT_ROOT;
+  try {
+    process.chdir(base);
+    process.env.GSD_HOME = join(base, ".test-gsd-home");
+    delete process.env.GSD_PROJECT_ROOT;
+
+    const notifications: string[] = [];
+    const ctx = {
+      hasUI: false,
+      ui: {
+        notify: (content: unknown) => notifications.push(String(content)),
+        setStatus: () => {},
+        setWidget: () => {},
+      },
+    };
+    const { handleAutoCommand } = await import("../commands/handlers/auto.ts");
+
+    await handleAutoCommand("", ctx as any, {} as any);
+
+    assert.ok(
+      notifications.some((message) => message.includes("/gsd init did not start")),
+      "bare /gsd should route unbootstrapped zombie folders to the init wizard",
+    );
+    assert.equal(
+      existsSync(join(base, ".gsd", "gsd.db")),
+      false,
+      "bare /gsd should not create the project DB before init has bootstrapped .gsd/",
+    );
+  } finally {
+    process.chdir(previousCwd);
+    if (previousGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = previousGsdHome;
+    if (previousProjectRoot === undefined) delete process.env.GSD_PROJECT_ROOT;
+    else process.env.GSD_PROJECT_ROOT = previousProjectRoot;
+  }
 });

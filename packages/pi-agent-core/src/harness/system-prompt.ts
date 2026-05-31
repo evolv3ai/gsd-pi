@@ -1,5 +1,12 @@
 import type { Skill } from "./types.js";
 
+/**
+ * Format skills for the pi-agent-core harness system prompt.
+ *
+ * GSD production sessions use `@gsd/pi-coding-agent`'s `formatSkillsForPrompt`
+ * instead. Keep this copy for standalone harness tests that do not load the
+ * coding-agent package.
+ */
 export function formatSkillsForSystemPrompt(skills: Skill[]): string {
 	const visibleSkills = skills.filter((skill) => !skill.disableModelInvocation);
 	if (visibleSkills.length === 0) return "";

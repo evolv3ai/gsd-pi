@@ -12,14 +12,7 @@ import { splashPalette } from "./splash-palette.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const GSD_LOGO: readonly string[] = [
-  "   ██████╗ ███████╗██████╗ ",
-  "  ██╔════╝ ██╔════╝██╔══██╗",
-  "  ██║  ███╗███████╗██║  ██║",
-  "  ██║   ██║╚════██║██║  ██║",
-  "  ╚██████╔╝███████║██████╔╝",
-  "   ╚═════╝ ╚══════╝╚═════╝ ",
-];
+import { GSD_PI_LOGO } from "../../../shared/gsd-pi-logo.js";
 
 /** Label column width for Model/Provider/Directory/Branch rows. */
 const LABEL_COL_WIDTH = 10;
@@ -244,7 +237,7 @@ export function renderHeaderLines(data: HeaderData, width: number): string[] {
   if (width < 40) return renderStackedHeader(data, width);
   const outerWidth = width;
   const innerWidth = Math.max(0, outerWidth - PANEL_INDENT.length);
-  const logoLines = GSD_LOGO;
+  const logoLines = GSD_PI_LOGO;
   const logoWidth = Math.max(...logoLines.map((line) => visibleWidth(line)));
   // Plain spaces, not a `│` divider — a vertical bar here would be dragged
   // into every copied logo row.

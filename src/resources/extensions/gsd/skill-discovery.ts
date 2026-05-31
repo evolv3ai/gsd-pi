@@ -2,21 +2,17 @@
  * GSD Skill Discovery
  *
  * Detects skills installed during auto-mode by comparing the current
- * skills directory against a snapshot taken at auto-mode start.
+ * installed catalog and skill directories against a snapshot taken at auto-mode start.
  *
- * New skills are injected into the system prompt via before_agent_start,
- * making them visible to all subsequent units without requiring a reload.
+ * New skills are surfaced via resource reload when possible, with a fallback
+ * prompt block when reload fails before the next agent turn.
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, readFileSync, type Dirent } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { gsdHome } from "./gsd-home.js";
-
-/** Skills directories — GSD bundled, skills.sh ecosystem, and Claude Code official */
-const GSD_SKILLS_DIR = join(gsdHome(), "agent", "skills");
-const SKILLS_DIR = join(homedir(), ".agents", "skills");
-const CLAUDE_SKILLS_DIR = join(homedir(), ".claude", "skills");
+import { getInstalledSkills, normalizeSkillName } from "./skills.js";
 
 export interface DiscoveredSkill {
   name: string;
@@ -24,14 +20,14 @@ export interface DiscoveredSkill {
   location: string;
 }
 
-/** Snapshot of skill names at auto-mode start */
+/** Snapshot of normalized skill names at auto-mode start */
 let baselineSkills: Set<string> | null = null;
 
 /**
- * Snapshot the current skills directory. Call at auto-mode start.
+ * Snapshot the current installed skill catalog. Call at auto-mode start.
  */
 export function snapshotSkills(): void {
-  baselineSkills = new Set(listSkillDirs());
+  baselineSkills = snapshotCurrentSkillNames();
 }
 
 /**
@@ -50,82 +46,158 @@ export function hasSkillSnapshot(): boolean {
 
 /**
  * Detect skills installed since the snapshot was taken.
- * Returns skill metadata for any new skills found.
+ * Returns skill metadata for any new skills found in the loader catalog or on disk.
  */
 export function detectNewSkills(): DiscoveredSkill[] {
   if (!baselineSkills) return [];
 
-  const current = listSkillDirs();
   const newSkills: DiscoveredSkill[] = [];
-
-  for (const dir of current) {
-    if (baselineSkills.has(dir)) continue;
-
-    // Check both skill directories for the SKILL.md file
-    const skillMdPath = resolveSkillMdPath(dir);
-    if (!skillMdPath) continue;
-
-    const meta = parseSkillFrontmatter(skillMdPath);
-    if (meta) {
-      newSkills.push({
-        name: meta.name || dir,
-        description: meta.description || `Skill: ${dir}`,
-        location: skillMdPath,
-      });
-    }
+  for (const skill of getCurrentSkillsForDiscovery()) {
+    const normalized = normalizeSkillName(skill.name);
+    if (baselineSkills.has(normalized)) continue;
+    newSkills.push(skill);
   }
 
   return newSkills;
 }
 
 /**
- * Format discovered skills as an XML block matching pi's <available_skills> format.
- * This can be appended to the system prompt so the LLM sees them naturally.
+ * Reload the skill catalog when auto-mode detects newly installed skills.
+ * Returns discovered skills even if reload fails so callers can surface them
+ * in the prompt. Updates the snapshot baseline only after a successful reload
+ * so detection is retried after failures.
  */
-export function formatSkillsXml(skills: DiscoveredSkill[]): string {
-  if (skills.length === 0) return "";
+export async function refreshCatalogForNewSkills(options?: {
+  reload?: () => Promise<void>;
+  notify?: (message: string, level: "info" | "warning") => void;
+}): Promise<DiscoveredSkill[]> {
+  const newSkills = detectNewSkills();
+  if (newSkills.length === 0) return [];
 
-  const entries = skills.map(s => `  <skill>
-    <name>${escapeXml(s.name)}</name>
-    <description>${escapeXml(s.description)}</description>
-    <location>${escapeXml(s.location)}</location>
-  </skill>`).join("\n");
+  if (options?.reload) {
+    try {
+      await options.reload();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      options.notify?.(`GSD: failed to reload skill catalog: ${message}`, "warning");
+      return newSkills;
+    }
+  }
 
-  return `\n<newly_discovered_skills>
-The following skills were installed during this auto-mode session.
-Use the read tool to load a skill's file when the task matches its description.
+  snapshotSkills();
+  const names = newSkills.map((skill) => skill.name).join(", ");
+  options?.notify?.(`GSD: loaded new skills: ${names}`, "info");
+  return newSkills;
+}
 
-${entries}
-</newly_discovered_skills>`;
+export function appendDiscoveredSkillsFallback(systemPrompt: string, skills: DiscoveredSkill[]): string {
+  const missingSkills = skills.filter(skill => !systemPrompt.includes(skill.location));
+  if (missingSkills.length === 0) return systemPrompt;
+
+  return `${systemPrompt}\n\n${formatDiscoveredSkillsXml(missingSkills)}`;
 }
 
 // ─── Internals ────────────────────────────────────────────────────────────────
 
-function listSkillDirsFrom(dir: string): string[] {
-  if (!existsSync(dir)) return [];
-  try {
-    return readdirSync(dir, { withFileTypes: true })
-      .filter(d => d.isDirectory())
-      .map(d => d.name);
-  } catch {
-    return [];
+function formatDiscoveredSkillsXml(skills: DiscoveredSkill[]): string {
+  const lines = [
+    "<newly_discovered_skills>",
+    "  <note>These skills were detected after this session started and may be absent from &lt;available_skills&gt;. If relevant, read the skill file at its location before using it.</note>",
+  ];
+
+  for (const skill of skills) {
+    lines.push(
+      "  <skill>",
+      `    <name>${escapeXml(skill.name)}</name>`,
+      `    <description>${escapeXml(skill.description)}</description>`,
+      `    <location>${escapeXml(skill.location)}</location>`,
+      "  </skill>",
+    );
   }
+
+  lines.push("</newly_discovered_skills>");
+  return lines.join("\n");
 }
 
-function listSkillDirs(): string[] {
-  const names = new Set<string>();
-  for (const name of listSkillDirsFrom(GSD_SKILLS_DIR)) names.add(name);
-  for (const name of listSkillDirsFrom(SKILLS_DIR)) names.add(name);
-  for (const name of listSkillDirsFrom(CLAUDE_SKILLS_DIR)) names.add(name);
-  return [...names];
+function escapeXml(value: string): string {
+  return value.replace(/[<>&'"]/g, (char) => {
+    switch (char) {
+      case "<": return "&lt;";
+      case ">": return "&gt;";
+      case "&": return "&amp;";
+      case "'": return "&apos;";
+      case "\"": return "&quot;";
+      default: return char;
+    }
+  });
+}
+
+function skillSearchDirs(): string[] {
+  return [
+    join(gsdHome(), "agent", "skills"),
+    join(homedir(), ".agents", "skills"),
+    join(homedir(), ".claude", "skills"),
+  ];
+}
+
+function snapshotCurrentSkillNames(): Set<string> {
+  return new Set(getCurrentSkillsForDiscovery().map(skill => normalizeSkillName(skill.name)));
+}
+
+function getCurrentSkillsForDiscovery(): DiscoveredSkill[] {
+  const skills = new Map<string, DiscoveredSkill>();
+  for (const skill of getInstalledSkills()) {
+    const normalized = normalizeSkillName(skill.name);
+    skills.set(normalized, {
+      name: skill.name,
+      description: skill.description || `Skill: ${skill.name}`,
+      location: skill.filePath,
+    });
+  }
+
+  for (const skill of getDiskSkills()) {
+    const normalized = normalizeSkillName(skill.name);
+    if (!skills.has(normalized)) skills.set(normalized, skill);
+  }
+
+  return [...skills.values()];
+}
+
+function getDiskSkills(): DiscoveredSkill[] {
+  const skills = new Map<string, DiscoveredSkill>();
+  for (const dir of skillSearchDirs()) {
+    if (!existsSync(dir)) continue;
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+      const skillMdPath = join(dir, entry.name, "SKILL.md");
+      if (!existsSync(skillMdPath)) continue;
+
+      const meta = parseSkillFrontmatter(skillMdPath);
+      const name = meta?.name || entry.name;
+      const normalized = normalizeSkillName(name);
+      if (skills.has(normalized)) continue;
+      skills.set(normalized, {
+        name,
+        description: meta?.description || `Skill: ${name}`,
+        location: skillMdPath,
+      });
+    }
+  }
+  return [...skills.values()];
 }
 
 function parseSkillFrontmatter(path: string): { name?: string; description?: string } | null {
   try {
     const content = readFileSync(path, "utf-8");
-    // Use indexOf instead of [\s\S]*? regex to avoid backtracking (#468)
-    if (!content.startsWith('---\n')) return null;
-    const endIdx = content.indexOf('\n---', 4);
+    if (!content.startsWith("---\n")) return null;
+    const endIdx = content.indexOf("\n---", 4);
     if (endIdx === -1) return null;
 
     const fm = content.slice(4, endIdx);
@@ -141,20 +213,4 @@ function parseSkillFrontmatter(path: string): { name?: string; description?: str
   } catch {
     return null;
   }
-}
-
-function resolveSkillMdPath(skillName: string): string | null {
-  for (const dir of [GSD_SKILLS_DIR, SKILLS_DIR, CLAUDE_SKILLS_DIR]) {
-    const candidate = join(dir, skillName, "SKILL.md");
-    if (existsSync(candidate)) return candidate;
-  }
-  return null;
-}
-
-function escapeXml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
 }

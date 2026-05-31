@@ -8,7 +8,7 @@
  */
 
 import type { Theme } from "@gsd/pi-coding-agent";
-import { truncateToWidth, visibleWidth, matchesKey, Key } from "@gsd/pi-tui";
+import { truncateToWidth, matchesKey, Key } from "@gsd/pi-tui";
 import { deriveState } from "./state.js";
 import { loadFile } from "./files.js";
 import { isDbAvailable, getMilestoneSlices, getSliceTasks } from "./gsd-db.js";
@@ -29,6 +29,7 @@ import { estimateTimeRemaining } from "./auto-dashboard.js";
 import { computeProgressScore, formatProgressLine } from "./progress-score.js";
 import { runEnvironmentChecks, type EnvironmentCheckResult } from "./doctor-environment.js";
 import { formattedShortcutPair } from "./shortcut-defs.js";
+import { renderDialogFrame, renderKeyHints } from "./tui/render-kit.js";
 
 export function unitLabel(type: string): string {
   switch (type) {
@@ -258,32 +259,23 @@ export class GSDDashboardOverlay {
 
     const content = this.buildContentLines(width);
     const viewportHeight = Math.max(5, process.stdout.rows ? process.stdout.rows - 8 : 24);
-    const chromeHeight = 2;
-    const visibleContentRows = Math.max(1, viewportHeight - chromeHeight);
+    const visibleContentRows = Math.max(1, viewportHeight - 4);
     const maxScroll = Math.max(0, content.length - visibleContentRows);
     this.scrollOffset = Math.min(this.scrollOffset, maxScroll);
     const visibleContent = content.slice(this.scrollOffset, this.scrollOffset + visibleContentRows);
-
-    const lines = this.wrapInBox(visibleContent, width);
+    const contentWidth = Math.max(1, width - 4);
+    const footer = renderKeyHints(
+      this.theme,
+      ["↑↓ scroll", "g/G top/end", `Esc/${formattedShortcutPair("dashboard")} close`],
+      contentWidth,
+    );
+    const lines = renderDialogFrame(this.theme, "GSD Dashboard", visibleContent, width, {
+      footer,
+      scroll: { offset: this.scrollOffset, visibleRows: visibleContentRows, totalRows: content.length },
+    });
 
     this.cachedWidth = width;
     this.cachedLines = lines;
-    return lines;
-  }
-
-  private wrapInBox(inner: string[], width: number): string[] {
-    const th = this.theme;
-    const border = (s: string) => th.fg("borderAccent", s);
-    const innerWidth = width - 4;
-    const lines: string[] = [];
-
-    lines.push(border("╭" + "─".repeat(width - 2) + "╮"));
-    for (const line of inner) {
-      const truncated = truncateToWidth(line, innerWidth);
-      const padWidth = Math.max(0, innerWidth - visibleWidth(truncated));
-      lines.push(border("│") + " " + truncated + " ".repeat(padWidth) + " " + border("│"));
-    }
-    lines.push(border("╰" + "─".repeat(width - 2) + "╯"));
     return lines;
   }
 
@@ -303,7 +295,6 @@ export class GSDDashboardOverlay {
     const hr = () => row(th.fg("dim", "─".repeat(contentWidth)));
     const centered = (content: string) => row(centerLine(content, contentWidth));
 
-    const title = th.fg("accent", th.bold("GSD Dashboard"));
     const isRemote = !!this.dashData.remoteSession;
     const status = this.dashData.active
       ? `${Date.now() % 2000 < 1000 ? th.fg("success", "●") : th.fg("dim", "○")} ${th.fg("success", "AUTO")}`
@@ -328,7 +319,7 @@ export class GSDDashboardOverlay {
     } else if (isRemote) {
       elapsedParts = th.fg("dim", `since ${this.dashData.remoteSession!.startedAt.replace("T", " ").slice(0, 19)}`);
     }
-    lines.push(row(joinColumns(`${title}  ${status}${worktreeTag}`, elapsedParts, contentWidth)));
+    lines.push(row(joinColumns(`${status}${worktreeTag}`, elapsedParts, contentWidth)));
 
     // Progress score — traffic light indicator (#1221)
     if (this.dashData.active || this.dashData.paused) {
@@ -609,10 +600,6 @@ export class GSDDashboardOverlay {
         }
       }
     }
-
-    lines.push(blank());
-    lines.push(hr());
-    lines.push(centered(th.fg("dim", `↑↓ scroll · g/G top/end · Esc/${formattedShortcutPair("dashboard")} close`)));
 
     return lines;
   }

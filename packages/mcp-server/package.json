@@ -1,6 +1,6 @@
 {
   "name": "@opengsd/mcp-server",
-  "version": "1.0.2",
+  "version": "1.1.1",
   "description": "MCP server exposing GSD orchestration tools for compatible clients",
   "license": "MIT",
   "gsd": {
@@ -26,16 +26,16 @@
     }
   },
   "bin": {
-    "gsd-mcp-server": "./dist/cli.js"
+    "gsd-mcp-server": "./bin/gsd-mcp-server.js"
   },
   "scripts": {
-    "build": "tsc --incremental false",
+    "build": "node ../../scripts/clean-package-dist.cjs && tsc --incremental false",
     "build:test": "tsc -p tsconfig.test.json",
-    "test": "npm run build:test && node --test dist/mcp-server.test.js dist/remote-questions.test.js"
+    "test": "pnpm run build:test && node --test dist/mcp-server.test.js dist/remote-questions.test.js"
   },
   "dependencies": {
-    "@opengsd/contracts": "^1.0.2",
-    "@opengsd/rpc-client": "^1.0.2",
+    "@opengsd/contracts": "workspace:*",
+    "@opengsd/rpc-client": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "zod": "^4.0.0"
   },
@@ -47,6 +47,7 @@
     "node": ">=22.0.0"
   },
   "files": [
+    "bin",
     "dist",
     "!dist/**/*.test.*"
   ]

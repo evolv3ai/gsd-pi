@@ -89,6 +89,15 @@ function getAliases(): Record<string, string> {
 
 	const piCodingAgentEntry = packageIndex;
 
+	const mcpClientEntry = require.resolve("@modelcontextprotocol/sdk/client/index.js");
+	const mcpStdioEntry = require.resolve("@modelcontextprotocol/sdk/client/stdio.js");
+	const mcpStreamableHttpEntry = require.resolve("@modelcontextprotocol/sdk/client/streamableHttp.js");
+	const mcpAuthEntry = require.resolve("@modelcontextprotocol/sdk/client/auth.js");
+	const yamlEntry = require.resolve("yaml");
+	const minimatchEntry = require.resolve("minimatch");
+	const properLockfileEntry = require.resolve("proper-lockfile");
+	const picomatchEntry = require.resolve("picomatch");
+
 	_aliases = {
 		"@gsd/pi-coding-agent": piCodingAgentEntry,
 		"@gsd/pi-agent-core": resolveWorkspaceOrImport("pi-agent-core/dist/index.js", "@gsd/pi-agent-core"),
@@ -104,6 +113,15 @@ function getAliases(): Record<string, string> {
 		"@sinclair/typebox/compile": typeboxCompileEntry,
 		"@sinclair/typebox/compiler": sinclairTypeboxCompilerEntry,
 		"@sinclair/typebox/value": typeboxValueEntry,
+		"@modelcontextprotocol/sdk/client": mcpClientEntry,
+		"@modelcontextprotocol/sdk/client/index.js": mcpClientEntry,
+		"@modelcontextprotocol/sdk/client/stdio.js": mcpStdioEntry,
+		"@modelcontextprotocol/sdk/client/streamableHttp.js": mcpStreamableHttpEntry,
+		"@modelcontextprotocol/sdk/client/auth.js": mcpAuthEntry,
+		yaml: yamlEntry,
+		minimatch: minimatchEntry,
+		"proper-lockfile": properLockfileEntry,
+		picomatch: picomatchEntry,
 	};
 
 	return _aliases;
@@ -293,9 +311,9 @@ function createExtensionAPI(
 		},
 
 		// Action methods - delegate to shared runtime
-		sendMessage(message, options): void {
+		sendMessage(message, options): Promise<void> {
 			runtime.assertActive();
-			runtime.sendMessage(message, options);
+			return runtime.sendMessage(message, options);
 		},
 
 		sendUserMessage(content, options): void {

@@ -1,9 +1,12 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { execSync } from 'node:child_process'
 import { dirname, join, resolve as resolvePath, sep } from 'node:path'
 import { homedir } from 'node:os'
 import chalk from 'chalk'
 import { appRoot } from './app-paths.js'
-import { execSync } from 'node:child_process'
+import { isPnpmInstall } from './resources/shared/package-manager-detection.js'
+
+export { isPnpmInstall }
 
 const CACHE_FILE = join(appRoot, '.update-check')
 const NPM_PACKAGE_NAME = '@opengsd/gsd-pi'
@@ -103,8 +106,12 @@ export function isBunInstall(argv1: string | undefined = process.argv[1]): boole
   return bunBinDirs.some((dir) => resolved.startsWith(resolvePath(dir) + sep))
 }
 
-export function resolveInstallCommand(pkg: string): string {
-  if (isBunInstall()) return `bun add -g ${pkg}`
+export function resolveInstallCommand(
+  pkg: string,
+  options: { argv1?: string; env?: NodeJS.ProcessEnv } = {},
+): string {
+  if (isBunInstall(options.argv1)) return `bun add -g ${pkg}`
+  if (isPnpmInstall(options.argv1, options.env)) return `pnpm add -g ${pkg}`
   return `npm install -g ${pkg}`
 }
 

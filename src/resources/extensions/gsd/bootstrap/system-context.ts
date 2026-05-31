@@ -11,11 +11,9 @@ import { loadPrompt, getTemplatesDir } from "../prompt-loader.js";
 import { readForensicsMarker } from "../forensics.js";
 import { resolveAllSkillReferences, renderPreferencesForSystemPrompt, loadEffectiveGSDPreferences } from "../preferences.js";
 import { resolveModelWithFallbacksForUnit } from "../preferences-models.js";
-import { resolveSkillReference } from "../preferences-skills.js";
 import { resolveGsdRootFile, resolveSliceFile, resolveSlicePath, resolveTaskFile, resolveTaskFiles, resolveTasksDir, relSliceFile, relSlicePath, relTaskFile } from "../paths.js";
 import { extractIntroAndRules } from "../knowledge-parser.js";
 import { ensureCodebaseMapFresh, readCodebaseMap } from "../codebase-generator.js";
-import { hasSkillSnapshot, detectNewSkills, formatSkillsXml } from "../skill-discovery.js";
 import { getActiveAutoWorktreeContext } from "../auto-worktree.js";
 import { getActiveWorktreeName, getWorktreeOriginalCwd } from "../worktree-session-state.js";
 import { deriveState } from "../state.js";
@@ -72,20 +70,6 @@ export const BUNDLED_SKILL_TRIGGERS: Array<{ trigger: string; skill: string }> =
   { trigger: "Deep code optimization audit — perf anti-patterns, memory leaks, algorithmic complexity, bundle size, I/O, caching, dead code (parallel pattern-based hunt)", skill: "code-optimizer" },
 ];
 
-function buildBundledSkillsTable(): string {
-  const cwd = process.cwd();
-  const rows: string[] = [];
-  for (const { trigger, skill } of BUNDLED_SKILL_TRIGGERS) {
-    const resolution = resolveSkillReference(skill, cwd);
-    if (resolution.method === "unresolved") continue; // skill not installed — omit from prompt
-    rows.push(`| ${trigger} | \`${resolution.resolvedPath}\` |`);
-  }
-  if (rows.length === 0) {
-    return "*No bundled skills found. Install or sync skills to `~/.gsd/agent/skills/`, `~/.agents/skills/`, or `~/.claude/skills/`.*";
-  }
-  return `| Trigger | Skill to load |\n|---|---|\n${rows.join("\n")}`;
-}
-
 function warnDeprecatedAgentInstructions(): void {
   const paths = [
     join(gsdHome(), "agent-instructions.md"),
@@ -110,7 +94,6 @@ export async function buildBeforeAgentStartResult(
 
   const stopContextTimer = debugTime("context-inject");
   const systemContent = loadPrompt("system", {
-    bundledSkillsTable: buildBundledSkillsTable(),
     templatesDir: getTemplatesDir(),
     shortcutDashboard: formatShortcut("Ctrl+Alt+G"),
     shortcutShell: formatShortcut("Ctrl+Alt+B"),
@@ -141,7 +124,7 @@ export async function buildBeforeAgentStartResult(
   if (loadedPreferences) {
     const cwd = basePath;
     const report = resolveAllSkillReferences(loadedPreferences.preferences, cwd);
-    preferenceBlock = `\n\n${renderPreferencesForSystemPrompt(loadedPreferences.preferences, report.resolutions)}`;
+    preferenceBlock = `\n\n${renderPreferencesForSystemPrompt(loadedPreferences.preferences, report.resolutions, { includeResolvedPaths: false })}`;
     if (report.warnings.length > 0) {
       ctx.ui.notify(
         `GSD skill preferences: ${report.warnings.length} unresolved skill${report.warnings.length === 1 ? "" : "s"}: ${report.warnings.join(", ")}`,
@@ -201,14 +184,6 @@ export async function buildBeforeAgentStartResult(
     );
   }
 
-  let newSkillsBlock = "";
-  if (hasSkillSnapshot()) {
-    const newSkills = detectNewSkills();
-    if (newSkills.length > 0) {
-      newSkillsBlock = formatSkillsXml(newSkills);
-    }
-  }
-
   let codebaseBlock = "";
   try {
     const codebaseOptions = loadedPreferences?.preferences?.codebase
@@ -264,13 +239,13 @@ export async function buildBeforeAgentStartResult(
   // Keeping it out of `fullSystem` preserves provider prompt-cache stability
   // for the static system/tool prefix. The dynamic memory block rides the
   // volatile context message instead. (#5019)
-  const fullSystem = `${event.systemPrompt}\n\n[SYSTEM CONTEXT — GSD]\n\n${systemContent}${preferenceBlock}${knowledgeBlock}${codebaseBlock}${newSkillsBlock}${worktreeBlock}${subagentModelBlock}`;
+  const fullSystem = `${event.systemPrompt}\n\n[SYSTEM CONTEXT — GSD]\n\n${systemContent}${preferenceBlock}${knowledgeBlock}${codebaseBlock}${worktreeBlock}${subagentModelBlock}`;
 
   stopContextTimer({
     systemPromptSize: fullSystem.length,
     injectionSize: injection?.length ?? forensicsInjection?.length ?? 0,
     hasPreferences: preferenceBlock.length > 0,
-    hasNewSkills: newSkillsBlock.length > 0,
+    hasNewSkills: false,
   });
 
   const contextMessage = buildContextMessage({ memoryBlock, injection, forensicsInjection });

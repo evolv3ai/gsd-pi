@@ -76,6 +76,8 @@ export async function reconcileBeforeDispatch(
     }
 
     const failures: ReconciliationFailureDetail[] = [];
+    const blockers: string[] = [];
+    let repairedThisPass = false;
     for (const record of drift) {
       const handler = registry.find((h) => h.kind === record.kind);
       if (!handler) {
@@ -87,14 +89,33 @@ export async function reconcileBeforeDispatch(
         });
         continue;
       }
+      const blocker = handler.blocker ? await handler.blocker(record, ctx) : null;
+      if (blocker) {
+        blockers.push(blocker);
+        continue;
+      }
       try {
         await handler.repair(record, ctx);
         repaired.push(record);
+        repairedThisPass = true;
       } catch (cause) {
         failures.push({ drift: record, cause });
       }
     }
 
+    if (blockers.length > 0) {
+      let blockerState = stateSnapshot;
+      if (repairedThisPass) {
+        deps.invalidateStateCache();
+        blockerState = await deps.deriveState(basePath, deps.deriveStateOptions);
+      }
+      return {
+        ok: true,
+        stateSnapshot: blockerState,
+        repaired,
+        blockers: [...new Set([...(blockerState.blockers ?? []), ...blockers])],
+      };
+    }
     if (failures.length > 0) {
       throw new ReconciliationFailedError({ failures, pass });
     }
@@ -108,6 +129,25 @@ export async function reconcileBeforeDispatch(
   const persistent = await detectAllDrift(finalState, finalCtx, registry);
 
   if (persistent.length > 0) {
+    const blockers: string[] = [];
+    const unblockedPersistent: DriftRecord[] = [];
+    for (const record of persistent) {
+      const handler = registry.find((h) => h.kind === record.kind);
+      const blocker = handler?.blocker ? await handler.blocker(record, finalCtx) : null;
+      if (blocker) {
+        blockers.push(blocker);
+      } else {
+        unblockedPersistent.push(record);
+      }
+    }
+    if (blockers.length > 0 && unblockedPersistent.length === 0) {
+      return {
+        ok: true,
+        stateSnapshot: finalState,
+        repaired,
+        blockers: [...new Set([...(finalState.blockers ?? []), ...blockers])],
+      };
+    }
     throw new ReconciliationFailedError({ persistentDrift: persistent });
   }
 

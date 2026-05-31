@@ -65,6 +65,7 @@ test("workflow tool contracts expose canonical names and aliases", () => {
 	assert.ok(WORKFLOW_TOOL_NAMES.includes("gsd_task_reopen"));
 	assert.ok(WORKFLOW_TOOL_NAMES.includes("gsd_reopen_task"));
 	assert.ok(WORKFLOW_TOOL_NAMES.includes("gsd_plan_milestone"));
+	assert.ok(WORKFLOW_TOOL_NAMES.includes("gsd_checkpoint_db"));
 
 	const taskComplete = WORKFLOW_TOOL_CONTRACTS.find((tool) => tool.canonicalName === "gsd_task_complete");
 	assert.ok(taskComplete);
@@ -77,4 +78,9 @@ test("workflow tool contracts expose canonical names and aliases", () => {
 	assert.deepEqual([...taskReopen.aliases], ["gsd_reopen_task"]);
 	assert.equal(taskReopen.writePolicy, "write");
 	assert.equal(taskReopen.schemaId, "workflow.task.reopen");
+
+	const checkpointDb = WORKFLOW_TOOL_CONTRACTS.find((tool) => tool.canonicalName === "gsd_checkpoint_db");
+	assert.ok(checkpointDb);
+	assert.equal(checkpointDb.writePolicy, "read");
+	assert.equal(checkpointDb.schemaId, "workflow.database.checkpoint");
 });

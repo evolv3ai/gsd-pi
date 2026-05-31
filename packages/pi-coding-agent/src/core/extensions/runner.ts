@@ -979,16 +979,22 @@ export class ExtensionRunner {
 		systemPromptOptions: BuildSystemPromptOptions,
 	): Promise<BeforeAgentStartCombinedResult | undefined> {
 		let currentSystemPrompt = systemPrompt;
+		const messages: NonNullable<BeforeAgentStartEventResult["message"]>[] = [];
+		let systemPromptModified = false;
 		const ctx = Object.defineProperties(
 			{},
 			Object.getOwnPropertyDescriptors(this.createContext()),
-		) as ExtensionContext;
+		) as ExtensionContext & Pick<ExtensionCommandContext, "reload">;
 		ctx.getSystemPrompt = () => {
 			this.assertActive();
 			return currentSystemPrompt;
 		};
-		const messages: NonNullable<BeforeAgentStartEventResult["message"]>[] = [];
-		let systemPromptModified = false;
+		ctx.reload = async () => {
+			this.assertActive();
+			await this.reloadHandler();
+			currentSystemPrompt = this.getSystemPromptFn();
+			systemPromptModified = true;
+		};
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("before_agent_start");

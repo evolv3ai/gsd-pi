@@ -1,6 +1,6 @@
 {
   "name": "@opengsd/contracts",
-  "version": "1.0.2",
+  "version": "1.1.1",
   "description": "Shared public contracts for GSD workspace boundaries",
   "license": "MIT",
   "gsd": {
@@ -30,7 +30,7 @@
     "!dist/**/*.test.*"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json --incremental false",
+    "build": "node ../../scripts/clean-package-dist.cjs && tsc -p tsconfig.json --incremental false",
     "test": "node --test dist/rpc.test.js"
   },
   "engines": {

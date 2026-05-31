@@ -1837,3 +1837,44 @@ test("#4414: verifyExpectedArtifact parallel-research succeeds when all research
     cleanup(base);
   }
 });
+
+test("parallel-research verification accepts canonical project artifacts from a worktree base", () => {
+  const base = makeTmpBase();
+  try {
+    const milestoneDir = join(base, ".gsd", "milestones", "M001");
+    mkdirSync(join(milestoneDir, "slices", "S02", "tasks"), { recursive: true });
+    mkdirSync(join(milestoneDir, "slices", "S03", "tasks"), { recursive: true });
+
+    writeFileSync(
+      join(milestoneDir, "M001-ROADMAP.md"),
+      [
+        "# M001: Regression",
+        "",
+        "## Slices",
+        "",
+        "- [ ] **S01: Alpha** `risk:low` `depends:[]`",
+        "- [ ] **S02: Beta** `risk:low` `depends:[]`",
+        "- [ ] **S03: Gamma** `risk:low` `depends:[]`",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    writeFileSync(join(milestoneDir, "M001-RESEARCH.md"), "# milestone research\n", "utf-8");
+    writeFileSync(join(milestoneDir, "slices", "S02", "S02-RESEARCH.md"), "# research\n", "utf-8");
+    writeFileSync(join(milestoneDir, "slices", "S03", "S03-RESEARCH.md"), "# research\n", "utf-8");
+
+    const worktree = join(base, ".gsd", "worktrees", "M001");
+    mkdirSync(join(worktree, ".gsd", "milestones", "M001"), { recursive: true });
+    writeFileSync(join(worktree, ".git"), "gitdir: ../../../../.git/worktrees/M001\n", "utf-8");
+
+    clearParseCache();
+    invalidateAllCaches();
+    assert.equal(
+      verifyExpectedArtifact("research-slice", "M001/parallel-research", worktree),
+      true,
+      "worktree verification should use the same canonical artifacts as dispatch",
+    );
+  } finally {
+    cleanup(base);
+  }
+});

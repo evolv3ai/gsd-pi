@@ -396,9 +396,11 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
     const activeUnitKey = this.status.activeUnit
       ? `${this.status.activeUnit.unitType}:${this.status.activeUnit.unitId}`
       : null;
-    if (activeUnitKey !== unitKey) return;
+    if (activeUnitKey !== unitKey && this.lastFinalizedUnitKey !== unitKey) return;
 
-    this.status.activeUnit = undefined;
+    if (activeUnitKey === unitKey) {
+      this.status.activeUnit = undefined;
+    }
     this.lastAdvanceKey = null;
     this.lastFinalizedUnitKey = null;
     this.bumpTransition();

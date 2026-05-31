@@ -16,6 +16,30 @@ export type DriftRecord =
   | { kind: "unregistered-milestone"; milestoneId: string }
   | { kind: "roadmap-divergence"; milestoneId: string; sliceId?: string }
   | {
+      kind: "disk-slice-id-divergence";
+      milestoneId: string;
+      sliceId: string;
+      sliceDir: string;
+      disposition: "delete-empty" | "quarantine-scaffold" | "block-meaningful";
+      reason: string;
+    }
+  | {
+      kind: "artifact-db-status-divergence";
+      milestoneId: string;
+      sliceId?: string;
+      taskId?: string;
+      artifactType: string;
+      artifactPath?: string;
+      dbStatus?: string;
+      reason: string;
+    }
+  | {
+      kind: "completed-milestone-reopened";
+      milestoneId: string;
+      dbStatus: string;
+      completedDispatchAt?: string | null;
+    }
+  | {
       kind: "missing-completion-timestamp";
       entity: "task" | "slice" | "milestone";
       ids: string[];
@@ -40,6 +64,12 @@ export interface DriftContext {
 export interface DriftHandler<T extends DriftRecord = DriftRecord> {
   kind: T["kind"];
   detect: (state: GSDState, ctx: DriftContext) => T[] | Promise<T[]>;
+  /**
+   * Return a terminal blocker message for drift that is intentionally
+   * non-repairable in runtime. This lets callers stop cleanly without
+   * classifying the condition as a repair exception.
+   */
+  blocker?: (record: T, ctx: DriftContext) => string | null | Promise<string | null>;
   repair: (record: T, ctx: DriftContext) => Promise<void> | void;
 }
 

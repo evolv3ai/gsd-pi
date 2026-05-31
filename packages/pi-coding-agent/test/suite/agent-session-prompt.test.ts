@@ -247,6 +247,56 @@ describe("AgentSession prompt characterization", () => {
 		expect(harness.getPendingResponseCount()).toBe(1);
 	});
 
+	it("extension sendMessage awaits triggerTurn completion", async () => {
+		const events: string[] = [];
+		let markModelStarted!: () => void;
+		const modelStarted = new Promise<void>((resolve) => {
+			markModelStarted = resolve;
+		});
+		let releaseResponse!: () => void;
+		const responseReleased = new Promise<void>((resolve) => {
+			releaseResponse = resolve;
+		});
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.registerCommand("dispatch", {
+						description: "Dispatch a custom turn",
+						handler: async () => {
+							events.push("before-send");
+							await pi.sendMessage(
+								{ customType: "dispatch", content: "run", display: false },
+								{ triggerTurn: true },
+							);
+							events.push("after-send");
+						},
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([
+			async () => {
+				events.push("model-start");
+				markModelStarted();
+				await responseReleased;
+				events.push("model-end");
+				return fauxAssistantMessage("done");
+			},
+		]);
+
+		const promptPromise = harness.session.prompt("/dispatch");
+		await modelStarted;
+		await Promise.resolve();
+		const eventsBeforeModelCompletion = [...events];
+
+		releaseResponse();
+		await promptPromise;
+
+		expect(eventsBeforeModelCompletion).toEqual(["before-send", "model-start"]);
+		expect(events).toEqual(["before-send", "model-start", "model-end", "after-send"]);
+	});
+
 	it("sendUserMessage while idle triggers a turn", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

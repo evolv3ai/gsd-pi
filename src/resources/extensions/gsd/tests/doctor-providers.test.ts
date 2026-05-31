@@ -702,6 +702,48 @@ test("runProviderChecks reports ok for claude-code without any API key", () => {
   rmSync(tmpHome, { recursive: true, force: true });
 });
 
+test("runProviderChecks reports errors for required Google CLI providers missing from PATH", () => {
+  const scenarios = [
+    { provider: "google-gemini-cli", label: "Google Gemini CLI", model: "gemini-2.5-pro" },
+    { provider: "google-antigravity", label: "Antigravity", model: "default" },
+  ];
+
+  for (const { provider, label, model } of scenarios) {
+    const repo = realpathSync(mkdtempSync(join(tmpdir(), `gsd-providers-${provider}-repo-`)));
+    mkdirSync(join(repo, ".gsd"), { recursive: true });
+    writeFileSync(
+      join(repo, ".gsd", "PREFERENCES.md"),
+      [
+        "---",
+        "models:",
+        "  execution:",
+        `    model: ${model}`,
+        `    provider: ${provider}`,
+        "---",
+        "",
+      ].join("\n"),
+    );
+
+    const tmpHome = realpathSync(mkdtempSync(join(tmpdir(), `gsd-providers-${provider}-home-`)));
+
+    withEnv({
+      HOME: tmpHome,
+      PATH: tmpHome,
+    }, () => {
+      withCwd(repo, () => {
+        const results = runProviderChecks();
+        const cli = results.find(r => r.name === provider);
+        assert.ok(cli, `${provider} result should exist`);
+        assert.equal(cli!.status, "error", `${provider} should error when the CLI binary is missing`);
+        assert.ok(cli!.detail?.includes(label), "should explain which CLI must be installed");
+      });
+    });
+
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(tmpHome, { recursive: true, force: true });
+  }
+});
+
 test("runProviderChecks reports ok for Anthropic via claude-code binary in PATH", () => {
   // Simulate a user who has no Anthropic API key but has the claude CLI installed.
   // Their PREFERENCES use a claude model without an explicit provider, so the doctor
@@ -734,6 +776,69 @@ test("runProviderChecks reports ok for Anthropic via claude-code binary in PATH"
       rmSync(tmpHome, { recursive: true, force: true });
     }
   });
+});
+
+test("runProviderChecks ignores external CLI auth sentinels when the CLI is missing", () => {
+  const scenarios = [
+    {
+      requiredProvider: "anthropic",
+      routeProvider: "claude-code",
+      model: "claude-sonnet-4-6",
+      env: {
+        ANTHROPIC_API_KEY: undefined,
+        ANTHROPIC_OAUTH_TOKEN: undefined,
+        COPILOT_GITHUB_TOKEN: undefined,
+        GH_TOKEN: undefined,
+        GITHUB_TOKEN: undefined,
+      },
+    },
+    {
+      requiredProvider: "google",
+      routeProvider: "google-gemini-cli",
+      model: "gemini-2.5-pro",
+      env: {
+        GEMINI_API_KEY: undefined,
+        GOOGLE_API_KEY: undefined,
+      },
+    },
+  ];
+
+  for (const { requiredProvider, routeProvider, model, env } of scenarios) {
+    const repo = realpathSync(mkdtempSync(join(tmpdir(), `gsd-providers-${routeProvider}-sentinel-repo-`)));
+    const tmpHome = realpathSync(mkdtempSync(join(tmpdir(), `gsd-providers-${routeProvider}-sentinel-home-`)));
+    const agentDir = join(tmpHome, ".gsd", "agent");
+    mkdirSync(join(repo, ".gsd"), { recursive: true });
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(
+      join(repo, ".gsd", "PREFERENCES.md"),
+      [
+        "---",
+        "models:",
+        `  execution: ${model}`,
+        "---",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(join(agentDir, "auth.json"), JSON.stringify({
+      [routeProvider]: { type: "api_key", key: "cli" },
+    }));
+
+    withEnv({
+      ...env,
+      HOME: tmpHome,
+      PATH: tmpHome,
+    }, () => {
+      withCwd(repo, () => {
+        const results = runProviderChecks();
+        const provider = results.find(r => r.name === requiredProvider);
+        assert.ok(provider, `${requiredProvider} result should exist`);
+        assert.equal(provider!.status, "error", `${routeProvider} sentinel should not satisfy ${requiredProvider}`);
+      });
+    });
+
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(tmpHome, { recursive: true, force: true });
+  }
 });
 
 test("runProviderChecks detects claude.cmd in PATH on Windows (#4503)", { skip: process.platform !== "win32" }, () => {

@@ -352,33 +352,45 @@ function copyDirRecursive(src: string, dest: string): void {
  * them without requiring every call site to use jiti.
  *
  * Layout differences by install method:
- * - Source/monorepo: packageRoot/node_modules has everything → simple symlink
- * - npm/bun global: deps hoisted to dirname(packageRoot), including @gsd/* → simple symlink
- * - pnpm global: external deps hoisted, but GSD workspace scopes stay in packageRoot/node_modules
- *   → merged directory with symlinks from both roots (#3529, #3564)
+ * - Source/monorepo: packageRoot/node_modules has everything -> simple symlink
+ * - Global install (npm/bun/pnpm): merge the nearest ancestor node_modules
+ *   with packageRoot/node_modules so both hoisted deps like yaml and
+ *   package-local deps like @sinclair/typebox resolve (#3529, #3564).
  */
 function ensureNodeModulesSymlink(agentDir: string): void {
   const agentNodeModules = join(agentDir, 'node_modules')
-  const internalNodeModules = join(packageRoot, 'node_modules')
-  const hoistedNodeModules = dirname(packageRoot)
-  const isGlobalInstall = basename(hoistedNodeModules) === 'node_modules'
+  const { internalNodeModules, hoistedNodeModules } = resolvePackageNodeModulesLayout(packageRoot)
 
-  if (!isGlobalInstall) {
+  if (!hoistedNodeModules) {
     // Source/monorepo: internal node_modules has everything
     reconcileSymlink(agentNodeModules, internalNodeModules)
     return
   }
 
-  // Global install: check if GSD workspace scopes are hoisted.
-  // npm/bun hoist everything; pnpm keeps workspace packages internal.
-  if (!hasMissingWorkspaceScopes(hoistedNodeModules, internalNodeModules)) {
-    // Everything is hoisted — simple symlink to parent node_modules
-    reconcileSymlink(agentNodeModules, hoistedNodeModules)
-    return
-  }
-
-  // pnpm-style layout: create a real directory merging both roots
+  // Global install: always merge hoisted + package-local node_modules.
+  // npm often keeps runtime deps (e.g. @sinclair/typebox) package-local even when
+  // @gsd/* scopes are hoisted — a hoisted-only symlink breaks extension imports.
   reconcileMergedNodeModules(agentNodeModules, hoistedNodeModules, internalNodeModules)
+}
+
+export function resolvePackageNodeModulesLayout(root: string): {
+  internalNodeModules: string
+  hoistedNodeModules: string | null
+} {
+  return {
+    internalNodeModules: join(root, 'node_modules'),
+    hoistedNodeModules: findNearestNodeModulesAncestor(root),
+  }
+}
+
+export function findNearestNodeModulesAncestor(startPath: string): string | null {
+  let current = resolve(startPath)
+  while (true) {
+    if (basename(current) === 'node_modules') return current
+    const parent = dirname(current)
+    if (parent === current) return null
+    current = parent
+  }
 }
 
 /** Check if any GSD workspace scopes exist in internal but not in hoisted node_modules */
@@ -575,6 +587,7 @@ function pruneRemovedBundledExtensions(
  * Syncs all bundled resources to agentDir (~/.gsd/agent/) on every launch.
  *
  * - extensions/ → ~/.gsd/agent/extensions/   (overwrite when version changes)
+ * - shared/     → ~/.gsd/agent/shared/       (overwrite when version changes)
  * - agents/     → ~/.gsd/agent/agents/        (overwrite when version changes)
  * - skills/     → ~/.gsd/agent/skills/        (overwrite when version changes)
  * - GSD-WORKFLOW.md → ~/.gsd/agent/GSD-WORKFLOW.md (fallback for env var miss)
@@ -620,7 +633,21 @@ export function initResources(agentDir: string, skillsDir: string = join(agentDi
     // Version matches — check content fingerprint for same-version staleness.
     const currentHash = getCurrentResourceFingerprint()
     const hasStaleExtensionFiles = hasStaleCompiledExtensionSiblings(extensionsDir, bundledExtensionsDir)
-    if (manifest.contentHash && manifest.contentHash === currentHash && !hasStaleExtensionFiles) {
+    const hasMissingSharedFiles = hasMissingBundledResourceFiles(
+      join(agentDir, 'shared'),
+      join(resourcesDir, 'shared'),
+    )
+    const hasMissingSkillFiles = hasMissingBundledResourceFiles(
+      skillsDir,
+      join(resourcesDir, 'skills'),
+    )
+    if (
+      manifest.contentHash &&
+      manifest.contentHash === currentHash &&
+      !hasStaleExtensionFiles &&
+      !hasMissingSharedFiles &&
+      !hasMissingSkillFiles
+    ) {
       return
     }
   }
@@ -628,6 +655,7 @@ export function initResources(agentDir: string, skillsDir: string = join(agentDi
   // Sync bundled resources — overwrite so updates land on next launch.
 
   syncResourceDir(bundledExtensionsDir, join(agentDir, 'extensions'))
+  syncResourceDir(join(resourcesDir, 'shared'), join(agentDir, 'shared'))
   syncResourceDir(join(resourcesDir, 'agents'), join(agentDir, 'agents'))
   syncResourceDir(join(resourcesDir, 'skills'), skillsDir)
 
@@ -664,7 +692,7 @@ function cleanupBundledSkillsFromEcosystemDir(): void {
       if (directoriesHaveExactFileContents(sourcePath, targetPath)) {
         makeTreeWritable(targetPath)
         rmSync(targetPath, { recursive: true, force: true })
-      } else {
+      } else if (process.env.GSD_RESOURCE_LOADER_DEBUG === '1') {
         console.warn(
           `[GSD] Leaving ambiguous skill collision in ${targetPath}; ` +
           `the bundled copy will be used from ~/.gsd/agent/skills/${entry.name}.`,
@@ -710,6 +738,17 @@ export function hasStaleCompiledExtensionSiblings(extensionsDir: string, sourceD
     if (sourceFiles.has(bundledSibling)) return true
   }
 
+  return false
+}
+
+export function hasMissingBundledResourceFiles(destDir: string, sourceDir: string): boolean {
+  const sourceFiles = collectRelativeFiles(sourceDir)
+  if (sourceFiles.size === 0) return false
+
+  const installedFiles = collectRelativeFiles(destDir)
+  for (const relPath of sourceFiles) {
+    if (!installedFiles.has(relPath)) return true
+  }
   return false
 }
 

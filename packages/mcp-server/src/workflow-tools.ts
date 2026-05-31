@@ -7,10 +7,14 @@
 
 import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
-import { WORKFLOW_TOOL_NAMES as CONTRACT_WORKFLOW_TOOL_NAMES } from "@opengsd/contracts";
+import {
+  WORKFLOW_TOOL_NAMES as CONTRACT_WORKFLOW_TOOL_NAMES,
+  CANONICAL_WORKFLOW_TOOL_NAMES as CONTRACT_CANONICAL_WORKFLOW_TOOL_NAMES,
+  WORKFLOW_TOOL_ALIAS_NAMES as CONTRACT_WORKFLOW_TOOL_ALIAS_NAMES,
+} from "@opengsd/contracts";
 
 import { logAliasUsage } from "./alias-telemetry.js";
 
@@ -212,7 +216,7 @@ type WorkflowToolExecutors = {
       milestoneId: string;
       oneLiner: string;
       narrative: string;
-      verification: string;
+      verification?: string;
       deviations?: string;
       knownIssues?: string;
       keyFiles?: string[];
@@ -739,6 +743,10 @@ interface McpToolServer {
 }
 
 export const WORKFLOW_TOOL_NAMES = CONTRACT_WORKFLOW_TOOL_NAMES;
+export const CANONICAL_WORKFLOW_TOOL_NAMES = CONTRACT_CANONICAL_WORKFLOW_TOOL_NAMES;
+export const WORKFLOW_TOOL_ALIAS_NAMES = CONTRACT_WORKFLOW_TOOL_ALIAS_NAMES;
+
+const WORKFLOW_TOOL_ALIAS_NAME_SET = new Set<string>(CONTRACT_WORKFLOW_TOOL_ALIAS_NAMES);
 
 const DEFAULT_WORKFLOW_OP_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -992,6 +1000,94 @@ async function handleReassessRoadmap(
   );
 }
 
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
+}
+
+function inferMilestoneIdFromProjectDir(projectDir: string): string | undefined {
+  const name = basename(projectDir);
+  const match = /^M\d+(?:-[A-Za-z0-9]+)?$/.exec(name);
+  return match?.[0];
+}
+
+type GateDbModule = {
+  getAllMilestones?: () => Array<{ id?: unknown }>;
+  getMilestoneSlices?: (milestoneId: string) => Array<{ id?: unknown; sequence?: unknown; status?: unknown }>;
+  getPendingGates?: (milestoneId: string, sliceId: string) => Array<Record<string, unknown>>;
+  getGateResults?: (milestoneId: string, sliceId: string) => Array<Record<string, unknown>>;
+};
+
+async function inferSaveGateResultScope(
+  projectDir: string,
+  prepared: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const out = { ...prepared };
+  const gateId = stringValue(out.gateId)?.toUpperCase();
+  const taskId = stringValue(out.taskId);
+
+  if (!stringValue(out.milestoneId)) {
+    const inferredMilestoneId = inferMilestoneIdFromProjectDir(projectDir);
+    if (inferredMilestoneId) out.milestoneId = inferredMilestoneId;
+  }
+
+  if (stringValue(out.milestoneId) && stringValue(out.sliceId)) return out;
+  if (!gateId) return out;
+
+  const { ensureDbOpen } = await importLocalModule<WorkflowDbBootstrapModule>(
+    "../../../src/resources/extensions/gsd/bootstrap/dynamic-tools.js",
+  );
+  if (!(await ensureDbOpen(projectDir))) return out;
+
+  const db = await importLocalModule<GateDbModule>("../../../src/resources/extensions/gsd/gsd-db.js");
+  if (!db.getMilestoneSlices || !db.getPendingGates || !db.getGateResults) return out;
+
+  const milestoneFilter = stringValue(out.milestoneId);
+  const sliceFilter = stringValue(out.sliceId);
+  const milestones = milestoneFilter
+    ? [{ id: milestoneFilter }]
+    : (db.getAllMilestones?.() ?? []).filter((milestone) => stringValue(milestone.id));
+
+  const candidates: Array<{ milestoneId: string; sliceId: string; taskId?: string }> = [];
+  for (const milestone of milestones) {
+    const milestoneId = stringValue(milestone.id);
+    if (!milestoneId) continue;
+    const slices = db.getMilestoneSlices(milestoneId)
+      .filter((slice) => {
+        const sliceId = stringValue(slice.id);
+        return sliceId && (!sliceFilter || sliceId === sliceFilter);
+      });
+
+    for (const slice of slices) {
+      const sliceId = stringValue(slice.id);
+      if (!sliceId) continue;
+      const rows = [
+        ...db.getPendingGates(milestoneId, sliceId),
+        ...db.getGateResults(milestoneId, sliceId),
+      ];
+      for (const row of rows) {
+        if (stringValue(row.gate_id)?.toUpperCase() !== gateId) continue;
+        const rowTaskId = stringValue(row.task_id) ?? "";
+        if (taskId && rowTaskId !== taskId) continue;
+        candidates.push({ milestoneId, sliceId, taskId: rowTaskId || undefined });
+      }
+    }
+  }
+
+  const unique = new Map<string, { milestoneId: string; sliceId: string; taskId?: string }>();
+  for (const candidate of candidates) {
+    unique.set(`${candidate.milestoneId}/${candidate.sliceId}/${candidate.taskId ?? ""}`, candidate);
+  }
+
+  if (unique.size === 1) {
+    const only = [...unique.values()][0]!;
+    if (!stringValue(out.milestoneId)) out.milestoneId = only.milestoneId;
+    if (!stringValue(out.sliceId)) out.sliceId = only.sliceId;
+    if (!stringValue(out.taskId) && only.taskId) out.taskId = only.taskId;
+  }
+
+  return out;
+}
+
 async function handleSaveGateResult(
   projectDir: string,
   args: z.infer<typeof saveGateResultSchema>,
@@ -1095,6 +1191,8 @@ const projectDirParam = z
   .string()
   .optional()
   .describe("Optional. Omit this field — the server defaults to its current working directory, which is already the correct project or worktree root.");
+
+const unknownRecord = z.record(z.string(), z.unknown());
 
 const nonEmptyString = (field: string) =>
   z.string().trim().min(1, `${field} must be a non-empty string`);
@@ -1275,15 +1373,56 @@ const reassessRoadmapSchema = z.object(reassessRoadmapParams);
 
 const saveGateResultParams = {
   projectDir: projectDirParam,
-  milestoneId: z.string().describe("Milestone ID (e.g. M001)"),
-  sliceId: z.string().describe("Slice ID (e.g. S01)"),
-  gateId: z.string().describe("Gate ID (e.g. Q3, Q4, Q5, Q6, Q7, Q8, MV01, MV02, MV03, MV04). Accepts any string for forward-compatibility with new gates."),
+  milestoneId: nonEmptyString("milestoneId").describe("Milestone ID (e.g. M001)"),
+  sliceId: nonEmptyString("sliceId").describe("Slice ID (e.g. S01)"),
+  gateId: nonEmptyString("gateId").describe("Gate ID (e.g. Q3, Q4, Q5, Q6, Q7, Q8, MV01, MV02, MV03, MV04). Accepts any string for forward-compatibility with new gates."),
   taskId: z.string().optional().describe("Task ID for task-scoped gates"),
   verdict: z.enum(["pass", "flag", "omitted"]).describe("Gate verdict"),
-  rationale: z.string().describe("One-sentence justification"),
+  rationale: nonEmptyString("rationale").describe("One-sentence justification"),
   findings: z.string().optional().describe("Detailed markdown findings"),
 };
 const saveGateResultSchema = z.object(saveGateResultParams);
+
+const saveGateResultIncomingParams = {
+  projectDir: projectDirParam,
+  milestoneId: z.string().optional().describe("Milestone ID (e.g. M001). Required unless it can be inferred from the active worktree or pending gate row."),
+  sliceId: z.string().optional().describe("Slice ID (e.g. S01). Required unless it can be inferred from the active pending gate row."),
+  gateId: z.string().optional().describe("Gate ID (e.g. Q3, Q4, Q5, Q6, Q7, Q8, MV01, MV02, MV03, MV04)"),
+  taskId: z.string().optional().describe("Task ID for task-scoped gates"),
+  verdict: z.string().optional().describe("Gate verdict: pass, flag, or omitted"),
+  rationale: z.string().optional().describe("One-sentence justification"),
+  findings: z.string().optional().describe("Detailed markdown findings"),
+  milestone_id: z.string().optional(),
+  mid: z.string().optional(),
+  milestone: z.string().optional(),
+  slice_id: z.string().optional(),
+  sid: z.string().optional(),
+  slice: z.string().optional(),
+  gate_id: z.string().optional(),
+  gate: z.string().optional(),
+  questionId: z.string().optional(),
+  question_id: z.string().optional(),
+  task_id: z.string().optional(),
+  tid: z.string().optional(),
+  task: z.string().optional(),
+  result: z.string().optional(),
+  status: z.string().optional(),
+  outcome: z.string().optional(),
+  reason: z.string().optional(),
+  summary: z.string().optional(),
+  justification: z.string().optional(),
+  explanation: z.string().optional(),
+  finding: z.string().optional(),
+  details: z.string().optional(),
+  analysis: z.string().optional(),
+  report: z.string().optional(),
+  arguments: unknownRecord.optional(),
+  args: unknownRecord.optional(),
+  params: unknownRecord.optional(),
+  input: unknownRecord.optional(),
+  payload: unknownRecord.optional(),
+};
+const saveGateResultIncomingSchema = z.object(saveGateResultIncomingParams);
 
 const replanSliceParams = {
   projectDir: projectDirParam,
@@ -1449,7 +1588,7 @@ const taskCompleteParams = {
   milestoneId: nonEmptyString("milestoneId").describe("Milestone ID (e.g. M001)"),
   oneLiner: z.string().describe("One-line summary of what was accomplished"),
   narrative: z.string().describe("Detailed narrative of what happened during the task"),
-  verification: z.string().describe("What was verified and how"),
+  verification: z.string().optional().describe("What was verified and how. If omitted, the executor derives this from verificationEvidence when possible."),
   deviations: z.string().optional().describe("Deviations from the task plan"),
   knownIssues: z.string().optional().describe("Known issues discovered but not fixed"),
   keyFiles: z.array(z.string()).optional().describe("List of key files created or modified"),
@@ -1517,6 +1656,11 @@ const milestoneStatusParams = {
 };
 const milestoneStatusSchema = z.object(milestoneStatusParams);
 
+const checkpointDbParams = {
+  projectDir: projectDirParam,
+};
+const checkpointDbSchema = z.object(checkpointDbParams);
+
 const journalQueryParams = {
   projectDir: projectDirParam,
   flowId: z.string().optional().describe("Filter by flow ID"),
@@ -1529,11 +1673,16 @@ const journalQueryParams = {
 };
 const journalQuerySchema = z.object(journalQueryParams);
 
-const execRuntimeSchema = z.enum(["bash", "node", "python"]);
+const execRuntimeSchema = z.string();
 const execParams = {
   projectDir: projectDirParam,
-  runtime: execRuntimeSchema.describe("Interpreter: bash (-c), node (-e), or python3 (-c)."),
-  script: nonEmptyString("script").describe("Script body. Keep output small; capped stdout/stderr are persisted under .gsd/exec."),
+  runtime: execRuntimeSchema
+    .optional()
+    .describe("Optional interpreter. Defaults to bash. Supported: bash, node, python; sh/shell, js/nodejs, and py/python3 aliases are accepted."),
+  script: z.string().optional().describe("Script body. Keep output small; capped stdout/stderr are persisted under .gsd/exec."),
+  command: z.string().optional().describe("Alias for script; defaults to bash when runtime is omitted."),
+  cmd: z.string().optional().describe("Short alias for script."),
+  code: z.string().optional().describe("Alias for script, useful for node/python snippets."),
   purpose: z.string().optional().describe("Short label recorded in meta.json for later review."),
   timeout_ms: z.number().int().min(1_000).max(600_000).optional().describe("Per-invocation timeout in milliseconds."),
 };
@@ -1542,7 +1691,7 @@ const execSchema = z.object(execParams);
 const execSearchParams = {
   projectDir: projectDirParam,
   query: z.string().optional().describe("Substring matched against id and purpose, case-insensitive."),
-  runtime: execRuntimeSchema.optional().describe("Restrict to one runtime."),
+  runtime: z.enum(["bash", "node", "python"]).optional().describe("Restrict to one runtime."),
   failing_only: z.boolean().optional().describe("Only non-zero exit codes and timeouts."),
   limit: z.number().int().min(1).max(200).optional().describe("Max results (default 20, cap 200)."),
 };
@@ -1584,8 +1733,34 @@ function wrapServerWithErrorHandler(realServer: McpToolServer): McpToolServer {
   };
 }
 
-export function registerWorkflowTools(realServer: McpToolServer): void {
-  const server = wrapServerWithErrorHandler(realServer);
+export interface RegisterWorkflowToolsOptions {
+  /**
+   * Whether to advertise the 14 backwards-compatibility alias tools in the
+   * server's tool list. Defaults to `true` so in-process callers (e.g. the
+   * daemon's handler map) keep resolving alias names. The MCP subprocess
+   * passes `false` to drop ~5.6K tokens/turn of duplicate alias schemas from
+   * the model-facing surface; canonical names are always registered.
+   */
+  advertiseAliases?: boolean;
+}
+
+export function registerWorkflowTools(
+  realServer: McpToolServer,
+  options: RegisterWorkflowToolsOptions = {},
+): void {
+  const advertiseAliases = options.advertiseAliases ?? true;
+  const wrapped = wrapServerWithErrorHandler(realServer);
+  // When aliases are not advertised, skip their registration entirely so they
+  // never enter the tool list. Canonical tools always register. Alias handlers
+  // remain available wherever advertiseAliases is true (e.g. the daemon).
+  const server: McpToolServer = advertiseAliases
+    ? wrapped
+    : {
+        tool(name, description, params, handler) {
+          if (WORKFLOW_TOOL_ALIAS_NAME_SET.has(name)) return undefined;
+          return wrapped.tool(name, description, params, handler);
+        },
+      };
   server.tool(
     "gsd_decision_save",
     "Record a project decision to the GSD database and regenerate DECISIONS.md.",
@@ -1920,12 +2095,16 @@ export function registerWorkflowTools(realServer: McpToolServer): void {
   server.tool(
     "gsd_save_gate_result",
     "Save a quality gate result to the GSD database.",
-    saveGateResultParams,
+    saveGateResultIncomingParams,
     async (args: Record<string, unknown>) => {
+      const incoming = parseWorkflowArgs(saveGateResultIncomingSchema, args);
       const { prepareSaveGateResultArguments } = await importLocalModule<{
         prepareSaveGateResultArguments: (raw: unknown) => unknown;
       }>("../../../src/resources/extensions/gsd/tools/save-gate-result-args.js");
-      const prepared = prepareSaveGateResultArguments(args);
+      const prepared = await inferSaveGateResultScope(
+        incoming.projectDir,
+        prepareSaveGateResultArguments(incoming) as Record<string, unknown>,
+      );
       const record =
         prepared !== null && typeof prepared === "object" && !Array.isArray(prepared)
           ? (prepared as Record<string, unknown>)
@@ -2063,6 +2242,28 @@ export function registerWorkflowTools(realServer: McpToolServer): void {
       return adaptExecutorResult(
         await runSerializedWorkflowOperation(() => executeMilestoneStatus({ milestoneId }, projectDir)),
       );
+    },
+  );
+
+  server.tool(
+    "gsd_checkpoint_db",
+    "Flush the SQLite WAL into gsd.db so git add stages the current GSD database state.",
+    checkpointDbParams,
+    async (args: Record<string, unknown>) => {
+      const { projectDir } = parseWorkflowArgs(checkpointDbSchema, args);
+      await runSerializedWorkflowDbOperation(projectDir, async () => {
+        const { checkpointDatabase } = await importLocalModule<any>(
+          "../../../src/resources/extensions/gsd/gsd-db.js",
+        );
+        checkpointDatabase();
+      });
+      return {
+        content: [{
+          type: "text" as const,
+          text: "WAL checkpoint complete. gsd.db is now up to date and safe to stage with git add.",
+        }],
+        structuredContent: { operation: "checkpoint_db", status: "ok" },
+      };
     },
   );
 

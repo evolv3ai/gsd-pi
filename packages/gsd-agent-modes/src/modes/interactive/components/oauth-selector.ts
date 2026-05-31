@@ -10,12 +10,17 @@ import { DynamicBorder } from "./dynamic-border.js";
 import { selectorFooter } from "./keybinding-hints.js";
 import { renderCursor } from "./tree-render-utils.js";
 
+export type AuthSelectorProvider = Pick<OAuthProviderInterface, "id" | "name" | "usesCallbackServer"> & {
+	authType?: "oauth" | "api_key" | "external_cli";
+	statusLabel?: string;
+};
+
 /**
  * Component that renders an OAuth provider selector
  */
 export class OAuthSelectorComponent extends Container {
 	private listContainer: Container;
-	private allProviders: OAuthProviderInterface[] = [];
+	private allProviders: AuthSelectorProvider[] = [];
 	private selectedIndex: number = 0;
 	private mode: "login" | "logout";
 	private authStorage: AuthStorage;
@@ -27,6 +32,7 @@ export class OAuthSelectorComponent extends Container {
 		authStorage: AuthStorage,
 		onSelect: (providerId: string) => void,
 		onCancel: () => void,
+		providers?: AuthSelectorProvider[],
 	) {
 		super();
 
@@ -36,7 +42,7 @@ export class OAuthSelectorComponent extends Container {
 		this.onCancelCallback = onCancel;
 
 		// Load all OAuth providers
-		this.loadProviders();
+		this.loadProviders(providers);
 
 		// Add top border
 		this.addChild(new DynamicBorder());
@@ -62,8 +68,8 @@ export class OAuthSelectorComponent extends Container {
 		this.updateList();
 	}
 
-	private loadProviders(): void {
-		this.allProviders = getOAuthProviders();
+	private loadProviders(providers?: AuthSelectorProvider[]): void {
+		this.allProviders = providers ?? getOAuthProviders();
 	}
 
 	private updateList(): void {
@@ -75,10 +81,13 @@ export class OAuthSelectorComponent extends Container {
 
 			const isSelected = i === this.selectedIndex;
 
-			// Check if user is logged in for this provider
 			const credentials = this.authStorage.get(provider.id);
 			const isLoggedIn = credentials?.type === "oauth";
-			const statusIndicator = isLoggedIn ? theme.fg("success", " ✓ logged in") : "";
+			const statusIndicator = provider.statusLabel
+				? theme.fg("success", ` ${provider.statusLabel}`)
+				: isLoggedIn
+					? theme.fg("success", " ✓ logged in")
+					: "";
 
 			let line = "";
 			if (isSelected) {

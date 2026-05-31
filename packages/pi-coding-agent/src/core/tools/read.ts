@@ -38,8 +38,8 @@ const COMPACT_RESOURCE_FILE_NAMES = new Set(["AGENTS.md", "AGENTS.MD", "CLAUDE.m
 
 /** Max read output lines shown in the TUI when tool cards are collapsed (errors only). */
 export const READ_TUI_COLLAPSED_MAX_LINES = 10;
-/** Expanded read output is intentionally uncapped in the TUI. */
-export const READ_TUI_EXPANDED_MAX_LINES = Number.POSITIVE_INFINITY;
+/** Max read output lines shown in the TUI when tool cards are expanded. */
+export const READ_TUI_EXPANDED_MAX_LINES = 50;
 
 export function getReadTuiMaxDisplayLines(expanded: boolean): number {
 	return expanded ? READ_TUI_EXPANDED_MAX_LINES : READ_TUI_COLLAPSED_MAX_LINES;
@@ -196,7 +196,9 @@ function formatReadResult(
 	const remaining = lines.length - maxLines;
 	let text = `\n${displayLines.map((line) => (lang ? replaceTabs(line) : theme.fg("toolOutput", replaceTabs(line)))).join("\n")}`;
 	if (remaining > 0) {
-		text += `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("app.tools.expand", "to expand")})`;
+		text += options.expanded
+			? theme.fg("muted", `\n... (${remaining} more lines hidden from display)`)
+			: `${theme.fg("muted", `\n... (${remaining} more lines,`)} ${keyHint("app.tools.expand", "to expand")})`;
 	}
 
 	const truncation = result.details?.truncation;
@@ -223,7 +225,6 @@ export function createReadToolDefinition(
 		label: "read",
 		description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,
 		promptSnippet: "Read file contents",
-		promptGuidelines: ["Use read to examine files instead of cat or sed."],
 		parameters: readSchema,
 		async execute(
 			_toolCallId,

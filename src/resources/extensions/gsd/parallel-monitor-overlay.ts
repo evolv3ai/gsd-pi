@@ -13,6 +13,7 @@ import { formattedShortcutPair } from "./shortcut-defs.js";
 import { resolveGsdPathContract } from "./paths.js";
 import {
   renderBar,
+  renderDialogFrame,
   renderKeyHints,
   renderProgressBar,
   safeLine,
@@ -378,19 +379,18 @@ export class ParallelMonitorOverlay {
     const t = this.theme;
     const lines: string[] = [];
     const w = Math.max(1, width);
+    const contentWidth = Math.max(1, w - 4);
 
-    // Header
     const totalCost = this.workers.reduce((s, wk) => s + wk.cost, 0);
     const aliveCount = this.workers.filter((wk) => wk.alive).length;
     const now = new Date().toLocaleTimeString();
 
-    lines.push(t.bold(t.fg("accent", " GSD Parallel Monitor ")));
     lines.push(
       t.fg("muted", `  ${now}  │  ${aliveCount}/${this.workers.length} alive  │  Total: `) +
       t.bold(`$${totalCost.toFixed(2)}`) +
       t.fg("muted", "  │  5s refresh"),
     );
-    lines.push(renderBar(t, w));
+    lines.push(renderBar(t, contentWidth));
 
     if (this.workers.length === 0) {
       lines.push("");
@@ -444,7 +444,7 @@ export class ParallelMonitorOverlay {
           lines.push(`     ${t.fg("muted", "slices")}  ${chips.join("  ")}`);
 
           // Task progress bar
-          const barWidth = Math.max(6, Math.min(25, w - 32));
+          const barWidth = Math.max(6, Math.min(25, contentWidth - 32));
           const bar = renderProgressBar(t, wk.doneTasks, wk.totalTasks, barWidth, {
             filledChar: "█",
             emptyChar: "░",
@@ -466,7 +466,7 @@ export class ParallelMonitorOverlay {
 
     // Event feed
     lines.push("");
-    lines.push(renderBar(t, w));
+    lines.push(renderBar(t, contentWidth));
     lines.push(`  ${t.bold("Recent Events")}`);
 
     if (this.events.length === 0) {
@@ -478,7 +478,6 @@ export class ParallelMonitorOverlay {
       }
     }
 
-    // Footer
     lines.push("");
     const allDone = this.workers.length > 0 && this.workers.every((wk) => !wk.alive);
     if (allDone) {
@@ -491,17 +490,22 @@ export class ParallelMonitorOverlay {
       }
       lines.push(`  ${t.bold("Total: $" + this.workers.reduce((s, wk) => s + wk.cost, 0).toFixed(2))}`);
     }
-    lines.push(renderKeyHints(t, [`ESC/q/${formattedShortcutPair("parallel")} close`, "↑↓ scroll"], w));
 
     // Apply scroll — use terminal rows as height estimate
     const termHeight = process.stdout.rows || 40;
-    const maxScroll = Math.max(0, lines.length - termHeight);
+    const maxBodyRows = Math.max(1, Math.min(lines.length, termHeight - 12));
+    const maxScroll = Math.max(0, lines.length - maxBodyRows);
     this.scrollOffset = Math.min(Math.max(this.scrollOffset, 0), maxScroll);
     const visible = lines
-      .slice(this.scrollOffset, this.scrollOffset + termHeight)
-      .map((line) => safeLine(line, w));
-    this.cachedLines = visible;
+      .slice(this.scrollOffset, this.scrollOffset + maxBodyRows)
+      .map((line) => safeLine(line, contentWidth));
+    const footer = renderKeyHints(t, [`ESC/q/${formattedShortcutPair("parallel")} close`, "↑↓ scroll"], contentWidth);
+
+    this.cachedLines = renderDialogFrame(t, "GSD Parallel Monitor", visible, w, {
+      footer,
+      scroll: { offset: this.scrollOffset, visibleRows: maxBodyRows, totalRows: lines.length },
+    });
     this.cachedWidth = width;
-    return visible;
+    return this.cachedLines;
   }
 }

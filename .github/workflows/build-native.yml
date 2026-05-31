@@ -15,7 +15,7 @@ on:
           - "false"
           - "true"
       publish_auth:
-        description: "npm auth: token creates packages not on npm yet; trusted after first publish"
+        description: "npm auth: token creates/bootstrap-publishes packages; trusted only works if npm trusts build-native.yml"
         required: false
         default: "trusted"
         type: choice
@@ -122,18 +122,22 @@ jobs:
   publish:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.publish == 'true'
-    # npm trusted publishing requires GitHub-hosted runners for OIDC.
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # npm trusted publishing + provenance require GitHub-hosted runners (not Blacksmith).
+    runs-on: ubuntu-latest
     name: Publish platform packages
 
     steps:
       - uses: actions/checkout@v6
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.1
+
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
-          package-manager-cache: false
+          cache: pnpm
 
       - name: Verify npm publish toolchain
         run: |
@@ -287,12 +291,12 @@ jobs:
       - name: Install dependencies
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform_packages_only != 'true'
         run: |
-          npm install --package-lock-only --ignore-scripts
-          npm ci --omit=optional
+          pnpm install --lockfile-only
+          pnpm install --frozen-lockfile --no-optional
 
       - name: Build
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform_packages_only != 'true'
-        run: npm run build
+        run: pnpm run build
 
       - name: Verify dist exists
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform_packages_only != 'true'
@@ -300,7 +304,7 @@ jobs:
 
       - name: Validate package is installable
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform_packages_only != 'true'
-        run: npm run validate-pack
+        run: pnpm run validate-pack
 
       - name: Publish workspace packages
         if: github.event_name != 'workflow_dispatch' || github.event.inputs.platform_packages_only != 'true'
@@ -308,6 +312,8 @@ jobs:
           NODE_AUTH_TOKEN: ${{ github.event.inputs.publish_auth == 'token' && secrets.NPM_TOKEN || '' }}
           TAG_FLAG: ${{ steps.version-check.outputs.tag_flag }}
         run: |
+          node scripts/prepack-resolve-workspace.cjs
+          trap 'node scripts/postpack-restore-workspace.cjs' EXIT
           VERSION=$(node -p "require('./package.json').version")
           wait_for_workspace_package() {
             PACKAGE="$1"
@@ -342,6 +348,8 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ github.event.inputs.publish_auth == 'token' && secrets.NPM_TOKEN || '' }}
         run: |
+          node scripts/prepack-resolve-workspace.cjs
+          trap 'node scripts/postpack-restore-workspace.cjs' EXIT
           # --ignore-scripts: skip prepublishOnly since we built explicitly above
           if OUTPUT=$(npm publish --ignore-scripts ${{ steps.version-check.outputs.tag_flag }} 2>&1); then
             echo "$OUTPUT"

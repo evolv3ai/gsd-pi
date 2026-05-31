@@ -18,6 +18,7 @@
 import type { ExtensionContext } from "@gsd/pi-coding-agent";
 import { type Theme } from "@gsd/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth, type TUI } from "@gsd/pi-tui";
+import { renderSharedDialogFrame } from "./dialog-frame.js";
 import { makeUI, GLYPH } from "./ui.js";
 
 export interface ConfirmOptions {
@@ -83,20 +84,18 @@ export async function showConfirm(
 		function render(width: number): string[] {
 			if (cachedLines) return cachedLines;
 
-			const ui = makeUI(theme, width);
+			const contentWidth = Math.max(1, width - 4);
+			const ui = makeUI(theme, contentWidth);
 			const lines: string[] = [];
 			const push = (...rows: string[][]) => { for (const r of rows) lines.push(...r); };
 
 			push(
-				ui.bar(),
-				ui.blank(),
-				ui.header(`  ${opts.title}`),
 				ui.blank(),
 				ui.subtitle(`  ${opts.message}`),
 				ui.blank(),
 			);
 
-			const add = (s: string) => truncateToWidth(s, width);
+			const add = (s: string) => truncateToWidth(s, contentWidth);
 			const option = (num: number, label: string, selected: boolean) => {
 				if (selected) {
 					return add(`  ${theme.fg("accent", GLYPH.cursor)} ${theme.fg("accent", `${num}. ${label}`)}`);
@@ -107,14 +106,11 @@ export async function showConfirm(
 			lines.push(option(1, yesLabel, cursor === 0));
 			lines.push(option(2, noLabel, cursor === 1));
 
-			push(
-				ui.blank(),
-				ui.hints(["↑/↓ to choose", "y/n to quick-select", "enter to confirm"]),
-				ui.bar(),
-			);
+			push(ui.blank());
+			const footer = ui.hints(["↑/↓ to choose", "y/n to quick-select", "enter to confirm"])[0] ?? "";
 
-			cachedLines = lines;
-			return lines;
+			cachedLines = renderSharedDialogFrame(theme, opts.title, lines, width, { footer });
+			return cachedLines;
 		}
 
 		return {

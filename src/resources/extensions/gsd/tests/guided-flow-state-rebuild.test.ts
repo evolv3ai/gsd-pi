@@ -19,6 +19,7 @@ import { resolveGsdRootFile } from "../paths.ts";
 import {
   openDatabase,
   closeDatabase,
+  _getAdapter,
   insertMilestone,
   insertSlice,
   insertTask,
@@ -135,6 +136,39 @@ describe("guided-flow STATE.md rebuild (#3475)", () => {
     assert.equal(accepted, true);
     assert.equal(notifications.some(n => n.level === "error" && n.message.includes("no DB row exists")), false);
     assert.ok(notifications.some(n => n.level === "success" && n.message.includes("Milestone M001 ready.")));
+    clearPendingAutoStart(base);
+  });
+
+  test("checkAutoStartAfterDiscuss caps R3b insert-failure recovery notifications", () => {
+    base = createFixtureBase();
+    openDatabase(":memory:");
+    const db = _getAdapter();
+    assert.ok(db, "database should be open");
+    db.exec("DROP TABLE milestones");
+    db.exec("CREATE TABLE milestones (id TEXT PRIMARY KEY)");
+
+    writeFile(base, "milestones/M001/M001-CONTEXT.md", "# M001: Planned\n");
+    writeFile(base, "STATE.md", "# GSD State\n\n**Active Milestone:** M001: Planned\n");
+
+    const notifications: Array<{ message: string; level: string }> = [];
+    const ctx = {
+      ui: { notify: (message: string, level: string) => notifications.push({ message, level }) },
+      waitForIdle: () => new Promise<void>(() => {}),
+    };
+    setPendingAutoStart(base, { basePath: base, milestoneId: "M001", ctx: ctx as any, pi: {} as any });
+
+    for (let i = 0; i < 4; i += 1) {
+      assert.equal(checkAutoStartAfterDiscuss(), false);
+    }
+
+    assert.equal(
+      notifications.filter(n => n.level === "warning" && n.message.includes("recovering. Retrying gsd_plan_milestone")).length,
+      3,
+    );
+    assert.equal(
+      notifications.filter(n => n.level === "error" && n.message.includes("DB row recovery failed")).length,
+      1,
+    );
     clearPendingAutoStart(base);
   });
 });

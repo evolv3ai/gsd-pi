@@ -23,10 +23,17 @@ import { validatePreferences } from "./preferences-validation.js";
 export type { GSDSkillRule, SkillDiscoveryMode, SkillResolution, SkillResolutionReport } from "./preferences-types.js";
 
 /**
- * Known skill directories, in priority order.
- * GSD bundled skills live in ~/.gsd/agent/skills/ and win name collisions.
- * User-global and project-local ecosystem directories remain available as
- * read-only discovery sources, followed by Claude Code compatibility paths.
+ * Known skill directories for **preference reference resolution** (bare skill names).
+ *
+ * Search order (first match wins):
+ * 1. ~/.gsd/agent/skills/ (GSD bundled)
+ * 2. ~/.agents/skills/ (ecosystem global)
+ * 3. .agents/skills/ (project ecosystem)
+ * 4. ~/.claude/skills/ and .claude/skills/ (Claude Code compatibility)
+ *
+ * Note: the ResourceLoader catalog uses PackageManager precedence instead —
+ * project `.gsd/skills` and `.agents/skills` can override bundled GSD skills
+ * on name collision. See docs/dev/what-is-pi/09-the-customization-stack.md.
  */
 export function getSkillSearchDirs(cwd: string): Array<{ dir: string; method: SkillResolution["method"] }> {
   const dirs: Array<{ dir: string; method: SkillResolution["method"] }> = [

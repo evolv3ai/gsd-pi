@@ -41,18 +41,15 @@ function withEnv(values: Partial<Record<(typeof ENV_KEYS)[number], string | unde
 }
 
 describe("UserMessageComponent connected rail", () => {
-	test("renders a user message like GSD with a lighter blue connected card", () => {
+	test("renders a user message like GSD with a transparent connected card", () => {
 		const component = new UserMessageComponent(
 			"Can we make the transcript feel like chat?",
 			undefined,
 			1,
 			"date-time-iso",
 		);
-		const plain = component
-			.render(100)
-			.map((line) => stripVTControlCharacters(line))
-			.join("\n")
-			.split("\n");
+		const raw = component.render(100);
+		const plain = raw.map((line) => stripVTControlCharacters(line)).join("\n").split("\n");
 
 		const joined = plain.join("\n");
 		assert.match(joined, /YOU/);
@@ -63,10 +60,11 @@ describe("UserMessageComponent connected rail", () => {
 		const topRuleIndex = plain.findIndex((line) => line.includes("YOU") && line.includes("─"));
 		const contentIndex = plain.findIndex((line) => line.includes("feel like chat"));
 		assert.ok(contentIndex > topRuleIndex, `expected content after the top rule:\n${joined}`);
+		assert.doesNotMatch(raw[contentIndex] ?? "", /\x1b\[48[;:]/, "user content rows should not paint a background");
 		assert.ok(plain[topRuleIndex]?.startsWith("    ╭─ YOU"), `user turn should indent for the connected bridge:\n${joined}`);
 		assert.ok(plain[contentIndex]?.startsWith("       "), `user content should keep inner padding:\n${joined}`);
 		assert.equal(plain[contentIndex]?.length, 100, `user content row should fill the card interior:\n${joined}`);
-		assert.match(plain[contentIndex] ?? "", /^    /, `user background should not bleed into the rail gutter:\n${joined}`);
+		assert.match(plain[contentIndex] ?? "", /^    /, `user content should remain aligned with the rail gutter:\n${joined}`);
 		assert.doesNotMatch(plain[contentIndex] ?? "", /[│┃╭╮╰╯]/, `content line must stay copy-clean:\n${joined}`);
 	});
 

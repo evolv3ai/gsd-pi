@@ -2,9 +2,10 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
 import { createRepositoryRegistryFromPreferences, defaultRepositoryTargets } from "../repository-registry.ts";
 
 test("repository registry includes implicit project root and declared child repos", (t) => {
@@ -98,4 +99,32 @@ test("defaultRepositoryTargets returns [project] for a parent-mode registry", (t
   });
 
   assert.deepEqual(defaultRepositoryTargets(registry), ["project"]);
+});
+
+test("repository registry keeps project root anchored to .gsd project in monorepo subdirectory", (t) => {
+  const monorepo = mkdtempSync(join(tmpdir(), "gsd-repo-registry-mono-"));
+  t.after(() => rmSync(monorepo, { recursive: true, force: true }));
+  execFileSync("git", ["init"], { cwd: monorepo, stdio: "ignore" });
+
+  const subproject = join(monorepo, "fieldkit-tools");
+  mkdirSync(join(subproject, ".gsd"), { recursive: true });
+  writeFileSync(join(subproject, ".gsd", "PREFERENCES.md"), "---\nversion: 1\n---\n");
+
+  const registry = createRepositoryRegistryFromPreferences(subproject, undefined);
+
+  assert.equal(registry.projectRoot, subproject);
+  assert.equal(registry.byId.get("project")?.root, subproject);
+});
+
+test("repository registry uses external-state worktree checkout as project root", (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-repo-registry-external-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const worktree = join(base, ".gsd", "projects", "abc123", "worktrees", "M001");
+  mkdirSync(worktree, { recursive: true });
+  execFileSync("git", ["init"], { cwd: worktree, stdio: "ignore" });
+
+  const registry = createRepositoryRegistryFromPreferences(worktree, undefined);
+
+  assert.equal(registry.projectRoot, worktree);
+  assert.equal(registry.byId.get("project")?.root, worktree);
 });

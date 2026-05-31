@@ -6,15 +6,16 @@ Skills follow the open [Agent Skills standard](https://agentskills.io/) and work
 
 ## Skill Directories
 
-| Location | Scope | Description |
-|----------|-------|------------|
-| `~/.gsd/agent/skills/` | Bundled | GSD-managed bundled skills synced during install/update |
-| `~/.agents/skills/` | Global | User-global skills shared across compatible agents |
-| `.agents/skills/` (project root) | Project | Project-specific, committable to git |
-| `~/.claude/skills/` | Compat | Claude Code compatibility source, lower priority |
-| `.claude/skills/` (project root) | Compat | Project-local Claude Code compatibility source |
+| Location | Scope | Catalog precedence |
+|----------|-------|-------------------|
+| `.gsd/skills/` and `.agents/skills/` (project) | Project | Highest — overrides bundled on name collision |
+| `~/.gsd/agent/skills/` | Bundled | GSD-managed defaults synced during install/update |
+| `~/.agents/skills/` | Global | User-global ecosystem skills |
+| `~/.claude/skills/` and `.claude/skills/` | Compat | Claude Code compatibility (lowest) |
 
-Earlier entries take precedence when names collide. Bundled GSD skills win over user-global and project skills; Claude Code compatibility directories are searched after the standard Agent Skills locations.
+When resolving bare skill names in GSD `PREFERENCES.md`, bundled `~/.gsd/agent/skills/`
+is searched before ecosystem directories — preference refs may point at bundled
+skills even when a project-local skill with the same name wins in the catalog.
 
 ## Installing Skills
 

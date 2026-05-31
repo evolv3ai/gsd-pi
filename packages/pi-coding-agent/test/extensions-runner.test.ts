@@ -604,6 +604,51 @@ describe("ExtensionRunner", () => {
 				systemPrompt: "base\nfirst\nsecond",
 			});
 		});
+
+		it("updates ctx.getSystemPrompt() after before_agent_start reloads resources", async () => {
+			const extCode = `
+				export default function(pi) {
+					pi.on("before_agent_start", async (_event, ctx) => {
+						await ctx.reload();
+						return {
+							systemPrompt: ctx.getSystemPrompt() + "\\ngsd",
+						};
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "before-agent-start-reload.ts"), extCode);
+
+			let currentSystemPrompt = "base";
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			expect(result.errors).toEqual([]);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			const errors: string[] = [];
+			runner.onError((error) => errors.push(error.error));
+			runner.bindCore(extensionActions, {
+				...extensionContextActions,
+				getSystemPrompt: () => currentSystemPrompt,
+			});
+			runner.bindCommandContext({
+				waitForIdle: async () => {},
+				newSession: async () => ({ cancelled: false }),
+				fork: async () => ({ cancelled: false }),
+				navigateTree: async () => ({ cancelled: false }),
+				switchSession: async () => ({ cancelled: false }),
+				reload: async () => {
+					currentSystemPrompt = "reloaded";
+				},
+			});
+
+			const chained = await runner.emitBeforeAgentStart("hello", undefined, "base", {
+				cwd: tempDir,
+			});
+
+			expect(errors).toEqual([]);
+			expect(chained).toEqual({
+				messages: undefined,
+				systemPrompt: "reloaded\ngsd",
+			});
+		});
 	});
 
 	describe("tool_result chaining", () => {

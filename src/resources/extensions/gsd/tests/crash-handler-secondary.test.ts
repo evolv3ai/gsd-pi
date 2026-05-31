@@ -79,7 +79,7 @@ describe('register-extension crash handler secondary fixes (#3348)', () => {
     assert.ok(listener, 'installEpipeGuard should register an unhandledRejection handler');
   });
 
-  test('_gsdEpipeGuard writes a crash log and exits for unrecoverable errors', () => {
+  test('_gsdEpipeGuard writes a crash log and exits with failure for unrecoverable errors', () => {
     installEpipeGuard();
     const listener = process.listeners("uncaughtException").find((candidate) =>
       candidate.name === "_gsdEpipeGuard"
@@ -100,7 +100,7 @@ describe('register-extension crash handler secondary fixes (#3348)', () => {
         () => listener(new Error("unrecoverable crash guard test"), "uncaughtException"),
         /process\.exit intercepted/,
       );
-      assert.equal(exitCode, 1);
+      assert.equal(exitCode, 1, "guard should terminate with failure status");
       const crashDir = join(tmpHome, "crash");
       const logs = readdirSync(crashDir).filter((f) => f.endsWith(".log"));
       assert.equal(logs.length, 1);

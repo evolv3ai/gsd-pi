@@ -36,6 +36,7 @@ import {
 	truncateToWidth,
 	type TUI,
 } from "@gsd/pi-tui";
+import { renderSharedDialogFrame } from "./dialog-frame.js";
 import { mergeSideBySide } from "./layout-utils.js";
 import { makeUI, INDENT } from "./ui.js";
 
@@ -126,6 +127,10 @@ const DIVIDER_CHARS = " │ ";
 const DIVIDER_WIDTH = 3;
 const PREVIEW_MAX_LINES = 20;     // hard cap — keeps total ≤ 24 rows for single-question
 
+function dialogContentWidth(width: number): number {
+	return width < 4 ? Math.max(1, width) : Math.max(1, width - 4);
+}
+
 // ─── Wrap-up screen ───────────────────────────────────────────────────────────
 
 export async function showWrapUpScreen(
@@ -157,11 +162,12 @@ export async function showWrapUpScreen(
 
 		function render(width: number): string[] {
 			if (cachedLines) return cachedLines;
-			const ui = makeUI(theme, width);
+			const contentWidth = dialogContentWidth(width);
+			const ui = makeUI(theme, contentWidth);
 			const lines: string[] = [];
 			const push = (...rows: string[][]) => { for (const r of rows) lines.push(...r); };
 
-			push(ui.bar(), ui.blank(), ui.header(`  ${opts.headline}`), ui.blank());
+			push(ui.blank());
 			if (opts.progress) push(ui.meta(`  ${opts.progress}`), ui.blank());
 
 			if (cursorIdx === 1) {
@@ -175,14 +181,11 @@ export async function showWrapUpScreen(
 			} else {
 				push(ui.actionUnselected(2, opts.keepGoingLabel, "Continue with another batch of questions."));
 			}
-			push(
-				ui.blank(),
-				ui.hints(["↑/↓ to choose", "1/2 to quick-select", "enter to confirm"]),
-				ui.bar(),
-			);
+			push(ui.blank());
 
-			cachedLines = lines;
-			return lines;
+			const footer = ui.hints(["↑/↓ to choose", "1/2 to quick-select", "enter to confirm"])[0] ?? "";
+			cachedLines = renderSharedDialogFrame(theme, opts.headline, lines, width, { footer });
+			return cachedLines;
 		}
 
 		return {
@@ -469,11 +472,13 @@ export async function showInterviewRound(
 		// ── Review screen ────────────────────────────────────────────────
 
 		function renderReviewScreen(width: number): string[] {
-			const ui = makeUI(theme, width);
+			const contentWidth = dialogContentWidth(width);
+			const title = opts.reviewHeadline ?? "Review your answers";
+			const ui = makeUI(theme, contentWidth);
 			const lines: string[] = [];
 			const push = (...rows: string[][]) => { for (const r of rows) lines.push(...r); };
 
-			push(ui.bar(), ui.blank(), ui.header(`  ${opts.reviewHeadline ?? "Review your answers"}`), ui.blank());
+			push(ui.blank());
 
 			for (let i = 0; i < questions.length; i++) {
 				const q = questions[i];
@@ -500,24 +505,22 @@ export async function showInterviewRound(
 			push(
 				ui.actionSelected(0, "Submit answers"),
 				ui.blank(),
-				ui.hints(["← to go back and edit", "enter to submit", `esc to ${opts.exitLabel ?? "end interview"}`]),
-				ui.bar(),
 			);
 
-			return lines;
+			const footer = ui.hints(["← to go back and edit", "enter to submit", `esc to ${opts.exitLabel ?? "end interview"}`])[0] ?? "";
+			return renderSharedDialogFrame(theme, title, lines, width, { footer });
 		}
 
 		// ── Exit confirm screen ──────────────────────────────────────────
 
 		function renderExitConfirm(width: number): string[] {
-			const ui = makeUI(theme, width);
+			const contentWidth = dialogContentWidth(width);
+			const title = opts.exitHeadline ?? "End interview?";
+			const ui = makeUI(theme, contentWidth);
 			const lines: string[] = [];
 			const push = (...rows: string[][]) => { for (const r of rows) lines.push(...r); };
 
 			push(
-				ui.bar(),
-				ui.blank(),
-				ui.header(`  ${opts.exitHeadline ?? "End interview?"}`),
 				ui.blank(),
 				ui.subtitle("  Answers from this batch won't be saved."),
 				ui.blank(),
@@ -538,13 +541,10 @@ export async function showInterviewRound(
 			} else {
 				push(ui.actionUnselected(2, exitActionLabel, "Exit and discard this batch of answers."));
 			}
-			push(
-				ui.blank(),
-				ui.hints(["↑/↓ to choose", "1/2 to quick-select", "enter to confirm"]),
-				ui.bar(),
-			);
+			push(ui.blank());
 
-			return lines;
+			const footer = ui.hints(["↑/↓ to choose", "1/2 to quick-select", "enter to confirm"])[0] ?? "";
+			return renderSharedDialogFrame(theme, title, lines, width, { footer });
 		}
 
 		// ── Preview helpers ──────────────────────────────────────────────
@@ -648,16 +648,16 @@ export async function showInterviewRound(
 			if (showingExitConfirm) { cachedLines = renderExitConfirm(width); return cachedLines; }
 			if (showingReview) { cachedLines = renderReviewScreen(width); return cachedLines; }
 
+			const contentWidth = dialogContentWidth(width);
+			const title = questions[currentIdx]?.header || "GSD Interview";
 			const useSideBySide = questionHasAnyPreview()
-				&& width >= (MIN_OPTIONS_WIDTH + MIN_PREVIEW_WIDTH + DIVIDER_WIDTH);
+				&& contentWidth >= (MIN_OPTIONS_WIDTH + MIN_PREVIEW_WIDTH + DIVIDER_WIDTH);
 
 			if (useSideBySide) {
 				// ── Preview path ──────────────────────────────────────
-				const ui = makeUI(theme, width);
+				const ui = makeUI(theme, contentWidth);
 				const lines: string[] = [];
 				const push = (...rows: string[][]) => { for (const r of rows) lines.push(...r); };
-
-				push(ui.bar());
 
 				if (isMultiQuestion) {
 					const unanswered = questions.filter((_, i) => !isQuestionAnswered(i)).length;
@@ -680,12 +680,15 @@ export async function showInterviewRound(
 				// component: spinner/loader (1-2), status line (1), tool header (1),
 				// plus a safety margin for future additions.
 				const termRows = (typeof process !== "undefined" && process.stdout?.rows) || 24;
-				const footerLines = 3; // blank + hints + bar
+				const footerLines = 5; // body spacer + frame top/footer/bottom chrome
 				const tuiChrome = 5;
 				const maxBody = Math.min(PREVIEW_MAX_LINES, Math.max(6, termRows - lines.length - footerLines - tuiChrome));
 
-				const previewWidth = Math.max(MIN_PREVIEW_WIDTH, Math.floor(width * PREVIEW_RATIO));
-				const leftWidth = Math.max(MIN_OPTIONS_WIDTH, width - previewWidth - DIVIDER_WIDTH);
+				const previewWidth = Math.max(
+					MIN_PREVIEW_WIDTH,
+					Math.min(contentWidth - MIN_OPTIONS_WIDTH - DIVIDER_WIDTH, Math.floor(contentWidth * PREVIEW_RATIO)),
+				);
+				const leftWidth = Math.max(MIN_OPTIONS_WIDTH, contentWidth - previewWidth - DIVIDER_WIDTH);
 
 				const fullLeft = renderOptionsColumn(leftWidth);
 				const leftLines = fullLeft.slice(0, maxBody);
@@ -709,7 +712,7 @@ export async function showInterviewRound(
 				while (leftLines.length < maxBody) leftLines.push("");
 				while (rightLines.length < maxBody) rightLines.push("");
 				const divider = theme.fg("dim", DIVIDER_CHARS);
-				lines.push(...mergeSideBySide(leftLines, rightLines, leftWidth, divider, width));
+				lines.push(...mergeSideBySide(leftLines, rightLines, leftWidth, divider, contentWidth));
 
 				// Footer
 				push(ui.blank());
@@ -729,23 +732,21 @@ export async function showInterviewRound(
 					hints.push(isLast && allAnswered() ? "enter to review" : "enter to next");
 				}
 				hints.push("esc to exit");
-				push(ui.hints(hints), ui.bar());
+				const footer = ui.hints(hints)[0] ?? "";
 
-				cachedLines = lines;
-				return lines;
+				cachedLines = renderSharedDialogFrame(theme, title, lines, width, { footer });
+				return cachedLines;
 			}
 
 			// ── Original path — no preview, untouched ────────────────
 
-			const ui = makeUI(theme, width);
+			const ui = makeUI(theme, contentWidth);
 			const lines: string[] = [];
 			const push = (...rows: string[][]) => { for (const r of rows) lines.push(...r); };
 
 			const q = questions[currentIdx];
 			const st = states[currentIdx];
 			const multiSel = isMultiSelect(currentIdx);
-
-			push(ui.bar());
 
 			// ── Progress header ────────────────────────────────────────────
 			if (isMultiQuestion) {
@@ -809,7 +810,7 @@ export async function showInterviewRound(
 			if (st.notesVisible || focusNotes) {
 				push(ui.blank(), ui.notesLabel(focusNotes));
 				if (focusNotes) {
-					for (const line of getEditor().render(width - 2)) lines.push(truncateToWidth(` ${line}`, width));
+					for (const line of getEditor().render(contentWidth - 2)) lines.push(truncateToWidth(` ${line}`, contentWidth));
 				} else if (st.notes) {
 					push(ui.notesText(st.notes));
 				}
@@ -833,10 +834,10 @@ export async function showInterviewRound(
 				hints.push(isLast && allAnswered() ? "enter to review" : "enter to next");
 			}
 			hints.push("esc to exit");
-			push(ui.hints(hints), ui.bar());
+			const footer = ui.hints(hints)[0] ?? "";
 
-			cachedLines = lines;
-			return lines;
+			cachedLines = renderSharedDialogFrame(theme, title, lines, width, { footer });
+			return cachedLines;
 		}
 
 		return {

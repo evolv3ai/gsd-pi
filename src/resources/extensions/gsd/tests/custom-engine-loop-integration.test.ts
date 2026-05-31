@@ -344,6 +344,70 @@ describe("Custom engine loop integration", () => {
     );
   });
 
+  it("step mode stops after one custom workflow step", async () => {
+    _resetPendingResolve();
+
+    const runDir = makeTmpDir();
+    const graph = makeGraph([
+      makeStep({ id: "step-a" }),
+      makeStep({ id: "step-b", dependsOn: ["step-a"] }),
+      makeStep({ id: "step-c", dependsOn: ["step-b"] }),
+    ], "step-mode-custom");
+    writeGraph(runDir, graph);
+    writeDefinition(runDir, graph.steps, "step-mode-custom");
+
+    const ctx = makeMockCtx();
+    const pi = makeMockPi();
+    const s = makeLoopSession({
+      activeEngineId: "custom",
+      activeRunDir: runDir,
+      basePath: runDir,
+      stepMode: true,
+    });
+
+    const deps = makeMockDeps({
+      stopAuto: async (_ctx, _pi, reason) => {
+        deps.callLog.push(`stopAuto:${reason ?? "no-reason"}`);
+        s.active = false;
+      },
+    });
+
+    const loopPromise = autoLoop(ctx, pi, s, deps);
+    await resolveNextAgentEnd();
+
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        loopPromise,
+        new Promise((_, reject) =>
+          timeout = setTimeout(() => {
+            s.active = false;
+            if (_hasPendingResolveForTest()) {
+              resolveAgentEnd({ messages: [{ role: "assistant" }] });
+            }
+            reject(new Error(
+              `step mode did not stop after one custom workflow step; calls=${pi.calls.length}; log=${deps.callLog.join(",")}`,
+            ));
+          }, 1_000),
+        ),
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+
+    const finalGraph = readGraph(runDir);
+    assert.equal(pi.calls.length, 1, "step mode should dispatch exactly one custom step");
+    assert.equal(finalGraph.steps[0]?.status, "complete", "first step should complete");
+    assert.equal(finalGraph.steps[1]?.status, "pending", "second step should wait for the next /gsd next");
+    assert.equal(finalGraph.steps[2]?.status, "pending", "third step should wait for a later step");
+    assert.equal(
+      deps.callLog.some((e: string) => e.startsWith("stopAuto:")),
+      false,
+      "step-mode pause should not complete or stop the whole workflow",
+    );
+    assert.equal(s.preserveStepSurfaceAfterLoopExit, true);
+  });
+
   it("stops when engine reports isComplete on first derive", async () => {
     _resetPendingResolve();
 
