@@ -206,6 +206,20 @@ function completeSliceReopenReplanHandoffDetected(
   );
 }
 
+function completeSliceReplanSignalDetected(
+  s: AutoSession,
+  agentEndMessages: unknown[] | undefined,
+): boolean {
+  if (s.currentUnit?.type !== "complete-slice") return false;
+  return (
+    agentEndMessagesIncludeSuccessfulToolResult(agentEndMessages, "gsd_replan_slice") ||
+    agentEndMessagesIncludeToolCall(agentEndMessages, "gsd_replan_slice") ||
+    agentEndMessagesMentionTool(agentEndMessages, "gsd_replan_slice") ||
+    unitActivityMentionsTool(s.basePath, s.currentUnit.type, s.currentUnit.id, "gsd_replan_slice") ||
+    unitActivityMentionsTool(s.canonicalProjectRoot, s.currentUnit.type, s.currentUnit.id, "gsd_replan_slice")
+  );
+}
+
 function completeSliceValidReplanOutcomeDetected(
   s: AutoSession,
   agentEndMessages: unknown[] | undefined,
@@ -214,14 +228,7 @@ function completeSliceValidReplanOutcomeDetected(
   const { milestone: mid, slice: sid } = parseUnitId(s.currentUnit.id);
   if (!mid || !sid) return false;
 
-  const hasReplanSignal = (
-    agentEndMessagesIncludeSuccessfulToolResult(agentEndMessages, "gsd_replan_slice") ||
-    agentEndMessagesIncludeToolCall(agentEndMessages, "gsd_replan_slice") ||
-    agentEndMessagesMentionTool(agentEndMessages, "gsd_replan_slice") ||
-    unitActivityMentionsTool(s.basePath, s.currentUnit.type, s.currentUnit.id, "gsd_replan_slice") ||
-    unitActivityMentionsTool(s.canonicalProjectRoot, s.currentUnit.type, s.currentUnit.id, "gsd_replan_slice")
-  );
-  if (!hasReplanSignal) return false;
+  if (!completeSliceReplanSignalDetected(s, agentEndMessages)) return false;
 
   const replanPath = resolveSliceFile(s.basePath, mid, sid, "REPLAN");
   const canonicalReplanPath = resolveSliceFile(s.canonicalProjectRoot, mid, sid, "REPLAN");
@@ -1820,7 +1827,11 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
           "warning",
         );
         return "continue";
-      } else if (!triggerArtifactVerified && !isDbAvailable()) {
+      } else if (
+        !triggerArtifactVerified &&
+        !isDbAvailable() &&
+        !completeSliceReplanSignalDetected(s, opts?.agentEndMessages)
+      ) {
         debugLog("postUnit", { phase: "artifact-verify-skip-db-unavailable", unitType: s.currentUnit.type, unitId: s.currentUnit.id });
         const dbSkipDiag = diagnoseExpectedArtifact(s.currentUnit.type, s.currentUnit.id, verificationBasePath);
         ctx.ui.notify(
