@@ -665,6 +665,18 @@ test("handles empty models config", () => {
   assert.equal(prefs!.models, undefined);
 });
 
+test("parsePreferencesMarkdown keeps unsafe numeric remote_questions.channel_id as number", () => {
+  const content = `---
+remote_questions:
+  channel: discord
+  channel_id: 1234567890123456789
+---
+`;
+  const prefs = parsePreferencesMarkdown(content);
+  assert.notEqual(prefs, null);
+  assert.equal(typeof prefs!.remote_questions?.channel_id, "number");
+});
+
 test("parses raw YAML blocks under headings", () => {
   const content = `## Parallel
 enabled: true

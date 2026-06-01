@@ -1,10 +1,11 @@
 import test, { mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parseSlackReply, parseDiscordResponse, formatForDiscord, formatForSlack, parseSlackReactionResponse, formatForTelegram, parseTelegramResponse } from "../../remote-questions/format.ts";
 import { resolveRemoteConfig, isValidChannelId } from "../../remote-questions/config.ts";
+import { getGlobalGSDPreferencesPath } from "../../gsd/preferences.ts";
 import { DiscordAdapter } from "../../remote-questions/discord-adapter.ts";
 import { isRemoteConfigured } from "../../remote-questions/manager.ts";
 import { handleRemote, saveRemoteQuestionsConfig } from "../../remote-questions/remote-command.ts";
@@ -766,6 +767,32 @@ test("remote disconnect removes active env token and disables remote config", as
       assert.equal(process.env.DISCORD_BOT_TOKEN, undefined);
       assert.equal(resolveRemoteConfig(), null);
       assert.ok(notifications.some((message) => message.includes("disconnected")));
+    });
+  } finally {
+    if (saved === undefined) delete process.env.DISCORD_BOT_TOKEN;
+    else process.env.DISCORD_BOT_TOKEN = saved;
+  }
+});
+
+test("resolveRemoteConfig rejects discord channel_id parsed as unsafe number", async () => {
+  const saved = process.env.DISCORD_BOT_TOKEN;
+  try {
+    await withTempGsdHome(() => {
+      process.env.DISCORD_BOT_TOKEN = "discord-token";
+      writeFileSync(
+        getGlobalGSDPreferencesPath(),
+        [
+          "---",
+          "remote_questions:",
+          "  channel: discord",
+          "  channel_id: 1234567890123456789",
+          "---",
+          "",
+        ].join("\n"),
+        "utf-8",
+      );
+
+      assert.equal(resolveRemoteConfig(), null);
     });
   } finally {
     if (saved === undefined) delete process.env.DISCORD_BOT_TOKEN;
