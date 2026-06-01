@@ -674,6 +674,35 @@ describe('createMcpServer tool registration', () => {
     assert.ok(typeof server.close === 'function');
   });
 
+  it('advertises workflow aliases by default for external MCP clients', async () => {
+    const previous = process.env.GSD_MCP_HIDE_ALIASES;
+    delete process.env.GSD_MCP_HIDE_ALIASES;
+    try {
+      const { server } = await createMcpServer(sm);
+      const registeredTools = (server as any)._registeredTools ?? {};
+      for (const alias of ['gsd_save_summary', 'gsd_milestone_plan', 'gsd_slice_plan']) {
+        assert.ok(registeredTools[alias], `${alias} should be advertised by default`);
+      }
+    } finally {
+      if (previous === undefined) delete process.env.GSD_MCP_HIDE_ALIASES;
+      else process.env.GSD_MCP_HIDE_ALIASES = previous;
+    }
+  });
+
+  it('can hide workflow aliases when explicitly requested', async () => {
+    const previous = process.env.GSD_MCP_HIDE_ALIASES;
+    process.env.GSD_MCP_HIDE_ALIASES = '1';
+    try {
+      const { server } = await createMcpServer(sm);
+      const registeredTools = (server as any)._registeredTools ?? {};
+      assert.ok(registeredTools.gsd_summary_save, 'canonical tool should remain advertised');
+      assert.equal(registeredTools.gsd_save_summary, undefined);
+    } finally {
+      if (previous === undefined) delete process.env.GSD_MCP_HIDE_ALIASES;
+      else process.env.GSD_MCP_HIDE_ALIASES = previous;
+    }
+  });
+
   it('gsd_execute flow returns sessionId on success', async () => {
     const sessionId = await sm.startSession('/tmp/tool-exec', { cliPath: '/usr/bin/gsd' });
     assert.equal(typeof sessionId, 'string');

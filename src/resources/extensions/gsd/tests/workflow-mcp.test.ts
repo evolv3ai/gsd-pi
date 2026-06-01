@@ -54,6 +54,21 @@ test("complete-slice requires closeout and execution handoff tools", () => {
   assert.deepEqual(getRequiredWorkflowToolsForAutoUnit("complete-slice"), expected);
 });
 
+test("workflow MCP capability surface includes native legacy gsd aliases", () => {
+  const err = getWorkflowTransportSupportError(
+    "claude-code",
+    ["gsd_save_summary", "gsd_milestone_plan", "gsd_slice_plan"],
+    {
+      authMode: "externalCli",
+      baseUrl: "local://test",
+      env: { GSD_WORKFLOW_MCP_COMMAND: "node" },
+      projectRoot: "/tmp/project",
+    },
+  );
+
+  assert.equal(err, null);
+});
+
 test("deep project setup units declare required workflow MCP tools", () => {
   assert.deepEqual(getRequiredWorkflowToolsForGuidedUnit("discuss-project"), [
     "ask_user_questions",
