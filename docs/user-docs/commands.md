@@ -91,7 +91,7 @@ After writing the file, GSD attempts to open it in a browser using the local pla
 | `/gsd init` | Project init wizard — detect, configure, bootstrap `.gsd/`; if `.gsd/` already exists, opens an "Already Initialized" menu with `Re-configure preferences`, `Suggest & install skills`, or `Cancel` |
 | `/gsd setup` | Global setup status and configuration |
 | `/gsd onboarding` | Re-run the setup wizard (`--resume`, `--reset`, `--step <name>`) |
-| `/gsd mcp` | Manage MCP servers (`status`, `check`, `test`, `enable`, `disable`, `import`, `delete`, `init`) |
+| `/gsd mcp` | Manage MCP servers (`status`, `check`, `discover`, `test`, `enable`, `disable`, `import`, `delete`, `init`) |
 | `/gsd context` | Show a context breakdown chart for skills, injections, history, and MCP tool schema usage |
 | `/gsd skill-health` | Skill lifecycle dashboard — usage stats, success rates, token trends, staleness warnings |
 | `/gsd skill-health <name>` | Detailed view for a single skill |

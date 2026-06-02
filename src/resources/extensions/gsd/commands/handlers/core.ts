@@ -138,7 +138,7 @@ export function showHelp(ctx: ExtensionCommandContext, args = ""): void {
     "  /gsd skill-health   Skill lifecycle dashboard",
     "  /gsd extensions     Manage extensions  [list|enable|disable|info]",
     "  /gsd fast           Toggle OpenAI service tier  [on|off|flex|status]",
-    "  /gsd mcp            MCP server management  [status|check|test|enable|disable|import|delete|init]",
+    "  /gsd mcp            MCP server management  [status|check|discover|test|enable|disable|import|delete|init]",
     "",
     "MAINTENANCE",
     "  /gsd doctor         Diagnose and repair .gsd/ state  [audit|fix|heal] [scope]",
