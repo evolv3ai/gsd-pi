@@ -150,6 +150,7 @@
     "@mistralai/mistralai": "2.2.1",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@opengsd/gsd-browser": "0.1.27",
+    "@opengsd/mcp-server": "workspace:*",
     "@silvia-odwyer/photon-node": "^0.3.4",
     "@sinclair/typebox": "^0.34.41",
     "@smithy/node-http-handler": "^4.7.3",

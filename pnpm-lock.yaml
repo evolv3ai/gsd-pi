@@ -38,6 +38,9 @@ importers:
       '@opengsd/gsd-browser':
         specifier: 0.1.27
         version: 0.1.27
+      '@opengsd/mcp-server':
+        specifier: workspace:*
+        version: link:packages/mcp-server
       '@silvia-odwyer/photon-node':
         specifier: ^0.3.4
         version: 0.3.4
