@@ -185,6 +185,7 @@ test("buildMinimalAutoGsdToolSet preserves browser tools for run-uat", () => {
     "browser_assert",
     "browser_screenshot",
     "browser_wait_for",
+    "subagent",
     "gsd_summary_save",
     "gsd_task_complete",
     "memory_query",
@@ -197,6 +198,7 @@ test("buildMinimalAutoGsdToolSet preserves browser tools for run-uat", () => {
   assert.ok(result.includes("browser_assert"));
   assert.ok(result.includes("browser_screenshot"));
   assert.ok(result.includes("browser_wait_for"));
+  assert.ok(result.includes("subagent"));
   assert.ok(result.includes("gsd_summary_save"));
   assert.ok(!result.includes("gsd_task_complete"));
 });

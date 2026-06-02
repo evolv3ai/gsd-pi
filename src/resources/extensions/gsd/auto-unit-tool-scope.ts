@@ -44,7 +44,7 @@ export const AUTO_UNIT_SCOPED_TOOLS: Record<string, readonly string[]> = {
   "execute-task": ["gsd_task_complete", "gsd_decision_save"],
   "execute-task-simple": ["gsd_task_complete", "gsd_decision_save"],
   "reactive-execute": ["gsd_task_complete", "gsd_decision_save"],
-  "run-uat": ["gsd_summary_save", ...RUN_UAT_BROWSER_TOOL_NAMES],
+  "run-uat": ["gsd_summary_save", "subagent", ...RUN_UAT_BROWSER_TOOL_NAMES],
   "gate-evaluate": ["gsd_save_gate_result"],
   "rewrite-docs": ["gsd_summary_save", "gsd_decision_save"],
   "workflow-preferences": ["gsd_summary_save"],
