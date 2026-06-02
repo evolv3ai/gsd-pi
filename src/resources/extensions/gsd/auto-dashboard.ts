@@ -516,8 +516,9 @@ export const hideFooter = (_tui: unknown, theme: Theme, footerData: ReadonlyFoot
 
 /** Widget display modes: full → small → min → off → full */
 export type WidgetMode = "full" | "small" | "min" | "off";
+export const DEFAULT_WIDGET_MODE: WidgetMode = "small";
 const WIDGET_MODES: WidgetMode[] = ["full", "small", "min", "off"];
-let widgetMode: WidgetMode = "full";
+let widgetMode: WidgetMode = DEFAULT_WIDGET_MODE;
 let widgetModeInitialized = false;
 let widgetModePreferencePath: string | null = null;
 
@@ -628,7 +629,7 @@ export function getWidgetMode(projectPath?: string, globalPath?: string): Widget
 
 /** Test-only reset for widget mode caching. */
 export function _resetWidgetModeForTests(): void {
-  widgetMode = "full";
+  widgetMode = DEFAULT_WIDGET_MODE;
   widgetModeInitialized = false;
   widgetModePreferencePath = null;
 }
