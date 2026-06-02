@@ -251,7 +251,7 @@ export function buildRunUatGsdToolSet(
 ): string[] {
   const scoped = resolveScopedToolNames(
     [...activeToolNames, ...registeredToolNames],
-    [...RUN_UAT_WORKFLOW_TOOL_NAMES, ...RUN_UAT_BROWSER_TOOL_NAMES],
+    [...RUN_UAT_WORKFLOW_TOOL_NAMES, "subagent", ...RUN_UAT_BROWSER_TOOL_NAMES],
   );
   return [...new Set(scoped)];
 }

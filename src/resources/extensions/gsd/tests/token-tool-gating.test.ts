@@ -212,6 +212,7 @@ test("buildMinimalAutoGsdToolSet preserves compatible browser add-ons for run-ua
     "gsd_resume",
     "gsd_milestone_status",
     "gsd_journal_query",
+    "subagent",
     "gsd_summary_save",
     "gsd_exec",
     "gsd_save_gate_result",
@@ -228,6 +229,7 @@ test("buildMinimalAutoGsdToolSet preserves compatible browser add-ons for run-ua
   assert.ok(result.includes("browser_wait_for"));
   assert.ok(result.includes("gsd_uat_exec"));
   assert.ok(result.includes("gsd_uat_result_save"));
+  assert.ok(result.includes("subagent"));
   assert.ok(!result.includes("ToolSearch"));
   assert.ok(!result.includes("bash"));
   assert.ok(!result.includes("read"));
