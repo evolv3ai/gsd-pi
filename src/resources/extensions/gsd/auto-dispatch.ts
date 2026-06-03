@@ -622,6 +622,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
           structuredQuestionsAvailable,
           { headless: !!process.env.GSD_HEADLESS },
         ),
+        pauseAfterDispatch: !process.env.GSD_HEADLESS,
       };
     },
   },
@@ -772,6 +773,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
           structuredQuestionsAvailable,
           { headless: !!process.env.GSD_HEADLESS },
         ),
+        pauseAfterDispatch: !process.env.GSD_HEADLESS,
       };
     },
   },
@@ -805,6 +807,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
         unitType: "discuss-project",
         unitId: "PROJECT",
         prompt: await buildDiscussProjectPrompt(basePath, structuredQuestionsAvailable),
+        pauseAfterDispatch: !process.env.GSD_HEADLESS,
       };
     },
   },
@@ -826,6 +829,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
         unitType: "discuss-requirements",
         unitId: "REQUIREMENTS",
         prompt: await buildDiscussRequirementsPrompt(basePath, structuredQuestionsAvailable),
+        pauseAfterDispatch: !process.env.GSD_HEADLESS,
       };
     },
   },
@@ -940,6 +944,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
           structuredQuestionsAvailable,
           { headless: !!process.env.GSD_HEADLESS },
         ),
+        pauseAfterDispatch: !process.env.GSD_HEADLESS,
       };
     },
   },
