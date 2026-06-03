@@ -305,9 +305,17 @@ This config sets a parent workspace with two child repositories. The implicit `p
   - `max_cycles`: number — max times this hook fires per trigger (default: 1, max: 10).
   - `model`: string — optional model override.
   - `artifact`: string — expected output file name (relative to task/slice dir). Hook is skipped if file already exists (idempotent).
+  - `criticality`: `"advisory"` or `"blocking"` — advisory preserves current best-effort behavior; blocking requires clean hook completion plus a valid outcome verdict before auto-mode advances. Default: `"advisory"`.
   - `retry_on`: string — if this file is produced instead of the artifact, re-run the trigger unit then re-run hooks.
+  - `on_block`: object — optional routing for blocking findings:
+    - `action`: `"retry-unit"`, `"retry-task"`, `"queue-task"`, `"queue-slice"`, or `"pause"`.
+    - `artifact`: string — optional compatibility artifact for retry routing.
   - `agent`: string — agent definition file to use for hook execution.
   - `enabled`: boolean — toggle without removing (default: `true`).
+
+  Blocking hook artifacts must begin with YAML frontmatter containing either `verdict` or `outcome.verdict`.
+  Supported verdicts are `pass`, `advisory`, `needs-rework`, `needs-remediation`, and `needs-attention`.
+  `pass` and `advisory` continue; `needs-rework` retries the trigger unit when routed with `retry-unit`/`retry-task`; `needs-remediation` and `needs-attention` pause with recovery guidance.
 
 - `pre_dispatch_hooks`: array — hooks that fire before a unit is dispatched. Each entry has:
   - `name`: string — unique hook identifier.

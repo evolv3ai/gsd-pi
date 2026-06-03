@@ -5,6 +5,14 @@
 - **Auto Orchestration**: runtime coordination of GSD auto-mode units from start to completion, including dispatch and stop/resume behavior; unit-execution failure recovery is classified by the Recovery Classification module.
 - **Unit**: the smallest executable workflow step (e.g., plan slice, execute task, complete slice).
 - **Unit progression**: movement from one Unit to the next under orchestration rules.
+- **Post-Unit Hook**: a configured follow-up evaluation that runs after a Unit completes. It may be advisory or may act as a Post-Unit Gate.
+- **Advisory Post-Unit Hook**: a Post-Unit Hook whose outcome may be recorded but is not required for Unit progression.
+- **Post-Unit Gate**: a Post-Unit Hook whose successful completion is required before Unit progression continues.
+- **Post-Unit Gate Enforcement**: the orchestration rule that decides whether a Post-Unit Gate permits, delays, or stops Unit progression.
+- **Post-Unit Hook Outcome**: the recorded result of a Post-Unit Hook, including whether it allows progress or calls for rework or remediation.
+- **Rework**: corrective work that revisits the Unit that produced an unsatisfactory result.
+- **Remediation**: corrective workflow work scheduled beyond the triggering Unit to address a finding before downstream completion or progression.
+- **Needs Attention**: a finding that requires human review before progression or completion continues.
 - **First-visible response latency**: the user-perceived delay from submitting a prompt to seeing the first assistant output. Distinct from total completion time, Unit duration, or tool execution duration.
 - **Closeout Boundary Stop**: the rule that a foreground run stops after the first task, slice, or milestone closeout boundary and leaves a durable final closeout surface visible in the live terminal, not merely scrollback or a cleared progress area.
 - **Dispatch decision**: selection of the next Unit plus rationale and preconditions.

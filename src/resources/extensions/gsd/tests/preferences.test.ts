@@ -561,6 +561,35 @@ test("post-unit hook max_cycles clamping via validatePreferences", () => {
   assert.equal(p4.post_unit_hooks![0].max_cycles, 3, "valid value passes through");
 });
 
+test("post-unit hook criticality and on_block validation", () => {
+  const base = { name: "h", after: ["execute-task"], prompt: "do something", artifact: "REVIEW.md" };
+
+  const { preferences, errors } = validatePreferences({
+    post_unit_hooks: [{
+      ...base,
+      criticality: "blocking",
+      on_block: { action: "retry-unit", artifact: "NEEDS-REWORK.md" },
+    }],
+  } as any);
+  assert.equal(errors.length, 0);
+  assert.equal(preferences.post_unit_hooks![0].criticality, "blocking");
+  assert.deepEqual(preferences.post_unit_hooks![0].on_block, {
+    action: "retry-unit",
+    artifact: "NEEDS-REWORK.md",
+  });
+
+  const missingArtifact = validatePreferences({
+    post_unit_hooks: [{ name: "blocking", after: ["execute-task"], prompt: "do something", criticality: "blocking" }],
+  } as any);
+  assert.match(missingArtifact.errors.join("\n"), /criticality blocking requires artifact/);
+  assert.equal(missingArtifact.preferences.post_unit_hooks, undefined);
+
+  const invalidAction = validatePreferences({
+    post_unit_hooks: [{ ...base, on_block: { action: "teleport" } }],
+  } as any);
+  assert.match(invalidAction.errors.join("\n"), /invalid on_block action/);
+});
+
 test("pre-dispatch hook action validation via validatePreferences", () => {
   const base = { name: "h", before: ["execute-task"] };
 

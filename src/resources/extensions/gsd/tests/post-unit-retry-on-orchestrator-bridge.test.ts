@@ -49,6 +49,23 @@ post_unit_hooks:
   writeFileSync(join(basePath, ".gsd", "PREFERENCES.md"), content, "utf-8");
 }
 
+function writeBlockingPreferences(basePath: string): void {
+  const content = `---
+post_unit_hooks:
+  - name: review-arbiter
+    after:
+      - execute-task
+    prompt: Review {taskId}
+    agent: arbiter
+    artifact: REVIEW-DEBATE.md
+    criticality: blocking
+    max_cycles: 2
+    enabled: true
+---
+`;
+  writeFileSync(join(basePath, ".gsd", "PREFERENCES.md"), content, "utf-8");
+}
+
 test("post-unit retry_on marks trigger unit as retry in orchestrator before redispatch", async () => {
   const originalCwd = process.cwd();
   const base = mkdtempSync(join(tmpdir(), "gsd-post-unit-retry-"));
@@ -177,6 +194,74 @@ test("failed post-unit hook pauses auto-mode even when its artifact exists", asy
       notifications.some(message => message.includes("Post-unit hook review-arbiter failed")),
       "pause notification should explain the failed hook",
     );
+  } finally {
+    process.chdir(originalCwd);
+    resetHookState();
+    invalidateAllCaches();
+    _clearGsdRootCache();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("post-unit blocking gate pauses auto-mode on needs-attention verdict", async () => {
+  const originalCwd = process.cwd();
+  const base = mkdtempSync(join(tmpdir(), "gsd-post-unit-gate-"));
+  const taskDir = join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks");
+  mkdirSync(taskDir, { recursive: true });
+
+  try {
+    process.chdir(base);
+    _clearGsdRootCache();
+    invalidateAllCaches();
+    resetHookState();
+    writeBlockingPreferences(base);
+
+    const hookDispatch = checkPostUnitHooks("execute-task", "M001/S01/T01", base);
+    assert.ok(hookDispatch, "hook should dispatch for execute-task");
+
+    const artifactPath = resolveHookArtifactPath(base, "M001/S01/T01", "REVIEW-DEBATE.md");
+    writeFileSync(artifactPath, "---\nverdict: needs-attention\n---\n\nManual review required.\n", "utf-8");
+
+    const pauseAuto = mock.fn(async () => {});
+    const s = new AutoSession();
+    s.basePath = base;
+    s.active = true;
+    s.currentUnit = { type: "hook/review-arbiter", id: "M001/S01/T01", startedAt: Date.now() };
+    s.orchestration = {
+      start: async () => ({ kind: "started" }),
+      advance: async () => ({ kind: "stopped", reason: "unused" }),
+      completeActiveUnit: async () => {},
+      retryActiveUnit: async () => {},
+      resume: async () => ({ kind: "resumed" }),
+      stop: async (reason: string) => ({ kind: "stopped", reason }),
+      getStatus: () => ({ phase: "running", transitionCount: 0 }),
+    };
+
+    const notifications: string[] = [];
+    const pctx: PostUnitContext = {
+      s,
+      ctx: {
+        ui: {
+          notify: (message: string) => { notifications.push(message); },
+          setStatus: () => {},
+          setWidget: () => {},
+          setFooter: () => {},
+        },
+        model: { id: "test-model" },
+      } as any,
+      pi: { sendMessage: async () => {}, setModel: async () => true } as any,
+      buildSnapshotOpts: () => ({}),
+      lockBase: () => base,
+      stopAuto: async () => {},
+      pauseAuto,
+      updateProgressWidget: () => {},
+    };
+
+    const result = await postUnitPostVerification(pctx);
+    assert.equal(result, "stopped");
+    assert.equal(pauseAuto.mock.callCount(), 1);
+    assert.match(notifications.join("\n"), /Post-unit gate "review-arbiter" blocked execute-task M001\/S01\/T01/);
+    assert.match(notifications.join("\n"), /\/gsd status/);
   } finally {
     process.chdir(originalCwd);
     resetHookState();

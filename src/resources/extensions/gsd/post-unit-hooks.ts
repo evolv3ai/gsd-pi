@@ -9,6 +9,7 @@ import type {
   HookDispatchResult,
   PreDispatchResult,
   HookStatusEntry,
+  PostUnitGateBlock,
 } from "./types.js";
 import { getOrCreateRegistry, resolveHookArtifactPath } from "./rule-registry.js";
 
@@ -33,12 +34,20 @@ export function isRetryPending(): boolean {
   return getOrCreateRegistry().isRetryPending();
 }
 
-export function consumeRetryTrigger(): { unitType: string; unitId: string; retryArtifact: string } | null {
+export function consumeRetryTrigger(): { unitType: string; unitId: string; retryArtifact?: string } | null {
   return getOrCreateRegistry().consumeRetryTrigger();
 }
 
 export function consumeHookFailure(): { hookName: string; unitType: string; unitId: string; reason: string } | null {
   return getOrCreateRegistry().consumeHookFailure();
+}
+
+export function isGateBlockPending(): boolean {
+  return getOrCreateRegistry().isGateBlockPending();
+}
+
+export function consumeGateBlock(): PostUnitGateBlock | null {
+  return getOrCreateRegistry().consumeGateBlock();
 }
 
 export function resetHookState(): void {

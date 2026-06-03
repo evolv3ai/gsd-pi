@@ -29,6 +29,14 @@ const VALID_UOK_TURN_ACTIONS = new Set<"commit" | "snapshot" | "status-only">([
   "snapshot",
   "status-only",
 ]);
+const VALID_POST_UNIT_HOOK_CRITICALITIES = new Set(["advisory", "blocking"]);
+const VALID_POST_UNIT_HOOK_ON_BLOCK_ACTIONS = new Set([
+  "retry-unit",
+  "retry-task",
+  "queue-task",
+  "queue-slice",
+  "pause",
+]);
 
 export function validatePreferences(preferences: GSDPreferences): {
   preferences: GSDPreferences;
@@ -486,8 +494,36 @@ export function validatePreferences(preferences: GSDPreferences): {
       if (typeof hook.artifact === "string" && hook.artifact.trim()) {
         validHook.artifact = hook.artifact.trim();
       }
+      if (hook.criticality !== undefined) {
+        const criticality = typeof hook.criticality === "string" ? hook.criticality.trim() : "";
+        if (VALID_POST_UNIT_HOOK_CRITICALITIES.has(criticality)) {
+          validHook.criticality = criticality as PostUnitHookConfig["criticality"];
+        } else {
+          errors.push(`post_unit_hooks "${name}" invalid criticality: ${String(hook.criticality)}`);
+        }
+      }
       if (typeof hook.retry_on === "string" && hook.retry_on.trim()) {
         validHook.retry_on = hook.retry_on.trim();
+      }
+      if (hook.on_block !== undefined) {
+        if (!hook.on_block || typeof hook.on_block !== "object") {
+          errors.push(`post_unit_hooks "${name}" on_block must be an object`);
+        } else {
+          const onBlock = hook.on_block as unknown as Record<string, unknown>;
+          const action = typeof onBlock.action === "string" ? onBlock.action.trim() : "";
+          if (!VALID_POST_UNIT_HOOK_ON_BLOCK_ACTIONS.has(action)) {
+            errors.push(`post_unit_hooks "${name}" invalid on_block action: ${String(onBlock.action)}`);
+          } else {
+            validHook.on_block = { action: action as NonNullable<PostUnitHookConfig["on_block"]>["action"] };
+            if (typeof onBlock.artifact === "string" && onBlock.artifact.trim()) {
+              validHook.on_block.artifact = onBlock.artifact.trim();
+            }
+          }
+        }
+      }
+      if (validHook.criticality === "blocking" && !validHook.artifact) {
+        errors.push(`post_unit_hooks "${name}" criticality blocking requires artifact`);
+        continue;
       }
       if (typeof hook.agent === "string" && hook.agent.trim()) {
         validHook.agent = hook.agent.trim();

@@ -58,6 +58,7 @@ import {
   consumeHookFailure,
   isRetryPending,
   consumeRetryTrigger,
+  consumeGateBlock,
   persistHookState,
   resolveHookArtifactPath,
 } from "./post-unit-hooks.js";
@@ -2228,11 +2229,11 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
   // ── Post-unit hooks ──
   if (s.currentUnit && !s.stepMode) {
     const hookUnit = checkPostUnitHooks(s.currentUnit.type, s.currentUnit.id, s.basePath);
+    persistHookState(s.basePath);
     if (hookUnit) {
       if (s.currentUnit) {
         await closeoutUnit(ctx, s.basePath, s.currentUnit.type, s.currentUnit.id, s.currentUnit.startedAt, buildSnapshotOpts(s.currentUnit.type, s.currentUnit.id));
       }
-      persistHookState(s.basePath);
 
       return enqueueSidecar(
         s, ctx,
@@ -2255,8 +2256,9 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
     if (isRetryPending()) {
       const trigger = consumeRetryTrigger();
       if (trigger) {
+        persistHookState(s.basePath);
         ctx.ui.notify(
-          `Hook requested retry of ${trigger.unitType} ${trigger.unitId} — resetting task state.`,
+          `Hook requested retry of ${trigger.unitType} ${trigger.unitId} — resetting trigger unit state.`,
           "info",
         );
 
@@ -2309,6 +2311,19 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
 
         // Fall through to normal dispatch — deriveState will re-derive the unit
       }
+    }
+
+    const gateBlock = consumeGateBlock();
+    if (gateBlock) {
+      persistHookState(s.basePath);
+      const verdict = gateBlock.verdict ? ` verdict=${gateBlock.verdict};` : "";
+      const artifact = gateBlock.artifact ? ` artifact=${gateBlock.artifact};` : "";
+      const message =
+        `Post-unit gate "${gateBlock.hookName}" blocked ${gateBlock.triggerUnitType} ${gateBlock.triggerUnitId}:` +
+        `${verdict}${artifact} ${gateBlock.reason}. Run /gsd status to inspect, then /gsd auto after recovery.`;
+      ctx.ui.notify(message, "warning");
+      await pauseAuto(ctx, pi);
+      return "stopped";
     }
   }
 

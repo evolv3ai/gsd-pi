@@ -7,8 +7,59 @@
 
 import { extractUatType } from "./files.js";
 import type { UatType } from "./files.js";
+import { splitFrontmatter, parseFrontmatterMap } from "../shared/frontmatter.js";
+import { parse as parseYaml } from "yaml";
+
+function normalizeVerdict(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  let verdict = value.trim().toLowerCase();
+  if (!verdict) return undefined;
+  if (verdict === "passed") verdict = "pass";
+  return verdict;
+}
+
+function getCaseInsensitive(obj: Record<string, unknown>, key: string): unknown {
+  const lowerKey = key.toLowerCase();
+  for (const [candidate, value] of Object.entries(obj)) {
+    if (candidate.toLowerCase() === lowerKey) return value;
+  }
+  return undefined;
+}
 
 // ── Verdict extraction ──────────────────────────────────────────────────
+
+/**
+ * Extract and normalize the frontmatter `verdict` value.
+ *
+ * Supports both top-level `verdict` and the hook outcome shape
+ * `outcome.verdict`. Returns `undefined` when frontmatter is absent or has no
+ * verdict field.
+ */
+export function extractFrontmatterVerdict(content: string): string | undefined {
+  const [frontmatterLines] = splitFrontmatter(content);
+  if (!frontmatterLines) return undefined;
+
+  try {
+    const parsed = parseYaml(frontmatterLines.join("\n")) as unknown;
+    if (parsed && typeof parsed === "object") {
+      const root = parsed as Record<string, unknown>;
+      const topLevel = normalizeVerdict(getCaseInsensitive(root, "verdict"));
+      if (topLevel) return topLevel;
+      const outcome = getCaseInsensitive(root, "outcome");
+      if (outcome && typeof outcome === "object") {
+        const nested = normalizeVerdict(getCaseInsensitive(outcome as Record<string, unknown>, "verdict"));
+        if (nested) return nested;
+      }
+    }
+  } catch {
+    // Fall through to the permissive parser used by legacy frontmatter paths.
+  }
+
+  const frontmatter = parseFrontmatterMap(frontmatterLines);
+  const topLevel = normalizeVerdict(getCaseInsensitive(frontmatter, "verdict"));
+  if (topLevel) return topLevel;
+  return undefined;
+}
 
 /**
  * Extract and normalize the `verdict` value from YAML frontmatter.
@@ -21,24 +72,14 @@ import type { UatType } from "./files.js";
  */
 export function extractVerdict(content: string): string | undefined {
   // Primary: YAML frontmatter verdict (canonical format)
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-  if (fmMatch) {
-    const verdictMatch = fmMatch[1].match(/verdict:\s*([\w-]+)/i);
-    if (verdictMatch) {
-      let v = verdictMatch[1].toLowerCase();
-      if (v === "passed") v = "pass";
-      return v;
-    }
-    return undefined;
-  }
+  const [frontmatterLines] = splitFrontmatter(content);
+  if (frontmatterLines) return extractFrontmatterVerdict(content);
 
   // Fallback: detect verdict in markdown body (LLM manual writes, #2960).
   // Matches patterns like: **Verdict:** PASS, **Verdict:** ✅ PASS, **Verdict** needs-remediation
   const bodyMatch = content.match(/\*\*Verdict:?\*\*\s*(?:✅\s*)?(\w[\w-]*)/i);
   if (bodyMatch) {
-    let v = bodyMatch[1].toLowerCase();
-    if (v === "passed") v = "pass";
-    return v;
+    return normalizeVerdict(bodyMatch[1]);
   }
 
   return undefined;
