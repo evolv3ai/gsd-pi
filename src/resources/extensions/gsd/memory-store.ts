@@ -777,7 +777,10 @@ export function decayStaleMemories(thresholdUnits = 20): string[] {
     const cutoff = row['processed_at'] as string;
     const affected = adapter.prepare(
       `SELECT id FROM memories
-       WHERE superseded_by IS NULL AND updated_at < :cutoff AND confidence > 0.1`,
+       WHERE superseded_by IS NULL
+         AND updated_at < :cutoff
+         AND confidence > 0.1
+         AND (structured_fields IS NULL OR structured_fields NOT LIKE '%"sourceDecisionId"%')`,
     ).all({ ':cutoff': cutoff }).map((r) => r['id'] as string);
 
     decayMemoriesBefore(cutoff, new Date().toISOString());

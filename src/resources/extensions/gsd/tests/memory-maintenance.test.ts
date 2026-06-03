@@ -11,6 +11,16 @@ import {
 import { createMemoryRelation, listRelationsFor } from '../memory-relations.ts';
 import { saveEmbedding, getEmbeddingForMemory } from '../memory-embeddings.ts';
 
+function markProcessedUnits(count = 21): void {
+  const now = Date.now();
+  for (let i = 0; i < count; i++) {
+    markUnitProcessed(`unit/${i}`, `file-${i}`);
+    _getAdapter()!
+      .prepare('UPDATE memory_processed_units SET processed_at = :ts WHERE unit_key = :key')
+      .run({ ':ts': new Date(now + i * 1000).toISOString(), ':key': `unit/${i}` });
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // enforceMemoryCap — cascade cleanup of embeddings and relations
 // ═══════════════════════════════════════════════════════════════════════════
@@ -71,14 +81,7 @@ test('memory-decay: returns decayed memory IDs', () => {
   openDatabase(':memory:');
 
   // Insert processed units — decayStaleMemories needs at least N rows.
-  const now = Date.now();
-  for (let i = 0; i < 21; i++) {
-    markUnitProcessed(`unit/${i}`, `file-${i}`);
-    // small spacing to create deterministic ordering
-    const row = _getAdapter()!
-      .prepare('UPDATE memory_processed_units SET processed_at = :ts WHERE unit_key = :key');
-    row.run({ ':ts': new Date(now + i * 1000).toISOString(), ':key': `unit/${i}` });
-  }
+  markProcessedUnits();
 
   // Create memory with updated_at in the distant past
   createMemory({ category: 'pattern', content: 'stale entry', confidence: 0.9 });
@@ -94,6 +97,34 @@ test('memory-decay: returns decayed memory IDs', () => {
     .prepare("SELECT confidence FROM memories WHERE id = 'MEM001'")
     .get();
   assert.ok((row?.['confidence'] as number) < 0.9);
+
+  closeDatabase();
+});
+
+test('memory-decay: skips stale decision-sourced memories', () => {
+  openDatabase(':memory:');
+  markProcessedUnits();
+
+  createMemory({ category: 'pattern', content: 'stale working note', confidence: 0.9 });
+  createMemory({
+    category: 'architecture',
+    content: 'decision-backed architecture memory',
+    confidence: 0.85,
+    structuredFields: { sourceDecisionId: 'D001' },
+  });
+  _getAdapter()!
+    .prepare("UPDATE memories SET updated_at = '2000-01-01T00:00:00Z' WHERE id IN ('MEM001', 'MEM002')")
+    .run({});
+
+  const decayed = decayStaleMemories(20);
+  assert.ok(decayed.includes('MEM001'));
+  assert.ok(!decayed.includes('MEM002'));
+
+  const rows = _getAdapter()!
+    .prepare("SELECT id, confidence FROM memories WHERE id IN ('MEM001', 'MEM002') ORDER BY id")
+    .all() as Array<{ id: string; confidence: number }>;
+  assert.ok(rows.find((row) => row.id === 'MEM001')!.confidence < 0.9);
+  assert.equal(rows.find((row) => row.id === 'MEM002')!.confidence, 0.85);
 
   closeDatabase();
 });

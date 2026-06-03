@@ -3233,7 +3233,10 @@ export function decayMemoriesBefore(cutoffTs: string, now: string): void {
   currentDb.prepare(
     `UPDATE memories
      SET confidence = MAX(0.1, confidence - 0.1), updated_at = :now
-     WHERE superseded_by IS NULL AND updated_at < :cutoff AND confidence > 0.1`,
+     WHERE superseded_by IS NULL
+       AND updated_at < :cutoff
+       AND confidence > 0.1
+       AND (structured_fields IS NULL OR structured_fields NOT LIKE '%"sourceDecisionId"%')`,
   ).run({ ":now": now, ":cutoff": cutoffTs });
 }
 
