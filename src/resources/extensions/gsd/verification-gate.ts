@@ -295,6 +295,90 @@ function hasUnsafeShellSyntax(cmd: string): boolean {
   return false;
 }
 
+function splitLeadingShellWords(cmd: string): string[] {
+  const words: string[] = [];
+  let current = "";
+  let inSingle = false;
+  let inDouble = false;
+  let escaped = false;
+
+  for (let i = 0; i < cmd.length; i += 1) {
+    const ch = cmd[i];
+
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+
+    if (ch === "\\" && !inSingle) {
+      escaped = true;
+      continue;
+    }
+
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      continue;
+    }
+
+    if (ch === "\"" && !inSingle) {
+      inDouble = !inDouble;
+      continue;
+    }
+
+    if (!inSingle && !inDouble) {
+      if (/\s/.test(ch)) {
+        if (current) {
+          words.push(current);
+          current = "";
+        }
+        continue;
+      }
+
+      if ([";", "|", "&", "<", ">"].includes(ch)) {
+        break;
+      }
+    }
+
+    current += ch;
+  }
+
+  if (current) {
+    words.push(current);
+  }
+
+  return words;
+}
+
+function isCountFlag(token: string): boolean {
+  return (
+    token === "--count" ||
+    token.startsWith("--count=") ||
+    token === "--count-matches" ||
+    token.startsWith("--count-matches=") ||
+    /^-[A-Za-z]*c[A-Za-z]*$/.test(token)
+  );
+}
+
+function countSearchWarning(command: string, exitCode: number): string | null {
+  if (exitCode !== 1) return null;
+
+  const trimmed = command.trim();
+  if (trimmed.startsWith("!")) return null;
+
+  const [tool, ...args] = splitLeadingShellWords(trimmed);
+  if (tool !== "grep" && tool !== "rg") return null;
+  if (!args.some(isCountFlag)) return null;
+
+  return `verification-gate: warning: '${tool} -c' returns exit 1 when count=0; for absence checks use '! ${tool} -q ...' instead.`;
+}
+
+function appendStderrWarning(stderr: string, warning: string | null): string {
+  if (!warning) return stderr;
+  const trimmed = stderr.trimEnd();
+  return trimmed ? `${trimmed}\n${warning}` : warning;
+}
+
 /**
  * Known executable first-tokens that are safe to run.
  * Lowercase commands, common build/test tools, and npm/yarn/pnpm invocations.
@@ -486,11 +570,13 @@ export function runVerificationGate(options: RunVerificationGateOptions): Verifi
       stderr = truncate(result.stderr, MAX_OUTPUT_BYTES);
     }
 
+    const warning = countSearchWarning(command, exitCode);
+
     checks.push({
       command,
       exitCode,
       stdout: truncate(result.stdout, MAX_OUTPUT_BYTES),
-      stderr,
+      stderr: truncate(appendStderrWarning(stderr, warning), MAX_OUTPUT_BYTES),
       durationMs,
     });
   }

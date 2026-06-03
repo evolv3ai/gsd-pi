@@ -83,6 +83,15 @@ test("plan-slice prompt: compact planning gates survive template substitution", 
   assert.ok(!result.includes("{{"));
 });
 
+test("plan-slice prompt: absence checks use negated quiet searches", () => {
+  const result = loadPrompt("plan-slice", { ...BASE_VARS, commitInstruction: "Do not commit." });
+  assert.ok(result.includes("For absence checks"));
+  assert.ok(result.includes("`! grep -q 'pattern' file`"));
+  assert.ok(result.includes("`! rg -q 'pattern' file`"));
+  assert.ok(result.includes("do not use `grep -c` or `rg -c`"));
+  assert.ok(result.includes("count commands exit 1 when they find zero matches"));
+});
+
 test("plan-slice prompt: footer references gsd_plan_slice tool, not direct write", () => {
   const result = loadPrompt("plan-slice", { ...BASE_VARS, commitInstruction: "Do not commit." });
   assert.ok(
