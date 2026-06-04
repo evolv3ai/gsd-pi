@@ -16,6 +16,7 @@ import { extractVerdict, isAcceptableUatVerdict } from "./verdict-parser.js";
 import { logWarning } from "./workflow-logger.js";
 import { hasImplementationArtifacts } from "./milestone-implementation-evidence.js";
 import { buildCompleteMilestonePrompt } from "./auto-prompts.js";
+import { checkCloseoutConsistencyGate } from "./closeout-consistency-gate.js";
 import type { DispatchAction, DispatchContext } from "./auto-dispatch.js";
 import {
   commitPendingMilestoneCloseoutChanges,
@@ -37,7 +38,8 @@ export async function isMilestoneCloseoutSettled(mid: string, basePath: string):
     if (isDbAvailable()) {
       const milestone = getMilestone(mid);
       if (milestone && isClosedStatus(milestone.status)) {
-        if (verifyExpectedArtifact("complete-milestone", mid, basePath)) {
+        const closeoutGate = checkCloseoutConsistencyGate(mid, { refreshFromDisk: true });
+        if (closeoutGate.ok && verifyExpectedArtifact("complete-milestone", mid, basePath)) {
           return true;
         }
       }

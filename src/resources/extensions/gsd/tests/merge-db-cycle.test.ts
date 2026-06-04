@@ -15,7 +15,7 @@ import { delimiter, join } from "node:path";
 import { execFileSync } from "node:child_process";
 
 import { mergeMilestoneToMain } from "../auto-worktree.ts";
-import { closeDatabase, openDatabase } from "../gsd-db.ts";
+import { closeDatabase, insertAssessment, insertMilestone, insertSlice, openDatabase } from "../gsd-db.ts";
 import { GIT_NO_PROMPT_ENV } from "../git-constants.js";
 import { _clearGsdRootCache } from "../paths.ts";
 import { _resetServiceCache } from "../worktree.ts";
@@ -145,6 +145,15 @@ test("mergeMilestoneToMain keeps the Windows DB cycle closed through squash merg
 
     withPlatform("win32", () => {
       assert.equal(openDatabase(join(repo, ".gsd", "gsd.db")), true);
+      insertMilestone({ id: "M001", title: "Windows DB cycle", status: "complete" });
+      insertSlice({ id: "S01", milestoneId: "M001", title: "Done Slice", status: "complete" });
+      insertAssessment({
+        path: "milestones/M001/M001-VALIDATION.md",
+        milestoneId: "M001",
+        status: "pass",
+        scope: "milestone-validation",
+        fullContent: "verdict: pass",
+      });
       assert.equal(existsSync(join(repo, ".gsd", "gsd.db-shm")), true);
 
       process.env.PATH = `${bin}${delimiter}${originalPath}`;

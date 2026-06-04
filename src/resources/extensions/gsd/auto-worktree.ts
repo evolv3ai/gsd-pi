@@ -83,6 +83,11 @@ import {
   nativeWorktreeList,
   nativeLsFiles,
 } from "./native-git-bridge.js";
+import {
+  CLOSEOUT_CONSISTENCY_BLOCKED_REASON,
+  checkCloseoutConsistencyGate,
+  formatCloseoutConsistencyBlock,
+} from "./closeout-consistency-gate.js";
 import { gsdHome } from "./gsd-home.js";
 import { type MilestoneScope, type GsdWorkspace, createWorkspace } from "./workspace.js";
 import {
@@ -1771,16 +1776,29 @@ export function mergeMilestoneToMain(
   // symlink layout) — ATTACHing a WAL-mode file to itself corrupts the
   // database (#2823).
   if (isDbAvailable()) {
+    const contract = resolveGsdPathContract(worktreeCwd, originalBasePath_);
+    const worktreeDbPath = join(contract.worktreeGsd ?? join(worktreeCwd, ".gsd"), "gsd.db");
+    const mainDbPath = contract.projectDb;
     try {
-      const contract = resolveGsdPathContract(worktreeCwd, originalBasePath_);
-      const worktreeDbPath = join(contract.worktreeGsd ?? join(worktreeCwd, ".gsd"), "gsd.db");
-      const mainDbPath = contract.projectDb;
+      const activeDbPath = getDbPath();
+      if (activeDbPath && _shouldReconcileWorktreeDb(activeDbPath, mainDbPath)) {
+        closeDatabase();
+        if (!openDatabase(mainDbPath)) {
+          throw new Error(`cannot open project DB at ${mainDbPath}`);
+        }
+      }
       if (_shouldReconcileWorktreeDb(worktreeDbPath, mainDbPath)) {
         reconcileWorktreeDb(mainDbPath, worktreeDbPath);
       }
     } catch (err) {
-      /* non-fatal */
-      logError("worktree", `DB reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
+      const message = `DB reconciliation failed before milestone ${milestoneId} merge: ${err instanceof Error ? err.message : String(err)}`;
+      logError("worktree", message);
+      throw new GSDError(GSD_GIT_ERROR, `${message}. Recovery reason: ${CLOSEOUT_CONSISTENCY_BLOCKED_REASON}.`);
+    }
+
+    const closeoutGate = checkCloseoutConsistencyGate(milestoneId);
+    if (!closeoutGate.ok) {
+      throw new GSDError(GSD_GIT_ERROR, formatCloseoutConsistencyBlock(closeoutGate));
     }
   }
 

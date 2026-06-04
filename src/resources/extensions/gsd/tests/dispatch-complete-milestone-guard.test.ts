@@ -14,7 +14,7 @@ import { execFileSync } from "node:child_process";
 
 import { DISPATCH_RULES, resolveDispatch, type DispatchContext } from "../auto-dispatch.ts";
 import { AutoSession } from "../auto/session.ts";
-import { closeDatabase, insertMilestone, insertSlice, openDatabase } from "../gsd-db.ts";
+import { closeDatabase, insertAssessment, insertGateRow, insertMilestone, insertSlice, openDatabase } from "../gsd-db.ts";
 
 function makeBase(): string {
   const base = mkdtempSync(join(tmpdir(), "gsd-complete-dispatch-"));
@@ -225,6 +225,14 @@ describe("complete phase dispatch guard (#5683)", () => {
     base = makeBase();
     openDatabase(join(base, ".gsd", "gsd.db"));
     insertMilestone({ id: "M001", title: "Milestone One", status: "complete" });
+    insertSlice({ milestoneId: "M001", id: "S01", title: "Done", status: "complete" });
+    insertAssessment({
+      path: "milestones/M001/M001-VALIDATION.md",
+      milestoneId: "M001",
+      status: "pass",
+      scope: "milestone-validation",
+      fullContent: "verdict: pass",
+    });
 
     const ctx = buildDispatchCtx(base);
     ctx.state.phase = "complete";
@@ -233,6 +241,37 @@ describe("complete phase dispatch guard (#5683)", () => {
 
     assert.equal(result?.action, "stop");
     assert.equal(result?.reason, "All milestones complete.");
+  });
+
+  test("blocks terminal stop when closed milestone still has pending gates", async () => {
+    base = makeBase();
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "M001", title: "Milestone One", status: "complete" });
+    insertSlice({ milestoneId: "M001", id: "S01", title: "Done", status: "complete" });
+    insertAssessment({
+      path: "milestones/M001/M001-VALIDATION.md",
+      milestoneId: "M001",
+      status: "pass",
+      scope: "milestone-validation",
+      fullContent: "verdict: pass",
+    });
+    insertGateRow({
+      milestoneId: "M001",
+      sliceId: "S01",
+      gateId: "Q3",
+      scope: "slice",
+      status: "pending",
+    });
+
+    const ctx = buildDispatchCtx(base);
+    ctx.state.phase = "complete";
+
+    const result = await rule.match(ctx);
+
+    assert.equal(result?.action, "stop");
+    assert.equal(result?.level, "warning");
+    assert.match(result?.reason ?? "", /closeout-consistency-blocked/);
+    assert.match(result?.reason ?? "", /quality gate Q3 is still pending/);
   });
 });
 

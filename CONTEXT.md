@@ -16,6 +16,7 @@
 - **Needs Attention**: a finding that requires human review before progression or completion continues.
 - **First-visible response latency**: the user-perceived delay from submitting a prompt to seeing the first assistant output. Distinct from total completion time, Unit duration, or tool execution duration.
 - **Closeout Boundary Stop**: the rule that a foreground run stops after the first task, slice, or milestone closeout boundary and leaves a durable final closeout surface visible in the live terminal, not merely scrollback or a cleared progress area.
+- **Closeout Consistency Gate**: the preventive rule that finalization, merge, and all-complete stop paths require canonical DB state to prove the closeout is complete before they proceed. Distinct from State Reconciliation, which detects and repairs drift before dispatch.
 - **Dispatch decision**: selection of the next Unit plus rationale and preconditions.
 - **Recovery decision**: retry/escalate/abort choice after runtime failure.
 - **Runtime persistence**: lock state, transition journal, and any persisted execution state required for safe resume.

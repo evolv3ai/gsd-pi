@@ -41,6 +41,7 @@ import {
 import {
   openDatabase,
   closeDatabase,
+  insertAssessment,
   insertMilestone,
   insertSlice,
   updateMilestoneStatus,
@@ -346,6 +347,13 @@ test("mergeCompletedMilestone — synthesizes roadmap from DB when projection is
       milestoneId: "M010",
       title: "Search Bar",
       status: "complete",
+    });
+    insertAssessment({
+      path: "milestones/M010/M010-VALIDATION.md",
+      milestoneId: "M010",
+      status: "pass",
+      scope: "milestone-validation",
+      fullContent: "verdict: pass",
     });
 
     createMilestoneBranch(repo, "M010", [
@@ -671,6 +679,14 @@ function setupCanonicalDbWithWorktree(basePath: string, mid: string): void {
   const dbPath = join(basePath, ".gsd", "gsd.db");
   openDatabase(dbPath);
   insertMilestone({ id: mid, title: `Milestone ${mid}`, status: "complete" });
+  insertSlice({ id: "S01", milestoneId: mid, title: "Done Slice", status: "complete" });
+  insertAssessment({
+    path: `milestones/${mid}/${mid}-VALIDATION.md`,
+    milestoneId: mid,
+    status: "pass",
+    scope: "milestone-validation",
+    fullContent: "verdict: pass",
+  });
   updateMilestoneStatus(mid, "complete", new Date().toISOString());
   closeDatabase();
 }

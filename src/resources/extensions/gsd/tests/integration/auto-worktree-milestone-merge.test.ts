@@ -29,6 +29,7 @@ import { nativeMergeSquash } from "../../native-git-bridge.ts";
 import { drainLogs, setStderrLoggingEnabled } from "../../workflow-logger.ts";
 import {
   closeDatabase,
+  insertAssessment,
   insertMilestone,
   insertSlice,
   insertTask,
@@ -207,6 +208,13 @@ describe("auto-worktree-milestone-merge", { timeout: 300_000 }, () => {
         });
       }
     }
+    insertAssessment({
+      path: "milestones/M020/M020-VALIDATION.md",
+      milestoneId: "M020",
+      status: "pass",
+      scope: "milestone-validation",
+      fullContent: "verdict: pass",
+    });
 
     const roadmap = makeRoadmap("M020", "Backend foundation", [
       { id: "S01", title: "Core API" },

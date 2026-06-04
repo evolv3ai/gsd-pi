@@ -96,6 +96,10 @@ import { probeGitConflictState } from "./git-conflict-state.js";
 import { runTurnGitAction } from "./git-service.js";
 import { parseUnitId } from "./unit-id.js";
 import { resolveExpectedArtifactPath } from "./auto-artifact-paths.js";
+import {
+  checkCloseoutConsistencyGate,
+  formatCloseoutConsistencyBlock,
+} from "./closeout-consistency-gate.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -1634,6 +1638,16 @@ export const DISPATCH_RULES: DispatchRule[] = [
             unitId: mid,
             prompt: await buildCompleteMilestonePrompt(mid, midTitle, basePath),
           };
+        }
+        if (milestone) {
+          const closeoutGate = checkCloseoutConsistencyGate(mid, { refreshFromDisk: true });
+          if (!closeoutGate.ok) {
+            return {
+              action: "stop",
+              reason: formatCloseoutConsistencyBlock(closeoutGate),
+              level: "warning",
+            };
+          }
         }
       }
       return {

@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { openDatabase, insertMilestone, closeDatabase } from "../gsd-db.js";
+import { openDatabase, insertAssessment, insertMilestone, insertSlice, closeDatabase } from "../gsd-db.js";
 import {
   isMilestoneCloseoutSettled,
   evaluateCompleteMilestoneDispatch,
@@ -39,6 +39,14 @@ test("isMilestoneCloseoutSettled requires DB closed and summary artifact", async
   mkdirSync(join(base, ".gsd"), { recursive: true });
   openDatabase(join(base, ".gsd", "gsd.db"));
   insertMilestone({ id: "M001", title: "Done", status: "complete" });
+  insertSlice({ id: "S01", milestoneId: "M001", title: "Done Slice", status: "complete" });
+  insertAssessment({
+    path: "milestones/M001/M001-VALIDATION.md",
+    milestoneId: "M001",
+    status: "pass",
+    scope: "milestone-validation",
+    fullContent: "verdict: pass",
+  });
   const milestoneDir = join(base, ".gsd", "milestones", "M001");
   mkdirSync(milestoneDir, { recursive: true });
   writeFileSync(join(milestoneDir, "M001-SUMMARY.md"), "# Milestone Summary\n");

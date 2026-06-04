@@ -54,6 +54,7 @@ import { isGsdWorktreePath } from "./worktree-root.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
 import { hasImplementationArtifacts } from "./milestone-implementation-evidence.js";
 import { loadAllCaptures, loadPendingCaptures } from "./captures.js";
+import { checkCloseoutConsistencyGate } from "./closeout-consistency-gate.js";
 
 // Re-export so existing consumers of auto-recovery.ts keep working.
 export { resolveExpectedArtifactPath, diagnoseExpectedArtifact };
@@ -626,9 +627,8 @@ export function verifyExpectedArtifact(
     if (summaryOutcome === "failure") return false;
     const { milestone: mid } = parseUnitId(unitId);
     if (mid && isDbAvailable()) {
-      const dbMilestone = getMilestone(mid);
-      if (!dbMilestone) return false;
-      if (!isClosedStatus(dbMilestone.status) && summaryOutcome !== "success") return false;
+      const closeoutGate = checkCloseoutConsistencyGate(mid, { refreshFromDisk: true });
+      if (!closeoutGate.ok) return false;
     }
     if (hasImplementationArtifacts(base, mid) === "absent") return false;
   }

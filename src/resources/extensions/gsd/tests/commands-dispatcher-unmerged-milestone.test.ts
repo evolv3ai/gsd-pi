@@ -9,6 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { handleGSDCommand } from "../commands/dispatcher.ts";
 import {
   closeDatabase,
+  insertAssessment,
   insertMilestone,
   insertSlice,
   openDatabase,
@@ -106,6 +107,13 @@ function seedRegisteredCompletedWorktreeWithoutRoadmap(base: string): void {
     title: "Live Text Search",
     status: "complete",
   });
+  insertAssessment({
+    path: "milestones/M008/M008-VALIDATION.md",
+    milestoneId: "M008",
+    status: "pass",
+    scope: "milestone-validation",
+    fullContent: "verdict: pass",
+  });
   writeFileSync(
     join(base, ".gsd", "PREFERENCES.md"),
     "---\ngit:\n  isolation: worktree\n---\n",
@@ -124,6 +132,19 @@ function seedRegisteredCompletedWorktree(base: string): void {
   mkdirSync(join(base, ".gsd"), { recursive: true });
   openDatabase(join(base, ".gsd", "gsd.db"));
   insertMilestone({ id: "M008", title: "Live Text Search", status: "complete" });
+  insertSlice({
+    id: "S01",
+    milestoneId: "M008",
+    title: "Live Text Search",
+    status: "complete",
+  });
+  insertAssessment({
+    path: "milestones/M008/M008-VALIDATION.md",
+    milestoneId: "M008",
+    status: "pass",
+    scope: "milestone-validation",
+    fullContent: "verdict: pass",
+  });
   writeWorktreePreferencesAndRoadmap(base);
 
   const worktreePath = join(base, ".gsd", "worktrees", "M008");
