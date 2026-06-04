@@ -135,7 +135,13 @@ describe("guided-flow STATE.md rebuild (#3475)", () => {
 
     assert.equal(accepted, true);
     assert.equal(notifications.some(n => n.level === "error" && n.message.includes("no DB row exists")), false);
-    assert.ok(notifications.some(n => n.level === "success" && n.message.includes("Milestone M001 ready.")));
+    assert.ok(
+      notifications.some(
+        n =>
+          n.level === "success" &&
+          n.message.includes("Milestone M001 context captured. Continuing the planning pipeline."),
+      ),
+    );
     clearPendingAutoStart(base);
   });
 
@@ -157,13 +163,13 @@ describe("guided-flow STATE.md rebuild (#3475)", () => {
     };
     setPendingAutoStart(base, { basePath: base, milestoneId: "M001", ctx: ctx as any, pi: {} as any });
 
-    for (let i = 0; i < 4; i += 1) {
+    for (let i = 0; i < 3; i += 1) {
       assert.equal(checkAutoStartAfterDiscuss(), false);
     }
 
     assert.equal(
-      notifications.filter(n => n.level === "warning" && n.message.includes("recovering. Retrying gsd_plan_milestone")).length,
-      3,
+      notifications.filter(n => n.level === "warning").length,
+      0,
     );
     assert.equal(
       notifications.filter(n => n.level === "error" && n.message.includes("DB row recovery failed")).length,

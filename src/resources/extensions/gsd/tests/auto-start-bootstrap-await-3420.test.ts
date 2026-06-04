@@ -30,6 +30,7 @@ test("checkAutoStartAfterDiscuss waits until discussion artifacts exist before r
   setPendingAutoStart(base, {
     basePath: base,
     milestoneId: "M001",
+    startAuto: false,
     ctx: { ui: { notify: (message: string) => notifications.push(message) } } as any,
     pi: { sendMessage: () => {} } as any,
   });
@@ -41,5 +42,7 @@ test("checkAutoStartAfterDiscuss waits until discussion artifacts exist before r
   writeFileSync(join(base, ".gsd", "STATE.md"), "# State\n", "utf-8");
 
   assert.equal(checkAutoStartAfterDiscuss(), true);
-  assert.deepEqual(notifications, ["Milestone M001 ready."]);
+  assert.deepEqual(notifications, [
+    "Milestone M001 context captured. Continuing the planning pipeline.",
+  ]);
 });

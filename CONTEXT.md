@@ -5,6 +5,7 @@
 - **Auto Orchestration**: runtime coordination of GSD auto-mode units from start to completion, including dispatch and stop/resume behavior; unit-execution failure recovery is classified by the Recovery Classification module.
 - **Unit**: the smallest executable workflow step (e.g., plan slice, execute task, complete slice).
 - **Unit progression**: movement from one Unit to the next under orchestration rules.
+- **Discussion Complete, Planning Pending**: a Milestone state where the discovery conversation has settled the Milestone context, but the Milestone has not yet been decomposed into planned Slices. Distinct from a reserved future Milestone.
 - **Post-Unit Hook**: a configured follow-up evaluation that runs after a Unit completes. It may be advisory or may act as a Post-Unit Gate.
 - **Advisory Post-Unit Hook**: a Post-Unit Hook whose outcome may be recorded but is not required for Unit progression.
 - **Post-Unit Gate**: a Post-Unit Hook whose successful completion is required before Unit progression continues.

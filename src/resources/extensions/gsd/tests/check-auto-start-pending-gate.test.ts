@@ -164,17 +164,13 @@ describe("checkAutoStartAfterDiscuss Gate 1a (pending depth-verification gate)",
   test("Gate 1a does NOT trip when the pending gate is for a DIFFERENT milestone", () => {
     base = mkBase();
     openDatabase(":memory:");
-    // status: "queued" so that Gate 1b downstream of Gate 1a fires its
-    // recovery notify ("context file exists but milestone is still queued") —
-    // observing that notify proves we advanced past Gate 1a. If Gate 1a
-    // wrongly tripped on the M999 gate it would `return false` immediately
-    // and Gate 1b would never run, so the notify would be absent.
     insertMilestone({ id: "M001", title: "Pending Gate Test", status: "queued" });
 
     cap = mkCapture();
     setPendingAutoStart(base, {
       basePath: base,
       milestoneId: "M001",
+      startAuto: false,
       ctx: mkCtx(cap),
       pi: mkPi(cap),
     });
@@ -182,21 +178,19 @@ describe("checkAutoStartAfterDiscuss Gate 1a (pending depth-verification gate)",
     setPendingGate("depth_verification_M999_confirm", base);
 
     const result = checkAutoStartAfterDiscuss();
-    assert.equal(result, false, "Gate 1b returns false (expected) — but only if Gate 1a let us through");
+    assert.equal(result, true, "different milestone gate must not block this handoff");
 
-    // Positive proof we passed Gate 1a: Gate 1b emitted its recovery notify
-    // about M001 (not M999 — the pending-gate milestone is irrelevant here).
-    const gate1bNotify = cap.notifies.find(n =>
-      n.level === "warning" && /M001.*context file exists but milestone is still queued/i.test(n.msg)
+    const successNotify = cap.notifies.find(n =>
+      n.level === "success" && /M001 context captured/i.test(n.msg)
     );
     assert.ok(
-      gate1bNotify,
-      `expected Gate 1b warning notify about M001; got: ${JSON.stringify(cap.notifies)}`,
+      successNotify,
+      `expected context-captured success notify about M001; got: ${JSON.stringify(cap.notifies)}`,
     );
 
-    // Negative proof: no Gate 1a notification path exists in source today, but
-    // also assert no notify mentions M999 (the pending-gate milestone) — that
-    // would suggest Gate 1a is leaking the wrong milestone into messaging.
+    const retryNotify = cap.notifies.find(n => /queued|gsd_plan_milestone/i.test(n.msg));
+    assert.equal(retryNotify, undefined, "handoff must not mention queued state or internal plan retry");
+
     const m999Notify = cap.notifies.find(n => /M999/i.test(n.msg));
     assert.equal(m999Notify, undefined, "no notify should reference M999 (the pending-gate milestone)");
   });

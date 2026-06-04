@@ -98,6 +98,7 @@ import {
   getDiscussionMilestoneId,
   hasPendingAutoStart,
   setPendingAutoStart,
+  type PendingAutoStartEntry,
 } from "./pending-auto-start.js";
 import { clearGuidedUnitContext, setGuidedUnitContext } from "./guided-unit-context.js";
 
@@ -320,6 +321,117 @@ export function _roadmapHasParseableSlicesForTest(
   return parseRoadmapSlices(roadmapContent).length > 0;
 }
 
+function hasExecutablePlanForHandoff(milestoneId: string, roadmapFile: string | null): boolean {
+  if (isDbAvailable()) {
+    return getMilestoneSlices(milestoneId).length > 0;
+  }
+  if (!roadmapFile) return false;
+  try {
+    return parseRoadmapSlices(readFileSync(roadmapFile, "utf-8")).length > 0;
+  } catch (e) {
+    logWarning(
+      "guided",
+      `failed to parse roadmap slices for ${milestoneId}: ${(e as Error).message}`,
+    );
+    return false;
+  }
+}
+
+function formatAcceptedDiscussHandoffMessage(
+  milestoneId: string,
+  contextFile: string | null,
+  hasExecutablePlan: boolean,
+): string {
+  if (hasExecutablePlan) return `Milestone ${milestoneId} ready.`;
+  if (contextFile) return `Milestone ${milestoneId} context captured. Continuing the planning pipeline.`;
+  return `Milestone ${milestoneId} planning artifacts captured. Continuing the planning pipeline.`;
+}
+
+function manifestContainsMilestone(basePath: string, milestoneId: string): boolean {
+  try {
+    const manifest = readManifest(basePath);
+    return (
+      Array.isArray(manifest?.milestones) &&
+      manifest.milestones.some(m => m.id === milestoneId)
+    );
+  } catch (e) {
+    logWarning("guided", `R3b: failed to read state manifest: ${(e as Error).message}`);
+    return false;
+  }
+}
+
+function notifyDbRowRecoveryFailed(entry: PendingAutoStartEntry): void {
+  entry.ctx.ui.notify(
+    `Milestone ${entry.milestoneId}: DB row recovery failed ${entry.r3bRecoveryCount} times. ` +
+    `Re-run /gsd to reset the recovery counter, or run /gsd-debug to diagnose without resetting.`,
+    "error",
+  );
+}
+
+function noteDbRowRecoveryMiss(entry: PendingAutoStartEntry): void {
+  entry.r3bRecoveryCount += 1;
+  if (entry.r3bRecoveryCount >= MAX_DB_ROW_RECOVERIES) {
+    notifyDbRowRecoveryFailed(entry);
+  }
+}
+
+function ensureMilestoneRowForAcceptedHandoff(
+  entry: PendingAutoStartEntry,
+  contextFile: string | null,
+): boolean {
+  if (!isDbAvailable()) return true;
+
+  const { basePath, milestoneId } = entry;
+  const milestoneRow = getMilestone(milestoneId);
+  if (milestoneRow) return true;
+
+  if (manifestContainsMilestone(basePath, milestoneId)) {
+    logWarning(
+      "guided",
+      `R3b: getMilestone(${milestoneId}) returned null but manifest has the row — treating as stale read`,
+    );
+    return true;
+  }
+
+  if (!contextFile) {
+    entry.ctx.ui.notify(
+      `Milestone ${milestoneId}: discuss artifacts on disk but no DB row exists. ` +
+      `PROJECT.md may have failed to register milestones. ` +
+      `Re-save PROJECT.md with canonical "- [ ] M001: Title — One-liner" lines, ` +
+      `then re-run /gsd to recover.`,
+      "error",
+    );
+    return false;
+  }
+
+  if (entry.r3bRecoveryCount >= MAX_DB_ROW_RECOVERIES) {
+    logWarning(
+      "guided",
+      `R3b: milestone ${milestoneId} DB-row recovery limit reached ` +
+      `(${entry.r3bRecoveryCount}/${MAX_DB_ROW_RECOVERIES}); escalating to user`,
+    );
+    notifyDbRowRecoveryFailed(entry);
+    return false;
+  }
+
+  logWarning(
+    "guided",
+    `R3b: ${milestoneId} has CONTEXT.md but no DB row — inserting placeholder "queued" row ` +
+    `(attempt ${entry.r3bRecoveryCount + 1}/${MAX_DB_ROW_RECOVERIES})`,
+  );
+
+  try {
+    insertMilestone({ id: milestoneId, title: milestoneId, status: "queued" });
+  } catch (e) {
+    logWarning("guided", `R3b: insertMilestone failed: ${(e as Error).message}`);
+  }
+
+  if (getMilestone(milestoneId)) return true;
+
+  noteDbRowRecoveryMiss(entry);
+  return false;
+}
+
 // ─── Commit Instruction Helpers ──────────────────────────────────────────────
 
 /** Build commit instruction for planning prompts. .gsd/ is managed externally and always gitignored. */
@@ -344,10 +456,8 @@ interface PendingDeepProjectSetupEntry {
 // phrase before giving up and asking the user to re-run /gsd.
 const MAX_READY_REJECTS = 2;
 
-// H1 (#5012): cap for Gate 1b plan-blocked recovery hints. After this many
-// consecutive recovery attempts the loop is stopped and the user is directed
-// to investigate manually.
-const MAX_PLAN_BLOCKED_RECOVERIES = 3;
+// Cap failed in-flight DB row repair attempts before escalating to the user.
+const MAX_DB_ROW_RECOVERIES = 3;
 
 // #4573: matches the canonical ready phrase the discuss prompt asks the LLM
 // to emit. Accepts any M-prefixed milestone ID (three digits + optional
@@ -613,72 +723,12 @@ export function checkAutoStartAfterDiscuss(lookupBasePath?: string): boolean {
     }
   }
 
-  // Gate 1b: Discriminate plan-blocked from discuss-incomplete when the DB row is queued.
-  // If the DB is available and the row is still "queued" but CONTEXT.md already exists on
-  // disk, the discuss phase completed but gsd_plan_milestone was hard-blocked by the
-  // depth-verification gate.  Emit a recovery hint so the next agent turn can retry
-  // gsd_plan_milestone, then return false (keep blocking auto-start).
-  // If CONTEXT.md does not exist (discuss-incomplete), Gate 1 already blocked above.
-  if (isDbAvailable()) {
-    const dbRow = getMilestone(milestoneId);
-    if (dbRow?.status === "queued" && contextFile) {
-      if (entry.planBlockedRecoveryCount >= MAX_PLAN_BLOCKED_RECOVERIES) {
-        // H1: recovery loop cap reached — stop triggering new turns, escalate to user.
-        logWarning(
-          "guided",
-          `Gate 1b: milestone ${milestoneId} plan-blocked recovery limit reached ` +
-          `(${entry.planBlockedRecoveryCount}/${MAX_PLAN_BLOCKED_RECOVERIES}); escalating to user`,
-        );
-        ctx.ui.notify(
-          `Milestone ${milestoneId} plan_milestone has been blocked ${entry.planBlockedRecoveryCount} times. ` +
-          `Re-run /gsd to reset the recovery counter, or run /gsd-debug to diagnose without resetting.`,
-          "error",
-        );
-        return false;
-      }
-      logWarning(
-        "guided",
-        `Gate 1b: milestone ${milestoneId} queued with CONTEXT.md present — ` +
-        `plan_milestone was blocked; emitting recovery hint ` +
-        `(attempt ${entry.planBlockedRecoveryCount + 1}/${MAX_PLAN_BLOCKED_RECOVERIES})`,
-      );
-      ctx.ui.notify(
-        `Milestone ${milestoneId}: context file exists but milestone is still queued. ` +
-        `Retrying gsd_plan_milestone to complete the blocked planning step.`,
-        "warning",
-      );
-      try {
-        pi.sendMessage(
-          {
-            customType: "gsd-plan-milestone-blocked-recovery",
-            content:
-              `Milestone ${milestoneId} has ${contextFile} on disk but its DB row is still ` +
-              `"queued". The gsd_plan_milestone tool was previously blocked by the ` +
-              `depth-verification gate. Call gsd_plan_milestone now to complete the ` +
-              `planning phase.`,
-            display: false,
-          },
-          { triggerTurn: true },
-        );
-        // Increment only after a successful dispatch so transient sendMessage
-        // failures do not consume recovery budget.
-        entry.planBlockedRecoveryCount += 1;
-      } catch (e) {
-        logWarning("guided", `Gate 1b recovery sendMessage failed: ${(e as Error).message}`);
-      }
-      return false;
-    }
-  }
+  // Gate 1b: accept the in-flight discuss handoff. A queued DB row with pinned
+  // CONTEXT.md is Discussion Complete, Planning Pending, not a plan-blocked
+  // failure. If the row is missing, only this pending handoff may repair it.
+  if (!ensureMilestoneRowForAcceptedHandoff(entry, contextFile)) return false;
 
-  // Gate 2: STATE.md must exist — written as the last step in the discuss
-  // output phase. This prevents auto-start from firing during Phase 3
-  // (sequential readiness gates for remaining milestones) in multi-milestone
-  // discussions, where M001-CONTEXT.md exists but M002/M003 haven't been
-  // processed yet.
-  const stateFilePath = entry.scope.stateFile();
-  if (!existsSync(stateFilePath)) return false; // discussion not finalized yet
-
-  // Gate 3: Multi-milestone completeness warning
+  // Gate 2: Multi-milestone completeness warning
   // Parse PROJECT.md for milestone sequence, warn if any are missing context.
   // Don't block — milestones can be intentionally queued without context.
   const projectFile = resolveGsdRootFile(basePath, "PROJECT");
@@ -705,7 +755,7 @@ export function checkAutoStartAfterDiscuss(lookupBasePath?: string): boolean {
     } catch (e) { logWarning("guided", `PROJECT.md parsing failed: ${(e as Error).message}`); }
   }
 
-  // Gate 4: Discussion manifest process verification (multi-milestone only)
+  // Gate 3: Discussion manifest process verification (multi-milestone only)
   // The LLM writes DISCUSSION-MANIFEST.json after each Phase 3 gate decision.
   // When it exists, validate it before auto-starting. Project history alone is
   // not a reliable signal for the current discussion mode.
@@ -747,71 +797,12 @@ export function checkAutoStartAfterDiscuss(lookupBasePath?: string): boolean {
     try { unlinkSync(manifestPath); } catch (e) { logWarning("guided", `manifest unlink failed: ${(e as Error).message}`); }
   }
 
-  // R3b: belt-and-suspenders for silent registration failure. The discuss flow
-  // finished and STATE.md exists, but the milestone may never have landed in
-  // the DB. Without this guard, the user sees "Milestone M001 ready." and then
-  // /gsd reports "No Active Milestone".
-  if (isDbAvailable()) {
-    const milestoneRow = getMilestone(milestoneId);
-    if (!milestoneRow) {
-      let manifestHasMilestone = false;
-      try {
-        const manifest = readManifest(basePath);
-        manifestHasMilestone = Array.isArray(manifest?.milestones) && manifest.milestones.some(m => m.id === milestoneId);
-      } catch (e) {
-        logWarning("guided", `R3b: failed to read state manifest: ${(e as Error).message}`);
-      }
-      if (manifestHasMilestone) {
-        logWarning("guided", `R3b: getMilestone(${milestoneId}) returned null but manifest has the row — treating as stale read`);
-      } else if (contextFile) {
-        // R3b-recovery: CONTEXT.md is on disk but gsd_plan_milestone was never called
-        // (likely blocked by the depth-verification gate re-firing on post-verification
-        // text). Auto-register as "queued" so Gate 1b can pick it up and retry
-        // gsd_plan_milestone on the next checkAutoStartAfterDiscuss call.
-        if (entry.r3bRecoveryCount >= MAX_PLAN_BLOCKED_RECOVERIES) {
-          logWarning(
-            "guided",
-            `R3b: milestone ${milestoneId} DB-row recovery limit reached ` +
-            `(${entry.r3bRecoveryCount}/${MAX_PLAN_BLOCKED_RECOVERIES}); escalating to user`,
-          );
-          ctx.ui.notify(
-            `Milestone ${milestoneId}: DB row recovery failed ${entry.r3bRecoveryCount} times. ` +
-            `Re-run /gsd to reset the recovery counter, or run /gsd-debug to diagnose without resetting.`,
-            "error",
-          );
-          return false;
-        }
-        logWarning(
-          "guided",
-          `R3b: ${milestoneId} has CONTEXT.md but no DB row — inserting placeholder "queued" row ` +
-          `for Gate 1b recovery (attempt ${entry.r3bRecoveryCount + 1}/${MAX_PLAN_BLOCKED_RECOVERIES})`,
-        );
-        try {
-          insertMilestone({ id: milestoneId, title: milestoneId, status: "queued" });
-        } catch (e) {
-          logWarning("guided", `R3b: insertMilestone failed: ${(e as Error).message}`);
-        }
-        entry.r3bRecoveryCount += 1;
-        ctx.ui.notify(
-          `Milestone ${milestoneId}: context file exists but DB row was missing — recovering. Retrying gsd_plan_milestone.`,
-          "warning",
-        );
-        return false;
-      } else {
-        ctx.ui.notify(
-          `Milestone ${milestoneId}: discuss artifacts on disk but no DB row exists. ` +
-          `PROJECT.md may have failed to register milestones. ` +
-          `Re-save PROJECT.md with canonical "- [ ] M001: Title — One-liner" lines, ` +
-          `then re-run /gsd to recover.`,
-          "error",
-        );
-        return false;
-      }
-    }
-  }
-
   deletePendingAutoStart(basePath);
-  ctx.ui.notify(`Milestone ${milestoneId} ready.`, "success");
+  const hasExecutablePlan = hasExecutablePlanForHandoff(milestoneId, roadmapFile);
+  ctx.ui.notify(
+    formatAcceptedDiscussHandoffMessage(milestoneId, contextFile, hasExecutablePlan),
+    "success",
+  );
   if (entry.startAuto !== false) {
     scheduleAutoStartAfterIdle(ctx, pi, basePath, false, { step: step ?? true });
   }

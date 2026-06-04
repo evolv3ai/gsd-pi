@@ -161,8 +161,9 @@ flowchart TD
   G1 -->|no| WAIT[Interview continues]
   G1 -->|yes| G1a{depth_verification pending?}
   G1a -->|yes| WAIT
-  G1a --> G2{STATE.md + manifest gates}
-  G2 -->|pass| AUTO["M### ready · schedule auto/step"]
+  G1a --> G2{Multi-milestone manifest still open?}
+  G2 -->|yes| WAIT
+  G2 -->|no| AUTO["Accepted handoff · schedule auto/step"]
 
   C2 -->|false| R1["maybeHandleReadyPhraseWithoutFiles"]
   R1 --> R2["maybeHandleEmptyIntentTurn"]
@@ -175,10 +176,24 @@ First interview message ending with `?` should **not** trigger empty-turn nudge 
 ## After CONTEXT is written
 
 1. `M###-CONTEXT.md` on disk (+ depth gate cleared)
-2. User or auto: plan milestone → `M###-ROADMAP.md`, `gsd_plan_milestone`
+2. User or auto resumes the planning pipeline: `research-milestone` if needed, then `plan-milestone`, which persists Slices and renders `M###-ROADMAP.md`.
 3. Slice execution / auto-mode
 
-`checkAutoStartAfterDiscuss` clears `pendingAutoStart` and may call `scheduleAutoStartAfterIdle` when artifacts and gates pass.
+`checkAutoStartAfterDiscuss` clears `pendingAutoStart` and may call `scheduleAutoStartAfterIdle` when artifacts and gates pass. Single-milestone handoff needs context plus a cleared depth gate; multi-milestone discussion still waits for manifest gates.
+
+The user-facing handoff should describe context capture and planning continuation, not imply the Milestone is fully planned or execution-ready. The model-facing ready phrase remains a prompt contract for post-write detection.
+
+Runtime handoff rules:
+
+- Generic `unregistered-milestone` drift still fails closed; runtime reconciliation must not import arbitrary markdown-only milestones into the DB.
+- A matching `pendingAutoStart` entry, the pinned `entry.scope.contextFile()`, and a cleared depth gate prove the in-flight milestone was just reserved. If the DB row is missing, guided-flow may insert the minimal queued row, log the repair, and continue in the same check.
+- Staleness is artifact-based once context exists. No manifest, no context, no roadmap, plus an expired short timeout may be cleared as interrupted; pinned context remains a legitimate handoff until it progresses or is explicitly cleared.
+- Context capture does not promote the stored milestone row to `active`. The durable row may remain `queued` until `plan-milestone` persists Slices; `queued` plus pinned context plus no Slices is interpreted as **Discussion Complete, Planning Pending**, not execution-ready.
+- Gate 1b treats `queued` plus pinned context plus a cleared depth gate as normal handoff, not a plan-blocked failure. It must not warn the user about `queued`, inject a hidden `gsd_plan_milestone` retry, or wait for another model turn.
+- Remove the old `planBlockedRecoveryCount` behavior. Only failed missing-row repair needs a bounded counter; normal `queued` plus context proceeds without a cap.
+- Split success copy by executable plan state. Context-only handoff says `Milestone M### context captured. Continuing the planning pipeline.`; `Milestone M### ready.` requires persisted Slice rows in DB mode or parsed non-empty roadmap Slices in file-only mode.
+- Context-only handoff schedules the next auto/step tick; it does not directly dispatch `plan-milestone`. The dispatch resolver chooses `research-milestone` or `plan-milestone`.
+- `startAuto: false` only suppresses scheduling. The accepted handoff still clears `pendingAutoStart` and uses the artifact-appropriate success copy.
 
 ## Test checklist
 
@@ -190,6 +205,9 @@ First interview message ending with `?` should **not** trigger empty-turn nudge 
 | No reflection | No “Here’s my read” / vision sizing |
 | User reply | New turn with follow-up questions or depth check |
 | CONTEXT | Only after `depth_verification_M###_confirm` |
+| Queued + context | Context-captured success, no hidden `gsd_plan_milestone` retry |
+| Missing DB row + context | Insert minimal queued row, then same context-captured success |
+| Wrong milestone pending gate | Does not block the current milestone handoff |
 
 If two bubbles share one timestamp → model sub-turn (prompt compliance). If two timestamps → check for second `/gsd` dispatch or `agent_end` nudge.
 

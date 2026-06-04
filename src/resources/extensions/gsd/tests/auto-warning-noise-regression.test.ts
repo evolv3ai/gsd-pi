@@ -92,13 +92,23 @@ test("checkAutoStartAfterDiscuss completes when discussion manifest is absent", 
     setPendingAutoStart(base, {
       basePath: base,
       milestoneId: "M001",
-      ctx: { ui: { notify: (message: string, level: string) => notifications.push({ message, level }) } } as any,
+      startAuto: false,
+      ctx: {
+        ui: {
+          notify: (message: string, level: string) => notifications.push({ message, level }),
+        },
+      } as any,
       pi: { sendMessage: () => { scheduled = true; } } as any,
     });
 
     assert.equal(checkAutoStartAfterDiscuss(), true);
     assert.equal(scheduled, false);
-    assert.deepEqual(notifications, [{ message: "Milestone M001 ready.", level: "success" }]);
+    assert.deepEqual(notifications, [
+      {
+        message: "Milestone M001 context captured. Continuing the planning pipeline.",
+        level: "success",
+      },
+    ]);
   } finally {
     clearPendingAutoStart(base);
     rmSync(base, { recursive: true, force: true });
