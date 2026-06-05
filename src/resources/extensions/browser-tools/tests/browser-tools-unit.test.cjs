@@ -10,6 +10,9 @@
 
 const { describe, it, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
+const { mkdtempSync, rmSync } = require("node:fs");
+const { tmpdir } = require("node:os");
+const { join } = require("node:path");
 const jiti = require("jiti")(__filename, { interopDefault: true, debug: false });
 
 // ---------------------------------------------------------------------------
@@ -28,9 +31,12 @@ const {
 	getUrlHash,
 	firstErrorLine,
 	formatArtifactTimestamp,
+	ensureSessionArtifactDir,
 } = jiti("../utils.ts");
 
 const {
+	getArtifactRoot,
+	setArtifactRootForCwd,
 	getBrowser,
 	setBrowser,
 	getContext,
@@ -467,6 +473,34 @@ describe("state accessors", () => {
 		assert.equal(getSessionArtifactDir(), null);
 		setSessionArtifactDir("/tmp/artifacts");
 		assert.equal(getSessionArtifactDir(), "/tmp/artifacts");
+	});
+
+	it("uses the active tool context cwd for session artifact paths", async (t) => {
+		const processRoot = mkdtempSync(join(tmpdir(), "browser-tools-process-"));
+		const contextRoot = mkdtempSync(join(tmpdir(), "browser-tools-context-"));
+		const previousCwd = process.cwd();
+		t.after(() => {
+			process.chdir(previousCwd);
+			rmSync(processRoot, { recursive: true, force: true });
+			rmSync(contextRoot, { recursive: true, force: true });
+		});
+
+		process.chdir(processRoot);
+		resetAllState();
+		const expectedRoot = join(contextRoot, ".artifacts", "browser");
+		setArtifactRootForCwd(contextRoot);
+
+		const sessionDir = await ensureSessionArtifactDir();
+
+		assert.equal(getArtifactRoot(), expectedRoot);
+		assert.ok(
+			sessionDir.startsWith(`${expectedRoot}/`),
+			`session artifact dir should stay under context cwd: ${sessionDir}`,
+		);
+		assert.ok(
+			!sessionDir.startsWith(join(processRoot, ".artifacts", "browser")),
+			`session artifact dir must not use process cwd: ${sessionDir}`,
+		);
 	});
 
 	it("setCurrentRefMap/getCurrentRefMap round-trip", () => {

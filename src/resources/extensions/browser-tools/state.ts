@@ -186,6 +186,14 @@ export interface BrowserAssertionCheckInput {
 // Mutable state variables — accessed only via get/set functions
 // ---------------------------------------------------------------------------
 
+// 0. artifactRoot
+let _artifactRoot = ARTIFACT_ROOT;
+export function getArtifactRoot(): string { return _artifactRoot; }
+export function setArtifactRootForCwd(cwd: string): string {
+	_artifactRoot = path.resolve(cwd, ".artifacts", "browser");
+	return _artifactRoot;
+}
+
 // 1. browser
 let _browser: Browser | null = null;
 export function getBrowser(): Browser | null { return _browser; }
@@ -290,6 +298,7 @@ export function setHarState(h: HarState): void { _harState = h; }
 // ---------------------------------------------------------------------------
 
 export function resetAllState(): void {
+	_artifactRoot = ARTIFACT_ROOT;
 	_browser = null;
 	_context = null;
 	pageRegistry.pages = [];
