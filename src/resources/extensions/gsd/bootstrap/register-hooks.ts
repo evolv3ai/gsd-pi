@@ -1384,48 +1384,47 @@ export function registerHooks(
     const payload = event.payload as Record<string, unknown> | null;
     if (!payload || typeof payload !== "object") return;
 
-    // ── Observation Masking ─────────────────────────────────────────────
-    // Replace old tool results with placeholders to reduce context bloat.
-    // Only active during auto-mode when context_management.observation_masking is enabled.
-    if (isAutoActive()) {
-      try {
-        const { loadEffectiveGSDPreferences } = await import("../preferences.js");
-        const {
-          createObservationMask,
-          createResponsesInputObservationMask,
-          truncateContextResultMessages,
-          truncateResponsesInputResultItems,
-        } = await import("../context-masker.js");
-        const prefs = loadEffectiveGSDPreferences();
-        const cmConfig = prefs?.preferences.context_management;
+    // ── Context Management ──────────────────────────────────────────────
+    // Load preferences once for both masking and truncation.
+    try {
+      const { loadEffectiveGSDPreferences } = await import("../preferences.js");
+      const {
+        createObservationMask,
+        createResponsesInputObservationMask,
+        truncateContextResultMessages,
+        truncateResponsesInputResultItems,
+      } = await import("../context-masker.js");
+      const prefs = loadEffectiveGSDPreferences();
+      const cmConfig = prefs?.preferences.context_management;
 
-        // Observation masking: replace old tool results with placeholders
-        if (cmConfig?.observation_masking !== false) {
-          const keepTurns = cmConfig?.observation_mask_turns ?? 8;
-          const messages = payload.messages;
-          if (Array.isArray(messages)) {
-            payload.messages = createObservationMask(keepTurns)(messages);
-          }
-          const input = payload.input;
-          if (Array.isArray(input)) {
-            payload.input = createResponsesInputObservationMask(keepTurns)(input);
-          }
-        }
-
-        // Tool result truncation: cap individual tool result content length.
-        // In pi-ai format, toolResult messages have role: "toolResult" and content: TextContent[].
-        // Creates new objects to avoid mutating shared conversation state.
-        const maxChars = cmConfig?.tool_result_max_chars ?? 800;
-        const msgs = payload.messages;
-        if (Array.isArray(msgs)) {
-          payload.messages = truncateContextResultMessages(msgs as any, maxChars);
+      // Observation masking: replace old tool results with placeholders.
+      // Only active during auto-mode when context_management.observation_masking is enabled.
+      if (isAutoActive() && cmConfig?.observation_masking !== false) {
+        const keepTurns = cmConfig?.observation_mask_turns ?? 8;
+        const messages = payload.messages;
+        if (Array.isArray(messages)) {
+          payload.messages = createObservationMask(keepTurns)(messages);
         }
         const input = payload.input;
         if (Array.isArray(input)) {
-          payload.input = truncateResponsesInputResultItems(input as any, maxChars);
+          payload.input = createResponsesInputObservationMask(keepTurns)(input);
         }
-      } catch { /* non-fatal */ }
-    }
+      }
+
+      // Tool result truncation: cap individual tool result content length.
+      // Applies in ALL modes (auto + interactive) to prevent context bloat.
+      // In pi-ai format, toolResult messages have role: "toolResult" and content: TextContent[].
+      // Creates new objects to avoid mutating shared conversation state.
+      const maxChars = cmConfig?.tool_result_max_chars ?? 800;
+      const msgs = payload.messages;
+      if (Array.isArray(msgs)) {
+        payload.messages = truncateContextResultMessages(msgs as any, maxChars);
+      }
+      const input = payload.input;
+      if (Array.isArray(input)) {
+        payload.input = truncateResponsesInputResultItems(input as any, maxChars);
+      }
+    } catch { /* non-fatal */ }
 
     // ── Service Tier ────────────────────────────────────────────────────
     const modelId = event.model?.id;
