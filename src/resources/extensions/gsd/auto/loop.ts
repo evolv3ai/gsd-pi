@@ -1284,7 +1284,7 @@ export async function autoLoop(
         unitId: iterData.unitId,
       });
       const finalizeReason = finalizeResult.action === "break" ? finalizeResult.reason : undefined;
-      const finalizeStatus = finalizeReason === "step-wizard"
+      const finalizeStatus = (finalizeReason === "step-wizard" || finalizeReason === "milestone-complete")
         ? "completed"
         : finalizeResult.action === "next"
           ? "completed"
