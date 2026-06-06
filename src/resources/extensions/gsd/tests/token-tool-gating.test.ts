@@ -24,7 +24,9 @@ test("buildMinimalGsdToolSet preserves non-GSD tools and replaces broad GSD surf
     "gsd_milestone_status",
     "gsd_checkpoint_db",
     "memory_query",
+    "gsd_memory_query",
     "capture_thought",
+    "gsd_capture_thought",
     "gsd_graph",
   ]);
 
