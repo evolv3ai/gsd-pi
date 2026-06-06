@@ -340,13 +340,13 @@ test("resume path only hard-exits on blocked stop, not blocked pause (#6154)", (
 });
 
 test("prepareForUnit skips worktree safety when isolation is not worktree (#6154)", () => {
-  const autoSrc = readGsdFile("auto.ts");
-  const prepareForUnitIdx = autoSrc.indexOf("async prepareForUnit(unitType, unitId) {");
-  const prepareForUnitBody = autoSrc.slice(prepareForUnitIdx, autoSrc.indexOf("async syncAfterUnit() {}", prepareForUnitIdx));
+  const orchSrc = readGsdFile("auto/orchestrator.ts");
+  const prepareForUnitIdx = orchSrc.indexOf("private async prepareWorktreeForUnit(");
+  const prepareForUnitBody = orchSrc.slice(prepareForUnitIdx, orchSrc.indexOf("private classifyAndRecover(", prepareForUnitIdx));
 
   assert.ok(prepareForUnitIdx > -1, "prepareForUnit should exist");
   assert.ok(
-    prepareForUnitBody.includes("const isolationMode = getEffectiveUnitIsolationMode(runtimeBasePath);"),
+    prepareForUnitBody.includes("const isolationMode = this.getEffectiveUnitIsolationMode(this.runtimeBasePath);"),
     "prepareForUnit should resolve the effective isolation mode once",
   );
   assert.ok(
