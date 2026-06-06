@@ -21,6 +21,8 @@ import { debugCount, debugTime } from "../debug-logger.js";
 import { reconcileBeforeDispatch } from "../state-reconciliation.js";
 import { resolveDispatch } from "../auto-dispatch.js";
 import { classifyFailure } from "../recovery-classification.js";
+import { verifyExpectedArtifact, refreshRecoveryDbForArtifact } from "../auto-recovery.js";
+import { invalidateAllCaches } from "../cache.js";
 import { compileUnitToolContract } from "../tool-contract.js";
 import { createWorktreeSafetyModule } from "../worktree-safety.js";
 import { repairAutoWorktreeSafetyFailure } from "../auto-worktree-repair.js";
@@ -308,6 +310,10 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
   private lastAdvanceKey: string | null = null;
   private lastFinalizedUnitKey: string | null = null;
   private dispatchKeyWindow: string[] = [];
+  // #442: the unit key we last attempted graduated stuck-recovery for. Bounds
+  // recovery to one attempt per stuck episode per run (reset on start/resume/
+  // stop), mirroring the legacy Level-1-then-Level-2 escalation in phases.ts.
+  private lastStuckRecoveryKey: string | null = null;
 
   public constructor(context: OrchestratorContext) {
     this.ctx = context.ctx;
@@ -651,10 +657,63 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
 
   // ── Lifecycle verbs ──────────────────────────────────────────────────────
 
+  /**
+   * #442: graduated stuck recovery, ported from the legacy
+   * auto/phases.ts:runDispatch path that Phase 3 retires. The ring-buffer
+   * hard-stops (stuck-loop saturation and finalized-repeat) would otherwise
+   * KILL a unit that actually completed on disk but whose DB row is still
+   * stale. Before hard-stopping, verify the expected artifact exists; if so,
+   * refresh the DB from it, invalidate caches and reset the dispatch ring so
+   * the next advance picks the correct next unit. Bounded to one attempt per
+   * stuck key per episode (reset on lifecycle + genuine finalize) to avoid an
+   * unbounded recover→re-saturate→recover loop — mirrors the legacy
+   * Level-1-recover-then-Level-2-hard-stop escalation.
+   *
+   * Returns true when recovery succeeded; the caller should re-loop (return a
+   * skipped result) instead of stopping.
+   */
+  private tryStuckArtifactRecovery(unitType: string, unitId: string): boolean {
+    const key = `${unitType}:${unitId}`;
+    if (this.lastStuckRecoveryKey === key) return false; // already tried this episode
+    const basePath = this.s.basePath;
+    if (!verifyExpectedArtifact(unitType, unitId, basePath)) return false;
+    const refreshed = refreshRecoveryDbForArtifact(unitType, unitId, basePath);
+    if (!refreshed.ok) return false;
+    this.lastStuckRecoveryKey = key;
+    invalidateAllCaches();
+    this.dispatchKeyWindow = [];
+    this.lastAdvanceKey = null;
+    this.lastFinalizedUnitKey = null;
+    return true;
+  }
+
+  private stuckRecovered(
+    decision: { unitType: string; unitId: string },
+    stateSnapshot: GSDState,
+  ): AutoAdvanceResult {
+    const recovered: AutoAdvanceResult = {
+      kind: "skipped",
+      reason: `stuck-recovery: ${decision.unitType} ${decision.unitId} artifact found on disk; DB refreshed`,
+      stateSnapshot,
+    };
+    this.status.phase = "running";
+    this.status.activeUnit = undefined;
+    this.bumpTransition();
+    this.journalTransition({
+      name: "advance-skipped",
+      reason: recovered.reason,
+      unitType: decision.unitType,
+      unitId: decision.unitId,
+    });
+    this.postAdvanceRecord(recovered);
+    return recovered;
+  }
+
   public async start(_sessionContext: AutoSessionContext): Promise<AutoAdvanceResult> {
     this.lastAdvanceKey = null;
     this.lastFinalizedUnitKey = null;
     this.dispatchKeyWindow = [];
+    this.lastStuckRecoveryKey = null;
     this.status.phase = "running";
     this.bumpTransition();
     this.journalTransition({ name: "start" });
@@ -798,6 +857,12 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
 
       const matchingCount = this.dispatchKeyWindow.filter((k) => k === nextKey).length;
       if (this.lastFinalizedUnitKey === nextKey) {
+        // #442: the unit re-dispatched immediately after finalizing may have
+        // actually completed on disk with a stale DB. Verify + recover before
+        // hard-stopping (legacy graduated stuck-recovery parity).
+        if (this.tryStuckArtifactRecovery(decision.unitType, decision.unitId)) {
+          return this.stuckRecovered(decision, reconciliation.stateSnapshot);
+        }
         const blocked: AutoAdvanceResult = {
           kind: "blocked",
           reason: `state did not advance after finalized ${decision.unitType} ${decision.unitId}`,
@@ -837,6 +902,12 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
       // picking the same unit across the whole window and must hard-stop with
       // a diagnosable reason.
       if (matchingCount >= STUCK_WINDOW_SIZE) {
+        // #442: before declaring a stuck loop, verify the unit didn't actually
+        // complete on disk (stale DB) and recover if so — legacy graduated
+        // stuck-recovery parity. Otherwise hard-stop with a diagnosable reason.
+        if (this.tryStuckArtifactRecovery(decision.unitType, decision.unitId)) {
+          return this.stuckRecovered(decision, reconciliation.stateSnapshot);
+        }
         const blocked: AutoAdvanceResult = {
           kind: "blocked",
           reason: `stuck-loop: ${nextKey} picked ${matchingCount} times`,
@@ -961,6 +1032,7 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
     this.lastAdvanceKey = null;
     this.lastFinalizedUnitKey = null;
     this.dispatchKeyWindow = [];
+    this.lastStuckRecoveryKey = null;
     this.status.phase = "running";
     this.bumpTransition();
     this.journalTransition({ name: "resume" });
@@ -978,6 +1050,7 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
     this.lastAdvanceKey = null;
     this.lastFinalizedUnitKey = null;
     this.dispatchKeyWindow = [];
+    this.lastStuckRecoveryKey = null;
     this.bumpTransition();
     this.journalTransition({ name: "stop", reason });
     this.notifyLifecycle({ name: "stop", detail: reason });
@@ -998,6 +1071,8 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
     this.status.activeUnit = undefined;
     this.lastAdvanceKey = null;
     this.lastFinalizedUnitKey = unitKey;
+    // Genuine progress — re-enable graduated stuck recovery for future episodes.
+    this.lastStuckRecoveryKey = null;
     this.bumpTransition();
     this.journalTransition({
       name: "unit-finalized",

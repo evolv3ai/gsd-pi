@@ -460,6 +460,31 @@ test("completeActiveUnit clears in-flight idempotency and stops stale same-unit 
   assert.ok(f.journalNames().includes("unit-finalized"));
 });
 
+test("#442: finalized-repeat recovers (skipped) when the unit's artifact already exists on disk", async (t) => {
+  // plan-milestone's expected artifact is the ROADMAP, which the fixture
+  // already writes — so verifyExpectedArtifact returns true. This is the legacy
+  // stuck-recovery scenario (unit completed on disk, DB row stale): instead of
+  // the finalized-repeat HARD-STOP, #442 verify-and-recover should refresh +
+  // skip so the loop can progress. plan-milestone is deliberately NOT one of
+  // the DB-refreshing unit types, so the recovery stays side-effect-light.
+  const f = makeFixture({
+    dispatch: () => ({ action: "dispatch", unitType: "plan-milestone", unitId: "M001", prompt: "p" }),
+  });
+  t.after(() => f.cleanup());
+
+  const first = await f.orchestrator.advance();
+  if (first.kind !== "advanced") {
+    throw new Error(`expected advanced, got ${first.kind}: ${(first as { reason?: string }).reason ?? ""}`);
+  }
+  await f.orchestrator.completeActiveUnit(first.unit);
+
+  const second = await f.orchestrator.advance();
+  assert.equal(second.kind, "skipped", "should recover via artifact verification, not hard-stop");
+  if (second.kind !== "skipped") throw new Error("expected skipped recovery");
+  assert.match(second.reason, /stuck-recovery/);
+  assert.ok(f.journalNames().includes("advance-skipped"));
+});
+
 test("completeActiveUnit allows a different next unit to advance", async (t) => {
   let nextTaskId = "M001/S01/T01";
   const f = makeFixture({
