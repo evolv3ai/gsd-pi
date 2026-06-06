@@ -37,6 +37,7 @@ import {
 import { formatDecisionsCompact, formatRequirementsCompact } from "./structured-data-formatter.js";
 import { readPhaseAnchor, formatAnchorForPrompt } from "./phase-anchor.js";
 import { composeContextModeInstructions, composeInlinedContext, composeUnitContext, type ArtifactResolver, type ContextModeRenderMode, type ExcerptResolver } from "./unit-context-composer.js";
+import { resolveManifest } from "./unit-context-manifest.js";
 import { readCompactionSnapshot } from "./compaction-snapshot.js";
 import { logWarning } from "./workflow-logger.js";
 import { inlineGraphSubgraph } from "./graph-context.js";
@@ -1674,6 +1675,70 @@ export async function buildDiscussRequirementsPrompt(
   }));
 }
 
+/**
+ * Bounded codebase snapshot for research-milestone grounding (ADR-029).
+ *
+ * Reuses the in-process, ~millisecond `analyzeCodebase` / `formatCodebaseBrief`
+ * machinery that powers the guided-discuss Preparation Snapshot, so research
+ * grounds on current code reality instead of running an open-ended `rg`/`find`/
+ * `scout` survey on every dispatch (the auto-mode counterpart to ADR-028).
+ *
+ * Gated on the manifest's `codebaseMap` flag (previously a dead policy flag)
+ * and the `discuss_preparation` opt-out. Failures degrade silently — research
+ * still runs, it just falls back to on-demand reads.
+ */
+async function buildResearchCodebaseSnapshot(base: string): Promise<string | null> {
+  const manifest = resolveManifest("research-milestone");
+  if (!manifest?.codebaseMap) return null;
+  const prefs = loadEffectiveGSDPreferences(base)?.preferences;
+  if (prefs?.discuss_preparation === false) return null;
+  try {
+    const { analyzeCodebase, formatCodebaseBrief } = await import("./preparation.js");
+    const brief = await analyzeCodebase(base);
+    const formatted = formatCodebaseBrief(brief).trim();
+    if (!formatted) return null;
+    return [
+      "### Codebase Snapshot (current code reality)",
+      "Source: in-process bounded scan of the working tree.",
+      "",
+      "This snapshot describes what already exists. Treat it as authoritative for current code reality and do NOT re-survey the tree to rediscover it. Read a specific file only when a research question hinges on its exact contents.",
+      "",
+      formatted,
+    ].join("\n");
+  } catch (err) {
+    logWarning("prompt", `buildResearchCodebaseSnapshot failed: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+/**
+ * Lightweight research resume block (ADR-029).
+ *
+ * When a prior attempt for this milestone left durable output — a partial
+ * RESEARCH artifact and/or a research phase anchor — inline it under a
+ * "continue, do not redo" banner so a re-dispatched research unit extends
+ * prior work instead of re-running every command from scratch (the
+ * restart-from-scratch pattern observed in the 789 run trace). No new state
+ * machine: the partial RESEARCH file and the existing phase anchor are the
+ * durable signals. Returns null when there is nothing to resume.
+ */
+async function buildResearchResumeBlock(base: string, mid: string): Promise<string | null> {
+  const researchPath = resolveMilestoneFile(base, mid, "RESEARCH");
+  const researchRel = relMilestoneFile(base, mid, "RESEARCH");
+  const partial = await inlineFileOptional(researchPath, researchRel, "Prior Partial Research");
+  const anchor = readPhaseAnchor(base, mid, "research-milestone");
+  if (!partial && !anchor) return null;
+  const lines: string[] = [
+    "### Resume — Prior Partial Research (continue, do not redo)",
+    "",
+    "A previous research attempt for this milestone left the durable output below. **Build on it — do not restart from scratch.** Re-run a command only when its prior result is missing or stale, and persist progress incrementally with `gsd_summary_save` so any interruption keeps your findings.",
+    "",
+  ];
+  if (anchor) lines.push(formatAnchorForPrompt(anchor), "");
+  if (partial) lines.push(partial);
+  return lines.join("\n").trimEnd();
+}
+
 export async function buildResearchMilestonePrompt(mid: string, midTitle: string, base: string): Promise<string> {
   const contextTelemetry: PromptContextTelemetryEntry[] = [];
 
@@ -1715,6 +1780,34 @@ export async function buildResearchMilestonePrompt(mid: string, midTitle: string
   const knowledgeInlineRM = await inlineKnowledgeBudgeted(base, extractKeywords(midTitle));
   const parts: string[] = [];
   if (composed.prepend) parts.push(composed.prepend);
+
+  // Resume grounding (ADR-029): if a prior attempt left partial research or a
+  // phase anchor, inline it prominently so a re-dispatched unit continues
+  // rather than re-running every command from scratch.
+  const resumeBlock = await buildResearchResumeBlock(base, mid);
+  if (resumeBlock) {
+    parts.push(resumeBlock);
+    trackPromptContext(contextTelemetry, "research-resume", "inline", resumeBlock);
+  } else {
+    trackPromptContext(contextTelemetry, "research-resume", "skipped", null, "no prior partial research");
+  }
+
+  // Project-size signal (ADR-029): same classification plan-milestone gets, so
+  // research right-sizes effort on tiny projects instead of over-researching.
+  const classificationBlock = formatProjectClassificationForPlanning(classifyProject(base));
+  parts.push(classificationBlock);
+  trackPromptContext(contextTelemetry, "project-classification", "inline", classificationBlock);
+
+  // Codebase snapshot (ADR-029): bounded, in-process code-reality grounding so
+  // research does not open-endedly survey the tree (auto-mode ADR-028).
+  const codebaseSnapshot = await buildResearchCodebaseSnapshot(base);
+  if (codebaseSnapshot) {
+    parts.push(codebaseSnapshot);
+    trackPromptContext(contextTelemetry, "codebase-snapshot", "inline", codebaseSnapshot);
+  } else {
+    trackPromptContext(contextTelemetry, "codebase-snapshot", "skipped", null, "disabled, empty, or scan failed");
+  }
+
   if (knowledgeInlineRM && composed.inline) {
     const idx = composed.inline.lastIndexOf("### Output Template:");
     if (idx > 0) {
