@@ -123,5 +123,5 @@ test("#442 characterization: no matching rule → orchestrator yields no unit (l
   // surfaces that as a null decision, which advance() turns into a "stopped:
   // no remaining units" outcome — the same terminal the legacy path reaches.
   assert.ok(legacy == null || (legacy as { action?: string }).action !== "dispatch");
-  assert.ok(decision == null || ("kind" in decision && decision.kind !== "advanced"));
+  assert.ok(decision == null || !("unitType" in decision), "no-match must not yield a unit dispatch");
 });
