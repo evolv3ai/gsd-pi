@@ -135,6 +135,7 @@
     "pipeline:version-stamp": "node scripts/version-stamp.mjs",
     "release:changelog": "node scripts/generate-changelog.mjs",
     "release:bump": "node scripts/bump-version.mjs",
+    "release:update-readme-highlights": "node scripts/update-readme-release-highlights.mjs",
     "release:update-changelog": "node scripts/update-changelog.mjs",
     "docker:build-runtime": "docker build --target runtime -t ghcr.io/open-gsd/gsd-pi .",
     "docker:build-builder": "docker build --target builder -t ghcr.io/open-gsd/gsd-ci-builder .",

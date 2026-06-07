@@ -199,6 +199,21 @@ test("production release publishes workspace packages and verifies ALL packages 
   assert.ok(verifyAll < ghRelease, "verify must run before the GitHub release is created");
 });
 
+test("production release updates README highlights in the release commit", () => {
+  const steps = workflow.jobs["prod-release"].steps;
+  const idx = (name) => steps.findIndex((s) => s.name === name);
+
+  const updateChangelog = idx("Update CHANGELOG.md");
+  const updateReadme = idx("Update README release highlights");
+  const commitRelease = idx("Commit and tag release");
+
+  assert.ok(updateReadme > updateChangelog, "README highlights should use generated release notes");
+  assert.ok(updateReadme < commitRelease, "README highlights must be staged into the release commit");
+  assert.match(steps[updateReadme].run, /update-readme-release-highlights\.mjs/);
+  assert.match(steps[updateReadme].run, /release-metadata\/release-notes\.md/);
+  assert.match(steps[commitRelease].run, /git add .*README\.md/);
+});
+
 test("main package publish uses explicit prepack and disables npm lifecycle reruns", () => {
   const prereleasePublish = workflow.jobs["prerelease-publish"].steps.find(
     (step) => step.name === "Publish @${{ github.event.inputs.channel }}",

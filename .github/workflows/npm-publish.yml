@@ -461,6 +461,11 @@ jobs:
       - name: Update CHANGELOG.md
         run: node scripts/update-changelog.mjs release-metadata/changelog-entry.md
 
+      - name: Update README release highlights
+        env:
+          RELEASE_VERSION: ${{ needs.prod-release-plan.outputs.version }}
+        run: node scripts/update-readme-release-highlights.mjs release-metadata/release-notes.md --version "$RELEASE_VERSION"
+
       - name: Commit and tag release
         env:
           RELEASE_SOURCE_SHA: ${{ needs.prod-release-plan.outputs.source_sha }}
@@ -477,7 +482,7 @@ jobs:
             echo "::error::Re-run NPM Publish so the release includes the latest main."
             exit 1
           fi
-          git add package.json pnpm-lock.yaml CHANGELOG.md native/Cargo.toml native/Cargo.lock native/npm/*/package.json pkg/package.json packages/*/package.json extensions/google-search/package.json
+          git add package.json pnpm-lock.yaml CHANGELOG.md README.md native/Cargo.toml native/Cargo.lock native/npm/*/package.json pkg/package.json packages/*/package.json extensions/google-search/package.json
           git commit -m "release: v${RELEASE_VERSION}"
           git tag "v${RELEASE_VERSION}"
 
