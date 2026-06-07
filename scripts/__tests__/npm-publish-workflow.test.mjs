@@ -39,7 +39,7 @@ test("production publish keeps the prod approval gate", () => {
 
 test("prerelease publish preserves channel-specific default refs", () => {
   const checkout = workflow.jobs["prerelease-publish"].steps.find(
-    (step) => step.uses === "actions/checkout@v6",
+    (step) => step.uses?.startsWith("actions/checkout@"),
   );
 
   assert.equal(workflow.on.workflow_dispatch.inputs.ref.default, "");
@@ -56,7 +56,7 @@ test("npm publish supports token auth fallback for prerelease", () => {
   assert.deepEqual(input.options, ["trusted", "token"]);
 
   const setupNode = workflow.jobs["prerelease-publish"].steps.find(
-    (step) => step.uses === "actions/setup-node@v6",
+    (step) => step.uses?.startsWith("actions/setup-node@"),
   );
   assert.equal(
     setupNode.env.NODE_AUTH_TOKEN,
@@ -78,7 +78,7 @@ test("production publish plans the release and builds native artifacts in the sa
   assert.equal(plan.outputs.version, "${{ steps.release.outputs.version }}");
   assert.equal(plan.outputs.source_sha, "${{ steps.release.outputs.source_sha }}");
   assert.ok(
-    plan.steps.some((step) => step.uses === "actions/upload-artifact@v5"),
+    plan.steps.some((step) => step.uses?.startsWith("actions/upload-artifact@")),
     "release metadata must be passed to the gated publish job",
   );
 
@@ -95,7 +95,7 @@ test("production publish plans the release and builds native artifacts in the sa
     ],
   );
   assert.ok(
-    nativeBuild.steps.some((step) => step.uses === "actions/upload-artifact@v5"),
+    nativeBuild.steps.some((step) => step.uses?.startsWith("actions/upload-artifact@")),
     "native artifacts must be uploaded for the production release job",
   );
 });
