@@ -1102,6 +1102,45 @@ export function nativeMergeSquash(basePath: string, branch: string): GitMergeRes
 }
 
 /**
+ * Regular (non-squash) merge a branch (stages changes, does NOT commit).
+ * Uses --no-ff to ensure a proper merge commit and --no-commit so the caller
+ * can supply a custom commit message via nativeCommit.
+ * Respects the user's global git merge.ff config; --no-ff is additive here.
+ */
+export function nativeMergeRegular(basePath: string, branch: string): GitMergeResult {
+  try {
+    execFileSync("git", ["merge", "--no-ff", "--no-commit", branch], {
+      cwd: basePath,
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf-8",
+      env: GIT_NO_PROMPT_ENV,
+    });
+    return { success: true, conflicts: [] };
+  } catch (err: unknown) {
+    const stderr =
+      err instanceof Error ? (err as Error & { stderr?: string }).stderr ?? err.message : String(err);
+    if (
+      stderr.includes("local changes would be overwritten") ||
+      stderr.includes("not possible because you have unmerged files") ||
+      stderr.includes("overwritten by merge")
+    ) {
+      const dirtyFiles = stderr
+        .split("\n")
+        .filter((line) => line.startsWith("\t"))
+        .map((line) => line.trim())
+        .filter(Boolean);
+      return { success: false, conflicts: ["__dirty_working_tree__"], dirtyFiles };
+    }
+    const conflictOutput = gitExec(basePath, ["diff", "--name-only", "--diff-filter=U"], true);
+    const conflicts = conflictOutput ? conflictOutput.split("\n").filter(Boolean) : [];
+    if (conflicts.length > 0) {
+      return { success: false, conflicts };
+    }
+    throw err;
+  }
+}
+
+/**
  * Abort an in-progress merge.
  * Native: libgit2 reset + cleanup.
  * Fallback: `git merge --abort`.

@@ -69,6 +69,7 @@ import {
   nativeCommit,
   nativeCheckoutBranch,
   nativeMergeSquash,
+  nativeMergeRegular,
   nativeConflictFiles,
   nativeCheckoutTheirs,
   nativeAddPaths,
@@ -2168,8 +2169,13 @@ export function mergeMilestoneToMain(
   // Defensively remove merge artifacts before starting.
   removeMergeStateFiles(originalBasePath_, "pre-merge");
 
-  // 8. Squash merge — auto-resolve .gsd/ state file conflicts (#530)
-  const mergeResult = nativeMergeSquash(originalBasePath_, milestoneBranch);
+  // 8. Merge — respect merge_strategy preference (#549).
+  // "squash" (default): stages changes without a merge commit; caller commits.
+  // "merge": --no-ff --no-commit so caller can supply the commit message while
+  // git records a real merge commit (MERGE_HEAD present when nativeCommit runs).
+  const mergeResult = prefs.merge_strategy === "merge"
+    ? nativeMergeRegular(originalBasePath_, milestoneBranch)
+    : nativeMergeSquash(originalBasePath_, milestoneBranch);
   if (needsDbCycle && dbPathToReopen) {
     try {
       openDatabase(dbPathToReopen);
