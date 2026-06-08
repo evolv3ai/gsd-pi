@@ -28,6 +28,7 @@ import { isAutoActive, checkRemoteAutoSession } from "./auto.js";
 import { getAutoWorktreePath } from "./auto-worktree.js";
 import { currentDirectoryRoot, projectRoot } from "./commands/context.js";
 import { loadPrompt } from "./prompt-loader.js";
+import { buildClaudeRuntimeFloorAdvisory } from "../../shared/claude-runtime-floor.js";
 import { isPnpmInstall } from "../../shared/package-manager-detection.js";
 import {
   buildDoctorHealIssuePayload,
@@ -65,6 +66,21 @@ function resolveInstallCommand(pkg: string): string {
   if (isBunInstall()) return `bun add -g ${pkg}`;
   if (isPnpmInstall()) return `pnpm add -g ${pkg}`;
   return `npm install -g ${pkg}`;
+}
+
+function notifyClaudeRuntimeFloorAdvisory(ctx: ExtensionCommandContext): void {
+  let advisory: string | null = null;
+  try {
+    advisory = buildClaudeRuntimeFloorAdvisory({
+      agentDir: join(gsdHome(), "agent"),
+      cwd: process.cwd(),
+    });
+  } catch {
+    return;
+  }
+  if (advisory) {
+    ctx.ui.notify(advisory, "warning");
+  }
 }
 
 async function fetchLatestVersionForCommand(registryUrl: string = UPDATE_REGISTRY_URL): Promise<string | null> {
@@ -549,6 +565,7 @@ export async function handleUpdate(ctx: ExtensionCommandContext, args = ""): Pro
 
   if (current && compareSemverLocal(latest, current) <= 0) {
     ctx.ui.notify(`Already up to date (${formatCommandVersion(current)}).`, "info");
+    if (!browserUpdate) notifyClaudeRuntimeFloorAdvisory(ctx);
     return;
   }
 
@@ -568,6 +585,7 @@ export async function handleUpdate(ctx: ExtensionCommandContext, args = ""): Pro
         : `Updated to v${latest}. Restart your GSD session to use the new version.`,
       "info",
     );
+    if (!browserUpdate) notifyClaudeRuntimeFloorAdvisory(ctx);
   } catch {
     ctx.ui.notify(
       `Update failed. Try manually: ${installCmd}`,

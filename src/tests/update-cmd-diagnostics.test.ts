@@ -6,13 +6,23 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 
 import { runUpdate } from "../update-cmd.ts";
 import { handleUpdate } from "../resources/extensions/gsd/commands-handlers.ts";
 import { GSD_BROWSER_PACKAGE_NAME, GSD_BROWSER_REGISTRY_URL, resolveInstalledPackageVersion } from "../update-check.js";
+
+function writeFakeClaude(binDir: string, output: string): void {
+  mkdirSync(binDir, { recursive: true });
+  const script = join(binDir, process.platform === "win32" ? "claude.cmd" : "claude");
+  const content = process.platform === "win32"
+    ? `@echo off\r\necho ${output}\r\n`
+    : `#!/bin/sh\necho "${output}"\n`;
+  writeFileSync(script, content);
+  if (process.platform !== "win32") chmodSync(script, 0o755);
+}
 
 test("update-cmd prints latest version before comparison (#3445)", async (t) => {
   const originalFetch = globalThis.fetch;
@@ -83,6 +93,54 @@ test("update-cmd refreshes managed resources when already up to date (#52)", asy
   const manifest = JSON.parse(readFileSync(join(fakeAgentDir, "managed-resources.json"), "utf-8"));
   assert.equal(manifest.gsdVersion, "1.0.1");
   assert.equal(manifest.packageName, "@opengsd/gsd-pi");
+});
+
+test("update-cmd prints Claude Code Runtime floor advisory after normal update result", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalVersion = process.env.GSD_VERSION;
+  const originalStdoutWrite = process.stdout.write;
+  const originalPath = process.env.PATH;
+  const writes: string[] = [];
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-update-claude-floor-"));
+  const agentDir = join(tmp, "agent");
+  const binDir = join(tmp, "bin");
+
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProvider: "claude-code" }));
+  writeFakeClaude(binDir, "2.1.100 (Claude Code)");
+
+  try {
+    process.env.GSD_VERSION = "1.2.3";
+    process.env.PATH = `${binDir}${delimiter}${originalPath ?? ""}`;
+    globalThis.fetch = async () => Response.json({ version: "1.2.3" });
+    (process.stdout as any).write = (chunk: unknown) => {
+      writes.push(String(chunk));
+      return true;
+    };
+
+    await runUpdate({ agentDir, skillsDir: join(tmp, "skills") });
+  } finally {
+    globalThis.fetch = originalFetch;
+    (process.stdout as any).write = originalStdoutWrite;
+    if (originalVersion === undefined) {
+      delete process.env.GSD_VERSION;
+    } else {
+      process.env.GSD_VERSION = originalVersion;
+    }
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
+  }
+
+  const output = writes.join("");
+  const updateIdx = output.indexOf("Already up to date.");
+  const advisoryIdx = output.indexOf("Claude Code Runtime is below GSD's validated floor");
+  assert.ok(updateIdx !== -1, "expected normal update result");
+  assert.ok(advisoryIdx !== -1, "expected Claude Code Runtime advisory");
+  assert.ok(advisoryIdx > updateIdx, "advisory should appear after the normal update result");
 });
 
 test("update-cmd supports browser-only update checks", async (t) => {
@@ -238,13 +296,78 @@ test("/gsd update handler fetches latest version through the registry endpoint (
   assert.ok(notifications.some((notification) => notification.message.includes("Already up to date")));
 });
 
+test("/gsd update handler warns after update result when Claude Code Runtime is below floor", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalVersion = process.env.GSD_VERSION;
+  const originalGsdHome = process.env.GSD_HOME;
+  const originalPath = process.env.PATH;
+  const notifications: Array<{ message: string; level: string }> = [];
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-command-claude-floor-"));
+  const agentDir = join(tmp, "agent");
+  const binDir = join(tmp, "bin");
+
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  mkdirSync(agentDir, { recursive: true });
+  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProvider: "claude-code" }));
+  writeFakeClaude(binDir, "2.1.100 (Claude Code)");
+
+  try {
+    process.env.GSD_VERSION = "1.2.3";
+    process.env.GSD_HOME = tmp;
+    process.env.PATH = `${binDir}${delimiter}${originalPath ?? ""}`;
+    globalThis.fetch = async () => Response.json({ version: "1.2.3" });
+
+    await handleUpdate({
+      ui: {
+        notify(message: string, level: string) {
+          notifications.push({ message, level });
+        },
+      },
+    } as any);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalVersion === undefined) {
+      delete process.env.GSD_VERSION;
+    } else {
+      process.env.GSD_VERSION = originalVersion;
+    }
+    if (originalGsdHome === undefined) {
+      delete process.env.GSD_HOME;
+    } else {
+      process.env.GSD_HOME = originalGsdHome;
+    }
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
+  }
+
+  const updateIdx = notifications.findIndex((notification) => notification.message.includes("Already up to date"));
+  const advisoryIdx = notifications.findIndex((notification) => notification.message.includes("Claude Code Runtime is below GSD's validated floor"));
+  assert.ok(updateIdx !== -1, "expected normal update result");
+  assert.ok(advisoryIdx !== -1, "expected Claude Code Runtime advisory");
+  assert.equal(notifications[advisoryIdx]?.level, "warning");
+  assert.ok(advisoryIdx > updateIdx, "advisory should appear after the normal update result");
+});
+
 test("/gsd update browser handler fetches latest gsd-browser version", async () => {
   const originalFetch = globalThis.fetch;
+  const originalGsdHome = process.env.GSD_HOME;
+  const originalPath = process.env.PATH;
   const fetchUrls: string[] = [];
   const notifications: Array<{ message: string; level: string }> = [];
   const browserVersion = resolveInstalledPackageVersion(GSD_BROWSER_PACKAGE_NAME) ?? "0.1.27";
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-command-browser-floor-"));
+  const agentDir = join(tmp, "agent");
+  const binDir = join(tmp, "bin");
 
   try {
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProvider: "claude-code" }));
+    writeFakeClaude(binDir, "2.1.100 (Claude Code)");
+    process.env.GSD_HOME = tmp;
+    process.env.PATH = `${binDir}${delimiter}${originalPath ?? ""}`;
     globalThis.fetch = async (input) => {
       fetchUrls.push(String(input));
       return Response.json({ version: browserVersion });
@@ -259,10 +382,25 @@ test("/gsd update browser handler fetches latest gsd-browser version", async () 
     } as any, "browser");
   } finally {
     globalThis.fetch = originalFetch;
+    rmSync(tmp, { recursive: true, force: true });
+    if (originalGsdHome === undefined) {
+      delete process.env.GSD_HOME;
+    } else {
+      process.env.GSD_HOME = originalGsdHome;
+    }
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
   }
 
   assert.deepEqual(fetchUrls, ["https://registry.npmjs.org/@opengsd%2fgsd-browser/latest"]);
   assert.ok(notifications.some((notification) => notification.message.includes("Already up to date")));
+  assert.equal(
+    notifications.some((notification) => notification.message.includes("Claude Code Runtime is below GSD's validated floor")),
+    false,
+  );
 });
 
 test("/gsd update handler suggests pnpm when installed via pnpm", async () => {

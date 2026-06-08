@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process'
 import { agentDir as defaultAgentDir } from './app-paths.js'
 import { initResources } from './resource-loader.js'
+import { buildClaudeRuntimeFloorAdvisory } from './resources/shared/claude-runtime-floor.js'
 import {
   compareSemver,
   fetchLatestVersionFromRegistry,
@@ -23,6 +24,23 @@ interface RunUpdateOptions {
 
 function formatCurrentVersion(version: string | null): string {
   return version ? `v${version}` : 'unknown'
+}
+
+function printClaudeRuntimeFloorAdvisory(agentDir: string): void {
+  let advisory: string | null = null
+  try {
+    advisory = buildClaudeRuntimeFloorAdvisory({
+      agentDir,
+      cwd: process.cwd(),
+    })
+  } catch {
+    return
+  }
+  if (advisory) {
+    const yellow = '\x1b[33m'
+    const reset = '\x1b[0m'
+    process.stdout.write(`${yellow}${advisory}${reset}\n`)
+  }
 }
 
 async function runBrowserUpdate(): Promise<void> {
@@ -104,6 +122,7 @@ export async function runUpdate(options: RunUpdateOptions = {}): Promise<void> {
   if (compareSemver(latest, current) <= 0) {
     process.stdout.write(`${green}Already up to date.${reset}\n`)
     initResources(options.agentDir ?? defaultAgentDir, options.skillsDir)
+    printClaudeRuntimeFloorAdvisory(options.agentDir ?? defaultAgentDir)
     return
   }
 
@@ -115,6 +134,7 @@ export async function runUpdate(options: RunUpdateOptions = {}): Promise<void> {
       stdio: 'inherit',
     })
     process.stdout.write(`\n${green}${bold}Updated to v${latest}${reset}\n`)
+    printClaudeRuntimeFloorAdvisory(options.agentDir ?? defaultAgentDir)
   } catch {
     process.stderr.write(`\n${yellow}Update failed. Try manually: ${installCmd}${reset}\n`)
     process.exit(1)

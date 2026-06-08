@@ -466,6 +466,7 @@ See [Cloud MCP Gateway](./cloud-mcp-gateway.md) for the full operator setup flow
 ## In-Session Update
 
 `/gsd update` checks npm for a newer version of GSD and installs it without leaving the session.
+When the `claude-code` provider is configured, update may also warn if the local Claude Code Runtime is below the GSD release's validated floor.
 
 ```bash
 /gsd update
