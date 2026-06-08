@@ -130,7 +130,8 @@ export async function runUnit(
       unitId,
       error: msg,
     });
-    return { status: "cancelled", errorContext: { message: `Session creation failed: ${msg}`, category: "session-failed", isTransient: true } };
+    const isStructural = sessionErr instanceof TypeError || /is not a function/i.test(msg);
+    return { status: "cancelled", errorContext: { message: `Session creation failed: ${msg}`, category: "session-failed", isTransient: !isStructural } };
   }
   if (sessionTimeoutHandle) clearTimeout(sessionTimeoutHandle);
 
