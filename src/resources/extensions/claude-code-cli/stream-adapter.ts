@@ -1361,7 +1361,16 @@ export function createClaudeCodeCanUseToolHandler(
 // Elicitation handler
 // ---------------------------------------------------------------------------
 
-/** Create an SDK elicitation handler that routes requests through the extension UI dialogs, or undefined if no UI is available. */
+/**
+ * Create an SDK elicitation handler that routes requests through the extension UI dialogs, or undefined if no UI is available.
+ *
+ * For structured (AskUserQuestion) elicitations, the interview round's result
+ * disambiguates two cases that must not be conflated: an `undefined` result
+ * means the custom UI is unavailable, so we fall back to the simpler `select`
+ * dialogs; an empty-answers result means the user dismissed the question, which
+ * is treated as a clean cancel. Falling back to dialogs on dismissal would
+ * re-ask the same questions (the duplicate-question bug).
+ */
 export function createClaudeCodeElicitationHandler(
 	ui: ExtensionUIContext | undefined,
 ): ((request: SdkElicitationRequest, options: { signal: AbortSignal }) => Promise<SdkElicitationResult>) | undefined {
