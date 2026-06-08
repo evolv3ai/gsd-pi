@@ -629,9 +629,33 @@ test("usesWorkflowMcpTransport matches local externalCli providers", () => {
   assert.equal(usesWorkflowMcpTransport("oauth", "local://custom"), false);
 });
 
-test("supportsStructuredQuestions disables local workflow MCP questions unless explicitly enabled", () => {
+test("supportsStructuredQuestions recognizes workflow MCP question tools", () => {
   assert.equal(
     supportsStructuredQuestions(["ask_user_questions"], {
+      authMode: "externalCli",
+      baseUrl: "local://claude-code",
+      env: {},
+    }),
+    true,
+  );
+  assert.equal(
+    supportsStructuredQuestions(["mcp__gsd-workflow__ask_user_questions"], {
+      authMode: "externalCli",
+      baseUrl: "local://claude-code",
+      env: {},
+    }),
+    true,
+  );
+  assert.equal(
+    supportsStructuredQuestions(["mcp__gsd-workflow__*"], {
+      authMode: "externalCli",
+      baseUrl: "local://claude-code",
+      env: {},
+    }),
+    true,
+  );
+  assert.equal(
+    supportsStructuredQuestions(["mcp__gsd-browser__*"], {
       authMode: "externalCli",
       baseUrl: "local://claude-code",
       env: {},
@@ -642,9 +666,9 @@ test("supportsStructuredQuestions disables local workflow MCP questions unless e
     supportsStructuredQuestions(["mcp__gsd-workflow__ask_user_questions"], {
       authMode: "externalCli",
       baseUrl: "local://claude-code",
-      env: { GSD_WORKFLOW_MCP_STRUCTURED_QUESTIONS: "1" } as NodeJS.ProcessEnv,
+      env: { GSD_WORKFLOW_MCP_STRUCTURED_QUESTIONS: "0" } as NodeJS.ProcessEnv,
     }),
-    true,
+    false,
   );
   assert.equal(
     supportsStructuredQuestions(["ask_user_questions"], {
@@ -954,6 +978,7 @@ test("discuss-milestone guided flow does not abort when all required tools are o
   // Guided flow starts the workflow MCP server as part of dispatch, so the
   // parent session active-tool list is not authoritative for MCP tools.
   const discussMilestoneTools = [
+    "ask_user_questions",
     "gsd_summary_save",
     "gsd_requirement_save",
     "gsd_requirement_update",

@@ -426,6 +426,11 @@ interface AskUserQuestionsWriteGateModule {
   markDepthVerified(milestoneId?: string | null, basePath?: string): void;
   clearPendingGate(basePath: string): void;
   extractDepthVerificationMilestoneId(questionId: string): string | null;
+  applyAskUserQuestionsGateResult?(options: {
+    basePath: string;
+    questions: AskUserQuestion[];
+    details: AskUserQuestionsStructuredContent;
+  }): unknown;
 }
 
 const OTHER_OPTION_LABEL = 'None of the above';
@@ -647,6 +652,15 @@ async function recordAskUserQuestionsGateResult(
   if (!writeGate) return;
 
   const basePath = askUserQuestionsWriteGateBasePath(deps);
+  if (writeGate.applyAskUserQuestionsGateResult) {
+    writeGate.applyAskUserQuestionsGateResult({
+      basePath,
+      questions: structured.questions,
+      details: structured,
+    });
+    return;
+  }
+
   for (const question of structured.questions) {
     if (!writeGate.isGateQuestionId(question.id)) continue;
     const selected = structured.response.answers[question.id]?.selected;

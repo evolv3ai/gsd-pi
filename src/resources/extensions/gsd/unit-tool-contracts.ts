@@ -71,6 +71,7 @@ export const UNIT_TOOL_CONTRACTS: Record<string, UnitToolSurfaceContract> = {
       "gsd_milestone_generate_id",
     ],
     requiredWorkflowTools: [
+      "ask_user_questions",
       "gsd_summary_save",
       "gsd_requirement_save",
       "gsd_requirement_update",
@@ -80,7 +81,7 @@ export const UNIT_TOOL_CONTRACTS: Record<string, UnitToolSurfaceContract> = {
   },
   "discuss-slice": {
     allowedGsdTools: ["gsd_summary_save", "gsd_decision_save"],
-    requiredWorkflowTools: ["gsd_summary_save"],
+    requiredWorkflowTools: ["ask_user_questions", "gsd_summary_save"],
   },
   "validate-milestone": {
     allowedGsdTools: ["gsd_milestone_status", "gsd_validate_milestone", "gsd_reassess_roadmap", "subagent"],

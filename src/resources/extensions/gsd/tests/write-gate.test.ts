@@ -340,6 +340,8 @@ test('write-gate: reopening a gate revokes its previous verified approval', () =
 // ═══════════════════════════════════════════════════════════════════════
 
 import {
+  applyAskUserQuestionsGateResult,
+  formatPendingAskUserQuestionsGateMessage,
   isGateQuestionId,
   shouldBlockPendingGate,
   shouldBlockPendingGateBash,
@@ -377,6 +379,83 @@ test('write-gate: pending gate lifecycle (set, get, clear)', () => {
   setPendingGate('depth_verification_M002', process.cwd());
   clearDiscussionFlowState(process.cwd());
   assert.strictEqual(getPendingGate(), null, 'clearDiscussionFlowState clears pending gate');
+});
+
+test('write-gate: applyAskUserQuestionsGateResult keeps cancelled pending gate waiting', () => {
+  const base = join(tmpdir(), `gsd-write-gate-ask-waiting-${randomUUID()}`);
+  const gateId = 'depth_verification_M001_confirm';
+
+  try {
+    mkdirSync(base, { recursive: true });
+    clearDiscussionFlowState(base);
+    setPendingGate(gateId, base);
+
+    const result = applyAskUserQuestionsGateResult({
+      basePath: base,
+      questions: [{
+        id: gateId,
+        options: [{ label: 'Confirm depth (Recommended)' }, { label: 'Needs adjustment' }],
+      }],
+      details: { cancelled: true, interrupted: true },
+    });
+
+    assert.deepEqual(result, {
+      status: 'waiting',
+      pendingGateId: gateId,
+      interrupted: true,
+    });
+    assert.strictEqual(getPendingGate(base), gateId, 'cancelled question must leave gate pending');
+    assert.strictEqual(isMilestoneDepthVerified('M001', base), false, 'cancelled question must not verify depth');
+    assert.match(
+      formatPendingAskUserQuestionsGateMessage(gateId, true),
+      /Re-call ask_user_questions with the same gate question id/,
+    );
+  } finally {
+    clearDiscussionFlowState(base);
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('write-gate: applyAskUserQuestionsGateResult verifies confirmed pending gate', () => {
+  const base = join(tmpdir(), `gsd-write-gate-ask-verified-${randomUUID()}`);
+  const gateId = 'depth_verification_M001_confirm';
+  const confirmLabel = 'Confirm depth (Recommended)';
+
+  try {
+    mkdirSync(base, { recursive: true });
+    clearDiscussionFlowState(base);
+    setPendingGate(gateId, base);
+
+    const result = applyAskUserQuestionsGateResult({
+      basePath: base,
+      questions: [{
+        id: gateId,
+        options: [{ label: confirmLabel }, { label: 'Needs adjustment' }],
+      }],
+      details: {
+        response: {
+          answers: {
+            [gateId]: { selected: confirmLabel },
+          },
+        },
+      },
+    });
+
+    assert.deepEqual(result, {
+      status: 'verified',
+      gateId,
+      milestoneId: 'M001',
+    });
+    assert.strictEqual(getPendingGate(base), null, 'confirmed gate must clear pending state');
+    assert.strictEqual(isMilestoneDepthVerified('M001', base), true, 'confirmed gate must verify milestone depth');
+    assert.ok(
+      loadWriteGateSnapshot(base).verifiedApprovalGates?.includes(gateId) ?? false,
+      'confirmed gate must record verified approval',
+    );
+  } finally {
+    clearDiscussionFlowState(base);
+    rmSync(base, { recursive: true, force: true });
+  }
 });
 
 // ─── Scenario 21: shouldBlockPendingGate blocks non-safe tools when gate is pending ──

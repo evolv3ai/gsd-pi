@@ -13,7 +13,7 @@ import type { GSDEcosystemBeforeAgentStartHandler } from "../ecosystem/gsd-exten
 import { updateSnapshot } from "../ecosystem/gsd-extension-api.js";
 
 import { buildMilestoneFileName, clearPathCache, milestonesDir, resolveMilestonePath, resolveSliceFile, resolveSlicePath } from "../paths.js";
-import { canonicalToolName, clearDiscussionFlowState, isDepthConfirmationAnswer, isMilestoneDepthVerified, isQueuePhaseActive, markApprovalGateVerified, markDepthVerified, resetWriteGateState, shouldBlockContextWrite, shouldBlockPlanningUnit, shouldBlockQueueExecution, shouldBlockWorktreeWrite, isGateQuestionId, setPendingGate, clearPendingGate, getPendingGate, shouldBlockPendingGate, shouldBlockPendingGateBash, extractDepthVerificationMilestoneId } from "./write-gate.js";
+import { applyAskUserQuestionsGateResult, canonicalToolName, clearDiscussionFlowState, formatPendingAskUserQuestionsGateMessage, isMilestoneDepthVerified, isQueuePhaseActive, markApprovalGateVerified, markDepthVerified, resetWriteGateState, shouldBlockContextWrite, shouldBlockPlanningUnit, shouldBlockQueueExecution, shouldBlockWorktreeWrite, isGateQuestionId, setPendingGate, clearPendingGate, getPendingGate, shouldBlockPendingGate, shouldBlockPendingGateBash, extractDepthVerificationMilestoneId } from "./write-gate.js";
 import { resolveManifest } from "../unit-context-manifest.js";
 import { isBlockedStateFile, isBashWriteToStateFile, BLOCKED_WRITE_ERROR } from "../write-intercept.js";
 import { loadFile, saveFile, formatContinue } from "../files.js";
@@ -1329,81 +1329,37 @@ export function registerHooks(
 
     const details = event.details as any;
 
-    // ── Discussion gate enforcement: handle gate question responses ──
-    // If the result is cancelled or has no response, the pending gate stays active
-    // so the model is blocked from non-read-only tools until it re-asks.
-    // If the user responded at all (even "needs adjustment"), clear the pending gate
-    // because the user engaged — the prompt handles the re-ask-after-adjustment flow.
     const questions: any[] = (event.input as any)?.questions ?? [];
-    const currentPendingGate = getPendingGate(basePath);
-    if (currentPendingGate) {
-      if (details?.cancelled || !details?.response) {
-        // Gate stays pending. Direct the agent to the most reliable recovery
-        // path — re-calling ask_user_questions with the same gate id — without
-        // misrepresenting the plain-text path. The plain-text path also works
-        // (isExplicitApprovalResponse on the next before_agent_start clears
-        // the gate when the user replies with an approval keyword), but the
-        // structured re-ask is more deterministic and gives the user a clear UI.
-        resetToolCallLoopGuard();
-        const interrupted = details?.interrupted === true;
-        if (ctx) {
-          await maybePauseAutoForApprovalGate(
-            ctx,
-            pi,
-            true,
-            interrupted
-              ? "Depth confirmation was interrupted — pausing auto-mode until you respond."
-              : "Depth confirmation is waiting for your answer — pausing auto-mode.",
-          );
-        }
-        return {
-          content: [{
-            type: "text" as const,
-            text: [
-              `Waiting for depth confirmation on gate "${currentPendingGate}".`,
-              interrupted
-                ? "The confirmation question was interrupted before a response was recorded."
-                : "No user response was received for the confirmation question.",
-              "Do not infer approval from earlier or prior messages.",
-              "Do not proceed, write files, save artifacts, or call other tools.",
-              `Re-call ask_user_questions with the same gate question id ("${currentPendingGate}") and wait for the user's response.`,
-            ].join(" "),
-          }],
-        };
-      } else {
-        const pendingQuestion = questions.find((question) => question?.id === currentPendingGate);
-        if (pendingQuestion) {
-          const answer = details.response?.answers?.[currentPendingGate];
-          if (isDepthConfirmationAnswer(answer?.selected, pendingQuestion.options)) {
-            markApprovalGateVerified(currentPendingGate, basePath);
-            const milestoneIdFromGate = extractDepthVerificationMilestoneId(currentPendingGate);
-            if (milestoneIdFromGate) markDepthVerified(milestoneIdFromGate, basePath);
-            clearPendingGate(basePath);
-            clearDeferredApprovalGate(basePath);
-          }
-        }
+    const gateResult = applyAskUserQuestionsGateResult({
+      basePath,
+      questions,
+      details,
+      fallbackMilestoneId: milestoneId,
+    });
+    if (gateResult.status === "waiting") {
+      resetToolCallLoopGuard();
+      if (ctx) {
+        await maybePauseAutoForApprovalGate(
+          ctx,
+          pi,
+          true,
+          gateResult.interrupted
+            ? "Depth confirmation was interrupted — pausing auto-mode until you respond."
+            : "Depth confirmation is waiting for your answer — pausing auto-mode.",
+        );
       }
+      return {
+        content: [{
+          type: "text" as const,
+          text: formatPendingAskUserQuestionsGateMessage(gateResult.pendingGateId, gateResult.interrupted),
+        }],
+      };
+    }
+    if (gateResult.status === "verified") {
+      clearDeferredApprovalGate(basePath);
     }
 
     if (details?.cancelled || !details?.response) return;
-
-    for (const question of questions) {
-      if (typeof question.id === "string" && question.id.includes("depth_verification")) {
-        // Only unlock the gate if the user selected the first option (confirmation).
-        // Cross-references against the question's defined options to reject free-form "Other" text.
-        const answer = details.response?.answers?.[question.id];
-        const inferredMilestoneId = extractDepthVerificationMilestoneId(question.id) ?? milestoneId;
-        if (isDepthConfirmationAnswer(answer?.selected, question.options)) {
-          if (currentPendingGate && question.id !== currentPendingGate) break;
-          markApprovalGateVerified(question.id, basePath);
-          markDepthVerified(inferredMilestoneId, basePath);
-          clearPendingGate(basePath);
-          clearDeferredApprovalGate(basePath);
-        }
-        break;
-      }
-    }
-
     if (!milestoneId) return;
     await saveDiscussionQuestionRound(basePath, milestoneId, questions, details);
   });

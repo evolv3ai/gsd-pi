@@ -58,6 +58,7 @@ const WORKFLOW_MCP_ENV_KEYS = [
 	"GSD_WORKFLOW_MCP_ARGS",
 	"GSD_WORKFLOW_MCP_ENV",
 	"GSD_WORKFLOW_MCP_CWD",
+	"GSD_WORKFLOW_MCP_STRUCTURED_QUESTIONS",
 	"GSD_PROJECT_ROOT",
 	"GSD_WORKFLOW_PROJECT_ROOT",
 ] as const;
@@ -1043,6 +1044,31 @@ describe("stream-adapter — session persistence (#2859)", () => {
 		}
 	});
 
+	test("buildSdkOptions can disable workflow MCP ask_user_questions explicitly", () => {
+		const restore = setWorkflowMcpEnv({
+			GSD_WORKFLOW_MCP_COMMAND: "node",
+			GSD_WORKFLOW_MCP_NAME: "gsd-workflow",
+			GSD_WORKFLOW_MCP_ARGS: JSON.stringify(["packages/mcp-server/dist/cli.js"]),
+			GSD_WORKFLOW_MCP_CWD: "/tmp/project",
+			GSD_WORKFLOW_MCP_STRUCTURED_QUESTIONS: "0",
+		});
+		const originalCwd = process.cwd();
+		const emptyDir = mkdtempSync(join(tmpdir(), "claude-mcp-ask-disabled-"));
+		try {
+			process.chdir(emptyDir);
+			const options = buildSdkOptions("claude-sonnet-4-20250514", "test");
+			assert.ok(
+				(options.disallowedTools as string[]).includes("mcp__gsd-workflow__ask_user_questions"),
+				"explicit opt-out must block the MCP question tool even when workflow wildcard is allowed",
+			);
+			assert.ok((options.disallowedTools as string[]).includes("AskUserQuestion"));
+		} finally {
+			process.chdir(originalCwd);
+			rmSync(emptyDir, { recursive: true, force: true });
+			restore();
+		}
+	});
+
 	test("buildSdkOptions scopes run-uat to exact workflow MCP tools", () => {
 		const restore = setWorkflowMcpEnv({
 			GSD_WORKFLOW_MCP_COMMAND: "node",
@@ -1138,6 +1164,38 @@ describe("stream-adapter — session persistence (#2859)", () => {
 		} as Context;
 
 		assert.equal(inferGsdPhaseFromContext(context), "plan-milestone");
+	});
+
+	test("buildSdkOptions presents ask_user_questions for discuss phases", () => {
+		const restore = setWorkflowMcpEnv({
+			GSD_WORKFLOW_MCP_COMMAND: "node",
+			GSD_WORKFLOW_MCP_NAME: "gsd-workflow",
+			GSD_WORKFLOW_MCP_ARGS: JSON.stringify(["packages/mcp-server/dist/cli.js"]),
+			GSD_WORKFLOW_MCP_ENV: JSON.stringify({ GSD_CLI_PATH: "/tmp/gsd" }),
+			GSD_WORKFLOW_MCP_CWD: "/tmp/project",
+		});
+		const originalCwd = process.cwd();
+		const emptyDir = mkdtempSync(join(tmpdir(), "claude-mcp-discuss-"));
+		try {
+			process.chdir(emptyDir);
+			const options = buildSdkOptions("claude-sonnet-4-20250514", "test", undefined, { gsdPhase: "discuss-milestone" });
+			const allowedTools = options.allowedTools as string[];
+			const disallowedTools = options.disallowedTools as string[];
+
+			assert.ok(
+				allowedTools.includes("mcp__gsd-workflow__ask_user_questions"),
+				"discuss phases must expose the exact workflow MCP question tool",
+			);
+			assert.ok(disallowedTools.includes("AskUserQuestion"));
+			assert.ok(
+				!disallowedTools.includes("mcp__gsd-workflow__ask_user_questions"),
+				"workflow MCP ask_user_questions should remain enabled by default",
+			);
+		} finally {
+			process.chdir(originalCwd);
+			rmSync(emptyDir, { recursive: true, force: true });
+			restore();
+		}
 	});
 
 	test("buildSdkOptions prefers custom workflow MCP question tools over native AskUserQuestion", () => {

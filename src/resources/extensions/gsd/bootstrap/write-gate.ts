@@ -462,6 +462,111 @@ export function isDepthConfirmationAnswer(
   return false;
 }
 
+export interface AskUserQuestionsGateQuestion {
+  id?: unknown;
+  options?: Array<{ label?: string }>;
+}
+
+export interface AskUserQuestionsGateDetails {
+  cancelled?: boolean;
+  interrupted?: boolean;
+  response?: {
+    answers?: Record<string, { selected?: unknown } | undefined>;
+  } | null;
+}
+
+export type AskUserQuestionsGateResult =
+  | { status: "not-gate" }
+  | { status: "waiting"; pendingGateId: string; interrupted: boolean }
+  | { status: "verified"; gateId: string; milestoneId: string | null }
+  | { status: "answered"; gateId: string };
+
+function findGateQuestion(
+  questions: AskUserQuestionsGateQuestion[],
+  gateId: string,
+): AskUserQuestionsGateQuestion | undefined {
+  return questions.find((question) => question?.id === gateId);
+}
+
+function readSelectedGateAnswer(
+  details: AskUserQuestionsGateDetails,
+  questionId: string,
+): unknown {
+  return details.response?.answers?.[questionId]?.selected;
+}
+
+function verifyAnsweredGate(
+  basePath: string,
+  question: AskUserQuestionsGateQuestion,
+  fallbackMilestoneId?: string | null,
+): AskUserQuestionsGateResult {
+  const gateId = typeof question.id === "string" ? question.id : "";
+  const milestoneId = extractDepthVerificationMilestoneId(gateId) ?? fallbackMilestoneId ?? null;
+  markApprovalGateVerified(gateId, basePath);
+  markDepthVerified(milestoneId, basePath);
+  clearPendingGate(basePath);
+  return { status: "verified", gateId, milestoneId };
+}
+
+export function applyAskUserQuestionsGateResult(options: {
+  basePath: string;
+  questions: AskUserQuestionsGateQuestion[];
+  details: AskUserQuestionsGateDetails;
+  fallbackMilestoneId?: string | null;
+}): AskUserQuestionsGateResult {
+  const { basePath, questions, details, fallbackMilestoneId } = options;
+  const currentPendingGate = getPendingGate(basePath);
+  if (currentPendingGate) {
+    if (details.cancelled || !details.response) {
+      return {
+        status: "waiting",
+        pendingGateId: currentPendingGate,
+        interrupted: details.interrupted === true,
+      };
+    }
+
+    const pendingQuestion = findGateQuestion(questions, currentPendingGate);
+    if (pendingQuestion) {
+      const selected = readSelectedGateAnswer(details, currentPendingGate);
+      if (isDepthConfirmationAnswer(selected, pendingQuestion.options)) {
+        return verifyAnsweredGate(basePath, pendingQuestion, fallbackMilestoneId);
+      }
+      return { status: "answered", gateId: currentPendingGate };
+    }
+  }
+
+  if (details.cancelled || !details.response) return { status: "not-gate" };
+
+  for (const question of questions) {
+    if (typeof question.id !== "string" || !isGateQuestionId(question.id)) continue;
+    const selected = readSelectedGateAnswer(details, question.id);
+    if (!isDepthConfirmationAnswer(selected, question.options)) {
+      return { status: "answered", gateId: question.id };
+    }
+    if (currentPendingGate && question.id !== currentPendingGate) {
+      return { status: "answered", gateId: currentPendingGate };
+    }
+    return verifyAnsweredGate(basePath, question, fallbackMilestoneId);
+  }
+
+  return { status: "not-gate" };
+}
+
+export function formatPendingAskUserQuestionsGateMessage(
+  pendingGateId: string,
+  interrupted: boolean,
+): string {
+  return [
+    `Waiting for depth confirmation on gate "${pendingGateId}".`,
+    interrupted
+      ? "The confirmation question was interrupted before a response was recorded."
+      : "No user response was received for the confirmation question.",
+    "Do not infer approval from earlier or prior messages.",
+    "Do not proceed, write files, save artifacts, or call other tools.",
+    `Re-call ask_user_questions with the same gate question id ("${pendingGateId}") and wait for the user's response.`,
+  ].join(" ");
+}
+
 export function shouldBlockContextWrite(
   toolName: string,
   inputPath: string,
