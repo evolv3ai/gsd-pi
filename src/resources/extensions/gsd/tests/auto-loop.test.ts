@@ -274,6 +274,8 @@ async function autoLoop(
 function makeMockSession(opts?: {
   newSessionResult?: { cancelled: boolean };
   newSessionThrows?: string;
+  /** Reject newSession() with a specific Error instance (e.g. TypeError). */
+  newSessionThrowsError?: Error;
   newSessionDelayMs?: number;
   onNewSessionStart?: (session: any) => void;
   onNewSessionSettle?: (session: any) => void;
@@ -288,6 +290,9 @@ function makeMockSession(opts?: {
     cmdCtx: {
       newSession: (options?: { abortSignal?: AbortSignal; workspaceRoot?: string }) => {
         opts?.onNewSessionStart?.(session);
+        if (opts?.newSessionThrowsError) {
+          return Promise.reject(opts.newSessionThrowsError);
+        }
         if (opts?.newSessionThrows) {
           return Promise.reject(new Error(opts.newSessionThrows));
         }
@@ -696,6 +701,73 @@ test("runUnit returns cancelled when session creation fails", async () => {
   assert.equal(result.event, undefined);
   // sendMessage should NOT have been called
   assert.equal(pi.calls.length, 0);
+});
+
+test("runUnit: TypeError from newSession is classified as structural (isTransient: false)", async () => {
+  // Regression for #572: a TypeError thrown from newSession (e.g. "something is
+  // not a function") indicates a programming error, not a transient provider
+  // blip. Before the fix it was always classified isTransient: true, causing
+  // auto-mode to retry indefinitely instead of surfacing the real problem.
+  _resetPendingResolve();
+
+  const baseCtx = {
+    ...makeMockCtx(),
+    ui: { notify: () => {}, setStatus: () => {}, setWorkingMessage: () => {} },
+    sessionManager: { getEntries: () => [] },
+    modelRegistry: { getProviderAuthMode: () => undefined, isProviderRequestReady: () => true },
+  } as any;
+  const pi = makeMockPi();
+  const s = makeMockSession({
+    newSessionThrowsError: new TypeError("pi.sendMessage is not a function"),
+  });
+
+  const result = await runUnit(baseCtx, pi, s, "task", "T01", "prompt");
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.errorContext?.category, "session-failed");
+  assert.equal(result.errorContext?.isTransient, false, "TypeError must be non-transient");
+});
+
+test("runUnit: 'is not a function' message from newSession is classified as structural", async () => {
+  // Regression for #572: the pattern also catches errors where the thrown
+  // object is not a TypeError instance but the message contains "is not a function".
+  _resetPendingResolve();
+
+  const baseCtx = {
+    ...makeMockCtx(),
+    ui: { notify: () => {}, setStatus: () => {}, setWorkingMessage: () => {} },
+    sessionManager: { getEntries: () => [] },
+    modelRegistry: { getProviderAuthMode: () => undefined, isProviderRequestReady: () => true },
+  } as any;
+  const pi = makeMockPi();
+  const s = makeMockSession({ newSessionThrows: "pi.sendMessage is not a function" });
+
+  const result = await runUnit(baseCtx, pi, s, "task", "T01", "prompt");
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.errorContext?.category, "session-failed");
+  assert.equal(result.errorContext?.isTransient, false, "'is not a function' errors must be non-transient");
+});
+
+test("runUnit: generic network error from newSession remains transient", async () => {
+  // Confirm that non-structural session errors (e.g. 429, ECONNREFUSED) are
+  // still classified as transient so auto-mode can retry them.
+  _resetPendingResolve();
+
+  const baseCtx = {
+    ...makeMockCtx(),
+    ui: { notify: () => {}, setStatus: () => {}, setWorkingMessage: () => {} },
+    sessionManager: { getEntries: () => [] },
+    modelRegistry: { getProviderAuthMode: () => undefined, isProviderRequestReady: () => true },
+  } as any;
+  const pi = makeMockPi();
+  const s = makeMockSession({ newSessionThrows: "connection refused" });
+
+  const result = await runUnit(baseCtx, pi, s, "task", "T01", "prompt");
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.errorContext?.category, "session-failed");
+  assert.equal(result.errorContext?.isTransient, true, "network errors must remain transient");
 });
 
 test("runUnit clears queued switch cancellation when session creation fails", async () => {

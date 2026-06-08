@@ -1091,7 +1091,8 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
   public async resume(): Promise<AutoAdvanceResult> {
     this.lastAdvanceKey = null;
     this.lastFinalizedUnitKey = null;
-    this.dispatchKeyWindow = [];
+    // Preserve dispatchKeyWindow across resume so stuck-loop detection
+    // accumulates across pause/resume cycles rather than resetting each time.
     this.lastStuckRecoveryKey = null;
     this.status.phase = "running";
     this.bumpTransition();
@@ -1109,7 +1110,11 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
     this.status.activeUnit = undefined;
     this.lastAdvanceKey = null;
     this.lastFinalizedUnitKey = null;
-    this.dispatchKeyWindow = [];
+    // Preserve dispatchKeyWindow on pause so stuck-loop detection accumulates
+    // across pause/resume cycles. Only clear on a hard stop.
+    if (reason !== "pause") {
+      this.dispatchKeyWindow = [];
+    }
     this.lastStuckRecoveryKey = null;
     this.bumpTransition();
     this.journalTransition({ name: "stop", reason });

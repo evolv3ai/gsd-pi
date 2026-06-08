@@ -736,7 +736,10 @@ test("stuck-loop: start() resets the ring so a fresh saturation cycle is require
   assert.equal(next.kind, "advanced");
 });
 
-test("stuck-loop: resume() resets the ring", async (t) => {
+test("stuck-loop: resume() preserves ring so detection accumulates across pause/resume", async (t) => {
+  // Regression for #572: resume() must NOT reset dispatchKeyWindow. Before the
+  // fix, a pause/resume cycle cleared the window, letting a stuck loop silently
+  // re-accumulate STUCK_WINDOW_SIZE dispatches before being detected again.
   const f = makeFixture();
   t.after(() => f.cleanup());
 
@@ -747,11 +750,39 @@ test("stuck-loop: resume() resets the ring", async (t) => {
   const resumed = await f.orchestrator.resume();
   assert.equal(resumed.kind, "resumed");
 
+  // The ring is preserved, so the next advance pushes it to STUCK_WINDOW_SIZE
+  // and triggers stuck-loop detection — not a fresh dispatch.
   const next = await f.orchestrator.advance();
-  assert.equal(next.kind, "advanced");
+  assert.equal(next.kind, "blocked");
+  if (next.kind !== "blocked") return;
+  assert.equal(next.action, "stop");
+  assert.ok(next.reason.startsWith("stuck-loop:"), `expected stuck-loop reason, got: ${next.reason}`);
 });
 
-test("stuck-loop: stop() resets the ring", async (t) => {
+test("stuck-loop: stop('pause') preserves ring across the stop/resume cycle", async (t) => {
+  // Regression for #572: stop("pause") must behave the same as resume() —
+  // the window must survive so detection accumulates across pause/resume pairs.
+  const f = makeFixture();
+  t.after(() => f.cleanup());
+
+  for (let i = 0; i < STUCK_WINDOW_SIZE - 1; i++) {
+    await f.orchestrator.advance();
+  }
+
+  const stopped = await f.orchestrator.stop("pause");
+  assert.equal(stopped.kind, "stopped");
+
+  const resumed = await f.orchestrator.resume();
+  assert.equal(resumed.kind, "resumed");
+
+  const next = await f.orchestrator.advance();
+  assert.equal(next.kind, "blocked");
+  if (next.kind !== "blocked") return;
+  assert.equal(next.action, "stop");
+  assert.ok(next.reason.startsWith("stuck-loop:"), `expected stuck-loop reason, got: ${next.reason}`);
+});
+
+test("stuck-loop: stop('user-request') resets the ring (hard stop)", async (t) => {
   const f = makeFixture();
   t.after(() => f.cleanup());
 
@@ -762,6 +793,7 @@ test("stuck-loop: stop() resets the ring", async (t) => {
   const stopped = await f.orchestrator.stop("user-request");
   assert.equal(stopped.kind, "stopped");
 
+  // Hard stop clears the ring, so the next advance dispatches fresh.
   const next = await f.orchestrator.advance();
   assert.equal(next.kind, "advanced");
 });
