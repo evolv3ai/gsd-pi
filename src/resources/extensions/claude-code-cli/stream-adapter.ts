@@ -1378,14 +1378,16 @@ export function createClaudeCodeElicitationHandler(
 			if (headlessAnswer) return headlessAnswer;
 
 			const interviewResult = await showInterviewRound(questions, { signal }, { ui } as any).catch(() => undefined);
-			if (interviewResult && Object.keys(interviewResult.answers).length > 0) {
-				return {
-					action: "accept",
-					content: roundResultToElicitationContent(questions, interviewResult),
-				};
+			if (interviewResult === undefined) {
+				return promptElicitationWithDialogs(request, questions, ui, signal);
 			}
-
-			return promptElicitationWithDialogs(request, questions, ui, signal);
+			if (Object.keys(interviewResult.answers).length === 0) {
+				return { action: "cancel" };
+			}
+			return {
+				action: "accept",
+				content: roundResultToElicitationContent(questions, interviewResult),
+			};
 		}
 
 		const textFields = parseTextInputElicitation(request);

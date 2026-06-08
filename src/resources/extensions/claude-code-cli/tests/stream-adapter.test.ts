@@ -1720,6 +1720,26 @@ describe("stream-adapter — MCP elicitation bridge", () => {
 		});
 	});
 
+	test("createClaudeCodeElicitationHandler returns cancel when custom UI is dismissed", async () => {
+		let selectCalls = 0;
+		const handler = createClaudeCodeElicitationHandler({
+			custom: async () => ({
+				endInterview: false,
+				answers: {},
+			}),
+			select: async () => {
+				selectCalls++;
+				return "Cloud-synced";
+			},
+		} as any);
+		assert.ok(handler);
+
+		const result = await handler!(askUserQuestionsRequest, { signal: new AbortController().signal });
+
+		assert.deepEqual(result, { action: "cancel" });
+		assert.equal(selectCalls, 0, "dismissed custom question must not re-open dialog fallback");
+	});
+
 	test("parseTextInputElicitation recognizes secure free-text MCP forms", () => {
 		const request = {
 			serverName: "gsd-workflow",
