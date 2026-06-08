@@ -2404,8 +2404,13 @@ test("autoLoop stops orchestrator complete state through completion surface", as
       start: async () => ({ kind: "stopped" as const, reason: "unused" }),
       advance: async () => ({
         kind: "stopped" as const,
-        reason: "all milestones complete",
+        reason: "legacy text not used",
         stateSnapshot,
+        terminalOutcome: {
+          code: "all-complete" as const,
+          displayReason: "All milestones complete",
+          allMilestonesComplete: true as const,
+        },
       }),
       completeActiveUnit: async () => {},
       retryActiveUnit: async () => {},
@@ -2431,6 +2436,7 @@ test("autoLoop stops orchestrator complete state through completion surface", as
     milestoneTitle: "Priority Levels",
     allMilestonesComplete: true,
   });
+  assert.equal((stopCalls[0]?.options as any)?.terminalOutcome?.code, "all-complete");
   assert.equal(
     deps.callLog.includes("resolveDispatch"),
     false,

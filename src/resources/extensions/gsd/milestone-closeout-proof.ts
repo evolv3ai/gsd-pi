@@ -101,6 +101,7 @@ export function proveMilestoneCloseout(
   const consistency = checkCloseoutConsistencyGate(milestoneId, {
     refreshFromDisk: options.refreshFromDisk,
     allowOpenMilestone: options.allowOpenMilestone,
+    artifactBasePath: options.summaryArtifactBasePath,
   });
   if (!consistency.ok) return fromConsistencyResult(consistency);
 

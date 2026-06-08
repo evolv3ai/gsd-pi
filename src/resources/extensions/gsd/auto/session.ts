@@ -29,6 +29,7 @@ import { resolveWorktreeProjectRoot } from "../worktree-root.js";
 import { normalizeRealPath } from "../paths.js";
 import type { MilestoneScope } from "../workspace.js";
 import type { RootDirtySnapshot } from "../root-write-leak-guard.js";
+import type { MilestoneSettlementOutcome } from "../milestone-settlement.js";
 
 // ─── Exported Types ──────────────────────────────────────────────────────────
 
@@ -230,6 +231,8 @@ export class AutoSession {
   /** Set to true after phases.ts successfully calls mergeAndExit, so that
    *  stopAuto does not attempt the same merge a second time (#2645). */
   milestoneMergedInPhases = false;
+  /** Last milestone settlement result observed by Auto Orchestration. */
+  milestoneSettlement: MilestoneSettlementOutcome | null = null;
 
   // #4765 — slice-cadence collapse: main-branch SHAs at the moment each
   // milestone's first slice merge began. Used by resquashMilestoneOnMain at
@@ -410,6 +413,7 @@ export class AutoSession {
     this.strandedRecoveryIsolationMode = null;
     this.rootWriteBaseline = null;
     this.milestoneMergedInPhases = false;
+    this.milestoneSettlement = null;
     this.milestoneStartShas = new Map();
     this.checkpointSha = null;
 

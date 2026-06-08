@@ -33,6 +33,8 @@ import type { UnifiedRule } from "../rule-types.js";
 import { supportsStructuredQuestions } from "../workflow-mcp.js";
 import {
   closeDatabase,
+  insertAssessment,
+  insertGateRow,
   insertMilestone,
   insertSlice,
   insertTask,
@@ -414,8 +416,63 @@ test("advance() reports completion when complete state has no next unit", async 
 
   assert.equal(result.kind, "stopped");
   if (result.kind !== "stopped") return;
-  assert.equal(result.reason, "all milestones complete");
+  assert.equal(result.reason, "All milestones complete");
+  assert.equal(result.terminalOutcome?.code, "all-complete");
   assert.equal(f.orchestrator.getStatus().phase, "stopped");
+});
+
+test("advance() blocks all-complete stop when completed milestone is still unmerged in a worktree", async (t) => {
+  const f = makeFixture({ complete: true, noTask: true });
+  t.after(() => f.cleanup());
+
+  insertSlice({
+    id: "S01",
+    milestoneId: "M001",
+    title: "Slice",
+    status: "complete",
+    risk: "low",
+    depends: [],
+    demo: "",
+    sequence: 1,
+  });
+  insertAssessment({
+    path: "milestones/M001/M001-VALIDATION.md",
+    milestoneId: "M001",
+    status: "pass",
+    scope: "milestone-validation",
+    fullContent: "verdict: pass",
+  });
+  insertGateRow({
+    milestoneId: "M001",
+    sliceId: "S01",
+    gateId: "Q3",
+    scope: "slice",
+    status: "pending",
+  });
+
+  const worktreePath = join(f.base, ".gsd", "worktrees", "M001");
+  mkdirSync(join(f.base, ".gsd", "worktrees"), { recursive: true });
+  execFileSync("git", ["worktree", "add", "-b", "milestone/M001", worktreePath], { cwd: f.base, stdio: "ignore" });
+  mkdirSync(join(worktreePath, ".gsd", "milestones", "M001"), { recursive: true });
+  writeFileSync(join(worktreePath, ".gsd", "milestones", "M001", "M001-SUMMARY.md"), "# Milestone Summary\n");
+  f.session.basePath = worktreePath;
+  f.session.originalBasePath = f.base;
+  f.session.currentMilestoneId = "M001";
+  f.session.milestoneMergedInPhases = false;
+
+  const result = await f.orchestrator.advance();
+
+  assert.equal(result.kind, "blocked");
+  if (result.kind !== "blocked") return;
+  assert.equal(result.action, "pause");
+  assert.equal(result.terminalOutcome?.code, "settlement-blocked");
+  assert.match(result.reason, /worktree branch has not been merged to main/);
+  assert.doesNotMatch(result.reason, /quality gate Q3 is still pending/);
+  assert.equal(f.orchestrator.getStatus().phase, "paused");
+  assert.equal(f.session.milestoneSettlement?.ok, false);
+  const names = f.journalNames();
+  assert.ok(names.includes("advance-blocked"));
+  assert.ok(!names.includes("advance-stopped"));
 });
 
 test("advance() stopped clears previous activeUnit and resets idempotent lock", async (t) => {

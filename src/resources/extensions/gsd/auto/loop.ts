@@ -15,6 +15,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AutoSession } from "./session.js";
+import type { AutoTerminalOutcome } from "./contracts.js";
 import type { LoopDeps, StopAutoOptions } from "./loop-deps.js";
 import type { GSDState } from "../types.js";
 import {
@@ -136,6 +137,25 @@ function resolveCompletionStopFromState(
         milestoneTitle: completedMilestone?.title ?? null,
         allMilestonesComplete: true,
       },
+    },
+  };
+}
+
+function resolveCompletionStopFromOutcome(
+  outcome: AutoTerminalOutcome | undefined,
+  stateSnapshot: GSDState | undefined,
+): { reason: string; options: StopAutoOptions } | null {
+  if (outcome?.code !== "all-complete") return null;
+  const completedMilestone = stateSnapshot?.lastCompletedMilestone ?? stateSnapshot?.activeMilestone;
+  return {
+    reason: outcome.displayReason,
+    options: {
+      completionWidget: {
+        milestoneId: completedMilestone?.id ?? null,
+        milestoneTitle: completedMilestone?.title ?? null,
+        allMilestonesComplete: true,
+      },
+      terminalOutcome: outcome,
     },
   };
 }
@@ -871,16 +891,22 @@ export async function autoLoop(
 
           if (orchestrationResult.kind === "blocked") {
             s.pendingOrchestrationDispatch = null;
+            const blockMessage = orchestrationResult.terminalOutcome?.code === "settlement-blocked"
+              ? [
+                  orchestrationResult.terminalOutcome.displayReason,
+                  `Next: ${orchestrationResult.terminalOutcome.nextAction}`,
+                ].join("\n")
+              : orchestrationResult.reason;
             if (orchestrationResult.action === "pause") {
               await deps.pauseAuto(ctx, pi, {
-                message: orchestrationResult.reason,
+                message: blockMessage,
                 category: "unknown",
               }, {
                 expectedCurrentUnit: null,
               });
               finishTurn("paused", "manual-attention", "orchestration-blocked");
             } else {
-              await deps.stopAuto(ctx, pi, orchestrationResult.reason);
+              await deps.stopAuto(ctx, pi, blockMessage);
               finishTurn("stopped", "manual-attention", "orchestration-blocked");
             }
             finishIncompleteIteration({
@@ -926,7 +952,11 @@ export async function autoLoop(
 
           if (orchestrationResult.kind === "stopped") {
             s.pendingOrchestrationDispatch = null;
-            const completionStop = resolveCompletionStopFromState(orchestrationResult.stateSnapshot);
+            let completionStop = resolveCompletionStopFromOutcome(
+              orchestrationResult.terminalOutcome,
+              orchestrationResult.stateSnapshot,
+            );
+            completionStop ??= resolveCompletionStopFromState(orchestrationResult.stateSnapshot);
             if (completionStop) {
               await deps.stopAuto(ctx, pi, completionStop.reason, completionStop.options);
             } else {

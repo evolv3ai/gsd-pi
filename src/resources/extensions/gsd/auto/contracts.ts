@@ -27,13 +27,43 @@ export interface AutoStatus {
   transitionCount: number;
 }
 
+export type AutoTerminalOutcome =
+  | {
+      code: "all-complete";
+      displayReason: string;
+      allMilestonesComplete: true;
+    }
+  | {
+      code: "no-remaining-units";
+      displayReason: string;
+      allMilestonesComplete: false;
+    }
+  | {
+      code: "settlement-blocked";
+      displayReason: string;
+      nextAction: string;
+      milestoneId: string;
+      allMilestonesComplete: false;
+    };
+
 export type AutoAdvanceResult =
   | { kind: "started" }
   | { kind: "resumed" }
   | { kind: "advanced"; unit: UnitRef; stateSnapshot: GSDState }
   | { kind: "skipped"; reason: string; stateSnapshot?: GSDState }
-  | { kind: "blocked"; reason: string; action: "pause" | "stop"; stateSnapshot?: GSDState }
-  | { kind: "stopped"; reason: string; stateSnapshot?: GSDState }
+  | {
+      kind: "blocked";
+      reason: string;
+      action: "pause" | "stop";
+      stateSnapshot?: GSDState;
+      terminalOutcome?: AutoTerminalOutcome;
+    }
+  | {
+      kind: "stopped";
+      reason: string;
+      stateSnapshot?: GSDState;
+      terminalOutcome?: AutoTerminalOutcome;
+    }
   | { kind: "paused"; reason: string }
   | { kind: "error"; reason: string };
 

@@ -1,6 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Shared DB-backed guard for milestone closeout finalization.
 
+import { dirname } from "node:path";
+
 import {
   getLatestAssessmentByScope,
   getMilestone,
@@ -14,6 +16,7 @@ import {
   refreshWorkflowDatabaseFromDisk,
 } from "./db-workspace.js";
 import { isClosedStatus } from "./status-guards.js";
+import { closeQualityGatesFromEvidence } from "./quality-gate-closure.js";
 
 export const CLOSEOUT_CONSISTENCY_BLOCKED_REASON = "closeout-consistency-blocked";
 
@@ -40,6 +43,7 @@ export type CloseoutConsistencyResult =
 export interface CloseoutConsistencyOptions {
   refreshFromDisk?: boolean;
   allowOpenMilestone?: boolean;
+  artifactBasePath?: string;
 }
 
 function blocked(reason: CloseoutConsistencyFailureReason, message: string): CloseoutConsistencyResult {
@@ -53,6 +57,12 @@ function blocked(reason: CloseoutConsistencyFailureReason, message: string): Clo
 
 function isFileBackedDbPath(path: string | null): boolean {
   return Boolean(path && path !== ":memory:");
+}
+
+function artifactBasePathFromDb(): string | undefined {
+  const dbPath = getWorkflowDatabasePath();
+  if (!isFileBackedDbPath(dbPath)) return undefined;
+  return dirname(dirname(dbPath!));
 }
 
 export function checkCloseoutConsistencyGate(
@@ -87,8 +97,10 @@ export function checkCloseoutConsistencyGate(
     );
   }
 
+  const validation = milestone.status === "skipped"
+    ? null
+    : getLatestAssessmentByScope(milestoneId, "milestone-validation");
   if (milestone.status !== "skipped") {
-    const validation = getLatestAssessmentByScope(milestoneId, "milestone-validation");
     if (validation?.status !== "pass") {
       return blocked(
         "validation-not-pass",
@@ -103,6 +115,13 @@ export function checkCloseoutConsistencyGate(
       "slice-missing",
       `Closeout consistency blocked for ${milestoneId}: no slices exist in canonical DB.`,
     );
+  }
+
+  if (milestone.status !== "skipped") {
+    closeQualityGatesFromEvidence(milestoneId, {
+      artifactBasePath: options.artifactBasePath ?? artifactBasePathFromDb(),
+      milestoneValidationPassed: validation?.status === "pass",
+    });
   }
 
   for (const slice of slices) {

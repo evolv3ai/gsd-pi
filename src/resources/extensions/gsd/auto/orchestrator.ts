@@ -12,10 +12,12 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@gsd/pi-coding-agent";
 
-import type { AutoAdvanceResult, AutoOrchestrationModule, AutoSessionContext, AutoStatus } from "./contracts.js";
+import type { AutoAdvanceResult, AutoOrchestrationModule, AutoSessionContext, AutoStatus, AutoTerminalOutcome } from "./contracts.js";
 import type { AutoSession, PendingOrchestrationDispatch } from "./session.js";
 import type { GSDState } from "../types.js";
 import type { MinimalModelRegistry } from "../context-budget.js";
+
+type BlockedAdvanceResult = Extract<AutoAdvanceResult, { kind: "blocked" }>;
 
 import { debugCount, debugTime } from "../debug-logger.js";
 import { reconcileBeforeDispatch } from "../state-reconciliation.js";
@@ -63,6 +65,7 @@ import { getErrorMessage } from "../error-utils.js";
 import { logWarning } from "../workflow-logger.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { evaluateAllCompleteSettlement } from "../milestone-settlement.js";
 
 function now(): number {
   return Date.now();
@@ -78,11 +81,19 @@ function now(): number {
  */
 export const STUCK_WINDOW_SIZE = 6;
 
-function noRemainingUnitsReason(stateSnapshot: GSDState): string {
+function noRemainingUnitsOutcome(stateSnapshot: GSDState): AutoTerminalOutcome {
   if (stateSnapshot.phase === "complete") {
-    return "all milestones complete";
+    return {
+      code: "all-complete",
+      displayReason: "All milestones complete",
+      allMilestonesComplete: true,
+    };
   }
-  return "no remaining units";
+  return {
+    code: "no-remaining-units",
+    displayReason: "No remaining units",
+    allMilestonesComplete: false,
+  };
 }
 
 /**
@@ -541,6 +552,31 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
     return decideOrchestratorDispatch(this.ctx, this.pi, this.dispatchBasePath, this.s, input);
   }
 
+  private evaluateNoRemainingUnitsSettlement(stateSnapshot: GSDState): BlockedAdvanceResult | null {
+    const settlement = evaluateAllCompleteSettlement({
+      milestoneId: this.s.currentMilestoneId ?? stateSnapshot.activeMilestone?.id,
+      statePhase: stateSnapshot.phase,
+      basePath: this.s.basePath || this.getLiveDispatchBasePath(),
+      originalBasePath: this.s.originalBasePath || this.runtimeBasePath,
+      milestoneMerged: this.s.milestoneMergedInPhases,
+    });
+    this.s.milestoneSettlement = settlement;
+    if (settlement.ok) return null;
+    return {
+      kind: "blocked",
+      reason: settlement.message,
+      action: settlement.action,
+      stateSnapshot,
+      terminalOutcome: {
+        code: "settlement-blocked",
+        displayReason: settlement.message,
+        nextAction: settlement.nextAction,
+        milestoneId: settlement.milestoneId,
+        allMilestonesComplete: false,
+      },
+    };
+  }
+
   private clearPendingDispatch(): void {
     this.s.pendingOrchestrationDispatch = null;
   }
@@ -842,10 +878,23 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
 
       const decision = await this.decideNextUnit({ stateSnapshot: reconciliation.stateSnapshot });
       if (!decision) {
+        const settlementBlock = this.evaluateNoRemainingUnitsSettlement(reconciliation.stateSnapshot);
+        if (settlementBlock) {
+          this.status.phase = "paused";
+          this.status.activeUnit = undefined;
+          this.lastAdvanceKey = null;
+          this.dispatchKeyWindow = [];
+          this.bumpTransition();
+          this.journalTransition({ name: "advance-blocked", reason: settlementBlock.reason });
+          this.postAdvanceRecord(settlementBlock);
+          return settlementBlock;
+        }
+        const terminalOutcome = noRemainingUnitsOutcome(reconciliation.stateSnapshot);
         const stopped: AutoAdvanceResult = {
           kind: "stopped",
-          reason: noRemainingUnitsReason(reconciliation.stateSnapshot),
+          reason: terminalOutcome.displayReason,
           stateSnapshot: reconciliation.stateSnapshot,
+          terminalOutcome,
         };
         this.status.phase = "stopped";
         this.status.activeUnit = undefined;

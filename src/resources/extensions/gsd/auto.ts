@@ -1479,12 +1479,17 @@ export async function stopAuto(
   // worktree was active, and whether the current milestone was merged before
   // stopAuto. The unmerged-work warning is only meaningful for real worktrees.
   try {
-    const { emitAutoExit, normalizeAutoExitReason } = await import("./worktree-telemetry.js");
+    const {
+      autoExitReasonForTerminalOutcome,
+      emitAutoExit,
+      normalizeAutoExitReason,
+    } = await import("./worktree-telemetry.js");
     // Normalize the free-form reason to a closed set so the telemetry
     // aggregator buckets stably. Raw detail is preserved in the phases.ts
     // notification and the notify'd error string.
     const rawReason = reason ?? "stop";
-    const normalizedReason = normalizeAutoExitReason(rawReason);
+    const normalizedReason = autoExitReasonForTerminalOutcome(options.terminalOutcome)
+      ?? normalizeAutoExitReason(rawReason);
     const telemetryBase = s.originalBasePath || s.basePath;
     emitAutoExit(telemetryBase, {
       reason: normalizedReason,

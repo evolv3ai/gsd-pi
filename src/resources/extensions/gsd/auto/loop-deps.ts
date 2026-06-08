@@ -7,6 +7,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@gsd/pi-coding-agent";
 
 import type { AutoSession } from "./session.js";
+import type { AutoTerminalOutcome } from "./contracts.js";
 import type { ErrorContext } from "./types.js";
 import type { GSDPreferences } from "../preferences.js";
 import type { GSDState } from "../types.js";
@@ -33,6 +34,7 @@ export interface StopAutoOptions {
     milestoneTitle?: string | null;
     allMilestonesComplete?: boolean;
   };
+  terminalOutcome?: AutoTerminalOutcome;
   /**
    * Foreground closeout-boundary stops already have the useful final surface in
    * the transcript. Preserve it instead of installing a replacement widget.

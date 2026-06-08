@@ -14,7 +14,15 @@ import { execFileSync } from "node:child_process";
 
 import { DISPATCH_RULES, resolveDispatch, type DispatchContext } from "../auto-dispatch.ts";
 import { AutoSession } from "../auto/session.ts";
-import { closeDatabase, insertAssessment, insertGateRow, insertMilestone, insertSlice, openDatabase } from "../gsd-db.ts";
+import {
+  closeDatabase,
+  getPendingGates,
+  insertAssessment,
+  insertGateRow,
+  insertMilestone,
+  insertSlice,
+  openDatabase,
+} from "../gsd-db.ts";
 
 function makeBase(): string {
   const base = mkdtempSync(join(tmpdir(), "gsd-complete-dispatch-"));
@@ -243,7 +251,7 @@ describe("complete phase dispatch guard (#5683)", () => {
     assert.equal(result?.reason, "All milestones complete.");
   });
 
-  test("blocks terminal stop when closed milestone still has pending gates", async () => {
+  test("closes stale pending gates from milestone validation before terminal stop", async () => {
     base = makeBase();
     openDatabase(join(base, ".gsd", "gsd.db"));
     insertMilestone({ id: "M001", title: "Milestone One", status: "complete" });
@@ -269,9 +277,32 @@ describe("complete phase dispatch guard (#5683)", () => {
     const result = await rule.match(ctx);
 
     assert.equal(result?.action, "stop");
+    assert.equal(result?.reason, "All milestones complete.");
+    assert.deepEqual(getPendingGates("M001", "S01"), []);
+  });
+
+  test("blocks terminal stop when pending gates have no closeout evidence", async () => {
+    base = makeBase();
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "M001", title: "Milestone One", status: "complete" });
+    insertSlice({ milestoneId: "M001", id: "S01", title: "Done", status: "complete" });
+    insertGateRow({
+      milestoneId: "M001",
+      sliceId: "S01",
+      gateId: "Q3",
+      scope: "slice",
+      status: "pending",
+    });
+
+    const ctx = buildDispatchCtx(base);
+    ctx.state.phase = "complete";
+
+    const result = await rule.match(ctx);
+
+    assert.equal(result?.action, "stop");
     assert.equal(result?.level, "warning");
     assert.match(result?.reason ?? "", /closeout-consistency-blocked/);
-    assert.match(result?.reason ?? "", /quality gate Q3 is still pending/);
+    assert.match(result?.reason ?? "", /latest milestone validation is "absent"/);
   });
 });
 
