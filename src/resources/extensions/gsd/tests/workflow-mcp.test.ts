@@ -835,7 +835,7 @@ test("transport compatibility now allows replan-slice over workflow MCP surface"
   assert.equal(error, null);
 });
 
-test("transport compatibility rejects MCP tools not connected in active tool surface", () => {
+test("transport compatibility accepts workflow MCP tools absent from parent active tool surface", () => {
   const error = getWorkflowTransportSupportError(
     "claude-code",
     ["gsd_summary_save"],
@@ -850,10 +850,10 @@ test("transport compatibility rejects MCP tools not connected in active tool sur
     },
   );
 
-  assert.match(error ?? "", /requires gsd_summary_save/);
+  assert.equal(error, null);
 });
 
-test("transport compatibility checks all required tools against active tool surface", () => {
+test("transport compatibility still checks non-MCP tools against parent active tool surface", () => {
   const error = getWorkflowTransportSupportError(
     "claude-code",
     ["gsd_summary_save", "secure_env_collect"],
@@ -868,9 +868,54 @@ test("transport compatibility checks all required tools against active tool surf
     },
   );
 
-  assert.match(error ?? "", /requires.*(?:gsd_summary_save|secure_env_collect)/);
-  assert.match(error ?? "", /gsd_summary_save/);
-  assert.match(error ?? "", /secure_env_collect/);
+  assert.match(error ?? "", /requires secure_env_collect/);
+  assert.doesNotMatch(error ?? "", /gsd_summary_save/);
+});
+
+test("transport compatibility allows plan-slice MCP tools when parent surface is scoped (regression #457)", () => {
+  const error = getWorkflowTransportSupportError(
+    "claude-code",
+    getRequiredWorkflowToolsForAutoUnit("plan-slice"),
+    {
+      projectRoot: "/tmp/project",
+      env: { GSD_WORKFLOW_MCP_COMMAND: "node" },
+      surface: "auto-mode",
+      unitType: "plan-slice",
+      authMode: "externalCli",
+      baseUrl: "local://claude-code",
+      activeTools: [
+        "ScheduleWakeup",
+        "ToolSearch",
+        "ask_user_questions",
+        "async_bash",
+        "await_job",
+        "bash",
+        "bg_shell",
+        "cancel_job",
+        "capture_thought",
+        "discover_configs",
+        "edit",
+        "fetch_page",
+        "get_library_docs",
+        "gsd_checkpoint_db",
+        "gsd_exec",
+        "gsd_exec_search",
+        "gsd_milestone_status",
+        "gsd_resume",
+        "mcp_call",
+        "mcp_discover",
+        "mcp_servers",
+        "memory_query",
+        "read",
+        "resolve_library",
+        "secure_env_collect",
+        "subagent",
+        "write",
+      ],
+    },
+  );
+
+  assert.equal(error, null);
 });
 
 test("transport compatibility still blocks units whose MCP tools are not exposed", () => {

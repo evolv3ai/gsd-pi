@@ -8,6 +8,9 @@ This changelog starts from the `open-gsd/gsd-pi` ownership baseline. Earlier pro
 
 ## [Unreleased]
 
+### Fixed
+- **issue**: [Bug]: After upgrading to version 1.1.1 GSD is stuck for missing toolset
+
 ## [1.2.0] - 2026-06-06
 
 ### Added
