@@ -20,6 +20,17 @@ const inFlightTools = new Map<string, InFlightTool>();
 const INTERACTIVE_TOOLS = new Set(["ask_user_questions", "secure_env_collect"]);
 
 /**
+ * Mode-agnostic refcount of in-flight interactive elicitations that are an
+ * active human boundary (the model ASKED via ask_user_questions). Unlike the
+ * `inFlightTools` Map, this is NOT gated by auto-session.active, so it is true
+ * in FOREGROUND (where s.active is false). Kept SEPARATE from inFlightTools so
+ * getInFlightToolCount()/getOldestInFlightToolAgeMs()/hasInteractiveToolInFlight()
+ * and the auto-watchdog accounting are byte-for-byte unchanged. A refcount (not
+ * a boolean) handles nested/back-to-back elicitations in a single turn.
+ */
+let interactiveElicitationDepth = 0;
+
+/**
  * Mark a tool execution as in-flight.
  * Records start time and tool name so the idle watchdog can detect tools
  * hung longer than the idle timeout while exempting interactive tools.
@@ -34,6 +45,29 @@ export function markToolStart(toolCallId: string, isActive: boolean, toolName?: 
  */
 export function markToolEnd(toolCallId: string): void {
   inFlightTools.delete(toolCallId);
+}
+
+/**
+ * Mark an interactive elicitation (the model asking via ask_user_questions) as
+ * in flight. Ungated by auto-session.active so it is observable in foreground.
+ */
+export function markInteractiveElicitationStart(): void {
+  interactiveElicitationDepth++;
+}
+
+/**
+ * Mark an interactive elicitation as completed. Idempotent below zero.
+ */
+export function markInteractiveElicitationEnd(): void {
+  if (interactiveElicitationDepth > 0) interactiveElicitationDepth--;
+}
+
+/**
+ * Returns true if any interactive elicitation is currently the active human
+ * boundary. True in ALL modes (foreground and auto) while one is in flight.
+ */
+export function isInteractiveElicitationInFlight(): boolean {
+  return interactiveElicitationDepth > 0;
 }
 
 /**
@@ -84,6 +118,7 @@ export function hasInteractiveToolInFlight(): boolean {
  */
 export function clearInFlightTools(): void {
   inFlightTools.clear();
+  interactiveElicitationDepth = 0;
 }
 
 // ─── Tool invocation error classification (#2883) ────────────────────────

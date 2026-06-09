@@ -9,6 +9,10 @@ import {
   markToolEnd as markTrackedToolEnd,
   markToolStart as markTrackedToolStart,
 } from "./auto-tool-tracking.js";
+// Re-exported as a pure pass-through. Must stay UNGATED (no autoSession.active
+// argument, unlike markToolStart at the bottom of this file) so it is true in
+// foreground where the foreground approval-gate pause consults it.
+export { isInteractiveElicitationInFlight } from "./auto-tool-tracking.js";
 import {
   createToolSurfaceSnapshot,
   type ToolSurfaceSnapshot,

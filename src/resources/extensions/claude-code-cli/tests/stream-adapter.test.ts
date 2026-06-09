@@ -39,7 +39,7 @@ import {
 import type { AssistantMessage, Context, Message } from "@gsd/pi-ai";
 import type { SDKUserMessage } from "../sdk-types.ts";
 import { _setAutoActiveForTest } from "../../gsd/auto.ts";
-import { getInFlightToolCount, hasInteractiveToolInFlight, clearInFlightTools } from "../../gsd/auto-tool-tracking.ts";
+import { getInFlightToolCount, hasInteractiveToolInFlight, clearInFlightTools, isInteractiveElicitationInFlight } from "../../gsd/auto-tool-tracking.ts";
 
 // ---------------------------------------------------------------------------
 // Env helpers — `GSD_WORKFLOW_MCP_*` save/restore
@@ -1961,6 +1961,57 @@ describe("stream-adapter — MCP elicitation bridge", () => {
 
 		await handler!(askUserQuestionsRequest, { signal: new AbortController().signal });
 		assert.equal(countDuringWait, 0, "foreground/non-auto elicitation must not touch the in-flight guard");
+	});
+
+	// The FOREGROUND self-cancel regression guard: the s.active-gated in-flight
+	// guard above is a no-op in foreground, so the foreground approval-gate pause
+	// path needs a SEPARATE, ungated signal to see the elicitation as the active
+	// human boundary. isInteractiveElicitationInFlight() must be true DURING the
+	// wait and false after, even with auto inactive (#cc-elicitation-self-cancel).
+	test("sets the ungated interactive-elicitation marker in FOREGROUND (auto inactive)", async () => {
+		_setAutoActiveForTest(false);
+		clearInFlightTools();
+		try {
+			let markerDuringWait = false;
+			let countDuringWait = -1;
+			const handler = createClaudeCodeElicitationHandler({
+				custom: async () => {
+					markerDuringWait = isInteractiveElicitationInFlight();
+					countDuringWait = getInFlightToolCount();
+					return {
+						endInterview: false,
+						answers: { storage_scope: { selected: "Cloud-synced", notes: "" }, platform: { selected: ["Web"], notes: "" } },
+					};
+				},
+			} as any);
+			assert.ok(handler);
+
+			const result = await handler!(askUserQuestionsRequest, { signal: new AbortController().signal });
+
+			assert.equal(markerDuringWait, true, "ungated marker must be true during the foreground human wait");
+			assert.equal(countDuringWait, 0, "the separate marker must NOT touch the in-flight tool count in foreground");
+			assert.equal(result.action, "accept");
+			assert.equal(isInteractiveElicitationInFlight(), false, "marker must clear after the elicitation resolves");
+		} finally {
+			clearInFlightTools();
+		}
+	});
+
+	test("clears the ungated marker even when the interview UI throws in FOREGROUND (finally)", async () => {
+		_setAutoActiveForTest(false);
+		clearInFlightTools();
+		try {
+			const handler = createClaudeCodeElicitationHandler({
+				custom: async () => {
+					throw new Error("ui exploded");
+				},
+			} as any);
+			assert.ok(handler);
+			await handler!(askUserQuestionsRequest, { signal: new AbortController().signal }).catch(() => undefined);
+			assert.equal(isInteractiveElicitationInFlight(), false, "marker must clear via finally on throw");
+		} finally {
+			clearInFlightTools();
+		}
 	});
 });
 

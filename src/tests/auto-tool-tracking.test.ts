@@ -6,6 +6,9 @@ import {
   getOldestInFlightToolAgeMs,
   getInFlightToolCount,
   clearInFlightTools,
+  markInteractiveElicitationStart,
+  markInteractiveElicitationEnd,
+  isInteractiveElicitationInFlight,
 } from "../resources/extensions/gsd/auto-tool-tracking.js";
 
 describe("auto-tool-tracking", () => {
@@ -42,5 +45,41 @@ describe("auto-tool-tracking", () => {
     assert.equal(getInFlightToolCount(), 2);
     clearInFlightTools();
     assert.equal(getInFlightToolCount(), 0);
+  });
+
+  describe("interactive elicitation refcount", () => {
+    it("is false with no elicitation in flight", () => {
+      assert.equal(isInteractiveElicitationInFlight(), false);
+    });
+
+    it("is true while at least one elicitation is in flight (refcounted)", () => {
+      markInteractiveElicitationStart();
+      markInteractiveElicitationStart();
+      assert.equal(isInteractiveElicitationInFlight(), true);
+      markInteractiveElicitationEnd();
+      // Nested: still true until the last one ends — a boolean would clear early.
+      assert.equal(isInteractiveElicitationInFlight(), true);
+      markInteractiveElicitationEnd();
+      assert.equal(isInteractiveElicitationInFlight(), false);
+    });
+
+    it("never goes below zero", () => {
+      markInteractiveElicitationEnd();
+      assert.equal(isInteractiveElicitationInFlight(), false);
+    });
+
+    it("is independent of the inFlightTools count (auto-watchdog accounting unchanged)", () => {
+      markInteractiveElicitationStart();
+      assert.equal(isInteractiveElicitationInFlight(), true);
+      assert.equal(getInFlightToolCount(), 0, "marker must not touch inFlightTools");
+      markInteractiveElicitationEnd();
+    });
+
+    it("is reset by clearInFlightTools()", () => {
+      markInteractiveElicitationStart();
+      assert.equal(isInteractiveElicitationInFlight(), true);
+      clearInFlightTools();
+      assert.equal(isInteractiveElicitationInFlight(), false);
+    });
   });
 });

@@ -47,6 +47,10 @@ import { buildProjectGsdMcpServers, ensureProjectWorkflowMcpConfig } from "../gs
 import { loadProjectGSDPreferences } from "../gsd/preferences.js";
 import { markToolStart, markToolEnd } from "../gsd/auto.js";
 import {
+	markInteractiveElicitationStart,
+	markInteractiveElicitationEnd,
+} from "../gsd/auto-tool-tracking.js";
+import {
 	discoverBrowserMcpServerName,
 	discoverMcpServers,
 	discoverMcpServerNames,
@@ -1407,7 +1411,15 @@ export function createClaudeCodeElicitationHandler(
 			// the s.active-gated interactive-tool guard makes it visible to
 			// hasInteractiveToolInFlight()/getInFlightToolCount() so those
 			// watchdogs exempt it. No-op outside auto-mode (wrapper self-gates).
+			//
+			// markInteractiveElicitationStart/End is a SEPARATE, ungated signal that
+			// is observable in FOREGROUND (where the s.active-gated markToolStart is a
+			// no-op). The foreground approval-gate pause path (register-hooks
+			// message_update) consults isInteractiveElicitationInFlight() and bails so
+			// it does not tear down the very elicitation that IS the human boundary
+			// (#cc-elicitation-self-cancel). It clears in the finally on every exit.
 			const elicId = "cc-elicit-" + ((request as { id?: string | number }).id ?? `${Date.now()}-${nextElicitationSeq()}`);
+			markInteractiveElicitationStart();
 			markToolStart(elicId, "ask_user_questions");
 			try {
 				const interviewResult = await showInterviewRound(questions, { signal }, { ui } as any).catch(() => undefined);
@@ -1434,6 +1446,7 @@ export function createClaudeCodeElicitationHandler(
 				};
 			} finally {
 				markToolEnd(elicId);
+				markInteractiveElicitationEnd();
 			}
 		}
 

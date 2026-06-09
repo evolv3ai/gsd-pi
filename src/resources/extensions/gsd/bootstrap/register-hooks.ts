@@ -25,6 +25,7 @@ import {
   isAutoActive,
   isAutoCompletionStopInProgress,
   isAutoPaused,
+  isInteractiveElicitationInFlight,
   markToolEnd,
   markToolStart,
   recordAutoToolSurfaceSnapshot,
@@ -1013,6 +1014,14 @@ export function registerHooks(
 
   pi.on("message_update", async (event, ctx: ExtensionContext) => {
     if (approvalQuestionAbortInFlight) return;
+    // If the model asked via ask_user_questions, that in-flight elicitation IS
+    // the human boundary. Arming the pause/gate here (and emitting the "waiting
+    // for your approval - pausing" notice) would tear it down and trigger the
+    // foreground self-cancel/re-ask loop. The marker is set only by the
+    // claude-code-cli SDK elicitation handler and is ungated, so it is true in
+    // foreground; under the native-TUI provider it is always false and this path
+    // runs unchanged (#cc-elicitation-self-cancel).
+    if (isInteractiveElicitationInFlight()) return;
 
     const dash = getAutoRuntimeSnapshot();
     if (dash.active) return;
