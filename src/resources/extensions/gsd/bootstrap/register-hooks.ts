@@ -13,7 +13,7 @@ import type { GSDEcosystemBeforeAgentStartHandler } from "../ecosystem/gsd-exten
 import { updateSnapshot } from "../ecosystem/gsd-extension-api.js";
 
 import { buildMilestoneFileName, clearPathCache, milestonesDir, resolveMilestonePath, resolveSliceFile, resolveSlicePath } from "../paths.js";
-import { applyAskUserQuestionsGateResult, canonicalToolName, clearDiscussionFlowState, formatPendingAskUserQuestionsGateMessage, isApprovalGateVerifiedInSnapshot, isMilestoneDepthVerified, isMilestoneDepthVerifiedInSnapshot, isQueuePhaseActive, loadWriteGateSnapshot, markApprovalGateVerified, markDepthVerified, refreshWriteGateStateFromDisk, resetWriteGateState, shouldBlockContextWrite, shouldBlockPlanningUnit, shouldBlockQueueExecution, shouldBlockWorktreeWrite, isGateQuestionId, setPendingGate, clearPendingGate, getPendingGate, shouldBlockPendingGate, shouldBlockPendingGateBash, extractDepthVerificationMilestoneId } from "./write-gate.js";
+import { applyAskUserQuestionsGateResult, canonicalToolName, clearDiscussionFlowState, formatPendingAskUserQuestionsGateMessage, isApprovalGateVerifiedInSnapshot, isDepthConfirmationAnswer, isMilestoneDepthVerified, isMilestoneDepthVerifiedInSnapshot, isQueuePhaseActive, loadWriteGateSnapshot, markApprovalGateVerified, markDepthVerified, refreshWriteGateStateFromDisk, resetWriteGateState, shouldBlockContextWrite, shouldBlockPlanningUnit, shouldBlockQueueExecution, shouldBlockWorktreeWrite, isGateQuestionId, setPendingGate, clearPendingGate, getPendingGate, shouldBlockPendingGate, shouldBlockPendingGateBash, extractDepthVerificationMilestoneId } from "./write-gate.js";
 import { resolveManifest } from "../unit-context-manifest.js";
 import { isBlockedStateFile, isBashWriteToStateFile, BLOCKED_WRITE_ERROR } from "../write-intercept.js";
 import { loadFile, saveFile, formatContinue } from "../files.js";
@@ -39,6 +39,12 @@ import { saveActivityLog } from "../activity-log.js";
 import { recordToolCall as safetyRecordToolCall, recordToolResult as safetyRecordToolResult, saveEvidenceToDisk } from "../safety/evidence-collector.js";
 import { parseUnitId } from "../unit-id.js";
 import { classifyCommand } from "../safety/destructive-guard.js";
+import {
+  confirmDestructiveCommand,
+  consumeDestructiveConfirmation,
+  isDestructiveConfirmGateId,
+  requestDestructiveConfirmation,
+} from "../safety/destructive-confirmation.js";
 import { logWarning as safetyLogWarning } from "../workflow-logger.js";
 import { isUnitCloseoutTool, runInteractiveUnitCloseout } from "../unit-closeout.js";
 import { installNotifyInterceptor } from "./notify-interceptor.js";
@@ -1390,23 +1396,39 @@ export function registerHooks(
 
     // Destructive command classification + hard gate in all modes.
     if (isToolCallEventType("bash", event)) {
-      const classification = classifyCommand(event.input.command);
+      const command = event.input.command;
+      const classification = classifyCommand(command);
       if (classification.destructive) {
+        const guardBasePath = contextBasePath(ctx);
+        // Escape hatch: if the user already confirmed this exact command via a
+        // destructive_confirm gate, consume the one-shot token and let it run.
+        // Without this, the block below loops forever — the model cannot satisfy
+        // "confirm in the current turn" because nothing ever clears the gate.
+        if (consumeDestructiveConfirmation(command, guardBasePath)) {
+          safetyLogWarning("safety", `destructive command confirmed: ${classification.labels.join(", ")}`, {
+            command: String(command).slice(0, 200),
+          });
+          return;
+        }
+        // Record the command as pending so an affirmative answer to a
+        // destructive_confirm gate (handled in tool_result) can confirm it.
+        requestDestructiveConfirmation(command, guardBasePath);
         const reason = [
           "HARD BLOCK: destructive Bash command requires explicit human confirmation.",
           `Detected: ${classification.labels.join(", ")}`,
-          "Run this via ask_user_questions, wait for the user's response,",
-          "then issue the command only when confirmed in the current turn.",
+          "Call ask_user_questions with a question id containing \"destructive_confirm\"",
+          "and a first option that affirms the action; wait for the user's response,",
+          "then re-issue this exact command in the same turn to run it once.",
         ].join(" ");
         safetyLogWarning("safety", `destructive command: ${classification.labels.join(", ")}`, {
-          command: String(event.input.command).slice(0, 200),
+          command: String(command).slice(0, 200),
         });
         if (ctx) {
           await maybePauseAutoForApprovalGate(
             ctx,
             pi,
             isAutoActive(),
-            "Depth confirmation is waiting for your answer — pausing auto-mode.",
+            "Destructive-command confirmation is waiting for your answer — pausing auto-mode.",
           );
         }
         return { block: true, reason };
@@ -1495,6 +1517,24 @@ export function registerHooks(
     }
 
     if (details?.cancelled || !details?.response) return;
+
+    // Destructive-command confirmation: an affirmative answer to a
+    // destructive_confirm gate promotes the pending blocked command to a
+    // one-shot confirmed token, which the bash tool_call guard consumes on the
+    // next attempt. Rejecting/declining leaves the command blocked.
+    // (Depth-verification gate handling now lives in
+    // applyAskUserQuestionsGateResult above; only the destructive-confirm gate
+    // is handled inline here.)
+    for (const question of questions) {
+      if (isDestructiveConfirmGateId(question?.id)) {
+        const answer = details.response?.answers?.[question.id];
+        if (isDepthConfirmationAnswer(answer?.selected, question.options)) {
+          confirmDestructiveCommand(basePath);
+        }
+        break;
+      }
+    }
+
     if (!milestoneId) return;
     await saveDiscussionQuestionRound(basePath, milestoneId, questions, details);
   });
