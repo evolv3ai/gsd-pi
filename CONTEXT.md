@@ -128,7 +128,17 @@ Dispatch remains responsible for selecting the next Unit from reconciled state. 
 
   The structural invariant (`tests/single-writer-invariant.test.ts`) re-scopes from a basename allowlist to: write SQL may appear only under `db/writers/`; `db/queries.ts` must contain no write SQL.
 
-- The Single Writer should expose **Domain Write Operations** for multi-row changes, keeping single-row primitives public (hybrid). The **Hierarchy Status Cascade** family (`reopenMilestoneCascade`, `reopenSliceCascade`, `skipSliceCascade`, `completeSliceCascade`, `resetSliceCascade`) plus `importHierarchy`, `fixCompletionDrift`, and `replaceSlicePlan`/`replaceTaskPlan` move into `db/writers/cascades.ts`, each owning its own `transaction()`. This folds the four hand-rolled atomic cascades into one home and closes the non-atomic (`undo` reset, `md-importer`, `drift/completion`) and wrong-order delete+insert (`replan-slice`, `reassess-roadmap`) gaps. Operations own DB-row atomicity only; projection/validation/messaging stay in callers.
+- The Single Writer should expose **Domain Write Operations** for multi-row changes, keeping single-row primitives public (hybrid). The **Hierarchy Status Cascade** family lives in `db/writers/cascades.ts`, each operation owning its own `transaction()`. Operations own DB-row atomicity only; projection/validation/messaging stay in callers.
+
+  **Verified status (2026-06-09).** A first-pass exploratory catalog flagged several callers as non-atomic; direct inspection corrected most of them:
+  - `resetSliceCascade` — **landed**. `undo`'s reset-slice was genuinely non-atomic (a per-task `updateTaskStatus` loop + a separate `updateSliceStatus`, each auto-committing); it now calls the atomic op.
+  - `replan-slice`, `reassess-roadmap`, `milestone-planning-persistence` — **already atomic** (delete+insert and insert-cascade run inside one `transaction()` with guards inside the txn for TOCTOU safety). No fix needed.
+  - `state-reconciliation/drift/completion` `repairMissingCompletionTimestamp` — **single write per call** (mutually-exclusive milestone/slice/task branches), not a sequence. No fix needed.
+  - `auto-recovery` `writeBlockerPlaceholder` — **deliberately best-effort** (each write independently try/caught during context-exhaustion recovery); must NOT become all-or-nothing.
+  - `md-importer` `migrateHierarchyToDb` — genuinely unwrapped, but a one-shot migration whose writes are `INSERT OR IGNORE` / `ON CONFLICT` upserts, so a partial import self-corrects on re-run; a clean wrap is blocked by an interleaved `continue`. Low-priority follow-up.
+  - **Remaining locality opportunity (no bug):** the four hand-rolled-but-already-atomic cascades — `reopen-milestone`, `reopen-slice`, `skip-slice`, `complete-slice` — each independently re-derive the milestone/slice/task transaction-plus-cascade with guards inside the txn. Folding them into named ops (`reopenMilestoneCascade`, etc.) would dedupe the rule; because their guards must stay inside the transaction, the op interface should return a discriminated result (structural guards in the writer, message formatting in the caller). Pending.
+
+  Takeaway: the `transaction()` discipline is used correctly almost everywhere; candidate 1's value is primarily **locality** (deduping the cascade rule), with one real atomicity bug (now fixed).
 
 - Foreground `/gsd next` and `/gsd auto` runs follow **Closeout Boundary Stop**: after the first durable task, slice, or milestone closeout boundary, the foreground terminal preserves the closeout transcript as the final visible surface instead of replacing it with a terminal roll-up widget. Headless runs may still emit durable terminal completion notifications/widgets for automation.
 
