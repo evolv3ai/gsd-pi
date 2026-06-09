@@ -50,7 +50,7 @@ import { resolveSkillManifest } from "../skill-manifest.js";
 import { applyUnitSkillVisibility, unitHasSkillManifest } from "../skill-scope.js";
 import { getGuidedUnitContext } from "../guided-unit-context.js";
 import { registerPlanMilestoneSchemaRecovery } from "./plan-milestone-schema-recovery.js";
-import { AUTO_UNIT_SCOPED_TOOLS, RUN_UAT_BROWSER_TOOL_NAMES, isWorkflowAliasTool } from "../auto-unit-tool-scope.js";
+import { AUTO_UNIT_SCOPED_TOOLS, RUN_UAT_BROWSER_TOOL_NAMES, canonicalWorkflowToolName, isWorkflowAliasTool } from "../auto-unit-tool-scope.js";
 import { filterToolsForProvider } from "../model-router.js";
 import { mcpToolMatchesBaseName } from "../mcp-tool-name.js";
 import { RUN_UAT_READ_ONLY_TOOL_NAMES, RUN_UAT_WORKFLOW_TOOL_NAMES } from "../tool-presentation-plan.js";
@@ -217,6 +217,9 @@ function resolveScopedToolNames(
 
     for (const activeName of activeToolNames) {
       if (mcpToolMatchesBaseName(activeName, requested)) {
+        scopedMatches.push(activeName);
+      } else if (isWorkflowAliasTool(activeName) && canonicalWorkflowToolName(activeName) === requested) {
+        // Alias registered in place of canonical: include the alias so the agent can call it.
         scopedMatches.push(activeName);
       }
     }

@@ -141,6 +141,25 @@ for (const customType of ["gsd-discuss", "gsd-run"] as const) {
   });
 }
 
+for (const unitType of ["execute-task", "execute-task-simple", "reactive-execute"] as const) {
+  test(`${unitType}: resolves gsd_task_complete via alias gsd_complete_task when only alias is registered`, () => {
+    // Simulates the MCP transport registering gsd_complete_task (alias) instead of gsd_task_complete.
+    // adjust_tool_set strips aliases from providerCompatible, so gsd_complete_task is only present
+    // in registeredToolNames. resolveScopedToolNames must still surface it so the agent can complete tasks.
+    const aliasOnlyRegistered = FULL_REGISTERED_TOOLS
+      .filter((name) => name !== "gsd_task_complete")
+      .concat("gsd_complete_task");
+    const aliasStrippedActive = aliasOnlyRegistered.filter((name) => name !== "gsd_complete_task");
+
+    const result = buildMinimalAutoGsdToolSet(aliasStrippedActive, unitType, aliasOnlyRegistered);
+
+    assert.ok(
+      result.includes("gsd_task_complete") || result.includes("gsd_complete_task"),
+      `${unitType} missing gsd_task_complete / gsd_complete_task — agent cannot complete tasks`,
+    );
+  });
+}
+
 test("discuss-milestone two-stage scoping matches adjust_tool_set request scope", () => {
   const activeTools = simulateDiscussAllowlistFilter(FULL_REGISTERED_TOOLS);
   const dispatchScoped = buildMinimalAutoGsdToolSet(
