@@ -18,9 +18,13 @@ tools/workflow-tool-executors.ts  ← business logic
        ├── validation reads (milestones, slices, tasks)
        │
        ▼
-gsd-db.ts  ← typed write API, transaction wrapper
+gsd-db.ts  ← barrel: re-exports the single-writer layer (callers import from here)
        │
-       ├── transaction()  (db-transaction.ts — depth counter, no nested BEGIN)
+       ├── db/engine.ts     ← connection/handle, schema/migrations, transaction primitives
+       ├── db/writers/*.ts  ← the Single Writer Layer (one write subsystem per file)
+       ├── db/queries.ts    ← the Query Module (read-only SELECT wrappers)
+       │
+       ├── transaction()  (db/engine.ts via db-transaction.ts — depth counter, no nested BEGIN)
        │
        ▼
 db-adapter.ts  ← normalized prepared-statement cache
@@ -741,14 +745,15 @@ remain outside manifest restore.
 
 ## 7. Write Path Invariants
 
-1. **Single-writer rule**: all writes go through typed wrappers in `gsd-db.ts`. No raw SQL escapes to the adapter from outside this file. Enforced by structural test.
+1. **Single-writer rule**: all write SQL lives in the single-writer *layer* — `db/engine.ts` (schema/migrations + transaction primitives) and `db/writers/**` (one write subsystem per file). `gsd-db.ts` is a barrel re-exporting that layer (and still holds some wrappers mid-migration), so callers keep importing from it unchanged. `db/queries.ts` is the read-only Query Module and must contain no write SQL. No raw write SQL escapes to the adapter from anywhere else. Enforced by the structural `single-writer-invariant.test.ts`, which checks a directory predicate (not a single filename).
 
 2. **Transaction wrapping**: every multi-table write uses `transaction()`. Rollback on any error. Re-entrant: nested calls increment depth counter; no nested BEGIN.
 
-3. **Cascade semantics**:
-   - `gsd_slice_complete` cascades `pending` tasks → `skipped`
-   - `gsd_skip_slice` cascades `pending`/`active` tasks → `skipped`, preserves `complete`
-   - `gsd_milestone_reopen` cascades all slices → `in_progress`, all tasks → `pending`
+3. **Cascade semantics**: hierarchy status cascades are named **Domain Write Operations** in `db/writers/cascades.ts`, each owning its own `transaction()` so the milestone/slice/task subtree transitions atomically (callers keep only projection/file-cleanup/event logic):
+   - `gsd_slice_complete` (`completeSliceCascade`) cascades `pending` tasks → `skipped`
+   - `gsd_skip_slice` (`skipSliceCascade`) cascades `pending`/`active` tasks → `skipped`, preserves `complete`
+   - `gsd_milestone_reopen` (`reopenMilestoneCascade`) cascades all slices → `in_progress`, all tasks → `pending`
+   - `gsd_slice_reopen` (`reopenSliceCascade`) and `undo`'s reset (`resetSliceCascade`) reopen a slice's subtree atomically
 
 4. **Conflict guards**: `insertSlice`, `insertTask` use `ON CONFLICT` to preserve existing completed status and non-empty fields. Fresh INSERT of an already-complete row is a no-op.
 

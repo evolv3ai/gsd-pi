@@ -38,7 +38,8 @@ See also:
               bootstrap/db-tools.ts
                        │
                        ▼
-              gsd-db.ts  (typed write API)
+              gsd-db.ts  (barrel over the single-writer layer:
+                          db/engine.ts + db/writers/**)
                        │
                  transaction()
                        │
@@ -352,7 +353,7 @@ unit completes
 
 | Invariant | Where Enforced |
 |-----------|---------------|
-| Single-writer: all DB writes through `gsd-db.ts` typed API | structural test `single-writer-invariant.test.ts` |
+| Single-writer: all write SQL in the single-writer layer (`db/engine.ts` + `db/writers/**`); `gsd-db.ts` is the barrel re-exporting it; `db/queries.ts` is read-only | structural test `single-writer-invariant.test.ts` (directory predicate) |
 | Cascade on slice complete: pending tasks → skipped | `gsd_slice_complete` transaction |
 | Cascade on milestone reopen: all slices → in_progress, tasks → pending | `gsd_milestone_reopen` transaction |
 | No nested transactions | `db-transaction.ts` depth counter |
