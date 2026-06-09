@@ -74,6 +74,30 @@ const VERDICT_RE = /verdict:\s*[\w-]+/i;
  * Only overwrites when the source has a verdict — never clobbers a
  * worktree ASSESSMENT with a verdictless project-root copy.
  */
+function forceOverwriteValidationWithVerdict(
+  srcMilestoneDir: string,
+  dstMilestoneDir: string,
+  milestoneId: string,
+): void {
+  if (!existsSync(srcMilestoneDir) || !milestoneId) return;
+
+  const srcFile = join(srcMilestoneDir, `${milestoneId}-VALIDATION.md`);
+  if (!existsSync(srcFile)) return;
+
+  try {
+    const srcContent = readFileSync(srcFile, "utf-8");
+    if (!VERDICT_RE.test(srcContent)) return;
+
+    mkdirSync(dstMilestoneDir, { recursive: true });
+    safeCopy(srcFile, join(dstMilestoneDir, `${milestoneId}-VALIDATION.md`), { force: true });
+  } catch (err) {
+    logWarning(
+      "worktree",
+      `validation force-copy failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
 function forceOverwriteAssessmentsWithVerdict(
   srcMilestoneDir: string,
   dstMilestoneDir: string,
@@ -260,10 +284,10 @@ export function _projectRootToWorktreeImpl(
   // session resume the DB is rebuilt from disk, and if the stale ASSESSMENT
   // persists, checkNeedsRunUat finds no passing verdict → re-dispatches
   // run-uat indefinitely (stuck-loop ×9).
-  forceOverwriteAssessmentsWithVerdict(
-    join(prGsd, "milestones", milestoneId),
-    join(wtGsd, "milestones", milestoneId),
-  );
+  const prMilestoneDir = join(prGsd, "milestones", milestoneId);
+  const wtMilestoneDir = join(wtGsd, "milestones", milestoneId);
+  forceOverwriteValidationWithVerdict(prMilestoneDir, wtMilestoneDir, milestoneId);
+  forceOverwriteAssessmentsWithVerdict(prMilestoneDir, wtMilestoneDir);
 
   // Forward-sync completed-units.json from project root to worktree.
   // Project root is authoritative for completion state after crash recovery;

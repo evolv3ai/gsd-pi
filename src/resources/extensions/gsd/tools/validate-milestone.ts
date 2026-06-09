@@ -22,6 +22,7 @@ import {
 } from "../gsd-db.js";
 import { gsdProjectionRoot, clearPathCache } from "../paths.js";
 import { resolveCanonicalMilestoneRoot } from "../worktree-manager.js";
+import { resolveWorktreeProjectRoot } from "../worktree-root.js";
 import { saveFile, clearParseCache } from "../files.js";
 import { invalidateStateCache } from "../state.js";
 import { VALIDATION_VERDICTS, isValidMilestoneVerdict } from "../verdict-parser.js";
@@ -201,6 +202,24 @@ export async function handleValidateMilestone(
   let projectionStale = false;
   try {
     await saveFile(validationPath, validationMd);
+    const projectRoot = resolveWorktreeProjectRoot(basePath);
+    if (projectRoot !== artifactBasePath) {
+      const projectValidationPath = join(
+        gsdProjectionRoot(projectRoot),
+        "milestones",
+        effectiveParams.milestoneId,
+        `${effectiveParams.milestoneId}-VALIDATION.md`,
+      );
+      try {
+        await saveFile(projectValidationPath, validationMd);
+      } catch (mirrorErr) {
+        logWarning(
+          "projection",
+          `validate_milestone project-root VALIDATION mirror failed for ${effectiveParams.milestoneId}`,
+          { error: (mirrorErr as Error).message },
+        );
+      }
+    }
   } catch (renderErr) {
     projectionStale = true;
     logWarning("projection", `validate_milestone projection write failed for ${effectiveParams.milestoneId}; DB validation remains committed`, {

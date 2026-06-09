@@ -4,7 +4,9 @@
 import type { ExtensionCommandContext } from "@gsd/pi-coding-agent";
 
 import { loadFile } from "./files.js";
-import { resolveMilestoneFile } from "./paths.js";
+import { gsdProjectionRoot, resolveMilestoneFile } from "./paths.js";
+import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
+import { join } from "node:path";
 import { deriveState } from "./state.js";
 import { executeValidateMilestone } from "./tools/workflow-tool-executors.js";
 import { ensureDbOpen } from "./bootstrap/dynamic-tools.js";
@@ -123,8 +125,22 @@ async function loadExistingValidation(
   basePath: string,
   milestoneId: string,
 ): Promise<ExistingValidation | null> {
+  const canonicalBase = resolveCanonicalMilestoneRoot(basePath, milestoneId);
+  const canonicalValidationPath = join(
+    gsdProjectionRoot(canonicalBase),
+    "milestones",
+    milestoneId,
+    `${milestoneId}-VALIDATION.md`,
+  );
+  if (canonicalValidationPath) {
+    const canonicalContent = await loadFile(canonicalValidationPath);
+    if (canonicalContent) {
+      return { content: canonicalContent, source: canonicalValidationPath };
+    }
+  }
+
   const validationPath = resolveMilestoneFile(basePath, milestoneId, "VALIDATION");
-  if (validationPath) {
+  if (validationPath && validationPath !== canonicalValidationPath) {
     const content = await loadFile(validationPath);
     if (content) return { content, source: validationPath };
   }

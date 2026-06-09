@@ -16,13 +16,13 @@
 import type { ExtensionContext, ExtensionAPI } from "@gsd/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { gsdProjectionRoot, resolveSliceFile, resolveSlicePath, resolveMilestoneFile } from "./paths.js";
+import { resolveMilestoneValidationVerdict } from "./milestone-validation-verdict.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
 import { parseUnitId } from "./unit-id.js";
 import { isDbAvailable, getTask, getSliceTasks, getMilestoneSlices } from "./gsd-db.js";
 import type { TaskRow } from "./db-task-slice-rows.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 import type { GSDPreferences } from "./preferences-types.js";
-import { extractVerdict } from "./verdict-parser.js";
 import { isClosedStatus } from "./status-guards.js";
 import { loadFile } from "./files.js";
 import { parseRoadmap } from "./parsers-legacy.js";
@@ -269,18 +269,8 @@ async function runValidateMilestonePostCheck(
     mid,
     `${mid}-VALIDATION.md`,
   );
-  if (!validationFile) {
-    if (await reassessmentInvalidatedValidation()) {
-      clearValidationRetry();
-      return "continue";
-    }
-    return setToolFailureRetry(
-      "You must call gsd_validate_milestone to persist the validation results. No VALIDATION.md was created.",
-    );
-  }
-
-  const validationContent = await loadFile(validationFile);
-  if (!validationContent) {
+  const validationContent = validationFile ? await loadFile(validationFile) : null;
+  if (validationFile && validationContent !== null && validationContent.trim() === "") {
     if (await reassessmentInvalidatedValidation()) {
       clearValidationRetry();
       return "continue";
@@ -290,7 +280,16 @@ async function runValidateMilestonePostCheck(
     );
   }
 
-  const verdict = extractVerdict(validationContent);
+  const verdict = await resolveMilestoneValidationVerdict(s.basePath, mid);
+  if (!verdict) {
+    if (await reassessmentInvalidatedValidation()) {
+      clearValidationRetry();
+      return "continue";
+    }
+    return setToolFailureRetry(
+      "You must call gsd_validate_milestone to persist the validation results. No VALIDATION.md was created.",
+    );
+  }
   if (verdict === "needs-attention") {
     ctx.ui.notify(
       `Milestone ${mid} validation returned verdict=needs-attention. Pausing for human review.`,
