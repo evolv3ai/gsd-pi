@@ -17,6 +17,7 @@ test("buildMinimalGsdToolSet preserves non-GSD tools and replaces broad GSD surf
     "read",
     "browser_open",
     "gsd_plan_milestone",
+    "gsd_plan_slice",
     "gsd_task_complete",
     "gsd_exec",
     "gsd_exec_search",
