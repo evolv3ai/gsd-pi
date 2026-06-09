@@ -96,6 +96,73 @@ test("isRedundantDiscussRestatement: keeps short new follow-up questions", () =>
 	assert.equal(isRedundantDiscussRestatement(prior, next), false);
 });
 
+test("isRedundantDiscussRestatement: drops holding-here wait ack after questions", () => {
+	const prior = [
+		"Oriented. Here's where things stand.",
+		"1. Where should we take this?",
+		"2. One focused capability, or a polish/utility pass?",
+	].join("\n");
+	const next =
+		"I've asked my two questions above and I'm holding here for your answer - no need for anything else from me until you point M002 in a direction.";
+	assert.equal(isRedundantDiscussRestatement(prior, next), true);
+});
+
+test("isRedundantDiscussRestatement: keeps wait ack that adds a new question", () => {
+	const prior = "What do you want to build for M006?";
+	const next = "I've asked about scope above. Should we also add offline support?";
+	assert.equal(isRedundantDiscussRestatement(prior, next), false);
+});
+
+test("handleAgentEvent: suppresses redundant holding-here sub-turn after discuss questions", async () => {
+	initTheme("dark", false);
+	const chatContainer = new Container();
+	const prior = [
+		"Oriented. Here's where things stand.",
+		"1. Where should we take this?",
+		"2. One focused capability, or a polish/utility pass?",
+	].join("\n");
+	const waitAck =
+		"I've asked my two questions above and I'm holding here for your answer - no need for anything else from me until you point M002 in a direction.";
+	function makeMessage(content: any[]): any {
+		return {
+			id: "a-discuss",
+			role: "assistant",
+			provider: "claude-code",
+			model: "claude-opus-4-8",
+			timestamp: 1,
+			stopReason: "stop",
+			content,
+		};
+	}
+	const host = createStreamingHost(chatContainer);
+	const first = makeMessage([{ type: "text", text: prior }]);
+
+	await handleAgentEvent(host, { type: "message_start", message: makeMessage([]) } as any);
+	await handleAgentEvent(host, {
+		type: "message_update",
+		message: first,
+		assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: prior, partial: first },
+	} as any);
+
+	// Claude Code can replace sub-turn text at the same content index.
+	const replaced = makeMessage([{ type: "text", text: waitAck }]);
+	await handleAgentEvent(host, {
+		type: "message_update",
+		message: replaced,
+		assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: waitAck, partial: replaced },
+	} as any);
+
+	const final = makeMessage([
+		{ type: "text", text: prior },
+		{ type: "text", text: waitAck },
+	]);
+	await handleAgentEvent(host, { type: "message_end", message: final } as any);
+
+	const rendered = stripAnsi(chatContainer.render(100).join("\n"));
+	assert.match(rendered, /Where should we take this/);
+	assert.doesNotMatch(rendered, /holding here for your answer/);
+});
+
 test("isProvisionalPreToolProse: only treats transient tool scaffolding as disposable", () => {
 	assert.equal(isProvisionalPreToolProse("I'll inspect the current state and then patch it."), true);
 	assert.equal(isProvisionalPreToolProse("Running the focused tests now."), true);

@@ -164,6 +164,19 @@ export function textInvitesUserReply(text: string): boolean {
 const DISCUSS_RESTATE_RE =
 	/\b(?:what do you want|what should we|before i can write|context file|placeholder name|need to understand what|what(?:'s| is) (?:on your mind|the next)|help me understand what you want)\b/i;
 
+/** Second sub-turn that only says it is waiting after questions were already asked. */
+const HANDOFF_WAIT_RESTATE_RE =
+	/\b(?:holding\s+(?:here|for)|waiting\s+(?:here|for)|no\s+need\s+for\s+anything\s+else|until\s+you\s+(?:point|tell|let\s+me\s+know|answer|reply)|i(?:'ve| have)\s+asked)\b/i;
+
+function isHandoffWaitRestatement(next: string): boolean {
+	if (!HANDOFF_WAIT_RESTATE_RE.test(next)) return false;
+	// Keep follow-ups that add a new substantive question, not just a wait ack.
+	if (/\?/.test(next) && !/\b(?:holding|waiting|no\s+need\s+for\s+anything\s+else|until\s+you)\b/i.test(next)) {
+		return false;
+	}
+	return true;
+}
+
 /**
  * Claude Code can emit a second text sub-turn that restates the same milestone
  * discuss ask. Drop it when the prior sub-turn already invited a user reply.
@@ -173,9 +186,29 @@ export function isRedundantDiscussRestatement(priorText: string, newText: string
 	const next = newText.trim();
 	if (!prior || !next) return false;
 	if (!textInvitesUserReply(prior)) return false;
-	if (!DISCUSS_RESTATE_RE.test(next)) return false;
+	const isDiscussRestate = DISCUSS_RESTATE_RE.test(next);
+	const isWaitRestate = isHandoffWaitRestatement(next);
+	if (!isDiscussRestate && !isWaitRestate) return false;
+	// Wait acks are short boilerplate even when the prior recap was brief.
+	if (isWaitRestate) return next.length < 900;
 	if (next.length > prior.length * 1.1) return false;
 	return next.length <= prior.length || next.length < 900;
+}
+
+function isSubTurnTextReplacement(
+	blocks: Array<any>,
+	rendered: RenderedSegment[],
+): boolean {
+	for (const seg of rendered) {
+		if (seg.kind !== "text-run") continue;
+		const oldText = (seg.cachedText ?? "").trim();
+		if (!oldText) continue;
+		const newText = getTextFromContentBlocks(blocks, seg.startIndex, seg.endIndex).trim();
+		if (!newText || newText === oldText) continue;
+		// Streaming growth extends prior text; a new sub-turn replaces it wholesale.
+		if (!newText.startsWith(oldText) && !oldText.startsWith(newText)) return true;
+	}
+	return false;
 }
 
 function getTextFromContentBlocks(blocks: Array<any>, startIndex: number, endIndex: number): string {
@@ -731,7 +764,13 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 				// components don't get overwritten in place with new sub-turn
 				// content (#4144 regression). Prior sub-turn children stay in
 				// chatContainer as frozen history; new segments append after them.
-				if (contentBlocks.length < lastContentLength) {
+				if (
+					contentBlocks.length < lastContentLength
+					|| (
+						contentBlocks.length <= lastContentLength
+						&& isSubTurnTextReplacement(contentBlocks, renderedSegments)
+					)
+				) {
 					// Accumulate across successive shrinks — overwriting would drop
 					// segments displaced by an earlier shrink, leaving them stranded
 					// in chatContainer once the prune pass finally runs.
