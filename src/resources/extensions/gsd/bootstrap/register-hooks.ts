@@ -13,7 +13,7 @@ import type { GSDEcosystemBeforeAgentStartHandler } from "../ecosystem/gsd-exten
 import { updateSnapshot } from "../ecosystem/gsd-extension-api.js";
 
 import { buildMilestoneFileName, clearPathCache, milestonesDir, resolveMilestonePath, resolveSliceFile, resolveSlicePath } from "../paths.js";
-import { applyAskUserQuestionsGateResult, canonicalToolName, clearDiscussionFlowState, formatPendingAskUserQuestionsGateMessage, isMilestoneDepthVerified, isQueuePhaseActive, markApprovalGateVerified, markDepthVerified, resetWriteGateState, shouldBlockContextWrite, shouldBlockPlanningUnit, shouldBlockQueueExecution, shouldBlockWorktreeWrite, isGateQuestionId, setPendingGate, clearPendingGate, getPendingGate, shouldBlockPendingGate, shouldBlockPendingGateBash, extractDepthVerificationMilestoneId } from "./write-gate.js";
+import { applyAskUserQuestionsGateResult, canonicalToolName, clearDiscussionFlowState, formatPendingAskUserQuestionsGateMessage, isApprovalGateVerifiedInSnapshot, isMilestoneDepthVerified, isMilestoneDepthVerifiedInSnapshot, isQueuePhaseActive, loadWriteGateSnapshot, markApprovalGateVerified, markDepthVerified, refreshWriteGateStateFromDisk, resetWriteGateState, shouldBlockContextWrite, shouldBlockPlanningUnit, shouldBlockQueueExecution, shouldBlockWorktreeWrite, isGateQuestionId, setPendingGate, clearPendingGate, getPendingGate, shouldBlockPendingGate, shouldBlockPendingGateBash, extractDepthVerificationMilestoneId } from "./write-gate.js";
 import { resolveManifest } from "../unit-context-manifest.js";
 import { isBlockedStateFile, isBashWriteToStateFile, BLOCKED_WRITE_ERROR } from "../write-intercept.js";
 import { loadFile, saveFile, formatContinue } from "../files.js";
@@ -572,8 +572,14 @@ function isShellExecutionTool(canonicalName: string): boolean {
 
 function activateDeferredApprovalGate(basePath: string): void {
   if (deferredApprovalGate?.basePath !== basePath) return;
-  setPendingGate(deferredApprovalGate.gateId, basePath);
+  const gateId = deferredApprovalGate.gateId;
   deferredApprovalGate = null;
+  refreshWriteGateStateFromDisk(basePath);
+  const snapshot = loadWriteGateSnapshot(basePath);
+  const milestoneId = extractDepthVerificationMilestoneId(gateId);
+  if (isApprovalGateVerifiedInSnapshot(snapshot, gateId)) return;
+  if (milestoneId && isMilestoneDepthVerifiedInSnapshot(snapshot, milestoneId)) return;
+  setPendingGate(gateId, basePath);
 }
 
 function extractGateQuestionId(input: unknown): string | undefined {

@@ -1582,6 +1582,25 @@ function selfHealRuntimeRecords(basePath: string, ctx: ExtensionContext): { clea
   }
 }
 
+/**
+ * True when an agent turn is currently streaming or a dispatched message is
+ * still queued waiting to trigger one. Used by the pending-auto-start stale
+ * check: a live discuss turn can run for minutes before writing its first
+ * artifact, and deleting its entry as "stale" re-dispatches the workflow —
+ * resetting the interview and producing a duplicate completion turn.
+ */
+function isAgentTurnInFlight(ctx: ExtensionCommandContext): boolean {
+  try {
+    if (typeof ctx.isIdle === "function" && !ctx.isIdle()) return true;
+    if (typeof ctx.hasPendingMessages === "function" && ctx.hasPendingMessages()) return true;
+  } catch {
+    // assertActive() throws on a stale runner context; fall through to
+    // artifact/age staleness signals.
+    logWarning("guided", "isAgentTurnInFlight: ctx method threw (stale runner); assuming no turn in flight");
+  }
+  return false;
+}
+
 // ─── Milestone Actions Submenu ──────────────────────────────────────────────
 
 /**
@@ -1911,12 +1930,18 @@ export async function showSmartEntry(
     // and fires another dispatchWorkflow, resetting the conversation mid-interview.
     if (hasPendingAutoStart(basePath)) {
       // #3274: If /clear interrupted the discussion, the pending entry is stale.
-      // Detect staleness: no manifest, no milestone CONTEXT artifact, AND entry is older than
-      // 30s (avoids race between .set() and LLM writing first artifact).
+      // Detect staleness: no manifest, no milestone CONTEXT/CONTEXT-DRAFT artifact,
+      // the entry is older than 30s (avoids race between .set() and LLM writing the
+      // first artifact), AND no agent turn is in flight. A dispatched discuss turn
+      // can think for well over 30s before its first question round writes any
+      // artifact; deleting the entry while that turn is live re-dispatches the
+      // workflow, which both resets the interview and queues a duplicate turn that
+      // replays the final "context written" message after the real one.
       const entry = _getPendingAutoStart(basePath)!;
       const ageMs = Date.now() - (entry.createdAt || 0);
       const manifestExists = existsSync(join(gsdRoot(basePath), "DISCUSSION-MANIFEST.json"));
       const milestoneHasContext = !!resolveMilestoneFile(basePath, entry.milestoneId, "CONTEXT");
+      const milestoneHasDraft = !!resolveMilestoneFile(basePath, entry.milestoneId, "CONTEXT-DRAFT");
       const milestoneHasRoadmap = !!resolveMilestoneFile(basePath, entry.milestoneId, "ROADMAP");
       const milestoneRow = isDbAvailable() ? getMilestone(entry.milestoneId) : null;
       const discussPlanComplete = milestoneHasRoadmap && !!milestoneRow && milestoneRow.status !== "queued";
@@ -1924,7 +1949,13 @@ export async function showSmartEntry(
         // The discuss flow already completed, but pending auto-start cleanup handshake did not run.
         // Clear stale in-memory guard and continue through normal active-milestone routing.
         deletePendingAutoStart(basePath);
-      } else if (!manifestExists && !milestoneHasContext && ageMs > 30_000) {
+      } else if (
+        !manifestExists &&
+        !milestoneHasContext &&
+        !milestoneHasDraft &&
+        ageMs > 30_000 &&
+        !isAgentTurnInFlight(ctx)
+      ) {
         // Stale entry from an interrupted discussion — clear and continue
         deletePendingAutoStart(basePath);
       } else {

@@ -803,3 +803,45 @@ test('write-gate: resetWriteGateState persists through dangling .gsd symlink', (
     } catch { /* swallow */ }
   }
 });
+
+// ─── Scenario 31: hydrate in-memory gate state from persisted snapshot (MCP subprocess) ──
+
+test('write-gate: getPendingGate hydrates from disk when workflow MCP verified gate in child process', () => {
+  const base = join(tmpdir(), `gsd-write-gate-mcp-hydrate-${randomUUID()}`);
+  const stateFilePath = join(base, '.gsd', 'runtime', 'write-gate-state.json');
+  const originalEnv = process.env.GSD_PERSIST_WRITE_GATE_STATE;
+  const gateId = 'depth_verification_M005_confirm';
+
+  try {
+    process.env.GSD_PERSIST_WRITE_GATE_STATE = '1';
+    mkdirSync(join(base, '.gsd', 'runtime'), { recursive: true });
+    clearDiscussionFlowState(base);
+    setPendingGate(gateId, base);
+
+    writeFileSync(stateFilePath, JSON.stringify({
+      verifiedDepthMilestones: ['M005'],
+      verifiedApprovalGates: [gateId],
+      activeQueuePhase: false,
+      pendingGateId: null,
+    }, null, 2), 'utf-8');
+
+    assert.strictEqual(getPendingGate(base), null, 'stale in-memory pending must refresh from disk');
+    assert.strictEqual(isMilestoneDepthVerified('M005', base), true, 'verified milestone must hydrate from disk');
+    assert.deepEqual(loadWriteGateSnapshot(base), {
+      verifiedDepthMilestones: ['M005'],
+      verifiedApprovalGates: [gateId],
+      activeQueuePhase: false,
+      pendingGateId: null,
+    });
+  } finally {
+    if (originalEnv === undefined) {
+      delete process.env.GSD_PERSIST_WRITE_GATE_STATE;
+    } else {
+      process.env.GSD_PERSIST_WRITE_GATE_STATE = originalEnv;
+    }
+    clearDiscussionFlowState(base);
+    try {
+      rmSync(base, { recursive: true, force: true });
+    } catch { /* swallow */ }
+  }
+});

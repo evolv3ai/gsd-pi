@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -13,7 +13,9 @@ import { closeDatabase, getMilestone } from "../gsd-db.ts";
 import { deriveState, invalidateStateCache } from "../state.ts";
 import {
   getPendingGate,
+  loadWriteGateSnapshot,
   resetWriteGateState,
+  setPendingGate,
   shouldBlockContextArtifactSave,
 } from "../bootstrap/write-gate.ts";
 import { classifyCommand } from "../safety/destructive-guard.ts";
@@ -801,4 +803,92 @@ test("register-hooks message_update does NOT pause while an interactive elicitat
     true,
     "prose-only approval with no elicitation in flight must still arm the pause notice",
   );
+});
+
+test("register-hooks agent_end does not re-arm deferred gate after workflow MCP verified write-gate on disk", async (t) => {
+  const dir = makeTempDir("mcp-disk-sync");
+  const originalCwd = process.cwd();
+  const originalEnv = process.env.GSD_PERSIST_WRITE_GATE_STATE;
+  process.chdir(dir);
+  resetWriteGateState(dir);
+  clearPendingAutoStart(dir);
+  process.env.GSD_PERSIST_WRITE_GATE_STATE = "1";
+
+  const gateId = "depth_verification_M005_confirm";
+  const statePath = join(dir, ".gsd", "runtime", "write-gate-state.json");
+
+  t.after(() => {
+    try {
+      resetWriteGateState(dir);
+      clearPendingAutoStart(dir);
+    } finally {
+      if (originalEnv === undefined) {
+        delete process.env.GSD_PERSIST_WRITE_GATE_STATE;
+      } else {
+        process.env.GSD_PERSIST_WRITE_GATE_STATE = originalEnv;
+      }
+      process.chdir(originalCwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  const handlers = new Map<string, Array<(event: any, ctx?: any) => Promise<any> | any>>();
+  const pi = {
+    on(event: string, handler: (event: any, ctx?: any) => Promise<any> | any) {
+      const existing = handlers.get(event) ?? [];
+      existing.push(handler);
+      handlers.set(event, existing);
+    },
+  } as any;
+
+  const ctx = {
+    cwd: dir,
+    ui: { notify: () => undefined },
+  } as any;
+
+  registerHooks(pi, []);
+
+  setPendingAutoStart(dir, {
+    basePath: dir,
+    milestoneId: "M005",
+    ctx,
+    pi: { sendMessage: () => undefined } as any,
+  });
+
+  const approvalMessage = {
+    role: "assistant",
+    content: [
+      { type: "text", text: "Did I capture the depth right?" },
+    ],
+  };
+
+  for (const handler of handlers.get("message_update") ?? []) {
+    await handler({ message: approvalMessage }, ctx);
+  }
+
+  setPendingGate(gateId, dir);
+  mkdirSync(join(dir, ".gsd", "runtime"), { recursive: true });
+  writeFileSync(statePath, JSON.stringify({
+    verifiedDepthMilestones: ["M005"],
+    verifiedApprovalGates: [gateId],
+    activeQueuePhase: false,
+    pendingGateId: null,
+  }, null, 2), "utf-8");
+
+  for (const handler of handlers.get("agent_end") ?? []) {
+    await handler({ messages: [] }, ctx);
+  }
+
+  assert.equal(getPendingGate(dir), null, "agent_end must not re-arm a gate the MCP subprocess already verified");
+  assert.equal(
+    shouldBlockContextArtifactSave("CONTEXT", "M005", null, dir).block,
+    false,
+    "verified milestone context writes must stay unlocked after agent_end",
+  );
+  assert.deepEqual(loadWriteGateSnapshot(dir), {
+    verifiedDepthMilestones: ["M005"],
+    verifiedApprovalGates: [gateId],
+    activeQueuePhase: false,
+    pendingGateId: null,
+  });
 });

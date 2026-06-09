@@ -244,6 +244,23 @@ export function loadWriteGateSnapshot(basePath: string): WriteGateSnapshot {
   }
 }
 
+/**
+ * Merge the persisted write-gate snapshot into the in-process Map entry.
+ * The workflow MCP server runs in a child process and records depth
+ * verification there; without this refresh the extension host keeps stale
+ * pending-gate memory and `activateDeferredApprovalGate` can re-arm a gate
+ * that the subprocess already cleared on disk.
+ */
+export function refreshWriteGateStateFromDisk(basePath: string): void {
+  if (!shouldPersistWriteGateSnapshot()) return;
+  const snapshot = loadWriteGateSnapshot(basePath);
+  const state = getWriteGateState(basePath);
+  state.pendingGateId = snapshot.pendingGateId;
+  state.activeQueuePhase = snapshot.activeQueuePhase;
+  state.verifiedDepthMilestones = new Set(snapshot.verifiedDepthMilestones);
+  state.verifiedApprovalGates = new Set(snapshot.verifiedApprovalGates ?? []);
+}
+
 export function isDepthVerified(basePath: string = process.cwd()): boolean {
   return getWriteGateState(basePath).verifiedDepthMilestones.size > 0;
 }
@@ -256,6 +273,7 @@ export function isMilestoneDepthVerified(
   basePath: string = process.cwd(),
 ): boolean {
   if (!milestoneId) return false;
+  refreshWriteGateStateFromDisk(basePath);
   return getWriteGateState(basePath).verifiedDepthMilestones.has(milestoneId);
 }
 
@@ -357,6 +375,7 @@ export function clearPendingGate(basePath: string): void {
  * Get the currently pending gate, if any.
  */
 export function getPendingGate(basePath: string = process.cwd()): string | null {
+  refreshWriteGateStateFromDisk(basePath);
   return getWriteGateState(basePath).pendingGateId;
 }
 

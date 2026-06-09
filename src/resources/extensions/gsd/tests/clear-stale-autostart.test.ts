@@ -73,4 +73,26 @@ describe("clear stale pending auto-start (#3667)", () => {
       "pending auto-start gate must clear stale map entries for completed discussions",
     );
   });
+
+  test("guided-flow does not treat a live discuss turn as a stale pending entry", () => {
+    const source = readFileSync(join(__dirname, "..", "guided-flow.ts"), "utf-8");
+    assert.ok(
+      source.includes("!isAgentTurnInFlight(ctx)"),
+      "stale-entry deletion must be gated on no agent turn being in flight — a dispatched " +
+      "discuss turn can think for over 30s before writing its first artifact, and deleting " +
+      "its entry re-dispatches the workflow (duplicate interview + duplicate completion message)",
+    );
+    assert.ok(
+      source.includes('const milestoneHasDraft = !!resolveMilestoneFile(basePath, entry.milestoneId, "CONTEXT-DRAFT");'),
+      "stale-entry check must treat an existing CONTEXT-DRAFT as proof of an in-progress interview",
+    );
+    assert.ok(
+      source.includes("!milestoneHasDraft"),
+      "stale-entry deletion must require the CONTEXT-DRAFT to be absent",
+    );
+    assert.ok(
+      source.includes("ctx.hasPendingMessages"),
+      "in-flight detection must also cover dispatched-but-not-yet-started queued messages",
+    );
+  });
 });
