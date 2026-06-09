@@ -27,6 +27,10 @@ const gsdDir = join(process.cwd(), "src/resources/extensions/gsd");
 const ALLOWLIST = new Set([
   "gsd-db.ts",
   "unit-ownership.ts",
+  // db/engine.ts owns connection lifecycle, schema/migrations (DDL), and the
+  // BEGIN/COMMIT transaction primitives for the single-writer layer. It is the
+  // shared engine handle every writer reads through, not a bypass.
+  "engine.ts",
 ]);
 
 /** Walk the gsd extension dir and return all .ts files outside tests/. */
