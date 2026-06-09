@@ -18,6 +18,11 @@ import {
 } from "../bootstrap/write-gate.ts";
 import { classifyCommand } from "../safety/destructive-guard.ts";
 import { toRoundResultResponse } from "../../remote-questions/manager.ts";
+import {
+  markInteractiveElicitationStart,
+  markInteractiveElicitationEnd,
+  clearInFlightTools,
+} from "../auto-tool-tracking.ts";
 
 function makeTempDir(prefix: string): string {
   const dir = join(
@@ -707,4 +712,93 @@ test("register-hooks gates MCP ask_user_questions cancellation before requiremen
 
   assert.equal(requirementBlock?.block, true, "requirement save must be blocked while gate is pending");
   assert.match(requirementBlock?.reason ?? "", /has not been confirmed/);
+});
+
+// ─── Foreground self-cancel regression (#cc-elicitation-self-cancel) ───
+// Product-visible symptom: under claude-code-cli + gsd-MCP, ask_user_questions
+// is routed as an SDK elicitation (the human boundary). The message_update hook
+// would arm the approval-gate pause and emit the "waiting for your approval -
+// pausing" notice, tearing down that elicitation and looping a re-ask. The fix
+// makes message_update bail while an interactive elicitation is in flight, while
+// still pausing for prose-only approvals (native-TUI provider, where the marker
+// is always false). This drives the real registered hook end-to-end.
+test("register-hooks message_update does NOT pause while an interactive elicitation is the human boundary, but still pauses otherwise", async (t) => {
+  const dir = makeTempDir("elicitation-pause-guard");
+  const originalCwd = process.cwd();
+  process.chdir(dir);
+  resetWriteGateState(dir);
+  clearPendingAutoStart(dir);
+  clearInFlightTools();
+
+  t.after(() => {
+    try {
+      resetWriteGateState(dir);
+      clearPendingAutoStart(dir);
+      clearInFlightTools();
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  const handlers = new Map<string, Array<(event: any, ctx?: any) => Promise<any> | any>>();
+  const pi = {
+    on(event: string, handler: (event: any, ctx?: any) => Promise<any> | any) {
+      const existing = handlers.get(event) ?? [];
+      existing.push(handler);
+      handlers.set(event, existing);
+    },
+  } as any;
+
+  const notices: Array<{ text: string; level: string }> = [];
+  const ctx = {
+    cwd: dir,
+    ui: { notify: (text: string, level: string) => notices.push({ text, level }) },
+  } as any;
+
+  registerHooks(pi, []);
+
+  // A discuss-milestone is the active unit, so the approval text would normally
+  // arm the pause/notice path.
+  setPendingAutoStart(dir, {
+    basePath: dir,
+    milestoneId: "M001",
+    ctx,
+    pi: { sendMessage: () => undefined } as any,
+  });
+
+  // The model's plain-text approval question — identical in both phases.
+  const approvalMessage = {
+    role: "assistant",
+    content: [
+      { type: "text", text: "Here is the milestone plan.\n\nDid I capture the project correctly?" },
+    ],
+  };
+
+  const fireMessageUpdate = async () => {
+    for (const handler of handlers.get("message_update") ?? []) {
+      await handler({ message: approvalMessage }, ctx);
+    }
+  };
+
+  // Phase 1 — FIX: an interactive elicitation is in flight (claude-code-cli
+  // foreground). The pause/notice MUST be suppressed.
+  markInteractiveElicitationStart();
+  await fireMessageUpdate();
+  assert.equal(
+    notices.some((n) => /waiting for your approval - pausing/.test(n.text)),
+    false,
+    "must NOT emit the approval-pause notice while the elicitation is the human boundary",
+  );
+  markInteractiveElicitationEnd();
+
+  // Phase 2 — control: no elicitation in flight (native-TUI provider or a
+  // prose-only approval). The same message MUST still pause.
+  notices.length = 0;
+  await fireMessageUpdate();
+  assert.equal(
+    notices.some((n) => /discuss-milestone M001 is waiting for your approval - pausing/.test(n.text)),
+    true,
+    "prose-only approval with no elicitation in flight must still arm the pause notice",
+  );
 });

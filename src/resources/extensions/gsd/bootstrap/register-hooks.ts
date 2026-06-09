@@ -56,7 +56,7 @@ import { resolveSkillManifest } from "../skill-manifest.js";
 import { applyUnitSkillVisibility, unitHasSkillManifest } from "../skill-scope.js";
 import { getGuidedUnitContext } from "../guided-unit-context.js";
 import { registerPlanMilestoneSchemaRecovery } from "./plan-milestone-schema-recovery.js";
-import { AUTO_UNIT_SCOPED_TOOLS, RUN_UAT_BROWSER_TOOL_NAMES, isWorkflowAliasTool } from "../auto-unit-tool-scope.js";
+import { AUTO_UNIT_SCOPED_TOOLS, RUN_UAT_BROWSER_TOOL_NAMES, canonicalWorkflowToolName, isWorkflowAliasTool } from "../auto-unit-tool-scope.js";
 import { filterToolsForProvider } from "../model-router.js";
 import { mcpToolMatchesBaseName } from "../mcp-tool-name.js";
 import { RUN_UAT_READ_ONLY_TOOL_NAMES, RUN_UAT_WORKFLOW_TOOL_NAMES } from "../tool-presentation-plan.js";
@@ -220,11 +220,20 @@ function resolveScopedToolNames(
 
   for (const requested of requestedToolNames) {
     const scopedMatches: string[] = [];
+    const aliasFallbacks: string[] = [];
 
     for (const activeName of activeToolNames) {
       if (mcpToolMatchesBaseName(activeName, requested)) {
         scopedMatches.push(activeName);
+      } else if (isWorkflowAliasTool(activeName) && canonicalWorkflowToolName(activeName) === requested) {
+        aliasFallbacks.push(activeName);
       }
+    }
+
+    // Only use alias as fallback when canonical is absent — not directly and not via MCP scoping.
+    // Prevents the alias from resurfacing alongside the canonical when both are in the active set.
+    if (!exact.has(requested) && scopedMatches.length === 0) {
+      scopedMatches.push(...aliasFallbacks);
     }
 
     if (requested.startsWith("browser_") && scopedMatches.length > 0) {

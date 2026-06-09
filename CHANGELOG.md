@@ -9,6 +9,7 @@ This changelog starts from the `open-gsd/gsd-pi` ownership baseline. Earlier pro
 ## [Unreleased]
 
 ### Fixed
+- **claude-code-cli**: keep in-flight ask_user_questions elicitation alive through the foreground approval pause
 - **claude-code-cli**: stop auto-mode watchdogs from self-cancelling ask_user_questions
 - **gsd**: stop duplicate claude code question fallback
 - **issue**: [Bug]: After upgrading to version 1.1.1 GSD is stuck for missing toolset
