@@ -113,6 +113,34 @@ test("isRedundantDiscussRestatement: keeps wait ack that adds a new question", (
 	assert.equal(isRedundantDiscussRestatement(prior, next), false);
 });
 
+test("isRedundantDiscussRestatement: keeps new question even when wait language is also present", () => {
+	// Bug 1: ? + wait language together must NOT be suppressed.
+	const prior = [
+		"Oriented. Here's where things stand.",
+		"1. Where should we take this?",
+		"2. One focused capability, or a polish/utility pass?",
+	].join("\n");
+	const next = "I'm holding here. Should we also add offline support?";
+	assert.equal(isRedundantDiscussRestatement(prior, next), false);
+});
+
+test("isRedundantDiscussRestatement: does not suppress long combined text with incidental wait language", () => {
+	// Bug 2: full extractAssistantText (questions + trailing wait-ack, >400 chars) must NOT be suppressed.
+	const prior = "Let me know what you think.";
+	const questions = [
+		"Here is what I need to understand before proceeding:",
+		"1. What is the primary goal of this milestone?",
+		"2. Are there any hard deadlines we must hit?",
+		"3. Which existing modules should this new work integrate with?",
+		"4. Do you have a preference for the data storage approach?",
+		"5. Should we prioritize mobile responsiveness or desktop-first for this phase?",
+		"6. Are there any existing design patterns or component libraries we must follow?",
+	].join("\n");
+	const next = questions + "\n\nI'm holding here for your answers before I can move forward.";
+	assert.ok(next.length > 400, "test fixture must exceed the guard threshold");
+	assert.equal(isRedundantDiscussRestatement(prior, next), false);
+});
+
 test("handleAgentEvent: suppresses redundant holding-here sub-turn after discuss questions", async () => {
 	initTheme("dark", false);
 	const chatContainer = new Container();

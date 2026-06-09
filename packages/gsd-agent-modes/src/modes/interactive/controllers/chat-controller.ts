@@ -170,10 +170,11 @@ const HANDOFF_WAIT_RESTATE_RE =
 
 function isHandoffWaitRestatement(next: string): boolean {
 	if (!HANDOFF_WAIT_RESTATE_RE.test(next)) return false;
-	// Keep follow-ups that add a new substantive question, not just a wait ack.
-	if (/\?/.test(next) && !/\b(?:holding|waiting|no\s+need\s+for\s+anything\s+else|until\s+you)\b/i.test(next)) {
-		return false;
-	}
+	// Any question mark signals substantive new content — keep it regardless of wait language.
+	if (/\?/.test(next)) return false;
+	// Only classify as a pure wait ack when the text is short; long text likely
+	// contains substantive content alongside incidental wait language.
+	if (next.length > 400) return false;
 	return true;
 }
 
@@ -189,8 +190,8 @@ export function isRedundantDiscussRestatement(priorText: string, newText: string
 	const isDiscussRestate = DISCUSS_RESTATE_RE.test(next);
 	const isWaitRestate = isHandoffWaitRestatement(next);
 	if (!isDiscussRestate && !isWaitRestate) return false;
-	// Wait acks are short boilerplate even when the prior recap was brief.
-	if (isWaitRestate) return next.length < 900;
+	// Wait acks are gated on length and no-? inside isHandoffWaitRestatement.
+	if (isWaitRestate) return true;
 	if (next.length > prior.length * 1.1) return false;
 	return next.length <= prior.length || next.length < 900;
 }
