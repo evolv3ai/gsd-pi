@@ -8,8 +8,9 @@
  * git operations during worktree transitions:
  *
  *   - `checkoutBranchWithStashGuard` — branch switch with stash protection,
- *     including the stash-pop EEXIST collision recovery for `.gsd/` runtime
- *     files (force-checkout + targeted stash drop).
+ *     including the stash-pop EEXIST collision recovery for untracked files
+ *     (force-checkout + targeted stash drop; #645 broadened it beyond `.gsd/`,
+ *     guarded by "no non-.gsd unmerged entries remain").
  *   - `removeMergeStateFiles` — clears SQUASH_MSG / MERGE_HEAD / etc. left by
  *     a failed merge so subsequent merges don't fail on stale state.
  *   - `cleanupConflictState` — merge-abort + index reset + state-file cleanup
