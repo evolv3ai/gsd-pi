@@ -1,6 +1,7 @@
 // Project/App: gsd-pi
 // File Purpose: ADR-015 Recovery Classification module for runtime failure taxonomy.
 
+import { isToolUnavailableError } from "./auto-tool-tracking.js";
 import { classifyError, isTransient, type ErrorClass } from "./error-classifier.js";
 import { ReconciliationFailedError } from "./state-reconciliation.js";
 import { IllegalPhaseTransitionError } from "./state-transition-matrix.js";
@@ -8,6 +9,7 @@ import { IllegalPhaseTransitionError } from "./state-transition-matrix.js";
 export type RecoveryFailureKind =
   | "tool-schema"
   | "tool-contract"
+  | "tool-unavailable"
   | "deterministic-policy"
   | "lifecycle-progression"
   | "stale-worker"
@@ -65,6 +67,15 @@ export function classifyFailure(input: RecoveryClassificationInput): RecoveryCla
         reason: `Tool Contract failure${unitSuffix(input)}: ${message}`,
         exitReason: "tool-contract",
         remediation: "Fix the Unit Tool Contract or prompt so the Unit is only asked to use tools owned by its phase.",
+      };
+    case "tool-unavailable":
+      return {
+        failureKind,
+        action: "retry",
+        reason: `Tool unavailable${unitSuffix(input)}: ${message}`,
+        exitReason: "tool-unavailable",
+        remediation:
+          "The tool surface had not finished registering when the Unit called it (workflow MCP startup race). Retry after the surface is ready; escalate if the tool never appears.",
       };
     case "deterministic-policy":
       return {
@@ -149,6 +160,7 @@ export function classifyFailure(input: RecoveryClassificationInput): RecoveryCla
 }
 
 function inferFailureKind(message: string): RecoveryFailureKind {
+  if (isToolUnavailableError(message)) return "tool-unavailable";
   if (/tool contract|auto-unit tool scope|phase-boundary gate|not permitted.*own/i.test(message)) return "tool-contract";
   if (/lifecycle progression|required artifact|missing .*assessment|missing .*closeout|cannot legally (?:advance|progress)/i.test(message)) return "lifecycle-progression";
   if (/schema|invalid.*tool|tool.*invalid|enum/i.test(message)) return "tool-schema";

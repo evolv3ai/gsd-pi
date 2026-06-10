@@ -133,12 +133,30 @@ const TOOL_INVOCATION_ERROR_RE = /Validation failed for tool|Input validation er
 const DETERMINISTIC_POLICY_ERROR_RE = /(?:^|\b)(?:HARD BLOCK:|Blocked: \/gsd queue is a planning tool|Direct writes to \.gsd\/STATE\.md and \.gsd\/gsd\.db are blocked|This is a mechanical gate)/i;
 
 /**
+ * Matches the runtime's "tool not registered" error. Unlike the deterministic
+ * invocation failures above, this one is usually transient: the workflow MCP
+ * server registers its tool surface asynchronously after session start, so a
+ * Unit's first tool call can race the registration. Callers should retry
+ * (bounded) instead of breaking the loop.
+ */
+const TOOL_UNAVAILABLE_ERROR_RE = /No such tool available/i;
+
+/**
  * Returns true if the error message indicates a deterministic invocation or
  * policy failure (as opposed to a normal tool execution error).
  */
 export function isToolInvocationError(errorMsg: string): boolean {
   if (!errorMsg) return false;
   return TOOL_INVOCATION_ERROR_RE.test(errorMsg) || isDeterministicPolicyError(errorMsg);
+}
+
+/**
+ * Returns true if the error message indicates the called tool was not on the
+ * session's tool surface (MCP startup race — see TOOL_UNAVAILABLE_ERROR_RE).
+ */
+export function isToolUnavailableError(errorMsg: string): boolean {
+  if (!errorMsg) return false;
+  return TOOL_UNAVAILABLE_ERROR_RE.test(errorMsg);
 }
 
 /**

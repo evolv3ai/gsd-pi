@@ -164,6 +164,7 @@ test("Recovery Classification covers ADR-015 failure families", () => {
   const cases = [
     ["invalid tool schema enum", "tool-schema", "stop"],
     ["Tool Contract failure: complete-slice cannot use gsd_uat_result_save", "tool-contract", "stop"],
+    ["No such tool available: mcp__gsd-workflow__gsd_uat_exec", "tool-unavailable", "retry"],
     ["deterministic policy rejection", "deterministic-policy", "stop"],
     ["cannot legally advance because required UAT Assessment artifact is missing", "lifecycle-progression", "stop"],
     ["stale worker lease", "stale-worker", "stop"],

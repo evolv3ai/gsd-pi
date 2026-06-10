@@ -88,7 +88,7 @@ import { writeTurnGitTransaction } from "./uok/gitops.js";
 import { isClosedStatus } from "./status-guards.js";
 import { detectAbandonMilestone } from "./abandon-detect.js";
 import { getPendingGate } from "./bootstrap/write-gate.js";
-import { isDeterministicPolicyError } from "./auto-tool-tracking.js";
+import { isDeterministicPolicyError, isToolUnavailableError } from "./auto-tool-tracking.js";
 import { formatConnectedStepStack, formatPostUnitStatusCard } from "./auto-status-message.js";
 import {
   clearProjectResearchInflightMarker,
@@ -2022,7 +2022,18 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
           "error",
         );
       } else if (!triggerArtifactVerified) {
-        if (s.lastToolInvocationError) {
+        if (s.lastToolInvocationError && isToolUnavailableError(s.lastToolInvocationError)) {
+          // Tool-unavailable is the one transient invocation error: the
+          // workflow MCP server registers its surface asynchronously, so a
+          // Unit's first call can race the registration. Fall through to the
+          // bounded verification retry instead of pausing.
+          debugLog("postUnit", { phase: "tool-unavailable-retry", unitType: s.currentUnit.type, unitId: s.currentUnit.id, error: s.lastToolInvocationError });
+          ctx.ui.notify(
+            `Tool unavailable for ${s.currentUnit.type}: ${s.lastToolInvocationError}. The tool surface may still be registering — retrying.`,
+            "warning",
+          );
+          s.lastToolInvocationError = null;
+        } else if (s.lastToolInvocationError) {
           const isUserSkip = /queued user message/i.test(s.lastToolInvocationError);
           const errMsg = isUserSkip
             ? `Tool skipped for ${s.currentUnit.type}: ${s.lastToolInvocationError}. Queued user message interrupted the turn — pausing auto-mode.`

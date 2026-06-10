@@ -48,6 +48,7 @@ import {
   isDeterministicPolicyError,
   isPendingUserApprovalGateError,
   isToolInvocationError,
+  isToolUnavailableError,
   isQueuedUserMessageSkip,
 } from "../auto-tool-tracking.ts";
 import {
@@ -119,6 +120,13 @@ describe("#2883: isToolInvocationError classification", () => {
 
   test("detects 'No such tool available' error", () => {
     assert.equal(isToolInvocationError("No such tool available: mcp__gsd-workflow__memory_query"), true);
+  });
+
+  test("isToolUnavailableError singles out the startup-race error as transient", () => {
+    assert.equal(isToolUnavailableError("No such tool available: mcp__gsd-workflow__gsd_uat_exec"), true);
+    assert.equal(isToolUnavailableError("Validation failed for tool gsd_complete_slice"), false);
+    assert.equal(isToolUnavailableError("Unexpected end of JSON input"), false);
+    assert.equal(isToolUnavailableError(""), false);
   });
 
   test("detects ESM export-link errors", () => {
