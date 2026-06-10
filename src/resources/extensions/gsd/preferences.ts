@@ -867,6 +867,19 @@ export function getIsolationMode(basePath?: string): "none" | "worktree" | "bran
   return "none"; // default — no isolation, work on current branch
 }
 
+/**
+ * Resolve the isolation mode a unit actually runs under. A session whose
+ * worktree isolation has degraded (worktree creation failed) falls back to
+ * the milestone branch in the project root, so configured "worktree" becomes
+ * effective "branch".
+ */
+export function resolveEffectiveUnitIsolationMode(
+  configuredMode: ReturnType<typeof getIsolationMode>,
+  isolationDegraded: boolean,
+): ReturnType<typeof getIsolationMode> {
+  return configuredMode === "worktree" && isolationDegraded ? "branch" : configuredMode;
+}
+
 export function resolveParallelConfig(prefs: GSDPreferences | undefined): import("./types.js").ParallelConfig {
   return {
     enabled: prefs?.parallel?.enabled ?? false,

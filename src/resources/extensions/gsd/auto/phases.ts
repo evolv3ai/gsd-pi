@@ -20,6 +20,7 @@ import {
   type PreVerificationOpts,
 } from "../auto-post-unit.js";
 import { lastAssistantText } from "../user-input-boundary.js";
+import { resolveEffectiveUnitIsolationMode } from "../preferences.js";
 import type { Phase } from "../types.js";
 import {
   MAX_RECOVERY_CHARS,
@@ -362,7 +363,13 @@ async function validateSourceWriteWorktreeSafety(
   if (!writesSource) return null;
 
   const projectRoot = s.canonicalProjectRoot ?? resolveWorktreeProjectRoot(s.basePath, s.originalBasePath);
-  const isolationMode = deps.getIsolationMode(projectRoot);
+  // A degraded session already fell back to the milestone branch in the
+  // project root — validating against the canonical worktree root there
+  // would fail every dispatch with a false invalid-root.
+  const isolationMode = resolveEffectiveUnitIsolationMode(
+    deps.getIsolationMode(projectRoot),
+    s.isolationDegraded,
+  );
   if (isolationMode !== "worktree") return null;
 
   const safety = createWorktreeSafetyModule();

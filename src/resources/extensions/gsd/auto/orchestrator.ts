@@ -38,7 +38,7 @@ import { checkResourcesStale, autoWorktreeBranch, mergeMilestoneToMain } from ".
 import { getSessionLockStatus } from "../session-lock.js";
 import { resolveUokFlags } from "../uok/flags.js";
 import { emitJournalEvent as _emitJournalEvent } from "../journal.js";
-import { loadEffectiveGSDPreferences, getIsolationMode } from "../preferences.js";
+import { loadEffectiveGSDPreferences, getIsolationMode, resolveEffectiveUnitIsolationMode } from "../preferences.js";
 import {
   detectWorktreeName,
   getMainBranch,
@@ -617,8 +617,7 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
   // ── WorktreeAdapter (folded) ─────────────────────────────────────────────
 
   private getEffectiveUnitIsolationMode(basePath: string): ReturnType<typeof getIsolationMode> {
-    const configuredMode = getIsolationMode(basePath);
-    return configuredMode === "worktree" && this.s.isolationDegraded ? "branch" : configuredMode;
+    return resolveEffectiveUnitIsolationMode(getIsolationMode(basePath), this.s.isolationDegraded);
   }
 
   private buildLifecycle(): WorktreeLifecycle {

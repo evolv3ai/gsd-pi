@@ -121,9 +121,14 @@ function findMatches(
   const exact = bashCalls.filter(b => b.command.trim() === normalized);
   if (exact.length > 0) return exact;
 
-  // Substring match: claimed is contained in actual or actual in claimed
+  // Substring match: claimed is contained in actual or actual in claimed.
+  // A claimed verification command typically appears verbatim inside a
+  // larger gsd_exec script body (cd prefix, multi-line scripts), so
+  // script-containing-claim is the common direction. Blank-command entries
+  // must be excluded — `"x".includes("")` is true, so they'd match anything.
   const substring = bashCalls.filter(
-    b => b.command.includes(normalized) || normalized.includes(b.command),
+    b => b.command.trim().length > 0 &&
+      (b.command.includes(normalized) || normalized.includes(b.command)),
   );
   if (substring.length > 0) return substring;
 

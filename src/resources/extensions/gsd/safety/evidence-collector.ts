@@ -57,9 +57,10 @@ const EXECUTION_TOOL_NAMES = new Set([
   "functions.exec_command",
   "gsd_exec",
   "gsd_exec_search",
+  "gsd_uat_exec",
   "powershell",
 ]);
-const MCP_EXECUTION_TOOL_RE = /^mcp__.+__gsd_exec(?:_search)?$/;
+const MCP_EXECUTION_TOOL_RE = /^mcp__.+__gsd_(?:uat_)?exec(?:_search)?$/;
 
 // ─── Module State ───────────────────────────────────────────────────────────
 
@@ -206,11 +207,17 @@ export function clearEvidenceFromDisk(
  * Exit codes and output are filled in by recordToolResult after execution.
  */
 export function recordToolCall(toolCallId: string, toolName: string, input: Record<string, unknown>): void {
+  // Idempotent by toolCallId: native tools reach this via both
+  // tool_execution_start and tool_call; external (pre-executed) tools only
+  // via tool_execution_start. First recording wins.
+  if (unitEvidence.some(e => e.toolCallId === toolCallId)) return;
   if (isExecutionToolName(toolName)) {
     unitEvidence.push({
       kind: "bash",
       toolCallId,
-      command: String(input.command ?? input.cmd ?? input.query ?? ""),
+      // gsd_exec / gsd_uat_exec carry the script body in `script` (or `code`);
+      // bash-style tools use `command`/`cmd`; gsd_exec_search uses `query`.
+      command: String(input.command ?? input.script ?? input.cmd ?? input.code ?? input.query ?? ""),
       exitCode: -1,
       outputSnippet: "",
       timestamp: Date.now(),
@@ -249,9 +256,34 @@ export function recordToolResult(
   if (entry.kind === "bash") {
     const text = extractResultText(result);
     entry.outputSnippet = text.slice(0, 500);
-    const exitMatch = text.match(/Command exited with code (\d+)/);
-    entry.exitCode = exitMatch ? Number(exitMatch[1]) : (isError ? 1 : 0);
+    entry.exitCode = resolveExitCode(text, isError);
   }
+}
+
+/**
+ * Resolve the exit code from a tool result's text. Handles the bash tool's
+ * prose marker, the gsd_exec / gsd_uat_exec JSON envelope (`"exit_code": N`),
+ * and a last-resort read of the run's persisted `.gsd/exec/<id>.meta.json`
+ * (covers truncated result text).
+ */
+function resolveExitCode(text: string, isError: boolean): number {
+  const proseMatch = text.match(/Command exited with code (\d+)/);
+  if (proseMatch) return Number(proseMatch[1]);
+
+  const jsonMatch = text.match(/"exit_code"\s*:\s*(-?\d+)/);
+  if (jsonMatch) return Number(jsonMatch[1]);
+
+  const metaMatch = text.match(/"meta_path"\s*:\s*"([^"]+)"/);
+  if (metaMatch) {
+    try {
+      const meta = JSON.parse(readFileSync(metaMatch[1], "utf-8")) as Record<string, unknown>;
+      if (typeof meta.exit_code === "number") return meta.exit_code;
+    } catch {
+      // Fall through to the isError heuristic
+    }
+  }
+
+  return isError ? 1 : 0;
 }
 
 // ─── Internals ──────────────────────────────────────────────────────────────

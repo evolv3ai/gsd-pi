@@ -1433,6 +1433,21 @@ export function registerHooks(
         clearDeferredApprovalGate(basePath);
       }
     }
+
+    // Safety harness: record evidence here, not only in tool_call. External
+    // engines (claude-code-cli) pre-execute tools, so the agent loop skips
+    // beforeToolCall/tool_call for them — tool_execution_start is the only
+    // event that fires for every tool call. recordToolCall dedupes by
+    // toolCallId, so native tools (which hit both events) record once.
+    safetyRecordToolCall(event.toolCallId, event.toolName, (event.args ?? {}) as Record<string, unknown>);
+    const execDash = getAutoRuntimeSnapshot();
+    if (execDash.basePath && execDash.currentUnit?.type === "execute-task") {
+      const { milestone: xMid, slice: xSid, task: xTid } = parseUnitId(execDash.currentUnit.id);
+      if (xMid && xSid && xTid) {
+        saveEvidenceToDisk(execDash.basePath, xMid, xSid, xTid);
+      }
+    }
+
     if (!isAutoActive()) return;
     markToolStart(event.toolCallId, event.toolName);
   });

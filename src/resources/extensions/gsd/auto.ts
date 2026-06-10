@@ -81,6 +81,7 @@ import {
   resolveAutoSupervisorConfig,
   loadEffectiveGSDPreferences,
   getIsolationMode,
+  resolveEffectiveUnitIsolationMode,
 } from "./preferences.js";
 import { playNotificationBell, sendDesktopNotification } from "./notifications.js";
 import type { GSDPreferences } from "./preferences.js";
@@ -633,13 +634,6 @@ export function shouldUseWorktreeIsolation(basePath?: string): boolean {
 }
 
 type AutoIsolationMode = ReturnType<typeof getIsolationMode>;
-
-function resolveEffectiveUnitIsolationMode(
-  configuredMode: AutoIsolationMode,
-  isolationDegraded: boolean,
-): AutoIsolationMode {
-  return configuredMode === "worktree" && isolationDegraded ? "branch" : configuredMode;
-}
 
 export function _resolveEffectiveUnitIsolationModeForTest(
   configuredMode: AutoIsolationMode,

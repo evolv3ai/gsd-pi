@@ -5517,6 +5517,67 @@ test("dispatch Worktree Safety wins before stuck detection for execute-task with
   );
 });
 
+test("dispatch Worktree Safety honors degraded branch fallback instead of demanding the canonical worktree root", async (t) => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  const pi = makeMockPi();
+  const notifications: string[] = [];
+  ctx.ui.notify = (msg: string) => { notifications.push(msg); };
+
+  // Worktree creation failed and the lifecycle fell back to the milestone
+  // branch in the project root. The safety gate must validate against that
+  // effective branch mode, not the configured worktree mode.
+  const projectRoot = mkdtempSync(join(tmpdir(), "gsd-wt-safety-degraded-"));
+  t.after(() => rmSync(projectRoot, { recursive: true, force: true }));
+
+  const s = makeLoopSession({
+    basePath: projectRoot,
+    originalBasePath: projectRoot,
+    canonicalProjectRoot: projectRoot,
+    isolationDegraded: true,
+  });
+  const deps = makeMockDeps({
+    getIsolationMode: () => "worktree",
+  });
+  const result = await runDispatch(
+    {
+      ctx,
+      pi,
+      s,
+      deps,
+      prefs: undefined,
+      iteration: 1,
+      flowId: "test-flow",
+      nextSeq: () => 1,
+    },
+    {
+      state: {
+        phase: "executing",
+        activeMilestone: { id: "M001", title: "Test", status: "active" },
+        activeSlice: { id: "S01", title: "Slice 1" },
+        activeTask: { id: "T01" },
+        registry: [{ id: "M001", status: "active" }],
+        blockers: [],
+      } as any,
+      mid: "M001",
+      midTitle: "Test",
+    },
+    {
+      recentUnits: [],
+      stuckRecoveryAttempts: 0,
+      consecutiveFinalizeTimeouts: 0,
+    },
+  );
+
+  assert.equal(result.action, "next", "dispatch must proceed under degraded branch isolation");
+  assert.ok(
+    !notifications.some((n) => n.includes("Worktree Safety failed")),
+    "degraded branch fallback must not trip a false invalid-root",
+  );
+  assert.ok(!deps.callLog.includes("stopAuto"), "auto-mode must not stop on the degraded fallback");
+});
+
 test("runDispatch runs stuck detection while artifact verification retry is pending (#5719)", async (t) => {
   _resetPendingResolve();
 
