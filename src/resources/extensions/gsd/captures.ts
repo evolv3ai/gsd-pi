@@ -12,7 +12,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { gsdRoot } from "./paths.js";
-import { findWorktreeSegment } from "./worktree-root.js";
+import { projectRootFromWorktreePath } from "./worktree-root.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -60,11 +60,9 @@ const VALID_CLASSIFICATIONS: readonly string[] = [
  * directory that contains `.gsd/worktrees/` — that's the project root.
  */
 export function resolveCapturesPath(basePath: string): string {
-  const resolved = resolve(basePath);
-  const segment = findWorktreeSegment(resolved.replaceAll("\\", "/"));
-  if (segment) {
-    // basePath is inside a worktree — resolve to project root
-    const projectRoot = resolved.slice(0, segment.gsdIdx);
+  // If basePath is inside a worktree, resolve to the project root.
+  const projectRoot = projectRootFromWorktreePath(resolve(basePath));
+  if (projectRoot) {
     return join(projectRoot, ".gsd", CAPTURES_FILENAME);
   }
   return join(gsdRoot(basePath), CAPTURES_FILENAME);

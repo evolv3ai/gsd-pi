@@ -15,7 +15,7 @@ import { join } from "node:path";
 
 import type { DoctorIssue, DoctorIssueCode } from "./doctor-types.js";
 import { detectPythonExecutable } from "./python-resolver.js";
-import { findWorktreeSegment } from "./worktree-root.js";
+import { projectRootFromWorktreePath } from "./worktree-root.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -50,12 +50,7 @@ const CMD_TIMEOUT = 5_000;
 function resolveWorktreeProjectRoot(basePath: string): string | null {
   const envRoot = process.env.GSD_WORKTREE;
   if (envRoot) return envRoot;
-
-  const segment = findWorktreeSegment(basePath.replace(/\\/g, "/"));
-  if (!segment) return null;
-
-  // Everything before the worktree segment is the project root
-  return basePath.slice(0, segment.gsdIdx);
+  return projectRootFromWorktreePath(basePath);
 }
 
 function tryExec(cmd: string, cwd: string): string | null {

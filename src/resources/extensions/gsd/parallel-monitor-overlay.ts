@@ -128,8 +128,7 @@ function discoverWorkers(basePath: string): string[] {
   return [...mids].sort();
 }
 
-function querySliceProgress(basePath: string, mid: string): SliceProgress[] {
-  const workRoot = worktreePathFor(basePath, mid);
+function querySliceProgress(basePath: string, mid: string, workRoot: string = worktreePathFor(basePath, mid)): SliceProgress[] {
   const dbPath = resolveGsdPathContract(workRoot, basePath).projectDb;
   if (!existsSync(dbPath)) return [];
 
@@ -193,9 +192,12 @@ function collectWorkerData(basePath: string): WorkerView[] {
   const workers: WorkerView[] = [];
 
   for (const mid of mids) {
+    // Resolve the worktree path once per worker per tick — this runs on a
+    // 5-second refresh interval and worktreePathFor probes the filesystem.
+    const workRoot = worktreePathFor(basePath, mid);
     const status = readJsonSafe<StatusJson>(join(parallelDir, `${mid}.status.json`));
-    const lock = readJsonSafe<AutoLock>(join(worktreePathFor(basePath, mid), ".gsd", "auto.lock"));
-    const slices = querySliceProgress(basePath, mid);
+    const lock = readJsonSafe<AutoLock>(join(workRoot, ".gsd", "auto.lock"));
+    const slices = querySliceProgress(basePath, mid, workRoot);
 
     const pid = lock?.pid || status?.pid || 0;
     const alive = pid ? isPidAlive(pid) : false;

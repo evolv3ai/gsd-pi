@@ -57,7 +57,8 @@ import {
   detectWorktreeName,
   setActiveMilestoneId,
 } from "./worktree.js";
-import { getAutoWorktreePath, isInAutoWorktree, checkoutBranchWithStashGuard } from "./auto-worktree.js";
+import { getAutoWorktreePath, isInAutoWorktree } from "./auto-worktree.js";
+import { checkoutBranchWithStashGuard } from "./worktree-git-recovery.js";
 import { readResourceVersion, cleanStaleRuntimeUnits } from "./auto-worktree.js";
 import { worktreePath as getWorktreeDir, isInsideWorktreesDir } from "./worktree-manager.js";
 import { emitWorktreeOrphaned } from "./worktree-telemetry.js";
@@ -1612,8 +1613,10 @@ export async function bootstrapAutoSession(
     const isUnderGsdWorktrees = (p: string): boolean => {
       const normalized = p.replaceAll("\\", "/");
       if (findWorktreeSegment(normalized) !== null) return true;
-      // The container directory itself (no trailing worktree name).
-      return normalized.endsWith("/.gsd/worktrees") || normalized.endsWith("/.gsd-worktrees");
+      // The container directory itself (no trailing worktree name), in any layout.
+      return normalized.endsWith("/.gsd/worktrees")
+        || normalized.endsWith("/.gsd-worktrees")
+        || /\/\.gsd\/projects\/[^/]+\/worktrees$/.test(normalized);
     };
 
     if (

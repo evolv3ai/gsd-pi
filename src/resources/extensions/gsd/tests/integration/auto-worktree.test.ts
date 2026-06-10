@@ -192,6 +192,59 @@ describe("auto-worktree lifecycle", () => {
     }
   });
 
+  test("legacy symlink-resolved auto worktree is detected after module state reset", () => {
+    tempDir = createTempRepo();
+    const savedGsdHome = process.env.GSD_HOME;
+    const fakeHome = realpathSync(mkdtempSync(join(tmpdir(), "auto-wt-home-legacy-")));
+    const storage = join(fakeHome, ".gsd", "projects", "abc123def456");
+    mkdirSync(join(storage, "milestones", "M001"), { recursive: true });
+    writeFileSync(join(storage, "milestones", "M001", "CONTEXT.md"), "# M001\n");
+    symlinkSync(storage, join(tempDir, ".gsd"));
+    process.env.GSD_HOME = join(fakeHome, ".gsd");
+
+    try {
+      // Worktrees created by older versions live at .gsd/worktrees/<MID>;
+      // git resolves the symlink and registers them under external state.
+      // Detection must keep working for them — canonical .gsd-worktrees/
+      // creation never crosses the symlink, so create the legacy worktree
+      // explicitly.
+      const wtPath = join(tempDir, ".gsd", "worktrees", "M001");
+      run(`git worktree add -b milestone/M001 "${wtPath}"`, tempDir);
+      const realWtPath = realpathSync(wtPath);
+      assert.ok(realWtPath.startsWith(storage), "git registered the symlink-resolved worktree path");
+
+      _resetAutoWorktreeOriginalBaseForTests();
+      process.chdir(realWtPath);
+
+      assert.ok(isInAutoWorktree(tempDir), "structural detection works without module originalBase");
+      const resolved = getAutoWorktreePath(realWtPath, "M001");
+      assert.ok(resolved, "existing legacy worktree is found when basePath is the worktree path");
+      assert.equal(realpathSync(resolved!), realWtPath);
+
+      enterAutoWorktree(tempDir, "M001");
+      process.chdir(realWtPath);
+      assert.deepStrictEqual(
+        getActiveAutoWorktreeContext(),
+        {
+          originalBase: tempDir,
+          worktreeName: "M001",
+          branch: "milestone/M001",
+        },
+        "active context is detected from a symlink-resolved legacy worktree cwd",
+      );
+    } finally {
+      process.chdir(tempDir);
+      try {
+        teardownAutoWorktree(tempDir, "M001");
+      } catch {
+        // Best-effort cleanup for partially-created temp worktrees.
+      }
+      if (savedGsdHome === undefined) delete process.env.GSD_HOME;
+      else process.env.GSD_HOME = savedGsdHome;
+      rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
   test("coexistence with manual worktree", async () => {
     tempDir = createTempRepo();
     const msDir = join(tempDir, ".gsd", "milestones", "M003");

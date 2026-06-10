@@ -11,7 +11,7 @@ import {
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import { isContextModeEnabled, type ContextModeConfig } from "../preferences-types.js";
-import { findWorktreeSegment } from "../worktree-root.js";
+import { projectRootFromWorktreePath } from "../worktree-root.js";
 import { contextModeDisabledResult, type ToolExecutionResult } from "./context-mode-tool-result.js";
 
 export interface ExecToolParams {
@@ -202,12 +202,9 @@ function normalizeScanPath(value: string): string {
 
 function parseWorktreeBase(baseDir: string): { originalRoot: string; worktreeRoot: string } | null {
   const normalizedBase = normalizeScanPath(baseDir);
-  const segment = findWorktreeSegment(normalizedBase);
-  if (!segment || segment.gsdIdx <= 0) return null;
-  return {
-    originalRoot: normalizedBase.slice(0, segment.gsdIdx),
-    worktreeRoot: normalizedBase,
-  };
+  const originalRoot = projectRootFromWorktreePath(normalizedBase);
+  if (!originalRoot) return null;
+  return { originalRoot, worktreeRoot: normalizedBase };
 }
 
 function pathInside(parent: string, target: string): boolean {

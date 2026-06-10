@@ -70,6 +70,18 @@ export function isGsdWorktreePath(path: string): boolean {
 }
 
 /**
+ * Project-root prefix of a GSD worktree path, or null when the path is not
+ * inside a recognized worktree layout. Pure string split — no env handling,
+ * HOME guard, or filesystem fallbacks (resolveWorktreeProjectRoot adds
+ * those). Separator normalization is 1:1 on characters, so the prefix is
+ * sliced from the ORIGINAL string and keeps its separators.
+ */
+export function projectRootFromWorktreePath(path: string): string | null {
+  const segment = findWorktreeSegment(path.replaceAll("\\", "/"));
+  return segment ? path.slice(0, segment.gsdIdx) : null;
+}
+
+/**
  * When a milestone worktree lives under the external-state layout
  * (`<gsdHome>/projects/<hash>/worktrees/<MID>/`, or the `GSD_STATE_DIR`
  * equivalent), return the parent project's authoritative external `.gsd`

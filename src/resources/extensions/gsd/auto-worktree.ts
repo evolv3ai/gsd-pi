@@ -44,14 +44,15 @@ import {
   worktreePath,
   isInsideWorktreesDir,
 } from "./worktree-manager.js";
+import { worktreePathFor } from "./worktree-placement.js";
 import {
   detectWorktreeName,
   resolveGitHeadPath,
   nudgeGitBranchCache,
 } from "./worktree.js";
 import {
-  findWorktreeSegment,
   isGsdWorktreePath,
+  projectRootFromWorktreePath,
   normalizeWorktreePathForCompare,
   resolveWorktreeProjectRoot,
 } from "./worktree-root.js";
@@ -73,9 +74,6 @@ import {
   stashAlreadyExistsFilesFromError,
   stashRefFromError,
 } from "./worktree-git-recovery.js";
-
-// Re-export for existing callers/tests (auto-start.ts, checkout-branch-stash-guard.test.ts).
-export { checkoutBranchWithStashGuard } from "./worktree-git-recovery.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 import { MILESTONE_ID_RE } from "./milestone-ids.js";
 import { runWorktreePostCreateHook } from "./worktree-post-create-hook.js";
@@ -520,12 +518,8 @@ export function checkResourcesStale(
  * Returns the corrected base path.
  */
 export function escapeStaleWorktree(base: string): string {
-  const segment = findWorktreeSegment(base.replaceAll("\\", "/"));
-  if (!segment) return base;
-
-  // base is inside .gsd/worktrees/<something> — extract the project root.
-  // Normalization is 1:1 on characters, so the segment index is valid in `base`.
-  const projectRoot = base.slice(0, segment.gsdIdx);
+  const projectRoot = projectRootFromWorktreePath(base);
+  if (projectRoot === null) return base;
 
   // Guard: If the candidate project root's .gsd IS the user-level ~/.gsd,
   // the string-slice heuristic matched the wrong /.gsd/ boundary. This happens
@@ -1307,7 +1301,9 @@ export function getAutoWorktreePath(
 ): string | null {
   basePath = resolveWorktreeProjectRoot(basePath);
 
-  const p = worktreePath(basePath, milestoneId);
+  // basePath is already the resolved project root — go straight to placement
+  // instead of worktreePath(), which would re-resolve the root.
+  const p = worktreePathFor(basePath, milestoneId);
   if (!existsSync(p)) return null;
 
   // Validate this is a real git worktree, not a stray directory.

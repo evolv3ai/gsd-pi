@@ -43,6 +43,9 @@ export function formatTimeAgo(timestamp: number): string {
 	return formatDuration(Date.now() - timestamp) + " ago";
 }
 
+// NOTE: these worktree-layout regexes mirror findWorktreeSegment in
+// src/resources/extensions/gsd/worktree-root.ts (bg-shell does not import the
+// gsd extension). Keep them synchronized when a layout changes.
 function deriveProjectRootFromAutoWorktree(cachedCwd?: string): string | undefined {
 	if (!cachedCwd) return undefined;
 	const match = cachedCwd.match(/^(.*?)[\\/]\.gsd(?:-worktrees|[\\/]worktrees)[\\/][^\\/]+(?:[\\/].*)?$/);

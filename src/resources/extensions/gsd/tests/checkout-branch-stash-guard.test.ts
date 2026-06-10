@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { checkoutBranchWithStashGuard } from "../auto-worktree.ts";
+import { checkoutBranchWithStashGuard } from "../worktree-git-recovery.ts";
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, {

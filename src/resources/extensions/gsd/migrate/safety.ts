@@ -10,6 +10,7 @@ import { readCrashLock, isLockProcessAlive } from "../crash-recovery.js";
 import { closeWorkflowDatabase } from "../db-workspace.js";
 import { readPausedSessionMetadata } from "../interrupted-session.js";
 import { gsdRoot } from "../paths.js";
+import { canonicalWorktreesDir } from "../worktree-placement.js";
 import type { MigrationPreview } from "./writer.js";
 
 export interface MigrationPaths {
@@ -106,8 +107,10 @@ export function assertMigrationHasSlices(preview: MigrationPreview): void {
 }
 
 function hasWorktreeState(targetRoot: string): boolean {
+  // Legacy container is probed via gsdRoot() (symlink-resolved) on purpose —
+  // migration targets may have .gsd in the external-state layout.
   const containers = [
-    join(targetRoot, ".gsd-worktrees"),
+    canonicalWorktreesDir(targetRoot),
     join(gsdRoot(targetRoot), "worktrees"),
   ];
   for (const worktreesDir of containers) {

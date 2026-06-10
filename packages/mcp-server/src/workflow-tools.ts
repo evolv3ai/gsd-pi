@@ -418,7 +418,12 @@ function extractMilestoneId(parsed: Record<string, unknown>): string | null {
  * the shared project `.gsd/` and auto-mode's verifyExpectedArtifact (which
  * uses the worktree `.gsd/`) fails, triggering a guaranteed retry per unit.
  */
-/** Containers a GSD worktree may live in: canonical .gsd-worktrees/ first, legacy .gsd/worktrees/ second. */
+/**
+ * Containers a GSD worktree may live in: canonical .gsd-worktrees/ first,
+ * legacy .gsd/worktrees/ second. Boundary copy of `worktreesDirs` in
+ * src/resources/extensions/gsd/worktree-placement.ts — the MCP server cannot
+ * statically import the extension tree. Keep the two lists synchronized.
+ */
 function worktreeContainers(projectRoot: string): string[] {
   return [join(projectRoot, ".gsd-worktrees"), join(projectRoot, ".gsd", "worktrees")];
 }

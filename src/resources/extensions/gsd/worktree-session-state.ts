@@ -1,5 +1,5 @@
 // GSD worktree session state
-import { findWorktreeSegment } from "./worktree-root.js";
+import { findWorktreeSegment, projectRootFromWorktreePath } from "./worktree-root.js";
 
 let originalCwd: string | null = null;
 
@@ -17,10 +17,8 @@ export function clearWorktreeOriginalCwd(): void {
 
 export function ensureWorktreeOriginalCwdFromPath(cwd: string = process.cwd()): string | null {
   if (originalCwd) return originalCwd;
-  const segment = findWorktreeSegment(cwd.replaceAll("\\", "/"));
-  if (segment) {
-    originalCwd = cwd.slice(0, segment.gsdIdx);
-  }
+  const root = projectRootFromWorktreePath(cwd);
+  if (root) originalCwd = root;
   return originalCwd;
 }
 

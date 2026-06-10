@@ -425,22 +425,20 @@ export async function checkRuntimeHealth(
         missing.push(...criticalPatterns.filter(p => !existingLines.has(p)));
       }
 
-      {
-        if (missing.length > 0) {
-          issues.push({
-            severity: "warning",
-            code: "gitignore_missing_patterns",
-            scope: "project",
-            unitId: "project",
-            message: `${missing.length} critical GSD runtime pattern(s) missing from .gitignore: ${missing.join(", ")}`,
-            file: ".gitignore",
-            fixable: true,
-          });
+      if (missing.length > 0) {
+        issues.push({
+          severity: "warning",
+          code: "gitignore_missing_patterns",
+          scope: "project",
+          unitId: "project",
+          message: `${missing.length} critical GSD runtime pattern(s) missing from .gitignore: ${missing.join(", ")}`,
+          file: ".gitignore",
+          fixable: true,
+        });
 
-          if (shouldFix("gitignore_missing_patterns")) {
-            ensureGitignore(basePath, { manageGitignore });
-            fixesApplied.push("added missing GSD runtime patterns to .gitignore");
-          }
+        if (shouldFix("gitignore_missing_patterns")) {
+          ensureGitignore(basePath, { manageGitignore });
+          fixesApplied.push("added missing GSD runtime patterns to .gitignore");
         }
       }
     }

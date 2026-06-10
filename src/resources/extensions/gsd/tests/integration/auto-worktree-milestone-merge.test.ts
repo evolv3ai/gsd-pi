@@ -784,6 +784,52 @@ describe("auto-worktree-milestone-merge", { timeout: 300_000 }, () => {
     );
   });
 
+  test("#2156 (legacy): mergeMilestoneToMain removes external-state worktrees created under .gsd/worktrees/", () => {
+    const { repo, externalState } = freshRepoWithExternalGsd();
+    // Worktrees created by older versions live at .gsd/worktrees/<MID>; git
+    // resolves the symlink and registers them under external state. Canonical
+    // .gsd-worktrees/ creation never crosses the symlink, so this coverage
+    // creates the legacy worktree explicitly. createAutoWorktree chdirs into
+    // the new worktree and mergeMilestoneToMain reads process.cwd() as the
+    // worktree cwd, so mirror that here.
+    const wtPath = join(repo, ".gsd", "worktrees", "M216");
+    run(`git worktree add -b milestone/M216 "${wtPath}"`, repo);
+    process.chdir(wtPath);
+
+    addSliceToMilestone(repo, wtPath, "M216", "S01", "Legacy external cleanup", [
+      { file: "legacy-external-cleanup.ts", content: "export const legacyExternalCleanup = true;\n", message: "add legacy external cleanup" },
+    ]);
+
+    const realWtPath = realpathSync(wtPath);
+    assert.ok(
+      realWtPath.startsWith(externalState),
+      `legacy worktree should be registered under external .gsd state, got ${realWtPath}`,
+    );
+
+    // Recreate the exact divergence from #1852: local .gsd/ is replaced with a
+    // stale real directory, so the computed path no longer matches git's record.
+    unlinkSync(join(repo, ".gsd"));
+    mkdirSync(join(repo, ".gsd", "worktrees", "M216"), { recursive: true });
+    writeFileSync(join(repo, ".gsd", "STATE.md"), "# Local stale state\n");
+    writeFileSync(join(repo, ".gsd", "worktrees", "M216", "stale.txt"), "stale local artifact\n");
+
+    const roadmap = makeRoadmap("M216", "Legacy external cleanup", [
+      { id: "S01", title: "Legacy external cleanup" },
+    ]);
+
+    mergeMilestoneToMain(repo, "M216", roadmap);
+
+    assert.ok(
+      !run("git worktree list", repo).includes("M216"),
+      "merged legacy milestone worktree should be removed from git worktree list",
+    );
+    assert.ok(!existsSync(realWtPath), "real external worktree directory should be removed");
+    assert.ok(
+      !run("git branch", repo).includes("milestone/M216"),
+      "milestone branch should be deleted after merge cleanup",
+    );
+  });
+
   test("#2912: MERGE_HEAD cleaned up after squash-merge conflict", () => {
     const repo = freshRepo();
     const wtPath = createAutoWorktree(repo, "M291");
