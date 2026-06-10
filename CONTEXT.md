@@ -96,6 +96,8 @@
 - **Unit Descriptor**: one Unit type's declaration — kind (primary/variant), scope class (`execute-task` / `section-close` / `standard`), Phase routing chain, and tool surface contract. Prompt *composition* stays in `auto-prompts.ts`; the descriptor only declares.
 - **Publication module**: the module (`publication.ts`) that owns pushing a merged milestone and opening a draft PR (`auto_push`/`auto_pr`) behind `publishMilestone(request)`. Distinct from the merge verb: merge is a Worktree Lifecycle concern; publication needs only the resulting commit, a remote, and preferences. Publication failure is non-fatal to a completed local merge. See `docs/dev/ADR-034-milestone-merge-publication-split.md`.
 
+- **Dirty Projection Scope** (proposed): the `(milestoneId, sliceId?, taskId?)` scope a write marks as needing re-projection, recorded as part of the write itself. Paired with the **Projection Flush seam** — `flushProjections(basePath)` at pipeline exits — replacing the call-`render*`-after-every-mutation convention. Proposed, not in force; see `docs/dev/ADR-035-projection-dirty-scope.md` for the adoption trigger.
+
 ## Current decision in force
 
 - Auto-mode architecture should deepen around a single Auto Orchestration module with interface:
@@ -183,6 +185,10 @@ Dispatch remains responsible for selecting the next Unit from reconciled state. 
 - The merge verb's full contract — including the stash-restore choreography currently wrapped around it at four `auto/phases.ts` call sites — moves inside Worktree Lifecycle's `exitMilestone`, making the "sole owner of merge" statement above true in code. Push and PR creation split out into the **Publication module**, called after a successful milestone merge. Migration order: extract Publication first (done), then absorb the stash choreography, then relocate the merge core out of `auto-worktree.ts`.
 
   See `docs/dev/ADR-034-milestone-merge-publication-split.md`.
+
+- **Proposed, not in force:** projection-after-write moves from an 11-site caller convention to Dirty Projection Scope marking at the write seam plus one Projection Flush seam. Contradicts the Domain Write Operation scoping note above ("markdown re-projection … remain in callers") — adopt only when the recorded trigger fires (recurring `stale-render` drift in telemetry, or a mutation surface that bypasses `reconcileBeforeDispatch`; note the Interactive Closeout adapter from ADR-032 is exactly such a surface candidate — watch it).
+
+  See `docs/dev/ADR-035-projection-dirty-scope.md`.
 
 ## Current implementation snapshot (phase 1)
 
