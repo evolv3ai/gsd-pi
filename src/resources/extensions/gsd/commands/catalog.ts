@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { loadRegistry } from "../workflow-templates.js";
 import { gsdHome } from "../gsd-home.js";
-import { isGsdWorktreePath, resolveWorktreeProjectRoot } from "../worktree-root.js";
+import { resolveWorktreeProjectRoot } from "../worktree-root.js";
 import { VISUAL_BRIEF_MODES } from "../../visual-brief/prompts.js";
 
 
@@ -402,10 +402,6 @@ function resolveProjectRootForCompletion(basePath: string): string {
   // complete from any cwd); resolveWorktreeProjectRoot only honors it for
   // worktree paths.
   if (process.env.GSD_PROJECT_ROOT) return process.env.GSD_PROJECT_ROOT;
-  // Zero-I/O fast path: completion runs on every TAB and basePath is usually
-  // already the project root. resolveWorktreeProjectRoot's non-worktree
-  // fallback walks directories with stat probes — too slow for a keypress.
-  if (!isGsdWorktreePath(basePath)) return basePath;
   return resolveWorktreeProjectRoot(basePath);
 }
 
