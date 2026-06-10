@@ -1023,16 +1023,18 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
       // checks coexist: idempotency for the common immediate-repeat case,
       // stuck-loop for the saturated-window case.
       if (this.lastAdvanceKey === nextKey && matchingCount < STUCK_WINDOW_SIZE) {
+        // Unit already active — benign no-op. Return skipped so the loop re-polls
+        // without cancelling the in-flight unit (blocked+pause would force-cancel it).
         this.clearPendingDispatch();
-        const blocked: AutoAdvanceResult = { kind: "blocked", reason: "idempotent advance: unit already active", action: "pause" };
+        const skipped: AutoAdvanceResult = { kind: "skipped", reason: "idempotent advance: unit already active" };
         this.journalTransition({
-          name: "advance-blocked",
-          reason: blocked.reason,
+          name: "advance-skipped",
+          reason: skipped.reason,
           unitType: decision.unitType,
           unitId: decision.unitId,
         });
-        this.postAdvanceRecord(blocked);
-        return blocked;
+        this.postAdvanceRecord(skipped);
+        return skipped;
       }
 
       // Stuck-loop detection: when the ring is saturated with copies of

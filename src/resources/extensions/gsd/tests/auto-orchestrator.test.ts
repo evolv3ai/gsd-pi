@@ -518,13 +518,12 @@ test("advance() is idempotent for the same active unit", async (t) => {
   if (first.kind === "advanced") {
     assert.deepEqual(first.unit, { unitType: "execute-task", unitId: "M001/S01/T01" });
   }
-  assert.equal(second.kind, "blocked");
-  if (second.kind !== "blocked") return;
+  assert.equal(second.kind, "skipped");
+  if (second.kind !== "skipped") return;
   assert.equal(second.reason, "idempotent advance: unit already active");
-  assert.equal(second.action, "pause");
 });
 
-test("idempotency block fires with its own reason before saturation", async (t) => {
+test("idempotency skip fires with its own reason before saturation", async (t) => {
   const f = makeFixture();
   t.after(() => f.cleanup());
 
@@ -532,10 +531,9 @@ test("idempotency block fires with its own reason before saturation", async (t) 
   const second = await f.orchestrator.advance();
 
   assert.equal(first.kind, "advanced");
-  assert.equal(second.kind, "blocked");
-  if (second.kind !== "blocked") return;
+  assert.equal(second.kind, "skipped");
+  if (second.kind !== "skipped") return;
   assert.equal(second.reason, "idempotent advance: unit already active");
-  assert.equal(second.action, "pause");
 });
 
 test("completeActiveUnit clears in-flight idempotency and stops stale same-unit advance", async (t) => {
@@ -671,12 +669,12 @@ test("resume() clears idempotent lock and allows re-advance", async (t) => {
   t.after(() => f.cleanup());
 
   const first = await f.orchestrator.advance();
-  const blocked = await f.orchestrator.advance();
+  const idempotent = await f.orchestrator.advance();
   const resumed = await f.orchestrator.resume();
   const next = await f.orchestrator.advance();
 
   assert.equal(first.kind, "advanced");
-  assert.equal(blocked.kind, "blocked");
+  assert.equal(idempotent.kind, "skipped");
   assert.equal(resumed.kind, "resumed");
   assert.equal(next.kind, "advanced");
 });
@@ -686,11 +684,11 @@ test("start() clears prior idempotent lock", async (t) => {
   t.after(() => f.cleanup());
 
   await f.orchestrator.advance();
-  const blocked = await f.orchestrator.advance();
+  const idempotent = await f.orchestrator.advance();
   const restarted = await f.orchestrator.start(SESSION_CONTEXT);
   const next = await f.orchestrator.advance();
 
-  assert.equal(blocked.kind, "blocked");
+  assert.equal(idempotent.kind, "skipped");
   assert.equal(restarted.kind, "started");
   assert.equal(next.kind, "advanced");
 });
@@ -700,24 +698,24 @@ test("stop() clears idempotent unit lock so advance can run again", async (t) =>
   t.after(() => f.cleanup());
 
   const first = await f.orchestrator.advance();
-  const blocked = await f.orchestrator.advance();
+  const idempotent = await f.orchestrator.advance();
   const stopped = await f.orchestrator.stop("reset");
   const second = await f.orchestrator.advance();
 
   assert.equal(first.kind, "advanced");
-  assert.equal(blocked.kind, "blocked");
+  assert.equal(idempotent.kind, "skipped");
   assert.equal(stopped.kind, "stopped");
   assert.equal(second.kind, "advanced");
 });
 
-test("blocked path journals advance-blocked and records a health snapshot", async (t) => {
+test("idempotent path journals advance-skipped and records a health snapshot", async (t) => {
   const f = makeFixture();
   t.after(() => f.cleanup());
 
   await f.orchestrator.advance();
   await f.orchestrator.advance();
 
-  assert.ok(f.journalNames().includes("advance-blocked"));
+  assert.ok(f.journalNames().includes("advance-skipped"));
 });
 
 // ─── Stuck-loop ring buffer (issue #5787) ──────────────────────────────────
@@ -761,13 +759,12 @@ test("stuck-loop: ring saturated with same unit blocks with action 'stop' and st
   // First call advances.
   assert.equal(results[0].kind, "advanced");
 
-  // Intermediate calls are blocked by idempotency (not stuck-loop yet).
+  // Intermediate calls are skipped by idempotency (not stuck-loop yet).
   for (let i = 1; i < STUCK_WINDOW_SIZE - 1; i++) {
     const r = results[i];
-    assert.equal(r.kind, "blocked", `round ${i} should be blocked`);
-    if (r.kind !== "blocked") return;
+    assert.equal(r.kind, "skipped", `round ${i} should be skipped`);
+    if (r.kind !== "skipped") return;
     assert.equal(r.reason, "idempotent advance: unit already active");
-    assert.equal(r.action, "pause");
   }
 
   // The final call (ring now holds STUCK_WINDOW_SIZE copies) returns stuck-loop.
