@@ -15,22 +15,15 @@ export {
   RUN_UAT_BROWSER_TOOL_NAMES,
 } from "./unit-tool-contracts.js";
 
-const EXECUTE_TASK_UNIT_TYPES = new Set([
-  "execute-task",
-  "execute-task-simple",
-  "reactive-execute",
-]);
-
-// These units own quality gates, but their completion handlers persist verdicts
-// from artifact sections. gsd_save_gate_result belongs to gate-evaluate, so keep
-// blocking it here with a calm redirect to the section-write path.
-const SECTION_CLOSE_GATE_UNIT_TYPES = new Set([
-  "execute-task",
-  "execute-task-simple",
-  "reactive-execute",
-  "complete-slice",
-  "validate-milestone",
-]);
+// Scope-class membership is declared per unit in the Unit Registry (ADR-033).
+// EXECUTE_TASK_UNIT_TYPES = scopeClass "execute-task"; the section-close gate
+// Set additionally includes scopeClass "section-close" — units whose completion
+// handlers persist gate verdicts from artifact sections (gsd_save_gate_result
+// belongs to gate-evaluate, so it is soft-blocked with a redirect below).
+import {
+  EXECUTE_TASK_UNIT_TYPES,
+  SECTION_CLOSE_GATE_UNIT_TYPES,
+} from "./unit-registry.js";
 
 const EXTRA_SCOPED_GSD_LIFECYCLE_TOOLS = [
   "gsd_skip_slice",
@@ -110,7 +103,7 @@ function isNativeWorkflowTool(toolName: string): boolean {
   return stripMcpToolPrefix(toolName) === "Workflow";
 }
 
-function readStringField(input: unknown, camel: string, snake: string): string | undefined {
+export function readStringField(input: unknown, camel: string, snake: string): string | undefined {
   if (!input || typeof input !== "object") return undefined;
   const record = input as Record<string, unknown>;
   const value = record[camel] ?? record[snake];

@@ -9,6 +9,7 @@ This changelog starts from the `open-gsd/gsd-pi` ownership baseline. Earlier pro
 ## [Unreleased]
 
 ### Fixed
+- **gsd**: durably commit interactive milestone completions — completing a milestone outside auto-mode now commits the working tree where the work sits instead of silently bypassing `git.isolation`; under configured worktree/branch isolation a milestone closed outside its milestone worktree/branch surfaces a Needs Attention notice rather than finishing with untracked source files and no merge
 - **gsd**: honor an adopted stranded-milestone branch when auto mode re-enters the milestone — resuming saved milestone work no longer fails worktree creation with "already in use by another worktree" and stops emitting a degraded-isolation warning on every re-entry; configured worktree isolation is restored for the next milestone once the recovered one merges
 - **skills**: quote the gsd-browser SKILL.md description so the skill loads in Claude Code — an unquoted colon in the description was parsed as a nested YAML mapping and rejected the frontmatter
 - **gsd**: make undo's slice reset atomic — an interrupted reset can no longer leave a slice partially reset (tasks reset but slice status not, or vice versa)

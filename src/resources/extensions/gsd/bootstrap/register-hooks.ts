@@ -40,6 +40,7 @@ import { recordToolCall as safetyRecordToolCall, recordToolResult as safetyRecor
 import { parseUnitId } from "../unit-id.js";
 import { classifyCommand } from "../safety/destructive-guard.js";
 import { logWarning as safetyLogWarning } from "../workflow-logger.js";
+import { isUnitCloseoutTool, runInteractiveUnitCloseout } from "../unit-closeout.js";
 import { installNotifyInterceptor } from "./notify-interceptor.js";
 import { initNotificationStore } from "../notification-store.js";
 import { initNotificationWidget } from "../notification-widget.js";
@@ -62,6 +63,7 @@ import { mcpToolMatchesBaseName } from "../mcp-tool-name.js";
 import { RUN_UAT_READ_ONLY_TOOL_NAMES, RUN_UAT_WORKFLOW_TOOL_NAMES } from "../tool-presentation-plan.js";
 import { supportsSourceObservationsForUnit } from "../source-observations.js";
 import { clearPendingAutoStart } from "../pending-auto-start.js";
+import { resolveWorkflowToolBasePath } from "./dynamic-tools.js";
 
 let approvalQuestionAbortInFlight = false;
 
@@ -1381,6 +1383,20 @@ export function registerHooks(
       recordToolInvocationError(event.toolName, errorText);
     } else if (isAutoActive()) {
       clearToolInvocationError();
+    }
+    // Interactive Closeout adapter (ADR-032): auto-mode owns closeout for its
+    // own units; interactive completions get the durable git subset (commit +
+    // Closeout Git Verdict) instead of silently bypassing git.isolation.
+    if (!event.isError && !isAutoActive() && isUnitCloseoutTool(toolName)) {
+      try {
+        runInteractiveUnitCloseout({
+          basePath: resolveWorkflowToolBasePath(ctx, event.input as { milestone_id?: string }),
+          canonicalToolName: toolName,
+          input: event.input,
+        });
+      } catch (err) {
+        safetyLogWarning("engine", `interactive unit closeout failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
     if (toolName !== "ask_user_questions") return;
     const basePath = contextBasePath(ctx);

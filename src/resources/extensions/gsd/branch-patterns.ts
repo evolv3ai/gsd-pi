@@ -14,3 +14,6 @@ export const QUICK_BRANCH_RE = /^gsd\/quick\//;
 
 /** Matches GSD-generated workflow template branches, not arbitrary user gsd/* branches. */
 export const WORKFLOW_BRANCH_RE = /^gsd\/(?:hotfix|bugfix|small-feature|refactor|spike|security-audit|dep-upgrade|full-project)\//;
+
+/** Auto-mode milestone branch prefix: milestone/<MID>. */
+export const MILESTONE_BRANCH_PREFIX = "milestone/";

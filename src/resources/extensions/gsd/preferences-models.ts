@@ -26,6 +26,7 @@ import type {
   AutoSupervisorConfig,
 } from "./preferences-types.js";
 import { loadEffectiveGSDPreferences, getGlobalGSDPreferencesPath } from "./preferences.js";
+import { getUnitPhaseChain } from "./unit-registry.js";
 
 // Re-export types so existing consumers of ./preferences-models.js keep working
 export type { GSDPhaseModelConfig, GSDModelConfig, GSDModelConfigV2, ResolvedModelConfig } from "./preferences-types.js";
@@ -49,53 +50,16 @@ export function resolveModelForUnit(unitType: string): string | undefined {
  * (`resolveThinkingLevelForUnit`) so the two never drift (ADR-026).
  */
 export function phaseChainForUnit(unitType: string): GSDModelPhaseKey[] | undefined {
-  switch (unitType) {
-    case "research-milestone":
-    case "research-slice":
-    // Deep-mode project research orchestrator. Reads PROJECT.md / REQUIREMENTS.md
-    // and fans out research subagents. Routes to the research bucket.
-    case "research-project":
-      return ["research"];
-    case "plan-milestone":
-    case "plan-slice":
-    case "refine-slice":
-    case "replan-slice":
-      return ["planning"];
-    // Deep-mode project-level discussion units route to the same model bucket
-    // as milestone-level discussion (interactive interview style). Workflow
-    // preferences and research-decision are tiny ask_user_questions style units
-    // that share the discuss bucket because they are conversational. All fall
-    // back to planning when no `discuss` bucket is set.
-    case "discuss-milestone":
-    case "discuss-slice":
-    case "discuss-project":
-    case "discuss-requirements":
-    case "workflow-preferences":
-    case "research-decision":
-      return ["discuss", "planning"];
-    case "execute-task":
-    case "reactive-execute":
-      return ["execution"];
-    case "execute-task-simple":
-      return ["execution_simple", "execution"];
-    case "complete-slice":
-    case "complete-milestone":
-    case "worktree-merge":
-      return ["completion"];
-    case "run-uat":
-      return ["uat", "completion"];
-    case "reassess-roadmap":
-    case "rewrite-docs":
-    case "gate-evaluate":
-    case "validate-milestone":
-      return ["validation", "planning"];
-    default:
-      // Subagent unit types (e.g., "subagent", "subagent/scout")
-      if (unitType === "subagent" || unitType.startsWith("subagent/")) {
-        return ["subagent"];
-      }
-      return undefined;
+  // Unit types declare their chain on their Unit Descriptor (ADR-033).
+  const declared = getUnitPhaseChain(unitType);
+  if (declared) return [...declared];
+  // Dispatch types without a Unit Descriptor.
+  if (unitType === "worktree-merge") return ["completion"];
+  // Subagent unit types (e.g., "subagent", "subagent/scout")
+  if (unitType === "subagent" || unitType.startsWith("subagent/")) {
+    return ["subagent"];
   }
+  return undefined;
 }
 
 /**

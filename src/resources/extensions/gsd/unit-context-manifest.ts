@@ -343,35 +343,11 @@ const TOOLS_DOCS: ToolsPolicy = {
  * enumerates these against `UNIT_MANIFESTS` to catch manifest drift when
  * a new unit type lands.
  */
-export const KNOWN_UNIT_TYPES = [
-  "research-milestone",
-  "plan-milestone",
-  "discuss-milestone",
-  "validate-milestone",
-  "complete-milestone",
-  "research-slice",
-  "plan-slice",
-  "refine-slice",
-  "replan-slice",
-  "complete-slice",
-  "reassess-roadmap",
-  "execute-task",
-  "reactive-execute",
-  "run-uat",
-  "gate-evaluate",
-  "rewrite-docs",
-  // Sidecar units (triage, quick-task)
-  "triage-captures",
-  "quick-task",
-  // Deep planning mode (project-level) units
-  "workflow-preferences",
-  "discuss-project",
-  "discuss-requirements",
-  "research-decision",
-  "research-project",
-] as const;
+// Unit-type vocabulary is owned by the Unit Registry (ADR-033); re-exported
+// here so established import paths keep working.
+import { KNOWN_UNIT_TYPES, type UnitType } from "./unit-registry.js";
 
-export type UnitType = typeof KNOWN_UNIT_TYPES[number];
+export { KNOWN_UNIT_TYPES, type UnitType };
 
 export const UNIT_MANIFESTS: Record<UnitType, UnitContextManifest> = {
   // ─── Milestone-scoped ────────────────────────────────────────────────
