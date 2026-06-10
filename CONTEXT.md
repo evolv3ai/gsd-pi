@@ -88,6 +88,8 @@
 - **Status Transition Core**: the single private `applyTransition` chokepoint in `gsd-db.ts` that every row-level status write funnels through. Owns the closed→open guard (generalized from milestone-only to task/slice/milestone), the completion-timestamp invariant, derived-cache invalidation, and the transition journal entry. The public `updateTaskStatus`/`updateSliceStatus`/`updateMilestoneStatus` functions are thin entity-typed faces that delegate to it — they retain their signatures so existing callers gain the policy without churn. Operates at row altitude; distinct from the Phase Transition Invariant, which operates at Phase altitude.
 - **Status vocabulary (`type Status`)**: the canonical typed set of entity statuses the domain speaks (e.g. `pending`, `in_progress`, `complete`, `skipped`, `blocked`, `active`, `parked`, `deferred`). The single source from which the closed-status predicates and the SQL terminal-status fragment are derived, replacing the prior ≥4 independent definitions. The DB column stays free-form `string` so legacy/imported values still load; the typed vocabulary governs the in-memory domain.
 - **Status normalization (`toStatus`)**: the single parse seam `toStatus(raw: string): Status` where free-form DB strings enter the typed domain. Maps aliases to canonical (`done`/`closed` → `complete`, `planned` → `pending`) and quarantines unknown values rather than forcing a data migration. The Status Transition Core writes canonical, so the store converges to canonical over time without violating the DB-is-source-of-truth drift invariant.
+- **Unit Registry**: the single declarative table (`unit-registry.ts`) mapping each Unit type to its **Unit Descriptor**. The source from which `KNOWN_UNIT_TYPES`/`UnitType`, the tool contracts, the scope-class Sets, and the unit→phase chain are derived. Adding a Unit type = one registry row + one template file. Preserves the pre-registry asymmetries explicitly: `discuss-slice`/`execute-task-simple` are `kind: "variant"` (contracts and scope Sets, but excluded from `KNOWN_UNIT_TYPES`); `triage-captures`/`quick-task` carry `toolContract: null` and `phaseChain: null`. See `docs/dev/ADR-033-unit-type-registry.md`.
+- **Unit Descriptor**: one Unit type's declaration — kind (primary/variant), scope class (`execute-task` / `section-close` / `standard`), Phase routing chain, and tool surface contract. Prompt *composition* stays in `auto-prompts.ts`; the descriptor only declares.
 
 ## Current decision in force
 
@@ -164,6 +166,10 @@ Dispatch remains responsible for selecting the next Unit from reconciled state. 
 - Worktree placement deepens behind the **Worktree Placement module**: new worktrees are created at the Canonical Worktree Container (`<projectRoot>/.gsd-worktrees/<MID>`), the Legacy Worktree Container stays recognized for in-flight worktrees, and `findWorktreeSegment` (worktree-root.ts) is the only marker-matching implementation — new layouts are taught in exactly two places (placement forward, worktree-root reverse). ADR-002's "no external state directory exists" closure is amended: the External State Layout shipped.
 
   See `docs/dev/ADR-031-worktree-placement.md`.
+
+- "What a Unit type is" should be declared once, in the **Unit Registry**. The parallel tables (`KNOWN_UNIT_TYPES`, `UNIT_TOOL_CONTRACTS`, the scope Sets in `auto-unit-tool-scope.ts`, the unit→phase switch in `preferences-models.ts`) become derived views with stable import paths (the `gsd-db.ts` barrel discipline). Parity is pinned by one table-driven registry test. The Tool Contract module (ADR-015) compiles from the registry. Remaining steps: fold `UNIT_MANIFESTS` data into descriptor rows (already type-enforced against the registry's `UnitType`), declare prompt-template association.
+
+  See `docs/dev/ADR-033-unit-type-registry.md`.
 
 ## Current implementation snapshot (phase 1)
 
