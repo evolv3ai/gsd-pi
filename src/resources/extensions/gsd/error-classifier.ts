@@ -70,6 +70,10 @@ const CONNECTION_RE = /terminated|connection.?(?:refused|error)|other side close
 const STREAM_RE = /in JSON at position \d+|Unexpected end of JSON|SyntaxError.*JSON/i;
 const RESET_DELAY_RE = /reset in (\d+)s/i;
 const TOOL_SCHEMA_RE = /schema overload|consecutive tool validation failures/i;
+// GSD tool-surface readiness abort (claude-code stream adapter): the workflow
+// MCP server had not registered the Unit's required tools at SDK init. The
+// server typically finishes connecting within seconds — same-model retry.
+const TOOL_SURFACE_NOT_READY_RE = /workflow tool surface not ready/i;
 // Provider rejected the request shape for the selected model (400 bad request,
 // grammar limits, etc.). Not transient — try a different model/fallback.
 // Context-window 400s stay in SERVER_RE (checked earlier).
@@ -106,6 +110,11 @@ export function classifyError(errorMsg: string, retryAfterMs?: number): ErrorCla
   // Checked early to prevent misclassification as unknown/provider error.
   if (TOOL_SCHEMA_RE.test(errorMsg)) {
     return { kind: "tool-schema", retryAfterMs: 0 };
+  }
+
+  // Tool-surface readiness abort — transient; retry the same model shortly.
+  if (TOOL_SURFACE_NOT_READY_RE.test(errorMsg)) {
+    return { kind: "network", retryAfterMs: retryAfterMs ?? 3_000 };
   }
 
   const isPermanent = PERMANENT_RE.test(errorMsg);

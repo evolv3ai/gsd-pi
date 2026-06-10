@@ -139,7 +139,7 @@ const DETERMINISTIC_POLICY_ERROR_RE = /(?:^|\b)(?:HARD BLOCK:|Blocked: \/gsd que
  * Unit's first tool call can race the registration. Callers should retry
  * (bounded) instead of breaking the loop.
  */
-const TOOL_UNAVAILABLE_ERROR_RE = /No such tool available/i;
+const TOOL_UNAVAILABLE_ERROR_RE = /No such tool available|workflow tool surface not ready/i;
 
 /**
  * Returns true if the error message indicates a deterministic invocation or

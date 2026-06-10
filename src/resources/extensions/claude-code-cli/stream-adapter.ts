@@ -59,6 +59,7 @@ import {
 	computeMcpDisallowedTools,
 } from "../gsd/mcp-filter.js";
 import { RUN_UAT_CLAUDE_NATIVE_TOOL_NAMES, RUN_UAT_FORBIDDEN_TOOL_NAMES, RUN_UAT_WORKFLOW_TOOL_NAMES, resolveToolPresentationPlan } from "../gsd/tool-presentation-plan.js";
+import { getToolSurfaceReadinessError } from "../gsd/tool-surface-readiness.js";
 import { showInterviewRound, type Question, type RoundResult } from "../shared/tui.js";
 import type {
 	SDKAssistantMessage,
@@ -2041,7 +2042,34 @@ async function pumpSdkMessages(
 			switch (msg.type) {
 				// -- Init --
 				case "system": {
-					// Nothing to emit — the stream is already started.
+					// Tool Surface Readiness gate: the init message is the first (and
+					// only) point where the session reports its live tool surface and
+					// MCP server statuses. If the workflow server failed or has not
+					// registered this Unit's required tools, abort before the first
+					// model turn with a transient, recovery-classifiable error
+					// (tool-unavailable → retry) instead of letting the model hit
+					// "No such tool available" mid-Unit and improvise around it.
+					const init = msg as unknown as {
+						subtype?: string;
+						tools?: string[];
+						mcp_servers?: { name: string; status: string }[];
+					};
+					if (init.subtype === "init") {
+						const readinessError = getToolSurfaceReadinessError({
+							unitType: gsdPhase,
+							workflowServerName: workflowMcpServerNameFromAllowedTools(sdkOpts.allowedTools),
+							observation: { tools: init.tools ?? [], mcpServers: init.mcp_servers ?? [] },
+						});
+						if (readinessError) {
+							controller.abort();
+							stream.push({
+								type: "error",
+								reason: "error",
+								error: makeErrorMessage(modelId, readinessError),
+							});
+							return;
+						}
+					}
 					break;
 				}
 
