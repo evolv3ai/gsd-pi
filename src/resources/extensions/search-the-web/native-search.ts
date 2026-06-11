@@ -243,9 +243,11 @@ export function registerNativeSearchHooks(pi: NativeSearchPI): { getIsAnthropic:
       // Anthropic-only tool never leaks into OpenAI Responses requests.
       isAnthropic = isAnthropicProvider && payloadLooksAnthropic !== false;
     } else {
-      // Last resort: session-restore paths where the SDK doesn't pass model.
-      // The model-name prefix is best-effort and assumes direct Anthropic.
-      isAnthropic = payloadLooksAnthropic === true;
+      // No authoritative provider info available (no event.model, no model_select).
+      // Do NOT inject native web_search — guessing on model name alone causes 400
+      // "unsupported_value" errors when the actual provider (copilot, openrouter,
+      // proxy, etc.) doesn't expose the server-side search tool (#648).
+      isAnthropic = false;
     }
     if (!isAnthropic) return;
 

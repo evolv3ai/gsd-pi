@@ -101,11 +101,14 @@ test("before_provider_request injects web_search for claude models", async () =>
   assert.equal(nativeTool.max_uses, 5, "Should set max_uses to 5 to prevent search loops (#817)");
 });
 
-test("before_provider_request injects web_search for claude models even without model_select", async () => {
+test("before_provider_request does NOT inject web_search without model_select or event.model provider (#648)", async () => {
   const pi = createMockPI();
   registerNativeSearchHooks(pi);
 
-  // NO model_select fired — simulates session restore where modelsAreEqual suppresses the event
+  // NO model_select fired, NO event.model with provider info — simulates startup
+  // or a third-party proxy where the SDK omits provider details. Injecting
+  // web_search_20250305 without confirmed provider causes 400 "unsupported_value"
+  // errors on non-Anthropic endpoints that serve Claude-named models (#648).
   const payload: Record<string, unknown> = {
     model: "claude-opus-4-8",
     tools: [
@@ -120,13 +123,12 @@ test("before_provider_request injects web_search for claude models even without 
     payload,
   });
 
-  const tools = ((result as any)?.tools ?? payload.tools) as any[];
-  const names = tools.map((t: any) => t.name ?? t.type);
-
-  assert.ok(names.includes("web_search"), "Should inject native web_search based on model name");
-  assert.ok(!names.includes("search-the-web"), "Should remove search-the-web");
-  assert.ok(!names.includes("google_search"), "Should remove google_search");
-  assert.ok(names.includes("bash"), "Should keep non-search tools");
+  assert.equal(result, undefined, "Should not modify payload without authoritative provider info");
+  const tools = payload.tools as any[];
+  assert.ok(
+    !tools.some((t: any) => t.type === "web_search_20250305"),
+    "web_search_20250305 must NOT be injected without confirmed provider — causes 400 on proxies/copilot"
+  );
 });
 
 test("before_provider_request does NOT inject for non-claude models", async () => {
