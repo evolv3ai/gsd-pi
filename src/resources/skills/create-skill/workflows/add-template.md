@@ -12,6 +12,8 @@ Ask (if not already provided):
 - Which skill needs a template?
 - What output does this template structure?
 
+Determine `{skill-path}`: check `~/.agents/skills/{skill-name}` (user-global) and `.agents/skills/{skill-name}` (project-local); use whichever exists.
+
 ## Step 2: Analyze Template Need
 
 Confirm this is a good template candidate:
@@ -24,7 +26,7 @@ If not a good fit, suggest alternatives (workflow guidance, reference examples).
 ## Step 3: Create Templates Directory
 
 ```bash
-mkdir -p ~/.claude/skills/{skill-name}/templates
+mkdir -p {skill-path}/templates
 ```
 
 ## Step 4: Design Template Structure

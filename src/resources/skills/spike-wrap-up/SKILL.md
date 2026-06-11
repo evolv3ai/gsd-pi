@@ -1,16 +1,16 @@
 ---
 name: spike-wrap-up
-description: Package findings from a completed spike into a durable project-local skill that auto-loads on future similar work. Reads the latest `.gsd/workflows/spikes/` dir, interviews the user on what's reusable, then writes `.claude/skills/<name>/SKILL.md`. Use when asked to "wrap up the spike", "package this as a skill", "make this reusable", "turn findings into a skill", or at the synthesize phase of `/gsd start spike`.
+description: Package findings from a completed spike into a durable project-local skill that auto-loads on future similar work. Reads the latest `.gsd/workflows/spikes/` dir, interviews the user on what's reusable, then writes `.agents/skills/<name>/SKILL.md`. Use when asked to "wrap up the spike", "package this as a skill", "make this reusable", "turn findings into a skill", or at the synthesize phase of `/gsd start spike`.
 ---
 
 <objective>
-Convert the output of a research spike (`SCOPE.md`, `research/*.md`, `RECOMMENDATION.md`) into a project-local skill under `.claude/skills/` so that the next time a similar task comes up, the agent loads the skill automatically. This is how throwaway spikes become durable capital.
+Convert the output of a research spike (`SCOPE.md`, `research/*.md`, `RECOMMENDATION.md`) into a project-local skill under `.agents/skills/` so that the next time a similar task comes up, the agent loads the skill automatically. This is how throwaway spikes become durable capital.
 </objective>
 
 <context>
 GSD's spike workflow (`src/resources/extensions/gsd/workflow-templates/spike.md`) produces documents in `.gsd/workflows/spikes/<slug>/`. Those documents are useful once and then forgotten unless something packages them for reuse.
 
-GSD already watches `.claude/skills/` (and `.agents/skills/`) at both user and project levels — see `src/resources/extensions/gsd/skill-discovery.ts`. Any skill written there is picked up on the next session without further wiring. This skill is the bridge from "spike done" to "skill available."
+GSD already watches `.agents/skills/` (and `.claude/skills/` as a legacy compat path) at both user and project levels — see `src/resources/extensions/gsd/skill-discovery.ts`. Any skill written there is picked up on the next session without further wiring. This skill is the bridge from "spike done" to "skill available."
 
 Invocation points:
 - End of Phase 3 (synthesize) in `/gsd start spike` — prompt suggests running this skill
@@ -21,7 +21,7 @@ Invocation points:
 <core_principle>
 **NOT EVERY SPIKE DESERVES A SKILL.** If the recommendation was "don't do X," there may be no reusable guidance. Ask the user first; exit without writing if the answer is no.
 
-**PROJECT-LOCAL, NOT USER-GLOBAL.** Write to `.claude/skills/` in the repo, not `~/.claude/skills/`. The skill encodes project-specific choices that should not leak into unrelated projects.
+**PROJECT-LOCAL, NOT USER-GLOBAL.** Write to `.agents/skills/` in the project root, not `~/.agents/skills/`. The skill encodes project-specific choices that should not leak into unrelated projects.
 
 **DESCRIPTION IS THE DISCOVERABILITY SIGNAL.** The `description` field in frontmatter is the primary signal the agent uses to judge relevance and decide whether to load the skill — it is a heuristic, not a deterministic trigger. Write it as keywords the future agent will plausibly encounter, not a summary.
 </core_principle>
@@ -65,7 +65,7 @@ Show this sketch to the user. One round of feedback. Iterate.
 
 ## Step 4: Write the skill
 
-Write to `.claude/skills/<name>/SKILL.md` (create the directory). Match the frontmatter + XML-tag structure used by other bundled skills — see `src/resources/skills/review/SKILL.md` for the canonical shape.
+Write to `.agents/skills/<name>/SKILL.md` (create the directory). Match the frontmatter + XML-tag structure used by other bundled skills — see `src/resources/skills/review/SKILL.md` for the canonical shape.
 
 Minimum structure:
 
@@ -102,7 +102,7 @@ description: <one sentence with trigger keywords>
 </success_criteria>
 ```
 
-If the spike produced a reusable template (a config file, a starter script), copy it into `.claude/skills/<name>/templates/` or `.claude/skills/<name>/references/` and reference it from the skill body.
+If the spike produced a reusable template (a config file, a starter script), copy it into `.agents/skills/<name>/templates/` or `.agents/skills/<name>/references/` and reference it from the skill body.
 
 ## Step 5: Archive the spike, link from the skill
 
@@ -112,13 +112,13 @@ If the spike produced a reusable template (a config file, a starter script), cop
 
 ## Step 6: Confirm pickup
 
-Tell the user the skill will be surfaced on the next session via `skill-discovery.ts`. If they want to use it immediately, they can `Read .claude/skills/<name>/SKILL.md` now.
+Tell the user the skill will be surfaced on the next session via `skill-discovery.ts`. If they want to use it immediately, they can `Read .agents/skills/<name>/SKILL.md` now.
 
 </process>
 
 <anti_patterns>
 
-- **Writing to `~/.claude/skills/`.** That's user-global. Project spikes produce project skills — keep them scoped.
+- **Writing to `~/.claude/skills/` or `.claude/skills/`.** These are legacy Claude Code compatibility paths. Write project skills to `.agents/skills/` in the project root instead.
 - **Verbose frontmatter description.** The description is an index entry, not a tutorial. Keywords over prose.
 - **Packaging every spike.** If the outcome was "we decided X once," append to DECISIONS.md and move on.
 - **Copy-pasting the spike verbatim into the skill.** The spike is research; the skill is executable guidance. Re-author.
@@ -128,7 +128,7 @@ Tell the user the skill will be surfaced on the next session via `skill-discover
 
 <success_criteria>
 
-- [ ] A new `.claude/skills/<name>/SKILL.md` exists with well-formed frontmatter.
+- [ ] A new `.agents/skills/<name>/SKILL.md` exists with well-formed frontmatter.
 - [ ] The `description` field uses keywords that will plausibly match future agent work.
 - [ ] The skill body is executable on its own without re-reading the originating spike.
 - [ ] The originating spike is referenced from the skill.

@@ -12,17 +12,22 @@
 **DO NOT use AskUserQuestion** - there may be many skills.
 
 ```bash
-ls ~/.claude/skills/
+# User-global skills
+ls ~/.agents/skills/ 2>/dev/null
+# Project-local skills
+ls .agents/skills/ 2>/dev/null
 ```
 
 Present numbered list, ask: "Which skill needs a new workflow?"
+
+Determine `{skill-path}`: use `~/.agents/skills/{skill-name}` if found there, otherwise `.agents/skills/{skill-name}`.
 
 ## Step 2: Analyze Current Structure
 
 Read the skill:
 ```bash
-cat ~/.claude/skills/{skill-name}/SKILL.md
-ls ~/.claude/skills/{skill-name}/workflows/ 2>/dev/null
+cat {skill-path}/SKILL.md
+ls {skill-path}/workflows/ 2>/dev/null
 ```
 
 Determine:
