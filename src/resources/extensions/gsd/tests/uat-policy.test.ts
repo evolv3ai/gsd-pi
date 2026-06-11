@@ -5,7 +5,6 @@ import {
   classifyUatContent,
   getDeclaredUatType,
   getUatBrowserToolSupportError,
-  hasUatBrowserToolSurface,
   isPartialEligibleUatType,
   resolveEffectiveUatType,
   shouldDispatchUatForContent,
@@ -13,6 +12,12 @@ import {
   uatTypeIncludesBrowser,
   validateUatModePolicy,
 } from "../uat-policy.ts";
+import {
+  assertBrowserAutomationContractAvailable,
+  assertBrowserAutomationContractMissing,
+  assertBrowserBackedUatCanDispatch,
+  BROWSER_AUTOMATION_CONTRACT_TOOLS,
+} from "./browser-automation-contract-fixture.ts";
 
 describe("uat-policy", () => {
   it("defaults missing UAT mode to artifact-driven", () => {
@@ -63,14 +68,14 @@ describe("uat-policy", () => {
     }
   });
 
-  it("detects direct and MCP-shaped browser tool surfaces", () => {
-    assert.equal(hasUatBrowserToolSurface(["read", "browser_navigate"]), true);
-    assert.equal(hasUatBrowserToolSurface(["read", "mcp__gsd-browser__browser_navigate"]), true);
-    assert.equal(hasUatBrowserToolSurface(["read", "mcp__gsd-browser__*"]), true);
-    assert.equal(hasUatBrowserToolSurface(["read", "mcp__browser-uat__*"]), true);
-    assert.equal(hasUatBrowserToolSurface(["read", "mcp__gsd-workflow__*"]), false);
-    assert.equal(hasUatBrowserToolSurface(["read", "gsd_uat_exec"]), false);
-    assert.equal(hasUatBrowserToolSurface(undefined), false);
+  it("detects Browser Automation Contract capability across adapters", () => {
+    assertBrowserAutomationContractAvailable(BROWSER_AUTOMATION_CONTRACT_TOOLS.piProvider);
+    assertBrowserAutomationContractAvailable(BROWSER_AUTOMATION_CONTRACT_TOOLS.externalMcpClient);
+    assertBrowserAutomationContractAvailable(BROWSER_AUTOMATION_CONTRACT_TOOLS.externalMcpWildcard);
+    assertBrowserAutomationContractAvailable(BROWSER_AUTOMATION_CONTRACT_TOOLS.otherBrowserMcp);
+    assertBrowserAutomationContractMissing(BROWSER_AUTOMATION_CONTRACT_TOOLS.workflowOnly);
+    assertBrowserAutomationContractMissing(BROWSER_AUTOMATION_CONTRACT_TOOLS.withoutBrowser);
+    assertBrowserAutomationContractMissing(undefined);
   });
 
   it("reports missing browser tools only for browser-backed UAT with a known tool snapshot", () => {
@@ -92,26 +97,16 @@ describe("uat-policy", () => {
       }),
       null,
     );
-    assert.equal(
-      getUatBrowserToolSupportError({
-        uatType: "human-experience",
-        activeTools: ["read", "gsd_uat_exec"],
-        registeredTools: ["browser_navigate"],
-        milestoneId: "M001",
-        sliceId: "S01",
-      }),
-      null,
-    );
-    assert.equal(
-      getUatBrowserToolSupportError({
-        uatType: "human-experience",
-        activeTools: ["read", "gsd_uat_exec"],
-        registeredTools: ["mcp__gsd-browser__*"],
-        milestoneId: "M001",
-        sliceId: "S01",
-      }),
-      null,
-    );
+    assertBrowserBackedUatCanDispatch({
+      uatType: "human-experience",
+      activeTools: BROWSER_AUTOMATION_CONTRACT_TOOLS.withoutBrowser,
+      registeredTools: BROWSER_AUTOMATION_CONTRACT_TOOLS.piProvider,
+    });
+    assertBrowserBackedUatCanDispatch({
+      uatType: "human-experience",
+      activeTools: BROWSER_AUTOMATION_CONTRACT_TOOLS.withoutBrowser,
+      registeredTools: BROWSER_AUTOMATION_CONTRACT_TOOLS.externalMcpWildcard,
+    });
 
     const error = getUatBrowserToolSupportError({
       uatType: "browser-executable",

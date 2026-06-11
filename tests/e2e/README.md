@@ -73,6 +73,10 @@ describe("my feature", () => {
 - **`artifacts.ts`** — `artifactsFor(testSlug)` returns `{ dir, write }`.
   Use it to dump logs/screenshots/traces from a test that's about to fail
   so CI can upload them.
+- **`workflow-scenario.ts`** — shared fake-LLM workflow scenario helpers:
+  transcript turn builders, git commit helpers, DB scalar reads, notification
+  extraction, and `WorkflowOutcomeProbe` assertions for full headless
+  milestone flows.
 
 ## Anti-patterns to avoid
 

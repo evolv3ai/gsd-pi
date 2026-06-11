@@ -35,6 +35,7 @@ import {
   insertTask,
   openDatabase,
 } from "../../gsd-db.ts";
+import { createGsdIntegrationProject } from "./gsd-integration-fixture.ts";
 
 function run(cmd: string, cwd: string): string {
   // Safe: all inputs are hardcoded test strings, not user input
@@ -42,17 +43,12 @@ function run(cmd: string, cwd: string): string {
 }
 
 function createTempRepo(): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "wt-ms-merge-test-")));
-  run("git init", dir);
-  run("git config user.email test@test.com", dir);
-  run("git config user.name Test", dir);
-  writeFileSync(join(dir, "README.md"), "# test\n");
-  mkdirSync(join(dir, ".gsd"), { recursive: true });
-  writeFileSync(join(dir, ".gsd", "STATE.md"), "# State\n");
-  run("git add .", dir);
-  run("git commit -m init", dir);
-  run("git branch -M main", dir);
-  return dir;
+  return createGsdIntegrationProject({
+    prefix: "wt-ms-merge-test-",
+    initialFiles: {
+      ".gsd/STATE.md": "# State\n",
+    },
+  }).root;
 }
 
 function createTempRepoWithExternalGsd(): { repo: string; externalState: string } {

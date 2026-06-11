@@ -9,6 +9,7 @@ import { join } from "node:path";
 
 import { DISPATCH_RULES, type DispatchContext } from "../auto-dispatch.ts";
 import type { GSDState } from "../types.ts";
+import { BROWSER_AUTOMATION_CONTRACT_TOOLS } from "./browser-automation-contract-fixture.ts";
 
 type DispatchRuleEntry = (typeof DISPATCH_RULES)[number];
 
@@ -80,7 +81,7 @@ test("run-uat browser preflight uses registered tools when the active surface is
   assert.match(blocked?.action === "stop" ? blocked.reason : "", /run-uat tool surface has none/);
 
   const dispatched = await runUatRule().match(makeContext(basePath, {
-    registeredTools: ["browser_navigate"],
+    registeredTools: [...BROWSER_AUTOMATION_CONTRACT_TOOLS.piProvider],
   }));
   assert.equal(dispatched?.action, "dispatch");
   assert.equal(dispatched?.action === "dispatch" ? dispatched.unitType : undefined, "run-uat");
