@@ -180,26 +180,28 @@ async function registerBrowserTools(pi: ExtensionAPI, ctx: ExtensionContext): Pr
   // works — prove it by connecting the daemon before committing the session's
   // tool registrations to it. Connect failure falls back to legacy Playwright
   // (the failure mode that made ADR-024 freeze the old default) and commits
-  // the outcome so ambient readers see the engine actually in use. An explicit
+  // the outcome so ambient readers see the engine actually in use. When eager
+  // warm-up is disabled the daemon-connect proof cannot run, so the probe
+  // default treats the managed engine as unprovable and falls back to legacy
+  // rather than registering it unverified. An explicit
   // GSD_BROWSER_ENGINE=gsd-browser override skips the gate and is honored
   // verbatim, matching prior behavior.
-  if (engine === "gsd-browser" && resolution.source === "probe" && !registeredEngine && !isWarmUpDisabled()) {
-    const warmUp = await warmUpManagedGsdBrowser(ctx, AbortSignal.timeout(PROBE_WARMUP_TIMEOUT_MS));
-    if (!warmUp.ok) {
-      engine = "legacy";
-      commitBrowserEngineResolution(projectRoot, {
-        engine: "legacy",
-        source: "probe",
-        reason: `gsd-browser daemon connect failed (${warmUp.error}); using legacy Playwright`,
-      });
-      if (ctx.hasUI) {
-        ctx.ui.notify(
-          `gsd-browser engine unavailable (${warmUp.error}); using Playwright browser tools for this session.`,
-          "warning",
-        );
+  if (engine === "gsd-browser" && resolution.source === "probe" && !registeredEngine) {
+    if (isWarmUpDisabled()) {
+      engine = commitLegacyFallback(projectRoot, "warm-up disabled; managed engine unverifiable; using legacy Playwright");
+    } else {
+      const warmUp = await warmUpManagedGsdBrowser(ctx, AbortSignal.timeout(PROBE_WARMUP_TIMEOUT_MS));
+      if (!warmUp.ok) {
+        engine = commitLegacyFallback(projectRoot, `gsd-browser daemon connect failed (${warmUp.error}); using legacy Playwright`);
+        if (ctx.hasUI) {
+          ctx.ui.notify(
+            `gsd-browser engine unavailable (${warmUp.error}); using Playwright browser tools for this session.`,
+            "warning",
+          );
+        }
+      } else if (warmUp.coverageWarning && ctx.hasUI) {
+        ctx.ui.notify(warmUp.coverageWarning, "warning");
       }
-    } else if (warmUp.coverageWarning && ctx.hasUI) {
-      ctx.ui.notify(warmUp.coverageWarning, "warning");
     }
   }
 
@@ -233,6 +235,11 @@ async function registerBrowserTools(pi: ExtensionAPI, ctx: ExtensionContext): Pr
     if (registeredEngine === engine) registeredEngine = null;
     throw error;
   }
+}
+
+function commitLegacyFallback(projectRoot: string, reason: string): "legacy" {
+  commitBrowserEngineResolution(projectRoot, { engine: "legacy", source: "probe", reason });
+  return "legacy";
 }
 
 function isWarmUpDisabled(): boolean {

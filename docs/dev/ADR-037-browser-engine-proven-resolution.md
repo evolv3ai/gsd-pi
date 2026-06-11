@@ -42,7 +42,11 @@ reason:
    readers — UAT guidance, re-warm-up, later sessions in the same process —
    see the engine actually registered, not the prediction. This is the
    fail-closed-with-fallback answer to ADR-024's blocker: a managed startup
-   failure now degrades instead of blocking browser verification.
+   failure now degrades instead of blocking browser verification. When eager
+   warm-up is disabled (`GSD_BROWSER_WARMUP=0`) the connect proof cannot run, so
+   the probe default resolves to legacy Playwright rather than registering an
+   unverified managed engine; forcing the managed engine without the proof
+   stays an explicit `GSD_BROWSER_ENGINE=gsd-browser` opt-in.
 4. **Non-browser-facing projects keep legacy Playwright.** Browser tools are
    incidental there; the managed daemon is not worth its startup risk. The
    resolution record says so explicitly.
