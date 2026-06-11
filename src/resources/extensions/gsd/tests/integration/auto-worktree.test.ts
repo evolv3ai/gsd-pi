@@ -11,6 +11,11 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, realpathSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
+import {
+  commitAll,
+  createGsdIntegrationProject,
+  writeGsdMilestoneContext,
+} from "./gsd-integration-fixture.ts";
 
 import {
   createAutoWorktree,
@@ -32,17 +37,12 @@ function run(command: string, cwd: string): string {
 }
 
 function createTempRepo(): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "auto-wt-test-")));
-  run("git init", dir);
-  run("git config user.email test@test.com", dir);
-  run("git config user.name Test", dir);
-  // Create initial commit on main
-  writeFileSync(join(dir, "README.md"), "# test\n");
-  run("git add .", dir);
-  run("git commit -m init", dir);
-  // Ensure branch is called main
-  run("git branch -M main", dir);
-  return dir;
+  return createGsdIntegrationProject("auto-wt-test-").root;
+}
+
+function commitMilestoneContext(repo: string, milestoneId: string): void {
+  writeGsdMilestoneContext(repo, milestoneId);
+  commitAll(repo, "add milestone");
 }
 
 describe("auto-worktree lifecycle", () => {
@@ -59,13 +59,7 @@ describe("auto-worktree lifecycle", () => {
 
   test("create → detect → teardown", () => {
     tempDir = createTempRepo();
-
-    // Create .gsd/milestones/M003 with a dummy file (simulates planning artifacts)
-    const msDir = join(tempDir, ".gsd", "milestones", "M003");
-    mkdirSync(msDir, { recursive: true });
-    writeFileSync(join(msDir, "CONTEXT.md"), "# M003 Context\n");
-    run("git add .", tempDir);
-    run("git commit -m \"add milestone\"", tempDir);
+    commitMilestoneContext(tempDir, "M003");
 
     // ─── createAutoWorktree ──────────────────────────────────────────
     const wtPath = createAutoWorktree(tempDir, "M003");
@@ -112,11 +106,7 @@ describe("auto-worktree lifecycle", () => {
 
   test("re-entry: create again, exit without teardown, re-enter", () => {
     tempDir = createTempRepo();
-    const msDir = join(tempDir, ".gsd", "milestones", "M003");
-    mkdirSync(msDir, { recursive: true });
-    writeFileSync(join(msDir, "CONTEXT.md"), "# M003 Context\n");
-    run("git add .", tempDir);
-    run("git commit -m \"add milestone\"", tempDir);
+    commitMilestoneContext(tempDir, "M003");
 
     const wtPath2 = createAutoWorktree(tempDir, "M003");
     assert.ok(existsSync(wtPath2), "worktree re-created");
@@ -247,11 +237,7 @@ describe("auto-worktree lifecycle", () => {
 
   test("coexistence with manual worktree", async () => {
     tempDir = createTempRepo();
-    const msDir = join(tempDir, ".gsd", "milestones", "M003");
-    mkdirSync(msDir, { recursive: true });
-    writeFileSync(join(msDir, "CONTEXT.md"), "# M003 Context\n");
-    run("git add .", tempDir);
-    run("git commit -m \"add milestone\"", tempDir);
+    commitMilestoneContext(tempDir, "M003");
 
     // Import createWorktree directly for manual worktree
     const { createWorktree } = await import("../../worktree-manager.ts");
@@ -274,11 +260,7 @@ describe("auto-worktree lifecycle", () => {
 
   test("split-brain prevention: originalBase cleared after teardown", () => {
     tempDir = createTempRepo();
-    const msDir = join(tempDir, ".gsd", "milestones", "M003");
-    mkdirSync(msDir, { recursive: true });
-    writeFileSync(join(msDir, "CONTEXT.md"), "# M003 Context\n");
-    run("git add .", tempDir);
-    run("git commit -m \"add milestone\"", tempDir);
+    commitMilestoneContext(tempDir, "M003");
 
     createAutoWorktree(tempDir, "M003");
     teardownAutoWorktree(tempDir, "M003");
@@ -288,11 +270,7 @@ describe("auto-worktree lifecycle", () => {
 
   test("#1526: getMainBranch returns milestone/<MID> in auto-worktree", async () => {
     tempDir = createTempRepo();
-    const msDir = join(tempDir, ".gsd", "milestones", "M005");
-    mkdirSync(msDir, { recursive: true });
-    writeFileSync(join(msDir, "CONTEXT.md"), "# M005 Context\n");
-    run("git add .", tempDir);
-    run("git commit -m \"add milestone\"", tempDir);
+    commitMilestoneContext(tempDir, "M005");
 
     const { GitServiceImpl } = await import("../../git-service.ts");
 
@@ -312,11 +290,7 @@ describe("auto-worktree lifecycle", () => {
 
   test("#1713: stale worktree directory without .git file", async () => {
     tempDir = createTempRepo();
-    const msDir = join(tempDir, ".gsd", "milestones", "M010");
-    mkdirSync(msDir, { recursive: true });
-    writeFileSync(join(msDir, "CONTEXT.md"), "# M010 Context\n");
-    run("git add .", tempDir);
-    run("git commit -m \"add milestone\"", tempDir);
+    commitMilestoneContext(tempDir, "M010");
 
     // Simulate a crash leaving a stale directory with no .git file.
     const { worktreePath } = await import("../../worktree-manager.ts");
@@ -337,11 +311,7 @@ describe("auto-worktree lifecycle", () => {
 
   test("#778: re-attach does not reconcile plan checkboxes into a worktree-local .gsd projection", async () => {
     tempDir = createTempRepo();
-    const msDir = join(tempDir, ".gsd", "milestones", "M003");
-    mkdirSync(msDir, { recursive: true });
-    writeFileSync(join(msDir, "CONTEXT.md"), "# M003 Context\n");
-    run("git add .", tempDir);
-    run("git commit -m \"add milestone\"", tempDir);
+    commitMilestoneContext(tempDir, "M003");
 
     const planRelPath = join(".gsd", "milestones", "M004", "slices", "S01", "S01-PLAN.md");
     const planDir = join(tempDir, ".gsd", "milestones", "M004", "slices", "S01");
@@ -401,11 +371,7 @@ describe("auto-worktree lifecycle", () => {
 
   test("#2791: mcp.json is not copied into worktree on creation after copyPlanningArtifacts removal", () => {
     tempDir = createTempRepo();
-    const msDir = join(tempDir, ".gsd", "milestones", "M003");
-    mkdirSync(msDir, { recursive: true });
-    writeFileSync(join(msDir, "CONTEXT.md"), "# M003 Context\n");
-    run("git add .", tempDir);
-    run("git commit -m \"add milestone\"", tempDir);
+    commitMilestoneContext(tempDir, "M003");
 
     // Create mcp.json in .gsd/ AFTER the commit (untracked, like real usage).
     // Phase C removed copyPlanningArtifacts, so creation should not seed a
@@ -430,11 +396,7 @@ describe("auto-worktree lifecycle", () => {
 
   test("#2791: mcp.json synced via syncGsdStateToWorktree (ROOT_STATE_FILES)", () => {
     tempDir = createTempRepo();
-    const msDir = join(tempDir, ".gsd", "milestones", "M003");
-    mkdirSync(msDir, { recursive: true });
-    writeFileSync(join(msDir, "CONTEXT.md"), "# M003 Context\n");
-    run("git add .", tempDir);
-    run("git commit -m \"add milestone\"", tempDir);
+    commitMilestoneContext(tempDir, "M003");
 
     // Create worktree first (no mcp.json yet)
     const wtPath = createAutoWorktree(tempDir, "M003");
