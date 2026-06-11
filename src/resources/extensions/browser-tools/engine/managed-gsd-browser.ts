@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { Type, type TSchema } from "@sinclair/typebox";
 
+import { BROWSER_CONTRACT_TOOL_NAMES, type BrowserContractToolName } from "../../shared/browser-contract.js";
 import { resolveGsdBrowserMcpLaunchConfig, type GsdBrowserMcpLaunchConfig } from "../../shared/gsd-browser-cli.js";
 import { buildMcpChildEnv } from "../../mcp-client/manager.js";
 
@@ -38,7 +39,7 @@ interface McpContentItem {
 }
 
 interface ManagedBrowserToolSpec {
-  name: string;
+  /** gsd-browser MCP tool candidates, tried in order. Defaults to the contract name itself. */
   mcpTools?: string[];
   label: string;
   description: string;
@@ -77,30 +78,16 @@ const BatchStep = Type.Object({
   checks: Type.Optional(Type.Array(AssertionCheck)),
 }, { additionalProperties: true });
 
-export const MANAGED_GSD_BROWSER_TOOL_NAMES = [
-  "browser_navigate",
-  "browser_click",
-  "browser_type",
-  "browser_fill_form",
-  "browser_click_ref",
-  "browser_fill_ref",
-  "browser_wait_for",
-  "browser_assert",
-  "browser_verify",
-  "browser_screenshot",
-  "browser_snapshot_refs",
-  "browser_find",
-  "browser_get_console_logs",
-  "browser_get_network_logs",
-  "browser_evaluate",
-  "browser_reload",
-  "browser_batch",
-  "browser_act",
-] as const;
+/**
+ * The managed adapter serves exactly the Browser Automation Contract
+ * vocabulary. The spec table below is keyed by contract name, so adding a
+ * contract capability fails typecheck here until the adapter declares how the
+ * gsd-browser server satisfies it.
+ */
+export const MANAGED_GSD_BROWSER_TOOL_NAMES = BROWSER_CONTRACT_TOOL_NAMES;
 
-const MANAGED_BROWSER_TOOLS: ManagedBrowserToolSpec[] = [
-  {
-    name: "browser_navigate",
+const MANAGED_BROWSER_TOOL_SPECS: Record<BrowserContractToolName, ManagedBrowserToolSpec> = {
+  browser_navigate: {
     label: "Browser Navigate",
     description: "Navigate the managed gsd-browser session to a URL and return page state. Use for local web app verification and UAT evidence.",
     parameters: Type.Object({
@@ -108,8 +95,7 @@ const MANAGED_BROWSER_TOOLS: ManagedBrowserToolSpec[] = [
       screenshot: Type.Optional(Type.Boolean({ description: "Capture screenshot evidence when supported." })),
     }, { additionalProperties: true }),
   },
-  {
-    name: "browser_click",
+  browser_click: {
     label: "Browser Click",
     description: "Click an element in the managed gsd-browser session by selector or coordinates.",
     parameters: Type.Object({
@@ -118,8 +104,7 @@ const MANAGED_BROWSER_TOOLS: ManagedBrowserToolSpec[] = [
       y: Type.Optional(Type.Number({ description: "Y coordinate to click." })),
     }, { additionalProperties: true }),
   },
-  {
-    name: "browser_type",
+  browser_type: {
     label: "Browser Type",
     description: "Type or fill text into an input in the managed gsd-browser session.",
     parameters: Type.Object({
@@ -130,8 +115,7 @@ const MANAGED_BROWSER_TOOLS: ManagedBrowserToolSpec[] = [
       slowly: Type.Optional(Type.Boolean({ description: "Type character by character." })),
     }, { additionalProperties: true }),
   },
-  {
-    name: "browser_fill_form",
+  browser_fill_form: {
     label: "Browser Fill Form",
     description: "Fill a form in the managed gsd-browser session using field labels, names, placeholders, or aria labels.",
     parameters: Type.Object({
@@ -140,16 +124,14 @@ const MANAGED_BROWSER_TOOLS: ManagedBrowserToolSpec[] = [
       submit: Type.Optional(Type.Boolean({ description: "Submit the form after filling." })),
     }, { additionalProperties: true }),
   },
-  {
-    name: "browser_click_ref",
+  browser_click_ref: {
     label: "Browser Click Ref",
     description: "Click a versioned ref from the latest gsd-browser snapshot.",
     parameters: Type.Object({
       ref: Type.String({ description: "Versioned ref, e.g. @v3:e2." }),
     }, { additionalProperties: true }),
   },
-  {
-    name: "browser_fill_ref",
+  browser_fill_ref: {
     label: "Browser Fill Ref",
     description: "Fill text into an input-like versioned ref from the latest gsd-browser snapshot.",
     parameters: Type.Object({
@@ -160,8 +142,7 @@ const MANAGED_BROWSER_TOOLS: ManagedBrowserToolSpec[] = [
       slowly: Type.Optional(Type.Boolean({ description: "Type character by character." })),
     }, { additionalProperties: true }),
   },
-  {
-    name: "browser_wait_for",
+  browser_wait_for: {
     label: "Browser Wait For",
     description: "Wait for a browser condition such as network idle, selector visibility, text visibility, or URL change.",
     parameters: Type.Object({
@@ -171,8 +152,7 @@ const MANAGED_BROWSER_TOOLS: ManagedBrowserToolSpec[] = [
       timeout: Type.Optional(Type.Number({ description: "Maximum milliseconds to wait." })),
     }, { additionalProperties: true }),
   },
-  {
-    name: "browser_assert",
+  browser_assert: {
     label: "Browser Assert",
     description: "Run explicit browser assertions and return structured PASS/FAIL evidence.",
     promptGuidelines: [
@@ -183,8 +163,7 @@ const MANAGED_BROWSER_TOOLS: ManagedBrowserToolSpec[] = [
       checks: Type.Array(AssertionCheck),
     }, { additionalProperties: true }),
   },
-  {
-    name: "browser_verify",
+  browser_verify: {
     label: "Browser Verify",
     description: "Run a structured browser verification flow and return evidence from the managed gsd-browser session.",
     parameters: Type.Object({
@@ -199,8 +178,7 @@ const MANAGED_BROWSER_TOOLS: ManagedBrowserToolSpec[] = [
       timeout: Type.Optional(Type.Number({ description: "Navigation timeout in milliseconds." })),
     }, { additionalProperties: true }),
   },
-  {
-    name: "browser_screenshot",
+  browser_screenshot: {
     label: "Browser Screenshot",
     description: "Capture browser screenshot evidence from the managed gsd-browser session.",
     compatibility: { producesImages: true },
@@ -210,8 +188,7 @@ const MANAGED_BROWSER_TOOLS: ManagedBrowserToolSpec[] = [
       quality: Type.Optional(Type.Number({ description: "JPEG quality when supported." })),
     }, { additionalProperties: true }),
   },
-  {
-    name: "browser_snapshot_refs",
+  browser_snapshot_refs: {
     mcpTools: ["browser_snapshot", "browser_snapshot_refs"],
     label: "Browser Snapshot Refs",
     description: "Capture a compact gsd-browser snapshot with versioned refs for reliable interaction.",
@@ -222,8 +199,7 @@ const MANAGED_BROWSER_TOOLS: ManagedBrowserToolSpec[] = [
       mode: Type.Optional(Type.String({ description: "Snapshot mode: interactive, form, dialog, navigation, errors, headings, visible_only." })),
     }, { additionalProperties: true }),
   },
-  {
-    name: "browser_find",
+  browser_find: {
     mcpTools: ["browser_find_element", "browser_find"],
     label: "Browser Find",
     description: "Find elements by text, role, or selector in the managed gsd-browser session.",
@@ -234,8 +210,7 @@ const MANAGED_BROWSER_TOOLS: ManagedBrowserToolSpec[] = [
       limit: Type.Optional(Type.Number({ description: "Maximum results to return." })),
     }, { additionalProperties: true }),
   },
-  {
-    name: "browser_get_console_logs",
+  browser_get_console_logs: {
     mcpTools: ["browser_console", "browser_get_console_logs"],
     label: "Browser Console Logs",
     description: "Return buffered console logs and JavaScript errors from the managed gsd-browser session.",
@@ -243,8 +218,7 @@ const MANAGED_BROWSER_TOOLS: ManagedBrowserToolSpec[] = [
       clear: Type.Optional(Type.Boolean({ description: "Clear the buffer after reading logs." })),
     }, { additionalProperties: true }),
   },
-  {
-    name: "browser_get_network_logs",
+  browser_get_network_logs: {
     mcpTools: ["browser_network", "browser_get_network_logs"],
     label: "Browser Network Logs",
     description: "Return buffered network requests and responses from the managed gsd-browser session.",
@@ -253,8 +227,7 @@ const MANAGED_BROWSER_TOOLS: ManagedBrowserToolSpec[] = [
       filter: Type.Optional(Type.String({ description: "Filter, e.g. all, errors, fetch-xhr." })),
     }, { additionalProperties: true }),
   },
-  {
-    name: "browser_evaluate",
+  browser_evaluate: {
     mcpTools: ["browser_eval", "browser_evaluate"],
     label: "Browser Evaluate",
     description: "Evaluate a JavaScript expression in the managed gsd-browser page context.",
@@ -262,14 +235,12 @@ const MANAGED_BROWSER_TOOLS: ManagedBrowserToolSpec[] = [
       expression: Type.String({ description: "JavaScript expression to evaluate." }),
     }, { additionalProperties: true }),
   },
-  {
-    name: "browser_reload",
+  browser_reload: {
     label: "Browser Reload",
     description: "Reload the current page in the managed gsd-browser session.",
     parameters: Type.Object({}, { additionalProperties: true }),
   },
-  {
-    name: "browser_batch",
+  browser_batch: {
     label: "Browser Batch",
     description: "Execute multiple explicit browser steps through the managed gsd-browser session in one call.",
     promptGuidelines: [
@@ -282,8 +253,7 @@ const MANAGED_BROWSER_TOOLS: ManagedBrowserToolSpec[] = [
       finalSummaryOnly: Type.Optional(Type.Boolean({ description: "Return only the compact final summary." })),
     }, { additionalProperties: true }),
   },
-  {
-    name: "browser_act",
+  browser_act: {
     label: "Browser Act",
     description: "Execute a semantic browser action through gsd-browser, such as primary_cta, submit_form, or close_dialog.",
     parameters: Type.Object({
@@ -291,7 +261,7 @@ const MANAGED_BROWSER_TOOLS: ManagedBrowserToolSpec[] = [
       scope: Type.Optional(Type.String({ description: "CSS selector to narrow the search area." })),
     }, { additionalProperties: true }),
   },
-];
+};
 
 function resolveProjectRoot(ctx?: ExtensionContext): string {
   return ctx?.cwd || process.cwd();
@@ -521,6 +491,42 @@ function formatManagedBrowserError(toolName: string, error: unknown): string {
 }
 
 /**
+ * Contract tools the server's advertised tool list cannot satisfy through any
+ * of their declared MCP candidates.
+ */
+export function findMissingContractCoverage(servedToolNames: Iterable<string>): BrowserContractToolName[] {
+  const served = new Set(servedToolNames);
+  return BROWSER_CONTRACT_TOOL_NAMES.filter((name) => {
+    const candidates = MANAGED_BROWSER_TOOL_SPECS[name].mcpTools ?? [name];
+    return !candidates.some((candidate) => served.has(candidate));
+  });
+}
+
+/**
+ * Compare the server's advertised tool list against the Browser Automation
+ * Contract so a server that stops serving a contract tool surfaces at warm-up
+ * instead of as a first-use error. Best-effort: a failed or empty listing
+ * returns no warning (call-time alias fallback still applies).
+ */
+async function verifyContractCoverage(
+  connection: ManagedConnection,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  let served: string[];
+  try {
+    const result = await connection.client.listTools(undefined, { signal, timeout: 10000 });
+    served = (result.tools ?? []).map((tool) => tool.name);
+  } catch {
+    return undefined;
+  }
+  if (served.length === 0) return undefined;
+
+  const missing = findMissingContractCoverage(served);
+  if (missing.length === 0) return undefined;
+  return `gsd-browser does not serve ${missing.length} Browser Automation Contract tool(s): ${missing.join(", ")}. These will error on first use; update gsd-browser or check GSD_BROWSER_* overrides.`;
+}
+
+/**
  * Eagerly establish the managed gsd-browser connection so browser tools are
  * ready before first use. Best-effort: returns the error instead of throwing so
  * callers (e.g. session-start warm-up) can surface a warning without failing the
@@ -530,19 +536,21 @@ function formatManagedBrowserError(toolName: string, error: unknown): string {
 export async function warmUpManagedGsdBrowser(
   ctx?: ExtensionContext,
   signal?: AbortSignal,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<{ ok: true; coverageWarning?: string } | { ok: false; error: string }> {
   try {
-    await getOrConnectManagedGsdBrowser(ctx, signal);
-    return { ok: true };
+    const connection = await getOrConnectManagedGsdBrowser(ctx, signal);
+    const coverageWarning = await verifyContractCoverage(connection, signal);
+    return coverageWarning ? { ok: true, coverageWarning } : { ok: true };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
 export function registerManagedGsdBrowserTools(pi: ExtensionAPI): void {
-  for (const tool of MANAGED_BROWSER_TOOLS) {
+  for (const name of BROWSER_CONTRACT_TOOL_NAMES) {
+    const tool = MANAGED_BROWSER_TOOL_SPECS[name];
     pi.registerTool({
-      name: tool.name,
+      name,
       label: tool.label,
       description: tool.description,
       ...(tool.promptGuidelines ? { promptGuidelines: tool.promptGuidelines } : {}),
@@ -551,20 +559,20 @@ export function registerManagedGsdBrowserTools(pi: ExtensionAPI): void {
       async execute(_toolCallId, params, signal, _onUpdate, ctx) {
         try {
           return await callManagedGsdBrowserTool(
-            tool.name,
-            tool.mcpTools ?? [tool.name],
+            name,
+            tool.mcpTools ?? [name],
             params as Record<string, unknown>,
             { signal, ctx },
           );
         } catch (error) {
-          const message = formatManagedBrowserError(tool.name, error);
+          const message = formatManagedBrowserError(name, error);
           return {
             content: [{ type: "text", text: message }],
             details: {
               engine: "gsd-browser",
               server: "gsd-browser",
-              tool: tool.name,
-              mcpTool: tool.mcpTools?.[0] ?? tool.name,
+              tool: name,
+              mcpTool: tool.mcpTools?.[0] ?? name,
               error: error instanceof Error ? error.message : String(error),
             },
             isError: true,

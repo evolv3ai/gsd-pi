@@ -192,6 +192,8 @@ async function registerBrowserTools(pi: ExtensionAPI, ctx: ExtensionContext): Pr
           "warning",
         );
       }
+    } else if (warmUp.coverageWarning && ctx.hasUI) {
+      ctx.ui.notify(warmUp.coverageWarning, "warning");
     }
   }
 
@@ -247,11 +249,14 @@ function maybeWarmUpManagedEngine(pi: ExtensionAPI, ctx: ExtensionContext): void
   if (!detectWebApp(projectRoot)) return;
 
   void warmUpManagedGsdBrowser(ctx).then((result) => {
-    if (!result.ok && ctx.hasUI) {
+    if (!ctx.hasUI) return;
+    if (!result.ok) {
       ctx.ui.notify(
         `gsd-browser auto-init failed: ${result.error}. Browser UAT tools will retry on first use; run /gsd doctor if this persists.`,
         "warning",
       );
+    } else if (result.coverageWarning) {
+      ctx.ui.notify(result.coverageWarning, "warning");
     }
   });
 }
