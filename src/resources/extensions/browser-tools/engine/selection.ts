@@ -16,6 +16,8 @@
  * guidance, re-warm-up, later sessions in the same process — sees the engine
  * the session actually registered.
  */
+import path from "node:path";
+
 import { resolveGsdBrowserCliAvailability } from "../../shared/gsd-browser-cli.js";
 import { detectWebApp } from "../web-app-detect.js";
 
@@ -85,11 +87,12 @@ export function resolveBrowserEngineResolution(
  * touches the filesystem and at worst one short subprocess).
  */
 export function resolveAmbientBrowserEngineResolution(projectRoot: string): BrowserEngineResolution {
-  const committed = committedResolutionByProjectRoot.get(projectRoot);
+  const key = path.resolve(projectRoot);
+  const committed = committedResolutionByProjectRoot.get(key);
   if (committed) return committed;
 
   const resolution = resolveBrowserEngineResolution(process.env, projectRoot);
-  committedResolutionByProjectRoot.set(projectRoot, resolution);
+  committedResolutionByProjectRoot.set(key, resolution);
   return resolution;
 }
 
@@ -98,5 +101,5 @@ export function resolveAmbientBrowserEngineResolution(projectRoot: string): Brow
  * gsd-browser but the daemon-connect gate fell back to legacy Playwright.
  */
 export function commitBrowserEngineResolution(projectRoot: string, resolution: BrowserEngineResolution): void {
-  committedResolutionByProjectRoot.set(projectRoot, resolution);
+  committedResolutionByProjectRoot.set(path.resolve(projectRoot), resolution);
 }
