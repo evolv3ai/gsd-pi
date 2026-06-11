@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 
 import { classifyError, isTransient } from "../error-classifier.ts";
 import {
-  formatProviderErrorGuidance,
   resolveProviderErrorGuidance,
   unitTypeToPrefsPhaseKey,
 } from "../provider-error-guidance.ts";
+import { formatGuidance } from "../guidance.ts";
 
 test("classifyError: Cloud Code Assist 400 invalid argument is model-error", () => {
   const result = classifyError(
@@ -75,8 +75,8 @@ test("resolveProviderErrorGuidance suggests gemini-3-flash for antigravity pro-h
   assert.ok(guidance.steps.some((step) => step.includes("fallbacks")));
 });
 
-test("formatProviderErrorGuidance numbers steps", () => {
-  const text = formatProviderErrorGuidance({
+test("formatGuidance numbers steps", () => {
+  const text = formatGuidance({
     summary: "Provider error on test/model.",
     steps: ["Change model", "Run /gsd next"],
   });

@@ -76,6 +76,7 @@
 | src/bundled-extension-paths.ts | Extension Registry | Serializes/parses bundled extension directory paths |
 | src/bundled-resource-path.ts | Loader/Bootstrap, Extension Registry | Resolves bundled raw resource files from package root |
 | src/cli.ts | CLI | Main CLI entry point — arg parsing, mode detection, plugin init |
+| src/cli-style.ts | CLI | Terminal presentation helpers for CLI-side stderr notices (tags, warnings, hints, banner lines) |
 | src/cli-web-branch.ts | CLI, Web Mode | Web CLI branch; session dir resolution, legacy migration |
 | src/extension-discovery.ts | Extension Registry | Discovers extension entry points from FS and package.json |
 | src/extension-registry.ts | Extension Registry | Extension manifests, registry persistence, enable/disable |
@@ -528,6 +529,8 @@
 | gsd/export-html.ts | GSD Workflow | HTML export of milestone reports |
 | gsd/reports.ts | GSD Workflow | Report generation and summaries |
 | gsd/notifications.ts | GSD Workflow | User notification and messaging |
+| gsd/guidance.ts | GSD Workflow, Doctor/Diagnostics | Single catalog mapping typed findings (recovery kinds, milestone blockers, doctor issue codes, crash unit classes) to remediation prose |
+| gsd/stop-notice.ts | Auto Engine, Headless Mode | Single owner of auto/step-mode stop/pause notice vocabulary — formatters and headless exit-code classifiers |
 | gsd/triage-ui.ts | GSD Workflow | Triage interface for issue categorization |
 | gsd/guided-flow.ts | GSD Workflow | User-guided workflow orchestration |
 | gsd/env-utils.ts | GSD Workflow | Environment variable utilities |

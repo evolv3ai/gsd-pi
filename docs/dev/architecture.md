@@ -162,6 +162,8 @@ Phase skipping (from token profile) gates steps 2-3: if a phase is skipped, the 
 | `state.ts` | DB-authoritative state derivation with explicit legacy markdown fallback for tests/recovery |
 | `session-lock.ts` | OS-level exclusive session locking (proper-lockfile) |
 | `crash-recovery.ts` | Lock file management for crash detection and recovery |
+| `guidance.ts` | Single catalog mapping typed findings (recovery kinds, milestone blockers, doctor issue codes, crash unit classes) to user-facing remediation prose |
+| `stop-notice.ts` | Single owner of the auto/step-mode stop/pause notice vocabulary — formatters and headless exit-code classifiers stay in lockstep |
 | `preferences.ts` | Preference loading, merging, validation |
 | `git-service.ts` | Git operations — commit, merge, worktree sync, completed-units cross-boundary sync |
 | `unit-id.ts` | Centralized `parseUnitId()` — milestone/slice/task extraction from unit IDs |

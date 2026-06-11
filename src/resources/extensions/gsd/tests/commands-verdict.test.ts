@@ -472,18 +472,19 @@ test("auto-dispatch needs-attention pause message references /gsd verdict", asyn
   }
 });
 
-test("state.ts needs-remediation blocker messages reference /gsd verdict", async () => {
+test("guidance.ts needs-remediation blocker messages reference /gsd verdict", async () => {
   // We don't need to invoke deriveState — just assert the substring is in the
-  // source. The blocker strings are constructed inline and shipped to the user
-  // verbatim, so a static check is sufficient and avoids fragile DB setup.
-  const stateSource = readFileSync(
-    new URL("../state.ts", import.meta.url).pathname,
+  // source. The blocker strings are constructed in the guidance catalog and
+  // shipped to the user verbatim, so a static check is sufficient and avoids
+  // fragile DB setup.
+  const guidanceSource = readFileSync(
+    new URL("../guidance.ts", import.meta.url).pathname,
     "utf-8",
   );
-  const occurrences = stateSource.match(/`\/gsd verdict /g) ?? [];
+  const occurrences = guidanceSource.match(/`\/gsd verdict /g) ?? [];
   assert.ok(
     occurrences.length >= 2,
-    `expected at least 2 references to /gsd verdict in state.ts blockers, found ${occurrences.length}`,
+    `expected at least 2 references to /gsd verdict in guidance.ts blockers, found ${occurrences.length}`,
   );
 });
 

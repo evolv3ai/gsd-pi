@@ -19,6 +19,7 @@
  */
 
 import chalk from 'chalk'
+import { bannerLines, name as styledName, warn } from './cli-style.js'
 import { createJiti } from '@mariozechner/jiti'
 import { fileURLToPath } from 'node:url'
 import { generateWorktreeName } from './worktree-name-gen.js'
@@ -387,13 +388,12 @@ async function handleStatusBanner(basePath: string): Promise<void> {
 
   if (withChanges.length === 0) return
 
-  const names = withChanges.map(w => chalk.cyan(w.name)).join(', ')
+  const names = withChanges.map(w => styledName(w.name)).join(', ')
   process.stderr.write(
-    chalk.dim('[gsd] ') +
-    chalk.yellow(`${withChanges.length} worktree${withChanges.length === 1 ? '' : 's'} with unmerged changes: `) +
-    names + '\n' +
-    chalk.dim('[gsd] ') +
-    chalk.dim('Resume: gsd -w <name>  |  Merge: gsd worktree merge <name>  |  List: gsd worktree list\n\n'),
+    bannerLines(
+      warn(`${withChanges.length} worktree${withChanges.length === 1 ? '' : 's'} with unmerged changes: `) + names,
+      'Resume: gsd -w <name>  |  Merge: gsd worktree merge <name>  |  List: gsd worktree list',
+    ),
   )
 }
 

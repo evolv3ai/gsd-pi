@@ -43,10 +43,8 @@ import {
 } from "../error-classifier.js";
 import { blockModel, isModelBlocked } from "../blocked-models.js";
 import { getProjectGSDPreferencesPath } from "../preferences.js";
-import {
-  formatProviderErrorGuidance,
-  resolveProviderErrorGuidance,
-} from "../provider-error-guidance.js";
+import { resolveProviderErrorGuidance } from "../provider-error-guidance.js";
+import { formatGuidance } from "../guidance.js";
 
 const retryState = createRetryState();
 const MAX_NETWORK_RETRIES = 2;
@@ -627,7 +625,7 @@ export async function handleAgentEnd(
         preferencesPath: dash.basePath ? getProjectGSDPreferencesPath(dash.basePath) : undefined,
         hasConfiguredFallbacks: (modelConfig?.fallbacks.length ?? 0) > 0,
       });
-      const guidanceText = formatProviderErrorGuidance(guidance);
+      const guidanceText = formatGuidance(guidance);
 
       await pauseForProviderModelRejection(ctx, pi, {
         errorDetail,

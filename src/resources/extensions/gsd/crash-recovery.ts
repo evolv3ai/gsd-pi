@@ -39,6 +39,7 @@ import { markLatestActiveForWorkerCanceled, type DispatchStatus } from "./db/uni
 import { getRuntimeKv, setRuntimeKv, deleteRuntimeKv } from "./db/runtime-kv.js";
 import { _getAdapter, isDbAvailable } from "./gsd-db.js";
 import { gsdRoot, normalizeRealPath } from "./paths.js";
+import { crashResumeHint } from "./guidance.js";
 import { atomicWriteSync } from "./atomic-write.js";
 import { effectiveLockFile } from "./session-lock.js";
 import { isInFlightRuntimePhase, listUnitRuntimeRecords, type AutoUnitRuntimeRecord } from "./unit-runtime.js";
@@ -321,15 +322,8 @@ export function formatCrashInfo(lock: LockData): string {
     `  PID: ${lock.pid}`,
   ];
 
-  if (lock.unitType === "starting" && lock.unitId === "bootstrap") {
-    lines.push(`No work was lost. Run /gsd auto to restart.`);
-  } else if (lock.unitType.includes("research") || lock.unitType.includes("plan")) {
-    lines.push(`The ${lock.unitType} unit may be incomplete. Run /gsd auto to re-run it.`);
-  } else if (lock.unitType.includes("execute")) {
-    lines.push(`Task execution was interrupted. Run /gsd auto to resume — completed work is preserved.`);
-  } else if (lock.unitType.includes("complete")) {
-    lines.push(`Slice/milestone completion was interrupted. Run /gsd auto to finish.`);
-  }
+  const hint = crashResumeHint(lock.unitType, lock.unitId);
+  if (hint) lines.push(hint);
 
   return lines.join("\n");
 }

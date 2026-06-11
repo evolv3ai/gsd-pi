@@ -12,6 +12,17 @@ import { randomUUID } from "node:crypto";
 export type NotifySeverity = "info" | "success" | "warning" | "error";
 export type NotificationSource = "notify" | "workflow-logger";
 
+/**
+ * Optional structured identity for a notification. When present, `kind`
+ * (a stable machine name like "auto-stop" or "provider-error-pause") plus
+ * `scope` (e.g. a milestone/slice id) — not the prose — key deduplication,
+ * and consumers can filter without parsing message text.
+ */
+export interface NotificationMeta {
+  kind?: string;
+  scope?: string;
+}
+
 export interface NotificationEntry {
   id: string;
   ts: string;
@@ -19,6 +30,8 @@ export interface NotificationEntry {
   message: string;
   source: NotificationSource;
   read: boolean;
+  kind?: string;
+  scope?: string;
 }
 
 // ─── Constants ──────────────────────────────────────────────────────────
@@ -60,11 +73,15 @@ export function appendNotification(
   message: string,
   severity: NotifySeverity,
   source: NotificationSource = "notify",
+  meta?: NotificationMeta,
 ): void {
   if (!_basePath) return;
   if (_suppressCount > 0) return;
   const persistedMessage = message.length > 500 ? message.slice(0, 500) + "…" : message;
-  const dedupKey = `${_basePath}:${severity}:${source}:${persistedMessage}`;
+  // Structured identity (kind + scope) keys dedup when present, so a rephrased
+  // message of the same event still dedups; otherwise fall back to the prose.
+  const identity = meta?.kind ? `${meta.kind}:${meta.scope ?? ""}` : persistedMessage;
+  const dedupKey = `${_basePath}:${severity}:${source}:${identity}`;
   const now = Date.now();
   const lastSeen = _recentMessageTimestamps.get(dedupKey);
   if (lastSeen !== undefined && now - lastSeen < DEDUP_WINDOW_MS) return;
@@ -82,6 +99,8 @@ export function appendNotification(
     message: persistedMessage,
     source,
     read: false,
+    ...(meta?.kind ? { kind: meta.kind } : {}),
+    ...(meta?.scope ? { scope: meta.scope } : {}),
   };
 
   try {
@@ -102,11 +121,15 @@ export function appendNotification(
 
 /**
  * Read all notification entries from disk. Returns newest-first.
+ * An optional filter narrows by structured identity (kind and/or scope).
  */
-export function readNotifications(basePath?: string): NotificationEntry[] {
+export function readNotifications(basePath?: string, filter?: NotificationMeta): NotificationEntry[] {
   const bp = basePath ?? _basePath;
   if (!bp) return [];
-  return _readEntriesFromDisk(bp).reverse();
+  const entries = _readEntriesFromDisk(bp).filter(
+    (e) => (!filter?.kind || e.kind === filter.kind) && (!filter?.scope || e.scope === filter.scope),
+  );
+  return entries.reverse();
 }
 
 /**

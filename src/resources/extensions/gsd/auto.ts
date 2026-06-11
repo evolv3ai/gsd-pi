@@ -331,6 +331,11 @@ import {
 } from "./db/auto-workers.js";
 import { releaseMilestoneLease } from "./db/milestone-leases.js";
 import { normalizeRealPath } from "./paths.js";
+import {
+  formatStopNoticePrefix,
+  isBlockedStopReason,
+  stopNoticeDisplayReason,
+} from "./stop-notice.js";
 
 // ── ENCAPSULATION INVARIANT ─────────────────────────────────────────────────
 // ALL mutable auto-mode state lives in the AutoSession class (auto/session.ts).
@@ -355,19 +360,7 @@ export function formatAutoStopNotification(prefix: string, totals: { cost: numbe
   ].join("\n");
 }
 
-function isBlockedStopReason(reason?: string | null): boolean {
-  return /^Blocked:\s*/i.test(reason ?? "");
-}
-
-function formatAutoStopDisplayReason(reason?: string | null): string {
-  return (reason ?? "").replace(/^Blocked:\s*/i, "").trim();
-}
-
-export function formatAutoStopNotificationPrefix(reason?: string | null): string {
-  const displayReason = formatAutoStopDisplayReason(reason);
-  const prefix = isBlockedStopReason(reason) ? "Auto-mode blocked" : "Auto-mode stopped";
-  return displayReason ? `${prefix} — ${displayReason}` : prefix;
-}
+export { formatStopNoticePrefix as formatAutoStopNotificationPrefix } from "./stop-notice.js";
 
 function clearSessionModelOverrideForCommandSession(ctx?: ExtensionContext | null): void {
   const sessionId =
@@ -1465,8 +1458,8 @@ export async function stopAuto(
 ): Promise<void> {
   if (!s.active && !s.paused) return;
   const loadedPreferences = loadEffectiveGSDPreferences(s.basePath || undefined)?.preferences;
-  const stopNotificationPrefix = formatAutoStopNotificationPrefix(reason);
-  const displayReason = formatAutoStopDisplayReason(reason);
+  const stopNotificationPrefix = formatStopNoticePrefix(reason);
+  const displayReason = stopNoticeDisplayReason(reason);
   const isHeadlessStop = process.env.GSD_HEADLESS === "1";
   const completionStopRequested = Boolean(options.completionWidget);
   const preserveCloseoutTranscript = !isHeadlessStop && (
