@@ -124,6 +124,14 @@ function hasResearchDecisionQuestion(text: string): boolean {
   return false;
 }
 
+function hasPlainTextNextStepsMenu(lines: string[]): boolean {
+  const nextStepsIndex = lines.findIndex((line) => /^next steps\s*:?$/i.test(line));
+  if (nextStepsIndex < 0) return false;
+  const menuLines = lines.slice(nextStepsIndex + 1);
+  const numberedOptions = menuLines.filter((line) => /^\d+[.)]\s+\S/.test(line));
+  return numberedOptions.length >= 2 && numberedOptions.some((line) => /\bother\b/i.test(line));
+}
+
 export function approvalGateIdForUnit(
   unitType: string | undefined,
   unitId?: string | null,
@@ -171,6 +179,7 @@ export function isAwaitingUserInput(messages: unknown[] | undefined): boolean {
   if (APPROVAL_WAIT_RE.test(text)) return true;
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   if (lines.some((line) => line.endsWith("?"))) return true;
+  if (hasPlainTextNextStepsMenu(lines)) return true;
   return hasApprovalQuestion(text);
 }
 

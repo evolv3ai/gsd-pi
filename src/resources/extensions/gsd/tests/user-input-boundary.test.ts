@@ -171,3 +171,19 @@ test("isAwaitingUserInput still triggers on text-block question marks when think
   ];
   assert.equal(isAwaitingUserInput(messages), true);
 });
+
+test("isAwaitingUserInput treats plain-text next steps menus as waiting for the user", () => {
+  const messages = [
+    {
+      role: "assistant",
+      content: [
+        "Next steps:",
+        "1. Walk through the runtime placement check above.",
+        "2. Build a release once you're satisfied.",
+        "3. Other.",
+      ].join("\n"),
+    },
+  ];
+
+  assert.equal(isAwaitingUserInput(messages), true);
+});
