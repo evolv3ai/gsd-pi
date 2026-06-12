@@ -1030,6 +1030,22 @@ function responseToLine(response: WorkspaceCommandResponse): WorkspaceTerminalLi
       return createTerminalLine("success", "Prompt accepted by the live bridge")
     case "follow_up":
       return createTerminalLine("success", "Follow-up queued on the live bridge")
+    case "bash": {
+      const data = response.data as
+        | { output?: string; exitCode?: number; cancelled?: boolean }
+        | undefined
+      if (data?.output?.trim()) {
+        return createTerminalLine("output", data.output.trimEnd())
+      }
+      if (data?.cancelled) {
+        return createTerminalLine("system", "Bash command cancelled")
+      }
+      const exitCode = data?.exitCode ?? 0
+      return createTerminalLine(
+        exitCode === 0 ? "success" : "error",
+        exitCode === 0 ? "Bash command completed" : `Bash command exited with code ${exitCode}`,
+      )
+    }
     default:
       return createTerminalLine("success", `Command accepted (${response.command})`)
   }
@@ -3834,6 +3850,9 @@ export class GSDWorkspaceStore {
     }
 
     switch (outcome.kind) {
+      case "bash":
+        await this.sendCommand(outcome.command, { displayInput: trimmed })
+        return outcome
       case "prompt":
       case "rpc": {
         const imagePayload = images?.map((i) => ({ type: "image" as const, data: i.data, mimeType: i.mimeType }))

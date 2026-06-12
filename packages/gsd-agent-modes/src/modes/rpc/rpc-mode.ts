@@ -668,7 +668,9 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 			// =================================================================
 
 			case "bash": {
-				const result = await session.executeBash(command.command);
+				const result = await session.executeBash(command.command, undefined, {
+					excludeFromContext: command.excludeFromContext,
+				});
 				return success(id, "bash", result);
 			}
 

@@ -19,6 +19,16 @@ function markEditorSubmitLatency(host: InteractiveModeStateHost, images: ImageCo
 	host.session.markTurnLatency?.("tui.editor_submit", { images: images?.length ?? 0 });
 }
 
+function wireEditorSubmitHandler(
+	host: InteractiveModeStateHost & { editor: { onSubmit?: (text: string) => void | Promise<void> } },
+	handler: (text: string) => Promise<void>,
+): void {
+	host.defaultEditor.onSubmit = handler;
+	if (host.editor !== host.defaultEditor) {
+		host.editor.onSubmit = handler;
+	}
+}
+
 export function setupEditorSubmitHandler(host: InteractiveModeStateHost & {
 	getSlashCommandContext: () => any;
 	handleBashCommand: (command: string, excludeFromContext?: boolean) => Promise<void>;
@@ -35,7 +45,7 @@ export function setupEditorSubmitHandler(host: InteractiveModeStateHost & {
 	getContextPercent: () => number | undefined;
 	options?: { submitPromptsDirectly?: boolean };
 }): void {
-	host.defaultEditor.onSubmit = async (text: string) => {
+	const onSubmit = async (text: string) => {
 		text = text.trim();
 		if (!text) return;
 
@@ -146,6 +156,8 @@ export function setupEditorSubmitHandler(host: InteractiveModeStateHost & {
 			host.showError(errorMessage);
 		}
 	};
+
+	wireEditorSubmitHandler(host, onSubmit);
 }
 
 /**
