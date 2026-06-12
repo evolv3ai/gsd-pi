@@ -18,6 +18,7 @@ test("buildMinimalGsdToolSet preserves non-GSD tools and replaces broad GSD surf
     "read",
     "browser_open",
     "gsd_plan_milestone",
+    "gsd_plan_slice",
     "gsd_task_complete",
     "gsd_exec",
     "gsd_exec_search",
@@ -645,6 +646,46 @@ test("buildMinimalAutoGsdToolSet resolves MCP-scoped gsd_memory_query and gsd_ca
   assert.ok(
     result.includes("mcp__gsd-workflow__gsd_capture_thought"),
     "mcp__gsd-workflow__gsd_capture_thought must be included when only the gsd_-prefixed variant is available",
+  );
+});
+
+// ── Regression #627: auto-mode cannot run plan-milestone because gsd_plan_slice is missing ──
+// gsd_plan_slice is in AUTO_UNIT_SCOPED_TOOLS["plan-milestone"] (via unit-tool-contracts).
+// buildMinimalAutoGsdToolSet must expose it when unitType is "plan-milestone".
+
+test("buildMinimalAutoGsdToolSet includes gsd_plan_slice for plan-milestone (regression #627)", () => {
+  const result = buildMinimalAutoGsdToolSet([
+    "bash",
+    "read",
+    "gsd_plan_milestone",
+    "gsd_plan_slice",
+    "gsd_milestone_status",
+    "gsd_checkpoint_db",
+    "memory_query",
+    "capture_thought",
+  ], "plan-milestone");
+
+  assert.ok(
+    result.includes("gsd_plan_slice"),
+    "gsd_plan_slice must be included in plan-milestone auto-mode tool set",
+  );
+});
+
+test("buildMinimalAutoGsdToolSet resolves MCP-scoped gsd_plan_slice for plan-milestone when subprocess only registers prefixed variant (regression #627)", () => {
+  const result = buildMinimalAutoGsdToolSet([
+    "bash",
+    "read",
+    "mcp__gsd-workflow__gsd_plan_milestone",
+    "mcp__gsd-workflow__gsd_plan_slice",
+    "mcp__gsd-workflow__gsd_milestone_status",
+    "mcp__gsd-workflow__gsd_checkpoint_db",
+    "mcp__gsd-workflow__memory_query",
+    "mcp__gsd-workflow__capture_thought",
+  ], "plan-milestone");
+
+  assert.ok(
+    result.includes("mcp__gsd-workflow__gsd_plan_slice"),
+    "mcp__gsd-workflow__gsd_plan_slice must be included when only the MCP-scoped variant is available",
   );
 });
 
