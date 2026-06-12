@@ -11,6 +11,7 @@ import {
   getSliceStatusSummary,
   getSliceTaskCounts,
   insertMilestone,
+  deleteMilestone,
   insertAssessment,
   insertGateRun,
   readTransaction,
@@ -56,7 +57,13 @@ import {
   type UatResultSaveParams,
 } from "../uat-run.js";
 import { registerAutoWorker, markWorkerStopping, getAutoWorker } from "../db/auto-workers.js";
-import { claimMilestoneLease, releaseMilestoneLease, getMilestoneLease } from "../db/milestone-leases.js";
+import {
+  claimMilestoneLease,
+  releaseMilestoneLease,
+  getMilestoneLease,
+  refreshMilestoneLease,
+  milestoneLeaseTtlSeconds,
+} from "../db/milestone-leases.js";
 export type {
   UatCheckResultInput,
   UatEvidenceRef,
@@ -1246,10 +1253,6 @@ export async function executePlanMilestone(
     isError: true,
       };
   }
-  if (!getMilestone(params.milestoneId)) {
-    insertMilestone({ id: params.milestoneId, title: params.milestoneId, status: "queued" });
-  }
-
   const heldLease = getMilestoneLease(params.milestoneId);
   if (heldLease?.status === "held" && Date.parse(heldLease.expires_at) > Date.now()) {
     const holder = getAutoWorker(heldLease.worker_id);
@@ -1270,7 +1273,15 @@ export async function executePlanMilestone(
 
   const workerId = registerAutoWorker({ projectRootRealpath: normalizeRealPath(basePath) });
   let acquiredToken: number | null = null;
+  let insertedPlaceholder = false;
+  let planningSucceeded = false;
+  let leaseRefreshTimer: ReturnType<typeof setInterval> | undefined;
   try {
+    if (!getMilestone(params.milestoneId)) {
+      insertMilestone({ id: params.milestoneId, title: params.milestoneId, status: "queued" });
+      insertedPlaceholder = true;
+    }
+
     const lease = claimMilestoneLease(workerId, params.milestoneId);
     if (!lease.ok) {
       return {
@@ -1287,6 +1298,13 @@ export async function executePlanMilestone(
     }
     acquiredToken = lease.token;
 
+    const leaseRefreshMs = (milestoneLeaseTtlSeconds() / 2) * 1000;
+    leaseRefreshTimer = setInterval(() => {
+      if (acquiredToken !== null) {
+        refreshMilestoneLease(workerId, params.milestoneId, acquiredToken);
+      }
+    }, leaseRefreshMs);
+
     const result = await handlePlanMilestone(params, basePath);
     if ("error" in result) {
       return {
@@ -1295,6 +1313,7 @@ export async function executePlanMilestone(
       isError: true,
       };
     }
+    planningSucceeded = true;
     return {
       content: [{ type: "text", text: `Planned milestone ${result.milestoneId}` }],
       details: {
@@ -1313,10 +1332,19 @@ export async function executePlanMilestone(
       };
   }
   finally {
+    if (leaseRefreshTimer !== undefined) {
+      clearInterval(leaseRefreshTimer);
+    }
     if (acquiredToken !== null) {
       releaseMilestoneLease(workerId, params.milestoneId, acquiredToken);
     }
     markWorkerStopping(workerId);
+    if (insertedPlaceholder && !planningSucceeded) {
+      const milestone = getMilestone(params.milestoneId);
+      if (milestone?.status === "queued" && milestone.title === params.milestoneId) {
+        deleteMilestone(params.milestoneId);
+      }
+    }
   }
 }
 
