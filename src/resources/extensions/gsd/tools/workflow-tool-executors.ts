@@ -19,7 +19,7 @@ import {
 } from "../gsd-db.js";
 import { GATE_REGISTRY } from "../gate-registry.js";
 import { generateRequirementsMd, saveArtifactToDb } from "../db-writer.js";
-import { clearPathCache, relSliceFile, resolveGsdPathContract, resolveMilestoneFile, resolveSliceFile } from "../paths.js";
+import { clearPathCache, normalizeRealPath, relSliceFile, resolveGsdPathContract, resolveMilestoneFile, resolveSliceFile } from "../paths.js";
 import { saveFile, clearParseCache } from "../files.js";
 import { unlinkSync } from "node:fs";
 import { join } from "node:path";
@@ -55,6 +55,8 @@ import {
   saveUatAttemptArtifact,
   type UatResultSaveParams,
 } from "../uat-run.js";
+import { registerAutoWorker, markWorkerStopping } from "../db/auto-workers.js";
+import { claimMilestoneLease, releaseMilestoneLease } from "../db/milestone-leases.js";
 export type {
   UatCheckResultInput,
   UatEvidenceRef,
@@ -1244,6 +1246,22 @@ export async function executePlanMilestone(
     isError: true,
       };
   }
+  const workerId = registerAutoWorker({ projectRootRealpath: normalizeRealPath(basePath) });
+  const lease = claimMilestoneLease(workerId, params.milestoneId);
+  if (!lease.ok) {
+    markWorkerStopping(workerId);
+    return {
+      content: [{ type: "text", text: `Milestone ${params.milestoneId} is currently leased by ${lease.byWorker}. Retry after ${lease.expiresAt}.` }],
+      details: {
+        operation: "plan_milestone",
+        error: "milestone_lease_conflict",
+        milestoneId: params.milestoneId,
+        byWorker: lease.byWorker,
+        expiresAt: lease.expiresAt,
+      },
+      isError: true,
+    };
+  }
   try {
     const result = await handlePlanMilestone(params, basePath);
     if ("error" in result) {
@@ -1269,6 +1287,10 @@ export async function executePlanMilestone(
       details: { operation: "plan_milestone", error: msg },
     isError: true,
       };
+  }
+  finally {
+    releaseMilestoneLease(workerId, params.milestoneId, lease.token);
+    markWorkerStopping(workerId);
   }
 }
 

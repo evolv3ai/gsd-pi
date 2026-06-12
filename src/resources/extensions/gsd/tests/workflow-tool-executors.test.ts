@@ -15,6 +15,8 @@ import {
   upsertRequirement,
   getAllMilestones,
 } from "../gsd-db.ts";
+import { registerAutoWorker } from "../db/auto-workers.ts";
+import { claimMilestoneLease, getMilestoneLease } from "../db/milestone-leases.ts";
 import { deriveState, invalidateStateCache } from "../state.ts";
 import { autoSession } from "../auto-runtime-state.ts";
 import { markApprovalGateVerified, markDepthVerified, clearDiscussionFlowState, loadWriteGateSnapshot, setPendingGate } from "../bootstrap/write-gate.ts";
@@ -92,6 +94,28 @@ function seedMilestone(milestoneId: string, title: string, status = "active"): v
   db.prepare(
     "INSERT OR REPLACE INTO milestones (id, title, status, created_at) VALUES (?, ?, ?, ?)",
   ).run(milestoneId, title, status, new Date().toISOString());
+}
+
+function validMilestonePlan(milestoneId = "M001"): Parameters<typeof executePlanMilestone>[0] {
+  return {
+    milestoneId,
+    title: "Workflow MCP planning",
+    vision: "Plan milestone over shared executors.",
+    slices: [
+      {
+        sliceId: "S01",
+        title: "Bridge planning",
+        risk: "medium",
+        depends: [],
+        demo: "Milestone plan persists through MCP.",
+        goal: "Persist roadmap state.",
+        successCriteria: "ROADMAP.md renders from DB.",
+        proofLevel: "integration",
+        integrationClosure: "Prompts and MCP call the same handler.",
+        observabilityImpact: "Executor tests cover output paths.",
+      },
+    ],
+  };
 }
 
 function seedSlice(milestoneId: string, sliceId: string, status: string): void {
@@ -461,25 +485,7 @@ test("executePlanMilestone writes roadmap state and rendered roadmap path", asyn
   try {
     openTestDb(base);
 
-    const result = await inProjectDir(base, () => executePlanMilestone({
-      milestoneId: "M001",
-      title: "Workflow MCP planning",
-      vision: "Plan milestone over shared executors.",
-      slices: [
-        {
-          sliceId: "S01",
-          title: "Bridge planning",
-          risk: "medium",
-          depends: [],
-          demo: "Milestone plan persists through MCP.",
-          goal: "Persist roadmap state.",
-          successCriteria: "ROADMAP.md renders from DB.",
-          proofLevel: "integration",
-          integrationClosure: "Prompts and MCP call the same handler.",
-          observabilityImpact: "Executor tests cover output paths.",
-        },
-      ],
-    }, base));
+    const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan(), base));
 
     assert.equal(result.details.operation, "plan_milestone");
     assert.equal(result.details.milestoneId, "M001");
@@ -492,29 +498,49 @@ test("executePlanMilestone writes roadmap state and rendered roadmap path", asyn
   }
 });
 
+test("executePlanMilestone refuses a same-milestone lease conflict", async () => {
+  const base = makeTmpBase();
+  try {
+    openTestDb(base);
+    seedMilestone("M001", "Existing holder");
+    const holder = registerAutoWorker({ projectRootRealpath: join(base, "other-project") });
+    const lease = claimMilestoneLease(holder, "M001");
+    assert.equal(lease.ok, true);
+
+    const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M001"), base));
+
+    assert.equal(result.isError, true);
+    assert.equal(result.details.operation, "plan_milestone");
+    assert.equal(result.details.error, "milestone_lease_conflict");
+    assert.match(result.content[0].text, /Milestone M001 is currently leased/);
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executePlanMilestone releases its one-shot milestone lease after planning", async () => {
+  const base = makeTmpBase();
+  try {
+    openTestDb(base);
+
+    const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M001"), base));
+
+    assert.equal(result.isError, undefined);
+    const lease = getMilestoneLease("M001");
+    assert.ok(lease, "planning should participate in milestone lease coordination");
+    assert.equal(lease.status, "released");
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
 test("executePlanSlice writes task planning state and rendered plan artifacts", async () => {
   const base = makeTmpBase();
   try {
     openTestDb(base);
-    await inProjectDir(base, () => executePlanMilestone({
-      milestoneId: "M001",
-      title: "Workflow MCP planning",
-      vision: "Plan milestone over shared executors.",
-      slices: [
-        {
-          sliceId: "S01",
-          title: "Bridge planning",
-          risk: "medium",
-          depends: [],
-          demo: "Milestone plan persists through MCP.",
-          goal: "Persist roadmap state.",
-          successCriteria: "ROADMAP.md renders from DB.",
-          proofLevel: "integration",
-          integrationClosure: "Prompts and MCP call the same handler.",
-          observabilityImpact: "Executor tests cover output paths.",
-        },
-      ],
-    }, base));
+    await inProjectDir(base, () => executePlanMilestone(validMilestonePlan(), base));
 
     const result = await inProjectDir(base, () => executePlanSlice({
       milestoneId: "M001",
