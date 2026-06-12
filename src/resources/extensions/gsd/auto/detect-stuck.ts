@@ -5,6 +5,7 @@
  */
 
 import type { WindowEntry } from "./types.js";
+import { parseDispatchKey } from "./dispatch-key.js";
 import { summarizeLogs } from "../workflow-logger.js";
 import { getLatestForUnit } from "../db/unit-dispatches.js";
 
@@ -35,23 +36,24 @@ function rowInsideRetryBudget(row: ReturnType<typeof getLatestForUnit>): boolean
  *
  * Window keys are compound (`unitType:unitId`, legacy `unitType/unitId`)
  * while the production dispatch ledger keys rows by the bare unit id with
- * the unit type in its own column. Look the full key up first (test
- * fixtures / legacy rows), then fall back to the bare unit id with a
- * unit_type match so production ledger rows also suppress.
+ * the unit type in its own column. Look the bare unit id up first (with a
+ * unit_type match — the production shape), then fall back to the full
+ * compound key (test fixtures / legacy rows).
  *
  * Returns true if the dispatch ledger says we should suppress the stuck
  * signal; false (no suppression) when the ledger is unavailable or has
  * no opinion.
  */
-export function retryBudgetSuppresses(unitKey: string): boolean {
+function retryBudgetSuppresses(unitKey: string): boolean {
   try {
-    if (rowInsideRetryBudget(getLatestForUnit(unitKey))) return true;
-    const separator = unitKey.includes(":") ? ":" : "/";
-    const split = unitKey.indexOf(separator);
-    if (split <= 0) return false;
-    const unitType = unitKey.slice(0, split);
-    const bare = getLatestForUnit(unitKey.slice(split + 1));
-    return !!bare && bare.unit_type === unitType && rowInsideRetryBudget(bare);
+    const parsed = parseDispatchKey(unitKey);
+    if (parsed) {
+      const bare = getLatestForUnit(parsed.unitId);
+      if (bare && bare.unit_type === parsed.unitType && rowInsideRetryBudget(bare)) {
+        return true;
+      }
+    }
+    return rowInsideRetryBudget(getLatestForUnit(unitKey));
   } catch {
     return false;
   }
@@ -86,6 +88,12 @@ export function detectStuck(
   const last = window[window.length - 1];
   const prev = window[window.length - 2];
 
+  // Rules 2 and 2b share one retry-budget verdict for `last.key` — compute it
+  // at most once per invocation (it hits the dispatch ledger).
+  let suppressionVerdict: boolean | undefined;
+  const suppressed = (): boolean =>
+    (suppressionVerdict ??= retryBudgetSuppresses(last.key));
+
   // Rule 1: Same error repeated consecutively
   if (last.error && prev.error && last.error === prev.error) {
     return {
@@ -98,7 +106,7 @@ export function detectStuck(
   // says we're inside the retry-backoff window (codex MEDIUM B3).
   if (window.length >= 3) {
     const lastThree = window.slice(-3);
-    if (lastThree.every((u) => u.key === last.key) && !retryBudgetSuppresses(last.key)) {
+    if (lastThree.every((u) => u.key === last.key) && !suppressed()) {
       return {
         stuck: true,
         reason: `${last.key} derived 3 consecutive times without progress${suffix}`,
@@ -109,7 +117,7 @@ export function detectStuck(
   // Rule 2b: Same unit key 3+ times anywhere in the active window — same
   // retry-budget suppression as Rule 2.
   const countInWindow = window.filter((entry) => entry.key === last.key).length;
-  if (countInWindow >= 3 && !retryBudgetSuppresses(last.key)) {
+  if (countInWindow >= 3 && !suppressed()) {
     return {
       stuck: true,
       reason: `${last.key} derived ${countInWindow} times in last ${window.length} attempts without progress${suffix}`,

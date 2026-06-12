@@ -136,7 +136,7 @@ test("clearOnRecovery empties the window", () => {
 
 // ─── Ledger error attachment + detect-stuck delegation ──────────────────────
 
-test("recordDispatch attaches the latest ledger error so repeat-error detection fires", (t) => {
+test("recordDispatch attaches the latest ledger error on repeats so repeat-error detection fires", (t) => {
   const f = makeLedgerFixture(t);
   const dispatchId = f.claim("execute-task", "M001/S01/T01");
   markFailed(dispatchId, { errorSummary: "boom: deterministic failure" });
@@ -144,12 +144,30 @@ test("recordDispatch attaches the latest ledger error so repeat-error detection 
   const history = historyFor(f.base);
   history.recordDispatch("execute-task", "M001/S01/T01");
   history.recordDispatch("execute-task", "M001/S01/T01");
+  history.recordDispatch("execute-task", "M001/S01/T01");
 
   const window = history.getRecentWindow();
-  assert.equal(window[0].error, "boom: deterministic failure");
+  // First dispatch of a unit skips the ledger lookup (zero DB cost on the
+  // common path); repeats attach the latest error.
+  assert.equal(window[0].error, undefined);
+  assert.equal(window[1].error, "boom: deterministic failure");
+  assert.equal(window[2].error, "boom: deterministic failure");
   const verdict = history.detectStuck();
   assert.equal(verdict?.stuck, true);
   assert.match(verdict?.reason ?? "", /Same error repeated/);
+});
+
+test("recordDispatch never attaches another unit type's ledger error for the same unit id", (t) => {
+  const f = makeLedgerFixture(t);
+  const dispatchId = f.claim("plan-slice", "M001/S01");
+  markFailed(dispatchId, { errorSummary: "boom: plan failure" });
+
+  const history = historyFor(f.base);
+  history.recordDispatch("execute-task", "M001/S01");
+  history.recordDispatch("execute-task", "M001/S01");
+
+  assert.ok(history.getRecentWindow().every((entry) => entry.error === undefined));
+  assert.equal(history.detectStuck(), null);
 });
 
 test("detectStuck fires on three consecutive same-key dispatches without errors", () => {
@@ -162,17 +180,16 @@ test("detectStuck fires on three consecutive same-key dispatches without errors"
 
 // ─── Retry-budget suppression ────────────────────────────────────────────────
 
-test("shouldSuppressStuck honors a production ledger row keyed by the bare unit id", (t) => {
+test("a bare-id ledger row for a different unit type does not suppress the stuck verdict", (t) => {
   const f = makeLedgerFixture(t);
+  // Retry backoff is open for plan-slice:M001/S01 only (bare-id ledger row).
   const dispatchId = f.claim("plan-slice", "M001/S01");
-  markFailed(dispatchId, { errorSummary: "transient", retryAfterMs: 60_000 });
+  markFailed(dispatchId, { errorSummary: "", retryAfterMs: 60_000 });
 
   const history = historyFor(f.base);
-  assert.equal(history.shouldSuppressStuck("plan-slice:M001/S01"), true);
-  // Legacy slash key normalizes to the same lookup.
-  assert.equal(history.shouldSuppressStuck("plan-slice/M001/S01"), true);
-  // Different unit type must not match the bare-id row.
-  assert.equal(history.shouldSuppressStuck("execute-task:M001/S01"), false);
+  for (let i = 0; i < 3; i++) history.recordDispatch("execute-task", "M001/S01");
+  const verdict = history.detectStuck();
+  assert.equal(verdict?.stuck, true, "another unit type's backoff must not suppress this unit");
 });
 
 test("consecutive-repeat verdict is suppressed while the retry budget drains", (t) => {

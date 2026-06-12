@@ -22,8 +22,8 @@ import {
   createAutoOrchestrator,
   decideOrchestratorDispatch,
   resolveLiveOrchestratorBasePath,
-  STUCK_WINDOW_SIZE,
 } from "../auto/orchestrator.js";
+import { STUCK_WINDOW_SIZE } from "../auto/dispatch-history.js";
 import type { OrchestratorContext } from "../auto/orchestrator.js";
 import type { AutoOrchestrationModule, AutoSessionContext } from "../auto/contracts.js";
 import type { GSDState } from "../types.js";
@@ -723,10 +723,6 @@ test("idempotent path journals advance-skipped and records a health snapshot", a
 });
 
 // ─── Stuck-loop ring buffer (issue #5787) ──────────────────────────────────
-
-test("STUCK_WINDOW_SIZE matches the legacy auto/phases.ts constant", () => {
-  assert.equal(STUCK_WINDOW_SIZE, 6);
-});
 
 test("stuck-loop: empty ring on a freshly constructed orchestrator advances normally", async (t) => {
   const f = makeFixture();

@@ -79,10 +79,6 @@ function now(): number {
   return Date.now();
 }
 
-// Re-exported for callers/tests that historically imported the window size
-// from the orchestrator; the Dispatch History module is now its home.
-export { STUCK_WINDOW_SIZE };
-
 function noRemainingUnitsOutcome(stateSnapshot: GSDState): AutoTerminalOutcome {
   if (stateSnapshot.phase === "complete") {
     return {

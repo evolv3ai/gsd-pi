@@ -22,16 +22,21 @@
  * Key format: the canonical dispatch key is `${unitType}:${unitId}`
  * (e.g. "execute-task:M001/S01/T01"). The legacy auto/phases.ts path and the
  * DB rehydration helper use `${unitType}/${unitId}`; normalizeDispatchKey
- * converts those on rehydrate so one format lives in the window.
+ * converts those on rehydrate so one format lives in the window. The key
+ * grammar itself lives in auto/dispatch-key.ts and is re-exported here for
+ * import stability.
  */
 
 import type { WindowEntry } from "./types.js";
-import { detectStuck, retryBudgetSuppresses } from "./detect-stuck.js";
+import { buildDispatchKey, normalizeDispatchKey } from "./dispatch-key.js";
+import { detectStuck } from "./detect-stuck.js";
 import {
   getLatestForUnit,
   getRecentUnitKeysForProjectRoot,
 } from "../db/unit-dispatches.js";
 import { debugLog } from "../debug-logger.js";
+
+export { buildDispatchKey, normalizeDispatchKey, parseDispatchKey } from "./dispatch-key.js";
 
 /**
  * Size of the dispatch-decision ring buffer. Mirrors the legacy
@@ -40,39 +45,13 @@ import { debugLog } from "../debug-logger.js";
  */
 export const STUCK_WINDOW_SIZE = 6;
 
-/** Build the canonical dispatch key for a unit. One format, one home. */
-export function buildDispatchKey(unitType: string, unitId: string): string {
-  return `${unitType}:${unitId}`;
-}
-
-/** Split a canonical or legacy dispatch key into its unit type and id. */
-export function parseDispatchKey(key: string): { unitType: string; unitId: string } | null {
-  const colon = key.indexOf(":");
-  if (colon > 0) {
-    return { unitType: key.slice(0, colon), unitId: key.slice(colon + 1) };
-  }
-  // Legacy `${unitType}/${unitId}` format (auto/phases.ts, DB rehydration).
-  // Unit ids themselves contain "/" (M001/S01/T01) — the first segment is the
-  // unit type.
-  const slash = key.indexOf("/");
-  if (slash > 0) {
-    return { unitType: key.slice(0, slash), unitId: key.slice(slash + 1) };
-  }
-  return null;
-}
-
-/** Normalize a legacy `${unitType}/${unitId}` key to the canonical format. */
-export function normalizeDispatchKey(key: string): string {
-  if (key.includes(":")) return key;
-  const parsed = parseDispatchKey(key);
-  return parsed ? buildDispatchKey(parsed.unitType, parsed.unitId) : key;
-}
-
 export interface DispatchHistory {
   /**
    * Record a dispatch decision in the window (evicting oldest-first past the
-   * window size). Attaches the latest ledger error summary for the unit so the
-   * repeat-error and ENOENT stuck rules can fire. Returns the canonical key.
+   * window size). When the window already holds an entry for the same unit,
+   * attaches the latest ledger error summary so the repeat-error and ENOENT
+   * stuck rules can fire; first-time dispatches (the common case) skip the
+   * ledger lookup entirely. Returns the canonical key.
    */
   recordDispatch(unitType: string, unitId: string): string;
   /** Read-only view of the current window, oldest-first. */
@@ -84,11 +63,6 @@ export interface DispatchHistory {
    * retry-budget suppression via the dispatch ledger).
    */
   detectStuck(): { stuck: true; reason: string } | null;
-  /**
-   * True when the dispatch ledger says the unit is inside its retry-backoff
-   * budget — the stuck verdict should be suppressed while the budget drains.
-   */
-  shouldSuppressStuck(key: string): boolean;
   /**
    * Seed the window from the DB dispatch ledger (cross-session continuity,
    * #482). Legacy `${unitType}/${unitId}` keys are normalized. Degrades to a
@@ -110,9 +84,14 @@ export interface DispatchHistoryOptions {
   windowSize?: number;
 }
 
-function lookupLatestLedgerError(unitId: string): string | undefined {
+function lookupLatestLedgerError(unitType: string, unitId: string): string | undefined {
   try {
-    return getLatestForUnit(unitId)?.error_summary ?? undefined;
+    const row = getLatestForUnit(unitId);
+    // The ledger keys rows by bare unit id; require a unit_type match so
+    // another unit type's error on the same id is never attached (it would
+    // trip the repeat-error rule spuriously).
+    if (!row || row.unit_type !== unitType) return undefined;
+    return row.error_summary ?? undefined;
   } catch {
     return undefined;
   }
@@ -125,7 +104,13 @@ export function createDispatchHistory(options: DispatchHistoryOptions): Dispatch
   return {
     recordDispatch(unitType: string, unitId: string): string {
       const key = buildDispatchKey(unitType, unitId);
-      window.push({ key, error: lookupLatestLedgerError(unitId) });
+      // Ledger errors only feed the repeat-error/ENOENT rules, which need a
+      // prior occurrence of the same unit in the window — first-dispatch
+      // advances (the common case) pay zero DB cost.
+      const error = window.some((entry) => entry.key === key)
+        ? lookupLatestLedgerError(unitType, unitId)
+        : undefined;
+      window.push({ key, error });
       while (window.length > windowSize) window.shift();
       return key;
     },
@@ -140,10 +125,6 @@ export function createDispatchHistory(options: DispatchHistoryOptions): Dispatch
 
     detectStuck(): { stuck: true; reason: string } | null {
       return detectStuck(window);
-    },
-
-    shouldSuppressStuck(key: string): boolean {
-      return retryBudgetSuppresses(normalizeDispatchKey(key));
     },
 
     rehydrate(): number {

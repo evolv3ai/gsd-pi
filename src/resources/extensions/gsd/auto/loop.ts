@@ -25,7 +25,8 @@ import {
   type IterationData,
 } from "./types.js";
 import { _clearCurrentResolve } from "./resolve.js";
-import { runGuards, runFinalize, STUCK_WINDOW_SIZE } from "./phases.js";
+import { runGuards, runFinalize } from "./phases.js";
+import { STUCK_WINDOW_SIZE } from "./dispatch-history.js";
 import { debugLog } from "../debug-logger.js";
 import { isInfrastructureError, isTransientCooldownError, getCooldownRetryAfterMs, COOLDOWN_FALLBACK_WAIT_MS, MAX_COOLDOWN_RETRIES } from "./infra-errors.js";
 import { ModelPolicyDispatchBlockedError } from "../auto-model-selection.js";
