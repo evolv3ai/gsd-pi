@@ -273,10 +273,10 @@ export function getMilestoneSlices(milestoneId: string): SliceRow[] {
 /** Dispatch-eligibility shape consumed by decision-path callers (ADR-017). */
 export interface MilestoneSliceSummary {
   id: string;
+  title: string;
   /** Closed per the canonical status vocabulary (complete/done/skipped/closed). */
   done: boolean;
   depends: string[];
-  sequence: number;
 }
 
 /**
@@ -284,14 +284,26 @@ export interface MilestoneSliceSummary {
  * `done` uses the canonical closed-status predicate (`isClosedStatus`) — the
  * same vocabulary the SQL terminal-status fragment derives from. Decision
  * paths must consume this instead of parsing `.gsd/*.md` projections.
+ * Rows keep `getMilestoneSlices` ordering (sequence, then id).
  */
 export function getMilestoneSliceSummaries(milestoneId: string): MilestoneSliceSummary[] {
   return getMilestoneSlices(milestoneId).map((s) => ({
     id: s.id,
+    title: s.title,
     done: isClosedStatus(s.status),
     depends: s.depends ?? [],
-    sequence: s.sequence,
   }));
+}
+
+/**
+ * Ids of slices closed per the canonical status vocabulary (ADR-017), in
+ * milestone order. Thin wrapper over `getMilestoneSliceSummaries` for the
+ * common "which slices are done?" decision-path read.
+ */
+export function getClosedSliceIds(milestoneId: string): string[] {
+  return getMilestoneSliceSummaries(milestoneId)
+    .filter((s) => s.done)
+    .map((s) => s.id);
 }
 
 export function getArtifact(path: string): ArtifactRow | null {

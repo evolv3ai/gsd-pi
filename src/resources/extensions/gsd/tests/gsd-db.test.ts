@@ -30,6 +30,8 @@ import {
   insertTask,
   getTask,
   getSliceTasks,
+  getMilestoneSliceSummaries,
+  getClosedSliceIds,
   getActiveMilestoneFromDb,
   deleteMilestone,
   clearEngineHierarchy,
@@ -943,6 +945,31 @@ describe('gsd-db', () => {
     const sliceTasks = getSliceTasks('M001', 'S01');
     assert.equal(sliceTasks.length, 1, 'getSliceTasks should also survive corrupt rows');
     assert.deepStrictEqual(sliceTasks[0]!.files, task!.files);
+
+    closeDatabase();
+  });
+
+  test('gsd-db: slice summaries use the canonical closed vocabulary; getClosedSliceIds filters to closed ids', () => {
+    openDatabase(':memory:');
+    insertMilestone({ id: 'M001', status: 'active' });
+    insertSlice({ milestoneId: 'M001', id: 'S01', title: 'Complete', status: 'complete', depends: [], sequence: 1 });
+    insertSlice({ milestoneId: 'M001', id: 'S02', title: 'Done', status: 'done', depends: ['S01'], sequence: 2 });
+    insertSlice({ milestoneId: 'M001', id: 'S03', title: 'Skipped', status: 'skipped', depends: [], sequence: 3 });
+    insertSlice({ milestoneId: 'M001', id: 'S04', title: 'Closed', status: 'closed', depends: [], sequence: 4 });
+    insertSlice({ milestoneId: 'M001', id: 'S05', title: 'Active', status: 'active', depends: [], sequence: 5 });
+    insertSlice({ milestoneId: 'M001', id: 'S06', title: 'Pending', status: 'pending', depends: ['S05'], sequence: 6 });
+
+    const summaries = getMilestoneSliceSummaries('M001');
+    assert.deepStrictEqual(summaries[0], { id: 'S01', title: 'Complete', done: true, depends: [] });
+    assert.deepStrictEqual(summaries[5], { id: 'S06', title: 'Pending', done: false, depends: ['S05'] });
+    assert.deepStrictEqual(
+      summaries.map((s) => s.done),
+      [true, true, true, true, false, false],
+      'complete/done/skipped/closed are closed; active/pending are not',
+    );
+
+    assert.deepStrictEqual(getClosedSliceIds('M001'), ['S01', 'S02', 'S03', 'S04']);
+    assert.deepStrictEqual(getClosedSliceIds('M999'), [], 'unknown milestone yields no closed ids');
 
     closeDatabase();
   });

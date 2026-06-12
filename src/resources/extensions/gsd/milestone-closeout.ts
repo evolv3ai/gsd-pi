@@ -7,7 +7,7 @@
 
 import { loadFile } from "./files.js";
 import { resolveMilestoneFile } from "./paths.js";
-import { getMilestone, getMilestoneSliceSummaries, isDbAvailable } from "./gsd-db.js";
+import { getMilestone, getClosedSliceIds, isDbAvailable } from "./gsd-db.js";
 import { isClosedStatus } from "./status-guards.js";
 import { runSafely } from "./auto-utils.js";
 import { extractVerdict, isAcceptableUatVerdict } from "./verdict-parser.js";
@@ -95,11 +95,7 @@ export async function evaluateCompleteMilestoneDispatch(
         level: "warning",
       };
     }
-    const closedSliceIds = getMilestoneSliceSummaries(mid)
-      .filter((slice) => slice.done)
-      .map((slice) => slice.id);
-
-    for (const sliceId of closedSliceIds) {
+    for (const sliceId of getClosedSliceIds(mid)) {
       const result = await readUatGateVerdict(basePath, mid, sliceId);
       if (!result) {
         return {

@@ -21,6 +21,7 @@ import {
   isDbAvailable,
   getMilestoneSlices,
   getMilestoneSliceSummaries,
+  getClosedSliceIds,
   getPendingGatesForTurn,
   markPendingGatesOmittedForTurn,
   getMilestone,
@@ -495,14 +496,9 @@ function backfillMissingAssessmentsFromSummaries(basePath: string, mid: string):
   // DB-authoritative (ADR-017): no markdown fallback. Without DB rows there
   // is nothing to backfill.
   if (!isDbAvailable()) return;
-  const completedSliceIds = new Set<string>();
-  for (const slice of getMilestoneSlices(mid)) {
-    if (slice.status === "complete" || slice.status === "done") {
-      completedSliceIds.add(slice.id);
-    }
-  }
-
-  for (const sliceId of completedSliceIds) {
+  // Canonical closed vocabulary (complete/done/skipped/closed) — a skipped or
+  // closed slice with a SUMMARY gets the same assessment backfill treatment.
+  for (const sliceId of getClosedSliceIds(mid)) {
     const summaryPath = resolveSliceFile(basePath, mid, sliceId, "SUMMARY");
     if (!summaryPath || !existsSync(summaryPath)) continue;
 
@@ -813,11 +809,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
       // DB-authoritative (ADR-017): closed slices come from the DB only; the
       // ROADMAP projection is never parsed for gate decisions.
       if (!isDbAvailable()) return null;
-      const closedSliceIds = getMilestoneSliceSummaries(mid)
-        .filter(s => s.done)
-        .map(s => s.id);
-
-      for (const sliceId of closedSliceIds) {
+      for (const sliceId of getClosedSliceIds(mid)) {
         const result = await readUatGateVerdict(basePath, mid, sliceId);
         if (!result) continue;
         const { verdict, uatType } = result;
@@ -1124,7 +1116,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
       // DB-authoritative slice list (ADR-017): the ROADMAP projection is
       // never parsed for dispatch decisions. No DB / no rows → skip this rule.
       if (!isDbAvailable()) return null;
-      const dbSlices = getMilestoneSlices(mid);
+      const dbSlices = getMilestoneSliceSummaries(mid);
       if (dbSlices.length === 0) return null;
 
       // Find slices that need research (no RESEARCH file, dependencies done)
@@ -1134,13 +1126,13 @@ export const DISPATCH_RULES: DispatchRule[] = [
       const researchReadySlices: Array<{ id: string; title: string }> = [];
 
       for (const slice of dbSlices) {
-        if (isClosedStatus(slice.status)) continue;
+        if (slice.done) continue;
         // Skip S01 when milestone research exists
         if (milestoneResearchFile && slice.id === "S01") continue;
         // Skip if already has research
         if (resolveExistingExpectedArtifact("research-slice", `${mid}/${slice.id}`, basePath)) continue;
         // Skip if dependencies aren't done (check for SUMMARY files)
-        const depsComplete = (slice.depends ?? []).every((depId) =>
+        const depsComplete = slice.depends.every((depId) =>
           !!resolveExistingExpectedArtifact("complete-slice", `${mid}/${depId}`, basePath),
         );
         if (!depsComplete) continue;
