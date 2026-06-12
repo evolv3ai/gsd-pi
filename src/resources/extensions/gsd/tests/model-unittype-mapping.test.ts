@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { resolveExpectedArtifactPath } from "../auto-artifact-paths.ts";
 import { unitPhaseLabel, unitVerb } from "../auto-dashboard.ts";
 import { classifyUnitPhase } from "../metrics.ts";
-import { resolveModelWithFallbacksForUnit } from "../preferences-models.ts";
+import { resolveDefaultSessionModel, resolveModelWithFallbacksForUnit } from "../preferences-models.ts";
 import { KNOWN_UNIT_LABELS } from "../preferences-types.ts";
 
 function withModelPreferences<T>(fn: () => T): T {
@@ -89,6 +89,37 @@ test("run-uat falls back to completion when uat bucket is not configured", () =>
     if (oldHome === undefined) delete process.env.GSD_HOME;
     else process.env.GSD_HOME = oldHome;
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("default session model resolves from the explicit project base path", () => {
+  const oldHome = process.env.GSD_HOME;
+  const originalCwd = process.cwd();
+  const home = mkdtempSync(join(tmpdir(), "gsd-model-map-home-"));
+  const base = mkdtempSync(join(tmpdir(), "gsd-model-map-project-"));
+
+  try {
+    process.env.GSD_HOME = home;
+    mkdirSync(join(base, ".gsd"), { recursive: true });
+    writeFileSync(join(base, ".gsd", "PREFERENCES.md"), [
+      "---",
+      "models:",
+      "  execution: gpt-5.5",
+      "---",
+      "",
+    ].join("\n"));
+    process.chdir(home);
+
+    assert.deepEqual(resolveDefaultSessionModel("openai-codex", base), {
+      provider: "openai-codex",
+      id: "gpt-5.5",
+    });
+  } finally {
+    process.chdir(originalCwd);
+    if (oldHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+    rmSync(base, { recursive: true, force: true });
   }
 });
 
