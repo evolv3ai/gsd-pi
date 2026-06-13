@@ -372,8 +372,9 @@ export function normalizeClaudeToolSchemaForGoogle(schema: unknown): unknown {
 	);
 
 	if (objectVariants.length === 0) {
+		const { anyOf: _anyOf, oneOf: _oneOf, allOf: _allOf, ...withoutUnions } = jsonSchema;
 		return {
-			...jsonSchema,
+			...withoutUnions,
 			type: "object",
 			properties:
 				typeof jsonSchema.properties === "object" &&
@@ -556,12 +557,13 @@ function sanitizeForClaudeInputSchemaDeep(schema: unknown): unknown {
 		const variants = obj[unionKey] as unknown[];
 		if (variants.length > 0 && variants.every(isConstOnlySchema)) {
 			const collapsedUnionKey = unionKey === "allOf" ? "anyOf" : unionKey;
-			const { [unionKey]: unionVariants, ...restWithoutUnion } = obj;
+			const { [unionKey]: unionVariants, type: _type, ...restWithoutUnion } = obj;
 			return sanitizeForClaudeInputSchemaDeep(
 				collapseConstUnion({ ...restWithoutUnion, [collapsedUnionKey]: unionVariants }, collapsedUnionKey),
 			);
 		}
-		return sanitizeForClaudeInputSchemaDeep(simplifyNonConstUnion(obj, unionKey, sanitizeForClaudeInputSchemaDeep));
+		const { type: _type, ...withoutType } = obj;
+		return sanitizeForClaudeInputSchemaDeep(simplifyNonConstUnion(withoutType, unionKey, sanitizeForClaudeInputSchemaDeep));
 	}
 
 	if ("const" in obj) {
@@ -667,6 +669,14 @@ function sanitizeForOpenApi(schema: unknown): unknown {
 /** Legacy export name used by google-shared.test.ts and provider-capabilities docs. */
 export function sanitizeSchemaForGoogle(schema: unknown): unknown {
 	return sanitizeForOpenApi(schema);
+}
+
+/**
+ * Moonshot/Kimi `tools.function.parameters` rejects anyOf/oneOf/allOf and
+ * requires `type` on parent schemas. Reuses the Claude deep sanitizer.
+ */
+export function sanitizeSchemaForMoonshot(schema: unknown): Record<string, unknown> {
+	return toClaudeInputSchemaRoot(schema);
 }
 
 /**

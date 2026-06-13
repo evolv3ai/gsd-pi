@@ -54,6 +54,8 @@ export interface McpToolDef {
 // `any` and skips static checking.
 const MCP_PKG = '@modelcontextprotocol/sdk'
 
+export { sanitizeSchemaForMoonshot } from '@gsd/pi-ai'
+
 export function mcpSdkSpecifier(subpath: 'server/index' | 'server/stdio' | 'types'): string {
   return `${MCP_PKG}/${subpath}.js`
 }
@@ -102,7 +104,7 @@ export async function startMcpServer(options: {
     tools: tools.map((t: McpToolDef) => ({
       name: t.name,
       description: t.description,
-      inputSchema: t.parameters,
+      inputSchema: sanitizeSchemaForMoonshot(t.parameters),
     })),
   }))
 

@@ -39,6 +39,10 @@ import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copi
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.js";
 import { buildBaseOptions } from "./simple-options.js";
 import { transformMessages } from "./transform-messages.js";
+import {
+	requiresMoonshotToolSchemaSanitization,
+	sanitizeSchemaForMoonshot,
+} from "../utils/moonshot-tool-schema.js";
 
 /**
  * Check if conversation messages contain tool calls or tool results.
@@ -543,7 +547,7 @@ function buildParams(
 	}
 
 	if (context.tools && context.tools.length > 0) {
-		params.tools = convertTools(context.tools, compat);
+		params.tools = convertTools(context.tools, compat, model);
 		if (compat.zaiToolStream) {
 			(params as any).tool_stream = true;
 		}
@@ -993,13 +997,17 @@ export function convertMessages(
 function convertTools(
 	tools: Tool[],
 	compat: ResolvedOpenAICompletionsCompat,
+	model: Model<"openai-completions">,
 ): OpenAI.Chat.Completions.ChatCompletionTool[] {
+	const sanitizeParameters = requiresMoonshotToolSchemaSanitization(model);
 	return tools.map((tool) => ({
 		type: "function",
 		function: {
 			name: tool.name,
 			description: tool.description,
-			parameters: tool.parameters as any, // TypeBox already generates JSON Schema
+			parameters: sanitizeParameters
+				? sanitizeSchemaForMoonshot(tool.parameters)
+				: (tool.parameters as any), // TypeBox already generates JSON Schema
 			// Only include strict if provider supports it. Some reject unknown fields.
 			...(compat.supportsStrictMode !== false && { strict: false }),
 		},

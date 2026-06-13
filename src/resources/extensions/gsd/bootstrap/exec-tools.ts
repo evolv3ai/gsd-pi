@@ -137,8 +137,8 @@ export function registerExecTools(pi: ExtensionAPI): void {
     parameters: Type.Object({
       query: Type.Optional(Type.String({ description: "Substring matched against id and purpose (case-insensitive)." })),
       runtime: Type.Optional(
-        Type.Union([Type.Literal("bash"), Type.Literal("node"), Type.Literal("python")], {
-          description: "Restrict to one runtime.",
+        Type.String({
+          description: "Restrict to one runtime: bash, node, or python.",
         }),
       ),
       failing_only: Type.Optional(Type.Boolean({ description: "Only non-zero exit codes and timeouts." })),
