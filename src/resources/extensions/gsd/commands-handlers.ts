@@ -29,6 +29,7 @@ import { getAutoWorktreePath } from "./auto-worktree.js";
 import { currentDirectoryRoot, projectRoot } from "./commands/context.js";
 import { loadPrompt } from "./prompt-loader.js";
 import { buildClaudeRuntimeFloorAdvisory } from "../../shared/claude-runtime-floor.js";
+import { reconcileGsdBrowserPathAfterInstall } from "../../shared/gsd-browser-path-sync.js";
 import { isPnpmInstall } from "../../shared/package-manager-detection.js";
 import {
   buildDoctorHealIssuePayload,
@@ -600,12 +601,30 @@ export async function handleUpdate(ctx: ExtensionCommandContext, args = ""): Pro
     execSync(installCmd, {
       stdio: ["ignore", "pipe", "ignore"],
     });
+    let reconcile: ReturnType<typeof reconcileGsdBrowserPathAfterInstall> | null = null;
+    if (browserUpdate) {
+      try {
+        reconcile = reconcileGsdBrowserPathAfterInstall({
+          latestVersion: latest,
+          compareSemver: compareSemverLocal,
+          resolvePathVersion: resolveGsdBrowserPathVersionForCommand,
+        });
+      } catch {
+        // Reconciliation is best-effort: the install above already succeeded,
+        // so a reconcile failure must not flip the result to "Update failed".
+        reconcile = null;
+      }
+    }
     const newPathVersion = browserUpdate ? resolveGsdBrowserPathVersionForCommand() : null;
-    const pathReady = !browserUpdate || (!!newPathVersion && compareSemverLocal(newPathVersion, latest) >= 0);
+    const pathNote = browserUpdate && !(newPathVersion && compareSemverLocal(newPathVersion, latest) >= 0)
+      ? (reconcile?.message
+        ?? "Ensure the npm global bin directory is on your PATH so MCP automation uses the updated binary.")
+      : "";
     ctx.ui.notify(
       browserUpdate
         ? `Updated gsd-browser to v${latest}. Restart your GSD session to use the new browser automation version.` +
-          (pathReady ? "" : "\nNote: Ensure the npm global bin directory is on your PATH so MCP automation uses the updated binary.")
+          (reconcile?.action === "synced" && reconcile.message ? `\n${reconcile.message}` : "") +
+          (pathNote ? `\nNote: ${pathNote}` : "")
         : `Updated to v${latest}. Restart your GSD session to use the new version.`,
       "info",
     );

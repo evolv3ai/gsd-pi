@@ -12,7 +12,7 @@ function hasPnpmPath(value: string | undefined): boolean {
   )
 }
 
-function pathStartsWith(pathValue: string | undefined, dir: string): boolean {
+export function pathStartsWith(pathValue: string | undefined, dir: string): boolean {
   if (!pathValue) return false
   const resolvedPath = resolvePath(pathValue)
   const resolvedDir = resolvePath(dir)

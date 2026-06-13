@@ -6,13 +6,15 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { execFileSync } from "node:child_process";
 
 import { runUpdate } from "../update-cmd.ts";
 import { handleUpdate } from "../resources/extensions/gsd/commands-handlers.ts";
-import { GSD_BROWSER_PACKAGE_NAME, GSD_BROWSER_REGISTRY_URL, resolveInstalledPackageVersion } from "../update-check.js";
+import { compareSemver, GSD_BROWSER_PACKAGE_NAME, GSD_BROWSER_REGISTRY_URL, resolveInstalledPackageVersion } from "../update-check.js";
+import { reconcileGsdBrowserPathAfterInstall } from "../resources/shared/gsd-browser-path-sync.ts";
 
 function writeFakeClaude(binDir: string, output: string): void {
   mkdirSync(binDir, { recursive: true });
@@ -22,6 +24,41 @@ function writeFakeClaude(binDir: string, output: string): void {
     : `#!/bin/sh\necho "${output}"\n`;
   writeFileSync(script, content);
   if (process.platform !== "win32") chmodSync(script, 0o755);
+}
+
+function writeFakeGsdBrowser(dir: string, version: string): string {
+  mkdirSync(dir, { recursive: true });
+  const script = join(dir, process.platform === "win32" ? "gsd-browser.cmd" : "gsd-browser");
+  const content = process.platform === "win32"
+    ? `@echo off\r\necho gsd-browser ${version}\r\n`
+    : `#!/bin/sh\necho "gsd-browser ${version}"\n`;
+  writeFileSync(script, content);
+  if (process.platform !== "win32") chmodSync(script, 0o755);
+  return script;
+}
+
+function resolveGsdBrowserPathVersionFromEnv(env: NodeJS.ProcessEnv): string | null {
+  try {
+    const out = execFileSync("gsd-browser", ["--version"], {
+      encoding: "utf-8",
+      env,
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 2000,
+    });
+    return out.match(/\b(\d+\.\d+\.\d+)\b/)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function writeFakeNpmGlobalBin(dir: string, globalBinDir: string): void {
+  mkdirSync(dir, { recursive: true });
+  const npm = join(dir, process.platform === "win32" ? "npm.cmd" : "npm");
+  const content = process.platform === "win32"
+    ? `@echo off\r\nif "%1"=="bin" if "%2"=="-g" (\r\n  echo ${globalBinDir}\r\n  exit /b 0\r\n)\r\nexit /b 1\r\n`
+    : `#!/bin/sh\nif [ "$1" = "bin" ] && [ "$2" = "-g" ]; then\n  echo "${globalBinDir}"\n  exit 0\nfi\nexit 1\n`;
+  writeFileSync(npm, content);
+  if (process.platform !== "win32") chmodSync(npm, 0o755);
 }
 
 test("update-cmd prints latest version before comparison (#3445)", async (t) => {
@@ -735,4 +772,194 @@ test("isPnpmInstall detects pnpm user agent, exec path, and PNPM_HOME", async ()
     isPnpmInstall("/usr/local/lib/node_modules/@opengsd/gsd-pi/dist/loader.js", {} as any),
     false,
   );
+});
+
+test("reconcileGsdBrowserPathAfterInstall syncs stale managed PATH binary", (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX symlink PATH shadowing scenario");
+  }
+
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-browser-path-sync-"));
+  const homeDir = join(tmp, "home");
+  const managedBinDir = join(homeDir, ".gsd-browser", "bin");
+  const pathBinDir = join(tmp, "path-bin");
+  const globalBinDir = join(tmp, "global-bin");
+  const fakeNpmDir = join(tmp, "fake-npm");
+
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  const managedCli = writeFakeGsdBrowser(managedBinDir, "1.0.0");
+  writeFakeGsdBrowser(globalBinDir, "2.0.0");
+  mkdirSync(pathBinDir, { recursive: true });
+  symlinkSync(managedCli, join(pathBinDir, "gsd-browser"));
+  writeFakeNpmGlobalBin(fakeNpmDir, globalBinDir);
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: homeDir,
+    PATH: `${pathBinDir}${delimiter}${fakeNpmDir}`,
+    npm_config_user_agent: undefined,
+    npm_execpath: undefined,
+    PNPM_HOME: undefined,
+  };
+
+  const result = reconcileGsdBrowserPathAfterInstall({
+    latestVersion: "2.0.0",
+    compareSemver,
+    resolvePathVersion: resolveGsdBrowserPathVersionFromEnv,
+    env,
+    argv1: "/usr/local/lib/node_modules/@opengsd/gsd-pi/dist/loader.js",
+  });
+
+  assert.equal(result.action, "synced");
+  assert.equal(resolveGsdBrowserPathVersionFromEnv(env), "2.0.0");
+  assert.match(result.message ?? "", /Synced PATH-resolved gsd-browser/);
+});
+
+test("reconcileGsdBrowserPathAfterInstall reports shadowing for non-home targets", (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX symlink PATH shadowing scenario");
+  }
+
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-browser-path-shadow-"));
+  const staleBinDir = join(tmp, "usr", "local", "bin");
+  const globalBinDir = join(tmp, "global-bin");
+  const fakeNpmDir = join(tmp, "fake-npm");
+
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  writeFakeGsdBrowser(staleBinDir, "1.0.0");
+  writeFakeGsdBrowser(globalBinDir, "2.0.0");
+  writeFakeNpmGlobalBin(fakeNpmDir, globalBinDir);
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: join(tmp, "home"),
+    PATH: `${staleBinDir}${delimiter}${fakeNpmDir}`,
+    npm_config_user_agent: undefined,
+    npm_execpath: undefined,
+    PNPM_HOME: undefined,
+  };
+
+  const result = reconcileGsdBrowserPathAfterInstall({
+    latestVersion: "2.0.0",
+    compareSemver,
+    resolvePathVersion: resolveGsdBrowserPathVersionFromEnv,
+    env,
+    argv1: "/usr/local/lib/node_modules/@opengsd/gsd-pi/dist/loader.js",
+  });
+
+  assert.equal(result.action, "shadowed");
+  assert.equal(resolveGsdBrowserPathVersionFromEnv(env), "1.0.0");
+  assert.match(result.message ?? "", /Move your package manager global bin directory ahead/);
+});
+
+test("reconcileGsdBrowserPathAfterInstall reports synced when copy succeeds even if PATH version probe is inconclusive", (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX symlink PATH shadowing scenario");
+  }
+
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-browser-path-sync-unverified-"));
+  const homeDir = join(tmp, "home");
+  const managedBinDir = join(homeDir, ".gsd-browser", "bin");
+  const pathBinDir = join(tmp, "path-bin");
+  const globalBinDir = join(tmp, "global-bin");
+  const fakeNpmDir = join(tmp, "fake-npm");
+
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  const managedCli = writeFakeGsdBrowser(managedBinDir, "1.0.0");
+  writeFakeGsdBrowser(globalBinDir, "2.0.0");
+  mkdirSync(pathBinDir, { recursive: true });
+  symlinkSync(managedCli, join(pathBinDir, "gsd-browser"));
+  writeFakeNpmGlobalBin(fakeNpmDir, globalBinDir);
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: homeDir,
+    PATH: `${pathBinDir}${delimiter}${fakeNpmDir}`,
+    npm_config_user_agent: undefined,
+    npm_execpath: undefined,
+    PNPM_HOME: undefined,
+  };
+
+  // Pretend the post-sync version probe cannot read the new version (timeout,
+  // shell cache, etc.) by returning null on the second call. The first call —
+  // before sync — sees the old binary; the second — after sync — returns null.
+  let probeCalls = 0;
+  const flakyResolvePathVersion = (probeEnv: NodeJS.ProcessEnv): string | null => {
+    probeCalls += 1;
+    return probeCalls === 1 ? resolveGsdBrowserPathVersionFromEnv(probeEnv) : null;
+  };
+
+  const result = reconcileGsdBrowserPathAfterInstall({
+    latestVersion: "2.0.0",
+    compareSemver,
+    resolvePathVersion: flakyResolvePathVersion,
+    env,
+    argv1: "/usr/local/lib/node_modules/@opengsd/gsd-pi/dist/loader.js",
+  });
+
+  // The copy actually succeeded — the post-sync probe being inconclusive
+  // must not flip the result to "shadowed".
+  assert.equal(result.action, "synced");
+  assert.equal(resolveGsdBrowserPathVersionFromEnv(env), "2.0.0");
+  assert.match(result.message ?? "", /Synced PATH-resolved gsd-browser/);
+});
+
+test("reconcileGsdBrowserPathAfterInstall does not throw when PATH entry vanishes between resolve and sync", (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX symlink PATH shadowing scenario");
+  }
+
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-browser-path-vanish-"));
+  const homeDir = join(tmp, "home");
+  const pathBinDir = join(tmp, "path-bin");
+  const globalBinDir = join(tmp, "global-bin");
+  const fakeNpmDir = join(tmp, "fake-npm");
+
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  writeFakeGsdBrowser(globalBinDir, "2.0.0");
+  mkdirSync(pathBinDir, { recursive: true });
+  // Write a stale binary on PATH so resolvePathBinary finds it, then delete it
+  // before reconciliation reads it via lstatSync. resolvePathBinary uses
+  // existsSync which can race with deletion in real systems; simulate that
+  // here by leaving an entry that disappears between the two reads.
+  writeFakeGsdBrowser(pathBinDir, "1.0.0");
+  writeFakeNpmGlobalBin(fakeNpmDir, globalBinDir);
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: homeDir,
+    PATH: `${pathBinDir}${delimiter}${fakeNpmDir}`,
+    npm_config_user_agent: undefined,
+    npm_execpath: undefined,
+    PNPM_HOME: undefined,
+  };
+
+  // Patch resolvePathVersion to remove the PATH binary the moment it is first
+  // queried — that mimics the entry vanishing between resolution and the
+  // lstatSync call inside reconcileGsdBrowserPathAfterInstall.
+  let firstCall = true;
+  const racyResolvePathVersion = (probeEnv: NodeJS.ProcessEnv): string | null => {
+    if (firstCall) {
+      firstCall = false;
+      const version = resolveGsdBrowserPathVersionFromEnv(probeEnv);
+      rmSync(join(pathBinDir, "gsd-browser"), { force: true });
+      return version;
+    }
+    return resolveGsdBrowserPathVersionFromEnv(probeEnv);
+  };
+
+  // The reconciliation must not throw even if the PATH entry disappears.
+  assert.doesNotThrow(() => {
+    reconcileGsdBrowserPathAfterInstall({
+      latestVersion: "2.0.0",
+      compareSemver,
+      resolvePathVersion: racyResolvePathVersion,
+      env,
+      argv1: "/usr/local/lib/node_modules/@opengsd/gsd-pi/dist/loader.js",
+    });
+  });
 });

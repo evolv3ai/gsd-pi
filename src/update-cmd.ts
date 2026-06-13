@@ -2,6 +2,7 @@ import { execSync } from 'node:child_process'
 import { agentDir as defaultAgentDir } from './app-paths.js'
 import { initResources } from './resource-loader.js'
 import { buildClaudeRuntimeFloorAdvisory } from './resources/shared/claude-runtime-floor.js'
+import { reconcileGsdBrowserPathAfterInstall } from './resources/shared/gsd-browser-path-sync.js'
 import {
   compareSemver,
   fetchLatestVersionFromRegistry,
@@ -76,13 +77,28 @@ async function runBrowserUpdate(): Promise<void> {
       stdio: 'inherit',
     })
     process.stdout.write(`\n${green}${bold}Updated gsd-browser to v${latest}${reset}\n`)
-    // Verify the new version is reachable via PATH (MCP prefers PATH binary when newer)
+
+    let reconcile: ReturnType<typeof reconcileGsdBrowserPathAfterInstall> | null = null
+    try {
+      reconcile = reconcileGsdBrowserPathAfterInstall({
+        latestVersion: latest,
+        compareSemver,
+        resolvePathVersion: resolveGsdBrowserPathVersion,
+      })
+    } catch {
+      // Reconciliation is best-effort: the install above already succeeded,
+      // so a reconcile failure must not flip the result to "Update failed".
+      reconcile = null
+    }
+    if (reconcile?.action === 'synced' && reconcile.message) {
+      process.stdout.write(`${green}${reconcile.message}${reset}\n`)
+    }
+
     const newPathVersion = resolveGsdBrowserPathVersion()
     if (!newPathVersion || compareSemver(newPathVersion, latest) < 0) {
-      process.stdout.write(
-        `${yellow}Note:${reset} ${dim}Ensure the npm global bin directory is on your PATH` +
-        ` so MCP automation uses the updated binary.${reset}\n`,
-      )
+      const guidance = reconcile?.message
+        ?? `${dim}Ensure the npm global bin directory is on your PATH so MCP automation uses the updated binary.${reset}`
+      process.stdout.write(`${yellow}Note:${reset} ${guidance}\n`)
     }
   } catch {
     process.stderr.write(`\n${yellow}gsd-browser update failed. Try manually: ${installCmd}${reset}\n`)
