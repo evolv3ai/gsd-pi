@@ -200,6 +200,31 @@ test("parseRoadmapSlices: checkbox slices with pipe characters do not switch to 
   assert.deepEqual(slices[2]?.depends, ["S01", "S02"]);
 });
 
+test("parseRoadmapSlices: demo markdown table does not switch checkbox roadmap to table mode (#721)", () => {
+  const checkboxWithDemoTable = [
+    "# M004: Demo Table Repro",
+    "",
+    "## Slices",
+    "",
+    "- [x] **S01: First** `risk:low` `depends:[]`",
+    "  > After this: cli can render examples:",
+    "| Example | Meaning |",
+    "| --- | --- |",
+    "| S01 | Not a roadmap row |",
+    "- [ ] **S02: Second** `risk:medium` `depends:[S01]`",
+    "  > After this: cat file | sort returns stable output.",
+    "",
+  ].join("\n");
+
+  const slices = parseRoadmapSlices(checkboxWithDemoTable);
+  assert.equal(slices.length, 2);
+  assert.equal(slices[0]?.id, "S01");
+  assert.equal(slices[0]?.title, "First");
+  assert.equal(slices[0]?.done, true);
+  assert.equal(slices[1]?.id, "S02");
+  assert.deepEqual(slices[1]?.depends, ["S01"]);
+});
+
 // --- Prose slice header completion marker tests (#1803) ---
 
 test("parseRoadmapSlices: prose headers with ✓ marker detected as done", () => {

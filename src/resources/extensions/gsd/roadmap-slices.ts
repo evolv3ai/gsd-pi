@@ -154,6 +154,23 @@ function parseTableSlices(section: string): RoadmapSliceEntry[] {
   return slices;
 }
 
+function looksLikeTable(section: string): boolean {
+  const lines = section.split("\n");
+  const firstContentLineIndex = lines.findIndex(line => line.trim() !== "");
+  if (firstContentLineIndex < 0 || !/^\s*\|/.test(lines[firstContentLineIndex]!)) {
+    return false;
+  }
+
+  const firstPipeLineIndex = lines.findIndex(line => /^\s*\|/.test(line));
+  if (firstPipeLineIndex < 0) return false;
+
+  const separatorLine = lines.slice(firstPipeLineIndex + 1).find(line => /^\s*\|/.test(line));
+  if (!separatorLine) return false;
+
+  const cells = separatorLine.split("|").map(c => c.trim()).filter(Boolean);
+  return /^\s*\|[\s:-]+\|/.test(separatorLine) && cells.length >= 2 && cells.every(c => /^[\s:-]+$/.test(c));
+}
+
 export function parseRoadmapSlices(content: string): RoadmapSliceEntry[] {
   const slicesSection = extractSlicesSection(content);
   if (!slicesSection) {
@@ -165,9 +182,11 @@ export function parseRoadmapSlices(content: string): RoadmapSliceEntry[] {
 
   // Try table format first — if the section contains pipe-delimited rows with
   // slice IDs, parse them as a table (#1736).
-  const tableSlices = parseTableSlices(slicesSection);
-  if (tableSlices.length > 0) {
-    return tableSlices;
+  if (looksLikeTable(slicesSection)) {
+    const tableSlices = parseTableSlices(slicesSection);
+    if (tableSlices.length > 0) {
+      return tableSlices;
+    }
   }
 
   // Standard checkbox format
