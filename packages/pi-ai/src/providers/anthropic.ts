@@ -38,6 +38,10 @@ import { resolveCloudflareBaseUrl } from "./cloudflare.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.js";
 import { adjustMaxTokensForThinking, buildBaseOptions } from "./simple-options.js";
 import { transformMessages } from "./transform-messages.js";
+import {
+	requiresMoonshotToolSchemaSanitizationAnthropic,
+	sanitizeSchemaForMoonshot,
+} from "../utils/moonshot-tool-schema.js";
 
 /**
  * Resolve cache retention preference.
@@ -978,6 +982,7 @@ function buildParams(
 			isOAuthToken,
 			compat.supportsEagerToolInputStreaming,
 			compat.supportsCacheControlOnTools ? cacheControl : undefined,
+			model,
 		);
 	}
 
@@ -1222,22 +1227,28 @@ function convertTools(
 	tools: Tool[],
 	isOAuthToken: boolean,
 	supportsEagerToolInputStreaming: boolean,
-	cacheControl?: CacheControlEphemeral,
+	cacheControl: CacheControlEphemeral | undefined,
+	model: Model<"anthropic-messages">,
 ): Anthropic.Messages.Tool[] {
 	if (!tools) return [];
 
+	const sanitizeInputSchema = requiresMoonshotToolSchemaSanitizationAnthropic(model);
+
 	return tools.map((tool, index) => {
 		const schema = tool.parameters as { properties?: unknown; required?: string[] };
+		const inputSchema = sanitizeInputSchema
+			? sanitizeSchemaForMoonshot(tool.parameters)
+			: {
+					type: "object" as const,
+					properties: schema.properties ?? {},
+					required: schema.required ?? [],
+				};
 
 		return {
 			name: isOAuthToken ? toClaudeCodeName(tool.name) : tool.name,
 			description: tool.description,
 			...(supportsEagerToolInputStreaming ? { eager_input_streaming: true } : {}),
-			input_schema: {
-				type: "object",
-				properties: schema.properties ?? {},
-				required: schema.required ?? [],
-			},
+			input_schema: inputSchema as Anthropic.Messages.Tool.InputSchema,
 			...(cacheControl && index === tools.length - 1 ? { cache_control: cacheControl } : {}),
 		};
 	});

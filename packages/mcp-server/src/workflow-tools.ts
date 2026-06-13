@@ -208,7 +208,7 @@ type WorkflowToolExecutors = {
       checks: Array<Record<string, unknown>>;
       presentation: Record<string, unknown>;
       notes?: string;
-      attempt?: number | "auto";
+      attempt?: string;
       previousAttemptId?: string;
     },
     basePath?: string,
@@ -1238,6 +1238,100 @@ const projectDirParam = z
 
 const unknownRecord = z.record(z.string(), z.unknown());
 
+/** Split "id — detail" / "id - detail" pairs used by legacy string payloads. */
+function splitPair(value: string): [string, string] {
+  const match = value.match(/^(.+?)\s*(?:—|-)\s+(.+)$/);
+  return match ? [match[1].trim(), match[2].trim()] : [value.trim(), ""];
+}
+
+/** Accept string or string[] at runtime; emit array-only JSON Schema (no anyOf). */
+const optionalStringOrStringArray = () =>
+  z.preprocess(
+    (value) => (value == null ? value : Array.isArray(value) ? value : [value]),
+    z.array(z.string()).optional(),
+  );
+
+function optionalStructuredStringArray<T extends z.ZodTypeAny>(
+  itemSchema: T,
+  coerceString: (value: string) => z.infer<T>,
+) {
+  return z.preprocess(
+    (value) => {
+      if (value == null) return value;
+      if (!Array.isArray(value)) return value;
+      return value.map((item) => (typeof item === "string" ? coerceString(item) : item));
+    },
+    z.array(itemSchema).optional(),
+  );
+}
+
+const requirementAdvancedItemSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const [id, how] = splitPair(value);
+    return { id, how };
+  },
+  z.object({ id: z.string(), how: z.string() }),
+);
+
+const requirementValidatedItemSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const [id, proof] = splitPair(value);
+    return { id, proof };
+  },
+  z.object({ id: z.string(), proof: z.string() }),
+);
+
+const requirementInvalidatedItemSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const [id, what] = splitPair(value);
+    return { id, what };
+  },
+  z.object({ id: z.string(), what: z.string() }),
+);
+
+const filesModifiedItemSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const [path, description] = splitPair(value);
+    return { path, description };
+  },
+  z.object({ path: z.string(), description: z.string() }),
+);
+
+const requiresItemSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const [slice, provides] = splitPair(value);
+    return { slice, provides };
+  },
+  z.object({ slice: z.string(), provides: z.string() }),
+);
+
+// Accept either a string (legacy command-only form) or the structured object.
+// Mirrors `normalizeVerificationEvidence` in the executor: strings are coerced
+// into the canonical object shape before Zod validates, so the emitted JSON
+// Schema stays a single object type (no anyOf/oneOf) for Moonshot/Kimi.
+const verificationEvidenceItemSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    return {
+      command: value,
+      exitCode: -1,
+      verdict: "unknown (coerced from string)",
+      durationMs: 0,
+    };
+  },
+  z.object({
+    command: z.string(),
+    exitCode: z.number(),
+    verdict: z.string(),
+    durationMs: z.number(),
+  }),
+);
+
 const nonEmptyString = (field: string) =>
   z.string().trim().min(1, `${field} must be a non-empty string`);
 
@@ -1502,34 +1596,49 @@ const sliceCompleteParams = {
   deviations: z.string().optional(),
   knownLimitations: z.string().optional(),
   followUps: z.string().optional(),
-  keyFiles: z.union([z.array(z.string()), z.string()]).optional(),
-  keyDecisions: z.union([z.array(z.string()), z.string()]).optional(),
-  patternsEstablished: z.union([z.array(z.string()), z.string()]).optional(),
-  observabilitySurfaces: z.union([z.array(z.string()), z.string()]).optional(),
-  provides: z.union([z.array(z.string()), z.string()]).optional(),
-  requirementsSurfaced: z.union([z.array(z.string()), z.string()]).optional(),
-  drillDownPaths: z.union([z.array(z.string()), z.string()]).optional(),
-  affects: z.union([z.array(z.string()), z.string()]).optional(),
-  requirementsAdvanced: z.array(z.union([
-    z.object({ id: z.string(), how: z.string() }),
-    z.string(),
-  ])).optional(),
-  requirementsValidated: z.array(z.union([
-    z.object({ id: z.string(), proof: z.string() }),
-    z.string(),
-  ])).optional(),
-  requirementsInvalidated: z.array(z.union([
-    z.object({ id: z.string(), what: z.string() }),
-    z.string(),
-  ])).optional(),
-  filesModified: z.array(z.union([
-    z.object({ path: z.string(), description: z.string() }),
-    z.string(),
-  ])).optional(),
-  requires: z.array(z.union([
-    z.object({ slice: z.string(), provides: z.string() }),
-    z.string(),
-  ])).optional(),
+  keyFiles: optionalStringOrStringArray(),
+  keyDecisions: optionalStringOrStringArray(),
+  patternsEstablished: optionalStringOrStringArray(),
+  observabilitySurfaces: optionalStringOrStringArray(),
+  provides: optionalStringOrStringArray(),
+  requirementsSurfaced: optionalStringOrStringArray(),
+  drillDownPaths: optionalStringOrStringArray(),
+  affects: optionalStringOrStringArray(),
+  requirementsAdvanced: optionalStructuredStringArray(
+    requirementAdvancedItemSchema,
+    (value) => {
+      const [id, how] = splitPair(value);
+      return { id, how };
+    },
+  ),
+  requirementsValidated: optionalStructuredStringArray(
+    requirementValidatedItemSchema,
+    (value) => {
+      const [id, proof] = splitPair(value);
+      return { id, proof };
+    },
+  ),
+  requirementsInvalidated: optionalStructuredStringArray(
+    requirementInvalidatedItemSchema,
+    (value) => {
+      const [id, what] = splitPair(value);
+      return { id, what };
+    },
+  ),
+  filesModified: optionalStructuredStringArray(
+    filesModifiedItemSchema,
+    (value) => {
+      const [path, description] = splitPair(value);
+      return { path, description };
+    },
+  ),
+  requires: optionalStructuredStringArray(
+    requiresItemSchema,
+    (value) => {
+      const [slice, provides] = splitPair(value);
+      return { slice, provides };
+    },
+  ),
 };
 const sliceCompleteSchema = z.object(sliceCompleteParams);
 export const _sliceCompleteSchemaForTest = sliceCompleteSchema;
@@ -1653,15 +1762,7 @@ const taskCompleteParams = {
       "When true, the recommendation is recorded as the default, but auto-mode still pauses until the user resolves via /gsd escalate resolve.",
     ),
   }).optional().describe("ADR-011 Phase 2: optional escalation payload. Only honored when phases.mid_execution_escalation is true."),
-  verificationEvidence: z.array(z.union([
-    z.object({
-      command: z.string(),
-      exitCode: z.number(),
-      verdict: z.string(),
-      durationMs: z.number(),
-    }),
-    z.string(),
-  ])).optional().describe("Verification evidence entries"),
+  verificationEvidence: z.array(verificationEvidenceItemSchema).optional().describe("Verification evidence entries"),
 };
 const taskCompleteSchema = z.object(taskCompleteParams);
 
@@ -1795,7 +1896,14 @@ const uatResultSaveParams = {
   checks: z.array(uatCheckSchema).min(1).describe("Structured check results"),
   presentation: uatPresentationSchema.describe("Tool-presentation evidence"),
   notes: z.string().optional().describe("Overall verdict rationale"),
-  attempt: z.union([z.number().int().min(1), z.literal("auto")]).optional().describe("Attempt number or auto"),
+  // Accept number (e.g. 1) or string (e.g. "1", "auto") and coerce to string
+  // before validation, so the emitted JSON Schema stays a single primitive type
+  // (no anyOf/oneOf) for Moonshot/Kimi. The executor still treats "auto" and
+  // numeric strings as previously.
+  attempt: z.preprocess(
+    (value) => (typeof value === "number" ? String(value) : value),
+    z.string().optional(),
+  ).describe("Attempt number or auto"),
   previousAttemptId: z.string().optional(),
 };
 const uatResultSaveSchema = z.object(uatResultSaveParams);
