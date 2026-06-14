@@ -62,7 +62,7 @@ import { writeUnitRuntimeRecord } from "../unit-runtime.js";
 import { withTimeout, FINALIZE_PRE_TIMEOUT_MS, FINALIZE_POST_TIMEOUT_MS } from "./finalize-timeout.js";
 import { getEligibleSlices } from "../slice-parallel-eligibility.js";
 import { isSliceParallelActive, startSliceParallel } from "../slice-parallel-orchestrator.js";
-import { isDbAvailable, getMilestoneSlices, getSlice, getTask } from "../gsd-db.js";
+import { isDbAvailable, getMilestone, getMilestoneSlices, getSlice, getTask } from "../gsd-db.js";
 import { refreshWorkflowDatabaseFromDisk } from "../db-workspace.js";
 import { isClosedStatus } from "../status-guards.js";
 import { setRuntimeKv } from "../db/runtime-kv.js";
@@ -1399,6 +1399,11 @@ export async function runPreDispatch(
 
   // Terminal: complete
   if (state.phase === "complete") {
+    // ponytail: skip notifications if milestone already closed (double-session race)
+    if (s.completionStopInProgress || (mid && isDbAvailable() && isClosedStatus(getMilestone(mid)?.status ?? ""))) {
+      debugLog("autoLoop", { phase: "complete", reason: "milestone-already-closed", milestoneId: mid });
+      return { action: "break", reason: "milestone-complete" };
+    }
     // Milestone merge on complete (before closeout so branch state is clean).
     if (s.currentMilestoneId) {
       // #2909 / #5538-followup: preflight stash + always-on postflight pop.

@@ -1775,6 +1775,18 @@ import { getRegistry } from "./rule-registry.js";
  * loop over DISPATCH_RULES for backward compatibility (tests that import
  * resolveDispatch directly without registry initialization).
  */
+// ponytail: centralized transport gate, covers all dispatch unit types
+function transportGate(ctx: DispatchContext, action: DispatchAction): DispatchAction | null {
+  if (action.action !== "dispatch") return null;
+  const err = getWorkflowTransportSupportError(
+    ctx.sessionProvider,
+    getRequiredWorkflowToolsForAutoUnit(action.unitType),
+    { projectRoot: ctx.basePath, surface: "auto-mode", unitType: action.unitType, authMode: ctx.sessionAuthMode, baseUrl: ctx.sessionBaseUrl, activeTools: ctx.activeTools },
+  );
+  if (!err) return null;
+  return { action: "stop", reason: err, level: "warning", matchedRule: action.matchedRule };
+}
+
 export async function resolveDispatch(
   ctx: DispatchContext,
 ): Promise<DispatchAction> {
@@ -1827,7 +1839,7 @@ export async function resolveDispatch(
         level: "error",
       };
     }
-    return action;
+    return transportGate(ctx, action) ?? action;
   } catch (err) {
     // Registry not initialized — fall back to inline loop
     logWarning("dispatch", `registry dispatch failed, falling back to inline rules: ${err instanceof Error ? err.message : String(err)}`);
@@ -1849,7 +1861,7 @@ export async function resolveDispatch(
           matchedRule: rule.name,
         };
       }
-      return action;
+      return transportGate(ctx, action) ?? action;
     }
   }
 
