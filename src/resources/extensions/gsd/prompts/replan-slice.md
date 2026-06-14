@@ -38,4 +38,4 @@ Consider these captures when rewriting the remaining tasks — they represent th
 4. If any incomplete task had a `T0x-PLAN.md`, remove or rewrite it to match the new task description.
 5. Do not commit manually — the system auto-commits your changes after this unit completes.
 
-When done, say: "Slice {{sliceId}} replanned."
+When done, say: "Slice {{sliceId}} replanned." Say this exactly once — if you already said it in a prior message, do not repeat it.

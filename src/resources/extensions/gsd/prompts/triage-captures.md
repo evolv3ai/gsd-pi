@@ -65,4 +65,4 @@ Classify each capture as one of:
 
 **Important:** Do NOT execute any resolutions. Only classify and update CAPTURES.md. Resolution execution happens separately (in auto-mode dispatch or manually by the user).
 
-When done, say: "Triage complete."
+When done, say: "Triage complete." Say this exactly once — if you already said it in a prior message, do not repeat it.

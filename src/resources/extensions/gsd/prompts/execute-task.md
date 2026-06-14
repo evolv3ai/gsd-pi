@@ -76,4 +76,4 @@ Keep about **{{verificationBudget}}** for verification and summary. If context i
 
 **You MUST call `gsd_task_complete` before finishing, including when the stale-path safety rule stops execution.**
 
-When done, say: "Task {{taskId}} complete."
+When done, say: "Task {{taskId}} complete." Say this exactly once — if you already said it in a prior message, do not repeat it.

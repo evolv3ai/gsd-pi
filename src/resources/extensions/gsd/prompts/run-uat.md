@@ -100,4 +100,4 @@ checks: [{
 
 **You MUST call `gsd_uat_result_save` before finishing. Do not write the assessment file directly, and do not call `gsd_summary_save` as a substitute.**
 
-When done, say: "UAT {{sliceId}} complete."
+When done, say: "UAT {{sliceId}} complete." Say this exactly once — if you already said it in a prior message, do not repeat it.

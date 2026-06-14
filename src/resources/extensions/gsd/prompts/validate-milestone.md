@@ -87,4 +87,4 @@ If verdict is `needs-remediation`:
 
 **File system safety:** When scanning milestone directories, use `ls` or `find` first. Never pass a directory path such as `tasks/` or `slices/` directly to `read`; it only accepts files.
 
-When done, say: "Milestone {{milestoneId}} validation complete — verdict: <verdict>."
+When done, say: "Milestone {{milestoneId}} validation complete — verdict: <verdict>." Say this exactly once — if you already said it in a prior message, do not repeat it.

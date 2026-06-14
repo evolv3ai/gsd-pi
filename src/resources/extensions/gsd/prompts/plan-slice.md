@@ -57,4 +57,4 @@ The slice directory already exists. Do not mkdir.
 
 **You MUST call `gsd_plan_slice` to persist planning state before finishing, unless the stale-path safety rule above stops the unit before safe planning can occur.**
 
-When done, say: "Slice {{sliceId}} planned."
+When done, say: "Slice {{sliceId}} planned." Say this exactly once — if you already said it in a prior message, do not repeat it.

@@ -77,4 +77,4 @@ The slice directory and tasks/ subdirectory already exist. Do NOT mkdir.
 
 **You MUST call `gsd_plan_slice` to persist planning state before finishing.** After success, the pipeline clears the sketch flag on next state derivation; the on-disk PLAN file is the signal.
 
-When done, say: "Slice {{sliceId}} refined."
+When done, say: "Slice {{sliceId}} refined." Say this exactly once — if you already said it in a prior message, do not repeat it.

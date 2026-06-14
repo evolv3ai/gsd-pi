@@ -46,4 +46,4 @@ Then research the codebase and relevant technologies. Narrate key findings and s
 
 **You MUST call `gsd_summary_save` with the research content before finishing.**
 
-When done, say: "Milestone {{milestoneId}} researched."
+When done, say: "Milestone {{milestoneId}} researched." Say this exactly once — if you already said it in a prior message, do not repeat it.

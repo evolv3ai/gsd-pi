@@ -49,4 +49,4 @@ Use `subagent` only when useful: reviewer, security, or tester. Apply findings b
 
 **You MUST call `gsd_slice_complete` with summary and UAT content only after verification passes.**
 
-When done, say: "Slice {{sliceId}} complete."
+When done, say: "Slice {{sliceId}} complete." Say this exactly once — if you already said it in a prior message, do not repeat it.

@@ -118,4 +118,4 @@ If external API keys or secrets are required, use the inlined **Secrets Manifest
 
 If no external API keys or secrets are required, skip this step; do not create an empty manifest.
 
-When done, say: "Milestone {{milestoneId}} planned."
+When done, say: "Milestone {{milestoneId}} planned." Say this exactly once — if you already said it in a prior message, do not repeat it.

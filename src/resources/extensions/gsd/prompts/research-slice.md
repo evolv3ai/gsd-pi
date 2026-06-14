@@ -55,4 +55,4 @@ The slice directory already exists at `{{slicePath}}/`. Do NOT mkdir.
 
 **You MUST call `gsd_summary_save` with the research content before finishing.**
 
-When done, say: "Slice {{sliceId}} researched."
+When done, say: "Slice {{sliceId}} researched." Say this exactly once — if you already said it in a prior message, do not repeat it.
