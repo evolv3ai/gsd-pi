@@ -13,6 +13,7 @@ import {
   compactMilestoneEvents,
   type WorkflowEvent,
 } from '../workflow-events.ts';
+import { workflowEventLogPath } from '../workflow-event-ledger.ts';
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-events-'));
@@ -33,6 +34,24 @@ test('workflow-events: appendEvent creates .gsd dir and event-log.jsonl', () => 
   try {
     appendEvent(base, makeEvent('complete-task', { milestoneId: 'M001', taskId: 'T01' }));
     assert.ok(fs.existsSync(path.join(base, '.gsd', 'event-log.jsonl')));
+  } finally {
+    cleanupDir(base);
+  }
+});
+
+test('workflow-events: appendEvent from canonical worktree writes project ledger', () => {
+  const base = tempDir();
+  try {
+    const worktree = path.join(base, '.gsd-worktrees', 'M001');
+    fs.mkdirSync(worktree, { recursive: true });
+
+    appendEvent(worktree, makeEvent('complete-task', { milestoneId: 'M001', taskId: 'T01' }));
+
+    const projectLog = path.join(base, '.gsd', 'event-log.jsonl');
+    const worktreeLog = path.join(worktree, '.gsd', 'event-log.jsonl');
+    assert.ok(fs.existsSync(projectLog), 'project event ledger should exist');
+    assert.equal(fs.existsSync(worktreeLog), false, 'worktree-local event log should not be the append target');
+    assert.equal(workflowEventLogPath(worktree), projectLog);
   } finally {
     cleanupDir(base);
   }

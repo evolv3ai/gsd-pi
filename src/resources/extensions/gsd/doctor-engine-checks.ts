@@ -6,6 +6,7 @@ import { isDbAvailable, _getAdapter } from "./gsd-db.js";
 import { isAfter, latestExplicitReopenAt } from "./milestone-reopen-events.js";
 import { resolveGsdPathContract, resolveMilestoneFile } from "./paths.js";
 import { deriveState } from "./state.js";
+import { workflowEventLogPath } from "./workflow-event-ledger.js";
 import { readEvents } from "./workflow-events.js";
 import { flushWorkflowProjections } from "./projection-flush.js";
 
@@ -260,7 +261,7 @@ export async function checkEngineHealth(
   // relative to the event log and re-render them.
   try {
     if (isDbAvailable()) {
-      const eventLogPath = join(basePath, ".gsd", "event-log.jsonl");
+      const eventLogPath = workflowEventLogPath(basePath);
       const events = readEvents(eventLogPath);
       if (events.length > 0) {
         const lastEventTs = new Date(events[events.length - 1]!.ts).getTime();
