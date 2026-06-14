@@ -872,7 +872,12 @@ test("selectAndApplyModel clamps explicit no-model thinking via ctx.model when r
 
   await selectAndApplyModel(
     {
-      modelRegistry: { getAvailable: () => [] },   // registry lookup fails
+      // Empty registry results force the clamp source to fall back to ctx.model.
+      modelRegistry: {
+        getAvailable: () => [],
+        getAll: () => [],
+        isProviderRequestReady: () => true,
+      },
       sessionManager: { getSessionId: () => "test-session" },
       ui: { notify: () => {} },
       model: ctxModel,

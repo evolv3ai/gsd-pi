@@ -1,8 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join, parse } from "node:path";
 import { tmpdir } from "node:os";
+import { parse as parseYaml } from "yaml";
+
+const requireFromTest = createRequire(import.meta.url);
 
 function overrideHomeEnv(homeDir: string): () => void {
   const original = {
@@ -46,6 +50,17 @@ function bundledSkillsDir(): string {
   return existsSync(join(process.cwd(), "dist", "resources", "skills"))
     ? join(process.cwd(), "dist", "resources", "skills")
     : join(process.cwd(), "src", "resources", "skills");
+}
+
+function currentPackageVersion(): string {
+  const packageJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf-8"));
+  return process.env.GSD_VERSION && process.env.GSD_VERSION !== "0.0.0"
+    ? process.env.GSD_VERSION
+    : packageJson.version;
+}
+
+function packagedGsdBrowserSkill(): string {
+  return readFileSync(requireFromTest.resolve("@opengsd/gsd-browser/SKILL.md"), "utf-8");
 }
 
 test("getExtensionKey normalizes top-level .ts and .js entry names to the same key", async () => {
@@ -232,6 +247,94 @@ test("initResources syncs bundled skills to the GSD agent dir by default", async
     false,
     "initResources should not write bundled skills to ~/.agents/skills by default",
   );
+});
+
+test("initResources syncs the gsd-browser skill from the installed gsd-browser package", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-resource-loader-browser-skill-"));
+  const fakeAgentDir = join(tmp, ".gsd", "agent");
+  const restoreHomeEnv = overrideHomeEnv(tmp);
+
+  t.after(() => {
+    restoreHomeEnv();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const { initResources } = await import("../resource-loader.ts");
+  initResources(fakeAgentDir);
+
+  assert.equal(
+    readFileSync(join(fakeAgentDir, "skills", "gsd-browser", "SKILL.md"), "utf-8"),
+    packagedGsdBrowserSkill(),
+    "managed gsd-browser skill should come from @opengsd/gsd-browser, not Pi's bundled skills",
+  );
+});
+
+test("initResources refreshes a stale managed gsd-browser package skill", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-resource-loader-browser-skill-stale-"));
+  const fakeAgentDir = join(tmp, ".gsd", "agent");
+  const restoreHomeEnv = overrideHomeEnv(tmp);
+
+  t.after(() => {
+    restoreHomeEnv();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const {
+    computeResourceFingerprint,
+    hasStaleGsdBrowserPackageSkill,
+    initResources,
+  } = await import("../resource-loader.ts");
+  initResources(fakeAgentDir);
+
+  writeFileSync(
+    join(fakeAgentDir, "skills", "gsd-browser", "SKILL.md"),
+    "---\nname: gsd-browser\ndescription: stale\n---\n",
+  );
+  writeFileSync(
+    join(fakeAgentDir, "managed-resources.json"),
+    JSON.stringify({
+      gsdVersion: currentPackageVersion(),
+      packageName: "@opengsd/gsd-pi",
+      contentHash: computeResourceFingerprint(),
+    }),
+  );
+
+  assert.equal(
+    hasStaleGsdBrowserPackageSkill(join(fakeAgentDir, "skills")),
+    true,
+    "test setup should simulate a stale managed gsd-browser skill under a current manifest",
+  );
+
+  initResources(fakeAgentDir);
+
+  assert.equal(
+    readFileSync(join(fakeAgentDir, "skills", "gsd-browser", "SKILL.md"), "utf-8"),
+    packagedGsdBrowserSkill(),
+    "current managed-resource manifests must not skip stale package-owned gsd-browser skills",
+  );
+});
+
+test("bundled skill frontmatter is valid YAML", () => {
+  const skillsDir = join(process.cwd(), "src", "resources", "skills");
+  const skillNames = readdirSync(skillsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+
+  assert.ok(skillNames.length > 0, "expected bundled skills to be present");
+
+  for (const skillName of skillNames) {
+    const skillPath = join(skillsDir, skillName, "SKILL.md");
+    if (!existsSync(skillPath)) continue;
+
+    const content = readFileSync(skillPath, "utf-8");
+    const frontmatter = content.match(/^---\n([\s\S]*?)\n---/);
+
+    assert.ok(frontmatter, `${skillName}/SKILL.md should include YAML frontmatter`);
+    assert.doesNotThrow(
+      () => parseYaml(frontmatter[1]),
+      `${skillName}/SKILL.md frontmatter should parse as YAML`,
+    );
+  }
 });
 
 test("initResources syncs top-level shared resources used by extension imports", async (t) => {

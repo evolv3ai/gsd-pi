@@ -2,6 +2,7 @@ import type { DefaultResourceLoader as DefaultResourceLoaderType } from '@gsd/pi
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { compareSemver } from './update-check.js'
@@ -30,6 +31,8 @@ const resourcesDir = resolveBundledResourcesDirFromPackageRoot(packageRoot)
 const bundledExtensionsDir = join(resourcesDir, 'extensions')
 const resourceVersionManifestName = 'managed-resources.json'
 const resourceFingerprintFileName = '.managed-resources-content-hash'
+const gsdBrowserSkillName = 'gsd-browser'
+const requireFromResourceLoader = createRequire(import.meta.url)
 
 interface ManagedResourceManifest {
   gsdVersion: string
@@ -185,6 +188,47 @@ function getCurrentResourceFingerprint(): string {
     // Source-tree and partial-build workflows may not have a precomputed hash.
   }
   return computeResourceFingerprint()
+}
+
+function resolveGsdBrowserPackageSkillPath(): string | null {
+  try {
+    return requireFromResourceLoader.resolve('@opengsd/gsd-browser/SKILL.md')
+  } catch {
+    return null
+  }
+}
+
+export function hasStaleGsdBrowserPackageSkill(skillsDir: string): boolean {
+  const targetDir = join(skillsDir, gsdBrowserSkillName)
+  const targetSkillPath = join(targetDir, 'SKILL.md')
+  const sourceSkillPath = resolveGsdBrowserPackageSkillPath()
+
+  if (!sourceSkillPath) {
+    return existsSync(targetDir)
+  }
+  if (!existsSync(targetSkillPath)) {
+    return true
+  }
+
+  try {
+    return !readFileSync(targetSkillPath).equals(readFileSync(sourceSkillPath))
+  } catch {
+    return true
+  }
+}
+
+function syncGsdBrowserPackageSkill(skillsDir: string): void {
+  const targetDir = join(skillsDir, gsdBrowserSkillName)
+  const sourceSkillPath = resolveGsdBrowserPackageSkillPath()
+
+  makeTreeWritable(targetDir)
+  rmSync(targetDir, { recursive: true, force: true })
+
+  if (!sourceSkillPath) return
+
+  mkdirSync(targetDir, { recursive: true })
+  copyFileSync(sourceSkillPath, join(targetDir, 'SKILL.md'))
+  makeTreeWritable(targetDir)
 }
 
 function collectFileEntries(dir: string, root: string, out: string[]): void {
@@ -641,12 +685,14 @@ export function initResources(agentDir: string, skillsDir: string = join(agentDi
       skillsDir,
       join(resourcesDir, 'skills'),
     )
+    const hasStaleGsdBrowserSkill = hasStaleGsdBrowserPackageSkill(skillsDir)
     if (
       manifest.contentHash &&
       manifest.contentHash === currentHash &&
       !hasStaleExtensionFiles &&
       !hasMissingSharedFiles &&
-      !hasMissingSkillFiles
+      !hasMissingSkillFiles &&
+      !hasStaleGsdBrowserSkill
     ) {
       return
     }
@@ -658,6 +704,7 @@ export function initResources(agentDir: string, skillsDir: string = join(agentDi
   syncResourceDir(join(resourcesDir, 'shared'), join(agentDir, 'shared'))
   syncResourceDir(join(resourcesDir, 'agents'), join(agentDir, 'agents'))
   syncResourceDir(join(resourcesDir, 'skills'), skillsDir)
+  syncGsdBrowserPackageSkill(skillsDir)
 
   // Sync GSD-WORKFLOW.md to agentDir as a fallback for when GSD_WORKFLOW_PATH
   // env var is not set (e.g. fork/dev builds, alternative entry points).

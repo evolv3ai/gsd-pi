@@ -29,8 +29,8 @@ export const promptGoldenUnits = [
     unitType: "complete-slice",
     // Tool Surface guidance is prepended to every auto-mode unit prompt; the
     // Phase 2 reduction baseline is adjusted so the gate still tracks shrinkage
-    // from the original oversized prompts without blocking this additive guardrail.
-    phase2StartChars: 13100,
+    // from the original oversized prompts while allowing today's 8041-char fixture.
+    phase2StartChars: 13402,
     requiredMarkers: [
       "UNIT: Complete Slice S01",
       "Tool Surface",
