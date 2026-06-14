@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, parse } from "node:path";
 import { tmpdir } from "node:os";
@@ -259,14 +259,27 @@ test("initResources syncs the gsd-browser skill from the installed gsd-browser p
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  const { initResources } = await import("../resource-loader.ts");
+  const { collectGsdBrowserPackageSkillReferences, initResources } = await import("../resource-loader.ts");
   initResources(fakeAgentDir);
+  const packageSkill = packagedGsdBrowserSkill();
 
   assert.equal(
     readFileSync(join(fakeAgentDir, "skills", "gsd-browser", "SKILL.md"), "utf-8"),
-    packagedGsdBrowserSkill(),
+    packageSkill,
     "managed gsd-browser skill should come from @opengsd/gsd-browser, not Pi's bundled skills",
   );
+
+  const supportRefs = collectGsdBrowserPackageSkillReferences(packageSkill);
+  assert.ok(supportRefs.includes("docs/mcp.md"), "test package skill should reference MCP docs");
+
+  for (const relPath of supportRefs) {
+    const targetPath = join(fakeAgentDir, "skills", "gsd-browser", relPath);
+    assert.equal(existsSync(targetPath), true, `${relPath} should be installed with the managed skill`);
+
+    if (relPath.startsWith("scripts/") && relPath.endsWith(".sh")) {
+      assert.notEqual(statSync(targetPath).mode & 0o111, 0, `${relPath} should be executable`);
+    }
+  }
 });
 
 test("initResources refreshes a stale managed gsd-browser package skill", async (t) => {
@@ -290,6 +303,7 @@ test("initResources refreshes a stale managed gsd-browser package skill", async 
     join(fakeAgentDir, "skills", "gsd-browser", "SKILL.md"),
     "---\nname: gsd-browser\ndescription: stale\n---\n",
   );
+  rmSync(join(fakeAgentDir, "skills", "gsd-browser", "docs", "mcp.md"), { force: true });
   writeFileSync(
     join(fakeAgentDir, "managed-resources.json"),
     JSON.stringify({
@@ -311,6 +325,11 @@ test("initResources refreshes a stale managed gsd-browser package skill", async 
     readFileSync(join(fakeAgentDir, "skills", "gsd-browser", "SKILL.md"), "utf-8"),
     packagedGsdBrowserSkill(),
     "current managed-resource manifests must not skip stale package-owned gsd-browser skills",
+  );
+  assert.equal(
+    existsSync(join(fakeAgentDir, "skills", "gsd-browser", "docs", "mcp.md")),
+    true,
+    "current managed-resource manifests must not skip missing package-owned skill support files",
   );
 });
 
