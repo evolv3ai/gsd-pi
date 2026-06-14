@@ -6,7 +6,11 @@ import assert from "node:assert/strict";
 
 import { classifyFailure } from "../recovery-classification.js";
 import { reconcileBeforeDispatch } from "../state-reconciliation.js";
-import { compileUnitContextContract, compileUnitToolContract } from "../tool-contract.js";
+import {
+  compileUnitContextContract,
+  compileUnitToolContract,
+  getUnitWorkflowDispatchReadinessError,
+} from "../tool-contract.js";
 import { shouldBlockAutoUnitToolCall } from "../auto-unit-tool-scope.js";
 import type { GSDState } from "../types.js";
 
@@ -85,6 +89,20 @@ test("Tool Contract compiles known Unit prompt and tool policy", () => {
     maxBytes: 50 * 1024,
     maxLines: 2000,
   });
+});
+
+test("Tool Contract derives dispatch readiness from Unit workflow tools", () => {
+  const error = getUnitWorkflowDispatchReadinessError({
+    provider: "claude-code",
+    unitType: "plan-slice",
+    projectRoot: "/tmp/project",
+    env: { GSD_WORKFLOW_MCP_COMMAND: "node" },
+    surface: "auto-mode",
+    authMode: "externalCli",
+    baseUrl: "local://claude-code",
+  });
+
+  assert.equal(error, null);
 });
 
 test("Unit Context Contract exposes prompt context without workflow tool surface", () => {

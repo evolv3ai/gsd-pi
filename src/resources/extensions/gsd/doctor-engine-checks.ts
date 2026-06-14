@@ -7,7 +7,7 @@ import { isAfter, latestExplicitReopenAt } from "./milestone-reopen-events.js";
 import { resolveGsdPathContract, resolveMilestoneFile } from "./paths.js";
 import { deriveState } from "./state.js";
 import { readEvents } from "./workflow-events.js";
-import { renderAllProjections } from "./workflow-projections.js";
+import { flushWorkflowProjections } from "./projection-flush.js";
 
 export async function checkEngineHealth(
   basePath: string,
@@ -270,7 +270,7 @@ export async function checkEngineHealth(
           const roadmapPath = resolveMilestoneFile(basePath, milestone.id, "ROADMAP");
           if (!roadmapPath || !existsSync(roadmapPath)) {
             try {
-              await renderAllProjections(basePath, milestone.id);
+              await flushWorkflowProjections(basePath, { milestoneId: milestone.id });
               fixesApplied.push(`re-rendered missing projections for ${milestone.id}`);
             } catch {
               // Non-fatal — projection re-render failed
@@ -280,7 +280,7 @@ export async function checkEngineHealth(
           const projectionMtime = statSync(roadmapPath).mtimeMs;
           if (lastEventTs > projectionMtime) {
             try {
-              await renderAllProjections(basePath, milestone.id);
+              await flushWorkflowProjections(basePath, { milestoneId: milestone.id });
               fixesApplied.push(`re-rendered stale projections for ${milestone.id}`);
             } catch {
               // Non-fatal — projection re-render failed

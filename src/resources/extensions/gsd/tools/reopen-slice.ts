@@ -16,7 +16,7 @@ import {
   reopenSliceCascade,
 } from "../gsd-db.js";
 import { invalidateStateCache } from "../state.js";
-import { renderAllProjections } from "../workflow-projections.js";
+import { flushWorkflowProjections } from "../projection-flush.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning } from "../workflow-logger.js";
@@ -97,7 +97,7 @@ export async function handleReopenSlice(
 
   // ── Post-mutation hook ───────────────────────────────────────────────────
   try {
-    await renderAllProjections(basePath, params.milestoneId);
+    await flushWorkflowProjections(basePath, { milestoneId: params.milestoneId });
     writeManifest(basePath);
     appendEvent(basePath, {
       cmd: "reopen-slice",

@@ -35,7 +35,8 @@ import { checkOwnership, taskUnitKey } from "../unit-ownership.js";
 import { saveFile, clearParseCache } from "../files.js";
 import { invalidateStateCache } from "../state.js";
 import { renderPlanCheckboxes } from "../markdown-renderer.js";
-import { renderAllProjections, renderSummaryContent } from "../workflow-projections.js";
+import { renderSummaryContent } from "../workflow-projections.js";
+import { flushWorkflowProjections } from "../projection-flush.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning, logError } from "../workflow-logger.js";
@@ -467,7 +468,7 @@ export async function handleCompleteTask(
   // Separate try/catch per step so a projection failure doesn't prevent
   // the event log entry (critical for worktree reconciliation).
   try {
-    await renderAllProjections(artifactBasePath, params.milestoneId);
+    await flushWorkflowProjections(artifactBasePath, { milestoneId: params.milestoneId });
   } catch (projErr) {
     logWarning("tool", `complete-task projection warning: ${(projErr as Error).message}`);
   }

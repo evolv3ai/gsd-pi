@@ -21,7 +21,7 @@ import {
 import type { GateEvaluationConfig, GateId } from "../types.js";
 import { invalidateStateCache } from "../state.js";
 import { renderPlanFromDb } from "../markdown-renderer.js";
-import { renderAllProjections } from "../workflow-projections.js";
+import { flushWorkflowProjections } from "../projection-flush.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning } from "../workflow-logger.js";
@@ -468,7 +468,7 @@ export async function handlePlanSlice(
 
     // ── Post-mutation hook: projections, manifest, event log ─────────────
     try {
-      await renderAllProjections(basePath, params.milestoneId);
+      await flushWorkflowProjections(basePath, { milestoneId: params.milestoneId });
       writeManifest(basePath);
       appendEvent(basePath, {
         cmd: "plan-slice",

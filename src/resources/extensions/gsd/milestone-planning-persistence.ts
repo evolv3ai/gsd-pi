@@ -15,7 +15,7 @@ import {
 } from "./gsd-db.js";
 import { invalidateStateCache } from "./state.js";
 import { renderRoadmapFromDb } from "./markdown-renderer.js";
-import { renderAllProjections } from "./workflow-projections.js";
+import { flushWorkflowProjections } from "./projection-flush.js";
 import { writeManifest } from "./workflow-manifest.js";
 import { appendEvent } from "./workflow-events.js";
 import { logWarning } from "./workflow-logger.js";
@@ -171,7 +171,7 @@ async function renderPlanArtifacts(
 
 async function runPostPlanHooks(basePath: string, params: PersistMilestonePlanParams): Promise<void> {
   try {
-    await renderAllProjections(basePath, params.milestoneId);
+    await flushWorkflowProjections(basePath, { milestoneId: params.milestoneId });
     writeManifest(basePath);
     appendEvent(basePath, {
       cmd: "plan-milestone",

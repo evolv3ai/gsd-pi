@@ -31,10 +31,7 @@ import { loadEffectiveGSDPreferences } from "./preferences.js";
 import type { MinimalModelRegistry } from "./context-budget.js";
 import { pauseAuto } from "./auto.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
-import {
-  getWorkflowTransportSupportError,
-  getRequiredWorkflowToolsForAutoUnit,
-} from "./workflow-mcp.js";
+import { getUnitWorkflowDispatchReadinessError } from "./tool-contract.js";
 
 export async function dispatchDirectPhase(
   ctx: ExtensionCommandContext,
@@ -256,18 +253,15 @@ export async function dispatchDirectPhase(
       return;
   }
 
-  const compatibilityError = getWorkflowTransportSupportError(
-    ctx.model?.provider,
-    getRequiredWorkflowToolsForAutoUnit(unitType),
-    {
-      projectRoot,
-      surface: "direct phase dispatch",
-      unitType,
-      authMode: ctx.model?.provider ? ctx.modelRegistry.getProviderAuthMode(ctx.model.provider) : undefined,
-      baseUrl: ctx.model?.baseUrl,
-      activeTools: typeof pi.getActiveTools === "function" ? pi.getActiveTools() : [],
-    },
-  );
+  const compatibilityError = getUnitWorkflowDispatchReadinessError({
+    provider: ctx.model?.provider,
+    projectRoot,
+    surface: "direct phase dispatch",
+    unitType,
+    authMode: ctx.model?.provider ? ctx.modelRegistry.getProviderAuthMode(ctx.model.provider) : undefined,
+    baseUrl: ctx.model?.baseUrl,
+    activeTools: typeof pi.getActiveTools === "function" ? pi.getActiveTools() : [],
+  });
   if (compatibilityError) {
     ctx.ui.notify(compatibilityError, "error");
     return;

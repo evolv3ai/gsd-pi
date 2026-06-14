@@ -77,12 +77,8 @@ test("guided dispatch passes the explicit project root through model and compati
             seen.modelRoot = projectRoot;
             return { routing: null, appliedModel: null };
           },
-          getTransportSupportError: (
-            _provider: string | undefined,
-            _requiredTools: string[],
-            options?: { projectRoot?: string },
-          ) => {
-            seen.compatibilityRoot = options?.projectRoot ?? "";
+          getDispatchReadinessError: (input: { projectRoot?: string }) => {
+            seen.compatibilityRoot = input.projectRoot ?? "";
             return null;
           },
         },

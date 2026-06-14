@@ -9,8 +9,14 @@ import {
   type ToolsPolicy,
   type UnitContextManifest,
 } from "./unit-context-manifest.js";
-import { getRequiredWorkflowToolsForAutoUnit } from "./workflow-mcp.js";
-import { getUnitToolSurfaceContract } from "./unit-tool-contracts.js";
+import {
+  getWorkflowTransportSupportError,
+  type WorkflowCapabilityOptions,
+} from "./workflow-mcp.js";
+import {
+  getRequiredWorkflowToolsForUnit,
+  getUnitToolSurfaceContract,
+} from "./unit-tool-contracts.js";
 import {
   WHOLE_FILE_OBSERVATION_MAX_BYTES,
   WHOLE_FILE_OBSERVATION_MAX_LINES,
@@ -68,6 +74,17 @@ export type UnitContextContractResult =
   | { ok: true; contract: UnitPromptContextContract }
   | { ok: false; reason: "unknown-unit-type"; detail: string };
 
+export interface UnitWorkflowDispatchReadinessInput {
+  provider?: string;
+  unitType: string;
+  projectRoot?: string;
+  env?: NodeJS.ProcessEnv;
+  surface?: string;
+  authMode?: WorkflowCapabilityOptions["authMode"];
+  baseUrl?: string;
+  activeTools?: string[];
+}
+
 export function compileUnitContextContract(unitType: string): UnitContextContractResult {
   const manifest = resolveManifest(unitType);
   if (!manifest) {
@@ -78,6 +95,24 @@ export function compileUnitContextContract(unitType: string): UnitContextContrac
     };
   }
   return { ok: true, contract: buildPromptContextContract(unitType, manifest) };
+}
+
+export function getUnitWorkflowDispatchReadinessError(
+  input: UnitWorkflowDispatchReadinessInput,
+): string | null {
+  return getWorkflowTransportSupportError(
+    input.provider,
+    getRequiredWorkflowToolsForUnit(input.unitType),
+    {
+      projectRoot: input.projectRoot,
+      env: input.env,
+      surface: input.surface,
+      unitType: input.unitType,
+      authMode: input.authMode,
+      baseUrl: input.baseUrl,
+      activeTools: input.activeTools,
+    },
+  );
 }
 
 export function compileUnitToolContract(unitType: string): ToolContractResult {
@@ -91,7 +126,7 @@ export function compileUnitToolContract(unitType: string): ToolContractResult {
     };
   }
 
-  const requiredWorkflowTools = getRequiredWorkflowToolsForAutoUnit(unitType);
+  const requiredWorkflowTools = getRequiredWorkflowToolsForUnit(unitType);
   const forbiddenWorkflowTools = Object.entries(surfaceContract?.forbiddenGsdTools ?? {})
     .map(([name, reason]) => ({ name, reason }));
   const closeoutTools = requiredWorkflowTools.filter((tool) =>

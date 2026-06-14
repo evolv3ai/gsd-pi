@@ -82,11 +82,8 @@ import { parseUnitId } from "../unit-id.js";
 import { createCheckpoint, cleanupCheckpoint, rollbackToCheckpoint } from "../safety/git-checkpoint.js";
 import { resolveSafetyHarnessConfig } from "../safety/safety-harness.js";
 import { getContextPauseAction } from "../auto-budget.js";
-import {
-  getWorkflowTransportSupportError,
-  getRequiredWorkflowToolsForAutoUnit,
-  supportsStructuredQuestions,
-} from "../workflow-mcp.js";
+import { supportsStructuredQuestions } from "../workflow-mcp.js";
+import { getUnitWorkflowDispatchReadinessError } from "../tool-contract.js";
 import { prepareWorkflowMcpForProject } from "../workflow-mcp-auto-prep.js";
 import {
   applyThinkingLevelForModel,
@@ -2324,22 +2321,19 @@ export async function runUnitPhase(
     ? `${(s.currentUnitModel as any).provider ?? ""}/${(s.currentUnitModel as any).id ?? ""}`
     : null;
 
-  const compatibilityError = getWorkflowTransportSupportError(
-    s.currentUnitModel?.provider ?? ctx.model?.provider,
-    getRequiredWorkflowToolsForAutoUnit(unitType),
-    {
-      projectRoot: s.basePath,
-      surface: "auto-mode",
-      unitType,
-      authMode: s.currentUnitModel?.provider
-        ? ctx.modelRegistry.getProviderAuthMode(s.currentUnitModel.provider)
-        : ctx.model?.provider
-          ? ctx.modelRegistry.getProviderAuthMode(ctx.model.provider)
-          : undefined,
-      baseUrl: (s.currentUnitModel as any)?.baseUrl ?? ctx.model?.baseUrl,
-      activeTools: typeof pi.getActiveTools === "function" ? pi.getActiveTools() : [],
-    },
-  );
+  const compatibilityError = getUnitWorkflowDispatchReadinessError({
+    provider: s.currentUnitModel?.provider ?? ctx.model?.provider,
+    projectRoot: s.basePath,
+    surface: "auto-mode",
+    unitType,
+    authMode: s.currentUnitModel?.provider
+      ? ctx.modelRegistry.getProviderAuthMode(s.currentUnitModel.provider)
+      : ctx.model?.provider
+        ? ctx.modelRegistry.getProviderAuthMode(ctx.model.provider)
+        : undefined,
+    baseUrl: (s.currentUnitModel as any)?.baseUrl ?? ctx.model?.baseUrl,
+    activeTools: typeof pi.getActiveTools === "function" ? pi.getActiveTools() : [],
+  });
   const workflowMcpPrepModel = s.currentUnitModel;
   if (compatibilityError) {
     s.currentUnitRouting = prevUnitRouting;

@@ -91,11 +91,8 @@ import { isAutoActive } from "./auto.js";
 import { hostWriteGateAdapter } from "./bootstrap/write-gate.js";
 import { ensureWorkflowPreferencesCaptured } from "./planning-depth.js";
 import { MILESTONE_ID_RE } from "./milestone-ids.js";
-import {
-  getWorkflowTransportSupportError,
-  getRequiredWorkflowToolsForAutoUnit,
-  resolveWorkflowMcpProjectRoot,
-} from "./workflow-mcp.js";
+import { resolveWorkflowMcpProjectRoot } from "./workflow-mcp.js";
+import { getUnitWorkflowDispatchReadinessError } from "./tool-contract.js";
 import { prepareBrowserDaemonForUat } from "./browser-daemon-auto-prep.js";
 import {
   PROJECT_RESEARCH_INFLIGHT_MARKER,
@@ -745,11 +742,15 @@ export const DISPATCH_RULES: DispatchRule[] = [
       // Transport preflight: verify required MCP tools are actually connected
       // before consuming a retry attempt. Fixes tool-starved sessions burning
       // all MAX_UAT_ATTEMPTS before stopping (#477).
-      const transportError = getWorkflowTransportSupportError(
-        sessionProvider,
-        getRequiredWorkflowToolsForAutoUnit("run-uat"),
-        { projectRoot: basePath, surface: "auto-mode", unitType: "run-uat", authMode: sessionAuthMode, baseUrl: sessionBaseUrl, activeTools },
-      );
+      const transportError = getUnitWorkflowDispatchReadinessError({
+        provider: sessionProvider,
+        projectRoot: basePath,
+        surface: "auto-mode",
+        unitType: "run-uat",
+        authMode: sessionAuthMode,
+        baseUrl: sessionBaseUrl,
+        activeTools,
+      });
       if (transportError) {
         return { action: "stop" as const, reason: transportError, level: "warning" as const };
       }

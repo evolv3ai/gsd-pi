@@ -78,11 +78,8 @@ import {
 } from "./requirements-backlog.js";
 import { selectAndApplyModel } from "./auto-model-selection.js";
 import { DISCUSS_TOOLS_ALLOWLIST } from "./constants.js";
-import {
-  getWorkflowTransportSupportError,
-  getRequiredWorkflowToolsForGuidedUnit,
-  supportsStructuredQuestions,
-} from "./workflow-mcp.js";
+import { supportsStructuredQuestions } from "./workflow-mcp.js";
+import { getUnitWorkflowDispatchReadinessError } from "./tool-contract.js";
 import {
   runPreparation,
   formatCodebaseBrief,
@@ -555,7 +552,7 @@ interface DispatchWorkflowOptions {
   deps?: {
     loadPreferences?: typeof loadEffectiveGSDPreferences;
     selectModel?: typeof selectAndApplyModel;
-    getTransportSupportError?: typeof getWorkflowTransportSupportError;
+    getDispatchReadinessError?: typeof getUnitWorkflowDispatchReadinessError;
   };
 }
 
@@ -584,7 +581,8 @@ async function dispatchWorkflow(
   const projectRoot = resolveGuidedDispatchProjectRoot(resolvedOptions.basePath);
   const loadPreferences = resolvedOptions.deps?.loadPreferences ?? loadEffectiveGSDPreferences;
   const selectModel = resolvedOptions.deps?.selectModel ?? selectAndApplyModel;
-  const getTransportSupportError = resolvedOptions.deps?.getTransportSupportError ?? getWorkflowTransportSupportError;
+  const getDispatchReadinessError = resolvedOptions.deps?.getDispatchReadinessError
+    ?? getUnitWorkflowDispatchReadinessError;
 
   // Route through the dynamic routing pipeline (complexity classification,
   // tier downgrade, fallback chains) — same path as auto-mode dispatches (#2958).
@@ -603,25 +601,22 @@ async function dispatchWorkflow(
       });
     }
 
-    const compatibilityError = getTransportSupportError(
-      result.appliedModel?.provider ?? ctx.model?.provider,
-      getRequiredWorkflowToolsForGuidedUnit(unitType),
-      {
-        projectRoot,
-        surface: "guided flow",
-        unitType,
-        authMode: result.appliedModel?.provider
-          ? ctx.modelRegistry.getProviderAuthMode(result.appliedModel.provider)
-          : ctx.model?.provider
-            ? ctx.modelRegistry.getProviderAuthMode(ctx.model.provider)
-            : undefined,
-        baseUrl: result.appliedModel?.baseUrl ?? ctx.model?.baseUrl,
-        // Guided flow starts the MCP workflow server as part of dispatch, so the
-        // parent session's activeTools doesn't include MCP tools yet. The MCP
-        // launch config check (detectWorkflowMcpLaunchConfig) is the right gate
-        // here — not whether MCP tools are pre-registered in the parent session.
-      },
-    );
+    const compatibilityError = getDispatchReadinessError({
+      provider: result.appliedModel?.provider ?? ctx.model?.provider,
+      projectRoot,
+      surface: "guided flow",
+      unitType,
+      authMode: result.appliedModel?.provider
+        ? ctx.modelRegistry.getProviderAuthMode(result.appliedModel.provider)
+        : ctx.model?.provider
+          ? ctx.modelRegistry.getProviderAuthMode(ctx.model.provider)
+          : undefined,
+      baseUrl: result.appliedModel?.baseUrl ?? ctx.model?.baseUrl,
+      // Guided flow starts the MCP workflow server as part of dispatch, so the
+      // parent session's activeTools doesn't include MCP tools yet. The MCP
+      // launch config check (detectWorkflowMcpLaunchConfig) is the right gate
+      // here — not whether MCP tools are pre-registered in the parent session.
+    });
     if (compatibilityError) {
       ctx.ui.notify(compatibilityError, "error");
       return;
