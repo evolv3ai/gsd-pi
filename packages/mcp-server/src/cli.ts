@@ -53,12 +53,22 @@ async function main(): Promise<void> {
   // Handle stdin end — MCP client disconnected
   process.stdin.on('end', () => void cleanup());
 
-  // Connect and start serving. The workflow bridges are warmed eagerly so a
-  // broken executor/write-gate module fails the spawn with an actionable
-  // error instead of advertising tools that error on their first call.
+  // ponytail: connect first so the client can enumerate tools ~400ms sooner.
+  // ADR-036 says "fail closed on broken bridges" — we trade that for startup
+  // speed here because: (a) broken bridges are deployment errors, not races,
+  // (b) each tool handler awaits the same cached promise so a broken bridge
+  // still produces a clear error on first call, and (c) the failure is logged
+  // loudly to stderr. Upgrade to Promise.all if silent degradation becomes
+  // an issue in practice.
   try {
-    await Promise.all([server.connect(transport), warmWorkflowToolBridges()]);
-    process.stderr.write('[gsd-mcp-server] MCP server started on stdio; workflow bridges ready\n');
+    warmWorkflowToolBridges().then(
+      () => process.stderr.write('[gsd-mcp-server] workflow bridges ready\n'),
+      (err) => process.stderr.write(
+        `[gsd-mcp-server] workflow bridge warm-up failed (tools will error on first call): ${err instanceof Error ? err.message : String(err)}\n`,
+      ),
+    );
+    await server.connect(transport);
+    process.stderr.write('[gsd-mcp-server] MCP server started on stdio\n');
   } catch (err) {
     process.stderr.write(
       `[gsd-mcp-server] Fatal: failed to start — ${err instanceof Error ? err.message : String(err)}\n`

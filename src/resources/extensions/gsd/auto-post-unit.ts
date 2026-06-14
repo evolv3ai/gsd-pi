@@ -2025,16 +2025,30 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
         );
       } else if (!triggerArtifactVerified) {
         if (s.lastToolInvocationError && isToolUnavailableError(s.lastToolInvocationError)) {
-          // Tool-unavailable is the one transient invocation error: the
-          // workflow MCP server registers its surface asynchronously, so a
-          // Unit's first call can race the registration. Fall through to the
-          // bounded verification retry instead of pausing.
-          debugLog("postUnit", { phase: "tool-unavailable-retry", unitType: s.currentUnit.type, unitId: s.currentUnit.id, error: s.lastToolInvocationError });
+          // Tool-unavailable is transient: the workflow MCP server registers
+          // its surface asynchronously, so a Unit's first call can race the
+          // registration. Retry with escalating delay, bounded at 3 attempts.
+          // ponytail: MAX constant so the guard, log, and display all agree
+          const MAX_TOOL_UNAVAIL_RETRIES = 3;
+          if (s.toolUnavailableRetries >= MAX_TOOL_UNAVAIL_RETRIES) {
+            debugLog("postUnit", { phase: "tool-unavailable-exhausted", unitType: s.currentUnit.type, unitId: s.currentUnit.id, retries: s.toolUnavailableRetries });
+            ctx.ui.notify(
+              `Tool unavailable for ${s.currentUnit.type} after ${MAX_TOOL_UNAVAIL_RETRIES} retries: ${s.lastToolInvocationError}. MCP server may not be starting — pausing auto-mode.`,
+              "error",
+            );
+            s.lastToolInvocationError = null;
+            await pauseAuto(ctx, pi);
+            return "dispatched";
+          }
+          s.toolUnavailableRetries++;
+          const delayMs = s.toolUnavailableRetries * 1000;
+          debugLog("postUnit", { phase: "tool-unavailable-retry", unitType: s.currentUnit.type, unitId: s.currentUnit.id, error: s.lastToolInvocationError, attempt: s.toolUnavailableRetries, delayMs });
           ctx.ui.notify(
-            `Tool unavailable for ${s.currentUnit.type}: ${s.lastToolInvocationError}. The tool surface may still be registering — retrying.`,
+            `Tool unavailable for ${s.currentUnit.type}: ${s.lastToolInvocationError}. Waiting ${delayMs}ms for MCP server — retry ${s.toolUnavailableRetries}/${MAX_TOOL_UNAVAIL_RETRIES}.`,
             "warning",
           );
           s.lastToolInvocationError = null;
+          await new Promise(r => setTimeout(r, delayMs));
         } else if (s.lastToolInvocationError) {
           const isUserSkip = /queued user message/i.test(s.lastToolInvocationError);
           const errMsg = isUserSkip

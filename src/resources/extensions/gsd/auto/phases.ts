@@ -2409,6 +2409,7 @@ export async function runUnitPhase(
     causedBy: "unit-start",
   });
   s.lastToolInvocationError = null; // #2883: clear stale error from previous unit
+  s.toolUnavailableRetries = 0;
   const unitStartSeq = ic.nextSeq();
   deps.emitJournalEvent({ ts: new Date().toISOString(), flowId: ic.flowId, seq: unitStartSeq, eventType: "unit-start", data: { unitType, unitId } });
   deps.captureAvailableSkills();

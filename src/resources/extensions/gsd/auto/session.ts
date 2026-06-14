@@ -212,6 +212,8 @@ export class AutoSession {
   /** Set when a GSD tool execution ends with isError due to malformed/truncated
    *  JSON arguments. Checked by postUnitPreVerification to break retry loops. */
   lastToolInvocationError: string | null = null;
+  /** Consecutive tool-unavailable retries for the current unit (MCP startup race). */
+  toolUnavailableRetries = 0;
   /** Agent-end messages from the just-finished unit, consumed during finalize. */
   lastUnitAgentEndMessages: unknown[] | null = null;
   /** Set when turn-level git action fails during closeout. */
@@ -406,6 +408,7 @@ export class AutoSession {
     this.lastPreExecFailure = null;
     this.preExecRetryCount.clear();
     this.lastToolInvocationError = null;
+    this.toolUnavailableRetries = 0;
     this.lastUnitAgentEndMessages = null;
     this.lastGitActionFailure = null;
     this.lastGitActionStatus = null;
