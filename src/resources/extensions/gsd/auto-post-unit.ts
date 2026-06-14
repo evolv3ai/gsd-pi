@@ -2207,6 +2207,7 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
         if (s.pendingVerificationRetry?.unitId === s.currentUnit.id) {
           s.pendingVerificationRetry = null;
         }
+        s.toolUnavailableRetries = 0;
         s.verificationRetryCount.delete(retryKey);
         s.verificationRetryFailureHashes.delete(retryKey);
         s.exhaustedVerificationUnits.delete(retryKey);
