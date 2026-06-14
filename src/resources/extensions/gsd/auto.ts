@@ -1009,6 +1009,41 @@ export function stopAutoRemote(projectRoot: string): {
 }
 
 /**
+ * Force-stop a remote auto-mode session before stealing its lock.
+ * The normal stop path stays SIGTERM-only so cooperative sessions can clean up;
+ * this path is only for the explicit "Force start" action.
+ */
+export function forceStopAutoRemote(projectRoot: string): {
+  found: boolean;
+  pid?: number;
+  error?: string;
+} {
+  const lock = readCrashLock(projectRoot);
+  if (!lock) return { found: false };
+
+  if (lock.pid === process.pid) {
+    clearLock(projectRoot);
+    return { found: false };
+  }
+
+  if (!isLockProcessAlive(lock)) {
+    clearLock(projectRoot);
+    return { found: false };
+  }
+
+  try {
+    process.kill(lock.pid, "SIGTERM");
+    if (isLockProcessAlive(lock)) {
+      process.kill(lock.pid, "SIGKILL");
+    }
+    clearLock(projectRoot);
+    return { found: true, pid: lock.pid };
+  } catch (err) {
+    return { found: false, error: (err as Error).message };
+  }
+}
+
+/**
  * Check if a remote auto-mode session is running (from a different process).
  * Reads the crash lock, checks PID liveness, and returns session details.
  * Used by the guard in commands.ts to prevent bare /gsd, /gsd next, and
@@ -2408,7 +2443,7 @@ export async function startAuto(
     const pid = freshStartAssessment.lock?.pid;
     ctx.ui.notify(
       pid
-        ? `Another auto-mode session (PID ${pid}) appears to be running.\nStop it with \`kill ${pid}\` before starting a new session.`
+        ? `Another auto-mode session (PID ${pid}) appears to be running.\nRun \`/gsd stop\` for graceful shutdown, or choose "Force start" from \`/gsd auto\` to terminate it.`
         : "Another auto-mode session appears to be running.",
       "error",
     );

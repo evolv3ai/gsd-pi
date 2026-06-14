@@ -223,6 +223,7 @@ export function writeLock(
  * stale session-file pointer.
  */
 export function clearLock(basePath: string): void {
+  const legacyLock = readLegacyLock(basePath);
   clearLegacyLockFile(basePath);
 
   if (!isDbAvailable()) return;
@@ -235,8 +236,15 @@ export function clearLock(basePath: string): void {
       deleteRuntimeKv("worker", staleWorker.worker_id, SESSION_FILE_KV_KEY);
       return;
     }
-    const lock = readLegacyLock(basePath);
-    if (lock?.pid) markWorkerStoppingByPid(projectRoot, lock.pid);
+    if (legacyLock?.pid) {
+      markWorkerStoppingByPid(projectRoot, legacyLock.pid);
+      const workerByLegacyPid = getAllAutoWorkers().find(
+        (w) =>
+          w.pid === legacyLock.pid
+          && normalizeRealPath(w.project_root_realpath) === projectRoot,
+      );
+      if (workerByLegacyPid) forceReleaseLeasesForWorker(workerByLegacyPid.worker_id);
+    }
     const worker = findActiveWorkerForCurrentProcess(projectRoot);
     if (worker) deleteRuntimeKv("worker", worker.worker_id, SESSION_FILE_KV_KEY);
 

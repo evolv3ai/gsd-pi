@@ -387,7 +387,7 @@ export function acquireSessionLock(basePath: string): SessionLockResult {
     // #3218: Provide actionable workaround when lock recovery fails
     const lockDirPath = lockTarget + ".lock";
     const reason = existingPid
-      ? `Another auto-mode session (PID ${existingPid}) appears to be running.\nStop it with \`kill ${existingPid}\` before starting a new session.`
+      ? `Another auto-mode session (PID ${existingPid}) appears to be running.\nRun \`/gsd stop\` for graceful shutdown, or choose "Force start" from \`/gsd auto\` to terminate it.`
       : `Another auto-mode session lock is stuck on this project.\nRun: rm -rf "${lockDirPath}" && rm -f "${lp}"`;
 
     return { acquired: false, reason, existingPid };

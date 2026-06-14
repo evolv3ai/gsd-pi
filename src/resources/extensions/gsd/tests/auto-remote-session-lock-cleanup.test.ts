@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { checkRemoteAutoSession } from "../auto.ts";
+import { checkRemoteAutoSession, forceStopAutoRemote } from "../auto.ts";
 import { openDatabase, closeDatabase, _getAdapter } from "../gsd-db.ts";
-import { registerAutoWorker } from "../db/auto-workers.ts";
+import { getAutoWorker, registerAutoWorker } from "../db/auto-workers.ts";
+import { claimMilestoneLease, getMilestoneLease } from "../db/milestone-leases.ts";
 import { normalizeRealPath } from "../paths.ts";
 import { readCrashLock } from "../crash-recovery.ts";
 
@@ -35,6 +36,29 @@ function setWorkerPid(workerId: string, pid: number): void {
   ).run({ ":pid": pid, ":worker_id": workerId });
 }
 
+function insertMilestone(id: string): void {
+  const db = _getAdapter()!;
+  db.prepare(
+    `INSERT INTO milestones (id, title, status, created_at)
+     VALUES (:id, :title, 'active', :created_at)`,
+  ).run({
+    ":id": id,
+    ":title": id,
+    ":created_at": new Date().toISOString(),
+  });
+}
+
+function writeLegacyLock(base: string, pid: number): void {
+  const now = new Date().toISOString();
+  writeFileSync(join(base, ".gsd", "auto.lock"), JSON.stringify({
+    pid,
+    startedAt: now,
+    unitType: "execute-task",
+    unitId: "M001/S01/T01",
+    unitStartedAt: now,
+  }));
+}
+
 function findDeadPidCandidate(): number {
   const candidates = [99_999, 199_999, 299_999, 399_999];
   for (const pid of candidates) {
@@ -61,4 +85,42 @@ test("checkRemoteAutoSession clears stale lock state when lock PID is dead", (t)
   const remote = checkRemoteAutoSession(base);
   assert.deepEqual(remote, { running: false });
   assert.equal(readCrashLock(base), null, "stale lock should be cleared by remote session check");
+});
+
+test("forceStopAutoRemote escalates a live remote PID and releases worker state", (t) => {
+  const base = makeBase();
+  t.after(() => cleanup(base));
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  const workerId = registerAutoWorker({ projectRootRealpath: normalizeRealPath(base) });
+  const pid = 424_242;
+  setWorkerPid(workerId, pid);
+  insertMilestone("M001");
+  writeLegacyLock(base, pid);
+  const lease = claimMilestoneLease(workerId, "M001");
+  assert.equal(lease.ok, true, "precondition: worker holds a milestone lease");
+
+  const signals: Array<NodeJS.Signals | 0> = [];
+  const originalKill = process.kill;
+  process.kill = ((target: number, signal?: NodeJS.Signals | number) => {
+    assert.equal(target, pid);
+    signals.push((signal ?? 0) as NodeJS.Signals | 0);
+    return true;
+  }) as typeof process.kill;
+  t.after(() => {
+    process.kill = originalKill;
+  });
+
+  const result = forceStopAutoRemote(base);
+
+  assert.deepEqual(result, { found: true, pid });
+  assert.ok(signals.includes("SIGTERM"), "force stop should request graceful termination first");
+  assert.ok(signals.includes("SIGKILL"), "force stop should escalate when the PID is still alive");
+  assert.equal(getAutoWorker(workerId)?.status, "stopping");
+  assert.equal(
+    getMilestoneLease("M001")?.status,
+    "released",
+    "force stop should release held milestone leases",
+  );
+  assert.equal(readCrashLock(base), null, "force stop should remove the visible remote lock");
 });
