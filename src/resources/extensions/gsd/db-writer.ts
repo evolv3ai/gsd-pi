@@ -714,31 +714,23 @@ async function mirrorDecisionToMemory(
 /**
  * Extract a milestone/slice reference from a deferral decision.
  *
- * Detects deferrals by checking:
- *   - scope contains "defer" (e.g., "deferral", "defer")
- *   - choice or decision contains "defer" + an M###/S## pattern
+ * Detects deferrals when the slice reference is part of the deferral phrase.
  *
  * Returns { milestoneId, sliceId } if found, null otherwise.
  */
 export function extractDeferredSliceRef(
   fields: Pick<SaveDecisionFields, 'scope' | 'decision' | 'choice'>,
 ): { milestoneId: string; sliceId: string } | null {
-  const isDeferral =
-    /\bdefer(?:ral|red|ring|s)?\b/i.test(fields.scope) ||
-    /\bdefer(?:ral|red|ring|s)?\b/i.test(fields.choice) ||
-    /\bdefer(?:ral|red|ring|s)?\b/i.test(fields.decision);
+  const defersSlicePattern =
+    /\bdefer(?:ral|red|ring|s)?\b\s+(?:(?:of|the)\s+)*(?:slice\s+)?\b(M\d{3,4})\/(S\d{2,3})\b/i;
+  const sliceIsDeferredPattern =
+    /\b(M\d{3,4})\/(S\d{2,3})\b\s+(?:is|was|will be|should be|can be)\s+defer(?:red|ring)?\b/i;
 
-  if (!isDeferral) return null;
-
-  // Look for M###/S## pattern in choice first, then decision
-  const slicePattern = /\b(M\d{3,4})\/(S\d{2,3})\b/;
-  const choiceMatch = fields.choice.match(slicePattern);
-  if (choiceMatch) {
-    return { milestoneId: choiceMatch[1], sliceId: choiceMatch[2] };
-  }
-  const decisionMatch = fields.decision.match(slicePattern);
-  if (decisionMatch) {
-    return { milestoneId: decisionMatch[1], sliceId: decisionMatch[2] };
+  for (const text of [fields.choice, fields.decision, fields.scope]) {
+    const match = text.match(defersSlicePattern) ?? text.match(sliceIsDeferredPattern);
+    if (match) {
+      return { milestoneId: match[1], sliceId: match[2] };
+    }
   }
 
   return null;
