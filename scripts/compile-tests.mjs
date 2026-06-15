@@ -123,7 +123,16 @@ async function removeStaleMirroredFiles(distDir, srcDir, options = {}) {
     const distPath = join(distDir, entry.name);
     const srcPath = join(srcDir, entry.name);
     if (entry.isDirectory()) {
+      if (!existsSync(srcPath)) {
+        await rm(distPath, { recursive: true, force: true });
+        staleCleaned++;
+        continue;
+      }
       staleCleaned += await removeStaleMirroredFiles(distPath, srcPath, options);
+      if ((await isEmptyDir(distPath)) && (await isEmptyDir(srcPath))) {
+        await rm(distPath, { recursive: true, force: true });
+        staleCleaned++;
+      }
       continue;
     }
     if (!entry.isFile()) continue;
@@ -141,6 +150,14 @@ async function removeStaleMirroredFiles(distDir, srcDir, options = {}) {
   }
 
   return staleCleaned;
+}
+
+async function isEmptyDir(dir) {
+  try {
+    return (await readdir(dir)).length === 0;
+  } catch {
+    return false;
+  }
 }
 
 function isCompiledTestArtifact(filePath) {
@@ -378,12 +395,18 @@ async function main() {
     logLevel: 'warning',
   });
 
+  let staleCleaned = 0;
+
   // Copy non-compiled assets from src/ to dist-test/src/ maintaining structure.
   // Tests use import.meta.url to resolve sibling .md, .yaml, .json, .ts etc.
   // Also copy original .ts files — jiti-based imports load .ts source directly.
   const srcDir = join(ROOT, 'src');
   const distSrcDir = join(DIST_TEST_DIR, 'src');
   await copyAssets(srcDir, distSrcDir);
+  staleCleaned += await removeStaleMirroredFiles(
+    join(distSrcDir, 'resources'),
+    join(srcDir, 'resources'),
+  );
   console.log('Copied non-TS assets and .ts source files to dist-test/src/');
 
   // Copy packages/*/src/ assets as well
@@ -436,6 +459,10 @@ async function main() {
   const rootDistDir = join(ROOT, 'dist');
   const distTestDistDir = join(DIST_TEST_DIR, 'dist');
   await copyAssets(rootDistDir, distTestDistDir);
+  staleCleaned += await removeStaleMirroredFiles(
+    join(distTestDistDir, 'resources'),
+    join(rootDistDir, 'resources'),
+  );
 
   // Post-process: rewrite .ts import specifiers to .js in all compiled JS files.
   // esbuild with bundle:false preserves original specifiers; Node can't load .ts.
@@ -476,7 +503,6 @@ async function main() {
       join(ROOT, 'packages', entry.name, 'src'),
     ]);
   }
-  let staleCleaned = 0;
   for (const [distDir, srcDir] of testDirsToClean) {
     staleCleaned += await removeStaleMirroredFiles(distDir, srcDir, { testOnly: true });
   }

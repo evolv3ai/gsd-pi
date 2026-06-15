@@ -448,6 +448,7 @@ test("/gsd update browser handler fetches latest gsd-browser version", async () 
   const originalFetch = globalThis.fetch;
   const originalGsdHome = process.env.GSD_HOME;
   const originalPath = process.env.PATH;
+  const originalBrowserPathVersion = process.env.GSD_BROWSER_PATH_VERSION;
   const fetchUrls: string[] = [];
   const notifications: Array<{ message: string; level: string }> = [];
   const browserVersion = resolveInstalledPackageVersion(GSD_BROWSER_PACKAGE_NAME) ?? "0.1.27";
@@ -461,6 +462,7 @@ test("/gsd update browser handler fetches latest gsd-browser version", async () 
     writeFakeClaude(binDir, "2.1.100 (Claude Code)");
     process.env.GSD_HOME = tmp;
     process.env.PATH = `${binDir}${delimiter}${originalPath ?? ""}`;
+    process.env.GSD_BROWSER_PATH_VERSION = browserVersion;
     globalThis.fetch = async (input) => {
       fetchUrls.push(String(input));
       return Response.json({ version: browserVersion });
@@ -485,6 +487,11 @@ test("/gsd update browser handler fetches latest gsd-browser version", async () 
       delete process.env.PATH;
     } else {
       process.env.PATH = originalPath;
+    }
+    if (originalBrowserPathVersion === undefined) {
+      delete process.env.GSD_BROWSER_PATH_VERSION;
+    } else {
+      process.env.GSD_BROWSER_PATH_VERSION = originalBrowserPathVersion;
     }
   }
 

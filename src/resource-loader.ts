@@ -34,6 +34,7 @@ const resourceFingerprintFileName = '.managed-resources-content-hash'
 const gsdBrowserSkillName = 'gsd-browser'
 const requireFromResourceLoader = createRequire(import.meta.url)
 const gsdBrowserSkillReferenceDirs = ['docs', 'scripts', 'gsd-browser-skill']
+let gsdBrowserPackageSkillPathForTests: string | null | undefined
 
 interface ManagedResourceManifest {
   gsdVersion: string
@@ -192,11 +193,18 @@ function getCurrentResourceFingerprint(): string {
 }
 
 function resolveGsdBrowserPackageSkillPath(): string | null {
+  if (gsdBrowserPackageSkillPathForTests !== undefined) {
+    return gsdBrowserPackageSkillPathForTests
+  }
   try {
     return requireFromResourceLoader.resolve('@opengsd/gsd-browser/SKILL.md')
   } catch {
     return null
   }
+}
+
+export function setGsdBrowserPackageSkillPathForTests(skillPath: string | null | undefined): void {
+  gsdBrowserPackageSkillPathForTests = skillPath
 }
 
 export function collectGsdBrowserPackageSkillReferences(content: string): string[] {
