@@ -45,6 +45,7 @@ docs/coherence-audit/
 # Local agent/editor state
 .claude/
 .agents/
+.opencode/
 .idea/
 .vscode/
 *.code-workspace
