@@ -225,83 +225,17 @@ function normalizeGsdBrowserPackageSkillReference(ref: string | undefined): stri
   return normalized
 }
 
-function gsdBrowserSkillFallbackFile(relPath: string): Buffer {
-  if (relPath === 'scripts/mcp-quickstart.sh') {
-    return Buffer.from(
-      [
-        '#!/usr/bin/env bash',
-        'set -euo pipefail',
-        'target="${1:-generic}"',
-        'case "$target" in',
-        '  cursor|claude|vscode|generic) ;;',
-        '  *) target="generic" ;;',
-        'esac',
-        'cat <<EOF',
-        'Use this MCP server command for ${target}:',
-        '',
-        '  gsd-browser mcp',
-        '',
-        'Keep detailed agent guidance in SKILL.md next to this script.',
-        'EOF',
-        '',
-      ].join('\n'),
-    )
-  }
-
-  if (relPath === 'docs/examples/mcp-client-config.json') {
-    return Buffer.from(JSON.stringify({
-      mcpServers: {
-        'gsd-browser': {
-          command: 'gsd-browser',
-          args: ['mcp'],
-        },
-      },
-    }, null, 2) + '\n')
-  }
-
-  if (relPath === 'gsd-browser-skill/SKILL.md') {
-    return Buffer.from(
-      [
-        '---',
-        'name: gsd-browser',
-        'description: Managed gsd-browser skill entrypoint.',
-        '---',
-        '',
-        '# gsd-browser',
-        '',
-        'Use the parent `SKILL.md` as the authoritative managed gsd-browser skill.',
-        '',
-      ].join('\n'),
-    )
-  }
-
-  return Buffer.from(
-    [
-      `# ${basename(relPath)}`,
-      '',
-      'This managed gsd-browser skill installs package-relative support files so agent instructions never point at missing paths.',
-      '',
-      'Use `../SKILL.md` as the authoritative reference and run `gsd-browser mcp` for the live MCP tool surface.',
-      '',
-    ].join('\n'),
-  )
-}
-
-function readGsdBrowserSkillSupportFile(sourceSkillPath: string, relPath: string): Buffer {
-  const sourcePath = join(dirname(sourceSkillPath), relPath)
-  if (existsSync(sourcePath)) {
-    return readFileSync(sourcePath)
-  }
-  return gsdBrowserSkillFallbackFile(relPath)
-}
-
 function readGsdBrowserPackageSkillBundle(sourceSkillPath: string): Map<string, Buffer> {
   const skillContent = readFileSync(sourceSkillPath)
   const files = new Map<string, Buffer>([['SKILL.md', skillContent]])
   const supportRefs = collectGsdBrowserPackageSkillReferences(skillContent.toString('utf-8'))
+  const sourceDir = dirname(sourceSkillPath)
 
   for (const relPath of supportRefs) {
-    files.set(relPath, readGsdBrowserSkillSupportFile(sourceSkillPath, relPath))
+    const sourcePath = join(sourceDir, relPath)
+    if (existsSync(sourcePath)) {
+      files.set(relPath, readFileSync(sourcePath))
+    }
   }
 
   return files
@@ -316,9 +250,18 @@ export function hasStaleGsdBrowserPackageSkill(skillsDir: string): boolean {
   }
 
   try {
+    const sourceDir = dirname(sourceSkillPath)
+    const skillContent = readFileSync(sourceSkillPath, 'utf-8')
     for (const [relPath, content] of readGsdBrowserPackageSkillBundle(sourceSkillPath)) {
       const targetPath = join(targetDir, relPath)
       if (!existsSync(targetPath) || !readFileSync(targetPath).equals(content)) {
+        return true
+      }
+    }
+    for (const relPath of collectGsdBrowserPackageSkillReferences(skillContent)) {
+      const sourcePath = join(sourceDir, relPath)
+      const targetPath = join(targetDir, relPath)
+      if (!existsSync(sourcePath) && existsSync(targetPath)) {
         return true
       }
     }
