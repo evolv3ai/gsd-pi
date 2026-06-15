@@ -371,6 +371,15 @@ test("bundled skill frontmatter is valid YAML", () => {
       `${label} frontmatter should parse as YAML`,
     );
   }
+
+  const gsdBrowserSkill = packagedGsdBrowserSkill();
+  const gsdBrowserFrontmatter = gsdBrowserSkill.match(/^---\n([\s\S]*?)\n---/);
+
+  assert.ok(gsdBrowserFrontmatter, "gsd-browser/SKILL.md should include YAML frontmatter");
+  assert.doesNotThrow(
+    () => parseYaml(gsdBrowserFrontmatter[1]),
+    "gsd-browser/SKILL.md frontmatter should parse as YAML",
+  );
 });
 
 test("initResources syncs top-level shared resources used by extension imports", async (t) => {
