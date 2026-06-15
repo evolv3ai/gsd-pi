@@ -39,6 +39,47 @@ export function setCellDimensions(dims: CellDimensions): void {
 	cellDimensions = dims;
 }
 
+/**
+ * Parse a terminal cell-size reply into integer pixel dimensions, or null if the
+ * data is not a recognized cell-size reply. Two formats are supported:
+ *
+ *  - xterm `CSI 16 t` reply:        `CSI 6 ; height ; width t`
+ *  - iTerm2 `OSC 1337 ; ReportCellSize` reply (iTerm2 does NOT answer CSI 16t):
+ *      `OSC 1337 ; ReportCellSize=[height] ; [width] ST`           or
+ *      `OSC 1337 ; ReportCellSize=[height] ; [width] ; [scale] ST`
+ *    where height/width are floating-point point sizes and the optional scale is
+ *    physical-pixels-per-point (retina). We size cells in points (the logical
+ *    units the image protocol uses), so the scale factor is intentionally ignored.
+ *
+ * Non-positive sizes are rejected (returns null) so a bogus reply never poisons
+ * the cell-size used for image math.
+ *
+ * The patterns are anchored to the whole payload: the reply must be the entire
+ * input, not embedded in it. Cell-size replies arrive as their own read chunk
+ * (the terminal answering pi's startup query), and anchoring means a reply that
+ * happened to be batched with a keystroke is NOT consumed — so the caller never
+ * swallows real input. This matches the original CSI-16t handler's behavior.
+ */
+export function parseCellSizeResponse(data: string): CellDimensions | null {
+	// xterm CSI 16t reply: ESC [ 6 ; height ; width t
+	const xterm = data.match(/^\x1b\[6;(\d+);(\d+)t$/);
+	if (xterm) {
+		const heightPx = Math.round(Number(xterm[1]));
+		const widthPx = Math.round(Number(xterm[2]));
+		return widthPx > 0 && heightPx > 0 ? { widthPx, heightPx } : null;
+	}
+
+	// iTerm2 OSC 1337 ; ReportCellSize=height;width[;scale] ST (ST = BEL or ESC \)
+	const iterm = data.match(/^\x1b\]1337;ReportCellSize=([\d.]+);([\d.]+)(?:;[\d.]+)?(?:\x07|\x1b\\)$/);
+	if (iterm) {
+		const heightPx = Math.round(Number(iterm[1]));
+		const widthPx = Math.round(Number(iterm[2]));
+		return widthPx > 0 && heightPx > 0 ? { widthPx, heightPx } : null;
+	}
+
+	return null;
+}
+
 export function detectCapabilities(): TerminalCapabilities {
 	const termProgram = process.env.TERM_PROGRAM?.toLowerCase() || "";
 	const term = process.env.TERM?.toLowerCase() || "";
@@ -129,6 +170,17 @@ export function encodeKitty(
 		columns?: number;
 		rows?: number;
 		imageId?: number;
+		/**
+		 * Kitty placement id (`p` key). A placement is uniquely identified by the
+		 * pair (image id, placement id). Sending the same (i, p) again REPLACES the
+		 * existing placement instead of stacking a new one on top — this is how the
+		 * protocol says to move/resize an image without flicker. The TUI re-emits an
+		 * image's sequence on many redraws (scroll, spinner ticks, viewport realign);
+		 * without a stable placement id every redraw would add another copy, painting
+		 * stacked/overflowing images over the chat and footer. Requires a non-zero
+		 * imageId (the protocol ignores `p` when the image has id=0). Default: 1.
+		 */
+		placementId?: number;
 		/** Whether Kitty should apply its default cursor movement after placement. Default: true. */
 		moveCursor?: boolean;
 	} = {},
@@ -140,7 +192,13 @@ export function encodeKitty(
 	if (options.moveCursor === false) params.push("C=1");
 	if (options.columns) params.push(`c=${options.columns}`);
 	if (options.rows) params.push(`r=${options.rows}`);
-	if (options.imageId) params.push(`i=${options.imageId}`);
+	if (options.imageId) {
+		params.push(`i=${options.imageId}`);
+		// Pin a stable placement id so re-emitting this image replaces its single
+		// placement rather than appending a new one. Only meaningful when the image
+		// has a non-zero id (kitty ignores `p` for id=0 images).
+		params.push(`p=${options.placementId ?? 1}`);
+	}
 
 	if (base64Data.length <= CHUNK_SIZE) {
 		return `\x1b_G${params.join(",")};${base64Data}\x1b\\`;
@@ -415,9 +473,18 @@ export function renderImage(
 	}
 
 	if (caps.images === "iterm2") {
+		// Pin the height to the cell box the TUI reserved (size.rows) instead of
+		// "auto". With height="auto" iTerm2 renders at the image's natural aspect
+		// height, which for tall images (documents, screenshots) overflows the
+		// reserved rows and paints over the chat, status, and footer — meanwhile
+		// the TUI's cursor accounting only knows about size.rows, so everything
+		// below drifts. Bounding both width and height to the box makes iTerm2
+		// letterbox the image within size.rows; preserveAspectRatio stays on so
+		// the image is never distorted (the box is already aspect-fitted by
+		// calculateImageCellSize, so letterboxing is near-exact).
 		const sequence = encodeITerm2(base64Data, {
 			width: size.columns,
-			height: "auto",
+			height: size.rows,
 			preserveAspectRatio: options.preserveAspectRatio ?? true,
 		});
 		return { sequence, rows: size.rows };

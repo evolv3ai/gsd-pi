@@ -2,10 +2,12 @@
 // File Purpose: Interactive terminal tool execution renderer for commands, tool calls, diffs, images, and summaries.
 import { normalizeToolArguments } from "@gsd/pi-ai";
 import {
+	allocateImageId,
 	Box,
 	Container,
 	getCapabilities,
 	Image,
+	isImageLine,
 	type ImageDimensions,
 	imageFallback,
 	Spacer,
@@ -360,6 +362,14 @@ export class ToolExecutionComponent extends Container {
 	// Cached resolved image dimensions to avoid re-triggering async parsing
 	// when updateDisplay() recreates Image components (#3455).
 	private resolvedImageDimensions: Map<number, ImageDimensions> = new Map();
+	// Stable Kitty image ids, keyed by image index. updateDisplay() destroys and
+	// recreates Image components on every streaming tick; without a stable id each
+	// recreation would call allocateImageId() and get a fresh random id, so the
+	// Kitty placement key (imageId, p) would change every render and the terminal
+	// would STACK a new placement instead of replacing the old one — painting
+	// overlapping copies over the chat and footer. Reusing one id per image index
+	// keeps the placement identity stable so re-emits replace in place.
+	private stableImageIds: Map<number, number> = new Map();
 	// Incremental syntax highlighting cache for write tool call args
 	private writeHighlightCache?: WriteHighlightCache;
 	// When true, this component intentionally renders no lines
@@ -451,6 +461,7 @@ export class ToolExecutionComponent extends Container {
 	dispose(): void {
 		this.stopRunningRailTimer();
 		this.convertedImages.clear();
+		this.stableImageIds.clear();
 		this.imageComponents = [];
 		this.imageSpacers = [];
 		this.editDiffPreview = undefined;
@@ -784,7 +795,15 @@ export class ToolExecutionComponent extends Container {
 				hidden: !this.isPartial && !!this.result,
 			});
 		}
-		const lines = collapseBlankLines(super.render(contentWidth));
+		// collapseBlankLines merges consecutive blank rows. An inline image reserves
+		// its height as (rows-1) trailing blank padding lines after the sequence;
+		// collapsing those would shrink a tall image to a single row and the terminal
+		// would paint the full image over everything below it. Preserve the exact
+		// line structure whenever the content includes an image.
+		const renderedBody = super.render(contentWidth);
+		const lines = hasImages || renderedBody.some((l) => isImageLine(l))
+			? renderedBody
+			: collapseBlankLines(renderedBody);
 		return renderTranscriptCard(lines, frameWidth, {
 			title: frameLabel,
 			right: frameStatus,
@@ -1008,11 +1027,19 @@ export class ToolExecutionComponent extends Container {
 					// Pass cached dimensions to avoid re-triggering async parsing
 					// when updateDisplay() recreates Image components (#3455).
 					const cachedDims = this.resolvedImageDimensions.get(i);
+					// Reuse a stable Kitty image id per image index so the recreated
+					// component keeps the same placement identity across redraws
+					// (otherwise every updateDisplay() stacks a new placement).
+					let stableImageId = this.stableImageIds.get(i);
+					if (caps.images === "kitty" && stableImageId === undefined) {
+						stableImageId = allocateImageId();
+						this.stableImageIds.set(i, stableImageId);
+					}
 					const imageComponent = new Image(
 						imageData,
 						imageMimeType,
 						{ fallbackColor: (s: string) => theme.fg("toolOutput", s) },
-						{ maxWidthCells: 60 },
+						{ maxWidthCells: 60, imageId: stableImageId },
 						cachedDims,
 					);
 					if (!cachedDims) {

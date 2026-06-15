@@ -1,7 +1,7 @@
 // Project/App: gsd-pi
 // File Purpose: Shared recommended transcript rendering primitives for assistant, tool, command, footer, and auto-mode TUI surfaces.
 
-import { alignRight, padRight, style, truncateToWidth, visibleWidth } from "@gsd/pi-tui";
+import { alignRight, isImageLine, padRight, style, truncateToWidth, visibleWidth } from "@gsd/pi-tui";
 import { theme, type ThemeBg, type ThemeColor } from "@gsd/pi-coding-agent/theme/theme.js";
 import { formatTimestamp, type TimestampFormat } from "./timestamp.js";
 
@@ -134,12 +134,26 @@ export function renderConnectedCard(
 		}
 	}
 	const paintBody = (line: string) => {
+		// Image (Kitty/iTerm2) sequence lines carry raw terminal graphics escapes and
+		// rely on exact column/row positioning. Prepend the SAME left offset normal
+		// body lines get (card indent + 3 spaces) so the image aligns under the card
+		// text rather than hugging column 0, but do NOT padRight/truncate — trailing
+		// padding or clipping after the sequence would corrupt the placement. The
+		// leading spaces simply advance the cursor before the image draws.
+		if (isImageLine(line)) {
+			return prefix + "   " + line;
+		}
 		const innerWidth = Math.max(1, width - indent);
 		const inner = padRight("   " + line, innerWidth);
 		const painted = opts.bodyBg ? theme.bg(opts.bodyBg, inner) : inner;
 		return prefix + painted;
 	};
-	const bodySource = trimOuterBlankLines(bodyLines);
+	// When the body contains an inline image, its reserved blank padding rows (the
+	// rows the TUI counts so content below the image lands in the right place) must
+	// NOT be trimmed/collapsed — trimming them collapses a tall image to one line
+	// and the terminal then paints the full image over the chat and footer below.
+	const hasImage = bodyLines.some((l) => isImageLine(l));
+	const bodySource = hasImage ? bodyLines : trimOuterBlankLines(bodyLines);
 	const out = [padLine(topLine, width)];
 	for (const line of bodySource) {
 		out.push(paintBody(line));
@@ -415,7 +429,9 @@ export function renderTranscriptCard(
 	const outerWidth = Math.max(20, width);
 	const indent = opts.indent ?? TRANSCRIPT_CARD_INDENT;
 	const tone = toneColor(opts.tone);
-	const body = trimOuterBlankLines(lines);
+	// Preserve image padding rows (see renderConnectedCard) — trimming them would
+	// collapse a tall inline image and make it overflow the card.
+	const body = lines.some((l) => isImageLine(l)) ? lines : trimOuterBlankLines(lines);
 	let titleRight = opts.right ? theme.fg(tone, opts.right) : undefined;
 	if (opts.footerLeft || opts.footerRight) {
 		const hint = [opts.footerLeft, opts.footerRight].filter(Boolean).join(" · ");
