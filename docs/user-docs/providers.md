@@ -98,7 +98,7 @@ You can also trigger this manually from inside a GSD session:
 
 This writes (or updates) the `gsd-workflow` and `gsd-browser` entries in your project's `.mcp.json`. Claude Code discovers this file automatically on its next session start.
 
-GSD's own Pi Providers, including Codex and non-Claude harnesses, do not need `.mcp.json` to use browser automation. They receive canonical `browser_*` tools from GSD. For browser-facing projects, the managed bundled `gsd-browser` engine is preferred automatically when it is available and starts cleanly; otherwise (and for non-web projects) the tools are backed by Playwright, with the fallback reason recorded. Set `GSD_BROWSER_ENGINE=gsd-browser|playwright|off` to override the automatic choice.
+GSD's own Pi Providers, including Codex and non-Claude harnesses, do not need `.mcp.json` to use browser automation. They receive canonical `browser_*` tools from GSD. For browser-facing projects, the managed `@opengsd/gsd-browser` engine is preferred automatically when it is available and starts cleanly; otherwise (and for non-web projects) the tools are backed by Playwright, with the fallback reason recorded. Set `GSD_BROWSER_ENGINE=gsd-browser|playwright|off` to override the automatic choice.
 
 **Manual setup:**
 

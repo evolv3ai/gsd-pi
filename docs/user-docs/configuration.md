@@ -135,7 +135,11 @@ If both files exist, server names are merged and the first definition found wins
 
 Use `gsd-browser` when GSD or an external MCP client needs deterministic browser automation, versioned element refs, assertions, screenshots, visual diffs, recordings, or a live human takeover viewer.
 
-For GSD Pi Providers such as Codex and non-Claude harnesses, browser tools are backed by Playwright by default. `@opengsd/gsd-browser` remains bundled for External MCP Clients and for explicit managed-engine opt-in. The easiest way to write the external MCP entry is:
+GSD Pi Providers such as Codex and non-Claude harnesses do not need an external
+MCP entry to use browser automation. Browser-facing projects prefer the managed
+`@opengsd/gsd-browser` engine when it is available and starts cleanly, then fall
+back to Playwright; non-browser-facing projects use Playwright unless you force
+the managed engine. The easiest way to write the external MCP entry is:
 
 ```bash
 /gsd mcp init

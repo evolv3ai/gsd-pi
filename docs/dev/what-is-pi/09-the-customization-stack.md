@@ -58,6 +58,10 @@ On-demand capability packages following the [Agent Skills standard](https://agen
 when resolving preference refs — even though a project-local skill with the same
 name would appear in the `<available_skills>` catalog instead.
 
+GSD owns the managed skill directory. The `gsd-browser` managed skill is sourced
+from the installed `@opengsd/gsd-browser` package, not from Pi's bundled
+`src/resources/skills/` tree, and startup refreshes its referenced support files.
+
 **Skill structure:**
 ```
 my-skill/
@@ -67,6 +71,9 @@ my-skill/
 └── references/           # Reference docs (optional)
     └── api-guide.md
 ```
+
+Frontmatter is parsed as YAML. Quote description values that contain `:` or use
+a folded block (`description: >`) for longer trigger descriptions.
 
 ### Prompt Templates
 

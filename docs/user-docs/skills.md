@@ -20,6 +20,12 @@ Earlier entries take precedence when names collide. Bundled GSD skills win over 
 
 > **Bundled vs user skills:** GSD bundled skills are managed in `~/.gsd/agent/skills/`. Install your own shared skills into `~/.agents/skills/`, or commit project-specific skills under `.agents/skills/`.
 
+The managed `gsd-browser` skill is package-owned: on startup GSD installs it
+from the installed `@opengsd/gsd-browser` package, including referenced support
+files under `docs/`, `scripts/`, and `gsd-browser-skill/`. GSD refreshes stale
+or incomplete copies in `~/.gsd/agent/skills/gsd-browser/`, so do not edit that
+managed directory directly.
+
 ## Installing Skills
 
 Skills are installed via the [skills.sh CLI](https://skills.sh):
@@ -136,6 +142,10 @@ Create your own skills by adding a directory with a `SKILL.md` file:
 ```
 
 The `SKILL.md` file contains instructions the LLM follows when the skill is active. Reference files can be loaded by the skill instructions as needed.
+
+`SKILL.md` frontmatter must be valid YAML. Quote description values that contain
+YAML-sensitive characters such as `:` or use a folded block (`description: >`)
+for longer trigger descriptions.
 
 ### Project-Local Skills
 

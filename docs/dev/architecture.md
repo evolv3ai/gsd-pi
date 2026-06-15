@@ -11,7 +11,7 @@ gsd (CLI binary)
           ├─ onboarding.ts   First-run setup wizard (LLM provider + tool keys)
           ├─ wizard.ts       Env hydration from stored auth.json credentials
           ├─ app-paths.ts    ~/.gsd/agent/, ~/.gsd/sessions/, auth.json
-          ├─ resource-loader.ts  Syncs bundled extensions + agents to ~/.gsd/agent/
+          ├─ resource-loader.ts  Syncs managed resources to ~/.gsd/agent/
           └─ src/resources/
               ├─ extensions/gsd/    Core GSD extension
               ├─ extensions/...     23 supporting extensions
@@ -39,9 +39,14 @@ GSD stores runtime workflow state in the project-root SQLite database. Auto mode
 
 `PI_PACKAGE_DIR` points to `pkg/` (not project root) to avoid Pi's theme resolution colliding with GSD's `src/` directory. Contains only `piConfig` and theme assets.
 
-### Always-Overwrite Sync
+### Managed Resource Sync
 
-Bundled extensions and agents are synced to `~/.gsd/agent/` on every launch, not just first run. This means `npm update -g` takes effect immediately.
+Bundled extensions, shared files, agents, and skills are synced to
+`~/.gsd/agent/` on launch when the managed-resource manifest or content
+fingerprint is stale. The `gsd-browser` skill is then overlaid from the
+installed `@opengsd/gsd-browser` package, including package-relative support
+files, so browser automation guidance tracks the browser package instead of a
+duplicated Pi copy.
 
 ### Lazy Provider Loading
 

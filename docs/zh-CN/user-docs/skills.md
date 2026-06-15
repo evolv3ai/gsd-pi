@@ -20,6 +20,11 @@ GSD 会按优先级顺序从这些位置读取技能：
 
 > **内置技能与用户技能：** GSD 内置技能由 `~/.gsd/agent/skills/` 管理。你自己的共享技能应安装到 `~/.agents/skills/`，项目专用技能应提交到 `.agents/skills/`。
 
+托管的 `gsd-browser` 技能由包提供：GSD 启动时会从已安装的
+`@opengsd/gsd-browser` 包安装它，并带上 `docs/`、`scripts/` 和
+`gsd-browser-skill/` 下被引用的辅助文件。GSD 会刷新
+`~/.gsd/agent/skills/gsd-browser/` 中过期或不完整的副本，因此不要直接编辑这个托管目录。
+
 ## 安装技能
 
 技能通过 [skills.sh CLI](https://skills.sh) 安装：
@@ -142,6 +147,9 @@ skill_rules:
 ```
 
 `SKILL.md` 中写的是当技能启用时，LLM 应遵循的指令。参考文件可由技能按需加载。
+
+`SKILL.md` frontmatter 必须是合法 YAML。包含 `:` 等 YAML 敏感字符的
+description 值应加引号，较长的触发描述可以使用折叠块（`description: >`）。
 
 ### 项目本地技能
 

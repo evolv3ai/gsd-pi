@@ -660,6 +660,11 @@
 
 ### src/resources/skills/
 
+These are Pi-owned bundled skills copied into `~/.gsd/agent/skills/`. The
+managed `gsd-browser` skill is intentionally not stored here;
+`src/resource-loader.ts` installs it from the installed `@opengsd/gsd-browser`
+package and refreshes stale or incomplete managed copies.
+
 | Skill Directory | System Label(s) | Description |
 |-----------------|-----------------|-------------|
 | react-best-practices/ | Skills | React development patterns (62 files) |

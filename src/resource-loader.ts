@@ -745,18 +745,20 @@ function pruneRemovedBundledExtensions(
 }
 
 /**
- * Syncs all bundled resources to agentDir (~/.gsd/agent/) on every launch.
+ * Initializes managed resources under agentDir (~/.gsd/agent/).
  *
  * - extensions/ → ~/.gsd/agent/extensions/   (overwrite when version changes)
  * - shared/     → ~/.gsd/agent/shared/       (overwrite when version changes)
  * - agents/     → ~/.gsd/agent/agents/        (overwrite when version changes)
  * - skills/     → ~/.gsd/agent/skills/        (overwrite when version changes)
+ * - gsd-browser skill → ~/.gsd/agent/skills/gsd-browser/ from @opengsd/gsd-browser
  * - GSD-WORKFLOW.md → ~/.gsd/agent/GSD-WORKFLOW.md (fallback for env var miss)
  *
- * Skips the copy when the managed-resources.json version matches the current
- * GSD version, avoiding ~128ms of synchronous cpSync on every startup.
- * After `npm update -g @glittercowboy/gsd`, versions will differ and the
- * copy runs once to land the new resources.
+ * Skips the full copy only when the managed-resources.json version, content
+ * fingerprint, and package-owned gsd-browser skill all match the current
+ * install, avoiding ~128ms of synchronous cpSync on steady-state startup.
+ * After `npm update -g @opengsd/gsd-pi`, versions will differ and the copy
+ * runs once to land the new resources.
  *
  * Inspectable: `ls ~/.gsd/agent/extensions/`
  */
