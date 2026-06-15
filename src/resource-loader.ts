@@ -259,8 +259,11 @@ export function hasStaleGsdBrowserPackageSkill(skillsDir: string): boolean {
       }
     }
     for (const relPath of collectGsdBrowserPackageSkillReferences(skillContent)) {
-      const sourcePath = join(sourceDir, relPath)
       const targetPath = join(targetDir, relPath)
+      if (!existsSync(targetPath)) {
+        return true
+      }
+      const sourcePath = join(sourceDir, relPath)
       if (!existsSync(sourcePath) && existsSync(targetPath)) {
         return true
       }
@@ -275,10 +278,10 @@ function syncGsdBrowserPackageSkill(skillsDir: string): void {
   const targetDir = join(skillsDir, gsdBrowserSkillName)
   const sourceSkillPath = resolveGsdBrowserPackageSkillPath()
 
+  if (!sourceSkillPath) return
+
   makeTreeWritable(targetDir)
   rmSync(targetDir, { recursive: true, force: true })
-
-  if (!sourceSkillPath) return
 
   for (const [relPath, content] of readGsdBrowserPackageSkillBundle(sourceSkillPath)) {
     const targetPath = join(targetDir, relPath)
