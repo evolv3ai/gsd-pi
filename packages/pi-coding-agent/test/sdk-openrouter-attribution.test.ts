@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -85,8 +85,10 @@ describe("createAgentSession OpenRouter attribution headers", () => {
 		options: {
 			telemetryEnabled?: boolean;
 			providerHeaders?: Record<string, string>;
+			modelsJsonProviders?: Record<string, unknown>;
 			requestHeaders?: Record<string, string>;
 			sessionId?: string;
+			captureModelHeaders?: boolean;
 		} = {},
 	): Promise<Record<string, string> | undefined> {
 		const settingsManager = SettingsManager.create(cwd, agentDir);
@@ -96,13 +98,18 @@ describe("createAgentSession OpenRouter attribution headers", () => {
 
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		authStorage.setRuntimeApiKey(model.provider, "test-api-key");
+		if (options.modelsJsonProviders) {
+			writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: options.modelsJsonProviders }));
+		}
 		const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
-		const registeredProviders = ["capture-provider"];
+		const registeredProviders = [model.provider];
 		let capturedOptions: SimpleStreamOptions | undefined;
+		let capturedModelHeaders: Record<string, string> | undefined;
 
-		modelRegistry.registerProvider("capture-provider", {
+		modelRegistry.registerProvider(model.provider, {
 			api: "openai-completions",
-			streamSimple: (_model, _context, providerOptions) => {
+			streamSimple: (providerModel, _context, providerOptions) => {
+				capturedModelHeaders = providerModel.headers;
 				capturedOptions = providerOptions;
 				return createDoneStream();
 			},
@@ -137,7 +144,7 @@ describe("createAgentSession OpenRouter attribution headers", () => {
 					...(options.requestHeaders ? { headers: options.requestHeaders } : {}),
 				},
 			);
-			return capturedOptions?.headers;
+			return options.captureModelHeaders ? capturedModelHeaders : capturedOptions?.headers;
 		} finally {
 			session.dispose();
 			for (const provider of registeredProviders.reverse()) {
@@ -208,5 +215,39 @@ describe("createAgentSession OpenRouter attribution headers", () => {
 
 		expect(headers?.["x-opencode-session"]).toBe("configured-session");
 		expect(headers?.["x-opencode-client"]).toBe("configured-client");
+	});
+
+	it("applies model-level headers from models.json to outgoing requests", async () => {
+		const model = createModel("kimi", "https://api.moonshot.ai/v1");
+		const headers = await captureHeaders(model, {
+			captureModelHeaders: true,
+			modelsJsonProviders: {
+				kimi: {
+					baseUrl: "https://api.moonshot.ai/v1",
+					apiKey: "KIMI_API_KEY",
+					api: "openai-completions",
+					models: [
+						{
+							id: model.id,
+							name: model.name,
+							reasoning: false,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 128000,
+							maxTokens: 4096,
+							headers: {
+								"User-Agent": "KimiCLI/1.30.0",
+								"X-Msh-Platform": "kimi_cli",
+								"X-Msh-Version": "1.30.0",
+							},
+						},
+					],
+				},
+			},
+		});
+
+		expect(headers?.["User-Agent"]).toBe("KimiCLI/1.30.0");
+		expect(headers?.["X-Msh-Platform"]).toBe("kimi_cli");
+		expect(headers?.["X-Msh-Version"]).toBe("1.30.0");
 	});
 });
