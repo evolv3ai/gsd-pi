@@ -733,6 +733,80 @@ describe("agentLoop with AgentMessage", () => {
 		expect(toolResults.map((event) => event.result.content[0]?.text).join("\n")).not.toContain("not found");
 	});
 
+	it("does not request another assistant turn after externalResult tool calls (issue #654)", async () => {
+		// Regression for the duplicate-bubble / duplicate `╭─ GSD ─` header bug.
+		// The claude-code-cli adapter pre-executes its tools and emits ONE final
+		// AssistantMessage containing both the tool-call blocks (with externalResult
+		// attached) AND the post-tool text. The agent-loop must recognize that this
+		// batch is already finished and NOT loop back for a second streamAssistantResponse
+		// call — a second call emits a second message_start, which the interactive
+		// renderer draws as a second assistant bubble (a stacked second `╭─ GSD ─` header).
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [],
+		};
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+		};
+
+		let streamCallCount = 0;
+		const streamFn = () => {
+			streamCallCount++;
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (streamCallCount === 1) {
+					// One logical claude-code turn: tool call (already executed by the
+					// SDK, so externalResult is attached) followed by the model's final text.
+					const message = createAssistantMessage(
+						[
+							{
+								type: "toolCall",
+								id: "tool-bash",
+								name: "Bash",
+								arguments: { command: "lsof -i :3000" },
+								externalResult: {
+									content: [{ type: "text", text: "nothing on :3000" }],
+									details: { source: "claude-code" },
+									isError: false,
+								},
+							} as any,
+							{ type: "text", text: "Nothing is running on port 3000." },
+						],
+						"toolUse",
+					);
+					stream.push({ type: "done", reason: "toolUse", message });
+				} else {
+					// If the loop reaches here, it has looped back for a redundant turn —
+					// this is the duplicate-bubble bug. Emit a distinct duplicate so the
+					// assertion can show what leaked through.
+					stream.push({
+						type: "done",
+						reason: "stop",
+						message: createAssistantMessage([{ type: "text", text: "Nothing is running on port 3000." }]),
+					});
+				}
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([createUserMessage("Is anything running on port 3000?")], context, config, undefined, streamFn);
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		const messageStarts = events.filter(
+			(event): event is Extract<AgentEvent, { type: "message_start" }> => event.type === "message_start",
+		);
+		const assistantStarts = messageStarts.filter((event) => event.message.role === "assistant");
+
+		// The externalResult batch is terminal: exactly one assistant turn, one bubble.
+		expect(streamCallCount).toBe(1);
+		expect(assistantStarts.length).toBe(1);
+	});
+
 	it("returns ToolSearch guidance when the shim is not in the active tool registry", async () => {
 		const context: AgentContext = {
 			systemPrompt: "",

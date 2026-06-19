@@ -685,6 +685,15 @@ async function prepareToolCall(
 						? (externalResult.content as AgentToolResult<any>["content"])
 						: [{ type: "text", text: "" }],
 				details: externalResult.details ?? {},
+				// The provider (claude-code-cli) already executed this tool inside its
+				// own agentic session and emitted ONE final assistant message carrying
+				// both the tool blocks and the post-tool text. There is no follow-up
+				// LLM work for the agent-loop to do, so terminate the batch. Without
+				// this, shouldTerminateToolBatch() returns false → hasMoreToolCalls
+				// stays true → the loop makes a redundant streamAssistantResponse call,
+				// emitting a second message_start that the TUI renders as a duplicate
+				// assistant bubble / stacked `╭─ GSD ─` header (issue #654).
+				terminate: true,
 			},
 			isError: externalResult.isError ?? false,
 		};
