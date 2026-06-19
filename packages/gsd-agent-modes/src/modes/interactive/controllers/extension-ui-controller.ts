@@ -11,6 +11,7 @@ export function createExtensionUIContext(host: any): ExtensionUIContext {
 		notify: (message, type) => host.showExtensionNotify(message, type),
 		onTerminalInput: (handler) => host.addExtensionTerminalInputListener(handler),
 		setStatus: (key, text) => host.setExtensionStatus(key, text),
+		setGsdProgress: (state, dispose) => host.setGsdProgress(state, dispose),
 		setWorkingMessage: (message) => {
 			if (message === null || message === undefined) {
 				host.pendingWorkingMessage = null;

@@ -11,6 +11,7 @@
 import type {
   ExtensionContext,
   ExtensionCommandContext,
+  GsdProgressState,
   ReadonlyFooterDataProvider,
   Theme,
   ThemeColor,
@@ -754,342 +755,9 @@ export function updateProgressWidget(
     updateSliceProgressCache(accessors.getBasePath(), mid.id, slice?.id);
   }
 
-  ctx.ui.setWidget("gsd-progress", (tui, theme) => {
-    let spinnerIndex = 0;
-    let cachedLines: string[] | undefined;
-    let cachedWidth: number | undefined;
-    let cachedRuntimeRecord: AutoUnitRuntimeRecord | null = null;
-
-    const refreshRuntimeRecord = (): void => {
-      try {
-        cachedRuntimeRecord = readUnitRuntimeRecord(accessors.getBasePath(), unitType, unitId);
-      } catch {
-        cachedRuntimeRecord = null;
-      }
-    };
-
-    refreshRuntimeRecord();
-
-    const spinnerTimer = setInterval(() => {
-      spinnerIndex = (spinnerIndex + 1) % ACTIVE_SPINNER_FRAMES.length;
-      cachedLines = undefined;
-      tui.requestRender();
-    }, 200);
-    spinnerTimer.unref?.();
-
-    // Refresh progress cache from disk every 15s so the widget reflects
-    // task/slice completion mid-unit. Without this, the progress bar only
-    // updates at dispatch time, appearing frozen during long-running units.
-    // 15s (vs 5s) reduces synchronous file I/O on the hot path.
-    const progressRefreshTimer = setInterval(() => {
-      try {
-        if (mid) {
-          updateSliceProgressCache(accessors.getBasePath(), mid.id, slice?.id);
-        }
-        refreshRuntimeRecord();
-        cachedLines = undefined;
-      } catch (err) { /* non-fatal */
-        logWarning("dashboard", `DB status update failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }, 15_000);
-    progressRefreshTimer.unref?.();
-
-    return {
-      render(width: number): string[] {
-        if (cachedLines && cachedWidth === width) return cachedLines;
-
-        // While newSession() is in-flight, session state is mid-mutation.
-        // Accessing cmdCtx.sessionManager or cmdCtx.getContextUsage() can
-        // block the render loop and freeze the TUI. Return the last cached
-        // frame (or an empty frame on first render) until the switch settles.
-        if (accessors.isSessionSwitching()) {
-          return cachedLines ?? [];
-        }
-
-        const ui = makeUI(theme, width);
-        const lines: string[] = [];
-        const pad = INDENT.base;
-
-        // ── Line 1: Top bar ───────────────────────────────────────────────
-        lines.push(...ui.bar());
-
-        const spinner = theme.fg("accent", ACTIVE_SPINNER_FRAMES[spinnerIndex]);
-        const elapsed = formatAutoElapsed(accessors.getAutoStartTime());
-        const modeTag = accessors.isStepMode() ? "NEXT" : "AUTO";
-
-        // Health indicator in header
-        const score = computeProgressScore();
-        const runtimeSignal = formatRuntimeHealthSignal(cachedRuntimeRecord);
-        const healthLevel = runtimeSignal?.level ?? score.level;
-        const healthSummary = runtimeSignal?.summary ?? score.summary;
-        const healthColor = healthLevel === "green" ? "success"
-          : healthLevel === "yellow" ? "warning"
-            : "error";
-        const healthIcon = healthLevel === "green" ? GLYPH.statusActive
-          : healthLevel === "yellow" ? "!"
-            : "x";
-        const activeState = runtimeSignal?.state === "waiting" ? "waiting" : "running";
-        const stateColor = runtimeSignal?.state === "waiting" ? "warning" : "success";
-        const healthParts: string[] = [];
-        if (runtimeSignal?.summary) {
-          healthParts.push(theme.fg(healthColor, healthSummary));
-        } else if (healthLevel !== "green") {
-          healthParts.push(`${theme.fg(healthColor, healthIcon)} ${theme.fg(healthColor, healthSummary)}`);
-        }
-
-        const headerLeft = [
-          `${pad}${spinner} ${theme.fg("accent", theme.bold("GSD"))}`,
-          theme.fg("success", modeTag),
-          theme.fg(stateColor, activeState),
-          ...healthParts,
-        ].join(` ${theme.fg("dim", "·")} `);
-
-        // ETA in header right, after elapsed
-        const eta = estimateTimeRemaining();
-        const etaShort = eta ? eta.replace(" remaining", " left") : null;
-        const headerRight = elapsed
-          ? (etaShort
-            ? `${theme.fg("dim", elapsed)} ${theme.fg("dim", "·")} ${theme.fg("dim", etaShort)}`
-            : theme.fg("dim", elapsed))
-          : "";
-        lines.push(rightAlign(headerLeft, headerRight, width));
-
-        // Show health signal details when degraded (yellow/red)
-        if (runtimeSignal?.detail && widgetMode !== "min") {
-          lines.push(`${pad}  ${theme.fg("dim", runtimeSignal.detail)}`);
-        } else if (score.level !== "green" && score.signals.length > 0 && widgetMode !== "min") {
-          // Show up to 3 most relevant signals in compact form
-          const topSignals = score.signals
-            .filter(s => s.kind === "negative")
-            .slice(0, 3);
-          if (topSignals.length > 0) {
-            const signalStr = topSignals
-              .map(s => theme.fg("dim", s.label))
-              .join(theme.fg("dim", " · "));
-            lines.push(`${pad}  ${signalStr}`);
-          }
-        }
-
-        // ── Mode: off — return empty ──────────────────────────────────
-        if (widgetMode === "off") {
-          cachedLines = [];
-          cachedWidth = width;
-          return [];
-        }
-
-        // ── Mode: min — header line only ──────────────────────────────
-        if (widgetMode === "min") {
-          lines.push(...ui.bar());
-          cachedLines = lines;
-          cachedWidth = width;
-          return lines;
-        }
-
-        // ── Mode: small — dense horizontal grid ───────────────────────
-        if (widgetMode === "small") {
-          lines.length = 0;
-          lines.push(...ui.bar());
-
-          const roadmapSlices = mid ? getRoadmapSlicesSync() : null;
-          const unitLabel = unitId || [mid?.id, slice?.id, task?.id].filter(Boolean).join("/");
-          const statusParts = [
-            spinner,
-            theme.fg("success", modeTag),
-            theme.fg(stateColor, activeState),
-          ];
-          if (runtimeSignal?.summary) {
-            statusParts.push(theme.fg(healthColor, healthSummary));
-          } else if (healthLevel !== "green") {
-            statusParts.push(`${theme.fg(healthColor, healthIcon)} ${theme.fg(healthColor, healthSummary)}`);
-          }
-
-          const timeValue = [elapsed, etaShort].filter(Boolean).join(" · ") || "--";
-          const rowOne = widgetGridColumns(theme, width, [
-            `${widgetGridLabel(theme, "status", "border")} ${statusParts.join(" ")}`,
-            `${widgetGridLabel(theme, "unit")} ${theme.fg("text", unitLabel || "--")}`,
-            `${widgetGridLabel(theme, "spend", "border")} ${theme.fg("dim", formatSmallWidgetSpend())}`,
-            `${widgetGridLabel(theme, "time")} ${theme.fg("dim", timeValue)}`,
-          ]);
-
-          const target = task
-            ? `${task.id}: ${task.title}`
-            : slice
-              ? `${slice.id}: ${slice.title}`
-              : unitId;
-
-          let taskValue = task?.id ?? "--";
-          let sliceValue = slice?.id ?? "--";
-          if (shouldRenderRoadmapProgress(roadmapSlices)) {
-            const { done, total, activeSliceTasks } = roadmapSlices;
-            const barWidth = Math.max(4, Math.min(14, Math.floor(width * 0.12)));
-            const bar = renderProgressBar(theme, done, total, barWidth);
-            sliceValue = `${bar} ${theme.fg("text", `${done}/${total}`)}`;
-            if (activeSliceTasks && activeSliceTasks.total > 0) {
-              const taskNum = isHook
-                ? Math.max(activeSliceTasks.done, 1)
-                : Math.min(activeSliceTasks.done + 1, activeSliceTasks.total);
-              taskValue = `${theme.fg("accent", `${taskNum}`)}${theme.fg("dim", `/${activeSliceTasks.total}`)}`;
-            }
-          }
-
-          const rowTwo = widgetGridColumns(theme, width, [
-            `${widgetGridLabel(theme, "phase", "border")} ${theme.fg("dim", unitType)}`,
-            `${widgetGridLabel(theme, "work")} ${theme.fg("text", target || "--")}`,
-            `${widgetGridLabel(theme, "task", "border")} ${taskValue}`,
-            `${widgetGridLabel(theme, "slice")} ${sliceValue}`,
-          ]);
-
-          lines.push(rowOne);
-          lines.push(rowTwo);
-          lines.push(...ui.bar());
-          cachedLines = lines;
-          cachedWidth = width;
-          return lines;
-        }
-
-        // ── Mode: full — complete two-column layout ───────────────────
-        lines.push("");
-
-        // Context section: milestone + slice. Footer owns model/cost/context.
-        const hasContext = !!(mid || (slice && unitType !== "research-milestone" && unitType !== "plan-milestone"));
-        if (mid) {
-          lines.push(truncateToWidth(`${pad}${theme.fg("dim", mid.title)}`, width, "…"));
-        }
-        if (slice && unitType !== "research-milestone" && unitType !== "plan-milestone") {
-          lines.push(truncateToWidth(
-            `${pad}${theme.fg("text", theme.bold(`${slice.id}: ${slice.title}`))}`,
-            width, "…",
-          ));
-        }
-        if (hasContext) lines.push("");
-
-        const target = task ? `${task.id}: ${task.title}` : unitId;
-        const actionLeft = `${pad}${theme.fg("accent", "▸")} ${theme.fg("accent", verb)}  ${theme.fg("text", target)}`;
-        const tierTag = tierBadge ? theme.fg("dim", `[${tierBadge}] `) : "";
-        const phaseBadge = `${tierTag}${theme.fg("dim", phaseLabel)}`;
-        lines.push(rightAlign(actionLeft, phaseBadge, width));
-
-        lines.push("");
-
-        // Two-column body
-        const minTwoColWidth = 76;
-        const roadmapSlices = mid ? getRoadmapSlicesSync() : null;
-        const taskDetailsCol = roadmapSlices?.taskDetails ?? null;
-        const useTwoCol = width >= minTwoColWidth && taskDetailsCol !== null && taskDetailsCol.length > 0;
-        const leftColWidth = useTwoCol
-          ? Math.floor(width * (width >= 100 ? 0.45 : 0.50))
-          : width;
-
-        const leftLines: string[] = [];
-
-        if (shouldRenderRoadmapProgress(roadmapSlices)) {
-          const { done, total, activeSliceTasks } = roadmapSlices;
-          const barWidth = Math.max(6, Math.min(18, Math.floor(leftColWidth * 0.4)));
-          const bar = renderProgressBar(theme, done, total, barWidth);
-
-          let meta = `${theme.fg("text", `${done}`)}${theme.fg("dim", `/${total} slices`)}`;
-          if (activeSliceTasks && activeSliceTasks.total > 0) {
-            const taskNum = isHook
-              ? Math.max(activeSliceTasks.done, 1)
-              : Math.min(activeSliceTasks.done + 1, activeSliceTasks.total);
-            meta += `${theme.fg("dim", " · task ")}${theme.fg("accent", `${taskNum}`)}${theme.fg("dim", `/${activeSliceTasks.total}`)}`;
-          }
-          leftLines.push(`${pad}${bar} ${meta}`);
-        }
-
-        // Build right column: task checklist
-        const rightLines: string[] = [];
-        const maxVisibleTasks = 8;
-
-        // Max visible chars for task title text (before ANSI theming)
-        const maxTaskTitleLen = 45;
-        function truncTitle(s: string): string {
-          return s.length > maxTaskTitleLen ? s.slice(0, maxTaskTitleLen - 1) + "…" : s;
-        }
-
-        function formatTaskLine(t: { id: string; title: string; done: boolean }, isCurrent: boolean): string {
-          const glyph = t.done
-            ? theme.fg("success", "*")
-            : isCurrent
-              ? theme.fg("accent", ">")
-              : theme.fg("dim", ".");
-          const id = isCurrent
-            ? theme.fg("accent", t.id)
-            : t.done
-              ? theme.fg("muted", t.id)
-              : theme.fg("dim", t.id);
-          const short = truncTitle(t.title);
-          const title = isCurrent
-            ? theme.fg("text", short)
-            : t.done
-              ? theme.fg("muted", short)
-              : theme.fg("text", short);
-          return `${glyph} ${id}: ${title}`;
-        }
-
-        if (useTwoCol && taskDetailsCol) {
-          for (const t of taskDetailsCol.slice(0, maxVisibleTasks)) {
-            rightLines.push(formatTaskLine(t, !!(task && t.id === task.id)));
-          }
-          if (taskDetailsCol.length > maxVisibleTasks) {
-            rightLines.push(theme.fg("dim", `  +${taskDetailsCol.length - maxVisibleTasks} more`));
-          }
-        } else if (!useTwoCol && taskDetailsCol && taskDetailsCol.length > 0) {
-          for (const t of taskDetailsCol.slice(0, maxVisibleTasks)) {
-            leftLines.push(`${pad}${formatTaskLine(t, !!(task && t.id === task.id))}`);
-          }
-        }
-
-        // Compose columns
-        if (useTwoCol) {
-          const maxRows = Math.max(leftLines.length, rightLines.length);
-          if (maxRows > 0) {
-            lines.push("");
-            for (let i = 0; i < maxRows; i++) {
-              const left = padRightVisible(truncateToWidth(leftLines[i] ?? "", leftColWidth, "…"), leftColWidth);
-              const right = rightLines[i] ?? "";
-              lines.push(`${left}${right}`);
-            }
-          }
-        } else {
-          if (leftLines.length > 0) {
-            lines.push("");
-            for (const l of leftLines) lines.push(truncateToWidth(l, width, "…"));
-          }
-        }
-
-        // ── Auto controls. Footer owns cwd/branch/model/cost/context. ───
-        lines.push("");
-        // Step-mode guidance — shown above keyboard hints when auto is paused
-        if (accessors.isStepMode()) {
-          lines.push(`${pad}${theme.fg("accent", "→")} ${theme.fg("dim", "/gsd next to advance one step  ·  /gsd status for overview")}`);
-        }
-
-        // Hints line
-        const hintParts: string[] = [];
-        hintParts.push("esc pause");
-        hintParts.push(`${formattedShortcutPair("dashboard")} dashboard`);
-        hintParts.push(`${formattedShortcutPair("parallel")} parallel`);
-        const hintStr = theme.fg("dim", hintParts.join(" | "));
-        lines.push(rightAlign("", hintStr, width));
-
-        lines.push(...ui.bar());
-
-        cachedLines = lines;
-        cachedWidth = width;
-        return lines;
-      },
-      invalidate() {
-        cachedLines = undefined;
-        cachedWidth = undefined;
-      },
-      dispose() {
-        clearInterval(spinnerTimer);
-        if (progressRefreshTimer) clearInterval(progressRefreshTimer);
-      },
-    };
-  });
+  installGsdProgressStrip(ctx, accessors, unitType, unitId, mid, slice, task, isHook, verb);
 }
+
 
 export function setCompletionProgressWidget(
   ctx: ExtensionContext,
@@ -1343,4 +1011,142 @@ function extractMessageText(value: unknown): string | null {
   }
 
   return null;
+}
+
+type MilestoneRef = NonNullable<GSDState["activeMilestone"]>;
+type SliceRef = NonNullable<GSDState["activeSlice"]>;
+type TaskRef = NonNullable<GSDState["activeTask"]>;
+
+function buildGsdProgressPayload(
+  accessors: WidgetStateAccessors,
+  unitType: string,
+  unitId: string,
+  mid: MilestoneRef | null | undefined,
+  slice: SliceRef | null | undefined,
+  task: TaskRef | null | undefined,
+  isHook: boolean,
+  verb: string,
+  runtimeRecord: AutoUnitRuntimeRecord | null,
+): GsdProgressState | undefined {
+  const mode = getWidgetMode();
+  if (mode === "off") return undefined;
+
+  const elapsed = formatAutoElapsed(accessors.getAutoStartTime());
+  const eta = estimateTimeRemaining();
+  const etaShort = eta ? eta.replace(" remaining", " left") : undefined;
+  const modeTag = accessors.isStepMode() ? "NEXT" : "AUTO";
+
+  const target = task
+    ? `${task.id}: ${task.title}`
+    : slice
+      ? `${slice.id}: ${slice.title}`
+      : unitId;
+  const phase = `${verb} ${target}`.trim();
+
+  const roadmapSlices = mid ? getRoadmapSlicesSync() : null;
+  let taskProgress: { done: number; total: number } | undefined;
+  if (shouldRenderRoadmapProgress(roadmapSlices)) {
+    const { activeSliceTasks } = roadmapSlices;
+    if (activeSliceTasks && activeSliceTasks.total > 0) {
+      const taskNum = isHook
+        ? Math.max(activeSliceTasks.done, 1)
+        : Math.min(activeSliceTasks.done + 1, activeSliceTasks.total);
+      taskProgress = { done: taskNum, total: activeSliceTasks.total };
+    }
+  }
+
+  const runtimeSignal = formatRuntimeHealthSignal(runtimeRecord);
+  const score = computeProgressScore();
+  let healthSummary: string | undefined;
+  if (mode !== "min") {
+    if (runtimeSignal?.detail) {
+      healthSummary = runtimeSignal.detail;
+    } else if (score.level !== "green") {
+      healthSummary = score.signals
+        .filter((signal) => signal.kind === "negative")
+        .slice(0, 2)
+        .map((signal) => signal.label)
+        .join(" · ");
+    }
+  }
+
+  const unitLabel = unitId || [mid?.id, slice?.id, task?.id].filter(Boolean).join("/");
+
+  return {
+    phase,
+    modeTag,
+    taskProgress,
+    sliceLabel: slice?.id,
+    taskLabel: task?.id,
+    unitLabel,
+    elapsed,
+    eta: etaShort,
+    healthSummary,
+    path: accessors.getBasePath(),
+    widgetMode: mode,
+  };
+}
+
+function installGsdProgressStrip(
+  ctx: ExtensionContext,
+  accessors: WidgetStateAccessors,
+  unitType: string,
+  unitId: string,
+  mid: MilestoneRef | null | undefined,
+  slice: SliceRef | null | undefined,
+  task: TaskRef | null | undefined,
+  isHook: boolean,
+  verb: string,
+): void {
+  if (!ctx.hasUI || typeof ctx.ui?.setGsdProgress !== "function") return;
+
+  ctx.ui.setWidget("gsd-progress", undefined);
+
+  let cachedRuntimeRecord: AutoUnitRuntimeRecord | null = null;
+  const refreshRuntimeRecord = (): void => {
+    try {
+      cachedRuntimeRecord = readUnitRuntimeRecord(accessors.getBasePath(), unitType, unitId);
+    } catch {
+      cachedRuntimeRecord = null;
+    }
+  };
+  refreshRuntimeRecord();
+
+  const dispose = (): void => {
+    clearInterval(progressRefreshTimer);
+    ctx.ui?.setGsdProgress?.(undefined);
+  };
+
+  const publish = (registerDispose = false): void => {
+    if (accessors.isSessionSwitching()) return;
+    ctx.ui!.setGsdProgress!(
+      buildGsdProgressPayload(
+        accessors,
+        unitType,
+        unitId,
+        mid,
+        slice,
+        task,
+        isHook,
+        verb,
+        cachedRuntimeRecord,
+      ),
+      registerDispose ? dispose : undefined,
+    );
+  };
+
+  const progressRefreshTimer = setInterval(() => {
+    try {
+      if (mid) {
+        updateSliceProgressCache(accessors.getBasePath(), mid.id, slice?.id);
+      }
+      refreshRuntimeRecord();
+      publish();
+    } catch (err) {
+      logWarning("dashboard", `progress strip refresh failed: ${getErrorMessage(err)}`);
+    }
+  }, 15_000);
+  progressRefreshTimer.unref?.();
+
+  publish(true);
 }

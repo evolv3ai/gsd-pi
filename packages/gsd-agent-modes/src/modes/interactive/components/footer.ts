@@ -6,25 +6,27 @@ import type { AgentSession } from "@gsd/agent-core";
 import type { ReadonlyFooterDataProvider } from "@gsd/pi-coding-agent/core/footer-data-provider.js";
 import { theme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { providerAuthBadge, providerDisplayName } from "./model-selector.js";
-import { badge, renderFooterStrip } from "./transcript-design.js";
+import {
+	badge,
+	layoutFullWidthMinimalFooter,
+	renderMinimalFooterLine,
+	renderProgressBar,
+} from "./transcript-design.js";
 import type { GsdStatusWidgetState } from "./gsd-status-widget.js";
-import { gsdStatusCollapsedLine } from "./gsd-status-widget.js";
+import { isGsdStatusWidgetVisible } from "./gsd-status-widget.js";
 
-/**
- * Sanitize text for display in a single-line status.
- * Removes newlines, tabs, carriage returns, and other control characters.
- */
+const CONTEXT_BAR_WIDTH = 6;
+
+/** Extension status keys shown in the footer center when the GSD strip is visible. */
+const PRIMARY_STATUS_KEYS = ["gsd-step", "zz-notifications", "gsd-fast"] as const;
+
 function sanitizeStatusText(text: string): string {
-	// Replace newlines, tabs, carriage returns with space, then collapse multiple spaces
 	return text
 		.replace(/[\r\n\t]/g, " ")
 		.replace(/ +/g, " ")
 		.trim();
 }
 
-/**
- * Format token counts (similar to web-ui)
- */
 function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
 	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
@@ -34,8 +36,51 @@ function formatTokens(count: number): string {
 }
 
 /**
+ * Abbreviate cwd for the footer — `~` for home and descendants only.
+ * @internal Exported for testing only.
+ */
+export function formatCwdForFooter(cwd: string, home = process.env.HOME ?? process.env.USERPROFILE ?? ""): string {
+	if (!home) return cwd;
+	if (cwd === home) return "~";
+	const withSep = home.endsWith("/") ? home : `${home}/`;
+	if (cwd.startsWith(withSep)) {
+		return `~${cwd.slice(home.length)}`;
+	}
+	return cwd;
+}
+
+function pickPrimaryExtensionStatus(
+	statuses: ReadonlyMap<string, string>,
+): { key: string; text: string } | undefined {
+	for (const key of PRIMARY_STATUS_KEYS) {
+		const raw = statuses.get(key);
+		if (!raw) continue;
+		const text = sanitizeStatusText(raw);
+		if (text) return { key, text };
+	}
+	return undefined;
+}
+
+function formatSecondaryExtensionStatuses(
+	statuses: ReadonlyMap<string, string>,
+	excludedKeys: ReadonlySet<string>,
+): string {
+	return Array.from(statuses.entries())
+		.filter(([key]) => !excludedKeys.has(key))
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(([, text]) => sanitizeStatusText(text))
+		.filter(Boolean)
+		.join(" ");
+}
+
+function formatWorkspaceCenter(cwd: string, sessionName?: string): string {
+	const parts = [formatCwdForFooter(cwd)];
+	if (sessionName) parts.push(sessionName);
+	return parts.join(" · ");
+}
+
+/**
  * Format a cost value for compact display.
- * Uses fewer decimal places for larger amounts.
  * @internal Exported for testing only.
  */
 export function formatPromptCost(cost: number): string {
@@ -46,8 +91,7 @@ export function formatPromptCost(cost: number): string {
 }
 
 /**
- * Footer component that shows pwd, token stats, and context usage.
- * Computes token/context stats from session, gets git branch and extension statuses from provider.
+ * Footer component — one minimal status line (branch, model, context, cost).
  */
 export class FooterComponent implements Component {
 	private autoCompactEnabled = true;
@@ -62,21 +106,9 @@ export class FooterComponent implements Component {
 		this.autoCompactEnabled = enabled;
 	}
 
-	/**
-	 * No-op: git branch caching now handled by provider.
-	 * Kept for compatibility with existing call sites in interactive-mode.
-	 */
-	invalidate(): void {
-		// No-op: git branch is cached/invalidated by provider
-	}
+	invalidate(): void {}
 
-	/**
-	 * Clean up resources.
-	 * Git watcher cleanup now handled by provider.
-	 */
-	dispose(): void {
-		// Git watcher cleanup handled by provider
-	}
+	dispose(): void {}
 
 	render(width: number): string[] {
 		const state = this.session.state;
@@ -90,81 +122,86 @@ export class FooterComponent implements Component {
 		const totalCost = usageTotals.cost;
 
 		const displayModel = state.activeInferenceModel ?? state.model;
-
 		const contextUsage = this.session.getContextUsage();
 		const contextWindow = contextUsage?.contextWindow ?? displayModel?.contextWindow ?? 0;
 		const contextPercentValue = contextUsage?.percent ?? 0;
 		const contextPercent = contextUsage?.percent !== null ? contextPercentValue.toFixed(0) : "?";
 
 		const branch = this.footerData.getGitBranch();
-		const branchSegment = branch ? theme.fg("dim", branch) : undefined;
-
 		const modelName = displayModel?.id || "no-model";
-		let modelSegment = theme.fg("text", modelName);
-		if (displayModel?.reasoning) {
-			const thinkingLevel = state.thinkingLevel || "off";
-			modelSegment =
-				thinkingLevel === "off"
-					? theme.fg("text", `${modelName} · thinking off`)
-					: theme.fg("text", `${modelName} · ${thinkingLevel}`);
-		}
 
 		const inputSide = totalInput + totalCacheRead + totalCacheWrite;
 		let cacheSegment: string | undefined;
 		if (totalCacheRead > 0 && inputSide > 0) {
 			const cachedPct = Math.round((totalCacheRead / inputSide) * 100);
-			cacheSegment = theme.fg("success", `${cachedPct}%hit`);
+			cacheSegment = theme.fg("success", `${cachedPct}%↺`);
 		}
 
 		let costSegment: string | undefined;
 		const usingSubscription = displayModel ? this.session.modelRegistry.isUsingOAuth(displayModel) : false;
 		if (totalCost || usingSubscription) {
-			costSegment = theme.fg("warning", `$${totalCost.toFixed(2)}${usingSubscription ? " (sub)" : ""}`);
+			const costLabel = usingSubscription ? `$${totalCost.toFixed(2)}*` : `$${totalCost.toFixed(2)}`;
+			costSegment = theme.fg("warning", costLabel);
 		}
 
-		const gsdActive = gsdState && gsdStatusCollapsedLine(gsdState, width) !== undefined;
-		const gsdSegment = gsdActive
-			? badge("● GSD AUTO", "accent")
-			: badge("● GSD", "default");
-
-		const leftSegments = [gsdSegment, branchSegment, modelSegment, cacheSegment ?? costSegment].filter(
-			(segment): segment is string => !!segment,
-		).slice(0, 4);
+		const gsdWidgetVisible = gsdState ? isGsdStatusWidgetVisible(gsdState, width) : false;
+		const gsdSegment = gsdWidgetVisible ? undefined : badge("● GSD", "default");
 
 		const barColor: "error" | "warning" | "success" =
 			contextPercentValue > 90 ? "error" : contextPercentValue > 70 ? "warning" : "success";
-		const pctText = contextPercent === "?" ? "?" : `${contextPercent}%`;
-		const colorizedPct =
-			contextPercentValue > 90
-				? theme.fg("error", pctText)
-				: contextPercentValue > 70
-					? theme.fg("warning", pctText)
-					: theme.fg("text", pctText);
-		const contextHint = `ctx ${colorizedPct}/${formatTokens(contextWindow)}`;
 
 		const extensionStatuses = this.footerData.getExtensionStatuses();
-		const extStatusText =
-			extensionStatuses.size > 0
-				? Array.from(extensionStatuses.entries())
-						.sort(([a], [b]) => a.localeCompare(b))
-						.map(([, text]) => sanitizeStatusText(text))
-						.join(" ")
-				: "";
+		const primaryStatus = gsdWidgetVisible ? pickPrimaryExtensionStatus(extensionStatuses) : undefined;
+		const secondaryExtText = formatSecondaryExtensionStatuses(
+			extensionStatuses,
+			primaryStatus ? new Set([primaryStatus.key]) : new Set(),
+		);
 
 		let providerSuffix = "";
 		if (this.footerData.getAvailableProviderCount() > 1 && displayModel) {
 			const authMode = this.session.modelRegistry.getProviderAuthMode(displayModel.provider);
 			const authLabel = providerAuthBadge(authMode);
 			const providerLabel = providerDisplayName(displayModel.provider);
-			providerSuffix = authLabel ? ` · ${providerLabel} · ${authLabel}` : ` · ${providerLabel}`;
+			providerSuffix = authLabel ? `${providerLabel} ${authLabel}` : providerLabel;
 		}
 
-		const footerRight = truncateToWidth(
-			`${contextHint}${providerSuffix}${extStatusText ? ` · ${extStatusText}` : ""} · ctrl+shift+d`,
-			Math.max(20, Math.floor(width * 0.45)),
-			"…",
-		);
+		const pctLabel = theme.fg(barColor, contextPercent === "?" ? "?" : `${contextPercent}%`);
+		const tokenHint =
+			contextPercent === "?"
+				? ""
+				: theme.fg("dim", ` ${formatTokens(totalInput + totalOutput)}/${formatTokens(contextWindow)}`);
+		const pct = contextPercent === "?" ? 0 : contextPercentValue;
+		const contextBar = renderProgressBar(pct, 100, CONTEXT_BAR_WIDTH, barColor);
+		const contextSegment = `${contextBar} ${pctLabel}${tokenHint}`;
 
-		return renderFooterStrip(leftSegments, footerRight, width);
+		const leftSegments = [
+			gsdSegment,
+			branch ? theme.fg("dim", branch) : undefined,
+			theme.fg("text", modelName),
+		].filter((segment): segment is string => !!segment);
+
+		const rightSegments = [
+			contextSegment,
+			cacheSegment,
+			costSegment,
+			providerSuffix ? theme.fg("dim", providerSuffix) : undefined,
+			secondaryExtText ? theme.fg("dim", secondaryExtText) : undefined,
+		].filter((segment): segment is string => !!segment);
+
+		const cwd = gsdState?.cwd ?? process.cwd();
+		const sessionName = this.session.sessionManager.getSessionName() ?? gsdState?.sessionName;
+		const centerSource = gsdWidgetVisible
+			? primaryStatus?.text
+			: formatWorkspaceCenter(cwd, sessionName);
+
+		const line = layoutFullWidthMinimalFooter(leftSegments, rightSegments, width, (budget) => {
+			if (!centerSource) return "";
+			const styled = gsdWidgetVisible
+				? theme.fg("text", centerSource)
+				: theme.fg("dim", centerSource);
+			return truncateToWidth(styled, budget, "…");
+		});
+
+		return renderMinimalFooterLine(line, width);
 	}
 }

@@ -41,6 +41,12 @@ import {
 } from "../auto-runtime-state.ts";
 import { formatRtkSavingsLabel } from "../../shared/rtk-session-stats.ts";
 import {
+  createProgressStripUiMock,
+  renderProgressStrip,
+  renderProgressStripLines,
+  assertLinesFit,
+} from "./progress-strip-test-helpers.ts";
+import {
   openDatabase,
   closeDatabase,
   insertMilestone,
@@ -60,15 +66,6 @@ function cleanup(dir: string): void {
     rmSync(dir, { recursive: true, force: true });
   } catch {
     // best-effort
-  }
-}
-
-function assertLinesFit(lines: string[], width: number): void {
-  for (const line of lines) {
-    assert.ok(
-      visibleWidth(line) <= width,
-      `line exceeds width ${width}: ${visibleWidth(line)} "${line}"`,
-    );
   }
 }
 
@@ -408,17 +405,11 @@ test("buildPhaseHandoffOutcome ignores non-assistant trailing messages", () => {
 });
 
 test("updateProgressWidget preserves the phase handoff during session switching", () => {
-  const calls: Array<[string, unknown]> = [];
+  const mock = createProgressStripUiMock();
   updateProgressWidget(
     {
       hasUI: true,
-      ui: {
-        setWidget(key: string, factory: unknown) {
-          calls.push([key, factory]);
-        },
-        setHeader() {},
-        setStatus() {},
-      },
+      ui: mock.ui,
     } as any,
     "execute-task",
     "M005/S01/T01",
@@ -438,25 +429,28 @@ test("updateProgressWidget preserves the phase handoff during session switching"
     },
   );
 
-  assert.ok(calls.some(([key]) => key === "gsd-progress"));
+  assert.equal(
+    mock.getProgressState(),
+    undefined,
+    "progress strip should not publish while session switching is active",
+  );
   assert.ok(
-    !calls.some(([key, value]) => key === "gsd-outcome" && value === undefined),
+    mock.widgetCalls.some(([key, value]) => key === "gsd-progress" && value === undefined),
+    "stale gsd-progress widget slot should still be cleared",
+  );
+  assert.ok(
+    !mock.widgetCalls.some(([key, value]) => key === "gsd-outcome" && value === undefined),
     "handoff widget should stay visible until the next progress frame renders",
   );
+  mock.disposeProgress();
 });
 
 test("updateProgressWidget clears the phase handoff once active progress resumes", () => {
-  const calls: Array<[string, unknown]> = [];
+  const mock = createProgressStripUiMock();
   updateProgressWidget(
     {
       hasUI: true,
-      ui: {
-        setWidget(key: string, factory: unknown) {
-          calls.push([key, factory]);
-        },
-        setHeader() {},
-        setStatus() {},
-      },
+      ui: mock.ui,
     } as any,
     "execute-task",
     "M005/S01/T01",
@@ -476,11 +470,12 @@ test("updateProgressWidget clears the phase handoff once active progress resumes
     },
   );
 
-  assert.ok(calls.some(([key]) => key === "gsd-progress"));
+  assert.ok(mock.getProgressState(), "progress strip state should publish once session switching ends");
   assert.ok(
-    calls.some(([key, value]) => key === "gsd-outcome" && value === undefined),
+    mock.widgetCalls.some(([key, value]) => key === "gsd-outcome" && value === undefined),
     "handoff widget should clear once the active dashboard can render",
   );
+  mock.disposeProgress();
 });
 
 test("shouldRenderRoadmapProgress hides pre-roadmap zero-slice progress", () => {
@@ -636,10 +631,10 @@ test("updateProgressWidget full mode keeps footer-owned signals out of auto deck
   const projectPrefsPath = join(dir, ".gsd", "preferences.md");
   const globalPrefsPath = join(dir, ".gsd", "global-preferences.md");
   writeFileSync(projectPrefsPath, "---\nversion: 1\n---\n", "utf-8");
-  let widget: { render(width: number): string[]; dispose?: () => void } | null = null;
+  const mock = createProgressStripUiMock();
 
   t.after(() => {
-    widget?.dispose?.();
+    mock.disposeProgress();
     _resetWidgetModeForTests();
     clearSliceProgressCache();
     cleanup(dir);
@@ -651,18 +646,7 @@ test("updateProgressWidget full mode keeps footer-owned signals out of auto deck
   updateProgressWidget(
     {
       hasUI: true,
-      ui: {
-        setHeader() {},
-        setStatus() {},
-        setWidget(_key: string, factory: any) {
-          if (_key === "gsd-progress") {
-            widget = factory(
-              { requestRender() {} },
-              { fg: (_color: string, text: string) => text, bold: (text: string) => text },
-            );
-          }
-        },
-      },
+      ui: mock.ui,
       sessionManager: { getSessionId: () => "session-1" },
     } as any,
     "execute-task",
@@ -688,15 +672,13 @@ test("updateProgressWidget full mode keeps footer-owned signals out of auto deck
     },
   );
 
-  const installedWidget = widget as { render(width: number): string[]; dispose?: () => void } | null;
-  assert.ok(installedWidget, "progress widget should be installed");
-  const rendered = installedWidget.render(120).join("\n");
+  const progress = mock.getProgressState();
+  assert.ok(progress, "progress strip state should be published");
+  const rendered = renderProgressStrip(progress!, 120);
 
-  assert.match(rendered, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s+GSD\s+·\s+AUTO\s+·\s+running/);
-  assert.doesNotMatch(rendered.split("\n")[1] ?? "", /M004\/S01\/T01/);
-  assert.match(rendered, /Budget Tracking/);
+  assert.match(rendered, /GSD AUTO/);
   assert.match(rendered, /T01: Add repeat column via idempotent ALTER TABLE/);
-  assert.match(rendered, /dashboard/);
+  assert.match(rendered, /tools/);
   assert.doesNotMatch(rendered, /claude-sonnet-4-6/, "footer owns provider/model display");
   assert.doesNotMatch(rendered, /0\.2%|ctx|1\.0M/, "footer owns raw context meter display");
   assert.doesNotMatch(rendered, /\$/, "footer owns session cost display");
@@ -712,10 +694,10 @@ test("updateProgressWidget small mode renders the dense horizontal grid", (t) =>
   writeFileSync(projectPrefsPath, "---\nversion: 1\nwidget_mode: full\n---\n", "utf-8");
   writeFileSync(globalPrefsPath, "---\nversion: 1\nwidget_mode: full\n---\n", "utf-8");
 
-  const holder: { widget?: RenderableWidget } = {};
+  const mock = createProgressStripUiMock();
 
   t.after(() => {
-    holder.widget?.dispose?.();
+    mock.disposeProgress();
     closeDatabase();
     clearSliceProgressCache();
     _resetWidgetModeForTests();
@@ -736,18 +718,7 @@ test("updateProgressWidget small mode renders the dense horizontal grid", (t) =>
   updateProgressWidget(
     {
       hasUI: true,
-      ui: {
-        setHeader() {},
-        setStatus() {},
-        setWidget(_key: string, factory: any) {
-          if (_key === "gsd-progress") {
-            holder.widget = factory(
-              { requestRender() {} },
-              { fg: (_color: string, text: string) => text, bold: (text: string) => text },
-            );
-          }
-        },
-      },
+      ui: mock.ui,
     } as any,
     "execute-task",
     "M004/S01/T02",
@@ -768,60 +739,40 @@ test("updateProgressWidget small mode renders the dense horizontal grid", (t) =>
     },
   );
 
-  assert.ok(holder.widget, "progress widget should be installed");
-  const widget = holder.widget;
-  const lines = widget.render(120);
-  const rendered = lines.join("\n");
+  const progress = mock.getProgressState();
+  assert.ok(progress, "progress strip state should be published");
+  assert.equal(progress!.widgetMode, "small");
+  const rendered = renderProgressStrip(progress!, 120);
 
-  assert.equal(lines.length, 4, `small widget should render as rule + two dense rows + rule:\n${rendered}`);
-  assert.match(rendered, /STATUS\s+.*AUTO\s+running/);
-  assert.match(rendered, /UNIT\s+M004\/S01\/T02/);
-  assert.match(rendered, /SPEND/);
-  assert.match(rendered, /TIME/);
-  assert.match(rendered, /PHASE\s+execute-task/);
-  assert.match(rendered, /WORK\s+T02: Backfill repeat m/);
-  assert.match(rendered, /TASK\s+2\/2/);
-  assert.match(rendered, /SLICE.*1\/2/);
-  assert.doesNotMatch(rendered, /\/gsd next|\/gsd status/);
-  assert.doesNotMatch(rendered, /dashboard|esc pause/);
+  assert.match(rendered, /GSD AUTO/);
+  assert.match(rendered, /T02: Backfill repeat metadata/);
+  assert.match(rendered, /tasks/);
+  assert.doesNotMatch(rendered, /\/gsd next|\/gsd status|esc pause/);
 
   for (const width of [40, 80, 120]) {
-    widget.invalidate();
-    assertLinesFit(widget.render(width), width);
+    assertLinesFit(renderProgressStripLines(progress!, width, { cwd: dir }), width);
   }
 });
 
 test("updateProgressWidget shows provider-waiting state consistently for auto and next modes", (t) => {
   const dir = makeTempDir("auto-next-dashboard");
   mkdirSync(join(dir, ".gsd"), { recursive: true });
-  const widgets: Array<{ render(width: number): string[]; dispose?: () => void }> = [];
+  const mocks: ReturnType<typeof createProgressStripUiMock>[] = [];
 
   t.after(() => {
-    for (const widget of widgets) widget.dispose?.();
+    for (const mock of mocks) mock.disposeProgress();
     _resetWidgetModeForTests();
     clearSliceProgressCache();
     cleanup(dir);
   });
 
-  function renderDashboard(stepMode: boolean): string {
-    const holder: { widget?: { render(width: number): string[]; dispose?: () => void } } = {};
+  function captureDashboard(stepMode: boolean): string {
+    const mock = createProgressStripUiMock();
+    mocks.push(mock);
     updateProgressWidget(
       {
         hasUI: true,
-        ui: {
-          setHeader() {},
-          setStatus() {},
-          setWidget(_key: string, factory: any) {
-            if (_key === "gsd-progress") {
-              const installed = factory(
-                { requestRender() {} },
-                { fg: (_color: string, text: string) => text, bold: (text: string) => text },
-              );
-              holder.widget = installed;
-              widgets.push(installed);
-            }
-          },
-        },
+        ui: mock.ui,
       } as any,
       "complete-slice",
       "M003/S01",
@@ -842,21 +793,20 @@ test("updateProgressWidget shows provider-waiting state consistently for auto an
       },
     );
 
-    assert.ok(holder.widget, "progress widget should be installed");
-    return holder.widget.render(120).join("\n");
+    const progress = mock.getProgressState();
+    assert.ok(progress, "progress strip state should be published");
+    return renderProgressStrip(progress!, 120, { cwd: dir });
   }
 
-  const autoRendered = renderDashboard(false);
-  const nextRendered = renderDashboard(true);
+  const autoRendered = captureDashboard(false);
+  const nextRendered = captureDashboard(true);
 
-  assert.match(autoRendered, /STATUS\s+.*AUTO\s+running/);
-  assert.match(nextRendered, /STATUS\s+.*NEXT\s+running/);
-  assert.doesNotMatch(autoRendered.split("\n")[1] ?? "", /completing M003\/S01/);
-  assert.doesNotMatch(nextRendered.split("\n")[1] ?? "", /completing M003\/S01/);
+  assert.match(autoRendered, /AUTO/);
+  assert.match(nextRendered, /NEXT/);
+  assert.match(autoRendered, /Completing|complete-slice/i);
+  assert.match(nextRendered, /Completing|complete-slice/i);
   assert.doesNotMatch(autoRendered, /waiting on provider.*Waiting on provider/i);
   assert.doesNotMatch(nextRendered, /waiting on provider.*Waiting on provider/i);
-  assert.match(autoRendered, /PHASE\s+complete-slice/);
-  assert.match(nextRendered, /PHASE\s+complete-slice/);
   assert.doesNotMatch(autoRendered, /Working/);
   assert.doesNotMatch(nextRendered, /Working/);
 });

@@ -34,7 +34,7 @@ test("setExtensionWidget: forces viewport realign when key is gsd-outcome", () =
 test("setExtensionWidget: does not force viewport realign for non-gsd-outcome keys", () => {
 	initTheme("dark", false);
 	const { host, renderCalls } = createWidgetHost();
-	setExtensionWidget(host, "gsd-progress", ["Working..."]);
+	setExtensionWidget(host, "gsd-other", ["Working..."]);
 	assert.equal(renderCalls.length, 0, "requestRender(true) should not be called for non-gsd-outcome keys");
 });
 

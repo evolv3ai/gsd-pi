@@ -4,44 +4,103 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { FooterComponent } from "../../packages/gsd-agent-modes/src/modes/interactive/components/footer.ts";
+import {
+	FooterComponent,
+	formatCwdForFooter,
+} from "../../packages/gsd-agent-modes/src/modes/interactive/components/footer.ts";
 import { initTheme } from "../../packages/pi-coding-agent/src/theme/theme.ts";
 
 initTheme("dark", false);
 
-test("FooterComponent renders a rounded operations-console footer with extension statuses", () => {
-  const footer = new FooterComponent(
-    {
-      state: {
-        model: { id: "test-model", provider: "test", contextWindow: 1000 },
-      },
-      sessionManager: {
-        getUsageTotals: () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }),
-        getSessionName: () => undefined,
-      },
-      getContextUsage: () => ({ percent: 12.5, contextWindow: 1000 }),
-      getLastTurnCost: () => 0,
-      modelRegistry: {
-        isUsingOAuth: () => false,
-        getProviderAuthMode: () => "apiKey",
-      },
-    } as any,
-    {
-      getGitBranch: () => "main",
-      getExtensionStatuses: () => new Map([["one", "ready"], ["two", "synced"]]),
-      getAvailableProviderCount: () => 1,
-    } as any,
-  );
+test("formatCwdForFooter abbreviates home paths only", () => {
+	assert.equal(formatCwdForFooter("/home/user2", "/home/user"), "/home/user2");
+	assert.equal(formatCwdForFooter("/home/user", "/home/user"), "~");
+	assert.equal(formatCwdForFooter("/home/user/project", "/home/user"), "~/project");
+});
 
-  const lines = footer.render(160).map((line) => stripVTControlCharacters(line));
+test("FooterComponent renders workspace in center when GSD strip is hidden", () => {
+	const footer = new FooterComponent(
+		{
+			state: {
+				model: { id: "test-model", provider: "test", contextWindow: 1000 },
+			},
+			sessionManager: {
+				getUsageTotals: () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }),
+				getSessionName: () => "feature-session",
+			},
+			getContextUsage: () => ({ percent: 12.5, contextWindow: 1000 }),
+			getLastTurnCost: () => 0,
+			modelRegistry: {
+				isUsingOAuth: () => false,
+				getProviderAuthMode: () => "apiKey",
+			},
+		} as any,
+		{
+			getGitBranch: () => "main",
+			getExtensionStatuses: () => new Map([["one", "ready"], ["two", "synced"]]),
+			getAvailableProviderCount: () => 1,
+		} as any,
+		() => ({
+			override: "chat",
+			activeToolCount: 0,
+			cwd: "/tmp/gsd-pi",
+			manuallyExpanded: false,
+		}),
+	);
 
-  assert.equal(lines.length, 3);
-  assert.match(lines[0], /^╭─+╮$/);
-  assert.match(lines[1], /^\│/);
-  assert.match(lines[1], /\(main\)/);
-  assert.match(lines[1], /ready synced\s*│$/);
-  assert.match(lines[1], /● GSD/);
-  assert.match(lines[1], /● GSD  │  .* \(main\)  │  /);
-  assert.match(lines[1], /12\.5%\/1\.0k/);
-  assert.match(lines[2], /^╰─+╯$/);
+	const lines = footer.render(160).map((line) => stripVTControlCharacters(line));
+
+	assert.equal(lines.length, 1);
+	assert.match(lines[0], /main/);
+	assert.match(lines[0], /test-model/);
+	assert.match(lines[0], /13%/);
+	assert.match(lines[0], /feature-session/);
+	assert.match(lines[0], /\/tmp\/gsd-pi/);
+	assert.match(lines[0], /ready synced/);
+	assert.match(lines[0], /● GSD/);
+	assert.doesNotMatch(lines[0], /╭/);
+});
+
+test("FooterComponent promotes gsd-step to center when GSD strip is visible", () => {
+	const footer = new FooterComponent(
+		{
+			state: {
+				model: { id: "test-model", provider: "test", contextWindow: 1000 },
+			},
+			sessionManager: {
+				getUsageTotals: () => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 }),
+				getSessionName: () => undefined,
+			},
+			getContextUsage: () => ({ percent: 40, contextWindow: 1000 }),
+			getLastTurnCost: () => 0,
+			modelRegistry: {
+				isUsingOAuth: () => false,
+				getProviderAuthMode: () => "apiKey",
+			},
+		} as any,
+		{
+			getGitBranch: () => "main",
+			getExtensionStatuses: () =>
+				new Map([
+					["gsd-fast", "fast: priority"],
+					["gsd-step", "Executing Task · follow progress above"],
+					["ollama", "Ollama"],
+				]),
+			getAvailableProviderCount: () => 1,
+		} as any,
+		() => ({
+			override: "auto",
+			activeToolCount: 1,
+			gsdPhase: "Executing T03",
+			cwd: "/tmp/gsd-pi",
+			manuallyExpanded: true,
+		}),
+	);
+
+	const lines = footer.render(160).map((line) => stripVTControlCharacters(line));
+
+	assert.match(lines[0], /Executing Task/);
+	assert.match(lines[0], /Ollama/);
+	assert.match(lines[0], /fast: priority/);
+	assert.doesNotMatch(lines[0], /● GSD/);
 });

@@ -99,6 +99,8 @@ export class InteractiveMode {
 	private pendingMessagesContainer: Container;
 	private gsdStatusWidget: GsdStatusWidget;
 	private gsdStatusExpanded = false;
+	private gsdProgressState: import("@gsd/pi-coding-agent/core/extensions/extension-upstream-types.js").GsdProgressState | undefined;
+	private gsdProgressDispose?: () => void;
 	private statusContainer: Container;
 	private pinnedMessageContainer: Container;
 	private blockingErrorContainer: Container;
@@ -187,11 +189,12 @@ export class InteractiveMode {
 		this.gsdStatusWidget = new GsdStatusWidget(() => ({
 			override: this.settingsManager.getAdaptiveMode(),
 			activeToolCount: this.pendingTools.size,
-			gsdPhase: this.pendingWorkingMessage ?? undefined,
+			gsdPhase: this.gsdProgressState?.phase ?? this.pendingWorkingMessage ?? undefined,
 			lastError: this.lastBlockingError,
 			sessionName: this.sessionManager.getSessionName(),
-			cwd: process.cwd(),
+			cwd: this.gsdProgressState?.path ?? process.cwd(),
 			manuallyExpanded: this.gsdStatusExpanded,
+			gsdProgress: this.gsdProgressState,
 		}));
 		this.statusContainer = new Container();
 		this.pinnedMessageContainer = new Container();
@@ -463,6 +466,7 @@ export class InteractiveMode {
 	private formatWebSearchResult(content: unknown): string { return extensionSystem.formatWebSearchResult(this, content); }
 	private setupExtensionShortcuts(extensionRunner: ExtensionRunner): void { extensionSystem.setupExtensionShortcuts(this, extensionRunner); }
 	private setExtensionStatus(key: string, text: string | undefined): void { extensionSystem.setExtensionStatus(this, key, text); }
+	private setGsdProgress(state: Parameters<typeof extensionSystem.setGsdProgress>[1], dispose?: () => void): void { extensionSystem.setGsdProgress(this, state, dispose); }
 	private setExtensionWidget(key: string, content: Parameters<typeof extensionSystem.setExtensionWidget>[2], options?: Parameters<typeof extensionSystem.setExtensionWidget>[3]): void { extensionSystem.setExtensionWidget(this, key, content, options); }
 	private clearExtensionWidgets(): void { extensionSystem.clearExtensionWidgets(this); }
 	private resetExtensionUI(): void { extensionSystem.resetExtensionUI(this); }

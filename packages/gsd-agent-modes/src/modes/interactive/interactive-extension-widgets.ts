@@ -123,8 +123,25 @@ export async function initExtensions(host: InteractiveModeDelegateHost): Promise
 
 export function setExtensionStatus(host: InteractiveModeDelegateHost, key: string, text: string | undefined): void {
 		host.footerDataProvider.setExtensionStatus(key, text);
+		host.footer.invalidate();
 		host.ui.requestRender();
 	}
+
+export function setGsdProgress(
+	host: InteractiveModeDelegateHost,
+	state: import("@gsd/pi-coding-agent/core/extensions/extension-upstream-types.js").GsdProgressState | undefined,
+	dispose?: () => void,
+): void {
+	if (dispose !== undefined) {
+		host.gsdProgressDispose?.();
+		host.gsdProgressDispose = dispose;
+	} else if (state === undefined) {
+		host.gsdProgressDispose?.();
+		host.gsdProgressDispose = undefined;
+	}
+	host.gsdProgressState = state;
+	host.ui.requestRender();
+}
 
 	/**
 	 * Set an extension widget (string array or custom component).
@@ -203,6 +220,9 @@ export function resetExtensionUI(host: InteractiveModeDelegateHost): void {
 		host.setExtensionFooter(undefined);
 		host.setExtensionHeader(undefined);
 		clearExtensionWidgets(host, );
+		host.gsdProgressDispose?.();
+		host.gsdProgressDispose = undefined;
+		host.gsdProgressState = undefined;
 		host.footerDataProvider.clearExtensionStatuses();
 		host.footer.invalidate();
 		host.setCustomEditorComponent(undefined);
