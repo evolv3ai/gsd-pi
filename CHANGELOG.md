@@ -9,6 +9,7 @@ This changelog starts from the `open-gsd/gsd-pi` ownership baseline. Earlier pro
 ## [Unreleased]
 
 ### Fixed
+- **tui**: exit gracefully when stdout closes during interactive shutdown instead of crashing on terminal write errors
 - **gsd**: stop external engines from getting permanently stuck on "Discussion already in progress" — on claude-code-cli the host ingests the model turn's tool blocks after the workflow subprocess already verified the discuss depth gate, so re-arming the gate post-hoc wiped that verification and silently blocked the discuss→auto handoff; the re-arm is now skipped for an already-verified gate, relayed MCP gate answers are read from `result.structuredContent`, and a milestone left stuck by an earlier clobber self-recovers on the next `/gsd`
 - **gsd**: durably commit interactive milestone completions — completing a milestone outside auto-mode now commits the working tree where the work sits instead of silently bypassing `git.isolation`; under configured worktree/branch isolation a milestone closed outside its milestone worktree/branch surfaces a Needs Attention notice rather than finishing with untracked source files and no merge
 - **gsd**: honor an adopted stranded-milestone branch when auto mode re-enters the milestone — resuming saved milestone work no longer fails worktree creation with "already in use by another worktree" and stops emitting a degraded-isolation warning on every re-entry; configured worktree isolation is restored for the next milestone once the recovered one merges

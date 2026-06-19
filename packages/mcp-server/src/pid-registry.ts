@@ -311,7 +311,16 @@ function normalizeCommandPath(value: string): string {
 }
 
 function resolveComparableProjectPath(projectDir: string): string {
-  if (/^[A-Za-z]:[\\/]/.test(projectDir) || projectDir.startsWith('\\\\')) {
+  if (
+    /^[A-Za-z]:[\\/]/.test(projectDir) ||
+    projectDir.startsWith('\\\\') ||
+    projectDir.startsWith('/')
+  ) {
+    // Already an absolute path (Windows drive-letter, UNC, or POSIX). Do NOT
+    // call path.resolve(), which would prepend the current drive letter on
+    // Windows and turn a POSIX path like /workspace/project into
+    // C:/workspace/project, breaking command-path matching when the process
+    // command still contains the raw POSIX prefix.
     return normalizeCommandPath(projectDir);
   }
   return normalizeCommandPath(resolve(projectDir));

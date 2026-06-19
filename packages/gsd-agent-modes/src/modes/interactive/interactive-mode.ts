@@ -250,6 +250,10 @@ export class InteractiveMode {
 		this.renderInitialMessages();
 
 		this.ui.start();
+		this.ui.onOutputClosed = () => {
+			if (this.isShuttingDown) return;
+			void keyHandlers.shutdown(this);
+		};
 		this.installStdinErrorRecovery();
 		this.isInitialized = true;
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added `TUI.onOutputClosed`, `Terminal.outputClosed`, `Terminal.setOutputClosedHandler()`, and `isStdoutClosedError()` so embedders can react when terminal output closes.
+
+### Fixed
+
+- Fixed closed stdout writes (`EIO`, `EPIPE`, and EOF) to stop the TUI render loop and notify callers instead of crashing during shutdown.
+
 ## [0.75.5] - 2026-05-23
 
 ### Changed
