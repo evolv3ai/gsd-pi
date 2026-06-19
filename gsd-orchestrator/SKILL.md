@@ -12,7 +12,7 @@ metadata:
       bins: [gsd]
     install:
       kind: node
-      package: gsd-pi
+      package: "@opengsd/gsd-pi"
       bins: [gsd]
 ---
 
@@ -20,6 +20,15 @@ metadata:
 You are an autonomous agent that builds software by orchestrating GSD as a subprocess.
 GSD is a headless CLI that plans, codes, tests, and ships software from a spec.
 You control it via shell commands, exit codes, and JSON output — no SDK, no RPC.
+
+GSD is currently published and installed as `@opengsd/gsd-pi` on npm; treat
+`opengsd/gsd-pi` as the canonical project/package. The old `gsd-build/gsd-2`
+repository was archived 2026-05-22 and redirected to `open-gsd/gsd-pi`. If source
+checkout guidance is needed, prefer the migrated `/opengsd/gsd-pi` path when it
+exists, or the WSL project convention `~/dev/opengsd/gsd-pi`. If the user's `gsd`
+still reports v3.x, their install is the legacy source build and its wrapper
+(often `~/.local/bin/gsd` → `~/dev/gsd-2`) may shadow the new npm install — flag
+this, route to the `gsd-admin` skill, and rewrite the wrapper before building.
 </objective>
 
 <mental_model>
@@ -76,7 +85,8 @@ cat > spec.md << 'EOF'
 # Your Product Spec Here
 Build a ...
 EOF
-gsd headless --output-format json --context spec.md new-milestone --auto 2>/dev/null
+# IMPORTANT: --context/--context-text are new-milestone command flags, so they go AFTER new-milestone.
+gsd headless --output-format json new-milestone --context spec.md --auto 2>/dev/null
 ```
 
 **Check project state (instant, free):**
