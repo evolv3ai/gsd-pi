@@ -1,7 +1,7 @@
 // Project/App: gsd-pi
 // File Purpose: Shared terminal rendering helpers for GSD extension TUI surfaces.
 
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@gsd/pi-tui";
+import { style, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@gsd/pi-tui";
 
 export interface ThemeLike {
   fg(color: string, text: string): string;
@@ -107,21 +107,16 @@ export function renderPanel(
   }
 
   const ruleColor = options.ruleColor ?? "borderAccent";
-  const indent = Math.max(0, options.indent ?? 2);
-  const rule = (text: string) => theme.fg(ruleColor, text);
+  const paddingX = Math.max(0, options.indent ?? 0);
+  const surface = style()
+    .border("open")
+    .title(title, (text) => theme.fg(ruleColor, text))
+    .borderColor((text) => theme.fg(ruleColor, text))
+    .paddingX(paddingX)
+    .bottomRule(true);
 
-  // Header rule: "── <title> ───────"
-  const lead = "── ";
-  const headerUsed = visibleWidth(lead) + visibleWidth(title) + 1;
-  const headerFill = Math.max(0, width - headerUsed);
-  const header = safeLine(rule(lead) + title + " " + rule("─".repeat(headerFill)), width, "");
-
-  // Body lines, indented so no chrome sits on copyable text.
-  const pad = " ".repeat(indent);
-  const contentWidth = Math.max(0, width - indent);
-  const body = inner.map((line) => safeLine(pad + safeLine(line, contentWidth), width, ""));
-
-  return [header, "", ...body, rule("─".repeat(width))];
+  const body = inner.length > 0 ? inner : [""];
+  return surface.render(body, width);
 }
 
 export function renderFrame(

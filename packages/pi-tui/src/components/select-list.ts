@@ -65,8 +65,11 @@ export class SelectList implements Component {
 
 	setFilter(filter: string): void {
 		this.filteredItems = this.items.filter((item) => item.value.toLowerCase().startsWith(filter.toLowerCase()));
-		// Reset selection when filter changes
-		this.selectedIndex = 0;
+		// Reset selection when filter changes; clamp so empty lists never leave a stale index.
+		this.selectedIndex =
+			this.filteredItems.length === 0
+				? 0
+				: clamp(this.selectedIndex, 0, this.filteredItems.length - 1);
 	}
 
 	setSelectedIndex(index: number): void {
@@ -259,6 +262,8 @@ export class SelectList implements Component {
 	}
 
 	private notifySelectionChange(): void {
+		if (this.filteredItems.length === 0) return;
+		this.selectedIndex = clamp(this.selectedIndex, 0, this.filteredItems.length - 1);
 		const selectedItem = this.filteredItems[this.selectedIndex];
 		if (selectedItem && this.onSelectionChange) {
 			this.onSelectionChange(selectedItem);

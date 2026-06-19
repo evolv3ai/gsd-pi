@@ -531,6 +531,7 @@ export class TUI extends Container {
 
 	override invalidate(): void {
 		super.invalidate();
+		this._lastRenderedComponents = null;
 		for (const overlay of this.overlayStack) overlay.component.invalidate?.();
 	}
 

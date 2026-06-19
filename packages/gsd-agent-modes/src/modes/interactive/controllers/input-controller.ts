@@ -2,6 +2,7 @@ import type { ImageContent } from "@gsd/pi-ai";
 import { dispatchSlashCommand } from "../slash-command-handlers.js";
 import type { InteractiveModeStateHost } from "../interactive-mode-state.js";
 import type { ContextualTips } from "@gsd/agent-core";
+import * as modeInit from "../interactive-mode-init.js";
 
 /**
  * Consume and clear any pending pasted images from the host.
@@ -48,6 +49,8 @@ export function setupEditorSubmitHandler(host: InteractiveModeStateHost & {
 	const onSubmit = async (text: string) => {
 		text = text.trim();
 		if (!text) return;
+
+		modeInit.dismissStartupHeader(host as Parameters<typeof modeInit.dismissStartupHeader>[0]);
 
 		if (text.startsWith("/") && !looksLikeFilePath(text)) {
 			const handled = await dispatchSlashCommand(text, host.getSlashCommandContext());

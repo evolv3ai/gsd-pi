@@ -22,7 +22,7 @@ import type { ExtensionRunner } from "@gsd/pi-coding-agent/core/extensions/index
 import { FooterDataProvider } from "@gsd/pi-coding-agent/core/footer-data-provider.js";
 import { KeybindingsManager } from "@gsd/agent-core";
 import { ensureTool } from "@gsd/pi-coding-agent/utils/tools-manager.js";
-import { AdaptiveLayoutComponent } from "./components/adaptive-layout.js";
+import { GsdStatusWidget } from "./components/gsd-status-widget.js";
 import { AssistantMessageComponent } from "./components/assistant-message.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
 import { CustomEditor } from "./components/custom-editor.js";
@@ -97,7 +97,8 @@ export class InteractiveMode {
 	private ui: TUI;
 	private chatContainer: Container;
 	private pendingMessagesContainer: Container;
-	private adaptiveLayout: AdaptiveLayoutComponent;
+	private gsdStatusWidget: GsdStatusWidget;
+	private gsdStatusExpanded = false;
 	private statusContainer: Container;
 	private pinnedMessageContainer: Container;
 	private blockingErrorContainer: Container;
@@ -119,6 +120,7 @@ export class InteractiveMode {
 	private lastSigintTime = 0;
 	private lastEscapeTime = 0;
 	private changelogMarkdown: string | undefined = undefined;
+	private startupHeaderDismissed = false;
 
 	private lastStatusSpacer: Spacer | undefined = undefined;
 	private lastStatusText: Text | undefined = undefined;
@@ -182,13 +184,14 @@ export class InteractiveMode {
 		this.headerContainer = new Container();
 		this.chatContainer = new Container();
 		this.pendingMessagesContainer = new Container();
-		this.adaptiveLayout = new AdaptiveLayoutComponent(() => ({
+		this.gsdStatusWidget = new GsdStatusWidget(() => ({
 			override: this.settingsManager.getAdaptiveMode(),
 			activeToolCount: this.pendingTools.size,
 			gsdPhase: this.pendingWorkingMessage ?? undefined,
 			lastError: this.lastBlockingError,
 			sessionName: this.sessionManager.getSessionName(),
 			cwd: process.cwd(),
+			manuallyExpanded: this.gsdStatusExpanded,
 		}));
 		this.statusContainer = new Container();
 		this.pinnedMessageContainer = new Container();
@@ -206,7 +209,14 @@ export class InteractiveMode {
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor as import("@gsd/pi-tui").Component);
 		this.footerDataProvider = new FooterDataProvider(process.cwd());
-		this.footer = new FooterComponent(session, this.footerDataProvider);
+		this.footer = new FooterComponent(session, this.footerDataProvider, () => ({
+			override: this.settingsManager.getAdaptiveMode(),
+			activeToolCount: this.pendingTools.size,
+			gsdPhase: this.pendingWorkingMessage ?? undefined,
+			lastError: this.lastBlockingError,
+			cwd: process.cwd(),
+			manuallyExpanded: this.gsdStatusExpanded,
+		}));
 		this.footer.setAutoCompactEnabled(session.autoCompactionEnabled);
 		this.toolOutputExpanded = this.settingsManager.getToolsExpanded();
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
@@ -231,7 +241,6 @@ export class InteractiveMode {
 		this.ui.addChild(this.headerContainer);
 		modeInit.mountStartupHeader(this);
 
-		this.ui.addChild(this.adaptiveLayout);
 		this.ui.addChild(this.chatContainer);
 		this.ui.addChild(this.pendingMessagesContainer);
 		this.ui.addChild(this.statusContainer);
@@ -511,6 +520,12 @@ export class InteractiveMode {
 	private async cycleModel(direction: "forward" | "backward"): Promise<void> { return keyHandlers.cycleModel(this, direction); }
 	private toggleToolOutputExpansion(): void { keyHandlers.toggleToolOutputExpansion(this); }
 	private setToolsExpanded(expanded: boolean): void { keyHandlers.setToolsExpanded(this, expanded); }
+	toggleGsdStatusWidget(): void {
+		this.gsdStatusExpanded = !this.gsdStatusExpanded;
+		this.gsdStatusWidget.invalidate();
+		this.footer.invalidate();
+		this.ui.requestRender();
+	}
 	private setToolRailAnimation(enabled: boolean): void {
 		this.settingsManager.setToolRailAnimation(enabled);
 		setRailAnimationEnabled(enabled);

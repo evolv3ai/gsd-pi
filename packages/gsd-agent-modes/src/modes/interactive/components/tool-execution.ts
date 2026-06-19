@@ -772,6 +772,27 @@ export class ToolExecutionComponent extends Container {
 		this.updateDisplay();
 	}
 
+	private shouldDefaultExpandBody(): boolean {
+		if (this.expanded) return true;
+		if (this.result?.isError) return false;
+		const name = this.normalizedToolName;
+		if (name === "edit") {
+			return !!(
+				this.editDiffPreview &&
+				"diff" in this.editDiffPreview &&
+				this.editDiffPreview.diff
+			);
+		}
+		if (name === "write") {
+			return !this.isPartial;
+		}
+		return false;
+	}
+
+	private showExpandedBody(): boolean {
+		return this.shouldDefaultExpandBody();
+	}
+
 	setShowImages(show: boolean): void {
 		this.showImages = show;
 		this.updateDisplay();
@@ -800,7 +821,7 @@ export class ToolExecutionComponent extends Container {
 		const recommendedTone: StatusTone =
 			frameTone === "pending" ? "running" : frameTone === "error" ? "error" : "success";
 
-		if (this.normalizedToolName === "bash" && !this.expanded && !this.result?.isError) {
+		if (this.normalizedToolName === "bash" && !this.showExpandedBody() && !this.result?.isError) {
 			const command = str(this.args?.command);
 			return renderCommandCard(command && command.length > 0 ? formatCommandPreview(command) : frameLabel, frameWidth, {
 				status: frameStatus,
@@ -808,7 +829,7 @@ export class ToolExecutionComponent extends Container {
 			});
 		}
 		const hasImages = this.result?.content?.some((block) => block.type === "image") ?? false;
-		if (!this.expanded && !this.result?.isError && !hasImages) {
+		if (!this.showExpandedBody() && !this.result?.isError && !hasImages) {
 			const compactTarget = this.getCompactTarget();
 			return renderToolLineCard(frameLabel, compactTarget, frameWidth, {
 				status: frameStatus,

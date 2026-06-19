@@ -231,6 +231,9 @@ export function renderWidgets(host: InteractiveModeDelegateHost): void {
 			render: () => pinned.children.length > 0 ? [] : [""],
 			invalidate: () => {},
 		});
+		if (host.gsdStatusWidget) {
+			host.widgetContainerAbove.addChild(host.gsdStatusWidget);
+		}
 		for (const component of host.extensionWidgetsAbove.values()) {
 			host.widgetContainerAbove.addChild(component);
 		}
