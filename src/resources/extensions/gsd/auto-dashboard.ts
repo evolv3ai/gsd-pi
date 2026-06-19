@@ -1134,7 +1134,10 @@ function installGsdProgressStrip(
 
   const publish = (registerDispose = false): boolean => {
     if (accessors.isSessionSwitching()) {
-      ctx.ui!.setGsdProgress!(undefined);
+      // Only clear on initial install; timer refreshes must not dispose intervals.
+      if (registerDispose) {
+        ctx.ui!.setGsdProgress!(undefined);
+      }
       return false;
     }
     ctx.ui!.setGsdProgress!(

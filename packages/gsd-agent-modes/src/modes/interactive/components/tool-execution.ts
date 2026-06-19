@@ -775,17 +775,6 @@ export class ToolExecutionComponent extends Container {
 	private shouldDefaultExpandBody(): boolean {
 		if (this.expanded) return true;
 		if (this.result?.isError) return false;
-		const name = this.normalizedToolName;
-		if (name === "edit") {
-			return !!(
-				this.editDiffPreview &&
-				"diff" in this.editDiffPreview &&
-				this.editDiffPreview.diff
-			);
-		}
-		if (name === "write") {
-			return !this.isPartial;
-		}
 		return false;
 	}
 

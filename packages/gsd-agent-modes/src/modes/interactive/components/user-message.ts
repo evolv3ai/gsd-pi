@@ -56,6 +56,7 @@ export class UserMessageComponent extends Container {
 			label: "You",
 			meta,
 			tone: "user",
+			trailingBlank: false,
 		});
 		if (framed.length === 0) {
 			return framed;

@@ -47,10 +47,7 @@ export function isGsdStatusWidgetVisible(state: GsdStatusWidgetState, width: num
 function renderProgressDrivenStrip(state: GsdStatusWidgetState, width: number): string[] {
 	const progress = state.gsdProgress!;
 	const autoExpand = !!state.lastError;
-	const expanded =
-		state.manuallyExpanded ||
-		autoExpand ||
-		(progress.widgetMode !== "min" && progress.widgetMode !== undefined);
+	const expanded = state.manuallyExpanded || autoExpand;
 
 	const phase = progress.phase || state.gsdPhase || "Ready";
 	const modeTag =
