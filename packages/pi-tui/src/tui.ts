@@ -9,6 +9,7 @@ import { performance } from "node:perf_hooks";
 import { isKeyRelease, matchesKey } from "./keys.js";
 import { isMouseEvent, type MouseEvent, parseMouseEvent } from "./mouse.js";
 import type { Terminal } from "./terminal.js";
+import { isStdoutClosedError } from "./terminal.js";
 import {
 	deleteKittyImage,
 	getCapabilities,
@@ -322,6 +323,9 @@ export class TUI extends Container {
 
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
 	public onDebug?: () => void;
+	/** Called once when terminal output is no longer writable (pipe closed). */
+	public onOutputClosed?: () => void;
+	private outputClosedHandled = false;
 	private renderRequested = false;
 	private renderTimer: NodeJS.Timeout | undefined;
 	private lastRenderAt = 0;
@@ -531,14 +535,17 @@ export class TUI extends Container {
 
 	override invalidate(): void {
 		super.invalidate();
+		this._lastRenderedComponents = null;
 		for (const overlay of this.overlayStack) overlay.component.invalidate?.();
 	}
 
 	start(): void {
 		this.stopped = false;
+		this.outputClosedHandled = false;
 		if (!this.terminal.isTTY) {
 			return;
 		}
+		this.terminal.setOutputClosedHandler?.(() => this.notifyOutputClosed());
 		this.terminal.start(
 			(data) => this.handleInput(data),
 			() => this.requestRender(),
@@ -546,6 +553,31 @@ export class TUI extends Container {
 		this.terminal.hideCursor();
 		this.queryCellSize();
 		this.requestRender();
+	}
+
+	private notifyOutputClosed(): void {
+		if (this.outputClosedHandled) return;
+		this.outputClosedHandled = true;
+		this.stopped = true;
+		if (this.renderTimer) {
+			clearTimeout(this.renderTimer);
+			this.renderTimer = undefined;
+		}
+		this.renderRequested = false;
+		this.onOutputClosed?.();
+	}
+
+	private safeDoRender(): void {
+		if (this.stopped || this.terminal.outputClosed) return;
+		try {
+			this.doRender();
+		} catch (err) {
+			if (isStdoutClosedError(err)) {
+				this.notifyOutputClosed();
+				return;
+			}
+			throw err;
+		}
 	}
 
 	addInputListener(listener: InputListener): () => void {
@@ -602,7 +634,7 @@ export class TUI extends Container {
 	}
 
 	requestRender(force = false): void {
-		if (!this.terminal.isTTY) {
+		if (!this.terminal.isTTY || this.terminal.outputClosed) {
 			return;
 		}
 		if (force) {
@@ -624,7 +656,7 @@ export class TUI extends Container {
 				}
 				this.renderRequested = false;
 				this.lastRenderAt = performance.now();
-				this.doRender();
+				this.safeDoRender();
 			});
 			return;
 		}
@@ -646,7 +678,7 @@ export class TUI extends Container {
 			}
 			this.renderRequested = false;
 			this.lastRenderAt = performance.now();
-			this.doRender();
+			this.safeDoRender();
 			if (this.renderRequested) {
 				this.scheduleRender();
 			}
