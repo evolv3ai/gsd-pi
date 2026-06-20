@@ -531,7 +531,7 @@ export class InteractiveMode {
 		// Compute the effective expansion so the toggle always visually flips:
 		// undefined = use widgetMode default, otherwise use the explicit value.
 		const progress = this.gsdProgressState;
-		const defaultExpanded = progress !== undefined && progress.widgetMode !== "min" && progress.widgetMode !== undefined;
+		const defaultExpanded = progress !== undefined && progress.widgetMode !== "min";
 		const currentlyExpanded = this.gsdStatusExpanded !== undefined ? this.gsdStatusExpanded : defaultExpanded;
 		this.gsdStatusExpanded = !currentlyExpanded;
 		this.gsdStatusWidget.invalidate();
