@@ -438,7 +438,8 @@ test("handleAgentEvent: agent_start suppresses loader when extension requested n
 
 	assert.equal(host.loadingAnimation, undefined);
 	assert.equal(host.pendingWorkingMessage, null);
-	assert.equal(addChildCalled, false);
+	assert.equal(typeof host.activityLoader, "object");
+	assert.equal(addChildCalled, true);
 	assert.equal(requestedRender, true);
 });
 

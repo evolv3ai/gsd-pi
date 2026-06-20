@@ -111,8 +111,8 @@ function registerPendingToolComponent(
 function startLoadingAnimation(host: InteractiveModeStateHost): void {
 	if (host.pendingWorkingMessage === null) {
 		host.loadingAnimation = undefined;
-		stopActivityIndicator(host);
 		host.statusContainer.clear();
+		startActivityIndicator(host);
 		return;
 	}
 
