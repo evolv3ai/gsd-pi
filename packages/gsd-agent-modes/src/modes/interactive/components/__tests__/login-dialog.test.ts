@@ -1,5 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import * as childProcess from "node:child_process";
 import {
 	EditorKeybindingsManager,
 	setEditorKeybindings,
@@ -7,7 +8,12 @@ import {
 	type Terminal,
 } from "@gsd/pi-tui";
 import { initTheme } from "@gsd/pi-coding-agent/theme/theme.js";
-import { buildAuthUrlPresentation, LoginDialogComponent } from "../login-dialog.js";
+import {
+	buildAuthUrlPresentation,
+	buildExternalUrlOpenCommand,
+	LoginDialogComponent,
+	openExternalUrl,
+} from "../login-dialog.js";
 
 function makeTerminal(): Terminal {
 	return {
@@ -94,5 +100,48 @@ describe("LoginDialogComponent", () => {
 		assert.match(output, /https:\/\/github\.com\/login\/device/);
 		assert.match(output, /Code expires in 15 minutes/);
 		assert.equal(openedUrl, "https://github.com/login/device");
+	});
+
+	test("buildExternalUrlOpenCommand selects platform URL openers safely", () => {
+		const url = "https://auth.example.com/device?state=needs'quote&next=1";
+
+		assert.deepEqual(buildExternalUrlOpenCommand(url, "darwin"), {
+			command: "open",
+			args: [url],
+		});
+		assert.deepEqual(buildExternalUrlOpenCommand(url, "linux"), {
+			command: "xdg-open",
+			args: [url],
+		});
+		assert.deepEqual(buildExternalUrlOpenCommand(url, "win32"), {
+			command: "powershell",
+			args: ["-c", "Start-Process 'https://auth.example.com/device?state=needs''quote&next=1'"],
+		});
+	});
+
+	test("openExternalUrl detaches and unreferences the spawned URL opener", () => {
+		let unrefCalled = false;
+		let spawnCall:
+			| {
+					command: string;
+					args: readonly string[];
+					options: childProcess.SpawnOptions;
+			  }
+			| undefined;
+
+		const spawnUrlOpener = (command: string, args: readonly string[], options: childProcess.SpawnOptions) => {
+			spawnCall = { command, args, options };
+			return {
+				unref() {
+					unrefCalled = true;
+				},
+			};
+		};
+
+		openExternalUrl("https://auth.example.com/device?code=ABCD&state=oauth", spawnUrlOpener);
+
+		assert.ok(spawnCall, "expected openExternalUrl to spawn an opener process");
+		assert.deepEqual(spawnCall.options, { detached: true, stdio: "ignore" });
+		assert.equal(unrefCalled, true, "detached opener should not keep the login process alive");
 	});
 });
