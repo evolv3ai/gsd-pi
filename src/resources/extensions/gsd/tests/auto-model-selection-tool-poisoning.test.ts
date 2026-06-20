@@ -334,9 +334,12 @@ test("genuinely-impossible (b): cross-provider routing disabled + provider misma
 
     // Set dynamic_routing.cross_provider=false via PREFERENCES so the policy
     // disables cross-provider routing.
+    // burn-max prevents the D046 balanced profile from injecting canonical
+    // anthropic models — without it, source:"explicit" forces allowCrossProvider=true
+    // and the cross-provider guard is bypassed before the test can exercise it.
     writeFileSync(
       join(env.dir, ".gsd", "PREFERENCES.md"),
-      ["---", "dynamic_routing:", "  enabled: true", "  cross_provider: false", "  tier_models:", "    heavy: other-provider/other-model", "---"].join("\n"),
+      ["---", "token_profile: burn-max", "dynamic_routing:", "  enabled: true", "  cross_provider: false", "  tier_models:", "    heavy: other-provider/other-model", "---"].join("\n"),
       "utf-8",
     );
 
@@ -434,9 +437,11 @@ test("restore baseline: setActiveTools(BASELINE) called between units before nex
 test("error carries deny reason fragment from applyModelPolicyFilter", async () => {
   const env = makeTempProject();
   try {
+    // burn-max: prevents D046 balanced default from injecting source:"explicit"
+    // which would force allowCrossProvider=true and bypass cross-provider denial.
     writeFileSync(
       join(env.dir, ".gsd", "PREFERENCES.md"),
-      ["---", "dynamic_routing:", "  enabled: true", "  cross_provider: false", "  tier_models:", "    heavy: other-provider/other-model", "---"].join("\n"),
+      ["---", "token_profile: burn-max", "dynamic_routing:", "  enabled: true", "  cross_provider: false", "  tier_models:", "    heavy: other-provider/other-model", "---"].join("\n"),
       "utf-8",
     );
 

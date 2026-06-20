@@ -26,6 +26,11 @@ test("resolvePreferredModelConfig synthesizes heavy routing ceiling when models 
       join(tempProject, ".gsd", "PREFERENCES.md"),
       [
         "---",
+        // burn-max disables profile-based model injection so the synthesis path
+        // (dynamic_routing.tier_models.heavy → primary) is exercised as intended.
+        // Without this, the D046 balanced default injects models.planning and the
+        // function returns source:"explicit" before reaching synthesis.
+        "token_profile: burn-max",
         "dynamic_routing:",
         "  enabled: true",
         "  tier_models:",
@@ -70,6 +75,8 @@ test("resolvePreferredModelConfig falls back to auto start model when heavy tier
       join(tempProject, ".gsd", "PREFERENCES.md"),
       [
         "---",
+        // burn-max: no profile model injection → synthesis path runs
+        "token_profile: burn-max",
         "dynamic_routing:",
         "  enabled: true",
         "  tier_models:",
@@ -395,6 +402,9 @@ test("selectAndApplyModel escalates dynamic routing tier when retry metadata is 
     join(tempProject, ".gsd", "PREFERENCES.md"),
     [
       "---",
+      // burn-max: no profile model injection → synthesis ceiling = heavy tier
+      // → source:"synthesized" → dynamic routing escalation is active on retry
+      "token_profile: burn-max",
       "dynamic_routing:",
       "  enabled: true",
       "  hooks: false",
