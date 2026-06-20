@@ -174,7 +174,7 @@ test("hasGeminiCliExternalAuth detects external CLI sentinel", () => {
   )
   assert.equal(
     hasGeminiCliExternalAuth(
-      makeGeminiAuthStorage([{ type: "oauth", token: "fake-oauth-token-not-real" }]) as any,
+      makeGeminiAuthStorage([{ type: "oauth", token: "nope" }]) as any,
     ),
     false,
   )
