@@ -82,7 +82,7 @@ test("fix: google-search uses OAuth if GEMINI_API_KEY is missing", async (t) => 
   assert.ok(result.content[0].text.includes("Mocked AI Answer"));
 });
 
-test("google-search warns if NO authentication is present", async (t) => {
+test("google-search does NOT register the tool and warns when NO authentication is present", async (t) => {
   const originalKey = process.env.GEMINI_API_KEY;
   delete process.env.GEMINI_API_KEY;
 
@@ -97,13 +97,13 @@ test("google-search warns if NO authentication is present", async (t) => {
   };
 
   await pi.fire("session_start", {}, mockCtx);
+
+  // Registration is credential-gated: with no GEMINI_API_KEY and no OAuth, the
+  // tool must NOT be registered (so the model is never offered a tool that can
+  // only return an auth error), and the user is warned instead.
   assert.equal(notifications.length, 1);
   assert.ok(notifications[0].msg.includes("No authentication set"));
-
-  const registeredTool = (pi as any).registeredTool;
-  const result = await registeredTool.execute("call-2", { query: "test" }, new AbortController().signal, () => {}, mockCtx);
-  assert.equal(result.isError, true);
-  assert.ok(result.content[0].text.includes("No authentication found"));
+  assert.equal((pi as any).registeredTool, null, "google_search must not be registered without credentials");
 });
 
 test("google-search uses GEMINI_API_KEY if present (precedence)", async (t) => {
