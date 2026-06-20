@@ -393,6 +393,48 @@ test('── markdown-renderer: renderPlanCheckboxes round-trip ──', async (
   }
 });
 
+test('── markdown-renderer: renderPlanCheckboxes re-renders DB tasks added after the plan artifact ──', async () => {
+  // Regression for the lossy-projection root cause: renderPlanCheckboxes used to
+  // patch the cached PLAN artifact in place, silently dropping tasks added to
+  // the DB after the artifact was first written (the 4S/0T-vs-5S/13T drift).
+  const tmpDir = makeTmpDir();
+  const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
+  openDatabase(dbPath);
+  clearAllCaches();
+
+  try {
+    scaffoldDirs(tmpDir, 'M001', ['S01']);
+    insertMilestone({ id: 'M001', title: 'Test', status: 'active' });
+    insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Slice', status: 'pending' });
+    insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', title: 'First task', status: 'pending' });
+
+    // PLAN.md on disk reflects an earlier state with only T01.
+    const planPath = path.join(tmpDir, '.gsd', 'milestones', 'M001', 'slices', 'S01', 'S01-PLAN.md');
+    fs.writeFileSync(planPath, makePlanContent('S01', [{ id: 'T01', title: 'First task', done: false }]));
+    clearAllCaches();
+
+    // Two more tasks are written to the DB after the artifact already exists.
+    insertTask({ id: 'T02', sliceId: 'S01', milestoneId: 'M001', title: 'Second task', status: 'done' });
+    insertTask({ id: 'T03', sliceId: 'S01', milestoneId: 'M001', title: 'Third task', status: 'pending' });
+
+    const ok = await renderPlanCheckboxes(tmpDir, 'M001', 'S01');
+    assert.ok(ok, 'renderPlanCheckboxes returns true');
+
+    const parsed = parsePlan(fs.readFileSync(planPath, 'utf-8'));
+    clearAllCaches();
+    assert.deepStrictEqual(
+      parsed.tasks.map(t => t.id).sort(),
+      ['T01', 'T02', 'T03'],
+      'full re-render must include tasks added after the artifact was written',
+    );
+    assert.ok(parsed.tasks.find(t => t.id === 'T02')!.done, 'T02 reflects done status from DB');
+    assert.ok(!parsed.tasks.find(t => t.id === 'T03')!.done, 'T03 reflects pending status from DB');
+  } finally {
+    closeDatabase();
+    cleanupDir(tmpDir);
+  }
+});
+
 test('── markdown-renderer: renderPlanCheckboxes bidirectional ──', async () => {
   const tmpDir = makeTmpDir();
   const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');

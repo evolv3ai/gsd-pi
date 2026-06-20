@@ -671,33 +671,54 @@ export function parseTaskPlanIO(content: string): { inputFiles: string[]; output
  */
 export type UatType = 'artifact-driven' | 'live-runtime' | 'human-experience' | 'mixed' | 'browser-executable' | 'runtime-executable';
 
+/** Canonical list of recognised UAT types — uat-policy.ts re-exports this as UAT_TYPES. */
+export const UAT_TYPE_KEYWORDS: readonly UatType[] = [
+  'artifact-driven',
+  'browser-executable',
+  'runtime-executable',
+  'live-runtime',
+  'mixed',
+  'human-experience',
+];
+
+/** Match a value against the recognised UAT type keywords (leading-keyword-only). */
+function matchUatTypeKeyword(value: string): UatType | undefined {
+  const normalized = value.trim().toLowerCase();
+  return UAT_TYPE_KEYWORDS.find(keyword => normalized.startsWith(keyword));
+}
+
 /**
  * Extract the UAT type from a UAT file's raw content.
  *
  * UAT files have no YAML frontmatter - pass raw file content directly.
  * Classification is leading-keyword-only: e.g. `mixed (artifact-driven + live-runtime)` → `'mixed'`.
  *
+ * The canonical form is a `- UAT mode: <type>` bullet under `## UAT Type`
+ * (case-insensitive prefix, `**bold**` tolerated). When no such line exists,
+ * a line that itself starts with a recognised keyword — e.g. a bare
+ * `browser-executable` under the heading — is accepted, so agent-authored
+ * format drift does not silently fall back to artifact-driven.
+ *
  * Returns `undefined` when:
  * - the `## UAT Type` section is absent
- * - no `UAT mode:` bullet is found in the section
- * - the value does not start with a recognised keyword
+ * - a `UAT mode:` line exists but its value starts with no recognised keyword
+ * - no line in the section starts with `UAT mode:` or a recognised keyword
  */
 export function extractUatType(content: string): UatType | undefined {
   const sectionText = extractSection(content, 'UAT Type');
   if (!sectionText) return undefined;
 
-  const bullets = parseBullets(sectionText);
-  const modeBullet = bullets.find(b => b.startsWith('UAT mode:'));
-  if (!modeBullet) return undefined;
+  const lines = parseBullets(sectionText).map(line => line.replace(/\*\*/g, ''));
 
-  const rawValue = modeBullet.slice('UAT mode:'.length).trim().toLowerCase();
+  for (const line of lines) {
+    const declared = /^uat mode:\s*(.*)$/i.exec(line);
+    if (declared) return matchUatTypeKeyword(declared[1]);
+  }
 
-  if (rawValue.startsWith('artifact-driven')) return 'artifact-driven';
-  if (rawValue.startsWith('browser-executable')) return 'browser-executable';
-  if (rawValue.startsWith('runtime-executable')) return 'runtime-executable';
-  if (rawValue.startsWith('live-runtime')) return 'live-runtime';
-  if (rawValue.startsWith('human-experience')) return 'human-experience';
-  if (rawValue.startsWith('mixed')) return 'mixed';
+  for (const line of lines) {
+    const matched = matchUatTypeKeyword(line);
+    if (matched) return matched;
+  }
 
   return undefined;
 }

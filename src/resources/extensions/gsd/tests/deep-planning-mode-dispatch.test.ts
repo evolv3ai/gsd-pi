@@ -229,6 +229,24 @@ function makeIsolatedBaseWithCleanup(t: TestContext): string {
   return base;
 }
 
+function setGsdHeadless(t: TestContext): void {
+  const previous = process.env.GSD_HEADLESS;
+  process.env.GSD_HEADLESS = "1";
+  t.after(() => {
+    if (previous === undefined) delete process.env.GSD_HEADLESS;
+    else process.env.GSD_HEADLESS = previous;
+  });
+}
+
+function unsetGsdHeadless(t: TestContext): void {
+  const previous = process.env.GSD_HEADLESS;
+  delete process.env.GSD_HEADLESS;
+  t.after(() => {
+    if (previous === undefined) delete process.env.GSD_HEADLESS;
+    else process.env.GSD_HEADLESS = previous;
+  });
+}
+
 function writeValidProject(base: string): void {
   writeFileSync(join(base, ".gsd", "PROJECT.md"), VALID_PROJECT_MD);
 }
@@ -364,13 +382,30 @@ test("Deep mode: discuss-project does NOT dispatch when planning_depth is 'light
 test("Deep mode: discuss-project DOES dispatch when planning_depth is 'deep' and PROJECT.md missing", async (t) => {
   const base = makeIsolatedBaseWithCleanup(t);
 
+  unsetGsdHeadless(t);
+
   const prefs = { planning_depth: "deep" } as GSDPreferences;
   const result = await rule(PROJECT_RULE_NAME).match(makeCtx(base, prefs));
   assert.ok(result && result.action === "dispatch", "deep mode + missing PROJECT.md must dispatch");
   if (result.action === "dispatch") {
     assert.strictEqual(result.unitType, "discuss-project");
     assert.strictEqual(result.unitId, "PROJECT");
+    assert.strictEqual(result.pauseAfterDispatch, true);
     assert.ok(result.prompt.length > 0, "prompt must be non-empty");
+  }
+});
+
+test("Deep mode: discuss-project does not pause when GSD_HEADLESS is set", async (t) => {
+  const base = makeIsolatedBaseWithCleanup(t);
+
+  setGsdHeadless(t);
+
+  const prefs = { planning_depth: "deep" } as GSDPreferences;
+  const result = await rule(PROJECT_RULE_NAME).match(makeCtx(base, prefs));
+  assert.ok(result && result.action === "dispatch", "deep mode + missing PROJECT.md must dispatch");
+  if (result.action === "dispatch") {
+    assert.strictEqual(result.unitType, "discuss-project");
+    assert.strictEqual(result.pauseAfterDispatch, false);
   }
 });
 
@@ -432,6 +467,8 @@ test("Deep mode: discuss-requirements does NOT dispatch when PROJECT.md missing 
 test("Deep mode: discuss-requirements DOES dispatch when PROJECT.md exists and REQUIREMENTS.md missing", async (t) => {
   const base = makeIsolatedBaseWithCleanup(t);
 
+  unsetGsdHeadless(t);
+
   writeValidProject(base);
   const prefs = { planning_depth: "deep" } as GSDPreferences;
   const result = await rule(REQUIREMENTS_RULE_NAME).match(makeCtx(base, prefs));
@@ -439,6 +476,22 @@ test("Deep mode: discuss-requirements DOES dispatch when PROJECT.md exists and R
   if (result.action === "dispatch") {
     assert.strictEqual(result.unitType, "discuss-requirements");
     assert.strictEqual(result.unitId, "REQUIREMENTS");
+    assert.strictEqual(result.pauseAfterDispatch, true);
+  }
+});
+
+test("Deep mode: discuss-requirements does not pause when GSD_HEADLESS is set", async (t) => {
+  const base = makeIsolatedBaseWithCleanup(t);
+
+  setGsdHeadless(t);
+
+  writeValidProject(base);
+  const prefs = { planning_depth: "deep" } as GSDPreferences;
+  const result = await rule(REQUIREMENTS_RULE_NAME).match(makeCtx(base, prefs));
+  assert.ok(result && result.action === "dispatch", "deep mode + PROJECT.md present + REQUIREMENTS.md missing must dispatch");
+  if (result.action === "dispatch") {
+    assert.strictEqual(result.unitType, "discuss-requirements");
+    assert.strictEqual(result.pauseAfterDispatch, false);
   }
 });
 

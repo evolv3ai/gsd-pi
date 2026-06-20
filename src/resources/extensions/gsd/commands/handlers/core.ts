@@ -4,7 +4,7 @@ import type { GSDState } from "../../types.js";
 import { createRequire } from "node:module";
 
 import { computeProgressScore, formatProgressLine } from "../../progress-score.js";
-import { loadEffectiveGSDPreferences, getGlobalGSDPreferencesPath, getProjectGSDPreferencesPath } from "../../preferences.js";
+import { loadEffectiveGSDPreferences, getGlobalGSDPreferencesPath, getProjectGSDPreferencesPath, availableModelIdsFromRegistry, modelIdsForProfileResolution, resolveProfileAnchorProvider, resolveDisabledModelProvidersFromPreferences } from "../../preferences.js";
 import { ensurePreferencesFile, handlePrefs, handlePrefsMode, handlePrefsWizard, handleLanguage } from "../../commands-prefs-wizard.js";
 import { runEnvironmentChecks } from "../../doctor-environment.js";
 import { deriveState } from "../../state.js";
@@ -75,7 +75,7 @@ export function showHelp(ctx: ExtensionCommandContext, args = ""): void {
     "  /gsd new-milestone  Create milestone from headless context (used by gsd headless)",
     "  /gsd new-project    Bootstrap a new project (use --deep for staged project-level discovery)",
     "  /gsd quick          Execute a quick task without full planning overhead",
-    "  /gsd dispatch       Dispatch a specific phase directly  [research|plan|execute|complete|uat|replan]",
+    "  /gsd dispatch       Dispatch a specific phase directly  [research|plan|execute|complete|validate|reassess|uat|replan]",
     "  /gsd verdict <v>    Override milestone validation verdict  [pass|needs-attention|needs-remediation] [--milestone Mxxx] [--rationale \"...\"]",
     "  /gsd parallel       Parallel milestone orchestration  [start|status|stop|pause|resume|merge|watch]",
     "  /gsd workflow       Custom workflow lifecycle  [new|run|list|validate|pause|resume]",
@@ -282,7 +282,10 @@ export async function handleSetup(args: string, ctx: ExtensionCommandContext, pi
     return;
   }
   if (args === "model") {
-    await handleModel("", ctx, pi);
+    // Default model picker: persist settings.json default only — do not pin the
+    // session override that /gsd model uses, or PREFERENCES.md per-phase models
+    // are ignored for the rest of this session (#model-prefs-precedence).
+    await handleModel("", ctx, pi, { pinSession: false });
     return;
   }
   if (args === "keys") {
@@ -412,7 +415,12 @@ async function resolveRequestedModel(
   return selectModelByProvider(`Multiple models match "${query}"`, partialMatches, ctx, ctx.model);
 }
 
-async function handleModel(trimmedArgs: string, ctx: ExtensionCommandContext, pi: ExtensionAPI | undefined): Promise<void> {
+async function handleModel(
+  trimmedArgs: string,
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI | undefined,
+  options?: { pinSession?: boolean },
+): Promise<void> {
   const availableModels = ctx.modelRegistry.getAvailable();
   if (availableModels.length === 0) {
     ctx.ui.notify("No available models found. Check provider auth and model discovery.", "warning");
@@ -451,16 +459,19 @@ async function handleModel(trimmedArgs: string, ctx: ExtensionCommandContext, pi
 
   // /gsd model is an explicit per-session pin for GSD dispatches.
   // This is captured at auto bootstrap so it survives internal session
-  // switches during /gsd auto and /gsd next runs.
+  // switches during /gsd auto and /gsd next runs. /gsd setup model skips
+  // this pin so PREFERENCES.md per-phase models keep precedence.
+  const pinSession = options?.pinSession !== false;
   const sessionId = ctx.sessionManager?.getSessionId?.();
-  if (sessionId) {
+  if (pinSession && sessionId) {
     setSessionModelOverride(sessionId, {
       provider: targetModel.provider,
       id: targetModel.id,
     });
   }
 
-  ctx.ui.notify(`Model: ${targetModel.provider}/${targetModel.id}`, "info");
+  const pinNote = pinSession ? "" : " (default updated; per-phase prefs still apply in auto)";
+  ctx.ui.notify(`Model: ${targetModel.provider}/${targetModel.id}${pinNote}`, "info");
 }
 
 export async function handleCoreCommand(
@@ -531,8 +542,16 @@ export async function handleCoreCommand(
   }
   if (trimmed === "show-config") {
     const { GSDConfigOverlay, formatConfigText } = await import("../../config-overlay.js");
+    const basePath = projectRoot();
+    const anchorProvider = resolveProfileAnchorProvider(ctx.model?.provider);
+    const disabledProviders = resolveDisabledModelProvidersFromPreferences();
+    const availableModelIds = modelIdsForProfileResolution(ctx.modelRegistry, anchorProvider, disabledProviders);
+    const configOptions = {
+      basePath,
+      ...(availableModelIds && availableModelIds.length > 0 ? { availableModelIds } : {}),
+    };
     const result = await ctx.ui.custom<boolean>(
-      (tui, theme, _kb, done) => new GSDConfigOverlay(tui, theme, () => done(true)),
+      (tui, theme, _kb, done) => new GSDConfigOverlay(tui, theme, () => done(true), configOptions),
       {
         overlay: true,
         overlayOptions: {
@@ -544,7 +563,7 @@ export async function handleCoreCommand(
       },
     );
     if (result === undefined) {
-      ctx.ui.notify(formatConfigText(), "info");
+      ctx.ui.notify(formatConfigText(configOptions), "info");
     }
     return true;
   }

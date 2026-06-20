@@ -59,3 +59,4 @@
 | `--host` | `localhost` | Bind address |
 | `--port` | `3000` | Port |
 | `--allowed-origins` | (none) | CORS origins |
+| `--no-auth` | disabled | Disable the built-in bearer token gate |

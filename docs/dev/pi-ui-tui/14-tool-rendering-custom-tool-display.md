@@ -5,7 +5,7 @@ Tools can control how their calls and results appear in the message area.
 ### renderCall — How the Tool Call Looks
 
 ```typescript
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@gsd/pi-tui";
 
 pi.registerTool({
   name: "my_tool",
@@ -24,8 +24,8 @@ pi.registerTool({
 ### renderResult — How the Tool Result Looks
 
 ```typescript
-import { Text } from "@mariozechner/pi-tui";
-import { keyHint } from "@mariozechner/pi-coding-agent";
+import { Text } from "@gsd/pi-tui";
+import { keyHint } from "@gsd/agent-modes";
 
 pi.registerTool({
   name: "my_tool",
@@ -68,7 +68,7 @@ pi.registerTool({
 ### Key Hints for Keybindings
 
 ```typescript
-import { keyHint, appKeyHint, editorKey, rawKeyHint } from "@mariozechner/pi-coding-agent";
+import { keyHint, appKeyHint, editorKey, rawKeyHint } from "@gsd/agent-modes";
 
 // Editor action hint (respects user's keybinding config)
 keyHint("expandTools", "to expand")    // e.g., "Ctrl+O to expand"

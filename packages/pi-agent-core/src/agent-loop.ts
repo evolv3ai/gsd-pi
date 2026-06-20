@@ -338,11 +338,17 @@ async function streamAssistantResponse(
 	// Apply context transform if configured (AgentMessage[] → AgentMessage[])
 	let messages = context.messages;
 	if (config.transformContext) {
+		const stop = startLatencyTimer(config, "agent_loop.context_transform");
 		messages = await config.transformContext(messages, signal);
+		stop({ inputMessages: context.messages.length, outputMessages: messages.length });
+	} else {
+		markLatency(config, "agent_loop.context_transform.skipped", { inputMessages: context.messages.length });
 	}
 
 	// Convert to LLM-compatible messages (AgentMessage[] → Message[])
+	const stopConvert = startLatencyTimer(config, "agent_loop.convert_to_llm");
 	const llmMessages = await config.convertToLlm(messages);
+	stopConvert({ inputMessages: messages.length, outputMessages: llmMessages.length });
 
 	// Build LLM context
 	const llmContext: Context = {
@@ -354,21 +360,39 @@ async function streamAssistantResponse(
 	const streamFunction = streamFn || streamSimple;
 
 	// Resolve API key (important for expiring tokens)
+	const stopApiKey = startLatencyTimer(config, "agent_loop.api_key");
 	const resolvedApiKey =
 		(config.getApiKey ? await config.getApiKey(config.model.provider) : undefined) || config.apiKey;
+	stopApiKey({ provider: config.model.provider, resolved: !!resolvedApiKey });
 
+	const stopStreamCreate = startLatencyTimer(config, "agent_loop.stream_create");
 	const response = await streamFunction(config.model, llmContext, {
 		...config,
 		apiKey: resolvedApiKey,
 		signal,
 	});
+	stopStreamCreate({
+		provider: config.model.provider,
+		model: config.model.id,
+		contextMessages: llmMessages.length,
+		tools: llmContext.tools?.length ?? 0,
+	});
 
 	let partialMessage: AssistantMessage | null = null;
 	let addedPartial = false;
+	let sawStreamActivity = false;
 
 	for await (const event of response) {
+		if (!sawStreamActivity) {
+			sawStreamActivity = true;
+			markLatency(config, "agent_loop.first_stream_activity", { eventType: event.type });
+		}
 		switch (event.type) {
 			case "start":
+				markLatency(config, "agent_loop.assistant_start", {
+					provider: event.partial.provider,
+					model: event.partial.model,
+				});
 				partialMessage = event.partial;
 				context.messages.push(partialMessage);
 				addedPartial = true;
@@ -421,6 +445,24 @@ async function streamAssistantResponse(
 	}
 	await emit({ type: "message_end", message: finalMessage });
 	return finalMessage;
+}
+
+function markLatency(config: AgentLoopConfig, phase: string, data?: Record<string, unknown>): void {
+	config.latencyMark?.(phase, data);
+}
+
+function startLatencyTimer(
+	config: AgentLoopConfig,
+	phase: string,
+): (data?: Record<string, unknown>) => void {
+	const start = performance.now();
+	markLatency(config, `${phase}.start`);
+	return (data?: Record<string, unknown>) => {
+		markLatency(config, `${phase}.end`, {
+			elapsedMs: Math.round((performance.now() - start) * 100) / 100,
+			...(data ?? {}),
+		});
+	};
 }
 
 /**
@@ -643,6 +685,15 @@ async function prepareToolCall(
 						? (externalResult.content as AgentToolResult<any>["content"])
 						: [{ type: "text", text: "" }],
 				details: externalResult.details ?? {},
+				// The provider (claude-code-cli) already executed this tool inside its
+				// own agentic session and emitted ONE final assistant message carrying
+				// both the tool blocks and the post-tool text. There is no follow-up
+				// LLM work for the agent-loop to do, so terminate the batch. Without
+				// this, shouldTerminateToolBatch() returns false → hasMoreToolCalls
+				// stays true → the loop makes a redundant streamAssistantResponse call,
+				// emitting a second message_start that the TUI renders as a duplicate
+				// assistant bubble / stacked `╭─ GSD ─` header (issue #654).
+				terminate: true,
 			},
 			isError: externalResult.isError ?? false,
 		};
@@ -705,9 +756,10 @@ async function prepareToolCall(
 				};
 			}
 			if (beforeResult?.block) {
+				const reason = beforeResult.reason || "Tool execution was blocked";
 				return {
 					kind: "immediate",
-					result: createErrorToolResult(beforeResult.reason || "Tool execution was blocked"),
+					result: createErrorToolResult(reason, beforeResult.displayReason),
 					isError: true,
 				};
 			}
@@ -742,7 +794,7 @@ async function executePreparedToolCall(
 	const updateEvents: Promise<void>[] = [];
 
 	try {
-		const result = await prepared.tool.execute(
+		const execution = prepared.tool.execute(
 			prepared.toolCall.id,
 			prepared.args as never,
 			signal,
@@ -760,14 +812,60 @@ async function executePreparedToolCall(
 				);
 			},
 		);
+		// A cooperative tool returns promptly when its signal aborts. A hung or
+		// signal-deaf tool (a deadlocked MCP server, a D-state child the tool never
+		// reaps) would otherwise leave `execution` pending forever — blocking the
+		// whole tool batch, so no tool_execution_end is ever emitted and the UI card
+		// stays "running" indefinitely (a real CPU drain downstream). Race the
+		// execution against abort: once aborted, stop awaiting the tool and finalize
+		// it as aborted. The tool's own promise keeps running in the background, but
+		// the turn completes and every tool_execution_start gets a paired _end.
+		const outcome: ExecutedToolCallOutcome = signal
+			? await raceToolExecutionAgainstAbort(execution, signal)
+			: { result: await execution, isError: false };
 		await Promise.all(updateEvents);
-		return { result, isError: false };
+		return outcome;
 	} catch (error) {
 		await Promise.all(updateEvents);
 		return {
 			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
 			isError: true,
 		};
+	}
+}
+
+/**
+ * Await a tool's execution unless `signal` aborts first. On abort, resolve with a
+ * synthetic aborted result instead of blocking on a tool that ignores the signal.
+ * Only abort short-circuits the wait — there is no general timeout, so legitimately
+ * long-running cooperative tools are unaffected.
+ */
+async function raceToolExecutionAgainstAbort(
+	execution: Promise<AgentToolResult<any>>,
+	signal: AbortSignal,
+): Promise<ExecutedToolCallOutcome> {
+	if (signal.aborted) {
+		return { result: createErrorToolResult("Operation aborted"), isError: true };
+	}
+	// If abort wins the race, `execution` is abandoned but still pending; swallow any
+	// later settlement so a background rejection does not surface as an unhandled
+	// rejection after the turn has moved on.
+	const guardedExecution = execution.then(
+		(result) => ({ result, isError: false }) satisfies ExecutedToolCallOutcome,
+		(error) => ({
+			result: createErrorToolResult(error instanceof Error ? error.message : String(error)),
+			isError: true,
+		}),
+	);
+	let onAbort: (() => void) | undefined;
+	const abortPromise = new Promise<ExecutedToolCallOutcome>((resolve) => {
+		onAbort = () => resolve({ result: createErrorToolResult("Operation aborted"), isError: true });
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+	try {
+		return await Promise.race([guardedExecution, abortPromise]);
+	} finally {
+		if (onAbort) signal.removeEventListener("abort", onAbort);
 	}
 }
 
@@ -816,10 +914,10 @@ async function finalizeExecutedToolCall(
 	};
 }
 
-function createErrorToolResult(message: string): AgentToolResult<any> {
+function createErrorToolResult(message: string, displayReason?: string): AgentToolResult<any> {
 	return {
 		content: [{ type: "text", text: message }],
-		details: {},
+		details: displayReason ? { displayReason } : {},
 	};
 }
 

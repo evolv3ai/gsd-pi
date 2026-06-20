@@ -109,6 +109,7 @@ description: What it does and when to use it (third person, specific triggers)
 - No XML tags
 - Third person (never first or second person)
 - Include what it does AND when to use it
+- Must parse as YAML; quote values containing `:` or use `description: >`
 
 **Critical rule**: Always write in third person.
 - ✅ "Processes Excel files and generates reports"

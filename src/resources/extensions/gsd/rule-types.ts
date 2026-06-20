@@ -32,6 +32,8 @@ export interface RuleLifecycle {
   retry_on?: string;
   /** Max times this hook can fire for the same trigger unit. */
   max_cycles?: number;
+  /** Whether this hook is advisory or blocking. */
+  criticality?: PostUnitHookConfig["criticality"];
   /** Idempotency key pattern for this hook. */
   idempotency_key?: string;
 }

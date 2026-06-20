@@ -41,6 +41,7 @@ after(() => {
 
 const { resolveDispatch } = await import("../auto-dispatch.ts");
 const { buildParallelResearchSlicesPrompt } = await import("../auto-prompts.ts");
+const { openDatabase, closeDatabase, insertMilestone, insertSlice } = await import("../gsd-db.ts");
 
 type DispatchState = Parameters<typeof resolveDispatch>[0]["state"];
 
@@ -51,6 +52,20 @@ function writeRoadmap(
 ): void {
   const milestoneDir = join(base, ".gsd", "milestones", mid);
   mkdirSync(milestoneDir, { recursive: true });
+  // The dispatch rule reads slices from the DB (ADR-017), not the ROADMAP
+  // projection — seed both so disk-based artifact checks still resolve.
+  insertMilestone({ id: mid, title: "Parallel Research Milestone" });
+  let sequence = 1;
+  for (const s of slices) {
+    insertSlice({
+      id: s.id,
+      milestoneId: mid,
+      title: s.title,
+      status: s.done ? "complete" : "pending",
+      depends: s.depends ?? [],
+      sequence: sequence++,
+    });
+  }
   const lines = [
     `# ${mid}: Parallel Research Milestone`,
     "",
@@ -100,9 +115,12 @@ describe("parallel-research-slices dispatch rule", () => {
 
   beforeEach(() => {
     base = mkdtempSync(join(tmpdir(), "parallel-research-"));
+    mkdirSync(join(base, ".gsd"), { recursive: true });
+    openDatabase(join(base, ".gsd", "gsd.db"));
   });
 
   afterEach(() => {
+    closeDatabase();
     rmSync(base, { recursive: true, force: true });
   });
 

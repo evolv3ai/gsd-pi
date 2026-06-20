@@ -281,7 +281,14 @@ export function transformMessagesWithReport<TApi extends Api>(
 	// If the conversation ends with unresolved tool calls, synthesize results now.
 	insertSyntheticToolResults();
 
-	if (hasReportChanges(report)) {
+	// Only surface a provider-switch report when the source and target APIs
+	// actually differ. Within-API transforms — most notably synthetic
+	// tool-result backfills inserted when a same-provider conversation ends on
+	// an unresolved tool call — are not cross-provider data loss and must not be
+	// reported as a "provider switch". Callers that omit `sourceApi` default
+	// `fromApi` to the target api, so without this guard every such call emits a
+	// spurious same→same report that floods telemetry and buries real switches.
+	if (hasReportChanges(report) && report.fromApi !== report.toApi) {
 		notifyProviderSwitchObserver(report);
 	}
 

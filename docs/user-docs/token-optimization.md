@@ -1,7 +1,5 @@
 # Token Optimization
 
-*Introduced in v2.17.0*
-
 GSD 2.17 introduces a coordinated token optimization system that can reduce token usage by 40-60% without sacrificing output quality for most workloads. The system has three pillars: **token profiles**, **context compression**, and **complexity-based task routing**.
 
 ## Token Profiles
@@ -290,8 +288,6 @@ The profile is resolved once and flows through the entire dispatch pipeline. Exp
 
 ## Observation Masking
 
-*Introduced in v2.59.0*
-
 During auto-mode sessions, tool results accumulate in the conversation history and consume context window space. Observation masking replaces tool result content older than N user turns with a lightweight placeholder before each LLM call. This reduces token usage with zero LLM overhead — no summarization calls, no latency.
 
 Masking is enabled by default during auto-mode. Configure via preferences:
@@ -318,41 +314,13 @@ Individual tool results that exceed `tool_result_max_chars` (default: 800) are t
 
 ## Phase Handoff Anchors
 
-*Introduced in v2.59.0*
-
 When auto-mode transitions between phases (research → planning → execution), structured JSON anchors are written to `.gsd/milestones/<mid>/anchors/<phase>.json`. Downstream prompt builders inject these anchors so the next phase inherits intent, decisions, blockers, and next steps without re-inferring from artifact files.
 
 This reduces context drift — the 65% of enterprise agent failures caused by agents losing track of prior decisions across phase boundaries.
 
 Anchors are written automatically after successful completion of `research-milestone`, `research-slice`, `plan-milestone`, and `plan-slice` units. No configuration needed.
 
-## Prompt Compression
-
-*Introduced in v2.29.0*
-
-GSD can apply deterministic prompt compression before falling back to section-boundary truncation. This preserves more information when context exceeds the budget.
-
-### Compression Strategy
-
-Set via preferences:
-
-```yaml
----
-version: 1
-compression_strategy: compress
----
-```
-
-Two strategies are available:
-
-| Strategy | Behavior | Default For |
-|----------|----------|------------|
-| `truncate` | Drop entire sections at boundaries (pre-v2.29 behavior) | `quality` profile |
-| `compress` | Apply heuristic text compression first, then truncate if still over budget | `budget` and `balanced` profiles |
-
-Compression removes redundant whitespace, abbreviates verbose phrases, deduplicates repeated content, and removes low-information boilerplate — all deterministically with no LLM calls.
-
-### Context Selection
+## Context Selection
 
 Controls how files are inlined into prompts:
 

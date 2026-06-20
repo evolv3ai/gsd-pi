@@ -32,6 +32,8 @@ You execute. The inlined task plan is authoritative. Verify referenced files and
 - Prior task summaries:
 {{priorTaskLines}}
 
+{{onDemandContext}}
+
 ## Execution Rules
 
 1. Tersely narrate transitions, decisions, and verification outcomes between tool-call clusters.
@@ -50,6 +52,7 @@ You execute. The inlined task plan is authoritative. Verify referenced files and
 
 - If task sections exist for Failure Modes (Q5), Load Profile (Q6), Negative Tests (Q7), or Observability Impact, implement and verify them.
 - Verify must-haves with concrete commands or observable behavior.
+- Run verification commands through `gsd_exec` / Context Mode evidence when workflow MCP tools are presented. Use `gsd_exec_search` before rerunning noisy checks, and `gsd_resume` after compaction or resume. Do not call direct `bash` for final verification evidence in this unit.
 - Run slice-level verification from the slice plan. Final tasks need all checks passing; intermediate tasks should record partial passes.
 - Populate `## Verification Evidence` with `formatEvidenceTable` rows: command, exit code, verdict, duration. If no checks were found, say so.
 - For UI/browser/DOM/user-visible web changes, exercise the real flow and record explicit checks.
@@ -60,9 +63,13 @@ Keep about **{{verificationBudget}}** for verification and summary. If context i
 
 ## Completion Contract
 
+### Closeout messaging (auto-mode)
+
+You write task closeout artifacts; **GSD auto-mode** decides when the task is actually **done**. Never say "Task {{taskId}} complete" in this unit — not even after `gsd_task_complete` succeeds. GSD announces completion only after post-unit verification passes.
+
 - If the plan is fundamentally invalid, set `blocker_discovered: true` in the summary and explain.
 - For downstream-impacting ambiguity that cannot be resolved from code, plans, or decisions, include an `escalation` object with question, options, recommendation, rationale, and `continueWithDefault`.
-- Capture meaningful architecture/pattern/observability decisions with `capture_thought`; capture non-obvious gotchas or conventions only when they save future investigation.
+- Capture meaningful architecture/pattern/observability decisions with `gsd_capture_thought` (or MCP-scoped `mcp__...__gsd_capture_thought`) when workflow MCP tools are presented; capture non-obvious gotchas or conventions only when they save future investigation.
 - Use the inlined Task Summary template below. Read `{{taskSummaryTemplatePath}}` only if the inlined template is absent or visibly truncated.
 - Call `gsd_task_complete` with camelCase fields `milestoneId`, `sliceId`, `taskId`, `oneLiner`, `narrative`, `verification`, and `verificationEvidence`. Include `blockerDiscovered: true` when a stale-path safety failure or other plan-invalidating blocker prevents execution.
 - The DB-backed tool is the canonical write path. Do **not** manually write `{{taskSummaryPath}}` or edit PLAN.md checkboxes; the tool renders the summary and updates state.
@@ -74,4 +81,4 @@ Keep about **{{verificationBudget}}** for verification and summary. If context i
 
 **You MUST call `gsd_task_complete` before finishing, including when the stale-path safety rule stops execution.**
 
-When done, say: "Task {{taskId}} complete."
+When done, say: "Task {{taskId}} closeout submitted." Do not say the task is complete. Say this exactly once — if you already said it in a prior message, do not repeat it.

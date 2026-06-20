@@ -7,7 +7,9 @@
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent";
 import { existsSync, readFileSync, mkdirSync } from "node:fs";
-import { join, resolve as resolvePath, sep } from "node:path";
+import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { join, resolve as resolvePath, sep, win32 as pathWin32 } from "node:path";
 import { homedir } from "node:os";
 import { deriveState } from "./state.js";
 import { gsdRoot } from "./paths.js";
@@ -26,6 +28,8 @@ import { isAutoActive, checkRemoteAutoSession } from "./auto.js";
 import { getAutoWorktreePath } from "./auto-worktree.js";
 import { currentDirectoryRoot, projectRoot } from "./commands/context.js";
 import { loadPrompt } from "./prompt-loader.js";
+import { buildClaudeRuntimeFloorAdvisory } from "../../shared/claude-runtime-floor.js";
+import { reconcileGsdBrowserPathAfterInstall } from "../../shared/gsd-browser-path-sync.js";
 import { isPnpmInstall } from "../../shared/package-manager-detection.js";
 import {
   buildDoctorHealIssuePayload,
@@ -37,7 +41,10 @@ import {
   scopeGsdWorkflowToolsForDispatch,
 } from "./bootstrap/register-hooks.js";
 
+const GSD_PI_PACKAGE = "@opengsd/gsd-pi";
+const GSD_BROWSER_PACKAGE = "@opengsd/gsd-browser";
 const UPDATE_REGISTRY_URL = "https://registry.npmjs.org/@opengsd%2fgsd-pi/latest";
+const BROWSER_UPDATE_REGISTRY_URL = "https://registry.npmjs.org/@opengsd%2fgsd-browser/latest";
 const UPDATE_FETCH_TIMEOUT_MS = 5000;
 
 // Detects a bun-installed gsd via `process.argv[1]`. Mirrors isBunInstall in
@@ -59,15 +66,54 @@ function isBunInstall(argv1: string | undefined = process.argv[1]): boolean {
 function resolveInstallCommand(pkg: string): string {
   if (isBunInstall()) return `bun add -g ${pkg}`;
   if (isPnpmInstall()) return `pnpm add -g ${pkg}`;
+  const npmPrefix = resolveWindowsNpmGlobalPrefix();
+  if (npmPrefix) return `npm --prefix ${quoteWindowsArg(npmPrefix)} install -g ${pkg}`;
   return `npm install -g ${pkg}`;
 }
 
-async function fetchLatestVersionForCommand(): Promise<string | null> {
+function resolveWindowsNpmGlobalPrefix(
+  argv1: string | undefined = process.argv[1],
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  if (platform !== "win32" || !argv1) return null;
+  const normalized = pathWin32.normalize(argv1);
+  const marker = `${pathWin32.sep}node_modules${pathWin32.sep}`;
+  const index = normalized.toLowerCase().lastIndexOf(marker);
+  if (index <= 0) return null;
+  const prefix = normalized.slice(0, index);
+  // Verify this is a real npm global prefix: such a directory always contains
+  // npm's own bin shim (`npm.cmd`) as a sibling of `node_modules/`. Local
+  // project `node_modules/`, npx caches, and other non-global layouts do not,
+  // so without this check `--prefix` would target the wrong directory.
+  if (!existsSync(pathWin32.join(prefix, "npm.cmd"))) return null;
+  return prefix;
+}
+
+function quoteWindowsArg(value: string): string {
+  return `"${value.replace(/"/g, '\\"')}"`;
+}
+
+function notifyClaudeRuntimeFloorAdvisory(ctx: ExtensionCommandContext): void {
+  let advisory: string | null = null;
+  try {
+    advisory = buildClaudeRuntimeFloorAdvisory({
+      agentDir: join(gsdHome(), "agent"),
+      cwd: process.cwd(),
+    });
+  } catch {
+    return;
+  }
+  if (advisory) {
+    ctx.ui.notify(advisory, "warning");
+  }
+}
+
+async function fetchLatestVersionForCommand(registryUrl: string = UPDATE_REGISTRY_URL): Promise<string | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), UPDATE_FETCH_TIMEOUT_MS);
 
   try {
-    const res = await fetch(UPDATE_REGISTRY_URL, { signal: controller.signal });
+    const res = await fetch(registryUrl, { signal: controller.signal });
     if (!res.ok) return null;
     const data = (await res.json()) as { version?: string };
     const latest = typeof data.version === "string" ? data.version.trim().replace(/^v/, "") : "";
@@ -76,6 +122,19 @@ async function fetchLatestVersionForCommand(): Promise<string | null> {
     return null;
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+function resolveInstalledPackageVersionForCommand(packageName: string): string | null {
+  try {
+    const requireFromHere = createRequire(import.meta.url);
+    const packageJsonPath = requireFromHere.resolve(`${packageName}/package.json`);
+    const pkg = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as { version?: unknown };
+    return typeof pkg.version === "string" && pkg.version.trim().length > 0
+      ? pkg.version.trim().replace(/^v/, "")
+      : null;
+  } catch {
+    return null;
   }
 }
 
@@ -473,36 +532,103 @@ function compareSemverLocal(a: string, b: string): number {
   return 0
 }
 
-export async function handleUpdate(ctx: ExtensionCommandContext): Promise<void> {
+function formatCommandVersion(version: string | null): string {
+  return version ? `v${version}` : "unknown";
+}
+
+function pickHigherVersionForCommand(a: string | null, b: string | null): string | null {
+  if (!a) return b;
+  if (!b) return a;
+  return compareSemverLocal(a, b) >= 0 ? a : b;
+}
+
+// Mirrors resolveGsdBrowserPathVersion in src/update-check.ts — duplicated because
+// tsconfig.resources.json rootDir prevents importing from src/.
+function resolveGsdBrowserPathVersionForCommand(env: NodeJS.ProcessEnv = process.env): string | null {
+  const explicit = env.GSD_BROWSER_PATH_VERSION?.trim();
+  if (explicit) return explicit.match(/\b(\d+\.\d+\.\d+)\b/)?.[1] ?? null;
+  try {
+    const out = execFileSync("gsd-browser", ["--version"], {
+      encoding: "utf-8",
+      env,
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 2000,
+    });
+    return out.match(/\b(\d+\.\d+\.\d+)\b/)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function handleUpdate(ctx: ExtensionCommandContext, args = ""): Promise<void> {
   const { execSync } = await import("node:child_process");
 
-  const NPM_PACKAGE = "@opengsd/gsd-pi";
-  const current = process.env.GSD_VERSION || "0.0.0";
+  const target = args.trim();
+  const browserUpdate = target === "browser" || target === "gsd-browser";
+  if (target && !browserUpdate) {
+    ctx.ui.notify("Usage: /gsd update [browser]", "warning");
+    return;
+  }
 
-  ctx.ui.notify(`Current version: v${current}\nChecking npm registry...`, "info");
+  const NPM_PACKAGE = browserUpdate ? GSD_BROWSER_PACKAGE : GSD_PI_PACKAGE;
+  const registryUrl = browserUpdate ? BROWSER_UPDATE_REGISTRY_URL : UPDATE_REGISTRY_URL;
+  const bundledVersion = browserUpdate
+    ? resolveInstalledPackageVersionForCommand(GSD_BROWSER_PACKAGE)
+    : null;
+  const current = browserUpdate
+    ? pickHigherVersionForCommand(bundledVersion, resolveGsdBrowserPathVersionForCommand())
+    : process.env.GSD_VERSION || "0.0.0";
+  const label = browserUpdate ? "gsd-browser version" : "version";
 
-  const latest = await fetchLatestVersionForCommand();
+  ctx.ui.notify(`Current ${label}: ${formatCommandVersion(current)}\nChecking npm registry...`, "info");
+
+  const latest = await fetchLatestVersionForCommand(registryUrl);
   if (!latest) {
     ctx.ui.notify("Failed to reach npm registry. Check your network connection.", "error");
     return;
   }
 
-  if (compareSemverLocal(latest, current) <= 0) {
-    ctx.ui.notify(`Already up to date (v${current}).`, "info");
+  if (current && compareSemverLocal(latest, current) <= 0) {
+    ctx.ui.notify(`Already up to date (${formatCommandVersion(current)}).`, "info");
+    if (!browserUpdate) notifyClaudeRuntimeFloorAdvisory(ctx);
     return;
   }
 
-  ctx.ui.notify(`Updating: v${current} → v${latest}...`, "info");
+  ctx.ui.notify(`Updating: ${formatCommandVersion(current)} → v${latest}...`, "info");
 
   const installCmd = resolveInstallCommand(`${NPM_PACKAGE}@latest`);
   try {
     execSync(installCmd, {
       stdio: ["ignore", "pipe", "ignore"],
     });
+    let reconcile: ReturnType<typeof reconcileGsdBrowserPathAfterInstall> | null = null;
+    if (browserUpdate) {
+      try {
+        reconcile = reconcileGsdBrowserPathAfterInstall({
+          latestVersion: latest,
+          compareSemver: compareSemverLocal,
+          resolvePathVersion: resolveGsdBrowserPathVersionForCommand,
+        });
+      } catch {
+        // Reconciliation is best-effort: the install above already succeeded,
+        // so a reconcile failure must not flip the result to "Update failed".
+        reconcile = null;
+      }
+    }
+    const newPathVersion = browserUpdate ? resolveGsdBrowserPathVersionForCommand() : null;
+    const pathNote = browserUpdate && !(newPathVersion && compareSemverLocal(newPathVersion, latest) >= 0)
+      ? (reconcile?.message
+        ?? "Ensure the npm global bin directory is on your PATH so MCP automation uses the updated binary.")
+      : "";
     ctx.ui.notify(
-      `Updated to v${latest}. Restart your GSD session to use the new version.`,
+      browserUpdate
+        ? `Updated gsd-browser to v${latest}. Restart your GSD session to use the new browser automation version.` +
+          (reconcile?.action === "synced" && reconcile.message ? `\n${reconcile.message}` : "") +
+          (pathNote ? `\nNote: ${pathNote}` : "")
+        : `Updated to v${latest}. Restart your GSD session to use the new version.`,
       "info",
     );
+    if (!browserUpdate) notifyClaudeRuntimeFloorAdvisory(ctx);
   } catch {
     ctx.ui.notify(
       `Update failed. Try manually: ${installCmd}`,

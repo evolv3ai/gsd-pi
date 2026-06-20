@@ -62,19 +62,19 @@ export async function checkRuntimeHealth(
     if (lock) {
       const alive = isLockProcessAlive(lock);
       if (!alive) {
-        issues.push({
-          severity: "error",
-          code: "stale_crash_lock",
-          scope: "project",
-          unitId: "project",
-          message: `Stale auto-mode worker (PID ${lock.pid}, started ${lock.startedAt}, was executing ${lock.unitType} ${lock.unitId}) — process is no longer running`,
-          file: "<workers table>",
-          fixable: true,
-        });
-
         if (shouldFix("stale_crash_lock")) {
           clearStaleWorkerLock(basePath);
           fixesApplied.push("cleared stale auto-mode worker state");
+        } else {
+          issues.push({
+            severity: "error",
+            code: "stale_crash_lock",
+            scope: "project",
+            unitId: "project",
+            message: `Stale auto-mode worker (PID ${lock.pid}, started ${lock.startedAt}, was executing ${lock.unitType} ${lock.unitId}) — process is no longer running`,
+            file: "<workers table>",
+            fixable: true,
+          });
         }
       }
     }
@@ -269,14 +269,14 @@ export async function checkRuntimeHealth(
         } catch {
           count = MAX_UAT_ATTEMPTS + 1;
         }
-        if (count <= MAX_UAT_ATTEMPTS) continue;
+        if (count < MAX_UAT_ATTEMPTS) continue;
 
         issues.push({
           severity: "warning",
           code: "uat_retry_exhausted",
           scope: "slice",
           unitId: `${mid}/${sid}`,
-          message: `run-uat for ${mid}/${sid} exhausted ${count - 1} retry attempt(s) without an ASSESSMENT verdict. Reset the retry counter after fixing the underlying UAT/tool issue, then rerun /gsd auto.`,
+          message: `run-uat for ${mid}/${sid} exhausted ${count} attempt(s) without an ASSESSMENT verdict. Reset the retry counter after fixing the underlying UAT/tool issue, then rerun /gsd auto.`,
           file: `.gsd/runtime/${fileName}`,
           fixable: true,
         });
@@ -414,26 +414,31 @@ export async function checkRuntimeHealth(
         ".gsd/event-log.jsonl",
       ];
 
-      // If blanket .gsd/ or .gsd is present, all patterns are covered
+      // If blanket .gsd/ or .gsd is present, all .gsd/* patterns are covered —
+      // but NOT the .gsd-worktrees/ sibling, which always needs its own entry.
       const hasBlanketIgnore = existingLines.has(".gsd/") || existingLines.has(".gsd");
-
+      const missing: string[] = [];
+      if (!existingLines.has(".gsd-worktrees/") && !existingLines.has(".gsd-worktrees")) {
+        missing.push(".gsd-worktrees/");
+      }
       if (!hasBlanketIgnore) {
-        const missing = criticalPatterns.filter(p => !existingLines.has(p));
-        if (missing.length > 0) {
-          issues.push({
-            severity: "warning",
-            code: "gitignore_missing_patterns",
-            scope: "project",
-            unitId: "project",
-            message: `${missing.length} critical GSD runtime pattern(s) missing from .gitignore: ${missing.join(", ")}`,
-            file: ".gitignore",
-            fixable: true,
-          });
+        missing.push(...criticalPatterns.filter(p => !existingLines.has(p)));
+      }
 
-          if (shouldFix("gitignore_missing_patterns")) {
-            ensureGitignore(basePath, { manageGitignore });
-            fixesApplied.push("added missing GSD runtime patterns to .gitignore");
-          }
+      if (missing.length > 0) {
+        issues.push({
+          severity: "warning",
+          code: "gitignore_missing_patterns",
+          scope: "project",
+          unitId: "project",
+          message: `${missing.length} critical GSD runtime pattern(s) missing from .gitignore: ${missing.join(", ")}`,
+          file: ".gitignore",
+          fixable: true,
+        });
+
+        if (shouldFix("gitignore_missing_patterns")) {
+          ensureGitignore(basePath, { manageGitignore });
+          fixesApplied.push("added missing GSD runtime patterns to .gitignore");
         }
       }
     }

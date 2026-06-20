@@ -7,10 +7,19 @@ import { atomicWriteSync } from "../atomic-write.js";
 import { gsdRoot } from "../paths.js";
 import type { AutoSession } from "./session.js";
 
-type RetrySession = Pick<AutoSession, "activeRunDir" | "basePath" | "verificationRetryCount">;
+type RetrySession = Pick<AutoSession, "activeRunDir" | "basePath" | "verificationRetryCount"> & {
+  exhaustedVerificationUnits?: Set<string>;
+};
 
 interface RetryStoreLogDeps {
   logFailure: (err: unknown) => void;
+}
+
+function ensureExhaustedVerificationUnits(s: RetrySession): Set<string> {
+  if (!s.exhaustedVerificationUnits) {
+    s.exhaustedVerificationUnits = new Set<string>();
+  }
+  return s.exhaustedVerificationUnits;
 }
 
 export function customVerifyRetryStateDir(s: Pick<AutoSession, "activeRunDir" | "basePath">): string {
@@ -25,7 +34,8 @@ export function hydrateCustomVerifyRetryCounts(
   s: RetrySession,
   deps: RetryStoreLogDeps,
 ): Map<string, number> {
-  if (s.verificationRetryCount.size > 0) {
+  const exhaustedUnits = ensureExhaustedVerificationUnits(s);
+  if (s.verificationRetryCount.size > 0 || exhaustedUnits.size > 0) {
     return s.verificationRetryCount;
   }
 
@@ -37,6 +47,12 @@ export function hydrateCustomVerifyRetryCounts(
     for (const [key, value] of Object.entries(counts)) {
       if (typeof value === "number" && Number.isFinite(value) && value > 0) {
         s.verificationRetryCount.set(key, Math.floor(value));
+      }
+    }
+    const exhausted = raw && typeof raw === "object" && Array.isArray(raw.exhausted) ? raw.exhausted : [];
+    for (const key of exhausted) {
+      if (typeof key === "string" && key.length > 0) {
+        exhaustedUnits.add(key);
       }
     }
   } catch (err) {
@@ -51,16 +67,18 @@ export function saveCustomVerifyRetryCounts(
   deps: RetryStoreLogDeps,
 ): void {
   const retryCounts = s.verificationRetryCount;
+  const exhaustedUnits = ensureExhaustedVerificationUnits(s);
   const filePath = customVerifyRetryStatePath(s);
 
   try {
-    if (!retryCounts || retryCounts.size === 0) {
+    if ((!retryCounts || retryCounts.size === 0) && (!exhaustedUnits || exhaustedUnits.size === 0)) {
       unlinkSync(filePath);
       return;
     }
     mkdirSync(customVerifyRetryStateDir(s), { recursive: true });
     atomicWriteSync(filePath, JSON.stringify({
       counts: Object.fromEntries(retryCounts),
+      exhausted: [...exhaustedUnits],
       updatedAt: new Date().toISOString(),
     }) + "\n");
   } catch (err) {

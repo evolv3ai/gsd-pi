@@ -20,7 +20,6 @@ All paths relative to `<pi-install-dir>/examples/extensions/`.
 | `dynamic-tools.ts` | Registering tools after startup and at runtime |
 | `truncated-tool.ts` | Output truncation with `truncateHead` |
 | `built-in-tool-renderer.ts` | Custom compact rendering for built-in tools |
-| `antigravity-image-gen.ts` | Image generation tool |
 | `ssh.ts` | Full SSH remote execution with pluggable operations |
 
 ### Commands & UI
@@ -75,7 +74,6 @@ All paths relative to `<pi-install-dir>/examples/extensions/`.
 |------|---------------------|
 | `custom-provider-anthropic/` | Custom Anthropic provider with OAuth |
 | `custom-provider-gitlab-duo/` | GitLab Duo via proxy |
-| `custom-provider-qwen-cli/` | Qwen CLI with OAuth device flow |
 
 ### Communication
 | File | What It Demonstrates |
@@ -98,7 +96,7 @@ All paths relative to `<pi-install-dir>/examples/extensions/`.
 
 | Goal | Approach | Key API | Example File |
 |------|----------|---------|-------------|
-| Block dangerous commands | Listen to `tool_call`, return `{ block: true }` | `pi.on("tool_call", ...)` | `protected-paths.ts` |
+| Block dangerous commands in native execution | Listen to `tool_call`, return `{ block: true }` | `pi.on("tool_call", ...)` | `protected-paths.ts` |
 | Add a tool the LLM can use | Register a tool with schema and execute | `pi.registerTool({...})` | `todo.ts` |
 | Add a slash command | Register a command with handler | `pi.registerCommand(...)` | `commands.ts` |
 | Ask the user a question | Use dialog methods | `ctx.ui.select()`, `ctx.ui.confirm()` | `question.ts` |

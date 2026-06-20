@@ -118,6 +118,51 @@ function makeRepoWithMultipleStrandedMilestones(): string {
   return base;
 }
 
+function makeRepoWithOnlySiblingStrandedAndLockedActive(): string {
+  // Locked milestone (M002) is the active row but has NO stranded
+  // milestone branch. A sibling milestone (M001) has a stranded branch.
+  // A parallel worker locked to M002 must skip the sibling's stranded
+  // action entirely — neither block on it nor adopt it.
+  const base = mkdtempSync(join(tmpdir(), "gsd-locked-no-stranded-bootstrap-"));
+  mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
+  mkdirSync(join(base, ".gsd", "milestones", "M002"), { recursive: true });
+  // M002 has CONTEXT so bootstrap's pre-planning gate doesn't route to
+  // showSmartEntry and the test reaches the post-lock session-init path.
+  writeFileSync(
+    join(base, ".gsd", "milestones", "M002", "M002-CONTEXT.md"),
+    "# M002 context\n",
+  );
+  writeFileSync(
+    join(base, ".gsd", "PREFERENCES.md"),
+    "---\ngit:\n  isolation: \"none\"\n---\n",
+  );
+  runGit(base, ["init"]);
+  runGit(base, ["config", "user.email", "test@test.com"]);
+  runGit(base, ["config", "user.name", "Test"]);
+  writeFileSync(join(base, "README.md"), "# test\n");
+  runGit(base, ["add", "-A"]);
+  runGit(base, ["commit", "-m", "init"]);
+  runGit(base, ["branch", "-M", "main"]);
+
+  // Sibling M001 has stranded work on milestone/M001.
+  runGit(base, ["checkout", "-b", "milestone/M001"]);
+  writeFileSync(join(base, "m001.txt"), "sibling stranded work\n");
+  runGit(base, ["add", "-A"]);
+  runGit(base, ["commit", "-m", "feat: M001 in progress"]);
+  runGit(base, ["checkout", "main"]);
+
+  // M002 has no stranded branch at all.
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  // Both milestones are open so the stranded audit produces a blocking
+  // action for the sibling (M001). M002 is the lock target and active
+  // row; getActiveMilestoneId honors the lock regardless of M001 order.
+  insertMilestone({ id: "M001", title: "Sibling milestone", status: "pending" });
+  insertMilestone({ id: "M002", title: "Locked milestone", status: "active" });
+  closeDatabase();
+
+  return base;
+}
+
 function makeRepoWithActiveMismatchAndStrandedTarget(): string {
   const base = mkdtempSync(join(tmpdir(), "gsd-targeted-stranded-bootstrap-"));
   mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
@@ -455,6 +500,197 @@ test("bootstrap blocks active stranded recovery when another open milestone also
   }
 });
 
+test("parallel worker recovers its locked stranded milestone despite stranded siblings", async () => {
+  const base = makeRepoWithMultipleStrandedMilestones();
+  const previousCwd = process.cwd();
+  const previousLock = process.env.GSD_MILESTONE_LOCK;
+  const previousWorker = process.env.GSD_PARALLEL_WORKER;
+  const s = new AutoSession();
+  const adoptCalls: Array<{ milestoneId: string; mode: string }> = [];
+  const notifications: Array<{ message: string; level?: string }> = [];
+
+  try {
+    process.env.GSD_PARALLEL_WORKER = "1";
+    process.env.GSD_MILESTONE_LOCK = "M002";
+
+    const ready = await bootstrapAutoSession(
+      s,
+      makeCtx(notifications) as any,
+      {
+        getThinkingLevel: () => "medium",
+        getActiveTools: () => [],
+        events: { emit: () => {} },
+      } as any,
+      base,
+      false,
+      false,
+      {
+        shouldUseWorktreeIsolation: () => false,
+        registerSigtermHandler: () => {},
+        registerAutoWorkerForSession: () => {},
+        lockBase: () => base,
+        buildLifecycle: () => ({
+          adoptSessionRoot: (sessionBase: string, originalBase?: string) => {
+            s.basePath = sessionBase;
+            if (originalBase !== undefined) {
+              s.originalBasePath = originalBase;
+            } else if (!s.originalBasePath) {
+              s.originalBasePath = sessionBase;
+            }
+          },
+          enterMilestone: () => ({ ok: true, mode: "none", path: base }),
+          adoptStrandedMilestone: (
+            milestoneId: string,
+            sessionBase: string,
+            _ctx: unknown,
+            opts: { mode: "worktree" | "branch" },
+          ) => {
+            adoptCalls.push({ milestoneId, mode: opts.mode });
+            s.basePath = sessionBase;
+            s.originalBasePath = sessionBase;
+            s.strandedRecoveryIsolationMode = opts.mode;
+            return { ok: true, mode: opts.mode, path: sessionBase };
+          },
+          adoptOrphanWorktree: <T extends { merged: boolean }>(
+            _mid: string,
+            _base: string,
+            run: () => T,
+          ): T => run(),
+        }) as any,
+      },
+      {
+        classification: "none",
+        lock: null,
+        pausedSession: null,
+        state: null,
+        recovery: null,
+        recoveryPrompt: null,
+        recoveryToolCallCount: 0,
+        artifactSatisfied: false,
+        hasResumableDiskState: false,
+        isBootstrapCrash: false,
+      },
+    );
+
+    const messages = notifications.map((entry) => entry.message).join("\n");
+    assert.equal(ready, true);
+    assert.deepEqual(adoptCalls, [{ milestoneId: "M002", mode: "branch" }]);
+    assert.equal(s.currentMilestoneId, "M002");
+    assert.match(messages, /Resuming saved milestone work for M002/);
+    assert.doesNotMatch(messages, /blocks auto-mode before M002/);
+    assert.doesNotMatch(messages, /\/gsd auto M001/);
+  } finally {
+    if (previousLock === undefined) delete process.env.GSD_MILESTONE_LOCK;
+    else process.env.GSD_MILESTONE_LOCK = previousLock;
+    if (previousWorker === undefined) delete process.env.GSD_PARALLEL_WORKER;
+    else process.env.GSD_PARALLEL_WORKER = previousWorker;
+    try {
+      closeDatabase();
+    } catch {}
+    process.chdir(previousCwd);
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("locked worker with no own stranded action does not adopt sibling stranded action", async () => {
+  const base = makeRepoWithOnlySiblingStrandedAndLockedActive();
+  const previousCwd = process.cwd();
+  const previousLock = process.env.GSD_MILESTONE_LOCK;
+  const previousWorker = process.env.GSD_PARALLEL_WORKER;
+  const s = new AutoSession();
+  const adoptCalls: Array<{ milestoneId: string; mode: string }> = [];
+  const enterCalls: string[] = [];
+  const notifications: Array<{ message: string; level?: string }> = [];
+
+  try {
+    process.env.GSD_PARALLEL_WORKER = "1";
+    process.env.GSD_MILESTONE_LOCK = "M002";
+
+    const ready = await bootstrapAutoSession(
+      s,
+      makeCtx(notifications) as any,
+      {
+        getThinkingLevel: () => "medium",
+        getActiveTools: () => [],
+        events: { emit: () => {} },
+      } as any,
+      base,
+      false,
+      false,
+      {
+        shouldUseWorktreeIsolation: () => false,
+        registerSigtermHandler: () => {},
+        registerAutoWorkerForSession: () => {},
+        lockBase: () => base,
+        buildLifecycle: () => ({
+          adoptSessionRoot: (sessionBase: string, originalBase?: string) => {
+            s.basePath = sessionBase;
+            if (originalBase !== undefined) {
+              s.originalBasePath = originalBase;
+            } else if (!s.originalBasePath) {
+              s.originalBasePath = sessionBase;
+            }
+          },
+          enterMilestone: (mid: string) => {
+            enterCalls.push(mid);
+            return { ok: true, mode: "none", path: base };
+          },
+          adoptStrandedMilestone: (
+            milestoneId: string,
+            sessionBase: string,
+            _ctx: unknown,
+            opts: { mode: "worktree" | "branch" },
+          ) => {
+            adoptCalls.push({ milestoneId, mode: opts.mode });
+            s.basePath = sessionBase;
+            s.originalBasePath = sessionBase;
+            s.strandedRecoveryIsolationMode = opts.mode;
+            return { ok: true, mode: opts.mode, path: sessionBase };
+          },
+          adoptOrphanWorktree: <T extends { merged: boolean }>(
+            _mid: string,
+            _base: string,
+            run: () => T,
+          ): T => run(),
+        }) as any,
+      },
+      {
+        classification: "none",
+        lock: null,
+        pausedSession: null,
+        state: null,
+        recovery: null,
+        recoveryPrompt: null,
+        recoveryToolCallCount: 0,
+        artifactSatisfied: false,
+        hasResumableDiskState: false,
+        isBootstrapCrash: false,
+      },
+    );
+
+    const messages = notifications.map((entry) => entry.message).join("\n");
+    assert.equal(ready, true);
+    // Must not adopt M001 (the sibling stranded action) — the locked
+    // worker has no stranded action of its own, so adoption should not
+    // run at all. enterMilestone for M002 is also gated off by
+    // isolation=none with no stranded recoveryMode (#742 regression).
+    assert.deepEqual(adoptCalls, []);
+    assert.equal(s.currentMilestoneId, "M002");
+    assert.doesNotMatch(messages, /Resuming saved milestone work for M001/);
+    assert.doesNotMatch(messages, /blocks auto-mode before M002/);
+  } finally {
+    if (previousLock === undefined) delete process.env.GSD_MILESTONE_LOCK;
+    else process.env.GSD_MILESTONE_LOCK = previousLock;
+    if (previousWorker === undefined) delete process.env.GSD_PARALLEL_WORKER;
+    else process.env.GSD_PARALLEL_WORKER = previousWorker;
+    try {
+      closeDatabase();
+    } catch {}
+    process.chdir(previousCwd);
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test("bootstrap honors explicit solo milestone lock when recovering stranded target worktree", async () => {
   const base = makeRepoWithActiveMismatchAndStrandedTarget();
   const previousCwd = process.cwd();
@@ -531,8 +767,13 @@ test("bootstrap honors explicit solo milestone lock when recovering stranded tar
     assert.equal(ready, true);
     assert.deepEqual(adoptCalls, [{ milestoneId: "M002", mode: "worktree" }]);
     assert.equal(s.currentMilestoneId, "M002");
-    assert.match(messages, /Recovering stranded work for M002/);
+    assert.match(messages, /Resuming saved milestone work for M002/);
     assert.doesNotMatch(messages, /blocks auto-mode before M001/);
+    assert.doesNotMatch(messages, /Stranded work for in-progress milestone M002/);
+    assert.ok(
+      notifications.some((entry) => entry.level === "info" && entry.message.includes("Resuming saved milestone work for M002")),
+      "active recovery should be presented as an info-level resume",
+    );
   } finally {
     if (previousLock === undefined) delete process.env.GSD_MILESTONE_LOCK;
     else process.env.GSD_MILESTONE_LOCK = previousLock;
@@ -624,7 +865,11 @@ test("bootstrap adopts stranded active branch even when isolation is none", asyn
     assert.equal(s.strandedRecoveryIsolationMode, "branch");
     assert.match(
       notifications.map((entry) => entry.message).join("\n"),
-      /Recovering stranded work for M001/,
+      /Resuming saved milestone work for M001/,
+    );
+    assert.ok(
+      notifications.every((entry) => entry.level !== "warning" || !entry.message.includes("Stranded work for in-progress milestone M001")),
+      "adopting the active milestone should not emit a scary stranded-work warning",
     );
   } finally {
     try {
@@ -713,7 +958,11 @@ test("bootstrap adopts stranded active branch before deep project setup", async 
     assert.equal(s.strandedRecoveryIsolationMode, "branch");
     assert.match(
       notifications.map((entry) => entry.message).join("\n"),
-      /Recovering stranded work for M001/,
+      /Resuming saved milestone work for M001/,
+    );
+    assert.ok(
+      notifications.every((entry) => entry.level !== "warning" || !entry.message.includes("Stranded work for in-progress milestone M001")),
+      "adopting the active milestone should not emit a scary stranded-work warning",
     );
   } finally {
     try {

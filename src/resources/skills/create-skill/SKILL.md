@@ -174,6 +174,9 @@ description: ...          # What it does AND when to use it (third person)
 ---
 ```
 
+Frontmatter must parse as YAML. Quote description values containing `:` or use
+a folded block (`description: >`) for longer trigger descriptions.
+
 Name conventions: `create-*`, `manage-*`, `setup-*`, `generate-*`, `build-*`
 </yaml_requirements>
 

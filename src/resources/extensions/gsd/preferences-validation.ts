@@ -12,23 +12,44 @@ import type { DynamicRoutingConfig } from "./model-router.js";
 import { isAbsolute } from "node:path";
 import { VALID_BRANCH_NAME } from "./git-service.js";
 import { normalizeStringArray } from "../shared/format-utils.js";
+import { getGateIdsForTurn } from "./gate-registry.js";
 
 import {
   KNOWN_PREFERENCE_KEYS,
   KNOWN_UNIT_LABELS,
+  GSD_MODEL_PHASE_KEYS,
 
   SKILL_ACTIONS,
   type WorkflowMode,
   type GSDPreferences,
   type GSDSkillRule,
+  type GSDThinkingLevel,
 } from "./preferences-types.js";
 
 const VALID_TOKEN_PROFILES = new Set<TokenProfile>(["budget", "balanced", "quality", "burn-max"]);
+const VALID_THINKING_LEVELS = new Set<GSDThinkingLevel>([
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+]);
+const KNOWN_MODEL_PHASE_KEYS = new Set<string>(GSD_MODEL_PHASE_KEYS);
 const VALID_UOK_TURN_ACTIONS = new Set<"commit" | "snapshot" | "status-only">([
   "commit",
   "snapshot",
   "status-only",
 ]);
+const VALID_POST_UNIT_HOOK_CRITICALITIES = new Set(["advisory", "blocking"]);
+const VALID_POST_UNIT_HOOK_ON_BLOCK_ACTIONS = new Set([
+  "retry-unit",
+  "retry-task",
+  "queue-task",
+  "queue-slice",
+  "pause",
+]);
+const VALID_GATE_EVALUATE_SLICE_GATES = new Set<string>(getGateIdsForTurn("gate-evaluate"));
 
 export function validatePreferences(preferences: GSDPreferences): {
   preferences: GSDPreferences;
@@ -382,9 +403,63 @@ export function validatePreferences(preferences: GSDPreferences): {
   // ─── Models ─────────────────────────────────────────────────────────
   if (preferences.models !== undefined) {
     if (preferences.models && typeof preferences.models === "object") {
-      validated.models = preferences.models;
+      // Static check for inline per-phase thinking (ADR-026). The resolved
+      // model isn't known until dispatch, so capability is clamped there; here
+      // we warn on illegal level strings AND strip them, so a typo can't reach
+      // resolveThinkingLevelForUnit and be treated as explicit configuration.
+      const sanitizedModels: Record<string, unknown> = {};
+      for (const [phase, entry] of Object.entries(preferences.models as Record<string, unknown>)) {
+        if (entry && typeof entry === "object" && "thinking" in entry) {
+          const level = (entry as { thinking?: unknown }).thinking;
+          if (level !== undefined && !VALID_THINKING_LEVELS.has(level as GSDThinkingLevel)) {
+            warnings.push(
+              `models.${phase}.thinking "${String(level)}" is not a valid thinking level ` +
+              `(off, minimal, low, medium, high, xhigh) — ignored`,
+            );
+            const { thinking: _ignored, ...rest } = entry as Record<string, unknown>;
+            // If stripping the bad thinking leaves no usable model, drop the
+            // phase entirely rather than storing a hollow `{}` / `{ provider }`
+            // entry that resolveWinningPhase would otherwise treat as configured.
+            if (rest.model) {
+              sanitizedModels[phase] = rest;
+            }
+            continue;
+          }
+        }
+        sanitizedModels[phase] = entry;
+      }
+      validated.models = sanitizedModels as GSDPreferences["models"];
     } else {
       errors.push("models must be an object");
+    }
+  }
+
+  // ─── Thinking (separate per-phase block, ADR-026) ───────────────────
+  if (preferences.thinking !== undefined) {
+    if (preferences.thinking && typeof preferences.thinking === "object" && !Array.isArray(preferences.thinking)) {
+      const validatedThinking: Record<string, GSDThinkingLevel> = {};
+      for (const [phase, level] of Object.entries(preferences.thinking as Record<string, unknown>)) {
+        if (!KNOWN_MODEL_PHASE_KEYS.has(phase)) {
+          warnings.push(
+            `unknown thinking phase "${phase}" — must be one of: ` +
+            `${[...KNOWN_MODEL_PHASE_KEYS].join(", ")} — ignored`,
+          );
+          continue;
+        }
+        if (!VALID_THINKING_LEVELS.has(level as GSDThinkingLevel)) {
+          warnings.push(
+            `thinking.${phase} "${String(level)}" is not a valid thinking level ` +
+            `(off, minimal, low, medium, high, xhigh) — ignored`,
+          );
+          continue;
+        }
+        validatedThinking[phase] = level as GSDThinkingLevel;
+      }
+      if (Object.keys(validatedThinking).length > 0) {
+        validated.thinking = validatedThinking;
+      }
+    } else {
+      errors.push("thinking must be an object");
     }
   }
 
@@ -486,8 +561,36 @@ export function validatePreferences(preferences: GSDPreferences): {
       if (typeof hook.artifact === "string" && hook.artifact.trim()) {
         validHook.artifact = hook.artifact.trim();
       }
+      if (hook.criticality !== undefined) {
+        const criticality = typeof hook.criticality === "string" ? hook.criticality.trim() : "";
+        if (VALID_POST_UNIT_HOOK_CRITICALITIES.has(criticality)) {
+          validHook.criticality = criticality as PostUnitHookConfig["criticality"];
+        } else {
+          errors.push(`post_unit_hooks "${name}" invalid criticality: ${String(hook.criticality)}`);
+        }
+      }
       if (typeof hook.retry_on === "string" && hook.retry_on.trim()) {
         validHook.retry_on = hook.retry_on.trim();
+      }
+      if (hook.on_block !== undefined) {
+        if (!hook.on_block || typeof hook.on_block !== "object") {
+          errors.push(`post_unit_hooks "${name}" on_block must be an object`);
+        } else {
+          const onBlock = hook.on_block as unknown as Record<string, unknown>;
+          const action = typeof onBlock.action === "string" ? onBlock.action.trim() : "";
+          if (!VALID_POST_UNIT_HOOK_ON_BLOCK_ACTIONS.has(action)) {
+            errors.push(`post_unit_hooks "${name}" invalid on_block action: ${String(onBlock.action)}`);
+          } else {
+            validHook.on_block = { action: action as NonNullable<PostUnitHookConfig["on_block"]>["action"] };
+            if (typeof onBlock.artifact === "string" && onBlock.artifact.trim()) {
+              validHook.on_block.artifact = onBlock.artifact.trim();
+            }
+          }
+        }
+      }
+      if (validHook.criticality === "blocking" && !validHook.artifact) {
+        errors.push(`post_unit_hooks "${name}" criticality blocking requires artifact`);
+        continue;
       }
       if (typeof hook.agent === "string" && hook.agent.trim()) {
         validHook.agent = hook.agent.trim();
@@ -871,7 +974,14 @@ export function validatePreferences(preferences: GSDPreferences): {
       }
       if (ge.slice_gates !== undefined) {
         if (Array.isArray(ge.slice_gates) && ge.slice_gates.every((g: unknown) => typeof g === "string")) {
-          validGe.slice_gates = ge.slice_gates;
+          const invalid = ge.slice_gates.filter((g) => !VALID_GATE_EVALUATE_SLICE_GATES.has(g));
+          if (invalid.length === 0) {
+            validGe.slice_gates = ge.slice_gates;
+          } else {
+            errors.push(
+              `gate_evaluation.slice_gates must contain only gate-evaluate slice gates: ${[...VALID_GATE_EVALUATE_SLICE_GATES].join(", ")}`,
+            );
+          }
         } else {
           errors.push("gate_evaluation.slice_gates must be an array of strings");
         }

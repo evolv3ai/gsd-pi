@@ -1,8 +1,9 @@
 import { existsSync, rmSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { clearParseCache } from "../files.js";
 import { isClosedStatus, isDeferredStatus } from "../status-guards.js";
 import { isNonEmptyString, validateStringArray } from "../validation.js";
+import { getGateIdsForTurn } from "../gate-registry.js";
 import {
   transaction,
   getMilestone,
@@ -17,16 +18,17 @@ import {
   deleteTask,
   deleteArtifactByPath,
 } from "../gsd-db.js";
-import type { GateId } from "../types.js";
+import type { GateEvaluationConfig, GateId } from "../types.js";
 import { invalidateStateCache } from "../state.js";
 import { renderPlanFromDb } from "../markdown-renderer.js";
-import { renderAllProjections } from "../workflow-projections.js";
+import { flushWorkflowProjections } from "../projection-flush.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning } from "../workflow-logger.js";
-import { validatePlanningPathScope } from "../planning-path-scope.js";
-import { checkFilePathConsistency, checkTaskOrdering } from "../pre-execution-checks.js";
+import { validatePathOnlyPlanningFields, validatePlanningPathScope } from "../planning-path-scope.js";
+import { runTaskPathChecks } from "../pre-execution-checks.js";
 import type { TaskRow } from "../db-task-slice-rows.js";
+import { resolveWorktreeProjectRoot } from "../worktree-root.js";
 import { buildTaskFileName, gsdProjectionRoot } from "../paths.js";
 import { loadEffectiveGSDPreferences } from "../preferences.js";
 import { createRepositoryRegistryFromPreferences, defaultRepositoryTargets, type RepositoryRegistry } from "../repository-registry.js";
@@ -163,9 +165,27 @@ function validateParams(params: PlanSliceParams): PlanSliceParams {
   };
 }
 
-function loadRepositoryRegistry(basePath: string): RepositoryRegistry {
+function loadPlanningContext(basePath: string): {
+  repositoryRegistry: RepositoryRegistry;
+  gateEvaluation?: GateEvaluationConfig;
+} {
   const loaded = loadEffectiveGSDPreferences(basePath);
-  return createRepositoryRegistryFromPreferences(basePath, loaded?.preferences);
+  return {
+    repositoryRegistry: createRepositoryRegistryFromPreferences(basePath, loaded?.preferences),
+    gateEvaluation: loaded?.preferences?.gate_evaluation,
+  };
+}
+
+function resolveGateEvaluateSliceGates(config: GateEvaluationConfig | undefined): GateId[] {
+  const ownedGateIds = [...getGateIdsForTurn("gate-evaluate")];
+  if (!config?.slice_gates?.length) return ownedGateIds;
+  const owned = new Set<string>(ownedGateIds);
+  return config.slice_gates.filter((gateId): gateId is GateId => owned.has(gateId));
+}
+
+function resolveTaskGates(config: GateEvaluationConfig | undefined): GateId[] {
+  if (config?.task_gates === false) return [];
+  return [...getGateIdsForTurn("execute-task")];
 }
 
 function validateReferencedRepositories(
@@ -238,12 +258,27 @@ function toTaskRows(params: PlanSliceParams, defaultTargets: string[]): TaskRow[
   }));
 }
 
-function validateTaskPathsBeforePersist(params: PlanSliceParams, basePath: string, defaultTargets: string[]): string | null {
+function validateTaskPathsBeforePersist(
+  params: PlanSliceParams,
+  basePath: string,
+  defaultTargets: string[],
+  allowedRoots: string[],
+): string | null {
   const taskRows = toTaskRows(params, defaultTargets);
-  const checks = [
-    ...checkFilePathConsistency(taskRows, basePath),
-    ...checkTaskOrdering(taskRows, basePath),
-  ];
+  const baseRoot = resolve(basePath);
+  const additionalRoots = allowedRoots
+    .map((root) => resolve(root))
+    .filter((root) => root !== baseRoot);
+  const resolvedCanonicalRoot = resolve(resolveWorktreeProjectRoot(basePath));
+  const canonicalProjectRoot = resolvedCanonicalRoot !== baseRoot ? resolvedCanonicalRoot : undefined;
+  const hasContext = additionalRoots.length > 0 || canonicalProjectRoot !== undefined;
+  const context = hasContext
+    ? {
+        ...(additionalRoots.length > 0 ? { additionalRoots } : {}),
+        ...(canonicalProjectRoot !== undefined ? { canonicalProjectRoot } : {}),
+      }
+    : undefined;
+  const checks = runTaskPathChecks(taskRows, basePath, context);
   const blocking = checks.filter((check) => !check.passed && check.blocking);
 
   if (blocking.length === 0) return null;
@@ -265,8 +300,11 @@ export async function handlePlanSlice(
   }
 
   let repositoryRegistry: RepositoryRegistry;
+  let gateEvaluation: GateEvaluationConfig | undefined;
   try {
-    repositoryRegistry = loadRepositoryRegistry(basePath);
+    const context = loadPlanningContext(basePath);
+    repositoryRegistry = context.repositoryRegistry;
+    gateEvaluation = context.gateEvaluation;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { error: `validation failed: ${message}` };
@@ -278,6 +316,16 @@ export async function handlePlanSlice(
   }
 
   const allowedAbsoluteRoots = resolveAllowedRootsForPathScope(params, repositoryRegistry, defaultTargets);
+
+  const pathOnlyError = validatePathOnlyPlanningFields(
+    params.tasks.map((task, index) => ({
+      field: `tasks[${index}].expectedOutput`,
+      values: task.expectedOutput,
+    })),
+  );
+  if (pathOnlyError) {
+    return { error: `validation failed: ${pathOnlyError}` };
+  }
 
   const pathScopeError = validatePlanningPathScope(
     basePath,
@@ -292,7 +340,7 @@ export async function handlePlanSlice(
     return { error: `validation failed: ${pathScopeError}` };
   }
 
-  const pathError = validateTaskPathsBeforePersist(params, basePath, defaultTargets);
+  const pathError = validateTaskPathsBeforePersist(params, basePath, defaultTargets, allowedAbsoluteRoots);
   if (pathError) {
     return { error: `pre-execution validation failed:\n${pathError}` };
   }
@@ -384,11 +432,11 @@ export async function handlePlanSlice(
 
       // Seed quality gate rows inside the transaction — all-or-nothing with
       // the plan data so a crash can't leave orphaned gates without tasks.
-      const sliceGates: GateId[] = ["Q3", "Q4"];
+      const sliceGates = resolveGateEvaluateSliceGates(gateEvaluation);
       for (const gid of sliceGates) {
         insertGateRow({ milestoneId: params.milestoneId, sliceId: params.sliceId, gateId: gid, scope: "slice" });
       }
-      const taskGates: GateId[] = ["Q5", "Q6", "Q7"];
+      const taskGates = resolveTaskGates(gateEvaluation);
       for (const task of params.tasks) {
         for (const gid of taskGates) {
           insertGateRow({ milestoneId: params.milestoneId, sliceId: params.sliceId, gateId: gid, scope: "task", taskId: task.taskId });
@@ -420,7 +468,7 @@ export async function handlePlanSlice(
 
     // ── Post-mutation hook: projections, manifest, event log ─────────────
     try {
-      await renderAllProjections(basePath, params.milestoneId);
+      await flushWorkflowProjections(basePath, { milestoneId: params.milestoneId });
       writeManifest(basePath);
       appendEvent(basePath, {
         cmd: "plan-slice",

@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 
 import { resolveCanonicalMilestoneRoot } from "../worktree-manager.ts";
+import { resolveCloseoutArtifactProjection } from "../artifact-projection.ts";
 
 function makeTmpBase(): string {
   const base = join(tmpdir(), `gsd-canon-test-${randomUUID()}`);
@@ -102,6 +103,25 @@ test("only returns the worktree for the requested milestone, not siblings", () =
     makeLiveWorktree(base, "M001");
     const result = resolveCanonicalMilestoneRoot(base, "M002");
     assert.equal(result, base, "M002 has no worktree → basePath");
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("resolveCloseoutArtifactProjection names project and canonical artifact roots", () => {
+  const base = makeTmpBase();
+  try {
+    const wtPath = makeLiveWorktree(base, "M001");
+    const projection = resolveCloseoutArtifactProjection({
+      milestoneId: "M001",
+      basePath: wtPath,
+      originalBasePath: base,
+    });
+
+    assert.equal(projection.projectRoot, base);
+    assert.equal(projection.canonicalMilestoneRoot, wtPath);
+    assert.equal(projection.summaryArtifactBasePath, wtPath);
+    assert.equal(projection.gateEvidenceBasePath, wtPath);
   } finally {
     cleanup(base);
   }

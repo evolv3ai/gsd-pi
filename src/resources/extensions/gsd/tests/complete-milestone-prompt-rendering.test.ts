@@ -42,7 +42,11 @@ test("complete milestone prompt renders compact verification and completion guid
   assert.match(prompt, /Decision Re-evaluation/);
   assert.match(prompt, /self-diff/i);
   assert.match(prompt, /GSD-(?:Task|Unit)/);
-  assert.match(prompt, /Milestone M001 complete/);
-  assert.match(prompt, /Do not add a second final-status block/);
+  assert.match(prompt, /Closeout messaging \(auto-mode\)/);
+  assert.match(prompt, /Never say "Milestone M001 is complete"/);
+  assert.match(prompt, /Milestone M001 closeout submitted/);
+  assert.match(prompt, /Do not say the milestone is complete/);
+  assert.match(prompt, /VERIFICATION FAILED/);
+  assert.doesNotMatch(prompt, /emit only one closeout line: "Milestone M001 complete\."/);
   assert.doesNotMatch(prompt, /\{\{[a-zA-Z][a-zA-Z0-9_]*\}\}/);
 });

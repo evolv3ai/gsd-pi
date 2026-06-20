@@ -7,12 +7,10 @@
  */
 
 import { resolve } from 'node:path'
-import {
-  readProgress,
-  readRoadmap,
-  graphQuery,
-  resolveGsdRoot,
-} from '@opengsd/mcp-server'
+import { graphQuery } from '@opengsd/mcp-server/readers/graph'
+import { resolveGsdRoot } from '@opengsd/mcp-server/readers/paths'
+import { readRoadmap } from '@opengsd/mcp-server/readers/roadmap'
+import { readProgress } from '@opengsd/mcp-server/readers/state'
 
 export const INTEGRATION_VERSION = 1
 

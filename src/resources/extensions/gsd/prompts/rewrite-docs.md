@@ -30,4 +30,4 @@ An override was issued by the user that changes a fundamental decision or approa
 
 **You MUST update the relevant documents AND mark overrides as resolved in `{{overridesPath}}` before finishing.**
 
-When done, say: "Override applied across all documents."
+When done, say: "Override applied across all documents." Say this exactly once — if you already said it in a prior message, do not repeat it.

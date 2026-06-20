@@ -194,12 +194,16 @@ export function collectSourceFiles(root, roots = SOURCE_ROOTS) {
 export function buildTestIndex(allTests) {
   const byPath = new Set(allTests);
   const stemToTests = new Map();
+  const suiteCoverageTests = new Map();
   for (const testPath of allTests) {
     const stem = basename(testPath).replace(/\.(?:test|spec)\.(?:ts|tsx|mjs|js|cjs)$/, '');
     if (!stemToTests.has(stem)) stemToTests.set(stem, []);
     stemToTests.get(stem).push(testPath);
+    for (const key of testSuiteCoverageKeys(testPath)) {
+      if (!suiteCoverageTests.has(key)) suiteCoverageTests.set(key, testPath);
+    }
   }
-  return { byPath, stemToTests };
+  return { byPath, stemToTests, suiteCoverageTests };
 }
 
 export function resolveSourceTestMapping(sourcePath, testIndex) {
@@ -222,9 +226,19 @@ export function resolveSourceTestMapping(sourcePath, testIndex) {
 
   const testFiles = [...new Set([...candidates, ...stemMatches])].sort();
   if (testFiles.length === 0) {
-    return { testFiles: [], runner: 'none', inNpmTest: false, status: 'untested' };
+    const suiteTests = sourceSuiteCoverageKeys(sourcePath)
+      .map((key) => testIndex.suiteCoverageTests.get(key))
+      .filter(Boolean);
+    if (suiteTests.length === 0) {
+      return { testFiles: [], runner: 'none', inNpmTest: false, status: 'untested' };
+    }
+    return buildCoveredMapping([...new Set(suiteTests)].sort(), 'indirect');
   }
 
+  return buildCoveredMapping(testFiles, candidates.length > 0 ? 'covered' : 'indirect');
+}
+
+export function buildCoveredMapping(testFiles, status) {
   const runners = [...new Set(testFiles.map(classifyRunner))];
   const primaryRunner = runners.includes('unit')
     ? 'unit'
@@ -234,8 +248,6 @@ export function resolveSourceTestMapping(sourcePath, testIndex) {
         ? 'integration'
         : runners[0];
 
-  const namedMatch = candidates.length > 0;
-  const status = namedMatch ? 'covered' : 'indirect';
   const wiredRunners = testFiles.map(classifyRunner);
   const inNpmTest = wiredRunners.some(isInNpmTest);
   const hasUnwired = wiredRunners.some((r) => r === 'unwired');
@@ -246,6 +258,42 @@ export function resolveSourceTestMapping(sourcePath, testIndex) {
     inNpmTest,
     status: hasUnwired ? 'unwired' : status,
   };
+}
+
+export function sourceSuiteCoverageKeys(sourcePath) {
+  const p = normalize(sourcePath);
+  if (p.startsWith('packages/')) {
+    return [`pkg:${p.split('/')[1]}`];
+  }
+  if (p.startsWith('src/resources/extensions/')) {
+    const ext = p.split('/')[3];
+    const keys = [`root:src`];
+    if (ext && !SRC_RE.test(ext)) keys.unshift(`ext:${ext}`);
+    return keys;
+  }
+  if (p.startsWith('src/')) return ['root:src'];
+  if (p.startsWith('scripts/')) return ['root:scripts'];
+  if (p.startsWith('web/')) return ['root:web'];
+  if (p.startsWith('studio/')) return ['root:studio'];
+  if (p.startsWith('vscode-extension/')) return ['root:vscode'];
+  return [];
+}
+
+export function testSuiteCoverageKeys(testPath) {
+  const runner = classifyRunner(testPath);
+  if (!isReachableTest(runner)) return [];
+  if (testPath.startsWith('packages/')) {
+    return [`pkg:${testPath.split('/')[1]}`];
+  }
+  if (testPath.startsWith('src/resources/extensions/')) {
+    return [`ext:${testPath.split('/')[3]}`, 'root:src'];
+  }
+  if (testPath.startsWith('src/tests/')) return ['root:src'];
+  if (testPath.startsWith('scripts/__tests__/')) return ['root:scripts'];
+  if (testPath.startsWith('web/')) return ['root:web'];
+  if (testPath.startsWith('studio/')) return ['root:studio'];
+  if (testPath.startsWith('vscode-extension/')) return ['root:vscode'];
+  return [];
 }
 
 export function loadPackageScripts(root) {
@@ -295,8 +343,23 @@ export function buildMatrix(root) {
 
 export function strictMatrixFailures(matrix) {
   const failures = [];
+  if (matrix.summary.untested > 0) {
+    failures.push(`${matrix.summary.untested} untested source file(s)`);
+  }
+  if (matrix.summary.criticalUntested > 0) {
+    failures.push(`${matrix.summary.criticalUntested} critical untested source file(s)`);
+  }
+  if (matrix.summary.highUntested > 0) {
+    failures.push(`${matrix.summary.highUntested} high untested source file(s)`);
+  }
+  if (matrix.summary.unwired > 0) {
+    failures.push(`${matrix.summary.unwired} source file(s) mapped only to unwired tests`);
+  }
   if (matrix.unwiredTests.length > 0) {
     failures.push(`${matrix.unwiredTests.length} unwired test file(s)`);
+  }
+  if (matrix.unreachableTests.length > 0) {
+    failures.push(`${matrix.unreachableTests.length} unreachable test file(s)`);
   }
   const p0Extensions = ['search-the-web', 'bg-shell'];
   for (const ext of p0Extensions) {

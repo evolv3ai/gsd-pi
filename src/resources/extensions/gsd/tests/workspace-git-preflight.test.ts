@@ -109,6 +109,21 @@ test("ensureWorkspaceGitReadyForPath blocks product file conflicts", async () =>
   }
 });
 
+test("ensureWorkspaceGitReadyForPath does not block on staged files with trailing whitespace", async () => {
+  // Regression test for #599: git diff --check exits non-zero for whitespace
+  // errors as well as conflict markers. Staged files from auto-generated code
+  // often have trailing whitespace; these must not trigger the conflict gate.
+  const base = makeTempRepo("gsd-ws-git-whitespace-");
+  try {
+    writeFileSync(join(base, "app.ts"), "const x = 1;   \n"); // trailing whitespace
+    git(base, "add", "app.ts");
+    const ready = await ensureWorkspaceGitReadyForPath(base);
+    assert.equal(ready.ok, true, "trailing whitespace in staged files must not block");
+  } finally {
+    cleanup(base);
+  }
+});
+
 test("isWorkspaceGitAllowedCommand allowlists doctor, closeout, and dispatch complete-milestone", () => {
   assert.equal(isWorkspaceGitAllowedCommand("doctor"), true);
   assert.equal(isWorkspaceGitAllowedCommand("doctor fix"), true);

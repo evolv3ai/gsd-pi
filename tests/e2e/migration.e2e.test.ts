@@ -25,14 +25,15 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { createTmpProject, gsdSync } from "./_shared/index.ts";
 
 interface SqliteDb {
 	// Method names match node:sqlite's API surface.
-	// (`run` here is the SQL exec method, not shell exec.)
-	run(sql: string): void;
+	// (`exec` here is the SQL exec method, not shell exec.)
+	exec(sql: string): void;
 	prepare(sql: string): { get(): Record<string, unknown> | undefined; all(): Record<string, unknown>[] };
 	close(): void;
 }
@@ -63,7 +64,7 @@ async function tryLoadSqlite(): Promise<{ ok: true; mod: SqliteModule } | { ok: 
  * minimum invariant is a `schema_version` row with `version = 20`.
  */
 function seedV20Db(sqlite: SqliteModule, dbPath: string): void {
-	const db = new sqlite.DatabaseSync(dbPath) as unknown as { exec(sql: string): void; close(): void };
+	const db = new sqlite.DatabaseSync(dbPath);
 	db.exec("PRAGMA journal_mode=WAL");
 	db.exec(`
     CREATE TABLE IF NOT EXISTS schema_version (
@@ -82,6 +83,32 @@ function readSchemaVersion(sqlite: SqliteModule, dbPath: string): number {
 			.prepare("SELECT MAX(version) AS v FROM schema_version")
 			.get() as { v?: number } | undefined;
 		return row?.v ?? 0;
+	} finally {
+		db.close();
+	}
+}
+
+async function readBuiltSchemaVersion(): Promise<number> {
+	const bin = process.env.GSD_SMOKE_BINARY;
+	assert.ok(bin, "GSD_SMOKE_BINARY must be set before reading built schema version");
+
+	const modulePath = join(dirname(bin), "resources", "extensions", "gsd", "gsd-db.js");
+	assert.ok(existsSync(modulePath), `expected built gsd-db.js at ${modulePath}`);
+
+	const mod = (await import(pathToFileURL(modulePath).href)) as { SCHEMA_VERSION?: unknown };
+	assert.equal(
+		typeof mod.SCHEMA_VERSION,
+		"number",
+		"expected built gsd-db.js to export numeric SCHEMA_VERSION",
+	);
+	return mod.SCHEMA_VERSION;
+}
+
+function readColumnNames(sqlite: SqliteModule, dbPath: string, table: string): Set<string> {
+	const db = new sqlite.DatabaseSync(dbPath);
+	try {
+		const rows = db.prepare(`PRAGMA table_info(${table})`).all();
+		return new Set(rows.map((row) => row["name"] as string));
 	} finally {
 		db.close();
 	}
@@ -118,6 +145,7 @@ describe("schema migration smoke (forward only)", () => {
 		// Sanity: the seeded DB really is v20 before we hand it to gsd.
 		const before = readSchemaVersion(sqliteLoaded.mod, dbPath);
 		assert.equal(before, 20, `seed step failed — expected v20 before run, got ${before}`);
+		const expectedSchemaVersion = await readBuiltSchemaVersion();
 
 		// Run a no-LLM probe that opens the DB. The mere act of running it
 		// triggers initSchema/migrateSchema in the binary's compiled code.
@@ -137,12 +165,18 @@ describe("schema migration smoke (forward only)", () => {
 			after > before,
 			`expected schema_version to advance past ${before}, still at ${after}`,
 		);
-		// We don't hard-pin `after === SCHEMA_VERSION` because that constant
-		// shifts with normal development. The contract is: forward-only
-		// migration must reach SOME version newer than what we seeded.
+		assert.equal(
+			after,
+			expectedSchemaVersion,
+			`expected schema_version to reach current SCHEMA_VERSION ${expectedSchemaVersion}, got ${after}`,
+		);
 		assert.ok(
-			after >= 21,
-			`expected schema_version to reach at least 21 (the v20→v21 hop), got ${after}`,
+			readColumnNames(sqliteLoaded.mod, dbPath, "slices").has("target_repositories"),
+			"expected migrated slices table to include target_repositories",
+		);
+		assert.ok(
+			readColumnNames(sqliteLoaded.mod, dbPath, "tasks").has("target_repositories"),
+			"expected migrated tasks table to include target_repositories",
 		);
 	});
 });

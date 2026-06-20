@@ -23,17 +23,20 @@ import {
   createAutoWorktree,
   mergeMilestoneToMain,
   getAutoWorktreeOriginalBase,
+  _setRestoreEntryFnForTests,
 } from "../../auto-worktree.ts";
 import { getSliceBranchName } from "../../worktree.ts";
 import { nativeMergeSquash } from "../../native-git-bridge.ts";
 import { drainLogs, setStderrLoggingEnabled } from "../../workflow-logger.ts";
 import {
   closeDatabase,
+  insertAssessment,
   insertMilestone,
   insertSlice,
   insertTask,
   openDatabase,
 } from "../../gsd-db.ts";
+import { createGsdIntegrationProject } from "./gsd-integration-fixture.ts";
 
 function run(cmd: string, cwd: string): string {
   // Safe: all inputs are hardcoded test strings, not user input
@@ -41,17 +44,12 @@ function run(cmd: string, cwd: string): string {
 }
 
 function createTempRepo(): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "wt-ms-merge-test-")));
-  run("git init", dir);
-  run("git config user.email test@test.com", dir);
-  run("git config user.name Test", dir);
-  writeFileSync(join(dir, "README.md"), "# test\n");
-  mkdirSync(join(dir, ".gsd"), { recursive: true });
-  writeFileSync(join(dir, ".gsd", "STATE.md"), "# State\n");
-  run("git add .", dir);
-  run("git commit -m init", dir);
-  run("git branch -M main", dir);
-  return dir;
+  return createGsdIntegrationProject({
+    prefix: "wt-ms-merge-test-",
+    initialFiles: {
+      ".gsd/STATE.md": "# State\n",
+    },
+  }).root;
 }
 
 function createTempRepoWithExternalGsd(): { repo: string; externalState: string } {
@@ -207,6 +205,13 @@ describe("auto-worktree-milestone-merge", { timeout: 300_000 }, () => {
         });
       }
     }
+    insertAssessment({
+      path: "milestones/M020/M020-VALIDATION.md",
+      milestoneId: "M020",
+      status: "pass",
+      scope: "milestone-validation",
+      fullContent: "verdict: pass",
+    });
 
     const roadmap = makeRoadmap("M020", "Backend foundation", [
       { id: "S01", title: "Core API" },
@@ -738,7 +743,7 @@ describe("auto-worktree-milestone-merge", { timeout: 300_000 }, () => {
   });
 
   test("#2156: mergeMilestoneToMain removes external-state worktrees using the milestone branch name", () => {
-    const { repo, externalState } = freshRepoWithExternalGsd();
+    const { repo } = freshRepoWithExternalGsd();
     const wtPath = createAutoWorktree(repo, "M215");
 
     addSliceToMilestone(repo, wtPath, "M215", "S01", "External cleanup", [
@@ -746,9 +751,10 @@ describe("auto-worktree-milestone-merge", { timeout: 300_000 }, () => {
     ]);
 
     const realWtPath = realpathSync(wtPath);
-    assert.ok(
-      realWtPath.startsWith(externalState),
-      `worktree should be registered under external .gsd state, got ${realWtPath}`,
+    assert.equal(
+      realWtPath,
+      join(repo, ".gsd-worktrees", "M215"),
+      `worktree should use canonical path under project root, got ${realWtPath}`,
     );
 
     // Recreate the exact divergence from #1852: local .gsd/ is replaced with a
@@ -771,6 +777,52 @@ describe("auto-worktree-milestone-merge", { timeout: 300_000 }, () => {
     assert.ok(!existsSync(realWtPath), "real external worktree directory should be removed");
     assert.ok(
       !run("git branch", repo).includes("milestone/M215"),
+      "milestone branch should be deleted after merge cleanup",
+    );
+  });
+
+  test("#2156 (legacy): mergeMilestoneToMain removes external-state worktrees created under .gsd/worktrees/", () => {
+    const { repo, externalState } = freshRepoWithExternalGsd();
+    // Worktrees created by older versions live at .gsd/worktrees/<MID>; git
+    // resolves the symlink and registers them under external state. Canonical
+    // .gsd-worktrees/ creation never crosses the symlink, so this coverage
+    // creates the legacy worktree explicitly. createAutoWorktree chdirs into
+    // the new worktree and mergeMilestoneToMain reads process.cwd() as the
+    // worktree cwd, so mirror that here.
+    const wtPath = join(repo, ".gsd", "worktrees", "M216");
+    run(`git worktree add -b milestone/M216 "${wtPath}"`, repo);
+    process.chdir(wtPath);
+
+    addSliceToMilestone(repo, wtPath, "M216", "S01", "Legacy external cleanup", [
+      { file: "legacy-external-cleanup.ts", content: "export const legacyExternalCleanup = true;\n", message: "add legacy external cleanup" },
+    ]);
+
+    const realWtPath = realpathSync(wtPath);
+    assert.ok(
+      realWtPath.startsWith(externalState),
+      `legacy worktree should be registered under external .gsd state, got ${realWtPath}`,
+    );
+
+    // Recreate the exact divergence from #1852: local .gsd/ is replaced with a
+    // stale real directory, so the computed path no longer matches git's record.
+    unlinkSync(join(repo, ".gsd"));
+    mkdirSync(join(repo, ".gsd", "worktrees", "M216"), { recursive: true });
+    writeFileSync(join(repo, ".gsd", "STATE.md"), "# Local stale state\n");
+    writeFileSync(join(repo, ".gsd", "worktrees", "M216", "stale.txt"), "stale local artifact\n");
+
+    const roadmap = makeRoadmap("M216", "Legacy external cleanup", [
+      { id: "S01", title: "Legacy external cleanup" },
+    ]);
+
+    mergeMilestoneToMain(repo, "M216", roadmap);
+
+    assert.ok(
+      !run("git worktree list", repo).includes("M216"),
+      "merged legacy milestone worktree should be removed from git worktree list",
+    );
+    assert.ok(!existsSync(realWtPath), "real external worktree directory should be removed");
+    assert.ok(
+      !run("git branch", repo).includes("milestone/M216"),
       "milestone branch should be deleted after merge cleanup",
     );
   });
@@ -960,5 +1012,79 @@ describe("auto-worktree-milestone-merge", { timeout: 300_000 }, () => {
     assert.ok(existsSync(join(queuedDir, "CONTEXT.md")), "queued milestone restored from shelter");
     assert.ok(!existsSync(join(repo, ".gsd", ".milestone-shelter")), "shelter removed on successful restore");
     assert.ok(result.commitMessage.length > 0, "merge completed");
+  });
+
+  // #2505 log coverage: when the per-entry shelter restore throws (here via the
+  // _setRestoreEntryFnForTests seam — the only deterministic way to reach this
+  // path, since shelter + restore run synchronously in one merge call), the
+  // merge must log a `worktree` ERROR naming the entry (auto-worktree.ts:1809),
+  // emit a retention warning (:1816), and PRESERVE the shelter dir so the
+  // queued milestone files (whose on-disk sources were deleted during the
+  // shelter step) remain recoverable. The existing #2505 test only covered the
+  // success path; this pins the failure-path log + the data-loss guard.
+  test("#2505 logs: shelter restore failure logs a worktree error and retains the shelter", () => {
+    const repo = freshRepo();
+    const wtPath = createAutoWorktree(repo, "M210");
+
+    addSliceToMilestone(repo, wtPath, "M210", "S01", "Feature", [
+      { file: "feature.ts", content: "export const f = 1;\n", message: "add feature" },
+    ]);
+
+    // Seed a queued (non-target) milestone that will be sheltered then restored.
+    const queuedDir = join(repo, ".gsd", "milestones", "M211");
+    mkdirSync(queuedDir, { recursive: true });
+    writeFileSync(join(queuedDir, "CONTEXT.md"), "# queued\n");
+
+    const roadmap = makeRoadmap("M210", "Milestone w/ failing restore", [
+      { id: "S01", title: "Feature" },
+    ]);
+
+    // Inject a restore entry fn that always throws, forcing the best-effort
+    // failure path. restoreDefault() is invoked in finally so no other test in
+    // the process observes the injected behavior.
+    const restoreDefault = _setRestoreEntryFnForTests(() => {
+      throw new Error("forced restore failure");
+    });
+
+    const previousStderr = setStderrLoggingEnabled(false);
+    let logs: ReturnType<typeof drainLogs> = [];
+    try {
+      mergeMilestoneToMain(repo, "M210", roadmap);
+      logs = drainLogs();
+    } finally {
+      setStderrLoggingEnabled(previousStderr);
+      restoreDefault();
+    }
+
+    const worktreeLogs = logs.filter((e) => e.component === "worktree");
+
+    const restoreError = worktreeLogs.find(
+      (e) => e.severity === "error" && /shelter restore failed/u.test(e.message),
+    );
+    assert.ok(
+      restoreError,
+      "a worktree ERROR must be logged when the shelter restore fails (got: " +
+        worktreeLogs.map((e) => e.message).join(" | ") + ")",
+    );
+    assert.match(
+      restoreError!.message,
+      /shelter restore failed \(M211\)/u,
+      "the error must name the unrestored milestone entry",
+    );
+    assert.match(
+      restoreError!.message,
+      /forced restore failure/u,
+      "the error must carry the underlying restore failure detail",
+    );
+
+    // #2505 data-loss guard: the shelter must survive so files stay recoverable.
+    assert.ok(
+      worktreeLogs.some((e) => /shelter retained/u.test(e.message)),
+      "a retention warning must be logged when a restore entry fails",
+    );
+    assert.ok(
+      existsSync(join(repo, ".gsd", ".milestone-shelter")),
+      "the shelter dir must be retained when a restore entry fails",
+    );
   });
 });

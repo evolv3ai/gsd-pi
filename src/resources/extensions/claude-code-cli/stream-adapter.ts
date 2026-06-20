@@ -27,13 +27,56 @@ import { homedir } from "node:os";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { PartialMessageBuilder, ZERO_USAGE, mapUsage } from "./partial-builder.js";
-import { buildWorkflowMcpServers, resolveWorkflowMcpProjectRoot } from "../gsd/workflow-mcp.js";
+import {
+	attachExternalResultsToToolBlocks,
+	buildFinalAssistantContent,
+	extractToolResultsFromSdkUserMessage,
+	handleClaudeCodePartialStreamEvent,
+	shouldSuppressDuplicateToolUnavailableBlock,
+} from "./turn-assembler.js";
+import type {
+	ExternalToolResultPayload,
+	ToolCallWithExternalResult,
+} from "./turn-assembler.js";
+import {
+	buildWorkflowMcpServers,
+	getRequiredWorkflowToolsForAutoUnit,
+	resolveWorkflowMcpProjectRoot,
+} from "../gsd/workflow-mcp.js";
+import { resolveWorkflowQuestionToolSurface } from "../gsd/question-transport.js";
 import { buildProjectGsdMcpServers, ensureProjectWorkflowMcpConfig } from "../gsd/mcp-project-config.js";
 import { loadProjectGSDPreferences } from "../gsd/preferences.js";
-import { discoverBrowserMcpServerName, discoverMcpServerNames, discoverWorkflowMcpServerName, computeMcpDisallowedTools } from "../gsd/mcp-filter.js";
+import { markToolStart, markToolEnd } from "../gsd/auto.js";
+import {
+	markInteractiveElicitationStart,
+	markInteractiveElicitationEnd,
+} from "../gsd/auto-tool-tracking.js";
+import {
+	discoverBrowserMcpServerName,
+	discoverMcpServers,
+	discoverMcpServerNames,
+	discoverUserMcpServerNames,
+	discoverWorkflowMcpServerName,
+	computeMcpDisallowedTools,
+} from "../gsd/mcp-filter.js";
+import { RUN_UAT_CLAUDE_NATIVE_TOOL_NAMES, RUN_UAT_FORBIDDEN_TOOL_NAMES, RUN_UAT_WORKFLOW_TOOL_NAMES, resolveToolPresentationPlan } from "../gsd/tool-presentation-plan.js";
+import { getUnitToolSurfaceContract } from "../gsd/unit-tool-contracts.js";
+import {
+	awaitWorkflowMcpToolRegistration,
+	getToolSurfaceReadinessError,
+	POST_PREFLIGHT_READINESS_RETRY_DELAYS_MS,
+	POST_PREFLIGHT_SDK_SETTLE_MS,
+	TOOL_SURFACE_NOT_READY,
+	type LiveToolSurfaceObservation,
+} from "../gsd/tool-surface-readiness.js";
+import {
+	beginWorkflowMcpSdkSession,
+	endWorkflowMcpSdkSession,
+} from "../gsd/workflow-mcp-readiness-cache.js";
+import { getGuidedUnitContext } from "../gsd/guided-unit-context.js";
+import { hasBrowserContractPrefix } from "../shared/browser-contract.js";
 import { showInterviewRound, type Question, type RoundResult } from "../shared/tui.js";
 import type {
-	BetaRawMessageStreamEvent,
 	SDKAssistantMessage,
 	SDKMessage,
 	SDKPartialAssistantMessage,
@@ -41,25 +84,18 @@ import type {
 	SDKUserMessage,
 } from "./sdk-types.js";
 
-/** A single content block returned by an external (SDK-executed) tool call. */
-export interface ExternalToolResultContentBlock {
-	type: string;
-	text?: string;
-	data?: string;
-	mimeType?: string;
-}
-
-/** The full result payload returned by an external tool, including content blocks and error status. */
-export interface ExternalToolResultPayload {
-	content: ExternalToolResultContentBlock[];
-	details?: Record<string, unknown>;
-	isError: boolean;
-}
-
-/** A `ToolCall` block augmented with the external result attached by the SDK synthetic user message. */
-type ToolCallWithExternalResult = ToolCall & {
-	externalResult?: ExternalToolResultPayload;
-};
+export {
+	buildFinalAssistantContent,
+	extractToolResultsFromSdkUserMessage,
+	handleClaudeCodePartialStreamEvent,
+	mergePendingToolCalls,
+	shouldSuppressDuplicateToolUnavailableBlock,
+} from "./turn-assembler.js";
+export type {
+	ExternalToolResultContentBlock,
+	ExternalToolResultPayload,
+	ToolCallWithExternalResult,
+} from "./turn-assembler.js";
 
 interface PromptToolContextOptions {
 	workflowMcpServerName?: string | null;
@@ -71,6 +107,11 @@ interface ClaudeCodeStreamOptions extends SimpleStreamOptions {
 	extensionUIContext?: ExtensionUIContext;
 	onExternalToolCall?: (toolCall: ToolCall) => Promise<void> | void;
 	onExternalToolResult?: (event: { toolCall: ToolCall; result: ExternalToolResultPayload }) => Promise<void> | void;
+	_sdkQueryForTest?: (args: {
+		prompt: string | AsyncIterable<unknown>;
+		options?: Record<string, unknown>;
+	}) => AsyncIterable<SDKMessage>;
+	_skipWorkflowMcpPreflightForTest?: boolean;
 }
 
 export function serverToolUseToToolCallLike(block: {
@@ -324,6 +365,58 @@ function extractMessageText(msg: { role: string; content: unknown }): string {
 	return "";
 }
 
+const GSD_PHASE_PATTERNS: Array<[string, RegExp]> = [
+	["run-uat", /\b(?:UNIT:\s*Run UAT|run-uat)\b/i],
+	["complete-milestone", /\b(?:UNIT:\s*Complete Milestone|complete-milestone)\b/i],
+	["validate-milestone", /\b(?:UNIT:\s*Validate Milestone|validate-milestone)\b/i],
+	["reassess-roadmap", /\b(?:UNIT:\s*Reassess Roadmap|reassess-roadmap)\b/i],
+	["complete-slice", /\b(?:UNIT:\s*Complete Slice|complete-slice)\b/i],
+	["replan-slice", /\b(?:UNIT:\s*Replan Slice|replan-slice)\b/i],
+	["refine-slice", /\b(?:UNIT:\s*Refine Slice|refine-slice)\b/i],
+	["plan-slice", /\b(?:UNIT:\s*Plan Slice|plan-slice|gsd_plan_slice)\b/i],
+	["plan-milestone", /\b(?:UNIT:\s*Plan Milestone|plan-milestone|gsd_plan_milestone)\b/i],
+	["execute-task", /\b(?:UNIT:\s*Execute Task|execute-task|execute-task-simple|reactive-execute)\b/i],
+	["gate-evaluate", /\b(?:UNIT:\s*Gate Evaluate|gate-evaluate|gsd_save_gate_result)\b/i],
+	["research-milestone", /\b(?:UNIT:\s*Research Milestone|research-milestone)\b/i],
+	["research-slice", /\b(?:UNIT:\s*Research Slice|research-slice)\b/i],
+	["research-decision", /\b(?:research decision|research-decision)\b/i],
+	["discuss-milestone", /\b(?:Discuss milestone|discuss-milestone)\b/i],
+	["discuss-slice", /\b(?:Discuss slice|discuss-slice)\b/i],
+	["discuss-project", /\b(?:discuss-project|Discuss project)\b/i],
+	["discuss-requirements", /\b(?:discuss-requirements|Discuss requirements)\b/i],
+];
+
+export function inferGsdPhaseFromContext(context: Context): string | undefined {
+	const text = [
+		context.systemPrompt ?? "",
+		...context.messages.map((message) => extractMessageText(message)),
+	].join("\n");
+	for (const [phase, pattern] of GSD_PHASE_PATTERNS) {
+		if (pattern.test(text)) return phase;
+	}
+	return undefined;
+}
+
+/**
+ * Resolve the GSD unit phase for Claude Code SDK sessions. Guided-flow
+ * dispatch records the authoritative unit type before the turn is queued;
+ * prefer that over regex inference from prompt text.
+ */
+export function resolveGsdPhaseForSdk(context: Context, projectRoot: string): string | undefined {
+	const resolvedRoot = resolveWorkflowMcpProjectRoot(projectRoot);
+	const guided =
+		getGuidedUnitContext(resolvedRoot)
+		?? getGuidedUnitContext(projectRoot)
+		?? getGuidedUnitContext();
+	if (guided?.unitType) {
+		const guidedRoot = resolveWorkflowMcpProjectRoot(guided.basePath);
+		if (guidedRoot === resolvedRoot) {
+			return guided.unitType;
+		}
+	}
+	return inferGsdPhaseFromContext(context);
+}
+
 /**
  * Build a full conversational prompt from GSD's context messages.
  *
@@ -349,10 +442,15 @@ export function buildPromptFromContext(context: Context, toolContext: PromptTool
 	const workflowToolLine = toolContext.workflowMcpServerName
 		? "- GSD workflow tools (gsd_exec, gsd_slice_complete, gsd_task_complete, gsd_plan_slice, gsd_save_gate_result, etc.) " +
 			`are MCP tools — call them as mcp__${toolContext.workflowMcpServerName}__<tool_name> ` +
-			`(e.g. mcp__${toolContext.workflowMcpServerName}__gsd_exec, mcp__${toolContext.workflowMcpServerName}__gsd_save_gate_result)\n`
+			`(e.g. mcp__${toolContext.workflowMcpServerName}__gsd_exec, mcp__${toolContext.workflowMcpServerName}__gsd_save_gate_result)\n` +
+			`- Structured user input: call mcp__${toolContext.workflowMcpServerName}__ask_user_questions. ` +
+			"Do not call bare ask_user_questions. Do not call native AskUserQuestion.\n"
 		: "- GSD workflow MCP tools are unavailable in this Claude Code run.\n";
 	const toolSearchLine = toolContext.workflowMcpServerName
-		? "- ToolSearch is NOT available — never use it to discover tools; invoke the MCP tool directly\n"
+		? "- ToolSearch is available only for Claude Code deferred workflow MCP hydration. " +
+			`If mcp__${toolContext.workflowMcpServerName}__<tool_name> is missing or Claude Code reports the server is still connecting, ` +
+			`use ToolSearch with select:mcp__${toolContext.workflowMcpServerName}__<tool_name> or the base tool name, then call the returned MCP tool directly. ` +
+			"Do not use ToolSearch for browser_* tools or general discovery.\n"
 		: "- ToolSearch is NOT available — never use it to discover tools\n";
 	const browserToolLine = toolContext.browserMcpServerName
 		? "- Browser verification uses gsd-browser MCP by default — call browser tools as " +
@@ -463,9 +561,11 @@ export function buildSdkQueryPrompt(
 		parent_tool_use_id: null,
 	};
 
-	return (async function* () {
-		yield sdkMessage;
-	})();
+	return {
+		async *[Symbol.asyncIterator]() {
+			yield sdkMessage;
+		},
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -485,6 +585,59 @@ function makeErrorMessage(model: string, errorMsg: string): AssistantMessage {
 		errorMessage: errorMsg,
 		timestamp: Date.now(),
 	};
+}
+
+export interface WorkflowMcpReadinessProgressState {
+	contentIndex?: number;
+}
+
+export function buildWorkflowMcpReadinessProgressMessage(input: {
+	unitType: string;
+	workflowServerName: string;
+	stage: "preflight" | "retry";
+	attempt?: number;
+	delayMs?: number;
+}): string {
+	const { unitType, workflowServerName, stage } = input;
+	if (stage === "preflight") {
+		return `Starting ${workflowServerName} MCP for ${unitType}; waiting for workflow tools to register...`;
+	}
+
+	const attempt = input.attempt === undefined ? "" : ` attempt ${input.attempt}`;
+	const delay = input.delayMs === undefined ? "" : ` Retrying in ${formatReadinessDelay(input.delayMs)}.`;
+	return `Still waiting for ${workflowServerName} MCP tools for ${unitType}${attempt}.${delay}`;
+}
+
+function formatReadinessDelay(delayMs: number): string {
+	if (delayMs < 1_000) return `${delayMs}ms`;
+	const seconds = delayMs / 1_000;
+	return Number.isInteger(seconds) ? `${seconds}s` : `${seconds.toFixed(1)}s`;
+}
+
+export function pushWorkflowMcpReadinessProgressEvent(input: {
+	stream: Pick<AssistantMessageEventStream, "push">;
+	partial: AssistantMessage;
+	state: WorkflowMcpReadinessProgressState;
+	message: string;
+}): void {
+	const { stream, partial, state, message } = input;
+	if (!message) return;
+
+	let contentIndex = state.contentIndex;
+	const existing = contentIndex === undefined ? undefined : partial.content[contentIndex];
+	if (contentIndex === undefined || existing?.type !== "text") {
+		contentIndex = partial.content.length;
+		state.contentIndex = contentIndex;
+		partial.content.push({ type: "text", text: "" });
+		stream.push({ type: "text_start", contentIndex, partial });
+	}
+
+	const block = partial.content[contentIndex];
+	if (block.type !== "text") return;
+
+	const delta = block.text.length === 0 ? message : `\n${message}`;
+	block.text += delta;
+	stream.push({ type: "text_delta", contentIndex, delta, partial });
 }
 
 export function isClaudeCodeAbortErrorMessage(message: string | undefined | null): boolean {
@@ -1320,7 +1473,27 @@ export function createClaudeCodeCanUseToolHandler(
 // Elicitation handler
 // ---------------------------------------------------------------------------
 
-/** Create an SDK elicitation handler that routes requests through the extension UI dialogs, or undefined if no UI is available. */
+/**
+ * Create an SDK elicitation handler that routes requests through the extension UI dialogs, or undefined if no UI is available.
+ *
+ * For structured (AskUserQuestion) elicitations, the interview round's result
+ * disambiguates two cases that must not be conflated: an `undefined` result
+ * means the custom UI is unavailable, so we fall back to the simpler `select`
+ * dialogs; an empty-answers result means the user dismissed the question, which
+ * is treated as a clean cancel. Falling back to dialogs on dismissal would
+ * re-ask the same questions (the duplicate-question bug).
+ */
+/**
+ * Monotonic counter so concurrent/sequential elicitations resolved within the
+ * same millisecond get distinct synthetic in-flight-tool ids (the `cc-elicit-*`
+ * namespace never collides with real MCP toolCallIds).
+ */
+let _elicitationSeq = 0;
+function nextElicitationSeq(): number {
+	_elicitationSeq = (_elicitationSeq + 1) % Number.MAX_SAFE_INTEGER;
+	return _elicitationSeq;
+}
+
 export function createClaudeCodeElicitationHandler(
 	ui: ExtensionUIContext | undefined,
 ): ((request: SdkElicitationRequest, options: { signal: AbortSignal }) => Promise<SdkElicitationResult>) | undefined {
@@ -1336,20 +1509,67 @@ export function createClaudeCodeElicitationHandler(
 			const headlessAnswer = answerElicitationFromHeadlessAnswers(questions, loadHeadlessAnswers());
 			if (headlessAnswer) return headlessAnswer;
 
-			const interviewResult = await showInterviewRound(questions, { signal }, { ui } as any).catch(() => undefined);
-			if (interviewResult && Object.keys(interviewResult.answers).length > 0) {
+			// The SDK elicitation blocks waiting for human input, but it is not an
+			// MCP tool dispatch, so markToolStart/markToolEnd are never called for
+			// it. Without this the soft/context/idle/hard watchdogs see zero
+			// in-flight tools and re-dispatch (and ultimately abort) the agent
+			// turn hosting this elicitation, tearing the question down (#2676 /
+			// claude-code-cli self-cancel loop). Bracketing the human wait with
+			// the s.active-gated interactive-tool guard makes it visible to
+			// hasInteractiveToolInFlight()/getInFlightToolCount() so those
+			// watchdogs exempt it. No-op outside auto-mode (wrapper self-gates).
+			//
+			// markInteractiveElicitationStart/End is a SEPARATE, ungated signal that
+			// is observable in FOREGROUND (where the s.active-gated markToolStart is a
+			// no-op). The foreground approval-gate pause path (register-hooks
+			// message_update) consults isInteractiveElicitationInFlight() and bails so
+			// it does not tear down the very elicitation that IS the human boundary
+			// (#cc-elicitation-self-cancel). It clears in the finally on every exit.
+			const elicId = "cc-elicit-" + ((request as { id?: string | number }).id ?? `${Date.now()}-${nextElicitationSeq()}`);
+			markInteractiveElicitationStart();
+			markToolStart(elicId, "ask_user_questions");
+			try {
+				const interviewResult = await showInterviewRound(
+					questions,
+					{ signal, overlay: true },
+					{ ui } as any,
+				).catch(() => undefined);
+				if (interviewResult === undefined) {
+					// `await` so the dialog human-wait stays inside try/finally and the
+					// in-flight guard is held until the dialog resolves. Without it,
+					// `finally` runs the moment the promise is created and the fallback
+					// wait runs with zero in-flight tools — reintroducing the
+					// self-cancel on this path (Bugbot #1c00624d).
+					return await promptElicitationWithDialogs(request, questions, ui, signal);
+				}
+				if (Object.keys(interviewResult.answers).length === 0) {
+					// A system/host teardown (compaction, session_switch, true
+					// interrupt) that aborted the signal mid-wait sets `interrupted`.
+					// Surface that as a non-affirmative `decline` so it is not
+					// laundered into a clean user-declined `cancel` the model re-asks
+					// against. A genuine user dismissal leaves `interrupted` falsy and
+					// keeps the prior `cancel` semantics.
+					return interviewResult.interrupted ? { action: "decline" } : { action: "cancel" };
+				}
 				return {
 					action: "accept",
 					content: roundResultToElicitationContent(questions, interviewResult),
 				};
+			} finally {
+				markToolEnd(elicId);
+				markInteractiveElicitationEnd();
 			}
-
-			return promptElicitationWithDialogs(request, questions, ui, signal);
 		}
 
 		const textFields = parseTextInputElicitation(request);
 		if (textFields) {
-			return promptTextInputElicitation(request, textFields, ui, signal);
+			const elicId = "cc-elicit-" + ((request as { id?: string | number }).id ?? `${Date.now()}-${nextElicitationSeq()}`);
+			markToolStart(elicId, "secure_env_collect");
+			try {
+				return await promptTextInputElicitation(request, textFields, ui, signal);
+			} finally {
+				markToolEnd(elicId);
+			}
 		}
 
 		return { action: "decline" };
@@ -1429,6 +1649,8 @@ function modelSupportsAdaptiveThinking(modelId: string): boolean {
 		|| modelId.includes("opus-4.7")
 		|| modelId.includes("opus-4-8")
 		|| modelId.includes("opus-4.8")
+		|| modelId.includes("fable-5")
+		|| modelId.includes("fable.5")
 		|| modelId.includes("sonnet-4-6")
 		|| modelId.includes("sonnet-4.6")
 		|| modelId.includes("sonnet-4-7")
@@ -1454,6 +1676,8 @@ function mapThinkingLevelToAnthropicEffort(level: ThinkingLevel | undefined, mod
 				|| modelId.includes("opus-4.7")
 				|| modelId.includes("opus-4-8")
 				|| modelId.includes("opus-4.8")
+				|| modelId.includes("fable-5")
+				|| modelId.includes("fable.5")
 			) return "xhigh";
 			if (modelId.includes("opus-4-6") || modelId.includes("opus-4.6")) return "max";
 			return "high";
@@ -1462,19 +1686,123 @@ function mapThinkingLevelToAnthropicEffort(level: ThinkingLevel | undefined, mod
 	}
 }
 
-function workflowMcpServerNameFromAllowedTools(allowedTools: unknown): string | undefined {
-	if (!Array.isArray(allowedTools)) return undefined;
-	for (const toolName of allowedTools) {
-		if (typeof toolName !== "string") continue;
-		const match = /^mcp__(.+)__\*$/.exec(toolName);
-		if (match?.[1] && match[1] !== "gsd-browser") return match[1];
-	}
-	return undefined;
+function parseAllowedMcpToolName(toolName: string): { server: string; tool: string } | undefined {
+	const match = /^mcp__(.+)__(\*|[^*]+)$/.exec(toolName);
+	return match?.[1] && match[2] ? { server: match[1], tool: match[2] } : undefined;
 }
 
 function browserMcpServerNameFromAllowedTools(allowedTools: unknown): string | undefined {
 	if (!Array.isArray(allowedTools)) return undefined;
-	return allowedTools.includes("mcp__gsd-browser__*") ? "gsd-browser" : undefined;
+	for (const toolName of allowedTools) {
+		if (typeof toolName !== "string") continue;
+		const parsed = parseAllowedMcpToolName(toolName);
+		if (!parsed) continue;
+		if (parsed.server === "gsd-browser" || hasBrowserContractPrefix(parsed.tool)) {
+			return parsed.server;
+		}
+	}
+	return undefined;
+}
+
+function workflowMcpServerNameFromAllowedTools(allowedTools: unknown): string | undefined {
+	if (!Array.isArray(allowedTools)) return undefined;
+	const browserServerName = browserMcpServerNameFromAllowedTools(allowedTools);
+	for (const toolName of allowedTools) {
+		if (typeof toolName !== "string") continue;
+		const parsed = parseAllowedMcpToolName(toolName);
+		if (!parsed || parsed.server === browserServerName || hasBrowserContractPrefix(parsed.tool)) continue;
+		return parsed.server;
+	}
+	return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+	return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
+}
+
+function cloneSdkMcpServerConfig(config: unknown): Record<string, unknown> | undefined {
+	if (!isRecord(config)) return undefined;
+	const cloned: Record<string, unknown> = {};
+	for (const key of ["type", "command", "cwd", "url"] as const) {
+		if (typeof config[key] === "string") cloned[key] = config[key];
+	}
+	if (Array.isArray(config.args)) {
+		cloned.args = config.args.filter((arg): arg is string => typeof arg === "string");
+	}
+	if (isStringRecord(config.env)) cloned.env = { ...config.env };
+	if (isStringRecord(config.headers)) cloned.headers = { ...config.headers };
+	if (isRecord(config.oauth)) cloned.oauth = { ...config.oauth };
+	return Object.keys(cloned).length > 0 ? cloned : undefined;
+}
+
+function resolveProjectMcpServerConfig(
+	projectRoot: string,
+	serverName: string | undefined,
+	fallbackServers?: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+	if (!serverName) return undefined;
+	const projectServer = discoverMcpServers(projectRoot).find((server) => server.name === serverName);
+	return cloneSdkMcpServerConfig(projectServer?.config) ?? cloneSdkMcpServerConfig(fallbackServers?.[serverName]);
+}
+
+function resolveProjectMcpServerConfigs(
+	projectRoot: string,
+	serverNames: readonly (string | undefined)[],
+	fallbackServers?: Record<string, unknown>,
+): Record<string, Record<string, unknown>> | undefined {
+	const resolved: Record<string, Record<string, unknown>> = {};
+	for (const serverName of serverNames) {
+		const serverConfig = resolveProjectMcpServerConfig(projectRoot, serverName, fallbackServers);
+		if (serverName && serverConfig) resolved[serverName] = serverConfig;
+	}
+	return Object.keys(resolved).length > 0 ? resolved : undefined;
+}
+
+function resolveExactWorkflowMcpToolsForPhase(
+	gsdPhase: string | undefined,
+	workflowServerName: string | undefined,
+	workflowExplicitlyBlocked: boolean,
+): string[] {
+	if (!gsdPhase || !workflowServerName || workflowExplicitlyBlocked) return [];
+	const requestedTools = gsdPhase === "run-uat"
+		? [...RUN_UAT_WORKFLOW_TOOL_NAMES]
+		: [
+				...(getUnitToolSurfaceContract(gsdPhase)?.allowedGsdTools ?? []),
+				...getRequiredWorkflowToolsForAutoUnit(gsdPhase),
+			];
+	const requestedToolNames = [...new Set(
+		requestedTools.filter((toolName) => toolName.startsWith("gsd_") || toolName === "ask_user_questions"),
+	)];
+	if (requestedToolNames.length === 0) return [];
+	return resolveToolPresentationPlan({
+		phase: gsdPhase,
+		surface: "claude-code-sdk",
+		workflowMcpServerName: workflowServerName,
+		requestedToolNames,
+	}).presentedToolNames;
+}
+
+function resolveClaudeNativeToolsForPhase(gsdPhase: string | undefined): string[] {
+	const standardClaudeTools = [
+		"Read",
+		"Write",
+		"Edit",
+		"Glob",
+		"Grep",
+		"Bash",
+		"Agent",
+		"WebFetch",
+		"WebSearch",
+	];
+	if (!gsdPhase) return standardClaudeTools;
+	if (gsdPhase === "run-uat" || gsdPhase === "complete-slice") {
+		return [...RUN_UAT_CLAUDE_NATIVE_TOOL_NAMES];
+	}
+	return standardClaudeTools;
 }
 
 export function autoInitClaudeCodeWorkflowMcp(cwd: string): void {
@@ -1488,6 +1816,70 @@ export function autoInitClaudeCodeWorkflowMcp(cwd: string): void {
 			);
 		}
 	}
+}
+
+export function resolveClaudeCodeToolSurfaceReadinessError(input: {
+	unitType: string | undefined;
+	workflowServerName: string | undefined;
+	observation: LiveToolSurfaceObservation;
+	projectRoot?: string | undefined;
+	allowPendingToolSearchHydration?: boolean | undefined;
+}): Promise<string | null> {
+	const error = getToolSurfaceReadinessError(input);
+	if (
+		error
+		&& input.allowPendingToolSearchHydration
+		&& input.workflowServerName
+		&& input.observation.mcpServers.some(
+			(server) => server.name === input.workflowServerName && server.status === "pending",
+		)
+	) {
+		return Promise.resolve(null);
+	}
+	return Promise.resolve(error);
+}
+
+export { awaitWorkflowMcpToolRegistration } from "../gsd/tool-surface-readiness.js";
+
+const TOOL_SURFACE_READINESS_RETRY_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000, 15_000, 15_000, 15_000] as const;
+
+export function shouldRetryClaudeCodeToolSurfaceReadiness(error: string | null): boolean {
+	if (!error) return false;
+	return error.includes(TOOL_SURFACE_NOT_READY) && !/\bterminal\b/i.test(error);
+}
+
+export function resolveClaudeCodeToolSurfaceReadinessRetryDelayMs(
+	error: string | null,
+	attempt: number,
+	preflightVerified = false,
+): number | null {
+	if (!shouldRetryClaudeCodeToolSurfaceReadiness(error)) return null;
+	const delays = preflightVerified
+		? POST_PREFLIGHT_READINESS_RETRY_DELAYS_MS
+		: TOOL_SURFACE_READINESS_RETRY_DELAYS_MS;
+	return delays[attempt] ?? null;
+}
+
+function makeAbortError(): Error {
+	const error = new Error("AbortError: The operation was aborted");
+	error.name = "AbortError";
+	return error;
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted) return Promise.reject(makeAbortError());
+
+	return new Promise((resolve, reject) => {
+		const timeout = setTimeout(() => {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		const onAbort = (): void => {
+			clearTimeout(timeout);
+			reject(makeAbortError());
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
 }
 
 /**
@@ -1505,9 +1897,9 @@ export function buildSdkOptions(
 	modelId: string,
 	prompt: string,
 	overrides?: { permissionMode?: "bypassPermissions" | "acceptEdits" | "default" | "plan" },
-	extraOptions: Record<string, unknown> & { reasoning?: ThinkingLevel } = {},
+	extraOptions: Record<string, unknown> & { reasoning?: ThinkingLevel; gsdPhase?: string } = {},
 ): Record<string, unknown> {
-	const { reasoning, cwd, ...sdkExtraOptions } = extraOptions;
+	const { reasoning, cwd, gsdPhase, ...sdkExtraOptions } = extraOptions;
 	const sdkCwd = typeof cwd === "string" && cwd.trim().length > 0 ? cwd : process.cwd();
 	// Claude Code runs in the milestone worktree for file/shell work, but workflow MCP
 	// config (.mcp.json) and server discovery live at the project root.
@@ -1539,14 +1931,23 @@ export function buildSdkOptions(
 	const workflowServerName = projectWorkflowServerName ?? injectedWorkflowServerName;
 	const browserServerName = projectBrowserServerName ?? injectedBrowserServerName;
 
-	// If a default GSD MCP server is already declared in the project's .mcp.json
-	// or .claude/settings.json, do not inject it again via mcpServers. Passing the
-	// same server name from two sources causes a duplicate registration conflict
-	// that prevents the MCP server from loading (tools become unavailable).
+	// Non-strict (non-phase) sessions load ~/.claude/settings.json via settingSources
+	// including "user". If the user declared the same server names there, injecting them
+	// again via mcpServers causes duplicate registration and leaves MCP tools unavailable.
+	// Strict (gsdPhase) sessions set settingSources=[] so user settings are not loaded.
+	const userDiscovered = !gsdPhase ? discoverUserMcpServerNames() : [];
+	const allDiscovered = discovered.length > 0 || userDiscovered.length > 0
+		? [...discovered, ...userDiscovered]
+		: discovered;
+
+	// If a default GSD MCP server is already declared in project config or in the user's
+	// ~/.claude/settings.json (when that file will be loaded), do not inject it again via
+	// mcpServers. Passing the same server name from two sources causes a duplicate
+	// registration conflict that prevents the MCP server from loading (tools become unavailable).
 	const workflowAlreadyInProject = projectWorkflowServerName !== undefined
-		|| (injectedWorkflowServerName !== undefined && discovered.includes(injectedWorkflowServerName));
+		|| (injectedWorkflowServerName !== undefined && allDiscovered.includes(injectedWorkflowServerName));
 	const browserAlreadyInProject = projectBrowserServerName !== undefined
-		|| (injectedBrowserServerName !== undefined && discovered.includes(injectedBrowserServerName));
+		|| (injectedBrowserServerName !== undefined && allDiscovered.includes(injectedBrowserServerName));
 	const mcpServersToInject = { ...defaultMcpServers.servers };
 	if (workflowAlreadyInProject && injectedWorkflowServerName) delete mcpServersToInject[injectedWorkflowServerName];
 	if (browserAlreadyInProject && injectedBrowserServerName) delete mcpServersToInject[injectedBrowserServerName];
@@ -1591,24 +1992,69 @@ export function buildSdkOptions(
 	const browserMcpTools = !browserExplicitlyBlocked && browserServerName
 		? [`mcp__${browserServerName}__*`]
 		: [];
-	const gsdMcpTools = [...workflowMcpTools, ...browserMcpTools];
+	const phaseUsesBrowserMcp = !gsdPhase || gsdPhase === "run-uat";
+	const allowedBrowserMcpTools = phaseUsesBrowserMcp ? browserMcpTools : [];
+	const inlinePhaseMcpServers = gsdPhase
+		? resolveProjectMcpServerConfigs(
+				projectRoot,
+				[
+					workflowExplicitlyBlocked ? undefined : workflowServerName,
+					phaseUsesBrowserMcp && !browserExplicitlyBlocked ? browserServerName : undefined,
+				],
+				defaultMcpServers.servers,
+			)
+		: undefined;
+	const sdkMcpServers = inlinePhaseMcpServers ?? filteredMcpServers;
+	const strictMcpConfig = !!inlinePhaseMcpServers;
+	// Strict phase configs inline the exact MCP servers GSD needs. Loading
+	// Claude Code settings at the same time can duplicate those servers and
+	// leave allowed mcp__... tools with no registered backing tool.
+	const settingSources = strictMcpConfig ? [] : ["user", "project", "local"];
+	const exactWorkflowMcpTools = resolveExactWorkflowMcpToolsForPhase(
+		gsdPhase,
+		workflowServerName,
+		workflowExplicitlyBlocked,
+	);
+	const questionToolSurface = resolveWorkflowQuestionToolSurface({
+		workflowServerName,
+		workflowExplicitlyBlocked,
+		workflowMcpTools,
+		exactWorkflowMcpTools,
+		env: process.env,
+	});
+	const runUatDisallowedTools = gsdPhase === "run-uat" && workflowServerName
+		? [
+				...RUN_UAT_FORBIDDEN_TOOL_NAMES.filter((toolName) => !toolName.startsWith("mcp__")),
+				"WebFetch",
+				"Agent",
+				`mcp__${workflowServerName}__gsd_exec`,
+				`mcp__${workflowServerName}__gsd_summary_save`,
+				`mcp__${workflowServerName}__gsd_save_gate_result`,
+			]
+		: [];
+	const allowToolSearchForWorkflowMcp = workflowMcpTools.length > 0 || exactWorkflowMcpTools.length > 0;
 	const disallowedTools: string[] = [...new Set([
-		"ToolSearch",
-		...(workflowMcpTools.length > 0 ? ["AskUserQuestion"] : []),
+		...(allowToolSearchForWorkflowMcp ? [] : ["ToolSearch"]),
+		...(gsdPhase ? ["Skill"] : []),
+		...(workflowMcpTools.length > 0 || exactWorkflowMcpTools.length > 0 ? ["AskUserQuestion"] : []),
+		...questionToolSurface.disallowedTools,
+		...runUatDisallowedTools,
 		...extraDisallowedTools,
 	])];
-	const allowedTools = [
-		"Read",
-		"Write",
-		"Edit",
-		"Glob",
-		"Grep",
-		"Bash",
-		"Agent",
-		"WebFetch",
-		"WebSearch",
-		...(workflowMcpTools.length > 0 ? gsdMcpTools : ["AskUserQuestion", ...browserMcpTools]),
-	];
+	const nativeTools = resolveClaudeNativeToolsForPhase(gsdPhase);
+	const allowedTools = gsdPhase === "run-uat"
+		? [
+				...nativeTools,
+				...(exactWorkflowMcpTools.length > 0 ? exactWorkflowMcpTools : []),
+				...allowedBrowserMcpTools,
+			]
+		: [
+				...nativeTools,
+				...exactWorkflowMcpTools,
+				...(!gsdPhase && workflowMcpTools.length > 0 ? workflowMcpTools : []),
+				...(workflowMcpTools.length === 0 && exactWorkflowMcpTools.length === 0 ? ["AskUserQuestion"] : []),
+				...allowedBrowserMcpTools,
+			];
 	const supportsAdaptive = modelSupportsAdaptiveThinking(modelId);
 	const effort =
 		reasoning && supportsAdaptive
@@ -1632,277 +2078,25 @@ export function buildSdkOptions(
 		cwd: sdkCwd,
 		permissionMode,
 		allowDangerouslySkipPermissions: permissionMode === "bypassPermissions",
-		settingSources: ["project", "local"],
+		settingSources,
 		systemPrompt: { type: "preset", preset: "claude_code" },
 		disallowedTools,
 		...(allowedTools.length > 0 ? { allowedTools } : {}),
-		...(filteredMcpServers ? { mcpServers: filteredMcpServers } : {}),
+		...(sdkMcpServers ? { mcpServers: sdkMcpServers } : {}),
+		...(strictMcpConfig ? { strictMcpConfig: true } : {}),
 		betas: (
 			modelId.includes("sonnet")
 			|| modelId.includes("opus-4-7")
 			|| modelId.includes("opus-4.7")
 			|| modelId.includes("opus-4-8")
 			|| modelId.includes("opus-4.8")
+			|| modelId.includes("fable-5")
+			|| modelId.includes("fable.5")
 		) ? ["context-1m-2025-08-07"] : [],
 		...(thinkingConfig ?? {}),
 		...(effort ? { effort } : {}),
 		...sdkExtraOptions,
 	};
-}
-
-/** Normalise heterogeneous SDK tool-result content (string, array, or object) into a uniform `ExternalToolResultContentBlock[]`. */
-function normalizeToolResultContent(content: unknown): ExternalToolResultContentBlock[] {
-	if (typeof content === "string") {
-		return [{ type: "text", text: content }];
-	}
-
-	if (!Array.isArray(content)) {
-		if (content == null) return [{ type: "text", text: "" }];
-		return [{ type: "text", text: JSON.stringify(content) }];
-	}
-
-	const blocks: ExternalToolResultContentBlock[] = [];
-
-	for (const item of content) {
-		if (typeof item === "string") {
-			blocks.push({ type: "text", text: item });
-			continue;
-		}
-		if (!item || typeof item !== "object") {
-			blocks.push({ type: "text", text: String(item) });
-			continue;
-		}
-
-		const block = item as Record<string, unknown>;
-		if (block.type === "text") {
-			blocks.push({ type: "text", text: typeof block.text === "string" ? block.text : "" });
-			continue;
-		}
-		if (
-			block.type === "image"
-			&& typeof block.data === "string"
-			&& typeof block.mimeType === "string"
-		) {
-			blocks.push({ type: "image", data: block.data, mimeType: block.mimeType });
-			continue;
-		}
-
-		blocks.push({ type: "text", text: JSON.stringify(block) });
-	}
-
-	return blocks.length > 0 ? blocks : [{ type: "text", text: "" }];
-}
-
-/**
- * Extract a `details` payload from an MCP tool-result block.
- *
- * MCP's `CallToolResult` carries structured data in `structuredContent` — the
- * protocol's supported channel for non-text payloads. Claude Code's synthetic
- * user message may surface that field in one of two shapes depending on SDK
- * version: as a sibling on the `mcp_tool_result` block itself, or as a
- * dedicated content sub-block with `type: "structuredContent"`. Snake-case
- * (`structured_content`) is accepted defensively in case a transport hop
- * rewrites casing. All other shapes fall back to an empty object so callers
- * can rely on `details` being present.
- */
-function extractStructuredDetailsFromBlock(block: Record<string, unknown>): Record<string, unknown> | undefined {
-	const sibling = block.structuredContent ?? (block as Record<string, unknown>).structured_content;
-	if (sibling && typeof sibling === "object" && !Array.isArray(sibling)) {
-		return sibling as Record<string, unknown>;
-	}
-
-	if (Array.isArray(block.content)) {
-		for (const item of block.content) {
-			if (!item || typeof item !== "object") continue;
-			const sub = item as Record<string, unknown>;
-			if (sub.type !== "structuredContent" && sub.type !== "structured_content") continue;
-			const payload = sub.structuredContent ?? sub.structured_content ?? sub.data ?? sub.value;
-			if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-				return payload as Record<string, unknown>;
-			}
-		}
-	}
-
-	// Return undefined (not {}) when no structured payload is present, matching
-	// the pre-#4477 contract where `details` was nullable. An empty-object
-	// sentinel is truthy and breaks downstream consumers that gate on
-	// `if (details)`. `undefined` matches the type of the field these results
-	// flow into (`Record<string, unknown> | undefined`).
-	return undefined;
-}
-
-/**
- * True for items that are MCP `structuredContent` pseudo-blocks living inside
- * a tool-result `content[]` array. These blocks carry the structured payload
- * (extracted separately by `extractStructuredDetailsFromBlock`) and must NOT
- * leak into the visible content rendered to the user — otherwise the renderer
- * stringifies the JSON pseudo-block and shows it next to the actual tool
- * output. See PR #4477 review (post-fix-round).
- */
-function isStructuredContentPseudoBlock(item: unknown): boolean {
-	if (!item || typeof item !== "object") return false;
-	const type = (item as Record<string, unknown>).type;
-	return type === "structuredContent" || type === "structured_content";
-}
-
-/**
- * Strip `structuredContent` pseudo-blocks from a tool-result content array
- * before normalization. The structured payload is extracted via the sibling
- * `structuredContent` field (or a dedicated extractor pass on the raw block);
- * the visible content path must not include the pseudo-block itself.
- */
-function stripStructuredContentPseudoBlocks(content: unknown): unknown {
-	if (!Array.isArray(content)) return content;
-	return content.filter((item) => !isStructuredContentPseudoBlock(item));
-}
-
-/** Extract tool result payloads from an SDK synthetic user message, keyed by tool-use ID. */
-export function extractToolResultsFromSdkUserMessage(message: SDKUserMessage): Array<{
-	toolUseId: string;
-	result: ExternalToolResultPayload;
-}> {
-	const extracted: Array<{ toolUseId: string; result: ExternalToolResultPayload }> = [];
-	const seen = new Set<string>();
-	const rawMessage = message.message as Record<string, unknown> | null | undefined;
-	const content = Array.isArray(rawMessage?.content) ? rawMessage.content : [];
-
-	for (const item of content) {
-		if (!item || typeof item !== "object") continue;
-		const block = item as Record<string, unknown>;
-		const type = typeof block.type === "string" ? block.type : "";
-		if (type !== "tool_result" && type !== "mcp_tool_result") continue;
-
-		const toolUseId = typeof block.tool_use_id === "string" ? block.tool_use_id : "";
-		if (!toolUseId || seen.has(toolUseId)) continue;
-		seen.add(toolUseId);
-
-		extracted.push({
-			toolUseId,
-			result: {
-				content: normalizeToolResultContent(stripStructuredContentPseudoBlocks(block.content)),
-				details: extractStructuredDetailsFromBlock(block),
-				isError: block.is_error === true,
-			},
-		});
-	}
-
-	if (extracted.length === 0) {
-		const fallback = message.tool_use_result;
-		if (fallback && typeof fallback === "object") {
-			const toolResult = fallback as Record<string, unknown>;
-			const toolUseId = typeof toolResult.tool_use_id === "string" ? toolResult.tool_use_id : "";
-			if (toolUseId) {
-				extracted.push({
-					toolUseId,
-					result: {
-						content: normalizeToolResultContent(stripStructuredContentPseudoBlocks(toolResult.content)),
-						details: extractStructuredDetailsFromBlock(toolResult),
-						isError: toolResult.is_error === true,
-					},
-				});
-			}
-		}
-	}
-
-	return extracted;
-}
-
-/** Attach external tool results from the SDK synthetic user message to their corresponding tool-call blocks by ID. */
-function attachExternalResultsToToolBlocks(
-	toolBlocks: AssistantMessage["content"],
-	toolResultsById: ReadonlyMap<string, ExternalToolResultPayload>,
-): void {
-	for (const block of toolBlocks) {
-		if (block.type !== "toolCall" && block.type !== "serverToolUse") continue;
-		const externalResult = toolResultsById.get(block.id);
-		if (!externalResult) continue;
-		(block as ToolCallWithExternalResult & { id: string }).externalResult = externalResult;
-	}
-}
-
-/**
- * Build the final assistant content that Agent Core consumes in
- * `externalToolExecution` mode. This preserves tool-call blocks, attaches any
- * SDK-produced external results by tool-call id, and then appends the final
- * text/thinking blocks for the completed turn.
- */
-export function buildFinalAssistantContent(params: {
-	intermediateToolBlocks: AssistantMessage["content"];
-	pendingContent?: AssistantMessage["content"];
-	toolResultsById: ReadonlyMap<string, ExternalToolResultPayload>;
-	lastThinkingContent?: string;
-	lastTextContent?: string;
-	fallbackResultText?: string;
-}): AssistantMessage["content"] {
-	const mergedToolBlocks = [...params.intermediateToolBlocks];
-	if (params.pendingContent) {
-		mergePendingToolCalls(mergedToolBlocks, params.pendingContent);
-	}
-	attachExternalResultsToToolBlocks(mergedToolBlocks, params.toolResultsById);
-
-	const finalContent: AssistantMessage["content"] = [...mergedToolBlocks];
-	if (params.pendingContent && params.pendingContent.length > 0) {
-		for (const block of params.pendingContent) {
-			if (block.type === "text" || block.type === "thinking") {
-				finalContent.push(block);
-			}
-		}
-	} else {
-		if (params.lastThinkingContent) {
-			finalContent.push({ type: "thinking", thinking: params.lastThinkingContent });
-		}
-		if (params.lastTextContent) {
-			finalContent.push({ type: "text", text: params.lastTextContent });
-		}
-	}
-
-	if (finalContent.length === 0 && params.fallbackResultText) {
-		finalContent.push({ type: "text", text: params.fallbackResultText });
-	}
-
-	return finalContent;
-}
-
-/**
- * Merge tool-call blocks from the active partial-message builder into the
- * running list of intermediate tool calls, preserving order and de-duping
- * by tool-call id. Exposed for testing the F3 fix (final-turn tool calls
- * dropped when `result` arrives without a preceding synthetic `user`).
- */
-export function mergePendingToolCalls(
-	intermediate: AssistantMessage["content"],
-	pending: AssistantMessage["content"],
-): AssistantMessage["content"] {
-	const alreadyIncluded = new Set<string>();
-	for (const block of intermediate) {
-		if (block.type === "toolCall") alreadyIncluded.add(block.id);
-	}
-	for (const block of pending) {
-		if (block.type !== "toolCall") continue;
-		if (alreadyIncluded.has(block.id)) continue;
-		alreadyIncluded.add(block.id);
-		intermediate.push(block);
-	}
-	return intermediate;
-}
-
-export function handleClaudeCodePartialStreamEvent(
-	builder: PartialMessageBuilder | null,
-	event: BetaRawMessageStreamEvent,
-	modelId: string,
-): { builder: PartialMessageBuilder | null; assistantEvent: AssistantMessageEvent | null } {
-	if (event.type === "message_start") {
-		// Claude Code can emit repeated SDK message_start events inside one
-		// logical assistant response. Keep appending until a synthetic user
-		// tool-result boundary explicitly clears the builder.
-		return {
-			builder: builder ?? new PartialMessageBuilder((event as any).message?.model ?? modelId),
-			assistantEvent: null,
-		};
-	}
-
-	if (!builder) return { builder, assistantEvent: null };
-	return { builder, assistantEvent: builder.handleEvent(event) };
 }
 
 // ---------------------------------------------------------------------------
@@ -1929,6 +2123,20 @@ export function streamViaClaudeCode(
 	return stream;
 }
 
+interface SdkAttemptMessageState {
+	builder: PartialMessageBuilder | null;
+	intermediateToolBlocks: AssistantMessage["content"];
+	toolResultsById: Map<string, ExternalToolResultPayload>;
+}
+
+function createSdkAttemptMessageState(): SdkAttemptMessageState {
+	return {
+		builder: null,
+		intermediateToolBlocks: [],
+		toolResultsById: new Map<string, ExternalToolResultPayload>(),
+	};
+}
+
 /** Async pump that drives the Claude Agent SDK's async-iterable message stream and pushes events into `stream`. */
 async function pumpSdkMessages(
 	model: Model<any>,
@@ -1937,37 +2145,30 @@ async function pumpSdkMessages(
 	stream: AssistantMessageEventStream,
 ): Promise<void> {
 	const modelId = model.id;
-	let builder: PartialMessageBuilder | null = null;
 	/** Track the last text content seen across all assistant turns for the final message. */
 	let lastTextContent = "";
 	let lastThinkingContent = "";
-	/** Collect tool blocks from intermediate SDK turns for tool execution rendering. */
-	const intermediateToolBlocks: AssistantMessage["content"] = [];
-	/** Preserve real external tool results from Claude Code's synthetic user messages. */
-	const toolResultsById = new Map<string, ExternalToolResultPayload>();
 
 	try {
-		// Dynamic import — the SDK is an optional dependency.
-		const sdkModule = "@anthropic-ai/claude-agent-sdk";
-		const sdk = (await import(/* webpackIgnore: true */ sdkModule)) as {
-			query: (args: {
-				prompt: string | AsyncIterable<unknown>;
-				options?: Record<string, unknown>;
-			}) => AsyncIterable<SDKMessage>;
-		};
-
-		// Bridge GSD's AbortSignal to SDK's AbortController
-		const controller = new AbortController();
-		if (options?.signal) {
-			options.signal.addEventListener("abort", () => controller.abort(), { once: true });
-		}
-
 		const permissionMode = await resolveClaudePermissionMode();
-		const uiContext = (options as ClaudeCodeStreamOptions | undefined)?.extensionUIContext;
-		const onExternalToolCall = (options as ClaudeCodeStreamOptions | undefined)?.onExternalToolCall;
-		const onExternalToolResult = (options as ClaudeCodeStreamOptions | undefined)?.onExternalToolResult;
+		const claudeOptions = options as ClaudeCodeStreamOptions | undefined;
+		const uiContext = claudeOptions?.extensionUIContext;
+		const onExternalToolCall = claudeOptions?.onExternalToolCall;
+		const onExternalToolResult = claudeOptions?.onExternalToolResult;
+		const sdkQueryForTest = claudeOptions?._sdkQueryForTest;
+		const query = sdkQueryForTest ?? (
+			// Dynamic import — the SDK is an optional dependency.
+			(await import(/* webpackIgnore: true */ "@anthropic-ai/claude-agent-sdk")) as {
+				query: (args: {
+					prompt: string | AsyncIterable<unknown>;
+					options?: Record<string, unknown>;
+				}) => AsyncIterable<SDKMessage>;
+			}
+		).query;
 		const cwd = resolveClaudeCodeCwd(options);
+		const projectRoot = resolveWorkflowMcpProjectRoot(cwd);
 		autoInitClaudeCodeWorkflowMcp(cwd);
+		const gsdPhase = resolveGsdPhaseForSdk(context, projectRoot);
 		const canUseToolHandler = createClaudeCodeCanUseToolHandler(uiContext);
 		// When no UI is available (headless / auto-mode), auto-approve all
 		// tool requests. This replaces the old bypassPermissions workaround.
@@ -1980,6 +2181,7 @@ async function pumpSdkMessages(
 			{ permissionMode },
 			{
 				cwd,
+				gsdPhase,
 				reasoning: options?.reasoning,
 				canUseTool: canUseToolFallback,
 				...(uiContext
@@ -1989,19 +2191,15 @@ async function pumpSdkMessages(
 					: {}),
 			},
 		);
+		const workflowMcpServerName = workflowMcpServerNameFromAllowedTools(sdkOpts.allowedTools);
+		const allowPendingToolSearchHydration =
+			Boolean(workflowMcpServerName && gsdPhase)
+			&& !(sdkOpts.disallowedTools as string[] | undefined)?.includes("ToolSearch");
 		const prompt = buildPromptFromContext(context, {
-			workflowMcpServerName: workflowMcpServerNameFromAllowedTools(sdkOpts.allowedTools),
+			workflowMcpServerName,
 			browserMcpServerName: browserMcpServerNameFromAllowedTools(sdkOpts.allowedTools),
 		});
 		const queryPrompt = buildSdkQueryPrompt(context, prompt);
-
-		const queryResult = sdk.query({
-			prompt: queryPrompt,
-			options: {
-				...sdkOpts,
-				abortController: controller,
-			},
-		});
 
 		// Emit start with an empty partial
 		const initialPartial: AssistantMessage = {
@@ -2015,174 +2213,320 @@ async function pumpSdkMessages(
 			timestamp: Date.now(),
 		};
 		stream.push({ type: "start", partial: initialPartial });
+		const readinessProgressState: WorkflowMcpReadinessProgressState = {};
 
-		for await (const msg of queryResult as AsyncIterable<SDKMessage>) {
-			if (options?.signal?.aborted) {
-				// User-initiated cancel — emit an aborted error so the agent
-				// loop classifies this as a deliberate stop, not a transient
-				// provider failure that should be retried.
-				stream.push({
-					type: "error",
-					reason: "aborted",
-					error: makeAbortedMessage(modelId, lastTextContent),
-				});
-				return;
-			}
-
-			switch (msg.type) {
-				// -- Init --
-				case "system": {
-					// Nothing to emit — the stream is already started.
-					break;
-				}
-
-				// -- Streaming partial messages --
-				case "stream_event": {
-					const partial = msg as SDKPartialAssistantMessage;
-
-					const event = partial.event;
-
-					const result = handleClaudeCodePartialStreamEvent(builder, event, modelId);
-					builder = result.builder;
-					const assistantEvent = result.assistantEvent;
-					if (assistantEvent) {
-						stream.push(assistantEvent);
-						if (assistantEvent.type === "toolcall_start") {
-							const toolBlock = assistantEvent.partial.content[assistantEvent.contentIndex];
-							if (toolBlock?.type === "toolCall") {
-								try {
-									await onExternalToolCall?.(toolBlock);
-								} catch (error) {
-									console.warn("[claude-code] onExternalToolCall callback failed:", error);
-								}
-							}
-						}
-					}
-					break;
-				}
-
-				// -- Complete assistant message (non-streaming fallback) --
-				case "assistant": {
-					const sdkAssistant = msg as SDKAssistantMessage;
-
-					// Capture text content from complete messages
-					for (const block of sdkAssistant.message.content) {
-						if (block.type === "text") {
-							lastTextContent = block.text;
-						} else if (block.type === "thinking") {
-							lastThinkingContent = block.thinking;
-						}
-					}
-					break;
-				}
-
-				// -- User message (synthetic tool result — signals turn boundary) --
-				case "user": {
-					// Capture content from the completed turn before resetting
-					if (builder) {
-						for (const block of builder.message.content) {
-							if (block.type === "text" && block.text) {
-								lastTextContent = block.text;
-							} else if (block.type === "thinking" && block.thinking) {
-								lastThinkingContent = block.thinking;
-							} else if (block.type === "toolCall" || block.type === "serverToolUse") {
-								// Collect tool blocks for externalToolExecution rendering
-								intermediateToolBlocks.push(block);
-							}
-						}
-					}
-
-					// Extract tool results from the SDK's synthetic user message
-					// and attach to corresponding tool call blocks immediately.
-					for (const { toolUseId, result } of extractToolResultsFromSdkUserMessage(msg as SDKUserMessage)) {
-						toolResultsById.set(toolUseId, result);
-					}
-					attachExternalResultsToToolBlocks(intermediateToolBlocks, toolResultsById);
-
-					// Push a synthetic toolcall_end for each tool call from this turn
-					// so the TUI can render tool results in real-time during the SDK
-					// session instead of waiting until the entire session completes.
-					if (builder) {
-						for (const block of builder.message.content) {
-							const extResult = (block as ToolCallWithExternalResult).externalResult;
-							if (!extResult) continue;
-							const contentIndex = builder.message.content.indexOf(block);
-							if (contentIndex < 0) continue;
-							// Push synthetic completion events with result attached so the
-							// chat-controller can update pending ToolExecutionComponents.
-							if (block.type === "toolCall") {
-								try {
-									await onExternalToolResult?.({
-										toolCall: block,
-										result: extResult,
-									});
-								} catch (error) {
-									console.warn("[claude-code] onExternalToolResult callback failed:", error);
-								}
-								stream.push({
-									type: "toolcall_end",
-									contentIndex,
-									toolCall: block,
-									partial: builder.message,
-								});
-							} else if (block.type === "serverToolUse") {
-								try {
-									await onExternalToolResult?.({
-										toolCall: serverToolUseToToolCallLike(block),
-										result: extResult,
-									});
-								} catch (error) {
-									console.warn("[claude-code] onExternalToolResult callback failed:", error);
-								}
-								stream.push({
-									type: "server_tool_use",
-									contentIndex,
-									partial: builder.message,
-								});
-							}
-						}
-					}
-
-					builder = null;
-					break;
-				}
-
-				// -- Result (terminal) --
-				case "result": {
-					const result = msg as SDKResultMessage;
-					const finalContent = buildFinalAssistantContent({
-						intermediateToolBlocks,
-						pendingContent: builder?.message.content,
-						toolResultsById,
-						lastThinkingContent,
-						lastTextContent,
-						fallbackResultText:
-							result.subtype === "success" && result.result ? result.result : undefined,
+		const trackWorkflowMcpSdk = Boolean(workflowMcpServerName && gsdPhase);
+		if (trackWorkflowMcpSdk) beginWorkflowMcpSdkSession();
+		try {
+			let workflowMcpPreflightVerified = false;
+			const shouldRunWorkflowMcpPreflight =
+				workflowMcpServerName && gsdPhase && !claudeOptions?._skipWorkflowMcpPreflightForTest;
+			if (shouldRunWorkflowMcpPreflight) {
+				try {
+					const progressMessage = buildWorkflowMcpReadinessProgressMessage({
+						unitType: gsdPhase,
+						workflowServerName: workflowMcpServerName,
+						stage: "preflight",
 					});
-
-					const finalMessage: AssistantMessage = {
-						role: "assistant",
-						content: finalContent,
-						api: "anthropic-messages",
-						provider: "claude-code",
-						model: modelId,
-						usage: mapUsage(result.usage, result.total_cost_usd),
-						stopReason: result.is_error ? "error" : "stop",
-						timestamp: Date.now(),
-					};
-
-					if (result.is_error) {
-						finalMessage.errorMessage = getResultErrorMessage(result);
-						stream.push({ type: "error", reason: "error", error: finalMessage });
-					} else {
-						stream.push({ type: "done", reason: "stop", message: finalMessage });
+					pushWorkflowMcpReadinessProgressEvent({
+						stream,
+						partial: initialPartial,
+						state: readinessProgressState,
+						message: progressMessage,
+					});
+					uiContext?.setStatus?.("gsd-step", progressMessage);
+					const preflightError = await awaitWorkflowMcpToolRegistration({
+						unitType: gsdPhase,
+						workflowServerName: workflowMcpServerName,
+						projectRoot,
+						signal: options?.signal,
+					});
+					if (preflightError) {
+						stream.push({
+							type: "error",
+							reason: "error",
+							error: makeErrorMessage(modelId, preflightError),
+						});
+						return;
 					}
-					return;
+					workflowMcpPreflightVerified = true;
+				} finally {
+					uiContext?.setStatus?.("gsd-step", "");
+				}
+				if (workflowMcpPreflightVerified) {
+					await delay(POST_PREFLIGHT_SDK_SETTLE_MS, options?.signal);
+				}
+			}
+
+			sdkAttemptLoop:
+			for (let readinessAttempt = 0; ; readinessAttempt++) {
+				let { builder, intermediateToolBlocks, toolResultsById } = createSdkAttemptMessageState();
+				const controller = new AbortController();
+				const forwardAbort = (): void => controller.abort();
+				if (options?.signal) {
+					options.signal.addEventListener("abort", forwardAbort, { once: true });
 				}
 
-				default:
-					break;
+				const queryResult = query({
+					prompt: queryPrompt,
+					options: {
+						...sdkOpts,
+						abortController: controller,
+					},
+				});
+
+				try {
+					for await (const msg of queryResult as AsyncIterable<SDKMessage>) {
+					if (options?.signal?.aborted) {
+						// User-initiated cancel — emit an aborted error so the agent
+						// loop classifies this as a deliberate stop, not a transient
+						// provider failure that should be retried.
+						stream.push({
+							type: "error",
+							reason: "aborted",
+							error: makeAbortedMessage(modelId, lastTextContent),
+						});
+						return;
+					}
+
+					switch (msg.type) {
+						// -- Init --
+						case "system": {
+							// Tool Surface Readiness gate: the init message is the first (and
+							// only) point where the session reports its live tool surface and
+							// MCP server statuses. If the workflow server failed or has not
+							// registered this Unit's required tools, abort before the first
+							// model turn with a transient, recovery-classifiable error
+							// (tool-unavailable → retry) instead of letting the model hit
+							// "No such tool available" mid-Unit and improvise around it.
+							const init = msg as unknown as {
+								subtype?: string;
+								tools?: string[];
+								mcp_servers?: { name: string; status: string }[];
+							};
+							if (init.subtype === "init") {
+								const readinessError = await resolveClaudeCodeToolSurfaceReadinessError({
+									unitType: gsdPhase,
+									workflowServerName: workflowMcpServerName,
+									projectRoot,
+									observation: { tools: init.tools ?? [], mcpServers: init.mcp_servers ?? [] },
+									allowPendingToolSearchHydration,
+								});
+								if (readinessError) {
+									const retryDelayMs = resolveClaudeCodeToolSurfaceReadinessRetryDelayMs(
+										readinessError,
+										readinessAttempt,
+										workflowMcpPreflightVerified,
+									);
+									if (retryDelayMs !== null && !options?.signal?.aborted) {
+										controller.abort();
+										const progressMessage = buildWorkflowMcpReadinessProgressMessage({
+											unitType: gsdPhase ?? "workflow unit",
+											workflowServerName: workflowMcpServerName ?? "workflow",
+											stage: "retry",
+											attempt: readinessAttempt + 1,
+											delayMs: retryDelayMs,
+										});
+										pushWorkflowMcpReadinessProgressEvent({
+											stream,
+											partial: initialPartial,
+											state: readinessProgressState,
+											message: progressMessage,
+										});
+										uiContext?.setStatus?.("gsd-step", progressMessage);
+										await delay(retryDelayMs, options?.signal);
+										uiContext?.setStatus?.("gsd-step", "");
+										continue sdkAttemptLoop;
+									}
+									controller.abort();
+									stream.push({
+										type: "error",
+										reason: "error",
+										error: makeErrorMessage(modelId, readinessError),
+									});
+									return;
+								}
+							}
+							break;
+						}
+
+						// -- Streaming partial messages --
+						case "stream_event": {
+							const partial = msg as SDKPartialAssistantMessage;
+
+							const event = partial.event;
+
+							const result = handleClaudeCodePartialStreamEvent(builder, event, modelId);
+							builder = result.builder;
+							const assistantEvent = result.assistantEvent;
+							if (assistantEvent) {
+								stream.push(assistantEvent);
+								if (assistantEvent.type === "toolcall_start") {
+									const toolBlock = assistantEvent.partial.content[assistantEvent.contentIndex];
+									if (toolBlock?.type === "toolCall") {
+										try {
+											await onExternalToolCall?.(toolBlock);
+										} catch (error) {
+											console.warn("[claude-code] onExternalToolCall callback failed:", error);
+										}
+									}
+								}
+							}
+							break;
+						}
+
+						// -- Complete assistant message (non-streaming fallback) --
+						case "assistant": {
+							const sdkAssistant = msg as SDKAssistantMessage;
+
+							// Capture text content from complete messages
+							for (const block of sdkAssistant.message.content) {
+								if (block.type === "text") {
+									lastTextContent = block.text;
+								} else if (block.type === "thinking") {
+									lastThinkingContent = block.thinking;
+								}
+							}
+							break;
+						}
+
+						// -- User message (synthetic tool result — signals turn boundary) --
+						case "user": {
+							// Capture content from the completed turn before resetting
+							if (builder) {
+								for (const block of builder.message.content) {
+									if (block.type === "text" && block.text) {
+										lastTextContent = block.text;
+									} else if (block.type === "thinking" && block.thinking) {
+										lastThinkingContent = block.thinking;
+									} else if (block.type === "toolCall" || block.type === "serverToolUse") {
+										// Collect tool blocks for externalToolExecution rendering
+										intermediateToolBlocks.push(block);
+									}
+								}
+							}
+
+							// Extract tool results from the SDK's synthetic user message
+							// and attach to corresponding tool call blocks immediately.
+							for (const { toolUseId, result } of extractToolResultsFromSdkUserMessage(msg as SDKUserMessage)) {
+								toolResultsById.set(toolUseId, result);
+							}
+							attachExternalResultsToToolBlocks(intermediateToolBlocks, toolResultsById);
+
+							// Push a synthetic toolcall_end for each tool call from this turn
+							// so the TUI can render tool results in real-time during the SDK
+							// session instead of waiting until the entire session completes.
+							if (builder) {
+								for (const block of builder.message.content) {
+									const extResult = (block as ToolCallWithExternalResult).externalResult;
+									if (!extResult) continue;
+									const contentIndex = builder.message.content.indexOf(block);
+									if (contentIndex < 0) continue;
+									const suppressDuplicateUnavailable = shouldSuppressDuplicateToolUnavailableBlock(
+										block,
+										builder.message.content,
+									);
+									// Push synthetic completion events with result attached so the
+									// chat-controller can update pending ToolExecutionComponents.
+									if (block.type === "toolCall") {
+										if (suppressDuplicateUnavailable) {
+											delete (block as ToolCallWithExternalResult).externalResult;
+											stream.push({
+												type: "toolcall_end",
+												contentIndex,
+												toolCall: block,
+												partial: builder.message,
+											});
+											(block as ToolCallWithExternalResult).externalResult = extResult;
+											continue;
+										}
+										try {
+											await onExternalToolResult?.({
+												toolCall: block,
+												result: extResult,
+											});
+										} catch (error) {
+											console.warn("[claude-code] onExternalToolResult callback failed:", error);
+										}
+										stream.push({
+											type: "toolcall_end",
+											contentIndex,
+											toolCall: block,
+											partial: builder.message,
+										});
+									} else if (block.type === "serverToolUse") {
+										try {
+											await onExternalToolResult?.({
+												toolCall: serverToolUseToToolCallLike(block),
+												result: extResult,
+											});
+										} catch (error) {
+											console.warn("[claude-code] onExternalToolResult callback failed:", error);
+										}
+										stream.push({
+											type: "server_tool_use",
+											contentIndex,
+											partial: builder.message,
+										});
+									}
+								}
+							}
+
+							builder = null;
+							break;
+						}
+
+						// -- Result (terminal) --
+						case "result": {
+							const result = msg as SDKResultMessage;
+							const finalContent = buildFinalAssistantContent({
+								intermediateToolBlocks,
+								pendingContent: builder?.message.content,
+								toolResultsById,
+								lastThinkingContent,
+								lastTextContent,
+								fallbackResultText:
+									result.subtype === "success" && result.result ? result.result : undefined,
+							});
+
+							const finalMessage: AssistantMessage = {
+								role: "assistant",
+								content: finalContent,
+								api: "anthropic-messages",
+								provider: "claude-code",
+								model: modelId,
+								usage: mapUsage(result.usage, result.total_cost_usd),
+								stopReason: result.is_error ? "error" : "stop",
+								timestamp: Date.now(),
+							};
+
+							if (result.is_error) {
+								finalMessage.errorMessage = getResultErrorMessage(result);
+								stream.push({ type: "error", reason: "error", error: finalMessage });
+							} else {
+								stream.push({ type: "done", reason: "stop", message: finalMessage });
+							}
+							return;
+						}
+
+						default:
+							break;
+					}
+				}
+				} finally {
+					options?.signal?.removeEventListener("abort", forwardAbort);
+				}
+
+				// The SDK stream ended without a terminal `result` message and
+				// without a readiness retry (the only restart path, via
+				// `continue sdkAttemptLoop`). Break out so the post-loop
+				// exhaustion handler emits a transient stream-exhausted error,
+				// instead of silently starting another SDK session and looping
+				// forever.
+				break sdkAttemptLoop;
 			}
+		} finally {
+			if (trackWorkflowMcpSdk) endWorkflowMcpSdkSession();
 		}
 
 		// Generator exhaustion without a terminal result is a stream interruption,

@@ -24,6 +24,8 @@ test("execute-task fails closed when no host-owned checks are discovered", () =>
   assert.equal(verdict.reason, "no-host-checks");
   assert.equal(verdict.retryable, false);
   assert.match(verdict.failureContext, /No runnable host-owned verification command/);
+  assert.match(verdict.failureContext, /\.gsd\/PREFERENCES\.md/);
+  assert.match(verdict.failureContext, /\/gsd next/);
 });
 
 test("execute-task passes when non-runnable task-plan prose is the verification source", () => {

@@ -5,7 +5,7 @@ import { Loader, Markdown, Spacer, Text } from "@gsd/pi-tui";
 import type { InteractiveModeEvent, InteractiveModeStateHost } from "../interactive-mode-state.js";
 import { theme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { AssistantMessageComponent } from "../components/assistant-message.js";
-import { chatTurnFollowsUser, reconcileChatTurnConnections } from "../components/chat-turn-connect.js";
+import { reconcileChatTurnConnections } from "../components/chat-turn-connect.js";
 import {
 	ToolExecutionComponent,
 	ToolPhaseSummaryComponent,
@@ -50,6 +50,14 @@ type ToolRegistrationSource = "content" | "standalone";
 // Invocation matching only reconciles IDs reported by different event streams.
 // Same-source identical invocations are separate concurrent tool calls.
 const toolRegistrationSources = new WeakMap<ToolExecutionComponent, Set<ToolRegistrationSource>>();
+const PROVISIONAL_PRE_TOOL_ACTIONS =
+	"check|inspect|look(?:\\s+into)?|read|open|search|grep|scan|run|verify|test|trace|review|investigate|reproduce|use|gather|find|pull|query|take a look|update|patch|edit|change|modify|write|create|add|remove|apply";
+const FIRST_PERSON_PROVISIONAL_PRE_TOOL_RE = new RegExp(
+	`^(?:i(?:'ll| will)|i(?:'m| am) going to|let me|i need to)\\s+(?:${PROVISIONAL_PRE_TOOL_ACTIONS})\\b`,
+	"i",
+);
+const GERUND_PROVISIONAL_PRE_TOOL_RE =
+	/^(?:checking|inspecting|reading|searching|running|verifying|testing|tracing|reviewing|investigating|scanning|updating|patching|editing|writing|creating|applying)\b/i;
 
 function findPendingToolByInvocation(
 	pendingTools: Map<string, ToolExecutionComponent>,
@@ -94,6 +102,7 @@ function registerPendingToolComponent(
 	const component = createComponent();
 	component.setExpanded(host.toolOutputExpanded);
 	host.chatContainer.addChild(component);
+	markFirstVisibleAssistantOutput(host, "tool", { toolName, source });
 	host.pendingTools.set(toolCallId, component);
 	toolRegistrationSources.set(component, new Set([source]));
 	return { component, created: true };
@@ -103,6 +112,7 @@ function startLoadingAnimation(host: InteractiveModeStateHost): void {
 	if (host.pendingWorkingMessage === null) {
 		host.loadingAnimation = undefined;
 		host.statusContainer.clear();
+		startActivityIndicator(host);
 		return;
 	}
 
@@ -121,8 +131,51 @@ function startLoadingAnimation(host: InteractiveModeStateHost): void {
 	}
 }
 
-function getVisibleTextLikeBlockType(block: any): "text" | "thinking" | undefined {
+/** Compact activity pulse used when extensions suppress the default working loader. */
+export function startActivityIndicator(host: InteractiveModeStateHost, message?: string): void {
+	stopActivityIndicator(host);
+	const phase =
+		message?.trim() ||
+		(host as { gsdProgressState?: { phase?: string } }).gsdProgressState?.phase ||
+		host.defaultWorkingMessage;
+	host.activityLoader = new Loader(
+		host.ui,
+		(spinner) => theme.fg("accent", spinner),
+		(text) => theme.fg("muted", text),
+		phase,
+	);
+	host.statusContainer.addChild(host.activityLoader);
+	host.ui.requestRender();
+}
+
+export function stopActivityIndicator(host: InteractiveModeStateHost): void {
+	if (!host.activityLoader) return;
+	host.activityLoader.stop();
+	host.activityLoader = undefined;
+	if (!host.loadingAnimation && !host.autoCompactionLoader && !host.retryLoader) {
+		host.statusContainer.clear();
+	}
+}
+
+function markTuiLatency(
+	host: InteractiveModeStateHost,
+	phase: string,
+	data?: Record<string, unknown>,
+): void {
+	host.session?.markTurnLatency?.(phase, data);
+}
+
+function markFirstVisibleAssistantOutput(
+	host: InteractiveModeStateHost,
+	kind: "text" | "thinking" | "tool" | "message_end_only",
+	data?: Record<string, unknown>,
+): void {
+	host.session?.markFirstVisibleTurnLatency?.(kind, data);
+}
+
+function getVisibleTextLikeBlockType(block: any, hideThinkingBlock = false): "text" | "thinking" | undefined {
 	if (block?.type === "text" && typeof block.text === "string" && block.text.trim().length > 0) return "text";
+	if (hideThinkingBlock) return undefined;
 	if (block?.type === "thinking" && typeof block.thinking === "string" && block.thinking.trim().length > 0) return "thinking";
 	return undefined;
 }
@@ -138,6 +191,44 @@ export function textInvitesUserReply(text: string): boolean {
 const DISCUSS_RESTATE_RE =
 	/\b(?:what do you want|what should we|before i can write|context file|placeholder name|need to understand what|what(?:'s| is) (?:on your mind|the next)|help me understand what you want)\b/i;
 
+/** Second sub-turn that only says it is waiting after questions were already asked. */
+const HANDOFF_WAIT_RESTATE_RE =
+	/\b(?:holding\s+(?:here|for)|waiting\s+(?:here|for)|no\s+need\s+for\s+anything\s+else|until\s+you\s+(?:point|tell|let\s+me\s+know|answer|reply)|i(?:'ve| have)\s+asked)\b/i;
+
+function isWaitOnlyQuestionFragment(fragment: string): boolean {
+	return /^(?:i(?:'ve| have)\s+asked\b|(?:i'?m|i am)\s+(?:holding|waiting)\b|no\s+need\s+for\s+anything\s+else\b)/i.test(fragment)
+		&& !/\b(?:should|do you|would you|can we|could we|what|which|how|where|when|who|also|add|include)\b/i.test(fragment);
+}
+
+/** True when text adds a question beyond wait/hold boilerplate. */
+function containsNewSubstantiveQuestion(text: string): boolean {
+	for (let i = 0; i < text.length; i++) {
+		if (text[i] !== "?") continue;
+		const previousBreak = Math.max(
+			text.lastIndexOf("\n", i),
+			text.lastIndexOf(".", i),
+			text.lastIndexOf("!", i),
+			text.lastIndexOf("?", i - 1),
+			-1,
+		);
+		const fragment = text.slice(previousBreak + 1, i + 1).trim();
+		if (fragment.length < 8) continue;
+		if (isWaitOnlyQuestionFragment(fragment)) continue;
+		return true;
+	}
+	return false;
+}
+
+function isHandoffWaitRestatement(next: string): boolean {
+	if (!HANDOFF_WAIT_RESTATE_RE.test(next)) return false;
+	// Keep follow-ups that add a real question even when they also say holding/waiting.
+	if (containsNewSubstantiveQuestion(next)) return false;
+	// Only classify as a pure wait ack when the text is short; long text likely
+	// contains substantive content alongside incidental wait language.
+	if (next.length > 400) return false;
+	return true;
+}
+
 /**
  * Claude Code can emit a second text sub-turn that restates the same milestone
  * discuss ask. Drop it when the prior sub-turn already invited a user reply.
@@ -147,9 +238,29 @@ export function isRedundantDiscussRestatement(priorText: string, newText: string
 	const next = newText.trim();
 	if (!prior || !next) return false;
 	if (!textInvitesUserReply(prior)) return false;
-	if (!DISCUSS_RESTATE_RE.test(next)) return false;
+	const isDiscussRestate = DISCUSS_RESTATE_RE.test(next);
+	const isWaitRestate = isHandoffWaitRestatement(next);
+	if (!isDiscussRestate && !isWaitRestate) return false;
+	// Wait acks are gated on length and no-? inside isHandoffWaitRestatement.
+	if (isWaitRestate) return true;
 	if (next.length > prior.length * 1.1) return false;
 	return next.length <= prior.length || next.length < 900;
+}
+
+function isSubTurnTextReplacement(
+	blocks: Array<any>,
+	rendered: RenderedSegment[],
+): number | null {
+	for (const seg of rendered) {
+		if (seg.kind !== "text-run") continue;
+		const oldText = (seg.cachedText ?? "").trim();
+		if (!oldText) continue;
+		const newText = getTextFromContentBlocks(blocks, seg.startIndex, seg.endIndex).trim();
+		if (!newText || newText === oldText) continue;
+		// Streaming growth extends prior text; a new sub-turn replaces it wholesale.
+		if (!newText.startsWith(oldText) && !oldText.startsWith(newText)) return seg.startIndex;
+	}
+	return null;
 }
 
 function getTextFromContentBlocks(blocks: Array<any>, startIndex: number, endIndex: number): string {
@@ -243,6 +354,23 @@ export function priorAssistantTextFromSession(
 	return undefined;
 }
 
+function shouldSuppressEntireAssistantMessage(
+	message: { content?: Array<any> },
+	sessionMessages: Array<{ role?: string; content?: unknown }>,
+	orphaned: RenderedSegment[],
+): boolean {
+	const textBlocks = (message.content ?? []).filter(
+		(block) => block?.type === "text" && typeof block.text === "string" && block.text.trim(),
+	);
+	if (textBlocks.length !== 1) return false;
+	return shouldSuppressRedundantHandoffText(
+		sessionMessages,
+		textBlocks[0].text,
+		orphaned,
+		[],
+	);
+}
+
 function shouldSuppressRedundantHandoffText(
 	sessionMessages: Array<{ role?: string; content?: unknown }>,
 	currentText: string,
@@ -266,7 +394,7 @@ function shouldSuppressRedundantHandoffText(
 
 function buildDesiredSegments(
 	blocks: Array<any>,
-	options: { shouldSkipTextBlock?: (block: any, index: number) => boolean } = {},
+	options: { hideThinkingBlock?: boolean; shouldSkipTextBlock?: (block: any, index: number) => boolean } = {},
 ): DesiredSegment[] {
 	const desired: DesiredSegment[] = [];
 	let runStart = -1;
@@ -283,7 +411,7 @@ function buildDesiredSegments(
 
 	for (let i = 0; i < blocks.length; i++) {
 		const block = blocks[i];
-		const blockType = getVisibleTextLikeBlockType(block);
+		const blockType = getVisibleTextLikeBlockType(block, options.hideThinkingBlock);
 		const isInvisibleTextLike = blockType === undefined && (block?.type === "text" || block?.type === "thinking");
 		const isTool = block?.type === "toolCall" || block?.type === "serverToolUse";
 
@@ -317,8 +445,79 @@ function buildDesiredSegments(
 	return desired;
 }
 
-function hasVisibleAssistantContent(message: { content: Array<any> }): boolean {
-	return message.content.some((c) => getVisibleTextLikeBlockType(c) !== undefined);
+function isToolUseBlock(block: any): boolean {
+	return block?.type === "toolCall" || block?.type === "serverToolUse";
+}
+
+function isMcpToolBlock(block: any): boolean {
+	if (!isToolUseBlock(block)) return false;
+	const toolName = typeof block?.name === "string" ? block.name : "";
+	return typeof block?.mcpServer === "string" || toolName.startsWith("mcp__");
+}
+
+function hasPostToolText(blocks: Array<any>, firstToolIdx: number): boolean {
+	if (firstToolIdx < 0) return false;
+	return blocks.some(
+		(b: any, idx: number) => (
+			idx > firstToolIdx
+			&& b?.type === "text"
+			&& typeof b?.text === "string"
+			&& b.text.trim().length > 0
+		),
+	);
+}
+
+function normalizeProvisionalText(text: string): string {
+	return text
+		.trim()
+		.replace(/[’`]/g, "'")
+		.replace(/\s+/g, " ");
+}
+
+export function isProvisionalPreToolProse(text: string): boolean {
+	const normalized = normalizeProvisionalText(text);
+	if (!normalized) return false;
+	if (textInvitesUserReply(normalized)) return false;
+	if (/\?\s*$/.test(normalized)) return false;
+
+	return FIRST_PERSON_PROVISIONAL_PRE_TOOL_RE.test(normalized)
+		|| GERUND_PROVISIONAL_PRE_TOOL_RE.test(normalized);
+}
+
+function getProvisionalPreToolPrunePlan(message: { provider?: string; content: Array<any> }): {
+	shouldPrune: boolean;
+	firstToolIdx: number;
+} {
+	const blocks = message.content;
+	const firstToolIdx = blocks.findIndex(isToolUseBlock);
+	return {
+		firstToolIdx,
+		shouldPrune:
+			message.provider === "claude-code"
+			&& firstToolIdx >= 0
+			&& blocks.some(isMcpToolBlock)
+			&& hasPostToolText(blocks, firstToolIdx),
+	};
+}
+
+function buildDesiredSegmentsForMessage(
+	message: { provider?: string; content: Array<any> },
+	options: { hideThinkingBlock?: boolean } = {},
+): DesiredSegment[] {
+	const { shouldPrune, firstToolIdx } = getProvisionalPreToolPrunePlan(message);
+	return buildDesiredSegments(message.content, {
+		hideThinkingBlock: options.hideThinkingBlock,
+		shouldSkipTextBlock: (block: any, index: number) => {
+			if (!shouldPrune || firstToolIdx < 0 || index >= firstToolIdx) return false;
+			if (getVisibleTextLikeBlockType(block, options.hideThinkingBlock) !== "text") return false;
+			const textValue = typeof block?.text === "string" ? block.text : "";
+			return isProvisionalPreToolProse(textValue);
+		},
+	});
+}
+
+function hasVisibleAssistantContent(message: { content: Array<any> }, hideThinkingBlock = false): boolean {
+	return message.content.some((c) => getVisibleTextLikeBlockType(c, hideThinkingBlock) !== undefined);
 }
 
 function hasAssistantToolBlocks(message: { content: Array<any> }): boolean {
@@ -381,6 +580,25 @@ let hasToolsInTurn = false;
 let pinnedBorder: DynamicBorder | undefined;
 // Reference to the pinned markdown component below the border
 let pinnedTextComponent: Markdown | undefined;
+// Set when the pinned zone was shown this turn; used to realign viewport after teardown.
+let pinnedZoneNeedsViewportRealign = false;
+
+function tearDownPinnedZone(
+	host: { pinnedMessageContainer: { clear(): void }; ui: { requestRender(force?: boolean): void } },
+	options?: { realignViewport?: boolean },
+): void {
+	const needsRealign = pinnedZoneNeedsViewportRealign;
+	if (pinnedBorder) pinnedBorder.stopSpinner();
+	pinnedBorder = undefined;
+	pinnedTextComponent = undefined;
+	host.pinnedMessageContainer.clear();
+	lastPinnedText = "";
+	hasToolsInTurn = false;
+	pinnedZoneNeedsViewportRealign = false;
+	if (options?.realignViewport && needsRealign) {
+		host.ui.requestRender(true);
+	}
+}
 
 function mergeToolPhases(phases: ToolExecutionPhase[]): ToolExecutionPhase[] {
 	const merged: ToolExecutionPhase[] = [];
@@ -503,14 +721,9 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 	if (event.type === "message_start" && event.message.role === "assistant") {
 		lastProcessedContentIndex = 0;
 		lastContentLength = 0;
-		lastPinnedText = "";
-		hasToolsInTurn = false;
 		renderedSegments = [];
 		orphanedSegments = [];
-		if (pinnedBorder) pinnedBorder.stopSpinner();
-		pinnedBorder = undefined;
-		pinnedTextComponent = undefined;
-		host.pinnedMessageContainer.clear();
+		tearDownPinnedZone(host);
 	}
 
 	switch (event.type) {
@@ -523,15 +736,10 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 					host.streamingMessage = undefined;
 					host.pendingTools.clear();
 					host.pendingMessagesContainer.clear();
-					host.pinnedMessageContainer.clear();
-					lastPinnedText = "";
-					hasToolsInTurn = false;
+					tearDownPinnedZone(host);
 					renderedSegments = [];
 					orphanedSegments = [];
 					lastContentLength = 0;
-					if (pinnedBorder) pinnedBorder.stopSpinner();
-					pinnedBorder = undefined;
-					pinnedTextComponent = undefined;
 					host.compactionQueuedMessages = [];
 					host.rebuildChatFromMessages();
 					host.updatePendingMessagesDisplay();
@@ -565,8 +773,10 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 			if (host.loadingAnimation) {
 				host.loadingAnimation.stop();
 			}
+			stopActivityIndicator(host);
 			host.statusContainer.clear();
 			startLoadingAnimation(host);
+			markTuiLatency(host, "tui.loader_visible");
 			host.ui.requestRender();
 			break;
 
@@ -583,6 +793,10 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 				// External-tool providers can stream multiple assistant turns through
 				// one response. Delay component creation until visible assistant text
 				// arrives so tool outputs keep chronological ordering.
+				markTuiLatency(host, "tui.assistant_message_start", {
+					provider: event.message.provider,
+					model: event.message.model,
+				});
 				host.ui.requestRender();
 			}
 			break;
@@ -602,7 +816,10 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 						externalToolResult = {
 							toolCallId: tc.id,
 							content: ext.content ?? [{ type: "text", text: "" }],
-							details: ext.details ?? {},
+							// Preserve undefined when MCP omits structuredContent — an empty
+							// object is truthy and makes ask_user_questions renderResult show
+							// "Cancelled" despite a successful text payload (#cc-elicitation).
+							details: ext.details,
 							isError: ext.isError ?? false,
 						};
 					}
@@ -614,7 +831,7 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 						externalToolResult = {
 							toolCallId: block.id,
 							content: ext.content ?? [{ type: "text", text: "" }],
-							details: ext.details ?? {},
+							details: ext.details,
 							isError: ext.isError ?? false,
 						};
 					}
@@ -629,6 +846,9 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 				// components don't get overwritten in place with new sub-turn
 				// content (#4144 regression). Prior sub-turn children stay in
 				// chatContainer as frozen history; new segments append after them.
+				const replacedAt = contentBlocks.length <= lastContentLength
+					? isSubTurnTextReplacement(contentBlocks, renderedSegments)
+					: null;
 				if (contentBlocks.length < lastContentLength) {
 					// Accumulate across successive shrinks — overwriting would drop
 					// segments displaced by an earlier shrink, leaving them stranded
@@ -637,6 +857,20 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 					renderedSegments = [];
 					lastPinnedText = "";
 					lastProcessedContentIndex = 0;
+				} else if (replacedAt !== null) {
+					// Same-index wholesale replacement: orphan only the replaced
+					// text-run and any text-runs after it. Earlier unchanged text
+					// and tool segments stay in renderedSegments so they are not
+					// re-rendered and duplicated in chatContainer.
+					orphanedSegments = [
+						...orphanedSegments,
+						...renderedSegments.filter((seg) => seg.kind === "text-run" && seg.startIndex >= replacedAt),
+					];
+					renderedSegments = renderedSegments.filter(
+						(seg) => !(seg.kind === "text-run" && seg.startIndex >= replacedAt),
+					);
+					lastPinnedText = "";
+					lastProcessedContentIndex = replacedAt;
 				} else if (lastProcessedContentIndex >= contentBlocks.length) {
 					lastProcessedContentIndex = 0;
 				}
@@ -716,47 +950,27 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 				// Build desired segment plan from content[].
 				{
 					const blocks = host.streamingMessage.content;
-					const isClaudeCodeProvider = host.streamingMessage.provider === "claude-code";
-					const hasMcpToolBlock = blocks.some((b: any) => {
-						if (b?.type === "toolCall") {
-							return typeof b?.mcpServer === "string" || String(b?.name ?? "").startsWith("mcp__");
-						}
-						if (b?.type === "serverToolUse") {
-							return typeof b?.mcpServer === "string" || String(b?.name ?? "").startsWith("mcp__");
-						}
-						return false;
-					});
-					const firstToolIdx = blocks.findIndex((b: any) => b.type === "toolCall" || b.type === "serverToolUse");
-					const hasPostToolText = firstToolIdx >= 0
-						&& blocks.some(
-							(b: any, idx: number) => (
-								idx > firstToolIdx
-								&& b?.type === "text"
-								&& typeof b?.text === "string"
-								&& b.text.trim().length > 0
-							),
-						);
 					// Only prune provisional pre-tool prose after post-tool prose exists,
 					// so MCP tool-only windows do not blank the assistant content.
-					const shouldDropPreToolProse = isClaudeCodeProvider && hasMcpToolBlock && hasPostToolText;
-					let desired = buildDesiredSegments(blocks, {
-						shouldSkipTextBlock: (block: any, index: number) => {
-							if (!shouldDropPreToolProse || firstToolIdx < 0 || index >= firstToolIdx) return false;
-							if (getVisibleTextLikeBlockType(block) !== "text") return false;
-							const textValue = typeof block?.text === "string" ? block.text : "";
-							return !/\?\s*$/.test(textValue.trim());
-						},
+					const { shouldPrune: shouldPruneProvisionalPreToolProse } =
+						getProvisionalPreToolPrunePlan(host.streamingMessage);
+					let desired = buildDesiredSegmentsForMessage(host.streamingMessage, {
+						hideThinkingBlock: host.hideThinkingBlock,
 					});
 					desired = filterRedundantDiscussTextRuns(desired, blocks);
 
 					// Claude Code MCP can emit provisional pre-tool prose that gets
 					// superseded by post-tool output. Prune stale text-run segments so
 					// the final assistant output remains below tool output.
-					if (shouldDropPreToolProse && firstToolIdx >= 0) {
+					if (shouldPruneProvisionalPreToolProse) {
 						if (orphanedSegments.length > 0) {
 							const remainingOrphans: RenderedSegment[] = [];
 							for (const orphan of orphanedSegments) {
-								if (orphan.kind === "text-run" && orphan.contentType === "text") {
+								if (
+									orphan.kind === "text-run"
+									&& orphan.contentType === "text"
+									&& isProvisionalPreToolProse(orphan.cachedText ?? "")
+								) {
 									host.chatContainer.removeChild(orphan.component);
 									if (host.streamingComponent === orphan.component) {
 										host.streamingComponent = undefined;
@@ -829,19 +1043,17 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 								) {
 									continue;
 								}
-								const connectedToUser =
-									renderedSegments.filter((s) => s.kind === "text-run").length === 0 &&
-									orphanedSegments.filter((s) => s.kind === "text-run").length === 0 &&
-									chatTurnFollowsUser(host.chatContainer.children);
 								const comp = new AssistantMessageComponent(
 									undefined,
 									host.hideThinkingBlock,
 									host.getMarkdownThemeWithSettings(),
 									timestampFormat,
 									{ startIndex: seg.startIndex, endIndex: seg.endIndex },
-									connectedToUser,
 								);
 								host.chatContainer.addChild(comp);
+								markFirstVisibleAssistantOutput(host, seg.contentType, {
+									contentIndex: seg.startIndex,
+								});
 								renderedSegments.push({
 									kind: "text-run",
 									startIndex: seg.startIndex,
@@ -931,6 +1143,7 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 								// doesn't exceed the viewport and cause render flashing.
 								pinnedTextComponent.maxLines = pinnedMax;
 								host.pinnedMessageContainer.addChild(pinnedTextComponent);
+								pinnedZoneNeedsViewportRealign = true;
 								// Hide the separate status loader — the pinned zone replaces it
 								if (host.loadingAnimation) {
 									host.loadingAnimation.stop();
@@ -949,11 +1162,7 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 					} else if (pinnedBorder) {
 						// Every candidate is still visible in the chat scrollback —
 						// tear down the pinned zone so we don't duplicate on-screen text.
-						pinnedBorder.stopSpinner();
-						pinnedBorder = undefined;
-						pinnedTextComponent = undefined;
-						host.pinnedMessageContainer.clear();
-						lastPinnedText = "";
+						tearDownPinnedZone(host);
 						if (!host.loadingAnimation) {
 							host.statusContainer.clear();
 							startLoadingAnimation(host);
@@ -970,24 +1179,24 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 				if (event.message.role === "assistant") {
 					host.streamingMessage = event.message;
 					let errorMessage: string | undefined;
-				if (host.streamingMessage.stopReason === "aborted") {
-					const retryAttempt = host.session.retryAttempt;
-					errorMessage = retryAttempt > 0
-						? `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`
-						: "Operation aborted";
-					host.streamingMessage.errorMessage = errorMessage;
-				}
+					if (host.streamingMessage.stopReason === "aborted") {
+						const retryAttempt = host.session.retryAttempt;
+						errorMessage = retryAttempt > 0
+							? `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`
+							: "Operation aborted";
+						host.streamingMessage.errorMessage = errorMessage;
+					}
 
-					const shouldRenderAssistant = hasVisibleAssistantContent(host.streamingMessage)
-						|| (
-							(host.streamingMessage.stopReason === "aborted" || host.streamingMessage.stopReason === "error")
-							&& !hasAssistantToolBlocks(host.streamingMessage)
+					const shouldRenderAssistant =
+						hasVisibleAssistantContent(host.streamingMessage, host.hideThinkingBlock) ||
+						(
+							(host.streamingMessage.stopReason === "aborted" || host.streamingMessage.stopReason === "error") &&
+							!hasAssistantToolBlocks(host.streamingMessage)
 						);
-					const suppressRedundantHandoff = shouldSuppressRedundantHandoffText(
+					const suppressRedundantHandoff = shouldSuppressEntireAssistantMessage(
+						host.streamingMessage,
 						host.session.messages,
-						extractAssistantText(host.streamingMessage),
 						orphanedSegments,
-						renderedSegments,
 					);
 
 					// The final message_end payload can contain additional text/thinking
@@ -997,7 +1206,9 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 					if (renderedSegments.length > 0) {
 						const finalBlocks = host.streamingMessage.content;
 						const desired = filterRedundantDiscussTextRuns(
-							buildDesiredSegments(finalBlocks),
+							buildDesiredSegmentsForMessage(host.streamingMessage, {
+								hideThinkingBlock: host.hideThinkingBlock,
+							}),
 							finalBlocks,
 						);
 
@@ -1056,31 +1267,28 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 								continue;
 							}
 
-							const connectedToUser =
-								renderedSegments.filter((s) => s.kind === "text-run").length === 0 &&
-								chatTurnFollowsUser(host.chatContainer.children);
 							const comp = new AssistantMessageComponent(
 								undefined,
 								host.hideThinkingBlock,
 								host.getMarkdownThemeWithSettings(),
 								timestampFormat,
 								{ startIndex: seg.startIndex, endIndex: seg.endIndex },
-								connectedToUser,
 							);
 							comp.updateContent(host.streamingMessage);
 							const segmentText = getTextFromContentBlocks(finalBlocks, seg.startIndex, seg.endIndex);
-							if (
-								suppressRedundantHandoff ||
-								shouldSuppressRedundantHandoffText(
-									host.session.messages,
-									segmentText,
-									orphanedSegments,
-									renderedSegments,
-								)
-							) {
+							if (shouldSuppressRedundantHandoffText(
+								host.session.messages,
+								segmentText,
+								orphanedSegments,
+								renderedSegments,
+							)) {
 								continue;
 							}
 							host.chatContainer.addChild(comp);
+							markFirstVisibleAssistantOutput(host, seg.contentType, {
+								contentIndex: seg.startIndex,
+								source: "message_end_rebuild",
+							});
 							renderedSegments.push({
 								kind: "text-run",
 								startIndex: seg.startIndex,
@@ -1095,16 +1303,15 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 					}
 
 					if (!host.streamingComponent && shouldRenderAssistant && !suppressRedundantHandoff) {
-						const connectedToUser = chatTurnFollowsUser(host.chatContainer.children);
 						host.streamingComponent = new AssistantMessageComponent(
 							undefined,
 							host.hideThinkingBlock,
 							host.getMarkdownThemeWithSettings(),
 							timestampFormat,
 							undefined,
-							connectedToUser,
 						);
 						host.chatContainer.addChild(host.streamingComponent);
+						markFirstVisibleAssistantOutput(host, "message_end_only");
 						reconcileChatTurnConnections(host.chatContainer.children);
 					}
 					if (host.streamingComponent) {
@@ -1139,12 +1346,7 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 				// Clear pinned output once the message is finalized in the chat
 				// container — prevents duplicate display when the agent continues
 				// (e.g. form elicitation) after the assistant message ends.
-				if (pinnedBorder) pinnedBorder.stopSpinner();
-				host.pinnedMessageContainer.clear();
-				lastPinnedText = "";
-				hasToolsInTurn = false;
-				pinnedBorder = undefined;
-				pinnedTextComponent = undefined;
+				tearDownPinnedZone(host, { realignViewport: true });
 				host.footer.invalidate();
 			}
 			host.ui.requestRender();
@@ -1186,6 +1388,13 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 			const component = host.pendingTools.get(event.toolCallId);
 			if (component) {
 				component.updateResult({ ...event.result, isError: event.isError });
+				// NOTE: the component is intentionally left in host.pendingTools.
+				// The message_end rebuild path relies on finding already-completed
+				// components there to re-attach them; removing it here makes the
+				// rebuild synthesize a fresh empty component that a turn-abort would
+				// then mark errored. The real protection against downgrading a
+				// finished tool lives in ToolExecutionComponent.completeWithError,
+				// which no-ops on an already-successful result.
 				replaceCompactToolRowsWithPhaseSummary(host);
 				host.ui.requestRender();
 			}
@@ -1198,9 +1407,13 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 				host.loadingAnimation = undefined;
 				host.statusContainer.clear();
 			}
+			stopActivityIndicator(host);
 			if (host.streamingComponent && host.streamingMessage) {
 				host.streamingComponent.setShowMetadata(true);
 				host.streamingComponent.updateContent(host.streamingMessage);
+			}
+			for (const component of new Set(host.pendingTools.values())) {
+				component.markHistoricalNoResult();
 			}
 			replaceCompactToolRowsWithPhaseSummary(host);
 			host.streamingComponent = undefined;
@@ -1211,14 +1424,7 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 			host.pendingTools.clear();
 			// Pinned output is only useful while work is actively streaming.
 			// Keep chat history as the single source after completion.
-			if (pinnedBorder) {
-				pinnedBorder.stopSpinner();
-			}
-			host.pinnedMessageContainer.clear();
-			lastPinnedText = "";
-			hasToolsInTurn = false;
-			pinnedBorder = undefined;
-			pinnedTextComponent = undefined;
+			tearDownPinnedZone(host, { realignViewport: true });
 			await host.checkShutdownRequested();
 			host.ui.requestRender();
 			break;

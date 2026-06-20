@@ -1,13 +1,10 @@
-import { join } from "node:path";
-
-import { gsdRoot } from "./paths.js";
+import { workflowEventArchivePath, workflowEventLogPath } from "./workflow-event-ledger.js";
 import { readEvents } from "./workflow-events.js";
 
 export function latestExplicitReopenAt(basePath: string, milestoneId: string): string | null {
-  const root = gsdRoot(basePath);
   const candidates = [
-    join(root, "event-log.jsonl"),
-    join(root, `event-log-${milestoneId}.jsonl.archived`),
+    workflowEventLogPath(basePath),
+    workflowEventArchivePath(basePath, milestoneId),
   ];
 
   let latest: string | null = null;

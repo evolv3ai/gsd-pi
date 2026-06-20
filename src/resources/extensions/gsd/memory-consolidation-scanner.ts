@@ -264,7 +264,7 @@ export function reportConsolidationGaps(basePath: string): ConsolidationGapRepor
   try {
     const report = scanConsolidationGaps(basePath);
     if (report.totalGaps === 0) return report;
-    appendNotification(report.summary, "warning", "workflow-logger");
+    appendNotification(report.summary, "warning", "workflow-logger", { kind: "memory-consolidation" });
     logWarning("memory-consolidation", report.summary);
     return report;
   } catch (e) {

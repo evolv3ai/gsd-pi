@@ -97,24 +97,14 @@ export function authHeaders(extra?: Record<string, string>): Record<string, stri
 }
 
 /**
- * Wrapper around `fetch()` that automatically injects the auth token.
- *
- * When no token is available (missing `#token=` fragment and no localStorage
- * entry), returns a synthetic 401 Response instead of making an unauthenticated
- * request that will fail server-side anyway. This lets callers handle the
- * missing-token case uniformly rather than silently cascading 401s.
+ * Wrapper around `fetch()` that injects the auth token when one is available.
+ * The server remains authoritative for unauthenticated requests: token-protected
+ * launches return 401, while explicit no-auth launches accept the same request.
  */
 export async function authFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const token = getAuthToken()
-  if (!token) {
-    return new Response(JSON.stringify({ error: "No auth token available" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    })
-  }
-
   const headers = new Headers(init?.headers)
-  if (!headers.has("Authorization")) {
+  if (token && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`)
   }
 

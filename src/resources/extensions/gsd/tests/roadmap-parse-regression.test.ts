@@ -396,4 +396,44 @@ test('T. #1736: Checkbox format unchanged', () => {
     assert.deepStrictEqual(slices[1].done, false, '#1736 checkbox compat: S02 not done');
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+// U. Regression #566: double-bracket depends serialization recovery
+// ═══════════════════════════════════════════════════════════════════════
+test('U. #566: double-bracket depends:[[S01]] recovers to ["S01"]', () => {
+    // Simulates a roadmap written by markdown-renderer when the DB had
+    // depends=["[S01]"] — produces `depends:[[S01]]` on disk.
+    const content = [
+      '# M020: Corrupted Depends',
+      '',
+      '## Slices',
+      '',
+      '- [ ] **S01: Foundation** `risk:low` `depends:[]`',
+      '- [ ] **S02: Build** `risk:medium` `depends:[[S01]]`',
+      '- [ ] **S03: Ship** `risk:high` `depends:[[S01, S02]]`',
+      '',
+    ].join('\n');
+
+    const slices = parseRoadmapSlices(content);
+    assert.deepStrictEqual(slices.length, 3, '#566 double-bracket: 3 slices');
+    assert.deepStrictEqual(slices[1].depends, ['S01'], '#566: S02 depends recovered to ["S01"]');
+    assert.deepStrictEqual(slices[2].depends, ['S01', 'S02'], '#566: S03 depends recovered to ["S01","S02"]');
+});
+
+test('U. #566: bracket-wrapped single element depends:[[S01]] recovers to ["S01"]', () => {
+    // Simulates the exact DB corruption seen in the forensic evidence: depends=["[S01]"]
+    const content = [
+      '# M020: Single Bracket Corruption',
+      '',
+      '## Slices',
+      '',
+      '- [ ] **S01: First** `risk:low` `depends:[]`',
+      '- [ ] **S02: Second** `risk:medium` `depends:[[S01]]`',
+      '',
+    ].join('\n');
+
+    const slices = parseRoadmapSlices(content);
+    assert.deepStrictEqual(slices[1].depends.length, 1, '#566 single: S02 has exactly 1 dep');
+    assert.deepStrictEqual(slices[1].depends[0], 'S01', '#566 single: dep is "S01" not "[S01]"');
+});
+
 });

@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { checkoutBranchWithStashGuard } from "../auto-worktree.ts";
+import { checkoutBranchWithStashGuard } from "../worktree-git-recovery.ts";
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, {
@@ -154,6 +154,71 @@ describe("checkoutBranchWithStashGuard", () => {
     assert.equal(branch, "milestone/GSD");
     const wtContent = readFileSync(join(repo, ".gsd", "DECISIONS.md"), "utf8");
     assert.equal(wtContent, "tracked\n");
+    const status = git(["status", "--porcelain"], repo).trim();
+    assert.equal(status, "");
+    const stashList = git(["stash", "list"], repo).trim();
+    assert.equal(stashList, "");
+  });
+
+  test("auto-resolves combined non-.gsd untracked collision and .gsd index conflict", (t) => {
+    // Regression for: gate checked nonGsdUnmerged.length === 0 but ignored
+    // .gsd/ index conflicts, so a failed pop with both an untracked non-.gsd/
+    // collision AND a .gsd/ tracked conflict would drop the stash while leaving
+    // .gsd/ index unmerged entries unresolved.
+    const repo = createRepo(t);
+    // Add .gsd/DECISIONS.md to base so both branches diverge from it
+    writeFileSync(join(repo, ".gsd", "DECISIONS.md"), "base\n");
+    git(["add", ".gsd/DECISIONS.md"], repo);
+    git(["commit", "-m", "add decisions"], repo);
+
+    git(["checkout", "-b", "milestone/M003"], repo);
+    // Branch has its own version of DECISIONS.md (non-JSONL .gsd/ file)
+    writeFileSync(join(repo, ".gsd", "DECISIONS.md"), "target-version\n");
+    mkdirSync(join(repo, ".harness"), { recursive: true });
+    writeFileSync(join(repo, ".harness", "settings.json"), "{\"theme\":\"dark\"}\n");
+    git(["add", ".gsd/DECISIONS.md", ".harness/settings.json"], repo);
+    git(["commit", "-m", "branch state"], repo);
+    git(["checkout", "main"], repo);
+
+    // On main: tracked .gsd/ change (creates unmerged index entry on pop) +
+    // untracked harness file (triggers "already exists, no checkout").
+    writeFileSync(join(repo, ".gsd", "DECISIONS.md"), "local-version\n");
+    mkdirSync(join(repo, ".harness"), { recursive: true });
+    writeFileSync(join(repo, ".harness", "settings.json"), "{\"theme\":\"light\"}\n");
+
+    checkoutBranchWithStashGuard(repo, "milestone/M003", "test-combined-gsd-conflict");
+
+    const branch = git(["branch", "--show-current"], repo).trim();
+    assert.equal(branch, "milestone/M003");
+    const decisions = readFileSync(join(repo, ".gsd", "DECISIONS.md"), "utf8");
+    assert.equal(decisions, "target-version\n");
+    assert.doesNotMatch(decisions, /<<<<<<<|=======|>>>>>>>/);
+    const status = git(["status", "--porcelain"], repo).trim();
+    assert.equal(status, "");
+    const stashList = git(["stash", "list"], repo).trim();
+    assert.equal(stashList, "");
+  });
+
+  test("auto-resolves non-.gsd untracked restore collisions (e.g. harness config outside .gsd/)", (t) => {
+    const repo = createRepo(t);
+    // Target branch has a harness config file committed; source (main) has it untracked.
+    // Use a path not affected by global gitignore rules (unlike .claude/settings.local.json).
+    git(["checkout", "-b", "milestone/M001"], repo);
+    mkdirSync(join(repo, ".harness"), { recursive: true });
+    writeFileSync(join(repo, ".harness", "settings.json"), "{\"theme\":\"dark\"}\n");
+    git(["add", ".harness/settings.json"], repo);
+    git(["commit", "-m", "add harness settings"], repo);
+    git(["checkout", "main"], repo);
+
+    mkdirSync(join(repo, ".harness"), { recursive: true });
+    writeFileSync(join(repo, ".harness", "settings.json"), "{\"theme\":\"light\"}\n");
+
+    checkoutBranchWithStashGuard(repo, "milestone/M001", "test-non-gsd-untracked-collision");
+
+    const branch = git(["branch", "--show-current"], repo).trim();
+    assert.equal(branch, "milestone/M001");
+    const wtContent = readFileSync(join(repo, ".harness", "settings.json"), "utf8");
+    assert.equal(wtContent, "{\"theme\":\"dark\"}\n");
     const status = git(["status", "--porcelain"], repo).trim();
     assert.equal(status, "");
     const stashList = git(["stash", "list"], repo).trim();

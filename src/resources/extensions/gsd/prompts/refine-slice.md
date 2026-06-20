@@ -63,8 +63,9 @@ Then:
    - `{{taskPlanTemplatePath}}`
 2. {{skillActivation}} Record the installed skills you expect executors to use in each task plan's `skills_used` frontmatter.
 3. Define slice-level verification: the objective stopping condition. Plan real test files with real assertions; for simple slices, executable commands are fine.
+   **Web apps:** when inlined Web App UAT guidance is present, follow it for Playwright scaffolding and browser-capable verification commands.
 4. For non-trivial slices, plan observability / proof level / integration closure, threat surface, and requirement impact. Omit entirely for simple slices.
-5. Decompose the slice into tasks that fit one context window each. Every task passed to `gsd_plan_slice` must use the exact keys `taskId`, `title`, `description`, `estimate`, `files`, `verify`, `inputs`, `expectedOutput`, and optional `observabilityImpact`. Put Why / Do / Done-when detail in `description`. `files`, `inputs`, and `expectedOutput` must be JSON arrays of strings, even for one path (for example, `"expectedOutput": ["src/index.ts"]`, never `"expectedOutput": "src/index.ts"`).
+5. Decompose the slice into tasks that fit one context window each. Every task passed to `gsd_plan_slice` must use the exact keys `taskId`, `title`, `description`, `estimate`, `files`, `verify`, `inputs`, `expectedOutput`, and optional `observabilityImpact`. Put Why / Do / Done-when detail in `description`. `files`, `inputs`, and `expectedOutput` must be JSON arrays of strings, even for one path (for example, `"expectedOutput": ["src/index.ts"]`, never `"expectedOutput": "src/index.ts"`). `expectedOutput` is path-only: list only files the task creates or overwrites, and use `[]` for pure verification tasks. Never list GSD planning artifacts — anything under `.gsd/`, `.planning/`, or `.audits/`, or artifact names like `M001-CONTEXT.md` / `S01-PLAN.md` — in `inputs`, `files`, or `expectedOutput`: their content is preloaded as context, and they are written by workflow tools, not by tasks.
 6. **Persist planning state through `gsd_plan_slice`.** Call it with the full payload. The tool writes to the DB and renders `{{outputPath}}` and `{{slicePath}}/tasks/T##-PLAN.md` automatically. Do NOT rely on direct `PLAN.md` writes.
 7. **Self-audit the plan.** If every task were completed exactly as written, the slice goal/demo should be true. Every must-have maps to a task. Inputs and Expected Output are backtick-wrapped file paths.
 8. If refinement produced structural decisions that diverge from the sketch, call `gsd_decision_save` for each; the tool persists the decision and regenerates `.gsd/DECISIONS.md`.
@@ -76,4 +77,4 @@ The slice directory and tasks/ subdirectory already exist. Do NOT mkdir.
 
 **You MUST call `gsd_plan_slice` to persist planning state before finishing.** After success, the pipeline clears the sketch flag on next state derivation; the on-disk PLAN file is the signal.
 
-When done, say: "Slice {{sliceId}} refined."
+When done, say: "Slice {{sliceId}} refined." Say this exactly once — if you already said it in a prior message, do not repeat it.

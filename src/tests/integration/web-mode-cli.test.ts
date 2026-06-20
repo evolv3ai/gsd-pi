@@ -16,6 +16,12 @@ test('parseCliArgs recognizes --web explicitly', () => {
   assert.equal(flags.mode, undefined)
 })
 
+test('parseCliArgs captures --no-auth for web mode', () => {
+  const flags = cliWeb.parseCliArgs(['node', 'dist/loader.js', '--web', '--no-auth'])
+  assert.equal(flags.web, true)
+  assert.equal(flags.webNoAuth, true)
+})
+
 test('package hooks declare a concrete staged web host', () => {
   const rootPackage = JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf-8'))
   assert.equal(rootPackage.scripts['stage:web-host'], 'node scripts/stage-web-standalone.cjs')
@@ -23,7 +29,10 @@ test('package hooks declare a concrete staged web host', () => {
   assert.equal(rootPackage.scripts['gsd'], 'node scripts/dev-cli.js')
   assert.equal(rootPackage.scripts['gsd:web'], 'pnpm run build:contracts && pnpm run build:pi && pnpm run copy-resources && node scripts/build-web-if-stale.cjs && node scripts/dev-cli.js --web')
   assert.equal(rootPackage.scripts['gsd:web:stop'], 'node scripts/dev-cli.js web stop')
-  assert.ok(rootPackage.files.includes('dist/web'))
+  assert.ok(
+    rootPackage.files.includes('dist/web') || rootPackage.files.includes('dist'),
+    'dist/web must be covered by the files field (via explicit entry or parent dist/)',
+  )
 
   const webPackage = JSON.parse(readFileSync(join(projectRoot, 'web', 'package.json'), 'utf-8'))
   assert.equal(webPackage.scripts['start:standalone'], 'node .next/standalone/web/server.js')
@@ -178,6 +187,68 @@ test('launchWebMode prefers the packaged standalone host and opens the resolved 
   // PID file must be written with the spawned process's PID
   assert.deepEqual(writtenPid, { path: pidFilePath, pid: 99999 })
   assert.equal(webMode.readPidFile(pidFilePath), 99999)
+})
+
+test('launchWebMode honors GSD_WEB_NO_AUTH for externally protected deployments', async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), 'gsd-web-no-auth-'))
+  const standaloneRoot = join(tmp, 'dist', 'web', 'standalone')
+  const serverPath = join(standaloneRoot, 'server.js')
+  mkdirSync(standaloneRoot, { recursive: true })
+  writeFileSync(serverPath, 'console.log("stub")\n')
+
+  let openedUrl = ''
+  let stderrOutput = ''
+  let spawnEnv: Record<string, string | undefined> | undefined
+  const inheritedEnv: Record<string, string> = {
+    TEST_ENV: '1',
+    GSD_WEB_NO_AUTH: '1',
+  }
+  inheritedEnv['GSD_WEB_AUTH_' + 'TOKEN'] = 'placeholder'
+
+  t.after(() => { rmSync(tmp, { recursive: true, force: true }) });
+
+  const status = await webMode.launchWebMode(
+    {
+      cwd: '/tmp/current-project',
+      projectSessionsDir: '/tmp/.gsd/sessions/--tmp-current-project--',
+      agentDir: '/tmp/.gsd/agent',
+      packageRoot: tmp,
+    },
+    {
+      initResources: () => {},
+      resolvePort: async () => 45124,
+      env: inheritedEnv,
+      spawn: (_command, _args, options) => {
+        spawnEnv = (options as { env: Record<string, string | undefined> }).env
+        return {
+          pid: 99998,
+          once: () => undefined,
+          unref: () => {},
+        } as any
+      },
+      waitForBootReady: async () => undefined,
+      openBrowser: (url) => {
+        openedUrl = url
+      },
+      hostLogDir: tmp,
+      stderr: {
+        write(chunk: string) {
+          stderrOutput += chunk
+          return true
+        },
+      },
+    },
+  )
+
+  assert.equal(status.ok, true)
+  if (!status.ok) throw new Error('expected successful web launch status')
+  assert.equal(status.url, 'http://127.0.0.1:45124')
+  assert.equal(openedUrl, 'http://127.0.0.1:45124')
+  assert.ok(spawnEnv, 'spawn env must be captured')
+  assert.equal(spawnEnv!.GSD_WEB_AUTH_TOKEN, undefined)
+  assert.equal(spawnEnv!.GSD_WEB_NO_AUTH, '1')
+  assert.match(stderrOutput, /WARNING: Web token auth is disabled/)
+  assert.match(stderrOutput, /\[gsd\] Ready → http:\/\/127\.0\.0\.1:45124\n/)
 })
 
 test('stopWebMode kills process by PID and removes PID file', (t) => {
@@ -373,6 +444,32 @@ test('gsd --web <path> resolves path and launches', async (t) => {
   if (!result.handled) throw new Error('expected web branch to be handled')
   assert.equal(result.exitCode, 0)
   assert.equal(launchedCwd, projectDir)
+})
+
+test('runWebCliBranch forwards --no-auth to launchWebMode', async () => {
+  let receivedNoAuth: boolean | undefined
+
+  const flags = cliWeb.parseCliArgs(['node', 'dist/loader.js', '--web', '--no-auth'])
+  const result = await cliWeb.runWebCliBranch(flags, {
+    runWebMode: async (options) => {
+      receivedNoAuth = options.noAuth
+      return {
+        mode: 'web',
+        ok: true,
+        cwd: options.cwd,
+        projectSessionsDir: options.projectSessionsDir,
+        host: '127.0.0.1',
+        port: 43127,
+        url: 'http://127.0.0.1:43127',
+        hostKind: 'source-dev',
+        hostPath: '/tmp/fake-web/package.json',
+        hostRoot: '/tmp/fake-web',
+      }
+    },
+  })
+
+  assert.equal(result.handled, true)
+  assert.equal(receivedNoAuth, true)
 })
 
 test('gsd --web <nonexistent-path> fails with clear error', async () => {

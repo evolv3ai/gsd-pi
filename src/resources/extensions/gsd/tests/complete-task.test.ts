@@ -80,6 +80,20 @@ function createTempProject(): { basePath: string; planPath: string } {
   return { basePath, planPath };
 }
 
+function writeProjectPreferences(basePath: string, yaml: string): void {
+  fs.writeFileSync(path.join(basePath, '.gsd', 'PREFERENCES.md'), `---\n${yaml}---\n`);
+}
+
+async function withWorkingDirectory<T>(cwd: string, action: () => Promise<T>): Promise<T> {
+  const previousCwd = process.cwd();
+  process.chdir(cwd);
+  try {
+    return await action();
+  } finally {
+    process.chdir(previousCwd);
+  }
+}
+
 function makeValidParams() {
   return {
     taskId: 'T01',
@@ -102,6 +116,13 @@ function makeValidParams() {
       },
     ],
   };
+}
+
+function makeEscalationOptions() {
+  return [
+    { id: 'continue', label: 'Continue', tradeoffs: 'Keeps execution moving with the default path.' },
+    { id: 'pause', label: 'Pause', tradeoffs: 'Stops execution until the blocker is reviewed.' },
+  ];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -360,6 +381,105 @@ console.log('\n=== complete-task: handler happy path ===');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// complete-task: hard-blocker escalation with mid-execution escalation disabled
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n=== complete-task: disabled hard-blocker escalation rolls back completion ===');
+{
+  const dbPath = tempDbPath();
+  openDatabase(dbPath);
+
+  const { basePath } = createTempProject();
+  writeProjectPreferences(basePath, 'phases:\n  mid_execution_escalation: false\n');
+
+  insertMilestone({ id: 'M001', title: 'Test Milestone' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice' });
+
+  const params = {
+    ...makeValidParams(),
+    blockerDiscovered: true,
+    escalation: {
+      question: 'Should execution pause for the hard blocker?',
+      options: makeEscalationOptions(),
+      recommendation: 'pause',
+      recommendationRationale: 'The blocker should not be silently advanced.',
+      continueWithDefault: false,
+    },
+  };
+
+  const result = await withWorkingDirectory(basePath, () => handleCompleteTask(params, basePath));
+
+  assertTrue('error' in result, 'hard-blocker escalation should fail when escalation handling is disabled');
+  if ('error' in result) {
+    assertMatch(result.error, /hard-blocker escalation/, 'error should mention hard-blocker escalation');
+    assertMatch(result.error, /mid_execution_escalation is disabled/, 'error should mention disabled preference');
+  }
+
+  const task = getTask('M001', 'S01', 'T01');
+  assertTrue(task !== null, 'task row should remain after rollback');
+  assertEq(task!.status, 'pending', 'task status should be rolled back to pending');
+  assertEq(task!.blocker_discovered, true, 'blocker flag should remain recorded for visibility');
+  assertEq(task!.escalation_pending, 0, 'disabled preference should not create a pending escalation flag');
+  assertEq(task!.escalation_awaiting_review, 0, 'disabled preference should not create an awaiting-review flag');
+
+  const adapter = _getAdapter()!;
+  const evRows = adapter.prepare(
+    "SELECT * FROM verification_evidence WHERE task_id = 'T01' AND slice_id = 'S01' AND milestone_id = 'M001'"
+  ).all();
+  assertEq(evRows.length, 0, 'verification evidence should be deleted when completion rolls back');
+
+  cleanupDir(basePath);
+  cleanup(dbPath);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// complete-task: soft escalation with mid-execution escalation disabled
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n=== complete-task: disabled soft escalation still completes ===');
+{
+  const dbPath = tempDbPath();
+  openDatabase(dbPath);
+
+  const { basePath } = createTempProject();
+  writeProjectPreferences(basePath, 'phases:\n  mid_execution_escalation: false\n');
+
+  insertMilestone({ id: 'M001', title: 'Test Milestone' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice' });
+
+  const params = {
+    ...makeValidParams(),
+    escalation: {
+      question: 'Should execution continue with the default?',
+      options: makeEscalationOptions(),
+      recommendation: 'continue',
+      recommendationRationale: 'The default path is safe enough to continue.',
+      continueWithDefault: true,
+    },
+  };
+
+  const result = await withWorkingDirectory(basePath, () => handleCompleteTask(params, basePath));
+
+  assertTrue(!('error' in result), 'soft escalation should still complete when escalation handling is disabled');
+  if (!('error' in result)) {
+    assertTrue(!result.escalation, 'disabled preference should not return escalation metadata');
+  }
+
+  const task = getTask('M001', 'S01', 'T01');
+  assertTrue(task !== null, 'task row should exist');
+  assertEq(task!.status, 'complete', 'soft escalation should leave task complete');
+
+  const adapter = _getAdapter()!;
+  const evRows = adapter.prepare(
+    "SELECT * FROM verification_evidence WHERE task_id = 'T01' AND slice_id = 'S01' AND milestone_id = 'M001'"
+  ).all();
+  assertEq(evRows.length, 1, 'verification evidence should remain for soft escalation completion');
+
+  cleanupDir(basePath);
+  cleanup(dbPath);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // complete-task: Handler validation errors
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -414,6 +534,9 @@ console.log('\n=== complete-task: handler idempotency ===');
   // First call should succeed
   const r1 = await handleCompleteTask(params, basePath);
   assertTrue(!('error' in r1), 'first call should succeed');
+  if ('error' in r1) {
+    throw new Error(r1.error);
+  }
 
   // Verify complete-task did not duplicate T01. S01-PLAN.md is a projection,
   // so the remaining plan task is not imported implicitly.
@@ -421,16 +544,29 @@ console.log('\n=== complete-task: handler idempotency ===');
   assertEq(tasks.length, 1, 'should only have the completed DB task after first call');
   assertEq(tasks.filter(t => t.id === 'T01').length, 1, 'should have exactly one T01 row after first call');
 
-  // Second call with same params — state machine guard rejects (task is already complete)
+  // If the DB row is complete but the projection was lost, the duplicate call
+  // should repair the missing summary from full_summary_md instead of forcing a
+  // reopen/re-complete loop.
+  fs.unlinkSync(r1.summaryPath);
+  assertTrue(!fs.existsSync(r1.summaryPath), 'fixture should remove the task summary before repair');
   const r2 = await handleCompleteTask(params, basePath);
-  assertTrue('error' in r2, 'second call should return error (task already complete)');
+  assertTrue(!('error' in r2), 'second call should repair missing summary for DB-complete task');
   if ('error' in r2) {
-    assertMatch(r2.error, /already complete/, 'error should mention already complete');
+    throw new Error(r2.error);
+  }
+  assertTrue(fs.existsSync(r2.summaryPath), 'missing summary should be restored on disk');
+  assertEq(r2.duplicate, true, 'repair should be reported as a duplicate/no-op state mutation');
+
+  // Third call with the summary present — state machine guard rejects (task is already complete)
+  const r3 = await handleCompleteTask(params, basePath);
+  assertTrue('error' in r3, 'third call should return error (task already complete)');
+  if ('error' in r3) {
+    assertMatch(r3.error, /already complete/, 'error should mention already complete');
   }
 
-  // Still no duplicate rows from the rejected second call.
+  // Still no duplicate rows from the repair or rejected third call.
   const tasksAfter = getSliceTasks('M001', 'S01');
-  assertEq(tasksAfter.length, 1, 'should still only have T01 after rejected second call');
+  assertEq(tasksAfter.length, 1, 'should still only have T01 after duplicate repair and rejected third call');
   assertEq(tasksAfter.filter(t => t.id === 'T01').length, 1, 'should still have exactly one T01 row');
 
   cleanupDir(basePath);

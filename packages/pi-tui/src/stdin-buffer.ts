@@ -23,6 +23,24 @@ const ESC = "\x1b";
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 
+type TrailingEventTypeLength = number | "incomplete";
+
+function getTrailingKittyEventTypeLength(sequence: string, remaining: string): TrailingEventTypeLength {
+	if (!/^\x1b\[(?:(?:1;)?\d+)?[ABCDFH]$/.test(sequence) && !/^\x1b\[\d+(?:;\d+)?~$/.test(sequence)) {
+		return 0;
+	}
+
+	if (!remaining.startsWith(":")) {
+		return 0;
+	}
+
+	if (remaining.length === 1) {
+		return "incomplete";
+	}
+
+	return /^\d/.test(remaining[1]!) ? 2 : 0;
+}
+
 /**
  * Check if a string is a complete escape sequence or needs more data
  */
@@ -205,6 +223,17 @@ function extractCompleteSequences(buffer: string): { sequences: string[]; remain
 				const status = isCompleteSequence(candidate);
 
 				if (status === "complete") {
+					const trailingEventTypeLength = getTrailingKittyEventTypeLength(candidate, remaining.slice(seqEnd));
+					if (trailingEventTypeLength === "incomplete") {
+						return { sequences, remainder: remaining };
+					}
+					if (trailingEventTypeLength > 0) {
+						const sequenceLength = seqEnd + trailingEventTypeLength;
+						sequences.push(remaining.slice(0, sequenceLength));
+						pos += sequenceLength;
+						break;
+					}
+
 					// WezTerm with enable_kitty_keyboard sends the Escape key press as a
 					// raw '\x1b' byte (simple text path in encode_kitty, ignoring
 					// DISAMBIGUATE_ESCAPE_CODES) and the release as a full Kitty CSI-u

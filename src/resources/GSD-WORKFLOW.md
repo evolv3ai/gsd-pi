@@ -470,13 +470,13 @@ key_decisions: []
 
 **After a slice completes:**
 1. Write slice `S##-SUMMARY.md` (compresses all task summaries).
-2. Write slice `S##-UAT.md` — a non-blocking human test script derived from the slice's must-haves and demo sentence. The agent does NOT wait for UAT results.
+2. Write slice `S##-UAT.md` — a human test script derived from the slice's must-haves and demo sentence.
 3. Mark the slice checkbox in `M###-ROADMAP.md` as `[x]`.
 4. Update `STATE.md` with new position.
 5. Update milestone `M###-SUMMARY.md` with the completed slice's contributions.
-6. Continue to next slice immediately. The user tests the UAT whenever convenient.
-7. If the user reports UAT failures later, create fix tasks in the current or a new slice.
-8. If all slices done → milestone complete.
+6. Continue to next slice immediately. UAT can run after slice completion; automatic milestone closure requires each slice assessment to record `PASS`.
+7. If UAT is missing or non-PASS at milestone closeout, run `/gsd dispatch uat`, request a slice-specific UAT rerun when needed, or create remediation work with `/gsd dispatch reassess`.
+8. If all slices are done and UAT plus milestone validation pass → milestone complete.
 
 ---
 
@@ -605,6 +605,7 @@ Commit types: `feat`, `fix`, `test`, `refactor`, `docs`, `perf`, `chore`
 |---------|-----|
 | Bad task | Revert the task commit on the active branch |
 | Bad milestone squash | Revert the squash commit on the integration branch |
+| UAT missing or non-PASS at closeout | Run `/gsd dispatch uat`, request a slice-specific UAT rerun when needed, or create remediation work with `/gsd dispatch reassess` |
 | UAT failure after merge | Create follow-up fix tasks in the current or next milestone |
 
 ---

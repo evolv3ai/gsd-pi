@@ -43,9 +43,12 @@ export function formatTimeAgo(timestamp: number): string {
 	return formatDuration(Date.now() - timestamp) + " ago";
 }
 
+// NOTE: these worktree-layout regexes mirror findWorktreeSegment in
+// src/resources/extensions/gsd/worktree-root.ts (bg-shell does not import the
+// gsd extension). Keep them synchronized when a layout changes.
 function deriveProjectRootFromAutoWorktree(cachedCwd?: string): string | undefined {
 	if (!cachedCwd) return undefined;
-	const match = cachedCwd.match(/^(.*?)[\\/]\.gsd[\\/]worktrees[\\/][^\\/]+(?:[\\/].*)?$/);
+	const match = cachedCwd.match(/^(.*?)[\\/]\.gsd(?:-worktrees|[\\/]worktrees)[\\/][^\\/]+(?:[\\/].*)?$/);
 	return match?.[1];
 }
 
@@ -84,7 +87,7 @@ export function resolveBgShellPersistenceCwd(
 	pathExists: (path: string) => boolean = existsSync,
 ): string {
 	const resolvedLiveCwd = liveCwd ?? getBgShellLiveCwd(cachedCwd, pathExists);
-	const cachedIsAutoWorktree = /(?:^|[\\/])\.gsd[\\/]worktrees[\\/]/.test(cachedCwd);
+	const cachedIsAutoWorktree = /(?:^|[\\/])\.gsd(?:-worktrees|[\\/]worktrees)[\\/]/.test(cachedCwd);
 	if (!cachedIsAutoWorktree) return cachedCwd;
 	if (cachedCwd === resolvedLiveCwd && pathExists(cachedCwd)) return cachedCwd;
 	if (!pathExists(cachedCwd)) return resolvedLiveCwd;

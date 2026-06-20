@@ -5,17 +5,28 @@
 // - postUnit: git commit, artifact verify, DB settle, then GitHub finalize
 // - recovery: DB repair from artifacts, then GitHub finalize
 
+import { existsSync } from "node:fs";
+
 import { loadFile } from "./files.js";
-import { parseRoadmap } from "./parsers-legacy.js";
 import { resolveMilestoneFile } from "./paths.js";
-import { getMilestone, getMilestoneSlices, isDbAvailable } from "./gsd-db.js";
+import {
+  getMilestone,
+  getClosedSliceIds,
+  getLatestAssessmentByScope,
+  getMilestoneSlices,
+  isDbAvailable,
+} from "./gsd-db.js";
 import { isClosedStatus } from "./status-guards.js";
-import { verifyExpectedArtifact } from "./auto-recovery.js";
+import { resolveExpectedArtifactPath } from "./auto-artifact-paths.js";
+import { handleCompleteMilestone } from "./tools/complete-milestone.js";
 import { runSafely } from "./auto-utils.js";
 import { extractVerdict, isAcceptableUatVerdict } from "./verdict-parser.js";
+import { uatSignoffBlockerGuidance } from "./guidance.js";
 import { logWarning } from "./workflow-logger.js";
 import { hasImplementationArtifacts } from "./milestone-implementation-evidence.js";
 import { buildCompleteMilestonePrompt } from "./auto-prompts.js";
+import { proveMilestoneCloseout } from "./milestone-closeout-proof.js";
+import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
 import type { DispatchAction, DispatchContext } from "./auto-dispatch.js";
 import {
   commitPendingMilestoneCloseoutChanges,
@@ -28,6 +39,76 @@ const COMPLETE_MILESTONE_DB_SETTLE_MS = 1500;
 const COMPLETE_MILESTONE_DB_SETTLE_POLL_MS = 100;
 
 /**
+ * True when a milestone is terminal for git cleanup (orphaned worktrees, stale branches).
+ * DB-authoritative (ADR-017): closed status, or validation-pass with all slices closed.
+ * When the DB is unavailable we cannot make this decision and conservatively
+ * return false so callers leave the worktree/branch alone instead of cleaning
+ * up based on parsed projections.
+ */
+export async function isCompletedMilestoneTerminal(
+  _basePath: string,
+  milestoneId: string,
+): Promise<boolean> {
+  if (!isDbAvailable()) return false;
+
+  const milestone = getMilestone(milestoneId);
+  if (!milestone) return false;
+
+  if (isClosedStatus(milestone.status)) {
+    return true;
+  }
+
+  const validation = getLatestAssessmentByScope(milestoneId, "milestone-validation");
+  if (validation?.status !== "pass") {
+    return false;
+  }
+
+  const slices = getMilestoneSlices(milestoneId);
+  if (slices.length === 0) return false;
+  return slices.every((slice) => isClosedStatus(slice.status));
+}
+
+/** Write a missing milestone SUMMARY projection when canonical DB closeout already settled. */
+export async function repairMissingMilestoneSummaryProjection(
+  basePath: string,
+  milestoneId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const milestone = getMilestone(milestoneId);
+  if (!milestone) {
+    return { ok: false, error: `milestone not found: ${milestoneId}` };
+  }
+
+  const artifactBasePath = resolveCanonicalMilestoneRoot(basePath, milestoneId);
+  const summaryPath = resolveExpectedArtifactPath("complete-milestone", milestoneId, artifactBasePath);
+  if (summaryPath && existsSync(summaryPath)) {
+    return { ok: true };
+  }
+
+  const result = await handleCompleteMilestone(
+    {
+      milestoneId,
+      title: milestone.title,
+      oneLiner: "Canonical closeout completed; summary projection repaired automatically.",
+      narrative:
+        "The workflow database recorded this milestone as complete, but the milestone SUMMARY artifact was missing on disk. " +
+        "Dispatch policy repaired the projection so closeout proof and cleanup can proceed.",
+      verificationPassed: true,
+      triggerReason: "closeout-projection-repair",
+    },
+    basePath,
+  );
+
+  if ("error" in result) {
+    return { ok: false, error: result.error };
+  }
+  const writtenSummaryPath = result.summaryPath;
+  if (result.stale || !writtenSummaryPath || !existsSync(writtenSummaryPath)) {
+    return { ok: false, error: "milestone SUMMARY projection write failed" };
+  }
+  return { ok: true };
+}
+
+/**
  * True when the milestone is closed in the DB and the completion summary artifact exists.
  * Polls briefly so post-unit verification can observe the tool's DB write.
  */
@@ -37,7 +118,16 @@ export async function isMilestoneCloseoutSettled(mid: string, basePath: string):
     if (isDbAvailable()) {
       const milestone = getMilestone(mid);
       if (milestone && isClosedStatus(milestone.status)) {
-        if (verifyExpectedArtifact("complete-milestone", mid, basePath)) {
+        const artifactBasePath = resolveCanonicalMilestoneRoot(basePath, mid);
+        const closeoutProof = proveMilestoneCloseout(mid, {
+          refreshFromDisk: true,
+          summaryArtifactBasePath: artifactBasePath,
+          implementationEvidence: {
+            basePath,
+            requirement: "not-absent",
+          },
+        });
+        if (closeoutProof.ok) {
           return true;
         }
       }
@@ -68,7 +158,22 @@ export async function evaluateCompleteMilestoneDispatch(
   if (isDbAvailable()) {
     const milestone = getMilestone(mid);
     if (milestone && isClosedStatus(milestone.status)) {
-      return { action: "skip" };
+      const artifactBasePath = resolveCanonicalMilestoneRoot(basePath, mid);
+      const summaryPath = resolveExpectedArtifactPath("complete-milestone", mid, artifactBasePath);
+      const summaryMissing = !summaryPath || !existsSync(summaryPath);
+      if (summaryMissing) {
+        const repair = await repairMissingMilestoneSummaryProjection(basePath, mid);
+        if (!repair.ok) {
+          logWarning(
+            "dispatch",
+            `Milestone ${mid} is closed in DB but SUMMARY repair failed: ${repair.error}. Dispatching complete-milestone to retry.`,
+          );
+        } else {
+          return { action: "skip" };
+        }
+      } else {
+        return { action: "skip" };
+      }
     }
   }
 
@@ -76,31 +181,21 @@ export async function evaluateCompleteMilestoneDispatch(
   if (closeoutGitStop) return closeoutGitStop;
 
   if (prefs?.uat_dispatch) {
-    let closedSliceIds: string[];
-    if (isDbAvailable()) {
-      closedSliceIds = getMilestoneSlices(mid)
-        .filter((slice) => isClosedStatus(slice.status))
-        .map((slice) => slice.id);
-    } else {
-      const roadmapFile = resolveMilestoneFile(basePath, mid, "ROADMAP");
-      const roadmapContent = roadmapFile ? await loadFile(roadmapFile) : null;
-      if (!roadmapContent) {
-        return {
-          action: "stop",
-          reason: `Cannot complete milestone ${mid}: unable to verify UAT verdicts because ROADMAP is unavailable while DB is not accessible.`,
-          level: "warning",
-        };
-      }
-      const roadmap = parseRoadmap(roadmapContent);
-      closedSliceIds = roadmap.slices.filter((slice) => slice.done).map((slice) => slice.id);
+    // DB-authoritative (ADR-017): UAT sign-off gating never parses the
+    // ROADMAP projection. Without a DB we cannot verify — stop conservatively.
+    if (!isDbAvailable()) {
+      return {
+        action: "stop",
+        reason: `Cannot complete milestone ${mid}: unable to verify UAT verdicts because the workflow DB is not accessible.`,
+        level: "warning",
+      };
     }
-
-    for (const sliceId of closedSliceIds) {
+    for (const sliceId of getClosedSliceIds(mid)) {
       const result = await readUatGateVerdict(basePath, mid, sliceId);
       if (!result) {
         return {
           action: "stop",
-          reason: `Cannot complete milestone ${mid}: missing UAT PASS verdict for ${sliceId}. Manual UAT sign-off (PASS) is required before milestone closure.`,
+          reason: uatSignoffBlockerGuidance(mid, sliceId),
           level: "warning",
         };
       }
@@ -108,7 +203,7 @@ export async function evaluateCompleteMilestoneDispatch(
       if (!isAcceptableUatVerdict(verdict, uatType)) {
         return {
           action: "stop",
-          reason: `Cannot complete milestone ${mid}: UAT verdict for ${sliceId} is "${verdict}". Manual UAT sign-off (PASS) is required before milestone closure.`,
+          reason: uatSignoffBlockerGuidance(mid, sliceId, verdict),
           level: "warning",
         };
       }

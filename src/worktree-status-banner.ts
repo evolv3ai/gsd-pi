@@ -1,8 +1,9 @@
 // GSD worktree startup banner
 import { execFileSync } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
-import { join, resolve, sep } from 'node:path'
-import chalk from 'chalk'
+import { resolve, sep } from 'node:path'
+import { bannerLines, name, warn } from './cli-style.js'
+import { worktreesDirs } from './resources/extensions/gsd/worktree-placement.js'
 
 interface WorktreeEntry {
   path: string
@@ -67,7 +68,7 @@ function existingPathVariants(path: string): string[] {
 }
 
 function findGsdWorktrees(basePath: string, entries: WorktreeEntry[]): GsdWorktree[] {
-  const roots = existingPathVariants(join(basePath, '.gsd', 'worktrees'))
+  const roots = worktreesDirs(basePath).flatMap((dir) => existingPathVariants(dir))
   const worktrees: GsdWorktree[] = []
 
   for (const entry of entries) {
@@ -126,8 +127,7 @@ function branchHasChanges(basePath: string, mainBranch: string, branch: string):
 }
 
 export function showWorktreeStatusBanner(basePath: string): void {
-  const worktreesDir = join(basePath, '.gsd', 'worktrees')
-  if (!existsSync(worktreesDir)) return
+  if (!worktreesDirs(basePath).some((dir) => existsSync(dir))) return
 
   const entries = parseWorktreeList(gitExec(basePath, ['worktree', 'list', '--porcelain']))
   const worktrees = findGsdWorktrees(basePath, entries)
@@ -139,12 +139,11 @@ export function showWorktreeStatusBanner(basePath: string): void {
   const withChanges = worktrees.filter((worktree) => branchHasChanges(basePath, mainBranch, worktree.branch))
   if (withChanges.length === 0) return
 
-  const names = withChanges.map((worktree) => chalk.cyan(worktree.name)).join(', ')
+  const names = withChanges.map((worktree) => name(worktree.name)).join(', ')
   process.stderr.write(
-    chalk.dim('[gsd] ') +
-    chalk.yellow(`${withChanges.length} worktree${withChanges.length === 1 ? '' : 's'} with unmerged changes: `) +
-    names + '\n' +
-    chalk.dim('[gsd] ') +
-    chalk.dim('Resume: gsd -w <name>  |  Merge: gsd worktree merge <name>  |  List: gsd worktree list\n\n'),
+    bannerLines(
+      warn(`${withChanges.length} worktree${withChanges.length === 1 ? '' : 's'} with unmerged changes: `) + names,
+      'Resume: gsd -w <name>  |  Merge: gsd worktree merge <name>  |  List: gsd worktree list',
+    ),
   )
 }

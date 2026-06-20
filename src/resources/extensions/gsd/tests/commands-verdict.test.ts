@@ -10,7 +10,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -399,8 +399,12 @@ test("handleVerdict needs-remediation override with --rationale rewrites verdict
     assert.match(rewritten, /found missing slice/);
 
     assert.ok(
-      calls.some((c) => /gsd_reassess_roadmap/.test(c.message)),
-      "needs-remediation override should suggest gsd_reassess_roadmap follow-up",
+      calls.some((c) => /\/gsd dispatch reassess/.test(c.message)),
+      "needs-remediation override should suggest the reassess dispatch follow-up",
+    );
+    assert.ok(
+      calls.every((c) => !/gsd_reassess_roadmap/.test(c.message)),
+      "needs-remediation override should not expose the internal tool name",
     );
   } finally {
     closeDatabase();
@@ -468,17 +472,55 @@ test("auto-dispatch needs-attention pause message references /gsd verdict", asyn
   }
 });
 
-test("state.ts needs-remediation blocker messages reference /gsd verdict", async () => {
+test("guidance.ts needs-remediation blocker messages reference /gsd verdict", async () => {
   // We don't need to invoke deriveState — just assert the substring is in the
-  // source. The blocker strings are constructed inline and shipped to the user
-  // verbatim, so a static check is sufficient and avoids fragile DB setup.
-  const stateSource = readFileSync(
-    new URL("../state.ts", import.meta.url).pathname,
+  // source. The blocker strings are constructed in the guidance catalog and
+  // shipped to the user verbatim, so a static check is sufficient and avoids
+  // fragile DB setup.
+  const guidanceSource = readFileSync(
+    new URL("../guidance.ts", import.meta.url).pathname,
     "utf-8",
   );
-  const occurrences = stateSource.match(/`\/gsd verdict /g) ?? [];
+  const occurrences = guidanceSource.match(/`\/gsd verdict /g) ?? [];
   assert.ok(
     occurrences.length >= 2,
-    `expected at least 2 references to /gsd verdict in state.ts blockers, found ${occurrences.length}`,
+    `expected at least 2 references to /gsd verdict in guidance.ts blockers, found ${occurrences.length}`,
   );
+});
+
+// ─── WAL checkpoint regression (#563) ───────────────────────────────────
+
+test("handleVerdict pass checkpoints WAL so subsequent processes see the updated verdict (#563)", async () => {
+  // Regression: before the fix, executeValidateMilestone wrote the assessment
+  // only into the WAL file.  The next /gsd auto invocation (a new process)
+  // opened gsd.db directly and saw stale pre-verdict data because the WAL
+  // had not been flushed.  The fix adds checkpointDatabase() after a
+  // successful verdict so the WAL is truncated and gsd.db is self-contained.
+  const base = makeBase();
+  try {
+    openTestDb(base);
+    seedMilestone("M001", "Checkpoint Test Milestone");
+    seedSlice("M001", "S01", "complete");
+    writeValidation(base, "M001", "needs-attention");
+
+    const { ctx } = makeMockCtx();
+    await handleVerdict("pass --milestone M001", ctx, base);
+
+    // After handleVerdict succeeds, PRAGMA wal_checkpoint(TRUNCATE) must have
+    // run.  The WAL file is truncated to zero bytes — a new process reading
+    // gsd.db directly sees the updated verdict without needing the WAL.
+    const walPath = join(base, ".gsd", "gsd.db-wal");
+    if (existsSync(walPath)) {
+      const { size } = statSync(walPath);
+      assert.equal(
+        size,
+        0,
+        "WAL must be zero bytes after handleVerdict pass — checkpointDatabase() was not called (#563)",
+      );
+    }
+  } finally {
+    closeDatabase();
+    invalidateStateCache();
+    cleanup(base);
+  }
 });

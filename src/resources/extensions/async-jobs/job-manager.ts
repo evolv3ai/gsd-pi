@@ -25,6 +25,14 @@ export interface Job {
 	/** Set by await_job when results are consumed. Suppresses follow-up delivery. */
 	awaited?: boolean;
 	/**
+	 * Set true once the follow-up notification has actually been delivered via
+	 * onJobComplete. The delivery timer fires ~immediately (setTimeout(0)) after a
+	 * job settles, so by a later LLM turn the follow-up is already in context.
+	 * await_job reads this to avoid rendering the same result inline a second time
+	 * (duplicate-in-context bug): a delivered job is acknowledged tersely, not reprinted.
+	 */
+	delivered?: boolean;
+	/**
 	 * Handle for the pending follow-up delivery timer (set by deliverResult).
 	 * Stored so suppressFollowUp() can cancel it before the notification fires,
 	 * even when await_job is called after the job has already completed (#3787).
@@ -102,6 +110,15 @@ export class AsyncJobManager {
 
 		job.promise = runFn(abortController.signal)
 			.then((resultText) => {
+				if (job.status === "cancelled") {
+					// Already cancelled by cancel(). The runFn resolves (not rejects) even
+					// when aborted — async_bash's safeResolve returns "Command aborted"
+					// rather than throwing — so without this guard the status would be
+					// clobbered back to "completed", mislabeling a user-cancelled job.
+					// Mirrors the symmetric guard in the .catch branch below.
+					this.scheduleEviction(id);
+					return;
+				}
 				job.status = "completed";
 				job.resultText = resultText;
 				this.scheduleEviction(id);
@@ -200,7 +217,10 @@ export class AsyncJobManager {
 		const cb = this.onJobComplete;
 		job.deliveryTimer = setTimeout(() => {
 			job.deliveryTimer = undefined;
-			if (!job.awaited) cb(job);
+			if (!job.awaited) {
+				job.delivered = true;
+				cb(job);
+			}
 		}, 0);
 		// Allow process to exit even if timer is pending
 		if (typeof job.deliveryTimer === "object" && "unref" in job.deliveryTimer) {

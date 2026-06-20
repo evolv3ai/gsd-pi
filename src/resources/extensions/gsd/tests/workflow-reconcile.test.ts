@@ -89,3 +89,23 @@ test("resolveConflict(pick=main) rewrites the worktree log durably", () => {
   const second = reconcileWorktreeLogs(main, worktree);
   assert.equal(second.conflicts.length, 0, "reconcile should stay clean after choosing main");
 });
+
+test("reconcileWorktreeLogs treats canonical worktree project-ledger appends as already durable", () => {
+  const root = mkdtempSync(join(tmpdir(), "workflow-reconcile-canonical-"));
+  const main = join(root, "main");
+  const worktree = join(main, ".gsd-worktrees", "M001");
+  mkdirSync(worktree, { recursive: true });
+  tmpDirs.push(root);
+
+  appendEvent(worktree, {
+    cmd: "complete-task",
+    params: { milestoneId: "M001", sliceId: "S01", taskId: "T01" },
+    ts: "2026-01-01T00:00:00.000Z",
+    actor: "agent",
+  });
+
+  const result = reconcileWorktreeLogs(main, worktree);
+
+  assert.equal(result.autoMerged, 0, "project-ledger append should not replay the root log");
+  assert.equal(result.conflicts.length, 0, "missing worktree shard is not a conflict");
+});

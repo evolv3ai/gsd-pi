@@ -12,6 +12,7 @@ import {
 	encodeKitty,
 	hyperlink,
 	isImageLine,
+	parseCellSizeResponse,
 	renderImage,
 	resetCapabilitiesCache,
 	setCapabilities,
@@ -310,6 +311,50 @@ describe("Kitty image cursor movement", () => {
 		assert.strictEqual(deleteAllKittyImages(), "\x1b_Ga=d,d=A,q=2\x1b\\");
 	});
 
+	it("pins a stable placement id when an image id is given (anti-stacking)", () => {
+		// Without a placement id, kitty/Ghostty append a NEW placement for every
+		// re-emission of the same image (spec: "p=0 for multiple put commands with
+		// the same image id results in multiple placements"), which stacks copies
+		// over the chat and footer. A stable p= makes re-emission replace in place.
+		const seq = encodeKitty("AAAA", { columns: 2, rows: 2, imageId: 42, moveCursor: false });
+		assert.ok(seq.includes("i=42"), "image id present");
+		assert.ok(/(?:^|,)p=1(?:,|;)/.test(seq), `expected a stable p= in ${JSON.stringify(seq)}`);
+	});
+
+	it("re-emits the same (image id, placement id) across renders so it replaces", () => {
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		setCellDimensions({ widthPx: 10, heightPx: 10 });
+		try {
+			const image = new Image(
+				"AAAA",
+				"image/png",
+				{ fallbackColor: (value) => value },
+				{ maxWidthCells: 2 },
+				{ widthPx: 20, heightPx: 20 },
+			);
+			const seqOf = (lines: string[]) => lines.find((l) => l.includes("\x1b_G")) ?? "";
+			const idOf = (s: string) => s.match(/\x1b_G[^;]*?i=(\d+)/)?.[1];
+			const pOf = (s: string) => s.match(/\x1b_G[^;]*?p=(\d+)/)?.[1];
+
+			const first = seqOf(image.render(12));
+			image.invalidate();
+			const second = seqOf(image.render(12));
+
+			assert.ok(idOf(first), "first render has an image id");
+			assert.strictEqual(idOf(first), idOf(second), "image id is stable across renders");
+			assert.ok(pOf(first), "placement id present");
+			assert.strictEqual(pOf(first), pOf(second), "placement id is stable across renders");
+		} finally {
+			resetCapabilitiesCache();
+			setCellDimensions({ widthPx: 9, heightPx: 18 });
+		}
+	});
+
+	it("omits the placement id when there is no image id (spec: p ignored for id=0)", () => {
+		const seq = encodeKitty("AAAA", { columns: 2, rows: 2 });
+		assert.ok(!seq.includes("p="), `expected no p= without an image id in ${JSON.stringify(seq)}`);
+	});
+
 	it("preserves renderImage's default terminal-side cursor movement", () => {
 		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
 		setCellDimensions({ widthPx: 10, heightPx: 10 });
@@ -395,6 +440,113 @@ describe("Kitty image cursor movement", () => {
 			resetCapabilitiesCache();
 			setCellDimensions({ widthPx: 9, heightPx: 18 });
 		}
+	});
+});
+
+describe("iTerm2 image sizing", () => {
+	it("bounds height to the reserved rows instead of auto", () => {
+		setCapabilities({ images: "iterm2", trueColor: true, hyperlinks: true });
+		setCellDimensions({ widthPx: 10, heightPx: 20 });
+		try {
+			// Tall image: 100x1000px. In a 10-wide box the aspect fit yields few
+			// columns and a bounded number of rows — height must equal those rows,
+			// never "auto" (which would overflow the reserved lines).
+			const result = renderImage("AAAA", { widthPx: 100, heightPx: 1000 }, { maxWidthCells: 10, maxHeightCells: 8 });
+			assert.ok(result);
+			assert.ok(!result.sequence.includes("height=auto"), "must not use height=auto");
+			assert.ok(result.sequence.includes(`height=${result.rows}`), `expected height=${result.rows} in ${result.sequence}`);
+			assert.ok(result.rows <= 8, "rows must respect maxHeightCells");
+		} finally {
+			resetCapabilitiesCache();
+			setCellDimensions({ widthPx: 9, heightPx: 18 });
+		}
+	});
+
+	it("keeps width and height in cell units matching the reserved box", () => {
+		setCapabilities({ images: "iterm2", trueColor: true, hyperlinks: true });
+		// Square cells so a square image maps to a square cell box.
+		setCellDimensions({ widthPx: 10, heightPx: 10 });
+		try {
+			// Square 20x20px image in a 2-cell-wide box => 2x2 cells.
+			const result = renderImage("AAAA", { widthPx: 20, heightPx: 20 }, { maxWidthCells: 2 });
+			assert.ok(result);
+			assert.strictEqual(result.rows, 2);
+			assert.ok(result.sequence.includes("width=2"));
+			assert.ok(result.sequence.includes("height=2"));
+			assert.ok(result.sequence.startsWith("\x1b]1337;File="));
+		} finally {
+			resetCapabilitiesCache();
+			setCellDimensions({ widthPx: 9, heightPx: 18 });
+		}
+	});
+
+	it("Image component reserves exactly `rows` lines for an iTerm2 image", () => {
+		setCapabilities({ images: "iterm2", trueColor: true, hyperlinks: true });
+		setCellDimensions({ widthPx: 10, heightPx: 20 });
+		try {
+			const image = new Image(
+				"AAAA",
+				"image/png",
+				{ fallbackColor: (value) => value },
+				{ maxWidthCells: 10 },
+				{ widthPx: 10, heightPx: 100 },
+			);
+			const lines = image.render(12);
+			// Last line carries the image sequence; the rest are blank padding so
+			// the TUI accounts for the full height. Total lines === reserved rows.
+			const seqLine = lines[lines.length - 1];
+			assert.ok(seqLine.includes("\x1b]1337;File="));
+			assert.ok(!seqLine.includes("height=auto"));
+			for (let i = 0; i < lines.length - 1; i++) {
+				assert.strictEqual(lines[i], "");
+			}
+		} finally {
+			resetCapabilitiesCache();
+			setCellDimensions({ widthPx: 9, heightPx: 18 });
+		}
+	});
+});
+
+describe("parseCellSizeResponse", () => {
+	// pi queries the terminal for its cell pixel size to size inline images. Two
+	// reply formats exist: the xterm CSI 16t reply, and iTerm2's proprietary
+	// OSC 1337;ReportCellSize reply. iTerm2 does NOT answer CSI 16t at all (its
+	// only cell-size mechanism is ReportCellSize), so without parsing the OSC
+	// reply pi falls back to a default cell size on iTerm2 and inline images are
+	// sized with the wrong cell aspect.
+	it("parses the xterm CSI 16t reply (CSI 6 ; height ; width t)", () => {
+		assert.deepStrictEqual(parseCellSizeResponse("\x1b[6;34;15t"), { widthPx: 15, heightPx: 34 });
+	});
+
+	it("parses the iTerm2 ReportCellSize reply (height ; width)", () => {
+		// OSC 1337 ; ReportCellSize=[height];[width] ST  (ST = BEL here)
+		assert.deepStrictEqual(parseCellSizeResponse("\x1b]1337;ReportCellSize=17.50;8.00\x07"), {
+			widthPx: 8,
+			heightPx: 18, // 17.50 rounds to 18
+		});
+	});
+
+	it("parses the iTerm2 ReportCellSize reply with a retina scale factor", () => {
+		// OSC 1337 ; ReportCellSize=[height];[width];[scale] ST — scale gives
+		// physical-pixels-per-point; the points size is what we want for cell math.
+		assert.deepStrictEqual(parseCellSizeResponse("\x1b]1337;ReportCellSize=17.50;8.00;2.0\x07"), {
+			widthPx: 8,
+			heightPx: 18,
+		});
+	});
+
+	it("parses the iTerm2 ReportCellSize reply terminated by ST (ESC \\\\)", () => {
+		assert.deepStrictEqual(parseCellSizeResponse("\x1b]1337;ReportCellSize=20;10\x1b\\"), {
+			widthPx: 10,
+			heightPx: 20,
+		});
+	});
+
+	it("returns null for unrelated input and rejects non-positive sizes", () => {
+		assert.strictEqual(parseCellSizeResponse("\x1b[I"), null);
+		assert.strictEqual(parseCellSizeResponse("hello"), null);
+		assert.strictEqual(parseCellSizeResponse("\x1b[6;0;0t"), null);
+		assert.strictEqual(parseCellSizeResponse("\x1b]1337;ReportCellSize=0;0\x07"), null);
 	});
 });
 

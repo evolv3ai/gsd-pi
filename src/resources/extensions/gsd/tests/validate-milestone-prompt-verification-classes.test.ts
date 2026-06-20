@@ -11,11 +11,14 @@ const prompt = readFileSync(promptPath, "utf-8");
 
 test("validate-milestone reviewer C requires canonical verification class names", () => {
   assert.match(prompt, /\*\*Reviewer C[\s\S]*Verification Classes/i);
-  assert.match(prompt, /exact class names [`']?Contract[`']?, [`']?Integration[`']?, [`']?Operational[`']?, and [`']?UAT[`']?/i);
+  assert.match(prompt, /must be exactly `Contract`, `Integration`, `Operational`, or `UAT`/i);
+  assert.match(prompt, /Preserve every planned non-empty class row/i);
+  assert.match(prompt, /first cell of each row must be exactly `Contract`, `Integration`, `Operational`, or `UAT`/i);
   assert.match(prompt, /If no verification classes were planned, say that explicitly/i);
 });
 
 test("validate-milestone prompt routes verification class analysis into verificationClasses", () => {
-  assert.match(prompt, /pass it in `verificationClasses`/i);
-  assert.match(prompt, /Extract the `Verification Classes` subsection from Reviewer C and pass it verbatim in `verificationClasses`/);
+  assert.match(prompt, /pass a complete canonical table in `verificationClasses`/i);
+  assert.match(prompt, /If Reviewer C omitted a planned class, reconstruct the missing row/i);
+  assert.match(prompt, /Do not call `gsd_validate_milestone` with a partial `verificationClasses` table/i);
 });

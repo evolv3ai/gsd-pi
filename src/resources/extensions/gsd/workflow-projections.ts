@@ -546,6 +546,15 @@ export async function regenerateIfMissing(
     return false;
   }
 
+  // A sketch slice (or any slice not yet planned into tasks) legitimately has
+  // no PLAN.md to project. renderPlanFromDb throws on a zero-task slice, so
+  // skip cleanly here rather than logging a spurious failure. The PLAN.md will
+  // be created once the slice is refined and its first task is written through
+  // the single writer.
+  if (fileType === "PLAN" && getSliceTasks(milestoneId, sliceId).length === 0) {
+    return false;
+  }
+
   // Regenerate the missing file. Each renderer may swallow its own errors
   // (e.g. renderStateProjection), so confirm the file actually exists on
   // disk before reporting success — true must mean "file is there now".

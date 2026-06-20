@@ -1,14 +1,17 @@
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { basename, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  GSD_BROWSER_MCP_SERVER_NAME,
+  resolveBundledGsdBrowserCliPath,
+  resolveGsdBrowserMcpLaunchConfig,
+} from "../shared/gsd-browser-cli.js";
 import { assertSafeDirectory } from "./validate-directory.js";
 import { detectWorkflowMcpLaunchConfig } from "./workflow-mcp.js";
 
 export const GSD_WORKFLOW_MCP_SERVER_NAME = "gsd-workflow";
-export const GSD_BROWSER_MCP_SERVER_NAME = "gsd-browser";
+export { GSD_BROWSER_MCP_SERVER_NAME, resolveBundledGsdBrowserCliPath };
 
 export interface ProjectMcpServerConfig {
   command?: string;
@@ -59,31 +62,6 @@ export function resolveBundledGsdCliPath(env: NodeJS.ProcessEnv = process.env): 
   return null;
 }
 
-export function resolveBundledGsdBrowserCliPath(env: NodeJS.ProcessEnv = process.env): string | null {
-  const explicit = env.GSD_BROWSER_CLI_PATH?.trim() || env.GSD_BROWSER_BIN_PATH?.trim();
-  if (explicit) return explicit;
-
-  try {
-    const requireFromHere = createRequire(import.meta.url);
-    const packageJsonPath = requireFromHere.resolve("@opengsd/gsd-browser/package.json");
-    const candidate = resolve(packageJsonPath, "..", "bin", "gsd-browser");
-    if (existsSync(candidate)) return candidate;
-  } catch {
-    // Fall through to path candidates for source/dist layouts.
-  }
-
-  const candidates = [
-    resolve(fileURLToPath(new URL("../../../../node_modules/@opengsd/gsd-browser/bin/gsd-browser", import.meta.url))),
-    resolve(fileURLToPath(new URL("../../../../node_modules/.bin/gsd-browser", import.meta.url))),
-  ];
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
-  }
-
-  return null;
-}
-
 export function buildProjectWorkflowMcpServerConfig(
   projectRoot: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -119,29 +97,10 @@ function buildProjectWorkflowMcpServerSpec(
   };
 }
 
-function parseJsonEnv<T>(env: NodeJS.ProcessEnv, name: string): T | undefined {
-  const raw = env[name];
-  if (!raw) return undefined;
-  try {
-    return JSON.parse(raw) as T;
-  } catch {
-    throw new Error(`Invalid JSON in ${name}`);
-  }
-}
-
 function isEnvDisabled(value: string | undefined): boolean {
   if (!value) return false;
   const normalized = value.trim().toLowerCase();
   return normalized === "0" || normalized === "false" || normalized === "off";
-}
-
-function buildBrowserSessionName(projectRoot: string): string {
-  const resolvedProjectRoot = resolve(projectRoot);
-  const base = basename(resolvedProjectRoot)
-    .replace(/[^a-zA-Z0-9._-]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "project";
-  const hash = createHash("sha1").update(resolvedProjectRoot).digest("hex").slice(0, 8);
-  return `gsd-${base}-${hash}`;
 }
 
 export function buildProjectBrowserMcpServerConfig(
@@ -157,39 +116,15 @@ function buildProjectBrowserMcpServerSpec(
 ): ProjectMcpServerSpec | null {
   if (isEnvDisabled(env.GSD_BROWSER_MCP_ENABLED)) return null;
 
-  const resolvedProjectRoot = resolve(projectRoot);
-  const serverName = env.GSD_BROWSER_MCP_NAME?.trim() || GSD_BROWSER_MCP_SERVER_NAME;
-  const explicitArgs = parseJsonEnv<unknown>(env, "GSD_BROWSER_MCP_ARGS");
-  const explicitEnv = parseJsonEnv<Record<string, string>>(env, "GSD_BROWSER_MCP_ENV");
-  const explicitCommand = env.GSD_BROWSER_MCP_COMMAND?.trim();
-  const explicitCliPath = env.GSD_BROWSER_CLI_PATH?.trim() || env.GSD_BROWSER_BIN_PATH?.trim();
-  const bundledCliPath = !explicitCommand && !explicitCliPath ? resolveBundledGsdBrowserCliPath(env) : null;
-  const command =
-    explicitCommand
-    || explicitCliPath
-    || (bundledCliPath ? process.execPath : undefined)
-    || "gsd-browser";
-  const args = Array.isArray(explicitArgs) && explicitArgs.length > 0
-    ? explicitArgs.map(String)
-    : [
-        ...(bundledCliPath ? [bundledCliPath] : []),
-        "mcp",
-        "--session",
-        buildBrowserSessionName(resolvedProjectRoot),
-        "--identity-scope",
-        "project",
-        "--identity-project",
-        resolvedProjectRoot,
-      ];
-  const cwd = env.GSD_BROWSER_MCP_CWD?.trim() || resolvedProjectRoot;
+  const launch = resolveGsdBrowserMcpLaunchConfig(projectRoot, env);
 
   return {
-    serverName,
+    serverName: launch.serverName,
     server: {
-      command,
-      args,
-      cwd,
-      ...(explicitEnv ? { env: explicitEnv } : {}),
+      command: launch.command,
+      args: launch.args,
+      cwd: launch.cwd,
+      ...(launch.env ? { env: launch.env } : {}),
     },
   };
 }

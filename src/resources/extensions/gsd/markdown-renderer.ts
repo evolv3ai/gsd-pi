@@ -9,11 +9,10 @@
 // Critical invariant: rendered markdown must round-trip through
 // parseRoadmap(), parsePlan(), parseSummary() in files.ts.
 
-import { readFileSync, existsSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { logWarning } from "./workflow-logger.js";
 import { isClosedStatus } from "./status-guards.js";
-import { join, relative } from "node:path";
-import { createRequire } from "node:module";
+import { dirname, join, relative } from "node:path";
 import {
   getAllMilestones,
   getMilestone,
@@ -21,7 +20,6 @@ import {
   getSliceTasks,
   getTask,
   getSlice,
-  getArtifact,
   insertArtifact,
   getGateResults,
 } from "./gsd-db.js";
@@ -39,7 +37,8 @@ import {
   buildTaskFileName,
   buildSliceFileName,
 } from "./paths.js";
-import { saveFile, clearParseCache } from "./files.js";
+import { saveFile, clearParseCache, registerCacheClearCallback } from "./files.js";
+import { parseRoadmap, parsePlan } from "./parsers-legacy.js";
 import { invalidateStateCache } from "./state.js";
 import { clearPathCache } from "./paths.js";
 import type { RiskLevel } from "./types.js";
@@ -109,22 +108,6 @@ function sanitizeInlineRoadmapText(value: string | null | undefined): string {
     .trim();
 }
 
-/**
- * Load artifact content from the DB. Markdown projections are not authoritative
- * during runtime; when the artifact row is missing, callers regenerate from DB
- * rows instead of patching disk fallback content and storing it back.
- */
-function loadArtifactContent(
-  artifactPath: string,
-): string | null {
-  const artifact = getArtifact(artifactPath);
-  if (artifact && artifact.full_content) {
-    return artifact.full_content;
-  }
-
-  return null;
-}
-
 function resolveRoadmapProjectionPath(basePath: string, milestoneId: string): string {
   const projectionMilestonesDir = join(gsdProjectionRoot(basePath), "milestones");
   const milestoneDirName = resolveDir(projectionMilestonesDir, milestoneId) ?? milestoneId;
@@ -188,7 +171,8 @@ function renderRoadmapMarkdown(milestone: MilestoneRow, slices: SliceRow[]): str
   lines.push("");
   for (const slice of slices) {
     const done = isClosedStatus(slice.status) ? "x" : " ";
-    const depends = `[${(slice.depends ?? []).join(",")}]`;
+    const cleanDepends = (slice.depends ?? []).map(d => d.replace(/^\[|\]$/g, '')).filter(d => /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(d));
+    const depends = `[${cleanDepends.join(",")}]`;
     const safeTitle = sanitizeInlineRoadmapText(slice.title || slice.id) || slice.id;
     const safeRisk = normalizeRiskLevel(slice.risk);
     // ADR-011: sketch slices get a `[sketch]` badge so the roadmap shows at a
@@ -397,6 +381,7 @@ export async function renderPlanFromDb(
   basePath: string,
   milestoneId: string,
   sliceId: string,
+  outputPath?: string,
 ): Promise<{ planPath: string; taskPlanPaths: string[]; content: string }> {
   const slice = getSlice(milestoneId, sliceId);
   if (!slice) {
@@ -408,9 +393,16 @@ export async function renderPlanFromDb(
     throw new Error(`no tasks found for ${milestoneId}/${sliceId}`);
   }
 
-  const slicePath = join(gsdProjectionRoot(basePath), "milestones", milestoneId, "slices", sliceId);
-  mkdirSync(slicePath, { recursive: true });
-  const absPath = join(slicePath, `${sliceId}-PLAN.md`);
+  const defaultPlanPath = join(
+    gsdProjectionRoot(basePath),
+    "milestones",
+    milestoneId,
+    "slices",
+    sliceId,
+    `${sliceId}-PLAN.md`,
+  );
+  const absPath = outputPath ?? defaultPlanPath;
+  mkdirSync(dirname(absPath), { recursive: true });
   const artifactPath = toArtifactPath(absPath, basePath);
   const sliceGates = getGateResults(milestoneId, sliceId, "slice");
   const content = renderSlicePlanMarkdown(slice, tasks, sliceGates);
@@ -510,8 +502,14 @@ export async function renderRoadmapCheckboxes(
 /**
  * Render plan checkbox states from DB.
  *
- * For each task in the slice, sets [x] if status === 'done',
- * [ ] otherwise. Bidirectional.
+ * Compatibility wrapper for legacy callers that used to patch plan checkboxes
+ * in-place. Plans are now fully regenerated from DB rows (mirroring
+ * renderRoadmapCheckboxes) so the projection always reflects the complete
+ * current task set and statuses. The previous regex-patch approach reused the
+ * cached PLAN artifact as the render input, which silently dropped tasks added
+ * to the DB after the artifact was first written — producing a lossy
+ * projection (the 4S/0T-vs-5S/13T drift class). The artifacts table is an
+ * output sink, never a render input.
  *
  * @returns true if the plan was written, false on skip/error
  */
@@ -519,6 +517,7 @@ export async function renderPlanCheckboxes(
   basePath: string,
   milestoneId: string,
   sliceId: string,
+  outputPath?: string,
 ): Promise<boolean> {
   const tasks = getSliceTasks(milestoneId, sliceId);
   if (tasks.length === 0) {
@@ -528,48 +527,7 @@ export async function renderPlanCheckboxes(
     return false;
   }
 
-  const absPath = resolveSliceFile(basePath, milestoneId, sliceId, "PLAN");
-  const artifactPath = absPath ? toArtifactPath(absPath, basePath) : null;
-
-  let content: string | null = null;
-  if (artifactPath) {
-    content = loadArtifactContent(artifactPath);
-  }
-
-  if (!content) {
-    await renderPlanFromDb(basePath, milestoneId, sliceId);
-    return true;
-  }
-
-  // Apply checkbox patches for each task
-  let updated = content;
-  for (const task of tasks) {
-    const isDone = isClosedStatus(task.status);
-    const tid = task.id;
-
-    if (isDone) {
-      // Set [x]
-      updated = updated.replace(
-        new RegExp(`^(\\s*-\\s+)\\[ \\]\\s+\\*\\*${tid}:`, "m"),
-        `$1[x] **${tid}:`,
-      );
-    } else {
-      // Set [ ]
-      updated = updated.replace(
-        new RegExp(`^(\\s*-\\s+)\\[x\\]\\s+\\*\\*${tid}:`, "mi"),
-        `$1[ ] **${tid}:`,
-      );
-    }
-  }
-
-  if (!absPath) return false;
-
-  await writeAndStore(absPath, artifactPath!, updated, {
-    artifact_type: "PLAN",
-    milestone_id: milestoneId,
-    slice_id: sliceId,
-  });
-
+  await renderPlanFromDb(basePath, milestoneId, sliceId, outputPath);
   return true;
 }
 
@@ -747,6 +705,18 @@ export async function renderAllFromDb(basePath: string): Promise<RenderAllResult
     }
   }
 
+  // Re-project root DECISIONS.md from the authoritative decision records so a
+  // full DB → markdown re-projection (recover, rebuild) also heals decisions
+  // drift — e.g. a worktree merge that accepted one branch's DECISIONS.md while
+  // the DB holds the union of both branches' decisions.
+  try {
+    const { regenerateDecisionsMarkdown } = await import("./db-writer.js");
+    await regenerateDecisionsMarkdown(basePath);
+    result.rendered++;
+  } catch (err) {
+    result.errors.push(`decisions: ${(err as Error).message}`);
+  }
+
   return result;
 }
 
@@ -769,20 +739,41 @@ export interface StaleEntry {
  * Returns a list of stale entries with file path and reason.
  * Logs to stderr when stale files are detected.
  */
-export function detectStaleRenders(basePath: string): StaleEntry[] {
-  // Lazy-load parsers — intentional disk-vs-DB comparison requires parsers
-  const _require = createRequire(import.meta.url);
-  let parseRoadmap: Function, parsePlan: Function;
-  try {
-    // Prefer compiled JS for packaged/runtime installs; TS exists only in source/dev contexts.
-    const m = _require("./parsers-legacy.js");
-    parseRoadmap = m.parseRoadmap; parsePlan = m.parsePlan;
-  } catch (e) {
-    logWarning("renderer", `parsers-legacy.js require failed, falling back to .ts: ${(e as Error).message}`);
-    const m = _require("./parsers-legacy.ts");
-    parseRoadmap = m.parseRoadmap; parsePlan = m.parsePlan;
-  }
+// #442 Phase 1.5: cache parsed ROADMAP/PLAN projections by file identity
+// (path + mtimeMs + size) so an unchanged projection skips readFileSync AND
+// the parse entirely on repeated dispatches. The DB-vs-disk comparison below
+// still runs every call against fresh DB rows — only the disk-parse half is
+// memoized, and parsed output depends solely on file bytes, so this is
+// behavior-preserving. Invalidation rides the existing clearParseCache()
+// callback chain (fired by invalidateCaches() after every projection write and
+// by reconcileBeforeDispatch repairs), so a changed file always re-parses.
+interface CachedProjection { mtimeMs: number; size: number; parsed: unknown }
+const _projectionParseCache = new Map<string, CachedProjection>();
+registerCacheClearCallback(() => _projectionParseCache.clear());
 
+function parseProjectionByIdentity(path: string, parse: (content: string) => unknown): unknown {
+  let st: ReturnType<typeof statSync> | null = null;
+  try { st = statSync(path); } catch { st = null; }
+  if (st) {
+    const hit = _projectionParseCache.get(path);
+    if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) {
+      return hit.parsed;
+    }
+    const parsed = parse(readFileSync(path, "utf-8"));
+    _projectionParseCache.set(path, { mtimeMs: st.mtimeMs, size: st.size, parsed });
+    return parsed;
+  }
+  // stat failed (e.g. file vanished between existsSync and here) — fall back to
+  // the original plain read+parse so error handling is unchanged.
+  return parse(readFileSync(path, "utf-8"));
+}
+
+export function detectStaleRenders(basePath: string): StaleEntry[] {
+  // parseRoadmap/parsePlan are statically imported (#442 Phase 1.4): the
+  // per-call createRequire("./parsers-legacy") that used to live here ran on
+  // every dispatch. The static `./parsers-legacy.js` specifier resolves in
+  // both packaged (.js) and source (.ts via the strip-types loader) contexts —
+  // the same form a dozen other modules already use.
   const stale: StaleEntry[] = [];
   const milestones = getAllMilestones();
 
@@ -793,8 +784,7 @@ export function detectStaleRenders(basePath: string): StaleEntry[] {
     const roadmapPath = resolveRoadmapProjectionPath(basePath, milestone.id);
     if (existsSync(roadmapPath)) {
       try {
-        const content = readFileSync(roadmapPath, "utf-8");
-        const parsed = parseRoadmap(content);
+        const parsed = parseProjectionByIdentity(roadmapPath, parseRoadmap) as ReturnType<typeof parseRoadmap>;
 
         for (const slice of slices) {
           const isCompleteInDb = isClosedStatus(slice.status);
@@ -826,13 +816,21 @@ export function detectStaleRenders(basePath: string): StaleEntry[] {
       const planPath = resolveSliceFile(basePath, milestone.id, slice.id, "PLAN");
       if (planPath && existsSync(planPath)) {
         try {
-          const content = readFileSync(planPath, "utf-8");
-          const parsed = parsePlan(content);
+          const parsed = parseProjectionByIdentity(planPath, parsePlan) as ReturnType<typeof parsePlan>;
 
           for (const task of tasks) {
             const isDoneInDb = isClosedStatus(task.status);
             const planTask = parsed.tasks.find((t: { id: string }) => t.id === task.id);
-            if (!planTask) continue;
+            if (!planTask) {
+              // DB has a task the plan markdown lacks: the projection is
+              // lossy (e.g. tasks added after the PLAN artifact was first
+              // written). Flag it so the plan is re-rendered from DB rows.
+              stale.push({
+                path: planPath,
+                reason: `${task.id} exists in DB but is missing in plan`,
+              });
+              continue;
+            }
 
             if (isDoneInDb && !planTask.done) {
               stale.push({
@@ -911,6 +909,17 @@ export function detectStaleRenders(basePath: string): StaleEntry[] {
   }
 
   return stale;
+}
+
+/**
+ * Render-verification helper: does the rendered ROADMAP markdown mark a slice
+ * as done? Used by completion code to verify/repair the *projection* after a
+ * DB write — never as a source of truth for dispatch or completion decisions
+ * (ADR-017). Lives here so decision-path modules need not import
+ * parsers-legacy directly.
+ */
+export function roadmapRenderMarksSliceDone(roadmapContent: string, sliceId: string): boolean {
+  return parseRoadmap(roadmapContent).slices.some((slice) => slice.id === sliceId && slice.done);
 }
 
 // ─── Stale Repair ─────────────────────────────────────────────────────────

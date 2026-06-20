@@ -9,7 +9,7 @@ import { ERROR_PATTERNS, WARNING_PATTERNS } from "./types.js";
 import { formatUptime, formatTimeAgo } from "./utilities.js";
 import {
 	processes,
-	killProcess,
+	terminateProcess,
 	cleanupAll,
 	restartProcess,
 } from "./process-manager.js";
@@ -134,16 +134,20 @@ export class BgManagerOverlay {
 			return;
 		}
 
-		// x or d = kill selected
+		// x or d = kill selected (graceful ladder via killProcessTree).
+		// Use a short interactive grace: the user explicitly asked to kill, so give the
+		// process a brief clean-shutdown window then force, and re-render AFTER that grace
+		// plus slack so the row reflects the SIGKILL escalation (a 300ms re-render against
+		// the default 5s grace would show the process still alive).
 		if (data === "x" || data === "d") {
 			const proc = procs[this.selected];
 			if (proc && proc.alive) {
-				killProcess(proc.id, "SIGTERM");
+				const OVERLAY_KILL_GRACE_MS = 500;
+				terminateProcess(proc.id, OVERLAY_KILL_GRACE_MS);
 				setTimeout(() => {
-					if (proc.alive) killProcess(proc.id, "SIGKILL");
 					this.invalidate();
 					this.tui.requestRender();
-				}, 300);
+				}, OVERLAY_KILL_GRACE_MS + 400);
 			}
 			return;
 		}

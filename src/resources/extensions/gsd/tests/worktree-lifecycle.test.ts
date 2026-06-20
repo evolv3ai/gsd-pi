@@ -161,13 +161,13 @@ test("enterMilestone returns ok:true mode:worktree on successful create", (t) =>
   if (result.ok) {
     assert.equal(result.mode, "worktree");
     assert.ok(
-      result.path.endsWith("/.gsd/worktrees/M001"),
-      `expected path to end with /.gsd/worktrees/M001, got ${result.path}`,
+      result.path.endsWith("/.gsd-worktrees/M001"),
+      `expected path to end with /.gsd-worktrees/M001, got ${result.path}`,
     );
   }
   assert.ok(
-    s.basePath.endsWith("/.gsd/worktrees/M001"),
-    `expected s.basePath to end with /.gsd/worktrees/M001, got ${s.basePath}`,
+    s.basePath.endsWith("/.gsd-worktrees/M001"),
+    `expected s.basePath to end with /.gsd-worktrees/M001, got ${s.basePath}`,
   );
   // After C3 (#5626) `invalidateAllCaches` is inlined; assertion against
   // `deps.calls` for cache invalidation is no longer possible.
@@ -238,6 +238,43 @@ test("adoptStrandedMilestone forces branch recovery even when normal preferences
     encoding: "utf-8",
   }).trim();
   assert.equal(currentBranch, "milestone/M001");
+});
+
+test("enterMilestone honors stranded branch recovery instead of recreating the worktree", (t) => {
+  // Regression: after adoptStrandedMilestone checks out milestone/M001 in
+  // the project root, a plain enterMilestone under isolation:worktree used
+  // to attempt `git worktree add`, which git refuses ("branch is already in
+  // use by another worktree" — the root checkout IS the conflicting
+  // worktree), tripping a creation-failed warning and degrading isolation.
+  // The recovery override must keep re-entries in branch mode.
+  const previousCwd = process.cwd();
+  const base = makeGitRepoBase({ isolation: "worktree" });
+  t.after(() => cleanupRepoBase(base, previousCwd));
+
+  const s = makeSession({ basePath: base, originalBasePath: base });
+  const deps = makeDeps();
+  const ctx = makeCtx();
+  const lifecycle = new WorktreeLifecycle(s, deps);
+
+  const adopted = lifecycle.adoptStrandedMilestone("M001", base, ctx, {
+    mode: "branch",
+  });
+  assert.equal(adopted.ok, true, `expected adopt ok:true, got: ${JSON.stringify(adopted)}`);
+
+  const result = lifecycle.enterMilestone("M001", ctx);
+
+  assert.equal(result.ok, true, `expected ok:true, got: ${JSON.stringify(result)}`);
+  if (result.ok) {
+    assert.equal(result.mode, "branch");
+    assert.equal(result.path, base);
+  }
+  assert.equal(s.basePath, base);
+  assert.equal(s.isolationDegraded, false, "intentional branch adoption must not degrade isolation");
+  assert.equal(
+    ctx.messages.some((m) => m.msg.includes("creation for M001 failed")),
+    false,
+    "re-entry must not attempt (and fail) canonical worktree creation",
+  );
 });
 
 test("enterMilestone returns ok:false reason:isolation-degraded when session degraded", () => {

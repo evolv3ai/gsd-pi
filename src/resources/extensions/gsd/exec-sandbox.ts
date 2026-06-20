@@ -12,6 +12,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
+import { killProcessTree, SIGKILL_GRACE_MS, HARD_DEADLINE_MS } from "@gsd/pi-coding-agent";
 
 export interface ExecSandboxRequest {
   /** Interpreter to use. */
@@ -20,6 +21,8 @@ export interface ExecSandboxRequest {
   script: string;
   /** Optional purpose/label recorded in meta.json. */
   purpose?: string;
+  /** Optional structured metadata recorded in meta.json. */
+  metadata?: Record<string, unknown>;
   /** Per-invocation timeout in ms. Clamped to `clamp_timeout_ms`. */
   timeout_ms?: number;
 }
@@ -45,6 +48,17 @@ export interface ExecSandboxOptions {
   now?: () => Date;
   /** Optional override for id generation (tests). */
   generateId?: () => string;
+  /**
+   * Grace period (ms) between SIGTERM and SIGKILL on timeout.
+   * Defaults to SIGKILL_GRACE_MS. Exposed as a test seam.
+   */
+  kill_grace_ms?: number;
+  /**
+   * Delay (ms) after a kill is initiated before the hard-deadline force-resolves
+   * the promise (handles D-state / non-closing children).
+   * Defaults to SIGKILL_GRACE_MS + HARD_DEADLINE_MS. Exposed as a test seam.
+   */
+  force_resolve_delay_ms?: number;
 }
 
 export interface ExecSandboxResult {
@@ -53,6 +67,12 @@ export interface ExecSandboxResult {
   exit_code: number | null;
   signal: NodeJS.Signals | null;
   timed_out: boolean;
+  /**
+   * True when the result came from the hard-deadline force-resolve (a non-closing
+   * D-state child that never emitted 'close') rather than an observed process exit.
+   * In that case `signal` is the synthetic "SIGKILL" marker, not a delivered signal.
+   */
+  force_resolved: boolean;
   duration_ms: number;
   stdout_bytes: number;
   stderr_bytes: number;
@@ -65,6 +85,10 @@ export interface ExecSandboxResult {
 }
 
 const ALWAYS_FORWARD_ENV = ["PATH", "HOME"] as const;
+
+// SIGKILL_GRACE_MS / HARD_DEADLINE_MS are imported from @gsd/pi-coding-agent
+// (shell.ts) — the single source of truth for the graceful-kill timing ladder —
+// so this sandbox can never drift from the canonical kill path it delegates to.
 
 export const EXEC_DEFAULTS = {
   clampTimeoutMs: 600_000,
@@ -178,6 +202,7 @@ export function runExecSandbox(
         exit_code: null,
         signal: null,
         timed_out: false,
+        force_resolved: false,
         duration_ms: duration,
         stdout_bytes: 0,
         stderr_bytes: Buffer.byteLength(`spawn error: ${message}\n`),
@@ -231,23 +256,39 @@ export function runExecSandbox(
       }
     });
 
+    const effectiveGraceMs = opts.kill_grace_ms ?? SIGKILL_GRACE_MS;
+    const effectiveForceResolveDelay = opts.force_resolve_delay_ms ?? (effectiveGraceMs + HARD_DEADLINE_MS);
+
     let timedOut = false;
+    let settled = false;
+    let forceResolveTimer: NodeJS.Timeout | undefined;
+
     const timer = setTimeout(() => {
       timedOut = true;
-      if (useProcessGroup && child.pid != null) {
-        try {
-          process.kill(-child.pid, "SIGKILL");
-        } catch {
-          child.kill("SIGKILL");
-        }
+      // killProcessTree handles both platforms and kills the whole tree: on Unix
+      // it signals the process group (SIGTERM -> grace -> SIGKILL); on Windows it
+      // force-kills the tree via taskkill /F /T. Using child.kill("SIGTERM") here
+      // would only terminate the direct child on Windows, orphaning grandchildren.
+      if (child.pid != null) {
+        killProcessTree(child.pid, { graceMs: effectiveGraceMs });
       } else {
-        child.kill("SIGKILL");
+        child.kill("SIGTERM");
       }
+      // Arm hard-deadline force-resolve in case child never closes (D-state).
+      // The "SIGKILL" here is a synthetic marker (the process may not have actually
+      // received it); force_resolved=true records that this was a deadline, not an exit.
+      forceResolveTimer = setTimeout(() => {
+        finalize(null, "SIGKILL", true);
+      }, effectiveForceResolveDelay);
+      forceResolveTimer.unref?.();
     }, timeoutMs);
     timer.unref?.();
 
-    const finalize = (exitCode: number | null, signal: NodeJS.Signals | null) => {
+    const finalize = (exitCode: number | null, signal: NodeJS.Signals | null, forceResolved = false) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      clearTimeout(forceResolveTimer);
       const duration = Date.now() - started;
       const stdoutBuf = Buffer.concat(stdoutChunks);
       const stderrBuf = Buffer.concat(stderrChunks);
@@ -272,6 +313,7 @@ export function runExecSandbox(
         exit_code: exitCode,
         signal,
         timed_out: timedOut,
+        force_resolved: forceResolved,
         duration_ms: duration,
         stdout_bytes: stdoutBytes,
         stderr_bytes: stderrBytes,
@@ -315,12 +357,14 @@ function writeMeta(
     id: result.id,
     runtime: result.runtime,
     purpose: request.purpose ?? null,
+    ...(request.metadata ? { metadata: request.metadata } : {}),
     script_chars: request.script.length,
     started_at: now.toISOString(),
     finished_at: new Date(now.getTime() + result.duration_ms).toISOString(),
     exit_code: result.exit_code,
     signal: result.signal,
     timed_out: result.timed_out,
+    force_resolved: result.force_resolved,
     duration_ms: result.duration_ms,
     stdout_bytes: result.stdout_bytes,
     stderr_bytes: result.stderr_bytes,

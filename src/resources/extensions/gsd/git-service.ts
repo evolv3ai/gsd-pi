@@ -359,6 +359,7 @@ export interface PreMergeCheckResult {
  * This array must stay synchronized with it.
  */
 export const RUNTIME_EXCLUSION_PATHS: readonly string[] = [
+  ".gsd-worktrees/",
   ".gsd/activity/",
   ".gsd/audit/",
   ".gsd/forensics/",

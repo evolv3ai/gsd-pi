@@ -10,7 +10,8 @@ import {
 } from "./paths.js";
 import { loadFile, parseTaskPlanMustHaves, countMustHavesMentionedInSummary } from "./files.js";
 import { parseUnitId } from "./unit-id.js";
-import { getTask, isDbAvailable, refreshOpenDatabaseFromDisk } from "./gsd-db.js";
+import { getTask, isDbAvailable } from "./gsd-db.js";
+import { refreshWorkflowDatabaseFromDisk } from "./db-workspace.js";
 import { isClosedStatus } from "./status-guards.js";
 
 // Per-record advisory lock — prevents read-modify-write races between
@@ -218,7 +219,7 @@ export async function inspectExecuteTaskDurability(
   const nextActionAdvanced = !new RegExp(`Execute ${tid}\\b`).test(stateContent);
   let dbComplete = false;
   if (isDbAvailable()) {
-    refreshOpenDatabaseFromDisk();
+    refreshWorkflowDatabaseFromDisk();
     const task = getTask(mid, sid, tid);
     dbComplete = !!task && isClosedStatus(task.status);
   }

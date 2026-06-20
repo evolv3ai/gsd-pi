@@ -17,11 +17,13 @@ function makeSession(activeRunDir: string): {
   activeRunDir: string;
   basePath: string;
   verificationRetryCount: Map<string, number>;
+  exhaustedVerificationUnits: Set<string>;
 } {
   return {
     activeRunDir,
     basePath: activeRunDir,
     verificationRetryCount: new Map<string, number>(),
+    exhaustedVerificationUnits: new Set<string>(),
   };
 }
 
@@ -133,6 +135,71 @@ test("saveCustomVerifyRetryCounts deletes empty retry files and ignores missing 
       logFailure: err => logged.push(err),
     });
     assert.equal(logged.length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("saveCustomVerifyRetryCounts persists exhaustedVerificationUnits and hydrateCustomVerifyRetryCounts restores them", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gsd-verify-retries-"));
+  try {
+    const session = makeSession(dir);
+    session.exhaustedVerificationUnits.add("execute-task:M001/S001/T001");
+    session.exhaustedVerificationUnits.add("execute-task:M001/S001/T002");
+
+    saveCustomVerifyRetryCounts(session, {
+      logFailure: () => assert.fail("logFailure should not be called"),
+    });
+
+    const session2 = makeSession(dir);
+    hydrateCustomVerifyRetryCounts(session2, {
+      logFailure: () => assert.fail("logFailure should not be called"),
+    });
+
+    assert.deepEqual(
+      [...session2.exhaustedVerificationUnits].sort(),
+      ["execute-task:M001/S001/T001", "execute-task:M001/S001/T002"],
+    );
+    assert.equal(session2.verificationRetryCount.size, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("saveCustomVerifyRetryCounts keeps file when only exhaustedVerificationUnits is non-empty", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gsd-verify-retries-"));
+  try {
+    const session = makeSession(dir);
+    session.exhaustedVerificationUnits.add("execute-task:M001/S001/T001");
+
+    saveCustomVerifyRetryCounts(session, {
+      logFailure: () => assert.fail("logFailure should not be called"),
+    });
+
+    const saved = JSON.parse(readFileSync(customVerifyRetryStatePath(session), "utf-8"));
+    assert.deepEqual(saved.exhausted, ["execute-task:M001/S001/T001"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("hydrateCustomVerifyRetryCounts skips hydration when exhaustedVerificationUnits is already populated", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gsd-verify-retries-"));
+  try {
+    const session = makeSession(dir);
+    session.exhaustedVerificationUnits.add("pre-existing:key");
+    mkdirSync(join(dir, "runtime"));
+    writeFileSync(customVerifyRetryStatePath(session), JSON.stringify({
+      counts: { "execute-task/M001/S001/T001": 2 },
+      exhausted: ["execute-task:M001/S001/T002"],
+    }));
+
+    hydrateCustomVerifyRetryCounts(session, {
+      logFailure: () => assert.fail("logFailure should not be called"),
+    });
+
+    assert.deepEqual([...session.exhaustedVerificationUnits], ["pre-existing:key"]);
+    assert.equal(session.verificationRetryCount.size, 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

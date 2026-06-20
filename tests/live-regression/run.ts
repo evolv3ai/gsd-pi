@@ -526,6 +526,92 @@ run("version skew is detected and named in stderr", () => {
 // tests/smoke/test-help.ts and has been removed from this harness
 // (see #4801).  Smoke coverage of `--help` now lives in one place.
 
+// ─── Test: quick commands exit 0 (not spurious "cancelled" 11) ───────────
+//
+// `/gsd status`, `history`, `help`, and `config` are "quick commands": they
+// are handled entirely in the GSD extension layer (dashboard overlay /
+// notify) and never enter the LLM agent loop, so they emit no
+// `execution_complete` and make zero tool calls.  Headless completion used
+// to be detected only via `execution_complete` / `agent_end` / a tool-call
+// gated idle timer, so these commands never resolved their completion
+// promise; the process then drained its event loop and exited with a
+// spurious code 11 ("cancelled") — indistinguishable from a real SIGINT.
+// Regression coverage: each quick command must exit 0 on a seeded project.
+
+function seedProjectWithMilestone(name: string): string {
+  const dir = createTempProject(name);
+  const mDir = join(dir, ".gsd", "milestones", "M001");
+  mkdirSync(join(mDir, "slices", "S01"), { recursive: true });
+  writeFileSync(join(mDir, "M001-CONTEXT.md"), "# M001\n\nContext.");
+  writeFileSync(
+    join(mDir, "M001-ROADMAP.md"),
+    buildMinimalRoadmap([{ id: "S01", title: "First Slice", done: false }]),
+  );
+  writeFileSync(
+    join(mDir, "slices", "S01", "S01-PLAN.md"),
+    buildMinimalPlan([{ id: "T01", title: "Task One", done: false }]),
+  );
+  recover(dir);
+  return dir;
+}
+
+run("headless status exits 0 (not spurious cancelled) on seeded project", () => {
+  const dir = seedProjectWithMilestone("quick-status");
+  try {
+    const result = gsd(["headless", "status"], dir);
+    assert(
+      result.code === 0,
+      `expected exit 0, got ${result.code}: ${result.stderr.slice(0, 300)}`,
+    );
+    // The dashboard text is rendered to stderr in text mode.
+    assert(
+      /M001/i.test(result.stderr),
+      `status should reference M001, got: ${result.stderr.slice(0, 300)}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+run("headless history exits 0 (not spurious cancelled) on seeded project", () => {
+  const dir = seedProjectWithMilestone("quick-history");
+  try {
+    const result = gsd(["headless", "history"], dir);
+    assert(
+      result.code === 0,
+      `expected exit 0, got ${result.code}: ${result.stderr.slice(0, 300)}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+run("headless help exits 0 (not spurious cancelled)", () => {
+  const dir = seedProjectWithMilestone("quick-help");
+  try {
+    const result = gsd(["headless", "help"], dir);
+    assert(
+      result.code === 0,
+      `expected exit 0, got ${result.code}: ${result.stderr.slice(0, 300)}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+run("headless config exits 0 (not spurious cancelled)", () => {
+  const dir = seedProjectWithMilestone("quick-config");
+  try {
+    const result = gsd(["headless", "config"], dir);
+    assert(
+      result.code === 0,
+      `expected exit 0, got ${result.code}: ${result.stderr.slice(0, 300)}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ─── helpers ────────────────────────────────────────────────────────────
 
 async function captureDeadPid(): Promise<number> {

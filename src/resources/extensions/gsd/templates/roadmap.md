@@ -42,7 +42,7 @@
 - Contract verification: {{tests / shell verifiers / fixtures / artifact checks}}
 - Integration verification: {{real subsystem interaction that must be exercised, or none}}
 - Operational verification: {{service lifecycle / restart / reconnect / supervision / deploy-install behavior, or none}}
-- UAT / human verification: {{what needs real human judgment, or none}}
+- UAT / human verification: {{what needs real human judgment, or none — for web apps prefer browser-executable / runtime-executable Playwright checks over deferring UI proof to humans}}
 
 ## Milestone Definition of Done
 

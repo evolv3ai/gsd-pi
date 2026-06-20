@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { emitJournalEvent } from "../journal.ts";
+import { appendEvent } from "../workflow-events.ts";
 import { saveActivityLog } from "../activity-log.ts";
 import { initMetrics, resetMetrics, snapshotUnitMetrics } from "../metrics.ts";
 import { setLogBasePath, logWarning } from "../workflow-logger.ts";
@@ -37,6 +38,12 @@ test("unified audit plane bridges journal/activity/metrics/workflow logger into 
       seq: 1,
       eventType: "iteration-start",
       data: { turnId: "turn-123", unitId: "M001/S01/T01" },
+    });
+    appendEvent(basePath, {
+      cmd: "complete-task",
+      params: { milestoneId: "M001", sliceId: "S01", taskId: "T01" },
+      ts: new Date().toISOString(),
+      actor: "agent",
     });
 
     const activityCtx = makeMockContext([
@@ -73,6 +80,7 @@ test("unified audit plane bridges journal/activity/metrics/workflow logger into 
     const events = readAuditEvents(basePath);
     const types = new Set(events.map((event) => String(event.type ?? "")));
     assert.ok(types.has("journal-iteration-start"));
+    assert.ok(types.has("workflow-event-complete_task"));
     assert.ok(types.has("activity-log-saved"));
     assert.ok(types.has("unit-metrics-snapshot"));
     assert.ok(types.has("workflow-log-warn"));

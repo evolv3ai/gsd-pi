@@ -14,6 +14,7 @@ import {
   getWorktreeLog,
   worktreeBranchName,
   worktreePath,
+  pruneEphemeralGhostWorktreeDirectories,
 } from "../worktree-manager.ts";
 
 function run(command: string, cwd: string): string {
@@ -121,6 +122,48 @@ describe("createWorktree", () => {
     run("git rev-parse --git-dir", info.path);
     assert.ok(!existsSync(join(info.path, "orphan.txt")), "stale file removed by recovery");
   });
+
+  test("removes stale worktree directory with .git file not registered with git and recreates", () => {
+    // Simulate the scenario from issue #590: removeWorktree() failed to delete
+    // the directory (e.g. EPERM on Windows) but git worktree prune cleaned up
+    // the registry — leaving an orphaned directory with a .git *file* (not
+    // directory) that git no longer knows about.
+    const staleDir = worktreePath(base, "M010");
+    mkdirSync(staleDir, { recursive: true });
+    // Write a .git file (worktree gitdir pointer) — not a directory
+    writeFileSync(join(staleDir, ".git"), "gitdir: ../../../../.git/worktrees/M010\n", "utf-8");
+    writeFileSync(join(staleDir, "orphan.txt"), "stale leftover\n", "utf-8");
+
+    // createWorktree must detect the orphan (not in git worktree list), clean it
+    // up, and succeed — not throw GSD_STALE_STATE as if it were a live conflict.
+    const info = createWorktree(base, "M010");
+    assert.strictEqual(info.name, "M010");
+    assert.ok(existsSync(info.path));
+    assert.ok(existsSync(join(info.path, ".git")), "recovered worktree has .git marker");
+    run("git rev-parse --git-dir", info.path);
+    assert.ok(!existsSync(join(info.path, "orphan.txt")), "stale file removed by recovery");
+  });
+
+  test("removes stale canonical directory when legacy orphan is cleaned and canonical target is stale", () => {
+    // Scenario: a stale .gsd-worktrees/M020 directory (no .git — aborted prior
+    // creation) coexists with an orphaned .gsd/worktrees/M020 dir (.git file not
+    // registered with git). worktreePathFor returns the legacy path (canonical has
+    // no .git marker), so only the legacy path was previously cleaned — the stale
+    // canonical blocked git worktree add. The fix ensures createWorktree also
+    // removes the stale canonical before calling git worktree add.
+    const canonicalDir = join(base, ".gsd-worktrees", "M020");
+    const legacyDir = join(base, ".gsd", "worktrees", "M020");
+
+    mkdirSync(canonicalDir, { recursive: true });  // stale canonical: exists, no .git
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(join(legacyDir, ".git"), "gitdir: ../../../../.git/worktrees/M020\n", "utf-8");
+
+    const info = createWorktree(base, "M020");
+    assert.strictEqual(info.name, "M020");
+    assert.ok(existsSync(info.path), "worktree path should exist after creation");
+    assert.ok(existsSync(join(info.path, ".git")), "new worktree has .git marker");
+    run("git rev-parse --git-dir", info.path);
+  });
 });
 
 describe("createWorktree — duplicate rejection", () => {
@@ -159,7 +202,7 @@ describe("createWorktree — branch cleanup on add failure", () => {
 
     // Make the worktrees parent directory non-writable so `git worktree add`
     // fails after the branch has already been force-reset.
-    const parentDir = join(base, ".gsd", "worktrees");
+    const parentDir = join(base, ".gsd-worktrees");
     mkdirSync(parentDir, { recursive: true });
     run(`chmod 555 "${parentDir}"`, base);
 
@@ -301,5 +344,40 @@ describe("removeWorktree — missing worktree", () => {
       () => removeWorktree(base, "nonexistent", { deleteBranch: true }),
       "missing branch should be treated as already cleaned up",
     );
+  });
+});
+
+describe("pruneEphemeralGhostWorktreeDirectories", () => {
+  let base: string;
+  beforeEach(() => { base = makeBaseRepo(); });
+  afterEach(() => { rmSync(base, { recursive: true, force: true }); });
+
+  test("removes bg-shell-only ghost milestone directories", () => {
+    const ghostDir = join(base, ".gsd-worktrees", "M009");
+    mkdirSync(join(ghostDir, ".bg-shell"), { recursive: true });
+    writeFileSync(join(ghostDir, ".bg-shell", "manifest.json"), "[]\n", "utf-8");
+
+    const removed = pruneEphemeralGhostWorktreeDirectories(base);
+    assert.deepEqual(removed, [ghostDir]);
+    assert.ok(!existsSync(ghostDir));
+  });
+
+  test("preserves registered git worktrees", () => {
+    createWorktree(base, "M001");
+    const livePath = worktreePath(base, "M001");
+
+    const removed = pruneEphemeralGhostWorktreeDirectories(base);
+    assert.deepEqual(removed, []);
+    assert.ok(existsSync(livePath));
+  });
+
+  test("preserves unregistered dirs with source content", () => {
+    const staleDir = join(base, ".gsd-worktrees", "M020");
+    mkdirSync(staleDir, { recursive: true });
+    writeFileSync(join(staleDir, "orphan.txt"), "salvage me\n", "utf-8");
+
+    const removed = pruneEphemeralGhostWorktreeDirectories(base);
+    assert.deepEqual(removed, []);
+    assert.ok(existsSync(staleDir));
   });
 });

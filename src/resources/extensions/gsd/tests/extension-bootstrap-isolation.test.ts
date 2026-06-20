@@ -117,7 +117,8 @@ describe("extension bootstrap isolation (#4168, #4172)", () => {
 // registration is wrapped in its own try/catch so one failure does not
 // prevent siblings from loading.
 
-import { registerGsdExtension } from "../bootstrap/register-extension.ts";
+import { CRITICAL_GSD_WORKFLOW_TOOL_NAMES, registerGsdExtension } from "../bootstrap/register-extension.ts";
+import { drainLogs } from "../workflow-logger.ts";
 
 describe("registerGsdExtension defensive registration", () => {
   test("a failing shortcut registration does not prevent kill command registration", async () => {
@@ -160,5 +161,38 @@ describe("registerGsdExtension defensive registration", () => {
       !registered.includes("gsd"),
       `registerGsdExtension must NOT register 'gsd' (it is registered separately by index.ts), got ${JSON.stringify(registered)}`,
     );
+  });
+
+  test("critical workflow tool list includes lifecycle planning and completion tools", () => {
+    assert.ok(CRITICAL_GSD_WORKFLOW_TOOL_NAMES.includes("gsd_plan_slice"));
+    assert.ok(CRITICAL_GSD_WORKFLOW_TOOL_NAMES.includes("gsd_slice_complete"));
+    assert.ok(CRITICAL_GSD_WORKFLOW_TOOL_NAMES.includes("gsd_validate_milestone"));
+    assert.ok(CRITICAL_GSD_WORKFLOW_TOOL_NAMES.includes("gsd_complete_milestone"));
+  });
+
+  test("partial db-tools registration fails visibly when critical tools are missing", () => {
+    drainLogs();
+    const registeredTools: string[] = [];
+    const pi = {
+      registerCommand: () => {},
+      registerTool: (tool: { name: string }) => {
+        if (tool.name === "gsd_plan_slice") {
+          throw new Error("simulated db-tools partial registration failure");
+        }
+        registeredTools.push(tool.name);
+      },
+      registerHook: () => {},
+      registerShortcut: () => {},
+      events: { on: () => {}, off: () => {}, emit: () => {} },
+      getAllTools: () => registeredTools.map((name) => ({ name })),
+    };
+
+    assert.throws(
+      () => registerGsdExtension(pi as any),
+      /Critical GSD workflow tool registration failed; missing required tool\(s\): .*gsd_plan_slice/,
+    );
+    assert.ok(registeredTools.includes("gsd_plan_milestone"));
+    assert.ok(!registeredTools.includes("gsd_plan_slice"));
+    drainLogs();
   });
 });

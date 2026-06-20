@@ -178,7 +178,7 @@ test("checkAutoStartAfterDiscuss(basePath) selects the matching pending entry wh
   }
 });
 
-test("checkAutoStartAfterDiscuss can emit ready without scheduling auto-start", () => {
+test("checkAutoStartAfterDiscuss can accept context handoff without scheduling auto-start", () => {
   const base = mkdtempSync(join(tmpdir(), "gsd-auto-start-headless-owned-"));
   let waitForIdleCalls = 0;
   const notifications: string[] = [];
@@ -209,9 +209,11 @@ test("checkAutoStartAfterDiscuss can emit ready without scheduling auto-start", 
     });
 
     assert.equal(checkAutoStartAfterDiscuss(base), true);
-    assert.deepEqual(notifications, ["Milestone M001 ready."]);
+    assert.deepEqual(notifications, [
+      "Milestone M001 context captured. Continuing the planning pipeline.",
+    ]);
     assert.equal(waitForIdleCalls, 0, "headless-owned auto start must not schedule guided-flow auto");
-    assert.equal(getDiscussionMilestoneId(base), null, "ready handoff should still be cleared");
+    assert.equal(getDiscussionMilestoneId(base), null, "accepted handoff should still be cleared");
   } finally {
     clearPendingAutoStart();
     rmSync(base, { recursive: true, force: true });

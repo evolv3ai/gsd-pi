@@ -15,6 +15,22 @@ describe("models.generated.ts", () => {
 		expect(generated).not.toMatch(noisyCostLiteral);
 	});
 
+	test("includes Claude Fable 5 across its supported providers with adaptive thinking", () => {
+		const anthropic = MODELS.anthropic["claude-fable-5"];
+		expect(anthropic).toBeDefined();
+		expect(anthropic.api).toBe("anthropic-messages");
+		expect(anthropic.thinkingLevelMap).toMatchObject({ xhigh: "xhigh" });
+		expect(anthropic.compat).toMatchObject({ forceAdaptiveThinking: true });
+
+		const vertex = MODELS["anthropic-vertex"]["claude-fable-5"];
+		expect(vertex).toBeDefined();
+		expect(vertex.api).toBe("anthropic-vertex");
+		expect(vertex.compat).toMatchObject({ forceAdaptiveThinking: true });
+
+		expect(MODELS["amazon-bedrock"]["us.anthropic.claude-fable-5"]).toBeDefined();
+		expect(MODELS.openrouter["anthropic/claude-fable-5"]).toBeDefined();
+	});
+
 	test("includes Anthropic Vertex models from the generated catalog", () => {
 		const models = MODELS["anthropic-vertex"];
 
@@ -27,6 +43,46 @@ describe("models.generated.ts", () => {
 		for (const model of Object.values(models)) {
 			expect(model.provider).toBe("anthropic-vertex");
 			expect(model.api).toBe("anthropic-vertex");
+		}
+	});
+
+	test("includes MiniMax M3 for direct MiniMax providers", () => {
+		const providers = [
+			["minimax", "https://api.minimax.io/anthropic"],
+			["minimax-cn", "https://api.minimaxi.com/anthropic"],
+		] as const;
+
+		for (const [provider, baseUrl] of providers) {
+			const model = MODELS[provider]["MiniMax-M3"];
+
+			expect(model).toMatchObject({
+				id: "MiniMax-M3",
+				name: "MiniMax-M3",
+				api: "anthropic-messages",
+				provider,
+				baseUrl,
+				reasoning: true,
+				input: ["text", "image"],
+				cost: {
+					input: 0.6,
+					output: 2.4,
+					cacheRead: 0.12,
+					cacheWrite: 0,
+				},
+				contextWindow: 1000000,
+				maxTokens: 131072,
+			});
+		}
+	});
+
+	test("keeps GitHub Copilot Claude 4.6 context at Copilot's 200K limit", () => {
+		for (const id of ["claude-opus-4.6", "claude-sonnet-4.6"] as const) {
+			const model = MODELS["github-copilot"][id];
+
+			expect(model.provider).toBe("github-copilot");
+			expect(model.api).toBe("anthropic-messages");
+			expect(model.contextWindow).toBe(200000);
+			expect(model.maxTokens).toBe(32000);
 		}
 	});
 });

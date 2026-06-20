@@ -45,6 +45,14 @@ type LockResult<T> = {
 	next?: string;
 };
 
+function isUsableApiKeyCredential(credential: AuthCredential): credential is ApiKeyCredential {
+	return credential.type === "api_key" && credential.key.trim().length > 0;
+}
+
+function isUsableStoredCredential(credential: AuthCredential): boolean {
+	return credential.type === "oauth" || isUsableApiKeyCredential(credential);
+}
+
 export interface AuthStorageBackend {
 	withLock<T>(fn: (current: string | undefined) => LockResult<T>): T;
 	withLockAsync<T>(fn: (current: string | undefined) => Promise<LockResult<T>>): Promise<T>;
@@ -347,7 +355,7 @@ export class AuthStorage {
 	 */
 	hasAuth(provider: string): boolean {
 		if (this.runtimeOverrides.has(provider)) return true;
-		if (this.getCredentialsForProvider(provider).length > 0) return true;
+		if (this.getCredentialsForProvider(provider).some(isUsableStoredCredential)) return true;
 		if (getEnvApiKey(provider)) return true;
 		if (this.fallbackResolver?.(provider)) return true;
 		return false;
@@ -383,7 +391,7 @@ export class AuthStorage {
 	 * Return auth status without exposing credential values or refreshing tokens.
 	 */
 	getAuthStatus(provider: string): AuthStatus {
-		if (this.getCredentialsForProvider(provider).length > 0) {
+		if (this.getCredentialsForProvider(provider).some(isUsableStoredCredential)) {
 			return { configured: true, source: "stored" };
 		}
 
@@ -498,8 +506,8 @@ export class AuthStorage {
 	 * Get API key for a provider.
 	 * Priority:
 	 * 1. Runtime override (CLI --api-key)
-	 * 2. API key from auth.json
-	 * 3. OAuth token from auth.json (auto-refreshed with locking)
+	 * 2. OAuth token from auth.json (when provider supports OAuth login)
+	 * 3. API key from auth.json (including fallback when OAuth refresh fails)
 	 * 4. Environment variable
 	 * 5. Fallback resolver (models.json custom providers)
 	 */
@@ -511,7 +519,15 @@ export class AuthStorage {
 		}
 
 		const creds = this.getCredentialsForProvider(providerId);
-		const cred = creds.find((entry) => entry.type === "api_key") ?? creds.find((entry) => entry.type === "oauth");
+		const apiKeyCredential = creds.find(isUsableApiKeyCredential);
+		const oauthCredential = creds.find((entry) => entry.type === "oauth");
+		// Prefer OAuth for providers that support subscription login (anthropic,
+		// github-copilot, openai-codex). Users often have both OAuth and a stale
+		// API key on disk; subscription auth should win unless --api-key overrides.
+		const cred =
+			oauthCredential && getOAuthProvider(providerId)
+				? oauthCredential
+				: (apiKeyCredential ?? oauthCredential);
 
 		if (cred?.type === "api_key") {
 			return resolveConfigValue(cred.key);
@@ -523,6 +539,9 @@ export class AuthStorage {
 				// Unknown OAuth provider, can't get API key
 				return undefined;
 			}
+
+			const resolveStoredApiKey = (): string | undefined =>
+				apiKeyCredential ? resolveConfigValue(apiKeyCredential.key) : undefined;
 
 			// Check if token needs refresh
 			const needsRefresh = Date.now() >= cred.expires;
@@ -536,20 +555,21 @@ export class AuthStorage {
 					}
 				} catch (error) {
 					this.recordError(error);
-					// Refresh failed - re-read file to check if another instance succeeded
-					this.reload();
-					const updatedCred = this.getCredentialsForProvider(providerId).find(
-						(entry) => entry.type === "oauth",
-					);
+				}
 
-					if (updatedCred?.type === "oauth" && Date.now() < updatedCred.expires) {
-						// Another instance refreshed successfully, use those credentials
-						return provider.getApiKey(updatedCred);
-					}
+				// Refresh failed or returned nothing - re-read file to check if another instance succeeded
+				this.reload();
+				const updatedCred = this.getCredentialsForProvider(providerId).find(
+					(entry) => entry.type === "oauth",
+				);
 
-					// Refresh truly failed - return undefined so model discovery skips this provider
-					// User can /login to re-authenticate (credentials preserved for retry)
-					return undefined;
+				if (updatedCred?.type === "oauth" && Date.now() < updatedCred.expires) {
+					return provider.getApiKey(updatedCred);
+				}
+
+				const storedApiKey = resolveStoredApiKey();
+				if (storedApiKey) {
+					return storedApiKey;
 				}
 			} else {
 				// Token not expired, use current access token

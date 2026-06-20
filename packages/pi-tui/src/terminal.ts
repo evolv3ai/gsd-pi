@@ -12,6 +12,20 @@ const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
 const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0;\x07";
 
+export function shouldEnableMouseReporting(env: NodeJS.ProcessEnv = process.env): boolean {
+	return env.PI_TUI_MOUSE === "1";
+}
+
+/** True when stdout is no longer writable (pipe closed, terminal detached). */
+export function isStdoutClosedError(err: unknown): boolean {
+	if (!(err instanceof Error)) return false;
+	const errno = err as NodeJS.ErrnoException;
+	if (errno.code === "EPIPE") return true;
+	if (errno.code === "EIO" && errno.syscall === "write") return true;
+	const message = err.message;
+	return message === "write EOF" || message === "read EOF" || message === "write EIO";
+}
+
 /**
  * Minimal terminal interface for TUI
  */
@@ -60,6 +74,12 @@ export interface Terminal {
 
 	// Progress indicator (OSC 9;4)
 	setProgress(active: boolean): void;
+
+	/** True after stdout became unwritable (pipe closed). */
+	readonly outputClosed?: boolean;
+
+	/** Called once when stdout is no longer writable. */
+	setOutputClosedHandler?(handler: () => void): void;
 }
 
 /**
@@ -75,6 +95,8 @@ export class ProcessTerminal implements Terminal {
 	private stdinBuffer?: StdinBuffer;
 	private stdinDataHandler?: (data: string) => void;
 	private progressInterval?: ReturnType<typeof setInterval>;
+	private _outputClosed = false;
+	private outputClosedHandler?: () => void;
 	private writeLogPath = (() => {
 		const env = process.env.PI_TUI_WRITE_LOG || "";
 		if (!env) return "";
@@ -96,6 +118,39 @@ export class ProcessTerminal implements Terminal {
 
 	get isTTY(): boolean {
 		return Boolean(process.stdout.isTTY);
+	}
+
+	get outputClosed(): boolean {
+		return this._outputClosed;
+	}
+
+	setOutputClosedHandler(handler: () => void): void {
+		this.outputClosedHandler = handler;
+		if (this._outputClosed) {
+			handler();
+		}
+	}
+
+	private writeStdout(data: string | Uint8Array): void {
+		if (this._outputClosed) return;
+		try {
+			process.stdout.write(data);
+		} catch (err) {
+			if (isStdoutClosedError(err)) {
+				this.markOutputClosed();
+				return;
+			}
+			throw err;
+		}
+	}
+
+	private markOutputClosed(): void {
+		if (this._outputClosed) return;
+		this._outputClosed = true;
+		this.clearProgressInterval();
+		const handler = this.outputClosedHandler;
+		this.outputClosedHandler = undefined;
+		handler?.();
 	}
 
 	start(onInput: (data: string) => void, onResize: () => void): void {
@@ -135,13 +190,14 @@ export class ProcessTerminal implements Terminal {
 		process.stdin.resume();
 
 		// Enable bracketed paste mode - terminal will wrap pastes in \x1b[200~ ... \x1b[201~
-		process.stdout.write("\x1b[?2004h");
+		this.writeStdout("\x1b[?2004h");
 
-		// Enable mouse reporting so clicks and the wheel reach the TUI. On by
-		// default; set PI_TUI_MOUSE=0 to opt out (preserves native click-drag
-		// text selection without holding Shift).
-		if (process.env.PI_TUI_MOUSE !== "0") {
-			process.stdout.write(ENABLE_MOUSE);
+		// Mouse reporting lets clicks and the wheel reach the TUI, but terminal
+		// mouse capture prevents native click-drag text selection in most
+		// emulators. Keep native selection as the default; set PI_TUI_MOUSE=1 to
+		// opt into mouse reporting.
+		if (shouldEnableMouseReporting()) {
+			this.writeStdout(ENABLE_MOUSE);
 			this._mouseActive = true;
 		}
 
@@ -194,7 +250,7 @@ export class ProcessTerminal implements Terminal {
 					// Flag 2 = report event types (press/repeat/release)
 					// Flag 4 = report alternate keys (shifted key, base layout key)
 					// Base layout key enables shortcuts to work with non-Latin keyboard layouts
-					process.stdout.write("\x1b[>7u");
+					this.writeStdout("\x1b[>7u");
 					return; // Don't forward protocol response to TUI
 				}
 			}
@@ -234,10 +290,10 @@ export class ProcessTerminal implements Terminal {
 	private queryAndEnableKittyProtocol(): void {
 		this.setupStdinBuffer();
 		process.stdin.on("data", this.stdinDataHandler!);
-		process.stdout.write("\x1b[?u");
+		this.writeStdout("\x1b[?u");
 		setTimeout(() => {
 			if (!this._kittyProtocolActive && !this._modifyOtherKeysActive) {
-				process.stdout.write("\x1b[>4;2m");
+				this.writeStdout("\x1b[>4;2m");
 				this._modifyOtherKeysActive = true;
 			}
 		}, 150);
@@ -283,16 +339,16 @@ export class ProcessTerminal implements Terminal {
 		if (this._kittyProtocolActive) {
 			// Disable Kitty keyboard protocol first so any late key releases
 			// do not generate new Kitty escape sequences.
-			process.stdout.write("\x1b[<u");
+			this.writeStdout("\x1b[<u");
 			this._kittyProtocolActive = false;
 			setKittyProtocolActive(false);
 		}
 		if (this._modifyOtherKeysActive) {
-			process.stdout.write("\x1b[>4;0m");
+			this.writeStdout("\x1b[>4;0m");
 			this._modifyOtherKeysActive = false;
 		}
 		if (this._mouseActive) {
-			process.stdout.write(DISABLE_MOUSE);
+			this.writeStdout(DISABLE_MOUSE);
 			this._mouseActive = false;
 		}
 
@@ -323,26 +379,26 @@ export class ProcessTerminal implements Terminal {
 
 	stop(): void {
 		if (this.clearProgressInterval()) {
-			process.stdout.write(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
+			this.writeStdout(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
 		}
 
 		// Disable bracketed paste mode
-		process.stdout.write("\x1b[?2004l");
+		this.writeStdout("\x1b[?2004l");
 
 		// Disable mouse reporting if not already done by drainInput()
 		if (this._mouseActive) {
-			process.stdout.write(DISABLE_MOUSE);
+			this.writeStdout(DISABLE_MOUSE);
 			this._mouseActive = false;
 		}
 
 		// Disable Kitty keyboard protocol if not already done by drainInput()
 		if (this._kittyProtocolActive) {
-			process.stdout.write("\x1b[<u");
+			this.writeStdout("\x1b[<u");
 			this._kittyProtocolActive = false;
 			setKittyProtocolActive(false);
 		}
 		if (this._modifyOtherKeysActive) {
-			process.stdout.write("\x1b[>4;0m");
+			this.writeStdout("\x1b[>4;0m");
 			this._modifyOtherKeysActive = false;
 		}
 
@@ -375,7 +431,7 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	write(data: string): void {
-		process.stdout.write(data);
+		this.writeStdout(data);
 		if (this.writeLogPath) {
 			try {
 				fs.appendFileSync(this.writeLogPath, data, { encoding: "utf8" });
@@ -396,52 +452,52 @@ export class ProcessTerminal implements Terminal {
 	moveBy(lines: number): void {
 		if (lines > 0) {
 			// Move down
-			process.stdout.write(`\x1b[${lines}B`);
+			this.writeStdout(`\x1b[${lines}B`);
 		} else if (lines < 0) {
 			// Move up
-			process.stdout.write(`\x1b[${-lines}A`);
+			this.writeStdout(`\x1b[${-lines}A`);
 		}
 		// lines === 0: no movement
 	}
 
 	hideCursor(): void {
-		process.stdout.write("\x1b[?25l");
+		this.writeStdout("\x1b[?25l");
 	}
 
 	showCursor(): void {
-		process.stdout.write("\x1b[?25h");
+		this.writeStdout("\x1b[?25h");
 	}
 
 	clearLine(): void {
-		process.stdout.write("\x1b[K");
+		this.writeStdout("\x1b[K");
 	}
 
 	clearFromCursor(): void {
-		process.stdout.write("\x1b[J");
+		this.writeStdout("\x1b[J");
 	}
 
 	clearScreen(): void {
-		process.stdout.write("\x1b[2J\x1b[H"); // Clear screen and move to home (1,1)
+		this.writeStdout("\x1b[2J\x1b[H"); // Clear screen and move to home (1,1)
 	}
 
 	setTitle(title: string): void {
 		// OSC 0;title BEL - set terminal window title
-		process.stdout.write(`\x1b]0;${title}\x07`);
+		this.writeStdout(`\x1b]0;${title}\x07`);
 	}
 
 	setProgress(active: boolean): void {
 		if (active) {
 			// OSC 9;4;3 - indeterminate progress
-			process.stdout.write(TERMINAL_PROGRESS_ACTIVE_SEQUENCE);
+			this.writeStdout(TERMINAL_PROGRESS_ACTIVE_SEQUENCE);
 			if (!this.progressInterval) {
 				this.progressInterval = setInterval(() => {
-					process.stdout.write(TERMINAL_PROGRESS_ACTIVE_SEQUENCE);
+					this.writeStdout(TERMINAL_PROGRESS_ACTIVE_SEQUENCE);
 				}, TERMINAL_PROGRESS_KEEPALIVE_MS);
 			}
 		} else {
 			this.clearProgressInterval();
 			// OSC 9;4;0 - clear progress
-			process.stdout.write(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
+			this.writeStdout(TERMINAL_PROGRESS_CLEAR_SEQUENCE);
 		}
 	}
 

@@ -9,6 +9,7 @@ import {
   detectWorktreeName,
   getCurrentBranch,
   getMainBranch,
+  nudgeGitBranchCache,
   getSliceBranchName,
   parseSliceBranch,
   resolveProjectRoot,
@@ -94,6 +95,23 @@ describe('worktree', async () => {
   assert.ok(!SLICE_BRANCH_RE.test("main"), "regex rejects main");
   assert.ok(!SLICE_BRANCH_RE.test("gsd/"), "regex rejects bare gsd/");
   assert.ok(!SLICE_BRANCH_RE.test("worktree/foo"), "regex rejects worktree/foo");
+
+  console.log("\n=== nudgeGitBranchCache deleted cwd ===");
+  {
+    const safeCwd = process.cwd();
+    const deletedCwd = mkdtempSync(join(tmpdir(), "gsd-deleted-cwd-"));
+    try {
+      process.chdir(deletedCwd);
+      rmSync(deletedCwd, { recursive: true, force: true });
+
+      assert.doesNotThrow(
+        () => nudgeGitBranchCache(safeCwd),
+        "nudgeGitBranchCache should not call process.cwd() unguarded from a deleted cwd",
+      );
+    } finally {
+      process.chdir(safeCwd);
+    }
+  }
 
   console.log("\n=== detectWorktreeName ===");
   assert.deepStrictEqual(detectWorktreeName("/projects/myapp"), null, "no worktree in plain path");

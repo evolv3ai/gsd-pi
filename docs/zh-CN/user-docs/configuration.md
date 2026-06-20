@@ -153,15 +153,20 @@ mcp_call(server="my-server", tool="<tool_name>", args={...})
 - GSD 和 `gsd-mcp-server` 都会自动加载保存在 `~/.gsd/agent/auth.json` 中的 model / tool keys，因此 MCP 配置可以安全地通过 `${ENV_VAR}` 占位符引用这些值，而不必提交原始凭据
 - 如果某个 server 是团队共享且适合提交到仓库，通常更适合放在 `.mcp.json`
 - 如果某个 server 依赖本机路径、个人服务或本地 secrets，更适合放在 `.gsd/mcp.json`
+- 对内置的 `gsd-workflow` server，如果是从 worktree 或 wrapper 启动，请把 `GSD_WORKFLOW_PROJECT_ROOT` 设为规范项目根目录。打包的 server 会用它定位 workflow 工具路径，并用它作为 `$GSD_HOME/mcp-instances.json` 中的单项目 stale-process registry key。
+- 需要 GSD workflow 工具的 Claude Code 会话是 fail-closed 的：如果启动时 `gsd-workflow` 不存在、仍为 pending、failed、disabled，或缺少必需工具，GSD 会在第一个 model turn 前中止该 unit 并重试，而不是允许工具调用落到不完整的 surface 上。
 
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `GSD_HOME` | `~/.gsd` | 全局 GSD 目录。除非单独覆盖，否则其它路径都从这里派生。影响偏好、skills、sessions 以及项目状态。（v2.39） |
-| `GSD_PROJECT_ID` | （自动哈希） | 覆盖自动生成的项目身份哈希。这样项目状态会写入 `$GSD_HOME/projects/<GSD_PROJECT_ID>/`，而不是计算出的哈希目录。适用于 CI/CD 或多个克隆共享状态。（v2.39） |
+| `GSD_HOME` | `~/.gsd` | 全局 GSD 目录。除非单独覆盖，否则其它路径都从这里派生。影响偏好、skills、sessions 以及项目状态。 |
+| `GSD_PROJECT_ID` | （自动哈希） | 覆盖自动生成的项目身份哈希。这样项目状态会写入 `$GSD_HOME/projects/<GSD_PROJECT_ID>/`，而不是计算出的哈希目录。适用于 CI/CD 或多个克隆共享状态。 |
 | `GSD_STATE_DIR` | `$GSD_HOME` | 项目状态根目录。控制 `projects/<repo-hash>/` 的创建位置。对项目状态的优先级高于 `GSD_HOME`。 |
 | `GSD_CODING_AGENT_DIR` | `$GSD_HOME/agent` | agent 目录，包含托管资源、扩展和 auth。对 agent 相关路径的优先级高于 `GSD_HOME`。 |
+| `GSD_WORKFLOW_PROJECT_ROOT` | 当前工作目录 | 打包的 `gsd-workflow` MCP server 使用的规范项目根目录。workflow 工具和 `$GSD_HOME/mcp-instances.json` 的 stale-process registry key 都会使用它。 |
+| `GSD_WORKFLOW_EXECUTORS_MODULE` | 尽可能自动发现 | 可选的绝对路径或 `file:` URL，指向 `gsd-workflow` mutation tools 使用的共享 workflow executor module。 |
+| `GSD_WORKFLOW_WRITE_GATE_MODULE` | 尽可能自动发现 | 可选的绝对路径或 `file:` URL，指向 `gsd-workflow` mutation tools 使用的共享 write-gate module。 |
 | `GSD_ALLOWED_COMMAND_PREFIXES` | （内置列表） | 允许用于 `!command` 值解析的命令前缀，逗号分隔。会覆盖 settings.json 中的 `allowedCommandPrefixes`。见 [自定义模型：命令允许列表](custom-models.md#command-allowlist)。 |
 | `GSD_FETCH_ALLOWED_URLS` | （无） | 对 `fetch_page` URL block 免检的 hostnames，逗号分隔。会覆盖 settings.json 中的 `fetchAllowedUrls`。见 [URL Blocking](#url-blocking-fetch_page)。 |
 
@@ -184,7 +189,7 @@ models:
   subagent: claude-sonnet-4-6
 ```
 
-**阶段键：** `research`、`planning`、`execution`、`execution_simple`、`completion`、`subagent`
+**阶段键：** `research`、`planning`、`discuss`、`execution`、`execution_simple`、`completion`、`validation`、`subagent`、`uat`
 
 - `execution_simple`：用于被 [complexity router](./token-optimization.md#complexity-based-task-routing) 判断为 “simple” 的 task
 - `subagent`：委派给 subagent 的 task 所使用的 model（scout、researcher、worker）
@@ -316,6 +321,7 @@ auto_supervisor:
   soft_timeout_minutes: 20    # 提醒 LLM 收尾
   idle_timeout_minutes: 10    # 检测停滞
   hard_timeout_minutes: 30    # 暂停自动模式
+  stalled_tool_timeout_minutes: 5  # 恢复在调用中卡死的 tool（默认：5）
 ```
 
 ### `budget_ceiling`
@@ -354,7 +360,7 @@ context_pause_threshold: 80   # 在上下文使用达到 80% 时暂停
 uat_dispatch: true
 ```
 
-### Verification（v2.26）
+### Verification
 
 配置在每次 task 执行后自动运行的 shell 命令。若失败，会先尝试自动修复重试，再决定是否继续。
 
@@ -410,7 +416,7 @@ export GSD_FETCH_ALLOWED_URLS="internal-docs.company.com,192.168.1.50"
 
 > **注意：** 这是一个仅全局生效的设置。项目级 settings.json 不能覆盖 URL allowlist，以防克隆下来的仓库把 `fetch_page` 指向内部基础设施。
 
-### `auto_report`（v2.26）
+### `auto_report`
 
 在 milestone 完成后自动生成 HTML 报告：
 
@@ -520,7 +526,7 @@ git:
 
 如果没有设置 `pr_target_branch`，PR 会默认指向 `main_branch`（或者自动检测出的主分支）。PR 创建失败不会中断流程，GSD 会记录日志后继续。
 
-### `github`（v2.39）
+### `github`
 
 GitHub 同步配置。启用后，GSD 会自动把 milestones、slices 和 tasks 同步到 GitHub Issues、PRs 和 Milestones。
 
@@ -542,7 +548,7 @@ github:
 **要求：**
 
 - 已安装并认证 `gh` CLI（`gh auth login`）
-- 同步映射会保存在 `.gsd/.github-sync.json`
+- 同步映射会保存在 `.gsd/github-sync.json`
 - 具备速率限制感知：当 GitHub API rate limit 偏低时会跳过同步
 
 **命令：**
@@ -684,7 +690,7 @@ custom_instructions:
 
 如果是项目特有知识，请使用 GSD 的 knowledge 和 memory 机制。`.gsd/KNOWLEDGE.md` 是混合投影：手动维护的 Rules 保留在文件里，生成的 Patterns 和 Lessons 由 `memories` 表承载，并渲染回文件方便审阅。持久操作规则用 `/gsd knowledge rule <description>` 添加；agent 发现的模式和经验会作为 memories 保存，并自动参与 prompt 注入。
 
-### `RUNTIME.md`：运行时上下文（v2.39）
+### `RUNTIME.md`：运行时上下文
 
 你可以在 `.gsd/RUNTIME.md` 中声明项目级运行时上下文。这个文件会内联进 task execution prompt，让 agent 能准确知道运行环境，而不必靠猜测路径或 URL。
 
@@ -717,7 +723,7 @@ custom_instructions:
 ```yaml
 dynamic_routing:
   enabled: true
-  capability_routing: true          # 按 task capability 评分 models（v2.59）
+  capability_routing: true          # 按 task capability 评分 models
   tier_models:
     light: claude-haiku-4-5
     standard: claude-sonnet-4-6
@@ -727,7 +733,7 @@ dynamic_routing:
   cross_provider: true
 ```
 
-### `context_management`（v2.59）
+### `context_management`
 
 控制自动模式会话中的 observation masking 和 tool result truncation。可在不增加 LLM 开销的前提下，减少 compaction 之间的上下文膨胀。
 
@@ -735,11 +741,11 @@ dynamic_routing:
 context_management:
   observation_masking: true          # 用占位符替换旧 tool result（默认：true）
   observation_mask_turns: 8          # 保留最近 N 个 user turn 的结果（1-50，默认：8）
-  compaction_threshold_percent: 0.70 # 在 70% 上下文使用率处触发 compaction（0.5-0.95，默认：0.70）
+  compaction_threshold_percent: 0.60 # 在 60% 上下文使用率处触发 compaction（0.5-0.95，默认：0.60）
   tool_result_max_chars: 800         # 单个 tool result 的最大字符数（200-10000，默认：800）
 ```
 
-### `service_tier`（v2.42）
+### `service_tier`
 
 OpenAI 支持模型的 service tier 偏好。可通过 `/gsd fast` 切换。
 
@@ -753,7 +759,7 @@ OpenAI 支持模型的 service tier 偏好。可通过 `/gsd fast` 切换。
 service_tier: priority
 ```
 
-### `forensics_dedup`（v2.43）
+### `forensics_dedup`
 
 可选启用：在 `/gsd forensics` 提交 issue 之前，先搜索现有 issues 和 PRs。会额外消耗一些 AI tokens。
 
@@ -761,7 +767,7 @@ service_tier: priority
 forensics_dedup: true    # 默认：false
 ```
 
-### `show_token_cost`（v2.44）
+### `show_token_cost`
 
 可选启用：在 footer 中显示每次 prompt 和累计会话的 token 成本。
 

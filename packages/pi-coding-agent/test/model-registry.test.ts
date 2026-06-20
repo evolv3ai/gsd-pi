@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AnthropicMessagesCompat, Api, Context, Model, OpenAICompletionsCompat } from "@earendil-works/pi-ai";
-import { getApiProvider } from "@earendil-works/pi-ai";
+import { getApiProvider, streamSimple } from "@earendil-works/pi-ai";
 import { getOAuthProvider } from "@earendil-works/pi-ai/oauth";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -241,6 +241,54 @@ describe("ModelRegistry", () => {
 			const model = registry.find("gsd-fake", "gsd-fake-model");
 			expect(model).toBeDefined();
 			expect(registry.hasConfiguredAuth(model!)).toBe(true);
+		});
+
+		test("MiniMax ignores empty stored key placeholders when checking request readiness", async () => {
+			const originalMinimaxKey = process.env.MINIMAX_API_KEY;
+			const validCredential = ["minimax", "valid", "test", "credential"].join("-");
+
+			try {
+				delete process.env.MINIMAX_API_KEY;
+				authStorage = AuthStorage.inMemory({
+					minimax: { type: "api_key", key: "" },
+				});
+
+				const registryWithoutKey = ModelRegistry.create(authStorage, modelsJsonPath);
+				const minimaxModelWithoutKey = registryWithoutKey.find("minimax", "MiniMax-M2.7");
+
+				expect(minimaxModelWithoutKey).toBeDefined();
+				expect(registryWithoutKey.isProviderRequestReady("minimax")).toBe(false);
+				expect(registryWithoutKey.getProviderAuthStatus("minimax")).toEqual({ configured: false });
+
+				authStorage = AuthStorage.inMemory({
+					minimax: [
+						{ type: "api_key", key: "" },
+						{ type: "api_key", key: validCredential },
+					],
+				});
+
+				const registryWithKey = ModelRegistry.create(authStorage, modelsJsonPath);
+				const minimaxModelWithKey = registryWithKey.find("minimax", "MiniMax-M2.7");
+
+				expect(minimaxModelWithKey).toBeDefined();
+				const auth = await registryWithKey.getApiKeyAndHeaders(minimaxModelWithKey!);
+
+				expect(registryWithKey.isProviderRequestReady("minimax")).toBe(true);
+				expect(registryWithKey.getProviderAuthStatus("minimax")).toEqual({
+					configured: true,
+					source: "stored",
+				});
+				expect(auth.ok).toBe(true);
+				if (auth.ok) {
+					expect(auth.apiKey).toBe(validCredential);
+				}
+			} finally {
+				if (originalMinimaxKey === undefined) {
+					delete process.env.MINIMAX_API_KEY;
+				} else {
+					process.env.MINIMAX_API_KEY = originalMinimaxKey;
+				}
+			}
 		});
 
 		test("Anthropic Vertex built-in models are available when project auth is configured", () => {
@@ -1025,34 +1073,42 @@ describe("ModelRegistry", () => {
 			expect(getOAuthProvider("anthropic")?.name).not.toBe("Custom Anthropic OAuth");
 		});
 
-		test("unregisterProvider removes custom streamSimple override and restores built-in API stream handler", () => {
+		test("provider streamSimple is scoped to that provider and removed on unregister", () => {
 			const registry = ModelRegistry.create(authStorage, modelsJsonPath);
 
 			registry.registerProvider("stream-override-provider", {
 				api: "openai-completions",
+				baseUrl: "https://provider.test/v1",
+				apiKey: "TEST_KEY",
+				models: [
+					{
+						id: "scoped-model",
+						name: "Scoped Model",
+						reasoning: false,
+						input: ["text"],
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						contextWindow: 128000,
+						maxTokens: 4096,
+					},
+				],
 				streamSimple: () => {
 					throw new Error("custom streamSimple override");
 				},
 			});
 
-			let threwCustomOverride = false;
-			try {
-				getApiProvider("openai-completions")?.streamSimple(openAiModel, emptyContext);
-			} catch (error) {
-				threwCustomOverride = error instanceof Error && error.message === "custom streamSimple override";
+			const scopedModel = registry.find("stream-override-provider", "scoped-model");
+			if (!scopedModel) {
+				throw new Error("Expected scoped model to be registered");
 			}
-			expect(threwCustomOverride).toBe(true);
+
+			expect(() => streamSimple(scopedModel, emptyContext)).toThrow("custom streamSimple override");
+			expect(() => getApiProvider("openai-completions")?.streamSimple(openAiModel, emptyContext)).not.toThrow(
+				"custom streamSimple override",
+			);
 
 			registry.unregisterProvider("stream-override-provider");
 
-			let threwCustomOverrideAfterUnregister = false;
-			try {
-				getApiProvider("openai-completions")?.streamSimple(openAiModel, emptyContext);
-			} catch (error) {
-				threwCustomOverrideAfterUnregister =
-					error instanceof Error && error.message === "custom streamSimple override";
-			}
-			expect(threwCustomOverrideAfterUnregister).toBe(false);
+			expect(() => streamSimple(scopedModel, emptyContext)).not.toThrow("custom streamSimple override");
 		});
 
 		describe("dynamic provider override persistence", () => {

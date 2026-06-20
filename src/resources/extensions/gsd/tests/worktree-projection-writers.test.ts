@@ -171,7 +171,7 @@ test("validate-milestone invoked from the project root writes VALIDATION under t
   const projectProjection = join(projectRoot, ".gsd", "milestones", MID, "M001-VALIDATION.md");
   assert.equal(result.validationPath, expected);
   assert.equal(existsSync(expected), true);
-  assert.equal(existsSync(projectProjection), false);
+  assert.equal(existsSync(projectProjection), true, "VALIDATION should mirror to project root for consistent reads");
 });
 
 test("complete-milestone writes SUMMARY under the active worktree projection", async (t) => {

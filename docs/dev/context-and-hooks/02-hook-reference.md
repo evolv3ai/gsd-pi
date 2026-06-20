@@ -204,7 +204,9 @@ pi.on("message_end", async (event, ctx) => {
 
 ### `tool_call`
 
-**When:** After the LLM requests a tool call, before it executes.
+**When:** After the LLM requests a tool call, before the Pi loop executes it natively.
+
+External engines can pre-execute tools and hand Pi an `externalResult`; those calls skip `tool_call`. Do not rely on this hook alone for cross-engine safety policy.
 
 **Chaining:** Sequential. If any handler returns `{ block: true }`, execution stops immediately. The block reason becomes an Error that is caught and returned as the tool result with `isError: true`.
 
@@ -223,7 +225,7 @@ pi.on("tool_call", async (event, ctx) => {
 
 **Type narrowing:**
 ```typescript
-import { isToolCallEventType } from "@mariozechner/pi-coding-agent";
+import { isToolCallEventType } from "@gsd/pi-coding-agent";
 
 pi.on("tool_call", async (event, ctx) => {
   if (isToolCallEventType("bash", event)) {
@@ -242,7 +244,7 @@ pi.on("tool_call", async (event, ctx) => {
 
 ### `tool_execution_start` / `tool_execution_update` / `tool_execution_end`
 
-Informational events during tool execution. No return values.
+Informational events during tool execution. No return values. `tool_execution_start` and `tool_execution_end` fire for both native and external-engine tool calls.
 
 ```typescript
 pi.on("tool_execution_start", async (event) => {
@@ -260,7 +262,9 @@ pi.on("tool_execution_end", async (event) => {
 
 ### `tool_result`
 
-**When:** After a tool finishes executing, before the result is returned to the agent loop.
+**When:** After a natively executed tool finishes, before the result is returned to the agent loop.
+
+External-engine `externalResult` calls skip this hook. Use it for native result rewriting, not universal evidence collection.
 
 **Chaining:** Sequential. Each handler can modify the result. Modifications accumulate across handlers. All handlers see the evolving `currentEvent` with content/details/isError updated by previous handlers.
 
@@ -283,7 +287,7 @@ pi.on("tool_result", async (event, ctx) => {
 });
 ```
 
-**Also fires for errors:** If tool execution throws, `tool_result` still fires with `isError: true` and the error message as content. Extensions can modify even error results.
+**Also fires for native errors:** If native tool execution throws, `tool_result` still fires with `isError: true` and the error message as content. Extensions can modify even error results.
 
 ---
 

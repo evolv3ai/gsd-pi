@@ -19,10 +19,10 @@ Simplified Chinese translation: [`zh-CN/`](./zh-CN/).
 | [Provider Setup](./user-docs/providers.md) | Step-by-step setup for OpenRouter, Ollama, LM Studio, vLLM, and all supported providers |
 | [Claude Code Subscription Setup](./user-docs/claude-code-subscription.md) | Install Claude Code, sign in with `/login`, and use a Claude subscription with GSD |
 | [Custom Models](./user-docs/custom-models.md) | Advanced model configuration — models.json schema, compat flags, overrides |
-| [Token Optimization](./user-docs/token-optimization.md) | Token profiles, context compression, complexity routing, and adaptive learning (v2.17) |
-| [Dynamic Model Routing](./user-docs/dynamic-model-routing.md) | Complexity-based model selection, cost tables, escalation, and budget pressure (v2.19) |
-| [Captures & Triage](./user-docs/captures-triage.md) | Fire-and-forget thought capture during auto-mode with automated triage (v2.19) |
-| [Workflow Visualizer](./user-docs/visualizer.md) | Interactive TUI overlay for progress, dependencies, metrics, and timeline (v2.19) |
+| [Token Optimization](./user-docs/token-optimization.md) | Token profiles, context compression, complexity routing, and adaptive learning |
+| [Dynamic Model Routing](./user-docs/dynamic-model-routing.md) | Complexity-based model selection, cost tables, escalation, and budget pressure |
+| [Captures & Triage](./user-docs/captures-triage.md) | Fire-and-forget thought capture during auto-mode with automated triage |
+| [Workflow Visualizer](./user-docs/visualizer.md) | Interactive TUI overlay for progress, dependencies, metrics, and timeline |
 | [Cost Management](./user-docs/cost-management.md) | Budget ceilings, cost tracking, projections, and enforcement modes |
 | [Git Strategy](./user-docs/git-strategy.md) | Worktree isolation, branching model, and merge behavior |
 | [Parallel Orchestration](./user-docs/parallel-orchestration.md) | Run multiple milestones simultaneously with worker isolation and coordination |
@@ -30,10 +30,10 @@ Simplified Chinese translation: [`zh-CN/`](./zh-CN/).
 | [Working in Teams](./user-docs/working-in-teams.md) | Unique milestone IDs, `.gitignore` setup, and shared planning artifacts |
 | [Skills](./user-docs/skills.md) | Bundled skills, skill discovery, and custom skill authoring |
 | [Migration from v1](./user-docs/migration.md) | Migrating `.planning` directories from the original GSD |
-| [Troubleshooting](./user-docs/troubleshooting.md) | Common issues, `/gsd doctor` (real-time visibility v2.40), `/gsd forensics` (full debugger v2.40), and recovery procedures |
-| [Web Interface](./user-docs/web-interface.md) | Browser-based project management with `gsd --web` (v2.41) |
+| [Troubleshooting](./user-docs/troubleshooting.md) | Common issues, `/gsd doctor` (real-time visibility), `/gsd forensics` (full debugger), and recovery procedures |
+| [Web Interface](./user-docs/web-interface.md) | Browser-based project management with `gsd --web` |
 | [VS Code Extension](../vscode-extension/README.md) | Chat participant, sidebar dashboard, and RPC integration for VS Code |
-| [Release Notes](../CHANGELOG.md) | Current v2.81 release notes and full version history |
+| [Release Notes](../CHANGELOG.md) | Current 1.2.0 release notes and full version history |
 
 ## Architecture & Internals
 
@@ -43,8 +43,8 @@ Design documents, ADRs, and internal references. Located in [`dev/`](./dev/).
 |-------|-------------|
 | [Architecture Overview](./dev/architecture.md) | System design, extension model, state-on-disk, and dispatch pipeline |
 | [Native Engine](../native/README.md) | Rust N-API modules for performance-critical operations |
-| [ADR-001: Branchless Worktree Architecture](./dev/ADR-001-branchless-worktree-architecture.md) | Decision record for the v2.14 git architecture |
-| [ADR-003: Pipeline Simplification](./dev/ADR-003-pipeline-simplification.md) | Research merged into planning, mechanical completion (v2.30) |
+| [ADR-001: Branchless Worktree Architecture](./dev/ADR-001-branchless-worktree-architecture.md) | Decision record for the git architecture |
+| [ADR-003: Pipeline Simplification](./dev/ADR-003-pipeline-simplification.md) | Research merged into planning, mechanical completion |
 | [ADR-004: Capability-Aware Model Routing](./dev/ADR-004-capability-aware-model-routing.md) | Extend routing from tier/cost selection to task-capability matching |
 | [ADR-007: Model Catalog Split](./dev/ADR-007-model-catalog-split.md) | Separate model metadata from routing logic for extensibility |
 | [ADR-008: GSD Tools over MCP](./dev/ADR-008-gsd-tools-over-mcp-for-provider-parity.md) | Native tools over MCP for provider parity |

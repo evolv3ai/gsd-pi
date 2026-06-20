@@ -152,35 +152,50 @@ test("ADR-017 (#5700): repair failure throws ReconciliationFailedError with shap
   );
 });
 
-test("ADR-017 (#5700): detector failure throws ReconciliationFailedError with shape", async () => {
-  const handler: DriftHandler = {
-    kind: "stale-sketch-flag",
+test("ADR-017 (#5700): a detector failure degrades to a blocker without aborting other handlers", async () => {
+  // A single detector throwing (e.g. a transient file read error) must NOT
+  // abort the whole cycle and hide every later handler's drift. It is collected
+  // as a blocker (so dispatch is still gated) while the remaining detectors run
+  // and their drift is repaired — graceful degradation, not fail-fast.
+  const throwingHandler: DriftHandler = {
+    kind: "stale-render",
     detect: () => {
       throw new Error("simulated detect failure");
     },
     repair: () => {
-      /* detect fails before repair */
+      /* never reached: detect throws */
     },
   };
 
-  await assert.rejects(
-    () =>
-      reconcileBeforeDispatch("/project", {
-        invalidateStateCache: () => {},
-        deriveState: async () => makeState(),
-        registry: [handler],
-      }),
-    (err: unknown) => {
-      assert.ok(err instanceof ReconciliationFailedError, "must be ReconciliationFailedError");
-      assert.equal(err.failures.length, 1);
-      assert.equal(err.failures[0]?.drift.kind, "stale-sketch-flag");
-      assert.ok(err.failures[0]?.cause instanceof Error);
-      assert.equal((err.failures[0]?.cause as Error).message, "simulated detect failure");
-      assert.equal(err.pass, 0);
-      assert.equal(err.detectionFailures.length, 0);
-      assert.equal(err.persistentDrift.length, 0);
-      return true;
+  let repairCount = 0;
+  const workingHandler: DriftHandler = {
+    kind: "stale-sketch-flag",
+    detect: () =>
+      repairCount === 0
+        ? [{ kind: "stale-sketch-flag", mid: "M001", sid: "S02" }]
+        : [],
+    repair: () => {
+      repairCount++;
     },
+  };
+
+  const result = await reconcileBeforeDispatch("/project", {
+    invalidateStateCache: () => {},
+    deriveState: async () => makeState(),
+    registry: [throwingHandler, workingHandler],
+  });
+
+  assert.equal(result.ok, true, "cycle must not abort on a single detector failure");
+  // The working handler (registered AFTER the thrower) still detected + repaired.
+  assert.equal(repairCount, 1, "later handler must still run despite earlier detect failure");
+  assert.equal(result.repaired.length, 1);
+  assert.equal(result.repaired[0]?.kind, "stale-sketch-flag");
+  // The detector failure surfaces as a blocker so dispatch is still gated.
+  assert.ok(
+    result.blockers.some(
+      (b) => b.includes("stale-render") && b.includes("simulated detect failure"),
+    ),
+    "detect failure must surface as a blocker",
   );
 });
 
@@ -746,6 +761,46 @@ test("ADR-017 (#5702): missing UAT.md clears stale full_uat_md from DB", async (
   );
 });
 
+test("ADR-017 (#5702): stale-render plan repair works with descriptor-layout milestone dir", async (t) => {
+  // Regression for bugbot finding: repairStaleRenderFromBasePath was passing the
+  // raw dir segment (e.g. M001-DESCRIPTOR) straight to renderPlanCheckboxes, which
+  // queries the DB as getSliceTasks("M001-DESCRIPTOR", …) → empty → throws.
+  // After the fix it calls canonicalizeMilestoneId() first.
+  const base = mkdtempSync(join(tmpdir(), "gsd-adr017-descriptor-"));
+  // Use a descriptor-style directory name (M001-DESCRIPTOR → DB milestone M001)
+  const milestoneDir = "M001-DESCRIPTOR";
+  const sliceDir = join(base, ".gsd", "milestones", milestoneDir, "slices", "S01");
+  mkdirSync(join(sliceDir, "tasks"), { recursive: true });
+  t.after(() => {
+    try { closeDatabase(); } catch { /* noop */ }
+    rmTreeQuiet(base);
+  });
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  clearRendererCaches();
+  // DB uses the canonical ID (M001), directory uses the descriptor name.
+  insertMilestone({ id: "M001", title: "Descriptor Test", status: "active" });
+  insertSlice({ id: "S01", milestoneId: "M001", title: "Slice", status: "pending" });
+  insertTask({ id: "T01", sliceId: "S01", milestoneId: "M001", title: "Task One", status: "done" });
+
+  const planPath = join(sliceDir, "S01-PLAN.md");
+  writeFileSync(planPath, makeStalePlanContent("S01", [
+    { id: "T01", title: "Task One", done: false },
+  ]));
+  clearRendererCaches();
+
+  const result = await reconcileBeforeDispatch(base, {
+    invalidateStateCache: () => {},
+    deriveState: async () => makeState(),
+  });
+
+  assert.equal(result.ok, true, "reconcile should succeed with descriptor-layout milestone dir");
+  const renderRepaired = result.repaired.find((d) => d.kind === "stale-render");
+  assert.ok(renderRepaired, "stale-render drift should be repaired");
+  const repairedContent = readFileSync(planPath, "utf-8");
+  assert.match(repairedContent, /\[x\][^\n]*T01:/, "T01 checkbox should be checked after repair");
+});
+
 // ─── #5703: stale-worker drift ───────────────────────────────────────────────
 
 const DEAD_PID = 999_999_999; // far above any realistic system PID; process.kill(pid, 0) → ESRCH
@@ -906,6 +961,51 @@ test("ADR-017 (#5704): registered milestone (DB row present) → no drift", asyn
 
 // ─── #5705: roadmap-divergence drift ─────────────────────────────────────────
 
+test("ADR-017 (#391): roadmap-divergence skips slices before task planning completes", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-adr017-roadmap-unplanned-"));
+  const milestoneDir = join(base, ".gsd", "milestones", "M001");
+  const roadmapPath = join(milestoneDir, "M001-ROADMAP.md");
+  mkdirSync(milestoneDir, { recursive: true });
+  const originalRoadmap = [
+    "# M001: Test",
+    "",
+    "**Vision:** Verify transient milestone planning state",
+    "",
+    "## Slices",
+    "",
+    "- [ ] **S01: Foundation** `risk:medium` `depends:[]`",
+    "- [ ] **S02: Feature** `risk:medium` `depends:[S01]`",
+    "",
+  ].join("\n");
+  writeFileSync(roadmapPath, originalRoadmap);
+  t.after(() => {
+    try { closeDatabase(); } catch { /* noop */ }
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M001", title: "Test", status: "active" });
+  insertSlice({ id: "S01", milestoneId: "M001", title: "Foundation", status: "pending", risk: "medium", depends: [], demo: "", sequence: 1 });
+  insertSlice({ id: "S02", milestoneId: "M001", title: "Feature", status: "pending", risk: "medium", depends: [], demo: "", sequence: 2 });
+
+  assert.equal(getSliceTasks("M001", "S01").length, 0, "pre: S01 has not been planned");
+  assert.equal(getSliceTasks("M001", "S02").length, 0, "pre: S02 has not been planned");
+
+  const result = await reconcileBeforeDispatch(base, {
+    invalidateStateCache: () => {},
+    deriveState: async () => makeState(),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.repaired.some((d) => d.kind === "roadmap-divergence"),
+    false,
+    "unplanned slices should not trigger roadmap-divergence repair",
+  );
+  assert.equal(readFileSync(roadmapPath, "utf-8"), originalRoadmap);
+  assert.deepEqual(getSlice("M001", "S02")?.depends, [], "DB remains unchanged");
+});
+
 test("ADR-017 (#5705): roadmap-divergence re-renders projection without syncing depends into DB", async (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-adr017-roadmap-"));
   const milestoneDir = join(base, ".gsd", "milestones", "M001");
@@ -936,6 +1036,8 @@ test("ADR-017 (#5705): roadmap-divergence re-renders projection without syncing 
   // Seed DB with S02 depending on []  — diverges from ROADMAP.md
   insertSlice({ id: "S01", milestoneId: "M001", title: "Foundation", status: "pending", risk: "medium", depends: [], demo: "", sequence: 1 });
   insertSlice({ id: "S02", milestoneId: "M001", title: "Feature", status: "pending", risk: "medium", depends: [], demo: "", sequence: 2 });
+  insertTask({ id: "T01", sliceId: "S01", milestoneId: "M001", title: "Plan S01", status: "pending" });
+  insertTask({ id: "T01", sliceId: "S02", milestoneId: "M001", title: "Plan S02", status: "pending" });
 
   assert.deepEqual(getSlice("M001", "S02")?.depends, [], "pre: DB has S02.depends = []");
 
@@ -987,6 +1089,7 @@ test("ADR-017 (#5705): ROADMAP-only slice is removed from projection and not ins
   insertMilestone({ id: "M001", title: "Test", status: "active" });
   // Only insert S01 — S02 is intentionally absent from the DB.
   insertSlice({ id: "S01", milestoneId: "M001", title: "Foundation", status: "pending", risk: "medium", depends: [], demo: "", sequence: 1 });
+  insertTask({ id: "T01", sliceId: "S01", milestoneId: "M001", title: "Plan S01", status: "pending" });
 
   assert.equal(getSlice("M001", "S02"), null, "pre: S02 has no DB row");
 
@@ -1035,6 +1138,8 @@ test("ADR-017 (#5705): ROADMAP sequence drift re-renders from DB order without m
   insertMilestone({ id: "M001", title: "Test", status: "active" });
   insertSlice({ id: "S01", milestoneId: "M001", title: "Foundation", status: "pending", risk: "medium", depends: [], demo: "", sequence: 1 });
   insertSlice({ id: "S02", milestoneId: "M001", title: "Feature", status: "pending", risk: "medium", depends: [], demo: "", sequence: 2 });
+  insertTask({ id: "T01", sliceId: "S01", milestoneId: "M001", title: "Plan S01", status: "pending" });
+  insertTask({ id: "T01", sliceId: "S02", milestoneId: "M001", title: "Plan S02", status: "pending" });
 
   const result = await reconcileBeforeDispatch(base, {
     invalidateStateCache: () => {},
@@ -1078,6 +1183,7 @@ test("ADR-017 (#5705): ROADMAP checkbox drift re-renders from DB status without 
   openDatabase(join(base, ".gsd", "gsd.db"));
   insertMilestone({ id: "M001", title: "Test", status: "active" });
   insertSlice({ id: "S01", milestoneId: "M001", title: "Foundation", status: "pending", risk: "medium", depends: [], demo: "", sequence: 1 });
+  insertTask({ id: "T01", sliceId: "S01", milestoneId: "M001", title: "Plan S01", status: "pending" });
 
   const result = await reconcileBeforeDispatch(base, {
     invalidateStateCache: () => {},
@@ -1119,6 +1225,7 @@ test("ADR-017 (#5705): in-sync ROADMAP and DB → no roadmap-divergence drift", 
   openDatabase(join(base, ".gsd", "gsd.db"));
   insertMilestone({ id: "M001", title: "Test", status: "active" });
   insertSlice({ id: "S01", milestoneId: "M001", title: "Foundation", status: "pending", risk: "low", depends: [], demo: "", sequence: 1 });
+  insertTask({ id: "T01", sliceId: "S01", milestoneId: "M001", title: "Plan S01", status: "pending" });
 
   const result = await reconcileBeforeDispatch(base, {
     invalidateStateCache: () => {},
@@ -1300,6 +1407,160 @@ test("ADR-017: orphan task completion artifact fails closed", async (t) => {
   assert.match(result.blockers.join("\n"), /Artifact\/DB status drift/);
 });
 
+test("ADR-017 (#414): failure-path summary artifact blocker matches auto.ts filter phrase", async (t) => {
+  // When gsd_summary_save writes a SUMMARY artifact row for a task that never
+  // called gsd_task_complete, the task stays pending and the artifact DB row
+  // produces an artifact-db-status-divergence blocker. The auto.ts dispatch
+  // wrapper must be able to filter this class of blocker to allow re-dispatch.
+  // If this test fails, update the filter strings in auto.ts to match.
+  const base = mkdtempSync(join(tmpdir(), "gsd-failure-path-summary-drift-"));
+  t.after(() => cleanup(base));
+
+  mkdirSync(join(base, ".gsd", "milestones", "M001", "slices", "S04"), { recursive: true });
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M001", title: "Milestone", status: "active" });
+  insertSlice({ id: "S04", milestoneId: "M001", title: "Slice", status: "pending" });
+  insertTask({ id: "T01", sliceId: "S04", milestoneId: "M001", title: "Task", status: "pending" });
+  insertArtifact({
+    path: join(base, ".gsd", "milestones", "M001", "slices", "S04", "tasks", "T01", "T01-SUMMARY.md"),
+    artifact_type: "SUMMARY",
+    milestone_id: "M001",
+    slice_id: "S04",
+    task_id: "T01",
+    full_content: "# T01 Failure Summary\n",
+  });
+
+  const result = await reconcileBeforeDispatch(base, {
+    invalidateStateCache: () => {},
+    deriveState: async () => makeState({ activeMilestone: { id: "M001", title: "Milestone" } }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.ok(result.blockers.length > 0, "blocker must be produced for pending-task SUMMARY drift");
+  const blocker = result.blockers.join("\n");
+  assert.match(
+    blocker,
+    /has SUMMARY artifact while DB status is/,
+    "blocker phrase must match the filter in auto.ts reconcileBeforeDispatch wrapper",
+  );
+});
+
+test("ADR-017 (#414): no-db-tasks summary artifact blocker matches auto.ts filter phrase", async (t) => {
+  // When a slice has SUMMARY artifacts in the DB but no DB tasks, the auto.ts
+  // filter must be able to recognise this as a failure-path case and skip it.
+  const base = mkdtempSync(join(tmpdir(), "gsd-no-db-tasks-summary-drift-"));
+  t.after(() => cleanup(base));
+
+  mkdirSync(join(base, ".gsd", "milestones", "M001", "slices", "S04"), { recursive: true });
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M001", title: "Milestone", status: "active" });
+  insertSlice({ id: "S04", milestoneId: "M001", title: "Slice", status: "pending" });
+  // No tasks inserted — slice has SUMMARY artifacts for a task that no longer exists.
+  insertArtifact({
+    path: join(base, ".gsd", "milestones", "M001", "slices", "S04", "tasks", "T01", "T01-SUMMARY.md"),
+    artifact_type: "SUMMARY",
+    milestone_id: "M001",
+    slice_id: "S04",
+    task_id: "T01",
+    full_content: "# T01 Failure Summary\n",
+  });
+
+  const result = await reconcileBeforeDispatch(base, {
+    invalidateStateCache: () => {},
+    deriveState: async () => makeState({ activeMilestone: { id: "M001", title: "Milestone" } }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.ok(result.blockers.length > 0, "blocker must be produced for no-db-tasks SUMMARY drift");
+  const blocker = result.blockers.join("\n");
+  assert.match(
+    blocker,
+    /has task SUMMARY artifacts but no DB tasks/,
+    "blocker phrase must match the filter in auto.ts reconcileBeforeDispatch wrapper",
+  );
+});
+
+test("ADR-017 (#414): task-level on-disk summary blocker matches auto.ts filter phrase", async (t) => {
+  // When gsd_summary_save writes a SUMMARY file to disk for a task that never
+  // called gsd_task_complete, but the artifact DB row was not yet written (or
+  // the process crashed before insertion), reconciliation emits
+  // "has SUMMARY on disk while DB status is". The auto.ts filter must match
+  // this phrase so re-dispatch is not blocked.
+  const base = mkdtempSync(join(tmpdir(), "gsd-task-disk-summary-drift-"));
+  t.after(() => cleanup(base));
+
+  const tasksDir = join(base, ".gsd", "milestones", "M001", "slices", "S04", "tasks");
+  mkdirSync(tasksDir, { recursive: true });
+  writeFileSync(join(tasksDir, "T01-SUMMARY.md"), "# T01 Failure Summary\n");
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M001", title: "Milestone", status: "active" });
+  insertSlice({ id: "S04", milestoneId: "M001", title: "Slice", status: "pending" });
+  insertTask({ id: "T01", sliceId: "S04", milestoneId: "M001", title: "Task", status: "pending" });
+  // No artifact row inserted — SUMMARY exists only on disk.
+
+  const result = await reconcileBeforeDispatch(base, {
+    invalidateStateCache: () => {},
+    deriveState: async () => makeState({ activeMilestone: { id: "M001", title: "Milestone" } }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.ok(result.blockers.length > 0, "blocker must be produced for on-disk task SUMMARY drift");
+  const blocker = result.blockers.join("\n");
+  assert.match(
+    blocker,
+    /has SUMMARY on disk while DB status is/,
+    "blocker phrase must match the filter in auto.ts reconcileBeforeDispatch wrapper",
+  );
+});
+
+test("ADR-017 (#414): slice-level on-disk summary blocker matches auto.ts filter phrase", async (t) => {
+  // When a SUMMARY file exists on disk for a slice that is still pending
+  // (no gsd_task_complete for the slice), reconciliation emits
+  // "has SUMMARY on disk while DB status is". The auto.ts filter must match
+  // this phrase so re-dispatch is not blocked.
+  const base = mkdtempSync(join(tmpdir(), "gsd-slice-disk-summary-drift-"));
+  t.after(() => cleanup(base));
+
+  const sliceDir = join(base, ".gsd", "milestones", "M001", "slices", "S04");
+  mkdirSync(sliceDir, { recursive: true });
+  writeFileSync(join(sliceDir, "S04-SUMMARY.md"), "# S04 Failure Summary\n");
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M001", title: "Milestone", status: "active" });
+  insertSlice({ id: "S04", milestoneId: "M001", title: "Slice", status: "pending" });
+  // No artifact row inserted — SUMMARY exists only on disk.
+
+  const result = await reconcileBeforeDispatch(base, {
+    invalidateStateCache: () => {},
+    deriveState: async () => makeState({ activeMilestone: { id: "M001", title: "Milestone" } }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.ok(result.blockers.length > 0, "blocker must be produced for on-disk slice SUMMARY drift");
+  const blocker = result.blockers.join("\n");
+  assert.match(
+    blocker,
+    /has SUMMARY on disk while DB status is/,
+    "blocker phrase must match the filter in auto.ts reconcileBeforeDispatch wrapper",
+  );
+});
+
+test("completedMilestoneReopenedGuidance tells active milestones to finish closeout", async () => {
+  const { completedMilestoneReopenedGuidance } = await import(
+    "../state-reconciliation/drift/artifact-db.ts"
+  );
+  const guidance = completedMilestoneReopenedGuidance({
+    milestoneId: "M005",
+    dbStatus: "active",
+    completedDispatchAt: "2026-05-30T00:01:00.000Z",
+  });
+  assert.match(guidance, /M005/);
+  assert.match(guidance, /\/gsd dispatch complete-milestone M005/);
+  assert.match(guidance, /\/gsd status M005/);
+  assert.match(guidance, /\/gsd next again before fixing/);
+});
+
 test("ADR-017: completed milestone dispatch history blocks accidental re-planning", async (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-completed-reopened-drift-"));
   t.after(() => cleanup(base));
@@ -1328,7 +1589,8 @@ test("ADR-017: completed milestone dispatch history blocks accidental re-plannin
   });
 
   assert.equal(result.ok, true);
-  assert.match(result.blockers.join("\n"), /completed complete-milestone dispatch history/);
+  assert.match(result.blockers.join("\n"), /completed closeout dispatch history/);
+  assert.match(result.blockers.join("\n"), /\/gsd dispatch complete-milestone M001/);
 });
 
 test("ADR-017: synthetic parallel-research slice directory is ignored", async (t) => {

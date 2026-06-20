@@ -12,6 +12,7 @@ import {
 	processes,
 	startProcess,
 	killProcess,
+	terminateProcess,
 	restartProcess,
 	getInfo,
 	getGroupStatus,
@@ -44,7 +45,8 @@ export function registerBgShellTool(pi: ExtensionAPI, state: BgShellSharedState)
 			"group_status (health of a process group), highlights (significant output lines only).",
 
 		promptGuidelines: [
-			"Use bg_shell to start long-running processes (servers, watchers, builds) that should not block the agent.",
+			"Use bg_shell for processes that STAY ALIVE and you interact with over time: servers, watchers, daemons, REPLs. For a command that runs to completion and exits (terraform apply, migrations, builds, tests, installs), use async_bash or sync bash instead — NOT bg_shell.",
+			"'wait_for_ready' is for long-lived processes that signal readiness (open a port / print a pattern). Never use it on a run-to-completion command: that command exits instead of becoming ready, so a clean exit-0 is reported as 'not ready'. If you see that, switch to async_bash.",
 			"After starting a server, use 'wait_for_ready' to efficiently block until it's listening — avoids polling loops entirely.",
 			"Use 'digest' instead of 'output' when you just need status — it returns a structured ~30-token summary instead of ~2000 tokens of raw output.",
 			"Use 'highlights' to see only significant output (errors, URLs, results) — typically 5-15 lines instead of hundreds.",
@@ -615,11 +617,13 @@ export function registerBgShellTool(pi: ExtensionAPI, state: BgShellSharedState)
 						};
 					}
 
-					const killed = killProcess(params.id, "SIGTERM");
-					await new Promise(r => setTimeout(r, 300));
-					if (bg.alive) {
-						killProcess(params.id, "SIGKILL");
-						await new Promise(r => setTimeout(r, 200));
+					// Graceful termination: SIGTERM → grace → SIGKILL via the shared
+					// killProcessTree ladder (same path bash/async_bash/exec use), so a
+					// stateful process gets a clean-shutdown window instead of a bare kill.
+					const killed = terminateProcess(params.id);
+					const deadline = Date.now() + 6_000; // grace (5s) + slack
+					while (bg.alive && Date.now() < deadline) {
+						await new Promise(r => setTimeout(r, 100));
 					}
 
 					const info = getInfo(bg);

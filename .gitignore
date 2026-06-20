@@ -48,6 +48,7 @@ docs/coherence-audit/
 # Local agent/editor state
 .claude/
 .agents/
+.opencode/
 .idea/
 .vscode/
 *.code-workspace
@@ -85,3 +86,6 @@ preflight-script.ts
 RELEASE-GUIDE.md
 TODOS.md
 AGENTS.md
+
+# opencode local config
+.opencode/

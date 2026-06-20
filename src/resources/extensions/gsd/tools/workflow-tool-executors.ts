@@ -6,23 +6,28 @@ import { sanitizeCompleteMilestoneParams } from "../bootstrap/sanitize-complete-
 import { loadWriteGateSnapshot, shouldBlockContextArtifactSaveInSnapshot, shouldBlockRootArtifactSaveInSnapshot } from "../bootstrap/write-gate.js";
 import {
   getActiveRequirements,
-  insertMilestone,
+  getAllMilestones,
   getMilestone,
   getSliceStatusSummary,
   getSliceTaskCounts,
+  insertMilestone,
+  insertAssessment,
+  insertGateRun,
   readTransaction,
   saveGateResult,
+  upsertQualityGate,
 } from "../gsd-db.js";
 import { GATE_REGISTRY } from "../gate-registry.js";
 import { generateRequirementsMd, saveArtifactToDb } from "../db-writer.js";
-import { clearPathCache, resolveGsdPathContract, resolveMilestoneFile, resolveSliceFile } from "../paths.js";
+import { clearPathCache, normalizeRealPath, relSliceFile, resolveGsdPathContract, resolveMilestoneFile, resolveSliceFile } from "../paths.js";
 import { saveFile, clearParseCache } from "../files.js";
 import { unlinkSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import type { CompleteMilestoneParams } from "./complete-milestone.js";
 import { handleCompleteMilestone } from "./complete-milestone.js";
 import { handleCompleteTask } from "./complete-task.js";
-import type { CompleteSliceParams } from "../types.js";
+import type { CompleteSliceParams, EscalationOption } from "../types.js";
 import { handleCompleteSlice } from "./complete-slice.js";
 import type { PlanMilestoneParams } from "./plan-milestone.js";
 import { handlePlanMilestone } from "./plan-milestone.js";
@@ -44,7 +49,26 @@ import { logError, logWarning } from "../workflow-logger.js";
 import { invalidateStateCache } from "../state.js";
 import { loadEffectiveGSDPreferences } from "../preferences.js";
 import { parseProject } from "../schemas/parsers.js";
-import { getAutoRuntimeSnapshot } from "../auto-runtime-state.js";
+import { autoSession, getAutoRuntimeSnapshot, isAutoActive } from "../auto-runtime-state.js";
+import { renderPlanFromDb } from "../markdown-renderer.js";
+import {
+  prepareUatRun,
+  saveUatAttemptArtifact,
+  type UatResultSaveParams,
+} from "../uat-run.js";
+import { registerAutoWorker, markWorkerStopping, getAutoWorker } from "../db/auto-workers.js";
+import {
+  claimMilestoneLease,
+  releaseMilestoneLease,
+  getMilestoneLease,
+  refreshMilestoneLease,
+  milestoneLeaseTtlSeconds,
+} from "../db/milestone-leases.js";
+export type {
+  UatCheckResultInput,
+  UatEvidenceRef,
+  UatPresentationInput,
+} from "../uat-run.js";
 
 export const SUPPORTED_SUMMARY_ARTIFACT_TYPES = [
   "SUMMARY",
@@ -82,10 +106,28 @@ function blockIfWrongAutoUnit(requiredUnitType: string, operation: string): Tool
   if (!snapshot.active || !snapshot.currentUnit) return null;
   if (snapshot.currentUnit.type === requiredUnitType) return null;
 
-  const error = `HARD BLOCK: ${operation} may only run from ${requiredUnitType}; active unit is ${snapshot.currentUnit.type}. The orchestrator owns phase transitions.`;
+  const error = `HARD BLOCK: Tool Contract failure: ${operation} may only run from ${requiredUnitType}; active unit is ${snapshot.currentUnit.type}. Fix unit-tool-contracts.ts or the active Unit prompt. The orchestrator owns phase transitions.`;
   return {
     content: [{ type: "text", text: error }],
     details: { operation, error },
+    isError: true,
+  };
+}
+
+function milestoneLeaseConflictResult(
+  milestoneId: string,
+  byWorker: string,
+  expiresAt: string,
+): ToolExecutionResult {
+  return {
+    content: [{ type: "text", text: `Milestone ${milestoneId} is currently leased by ${byWorker}. Retry after ${expiresAt}.` }],
+    details: {
+      operation: "plan_milestone",
+      error: "milestone_lease_conflict",
+      milestoneId,
+      byWorker,
+      expiresAt,
+    },
     isError: true,
   };
 }
@@ -110,6 +152,111 @@ function registerProjectMilestoneSequence(content: string): string[] {
     registered.push(milestone.id);
   }
   return registered;
+}
+
+/** Minimal shape of a DB milestone row needed to re-render the sequence section. */
+interface MilestoneSeqRow {
+  id: string;
+  title: string;
+  status: string;
+  vision: string;
+}
+
+/**
+ * Best-effort recovery of the human one-liner for each milestone id from a
+ * (possibly malformed) Milestone Sequence body. Deliberately lenient: tolerates
+ * any separator the canonical MILESTONE_LINE_RE rejects (en-dash, " : ", a
+ * missing checkbox, etc.) so a model formatting slip does not discard the prose.
+ */
+function recoverMilestoneTails(sequenceBody: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const lenient = /^\s*(?:-\s*)?(?:\[[ xX]\]\s*)?(M\d{3})\b\s*[:.\-–—]*\s*(.*)$/;
+  for (const rawLine of sequenceBody.split("\n")) {
+    const m = rawLine.match(lenient);
+    if (m) out.set(m[1], m[2].trim());
+  }
+  return out;
+}
+
+function firstSentence(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  const idx = trimmed.search(/[.!?](\s|$)/);
+  return (idx >= 0 ? trimmed.slice(0, idx + 1) : trimmed).trim();
+}
+
+/** Render one canonical, parseable milestone line for the given DB row. */
+function renderMilestoneLine(m: MilestoneSeqRow, recoveredTail: string): string {
+  const done = m.status === "complete";
+  let oneLiner = recoveredTail;
+  // The recovered tail often still carries the title (e.g. "Foo — bar" or
+  // "Foo : bar"). Strip a leading repetition of the title, then any separator.
+  if (oneLiner.toLowerCase().startsWith(m.title.toLowerCase())) {
+    oneLiner = oneLiner.slice(m.title.length).replace(/^\s*[:.\-–—]+\s*/, "").trim();
+  } else {
+    const sep = oneLiner.match(/\s+(?:—|–|--|-|:)\s+/);
+    if (sep && sep.index !== undefined) oneLiner = oneLiner.slice(sep.index + sep[0].length).trim();
+  }
+  // MILESTONE_LINE_RE requires non-empty prose after the separator.
+  if (!oneLiner) oneLiner = firstSentence(m.vision) || (done ? "Completed." : "Planned.");
+  return `- [${done ? "x" : " "}] ${m.id}: ${m.title} — ${oneLiner}`;
+}
+
+/**
+ * Rebuild the "## Milestone Sequence" section from authoritative DB rows when a
+ * model-authored PROJECT.md projection parsed to zero milestone lines but the DB
+ * already holds milestones. The DB is the source of truth (markdown is a
+ * projection), so this repairs the projection rather than failing the save.
+ * Preserves a leading HTML comment in the section and recovers one-liners
+ * best-effort. The returned content parses cleanly under MILESTONE_LINE_RE.
+ */
+function rebuildMilestoneSequenceSection(content: string, milestones: MilestoneSeqRow[]): string {
+  const lines = content.split("\n");
+  const headerIdx = lines.findIndex(l => /^##\s+Milestone Sequence\s*$/.test(l));
+
+  const canonicalLines = (() => {
+    // Recover tails from the existing (malformed) body when the section exists.
+    let body = "";
+    if (headerIdx !== -1) {
+      let end = headerIdx + 1;
+      while (end < lines.length && !/^##\s+/.test(lines[end])) end++;
+      body = lines.slice(headerIdx + 1, end).join("\n");
+    }
+    const tails = recoverMilestoneTails(body);
+    return milestones.map(m => renderMilestoneLine(m, tails.get(m.id) ?? ""));
+  })();
+
+  if (headerIdx === -1) {
+    // No section at all — append a fresh, canonical one.
+    const sep = content.endsWith("\n") ? "" : "\n";
+    return `${content}${sep}\n## Milestone Sequence\n\n${canonicalLines.join("\n")}\n`;
+  }
+
+  let bodyEnd = headerIdx + 1;
+  while (bodyEnd < lines.length && !/^##\s+/.test(lines[bodyEnd])) bodyEnd++;
+  const existingBody = lines.slice(headerIdx + 1, bodyEnd);
+
+  // Preserve a contiguous leading HTML comment block (the "Check off…" hint).
+  let i = 0;
+  while (i < existingBody.length && existingBody[i].trim() === "") i++;
+  const preserved: string[] = [];
+  if (i < existingBody.length && existingBody[i].trim().startsWith("<!--")) {
+    while (i < existingBody.length) {
+      preserved.push(existingBody[i]);
+      const closed = existingBody[i].includes("-->");
+      i++;
+      if (closed) break;
+    }
+  }
+
+  return [
+    ...lines.slice(0, headerIdx + 1),
+    "",
+    ...(preserved.length ? [...preserved, ""] : []),
+    ...canonicalLines,
+    "",
+    ...lines.slice(bodyEnd),
+  ].join("\n");
 }
 
 async function mirrorArtifactToActiveWorktreeProjection(
@@ -170,7 +317,11 @@ export async function executeSummarySave(
   if (rootArtifactGuard.block) {
     return {
       content: [{ type: "text", text: `Error saving artifact: ${rootArtifactGuard.reason ?? "root artifact write blocked"}` }],
-      details: { operation: "save_summary", error: "root_artifact_write_blocked" },
+      details: {
+        operation: "save_summary",
+        error: "root_artifact_write_blocked",
+        displayReason: "Approval confirmation required before saving final project setup artifacts.",
+      },
       isError: true,
     };
   }
@@ -183,9 +334,13 @@ export async function executeSummarySave(
   if (contextGuard.block) {
     return {
       content: [{ type: "text", text: `Error saving artifact: ${contextGuard.reason ?? "context write blocked"}` }],
-      details: { operation: "save_summary", error: "context_write_blocked" },
-    isError: true,
-      };
+      details: {
+        operation: "save_summary",
+        error: "context_write_blocked",
+        displayReason: "Depth check required before writing milestone context.",
+      },
+      isError: true,
+    };
   }
   try {
     let relativePath: string;
@@ -238,6 +393,7 @@ export async function executeSummarySave(
     await mirrorArtifactToActiveWorktreeProjection(basePath, relativePath, contentToSave);
 
     let registeredMilestones: string[] = [];
+    let milestoneSequenceSelfHealed = false;
     if (params.artifact_type === "PROJECT") {
       try {
         registeredMilestones = registerProjectMilestoneSequence(contentToSave);
@@ -272,29 +428,83 @@ export async function executeSummarySave(
         };
       }
       if (registeredMilestones.length === 0) {
-        logError("tool", `gsd_summary_save: PROJECT.md saved to ${relativePath} but parsed zero milestones — registration produced no DB rows`, {
+        const existingMilestones = getAllMilestones();
+        if (existingMilestones.length === 0) {
+          // Genuine first-save failure: no milestones parsed AND none in the DB.
+          // /gsd really would report "No Active Milestone" — hard-fail so the
+          // caller rewrites the sequence before proceeding.
+          logError("tool", `gsd_summary_save: PROJECT.md saved to ${relativePath} but parsed zero milestones — registration produced no DB rows`, {
+            tool: "gsd_summary_save",
+          });
+          // PROJECT.md was persisted; invalidate so subsequent reads see the new
+          // artifacts row even though no milestones registered.
+          invalidateStateCache();
+          return {
+            content: [{
+              type: "text",
+              text:
+                `Error: PROJECT.md was saved to ${relativePath} but contains zero parseable milestone lines, ` +
+                `so no milestones were registered in the DB. /gsd will report "No Active Milestone". ` +
+                `Rewrite PROJECT.md so the "Milestone Sequence" section uses canonical lines: ` +
+                `\`- [ ] M001: <Title> — <One-liner>\` (em-dash, double-dash \`--\`, or single-dash \`-\` separator), then re-call gsd_summary_save(PROJECT).`,
+            }],
+            details: {
+              operation: "save_summary",
+              path: relativePath,
+              artifact_type: params.artifact_type,
+              error: "milestone_registration_empty_parse",
+            },
+            isError: true,
+          };
+        }
+
+        // Existing DB rows mean this is projection drift, not data loss. Rebuild
+        // the section from DB state and re-persist a parseable projection.
+        logWarning("tool", `gsd_summary_save: PROJECT.md parsed zero milestone lines but DB has ${existingMilestones.length} — rebuilding Milestone Sequence from DB (projection self-heal)`, {
           tool: "gsd_summary_save",
+          path: relativePath,
         });
-        // PROJECT.md was persisted; invalidate so subsequent reads see the new
-        // artifacts row even though no milestones registered.
-        invalidateStateCache();
-        return {
-          content: [{
-            type: "text",
-            text:
-              `Error: PROJECT.md was saved to ${relativePath} but contains zero parseable milestone lines, ` +
-              `so no milestones were registered in the DB. /gsd will report "No Active Milestone". ` +
-              `Rewrite PROJECT.md so the "Milestone Sequence" section uses canonical lines: ` +
-              `\`- [ ] M001: <Title> — <One-liner>\` (em-dash, double-dash \`--\`, or single-dash \`-\` separator), then re-call gsd_summary_save(PROJECT).`,
-          }],
-          details: {
-            operation: "save_summary",
+        try {
+          const healed = rebuildMilestoneSequenceSection(contentToSave, existingMilestones);
+          await saveArtifactToDb(
+            { path: relativePath, artifact_type: params.artifact_type, content: healed },
+            basePath,
+          );
+          await mirrorArtifactToActiveWorktreeProjection(basePath, relativePath, healed);
+          const healedRegisteredMilestones = registerProjectMilestoneSequence(healed);
+          if (healedRegisteredMilestones.length === 0) {
+            throw new Error("self-healed PROJECT.md still parsed zero milestone lines");
+          }
+          registeredMilestones = healedRegisteredMilestones;
+          milestoneSequenceSelfHealed = true;
+        } catch (healErr) {
+          const msg = healErr instanceof Error ? healErr.message : String(healErr);
+          logError("tool", `gsd_summary_save: Milestone Sequence self-heal failed: ${msg}`, {
+            tool: "gsd_summary_save",
             path: relativePath,
-            artifact_type: params.artifact_type,
-            error: "milestone_registration_empty_parse",
-          },
-          isError: true,
-        };
+            error: msg,
+          });
+          invalidateStateCache();
+          return {
+            content: [{
+              type: "text",
+              text:
+                `Error: PROJECT.md was saved to ${relativePath} but contains zero parseable milestone lines, ` +
+                `and automatic DB-backed Milestone Sequence repair failed: ${msg}. ` +
+                `Rewrite PROJECT.md so the "Milestone Sequence" section uses canonical lines: ` +
+                `\`- [ ] M001: <Title> — <One-liner>\`, then re-call gsd_summary_save(PROJECT).`,
+            }],
+            details: {
+              operation: "save_summary",
+              path: relativePath,
+              artifact_type: params.artifact_type,
+              error: "milestone_sequence_self_heal_failed",
+              self_heal_error: msg,
+            },
+            isError: true,
+          };
+        }
+        invalidateStateCache();
       }
     }
 
@@ -317,6 +527,7 @@ export async function executeSummarySave(
         artifact_type: params.artifact_type,
         content_source: contentSource,
         ...(registeredMilestones.length > 0 ? { registeredMilestones } : {}),
+        ...(milestoneSequenceSelfHealed ? { milestoneSequenceSelfHealed: true } : {}),
       },
     };
   } catch (err) {
@@ -339,6 +550,14 @@ type VerificationEvidenceInput =
     }
   | string;
 
+interface TaskEscalationInput {
+  question: string;
+  options: EscalationOption[];
+  recommendation: string;
+  recommendationRationale: string;
+  continueWithDefault: boolean;
+}
+
 export interface TaskCompleteParams {
   taskId: string;
   sliceId: string;
@@ -351,6 +570,7 @@ export interface TaskCompleteParams {
   keyFiles?: string[];
   keyDecisions?: string[];
   blockerDiscovered?: boolean;
+  escalation?: TaskEscalationInput;
   verificationEvidence?: VerificationEvidenceInput[];
 }
 
@@ -409,6 +629,8 @@ export interface SaveGateResultParams {
   findings?: string;
 }
 
+export type { UatResultSaveParams };
+
 export async function executeTaskComplete(
   params: TaskCompleteParams,
   basePath: string = process.cwd(),
@@ -451,6 +673,28 @@ export async function executeTaskComplete(
         content: [{ type: "text", text: `Error completing task: ${result.error}` }],
         details: { operation: "complete_task", error: result.error },
       isError: true,
+      };
+    }
+    if (result.escalation) {
+      const recommended = result.escalation.options.find((option) => option.id === result.escalation?.recommendation);
+      const optionIds = result.escalation.options.map((option) => option.id).join("|");
+      return {
+        content: [{
+          type: "text",
+          text: [
+            `Task completed with escalation decision required: ${result.escalation.question}`,
+            `Recommendation: ${result.escalation.recommendation}${recommended ? ` (${recommended.label})` : ""} — ${result.escalation.recommendationRationale}`,
+            `Resolve with: /gsd escalate resolve ${result.taskId} <${optionIds}|accept|reject-blocker> [rationale...]`,
+          ].join("\n"),
+        }],
+        details: {
+          operation: "complete_task",
+          taskId: result.taskId,
+          sliceId: result.sliceId,
+          milestoneId: result.milestoneId,
+          summaryPath: result.summaryPath,
+          escalation: result.escalation,
+        },
       };
     }
     return {
@@ -891,6 +1135,7 @@ export async function executeSaveGateResult(
       rationale: params.rationale,
       findings: params.findings ?? "",
     });
+    await renderPlanFromDb(basePath, params.milestoneId, params.sliceId);
     invalidateStateCache();
     return {
       content: [{ type: "text", text: `Gate ${params.gateId} result saved: verdict=${params.verdict}` }],
@@ -907,6 +1152,113 @@ export async function executeSaveGateResult(
   }
 }
 
+function errorResult(operation: string, message: string, error: string): ToolExecutionResult {
+  return {
+    content: [{ type: "text", text: `Error: ${message}` }],
+    details: { operation, error },
+    isError: true,
+  };
+}
+
+export async function executeUatResultSave(
+  params: UatResultSaveParams,
+  basePath: string = process.cwd(),
+): Promise<ToolExecutionResult> {
+  const unitGuard = blockIfWrongAutoUnit("run-uat", "save_uat_result");
+  if (unitGuard) return unitGuard;
+
+  const dbAvailable = await ensureDbOpen(basePath);
+  if (!dbAvailable) return errorResult("save_uat_result", "GSD database is not available.", "db_unavailable");
+
+  const prepared = prepareUatRun(basePath, params);
+  if (!prepared.ok) {
+    return errorResult("save_uat_result", prepared.error.message, prepared.error.code);
+  }
+  const { run } = prepared;
+
+  try {
+    const summary = await executeSummarySave(
+      {
+        milestone_id: run.params.milestoneId,
+        slice_id: run.params.sliceId,
+        artifact_type: "ASSESSMENT",
+        content: run.assessment,
+      },
+      basePath,
+    );
+    if (summary.isError) return summary;
+    const assessmentPath = relSliceFile(basePath, run.params.milestoneId, run.params.sliceId, "ASSESSMENT");
+    insertAssessment({
+      path: assessmentPath,
+      milestoneId: run.params.milestoneId,
+      sliceId: run.params.sliceId,
+      taskId: null,
+      status: run.params.verdict.toLowerCase(),
+      scope: "run-uat",
+      fullContent: run.assessment,
+    });
+    const attemptPath = await saveUatAttemptArtifact(basePath, run);
+    upsertQualityGate({
+      milestoneId: run.params.milestoneId,
+      sliceId: run.params.sliceId,
+      gateId: "UAT",
+      scope: "slice",
+      taskId: "",
+      status: "complete",
+      verdict: run.gateVerdict,
+      rationale: run.rationale,
+      findings: run.assessment,
+      evaluatedAt: run.evaluatedAt,
+    });
+    insertGateRun({
+      traceId: `uat:${run.params.milestoneId}:${run.params.sliceId}`,
+      turnId: run.runId,
+      gateId: "UAT",
+      gateType: "uat",
+      unitType: "run-uat",
+      unitId: `run-uat:${run.params.milestoneId}/${run.params.sliceId}`,
+      milestoneId: run.params.milestoneId,
+      sliceId: run.params.sliceId,
+      outcome: run.gateOutcome,
+      failureClass: run.params.verdict === "PASS" ? "none" : "verification",
+      rationale: run.rationale,
+      findings: run.assessment,
+      attempt: run.attempt,
+      maxAttempts: run.attempt,
+      retryable: run.params.verdict !== "PASS",
+      evaluatedAt: run.evaluatedAt,
+    });
+    invalidateStateCache();
+    const savedText = `UAT result saved for ${run.params.milestoneId}/${run.params.sliceId}: ${run.params.verdict}`;
+    return {
+      content: [{
+        type: "text",
+        text: run.manualGuidance ? `${savedText}\n\nManual validation needed:\n${run.manualGuidance}` : savedText,
+      }],
+      details: {
+        operation: "save_uat_result",
+        milestoneId: run.params.milestoneId,
+        sliceId: run.params.sliceId,
+        verdict: run.params.verdict,
+        gateVerdict: run.gateVerdict,
+        attempt: run.attempt,
+        attemptPath,
+        runId: run.runId,
+        worktreeRoot: run.worktreeRoot,
+        browserToolsPresented: run.browserToolsPresented,
+        recommendedNextUnit: run.params.verdict === "PASS" ? null : "reactive-execute",
+        ...(run.hasHuman
+          ? { manualValidationPath: run.worktreeRoot }
+          : {}),
+      },
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logError("tool", `gsd_uat_result_save failed: ${msg}`, { tool: "gsd_uat_result_save", error: String(err) });
+    return errorResult("save_uat_result", `saving UAT result failed: ${msg}`, msg);
+  }
+}
+
 export async function executePlanMilestone(
   params: PlanMilestoneExecutorParams,
   basePath: string = process.cwd(),
@@ -919,7 +1271,48 @@ export async function executePlanMilestone(
     isError: true,
       };
   }
+  let workerId: string | null = null;
+  let acquiredToken: number | null = null;
+  let leaseRefreshTimer: ReturnType<typeof setInterval> | undefined;
   try {
+    // Re-read at the gate so a peer-created milestone is not treated as fresh.
+    const milestoneExists = getMilestone(params.milestoneId) !== null;
+    if (milestoneExists) {
+      const heldLease = getMilestoneLease(params.milestoneId);
+      if (heldLease?.status === "held" && Date.parse(heldLease.expires_at) > Date.now()) {
+        const holder = getAutoWorker(heldLease.worker_id);
+        // Let the one-shot claim path recover stale same-process worker rows.
+        const projectRoot = normalizeRealPath(basePath);
+        const isOurAutoLease = isAutoActive() && heldLease.worker_id === autoSession.workerId;
+        const holderIsOneShotReentrantPeer = !isAutoActive()
+          && !!holder
+          && holder.host === hostname()
+          && holder.pid === process.pid
+          && holder.project_root_realpath === projectRoot;
+        if (holder?.status === "active" && !isOurAutoLease && !holderIsOneShotReentrantPeer) {
+          return milestoneLeaseConflictResult(params.milestoneId, heldLease.worker_id, heldLease.expires_at);
+        }
+      }
+    }
+
+    // Fresh creation cannot claim a lease because the FK row does not exist.
+    // In-process auto already owns its lease; re-claiming would bump its token.
+    if (!isAutoActive() && milestoneExists) {
+      workerId = registerAutoWorker({ projectRootRealpath: normalizeRealPath(basePath) });
+      const lease = claimMilestoneLease(workerId, params.milestoneId);
+      if (!lease.ok) {
+        return milestoneLeaseConflictResult(params.milestoneId, lease.byWorker, lease.expiresAt);
+      }
+      acquiredToken = lease.token;
+
+      const leaseRefreshMs = (milestoneLeaseTtlSeconds() / 2) * 1000;
+      leaseRefreshTimer = setInterval(() => {
+        if (acquiredToken !== null && workerId !== null) {
+          refreshMilestoneLease(workerId, params.milestoneId, acquiredToken);
+        }
+      }, leaseRefreshMs);
+    }
+
     const result = await handlePlanMilestone(params, basePath);
     if ("error" in result) {
       return {
@@ -944,6 +1337,17 @@ export async function executePlanMilestone(
       details: { operation: "plan_milestone", error: msg },
     isError: true,
       };
+  }
+  finally {
+    if (leaseRefreshTimer !== undefined) {
+      clearInterval(leaseRefreshTimer);
+    }
+    if (workerId !== null && acquiredToken !== null) {
+      releaseMilestoneLease(workerId, params.milestoneId, acquiredToken);
+    }
+    if (workerId !== null) {
+      markWorkerStopping(workerId);
+    }
   }
 }
 

@@ -11,6 +11,7 @@ import { deriveState } from "./state.js";
 import { gsdProjectionRoot, gsdRoot } from "./paths.js";
 import { nativeBranchList, nativeDetectMainBranch, nativeBranchListMerged, nativeBranchDelete, nativeForEachRef, nativeUpdateRef } from "./native-git-bridge.js";
 import { logWarning } from "./workflow-logger.js";
+import { backupWorkflowDatabaseSnapshot, refreshWorkflowDatabaseFromDisk } from "./db-workspace.js";
 
 export async function handleCleanupBranches(ctx: ExtensionCommandContext, basePath: string): Promise<void> {
   let branches: string[];
@@ -481,6 +482,8 @@ export async function handleCleanupProjects(args: string, ctx: ExtensionCommandC
   ctx.ui.notify(lines.join("\n"), "info");
 }
 
+type HierarchyCounts = { milestones: number; slices: number; tasks: number };
+
 function recoverConfirmed(args: string): boolean {
   return args
     .split(/\s+/)
@@ -488,27 +491,82 @@ function recoverConfirmed(args: string): boolean {
     .some((part) => part === "--confirm" || part === "--yes" || part === "confirm");
 }
 
-async function confirmRecover(ctx: ExtensionCommandContext, args: string): Promise<boolean> {
-  if (recoverConfirmed(args)) return true;
+function recoverAllowsDataLoss(args: string): boolean {
+  return args
+    .split(/\s+/)
+    .map((part) => part.trim().toLowerCase())
+    .some((part) => part === "--allow-data-loss" || part === "--force");
+}
 
+async function confirmRecover(
+  ctx: ExtensionCommandContext,
+  args: string,
+  markdown: HierarchyCounts,
+  beforeDb: HierarchyCounts,
+  dataLoss: boolean,
+): Promise<boolean> {
   const warning = [
     "gsd recover imports markdown into the database.",
     "It clears and reconstructs milestone, slice, and task hierarchy rows from rendered markdown.",
     "Use /gsd rebuild markdown for normal DB-to-markdown realignment.",
-  ].join("\n");
+    "",
+    `  Markdown on disk: ${markdown.milestones}M/${markdown.slices}S/${markdown.tasks}T`,
+    `  Current DB:       ${beforeDb.milestones}M/${beforeDb.slices}S/${beforeDb.tasks}T`,
+  ];
+  if (dataLoss) {
+    warning.push(
+      "",
+      "⚠ The DB holds rows the markdown lacks. Recover will permanently DELETE",
+      "  those rows. A snapshot is written to .gsd/backups/ first, but if the DB",
+      "  is the source of truth you almost certainly want /gsd rebuild markdown.",
+    );
+  }
+  const warningText = warning.join("\n");
+
+  if (recoverConfirmed(args)) {
+    // Non-interactive --confirm still refuses a data-loss recover unless the
+    // caller explicitly opts in with --allow-data-loss / --force.
+    if (dataLoss && !recoverAllowsDataLoss(args)) {
+      ctx.ui.notify(
+        `${warningText}\n\nRefusing: this would delete authoritative DB rows. Re-run with ` +
+          `/gsd recover --confirm --allow-data-loss to proceed, or use /gsd rebuild markdown ` +
+          `to re-project markdown from the DB instead.`,
+        "error",
+      );
+      return false;
+    }
+    return true;
+  }
 
   if (typeof ctx.ui.confirm === "function") {
     const confirmed = await ctx.ui.confirm(
       "Import markdown into the DB?",
-      `${warning}\n\nContinue only if the DB is lost or corrupt and markdown is the source you intend to import.`,
+      `${warningText}\n\nContinue only if the DB is lost or corrupt and markdown is the source you intend to import.`,
     );
-    if (confirmed) return true;
-    ctx.ui.notify("gsd recover cancelled. No database changes made.", "info");
-    return false;
+    if (!confirmed) {
+      ctx.ui.notify("gsd recover cancelled. No database changes made.", "info");
+      return false;
+    }
+    // Data loss requires a second, explicit acknowledgement — the interactive
+    // equivalent of the --allow-data-loss opt-in the non-interactive paths
+    // demand. A single generic "yes" must not silently delete DB rows.
+    if (dataLoss) {
+      const acknowledged = await ctx.ui.confirm(
+        "Permanently delete DB rows the markdown lacks?",
+        "This recover will DELETE authoritative DB rows the markdown does not contain. " +
+          "A snapshot is saved to .gsd/backups/ first, but /gsd rebuild markdown is usually " +
+          "what you want. Proceed with the deletion?",
+      );
+      if (!acknowledged) {
+        ctx.ui.notify("gsd recover cancelled. No database changes made.", "info");
+        return false;
+      }
+    }
+    return true;
   }
 
   ctx.ui.notify(
-    `${warning}\n\nNo database changes made. Re-run /gsd recover --confirm to proceed.`,
+    `${warningText}\n\nNo database changes made. Re-run /gsd recover --confirm to proceed.`,
     "warning",
   );
   return false;
@@ -527,15 +585,28 @@ export async function handleRecover(ctx: ExtensionCommandContext, basePath: stri
   const { isDbAvailable: dbAvailable, clearEngineHierarchy, transaction: dbTransaction } = await import("./gsd-db.js");
   const { migrateHierarchyToDb } = await import("./md-importer.js");
   const { invalidateStateCache } = await import("./state.js");
+  const { countDbHierarchy, countMarkdownHierarchy, recoverWouldDeleteDbRows } = await import("./migration-auto-check.js");
+  const { renderAllFromDb } = await import("./markdown-renderer.js");
 
   if (!dbAvailable()) {
     ctx.ui.notify("gsd recover: No database open. Run a GSD command first to initialize the DB.", "error");
     return;
   }
 
-  if (!(await confirmRecover(ctx, args))) return;
+  // Compare markdown-on-disk against the live DB so the confirmation prompt can
+  // surface exactly what recover will overwrite (and refuse silent data loss).
+  // The data-loss check is identity-based, not count-based: it flags any DB row
+  // markdown lacks, including equal-count divergence (DB S99 vs markdown S01).
+  const markdown = countMarkdownHierarchy(basePath);
+  const beforeDb = countDbHierarchy();
+  const dataLoss = recoverWouldDeleteDbRows(basePath);
+
+  if (!(await confirmRecover(ctx, args, markdown, beforeDb, dataLoss))) return;
 
   try {
+    // 0. Snapshot the DB before the destructive clear so recover is reversible.
+    const backupPath = backupWorkflowDatabaseSnapshot("pre-recover");
+
     // 1. Delete + re-populate inside a single transaction for atomicity.
     //    clearEngineHierarchy() uses transaction() internally but transaction()
     //    is re-entrant, so wrapping in dbTransaction() keeps the whole
@@ -545,8 +616,15 @@ export async function handleRecover(ctx: ExtensionCommandContext, basePath: stri
       return migrateHierarchyToDb(basePath);
     });
 
-    // 3. Invalidate state cache so deriveState() picks up fresh DB data
+    // 2. Invalidate state cache so deriveState() picks up fresh DB data
     invalidateStateCache();
+
+    // 3. Re-project markdown from the freshly imported DB so disk and DB agree
+    //    immediately (otherwise the markdown still reflects the pre-import state
+    //    and the next startup check would flag fresh drift). renderAllFromDb
+    //    swallows per-artifact failures into its result, so inspect them — a
+    //    silent projection failure must not be reported as a clean success.
+    const renderResult = await renderAllFromDb(basePath);
 
     // 4. Derive state to verify sanity
     const state = await deriveState(basePath);
@@ -560,6 +638,23 @@ export async function handleRecover(ctx: ExtensionCommandContext, basePath: stri
       ``,
       `  Phase:      ${state.phase}`,
     ];
+    // Post-import verification: markdown that failed to parse imports as fewer
+    // rows than countMarkdownHierarchy saw on disk. Surface the shortfall.
+    if (
+      counts.milestones < markdown.milestones ||
+      counts.slices < markdown.slices ||
+      counts.tasks < markdown.tasks
+    ) {
+      lines.push(
+        ``,
+        `  ⚠ Imported fewer rows than markdown contained ` +
+          `(${markdown.milestones}M/${markdown.slices}S/${markdown.tasks}T on disk). ` +
+          `Some markdown may have failed to parse — review before continuing.`,
+      );
+    }
+    if (backupPath) {
+      lines.push(``, `  Backup:     ${backupPath}`);
+    }
     if (state.activeMilestone) {
       lines.push(`  Active:     ${state.activeMilestone.id}: ${state.activeMilestone.title}`);
     }
@@ -570,10 +665,27 @@ export async function handleRecover(ctx: ExtensionCommandContext, basePath: stri
       lines.push(`  Task:       ${state.activeTask.id}: ${state.activeTask.title}`);
     }
 
+    // Surface markdown projection failures: renderAllFromDb resolves even when
+    // individual artifacts fail to render, so a clean exit here would otherwise
+    // hide a stale/partial projection.
+    const renderFailed = renderResult.errors.length > 0;
+    if (renderFailed) {
+      lines.push(
+        ``,
+        `  ⚠ ${renderResult.errors.length} markdown projection(s) failed to render — ` +
+          `markdown may be stale. Re-run /gsd rebuild markdown.`,
+      );
+      for (const e of renderResult.errors.slice(0, 5)) lines.push(`    - ${e}`);
+      if (renderResult.errors.length > 5) {
+        lines.push(`    …and ${renderResult.errors.length - 5} more`);
+      }
+    }
+
     process.stderr.write(
-      `gsd-recover: recovered ${counts.milestones}M/${counts.slices}S/${counts.tasks}T hierarchy\n`,
+      `gsd-recover: recovered ${counts.milestones}M/${counts.slices}S/${counts.tasks}T hierarchy` +
+        `${renderFailed ? ` (${renderResult.errors.length} projection errors)` : ""}\n`,
     );
-    ctx.ui.notify(lines.join("\n"), "success");
+    ctx.ui.notify(lines.join("\n"), renderFailed ? "warning" : "success");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logWarning("command", `recover failed: ${msg}`);
@@ -638,6 +750,62 @@ function parseRebuildTarget(args: string): RebuildTarget {
   return "usage";
 }
 
+export interface RebuildMarkdownProjectionsResult {
+  rendered: number;
+  skipped: number;
+  errors: string[];
+  quarantined: number;
+  quarantinedPaths: string[];
+}
+
+/**
+ * Re-render markdown planning projections from the authoritative DB.
+ *
+ * Quarantines open-unit SUMMARY files that contradict DB status before
+ * rendering. Safe to call after milestone merge/transition or during startup
+ * self-heal when the DB holds rows markdown lacks.
+ */
+export async function rebuildMarkdownProjectionsFromDb(
+  basePath: string,
+): Promise<RebuildMarkdownProjectionsResult> {
+  const { deleteArtifactByPath } = await import("./gsd-db.js");
+  const { detectArtifactDbDrift } = await import("./state-reconciliation/drift/artifact-db.js");
+  const { renderAllFromDb } = await import("./markdown-renderer.js");
+  const { invalidateStateCache } = await import("./state.js");
+
+  invalidateStateCache();
+  refreshWorkflowDatabaseFromDisk();
+
+  const state = await deriveState(basePath);
+  const drifts = detectArtifactDbDrift(state, { basePath, state });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const quarantined: string[] = [];
+  const seen = new Set<string>();
+
+  for (const drift of drifts) {
+    if (drift.kind !== "artifact-db-status-divergence") continue;
+    if (drift.artifactType !== "SUMMARY" || !drift.artifactPath) continue;
+    const absPath = resolveDiskArtifactPath(basePath, drift.artifactPath);
+    if (seen.has(absPath) || !existsSync(absPath)) continue;
+    seen.add(absPath);
+    const artifactDbPath = artifactPathForDb(basePath, absPath);
+    const target = quarantineProjectionFile(basePath, absPath, stamp);
+    deleteArtifactByPath(artifactDbPath);
+    quarantined.push(target);
+  }
+
+  const rendered = await renderAllFromDb(basePath);
+  invalidateStateCache();
+
+  return {
+    rendered: rendered.rendered,
+    skipped: rendered.skipped,
+    errors: rendered.errors,
+    quarantined: quarantined.length,
+    quarantinedPaths: quarantined,
+  };
+}
+
 /**
  * `gsd rebuild markdown` — Re-render markdown projections from the authoritative DB.
  *
@@ -646,10 +814,7 @@ function parseRebuildTarget(args: string): RebuildTarget {
  * under `.gsd/quarantine/projections/` before DB projections are rendered.
  */
 export async function handleRebuild(ctx: ExtensionCommandContext, basePath: string, args = ""): Promise<void> {
-  const { isDbAvailable: dbAvailable, deleteArtifactByPath } = await import("./gsd-db.js");
-  const { detectArtifactDbDrift } = await import("./state-reconciliation/drift/artifact-db.js");
-  const { renderAllFromDb } = await import("./markdown-renderer.js");
-  const { invalidateStateCache } = await import("./state.js");
+  const { isDbAvailable: dbAvailable } = await import("./gsd-db.js");
 
   const target = parseRebuildTarget(args);
   if (target === "usage") {
@@ -683,54 +848,34 @@ export async function handleRebuild(ctx: ExtensionCommandContext, basePath: stri
   }
 
   try {
-    invalidateStateCache();
-    const state = await deriveState(basePath);
-    const drifts = detectArtifactDbDrift(state, { basePath, state });
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const quarantined: string[] = [];
-    const seen = new Set<string>();
-
-    for (const drift of drifts) {
-      if (drift.kind !== "artifact-db-status-divergence") continue;
-      if (drift.artifactType !== "SUMMARY" || !drift.artifactPath) continue;
-      const absPath = resolveDiskArtifactPath(basePath, drift.artifactPath);
-      if (seen.has(absPath) || !existsSync(absPath)) continue;
-      seen.add(absPath);
-      const artifactDbPath = artifactPathForDb(basePath, absPath);
-      const target = quarantineProjectionFile(basePath, absPath, stamp);
-      deleteArtifactByPath(artifactDbPath);
-      quarantined.push(target);
-    }
-
-    const rendered = await renderAllFromDb(basePath);
-    invalidateStateCache();
+    const result = await rebuildMarkdownProjectionsFromDb(basePath);
 
     const lines = [
       "gsd rebuild markdown: rebuilt markdown projections from the canonical DB",
-      `  Rendered:    ${rendered.rendered}`,
-      `  Skipped:     ${rendered.skipped}`,
-      `  Quarantined: ${quarantined.length}`,
+      `  Rendered:    ${result.rendered}`,
+      `  Skipped:     ${result.skipped}`,
+      `  Quarantined: ${result.quarantined}`,
     ];
-    if (rendered.errors.length > 0) {
-      lines.push(`  Errors:      ${rendered.errors.length}`);
-      for (const err of rendered.errors.slice(0, 5)) {
+    if (result.errors.length > 0) {
+      lines.push(`  Errors:      ${result.errors.length}`);
+      for (const err of result.errors.slice(0, 5)) {
         lines.push(`    - ${err}`);
       }
-      if (rendered.errors.length > 5) {
-        lines.push(`    - ${rendered.errors.length - 5} more`);
+      if (result.errors.length > 5) {
+        lines.push(`    - ${result.errors.length - 5} more`);
       }
     }
-    if (quarantined.length > 0) {
+    if (result.quarantined > 0) {
       lines.push("", "  Quarantine:");
-      for (const target of quarantined.slice(0, 5)) {
+      for (const target of result.quarantinedPaths.slice(0, 5)) {
         lines.push(`    - ${target}`);
       }
-      if (quarantined.length > 5) {
-        lines.push(`    - ${quarantined.length - 5} more`);
+      if (result.quarantined > 5) {
+        lines.push(`    - ${result.quarantined - 5} more`);
       }
     }
 
-    ctx.ui.notify(lines.join("\n"), rendered.errors.length > 0 ? "warning" : "success");
+    ctx.ui.notify(lines.join("\n"), result.errors.length > 0 ? "warning" : "success");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logWarning("command", `rebuild failed: ${msg}`);

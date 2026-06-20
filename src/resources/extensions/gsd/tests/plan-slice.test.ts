@@ -133,6 +133,36 @@ test('handlePlanSlice persists explicit slice/task target repositories', async (
   }
 });
 
+test('handlePlanSlice honors configured gate-evaluation gate sets', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParentSlice();
+    writeFileSync(
+      join(base, '.gsd', 'PREFERENCES.md'),
+      [
+        '---',
+        'gate_evaluation:',
+        '  enabled: true',
+        '  slice_gates:',
+        '    - Q3',
+        '  task_gates: false',
+        '---',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const result = await handlePlanSlice(validParams(), base);
+    assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
+
+    const gateIds = getGateResults('M001', 'S02').map((gate) => gate.gate_id).sort();
+    assert.deepEqual(gateIds, ['Q3', 'Q8']);
+  } finally {
+    cleanup(base);
+  }
+});
+
 test('handlePlanSlice rejects unknown target repositories', async () => {
   const base = makeTmpBase();
   openDatabase(join(base, '.gsd', 'gsd.db'));
@@ -191,6 +221,50 @@ test('handlePlanSlice enforces absolute path scope to declared target repositori
     assert.ok('error' in result);
     assert.match(result.error, /outside allowed repository roots/);
     assert.equal(getSliceTasks('M001', 'S02').length, 0, 'invalid scoped path must not persist');
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanSlice resolves relative task IO paths against declared target repository roots', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParentSlice();
+    mkdirSync(join(base, 'frontend'), { recursive: true });
+    writeFileSync(join(base, 'frontend', 'app.js'), 'export {};\n', 'utf-8');
+    writeFileSync(
+      join(base, '.gsd', 'PREFERENCES.md'),
+      [
+        '---',
+        'workspace:',
+        '  mode: parent',
+        '  repositories:',
+        '    frontend:',
+        '      path: frontend',
+        '---',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const params = validParams();
+    const result = await handlePlanSlice({
+      ...params,
+      targetRepositories: ['frontend'],
+      tasks: [
+        {
+          ...params.tasks[0],
+          files: ['app.js'],
+          inputs: ['app.js'],
+          expectedOutput: ['app.js'],
+          targetRepositories: ['frontend'],
+        },
+      ],
+    }, base);
+
+    assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
+    assert.deepEqual(getSliceTasks('M001', 'S02').map((task) => task.id), ['T01']);
   } finally {
     cleanup(base);
   }
@@ -749,7 +823,7 @@ test('regression: validateTasks surfaces clean per-field errors for non-array IO
   }
 });
 
-test('handlePlanSlice skips prose and sentinel values in planning path scope', async () => {
+test('handlePlanSlice skips prose and sentinel input values in planning path scope', async () => {
   const base = makeTmpBase();
   openDatabase(join(base, '.gsd', 'gsd.db'));
 
@@ -760,12 +834,35 @@ test('handlePlanSlice skips prose and sentinel values in planning path scope', a
       tasks: [{
         ...validParams().tasks[0],
         inputs: ['Current enum shape in codebase', 'None'],
-        expectedOutput: ['Updated planning-path-scope.ts — validates paths only'],
+        expectedOutput: ['src/resources/extensions/gsd/planning-path-scope.ts'],
       }],
     }, base);
 
     assert.ok(!('error' in result), `expected success, got: ${(result as { error?: string }).error}`);
     assert.equal(getSliceTasks('M001', 'S02').length, 1);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanSlice rejects prose expectedOutput entries before path-scope validation', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParentSlice();
+    const result = await handlePlanSlice({
+      ...validParams(),
+      tasks: [{
+        ...validParams().tasks[0],
+        expectedOutput: ['Browser UI supports due-date add/edit flows and mixed-list urgency rendering.'],
+      }],
+    }, base);
+
+    assert.ok('error' in result);
+    assert.match(result.error, /expectedOutput must contain only file paths/);
+    assert.doesNotMatch(result.error, /outside allowed repository roots/);
+    assert.equal(getSliceTasks('M001', 'S02').length, 0, 'invalid output contract must not persist tasks');
   } finally {
     cleanup(base);
   }

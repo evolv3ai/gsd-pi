@@ -23,12 +23,25 @@ interface BlockedModelsFile {
   blocked: BlockedModelEntry[];
 }
 
+interface TemporaryBlockedModelEntry {
+  provider: string;
+  id: string;
+  reason: string;
+  blockedUntil: number;
+}
+
+const temporaryBlockedModels = new Map<string, TemporaryBlockedModelEntry>();
+
 function blockedModelsPath(basePath: string): string {
   return join(gsdRoot(basePath), "runtime", "blocked-models.json");
 }
 
 function modelKey(provider: string, id: string): string {
   return `${provider.toLowerCase()}/${id.toLowerCase()}`;
+}
+
+function temporaryModelKey(basePath: string, provider: string, id: string): string {
+  return `${basePath}:${modelKey(provider, id)}`;
 }
 
 function readFileSafe(path: string): BlockedModelsFile {
@@ -64,6 +77,42 @@ export function isModelBlocked(
   return loadBlockedModels(basePath).some(
     (e) => modelKey(e.provider, e.id) === target,
   );
+}
+
+export function blockModelUntil(
+  basePath: string,
+  provider: string,
+  id: string,
+  blockedUntil: number,
+  reason: string,
+): void {
+  const key = temporaryModelKey(basePath, provider, id);
+  if (blockedUntil <= Date.now()) {
+    temporaryBlockedModels.delete(key);
+    return;
+  }
+  temporaryBlockedModels.set(key, { provider, id, reason, blockedUntil });
+}
+
+export function isModelTemporarilyUnavailable(
+  basePath: string,
+  provider: string | undefined,
+  id: string | undefined,
+  now = Date.now(),
+): boolean {
+  if (!provider || !id) return false;
+  const key = temporaryModelKey(basePath, provider, id);
+  const entry = temporaryBlockedModels.get(key);
+  if (!entry) return false;
+  if (entry.blockedUntil <= now) {
+    temporaryBlockedModels.delete(key);
+    return false;
+  }
+  return true;
+}
+
+export function clearTemporaryModelBlocksForTest(): void {
+  temporaryBlockedModels.clear();
 }
 
 export function blockModel(

@@ -153,6 +153,12 @@ It checks file structure, referential integrity, completion state consistency, g
     **Fix:** Re-run the operation. Close tools holding files open if the error persists. Run `/gsd doctor` to verify repo health.
   </Accordion>
 
+  <Accordion title="Milestone entry blocked by degraded worktree isolation">
+    **Cause:** A previous worktree create or cleanup failure left worktree isolation degraded, often because an editor, terminal, antivirus tool, or Git client still holds the old worktree path.
+
+    **Fix:** Close tools using `.gsd/worktrees/*`. Merge salvageable work with `/gsd worktree merge <MID>` or remove a stale worktree with `/gsd worktree remove <MID>`, then run `/gsd doctor fix` and retry `/gsd auto`. If fallback already succeeded, work continues on `milestone/<MID>` in the project root for that milestone.
+  </Accordion>
+
   <Accordion title="Worktree isolation stopped working after upgrade to v2.45+">
     **Cause:** The default `git.isolation` mode changed from `worktree` to `none` in v2.45.0.
 

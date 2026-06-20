@@ -17,7 +17,7 @@ import { spawnSync } from "node:child_process";
 import { nativeScanGsdTree, type GsdTreeEntry } from "./native-parser-bridge.js";
 import { DIR_CACHE_MAX } from "./constants.js";
 import { gsdHome } from "./gsd-home.js";
-import { isGsdWorktreePath, resolveExternalStateProjectGsdFromWorktreePath, resolveWorktreeProjectRoot } from "./worktree-root.js";
+import { findWorktreeSegment, isGsdWorktreePath, resolveExternalStateProjectGsdFromWorktreePath, resolveWorktreeProjectRoot } from "./worktree-root.js";
 
 // ─── Directory Listing Cache ──────────────────────────────────────────────────
 
@@ -147,6 +147,39 @@ export function clearPathCache(): void {
 }
 
 // ─── Name Builders ─────────────────────────────────────────────────────────
+
+/** Directories owned by the GSD framework — metadata, never project source. */
+export const FRAMEWORK_METADATA_DIRS: readonly string[] = [".gsd", ".planning", ".audits"];
+
+/**
+ * Every artifact suffix used with the name builders below — the single source
+ * for the `<ID>-<SUFFIX>.md` naming vocabulary. Extend this list when a new
+ * artifact type is introduced; consumers (md-importer walking, pre-execution
+ * artifact detection) pick it up from here.
+ */
+export const PLANNING_ARTIFACT_SUFFIXES: readonly string[] = [
+  "CONTEXT",
+  "CONTEXT-DRAFT",
+  "ROADMAP",
+  "PLAN",
+  "REPLAN",
+  "SUMMARY",
+  "RESEARCH",
+  "VALIDATION",
+  "ASSESSMENT",
+  "UAT",
+  "DISCUSSION",
+  "EVAL-REVIEW",
+  "PARKED",
+  "VERIFICATION-FAILED",
+  "CONTINUE",
+];
+
+/** Matches a bare planning-artifact file name, e.g. "M001-CONTEXT.md", "S01-PLAN.md". */
+export const PLANNING_ARTIFACT_NAME_RE = new RegExp(
+  `^[MST]\\d+-(${PLANNING_ARTIFACT_SUFFIXES.join("|")})\\.md$`,
+  "i",
+);
 
 /**
  * Build a milestone-level file name.
@@ -458,29 +491,16 @@ function assertNotGlobalGsdHome(basePath: string, result: string): void {
  * When gsdRoot() is called with such a path, we must NOT walk up to the
  * project root's .gsd — each worktree manages its own .gsd state (#2594).
  *
- * Matches both forward-slash and platform-native separators to handle
- * Windows paths (path.sep = '\\') and normalized Unix paths.
+ * Layout matching is owned by worktree-root's findWorktreeSegment; this
+ * only adds the requirement that a non-empty worktree name follows the
+ * marker (the worktrees container dir itself is not a worktree).
  */
 function isInsideGsdWorktree(p: string): boolean {
-  // Match /.gsd/worktrees/<name> where <name> is the final segment or
-  // followed by a separator. The <name> segment must be non-empty.
-  const sepFwd = "/";
-  const sepNative = "\\";
-  const markers = [
-    `${sepFwd}.gsd${sepFwd}worktrees${sepFwd}`,
-    `${sepNative}.gsd${sepNative}worktrees${sepNative}`,
-  ];
-  for (const marker of markers) {
-    const idx = p.indexOf(marker);
-    if (idx === -1) continue;
-    // Verify there's a non-empty worktree name after the marker
-    const afterMarker = p.slice(idx + marker.length);
-    // The name is everything up to the next separator (or end of string)
-    const nameEnd = afterMarker.search(/[/\\]/);
-    const name = nameEnd === -1 ? afterMarker : afterMarker.slice(0, nameEnd);
-    if (name.length > 0) return true;
-  }
-  return false;
+  const normalized = p.replaceAll("\\", "/");
+  const segment = findWorktreeSegment(normalized);
+  if (!segment) return false;
+  const name = normalized.slice(segment.afterWorktrees).split("/")[0];
+  return name.length > 0;
 }
 
 function probeGsdRoot(rawBasePath: string): string {

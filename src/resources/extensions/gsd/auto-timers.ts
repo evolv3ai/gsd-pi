@@ -147,6 +147,15 @@ export function startUnitSupervision(sctx: SupervisionContext): void {
   const softTimeoutMs = supervisionTimeouts.softTimeoutMs;
   const idleTimeoutMs = supervisionTimeouts.idleTimeoutMs;
   const hardTimeoutMs = supervisionTimeouts.hardTimeoutMs;
+  // A single hung tool gets its own short budget, NOT the general idle window:
+  // a long-but-progressing session is not idle, but a tool stuck for minutes
+  // is. Falls back to the idle window only if misconfigured to zero. The
+  // hung-tool budget is intentionally not scaled by task estimate — a stuck
+  // tool call is stuck regardless of how long the overall task should take.
+  const stalledToolTimeoutMs =
+    (supervisor.stalled_tool_timeout_minutes ?? 0) > 0
+      ? supervisor.stalled_tool_timeout_minutes! * 60 * 1000
+      : idleTimeoutMs;
 
   // ── 1. Soft timeout warning ──
   s.wrapupWarningHandle = setTimeout(() => {
@@ -189,10 +198,13 @@ export function startUnitSupervision(sctx: SupervisionContext): void {
       };
       const runtime = readUnitRuntimeRecord(s.basePath, unitType, unitId);
       if (!runtime) return;
-      if (Date.now() - runtime.lastProgressAt < idleTimeoutMs) return;
 
-      // Agent has tool calls currently executing — not idle, just waiting.
-      // But only suppress recovery if the tool started recently.
+      // In-flight tool handling runs on its own dedicated hung-tool budget,
+      // independent of the general idle gate below, so a genuinely stuck tool
+      // is caught in minutes instead of waiting out the (typically much longer)
+      // idle window (#2527, follow-up). A tool actively executing within budget
+      // is real progress, so refreshing lastProgressAt here also keeps the idle
+      // gate from firing during legitimate long-running tool calls.
       let stalledToolDetected = false;
       if (getInFlightToolCount() > 0) {
         // User-interactive tools (ask_user_questions, secure_env_collect) block
@@ -206,24 +218,28 @@ export function startUnitSupervision(sctx: SupervisionContext): void {
         }
         const oldestStart = getOldestInFlightToolStart()!;
         const toolAgeMs = Date.now() - oldestStart;
-        if (toolAgeMs < idleTimeoutMs) {
+        if (toolAgeMs < stalledToolTimeoutMs) {
           writeUnitRuntimeRecord(s.basePath, unitType, unitId, s.currentUnit.startedAt, {
             lastProgressAt: Date.now(),
             lastProgressKind: "tool-in-flight",
           });
           return;
         }
-        // Tool has been in-flight longer than idle timeout — treat as hung.
-        // Clear the stale entries so subsequent ticks don't re-detect them,
-        // and set the flag so the filesystem-activity check below does not
-        // override the stall verdict (#2527).
+        // Tool has been in-flight longer than the hung-tool budget — treat as
+        // hung. Clear the stale entries so subsequent ticks don't re-detect
+        // them, and set the flag so the idle gate and filesystem-activity check
+        // below do not override the stall verdict (#2527).
         stalledToolDetected = true;
         clearInFlightTools();
         ctx.ui.notify(
-          `Stalled tool detected: a tool has been in-flight for ${Math.round(toolAgeMs / 60000)}min. Treating as hung — attempting idle recovery.`,
+          `Stalled tool detected: a tool has been in-flight for ${Math.round(toolAgeMs / 60000)}min (budget ${Math.round(stalledToolTimeoutMs / 60000)}min). Treating as hung — attempting idle recovery.`,
           "warning",
         );
       }
+
+      // No hung tool — apply the general idle gate. A unit that has made
+      // meaningful progress within the idle window is not idle yet.
+      if (!stalledToolDetected && Date.now() - runtime.lastProgressAt < idleTimeoutMs) return;
 
       // Check if the agent is producing work on disk.
       // Skip this when a stalled tool was just detected — filesystem changes
@@ -271,10 +287,23 @@ export function startUnitSupervision(sctx: SupervisionContext): void {
   }, 15000);
 
   // ── 3. Hard timeout ──
-  s.unitTimeoutHandle = setTimeout(async () => {
+  const hardTimeoutBody = async () => {
     try {
       s.unitTimeoutHandle = null;
       if (!s.active) return;
+      // User-interactive tools (ask_user_questions, secure_env_collect) block
+      // waiting for human input by design. Unlike the idle watchdog (above),
+      // the hard timeout had no interactive exemption, so a long human
+      // deliberation crossing the hard cap would still closeout + recover
+      // (triggerTurn) and abort the turn hosting the elicitation, reintroducing
+      // the self-cancel loop on slow answers (#2676). Re-arm instead of firing
+      // while a human is being asked, mirroring the idle watchdog's
+      // refresh-and-return. Conditional on hasInteractiveToolInFlight(), so a
+      // genuinely hung non-interactive unit still hits the hard cap.
+      if (getInFlightToolCount() > 0 && hasInteractiveToolInFlight()) {
+        s.unitTimeoutHandle = setTimeout(hardTimeoutBody, hardTimeoutMs);
+        return;
+      }
       const expectedCurrentUnit = s.currentUnit
         ? { type: s.currentUnit.type, id: s.currentUnit.id, startedAt: s.currentUnit.startedAt }
         : null;
@@ -307,7 +336,8 @@ export function startUnitSupervision(sctx: SupervisionContext): void {
         logWarning("timer", `notification failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
-  }, hardTimeoutMs);
+  };
+  s.unitTimeoutHandle = setTimeout(hardTimeoutBody, hardTimeoutMs);
 
   // ── 4. Context-pressure continue-here monitor ──
   if (s.continueHereHandle) {

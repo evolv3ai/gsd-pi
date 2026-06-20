@@ -1,12 +1,32 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { hasDirectAnthropicApiKey, migrateAnthropicDefaultToClaudeCode, shouldMigrateAnthropicToClaudeCode } from "../provider-migrations.ts"
+import {
+  hasDirectAnthropicApiKey,
+  hasDirectGoogleApiKey,
+  hasGeminiCliExternalAuth,
+  migrateAnthropicDefaultToClaudeCode,
+  migrateGeminiCliDefaultToAntigravity,
+  shouldMigrateAnthropicToClaudeCode,
+  shouldMigrateGeminiCliToAntigravity,
+} from "../provider-migrations.ts"
 
-function makeAuthStorage(credentials: unknown[]) {
+function makeAuthStorage(credentials: unknown[], provider = "anthropic") {
   return {
-    getCredentialsForProvider(provider: string) {
-      return provider === "anthropic" ? credentials : []
+    getCredentialsForProvider(id: string) {
+      return id === provider ? credentials : []
     },
+    set() {},
+  }
+}
+
+function makeGeminiAuthStorage(geminiCredentials: unknown[], googleCredentials: unknown[] = []) {
+  return {
+    getCredentialsForProvider(id: string) {
+      if (id === "google-gemini-cli") return geminiCredentials
+      if (id === "google") return googleCredentials
+      return []
+    },
+    set() {},
   }
 }
 
@@ -143,4 +163,145 @@ test("migrateAnthropicDefaultToClaudeCode does not switch without a claude-code 
 
   assert.equal(migrated, false)
   assert.equal(called, false)
+})
+
+test("hasGeminiCliExternalAuth detects external CLI sentinel", () => {
+  assert.equal(
+    hasGeminiCliExternalAuth(
+      makeGeminiAuthStorage([{ type: "api_key", key: "cli" }]) as any,
+    ),
+    true,
+  )
+  assert.equal(
+    hasGeminiCliExternalAuth(
+      makeGeminiAuthStorage([{ type: "oauth", token: "nope" }]) as any,
+    ),
+    false,
+  )
+})
+
+test("hasDirectGoogleApiKey detects GEMINI_API_KEY env fallback", () => {
+  assert.equal(
+    hasDirectGoogleApiKey(makeGeminiAuthStorage([]) as any, { GEMINI_API_KEY: "key" } as NodeJS.ProcessEnv),
+    true,
+  )
+})
+
+test("shouldMigrateGeminiCliToAntigravity requires external CLI auth and antigravity ready", () => {
+  assert.equal(
+    shouldMigrateGeminiCliToAntigravity({
+      authStorage: makeGeminiAuthStorage([{ type: "api_key", key: "cli" }]) as any,
+      isAntigravityReady: true,
+      defaultProvider: "google-gemini-cli",
+      env: {} as NodeJS.ProcessEnv,
+    }),
+    true,
+  )
+})
+
+test("shouldMigrateGeminiCliToAntigravity stays off for other providers", () => {
+  let checked = false
+  assert.equal(
+    shouldMigrateGeminiCliToAntigravity({
+      authStorage: makeGeminiAuthStorage([{ type: "api_key", key: "cli" }]) as any,
+      isAntigravityReady: () => {
+        checked = true
+        return true
+      },
+      defaultProvider: "google-antigravity",
+      env: {} as NodeJS.ProcessEnv,
+    }),
+    false,
+  )
+  assert.equal(checked, false)
+})
+
+test("shouldMigrateGeminiCliToAntigravity skips when antigravity is not ready", () => {
+  assert.equal(
+    shouldMigrateGeminiCliToAntigravity({
+      authStorage: makeGeminiAuthStorage([{ type: "api_key", key: "cli" }]) as any,
+      isAntigravityReady: false,
+      defaultProvider: "google-gemini-cli",
+      env: {} as NodeJS.ProcessEnv,
+    }),
+    false,
+  )
+})
+
+test("shouldMigrateGeminiCliToAntigravity blocks migration for direct Google API key users", () => {
+  assert.equal(
+    shouldMigrateGeminiCliToAntigravity({
+      authStorage: makeGeminiAuthStorage(
+        [{ type: "api_key", key: "cli" }],
+        [{ type: "api_key", key: "AIza-test" }],
+      ) as any,
+      isAntigravityReady: true,
+      defaultProvider: "google-gemini-cli",
+      env: {} as NodeJS.ProcessEnv,
+    }),
+    false,
+  )
+})
+
+test("migrateGeminiCliDefaultToAntigravity switches to antigravity default model", () => {
+  let saved: { provider: string; modelId: string } | undefined
+  let antigravityAuth: unknown
+  const authStorage = {
+    getCredentialsForProvider(id: string) {
+      if (id === "google-gemini-cli") return [{ type: "api_key", key: "cli" }]
+      if (id === "google") return []
+      return []
+    },
+    set(provider: string, credential: unknown) {
+      if (provider === "google-antigravity") antigravityAuth = credential
+    },
+  }
+
+  const migrated = migrateGeminiCliDefaultToAntigravity({
+    authStorage: authStorage as any,
+    isAntigravityReady: true,
+    settingsManager: {
+      getDefaultProvider: () => "google-gemini-cli",
+      getDefaultModel: () => "gemini-2.5-pro",
+      setDefaultModelAndProvider: (provider, modelId) => {
+        saved = { provider, modelId }
+      },
+    },
+    modelRegistry: {
+      getAvailable: () => [
+        { provider: "google-gemini-cli", id: "gemini-2.5-pro" },
+        { provider: "google-antigravity", id: "default" },
+      ],
+    },
+    env: {} as NodeJS.ProcessEnv,
+  })
+
+  assert.equal(migrated, true)
+  assert.deepEqual(saved, { provider: "google-antigravity", modelId: "default" })
+  assert.deepEqual(antigravityAuth, { type: "api_key", key: "cli" })
+})
+
+test("migrateGeminiCliDefaultToAntigravity preserves model id when antigravity exposes it", () => {
+  let saved: { provider: string; modelId: string } | undefined
+  const migrated = migrateGeminiCliDefaultToAntigravity({
+    authStorage: makeGeminiAuthStorage([{ type: "api_key", key: "cli" }]) as any,
+    isAntigravityReady: true,
+    settingsManager: {
+      getDefaultProvider: () => "google-gemini-cli",
+      getDefaultModel: () => "gemini-3-flash-preview",
+      setDefaultModelAndProvider: (provider, modelId) => {
+        saved = { provider, modelId }
+      },
+    },
+    modelRegistry: {
+      getAvailable: () => [
+        { provider: "google-antigravity", id: "default" },
+        { provider: "google-antigravity", id: "gemini-3-flash-preview" },
+      ],
+    },
+    env: {} as NodeJS.ProcessEnv,
+  })
+
+  assert.equal(migrated, true)
+  assert.deepEqual(saved, { provider: "google-antigravity", modelId: "gemini-3-flash-preview" })
 })

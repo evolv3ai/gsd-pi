@@ -156,6 +156,22 @@ describe("AuthStorage", () => {
 			expect(apiKey).toBe("literal_api_key_value");
 		});
 
+		test("empty apiKey placeholders are skipped when resolving stored keys", async () => {
+			const validCredential = ["minimax", "valid", "test", "credential"].join("-");
+
+			writeAuthJson({
+				minimax: [
+					{ type: "api_key", key: "" },
+					{ type: "api_key", key: validCredential },
+				],
+			});
+
+			authStorage = AuthStorage.create(authJsonPath);
+			const apiKey = await authStorage.getApiKey("minimax");
+
+			expect(apiKey).toBe(validCredential);
+		});
+
 		test("apiKey command can use shell features like pipes", async () => {
 			writeAuthJson({
 				anthropic: { type: "api_key", key: "!echo 'hello world' | tr ' ' '-'" },
@@ -456,6 +472,110 @@ describe("AuthStorage", () => {
 			expect(JSON.stringify(authStorage.getAuthStatus("anthropic"))).not.toContain("secret-api-key");
 			expect(JSON.stringify(authStorage.getAuthStatus("openai"))).not.toContain("secret-access-token");
 			expect(JSON.stringify(authStorage.getAuthStatus("openai"))).not.toContain("secret-refresh-token");
+		});
+
+		test("empty stored API keys do not count as configured auth", () => {
+			authStorage = AuthStorage.inMemory({
+				"custom-provider": { type: "api_key", key: "" },
+			});
+
+			expect(authStorage.has("custom-provider")).toBe(true);
+			expect(authStorage.hasAuth("custom-provider")).toBe(false);
+			expect(authStorage.getAuthStatus("custom-provider")).toEqual({ configured: false });
+		});
+
+		test("prefers OAuth over stored API key for OAuth-capable providers", async () => {
+			authStorage = AuthStorage.inMemory({
+				anthropic: [
+					{ type: "api_key", key: "sk-ant-stored-api-key" },
+					{
+						type: "oauth",
+						access: "oauth-access-token",
+						refresh: "oauth-refresh-token",
+						expires: Date.now() + 60_000,
+					},
+				],
+			});
+
+			const apiKey = await authStorage.getApiKey("anthropic");
+			expect(apiKey).toBe("oauth-access-token");
+		});
+
+		test("resolves legacy GitHub Copilot OAuth apiKey credentials", async () => {
+			authStorage = AuthStorage.inMemory({
+				"github-copilot": {
+					type: "oauth",
+					apiKey: "ghu-copilot-token",
+					expires: Date.now() + 60_000,
+				} as never,
+			});
+
+			const apiKey = await authStorage.getApiKey("github-copilot");
+			expect(apiKey).toBe("ghu-copilot-token");
+		});
+
+		test("falls back to stored API key when OAuth refresh fails", async () => {
+			const providerId = `test-oauth-api-fallback-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+			registerOAuthProvider({
+				id: providerId,
+				name: "Test OAuth API Fallback",
+				async login() {
+					throw new Error("Not used in this test");
+				},
+				async refreshToken() {
+					throw new Error("refresh failed");
+				},
+				getApiKey(credentials) {
+					return credentials.access;
+				},
+			});
+
+			authStorage = AuthStorage.inMemory({
+				[providerId]: [
+					{ type: "api_key", key: "sk-fallback-api-key" },
+					{
+						type: "oauth",
+						access: "expired-access-token",
+						refresh: "refresh-token",
+						expires: Date.now() - 10_000,
+					},
+				],
+			});
+
+			const apiKey = await authStorage.getApiKey(providerId);
+			expect(apiKey).toBe("sk-fallback-api-key");
+		});
+
+		test("falls back to stored API key when OAuth refresh returns nothing", async () => {
+			const providerId = `test-oauth-null-refresh-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+			registerOAuthProvider({
+				id: providerId,
+				name: "Test OAuth Null Refresh",
+				async login() {
+					throw new Error("Not used in this test");
+				},
+				async refreshToken() {
+					return null as never;
+				},
+				getApiKey(credentials) {
+					return credentials.access;
+				},
+			});
+
+			authStorage = AuthStorage.inMemory({
+				[providerId]: [
+					{ type: "api_key", key: "sk-null-refresh-fallback" },
+					{
+						type: "oauth",
+						access: "expired-access-token",
+						refresh: "refresh-token",
+						expires: Date.now() - 10_000,
+					},
+				],
+			});
+
+			const apiKey = await authStorage.getApiKey(providerId);
+			expect(apiKey).toBe("sk-null-refresh-fallback");
 		});
 	});
 

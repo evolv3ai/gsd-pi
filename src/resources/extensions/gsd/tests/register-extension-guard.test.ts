@@ -52,6 +52,31 @@ test("handleRecoverableExtensionProcessError swallows uv_cwd ENOENT", () => {
   }
 });
 
+test("handleRecoverableExtensionProcessError suppresses uv_cwd stderr in TUI mode", async () => {
+  const { setStderrLoggingEnabled } = await import("../workflow-logger.ts");
+  let stderr = "";
+  const originalWrite = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderr += String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+  const previous = setStderrLoggingEnabled(false);
+
+  try {
+    const handled = handleRecoverableExtensionProcessError(
+      Object.assign(new Error("process.cwd failed"), {
+        code: "ENOENT",
+        syscall: "uv_cwd",
+      }),
+    );
+    assert.equal(handled, true);
+    assert.equal(stderr, "");
+  } finally {
+    setStderrLoggingEnabled(previous);
+    process.stderr.write = originalWrite;
+  }
+});
+
 test("handleRecoverableExtensionProcessError swallows read EIO", () => {
 	let stderr = "";
 	const originalWrite = process.stderr.write.bind(process.stderr);

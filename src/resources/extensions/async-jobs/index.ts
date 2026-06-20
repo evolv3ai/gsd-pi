@@ -117,10 +117,89 @@ export default function AsyncJobs(pi: ExtensionAPI) {
 				return;
 			}
 
+			const ctx = _ctx;
 			const running = manager.getRunningJobs();
 			const recent = manager.getRecentJobs(10);
 			const completed = recent.filter((j) => j.status !== "running");
 
+			// Interactive kill-picker when there are running jobs and a UI is available
+			if (running.length > 0 && ctx.hasUI) {
+				// Kill-picker loop: each iteration shows live running jobs.
+				// Step 1 picks a job (neutral label — selecting does NOT cancel yet);
+				// step 2 confirms before the destructive cancel. Labels deliberately
+				// omit a live elapsed time: ctx.ui.select renders the option strings
+				// once and never refreshes them, so a "(24s)" baked into the label
+				// would freeze and mislead. Accurate elapsed times are shown in the
+				// post-picker summary (rebuilt fresh) instead.
+				const DONE = "Close";
+				while (true) {
+					const liveJobs = manager.getRunningJobs();
+					if (liveJobs.length === 0) break;
+
+					// Map display label -> job id so we never parse ids back out of
+					// free-form label text.
+					const labelToId = new Map<string, string>();
+					for (const j of liveJobs) {
+						labelToId.set(`${j.id} — ${j.label} (running)`, j.id);
+					}
+					const options = [...labelToId.keys(), DONE];
+
+					const choice = await ctx.ui.select(
+						"Background jobs — pick one to cancel, Escape to close",
+						options,
+					);
+
+					// ESC returns undefined; headless may return string[]; DONE closes
+					if (!choice || typeof choice !== "string" || choice === DONE) break;
+
+					const id = labelToId.get(choice);
+					if (!id) break;
+
+					const job = liveJobs.find((j) => j.id === id);
+					const confirmed = await ctx.ui.confirm(
+						"Cancel background job?",
+						`This will stop ${id}${job ? ` — ${job.label}` : ""}. Other jobs keep running.`,
+					);
+					if (!confirmed) continue;
+
+					const r = manager.cancel(id);
+					ctx.ui.notify(
+						r === "cancelled" ? `Job ${id} cancelled.` : `Job ${id}: ${r}`,
+						r === "cancelled" ? "success" : "warning",
+					);
+				}
+
+				// After picker, send a summary of any still-running jobs
+				const stillRunning = manager.getRunningJobs();
+				const summaryLines: string[] = ["## Background Jobs"];
+				if (stillRunning.length > 0) {
+					summaryLines.push("", "### Running");
+					for (const job of stillRunning) {
+						const elapsed = ((Date.now() - job.startTime) / 1000).toFixed(0);
+						summaryLines.push(`- **${job.id}** — ${job.label} (${elapsed}s)`);
+					}
+				}
+				const recentCompleted = manager.getRecentJobs(10).filter((j) => j.status !== "running");
+				if (recentCompleted.length > 0) {
+					summaryLines.push("", "### Recent");
+					for (const job of recentCompleted) {
+						const elapsed = ((Date.now() - job.startTime) / 1000).toFixed(1);
+						summaryLines.push(`- **${job.id}** — ${job.label} (${job.status}, ${elapsed}s)`);
+					}
+				}
+				if (stillRunning.length === 0 && recentCompleted.length === 0) {
+					summaryLines.push("", "No background jobs.");
+				}
+
+				pi.sendMessage({
+					customType: "async_jobs_list",
+					content: summaryLines.join("\n"),
+					display: true,
+				});
+				return;
+			}
+
+			// Text-only display: headless/RPC mode, or no running jobs
 			const lines: string[] = ["## Background Jobs"];
 
 			if (running.length === 0 && completed.length === 0) {

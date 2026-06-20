@@ -40,6 +40,20 @@ export interface FileChangeAudit {
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 /**
+ * Build the effective allowlist for a unit's file-change audit.
+ *
+ * When GSD manages .gitignore (manage_gitignore unset or true), ensureGitignore()
+ * appends baseline patterns at auto-start and the edit rides into the task's
+ * auto-commit — so .gitignore changes must not be attributed to the task.
+ */
+export function effectiveFileChangeAllowlist(
+  baseAllowlist: string[],
+  manageGitignore: boolean | undefined,
+): string[] {
+  return manageGitignore === false ? baseAllowlist : [...baseAllowlist, ".gitignore"];
+}
+
+/**
  * Validate file changes after auto-commit for an execute-task unit.
  * Returns null if task data is unavailable or DB is not loaded.
  *

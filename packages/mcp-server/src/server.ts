@@ -30,6 +30,7 @@ import { buildGraph, writeGraph, writeSnapshot, graphStatus, graphQuery, graphDi
 import { resolveGsdRoot, resolveMilestoneFile } from './readers/paths.js';
 import { runDoctorLite } from './readers/doctor-lite.js';
 import { registerWorkflowTools, validateProjectDir } from './workflow-tools.js';
+import { installMoonshotCompatibleToolSchemas } from './moonshot-tool-schema.js';
 import { applySecrets, checkExistingEnvKeys, detectDestination, resolveProjectEnvFilePath } from './env-writer.js';
 
 // ---------------------------------------------------------------------------
@@ -426,6 +427,11 @@ interface AskUserQuestionsWriteGateModule {
   markDepthVerified(milestoneId?: string | null, basePath?: string): void;
   clearPendingGate(basePath: string): void;
   extractDepthVerificationMilestoneId(questionId: string): string | null;
+  applyAskUserQuestionsGateResult?(options: {
+    basePath: string;
+    questions: AskUserQuestion[];
+    details: AskUserQuestionsStructuredContent;
+  }): unknown;
 }
 
 const OTHER_OPTION_LABEL = 'None of the above';
@@ -473,6 +479,7 @@ export function buildAskUserQuestionsElicitRequest(questions: AskUserQuestion[])
         maxItems: question.options.length,
         items: {
           anyOf: question.options.map((option) => ({
+            type: 'string',
             const: option.label,
             title: option.label,
           })),
@@ -486,6 +493,7 @@ export function buildAskUserQuestionsElicitRequest(questions: AskUserQuestion[])
       title: question.header,
       description: question.question,
       oneOf: [...question.options, { label: OTHER_OPTION_LABEL, description: 'Choose this when the listed options do not fit.' }].map((option) => ({
+        type: 'string',
         const: option.label,
         title: option.label,
       })),
@@ -647,6 +655,15 @@ async function recordAskUserQuestionsGateResult(
   if (!writeGate) return;
 
   const basePath = askUserQuestionsWriteGateBasePath(deps);
+  if (writeGate.applyAskUserQuestionsGateResult) {
+    writeGate.applyAskUserQuestionsGateResult({
+      basePath,
+      questions: structured.questions,
+      details: structured,
+    });
+    return;
+  }
+
   for (const question of structured.questions) {
     if (!writeGate.isGateQuestionId(question.id)) continue;
     const selected = structured.response.answers[question.id]?.selected;
@@ -1403,6 +1420,8 @@ export async function createMcpServer(
   registerWorkflowTools(server, {
     advertiseAliases: process.env.GSD_MCP_HIDE_ALIASES !== '1',
   });
+
+  installMoonshotCompatibleToolSchemas(server as unknown as Parameters<typeof installMoonshotCompatibleToolSchemas>[0]);
 
   return { server };
 }

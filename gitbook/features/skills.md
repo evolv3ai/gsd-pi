@@ -17,6 +17,12 @@ When resolving bare skill names in GSD `PREFERENCES.md`, bundled `~/.gsd/agent/s
 is searched before ecosystem directories — preference refs may point at bundled
 skills even when a project-local skill with the same name wins in the catalog.
 
+The managed `gsd-browser` skill is sourced from the installed
+`@opengsd/gsd-browser` package rather than from Pi's bundled `src/resources/skills`
+tree. Startup refreshes stale or incomplete copies under
+`~/.gsd/agent/skills/gsd-browser/`, including referenced support files in
+`docs/`, `scripts/`, and `gsd-browser-skill/`.
+
 ## Installing Skills
 
 Skills are installed via the [skills.sh CLI](https://skills.sh):
@@ -87,6 +93,8 @@ Create your own skill by adding a directory with a `SKILL.md` file:
 ```
 
 The `SKILL.md` contains instructions the AI follows when the skill is active.
+Its frontmatter must parse as YAML; quote description values containing `:` or
+use a folded block (`description: >`) for longer trigger descriptions.
 
 ### Project-Local Skills
 

@@ -1,7 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { parseMilestoneTarget, parseModelFlag } from "../commands/handlers/auto.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 describe("parseMilestoneTarget", () => {
   it("extracts a simple milestone ID", () => {
@@ -57,6 +62,24 @@ describe("parseMilestoneTarget", () => {
   it("does not match bare numbers without M prefix", () => {
     const result = parseMilestoneTarget("auto 016");
     assert.equal(result.milestoneId, null);
+  });
+});
+
+describe("auto preference diagnostics", () => {
+  it("notifies preference diagnostics before launching auto-mode", () => {
+    const source = readFileSync(join(__dirname, "..", "commands", "handlers", "auto.ts"), "utf-8");
+    const autoBlockIndex = source.indexOf('if (trimmed === "auto" || trimmed.startsWith("auto "))');
+    assert.ok(autoBlockIndex >= 0, "auto command block should exist");
+    const nextBlockIndex = source.indexOf('if (trimmed === "stop")', autoBlockIndex);
+    const autoBlock = source.slice(autoBlockIndex, nextBlockIndex);
+    const notifyIndex = autoBlock.indexOf("notifyPreferenceDiagnostics");
+    assert.ok(notifyIndex >= 0, "auto command should notify preference diagnostics");
+    for (const match of autoBlock.matchAll(/startAutoDetached/g)) {
+      assert.ok(
+        notifyIndex < match.index!,
+        "preference diagnostics should be notified before each auto-mode launch",
+      );
+    }
   });
 });
 

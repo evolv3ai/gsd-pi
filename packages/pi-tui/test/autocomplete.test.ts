@@ -114,6 +114,37 @@ describe("CombinedAutocompleteProvider", () => {
 		});
 	});
 
+	describe("non-fd @ file suggestions", () => {
+		let rootDir = "";
+		let baseDir = "";
+
+		beforeEach(() => {
+			rootDir = mkdtempSync(join(tmpdir(), "pi-autocomplete-no-fd-"));
+			baseDir = join(rootDir, "cwd");
+			mkdirSync(baseDir, { recursive: true });
+		});
+
+		afterEach(() => {
+			rmSync(rootDir, { recursive: true, force: true });
+		});
+
+		test("falls back to directory suggestions when fd is unavailable", async () => {
+			setupFolder(baseDir, {
+				dirs: ["src"],
+				files: {
+					"README.md": "readme",
+				},
+			});
+
+			const provider = new CombinedAutocompleteProvider([], baseDir, null);
+			const line = "@RE";
+			const result = await getSuggestions(provider, [line], 0, line.length);
+
+			assert.deepStrictEqual(result?.items.map((item) => item.value), ["@README.md"]);
+			assert.equal(result?.prefix, "@RE");
+		});
+	});
+
 	describe("fd @ file suggestions", { skip: !isFdInstalled }, () => {
 		let rootDir = "";
 		let baseDir = "";

@@ -13,10 +13,10 @@ test("dispatchNewMilestoneDiscuss uses discuss.md only on greenfield projects", 
 
   assert.match(fnBody, /findMilestoneIds\(basePath\)\.length === 0/);
   assert.match(fnBody, /prepareAndBuildDiscussPrompt/);
-  assert.match(fnBody, /loadPrompt\("guided-discuss-milestone"/);
+  assert.match(fnBody, /buildDiscussMilestonePrompt/);
   assert.match(
     fnBody,
-    /if \(isGreenfield\)[\s\S]*prepareAndBuildDiscussPrompt[\s\S]*loadPrompt\("guided-discuss-milestone"/,
+    /if \(isGreenfield\)[\s\S]*prepareAndBuildDiscussPrompt[\s\S]*buildDiscussMilestonePrompt/,
     "greenfield branch must precede guided-discuss-milestone branch",
   );
 });
@@ -24,7 +24,7 @@ test("dispatchNewMilestoneDiscuss uses discuss.md only on greenfield projects", 
 test("dispatchNewMilestoneDiscuss uses milestone-specific preparation guidance", () => {
   const source = readFileSync(join(__dirname, "..", "guided-flow.ts"), "utf-8");
   const fnBody = extractSourceRegion(source, "async function dispatchNewMilestoneDiscuss(");
-  assert.match(fnBody, /buildDiscussPreparationContext\(ctx, basePath, "milestone"\)/);
+  assert.match(fnBody, /buildDiscussPreparationContext\(ctx, basePath, "milestone", true\)/);
 });
 
 test("launchNextMilestoneDiscuss routes through dispatchNewMilestoneDiscuss for normal path", () => {

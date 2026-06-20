@@ -114,19 +114,19 @@ describe("resume: missing worktree warning emission", () => {
     assert.equal(peekLogs().length, 0);
   });
 
-  test("warning message mentions project-root fallback action", () => {
+  test("warning message mentions project-root fallback and worktree recreation", () => {
     const missingPath = join(projectDir, ".gsd", "worktrees", "M099-deleted");
     _warnIfWorktreeMissingForTest(missingPath, "M099");
 
     const logs = peekLogs();
     assert.equal(logs.length, 1);
     assert.ok(
-      logs[0].message.includes("project-root mode"),
-      "warning should mention project-root mode fallback",
+      logs[0].message.includes("project root"),
+      "warning should mention project-root fallback",
     );
     assert.ok(
-      logs[0].message.includes("gsd-debug"),
-      "warning should suggest /gsd-debug recovery action",
+      logs[0].message.includes("/gsd next"),
+      "warning should suggest /gsd next to recreate the worktree",
     );
   });
 });

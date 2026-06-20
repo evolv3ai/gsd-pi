@@ -5,11 +5,11 @@ import { dirname, join } from "node:path";
 
 import type { DoctorIssue, DoctorIssueCode } from "./doctor-types.js";
 import { loadFile } from "./files.js";
-import { parseRoadmap as parseLegacyRoadmap } from "./parsers-legacy.js";
-import { isDbAvailable, getMilestone } from "./gsd-db.js";
 import { resolveMilestoneFile } from "./paths.js";
-import { deriveState, isMilestoneComplete } from "./state.js";
-import { createWorktree, listWorktrees, resolveGitDir, worktreesDir } from "./worktree-manager.js";
+import { isCompletedMilestoneTerminal } from "./milestone-closeout.js";
+import { deriveState } from "./state.js";
+import { isClosedStatus } from "./status-guards.js";
+import { allWorktreesDirs, createWorktree, listWorktrees, resolveGitDir } from "./worktree-manager.js";
 import { abortAndReset } from "./git-self-heal.js";
 import { RUNTIME_EXCLUSION_PATHS, resolveMilestoneIntegrationBranch, writeIntegrationBranch } from "./git-service.js";
 import { nativeIsRepo, nativeWorktreeList, nativeWorktreeRemove, nativeBranchList, nativeBranchDelete, nativeLsFiles, nativeRmCached, nativeHasChanges, nativeLastCommitEpoch, nativeGetCurrentBranch, nativeAddTracked, nativeCommit } from "./native-git-bridge.js";
@@ -146,22 +146,6 @@ function getSnapshotDiffCheckFailure(basePath: string): string | null {
   return failures.length > 0 ? failures.join("\n") : null;
 }
 
-async function isCompletedMilestoneTerminal(basePath: string, milestoneId: string): Promise<boolean> {
-  const summaryPath = resolveMilestoneFile(basePath, milestoneId, "SUMMARY");
-  if (!summaryPath) return false;
-
-  if (isDbAvailable()) {
-    const milestone = getMilestone(milestoneId);
-    return !!milestone && milestone.status === "complete";
-  }
-
-  const roadmapPath = resolveMilestoneFile(basePath, milestoneId, "ROADMAP");
-  const roadmapContent = roadmapPath ? await loadFile(roadmapPath) : null;
-  if (!roadmapContent) return false;
-  const roadmap = parseLegacyRoadmap(roadmapContent);
-  return isMilestoneComplete(roadmap);
-}
-
 export async function checkGitHealth(
   basePath: string,
   issues: DoctorIssue[],
@@ -206,7 +190,7 @@ export async function checkGitHealth(
       const milestoneId = wt.branch.replace(/^milestone\//, "");
       const milestoneEntry = state.registry.find(m => m.id === milestoneId);
       const isComplete = milestoneEntry
-        ? await isCompletedMilestoneTerminal(basePath, milestoneId)
+        ? isClosedStatus(milestoneEntry.status)
         : false;
 
       if (!isComplete && !hasProjectContentOnDisk(wt.path) && hasProjectContentOnDisk(basePath)) {
@@ -304,6 +288,8 @@ export async function checkGitHealth(
           let branchMilestoneComplete = false;
           const roadmapContent = roadmapPath ? await loadFile(roadmapPath) : null;
           if (!roadmapContent) continue;
+          const milestoneEntry = state.registry.find(m => m.id === milestoneId);
+          if (!milestoneEntry || !isClosedStatus(milestoneEntry.status)) continue;
           branchMilestoneComplete = await isCompletedMilestoneTerminal(basePath, milestoneId);
           if (branchMilestoneComplete) {
             issues.push({
@@ -496,8 +482,8 @@ export async function checkGitHealth(
   // that is no longer registered with git. These orphaned dirs cause
   // "already exists" errors when re-creating the same worktree name.
   try {
-    const wtDir = worktreesDir(basePath);
-    if (existsSync(wtDir)) {
+    for (const wtDir of allWorktreesDirs(basePath)) {
+      if (!existsSync(wtDir)) continue;
       // Resolve symlinks and normalize separators so that symlinked .gsd
       // paths (e.g. ~/.gsd/projects/<hash>/worktrees/…) match the paths
       // returned by `git worktree list`.

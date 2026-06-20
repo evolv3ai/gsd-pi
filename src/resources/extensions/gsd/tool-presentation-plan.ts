@@ -1,0 +1,215 @@
+// Project/App: gsd-pi
+// File Purpose: Resolve phase-aware tool surfaces for GSD model presentations.
+
+import {
+  RUN_UAT_BROWSER_TOOL_NAMES,
+  RUN_UAT_READ_ONLY_TOOL_NAMES,
+  RUN_UAT_TOOL_PRESENTATION_PLAN_ID,
+  RUN_UAT_WORKFLOW_TOOL_NAMES,
+} from "./unit-tool-contracts.js";
+import { parseMcpToolName, toMcpToolName } from "./mcp-tool-name.js";
+import { createToolSurfaceSnapshot, type ToolSurfaceSnapshot } from "./tool-surface-snapshot.js";
+import { uatTypeIncludesBrowser } from "./uat-policy.js";
+import { canonicalWorkflowToolName } from "./engine-hook-contract.js";
+
+export {
+  RUN_UAT_BROWSER_TOOL_NAMES,
+  RUN_UAT_READ_ONLY_TOOL_NAMES,
+  RUN_UAT_TOOL_PRESENTATION_PLAN_ID,
+  RUN_UAT_WORKFLOW_TOOL_NAMES,
+} from "./unit-tool-contracts.js";
+
+export type ToolPresentationSurface = "provider-tools" | "claude-code-sdk" | "mcp" | "hybrid";
+
+export interface ToolPresentationModel {
+  provider?: string;
+  api?: string;
+  id?: string;
+}
+
+export interface ToolPresentationPlan {
+  phase: string;
+  surface: ToolPresentationSurface;
+  model?: ToolPresentationModel;
+  allowedToolNames: string[];
+  presentedToolNames: string[];
+  blockedToolNames: Array<{ name: string; reason: string }>;
+  aliases: Array<{ requested: string; canonical: string }>;
+  diagnostics: string[];
+  toolSurface: ToolSurfaceSnapshot;
+}
+
+export interface RunUatResultPresentation {
+  surface: ToolPresentationSurface;
+  presentedTools: string[];
+  blockedTools: Array<{ name: string; reason: string }>;
+  toolPresentationPlanId: string;
+}
+
+export const RUN_UAT_FORBIDDEN_TOOL_NAMES = [
+  "edit",
+  "write",
+  "gsd_exec",
+  "gsd_summary_save",
+  "gsd_save_gate_result",
+  "search-the-web",
+  "WebSearch",
+  "Bash",
+  "Write",
+  "Edit",
+  "mcp__gsd-workflow__*",
+] as const;
+
+export const RUN_UAT_CLAUDE_NATIVE_TOOL_NAMES = [
+  "Read",
+  "Glob",
+  "Grep",
+] as const;
+
+// Normalizer seam lives in engine-hook-contract.ts; re-exported here for
+// existing presentation importers (uat-run.ts).
+export { canonicalWorkflowToolName };
+
+export { parseMcpToolName } from "./mcp-tool-name.js";
+
+export function toWorkflowMcpToolName(serverName: string, toolName: string): string {
+  return toMcpToolName(serverName, canonicalWorkflowToolName(toolName));
+}
+
+function dedupe(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
+function addBlockedTool(
+  blocked: ToolPresentationPlan["blockedToolNames"],
+  name: string,
+  reason: string,
+): void {
+  if (!blocked.some((entry) => entry.name === name)) {
+    blocked.push({ name, reason });
+  }
+}
+
+export function buildRunUatCanonicalToolNames(options: { includeBrowserTools?: readonly string[] } = {}): string[] {
+  return dedupe([
+    ...RUN_UAT_WORKFLOW_TOOL_NAMES,
+    ...RUN_UAT_READ_ONLY_TOOL_NAMES,
+    ...(options.includeBrowserTools ?? []),
+  ]);
+}
+
+// UAT modes whose run-uat instructions direct the runner to exercise the live
+// app in a browser. These modes receive the browser tool surface so the runner
+// can actually drive the page instead of silently deferring browser checks to a
+// human. See run-uat.md automation rules: `browser-executable`, `live-runtime`,
+// and `mixed` are all told to drive a browser/runtime path, and
+// `human-experience` is told to capture screenshots. Without this, a webpage
+// UAT classified as anything but `browser-executable` had no browser tools and
+// downgraded its live checks to NEEDS-HUMAN (M001/S03 regression).
+export function runUatBrowserToolsForType(uatType: string | undefined): readonly string[] {
+  return uatTypeIncludesBrowser(uatType) ? RUN_UAT_BROWSER_TOOL_NAMES : [];
+}
+
+export function runUatPresentationSurfaceForType(uatType: string | undefined): ToolPresentationSurface {
+  return uatTypeIncludesBrowser(uatType) ? "hybrid" : "mcp";
+}
+
+export function buildRunUatPresentationForType(
+  uatType: string | undefined,
+  options: {
+    surface?: ToolPresentationSurface;
+    presentedTools?: readonly string[];
+  } = {},
+): RunUatResultPresentation {
+  return buildRunUatResultPresentation({
+    ...options,
+    surface: options.surface ?? runUatPresentationSurfaceForType(uatType),
+    includeBrowserTools: runUatBrowserToolsForType(uatType),
+  });
+}
+
+export function buildRunUatResultPresentation(options: {
+  surface?: ToolPresentationSurface;
+  includeBrowserTools?: readonly string[];
+  presentedTools?: readonly string[];
+} = {}): RunUatResultPresentation {
+  const presentedTools = options.presentedTools
+    ? dedupe(options.presentedTools)
+    : buildRunUatCanonicalToolNames({ includeBrowserTools: options.includeBrowserTools });
+  const blockedTools = RUN_UAT_FORBIDDEN_TOOL_NAMES
+    .filter((toolName) => !toolName.includes("*"))
+    .map((name) => ({ name, reason: "forbidden during run-uat" }));
+
+  return {
+    surface: options.surface ?? "mcp",
+    presentedTools,
+    blockedTools,
+    toolPresentationPlanId: RUN_UAT_TOOL_PRESENTATION_PLAN_ID,
+  };
+}
+
+export function resolveToolPresentationPlan(options: {
+  phase: string;
+  surface: ToolPresentationSurface;
+  model?: ToolPresentationModel;
+  workflowMcpServerName?: string | null;
+  requestedToolNames?: readonly string[];
+  availableToolNames?: readonly string[];
+  includeBrowserTools?: readonly string[];
+}): ToolPresentationPlan {
+  const requested = options.requestedToolNames ?? (
+    options.phase === "run-uat"
+      ? buildRunUatCanonicalToolNames({ includeBrowserTools: options.includeBrowserTools })
+      : []
+  );
+  const available = new Set(options.availableToolNames ?? requested);
+  const aliases: ToolPresentationPlan["aliases"] = [];
+  const blockedToolNames: ToolPresentationPlan["blockedToolNames"] = [];
+  const allowed: string[] = [];
+
+  for (const name of requested) {
+    const canonical = canonicalWorkflowToolName(name);
+    if (canonical !== name) aliases.push({ requested: name, canonical });
+    if (!available.has(name) && !available.has(canonical)) {
+      addBlockedTool(blockedToolNames, canonical, "not registered or provider-incompatible");
+      continue;
+    }
+    allowed.push(canonical);
+  }
+
+  const allowedToolNames = dedupe(allowed);
+  const workflowServerName = options.workflowMcpServerName || "gsd-workflow";
+  const presentedToolNames = options.surface === "claude-code-sdk" || options.surface === "mcp"
+    ? allowedToolNames.map((name) =>
+        name.startsWith("gsd_") || name === "ask_user_questions"
+          ? toWorkflowMcpToolName(workflowServerName, name)
+          : name
+      )
+    : allowedToolNames;
+  const toolSurface = createToolSurfaceSnapshot({
+    source: "presentation-plan",
+    phase: options.phase,
+    modelFacingToolNames: options.availableToolNames ?? requested,
+    registeredToolNames: options.availableToolNames ?? requested,
+    scopedToolNames: allowedToolNames,
+    presentedToolNames,
+  });
+
+  if (options.phase === "run-uat") {
+    for (const forbidden of RUN_UAT_FORBIDDEN_TOOL_NAMES) {
+      addBlockedTool(blockedToolNames, forbidden, "forbidden during run-uat");
+    }
+  }
+
+  return {
+    phase: options.phase,
+    surface: options.surface,
+    model: options.model,
+    allowedToolNames,
+    presentedToolNames,
+    blockedToolNames,
+    aliases,
+    diagnostics: [],
+    toolSurface,
+  };
+}

@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { validateFileChanges } from "../safety/file-change-validator.ts";
+import { validateFileChanges, effectiveFileChangeAllowlist } from "../safety/file-change-validator.ts";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, {
@@ -105,4 +105,36 @@ test("validateFileChanges ignores inline descriptions in expected output paths",
     false,
     "described expected output should not trigger unexpected-file warnings",
   );
+});
+
+test("effectiveFileChangeAllowlist includes .gitignore when GSD manages it", () => {
+  assert.deepEqual(effectiveFileChangeAllowlist([], undefined), [".gitignore"]);
+  assert.deepEqual(effectiveFileChangeAllowlist(["docs/**"], true), ["docs/**", ".gitignore"]);
+});
+
+test("effectiveFileChangeAllowlist keeps .gitignore auditable when management is disabled", () => {
+  assert.deepEqual(effectiveFileChangeAllowlist(["docs/**"], false), ["docs/**"]);
+});
+
+test("GSD-managed .gitignore edit swept into a task commit is not flagged", (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-file-change-validator-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  git(base, "init");
+  git(base, "config", "user.email", "test@example.com");
+  git(base, "config", "user.name", "Test User");
+  writeFileSync(join(base, "index.html"), "<main></main>\n");
+  writeFileSync(join(base, ".gitignore"), "# ── GSD baseline (auto-generated) ──\n.gsd\n");
+  git(base, "add", ".");
+  git(base, "commit", "-m", "task commit with swept gitignore");
+
+  const audit = validateFileChanges(
+    base,
+    ["index.html"],
+    [],
+    effectiveFileChangeAllowlist([], undefined),
+  );
+
+  assert.ok(audit, "audit should be produced");
+  assert.deepEqual(audit.unexpectedFiles, [], ".gitignore must not be flagged when GSD manages it");
 });

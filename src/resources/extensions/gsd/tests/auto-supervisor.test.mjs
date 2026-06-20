@@ -20,6 +20,10 @@ test('resolveAutoSupervisorConfig provides safe timeout defaults', () => {
     assert.equal(supervisor.soft_timeout_minutes, 20);
     assert.equal(supervisor.idle_timeout_minutes, 10);
     assert.equal(supervisor.hard_timeout_minutes, 30);
+    // A single hung tool gets its own short budget, well below the idle window,
+    // so a genuinely stuck tool is recovered in minutes instead of waiting out
+    // the full idle timeout.
+    assert.equal(supervisor.stalled_tool_timeout_minutes, 5);
   } finally {
     if (previousGsdHome === undefined) {
       delete process.env.GSD_HOME;

@@ -76,3 +76,12 @@ test('BUNDLED_SKILL_TRIGGERS: skill ids are unique', () => {
     seen.add(skill);
   }
 });
+
+test('BUNDLED_SKILL_TRIGGERS: gsd-browser and agent-browser stay distinct', () => {
+  const gsdBrowser = BUNDLED_SKILL_TRIGGERS.find(entry => entry.skill === 'gsd-browser');
+  const agentBrowser = BUNDLED_SKILL_TRIGGERS.find(entry => entry.skill === 'agent-browser');
+
+  assert.ok(gsdBrowser, 'gsd-browser trigger should be registered');
+  assert.ok(agentBrowser, 'agent-browser trigger should be registered');
+  assert.notStrictEqual(gsdBrowser.trigger, agentBrowser.trigger);
+});

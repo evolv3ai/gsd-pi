@@ -8,13 +8,16 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  composeContractedUnitContext,
   composeContextModeInstructions,
   composeInlinedContext,
+  composeToolSurfaceInstructions,
   composeUnitContext,
   manifestBudgetChars,
   type ArtifactResolver,
   type ExcerptResolver,
 } from "../unit-context-composer.ts";
+import { compileUnitContextContract } from "../tool-contract.ts";
 import type {
   ArtifactKey,
   BaseResolverContext,
@@ -22,6 +25,7 @@ import type {
   UnitContextManifest,
 } from "../unit-context-manifest.ts";
 import { KNOWN_UNIT_TYPES, UNIT_MANIFESTS } from "../unit-context-manifest.ts";
+import { getUnitToolSurfaceContract } from "../unit-tool-contracts.ts";
 import {
   buildExecuteTaskPrompt,
   buildGateEvaluatePrompt,
@@ -163,10 +167,30 @@ test("Context Mode composer: every known eligible unit renders its configured la
     }
     assert.ok(out.startsWith("## Context Mode"), `${unitType} should render standalone Context Mode heading`);
     assert.match(out, new RegExp(`Lane: \\*\\*${laneLabelByMode[manifest.contextMode]} lane\\*\\*\\.`, "i"));
-    assert.match(out, /`gsd_exec`/, `${unitType} should mention gsd_exec`);
-    assert.match(out, /`gsd_exec_search`/, `${unitType} should mention gsd_exec_search`);
+    const forbidden = getUnitToolSurfaceContract(unitType)?.forbiddenGsdTools ?? {};
+    if ("gsd_exec" in forbidden) {
+      // Units that forbid gsd_exec (run-uat) have it stripped from their
+      // Claude Code dispatch surface; guidance steering to it produces
+      // "No such tool available" loops in the dispatched agent.
+      assert.doesNotMatch(out, /`gsd_exec`/, `${unitType} forbids gsd_exec; guidance must not steer to it`);
+      assert.doesNotMatch(out, /`gsd_exec_search`/, `${unitType} guidance must not steer to gsd_exec_search`);
+      assert.match(out, /`gsd_uat_exec`/, `${unitType} guidance should steer to gsd_uat_exec instead`);
+    } else {
+      assert.match(out, /`gsd_exec`/, `${unitType} should mention gsd_exec`);
+      assert.match(out, /`gsd_exec_search`/, `${unitType} should mention gsd_exec_search`);
+    }
     assert.match(out, /`gsd_resume`/, `${unitType} should mention gsd_resume`);
   }
+});
+
+test("Context Mode composer: run-uat guidance steers to gsd_uat_exec in both render modes", () => {
+  const nested = composeContextModeInstructions("run-uat", { enabled: true, renderMode: "nested" });
+  assert.match(nested, /^Context Mode \(verification lane\): /);
+  assert.match(nested, /`gsd_uat_exec`/);
+  assert.doesNotMatch(nested, /`gsd_exec`/);
+  const standalone = composeContextModeInstructions("run-uat", { enabled: true, renderMode: "standalone" });
+  assert.match(standalone, /`gsd_uat_exec`/);
+  assert.doesNotMatch(standalone, /`gsd_exec`/);
 });
 
 test("Context Mode composer: workflow-preferences and research-decision render no Context Mode block", () => {
@@ -176,6 +200,49 @@ test("Context Mode composer: workflow-preferences and research-decision render n
   );
   assert.strictEqual(
     composeContextModeInstructions("research-decision", { enabled: true, renderMode: "standalone" }),
+    "",
+  );
+});
+
+test("Tool Surface composer: run-uat forbids gsd_exec and Bash", () => {
+  const out = composeToolSurfaceInstructions("run-uat", { renderMode: "standalone" });
+  assert.match(out, /^## Tool Surface/);
+  assert.match(out, /Do not call `gsd_exec`/);
+  assert.match(out, /`Bash`/);
+  assert.match(out, /`gsd_uat_exec`/);
+  assert.match(out, /`gsd_save_gate_result`/);
+  assert.match(out, /`gsd_summary_save`/);
+});
+
+test("Tool Surface composer: complete-slice steers verification to gsd_exec", () => {
+  const out = composeToolSurfaceInstructions("complete-slice", { renderMode: "standalone" });
+  assert.match(out, /`gsd_exec`/);
+  assert.match(out, /not direct `bash`/);
+  assert.match(out, /`gsd_uat_result_save`/);
+});
+
+test("Tool Surface composer: planning units restrict writes to .gsd", () => {
+  const out = composeToolSurfaceInstructions("discuss-milestone", { renderMode: "standalone" });
+  assert.match(out, /restricted to `\.gsd\/\*\*`/);
+  assert.match(out, /`ask_user_questions`/);
+});
+
+test("Tool Surface composer: planning-dispatch lists allowed subagents", () => {
+  const out = composeToolSurfaceInstructions("plan-slice", { renderMode: "standalone" });
+  assert.match(out, /\*\*scout\*\*/);
+  assert.match(out, /\*\*planner\*\*/);
+});
+
+test("Tool Surface composer: execute-task warns against slice/milestone closeout tools", () => {
+  const out = composeToolSurfaceInstructions("execute-task", { renderMode: "nested" });
+  assert.match(out, /^Tool surface: /);
+  assert.match(out, /`gsd_task_complete`/);
+  assert.match(out, /Do not call `gsd_slice_complete`/);
+});
+
+test("Tool Surface composer: unknown unit renders empty block", () => {
+  assert.strictEqual(
+    composeToolSurfaceInstructions("never-dispatched", { renderMode: "standalone" }),
     "",
   );
 });
@@ -266,6 +333,21 @@ test("#4782 phase 2: buildReassessRoadmapPrompt emits composer-shaped context wi
   // Slice context is optional and not present in this fixture — must not
   // leave a stray empty section
   assert.ok(!prompt.includes("Slice Context (from discussion)"));
+});
+
+test("execute-task prompt surfaces contract-declared on-demand slice research", async (t) => {
+  const base = makeFixtureBase();
+  t.after(() => cleanup(base));
+  invalidateAllCaches();
+
+  seed(base, "M001");
+  writeArtifacts(base);
+
+  const prompt = await buildExecuteTaskPrompt("M001", "S01", "First", "T01", "Task", base);
+
+  assert.match(prompt, /## On-demand Context/);
+  assert.match(prompt, /\.gsd\/milestones\/M001\/slices\/S01\/S01-RESEARCH\.md/);
+  assert.match(prompt, /Read it only if the inlined task plan, slice plan excerpt, and carry-forward context do not explain/);
 });
 
 test("Context Mode resume injection: eligible prompts include one bounded snapshot block above inlined context", async (t) => {
@@ -368,6 +450,36 @@ const fakeBase: BaseResolverContext = {
 test("#4924 v2 composer: returns empty sections for unknown unit type", async () => {
   const out = await composeUnitContext("never-dispatched", { base: fakeBase });
   assert.deepEqual(out, { prepend: "", inline: "" });
+});
+
+test("Unit Context Contract composer exposes keyed blocks and on-demand artifacts", async () => {
+  const result = compileUnitContextContract("execute-task");
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  const calls: ArtifactKey[] = [];
+  const out = await composeContractedUnitContext(result.contract, {
+    base: { ...fakeBase, unitType: "stale-unit", taskId: "T01" },
+    resolveArtifact: async (key) => {
+      calls.push(key);
+      return `BODY:${key}`;
+    },
+  });
+
+  assert.deepEqual(calls, [
+    "task-plan",
+    "slice-plan",
+    "prior-task-summaries",
+    "templates",
+  ]);
+  assert.deepEqual(out.blocks.map((block) => [block.key, block.mode]), [
+    ["task-plan", "inline"],
+    ["slice-plan", "inline"],
+    ["prior-task-summaries", "inline"],
+    ["templates", "inline"],
+  ]);
+  assert.deepEqual(out.onDemand, ["slice-research"]);
+  assert.match(out.inline, /BODY:task-plan\n\n---\n\nBODY:slice-plan/);
 });
 
 test("#4924 v2 composer: omitting resolveArtifact skips inline keys without erroring", async () => {

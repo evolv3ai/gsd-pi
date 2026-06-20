@@ -37,6 +37,8 @@ export interface SettingsConfig {
 	currentTheme: string;
 	availableThemes: string[];
 	hideThinkingBlock: boolean;
+	toolsExpanded: boolean;
+	toolRailAnimation: boolean;
 	collapseChangelog: boolean;
 	doubleEscapeAction: "fork" | "tree" | "none";
 	treeFilterMode: "default" | "no-tools" | "user-only" | "labeled-only" | "all";
@@ -63,6 +65,8 @@ export interface SettingsCallbacks {
 	onThemeChange: (theme: string) => void;
 	onThemePreview?: (theme: string) => void;
 	onHideThinkingBlockChange: (hidden: boolean) => void;
+	onToolsExpandedChange: (expanded: boolean) => void;
+	onToolRailAnimationChange: (enabled: boolean) => void;
 	onCollapseChangelogChange: (collapsed: boolean) => void;
 	onDoubleEscapeActionChange: (action: "fork" | "tree" | "none") => void;
 	onTreeFilterModeChange: (mode: "default" | "no-tools" | "user-only" | "labeled-only" | "all") => void;
@@ -186,6 +190,20 @@ export class SettingsSelectorComponent extends Container {
 				label: "Hide thinking",
 				description: "Hide thinking blocks in assistant responses",
 				currentValue: config.hideThinkingBlock ? "true" : "false",
+				values: ["true", "false"],
+			},
+			{
+				id: "tools-expanded",
+				label: "Tool output",
+				description: "Expand tool output cards by default",
+				currentValue: config.toolsExpanded ? "expanded" : "collapsed",
+				values: ["expanded", "collapsed"],
+			},
+			{
+				id: "tool-rail-animation",
+				label: "Tool rail animation",
+				description: "Animate the rail on running tool cards (off = static, no re-render timer)",
+				currentValue: config.toolRailAnimation ? "true" : "false",
 				values: ["true", "false"],
 			},
 			{
@@ -414,6 +432,12 @@ export class SettingsSelectorComponent extends Container {
 						break;
 					case "hide-thinking":
 						callbacks.onHideThinkingBlockChange(newValue === "true");
+						break;
+					case "tools-expanded":
+						callbacks.onToolsExpandedChange(newValue === "expanded");
+						break;
+					case "tool-rail-animation":
+						callbacks.onToolRailAnimationChange(newValue === "true");
 						break;
 					case "collapse-changelog":
 						callbacks.onCollapseChangelogChange(newValue === "true");

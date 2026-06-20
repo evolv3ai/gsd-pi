@@ -5,6 +5,7 @@
  */
 
 import { stripMcpToolPrefix } from "@gsd/pi-ai";
+import { TOOL_SURFACE_NOT_READY } from "./tool-surface-readiness.js";
 
 interface InFlightTool {
   startedAt: number;
@@ -18,6 +19,17 @@ const inFlightTools = new Map<string, InFlightTool>();
  * The idle watchdog must not treat these as stalled.
  */
 const INTERACTIVE_TOOLS = new Set(["ask_user_questions", "secure_env_collect"]);
+
+/**
+ * Mode-agnostic refcount of in-flight interactive elicitations that are an
+ * active human boundary (the model ASKED via ask_user_questions). Unlike the
+ * `inFlightTools` Map, this is NOT gated by auto-session.active, so it is true
+ * in FOREGROUND (where s.active is false). Kept SEPARATE from inFlightTools so
+ * getInFlightToolCount()/getOldestInFlightToolAgeMs()/hasInteractiveToolInFlight()
+ * and the auto-watchdog accounting are byte-for-byte unchanged. A refcount (not
+ * a boolean) handles nested/back-to-back elicitations in a single turn.
+ */
+let interactiveElicitationDepth = 0;
 
 /**
  * Mark a tool execution as in-flight.
@@ -34,6 +46,29 @@ export function markToolStart(toolCallId: string, isActive: boolean, toolName?: 
  */
 export function markToolEnd(toolCallId: string): void {
   inFlightTools.delete(toolCallId);
+}
+
+/**
+ * Mark an interactive elicitation (the model asking via ask_user_questions) as
+ * in flight. Ungated by auto-session.active so it is observable in foreground.
+ */
+export function markInteractiveElicitationStart(): void {
+  interactiveElicitationDepth++;
+}
+
+/**
+ * Mark an interactive elicitation as completed. Idempotent below zero.
+ */
+export function markInteractiveElicitationEnd(): void {
+  if (interactiveElicitationDepth > 0) interactiveElicitationDepth--;
+}
+
+/**
+ * Returns true if any interactive elicitation is currently the active human
+ * boundary. True in ALL modes (foreground and auto) while one is in flight.
+ */
+export function isInteractiveElicitationInFlight(): boolean {
+  return interactiveElicitationDepth > 0;
 }
 
 /**
@@ -84,6 +119,7 @@ export function hasInteractiveToolInFlight(): boolean {
  */
 export function clearInFlightTools(): void {
   inFlightTools.clear();
+  interactiveElicitationDepth = 0;
 }
 
 // ─── Tool invocation error classification (#2883) ────────────────────────
@@ -94,8 +130,17 @@ export function clearInFlightTools(): void {
  * from the tool handler. When these errors occur, retrying the same unit will
  * produce the same failure, so the retry loop must be broken.
  */
-const TOOL_INVOCATION_ERROR_RE = /Validation failed for tool|Expected ',' or '\}'(?: after property value)?(?: in JSON)?|Unexpected end of JSON|Unexpected token.*in JSON|does not provide an export named|Named export .* not found|Cannot find module|ERR_MODULE_NOT_FOUND|ERR_MODULE_NOT_EXPORTED|ERR_PACKAGE_PATH_NOT_EXPORTED/i;
+const TOOL_INVOCATION_ERROR_RE = /Validation failed for tool|Input validation error|Invalid arguments for tool|MCP error -32602|No such tool available|Expected ',' or '\}'(?: after property value)?(?: in JSON)?|Unexpected end of JSON|Unexpected token.*in JSON|does not provide an export named|Named export .* not found|Cannot find module|ERR_MODULE_NOT_FOUND|ERR_MODULE_NOT_EXPORTED|ERR_PACKAGE_PATH_NOT_EXPORTED/i;
 const DETERMINISTIC_POLICY_ERROR_RE = /(?:^|\b)(?:HARD BLOCK:|Blocked: \/gsd queue is a planning tool|Direct writes to \.gsd\/STATE\.md and \.gsd\/gsd\.db are blocked|This is a mechanical gate)/i;
+
+/**
+ * Matches the runtime's "tool not registered" error. Unlike the deterministic
+ * invocation failures above, this one is usually transient: the workflow MCP
+ * server registers its tool surface asynchronously after session start, so a
+ * Unit's first tool call can race the registration. Callers should retry
+ * (bounded) instead of breaking the loop.
+ */
+const TOOL_UNAVAILABLE_ERROR_RE = new RegExp(`No such tool available|${TOOL_SURFACE_NOT_READY}`, "i");
 
 /**
  * Returns true if the error message indicates a deterministic invocation or
@@ -104,6 +149,15 @@ const DETERMINISTIC_POLICY_ERROR_RE = /(?:^|\b)(?:HARD BLOCK:|Blocked: \/gsd que
 export function isToolInvocationError(errorMsg: string): boolean {
   if (!errorMsg) return false;
   return TOOL_INVOCATION_ERROR_RE.test(errorMsg) || isDeterministicPolicyError(errorMsg);
+}
+
+/**
+ * Returns true if the error message indicates the called tool was not on the
+ * session's tool surface (MCP startup race — see TOOL_UNAVAILABLE_ERROR_RE).
+ */
+export function isToolUnavailableError(errorMsg: string): boolean {
+  if (!errorMsg) return false;
+  return TOOL_UNAVAILABLE_ERROR_RE.test(errorMsg);
 }
 
 /**
@@ -136,6 +190,11 @@ export const DETERMINISTIC_POLICY_ERROR_STRINGS = [
   // "Cannot write to milestone CONTEXT.md without depth verification." for direct
   // write tool calls to *-CONTEXT.md paths (different code path than gsd_summary_save).
   "CONTEXT.md without depth verification",
+  // Section-close gate units (execute-task, complete-slice, validate-milestone) that
+  // reach for gsd_save_gate_result get the calm redirect from softGateToolRedirect
+  // (auto-unit-tool-scope.ts) instead of a HARD BLOCK. Still deterministic — those
+  // phases never own that tool, so a retry hits the same redirect every time.
+  "closes its quality gates by writing summary sections",
 ] as const;
 
 /**

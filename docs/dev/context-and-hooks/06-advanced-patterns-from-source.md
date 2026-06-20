@@ -15,7 +15,7 @@ This pattern combines tool set management, tool call blocking, context event fil
 ```
 /plan toggle → sets planModeEnabled
   ├─► setActiveTools(PLAN_MODE_TOOLS)     # restrict available tools
-  ├─► tool_call guard                      # block unsafe bash even if tool is active
+  ├─► tool_call guard                      # block unsafe bash in native execution
   ├─► before_agent_start                   # inject mode-specific instructions
   ├─► context                              # filter stale mode messages on mode exit
   └─► agent_end                            # check plan output, offer execution
@@ -26,7 +26,7 @@ This pattern combines tool set management, tool call blocking, context event fil
 The plan mode uses THREE layers of tool control:
 
 1. **`setActiveTools`** — removes write tools from the active set entirely. The LLM doesn't even know they exist.
-2. **`tool_call` guard** — even for allowed tools like `bash`, blocks destructive commands via an allowlist.
+2. **`tool_call` guard** — even for allowed tools like `bash`, blocks destructive commands via an allowlist when Pi executes the tool natively.
 3. **`context` filter** — when exiting plan mode, removes stale plan mode context messages so they don't confuse the LLM in normal mode.
 
 ```typescript
@@ -251,7 +251,7 @@ This is context-efficient: the system prompt grows by one line per rule file, no
 Tools support pluggable `operations` that replace the underlying I/O:
 
 ```typescript
-import { createBashTool } from "@mariozechner/pi-coding-agent";
+import { createBashTool } from "@gsd/pi-coding-agent";
 
 // Create a bash tool that executes via SSH
 const remoteBash = createBashTool(cwd, {

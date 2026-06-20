@@ -9,13 +9,17 @@ import {
   openDatabase,
   closeDatabase,
   _getAdapter,
-  insertGateRow,
+  getArtifact,
+  getAssessment,
   insertAssessment,
   upsertRequirement,
   getAllMilestones,
 } from "../gsd-db.ts";
+import { registerAutoWorker } from "../db/auto-workers.ts";
+import { claimMilestoneLease, getMilestoneLease } from "../db/milestone-leases.ts";
 import { deriveState, invalidateStateCache } from "../state.ts";
 import { autoSession } from "../auto-runtime-state.ts";
+import { normalizeRealPath } from "../paths.ts";
 import { markApprovalGateVerified, markDepthVerified, clearDiscussionFlowState, loadWriteGateSnapshot, setPendingGate } from "../bootstrap/write-gate.ts";
 import {
   executeCompleteMilestone,
@@ -30,6 +34,7 @@ import {
   executeSliceComplete,
   executeSliceReopen,
   executeValidateMilestone,
+  executeUatResultSave,
 } from "../tools/workflow-tool-executors.ts";
 
 function makeTmpBase(): string {
@@ -74,6 +79,11 @@ test("closeout executors reject phase escalation from the wrong active auto unit
     const milestone = await executeCompleteMilestone({} as Parameters<typeof executeCompleteMilestone>[0], "/tmp/project");
     assert.equal(milestone.isError, true);
     assert.match(String(milestone.details.error), /complete_milestone may only run from complete-milestone/);
+
+    const uat = await executeUatResultSave({} as Parameters<typeof executeUatResultSave>[0], "/tmp/project");
+    assert.equal(uat.isError, true);
+    assert.match(String(uat.details.error), /save_uat_result may only run from run-uat/);
+    assert.match(String(uat.details.error), /Tool Contract failure/);
   } finally {
     autoSession.reset();
   }
@@ -85,6 +95,28 @@ function seedMilestone(milestoneId: string, title: string, status = "active"): v
   db.prepare(
     "INSERT OR REPLACE INTO milestones (id, title, status, created_at) VALUES (?, ?, ?, ?)",
   ).run(milestoneId, title, status, new Date().toISOString());
+}
+
+function validMilestonePlan(milestoneId = "M001"): Parameters<typeof executePlanMilestone>[0] {
+  return {
+    milestoneId,
+    title: "Workflow MCP planning",
+    vision: "Plan milestone over shared executors.",
+    slices: [
+      {
+        sliceId: "S01",
+        title: "Bridge planning",
+        risk: "medium",
+        depends: [],
+        demo: "Milestone plan persists through MCP.",
+        goal: "Persist roadmap state.",
+        successCriteria: "ROADMAP.md renders from DB.",
+        proofLevel: "integration",
+        integrationClosure: "Prompts and MCP call the same handler.",
+        observabilityImpact: "Executor tests cover output paths.",
+      },
+    ],
+  };
 }
 
 function seedSlice(milestoneId: string, sliceId: string, status: string): void {
@@ -228,6 +260,62 @@ test("executeTaskComplete derives missing verification from evidence", async () 
 
     assert.match(String(row?.verification_result), /Verification evidence recorded/);
     assert.match(String(row?.verification_result), /`npm test` exited 0 \(pass\)/);
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executeTaskComplete surfaces escalation questions and metadata", async () => {
+  const base = makeTmpBase();
+  try {
+    openTestDb(base);
+    writeFileSync(join(base, ".gsd", "PREFERENCES.md"), [
+      "---",
+      "version: 1",
+      "phases:",
+      "  mid_execution_escalation: true",
+      "---",
+    ].join("\n"));
+    const planDir = join(base, ".gsd", "milestones", "M001", "slices", "S01");
+    mkdirSync(planDir, { recursive: true });
+    writeFileSync(join(planDir, "S01-PLAN.md"), "# S01\n\n- [ ] **T01: Demo** `est:5m`\n");
+
+    const result = await inProjectDir(base, () => executeTaskComplete({
+      milestoneId: "M001",
+      sliceId: "S01",
+      taskId: "T01",
+      oneLiner: "Completed task",
+      narrative: "Did the work but found an ambiguity.",
+      verification: "npm test",
+      escalation: {
+        question: "Should the cache use write-through or write-back?",
+        options: [
+          { id: "A", label: "Write-through", tradeoffs: "Simpler reads; slower writes." },
+          { id: "B", label: "Write-back", tradeoffs: "Faster writes; more flush complexity." },
+        ],
+        recommendation: "A",
+        recommendationRationale: "Current usage favors correctness over write latency.",
+        continueWithDefault: true,
+      },
+    }, base));
+
+    assert.equal(result.details.operation, "complete_task");
+    assert.match(
+      String(result.content[0]?.text),
+      /Task completed with escalation decision required: Should the cache use write-through or write-back\?/,
+    );
+    assert.match(String(result.content[0]?.text), /Resolve with: \/gsd escalate resolve T01/);
+    assert.equal((result.details.escalation as { question?: string }).question, "Should the cache use write-through or write-back?");
+
+    const db = _getAdapter();
+    assert.ok(db, "DB should be open");
+    const row = db!.prepare(
+      "SELECT escalation_pending, escalation_awaiting_review, escalation_artifact_path FROM tasks WHERE milestone_id = ? AND slice_id = ? AND id = ?",
+    ).get("M001", "S01", "T01") as Record<string, unknown> | undefined;
+    assert.equal(row?.escalation_pending, 0);
+    assert.equal(row?.escalation_awaiting_review, 1);
+    assert.ok(String(row?.escalation_artifact_path ?? "").endsWith("T01-ESCALATION.json"));
   } finally {
     closeDatabase();
     cleanup(base);
@@ -398,25 +486,7 @@ test("executePlanMilestone writes roadmap state and rendered roadmap path", asyn
   try {
     openTestDb(base);
 
-    const result = await inProjectDir(base, () => executePlanMilestone({
-      milestoneId: "M001",
-      title: "Workflow MCP planning",
-      vision: "Plan milestone over shared executors.",
-      slices: [
-        {
-          sliceId: "S01",
-          title: "Bridge planning",
-          risk: "medium",
-          depends: [],
-          demo: "Milestone plan persists through MCP.",
-          goal: "Persist roadmap state.",
-          successCriteria: "ROADMAP.md renders from DB.",
-          proofLevel: "integration",
-          integrationClosure: "Prompts and MCP call the same handler.",
-          observabilityImpact: "Executor tests cover output paths.",
-        },
-      ],
-    }, base));
+    const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan(), base));
 
     assert.equal(result.details.operation, "plan_milestone");
     assert.equal(result.details.milestoneId, "M001");
@@ -429,29 +499,257 @@ test("executePlanMilestone writes roadmap state and rendered roadmap path", asyn
   }
 });
 
+test("executePlanMilestone refuses a same-milestone lease conflict", async () => {
+  const base = makeTmpBase();
+  try {
+    openTestDb(base);
+    seedMilestone("M001", "Existing holder");
+    const holder = registerAutoWorker({ projectRootRealpath: join(base, "other-project") });
+    const lease = claimMilestoneLease(holder, "M001");
+    assert.equal(lease.ok, true);
+
+    const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M001"), base));
+
+    assert.equal(result.isError, true);
+    assert.equal(result.details.operation, "plan_milestone");
+    assert.equal(result.details.error, "milestone_lease_conflict");
+    assert.match(result.content[0].text, /Milestone M001 is currently leased/);
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executePlanMilestone releases its one-shot milestone lease after planning", async () => {
+  const base = makeTmpBase();
+  try {
+    openTestDb(base);
+    seedMilestone("M001", "Existing milestone");
+
+    const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M001"), base));
+
+    assert.equal(result.isError, undefined);
+    const lease = getMilestoneLease("M001");
+    assert.ok(lease, "planning should participate in milestone lease coordination");
+    assert.equal(lease.status, "released");
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executePlanMilestone creates a fresh milestone without a one-shot lease", async () => {
+  const base = makeTmpBase();
+  try {
+    openTestDb(base);
+
+    const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M042"), base));
+
+    assert.equal(result.isError, undefined);
+    assert.equal(result.details.operation, "plan_milestone");
+    assert.equal(result.details.milestoneId, "M042");
+    assert.equal(getMilestoneLease("M042"), null,
+      "fresh milestone creation must pass through without creating a lease row");
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executePlanMilestone does not create a placeholder when fresh planning validation fails", async () => {
+  const base = makeTmpBase();
+  try {
+    openTestDb(base);
+
+    // handlePlanMilestone rejects empty slice arrays during validation. Fresh
+    // milestone creation must pass through without pre-inserting a leaseable
+    // placeholder row.
+    const invalid = { ...validMilestonePlan("M042"), slices: [] };
+    const result = await inProjectDir(base, () => executePlanMilestone(invalid, base));
+
+    assert.equal(result.isError, true);
+    assert.equal(result.details.operation, "plan_milestone");
+    const milestones = getAllMilestones();
+    assert.equal(milestones.find(m => m.id === "M042"), undefined,
+      "failed fresh planning must not leave a milestone row behind");
+    assert.equal(getMilestoneLease("M042"), null,
+      "failed fresh planning must not create a lease row");
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executePlanMilestone does not delete a peer worker's milestone row on lease conflict", async () => {
+  const base = makeTmpBase();
+  try {
+    openTestDb(base);
+
+    // Simulate a peer worker (different project_root) that has already
+    // created the milestone row and taken its lease. The one-shot executor
+    // must observe the active lease and refuse — without removing the peer's
+    // milestone row or lease. The pre-rollback bug was that
+    // INSERT OR IGNORE's silent no-op was treated as proof of authorship and
+    // the cleanup path then deleted the peer's row.
+    const peer = registerAutoWorker({ projectRootRealpath: join(base, "peer-project") });
+    seedMilestone("M050", "Peer-owned milestone");
+    const peerLease = claimMilestoneLease(peer, "M050");
+    assert.equal(peerLease.ok, true);
+    const peerLeaseToken = peerLease.ok ? peerLease.token : -1;
+
+    const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M050"), base));
+
+    assert.equal(result.isError, true);
+    assert.equal(result.details.error, "milestone_lease_conflict");
+    const peerMilestone = getAllMilestones().find(m => m.id === "M050");
+    assert.ok(peerMilestone, "peer milestone row must survive the one-shot conflict path");
+    assert.equal(peerMilestone?.title, "Peer-owned milestone",
+      "peer milestone row must not be clobbered or recreated");
+    const surviving = getMilestoneLease("M050");
+    assert.ok(surviving, "peer lease row must survive");
+    assert.equal(surviving.status, "held", "peer must still hold the lease");
+    assert.equal(surviving.worker_id, peer);
+    assert.equal(surviving.fencing_token, peerLeaseToken,
+      "peer's fencing token must not be incremented by the rejected one-shot");
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executePlanMilestone refuses when a foreign active worker holds the lease even while in-process auto is active", async () => {
+  const base = makeTmpBase();
+  autoSession.reset();
+  try {
+    openTestDb(base);
+    seedMilestone("M060", "Foreign-held milestone");
+
+    // In-process auto must still reject a lease held by another worker.
+    const foreign = registerAutoWorker({ projectRootRealpath: join(base, "foreign-project") });
+    const foreignLease = claimMilestoneLease(foreign, "M060");
+    assert.equal(foreignLease.ok, true);
+    const foreignToken = foreignLease.ok ? foreignLease.token : -1;
+
+    const ownAutoWorker = registerAutoWorker({ projectRootRealpath: normalizeRealPath(base) });
+    autoSession.active = true;
+    autoSession.workerId = ownAutoWorker;
+
+    const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M060"), base));
+
+    assert.equal(result.isError, true);
+    assert.equal(result.details.error, "milestone_lease_conflict",
+      "in-process auto must NOT skip lease checks when the lease is held by a different active worker");
+    const surviving = getMilestoneLease("M060");
+    assert.ok(surviving);
+    assert.equal(surviving.status, "held");
+    assert.equal(surviving.worker_id, foreign);
+    assert.equal(surviving.fencing_token, foreignToken,
+      "foreign worker's fencing token must not be incremented by the rejected call");
+  } finally {
+    autoSession.reset();
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executePlanMilestone proceeds without re-claiming when in-process auto holds the lease itself", async () => {
+  const base = makeTmpBase();
+  autoSession.reset();
+  try {
+    openTestDb(base);
+    seedMilestone("M070", "Auto-held milestone");
+
+    // In-process auto should not re-claim its own lease and bump its token.
+    const ownAutoWorker = registerAutoWorker({ projectRootRealpath: normalizeRealPath(base) });
+    const heldLease = claimMilestoneLease(ownAutoWorker, "M070");
+    assert.equal(heldLease.ok, true);
+    const heldToken = heldLease.ok ? heldLease.token : -1;
+    autoSession.active = true;
+    autoSession.workerId = ownAutoWorker;
+
+    const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M070"), base));
+
+    assert.equal(result.isError, undefined, `auto's own plan-milestone call should succeed: ${result.content?.[0]?.text}`);
+    const surviving = getMilestoneLease("M070");
+    assert.ok(surviving);
+    assert.equal(surviving.status, "held", "auto's lease must still be held after the planning call");
+    assert.equal(surviving.worker_id, ownAutoWorker);
+    assert.equal(surviving.fencing_token, heldToken,
+      "auto's fencing token must not be incremented by an in-process plan call");
+  } finally {
+    autoSession.reset();
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executePlanMilestone refuses a same-process holder when active auto does not own it", async () => {
+  const base = makeTmpBase();
+  autoSession.reset();
+  try {
+    openTestDb(base);
+    seedMilestone("M080", "Same-process holder");
+    const staleWorker = registerAutoWorker({ projectRootRealpath: normalizeRealPath(base) });
+    const heldLease = claimMilestoneLease(staleWorker, "M080");
+    assert.equal(heldLease.ok, true);
+    const heldToken = heldLease.ok ? heldLease.token : -1;
+
+    autoSession.active = true;
+    autoSession.workerId = registerAutoWorker({ projectRootRealpath: normalizeRealPath(base) });
+
+    const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M080"), base));
+
+    assert.equal(result.isError, true);
+    assert.equal(result.details?.error, "milestone_lease_conflict");
+    const surviving = getMilestoneLease("M080");
+    assert.ok(surviving, "same-process holder lease must remain after conflict");
+    assert.equal(surviving.worker_id, staleWorker);
+    assert.equal(surviving.fencing_token, heldToken);
+    assert.equal(surviving.status, "held");
+  } finally {
+    autoSession.reset();
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executePlanMilestone takes over a stale same-process lease via reentry instead of waiting for TTL", async () => {
+  const base = makeTmpBase();
+  autoSession.reset();
+  try {
+    openTestDb(base);
+    seedMilestone("M080", "Stale-locked milestone");
+
+    // One-shot planning should reach claimMilestoneLease so its same-process
+    // reentry clause can recover stale worker rows.
+    const staleWorker = registerAutoWorker({ projectRootRealpath: normalizeRealPath(base) });
+    const staleLease = claimMilestoneLease(staleWorker, "M080");
+    assert.equal(staleLease.ok, true);
+    const staleToken = staleLease.ok ? staleLease.token : -1;
+
+    const result = await inProjectDir(base, () => executePlanMilestone(validMilestonePlan("M080"), base));
+
+    assert.equal(result.isError, undefined,
+      `same-process reentry takeover must succeed, not return milestone_lease_conflict: ${result.content?.[0]?.text}`);
+    const after = getMilestoneLease("M080");
+    assert.ok(after, "lease row must remain after takeover + release");
+    assert.equal(after.status, "released", "the executor releases its own claim before returning");
+    assert.notEqual(after.worker_id, staleWorker,
+      "lease must be owned by the new worker after takeover");
+    assert.ok(after.fencing_token > staleToken,
+      `fencing token must monotonically advance on takeover (was ${staleToken}, now ${after.fencing_token})`);
+  } finally {
+    autoSession.reset();
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
 test("executePlanSlice writes task planning state and rendered plan artifacts", async () => {
   const base = makeTmpBase();
   try {
     openTestDb(base);
-    await inProjectDir(base, () => executePlanMilestone({
-      milestoneId: "M001",
-      title: "Workflow MCP planning",
-      vision: "Plan milestone over shared executors.",
-      slices: [
-        {
-          sliceId: "S01",
-          title: "Bridge planning",
-          risk: "medium",
-          depends: [],
-          demo: "Milestone plan persists through MCP.",
-          goal: "Persist roadmap state.",
-          successCriteria: "ROADMAP.md renders from DB.",
-          proofLevel: "integration",
-          integrationClosure: "Prompts and MCP call the same handler.",
-          observabilityImpact: "Executor tests cover output paths.",
-        },
-      ],
-    }, base));
+    await inProjectDir(base, () => executePlanMilestone(validMilestonePlan(), base));
 
     const result = await inProjectDir(base, () => executePlanSlice({
       milestoneId: "M001",
@@ -465,8 +763,8 @@ test("executePlanSlice writes task planning state and rendered plan artifacts", 
           estimate: "15m",
           files: ["src/resources/extensions/gsd/tools/workflow-tool-executors.ts"],
           verify: "node --test",
-          inputs: [".gsd/milestones/M001/M001-ROADMAP.md"],
-          expectedOutput: ["S01-PLAN.md", "T01-PLAN.md"],
+          inputs: [],
+          expectedOutput: ["src/bridge-status.md"],
         },
       ],
     }, base));
@@ -498,6 +796,580 @@ test("executePlanSlice marks validation failures with isError", async () => {
     assert.equal(result.details.operation, "plan_slice");
     assert.match(String(result.details.error), /validation failed: tasks must be a non-empty array/);
     assert.match(result.content[0].text, /Error planning slice:/);
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executeUatResultSave accepts gsd_uat_exec evidence written in a milestone worktree", async () => {
+  const base = makeTmpBase();
+  const worktree = join(base, ".gsd", "worktrees", "M001");
+  const worktreeExecDir = join(worktree, ".gsd", "exec");
+  const browserTimelineDir = join(base, ".artifacts", "browser", "session");
+  const evidenceId = "worktree-uat-evidence";
+  const browserTimelinePath = join(browserTimelineDir, "s02-uat-browser-timeline.json");
+  try {
+    openTestDb(base);
+    seedMilestone("M001", "Milestone One");
+    seedSlice("M001", "S02", "complete");
+    mkdirSync(worktreeExecDir, { recursive: true });
+    mkdirSync(browserTimelineDir, { recursive: true });
+    writeFileSync(browserTimelinePath, JSON.stringify({ summary: "browser timeline evidence" }), "utf-8");
+    writeFileSync(
+      join(worktreeExecDir, `${evidenceId}.meta.json`),
+      JSON.stringify({
+        id: evidenceId,
+        metadata: {
+          kind: "uat_exec",
+          milestoneId: "M001",
+          sliceId: "S02",
+          checkId: "UAT-01",
+          intent: "uat-runtime-check",
+        },
+      }),
+      "utf-8",
+    );
+
+    const result = await inProjectDir(worktree, () => executeUatResultSave({
+      milestoneId: "M001",
+      sliceId: "S02",
+      uatType: "runtime-executable",
+      verdict: "PASS",
+      checks: [{
+        id: "UAT-01",
+        description: "Runtime path C:\\tmp|uat evidence was captured in the active worktree",
+        mode: "runtime",
+        result: "PASS",
+        evidence: [
+          { kind: "gsd_uat_exec", ref: evidenceId },
+          { kind: "browser", ref: browserTimelinePath },
+        ],
+        notes: "Worktree-local gsd_uat_exec metadata should resolve with backslash \\ and pipe |.",
+      }],
+      presentation: {
+        surface: "mcp",
+        presentedTools: [
+          "gsd_uat_exec",
+          "gsd_uat_result_save",
+          "gsd_resume",
+          "gsd_milestone_status",
+          "gsd_journal_query",
+        ],
+        blockedTools: [
+          { name: "gsd_exec", reason: "forbidden during run-uat" },
+          { name: "gsd_summary_save", reason: "forbidden during run-uat" },
+          { name: "gsd_save_gate_result", reason: "forbidden during run-uat" },
+        ],
+      },
+      notes: "UAT passed with worktree-local evidence.",
+    }, worktree));
+
+    assert.equal(result.isError, undefined);
+    assert.equal(result.details.operation, "save_uat_result");
+    assert.equal(result.details.verdict, "PASS");
+    assert.equal(result.details.runId, "uat:M001:S02:attempt-1");
+    assert.equal(result.details.worktreeRoot, worktree);
+    assert.equal(result.details.browserToolsPresented, false);
+    assert.ok(
+      existsSync(join(base, ".gsd", "uat", "M001", "S02", "attempt-1.json")),
+      "attempt JSON should be persisted under the authoritative project .gsd",
+    );
+    const attempt = JSON.parse(readFileSync(
+      join(base, ".gsd", "uat", "M001", "S02", "attempt-1.json"),
+      "utf-8",
+    )) as {
+      runId?: string;
+      worktreeRoot?: string;
+      browserToolsPresented?: boolean;
+      modePolicy?: { requiredAnyModes?: string[] };
+    };
+    assert.equal(attempt.runId, "uat:M001:S02:attempt-1");
+    assert.equal(attempt.worktreeRoot, worktree);
+    assert.equal(attempt.browserToolsPresented, false);
+    assert.deepEqual(attempt.modePolicy?.requiredAnyModes, ["runtime"]);
+    const assessment = readFileSync(
+      join(base, ".gsd", "milestones", "M001", "slices", "S02", "S02-ASSESSMENT.md"),
+      "utf-8",
+    );
+    assert.match(assessment, /runId: uat:M001:S02:attempt-1/);
+    assert.ok(assessment.includes(`worktreeRoot: ${worktree}`));
+    assert.match(assessment, /Runtime path C:\\\\tmp\\\|uat evidence/);
+    assert.match(assessment, /backslash \\\\ and pipe \\\|/);
+
+    const artifactPath = "milestones/M001/slices/S02/S02-ASSESSMENT.md";
+    const assessmentPath = `.gsd/${artifactPath}`;
+    assert.equal(getArtifact(artifactPath)?.artifact_type, "ASSESSMENT");
+    assert.equal(getAssessment(assessmentPath)?.scope, "run-uat");
+    assert.equal(getAssessment(assessmentPath)?.status, "pass");
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executeUatResultSave supplies canonical presentation and normalizes verdict casing", async () => {
+  const base = makeTmpBase();
+  const worktree = join(base, ".gsd", "worktrees", "M001");
+  const worktreeExecDir = join(worktree, ".gsd", "exec");
+  const evidenceId = "uat-lowercase-verdict";
+  try {
+    openTestDb(base);
+    seedMilestone("M001", "Milestone One");
+    seedSlice("M001", "S03", "complete");
+    mkdirSync(worktreeExecDir, { recursive: true });
+    writeFileSync(
+      join(worktreeExecDir, `${evidenceId}.meta.json`),
+      JSON.stringify({
+        id: evidenceId,
+        metadata: {
+          kind: "uat_exec",
+          milestoneId: "M001",
+          sliceId: "S03",
+          checkId: "UAT-01",
+          intent: "uat-artifact-check",
+        },
+      }),
+      "utf-8",
+    );
+
+    const result = await inProjectDir(worktree, () => executeUatResultSave({
+      milestoneId: "M001",
+      sliceId: "S03",
+      uatType: "artifact-driven",
+      verdict: "pass",
+      checks: [{
+        id: "UAT-01",
+        description: "Static artifact contract passes",
+        mode: "artifact",
+        result: "PASS",
+        evidence: [{ kind: "gsd_uat_exec", ref: evidenceId }],
+        notes: "Artifact check passed.",
+      }],
+      notes: "UAT passed with canonical presentation supplied by the executor.",
+    } as unknown as Parameters<typeof executeUatResultSave>[0], worktree));
+
+    assert.equal(result.isError, undefined);
+    assert.equal(result.details.verdict, "PASS");
+
+    const attempt = JSON.parse(readFileSync(
+      join(base, ".gsd", "uat", "M001", "S03", "attempt-1.json"),
+      "utf-8",
+    )) as { presentation?: { toolPresentationPlanId?: string; presentedTools?: string[] } };
+    assert.equal(attempt.presentation?.toolPresentationPlanId, "run-uat/default-v1");
+    assert.ok(attempt.presentation?.presentedTools?.includes("gsd_uat_result_save"));
+    assert.ok(attempt.presentation?.presentedTools?.includes("read"));
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executeUatResultSave supplies direct browser tools for browser-executable UAT", async () => {
+  const base = makeTmpBase();
+  const worktree = join(base, ".gsd", "worktrees", "M001");
+  const worktreeExecDir = join(worktree, ".gsd", "exec");
+  const evidenceId = "uat-direct-browser-evidence";
+  try {
+    openTestDb(base);
+    seedMilestone("M001", "Milestone One");
+    seedSlice("M001", "S06", "complete");
+    mkdirSync(worktreeExecDir, { recursive: true });
+    writeFileSync(
+      join(worktreeExecDir, `${evidenceId}.meta.json`),
+      JSON.stringify({
+        id: evidenceId,
+        metadata: {
+          kind: "uat_exec",
+          milestoneId: "M001",
+          sliceId: "S06",
+          checkId: "UAT-01",
+          intent: "uat-browser-check",
+        },
+      }),
+      "utf-8",
+    );
+
+    const result = await inProjectDir(worktree, () => executeUatResultSave({
+      milestoneId: "M001",
+      sliceId: "S06",
+      uatType: "browser-executable",
+      verdict: "PASS",
+      checks: [{
+        id: "UAT-01",
+        description: "Browser flow used browser tools",
+        mode: "browser",
+        result: "PASS",
+        evidence: [{ kind: "gsd_uat_exec", ref: evidenceId }],
+        notes: "Browser check passed.",
+      }],
+      notes: "UAT passed with browser evidence.",
+    } as unknown as Parameters<typeof executeUatResultSave>[0], worktree));
+
+    assert.equal(result.isError, undefined);
+    const attempt = JSON.parse(readFileSync(
+      join(base, ".gsd", "uat", "M001", "S06", "attempt-1.json"),
+      "utf-8",
+    )) as { browserToolsPresented?: boolean; presentation?: { presentedTools?: string[] } };
+
+    assert.equal(result.details.browserToolsPresented, true);
+    assert.equal(attempt.browserToolsPresented, true);
+    assert.ok(attempt.presentation?.presentedTools?.includes("browser_navigate"));
+    assert.ok(attempt.presentation?.presentedTools?.includes("browser_assert"));
+    assert.equal(
+      attempt.presentation?.presentedTools?.some((toolName) => toolName.startsWith("mcp__gsd-browser__")),
+      false,
+    );
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executeUatResultSave merges canonical plan ID and read-only tools when presentation lacks plan ID", async () => {
+  const base = makeTmpBase();
+  const worktree = join(base, ".gsd", "worktrees", "M001");
+  const worktreeExecDir = join(worktree, ".gsd", "exec");
+  const evidenceId = "uat-no-plan-id-evidence";
+  try {
+    openTestDb(base);
+    seedMilestone("M001", "Milestone One");
+    seedSlice("M001", "S05", "complete");
+    mkdirSync(worktreeExecDir, { recursive: true });
+    writeFileSync(
+      join(worktreeExecDir, `${evidenceId}.meta.json`),
+      JSON.stringify({
+        id: evidenceId,
+        metadata: {
+          kind: "uat_exec",
+          milestoneId: "M001",
+          sliceId: "S05",
+          checkId: "UAT-01",
+          intent: "uat-artifact-check",
+        },
+      }),
+      "utf-8",
+    );
+
+    const result = await inProjectDir(worktree, () => executeUatResultSave({
+      milestoneId: "M001",
+      sliceId: "S05",
+      uatType: "artifact-driven",
+      verdict: "PASS",
+      checks: [{
+        id: "UAT-01",
+        description: "Presentation plan ID absent from provider call",
+        mode: "artifact",
+        result: "PASS",
+        evidence: [{ kind: "gsd_uat_exec", ref: evidenceId }],
+        notes: "Canonical merge should apply even when toolPresentationPlanId is absent.",
+      }],
+      presentation: {
+        surface: "mcp",
+        presentedTools: [
+          "gsd_uat_exec",
+          "gsd_uat_result_save",
+          "gsd_resume",
+          "gsd_milestone_status",
+          "gsd_journal_query",
+        ],
+        blockedTools: [
+          { name: "gsd_exec", reason: "forbidden during run-uat" },
+          { name: "gsd_summary_save", reason: "forbidden during run-uat" },
+          { name: "gsd_save_gate_result", reason: "forbidden during run-uat" },
+        ],
+      },
+      notes: "Provider omitted toolPresentationPlanId; executor must canonicalize.",
+    } as unknown as Parameters<typeof executeUatResultSave>[0], worktree));
+
+    assert.equal(result.isError, undefined);
+    assert.equal(result.details.verdict, "PASS");
+
+    const attempt = JSON.parse(readFileSync(
+      join(base, ".gsd", "uat", "M001", "S05", "attempt-1.json"),
+      "utf-8",
+    )) as { presentation?: { toolPresentationPlanId?: string; presentedTools?: string[] } };
+    assert.equal(attempt.presentation?.toolPresentationPlanId, "run-uat/default-v1");
+    assert.ok(attempt.presentation?.presentedTools?.includes("read"), "read-only tool must be merged in");
+    assert.ok(attempt.presentation?.presentedTools?.includes("gsd_uat_result_save"));
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executeUatResultSave surfaces the worktree validation path for NEEDS-HUMAN checks", async () => {
+  const base = makeTmpBase();
+  const worktree = join(base, ".gsd", "worktrees", "M001");
+  const worktreeExecDir = join(worktree, ".gsd", "exec");
+  const evidenceId = "uat-human-validation-evidence";
+  try {
+    openTestDb(base);
+    seedMilestone("M001", "Milestone One");
+    seedSlice("M001", "S07", "complete");
+    mkdirSync(worktreeExecDir, { recursive: true });
+    writeFileSync(
+      join(worktreeExecDir, `${evidenceId}.meta.json`),
+      JSON.stringify({
+        id: evidenceId,
+        metadata: {
+          kind: "uat_exec",
+          milestoneId: "M001",
+          sliceId: "S07",
+          checkId: "UAT-01",
+          intent: "uat-runtime-check",
+        },
+      }),
+      "utf-8",
+    );
+
+    const result = await inProjectDir(worktree, () => executeUatResultSave({
+      milestoneId: "M001",
+      sliceId: "S07",
+      uatType: "human-experience",
+      verdict: "PASS",
+      checks: [
+        {
+          id: "UAT-01",
+          description: "Service boots and renders the dashboard",
+          mode: "runtime",
+          result: "PASS",
+          evidence: [{ kind: "gsd_uat_exec", ref: evidenceId }],
+          notes: "Boot check passed.",
+        },
+        {
+          id: "UAT-02",
+          description: "Dashboard layout feels balanced",
+          mode: "human-follow-up",
+          result: "NEEDS-HUMAN",
+          nonAutomatable: true,
+          notes: "Open the app and eyeball the spacing.",
+        },
+      ],
+      notes: "Automatable checks passed; layout taste needs a human.",
+    } as unknown as Parameters<typeof executeUatResultSave>[0], worktree));
+
+    assert.equal(result.isError, undefined);
+    assert.equal(result.details.verdict, "PASS");
+    // The reviewer needs the buried worktree checkout path, not just the file.
+    assert.equal(result.details.manualValidationPath, worktree);
+    const returnedText = (result.content[0] as { text: string }).text;
+    assert.match(returnedText, /Manual validation needed/);
+    assert.ok(returnedText.includes(worktree), "tool return should include the worktree path");
+
+    const assessment = readFileSync(
+      join(base, ".gsd", "milestones", "M001", "slices", "S07", "S07-ASSESSMENT.md"),
+      "utf-8",
+    );
+    assert.match(assessment, /## Manual Validation/);
+    assert.ok(assessment.includes(worktree), "assessment should include the worktree checkout path");
+    assert.match(assessment, /git worktree/);
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executeUatResultSave omits manual-validation guidance when no human checks remain", async () => {
+  const base = makeTmpBase();
+  const worktree = join(base, ".gsd", "worktrees", "M001");
+  const worktreeExecDir = join(worktree, ".gsd", "exec");
+  const evidenceId = "uat-no-human-evidence";
+  try {
+    openTestDb(base);
+    seedMilestone("M001", "Milestone One");
+    seedSlice("M001", "S08", "complete");
+    mkdirSync(worktreeExecDir, { recursive: true });
+    writeFileSync(
+      join(worktreeExecDir, `${evidenceId}.meta.json`),
+      JSON.stringify({
+        id: evidenceId,
+        metadata: {
+          kind: "uat_exec",
+          milestoneId: "M001",
+          sliceId: "S08",
+          checkId: "UAT-01",
+          intent: "uat-artifact-check",
+        },
+      }),
+      "utf-8",
+    );
+
+    const result = await inProjectDir(worktree, () => executeUatResultSave({
+      milestoneId: "M001",
+      sliceId: "S08",
+      uatType: "artifact-driven",
+      verdict: "PASS",
+      checks: [{
+        id: "UAT-01",
+        description: "Config file exists",
+        mode: "artifact",
+        result: "PASS",
+        evidence: [{ kind: "gsd_uat_exec", ref: evidenceId }],
+        notes: "Artifact present.",
+      }],
+      notes: "Fully automated pass.",
+    } as unknown as Parameters<typeof executeUatResultSave>[0], worktree));
+
+    assert.equal(result.isError, undefined);
+    assert.equal(result.details.manualValidationPath, undefined);
+    const returnedText = (result.content[0] as { text: string }).text;
+    assert.equal(returnedText.includes("Manual validation needed"), false);
+
+    const assessment = readFileSync(
+      join(base, ".gsd", "milestones", "M001", "slices", "S08", "S08-ASSESSMENT.md"),
+      "utf-8",
+    );
+    assert.equal(assessment.includes("## Manual Validation"), false);
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executeUatResultSave rejects saved UAT without fresh UAT-owned evidence", async () => {
+  const base = makeTmpBase();
+  const worktree = join(base, ".gsd", "worktrees", "M001");
+  const worktreeExecDir = join(worktree, ".gsd", "exec");
+  const evidenceId = "generic-exec-evidence";
+  try {
+    openTestDb(base);
+    seedMilestone("M001", "Milestone One");
+    seedSlice("M001", "S04", "complete");
+    mkdirSync(worktreeExecDir, { recursive: true });
+    writeFileSync(
+      join(worktreeExecDir, `${evidenceId}.meta.json`),
+      JSON.stringify({
+        id: evidenceId,
+        metadata: { kind: "exec" },
+      }),
+      "utf-8",
+    );
+
+    const result = await inProjectDir(worktree, () => executeUatResultSave({
+      milestoneId: "M001",
+      sliceId: "S04",
+      uatType: "artifact-driven",
+      verdict: "PASS",
+      checks: [{
+        id: "UAT-01",
+        description: "Static artifact contract passes",
+        mode: "artifact",
+        result: "PASS",
+        evidence: [{ kind: "gsd_exec", ref: evidenceId }],
+        notes: "Generic evidence should not satisfy fresh UAT evidence.",
+      }],
+      notes: "UAT should not pass without fresh UAT-owned evidence.",
+    } as unknown as Parameters<typeof executeUatResultSave>[0], worktree));
+
+    assert.equal(result.isError, true);
+    assert.match(String(result.content[0]?.text), /fresh gsd_uat_exec evidence/);
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executeUatResultSave rejects an unrecognized uatType", async () => {
+  const base = makeTmpBase();
+  const worktree = join(base, ".gsd", "worktrees", "M001");
+  try {
+    openTestDb(base);
+    mkdirSync(worktree, { recursive: true });
+    seedMilestone("M001", "Milestone One");
+    seedSlice("M001", "S06", "complete");
+
+    const result = await inProjectDir(worktree, () => executeUatResultSave({
+      milestoneId: "M001",
+      sliceId: "S06",
+      uatType: "hallucinated-mode",
+      verdict: "PASS",
+      checks: [{
+        id: "UAT-01",
+        description: "Static artifact contract passes",
+        mode: "artifact",
+        result: "PASS",
+        evidence: [{ kind: "gsd_uat_exec", ref: "some-ref" }],
+      }],
+      notes: "Should fail before evidence validation.",
+    } as unknown as Parameters<typeof executeUatResultSave>[0], worktree));
+
+    assert.equal(result.isError, true);
+    assert.match(String(result.content[0]?.text), /uatType must be one of/);
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executeUatResultSave rejects artifact-driven PASS with human follow-up checks", async () => {
+  const base = makeTmpBase();
+  const worktree = join(base, ".gsd", "worktrees", "M001");
+  const evidenceId = "uat-artifact-nonautomatable";
+  const worktreeExecDir = join(worktree, ".gsd", "exec");
+  try {
+    openTestDb(base);
+    seedMilestone("M001", "Milestone One");
+    seedSlice("M001", "S01", "complete");
+    mkdirSync(worktreeExecDir, { recursive: true });
+    writeFileSync(
+      join(worktreeExecDir, `${evidenceId}.meta.json`),
+      JSON.stringify({
+        id: evidenceId,
+        metadata: {
+          kind: "uat_exec",
+          milestoneId: "M001",
+          sliceId: "S01",
+          checkId: "UAT-01",
+          intent: "uat-artifact-check",
+        },
+      }),
+      "utf-8",
+    );
+
+    const result = await inProjectDir(worktree, () => executeUatResultSave({
+      milestoneId: "M001",
+      sliceId: "S01",
+      uatType: "artifact-driven",
+      verdict: "PASS",
+      checks: [
+        {
+          id: "UAT-01",
+          description: "Static contract passes",
+          mode: "artifact",
+          result: "PASS",
+          evidence: [{ kind: "gsd_uat_exec", ref: evidenceId }],
+          notes: "Artifact check passed.",
+        },
+        {
+          id: "UAT-02",
+          description: "Browser polish is deferred to the next slice",
+          mode: "human-follow-up",
+          result: "NEEDS-HUMAN",
+          notes: "Out of scope for this artifact-driven UAT.",
+          nonAutomatable: true,
+        },
+      ],
+      presentation: {
+        surface: "mcp",
+        presentedTools: [
+          "gsd_uat_exec",
+          "gsd_uat_result_save",
+          "gsd_resume",
+          "gsd_milestone_status",
+          "gsd_journal_query",
+        ],
+        blockedTools: [
+          { name: "gsd_exec", reason: "forbidden during run-uat" },
+          { name: "gsd_summary_save", reason: "forbidden during run-uat" },
+          { name: "gsd_save_gate_result", reason: "forbidden during run-uat" },
+        ],
+      },
+      notes: "UAT passed; non-automatable browser polish is deferred.",
+    }, worktree));
+
+    assert.equal(result.isError, true);
+    assert.match(String(result.content[0]?.text), /artifact-driven UAT cannot PASS with human-only checks/);
   } finally {
     closeDatabase();
     cleanup(base);
@@ -837,12 +1709,25 @@ test("executeSaveGateResult validates inputs and persists verdicts", async () =>
     openTestDb(base);
     seedMilestone("M005", "Milestone Five");
     seedSlice("M005", "S05", "pending");
-    insertGateRow({
+    mkdirSync(join(base, "src"), { recursive: true });
+    writeFileSync(join(base, "src", "gate.ts"), "export const gate = true;\n", "utf-8");
+    await inProjectDir(base, () => executePlanSlice({
       milestoneId: "M005",
       sliceId: "S05",
-      gateId: "Q3",
-      scope: "slice",
-    });
+      goal: "Plan gate save projection.",
+      tasks: [
+        {
+          taskId: "T01",
+          title: "Add gate fixture",
+          description: "Create a fixture touched by gate evaluation.",
+          estimate: "10m",
+          files: ["src/gate.ts"],
+          verify: "node --test",
+          inputs: [],
+          expectedOutput: ["src/gate.ts"],
+        },
+      ],
+    }, base));
 
     const result = await inProjectDir(base, () => executeSaveGateResult({
       milestoneId: "M005",
@@ -861,6 +1746,33 @@ test("executeSaveGateResult validates inputs and persists verdicts", async () =>
     assert.equal(row?.status, "complete");
     assert.equal(row?.verdict, "pass");
     assert.equal(row?.rationale, "Looks good.");
+    const planPath = join(base, ".gsd", "milestones", "M005", "slices", "S05", "S05-PLAN.md");
+    assert.match(readFileSync(planPath, "utf-8"), /No issues found\./);
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executeSaveGateResult fails when no canonical gate row is updated", async () => {
+  const base = makeTmpBase();
+  try {
+    openTestDb(base);
+    seedMilestone("M005", "Milestone Five");
+    seedSlice("M005", "S05", "pending");
+
+    const result = await inProjectDir(base, () => executeSaveGateResult({
+      milestoneId: "M005",
+      sliceId: "S05",
+      gateId: "Q3",
+      verdict: "pass",
+      rationale: "Looks good.",
+      findings: "No issues found.",
+    }, base));
+
+    assert.equal(result.isError, true);
+    assert.equal(result.details.operation, "save_gate_result");
+    assert.match(String(result.details.error), /quality gate row not found/);
   } finally {
     closeDatabase();
     cleanup(base);
@@ -1196,6 +2108,10 @@ test("executeSummarySave blocks final root artifacts while approval gate is pend
 
     assert.equal(result.isError, true);
     assert.equal(result.details.error, "root_artifact_write_blocked");
+    assert.equal(
+      result.details.displayReason,
+      "Approval confirmation required before saving final project setup artifacts.",
+    );
     assert.match(result.content[0].text, /has not been confirmed/);
     assert.equal(existsSync(join(base, ".gsd", "REQUIREMENTS.md")), false);
 
@@ -1238,6 +2154,10 @@ test("executeSummarySave requires verified root approval in deep mode", async ()
 
     assert.equal(blocked.isError, true);
     assert.equal(blocked.details.error, "root_artifact_write_blocked");
+    assert.equal(
+      blocked.details.displayReason,
+      "Approval confirmation required before saving final project setup artifacts.",
+    );
     assert.match(blocked.content[0].text, /fail-closed/);
     assert.equal(existsSync(join(base, ".gsd", "PROJECT.md")), false);
 
@@ -1454,6 +2374,10 @@ test("executeSummarySave CONTEXT HARD BLOCK clears after write-gate state file i
       content: "# Context\n\ncontent",
     }, base));
     assert.equal(blocked.isError, true, "should be blocked without depth verification");
+    assert.equal(
+      blocked.details.displayReason,
+      "Depth check required before writing milestone context.",
+    );
     assert.match(
       blocked.content[0].text,
       /HARD BLOCK/,

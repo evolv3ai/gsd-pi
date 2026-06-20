@@ -7,6 +7,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   loadRegistry,
   resolveByName,
@@ -16,6 +19,11 @@ import {
   getTemplateInfo,
   loadWorkflowTemplate,
 } from '../workflow-templates.ts';
+import {
+  findInProgressWorkflows,
+  isWorkflowStateComplete,
+  type WorkflowState,
+} from '../commands-workflow-templates.ts';
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -194,5 +202,89 @@ console.log('\n── Load Workflow Template ──');
   const missingContent = loadWorkflowTemplate('nonexistent');
   assert.ok(missingContent === null, 'Should return null for unknown template');
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Workflow Resume State ──');
+
+{
+  const started: WorkflowState = {
+    template: 'bugfix',
+    templateName: 'Bug Fix',
+    description: 'fix resume drift',
+    branch: 'gsd/bugfix/fix-resume-drift',
+    phases: [
+      { name: 'triage', index: 0, status: 'completed' },
+      { name: 'fix', index: 1, status: 'active' },
+      { name: 'verify', index: 2, status: 'pending' },
+    ],
+    currentPhase: 1,
+    startedAt: '2026-06-15T00:00:00.000Z',
+    updatedAt: '2026-06-15T00:01:00.000Z',
+    artifactDir: 'workflows/bugfixes/260615-1-fix-resume-drift',
+  };
+
+  assert.equal(isWorkflowStateComplete(started), false, 'active phase should be resumable');
+  assert.equal(
+    isWorkflowStateComplete({
+      ...started,
+      phases: started.phases.map((phase) => ({ ...phase, status: 'completed' })),
+      currentPhase: 2,
+      updatedAt: '2026-06-15T00:02:00.000Z',
+    }),
+    true,
+    'all completed phases should be treated as complete even when completedAt is absent',
+  );
+  assert.equal(
+    isWorkflowStateComplete({ ...started, completedAt: '2026-06-15T00:03:00.000Z' }),
+    true,
+    'completedAt should mark the workflow complete',
+  );
+}
+
+test('findInProgressWorkflows ignores completed phase-only STATE files', (t) => {
+  const base = mkdtempSync(join(tmpdir(), 'gsd-workflow-resume-'));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const workflowsRoot = join(base, '.gsd', 'workflows', 'bugfixes');
+  mkdirSync(join(workflowsRoot, '260615-1-complete'), { recursive: true });
+  mkdirSync(join(workflowsRoot, '260615-2-active'), { recursive: true });
+
+  const common = {
+    template: 'bugfix',
+    templateName: 'Bug Fix',
+    description: 'fix resume drift',
+    branch: 'gsd/bugfix/fix-resume-drift',
+    startedAt: '2026-06-15T00:00:00.000Z',
+    artifactDir: 'workflows/bugfixes/260615-1-complete',
+  };
+
+  writeFileSync(join(workflowsRoot, '260615-1-complete', 'STATE.json'), JSON.stringify({
+    ...common,
+    phases: [
+      { name: 'triage', index: 0, status: 'completed' },
+      { name: 'fix', index: 1, status: 'completed' },
+      { name: 'verify', index: 2, status: 'completed' },
+    ],
+    currentPhase: 2,
+    updatedAt: '2026-06-15T00:02:00.000Z',
+  }), 'utf-8');
+
+  writeFileSync(join(workflowsRoot, '260615-2-active', 'STATE.json'), JSON.stringify({
+    ...common,
+    artifactDir: 'workflows/bugfixes/260615-2-active',
+    phases: [
+      { name: 'triage', index: 0, status: 'completed' },
+      { name: 'fix', index: 1, status: 'active' },
+      { name: 'verify', index: 2, status: 'pending' },
+    ],
+    currentPhase: 1,
+    updatedAt: '2026-06-15T00:03:00.000Z',
+  }), 'utf-8');
+
+  const inProgress = findInProgressWorkflows(base);
+  assert.equal(inProgress.length, 1);
+  assert.equal(inProgress[0]?.artifactDir, 'workflows/bugfixes/260615-2-active');
+});
 
 // ═══════════════════════════════════════════════════════════════════════════

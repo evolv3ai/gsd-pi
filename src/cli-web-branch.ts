@@ -25,6 +25,8 @@ export interface CliFlags {
   webPort?: number
   /** Additional allowed origins for CORS: `--allowed-origins http://192.168.1.10:8080` */
   webAllowedOrigins?: string[]
+  /** Disable the web launcher's bearer token gate: `--no-auth` */
+  webNoAuth?: boolean
 
   /** Set by `gsd sessions` when the user picks a specific session to resume */
   _selectedSessionPath?: string
@@ -80,6 +82,8 @@ export function parseCliArgs(argv: string[]): CliFlags {
     } else if (arg === '--allowed-origins' && i + 1 < args.length) {
       const origins = args[++i].split(',').map(o => o.trim()).filter(Boolean)
       flags.webAllowedOrigins = (flags.webAllowedOrigins ?? []).concat(origins)
+    } else if (arg === '--no-auth') {
+      flags.webNoAuth = true
     } else if (arg === '--model' && i + 1 < args.length) {
       flags.model = args[++i]
     } else if (arg === '--extension' && i + 1 < args.length) {
@@ -288,14 +292,19 @@ export async function runWebCliBranch(
   const projectSessionsDir = getProjectSessionsDir(currentCwd, baseSessionsDir)
 
   migrateLegacyFlatSessions(baseSessionsDir, projectSessionsDir)
-  const status = await (deps.runWebMode ?? launchWebMode)({
+  const launchOptions: Parameters<typeof launchWebMode>[0] = {
     cwd: currentCwd,
     projectSessionsDir,
     agentDir,
     host: flags.webHost,
     port: flags.webPort,
     allowedOrigins: flags.webAllowedOrigins,
-  })
+  }
+  if (flags.webNoAuth !== undefined) {
+    launchOptions.noAuth = flags.webNoAuth
+  }
+
+  const status = await (deps.runWebMode ?? launchWebMode)(launchOptions)
 
   if (!status.ok) {
     emitWebModeFailure(stderr, status)

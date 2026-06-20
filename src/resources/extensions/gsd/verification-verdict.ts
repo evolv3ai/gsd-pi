@@ -15,6 +15,9 @@ export interface VerificationVerdict {
   failureContext: string;
 }
 
+export const NO_HOST_CHECKS_FAILURE_CONTEXT =
+  "No runnable host-owned verification command was discovered. Add project verification_commands in .gsd/PREFERENCES.md or a runnable task-plan Verify command, then resume with /gsd next.";
+
 export function decideVerificationVerdict(
   unitType: string,
   result: VerificationGateResult,
@@ -33,8 +36,7 @@ export function decideVerificationVerdict(
       passed: false,
       reason: "no-host-checks",
       retryable: false,
-      failureContext:
-        "No runnable host-owned verification command was discovered. Add project verification_commands or a runnable task-plan Verify command before completing this execute-task.",
+      failureContext: NO_HOST_CHECKS_FAILURE_CONTEXT,
     };
   }
 

@@ -236,6 +236,90 @@ describe("agentLoop with AgentMessage", () => {
 		expect(convertedMessages.length).toBe(2);
 	});
 
+	it("emits tool_execution_end and completes the turn when a hung, signal-deaf tool is aborted", async () => {
+		// Regression: a tool whose execute() never settles (a deadlocked MCP server,
+		// a D-state child) and that ignores its abort signal used to block the whole
+		// tool batch forever — no tool_execution_end was emitted, so a downstream UI
+		// card stayed "running" indefinitely (a real CPU drain). On abort, the loop
+		// must stop awaiting the hung tool, finalize it, and emit its _end.
+		const toolSchema = Type.Object({ value: Type.String() });
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "hang",
+			label: "Hang",
+			description: "A tool that never resolves and ignores the abort signal",
+			parameters: toolSchema,
+			// Deliberately ignores `signal` and never resolves.
+			execute(_toolCallId, _params) {
+				return new Promise(() => {});
+			},
+		};
+
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [tool],
+		};
+		const userPrompt: AgentMessage = createUserMessage("hang please");
+		const config: AgentLoopConfig = { model: createModel(), convertToLlm: identityConverter };
+
+		const controller = new AbortController();
+		let callIndex = 0;
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (callIndex === 0) {
+					stream.push({
+						type: "done",
+						reason: "toolUse",
+						message: createAssistantMessage(
+							[{ type: "toolCall", id: "tool-1", name: "hang", arguments: { value: "x" } }],
+							"toolUse",
+						),
+					});
+				} else {
+					stream.push({ type: "done", reason: "stop", message: createAssistantMessage([{ type: "text", text: "done" }]) });
+				}
+				callIndex++;
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([userPrompt], context, config, controller.signal, streamFn);
+
+		// Abort shortly after the tool starts running.
+		const started = new Promise<void>((resolve) => {
+			(async () => {
+				for await (const event of stream) {
+					events.push(event);
+					if (event.type === "tool_execution_start") {
+						resolve();
+						// Give the hung tool a tick, then abort.
+						setTimeout(() => controller.abort(), 10);
+					}
+				}
+			})();
+		});
+		await started;
+
+		// The whole loop must drain (not hang) within a sane bound.
+		const drained = (async () => {
+			const start = Date.now();
+			while (!events.some((e) => e.type === "tool_execution_end") && Date.now() - start < 3000) {
+				await new Promise((r) => setTimeout(r, 10));
+			}
+		})();
+		await drained;
+
+		const toolStart = events.find((e) => e.type === "tool_execution_start");
+		const toolEnd = events.find((e) => e.type === "tool_execution_end");
+		expect(toolStart).toBeDefined();
+		expect(toolEnd, "a hung+aborted tool must still emit tool_execution_end").toBeDefined();
+		if (toolEnd?.type === "tool_execution_end") {
+			expect(toolEnd.isError).toBe(true);
+		}
+	});
+
 	it("should handle tool calls and results", async () => {
 		const toolSchema = Type.Object({ value: Type.String() });
 		const executed: string[] = [];
@@ -367,6 +451,75 @@ describe("agentLoop with AgentMessage", () => {
 		}
 
 		expect(executed).toEqual([123]);
+	});
+
+	it("should preserve blocked tool reason for the model and displayReason for UI", async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		const tool: AgentTool<typeof toolSchema> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			async execute() {
+				throw new Error("tool should have been blocked");
+			},
+		};
+
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [tool],
+		};
+
+		const userPrompt: AgentMessage = createUserMessage("echo something");
+
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			beforeToolCall: async () => ({
+				block: true,
+				reason: "HARD BLOCK: call ask_user_questions before writing context.",
+				displayReason: "Depth check required before writing milestone context.",
+			}),
+		};
+
+		let callIndex = 0;
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (callIndex === 0) {
+					const message = createAssistantMessage(
+						[{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "hello" } }],
+						"toolUse",
+					);
+					stream.push({ type: "done", reason: "toolUse", message });
+				} else {
+					const message = createAssistantMessage([{ type: "text", text: "done" }]);
+					stream.push({ type: "done", reason: "stop", message });
+				}
+				callIndex++;
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([userPrompt], context, config, undefined, streamFn);
+
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		const blockedResult = events.find(
+			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+				event.type === "tool_execution_end" && event.toolCallId === "tool-1",
+		);
+		expect(blockedResult?.isError).toBe(true);
+		expect(blockedResult?.result.content[0]?.text).toBe(
+			"HARD BLOCK: call ask_user_questions before writing context.",
+		);
+		expect(blockedResult?.result.details?.displayReason).toBe(
+			"Depth check required before writing milestone context.",
+		);
 	});
 
 	it("should prepare tool arguments for validation", async () => {
@@ -578,6 +731,80 @@ describe("agentLoop with AgentMessage", () => {
 			["tool-gsd", false, "{\"status\":\"ok\"}"],
 		]);
 		expect(toolResults.map((event) => event.result.content[0]?.text).join("\n")).not.toContain("not found");
+	});
+
+	it("does not request another assistant turn after externalResult tool calls (issue #654)", async () => {
+		// Regression for the duplicate-bubble / duplicate `╭─ GSD ─` header bug.
+		// The claude-code-cli adapter pre-executes its tools and emits ONE final
+		// AssistantMessage containing both the tool-call blocks (with externalResult
+		// attached) AND the post-tool text. The agent-loop must recognize that this
+		// batch is already finished and NOT loop back for a second streamAssistantResponse
+		// call — a second call emits a second message_start, which the interactive
+		// renderer draws as a second assistant bubble (a stacked second `╭─ GSD ─` header).
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [],
+		};
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+		};
+
+		let streamCallCount = 0;
+		const streamFn = () => {
+			streamCallCount++;
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (streamCallCount === 1) {
+					// One logical claude-code turn: tool call (already executed by the
+					// SDK, so externalResult is attached) followed by the model's final text.
+					const message = createAssistantMessage(
+						[
+							{
+								type: "toolCall",
+								id: "tool-bash",
+								name: "Bash",
+								arguments: { command: "lsof -i :3000" },
+								externalResult: {
+									content: [{ type: "text", text: "nothing on :3000" }],
+									details: { source: "claude-code" },
+									isError: false,
+								},
+							} as any,
+							{ type: "text", text: "Nothing is running on port 3000." },
+						],
+						"toolUse",
+					);
+					stream.push({ type: "done", reason: "toolUse", message });
+				} else {
+					// If the loop reaches here, it has looped back for a redundant turn —
+					// this is the duplicate-bubble bug. Emit a distinct duplicate so the
+					// assertion can show what leaked through.
+					stream.push({
+						type: "done",
+						reason: "stop",
+						message: createAssistantMessage([{ type: "text", text: "Nothing is running on port 3000." }]),
+					});
+				}
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([createUserMessage("Is anything running on port 3000?")], context, config, undefined, streamFn);
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		const messageStarts = events.filter(
+			(event): event is Extract<AgentEvent, { type: "message_start" }> => event.type === "message_start",
+		);
+		const assistantStarts = messageStarts.filter((event) => event.message.role === "assistant");
+
+		// The externalResult batch is terminal: exactly one assistant turn, one bubble.
+		expect(streamCallCount).toBe(1);
+		expect(assistantStarts.length).toBe(1);
 	});
 
 	it("returns ToolSearch guidance when the shim is not in the active tool registry", async () => {

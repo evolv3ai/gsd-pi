@@ -696,3 +696,25 @@ test("ensureCodebaseMapFresh: does not rewrite expired metadata when fingerprint
     cleanup(base);
   }
 });
+
+test("ensureCodebaseMapFresh: detects file changes within the TTL window", () => {
+  const base = makeTmpRepo();
+  try {
+    addFile(base, "src/main.ts");
+    // Generate initial map with a long TTL so the cache is still active.
+    const initial = ensureCodebaseMapFresh(base, undefined, { ttlMs: 60_000 });
+    assert.equal(initial.status, "generated");
+
+    // Add a new tracked file while the TTL is still active.
+    addFile(base, "src/new.ts");
+
+    // Must detect the change even though the TTL has not expired.
+    const refreshed = ensureCodebaseMapFresh(base, undefined, { ttlMs: 60_000 });
+    assert.equal(refreshed.status, "updated");
+    assert.equal(refreshed.reason, "files-changed");
+    const written = readCodebaseMap(base);
+    assert.ok(written?.includes("`src/new.ts`"));
+  } finally {
+    cleanup(base);
+  }
+});

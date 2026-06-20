@@ -7,7 +7,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { getShellConfig, sanitizeCommand } from "@gsd/pi-coding-agent";
+import { getShellConfig, sanitizeCommand, killProcessTree } from "@gsd/pi-coding-agent";
 import { rewriteCommandWithRtk } from "../shared/rtk.js";
 import type {
 	BgProcess,
@@ -259,6 +259,34 @@ export function startProcess(opts: StartOptions): BgProcess {
 
 // ── Process Kill ───────────────────────────────────────────────────────────
 
+/**
+ * Gracefully terminate a process and its tree using the shared killProcessTree
+ * ladder (SIGTERM → grace window → SIGKILL), the same path bash/async_bash/exec
+ * use. This is the "I want it dead, cleanly" intent — use it for the `kill`
+ * action, `restart`, and session cleanup. For sending a SPECIFIC signal the
+ * agent chose on purpose (SIGINT, SIGHUP, …) use killProcess(), which delivers
+ * that exact signal once and does not escalate.
+ *
+ * `graceMs` overrides the SIGTERM→SIGKILL window (default: killProcessTree's 5s);
+ * session cleanup passes a shorter grace so it stays snappy between units.
+ *
+ * Returns false only when the process is unknown/already dead; the actual
+ * SIGKILL escalation fires asynchronously after the grace window, so callers
+ * should not assume the process is dead the instant this returns.
+ */
+export function terminateProcess(id: string, graceMs?: number): boolean {
+	const bg = processes.get(id);
+	if (!bg) return false;
+	if (!bg.alive) return true;
+	if (!bg.proc.pid) {
+		// No pid to target a tree; fall back to a direct graceful signal.
+		try { bg.proc.kill("SIGTERM"); } catch { /* already gone */ }
+		return true;
+	}
+	killProcessTree(bg.proc.pid, graceMs !== undefined ? { graceMs } : undefined);
+	return true;
+}
+
 export function killProcess(id: string, sig: NodeJS.Signals = "SIGTERM"): boolean {
 	const bg = processes.get(id);
 	if (!bg) return false;
@@ -306,13 +334,14 @@ export async function restartProcess(id: string): Promise<BgProcess | null> {
 	const config = old.startConfig;
 	const restartCount = old.restartCount + 1;
 
-	// Kill old process
+	// Kill old process via the graceful ladder, then wait for it to actually die.
+	// killProcessTree escalates SIGTERM → grace → SIGKILL asynchronously, so poll
+	// for death rather than assuming a fixed sleep is enough.
 	if (old.alive) {
-		killProcess(id, "SIGTERM");
-		await new Promise(r => setTimeout(r, 300));
-		if (old.alive) {
-			killProcess(id, "SIGKILL");
-			await new Promise(r => setTimeout(r, 200));
+		terminateProcess(id);
+		const deadline = Date.now() + 6_000; // grace (5s) + slack
+		while (old.alive && Date.now() < deadline) {
+			await new Promise(r => setTimeout(r, 100));
 		}
 	}
 	processes.delete(id);
@@ -374,23 +403,14 @@ export function pruneDeadProcesses(): void {
 }
 
 export function cleanupAll(): void {
+	// Deliberately a bare, synchronous SIGKILL — not the graceful ladder. This runs
+	// from process 'exit'/signal handlers where timers no longer fire, so a deferred
+	// SIGKILL would never be delivered and children would be orphaned when we vanish.
+	// Immediate force-kill is the correct teardown semantics here.
 	for (const [id, bg] of processes) {
 		if (bg.alive) killProcess(id, "SIGKILL");
 	}
 	processes.clear();
-}
-
-/**
- * Kill all alive, non-persistent bg processes.
- * Called between auto-mode units to prevent orphaned servers from
- * keeping ports bound across task boundaries (#1209).
- */
-export function killSessionProcesses(): void {
-	for (const [id, bg] of processes) {
-		if (bg.alive && !bg.persistAcrossSessions) {
-			killProcess(id, "SIGTERM");
-		}
-	}
 }
 
 async function waitForProcessExit(bg: BgProcess, timeoutMs: number): Promise<boolean> {
@@ -406,6 +426,13 @@ async function waitForProcessExit(bg: BgProcess, timeoutMs: number): Promise<boo
 	return !bg.alive;
 }
 
+/**
+ * Terminate the alive, non-persistent processes owned by a session, gracefully.
+ * Routes through the shared killProcessTree ladder (SIGTERM → grace → SIGKILL)
+ * via terminateProcess, with a short grace (default 300ms) so cleanup between
+ * units stays snappy; killProcessTree handles the SIGKILL escalation itself, so
+ * there is no separate force-kill pass here.
+ */
 export async function cleanupSessionProcesses(
 	sessionFile: string,
 	options?: { graceMs?: number },
@@ -417,13 +444,11 @@ export async function cleanupSessionProcesses(
 	if (matches.length === 0) return [];
 
 	for (const bg of matches) {
-		killProcess(bg.id, "SIGTERM");
+		terminateProcess(bg.id, graceMs);
 	}
 	if (graceMs > 0) {
-		await Promise.all(matches.map((bg) => waitForProcessExit(bg, graceMs)));
-	}
-	for (const bg of matches) {
-		if (bg.alive) killProcess(bg.id, "SIGKILL");
+		// Wait past the grace so the SIGKILL escalation has fired and exits are observed.
+		await Promise.all(matches.map((bg) => waitForProcessExit(bg, graceMs + 200)));
 	}
 	return matches.map((bg) => bg.id);
 }

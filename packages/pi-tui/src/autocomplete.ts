@@ -294,10 +294,18 @@ export class CombinedAutocompleteProvider implements AutocompleteProvider {
 		const atPrefix = this.extractAtPrefix(textBeforeCursor);
 		if (atPrefix) {
 			const { rawPrefix, isQuotedPrefix } = parsePathPrefix(atPrefix);
-			const suggestions = await this.getFuzzyFileSuggestions(rawPrefix, {
+
+			// Try fd-based fuzzy search first (fast, respects .gitignore)
+			let suggestions = await this.getFuzzyFileSuggestions(rawPrefix, {
 				isQuotedPrefix,
 				signal: options.signal,
 			});
+
+			// Fallback to readdirSync-based search when fd is not available
+			if (suggestions.length === 0 && !this.fdPath) {
+				suggestions = this.getFileSuggestions(atPrefix);
+			}
+
 			if (suggestions.length === 0) return null;
 
 			return {

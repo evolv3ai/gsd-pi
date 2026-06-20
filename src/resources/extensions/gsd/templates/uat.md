@@ -5,8 +5,12 @@
 
 ## UAT Type
 
-- UAT mode: {{artifact-driven | live-runtime | human-experience | mixed}}
+- UAT mode: {{artifact-driven | browser-executable | runtime-executable | live-runtime | human-experience | mixed}}
 - Why this mode is sufficient: {{reason}}
+
+<!-- Web apps: never use artifact-driven when steps open a browser, navigate to localhost,
+     or capture screenshots. Use browser-executable (browser_* tools) or runtime-executable
+     (npx playwright test). Name dev-server preconditions below. -->
 
 ## Preconditions
 

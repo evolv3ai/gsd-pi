@@ -64,3 +64,14 @@ test("getWorkspaceGitBlockMessageForBase allows doctor on product conflicts", as
     cleanup(base);
   }
 });
+
+test("getWorkspaceGitBlockMessageForBase allows forensics on product conflicts", async () => {
+  const base = makeTempRepo("gsd-dispatch-ws-git-forensics-");
+  try {
+    seedProductConflict(base);
+    const blocked = await getWorkspaceGitBlockMessageForBase(base, "forensics");
+    assert.equal(blocked, null);
+  } finally {
+    cleanup(base);
+  }
+});

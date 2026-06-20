@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent";
 
-import { checkRemoteAutoSession, isAutoActive, isAutoPaused, stopAutoRemote } from "../auto.js";
+import { checkRemoteAutoSession, forceStopAutoRemote, isAutoActive, isAutoPaused, stopAutoRemote } from "../auto.js";
 import { validateDirectory } from "../validate-directory.js";
 import { resolveProjectRoot } from "../worktree.js";
 import { showNextAction } from "../../shared/tui.js";
@@ -155,5 +155,19 @@ export async function guardRemoteSession(
     return false;
   }
 
-  return choice === "force";
+  if (choice === "force") {
+    const result = forceStopAutoRemote(projectRoot());
+    if (result.error) {
+      ctx.ui.notify(`Failed to force-stop remote auto-mode: ${result.error}`, "error");
+      return false;
+    }
+    if (result.found) {
+      ctx.ui.notify(`Force-stopped auto-mode session (PID ${result.pid}). Starting a new session.`, "warning");
+    } else {
+      ctx.ui.notify("Remote session is no longer running. Starting a new session.", "info");
+    }
+    return true;
+  }
+
+  return false;
 }

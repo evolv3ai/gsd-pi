@@ -192,6 +192,21 @@ describe("StdinBuffer", () => {
 			assert.deepStrictEqual(emittedSequences, ["\x1b[1;1:1A"]);
 		});
 
+		it("should keep suffix-style Kitty event types attached to legacy arrows", () => {
+			processInput("\x1b[1;1A:3");
+			assert.deepStrictEqual(emittedSequences, ["\x1b[1;1A:3"]);
+		});
+
+		it("should wait for partial suffix-style Kitty event types", () => {
+			processInput("\x1b[1;1A:");
+			assert.deepStrictEqual(emittedSequences, []);
+			assert.strictEqual(buffer.getBuffer(), "\x1b[1;1A:");
+
+			processInput("3");
+			assert.deepStrictEqual(emittedSequences, ["\x1b[1;1A:3"]);
+			assert.strictEqual(buffer.getBuffer(), "");
+		});
+
 		it("should handle Kitty functional keys with event type", () => {
 			// Delete key release
 			processInput("\x1b[3;1:3~");

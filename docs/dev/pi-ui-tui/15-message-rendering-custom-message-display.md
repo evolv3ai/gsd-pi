@@ -3,7 +3,7 @@
 Register a renderer for messages with your `customType`:
 
 ```typescript
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@gsd/pi-tui";
 
 pi.registerMessageRenderer("my-extension", (message, options, theme) => {
   const { expanded } = options;

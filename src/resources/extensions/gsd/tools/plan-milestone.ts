@@ -1,25 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Plans milestone roadmap state through DB-backed workflow tools.
 
-import { clearParseCache } from "../files.js";
-import { isClosedStatus } from "../status-guards.js";
 import { isNonEmptyString, validateStringArray, validateTitle } from "../validation.js";
-import {
-  transaction,
-  getMilestone,
-  getMilestoneSlices,
-  getSlice,
-  insertMilestone,
-  insertSlice,
-  upsertMilestonePlanning,
-  upsertSlicePlanning,
-} from "../gsd-db.js";
-import { invalidateStateCache } from "../state.js";
-import { renderRoadmapFromDb } from "../markdown-renderer.js";
-import { renderAllProjections } from "../workflow-projections.js";
-import { writeManifest } from "../workflow-manifest.js";
-import { appendEvent } from "../workflow-events.js";
-import { logWarning } from "../workflow-logger.js";
+import { persistMilestonePlan } from "../milestone-planning-persistence.js";
 
 export interface PlanMilestoneSliceInput {
   sliceId: string;
@@ -115,10 +98,20 @@ function validateProofStrategy(value: unknown): Array<{ riskOrUnknown: string; r
   });
 }
 
+const SLICE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
+
 function validateSlices(value: unknown): PlanMilestoneSliceInput[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new Error("slices must be a non-empty array");
   }
+
+  // Pre-collect all slice IDs so depends cross-validation can reference the full set.
+  const allSliceIds = new Set<string>(
+    (value as unknown[])
+      .filter((e): e is Record<string, unknown> => !!e && typeof e === "object")
+      .map(e => e.sliceId)
+      .filter((id): id is string => isNonEmptyString(id)),
+  );
 
   const seen = new Set<string>();
   return value.map((entry, index) => {
@@ -154,8 +147,13 @@ function validateSlices(value: unknown): PlanMilestoneSliceInput[] {
     const titleIssue = validateTitle(title);
     if (titleIssue) throw new Error(`slices[${index}].title is invalid: ${titleIssue}`);
     if (!isNonEmptyString(risk)) throw new Error(`slices[${index}].risk must be a non-empty string`);
-    if (!Array.isArray(depends) || depends.some((item) => !isNonEmptyString(item))) {
-      throw new Error(`slices[${index}].depends must be an array of non-empty strings`);
+    if (!Array.isArray(depends) || depends.some((item) => !isNonEmptyString(item) || !SLICE_ID_RE.test(item as string))) {
+      throw new Error(`slices[${index}].depends must be an array of valid slice IDs (e.g. "S01")`);
+    }
+    for (const dep of depends as string[]) {
+      if (!allSliceIds.has(dep)) {
+        throw new Error(`slices[${index}].depends references unknown slice "${dep}" — check that it is defined in the same milestone`);
+      }
     }
     if (!isNonEmptyString(demo)) throw new Error(`slices[${index}].demo must be a non-empty string`);
     if (!isNonEmptyString(goal)) throw new Error(`slices[${index}].goal must be a non-empty string`);
@@ -227,144 +225,5 @@ export async function handlePlanMilestone(
     return { error: `validation failed: ${(err as Error).message}` };
   }
 
-  // ── Guards + DB writes inside a single transaction (prevents TOCTOU) ───
-  // Guards must be inside the transaction so the state they check cannot
-  // change between the read and the write (#2723).
-  let guardError: string | null = null;
-
-  try {
-    transaction(() => {
-      const existingMilestone = getMilestone(params.milestoneId);
-      if (existingMilestone && isClosedStatus(existingMilestone.status)) {
-        guardError = `cannot re-plan milestone ${params.milestoneId}: it is already complete`;
-        return;
-      }
-
-      // Guard: refuse to re-plan a milestone that would drop completed slices (#2960).
-      // Allow re-planning when all completed slices are still present in the
-      // incoming plan — their status is preserved below (#2558). Block only when
-      // the new plan omits a completed slice, which could shadow completed work.
-      const existingSlices = getMilestoneSlices(params.milestoneId);
-      const completedSlices = existingSlices.filter(s => isClosedStatus(s.status));
-      if (completedSlices.length > 0) {
-        const incomingSliceIds = new Set(params.slices.map(s => s.sliceId));
-        const droppedCompleted = completedSlices.filter(s => !incomingSliceIds.has(s.id));
-        if (droppedCompleted.length > 0) {
-          guardError = `cannot re-plan milestone ${params.milestoneId}: ${droppedCompleted.length} completed slice(s) would be dropped (${droppedCompleted.map(s => s.id).join(", ")}). Use gsd_reassess_roadmap to modify the roadmap.`;
-          return;
-        }
-      }
-
-      // Validate depends_on: all dependencies must exist and be complete
-      if (params.dependsOn && params.dependsOn.length > 0) {
-        for (const depId of params.dependsOn) {
-          const dep = getMilestone(depId);
-          if (!dep) {
-            guardError = `depends_on references unknown milestone: ${depId}`;
-            return;
-          }
-          if (!isClosedStatus(dep.status)) {
-            guardError = `depends_on milestone ${depId} is not yet complete (status: ${dep.status})`;
-            return;
-          }
-        }
-      }
-
-      insertMilestone({
-        id: params.milestoneId,
-        title: params.title,
-        status: params.status ?? "active",
-        depends_on: params.dependsOn ?? [],
-      });
-
-      upsertMilestonePlanning(params.milestoneId, {
-        title: params.title,
-        status: params.status ?? "active",
-        depends_on: params.dependsOn ?? [],
-        vision: params.vision,
-        successCriteria: params.successCriteria,
-        keyRisks: params.keyRisks,
-        proofStrategy: params.proofStrategy,
-        verificationContract: params.verificationContract,
-        verificationIntegration: params.verificationIntegration,
-        verificationOperational: params.verificationOperational,
-        verificationUat: params.verificationUat,
-        definitionOfDone: params.definitionOfDone,
-        requirementCoverage: params.requirementCoverage,
-        boundaryMapMarkdown: params.boundaryMapMarkdown,
-      });
-
-      for (let i = 0; i < params.slices.length; i++) {
-        const slice = params.slices[i]!;
-        // Preserve completed/done status on re-plan (#2558).
-        // Without this, a re-plan after milestone transition would reset
-        // already-completed slices back to "pending".
-        const existing = getSlice(params.milestoneId, slice.sliceId);
-        const status = existing && (existing.status === "complete" || existing.status === "done")
-          ? existing.status
-          : "pending";
-        insertSlice({
-          id: slice.sliceId,
-          milestoneId: params.milestoneId,
-          title: slice.title,
-          status,
-          risk: slice.risk,
-          depends: slice.depends,
-          demo: slice.demo,
-          sequence: i + 1, // Preserve agent-ordered sequence (#3356)
-          // ADR-011: pass undefined through so ON CONFLICT preserves existing values
-          // when the caller omitted the fields on a re-plan.
-          isSketch: slice.isSketch,
-          sketchScope: slice.sketchScope,
-        });
-        upsertSlicePlanning(params.milestoneId, slice.sliceId, {
-          goal: slice.goal,
-          successCriteria: slice.successCriteria,
-          proofLevel: slice.proofLevel,
-          integrationClosure: slice.integrationClosure,
-          observabilityImpact: slice.observabilityImpact,
-        });
-      }
-    });
-  } catch (err) {
-    return { error: `db write failed: ${(err as Error).message}` };
-  }
-
-  if (guardError) {
-    return { error: guardError };
-  }
-
-  let roadmapPath: string;
-  try {
-    const renderResult = await renderRoadmapFromDb(basePath, params.milestoneId);
-    roadmapPath = renderResult.roadmapPath;
-  } catch (renderErr) {
-    logWarning("tool", `plan_milestone — render failed (DB rows preserved for debugging): ${(renderErr as Error).message}`);
-    invalidateStateCache();
-    return { error: `render failed: ${(renderErr as Error).message}` };
-  }
-
-  invalidateStateCache();
-  clearParseCache();
-
-  // ── Post-mutation hook: projections, manifest, event log ───────────────
-  try {
-    await renderAllProjections(basePath, params.milestoneId);
-    writeManifest(basePath);
-    appendEvent(basePath, {
-      cmd: "plan-milestone",
-      params: { milestoneId: params.milestoneId },
-      ts: new Date().toISOString(),
-      actor: "agent",
-      actor_name: params.actorName,
-      trigger_reason: params.triggerReason,
-    });
-  } catch (hookErr) {
-    logWarning("tool", `plan-milestone post-mutation hook warning: ${(hookErr as Error).message}`);
-  }
-
-  return {
-    milestoneId: params.milestoneId,
-    roadmapPath,
-  };
+  return persistMilestonePlan(params, basePath);
 }

@@ -33,6 +33,7 @@ mode: team
 .gsd/activity/
 .gsd/runtime/
 .gsd/worktrees/
+.gsd-worktrees/
 .gsd/milestones/**/continue.md
 .gsd/milestones/**/*-CONTINUE.md
 ```
@@ -88,7 +89,7 @@ git:
 
 多个开发者可以同时对不同 milestones 运行自动模式。每个开发者都会：
 
-- 获得自己的 worktree（`.gsd/worktrees/<MID>/`，已加入 gitignore）
+- 获得自己的 worktree（`.gsd-worktrees/<MID>/`，已加入 gitignore）
 - 在独立的 `milestone/<MID>` 分支上工作
 - 独立地 squash merge 回主分支
 

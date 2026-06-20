@@ -11,6 +11,7 @@ import {
   _dispatchWorkflowForTest,
   resolveGuidedDispatchProjectRoot,
 } from "../guided-flow.ts";
+import { getRequiredWorkflowToolsForUnit } from "../unit-tool-contracts.ts";
 
 test("guided dispatch falls back to cwd only when no project root is supplied", () => {
   const cwd = process.cwd();
@@ -77,12 +78,8 @@ test("guided dispatch passes the explicit project root through model and compati
             seen.modelRoot = projectRoot;
             return { routing: null, appliedModel: null };
           },
-          getTransportSupportError: (
-            _provider: string | undefined,
-            _requiredTools: string[],
-            options?: { projectRoot?: string },
-          ) => {
-            seen.compatibilityRoot = options?.projectRoot ?? "";
+          getDispatchReadinessError: (input: { projectRoot?: string }) => {
+            seen.compatibilityRoot = input.projectRoot ?? "";
             return null;
           },
         },
@@ -102,5 +99,106 @@ test("guided dispatch passes the explicit project root through model and compati
     }
     rmSync(explicitRoot, { recursive: true, force: true });
     rmSync(otherRoot, { recursive: true, force: true });
+  }
+});
+
+test("guided dispatch accepts workflow MCP tools absent from parent active tool surface", async () => {
+  const explicitRoot = mkdtempSync(join(tmpdir(), "gsd-guided-mcp-surface-"));
+  const workflowPath = join(explicitRoot, "GSD-WORKFLOW.md");
+  const originalWorkflowPath = process.env.GSD_WORKFLOW_PATH;
+  const originalMcpCommand = process.env.GSD_WORKFLOW_MCP_COMMAND;
+  const notifications: string[] = [];
+  let sent = false;
+
+  const ctx = {
+    model: { provider: "claude-code", baseUrl: "local://claude-code" },
+    modelRegistry: {
+      getProviderAuthMode: () => "externalCli",
+    },
+    ui: {
+      setStatus: () => {},
+      notify: (message: string) => {
+        notifications.push(message);
+      },
+    },
+  };
+
+  let activeTools = [
+    "ScheduleWakeup",
+    "ToolSearch",
+    "ask_user_questions",
+    "bash",
+    "read",
+    "write",
+  ];
+
+  // The workflow MCP server registers its tools out of band, so the unit's
+  // required workflow tools show up in the registered tool snapshot
+  // (getAllTools) under the MCP server prefix without ever entering the parent
+  // session's active tool surface (getActiveTools). This is exactly the shape
+  // the readiness gate must accept. Derive the surface from the unit contract
+  // so this test stays correct if discuss-milestone's required tools change.
+  const registeredTools = [
+    ...activeTools,
+    ...getRequiredWorkflowToolsForUnit("discuss-milestone").map(
+      (tool) => `mcp__gsd-workflow__${tool}`,
+    ),
+  ];
+
+  const pi = {
+    getActiveTools: () => [...activeTools],
+    getAllTools: () => registeredTools.map((name) => ({ name })),
+    setActiveTools: (tools: string[]) => {
+      activeTools = [...tools];
+    },
+    sendMessage: () => {
+      sent = true;
+    },
+  };
+
+  try {
+    writeFileSync(workflowPath, "# Workflow\n", "utf-8");
+    process.env.GSD_WORKFLOW_PATH = workflowPath;
+    process.env.GSD_WORKFLOW_MCP_COMMAND = "node";
+
+    await _dispatchWorkflowForTest(
+      pi as any,
+      "Discuss the milestone.",
+      "gsd-discuss",
+      ctx as any,
+      "discuss-milestone",
+      {
+        basePath: explicitRoot,
+        deps: {
+          loadPreferences: () => ({ preferences: {} }) as any,
+          selectModel: (async () => ({
+            routing: null,
+            appliedModel: {
+              provider: "claude-code",
+              id: "claude-opus-4-8",
+              baseUrl: "local://claude-code",
+            },
+          })) as any,
+        },
+      },
+    );
+
+    assert.equal(sent, true);
+    assert.equal(
+      notifications.some((message) => message.includes("cannot run guided flow")),
+      false,
+    );
+  } finally {
+    if (originalWorkflowPath === undefined) {
+      delete process.env.GSD_WORKFLOW_PATH;
+    } else {
+      process.env.GSD_WORKFLOW_PATH = originalWorkflowPath;
+    }
+    if (originalMcpCommand === undefined) {
+      delete process.env.GSD_WORKFLOW_MCP_COMMAND;
+    } else {
+      process.env.GSD_WORKFLOW_MCP_COMMAND = originalMcpCommand;
+    }
+    rmSync(explicitRoot, { recursive: true, force: true });
   }
 });

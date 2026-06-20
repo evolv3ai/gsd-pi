@@ -3,6 +3,7 @@
 
 import test, { mock } from "node:test";
 import assert from "node:assert/strict";
+import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,11 +24,14 @@ import {
 import { runUnit, shouldDeferUnitFailsafeTimeout } from "../auto/run-unit.js";
 import { scheduleAutoWakeup, _resetAutoWakeupsForTest } from "../auto/schedule-wakeup.js";
 import { writeUnitRuntimeRecord, readUnitRuntimeRecord } from "../unit-runtime.js";
-import { autoLoop } from "../auto/loop.js";
-import { runDispatch, runUnitPhase } from "../auto/phases.js";
+import { autoLoop as rawAutoLoop } from "../auto/loop.js";
+import { runPreDispatch } from "../auto/pre-dispatch.js";
+import { runDispatch } from "../auto/dispatch.js";
+import { runUnitPhase, resetSessionTimeoutState } from "../auto/unit-phase.js";
 import { detectStuck } from "../auto/detect-stuck.js";
-import type { UnitResult, AgentEndEvent } from "../auto/types.js";
+import type { UnitResult, AgentEndEvent, LoopState } from "../auto/types.js";
 import type { LoopDeps } from "../auto/loop-deps.js";
+import type { AutoAdvanceResult, AutoOrchestrationModule, AutoStatus, UnitRef } from "../auto/contracts.js";
 import { WorktreeStateProjection } from "../worktree-state-projection.js";
 import { ModelPolicyDispatchBlockedError } from "../auto-model-selection.js";
 import type { SessionLockStatus } from "../session-lock.js";
@@ -36,8 +40,20 @@ import { registerAutoWorker } from "../db/auto-workers.js";
 import { claimMilestoneLease } from "../db/milestone-leases.js";
 import { recordDispatchClaim, markCanceled } from "../db/unit-dispatches.js";
 import { setRuntimeKv, getRuntimeKv } from "../db/runtime-kv.js";
+import { SourceObservationStore } from "../source-observations.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+const ORCHESTRATION_MISSING_REASON =
+  "Auto Orchestration Module is not wired; cannot dispatch built-in GSD Unit.";
+
+type CapturedAutoSideEffects<T> = {
+  result: T;
+  stopped: boolean;
+  stoppedReason?: string;
+  paused: boolean;
+  pausedReason?: string;
+};
 
 function makeEvent(
   messages: unknown[] = [{ role: "assistant" }],
@@ -66,12 +82,203 @@ async function waitForMicrotasks(
   assert.fail(`Timed out waiting for ${label}`);
 }
 
+function makeLoopState(): LoopState {
+  return {
+    recentUnits: [],
+    stuckRecoveryAttempts: 0,
+    consecutiveFinalizeTimeouts: 0,
+    consecutiveDispatchCount: new Map<string, number>(),
+    lastDispatchedKey: null,
+    lastDispatchPhase: null,
+  };
+}
+
+function createLoopTestOrchestration(
+  ctx: any,
+  pi: any,
+  s: any,
+  deps: LoopDeps,
+): AutoOrchestrationModule {
+  // Production auto.ts wires the real Auto Orchestration Module before entering
+  // autoLoop. These loop-mechanics tests keep their LoopDeps fixtures by
+  // adapting the old phase helpers to the public orchestration Interface.
+  const loopState = makeLoopState();
+  const status: AutoStatus = { phase: "running", transitionCount: 0 };
+  let iteration = 0;
+  let seq = 0;
+
+  function nextSeq(): number {
+    return ++seq;
+  }
+
+  function clearActiveUnit(): void {
+    status.activeUnit = undefined;
+  }
+
+  async function captureAutoSideEffects<T>(
+    run: () => Promise<T>,
+  ): Promise<CapturedAutoSideEffects<T>> {
+    const originalStopAuto = deps.stopAuto;
+    const originalPauseAuto = deps.pauseAuto;
+    let stoppedReason: string | undefined;
+    let pausedReason: string | undefined;
+    let stopped = false;
+    let paused = false;
+
+    (deps as any).stopAuto = async (...args: Parameters<LoopDeps["stopAuto"]>) => {
+      stopped = true;
+      stoppedReason = args[2];
+      return originalStopAuto(...args);
+    };
+    (deps as any).pauseAuto = async (...args: Parameters<LoopDeps["pauseAuto"]>) => {
+      paused = true;
+      const context = args[2] as { message?: string } | undefined;
+      pausedReason = context?.message;
+      return originalPauseAuto(...args);
+    };
+
+    try {
+      const result = await run();
+      return { result, stopped, stoppedReason, paused, pausedReason };
+    } finally {
+      (deps as any).stopAuto = originalStopAuto;
+      (deps as any).pauseAuto = originalPauseAuto;
+    }
+  }
+
+  function resultForBreak(
+    reason: string,
+    sideEffects: CapturedAutoSideEffects<unknown>,
+  ): AutoAdvanceResult {
+    clearActiveUnit();
+    status.phase = sideEffects.paused && !sideEffects.stopped ? "paused" : "stopped";
+    status.transitionCount += 1;
+    if (sideEffects.paused && !sideEffects.stopped) {
+      return {
+        kind: "blocked",
+        reason: sideEffects.pausedReason ?? reason,
+        action: "pause",
+      };
+    }
+    return {
+      kind: "stopped",
+      reason: sideEffects.stoppedReason ?? reason,
+    };
+  }
+
+  return {
+    async start() {
+      status.phase = "running";
+      status.transitionCount += 1;
+      return { kind: "started" };
+    },
+    async advance() {
+      iteration += 1;
+      seq = 0;
+      const prefs = deps.loadEffectiveGSDPreferences()?.preferences;
+      const ic = {
+        ctx,
+        pi,
+        s,
+        deps,
+        prefs,
+        iteration,
+        flowId: `loop-test-orchestration-${iteration}`,
+        nextSeq,
+      };
+
+      const preDispatch = await captureAutoSideEffects(() => runPreDispatch(ic, loopState));
+      const preDispatchResult = preDispatch.result;
+      if (preDispatchResult.action === "break") {
+        return resultForBreak(preDispatchResult.reason, preDispatch);
+      }
+      if (preDispatchResult.action === "continue") {
+        return { kind: "skipped", reason: "pre-dispatch-skip" };
+      }
+      if (preDispatchResult.action === "retry") {
+        return { kind: "paused", reason: preDispatchResult.reason };
+      }
+
+      const dispatch = await captureAutoSideEffects(() =>
+        runDispatch(ic, preDispatchResult.data, loopState),
+      );
+      if (dispatch.result.action === "break") {
+        return resultForBreak(dispatch.result.reason, dispatch);
+      }
+      if (dispatch.result.action === "continue") {
+        return {
+          kind: "skipped",
+          reason: "dispatch-skip",
+          stateSnapshot: preDispatchResult.data.state,
+        };
+      }
+      if (dispatch.result.action === "retry") {
+        return { kind: "paused", reason: dispatch.result.reason };
+      }
+
+      const data = dispatch.result.data;
+      const unit: UnitRef = { unitType: data.unitType, unitId: data.unitId };
+      s.pendingOrchestrationDispatch = {
+        unitType: data.unitType,
+        unitId: data.unitId,
+        prompt: data.prompt,
+        pauseAfterUatDispatch: data.pauseAfterUatDispatch,
+        state: data.state,
+        mid: data.mid,
+        midTitle: data.midTitle,
+      };
+      status.phase = "running";
+      status.activeUnit = unit;
+      status.transitionCount += 1;
+      return { kind: "advanced", unit, stateSnapshot: data.state };
+    },
+    async completeActiveUnit() {
+      clearActiveUnit();
+    },
+    async retryActiveUnit() {
+      clearActiveUnit();
+    },
+    async resume() {
+      status.phase = "running";
+      status.transitionCount += 1;
+      return { kind: "resumed" };
+    },
+    async stop(reason: string) {
+      status.phase = "stopped";
+      clearActiveUnit();
+      status.transitionCount += 1;
+      return { kind: "stopped", reason };
+    },
+    getStatus() {
+      return {
+        ...status,
+        activeUnit: status.activeUnit ? { ...status.activeUnit } : undefined,
+      };
+    },
+  };
+}
+
+async function autoLoop(
+  ctx: any,
+  pi: any,
+  s: any,
+  deps: LoopDeps,
+  options?: Parameters<typeof rawAutoLoop>[4],
+): Promise<void> {
+  if (!s.orchestration) {
+    s.orchestration = createLoopTestOrchestration(ctx, pi, s, deps);
+  }
+  await rawAutoLoop(ctx, pi, s, deps, options);
+}
+
 /**
  * Build a minimal mock AutoSession with controllable newSession behavior.
  */
 function makeMockSession(opts?: {
   newSessionResult?: { cancelled: boolean };
   newSessionThrows?: string;
+  /** Reject newSession() with a specific Error instance (e.g. TypeError). */
+  newSessionThrowsError?: Error;
   newSessionDelayMs?: number;
   onNewSessionStart?: (session: any) => void;
   onNewSessionSettle?: (session: any) => void;
@@ -86,6 +293,9 @@ function makeMockSession(opts?: {
     cmdCtx: {
       newSession: (options?: { abortSignal?: AbortSignal; workspaceRoot?: string }) => {
         opts?.onNewSessionStart?.(session);
+        if (opts?.newSessionThrowsError) {
+          return Promise.reject(opts.newSessionThrowsError);
+        }
         if (opts?.newSessionThrows) {
           return Promise.reject(new Error(opts.newSessionThrows));
         }
@@ -324,7 +534,7 @@ test("runUnit failsafe defers cancellation while timeout recovery is making fres
     const ctx = makeMockCtx();
     const pi = makeMockPi();
     const s = makeMockSession();
-    s.basePath = mkdtempSync(join(tmpdir(), "gsd-rununit-recovery-"));
+    s.basePath = makeLoopTestBase("gsd-rununit-recovery-");
     s.currentUnit = { type: "task", id: "T01", startedAt: 1234 };
 
     const resultPromise = runUnit(ctx, pi, s, "task", "T01", "prompt");
@@ -494,6 +704,73 @@ test("runUnit returns cancelled when session creation fails", async () => {
   assert.equal(result.event, undefined);
   // sendMessage should NOT have been called
   assert.equal(pi.calls.length, 0);
+});
+
+test("runUnit: TypeError from newSession is classified as structural (isTransient: false)", async () => {
+  // Regression for #572: a TypeError thrown from newSession (e.g. "something is
+  // not a function") indicates a programming error, not a transient provider
+  // blip. Before the fix it was always classified isTransient: true, causing
+  // auto-mode to retry indefinitely instead of surfacing the real problem.
+  _resetPendingResolve();
+
+  const baseCtx = {
+    ...makeMockCtx(),
+    ui: { notify: () => {}, setStatus: () => {}, setWorkingMessage: () => {} },
+    sessionManager: { getEntries: () => [] },
+    modelRegistry: { getProviderAuthMode: () => undefined, isProviderRequestReady: () => true },
+  } as any;
+  const pi = makeMockPi();
+  const s = makeMockSession({
+    newSessionThrowsError: new TypeError("pi.sendMessage is not a function"),
+  });
+
+  const result = await runUnit(baseCtx, pi, s, "task", "T01", "prompt");
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.errorContext?.category, "session-failed");
+  assert.equal(result.errorContext?.isTransient, false, "TypeError must be non-transient");
+});
+
+test("runUnit: 'is not a function' message from newSession is classified as structural", async () => {
+  // Regression for #572: the pattern also catches errors where the thrown
+  // object is not a TypeError instance but the message contains "is not a function".
+  _resetPendingResolve();
+
+  const baseCtx = {
+    ...makeMockCtx(),
+    ui: { notify: () => {}, setStatus: () => {}, setWorkingMessage: () => {} },
+    sessionManager: { getEntries: () => [] },
+    modelRegistry: { getProviderAuthMode: () => undefined, isProviderRequestReady: () => true },
+  } as any;
+  const pi = makeMockPi();
+  const s = makeMockSession({ newSessionThrows: "pi.sendMessage is not a function" });
+
+  const result = await runUnit(baseCtx, pi, s, "task", "T01", "prompt");
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.errorContext?.category, "session-failed");
+  assert.equal(result.errorContext?.isTransient, false, "'is not a function' errors must be non-transient");
+});
+
+test("runUnit: generic network error from newSession remains transient", async () => {
+  // Confirm that non-structural session errors (e.g. 429, ECONNREFUSED) are
+  // still classified as transient so auto-mode can retry them.
+  _resetPendingResolve();
+
+  const baseCtx = {
+    ...makeMockCtx(),
+    ui: { notify: () => {}, setStatus: () => {}, setWorkingMessage: () => {} },
+    sessionManager: { getEntries: () => [] },
+    modelRegistry: { getProviderAuthMode: () => undefined, isProviderRequestReady: () => true },
+  } as any;
+  const pi = makeMockPi();
+  const s = makeMockSession({ newSessionThrows: "connection refused" });
+
+  const result = await runUnit(baseCtx, pi, s, "task", "T01", "prompt");
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.errorContext?.category, "session-failed");
+  assert.equal(result.errorContext?.isTransient, true, "network errors must remain transient");
 });
 
 test("runUnit clears queued switch cancellation when session creation fails", async () => {
@@ -1092,16 +1369,24 @@ function makeMockDeps(
  * runUnit mock (dispatch counters, milestone state, etc.).
  */
 function makeLoopSession(overrides?: Partial<Record<string, unknown>>) {
+  const basePath = mkdtempSync(join(tmpdir(), "gsd-auto-loop-"));
+  // Plan 001 enforces worktree safety for all isolation modes. Loop-mechanics
+  // tests run with getIsolationMode: () => "none", so the project root itself
+  // must be a valid git working tree for source-writing Units to dispatch.
+  execSync("git init --initial-branch=main", { cwd: basePath, stdio: "ignore" });
+  execSync("git config user.email test@test.com", { cwd: basePath, stdio: "ignore" });
+  execSync("git config user.name Test", { cwd: basePath, stdio: "ignore" });
   return {
     active: true,
     verbose: false,
     stepMode: false,
     paused: false,
-    basePath: mkdtempSync(join(tmpdir(), "gsd-auto-loop-")),
+    basePath,
     originalBasePath: "",
     currentMilestoneId: "M001",
     currentUnit: null,
     currentUnitRouting: null,
+    sourceObservations: new SourceObservationStore(),
     completedUnits: [],
     resourceVersionOnStart: null,
     lastPromptCharCount: undefined,
@@ -1118,6 +1403,7 @@ function makeLoopSession(overrides?: Partial<Record<string, unknown>>) {
     unitLifetimeDispatches: new Map<string, number>(),
     unitRecoveryCount: new Map<string, number>(),
     verificationRetryCount: new Map<string, number>(),
+    zeroToolRetryCount: new Map<string, number>(),
     gitService: null,
     lastRequestTimestamp: 0,
     autoStartTime: Date.now(),
@@ -1125,9 +1411,31 @@ function makeLoopSession(overrides?: Partial<Record<string, unknown>>) {
       newSession: () => Promise.resolve({ cancelled: false }),
       getContextUsage: () => ({ percent: 10, tokens: 1000, limit: 10000 }),
     },
+    setCurrentUnit(this: any, unit: any) {
+      this.currentUnit = unit;
+      this.sourceObservations.beginUnit({
+        unitType: unit.type,
+        unitId: unit.id,
+        startedAt: unit.startedAt,
+        basePath: unit.workspaceRoot ?? this.basePath,
+      });
+    },
+    clearCurrentUnit(this: any) {
+      this.currentUnit = null;
+      this.sourceObservations.clear();
+    },
     clearTimers: () => {},
     ...overrides,
   } as any;
+}
+
+/** Create a temp project root suitable for loop-mechanics tests. */
+function makeLoopTestBase(prefix: string): string {
+  const base = mkdtempSync(join(tmpdir(), prefix));
+  execSync("git init --initial-branch=main", { cwd: base, stdio: "ignore" });
+  execSync("git config user.email test@test.com", { cwd: base, stdio: "ignore" });
+  execSync("git config user.name Test", { cwd: base, stdio: "ignore" });
+  return base;
 }
 
 test("autoLoop exits when s.active is set to false", async (t) => {
@@ -1146,6 +1454,34 @@ test("autoLoop exits when s.active is set to false", async (t) => {
     !deps.callLog.includes("deriveState"),
     "loop should not have iterated",
   );
+});
+
+test("autoLoop pauses visibly when Auto Orchestration Module is not wired", async () => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  const pi = makeMockPi();
+  const s = makeLoopSession();
+  let pauseContext: unknown;
+
+  const deps = makeMockDeps({
+    pauseAuto: async (_ctx, _pi, errorContext) => {
+      pauseContext = errorContext;
+      deps.callLog.push("pauseAuto");
+    },
+  });
+
+  await rawAutoLoop(ctx, pi, s, deps);
+
+  assert.ok(deps.callLog.includes("pauseAuto"), "missing orchestration should pause auto-mode");
+  assert.equal(
+    (pauseContext as { message?: string } | undefined)?.message,
+    ORCHESTRATION_MISSING_REASON,
+  );
+  assert.equal(deps.callLog.includes("deriveState"), false);
+  assert.equal(deps.callLog.includes("resolveDispatch"), false);
+  assert.equal(s.pendingOrchestrationDispatch, null);
 });
 
 test("autoLoop exits on terminal complete state", async (t) => {
@@ -1189,7 +1525,7 @@ test("autoLoop preserves stuck recovery counter when dispatch recovery continues
 
   const ctx = makeMockCtx();
   const pi = makeMockPi();
-  const basePath = realpathSync(mkdtempSync(join(tmpdir(), "gsd-stuck-counter-reset-")));
+  const basePath = realpathSync(makeLoopTestBase("gsd-stuck-counter-reset-"));
   mkdirSync(join(basePath, ".gsd"), { recursive: true });
   mkdirSync(join(basePath, ".gsd", "milestones", "M001", "slices", "S01", "tasks"), { recursive: true });
   writeFileSync(
@@ -1264,7 +1600,7 @@ test("autoLoop skips provider dispatch when execute-task is already complete in 
   ctx.ui.setStatus = () => {};
   ctx.ui.setWidget = () => {};
   const pi = makeMockPi();
-  const basePath = realpathSync(mkdtempSync(join(tmpdir(), "gsd-already-complete-dispatch-")));
+  const basePath = realpathSync(makeLoopTestBase("gsd-already-complete-dispatch-"));
   mkdirSync(join(basePath, ".gsd"), { recursive: true });
 
   try {
@@ -1974,10 +2310,14 @@ test("autoLoop retries next iteration when orchestration reports paused", async 
     },
   });
 
+  const journalEvents: Array<{ eventType: string; data?: any }> = [];
   const deps = makeMockDeps({
     resolveDispatch: async () => {
       deps.callLog.push("resolveDispatch");
       throw new Error("legacy resolveDispatch must not run after orchestration paused");
+    },
+    emitJournalEvent: (entry: any) => {
+      journalEvents.push(entry);
     },
   });
 
@@ -1991,6 +2331,11 @@ test("autoLoop retries next iteration when orchestration reports paused", async 
     "orchestration paused must not fall back to legacy dispatch",
   );
   assert.equal(s.pendingOrchestrationDispatch, null, "no orchestration dispatch should remain pending");
+
+  const pausedIterationEnd = journalEvents.find(
+    (e) => e.eventType === "iteration-end" && e.data?.status === "paused",
+  );
+  assert.ok(pausedIterationEnd, "orchestration paused must emit iteration-end to close the iteration journal");
 });
 
 test("autoLoop consumes pending orchestration dispatch without advancing twice", async () => {
@@ -2078,8 +2423,13 @@ test("autoLoop stops orchestrator complete state through completion surface", as
       start: async () => ({ kind: "stopped" as const, reason: "unused" }),
       advance: async () => ({
         kind: "stopped" as const,
-        reason: "all milestones complete",
+        reason: "legacy text not used",
         stateSnapshot,
+        terminalOutcome: {
+          code: "all-complete" as const,
+          displayReason: "All milestones complete",
+          allMilestonesComplete: true as const,
+        },
       }),
       completeActiveUnit: async () => {},
       retryActiveUnit: async () => {},
@@ -2105,6 +2455,7 @@ test("autoLoop stops orchestrator complete state through completion surface", as
     milestoneTitle: "Priority Levels",
     allMilestonesComplete: true,
   });
+  assert.equal((stopCalls[0]?.options as any)?.terminalOutcome?.code, "all-complete");
   assert.equal(
     deps.callLog.includes("resolveDispatch"),
     false,
@@ -2944,7 +3295,7 @@ test("autoLoop closes journal iteration on pre-dispatch health-gate break", asyn
   assert.equal(deps.callLog.includes("pauseAuto"), true);
   assert.deepEqual(pauseOptions, { expectedCurrentUnit: null });
   assert.ok(
-    journalEvents.some((event) => event.eventType === "iteration-end" && event.data?.reason === "pre-dispatch-break"),
+    journalEvents.some((event) => event.eventType === "iteration-end" && event.data?.reason === "health-gate-failed"),
     "pre-dispatch break must close the started iteration",
   );
 });
@@ -3660,7 +4011,7 @@ test("resolveAgentEndCancelled with errorContext passes it through to resolved p
 test("runUnitPhase pauses transient aborted cancellations instead of hard-stopping", async (t) => {
   _resetPendingResolve();
 
-  const basePath = mkdtempSync(join(tmpdir(), "gsd-aborted-cancel-"));
+  const basePath = makeLoopTestBase("gsd-aborted-cancel-");
   t.after(() => {
     rmSync(basePath, { recursive: true, force: true });
   });
@@ -3732,10 +4083,157 @@ test("runUnitPhase pauses transient aborted cancellations instead of hard-stoppi
   assert.equal(deps.callLog.includes("stopAuto"), false);
 });
 
+test("resetSessionTimeoutState gives a new auto session a fresh session-creation timeout budget", async (t) => {
+  _resetPendingResolve();
+
+  // runUnitPhase schedules an auto-resume setTimeout on transient session
+  // timeouts. Capture and clear those timers so the test process can exit
+  // promptly while still exercising the real production path.
+  const originalSetTimeout = globalThis.setTimeout;
+  const timerHandles: ReturnType<typeof originalSetTimeout>[] = [];
+  globalThis.setTimeout = ((callback: any, delay?: number, ...args: any[]) => {
+    const handle = originalSetTimeout(callback, delay ?? 0, ...args);
+    timerHandles.push(handle);
+    return handle;
+  }) as any;
+
+  const basePath = makeLoopTestBase("gsd-session-timeout-reset-");
+  execSync("git init", { cwd: basePath });
+  execSync('git -c user.email=test@test.com -c user.name=Test commit --allow-empty -m init', { cwd: basePath });
+
+  t.after(() => {
+    for (const handle of timerHandles) clearTimeout(handle);
+    globalThis.setTimeout = originalSetTimeout;
+    rmSync(basePath, { recursive: true, force: true });
+  });
+
+  const ctx = {
+    ...makeMockCtx(),
+    ui: {
+      notify: () => {},
+      setStatus: () => {},
+      setWorkingMessage: () => {},
+    },
+    sessionManager: {
+      getEntries: () => [],
+    },
+    modelRegistry: {
+      getProviderAuthMode: () => undefined,
+      isProviderRequestReady: () => true,
+    },
+  } as any;
+  const notifications: Array<{ message: string; level?: string }> = [];
+  ctx.ui.notify = (message: string, level?: string) => {
+    notifications.push({ message, level });
+  };
+  const pi = makeMockPi();
+  const s = makeLoopSession({
+    basePath,
+    canonicalProjectRoot: basePath,
+    originalBasePath: basePath,
+  });
+  const deps = makeMockDeps();
+
+  async function runTimeoutUnit(iteration: number): Promise<string | undefined> {
+    notifications.length = 0;
+    const callsBefore = pi.calls.length;
+    let seq = 0;
+    const phasePromise = runUnitPhase(
+      { ctx, pi, s, deps, prefs: undefined, iteration, flowId: `flow-${iteration}`, nextSeq: () => ++seq },
+      {
+        unitType: "plan-slice",
+        unitId: "M001/S01",
+        prompt: "plan the slice",
+        finalPrompt: "plan the slice",
+        pauseAfterUatDispatch: false,
+        state: {
+          phase: "planning",
+          activeMilestone: { id: "M001", title: "Milestone" },
+          activeSlice: { id: "S01", title: "Slice" },
+          activeTask: null,
+          registry: [{ id: "M001", title: "Milestone", status: "active" }],
+          recentDecisions: [],
+          blockers: [],
+          nextAction: "",
+          progress: { milestones: { done: 0, total: 1 } },
+          requirements: { active: 0, validated: 0, deferred: 0, outOfScope: 0, blocked: 0, total: 0 },
+        } as any,
+        mid: "M001",
+        midTitle: "Milestone",
+        isRetry: false,
+        previousTier: undefined,
+      },
+      makeLoopState(),
+    );
+
+    // Wait until runUnit has dispatched the prompt, then resolve the unit
+    // as a session-creation timeout. This avoids the 120s real timeout and
+    // the mock-timer interaction that runUnitPhase's pre-flight setup makes
+    // fragile.
+    await new Promise<void>((resolve) => {
+      const check = () => {
+        if (pi.calls.length > callsBefore) return resolve();
+        setTimeout(check, 5);
+      };
+      check();
+    });
+    resolveAgentEndCancelled({
+      message: "Session creation timed out",
+      category: "timeout",
+      isTransient: true,
+    });
+
+    const result = await phasePromise;
+    return (result as any).reason;
+  }
+
+  // Start from a known state in case a previous test left the counter raised.
+  resetSessionTimeoutState();
+
+  // Exhaust the per-process timeout budget in the first "session".
+  for (let i = 1; i <= 4; i++) {
+    const reason = await runTimeoutUnit(i);
+    assert.equal(reason, "session-timeout");
+  }
+  const lastBudgetNotification = notifications.find((n) =>
+    n.message.includes("Session creation timed out")
+  );
+  assert.ok(lastBudgetNotification, "expected a session-creation timeout notification");
+  assert.match(
+    lastBudgetNotification.message,
+    /Pausing for manual review/,
+    "fourth consecutive timeout should exhaust the auto-resume budget",
+  );
+
+  // Simulate a new auto-mode session starting. autoLoop() must reset the
+  // module-level counter so the next timeout is treated as the first in the
+  // new session rather than inheriting the exhausted budget.
+  const freshSession = makeLoopSession({
+    basePath,
+    canonicalProjectRoot: basePath,
+    originalBasePath: basePath,
+    active: false,
+  });
+  freshSession.orchestration = createLoopTestOrchestration(ctx, pi, freshSession, deps);
+  await rawAutoLoop(ctx, pi, freshSession, deps);
+
+  const reasonAfterReset = await runTimeoutUnit(5);
+  assert.equal(reasonAfterReset, "session-timeout");
+  const notificationAfterReset = notifications.find((n) =>
+    n.message.includes("Auto-resuming")
+  );
+  assert.ok(notificationAfterReset, "expected an auto-resume notification after reset");
+  assert.match(
+    notificationAfterReset.message,
+    /Auto-resuming/,
+    "after autoLoop entry the timeout budget should be fresh so the first timeout auto-resumes",
+  );
+});
+
 test("runUnitPhase treats setup-race cancellations as pause-induced when session is already paused", async (t) => {
   _resetPendingResolve();
 
-  const basePath = mkdtempSync(join(tmpdir(), "gsd-paused-setup-race-"));
+  const basePath = makeLoopTestBase("gsd-paused-setup-race-");
   t.after(() => {
     rmSync(basePath, { recursive: true, force: true });
   });
@@ -3810,7 +4308,7 @@ test("runUnitPhase treats setup-race cancellations as pause-induced when session
 test("runUnitPhase remembers aborted milestone closeout for same-unit resume", async (t) => {
   _resetPendingResolve();
 
-  const basePath = mkdtempSync(join(tmpdir(), "gsd-aborted-closeout-"));
+  const basePath = makeLoopTestBase("gsd-aborted-closeout-");
   t.after(() => {
     rmSync(basePath, { recursive: true, force: true });
   });
@@ -3890,7 +4388,7 @@ test("runUnitPhase remembers aborted milestone closeout for same-unit resume", a
 test("runUnitPhase schedules default auto-resume for transient provider cancellations", async (t) => {
   _resetPendingResolve();
 
-  const basePath = mkdtempSync(join(tmpdir(), "gsd-provider-resume-"));
+  const basePath = makeLoopTestBase("gsd-provider-resume-");
   t.after(() => {
     _resetPendingResolve();
     rmSync(basePath, { recursive: true, force: true });
@@ -3987,7 +4485,7 @@ test("runUnitPhase schedules default auto-resume for transient provider cancella
 test("runUnitPhase pauses ghost completions before closeout and finalize side effects", async (t) => {
   _resetPendingResolve();
 
-  const basePath = mkdtempSync(join(tmpdir(), "gsd-ghost-completion-"));
+  const basePath = makeLoopTestBase("gsd-ghost-completion-");
   t.after(() => {
     _resetPendingResolve();
     rmSync(basePath, { recursive: true, force: true });
@@ -4089,7 +4587,7 @@ test("runUnitPhase pauses ghost completions before closeout and finalize side ef
 test("runUnitPhase records failed routing outcome when expected artifact is missing", async (t) => {
   _resetPendingResolve();
 
-  const basePath = mkdtempSync(join(tmpdir(), "gsd-routing-artifact-missing-"));
+  const basePath = makeLoopTestBase("gsd-routing-artifact-missing-");
   t.after(() => {
     _resetPendingResolve();
     rmSync(basePath, { recursive: true, force: true });
@@ -4172,7 +4670,7 @@ test("runUnitPhase records failed routing outcome when expected artifact is miss
 test("runUnitPhase execute-task retry prompt instructs gsd_task_complete instead of manual summary writes", async (t) => {
   _resetPendingResolve();
 
-  const basePath = mkdtempSync(join(tmpdir(), "gsd-execute-task-retry-prompt-"));
+  const basePath = makeLoopTestBase("gsd-execute-task-retry-prompt-");
   t.after(() => {
     _resetPendingResolve();
     rmSync(basePath, { recursive: true, force: true });
@@ -4253,7 +4751,7 @@ test("runUnitPhase execute-task retry prompt instructs gsd_task_complete instead
 test("runUnitPhase non-execute-task retry prompt keeps generic required-file guidance", async (t) => {
   _resetPendingResolve();
 
-  const basePath = mkdtempSync(join(tmpdir(), "gsd-non-execute-retry-prompt-"));
+  const basePath = makeLoopTestBase("gsd-non-execute-retry-prompt-");
   t.after(() => {
     _resetPendingResolve();
     rmSync(basePath, { recursive: true, force: true });
@@ -4601,7 +5099,7 @@ test("autoLoop rejects execute-task with 0 tool calls as hallucinated (#1833)", 
 test("runUnitPhase retries 0-tool units with ordinary network-related assistant text", async (t) => {
   _resetPendingResolve();
 
-  const basePath = mkdtempSync(join(tmpdir(), "gsd-zero-tool-network-text-"));
+  const basePath = makeLoopTestBase("gsd-zero-tool-network-text-");
   t.after(() => {
     rmSync(basePath, { recursive: true, force: true });
   });
@@ -4691,6 +5189,104 @@ test("runUnitPhase retries 0-tool units with ordinary network-related assistant 
   assert.equal(result.action, "retry");
   assert.equal((result as any).reason, "zero-tool-calls");
   assert.equal(deps.callLog.includes("pauseAuto"), false);
+});
+
+test("runUnitPhase pauses auto-mode when zero-tool-call retry is exhausted", async (t) => {
+  _resetPendingResolve();
+
+  const basePath = makeLoopTestBase("gsd-zero-tool-exhausted-");
+  t.after(() => {
+    rmSync(basePath, { recursive: true, force: true });
+  });
+
+  const ctx = {
+    ...makeMockCtx(),
+    ui: {
+      notify: () => {},
+      setStatus: () => {},
+      setWorkingMessage: () => {},
+    },
+    sessionManager: {
+      getEntries: () => [],
+    },
+    modelRegistry: {
+      getProviderAuthMode: () => undefined,
+      isProviderRequestReady: () => true,
+    },
+  } as any;
+  const pi = {
+    ...makeMockPi(),
+    sendMessage: () => {
+      queueMicrotask(() => resolveAgentEnd(makeEvent([
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "Error: I'll investigate the network error handling next." },
+          ],
+        },
+      ])));
+    },
+  } as any;
+  const s = makeLoopSession({
+    basePath,
+    canonicalProjectRoot: basePath,
+    originalBasePath: basePath,
+  });
+  // Pre-seed counter at MAX_ZERO_TOOL_RETRIES so the next zero-tool turn exhausts the cap
+  s.zeroToolRetryCount.set("execute-task/M001/S01/T01", 1);
+
+  const mockLedger = {
+    version: 1,
+    projectStartedAt: Date.now(),
+    units: [] as any[],
+  };
+  const deps = makeMockDeps({
+    closeoutUnit: async () => {
+      mockLedger.units.push({
+        type: "execute-task",
+        id: "M001/S01/T01",
+        startedAt: s.currentUnit?.startedAt ?? Date.now(),
+        toolCalls: 0,
+        assistantMessages: 1,
+        tokens: { input: 100, output: 20, total: 120, cacheRead: 0, cacheWrite: 0 },
+        cost: 0.01,
+      });
+    },
+    getLedger: () => mockLedger,
+  });
+  let seq = 0;
+
+  const result = await runUnitPhase(
+    { ctx, pi, s, deps, prefs: undefined, iteration: 1, flowId: "flow-zero-tool-exhausted", nextSeq: () => ++seq },
+    {
+      unitType: "execute-task",
+      unitId: "M001/S01/T01",
+      prompt: "do work",
+      finalPrompt: "do work",
+      pauseAfterUatDispatch: false,
+      state: {
+        phase: "executing",
+        activeMilestone: { id: "M001", title: "Milestone" },
+        activeSlice: { id: "S01", title: "Slice" },
+        activeTask: { id: "T01", title: "Task" },
+        registry: [{ id: "M001", title: "Milestone", status: "active" }],
+        recentDecisions: [],
+        blockers: [],
+        nextAction: "",
+        progress: { milestones: { done: 0, total: 1 } },
+        requirements: { active: 0, validated: 0, deferred: 0, outOfScope: 0, blocked: 0, total: 0 },
+      } as any,
+      mid: "M001",
+      midTitle: "Milestone",
+      isRetry: false,
+      previousTier: undefined,
+    },
+    { recentUnits: [{ key: "execute-task/M001/S01/T01" }], stuckRecoveryAttempts: 0, consecutiveFinalizeTimeouts: 0 },
+  );
+
+  assert.equal(result.action, "break");
+  assert.equal((result as any).reason, "zero-tool-calls-exhausted");
+  assert.equal(deps.callLog.includes("pauseAuto"), true);
 });
 
 test("autoLoop pauses user-driven deep question instead of flagging 0 tool calls", async () => {
@@ -4883,7 +5479,7 @@ test("autoLoop rejects complete-slice with 0 tool calls as context-exhausted (#2
 test("autoLoop pauses on zero-tool-call rate-limit assistant messages instead of immediate retry", async (t) => {
   _resetPendingResolve();
 
-  const basePath = mkdtempSync(join(tmpdir(), "gsd-zero-tool-rate-limit-"));
+  const basePath = makeLoopTestBase("gsd-zero-tool-rate-limit-");
   t.after(() => {
     _resetPendingResolve();
     rmSync(basePath, { recursive: true, force: true });
@@ -5087,6 +5683,147 @@ test("dispatch Worktree Safety wins before stuck detection for execute-task with
   );
 });
 
+test("dispatch Worktree Safety honors degraded branch fallback instead of demanding the canonical worktree root", async (t) => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  const pi = makeMockPi();
+  const notifications: string[] = [];
+  ctx.ui.notify = (msg: string) => { notifications.push(msg); };
+
+  // Worktree creation failed and the lifecycle fell back to the milestone
+  // branch in the project root. The safety gate must validate against that
+  // effective branch mode, not the configured worktree mode.
+  const projectRoot = mkdtempSync(join(tmpdir(), "gsd-wt-safety-degraded-"));
+  execSync("git init --initial-branch=main", { cwd: projectRoot, stdio: "ignore" });
+  execSync("git config user.email test@test.com", { cwd: projectRoot, stdio: "ignore" });
+  execSync("git config user.name Test", { cwd: projectRoot, stdio: "ignore" });
+  // The lifecycle fallback checks out the milestone branch in the project
+  // root, so the safety gate's branch verification expects that branch here
+  // too. expectedBranch comes from deps.autoWorktreeBranch (mocked to
+  // "auto/M001"), so the fixture repo must be on that same branch.
+  execSync("git commit --allow-empty -m init", { cwd: projectRoot, stdio: "ignore" });
+  execSync("git checkout -b auto/M001", { cwd: projectRoot, stdio: "ignore" });
+  t.after(() => rmSync(projectRoot, { recursive: true, force: true }));
+
+  const s = makeLoopSession({
+    basePath: projectRoot,
+    originalBasePath: projectRoot,
+    canonicalProjectRoot: projectRoot,
+    isolationDegraded: true,
+  });
+  const deps = makeMockDeps({
+    getIsolationMode: () => "worktree",
+  });
+  const result = await runDispatch(
+    {
+      ctx,
+      pi,
+      s,
+      deps,
+      prefs: undefined,
+      iteration: 1,
+      flowId: "test-flow",
+      nextSeq: () => 1,
+    },
+    {
+      state: {
+        phase: "executing",
+        activeMilestone: { id: "M001", title: "Test", status: "active" },
+        activeSlice: { id: "S01", title: "Slice 1" },
+        activeTask: { id: "T01" },
+        registry: [{ id: "M001", status: "active" }],
+        blockers: [],
+      } as any,
+      mid: "M001",
+      midTitle: "Test",
+    },
+    {
+      recentUnits: [],
+      stuckRecoveryAttempts: 0,
+      consecutiveFinalizeTimeouts: 0,
+    },
+  );
+
+  assert.equal(result.action, "next", "dispatch must proceed under degraded branch isolation");
+  assert.ok(
+    !notifications.some((n) => n.includes("Worktree Safety failed")),
+    "degraded branch fallback must not trip a false invalid-root",
+  );
+  assert.ok(!deps.callLog.includes("stopAuto"), "auto-mode must not stop on the degraded fallback");
+});
+
+test("dispatch Worktree Safety honors stranded branch recovery instead of demanding the canonical worktree root", async (t) => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  const pi = makeMockPi();
+  const notifications: string[] = [];
+  ctx.ui.notify = (msg: string) => { notifications.push(msg); };
+
+  // Bootstrap adopted stranded work by checking out the milestone branch in
+  // the project root (strandedRecoveryIsolationMode = "branch"). Isolation is
+  // NOT degraded — the adoption is intentional. The safety gate must validate
+  // against the effective branch mode, not the configured worktree mode.
+  const projectRoot = mkdtempSync(join(tmpdir(), "gsd-wt-safety-stranded-"));
+  execSync("git init --initial-branch=main", { cwd: projectRoot, stdio: "ignore" });
+  execSync("git config user.email test@test.com", { cwd: projectRoot, stdio: "ignore" });
+  execSync("git config user.name Test", { cwd: projectRoot, stdio: "ignore" });
+  // Stranded recovery adopts the milestone branch in the project root, so the
+  // safety gate's branch verification expects that branch here too.
+  // expectedBranch comes from deps.autoWorktreeBranch (mocked to "auto/M001"),
+  // so the fixture repo must be on that same branch.
+  execSync("git commit --allow-empty -m init", { cwd: projectRoot, stdio: "ignore" });
+  execSync("git checkout -b auto/M001", { cwd: projectRoot, stdio: "ignore" });
+  t.after(() => rmSync(projectRoot, { recursive: true, force: true }));
+
+  const s = makeLoopSession({
+    basePath: projectRoot,
+    originalBasePath: projectRoot,
+    canonicalProjectRoot: projectRoot,
+    strandedRecoveryIsolationMode: "branch",
+  });
+  const deps = makeMockDeps({
+    getIsolationMode: () => "worktree",
+  });
+  const result = await runDispatch(
+    {
+      ctx,
+      pi,
+      s,
+      deps,
+      prefs: undefined,
+      iteration: 1,
+      flowId: "test-flow",
+      nextSeq: () => 1,
+    },
+    {
+      state: {
+        phase: "executing",
+        activeMilestone: { id: "M001", title: "Test", status: "active" },
+        activeSlice: { id: "S01", title: "Slice 1" },
+        activeTask: { id: "T01" },
+        registry: [{ id: "M001", status: "active" }],
+        blockers: [],
+      } as any,
+      mid: "M001",
+      midTitle: "Test",
+    },
+    {
+      recentUnits: [],
+      stuckRecoveryAttempts: 0,
+      consecutiveFinalizeTimeouts: 0,
+    },
+  );
+
+  assert.equal(result.action, "next", "dispatch must proceed under stranded branch recovery");
+  assert.ok(
+    !notifications.some((n) => n.includes("Worktree Safety failed")),
+    "stranded branch recovery must not trip a false invalid-root",
+  );
+  assert.ok(!deps.callLog.includes("stopAuto"), "auto-mode must not stop on stranded branch recovery");
+});
+
 test("runDispatch runs stuck detection while artifact verification retry is pending (#5719)", async (t) => {
   _resetPendingResolve();
 
@@ -5095,7 +5832,7 @@ test("runDispatch runs stuck detection while artifact verification retry is pend
   const notifications: string[] = [];
   ctx.ui.notify = (msg: string) => { notifications.push(msg); };
 
-  const basePath = mkdtempSync(join(tmpdir(), "gsd-5719-retry-stuck-"));
+  const basePath = makeLoopTestBase("gsd-5719-retry-stuck-");
   t.after(() => rmSync(basePath, { recursive: true, force: true }));
 
   const s = makeLoopSession({
@@ -5163,7 +5900,7 @@ test("runDispatch falls back to main when dispatch guard cannot read main branch
 
   const ctx = makeMockCtx();
   const pi = makeMockPi();
-  const basePath = mkdtempSync(join(tmpdir(), "gsd-5530-main-branch-fallback-"));
+  const basePath = makeLoopTestBase("gsd-5530-main-branch-fallback-");
   t.after(() => rmSync(basePath, { recursive: true, force: true }));
 
   let guardBranch: string | null = null;
@@ -5690,7 +6427,7 @@ test("pre-dispatch replace resolves final unit before dispatch health and stuck 
   );
 });
 
-test("autoLoop warns but proceeds for greenfield project (no project files) (#1833)", async () => {
+test("autoLoop warns but proceeds for greenfield project (no project files) (#1833)", async (t) => {
   _resetPendingResolve();
 
   const ctx = makeMockCtx();
@@ -5699,7 +6436,9 @@ test("autoLoop warns but proceeds for greenfield project (no project files) (#18
   const pi = makeMockPi();
 
   const notifications: string[] = [];
-  const s = makeLoopSession({ basePath: "/tmp/empty-worktree" });
+  const basePath = makeLoopTestBase("gsd-greenfield-");
+  t.after(() => rmSync(basePath, { recursive: true, force: true }));
+  const s = makeLoopSession({ basePath });
 
   ctx.ui.notify = (msg: string) => {
     notifications.push(msg);
@@ -5722,8 +6461,6 @@ test("autoLoop warns but proceeds for greenfield project (no project files) (#18
         blockers: [],
       } as any;
     },
-    // Has .git but no package.json or src/
-    existsSync: (p: string) => p.endsWith(".git"),
   });
 
   await autoLoop(ctx, pi, s, deps);

@@ -14,6 +14,7 @@ export function isWorkspaceGitAllowedCommand(trimmed: string): boolean {
 
   const [name, subcommand] = command.split(/\s+/, 2);
   if (name === "doctor") return true;
+  if (name === "forensics") return true;
   if (name === "closeout" || command.startsWith("closeout")) return true;
   if (name === "dispatch") {
     return subcommand === "complete" || subcommand === "complete-milestone";

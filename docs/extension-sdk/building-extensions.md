@@ -71,7 +71,7 @@ Tools can customize how they appear in the TUI:
 
 ```typescript
 import { Text } from "@gsd/pi-tui";
-import { keyHint } from "@gsd/pi-coding-agent";
+import { keyHint } from "@gsd/agent-modes";
 
 pi.registerTool({
   name: "my_tool",
@@ -280,9 +280,9 @@ User types a prompt
   │   │ turn_start
   │   │ context (can modify messages sent to LLM)
   │   │ LLM responds → may call tools:
-  │   │   tool_call (can BLOCK)
-  │   │   tool_execution_start/update/end
-  │   │   tool_result (can MODIFY)
+  │   │   tool_call (native tools only; can BLOCK)
+  │   │   tool_execution_start/end (all engines)
+  │   │   tool_result (native tools only; can MODIFY)
   │   │ turn_end
   │   └──
   └── agent_end
@@ -309,6 +309,8 @@ pi.on("session_tree", async (event, ctx) => {
 
 ### Blocking Tool Calls
 
+`tool_call` is a native-engine interception hook. External engines can pre-execute tools and report an `externalResult`, so cross-engine policy should remove tools from the active set or use an engine-supported pre-execution guard instead of relying only on this hook.
+
 ```typescript
 pi.on("tool_call", async (event, ctx) => {
   if (event.toolName === "bash" && event.input.command?.includes("rm -rf /")) {
@@ -319,10 +321,14 @@ pi.on("tool_call", async (event, ctx) => {
 
 ### Modifying Tool Results
 
+`tool_result` has the same native-engine boundary as `tool_call`. Use it when you need to rewrite results from tools the Pi loop executes itself.
+
 ```typescript
 pi.on("tool_result", async (event, ctx) => {
   if (event.toolName === "my_tool") {
-    return { result: { ...event.result, modified: true } };
+    // The event carries { content, details, isError }. Return an object of the
+    // same shape to replace what the agent sees (all fields optional).
+    return { content: [...event.content, "post-processed note"], isError: false };
   }
 });
 ```
@@ -521,7 +527,7 @@ Import from `@gsd/pi-tui`:
 | `SettingsList` | Toggle settings UI |
 | `Input` | Text input field |
 
-Import from `@gsd/pi-coding-agent`:
+Import from `@gsd/agent-modes`:
 
 | Component | Purpose |
 |-----------|---------|
@@ -767,8 +773,9 @@ When a model/provider has request-time tool limits, Pi applies built-in provider
 ## Model Management
 
 ```typescript
-// Switch model (returns false if no API key)
-pi.setModel("claude-sonnet-4-20250514");
+// Switch model (returns false if no API key); setModel takes a Model object, not a string
+const model = pi.modelRegistry.find("anthropic", "claude-sonnet-4-5");
+if (model) await pi.setModel(model, { persist: true });
 
 // Thinking level control
 const level = pi.getThinkingLevel();

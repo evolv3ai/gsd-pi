@@ -19,7 +19,7 @@ import { handleSessionReport } from "../../commands-session-report.js";
 import { handlePrBranch } from "../../commands-pr-branch.js";
 import { currentDirectoryRoot, projectRoot } from "../context.js";
 import { findUnmergedCompletedMilestones } from "../../unmerged-milestone-guard.js";
-import { mergeCompletedMilestone } from "../../parallel-merge.js";
+import { runMergeMilestoneBlocker } from "../../closeout-wizard.js";
 
 async function handleCompletedMilestoneRecovery(
   phase: string,
@@ -37,22 +37,7 @@ async function handleCompletedMilestoneRecovery(
     : blockers[0];
   if (!blocker) return false;
 
-  ctx.ui.notify(
-    `Completing preserved milestone merge for ${blocker.milestoneId} from ${blocker.branch} into ${blocker.integrationBranch}.`,
-    "info",
-  );
-  const result = await mergeCompletedMilestone(basePath, blocker.milestoneId);
-  if (result.success) {
-    ctx.ui.notify(
-      `Milestone ${blocker.milestoneId} merged to ${blocker.integrationBranch}. Run /gsd again when ready.`,
-      "info",
-    );
-  } else {
-    ctx.ui.notify(
-      `Milestone ${blocker.milestoneId} merge recovery failed: ${result.error}`,
-      "error",
-    );
-  }
+  await runMergeMilestoneBlocker(ctx, basePath, blocker);
   return true;
 }
 
@@ -73,7 +58,7 @@ export async function handleOpsCommand(trimmed: string, ctx: ExtensionCommandCon
     ["execute-task", "execute"],
     ["complete-slice", "complete"],
     ["validate-milestone", "validate-milestone"],
-    ["complete-milestone", "complete"],
+    ["complete-milestone", "complete-milestone"],
   ]);
   const aliasPhase = directDispatchAlias.get(trimmed);
   if (aliasPhase) {
@@ -253,7 +238,10 @@ Examples:
   if (trimmed === "dispatch" || trimmed.startsWith("dispatch ")) {
     const phase = trimmed.replace(/^dispatch\s*/, "").trim();
     if (!phase) {
-      ctx.ui.notify("Usage: /gsd dispatch <phase>  (research|plan|execute|complete|validate|reassess|uat|replan)", "warning");
+      ctx.ui.notify(
+        "Usage: /gsd dispatch <phase>  (research|plan|execute|complete|complete-milestone|validate|reassess|uat|replan)",
+        "warning",
+      );
       return true;
     }
     const basePath = projectRoot();
@@ -282,8 +270,8 @@ Examples:
     await handleInspect(ctx);
     return true;
   }
-  if (trimmed === "update" || trimmed === "upgrade") {
-    await handleUpdate(ctx);
+  if (trimmed === "update" || trimmed.startsWith("update ") || trimmed === "upgrade" || trimmed.startsWith("upgrade ")) {
+    await handleUpdate(ctx, trimmed.replace(/^(?:update|upgrade)\s*/, "").trim());
     return true;
   }
   if (trimmed === "fast" || trimmed.startsWith("fast ")) {

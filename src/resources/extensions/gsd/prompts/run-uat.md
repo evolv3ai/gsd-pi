@@ -10,6 +10,8 @@ If any inlined plan, summary, verification command, or prior artifact names an a
 
 All relevant context has been preloaded below. Start working immediately without re-reading these files.
 
+If a `.gsd/**` or `.gsd/**/*` glob returns no matches, treat that as a possible symlink-backed traversal limitation; do not infer that the GSD harness is missing. Use the preloaded UAT context and direct `.gsd/...` file paths named in this prompt instead.
+
 {{inlinedContext}}
 
 {{skillActivation}}
@@ -27,28 +29,36 @@ You are the UAT runner. Execute every check defined in `{{uatPath}}` as deeply a
 ### Automation rules by mode
 
 - `artifact-driven` — verify with shell commands, scripts, file reads, and artifact structure checks.
-- `browser-executable` — use gsd-browser tools to navigate to the target URL and verify expected behavior. Prefer `mcp__gsd-browser__browser_*` tools when namespaced, or direct `browser_*` tools when surfaced without a namespace. Capture screenshots as evidence. Record pass/fail with specific assertions.
-- `runtime-executable` — execute the specified command or script. Capture stdout/stderr as evidence. Record pass/fail based on exit code and output.
+- `browser-executable` — use browser tools to navigate to the target URL and verify expected behavior. Prefer direct `browser_*` tools when available. Capture screenshots as evidence. Record pass/fail with specific assertions. When the UAT **Evidence** section names a self-contained runtime harness (for example `npm run test:uat` or `node tests/browser/search-uat.mjs`), treat the effective mode as **runtime-executable** instead: run that command only and do not start a separate server or `browser_navigate` to a hardcoded localhost port.
+- `runtime-executable` — execute the specified command or script. Capture stdout/stderr as evidence. Record pass/fail based on exit code and output. When the verification script starts its own dev/static server (for example `node tests/browser/search-uat.mjs`), do **not** start a separate server with `uat-service-start` — the script owns server lifecycle and binds an ephemeral port. If a server is already running, pass its URL via `UAT_BASE_URL` or `PORT` in the `gsd_uat_exec` environment instead of hardcoding a fixed port like 4173.
 - `live-runtime` — exercise the real runtime path. Start or connect to the app/service if needed, use browser/runtime/network checks, and verify observable behavior.
 - `mixed` — run all automatable artifact-driven and live-runtime checks. Separate any remaining human-only checks explicitly.
 - `human-experience` — automate setup, preconditions, screenshots, logs, and objective checks, but do **not** invent subjective PASS results. Mark taste-based, experiential, or purely human-judgment checks as `NEEDS-HUMAN`. Use an overall verdict of `PASS` when all automatable checks succeed (even if human-only checks remain as `NEEDS-HUMAN`). Use `PARTIAL` only when automatable checks themselves were inconclusive.
 
 ### Evidence tools
 
-Choose the lightest tool that proves the check honestly:
+The **Tool Surface** block prepended above lists unavailable tools for this unit. In short:
 
-- Run shell commands with `bash`
+- Run automated checks with `gsd_uat_exec`
+  - Use `uat-artifact-check` as `intent` for static file, grep, structure, or artifact checks.
+  - Use `uat-runtime-check` as `intent` for executing tests, scripts, or runtime assertions.
+  - Use `uat-browser-check` as `intent` for browser interaction or screenshot-backed UI checks.
+  - Use `uat-service-start` as `intent` only when starting or connecting to an app/service that the UAT checks will not start themselves.
+  - Do not start a dev/static server separately when a runtime test script owns server lifecycle — run the script directly instead.
+  - When you do start a service, capture the URL from its stdout (for example `Ready at http://127.0.0.1:PORT`) and pass it to downstream checks via `UAT_BASE_URL` rather than assuming a fixed port.
+  - Use `uat-log-inspection` as `intent` for checking logs or captured output files.
+  - The result-table evidence mode is separate; do not use `artifact`, `runtime`, or `human-follow-up` as `intent`.
 - Run `grep` / `rg` checks against files
 - Run `node` / other script invocations
 - Read files and verify their contents
 - Check that expected artifacts exist and have correct structure
-- For live/runtime/UI checks, exercise the real flow with gsd-browser when applicable and inspect runtime/network/console state
+- For live/runtime/UI checks, exercise the real flow with browser tools when applicable and inspect runtime/network/console state
 - When a check cannot be honestly automated, gather the best objective evidence you can and mark it `NEEDS-HUMAN`
 
 For each check, record:
 - The check description (from the UAT file)
 - The evidence mode used: `artifact`, `runtime`, or `human-follow-up`
-- The command or action taken
+- The command or action taken, including the `gsd_uat_exec` evidence ID for automated checks
 - The actual result observed
 - `PASS`, `FAIL`, or `NEEDS-HUMAN`
 
@@ -57,35 +67,43 @@ After running all checks, compute the **overall verdict**:
 - `FAIL` — one or more automatable checks failed
 - `PARTIAL` — one or more automatable checks were skipped or returned inconclusive results (not the same as `NEEDS-HUMAN` — use PARTIAL only when the agent itself could not determine pass/fail for a check it was supposed to automate)
 
-Call `gsd_summary_save` with `milestone_id: {{milestoneId}}`, `slice_id: {{sliceId}}`, `artifact_type: "ASSESSMENT"`, and the full UAT result markdown as `content` — the tool computes the file path and persists to both DB and disk. The content should follow this format:
+Call `gsd_uat_result_save` once after all checks are complete. The tool computes the assessment path, persists to DB/disk, saves attempt history, and saves the aggregate UAT gate.
 
-```markdown
----
-sliceId: {{sliceId}}
-uatType: {{uatType}}
-verdict: PASS | FAIL | PARTIAL
-date: <ISO 8601 timestamp>
----
+Pass these top-level fields:
 
-# UAT Result — {{sliceId}}
+```ts
+milestoneId: "{{milestoneId}}",
+sliceId: "{{sliceId}}",
+uatType: "{{uatType}}",
+verdict: "PASS" | "FAIL" | "PARTIAL",
+notes: "<one sentence overall verdict rationale>",
+```
 
-## Checks
+Use this canonical `presentation` object in the save call so the audit can verify the run-uat tool surface without retrying missing fields one by one. Keep `toolPresentationPlanId` as `{{toolPresentationPlanId}}`. If browser tools were actually presented for this run, add those concrete browser tool names to `presentedTools`; otherwise reuse this object exactly:
 
-| Check | Mode | Result | Notes |
-|-------|------|--------|-------|
-| <check description> | artifact / runtime / human-follow-up | PASS / FAIL / NEEDS-HUMAN | <observed output, evidence, or reason> |
+```json
+{{canonicalPresentation}}
+```
 
-## Overall Verdict
+Pass `checks` with this logical shape:
 
-<PASS / FAIL / PARTIAL> — <one sentence summary>
-
-## Notes
-
-<any additional context, errors encountered, screenshots/logs gathered, or manual follow-up still required>
+```ts
+checks: [{
+  id: "<stable check id>",
+  description: "<check description from the UAT file>",
+  mode: "artifact" | "runtime" | "browser" | "human-follow-up",
+  result: "PASS" | "FAIL" | "NEEDS-HUMAN",
+  evidence: [{ kind: "gsd_uat_exec", ref: "<evidence id>" }],
+  notes: "<observed output, evidence, reason, or manual follow-up>",
+}]
 ```
 
 ---
 
-**You MUST call `gsd_summary_save` with the UAT result content before finishing.**
+**You MUST call `gsd_uat_result_save` before finishing. Do not write the assessment file directly, and do not call `gsd_summary_save` as a substitute.**
 
-When done, say: "UAT {{sliceId}} complete."
+### Closeout messaging (auto-mode)
+
+You submit UAT results; **GSD auto-mode** decides when UAT is actually **done**. Never say "UAT {{sliceId}} complete" in this unit — not even after `gsd_uat_result_save` succeeds. GSD announces completion only after post-unit verification passes.
+
+When done, say: "UAT {{sliceId}} results submitted." Do not say UAT is complete. Say this exactly once — if you already said it in a prior message, do not repeat it.

@@ -11,10 +11,10 @@ gsd (CLI binary)
           ├─ onboarding.ts   First-run setup wizard (LLM provider + tool keys)
           ├─ wizard.ts       Env hydration from stored auth.json credentials
           ├─ app-paths.ts    ~/.gsd/agent/, ~/.gsd/sessions/, auth.json
-          ├─ resource-loader.ts  Syncs bundled extensions + agents to ~/.gsd/agent/
+          ├─ resource-loader.ts  Syncs managed resources to ~/.gsd/agent/
           └─ src/resources/
               ├─ extensions/gsd/    Core GSD extension
-              ├─ extensions/...     23 supporting extensions
+              ├─ extensions/...     22 supporting extensions
               ├─ agents/            scout, researcher, worker
               ├─ AGENTS.md          Agent routing instructions
               └─ GSD-WORKFLOW.md    Manual bootstrap protocol
@@ -39,9 +39,14 @@ GSD stores runtime workflow state in the project-root SQLite database. Auto mode
 
 `PI_PACKAGE_DIR` points to `pkg/` (not project root) to avoid Pi's theme resolution colliding with GSD's `src/` directory. Contains only `piConfig` and theme assets.
 
-### Always-Overwrite Sync
+### Managed Resource Sync
 
-Bundled extensions and agents are synced to `~/.gsd/agent/` on every launch, not just first run. This means `npm update -g` takes effect immediately.
+Bundled extensions, shared files, agents, and skills are synced to
+`~/.gsd/agent/` on launch when the managed-resource manifest or content
+fingerprint is stale. The `gsd-browser` skill is then overlaid from the
+installed `@opengsd/gsd-browser` package, including package-relative support
+files, so browser automation guidance tracks the browser package instead of a
+duplicated Pi copy.
 
 ### Lazy Provider Loading
 
@@ -60,7 +65,7 @@ GSD workflow code must treat the active project/worktree as explicit state, not 
 | Extension | What It Provides |
 |-----------|-----------------|
 | **GSD** | Core workflow engine — auto mode, state machine, commands, dashboard |
-| **Browser Tools** | Playwright-based browser automation — navigation, forms, screenshots, PDF export, device emulation, visual regression, structured data extraction, route mocking, accessibility tree inspection, and semantic actions |
+| **Browser Tools** | Browser Automation Contract adapter; browser-facing projects prefer the managed gsd-browser engine when proven, falling back to Playwright (ADR-037) |
 | **Search the Web** | Brave Search, Tavily, or Jina page extraction |
 | **Google Search** | Gemini-powered web search with AI-synthesized answers |
 | **Context7** | Up-to-date library/framework documentation |
@@ -70,9 +75,8 @@ GSD workflow code must treat the active project/worktree as explicit state, not 
 | **MCP Client** | Native MCP server integration via @modelcontextprotocol/sdk |
 | **Voice** | Real-time speech-to-text (macOS, Linux) |
 | **Slash Commands** | Custom command creation |
-| **LSP** | Language Server Protocol — diagnostics, definitions, references, hover, rename |
-| **Ask User Questions** | Structured user input with single/multi-select |
-| **Secure Env Collect** | Masked secret collection |
+| **Google CLI** | Local Google CLI providers (Gemini CLI, Antigravity) via external-cli auth — GSD never owns the OAuth flow |
+| **Visual Brief** | Self-contained HTML briefs via `/gsd brief` (diagram, plan, diff, recap, table, slides) |
 | **Async Jobs** | Background command execution with `async_bash`, `await_job`, `cancel_job` |
 | **Remote Questions** | Discord, Slack, and Telegram integration for headless question routing |
 | **TTSR** | Tool-triggered system rules — conditional context injection based on tool usage |
@@ -107,40 +111,34 @@ Performance-critical operations use a Rust N-API engine:
 - **image** — decode, encode, resize images
 - **fd** — fuzzy file path discovery
 - **clipboard** — native clipboard access
-- **git** — libgit2-backed git read operations (v2.16+)
+- **git** — libgit2-backed git read operations
 - **parser** — GSD file parsing and frontmatter extraction
 
 ## Dispatch Pipeline
 
-The auto mode dispatch pipeline:
+The auto-loop is a **linear** pipeline (`auto/loop.ts`), the replacement for the older recursive `dispatchNextUnit → resolveAgentEnd → dispatchNextUnit` chain. Each iteration flows through explicit stages (see [auto-mode.md](../user-docs/auto-mode.md) for the full description):
 
 ```
-1.  Derive project state from the database
-2.  Determine next unit type and ID
-3.  Classify complexity → select model tier
-4.  Apply budget pressure adjustments
-5.  Check routing history for adaptive adjustments
-6.  Dynamic model routing (if enabled) → select cheapest model for tier
-7.  Resolve effective model (with fallbacks)
-8.  Check pending captures → triage if needed
-9.  Build dispatch prompt (applying inline level compression)
-10. Create fresh agent session
-11. Inject prompt and let LLM execute
-12. On completion: snapshot metrics, verify artifacts, persist state
-13. Loop to step 1
+1. Pre-Dispatch  — derive state, run UOK guards, resolve model preferences, check captures
+2. Dispatch      — build the prompt and execute the unit with the selected model
+3. Post-Unit     — close out the unit, snapshot metrics, verify artifacts, persist state
+4. Finalize      — milestone/slice completion and projection
+5. Loop          — advance to the next unit
 ```
 
-Phase skipping (from token profile) gates steps 2-3: if a phase is skipped, the corresponding unit type is never dispatched.
+Model routing (complexity classification, budget pressure, routing history, capability scoring) is folded into the Pre-Dispatch stage via `auto-model-selection.ts` (`selectAndApplyModel`), not handled as standalone pipeline steps. Phase skipping (from a token profile) gates which unit types are dispatched.
 
-## Key Modules (v2.67)
+## Key Modules
+
+> The auto-mode kernel lives under the `auto/` subdirectory (`auto/orchestrator.ts`, `auto/loop.ts`, `auto/phases.ts`, `auto/pre-dispatch.ts`, `auto/dispatch.ts`, `auto/finalize.ts`, `auto/detect-stuck.ts`, `auto/dispatch-key.ts`, `auto/dispatch-history.ts`, and `workflow-kernel.ts`). Pre-dispatch invariants are enforced by the `uok/` deep module (`uok/flags.ts`, `uok/gate-runner.ts`) wired into the orchestrator. The flat `auto-*.ts` modules below are the older, surrounding surface.
 
 | Module | Purpose |
 |--------|---------|
 | `auto.ts` | Auto-mode state machine and orchestration |
 | `auto/session.ts` | `AutoSession` class — all mutable auto-mode state in one encapsulated instance |
 | `auto-dispatch.ts` | Declarative dispatch table (phase → unit mapping) |
-| `auto-idempotency.ts` | Completed-key checks, skip loop detection, key eviction |
-| `auto-stuck-detection.ts` | Stuck loop recovery and unit retry escalation |
+| `auto/dispatch-key.ts` | Completed-key checks, skip loop detection, key eviction |
+| `auto/detect-stuck.ts` | Stuck loop recovery and unit retry escalation |
 | `auto-start.ts` | Fresh-start bootstrap — git/state init, crash lock detection, worktree setup |
 | `auto-post-unit.ts` | Post-unit processing — commit, doctor, state rebuild, hooks |
 | `auto-verification.ts` | Post-unit verification gate (lint/test/typecheck with auto-fix retries) |
@@ -162,6 +160,8 @@ Phase skipping (from token profile) gates steps 2-3: if a phase is skipped, the 
 | `state.ts` | DB-authoritative state derivation with explicit legacy markdown fallback for tests/recovery |
 | `session-lock.ts` | OS-level exclusive session locking (proper-lockfile) |
 | `crash-recovery.ts` | Lock file management for crash detection and recovery |
+| `guidance.ts` | Single catalog mapping typed findings (recovery kinds, milestone blockers, doctor issue codes, crash unit classes) to user-facing remediation prose |
+| `stop-notice.ts` | Single owner of the auto/step-mode stop/pause notice vocabulary — formatters and headless exit-code classifiers stay in lockstep |
 | `preferences.ts` | Preference loading, merging, validation |
 | `git-service.ts` | Git operations — commit, merge, worktree sync, completed-units cross-boundary sync |
 | `unit-id.ts` | Centralized `parseUnitId()` — milestone/slice/task extraction from unit IDs |

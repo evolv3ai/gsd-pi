@@ -7,6 +7,8 @@ import { tmpdir } from "node:os";
 import { DISPATCH_RULES } from "../auto-dispatch.ts";
 import {
   closeDatabase,
+  getArtifact,
+  getAssessment,
   getLatestAssessmentByScope,
   insertMilestone,
   insertSlice,
@@ -46,6 +48,12 @@ test("skipped validation dispatch persists the validation file and DB assessment
 
     assert.deepEqual(action, { action: "skip" });
     assert.equal(existsSync(join(milestoneDir, "M001-VALIDATION.md")), true);
+    assert.equal(existsSync(join(sliceDir, "S01-ASSESSMENT.md")), true);
+    const artifactPath = "milestones/M001/slices/S01/S01-ASSESSMENT.md";
+    const assessmentPath = `.gsd/${artifactPath}`;
+    assert.equal(getArtifact(artifactPath)?.artifact_type, "ASSESSMENT");
+    assert.equal(getAssessment(assessmentPath)?.scope, "run-uat");
+    assert.equal(getAssessment(assessmentPath)?.status, "pass");
     assert.equal(
       getLatestAssessmentByScope("M001", "milestone-validation")?.status,
       "pass",

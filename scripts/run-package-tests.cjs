@@ -6,6 +6,14 @@ const { existsSync, readdirSync } = require('fs')
 const { join, relative } = require('path')
 const { getLinkablePackages, REPO_ROOT } = require('./lib/workspace-manifest.cjs')
 
+const DEFAULT_PACKAGE_TEST_TIMEOUT_MS = parsePositiveInt(process.env.PACKAGE_TEST_TIMEOUT_MS, 180_000)
+const NATIVE_PACKAGE_TEST_TIMEOUT_MS = parsePositiveInt(process.env.NATIVE_PACKAGE_TEST_TIMEOUT_MS, 600_000)
+
+function parsePositiveInt(value, fallback) {
+	const parsed = Number.parseInt(value ?? '', 10)
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
+
 function getPnpmCommand() {
 	return process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
 }
@@ -59,11 +67,12 @@ function looksLikePassingTestRun(output) {
 	return /(ℹ pass\s+\d+|# pass\s+\d+)/m.test(output) && /(ℹ fail\s+0|# fail\s+0)/m.test(output)
 }
 
-function runCommand(command, args, cwd = REPO_ROOT, label = command) {
+function runCommand(command, args, cwd = REPO_ROOT, label = command, timeoutMs = DEFAULT_PACKAGE_TEST_TIMEOUT_MS) {
 	const result = spawnSync(command, args, {
 		cwd,
 		encoding: 'utf8',
 		maxBuffer: 50 * 1024 * 1024,
+		timeout: timeoutMs,
 	})
 	if (result.stdout) {
 		process.stdout.write(result.stdout)
@@ -88,15 +97,22 @@ function runCommand(command, args, cwd = REPO_ROOT, label = command) {
 	if (result.signal) {
 		process.stderr.write(`${label} terminated by signal ${result.signal}.\n`)
 	}
+	if (result.error?.code === 'ETIMEDOUT') {
+		process.stderr.write(`${label} timed out after ${timeoutMs}ms.\n`)
+	}
+	if (result.error || result.signal) {
+		return 1
+	}
 	return result.status ?? 1
 }
 
-function runPackageScript(command, args, cwd = REPO_ROOT, label = command) {
+function runPackageScript(command, args, cwd = REPO_ROOT, label = command, timeoutMs = DEFAULT_PACKAGE_TEST_TIMEOUT_MS) {
 	const result = spawnSync(command, args, {
 		cwd,
 		encoding: 'utf8',
 		maxBuffer: 50 * 1024 * 1024,
 		shell: process.platform === 'win32',
+		timeout: timeoutMs,
 	})
 	if (result.stdout) {
 		process.stdout.write(result.stdout)
@@ -113,15 +129,25 @@ function runPackageScript(command, args, cwd = REPO_ROOT, label = command) {
 			return 0
 		}
 	}
-	if ((result.status ?? 1) !== 0) {
+	if ((result.status ?? 1) !== 0 || result.error || result.signal) {
 		if (result.error) {
 			process.stderr.write(`Failed to run ${label}: ${result.error.message}\n`)
 		}
 		if (result.signal) {
 			process.stderr.write(`${label} terminated by signal ${result.signal}.\n`)
 		}
+		if (result.error?.code === 'ETIMEDOUT') {
+			process.stderr.write(`${label} timed out after ${timeoutMs}ms.\n`)
+		}
+	}
+	if (result.error || result.signal) {
+		return 1
 	}
 	return result.status ?? 1
+}
+
+function buildNodeTestArgs(files) {
+	return ['--test-force-exit', '--test', ...files]
 }
 
 function main() {
@@ -129,6 +155,14 @@ function main() {
 	const summary = []
 	for (const pkg of packages) {
 		if (pkg.packageName === '@gsd/native') {
+			if (process.env.GSD_SKIP_NATIVE_PACKAGE_TESTS === '1') {
+				summary.push({
+					pkg: pkg.packageName,
+					dir: pkg.dir,
+					count: 'skipped by GSD_SKIP_NATIVE_PACKAGE_TESTS',
+				})
+				continue
+			}
 			const canRunNative = hasNativeAddon() || commandExists('cargo')
 			summary.push({
 				pkg: pkg.packageName,
@@ -155,6 +189,10 @@ function main() {
 
 	for (const pkg of packages) {
 		if (pkg.packageName === '@gsd/native') {
+			if (process.env.GSD_SKIP_NATIVE_PACKAGE_TESTS === '1') {
+				process.stderr.write(`Skipping ${pkg.packageName}: GSD_SKIP_NATIVE_PACKAGE_TESTS=1.\n`)
+				continue
+			}
 			if (!hasNativeAddon() && !commandExists('cargo')) {
 				process.stderr.write(
 					`Skipping ${pkg.packageName}: no native addon present and \`cargo\` is unavailable in this environment.\n`
@@ -163,8 +201,13 @@ function main() {
 			}
 			process.stderr.write(`\nRunning ${pkg.packageName} package tests via workspace script...\n`)
 			if (
-				runPackageScript(getPnpmCommand(), ['--filter', pkg.packageName, 'run', 'test'], REPO_ROOT, pkg.packageName) !==
-				0
+				runPackageScript(
+					getPnpmCommand(),
+					['--filter', pkg.packageName, 'run', 'test'],
+					REPO_ROOT,
+					pkg.packageName,
+					NATIVE_PACKAGE_TEST_TIMEOUT_MS
+				) !== 0
 			) {
 				failureCount += 1
 			}
@@ -178,7 +221,7 @@ function main() {
 		}
 
 		process.stderr.write(`\nRunning ${pkg.packageName} package tests...\n`)
-		if (runCommand(process.execPath, ['--test', ...files], REPO_ROOT, pkg.packageName) !== 0) {
+		if (runCommand(process.execPath, buildNodeTestArgs(files), REPO_ROOT, pkg.packageName) !== 0) {
 			failureCount += 1
 		}
 	}
@@ -194,4 +237,5 @@ module.exports = {
 	findTestFiles,
 	selectPackageTestFiles,
 	findDistTestFiles,
+	buildNodeTestArgs,
 }

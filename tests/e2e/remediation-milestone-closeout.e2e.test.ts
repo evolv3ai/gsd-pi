@@ -3,57 +3,32 @@
 
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { existsSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
 
 import {
+	appendTextTurn,
+	appendToolTurn,
 	artifactsFor,
 	createTmpProject,
 	gsdSync,
 	parseJsonEvents,
+	commitProjectFiles,
+	scalar,
+	smokeBinaryAvailable,
 	type TranscriptTurn,
+	toolNames,
+	WorkflowOutcomeProbe,
 	writeTranscript,
 } from "./_shared/index.ts";
 
-function binaryAvailable(): { ok: boolean; reason?: string } {
-	const bin = process.env.GSD_SMOKE_BINARY;
-	if (!bin) return { ok: false, reason: "GSD_SMOKE_BINARY not set; build with `npm run build:core` and re-export." };
-	if (!existsSync(bin)) return { ok: false, reason: `binary not found at ${bin}` };
-	return { ok: true };
-}
-
 function commitFixture(dir: string): void {
-	execFileSync("git", ["add", "package.json", "src/answer.js", "src/status.js", "test/answer.test.js", "test/status.test.js"], { cwd: dir, stdio: "pipe" });
-	execFileSync("git", ["commit", "-m", "test: seed remediation fixture"], { cwd: dir, stdio: "pipe" });
-}
-
-function scalar(db: DatabaseSync, sql: string, params: Record<string, string>): string | null {
-	const row = db.prepare(sql).get(params) as { value?: string | number | null } | undefined;
-	return row?.value == null ? null : String(row.value);
-}
-
-function pushTool(
-	turns: TranscriptTurn[],
-	name: string,
-	input: Record<string, unknown>,
-	id: string,
-	expect?: TranscriptTurn["expect"],
-): void {
-	turns.push({
-		turn: turns.length + 1,
-		...(expect ? { expect } : {}),
-		emit: { kind: "tool_use", calls: [{ id, name, input }] },
-	});
-}
-
-function pushText(turns: TranscriptTurn[], text: string, expect?: TranscriptTurn["expect"]): void {
-	turns.push({
-		turn: turns.length + 1,
-		...(expect ? { expect } : {}),
-		emit: { kind: "text", text },
-	});
+	commitProjectFiles(
+		dir,
+		["package.json", "src/answer.js", "src/status.js", "test/answer.test.js", "test/status.test.js"],
+		"test: seed remediation fixture",
+	);
 }
 
 function slicePlanInput(sliceId: "S01" | "S02", file: string, verify: string, expected: string): Record<string, unknown> {
@@ -122,7 +97,7 @@ function completeSliceInput(sliceId: "S01" | "S02", title: string, file: string,
 function buildTranscript(): string {
 	const turns: TranscriptTurn[] = [];
 
-	pushTool(turns, "gsd_summary_save", {
+	appendToolTurn(turns, "gsd_summary_save", {
 		artifact_type: "PROJECT",
 		content: [
 			"# Project",
@@ -135,7 +110,7 @@ function buildTranscript(): string {
 			"",
 		].join("\n"),
 	}, "project", { modelId: "gsd-fake-model", lastUserText: "Headless Milestone Creation" });
-	pushTool(turns, "gsd_requirement_save", {
+	appendToolTurn(turns, "gsd_requirement_save", {
 		class: "core-capability",
 		description: "The answer module returns the requested ready value.",
 		why: "The initial slice needs one observable source behavior change.",
@@ -146,7 +121,7 @@ function buildTranscript(): string {
 		validation: "The focused answer verification command exits 0.",
 		notes: "Remediation closeout e2e fixture.",
 	}, "answer-requirement", { hasToolResultFor: "gsd_summary_save" });
-	pushTool(turns, "gsd_requirement_save", {
+	appendToolTurn(turns, "gsd_requirement_save", {
 		class: "core-capability",
 		description: "The status module returns the requested done value before milestone closeout.",
 		why: "Milestone validation must be able to add and complete remediation work.",
@@ -157,11 +132,11 @@ function buildTranscript(): string {
 		validation: "The full fixture test command exits 0.",
 		notes: "Intentionally left uncovered by the initial roadmap.",
 	}, "status-requirement", { hasToolResultFor: "gsd_requirement_save" });
-	pushTool(turns, "gsd_summary_save", {
+	appendToolTurn(turns, "gsd_summary_save", {
 		artifact_type: "REQUIREMENTS",
 		content: "# Requirements\n",
 	}, "requirements", { hasToolResultFor: "gsd_requirement_save" });
-	pushTool(turns, "ask_user_questions", {
+	appendToolTurn(turns, "ask_user_questions", {
 		questions: [{
 			id: "depth_verification_M001_confirm",
 			header: "Depth Check",
@@ -178,7 +153,7 @@ function buildTranscript(): string {
 			],
 		}],
 	}, "depth-check", { hasToolResultFor: "gsd_summary_save" });
-	pushTool(turns, "gsd_summary_save", {
+	appendToolTurn(turns, "gsd_summary_save", {
 		milestone_id: "M001",
 		artifact_type: "CONTEXT",
 		content: [
@@ -195,7 +170,7 @@ function buildTranscript(): string {
 			"",
 		].join("\n"),
 	}, "context", { hasToolResultFor: "ask_user_questions" });
-	pushTool(turns, "gsd_plan_milestone", {
+	appendToolTurn(turns, "gsd_plan_milestone", {
 		milestoneId: "M001",
 		title: "Remediation Closeout",
 		vision: "A validation gap is remediated through a real added slice before milestone completion.",
@@ -238,31 +213,31 @@ function buildTranscript(): string {
 		requirementCoverage: "R001 is owned by S01. R002 will be covered by remediation slice S02.",
 		boundaryMapMarkdown: "| Boundary | Decision |\n| --- | --- |\n| Validation -> remediation | A needs-remediation verdict must add S02 before closeout. |\n",
 	}, "roadmap", { hasToolResultFor: "gsd_summary_save" });
-	pushText(turns, "Milestone M001 ready.", { hasToolResultFor: "gsd_plan_milestone" });
+	appendTextTurn(turns, "Milestone M001 ready.", { hasToolResultFor: "gsd_plan_milestone" });
 
-	pushTool(turns, "gsd_summary_save", {
+	appendToolTurn(turns, "gsd_summary_save", {
 		milestone_id: "M001",
 		slice_id: "S01",
 		artifact_type: "RESEARCH",
 		content: "# S01 - Research\n\nUse `src/answer.js` and verify with `node --test test/answer.test.js`.\n",
 	}, "s01-research");
-	pushText(turns, "Slice S01 researched.", { hasToolResultFor: "gsd_summary_save" });
-	pushTool(turns, "gsd_plan_slice", slicePlanInput("S01", "src/answer.js", "node --test test/answer.test.js", "answer() returns ready."), "s01-plan");
-	pushText(turns, "Slice S01 planned.", { hasToolResultFor: "gsd_plan_slice" });
-	pushTool(turns, "write", {
+	appendTextTurn(turns, "Slice S01 researched.", { hasToolResultFor: "gsd_summary_save" });
+	appendToolTurn(turns, "gsd_plan_slice", slicePlanInput("S01", "src/answer.js", "node --test test/answer.test.js", "answer() returns ready."), "s01-plan");
+	appendTextTurn(turns, "Slice S01 planned.", { hasToolResultFor: "gsd_plan_slice" });
+	appendToolTurn(turns, "write", {
 		path: "src/answer.js",
 		content: "export function answer() {\n\treturn \"ready\";\n}\n",
 	}, "write-answer");
-	pushTool(turns, "bash", {
+	appendToolTurn(turns, "bash", {
 		command: "node --test test/answer.test.js",
 		timeout: 30,
 	}, "verify-answer", { hasToolResultFor: "write" });
-	pushTool(turns, "gsd_task_complete", completeTaskInput("S01", "src/answer.js", "node --test test/answer.test.js", "Updated answer() to return ready."), "s01-task", { hasToolResultFor: "bash" });
-	pushText(turns, "S01/T01 complete.", { hasToolResultFor: "gsd_task_complete" });
-	pushTool(turns, "gsd_slice_complete", completeSliceInput("S01", "Update answer module", "src/answer.js", "node --test test/answer.test.js", "answer() now returns ready."), "s01-complete");
-	pushText(turns, "Slice S01 complete.", { hasToolResultFor: "gsd_slice_complete" });
+	appendToolTurn(turns, "gsd_task_complete", completeTaskInput("S01", "src/answer.js", "node --test test/answer.test.js", "Updated answer() to return ready."), "s01-task", { hasToolResultFor: "bash" });
+	appendTextTurn(turns, "S01/T01 complete.", { hasToolResultFor: "gsd_task_complete" });
+	appendToolTurn(turns, "gsd_slice_complete", completeSliceInput("S01", "Update answer module", "src/answer.js", "node --test test/answer.test.js", "answer() now returns ready."), "s01-complete");
+	appendTextTurn(turns, "Slice S01 complete.", { hasToolResultFor: "gsd_slice_complete" });
 
-	pushTool(turns, "gsd_validate_milestone", {
+	appendToolTurn(turns, "gsd_validate_milestone", {
 		milestoneId: "M001",
 		verdict: "needs-remediation",
 		remediationRound: 0,
@@ -274,7 +249,7 @@ function buildTranscript(): string {
 		verdictRationale: "The initial slice passed, but milestone success requires status() to return done before closeout.",
 		remediationPlan: "Add S02 to update src/status.js and run npm test.",
 	}, "validate-remediation");
-	pushTool(turns, "gsd_reassess_roadmap", {
+	appendToolTurn(turns, "gsd_reassess_roadmap", {
 		milestoneId: "M001",
 		completedSliceId: "S01",
 		verdict: "roadmap-adjusted",
@@ -291,31 +266,31 @@ function buildTranscript(): string {
 			removed: [],
 		},
 	}, "add-remediation-slice", { hasToolResultFor: "gsd_validate_milestone" });
-	pushText(turns, "Remediation slice S02 added.", { hasToolResultFor: "gsd_reassess_roadmap" });
+	appendTextTurn(turns, "Remediation slice S02 added.", { hasToolResultFor: "gsd_reassess_roadmap" });
 
-	pushTool(turns, "gsd_summary_save", {
+	appendToolTurn(turns, "gsd_summary_save", {
 		milestone_id: "M001",
 		slice_id: "S02",
 		artifact_type: "RESEARCH",
 		content: "# S02 - Research\n\nUse `src/status.js` and verify both modules with `npm test`.\n",
 	}, "s02-research");
-	pushText(turns, "Slice S02 researched.", { hasToolResultFor: "gsd_summary_save" });
-	pushTool(turns, "gsd_plan_slice", slicePlanInput("S02", "src/status.js", "npm test", "status() returns done."), "s02-plan");
-	pushText(turns, "Slice S02 planned.", { hasToolResultFor: "gsd_plan_slice" });
-	pushTool(turns, "write", {
+	appendTextTurn(turns, "Slice S02 researched.", { hasToolResultFor: "gsd_summary_save" });
+	appendToolTurn(turns, "gsd_plan_slice", slicePlanInput("S02", "src/status.js", "npm test", "status() returns done."), "s02-plan");
+	appendTextTurn(turns, "Slice S02 planned.", { hasToolResultFor: "gsd_plan_slice" });
+	appendToolTurn(turns, "write", {
 		path: "src/status.js",
 		content: "export function status() {\n\treturn \"done\";\n}\n",
 	}, "write-status");
-	pushTool(turns, "bash", {
+	appendToolTurn(turns, "bash", {
 		command: "npm test",
 		timeout: 30,
 	}, "verify-status", { hasToolResultFor: "write" });
-	pushTool(turns, "gsd_task_complete", completeTaskInput("S02", "src/status.js", "npm test", "Updated status() to return done."), "s02-task", { hasToolResultFor: "bash" });
-	pushText(turns, "S02/T01 complete.", { hasToolResultFor: "gsd_task_complete" });
-	pushTool(turns, "gsd_slice_complete", completeSliceInput("S02", "Remediate status module", "src/status.js", "npm test", "status() now returns done."), "s02-complete");
-	pushText(turns, "Slice S02 complete.", { hasToolResultFor: "gsd_slice_complete" });
+	appendToolTurn(turns, "gsd_task_complete", completeTaskInput("S02", "src/status.js", "npm test", "Updated status() to return done."), "s02-task", { hasToolResultFor: "bash" });
+	appendTextTurn(turns, "S02/T01 complete.", { hasToolResultFor: "gsd_task_complete" });
+	appendToolTurn(turns, "gsd_slice_complete", completeSliceInput("S02", "Remediate status module", "src/status.js", "npm test", "status() now returns done."), "s02-complete");
+	appendTextTurn(turns, "Slice S02 complete.", { hasToolResultFor: "gsd_slice_complete" });
 
-	pushTool(turns, "gsd_validate_milestone", {
+	appendToolTurn(turns, "gsd_validate_milestone", {
 		milestoneId: "M001",
 		verdict: "pass",
 		remediationRound: 1,
@@ -326,8 +301,8 @@ function buildTranscript(): string {
 		verificationClasses: "| Class | Planned Check | Evidence | Verdict |\n| --- | --- | --- | --- |\n| Contract | Focused and full node:test commands exit 0. | `node --test test/answer.test.js` and `npm test` exited 0. | PASS |\n| Integration | Both modules are verified together. | S02 `npm test` exercised both tests after remediation. | PASS |\n| Operational | Headless process exits cleanly. | No blocked/error operator notification was emitted. | PASS |\n| UAT | Slice UAT summaries pass. | S01 and S02 closeout UAT content recorded PASS. | PASS |",
 		verdictRationale: "The remediation slice covered the previously missing status behavior and the full fixture test now passes.",
 	}, "validate-pass");
-	pushText(turns, "Milestone M001 validation complete - verdict: pass.", { hasToolResultFor: "gsd_validate_milestone" });
-	pushTool(turns, "gsd_complete_milestone", {
+	appendTextTurn(turns, "Milestone M001 validation complete - verdict: pass.", { hasToolResultFor: "gsd_validate_milestone" });
+	appendToolTurn(turns, "gsd_complete_milestone", {
 		milestoneId: "M001",
 		title: "Remediation Closeout",
 		oneLiner: "Completed initial work, added remediation from validation, and verified the full fixture.",
@@ -342,13 +317,13 @@ function buildTranscript(): string {
 		followUps: "None.",
 		deviations: "The roadmap intentionally started with S01 only so validation could add S02.",
 	}, "complete-milestone");
-	pushText(turns, "Milestone M001 complete.", { hasToolResultFor: "gsd_complete_milestone" });
+	appendTextTurn(turns, "Milestone M001 complete.", { hasToolResultFor: "gsd_complete_milestone" });
 
 	return writeTranscript(turns);
 }
 
 describe("remediation milestone closeout e2e (fake LLM)", () => {
-	const avail = binaryAvailable();
+	const avail = smokeBinaryAvailable();
 	const skipReason = avail.ok ? null : avail.reason;
 
 	test("headless new-milestone --auto remediates validation gaps before completion", { skip: skipReason ?? false, timeout: 240_000 }, (t) => {
@@ -431,43 +406,28 @@ describe("remediation milestone closeout e2e (fake LLM)", () => {
 		assert.ok(!result.timedOut, "headless remediation run must not time out");
 
 		const events = parseJsonEvents(result.stdoutClean);
-		const notifyMessages = events
-			.filter((event) => event.type === "extension_ui_request" && event.method === "notify")
-			.map((event) => String(event.message ?? ""));
-		const badOperatorSignals = notifyMessages.filter((message) =>
-			/blocked:|failed|cannot complete|cannot validate|stopped with an issue/i.test(message),
-		);
-		const toolErrors = events
-			.filter((event) => event.type === "tool_execution_end")
-			.filter((event) => event.isError === true || (event.result as { isError?: boolean } | undefined)?.isError === true)
-			.map((event) => `${String(event.toolName ?? "unknown")}: ${JSON.stringify(event.result ?? {})}`);
-		const toolNames = events
-			.filter((event) => event.type === "tool_execution_end")
-			.map((event) => String(event.toolName ?? ""));
+		const outcome = new WorkflowOutcomeProbe(project.dir, events);
+		const completedToolNames = toolNames(events);
 
-		assert.deepEqual(badOperatorSignals, [], `unexpected blocked/error operator signals: ${badOperatorSignals.join("\n")}`);
-		assert.deepEqual(toolErrors, [], `unexpected tool errors:\n${toolErrors.join("\n")}`);
-		assert.ok(toolNames.includes("gsd_reassess_roadmap"), "remediation must add a roadmap slice through gsd_reassess_roadmap");
-		assert.equal(toolNames.filter((toolName) => toolName === "gsd_validate_milestone").length, 2, "validation must run before and after remediation");
-		assert.ok(
-			notifyMessages.some((message) => /auto-mode stopped/i.test(message) && /milestone m001 complete|all milestones complete/i.test(message)),
-			`expected terminal auto-mode completion notification, got:\n${notifyMessages.join("\n")}`,
-		);
+		outcome.assertNoOperatorFailures();
+		outcome.assertNoToolErrors();
+		assert.ok(completedToolNames.includes("gsd_reassess_roadmap"), "remediation must add a roadmap slice through gsd_reassess_roadmap");
+		assert.equal(completedToolNames.filter((toolName) => toolName === "gsd_validate_milestone").length, 2, "validation must run before and after remediation");
+		outcome.assertCompletionNotification(/milestone m001 complete|all milestones complete/i);
 		assert.doesNotThrow(
 			() => execFileSync("npm", ["test"], { cwd: project.dir, stdio: "pipe" }),
 			"full fixture verification command must pass after remediation completion",
 		);
 
-		assert.ok(existsSync(join(project.dir, ".gsd", "milestones", "M001", "M001-VALIDATION.md")), "final milestone validation artifact is present");
-		assert.ok(existsSync(join(project.dir, ".gsd", "milestones", "M001", "M001-SUMMARY.md")), "milestone summary artifact is present");
-		assert.ok(existsSync(join(project.dir, ".gsd", "milestones", "M001", "slices", "S01", "S01-ASSESSMENT.md")), "roadmap reassessment artifact is present");
+		outcome.assertArtifact(".gsd/milestones/M001/M001-VALIDATION.md", "final milestone validation artifact is present");
+		outcome.assertArtifact(".gsd/milestones/M001/M001-SUMMARY.md", "milestone summary artifact is present");
+		outcome.assertArtifact(".gsd/milestones/M001/slices/S01/S01-ASSESSMENT.md", "roadmap reassessment artifact is present");
 		for (const sliceId of ["S01", "S02"]) {
-			assert.ok(existsSync(join(project.dir, ".gsd", "milestones", "M001", "slices", sliceId, `${sliceId}-SUMMARY.md`)), `${sliceId} summary artifact is present`);
-			assert.ok(existsSync(join(project.dir, ".gsd", "milestones", "M001", "slices", sliceId, "tasks", "T01-SUMMARY.md")), `${sliceId}/T01 summary artifact is present`);
+			outcome.assertArtifact(`.gsd/milestones/M001/slices/${sliceId}/${sliceId}-SUMMARY.md`, `${sliceId} summary artifact is present`);
+			outcome.assertArtifact(`.gsd/milestones/M001/slices/${sliceId}/tasks/T01-SUMMARY.md`, `${sliceId}/T01 summary artifact is present`);
 		}
 
-		const db = new DatabaseSync(join(project.dir, ".gsd", "gsd.db"));
-		t.after(() => db.close());
+		const db = outcome.openDb(t);
 		assert.equal(scalar(db, "SELECT status AS value FROM milestones WHERE id = :id", { id: "M001" }), "complete");
 		assert.equal(scalar(db, "SELECT COUNT(*) AS value FROM slices WHERE milestone_id = :mid AND status = 'complete'", { mid: "M001" }), "2");
 		assert.equal(scalar(db, "SELECT COUNT(*) AS value FROM tasks WHERE milestone_id = :mid AND status = 'complete'", { mid: "M001" }), "2");

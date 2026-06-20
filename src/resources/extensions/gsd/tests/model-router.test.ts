@@ -429,6 +429,145 @@ test("resolveProfileDefaults: empty availableModelIds falls back to canonical An
   assert.ok(typeof planningModel === "string" && planningModel.startsWith("claude-"));
 });
 
+test("loadEffectiveGSDPreferences: balanced profile resolves OpenAI tiers from registry", async () => {
+  const oldHome = process.env.GSD_HOME;
+  const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const home = mkdtempSync(join(tmpdir(), "gsd-profile-registry-"));
+  try {
+    process.env.GSD_HOME = home;
+    writeFileSync(join(home, "PREFERENCES.md"), "---\ntoken_profile: balanced\n---\n");
+    const { loadEffectiveGSDPreferences, modelIdsForProfileResolution } = await import("../preferences.ts");
+    const registry = {
+      getAvailable: () => [
+        { provider: "google", id: "gemini-2.0-flash" },
+        { provider: "openai-codex", id: "gpt-4o" },
+        { provider: "openai-codex", id: "gpt-4o-mini" },
+      ],
+    };
+    const scopedIds = modelIdsForProfileResolution(registry, "openai-codex");
+    const loaded = loadEffectiveGSDPreferences(undefined, {
+      availableModelIds: scopedIds,
+    });
+    const models = loaded?.preferences.models as Record<string, string> | undefined;
+    assert.equal(models?.planning, "gpt-4o");
+    assert.equal(models?.execution, "gpt-4o");
+    assert.equal(models?.completion, "gpt-4o-mini");
+    assert.equal(models?.subagent, "gpt-4o-mini");
+  } finally {
+    if (oldHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("loadEffectiveGSDPreferences: implicit balanced (D046) resolves tiers from registry", async () => {
+  const oldHome = process.env.GSD_HOME;
+  const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const home = mkdtempSync(join(tmpdir(), "gsd-profile-implicit-balanced-"));
+  try {
+    process.env.GSD_HOME = home;
+    writeFileSync(join(home, "PREFERENCES.md"), "---\nmode: solo\n---\n");
+    const { loadEffectiveGSDPreferencesWithRegistry } = await import("../preferences.ts");
+    const registry = {
+      getAvailable: () => [
+        { provider: "google", id: "gemini-2.0-flash" },
+        { provider: "openai-codex", id: "gpt-4o" },
+        { provider: "openai-codex", id: "gpt-4o-mini" },
+      ],
+    };
+    const loaded = loadEffectiveGSDPreferencesWithRegistry(registry, undefined, "openai-codex");
+    const models = loaded?.preferences.models as Record<string, string> | undefined;
+    assert.equal(models?.planning, "gpt-4o");
+    assert.equal(models?.completion, "gpt-4o-mini");
+    assert.notEqual(models?.completion, "gemini-2.0-flash");
+    assert.equal(
+      loaded?.preferences.phases?.skip_slice_research,
+      undefined,
+      "implicit balanced model defaults must not silently skip slice research",
+    );
+  } finally {
+    if (oldHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("modelIdsForProfileResolution: empty anchor scope does not fall back to other providers", async () => {
+  const { modelIdsForProfileResolution } = await import("../preferences.ts");
+  const registry = {
+    getAvailable: () => [
+      { provider: "google", id: "gemini-2.0-flash" },
+      { provider: "openai-codex", id: "gpt-4o" },
+    ],
+  };
+  const scoped = modelIdsForProfileResolution(registry, "openai-codex");
+  assert.deepEqual(scoped, ["openai-codex/gpt-4o"]);
+  const emptyAnchor = modelIdsForProfileResolution(registry, "anthropic");
+  assert.deepEqual(emptyAnchor, []);
+});
+
+test("modelIdsForProfileResolution: honors disabled_model_providers", async () => {
+  const oldHome = process.env.GSD_HOME;
+  const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const home = mkdtempSync(join(tmpdir(), "gsd-profile-disabled-google-"));
+  try {
+    process.env.GSD_HOME = home;
+    writeFileSync(
+      join(home, "PREFERENCES.md"),
+      "---\ndisabled_model_providers:\n  - google\n---\n",
+    );
+    const { modelIdsForProfileResolution, resolveDisabledModelProvidersFromPreferences } = await import("../preferences.ts");
+    const registry = {
+      getAvailable: () => [
+        { provider: "google", id: "gemini-2.0-flash" },
+        { provider: "openai-codex", id: "gpt-4o" },
+      ],
+    };
+    const disabled = resolveDisabledModelProvidersFromPreferences();
+    const ids = modelIdsForProfileResolution(registry, undefined, disabled);
+    assert.deepEqual(ids, ["openai-codex/gpt-4o"]);
+  } finally {
+    if (oldHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("loadEffectiveGSDPreferences: anchor provider ignores cheaper Gemini when OpenAI is active", async () => {
+  const oldHome = process.env.GSD_HOME;
+  const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const home = mkdtempSync(join(tmpdir(), "gsd-profile-anchor-"));
+  try {
+    process.env.GSD_HOME = home;
+    writeFileSync(join(home, "PREFERENCES.md"), "---\ntoken_profile: balanced\n---\n");
+    const { loadEffectiveGSDPreferencesWithRegistry } = await import("../preferences.ts");
+    const registry = {
+      getAvailable: () => [
+        { provider: "google", id: "gemini-2.0-flash" },
+        { provider: "openai-codex", id: "gpt-4o" },
+        { provider: "openai-codex", id: "gpt-4o-mini" },
+      ],
+    };
+    const loaded = loadEffectiveGSDPreferencesWithRegistry(registry, undefined, "openai-codex");
+    const models = loaded?.preferences.models as Record<string, string> | undefined;
+    assert.equal(models?.planning, "gpt-4o");
+    assert.notEqual(models?.completion, "gemini-2.0-flash");
+    assert.equal(models?.completion, "gpt-4o-mini");
+  } finally {
+    if (oldHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("resolveProfileDefaults: burn-max omits models so user choice is preserved", async () => {
   const { resolveProfileDefaults } = await import("../preferences-models.js");
   const defaults = resolveProfileDefaults("burn-max", ["gpt-4o"]);

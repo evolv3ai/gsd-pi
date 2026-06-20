@@ -25,6 +25,7 @@ import { GIT_NO_PROMPT_ENV } from "./git-constants.js";
  * but retained for backwards compatibility during migration.
  */
 const GSD_RUNTIME_PATTERNS = [
+  ".gsd-worktrees/",
   ".gsd/activity/",
   ".gsd/audit/",
   ".gsd/forensics/",
@@ -48,6 +49,8 @@ const GSD_RUNTIME_PATTERNS = [
 const BASELINE_PATTERNS = [
   // ── GSD state directory (symlink to external storage) ──
   ".gsd",
+  // Worktree container sibling — NOT covered by the ".gsd" pattern above.
+  ".gsd-worktrees/",
   ".gsd-id",
   ".mcp.json",
   ".bg-shell/",

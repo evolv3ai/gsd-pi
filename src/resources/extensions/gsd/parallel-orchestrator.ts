@@ -21,9 +21,10 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gsdRoot } from "./paths.js";
 import { createWorktree, worktreePath } from "./worktree-manager.js";
-import { autoWorktreeBranch, fastForwardReusedMilestoneBranchIfSafe, runWorktreePostCreateHook, syncGsdStateToWorktree } from "./auto-worktree.js";
+import { autoWorktreeBranch, fastForwardReusedMilestoneBranchIfSafe, runWorktreePostCreateHook, syncGsdStateToWorktreeByScope } from "./auto-worktree.js";
 import { nativeBranchExists } from "./native-git-bridge.js";
 import { readIntegrationBranch } from "./git-service.js";
+import { createWorkspace, scopeMilestone } from "./workspace.js";
 import { resolveParallelConfig } from "./preferences.js";
 import type { GSDPreferences } from "./preferences.js";
 import type { ParallelConfig } from "./types.js";
@@ -561,7 +562,10 @@ export function _createMilestoneWorktree(basePath: string, milestoneId: string):
   // Copy .gsd/ planning artifacts (milestones, CONTEXT, ROADMAP, etc.) from the
   // project root into the worktree. Without this, workers for newly-planned
   // milestones can't find their roadmap and exit immediately (#2184 Bug 4).
-  syncGsdStateToWorktree(basePath, info.path);
+  syncGsdStateToWorktreeByScope(
+    scopeMilestone(createWorkspace(basePath), milestoneId),
+    scopeMilestone(createWorkspace(info.path), milestoneId),
+  );
 
   return info.path;
 }

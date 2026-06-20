@@ -10,8 +10,8 @@
  */
 
 import { loadFile, parseContinue, parseSummary, loadActiveOverrides, formatOverridesSection, parseTaskPlanFile } from "./files.js";
-import type { Override, UatType } from "./files.js";
-import { hasVerdict, getUatType, extractVerdict } from "./verdict-parser.js";
+import type { Override } from "./files.js";
+import { hasVerdict, extractVerdict } from "./verdict-parser.js";
 import { loadPrompt, inlineTemplate } from "./prompt-loader.js";
 import {
   resolveMilestoneFile, resolveSliceFile, resolveSlicePath,
@@ -36,15 +36,34 @@ import {
 } from "./gate-registry.js";
 import { formatDecisionsCompact, formatRequirementsCompact } from "./structured-data-formatter.js";
 import { readPhaseAnchor, formatAnchorForPrompt } from "./phase-anchor.js";
-import { composeContextModeInstructions, composeInlinedContext, composeUnitContext, type ArtifactResolver, type ContextModeRenderMode, type ExcerptResolver } from "./unit-context-composer.js";
+import {
+  composeContextModeInstructions,
+  composeContractedUnitContext,
+  composeInlinedContext,
+  composeToolSurfaceInstructions,
+  composeUnitContext,
+  type ArtifactResolver,
+  type ComposedUnitContextBlock,
+  type ContextModeRenderMode,
+  type ExcerptResolver,
+} from "./unit-context-composer.js";
+import { resolveManifest, type ArtifactKey } from "./unit-context-manifest.js";
+import { compileUnitContextContract, type UnitPromptContextContract } from "./tool-contract.js";
 import { readCompactionSnapshot } from "./compaction-snapshot.js";
 import { logWarning } from "./workflow-logger.js";
 import { inlineGraphSubgraph } from "./graph-context.js";
 import { buildExtractionStepsBlock } from "./commands-extract-learnings.js";
 import { classifyProject, type ProjectClassification } from "./detection.js";
-import { hasBrowserRequiredText } from "./browser-evidence.js";
 import { debugLog } from "./debug-logger.js";
 import { buildSkillActivationBlock, buildSkillDiscoveryVars } from "./skill-activation.js";
+import { findMilestoneIds } from "./milestone-ids.js";
+import { buildRunUatPresentationForType, RUN_UAT_TOOL_PRESENTATION_PLAN_ID } from "./tool-presentation-plan.js";
+import {
+  classifyUatContentForRun,
+  shouldDispatchUatForContent,
+  type UatType,
+} from "./uat-policy.js";
+import { buildWebAppUatGuidanceBlock } from "./web-app-uat.js";
 
 export { buildSkillActivationBlock, buildSkillDiscoveryVars };
 
@@ -278,23 +297,45 @@ function prependContextModeToBlock(
   block: string,
   renderMode: ContextModeRenderMode = "standalone",
 ): string {
+  const toolSurface = composeToolSurfaceInstructions(unitType, { renderMode });
   const contextMode = renderContextModeBlockForPrompt(unitType, base, renderMode);
-  if (!contextMode) return block;
-  if (!block.trim()) return contextMode;
-  return `${contextMode}\n\n${block}`;
+  const guidance = [toolSurface, contextMode].filter(Boolean).join("\n\n");
+  if (!guidance) return block;
+  if (!block.trim()) return guidance;
+  return `${guidance}\n\n${block}`;
 }
 
-function resolveEffectiveUatType(content: string): UatType {
-  const uatType = getUatType(content);
-  if (uatType === "artifact-driven" && hasBrowserRequiredText(content)) {
-    return "browser-executable";
+function requireUnitPromptContextContract(unitType: string): UnitPromptContextContract {
+  const result = compileUnitContextContract(unitType);
+  if (result.ok) return result.contract;
+  throw new Error(result.detail);
+}
+
+function requireComposedArtifactBlock(
+  blocks: readonly ComposedUnitContextBlock[],
+  unitType: string,
+  key: ArtifactKey,
+): string {
+  const block = blocks.find((item) => item.key === key);
+  if (!block) {
+    throw new Error(`Unit Context Contract for ${unitType} did not compose required artifact ${key}`);
   }
-  return uatType;
+  return block.body;
 }
 
-function shouldDispatchUatForContent(content: string, prefs: GSDPreferences | undefined): boolean {
-  const uatType = resolveEffectiveUatType(content);
-  return !!prefs?.uat_dispatch || uatType !== "artifact-driven" || hasBrowserRequiredText(content);
+function renderExecuteTaskOnDemandContext(
+  base: string,
+  mid: string,
+  sid: string,
+  artifacts: readonly ArtifactKey[],
+): string {
+  if (!artifacts.includes("slice-research")) return "";
+  const researchPath = relSliceFile(base, mid, sid, "RESEARCH");
+  return [
+    "## On-demand Context",
+    "",
+    `Slice research is available at \`${researchPath}\`. Read it only if the inlined task plan, slice plan excerpt, and carry-forward context do not explain a required implementation detail.`,
+  ].join("\n");
 }
 
 // ─── Executor Constraints ─────────────────────────────────────────────────────
@@ -935,7 +976,7 @@ export async function inlineDecisionsFromDb(
 
 /**
  * Inline requirements with optional milestone and slice scoping from the DB.
- * Falls back to filesystem via inlineGsdRootFile when DB unavailable or empty.
+ * Falls back to filesystem via inlineGsdRootFile only when DB is unavailable.
  */
 export async function inlineRequirementsFromDb(
   base: string, milestoneId?: string, sliceId?: string, level?: InlineLevel,
@@ -945,14 +986,28 @@ export async function inlineRequirementsFromDb(
     const { isDbAvailable } = await import("./gsd-db.js");
     if (isDbAvailable()) {
       const { queryRequirements, formatRequirementsForPrompt } = await import("./context-store.js");
-      const requirements = queryRequirements({ milestoneId, sliceId });
+      let requirements = queryRequirements({ milestoneId, sliceId });
+      let broadenedScope = false;
+      if (requirements.length === 0 && sliceId) {
+        requirements = queryRequirements({ milestoneId });
+        broadenedScope = true;
+      }
+      if (requirements.length === 0 && milestoneId) {
+        requirements = queryRequirements({ status: "active" });
+        broadenedScope = true;
+      }
       if (requirements.length > 0) {
-        // Use compact format for non-full levels to save ~40% tokens
-        const formatted = inlineLevel !== "full"
+        // Use compact format for non-full levels, milestone-scoped calls, and
+        // any cascade stage that broadened past the originally requested scope —
+        // a slice-scoped "full" call that fell through to the project-wide
+        // active fallback must not format those rows as full requirements.
+        const useCompact = inlineLevel !== "full" || !sliceId || broadenedScope;
+        const formatted = useCompact
           ? formatRequirementsCompact(requirements)
           : formatRequirementsForPrompt(requirements);
         return `### Requirements\nSource: \`.gsd/REQUIREMENTS.md\`\n\n${formatted}`;
       }
+      return null;
     }
   } catch (err) {
     logWarning("prompt", `inlineRequirementsFromDb failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1408,6 +1463,40 @@ export async function checkNeedsReassessment(
  * - No UAT file exists for the slice
  * - UAT result file already exists (idempotent — already ran)
  */
+/**
+ * Resolve the effective UAT mode for the dispatch gate the same way
+ * `buildRunUatPrompt` does: classify the UAT body with the slice's SUMMARY as
+ * supplemental context, so a `browser-executable` UAT whose slice references a
+ * self-contained harness (`npm run test:uat`, `search-uat.mjs`, `npx
+ * playwright test`) is promoted to `runtime-executable` for the gate too.
+ *
+ * Without this, `checkNeedsRunUat` returns `browser-executable` while the
+ * prompt instructs runtime-only execution, causing the dispatch gate to
+ * require browser tools / warm up the browser daemon (or stop dispatch when
+ * browser MCP is unavailable) for UAT runs that never touch the browser. See
+ * cursor[bot] review on PR #696 for the M007/S01 regression.
+ */
+async function resolveRunUatEffectiveType(
+  base: string,
+  mid: string,
+  sliceId: string,
+  uatContent: string,
+): Promise<UatType> {
+  let summaryContent = "";
+  try {
+    const summaryPath = resolveSliceFile(base, mid, sliceId, "SUMMARY");
+    if (summaryPath) {
+      summaryContent = (await loadFile(summaryPath)) ?? "";
+    }
+  } catch (err) {
+    logWarning(
+      "prompt",
+      `resolveRunUatEffectiveType SUMMARY load failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  return classifyUatContentForRun(uatContent, summaryContent).effectiveType;
+}
+
 export async function checkNeedsRunUat(
   base: string, mid: string, state: GSDState, prefs: GSDPreferences | undefined,
 ): Promise<{ sliceId: string; uatType: UatType } | null> {
@@ -1428,7 +1517,7 @@ export async function checkNeedsRunUat(
           // If the UAT file already contains a verdict, UAT has been run — skip
           if (hasVerdict(uatContent)) continue;
           // Also check the ASSESSMENT file — the run-uat prompt writes the verdict
-          // there (via gsd_summary_save artifact_type:"ASSESSMENT"), not into the
+          // there (via gsd_uat_result_save), not into the
           // UAT spec file. Without this check the unit re-dispatches indefinitely.
           const assessmentFile = resolveSliceFile(base, mid, sid, "ASSESSMENT");
           if (assessmentFile) {
@@ -1436,7 +1525,8 @@ export async function checkNeedsRunUat(
             if (assessmentContent && hasVerdict(assessmentContent)) continue;
           }
           if (!shouldDispatchUatForContent(uatContent, prefs)) continue;
-          return { sliceId: sid, uatType: resolveEffectiveUatType(uatContent) };
+          const uatType = await resolveRunUatEffectiveType(base, mid, sid, uatContent);
+          return { sliceId: sid, uatType };
         }
         return null;
       }
@@ -1469,7 +1559,8 @@ export async function checkNeedsRunUat(
       if (assessmentContentFb && hasVerdict(assessmentContentFb)) continue;
     }
     if (!shouldDispatchUatForContent(uatContentFb, prefs)) continue;
-    return { sliceId: uatSid, uatType: resolveEffectiveUatType(uatContentFb) };
+    const uatType = await resolveRunUatEffectiveType(base, mid, uatSid, uatContentFb);
+    return { sliceId: uatSid, uatType };
   }
   return null;
 }
@@ -1482,21 +1573,84 @@ export async function checkNeedsRunUat(
  * as a seed when present. The discussion agent interviews the user, writes
  * a full CONTEXT.md, and the phase transitions to pre-planning automatically.
  */
+export interface DiscussMilestonePromptOptions {
+  headless?: boolean;
+  commitInstruction?: string;
+  fastPathInstruction?: string;
+  includeDraftSeed?: boolean;
+  includeContextMode?: boolean;
+}
+
+export async function buildDiscussMilestoneInlinedContext(mid: string, base: string): Promise<string> {
+  const inlined: string[] = [];
+
+  const roadmapInline = await inlineFileOptional(
+    resolveMilestoneFile(base, mid, "ROADMAP"),
+    relMilestoneFile(base, mid, "ROADMAP"),
+    "Milestone Roadmap",
+  );
+  if (roadmapInline) inlined.push(roadmapInline);
+
+  const contextInline = await inlineFileOptional(
+    resolveMilestoneFile(base, mid, "CONTEXT"),
+    relMilestoneFile(base, mid, "CONTEXT"),
+    "Milestone Context",
+  );
+  if (contextInline) inlined.push(contextInline);
+
+  const researchInline = await inlineFileOptional(
+    resolveMilestoneFile(base, mid, "RESEARCH"),
+    relMilestoneFile(base, mid, "RESEARCH"),
+    "Milestone Research",
+  );
+  if (researchInline) inlined.push(researchInline);
+
+  const decisionsPath = resolveGsdRootFile(base, "DECISIONS");
+  if (existsSync(decisionsPath)) {
+    const decisionsContent = await loadFile(decisionsPath);
+    if (decisionsContent) {
+      inlined.push(`### Decisions Register\nSource: \`${relGsdRootFile("DECISIONS")}\`\n\n${decisionsContent.trim()}`);
+    }
+  }
+
+  const milestoneIds = findMilestoneIds(base);
+  const currentIndex = milestoneIds.indexOf(mid);
+  const priorMilestoneIds = currentIndex >= 0 ? milestoneIds.slice(0, currentIndex) : milestoneIds;
+  for (const priorMid of priorMilestoneIds) {
+    const summaryInline = await inlineFileOptional(
+      resolveMilestoneFile(base, priorMid, "SUMMARY"),
+      relMilestoneFile(base, priorMid, "SUMMARY"),
+      `${priorMid} Prior Milestone Summary`,
+    );
+    if (summaryInline) inlined.push(summaryInline);
+  }
+
+  return inlined.length > 0
+    ? `## Inlined Context (preloaded — do not re-read these files)\n\n${inlined.join("\n\n---\n\n")}`
+    : "## Inlined Context\n\n_(no milestone context files found yet — go in blind and ask broad questions)_";
+}
+
 export async function buildDiscussMilestonePrompt(
   mid: string,
   midTitle: string,
   base: string,
   structuredQuestionsAvailable = "false",
-  { headless = false }: { headless?: boolean } = {},
+  {
+    headless = false,
+    commitInstruction = "Do not commit planning artifacts — .gsd/ is managed externally.",
+    fastPathInstruction = "",
+    includeDraftSeed = true,
+    includeContextMode = true,
+  }: DiscussMilestonePromptOptions = {},
 ): Promise<string> {
-  const discussTemplates = inlineTemplate("context", "Context");
+  const contextTemplate = inlineTemplate("context", "Context");
 
   if (headless) {
     const roadmapPath = resolveMilestoneFile(base, mid, "ROADMAP");
     const roadmapContent = roadmapPath ? await loadFile(roadmapPath) : null;
     return loadPrompt("discuss-headless", {
       seedContext: roadmapContent ?? "",
-      inlinedTemplates: discussTemplates,
+      inlinedTemplates: contextTemplate,
       workingDirectory: base,
       milestoneId: mid,
       contextPath: relMilestoneFile(base, mid, "CONTEXT"),
@@ -1505,7 +1659,9 @@ export async function buildDiscussMilestonePrompt(
     });
   }
 
-  const contextModeInstructions = renderContextModeForPrompt("discuss-milestone", base);
+  const rawInlinedContext = await buildDiscussMilestoneInlinedContext(mid, base);
+  const cappedInlinedContext = capPreamble(rawInlinedContext);
+  const discussTemplates = [cappedInlinedContext, contextTemplate].join("\n\n---\n\n");
 
   const basePrompt = loadPrompt("guided-discuss-milestone", {
     workingDirectory: base,
@@ -1513,20 +1669,22 @@ export async function buildDiscussMilestonePrompt(
     milestoneTitle: midTitle,
     inlinedTemplates: discussTemplates,
     structuredQuestionsAvailable,
-    commitInstruction: "Do not commit planning artifacts — .gsd/ is managed externally.",
-    fastPathInstruction: "",
+    commitInstruction,
+    fastPathInstruction,
   });
-  const promptWithContextMode = prependContextModeToBlock("discuss-milestone", base, basePrompt);
+  const promptWithContextMode = includeContextMode
+    ? prependContextModeToBlock("discuss-milestone", base, basePrompt)
+    : basePrompt;
 
   // If a CONTEXT-DRAFT.md exists, append it as seed material
   const draftPath = resolveMilestoneFile(base, mid, "CONTEXT-DRAFT");
   const draftContent = draftPath ? await loadFile(draftPath) : null;
 
-  if (draftContent) {
+  if (includeDraftSeed && draftContent) {
     return `${promptWithContextMode}\n\n## Prior Discussion (Draft Seed)\n\nThe following draft was captured from a prior multi-milestone discussion. Use it as seed material — the user has already provided this context. Start with a brief reflection on what the draft covers, then probe for any gaps or open questions before writing the full CONTEXT.md.\n\n${draftContent}`;
   }
 
-  return contextModeInstructions ? promptWithContextMode : basePrompt;
+  return promptWithContextMode;
 }
 
 /**
@@ -1618,6 +1776,70 @@ export async function buildDiscussRequirementsPrompt(
   }));
 }
 
+/**
+ * Bounded codebase snapshot for research-milestone grounding (ADR-029).
+ *
+ * Reuses the in-process, ~millisecond `analyzeCodebase` / `formatCodebaseBrief`
+ * machinery that powers the guided-discuss Preparation Snapshot, so research
+ * grounds on current code reality instead of running an open-ended `rg`/`find`/
+ * `scout` survey on every dispatch (the auto-mode counterpart to ADR-028).
+ *
+ * Gated on the manifest's `codebaseMap` flag (previously a dead policy flag)
+ * and the `discuss_preparation` opt-out. Failures degrade silently — research
+ * still runs, it just falls back to on-demand reads.
+ */
+async function buildResearchCodebaseSnapshot(base: string): Promise<string | null> {
+  const manifest = resolveManifest("research-milestone");
+  if (!manifest?.codebaseMap) return null;
+  const prefs = loadEffectiveGSDPreferences(base)?.preferences;
+  if (prefs?.discuss_preparation === false) return null;
+  try {
+    const { analyzeCodebase, formatCodebaseBrief } = await import("./preparation.js");
+    const brief = await analyzeCodebase(base);
+    const formatted = formatCodebaseBrief(brief).trim();
+    if (!formatted) return null;
+    return [
+      "### Codebase Snapshot (current code reality)",
+      "Source: in-process bounded scan of the working tree.",
+      "",
+      "This snapshot describes what already exists. Treat it as authoritative for current code reality and do NOT re-survey the tree to rediscover it. Read a specific file only when a research question hinges on its exact contents.",
+      "",
+      formatted,
+    ].join("\n");
+  } catch (err) {
+    logWarning("prompt", `buildResearchCodebaseSnapshot failed: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+/**
+ * Lightweight research resume block (ADR-029).
+ *
+ * When a prior attempt for this milestone left durable output — a partial
+ * RESEARCH artifact and/or a research phase anchor — inline it under a
+ * "continue, do not redo" banner so a re-dispatched research unit extends
+ * prior work instead of re-running every command from scratch (the
+ * restart-from-scratch pattern observed in the 789 run trace). No new state
+ * machine: the partial RESEARCH file and the existing phase anchor are the
+ * durable signals. Returns null when there is nothing to resume.
+ */
+async function buildResearchResumeBlock(base: string, mid: string): Promise<string | null> {
+  const researchPath = resolveMilestoneFile(base, mid, "RESEARCH");
+  const researchRel = relMilestoneFile(base, mid, "RESEARCH");
+  const partial = await inlineFileOptional(researchPath, researchRel, "Prior Partial Research");
+  const anchor = readPhaseAnchor(base, mid, "research-milestone");
+  if (!partial && !anchor) return null;
+  const lines: string[] = [
+    "### Resume — Prior Partial Research (continue, do not redo)",
+    "",
+    "A previous research attempt for this milestone left the durable output below. **Build on it — do not restart from scratch.** Re-run a command only when its prior result is missing or stale, and persist progress incrementally with `gsd_summary_save` so any interruption keeps your findings.",
+    "",
+  ];
+  if (anchor) lines.push(formatAnchorForPrompt(anchor), "");
+  if (partial) lines.push(partial);
+  return lines.join("\n").trimEnd();
+}
+
 export async function buildResearchMilestonePrompt(mid: string, midTitle: string, base: string): Promise<string> {
   const contextTelemetry: PromptContextTelemetryEntry[] = [];
 
@@ -1659,6 +1881,34 @@ export async function buildResearchMilestonePrompt(mid: string, midTitle: string
   const knowledgeInlineRM = await inlineKnowledgeBudgeted(base, extractKeywords(midTitle));
   const parts: string[] = [];
   if (composed.prepend) parts.push(composed.prepend);
+
+  // Resume grounding (ADR-029): if a prior attempt left partial research or a
+  // phase anchor, inline it prominently so a re-dispatched unit continues
+  // rather than re-running every command from scratch.
+  const resumeBlock = await buildResearchResumeBlock(base, mid);
+  if (resumeBlock) {
+    parts.push(resumeBlock);
+    trackPromptContext(contextTelemetry, "research-resume", "inline", resumeBlock);
+  } else {
+    trackPromptContext(contextTelemetry, "research-resume", "skipped", null, "no prior partial research");
+  }
+
+  // Project-size signal (ADR-029): same classification plan-milestone gets, so
+  // research right-sizes effort on tiny projects instead of over-researching.
+  const classificationBlock = formatProjectClassificationForPlanning(classifyProject(base));
+  parts.push(classificationBlock);
+  trackPromptContext(contextTelemetry, "project-classification", "inline", classificationBlock);
+
+  // Codebase snapshot (ADR-029): bounded, in-process code-reality grounding so
+  // research does not open-endedly survey the tree (auto-mode ADR-028).
+  const codebaseSnapshot = await buildResearchCodebaseSnapshot(base);
+  if (codebaseSnapshot) {
+    parts.push(codebaseSnapshot);
+    trackPromptContext(contextTelemetry, "codebase-snapshot", "inline", codebaseSnapshot);
+  } else {
+    trackPromptContext(contextTelemetry, "codebase-snapshot", "skipped", null, "disabled, empty, or scan failed");
+  }
+
   if (knowledgeInlineRM && composed.inline) {
     const idx = composed.inline.lastIndexOf("### Output Template:");
     if (idx > 0) {
@@ -1826,6 +2076,12 @@ export async function buildPlanMilestonePrompt(mid: string, midTitle: string, ba
     pushTracked("knowledge", knowledgeInlinePM);
   } else {
     trackPromptContext(contextTelemetry, "knowledge", "skipped", null, "missing");
+  }
+  const webAppUatGuidance = buildWebAppUatGuidanceBlock(base);
+  if (webAppUatGuidance) {
+    pushTracked("web-app-uat", webAppUatGuidance);
+  } else {
+    trackPromptContext(contextTelemetry, "web-app-uat", "skipped", null, "not a web app");
   }
   pushTracked("templates", inlineTemplate("roadmap", "Roadmap"));
   if (inlineLevel === "full") {
@@ -2157,6 +2413,14 @@ async function renderSlicePrompt(options: {
     trackPromptContext(contextTelemetry, "graph-subgraph", "skipped", null, "missing");
   }
 
+  const webAppUatGuidance = buildWebAppUatGuidanceBlock(base);
+  if (webAppUatGuidance) {
+    inlined.push(webAppUatGuidance);
+    trackPromptContext(contextTelemetry, "web-app-uat", "inline", webAppUatGuidance);
+  } else {
+    trackPromptContext(contextTelemetry, "web-app-uat", "skipped", null, "not a web app");
+  }
+
   const planTemplateInline = level === "minimal" ? inlineCompactTemplate("plan", "Slice Plan") : inlineTemplate("plan", "Slice Plan");
   inlined.push(planTemplateInline);
   trackPromptContext(contextTelemetry, "templates", "inline", planTemplateInline);
@@ -2263,6 +2527,9 @@ export async function buildPlanSlicePrompt(
       `Either (a) add an earlier task that creates X on disk before the task that needs it, ` +
       `or (b) if this task IS the one that creates X, move X from inputs to expected_output. ` +
       `Do NOT put X in a task's expected_output if that task only reads or verifies X — only tasks that actually write X to disk should list it in expected_output.\n` +
+      `- **"[file] X: ... GSD planning artifacts are projections preloaded as context / written by workflow tools"**: ` +
+      `Remove X from the task's inputs, files, and expectedOutput entirely. Planning artifacts (anything under .gsd/, .planning/, or .audits/, or names like M001-CONTEXT.md / S01-PLAN.md) are preloaded as context and written by workflow tools — ` +
+      `do NOT add a task that creates X and do NOT move X to expectedOutput.\n` +
       `- **"[file] X: Task T_early reads X but it's created by task T_late (sequence violation)"**: ` +
       `Either (a) reorder tasks so T_late (the creator) runs before T_early (the reader), ` +
       `or (b) if T_late doesn't actually create X (it only reads/tests it), remove X from T_late's expected_output entirely.\n` +
@@ -2361,7 +2628,7 @@ export async function buildExecuteTaskPrompt(
   const taskPlanPath = resolveTaskFile(base, mid, sid, tid, "PLAN");
   const taskPlanContent = taskPlanPath ? await loadFile(taskPlanPath) : null;
   const taskPlanRelPath = relSlicePath(base, mid, sid) + `/tasks/${tid}-PLAN.md`;
-  const taskPlanInline = taskPlanContent
+  const taskPlanContext = taskPlanContent
     ? [
       "## Inlined Task Plan (authoritative local execution contract)",
       `Source: \`${taskPlanRelPath}\``,
@@ -2372,12 +2639,12 @@ export async function buildExecuteTaskPrompt(
       "## Inlined Task Plan (authoritative local execution contract)",
       `Task plan not found at dispatch time. Read \`${taskPlanRelPath}\` before executing.`,
     ].join("\n");
-  trackPromptContext(contextTelemetry, "task-plan", taskPlanContent ? "inline" : "on-demand", taskPlanInline, taskPlanContent ? undefined : "missing at dispatch");
+  trackPromptContext(contextTelemetry, "task-plan", taskPlanContent ? "inline" : "on-demand", taskPlanContext, taskPlanContent ? undefined : "missing at dispatch");
 
   const slicePlanPath = resolveSliceFile(base, mid, sid, "PLAN");
   const slicePlanContent = slicePlanPath ? await loadFile(slicePlanPath) : null;
-  const slicePlanExcerpt = extractSliceExecutionExcerpt(slicePlanContent, relSliceFile(base, mid, sid, "PLAN"));
-  trackPromptContext(contextTelemetry, "slice-plan", slicePlanExcerpt ? "excerpt" : "skipped", slicePlanExcerpt, slicePlanExcerpt ? undefined : "missing");
+  const slicePlanContext = extractSliceExecutionExcerpt(slicePlanContent, relSliceFile(base, mid, sid, "PLAN"));
+  trackPromptContext(contextTelemetry, "slice-plan", slicePlanContext ? "excerpt" : "skipped", slicePlanContext, slicePlanContext ? undefined : "missing");
 
   // Check for continue file (new naming or legacy)
   const continueFile = resolveSliceFile(base, mid, sid, "CONTINUE");
@@ -2508,6 +2775,37 @@ export async function buildExecuteTaskPrompt(
   }
   trackPromptContext(contextTelemetry, "templates", "inline", inlinedTemplates, inlineLevel);
 
+  const contextContract = requireUnitPromptContextContract("execute-task");
+  const contractedContext = await composeContractedUnitContext(contextContract, {
+    base: { unitType: "execute-task", basePath: base, milestoneId: mid, sliceId: sid, taskId: tid },
+    resolveArtifact: async (key) => {
+      switch (key) {
+        case "task-plan":
+          return taskPlanContext;
+        case "slice-plan":
+          return slicePlanContext;
+        case "prior-task-summaries":
+          return finalCarryForward;
+        case "templates":
+          return inlinedTemplates;
+        default:
+          return null;
+      }
+    },
+  });
+  const taskPlanInline = requireComposedArtifactBlock(contractedContext.blocks, "execute-task", "task-plan");
+  const slicePlanExcerpt = requireComposedArtifactBlock(contractedContext.blocks, "execute-task", "slice-plan");
+  const contractedCarryForward = requireComposedArtifactBlock(contractedContext.blocks, "execute-task", "prior-task-summaries");
+  const contractedTemplates = requireComposedArtifactBlock(contractedContext.blocks, "execute-task", "templates");
+  const onDemandContext = renderExecuteTaskOnDemandContext(base, mid, sid, contractedContext.onDemand);
+  trackPromptContext(
+    contextTelemetry,
+    "slice-research",
+    onDemandContext ? "on-demand" : "skipped",
+    onDemandContext,
+    onDemandContext ? undefined : "not declared by contract",
+  );
+
   const prompt = loadPrompt("execute-task", {
     overridesSection,
     runtimeContext,
@@ -2519,11 +2817,12 @@ export async function buildExecuteTaskPrompt(
     taskPlanPath: taskPlanRelPath,
     taskPlanInline,
     slicePlanExcerpt,
-    carryForwardSection: finalCarryForward,
+    carryForwardSection: contractedCarryForward,
     resumeSection,
     priorTaskLines: priorLines,
+    onDemandContext,
     taskSummaryPath,
-    inlinedTemplates,
+    inlinedTemplates: contractedTemplates,
     verificationBudget,
     gatesToClose,
     skillActivation: buildSkillActivationBlock({
@@ -2534,7 +2833,7 @@ export async function buildExecuteTaskPrompt(
       taskId: tid,
       taskTitle: tTitle,
       taskPlanContent,
-      extraContext: [taskPlanInline, slicePlanExcerpt, finalCarryForward, resumeSection],
+      extraContext: [taskPlanInline, slicePlanExcerpt, contractedCarryForward, resumeSection],
       unitType: "execute-task",
     }),
   });
@@ -2654,6 +2953,14 @@ export async function buildCompleteSlicePrompt(
     }
   }
 
+  const webAppUatGuidance = buildWebAppUatGuidanceBlock(base);
+  if (webAppUatGuidance && body) {
+    body = `${webAppUatGuidance}\n\n---\n\n${body}`;
+    trackPromptContext(contextTelemetry, "web-app-uat", "inline", webAppUatGuidance);
+  } else {
+    trackPromptContext(contextTelemetry, "web-app-uat", "skipped", null, webAppUatGuidance ? "missing composed body" : "not a web app");
+  }
+
   // Overrides section prepends to the top of the inlined context —
   // standard pattern for slice-level builders (until composer v2 lands
   // the prepend contract).
@@ -2711,6 +3018,15 @@ export async function buildCompleteSlicePrompt(
     sliceSummaryPath,
     sliceUatPath,
     gatesToClose,
+    skillActivation: buildSkillActivationBlock({
+      base,
+      milestoneId: mid,
+      milestoneTitle: midTitle,
+      sliceId: sid,
+      sliceTitle: sTitle,
+      extraContext: [inlinedContext],
+      unitType: "complete-slice",
+    }),
   });
 }
 
@@ -2909,13 +3225,23 @@ export async function buildValidateMilestonePrompt(
     if (isDbAvailable()) {
       const milestone = getMilestone(mid);
       if (milestone) {
+        const escapeCell = (value: string) =>
+          value.replace(/[\\|]/g, (char) => `\\${char}`).replace(/\r?\n/g, " ");
         const classes: string[] = [];
-        if (milestone.verification_contract) classes.push(`- **Contract:** ${milestone.verification_contract}`);
-        if (milestone.verification_integration) classes.push(`- **Integration:** ${milestone.verification_integration}`);
-        if (milestone.verification_operational) classes.push(`- **Operational:** ${milestone.verification_operational}`);
-        if (milestone.verification_uat) classes.push(`- **UAT:** ${milestone.verification_uat}`);
+        if (milestone.verification_contract) classes.push(`| Contract | ${escapeCell(milestone.verification_contract)} |`);
+        if (milestone.verification_integration) classes.push(`| Integration | ${escapeCell(milestone.verification_integration)} |`);
+        if (milestone.verification_operational) classes.push(`| Operational | ${escapeCell(milestone.verification_operational)} |`);
+        if (milestone.verification_uat) classes.push(`| UAT | ${escapeCell(milestone.verification_uat)} |`);
         if (classes.length > 0) {
-          const verificationClasses = `### Verification Classes (from planning)\n\nThese verification tiers were defined during milestone planning. Each non-empty class must be checked for evidence during validation.\n\n${classes.join("\n")}`;
+          const verificationClasses = [
+            "### Verification Classes (from planning)",
+            "",
+            "These verification tiers were defined during milestone planning. Every row in this table must appear in `verificationClasses` with the same canonical class name.",
+            "",
+            "| Class | Planned Check |",
+            "| --- | --- |",
+            ...classes,
+          ].join("\n");
           inlined.push(verificationClasses);
           trackPromptContext(contextTelemetry, "verification-classes", "inline", verificationClasses);
         }
@@ -3288,15 +3614,31 @@ export async function buildRunUatPrompt(
     null,
     cappedInlinedContext.length < rawInlinedContext.length ? `dropped ${rawInlinedContext.length - cappedInlinedContext.length} chars` : "within budget",
   );
+  const uatPolicy = classifyUatContentForRun(uatContent, cappedInlinedContext);
+  const uatType = uatPolicy.effectiveType;
+  const runtimeHarnessOverride = uatPolicy.declaredType === "browser-executable" && uatType === "runtime-executable"
+    ? [
+      "## Runtime harness override",
+      "",
+      "This UAT declares `browser-executable` but the slice references a self-contained verification command (`npm run test:uat`, `search-uat.mjs`, or similar).",
+      "Run **only** that command via `gsd_uat_exec` with `uat-runtime-check` intent.",
+      "Do **not** call `uat-service-start`, do **not** run `npm run start`, `npm run test:server`, or any separate server command.",
+      "Do **not** use `browser_navigate` or other `browser_*` tools — the harness already exercises the browser.",
+      "When the harness exits 0, save **PASS** with `uatType: \"runtime-executable\"` (the effective mode above, not the UAT file header) and **runtime** check modes only.",
+      "",
+    ].join("\n")
+    : "";
   const inlinedContext = prependContextModeToBlock(
     "run-uat",
     base,
-    cappedInlinedContext,
+    runtimeHarnessOverride
+      ? `${runtimeHarnessOverride}\n${cappedInlinedContext}`
+      : cappedInlinedContext,
   );
   emitPromptContextTelemetry("run-uat", contextTelemetry, inlinedContext);
 
   const uatResultPath = join(base, relSliceFile(base, mid, sliceId, "ASSESSMENT"));
-  const uatType = resolveEffectiveUatType(uatContent);
+  const canonicalPresentation = JSON.stringify(buildRunUatPresentationForType(uatType), null, 2);
 
   return loadPrompt("run-uat", {
     workingDirectory: base,
@@ -3305,6 +3647,8 @@ export async function buildRunUatPrompt(
     uatPath,
     uatResultPath,
     uatType,
+    toolPresentationPlanId: RUN_UAT_TOOL_PRESENTATION_PLAN_ID,
+    canonicalPresentation,
     inlinedContext,
     skillActivation: buildSkillActivationBlock({
       base,
@@ -3452,11 +3796,25 @@ export async function buildReassessRoadmapPrompt(
 
 // ─── Reactive Execute Prompt ──────────────────────────────────────────────
 
+/**
+ * Build the `with model: "…" and thinking: "…"` suffix injected into a prompt
+ * that instructs the coordinator how to dispatch a `subagent` call. Either or
+ * both may be absent (ADR-026 / #508).
+ */
+function subagentCallSuffix(model?: string, thinking?: string): string {
+  const parts: string[] = [];
+  if (model) parts.push(`model: "${model}"`);
+  if (thinking) parts.push(`thinking: "${thinking}"`);
+  return parts.length > 0 ? ` with ${parts.join(" and ")}` : "";
+}
+
 export async function buildReactiveExecutePrompt(
   mid: string, midTitle: string, sid: string, sTitle: string,
   readyTaskIds: string[], base: string,
   subagentModel?: string,
-  opts?: { sessionContextWindow?: number; modelRegistry?: MinimalModelRegistry; sessionProvider?: string },
+  // Reasoning effort travels inside opts here (not as a positional param) so
+  // existing positional `opts` callers don't shift (#508).
+  opts?: { sessionContextWindow?: number; modelRegistry?: MinimalModelRegistry; sessionProvider?: string; subagentThinking?: string },
 ): Promise<string> {
   const { loadSliceTaskIO, deriveTaskGraph, graphMetrics } = await import("./reactive-graph.js");
 
@@ -3533,7 +3891,11 @@ export async function buildReactiveExecutePrompt(
     const taskPrompt = [
       `## UNIT: Execute Task ${tid} ("${tTitle}")`,
       "",
-      "Work only in the repository root.",
+      "## Working Directory",
+      "",
+      `Your working directory is \`${base}\`. All file reads, writes, and shell commands MUST operate relative to this directory. Do NOT \`cd\` to any other directory.`,
+      `If any inlined plan names an absolute path outside \`${base}\`, treat it as stale — use the equivalent path under \`${base}\` before reading, writing, or executing.`,
+      "",
       "Implement from the inlined task plan below. Verify changes, then call `gsd_task_complete`.",
       "Do not run git commands.",
       "",
@@ -3549,7 +3911,7 @@ export async function buildReactiveExecutePrompt(
       `When done, say: "Task ${tid} complete."`,
     ].join("\n");
 
-    const modelSuffix = subagentModel ? ` with model: "${subagentModel}"` : "";
+    const modelSuffix = subagentCallSuffix(subagentModel, opts?.subagentThinking);
     subagentSections.push([
       `### ${tid}: ${tTitle}`,
       "",
@@ -3564,18 +3926,22 @@ export async function buildReactiveExecutePrompt(
   const inlinedTemplates = inlineTemplate("task-summary", "Task Summary");
   trackPromptContext(contextTelemetry, "templates", "inline", inlinedTemplates);
 
-  const prompt = loadPrompt("reactive-execute", {
-    workingDirectory: base,
-    milestoneId: mid,
-    milestoneTitle: midTitle,
-    sliceId: sid,
-    sliceTitle: sTitle,
-    graphContext: prependContextModeToBlock("reactive-execute", base, graphContext),
-    readyTaskCount: String(readyTaskIds.length),
-    readyTaskList: readyTaskListLines.join("\n"),
-    subagentPrompts: subagentSections.join("\n\n---\n\n"),
-    inlinedTemplates,
-  });
+  const prompt = prependContextModeToBlock(
+    "reactive-execute",
+    base,
+    loadPrompt("reactive-execute", {
+      workingDirectory: base,
+      milestoneId: mid,
+      milestoneTitle: midTitle,
+      sliceId: sid,
+      sliceTitle: sTitle,
+      graphContext,
+      readyTaskCount: String(readyTaskIds.length),
+      readyTaskList: readyTaskListLines.join("\n"),
+      subagentPrompts: subagentSections.join("\n\n---\n\n"),
+      inlinedTemplates,
+    }),
+  );
   emitPromptContextTelemetry("reactive-execute", contextTelemetry, prompt);
   return prompt;
 }
@@ -3586,6 +3952,22 @@ export async function buildReactiveExecutePrompt(
 // gate-registry.ts so that prompt builders, dispatch rules, state
 // derivation, and tool handlers all consult the same source of truth.
 // See gate-registry.ts for the full ownership map.
+
+/**
+ * Adapt gate-registry guidance for section-close phases.
+ *
+ * Gate-registry text is shared with the gate-evaluate subagent, where
+ * "Return verdict ..." is literal. Section-close units write artifact sections
+ * instead, so translate that wording at render time without mutating the
+ * canonical guidance.
+ */
+function sectionModeGuidance(guidance: string): string {
+  return guidance.replace(
+    /Return verdict '([^']+)'/g,
+    (_match, verdict: string) =>
+      verdict === "omitted" ? "Leave the section empty" : `Record a \`${verdict}\``,
+  );
+}
 
 /**
  * Render a "Gates to Close" block for turns like `complete-slice` and
@@ -3610,12 +3992,16 @@ function renderGatesToCloseBlock(
     "These quality gates are still pending for this unit. You MUST address every one before calling the closing tool — the handler closes the DB row based on whether the corresponding artifact section is present.",
   );
   lines.push("");
+  lines.push(
+    "**Do NOT call `gsd_save_gate_result` (or any gate-result tool) for these gates** — that tool belongs to a different phase and the call will be blocked. You close each gate purely by writing its named section: a populated section records `pass`, an empty section records `omitted`, and the completion handler persists the verdict for you. Treat any \"return verdict\" wording in the guidance below as describing that section outcome, not as an instruction to call a tool.",
+  );
+  lines.push("");
   for (const def of applicable) {
     lines.push(`### ${def.id} — ${def.promptSection}`);
     lines.push("");
     lines.push(`**Question:** ${def.question}`);
     lines.push("");
-    lines.push(def.guidance);
+    lines.push(sectionModeGuidance(def.guidance));
     if (opts.allowOmit) {
       lines.push("");
       lines.push(
@@ -3633,10 +4019,11 @@ export async function buildParallelResearchSlicesPrompt(
   slices: Array<{ id: string; title: string }>,
   basePath: string,
   subagentModel?: string,
+  subagentThinking?: string,
 ): Promise<string> {
   // Build individual research-slice prompts for each slice
   const subagentSections: string[] = [];
-  const modelSuffix = subagentModel ? ` with model: "${subagentModel}"` : "";
+  const modelSuffix = subagentCallSuffix(subagentModel, subagentThinking);
   for (const slice of slices) {
     const slicePrompt = await buildResearchSlicePrompt(mid, midTitle, slice.id, slice.title, basePath, { contextModeRenderMode: "nested" });
     subagentSections.push([
@@ -3664,6 +4051,7 @@ export async function buildGateEvaluatePrompt(
   mid: string, midTitle: string, sid: string, sTitle: string,
   base: string,
   subagentModel?: string,
+  subagentThinking?: string,
 ): Promise<string> {
   // Pull only the gates this turn actually owns (Q3/Q4). Filter via the
   // registry so that scope:"slice" gates owned by other turns (Q8) can't
@@ -3720,7 +4108,7 @@ export async function buildGateEvaluatePrompt(
       "- `findings`: detailed markdown findings (or empty if omitted)",
     ].join("\n");
 
-    const modelSuffix = subagentModel ? ` with model: "${subagentModel}"` : "";
+    const modelSuffix = subagentCallSuffix(subagentModel, subagentThinking);
     subagentSections.push([
       `### ${def.id}: ${def.question}`,
       "",
@@ -3732,17 +4120,21 @@ export async function buildGateEvaluatePrompt(
     ].join("\n"));
   }
 
-  return loadPrompt("gate-evaluate", {
-    workingDirectory: base,
-    milestoneId: mid,
-    milestoneTitle: midTitle,
-    sliceId: sid,
-    sliceTitle: sTitle,
-    slicePlanContent: prependContextModeToBlock("gate-evaluate", base, planContent),
-    gateCount: String(pending.length),
-    gateList: gateListLines.join("\n"),
-    subagentPrompts: subagentSections.join("\n\n---\n\n"),
-  });
+  return prependContextModeToBlock(
+    "gate-evaluate",
+    base,
+    loadPrompt("gate-evaluate", {
+      workingDirectory: base,
+      milestoneId: mid,
+      milestoneTitle: midTitle,
+      sliceId: sid,
+      sliceTitle: sTitle,
+      slicePlanContent: planContent,
+      gateCount: String(pending.length),
+      gateList: gateListLines.join("\n"),
+      subagentPrompts: subagentSections.join("\n\n---\n\n"),
+    }),
+  );
 }
 
 export async function buildRewriteDocsPrompt(

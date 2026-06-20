@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 
 import { classifyError, isTransient } from "../error-classifier.ts";
 import {
-  formatProviderErrorGuidance,
   resolveProviderErrorGuidance,
   unitTypeToPrefsPhaseKey,
 } from "../provider-error-guidance.ts";
+import { formatGuidance } from "../guidance.ts";
 
 test("classifyError: Cloud Code Assist 400 invalid argument is model-error", () => {
   const result = classifyError(
@@ -56,6 +56,21 @@ test("unitTypeToPrefsPhaseKey maps research units", () => {
   assert.equal(unitTypeToPrefsPhaseKey("plan-slice"), "planning");
 });
 
+test("resolveProviderErrorGuidance suggests Antigravity migration for deprecated Gemini CLI", () => {
+  const guidance = resolveProviderErrorGuidance({
+    errorMsg:
+      "IneligibleTierError: This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google.",
+    provider: "google-gemini-cli",
+    modelId: "gemini-2.5-pro",
+    unitType: "execute-task",
+  });
+
+  assert.match(guidance.summary, /Antigravity CLI/);
+  assert.ok(guidance.steps.some((step) => step.includes("antigravity.google/cli/install.sh")));
+  assert.ok(guidance.steps.some((step) => step.includes("/login")));
+  assert.ok(guidance.steps.some((step) => step.includes("/gsd next")));
+});
+
 test("resolveProviderErrorGuidance suggests gemini-3-flash for antigravity pro-high", () => {
   const guidance = resolveProviderErrorGuidance({
     errorMsg: "Cloud Code Assist API error (400): Request contains an invalid argument.",
@@ -75,8 +90,8 @@ test("resolveProviderErrorGuidance suggests gemini-3-flash for antigravity pro-h
   assert.ok(guidance.steps.some((step) => step.includes("fallbacks")));
 });
 
-test("formatProviderErrorGuidance numbers steps", () => {
-  const text = formatProviderErrorGuidance({
+test("formatGuidance numbers steps", () => {
+  const text = formatGuidance({
     summary: "Provider error on test/model.",
     steps: ["Change model", "Run /gsd next"],
   });

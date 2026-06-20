@@ -4,6 +4,7 @@ import { formatNoModelSelectedMessage } from "@gsd/pi-coding-agent/core/auth-gui
 import type { CompactionEntry } from "@gsd/pi-coding-agent/core/session-manager.js";
 import { getLatestCompactionEntry } from "@gsd/pi-coding-agent/core/session-manager.js";
 import type { SessionBeforeCompactResult } from "@gsd/pi-coding-agent/core/extensions/index.js";
+import type { AgentMessage } from "@gsd/pi-agent-core";
 import {
 	type CompactionResult,
 	calculateContextTokens,
@@ -13,6 +14,11 @@ import {
 	shouldCompact,
 } from "../compaction/index.js";
 import type { AgentSessionHost } from "./agent-session-host.js";
+
+export function resolveThresholdContextTokens(assistantMessage: AssistantMessage, messages: AgentMessage[]): number {
+	const estimate = estimateContextTokens(messages);
+	return Math.max(calculateContextTokens(assistantMessage.usage), estimate.tokens);
+}
 
 export class AgentSessionCompactionModule {
 	constructor(readonly host: AgentSessionHost) {}
@@ -208,7 +214,9 @@ export class AgentSessionCompactionModule {
 			return await this.runAutoCompaction("overflow", true);
 		}
 
-		// Case 2: Threshold - context is getting large
+		// Case 2: Threshold - context is getting large.
+		// Use the same session estimate as the footer so trailing tool/custom
+		// messages after the last provider usage can still trigger compaction.
 		// For error messages (no usage data), estimate from last successful response.
 		// This ensures sessions that hit persistent API errors (e.g. 529) can still compact.
 		let contextTokens: number;
@@ -229,7 +237,7 @@ export class AgentSessionCompactionModule {
 			}
 			contextTokens = estimate.tokens;
 		} else {
-			contextTokens = calculateContextTokens(assistantMessage.usage);
+			contextTokens = resolveThresholdContextTokens(assistantMessage, this.host.agent.state.messages);
 		}
 		if (shouldCompact(contextTokens, contextWindow, settings)) {
 			return await this.runAutoCompaction("threshold", false);

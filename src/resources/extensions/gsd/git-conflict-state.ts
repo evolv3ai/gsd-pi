@@ -64,7 +64,23 @@ export function gitDiffCheckFailures(basePath: string): string[] | null {
       .filter(Boolean)
       .join("\n")
       .trim();
-    failures.push(output || `git diff --check ${args.join(" ")} failed`);
+
+    // git diff --check exits non-zero for both whitespace errors and leftover
+    // conflict markers. Only conflict markers block the gate — whitespace errors
+    // in staged files (common in auto-generated code) must not be misread as an
+    // unresolved merge conflict. Filter to lines git explicitly labels as
+    // "leftover conflict marker".
+    if (!output) {
+      failures.push(`git diff --check ${args.join(" ")} failed`);
+      continue;
+    }
+    const conflictMarkerLines = output
+      .split("\n")
+      .filter((line) => /leftover conflict marker/i.test(line))
+      .join("\n");
+    if (conflictMarkerLines) {
+      failures.push(conflictMarkerLines);
+    }
   }
 
   return failures;

@@ -1326,6 +1326,7 @@ Create a new provider file (for example `amazon-bedrock.ts`) that exports:
 - Map chat/tool-capable provider model data to the standardized `Model` interface via `scripts/generate-models.ts`
 - Map image-generation provider model data to the standardized `ImagesModel` interface via `scripts/generate-image-models.ts`
 - Handle provider-specific quirks (pricing format, capability flags, model ID transformations)
+- Run `pnpm run generate` from `packages/pi-ai` when changing model generation; `pnpm run build` compiles the committed generated catalogs without refreshing them.
 
 #### 5. Tests (`test/`)
 

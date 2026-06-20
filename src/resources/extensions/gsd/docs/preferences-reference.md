@@ -73,6 +73,15 @@ These are **separate concerns**:
 
 Setting `prefer_skills: []` does **not** disable skill discovery — it just means you have no preference overrides. Use `skill_discovery: off` to disable discovery entirely.
 
+### Parse & Validation Diagnostics
+
+Preference loading never throws. When a file is malformed or contains invalid settings, GSD falls back to safe defaults but attaches structured diagnostics (see `collectPreferenceDiagnostics()` in `preferences-diagnostics.ts`) so the problem is reported instead of silently ignored:
+
+- **Parse failures** (missing closing `---` delimiter, YAML syntax error, or an unrecognized file format) cause the whole file to be ignored. Loading continues to the next candidate — a valid global or legacy preferences file is still used, and a malformed project file never becomes the effective wrapper or blocks fallback.
+- **Validation problems** (unknown keys, type mismatches) are sanitized or dropped per-field; the remaining valid settings in the file still apply.
+
+Diagnostics record the file path, scope (global/project), severity (error/warning), kind (parse/validation), and — for YAML parse errors — the line and column. They surface through session-start notifications, `/gsd doctor`, and auto-mode preflight, with each surface deduping repeated diagnostics.
+
 ---
 
 ## Field Guide
@@ -104,14 +113,22 @@ Setting `prefer_skills: []` does **not** disable skill discovery — it just mea
 
 - `language`: preferred response language for all GSD interactions. Accepts any language name or code — `"Chinese"`, `"zh"`, `"German"`, `"de"`, `"日本語"`, etc. When set, GSD injects "Always respond in \<language\>" into every agent's system prompt, including after `/clear`. Quickest way to set it: `/gsd language <name>`. To clear: `/gsd language off`.
 
-- `models`: per-stage model selection (applies to both auto-mode and guided-flow dispatches). Keys: `research`, `planning`, `discuss`, `execution`, `execution_simple`, `completion`, `validation`, `subagent`. Values can be:
+- `models`: per-stage model selection (applies to both auto-mode and guided-flow dispatches). Keys: `research`, `planning`, `discuss`, `execution`, `execution_simple`, `completion`, `validation`, `subagent`, `uat`. Values can be:
   - Simple string: `"claude-sonnet-4-6"` — single model, no fallbacks
   - Provider-qualified string: `"bedrock/claude-sonnet-4-6"` — targets a specific provider when the same model ID exists across multiple providers
   - Object with fallbacks: `{ model: "claude-opus-4-6", fallbacks: ["glm-5", "minimax-m2.5"] }` — tries fallbacks in order if primary fails
   - Object with provider: `{ model: "claude-opus-4-6", provider: "bedrock" }` — explicit provider targeting in object format
+  - Object with thinking: `{ model: "claude-opus-4-6", thinking: "xhigh" }` — pins the reasoning effort for that phase (see `thinking` below)
   - Omit a key to use whatever model is currently active (except `discuss` and `validation` which fall back to `planning` when unset). Fallbacks are tried when model switching fails (provider unavailable, rate limited, etc.).
   - `discuss` — used for milestone/slice discussion (interactive context gathering). Falls back to `planning` if unset.
   - `validation` — used for gate evaluation, roadmap reassessment, milestone validation, and doc rewrites. Falls back to `planning` if unset.
+  - `uat` — used for UAT runs. Falls back to `completion` if unset.
+
+- `thinking`: per-phase reasoning effort (ADR-026), separate from `models`. Same phase keys as `models`. Values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. Thinking travels with the model — model choice and reasoning effort are independent controls, so you can run one model across phases at different reasoning levels.
+  - Two equivalent ways to set it: inline as `models.<phase>.thinking`, or as a separate `thinking:` block keyed by phase. For the same phase, the inline value wins over the block; project preferences win over global; a phase that's unset inherits via the same sibling chain as `models` (e.g. `discuss → planning`).
+  - If no thinking is configured for a phase, the session level (set via `/model`) is used, exactly as before — this is fully backward-compatible.
+  - `execute-task` (code-writing) has a measured reasoning floor of `medium`: at lower levels models stop planning edits and thrash on file re-reads. The floor applies to the session/default path. An **explicit** `execution` thinking level bypasses the floor and is honored verbatim (with a one-time advisory) — set `execution: low` deliberately if you want it.
+  - Levels a model can't support are clamped to the nearest supported level at dispatch and never sent to the provider, so a model/level mismatch never fails a unit mid-run. `xhigh` is only honored by select model families.
 
 - `skill_staleness_days`: number — skills unused for this many days get deprioritized during discovery. Set to `0` to disable staleness tracking. Default: `60`.
 
@@ -305,9 +322,17 @@ This config sets a parent workspace with two child repositories. The implicit `p
   - `max_cycles`: number — max times this hook fires per trigger (default: 1, max: 10).
   - `model`: string — optional model override.
   - `artifact`: string — expected output file name (relative to task/slice dir). Hook is skipped if file already exists (idempotent).
+  - `criticality`: `"advisory"` or `"blocking"` — advisory preserves current best-effort behavior; blocking requires clean hook completion plus a valid outcome verdict before auto-mode advances. Default: `"advisory"`.
   - `retry_on`: string — if this file is produced instead of the artifact, re-run the trigger unit then re-run hooks.
+  - `on_block`: object — optional routing for blocking findings:
+    - `action`: `"retry-unit"`, `"retry-task"`, `"queue-task"`, `"queue-slice"`, or `"pause"`.
+    - `artifact`: string — optional compatibility artifact for retry routing.
   - `agent`: string — agent definition file to use for hook execution.
   - `enabled`: boolean — toggle without removing (default: `true`).
+
+  Blocking hook artifacts must begin with YAML frontmatter containing either `verdict` or `outcome.verdict`.
+  Supported verdicts are `pass`, `advisory`, `needs-rework`, `needs-remediation`, and `needs-attention`.
+  `pass` and `advisory` continue; `needs-rework` retries the trigger unit when routed with `retry-unit`/`retry-task`; `needs-remediation` and `needs-attention` pause with recovery guidance.
 
 - `pre_dispatch_hooks`: array — hooks that fire before a unit is dispatched. Each entry has:
   - `name`: string — unique hook identifier.
@@ -439,6 +464,47 @@ models:
   completion: openrouter/minimax/minimax-m2.5
 ---
 ```
+
+## Per-Phase Thinking Level Example
+
+Model choice and reasoning effort are independent controls (ADR-026). You can use one model across phases at different reasoning levels, or mix per-phase models with per-phase thinking.
+
+Inline form — thinking pinned alongside the model:
+
+```yaml
+---
+version: 1
+models:
+  planning:
+    model: openai-codex/gpt-5.4
+    thinking: xhigh
+  execution:
+    model: openai-codex/gpt-5.4
+    thinking: low      # explicit → bypasses the execute-task medium floor
+  validation:
+    model: openai-codex/gpt-5.4
+    thinking: high
+---
+```
+
+Separate-block form — set thinking without pinning a model (the session model is used):
+
+```yaml
+---
+version: 1
+thinking:
+  research: medium
+  planning: xhigh
+  discuss: high
+  execution: low
+  execution_simple: low
+  completion: medium
+  validation: high
+  uat: medium
+---
+```
+
+For a single phase, an inline `models.<phase>.thinking` value wins over the same phase in the `thinking:` block; project preferences win over global. Unsupported levels are clamped to the nearest level the resolved model supports.
 
 When a model fails to switch (provider unavailable, rate limited, credits exhausted), GSD automatically tries the next model in the `fallbacks` list. This ensures auto-mode continues even when your preferred provider hits limits.
 

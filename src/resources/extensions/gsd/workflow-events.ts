@@ -1,8 +1,13 @@
-import { createHash, randomUUID } from "node:crypto";
-import { appendFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { readFileSync, existsSync } from "node:fs";
 import { atomicWriteSync } from "./atomic-write.js";
 import { withFileLockSync } from "./file-lock.js";
+import {
+  appendWorkflowEvent,
+  workflowEventArchivePath,
+  workflowEventLogPath,
+  type WorkflowEventInput,
+} from "./workflow-event-ledger.js";
 import { logWarning } from "./workflow-logger.js";
 
 // ─── Session ID ───────────────────────────────────────────────────────────
@@ -40,22 +45,9 @@ export interface WorkflowEvent {
  */
 export function appendEvent(
   basePath: string,
-  event: Omit<WorkflowEvent, "hash" | "session_id"> & { actor_name?: string; trigger_reason?: string },
+  event: WorkflowEventInput,
 ): void {
-  const hash = createHash("sha256")
-    .update(JSON.stringify({ cmd: event.cmd, params: event.params }))
-    .digest("hex")
-    .slice(0, 16);
-
-  const fullEvent: WorkflowEvent = {
-    v: 2,
-    ...event,
-    hash,
-    session_id: ENGINE_SESSION_ID,
-  };
-  const dir = join(basePath, ".gsd");
-  mkdirSync(dir, { recursive: true });
-  appendFileSync(join(dir, "event-log.jsonl"), JSON.stringify(fullEvent) + "\n", "utf-8");
+  appendWorkflowEvent(basePath, event, ENGINE_SESSION_ID);
 }
 
 // ─── readEvents ──────────────────────────────────────────────────────────
@@ -125,8 +117,8 @@ export function compactMilestoneEvents(
   basePath: string,
   milestoneId: string,
 ): { archived: number } {
-  const logPath = join(basePath, ".gsd", "event-log.jsonl");
-  const archivePath = join(basePath, ".gsd", `event-log-${milestoneId}.jsonl.archived`);
+  const logPath = workflowEventLogPath(basePath);
+  const archivePath = workflowEventArchivePath(basePath, milestoneId);
 
   return withFileLockSync(logPath, () => {
     const allEvents = readEvents(logPath);

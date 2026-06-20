@@ -15,31 +15,22 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { CompleteSliceParams } from "../types.js";
-import { isClosedStatus } from "../status-guards.js";
 import {
-  transaction,
-  insertMilestone,
-  insertSlice,
-  getSlice,
-  getSliceTasks,
-  getMilestone,
-  updateSliceStatus,
+  completeSliceCascade,
   setSliceSummaryMd,
   saveGateResult,
   getPendingGatesForTurn,
-  getMilestoneSlices,
-  updateMilestoneStatus,
 } from "../gsd-db.js";
 import { getGatesForTurn } from "../gate-registry.js";
 import { gsdProjectionRoot, clearPathCache, resolveMilestoneFile } from "../paths.js";
 import { resolveCanonicalMilestoneRoot } from "../worktree-manager.js";
 import { checkOwnership, sliceUnitKey } from "../unit-ownership.js";
 import { saveFile, clearParseCache } from "../files.js";
+import { classifyUatContent, escalatesArtifactUatToBrowser } from "../uat-policy.js";
 import { invalidateStateCache } from "../state.js";
-import { renderRoadmapFromDb } from "../markdown-renderer.js";
-import { parseRoadmap } from "../parsers-legacy.js";
+import { renderRoadmapFromDb, roadmapRenderMarksSliceDone } from "../markdown-renderer.js";
 import { isStaleWrite } from "../auto/turn-epoch.js";
-import { renderAllProjections } from "../workflow-projections.js";
+import { flushWorkflowProjections } from "../projection-flush.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning, logError } from "../workflow-logger.js";
@@ -99,9 +90,11 @@ function hasCompleteSliceArtifactContract(basePath: string, milestoneId: string,
     join(gsdProjectionRoot(basePath), "milestones", milestoneId, `${milestoneId}-ROADMAP.md`);
   if (!existsSync(roadmapPath)) return false;
 
+  // Projection-completeness check (ADR-017): the DB has already recorded the
+  // duplicate completion; this only verifies the rendered markdown artifacts
+  // exist and reflect it, deciding whether re-rendering is needed.
   try {
-    const roadmap = parseRoadmap(readFileSync(roadmapPath, "utf-8"));
-    return roadmap.slices.some((slice) => slice.id === sliceId && slice.done);
+    return roadmapRenderMarksSliceDone(readFileSync(roadmapPath, "utf-8"), sliceId);
   } catch {
     return false;
   }
@@ -217,7 +210,7 @@ ${params.narrative}
 
 ## Verification
 
-${params.verification}
+${params.verification ?? ""}
 
 ## Requirements Advanced
 
@@ -342,60 +335,70 @@ export async function handleCompleteSlice(
     return { error: `slice verification indicates blocked/failed state — do not complete a slice that has not passed verification. Address the blockers and re-verify first.` };
   }
 
-  // ── Guards + DB writes inside a single transaction (prevents TOCTOU) ───
+  // ── Browser/web UAT classification gate ────────────────────────────────
+  // A UAT that drives a running web UI (opening a page in a browser,
+  // navigating to a page/localhost) must declare a browser-capable mode so the
+  // run-uat runner surfaces browser tools and actually launches a browser.
+  // Otherwise the browser checks get silently deferred to a human and the slice
+  // passes on static checks alone (M001/S03 regression). `browser-executable`,
+  // `live-runtime`, and `mixed` all receive browser tools (see
+  // UAT_MODE_POLICIES); only the non-browser modes are rejected here.
+  //
+  // Reuse the canonical hasBrowserRequiredText detector (also used by dispatch
+  // and milestone validation): it skips Not-Proven/Out-of-Scope disclaimer
+  // sections and only treats verbs like navigate/open as web when they sit next
+  // to browser/page/localhost — avoiding false positives on CLI/file/API steps.
+  //
+  // Only `artifact-driven` is gated. It is the one mode that performs no
+  // execution at all (static/file checks), so a browser-requiring UAT under it
+  // genuinely defers verification to a human. Every other mode has a real
+  // verification path: `runtime-executable` runs browser test commands like
+  // `npx playwright test` via gsd_uat_exec, and live-runtime/mixed/
+  // browser-executable receive browser tools (UAT_MODE_POLICIES).
+  const uatContent = params.uatContent || "";
+  const uatPolicy = classifyUatContent(uatContent);
+  if (escalatesArtifactUatToBrowser(uatPolicy)) {
+    // Distinguish an explicit artifact-driven declaration from a missing or
+    // unparseable one that merely *defaulted* to artifact-driven — telling an
+    // agent it "declared artifact-driven" when its declaration simply failed
+    // to parse sends it into a rewrite loop with the same unparseable format.
+    const staticOnlyClause = `which only runs static/file checks and would defer the browser work to a human`;
+    const modeClause = uatPolicy.modeDeclared
+      ? `declares "UAT mode: artifact-driven", ${staticOnlyClause}`
+      : `has no parseable UAT mode declaration in its "## UAT Type" section (the declaration must be a bullet exactly like "- UAT mode: browser-executable"), so it defaults to "artifact-driven", ${staticOnlyClause}`;
+    return {
+      error: `UAT requires browser verification (opening a page in a browser, navigating to a page or localhost, screenshots) but ${modeClause}. Use a mode that actually verifies the UI: "browser-executable" (interactive browser tools), "runtime-executable" (a browser test command such as playwright), or a browser-inclusive "mixed"/"live-runtime". Re-author the UAT Type section and complete the slice again.`,
+    };
+  }
+
+  // ── Atomic completion cascade (guards + writes in one transaction) ───────
   const completedAt = new Date().toISOString();
   let guardError: string | null = null;
   let existingSummaryMd = "";
   let duplicateComplete = false;
 
-  transaction(() => {
-    // State machine preconditions (inside txn for atomicity).
-    // Milestone/slice not existing is OK — insertMilestone/insertSlice below will auto-create.
-    // Only block if they exist and are closed.
-    const milestone = getMilestone(params.milestoneId);
-    if (milestone && isClosedStatus(milestone.status)) {
-      guardError = `cannot complete slice in a closed milestone: ${params.milestoneId} (status: ${milestone.status})`;
-      return;
-    }
-
-    const slice = getSlice(params.milestoneId, params.sliceId);
-    existingSummaryMd = slice?.full_summary_md?.trim() ?? "";
-    if (slice && isClosedStatus(slice.status)) {
-      duplicateComplete = true;
-      return;
-    }
-
-    // Verify all tasks are complete
-    const tasks = getSliceTasks(params.milestoneId, params.sliceId);
-    if (tasks.length === 0) {
-      guardError = `no tasks found for slice ${params.sliceId} in milestone ${params.milestoneId}`;
-      return;
-    }
-
-    const incompleteTasks = tasks.filter(t => !isClosedStatus(t.status));
-    if (incompleteTasks.length > 0) {
-      const incompleteIds = incompleteTasks.map(t => `${t.id} (status: ${t.status})`).join(", ");
-      guardError = `incomplete tasks: ${incompleteIds}`;
-      return;
-    }
-
-    // All guards passed — perform writes. Preserve existing planning metadata:
-    // completion should not overwrite title/risk/depends/demo/sequence.
-    insertMilestone({ id: params.milestoneId, title: params.milestoneId });
-    if (!slice) {
-      insertSlice({ id: params.sliceId, milestoneId: params.milestoneId, title: params.sliceTitle || params.sliceId });
-    }
-    updateSliceStatus(params.milestoneId, params.sliceId, "complete", completedAt);
-
-    const updatedSlices = getMilestoneSlices(params.milestoneId);
-    if (
-      milestone?.status === "planned" &&
-      updatedSlices.length > 0 &&
-      updatedSlices.every((s) => isClosedStatus(s.status))
-    ) {
-      updateMilestoneStatus(params.milestoneId, "active");
-    }
+  const outcome = completeSliceCascade(params.milestoneId, params.sliceId, {
+    sliceTitle: params.sliceTitle,
+    completedAt,
   });
+  if (outcome.ok) {
+    existingSummaryMd = outcome.existingSummaryMd;
+    duplicateComplete = outcome.duplicate;
+  } else {
+    switch (outcome.reason) {
+      case "milestone-closed":
+        guardError = `cannot complete slice in a closed milestone: ${params.milestoneId} (status: ${outcome.status})`;
+        break;
+      case "no-tasks":
+        guardError = `no tasks found for slice ${params.sliceId} in milestone ${params.milestoneId}`;
+        break;
+      case "incomplete-tasks": {
+        const incompleteIds = outcome.incomplete.map((t) => `${t.id} (status: ${t.status})`).join(", ");
+        guardError = `incomplete tasks: ${incompleteIds}`;
+        break;
+      }
+    }
+  }
 
   if (duplicateComplete) {
     const staleSummaryPath = sliceSummaryPath(
@@ -440,6 +443,19 @@ export async function handleCompleteSlice(
       const parsed = parseRequirementSection(existingSummaryMd, "Requirements Invalidated or Re-scoped", "what");
       if (parsed.length > 0) effectiveParams.requirementsInvalidated = parsed as Array<{ id: string; what: string }>;
     }
+    if (effectiveParams.verification === undefined) {
+      const headingLine = "## Verification\n\n";
+      const start = existingSummaryMd.indexOf(headingLine);
+      if (start !== -1) {
+        const contentStart = start + headingLine.length;
+        const nextHeading = existingSummaryMd.indexOf("\n\n## ", contentStart);
+        const prior = nextHeading === -1
+          ? existingSummaryMd.slice(contentStart)
+          : existingSummaryMd.slice(contentStart, nextHeading);
+        const trimmed = prior.trim();
+        if (trimmed) effectiveParams.verification = trimmed;
+      }
+    }
   }
 
   // Render summary markdown
@@ -463,8 +479,9 @@ export async function handleCompleteSlice(
 
     const roadmap = await renderRoadmapFromDb(artifactBasePath, params.milestoneId);
     clearParseCache();
-    const roadmapSlice = parseRoadmap(roadmap.content).slices.find((slice) => slice.id === params.sliceId);
-    if (!roadmapSlice?.done) {
+    // Render verification (ADR-017): confirms the just-written projection
+    // reflects the DB completion; the DB row is already committed.
+    if (!roadmapRenderMarksSliceDone(roadmap.content, params.sliceId)) {
       throw new Error(`roadmap render did not mark ${params.milestoneId}/${params.sliceId} complete`);
     }
   } catch (renderErr) {
@@ -520,7 +537,7 @@ export async function handleCompleteSlice(
   // Separate try/catch per step so a projection failure doesn't prevent
   // the event log entry (critical for worktree reconciliation).
   try {
-    await renderAllProjections(artifactBasePath, params.milestoneId);
+    await flushWorkflowProjections(artifactBasePath, { milestoneId: params.milestoneId });
   } catch (projErr) {
     logWarning("tool", `complete-slice projection warning for ${params.milestoneId}/${params.sliceId}: ${(projErr as Error).message}`);
   }

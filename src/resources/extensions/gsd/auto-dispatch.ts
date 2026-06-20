@@ -12,12 +12,25 @@
  * without modifying orchestration code.
  */
 
-import type { GSDState } from "./types.js";
+import type { GSDState, TaskIO } from "./types.js";
 import type { GSDPreferences } from "./preferences.js";
-import type { UatType } from "./files.js";
 import type { MinimalModelRegistry } from "./context-budget.js";
 import { loadFile, extractUatType, loadActiveOverrides } from "./files.js";
-import { isDbAvailable, getMilestoneSlices, getPendingGates, markAllGatesOmitted, getMilestone, insertAssessment, setSliceSketchFlag, transaction, getAssessment } from "./gsd-db.js";
+import { getUatBrowserToolSupportError, type UatType } from "./uat-policy.js";
+import {
+  isDbAvailable,
+  getMilestoneSlices,
+  getMilestoneSliceSummaries,
+  getClosedSliceIds,
+  getPendingGatesForTurn,
+  markPendingGatesOmittedForTurn,
+  getMilestone,
+  insertArtifact,
+  insertAssessment,
+  setSliceSketchFlag,
+  transaction,
+  getAssessment,
+} from "./gsd-db.js";
 import { isClosedStatus } from "./status-guards.js";
 import { extractVerdict, isAcceptableUatVerdict } from "./verdict-parser.js";
 
@@ -36,7 +49,6 @@ import {
   buildTaskFileName,
   gsdProjectionRoot,
 } from "./paths.js";
-import { parseRoadmap } from "./parsers-legacy.js";
 import { validateArtifact } from "./schemas/validate.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from "node:fs";
 import { logWarning, logError } from "./workflow-logger.js";
@@ -67,15 +79,21 @@ import {
   checkNeedsReassessment,
   checkNeedsRunUat,
 } from "./auto-prompts.js";
-import { resolveModelWithFallbacksForUnit } from "./preferences-models.js";
+import { resolveModelWithFallbacksForUnit, resolveThinkingLevelForUnit } from "./preferences-models.js";
 import { resolveUokFlags } from "./uok/flags.js";
 import { selectReactiveDispatchBatch } from "./uok/execution-graph.js";
 import { getMilestonePipelineVariant } from "./milestone-scope-classifier.js";
 import { EXECUTION_ENTRY_PHASES, hasFinalizedMilestoneContext } from "./uok/plan-v2.js";
 import { isAutoActive } from "./auto.js";
-import { markDepthVerified } from "./bootstrap/write-gate.js";
+// Host adapter explicitly: auto-dispatch runs in the extension host, and the
+// ambient write-gate exports env-sniff the adapter per call (they are reserved
+// for the workflow MCP child's dynamic-import surface).
+import { hostWriteGateAdapter } from "./bootstrap/write-gate.js";
 import { ensureWorkflowPreferencesCaptured } from "./planning-depth.js";
 import { MILESTONE_ID_RE } from "./milestone-ids.js";
+import { resolveWorkflowMcpProjectRoot } from "./workflow-mcp.js";
+import { getUnitWorkflowDispatchReadinessError } from "./tool-contract.js";
+import { prepareBrowserDaemonForUat } from "./browser-daemon-auto-prep.js";
 import {
   PROJECT_RESEARCH_INFLIGHT_MARKER,
 } from "./project-research-policy.js";
@@ -96,6 +114,10 @@ import { probeGitConflictState } from "./git-conflict-state.js";
 import { runTurnGitAction } from "./git-service.js";
 import { parseUnitId } from "./unit-id.js";
 import { resolveExpectedArtifactPath } from "./auto-artifact-paths.js";
+import {
+  formatCloseoutProofBlock,
+  proveMilestoneCloseout,
+} from "./milestone-closeout-proof.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────
 
@@ -132,6 +154,14 @@ export interface DispatchContext {
   modelRegistry?: MinimalModelRegistry;
   /** Session model provider, used for provider-specific effective context windows. */
   sessionProvider?: string;
+  /** Active tools in the current session, used for transport preflight checks. */
+  activeTools?: string[];
+  /** Registered tools in the current session, used for run-uat tools re-scoped at dispatch. */
+  registeredTools?: string[];
+  /** Session model base URL, used for transport preflight checks. */
+  sessionBaseUrl?: string;
+  /** Session model auth mode, used for transport preflight checks. */
+  sessionAuthMode?: "apiKey" | "oauth" | "externalCli" | "none";
 }
 
 function resolveExistingExpectedArtifact(
@@ -148,6 +178,26 @@ type ResearchProjectPromptBuilder = typeof buildResearchProjectPrompt;
 
 let reassessmentChecker: ReassessmentChecker = checkNeedsReassessment;
 let researchProjectPromptBuilder: ResearchProjectPromptBuilder = buildResearchProjectPrompt;
+
+/**
+ * Optional override for the reactive graph derivation step inside the
+ * "executing → reactive-execute" rule. Production leaves this null so the rule
+ * uses the real loadSliceTaskIO + deriveTaskGraph; tests inject a throwing
+ * function to deterministically exercise the best-effort failure path
+ * (auto-dispatch.ts:1494). The catch is otherwise unreachable because every
+ * operation it wraps (loadSliceTaskIO, deriveTaskGraph, saveReactiveState) is
+ * internally defensive.
+ * @internal
+ */
+let _reactiveGraphDeriveFn: ((basePath: string, mid: string, sid: string) => Promise<TaskIO[]>) | null = null;
+
+export function setReactiveGraphDeriveFnForTest(
+  fn: ((basePath: string, mid: string, sid: string) => Promise<TaskIO[]>) | null,
+): () => void {
+  const previous = _reactiveGraphDeriveFn;
+  _reactiveGraphDeriveFn = fn;
+  return () => { _reactiveGraphDeriveFn = previous; };
+}
 
 function shouldBypassMilestoneDepthGateInAuto(prefs: GSDPreferences | undefined): boolean {
   return isAutoActive() && prefs?.planning_depth !== "deep";
@@ -415,39 +465,72 @@ export function findMissingSummaries(basePath: string, mid: string): string[] {
     .map(s => s.id);
 }
 
-function backfillMissingAssessmentsFromSummaries(basePath: string, mid: string): void {
-  const completedSliceIds = new Set<string>();
-  if (isDbAvailable()) {
-    for (const slice of getMilestoneSlices(mid)) {
-      if (slice.status === "complete" || slice.status === "done") {
-        completedSliceIds.add(slice.id);
-      }
-    }
-  } else {
-    const roadmapFile = resolveMilestoneFile(basePath, mid, "ROADMAP");
-    if (!roadmapFile) return;
-    try {
-      const roadmap = parseRoadmap(readFileSync(roadmapFile, "utf-8"));
-      for (const slice of roadmap.slices) {
-        if (slice.done) completedSliceIds.add(slice.id);
-      }
-    } catch {
-      return;
-    }
-  }
+function stringField(row: Record<string, unknown> | null, key: string): string | null {
+  const value = row?.[key];
+  return typeof value === "string" ? value : null;
+}
 
-  for (const sliceId of completedSliceIds) {
+function stripGsdPrefix(path: string): string {
+  return path.startsWith(".gsd/") ? path.slice(".gsd/".length) : path;
+}
+
+function persistSliceAssessmentBackfill(
+  assessmentRelPath: string,
+  mid: string,
+  sliceId: string,
+  content: string,
+): void {
+  const artifactPath = stripGsdPrefix(assessmentRelPath);
+  const existingAssessment =
+    getAssessment(assessmentRelPath) ??
+    getAssessment(artifactPath);
+  const scope = stringField(existingAssessment, "scope") ?? "run-uat";
+  const status = stringField(existingAssessment, "status") ??
+    extractVerdict(content)?.toLowerCase() ??
+    "unknown";
+
+  transaction(() => {
+    insertArtifact({
+      path: artifactPath,
+      artifact_type: "ASSESSMENT",
+      milestone_id: mid,
+      slice_id: sliceId,
+      task_id: null,
+      full_content: content,
+    });
+    if (!getAssessment(assessmentRelPath)) {
+      insertAssessment({
+        path: assessmentRelPath,
+        milestoneId: mid,
+        sliceId,
+        taskId: null,
+        status,
+        scope,
+        fullContent: content,
+      });
+    }
+  });
+}
+
+function backfillMissingAssessmentsFromSummaries(basePath: string, mid: string): void {
+  // DB-authoritative (ADR-017): no markdown fallback. Without DB rows there
+  // is nothing to backfill.
+  if (!isDbAvailable()) return;
+  // Canonical closed vocabulary (complete/done/skipped/closed) — a skipped or
+  // closed slice with a SUMMARY gets the same assessment backfill treatment.
+  for (const sliceId of getClosedSliceIds(mid)) {
     const summaryPath = resolveSliceFile(basePath, mid, sliceId, "SUMMARY");
     if (!summaryPath || !existsSync(summaryPath)) continue;
 
     const slicePath = resolveSlicePath(basePath, mid, sliceId);
     const assessmentPath = resolveSliceFile(basePath, mid, sliceId, "ASSESSMENT")
       ?? (slicePath ? join(slicePath, buildSliceFileName(sliceId, "ASSESSMENT")) : null);
-    if (!assessmentPath || existsSync(assessmentPath)) continue;
+    if (!assessmentPath) continue;
 
-    mkdirSync(dirname(assessmentPath), { recursive: true });
+    const assessmentRelPath = relSliceFile(basePath, mid, sliceId, "ASSESSMENT");
     const now = new Date().toISOString();
-    const content = [
+    const didCreateAssessment = !existsSync(assessmentPath);
+    const content = didCreateAssessment ? [
       "---",
       `sliceId: ${sliceId}`,
       "verdict: PASS",
@@ -459,8 +542,20 @@ function backfillMissingAssessmentsFromSummaries(basePath: string, mid: string):
       "Auto-created during milestone validation because this completed slice had a SUMMARY but no ASSESSMENT artifact.",
       "No additional reassessment changes were detected in this backfill step.",
       "",
-    ].join("\n");
-    writeFileSync(assessmentPath, content, "utf-8");
+    ].join("\n") : readFileSync(assessmentPath, "utf-8");
+
+    if (isDbAvailable()) {
+      try {
+        persistSliceAssessmentBackfill(assessmentRelPath, mid, sliceId, content);
+      } catch (err) {
+        logWarning("dispatch", `failed to backfill assessment DB rows for ${mid}/${sliceId}: ${(err as Error).message}`);
+      }
+    }
+
+    if (didCreateAssessment) {
+      mkdirSync(dirname(assessmentPath), { recursive: true });
+      writeFileSync(assessmentPath, content, "utf-8");
+    }
   }
 }
 
@@ -609,7 +704,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
       // deadlock. Deep planning is still user-driven even inside auto-mode,
       // so it must wait for explicit approval instead of taking this bypass.
       if (shouldBypassMilestoneDepthGateInAuto(prefs)) {
-        markDepthVerified(mid, basePath);
+        hostWriteGateAdapter.markDepthVerified(mid, basePath);
       }
       return {
         action: "dispatch",
@@ -622,6 +717,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
           structuredQuestionsAvailable,
           { headless: !!process.env.GSD_HEADLESS },
         ),
+        pauseAfterDispatch: !process.env.GSD_HEADLESS,
       };
     },
   },
@@ -648,10 +744,56 @@ export const DISPATCH_RULES: DispatchRule[] = [
   },
   {
     name: "run-uat (post-completion)",
-    match: async ({ state, mid, basePath, prefs }) => {
+    match: async ({
+      state,
+      mid,
+      basePath,
+      prefs,
+      sessionProvider,
+      sessionAuthMode,
+      activeTools,
+      registeredTools,
+      sessionBaseUrl,
+    }) => {
       const needsRunUat = await checkNeedsRunUat(basePath, mid, state, prefs);
       if (!needsRunUat) return null;
       const { sliceId, uatType } = needsRunUat;
+
+      // Transport preflight: verify required MCP tools are actually connected
+      // before consuming a retry attempt. Fixes tool-starved sessions burning
+      // all MAX_UAT_ATTEMPTS before stopping (#477).
+      const transportError = getUnitWorkflowDispatchReadinessError({
+        provider: sessionProvider,
+        projectRoot: basePath,
+        surface: "auto-mode",
+        unitType: "run-uat",
+        authMode: sessionAuthMode,
+        baseUrl: sessionBaseUrl,
+        activeTools,
+      });
+      if (transportError) {
+        return { action: "stop" as const, reason: transportError, level: "warning" as const };
+      }
+      const browserToolError = getUatBrowserToolSupportError({
+        uatType,
+        activeTools,
+        registeredTools,
+        milestoneId: mid,
+        sliceId,
+      });
+      if (browserToolError) {
+        return { action: "stop" as const, reason: browserToolError, level: "warning" as const };
+      }
+      const browserDaemonError = prepareBrowserDaemonForUat({
+        uatType,
+        sessionProvider,
+        sessionAuthMode,
+        sessionBaseUrl,
+        projectRoot: resolveWorkflowMcpProjectRoot(basePath),
+      });
+      if (browserDaemonError) {
+        return { action: "stop" as const, reason: browserDaemonError, level: "warning" as const };
+      }
 
       // Cap run-uat dispatch attempts to prevent infinite replay (#3624).
       // Check before incrementing so an exhausted counter cannot create a
@@ -688,23 +830,10 @@ export const DISPATCH_RULES: DispatchRule[] = [
       // Only applies when UAT dispatch is enabled
       if (!prefs?.uat_dispatch) return null;
 
-      // DB-first: prefer closed slices from DB; fall back to ROADMAP on disk.
-      let closedSliceIds: string[];
-      if (isDbAvailable()) {
-        closedSliceIds = getMilestoneSlices(mid)
-          .filter(s => isClosedStatus(s.status))
-          .map(s => s.id);
-      } else {
-        // Filesystem fallback for degraded / unmigrated projects.
-        // `slice.done` in the parsed ROADMAP is the disk-level closed signal.
-        const roadmapFile = resolveMilestoneFile(basePath, mid, "ROADMAP");
-        const roadmapContent = roadmapFile ? await loadFile(roadmapFile) : null;
-        if (!roadmapContent) return null;
-        const roadmap = parseRoadmap(roadmapContent);
-        closedSliceIds = roadmap.slices.filter(s => s.done).map(s => s.id);
-      }
-
-      for (const sliceId of closedSliceIds) {
+      // DB-authoritative (ADR-017): closed slices come from the DB only; the
+      // ROADMAP projection is never parsed for gate decisions.
+      if (!isDbAvailable()) return null;
+      for (const sliceId of getClosedSliceIds(mid)) {
         const result = await readUatGateVerdict(basePath, mid, sliceId);
         if (!result) continue;
         const { verdict, uatType } = result;
@@ -759,7 +888,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
       // H6 fix (#4973): keep the non-deep auto-mode bypass, but do not
       // pre-verify deep planning's user-facing milestone approval gate.
       if (shouldBypassMilestoneDepthGateInAuto(prefs)) {
-        markDepthVerified(mid, basePath);
+        hostWriteGateAdapter.markDepthVerified(mid, basePath);
       }
       return {
         action: "dispatch",
@@ -772,6 +901,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
           structuredQuestionsAvailable,
           { headless: !!process.env.GSD_HEADLESS },
         ),
+        pauseAfterDispatch: !process.env.GSD_HEADLESS,
       };
     },
   },
@@ -805,6 +935,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
         unitType: "discuss-project",
         unitId: "PROJECT",
         prompt: await buildDiscussProjectPrompt(basePath, structuredQuestionsAvailable),
+        pauseAfterDispatch: !process.env.GSD_HEADLESS,
       };
     },
   },
@@ -826,6 +957,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
         unitType: "discuss-requirements",
         unitId: "REQUIREMENTS",
         prompt: await buildDiscussRequirementsPrompt(basePath, structuredQuestionsAvailable),
+        pauseAfterDispatch: !process.env.GSD_HEADLESS,
       };
     },
   },
@@ -927,7 +1059,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
       // H6 fix (#4973): keep the non-deep auto-mode bypass, but do not
       // pre-verify deep planning's user-facing milestone approval gate.
       if (shouldBypassMilestoneDepthGateInAuto(prefs)) {
-        markDepthVerified(mid, basePath);
+        hostWriteGateAdapter.markDepthVerified(mid, basePath);
       }
       return {
         action: "dispatch",
@@ -940,6 +1072,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
           structuredQuestionsAvailable,
           { headless: !!process.env.GSD_HEADLESS },
         ),
+        pauseAfterDispatch: !process.env.GSD_HEADLESS,
       };
     },
   },
@@ -1004,13 +1137,11 @@ export const DISPATCH_RULES: DispatchRule[] = [
       // behavior.
       if (await getMilestonePipelineVariant(mid) === "trivial") return null;
 
-      // Load roadmap to find all slices
-      const roadmapFile =
-        resolveExistingExpectedArtifact("plan-milestone", mid, basePath) ??
-        resolveMilestoneFile(basePath, mid, "ROADMAP");
-      const roadmapContent = roadmapFile ? await loadFile(roadmapFile) : null;
-      if (!roadmapContent) return null;
-      const roadmap = parseRoadmap(roadmapContent);
+      // DB-authoritative slice list (ADR-017): the ROADMAP projection is
+      // never parsed for dispatch decisions. No DB / no rows → skip this rule.
+      if (!isDbAvailable()) return null;
+      const dbSlices = getMilestoneSliceSummaries(mid);
+      if (dbSlices.length === 0) return null;
 
       // Find slices that need research (no RESEARCH file, dependencies done)
       const milestoneResearchFile =
@@ -1018,14 +1149,14 @@ export const DISPATCH_RULES: DispatchRule[] = [
         resolveMilestoneFile(basePath, mid, "RESEARCH");
       const researchReadySlices: Array<{ id: string; title: string }> = [];
 
-      for (const slice of roadmap.slices) {
+      for (const slice of dbSlices) {
         if (slice.done) continue;
         // Skip S01 when milestone research exists
         if (milestoneResearchFile && slice.id === "S01") continue;
         // Skip if already has research
         if (resolveExistingExpectedArtifact("research-slice", `${mid}/${slice.id}`, basePath)) continue;
         // Skip if dependencies aren't done (check for SUMMARY files)
-        const depsComplete = (slice.depends ?? []).every((depId) =>
+        const depsComplete = slice.depends.every((depId) =>
           !!resolveExistingExpectedArtifact("complete-slice", `${mid}/${depId}`, basePath),
         );
         if (!depsComplete) continue;
@@ -1054,6 +1185,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
           researchReadySlices,
           basePath,
           resolveModelWithFallbacksForUnit("subagent")?.primary,
+          resolveThinkingLevelForUnit("subagent"),
         ),
       };
     },
@@ -1223,11 +1355,11 @@ export const DISPATCH_RULES: DispatchRule[] = [
       // Gate evaluation is opt-in via preferences
       const gateConfig = prefs?.gate_evaluation;
       if (!gateConfig?.enabled) {
-        markAllGatesOmitted(mid, sid);
+        markPendingGatesOmittedForTurn(mid, sid, "gate-evaluate");
         return { action: "skip" };
       }
 
-      const pending = getPendingGates(mid, sid, "slice");
+      const pending = getPendingGatesForTurn(mid, sid, "gate-evaluate");
       if (pending.length === 0) return { action: "skip" };
 
       return {
@@ -1241,6 +1373,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
           sTitle,
           basePath,
           resolveModelWithFallbacksForUnit("subagent")?.primary,
+          resolveThinkingLevelForUnit("subagent"),
         ),
       };
     },
@@ -1286,6 +1419,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
       if (resolveSliceFile(basePath, mid, sid, "REACTIVE-BLOCKER")) return null;
       const maxParallel = reactiveConfig?.max_parallel ?? 2;
       const subagentModel = reactiveConfig?.subagent_model ?? resolveModelWithFallbacksForUnit("subagent")?.primary;
+      const subagentThinking = resolveThinkingLevelForUnit("subagent");
       // Default-on safety threshold: only activate reactive dispatch when at
       // least N tasks are ready. Users who explicitly enabled reactive_execution
       // keep the legacy threshold of 2 (matches the prior "any parallelism is
@@ -1307,7 +1441,9 @@ export const DISPATCH_RULES: DispatchRule[] = [
           graphMetrics,
         } = await import("./reactive-graph.js");
 
-        const taskIO = await loadSliceTaskIO(basePath, mid, sid);
+        const taskIO = _reactiveGraphDeriveFn
+          ? await _reactiveGraphDeriveFn(basePath, mid, sid)
+          : await loadSliceTaskIO(basePath, mid, sid);
         if (taskIO.length < 2) return null; // single task, no point
 
         const graph = deriveTaskGraph(taskIO);
@@ -1372,7 +1508,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
             selected,
             basePath,
             subagentModel,
-            { sessionContextWindow, modelRegistry, sessionProvider },
+            { sessionContextWindow, modelRegistry, sessionProvider, subagentThinking },
           ),
         };
       } catch (err) {
@@ -1629,6 +1765,16 @@ export const DISPATCH_RULES: DispatchRule[] = [
             unitId: mid,
             prompt: await buildCompleteMilestonePrompt(mid, midTitle, basePath),
           };
+        }
+        if (milestone) {
+          const closeoutProof = proveMilestoneCloseout(mid, { refreshFromDisk: true });
+          if (!closeoutProof.ok) {
+            return {
+              action: "stop",
+              reason: formatCloseoutProofBlock(closeoutProof),
+              level: "warning",
+            };
+          }
         }
       }
       return {

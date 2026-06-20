@@ -10,7 +10,7 @@ Auto mode is a **state machine driven by the GSD database at the project root**.
 ```
 Plan → Execute (per task) → Complete → Reassess Roadmap → Next Slice
                                                             ↓ (all slices done)
-                                                    Validate → Complete Milestone
+                                            UAT PASS → Validate → Complete Milestone
 ```
 
 - **Plan** — scouts the codebase, researches docs, decomposes the slice into tasks
@@ -21,7 +21,7 @@ Plan → Execute (per task) → Complete → Reassess Roadmap → Next Slice
 
 When progressive planning is enabled, GSD fully plans the first slice and may leave later slices as sketches. Those slices render in `M###-ROADMAP.md` with a `` `[sketch]` `` badge, meaning the slice has an approved scope boundary but has not yet been expanded into task plans. Auto mode runs `refine-slice` just before execution to convert the sketch into a full slice plan using the current codebase and prior slice summaries.
 
-`complete-milestone` enforces a hard validation prerequisite: the latest `milestone-validation` assessment for the milestone must exist with verdict `pass`. If the latest verdict is `fail`, `partial`, or missing, milestone closeout is blocked until `validate-milestone` records a fresh passing verdict.
+`complete-milestone` enforces hard closeout prerequisites: every slice must have a UAT assessment with verdict `PASS`, and the latest `milestone-validation` assessment for the milestone must exist with verdict `pass`. If UAT is missing or non-PASS, auto mode stops with guidance to run `/gsd dispatch uat`, request a slice-specific UAT rerun when needed, inspect `/gsd status`, or add remediation slices with `/gsd dispatch reassess`. If milestone validation is `fail`, `partial`, or missing, closeout is blocked until `validate-milestone` records a fresh passing verdict.
 
 ## Deep planning mode
 

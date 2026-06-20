@@ -1,16 +1,23 @@
 // Project/App: gsd-pi
 // File Purpose: ADR-015 Recovery Classification module for runtime failure taxonomy.
 
+import { isToolUnavailableError } from "./auto-tool-tracking.js";
 import { classifyError, isTransient, type ErrorClass } from "./error-classifier.js";
+import { recoveryRemediation } from "./guidance.js";
 import { ReconciliationFailedError } from "./state-reconciliation.js";
+import { IllegalPhaseTransitionError } from "./state-transition-matrix.js";
 
 export type RecoveryFailureKind =
   | "tool-schema"
+  | "tool-contract"
+  | "tool-unavailable"
   | "deterministic-policy"
+  | "lifecycle-progression"
   | "stale-worker"
   | "worktree-invalid"
   | "verification-drift"
   | "reconciliation-drift"
+  | "illegal-transition"
   | "provider"
   | "runtime-unknown";
 
@@ -41,83 +48,55 @@ export function classifyFailure(input: RecoveryClassificationInput): RecoveryCla
   const failureKind =
     input.error instanceof ReconciliationFailedError
       ? "reconciliation-drift"
-      : input.failureKind ?? inferFailureKind(message);
+      : input.error instanceof IllegalPhaseTransitionError
+        ? "illegal-transition"
+        : input.failureKind ?? inferFailureKind(message);
 
-  switch (failureKind) {
-    case "tool-schema":
-      return {
-        failureKind,
-        action: "stop",
-        reason: `Tool schema failure${unitSuffix(input)}: ${message}`,
-        exitReason: "tool-schema",
-        remediation: "Fix the Unit Tool Contract or tool schema before retrying.",
-      };
-    case "deterministic-policy":
-      return {
-        failureKind,
-        action: "stop",
-        reason: `Deterministic policy failure${unitSuffix(input)}: ${message}`,
-        exitReason: "deterministic-policy",
-        remediation: "Resolve the policy blocker; retrying the same Unit will repeat the failure.",
-      };
-    case "stale-worker":
-      return {
-        failureKind,
-        action: "stop",
-        reason: `Stale worker failure${unitSuffix(input)}: ${message}`,
-        exitReason: "stale-worker",
-        remediation: "Clear or reconcile the stale worker before dispatching another Unit.",
-      };
-    case "worktree-invalid":
-      return {
-        failureKind,
-        action: "stop",
-        reason: `Worktree invalid${unitSuffix(input)}: ${message}`,
-        exitReason: "worktree-invalid",
-        remediation: "Repair or recreate the milestone worktree before launching source-writing Units.",
-      };
-    case "verification-drift":
-      return {
-        failureKind,
-        action: "escalate",
-        reason: `Verification drift${unitSuffix(input)}: ${message}`,
-        exitReason: "verification-drift",
-        remediation: "Inspect the verification artifact and reconcile the state snapshot before resuming.",
-      };
-    case "reconciliation-drift":
-      return {
-        failureKind,
-        action: "escalate",
-        reason: `Reconciliation drift${unitSuffix(input)}: ${message}`,
-        exitReason: "reconciliation-drift",
-        remediation:
-          "Inspect the persistent or repair-failed drift kinds reported by the State Reconciliation Module before resuming.",
-      };
-    case "provider": {
-      const providerClass = classifyError(message, input.retryAfterMs);
-      return {
-        failureKind,
-        action: isTransient(providerClass) ? "retry" : "escalate",
-        reason: message,
-        exitReason: `provider-${providerClass.kind}`,
-        remediation: isTransient(providerClass)
-          ? "Retry after the provider/network condition clears."
-          : "Inspect provider credentials, model entitlement, or request shape.",
-        providerClass: providerClass.kind,
-      };
-    }
-    case "runtime-unknown":
-      return {
-        failureKind,
-        action: "escalate",
-        reason: message,
-        exitReason: "runtime-unknown",
-        remediation: "Inspect the runtime error and add a dedicated classification if it is repeatable.",
-      };
+  if (failureKind === "provider") {
+    const providerClass = classifyError(message, input.retryAfterMs);
+    const transient = isTransient(providerClass);
+    return {
+      failureKind,
+      action: transient ? "retry" : "escalate",
+      reason: message,
+      exitReason: `provider-${providerClass.kind}`,
+      remediation: recoveryRemediation(transient ? "provider-transient" : "provider-permanent"),
+      providerClass: providerClass.kind,
+    };
   }
+
+  const { action, label } = FAILURE_TAXONOMY[failureKind];
+  return {
+    failureKind,
+    action,
+    reason: label ? `${label}${unitSuffix(input)}: ${message}` : message,
+    exitReason: failureKind,
+    remediation: recoveryRemediation(failureKind),
+  };
 }
 
+/** Per-kind action and reason label. Remediation lives in the Guidance module. */
+const FAILURE_TAXONOMY: Record<
+  Exclude<RecoveryFailureKind, "provider">,
+  { action: RecoveryAction; label: string | null }
+> = {
+  "tool-schema": { action: "stop", label: "Tool schema failure" },
+  "tool-contract": { action: "stop", label: "Tool Contract failure" },
+  "tool-unavailable": { action: "retry", label: "Tool unavailable" },
+  "deterministic-policy": { action: "stop", label: "Deterministic policy failure" },
+  "lifecycle-progression": { action: "stop", label: "Lifecycle progression failure" },
+  "stale-worker": { action: "stop", label: "Stale worker failure" },
+  "worktree-invalid": { action: "stop", label: "Worktree invalid" },
+  "verification-drift": { action: "escalate", label: "Verification drift" },
+  "reconciliation-drift": { action: "escalate", label: "Reconciliation drift" },
+  "illegal-transition": { action: "escalate", label: "Illegal phase transition" },
+  "runtime-unknown": { action: "escalate", label: null },
+};
+
 function inferFailureKind(message: string): RecoveryFailureKind {
+  if (isToolUnavailableError(message)) return "tool-unavailable";
+  if (/tool contract|auto-unit tool scope|phase-boundary gate|not permitted.*own/i.test(message)) return "tool-contract";
+  if (/lifecycle progression|required artifact|missing .*assessment|missing .*closeout|cannot legally (?:advance|progress)/i.test(message)) return "lifecycle-progression";
   if (/schema|invalid.*tool|tool.*invalid|enum/i.test(message)) return "tool-schema";
   if (/deterministic policy|policy rejection|write gate|blocked by policy/i.test(message)) return "deterministic-policy";
   if (/stale worker|stale lock|worker.*stale/i.test(message)) return "stale-worker";

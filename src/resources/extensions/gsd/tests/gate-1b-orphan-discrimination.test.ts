@@ -1,12 +1,9 @@
 /**
- * gsd-pi / guided-flow — regression tests for Gate 1b orphan discrimination
+ * gsd-pi / guided-flow — regression tests for Gate 1b discussion handoff
  *
- * Gate 1b in checkAutoStartAfterDiscuss discriminates between two "queued" states:
- *   (a) plan-blocked: discuss completed (CONTEXT.md on disk), but gsd_plan_milestone
- *       was hard-blocked by the depth-verification gate.  DB row stuck at "queued".
- *       → emit recovery hint directing the LLM to retry gsd_plan_milestone.
- *   (b) discuss-incomplete: discuss did not finish, no CONTEXT.md, DB row "queued".
- *       → silent block (no recovery hint).
+ * Gate 1b treats queued + pinned CONTEXT.md as Discussion Complete, Planning
+ * Pending. It must accept the handoff without warning the user or injecting a
+ * hidden gsd_plan_milestone retry.
  */
 
 import { describe, test, beforeEach, afterEach } from "node:test";
@@ -26,8 +23,6 @@ import {
   closeDatabase,
   insertMilestone,
 } from "../gsd-db.ts";
-
-// ─── Harness ───────────────────────────────────────────────────────────────
 
 interface MockCapture {
   notifies: Array<{ msg: string; level: string }>;
@@ -58,24 +53,26 @@ function mkPi(cap: MockCapture): any {
   };
 }
 
-/**
- * Create a minimal temp tree with a .gsd/milestones/M001 directory.
- */
 function mkBase(): string {
   const base = mkdtempSync(join(tmpdir(), "gsd-gate1b-"));
   mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
   return base;
 }
 
-// ─── Tests ─────────────────────────────────────────────────────────────────
+function writeContext(base: string): void {
+  writeFileSync(
+    join(base, ".gsd", "milestones", "M001", "M001-CONTEXT.md"),
+    "# M001: Test Milestone\n\nContext written by discuss phase.\n",
+  );
+}
 
-describe("Gate 1b orphan discrimination in checkAutoStartAfterDiscuss", () => {
+describe("Gate 1b discussion handoff in checkAutoStartAfterDiscuss", () => {
   let base: string;
   let cap: MockCapture;
 
   beforeEach(() => {
     clearPendingAutoStart();
-    drainLogs(); // discard noise from prior tests
+    drainLogs();
   });
 
   afterEach(() => {
@@ -86,104 +83,59 @@ describe("Gate 1b orphan discrimination in checkAutoStartAfterDiscuss", () => {
     }
   });
 
-  test("plan-blocked: CONTEXT.md present + DB row queued → returns false + recovery hint emitted", () => {
+  test("queued row + CONTEXT.md accepts context-captured handoff without hidden retry", () => {
     base = mkBase();
     openDatabase(":memory:");
-
-    // DB row exists with status "queued" (plan_milestone was blocked)
     insertMilestone({ id: "M001", title: "Test Milestone", status: "queued" });
-
-    // CONTEXT.md on disk (discuss phase completed)
-    writeFileSync(
-      join(base, ".gsd", "milestones", "M001", "M001-CONTEXT.md"),
-      "# M001: Test Milestone\n\nContext written by discuss phase.\n",
-    );
+    writeContext(base);
 
     cap = mkCapture();
     setPendingAutoStart(base, {
       basePath: base,
       milestoneId: "M001",
+      startAuto: false,
       ctx: mkCtx(cap),
       pi: mkPi(cap),
     });
 
     const result = checkAutoStartAfterDiscuss();
 
-    // Must return false — auto-start should not proceed
-    assert.equal(result, false, "checkAutoStartAfterDiscuss must return false (plan still blocked)");
-
-    // Recovery hint must be sent to the LLM
+    assert.equal(result, true, "queued + context is a valid planning-pending handoff");
+    assert.equal(cap.messages.length, 0, "must not inject a hidden recovery turn");
+    assert.equal(cap.notifies.length, 1, "must emit one success notification");
+    assert.deepEqual(cap.notifies[0], {
+      msg: "Milestone M001 context captured. Continuing the planning pipeline.",
+      level: "success",
+    });
     assert.equal(
-      cap.messages.length,
-      1,
-      "exactly one sendMessage call expected for the recovery hint",
+      cap.notifies.some(n => /queued|gsd_plan_milestone/i.test(n.msg)),
+      false,
+      "user-visible copy must not mention queued state or internal plan tool retry",
     );
-    assert.equal(
-      cap.messages[0].payload.customType,
-      "gsd-plan-milestone-blocked-recovery",
-      "recovery message must have customType gsd-plan-milestone-blocked-recovery",
-    );
-    assert.equal(
-      cap.messages[0].options.triggerTurn,
-      true,
-      "recovery message must set triggerTurn: true",
-    );
-    assert.match(
-      cap.messages[0].payload.content,
-      /gsd_plan_milestone/,
-      "recovery message content must mention gsd_plan_milestone",
-    );
-
-    // User must be notified via ctx.ui.notify
-    assert.ok(
-      cap.notifies.some((n) => n.level === "warning" && /queued/.test(n.msg)),
-      "user must be notified with a warning about the queued state",
-    );
-
-    // logWarning must have recorded the Gate 1b event
-    const logs = drainLogs();
-    const gate1bLog = logs.find(
-      (e) => e.component === "guided" && /Gate 1b/.test(e.message),
-    );
-    assert.ok(gate1bLog, "Gate 1b warning must be logged via logWarning");
   });
 
-  test("discuss-incomplete: no CONTEXT.md + DB row queued → returns false silently (no recovery hint)", () => {
+  test("queued row without CONTEXT.md still waits silently for discussion output", () => {
     base = mkBase();
     openDatabase(":memory:");
-
-    // DB row exists with status "queued", but NO CONTEXT.md on disk
     insertMilestone({ id: "M001", title: "Test Milestone", status: "queued" });
 
-    // No CONTEXT.md written — discuss phase is incomplete
     cap = mkCapture();
     setPendingAutoStart(base, {
       basePath: base,
       milestoneId: "M001",
+      startAuto: false,
       ctx: mkCtx(cap),
       pi: mkPi(cap),
     });
 
-    drainLogs(); // clear any noise before the call
+    drainLogs();
 
     const result = checkAutoStartAfterDiscuss();
 
-    // Must return false — silent block
-    assert.equal(result, false, "checkAutoStartAfterDiscuss must return false when discuss is incomplete");
+    assert.equal(result, false, "must keep waiting while discuss has not written context");
+    assert.equal(cap.messages.length, 0, "no hidden recovery turn expected");
+    assert.equal(cap.notifies.length, 0, "no user notifications expected");
 
-    // No recovery hint — Gate 1 blocks before Gate 1b is reached
-    assert.equal(
-      cap.messages.length,
-      0,
-      "no sendMessage calls expected when CONTEXT.md is absent",
-    );
-    assert.equal(
-      cap.notifies.length,
-      0,
-      "no user notifications expected for discuss-incomplete case",
-    );
-
-    // No Gate 1b log entry
     const logs = drainLogs();
     const gate1bLog = logs.find(
       (e) => e.component === "guided" && /Gate 1b/.test(e.message),

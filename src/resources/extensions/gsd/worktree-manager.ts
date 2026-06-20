@@ -4,7 +4,8 @@
 /**
  * GSD Worktree Manager
  *
- * Creates and manages git worktrees under .gsd/worktrees/<name>/.
+ * Creates and manages git worktrees under .gsd-worktrees/<name>/ (canonical;
+ * legacy .gsd/worktrees/<name>/ stays recognized — see worktree-placement.ts).
  * Each worktree gets its own branch (worktree/<name>) and a full
  * working copy of the project, enabling parallel work streams.
  *
@@ -12,13 +13,13 @@
  * the main branch, then dispatches an LLM-guided merge flow.
  *
  * Flow:
- *   1. create()  — git worktree add .gsd/worktrees/<name> -b worktree/<name>
+ *   1. create()  — git worktree add .gsd-worktrees/<name> -b worktree/<name>
  *   2. user works in the worktree (new plans, milestones, etc.)
  *   3. merge()   — LLM-guided reconciliation of .gsd/ artifacts back to main
  *   4. remove()  — git worktree remove + branch cleanup
  */
 
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve, sep } from "node:path";
 import { GSDError, GSD_PARSE_ERROR, GSD_STALE_STATE, GSD_LOCK_HELD, GSD_GIT_ERROR, GSD_MERGE_CONFLICT } from "./errors.js";
@@ -48,6 +49,8 @@ import {
   normalizeWorktreePathForCompare,
   resolveWorktreeProjectRoot,
 } from "./worktree-root.js";
+import { MILESTONE_ID_RE } from "./milestone-ids.js";
+import { canonicalWorktreesDir, worktreePathFor, worktreesDirs } from "./worktree-placement.js";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -138,12 +141,20 @@ export function resolveGitDir(basePath: string): string {
   return gitPath;
 }
 
+/** Canonical container for new worktrees. For scans that must also see legacy
+ *  worktrees, use allWorktreesDirs(). */
 export function worktreesDir(basePath: string): string {
-  return join(resolveWorktreeProjectRoot(basePath), ".gsd", "worktrees");
+  return canonicalWorktreesDir(resolveWorktreeProjectRoot(basePath));
 }
 
+/** Every container a GSD worktree may live in (canonical + legacy), canonical first. */
+export function allWorktreesDirs(basePath: string): string[] {
+  return worktreesDirs(resolveWorktreeProjectRoot(basePath));
+}
+
+/** Path for worktree `name` — an existing legacy worktree keeps its location. */
 export function worktreePath(basePath: string, name: string): string {
-  return join(worktreesDir(basePath), name);
+  return worktreePathFor(resolveWorktreeProjectRoot(basePath), name);
 }
 
 export function worktreeBranchName(name: string): string {
@@ -151,20 +162,22 @@ export function worktreeBranchName(name: string): string {
 }
 
 /**
- * Validate that a path is inside the .gsd/worktrees/ directory.
- * Resolves symlinks and normalizes ".." traversals before comparison
- * so that a symlink-resolved or crafted path cannot escape containment.
+ * Validate that a path is inside a GSD worktrees container (canonical
+ * .gsd-worktrees/ or legacy .gsd/worktrees/). Resolves symlinks and
+ * normalizes ".." traversals before comparison so that a symlink-resolved
+ * or crafted path cannot escape containment.
  *
  * Used as a safety gate before any destructive operation (rmSync,
  * nativeWorktreeRemove --force) to prevent #2365-style data loss.
  */
 export function isInsideWorktreesDir(basePath: string, targetPath: string): boolean {
-  const wtDirPath = worktreesDir(basePath);
-  const wtDir = existsSync(wtDirPath) ? realpathSync(wtDirPath) : resolve(wtDirPath);
   const resolved = existsSync(targetPath) ? realpathSync(targetPath) : resolve(targetPath);
-  // The resolved path must start with the worktrees dir followed by a separator,
-  // not merely be a prefix match (e.g. ".gsd/worktrees-extra" must not match).
-  return resolved === wtDir || resolved.startsWith(wtDir + sep);
+  return allWorktreesDirs(basePath).some((wtDirPath) => {
+    const wtDir = existsSync(wtDirPath) ? realpathSync(wtDirPath) : resolve(wtDirPath);
+    // The resolved path must start with the worktrees dir followed by a separator,
+    // not merely be a prefix match (e.g. ".gsd/worktrees-extra" must not match).
+    return resolved === wtDir || resolved.startsWith(wtDir + sep);
+  });
 }
 
 function isRegisteredGitWorktreeAtPath(basePath: string, wtPath: string): boolean {
@@ -183,6 +196,95 @@ function isRegisteredGitWorktreeAtPath(basePath: string, wtPath: string): boolea
   } catch {
     return false;
   }
+}
+
+/** True when `wtPath` has a git worktree checkout marker (`.git` file with gitdir pointer). */
+export function isLiveGitWorktreeCheckout(wtPath: string): boolean {
+  const gitPath = join(wtPath, ".git");
+  if (!existsSync(gitPath)) return false;
+  try {
+    return lstatSync(gitPath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** True when a worktree directory should count toward idle milestone residue detection. */
+export function isMilestoneWorktreeResidueCandidate(basePath: string, wtPath: string): boolean {
+  return isRegisteredGitWorktreeAtPath(basePath, wtPath) || isLiveGitWorktreeCheckout(wtPath);
+}
+
+const EPHEMERAL_GHOST_WORKTREE_ENTRIES = new Set([".bg-shell", ".DS_Store"]);
+
+function isEphemeralGhostWorktreeContents(dirPath: string): boolean {
+  let entries: string[];
+  try {
+    entries = readdirSync(dirPath);
+  } catch {
+    return false;
+  }
+  if (entries.length === 0) return true;
+  for (const entry of entries) {
+    if (EPHEMERAL_GHOST_WORKTREE_ENTRIES.has(entry)) continue;
+    if (entry === ".gsd") {
+      try {
+        const gsdEntries = readdirSync(join(dirPath, ".gsd"));
+        if (gsdEntries.length <= 1 && gsdEntries.every((e) => e === "doctor-history.jsonl")) {
+          continue;
+        }
+      } catch {
+        return false;
+      }
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Remove milestone worktree directories that are not registered with git and
+ * contain only ephemeral runtime content (e.g. bg-shell manifests recreated
+ * after teardown). Returns removed directory paths.
+ */
+export function pruneEphemeralGhostWorktreeDirectories(basePath: string): string[] {
+  const removed: string[] = [];
+  for (const container of allWorktreesDirs(basePath)) {
+    if (!existsSync(container)) continue;
+    let entries: string[];
+    try {
+      entries = readdirSync(container);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!MILESTONE_ID_RE.test(entry)) continue;
+      const fullPath = join(container, entry);
+      try {
+        if (!statSync(fullPath).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      if (isRegisteredGitWorktreeAtPath(basePath, fullPath)) continue;
+      if (isLiveGitWorktreeCheckout(fullPath)) continue;
+      if (!isEphemeralGhostWorktreeContents(fullPath)) continue;
+      try {
+        rmSync(fullPath, { recursive: true, force: true });
+        logWarning(
+          "reconcile",
+          `Removed ephemeral ghost worktree directory (not registered with git): ${fullPath}`,
+          { worktree: entry },
+        );
+        removed.push(fullPath);
+      } catch (err) {
+        logWarning(
+          "worktree",
+          `ghost worktree directory removal failed for ${fullPath}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+  return removed;
 }
 
 function removeStaleWorktreeDirectory(wtPath: string, name: string): void {
@@ -259,6 +361,38 @@ export function resolveCanonicalMilestoneRoot(
   return wtPath;
 }
 
+/**
+ * Build human-facing guidance for manually validating a milestone's work.
+ *
+ * When a milestone runs in a git worktree, its checkout lives under the hidden
+ * `.gsd/worktrees/<MID>/` path that a human can't easily discover. The UAT
+ * pause/handoff and the saved assessment use this to tell the human exactly
+ * where to `cd` to run or inspect the app before signing off on NEEDS-HUMAN
+ * checks, rather than leaving them to hunt for a buried path.
+ *
+ * Returns null when no milestone id is available.
+ */
+export function buildManualValidationGuidance(
+  basePath: string,
+  milestoneId: string,
+  opts: { uatPath?: string } = {},
+): string | null {
+  if (!milestoneId) return null;
+  const validationRoot = resolveCanonicalMilestoneRoot(basePath, milestoneId);
+  const inWorktree = isGsdWorktreePath(validationRoot);
+  const lines: string[] = [`Validate the work here: ${validationRoot}`];
+  if (inWorktree) {
+    lines.push(
+      "This milestone runs in a git worktree, so the code lives under the " +
+        `GSD worktrees directory. Open it with: cd "${validationRoot}"`,
+    );
+  }
+  if (opts.uatPath) {
+    lines.push(`Follow the UAT checklist at: ${opts.uatPath}`);
+  }
+  return lines.join("\n");
+}
+
 // ─── Core Operations ───────────────────────────────────────────────────────
 
 /**
@@ -275,23 +409,32 @@ export function createWorktree(basePath: string, name: string, opts: { branch?: 
     throw new GSDError(GSD_PARSE_ERROR, `Invalid worktree name "${name}". Use only letters, numbers, hyphens, and underscores.`);
   }
 
-  const wtPath = worktreePath(basePath, name);
+  const existingPath = worktreePath(basePath, name);
   const branch = opts.branch ?? worktreeBranchName(name);
 
-  if (existsSync(wtPath)) {
+  if (existsSync(existingPath)) {
     // A valid git worktree is registered in `git worktree list` and has a .git
     // *file* with a gitdir: pointer. Leftover directories (no .git, a standalone
     // .git directory from accidental `git init`, or an orphan pointer) block
     // creation unless removed.
-    if (isRegisteredGitWorktreeAtPath(basePath, wtPath)) {
-      throw new GSDError(GSD_STALE_STATE, `Worktree "${name}" already exists at ${wtPath}`);
+    if (isRegisteredGitWorktreeAtPath(basePath, existingPath)) {
+      throw new GSDError(GSD_STALE_STATE, `Worktree "${name}" already exists at ${existingPath}`);
     }
-    removeStaleWorktreeDirectory(wtPath, name);
+    removeStaleWorktreeDirectory(existingPath, name);
   }
 
-  // Ensure the .gsd/worktrees/ directory exists
+  // New worktrees always land in the canonical container, even when a stale
+  // legacy directory was just cleaned up.
   const wtDir = worktreesDir(basePath);
+  const wtPath = join(wtDir, name);
   mkdirSync(wtDir, { recursive: true });
+
+  // When existingPath resolved to a legacy location, the canonical target may
+  // still hold a stale directory from a prior aborted creation (no .git marker).
+  // Remove it so git worktree add does not fail with "path already exists".
+  if (existingPath !== wtPath && existsSync(wtPath) && !isRegisteredGitWorktreeAtPath(basePath, wtPath)) {
+    removeStaleWorktreeDirectory(wtPath, name);
+  }
 
   // Prune any stale worktree entries from a previous removal
   nativeWorktreePrune(basePath);
@@ -373,7 +516,8 @@ export function createWorktree(basePath: string, name: string, opts: { branch?: 
 
 /**
  * List all GSD-managed worktrees.
- * Uses native worktree list and filters to those under .gsd/worktrees/.
+ * Uses native worktree list and filters to those under a GSD worktrees
+ * container (canonical .gsd-worktrees/ or legacy .gsd/worktrees/).
  */
 export function listWorktrees(basePath: string): WorktreeInfo[] {
   basePath = normalizeBasePathForWorktreeOps(basePath);
@@ -384,12 +528,8 @@ export function listWorktrees(basePath: string): WorktreeInfo[] {
   }
   const seenRoots = new Set<string>();
   const worktreeRoots = baseVariants
-    .map(baseVariant => {
-      const path = join(baseVariant, ".gsd", "worktrees");
-      return {
-        normalized: normalizePathForComparison(path),
-      };
-    })
+    .flatMap(baseVariant => worktreesDirs(baseVariant))
+    .map(path => ({ normalized: normalizePathForComparison(path) }))
     .filter(root => {
       if (seenRoots.has(root.normalized)) return false;
       seenRoots.add(root.normalized);
@@ -606,7 +746,12 @@ export function removeWorktree(
   const resolvedPathSafe = isInsideWorktreesDir(basePath, resolvedWtPath);
 
   // If we're inside the worktree, move out first — git can't remove an in-use directory
-  const cwd = process.cwd();
+  let cwd: string;
+  try {
+    cwd = process.cwd();
+  } catch {
+    cwd = basePath;
+  }
   const resolvedCwd = existsSync(cwd) ? realpathSync(cwd) : cwd;
   if (resolvedCwd === resolvedWtPath || resolvedCwd.startsWith(resolvedWtPath + sep)) {
     process.chdir(basePath);
@@ -762,6 +907,7 @@ export function removeWorktree(
  * This module uses a split representation (paths/exact/prefixes) for efficient matching.
  */
 const SKIP_PATHS = [
+  ".gsd-worktrees/",
   ".gsd/worktrees/",
   ".gsd/runtime/",
   ".gsd/activity/",

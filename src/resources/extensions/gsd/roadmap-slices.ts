@@ -154,6 +154,29 @@ function parseTableSlices(section: string): RoadmapSliceEntry[] {
   return slices;
 }
 
+function looksLikeTable(section: string): boolean {
+  const lines = section.split("\n");
+
+  // Checkbox format takes precedence — embedded demo tables must not switch mode (#721).
+  if (lines.some(line => /^\s*-\s+\[[ xX]\]/.test(line))) {
+    return false;
+  }
+
+  const pipeLines = lines.filter(line => /^\s*\|/.test(line));
+  if (pipeLines.length < 2) return false;
+
+  const hasSeparatorRow = pipeLines.some((line, index) => {
+    if (index === 0) return false;
+    const cells = line.split("|").map(c => c.trim()).filter(Boolean);
+    return /^\s*\|[\s:-]+\|/.test(line) && cells.length >= 2 && cells.every(c => /^[\s:-]+$/.test(c));
+  });
+
+  if (hasSeparatorRow) return true;
+
+  // Tables without a separator row still expose slice IDs in data rows.
+  return pipeLines.some(line => /\bS\d+\b/.test(line));
+}
+
 export function parseRoadmapSlices(content: string): RoadmapSliceEntry[] {
   const slicesSection = extractSlicesSection(content);
   if (!slicesSection) {
@@ -165,9 +188,11 @@ export function parseRoadmapSlices(content: string): RoadmapSliceEntry[] {
 
   // Try table format first — if the section contains pipe-delimited rows with
   // slice IDs, parse them as a table (#1736).
-  const tableSlices = parseTableSlices(slicesSection);
-  if (tableSlices.length > 0) {
-    return tableSlices;
+  if (looksLikeTable(slicesSection)) {
+    const tableSlices = parseTableSlices(slicesSection);
+    if (tableSlices.length > 0) {
+      return tableSlices;
+    }
   }
 
   // Standard checkbox format
@@ -189,11 +214,22 @@ export function parseRoadmapSlices(content: string): RoadmapSliceEntry[] {
       const risk = (riskMatch ? riskMatch[1] : "low") as RiskLevel;
 
       const depsMatch = rest.match(/`depends:\[([^\]]*)\]`/);
-      const depends = depsMatch && depsMatch[1]!.trim()
-        ? expandDependencies(depsMatch[1]!.split(",").map(s => s.trim()))
+      // Recovery fallback: double-bracket form `[[id]]` from serialized bracket-wrapped IDs
+      const fallbackDepsMatch = depsMatch ? null : rest.match(/`depends:\[(\[(?:[^\]]*)\](?:,\[(?:[^\]]*)\])*)\]`/);
+      const rawDepContent = (depsMatch ?? fallbackDepsMatch)?.[1] ?? "";
+      const SLICE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
+      const RANGE_RE = /^[A-Za-z]+\d+(?:-|\.\.)[A-Za-z]+\d+$/;
+      const rawDepParts = rawDepContent.trim()
+        ? rawDepContent.replace(/\[|\]/g, "").split(",").map(s => s.trim()).filter(s => SLICE_ID_RE.test(s) || RANGE_RE.test(s))
         : [];
+      const depends = expandDependencies(rawDepParts);
 
-      currentSlice = { id, title, risk, depends, done, demo: "" };
+      // ADR-011: the renderer writes a `[sketch]` badge for sketch slices.
+      // Parse it back so the is_sketch flag survives a markdown → DB re-import
+      // (e.g. /gsd recover); otherwise the flag was silently lost.
+      const isSketch = /\[sketch\]/i.test(rest);
+
+      currentSlice = { id, title, risk, depends, done, demo: "", isSketch };
       continue;
     }
 

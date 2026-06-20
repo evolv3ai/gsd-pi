@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 
 import { getAutoWorktreePath, isInAutoWorktree } from "./auto-worktree.js";
 import { ensureDbOpen } from "./bootstrap/dynamic-tools.js";
+import { refreshWorkflowDatabaseFromDisk } from "./db-workspace.js";
 import { getIsolationMode } from "./preferences.js";
 import { deriveState } from "./state.js";
 import type { GSDState } from "./types.js";
@@ -14,6 +15,8 @@ const VALIDATION_BLOCK_RE =
   /milestone validation returned needs-(?:attention|remediation)|validation verdict is needs-(?:attention|remediation)/i;
 
 const VALIDATION_SAFE_DISPATCH_COMMANDS = new Set([
+  "reassess",
+  "reassess-roadmap",
   "validate",
   "validate-milestone",
 ]);
@@ -89,6 +92,7 @@ export async function getValidationBlockMessageForBase(
   attemptedCommand = "",
 ): Promise<string | null> {
   await ensureDbOpen(base);
+  refreshWorkflowDatabaseFromDisk();
   let state = await deriveState(base);
 
   if (

@@ -19,10 +19,12 @@ import {
   saveGateResult,
   markAllGatesOmitted,
   getPendingSliceGateCount,
+  getGateResults,
 } from "../gsd-db.ts";
 import { deriveState, invalidateStateCache } from "../state.ts";
 import { renderPlanFromDb } from "../markdown-renderer.ts";
 import { invalidateAllCaches } from "../cache.ts";
+import { DISPATCH_RULES } from "../auto-dispatch.ts";
 
 function setupTestProject(): { tmpDir: string; dbPath: string } {
   const tmpDir = mkdtempSync(join(tmpdir(), "gate-dispatch-"));
@@ -212,5 +214,67 @@ describe("evaluating-gates phase", () => {
       "executing",
       `pending Q8 must not stall evaluating-gates — got phase=${state.phase}`,
     );
+  });
+
+  test("gate-evaluate dispatch id includes only gate-evaluate-owned gates", async () => {
+    planSlice(tmpDir);
+    await renderPlanFromDb(tmpDir, "M001", "S01");
+
+    insertGateRow({ milestoneId: "M001", sliceId: "S01", gateId: "Q3", scope: "slice" });
+    insertGateRow({ milestoneId: "M001", sliceId: "S01", gateId: "Q4", scope: "slice" });
+    insertGateRow({ milestoneId: "M001", sliceId: "S01", gateId: "Q8", scope: "slice" });
+
+    invalidateStateCache();
+    const state = await deriveState(tmpDir);
+    assert.equal(state.phase, "evaluating-gates");
+
+    const rule = DISPATCH_RULES.find((candidate) => candidate.name === "evaluating-gates → gate-evaluate");
+    assert.ok(rule, "gate-evaluate dispatch rule must exist");
+
+    const result = await rule.match({
+      basePath: tmpDir,
+      mid: "M001",
+      midTitle: "Test Milestone",
+      state,
+      prefs: { gate_evaluation: { enabled: true } },
+    });
+
+    assert.ok(result);
+    assert.equal(result.action, "dispatch");
+    if (result.action !== "dispatch") throw new Error("expected gate-evaluate dispatch");
+    assert.equal(result.unitId, "M001/S01/gates+Q3,Q4");
+    assert.doesNotMatch(result.prompt, /\*\*Q8\*\*/);
+  });
+
+  test("disabled gate evaluation only omits gate-evaluate-owned gates", async () => {
+    planSlice(tmpDir);
+    await renderPlanFromDb(tmpDir, "M001", "S01");
+
+    insertGateRow({ milestoneId: "M001", sliceId: "S01", gateId: "Q3", scope: "slice" });
+    insertGateRow({ milestoneId: "M001", sliceId: "S01", gateId: "Q4", scope: "slice" });
+    insertGateRow({ milestoneId: "M001", sliceId: "S01", gateId: "Q8", scope: "slice" });
+    insertGateRow({ milestoneId: "M001", sliceId: "S01", gateId: "Q5", scope: "task", taskId: "T01" });
+
+    invalidateStateCache();
+    const state = await deriveState(tmpDir);
+    assert.equal(state.phase, "evaluating-gates");
+
+    const rule = DISPATCH_RULES.find((candidate) => candidate.name === "evaluating-gates → gate-evaluate");
+    assert.ok(rule, "gate-evaluate dispatch rule must exist");
+
+    const result = await rule.match({
+      basePath: tmpDir,
+      mid: "M001",
+      midTitle: "Test Milestone",
+      state,
+      prefs: { gate_evaluation: { enabled: false } },
+    });
+
+    assert.equal(result?.action, "skip");
+    const byId = new Map(getGateResults("M001", "S01").map((gate) => [gate.gate_id, gate]));
+    assert.equal(byId.get("Q3")?.verdict, "omitted");
+    assert.equal(byId.get("Q4")?.verdict, "omitted");
+    assert.equal(byId.get("Q8")?.status, "pending");
+    assert.equal(byId.get("Q5")?.status, "pending");
   });
 });

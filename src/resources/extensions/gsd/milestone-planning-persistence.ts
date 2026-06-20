@@ -1,0 +1,224 @@
+// Project/App: gsd-pi
+// File Purpose: Persist planned milestone roadmaps and their DB-backed projections.
+
+import { clearParseCache } from "./files.js";
+import { isClosedStatus } from "./status-guards.js";
+import {
+  transaction,
+  getMilestone,
+  getMilestoneSlices,
+  getSlice,
+  insertMilestone,
+  insertSlice,
+  upsertMilestonePlanning,
+  upsertSlicePlanning,
+} from "./gsd-db.js";
+import { invalidateStateCache } from "./state.js";
+import { renderRoadmapFromDb } from "./markdown-renderer.js";
+import { flushWorkflowProjections } from "./projection-flush.js";
+import { writeManifest } from "./workflow-manifest.js";
+import { appendEvent } from "./workflow-events.js";
+import { logWarning } from "./workflow-logger.js";
+
+export interface PersistMilestonePlanSlice {
+  sliceId: string;
+  title: string;
+  risk: string;
+  depends: string[];
+  demo: string;
+  goal: string;
+  successCriteria: string;
+  proofLevel: string;
+  integrationClosure: string;
+  observabilityImpact: string;
+  isSketch?: boolean;
+  sketchScope?: string;
+}
+
+export interface PersistMilestonePlanParams {
+  milestoneId: string;
+  title: string;
+  vision: string;
+  slices: PersistMilestonePlanSlice[];
+  status?: string;
+  dependsOn?: string[];
+  actorName?: string;
+  triggerReason?: string;
+  successCriteria?: string[];
+  keyRisks?: Array<{ risk: string; whyItMatters: string }>;
+  proofStrategy?: Array<{ riskOrUnknown: string; retireIn: string; whatWillBeProven: string }>;
+  verificationContract?: string;
+  verificationIntegration?: string;
+  verificationOperational?: string;
+  verificationUat?: string;
+  definitionOfDone?: string[];
+  requirementCoverage?: string;
+  boundaryMapMarkdown?: string;
+}
+
+export interface PersistMilestonePlanResult {
+  milestoneId: string;
+  roadmapPath: string;
+}
+
+function validatePlanPromotion(params: PersistMilestonePlanParams): string | null {
+  const existingMilestone = getMilestone(params.milestoneId);
+  if (existingMilestone && isClosedStatus(existingMilestone.status)) {
+    return `cannot re-plan milestone ${params.milestoneId}: it is already complete`;
+  }
+
+  // Guard: refuse to re-plan a milestone that would drop completed slices (#2960).
+  // Allow re-planning when all completed slices are still present in the
+  // incoming plan — their status is preserved below (#2558). Block only when
+  // the new plan omits a completed slice, which could shadow completed work.
+  const existingSlices = getMilestoneSlices(params.milestoneId);
+  const completedSlices = existingSlices.filter(s => isClosedStatus(s.status));
+  if (completedSlices.length > 0) {
+    const incomingSliceIds = new Set(params.slices.map(s => s.sliceId));
+    const droppedCompleted = completedSlices.filter(s => !incomingSliceIds.has(s.id));
+    if (droppedCompleted.length > 0) {
+      return `cannot re-plan milestone ${params.milestoneId}: ${droppedCompleted.length} completed slice(s) would be dropped (${droppedCompleted.map(s => s.id).join(", ")}). Use gsd_reassess_roadmap to modify the roadmap.`;
+    }
+  }
+
+  // Validate depends_on: all dependencies must exist and be complete
+  if (params.dependsOn && params.dependsOn.length > 0) {
+    for (const depId of params.dependsOn) {
+      const dep = getMilestone(depId);
+      if (!dep) {
+        return `depends_on references unknown milestone: ${depId}`;
+      }
+      if (!isClosedStatus(dep.status)) {
+        return `depends_on milestone ${depId} is not yet complete (status: ${dep.status})`;
+      }
+    }
+  }
+
+  return null;
+}
+
+function writePlanRows(params: PersistMilestonePlanParams): void {
+  insertMilestone({
+    id: params.milestoneId,
+    title: params.title,
+    status: params.status ?? "active",
+    depends_on: params.dependsOn ?? [],
+  });
+
+  upsertMilestonePlanning(params.milestoneId, {
+    title: params.title,
+    status: params.status ?? "active",
+    depends_on: params.dependsOn ?? [],
+    vision: params.vision,
+    successCriteria: params.successCriteria,
+    keyRisks: params.keyRisks,
+    proofStrategy: params.proofStrategy,
+    verificationContract: params.verificationContract,
+    verificationIntegration: params.verificationIntegration,
+    verificationOperational: params.verificationOperational,
+    verificationUat: params.verificationUat,
+    definitionOfDone: params.definitionOfDone,
+    requirementCoverage: params.requirementCoverage,
+    boundaryMapMarkdown: params.boundaryMapMarkdown,
+  });
+
+  for (let i = 0; i < params.slices.length; i++) {
+    const slice = params.slices[i]!;
+    // Preserve completed/done status on re-plan (#2558).
+    // Without this, a re-plan after milestone transition would reset
+    // already-completed slices back to "pending".
+    const existing = getSlice(params.milestoneId, slice.sliceId);
+    const status = existing && (existing.status === "complete" || existing.status === "done")
+      ? existing.status
+      : "pending";
+    insertSlice({
+      id: slice.sliceId,
+      milestoneId: params.milestoneId,
+      title: slice.title,
+      status,
+      risk: slice.risk,
+      depends: slice.depends,
+      demo: slice.demo,
+      sequence: i + 1, // Preserve agent-ordered sequence (#3356)
+      // ADR-011: pass undefined through so ON CONFLICT preserves existing values
+      // when the caller omitted the fields on a re-plan.
+      isSketch: slice.isSketch,
+      sketchScope: slice.sketchScope,
+    });
+    upsertSlicePlanning(params.milestoneId, slice.sliceId, {
+      goal: slice.goal,
+      successCriteria: slice.successCriteria,
+      proofLevel: slice.proofLevel,
+      integrationClosure: slice.integrationClosure,
+      observabilityImpact: slice.observabilityImpact,
+    });
+  }
+}
+
+async function renderPlanArtifacts(
+  basePath: string,
+  params: PersistMilestonePlanParams,
+): Promise<string | { error: string }> {
+  try {
+    const renderResult = await renderRoadmapFromDb(basePath, params.milestoneId);
+    return renderResult.roadmapPath;
+  } catch (renderErr) {
+    logWarning("tool", `plan_milestone — render failed (DB rows preserved for debugging): ${(renderErr as Error).message}`);
+    invalidateStateCache();
+    return { error: `render failed: ${(renderErr as Error).message}` };
+  }
+}
+
+async function runPostPlanHooks(basePath: string, params: PersistMilestonePlanParams): Promise<void> {
+  try {
+    await flushWorkflowProjections(basePath, { milestoneId: params.milestoneId });
+    writeManifest(basePath);
+    appendEvent(basePath, {
+      cmd: "plan-milestone",
+      params: { milestoneId: params.milestoneId },
+      ts: new Date().toISOString(),
+      actor: "agent",
+      actor_name: params.actorName,
+      trigger_reason: params.triggerReason,
+    });
+  } catch (hookErr) {
+    logWarning("tool", `plan-milestone post-mutation hook warning: ${(hookErr as Error).message}`);
+  }
+}
+
+export async function persistMilestonePlan(
+  params: PersistMilestonePlanParams,
+  basePath: string,
+): Promise<PersistMilestonePlanResult | { error: string }> {
+  // ── Guards + DB writes inside a single transaction (prevents TOCTOU) ───
+  // Guards must be inside the transaction so the state they check cannot
+  // change between the read and the write (#2723).
+  let guardError: string | null = null;
+
+  try {
+    transaction(() => {
+      guardError = validatePlanPromotion(params);
+      if (guardError) return;
+      writePlanRows(params);
+    });
+  } catch (err) {
+    return { error: `db write failed: ${(err as Error).message}` };
+  }
+
+  if (guardError) {
+    return { error: guardError };
+  }
+
+  const roadmapPath = await renderPlanArtifacts(basePath, params);
+  if (typeof roadmapPath !== "string") return roadmapPath;
+
+  invalidateStateCache();
+  clearParseCache();
+
+  await runPostPlanHooks(basePath, params);
+
+  return {
+    milestoneId: params.milestoneId,
+    roadmapPath,
+  };
+}

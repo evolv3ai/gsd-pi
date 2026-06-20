@@ -35,6 +35,7 @@ export interface RoadmapSliceEntry {
   depends: string[]; // e.g. ["S01", "S02"]
   done: boolean;
   demo: string; // the "After this:" sentence
+  isSketch?: boolean; // ADR-011: true when the roadmap shows the `[sketch]` badge
 }
 
 export interface BoundaryMapEntry {
@@ -270,6 +271,29 @@ export interface GSDActiveUnit {
 
 // ─── Post-Unit Hook Types ─────────────────────────────────────────────────
 
+export type PostUnitHookCriticality = "advisory" | "blocking";
+
+export type PostUnitHookOutcomeVerdict =
+  | "pass"
+  | "advisory"
+  | "needs-rework"
+  | "needs-remediation"
+  | "needs-attention";
+
+export type PostUnitHookOnBlockAction =
+  | "retry-unit"
+  | "retry-task"
+  | "queue-task"
+  | "queue-slice"
+  | "pause";
+
+export interface PostUnitHookOnBlockConfig {
+  /** Routing action for blocking hook findings. */
+  action: PostUnitHookOnBlockAction;
+  /** Optional artifact used by compatibility retry routing. */
+  artifact?: string;
+}
+
 export interface PostUnitHookConfig {
   /** Unique hook identifier — used in idempotency keys and logging. */
   name: string;
@@ -283,8 +307,12 @@ export interface PostUnitHookConfig {
   model?: string;
   /** Expected output file name (relative to task/slice dir). Used for idempotency — skip if exists. */
   artifact?: string;
+  /** Whether the hook is advisory or blocks unit advancement. Default advisory. */
+  criticality?: PostUnitHookCriticality;
   /** If this file is produced instead of artifact, re-run the trigger unit then re-run hooks. */
   retry_on?: string;
+  /** Optional routing for blocking findings. */
+  on_block?: PostUnitHookOnBlockConfig;
   /** Agent definition file to use. */
   agent?: string;
   /** Set false to disable without removing config. Default true. */
@@ -315,6 +343,31 @@ export interface HookDispatchResult {
   unitType: string;
   /** The trigger unit's ID, reused for the hook. */
   unitId: string;
+}
+
+export interface PostUnitGateBlock {
+  /** Blocking hook name. */
+  hookName: string;
+  /** The unit type that triggered the gate. */
+  triggerUnitType: string;
+  /** The unit ID that triggered the gate. */
+  triggerUnitId: string;
+  /** Gate artifact name, when configured. */
+  artifact?: string;
+  /** Absolute path to the gate artifact, when known. */
+  artifactPath?: string;
+  /** Parsed blocking verdict, when present. */
+  verdict?: PostUnitHookOutcomeVerdict | "failed";
+  /** Configured routing action that caused the pause. */
+  action: PostUnitHookOnBlockAction;
+  /** Human-readable pause reason. */
+  reason: string;
+  /** Current hook cycle count. */
+  cycle: number;
+  /** Configured max cycle count. */
+  maxCycles: number;
+  /** Optional compatibility retry artifact. */
+  retryArtifact?: string;
 }
 
 // ─── Budget & Notification Types ──────────────────────────────────────────
@@ -384,10 +437,10 @@ export interface EscalationArtifact {
   /** Why the executor recommends that option (1-2 sentences). */
   recommendationRationale: string;
   /**
-   * When true, the executor proceeds with the recommendation as the answer
-   * and the loop continues. User's later choice becomes a carry-forward
-   * override for the NEXT task. When false, auto-mode pauses until the
-   * user resolves via `/gsd escalate resolve`.
+   * When true, the recommendation is recorded as the default path but the
+   * loop still pauses until the user explicitly resolves the escalation.
+   * When false, auto-mode also pauses until the user resolves via
+   * `/gsd escalate resolve`.
    */
   continueWithDefault: boolean;
   createdAt: string;
@@ -452,6 +505,15 @@ export interface PreDispatchResult {
 export interface PersistedHookState {
   /** Cycle counts keyed as "hookName/triggerUnitType/triggerUnitId". */
   cycleCounts: Record<string, number>;
+  /** In-flight hook, persisted so blocking gates cannot be skipped after resume. */
+  activeHook?: HookExecutionState | null;
+  /** Remaining hook queue by hook name and trigger unit. */
+  hookQueue?: Array<{
+    hookName: string;
+    triggerUnitType: string;
+    triggerUnitId: string;
+    forceRun?: boolean;
+  }>;
   /** Timestamp of last state save. */
   savedAt: string;
 }
@@ -465,6 +527,8 @@ export interface HookStatusEntry {
   enabled: boolean;
   /** What unit types it targets. */
   targets: string[];
+  /** Whether this post-unit hook is advisory or blocking. */
+  criticality?: PostUnitHookCriticality;
   /** Current cycle counts for active triggers. */
   activeCycles: Record<string, number>;
 }
@@ -644,7 +708,8 @@ export interface CompleteSliceParams {
   sliceTitle: string;
   oneLiner: string;
   narrative: string;
-  verification: string;
+  /** @optional — if omitted, verification section is left blank in summary */
+  verification?: string;
   uatContent: string;
   /** @optional — defaults to [] when omitted by models with limited tool-calling */
   keyFiles?: string[];

@@ -358,24 +358,30 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			}
 			const providerRetrySettings = settingsManager.getProviderRetrySettings();
 			const attributionHeaders = getAttributionHeaders(model, settingsManager, options?.sessionId);
-			return streamSimple(model, context, {
+			const headers =
+				attributionHeaders || auth.headers || options?.headers
+					? { ...attributionHeaders, ...auth.headers, ...options?.headers }
+					: undefined;
+			const requestModel = auth.headers ? { ...model, headers: { ...model.headers, ...auth.headers } } : model;
+			return streamSimple(requestModel, context, {
 				...options,
 				apiKey: auth.apiKey,
 				timeoutMs: options?.timeoutMs ?? providerRetrySettings.timeoutMs,
 				maxRetries: options?.maxRetries ?? providerRetrySettings.maxRetries,
 				maxRetryDelayMs: options?.maxRetryDelayMs ?? providerRetrySettings.maxRetryDelayMs,
-				headers:
-					attributionHeaders || auth.headers || options?.headers
-						? { ...attributionHeaders, ...auth.headers, ...options?.headers }
-						: undefined,
+				headers,
 			});
 		},
-		onPayload: async (payload, _model) => {
+		onPayload: async (payload, model) => {
 			const runner = extensionRunnerRef.current;
 			if (!runner?.hasHandlers("before_provider_request")) {
 				return payload;
 			}
-			return runner.emitBeforeProviderRequest(payload);
+			// Thread the resolved model into the event so extensions can gate on
+			// provider/api (e.g. native web_search injection). Without this the
+			// before_provider_request event carries no model and provider-shape
+			// detection silently fails.
+			return runner.emitBeforeProviderRequest(payload, model);
 		},
 		onResponse: async (response, _model) => {
 			const runner = extensionRunnerRef.current;

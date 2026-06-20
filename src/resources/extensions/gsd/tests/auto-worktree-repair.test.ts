@@ -35,7 +35,8 @@ test("repair target accepts a missing expected milestone worktree", () => {
 
     assert.equal(result.ok, true);
     if (result.ok) {
-      assert.equal(result.expectedPath, join(base, ".gsd", "worktrees", "M001"));
+      // No worktree exists yet, so the expected path is the canonical container.
+      assert.equal(result.expectedPath, join(base, ".gsd-worktrees", "M001"));
     }
   } finally {
     cleanup(base);
@@ -192,7 +193,8 @@ test("paused metadata path resolves to the expected worktree while paused at pro
       baseIsAutoWorktree: false,
     });
 
-    assert.equal(result, join(base, ".gsd", "worktrees", "M001"));
+    // No worktree exists yet, so resolution lands at the canonical container.
+    assert.equal(result, join(base, ".gsd-worktrees", "M001"));
   } finally {
     cleanup(base);
   }

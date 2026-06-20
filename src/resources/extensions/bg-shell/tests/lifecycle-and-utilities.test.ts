@@ -1,7 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import type { BgProcess } from "../types.ts";
-import { detectProcessType } from "../process-manager.ts";
+import { detectProcessType, startProcess, terminateProcess, processes } from "../process-manager.ts";
 import { waitForReady } from "../readiness-detector.ts";
 import {
   formatTimeAgo,
@@ -108,6 +108,18 @@ describe("bg-shell waitForReady", () => {
     assert.match(result.detail, /137/);
   });
 
+  test("a clean exit-0 reads as completion, not a crash, and points at the right tool", async () => {
+    // Regression: a run-to-completion batch command (e.g. terraform apply) put
+    // under wait_for_ready exits 0 on success. It must NOT be framed as a crash;
+    // it should say it completed and steer toward async_bash.
+    const bg = makeBg({ alive: false, exitCode: 0 });
+    const result = await waitForReady(bg, 1000);
+    assert.equal(result.ready, false);
+    assert.match(result.detail, /completed \(exit 0\)/);
+    assert.match(result.detail, /async_bash/);
+    assert.doesNotMatch(result.detail, /exited before becoming ready/);
+  });
+
   test("reports failure when the process entered an error state", async () => {
     const bg = makeBg({ status: "error", readyPort: 5173 });
     const result = await waitForReady(bg, 1000);
@@ -203,4 +215,39 @@ describe("bg-shell resolveBgShellPersistenceCwd", () => {
     );
     assert.equal(result, "/proj/.gsd/worktrees/feature-b");
   });
+});
+
+describe("bg-shell terminateProcess (graceful kill ladder)", () => {
+  test(
+    "force-kills a SIGTERM-immune process via the shared killProcessTree ladder",
+    { skip: process.platform === "win32" ? "Unix-primary graceful semantics" : false, timeout: 15_000 },
+    async (t) => {
+      // A process that ignores SIGTERM must still die — terminateProcess routes
+      // through killProcessTree, which escalates SIGTERM → grace → SIGKILL. A bare
+      // single-signal kill (the old behavior) would have left this running.
+      const bg = startProcess({
+        command: "trap '' TERM; while true; do sleep 1; done",
+        cwd: "/tmp",
+        label: "sigterm-immune",
+        type: "generic",
+      });
+      t.after(() => {
+        try { if (bg.proc.pid) process.kill(-bg.proc.pid, "SIGKILL"); } catch { /* gone */ }
+        processes.delete(bg.id);
+      });
+
+      // Let the trap install.
+      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(bg.alive, true, "process should be alive before terminate");
+
+      terminateProcess(bg.id);
+
+      // SIGKILL fires after the 5s grace; poll up to grace + slack.
+      const deadline = Date.now() + 9_000;
+      while (bg.alive && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      assert.equal(bg.alive, false, "SIGTERM-immune process must be SIGKILLed via the ladder, not left running");
+    },
+  );
 });

@@ -48,6 +48,8 @@ export interface WebModeLaunchOptions {
   port?: number
   /** Additional allowed origins for CORS (forwarded as GSD_WEB_ALLOWED_ORIGINS). */
   allowedOrigins?: string[]
+  /** Disable web bearer-token auth for externally protected deployments. */
+  noAuth?: boolean
 }
 
 export interface ResolvedWebHostBootstrap {
@@ -392,6 +394,10 @@ function emitLaunchStatus(stderr: WritableLike, status: WebModeLaunchStatus): vo
   stderr.write(formatLaunchStatus(status))
 }
 
+function isWebNoAuthEnabled(env: NodeJS.ProcessEnv): boolean {
+  return env.GSD_WEB_NO_AUTH === '1'
+}
+
 function buildSpawnSpec(
   resolution: ResolvedWebHostBootstrap,
   host: string,
@@ -632,21 +638,29 @@ export async function launchWebMode(
   cleanupStaleInstance(options.cwd, stderr, deps.registryPath)
 
   const port = options.port ?? await (deps.resolvePort ?? reserveWebPort)(host)
-  const authToken = randomBytes(32).toString('hex')
+  const baseEnv = deps.env ?? process.env
+  const noAuth = options.noAuth ?? isWebNoAuthEnabled(baseEnv)
+  const authToken = noAuth ? null : randomBytes(32).toString('hex')
   const url = `http://${host}:${port}`
-  const env = {
-    ...(deps.env ?? process.env),
+  const env: NodeJS.ProcessEnv = {
+    ...baseEnv,
     HOSTNAME: host,
     PORT: String(port),
     GSD_WEB_HOST: host,
     GSD_WEB_PORT: String(port),
-    GSD_WEB_AUTH_TOKEN: authToken,
     GSD_WEB_PROJECT_CWD: options.cwd,
     GSD_WEB_PROJECT_SESSIONS_DIR: options.projectSessionsDir,
     GSD_WEB_PACKAGE_ROOT: resolution.packageRoot,
     GSD_WEB_HOST_KIND: resolution.kind,
     ...(resolution.kind === 'source-dev' ? { NEXT_PUBLIC_GSD_DEV: '1' } : {}),
     ...(options.allowedOrigins?.length ? { GSD_WEB_ALLOWED_ORIGINS: options.allowedOrigins.join(',') } : {}),
+  }
+  if (authToken) {
+    env.GSD_WEB_AUTH_TOKEN = authToken
+  } else {
+    delete env.GSD_WEB_AUTH_TOKEN
+    env.GSD_WEB_NO_AUTH = '1'
+    stderr.write('[gsd] WARNING: Web token auth is disabled. The interface is unprotected unless external access control is in place.\n')
   }
 
   try {
@@ -760,7 +774,7 @@ export async function launchWebMode(
   })
 
   try {
-    const bootReadyFn = deps.waitForBootReady ?? ((u: string) => waitForBootReady(u, 180_000, stderr, authToken))
+    const bootReadyFn = deps.waitForBootReady ?? ((u: string) => waitForBootReady(u, 180_000, stderr, authToken ?? undefined))
     // Race readiness against the child exiting. A dead child resolves the exit
     // promise long before `waitForBootReady` would give up, so we fail fast
     // with the host's own stderr instead of an opaque connection timeout.
@@ -801,9 +815,9 @@ export async function launchWebMode(
       // Register in multi-instance registry
       registerInstance(options.cwd, { pid, port, url }, deps.registryPath)
     }
-    const authenticatedUrl = `${url}/#token=${authToken}`
+    const browserUrl = authToken ? `${url}/#token=${authToken}` : url
     try {
-      ;(deps.openBrowser ?? openBrowser)(authenticatedUrl)
+      ;(deps.openBrowser ?? openBrowser)(browserUrl)
     } catch (browserError) {
       stderr.write(`[gsd] Could not open browser: ${browserError instanceof Error ? browserError.message : String(browserError)}\n`)
     }
@@ -825,7 +839,7 @@ export async function launchWebMode(
     return failure
   }
 
-  const authenticatedUrl = `${url}/#token=${authToken}`
+  const readyUrl = authToken ? `${url}/#token=${authToken}` : url
   const success: WebModeLaunchSuccess = {
     mode: 'web',
     ok: true,
@@ -838,7 +852,7 @@ export async function launchWebMode(
     hostPath: resolution.entryPath,
     hostRoot: resolution.hostRoot,
   }
-  stderr.write(`[gsd] Ready → ${authenticatedUrl}\n`)
+  stderr.write(`[gsd] Ready → ${readyUrl}\n`)
   emitLaunchStatus(stderr, success)
   return success
 }

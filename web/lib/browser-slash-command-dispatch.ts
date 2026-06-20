@@ -45,7 +45,18 @@ export interface BrowserSlashCommandDispatchOptions {
   isStreaming?: boolean
 }
 
+export type BrowserBashBridgeCommand = {
+  type: "bash"
+  command: string
+  excludeFromContext?: boolean
+}
+
 export type BrowserSlashCommandDispatchResult =
+  | {
+      kind: "bash"
+      input: string
+      command: BrowserBashBridgeCommand
+    }
   | {
       kind: "prompt"
       input: string
@@ -242,6 +253,21 @@ function dispatchGSDSubcommand(
   }
 }
 
+/**
+ * Parse `!command` / `!!command` input matching the interactive TUI bash prefix.
+ * Returns null when the input is not a bash-prefixed command or has no command body.
+ */
+export function parseBashPrefixedInput(input: string): { command: string; excludeFromContext: boolean } | null {
+  const trimmed = input.trim()
+  if (!trimmed.startsWith("!")) return null
+
+  const excludeFromContext = trimmed.startsWith("!!")
+  const command = excludeFromContext ? trimmed.slice(2).trim() : trimmed.slice(1).trim()
+  if (!command) return null
+
+  return { command, excludeFromContext }
+}
+
 function parseSlashCommand(input: string): { name: string; args: string } | null {
   if (!input.startsWith("/")) return null
   const body = input.slice(1).trim()
@@ -286,6 +312,19 @@ export function dispatchBrowserSlashCommand(
   options: BrowserSlashCommandDispatchOptions = {},
 ): BrowserSlashCommandDispatchResult {
   const trimmed = input.trim()
+  const bashInput = parseBashPrefixedInput(trimmed)
+  if (bashInput) {
+    return {
+      kind: "bash",
+      input: trimmed,
+      command: {
+        type: "bash",
+        command: bashInput.command,
+        ...(bashInput.excludeFromContext ? { excludeFromContext: true } : {}),
+      },
+    }
+  }
+
   const parsed = parseSlashCommand(trimmed)
 
   if (trimmed === "/clear") {

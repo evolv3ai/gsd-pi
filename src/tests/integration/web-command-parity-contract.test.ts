@@ -151,6 +151,31 @@ test("browser-local aliases and legacy helpers stay explicit", async (t) => {
   })
 })
 
+test("bash-prefixed input dispatches to rpc bash instead of prompt", async (t) => {
+  await t.test("!command routes to bash RPC", () => {
+    const outcome = dispatchBrowserSlashCommand("! ls -la")
+    assert.equal(outcome.kind, "bash")
+    if (outcome.kind !== "bash") return
+    assert.equal(outcome.command.type, "bash")
+    assert.equal(outcome.command.command, "ls -la")
+    assert.equal(outcome.command.excludeFromContext, undefined)
+  })
+
+  await t.test("!!command excludes output from model context", () => {
+    const outcome = dispatchBrowserSlashCommand("!! git status")
+    assert.equal(outcome.kind, "bash")
+    if (outcome.kind !== "bash") return
+    assert.equal(outcome.command.command, "git status")
+    assert.equal(outcome.command.excludeFromContext, true)
+  })
+
+  await t.test("bare ! falls through to prompt", () => {
+    const outcome = dispatchBrowserSlashCommand("!")
+    assert.equal(outcome.kind, "prompt")
+    assert.equal(outcome.command.message, "!")
+  })
+})
+
 test("registered GSD command roots stay on the prompt/extension path", async () => {
   const registeredRoots = await collectRegisteredGsdCommandRoots()
   assert.deepEqual(

@@ -8,6 +8,11 @@
  *
  * Fix: removeWorktree should query `git worktree list` to find the actual
  * registered path when the computed path doesn't match.
+ *
+ * New worktrees are created at the canonical `.gsd-worktrees/` sibling and
+ * never cross the symlink, so this scenario only applies to LEGACY worktrees
+ * (created under `.gsd/worktrees/` by older versions). The test creates the
+ * worktree at the legacy location directly to keep that coverage.
  */
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync, existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -15,7 +20,6 @@ import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 
 import {
-  createWorktree,
   removeWorktree,
   listWorktrees,
   worktreePath,
@@ -64,13 +68,15 @@ test('worktree-symlink-removal removes the git-registered symlink target safely'
   run("git add .", base);
   run('git commit -m "init"', base);
 
-  // Create a worktree — git will resolve the symlink and register
-  // the worktree at the external path
-  const info = createWorktree(base, "M002", { branch: "milestone/M002" });
-  assert.ok(info.exists, "worktree created");
+  // Create a LEGACY worktree through the symlinked .gsd path — git resolves
+  // the symlink and registers the worktree at the external path. (Current
+  // createWorktree() uses the canonical .gsd-worktrees/ sibling instead.)
+  const legacyPath = join(base, ".gsd", "worktrees", "M002");
+  run(`git worktree add -b milestone/M002 "${legacyPath}"`, base);
+  assert.ok(existsSync(legacyPath), "worktree created");
 
   // Verify worktree was created at the resolved (external) path
-  const realWtPath = realpathSync(info.path);
+  const realWtPath = realpathSync(legacyPath);
   assert.ok(
     realWtPath.startsWith(externalState),
     `worktree real path (${realWtPath}) is under external state dir`,

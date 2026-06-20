@@ -8,9 +8,8 @@ import { renderChatFrame } from "./transcript-design.js";
 import { editorKey } from "./keybinding-hints.js";
 
 /**
- * Renders a skill invocation in the shared chat-frame style (top rule,
- * `• skill - <name>` header, `│ ` body margin) with purple border/label
- * matching compaction so it visually aligns with user/assistant messages.
+ * Renders a skill invocation as a plain system line (◇ skill header,
+ * copy-clean body) matching compaction notices.
  */
 export class SkillInvocationMessageComponent extends CollapsibleMessageComponent {
 	private skillBlock: ParsedSkillBlock;

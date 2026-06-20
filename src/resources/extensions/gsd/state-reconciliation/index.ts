@@ -6,6 +6,9 @@ import {
   deriveState as defaultDeriveState,
   invalidateStateCache as defaultInvalidate,
 } from "../state.js";
+import { clearParseCache as defaultClearParseCache } from "../files.js";
+import { clearPathCache } from "../paths.js";
+import { logWarning } from "../workflow-logger.js";
 import type { GSDState } from "../types.js";
 
 import {
@@ -37,6 +40,7 @@ const MAX_PASSES = 2;
 const defaultDeps: ReconciliationDeps = {
   invalidateStateCache: defaultInvalidate,
   deriveState: defaultDeriveState,
+  clearParseCache: defaultClearParseCache,
 };
 
 /**
@@ -58,6 +62,7 @@ export async function reconcileBeforeDispatch(
   deps: ReconciliationDeps = defaultDeps,
 ): Promise<ReconciliationResult> {
   const registry = deps.registry ?? DRIFT_REGISTRY;
+  const clearParseCache = deps.clearParseCache ?? defaultClearParseCache;
   const repaired: DriftRecord[] = [];
 
   for (let pass = 0; pass < MAX_PASSES; pass++) {
@@ -65,18 +70,24 @@ export async function reconcileBeforeDispatch(
     const stateSnapshot = await deps.deriveState(basePath, deps.deriveStateOptions);
     const ctx: DriftContext = { basePath, state: stateSnapshot };
 
-    const drift = await detectAllDrift(stateSnapshot, ctx, registry, pass);
+    const detection = await detectAllDrift(stateSnapshot, ctx, registry);
+    const drift = detection.records;
     if (drift.length === 0) {
       return {
         ok: true,
         stateSnapshot,
         repaired,
-        blockers: stateSnapshot.blockers ?? [],
+        blockers: [
+          ...new Set([
+            ...(stateSnapshot.blockers ?? []),
+            ...detection.detectBlockers,
+          ]),
+        ],
       };
     }
 
     const failures: ReconciliationFailureDetail[] = [];
-    const blockers: string[] = [];
+    const blockers: string[] = [...detection.detectBlockers];
     let repairedThisPass = false;
     for (const record of drift) {
       const handler = registry.find((h) => h.kind === record.kind);
@@ -103,6 +114,13 @@ export async function reconcileBeforeDispatch(
       }
     }
 
+    if (repairedThisPass) {
+      // A repair may have mutated on-disk structure (e.g. quarantined a slice
+      // dir). Clear both the parse cache and the path/dir cache centrally so
+      // later passes and any subsequent repair see fresh filesystem state.
+      clearParseCache();
+      clearPathCache();
+    }
     if (blockers.length > 0) {
       let blockerState = stateSnapshot;
       if (repairedThisPass) {
@@ -126,10 +144,11 @@ export async function reconcileBeforeDispatch(
   deps.invalidateStateCache();
   const finalState = await deps.deriveState(basePath, deps.deriveStateOptions);
   const finalCtx: DriftContext = { basePath, state: finalState };
-  const persistent = await detectAllDrift(finalState, finalCtx, registry);
+  const finalDetection = await detectAllDrift(finalState, finalCtx, registry);
+  const persistent = finalDetection.records;
 
   if (persistent.length > 0) {
-    const blockers: string[] = [];
+    const blockers: string[] = [...finalDetection.detectBlockers];
     const unblockedPersistent: DriftRecord[] = [];
     for (const record of persistent) {
       const handler = registry.find((h) => h.kind === record.kind);
@@ -155,28 +174,45 @@ export async function reconcileBeforeDispatch(
     ok: true,
     stateSnapshot: finalState,
     repaired,
-    blockers: finalState.blockers ?? [],
+    blockers: [
+      ...new Set([
+        ...(finalState.blockers ?? []),
+        ...finalDetection.detectBlockers,
+      ]),
+    ],
   };
 }
 
+interface DetectionOutcome {
+  records: DriftRecord[];
+  /** One blocker string per handler whose detect() threw. */
+  detectBlockers: string[];
+}
+
+/**
+ * Run every detector. A single detector throwing (e.g. a transient file read
+ * error) must NOT abort the whole cycle and hide every later handler's drift —
+ * it is collected as a blocker so dispatch is still gated, while the remaining
+ * detectors run and their drift gets repaired (graceful degradation, ADR-017).
+ */
 async function detectAllDrift(
   state: GSDState,
   ctx: DriftContext,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   registry: ReadonlyArray<DriftHandler<any>>,
-  pass?: number,
-): Promise<DriftRecord[]> {
-  const collected: DriftRecord[] = [];
+): Promise<DetectionOutcome> {
+  const records: DriftRecord[] = [];
+  const detectBlockers: string[] = [];
   for (const handler of registry) {
     try {
       const detected = await handler.detect(state, ctx);
-      collected.push(...detected);
+      records.push(...detected);
     } catch (cause) {
-      throw new ReconciliationFailedError({
-        failures: [{ drift: { kind: handler.kind } as DriftRecord, cause }],
-        pass,
-      });
+      const message = cause instanceof Error ? cause.message : String(cause);
+      const blocker = `Drift detection failed for "${handler.kind}": ${message}`;
+      logWarning("reconcile", blocker);
+      detectBlockers.push(blocker);
     }
   }
-  return collected;
+  return { records, detectBlockers };
 }

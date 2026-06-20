@@ -204,6 +204,27 @@ function emitText(stream: AssistantMessageEventStream, message: AssistantMessage
 	stream.end(message);
 }
 
+function isGeminiCliDeprecatedCliOutput(text: string): boolean {
+	return (
+		/IneligibleTierError/i.test(text)
+		|| /UNSUPPORTED_CLIENT/i.test(text)
+		|| /no longer supported for Gemini Code Assist for individuals/i.test(text)
+		|| /migrate to the Antigravity suite/i.test(text)
+	);
+}
+
+const GEMINI_CLI_DEPRECATION_HINT =
+	"Gemini CLI is no longer supported for individual users. Install Antigravity CLI " +
+	"(curl -fsSL https://antigravity.google/cli/install.sh | bash), run `agy` to authenticate, " +
+	"then use /login → Antigravity or restart GSD to auto-migrate.";
+
+function formatGoogleCliError(detail: string, provider: GoogleCliProviderId): string {
+	if (provider === "google-gemini-cli" && isGeminiCliDeprecatedCliOutput(detail)) {
+		return `${detail}\n\n${GEMINI_CLI_DEPRECATION_HINT}`;
+	}
+	return detail;
+}
+
 function emitError(stream: AssistantMessageEventStream, model: Model<Api>, error: unknown): void {
 	const message = error instanceof Error ? error.message : String(error);
 	const output = buildAssistantMessage(model, "", "error", message);
@@ -228,7 +249,7 @@ export function streamViaGoogleCli(
 
 			if (result.code !== 0) {
 				const detail = (result.stderr || result.stdout || `CLI exited with code ${result.code}`).trim();
-				throw new Error(detail);
+				throw new Error(formatGoogleCliError(detail, provider));
 			}
 
 			const text = provider === "google-gemini-cli"

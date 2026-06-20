@@ -8,7 +8,7 @@ import { shortcutDesc } from "../shared/terminal.js";
 
 import {
 	processes,
-	killProcess,
+	terminateProcess,
 	getGroupStatus,
 	cleanupAll,
 } from "./process-manager.js";
@@ -150,11 +150,11 @@ export function registerBgShellCommand(pi: ExtensionAPI, state: BgShellSharedSta
 					ctx.ui.notify(`No process with id '${id}'`, "error");
 					return;
 				}
-				killProcess(id, "SIGTERM");
-				await new Promise(r => setTimeout(r, 300));
-				if (bg.alive) {
-					killProcess(id, "SIGKILL");
-					await new Promise(r => setTimeout(r, 200));
+				// Graceful ladder (SIGTERM → grace → SIGKILL) via killProcessTree.
+				terminateProcess(id);
+				const deadline = Date.now() + 6_000; // grace (5s) + slack
+				while (bg.alive && Date.now() < deadline) {
+					await new Promise(r => setTimeout(r, 100));
 				}
 				if (!bg.alive) processes.delete(id);
 				ctx.ui.notify(`Killed process ${id} (${bg.label})`, "info");

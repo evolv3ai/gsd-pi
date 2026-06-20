@@ -4,7 +4,7 @@
 //
 // Exports: parseDecisionsTable, parseRequirementsSections, migrateFromMarkdown
 
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import type { Decision, Requirement } from './types.js';
 import {
@@ -14,11 +14,12 @@ import {
   insertMilestone,
   insertSlice,
   insertTask,
-  openDatabase,
   transaction,
+  updateMilestoneStatus,
   updateSliceStatus,
   _getAdapter,
 } from './gsd-db.js';
+import { openWorkflowDatabasePath } from './db-workspace.js';
 import {
   resolveGsdRootFile,
   resolveMilestoneFile,
@@ -37,6 +38,27 @@ import { logWarning } from './workflow-logger.js';
 // ─── DECISIONS.md Parser ───────────────────────────────────────────────────
 
 const VALID_MADE_BY = new Set(['human', 'agent', 'collaborative']);
+
+const IMPORT_COMPLETE_STATUSES = new Set(['complete', 'done']);
+
+/**
+ * Completion timestamp for an entity imported as complete: the SUMMARY.md mtime
+ * when one exists (deterministic, matches the completion drift handler), else
+ * the import time. Crucially this never returns null, so a complete entity is
+ * never left with completed_at=null — which would otherwise be permanent,
+ * undetectable drift when no SUMMARY file is present.
+ */
+function importCompletionTimestamp(summaryPath: string | null): string {
+  if (summaryPath && existsSync(summaryPath)) {
+    try {
+      return statSync(summaryPath).mtime.toISOString();
+    } catch (err) {
+      // Fall through to import time.
+      logWarning('projection', `summary mtime read failed for ${summaryPath}: ${(err as Error).message}`);
+    }
+  }
+  return new Date().toISOString();
+}
 
 /**
  * Parse a DECISIONS.md markdown table into Decision objects (without seq).
@@ -587,6 +609,14 @@ export function migrateHierarchyToDb(basePath: string): {
         boundaryMapMarkdown: boundaryMapSection,
       },
     });
+    // insertMilestone never sets completed_at; backfill it now for milestones
+    // imported as complete so the DB is internally coherent immediately after
+    // import (rather than relying on a later reconciliation pass that can't even
+    // see the drift when no SUMMARY file exists).
+    if (IMPORT_COMPLETE_STATUSES.has(milestoneStatus)) {
+      const summaryPath = resolveMilestoneFile(basePath, milestoneId, 'SUMMARY');
+      updateMilestoneStatus(milestoneId, milestoneStatus, importCompletionTimestamp(summaryPath));
+    }
     counts.milestones++;
 
     // Parse roadmap for slices
@@ -611,13 +641,25 @@ export function migrateHierarchyToDb(basePath: string): {
         title: sliceEntry.title,
         status: sliceStatus,
         risk: sliceEntry.risk,
-        depends: sliceEntry.depends,
+        depends: (sliceEntry.depends ?? []).map(d => d.replace(/^\[|\]$/g, '')).filter(d => /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(d)),
         demo: sliceEntry.demo,
         sequence: si + 1, // Preserve roadmap parse order (#3356)
+        isSketch: sliceEntry.isSketch ?? false, // ADR-011: preserve the `[sketch]` flag on re-import
         planning: {
           goal: plan?.goal ?? '',
         },
       });
+      // insertSlice never sets completed_at; backfill it for slices imported as
+      // complete (same rationale as milestones above).
+      if (IMPORT_COMPLETE_STATUSES.has(sliceStatus)) {
+        const sliceSummary = resolveSliceFile(basePath, milestoneId, sliceEntry.id, 'SUMMARY');
+        updateSliceStatus(
+          milestoneId,
+          sliceEntry.id,
+          sliceStatus,
+          importCompletionTimestamp(sliceSummary),
+        );
+      }
       counts.slices++;
 
       // Insert tasks from parsed plan
@@ -674,7 +716,12 @@ export function migrateHierarchyToDb(basePath: string): {
         });
         if (allTasksDone && hasSliceSummary) {
           if (_getAdapter()) {
-            updateSliceStatus(milestoneId, sliceEntry.id, 'complete');
+            updateSliceStatus(
+              milestoneId,
+              sliceEntry.id,
+              'complete',
+              importCompletionTimestamp(sliceSummaryPath),
+            );
             process.stderr.write(
               `gsd-migrate: ${milestoneId}/${sliceEntry.id} all tasks + slice summary complete — upgrading slice to complete\n`,
             );
@@ -706,7 +753,7 @@ export function migrateFromMarkdown(gsdDir: string): {
 
   // Open DB if not already open
   if (!_getAdapter()) {
-    openDatabase(dbPath);
+    openWorkflowDatabasePath(dbPath);
   }
 
   let decisions = 0;

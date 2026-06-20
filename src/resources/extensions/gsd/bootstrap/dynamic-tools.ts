@@ -2,16 +2,21 @@
 // File Purpose: Registers workspace-aware dynamic filesystem and shell tools.
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import { createBashTool, createEditTool, createReadTool, createWriteTool } from "@gsd/pi-coding-agent";
 
-import { DEFAULT_BASH_TIMEOUT_SECS } from "../constants.js";
-import { setLogBasePath, logWarning } from "../workflow-logger.js";
-import { resolveGsdPathContract } from "../paths.js";
+import { logWarning } from "../workflow-logger.js";
+import {
+  getWorkflowDatabaseStatus,
+  openWorkflowDatabase,
+  type WorkflowDatabaseOpenResult,
+  type WorkflowDatabaseStatus,
+} from "../db-workspace.js";
 import { getAutoWorktreePath } from "../auto-worktree.js";
 import { resolveWorktreeProjectRoot } from "../worktree-root.js";
+import { worktreesDirs } from "../worktree-placement.js";
 
 export function safeWorkspaceCwd(): string {
   try {
@@ -46,13 +51,15 @@ export function resolveWorkflowToolBasePath(
     const worktree = getAutoWorktreePath(projectRoot, milestoneId);
     if (worktree) return worktree;
   } else {
-    const worktreesDir = join(projectRoot, ".gsd", "worktrees");
-    if (existsSync(worktreesDir)) {
+    const live: string[] = [];
+    for (const worktreesDir of worktreesDirs(projectRoot)) {
+      if (!existsSync(worktreesDir)) continue;
       try {
-        const live = readdirSync(worktreesDir)
-          .map((name) => join(worktreesDir, name))
-          .filter((p) => existsSync(join(p, ".git")));
-        if (live.length === 1) return live[0]!;
+        live.push(
+          ...readdirSync(worktreesDir)
+            .map((name) => join(worktreesDir, name))
+            .filter((p) => existsSync(join(p, ".git"))),
+        );
       } catch (err) {
         logWarning(
           "bootstrap",
@@ -60,49 +67,68 @@ export function resolveWorkflowToolBasePath(
         );
       }
     }
+    if (live.length === 1) return live[0]!;
   }
   return cwd;
 }
 
-/**
- * Resolve the correct DB path for the current working directory.
- * If `basePath` is inside a `.gsd/worktrees/<MID>/` directory, returns
- * the project root's `.gsd/gsd.db` (shared WAL — R012). Otherwise
- * returns `<basePath>/.gsd/gsd.db`.
- */
-export function resolveProjectRootDbPath(basePath: string): string {
-  return resolveGsdPathContract(basePath).projectDb;
+export { resolveProjectRootDbPath } from "../db-workspace.js";
+
+type WorkflowDatabaseOpenFailure = Extract<WorkflowDatabaseOpenResult, { ok: false }>;
+
+function sqliteProviderHint(status: WorkflowDatabaseStatus, nodeVersion: string): string {
+  if (status.provider) return `Provider: ${status.provider}.`;
+
+  const major = Number.parseInt(nodeVersion.split(".")[0] ?? "", 10);
+  if (Number.isFinite(major) && major < 22) {
+    return (
+      `No SQLite provider available. Upgrade Node to >= 22.0.0 (current: v${nodeVersion}), ` +
+      "use the packaged GSD runtime, or install/restore better-sqlite3 in this runtime."
+    );
+  }
+
+  return (
+    "No SQLite provider available. Use a Node build with node:sqlite enabled, " +
+    "run the packaged GSD runtime, or install/restore better-sqlite3 in this runtime."
+  );
+}
+
+function dbOpenPhaseHint(status: WorkflowDatabaseStatus): string {
+  if (status.lastPhase === "open") return "The database file could not be opened";
+  if (status.lastPhase === "initSchema") return "The database schema could not be initialized";
+  if (status.lastPhase === "vacuum-recovery") return "Corruption recovery (VACUUM) failed";
+  if (status.attempted) return "The database could not be opened";
+  return "The database provider could not be loaded";
+}
+
+export function formatWorkflowDatabaseOpenFailure(
+  result: WorkflowDatabaseOpenFailure,
+  status?: WorkflowDatabaseStatus,
+  nodeVersion: string = process.versions.node,
+): string {
+  if (result.reason === "missing-gsd-dir") {
+    return `ensureDbOpen failed — no .gsd directory found at ${result.location.projectGsd}`;
+  }
+
+  if (result.reason === "missing-database") {
+    return `ensureDbOpen failed — no GSD database found at ${result.location.projectDb}`;
+  }
+
+  const resolvedStatus = status ?? getWorkflowDatabaseStatus();
+  const detail = result.error?.message ?? resolvedStatus.lastError?.message ?? "";
+  const detailSuffix = detail ? ` (${detail})` : "";
+  return (
+    `ensureDbOpen failed for ${result.location.projectDb}: ` +
+    `${dbOpenPhaseHint(resolvedStatus)}${detailSuffix}. ${sqliteProviderHint(resolvedStatus, nodeVersion)}`
+  );
 }
 
 export async function ensureDbOpen(basePath: string = safeWorkspaceCwd()): Promise<boolean> {
-  try {
-    const db = await import("../gsd-db.js");
-    const contract = resolveGsdPathContract(basePath);
-    const dbPath = contract.projectDb;
-    const gsdDir = contract.projectGsd;
-    const projectRoot = dirname(dirname(dbPath));
+  const result = openWorkflowDatabase(basePath);
+  if (result.ok) return true;
 
-    // Open existing DB file (may be at project root for worktrees)
-    if (existsSync(dbPath)) {
-      const opened = db.openDatabase(dbPath);
-      if (opened) setLogBasePath(projectRoot);
-      return opened;
-    }
-
-    // No DB file — create an empty authoritative DB. Markdown migration is
-    // explicit-only; runtime startup must not import projections into state.
-    if (existsSync(gsdDir)) {
-      const opened = db.openDatabase(dbPath);
-      if (opened) setLogBasePath(projectRoot);
-      return opened;
-    }
-
-    logWarning("bootstrap", "ensureDbOpen failed — no .gsd directory found");
-    return false;
-  } catch (err) {
-    logWarning("bootstrap", `ensureDbOpen failed: ${(err as Error).message ?? String(err)}`);
-    return false;
-  }
+  logWarning("bootstrap", formatWorkflowDatabaseOpenFailure(result));
+  return false;
 }
 
 export function registerDynamicTools(pi: ExtensionAPI): void {
@@ -110,8 +136,30 @@ export function registerDynamicTools(pi: ExtensionAPI): void {
   const baseBash = createBashTool(fallbackRoot, {
     spawnHook: (ctx) => ctx,
   });
+  // The auto-mode stalled-tool watchdog only exists in GSD/auto-mode, so the
+  // watchdog verbiage is injected here (the GSD-registered tool) rather than in
+  // core bash.ts, which is reused by non-GSD embeddings that have no watchdog.
+  const WATCHDOG_DETAIL =
+    "Genuine hangs are caught by the auto-mode stalled-tool watchdog (stalled: 5m / idle: 10m / soft: 20m / hard: 30m).";
+  const gsdBashDescription = `${(baseBash as any).description} ${WATCHDOG_DETAIL}`;
+  const gsdBashParameters = (() => {
+    const params: any = (baseBash as any).parameters;
+    if (!params?.properties?.timeout) return params;
+    return {
+      ...params,
+      properties: {
+        ...params.properties,
+        timeout: {
+          ...params.properties.timeout,
+          description: `${params.properties.timeout.description} ${WATCHDOG_DETAIL}`,
+        },
+      },
+    };
+  })();
   const dynamicBash = {
     ...baseBash,
+    description: gsdBashDescription,
+    parameters: gsdBashParameters,
     execute: async (
       toolCallId: string,
       params: { command: string; timeout?: number },
@@ -123,11 +171,7 @@ export function registerDynamicTools(pi: ExtensionAPI): void {
       const fresh = createBashTool(basePath, {
         spawnHook: (spawnCtx) => ({ ...spawnCtx, cwd: basePath }),
       });
-      const paramsWithTimeout = {
-        ...params,
-        timeout: params.timeout ?? DEFAULT_BASH_TIMEOUT_SECS,
-      };
-      return (fresh as any).execute(toolCallId, paramsWithTimeout, signal, onUpdate, ctx);
+      return (fresh as any).execute(toolCallId, params, signal, onUpdate, ctx);
     },
   };
   pi.registerTool(dynamicBash as any);

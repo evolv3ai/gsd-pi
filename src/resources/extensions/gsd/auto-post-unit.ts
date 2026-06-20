@@ -18,7 +18,7 @@ import { deriveState } from "./state.js";
 import { logWarning, logError } from "./workflow-logger.js";
 import { loadFile, parseSummary, resolveAllOverrides } from "./files.js";
 import { loadPrompt } from "./prompt-loader.js";
-import { isAwaitingUserInput } from "./user-input-boundary.js";
+import { isAwaitingUserInput } from "./consent-question.js";
 import {
   resolveMilestonePath,
   resolveSliceFile,
@@ -49,14 +49,16 @@ import { regenerateIfMissing } from "./workflow-projections.js";
 import { WorktreeStateProjection } from "./worktree-state-projection.js";
 import { createWorkspace, scopeMilestone } from "./workspace.js";
 import { normalizeWorktreePathForCompare } from "./worktree-root.js";
-import { isDbAvailable, getDbPath, refreshOpenDatabaseFromDisk, getTask, getSlice, getMilestone, getMilestoneSlices, updateTaskStatus, _getAdapter, getVerificationEvidence } from "./gsd-db.js";
-import { renderPlanCheckboxes, renderRoadmapFromDb } from "./markdown-renderer.js";
-import { parseRoadmap as parseLegacyRoadmap } from "./parsers-legacy.js";
+import { isDbAvailable, getTask, getSlice, getMilestone, getMilestoneSlices, updateTaskStatus, _getAdapter, getVerificationEvidence } from "./gsd-db.js";
+import { getWorkflowDatabasePath, refreshWorkflowDatabaseFromDisk } from "./db-workspace.js";
+import { renderPlanCheckboxes, renderRoadmapFromDb, roadmapRenderMarksSliceDone } from "./markdown-renderer.js";
 import { consumeSignal } from "./session-status-io.js";
 import {
   checkPostUnitHooks,
+  consumeHookFailure,
   isRetryPending,
   consumeRetryTrigger,
+  consumeGateBlock,
   persistHookState,
   resolveHookArtifactPath,
 } from "./post-unit-hooks.js";
@@ -69,7 +71,7 @@ import {
 } from "./milestone-closeout.js";
 import type { AutoSession, SidecarItem } from "./auto/session.js";
 import { getEvidence, clearEvidenceFromDisk, isExecutionToolName } from "./safety/evidence-collector.js";
-import { validateFileChanges } from "./safety/file-change-validator.js";
+import { validateFileChanges, effectiveFileChangeAllowlist } from "./safety/file-change-validator.js";
 import { crossReferenceEvidence, type ClaimedEvidence } from "./safety/evidence-cross-ref.js";
 import { validateContent } from "./safety/content-validator.js";
 import { resolveSafetyHarnessConfig } from "./safety/safety-harness.js";
@@ -85,7 +87,7 @@ import { writeTurnGitTransaction } from "./uok/gitops.js";
 import { isClosedStatus } from "./status-guards.js";
 import { detectAbandonMilestone } from "./abandon-detect.js";
 import { getPendingGate } from "./bootstrap/write-gate.js";
-import { isDeterministicPolicyError } from "./auto-tool-tracking.js";
+import { isDeterministicPolicyError, isToolUnavailableError } from "./auto-tool-tracking.js";
 import { formatConnectedStepStack, formatPostUnitStatusCard } from "./auto-status-message.js";
 import {
   clearProjectResearchInflightMarker,
@@ -93,6 +95,7 @@ import {
 } from "./project-research-policy.js";
 import { validateArtifact } from "./schemas/validate.js";
 import { verificationRetryKey } from "./auto/verification-retry-policy.js";
+import { saveCustomVerifyRetryCounts } from "./auto/custom-verify-retry-store.js";
 import { getLedger } from "./metrics.js";
 import { getUnitCostSpikeAction, resolveUnitCostSpikeMultiplier } from "./auto-budget.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
@@ -394,6 +397,50 @@ function stripKnownIdPrefix(value: string | undefined | null, id: string): strin
   return raw;
 }
 
+function parseReactiveBatchTaskIds(unitId: string): string[] {
+  const { task: batchPart } = parseUnitId(unitId);
+  if (!batchPart?.startsWith("reactive+")) return [];
+
+  const rawIds = batchPart
+    .slice("reactive+".length)
+    .split(",")
+    .map((taskId) => taskId.trim().toUpperCase())
+    .filter(Boolean);
+
+  const unique = new Set<string>();
+  for (const taskId of rawIds) {
+    unique.add(taskId);
+  }
+  return [...unique];
+}
+
+function dedupePaths(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (!seen.has(value)) {
+      seen.add(value);
+      result.push(value);
+    }
+  }
+  return result;
+}
+
+function getPlannedKeyFiles(tasks: Array<
+  { expected_output?: string[]; files?: string[]; key_files?: string[] }
+>): string[] {
+  return dedupePaths(
+    tasks.flatMap((taskRow) => [
+      ...(taskRow.expected_output ?? []),
+      ...(taskRow.files ?? []),
+      ...(taskRow.key_files ?? []),
+    ]),
+  );
+}
+
+export const _parseReactiveBatchTaskIdsForTest = parseReactiveBatchTaskIds;
+export const _getPlannedKeyFilesForTest = getPlannedKeyFiles;
+
 function resolveVerificationFailureMarkerPath(
   unitType: string,
   unitId: string,
@@ -481,6 +528,40 @@ async function buildTaskCommitContextForUnit(
   };
 }
 
+async function buildReactiveTaskCommitContext(
+  _basePath: string,
+  unitId: string,
+): Promise<TaskCommitContext | undefined> {
+  const { milestone: mid, slice: sid } = parseUnitId(unitId);
+  if (!mid || !sid || !isDbAvailable()) return undefined;
+
+  const batchTaskIds = parseReactiveBatchTaskIds(unitId);
+  if (batchTaskIds.length === 0) return undefined;
+
+  const milestone = getMilestone(mid);
+  const slice = getSlice(mid, sid);
+  const taskRows = batchTaskIds
+    .map((tid) => getTask(mid, sid, tid))
+    .filter((taskRow): taskRow is NonNullable<ReturnType<typeof getTask>> => taskRow !== null);
+
+  const keyFiles = getPlannedKeyFiles(taskRows);
+  if (taskRows.length === 0 || keyFiles.length === 0) return undefined;
+
+  const taskLabel = taskRows.map((row) => row.id).join(",");
+
+  return {
+    taskId: `${sid}/${taskLabel}`,
+    taskDisplayId: "reactive-batch",
+    taskTitle: `Reactive batch: ${taskLabel}`,
+    milestoneId: mid,
+    milestoneTitle: stripKnownIdPrefix(milestone?.title, mid),
+    sliceId: sid,
+    sliceTitle: stripKnownIdPrefix(slice?.title, sid),
+    oneLiner: `Reactive execute for ${taskLabel}`,
+    keyFiles,
+  };
+}
+
 async function runPostUnitGitHubSyncIfNeeded(
   basePath: string,
   unit: NonNullable<AutoSession["currentUnit"]>,
@@ -538,8 +619,10 @@ export function _hasExecutionToolCallsInSessionForTest(entries: readonly unknown
       return true;
     }
 
-    if (e?.type !== "message") continue;
-    const msg = e?.message;
+    // Accept both session-manager entries ({type: "message", message}) and
+    // bare agent-end messages ({role, content}) — the auto loop passes the
+    // latter via opts.agentEndMessages.
+    const msg = e?.type === "message" ? e?.message : e;
     if (!msg || msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
     for (const block of msg.content) {
       if (block?.type !== "toolCall") continue;
@@ -818,7 +901,7 @@ export const USER_DRIVEN_DEEP_UNITS = new Set([
   "discuss-milestone",
   "research-decision",
 ]);
-export { isAwaitingUserInput } from "./user-input-boundary.js";
+export { isAwaitingUserInput } from "./consent-question.js";
 
 function artifactValidationKind(unitType: string): "project" | "requirements" | null {
   if (unitType === "discuss-project") return "project";
@@ -907,11 +990,13 @@ async function repairCompleteSliceRoadmapProjection(
     return false;
   }
 
+  // Stale-render detection (ADR-017): the DB already says the slice is closed;
+  // this only checks whether the rendered ROADMAP projection reflects it, to
+  // decide whether a repair re-render is needed.
   const roadmapPath = resolveMilestoneFile(artifactBase, mid, "ROADMAP");
   if (roadmapPath && existsSync(roadmapPath)) {
     try {
-      const roadmap = parseLegacyRoadmap(readFileSync(roadmapPath, "utf-8"));
-      if (roadmap.slices.find((roadmapSlice) => roadmapSlice.id === sid)?.done) {
+      if (roadmapRenderMarksSliceDone(readFileSync(roadmapPath, "utf-8"), sid)) {
         return false;
       }
     } catch (err) {
@@ -943,6 +1028,8 @@ export async function autoCommitUnit(
 
     if (unitType === "execute-task") {
       taskContext = await buildTaskCommitContextForUnit(basePath, unitId);
+    } else if (unitType === "reactive-execute") {
+      taskContext = await buildReactiveTaskCommitContext(basePath, unitId);
     }
 
     _resetHasChangesCache();
@@ -1004,6 +1091,21 @@ async function runCloseoutGitAction(
       const { milestone: mid, slice: sid, task: tid } = parseUnitId(unit.id);
       if (mid && sid && tid && isDbAvailable()) {
         targetRepositories = getTask(mid, sid, tid)?.target_repositories;
+      }
+    } else if (turnAction === "commit" && unit.type === "reactive-execute") {
+      taskContext = await buildReactiveTaskCommitContext(s.basePath, unit.id);
+      const { milestone: mid, slice: sid } = parseUnitId(unit.id);
+      if (mid && sid && isDbAvailable()) {
+        const repositories = new Set<string>();
+        for (const tid of parseReactiveBatchTaskIds(unit.id)) {
+          const taskRow = getTask(mid, sid, tid);
+          for (const repoId of taskRow?.target_repositories ?? []) {
+            repositories.add(repoId);
+          }
+        }
+        if (repositories.size > 0) {
+          targetRepositories = [...repositories];
+        }
       }
     }
 
@@ -1176,9 +1278,9 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
     await new Promise(r => setTimeout(r, 100));
   }
 
-  const dbPath = getDbPath();
+  const dbPath = getWorkflowDatabasePath();
   if (isDbAvailable() && dbPath && dbPath !== ":memory:") {
-    const refreshed = refreshOpenDatabaseFromDisk();
+    const refreshed = refreshWorkflowDatabaseFromDisk();
     if (!refreshed) {
       logWarning("db", "post-unit database refresh failed; derived state may be stale");
     }
@@ -1424,6 +1526,8 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
       }
     }
 
+    let blockingContentViolation: string | null = null;
+
     // ── Safety harness: post-unit validation ──
     try {
       const { loadEffectiveGSDPreferences } = await import("./preferences.js");
@@ -1435,14 +1539,31 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
       if (safetyConfig.enabled) {
         const { milestone: sMid, slice: sSid, task: sTid } = parseUnitId(s.currentUnit.id);
 
+        const fileChangeAllowlist = effectiveFileChangeAllowlist(
+          safetyConfig.file_change_allowlist,
+          (prefs?.git as { manage_gitignore?: boolean } | undefined)?.manage_gitignore,
+        );
+
         // File change validation (execute-task only, after unit execution)
-        if (safetyConfig.file_change_validation && s.currentUnit.type === "execute-task" && sMid && sSid && sTid && isDbAvailable()) {
+        if (safetyConfig.file_change_validation && s.currentUnit.type === "execute-task" && sMid && sSid && sTid) {
           try {
-            const taskRow = getTask(sMid, sSid, sTid);
-            if (taskRow) {
-              const expectedOutput = taskRow.expected_output ?? [];
-              const plannedFiles = taskRow.files ?? [];
-              const audit = validateFileChanges(s.basePath, expectedOutput, plannedFiles, safetyConfig.file_change_allowlist);
+            const sliceTaskRows = isDbAvailable()
+              ? getSliceTasks(sMid, sSid).filter((t) => isClosedStatus(t.status) || t.id === sTid)
+              : [];
+
+            if (sliceTaskRows.length > 0) {
+              const expectedOutput = getPlannedKeyFiles(
+                sliceTaskRows.map((taskRow) => ({
+                  expected_output: taskRow.expected_output,
+                  files: taskRow.files,
+                })),
+              );
+              const plannedFiles = getPlannedKeyFiles(
+                sliceTaskRows.map((taskRow) => ({
+                  files: taskRow.files,
+                })),
+              );
+              const audit = validateFileChanges(s.basePath, expectedOutput, plannedFiles, fileChangeAllowlist);
               if (audit && audit.violations.length > 0) {
                 const warnings = audit.violations.filter(v => v.severity === "warning");
                 for (const v of warnings) {
@@ -1453,6 +1574,30 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
                     `Safety: ${warnings.length} unexpected file change(s) outside task plan`,
                     "warning",
                   );
+                }
+              }
+            } else {
+              const taskRow = getTask(sMid, sSid, sTid);
+              if (taskRow) {
+                const expectedOutput = taskRow.expected_output ?? [];
+                const plannedFiles = taskRow.files ?? [];
+                const audit = validateFileChanges(
+                  s.basePath,
+                  expectedOutput,
+                  plannedFiles,
+                  fileChangeAllowlist,
+                );
+                if (audit && audit.violations.length > 0) {
+                  const warnings = audit.violations.filter(v => v.severity === "warning");
+                  for (const v of warnings) {
+                    logWarning("safety", `file-change: ${v.file} — ${v.reason}`);
+                  }
+                  if (warnings.length > 0) {
+                    ctx.ui.notify(
+                      `Safety: ${warnings.length} unexpected file change(s) outside task plan`,
+                      "warning",
+                    );
+                  }
                 }
               }
             }
@@ -1535,8 +1680,14 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
             const artifactPath = resolveArtifactForContent(s.currentUnit.type, s.currentUnit.id, s.basePath);
             const contentViolations = validateContent(s.currentUnit.type, artifactPath);
             for (const v of contentViolations) {
-              logWarning("safety", `content: ${v.reason}`);
-              ctx.ui.notify(`Content validation: ${v.reason}`, "warning");
+              if (v.severity === "error") {
+                blockingContentViolation ??= v.reason;
+                logError("safety", `content: ${v.reason}`);
+                ctx.ui.notify(`Content validation: ${v.reason}`, "error");
+              } else {
+                logWarning("safety", `content: ${v.reason}`);
+                ctx.ui.notify(`Content validation: ${v.reason}`, "warning");
+              }
             }
           } catch (e) {
             debugLog("postUnit", { phase: "safety-content-validation", error: String(e) });
@@ -1735,6 +1886,16 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
         }
       }
 
+      if (blockingContentViolation && triggerArtifactVerified) {
+        triggerArtifactVerified = false;
+        debugLog("postUnit", {
+          phase: "content-validation-blocked-artifact",
+          unitType: s.currentUnit.type,
+          unitId: s.currentUnit.id,
+          reason: blockingContentViolation,
+        });
+      }
+
       // When artifact verification fails for a unit type that has a known expected
       // artifact, ask the caller to retry so it re-dispatches with failure context
       // instead of blindly re-dispatching the same unit (#1571).
@@ -1863,7 +2024,32 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
           "error",
         );
       } else if (!triggerArtifactVerified) {
-        if (s.lastToolInvocationError) {
+        if (s.lastToolInvocationError && isToolUnavailableError(s.lastToolInvocationError)) {
+          // Tool-unavailable is transient: the workflow MCP server registers
+          // its surface asynchronously, so a Unit's first call can race the
+          // registration. Retry with escalating delay, bounded at 3 attempts.
+          // ponytail: MAX constant so the guard, log, and display all agree
+          const MAX_TOOL_UNAVAIL_RETRIES = 3;
+          if (s.toolUnavailableRetries >= MAX_TOOL_UNAVAIL_RETRIES) {
+            debugLog("postUnit", { phase: "tool-unavailable-exhausted", unitType: s.currentUnit.type, unitId: s.currentUnit.id, retries: s.toolUnavailableRetries });
+            ctx.ui.notify(
+              `Tool unavailable for ${s.currentUnit.type} after ${MAX_TOOL_UNAVAIL_RETRIES} retries: ${s.lastToolInvocationError}. MCP server may not be starting — pausing auto-mode.`,
+              "error",
+            );
+            s.lastToolInvocationError = null;
+            await pauseAuto(ctx, pi);
+            return "dispatched";
+          }
+          s.toolUnavailableRetries++;
+          const delayMs = s.toolUnavailableRetries * 1000;
+          debugLog("postUnit", { phase: "tool-unavailable-retry", unitType: s.currentUnit.type, unitId: s.currentUnit.id, error: s.lastToolInvocationError, attempt: s.toolUnavailableRetries, delayMs });
+          ctx.ui.notify(
+            `Tool unavailable for ${s.currentUnit.type}: ${s.lastToolInvocationError}. Waiting ${delayMs}ms for MCP server — retry ${s.toolUnavailableRetries}/${MAX_TOOL_UNAVAIL_RETRIES}.`,
+            "warning",
+          );
+          s.lastToolInvocationError = null;
+          await new Promise(r => setTimeout(r, delayMs));
+        } else if (s.lastToolInvocationError) {
           const isUserSkip = /queued user message/i.test(s.lastToolInvocationError);
           const errMsg = isUserSkip
             ? `Tool skipped for ${s.currentUnit.type}: ${s.lastToolInvocationError}. Queued user message interrupted the turn — pausing auto-mode.`
@@ -1914,9 +2100,6 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
             return "dispatched";
           }
           if (getUnitCostSpikeAction(unitCostUsd, rollingAvgUsd, resolveUnitCostSpikeMultiplier(prefs)) === "pause") {
-            s.pendingVerificationRetry = null;
-            s.verificationRetryCount.delete(retryKey);
-            s.verificationRetryFailureHashes.delete(retryKey);
             const advancedPastUnit = await hasArtifactCostGuardAdvancedPastUnit(
               s,
               ctx,
@@ -1925,6 +2108,9 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
               prefs,
             );
             if (advancedPastUnit) {
+              s.pendingVerificationRetry = null;
+              s.verificationRetryCount.delete(retryKey);
+              s.verificationRetryFailureHashes.delete(retryKey);
               debugLog("postUnit", {
                 phase: "artifact-cost-spike-continue-after-advance",
                 unitType: s.currentUnit.type,
@@ -1945,14 +2131,21 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
               unitCostUsd,
               rollingAvgUsd,
             );
+            if (parallelBlocker) {
+              s.pendingVerificationRetry = null;
+              s.verificationRetryCount.delete(retryKey);
+              s.verificationRetryFailureHashes.delete(retryKey);
+              ctx.ui.notify(
+                `Unit ${s.currentUnit.id} cost spike detected (${unitCostUsd.toFixed(2)} vs avg ${rollingAvgUsd.toFixed(2)}) — wrote parallel blocker and pausing auto-mode.`,
+                "error",
+              );
+              await pauseAuto(ctx, pi);
+              return "dispatched";
+            }
             ctx.ui.notify(
-              parallelBlocker
-                ? `Unit ${s.currentUnit.id} cost spike detected (${unitCostUsd.toFixed(2)} vs avg ${rollingAvgUsd.toFixed(2)}) — wrote parallel blocker and pausing auto-mode.`
-                : `Unit ${s.currentUnit.id} cost spike detected (${unitCostUsd.toFixed(2)} vs avg ${rollingAvgUsd.toFixed(2)}) — pausing auto-mode.`,
-              "error",
+              `Unit ${s.currentUnit.id} cost spike detected (${unitCostUsd.toFixed(2)} vs avg ${rollingAvgUsd.toFixed(2)}) during artifact verification retry; keeping verification failure as the authoritative blocker.`,
+              "warning",
             );
-            await pauseAuto(ctx, pi);
-            return "dispatched";
           }
           const attempt = (s.verificationRetryCount.get(retryKey) ?? 0) + 1;
           const failureDetails = describeArtifactVerificationFailure(
@@ -1989,6 +2182,7 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
               }
             }
             s.exhaustedVerificationUnits.add(retryKey);
+            saveCustomVerifyRetryCounts(s, { logFailure: err => debugLog("postUnit", { phase: "save-verify-retries-failed", error: err instanceof Error ? err.message : String(err) }) });
             debugLog("postUnit", { phase: "artifact-verify-exhausted", unitType: s.currentUnit.type, unitId: s.currentUnit.id, attempt });
             ctx.ui.notify(
               `${failureDetails} Pausing auto-mode after ${MAX_ARTIFACT_VERIFICATION_RETRIES} retries.`,
@@ -1998,6 +2192,7 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
             return "dispatched";
           }
           s.verificationRetryCount.set(retryKey, attempt);
+          saveCustomVerifyRetryCounts(s, { logFailure: err => debugLog("postUnit", { phase: "save-verify-retries-failed", error: err instanceof Error ? err.message : String(err) }) });
           s.pendingVerificationRetry = {
             unitId: s.currentUnit.id,
             failureContext: `${failureDetails} (attempt ${attempt}/${MAX_ARTIFACT_VERIFICATION_RETRIES}).`,
@@ -2019,8 +2214,11 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
         if (s.pendingVerificationRetry?.unitId === s.currentUnit.id) {
           s.pendingVerificationRetry = null;
         }
+        s.toolUnavailableRetries = 0;
         s.verificationRetryCount.delete(retryKey);
         s.verificationRetryFailureHashes.delete(retryKey);
+        s.exhaustedVerificationUnits.delete(retryKey);
+        saveCustomVerifyRetryCounts(s, { logFailure: err => debugLog("postUnit", { phase: "save-verify-retries-failed", error: err instanceof Error ? err.message : String(err) }) });
 
         if (s.currentUnit.type === "complete-milestone") {
           const { milestone: mid } = parseUnitId(s.currentUnit.id);
@@ -2096,11 +2294,11 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
   // ── Post-unit hooks ──
   if (s.currentUnit && !s.stepMode) {
     const hookUnit = checkPostUnitHooks(s.currentUnit.type, s.currentUnit.id, s.basePath);
+    persistHookState(s.basePath);
     if (hookUnit) {
       if (s.currentUnit) {
         await closeoutUnit(ctx, s.basePath, s.currentUnit.type, s.currentUnit.id, s.currentUnit.startedAt, buildSnapshotOpts(s.currentUnit.type, s.currentUnit.id));
       }
-      persistHookState(s.basePath);
 
       return enqueueSidecar(
         s, ctx,
@@ -2109,12 +2307,23 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
       );
     }
 
+    const hookFailure = consumeHookFailure();
+    if (hookFailure) {
+      ctx.ui.notify(
+        `Post-unit hook ${hookFailure.hookName} failed for ${hookFailure.unitId}: ${hookFailure.reason}. Pausing auto-mode.`,
+        "warning",
+      );
+      await pauseAuto(ctx, pi);
+      return "stopped";
+    }
+
     // Check if a hook requested a retry of the trigger unit
     if (isRetryPending()) {
       const trigger = consumeRetryTrigger();
       if (trigger) {
+        persistHookState(s.basePath);
         ctx.ui.notify(
-          `Hook requested retry of ${trigger.unitType} ${trigger.unitId} — resetting task state.`,
+          `Hook requested retry of ${trigger.unitType} ${trigger.unitId} — resetting trigger unit state.`,
           "info",
         );
 
@@ -2167,6 +2376,19 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
 
         // Fall through to normal dispatch — deriveState will re-derive the unit
       }
+    }
+
+    const gateBlock = consumeGateBlock();
+    if (gateBlock) {
+      persistHookState(s.basePath);
+      const verdict = gateBlock.verdict ? ` verdict=${gateBlock.verdict};` : "";
+      const artifact = gateBlock.artifact ? ` artifact=${gateBlock.artifact};` : "";
+      const message =
+        `Post-unit gate "${gateBlock.hookName}" blocked ${gateBlock.triggerUnitType} ${gateBlock.triggerUnitId}:` +
+        `${verdict}${artifact} ${gateBlock.reason}. Run /gsd status to inspect, then /gsd auto after recovery.`;
+      ctx.ui.notify(message, "warning");
+      await pauseAuto(ctx, pi);
+      return "stopped";
     }
   }
 

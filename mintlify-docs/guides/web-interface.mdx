@@ -22,6 +22,9 @@ gsd --web --host 0.0.0.0 --port 8080 --allowed-origins "https://example.com"
 | `--host` | `localhost` | Bind address |
 | `--port` | `3000` | Port |
 | `--allowed-origins` | (none) | Comma-separated CORS origins |
+| `--no-auth` | disabled | Disable the built-in bearer token gate |
+
+`--no-auth` leaves the web interface unprotected unless another layer controls access. Use it only behind trusted external authentication, such as a reverse proxy, VPN, or private network boundary. Headless launches can set `GSD_WEB_NO_AUTH=1`.
 
 ## Features
 

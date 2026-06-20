@@ -8,7 +8,10 @@ import { join } from "node:path";
 
 import {
   blockModel,
+  blockModelUntil,
+  clearTemporaryModelBlocksForTest,
   isModelBlocked,
+  isModelTemporarilyUnavailable,
   loadBlockedModels,
 } from "../blocked-models.ts";
 
@@ -93,6 +96,22 @@ test("blocked-models: file created under .gsd/runtime/", () => {
     blockModel(base, "openai-codex", "gpt-5", "reason");
     assert.ok(existsSync(join(base, ".gsd", "runtime", "blocked-models.json")));
   } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("blocked-models: temporary rate-limit blocks expire without persisting", () => {
+  const base = mkBase();
+  try {
+    clearTemporaryModelBlocksForTest();
+    blockModelUntil(base, "openai-codex", "gpt-5.5", Date.now() + 60_000, "session limit");
+    assert.equal(isModelTemporarilyUnavailable(base, "openai-codex", "gpt-5.5"), true);
+    assert.equal(loadBlockedModels(base).length, 0, "rate-limit windows must not persist as account blocks");
+
+    blockModelUntil(base, "openai-codex", "gpt-5.5", Date.now() - 1, "expired");
+    assert.equal(isModelTemporarilyUnavailable(base, "openai-codex", "gpt-5.5"), false);
+  } finally {
+    clearTemporaryModelBlocksForTest();
     rmSync(base, { recursive: true, force: true });
   }
 });

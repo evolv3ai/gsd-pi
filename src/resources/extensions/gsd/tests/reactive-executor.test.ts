@@ -17,6 +17,10 @@ import { validatePreferences } from "../preferences-validation.ts";
 import type { ReactiveExecutionState } from "../types.ts";
 import { parseUnitId } from "../unit-id.ts";
 import { resolveDispatch } from "../auto-dispatch.ts";
+import {
+  _getPlannedKeyFilesForTest,
+  _parseReactiveBatchTaskIdsForTest,
+} from "../auto-post-unit.ts";
 
 // ─── Preference Validation ────────────────────────────────────────────────
 
@@ -69,6 +73,38 @@ test("reactive_execution validation warns on unknown keys", () => {
   });
   assert.equal(result.errors.length, 0);
   assert.ok(result.warnings.some((w) => w.includes("unknown_thing")));
+});
+
+test("reactive batch unit ids are parsed and deduped for commit context", () => {
+  assert.deepEqual(
+    _parseReactiveBatchTaskIdsForTest("M001/S01/reactive+T01,t02,T01"),
+    ["T01", "T02"],
+  );
+  assert.deepEqual(_parseReactiveBatchTaskIdsForTest("M001/S01/T01"), []);
+});
+
+test("reactive commit context key files include planned output, files, and key_files once", () => {
+  const result = _getPlannedKeyFilesForTest([
+    {
+      expected_output: ["src/new.ts", "src/shared.ts"],
+      files: ["src/input.ts", "src/shared.ts"],
+      key_files: ["src/key.ts"],
+    },
+    {
+      expected_output: ["src/new.ts"],
+      files: ["src/other.ts"],
+      key_files: ["src/key.ts", "src/final.ts"],
+    },
+  ]);
+
+  assert.deepEqual(result, [
+    "src/new.ts",
+    "src/shared.ts",
+    "src/input.ts",
+    "src/key.ts",
+    "src/other.ts",
+    "src/final.ts",
+  ]);
 });
 
 // ─── Dispatch Rule Matching Logic ─────────────────────────────────────────

@@ -46,9 +46,10 @@ User types prompt and hits Enter
 │   │    System prompt + converted messages + tool definitions   │
 │   │                                                            │
 │   │  Tool execution (if LLM calls tools)                       │
-│   │    tool_call event → can block                             │
-│   │    execute runs                                            │
-│   │    tool_result event → can modify result                   │
+│   │    tool_call event → can block native execution            │
+│   │    tool_execution_start/end → all engines                  │
+│   │    execute runs or externalResult is consumed              │
+│   │    tool_result event → can modify native results           │
 │   │    Steering check → may skip remaining tools               │
 │   │                                                            │
 │   │  Follow-up check (if no more tool calls)                   │
@@ -180,12 +181,12 @@ When the LLM responds with tool calls, they execute sequentially:
 
 ```
 For each tool call:
-  tool_call event → can { block: true, reason: "..." }
+  tool_call event → can { block: true, reason: "..." } for native execution
     If blocked → Error("reason") becomes the tool result
-  tool_execution_start event (informational)
-  tool.execute() runs
-  tool_execution_end event (informational)
-  tool_result event → can modify { content, details, isError }
+  tool_execution_start event (all engines, informational)
+  tool.execute() runs, or an external engine result is consumed
+  tool_execution_end event (all engines, informational)
+  tool_result event → can modify native { content, details, isError }
   
   Steering check → if steering messages queued:
     Remaining tools get "Skipped due to queued user message"
@@ -231,8 +232,8 @@ The system prompt includes:
 | `input` | Before expansion | Once per user input | Input text |
 | `before_agent_start` | After expansion, before agent loop | Once per user prompt | System prompt + inject messages |
 | `context` | Before each LLM call | Every turn in agent loop | Message array |
-| `tool_call` | Before each tool execution | Per tool call | Block execution |
-| `tool_result` | After each tool execution | Per tool call | Result content/details |
+| `tool_call` | Before native tool execution | Per native tool call | Block execution |
+| `tool_result` | After native tool execution | Per native tool call | Result content/details |
 
 ---
 
@@ -244,6 +245,6 @@ When do you get a safe-to-mutate copy vs a reference?
 |------|-----------------|-----------------|
 | `context` | `structuredClone` deep copy | Yes |
 | `before_agent_start` | `event.systemPrompt` is a string (immutable) | Return new string |
-| `tool_call` | `event.input` is the raw args object | Do not mutate — return `block` |
-| `tool_result` | `{ ...event }` shallow spread | Return new values, don't mutate |
+| `tool_call` | `event.input` is the raw args object for native execution | Do not mutate — return `block` |
+| `tool_result` | `{ ...event }` shallow spread for native execution | Return new values, don't mutate |
 | `input` | `event.text` is a string (immutable) | Return new text via `transform` |

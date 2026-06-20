@@ -1,14 +1,19 @@
 // gsd-pi - Write gate runtime persistence and policy guards.
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readlinkSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { minimatch } from "minimatch";
 
-import { shouldBlockAutoUnitToolCall } from "../auto-unit-tool-scope.js";
+import { GSD_PHASE_SCOPE_DISPLAY_REASON, shouldBlockAutoUnitToolCall } from "../auto-unit-tool-scope.js";
+import { canonicalToolName } from "../engine-hook-contract.js";
+import { loadJsonFileOrNull } from "../json-persistence.js";
 import { getIsolationMode } from "../preferences.js";
 import { compileSubagentPermissionContract, type ToolsPolicy } from "../unit-context-manifest.js";
 import { logWarning } from "../workflow-logger.js";
 import { isGsdWorktreePath, resolveWorktreeProjectRoot } from "../worktree-root.js";
+import { worktreesDirs } from "../worktree-placement.js";
+import { bashReferencesProjectRootOutsideWorktree } from "../worktree-shell-guard.js";
+import { evaluateGateAnswer } from "../consent-verdict.js";
 
 /**
  * Regex matching milestone CONTEXT.md file names in both legacy M001
@@ -122,17 +127,20 @@ const GATE_SAFE_TOOLS = new Set([
   "ask_user_questions",
 ]);
 
-export function canonicalToolName(toolName: string): string {
-  if (!toolName.startsWith("mcp__")) return toolName;
-  const toolSeparator = toolName.indexOf("__", "mcp__".length);
-  return toolSeparator >= 0 ? toolName.slice(toolSeparator + 2) : toolName;
-}
+/**
+ * Which process wrote a snapshot. Two processes share the snapshot file:
+ * the extension host ("host") and the workflow MCP child ("child"), which
+ * dynamically imports this same compiled module in its own process.
+ */
+export type WriteGateWriter = "host" | "child";
 
 export interface WriteGateSnapshot {
   verifiedDepthMilestones: string[];
   verifiedApprovalGates?: string[];
   activeQueuePhase: boolean;
   pendingGateId: string | null;
+  /** Tag of the process that produced this snapshot (diagnostic only). */
+  writer?: WriteGateWriter;
 }
 
 /**
@@ -176,12 +184,11 @@ function currentWriteGateSnapshot(basePath: string = process.cwd()): WriteGateSn
   };
 }
 
-function persistWriteGateSnapshot(basePath: string): void {
-  if (!shouldPersistWriteGateSnapshot()) return;
+function writeSnapshotFileAtomic(basePath: string, snapshot: WriteGateSnapshot): void {
   const path = writeGateSnapshotPath(basePath);
   ensureWriteGateSnapshotDirectory(basePath);
   const tempPath = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
-  writeFileSync(tempPath, JSON.stringify(currentWriteGateSnapshot(basePath), null, 2), "utf-8");
+  writeFileSync(tempPath, JSON.stringify(snapshot, null, 2), "utf-8");
   try {
     renameSync(tempPath, path);
   } catch (err: unknown) {
@@ -194,6 +201,18 @@ function persistWriteGateSnapshot(basePath: string): void {
       throw err;
     }
   }
+}
+
+/**
+ * Persist the current in-memory state for `basePath`, stamped with the
+ * writer provenance tag. Callers (mutateWriteGateState / childMutate) are
+ * responsible for first reconciling in-memory content against the disk
+ * snapshot — the read-merge-write sequence is synchronous, so a concurrent
+ * writer's update is folded in by that unconditional pre-persist read.
+ */
+function persistWriteGateSnapshot(basePath: string, writer: WriteGateWriter): void {
+  if (!shouldPersistWriteGateSnapshot()) return;
+  writeSnapshotFileAtomic(basePath, { ...currentWriteGateSnapshot(basePath), writer });
 }
 
 function clearPersistedWriteGateSnapshot(basePath: string): void {
@@ -219,6 +238,7 @@ function normalizeWriteGateSnapshot(value: unknown): WriteGateSnapshot {
     verifiedApprovalGates: [...new Set(verifiedGates)].sort(),
     activeQueuePhase: record.activeQueuePhase === true,
     pendingGateId: typeof record.pendingGateId === "string" ? record.pendingGateId : null,
+    ...(record.writer === "host" || record.writer === "child" ? { writer: record.writer } : {}),
   };
 }
 
@@ -229,6 +249,18 @@ const EMPTY_SNAPSHOT: WriteGateSnapshot = {
   pendingGateId: null,
 };
 
+/**
+ * Read the snapshot file as it exists on disk. Returns null when the file
+ * is missing or unparseable (no in-memory fallback — callers decide).
+ */
+function readDiskSnapshot(basePath: string): WriteGateSnapshot | null {
+  const raw = loadJsonFileOrNull(
+    writeGateSnapshotPath(basePath),
+    (data): data is Record<string, unknown> => typeof data === "object" && data !== null,
+  );
+  return raw === null ? null : normalizeWriteGateSnapshot(raw);
+}
+
 export function loadWriteGateSnapshot(basePath: string): WriteGateSnapshot {
   const path = writeGateSnapshotPath(basePath);
   if (!existsSync(path)) {
@@ -238,11 +270,116 @@ export function loadWriteGateSnapshot(basePath: string): WriteGateSnapshot {
     if (shouldPersistWriteGateSnapshot()) return EMPTY_SNAPSHOT;
     return currentWriteGateSnapshot(basePath);
   }
-  try {
-    return normalizeWriteGateSnapshot(JSON.parse(readFileSync(path, "utf-8")));
-  } catch {
-    return currentWriteGateSnapshot(basePath);
+  const disk = readDiskSnapshot(basePath);
+  return disk ?? currentWriteGateSnapshot(basePath);
+}
+
+/**
+ * Reconcile a disk snapshot into the in-memory state. This is THE merge
+ * rule for the two-process seam:
+ *
+ *   - verifications are a grow-only union: a milestone/gate verified by
+ *     either process is never lost to a stale write from the other;
+ *   - activeQueuePhase and pendingGateId take the disk value (last writer
+ *     wins — matches the long-standing refresh semantics, and keeps
+ *     "delete the snapshot file to clear the HARD BLOCK" working);
+ *   - verified wins over pending: if the merged verified sets already cover
+ *     the pending gate (gate id verified, or its depth milestone verified),
+ *     the pending re-arm is dropped. This generalizes the ad-hoc re-arm
+ *     guard that previously protected only the tool_execution_start window.
+ */
+function mergeSnapshotIntoState(state: InMemoryWriteGateState, disk: WriteGateSnapshot): void {
+  for (const milestone of disk.verifiedDepthMilestones) state.verifiedDepthMilestones.add(milestone);
+  for (const gate of disk.verifiedApprovalGates ?? []) state.verifiedApprovalGates.add(gate);
+  state.activeQueuePhase = disk.activeQueuePhase;
+  state.pendingGateId = disk.pendingGateId;
+  dropVerifiedPendingGate(state);
+}
+
+/** Verified-on-disk wins over a pending re-arm (see mergeSnapshotIntoState). */
+function dropVerifiedPendingGate(state: InMemoryWriteGateState): void {
+  const pending = state.pendingGateId;
+  if (!pending) return;
+  const milestoneId = extractDepthVerificationMilestoneId(pending);
+  if (
+    state.verifiedApprovalGates.has(pending) ||
+    (milestoneId !== null && state.verifiedDepthMilestones.has(milestoneId))
+  ) {
+    state.pendingGateId = null;
   }
+}
+
+function replaceStateFromSnapshot(state: InMemoryWriteGateState, snapshot: WriteGateSnapshot): void {
+  state.pendingGateId = snapshot.pendingGateId;
+  state.activeQueuePhase = snapshot.activeQueuePhase;
+  state.verifiedDepthMilestones = new Set(snapshot.verifiedDepthMilestones);
+  state.verifiedApprovalGates = new Set(snapshot.verifiedApprovalGates ?? []);
+}
+
+/**
+ * Reconcile the persisted write-gate snapshot into the in-process Map entry.
+ * The workflow MCP server runs in a child process and records depth
+ * verification there; without this refresh the extension host keeps stale
+ * pending-gate memory and `activateDeferredApprovalGate` can re-arm a gate
+ * that the subprocess already cleared on disk.
+ *
+ * Uses the union merge rule (mergeSnapshotIntoState) when a readable
+ * snapshot file exists; a missing or unparseable file is a full reset
+ * (replace with empty) so deleting the file still clears all gate state,
+ * and a corrupt file does not leave stale `pendingGateId` in memory for
+ * the next mutation to persist back.
+ *
+ * Returns the reconciled snapshot so callers that need to inspect it
+ * (e.g. re-arm guards) avoid a second disk read.
+ */
+export function refreshWriteGateStateFromDisk(basePath: string): WriteGateSnapshot {
+  if (!shouldPersistWriteGateSnapshot()) return currentWriteGateSnapshot(basePath);
+  const state = getWriteGateState(basePath);
+  const disk = readDiskSnapshot(basePath);
+  if (disk) {
+    mergeSnapshotIntoState(state, disk);
+  } else {
+    replaceStateFromSnapshot(state, EMPTY_SNAPSHOT);
+  }
+  return currentWriteGateSnapshot(basePath);
+}
+
+/**
+ * Read-modify-write primitive for gate mutations. Reconciles the disk
+ * snapshot into memory (union merge), applies the mutation on top, then
+ * persists. The whole sequence is synchronous, so the reconcile read
+ * doubles as the pre-persist merge of concurrent writes — there is no
+ * version field; the read-merge-write is simply unconditional.
+ *
+ * The mutate callback sees the already-reconciled state, so policy checks
+ * (e.g. host setPending's verified-on-disk-wins guard) can live inside it
+ * without a second disk read. Returning `false` from the callback aborts:
+ * nothing is persisted and this function returns false.
+ *
+ * `reconcile: false` skips the disk merge — used for intentional full
+ * resets where re-unioning disk verifications would defeat the reset.
+ */
+function mutateWriteGateState(
+  basePath: string,
+  mutate: (state: InMemoryWriteGateState) => void | false,
+  opts?: { writer?: WriteGateWriter; reconcile?: boolean },
+): boolean {
+  const state = getWriteGateState(basePath);
+  if (shouldPersistWriteGateSnapshot() && (opts?.reconcile ?? true)) {
+    const disk = readDiskSnapshot(basePath);
+    if (disk) {
+      mergeSnapshotIntoState(state, disk);
+    } else {
+      // Missing OR unparseable on disk: treat as a full reset. Keeping
+      // stale in-memory state across a corrupt snapshot would persist it
+      // back on this very mutation and defeat the documented
+      // "delete the file to clear the HARD BLOCK gate" escape hatch.
+      replaceStateFromSnapshot(state, EMPTY_SNAPSHOT);
+    }
+  }
+  if (mutate(state) === false) return false;
+  persistWriteGateSnapshot(basePath, opts?.writer ?? defaultWriteGateWriter());
+  return true;
 }
 
 export function isDepthVerified(basePath: string = process.cwd()): boolean {
@@ -257,6 +394,7 @@ export function isMilestoneDepthVerified(
   basePath: string = process.cwd(),
 ): boolean {
   if (!milestoneId) return false;
+  refreshWriteGateStateFromDisk(basePath);
   return getWriteGateState(basePath).verifiedDepthMilestones.has(milestoneId);
 }
 
@@ -273,16 +411,17 @@ export function isQueuePhaseActive(basePath: string = process.cwd()): boolean {
 }
 
 export function setQueuePhaseActive(active: boolean, basePath: string): void {
-  getWriteGateState(basePath).activeQueuePhase = active;
-  persistWriteGateSnapshot(basePath);
+  mutateWriteGateState(basePath, (state) => {
+    state.activeQueuePhase = active;
+  });
 }
 
 export function resetWriteGateState(basePath: string): void {
-  const state = getWriteGateState(basePath);
-  state.verifiedDepthMilestones.clear();
-  state.verifiedApprovalGates.clear();
-  state.pendingGateId = null;
-  persistWriteGateSnapshot(basePath);
+  mutateWriteGateState(basePath, (state) => {
+    state.verifiedDepthMilestones.clear();
+    state.verifiedApprovalGates.clear();
+    state.pendingGateId = null;
+  }, { reconcile: false });
 }
 
 export function clearDiscussionFlowState(basePath: string): void {
@@ -290,16 +429,20 @@ export function clearDiscussionFlowState(basePath: string): void {
   clearPersistedWriteGateSnapshot(basePath);
 }
 
+/**
+ * Ambient (env-sniffed) export, reserved for the child's dynamic-import
+ * surface (packages/mcp-server) and module-internal use. Host-owned modules
+ * (register-hooks, auto-dispatch, …) must call
+ * hostWriteGateAdapter.markDepthVerified explicitly so a leaked
+ * GSD_WORKFLOW_* env variable cannot silently flip them to child semantics.
+ */
 export function markDepthVerified(milestoneId?: string | null, basePath: string = process.cwd()): void {
-  if (!milestoneId) return;
-  getWriteGateState(basePath).verifiedDepthMilestones.add(milestoneId);
-  persistWriteGateSnapshot(basePath);
+  defaultWriteGateAdapter().markDepthVerified(milestoneId, basePath);
 }
 
+/** Ambient export for the child's dynamic-import surface — see markDepthVerified. */
 export function markApprovalGateVerified(gateId?: string | null, basePath: string = process.cwd()): void {
-  if (!gateId) return;
-  getWriteGateState(basePath).verifiedApprovalGates.add(gateId);
-  persistWriteGateSnapshot(basePath);
+  defaultWriteGateAdapter().markApprovalGateVerified(gateId, basePath);
 }
 
 export function isApprovalGateVerifiedInSnapshot(
@@ -335,30 +478,174 @@ function extractContextMilestoneId(inputPath: string): string | null {
 }
 
 /**
- * Mark a gate as pending (called when ask_user_questions is invoked with a gate ID).
+ * Mark a gate as pending (called when ask_user_questions is invoked with a
+ * gate ID). Delegates to the process's default adapter: in the workflow MCP
+ * child the arm is unconditional (a fresh question intentionally revokes
+ * prior verification); in the host the adapter's verified-on-disk-wins
+ * guard applies and a suppressed arm returns false.
+ *
+ * Ambient (env-sniffed) export, reserved for the child's dynamic-import
+ * surface (packages/mcp-server). Host-owned modules must call
+ * hostWriteGateAdapter.setPending explicitly.
  */
-export function setPendingGate(gateId: string, basePath: string): void {
-  const state = getWriteGateState(basePath);
+export function setPendingGate(gateId: string, basePath: string): boolean {
+  return defaultWriteGateAdapter().setPending(gateId, basePath);
+}
+
+/** Arm `gateId` on a reconciled state, revoking its prior verification. */
+function armPendingGate(state: InMemoryWriteGateState, gateId: string): void {
   state.pendingGateId = gateId;
   state.verifiedApprovalGates.delete(gateId);
   const milestoneId = extractDepthVerificationMilestoneId(gateId);
   if (milestoneId) state.verifiedDepthMilestones.delete(milestoneId);
-  persistWriteGateSnapshot(basePath);
 }
 
 /**
  * Clear the pending gate (called when the user confirms).
+ * Ambient export for the child's dynamic-import surface — host-owned
+ * modules must call hostWriteGateAdapter.clearPending explicitly.
  */
 export function clearPendingGate(basePath: string): void {
-  getWriteGateState(basePath).pendingGateId = null;
-  persistWriteGateSnapshot(basePath);
+  defaultWriteGateAdapter().clearPending(basePath);
 }
 
 /**
  * Get the currently pending gate, if any.
+ * Ambient export for the child's dynamic-import surface — host-owned
+ * modules should prefer hostWriteGateAdapter.readState.
  */
 export function getPendingGate(basePath: string = process.cwd()): string | null {
-  return getWriteGateState(basePath).pendingGateId;
+  return defaultWriteGateAdapter().readState(basePath).pendingGateId;
+}
+
+// ─── Write-gate two-process seam ─────────────────────────────────────────────
+//
+// Two processes write .gsd/runtime/write-gate-state.json: the extension host
+// and the workflow MCP child (which dynamically imports this same compiled
+// module — see GSD_WORKFLOW_WRITE_GATE_MODULE in workflow-mcp.ts and
+// packages/mcp-server/src/server.ts). The adapters below name that seam:
+// every cross-process interleaving reduces to "host adapter op vs child
+// adapter op", which is deterministic given the merge rule documented on
+// mergeSnapshotIntoState plus the unconditional read-merge-write persist.
+
+export interface WriteGateStateAdapter {
+  readonly writer: WriteGateWriter;
+  /** Fresh (child) or disk-reconciled (host) view of gate state. */
+  readState(basePath: string): WriteGateSnapshot;
+  markDepthVerified(milestoneId: string | null | undefined, basePath: string): void;
+  markApprovalGateVerified(gateId: string | null | undefined, basePath: string): void;
+  /**
+   * Arm a pending gate. Returns false when the adapter's policy suppressed
+   * the arm (host: gate already verified on disk — verified wins over a
+   * stale re-arm). Child adapter always arms (a fresh question intentionally
+   * revokes prior verification).
+   */
+  setPending(gateId: string, basePath: string): boolean;
+  clearPending(basePath: string): void;
+}
+
+/**
+ * HOST adapter: in-memory state + reconcile-on-read. Disk verifications are
+ * never lost (union merge), and a gate verified on disk wins over an
+ * in-memory pending re-arm — setPending refuses to clobber a verification
+ * the child already recorded. This generalizes the ad-hoc re-arm guard that
+ * previously protected only the tool_execution_start window in
+ * register-hooks.ts.
+ */
+export const hostWriteGateAdapter: WriteGateStateAdapter = {
+  writer: "host",
+  readState(basePath: string): WriteGateSnapshot {
+    return refreshWriteGateStateFromDisk(basePath);
+  },
+  markDepthVerified(milestoneId, basePath): void {
+    if (!milestoneId) return;
+    mutateWriteGateState(basePath, (state) => {
+      state.verifiedDepthMilestones.add(milestoneId);
+    }, { writer: "host" });
+  },
+  markApprovalGateVerified(gateId, basePath): void {
+    if (!gateId) return;
+    mutateWriteGateState(basePath, (state) => {
+      state.verifiedApprovalGates.add(gateId);
+    }, { writer: "host" });
+  },
+  setPending(gateId: string, basePath: string): boolean {
+    // The verified-check runs inside the mutate callback so the single
+    // reconcile read in mutateWriteGateState serves both the guard and the
+    // pre-persist merge. A suppressed arm aborts without persisting.
+    return mutateWriteGateState(basePath, (state) => {
+      if (state.verifiedApprovalGates.has(gateId)) return false;
+      const milestoneId = extractDepthVerificationMilestoneId(gateId);
+      if (milestoneId && state.verifiedDepthMilestones.has(milestoneId)) return false;
+      armPendingGate(state, gateId);
+    }, { writer: "host" });
+  },
+  clearPending(basePath: string): void {
+    mutateWriteGateState(basePath, (state) => {
+      state.pendingGateId = null;
+    }, { writer: "host" });
+  },
+};
+
+/**
+ * CHILD adapter: write-through with always-fresh reads — load the disk
+ * snapshot, mutate, persist. No cross-turn in-memory state is trusted: the
+ * in-process Map entry is replaced from disk before every mutation so a
+ * long-lived MCP child never resurrects state the host has since changed.
+ */
+export const childWriteGateAdapter: WriteGateStateAdapter = {
+  writer: "child",
+  readState(basePath: string): WriteGateSnapshot {
+    return loadWriteGateSnapshot(basePath);
+  },
+  markDepthVerified(milestoneId, basePath): void {
+    if (!milestoneId) return;
+    childMutate(basePath, (state) => {
+      state.verifiedDepthMilestones.add(milestoneId);
+    });
+  },
+  markApprovalGateVerified(gateId, basePath): void {
+    if (!gateId) return;
+    childMutate(basePath, (state) => {
+      state.verifiedApprovalGates.add(gateId);
+    });
+  },
+  setPending(gateId: string, basePath: string): boolean {
+    childMutate(basePath, (state) => armPendingGate(state, gateId));
+    return true;
+  },
+  clearPending(basePath: string): void {
+    childMutate(basePath, (state) => {
+      state.pendingGateId = null;
+    });
+  },
+};
+
+function childMutate(basePath: string, mutate: (state: InMemoryWriteGateState) => void): void {
+  const state = getWriteGateState(basePath);
+  if (shouldPersistWriteGateSnapshot()) {
+    // Always-fresh: disk is the only truth for the child; discard any
+    // cross-turn in-memory residue before mutating.
+    replaceStateFromSnapshot(state, readDiskSnapshot(basePath) ?? EMPTY_SNAPSHOT);
+  }
+  mutate(state);
+  persistWriteGateSnapshot(basePath, "child");
+}
+
+/**
+ * Which adapter the module-level convenience exports (markDepthVerified,
+ * setPendingGate, …) delegate to. The workflow MCP child is spawned with
+ * GSD_WORKFLOW_WRITE_GATE_MODULE / GSD_WORKFLOW_PROJECT_ROOT in its
+ * environment (workflow-mcp.ts), so when this module is dynamically imported
+ * inside that process the child adapter is selected automatically; the
+ * extension host process has neither variable and stays on the host adapter.
+ */
+export function defaultWriteGateWriter(env: NodeJS.ProcessEnv = process.env): WriteGateWriter {
+  return env.GSD_WORKFLOW_WRITE_GATE_MODULE || env.GSD_WORKFLOW_PROJECT_ROOT ? "child" : "host";
+}
+
+function defaultWriteGateAdapter(): WriteGateStateAdapter {
+  return defaultWriteGateWriter() === "child" ? childWriteGateAdapter : hostWriteGateAdapter;
 }
 
 /**
@@ -433,33 +720,139 @@ export function shouldBlockPendingGateBashInSnapshot(
   };
 }
 
-/**
- * Check whether a depth_verification answer confirms the discussion is complete.
- * Uses structural validation: the selected answer must exactly match the first
- * option label from the question definition (the confirmation option by convention).
- * This rejects free-form "Other" text, decline options, and garbage input without
- * coupling to any specific label substring.
- *
- * @param selected  The answer's selected value from details.response.answers[id].selected
- * @param options   The question's options array from event.input.questions[n].options
- */
-export function isDepthConfirmationAnswer(
-  selected: unknown,
-  options?: Array<{ label?: string }>,
-): boolean {
-  const value = Array.isArray(selected) ? selected[0] : selected;
-  if (typeof value !== "string" || !value) return false;
+// The structural depth-confirmation validator lives in the consent-verdict
+// leaf (../consent-verdict.ts) so the write gate and the Consent Question
+// module share one verdict engine without an import cycle. Re-exported here
+// because the workflow MCP child loads this module by dist path and validates
+// the function is present (packages/mcp-server/src/server.ts).
+export { isDepthConfirmationAnswer } from "../consent-verdict.js";
 
-  // If options are available, structurally validate: selected must exactly match
-  // the first option (confirmation) label. Rejects free-form "Other" and decline options.
-  if (Array.isArray(options) && options.length > 0) {
-    const confirmLabel = options[0]?.label;
-    return typeof confirmLabel === "string" && value === confirmLabel;
+export interface AskUserQuestionsGateQuestion {
+  id?: unknown;
+  options?: Array<{ label?: string }>;
+}
+
+export interface AskUserQuestionsGateDetails {
+  cancelled?: boolean;
+  interrupted?: boolean;
+  response?: {
+    answers?: Record<string, { selected?: unknown } | undefined>;
+  } | null;
+}
+
+export type AskUserQuestionsGateResult =
+  | { status: "not-gate" }
+  | { status: "waiting"; pendingGateId: string; interrupted: boolean }
+  | { status: "verified"; gateId: string; milestoneId: string | null }
+  | { status: "declined"; gateId: string };
+
+function findGateQuestion(
+  questions: AskUserQuestionsGateQuestion[],
+  gateId: string,
+): AskUserQuestionsGateQuestion | undefined {
+  return questions.find((question) => question?.id === gateId);
+}
+
+function verifyAnsweredGate(
+  basePath: string,
+  question: AskUserQuestionsGateQuestion,
+  fallbackMilestoneId?: string | null,
+): AskUserQuestionsGateResult {
+  const gateId = typeof question.id === "string" ? question.id : "";
+  const milestoneId = extractDepthVerificationMilestoneId(gateId) ?? fallbackMilestoneId ?? null;
+  markApprovalGateVerified(gateId, basePath);
+  markDepthVerified(milestoneId, basePath);
+  clearPendingGate(basePath);
+  return { status: "verified", gateId, milestoneId };
+}
+
+/** Map an unresolved (non-verified) gate verdict to the caller-facing result. */
+function unresolvedGateResult(
+  verdict: "declined" | "waiting" | "cancelled",
+  gateId: string,
+  details: AskUserQuestionsGateDetails,
+): AskUserQuestionsGateResult {
+  if (verdict === "declined") return { status: "declined", gateId };
+  // "waiting" (and the unreachable post-cancel case): an empty selection is
+  // not an answer — keep the gate pending and make the caller pause.
+  return {
+    status: "waiting",
+    pendingGateId: gateId,
+    interrupted: details.interrupted === true,
+  };
+}
+
+/**
+ * Apply an ask_user_questions round to durable gate state. The per-question
+ * VERDICT comes from the consent-verdict leaf (evaluateGateAnswer) — the same
+ * engine the Consent Question module uses — so write-gate only owns the
+ * persistence/arming side effects:
+ *
+ * - "verified" verdict → markApprovalGateVerified/markDepthVerified/clearPendingGate.
+ * - "declined" verdict → no state change; the gate (if armed) stays pending.
+ * - "waiting" verdict (empty/missing selection) → no state change; reported as
+ *   "waiting" so callers pause instead of proceeding (fail-closed; an empty
+ *   answer is never an answer).
+ */
+export function applyAskUserQuestionsGateResult(options: {
+  basePath: string;
+  questions: AskUserQuestionsGateQuestion[];
+  details: AskUserQuestionsGateDetails;
+  fallbackMilestoneId?: string | null;
+}): AskUserQuestionsGateResult {
+  const { basePath, questions, details, fallbackMilestoneId } = options;
+  const currentPendingGate = getPendingGate(basePath);
+  if (currentPendingGate) {
+    if (details.cancelled || !details.response) {
+      return {
+        status: "waiting",
+        pendingGateId: currentPendingGate,
+        interrupted: details.interrupted === true,
+      };
+    }
+
+    const pendingQuestion = findGateQuestion(questions, currentPendingGate);
+    if (pendingQuestion) {
+      const verdict = evaluateGateAnswer(pendingQuestion, details);
+      if (verdict === "verified") {
+        return verifyAnsweredGate(basePath, pendingQuestion, fallbackMilestoneId);
+      }
+      return unresolvedGateResult(verdict, currentPendingGate, details);
+    }
   }
 
-  // Fail-closed: no options means we cannot structurally validate the answer.
-  // Returning false prevents any free-form string from unlocking the gate.
-  return false;
+  if (details.cancelled || !details.response) return { status: "not-gate" };
+
+  for (const question of questions) {
+    if (typeof question.id !== "string" || !isGateQuestionId(question.id)) continue;
+    const verdict = evaluateGateAnswer(question, details);
+    if (verdict !== "verified") {
+      return unresolvedGateResult(verdict, question.id, details);
+    }
+    if (currentPendingGate && question.id !== currentPendingGate) {
+      // A different gate than the armed one was confirmed — the armed gate is
+      // still unresolved, so do not verify and let discussion continue.
+      return { status: "declined", gateId: currentPendingGate };
+    }
+    return verifyAnsweredGate(basePath, question, fallbackMilestoneId);
+  }
+
+  return { status: "not-gate" };
+}
+
+export function formatPendingAskUserQuestionsGateMessage(
+  pendingGateId: string,
+  interrupted: boolean,
+): string {
+  return [
+    `Waiting for depth confirmation on gate "${pendingGateId}".`,
+    interrupted
+      ? "The confirmation question was interrupted before a response was recorded."
+      : "No user response was received for the confirmation question.",
+    "Do not infer approval from earlier or prior messages.",
+    "Do not proceed, write files, save artifacts, or call other tools.",
+    `Re-call ask_user_questions with the same gate question id ("${pendingGateId}") and wait for the user's response.`,
+  ].join(" ");
 }
 
 export function shouldBlockContextWrite(
@@ -679,6 +1072,7 @@ const PLANNING_SUBAGENT_TOOLS = new Set(["subagent", "task"]);
  * manifests still declare per-unit subsets via ToolsPolicy.allowedSubagents.
  */
 const PLANNING_DISPATCH_AGENT_REGISTRY = {
+  mnemo: { readOnlySpecialist: true },
   scout: { readOnlySpecialist: true },
   planner: { readOnlySpecialist: true },
   reviewer: { readOnlySpecialist: true },
@@ -692,7 +1086,7 @@ export const ALLOWED_PLANNING_DISPATCH_AGENTS = new Set<string>(
     .map(([agentId]) => agentId),
 );
 
-let warnedMissingPlanningDispatchAgentClasses = false;
+let warnedMissingControlledDispatchAgentClasses = false;
 
 function isReadOnlySpecialist(agentId: string): boolean {
   const metadata = PLANNING_DISPATCH_AGENT_REGISTRY[agentId as keyof typeof PLANNING_DISPATCH_AGENT_REGISTRY];
@@ -703,11 +1097,20 @@ function allowedPlanningDispatchAgentsList(): string {
   return [...ALLOWED_PLANNING_DISPATCH_AGENTS].join(", ");
 }
 
-function warnMissingPlanningDispatchAgentClasses(unitType: string, mode: string, toolName: string): void {
-  if (warnedMissingPlanningDispatchAgentClasses) return;
-  warnedMissingPlanningDispatchAgentClasses = true;
+function allowsControlledSubagentDispatch(
+  policy: ToolsPolicy,
+): policy is ToolsPolicy & { readonly allowedSubagents: readonly string[] } {
+  return (
+    (policy.mode === "planning-dispatch" || policy.mode === "verification") &&
+    Array.isArray((policy as { readonly allowedSubagents?: unknown }).allowedSubagents)
+  );
+}
+
+function warnMissingControlledDispatchAgentClasses(unitType: string, mode: string, toolName: string): void {
+  if (warnedMissingControlledDispatchAgentClasses) return;
+  warnedMissingControlledDispatchAgentClasses = true;
   // TODO(#5060): Remove this migration shim once all subagent/task callers are verified to forward agent identities.
-  const message = `[write-gate] planning-dispatch: shouldBlockPlanningUnit called for tool "${toolName}" ` +
+  const message = `[write-gate] controlled-dispatch: shouldBlockPlanningUnit called for tool "${toolName}" ` +
     `on unit "${unitType}" without agentClasses - stale caller; blocking dispatch.`;
   console.warn(message);
   logWarning("intercept", message, {
@@ -762,6 +1165,20 @@ function blockReason(unitType: string, mode: string, what: string): string {
   ].join(" ");
 }
 
+function planningBlock(unitType: string, mode: string, what: string): PlanningUnitBlockResult {
+  return {
+    block: true,
+    reason: blockReason(unitType, mode, what),
+    displayReason: GSD_PHASE_SCOPE_DISPLAY_REASON,
+  };
+}
+
+type PlanningUnitBlockResult = {
+  block: boolean;
+  reason?: string;
+  displayReason?: string;
+};
+
 /**
  * Planning-unit tool-policy enforcement. Returns { block } per the policy
  * resolved from the active unit's manifest:
@@ -777,8 +1194,9 @@ function blockReason(unitType: string, mode: string, what: string): string {
  *   - "docs"       → like "planning" but also allows writes to paths
  *                    matching `allowedPathGlobs` relative to basePath.
  *   - "verification"
- *                  → allows Bash for project verification commands, but keeps
- *                    writes restricted to .gsd/ and blocks subagent dispatch.
+ *                  → allows Bash for project verification commands, keeps
+ *                    writes restricted to .gsd/, and permits subagent dispatch
+ *                    only when the manifest declares allowedSubagents.
  *
  * `pathOrCommand` is the file path for write/edit-shaped tools and the
  * shell command for bash. Other tools ignore this argument.
@@ -801,7 +1219,7 @@ export function shouldBlockPlanningUnit(
   agentClasses?: readonly string[],
   toolInput?: unknown,
   unitId?: string,
-): { block: boolean; reason?: string } {
+): PlanningUnitBlockResult {
   const tool = canonicalToolName(toolName);
   const autoScopeGuard = shouldBlockAutoUnitToolCall(unitType, toolName, toolInput, unitId);
   if (autoScopeGuard.block) return autoScopeGuard;
@@ -814,10 +1232,10 @@ export function shouldBlockPlanningUnit(
     if (PLANNING_SAFE_TOOLS.has(tool)) return { block: false };
     if (tool.startsWith("gsd_")) return { block: false };
     if (PLANNING_WRITE_TOOLS.has(tool) || tool === "bash" || PLANNING_SUBAGENT_TOOLS.has(tool)) {
-      return { block: true, reason: blockReason(unitType, policy.mode, `${tool} is not permitted (read-only)`) };
+      return planningBlock(unitType, policy.mode, `${tool} is not permitted (read-only)`);
     }
     // Unknown tool in read-only mode — block by default.
-    return { block: true, reason: blockReason(unitType, policy.mode, `tool "${tool}" is not on the read-only allowlist`) };
+    return planningBlock(unitType, policy.mode, `tool "${tool}" is not on the read-only allowlist`);
   }
 
   // planning / planning-dispatch / docs / verification modes share the same surface for safe tools, bash, and subagent.
@@ -825,7 +1243,7 @@ export function shouldBlockPlanningUnit(
   if (tool.startsWith("gsd_")) return { block: false };
 
   if (PLANNING_SUBAGENT_TOOLS.has(tool)) {
-    if (policy.mode === "planning-dispatch") {
+    if (allowsControlledSubagentDispatch(policy)) {
       const requested = (agentClasses ?? []).map(a => a.trim()).filter(Boolean);
       const dispatchContract = compileSubagentPermissionContract(policy);
       const allowedSubagents = dispatchContract.allowedSubagents;
@@ -834,15 +1252,12 @@ export function shouldBlockPlanningUnit(
       // agent identities yet. Block and warn so stale callers surface in telemetry
       // instead of silently bypassing the gate.
       if (agentClasses === undefined) {
-        warnMissingPlanningDispatchAgentClasses(unitType, policy.mode, tool);
-        return {
-          block: true,
-          reason: blockReason(
-            unitType,
-            policy.mode,
-            `subagent dispatch blocked: stale caller did not supply agent identities for "${tool}"; update extractSubagentAgentClasses to handle this input shape`,
-          ),
-        };
+        warnMissingControlledDispatchAgentClasses(unitType, policy.mode, tool);
+        return planningBlock(
+          unitType,
+          policy.mode,
+          `subagent dispatch blocked: stale caller did not supply agent identities for "${tool}"; update extractSubagentAgentClasses to handle this input shape`,
+        );
       }
       // agentClasses was explicitly provided but resolved to an empty list (for
       // example, a bare tool call with no agent field). Pass through; no agents
@@ -852,57 +1267,45 @@ export function shouldBlockPlanningUnit(
       }
       const globallyDisallowed = requested.find(a => !isReadOnlySpecialist(a));
       if (globallyDisallowed) {
-        return {
-          block: true,
-          reason: blockReason(
-            unitType,
-            policy.mode,
-            `subagent dispatch of "${globallyDisallowed}" not permitted; only read-only specialists (${allowedPlanningDispatchAgentsList()}) may be dispatched from planning-dispatch units`,
-          ),
-        };
+        return planningBlock(
+          unitType,
+          policy.mode,
+          `subagent dispatch of "${globallyDisallowed}" not permitted; only read-only specialists (${allowedPlanningDispatchAgentsList()}) may be dispatched from ${policy.mode} units`,
+        );
       }
       const disallowedByPolicy = requested.find(a => !allowed.has(a));
       if (disallowedByPolicy) {
-        return {
-          block: true,
-          reason: blockReason(
-            unitType,
-            policy.mode,
-            `subagent dispatch of "${disallowedByPolicy}" not permitted by ToolsPolicy.allowedSubagents; permitted agents for this unit: ${allowedSubagents.join(", ")}`,
-          ),
-        };
+        return planningBlock(
+          unitType,
+          policy.mode,
+          `subagent dispatch of "${disallowedByPolicy}" not permitted by ToolsPolicy.allowedSubagents; permitted agents for this unit: ${allowedSubagents.join(", ")}`,
+        );
       }
       return { block: false };
     }
-    return { block: true, reason: blockReason(unitType, policy.mode, `subagent dispatch is not permitted in planning units`) };
+    return planningBlock(unitType, policy.mode, "subagent dispatch is not permitted in planning units");
   }
 
   if (tool === "bash") {
     if (policy.mode === "verification") {
       if (BASH_VERIFICATION_RE.test(pathOrCommand) || BASH_READ_ONLY_RE.test(pathOrCommand)) return { block: false };
-      return {
-        block: true,
-        reason: blockReason(
-          unitType,
-          policy.mode,
-          `bash is restricted to build/test verification commands (npm run build, npm test, etc.); cannot run "${pathOrCommand.slice(0, 80)}${pathOrCommand.length > 80 ? "…" : ""}"`,
-        ),
-      };
-    }
-    if (BASH_READ_ONLY_RE.test(pathOrCommand)) return { block: false };
-    return {
-      block: true,
-      reason: blockReason(
+      return planningBlock(
         unitType,
         policy.mode,
-        `bash is restricted to read-only commands (cat/grep/git log/etc); cannot run "${pathOrCommand.slice(0, 80)}${pathOrCommand.length > 80 ? "…" : ""}"`,
-      ),
-    };
+        `bash is restricted to build/test verification commands (npm run build, npm test, etc.); cannot run "${pathOrCommand.slice(0, 80)}${pathOrCommand.length > 80 ? "…" : ""}"`,
+      );
+    }
+    if (BASH_READ_ONLY_RE.test(pathOrCommand)) return { block: false };
+    return planningBlock(
+      unitType,
+      policy.mode,
+      `bash is restricted to read-only commands (cat/grep/git log/etc); cannot run "${pathOrCommand.slice(0, 80)}${pathOrCommand.length > 80 ? "…" : ""}"`,
+    );
   }
 
   if (PLANNING_WRITE_TOOLS.has(tool)) {
     if (!pathOrCommand) {
-      return { block: true, reason: blockReason(unitType, policy.mode, `${tool} called with empty path`) };
+      return planningBlock(unitType, policy.mode, `${tool} called with empty path`);
     }
     const absPath = isAbsolute(pathOrCommand) ? pathOrCommand : resolve(basePath, pathOrCommand);
 
@@ -914,14 +1317,11 @@ export function shouldBlockPlanningUnit(
       return { block: false };
     }
 
-    return {
-      block: true,
-      reason: blockReason(
-        unitType,
-        policy.mode,
-        `cannot ${tool} "${pathOrCommand}" — writes are restricted to .gsd/${policy.mode === "docs" ? " and " + policy.allowedPathGlobs.join(", ") : ""}`,
-      ),
-    };
+    return planningBlock(
+      unitType,
+      policy.mode,
+      `cannot ${tool} "${pathOrCommand}" — writes are restricted to .gsd/${policy.mode === "docs" ? " and " + policy.allowedPathGlobs.join(", ") : ""}`,
+    );
   }
 
   // Unknown tool name — pass through. Other layers (queue, pending-gate,
@@ -974,6 +1374,37 @@ function isPathContained(target: string, container: string): boolean {
   return target.startsWith(container.endsWith(sep) ? container : container + sep);
 }
 
+function formatWorktreeIsolationBlockReason(
+  tool: string,
+  displayTarget: string,
+  isAutoLive: boolean,
+  effectiveBasePath: string,
+): string {
+  if (isGsdWorktreePath(effectiveBasePath)) {
+    return [
+      `HARD BLOCK: ${tool} target "${displayTarget}" is outside the active milestone worktree`,
+      `while \`git.isolation: worktree\` is configured. Source edits must stay inside`,
+      `\`.gsd-worktrees/<MID>/\` (or \`.gsd/\` planning artifacts) so the auto-mode commit`,
+      `pipeline captures them. Writing to the project root leaks changes that block milestone merge.`,
+      `Use a relative path under the worktree cwd or an absolute path inside the worktree directory.`,
+      ...(isAutoLive ? [] : [
+        "This guard also applies to subagent children spawned from the worktree — do not",
+        "`cd` to the project root or reference its paths in shell commands.",
+      ]),
+    ].join(" ");
+  }
+
+  return [
+    `HARD BLOCK: Worktree isolation is configured (\`git.isolation: worktree\`) but auto-mode is`,
+    `not running and the target "${displayTarget}" is not inside \`.gsd/worktrees/<MID>/\`.`,
+    `Code edits at the project root would be lost — only the auto-mode commit pipeline`,
+    `(auto-post-unit) commits work, and it never runs outside the loop.`,
+    `Required action: start auto-mode with \`/gsd\` so the milestone worktree is created,`,
+    `then write inside it. To disable this guard for self-hosting development, set`,
+    `GSD_DISABLE_WORKTREE_WRITE_GUARD=1.`,
+  ].join(" ");
+}
+
 /**
  * Block planning-write tool calls that would land code at the project root
  * while `git.isolation: worktree` is in effect and auto-mode hasn't created
@@ -991,10 +1422,9 @@ function isPathContained(target: string, container: string): boolean {
  *   5. Target is inside `<projectRoot>/.gsd/worktrees/` (a real worktree).
  *   6. Target is inside `<projectRoot>/.gsd/` and isn't masquerading as a
  *      worktrees sibling (rejects the `.gsd/worktrees-extra/…` prefix trick).
- *   7. Auto is live AND `effectiveBasePath` is itself a `.gsd/worktrees/…` path.
  *
- * Otherwise: block with a message that points the agent at `/gsd` to start
- * auto-mode.
+ * Otherwise: block with a message that points the agent at the active worktree
+ * or `/gsd` to start auto-mode.
  */
 export function shouldBlockWorktreeWrite(
   toolName: string,
@@ -1027,10 +1457,12 @@ export function shouldBlockWorktreeWrite(
   const realTarget = realpathOrResolve(absTarget);
   const realRoot = realpathOrResolve(projectRoot);
   const realGsd = realpathOrResolve(join(projectRoot, ".gsd"));
-  const realWorktreesDir = realpathOrResolve(join(projectRoot, ".gsd", "worktrees"));
 
-  // Allow writes inside the legitimate worktrees subtree.
-  if (isPathContained(realTarget, realWorktreesDir)) return { block: false };
+  // Allow writes inside a legitimate worktrees subtree (canonical
+  // .gsd-worktrees/ or legacy .gsd/worktrees/).
+  for (const container of worktreesDirs(projectRoot)) {
+    if (isPathContained(realTarget, realpathOrResolve(container))) return { block: false };
+  }
 
   // Allow writes to .gsd/ planning artifacts, but reject siblings whose name
   // starts with "worktrees" (the worktrees-extra prefix trick — case 4).
@@ -1041,24 +1473,46 @@ export function shouldBlockWorktreeWrite(
     // fall through: looks like worktrees<something> sibling — block
   }
 
-  // Auto is live and the caller is operating inside a worktree path —
-  // host tool's write happens in worktree context; let it through.
-  if (isAutoLive && isGsdWorktreePath(effectiveBasePath)) return { block: false };
-
   // Block. Provide enough context that the agent can self-correct.
   const displayTarget = isPathContained(realTarget, realRoot)
     ? relative(realRoot, realTarget) || "."
     : realTarget;
   return {
     block: true,
-    reason: [
-      `HARD BLOCK: Worktree isolation is configured (\`git.isolation: worktree\`) but auto-mode is`,
-      `not running and the target "${displayTarget}" is not inside \`.gsd/worktrees/<MID>/\`.`,
-      `Code edits at the project root would be lost — only the auto-mode commit pipeline`,
-      `(auto-post-unit) commits work, and it never runs outside the loop.`,
-      `Required action: start auto-mode with \`/gsd\` so the milestone worktree is created,`,
-      `then write inside it. To disable this guard for self-hosting development, set`,
-      `GSD_DISABLE_WORKTREE_WRITE_GUARD=1.`,
-    ].join(" "),
+    reason: formatWorktreeIsolationBlockReason(tool, displayTarget, isAutoLive, effectiveBasePath),
+  };
+}
+
+/**
+ * Block bash commands that reference the project root while executing inside an
+ * active milestone worktree under `git.isolation: worktree`.
+ *
+ * Mirrors the gsd_exec sandbox rule so native bash cannot bypass write/edit gates.
+ */
+export function shouldBlockWorktreeBash(
+  command: string,
+  effectiveBasePath: string,
+  isAutoLive: boolean,
+  currentUnitType?: string | null,
+): { block: boolean; reason?: string } {
+  if (process.env.GSD_DISABLE_WORKTREE_WRITE_GUARD === "1") return { block: false };
+  if (getIsolationMode(effectiveBasePath) !== "worktree") return { block: false };
+  if (currentUnitType && WORKTREE_GATE_BOOTSTRAP_UNITS.has(currentUnitType)) return { block: false };
+  // Block whenever the effective cwd is inside a milestone worktree — not only
+  // during live auto-mode. Reactive-execute subagents run as fresh pi children
+  // without an auto session, but still inherit the worktree cwd and must not
+  // shell out to the project root (the native bash bypass that caused root-write leaks).
+  if (!isGsdWorktreePath(effectiveBasePath)) return { block: false };
+  if (!command.trim()) return { block: false };
+  if (!bashReferencesProjectRootOutsideWorktree(command, effectiveBasePath)) return { block: false };
+
+  return {
+    block: true,
+    reason: formatWorktreeIsolationBlockReason(
+      "bash",
+      "project root path reference in shell command",
+      isAutoLive,
+      effectiveBasePath,
+    ),
   };
 }

@@ -3,8 +3,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
+import type { AgentMessage } from "@gsd/pi-agent-core";
+import type { AssistantMessage } from "@gsd/pi-ai";
 import { shouldCompact, type CompactionSettings } from "./compaction/compaction.js";
 import { SettingsManager } from "@gsd/pi-coding-agent/core/settings-manager.js";
+import { resolveThresholdContextTokens } from "./session/agent-session-compaction.js";
 
 const REGISTRY_DEFAULTS: CompactionSettings = {
 	enabled: true,
@@ -117,5 +120,42 @@ describe("end-to-end — getCompactionSettings + shouldCompact (#5475)", () => {
 		assert.equal(shouldCompact(140_001, 200_000, settings), true);
 		// Pre-fix behavior would have required 183_617 — verify we no longer wait that long
 		assert.equal(shouldCompact(150_000, 200_000, settings), true);
+	});
+
+	it("uses the footer-style context estimate when trailing messages exceed the threshold", () => {
+		const assistant: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "read result" }],
+			api: "faux",
+			provider: "faux",
+			model: "faux-context",
+			usage: {
+				input: 100_000,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 100_000,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		};
+		const messages: AgentMessage[] = [
+			{ role: "user", content: [{ type: "text", text: "inspect a large result" }], timestamp: Date.now() - 1 },
+			assistant,
+			{
+				role: "toolResult",
+				toolCallId: "tool-1",
+				toolName: "read",
+				content: [{ type: "text", text: "x".repeat(100_000) }],
+				timestamp: Date.now() + 1,
+			},
+		];
+
+		const tokens = resolveThresholdContextTokens(assistant, messages);
+
+		assert.equal(tokens, 125_000);
+		assert.equal(shouldCompact(tokens, 200_000, { ...REGISTRY_DEFAULTS, thresholdPercent: 0.6 }), true);
+		assert.equal(shouldCompact(assistant.usage.input, 200_000, { ...REGISTRY_DEFAULTS, thresholdPercent: 0.6 }), false);
 	});
 });

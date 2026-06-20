@@ -1,7 +1,7 @@
 // Project/App: gsd-pi
 // File Purpose: Registers GSD extension runtime hooks and token-saving tool policies.
 
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -12,12 +12,27 @@ import { ALWAYS_PRESERVED_SHIM_TOOL_NAMES } from "@gsd/pi-ai";
 import type { GSDEcosystemBeforeAgentStartHandler } from "../ecosystem/gsd-extension-api.js";
 import { updateSnapshot } from "../ecosystem/gsd-extension-api.js";
 
-import { buildMilestoneFileName, resolveMilestonePath, resolveSliceFile, resolveSlicePath } from "../paths.js";
-import { canonicalToolName, clearDiscussionFlowState, isDepthConfirmationAnswer, isMilestoneDepthVerified, isQueuePhaseActive, markApprovalGateVerified, markDepthVerified, resetWriteGateState, shouldBlockContextWrite, shouldBlockPlanningUnit, shouldBlockQueueExecution, shouldBlockWorktreeWrite, isGateQuestionId, setPendingGate, clearPendingGate, getPendingGate, shouldBlockPendingGate, shouldBlockPendingGateBash, extractDepthVerificationMilestoneId } from "./write-gate.js";
+import { buildMilestoneFileName, clearPathCache, milestonesDir, resolveMilestonePath, resolveSliceFile, resolveSlicePath } from "../paths.js";
+import { applyAskUserQuestionsGateResult, clearDiscussionFlowState, formatPendingAskUserQuestionsGateMessage, hostWriteGateAdapter, isApprovalGateVerifiedInSnapshot, isDepthConfirmationAnswer, isMilestoneDepthVerified, isMilestoneDepthVerifiedInSnapshot, isQueuePhaseActive, resetWriteGateState, shouldBlockContextWrite, shouldBlockPlanningUnit, shouldBlockQueueExecution, shouldBlockWorktreeBash, shouldBlockWorktreeWrite, isGateQuestionId, getPendingGate, shouldBlockPendingGate, shouldBlockPendingGateBash, extractDepthVerificationMilestoneId } from "./write-gate.js";
+import { canonicalToolName } from "../engine-hook-contract.js";
 import { resolveManifest } from "../unit-context-manifest.js";
 import { isBlockedStateFile, isBashWriteToStateFile, BLOCKED_WRITE_ERROR } from "../write-intercept.js";
 import { loadFile, saveFile, formatContinue } from "../files.js";
-import { clearToolInvocationError, getAutoRuntimeSnapshot, isAutoActive, isAutoPaused, markToolEnd, markToolStart, recordToolInvocationError } from "../auto-runtime-state.js";
+import {
+  clearAutoCompletionStopInProgress,
+  clearToolInvocationError,
+  getAutoRuntimeSnapshot,
+  getSourceObservationStore,
+  isAutoActive,
+  isAutoCompletionStopInProgress,
+  isAutoPaused,
+  isInteractiveElicitationInFlight,
+  markToolEnd,
+  markToolStart,
+  recordAutoToolSurfaceSnapshot,
+  recordToolInvocationError,
+} from "../auto-runtime-state.js";
+import { applyProviderPayloadPolicy } from "../provider-payload-policy.js";
 
 import { checkToolCallLoop, resetToolCallLoopGuard } from "./tool-call-loop-guard.js";
 import { maybePauseAutoForApprovalGate, resetPendingGatePauseGuard } from "./pending-gate-pause.js";
@@ -25,25 +40,43 @@ import { saveActivityLog } from "../activity-log.js";
 import { recordToolCall as safetyRecordToolCall, recordToolResult as safetyRecordToolResult, saveEvidenceToDisk } from "../safety/evidence-collector.js";
 import { parseUnitId } from "../unit-id.js";
 import { classifyCommand } from "../safety/destructive-guard.js";
-import { logWarning as safetyLogWarning } from "../workflow-logger.js";
+import {
+  confirmDestructiveCommand,
+  consumeDestructiveConfirmation,
+  isDestructiveConfirmGateId,
+  requestDestructiveConfirmation,
+} from "../safety/destructive-confirmation.js";
+import { logWarning as safetyLogWarning, setStderrLoggingEnabled } from "../workflow-logger.js";
+import { isUnitCloseoutTool, runInteractiveUnitCloseout } from "../unit-closeout.js";
 import { installNotifyInterceptor } from "./notify-interceptor.js";
 import { initNotificationStore } from "../notification-store.js";
 import { initNotificationWidget } from "../notification-widget.js";
+import { notifyPreferenceDiagnostics } from "../preferences-diagnostics.js";
 import { resolveWorktreeProjectRoot } from "../worktree-root.js";
 import { extractSubagentAgentClasses } from "./subagent-input.js";
-import { approvalGateIdForUnit, isExplicitApprovalResponse, shouldPauseForUserApprovalQuestion } from "../user-input-boundary.js";
+import {
+  approvalGateIdForUnit,
+  evaluateAskUserQuestionsRound,
+  formatUnansweredConsentQuestionMessage,
+  isExplicitApprovalResponse,
+  messageHasPendingAskUserQuestionsTool,
+  shouldPauseForQuestion,
+} from "../consent-question.js";
 import { resolveSkillManifest } from "../skill-manifest.js";
 import { applyUnitSkillVisibility, unitHasSkillManifest } from "../skill-scope.js";
 import { getGuidedUnitContext } from "../guided-unit-context.js";
 import { registerPlanMilestoneSchemaRecovery } from "./plan-milestone-schema-recovery.js";
-import { AUTO_UNIT_SCOPED_TOOLS, isWorkflowAliasTool } from "../auto-unit-tool-scope.js";
+import { AUTO_UNIT_SCOPED_TOOLS, RUN_UAT_BROWSER_TOOL_NAMES, canonicalWorkflowToolName, isWorkflowAliasTool } from "../auto-unit-tool-scope.js";
+import { hasBrowserContractPrefix } from "../../shared/browser-contract.js";
+import { filterToolsForProvider } from "../model-router.js";
+import { mcpToolMatchesBaseName } from "../mcp-tool-name.js";
+import { RUN_UAT_READ_ONLY_TOOL_NAMES, RUN_UAT_WORKFLOW_TOOL_NAMES } from "../tool-presentation-plan.js";
+import { supportsSourceObservationsForUnit } from "../source-observations.js";
+import { clearPendingAutoStart } from "../pending-auto-start.js";
+import { resolveWorkflowToolBasePath } from "./dynamic-tools.js";
+import { getRequiredWorkflowToolsForUnit } from "../unit-tool-contracts.js";
 
 let approvalQuestionAbortInFlight = false;
-
-interface DeferredApprovalGate {
-  gateId: string;
-  basePath: string;
-}
 
 type WelcomeScreenModule = {
   buildWelcomeScreenLines(opts: { version: string; remoteChannel?: string; width?: number }): string[];
@@ -115,7 +148,22 @@ async function installWelcomeHeader(ctx: ExtensionContext): Promise<void> {
   }
 }
 
-let deferredApprovalGate: DeferredApprovalGate | null = null;
+/** Suppress the startup welcome banner without restoring the built-in pi header. */
+function suppressWelcomeHeader(ctx: ExtensionContext): void {
+  if (!ctx.hasUI || typeof ctx.ui?.setHeader !== "function") return;
+  ctx.ui.setHeader(() => ({
+    render(): string[] { return []; },
+    invalidate(): void {},
+  }));
+}
+
+/**
+ * Approval gates whose durable arming is deferred until tool execution /
+ * agent end, keyed by basePath. A Map (not a single slot) so concurrent
+ * projects in one process cannot lose each other's deferred gate; entries
+ * are bounded — cleared on activation, session boundaries, and verification.
+ */
+const deferredApprovalGates = new Map<string, string>();
 
 export const MINIMAL_GSD_TOOL_NAMES = [
   "gsd_exec",
@@ -123,8 +171,11 @@ export const MINIMAL_GSD_TOOL_NAMES = [
   "gsd_resume",
   "gsd_milestone_status",
   "gsd_checkpoint_db",
+  "gsd_plan_milestone",
   "memory_query",
+  "gsd_memory_query",
   "capture_thought",
+  "gsd_capture_thought",
 ] as const;
 
 export const MINIMAL_AUTO_BASE_TOOL_NAMES = [
@@ -150,7 +201,7 @@ function withPreservedShimTools(toolNames: readonly string[]): string[] {
 
 /** True for the browser automation tools (browser_navigate, browser_click, ...). */
 function isBrowserTool(toolName: string): boolean {
-  return canonicalToolName(toolName).startsWith("browser_");
+  return hasBrowserContractPrefix(canonicalToolName(toolName));
 }
 
 /**
@@ -193,14 +244,20 @@ function resolveScopedToolNames(
 
   for (const requested of requestedToolNames) {
     const scopedMatches: string[] = [];
+    const aliasFallbacks: string[] = [];
 
     for (const activeName of activeToolNames) {
-      if (!activeName.startsWith("mcp__")) continue;
-      const toolSeparator = activeName.indexOf("__", "mcp__".length);
-      if (toolSeparator < 0) continue;
-      if (activeName.slice(toolSeparator + 2) === requested) {
+      if (mcpToolMatchesBaseName(activeName, requested)) {
         scopedMatches.push(activeName);
+      } else if (isWorkflowAliasTool(activeName) && canonicalWorkflowToolName(activeName) === requested) {
+        aliasFallbacks.push(activeName);
       }
+    }
+
+    // Only use alias as fallback when canonical is absent — not directly and not via MCP scoping.
+    // Prevents the alias from resurfacing alongside the canonical when both are in the active set.
+    if (!exact.has(requested) && scopedMatches.length === 0) {
+      scopedMatches.push(...aliasFallbacks);
     }
 
     if (requested.startsWith("browser_") && scopedMatches.length > 0) {
@@ -225,7 +282,11 @@ export function buildMinimalAutoGsdToolSet(
   activeToolNames: readonly string[],
   unitType: string | undefined,
   registeredToolNames: readonly string[] = activeToolNames,
+  warnOnUnresolvedRequiredTools = registeredToolNames !== activeToolNames,
 ): string[] {
+  if (unitType === "run-uat") {
+    return buildRunUatGsdToolSet(activeToolNames, registeredToolNames);
+  }
   const unitTools = unitType ? AUTO_UNIT_SCOPED_TOOLS[unitType] ?? [] : [];
   const autoBaseTools = new Set<string>(MINIMAL_AUTO_BASE_TOOL_NAMES);
   const availableBaseTools = registeredToolNames.filter((name) => autoBaseTools.has(name));
@@ -237,7 +298,64 @@ export function buildMinimalAutoGsdToolSet(
     [...activeToolNames, ...registeredToolNames],
     [...MINIMAL_GSD_TOOL_NAMES, ...unitTools],
   );
-  return withPreservedShimTools([...new Set([...preserved, ...scoped])]);
+  const result = withPreservedShimTools([...new Set([...preserved, ...scoped])]);
+  warnIfRequiredWorkflowToolsUnresolved(unitType, result, warnOnUnresolvedRequiredTools);
+  return result;
+}
+
+function hasResolvedWorkflowTool(
+  resolvedToolNames: readonly string[],
+  requiredToolName: string,
+): boolean {
+  return resolvedToolNames.some(
+    (name) => name === requiredToolName || mcpToolMatchesBaseName(name, requiredToolName),
+  );
+}
+
+function warnIfRequiredWorkflowToolsUnresolved(
+  unitType: string | undefined,
+  scopedToolNames: readonly string[],
+  shouldWarn: boolean,
+): void {
+  if (!unitType || !shouldWarn) return;
+
+  const unresolved = getRequiredWorkflowToolsForUnit(unitType).filter(
+    (toolName) => !hasResolvedWorkflowTool(scopedToolNames, toolName),
+  );
+  if (unresolved.length === 0) return;
+
+  safetyLogWarning(
+    "bootstrap",
+    `buildMinimalAutoGsdToolSet(${unitType}): required workflow tool(s) not in active/registered surface after scoping: ${unresolved.join(", ")}. Tool registration may have partially failed, provider filtering may have removed a required tool, or workflow MCP may be disconnected.`,
+  );
+}
+
+export function buildRunUatGsdToolSet(
+  activeToolNames: readonly string[],
+  registeredToolNames: readonly string[] = activeToolNames,
+): string[] {
+  const scoped = resolveScopedToolNames(
+    [...activeToolNames, ...registeredToolNames],
+    [
+      ...RUN_UAT_WORKFLOW_TOOL_NAMES,
+      ...RUN_UAT_READ_ONLY_TOOL_NAMES,
+      "subagent",
+      ...RUN_UAT_BROWSER_TOOL_NAMES,
+    ],
+  );
+  const resolved = [...new Set(scoped)];
+
+  const unresolved = RUN_UAT_WORKFLOW_TOOL_NAMES.filter(
+    (tool) => !resolved.some((name) => name === tool || mcpToolMatchesBaseName(name, tool)),
+  );
+  if (unresolved.length > 0) {
+    safetyLogWarning(
+      "bootstrap",
+      `buildRunUatGsdToolSet: required run-uat workflow tool(s) not found in active/registered surface: ${unresolved.join(", ")}. Session may lack gsd-workflow MCP connection.`,
+    );
+  }
+
+  return resolved;
 }
 
 export function buildMinimalGsdWorkflowToolSet(
@@ -262,6 +380,7 @@ export function buildRequestScopedGsdToolSet(
   requestCustomMessages: readonly { customType?: string }[] | undefined,
   registeredToolNames: readonly string[] = activeToolNames,
   guidedUnitType?: string,
+  warnOnUnresolvedRequiredTools = registeredToolNames !== activeToolNames,
 ): string[] | undefined {
   for (let index = (requestCustomMessages?.length ?? 0) - 1; index >= 0; index--) {
     const currentCustomType = requestCustomMessages?.[index]?.customType;
@@ -272,7 +391,12 @@ export function buildRequestScopedGsdToolSet(
       currentCustomType === "gsd-triage"
     ) {
       if (guidedUnitType) {
-        return buildMinimalAutoGsdToolSet(activeToolNames, guidedUnitType, registeredToolNames);
+        return buildMinimalAutoGsdToolSet(
+          activeToolNames,
+          guidedUnitType,
+          registeredToolNames,
+          warnOnUnresolvedRequiredTools,
+        );
       }
       return buildMinimalGsdWorkflowToolSet(activeToolNames, registeredToolNames);
     }
@@ -320,11 +444,23 @@ function applyMinimalGsdToolSurface(pi: ExtensionAPI): void {
   if (isFullGsdToolSurfaceRequested()) return;
   const dash = getAutoRuntimeSnapshot();
   if (dash.active && dash.currentUnit) {
-    pi.setActiveTools(buildMinimalAutoGsdToolSet(
-      pi.getActiveTools(),
+    const currentToolNames = pi.getActiveTools();
+    const hasRegisteredSurface = typeof pi.getAllTools === "function";
+    const registeredToolNames = resolveRegisteredToolNames(pi, currentToolNames);
+    const scopedToolNames = buildMinimalAutoGsdToolSet(
+      currentToolNames,
       dash.currentUnit.type,
-      resolveRegisteredToolNames(pi, pi.getActiveTools()),
-    ));
+      registeredToolNames,
+      hasRegisteredSurface,
+    );
+    recordAutoToolSurfaceSnapshot({
+      source: "runtime-scope",
+      unitType: dash.currentUnit.type,
+      modelFacingToolNames: scopedToolNames,
+      registeredToolNames,
+      scopedToolNames,
+    });
+    pi.setActiveTools(scopedToolNames);
     return;
   }
   if (!isGeneralGsdToolScopingRequested()) return;
@@ -337,10 +473,18 @@ export function scopeGsdWorkflowToolsForDispatch(
 ): ScopedGsdWorkflowState | null {
   if (isFullGsdToolSurfaceRequested()) return null;
   const current = pi.getActiveTools();
+  const hasRegisteredSurface = typeof pi.getAllTools === "function";
   const registeredToolNames = resolveRegisteredToolNames(pi, current);
   const scoped = unitType
-    ? buildMinimalAutoGsdToolSet(current, unitType, registeredToolNames)
+    ? buildMinimalAutoGsdToolSet(current, unitType, registeredToolNames, hasRegisteredSurface)
     : buildMinimalGsdWorkflowToolSet(current, registeredToolNames);
+  recordAutoToolSurfaceSnapshot({
+    source: "dispatch-scope",
+    unitType,
+    modelFacingToolNames: scoped,
+    registeredToolNames,
+    scopedToolNames: scoped,
+  });
   const toolsChanged = !(scoped.length === current.length && scoped.every((name, index) => name === current[index]));
   const canScopeSkills = unitHasSkillManifest(unitType) && pi.getVisibleSkills && pi.setVisibleSkills;
   if (!toolsChanged && !canScopeSkills) {
@@ -427,23 +571,85 @@ async function applyCompactionThresholdOverride(ctx: ExtensionContext): Promise<
 }
 
 function clearDeferredApprovalGate(basePath?: string): void {
-  if (!basePath || deferredApprovalGate?.basePath === basePath) {
-    deferredApprovalGate = null;
+  if (!basePath) {
+    deferredApprovalGates.clear();
+  } else {
+    deferredApprovalGates.delete(basePath);
   }
 }
 
 function deferApprovalGate(gateId: string, basePath: string): void {
-  deferredApprovalGate = { gateId, basePath };
+  // Verified-on-disk wins (same adapter policy as activation/re-arm): if the
+  // workflow MCP child already verified this gate, deferring would block
+  // tools for a gate that can never legitimately arm.
+  const snapshot = hostWriteGateAdapter.readState(basePath);
+  if (isApprovalGateVerifiedInSnapshot(snapshot, gateId)) return;
+  const milestoneId = extractDepthVerificationMilestoneId(gateId);
+  if (milestoneId && isMilestoneDepthVerifiedInSnapshot(snapshot, milestoneId)) return;
+  deferredApprovalGates.set(basePath, gateId);
 }
 
 function contextBasePath(ctx?: { cwd?: string }): string {
   return typeof ctx?.cwd === "string" ? ctx.cwd : process.cwd();
 }
 
+function beginSourceObservationStoreForCurrentUnit(
+  ctx?: { cwd?: string },
+): ReturnType<typeof getSourceObservationStore> | null {
+  if (!isAutoActive()) return null;
+  const dash = getAutoRuntimeSnapshot();
+  if (!dash.currentUnit) return null;
+  if (!supportsSourceObservationsForUnit(dash.currentUnit.type)) return null;
+
+  const store = getSourceObservationStore();
+  store.beginUnit({
+    unitType: dash.currentUnit.type,
+    unitId: dash.currentUnit.id,
+    startedAt: dash.currentUnit.startedAt,
+    basePath: dash.currentUnit.workspaceRoot ?? (dash.basePath || contextBasePath(ctx)),
+  });
+  return store;
+}
+
+function refreshSourceObservationAfterMutation(
+  canonicalName: string,
+  input: unknown,
+  ctx?: { cwd?: string },
+): void {
+  if (canonicalName !== "edit" && canonicalName !== "write") return;
+  if (!input || typeof input !== "object") return;
+
+  const store = beginSourceObservationStoreForCurrentUnit(ctx);
+  if (!store) return;
+  store.observeMutation(input as { path?: unknown; file_path?: unknown });
+}
+
+function clearSourceObservationsAfterShell(
+  canonicalName: string,
+): void {
+  if (!isAutoActive()) return;
+  if (!isShellExecutionTool(canonicalName)) return;
+  const dash = getAutoRuntimeSnapshot();
+  if (!dash.currentUnit || !supportsSourceObservationsForUnit(dash.currentUnit.type)) return;
+  getSourceObservationStore().clear();
+}
+
+function isShellExecutionTool(canonicalName: string): boolean {
+  return canonicalName === "bash" ||
+    canonicalName === "bg_shell" ||
+    canonicalName === "async_bash" ||
+    canonicalName === "shell" ||
+    canonicalName === "powershell";
+}
+
 function activateDeferredApprovalGate(basePath: string): void {
-  if (deferredApprovalGate?.basePath !== basePath) return;
-  setPendingGate(deferredApprovalGate.gateId, basePath);
-  deferredApprovalGate = null;
+  const gateId = deferredApprovalGates.get(basePath);
+  if (gateId === undefined) return;
+  deferredApprovalGates.delete(basePath);
+  // hostWriteGateAdapter.setPending applies the verified-on-disk-wins merge
+  // policy: it refuses to arm (and thereby clobber) a gate the workflow MCP
+  // child already verified on disk.
+  hostWriteGateAdapter.setPending(gateId, basePath);
 }
 
 function extractGateQuestionId(input: unknown): string | undefined {
@@ -454,7 +660,7 @@ function extractGateQuestionId(input: unknown): string | undefined {
 
 function isApprovalGateBlocking(basePath: string): boolean {
   return Boolean(getPendingGate(basePath))
-    || (deferredApprovalGate?.basePath === basePath);
+    || deferredApprovalGates.has(basePath);
 }
 
 function isContextDraftSummarySave(toolName: string, input: unknown): boolean {
@@ -463,22 +669,154 @@ function isContextDraftSummarySave(toolName: string, input: unknown): boolean {
   return (input as { artifact_type?: unknown }).artifact_type === "CONTEXT-DRAFT";
 }
 
+/**
+ * External engines (claude-code-cli) deliver ask_user_questions results as
+ * relayed MCP tool results: the structured round payload arrives in
+ * `result.structuredContent`, not in pi-native `event.details`. Without this
+ * fallback, applyAskUserQuestionsGateResult sees no response for an answered
+ * gate question and lands in the "waiting" branch — leaving a re-armed gate
+ * permanently pending and the discuss→auto handoff blocked.
+ */
+function resolveAskUserQuestionsGateDetails(event: { details?: unknown; result?: unknown }): any {
+  const hasRoundShape = (value: any): boolean =>
+    !!value && typeof value === "object" &&
+    (value.cancelled !== undefined || value.response !== undefined);
+
+  const details = event.details as any;
+  if (hasRoundShape(details)) return details;
+  const structured = (event.result as { structuredContent?: unknown } | undefined)?.structuredContent;
+  if (hasRoundShape(structured)) return structured;
+  return details ?? {};
+}
+
+type StructuredQuestion = {
+  id?: string;
+  header?: string;
+  question?: string;
+  options?: Array<{ label?: string; description?: string }>;
+};
+
+type StructuredAnswer = {
+  selected?: unknown;
+  notes?: unknown;
+};
+
+function selectedAnswerLabel(selected: unknown): string {
+  if (Array.isArray(selected)) return selected.map(String).join(", ");
+  if (selected == null) return "";
+  return String(selected);
+}
+
+function formatQuestionExchange(
+  questions: StructuredQuestion[],
+  answers: Record<string, StructuredAnswer> | undefined,
+): string {
+  const lines: string[] = [];
+  for (const question of questions) {
+    lines.push(`### ${question.header ?? "Question"}`, "", question.question ?? "");
+    if (Array.isArray(question.options)) {
+      lines.push("");
+      for (const opt of question.options) {
+        lines.push(`- **${opt.label ?? ""}** — ${opt.description ?? ""}`);
+      }
+    }
+
+    const answer = question.id ? answers?.[question.id] : undefined;
+    if (answer) {
+      lines.push("");
+      const selected = selectedAnswerLabel(answer.selected);
+      if (selected) lines.push(`**Selected:** ${selected}`);
+      if (answer.notes) lines.push(`**Notes:** ${String(answer.notes)}`);
+    }
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+async function ensureMilestoneShell(basePath: string, milestoneId: string): Promise<string> {
+  const milestoneDir = resolveMilestonePath(basePath, milestoneId)
+    ?? join(milestonesDir(basePath), milestoneId);
+  mkdirSync(milestoneDir, { recursive: true });
+  clearPathCache();
+
+  try {
+    const { ensureDbOpen } = await import("./dynamic-tools.js");
+    if (await ensureDbOpen(basePath)) {
+      const { getMilestone, insertMilestone } = await import("../gsd-db.js");
+      if (!getMilestone(milestoneId)) {
+        insertMilestone({
+          id: milestoneId,
+          title: `New milestone ${milestoneId}`,
+          status: "queued",
+        });
+      }
+    }
+  } catch (err) {
+    safetyLogWarning("guided", `failed to persist milestone shell for ${milestoneId}: ${(err as Error).message}`);
+  }
+
+  return milestoneDir;
+}
+
+async function saveDiscussionQuestionRound(
+  basePath: string,
+  milestoneId: string,
+  questions: StructuredQuestion[],
+  details: any,
+): Promise<void> {
+  const milestoneDir = await ensureMilestoneShell(basePath, milestoneId);
+  const answers = details?.response?.answers;
+  const timestamp = new Date().toISOString();
+  const exchange = formatQuestionExchange(questions, answers);
+
+  const discussionPath = join(milestoneDir, buildMilestoneFileName(milestoneId, "DISCUSSION"));
+  const existingDiscussion = await loadFile(discussionPath) ?? `# ${milestoneId} Discussion Log\n\n`;
+  await saveFile(
+    discussionPath,
+    `${existingDiscussion}## Exchange — ${timestamp}\n\n${exchange}---\n\n`,
+  );
+
+  const draftPath = join(milestoneDir, buildMilestoneFileName(milestoneId, "CONTEXT-DRAFT"));
+  const existingDraft = await loadFile(draftPath);
+  const draftHeader = existingDraft
+    ?? [
+      `# ${milestoneId}: New milestone ${milestoneId}`,
+      "",
+      "This draft was captured automatically from structured question responses.",
+      "Use it so `/gsd` can resume the in-flight milestone discussion.",
+      "",
+    ].join("\n");
+  await saveFile(
+    draftPath,
+    `${draftHeader.trimEnd()}\n\n## Captured Question Round — ${timestamp}\n\n${exchange}`,
+  );
+}
+
+function withDepthGateDisplayReason<T extends { block: boolean; reason?: string }>(
+  result: T,
+  displayReason = "Depth confirmation is waiting for your answer.",
+): T & { displayReason?: string } {
+  if (!result.block) return result;
+  return { ...result, displayReason };
+}
+
 function shouldBlockDeferredApprovalTool(
   toolName: string,
   input: unknown,
   basePath: string,
-): { block: boolean; reason?: string } {
-  if (deferredApprovalGate?.basePath !== basePath) return { block: false };
+): { block: boolean; reason?: string; displayReason?: string } {
+  const deferredGateId = deferredApprovalGates.get(basePath);
+  if (deferredGateId === undefined) return { block: false };
   if (toolName === "ask_user_questions") return { block: false };
   if (isContextDraftSummarySave(toolName, input)) return { block: false };
-  return {
+  return withDepthGateDisplayReason({
     block: true,
     reason: [
-      `HARD BLOCK: Approval question "${deferredApprovalGate.gateId}" has been shown to the user.`,
+      `HARD BLOCK: Approval question "${deferredGateId}" has been shown to the user.`,
       `Only CONTEXT-DRAFT persistence may finish in this same assistant turn.`,
       `Wait for the user's answer before calling additional tools.`,
     ].join(" "),
-  };
+  });
 }
 
 export function resolveNotificationStoreBasePath(basePath: string): string {
@@ -489,6 +827,10 @@ function initSessionNotifications(ctx: ExtensionContext): void {
   initNotificationStore(resolveNotificationStoreBasePath(contextBasePath(ctx)));
   installNotifyInterceptor(ctx);
   initNotificationWidget(ctx);
+  notifyPreferenceDiagnostics(ctx, contextBasePath(ctx), { surface: "session-start" });
+  if (ctx.hasUI) {
+    setStderrLoggingEnabled(false);
+  }
 }
 
 async function prepareWorkflowMcpForHookContext(
@@ -518,8 +860,9 @@ export function registerHooks(
 
   pi.on("session_start", async (_event, ctx) => {
     const basePath = contextBasePath(ctx);
+    const preserveCloseoutSurface = isAutoCompletionStopInProgress();
     initSessionNotifications(ctx);
-    if (!isAutoActive()) {
+    if (!isAutoActive() && !preserveCloseoutSurface) {
       const { initHealthWidget } = await import("../health-widget.js");
       initHealthWidget(ctx);
     }
@@ -539,27 +882,55 @@ export function registerHooks(
       const prefs = loadEffectiveGSDPreferences(basePath);
       process.env.GSD_SHOW_TOKEN_COST = prefs?.preferences.show_token_cost ? "1" : "";
     } catch { /* non-fatal */ }
-    await installWelcomeHeader(ctx);
+    if (!preserveCloseoutSurface) {
+      // Per-unit newSession() during auto/step runs fires session_start again.
+      // Keep the welcome banner startup-only — do not overwrite the empty header
+      // that updateProgressWidget installs once work begins.
+      if (isAutoActive() || isAutoPaused()) {
+        suppressWelcomeHeader(ctx);
+      } else {
+        await installWelcomeHeader(ctx);
+      }
+    }
     await loadToolApiKeysForSession();
-    if (isAutoActive()) {
+    if (isAutoActive() || preserveCloseoutSurface) {
       ctx.ui.setWidget("gsd-health", undefined);
+    }
+    // Cold start after /quit relaunches with cwd at the project root. When
+    // auto-mode is neither active nor paused (its own resume path re-enters the
+    // worktree with a lease check — auto.ts:3032), proactively chdir back into
+    // the active milestone's worktree so subsequent work isn't stranded at the
+    // root. Best-effort and a no-op when already inside a worktree.
+    if (!isAutoActive() && !isAutoPaused() && !preserveCloseoutSurface) {
+      try {
+        const { reenterActiveWorktreeIfNeeded } = await import("../worktree-reentry.js");
+        await reenterActiveWorktreeIfNeeded(basePath);
+      } catch { /* non-fatal */ }
     }
   });
 
-  pi.on("session_switch", async (_event, ctx) => {
+  pi.on("session_switch", async (event, ctx) => {
     const basePath = contextBasePath(ctx);
+    const preserveCloseoutSurface = isAutoCompletionStopInProgress();
     initSessionNotifications(ctx);
     resetWriteGateState(basePath);
     resetToolCallLoopGuard();
     clearDeferredApprovalGate();
     await resetAskUserQuestionsTurnCache();
     clearDiscussionFlowState(basePath);
+    // /clear or /new destroys the conversation holding a discuss interview, so
+    // its pending discuss→auto handoff can never be answered — clear it. Resume
+    // restores the interview transcript, so the entry survives. Auto-mode's own
+    // newSession() calls are safe: the handoff consumes the entry on agent_end.
+    if (event.reason === "new") {
+      clearPendingAutoStart(basePath);
+    }
     await syncServiceTierStatus(ctx);
     await applyDisabledModelProviderPolicy(ctx);
     await applyCompactionThresholdOverride(ctx);
     await prepareWorkflowMcpForHookContext(ctx, basePath);
     await loadToolApiKeysForSession();
-    if (!isAutoActive()) {
+    if (!isAutoActive() && !preserveCloseoutSurface) {
       ctx.ui.setWidget("gsd-progress", undefined);
       ctx.ui.setWidget("gsd-outcome", undefined);
       const { initHealthWidget } = await import("../health-widget.js");
@@ -570,6 +941,7 @@ export function registerHooks(
   });
 
   pi.on("before_agent_start", async (event, ctx: ExtensionContext) => {
+    clearAutoCompletionStopInProgress();
     resetPendingGatePauseGuard();
     applyMinimalGsdToolSurface(pi);
 
@@ -580,10 +952,12 @@ export function registerHooks(
     const beforeAgentBasePath = contextBasePath(ctx);
     const pendingApprovalGate = getPendingGate(beforeAgentBasePath);
     if (pendingApprovalGate && isExplicitApprovalResponse(event.prompt, pendingApprovalGate)) {
-      markApprovalGateVerified(pendingApprovalGate, beforeAgentBasePath);
+      // Host adapter explicitly: the ambient write-gate exports env-sniff the
+      // adapter per call and are reserved for the MCP child's import surface.
+      hostWriteGateAdapter.markApprovalGateVerified(pendingApprovalGate, beforeAgentBasePath);
       const milestoneId = extractDepthVerificationMilestoneId(pendingApprovalGate);
-      if (milestoneId) markDepthVerified(milestoneId, beforeAgentBasePath);
-      clearPendingGate(beforeAgentBasePath);
+      if (milestoneId) hostWriteGateAdapter.markDepthVerified(milestoneId, beforeAgentBasePath);
+      hostWriteGateAdapter.clearPending(beforeAgentBasePath);
       if (isAutoPaused() && !isAutoActive()) {
         const { resumeAutoAfterProviderDelay } = await import("./provider-error-resume.js");
         void resumeAutoAfterProviderDelay(pi, ctx).catch((err) => {
@@ -678,6 +1052,10 @@ export function registerHooks(
   pi.on("message_end", async (event) => {
     const { suppressTerminalDeletedWorktreeMessageEnd } = await import("./agent-end-recovery.js");
     suppressTerminalDeletedWorktreeMessageEnd(event);
+    if (isAutoActive()) {
+      const { sanitizePrematureCloseoutMessageEnd } = await import("../auto-closeout-messaging.js");
+      sanitizePrematureCloseoutMessageEnd(event);
+    }
   });
 
   // Squash-merge quick-task branch back to the original branch after the
@@ -770,6 +1148,18 @@ export function registerHooks(
 
   pi.on("message_update", async (event, ctx: ExtensionContext) => {
     if (approvalQuestionAbortInFlight) return;
+    // If the model asked via ask_user_questions, that in-flight elicitation IS
+    // the human boundary. Arming the pause/gate here (and emitting the "waiting
+    // for your approval - pausing" notice) would tear it down and trigger the
+    // foreground self-cancel/re-ask loop. The marker is set only by the
+    // claude-code-cli SDK elicitation handler and is ungated, so it is true in
+    // foreground; under the native-TUI provider it is always false and this path
+    // runs unchanged (#cc-elicitation-self-cancel).
+    if (isInteractiveElicitationInFlight()) return;
+    // Prose with "?" can stream before the MCP tool/elicitation starts. When the
+    // structured ask_user_questions call is already in the partial message, the
+    // tool IS the human boundary — do not arm the text-based approval pause.
+    if (messageHasPendingAskUserQuestionsTool(event.message)) return;
 
     const dash = getAutoRuntimeSnapshot();
     if (dash.active) return;
@@ -795,7 +1185,7 @@ export function registerHooks(
       }
     }
 
-    if (!shouldPauseForUserApprovalQuestion(unitType, [event.message])) return;
+    if (!shouldPauseForQuestion(unitType, [event.message])) return;
 
     const gateId = approvalGateIdForUnit(unitType, unitId);
     if (gateId) {
@@ -810,7 +1200,7 @@ export function registerHooks(
 
     approvalQuestionAbortInFlight = true;
     ctx.ui.notify(
-      `${unitType}${unitId ? ` ${unitId}` : ""} is waiting for your approval - pausing before more tool calls run.`,
+      `${unitType ?? "The discussion"}${unitId ? ` ${unitId}` : ""} is waiting for your approval - pausing before more tool calls run.`,
       "info",
     );
     // The durable pending gate is activated at agent_end so same-turn
@@ -838,6 +1228,13 @@ export function registerHooks(
     }
   });
 
+  // Engine hook contract (../engine-hook-contract.ts): tool_call is
+  // NATIVE_ONLY_TOOL_HOOKS — it never fires under external engines
+  // (claude-code-cli pre-executes tools). The guards below (loop guard,
+  // pending/deferred gate blocks, queue guard, planning-unit tools policy,
+  // worktree write gate, STATE.md single-writer, context-write depth gate)
+  // are therefore native-engine enforcement only. The write-gate arming
+  // concern has a universal mirror at tool_execution_start below.
   pi.on("tool_call", async (event, ctx) => {
     const discussionBasePath = contextBasePath(ctx);
     const toolName = canonicalToolName(event.toolName);
@@ -896,7 +1293,7 @@ export function registerHooks(
               "Depth confirmation is waiting for your answer — pausing auto-mode.",
             );
           }
-          return bashGuard;
+          return withDepthGateDisplayReason(bashGuard);
         }
       } else {
         const gateGuard = shouldBlockPendingGate(
@@ -914,7 +1311,7 @@ export function registerHooks(
               "Depth confirmation is waiting for your answer — pausing auto-mode.",
             );
           }
-          return gateGuard;
+          return withDepthGateDisplayReason(gateGuard);
         }
       }
     }
@@ -990,6 +1387,16 @@ export function registerHooks(
       if (wtGuard.block) return wtGuard;
     }
 
+    if (isToolCallEventType("bash", event)) {
+      const wtBashGuard = shouldBlockWorktreeBash(
+        event.input.command,
+        dash.basePath ?? discussionBasePath,
+        isAutoActive(),
+        dash.currentUnit?.type,
+      );
+      if (wtBashGuard.block) return wtBashGuard;
+    }
+
     // ── Single-writer engine: block direct writes to STATE.md ──────────
     // Covers write, edit, and bash tools to prevent bypass vectors.
     if (isToolCallEventType("write", event)) {
@@ -1019,12 +1426,18 @@ export function registerHooks(
       isQueuePhaseActive(discussionBasePath),
       discussionBasePath,
     );
-    if (result.block) return result;
+    if (result.block) {
+      return withDepthGateDisplayReason(result, "Depth check required before writing milestone context.");
+    }
   });
 
-  // ── Safety harness: evidence collection + destructive command warnings ──
+  // ── Safety harness: evidence collection + destructive command blocking ──
+  // Engine hook contract: tool_call is NATIVE_ONLY_TOOL_HOOKS. Evidence
+  // collection here is mirrored universally at tool_execution_start
+  // (safetyRecordToolCall dedupes by toolCallId); the destructive-command
+  // hard gate has NO universal mirror — blocking is impossible once an
+  // external engine has already executed the command.
   pi.on("tool_call", async (event, ctx) => {
-    if (!isAutoActive()) return;
     markToolStart(event.toolCallId, event.toolName);
     safetyRecordToolCall(event.toolCallId, event.toolName, event.input as Record<string, unknown>);
 
@@ -1041,24 +1454,67 @@ export function registerHooks(
       }
     }
 
-    // Destructive command classification (warn only, never block)
+    // Destructive command classification + hard gate in all modes.
     if (isToolCallEventType("bash", event)) {
-      const classification = classifyCommand(event.input.command);
+      const command = event.input.command;
+      const classification = classifyCommand(command);
       if (classification.destructive) {
+        const guardBasePath = contextBasePath(ctx);
+        // Escape hatch: if the user already confirmed this exact command via a
+        // destructive_confirm gate, consume the one-shot token and let it run.
+        // Without this, the block below loops forever — the model cannot satisfy
+        // "confirm in the current turn" because nothing ever clears the gate.
+        if (consumeDestructiveConfirmation(command, guardBasePath)) {
+          safetyLogWarning("safety", `destructive command confirmed: ${classification.labels.join(", ")}`, {
+            command: String(command).slice(0, 200),
+          });
+          return;
+        }
+        // Record the command as pending so an affirmative answer to a
+        // destructive_confirm gate (handled in tool_result) can confirm it.
+        requestDestructiveConfirmation(command, guardBasePath);
+        const reason = [
+          "HARD BLOCK: destructive Bash command requires explicit human confirmation.",
+          `Detected: ${classification.labels.join(", ")}`,
+          "Call ask_user_questions with a question id containing \"destructive_confirm\"",
+          "and a first option that affirms the action; wait for the user's response,",
+          "then re-issue this exact command in the same turn to run it once.",
+        ].join(" ");
         safetyLogWarning("safety", `destructive command: ${classification.labels.join(", ")}`, {
-          command: String(event.input.command).slice(0, 200),
+          command: String(command).slice(0, 200),
         });
-        ctx.ui.notify(
-          `Destructive command detected: ${classification.labels.join(", ")}`,
-          "warning",
-        );
+        if (ctx) {
+          await maybePauseAutoForApprovalGate(
+            ctx,
+            pi,
+            isAutoActive(),
+            "Destructive-command confirmation is waiting for your answer — pausing auto-mode.",
+          );
+        }
+        return { block: true, reason };
       }
     }
   });
 
+  // Engine hook contract: tool_result is NATIVE_ONLY_TOOL_HOOKS — external
+  // engines skip it. Error classification and markToolEnd are mirrored
+  // universally at tool_execution_end; the ask_user_questions gate lifecycle
+  // here is paired with the tool_execution_start arming path, which external
+  // engines do reach.
   pi.on("tool_result", async (event, ctx) => {
     if (isAutoActive() && typeof event.toolCallId === "string") {
       markToolEnd(event.toolCallId);
+    }
+    const toolName = canonicalToolName(event.toolName);
+    if (isAutoActive() && toolName === "read" && !event.isError) {
+      const store = beginSourceObservationStoreForCurrentUnit(ctx);
+      if (store) {
+        store.observeRead(event.input);
+      }
+    }
+    if (!event.isError) {
+      refreshSourceObservationAfterMutation(toolName, event.input, ctx);
+      clearSourceObservationsAfterShell(toolName);
     }
     if (isAutoActive() && event.isError) {
       const resultPayload = ("result" in event ? event.result : undefined) as any;
@@ -1075,135 +1531,161 @@ export function registerHooks(
     } else if (isAutoActive()) {
       clearToolInvocationError();
     }
-    const toolName = canonicalToolName(event.toolName);
+    // Interactive Closeout adapter (ADR-032): auto-mode owns closeout for its
+    // own units; interactive completions get the durable git subset (commit +
+    // Closeout Git Verdict) instead of silently bypassing git.isolation.
+    if (!event.isError && !isAutoActive() && isUnitCloseoutTool(toolName)) {
+      try {
+        runInteractiveUnitCloseout({
+          basePath: resolveWorkflowToolBasePath(ctx, event.input as { milestone_id?: string }),
+          canonicalToolName: toolName,
+          input: event.input,
+        });
+      } catch (err) {
+        safetyLogWarning("engine", `interactive unit closeout failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     if (toolName !== "ask_user_questions") return;
     const basePath = contextBasePath(ctx);
     const milestoneId = await getDiscussionMilestoneIdFor(basePath);
-    const queueActive = isQueuePhaseActive(basePath);
 
-    const details = event.details as any;
+    const details = resolveAskUserQuestionsGateDetails(event);
 
-    // ── Discussion gate enforcement: handle gate question responses ──
-    // If the result is cancelled or has no response, the pending gate stays active
-    // so the model is blocked from non-read-only tools until it re-asks.
-    // If the user responded at all (even "needs adjustment"), clear the pending gate
-    // because the user engaged — the prompt handles the re-ask-after-adjustment flow.
-    const questions: any[] = (event.input as any)?.questions ?? [];
-    const currentPendingGate = getPendingGate(basePath);
-    if (currentPendingGate) {
-      if (details?.cancelled || !details?.response) {
-        // Gate stays pending. Direct the agent to the most reliable recovery
-        // path — re-calling ask_user_questions with the same gate id — without
-        // misrepresenting the plain-text path. The plain-text path also works
-        // (isExplicitApprovalResponse on the next before_agent_start clears
-        // the gate when the user replies with an approval keyword), but the
-        // structured re-ask is more deterministic and gives the user a clear UI.
-        resetToolCallLoopGuard();
-        const interrupted = details?.interrupted === true;
-        if (ctx) {
-          await maybePauseAutoForApprovalGate(
-            ctx,
-            pi,
-            true,
-            interrupted
-              ? "Depth confirmation was interrupted — pausing auto-mode until you respond."
-              : "Depth confirmation is waiting for your answer — pausing auto-mode.",
-          );
-        }
-        return {
-          content: [{
-            type: "text" as const,
-            text: [
-              `Waiting for depth confirmation on gate "${currentPendingGate}".`,
-              interrupted
-                ? "The confirmation question was interrupted before a response was recorded."
-                : "No user response was received for the confirmation question.",
-              "Do not infer approval from earlier or prior messages.",
-              "Do not proceed, write files, save artifacts, or call other tools.",
-              `Re-call ask_user_questions with the same gate question id ("${currentPendingGate}") and wait for the user's response.`,
-            ].join(" "),
-          }],
-        };
-      } else {
-        const pendingQuestion = questions.find((question) => question?.id === currentPendingGate);
-        if (pendingQuestion) {
-          const answer = details.response?.answers?.[currentPendingGate];
-          if (isDepthConfirmationAnswer(answer?.selected, pendingQuestion.options)) {
-            markApprovalGateVerified(currentPendingGate, basePath);
-            const milestoneIdFromGate = extractDepthVerificationMilestoneId(currentPendingGate);
-            if (milestoneIdFromGate) markDepthVerified(milestoneIdFromGate, basePath);
-            clearPendingGate(basePath);
-            clearDeferredApprovalGate(basePath);
-          }
-        }
+    const questions: any[] = (event.input as any)?.questions ?? details?.questions ?? [];
+    const gateResult = applyAskUserQuestionsGateResult({
+      basePath,
+      questions,
+      details,
+      fallbackMilestoneId: milestoneId,
+    });
+    if (gateResult.status === "waiting") {
+      resetToolCallLoopGuard();
+      if (ctx) {
+        await maybePauseAutoForApprovalGate(
+          ctx,
+          pi,
+          true,
+          gateResult.interrupted
+            ? "Depth confirmation was interrupted — pausing auto-mode until you respond."
+            : "Depth confirmation is waiting for your answer — pausing auto-mode.",
+        );
       }
+      return {
+        content: [{
+          type: "text" as const,
+          text: formatPendingAskUserQuestionsGateMessage(gateResult.pendingGateId, gateResult.interrupted),
+        }],
+      };
+    }
+    if (gateResult.status === "verified") {
+      clearDeferredApprovalGate(basePath);
     }
 
-    if (details?.cancelled || !details?.response) return;
+    // ── Consent Question policy (consent-question.ts): one home for the
+    // answer lifecycle of every ask_user_questions round. Per-question
+    // verdicts come from the consent-verdict leaf — the same engine
+    // applyAskUserQuestionsGateResult consumed above for gate persistence —
+    // so empty answers on fail-closed kinds never pass as real answers (#528)
+    // and cancellations get one unified handler.
+    const roundOutcome = evaluateAskUserQuestionsRound(questions, details ?? {});
+    if (roundOutcome === "cancelled") {
+      resetToolCallLoopGuard();
+      if (ctx) {
+        await maybePauseAutoForApprovalGate(
+          ctx,
+          pi,
+          true,
+          "ask_user_questions was cancelled before receiving a response — pausing auto-mode until you respond.",
+        );
+      }
+      return;
+    }
+    if (roundOutcome === "waiting") {
+      resetToolCallLoopGuard();
+      if (ctx) {
+        await maybePauseAutoForApprovalGate(
+          ctx,
+          pi,
+          true,
+          "A user question received no answer — pausing auto-mode until you respond.",
+        );
+      }
+      return {
+        content: [{
+          type: "text" as const,
+          text: formatUnansweredConsentQuestionMessage(questions),
+        }],
+      };
+    }
 
+    // Cancelled rounds already returned via roundOutcome === "cancelled".
+    if (!details?.response) return;
+
+    // Destructive-command confirmation: an affirmative answer to a
+    // destructive_confirm gate promotes the pending blocked command to a
+    // one-shot confirmed token, which the bash tool_call guard consumes on the
+    // next attempt. Rejecting/declining leaves the command blocked.
+    // (Depth-verification gate handling now lives in
+    // applyAskUserQuestionsGateResult above; only the destructive-confirm gate
+    // is handled inline here.)
     for (const question of questions) {
-      if (typeof question.id === "string" && question.id.includes("depth_verification")) {
-        // Only unlock the gate if the user selected the first option (confirmation).
-        // Cross-references against the question's defined options to reject free-form "Other" text.
+      if (isDestructiveConfirmGateId(question?.id)) {
         const answer = details.response?.answers?.[question.id];
-        const inferredMilestoneId = extractDepthVerificationMilestoneId(question.id) ?? milestoneId;
         if (isDepthConfirmationAnswer(answer?.selected, question.options)) {
-          if (currentPendingGate && question.id !== currentPendingGate) break;
-          markApprovalGateVerified(question.id, basePath);
-          markDepthVerified(inferredMilestoneId, basePath);
-          clearPendingGate(basePath);
-          clearDeferredApprovalGate(basePath);
+          confirmDestructiveCommand(basePath);
         }
         break;
       }
     }
 
-    if (!milestoneId && !queueActive) return;
     if (!milestoneId) return;
-    const milestoneDir = resolveMilestonePath(basePath, milestoneId);
-    if (!milestoneDir) return;
-
-    const discussionPath = join(milestoneDir, buildMilestoneFileName(milestoneId, "DISCUSSION"));
-    const timestamp = new Date().toISOString();
-    const lines: string[] = [`## Exchange — ${timestamp}`, ""];
-    for (const question of questions) {
-      lines.push(`### ${question.header ?? "Question"}`, "", question.question ?? "");
-      if (Array.isArray(question.options)) {
-        lines.push("");
-        for (const opt of question.options) {
-          lines.push(`- **${opt.label}** — ${opt.description ?? ""}`);
-        }
-      }
-      const answer = details.response?.answers?.[question.id];
-      if (answer) {
-        lines.push("");
-        const selected = Array.isArray(answer.selected) ? answer.selected.join(", ") : answer.selected;
-        lines.push(`**Selected:** ${selected}`);
-        if (answer.notes) {
-          lines.push(`**Notes:** ${answer.notes}`);
-        }
-      }
-      lines.push("");
-    }
-    lines.push("---", "");
-    const existing = await loadFile(discussionPath) ?? `# ${milestoneId} Discussion Log\n\n`;
-    await saveFile(discussionPath, existing + lines.join("\n"));
+    await saveDiscussionQuestionRound(basePath, milestoneId, questions, details);
   });
 
+  // Engine hook contract: tool_execution_start is UNIVERSAL_TOOL_HOOKS — the
+  // only pre-execution event that fires for every tool call on every engine.
+  // Universal mirrors live here: write-gate arming and evidence collection.
   pi.on("tool_execution_start", async (event, ctx) => {
     const basePath = contextBasePath(ctx);
     const toolName = canonicalToolName(event.toolName);
     if (toolName === "ask_user_questions") {
       const questionId = extractGateQuestionId(event.args);
       if (typeof questionId === "string") {
-        setPendingGate(questionId, basePath);
+        // External engines (claude-code-cli) ingest the SDK turn's tool blocks
+        // post-hoc, so this event can fire AFTER the workflow MCP child already
+        // verified this gate and allowed the CONTEXT save. Arming also revokes
+        // verifiedDepthMilestones/verifiedApprovalGates, so an unconditional
+        // re-arm here would wipe the child's verification and leave the
+        // discuss→auto handoff permanently blocked. hostWriteGateAdapter
+        // .setPending applies the verified-on-disk-wins policy and skips the
+        // re-arm in that case. Stale verified state cannot leak into a later
+        // re-discussion: a successful handoff deletes the snapshot via
+        // clearDiscussionFlowState.
+        hostWriteGateAdapter.setPending(questionId, basePath);
         clearDeferredApprovalGate(basePath);
       }
     }
+
+    // Safety harness: record evidence here, not only in tool_call — see
+    // ../engine-hook-contract.ts for why tool_call never fires under external
+    // engines. recordToolCall dedupes by toolCallId, so native tools (which
+    // hit both events) record once.
+    safetyRecordToolCall(event.toolCallId, event.toolName, (event.args ?? {}) as Record<string, unknown>);
+    const execDash = getAutoRuntimeSnapshot();
+    if (execDash.basePath && execDash.currentUnit?.type === "execute-task") {
+      const { milestone: xMid, slice: xSid, task: xTid } = parseUnitId(execDash.currentUnit.id);
+      if (xMid && xSid && xTid) {
+        saveEvidenceToDisk(execDash.basePath, xMid, xSid, xTid);
+      }
+    }
+
     if (!isAutoActive()) return;
     markToolStart(event.toolCallId, event.toolName);
   });
 
+  // Engine hook contract: tool_execution_end is UNIVERSAL_TOOL_HOOKS — fires
+  // for every finalized tool call on every engine, so error classification
+  // and evidence persistence here cover external engines that skip tool_result.
   pi.on("tool_execution_end", async (event) => {
     markToolEnd(event.toolCallId);
     // #2883/#4974: Capture deterministic invocation/policy errors
@@ -1241,61 +1723,10 @@ export function registerHooks(
     const payload = event.payload as Record<string, unknown> | null;
     if (!payload || typeof payload !== "object") return;
 
-    // ── Observation Masking ─────────────────────────────────────────────
-    // Replace old tool results with placeholders to reduce context bloat.
-    // Only active during auto-mode when context_management.observation_masking is enabled.
-    if (isAutoActive()) {
-      try {
-        const { loadEffectiveGSDPreferences } = await import("../preferences.js");
-        const prefs = loadEffectiveGSDPreferences();
-        const cmConfig = prefs?.preferences.context_management;
-
-        // Observation masking: replace old tool results with placeholders
-        if (cmConfig?.observation_masking !== false) {
-          const keepTurns = cmConfig?.observation_mask_turns ?? 8;
-          const { createObservationMask } = await import("../context-masker.js");
-          const mask = createObservationMask(keepTurns);
-          const messages = payload.messages;
-          if (Array.isArray(messages)) {
-            payload.messages = mask(messages);
-          }
-        }
-
-        // Tool result truncation: cap individual tool result content length.
-        // In pi-ai format, toolResult messages have role: "toolResult" and content: TextContent[].
-        // Creates new objects to avoid mutating shared conversation state.
-        const maxChars = cmConfig?.tool_result_max_chars ?? 800;
-        const msgs = payload.messages;
-        if (Array.isArray(msgs)) {
-          payload.messages = msgs.map((msg: Record<string, unknown>) => {
-            // Match toolResult messages (role: "toolResult", content is array of content blocks)
-            if (msg?.role === "toolResult" && Array.isArray(msg.content)) {
-              const blocks = msg.content as Array<Record<string, unknown>>;
-              const totalLen = blocks.reduce((sum: number, b) => sum + (typeof b.text === "string" ? b.text.length : 0), 0);
-              if (totalLen > maxChars) {
-                const truncated = blocks.map(b => {
-                  if (typeof b.text === "string" && b.text.length > maxChars) {
-                    return { ...b, text: b.text.slice(0, maxChars) + "\n…[truncated]" };
-                  }
-                  return b;
-                });
-                return { ...msg, content: truncated };
-              }
-            }
-            return msg;
-          });
-        }
-      } catch { /* non-fatal */ }
-    }
-
-    // ── Service Tier ────────────────────────────────────────────────────
-    const modelId = event.model?.id;
-    if (!modelId) return payload;
-    const { getEffectiveServiceTier, supportsServiceTier } = await import("../service-tier.js");
-    const tier = getEffectiveServiceTier();
-    if (!tier || !supportsServiceTier(modelId)) return payload;
-    payload.service_tier = tier;
-    return payload;
+    return applyProviderPayloadPolicy({
+      payload,
+      modelId: event.model?.id,
+    });
   });
 
   // Capability-aware model routing hook (ADR-004)
@@ -1320,32 +1751,64 @@ export function registerHooks(
     const fullToolsRequested = isFullGsdToolSurfaceRequested();
     const dropAliases = !fullToolsRequested;
     const dropBrowser = !fullToolsRequested && !isBrowserToolSurfaceRequested();
-    const providerCompatible = compatible.filter(
-      (name) => !(dropAliases && isWorkflowAliasTool(name)) && !(dropBrowser && isBrowserTool(name)),
+    const aliasFilteredCompatible = compatible.filter(
+      (name) => !(dropAliases && isWorkflowAliasTool(name)),
+    );
+    const providerCompatible = aliasFilteredCompatible.filter(
+      (name) => !(dropBrowser && isBrowserTool(name)),
     );
     const surfaceReduced = providerCompatible.length !== compatible.length;
     if (fullToolsRequested) {
       return surfaceReduced ? { toolNames: providerCompatible } : undefined;
     }
     const registeredToolNames = resolveRegisteredToolNames(pi, event.activeToolNames);
-    const guidedUnit = getGuidedUnitContext();
-    const requestScoped = buildRequestScopedGsdToolSet(
-      providerCompatible,
-      event.requestCustomMessages,
+    const hasRegisteredSurface = typeof pi.getAllTools === "function";
+    const compatibleRegisteredToolNames = filterToolsForProvider(
       registeredToolNames,
+      event.selectedModelApi,
+      event.selectedModelProvider,
+    ).compatible.filter((name) => !(dropAliases && isWorkflowAliasTool(name)));
+    const guidedUnit = getGuidedUnitContext();
+    const requestRegisteredToolNames = guidedUnit?.unitType === "run-uat"
+      ? compatibleRegisteredToolNames
+      : registeredToolNames;
+    const requestScoped = buildRequestScopedGsdToolSet(
+      guidedUnit?.unitType === "run-uat" ? aliasFilteredCompatible : providerCompatible,
+      event.requestCustomMessages,
+      requestRegisteredToolNames,
       guidedUnit?.unitType,
+      hasRegisteredSurface,
     );
     if (requestScoped) {
+      recordAutoToolSurfaceSnapshot({
+        source: "provider-adjustment",
+        unitType: guidedUnit?.unitType,
+        modelFacingToolNames: requestScoped,
+        registeredToolNames: requestRegisteredToolNames,
+        scopedToolNames: requestScoped,
+      });
       return { toolNames: requestScoped };
     }
     const dash = getAutoRuntimeSnapshot();
     if (dash.active && dash.currentUnit) {
+      const registeredForUnit = dash.currentUnit.type === "run-uat"
+        ? compatibleRegisteredToolNames
+        : resolveRegisteredToolNames(pi, event.activeToolNames);
+      const scopedToolNames = buildMinimalAutoGsdToolSet(
+        dash.currentUnit.type === "run-uat" ? aliasFilteredCompatible : providerCompatible,
+        dash.currentUnit.type,
+        registeredForUnit,
+        hasRegisteredSurface,
+      );
+      recordAutoToolSurfaceSnapshot({
+        source: "provider-adjustment",
+        unitType: dash.currentUnit.type,
+        modelFacingToolNames: scopedToolNames,
+        registeredToolNames: registeredForUnit,
+        scopedToolNames,
+      });
       return {
-        toolNames: buildMinimalAutoGsdToolSet(
-          providerCompatible,
-          dash.currentUnit.type,
-          resolveRegisteredToolNames(pi, event.activeToolNames),
-        ),
+        toolNames: scopedToolNames,
       };
     }
     if (isGeneralGsdToolScopingRequested()) {

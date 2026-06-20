@@ -26,9 +26,9 @@ pi starts
       │   │ turn_start                                    ││
       │   │ context (can modify messages sent to LLM)     ││
       │   │ LLM responds → may call tools:                ││
-      │   │   tool_call (can BLOCK)                       ││
-      │   │   tool_execution_start/update/end             ││
-      │   │   tool_result (can MODIFY)                    ││
+      │   │   tool_call (native tools only; can BLOCK)    ││
+      │   │   tool_execution_start/end (all engines)       ││
+      │   │   tool_result (native tools only; can MODIFY) ││
       │   │ turn_end                                      ││
       │   └───────────────────────────────────────────────┘│
       │                                                    │

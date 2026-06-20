@@ -7,7 +7,9 @@ Skills are specialized instruction sets that GSD loads when the task matches. Th
 
 ## Bundled skills
 
-GSD ships with these skills, installed to `~/.agents/skills/`:
+GSD ships with managed skills installed to `~/.gsd/agent/skills/`. User-global
+skills belong in `~/.agents/skills/`, and project skills belong in
+`.agents/skills/`.
 
 | Skill | Trigger | Description |
 |-------|---------|-------------|
@@ -22,6 +24,10 @@ GSD ships with these skills, installed to `~/.agents/skills/`:
 | `review` | Code review | Diff-aware quality analysis |
 | `test` | Test generation | Auto-detects frameworks |
 | `lint` | Linting and formatting | ESLint, Biome, Prettier |
+
+The managed `gsd-browser` skill is sourced from the installed
+`@opengsd/gsd-browser` package and refreshed on startup, including referenced
+support files in `docs/`, `scripts/`, and `gsd-browser-skill/`.
 
 ## Skill discovery
 
@@ -51,11 +57,11 @@ skill_rules:
 
 ### Resolution order
 
-1. **Bare name** — e.g., `frontend-design` → scans `~/.agents/skills/` and project skills
+1. **Bare name** — e.g., `frontend-design` → scans managed, global, and project skill directories
 2. **Absolute path** — e.g., `/Users/you/.agents/skills/my-skill/SKILL.md`
 3. **Directory path** — looks for `SKILL.md` inside
 
-User skills take precedence over project skills.
+Managed GSD skills take precedence when resolving preference refs by bare name.
 
 ## Custom skills
 
@@ -66,6 +72,9 @@ Create a directory with a `SKILL.md` file:
   SKILL.md           — instructions for the LLM
   references/        — optional reference files
 ```
+
+`SKILL.md` frontmatter must be valid YAML. Quote description values containing
+`:` or use a folded block (`description: >`) for longer trigger descriptions.
 
 ### Project-local skills
 

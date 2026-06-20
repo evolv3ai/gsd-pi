@@ -11,19 +11,21 @@ import { waitForChildProcess } from "../../utils/child-process.js";
 import {
 	getShellConfig,
 	getShellEnv,
+	HARD_DEADLINE_MS,
 	killProcessTree,
+	SIGKILL_GRACE_MS,
 	trackDetachedChildPid,
 	untrackDetachedChildPid,
 } from "../../utils/shell.js";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.js";
 import { OutputAccumulator } from "./output-accumulator.js";
-import { getTextOutput, invalidArgText, str } from "./render-utils.js";
+import { getDisplayReason, getTextOutput, invalidArgText, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult } from "./truncate.js";
 
 const bashSchema = Type.Object({
 	command: Type.String({ description: "Bash command to execute" }),
-	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
+	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)." })),
 });
 
 export type BashToolInput = Static<typeof bashSchema>;
@@ -63,7 +65,23 @@ export interface BashOperations {
  * This is useful for extensions that intercept user_bash and still want pi's
  * standard local shell behavior while wrapping or rewriting commands.
  */
-export function createLocalBashOperations(options?: { shellPath?: string; loginShell?: boolean }): BashOperations {
+export function createLocalBashOperations(options?: {
+	shellPath?: string;
+	loginShell?: boolean;
+	/**
+	 * Grace (ms) handed to killProcessTree between SIGTERM and SIGKILL.
+	 * Defaults to SIGKILL_GRACE_MS. Exposed primarily as a test seam.
+	 */
+	killGraceMs?: number;
+	/**
+	 * Delay (ms) AFTER a kill is initiated before the hard deadline force-resolves
+	 * the awaiting exec. Defaults to SIGKILL_GRACE_MS + HARD_DEADLINE_MS so it only
+	 * fires once SIGKILL has had its grace window. Exposed primarily as a test seam.
+	 */
+	forceResolveDelayMs?: number;
+}): BashOperations {
+	const killGraceMs = options?.killGraceMs ?? SIGKILL_GRACE_MS;
+	const forceResolveDelayMs = options?.forceResolveDelayMs ?? SIGKILL_GRACE_MS + HARD_DEADLINE_MS;
 	return {
 		exec: async (command, cwd, { onData, signal, timeout, env }) => {
 			const { shell, args } = getShellConfig(options?.shellPath);
@@ -86,8 +104,31 @@ export function createLocalBashOperations(options?: { shellPath?: string; loginS
 			if (child.pid) trackDetachedChildPid(child.pid);
 			let timedOut = false;
 			let timeoutHandle: NodeJS.Timeout | undefined;
+
+			// Hard deadline: a true D-state (uninterruptible-sleep) child never emits
+			// `exit`/`close`, so waitForChildProcess(child) would hang forever even after
+			// SIGKILL. killProcessTree can send the signals but cannot force-resolve
+			// the awaiting caller — the deadline MUST live here, in the caller. It is only
+			// ARMED once a kill has been initiated (timeout or abort), and fires
+			// `forceResolveDelayMs` later so SIGKILL has had its full grace window first.
+			let deadlineHandle: NodeJS.Timeout | undefined;
+			let resolveDeadline: ((value: { forceKilled: true }) => void) | undefined;
+			const hardDeadlinePromise = new Promise<{ forceKilled: true }>((resolve) => {
+				resolveDeadline = resolve;
+			});
+			const armHardDeadline = () => {
+				if (deadlineHandle) return; // already armed by a prior kill
+				deadlineHandle = setTimeout(() => {
+					resolveDeadline?.({ forceKilled: true });
+				}, forceResolveDelayMs);
+				if (typeof deadlineHandle === "object" && "unref" in deadlineHandle) deadlineHandle.unref();
+			};
+			const initiateKill = () => {
+				if (child.pid) killProcessTree(child.pid, { graceMs: killGraceMs });
+				armHardDeadline();
+			};
 			const onAbort = () => {
-				if (child.pid) killProcessTree(child.pid);
+				initiateKill();
 			};
 
 			try {
@@ -95,7 +136,7 @@ export function createLocalBashOperations(options?: { shellPath?: string; loginS
 				if (timeout !== undefined && timeout > 0) {
 					timeoutHandle = setTimeout(() => {
 						timedOut = true;
-						if (child.pid) killProcessTree(child.pid);
+						initiateKill();
 					}, timeout * 1000);
 				}
 				// Stream stdout and stderr.
@@ -106,19 +147,27 @@ export function createLocalBashOperations(options?: { shellPath?: string; loginS
 					if (signal.aborted) onAbort();
 					else signal.addEventListener("abort", onAbort, { once: true });
 				}
-				// Handle shell spawn errors and wait for the process to terminate without hanging
-				// on inherited stdio handles held by detached descendants.
-				const exitCode = await waitForChildProcess(child);
+				// Race the real termination against the hard deadline. Promise.race ensures
+				// the deadline and the real `close` cannot double-resolve the caller.
+				const exitPromise = waitForChildProcess(child).then((code) => ({ forceKilled: false as const, code }));
+				const raceResult = await Promise.race([exitPromise, hardDeadlinePromise]);
+				if (raceResult.forceKilled) {
+					// Child never closed (D-state symptom). Stop tracking and force-resolve
+					// the awaiting caller with a distinct marker the bash tool renders sanely.
+					if (child.pid) untrackDetachedChildPid(child.pid);
+					throw new Error("force-killed");
+				}
 				if (signal?.aborted) {
 					throw new Error("aborted");
 				}
 				if (timedOut) {
 					throw new Error(`timeout:${timeout}`);
 				}
-				return { exitCode };
+				return { exitCode: raceResult.code };
 			} finally {
 				if (child.pid) untrackDetachedChildPid(child.pid);
 				if (timeoutHandle) clearTimeout(timeoutHandle);
+				if (deadlineHandle) clearTimeout(deadlineHandle);
 				if (signal) signal.removeEventListener("abort", onAbort);
 			}
 		},
@@ -188,7 +237,7 @@ function rebuildBashResultRenderComponent(
 	component: BashResultRenderComponent,
 	result: {
 		content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
-		details?: BashToolDetails;
+		details?: BashToolDetails & { displayReason?: string };
 	},
 	options: ToolRenderResultOptions,
 	showImages: boolean,
@@ -198,7 +247,7 @@ function rebuildBashResultRenderComponent(
 	const state = component.state;
 	component.clear();
 
-	let output = getTextOutput(result as any, showImages).trim();
+	let output = getDisplayReason(result.details) ?? getTextOutput(result as any, showImages).trim();
 	const truncation = result.details?.truncation;
 	const fullOutputPath = result.details?.fullOutputPath;
 	if (!options.isPartial && truncation?.truncated && fullOutputPath && output.endsWith("]")) {
@@ -276,7 +325,7 @@ export function createBashToolDefinition(
 	return {
 		name: "bash",
 		label: "bash",
-		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
+		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds. No default timeout — pass an explicit timeout or rely on human cancellation.`,
 		promptSnippet: "Execute bash commands (ls, grep, find, etc.)",
 		parameters: bashSchema,
 		async execute(
@@ -388,6 +437,13 @@ export function createBashToolDefinition(
 					if (err instanceof Error && err.message.startsWith("timeout:")) {
 						const timeoutSecs = err.message.split(":")[1];
 						throw new Error(appendStatus(text, `Command timed out after ${timeoutSecs} seconds`));
+					}
+					if (err instanceof Error && err.message === "force-killed") {
+						// Hard-deadline force-resolve: the child never closed even after SIGKILL
+						// (D-state symptom). Surface a distinct marker so an operator/agent can
+						// tell this apart from a clean SIGTERM exit. Partial output is preserved.
+						const suffix = timeout ? `Command timed out after ${timeout} seconds (force-killed)` : "Command force-killed";
+						throw new Error(appendStatus(text, suffix));
 					}
 					throw err;
 				}

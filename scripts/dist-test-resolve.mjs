@@ -175,7 +175,7 @@ function resolveWorkspaceSubpath(specifier, context) {
       const subpath = specifier.slice(nativePrefix.length);
       const base = useBuilt
         ? `../packages/native/dist/${subpath}/index.js`
-        : `../dist-test/packages/native/src/${subpath}/index.js`;
+        : `../dist-test/packages/native/dist/${subpath}/index.js`;
       return new URL(base, import.meta.url).href;
     }
   }

@@ -9,6 +9,7 @@
 import { existsSync, statSync } from "node:fs";
 
 import {
+  getAllMilestones,
   getMilestone,
   getMilestoneSlices,
   getSliceTasks,
@@ -41,17 +42,30 @@ function summaryMtimeIso(path: string): string | null {
 }
 
 export function detectMissingCompletionTimestampDrift(
-  state: GSDState,
+  _state: GSDState,
   ctx: DriftContext,
 ): CompletionTimestampDrift[] {
   if (!isDbAvailable()) return [];
-  const mid = state.activeMilestone?.id;
-  if (!mid) return [];
 
-  const milestone = getMilestone(mid);
-  if (!milestone) return [];
-
+  // Scan every milestone, not just the active one. Markdown artifacts exist on
+  // disk for all milestones, so a user can manually complete a queued/parked
+  // milestone (edit the roadmap + drop a SUMMARY) and leave completed_at=null
+  // in the DB. Gating on the active milestone left that drift unrepaired until
+  // the milestone happened to become active.
   const drifts: CompletionTimestampDrift[] = [];
+  for (const { id: mid } of getAllMilestones()) {
+    collectMilestoneCompletionDrift(mid, ctx, drifts);
+  }
+  return drifts;
+}
+
+function collectMilestoneCompletionDrift(
+  mid: string,
+  ctx: DriftContext,
+  drifts: CompletionTimestampDrift[],
+): void {
+  const milestone = getMilestone(mid);
+  if (!milestone) return;
 
   // Milestone-level
   if (
@@ -105,8 +119,6 @@ export function detectMissingCompletionTimestampDrift(
       }
     }
   }
-
-  return drifts;
 }
 
 export function repairMissingCompletionTimestamp(

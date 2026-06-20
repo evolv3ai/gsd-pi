@@ -24,6 +24,7 @@ import {
   setQueuePhaseActive,
 } from '../index.ts';
 import {
+  childWriteGateAdapter,
   markDepthVerified,
   isMilestoneDepthVerified,
   markApprovalGateVerified,
@@ -317,7 +318,11 @@ test('write-gate: reopening a gate revokes its previous verified approval', () =
       'precondition: verified approval unlocks the final project artifact',
     );
 
-    setPendingGate('depth_verification_project_confirm', base);
+    // A genuine re-ask originates from the workflow MCP child (where
+    // ask_user_questions executes): the child adapter arms unconditionally,
+    // revoking the prior approval. Host-side setPendingGate is guarded
+    // (verified-on-disk wins) and would deliberately suppress this arm.
+    childWriteGateAdapter.setPending('depth_verification_project_confirm', base);
     clearPendingGate(base);
 
     assert.strictEqual(
@@ -340,6 +345,8 @@ test('write-gate: reopening a gate revokes its previous verified approval', () =
 // ═══════════════════════════════════════════════════════════════════════
 
 import {
+  applyAskUserQuestionsGateResult,
+  formatPendingAskUserQuestionsGateMessage,
   isGateQuestionId,
   shouldBlockPendingGate,
   shouldBlockPendingGateBash,
@@ -377,6 +384,143 @@ test('write-gate: pending gate lifecycle (set, get, clear)', () => {
   setPendingGate('depth_verification_M002', process.cwd());
   clearDiscussionFlowState(process.cwd());
   assert.strictEqual(getPendingGate(), null, 'clearDiscussionFlowState clears pending gate');
+});
+
+test('write-gate: applyAskUserQuestionsGateResult keeps cancelled pending gate waiting', () => {
+  const base = join(tmpdir(), `gsd-write-gate-ask-waiting-${randomUUID()}`);
+  const gateId = 'depth_verification_M001_confirm';
+
+  try {
+    mkdirSync(base, { recursive: true });
+    clearDiscussionFlowState(base);
+    setPendingGate(gateId, base);
+
+    const result = applyAskUserQuestionsGateResult({
+      basePath: base,
+      questions: [{
+        id: gateId,
+        options: [{ label: 'Confirm depth (Recommended)' }, { label: 'Needs adjustment' }],
+      }],
+      details: { cancelled: true, interrupted: true },
+    });
+
+    assert.deepEqual(result, {
+      status: 'waiting',
+      pendingGateId: gateId,
+      interrupted: true,
+    });
+    assert.strictEqual(getPendingGate(base), gateId, 'cancelled question must leave gate pending');
+    assert.strictEqual(isMilestoneDepthVerified('M001', base), false, 'cancelled question must not verify depth');
+    assert.match(
+      formatPendingAskUserQuestionsGateMessage(gateId, true),
+      /Re-call ask_user_questions with the same gate question id/,
+    );
+  } finally {
+    clearDiscussionFlowState(base);
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('write-gate: applyAskUserQuestionsGateResult verifies confirmed pending gate', () => {
+  const base = join(tmpdir(), `gsd-write-gate-ask-verified-${randomUUID()}`);
+  const gateId = 'depth_verification_M001_confirm';
+  const confirmLabel = 'Confirm depth (Recommended)';
+
+  try {
+    mkdirSync(base, { recursive: true });
+    clearDiscussionFlowState(base);
+    setPendingGate(gateId, base);
+
+    const result = applyAskUserQuestionsGateResult({
+      basePath: base,
+      questions: [{
+        id: gateId,
+        options: [{ label: confirmLabel }, { label: 'Needs adjustment' }],
+      }],
+      details: {
+        response: {
+          answers: {
+            [gateId]: { selected: confirmLabel },
+          },
+        },
+      },
+    });
+
+    assert.deepEqual(result, {
+      status: 'verified',
+      gateId,
+      milestoneId: 'M001',
+    });
+    assert.strictEqual(getPendingGate(base), null, 'confirmed gate must clear pending state');
+    assert.strictEqual(isMilestoneDepthVerified('M001', base), true, 'confirmed gate must verify milestone depth');
+    assert.ok(
+      loadWriteGateSnapshot(base).verifiedApprovalGates?.includes(gateId) ?? false,
+      'confirmed gate must record verified approval',
+    );
+  } finally {
+    clearDiscussionFlowState(base);
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('write-gate: applyAskUserQuestionsGateResult reports declined pending gate (consent-verdict semantics)', () => {
+  const base = join(tmpdir(), `gsd-write-gate-ask-declined-${randomUUID()}`);
+  const gateId = 'depth_verification_M001_confirm';
+
+  try {
+    mkdirSync(base, { recursive: true });
+    clearDiscussionFlowState(base);
+    setPendingGate(gateId, base);
+
+    const result = applyAskUserQuestionsGateResult({
+      basePath: base,
+      questions: [{
+        id: gateId,
+        options: [{ label: 'Confirm depth (Recommended)' }, { label: 'Needs adjustment' }],
+      }],
+      details: {
+        response: { answers: { [gateId]: { selected: 'Needs adjustment' } } },
+      },
+    });
+
+    assert.deepEqual(result, { status: 'declined', gateId });
+    assert.strictEqual(getPendingGate(base), gateId, 'declined gate must stay pending');
+    assert.strictEqual(isMilestoneDepthVerified('M001', base), false, 'declined gate must not verify depth');
+  } finally {
+    clearDiscussionFlowState(base);
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('write-gate: applyAskUserQuestionsGateResult keeps empty-selection pending gate waiting (consent-verdict semantics)', () => {
+  // An empty selection is never an answer (fail-closed): the round used to
+  // report "answered" here, silently treating a missing selection as resolved.
+  const base = join(tmpdir(), `gsd-write-gate-ask-empty-${randomUUID()}`);
+  const gateId = 'depth_verification_M001_confirm';
+
+  try {
+    mkdirSync(base, { recursive: true });
+    clearDiscussionFlowState(base);
+    setPendingGate(gateId, base);
+
+    const result = applyAskUserQuestionsGateResult({
+      basePath: base,
+      questions: [{
+        id: gateId,
+        options: [{ label: 'Confirm depth (Recommended)' }, { label: 'Needs adjustment' }],
+      }],
+      details: {
+        response: { answers: { [gateId]: { selected: '' } } },
+      },
+    });
+
+    assert.deepEqual(result, { status: 'waiting', pendingGateId: gateId, interrupted: false });
+    assert.strictEqual(getPendingGate(base), gateId, 'unanswered gate must stay pending');
+    assert.strictEqual(isMilestoneDepthVerified('M001', base), false, 'unanswered gate must not verify depth');
+  } finally {
+    clearDiscussionFlowState(base);
+    rmSync(base, { recursive: true, force: true });
+  }
 });
 
 // ─── Scenario 21: shouldBlockPendingGate blocks non-safe tools when gate is pending ──
@@ -710,6 +854,7 @@ test('write-gate: resetWriteGateState persists through dangling .gsd symlink', (
       verifiedApprovalGates: [],
       activeQueuePhase: false,
       pendingGateId: null,
+      writer: 'host',
     });
   } finally {
     if (originalEnv === undefined) {
@@ -721,6 +866,48 @@ test('write-gate: resetWriteGateState persists through dangling .gsd symlink', (
     try {
       rmSync(base, { recursive: true, force: true });
       rmSync(externalState, { recursive: true, force: true });
+    } catch { /* swallow */ }
+  }
+});
+
+// ─── Scenario 31: hydrate in-memory gate state from persisted snapshot (MCP subprocess) ──
+
+test('write-gate: getPendingGate hydrates from disk when workflow MCP verified gate in child process', () => {
+  const base = join(tmpdir(), `gsd-write-gate-mcp-hydrate-${randomUUID()}`);
+  const stateFilePath = join(base, '.gsd', 'runtime', 'write-gate-state.json');
+  const originalEnv = process.env.GSD_PERSIST_WRITE_GATE_STATE;
+  const gateId = 'depth_verification_M005_confirm';
+
+  try {
+    process.env.GSD_PERSIST_WRITE_GATE_STATE = '1';
+    mkdirSync(join(base, '.gsd', 'runtime'), { recursive: true });
+    clearDiscussionFlowState(base);
+    setPendingGate(gateId, base);
+
+    writeFileSync(stateFilePath, JSON.stringify({
+      verifiedDepthMilestones: ['M005'],
+      verifiedApprovalGates: [gateId],
+      activeQueuePhase: false,
+      pendingGateId: null,
+    }, null, 2), 'utf-8');
+
+    assert.strictEqual(getPendingGate(base), null, 'stale in-memory pending must refresh from disk');
+    assert.strictEqual(isMilestoneDepthVerified('M005', base), true, 'verified milestone must hydrate from disk');
+    assert.deepEqual(loadWriteGateSnapshot(base), {
+      verifiedDepthMilestones: ['M005'],
+      verifiedApprovalGates: [gateId],
+      activeQueuePhase: false,
+      pendingGateId: null,
+    });
+  } finally {
+    if (originalEnv === undefined) {
+      delete process.env.GSD_PERSIST_WRITE_GATE_STATE;
+    } else {
+      process.env.GSD_PERSIST_WRITE_GATE_STATE = originalEnv;
+    }
+    clearDiscussionFlowState(base);
+    try {
+      rmSync(base, { recursive: true, force: true });
     } catch { /* swallow */ }
   }
 });

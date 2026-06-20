@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
+import { visibleWidth } from "@gsd/pi-tui";
 
 import {
   unitVerb,
@@ -16,22 +17,35 @@ import {
   buildPhaseHandoffOutcome,
   updateProgressWidget,
   setAutoOutcomeWidget,
+  setAutoActiveStatus,
   setCompletionProgressWidget,
   getRoadmapSlicesSync,
   clearSliceProgressCache,
   getWidgetMode,
   cycleWidgetMode,
+  setWidgetMode,
   _resetWidgetModeForTests,
   _resetLastCommitCacheForTests,
   _refreshLastCommitForTests,
   _getLastCommitForTests,
   _getLastCommitFetchedAtForTests,
+  formatToolSurfaceSnapshot,
   formatRuntimeHealthSignal,
   shouldRenderRoadmapProgress,
 } from "../auto-dashboard.ts";
 import { getAutoDashboardData } from "../auto.ts";
-import { autoSession } from "../auto-runtime-state.ts";
+import {
+  autoSession,
+  clearAutoToolSurfaceSnapshot,
+  recordAutoToolSurfaceSnapshot,
+} from "../auto-runtime-state.ts";
 import { formatRtkSavingsLabel } from "../../shared/rtk-session-stats.ts";
+import {
+  createProgressStripUiMock,
+  renderProgressStrip,
+  renderProgressStripLines,
+  assertLinesFit,
+} from "./progress-strip-test-helpers.ts";
 import {
   openDatabase,
   closeDatabase,
@@ -55,6 +69,8 @@ function cleanup(dir: string): void {
   }
 }
 
+type RenderableWidget = { render(width: number): string[]; invalidate(): void; dispose?: () => void };
+
 // ─── unitVerb ─────────────────────────────────────────────────────────────
 
 test("unitVerb maps known unit types to verbs", () => {
@@ -76,6 +92,26 @@ test("unitVerb returns raw type for unknown types", () => {
 test("unitVerb handles hook types", () => {
   assert.equal(unitVerb("hook/verify-code"), "hook: verify-code");
   assert.equal(unitVerb("hook/"), "hook: ");
+});
+
+test("setAutoActiveStatus clears stale outcome surfaces", () => {
+  const statusCalls: Array<[string, string]> = [];
+  const widgetCalls: Array<[string, unknown]> = [];
+
+  setAutoActiveStatus({
+    hasUI: true,
+    ui: {
+      setStatus: (key: string, value: string) => {
+        statusCalls.push([key, value]);
+      },
+      setWidget: (key: string, value: unknown) => {
+        widgetCalls.push([key, value]);
+      },
+    },
+  } as any, "next");
+
+  assert.deepEqual(statusCalls, [["gsd-auto", "next"]]);
+  assert.deepEqual(widgetCalls, [["gsd-outcome", undefined]]);
 });
 
 // ─── unitPhaseLabel ───────────────────────────────────────────────────────
@@ -277,13 +313,15 @@ test("setAutoOutcomeWidget renders a durable next-action handoff", () => {
     { fg: (_color: string, text: string) => text, bold: (text: string) => text },
   );
   const output = component.render(100).join("\n");
+  assert.match(output, /^GSD · /m);
   assert.match(output, /Auto-mode paused/);
   assert.match(output, /Paused by user request/);
   assert.match(output, /researching M005\/S01/);
   assert.match(output, /\/gsd auto/);
+  assert.doesNotMatch(output, /^───/m);
 });
 
-test("setCompletionProgressWidget keeps terminal all-complete handoff in progress slot", () => {
+test("setCompletionProgressWidget keeps terminal all-complete handoff in outcome slot", () => {
   const calls: Array<[string, unknown]> = [];
   setCompletionProgressWidget(
     {
@@ -318,13 +356,13 @@ test("setCompletionProgressWidget keeps terminal all-complete handoff in progres
   );
 
   assert.ok(
-    calls.some(([key, value]) => key === "gsd-outcome" && value === undefined),
-    "terminal completion should clear stale outcome widgets before rendering progress roll-up",
+    calls.some(([key, value]) => key === "gsd-progress" && value === undefined),
+    "terminal completion should clear the legacy progress widget slot",
   );
-  const progress = calls.filter(([key]) => key === "gsd-progress").at(-1);
-  assert.equal(typeof progress?.[1], "function", "terminal completion must install the final handoff in the progress slot");
+  const outcome = calls.filter(([key]) => key === "gsd-outcome").at(-1);
+  assert.equal(typeof outcome?.[1], "function", "terminal completion must install the final handoff in the outcome slot");
 
-  const component = (progress?.[1] as any)(
+  const component = (outcome?.[1] as any)(
     { requestRender() {} },
     { fg: (_color: string, text: string) => text, bold: (text: string) => text },
   );
@@ -369,17 +407,11 @@ test("buildPhaseHandoffOutcome ignores non-assistant trailing messages", () => {
 });
 
 test("updateProgressWidget preserves the phase handoff during session switching", () => {
-  const calls: Array<[string, unknown]> = [];
+  const mock = createProgressStripUiMock();
   updateProgressWidget(
     {
       hasUI: true,
-      ui: {
-        setWidget(key: string, factory: unknown) {
-          calls.push([key, factory]);
-        },
-        setHeader() {},
-        setStatus() {},
-      },
+      ui: mock.ui,
     } as any,
     "execute-task",
     "M005/S01/T01",
@@ -399,25 +431,28 @@ test("updateProgressWidget preserves the phase handoff during session switching"
     },
   );
 
-  assert.ok(calls.some(([key]) => key === "gsd-progress"));
+  assert.equal(
+    mock.getProgressState(),
+    undefined,
+    "progress strip should not publish while session switching is active",
+  );
   assert.ok(
-    !calls.some(([key, value]) => key === "gsd-outcome" && value === undefined),
+    mock.widgetCalls.some(([key, value]) => key === "gsd-progress" && value === undefined),
+    "stale gsd-progress widget slot should still be cleared",
+  );
+  assert.ok(
+    !mock.widgetCalls.some(([key, value]) => key === "gsd-outcome" && value === undefined),
     "handoff widget should stay visible until the next progress frame renders",
   );
+  mock.disposeProgress();
 });
 
 test("updateProgressWidget clears the phase handoff once active progress resumes", () => {
-  const calls: Array<[string, unknown]> = [];
+  const mock = createProgressStripUiMock();
   updateProgressWidget(
     {
       hasUI: true,
-      ui: {
-        setWidget(key: string, factory: unknown) {
-          calls.push([key, factory]);
-        },
-        setHeader() {},
-        setStatus() {},
-      },
+      ui: mock.ui,
     } as any,
     "execute-task",
     "M005/S01/T01",
@@ -437,11 +472,12 @@ test("updateProgressWidget clears the phase handoff once active progress resumes
     },
   );
 
-  assert.ok(calls.some(([key]) => key === "gsd-progress"));
+  assert.ok(mock.getProgressState(), "progress strip state should publish once session switching ends");
   assert.ok(
-    calls.some(([key, value]) => key === "gsd-outcome" && value === undefined),
+    mock.widgetCalls.some(([key, value]) => key === "gsd-outcome" && value === undefined),
     "handoff widget should clear once the active dashboard can render",
   );
+  mock.disposeProgress();
 });
 
 test("shouldRenderRoadmapProgress hides pre-roadmap zero-slice progress", () => {
@@ -494,6 +530,29 @@ test("getAutoDashboardData returns RTK savings in the dashboard payload", () => 
     cleanup(autoSession.basePath);
     autoSession.reset();
   }
+});
+
+test("getAutoDashboardData exposes typed tool-surface snapshots", () => {
+  autoSession.reset();
+  clearAutoToolSurfaceSnapshot();
+  autoSession.active = true;
+  recordAutoToolSurfaceSnapshot({
+    source: "provider-adjustment",
+    unitType: "run-uat",
+    modelFacingToolNames: ["read"],
+    registeredToolNames: ["read", "browser_navigate"],
+    scopedToolNames: ["read", "browser_navigate"],
+    presentedToolNames: ["browser_navigate"],
+    capturedAt: 456,
+  });
+
+  const data = getAutoDashboardData();
+
+  assert.equal(data.toolSurface?.source, "provider-adjustment");
+  assert.equal(formatToolSurfaceSnapshot(data.toolSurface), "run-uat: model 1 / registered 2 / scoped 2 / presented 1");
+
+  autoSession.reset();
+  clearAutoToolSurfaceSnapshot();
 });
 
 test("RTK savings label formats the dashboard footer text", () => {
@@ -571,29 +630,25 @@ test("updateProgressWidget refreshes slice progress cache immediately", (t) => {
 test("updateProgressWidget full mode keeps footer-owned signals out of auto deck", (t) => {
   const dir = makeTempDir("command-deck");
   mkdirSync(join(dir, ".gsd"), { recursive: true });
-  let widget: { render(width: number): string[]; dispose?: () => void } | null = null;
+  const projectPrefsPath = join(dir, ".gsd", "preferences.md");
+  const globalPrefsPath = join(dir, ".gsd", "global-preferences.md");
+  writeFileSync(projectPrefsPath, "---\nversion: 1\n---\n", "utf-8");
+  const mock = createProgressStripUiMock();
 
   t.after(() => {
-    widget?.dispose?.();
+    mock.disposeProgress();
+    _resetWidgetModeForTests();
     clearSliceProgressCache();
     cleanup(dir);
   });
 
+  _resetWidgetModeForTests();
+  setWidgetMode("full", projectPrefsPath, globalPrefsPath);
+
   updateProgressWidget(
     {
       hasUI: true,
-      ui: {
-        setHeader() {},
-        setStatus() {},
-        setWidget(_key: string, factory: any) {
-          if (_key === "gsd-progress") {
-            widget = factory(
-              { requestRender() {} },
-              { fg: (_color: string, text: string) => text, bold: (text: string) => text },
-            );
-          }
-        },
-      },
+      ui: mock.ui,
       sessionManager: { getSessionId: () => "session-1" },
     } as any,
     "execute-task",
@@ -619,51 +674,107 @@ test("updateProgressWidget full mode keeps footer-owned signals out of auto deck
     },
   );
 
-  const installedWidget = widget as { render(width: number): string[]; dispose?: () => void } | null;
-  assert.ok(installedWidget, "progress widget should be installed");
-  const rendered = installedWidget.render(120).join("\n");
+  const progress = mock.getProgressState();
+  assert.ok(progress, "progress strip state should be published");
+  const rendered = renderProgressStrip(progress!, 120);
 
-  assert.match(rendered, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s+GSD\s+·\s+AUTO\s+·\s+running/);
-  assert.doesNotMatch(rendered.split("\n")[1] ?? "", /M004\/S01\/T01/);
-  assert.match(rendered, /Budget Tracking/);
+  assert.match(rendered, /GSD AUTO/);
   assert.match(rendered, /T01: Add repeat column via idempotent ALTER TABLE/);
-  assert.match(rendered, /dashboard/);
+  assert.match(rendered, /tools/);
   assert.doesNotMatch(rendered, /claude-sonnet-4-6/, "footer owns provider/model display");
   assert.doesNotMatch(rendered, /0\.2%|ctx|1\.0M/, "footer owns raw context meter display");
   assert.doesNotMatch(rendered, /\$/, "footer owns session cost display");
 });
 
+test("updateProgressWidget small mode renders the dense horizontal grid", (t) => {
+  const dir = makeTempDir("small-dense-grid");
+  const homeDir = makeTempDir("small-dense-grid-home");
+  const projectPrefsPath = join(dir, ".gsd", "preferences.md");
+  const globalPrefsPath = join(homeDir, ".gsd", "preferences.md");
+  mkdirSync(join(dir, ".gsd"), { recursive: true });
+  mkdirSync(join(homeDir, ".gsd"), { recursive: true });
+  writeFileSync(projectPrefsPath, "---\nversion: 1\nwidget_mode: full\n---\n", "utf-8");
+  writeFileSync(globalPrefsPath, "---\nversion: 1\nwidget_mode: full\n---\n", "utf-8");
+
+  const mock = createProgressStripUiMock();
+
+  t.after(() => {
+    mock.disposeProgress();
+    closeDatabase();
+    clearSliceProgressCache();
+    _resetWidgetModeForTests();
+    cleanup(dir);
+    cleanup(homeDir);
+  });
+
+  openDatabase(join(dir, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M004", title: "Budget Tracking", status: "active" });
+  insertSlice({ milestoneId: "M004", id: "S01", title: "Schema migration", status: "complete", sequence: 1 });
+  insertSlice({ milestoneId: "M004", id: "S02", title: "Expense add", status: "pending", sequence: 2 });
+  insertTask({ milestoneId: "M004", sliceId: "S01", id: "T01", title: "Add repeat column via idempotent ALTER TABLE", status: "complete" });
+  insertTask({ milestoneId: "M004", sliceId: "S01", id: "T02", title: "Backfill repeat metadata", status: "pending" });
+
+  _resetWidgetModeForTests();
+  setWidgetMode("small", projectPrefsPath, globalPrefsPath);
+
+  updateProgressWidget(
+    {
+      hasUI: true,
+      ui: mock.ui,
+    } as any,
+    "execute-task",
+    "M004/S01/T02",
+    {
+      phase: "executing",
+      activeMilestone: { id: "M004", title: "Budget Tracking" },
+      activeSlice: { id: "S01", title: "Schema migration" },
+      activeTask: { id: "T02", title: "Backfill repeat metadata" },
+    } as any,
+    {
+      getAutoStartTime: () => Date.now() - 18_000,
+      isStepMode: () => false,
+      getCmdCtx: () => null,
+      getBasePath: () => dir,
+      isVerbose: () => false,
+      isSessionSwitching: () => false,
+      getCurrentDispatchedModelId: () => null,
+    },
+  );
+
+  const progress = mock.getProgressState();
+  assert.ok(progress, "progress strip state should be published");
+  assert.equal(progress!.widgetMode, "small");
+  const rendered = renderProgressStrip(progress!, 120);
+
+  assert.match(rendered, /GSD AUTO/);
+  assert.match(rendered, /T02: Backfill repeat metadata/);
+  assert.match(rendered, /tasks/);
+  assert.doesNotMatch(rendered, /\/gsd next|\/gsd status|esc pause/);
+
+  for (const width of [40, 80, 120]) {
+    assertLinesFit(renderProgressStripLines(progress!, width, { cwd: dir }), width);
+  }
+});
+
 test("updateProgressWidget shows provider-waiting state consistently for auto and next modes", (t) => {
   const dir = makeTempDir("auto-next-dashboard");
   mkdirSync(join(dir, ".gsd"), { recursive: true });
-  const widgets: Array<{ render(width: number): string[]; dispose?: () => void }> = [];
+  const mocks: ReturnType<typeof createProgressStripUiMock>[] = [];
 
   t.after(() => {
-    for (const widget of widgets) widget.dispose?.();
+    for (const mock of mocks) mock.disposeProgress();
     _resetWidgetModeForTests();
     clearSliceProgressCache();
     cleanup(dir);
   });
 
-  function renderDashboard(stepMode: boolean): string {
-    const holder: { widget?: { render(width: number): string[]; dispose?: () => void } } = {};
+  function captureDashboard(stepMode: boolean): string {
+    const mock = createProgressStripUiMock();
+    mocks.push(mock);
     updateProgressWidget(
       {
         hasUI: true,
-        ui: {
-          setHeader() {},
-          setStatus() {},
-          setWidget(_key: string, factory: any) {
-            if (_key === "gsd-progress") {
-              const installed = factory(
-                { requestRender() {} },
-                { fg: (_color: string, text: string) => text, bold: (text: string) => text },
-              );
-              holder.widget = installed;
-              widgets.push(installed);
-            }
-          },
-        },
+        ui: mock.ui,
       } as any,
       "complete-slice",
       "M003/S01",
@@ -684,21 +795,20 @@ test("updateProgressWidget shows provider-waiting state consistently for auto an
       },
     );
 
-    assert.ok(holder.widget, "progress widget should be installed");
-    return holder.widget.render(120).join("\n");
+    const progress = mock.getProgressState();
+    assert.ok(progress, "progress strip state should be published");
+    return renderProgressStrip(progress!, 120, { cwd: dir });
   }
 
-  const autoRendered = renderDashboard(false);
-  const nextRendered = renderDashboard(true);
+  const autoRendered = captureDashboard(false);
+  const nextRendered = captureDashboard(true);
 
-  assert.match(autoRendered, /GSD\s+·\s+AUTO\s+·\s+running/);
-  assert.match(nextRendered, /GSD\s+·\s+NEXT\s+·\s+running/);
-  assert.doesNotMatch(autoRendered.split("\n")[1] ?? "", /completing M003\/S01/);
-  assert.doesNotMatch(nextRendered.split("\n")[1] ?? "", /completing M003\/S01/);
+  assert.match(autoRendered, /AUTO/);
+  assert.match(nextRendered, /NEXT/);
+  assert.match(autoRendered, /Completing|complete-slice/i);
+  assert.match(nextRendered, /Completing|complete-slice/i);
   assert.doesNotMatch(autoRendered, /waiting on provider.*Waiting on provider/i);
   assert.doesNotMatch(nextRendered, /waiting on provider.*Waiting on provider/i);
-  assert.match(autoRendered, /completing\s+M003\/S01/);
-  assert.match(nextRendered, /completing\s+M003\/S01/);
   assert.doesNotMatch(autoRendered, /Working/);
   assert.doesNotMatch(nextRendered, /Working/);
 });
@@ -811,4 +921,26 @@ test("widget mode respects project preference precedence and persists there", (t
   const globalPrefs = readFileSync(globalPrefsPath, "utf-8");
   assert.match(projectPrefs, /widget_mode:\s*min/);
   assert.match(globalPrefs, /widget_mode:\s*off/);
+});
+
+test("widget mode defaults to small when preferences do not set it", (t) => {
+  const homeDir = makeTempDir("home-no-widget-pref");
+  const projectDir = makeTempDir("project-no-widget-pref");
+  const globalPrefsPath = join(homeDir, ".gsd", "preferences.md");
+  const projectPrefsPath = join(projectDir, ".gsd", "preferences.md");
+
+  mkdirSync(join(homeDir, ".gsd"), { recursive: true });
+  mkdirSync(join(projectDir, ".gsd"), { recursive: true });
+  writeFileSync(globalPrefsPath, "---\nversion: 1\n---\n", "utf-8");
+  writeFileSync(projectPrefsPath, "---\nversion: 1\n---\n", "utf-8");
+
+  t.after(() => {
+    cleanup(homeDir);
+    cleanup(projectDir);
+    _resetWidgetModeForTests();
+  });
+
+  _resetWidgetModeForTests();
+
+  assert.equal(getWidgetMode(projectPrefsPath, globalPrefsPath), "small");
 });

@@ -2,10 +2,9 @@
 // File Purpose: E2E gate for headless tiny milestone completion through auto-mode.
 
 import { execFileSync } from "node:child_process";
-import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -13,24 +12,15 @@ import {
 	createTmpProject,
 	gsdSync,
 	parseJsonEvents,
+	commitProjectFiles,
+	scalar,
+	smokeBinaryAvailable,
+	WorkflowOutcomeProbe,
 	writeTranscript,
 } from "./_shared/index.ts";
 
-function binaryAvailable(): { ok: boolean; reason?: string } {
-	const bin = process.env.GSD_SMOKE_BINARY;
-	if (!bin) return { ok: false, reason: "GSD_SMOKE_BINARY not set; build with `npm run build:core` and re-export." };
-	if (!existsSync(bin)) return { ok: false, reason: `binary not found at ${bin}` };
-	return { ok: true };
-}
-
 function commitFixture(dir: string): void {
-	execFileSync("git", ["add", "package.json", "src/answer.js", "test/answer.test.js"], { cwd: dir, stdio: "pipe" });
-	execFileSync("git", ["commit", "-m", "test: seed tiny fixture"], { cwd: dir, stdio: "pipe" });
-}
-
-function scalar(db: DatabaseSync, sql: string, params: Record<string, string>): string | null {
-	const row = db.prepare(sql).get(params) as { value?: string | null } | undefined;
-	return row?.value ?? null;
+	commitProjectFiles(dir, ["package.json", "src/answer.js", "test/answer.test.js"], "test: seed tiny fixture");
 }
 
 function buildTranscript(): string {
@@ -432,7 +422,7 @@ function buildTranscript(): string {
 }
 
 describe("tiny milestone completion e2e (fake LLM)", () => {
-	const avail = binaryAvailable();
+	const avail = smokeBinaryAvailable();
 	const skipReason = avail.ok ? null : avail.reason;
 
 	test("headless new-milestone --auto completes a verified source change", { skip: skipReason ?? false, timeout: 180_000 }, (t) => {
@@ -502,28 +492,19 @@ describe("tiny milestone completion e2e (fake LLM)", () => {
 		assert.ok(!result.timedOut, "headless milestone run must not time out");
 
 		const events = parseJsonEvents(result.stdoutClean);
-		const notifyMessages = events
-			.filter((event) => event.type === "extension_ui_request" && event.method === "notify")
-			.map((event) => String(event.message ?? ""));
-		const badOperatorSignals = notifyMessages.filter((message) =>
-			/blocked:|failed|cannot complete|cannot validate|stopped with an issue/i.test(message),
-		);
-		assert.deepEqual(badOperatorSignals, [], `unexpected blocked/error operator signals: ${badOperatorSignals.join("\n")}`);
-		assert.ok(
-			notifyMessages.some((message) => /auto-mode stopped/i.test(message) && /milestone m001 complete|all milestones complete/i.test(message)),
-			`expected terminal auto-mode completion notification, got:\n${notifyMessages.join("\n")}`,
-		);
+		const outcome = new WorkflowOutcomeProbe(project.dir, events);
+		outcome.assertNoOperatorFailures();
+		outcome.assertCompletionNotification(/milestone m001 complete|all milestones complete/i);
 
 		assert.doesNotThrow(
 			() => execFileSync("node", ["--test", "test/answer.test.js"], { cwd: project.dir, stdio: "pipe" }),
 			"fixture verification command must pass after milestone completion",
 		);
-		assert.ok(existsSync(join(project.dir, ".gsd", "milestones", "M001", "M001-SUMMARY.md")), "milestone summary artifact is present");
-		assert.ok(existsSync(join(project.dir, ".gsd", "milestones", "M001", "slices", "S01", "S01-SUMMARY.md")), "slice summary artifact is present");
-		assert.ok(existsSync(join(project.dir, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01-SUMMARY.md")), "task summary artifact is present");
+		outcome.assertArtifact(".gsd/milestones/M001/M001-SUMMARY.md", "milestone summary artifact is present");
+		outcome.assertArtifact(".gsd/milestones/M001/slices/S01/S01-SUMMARY.md", "slice summary artifact is present");
+		outcome.assertArtifact(".gsd/milestones/M001/slices/S01/tasks/T01-SUMMARY.md", "task summary artifact is present");
 
-		const db = new DatabaseSync(join(project.dir, ".gsd", "gsd.db"));
-		t.after(() => db.close());
+		const db = outcome.openDb(t);
 		assert.equal(
 			scalar(db, "SELECT status AS value FROM milestones WHERE id = :id", { id: "M001" }),
 			"complete",

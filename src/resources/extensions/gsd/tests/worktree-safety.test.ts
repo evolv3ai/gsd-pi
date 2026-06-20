@@ -126,7 +126,9 @@ describe("Worktree Safety module", () => {
     assert.equal(result.ok, false);
     assert.equal(result.kind, "invalid-root");
     assert.equal(result.details?.unitRoot, outsideRoot);
-    assert.equal(result.details?.expectedRoot, unitRoot);
+    // The reported expected root is the canonical container; the legacy
+    // .gsd/worktrees/ location is also accepted but not surfaced here.
+    assert.equal(result.details?.expectedRoot, join(projectRoot, ".gsd-worktrees", "M001"));
   });
 
   test("accepts project root for source-writing Unit when isolation mode is none", () => {
@@ -148,6 +150,78 @@ describe("Worktree Safety module", () => {
 
     assert.equal(result.ok, true);
     assert.equal(result.kind, "safe");
+  });
+
+  test("accepts project root for source-writing Unit when isolation mode is branch", () => {
+    const safety = createWorktreeSafetyModule({
+      existsSync: () => true,
+      lstatSync: () => ({ isFile: () => false }),
+      listRegisteredWorktrees: () => [{ path: projectRoot, branch: "milestone/M001" }],
+      getCurrentBranch: () => "milestone/M001",
+    });
+
+    const result = safety.validateUnitRoot({
+      unitType: "execute-task",
+      unitId: "M001/S01/T01",
+      writeScope: "source-writing",
+      projectRoot,
+      unitRoot: projectRoot,
+      milestoneId: "M001",
+      isolationMode: "branch",
+      expectedBranch: "milestone/M001",
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.kind, "safe");
+    assert.equal(result.branch, "milestone/M001");
+  });
+
+  test("rejects non-project root for source-writing Unit when isolation mode is branch", () => {
+    const safety = createWorktreeSafetyModule({
+      existsSync: () => true,
+      lstatSync: () => ({ isFile: () => true }),
+      listRegisteredWorktrees: () => [{ path: unitRoot, branch: "milestone/M001" }],
+    });
+
+    const result = safety.validateUnitRoot({
+      unitType: "execute-task",
+      unitId: "M001/S01/T01",
+      writeScope: "source-writing",
+      projectRoot,
+      unitRoot,
+      milestoneId: "M001",
+      isolationMode: "branch",
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.kind, "invalid-root");
+    assert.equal(result.details?.expectedRoot, projectRoot);
+    assert.equal(result.details?.unitRoot, unitRoot);
+  });
+
+  test("rejects branch mismatch for source-writing Unit when isolation mode is branch", () => {
+    const safety = createWorktreeSafetyModule({
+      existsSync: () => true,
+      lstatSync: () => ({ isFile: () => false }),
+      listRegisteredWorktrees: () => [{ path: projectRoot, branch: "main" }],
+      getCurrentBranch: () => "main",
+    });
+
+    const result = safety.validateUnitRoot({
+      unitType: "execute-task",
+      unitId: "M001/S01/T01",
+      writeScope: "source-writing",
+      projectRoot,
+      unitRoot: projectRoot,
+      milestoneId: "M001",
+      isolationMode: "branch",
+      expectedBranch: "milestone/M001",
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.kind, "branch-mismatch");
+    assert.equal(result.details?.branch, "main");
+    assert.equal(result.details?.expectedBranch, "milestone/M001");
   });
 
   test("rejects non-project root for source-writing Unit when isolation mode is none", () => {
@@ -392,6 +466,30 @@ describe("Worktree Safety module", () => {
 
     assert.equal(result.ok, false);
     assert.equal(result.kind, "empty-worktree-with-project-content");
+  });
+
+  test("rejects a source-writing Unit when the milestone lease is required but not held", () => {
+    const safety = createWorktreeSafetyModule({
+      existsSync: () => true,
+      lstatSync: () => ({ isFile: () => false }),
+      listRegisteredWorktrees: () => [{ path: projectRoot, branch: "main" }],
+      getCurrentBranch: () => "main",
+    });
+
+    const result = safety.validateUnitRoot({
+      unitType: "execute-task",
+      unitId: "M001/S01/T01",
+      writeScope: "source-writing",
+      projectRoot,
+      unitRoot: projectRoot,
+      milestoneId: "M001",
+      isolationMode: "none",
+      lease: { required: true, held: false, owner: "worker-1" },
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.kind, "lease-lost");
+    assert.equal(result.details?.owner, "worker-1");
   });
 
   test("default adapter proves registered worktree and current branch", (t) => {

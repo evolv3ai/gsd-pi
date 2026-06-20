@@ -1,7 +1,5 @@
 # Captures & Triage
 
-*Introduced in v2.19.0*
-
 Captures let you fire-and-forget thoughts during auto-mode execution. Instead of pausing auto-mode to steer, you can capture ideas, bugs, or scope changes and let GSD triage them at natural seams between tasks.
 
 ## Quick Start

@@ -33,6 +33,24 @@ export interface UnitActivitySnapshot {
   assistantMessages: number;
 }
 
+export interface AutoUnitCloseoutRequest {
+  ctx: ExtensionContext;
+  basePath: string;
+  unitType: string;
+  unitId: string;
+  startedAt: number;
+  opts?: CloseoutOptions;
+}
+
+export interface AutoUnitCloseoutResult {
+  activityFile?: string;
+  gitTransactionRecorded: boolean;
+}
+
+type GitTransactionCloseoutOptions =
+  Required<Pick<CloseoutOptions, "traceId" | "turnId" | "gitAction" | "gitStatus">>
+  & Pick<CloseoutOptions, "gitPush" | "gitError">;
+
 export const GHOST_COMPLETION_MAX_ELAPSED_MS = 500;
 
 export function snapshotUnitActivity(
@@ -76,8 +94,91 @@ export function isSuspiciousGhostCompletion(
 }
 
 /**
- * Snapshot metrics, save activity log, and fire-and-forget memory extraction
- * for a completed unit. Returns the activity log file path (if any).
+ * Snapshot metrics, save activity log, extract memories, and record the git
+ * transaction for a completed auto-mode unit.
+ */
+export async function closeoutAutoUnit(
+  request: AutoUnitCloseoutRequest,
+): Promise<AutoUnitCloseoutResult> {
+  const modelId = request.ctx.model?.id ?? "unknown";
+  snapshotUnitMetrics(
+    request.ctx,
+    request.unitType,
+    request.unitId,
+    request.startedAt,
+    modelId,
+    request.opts,
+  );
+  const activityFile = saveActivityLog(request.ctx, request.basePath, request.unitType, request.unitId);
+
+  if (activityFile) {
+    try {
+      const { buildMemoryLLMCall, extractMemoriesFromUnit } = await import("./memory-extractor.js");
+      const llmCallFn = buildMemoryLLMCall(request.ctx);
+      if (llmCallFn) {
+        // Awaited: a fire-and-forget here lets memory-extractor writes land in
+        // .gsd/ after closeoutUnit returns but before the milestone merge
+        // runs, which made the working tree appear dirty to `git merge
+        // --squash` (root cause class of #4704). Completion latency is now
+        // bounded by the extractor's LLM call, which is the acceptable price
+        // for not racing the merge boundary.
+        try {
+          await extractMemoriesFromUnit(activityFile, request.unitType, request.unitId, llmCallFn);
+        } catch (err) {
+          logWarning(
+            "engine",
+            `memory extraction failed for ${request.unitType}/${request.unitId}: ${(err as Error).message}`,
+          );
+        }
+      }
+    } catch (err) { /* non-fatal */
+      logWarning("engine", `operation failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  const gitTransaction = resolveGitTransactionOptions(request.opts);
+
+  if (gitTransaction) {
+    writeTurnGitTransaction({
+      basePath: request.basePath,
+      traceId: gitTransaction.traceId,
+      turnId: gitTransaction.turnId,
+      unitType: request.unitType,
+      unitId: request.unitId,
+      stage: "record",
+      action: gitTransaction.gitAction,
+      push: gitTransaction.gitPush === true,
+      status: gitTransaction.gitStatus,
+      error: gitTransaction.gitError,
+      metadata: {
+        activityFile,
+      },
+    });
+  }
+
+  return {
+    ...(activityFile ? { activityFile } : {}),
+    gitTransactionRecorded: Boolean(gitTransaction),
+  };
+}
+
+function resolveGitTransactionOptions(
+  opts: CloseoutOptions | undefined,
+): GitTransactionCloseoutOptions | null {
+  if (!opts?.traceId || !opts.turnId || !opts.gitAction || !opts.gitStatus) return null;
+  return {
+    traceId: opts.traceId,
+    turnId: opts.turnId,
+    gitAction: opts.gitAction,
+    gitStatus: opts.gitStatus,
+    gitPush: opts.gitPush,
+    gitError: opts.gitError,
+  };
+}
+
+/**
+ * Compatibility wrapper for existing auto-loop callers. New code should prefer
+ * closeoutAutoUnit so the closeout request and result stay explicit.
  */
 export async function closeoutUnit(
   ctx: ExtensionContext,
@@ -87,52 +188,6 @@ export async function closeoutUnit(
   startedAt: number,
   opts?: CloseoutOptions,
 ): Promise<string | undefined> {
-  const modelId = ctx.model?.id ?? "unknown";
-  snapshotUnitMetrics(ctx, unitType, unitId, startedAt, modelId, opts);
-  const activityFile = saveActivityLog(ctx, basePath, unitType, unitId);
-
-  if (activityFile) {
-    try {
-      const { buildMemoryLLMCall, extractMemoriesFromUnit } = await import('./memory-extractor.js');
-      const llmCallFn = buildMemoryLLMCall(ctx);
-      if (llmCallFn) {
-        // Awaited: a fire-and-forget here lets memory-extractor writes land in
-        // .gsd/ after closeoutUnit returns but before the milestone merge
-        // runs, which made the working tree appear dirty to `git merge
-        // --squash` (root cause class of #4704). Completion latency is now
-        // bounded by the extractor's LLM call, which is the acceptable price
-        // for not racing the merge boundary.
-        try {
-          await extractMemoriesFromUnit(activityFile, unitType, unitId, llmCallFn);
-        } catch (err) {
-          logWarning(
-            "engine",
-            `memory extraction failed for ${unitType}/${unitId}: ${(err as Error).message}`,
-          );
-        }
-      }
-    } catch (err) { /* non-fatal */
-      logWarning("engine", `operation failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  if (opts?.traceId && opts.turnId && opts.gitAction && opts.gitStatus) {
-    writeTurnGitTransaction({
-      basePath,
-      traceId: opts.traceId,
-      turnId: opts.turnId,
-      unitType,
-      unitId,
-      stage: "record",
-      action: opts.gitAction,
-      push: opts.gitPush === true,
-      status: opts.gitStatus,
-      error: opts.gitError,
-      metadata: {
-        activityFile,
-      },
-    });
-  }
-
-  return activityFile ?? undefined;
+  const result = await closeoutAutoUnit({ ctx, basePath, unitType, unitId, startedAt, opts });
+  return result.activityFile;
 }

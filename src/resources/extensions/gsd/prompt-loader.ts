@@ -33,6 +33,10 @@ function hasRequiredExtensionAssets(rootDir: string, exists: ExistsFn = existsSy
   );
 }
 
+function isSourceExtensionDir(moduleDir: string): boolean {
+  return moduleDir.replaceAll("\\", "/").endsWith("/src/resources/extensions/gsd");
+}
+
 export function resolveExtensionDirFromCandidates(
   moduleDir: string,
   agentGsdDir: string,
@@ -40,6 +44,10 @@ export function resolveExtensionDirFromCandidates(
 ): string {
   const moduleUsable = hasRequiredExtensionAssets(moduleDir, exists);
   const agentUsable = hasRequiredExtensionAssets(agentGsdDir, exists);
+
+  // Source checkouts must use their own prompt tree. Otherwise local tests and
+  // dev runs can silently render stale prompts from ~/.gsd/agent/extensions/gsd.
+  if (moduleUsable && isSourceExtensionDir(moduleDir)) return moduleDir;
 
   // Prefer the user-local extension tree when both are valid. This avoids
   // leaking npm/global-install paths into prompts on Windows.

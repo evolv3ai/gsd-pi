@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createObservationMask } from "../context-masker.js";
+import {
+  createObservationMask,
+  createResponsesInputObservationMask,
+  truncateContextResultMessages,
+  truncateResponsesInputResultItems,
+} from "../context-masker.js";
 
 // These helpers produce messages in the pi-ai LLM payload format
 // (post-convertToLlm, pre-provider), which is what before_provider_request sees.
@@ -119,4 +124,54 @@ test("masks toolResult by role, not by type field", () => {
   ];
   const result = mask(messages as any);
   assert.equal((result[1].content as any)[0].text, MASK_TEXT);
+});
+
+test("truncates recent bash result user messages", () => {
+  const messages = [
+    userMsg("turn 1"),
+    bashResult("a".repeat(50)),
+    assistantMsg("response 1"),
+  ];
+  const result = truncateContextResultMessages(messages as any, 10);
+  const text = (result[1].content as any)[0].text;
+  assert.ok(text.length < (messages[1].content as any)[0].text.length);
+  assert.match(text, /…\[truncated\]/);
+});
+
+test("masks Responses API function outputs older than keepRecentTurns", () => {
+  const mask = createResponsesInputObservationMask(1);
+  const items = [
+    { role: "user", content: [{ type: "input_text", text: "turn 1" }] },
+    { type: "function_call_output", call_id: "call_1", output: "old output" },
+    { type: "message", role: "assistant", content: [{ type: "output_text", text: "response 1" }] },
+    { role: "user", content: [{ type: "input_text", text: "turn 2" }] },
+  ];
+  const result = mask(items as any);
+  assert.equal(result[1].output, MASK_TEXT);
+});
+
+test("masks Responses API bash result user items older than keepRecentTurns", () => {
+  const mask = createResponsesInputObservationMask(1);
+  const items = [
+    { role: "user", content: [{ type: "input_text", text: "turn 1" }] },
+    { role: "user", content: [{ type: "input_text", text: "Ran `npm test`\n```\nold output\n```" }] },
+    { type: "message", role: "assistant", content: [{ type: "output_text", text: "response 1" }] },
+    { role: "user", content: [{ type: "input_text", text: "turn 2" }] },
+  ];
+  const result = mask(items as any);
+  assert.equal((result[1].content as any)[0].text, MASK_TEXT);
+});
+
+test("truncates Responses API function outputs and recent bash result items", () => {
+  const items = [
+    { role: "user", content: [{ type: "input_text", text: "turn 1" }] },
+    { type: "function_call_output", call_id: "call_1", output: "b".repeat(50) },
+    { role: "user", content: [{ type: "input_text", text: "Ran `npm test`\n```\n" + "c".repeat(50) + "\n```" }] },
+  ];
+  const result = truncateResponsesInputResultItems(items as any, 12);
+
+  assert.match(result[1].output as string, /…\[truncated\]/);
+  assert.match((result[2].content as any)[0].text, /…\[truncated\]/);
+  assert.ok((result[1].output as string).length < (items[1].output as string).length);
+  assert.ok((result[2].content as any)[0].text.length < (items[2].content as any)[0].text.length);
 });

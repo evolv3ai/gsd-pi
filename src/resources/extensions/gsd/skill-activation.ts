@@ -50,6 +50,16 @@ function tokenizeSkillContext(...parts: Array<string | null | undefined>): Set<s
   return tokens;
 }
 
+function tokenizeUnitType(unitType: string | undefined): Set<string> {
+  const tokens = new Set<string>();
+  const value = unitType?.trim().toLowerCase();
+  if (!value) return tokens;
+  tokens.add(value);
+  tokens.add(value.replace(/[-_]+/g, " "));
+  tokens.add(value.replace(/[-_\s]+/g, ""));
+  return tokens;
+}
+
 function skillMatchesContext(skill: Skill, contextTokens: Set<string>): boolean {
   const haystacks = [
     skill.name.toLowerCase(),
@@ -79,17 +89,25 @@ function ruleMatchesContext(when: string, contextTokens: Set<string>): boolean {
   );
 }
 
+function ruleMatchesUnitType(when: string, unitType: string | undefined): boolean {
+  if (!unitType) return false;
+  const whenTokens = tokenizeSkillContext(when);
+  const unitTokens = tokenizeUnitType(unitType);
+  return [...unitTokens].some(token => whenTokens.has(token));
+}
+
 function resolveSkillRuleMatches(
   prefs: GSDPreferences | undefined,
   contextTokens: Set<string>,
   base: string,
+  unitType?: string,
 ): { include: string[]; avoid: string[] } {
   if (!prefs?.skill_rules?.length) return { include: [], avoid: [] };
 
   const include: string[] = [];
   const avoid: string[] = [];
   for (const rule of prefs.skill_rules) {
-    if (!ruleMatchesContext(rule.when, contextTokens)) continue;
+    if (!ruleMatchesContext(rule.when, contextTokens) && !ruleMatchesUnitType(rule.when, unitType)) continue;
     include.push(...resolvePreferenceSkillNames([...(rule.use ?? []), ...(rule.prefer ?? [])], base));
     avoid.push(...resolvePreferenceSkillNames(rule.avoid ?? [], base));
   }
@@ -116,11 +134,8 @@ const SAFE_SKILL_NAME = /^[a-z0-9][a-z0-9-]*$/;
 function formatSkillActivationBlock(skillNames: string[]): string {
   const safe = skillNames.filter(name => SAFE_SKILL_NAME.test(name));
   if (safe.length === 0) return "";
-  // Use explicit parameter syntax so LLMs pass { skill: "..." } instead of { name: "..." }.
-  // The function-call-like syntax `Skill('name')` led LLMs to infer a positional
-  // parameter name, causing tool validation failures — see #2224.
-  const calls = safe.map(name => `Call Skill({ skill: '${name}' })`).join('. ');
-  return `<skill_activation>${calls}.</skill_activation>`;
+  const reads = safe.map(name => `Read the installed '${name}' skill file from <available_skills>`).join(". ");
+  return `<skill_activation>${reads}.</skill_activation>`;
 }
 
 /**
@@ -139,7 +154,7 @@ function formatSkillRecommendationsBlock(unitType: string | undefined, skillName
   if (!unitType) return "";
   const safe = skillNames.filter(name => SAFE_SKILL_NAME.test(name));
   if (safe.length === 0) return "";
-  return `<skill_recommendations unit="${unitType}">For this unit type, also consider invoking: ${safe.join(", ")}. Use Skill({ skill: 'name' }) when relevant — these are recommendations, not requirements.</skill_recommendations>`;
+  return `<skill_recommendations unit="${unitType}">For this unit type, also consider reading these installed skill files from <available_skills>: ${safe.join(", ")}. These are recommendations, not requirements.</skill_recommendations>`;
 }
 
 export function buildSkillActivationBlock(params: {
@@ -196,7 +211,7 @@ export function buildSkillActivationBlock(params: {
     matched.add(name);
   }
 
-  const ruleMatches = resolveSkillRuleMatches(prefs, contextTokens, params.base);
+  const ruleMatches = resolveSkillRuleMatches(prefs, contextTokens, params.base, params.unitType);
   for (const name of ruleMatches.include) matched.add(name);
   for (const name of ruleMatches.avoid) avoided.add(name);
 

@@ -9,7 +9,7 @@ GSD supports three isolation modes, configured via the `git.isolation` preferenc
 | Mode | Working Directory | Branch | Best For |
 |------|-------------------|--------|----------|
 | `none` (default) | Project root | Current branch (no milestone branch) | Most projects — no isolation overhead |
-| `worktree` | `.gsd/worktrees/<MID>/` | `milestone/<MID>` | Projects that need full file isolation between milestones |
+| `worktree` | `.gsd-worktrees/<MID>/` | `milestone/<MID>` | Projects that need full file isolation between milestones |
 | `branch` | Project root | `milestone/<MID>` | Submodule-heavy repos where worktrees don't work well |
 
 ### `none` Mode (Default)
@@ -20,7 +20,7 @@ Use this for hot-reload workflows where file isolation breaks dev tooling (e.g.,
 
 ### `worktree` Mode
 
-Each milestone gets its own git worktree at `.gsd/worktrees/<MID>/` on a `milestone/<MID>` branch. All execution happens inside the worktree. On completion, the worktree is squash-merged to main as one clean commit. The worktree and branch are then cleaned up.
+Each milestone gets its own git worktree at `.gsd-worktrees/<MID>/` on a `milestone/<MID>` branch. All execution happens inside the worktree. On completion, the worktree is squash-merged to main as one clean commit. The worktree and branch are then cleaned up.
 
 This provides full file isolation — changes in a milestone can't interfere with your main working copy.
 
@@ -97,7 +97,7 @@ These features apply only in **worktree mode**.
 
 Auto mode creates and manages worktrees automatically:
 
-1. When a milestone starts, a worktree is created at `.gsd/worktrees/<MID>/` on branch `milestone/<MID>`
+1. When a milestone starts, a worktree is created at `.gsd-worktrees/<MID>/` on branch `milestone/<MID>`
 2. The project-root SQLite database remains canonical runtime state; artifact/projection files are rendered under the active worktree-local `.gsd/` while execution runs inside that worktree
    SQLite WAL coordination is single-host only; do not share this runtime across machines, and see `src/resources/extensions/gsd/docs/COORDINATION.md` for the coordination constraints.
 3. All execution happens inside the worktree
@@ -200,4 +200,4 @@ Run `/gsd doctor` to check git health manually.
 
 ## Native Git Operations
 
-Since v2.16, GSD uses libgit2 via native bindings for read-heavy operations in the dispatch hot path. This eliminates ~70 process spawns per dispatch cycle, improving auto-mode throughput.
+GSD uses libgit2 via native bindings for read-heavy operations in the dispatch hot path. This eliminates ~70 process spawns per dispatch cycle, improving auto-mode throughput.

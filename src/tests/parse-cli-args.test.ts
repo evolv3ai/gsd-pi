@@ -147,6 +147,10 @@ describe('parseCliArgs — web mode flags', () => {
       ['http://a.com', 'http://b.com', 'http://c.com'],
     )
   })
+
+  test('--no-auth captures opt-in web auth disablement', () => {
+    assert.equal(parse('--web', '--no-auth').webNoAuth, true)
+  })
 })
 
 describe('parseCliArgs — positional messages', () => {

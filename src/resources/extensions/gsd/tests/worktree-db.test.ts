@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -11,9 +12,23 @@ import {
   insertRequirement,
   insertArtifact,
   insertMilestone,
+  insertSlice,
+  insertTask,
+  insertMemoryRow,
+  insertVerificationEvidence,
+  insertAssessment,
+  insertGateRow,
+  insertReplanHistory,
+  saveGateResult,
+  recordMilestoneCommitAttribution,
   getMilestone,
+  getSlice,
+  getTask,
   getDecisionById,
   getRequirementById,
+  getVerificationEvidence,
+  updateSliceStatus,
+  updateTaskStatus,
   _getAdapter,
   copyWorktreeDb,
   reconcileWorktreeDb,
@@ -62,7 +77,34 @@ function seedMainDb(dbPath: string): void {
   });
 }
 
-function registerCleanup(t: { after: (fn: () => void) => void }, ...dirs: string[]) {
+function seedTrackedTask(options: {
+  milestoneId?: string;
+  sliceId?: string;
+  taskId?: string;
+  sliceTargets?: string[];
+  taskTargets?: string[];
+} = {}): { milestoneId: string; sliceId: string; taskId: string } {
+  const milestoneId = options.milestoneId ?? "M-TRACK";
+  const sliceId = options.sliceId ?? "S-TRACK";
+  const taskId = options.taskId ?? "T-TRACK";
+  insertMilestone({ id: milestoneId, title: "Tracked Milestone", status: "active" });
+  insertSlice({
+    id: sliceId,
+    milestoneId,
+    title: "Tracked Slice",
+    planning: { targetRepositories: options.sliceTargets ?? [] },
+  });
+  insertTask({
+    id: taskId,
+    sliceId,
+    milestoneId,
+    title: "Tracked Task",
+    planning: { targetRepositories: options.taskTargets ?? [] },
+  });
+  return { milestoneId, sliceId, taskId };
+}
+
+function registerCleanup(t: { after: (fn: () => void) => void }, ...dirs: string[]): void {
   t.after(() => {
     closeDatabase();
     for (const dir of dirs) {
@@ -437,4 +479,472 @@ test("reconcileWorktreeDb does not downgrade milestone status complete→active 
   const m = getMilestone("M-COMP");
   assert.ok(m !== null, "milestone M-COMP still exists after reconcile");
   assert.equal(m!.status, "complete", "complete milestone must not be downgraded to active by stale worktree");
+});
+
+test("reconcileWorktreeDb does not downgrade completed slices or tasks", (t) => {
+  const mainDir = tempDir();
+  const wtDir = tempDir();
+  registerCleanup(t, mainDir, wtDir);
+
+  const mainDb = path.join(mainDir, "gsd.db");
+  const wtDb = path.join(wtDir, "gsd.db");
+  const completedAt = "2026-06-01T00:00:00.000Z";
+
+  seedMainDb(mainDb);
+  const ids = seedTrackedTask({
+    milestoneId: "M-COMPLETE-UNITS",
+    sliceId: "S-COMPLETE",
+    taskId: "T-COMPLETE",
+  });
+  closeDatabase();
+
+  copyWorktreeDb(mainDb, wtDb);
+
+  openDatabase(mainDb);
+  updateSliceStatus(ids.milestoneId, ids.sliceId, "complete", completedAt);
+  updateTaskStatus(ids.milestoneId, ids.sliceId, ids.taskId, "complete", completedAt);
+  closeDatabase();
+
+  openDatabase(wtDb);
+  const wtAdapter = _getAdapter()!;
+  wtAdapter.prepare(
+    "UPDATE slices SET status = 'active', completed_at = NULL WHERE milestone_id = :mid AND id = :sid",
+  ).run({ ":mid": ids.milestoneId, ":sid": ids.sliceId });
+  wtAdapter.prepare(
+    "UPDATE tasks SET status = 'pending', completed_at = NULL WHERE milestone_id = :mid AND slice_id = :sid AND id = :tid",
+  ).run({ ":mid": ids.milestoneId, ":sid": ids.sliceId, ":tid": ids.taskId });
+  closeDatabase();
+
+  openDatabase(mainDb);
+  reconcileWorktreeDb(mainDb, wtDb);
+
+  const slice = getSlice(ids.milestoneId, ids.sliceId);
+  assert.equal(slice?.status, "complete", "complete slice must not be downgraded by stale worktree");
+  assert.equal(slice?.completed_at, completedAt, "complete slice timestamp must be preserved");
+
+  const task = getTask(ids.milestoneId, ids.sliceId, ids.taskId);
+  assert.equal(task?.status, "complete", "complete task must not be downgraded by stale worktree");
+  assert.equal(task?.completed_at, completedAt, "complete task timestamp must be preserved");
+});
+
+test("reconcileWorktreeDb merges V29 target_repositories from worktree units", (t) => {
+  const mainDir = tempDir();
+  const wtDir = tempDir();
+  registerCleanup(t, mainDir, wtDir);
+
+  const mainDb = path.join(mainDir, "gsd.db");
+  const wtDb = path.join(wtDir, "gsd.db");
+
+  seedMainDb(mainDb);
+  const ids = seedTrackedTask({
+    milestoneId: "M-REPOS",
+    sliceId: "S-REPOS",
+    taskId: "T-REPOS",
+    sliceTargets: ["main-slice"],
+    taskTargets: ["main-task"],
+  });
+  closeDatabase();
+
+  copyWorktreeDb(mainDb, wtDb);
+
+  openDatabase(wtDb);
+  const wtAdapter = _getAdapter()!;
+  wtAdapter.prepare(
+    "UPDATE slices SET target_repositories = :targets WHERE milestone_id = :mid AND id = :sid",
+  ).run({ ":targets": JSON.stringify(["worktree-slice"]), ":mid": ids.milestoneId, ":sid": ids.sliceId });
+  wtAdapter.prepare(
+    "UPDATE tasks SET target_repositories = :targets WHERE milestone_id = :mid AND slice_id = :sid AND id = :tid",
+  ).run({ ":targets": JSON.stringify(["worktree-task"]), ":mid": ids.milestoneId, ":sid": ids.sliceId, ":tid": ids.taskId });
+  closeDatabase();
+
+  openDatabase(mainDb);
+  reconcileWorktreeDb(mainDb, wtDb);
+
+  assert.deepEqual(getSlice(ids.milestoneId, ids.sliceId)?.target_repositories, ["worktree-slice"]);
+  assert.deepEqual(getTask(ids.milestoneId, ids.sliceId, ids.taskId)?.target_repositories, ["worktree-task"]);
+});
+
+test("reconcileWorktreeDb preserves target_repositories when worktree predates V29", (t) => {
+  const mainDir = tempDir();
+  const wtDir = tempDir();
+  registerCleanup(t, mainDir, wtDir);
+
+  const mainDb = path.join(mainDir, "gsd.db");
+  const wtDb = path.join(wtDir, "gsd.db");
+
+  seedMainDb(mainDb);
+  const ids = seedTrackedTask({
+    milestoneId: "M-OLD-REPOS",
+    sliceId: "S-OLD-REPOS",
+    taskId: "T-OLD-REPOS",
+    sliceTargets: ["main-slice"],
+    taskTargets: ["main-task"],
+  });
+  closeDatabase();
+
+  copyWorktreeDb(mainDb, wtDb);
+  openDatabase(wtDb);
+  const wtAdapter = _getAdapter()!;
+  wtAdapter.exec("ALTER TABLE slices DROP COLUMN target_repositories");
+  wtAdapter.exec("ALTER TABLE tasks DROP COLUMN target_repositories");
+  closeDatabase();
+
+  openDatabase(mainDb);
+  reconcileWorktreeDb(mainDb, wtDb);
+
+  assert.deepEqual(getSlice(ids.milestoneId, ids.sliceId)?.target_repositories, ["main-slice"]);
+  assert.deepEqual(getTask(ids.milestoneId, ids.sliceId, ids.taskId)?.target_repositories, ["main-task"]);
+});
+
+test("reconcileWorktreeDb preserves target_repositories when migrated old worktree has default empty arrays", (t) => {
+  const mainDir = tempDir();
+  const wtDir = tempDir();
+  registerCleanup(t, mainDir, wtDir);
+
+  const mainDb = path.join(mainDir, "gsd.db");
+  const wtDb = path.join(wtDir, "gsd.db");
+
+  seedMainDb(mainDb);
+  const ids = seedTrackedTask({
+    milestoneId: "M-MIGRATED-REPOS",
+    sliceId: "S-MIGRATED-REPOS",
+    taskId: "T-MIGRATED-REPOS",
+    sliceTargets: ["main-slice"],
+    taskTargets: ["main-task"],
+  });
+  closeDatabase();
+
+  copyWorktreeDb(mainDb, wtDb);
+  openDatabase(wtDb);
+  const wtAdapter = _getAdapter()!;
+  wtAdapter.prepare(
+    "UPDATE slices SET target_repositories = '[]' WHERE milestone_id = :mid AND id = :sid",
+  ).run({ ":mid": ids.milestoneId, ":sid": ids.sliceId });
+  wtAdapter.prepare(
+    "UPDATE tasks SET target_repositories = '[]' WHERE milestone_id = :mid AND slice_id = :sid AND id = :tid",
+  ).run({ ":mid": ids.milestoneId, ":sid": ids.sliceId, ":tid": ids.taskId });
+  closeDatabase();
+
+  openDatabase(mainDb);
+  reconcileWorktreeDb(mainDb, wtDb);
+
+  assert.deepEqual(getSlice(ids.milestoneId, ids.sliceId)?.target_repositories, ["main-slice"]);
+  assert.deepEqual(getTask(ids.milestoneId, ids.sliceId, ids.taskId)?.target_repositories, ["main-task"]);
+});
+
+test("reconcileWorktreeDb preserves memory metadata when worktree predates memory columns", (t) => {
+  const mainDir = tempDir();
+  const wtDir = tempDir();
+  registerCleanup(t, mainDir, wtDir);
+
+  const mainDb = path.join(mainDir, "gsd.db");
+  const wtDb = path.join(wtDir, "gsd.db");
+  const memoryId = "mem-reconcile";
+  const createdAt = "2026-06-01T00:00:00.000Z";
+  const updatedAt = "2026-06-02T00:00:00.000Z";
+  const lastHitAt = "2026-06-03T00:00:00.000Z";
+
+  seedMainDb(mainDb);
+  insertMemoryRow({
+    id: memoryId,
+    category: "architecture",
+    content: "Main memory content",
+    confidence: 0.7,
+    sourceUnitType: "task",
+    sourceUnitId: "T001",
+    createdAt,
+    updatedAt,
+    scope: "workspace",
+    tags: ["db", "memory"],
+    structuredFields: { sourceDecisionId: "D-MEM" },
+  });
+  _getAdapter()!.prepare(
+    "UPDATE memories SET last_hit_at = :last_hit_at, hit_count = 3 WHERE id = :id",
+  ).run({ ":last_hit_at": lastHitAt, ":id": memoryId });
+  closeDatabase();
+
+  copyWorktreeDb(mainDb, wtDb);
+  openDatabase(wtDb);
+  const wtAdapter = _getAdapter()!;
+  wtAdapter.exec("DROP INDEX IF EXISTS idx_memories_scope");
+  wtAdapter.exec("ALTER TABLE memories DROP COLUMN scope");
+  wtAdapter.exec("ALTER TABLE memories DROP COLUMN tags");
+  wtAdapter.exec("ALTER TABLE memories DROP COLUMN structured_fields");
+  wtAdapter.exec("ALTER TABLE memories DROP COLUMN last_hit_at");
+  wtAdapter.prepare(
+    "UPDATE memories SET content = :content, confidence = :confidence, updated_at = :updated_at WHERE id = :id",
+  ).run({
+    ":content": "Worktree memory content",
+    ":confidence": 0.9,
+    ":updated_at": "2026-06-04T00:00:00.000Z",
+    ":id": memoryId,
+  });
+  closeDatabase();
+
+  openDatabase(mainDb);
+  reconcileWorktreeDb(mainDb, wtDb);
+
+  const row = _getAdapter()!.prepare("SELECT * FROM memories WHERE id = :id").get({ ":id": memoryId }) as Record<string, unknown>;
+  assert.equal(row["content"], "Worktree memory content");
+  assert.equal(row["confidence"], 0.9);
+  assert.equal(row["scope"], "workspace");
+  assert.equal(row["tags"], JSON.stringify(["db", "memory"]));
+  assert.equal(row["structured_fields"], JSON.stringify({ sourceDecisionId: "D-MEM" }));
+  assert.equal(row["last_hit_at"], lastHitAt);
+});
+
+test("reconcileWorktreeDb continues when an older worktree is missing an optional table", (t) => {
+  const mainDir = tempDir();
+  const wtDir = tempDir();
+  registerCleanup(t, mainDir, wtDir);
+
+  const mainDb = path.join(mainDir, "gsd.db");
+  const wtDb = path.join(wtDir, "gsd.db");
+
+  seedMainDb(mainDb);
+  closeDatabase();
+  copyWorktreeDb(mainDb, wtDb);
+
+  openDatabase(wtDb);
+  insertDecision({
+    id: "D-MISSING-TABLE",
+    when_context: "2026-06-01",
+    scope: "M001",
+    decision: "Merge despite old optional tables",
+    choice: "guard table reads",
+    rationale: "Old worktrees may lack newer tables",
+    revisable: "yes",
+    made_by: "agent",
+    superseded_by: null,
+  });
+  _getAdapter()!.exec("DROP TABLE memories");
+  closeDatabase();
+
+  openDatabase(mainDb);
+  const result = reconcileWorktreeDb(mainDb, wtDb);
+
+  assert.equal(result.conflicts.length, 0);
+  assert.equal(getDecisionById("D-MISSING-TABLE")?.choice, "guard table reads");
+});
+
+test("reconcileWorktreeDb preserves decision seq when replaying worktree decisions", (t) => {
+  const mainDir = tempDir();
+  const wtDir = tempDir();
+  registerCleanup(t, mainDir, wtDir);
+
+  const mainDb = path.join(mainDir, "gsd.db");
+  const wtDb = path.join(wtDir, "gsd.db");
+
+  seedMainDb(mainDb);
+  insertDecision({
+    id: "D002",
+    when_context: "2026-06-02",
+    scope: "M001",
+    decision: "Second decision",
+    choice: "keep order",
+    rationale: "Reconcile must not reset seq",
+    revisable: "yes",
+    made_by: "agent",
+    superseded_by: null,
+  });
+  const before = _getAdapter()!.prepare("SELECT id, seq FROM decisions ORDER BY seq").all();
+  closeDatabase();
+
+  copyWorktreeDb(mainDb, wtDb);
+
+  openDatabase(mainDb);
+  reconcileWorktreeDb(mainDb, wtDb);
+  const after = _getAdapter()!.prepare("SELECT id, seq FROM decisions ORDER BY seq").all();
+
+  assert.deepEqual(after, before);
+});
+
+test("reconcileWorktreeDb recomputes artifact hash when worktree predates content_hash", (t) => {
+  const mainDir = tempDir();
+  const wtDir = tempDir();
+  registerCleanup(t, mainDir, wtDir);
+
+  const mainDb = path.join(mainDir, "gsd.db");
+  const wtDb = path.join(wtDir, "gsd.db");
+  const artifactPath = "docs/hash.md";
+
+  seedMainDb(mainDb);
+  insertArtifact({
+    path: artifactPath,
+    artifact_type: "plan",
+    milestone_id: "M001",
+    slice_id: null,
+    task_id: null,
+    full_content: "old content",
+  });
+  closeDatabase();
+
+  copyWorktreeDb(mainDb, wtDb);
+  openDatabase(wtDb);
+  const wtAdapter = _getAdapter()!;
+  wtAdapter.exec("ALTER TABLE artifacts DROP COLUMN content_hash");
+  wtAdapter.prepare("UPDATE artifacts SET full_content = :content WHERE path = :path").run({
+    ":content": "new content",
+    ":path": artifactPath,
+  });
+  closeDatabase();
+
+  openDatabase(mainDb);
+  reconcileWorktreeDb(mainDb, wtDb);
+  const row = _getAdapter()!.prepare("SELECT full_content, content_hash FROM artifacts WHERE path = :path").get({
+    ":path": artifactPath,
+  }) as Record<string, unknown>;
+
+  assert.equal(row["full_content"], "new content");
+  assert.equal(row["content_hash"], createHash("sha256").update("new content").digest("hex"));
+});
+
+test("reconcileWorktreeDb merges correctness rows from worktree", (t) => {
+  const mainDir = tempDir();
+  const wtDir = tempDir();
+  registerCleanup(t, mainDir, wtDir);
+
+  const mainDb = path.join(mainDir, "gsd.db");
+  const wtDb = path.join(wtDir, "gsd.db");
+
+  seedMainDb(mainDb);
+  const ids = seedTrackedTask({
+    milestoneId: "M-CORRECTNESS",
+    sliceId: "S-CORRECTNESS",
+    taskId: "T-CORRECTNESS",
+  });
+  closeDatabase();
+
+  copyWorktreeDb(mainDb, wtDb);
+  openDatabase(wtDb);
+  const wtAdapter = _getAdapter()!;
+  insertSlice({ id: "S-BASE", milestoneId: ids.milestoneId, title: "Base Slice" });
+  insertSlice({ id: "S-DEPENDENT", milestoneId: ids.milestoneId, title: "Dependent Slice", depends: ["S-BASE"] });
+  wtAdapter.prepare(
+    "INSERT INTO slice_dependencies (milestone_id, slice_id, depends_on_slice_id) VALUES (?, ?, ?)",
+  ).run(ids.milestoneId, "S-DEPENDENT", "S-BASE");
+  insertAssessment({
+    path: ".gsd/milestones/M-CORRECTNESS/M-CORRECTNESS-VALIDATION.md",
+    milestoneId: ids.milestoneId,
+    status: "pass",
+    scope: "validate-milestone",
+    fullContent: "# Validation\n\nPASS",
+  });
+  insertReplanHistory({
+    milestoneId: ids.milestoneId,
+    sliceId: ids.sliceId,
+    taskId: ids.taskId,
+    summary: "Replanned in worktree",
+    previousArtifactPath: "old.md",
+    replacementArtifactPath: "new.md",
+  });
+  insertGateRow({ milestoneId: ids.milestoneId, sliceId: ids.sliceId, gateId: "Q3", scope: "slice" });
+  saveGateResult({
+    milestoneId: ids.milestoneId,
+    sliceId: ids.sliceId,
+    gateId: "Q3",
+    verdict: "pass",
+    rationale: "Worktree gate passed",
+    findings: "No findings",
+  });
+  recordMilestoneCommitAttribution({
+    commitSha: "abc123",
+    milestoneId: ids.milestoneId,
+    sliceId: ids.sliceId,
+    taskId: ids.taskId,
+    source: "recorded",
+    confidence: 0.95,
+    files: ["src/example.ts"],
+    createdAt: "2026-06-05T00:00:00.000Z",
+  });
+  closeDatabase();
+
+  openDatabase(mainDb);
+  const result = reconcileWorktreeDb(mainDb, wtDb);
+  const adapter = _getAdapter()!;
+
+  assert.ok(result.assessments > 0, "assessment rows should merge");
+  assert.ok(result.replan_history > 0, "replan history rows should merge");
+  assert.ok(result.quality_gates > 0, "quality gate rows should merge");
+  assert.ok(result.slice_dependencies > 0, "slice dependency rows should merge");
+  assert.ok(result.gate_runs > 0, "gate run rows should merge");
+  assert.ok(result.milestone_commit_attributions > 0, "commit attribution rows should merge");
+  assert.equal(
+    (adapter.prepare("SELECT count(*) AS n FROM assessments WHERE milestone_id = :mid").get({ ":mid": ids.milestoneId }) as Record<string, unknown>)["n"],
+    1,
+  );
+  assert.equal(
+    (adapter.prepare("SELECT count(*) AS n FROM replan_history WHERE summary = 'Replanned in worktree'").get() as Record<string, unknown>)["n"],
+    1,
+  );
+  assert.equal(
+    (adapter.prepare("SELECT verdict FROM quality_gates WHERE milestone_id = :mid AND slice_id = :sid AND gate_id = 'Q3'").get({
+      ":mid": ids.milestoneId,
+      ":sid": ids.sliceId,
+    }) as Record<string, unknown>)["verdict"],
+    "pass",
+  );
+  assert.equal(
+    (adapter.prepare("SELECT depends_on_slice_id FROM slice_dependencies WHERE milestone_id = :mid AND slice_id = 'S-DEPENDENT'").get({
+      ":mid": ids.milestoneId,
+    }) as Record<string, unknown>)["depends_on_slice_id"],
+    "S-BASE",
+  );
+  assert.equal(
+    (adapter.prepare("SELECT count(*) AS n FROM gate_runs WHERE milestone_id = :mid").get({ ":mid": ids.milestoneId }) as Record<string, unknown>)["n"],
+    1,
+  );
+  assert.equal(
+    (adapter.prepare("SELECT commit_sha FROM milestone_commit_attributions WHERE milestone_id = :mid").get({
+      ":mid": ids.milestoneId,
+    }) as Record<string, unknown>)["commit_sha"],
+    "abc123",
+  );
+});
+
+test("reconcileWorktreeDb appends new verification evidence without duplicating copied rows", (t) => {
+  const mainDir = tempDir();
+  const wtDir = tempDir();
+  registerCleanup(t, mainDir, wtDir);
+
+  const mainDb = path.join(mainDir, "gsd.db");
+  const wtDb = path.join(wtDir, "gsd.db");
+
+  seedMainDb(mainDb);
+  const ids = seedTrackedTask({
+    milestoneId: "M-EVIDENCE",
+    sliceId: "S-EVIDENCE",
+    taskId: "T-EVIDENCE",
+  });
+  insertVerificationEvidence({
+    taskId: ids.taskId,
+    sliceId: ids.sliceId,
+    milestoneId: ids.milestoneId,
+    command: "pnpm test",
+    exitCode: 0,
+    verdict: "pass",
+    durationMs: 100,
+  });
+  closeDatabase();
+
+  copyWorktreeDb(mainDb, wtDb);
+  openDatabase(wtDb);
+  insertVerificationEvidence({
+    taskId: ids.taskId,
+    sliceId: ids.sliceId,
+    milestoneId: ids.milestoneId,
+    command: "pnpm lint",
+    exitCode: 0,
+    verdict: "pass",
+    durationMs: 50,
+  });
+  closeDatabase();
+
+  openDatabase(mainDb);
+  const result = reconcileWorktreeDb(mainDb, wtDb);
+  const evidence = getVerificationEvidence(ids.milestoneId, ids.sliceId, ids.taskId);
+
+  assert.equal(result.verification_evidence, 1, "only the new evidence row should be appended");
+  assert.equal(evidence.length, 2, "copied evidence row should not duplicate during reconcile");
+  assert.deepEqual(evidence.map((row) => row.command).sort(), ["pnpm lint", "pnpm test"]);
 });

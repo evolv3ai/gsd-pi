@@ -18,6 +18,7 @@ import {
   emitWorktreeOrphaned,
   emitAutoExit,
   emitCanonicalRootRedirect,
+  autoExitReasonForTerminalOutcome,
   normalizeAutoExitReason,
   summarizeWorktreeTelemetry,
   percentile,
@@ -115,6 +116,27 @@ test("normalizeAutoExitReason maps new buckets and ignores casing", () => {
   for (const { rawReason, expected } of cases) {
     assert.equal(normalizeAutoExitReason(rawReason), expected);
   }
+});
+
+test("autoExitReasonForTerminalOutcome maps typed terminal outcomes", () => {
+  assert.equal(
+    autoExitReasonForTerminalOutcome({
+      code: "all-complete",
+      displayReason: "All milestones complete",
+      allMilestonesComplete: true,
+    }),
+    "all-complete",
+  );
+  assert.equal(
+    autoExitReasonForTerminalOutcome({
+      code: "settlement-blocked",
+      displayReason: "Milestone complete, merge blocked",
+      nextAction: "Retry closeout",
+      milestoneId: "M001",
+      allMilestonesComplete: false,
+    }),
+    "blocked",
+  );
 });
 
 test("summarizeWorktreeTelemetry only counts unmerged exits from active worktrees", (t) => {

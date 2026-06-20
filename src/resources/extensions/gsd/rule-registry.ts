@@ -17,11 +17,16 @@ import type {
   HookExecutionState,
   PersistedHookState,
   HookStatusEntry,
+  PostUnitGateBlock,
+  PostUnitHookOutcomeVerdict,
 } from "./types.js";
 import { resolvePostUnitHooks, resolvePreDispatchHooks } from "./preferences.js";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { parseUnitId } from "./unit-id.js";
+import { queryJournal, type JournalEntry } from "./journal.js";
+import { readUnitRuntimeRecord, type UnitRuntimePhase } from "./unit-runtime.js";
+import { extractFrontmatterVerdict } from "./verdict-parser.js";
 
 // ─── Artifact Path Resolution ──────────────────────────────────────────────
 
@@ -56,6 +61,56 @@ export function convertDispatchRules(rules: DispatchRule[]): UnifiedRule[] {
 // ─── RuleRegistry ─────────────────────────────────────────────────────────
 
 const HOOK_STATE_FILE = "hook-state.json";
+const FAILED_HOOK_RUNTIME_PHASES: ReadonlySet<UnitRuntimePhase> = new Set([
+  "timeout",
+  "finalize-timeout",
+  "crashed",
+  "paused",
+]);
+
+interface HookFailureState {
+  hookName: string;
+  unitType: string;
+  unitId: string;
+  reason: string;
+}
+
+type HookCompletionAssessment =
+  | { outcome: "success" }
+  | { outcome: "failed"; reason: string }
+  | { outcome: "unknown" };
+
+const HOOK_OUTCOME_VERDICTS = new Set<PostUnitHookOutcomeVerdict>([
+  "pass",
+  "advisory",
+  "needs-rework",
+  "needs-remediation",
+  "needs-attention",
+]);
+
+interface HookTriggerRef {
+  triggerUnitType: string;
+  triggerUnitId: string;
+}
+
+interface GateOutcome {
+  verdict?: PostUnitHookOutcomeVerdict | "failed";
+  artifact?: string;
+  artifactPath?: string;
+  reason?: string;
+}
+
+function isBlockingHook(config: PostUnitHookConfig | undefined): boolean {
+  return config?.criticality === "blocking";
+}
+
+function hookMaxCycles(config: PostUnitHookConfig): number {
+  return config.max_cycles ?? 1;
+}
+
+function hookCycleKey(config: PostUnitHookConfig, trigger: HookTriggerRef): string {
+  return `${config.name}/${trigger.triggerUnitType}/${trigger.triggerUnitId}`;
+}
 
 export class RuleRegistry {
   /** Static dispatch rules provided at construction time. */
@@ -68,10 +123,13 @@ export class RuleRegistry {
     config: PostUnitHookConfig;
     triggerUnitType: string;
     triggerUnitId: string;
+    forceRun?: boolean;
   }> = [];
   cycleCounts: Map<string, number> = new Map();
   retryPending: boolean = false;
-  retryTrigger: { unitType: string; unitId: string; retryArtifact: string } | null = null;
+  retryTrigger: { unitType: string; unitId: string; retryArtifact?: string } | null = null;
+  hookFailure: HookFailureState | null = null;
+  gateBlockPending: PostUnitGateBlock | null = null;
 
   constructor(dispatchRules: UnifiedRule[]) {
     this.dispatchRules = dispatchRules;
@@ -100,6 +158,7 @@ export class RuleRegistry {
           artifact: hook.artifact,
           retry_on: hook.retry_on,
           max_cycles: hook.max_cycles,
+          criticality: hook.criticality,
         },
       });
     }
@@ -155,7 +214,10 @@ export class RuleRegistry {
   ): HookDispatchResult | null {
     // If we just completed a hook unit, handle its result
     if (this.activeHook) {
-      return this._handleHookCompletion(basePath);
+      const observedCleanExecution =
+        completedUnitType === `hook/${this.activeHook.hookName}` &&
+        completedUnitId === this.activeHook.triggerUnitId;
+      return this._handleHookCompletion(basePath, observedCleanExecution);
     }
 
     // Don't trigger hooks for other hook units (prevent hook-on-hook chains)
@@ -187,47 +249,51 @@ export class RuleRegistry {
   private _dequeueNextHook(basePath: string): HookDispatchResult | null {
     while (this.hookQueue.length > 0) {
       const entry = this.hookQueue.shift()!;
-      const { config, triggerUnitType, triggerUnitId } = entry;
+      const { config, triggerUnitType, triggerUnitId, forceRun } = entry;
 
-      // Check idempotency — if artifact already exists, skip
-      if (config.artifact) {
+      // Advisory hooks preserve existing idempotency: any configured artifact
+      // means the hook already ran. Blocking gates must verify outcome first.
+      if (config.artifact && !forceRun) {
         const artifactPath = resolveHookArtifactPath(basePath, triggerUnitId, config.artifact);
-        if (existsSync(artifactPath)) continue;
+        if (existsSync(artifactPath)) {
+          const completion = this._assessConfiguredHookCompletion(basePath, config.name, triggerUnitId);
+          if (completion.outcome === "failed") {
+            return this._handleFailedHookCompletion(
+              basePath,
+              {
+                hookName: config.name,
+                triggerUnitType,
+                triggerUnitId,
+                cycle: this.cycleCounts.get(hookCycleKey(config, { triggerUnitType, triggerUnitId })) ?? 0,
+                pendingRetry: false,
+              },
+              config,
+              completion.reason,
+            );
+          }
+          if (!isBlockingHook(config)) continue;
+          const decision = this._handleExistingBlockingArtifact(config, { triggerUnitType, triggerUnitId }, basePath);
+          if (decision === "skip") continue;
+          return decision;
+        }
       }
 
-      // Check cycle limit
-      const cycleKey = `${config.name}/${triggerUnitType}/${triggerUnitId}`;
-      const currentCycle = (this.cycleCounts.get(cycleKey) ?? 0) + 1;
-      const maxCycles = config.max_cycles ?? 1;
-      if (currentCycle > maxCycles) continue;
-
-      this.cycleCounts.set(cycleKey, currentCycle);
-
-      this.activeHook = {
-        hookName: config.name,
-        triggerUnitType,
-        triggerUnitId,
-        cycle: currentCycle,
-        pendingRetry: false,
-      };
-
-      // Build prompt with variable substitution
-      const { milestone: mid, slice: sid, task: tid } = parseUnitId(triggerUnitId);
-      let prompt = config.prompt
-        .replace(/\{milestoneId\}/g, mid ?? "")
-        .replace(/\{sliceId\}/g, sid ?? "")
-        .replace(/\{taskId\}/g, tid ?? "");
-
-      // Inject browser safety instruction
-      prompt += "\n\n**Browser tool safety:** Do NOT use `browser_wait_for` with `condition: \"network_idle\"` — it hangs indefinitely when dev servers keep persistent connections (Vite HMR, WebSocket). Use `selector_visible`, `text_visible`, or `delay` instead.";
-
-      return {
-        hookName: config.name,
-        prompt,
-        model: config.model,
-        unitType: `hook/${config.name}`,
-        unitId: triggerUnitId,
-      };
+      const dispatch = this._startHook(config, triggerUnitType, triggerUnitId);
+      if (dispatch) return dispatch;
+      if (isBlockingHook(config)) {
+        const cycleKey = hookCycleKey(config, { triggerUnitType, triggerUnitId });
+        const maxCycles = hookMaxCycles(config);
+        const currentCycle = this.cycleCounts.get(cycleKey) ?? 0;
+        if (currentCycle >= maxCycles) {
+          this._setGateBlock(config, { triggerUnitType, triggerUnitId }, {
+            action: "pause",
+            reason: `gate cycle budget exhausted before ${config.name} produced a passing outcome`,
+            cycle: currentCycle,
+            maxCycles,
+          });
+          return null;
+        }
+      }
     }
 
     // No more hooks — clear active state
@@ -235,36 +301,419 @@ export class RuleRegistry {
     return null;
   }
 
-  private _handleHookCompletion(basePath: string): HookDispatchResult | null {
+  private _handleHookCompletion(basePath: string, observedCleanExecution: boolean): HookDispatchResult | null {
     const hook = this.activeHook!;
     const hooks = resolvePostUnitHooks(basePath);
     const config = hooks.find(h => h.name === hook.hookName);
+    if (!config) {
+      this.activeHook = null;
+      return this._dequeueNextHook(basePath);
+    }
+
+    const completion = this._assessHookCompletion(basePath, hook);
+    if (completion.outcome === "failed") {
+      return this._handleFailedHookCompletion(basePath, hook, config, completion.reason);
+    }
 
     // Check if retry was requested via retry_on artifact
-    if (config?.retry_on) {
+    if (config.retry_on) {
       const retryArtifactPath = resolveHookArtifactPath(basePath, hook.triggerUnitId, config.retry_on);
       if (existsSync(retryArtifactPath)) {
-        const cycleKey = `${config.name}/${hook.triggerUnitType}/${hook.triggerUnitId}`;
-        const currentCycle = this.cycleCounts.get(cycleKey) ?? 1;
-        const maxCycles = config.max_cycles ?? 1;
-
-        if (currentCycle < maxCycles) {
+        if (this._requestTriggerRetry(config, hook, config.retry_on)) {
+          return null;
+        }
+        if (isBlockingHook(config)) {
+          this._setGateBlock(config, hook, {
+            action: "pause",
+            reason: `gate cycle budget exhausted after ${config.retry_on} requested rework`,
+            retryArtifact: config.retry_on,
+          });
           this.activeHook = null;
           this.hookQueue = [];
-          this.retryPending = true;
-          this.retryTrigger = {
-            unitType: hook.triggerUnitType,
-            unitId: hook.triggerUnitId,
-            retryArtifact: config.retry_on,
-          };
           return null;
         }
       }
     }
 
+    if (isBlockingHook(config)) {
+      return this._handleBlockingGateCompletion(config, hook, basePath, observedCleanExecution);
+    }
+
     // Hook completed normally — try next hook in queue
     this.activeHook = null;
     return this._dequeueNextHook(basePath);
+  }
+
+  private _startHook(
+    config: PostUnitHookConfig,
+    triggerUnitType: string,
+    triggerUnitId: string,
+  ): HookDispatchResult | null {
+    const cycleKey = `${config.name}/${triggerUnitType}/${triggerUnitId}`;
+    const currentCycle = (this.cycleCounts.get(cycleKey) ?? 0) + 1;
+    const maxCycles = config.max_cycles ?? 1;
+    if (currentCycle > maxCycles) return null;
+
+    this.cycleCounts.set(cycleKey, currentCycle);
+
+    this.activeHook = {
+      hookName: config.name,
+      triggerUnitType,
+      triggerUnitId,
+      cycle: currentCycle,
+      pendingRetry: false,
+    };
+
+    const { milestone: mid, slice: sid, task: tid } = parseUnitId(triggerUnitId);
+    let prompt = config.prompt
+      .replace(/\{milestoneId\}/g, mid ?? "")
+      .replace(/\{sliceId\}/g, sid ?? "")
+      .replace(/\{taskId\}/g, tid ?? "");
+
+    prompt += "\n\n**Browser tool safety:** Do NOT use `browser_wait_for` with `condition: \"network_idle\"` — it hangs indefinitely when dev servers keep persistent connections (Vite HMR, WebSocket). Use `selector_visible`, `text_visible`, or `delay` instead.";
+
+    return {
+      hookName: config.name,
+      prompt,
+      model: config.model,
+      unitType: `hook/${config.name}`,
+      unitId: triggerUnitId,
+    };
+  }
+
+  private _assessHookCompletion(
+    basePath: string,
+    hook: HookExecutionState,
+  ): HookCompletionAssessment {
+    return this._assessConfiguredHookCompletion(basePath, hook.hookName, hook.triggerUnitId);
+  }
+
+  private _assessConfiguredHookCompletion(
+    basePath: string,
+    hookName: string,
+    unitId: string,
+  ): HookCompletionAssessment {
+    const unitType = `hook/${hookName}`;
+    const latestUnitEnd = this._latestHookUnitEnd(basePath, unitType, unitId);
+    if (latestUnitEnd) {
+      const data = latestUnitEnd.data ?? {};
+      const status = data.status;
+      const artifactVerified = data.artifactVerified;
+      if (status === "completed" && artifactVerified !== false) {
+        return { outcome: "success" };
+      }
+      return {
+        outcome: "failed",
+        reason: this._formatHookFailureReason(status, artifactVerified, data.errorContext),
+      };
+    }
+
+    const runtime = readUnitRuntimeRecord(basePath, unitType, unitId);
+    if (runtime && FAILED_HOOK_RUNTIME_PHASES.has(runtime.phase)) {
+      return { outcome: "failed", reason: `runtime phase ${runtime.phase}` };
+    }
+
+    return { outcome: "unknown" };
+  }
+
+  private _latestHookUnitEnd(
+    basePath: string,
+    unitType: string,
+    unitId: string,
+  ): JournalEntry | null {
+    const unitEnds = queryJournal(basePath, { eventType: "unit-end", unitId })
+      .filter(entry => entry.data?.unitType === unitType);
+    return unitEnds[unitEnds.length - 1] ?? null;
+  }
+
+  private _formatHookFailureReason(
+    status: unknown,
+    artifactVerified: unknown,
+    errorContext: unknown,
+  ): string {
+    const parts = [`status ${typeof status === "string" ? status : "unknown"}`];
+    if (artifactVerified === false) {
+      parts.push("artifact not verified");
+    }
+    if (typeof errorContext === "object" && errorContext !== null && "message" in errorContext) {
+      const message = (errorContext as { message?: unknown }).message;
+      if (typeof message === "string" && message.length > 0) {
+        parts.push(message);
+      }
+    }
+    return parts.join("; ");
+  }
+
+  private _handleFailedHookCompletion(
+    basePath: string,
+    hook: HookExecutionState,
+    config: PostUnitHookConfig | undefined,
+    reason: string,
+  ): HookDispatchResult | null {
+    if (config) {
+      const retry = this._startHook(config, hook.triggerUnitType, hook.triggerUnitId);
+      if (retry) return retry;
+    }
+
+    this.hookFailure = {
+      hookName: hook.hookName,
+      unitType: `hook/${hook.hookName}`,
+      unitId: hook.triggerUnitId,
+      reason,
+    };
+    this.activeHook = null;
+    this.hookQueue = [];
+    this.persistState(basePath);
+    return null;
+  }
+
+  private _handleExistingBlockingArtifact(
+    config: PostUnitHookConfig,
+    trigger: HookTriggerRef,
+    basePath: string,
+  ): "skip" | HookDispatchResult | null {
+    const outcome = this._readGateOutcome(config, trigger, basePath);
+    switch (outcome.verdict) {
+      case "pass":
+      case "advisory":
+        return "skip";
+      case "needs-rework":
+        return this._routeNeedsRework(config, trigger, outcome);
+      case "needs-remediation":
+      case "needs-attention":
+        this._pauseForGate(config, trigger, outcome, `gate reported ${outcome.verdict}`);
+        return null;
+      case "failed":
+      case undefined:
+        return this._rerunGateOrBlock(config, trigger, basePath, {
+          reason: outcome.reason ?? `gate artifact reported verdict=${outcome.verdict}`,
+          outcome,
+        });
+    }
+    return this._rerunGateOrBlock(config, trigger, basePath, {
+      reason: `gate artifact reported unsupported verdict=${String(outcome.verdict)}`,
+      outcome,
+    });
+  }
+
+  private _handleBlockingGateCompletion(
+    config: PostUnitHookConfig,
+    hook: HookExecutionState,
+    basePath: string,
+    observedCleanExecution: boolean,
+  ): HookDispatchResult | null {
+    if (!observedCleanExecution) {
+      return this._rerunGateOrBlock(config, hook, basePath, {
+        reason: `hook/${config.name} did not complete cleanly before the trigger unit resumed`,
+      });
+    }
+
+    const outcome = this._readGateOutcome(config, hook, basePath);
+    switch (outcome.verdict) {
+      case "pass":
+      case "advisory":
+        this.activeHook = null;
+        return this._dequeueNextHook(basePath);
+      case "needs-rework":
+        return this._routeNeedsRework(config, hook, outcome);
+      case "needs-remediation":
+      case "needs-attention":
+        return this._pauseForGate(config, hook, outcome, `gate reported ${outcome.verdict}`);
+      case "failed":
+      case undefined:
+        return this._rerunGateOrBlock(config, hook, basePath, {
+          reason: outcome.reason ?? `gate artifact reported verdict=${outcome.verdict}`,
+          outcome,
+        });
+    }
+    return this._rerunGateOrBlock(config, hook, basePath, {
+      reason: `gate artifact reported unsupported verdict=${String(outcome.verdict)}`,
+      outcome,
+    });
+  }
+
+  private _routeNeedsRework(
+    config: PostUnitHookConfig,
+    trigger: HookTriggerRef,
+    outcome: GateOutcome,
+  ): null {
+    const action = config.on_block?.action ?? "retry-unit";
+    if (action === "retry-task" || action === "retry-unit") {
+      if (this._requestTriggerRetry(config, trigger, config.on_block?.artifact)) {
+        return null;
+      }
+      this._setGateBlock(config, trigger, {
+        action: "pause",
+        reason: "gate cycle budget exhausted after needs-rework",
+        outcome,
+        retryArtifact: config.on_block?.artifact,
+      });
+      this.activeHook = null;
+      this.hookQueue = [];
+      return null;
+    }
+    return this._pauseForGate(config, trigger, outcome, `gate reported needs-rework; configured on_block action is ${action}`);
+  }
+
+  private _pauseForGate(
+    config: PostUnitHookConfig,
+    trigger: HookTriggerRef,
+    outcome: GateOutcome,
+    reason: string,
+  ): null {
+    this._setGateBlock(config, trigger, {
+      action: config.on_block?.action ?? "pause",
+      reason,
+      outcome,
+      retryArtifact: config.on_block?.artifact,
+    });
+    this.activeHook = null;
+    this.hookQueue = [];
+    return null;
+  }
+
+  private _requestTriggerRetry(
+    config: PostUnitHookConfig,
+    hook: HookTriggerRef,
+    retryArtifact?: string,
+  ): boolean {
+    const cycleKey = hookCycleKey(config, hook);
+    const currentCycle = this.cycleCounts.get(cycleKey) ?? 1;
+    const maxCycles = hookMaxCycles(config);
+    if (currentCycle >= maxCycles) return false;
+
+    this.activeHook = null;
+    this.hookQueue = [];
+    this.retryPending = true;
+    this.retryTrigger = {
+      unitType: hook.triggerUnitType,
+      unitId: hook.triggerUnitId,
+    };
+    if (retryArtifact !== undefined) {
+      this.retryTrigger.retryArtifact = retryArtifact;
+    }
+    return true;
+  }
+
+  private _rerunGateOrBlock(
+    config: PostUnitHookConfig,
+    trigger: HookTriggerRef,
+    basePath: string,
+    opts: {
+      reason: string;
+      outcome?: GateOutcome;
+    },
+  ): HookDispatchResult | null {
+    const cycleKey = hookCycleKey(config, trigger);
+    const currentCycle = this.cycleCounts.get(cycleKey) ?? 0;
+    const maxCycles = hookMaxCycles(config);
+    if (currentCycle < maxCycles) {
+      this.activeHook = null;
+      this.hookQueue.unshift({
+        config,
+        triggerUnitType: trigger.triggerUnitType,
+        triggerUnitId: trigger.triggerUnitId,
+        forceRun: true,
+      });
+      return this._dequeueNextHook(basePath);
+    }
+
+    this._setGateBlock(config, trigger, {
+      action: "pause",
+      reason: `${opts.reason}; gate cycle budget exhausted`,
+      outcome: opts.outcome,
+      cycle: currentCycle,
+      maxCycles,
+    });
+    this.activeHook = null;
+    this.hookQueue = [];
+    return null;
+  }
+
+  private _readGateOutcome(
+    config: PostUnitHookConfig,
+    trigger: HookTriggerRef,
+    basePath: string,
+  ): GateOutcome {
+    if (!config.artifact) {
+      return { reason: "blocking gate has no configured artifact" };
+    }
+    const artifactPath = resolveHookArtifactPath(basePath, trigger.triggerUnitId, config.artifact);
+    if (!existsSync(artifactPath)) {
+      return {
+        artifact: config.artifact,
+        artifactPath,
+        reason: `missing required gate artifact ${config.artifact}`,
+      };
+    }
+    let content = "";
+    try {
+      content = readFileSync(artifactPath, "utf-8");
+    } catch (e) {
+      return {
+        artifact: config.artifact,
+        artifactPath,
+        reason: `could not read gate artifact ${config.artifact}: ${(e as Error).message}`,
+      };
+    }
+
+    const rawVerdict = extractFrontmatterVerdict(content);
+    if (!rawVerdict) {
+      return {
+        artifact: config.artifact,
+        artifactPath,
+        reason: `gate artifact ${config.artifact} is missing frontmatter verdict`,
+      };
+    }
+    if (rawVerdict === "failed") {
+      return {
+        artifact: config.artifact,
+        artifactPath,
+        verdict: "failed",
+        reason: `gate artifact ${config.artifact} reported verdict=failed`,
+      };
+    }
+    if (!HOOK_OUTCOME_VERDICTS.has(rawVerdict as PostUnitHookOutcomeVerdict)) {
+      return {
+        artifact: config.artifact,
+        artifactPath,
+        reason: `gate artifact ${config.artifact} has unsupported verdict=${rawVerdict}`,
+      };
+    }
+    return {
+      artifact: config.artifact,
+      artifactPath,
+      verdict: rawVerdict as PostUnitHookOutcomeVerdict,
+    };
+  }
+
+  private _setGateBlock(
+    config: PostUnitHookConfig,
+    trigger: HookTriggerRef,
+    opts: {
+      action: PostUnitGateBlock["action"];
+      reason: string;
+      outcome?: GateOutcome;
+      cycle?: number;
+      maxCycles?: number;
+      retryArtifact?: string;
+    },
+  ): void {
+    const cycleKey = hookCycleKey(config, trigger);
+    const cycle = opts.cycle ?? this.cycleCounts.get(cycleKey) ?? 0;
+    this.gateBlockPending = {
+      hookName: config.name,
+      triggerUnitType: trigger.triggerUnitType,
+      triggerUnitId: trigger.triggerUnitId,
+      artifact: opts.outcome?.artifact ?? config.artifact,
+      artifactPath: opts.outcome?.artifactPath,
+      verdict: opts.outcome?.verdict,
+      action: opts.action,
+      reason: opts.reason,
+      cycle,
+      maxCycles: opts.maxCycles ?? hookMaxCycles(config),
+      retryArtifact: opts.retryArtifact,
+    };
   }
 
   // ── Pre-dispatch hook evaluation (sync, all-matching with compose) ──
@@ -351,11 +800,22 @@ export class RuleRegistry {
     return this.retryPending;
   }
 
+  consumeHookFailure(): HookFailureState | null {
+    if (!this.hookFailure) return null;
+    const failure = { ...this.hookFailure };
+    this.hookFailure = null;
+    return failure;
+  }
+
+  isGateBlockPending(): boolean {
+    return this.gateBlockPending !== null;
+  }
+
   /**
    * Returns the trigger unit info for a pending retry, or null.
    * Clears the retry state after reading.
    */
-  consumeRetryTrigger(): { unitType: string; unitId: string; retryArtifact: string } | null {
+  consumeRetryTrigger(): { unitType: string; unitId: string; retryArtifact?: string } | null {
     if (!this.retryPending || !this.retryTrigger) return null;
     const trigger = { ...this.retryTrigger };
     this.retryPending = false;
@@ -363,13 +823,26 @@ export class RuleRegistry {
     return trigger;
   }
 
-  /** Clear all mutable state (activeHook, hookQueue, cycleCounts, retryPending, retryTrigger). */
+  /**
+   * Returns a pending post-unit gate block, or null.
+   * Clears the block state after reading.
+   */
+  consumeGateBlock(): PostUnitGateBlock | null {
+    if (!this.gateBlockPending) return null;
+    const block = { ...this.gateBlockPending };
+    this.gateBlockPending = null;
+    return block;
+  }
+
+  /** Clear all mutable hook lifecycle state. */
   resetState(): void {
     this.activeHook = null;
     this.hookQueue = [];
     this.cycleCounts.clear();
     this.retryPending = false;
     this.retryTrigger = null;
+    this.hookFailure = null;
+    this.gateBlockPending = null;
   }
 
   // ── Persistence ─────────────────────────────────────────────────────
@@ -378,10 +851,17 @@ export class RuleRegistry {
     return join(basePath, ".gsd", HOOK_STATE_FILE);
   }
 
-  /** Persist current hook cycle counts to disk. */
+  /** Persist current hook state to disk. */
   persistState(basePath: string): void {
     const state: PersistedHookState = {
       cycleCounts: Object.fromEntries(this.cycleCounts),
+      activeHook: this.activeHook ? { ...this.activeHook } : null,
+      hookQueue: this.hookQueue.map(entry => ({
+        hookName: entry.config.name,
+        triggerUnitType: entry.triggerUnitType,
+        triggerUnitId: entry.triggerUnitId,
+        forceRun: entry.forceRun,
+      })),
       savedAt: new Date().toISOString(),
     };
     try {
@@ -393,7 +873,7 @@ export class RuleRegistry {
     }
   }
 
-  /** Restore hook cycle counts from disk after a crash/restart. */
+  /** Restore hook state from disk after a crash/restart. */
   restoreState(basePath: string): void {
     try {
       const filePath = this._hookStatePath(basePath);
@@ -405,6 +885,24 @@ export class RuleRegistry {
         for (const [key, value] of Object.entries(state.cycleCounts)) {
           if (typeof value === "number") {
             this.cycleCounts.set(key, value);
+          }
+        }
+      }
+      this.activeHook = state.activeHook && typeof state.activeHook === "object"
+        ? { ...state.activeHook }
+        : null;
+      this.hookQueue = [];
+      if (Array.isArray(state.hookQueue)) {
+        const hooks = resolvePostUnitHooks(basePath);
+        for (const entry of state.hookQueue) {
+          const config = hooks.find(h => h.name === entry.hookName);
+          if (config) {
+            this.hookQueue.push({
+              config,
+              triggerUnitType: entry.triggerUnitType,
+              triggerUnitId: entry.triggerUnitId,
+              forceRun: entry.forceRun,
+            });
           }
         }
       }
@@ -420,7 +918,7 @@ export class RuleRegistry {
       if (existsSync(filePath)) {
         writeFileSync(
           filePath,
-          JSON.stringify({ cycleCounts: {}, savedAt: new Date().toISOString() }, null, 2),
+          JSON.stringify({ cycleCounts: {}, activeHook: null, hookQueue: [], savedAt: new Date().toISOString() }, null, 2),
           "utf-8",
         );
       }
@@ -448,6 +946,7 @@ export class RuleRegistry {
         type: "post",
         enabled: hook.enabled !== false,
         targets: hook.after,
+        criticality: hook.criticality ?? "advisory",
         activeCycles,
       });
     }
@@ -537,9 +1036,10 @@ export class RuleRegistry {
       lines.push("Post-Unit Hooks (run after unit completes):");
       for (const hook of postHooks) {
         const status = hook.enabled ? "enabled" : "disabled";
+        const criticality = hook.criticality ?? "advisory";
         const cycles = Object.keys(hook.activeCycles).length;
         const cycleInfo = cycles > 0 ? ` (${cycles} active cycle${cycles === 1 ? "" : "s"})` : "";
-        lines.push(`  ${hook.name} [${status}] → after: ${hook.targets.join(", ")}${cycleInfo}`);
+        lines.push(`  ${hook.name} [${status}, ${criticality}] → after: ${hook.targets.join(", ")}${cycleInfo}`);
       }
       lines.push("");
     }

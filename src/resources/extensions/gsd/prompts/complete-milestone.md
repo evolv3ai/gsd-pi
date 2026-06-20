@@ -12,6 +12,10 @@ If any inlined plan, summary, verification command, or prior artifact names an a
 
 All slices are complete. Verify the integrated work, persist milestone completion, refresh project state, and write the final record future milestones will rely on.
 
+### Closeout messaging (auto-mode)
+
+You write closeout artifacts; **GSD auto-mode** decides when the milestone is actually **done**. Never say "Milestone {{milestoneId}} is complete" or "Milestone {{milestoneId}} complete." in this unit — not even after `gsd_complete_milestone` succeeds. GSD announces completion only after post-unit verification passes.
+
 Preloaded context includes roadmap, requirements, decisions, project context, and compact slice-summary excerpts. Slice summaries are excerpts, not full files: use them first, then selectively read full SUMMARY.md files listed under "On-demand Slice Summaries" only when section headings indicate needed evidence for LEARNINGS, Decision Re-evaluation, deviations, limitations, or cross-slice narrative.
 
 Start with what the excerpts give you. Read full files when the section heads signal richer context you need.
@@ -31,7 +35,9 @@ Subagents report only; they do not write user source. Fold any findings into Dec
 
 ## Steps
 
-1. **Duplicate completion guard:** Call `gsd_milestone_status` for `{{milestoneId}}` before any durable writes. If the returned milestone **status is `complete`**, this is a stale or duplicate closeout turn: do NOT mutate requirements, do NOT refresh the project document, do NOT write LEARNINGS, and do NOT persist milestone completion again. Say: "Milestone {{milestoneId}} is already complete." and stop.
+1. **Duplicate completion guard:** Call `gsd_milestone_status` for `{{milestoneId}}` before any durable writes. If the returned milestone **status is `complete`**:
+   - **Verification-retry turn** (prompt begins with `VERIFICATION FAILED`): do NOT stop or declare completion. Repair the closeout evidence in the failure context. Skip step 13 if the milestone is already complete in the DB.
+   - **Otherwise** (stale duplicate closeout): do NOT mutate requirements, do NOT refresh the project document, do NOT write LEARNINGS, and do NOT persist milestone completion again. Say: "Milestone {{milestoneId}} closeout already recorded." and stop.
 2. Use the **Milestone Summary** output template from the inlined context above
 3. {{skillActivation}}
 4. **Verify code changes exist.** Compare milestone work against the integration branch (`main`, `master`, or recorded branch), using merge-base as older revision and `HEAD` as newer. If the diff lists non-`.gsd/` files, pass. If `HEAD` equals the integration branch/merge-base, treat it as a self-diff retry: inspect milestone-scoped commit evidence (`GSD-Unit: {{milestoneId}}` or production `GSD-Task: Sxx/Tyy` trailers touching `.gsd/milestones/{{milestoneId}}/`) and verify those commits touched non-`.gsd/` files. Record **verification failure** only when neither source shows implementation files.
@@ -84,7 +90,7 @@ Subagents report only; they do not write user source. Fold any findings into Dec
    - `deviations` (string) — Deviations from the original plan
 
 14. Do not commit manually — the system auto-commits your changes after this unit completes.
-- After `gsd_complete_milestone` succeeds, emit only one closeout line: "Milestone {{milestoneId}} complete." Do not add a second final-status block, repeat the tool result, or restate the closeout summary.
+- After `gsd_complete_milestone` succeeds, emit only one closeout line: "Milestone {{milestoneId}} closeout submitted." Do not say the milestone is complete, do not add a second final-status block, repeat the tool result, or restate the closeout summary.
 
 **Important:** Do NOT skip code-change, success-criteria, or definition-of-done verification (steps 4-6). The summary must reflect verified outcomes. Verification failures block completion; there is no override. If a verification tool fails, errors, or returns unexpected output, treat it as failure.
 

@@ -71,10 +71,12 @@ function getApiKeyProviderDisplayName(host: InteractiveModeDelegateHost, provide
 
 export function buildLoginProviderOptions(host: InteractiveModeDelegateHost): AuthSelectorProvider[] {
 	const modelRegistry = host.session.modelRegistry;
-	const oauthProviders = modelRegistry.authStorage
-		.getOAuthProviders()
-		.filter((provider) => isBrowserOAuthProviderAllowed(provider.id));
+	const allOAuthProviders = modelRegistry.authStorage.getOAuthProviders();
+	const oauthProviders = allOAuthProviders.filter((provider) => isBrowserOAuthProviderAllowed(provider.id));
 	const oauthProviderIds = new Set(oauthProviders.map((provider) => provider.id));
+	const apiKeyOnlyOAuthProviderIds = new Set(
+		allOAuthProviders.filter((provider) => !isBrowserOAuthProviderAllowed(provider.id)).map((provider) => provider.id),
+	);
 	const modelProviderIds = Array.from(new Set(modelRegistry.getAll().map((model) => model.provider))).sort();
 
 	const externalCliProviders = modelProviderIds
@@ -87,7 +89,10 @@ export function buildLoginProviderOptions(host: InteractiveModeDelegateHost): Au
 		}));
 
 	const apiKeyProviders = modelProviderIds
-		.filter((providerId) => modelRegistry.getProviderAuthMode(providerId) === "apiKey")
+		.filter(
+			(providerId) =>
+				modelRegistry.getProviderAuthMode(providerId) === "apiKey" || apiKeyOnlyOAuthProviderIds.has(providerId),
+		)
 		.filter((providerId) => !oauthProviderIds.has(providerId))
 		.map((providerId) => ({
 			id: providerId,

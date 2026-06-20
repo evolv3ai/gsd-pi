@@ -12,6 +12,7 @@ import { clearPathCache } from "../paths.ts";
 import {
   openDatabase,
   closeDatabase,
+  insertAssessment,
   insertMilestone,
   insertSlice,
 } from "../gsd-db.ts";
@@ -220,6 +221,44 @@ describe("validate-milestone stuck-loop guard (#4094)", () => {
     assert.equal(result, "continue");
     assert.equal(pauseAutoMock.mock.callCount(), 0);
     assert.equal(s.pendingVerificationRetry, null);
+  });
+
+  test("continues when DB pass overrides stale worktree needs-attention after /gsd verdict", async () => {
+    insertMilestone({ id: "M001" });
+    insertSlice({ id: "S01", milestoneId: "M001", title: "Slice 1", status: "complete" });
+    writeWorktreeValidationFile("needs-attention");
+
+    const worktreeValidationPath = join(
+      tempDir,
+      ".gsd",
+      "worktrees",
+      "M001",
+      ".gsd",
+      "milestones",
+      "M001",
+      "M001-VALIDATION.md",
+    );
+    insertAssessment({
+      path: worktreeValidationPath,
+      milestoneId: "M001",
+      sliceId: null,
+      taskId: null,
+      status: "pass",
+      scope: "milestone-validation",
+      fullContent: "---\nverdict: pass\n---\n\n# Validation\nManually overridden via /gsd verdict\n",
+    });
+    invalidateAllCaches();
+
+    const ctx = makeMockCtx();
+    const pi = makeMockPi();
+    const pauseAutoMock = mock.fn(async () => {});
+    const s = makeMockSession(tempDir, "validate-milestone", "M001");
+
+    const result = await runPostUnitVerification({ s, ctx, pi } as VerificationContext, pauseAutoMock);
+
+    assert.equal(result, "continue");
+    assert.equal(pauseAutoMock.mock.callCount(), 0);
+    assert.equal(ctx.ui.notify.mock.callCount(), 0);
   });
 
   test("retries when no VALIDATION file exists yet", async () => {

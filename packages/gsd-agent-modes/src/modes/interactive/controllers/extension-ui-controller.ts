@@ -2,6 +2,7 @@ import type { ExtensionUIContext } from "@gsd/pi-coding-agent/core/extensions/in
 
 import { Theme, getAvailableThemesWithPaths, getThemeByName, setTheme, setThemeInstance, theme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { appKey } from "../components/keybinding-hints.js";
+import { startActivityIndicator, stopActivityIndicator } from "./chat-controller.js";
 
 export function createExtensionUIContext(host: any): ExtensionUIContext {
 	return {
@@ -11,6 +12,7 @@ export function createExtensionUIContext(host: any): ExtensionUIContext {
 		notify: (message, type) => host.showExtensionNotify(message, type),
 		onTerminalInput: (handler) => host.addExtensionTerminalInputListener(handler),
 		setStatus: (key, text) => host.setExtensionStatus(key, text),
+		setGsdProgress: (state, dispose) => host.setGsdProgress(state, dispose),
 		setWorkingMessage: (message) => {
 			if (message === null || message === undefined) {
 				host.pendingWorkingMessage = null;
@@ -18,8 +20,16 @@ export function createExtensionUIContext(host: any): ExtensionUIContext {
 					host.loadingAnimation.stop();
 					host.loadingAnimation = undefined;
 					host.statusContainer.clear();
-					host.ui.requestRender();
 				}
+				// GSD auto-mode suppresses the default loader but the turn is still
+				// in flight — keep a compact pulse until agent_end.
+				if (host.session?.isStreaming) {
+					const phase = host.gsdProgressState?.phase as string | undefined;
+					startActivityIndicator(host, phase);
+				} else {
+					stopActivityIndicator(host);
+				}
+				host.ui.requestRender();
 				return;
 			}
 			if (host.loadingAnimation) {

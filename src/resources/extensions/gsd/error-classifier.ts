@@ -10,6 +10,8 @@
  * @see https://github.com/open-gsd/gsd-pi/issues/2577
  */
 
+import { TOOL_SURFACE_NOT_READY } from "./tool-surface-readiness.js";
+
 // ── ErrorClass discriminated union ──────────────────────────────────────────
 
 export type ErrorClass =
@@ -47,9 +49,10 @@ export function resetRetryState(state: RetryState): void {
 const PERMANENT_RE = /auth|unauthorized|forbidden|invalid.*key|invalid.*api|billing|quota exceeded|account/i;
 // Include provider-specific quota-window phrasing like:
 // - "You've hit your limit"
+// - "You've reached your limit"
 // - "usage limit" / "quota reached"
 // - "out of extra usage"
-const RATE_LIMIT_RE = /rate.?limit|too many requests|429|hit your limit|usage limit|out of extra usage|quota (?:reached|hit)|limit.*resets?/i;
+const RATE_LIMIT_RE = /rate.?limit|too many requests|429|(?:hit|reached) your (?:\w+ )?limit|(?:usage|session|weekly|daily|monthly|quota) limit|out of extra usage|quota (?:reached|hit)|limit.*resets?/i;
 // OpenRouter affordability-style quota errors should be treated as transient
 // so core retry logic can lower maxTokens and continue in-session.
 const AFFORDABILITY_RE = /requires more credits|can only afford|insufficient credits|not enough credits|fewer max_tokens/i;
@@ -57,7 +60,7 @@ const AFFORDABILITY_RE = /requires more credits|can only afford|insufficient cre
 // are emitted by SDK/harness transports for mid-stream disconnects.
 // These indicate transient network-level interruptions.
 // See: https://github.com/open-gsd/gsd-pi/issues/4558
-const NETWORK_RE = /network|ECONNRESET|ETIMEDOUT|ECONNREFUSED|socket hang up|web ?socket|fetch failed|connection.*reset|dns|unexpected eof|stream idle timeout|partial response received/i;
+const NETWORK_RE = /network|ECONNRESET|ETIMEDOUT|ECONNREFUSED|socket hang up|web ?socket|fetch failed|connection.*reset|dns|unexpected eof|stream idle timeout|partial response received|stream ended without finish_reason/i;
 // Context overflow errors (context window/length exceeded) should be treated as server-class
 // transient errors so auto-mode can retry with reduced budget or fall back to a larger-context model.
 // See: https://github.com/open-gsd/gsd-pi/issues/4528
@@ -69,6 +72,10 @@ const CONNECTION_RE = /terminated|connection.?(?:refused|error)|other side close
 const STREAM_RE = /in JSON at position \d+|Unexpected end of JSON|SyntaxError.*JSON/i;
 const RESET_DELAY_RE = /reset in (\d+)s/i;
 const TOOL_SCHEMA_RE = /schema overload|consecutive tool validation failures/i;
+// GSD tool-surface readiness abort (claude-code stream adapter): the workflow
+// MCP server had not registered the Unit's required tools at SDK init. The
+// server typically finishes connecting within seconds — same-model retry.
+const TOOL_SURFACE_NOT_READY_RE = new RegExp(TOOL_SURFACE_NOT_READY, "i");
 // Provider rejected the request shape for the selected model (400 bad request,
 // grammar limits, etc.). Not transient — try a different model/fallback.
 // Context-window 400s stay in SERVER_RE (checked earlier).
@@ -105,6 +112,11 @@ export function classifyError(errorMsg: string, retryAfterMs?: number): ErrorCla
   // Checked early to prevent misclassification as unknown/provider error.
   if (TOOL_SCHEMA_RE.test(errorMsg)) {
     return { kind: "tool-schema", retryAfterMs: 0 };
+  }
+
+  // Tool-surface readiness abort — transient; retry the same model shortly.
+  if (TOOL_SURFACE_NOT_READY_RE.test(errorMsg)) {
+    return { kind: "network", retryAfterMs: retryAfterMs ?? 3_000 };
   }
 
   const isPermanent = PERMANENT_RE.test(errorMsg);

@@ -99,6 +99,7 @@ export const KNOWN_PREFERENCE_KEYS = new Set<string>([
   "skill_rules",
   "custom_instructions",
   "models",
+  "thinking",
   "skill_discovery",
   "skill_staleness_days",
   "auto_supervisor",
@@ -199,6 +200,28 @@ export interface GSDSkillRule {
 }
 
 /**
+ * Reasoning effort levels. Mirrors `ThinkingLevel` in `@gsd/pi-agent-core`;
+ * declared locally so preference parsing/validation does not import the agent
+ * core package. `xhigh` is only honored by models whose `thinkingLevelMap`
+ * advertises it — unsupported levels are clamped at dispatch (ADR-026).
+ */
+export type GSDThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+/** The nine model-routing phase buckets. */
+export const GSD_MODEL_PHASE_KEYS = [
+  "research",
+  "planning",
+  "discuss",
+  "execution",
+  "execution_simple",
+  "completion",
+  "validation",
+  "subagent",
+  "uat",
+] as const;
+export type GSDModelPhaseKey = (typeof GSD_MODEL_PHASE_KEYS)[number];
+
+/**
  * Model configuration for a single phase.
  * Supports primary model with optional fallbacks for resilience.
  */
@@ -209,7 +232,21 @@ export interface GSDPhaseModelConfig {
   provider?: string;
   /** Fallback models to try in order if primary fails (e.g., rate limits, credits exhausted) */
   fallbacks?: string[];
+  /**
+   * Reasoning effort for this phase (ADR-026). Travels with the model: an
+   * explicit value here bypasses the `execute-task` thinking floor and is
+   * capability-clamped to the resolved model at dispatch. Takes precedence
+   * over a same-phase entry in the separate `thinking` block.
+   */
+  thinking?: GSDThinkingLevel;
 }
+
+/**
+ * Separate per-phase reasoning-effort block (ADR-026). An alternative to
+ * inline `models.<phase>.thinking` that lets thinking be pinned without
+ * pinning a model. Same nine phase keys as `models`.
+ */
+export type GSDThinkingConfig = Partial<Record<GSDModelPhaseKey, GSDThinkingLevel>>;
 
 /**
  * Legacy model config -- simple string per phase.
@@ -256,6 +293,14 @@ export interface AutoSupervisorConfig {
   soft_timeout_minutes?: number;
   idle_timeout_minutes?: number;
   hard_timeout_minutes?: number;
+  /**
+   * Dedicated budget for a single in-flight tool call before it is treated as
+   * hung. Distinct from `idle_timeout_minutes`: a genuinely stuck tool should
+   * be recovered in minutes rather than waiting out the full idle window. A
+   * long-but-progressing session is not idle, so it must not share the hung-tool
+   * threshold.
+   */
+  stalled_tool_timeout_minutes?: number;
 }
 
 export interface RemoteQuestionsConfig {
@@ -364,6 +409,8 @@ export interface GSDPreferences {
   skill_rules?: GSDSkillRule[];
   custom_instructions?: string[];
   models?: GSDModelConfig | GSDModelConfigV2;
+  /** Per-phase reasoning effort, separate from `models` (ADR-026). */
+  thinking?: GSDThinkingConfig;
   skill_discovery?: SkillDiscoveryMode;
   skill_staleness_days?: number;  // Skills unused for N days get deprioritized (#599). 0 = disabled. Default: 60.
   auto_supervisor?: AutoSupervisorConfig;
@@ -423,7 +470,7 @@ export interface GSDPreferences {
   search_provider?: "brave" | "tavily" | "ollama" | "native" | "auto";
   /** Context selection mode for file inlining. "full" inlines entire files, "smart" uses semantic chunking. Default derived from token profile. */
   context_selection?: ContextSelectionMode;
-  /** Default widget display mode for auto-mode dashboard. "full" | "small" | "min" | "off". Default: "full". */
+  /** Default widget display mode for auto-mode dashboard. "full" | "small" | "min" | "off". Default: "small". */
   widget_mode?: "full" | "small" | "min" | "off";
   /** Reactive (graph-derived parallel) task execution within slices. Disabled by default. */
   reactive_execution?: ReactiveExecutionConfig;
@@ -547,8 +594,24 @@ export interface LoadedGSDPreferences {
   path: string;
   scope: "global" | "project";
   preferences: GSDPreferences;
+  /** True when the file exists but its contents were ignored before merging. */
+  ignored?: boolean;
   /** Validation warnings (unknown keys, type mismatches, deprecations). Empty when preferences are clean. */
   warnings?: string[];
+  /** Structured parse/validation diagnostics for user-visible reporting. */
+  diagnostics?: PreferenceDiagnostic[];
+}
+
+export interface PreferenceDiagnostic {
+  path: string;
+  scope: "global" | "project";
+  severity: "error" | "warning";
+  kind: "parse" | "validation";
+  message: string;
+  line?: number;
+  column?: number;
+  ignored?: boolean;
+  sanitized?: boolean;
 }
 
 export interface SkillResolution {

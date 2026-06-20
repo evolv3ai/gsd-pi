@@ -17,9 +17,12 @@ import {
   getRequiredWorkflowToolsForAutoUnit,
   getRequiredWorkflowToolsForGuidedUnit,
   resolveWorkflowMcpProjectRoot,
+  isWorkflowMcpSurfaceTool,
   supportsStructuredQuestions,
   usesWorkflowMcpTransport,
 } from "../workflow-mcp.ts";
+import { DB_WORKFLOW_TOOL_NAMES } from "../workflow-tool-surface.ts";
+import { UNIT_TOOL_CONTRACTS } from "../unit-tool-contracts.ts";
 
 const MCP_STDIO_TIMEOUT_MS = 90_000;
 
@@ -41,17 +44,73 @@ test("resolveWorkflowMcpProjectRoot maps milestone worktree cwd to project root"
 });
 
 test("guided execute-task requires canonical task completion tool", () => {
-  assert.deepEqual(getRequiredWorkflowToolsForGuidedUnit("execute-task"), ["gsd_task_complete"]);
+  const expected = [
+    "gsd_task_complete",
+    "gsd_exec",
+    "gsd_exec_search",
+    "gsd_resume",
+    "gsd_capture_thought",
+  ];
+  assert.deepEqual(getRequiredWorkflowToolsForGuidedUnit("execute-task"), expected);
 });
 
 test("auto execute-task requires canonical task completion tool", () => {
-  assert.deepEqual(getRequiredWorkflowToolsForAutoUnit("execute-task"), ["gsd_task_complete"]);
+  const expected = [
+    "gsd_task_complete",
+    "gsd_exec",
+    "gsd_exec_search",
+    "gsd_resume",
+    "gsd_capture_thought",
+  ];
+  assert.deepEqual(getRequiredWorkflowToolsForAutoUnit("execute-task"), expected);
+});
+
+test("plan-slice requires planning and roadmap reassessment tools", () => {
+  const expected = ["gsd_plan_slice", "gsd_reassess_roadmap"];
+  assert.deepEqual(getRequiredWorkflowToolsForGuidedUnit("plan-slice"), expected);
+  assert.deepEqual(getRequiredWorkflowToolsForAutoUnit("plan-slice"), expected);
+});
+
+test("plan-milestone requires status, roadmap, and single-slice planning tools", () => {
+  const expected = ["gsd_milestone_status", "gsd_plan_milestone", "gsd_plan_slice"];
+  assert.deepEqual(getRequiredWorkflowToolsForGuidedUnit("plan-milestone"), expected);
+  assert.deepEqual(getRequiredWorkflowToolsForAutoUnit("plan-milestone"), expected);
+});
+
+test("refine-slice requires canonical slice planning tool", () => {
+  assert.deepEqual(getRequiredWorkflowToolsForGuidedUnit("refine-slice"), ["gsd_plan_slice"]);
+  assert.deepEqual(getRequiredWorkflowToolsForAutoUnit("refine-slice"), ["gsd_plan_slice"]);
 });
 
 test("complete-slice requires closeout and execution handoff tools", () => {
-  const expected = ["gsd_slice_complete", "gsd_task_reopen", "gsd_replan_slice"];
+  const expected = [
+    "gsd_exec",
+    "gsd_capture_thought",
+    "gsd_slice_complete",
+    "gsd_task_reopen",
+    "gsd_replan_slice",
+    "gsd_requirement_update",
+    "gsd_summary_save",
+  ];
   assert.deepEqual(getRequiredWorkflowToolsForGuidedUnit("complete-slice"), expected);
   assert.deepEqual(getRequiredWorkflowToolsForAutoUnit("complete-slice"), expected);
+});
+
+test("complete-milestone requires status, requirement, project refresh, and closeout tools", () => {
+  const expected = [
+    "gsd_milestone_status",
+    "gsd_requirement_update",
+    "gsd_summary_save",
+    "gsd_complete_milestone",
+  ];
+  assert.deepEqual(getRequiredWorkflowToolsForGuidedUnit("complete-milestone"), expected);
+  assert.deepEqual(getRequiredWorkflowToolsForAutoUnit("complete-milestone"), expected);
+});
+
+test("reactive-execute requires task completion and failed-task summary tools", () => {
+  const expected = ["gsd_task_complete", "gsd_summary_save"];
+  assert.deepEqual(getRequiredWorkflowToolsForGuidedUnit("reactive-execute"), expected);
+  assert.deepEqual(getRequiredWorkflowToolsForAutoUnit("reactive-execute"), expected);
 });
 
 test("workflow MCP capability surface includes native legacy gsd aliases", () => {
@@ -67,6 +126,18 @@ test("workflow MCP capability surface includes native legacy gsd aliases", () =>
   );
 
   assert.equal(err, null);
+});
+
+test("workflow MCP capability surface includes every shared workflow contract tool", () => {
+  for (const name of DB_WORKFLOW_TOOL_NAMES) {
+    assert.equal(isWorkflowMcpSurfaceTool(name), true, `${name} should be in workflow MCP surface`);
+  }
+});
+
+test("workflow MCP capability surface preserves session and read tools outside DB contracts", () => {
+  for (const name of ["gsd_execute", "gsd_status", "gsd_progress", "gsd_doctor", "gsd_graph"]) {
+    assert.equal(isWorkflowMcpSurfaceTool(name), true, `${name} should stay in workflow MCP surface`);
+  }
 });
 
 test("deep project setup units declare required workflow MCP tools", () => {
@@ -441,8 +512,8 @@ test("workflow MCP launch config reaches mutation tools over stdio", async () =>
               estimate: "10m",
               files: ["src/resources/extensions/gsd/workflow-mcp.ts"],
               verify: "node --test",
-              inputs: [".gsd/milestones/M001/M001-ROADMAP.md"],
-              expectedOutput: ["S01-PLAN.md", "T01-PLAN.md"],
+              inputs: [],
+              expectedOutput: ["src/bridge-status.md"],
             },
           ],
         },
@@ -467,6 +538,52 @@ test("workflow MCP launch config reaches mutation tools over stdio", async () =>
     );
   } finally {
     await client.close().catch(() => {});
+    rmSync(projectRoot, { recursive: true, force: true });
+    rmSync(isolatedGsdHome, { recursive: true, force: true });
+  }
+});
+
+test("workflow MCP stdio surface exposes every unit's required workflow tool", async () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gsd-workflow-all-unit-tools-"));
+  const isolatedGsdHome = mkdtempSync(join(tmpdir(), "gsd-workflow-all-unit-home-"));
+  mkdirSync(join(projectRoot, ".gsd"), { recursive: true });
+
+  const launch = detectWorkflowMcpLaunchConfig(projectRoot, {});
+  assert.ok(launch, "expected a workflow MCP launch config");
+
+  const client = new Client({ name: "workflow-mcp-contract-test", version: "1.0.0" });
+  const transport = new StdioClientTransport({
+    command: launch.command,
+    args: launch.args,
+    env: {
+      ...process.env,
+      ...launch.env,
+      GSD_HOME: isolatedGsdHome,
+      DISCORD_BOT_TOKEN: "",
+      SLACK_BOT_TOKEN: "",
+      TELEGRAM_BOT_TOKEN: "",
+    } as Record<string, string>,
+    cwd: launch.cwd,
+    stderr: "pipe",
+  });
+
+  try {
+    await client.connect(transport, { timeout: MCP_STDIO_TIMEOUT_MS });
+    const listed = await client.listTools(undefined, { timeout: MCP_STDIO_TIMEOUT_MS });
+    const exposedTools = new Set((listed.tools ?? []).map((tool) => tool.name));
+
+    for (const [unitType, contract] of Object.entries(UNIT_TOOL_CONTRACTS)) {
+      for (const toolName of contract.requiredWorkflowTools) {
+        if (!toolName.startsWith("gsd_") && toolName !== "ask_user_questions") continue;
+        assert.ok(
+          exposedTools.has(toolName),
+          `${unitType} requires ${toolName}, but workflow MCP exposed ${JSON.stringify([...exposedTools].sort())}`,
+        );
+      }
+    }
+  } finally {
+    await client.close().catch(() => undefined);
+    await transport.close().catch(() => undefined);
     rmSync(projectRoot, { recursive: true, force: true });
     rmSync(isolatedGsdHome, { recursive: true, force: true });
   }
@@ -575,9 +692,33 @@ test("usesWorkflowMcpTransport matches local externalCli providers", () => {
   assert.equal(usesWorkflowMcpTransport("oauth", "local://custom"), false);
 });
 
-test("supportsStructuredQuestions disables local workflow MCP questions unless explicitly enabled", () => {
+test("supportsStructuredQuestions recognizes workflow MCP question tools", () => {
   assert.equal(
     supportsStructuredQuestions(["ask_user_questions"], {
+      authMode: "externalCli",
+      baseUrl: "local://claude-code",
+      env: {},
+    }),
+    true,
+  );
+  assert.equal(
+    supportsStructuredQuestions(["mcp__gsd-workflow__ask_user_questions"], {
+      authMode: "externalCli",
+      baseUrl: "local://claude-code",
+      env: {},
+    }),
+    true,
+  );
+  assert.equal(
+    supportsStructuredQuestions(["mcp__gsd-workflow__*"], {
+      authMode: "externalCli",
+      baseUrl: "local://claude-code",
+      env: {},
+    }),
+    true,
+  );
+  assert.equal(
+    supportsStructuredQuestions(["mcp__gsd-browser__*"], {
       authMode: "externalCli",
       baseUrl: "local://claude-code",
       env: {},
@@ -588,9 +729,9 @@ test("supportsStructuredQuestions disables local workflow MCP questions unless e
     supportsStructuredQuestions(["mcp__gsd-workflow__ask_user_questions"], {
       authMode: "externalCli",
       baseUrl: "local://claude-code",
-      env: { GSD_WORKFLOW_MCP_STRUCTURED_QUESTIONS: "1" } as NodeJS.ProcessEnv,
+      env: { GSD_WORKFLOW_MCP_STRUCTURED_QUESTIONS: "0" } as NodeJS.ProcessEnv,
     }),
-    true,
+    false,
   );
   assert.equal(
     supportsStructuredQuestions(["ask_user_questions"], {
@@ -603,6 +744,39 @@ test("supportsStructuredQuestions disables local workflow MCP questions unless e
     supportsStructuredQuestions([], {
       authMode: "oauth",
       baseUrl: "https://api.anthropic.com",
+    }),
+    false,
+  );
+});
+
+test("supportsStructuredQuestions gates non-local externalCli providers", () => {
+  assert.equal(
+    supportsStructuredQuestions(["ask_user_questions"], {
+      authMode: "externalCli",
+      env: {},
+    }),
+    true,
+  );
+  assert.equal(
+    supportsStructuredQuestions(["ask_user_questions"], {
+      authMode: "externalCli",
+      baseUrl: "https://api.example.com",
+      env: {},
+    }),
+    true,
+  );
+  assert.equal(
+    supportsStructuredQuestions(["ask_user_questions"], {
+      authMode: "externalCli",
+      env: { GSD_WORKFLOW_MCP_STRUCTURED_QUESTIONS: "0" } as NodeJS.ProcessEnv,
+    }),
+    false,
+  );
+  assert.equal(
+    supportsStructuredQuestions(["ask_user_questions"], {
+      authMode: "externalCli",
+      baseUrl: "https://api.example.com",
+      env: { GSD_WORKFLOW_MCP_STRUCTURED_QUESTIONS: "0" } as NodeJS.ProcessEnv,
     }),
     false,
   );
@@ -679,7 +853,7 @@ test("transport compatibility ignores API-backed providers", () => {
 test("transport compatibility now allows plan-slice over workflow MCP surface", () => {
   const error = getWorkflowTransportSupportError(
     "claude-code",
-    ["gsd_plan_slice"],
+    getRequiredWorkflowToolsForAutoUnit("plan-slice"),
     {
       projectRoot: "/tmp/project",
       env: { GSD_WORKFLOW_MCP_COMMAND: "node" },
@@ -696,7 +870,7 @@ test("transport compatibility now allows plan-slice over workflow MCP surface", 
 test("transport compatibility now allows complete-slice over workflow MCP surface", () => {
   const error = getWorkflowTransportSupportError(
     "claude-code",
-    ["gsd_complete_slice"],
+    getRequiredWorkflowToolsForAutoUnit("complete-slice"),
     {
       projectRoot: "/tmp/project",
       env: { GSD_WORKFLOW_MCP_COMMAND: "node" },
@@ -747,7 +921,7 @@ test("transport compatibility now allows gate-evaluate over workflow MCP surface
 test("transport compatibility now allows validate-milestone over workflow MCP surface", () => {
   const error = getWorkflowTransportSupportError(
     "claude-code",
-    ["gsd_milestone_status", "gsd_validate_milestone"],
+    getRequiredWorkflowToolsForAutoUnit("validate-milestone"),
     {
       projectRoot: "/tmp/project",
       env: { GSD_WORKFLOW_MCP_COMMAND: "node" },
@@ -764,7 +938,7 @@ test("transport compatibility now allows validate-milestone over workflow MCP su
 test("transport compatibility now allows complete-milestone over workflow MCP surface", () => {
   const error = getWorkflowTransportSupportError(
     "claude-code",
-    ["gsd_milestone_status", "gsd_complete_milestone"],
+    getRequiredWorkflowToolsForAutoUnit("complete-milestone"),
     {
       projectRoot: "/tmp/project",
       env: { GSD_WORKFLOW_MCP_COMMAND: "node" },
@@ -832,6 +1006,52 @@ test("transport compatibility still checks non-MCP tools against parent active t
   assert.doesNotMatch(error ?? "", /gsd_summary_save/);
 });
 
+test("transport compatibility allows plan-slice MCP tools when parent surface is scoped (regression #457)", () => {
+  const error = getWorkflowTransportSupportError(
+    "claude-code",
+    getRequiredWorkflowToolsForAutoUnit("plan-slice"),
+    {
+      projectRoot: "/tmp/project",
+      env: { GSD_WORKFLOW_MCP_COMMAND: "node" },
+      surface: "auto-mode",
+      unitType: "plan-slice",
+      authMode: "externalCli",
+      baseUrl: "local://claude-code",
+      activeTools: [
+        "ScheduleWakeup",
+        "ToolSearch",
+        "ask_user_questions",
+        "async_bash",
+        "await_job",
+        "bash",
+        "bg_shell",
+        "cancel_job",
+        "capture_thought",
+        "discover_configs",
+        "edit",
+        "fetch_page",
+        "get_library_docs",
+        "gsd_checkpoint_db",
+        "gsd_exec",
+        "gsd_exec_search",
+        "gsd_milestone_status",
+        "gsd_resume",
+        "mcp_call",
+        "mcp_discover",
+        "mcp_servers",
+        "memory_query",
+        "read",
+        "resolve_library",
+        "secure_env_collect",
+        "subagent",
+        "write",
+      ],
+    },
+  );
+
+  assert.equal(error, null);
+});
+
 test("transport compatibility still blocks units whose MCP tools are not exposed", () => {
   const error = getWorkflowTransportSupportError(
     "claude-code",
@@ -848,6 +1068,33 @@ test("transport compatibility still blocks units whose MCP tools are not exposed
 
   assert.match(error ?? "", /requires secure_env_collect/);
   assert.match(error ?? "", /currently exposes only/);
+});
+
+test("discuss-milestone guided flow does not abort when all required tools are on MCP surface (regression #469)", () => {
+  // Guided flow starts the workflow MCP server as part of dispatch, so the
+  // parent session active-tool list is not authoritative for MCP tools.
+  const discussMilestoneTools = [
+    "ask_user_questions",
+    "gsd_summary_save",
+    "gsd_requirement_save",
+    "gsd_requirement_update",
+    "gsd_plan_milestone",
+    "gsd_milestone_generate_id",
+  ];
+  const error = getWorkflowTransportSupportError(
+    "claude-code",
+    discussMilestoneTools,
+    {
+      projectRoot: "/tmp/project",
+      env: { GSD_WORKFLOW_MCP_COMMAND: "node" },
+      surface: "guided flow",
+      unitType: "discuss-milestone",
+      authMode: "externalCli",
+      baseUrl: "local://claude-code",
+    },
+  );
+
+  assert.equal(error, null);
 });
 
 test("transport compatibility accepts MCP-namespaced runtime tools", () => {

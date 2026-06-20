@@ -5,7 +5,19 @@
  * and classifies commands as quick (single-turn) vs long-running.
  *
  * Also defines exit code constants and the status→exit-code mapping function.
+ *
+ * The stop/pause notice vocabulary itself (prefixes + message classifiers)
+ * lives in the Stop Notice module — the same module the emitters format with,
+ * so wording stays in lockstep with detection.
  */
+
+import {
+  isBlockedNoticeMessage,
+  isManualResolutionNotice,
+  isPauseNotice,
+  isTerminalNotice,
+} from './resources/extensions/gsd/stop-notice.js'
+import { canonicalToolName } from './resources/extensions/gsd/engine-hook-contract.js'
 
 // ---------------------------------------------------------------------------
 // Exit Code Constants
@@ -70,14 +82,6 @@ export function mapStatusToExitCode(status: string): number {
  *
  * Blocked detection is separate — checked via isBlockedNotification.
  */
-export const PAUSED_PREFIXES = ['auto-mode paused', 'step-mode paused']
-export const TERMINAL_PREFIXES = [
-  'auto-mode stopped',
-  'step-mode stopped',
-  'auto-mode complete',
-  'no active milestone',
-  'auto-mode idle',
-]
 export const IDLE_TIMEOUT_MS = 15_000
 // new-milestone is a long-running creative task where the LLM may pause
 // between tool calls (e.g. after mkdir, before writing files). Use a
@@ -85,31 +89,13 @@ export const IDLE_TIMEOUT_MS = 15_000
 export const NEW_MILESTONE_IDLE_TIMEOUT_MS = 120_000
 const INTERACTIVE_HEADLESS_TOOLS = new Set(['ask_user_questions', 'secure_env_collect'])
 
+// Delegates to the shared normalizer seam (engine-hook-contract.ts) instead of
+// a hand-rolled parser. Behavior differs from the old parser only on malformed
+// MCP names: `mcp____tool` (empty server) and `mcp__server__` (empty tool) are
+// now returned unchanged rather than partially stripped — neither can match a
+// real tool name, so detection behavior is unaffected.
 export function canonicalHeadlessToolName(toolName: string | undefined): string {
-  const name = String(toolName ?? '')
-  if (!name.startsWith('mcp__')) return name
-  const toolSeparator = name.indexOf('__', 'mcp__'.length)
-  return toolSeparator >= 0 ? name.slice(toolSeparator + 2) : name
-}
-
-function isManualResolutionNotification(message: string): boolean {
-  return (
-    message.includes('resolve manually and re-run /gsd auto') ||
-    message.includes('resolve conflicts manually and run /gsd auto to resume') ||
-    message.includes('resolve and run /gsd auto to resume')
-  )
-}
-
-function isNonBlockingPauseNotification(message: string): boolean {
-  return message.includes('idempotent advance: unit already active')
-}
-
-function isPauseNotification(message: string): boolean {
-  return PAUSED_PREFIXES.some((prefix) => message.startsWith(prefix))
-}
-
-function isPauseNotificationRequiringIntervention(message: string): boolean {
-  return isPauseNotification(message) && !isNonBlockingPauseNotification(message)
+  return canonicalToolName(String(toolName ?? ''))
 }
 
 function getCommandBlockContent(event: Record<string, unknown>): string | null {
@@ -136,23 +122,14 @@ export function isTerminalNotification(event: Record<string, unknown>): boolean 
   if (isBlockingCommandBlock(event)) return true
   if (event.type !== 'extension_ui_request' || event.method !== 'notify') return false
   const message = String(event.message ?? '').toLowerCase()
-  return (
-    TERMINAL_PREFIXES.some((prefix) => message.startsWith(prefix)) ||
-    isPauseNotification(message) ||
-    isManualResolutionNotification(message)
-  )
+  return isTerminalNotice(message) || isPauseNotice(message) || isManualResolutionNotice(message)
 }
 
 export function isBlockedNotification(event: Record<string, unknown>): boolean {
   if (isBlockingCommandBlock(event)) return true
   if (event.type !== 'extension_ui_request' || event.method !== 'notify') return false
-  const message = String(event.message ?? '').toLowerCase()
   // Recoverable pauses need operator intervention in headless mode.
-  return (
-    message.includes('blocked:') ||
-    isPauseNotificationRequiringIntervention(message) ||
-    isManualResolutionNotification(message)
-  )
+  return isBlockedNoticeMessage(String(event.message ?? '').toLowerCase())
 }
 
 export function isMilestoneReadyNotification(event: Record<string, unknown>): boolean {
@@ -164,8 +141,28 @@ export function isInteractiveHeadlessTool(toolName: string | undefined): boolean
   return INTERACTIVE_HEADLESS_TOOLS.has(canonicalHeadlessToolName(toolName))
 }
 
-export function shouldArmHeadlessIdleTimeout(toolCallCount: number, interactiveToolCount: number): boolean {
-  return toolCallCount > 0 && interactiveToolCount === 0
+/**
+ * Decide whether to arm the headless idle-completion timer.
+ *
+ * Arms once at least one tool call has started (and no interactive tool —
+ * ask_user_questions / secure_env_collect — is still awaiting a human answer),
+ * so a multi-step command that pauses between tool calls still resolves.
+ *
+ * Also arms for *quick commands* that are handled entirely in the extension
+ * layer (e.g. `/gsd status`, `/gsd history`, `/gsd help`). These never enter
+ * the LLM agent loop, so they emit no `agent_end` / `execution_complete` and
+ * make zero tool calls. Without this branch the idle timer never arms, the
+ * completion promise never resolves, and the process exits with a spurious
+ * "cancelled" (11) code once the event loop drains. See live-regression
+ * scenario `headless status exits 0 on a seeded project`.
+ */
+export function shouldArmHeadlessIdleTimeout(
+  toolCallCount: number,
+  interactiveToolCount: number,
+  isQuickCommand = false,
+): boolean {
+  if (interactiveToolCount > 0) return false
+  return toolCallCount > 0 || isQuickCommand
 }
 
 export interface HeadlessTrackedEventLike {

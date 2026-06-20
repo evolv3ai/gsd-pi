@@ -49,7 +49,3 @@ Closes #123
 ## Rollback And Compatibility
 
 - Disable writer sequence enrichment
-
-## AI Assistance Disclosure
-
-This PR was prepared with AI assistance.

@@ -266,3 +266,41 @@ test("safety-harness: planned changed file avoids unexpected-file warning", (t) 
   assert.deepEqual(audit!.unexpectedFiles, [], "planned index.html must not be unexpected");
   assert.deepEqual(audit!.missingFiles, [], "planned index.html must not be missing");
 });
+
+// ─── External engine evidence (claude-code-cli pre-executed tools) ──────────
+// External engines skip beforeToolCall/tool_call, so register-hooks.ts records
+// evidence at tool_execution_start instead. These tests lock the collector
+// semantics that wiring relies on: idempotent recording by toolCallId, and
+// capitalized external tool names (Bash/Write/Edit) being recognized.
+
+test("safety-harness: recordToolCall is idempotent by toolCallId", () => {
+  resetEvidence();
+
+  // Native tools fire tool_execution_start AND tool_call — both record.
+  recordToolCall("tc-dup-1", "bash", { command: "npm test" });
+  recordToolCall("tc-dup-1", "bash", { command: "npm test" });
+
+  assert.equal(getEvidence().length, 1, "same toolCallId must not duplicate");
+});
+
+test("safety-harness: external capitalized Bash call records and resolves evidence", () => {
+  resetEvidence();
+
+  // tool_execution_start with Claude Code's native tool name
+  recordToolCall("ext-bash-1", "Bash", { command: "node /tmp/t01-verify.mjs" });
+  const entries = getEvidence().filter((e): e is BashEvidence => e.kind === "bash");
+  assert.equal(entries.length, 1, "capitalized Bash must be recognized as execution tool");
+  assert.equal(entries[0]!.command, "node /tmp/t01-verify.mjs");
+
+  // tool_execution_end fills the result
+  recordToolResult("ext-bash-1", "Bash", { content: [{ type: "text", text: "13 checks passed" }] }, false);
+  assert.equal(entries[0]!.exitCode, 0, "non-error external result resolves to exitCode 0");
+});
+
+test("safety-harness: external Write call records file evidence", () => {
+  resetEvidence();
+
+  recordToolCall("ext-write-1", "Write", { file_path: "/tmp/app/index.html" });
+  const writes = getEvidence().filter((e) => e.kind === "write");
+  assert.equal(writes.length, 1, "capitalized Write must record file evidence");
+});

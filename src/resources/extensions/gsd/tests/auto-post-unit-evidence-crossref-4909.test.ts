@@ -88,3 +88,49 @@ test("detects session execution tools supported by the evidence collector", () =
 
   assert.equal(_hasExecutionToolCallsInSessionForTest(entries), true);
 });
+
+test("detects execution tool calls in bare agent-end messages (no session-entry wrapper)", () => {
+  // The auto loop passes opts.agentEndMessages as bare {role, content}
+  // messages — not {type: "message", message} session-manager entries.
+  const entries = [
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          name: "Bash",
+          arguments: { command: "test -s index.html && grep -q localStorage index.html" },
+        },
+      ],
+    },
+  ];
+
+  assert.equal(_hasExecutionToolCallsInSessionForTest(entries), true);
+});
+
+test("does not suppress for bare agent-end messages without execution tools", () => {
+  const entries = [
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Task complete." },
+        { type: "toolCall", name: "Write", arguments: { file_path: "index.html" } },
+      ],
+    },
+  ];
+
+  assert.equal(_hasExecutionToolCallsInSessionForTest(entries), false);
+});
+
+test("ignores bare user messages with toolCall-shaped content", () => {
+  const entries = [
+    {
+      role: "user",
+      content: [
+        { type: "toolCall", name: "bash", arguments: { command: "echo hi" } },
+      ],
+    },
+  ];
+
+  assert.equal(_hasExecutionToolCallsInSessionForTest(entries), false);
+});

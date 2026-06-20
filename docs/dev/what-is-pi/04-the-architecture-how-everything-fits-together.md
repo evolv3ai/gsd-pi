@@ -32,7 +32,7 @@
 │  │  ┌──────────────────────────────────────────────────────────────┐  │ │
 │  │  │                    Event System                              │  │ │
 │  │  │  session_start → input → before_agent_start → agent_start   │  │ │
-│  │  │  → turn_start → context → tool_call → tool_result →        │  │ │
+│  │  │  → turn_start → context → tool_execution_* →               │  │ │
 │  │  │  turn_end → agent_end → session_shutdown                    │  │ │
 │  │  └──────────────────────────┬───────────────────────────────────┘  │ │
 │  │                             │                                      │ │

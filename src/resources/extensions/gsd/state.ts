@@ -13,6 +13,11 @@ import type {
   MilestoneRegistryEntry,
 } from './types.js';
 
+// Pre-migration fallback ONLY (ADR-017): deriveState must work on projects
+// whose DB does not exist yet (before md-importer runs), so it parses markdown
+// projections when `isDbAvailable()` is false or the DB has no rows. Once the
+// DB is populated, decision reads go through gsd-db queries — these parsers
+// must never be consulted when DB data is present.
 import {
   parseRoadmap,
   parsePlan,
@@ -52,10 +57,10 @@ import { isTerminalMilestoneSummaryContent } from './milestone-summary-classifie
 
 import {
   isDbAvailable,
-  wasDbOpenAttempted,
   getAllMilestones,
   getMilestone,
   getMilestoneSlices,
+  getSlicesByMilestoneIds,
   getSliceTasks,
   getReplanHistory,
   getSlice,
@@ -63,31 +68,19 @@ import {
   getLatestAssessmentByScope,
   getPendingGateCountForTurn,
 } from './gsd-db.js';
+import { wasWorkflowDatabaseOpenAttempted } from './db-workspace.js';
 import { formatCompletePhaseNextAction, countUnmappedActiveRequirements } from './requirements-backlog.js';
 import type { MilestoneRow } from './db-milestone-artifact-rows.js';
 import type { SliceRow, TaskRow } from './db-task-slice-rows.js';
+import {
+  classifyMilestoneReadiness,
+  readinessNeedsDiscussion,
+} from './milestone-readiness.js';
 
-function formatNeedsAttentionBlocker(milestoneId: string): string {
-  return [
-    `Milestone ${milestoneId} is blocked because milestone validation returned needs-attention.`,
-    `Fix options:`,
-    `1. Review the validation details: \`/gsd status\``,
-    `2. If you fixed the missing evidence or issue, re-run milestone validation: \`/gsd validate-milestone\``,
-    `3. If the finding is acceptable, override it: \`/gsd verdict pass --rationale "why this is okay"\``,
-    `4. If this should wait, defer it explicitly: \`/gsd park ${milestoneId}\``,
-    `After validation or override passes, run \`/gsd auto\` to complete and merge the milestone.`,
-  ].join("\n");
-}
-
-function formatNeedsRemediationBlocker(milestoneId: string): string {
-  return [
-    `Milestone ${milestoneId} is blocked because milestone validation returned needs-remediation, but all slices are complete.`,
-    `Fix options:`,
-    `1. Add remediation slices with \`gsd_reassess_roadmap\`, then run \`/gsd auto\``,
-    `2. If the finding is acceptable, override it: \`/gsd verdict pass --rationale "why this is okay"\``,
-    `3. If this should wait, defer it explicitly: \`/gsd park ${milestoneId}\``,
-  ].join("\n");
-}
+import {
+  needsAttentionBlockerGuidance as formatNeedsAttentionBlocker,
+  needsRemediationBlockerGuidance as formatNeedsRemediationBlocker,
+} from './guidance.js';
 
 /**
  * A "ghost" milestone directory contains only META.json (and no substantive
@@ -395,7 +388,7 @@ export async function deriveState(
     stopDbTimer({ phase: result.phase, milestone: result.activeMilestone?.id });
     _telemetry.dbDeriveCount++;
   } else {
-    if (wasDbOpenAttempted()) {
+    if (wasWorkflowDatabaseOpenAttempted()) {
       logWarning("state", "DB unavailable — refusing implicit markdown state derivation");
     }
     result = {
@@ -483,7 +476,12 @@ async function buildRegistryAndFindActive(
   let activeMilestoneSlices: SliceRow[] = [];
   let activeMilestoneFound = false;
   let activeMilestoneHasDraft = false;
-  let firstDeferredQueuedShell: { id: string; title: string; deps: string[] } | null = null;
+  let firstDeferredQueuedShell: { id: string; title: string; deps: string[]; hasDraftContext: boolean } | null = null;
+
+  const activeMilestoneIds = milestones
+    .filter((m) => !parkedMilestoneIds.has(m.id))
+    .map((m) => m.id);
+  const slicesByMilestone = getSlicesByMilestoneIds(activeMilestoneIds);
 
   for (const m of milestones) {
     if (parkedMilestoneIds.has(m.id)) {
@@ -491,7 +489,7 @@ async function buildRegistryAndFindActive(
       continue;
     }
 
-    const slices = getMilestoneSlices(m.id);
+    const slices = slicesByMilestone.get(m.id) ?? [];
 
     // DB-authoritative completeness (#4179): only trust completeMilestoneIds,
     // which is itself derived from DB status. SUMMARY-file presence alone must
@@ -505,6 +503,14 @@ async function buildRegistryAndFindActive(
     const allSlicesDone = slices.length > 0 && slices.every(s => isStatusDone(s.status));
 
     const title = stripMilestonePrefix(m.title) || m.id;
+    const hasContext = !!resolveMilestoneFile(basePath, m.id, "CONTEXT");
+    const hasDraftContext = !hasContext && !!resolveMilestoneFile(basePath, m.id, "CONTEXT-DRAFT");
+    const readiness = classifyMilestoneReadiness({
+      status: m.status,
+      hasContext,
+      hasDraftContext,
+      sliceCount: slices.length,
+    });
 
     if (!activeMilestoneFound) {
       const deps = m.depends_on;
@@ -515,9 +521,9 @@ async function buildRegistryAndFindActive(
         continue;
       }
 
-      if (m.status === 'queued' && slices.length === 0) {
+      if (readiness.kind === 'queued-shell') {
         if (!firstDeferredQueuedShell) {
-          firstDeferredQueuedShell = { id: m.id, title, deps };
+          firstDeferredQueuedShell = { id: m.id, title, deps, hasDraftContext: readiness.hasDraftContext };
         }
         registry.push({ id: m.id, title, status: 'pending', ...(deps.length > 0 ? { dependsOn: deps } : {}) });
         continue;
@@ -531,7 +537,7 @@ async function buildRegistryAndFindActive(
         continue;
       }
 
-      if (m.status === 'needs-discussion') activeMilestoneHasDraft = true;
+      if (readinessNeedsDiscussion(readiness)) activeMilestoneHasDraft = true;
 
       activeMilestone = { id: m.id, title };
       activeMilestoneSlices = slices;
@@ -548,6 +554,7 @@ async function buildRegistryAndFindActive(
     activeMilestone = { id: shell.id, title: shell.title };
     activeMilestoneSlices = [];
     activeMilestoneFound = true;
+    if (shell.hasDraftContext) activeMilestoneHasDraft = true;
     const entry = registry.find(e => e.id === shell.id);
     if (entry) entry.status = 'active';
   }
@@ -896,8 +903,8 @@ export async function deriveStateFromDb(
   }
 
   // ADR-011 Phase 2: pause-on-escalation takes precedence over dispatching the
-  // next task. `awaiting_review` tasks (continueWithDefault=true) are NOT
-  // surfaced here — they let the loop continue.
+  // next task. `awaiting_review` tasks (continueWithDefault=true) still pause
+  // here so silence is never treated as consent.
   //
   // We do NOT gate this on `phases.mid_execution_escalation` — creation of
   // new escalations is gated at the write site (tools/complete-task.ts:315),

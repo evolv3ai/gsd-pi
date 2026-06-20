@@ -87,6 +87,18 @@ export async function waitForReady(bg: BgProcess, timeout: number, signal?: Abor
 			return { ready: false, detail: "Cancelled" };
 		}
 		if (!bg.alive) {
+			// A clean exit-0 means the command ran to completion — it was a batch
+			// command (e.g. terraform apply, a migration, a build), not a long-lived
+			// server. That is success, not a readiness failure; say so plainly and
+			// point at the right tool so the agent stops using wait_for_ready here.
+			if (bg.exitCode === 0) {
+				return {
+					ready: false,
+					detail:
+						"Process completed (exit 0) before signaling readiness — it ran to completion rather than staying alive. " +
+						"wait_for_ready is for long-lived servers/watchers; for a run-to-completion command use async_bash (or bg_shell 'run').",
+				};
+			}
 			const stderrLines = bg.output.filter(l => l.stream === "stderr").slice(-5).map(l => l.line);
 			const stderrContext = stderrLines.length > 0 ? `\nstderr:\n${stderrLines.join("\n").slice(0, 500)}` : "";
 			return {

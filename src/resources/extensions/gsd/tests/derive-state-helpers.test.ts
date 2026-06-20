@@ -21,6 +21,7 @@ import {
   insertSlice,
   insertTask,
   setMilestoneQueueOrder,
+  transaction,
   updateTaskStatus,
 } from '../gsd-db.ts';
 
@@ -473,6 +474,31 @@ describe('derive-state-helpers', () => {
     }
   });
 
+  test('setMilestoneQueueOrder can be composed inside a transaction', async () => {
+    const base = createFixtureBase();
+    try {
+      writeFile(base, 'milestones/M001/M001-CONTEXT.md', '# M001\n\nContext.');
+      writeFile(base, 'milestones/M002/M002-CONTEXT.md', '# M002\n\nContext.');
+
+      openDatabase(':memory:');
+      insertMilestone({ id: 'M001', title: 'First', status: 'active' });
+      insertMilestone({ id: 'M002', title: 'Second', status: 'active' });
+
+      transaction(() => {
+        setMilestoneQueueOrder(['M002', 'M001']);
+      });
+
+      invalidateStateCache();
+      const state = await deriveStateFromDb(base);
+
+      assert.equal(state.activeMilestone?.id, 'M002', 'queue-order: nested transaction chooses M002');
+      assert.deepEqual(state.registry.map(entry => entry.id), ['M002', 'M001']);
+    } finally {
+      closeDatabase();
+      cleanup(base);
+    }
+  });
+
   test('getActiveMilestoneId: DB lock path ignores PARKED flag projection', async () => {
     const base = createFixtureBase();
     const previousLock = process.env.GSD_MILESTONE_LOCK;
@@ -555,6 +581,50 @@ describe('derive-state-helpers', () => {
         state.blockers.some(b => b.includes('needs-remediation') && b.includes('M001')),
         'remediation-stuck: blocker message mentions milestone and verdict',
       );
+      assert.ok(
+        state.blockers.some(b => b.includes('/gsd dispatch reassess')),
+        'remediation-stuck: blocker message points users to the reassess command',
+      );
+      assert.ok(
+        state.blockers.every(b => !b.includes('gsd_reassess_roadmap')),
+        'remediation-stuck: blocker message does not expose the internal tool name',
+      );
+    } finally {
+      closeDatabase();
+      cleanup(base);
+    }
+  });
+
+  // ─── Batch slice query: multi-milestone slices loaded in one query ─────
+  test('buildRegistryAndFindActive: batched slice query preserves ordering across milestones', async () => {
+    const base = createFixtureBase();
+    try {
+      // M001 is complete so the loop advances past it.
+      writeFile(base, 'milestones/M001/M001-ROADMAP.md', ROADMAP_CONTENT);
+      writeFile(base, 'milestones/M001/M001-SUMMARY.md', '# M001 Summary\n\nDone.');
+      // M002 is a queued shell milestone with no context and no slices — should be deferred.
+      mkdirSync(join(base, '.gsd', 'milestones', 'M002'), { recursive: true });
+      // M003 is the real active milestone with slices in non-trivial sequence order.
+      writeFile(base, 'milestones/M003/M003-CONTEXT.md', '# M003: Real\n\nReal milestone.');
+
+      openDatabase(':memory:');
+      insertMilestone({ id: 'M001', title: 'Complete', status: 'complete' });
+      insertMilestone({ id: 'M002', title: 'Shell', status: 'queued' });
+      insertMilestone({ id: 'M003', title: 'Real', status: 'active' });
+      // Slices intentionally inserted with out-of-order sequences to prove ordering.
+      insertSlice({ id: 'S01', milestoneId: 'M001', title: 'M1 Second', status: 'complete', risk: 'low', depends: [], sequence: 2 });
+      insertSlice({ id: 'S02', milestoneId: 'M001', title: 'M1 First', status: 'complete', risk: 'low', depends: [], sequence: 1 });
+      insertSlice({ id: 'S03', milestoneId: 'M003', title: 'M3 Second', status: 'active', risk: 'low', depends: [], sequence: 5 });
+      insertSlice({ id: 'S04', milestoneId: 'M003', title: 'M3 First', status: 'active', risk: 'low', depends: [], sequence: 3 });
+
+      invalidateStateCache();
+      const state = await deriveStateFromDb(base);
+
+      assert.equal(state.activeMilestone?.id, 'M003', 'batched: M003 is active after complete M001 and shell M002');
+      assert.equal(state.activeSlice?.id, 'S04', 'batched: first slice by sequence is active');
+      assert.equal(state.registry.find(e => e.id === 'M001')?.status, 'complete', 'batched: M001 complete');
+      assert.equal(state.registry.find(e => e.id === 'M002')?.status, 'pending', 'batched: shell M002 deferred to pending');
+      assert.equal(state.registry.find(e => e.id === 'M003')?.status, 'active', 'batched: M003 active');
     } finally {
       closeDatabase();
       cleanup(base);

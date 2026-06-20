@@ -23,19 +23,29 @@ import {
   resolveAutoSupervisorConfig,
 } from "./preferences.js";
 
-// ─── Data Collection ──────────────────────────────────────────────────────
+const DEFAULT_WIDGET_MODE = "small";
 
 interface ConfigSection {
   title: string;
   rows: Array<{ label: string; value: string; accent?: boolean }>;
 }
 
-function collectConfigSections(): ConfigSection[] {
+// ─── Data Collection ──────────────────────────────────────────────────────
+
+export interface CollectConfigOptions {
+  basePath?: string;
+  availableModelIds?: string[];
+}
+
+function collectConfigSections(options?: CollectConfigOptions): ConfigSection[] {
   const sections: ConfigSection[] = [];
 
   const globalPrefs = loadGlobalGSDPreferences();
-  const projectPrefs = loadProjectGSDPreferences();
-  const effective = loadEffectiveGSDPreferences();
+  const projectPrefs = loadProjectGSDPreferences(options?.basePath);
+  const loadOpts = options?.availableModelIds
+    ? { availableModelIds: options.availableModelIds }
+    : undefined;
+  const effective = loadEffectiveGSDPreferences(options?.basePath, loadOpts);
   const prefs = effective?.preferences;
 
   // ─── Sources ─────────────────────────────────────────────────────────
@@ -67,7 +77,11 @@ function collectConfigSections(): ConfigSection[] {
 
   const modelRows: ConfigSection["rows"] = [];
   for (const [label, unitType] of unitTypes) {
-    const resolved = resolveModelWithFallbacksForUnit(unitType);
+    const resolved = resolveModelWithFallbacksForUnit(
+      unitType,
+      options?.basePath,
+      options?.availableModelIds,
+    );
     if (resolved) {
       let val = resolved.primary;
       if (resolved.fallbacks.length > 0) {
@@ -137,6 +151,7 @@ function collectConfigSections(): ConfigSection[] {
     if (sup.model) supRows.push({ label: "Model", value: sup.model });
     supRows.push({ label: "Soft timeout", value: `${sup.soft_timeout_minutes}m` });
     supRows.push({ label: "Idle timeout", value: `${sup.idle_timeout_minutes}m` });
+    supRows.push({ label: "Stalled tool timeout", value: `${sup.stalled_tool_timeout_minutes}m` });
     supRows.push({ label: "Hard timeout", value: `${sup.hard_timeout_minutes}m` });
     sections.push({ title: "Auto Supervisor", rows: supRows });
   }
@@ -160,7 +175,7 @@ function collectConfigSections(): ConfigSection[] {
   if (prefs?.service_tier) toggleRows.push({ label: "service_tier", value: prefs.service_tier });
   if (prefs?.search_provider && prefs.search_provider !== "auto") toggleRows.push({ label: "search_provider", value: prefs.search_provider });
   if (prefs?.context_selection) toggleRows.push({ label: "context_selection", value: prefs.context_selection });
-  if (prefs?.widget_mode && prefs.widget_mode !== "full") toggleRows.push({ label: "widget_mode", value: prefs.widget_mode });
+  if (prefs?.widget_mode && prefs.widget_mode !== DEFAULT_WIDGET_MODE) toggleRows.push({ label: "widget_mode", value: prefs.widget_mode });
   if (prefs?.experimental?.rtk) toggleRows.push({ label: "experimental.rtk", value: "on" });
   if (toggleRows.length > 0) sections.push({ title: "Toggles", rows: toggleRows });
 
@@ -201,8 +216,8 @@ function collectConfigSections(): ConfigSection[] {
 
 // ─── Plain Text Formatter (headless/RPC fallback) ─────────────────────────
 
-export function formatConfigText(): string {
-  const sections = collectConfigSections();
+export function formatConfigText(options?: CollectConfigOptions): string {
+  const sections = collectConfigSections(options);
   const lines: string[] = ["GSD Configuration\n"];
 
   let maxLabel = 0;
@@ -240,11 +255,12 @@ export class GSDConfigOverlay {
     tui: { requestRender: () => void },
     theme: Theme,
     onClose: () => void,
+    options?: CollectConfigOptions,
   ) {
     this.tui = tui;
     this.theme = theme;
     this.onClose = onClose;
-    this.sections = collectConfigSections();
+    this.sections = collectConfigSections(options);
   }
 
   invalidate(): void {

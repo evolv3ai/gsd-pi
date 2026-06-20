@@ -3,11 +3,13 @@ import { join } from "node:path";
 
 import { loadFile, parseSummary, saveFile, parseTaskPlanMustHaves, countMustHavesMentionedInSummary } from "./files.js";
 import { parseRoadmap as parseLegacyRoadmap, parsePlan as parseLegacyPlan } from "./parsers-legacy.js";
-import { isDbAvailable, openDatabase, getMilestoneSlices, getSliceTasks } from "./gsd-db.js";
+import { isDbAvailable, getMilestoneSlices, getSliceTasks } from "./gsd-db.js";
+import { openExistingWorkflowDatabase } from "./db-workspace.js";
 import { resolveMilestoneFile, resolveMilestonePath, resolveSliceFile, resolveSlicePath, resolveTaskFile, resolveTasksDir, milestonesDir, gsdRoot, relMilestoneFile, relSliceFile, relTaskFile, relSlicePath, relGsdRootFile, resolveGsdRootFile, relMilestonePath, resolveGsdPathContract } from "./paths.js";
 import { deriveState, isMilestoneComplete } from "./state.js";
 import { invalidateAllCaches } from "./cache.js";
 import { loadEffectiveGSDPreferences, type GSDPreferences } from "./preferences.js";
+import { collectPreferenceDiagnostics, formatPreferenceDiagnosticDetail } from "./preferences-diagnostics.js";
 import { isClosedStatus } from "./status-guards.js";
 
 import type { DoctorIssue, DoctorIssueCode, DoctorReport } from "./doctor-types.js";
@@ -314,10 +316,7 @@ export async function runGSDDoctor(basePath: string, options?: { fix?: boolean; 
   // CLI doctor can run before any tool handler has opened the DB. Runtime
   // health checks need the existing project DB to surface DB-backed crash
   // locks, paused sessions, and coordination rows.
-  const dbPath = resolveGsdPathContract(basePath).projectDb;
-  if (existsSync(dbPath)) {
-    try { openDatabase(dbPath); } catch { /* surfaced later as db_unavailable */ }
-  }
+  openExistingWorkflowDatabase(basePath);
 
   // Issue codes that represent completion state transitions — creating summary
   // stubs, marking slices/milestones done in the roadmap. These belong to the
@@ -333,6 +332,17 @@ export async function runGSDDoctor(basePath: string, options?: { fix?: boolean; 
   };
 
   const prefs = loadEffectiveGSDPreferences(basePath);
+  for (const diagnostic of collectPreferenceDiagnostics(basePath)) {
+    issues.push({
+      severity: diagnostic.severity,
+      code: "invalid_preferences",
+      scope: "project",
+      unitId: "project",
+      message: `GSD preferences ${diagnostic.kind}: ${formatPreferenceDiagnosticDetail(diagnostic)}`,
+      file: diagnostic.path,
+      fixable: false,
+    });
+  }
   if (prefs) {
     const prefIssues = validatePreferenceShape(prefs.preferences);
     for (const issue of prefIssues) {

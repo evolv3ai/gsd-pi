@@ -123,6 +123,10 @@ test("#4782 phase 3: buildRunUatPrompt inlines UAT and keeps summary/project con
   // Project path is advertised on-demand; full project body is not inlined.
   assert.match(prompt, /\.gsd\/PROJECT\.md/);
   assert.ok(!prompt.includes("Run-UAT composer fixture project"), "run-uat should not inline full project context");
+
+  assert.match(prompt, /"toolPresentationPlanId": "run-uat\/default-v1"/);
+  assert.match(prompt, /"gsd_uat_result_save"/);
+  assert.match(prompt, /"read"/);
 });
 
 test("#4782 phase 3: buildRunUatPrompt omits optional slice summary when file is missing", async (t) => {

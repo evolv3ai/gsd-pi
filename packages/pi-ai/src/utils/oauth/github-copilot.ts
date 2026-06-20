@@ -77,6 +77,11 @@ function getBaseUrlFromToken(token: string): string | null {
 	return `https://${apiHost}`;
 }
 
+function getCopilotAccessToken(credentials: OAuthCredentials): string | undefined {
+	const legacyApiKey = (credentials as { apiKey?: unknown }).apiKey;
+	return credentials.access || (typeof legacyApiKey === "string" && legacyApiKey ? legacyApiKey : undefined);
+}
+
 export function getGitHubCopilotBaseUrl(token?: string, enterpriseDomain?: string): string {
 	// If we have a token, extract the base URL from proxy-ep
 	if (token) {
@@ -333,13 +338,13 @@ export const githubCopilotOAuthProvider: OAuthProviderInterface = {
 	},
 
 	getApiKey(credentials: OAuthCredentials): string {
-		return credentials.access;
+		return getCopilotAccessToken(credentials) as string;
 	},
 
 	modifyModels(models: Model<Api>[], credentials: OAuthCredentials): Model<Api>[] {
 		const creds = credentials as CopilotCredentials;
 		const domain = creds.enterpriseUrl ? (normalizeDomain(creds.enterpriseUrl) ?? undefined) : undefined;
-		const baseUrl = getGitHubCopilotBaseUrl(creds.access, domain);
+		const baseUrl = getGitHubCopilotBaseUrl(getCopilotAccessToken(creds), domain);
 		return models.map((m) => (m.provider === "github-copilot" ? { ...m, baseUrl } : m));
 	},
 };

@@ -47,6 +47,7 @@ import {
 // callers — production wiring previously injected them via deps; the seam
 // added type churn without enabling test variation.
 import { loadEffectiveGSDPreferences, getIsolationMode } from "./preferences.js";
+import { isolationDegradedFallbackGuidance, worktreeCreationFailedGuidance } from "./guidance.js";
 import { invalidateAllCaches } from "./cache.js";
 import { resolveMilestoneFile } from "./paths.js";
 import { getMilestone, insertMilestone, isDbAvailable, updateMilestoneStatus } from "./gsd-db.js";
@@ -79,6 +80,7 @@ import {
   teardownAutoWorktree,
 } from "./auto-worktree.js";
 import { resolveRoadmapForMilestoneMerge } from "./milestone-merge-roadmap.js";
+import type { MilestoneMergeTransactionRunner } from "./milestone-merge-transaction.js";
 
 const recentWorktreeMergeFailures = new Map<string, number>();
 const MERGE_FAILURE_DEDUPE_MS = 60_000;
@@ -147,25 +149,15 @@ export interface WorktreeLifecycleDeps {
    */
   worktreeProjection: WorktreeStateProjection;
 
-  // ── Merge primitive ──────────────────────────────────────────────────
+  // ── Merge transaction ────────────────────────────────────────────────
   /**
-   * Inner squash-merge primitive (`auto-worktree.ts:mergeMilestoneToMain`).
+   * Milestone Merge Transaction Module runner.
    *
-   * **Module-internal seam — do not construct your own.** Only the wiring
-   * factory `auto.ts:buildWorktreeLifecycleDeps()` is permitted to populate
-   * this field. The primitive is `@internal`; production callers reach the
-   * merge body through `WorktreeLifecycle.exitMilestone({ merge: true })`,
-   * never by calling this dep directly.
+   * The field name is preserved for existing test fixtures, but production
+   * wiring now supplies the named transaction wrapper rather than the raw
+   * squash-merge primitive directly.
    */
-  mergeMilestoneToMain: (
-    basePath: string,
-    milestoneId: string,
-    roadmapContent: string,
-  ) => {
-    pushed: boolean;
-    codeFilesChanged: boolean;
-    commitMessage?: string;
-  };
+  mergeMilestoneToMain: MilestoneMergeTransactionRunner;
 
   // ADR-016 phase 2 / C1 + C2 + C3 + C4 inlined the following fields as
   // direct imports — leaf primitives that did not vary across callers:
@@ -684,7 +676,16 @@ export function _enterMilestoneCore(
   // Handles the case where originalBasePath is falsy and basePath is itself
   // a worktree path — prevents double-nested worktree paths (#3729).
   const basePath = resolveWorktreeProjectRoot(s.basePath, s.originalBasePath);
-  const mode = opts.modeOverride ?? getIsolationMode(basePath);
+  // A stranded-recovery session that adopted the milestone branch in the
+  // project root must keep re-entering in that mode: the root checkout holds
+  // the branch, so creating the canonical worktree would fail with "already
+  // in use by another worktree". The override clears when the recovered
+  // milestone merges (_mergeAndExit), restoring configured isolation for
+  // subsequent milestones.
+  const mode =
+    opts.modeOverride ??
+    s.strandedRecoveryIsolationMode ??
+    getIsolationMode(basePath);
 
   if (s.isolationDegraded) {
     if (mode === "worktree") {
@@ -693,10 +694,7 @@ export function _enterMilestoneCore(
         s.basePath = basePath;
         rebuildGitService(s, deps);
         invalidateAllCaches();
-        ctx.notify(
-          `Worktree isolation is degraded. Fell back to branch milestone/${milestoneId}.`,
-          "warning",
-        );
+        ctx.notify(isolationDegradedFallbackGuidance(milestoneId), "warning");
         return { ok: true, mode: "branch", path: basePath };
       } catch (err) {
         debugLog("WorktreeLifecycle", {
@@ -883,10 +881,7 @@ export function _enterMilestoneCore(
       eventType: "worktree-create-failed",
       data: { milestoneId, error: msg, fallback: "project-root" },
     });
-    ctx.notify(
-      `Auto-worktree creation for ${milestoneId} failed: ${msg}. Continuing in project root.`,
-      "warning",
-    );
+    ctx.notify(worktreeCreationFailedGuidance(milestoneId, msg), "warning");
     // Degrade isolation for the rest of this session so mergeAndExit
     // doesn't try to merge a nonexistent worktree branch (#2483)
     s.isolationDegraded = true;

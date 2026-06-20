@@ -189,29 +189,60 @@ function getShellEnv(baseEnv?: NodeJS.ProcessEnv, extraEnv?: Record<string, stri
 	};
 }
 
+// Grace period before escalating from SIGTERM to SIGKILL. Deliberately a local
+// mirror of @gsd/pi-coding-agent shell.ts SIGKILL_GRACE_MS: pi-agent-core is the
+// lowest layer and must not depend on pi-coding-agent, so the value cannot be
+// imported. Exported so a higher-layer test can lock it against the canonical
+// source and fail CI on drift (see
+// packages/pi-coding-agent/src/utils/kill-constant-parity.test.ts).
+export const SIGKILL_GRACE_MS = 5_000;
+
+// Note: NodeExecutionEnv.exec does not impose a hard exec deadline — that is intentionally out of
+// scope here; the sync-bash hard deadline in shell.ts covers the agent-facing case. This function
+// only provides graceful SIGTERM→SIGKILL escalation for consistency with the sync-bash kill path.
 function killProcessTree(pid: number): void {
 	if (process.platform === "win32") {
+		// No deliverable graceful signal for hidden console processes; force-kill the
+		// whole tree immediately (matches shell.ts killProcessTree on Windows).
 		try {
-			spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
+			const tk = spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
 				stdio: "ignore",
 				detached: true,
 				windowsHide: true,
 			});
+			tk.unref();
 		} catch {
 			// Ignore errors.
 		}
 		return;
 	}
 
+	// Send SIGTERM to the process group first; well-behaved processes exit promptly.
 	try {
-		process.kill(-pid, "SIGKILL");
+		process.kill(-pid, "SIGTERM");
 	} catch {
 		try {
-			process.kill(pid, "SIGKILL");
+			process.kill(pid, "SIGTERM");
 		} catch {
 			// Process already dead.
+			return;
 		}
 	}
+
+	// Escalate to SIGKILL after the grace window for SIGTERM-immune processes.
+	// .unref() so this timer does not prevent the Node.js event loop from exiting.
+	const timer = setTimeout(() => {
+		try {
+			process.kill(-pid, "SIGKILL");
+		} catch {
+			try {
+				process.kill(pid, "SIGKILL");
+			} catch {
+				// Process already dead.
+			}
+		}
+	}, SIGKILL_GRACE_MS);
+	timer.unref();
 }
 
 export class NodeExecutionEnv implements ExecutionEnv {

@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 
 import { autoSession } from "../auto-runtime-state.ts";
 import { registerHooks } from "../bootstrap/register-hooks.ts";
+import { _resetPreferenceDiagnosticNotificationsForTests } from "../preferences-diagnostics.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HOOKS_SOURCE = readFileSync(
@@ -298,6 +299,174 @@ test("session_start installs the welcome screen as the TUI header", async (t) =>
   assert.deepEqual(header.render(123), ["welcome 9.9.9-test none 123"]);
 });
 
+test("session_start suppresses the welcome header while auto-mode is active", async (t) => {
+  const dir = join(
+    tmpdir(),
+    `gsd-welcome-header-auto-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  );
+  mkdirSync(join(dir, ".gsd"), { recursive: true });
+  mkdirSync(join(dir, "dist"), { recursive: true });
+  writeFileSync(
+    join(dir, "dist", "welcome-screen.js"),
+    "export function buildWelcomeScreenLines() { return ['welcome header']; }\n",
+    "utf-8",
+  );
+
+  const originalCwd = process.cwd();
+  const originalGsdPkgRoot = process.env.GSD_PKG_ROOT;
+  process.chdir(dir);
+  process.env.GSD_PKG_ROOT = dir;
+  autoSession.reset();
+  autoSession.active = true;
+  t.after(() => {
+    autoSession.reset();
+    process.chdir(originalCwd);
+    if (originalGsdPkgRoot === undefined) delete process.env.GSD_PKG_ROOT;
+    else process.env.GSD_PKG_ROOT = originalGsdPkgRoot;
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+
+  const handlers = new Map<string, (event: unknown, ctx: any) => Promise<void> | void>();
+  const pi = {
+    on(event: string, handler: (event: unknown, ctx: any) => Promise<void> | void) {
+      handlers.set(event, handler);
+    },
+  } as any;
+
+  registerHooks(pi, []);
+
+  const sessionStart = handlers.get("session_start");
+  assert.ok(sessionStart, "session_start handler must be registered");
+
+  let headerFactory: ((tui: unknown, theme: unknown) => { render(width: number): string[] }) | undefined;
+  await sessionStart!({}, {
+    hasUI: true,
+    ui: {
+      notify: () => {},
+      setStatus: () => {},
+      setFooter: () => {},
+      setHeader: (factory: typeof headerFactory) => {
+        headerFactory = factory;
+      },
+      setWorkingMessage: () => {},
+      onTerminalInput: () => () => {},
+      setWidget: () => {},
+    },
+    sessionManager: { getSessionId: () => null },
+    model: null,
+    setCompactionThresholdOverride: () => {},
+    modelRegistry: {
+      setDisabledModelProviders: () => {},
+      getProviderAuthMode: () => undefined,
+      isProviderRequestReady: () => false,
+    },
+  } as any);
+
+  assert.equal(typeof headerFactory, "function", "session_start should install a header factory during auto-mode");
+  const header = headerFactory!({}, {});
+  assert.deepEqual(header.render(120), [], "auto-mode session_start must keep the welcome banner suppressed");
+});
+
+test("session hooks preserve closeout-boundary UI during completion reroot", async (t) => {
+  const dir = join(
+    tmpdir(),
+    `gsd-closeout-session-hooks-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  );
+  mkdirSync(join(dir, ".gsd"), { recursive: true });
+  mkdirSync(join(dir, "dist"), { recursive: true });
+  const tempGsdHome = join(dir, "home");
+  mkdirSync(tempGsdHome, { recursive: true });
+  writeFileSync(
+    join(dir, "dist", "welcome-screen.js"),
+    "export function buildWelcomeScreenLines() { return ['welcome header']; }\n",
+    "utf-8",
+  );
+
+  const originalCwd = process.cwd();
+  const originalGsdHome = process.env.GSD_HOME;
+  const originalGsdPkgRoot = process.env.GSD_PKG_ROOT;
+  process.chdir(dir);
+  process.env.GSD_HOME = tempGsdHome;
+  process.env.GSD_PKG_ROOT = dir;
+  autoSession.reset();
+  autoSession.completionStopInProgress = true;
+  t.after(() => {
+    autoSession.reset();
+    process.chdir(originalCwd);
+    if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = originalGsdHome;
+    if (originalGsdPkgRoot === undefined) delete process.env.GSD_PKG_ROOT;
+    else process.env.GSD_PKG_ROOT = originalGsdPkgRoot;
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+
+  const handlers = new Map<string, (event: unknown, ctx: any) => Promise<void> | void>();
+  const pi = {
+    on(event: string, handler: (event: unknown, ctx: any) => Promise<void> | void) {
+      handlers.set(event, handler);
+    },
+  } as any;
+
+  registerHooks(pi, []);
+
+  const sessionStart = handlers.get("session_start");
+  const sessionSwitch = handlers.get("session_switch");
+  assert.ok(sessionStart, "session_start handler must be registered");
+  assert.ok(sessionSwitch, "session_switch handler must be registered");
+
+  const widgetCalls: Array<{ key: string; value: unknown }> = [];
+  let headerInstallCount = 0;
+  const ctx = {
+    hasUI: true,
+    ui: {
+      notify: () => {},
+      setStatus: () => {},
+      setFooter: () => {},
+      setHeader: () => {
+        headerInstallCount++;
+      },
+      setWorkingMessage: () => {},
+      onTerminalInput: () => () => {},
+      setWidget: (key: string, value: unknown) => {
+        widgetCalls.push({ key, value });
+      },
+    },
+    sessionManager: { getSessionId: () => null },
+    model: null,
+    setCompactionThresholdOverride: () => {},
+    modelRegistry: {
+      setDisabledModelProviders: () => {},
+      getProviderAuthMode: () => undefined,
+      isProviderRequestReady: () => false,
+    },
+  };
+
+  await sessionStart!({}, ctx);
+  assert.equal(
+    headerInstallCount,
+    0,
+    "completion reroot session_start must not reinstall the welcome/project-console header",
+  );
+  assert.ok(
+    widgetCalls.some((call) => call.key === "gsd-health" && call.value === undefined),
+    "completion reroot session_start should hide the ambient health widget",
+  );
+
+  widgetCalls.length = 0;
+  await sessionSwitch!({ reason: "reroot" }, ctx);
+  assert.deepEqual(
+    widgetCalls
+      .filter((call) => call.key === "gsd-progress" || call.key === "gsd-outcome")
+      .map((call) => [call.key, call.value]),
+    [],
+    "completion reroot session_switch must not clear the preserved closeout surface",
+  );
+  assert.ok(
+    widgetCalls.some((call) => call.key === "gsd-health" && call.value === undefined),
+    "completion reroot session_switch should keep the ambient health widget hidden",
+  );
+});
+
 test("session_start and session_switch apply disabled model provider policy from current preferences", async (t) => {
   const dir = join(
     tmpdir(),
@@ -384,4 +553,83 @@ test("session_start and session_switch apply disabled model provider policy from
     ["anthropic"],
     "session_switch should re-read preferences for the switched project/session context",
   );
+});
+
+test("session_start surfaces malformed preference diagnostics through visible notifications", async (t) => {
+  const dir = join(
+    tmpdir(),
+    `gsd-session-pref-diagnostics-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  );
+  mkdirSync(join(dir, ".gsd"), { recursive: true });
+  const tempGsdHome = join(dir, "home");
+  mkdirSync(tempGsdHome, { recursive: true });
+
+  const originalCwd = process.cwd();
+  const originalGsdHome = process.env.GSD_HOME;
+  process.env.GSD_HOME = tempGsdHome;
+  process.chdir(dir);
+  _resetPreferenceDiagnosticNotificationsForTests();
+  t.after(() => {
+    process.chdir(originalCwd);
+    if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = originalGsdHome;
+    _resetPreferenceDiagnosticNotificationsForTests();
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+
+  writeFileSync(
+    join(dir, ".gsd", "PREFERENCES.md"),
+    [
+      "---",
+      "version: 1",
+      "models:",
+      "  validation:",
+      "    openrouter/deepseek/deepseek-v4-pro",
+      "    thinking: high",
+      "---",
+      "",
+    ].join("\n"),
+    "utf-8",
+  );
+
+  const notifications: Array<{ message: string; level?: string }> = [];
+  const handlers = new Map<string, (event: unknown, ctx: any) => Promise<void> | void>();
+  const pi = {
+    on(event: string, handler: (event: unknown, ctx: any) => Promise<void> | void) {
+      handlers.set(event, handler);
+    },
+  } as any;
+  const ctx = {
+    hasUI: true,
+    ui: {
+      notify: (message: string, level?: string) => notifications.push({ message, level }),
+      setStatus: () => {},
+      setFooter: () => {},
+      setWorkingMessage: () => {},
+      onTerminalInput: () => () => {},
+      setWidget: () => {},
+    },
+    sessionManager: { getSessionId: () => null },
+    model: null,
+    setCompactionThresholdOverride: () => {},
+    modelRegistry: {
+      setDisabledModelProviders: () => {},
+      getProviderAuthMode: () => undefined,
+      isProviderRequestReady: () => false,
+    },
+  };
+
+  registerHooks(pi, []);
+
+  const sessionStart = handlers.get("session_start");
+  assert.ok(sessionStart, "session_start handler must be registered");
+  await sessionStart!({}, ctx);
+
+  const diagnostic = notifications.find((notification) =>
+    notification.message.includes("GSD project preferences error"),
+  );
+  assert.equal(diagnostic?.level, "error");
+  assert.match(diagnostic?.message ?? "", /could not be parsed/);
+  assert.match(diagnostic?.message ?? "", /line 5, column 5/);
+  assert.match(diagnostic?.message ?? "", /Preferences from this file were ignored/);
 });

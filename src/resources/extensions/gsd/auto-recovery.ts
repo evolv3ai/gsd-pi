@@ -15,7 +15,23 @@ import { appendEvent } from "./workflow-events.js";
 import { atomicWriteSync } from "./atomic-write.js";
 import { clearParseCache } from "./files.js";
 import { parseRoadmap as parseLegacyRoadmap, parsePlan as parseLegacyPlan } from "./parsers-legacy.js";
-import { isDbAvailable, getTask, getSlice, getSliceTasks, getPendingGates, updateTaskStatus, updateSliceStatus, insertSlice, getMilestone, getMilestoneSlices, getLatestAssessmentByScope, updateMilestoneStatus, refreshOpenDatabaseFromDisk, getCompletedMilestoneTaskFileHints, getMilestoneCommitAttributionShas, recordMilestoneCommitAttribution, transaction } from "./gsd-db.js";
+import {
+  isDbAvailable,
+  getTask,
+  getSlice,
+  getSliceTasks,
+  getPendingGatesForTurn,
+  updateTaskStatus,
+  updateSliceStatus,
+  insertSlice,
+  getMilestone,
+  updateMilestoneStatus,
+  getCompletedMilestoneTaskFileHints,
+  getMilestoneCommitAttributionShas,
+  recordMilestoneCommitAttribution,
+  transaction,
+} from "./gsd-db.js";
+import { refreshWorkflowDatabaseFromDisk } from "./db-workspace.js";
 import { isValidationTerminal } from "./state.js";
 import { getErrorMessage } from "./error-utils.js";
 import { logWarning, logError } from "./workflow-logger.js";
@@ -54,6 +70,10 @@ import { isGsdWorktreePath } from "./worktree-root.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
 import { hasImplementationArtifacts } from "./milestone-implementation-evidence.js";
 import { loadAllCaptures, loadPendingCaptures } from "./captures.js";
+import {
+  proveMilestoneCloseout,
+  type CloseoutProofFailureReason,
+} from "./milestone-closeout-proof.js";
 
 // Re-export so existing consumers of auto-recovery.ts keep working.
 export { resolveExpectedArtifactPath, diagnoseExpectedArtifact };
@@ -62,6 +82,53 @@ export {
   type MilestoneSummaryOutcome,
 } from "./milestone-summary-classifier.js";
 export { hasImplementationArtifacts } from "./milestone-implementation-evidence.js";
+
+/**
+ * Optional override for the legacy roadmap parser used by verifyExpectedArtifact.
+ * Production leaves this null so the real parseLegacyRoadmap runs; tests inject
+ * a throwing function to deterministically exercise the parse-failure catches
+ * (auto-recovery.ts:515 plan-milestone and :622 complete-slice). Those catches
+ * are otherwise unreachable because parseLegacyRoadmap is internally defensive
+ * against every malformed input.
+ * @internal
+ */
+let _roadmapParserFn: ((content: string) => { slices: Array<{ id: string; done: boolean; depends?: string[] }> }) | null = null;
+
+/**
+ * Inject an override for the legacy roadmap parser, returning a function that
+ * restores the default (real parser) behavior. No production caller.
+ * @internal
+ */
+export function _setRoadmapParserFnForTests(
+  fn: ((content: string) => { slices: Array<{ id: string; done: boolean; depends?: string[] }> }) | null,
+): () => void {
+  const previous = _roadmapParserFn;
+  _roadmapParserFn = fn;
+  return () => { _roadmapParserFn = previous; };
+}
+
+function parseRoadmapForRecovery(content: string): ReturnType<NonNullable<typeof _roadmapParserFn>> {
+  if (_roadmapParserFn) return _roadmapParserFn(content);
+  return parseLegacyRoadmap(content) as unknown as ReturnType<NonNullable<typeof _roadmapParserFn>>;
+}
+
+/**
+ * Optional override for the detached GitHub milestone finalize invoked after DB
+ * closeout in refreshRecoveryDbForArtifact. Production leaves this null so the
+ * real finalizeMilestoneGitHubSync runs; tests inject a throwing function to
+ * deterministically exercise the best-effort catch (auto-recovery.ts:232),
+ * which otherwise needs a real GitHub remote + network failure.
+ * @internal
+ */
+let _githubFinalizeFn: ((basePath: string, mid: string) => void | Promise<void>) | null = null;
+
+export function _setGithubFinalizeFnForTests(
+  fn: ((basePath: string, mid: string) => void | Promise<void>) | null,
+): () => void {
+  const previous = _githubFinalizeFn;
+  _githubFinalizeFn = fn;
+  return () => { _githubFinalizeFn = previous; };
+}
 
 // ─── Artifact Resolution & Verification ───────────────────────────────────────
 
@@ -98,6 +165,19 @@ export type ArtifactRecoveryDbRefreshResult =
   | { ok: true }
   | { ok: false; fatal: boolean; message: string; reason: string };
 
+function closeoutProofRecoveryReason(reason: CloseoutProofFailureReason): string {
+  switch (reason) {
+    case "slice-missing":
+      return "complete-milestone-slices-missing";
+    case "summary-artifact-missing":
+      return "complete-milestone-summary-missing";
+    case "summary-artifact-failed":
+      return "complete-milestone-summary-failed";
+    default:
+      return `complete-milestone-${reason}`;
+  }
+}
+
 export function refreshRecoveryDbForArtifact(
   unitType: string,
   unitId: string,
@@ -106,7 +186,7 @@ export function refreshRecoveryDbForArtifact(
   if (unitType !== "plan-slice" && unitType !== "execute-task" && unitType !== "complete-milestone") return { ok: true };
   if (!isDbAvailable()) return { ok: true };
 
-  if (!refreshOpenDatabaseFromDisk()) {
+  if (!refreshWorkflowDatabaseFromDisk()) {
     return {
       ok: false,
       fatal: unitType === "execute-task" || unitType === "complete-milestone",
@@ -137,61 +217,45 @@ export function refreshRecoveryDbForArtifact(
     }
     if (isClosedStatus(milestone.status)) return { ok: true };
 
-    const validation = getLatestAssessmentByScope(mid, "milestone-validation");
-    if (validation?.status !== "pass") {
-      return {
-        ok: false,
-        fatal: true,
-        reason: "complete-milestone-validation-not-pass",
-        message: `Stuck recovery found complete-milestone ${unitId} artifacts, but milestone-validation is "${validation?.status ?? "absent"}" in the DB.`,
-      };
-    }
-
-    const slices = getMilestoneSlices(mid);
-    if (slices.length === 0) {
-      return {
-        ok: false,
-        fatal: true,
-        reason: "complete-milestone-slices-missing",
-        message: `Stuck recovery found complete-milestone ${unitId} artifacts, but no slices exist in the DB.`,
-      };
-    }
-    const openSlice = slices.find((slice) => !isClosedStatus(slice.status));
-    if (openSlice) {
-      return {
-        ok: false,
-        fatal: true,
-        reason: "complete-milestone-slice-open",
-        message: `Stuck recovery found complete-milestone ${unitId} artifacts, but slice ${openSlice.id} is still "${openSlice.status}" in the DB.`,
-      };
-    }
-    for (const slice of slices) {
-      const openTask = getSliceTasks(mid, slice.id).find((task) => !isClosedStatus(task.status));
-      if (openTask) {
+    const artifactBasePath = resolveArtifactVerificationBase(unitId, basePath);
+    const closeoutProof = proveMilestoneCloseout(mid, {
+      allowOpenMilestone: true,
+      summaryArtifactBasePath: artifactBasePath,
+      implementationEvidence: {
+        basePath,
+        requirement: "present",
+      },
+    });
+    if (!closeoutProof.ok) {
+      if (closeoutProof.reason === "implementation-evidence-missing") {
         return {
           ok: false,
           fatal: true,
-          reason: "complete-milestone-task-open",
-          message: `Stuck recovery found complete-milestone ${unitId} artifacts, but task ${slice.id}/${openTask.id} is still "${openTask.status}" in the DB.`,
+          reason: "complete-milestone-implementation-missing",
+          message: `Stuck recovery found complete-milestone ${unitId} artifacts, but implementation evidence is not present.`,
         };
       }
-    }
-
-    if (hasImplementationArtifacts(basePath, mid) !== "present") {
       return {
         ok: false,
         fatal: true,
-        reason: "complete-milestone-implementation-missing",
-        message: `Stuck recovery found complete-milestone ${unitId} artifacts, but implementation evidence is not present.`,
+        reason: closeoutProofRecoveryReason(closeoutProof.reason),
+        message: `Stuck recovery found complete-milestone ${unitId} artifacts, but ${closeoutProof.message}`,
       };
     }
 
     updateMilestoneStatus(mid, "complete", new Date().toISOString());
-    void import("../github-sync/sync.js")
-      .then(({ finalizeMilestoneGitHubSync }) => finalizeMilestoneGitHubSync(basePath, mid))
-      .catch((err) => {
-        logWarning("recovery", `GitHub milestone finalize failed after DB closeout: ${getErrorMessage(err)}`);
-      });
+    // Detached GitHub sync — best-effort. Test seam: when
+    // _githubFinalizeFn is injected, route through it so the catch
+    // (:232) is deterministically reachable (otherwise it needs a real
+    // GitHub remote + network failure). Production leaves it null. The
+    // seam is wrapped so a synchronous throw becomes a rejected promise,
+    // matching the real import-then-call deferred semantics.
+    const finalizePromise = _githubFinalizeFn
+      ? new Promise<void>((resolve) => { resolve(_githubFinalizeFn!(basePath, mid)); })
+      : import("../github-sync/sync.js").then(({ finalizeMilestoneGitHubSync }) => finalizeMilestoneGitHubSync(basePath, mid));
+    void finalizePromise.catch((err) => {
+      logWarning("recovery", `GitHub milestone finalize failed after DB closeout: ${getErrorMessage(err)}`);
+    });
     return { ok: true };
   }
 
@@ -389,8 +453,9 @@ export function verifyExpectedArtifact(
     if (gateIds.length === 0) return true;
 
     try {
-      const pending = getPendingGates(mid, sid, "slice");
-      const pendingIds = new Set(pending.map((g: any) => g.gate_id));
+      if (!isDbAvailable()) return false;
+      const pending = getPendingGatesForTurn(mid, sid, "gate-evaluate");
+      const pendingIds = new Set<string>(pending.map((g) => g.gate_id));
       // All dispatched gates must no longer be pending
       for (const gid of gateIds) {
         if (pendingIds.has(gid)) return false;
@@ -435,7 +500,7 @@ export function verifyExpectedArtifact(
       return false;
     }
     try {
-      const roadmap = parseLegacyRoadmap(readFileSync(roadmapFile, "utf-8"));
+      const roadmap = parseRoadmapForRecovery(readFileSync(roadmapFile, "utf-8"));
       const milestoneResearchFile = resolveExpectedArtifactPath("research-milestone", mid, base);
       const hasMilestoneResearch = !!milestoneResearchFile && existsSync(milestoneResearchFile);
       for (const slice of roadmap.slices) {
@@ -495,7 +560,7 @@ export function verifyExpectedArtifact(
 
   if (unitType === "plan-milestone") {
     try {
-      const roadmap = parseLegacyRoadmap(readFileSync(absPath, "utf-8"));
+      const roadmap = parseRoadmapForRecovery(readFileSync(absPath, "utf-8"));
       if (roadmap.slices.length === 0) {
         logWarning("recovery", `verify-fail ${unitType} ${unitId}: roadmap has zero slices at ${absPath}`);
         return false;
@@ -515,7 +580,7 @@ export function verifyExpectedArtifact(
       try {
         let taskIds: string[] | null = null;
         if (isDbAvailable()) {
-          const refreshed = refreshOpenDatabaseFromDisk();
+          const refreshed = refreshWorkflowDatabaseFromDisk();
           if (refreshed) {
             const tasks = getSliceTasks(mid, sid);
             if (tasks.length > 0) taskIds = tasks.map(t => t.id);
@@ -604,7 +669,7 @@ export function verifyExpectedArtifact(
         if (roadmapFile && existsSync(roadmapFile)) {
           try {
             const roadmapContent = readFileSync(roadmapFile, "utf-8");
-            const roadmap = parseLegacyRoadmap(roadmapContent);
+            const roadmap = parseRoadmapForRecovery(roadmapContent);
             const slice = roadmap.slices.find((s) => s.id === sid);
             if (slice && !slice.done) return false;
           } catch (e) {
@@ -622,15 +687,23 @@ export function verifyExpectedArtifact(
   // A milestone with only .gsd/ plan files and zero implementation code is
   // not genuinely complete — the LLM wrote plan files but skipped actual work.
   if (unitType === "complete-milestone") {
-    const summaryOutcome = classifyMilestoneSummaryContent(readFileSync(absPath, "utf-8"));
-    if (summaryOutcome === "failure") return false;
     const { milestone: mid } = parseUnitId(unitId);
-    if (mid && isDbAvailable()) {
-      const dbMilestone = getMilestone(mid);
-      if (!dbMilestone) return false;
-      if (!isClosedStatus(dbMilestone.status) && summaryOutcome !== "success") return false;
+    if (!mid) return false;
+    const closeoutProof = proveMilestoneCloseout(mid, {
+      refreshFromDisk: true,
+      summaryArtifactBasePath: artifactBase,
+      implementationEvidence: {
+        basePath: base,
+        requirement: "not-absent",
+      },
+    });
+    if (!closeoutProof.ok) {
+      if (!isDbAvailable() && closeoutProof.reason === "db-unavailable") {
+        const summaryOutcome = classifyMilestoneSummaryContent(readFileSync(absPath, "utf-8"));
+        return summaryOutcome !== "failure" && hasImplementationArtifacts(base, mid) !== "absent";
+      }
+      return false;
     }
-    if (hasImplementationArtifacts(base, mid) === "absent") return false;
   }
 
   return true;

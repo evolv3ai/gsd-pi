@@ -16,10 +16,15 @@ import type {
   ExtensionCommandContext,
 } from "@gsd/pi-coding-agent";
 import { deriveState } from "./state.js";
+import { findWorktreeSegment, isGsdWorktreePath } from "./worktree-root.js";
 import { loadFile, getManifestStatus } from "./files.js";
 import type { InterruptedSessionAssessment } from "./interrupted-session.js";
 import {
   loadEffectiveGSDPreferences,
+  loadEffectiveGSDPreferencesWithRegistry,
+  modelIdsForProfileResolution,
+  resolveProfileAnchorProvider,
+  resolveDisabledModelProvidersFromPreferences,
   resolveSkillDiscoveryMode,
   getIsolationMode,
 } from "./preferences.js";
@@ -27,6 +32,7 @@ import { ensureGsdSymlink, isInheritedRepo, validateProjectId } from "./repo-ide
 import { migrateToExternalState, recoverFailedMigration } from "./migrate-external.js";
 import { collectSecretsFromManifest } from "../get-secrets-from-user.js";
 import { gsdRoot, resolveMilestoneFile } from "./paths.js";
+import { milestoneEntryBlockedGuidance } from "./guidance.js";
 import { invalidateAllCaches } from "./cache.js";
 import { writeLock, clearLock, readCrashLock, isLockProcessAlive } from "./crash-recovery.js";
 import {
@@ -56,7 +62,8 @@ import {
   detectWorktreeName,
   setActiveMilestoneId,
 } from "./worktree.js";
-import { getAutoWorktreePath, isInAutoWorktree, checkoutBranchWithStashGuard } from "./auto-worktree.js";
+import { getAutoWorktreePath, isInAutoWorktree } from "./auto-worktree.js";
+import { checkoutBranchWithStashGuard } from "./worktree-git-recovery.js";
 import { readResourceVersion, cleanStaleRuntimeUnits } from "./auto-worktree.js";
 import { worktreePath as getWorktreeDir, isInsideWorktreesDir } from "./worktree-manager.js";
 import { emitWorktreeOrphaned } from "./worktree-telemetry.js";
@@ -66,7 +73,13 @@ import { initRoutingHistory } from "./routing-history.js";
 import { restoreHookState, resetHookState } from "./post-unit-hooks.js";
 import { resetProactiveHealing, setLevelChangeCallback } from "./doctor-proactive.js";
 import { snapshotSkills } from "./skill-discovery.js";
-import { isDbAvailable, getMilestone, getAllMilestones, insertMilestone, openDatabase, getDbStatus, updateMilestoneStatus } from "./gsd-db.js";
+import { isDbAvailable, getMilestone, getAllMilestones, insertMilestone, updateMilestoneStatus } from "./gsd-db.js";
+import {
+  getWorkflowDatabaseStatus,
+  openExistingWorkflowDatabase,
+  openWorkflowDatabase,
+  resolveProjectRootDbPath,
+} from "./db-workspace.js";
 import { isClosedStatus } from "./status-guards.js";
 import { classifyMilestoneSummaryContent } from "./milestone-summary-classifier.js";
 import { extractVerdict } from "./verdict-parser.js";
@@ -90,9 +103,7 @@ import {
   rmSync,
 } from "node:fs";
 import { join } from "node:path";
-import { sep as pathSep } from "node:path";
 
-import { resolveProjectRootDbPath } from "./bootstrap/dynamic-tools.js";
 import { validateDirectory } from "./validate-directory.js";
 import {
   isCustomProvider,
@@ -101,6 +112,7 @@ import {
 } from "./preferences-models.js";
 import type { WorktreeLifecycle } from "./worktree-lifecycle.js";
 import { getSessionModelOverride } from "./session-model-override.js";
+import { setAutoActiveStatus } from "./auto-dashboard.js";
 
 export interface BootstrapDeps {
   shouldUseWorktreeIsolation: (basePath?: string) => boolean;
@@ -149,10 +161,9 @@ export async function openProjectDbIfPresent(basePath: string): Promise<void> {
   const gsdDbPath = resolveProjectRootDbPath(basePath);
   if (!existsSync(gsdDbPath) || isDbAvailable()) return;
 
-  try {
-    openDatabase(gsdDbPath);
-  } catch (err) {
-    logWarning("engine", `gsd-db: failed to open existing database: ${err instanceof Error ? err.message : String(err)}`);
+  const result = openExistingWorkflowDatabase(basePath);
+  if (!result.ok && result.reason === "open-failed") {
+    logWarning("engine", `gsd-db: failed to open existing database: ${result.error?.message ?? "open failed"}`);
   }
 }
 
@@ -293,6 +304,7 @@ export interface OrphanAuditAction {
   message: string;
   severity: "info" | "warning";
   branch?: string;
+  mainBranch?: string;
   commitsAhead?: number;
   dirtyWorktree?: boolean;
   worktreeDirExists?: boolean;
@@ -309,6 +321,27 @@ export interface OrphanAuditResult {
 
 function isBlockingStrandedWorkAction(action: OrphanAuditAction): boolean {
   return action.kind === "in-progress-stranded-work" && action.blocksAuto;
+}
+
+function strandedWorkEvidence(args: {
+  branch?: string;
+  commitsAhead: number;
+  mainBranch: string;
+  dirtyWorktree: boolean;
+}): string[] {
+  const evidence: string[] = [];
+  if (args.branch && args.commitsAhead > 0) {
+    evidence.push(
+      `branch ${args.branch} has ${args.commitsAhead} commit(s) ahead of ${args.mainBranch}`,
+    );
+  }
+  if (args.dirtyWorktree) {
+    evidence.push("the worktree has uncommitted changes");
+  }
+  if (evidence.length === 0) {
+    evidence.push("physical git evidence exists");
+  }
+  return evidence;
 }
 
 function detectWorktreeEvidence(
@@ -342,18 +375,7 @@ function strandedWorkMessage(args: {
   worktreeDirExists: boolean;
   recoveryMode: StrandedWorkRecoveryMode;
 }): string {
-  const evidence: string[] = [];
-  if (args.branch && args.commitsAhead > 0) {
-    evidence.push(
-      `branch ${args.branch} has ${args.commitsAhead} commit(s) ahead of ${args.mainBranch}`,
-    );
-  }
-  if (args.dirtyWorktree) {
-    evidence.push("the worktree has uncommitted changes");
-  }
-  if (evidence.length === 0) {
-    evidence.push("physical git evidence exists");
-  }
+  const evidence = strandedWorkEvidence(args);
 
   const wtSuffix = args.worktreeDirExists
     ? ` Worktree directory at .gsd/worktrees/${args.milestoneId}/ holds live work.`
@@ -366,6 +388,26 @@ function strandedWorkMessage(args: {
     `Stranded work for in-progress milestone ${args.milestoneId}: ${evidence.join("; ")}.` +
     wtSuffix +
     ` ${recovery} Park or discard explicitly if abandoning.`
+  );
+}
+
+function formatStrandedWorkRecoveryMessage(action: OrphanAuditAction): string {
+  const recoveryMode = action.recoveryMode === "worktree"
+    ? "existing worktree"
+    : "milestone branch";
+  const evidence = strandedWorkEvidence({
+    branch: action.branch,
+    commitsAhead: action.commitsAhead ?? 0,
+    mainBranch: action.mainBranch ?? "main",
+    dirtyWorktree: action.dirtyWorktree ?? false,
+  });
+  const wtSuffix = action.worktreeDirExists
+    ? ` Worktree directory at .gsd/worktrees/${action.milestoneId}/ holds live work.`
+    : "";
+  return (
+    `Resuming saved milestone work for ${action.milestoneId}: ${evidence.join("; ")}.` +
+    wtSuffix +
+    ` Adopting the ${recoveryMode} before dispatching new units. Park or discard explicitly if abandoning.`
   );
 }
 
@@ -489,6 +531,7 @@ export function auditOrphanedMilestoneBranches(
         kind: "in-progress-stranded-work",
         milestoneId,
         branch,
+        mainBranch,
         commitsAhead,
         dirtyWorktree: worktreeEvidence.dirty,
         worktreeDirExists: worktreeEvidence.dirExists,
@@ -564,7 +607,7 @@ export function auditOrphanedMilestoneBranches(
               warnings.push(`Failed to remove worktree directory for ${milestoneId}: ${err2 instanceof Error ? err2.message : String(err2)}`);
             }
           } else {
-            warnings.push(`Orphaned worktree directory for ${milestoneId} is outside .gsd/worktrees/ — skipping removal for safety.`);
+            warnings.push(`Orphaned worktree directory for ${milestoneId} is outside the GSD worktrees containers — skipping removal for safety.`);
           }
         } else {
           pushAction({
@@ -643,6 +686,7 @@ export function auditOrphanedMilestoneBranches(
       pushAction({
         kind: "in-progress-stranded-work",
         milestoneId: m.id,
+        mainBranch,
         commitsAhead: 0,
         dirtyWorktree: true,
         worktreeDirExists: worktreeEvidence.dirExists,
@@ -679,7 +723,7 @@ export function auditOrphanedMilestoneBranches(
     if (!existsSync(wtDir)) continue;
     if (!isInsideWorktreesDir(basePath, wtDir)) {
       warnings.push(
-        `Orphaned worktree directory for ${m.id} is outside .gsd/worktrees/ — skipping removal for safety.`,
+        `Orphaned worktree directory for ${m.id} is outside the GSD worktrees containers — skipping removal for safety.`,
       );
       continue;
     }
@@ -955,12 +999,14 @@ export async function bootstrapAutoSession(
   // phase-specific planning model for a discuss turn (#2829).
   //
   // Precedence:
-  // 1) Explicit session override via /gsd model (this session)
-  // 2) Current session model from settings/session restore (if provider ready)
-  // 3) GSD model preferences from PREFERENCES.md (validated against live auth)
+  // 1) Explicit session override via /gsd model or /gsd auto --model (this session)
+  // 2) GSD model preferences from PREFERENCES.md (validated against live auth)
+  // 3) Current session model from settings/session restore (if provider ready)
   //
-  // This preserves #3517 defaults while honoring explicit runtime model
-  // selection for subsequent /gsd runs in the same session.
+  // PREFERENCES.md wins over the ambient session default (#3517) so /gsd auto
+  // does not stick on claude-code/claude-sonnet-4-6 when the user configured
+  // models via /gsd workflow-preferences or PREFERENCES.md. Custom providers
+  // still skip PREFERENCES.md entirely (#4122).
   //
   // Exception (#4122): when the session provider is a custom provider declared
   // in ~/.gsd/agent/models.json (Ollama, vLLM, OpenAI-compatible proxy, etc.),
@@ -970,9 +1016,14 @@ export async function bootstrapAutoSession(
   // run /login" before pausing and resetting to claude-code/claude-sonnet-4-6.
   const manualSessionOverride = getSessionModelOverride(ctx.sessionManager.getSessionId());
   const sessionProviderIsCustom = isCustomProvider(ctx.model?.provider);
+  const profileModelIds = modelIdsForProfileResolution(
+    ctx.modelRegistry,
+    resolveProfileAnchorProvider(ctx.model?.provider),
+    resolveDisabledModelProvidersFromPreferences(),
+  );
   const preferredModel = sessionProviderIsCustom
     ? null
-    : resolveDefaultSessionModel(ctx.model?.provider);
+    : resolveDefaultSessionModel(ctx.model?.provider, base, profileModelIds);
   // Validate the preferred model against the live registry + provider auth so
   // an unconfigured PREFERENCES.md entry (no API key / OAuth) can't become the
   // start-model snapshot. Without this, every subsequent unit would try to
@@ -1002,8 +1053,8 @@ export async function bootstrapAutoSession(
     : null;
   const startThinkingSnapshot = pi.getThinkingLevel();
   const startModelSnapshot = manualSessionOverride
-    ?? currentSessionModel
     ?? validatedPreferredModel
+    ?? currentSessionModel
     ?? null;
 
   try {
@@ -1158,7 +1209,13 @@ export async function bootstrapAutoSession(
       for (const msg of auditResult.recovered) {
         ctx.ui.notify(`Orphan audit: ${msg}`, "info");
       }
+      const deferredStrandedMessages = new Set(
+        auditResult.actions
+          .filter(isBlockingStrandedWorkAction)
+          .map((action) => action.message),
+      );
       for (const msg of auditResult.warnings) {
+        if (deferredStrandedMessages.has(msg)) continue;
         const prefix = msg.startsWith("Stranded work") ? "" : "Orphan audit: ";
         ctx.ui.notify(`${prefix}${msg}`, "warning");
       }
@@ -1223,11 +1280,29 @@ export async function bootstrapAutoSession(
       }
     }
 
-    const blockingStrandedRecoveryAction = state.activeMilestone
-      ? strandedRecoveryActions.find(
+    const requestedMilestoneLock = process.env.GSD_MILESTONE_LOCK?.trim() || null;
+    const lockedActiveMilestone =
+      requestedMilestoneLock && state.activeMilestone?.id === requestedMilestoneLock;
+    let blockingStrandedRecoveryAction: OrphanAuditAction | null;
+    if (lockedActiveMilestone) {
+      // Parallel worker or explicit `/gsd auto Mxxx`: sibling milestones'
+      // stranded work must not block this milestone's resumption, and the
+      // downstream `strandedRecoveryAction` (used for currentMilestoneId,
+      // setActiveMilestoneId, and adoptStrandedMilestone) must be scoped to
+      // the locked milestone only. Falling back to the first sibling action
+      // would mis-target adoption (#742).
+      const lockMatch = strandedRecoveryActions.find(
+        (action) => action.milestoneId === requestedMilestoneLock,
+      ) ?? null;
+      blockingStrandedRecoveryAction = lockMatch;
+      strandedRecoveryAction = lockMatch;
+    } else if (state.activeMilestone) {
+      blockingStrandedRecoveryAction = strandedRecoveryActions.find(
         (action) => action.milestoneId !== state.activeMilestone?.id,
-      ) ?? strandedRecoveryAction
-      : strandedRecoveryAction;
+      ) ?? strandedRecoveryAction;
+    } else {
+      blockingStrandedRecoveryAction = strandedRecoveryAction;
+    }
 
     if (blockingStrandedRecoveryAction) {
       if (!state.activeMilestone) {
@@ -1246,9 +1321,11 @@ export async function bootstrapAutoSession(
       }
       strandedRecoveryAction = blockingStrandedRecoveryAction;
       ctx.ui.notify(
-        `Recovering stranded work for ${strandedRecoveryAction.milestoneId} before dispatching new units.`,
+        formatStrandedWorkRecoveryMessage(strandedRecoveryAction),
         "info",
       );
+    } else if (lockedActiveMilestone) {
+      strandedRecoveryAction = null;
     }
 
     if (
@@ -1281,7 +1358,7 @@ export async function bootstrapAutoSession(
       (state.phase === "pre-planning" || state.phase === "complete") &&
       survivorIsolationMode !== "none" &&
       !detectWorktreeName(base) &&
-      !base.includes(`${pathSep}.gsd${pathSep}worktrees${pathSep}`)
+      !isGsdWorktreePath(base)
     ) {
       const milestoneBranch = `milestone/${survivorMilestoneId}`;
       const { nativeBranchExists } = await import("./native-git-bridge.js");
@@ -1388,7 +1465,11 @@ export async function bootstrapAutoSession(
       }
     }
 
-    const effectivePrefs = loadEffectiveGSDPreferences(base)?.preferences;
+    const effectivePrefs = loadEffectiveGSDPreferencesWithRegistry(
+      ctx.modelRegistry,
+      base,
+      resolveProfileAnchorProvider(ctx.model?.provider, startModelSnapshot?.provider),
+    )?.preferences;
     const { shouldRunDeepProjectSetup } = await import("./auto-dispatch.js");
     const deepProjectStagePending = shouldRunDeepProjectSetup(
       state,
@@ -1517,7 +1598,7 @@ export async function bootstrapAutoSession(
     s.autoStartTime = Date.now();
     s.resourceVersionOnStart = readResourceVersion();
     s.pendingQuickTasks = [];
-    s.currentUnit = null;
+    s.clearCurrentUnit();
     s.currentMilestoneId ??=
       strandedRecoveryAction?.milestoneId ??
       (deepProjectStagePending ? null : state.activeMilestone?.id ?? null);
@@ -1566,16 +1647,12 @@ export async function bootstrapAutoSession(
     // live here is gone.
 
     const isUnderGsdWorktrees = (p: string): boolean => {
-      // Direct layout: /.gsd/worktrees/
-      const marker = `${pathSep}.gsd${pathSep}worktrees${pathSep}`;
-      if (p.includes(marker)) return true;
-      const worktreesSuffix = `${pathSep}.gsd${pathSep}worktrees`;
-      if (p.endsWith(worktreesSuffix)) return true;
-      // Symlink-resolved layout: /.gsd/projects/<hash>/worktrees/
-      const symlinkRe = new RegExp(
-        `\\${pathSep}\\.gsd\\${pathSep}projects\\${pathSep}[a-f0-9]+\\${pathSep}worktrees(?:\\${pathSep}|$)`,
-      );
-      return symlinkRe.test(p);
+      const normalized = p.replaceAll("\\", "/");
+      if (findWorktreeSegment(normalized) !== null) return true;
+      // The container directory itself (no trailing worktree name), in any layout.
+      return normalized.endsWith("/.gsd/worktrees")
+        || normalized.endsWith("/.gsd-worktrees")
+        || /\/\.gsd\/projects\/[^/]+\/worktrees$/.test(normalized);
     };
 
     if (
@@ -1602,14 +1679,9 @@ export async function bootstrapAutoSession(
             `Cannot enter milestone ${s.currentMilestoneId}: lease is held by another worker.`,
             "error",
           );
-        } else if (enterResult.reason === "creation-failed") {
+        } else if (enterResult.reason === "creation-failed" || enterResult.reason === "isolation-degraded") {
           ctx.ui.notify(
-            `Cannot enter milestone ${s.currentMilestoneId}: worktree/branch creation failed. Isolation is degraded.`,
-            "error",
-          );
-        } else if (enterResult.reason === "isolation-degraded") {
-          ctx.ui.notify(
-            `Cannot enter milestone ${s.currentMilestoneId}: isolation is degraded from a prior worktree failure. Close processes locking the worktree and retry, or run /gsd doctor fix.`,
+            milestoneEntryBlockedGuidance(s.currentMilestoneId, enterResult.reason),
             "error",
           );
         } else if (enterResult.reason === "invalid-milestone-id") {
@@ -1633,21 +1705,14 @@ export async function bootstrapAutoSession(
 
     // ── DB lifecycle ──
     const gsdDbPath = resolveProjectRootDbPath(s.basePath);
-    const gsdDirPath = join(s.basePath, ".gsd");
-    if (existsSync(gsdDirPath) && !existsSync(gsdDbPath)) {
-      try {
-        const { openDatabase: openDb } = await import("./gsd-db.js");
-        openDb(gsdDbPath);
-      } catch (err) {
-        logError("engine", `failed to initialize project database: ${(err as Error).message}`);
-      }
+    const initialDbOpen = openWorkflowDatabase(s.basePath);
+    if (!initialDbOpen.ok && initialDbOpen.reason === "open-failed") {
+      logError("engine", `failed to initialize project database: ${initialDbOpen.error?.message ?? "open failed"}`);
     }
     if (_shouldAbortBootstrapForUnavailableDbForTest(gsdDbPath, isDbAvailable())) {
-      try {
-        const { openDatabase: openDb } = await import("./gsd-db.js");
-        openDb(gsdDbPath);
-      } catch (err) {
-        logError("engine", `failed to open existing database: ${(err as Error).message}`);
+      const retryDbOpen = openWorkflowDatabase(s.basePath);
+      if (!retryDbOpen.ok && retryDbOpen.reason === "open-failed") {
+        logError("engine", `failed to open existing database: ${retryDbOpen.error?.message ?? "open failed"}`);
       }
     }
 
@@ -1657,7 +1722,7 @@ export async function bootstrapAutoSession(
     // call returns "db_unavailable", triggering artifact-retry which
     // re-dispatches the same task — producing an infinite loop (#2419).
     if (existsSync(gsdDbPath) && !isDbAvailable()) {
-      const dbStatus = getDbStatus();
+      const dbStatus = getWorkflowDatabaseStatus();
       const phaseHint = dbStatus.lastPhase === "open"
         ? "The database file could not be opened"
         : dbStatus.lastPhase === "initSchema"
@@ -1718,7 +1783,7 @@ export async function bootstrapAutoSession(
       snapshotSkills();
     }
 
-    ctx.ui.setStatus("gsd-auto", s.stepMode ? "next" : "auto");
+    setAutoActiveStatus(ctx, s.stepMode ? "next" : "auto");
     ctx.ui.setWidget("gsd-health", undefined);
     const modeLabel = s.stepMode ? "Step-mode" : "Auto-mode";
     const pendingCount = (state.registry ?? []).filter(
@@ -1756,7 +1821,11 @@ export async function bootstrapAutoSession(
     // FlatRateContext used by selectAndApplyModel so user-declared
     // flat-rate providers and externalCli auto-detection are respected.
     const { isFlatRateProvider, buildFlatRateContext } = await import("./auto-model-selection.js");
-    const bannerPrefs = loadEffectiveGSDPreferences(base)?.preferences;
+    const bannerPrefs = loadEffectiveGSDPreferencesWithRegistry(
+      ctx.modelRegistry,
+      base,
+      resolveProfileAnchorProvider(ctx.model?.provider, s.autoModeStartModel?.provider),
+    )?.preferences;
     const effectiveProvider = s.autoModeStartModel?.provider ?? ctx.model?.provider;
     const effectivelyEnabled = routingConfig.enabled
       && (routingConfig.allow_flat_rate_providers

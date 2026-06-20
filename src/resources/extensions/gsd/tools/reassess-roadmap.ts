@@ -16,7 +16,7 @@ import {
 } from "../gsd-db.js";
 import { invalidateStateCache } from "../state.js";
 import { renderRoadmapFromDb, renderAssessmentFromDb } from "../markdown-renderer.js";
-import { renderAllProjections } from "../workflow-projections.js";
+import { flushWorkflowProjections } from "../projection-flush.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning } from "../workflow-logger.js";
@@ -75,12 +75,19 @@ function validateParams(params: ReassessRoadmapParams): ReassessRoadmapParams {
     throw new Error("sliceChanges.removed must be an array");
   }
 
+  const SLICE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9-]*$/;
+
   // Validate each modified slice
   for (let i = 0; i < params.sliceChanges.modified.length; i++) {
     const s = params.sliceChanges.modified[i];
     if (!s || typeof s !== "object") throw new Error(`sliceChanges.modified[${i}] must be an object`);
     if (!isNonEmptyString(s.sliceId)) throw new Error(`sliceChanges.modified[${i}].sliceId is required`);
     if (!isNonEmptyString(s.title)) throw new Error(`sliceChanges.modified[${i}].title is required`);
+    if (s.depends !== undefined) {
+      if (!Array.isArray(s.depends) || s.depends.some((item: unknown) => !isNonEmptyString(item) || !SLICE_ID_RE.test(item as string))) {
+        throw new Error(`sliceChanges.modified[${i}].depends must be an array of valid slice IDs (e.g. "S01")`);
+      }
+    }
   }
 
   // Validate each added slice
@@ -89,6 +96,11 @@ function validateParams(params: ReassessRoadmapParams): ReassessRoadmapParams {
     if (!s || typeof s !== "object") throw new Error(`sliceChanges.added[${i}] must be an object`);
     if (!isNonEmptyString(s.sliceId)) throw new Error(`sliceChanges.added[${i}].sliceId is required`);
     if (!isNonEmptyString(s.title)) throw new Error(`sliceChanges.added[${i}].title is required`);
+    if (s.depends !== undefined) {
+      if (!Array.isArray(s.depends) || s.depends.some((item: unknown) => !isNonEmptyString(item) || !SLICE_ID_RE.test(item as string))) {
+        throw new Error(`sliceChanges.added[${i}].depends must be an array of valid slice IDs (e.g. "S01")`);
+      }
+    }
   }
 
   return params;
@@ -163,6 +175,37 @@ export async function handleReassessRoadmap(
         if (completedSliceIds.has(removedId)) {
           guardError = `cannot remove completed slice ${removedId}`;
           return;
+        }
+      }
+
+      // Cross-milestone depends validation — effective slice ID set after this reassessment
+      const removedIds = new Set<string>(params.sliceChanges.removed);
+      const effectiveSliceIds = new Set<string>(
+        existingSlices.map(s => s.id).filter(id => !removedIds.has(id)),
+      );
+      for (const added of params.sliceChanges.added) {
+        effectiveSliceIds.add(added.sliceId);
+      }
+      for (let i = 0; i < params.sliceChanges.modified.length; i++) {
+        const mod = params.sliceChanges.modified[i]!;
+        if (mod.depends !== undefined) {
+          for (const dep of mod.depends) {
+            if (!effectiveSliceIds.has(dep)) {
+              guardError = `sliceChanges.modified[${i}].depends references unknown slice "${dep}" — check that it is defined in this milestone`;
+              return;
+            }
+          }
+        }
+      }
+      for (let i = 0; i < params.sliceChanges.added.length; i++) {
+        const added = params.sliceChanges.added[i]!;
+        if (added.depends !== undefined) {
+          for (const dep of added.depends) {
+            if (!effectiveSliceIds.has(dep)) {
+              guardError = `sliceChanges.added[${i}].depends references unknown slice "${dep}" — check that it is defined in this milestone`;
+              return;
+            }
+          }
         }
       }
 
@@ -263,7 +306,7 @@ export async function handleReassessRoadmap(
 
     // ── Post-mutation hook: projections, manifest, event log ─────
     try {
-      await renderAllProjections(basePath, params.milestoneId);
+      await flushWorkflowProjections(basePath, { milestoneId: params.milestoneId });
       writeManifest(basePath);
       appendEvent(basePath, {
         cmd: "reassess-roadmap",

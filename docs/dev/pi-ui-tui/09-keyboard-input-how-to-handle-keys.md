@@ -3,7 +3,7 @@
 ### matchesKey — The Key Detection Function
 
 ```typescript
-import { matchesKey, Key } from "@mariozechner/pi-tui";
+import { matchesKey, Key } from "@gsd/pi-tui";
 
 handleInput(data: string) {
   // Using Key constants (recommended — gives autocomplete)

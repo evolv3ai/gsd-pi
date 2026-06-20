@@ -50,11 +50,13 @@ export type AgentToolCall = Extract<AssistantMessage["content"][number], { type:
  * Result returned from `beforeToolCall`.
  *
  * Returning `{ block: true }` prevents the tool from executing. The loop emits an error tool result instead.
- * `reason` becomes the text shown in that error result. If omitted, a default blocked message is used.
+ * `reason` becomes the model-facing error result text. If omitted, a default blocked message is used.
+ * `displayReason` optionally replaces `reason` in UI renderers without changing what the model receives.
  */
 export interface BeforeToolCallResult {
 	block?: boolean;
 	reason?: string;
+	displayReason?: string;
 }
 
 /**
@@ -132,6 +134,8 @@ export interface AgentLoopTurnUpdate {
 
 export interface PrepareNextTurnContext extends ShouldStopAfterTurnContext {}
 
+export type AgentLatencyMarkSink = (phase: string, data?: Record<string, unknown>) => void;
+
 export interface AgentLoopConfig extends SimpleStreamOptions {
 	model: Model<any>;
 
@@ -194,6 +198,9 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * Contract: must not throw or reject. Return undefined when no key is available.
 	 */
 	getApiKey?: (provider: string) => Promise<string | undefined> | string | undefined;
+
+	/** @internal Diagnostic hook for low-level turn latency marks. */
+	latencyMark?: AgentLatencyMarkSink;
 
 	/**
 	 * Called after each turn fully completes and `turn_end` has been emitted.

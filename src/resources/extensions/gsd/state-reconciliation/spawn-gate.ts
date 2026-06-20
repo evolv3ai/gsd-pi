@@ -21,10 +21,10 @@ export interface SpawnGateDeps extends Partial<ReconciliationDeps> {
 }
 
 /**
- * Run reconciliation before spawning workers. Returns ok=true when the run
- * completed without throwing (blockers ride along but don't fail the gate —
- * spawn callers can choose how to handle them). On
- * ReconciliationFailedError, returns ok=false with the error message so the
+ * Run reconciliation before spawning workers. Returns ok=true only when the run
+ * completed without throwing AND surfaced no blockers; any blocker fails the
+ * gate (ok=false, reason carries the first blocker) so callers must not spawn.
+ * On ReconciliationFailedError, returns ok=false with the error message so the
  * caller can surface it to the user without re-throwing.
  *
  * Other unexpected errors propagate; they are not part of the drift

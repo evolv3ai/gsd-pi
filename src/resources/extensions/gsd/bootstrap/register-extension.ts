@@ -16,7 +16,8 @@ import { registerScheduleWakeupTool } from "./schedule-wakeup-tool.js";
 import { registerHooks } from "./register-hooks.js";
 import { registerShortcuts } from "./register-shortcuts.js";
 import { writeCrashLog } from "./crash-log.js";
-import { logWarning } from "../workflow-logger.js";
+import { logWarning, isGsdExtensionStderrEnabled } from "../workflow-logger.js";
+import { UNIT_TOOL_CONTRACTS } from "../unit-tool-contracts.js";
 // Static import so cmux event listeners are registered synchronously during
 // extension bootstrap. Prior implementation used `void import().then()` which
 // queued listener registration as a microtask — any CMUX_CHANNELS emit fired
@@ -37,9 +38,16 @@ const EPIPE_STORM_WINDOW_MS = 10_000;
 let epipeCount = 0;
 let epipeWindowStart = 0;
 
+export const CRITICAL_GSD_WORKFLOW_TOOL_NAMES = [...new Set(
+  Object.values(UNIT_TOOL_CONTRACTS)
+    .flatMap((contract) => contract.requiredWorkflowTools)
+    .filter((toolName) => toolName.startsWith("gsd_")),
+)].sort();
+
 /** Write to stderr without ever re-throwing — stderr can EPIPE too, which would
  *  re-enter this handler and re-loop. */
 function safeStderr(msg: string): void {
+  if (!isGsdExtensionStderrEnabled()) return;
   try {
     process.stderr.write(msg);
   } catch { /* stderr is also broken; nothing we can do */ }
@@ -133,6 +141,21 @@ export function installEpipeGuard(): void {
   }
 }
 
+function assertCriticalGsdWorkflowToolsRegistered(pi: ExtensionAPI): void {
+  if (typeof pi.getAllTools !== "function") return;
+
+  const registered = new Set(pi.getAllTools().map((tool) => tool.name));
+  const missing = CRITICAL_GSD_WORKFLOW_TOOL_NAMES.filter((toolName) => !registered.has(toolName));
+  if (missing.length === 0) return;
+
+  const message = [
+    `Critical GSD workflow tool registration failed; missing required tool(s): ${missing.join(", ")}.`,
+    "Check earlier bootstrap warnings for the registration slot that failed.",
+  ].join(" ");
+  logWarning("bootstrap", message);
+  throw new Error(message);
+}
+
 export function registerGsdExtension(pi: ExtensionAPI): void {
   // Note: registerGSDCommand is called by index.ts before this function,
   // so we intentionally skip it here to avoid double-registration.
@@ -214,4 +237,6 @@ export function registerGsdExtension(pi: ExtensionAPI): void {
       );
     }
   }
+
+  assertCriticalGsdWorkflowToolsRegistered(pi);
 }

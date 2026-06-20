@@ -87,6 +87,8 @@ export function showSettingsSelector(host: InteractiveModeDelegateHost): void {
 					currentTheme: host.settingsManager.getTheme() || "dark",
 					availableThemes: getAvailableThemes(),
 					hideThinkingBlock: host.hideThinkingBlock,
+					toolsExpanded: host.toolOutputExpanded,
+					toolRailAnimation: host.settingsManager.getToolRailAnimation(),
 					collapseChangelog: host.settingsManager.getCollapseChangelog(),
 					doubleEscapeAction: host.settingsManager.getDoubleEscapeAction(),
 					treeFilterMode: host.settingsManager.getTreeFilterMode(),
@@ -164,6 +166,13 @@ export function showSettingsSelector(host: InteractiveModeDelegateHost): void {
 						}
 						host.chatContainer.clear();
 						host.rebuildChatFromMessages();
+					},
+					onToolsExpandedChange: (expanded) => {
+						host.settingsManager.setToolsExpanded(expanded);
+						host.setToolsExpanded(expanded);
+					},
+					onToolRailAnimationChange: (enabled) => {
+						host.setToolRailAnimation(enabled);
 					},
 					onCollapseChangelogChange: (collapsed) => {
 						host.settingsManager.setCollapseChangelog(collapsed);
@@ -385,4 +394,3 @@ export async function showModelsSelector(host: InteractiveModeDelegateHost): Pro
 			return { component: selector, focus: selector };
 		});
 	}
-

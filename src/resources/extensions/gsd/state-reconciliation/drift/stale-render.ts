@@ -61,6 +61,18 @@ function isRepairableStaleRenderReason(reason: string): boolean {
   );
 }
 
+function canonicalizeMilestoneId(dirSegment: string): string {
+  if (getMilestone(dirSegment)) return dirSegment;
+  const suffixId = dirSegment.match(/^(M\d+-[a-z0-9]{6})(?:$|-)/)?.[1];
+  if (suffixId && getMilestone(suffixId)) return suffixId;
+
+  // Descriptor layout: e.g. M001-DESCRIPTOR → M001
+  const baseId = dirSegment.match(/^(M\d+)(?:$|-)/i)?.[1];
+  if (baseId && getMilestone(baseId)) return baseId;
+
+  return suffixId ?? baseId ?? dirSegment;
+}
+
 function resolveRoadmapMilestoneIdFromPath(normPath: string): string {
   const milestoneMatch = normPath.match(/milestones\/([^/]+)\//);
   if (!milestoneMatch) {
@@ -106,7 +118,19 @@ async function repairStaleRenderFromBasePath(
         `stale-render drift: plan path missing milestone/slice segments: ${record.renderPath}`,
       );
     }
-    await renderPlanCheckboxes(basePath, pathMatch[1], pathMatch[2]);
+    const milestoneId = canonicalizeMilestoneId(pathMatch[1]);
+    const wrote = await renderPlanCheckboxes(
+      basePath,
+      milestoneId,
+      pathMatch[2],
+      record.renderPath,
+    );
+    if (!wrote) {
+      throw new Error(
+        `stale-render drift: plan re-render wrote nothing for ${milestoneId}/${pathMatch[2]} ` +
+          `(${record.renderPath}); slice has no tasks or its path is unresolvable`,
+      );
+    }
     return;
   }
 
@@ -120,7 +144,15 @@ async function repairStaleRenderFromBasePath(
         `stale-render drift: task summary path/reason malformed: ${record.renderPath} reason=${reason}`,
       );
     }
-    await renderTaskSummary(basePath, pathMatch[1], pathMatch[2], taskMatch[1]);
+    const milestoneId = canonicalizeMilestoneId(pathMatch[1]);
+    const wrote = await renderTaskSummary(basePath, milestoneId, pathMatch[2], taskMatch[1]);
+    if (!wrote) {
+      throw new Error(
+        `stale-render drift: task summary re-render wrote nothing for ` +
+          `${milestoneId}/${pathMatch[2]}/${taskMatch[1]} (${record.renderPath}); ` +
+          `task has no summary in DB or its slice path is unresolvable`,
+      );
+    }
     return;
   }
 
@@ -131,7 +163,7 @@ async function repairStaleRenderFromBasePath(
         `stale-render drift: slice summary path missing milestone/slice segments: ${record.renderPath}`,
       );
     }
-    const milestoneId = pathMatch[1];
+    const milestoneId = canonicalizeMilestoneId(pathMatch[1]);
     const sliceId = pathMatch[2];
     const slice = getSlice(milestoneId, sliceId);
     const uatPath = join(dirname(record.renderPath), buildSliceFileName(sliceId, "UAT"));
@@ -139,7 +171,14 @@ async function repairStaleRenderFromBasePath(
     if (slice?.full_uat_md && !existsSync(uatPath)) {
       setSliceSummaryMd(milestoneId, sliceId, slice.full_summary_md ?? "", "");
     }
-    await renderSliceSummary(basePath, milestoneId, sliceId);
+    const wrote = await renderSliceSummary(basePath, milestoneId, sliceId);
+    if (!wrote) {
+      throw new Error(
+        `stale-render drift: slice summary re-render wrote nothing for ` +
+          `${milestoneId}/${sliceId} (${record.renderPath}); slice has no summary/UAT ` +
+          `in DB or its path is unresolvable`,
+      );
+    }
     return;
   }
 
@@ -152,7 +191,7 @@ async function repairStaleRenderFromBasePath(
     }
     // When UAT.md is removed from disk, mirror that intent by clearing stale
     // persisted UAT content instead of rehydrating it back onto disk.
-    const milestoneId = pathMatch[1];
+    const milestoneId = canonicalizeMilestoneId(pathMatch[1]);
     const sliceId = pathMatch[2];
     const slice = getSlice(milestoneId, sliceId);
     if (!slice) {

@@ -35,6 +35,20 @@ function makeTempDir(prefix: string): string {
   return dir;
 }
 
+function withRtkDisabled<T>(callback: () => T): T {
+  const previous = process.env.GSD_RTK_DISABLED;
+  process.env.GSD_RTK_DISABLED = "1";
+  try {
+    return callback();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.GSD_RTK_DISABLED;
+    } else {
+      process.env.GSD_RTK_DISABLED = previous;
+    }
+  }
+}
+
 // ─── Discovery Tests ─────────────────────────────────────────────────────────
 
 describe("verification-gate: discovery", () => {
@@ -430,6 +444,38 @@ describe("verification-gate: execution", () => {
     assert.ok(result.checks[1].stderr.includes("err"));
   });
 
+  test("grep -c zero-match failure includes absence-check warning", () => {
+    writeFileSync(join(tmp, "sample.txt"), "present\n");
+
+    const result = withRtkDisabled(() => runVerificationGate({
+      cwd: tmp,
+      preferenceCommands: ["grep -c missing sample.txt"],
+    }));
+
+    assert.equal(result.passed, false);
+    assert.equal(result.checks.length, 1);
+    assert.equal(result.checks[0].exitCode, 1);
+    assert.equal(result.checks[0].stdout.trim(), "0");
+    assert.match(result.checks[0].stderr, /grep -c/);
+    assert.match(result.checks[0].stderr, /count=0/);
+    assert.match(result.checks[0].stderr, /! grep -q/);
+  });
+
+  test("grep -c matching count does not warn", () => {
+    writeFileSync(join(tmp, "sample.txt"), "present\n");
+
+    const result = withRtkDisabled(() => runVerificationGate({
+      cwd: tmp,
+      preferenceCommands: ["grep -c present sample.txt"],
+    }));
+
+    assert.equal(result.passed, true);
+    assert.equal(result.checks.length, 1);
+    assert.equal(result.checks[0].exitCode, 0);
+    assert.equal(result.checks[0].stdout.trim(), "1");
+    assert.equal(result.checks[0].stderr, "");
+  });
+
   test("no commands discovered → gate passes with 0 checks", () => {
     const result = runVerificationGate({
       cwd: tmp,
@@ -684,6 +730,11 @@ test("isLikelyCommand: short lowercase tokens without flags are accepted (could 
 
 test("isLikelyCommand: bash negation with known command is accepted", () => {
   assert.equal(isLikelyCommand("! grep needle file.txt"), true);
+});
+
+test("validateVerificationCommand accepts negated quiet absence checks", () => {
+  assert.equal(validateVerificationCommand("! grep -q needle file.txt").ok, true);
+  assert.equal(validateVerificationCommand("! rg -q needle file.txt").ok, true);
 });
 
 test("validateVerificationCommand allows shell pipelines", () => {

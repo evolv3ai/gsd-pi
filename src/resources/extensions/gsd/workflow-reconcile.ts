@@ -4,6 +4,16 @@ import { logWarning, logError } from "./workflow-logger.js";
 import { readEvents, findForkPoint, getSessionId } from "./workflow-events.js";
 import type { WorkflowEvent } from "./workflow-events.js";
 import {
+  normalizeWorkflowEventCommand,
+  workflowEventEntityKey,
+} from "./workflow-event-vocabulary.js";
+import {
+  readWorktreeEventLogPath,
+  workflowEventLogPath,
+  writeWorkflowEventLog,
+  writeWorktreeEventLog,
+} from "./workflow-event-ledger.js";
+import {
   transaction,
   updateTaskStatus,
   updateSliceStatus,
@@ -13,11 +23,11 @@ import {
   getMilestoneSlices,
   insertVerificationEvidence,
   upsertDecision,
-  openDatabase,
   setTaskBlockerDiscovered,
   insertOrIgnoreSlice,
   insertOrIgnoreTask,
 } from "./gsd-db.js";
+import { openWorkflowDatabasePath } from "./db-workspace.js";
 import { isClosedStatus } from "./status-guards.js";
 import { invalidateStateCache } from "./state.js";
 import { clearPathCache, resolveGsdPathContract } from "./paths.js";
@@ -82,14 +92,11 @@ function replayEvents(events: WorkflowEvent[]): void {
   transaction(() => {
   for (const event of events) {
     const p = event.params;
-    // Normalize cmd format: completion tools write hyphens ("complete-task"),
-    // legacy logs use underscores ("complete_task"). Accept both formats.
-    // Type guard: malformed event lines with non-string cmd are skipped.
-    if (typeof event.cmd !== "string") {
+    const cmd = normalizeWorkflowEventCommand(event.cmd);
+    if (!cmd) {
       logWarning("reconcile", `Event with non-string cmd skipped: ${JSON.stringify(event.cmd)}`);
       continue;
     }
-    const cmd = event.cmd.replace(/-/g, "_");
     switch (cmd) {
       case "complete_task": {
         const milestoneId = p["milestoneId"] as string;
@@ -235,48 +242,7 @@ function replayEvents(events: WorkflowEvent[]): void {
 export function extractEntityKey(
   event: WorkflowEvent,
 ): { type: string; id: string } | null {
-  const p = event.params;
-  // Normalize cmd format: accept both hyphens and underscores
-  if (typeof event.cmd !== "string") return null;
-  const cmd = event.cmd.replace(/-/g, "_");
-
-  switch (cmd) {
-    case "complete_task":
-    case "start_task":
-    case "skip_task":
-    case "report_blocker":
-    case "record_verification":
-    case "plan_task":
-      return typeof p["taskId"] === "string"
-        ? { type: "task", id: p["taskId"] }
-        : null;
-
-    case "complete_slice":
-    case "replan_slice":
-      return typeof p["sliceId"] === "string"
-        ? { type: "slice", id: p["sliceId"] }
-        : null;
-
-    case "plan_slice":
-      return typeof p["sliceId"] === "string"
-        ? { type: "slice_plan", id: p["sliceId"] }
-        : null;
-
-    case "complete_milestone":
-    case "plan_milestone":
-      return typeof p["milestoneId"] === "string"
-        ? { type: "milestone", id: p["milestoneId"] }
-        : null;
-
-    case "save_decision":
-      if (typeof p["scope"] === "string" && typeof p["decision"] === "string") {
-        return { type: "decision", id: `${p["scope"]}:${p["decision"]}` };
-      }
-      return null;
-
-    default:
-      return null;
-  }
+  return workflowEventEntityKey(event);
 }
 
 // ─── detectConflicts ──────────────────────────────────────────────────────────
@@ -358,13 +324,6 @@ function rewriteDivergedEventsForEntity(
   }
 
   return rewritten;
-}
-
-function writeEventLog(basePath: string, events: WorkflowEvent[]): void {
-  const dir = join(basePath, ".gsd");
-  mkdirSync(dir, { recursive: true });
-  const content = events.map((e) => JSON.stringify(e)).join("\n") + (events.length > 0 ? "\n" : "");
-  atomicWriteSync(join(dir, "event-log.jsonl"), content);
 }
 
 // ─── writeConflictsFile ───────────────────────────────────────────────────────
@@ -450,11 +409,17 @@ function _reconcileWorktreeLogsInner(
   worktreeBasePath: string,
 ): ReconcileResult {
   // Step 1: Read both logs
-  const mainLogPath = join(mainBasePath, ".gsd", "event-log.jsonl");
-  const wtLogPath = join(worktreeBasePath, ".gsd", "event-log.jsonl");
+  const mainLogPath = workflowEventLogPath(mainBasePath);
+  const wtLogPath = readWorktreeEventLogPath(worktreeBasePath);
 
   const mainEvents = readEvents(mainLogPath);
   const wtEvents = readEvents(wtLogPath);
+
+  // Canonical worktree appends are already durable in the project ledger.
+  // Empty/missing worktree shards are legacy-only absence, not divergence.
+  if (wtEvents.length === 0) {
+    return { autoMerged: 0, conflicts: [] };
+  }
 
   // Step 2: Find fork point
   const forkPoint = findForkPoint(mainEvents, wtEvents);
@@ -495,12 +460,10 @@ function _reconcileWorktreeLogsInner(
 
   const baseEvents = mainEvents.slice(0, forkPoint + 1);
   const mergedLog = baseEvents.concat(merged);
-  const logContent = mergedLog.map((e) => JSON.stringify(e)).join("\n") + (mergedLog.length > 0 ? "\n" : "");
-  mkdirSync(join(mainBasePath, ".gsd"), { recursive: true });
-  atomicWriteSync(join(mainBasePath, ".gsd", "event-log.jsonl"), logContent);
+  writeWorkflowEventLog(mainBasePath, mergedLog);
 
   // Step 8: Replay into DB (wrapped in a transaction by replayEvents)
-  openDatabase(resolveGsdPathContract(mainBasePath).projectDb);
+  openWorkflowDatabasePath(resolveGsdPathContract(mainBasePath).projectDb);
   replayEvents(merged);
 
   // Step 9: Write manifest
@@ -636,8 +599,8 @@ export function resolveConflict(
   const conflict = conflicts[idx]!;
   const eventsToReplay = pick === "main" ? conflict.mainSideEvents : conflict.worktreeSideEvents;
 
-  const mainLogPath = join(basePath, ".gsd", "event-log.jsonl");
-  const wtLogPath = join(worktreeBasePath, ".gsd", "event-log.jsonl");
+  const mainLogPath = workflowEventLogPath(basePath);
+  const wtLogPath = readWorktreeEventLogPath(worktreeBasePath);
   const mainEvents = readEvents(mainLogPath);
   const wtEvents = readEvents(wtLogPath);
   const forkPoint = findForkPoint(mainEvents, wtEvents);
@@ -652,10 +615,14 @@ export function resolveConflict(
 
   const targetBasePath = pick === "main" ? worktreeBasePath : basePath;
   const targetBaseEvents = pick === "main" ? wtBaseEvents : mainBaseEvents;
-  writeEventLog(targetBasePath, targetBaseEvents.concat(rewrittenTargetEvents));
+  if (pick === "main") {
+    writeWorktreeEventLog(targetBasePath, targetBaseEvents.concat(rewrittenTargetEvents));
+  } else {
+    writeWorkflowEventLog(targetBasePath, targetBaseEvents.concat(rewrittenTargetEvents));
+  }
 
   // Replay resolved events through the DB (updates DB state)
-  openDatabase(resolveGsdPathContract(basePath).projectDb);
+  openWorkflowDatabasePath(resolveGsdPathContract(basePath).projectDb);
   replayEvents(eventsToReplay);
   invalidateStateCache();
   clearPathCache();

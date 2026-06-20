@@ -1,11 +1,11 @@
 // Project/App: gsd-pi
-// File Purpose: Left-edge user message rail renderer for interactive chat transcripts.
+// File Purpose: Left-edge user message renderer for interactive chat transcripts (corner-framed dialog).
 
 import { Container, Markdown, type MarkdownTheme } from "@gsd/pi-tui";
 import { getMarkdownTheme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { RenderCache } from "./render-cache.js";
 import { formatTimestamp, type TimestampFormat } from "./timestamp.js";
-import { renderUserRail, TRANSCRIPT_CARD_INDENT } from "./transcript-design.js";
+import { renderPlainSpeakerMessage } from "./transcript-design.js";
 
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -17,12 +17,11 @@ function shouldEmitOsc133Zones(): boolean {
 }
 
 /**
- * Component that renders a user message against the left edge of the chat transcript.
+ * Component that renders a user message as a plain speaker line + unboxed body.
  */
 export class UserMessageComponent extends Container {
 	private timestamp: number | undefined;
 	private timestampFormat: TimestampFormat;
-	private continuesToAssistant = false;
 	private renderCache = new RenderCache();
 	private renderVersion = 0;
 
@@ -38,39 +37,41 @@ export class UserMessageComponent extends Container {
 		this.clearRenderCache();
 	}
 
-	setContinuesToAssistant(value: boolean): void {
-		if (this.continuesToAssistant === value) return;
-		this.continuesToAssistant = value;
-		this.clearRenderCache();
-	}
+	/** @deprecated Plain transcript has no connected rails. */
+	setContinuesToAssistant(_value: boolean): void {}
 
 	override render(width: number): string[] {
 		const emitOsc133Zones = shouldEmitOsc133Zones();
-		const cacheKey = `${width}:${this.renderVersion}:${emitOsc133Zones ? 1 : 0}:${this.continuesToAssistant ? 1 : 0}`;
+		const cacheKey = `${width}:${this.renderVersion}:${emitOsc133Zones ? 1 : 0}`;
 		const cached = this.renderCache.get(cacheKey);
 		if (cached) return cached;
 
 		const frameWidth = Math.max(20, width);
-		const contentWidth = Math.max(1, frameWidth - TRANSCRIPT_CARD_INDENT - 3);
-		const lines = super.render(contentWidth);
+		const lines = super.render(frameWidth);
 		const meta =
 			this.timestamp !== undefined
 				? formatTimestamp(this.timestamp, this.timestampFormat)
 				: undefined;
-		const framed = renderUserRail(lines, frameWidth, {
-			label: "You",
+		const framed = renderPlainSpeakerMessage(lines, frameWidth, {
+			label: "YOU",
 			meta,
-			continuesToAssistant: this.continuesToAssistant,
+			tone: "user",
+			trailingBlank: false,
 		});
 		if (framed.length === 0) {
 			return framed;
 		}
-		const out = framed;
 		if (!emitOsc133Zones) {
-			return this.renderCache.set(cacheKey, out);
+			return this.renderCache.set(cacheKey, framed);
 		}
+		const out = [...framed];
 		const firstFrameLine = 0;
-		const lastFrameLine = out.length - 1;
+		// Skip trailing blank lines so the end-of-command marker lands on the
+		// last content line, not on the spacer appended by renderPlainSpeakerMessage.
+		let lastFrameLine = out.length - 1;
+		while (lastFrameLine > firstFrameLine && out[lastFrameLine] === "") {
+			lastFrameLine--;
+		}
 		out[firstFrameLine] = OSC133_ZONE_START + out[firstFrameLine];
 		out[lastFrameLine] = out[lastFrameLine] + OSC133_ZONE_END;
 		return this.renderCache.set(cacheKey, out);

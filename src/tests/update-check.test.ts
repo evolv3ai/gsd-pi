@@ -5,7 +5,15 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createServer } from 'node:http'
 
-import { compareSemver, readUpdateCache, writeUpdateCache, checkForUpdates, fetchLatestVersionFromRegistry } from '../update-check.js'
+import {
+  compareSemver,
+  readUpdateCache,
+  writeUpdateCache,
+  checkForGsdBrowserUpdates,
+  checkForUpdates,
+  fetchLatestVersionFromRegistry,
+  GSD_BROWSER_PACKAGE_NAME,
+} from '../update-check.js'
 
 // ---------------------------------------------------------------------------
 // compareSemver
@@ -206,6 +214,66 @@ test('checkForUpdates writes cache after successful fetch', async (t) => {
   assert.ok(cache, 'cache should exist after fetch')
   assert.equal(cache!.latestVersion, '5.0.0')
   assert.ok(cache!.lastCheck > 0)
+})
+
+test('checkForGsdBrowserUpdates checks and caches the browser package independently', async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), 'gsd-browser-update-'))
+  const cachePath = join(tmp, '.update-check-gsd-browser')
+  const registry = await startMockRegistry({ version: '0.1.99' })
+  t.after(async () => {
+    await registry.close()
+    rmSync(tmp, { recursive: true, force: true })
+  });
+
+  let reportedPackage = ''
+  let reportedLatest = ''
+
+  await checkForGsdBrowserUpdates({
+    currentVersion: '0.1.27',
+    cachePath,
+    registryUrl: registry.url,
+    checkIntervalMs: 0,
+    fetchTimeoutMs: 5000,
+    onUpdate: (_current, latest, packageName) => {
+      reportedLatest = latest
+      reportedPackage = packageName
+    },
+  })
+
+  assert.equal(reportedPackage, GSD_BROWSER_PACKAGE_NAME)
+  assert.equal(reportedLatest, '0.1.99')
+  assert.equal(readUpdateCache(cachePath), null, 'default GSD cache reader must ignore browser cache entries')
+  assert.equal(readUpdateCache(cachePath, GSD_BROWSER_PACKAGE_NAME)?.latestVersion, '0.1.99')
+})
+
+test('checkForGsdBrowserUpdates treats a newer PATH browser as the current version', async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), 'gsd-browser-update-'))
+  const cachePath = join(tmp, '.update-check-gsd-browser')
+  const registry = await startMockRegistry({ version: '0.2.2' })
+  const originalPathVersion = process.env.GSD_BROWSER_PATH_VERSION
+  t.after(async () => {
+    if (originalPathVersion === undefined) {
+      delete process.env.GSD_BROWSER_PATH_VERSION
+    } else {
+      process.env.GSD_BROWSER_PATH_VERSION = originalPathVersion
+    }
+    await registry.close()
+    rmSync(tmp, { recursive: true, force: true })
+  });
+
+  process.env.GSD_BROWSER_PATH_VERSION = '0.2.2'
+  let called = false
+
+  await checkForGsdBrowserUpdates({
+    cachePath,
+    registryUrl: registry.url,
+    checkIntervalMs: 0,
+    fetchTimeoutMs: 5000,
+    onUpdate: () => { called = true },
+  })
+
+  assert.equal(called, false, 'startup banner must not fire when PATH already has latest gsd-browser')
+  assert.equal(readUpdateCache(cachePath, GSD_BROWSER_PACKAGE_NAME)?.latestVersion, '0.2.2')
 })
 
 test('checkForUpdates uses cache and skips fetch when checked recently', async (t) => {

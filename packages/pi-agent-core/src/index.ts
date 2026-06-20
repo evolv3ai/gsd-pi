@@ -38,6 +38,9 @@ export * from "./harness/system-prompt.js";
 export * from "./harness/types.js";
 export * from "./harness/utils/shell-output.js";
 export * from "./harness/utils/truncate.js";
+// Graceful-kill timing constant (mirror of pi-coding-agent shell.ts; exported so a
+// higher-layer test can lock the two against each other and fail CI on drift).
+export { SIGKILL_GRACE_MS as NODE_ENV_SIGKILL_GRACE_MS } from "./harness/env/nodejs.js";
 // Proxy utilities
 export * from "./proxy.js";
 // Types

@@ -2,10 +2,12 @@
 // File Purpose: Interactive terminal tool execution renderer for commands, tool calls, diffs, images, and summaries.
 import { normalizeToolArguments } from "@gsd/pi-ai";
 import {
+	allocateImageId,
 	Box,
 	Container,
 	getCapabilities,
 	Image,
+	isImageLine,
 	type ImageDimensions,
 	imageFallback,
 	Spacer,
@@ -14,12 +16,14 @@ import {
 	type TUI,
 	truncateToWidth,
 	visibleWidth,
+	padRight,
 } from "@gsd/pi-tui";
 import stripAnsi from "strip-ansi";
 import type { ToolDefinition, ToolRenderContext } from "@gsd/pi-coding-agent/core/extensions/types.js";
 import { computeEditDiff, type EditDiffError, type EditDiffResult } from "@gsd/pi-coding-agent/core/tools/edit-diff.js";
 import { allTools } from "@gsd/pi-coding-agent/core/tools/index.js";
 import { getReadTuiMaxDisplayLines } from "@gsd/pi-coding-agent/core/tools/read.js";
+import { getDisplayReason } from "@gsd/pi-coding-agent/core/tools/render-utils.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "@gsd/pi-coding-agent/core/tools/truncate.js";
 import { convertToPng } from "@gsd/pi-coding-agent/utils/image-convert.js";
 import { sanitizeBinaryOutput } from "@gsd/pi-coding-agent/utils/shell.js";
@@ -29,10 +33,11 @@ import { renderDiff } from "./diff.js";
 import { keyHint } from "./keybinding-hints.js";
 import {
 	renderCommandCard,
-	renderToolLineCard,
-	renderTranscriptCard,
-	TRANSCRIPT_CARD_INDENT,
+	renderCompactToolStrip,
+	renderPlainToolMessage,
 	collapseBlankLines,
+	isRailAnimationEnabled,
+	rightAlign,
 	type StatusTone,
 } from "./transcript-design.js";
 import { truncateToVisualLines } from "./visual-truncate.js";
@@ -42,6 +47,16 @@ const BASH_PREVIEW_LINES = 5;
 // During partial write tool-call streaming, re-highlight the first N lines fully
 // to keep multiline tokenization mostly correct without re-highlighting the full file.
 const WRITE_PARTIAL_FULL_HIGHLIGHT_LINES = 50;
+// The in-flight tool card animates its rail by re-rendering the transcript on a
+// fixed-cadence timer. The cadence is matched to the rail's own step
+// (RUNNING_RAIL_FRAME_MS in transcript-design): one re-render == one cell of head
+// movement, so the motion is smooth and no frame is wasted. Animation is gated by
+// the `terminal.toolRailAnimation` user setting (isRailAnimationEnabled): when it
+// is off, the timer is never armed and the rail renders statically, so even a tool
+// that runs for 30 minutes costs zero idle CPU. (A genuinely hung tool is finalized
+// at the source by agent-loop's raceToolExecutionAgainstAbort, which gives the card
+// a result and lets the timer stop on its own.)
+const RUNNING_RAIL_RENDER_INTERVAL_MS = 70;
 
 /**
  * Replace tabs with spaces for consistent rendering
@@ -338,6 +353,7 @@ export class ToolExecutionComponent extends Container {
 	private toolName: string;
 	private args: any;
 	private expanded = false;
+	private explicitlyCollapsed = false;
 	private showImages: boolean;
 	private isPartial = true;
 	private toolDefinition?: ToolDefinition;
@@ -358,11 +374,20 @@ export class ToolExecutionComponent extends Container {
 	// Cached resolved image dimensions to avoid re-triggering async parsing
 	// when updateDisplay() recreates Image components (#3455).
 	private resolvedImageDimensions: Map<number, ImageDimensions> = new Map();
+	// Stable Kitty image ids, keyed by image index. updateDisplay() destroys and
+	// recreates Image components on every streaming tick; without a stable id each
+	// recreation would call allocateImageId() and get a fresh random id, so the
+	// Kitty placement key (imageId, p) would change every render and the terminal
+	// would STACK a new placement instead of replacing the old one — painting
+	// overlapping copies over the chat and footer. Reusing one id per image index
+	// keeps the placement identity stable so re-emits replace in place.
+	private stableImageIds: Map<number, number> = new Map();
 	// Incremental syntax highlighting cache for write tool call args
 	private writeHighlightCache?: WriteHighlightCache;
 	// When true, this component intentionally renders no lines
 	private hideComponent = false;
 	private toolRenderState: Record<string, unknown> = {};
+	private runningRailTimer: ReturnType<typeof setInterval> | undefined;
 
 	private createRenderContext(): ToolRenderContext {
 		return {
@@ -446,12 +471,48 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	dispose(): void {
+		this.stopRunningRailTimer();
 		this.convertedImages.clear();
+		this.stableImageIds.clear();
 		this.imageComponents = [];
 		this.imageSpacers = [];
 		this.editDiffPreview = undefined;
 		this.writeHighlightCache = undefined;
 		this.result = undefined;
+	}
+
+	private syncRunningRailTimer(): void {
+		if (!this.isInFlight() || this.hideComponent || !isRailAnimationEnabled()) {
+			this.stopRunningRailTimer();
+			return;
+		}
+		if (this.runningRailTimer) return;
+
+		this.runningRailTimer = setInterval(() => {
+			// Stop once the tool finishes, is hidden, or the animation setting is off.
+			if (!this.isInFlight() || this.hideComponent || !isRailAnimationEnabled()) {
+				this.stopRunningRailTimer();
+				return;
+			}
+			this.ui.requestRender();
+		}, RUNNING_RAIL_RENDER_INTERVAL_MS);
+		this.runningRailTimer.unref?.();
+	}
+
+	/**
+	 * Re-evaluate the running-rail timer after the `terminal.toolRailAnimation`
+	 * setting is toggled live. Arms the timer if animation is now on (and the card
+	 * is still in-flight) or stops it if now off; the static-vs-sweep rail picks up
+	 * the new setting on the next render.
+	 */
+	refreshRailAnimation(): void {
+		this.syncRunningRailTimer();
+	}
+
+	private stopRunningRailTimer(): void {
+		if (!this.runningRailTimer) return;
+		clearInterval(this.runningRailTimer);
+		this.runningRailTimer = undefined;
 	}
 
 	updateArgs(args: any): void {
@@ -647,8 +708,16 @@ export class ToolExecutionComponent extends Container {
 
 	/**
 	 * Finalize a pending tool call as failed/interrupted while preserving any streamed partial output.
+	 *
+	 * Guard: a tool that already produced a settled, non-partial result must NOT be
+	 * touched just because the surrounding turn was aborted (e.g. the user pressed
+	 * ESC during a later tool's await). Only genuinely-incomplete tool calls should
+	 * be marked interrupted.
 	 */
 	completeWithError(message?: string): void {
+		if (this.result && !this.isPartial) {
+			return;
+		}
 		this.isPartial = false;
 		this.endedAt = this.endedAt ?? Date.now();
 		if (this.result) {
@@ -702,7 +771,21 @@ export class ToolExecutionComponent extends Container {
 
 	setExpanded(expanded: boolean): void {
 		this.expanded = expanded;
+		this.explicitlyCollapsed = !expanded;
 		this.updateDisplay();
+	}
+
+	private shouldDefaultExpandBody(): boolean {
+		// If the user explicitly collapsed (ctrl+o), don't auto-expand even for
+		// edit/write tools — the global collapse must be respected.
+		if (this.explicitlyCollapsed) return false;
+		if (this.expanded) return true;
+		if (this.result?.isError) return false;
+		return false;
+	}
+
+	private showExpandedBody(): boolean {
+		return this.shouldDefaultExpandBody();
 	}
 
 	setShowImages(show: boolean): void {
@@ -720,7 +803,7 @@ export class ToolExecutionComponent extends Container {
 			return [];
 		}
 		const frameWidth = Math.max(20, width);
-		const contentWidth = Math.max(1, frameWidth - TRANSCRIPT_CARD_INDENT - 3);
+		const contentWidth = Math.max(1, frameWidth);
 		const frameTone: "pending" | "success" | "error" =
 			this.result?.isError ? "error" : this.isPartial || !this.result ? "pending" : "success";
 		const elapsed = formatElapsed((this.endedAt ?? Date.now()) - this.startedAt);
@@ -733,7 +816,7 @@ export class ToolExecutionComponent extends Container {
 		const recommendedTone: StatusTone =
 			frameTone === "pending" ? "running" : frameTone === "error" ? "error" : "success";
 
-		if (this.normalizedToolName === "bash" && !this.expanded && !this.result?.isError) {
+		if (this.normalizedToolName === "bash" && !this.showExpandedBody() && !this.result?.isError) {
 			const command = str(this.args?.command);
 			return renderCommandCard(command && command.length > 0 ? formatCommandPreview(command) : frameLabel, frameWidth, {
 				status: frameStatus,
@@ -741,21 +824,32 @@ export class ToolExecutionComponent extends Container {
 			});
 		}
 		const hasImages = this.result?.content?.some((block) => block.type === "image") ?? false;
-		if (!this.expanded && !this.result?.isError && !hasImages) {
+		if (!this.showExpandedBody() && !this.result?.isError && !hasImages) {
 			const compactTarget = this.getCompactTarget();
-			return renderToolLineCard(frameLabel, compactTarget, frameWidth, {
+			return renderCompactToolStrip(frameLabel, compactTarget, frameWidth, {
 				status: frameStatus,
 				tone: recommendedTone,
 				hidden: !this.isPartial && !!this.result,
 			});
 		}
-		const lines = collapseBlankLines(super.render(contentWidth));
-		return renderTranscriptCard(lines, frameWidth, {
+		// collapseBlankLines merges consecutive blank rows. An inline image reserves
+		// its height as (rows-1) trailing blank padding lines after the sequence;
+		// collapsing those would shrink a tall image to a single row and the terminal
+		// would paint the full image over everything below it. Preserve the exact
+		// line structure whenever the content includes an image.
+		const renderedBody = super.render(contentWidth);
+		const lines = hasImages || renderedBody.some((l) => isImageLine(l))
+			? renderedBody
+			: collapseBlankLines(renderedBody);
+		const rightParts = [frameStatus];
+		if (this.expanded) {
+			rightParts.push("ctrl+o collapse");
+		}
+		return renderPlainToolMessage(lines, frameWidth, {
 			title: frameLabel,
-			right: frameStatus,
+			target: this.getCompactTarget(),
+			meta: rightParts.join(" · "),
 			tone: recommendedTone,
-			footerLeft: this.expanded ? "output expanded" : undefined,
-			footerRight: this.expanded ? "ctrl+o collapse" : undefined,
 		});
 	}
 
@@ -973,11 +1067,19 @@ export class ToolExecutionComponent extends Container {
 					// Pass cached dimensions to avoid re-triggering async parsing
 					// when updateDisplay() recreates Image components (#3455).
 					const cachedDims = this.resolvedImageDimensions.get(i);
+					// Reuse a stable Kitty image id per image index so the recreated
+					// component keeps the same placement identity across redraws
+					// (otherwise every updateDisplay() stacks a new placement).
+					let stableImageId = this.stableImageIds.get(i);
+					if (caps.images === "kitty" && stableImageId === undefined) {
+						stableImageId = allocateImageId();
+						this.stableImageIds.set(i, stableImageId);
+					}
 					const imageComponent = new Image(
 						imageData,
 						imageMimeType,
 						{ fallbackColor: (s: string) => theme.fg("toolOutput", s) },
-						{ maxWidthCells: 60 },
+						{ maxWidthCells: 60, imageId: stableImageId },
 						cachedDims,
 					);
 					if (!cachedDims) {
@@ -1001,6 +1103,7 @@ export class ToolExecutionComponent extends Container {
 		if (!useBuiltInRenderer && this.toolDefinition) {
 			this.hideComponent = !customRendererHasContent && this.imageComponents.length === 0;
 		}
+		this.syncRunningRailTimer();
 	}
 
 	/**
@@ -1089,6 +1192,11 @@ export class ToolExecutionComponent extends Container {
 
 	private getTextOutput(): string {
 		if (!this.result) return "";
+
+		const displayReason = this.result.isError ? getDisplayReason(this.result.details) : undefined;
+		if (displayReason) {
+			return sanitizeBinaryOutput(stripAnsi(displayReason)).replace(/\r/g, "");
+		}
 
 		const textBlocks = this.result.content?.filter((c: any) => c.type === "text") || [];
 		const imageBlocks = this.result.content?.filter((c: any) => c.type === "image") || [];
@@ -1500,12 +1608,15 @@ export class ToolPhaseSummaryComponent extends Container {
 			const contentWidth = Math.max(1, frameWidth - 2);
 			const leftWidth = Math.max(1, contentWidth - visibleWidth(right) - 1);
 			const leftText = truncateToWidth(left, leftWidth, "");
-			const gap = Math.max(1, contentWidth - visibleWidth(leftText) - visibleWidth(right));
-			const summaryRow = `${theme.fg("toolSuccess", leftText)}${" ".repeat(gap)}${theme.fg("toolSuccess", right)}`;
-			const targetRow = summarizePhaseTargets(phase, contentWidth);
-			return targetRow ? [summaryRow, theme.fg("muted", targetRow)] : [summaryRow];
+			const leftStyled = theme.fg("toolSuccess", leftText);
+			const rightStyled = theme.fg("toolSuccess", right);
+			const summaryRow = padRight(truncateToWidth(rightAlign(leftStyled, rightStyled, frameWidth), frameWidth, ""), frameWidth);
+			const targetRow = summarizePhaseTargets(phase, frameWidth);
+			return targetRow
+				? [summaryRow, padRight(truncateToWidth(theme.fg("muted", truncateToWidth(targetRow, frameWidth, "…")), frameWidth, ""), frameWidth)]
+				: [summaryRow];
 		});
 
-		return ["", ...style().border("minimal").borderColor((text) => theme.fg("toolSuccess", text)).render(rows, frameWidth)];
+		return rows.length > 0 ? ["", ...rows] : [];
 	}
 }

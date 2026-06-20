@@ -71,6 +71,14 @@ export class GSDDashboardOverlay {
   private refreshInFlight: Promise<void> | null = null;
   private disposed = false;
   private resizeHandler: (() => void) | null = null;
+  private cachedMetrics: {
+    totals: ReturnType<typeof getProjectTotals>;
+    promptStats: ReturnType<typeof getPromptSizeStats>;
+    phases: ReturnType<typeof aggregateByPhase>;
+    slices: ReturnType<typeof aggregateBySlice>;
+    models: ReturnType<typeof aggregateByModel>;
+  } | null = null;
+  private lastSeenUnitCount = -1;
 
   constructor(
     tui: { requestRender: () => void },
@@ -123,7 +131,8 @@ export class GSDDashboardOverlay {
     this.dashData = getAutoDashboardData();
     const nextIdentity = this.computeDashboardIdentity(this.dashData);
 
-    if (initial || nextIdentity !== this.loadedDashboardIdentity) {
+    const identityChanged = initial || nextIdentity !== this.loadedDashboardIdentity;
+    if (identityChanged) {
       const loaded = await this.loadData();
       if (this.disposed) return;
       if (loaded) {
@@ -135,7 +144,9 @@ export class GSDDashboardOverlay {
       this.loading = false;
     }
 
-    this.invalidate();
+    if (identityChanged) {
+      this.invalidate();
+    }
     this.tui.requestRender();
   }
 
@@ -459,7 +470,7 @@ export class GSDDashboardOverlay {
 
     const ledger = getLedger();
     if (ledger && ledger.units.length > 0) {
-      const totals = getProjectTotals(ledger.units);
+      const { totals, promptStats, phases, slices, models } = this.ensureMetricsCache(ledger.units);
 
       lines.push(blank());
       lines.push(hr());
@@ -496,7 +507,6 @@ export class GSDDashboardOverlay {
         lines.push(row(budgetParts.join(`  ${th.fg("dim", "·")}  `)));
       }
 
-      const promptStats = getPromptSizeStats(ledger.units);
       if (promptStats) {
         const promptParts = [
           `${th.fg("dim", "avg prompt:")} ${th.fg("text", formatCharCount(promptStats.averagePromptChars))}`,
@@ -508,7 +518,6 @@ export class GSDDashboardOverlay {
         lines.push(row(promptParts.join(`  ${th.fg("dim", "·")}  `)));
       }
 
-      const phases = aggregateByPhase(ledger.units);
       if (phases.length > 0) {
         lines.push(blank());
         lines.push(row(th.fg("dim", "By Phase")));
@@ -520,7 +529,6 @@ export class GSDDashboardOverlay {
         }
       }
 
-      const slices = aggregateBySlice(ledger.units);
       if (slices.length > 0) {
         lines.push(blank());
         lines.push(row(th.fg("dim", "By Slice")));
@@ -551,7 +559,6 @@ export class GSDDashboardOverlay {
         }
       }
 
-      const models = aggregateByModel(ledger.units);
       if (models.length >= 1) {
         lines.push(blank());
         lines.push(row(th.fg("dim", "By Model")));
@@ -623,6 +630,20 @@ export class GSDDashboardOverlay {
     const filled = total > 0 ? Math.round((done / total) * barWidth) : 0;
     const bar = th.fg(color, "█".repeat(filled)) + th.fg("dim", "░".repeat(Math.max(0, barWidth - filled)));
     return `${th.fg("dim", labelText)}${" ".repeat(gap)}${bar}${" ".repeat(gap)}${th.fg("dim", rightText)}`;
+  }
+
+  private ensureMetricsCache(units: UnitMetrics[]) {
+    if (!this.cachedMetrics || units.length !== this.lastSeenUnitCount) {
+      this.cachedMetrics = {
+        totals: getProjectTotals(units),
+        promptStats: getPromptSizeStats(units),
+        phases: aggregateByPhase(units),
+        slices: aggregateBySlice(units),
+        models: aggregateByModel(units),
+      };
+      this.lastSeenUnitCount = units.length;
+    }
+    return this.cachedMetrics!;
   }
 
   invalidate(): void {

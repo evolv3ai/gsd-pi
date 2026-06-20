@@ -210,6 +210,61 @@ test("end-to-end: audit event is emitted when an auto trace is active", async ()
   }
 });
 
+test("same-API transform with changes does not fire the observer (no real provider switch)", async () => {
+  const { basePath, cleanup } = withTempBasePath();
+  try {
+    initNotificationStore(basePath);
+    installProviderSwitchObserver();
+
+    // Target api === source api. The conversation ends on an unresolved tool
+    // call, so a synthetic tool result IS backfilled (a non-empty report) — but
+    // this is a within-provider normalization, not a cross-provider switch.
+    // `sourceApi` is omitted (the common case), so fromApi defaults to the
+    // target api and equals toApi. The observer must stay silent.
+    const sameApiModel = {
+      id: "gpt-5",
+      name: "GPT-5",
+      api: "openai-responses",
+      provider: "openai",
+      baseUrl: "",
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128000,
+      maxTokens: 8192,
+    } as Parameters<typeof transformMessagesWithReport>[1];
+
+    const messages = [
+      {
+        role: "assistant" as const,
+        content: [
+          { type: "toolCall" as const, id: "call_orphan_1", name: "bash", arguments: {} },
+        ],
+        api: "openai-responses",
+        provider: "openai",
+        model: "gpt-5",
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        stopReason: "stop" as const,
+        timestamp: Date.now(),
+      },
+    ];
+
+    transformMessagesWithReport(
+      messages as Parameters<typeof transformMessagesWithReport>[0],
+      sameApiModel,
+    );
+
+    assert.equal(getProviderSwitchStats().totalSwitches, 0, "same→same transform must not count as a provider switch");
+    assert.equal(
+      readNotifications(basePath).filter((n) => n.message.includes("Provider switch")).length,
+      0,
+      "same→same transform must not emit a provider-switch notification",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
 test("empty report does not bump counter or emit a notification", async () => {
   const { basePath, cleanup } = withTempBasePath();
   try {

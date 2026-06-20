@@ -10,11 +10,14 @@ import type { ToolDefinition } from "@gsd/pi-coding-agent";
 import {
 	getShellConfig,
 	sanitizeCommand,
+	killProcessTree,
+	SIGKILL_GRACE_MS,
+	HARD_DEADLINE_MS,
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
 } from "@gsd/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,29 +40,6 @@ function getTempFilePath(): string {
 	return join(tmpdir(), `pi-async-bash-${id}.log`);
 }
 
-/**
- * Kill a process and its children (cross-platform).
- * Uses process group kill on Unix; taskkill /F /T on Windows.
- */
-function killTree(pid: number): void {
-	if (process.platform === "win32") {
-		try {
-			spawnSync("taskkill", ["/F", "/T", "/PID", String(pid)], {
-				timeout: 5_000,
-				stdio: "ignore",
-			});
-		} catch {
-			try { process.kill(pid, "SIGTERM"); } catch { /* already exited */ }
-		}
-	} else {
-		try {
-			process.kill(-pid, "SIGTERM");
-		} catch {
-			try { process.kill(pid, "SIGTERM"); } catch { /* already exited */ }
-		}
-	}
-}
-
 export function createAsyncBashTool(
 	getManager: () => AsyncJobManager,
 	getCwd: () => string,
@@ -73,7 +53,7 @@ export function createAsyncBashTool(
 			`Output is truncated to the last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB.`,
 		promptSnippet: "Run a bash command in the background, returning a job ID immediately.",
 		promptGuidelines: [
-			"Use async_bash for commands that take more than a few seconds (builds, tests, installs, large git operations).",
+			"Use async_bash for long-running builds, tests, installs, or operations that should run in the background so you can continue other work (the job ID lets you await_job later). Sync bash is uncapped — use async_bash when you want non-blocking behavior, not because of a timeout concern.",
 			"After starting async jobs, continue with other work and use await_job when you need the results.",
 			"await_job has a configurable timeout (default 120s) to prevent indefinite blocking — if it times out, jobs keep running and you can check again later.",
 			"For long-running processes (SSH, deploys, training) that may take minutes+, prefer async_bash with periodic await_job polling over a single long await.",
@@ -138,39 +118,27 @@ function executeBashInBackground(
 
 		let timedOut = false;
 		let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-		let sigkillHandle: ReturnType<typeof setTimeout> | undefined;
 		let hardDeadlineHandle: ReturnType<typeof setTimeout> | undefined;
-
-		/** Grace period (ms) between SIGTERM and SIGKILL. */
-		const SIGKILL_GRACE_MS = 5_000;
-		/** Hard deadline (ms) after SIGKILL to force-resolve the promise. */
-		const HARD_DEADLINE_MS = 3_000;
 
 		if (timeout !== undefined && timeout > 0) {
 			timeoutHandle = setTimeout(() => {
 				timedOut = true;
-				if (child.pid) killTree(child.pid);
+				// killProcessTree owns the SIGTERM -> grace -> SIGKILL escalation, so a
+				// SIGTERM-immune child is actually force-killed rather than left running.
+				if (child.pid) killProcessTree(child.pid);
 
-				// If the process ignores SIGTERM, escalate to SIGKILL
-				sigkillHandle = setTimeout(() => {
-					if (child.pid) {
-						// killTree already uses taskkill /F /T on Windows
-						killTree(child.pid);
-					}
-
-					// Hard deadline: if even SIGKILL doesn't trigger 'close',
-					// force-resolve so the job doesn't hang forever (#2186).
-					hardDeadlineHandle = setTimeout(() => {
-						const output = Buffer.concat(chunks).toString("utf-8");
-						safeResolve(
-							output
-								? `${output}\n\nCommand timed out after ${timeout} seconds (force-killed)`
-								: `Command timed out after ${timeout} seconds (force-killed)`,
-						);
-					}, HARD_DEADLINE_MS);
-					if (typeof hardDeadlineHandle === "object" && "unref" in hardDeadlineHandle) hardDeadlineHandle.unref();
-				}, SIGKILL_GRACE_MS);
-				if (typeof sigkillHandle === "object" && "unref" in sigkillHandle) sigkillHandle.unref();
+				// Hard deadline: a D-state (uninterruptible-I/O) child never emits 'close'
+				// even after SIGKILL, so force-resolve the promise rather than hang (#2186).
+				// Fires after the full grace window so SIGKILL has had its chance first.
+				hardDeadlineHandle = setTimeout(() => {
+					const output = Buffer.concat(chunks).toString("utf-8");
+					safeResolve(
+						output
+							? `${output}\n\nCommand timed out after ${timeout} seconds (force-killed)`
+							: `Command timed out after ${timeout} seconds (force-killed)`,
+					);
+				}, SIGKILL_GRACE_MS + HARD_DEADLINE_MS);
+				if (typeof hardDeadlineHandle === "object" && "unref" in hardDeadlineHandle) hardDeadlineHandle.unref();
 			}, timeout * 1000);
 		}
 
@@ -202,7 +170,18 @@ function executeBashInBackground(
 		if (child.stderr) child.stderr.on("data", onData);
 
 		const onAbort = () => {
-			if (child.pid) killTree(child.pid);
+			if (child.pid) killProcessTree(child.pid);
+			// Arm the same hard-deadline force-resolve the timeout path uses, so a
+			// cancelled D-state child (never emits 'close' even after SIGKILL) can't
+			// hang the job promise forever. safeResolve is idempotent, so the real
+			// 'close' still wins if the child does exit.
+			if (!hardDeadlineHandle) {
+				hardDeadlineHandle = setTimeout(() => {
+					const output = Buffer.concat(chunks).toString("utf-8");
+					safeResolve(output ? `${output}\n\nCommand aborted (force-killed)` : "Command aborted (force-killed)");
+				}, SIGKILL_GRACE_MS + HARD_DEADLINE_MS);
+				if (typeof hardDeadlineHandle === "object" && "unref" in hardDeadlineHandle) hardDeadlineHandle.unref();
+			}
 		};
 
 		if (signal.aborted) {
@@ -213,7 +192,6 @@ function executeBashInBackground(
 
 		child.on("error", (err) => {
 			if (timeoutHandle) clearTimeout(timeoutHandle);
-			if (sigkillHandle) clearTimeout(sigkillHandle);
 			if (hardDeadlineHandle) clearTimeout(hardDeadlineHandle);
 			signal.removeEventListener("abort", onAbort);
 			safeReject(err);
@@ -221,7 +199,6 @@ function executeBashInBackground(
 
 		child.on("close", (code) => {
 			if (timeoutHandle) clearTimeout(timeoutHandle);
-			if (sigkillHandle) clearTimeout(sigkillHandle);
 			if (hardDeadlineHandle) clearTimeout(hardDeadlineHandle);
 			signal.removeEventListener("abort", onAbort);
 			if (spillStream) spillStream.end();

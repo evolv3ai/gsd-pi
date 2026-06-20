@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  buildProjectBrowserMcpServerConfig,
   ensureClaudeCodeMcpJsonServerEnabled,
   ensureProjectWorkflowMcpConfig,
   GSD_BROWSER_MCP_SERVER_NAME,
@@ -53,7 +54,15 @@ test("ensureProjectWorkflowMcpConfig creates .mcp.json with workflow and browser
       "--identity-scope",
       "project",
     ]);
-    assert.equal(browserArgs[mcpArgIndex + 6], projectRoot);
+    // --identity-scope requires a non-empty --identity-key or gsd-browser exits
+    // immediately ("Connection closed"); the key must be stable per project.
+    assert.equal(browserArgs[mcpArgIndex + 5], "--identity-key");
+    assert.equal(typeof browserArgs[mcpArgIndex + 6], "string");
+    assert.ok((browserArgs[mcpArgIndex + 6] ?? "").length > 0, "identity-key must be non-empty");
+    assert.equal(browserArgs[mcpArgIndex + 7], "--identity-project");
+    assert.equal(typeof browserArgs[mcpArgIndex + 8], "string");
+    assert.ok((browserArgs[mcpArgIndex + 8] ?? "").length > 0, "identity-project must be non-empty");
+    assert.doesNotMatch(browserArgs[mcpArgIndex + 8] ?? "", /[\\/]/, "identity-project must not be a filesystem path");
     assert.equal((browserServer as { cwd?: string })?.cwd, projectRoot);
 
     const settings = JSON.parse(readFileSync(join(projectRoot, ".claude", "settings.local.json"), "utf-8")) as {
@@ -155,6 +164,37 @@ test("ensureProjectWorkflowMcpConfig can disable the default browser MCP server"
       enabledMcpjsonServers?: string[];
     };
     assert.deepEqual(settings.enabledMcpjsonServers, [GSD_WORKFLOW_MCP_SERVER_NAME]);
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("buildProjectBrowserMcpServerConfig prefers newer gsd-browser on PATH", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gsd-mcp-browser-"));
+
+  try {
+    const config = buildProjectBrowserMcpServerConfig(projectRoot, {
+      GSD_BROWSER_PATH_VERSION: "99.0.0",
+    });
+
+    assert.equal(config?.command, "gsd-browser");
+    assert.equal(config?.args?.[0], "mcp");
+  } finally {
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("buildProjectBrowserMcpServerConfig keeps bundled browser when PATH version is older", () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), "gsd-mcp-browser-"));
+
+  try {
+    const config = buildProjectBrowserMcpServerConfig(projectRoot, {
+      GSD_BROWSER_PATH_VERSION: "0.0.1",
+    });
+
+    assert.equal(config?.command, process.execPath);
+    assert.match(config?.args?.[0] ?? "", /@opengsd[\/\\]gsd-browser[\/\\]bin[\/\\]gsd-browser/);
+    assert.equal(config?.args?.[1], "mcp");
   } finally {
     rmSync(projectRoot, { recursive: true, force: true });
   }

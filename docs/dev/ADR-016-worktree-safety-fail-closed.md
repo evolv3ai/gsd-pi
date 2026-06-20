@@ -16,14 +16,14 @@ That fallback was convenient for untracked project-root content, but it weakened
 
 ## Decision
 
-Source-writing Units fail closed under worktree isolation unless Worktree Safety proves the Unit root is safe.
+Source-writing Units fail closed unless Worktree Safety proves the Unit root is safe. This applies to every git isolation mode — `worktree`, `branch`, and `none` (amended 2026-06-14; the original decision only enforced this under `worktree` isolation, so source writes under `branch`/`none` could land on the wrong branch from an unvalidated project root). The worktree-specific checks below (`git worktree list` registration and the `.git`-is-a-worktree-file probe) run only under `worktree` isolation; under `branch`/`none` the Unit root must equal the project root, the expected milestone branch must match when supplied, and any active lease must be held.
 
 A source-writing Unit is any Unit whose Tool Contract permits writes outside `.gsd/**`, currently tool policy modes `all` and `docs`. Planning-only Units may continue to write `.gsd/**` artifacts at the project root. Verification Units, such as `run-uat`, may run approved build/test commands but are not source-writing because their writes remain restricted to `.gsd/**`.
 
 Worktree Safety validates:
 
 - the milestone id is present and path-safe
-- the Unit root is the canonical `<projectRoot>/.gsd/worktrees/<milestone>` path
+- the Unit root is the canonical `<projectRoot>/.gsd-worktrees/<milestone>` path (amended by ADR-031; the legacy `<projectRoot>/.gsd/worktrees/<milestone>` path is also accepted for worktrees created before the placement change)
 - the worktree root exists
 - `.git` is a worktree file, not a standalone `.git` directory
 - the root is registered by `git worktree list`
@@ -35,7 +35,7 @@ Failures produce typed Worktree Safety outcomes such as `worktree-missing`, `wor
 
 ## Consequences
 
-- Source-writing Units stop before dispatch when worktree isolation cannot be proven.
+- Source-writing Units stop before dispatch when the Unit root cannot be proven safe for the active isolation mode.
 - Agents receive an actionable remediation reason instead of a generic stuck-loop or missing `.git` failure.
 - The Worktree Safety Interface becomes the test surface for worktree root invariants.
 - Users with untracked project-root content must resolve or import that content into the milestone worktree instead of relying on automatic project-root degradation.

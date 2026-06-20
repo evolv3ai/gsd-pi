@@ -18,141 +18,18 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { killChildProcess } from "./child-process-guard.ts";
+import { rmSync } from "node:fs";
 
-const projectRoot = process.cwd();
-const loaderPath = join(projectRoot, "dist", "loader.js");
+import {
+  assertNoCrashMarkers,
+  createTempWithGsd,
+  ensureBuiltLoader,
+  runGsd,
+  spawnGsd,
+  stripAnsi,
+} from "./cli-process.ts";
 
-if (!existsSync(loaderPath)) {
-  throw new Error("dist/loader.js not found — run: npm run build");
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-type RunResult = {
-  stdout: string;
-  stderr: string;
-  code: number | null;
-  timedOut: boolean;
-};
-
-/**
- * Spawn `node dist/loader.js ...args` and collect output.
- */
-function runGsd(
-  args: string[],
-  timeoutMs = 30_000,
-  env: NodeJS.ProcessEnv = {},
-  cwd: string = projectRoot,
-): Promise<RunResult> {
-  return new Promise((resolve) => {
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-
-    const child = spawn("node", [loaderPath, ...args], {
-      cwd,
-      env: { ...process.env, ...env },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-
-    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-
-    child.stdin.end();
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      killChildProcess(child, "SIGTERM");
-    }, timeoutMs);
-
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({ stdout, stderr, code, timedOut });
-    });
-  });
-}
-
-/**
- * Spawn a child process with the ability to send signals mid-flight.
- * Returns both the child and a promise that resolves with the result.
- */
-function spawnGsd(
-  args: string[],
-  timeoutMs = 30_000,
-  env: NodeJS.ProcessEnv = {},
-  cwd: string = projectRoot,
-): { child: ReturnType<typeof spawn>; result: Promise<RunResult> } {
-  let stdout = "";
-  let stderr = "";
-  let timedOut = false;
-
-  const child = spawn("node", [loaderPath, ...args], {
-    cwd,
-    env: { ...process.env, ...env },
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-
-  child.stdout!.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-  child.stderr!.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-
-  child.stdin!.end();
-
-  const timer = setTimeout(() => {
-    timedOut = true;
-    killChildProcess(child, "SIGTERM");
-  }, timeoutMs);
-
-  const result = new Promise<RunResult>((resolve) => {
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({ stdout, stderr, code, timedOut });
-    });
-  });
-
-  return { child, result };
-}
-
-/** Strip ANSI escape codes from a string. */
-function stripAnsi(s: string): string {
-  // eslint-disable-next-line no-control-regex
-  return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
-}
-
-/** Bootstrap a temp directory with .gsd/ structure (milestones + runtime). */
-function createTempWithGsd(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
-  mkdirSync(join(dir, ".gsd", "milestones"), { recursive: true });
-  mkdirSync(join(dir, ".gsd", "runtime"), { recursive: true });
-  return dir;
-}
-
-/** Assert no crash markers in output. */
-function assertNoCrashMarkers(output: string): void {
-  const crashMarkers = [
-    "SyntaxError:",
-    "ReferenceError:",
-    "TypeError: Cannot read",
-    "FATAL ERROR",
-    "ERR_MODULE_NOT_FOUND",
-    "Error: Cannot find module",
-    "SIGSEGV",
-    "SIGABRT",
-  ];
-
-  for (const marker of crashMarkers) {
-    assert.ok(
-      !output.includes(marker),
-      `output should not contain crash marker '${marker}':\n${output.slice(0, 500)}`,
-    );
-  }
-}
+ensureBuiltLoader();
 
 // ===========================================================================
 // 1. JSON batch mode suppresses streaming — stdout is a single JSON result

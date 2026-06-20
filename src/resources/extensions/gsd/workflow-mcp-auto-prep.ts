@@ -4,6 +4,7 @@ import {
   type EnsureProjectWorkflowMcpConfigResult,
   ensureProjectWorkflowMcpConfig,
 } from "./mcp-project-config.js";
+import { warmWorkflowMcpProbeInBackground } from "./workflow-mcp-readiness-cache.js";
 import { usesWorkflowMcpTransport } from "./workflow-mcp.js";
 
 interface WorkflowMcpAutoPrepContext {
@@ -73,8 +74,9 @@ export function prepareWorkflowMcpForProject(
   try {
     const result = ensureProjectWorkflowMcpConfig(projectRoot);
     if (result.status !== "unchanged") {
-      prepCtx.ui?.notify?.(`Claude Code MCP prepared at ${result.configPath}`, "info");
+      prepCtx.ui?.notify?.(`GSD MCP Server Prepared at ${result.configPath}`, "info");
     }
+    warmWorkflowMcpProbeInBackground(projectRoot);
     return result;
   } catch (err) {
     prepCtx.ui?.notify?.(

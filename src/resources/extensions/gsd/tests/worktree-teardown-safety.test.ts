@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 import { describe, it, after } from "node:test";
+import assert from "node:assert/strict";
 
 import { createWorktree, removeWorktree, worktreePath, isInsideWorktreesDir } from "../worktree-manager.ts";
 import { createTestContext } from "./test-helpers.ts";
@@ -86,6 +87,27 @@ describe("worktree-teardown-safety", () => {
     );
   });
 
+  it("removeWorktree survives when current working directory was deleted", () => {
+    const tempDir = createTempRepo();
+    dirs.push(tempDir);
+
+    const wt = createWorktree(tempDir, "deleted-cwd");
+    assertTrue(existsSync(wt.path), "worktree created successfully");
+
+    const safeCwd = process.cwd();
+    try {
+      process.chdir(wt.path);
+      rmSync(wt.path, { recursive: true, force: true });
+
+      assert.doesNotThrow(
+        () => removeWorktree(tempDir, "deleted-cwd"),
+        "removeWorktree should not call process.cwd() unguarded from a deleted cwd",
+      );
+    } finally {
+      process.chdir(safeCwd);
+    }
+  });
+
   it("path validation rejects paths outside .gsd/worktrees/", () => {
     const tempDir = createTempRepo();
     dirs.push(tempDir);
@@ -116,8 +138,8 @@ describe("worktree-teardown-safety", () => {
 
     const wtPathResult = worktreePath(tempDir, "anything");
     assertTrue(
-      wtPathResult.startsWith(join(tempDir, ".gsd", "worktrees")),
-      "worktreePath returns path under .gsd/worktrees/",
+      wtPathResult.startsWith(join(tempDir, ".gsd-worktrees")),
+      "worktreePath returns path under the canonical .gsd-worktrees/ container",
     );
   });
 

@@ -452,6 +452,44 @@ export function _resetDecisionSaveLock(): void {
   _decisionSaveLock = Promise.resolve();
 }
 
+/**
+ * Re-project root DECISIONS.md from the authoritative decision records, with no
+ * new decision being added. Mirrors the projection saveDecisionToDb performs
+ * after a save, but over the full set — so a DB → markdown re-projection
+ * (recover, rebuild, reconcile) re-derives DECISIONS.md and never leaves it
+ * showing a stale subset (e.g. after a worktree merge that accepted one
+ * branch's DECISIONS.md while the DB holds the union of both branches'
+ * decisions). DB stays the single source of truth; this only writes markdown.
+ */
+export async function regenerateDecisionsMarkdown(basePath: string): Promise<void> {
+  const { getAllDecisionsFromMemories } = await import('./context-store.js');
+  const allDecisions: Decision[] = getAllDecisionsFromMemories();
+
+  const filePath = resolveGsdRootFile(basePath, 'DECISIONS');
+  let existingContent: string | null = null;
+  if (existsSync(filePath)) {
+    existingContent = readFileSync(filePath, 'utf-8');
+  }
+
+  // Nothing to project: no decisions in the DB and no file to normalize.
+  if (allDecisions.length === 0 && existingContent === null) return;
+
+  let md: string;
+  if (existingContent && !isDecisionsTableFormat(existingContent)) {
+    // Preserve freeform content; refresh only the appended decisions table.
+    const marker = '---\n\n## Decisions Table';
+    const markerIdx = existingContent.indexOf(marker);
+    const freeformPart = markerIdx >= 0
+      ? existingContent.substring(0, markerIdx).trimEnd()
+      : existingContent.trimEnd();
+    md = freeformPart + '\n' + generateDecisionsAppendBlock(allDecisions);
+  } else {
+    md = generateDecisionsMd(allDecisions);
+  }
+
+  await saveFile(filePath, md);
+}
+
 // ─── Save Decision to DB + Regenerate Markdown ────────────────────────────
 
 export interface SaveDecisionFields {
@@ -676,31 +714,23 @@ async function mirrorDecisionToMemory(
 /**
  * Extract a milestone/slice reference from a deferral decision.
  *
- * Detects deferrals by checking:
- *   - scope contains "defer" (e.g., "deferral", "defer")
- *   - choice or decision contains "defer" + an M###/S## pattern
+ * Detects deferrals when the slice reference is part of the deferral phrase.
  *
  * Returns { milestoneId, sliceId } if found, null otherwise.
  */
 export function extractDeferredSliceRef(
   fields: Pick<SaveDecisionFields, 'scope' | 'decision' | 'choice'>,
 ): { milestoneId: string; sliceId: string } | null {
-  const isDeferral =
-    /\bdefer(?:ral|red|ring|s)?\b/i.test(fields.scope) ||
-    /\bdefer(?:ral|red|ring|s)?\b/i.test(fields.choice) ||
-    /\bdefer(?:ral|red|ring|s)?\b/i.test(fields.decision);
+  const defersSlicePattern =
+    /\bdefer(?:ral|red|ring|s)?\b\s+(?:(?:of|the)\s+)*(?:slice\s+)?\b(M\d{3,4})\/(S\d{2,3})\b/i;
+  const sliceIsDeferredPattern =
+    /\b(M\d{3,4})\/(S\d{2,3})\b\s+(?:is|was|will be|should be|can be)\s+defer(?:red|ring)?\b/i;
 
-  if (!isDeferral) return null;
-
-  // Look for M###/S## pattern in choice first, then decision
-  const slicePattern = /\b(M\d{3,4})\/(S\d{2,3})\b/;
-  const choiceMatch = fields.choice.match(slicePattern);
-  if (choiceMatch) {
-    return { milestoneId: choiceMatch[1], sliceId: choiceMatch[2] };
-  }
-  const decisionMatch = fields.decision.match(slicePattern);
-  if (decisionMatch) {
-    return { milestoneId: decisionMatch[1], sliceId: decisionMatch[2] };
+  for (const text of [fields.choice, fields.decision, fields.scope]) {
+    const match = text.match(defersSlicePattern) ?? text.match(sliceIsDeferredPattern);
+    if (match) {
+      return { milestoneId: match[1], sliceId: match[2] };
+    }
   }
 
   return null;

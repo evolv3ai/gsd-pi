@@ -9,9 +9,17 @@ import * as os from 'node:os';
 import {
   openDatabase,
   closeDatabase,
+  insertRequirement,
+  insertArtifact,
   insertMilestone,
   insertSlice,
   insertTask,
+  insertMemoryRow,
+  insertAssessment,
+  insertGateRow,
+  insertReplanHistory,
+  recordMilestoneCommitAttribution,
+  saveGateResult,
   _getAdapter,
 } from '../gsd-db.ts';
 import {
@@ -20,6 +28,7 @@ import {
   snapshotState,
   bootstrapFromManifest,
 } from '../workflow-manifest.ts';
+import { getAllDecisionsFromMemories } from '../context-store.ts';
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-manifest-'));
@@ -31,6 +40,33 @@ function tempDbPath(base: string): string {
 
 function cleanupDir(dirPath: string): void {
   try { fs.rmSync(dirPath, { recursive: true, force: true }); } catch { /* best effort */ }
+}
+
+function insertMemoryBackedDecision(id: string): void {
+  const now = '2026-01-01T00:00:00.000Z';
+  insertMemoryRow({
+    id: `MEM-${id}`,
+    category: 'architecture',
+    content: `Decision ${id} content`,
+    confidence: 0.85,
+    sourceUnitType: null,
+    sourceUnitId: null,
+    createdAt: now,
+    updatedAt: now,
+    scope: 'project',
+    tags: [],
+    structuredFields: {
+      sourceDecisionId: id,
+      when_context: 'M001',
+      scope: 'architecture',
+      decision: `Decision ${id}`,
+      choice: `Choice ${id}`,
+      rationale: `Rationale ${id}`,
+      made_by: 'agent',
+      revisable: 'Yes',
+      superseded_by: null,
+    },
+  });
 }
 
 // ─── readManifest: no file ────────────────────────────────────────────────
@@ -75,6 +111,12 @@ test('workflow-manifest: readManifest parses manifest written by writeManifest',
     assert.ok(Array.isArray(manifest!.slices));
     assert.ok(Array.isArray(manifest!.tasks));
     assert.ok(Array.isArray(manifest!.decisions));
+    assert.ok(Array.isArray(manifest!.requirements));
+    assert.ok(Array.isArray(manifest!.artifacts));
+    assert.ok(Array.isArray(manifest!.replan_history));
+    assert.ok(Array.isArray(manifest!.assessments));
+    assert.ok(Array.isArray(manifest!.quality_gates));
+    assert.ok(Array.isArray(manifest!.milestone_commit_attributions));
     assert.ok(Array.isArray(manifest!.verification_evidence));
   } finally {
     closeDatabase();
@@ -120,6 +162,136 @@ test('workflow-manifest: snapshotState captures tasks', () => {
   }
 });
 
+test('workflow-manifest: snapshotState captures memory-backed decisions', () => {
+  const base = tempDir();
+  openDatabase(tempDbPath(base));
+  try {
+    insertMemoryBackedDecision('D900');
+
+    const snap = snapshotState();
+    const decision = snap.decisions.find((r) => r.id === 'D900');
+
+    assert.ok(decision !== undefined, 'D900 should appear in manifest decisions');
+    assert.strictEqual(decision!.decision, 'Decision D900');
+    assert.strictEqual(decision!.choice, 'Choice D900');
+    assert.strictEqual(decision!.rationale, 'Rationale D900');
+  } finally {
+    closeDatabase();
+    cleanupDir(base);
+  }
+});
+
+test('workflow-manifest: bootstrapFromManifest restores extended correctness rows', () => {
+  const base = tempDir();
+  openDatabase(tempDbPath(base));
+  try {
+    insertRequirement({
+      id: 'R100',
+      class: 'functional',
+      status: 'active',
+      description: 'Persist requirements',
+      why: 'Recovery needs requirements',
+      source: 'test',
+      primary_owner: 'S01',
+      supporting_slices: 'S00',
+      validation: 'manifest round-trip',
+      notes: 'important',
+      full_content: 'Full requirement content',
+      superseded_by: null,
+    });
+    insertArtifact({
+      path: '.gsd/milestones/M001/M001-VALIDATION.md',
+      artifact_type: 'VALIDATION',
+      milestone_id: 'M001',
+      slice_id: null,
+      task_id: null,
+      full_content: '# Validation\n\nPASS',
+    });
+    insertArtifact({
+      path: 'milestones/M001/slices/S01/S01-ASSESSMENT.md',
+      artifact_type: 'ASSESSMENT',
+      milestone_id: 'M001',
+      slice_id: 'S01',
+      task_id: null,
+      full_content: '# Assessment\n\nPASS',
+    });
+    insertMilestone({ id: 'M001', title: 'Tracked Milestone' });
+    insertSlice({ id: 'S00', milestoneId: 'M001', title: 'Dependency Slice' });
+    insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Dependent Slice', depends: ['S00'] });
+    insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', title: 'Tracked Task' });
+    insertAssessment({
+      path: '.gsd/milestones/M001/slices/S01/S01-ASSESSMENT.md',
+      milestoneId: 'M001',
+      sliceId: 'S01',
+      taskId: null,
+      status: 'pass',
+      scope: 'run-uat',
+      fullContent: '# UAT\n\nPASS',
+    });
+    insertReplanHistory({
+      milestoneId: 'M001',
+      sliceId: 'S01',
+      taskId: 'T01',
+      summary: 'Replan preserved',
+      previousArtifactPath: 'old.md',
+      replacementArtifactPath: 'new.md',
+    });
+    insertGateRow({ milestoneId: 'M001', sliceId: 'S01', gateId: 'Q3', scope: 'slice' });
+    saveGateResult({
+      milestoneId: 'M001',
+      sliceId: 'S01',
+      gateId: 'Q3',
+      verdict: 'pass',
+      rationale: 'Gate passed',
+      findings: 'No findings',
+    });
+    recordMilestoneCommitAttribution({
+      commitSha: 'abc123',
+      milestoneId: 'M001',
+      sliceId: 'S01',
+      taskId: 'T01',
+      source: 'recorded',
+      confidence: 0.95,
+      files: ['src/example.ts'],
+      createdAt: '2026-06-05T00:00:00.000Z',
+    });
+
+    writeManifest(base);
+    closeDatabase();
+
+    const newDbPath = path.join(base, 'new.db');
+    openDatabase(newDbPath);
+    const restored = bootstrapFromManifest(base);
+    assert.strictEqual(restored, true);
+
+    const snap = snapshotState();
+    assert.strictEqual(snap.requirements?.find((r) => r.id === 'R100')?.full_content, 'Full requirement content');
+    const artifact = snap.artifacts?.find((r) => r.path === '.gsd/milestones/M001/M001-VALIDATION.md');
+    assert.strictEqual(artifact?.full_content, '# Validation\n\nPASS');
+    assert.ok(artifact?.content_hash, 'artifact content_hash should round-trip through manifest restore');
+    assert.strictEqual(
+      fs.readFileSync(path.join(base, '.gsd', 'milestones', 'M001', 'M001-VALIDATION.md'), 'utf-8'),
+      '# Validation\n\nPASS',
+    );
+    assert.strictEqual(
+      fs.readFileSync(path.join(base, '.gsd', 'milestones', 'M001', 'slices', 'S01', 'S01-ASSESSMENT.md'), 'utf-8'),
+      '# Assessment\n\nPASS',
+    );
+    assert.strictEqual(snap.assessments?.find((r) => r.scope === 'run-uat')?.status, 'pass');
+    assert.strictEqual(snap.replan_history?.find((r) => r.summary === 'Replan preserved')?.replacement_artifact_path, 'new.md');
+    assert.strictEqual(snap.quality_gates?.find((r) => r.gate_id === 'Q3')?.rationale, 'Gate passed');
+    assert.strictEqual(snap.milestone_commit_attributions?.find((r) => r.commit_sha === 'abc123')?.files_json, '["src/example.ts"]');
+
+    const dep = _getAdapter()!.prepare(
+      'SELECT depends_on_slice_id FROM slice_dependencies WHERE milestone_id = ? AND slice_id = ?',
+    ).get('M001', 'S01') as Record<string, unknown> | undefined;
+    assert.strictEqual(dep?.['depends_on_slice_id'], 'S00');
+  } finally {
+    closeDatabase();
+    cleanupDir(base);
+  }
+});
+
 // ─── bootstrapFromManifest ────────────────────────────────────────────────
 
 test('workflow-manifest: bootstrapFromManifest returns false when no manifest file', () => {
@@ -152,7 +324,7 @@ test('workflow-manifest: bootstrapFromManifest restores DB from manifest (round-
       milestoneId: 'M001',
       title: 'Restored Task',
       status: 'complete',
-      planning: { targetRepositories: ['project'] },
+      planning: { fullPlanMd: '# Full Task Plan\n\nKeep this body.', targetRepositories: ['project'] },
     });
     writeManifest(base);
     closeDatabase();
@@ -176,6 +348,7 @@ test('workflow-manifest: bootstrapFromManifest restores DB from manifest (round-
     const t = snap.tasks.find((r) => r.id === 'T01');
     assert.ok(t !== undefined, 'T01 should be restored');
     assert.strictEqual(t!.status, 'complete');
+    assert.strictEqual(t!.full_plan_md, '# Full Task Plan\n\nKeep this body.');
     assert.deepEqual(t!.target_repositories, ['project']);
   } finally {
     closeDatabase();
@@ -201,6 +374,138 @@ test('workflow-manifest: bootstrapFromManifest preserves target_repositories', (
     const snap = snapshotState();
     assert.deepStrictEqual(snap.slices.find((r) => r.id === 'S01')?.target_repositories, ['frontend']);
     assert.deepStrictEqual(snap.tasks.find((r) => r.id === 'T01')?.target_repositories, ['backend']);
+  } finally {
+    closeDatabase();
+    cleanupDir(base);
+  }
+});
+
+test('workflow-manifest: bootstrapFromManifest preserves optional rows from old manifests', () => {
+  const base = tempDir();
+  openDatabase(tempDbPath(base));
+  try {
+    insertMilestone({ id: 'M001', title: 'Old Manifest Milestone' });
+    insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Old Manifest Slice' });
+    insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', title: 'Old Manifest Task' });
+    writeManifest(base);
+
+    const manifestPath = path.join(base, '.gsd', 'state-manifest.json');
+    const oldManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+    delete oldManifest['replan_history'];
+    delete oldManifest['assessments'];
+    delete oldManifest['quality_gates'];
+    delete oldManifest['milestone_commit_attributions'];
+    fs.writeFileSync(manifestPath, JSON.stringify(oldManifest, null, 2));
+    closeDatabase();
+
+    const newDbPath = path.join(base, 'new.db');
+    openDatabase(newDbPath);
+    insertMilestone({ id: 'M001', title: 'Existing Milestone' });
+    insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Existing Slice' });
+    insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', title: 'Existing Task' });
+    insertAssessment({
+      path: '.gsd/milestones/M001/M001-VALIDATION.md',
+      milestoneId: 'M001',
+      status: 'pass',
+      scope: 'validate-milestone',
+      fullContent: '# Existing Validation',
+    });
+    insertReplanHistory({
+      milestoneId: 'M001',
+      sliceId: 'S01',
+      taskId: 'T01',
+      summary: 'Existing replan row',
+      previousArtifactPath: 'before.md',
+      replacementArtifactPath: 'after.md',
+    });
+    insertGateRow({ milestoneId: 'M001', sliceId: 'S01', gateId: 'Q3', scope: 'slice' });
+    saveGateResult({
+      milestoneId: 'M001',
+      sliceId: 'S01',
+      gateId: 'Q3',
+      verdict: 'pass',
+      rationale: 'Existing gate',
+      findings: 'No findings',
+    });
+    recordMilestoneCommitAttribution({
+      commitSha: 'def456',
+      milestoneId: 'M001',
+      source: 'recorded',
+      confidence: 0.8,
+      files: ['src/kept.ts'],
+      createdAt: '2026-06-05T00:00:00.000Z',
+    });
+
+    const restored = bootstrapFromManifest(base);
+    assert.strictEqual(restored, true);
+
+    const snap = snapshotState();
+    assert.strictEqual(snap.assessments?.find((r) => r.path.endsWith('VALIDATION.md'))?.full_content, '# Existing Validation');
+    assert.strictEqual(snap.replan_history?.find((r) => r.summary === 'Existing replan row')?.replacement_artifact_path, 'after.md');
+    assert.strictEqual(snap.quality_gates?.find((r) => r.gate_id === 'Q3')?.rationale, 'Existing gate');
+    assert.strictEqual(snap.milestone_commit_attributions?.find((r) => r.commit_sha === 'def456')?.files_json, '["src/kept.ts"]');
+  } finally {
+    closeDatabase();
+    cleanupDir(base);
+  }
+});
+
+test('workflow-manifest: bootstrapFromManifest restores memory-backed decisions', () => {
+  const base = tempDir();
+  openDatabase(tempDbPath(base));
+  try {
+    insertMemoryBackedDecision('D901');
+    writeManifest(base);
+    closeDatabase();
+
+    const newDbPath = path.join(base, 'new.db');
+    openDatabase(newDbPath);
+    const restored = bootstrapFromManifest(base);
+    assert.strictEqual(restored, true);
+
+    const decision = getAllDecisionsFromMemories().find((r) => r.id === 'D901');
+    assert.ok(decision !== undefined, 'D901 should be restored into the memory-backed decision surface');
+    assert.strictEqual(decision!.decision, 'Decision D901');
+  } finally {
+    closeDatabase();
+    cleanupDir(base);
+  }
+});
+
+test('workflow-manifest: bootstrapFromManifest replaces stale memory-backed decisions', () => {
+  const base = tempDir();
+  openDatabase(tempDbPath(base));
+  try {
+    insertMemoryBackedDecision('D902');
+    writeManifest(base);
+    closeDatabase();
+
+    const newDbPath = path.join(base, 'new.db');
+    openDatabase(newDbPath);
+    insertMemoryBackedDecision('D-STALE');
+    insertMemoryRow({
+      id: 'MEM-NOTE',
+      category: 'note',
+      content: 'Keep this non-decision memory',
+      confidence: 0.9,
+      sourceUnitType: null,
+      sourceUnitId: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      scope: 'project',
+      tags: ['keep'],
+      structuredFields: { kind: 'ordinary-note' },
+    });
+
+    const restored = bootstrapFromManifest(base);
+    assert.strictEqual(restored, true);
+
+    const decisions = getAllDecisionsFromMemories();
+    assert.ok(decisions.some((r) => r.id === 'D902'), 'manifest decision should be restored into memories');
+    assert.equal(decisions.some((r) => r.id === 'D-STALE'), false, 'stale memory-backed decision should be removed');
+
+    const note = _getAdapter()!.prepare('SELECT id FROM memories WHERE id = ?').get('MEM-NOTE') as Record<string, unknown> | undefined;
+    assert.strictEqual(note?.['id'], 'MEM-NOTE');
   } finally {
     closeDatabase();
     cleanupDir(base);

@@ -230,31 +230,75 @@ export function killTrackedDetachedChildren(): void {
 }
 
 /**
- * Kill a process and all its children (cross-platform)
+ * Grace period (ms) between SIGTERM and SIGKILL.
+ * Canonical source of truth for the graceful-kill timing ladder — imported by the
+ * async_bash and GSD exec-sandbox kill paths. The pi-agent-core harness keeps a
+ * deliberate local mirror (it must not depend on this package); a parity test
+ * locks the two. Update both together.
  */
-export function killProcessTree(pid: number): void {
+export const SIGKILL_GRACE_MS = 5_000;
+/** Hard deadline (ms) after SIGKILL to force-resolve the job promise — consumed by the sync-bash, async_bash, and exec-sandbox kill paths. */
+export const HARD_DEADLINE_MS = 3_000;
+
+/**
+ * Kill a process and all its children (cross-platform).
+ *
+ * Returns immediately; the SIGKILL escalation fires asynchronously after `graceMs`,
+ * so the target is not guaranteed dead by the time this returns.
+ *
+ * On Unix: sends SIGTERM immediately, then escalates to SIGKILL after `graceMs`
+ * (default: SIGKILL_GRACE_MS = 5 s). The escalation timer is `.unref()`'d so it
+ * never keeps the event loop alive after the parent process has nothing else to do.
+ *
+ * On Windows: there is no reliable graceful signal for the hidden console
+ * processes pi spawns (`windowsHide: true` means no window to receive WM_CLOSE
+ * and no console for CTRL_BREAK), so `taskkill /T` without /F is a no-op here.
+ * We therefore force-terminate the tree immediately with `taskkill /F /T /PID`.
+ * Graceful (SIGTERM-first) semantics are Unix-primary; `opts.graceMs` is ignored
+ * on Windows.
+ */
+export function killProcessTree(pid: number, opts?: { graceMs?: number }): void {
 	if (process.platform === "win32") {
-		// Use taskkill on Windows to kill process tree
+		// No deliverable graceful signal for hidden console processes — force-kill the
+		// whole tree now. (A delayed /F /T after a no-op /T would only add latency,
+		// regressing the old immediate-kill behavior.) opts.graceMs is intentionally
+		// unused on Windows.
 		try {
-			spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
+			const tk = spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
 				stdio: "ignore",
 				detached: true,
 				windowsHide: true,
 			});
+			tk.unref();
 		} catch {
-			// Ignore errors if taskkill fails
+			// Ignore — process may already be gone
 		}
 	} else {
-		// Use SIGKILL on Unix/Linux/Mac
+		// Unix: SIGTERM → grace window → SIGKILL
 		try {
-			process.kill(-pid, "SIGKILL");
+			process.kill(-pid, "SIGTERM");
 		} catch {
-			// Fallback to killing just the child if process group kill fails
+			// -pid (process group) failed — fall back to direct pid
 			try {
-				process.kill(pid, "SIGKILL");
+				process.kill(pid, "SIGTERM");
 			} catch {
-				// Process already dead
+				// Process already dead — no escalation needed
+				return;
 			}
 		}
+		// Escalate to SIGKILL after the grace period.
+		// The timer is unref'd so it never prevents the event loop from exiting.
+		const t = setTimeout(() => {
+			try {
+				process.kill(-pid, "SIGKILL");
+			} catch {
+				try {
+					process.kill(pid, "SIGKILL");
+				} catch {
+					// Process already dead
+				}
+			}
+		}, opts?.graceMs ?? SIGKILL_GRACE_MS);
+		if (typeof t === "object" && "unref" in t) t.unref();
 	}
 }

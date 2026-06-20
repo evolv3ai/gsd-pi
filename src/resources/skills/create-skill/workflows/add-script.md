@@ -12,6 +12,8 @@ Ask (if not already provided):
 - Which skill needs a script?
 - What operation should the script perform?
 
+Determine `{skill-path}`: use `.agents/skills/{skill-name}` (project-local) if found there, otherwise `~/.agents/skills/{skill-name}` (user-global). Project-local takes precedence because the skill catalog loads it first on name collision.
+
 ## Step 2: Analyze Script Need
 
 Confirm this is a good script candidate:
@@ -24,7 +26,7 @@ If not a good fit, suggest alternatives (inline code in workflow, reference exam
 ## Step 3: Create Scripts Directory
 
 ```bash
-mkdir -p ~/.claude/skills/{skill-name}/scripts
+mkdir -p {skill-path}/scripts
 ```
 
 ## Step 4: Design Script
@@ -58,7 +60,7 @@ set -euo pipefail
 ## Step 6: Make Executable (if bash)
 
 ```bash
-chmod +x ~/.claude/skills/{skill-name}/scripts/{script-name}.sh
+chmod +x {skill-path}/scripts/{script-name}.sh
 ```
 
 ## Step 7: Update Workflow to Use Script

@@ -66,7 +66,7 @@ function disabled(description: string, reason: string): string {
 
 export function buildGsdHomeModel(
   state: GSDState,
-  closeout?: Pick<CloseoutContext, "strandedQuick" | "unmergedMilestones">,
+  closeout?: Pick<CloseoutContext, "strandedQuick" | "unmergedMilestones" | "idleResidueHint">,
 ): GsdHomeModel {
   const blocked = isBlocked(state);
   const complete = state.phase === "complete";
@@ -74,10 +74,14 @@ export function buildGsdHomeModel(
   const workLabel = activeWorkLabel(state);
   const strandedQuick = closeout?.strandedQuick ?? null;
   const unmergedMilestone = closeout?.unmergedMilestones?.[0];
+  const idleResidueHint = closeout?.idleResidueHint ?? null;
+  const hasIdleResidue = Boolean(idleResidueHint);
   const nextReason = complete
     ? "all milestones are complete"
     : blocked
       ? "the active milestone is blocked"
+      : hasIdleResidue
+        ? "milestone git residue needs recovery"
       : !hasActiveWork
         ? "there is no active milestone"
         : "";
@@ -91,6 +95,8 @@ export function buildGsdHomeModel(
       ? "finish_milestone"
       : blocked
         ? "fix_recover"
+        : hasIdleResidue
+          ? "fix_recover"
         : canAdvance
           ? "continue_step"
           : complete && unmappedActive > 0
@@ -107,6 +113,8 @@ export function buildGsdHomeModel(
     ? [`Quick task Q${strandedQuick.taskNum} finished on ${strandedQuick.quickBranch} but is not merged to ${strandedQuick.originalBranch}.`]
     : unmergedMilestone
       ? [`${unmergedMilestone.milestoneId} is complete but not merged into ${unmergedMilestone.integrationBranch}.`]
+      : idleResidueHint
+        ? [idleResidueHint.message]
       : completionSummary;
 
   return {
@@ -181,10 +189,12 @@ export function buildGsdHomeModel(
         label: "Fix or recover",
         description: blocked
           ? "Review the blocker and recovery commands for the active milestone."
+          : hasIdleResidue
+            ? "Review stranded milestone worktrees/branches and run the suggested recovery command."
           : disabled("This becomes active when closeout, validation, or state recovery is needed.", "no blocker is active"),
-        enabled: blocked,
+        enabled: blocked || hasIdleResidue,
         recommended: recommended === "fix_recover",
-        disabledReason: blocked ? undefined : "no blocker is active",
+        disabledReason: blocked || hasIdleResidue ? undefined : "no blocker is active",
       },
       {
         id: "start_configure",

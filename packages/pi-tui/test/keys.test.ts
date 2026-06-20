@@ -7,6 +7,8 @@ import { describe, it } from "node:test";
 import {
 	decodeKittyPrintable,
 	decodePrintableKey,
+	isKeyRelease,
+	isKeyRepeat,
 	Key,
 	matchesKey,
 	parseKey,
@@ -149,6 +151,29 @@ describe("matchesKey", () => {
 			// Cyrillic ctrl+c release event (event type 3)
 			const releaseEvent = "\x1b[1089::99;5:3u";
 			assert.strictEqual(matchesKey(releaseEvent, "ctrl+c"), true);
+			setKittyProtocolActive(false);
+		});
+
+		it("should handle negative CSI-u arrow codepoints", () => {
+			setKittyProtocolActive(true);
+			assert.strictEqual(matchesKey("\x1b[-1;1u", "up"), true);
+			assert.strictEqual(matchesKey("\x1b[-2;1u", "down"), true);
+			assert.strictEqual(matchesKey("\x1b[-3;1u", "right"), true);
+			assert.strictEqual(matchesKey("\x1b[-4;1u", "left"), true);
+			assert.strictEqual(parseKey("\x1b[-1;1u"), "up");
+			setKittyProtocolActive(false);
+		});
+
+		it("should identify suffix-style legacy Kitty event types", () => {
+			setKittyProtocolActive(true);
+			assert.strictEqual(isKeyRelease("\x1b[1;1A:3"), true);
+			assert.strictEqual(isKeyRelease("\x1b[1;1:3A"), true);
+			assert.strictEqual(isKeyRelease("\x1b[1;1A:2"), false);
+			assert.strictEqual(isKeyRepeat("\x1b[1;1A:2"), true);
+			assert.strictEqual(isKeyRepeat("\x1b[1;1:2A"), true);
+			assert.strictEqual(matchesKey("\x1b[1;1A:3", "up"), true);
+			assert.strictEqual(parseKey("\x1b[1;1A:3"), "up");
+			assert.strictEqual(matchesKey("\x1b[1;1F:3", "end"), true);
 			setKittyProtocolActive(false);
 		});
 

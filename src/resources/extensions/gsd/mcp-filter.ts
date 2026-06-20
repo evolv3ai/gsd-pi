@@ -1,7 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 
 import type { ClaudeCodeMcpConfig } from "./preferences-types.js";
+import { isGsdBrowserMcpServerConfig } from "../shared/gsd-browser-cli.js";
+import { toMcpWildcardToolName } from "./mcp-tool-name.js";
 import { resolveModelMcpConfig } from "./preferences-mcp.js";
 
 interface McpJsonFile {
@@ -81,38 +84,22 @@ function isWorkflowMcpServerConfig(config: unknown): boolean {
   return args.some((arg) => arg.includes("gsd-mcp-server") || arg.includes("packages/mcp-server"));
 }
 
-function isBrowserMcpServerConfig(config: unknown): boolean {
-  if (!isRecord(config)) return false;
-  const command = typeof config.command === "string" ? config.command : "";
-  if (command.includes("gsd-browser") || command.includes("@opengsd/gsd-browser")) {
-    return true;
-  }
-
-  const env = config.env;
-  if (isRecord(env)) {
-    if (
-      typeof env.GSD_BROWSER_CLI_PATH === "string"
-      || typeof env.GSD_BROWSER_BIN_PATH === "string"
-      || typeof env.GSD_BROWSER_MCP_COMMAND === "string"
-    ) {
-      return true;
-    }
-  }
-
-  const args = Array.isArray(config.args) ? config.args.filter((arg): arg is string => typeof arg === "string") : [];
-  return args.some((arg) => arg.includes("gsd-browser") || arg.includes("@opengsd/gsd-browser"));
-}
-
 export function discoverWorkflowMcpServerName(projectDir: string): string | undefined {
   return discoverMcpServers(projectDir).find((server) => isWorkflowMcpServerConfig(server.config))?.name;
 }
 
 export function discoverBrowserMcpServerName(projectDir: string): string | undefined {
-  return discoverMcpServers(projectDir).find((server) => isBrowserMcpServerConfig(server.config))?.name;
+  return discoverMcpServers(projectDir).find((server) => isGsdBrowserMcpServerConfig(server.config))?.name;
 }
 
 export function discoverMcpServerNames(projectDir: string): string[] {
   return discoverMcpServers(projectDir).map((server) => server.name);
+}
+
+export function discoverUserMcpServerNames(): string[] {
+  const userSettingsPath = resolve(homedir(), ".claude", "settings.json");
+  const userSettings = readJsonFile(userSettingsPath, true) as ClaudeSettingsFile | undefined;
+  return collectServerEntries(userSettings?.mcpServers).map((s) => s.name);
 }
 
 export function computeMcpDisallowedTools(
@@ -152,5 +139,5 @@ export function computeMcpDisallowedTools(
     blocked.delete(workflowServerName);
   }
 
-  return [...blocked].map((name) => `mcp__${name}__*`);
+  return [...blocked].map(toMcpWildcardToolName);
 }

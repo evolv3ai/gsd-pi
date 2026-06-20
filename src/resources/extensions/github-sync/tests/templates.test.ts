@@ -62,7 +62,7 @@ describe("templates", () => {
       assert.ok(body.includes("- Session type"));
       assert.ok(body.includes("## Linked Issue"));
       assert.ok(body.includes("## Tests Run"));
-      assert.ok(body.includes("## AI Assistance Disclosure"));
+      assert.ok(!body.includes("## AI Assistance Disclosure"));
     });
 
     it("renders task checklist with issue links", () => {
@@ -173,7 +173,7 @@ describe("templates", () => {
       assert.ok(body.includes("- Disable writer sequence enrichment"));
       assert.ok(body.includes("- npm run typecheck:extensions"));
       assert.ok(body.includes("Closes #123"));
-      assert.ok(body.includes("## AI Assistance Disclosure"));
+      assert.ok(!body.includes("## AI Assistance Disclosure"));
     });
 
     it("formats release checklist bodies from lane state", () => {

@@ -22,10 +22,21 @@ export function resolveGsdBin({ isLocal, cwd = process.cwd() }) {
   return join(binDir, 'gsd')
 }
 
+// On Windows, .cmd shims cannot be executed directly by spawnSync without a
+// shell. Use `cmd /c <bin> <args>` to avoid both ENOENT failures and the
+// Node 22 DEP0190 deprecation triggered by `shell: true` with args.
+function buildSpawnInvocation(bin, args) {
+  if (process.platform === 'win32') {
+    return { cmd: 'cmd', args: ['/c', bin, ...args] }
+  }
+  return { cmd: bin, args }
+}
+
 export function runConfigHandoff({ bin, nonInteractive }) {
   if (nonInteractive) return { skipped: true }
 
-  const result = spawnSync(bin, ['config'], {
+  const inv = buildSpawnInvocation(bin, ['config'])
+  const result = spawnSync(inv.cmd, inv.args, {
     stdio: 'inherit',
     timeout: 600_000,
     env: { ...process.env, [GSD_SUPPRESS_LOGO_ENV]: '1' },
@@ -52,7 +63,8 @@ export async function promptLaunch({ bin, clack: p, nonInteractive }) {
 
   if (p.isCancel(launch) || !launch) return false
 
-  const result = spawnSync(bin, [], {
+  const inv = buildSpawnInvocation(bin, [])
+  const result = spawnSync(inv.cmd, inv.args, {
     stdio: 'inherit',
   })
 
@@ -64,7 +76,8 @@ export async function promptLaunch({ bin, clack: p, nonInteractive }) {
 }
 
 export function verifyInstall(bin) {
-  const result = spawnSync(bin, ['--version'], {
+  const inv = buildSpawnInvocation(bin, ['--version'])
+  const result = spawnSync(inv.cmd, inv.args, {
     encoding: 'utf-8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 10_000,

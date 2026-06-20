@@ -282,6 +282,18 @@ npm:
 npm install -g @anthropic-ai/claude-code@latest
 ```
 
+pnpm:
+
+```bash
+pnpm add -g @anthropic-ai/claude-code@latest
+```
+
+bun:
+
+```bash
+bun add -g @anthropic-ai/claude-code@latest
+```
+
 ## Official References
 
 - [Claude Code quickstart](https://code.claude.com/docs/en/quickstart)

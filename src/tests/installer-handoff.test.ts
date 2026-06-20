@@ -15,7 +15,7 @@ test('runConfigHandoff suppresses duplicate logo in gsd config subprocess', () =
     'utf-8',
   )
   assert.match(source, /GSD_SUPPRESS_LOGO/)
-  assert.match(source, /spawnSync\(bin, \['config'\], \{[\s\S]*env: \{ \.\.\.process\.env, \[GSD_SUPPRESS_LOGO_ENV\]: '1' \}/)
+  assert.match(source, /buildSpawnInvocation\(bin, \['config'\]\)[\s\S]*env: \{ \.\.\.process\.env, \[GSD_SUPPRESS_LOGO_ENV\]: '1' \}/)
 })
 
 test('promptLaunch does not time out the interactive agent session', () => {

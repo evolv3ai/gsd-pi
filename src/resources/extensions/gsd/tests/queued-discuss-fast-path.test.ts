@@ -24,25 +24,24 @@ describe("queued-discuss-fast-path", () => {
     );
   });
 
-  test("2. dispatchDiscussForMilestone computes fastPathInstruction and passes it to loadPrompt", () => {
+  test("2. dispatchDiscussForMilestone computes fastPathInstruction and passes it to buildDiscussMilestonePrompt", () => {
     const source = guidedFlowSrc();
     const fnStart = source.indexOf("async function dispatchDiscussForMilestone(");
     assert.ok(fnStart > 0, "dispatchDiscussForMilestone must exist");
-    const fnEnd = source.indexOf("\nasync function ", fnStart + 1);
     const fnBody = extractSourceRegion(source, "async function dispatchDiscussForMilestone(");
     assert.ok(
       fnBody.includes("fastPathInstruction"),
       "dispatchDiscussForMilestone must compute fastPathInstruction",
     );
     assert.ok(
-      fnBody.includes("loadPrompt("),
-      "dispatchDiscussForMilestone must call loadPrompt",
+      fnBody.includes("buildDiscussMilestonePrompt("),
+      "dispatchDiscussForMilestone must call buildDiscussMilestonePrompt",
     );
-    const loadPromptIdx = fnBody.indexOf("loadPrompt(");
-    const fastPathIdx = fnBody.indexOf("fastPathInstruction", loadPromptIdx);
+    const buildPromptIdx = fnBody.indexOf("buildDiscussMilestonePrompt(");
+    const fastPathIdx = fnBody.indexOf("fastPathInstruction", buildPromptIdx);
     assert.ok(
-      fastPathIdx > loadPromptIdx,
-      "fastPathInstruction must be passed to loadPrompt in dispatchDiscussForMilestone",
+      fastPathIdx > buildPromptIdx,
+      "fastPathInstruction must be passed to buildDiscussMilestonePrompt in dispatchDiscussForMilestone",
     );
   });
 

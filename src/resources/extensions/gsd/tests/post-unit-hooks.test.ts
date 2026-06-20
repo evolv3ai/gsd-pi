@@ -11,6 +11,7 @@ import {
   resetHookState,
   isRetryPending,
   consumeRetryTrigger,
+  consumeGateBlock,
   resolveHookArtifactPath,
   runPreDispatchHooks,
   persistHookState,
@@ -20,6 +21,7 @@ import {
   formatHookStatus,
   triggerHookManually,
 } from "../post-unit-hooks.ts";
+import { invalidateAllCaches } from "../cache.ts";
 
 // ─── Fixture Helpers ───────────────────────────────────────────────────────
 
@@ -27,6 +29,11 @@ function createFixtureBase(): string {
   const base = mkdtempSync(join(tmpdir(), "gsd-hook-test-"));
   mkdirSync(join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks"), { recursive: true });
   return base;
+}
+
+function writeHookPreferences(base: string, hookYaml: string): void {
+  writeFileSync(join(base, ".gsd", "PREFERENCES.md"), `---\npost_unit_hooks:\n${hookYaml}\n---\n`, "utf-8");
+  invalidateAllCaches();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -102,6 +109,156 @@ test('consumeRetryTrigger clears state', () => {
   resetHookState();
   assert.deepStrictEqual(consumeRetryTrigger(), null, "no trigger initially");
   assert.ok(!isRetryPending(), "no retry initially");
+});
+
+test('Advisory hook keeps artifact idempotency without verdict frontmatter', () => {
+  resetHookState();
+  const base = createFixtureBase();
+  try {
+    writeHookPreferences(base, `  - name: docs-hint
+    after:
+      - execute-task
+    prompt: Review docs
+    artifact: DOCS-HINT.md
+`);
+    writeFileSync(resolveHookArtifactPath(base, "M001/S01/T01", "DOCS-HINT.md"), "plain advisory note", "utf-8");
+
+    const result = checkPostUnitHooks("execute-task", "M001/S01/T01", base);
+    assert.deepStrictEqual(result, null, "existing advisory artifact remains idempotent");
+    assert.deepStrictEqual(consumeGateBlock(), null, "advisory hook does not create gate block");
+  } finally {
+    resetHookState();
+    invalidateAllCaches();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('Blocking hook skips only after passing frontmatter verdict', () => {
+  resetHookState();
+  const base = createFixtureBase();
+  try {
+    writeHookPreferences(base, `  - name: security-review
+    after:
+      - execute-task
+    prompt: Review security
+    artifact: SECURITY-REVIEW.md
+    criticality: blocking
+`);
+    writeFileSync(
+      resolveHookArtifactPath(base, "M001/S01/T01", "SECURITY-REVIEW.md"),
+      "---\nverdict: pass\n---\n\nNo blocking findings.\n",
+      "utf-8",
+    );
+
+    const result = checkPostUnitHooks("execute-task", "M001/S01/T01", base);
+    assert.deepStrictEqual(result, null, "passing gate artifact is idempotent");
+    assert.deepStrictEqual(consumeGateBlock(), null, "passing gate does not block");
+  } finally {
+    resetHookState();
+    invalidateAllCaches();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('Blocking hook reruns invalid artifact once then blocks at cycle budget', () => {
+  resetHookState();
+  const base = createFixtureBase();
+  try {
+    writeHookPreferences(base, `  - name: security-review
+    after:
+      - execute-task
+    prompt: Review security
+    artifact: SECURITY-REVIEW.md
+    criticality: blocking
+`);
+    writeFileSync(resolveHookArtifactPath(base, "M001/S01/T01", "SECURITY-REVIEW.md"), "partial output", "utf-8");
+
+    const dispatch = checkPostUnitHooks("execute-task", "M001/S01/T01", base);
+    assert.ok(dispatch, "invalid gate artifact dispatches the blocking hook");
+    assert.equal(dispatch.unitType, "hook/security-review");
+
+    const afterHook = checkPostUnitHooks("hook/security-review", "M001/S01/T01", base);
+    assert.deepStrictEqual(afterHook, null, "no further hook dispatch after max_cycles=1");
+    const block = consumeGateBlock();
+    assert.ok(block, "gate block is recorded");
+    assert.equal(block.hookName, "security-review");
+    assert.match(block.reason, /missing frontmatter verdict/);
+  } finally {
+    resetHookState();
+    invalidateAllCaches();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('Blocking hook restored from disk does not trust artifact without clean hook completion', () => {
+  resetHookState();
+  const base = createFixtureBase();
+  try {
+    writeHookPreferences(base, `  - name: security-review
+    after:
+      - execute-task
+    prompt: Review security
+    artifact: SECURITY-REVIEW.md
+    criticality: blocking
+    max_cycles: 2
+`);
+    const firstDispatch = checkPostUnitHooks("execute-task", "M001/S01/T01", base);
+    assert.ok(firstDispatch, "gate dispatches first cycle");
+    persistHookState(base);
+
+    writeFileSync(
+      resolveHookArtifactPath(base, "M001/S01/T01", "SECURITY-REVIEW.md"),
+      "---\noutcome:\n  verdict: pass\n---\n",
+      "utf-8",
+    );
+
+    resetHookState();
+    restoreHookState(base);
+
+    const resumed = checkPostUnitHooks("execute-task", "M001/S01/T01", base);
+    assert.ok(resumed, "persisted active gate reruns when clean hook completion was not observed");
+    assert.equal(resumed.unitType, "hook/security-review");
+  } finally {
+    resetHookState();
+    invalidateAllCaches();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('Blocking hook needs-rework verdict requests trigger unit retry', () => {
+  resetHookState();
+  const base = createFixtureBase();
+  try {
+    writeHookPreferences(base, `  - name: review-arbiter
+    after:
+      - execute-task
+    prompt: Review task
+    artifact: REVIEW-DEBATE.md
+    criticality: blocking
+    max_cycles: 2
+    on_block:
+      action: retry-unit
+`);
+    const dispatch = checkPostUnitHooks("execute-task", "M001/S01/T01", base);
+    assert.ok(dispatch, "gate dispatches");
+    writeFileSync(
+      resolveHookArtifactPath(base, "M001/S01/T01", "REVIEW-DEBATE.md"),
+      "---\nverdict: needs-rework\n---\n\nRework required.\n",
+      "utf-8",
+    );
+
+    const afterHook = checkPostUnitHooks("hook/review-arbiter", "M001/S01/T01", base);
+    assert.deepStrictEqual(afterHook, null, "needs-rework routes via retry signal");
+    assert.ok(isRetryPending(), "retry is pending");
+    assert.deepStrictEqual(consumeRetryTrigger(), {
+      unitType: "execute-task",
+      unitId: "M001/S01/T01",
+    });
+  } finally {
+    resetHookState();
+    invalidateAllCaches();
+    rmSync(base, { recursive: true, force: true });
+  }
 });
 
 // ─── Variable substitution in prompts ──────────────────────────────────────

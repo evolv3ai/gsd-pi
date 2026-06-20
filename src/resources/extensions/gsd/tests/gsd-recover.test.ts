@@ -502,11 +502,72 @@ describe('gsd-recover', async () => {
       insertMilestone({ id: 'M999', title: 'Existing DB State', status: 'active' });
 
       const { ctx, notes } = makeCtx();
-      await handleRecover(ctx, base, '--confirm');
+      // M999 is in the DB but not in the markdown, so recover would delete it:
+      // a data-loss recover now requires explicit --allow-data-loss.
+      await handleRecover(ctx, base, '--confirm --allow-data-loss');
 
       assert.equal(getMilestone('M999'), null, 'confirmed recover clears old hierarchy rows');
       assert.ok(getMilestone('M001'), 'confirmed recover imports markdown hierarchy');
       assert.equal(notes.at(-1)?.kind, 'success');
+    } finally {
+      closeDatabase();
+      cleanup(base);
+    }
+  });
+
+  test('handleRecover refuses to delete DB rows markdown lacks without --allow-data-loss', async () => {
+    const base = createFixtureBase();
+    try {
+      writeFile(base, 'milestones/M001/M001-ROADMAP.md', ROADMAP_M001);
+      openDatabase(':memory:');
+      insertMilestone({ id: 'M999', title: 'Existing DB State', status: 'active' });
+
+      const { ctx, notes } = makeCtx();
+      await handleRecover(ctx, base, '--confirm');
+
+      // --confirm alone must NOT clear authoritative DB rows the markdown lacks.
+      assert.ok(getMilestone('M999'), 'data-loss recover is refused, DB row preserved');
+      assert.equal(getMilestone('M001'), null, 'markdown not imported on refusal');
+      assert.equal(notes.at(-1)?.kind, 'error');
+    } finally {
+      closeDatabase();
+      cleanup(base);
+    }
+  });
+
+  test('handleRecover interactive data-loss requires a second explicit acknowledgement', async () => {
+    const base = createFixtureBase();
+    try {
+      writeFile(base, 'milestones/M001/M001-ROADMAP.md', ROADMAP_M001);
+      openDatabase(':memory:');
+      insertMilestone({ id: 'M999', title: 'Existing DB State', status: 'active' });
+
+      // First confirm (proceed?) = yes; second confirm (delete rows?) = no.
+      let call = 0;
+      const { ctx, notes } = makeCtx(async () => { call += 1; return call === 1; });
+      await handleRecover(ctx, base, '');
+
+      assert.ok(getMilestone('M999'), 'declining the data-loss ack preserves DB rows');
+      assert.equal(getMilestone('M001'), null, 'markdown not imported when data-loss ack declined');
+      assert.match(notes.at(-1)?.message ?? '', /cancelled/);
+    } finally {
+      closeDatabase();
+      cleanup(base);
+    }
+  });
+
+  test('handleRecover interactive proceeds when the data-loss deletion is acknowledged', async () => {
+    const base = createFixtureBase();
+    try {
+      writeFile(base, 'milestones/M001/M001-ROADMAP.md', ROADMAP_M001);
+      openDatabase(':memory:');
+      insertMilestone({ id: 'M999', title: 'Existing DB State', status: 'active' });
+
+      const { ctx } = makeCtx(async () => true); // both confirms accepted
+      await handleRecover(ctx, base, '');
+
+      assert.equal(getMilestone('M999'), null, 'acknowledged data-loss recover clears old rows');
+      assert.ok(getMilestone('M001'), 'acknowledged data-loss recover imports markdown');
     } finally {
       closeDatabase();
       cleanup(base);

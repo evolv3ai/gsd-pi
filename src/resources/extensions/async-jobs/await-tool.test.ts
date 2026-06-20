@@ -177,6 +177,145 @@ test("await_job suppresses follow-up for already-completed jobs (cross-turn case
 	manager.shutdown();
 });
 
+test("await_job aborts promptly when signal fires; job keeps running and is not suppressed", async () => {
+	const manager = new AsyncJobManager();
+	const tool = createAwaitTool(() => manager);
+
+	// Register a job that would run for 60s
+	const jobId = manager.register("bash", "long-job", async (_signal) => {
+		return new Promise<string>((resolve) => {
+			const timer = setTimeout(() => resolve("finally done"), 60_000);
+			if (typeof timer === "object" && "unref" in timer) timer.unref();
+		});
+	});
+
+	const ac = new AbortController();
+	// Abort after ~100ms
+	const abortTimer = setTimeout(() => ac.abort(), 100);
+	if (typeof abortTimer === "object" && "unref" in abortTimer) (abortTimer as NodeJS.Timeout).unref();
+
+	const start = Date.now();
+	const result = await tool.execute("tc_abort1", { jobs: [jobId], timeout: 60 }, ac.signal, () => {}, undefined as never);
+	const elapsed = Date.now() - start;
+	const text = getTextFromResult(result);
+
+	// Should abort quickly (within ~100ms + overhead), not wait for full timeout
+	assert.ok(elapsed < 5_000, `Expected abort in ~100ms but took ${elapsed}ms`);
+	assert.match(text, /interrupted/i);
+
+	// Job should still be running (not killed)
+	const job = manager.getJob(jobId)!;
+	assert.equal(job.status, "running", "Job should still be running after abort");
+	// Job should NOT be marked awaited — results must resurface later
+	assert.ok(!job.awaited, "Job should not be suppressed after abort");
+
+	// Cleanup
+	manager.cancel(jobId);
+	manager.shutdown();
+});
+
+test("after abort, a still-running job resurfaces via onJobComplete", async () => {
+	const followUps: string[] = [];
+	const manager = new AsyncJobManager({
+		onJobComplete: (job) => {
+			if (!job.awaited) followUps.push(job.id);
+		},
+	});
+	const tool = createAwaitTool(() => manager);
+
+	// Register a job that resolves after ~150ms
+	const jobId = manager.register("bash", "resurface-job", async () => {
+		return new Promise<string>((resolve) => {
+			const timer = setTimeout(() => resolve("done"), 150);
+			if (typeof timer === "object" && "unref" in timer) (timer as NodeJS.Timeout).unref();
+		});
+	});
+
+	const ac = new AbortController();
+	// Abort the await at ~50ms (before the job completes at ~150ms)
+	const abortTimer = setTimeout(() => ac.abort(), 50);
+	if (typeof abortTimer === "object" && "unref" in abortTimer) (abortTimer as NodeJS.Timeout).unref();
+
+	const result = await tool.execute("tc_abort2", { jobs: [jobId], timeout: 10 }, ac.signal, () => {}, undefined as never);
+	const text = getTextFromResult(result);
+	assert.match(text, /interrupted/i);
+
+	// Wait longer than the job's natural completion time (150ms) + delivery timer (0ms) + buffer
+	await new Promise((r) => setTimeout(r, 350));
+
+	// The job should have completed and the follow-up should have fired
+	// (because we did NOT suppress it on abort)
+	assert.ok(followUps.includes(jobId), `Expected job ${jobId} to resurface via onJobComplete, but got: ${followUps.join(", ")}`);
+
+	manager.shutdown();
+});
+
+test("await_job does not reprint a job whose follow-up was already delivered (no duplicate-in-context)", async () => {
+	// Real cross-turn timing: a job completes in a prior turn, its setTimeout(0)
+	// follow-up FIRES (delivered to context), and only THEN does await_job run in a
+	// later turn. The earlier #3787 test masked this by advancing with setImmediate,
+	// which races ahead of setTimeout(0); a real turn boundary does not. await_job
+	// must acknowledge the already-delivered job tersely instead of reprinting its
+	// full output (which would duplicate it in context).
+	const followUps: string[] = [];
+	const manager = new AsyncJobManager({
+		onJobComplete: (job) => {
+			if (!job.awaited) followUps.push(job.id);
+		},
+	});
+	const tool = createAwaitTool(() => manager);
+
+	const jobId = manager.register("bash", "already-delivered-job", async () => "THE_RESULT_TEXT");
+	await manager.getJob(jobId)!.promise;
+
+	// Real macrotask gap — generously long so the setTimeout(0) delivery fires even
+	// if the CI event loop is briefly starved (a tight 25ms could race the precondition).
+	await new Promise((r) => setTimeout(r, 100));
+	assert.equal(followUps.length, 1, "follow-up should have been delivered before the later-turn await_job");
+
+	const result = await tool.execute("tc_dup", { jobs: [jobId] }, noopSignal, () => {}, undefined as never);
+	const text = getTextFromResult(result);
+
+	// The full output must NOT be reprinted (it is already in context via the follow-up).
+	assert.ok(
+		!text.includes("THE_RESULT_TEXT"),
+		`await_job must not reprint already-delivered output, got:\n${text}`,
+	);
+	// It should still acknowledge the job so the agent knows the wait resolved.
+	assert.match(text, /already-delivered-job/);
+	// Single already-delivered job must use grammatical singular wording, not
+	// the plural form (regression: "These job ... their results ... they completed").
+	assert.match(text, /This job already finished and its result was shown above when it completed/);
+	assert.doesNotMatch(text, /These job\b/);
+
+	manager.shutdown();
+});
+
+test("await_job still renders full output for a job consumed within the same turn (not yet delivered)", async () => {
+	// Within-turn case: await_job wins the race against the delivery timer, so the
+	// follow-up is suppressed and never delivered. Here await_job IS the only place
+	// the result surfaces, so it must render the full output.
+	const followUps: string[] = [];
+	const manager = new AsyncJobManager({
+		onJobComplete: (job) => {
+			if (!job.awaited) followUps.push(job.id);
+		},
+	});
+	const tool = createAwaitTool(() => manager);
+
+	const jobId = manager.register("bash", "within-turn-job", async () => {
+		return new Promise<string>((resolve) => setTimeout(() => resolve("WITHIN_TURN_OUTPUT"), 40));
+	});
+
+	const result = await tool.execute("tc_within", { jobs: [jobId] }, noopSignal, () => {}, undefined as never);
+	const text = getTextFromResult(result);
+
+	assert.equal(followUps.length, 0, "within-turn await must suppress the follow-up");
+	assert.match(text, /WITHIN_TURN_OUTPUT/, "within-turn await must render the full output inline");
+
+	manager.shutdown();
+});
+
 test("unawaited jobs still get follow-up delivery (#2248)", async () => {
 	const followUps: string[] = [];
 	const manager = new AsyncJobManager({

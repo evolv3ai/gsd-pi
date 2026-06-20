@@ -39,9 +39,17 @@ export class CustomEditor extends Editor {
 		this.actionHandlers.set(action, handler);
 	}
 
+	/** Toggle the collapsible GSD status widget above the editor. */
+	public onToggleGsdStatus?: () => void;
+
 	handleInput(data: string): void {
 		// Check extension-registered shortcuts first
 		if (this.onExtensionShortcut?.(data)) {
+			return;
+		}
+
+		if (matchesKey(data, "shift+ctrl+d")) {
+			this.onToggleGsdStatus?.();
 			return;
 		}
 

@@ -15,6 +15,7 @@ import {
   insertTask,
   getMilestoneSlices,
   getSliceTasks,
+  _getAdapter,
 } from '../gsd-db.ts';
 import {
   renderRoadmapFromDb,
@@ -417,6 +418,50 @@ console.log('\n=== planning-crossval Test 6: ROADMAP descriptor projection dir =
     assertEq(rendered.roadmapPath, descriptorRoadmapPath, 'T6: roadmap path uses descriptor milestone dir');
     assertTrue(existsSync(descriptorRoadmapPath), 'T6: descriptor roadmap exists');
     assertEq(existsSync(bareMilestoneDir), false, 'T6: bare duplicate milestone dir is not created');
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Test 7: Renderer strips bracket-wrapped depends from corrupt DB rows (#566)
+// ═══════════════════════════════════════════════════════════════════════════
+// Simulates a DB that was corrupted before the insertSlice validation guard
+// was added (issue #566). The renderer must recover "[S01]" → "S01" rather
+// than silently dropping the dependency and rendering depends:[].
+
+console.log('\n=== planning-crossval Test 7: renderer recovers bracket-wrapped depends (#566) ===');
+{
+  const base = realpathSync(createFixtureBase());
+  const dbPath = join(base, '.gsd', 'gsd.db');
+  openDatabase(dbPath);
+  try {
+    scaffoldDirs(base, 'M001', ['S01', 'S02']);
+
+    insertMilestone({
+      id: 'M001',
+      title: 'Bracket Recovery',
+      status: 'active',
+      planning: { vision: 'Recover bracket-wrapped depends from corrupt DB.' },
+    });
+
+    insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Foundation', status: 'pending', risk: 'low', depends: [], demo: 'Foundation done.', sequence: 1 });
+    insertSlice({ id: 'S02', milestoneId: 'M001', title: 'Build', status: 'pending', risk: 'medium', depends: [], demo: 'Build done.', sequence: 2 });
+
+    // Bypass insertSlice validation to simulate pre-fix corrupt DB state
+    // (insertSlice now rejects bracket-wrapped IDs, but old DBs may have them)
+    _getAdapter()?.prepare('UPDATE slices SET depends = ? WHERE id = ? AND milestone_id = ?')
+      .run('["[S01]"]', 'S02', 'M001');
+
+    const rendered = await renderRoadmapFromDb(base, 'M001');
+    const content = readFileSync(rendered.roadmapPath, 'utf-8');
+    const parsed = parseRoadmapSlices(content);
+
+    assertEq(parsed.length, 2, 'T7: 2 slices parsed');
+    assertEq(parsed[1]?.depends.length, 1, 'T7: S02 has 1 dependency after bracket recovery');
+    assertEq(parsed[1]?.depends[0], 'S01', 'T7: recovered dependency is "S01", not "[S01]"');
+    assertTrue(content.includes('`depends:[S01]`'), 'T7: S02 renders with recovered depends:[S01] not empty depends:[]');
   } finally {
     closeDatabase();
     cleanup(base);

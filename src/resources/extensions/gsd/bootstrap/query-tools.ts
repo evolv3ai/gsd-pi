@@ -5,6 +5,7 @@
 import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import { ensureDbOpen, resolveCtxCwd } from "./dynamic-tools.js";
+import { checkpointWorkflowDatabase } from "../db-workspace.js";
 
 
 export function registerQueryTools(pi: ExtensionAPI): void {
@@ -57,8 +58,7 @@ export function registerQueryTools(pi: ExtensionAPI): void {
           details: { operation: "checkpoint_db", error: "db_unavailable" },
         };
       }
-      const { checkpointDatabase } = await import("../gsd-db.js");
-      checkpointDatabase();
+      checkpointWorkflowDatabase();
       return {
         content: [{ type: "text", text: "WAL checkpoint complete. gsd.db is now up to date and safe to stage with git add." }],
         details: { operation: "checkpoint_db", status: "ok" },

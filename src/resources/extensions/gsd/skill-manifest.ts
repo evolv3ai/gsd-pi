@@ -117,6 +117,18 @@ const UNIT_TYPE_SKILL_MANIFEST: Record<string, string[]> = {
     "review",
     "accessibility",
   ],
+  // Slice closeout — the "closer" role: verify assembled task work, write the
+  // downstream-ready summary + UAT, optionally drive reviewer/security/tester
+  // subagents. Predictable skill set, mirrors `complete-milestone`.
+  "complete-slice": [
+    "verify-before-complete",
+    "test",
+    "review",
+    "security-review",
+    "write-docs",
+    "observability",
+    "handoff",
+  ],
   // `execute-task` intentionally omitted — implementation hot path covers a
   // wide surface of technologies; wildcard fallback preserves today's
   // behavior until per-task skill hints can be derived from task-plan

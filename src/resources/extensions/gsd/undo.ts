@@ -13,7 +13,7 @@ import { deriveState } from "./state.js";
 import { invalidateAllCaches } from "./cache.js";
 import { gsdRoot, resolveTasksDir, resolveSlicePath, resolveTaskFile, buildTaskFileName, buildSliceFileName } from "./paths.js";
 import { sendDesktopNotification } from "./notifications.js";
-import { getTask, getSlice, getSliceTasks, updateTaskStatus, updateSliceStatus } from "./gsd-db.js";
+import { getTask, getSlice, getSliceTasks, updateTaskStatus, resetSliceCascade } from "./gsd-db.js";
 import { renderPlanCheckboxes, renderRoadmapCheckboxes } from "./markdown-renderer.js";
 
 /**
@@ -330,21 +330,22 @@ export async function handleResetSlice(
     return;
   }
 
-  // Reset all tasks
-  let tasksReset = 0;
+  // Reset all task statuses to "pending" and the slice to "active" in one
+  // atomic commit (DB is source of truth). Previously a per-task updateTaskStatus
+  // loop + a separate updateSliceStatus, which could leave a partial reset if
+  // interrupted mid-loop.
+  resetSliceCascade(mid, sid);
+
+  // Delete task summary files — projection cleanup, separate from the DB reset.
+  const tasksReset = tasks.length;
   let summariesDeleted = 0;
   for (const t of tasks) {
-    updateTaskStatus(mid, sid, t.id, "pending");
-    tasksReset++;
     const summaryPath = resolveTaskFile(basePath, mid, sid, t.id, "SUMMARY");
     if (summaryPath && existsSync(summaryPath)) {
       unlinkSync(summaryPath);
       summariesDeleted++;
     }
   }
-
-  // Reset slice status
-  updateSliceStatus(mid, sid, "active");
 
   // Delete slice summary and UAT files
   let sliceFilesDeleted = 0;

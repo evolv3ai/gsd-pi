@@ -21,7 +21,7 @@ echo "$FILES"
 
 is_core_file() {
   case "$1" in
-    src/*|packages/*|native/*|scripts/*|web/*|extensions/*|integrations/*|tests/*|docker/*|Dockerfile|package.json|pnpm-lock.yaml|tsconfig*.json) return 0 ;;
+    src/*|packages/*|native/*|scripts/*|web/*|extensions/*|integrations/*|tests/*|docker/*|Dockerfile|package.json|pnpm-lock.yaml|tsconfig*.json|.github/*) return 0 ;;
     packages/*/tsconfig.json) return 0 ;;
     *) return 1 ;;
   esac
@@ -36,7 +36,7 @@ is_web_file() {
 
 is_portability_file() {
   case "$1" in
-    src/*|packages/*|native/*|scripts/*|web/*|package.json|pnpm-lock.yaml|tsconfig*.json) return 0 ;;
+    native/*|packages/native/*|packages/pi-tui/native/*|src/loader*|src/native*|src/rtk*|src/tests/windows-*|src/tests/integration/web-mode-windows-hide.test.ts|src/resources/extensions/gsd/validate-directory*|src/resources/extensions/gsd/tests/validate-directory.test.ts|src/resources/extensions/gsd/auto-worktree*|src/resources/extensions/gsd/workflow-mcp*|pnpm-lock.yaml|tsconfig*.json) return 0 ;;
     packages/*/tsconfig.json) return 0 ;;
     *) return 1 ;;
   esac
@@ -44,7 +44,7 @@ is_portability_file() {
 
 is_windows_e2e_file() {
   case "$1" in
-    tests/e2e/*|src/loader*|src/rtk*|src/native*|src/resources/extensions/gsd/gsd-db*|src/resources/extensions/gsd/extension-host*|src/resources/extensions/gsd/auto-worktree*|src/resources/extensions/gsd/workflow-mcp*|packages/pi-coding-agent/*|packages/pi-ai/*|packages/pi-agent-core/*|packages/native/*|packages/mcp-server/*|packages/rpc-client/*|native/*|package.json|pnpm-lock.yaml|tsconfig*.json) return 0 ;;
+    tests/e2e/*|src/loader*|src/rtk*|src/native*|src/resources/extensions/gsd/gsd-db*|src/resources/extensions/gsd/extension-host*|src/resources/extensions/gsd/auto-worktree*|src/resources/extensions/gsd/workflow-mcp*|packages/native/*|native/*|pnpm-lock.yaml|tsconfig*.json) return 0 ;;
     packages/*/tsconfig.json) return 0 ;;
     *) return 1 ;;
   esac
@@ -52,7 +52,7 @@ is_windows_e2e_file() {
 
 is_docker_file() {
   case "$1" in
-    Dockerfile|docker/*|scripts/install.js|scripts/*.cjs|scripts/*.mjs|package.json|pnpm-lock.yaml|src/*|packages/*|tests/e2e/docker/*) return 0 ;;
+    Dockerfile|docker/*|tests/e2e/docker/*|scripts/install.js|scripts/link-workspace-packages.cjs|scripts/prepack-resolve-workspace.cjs|scripts/postpack-restore-workspace.cjs|scripts/validate-pack.js|native/npm/*/package.json|pnpm-lock.yaml) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -107,7 +107,7 @@ if [ -n "$WEB" ]; then
   write_output "web-changed" "true" "Web host files changed:"
   echo "$WEB"
 else
-  write_output "web-changed" "false" "No web host changes — skipping build:web-host"
+  write_output "web-changed" "false" "No web host changes"
 fi
 
 if [ -n "$PORTABILITY" ]; then
@@ -128,5 +128,5 @@ if [ -n "$DOCKER" ]; then
   write_output "docker-changed" "true" "Docker-relevant files changed:"
   echo "$DOCKER"
 else
-  write_output "docker-changed" "false" "No Docker-relevant changes — skipping docker-e2e"
+  write_output "docker-changed" "false" "No Docker-relevant changes — skipping Docker e2e"
 fi

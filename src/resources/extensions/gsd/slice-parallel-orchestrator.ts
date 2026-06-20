@@ -30,7 +30,8 @@ import { isAbsolute, join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gsdRoot } from "./paths.js";
 import { createWorktree, worktreePath, removeWorktree } from "./worktree-manager.js";
-import { autoWorktreeBranch, runWorktreePostCreateHook, syncGsdStateToWorktree } from "./auto-worktree.js";
+import { autoWorktreeBranch, runWorktreePostCreateHook, syncGsdStateToWorktreeByScope } from "./auto-worktree.js";
+import { createWorkspace, scopeMilestone } from "./workspace.js";
 import {
   writeSessionStatus,
   removeSessionStatus,
@@ -163,7 +164,10 @@ function createSliceWorktree(basePath: string, milestoneId: string, sliceId: str
   if (hookError) {
     throw new Error(`slice worktree post-create hook failed (${wtName}): ${hookError}`);
   }
-  syncGsdStateToWorktree(basePath, wtPath);
+  syncGsdStateToWorktreeByScope(
+    scopeMilestone(createWorkspace(basePath), milestoneId),
+    scopeMilestone(createWorkspace(wtPath), milestoneId),
+  );
 
   if (!existsSync(join(wtPath, ".gsd"))) {
     throw new Error(`slice worktree preflight failed (${wtName}): missing .gsd in worktree`);

@@ -12,7 +12,7 @@ import {
 import { theme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 import { editorKey, keyHint } from "./keybinding-hints.js";
-import { renderCommandCard, renderTranscriptCard, type StatusTone } from "./transcript-design.js";
+import { renderCommandCard, renderPlainToolMessage, type StatusTone } from "./transcript-design.js";
 import { truncateToVisualLines } from "./visual-truncate.js";
 
 // Preview line limit when not expanded (matches tool execution behavior)
@@ -166,12 +166,12 @@ export class BashExecutionComponent extends Container {
 			...(hidden > 0 ? [theme.fg("muted", `... ${hidden} earlier lines`)] : []),
 			...truncationWarning,
 		];
-		return renderTranscriptCard(body, frameWidth, {
+		const rightParts = [elapsedStatus];
+		rightParts.push(this.expanded ? "ctrl+o collapse" : "ctrl+o expand");
+		return renderPlainToolMessage(body, frameWidth, {
 			title: "command",
-			right: elapsedStatus,
+			meta: rightParts.join(" · "),
 			tone,
-			footerLeft: this.expanded ? "output expanded" : "output preview",
-			footerRight: this.expanded ? "ctrl+o collapse" : "ctrl+o expand",
 		});
 	}
 

@@ -9,9 +9,6 @@
 /** Default timeout for verification-gate commands (ms). */
 export const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 
-/** Default timeout for the dynamic bash tool (seconds). */
-export const DEFAULT_BASH_TIMEOUT_SECS = 120;
-
 // ─── Cache Sizes ──────────────────────────────────────────────────────────────
 
 /** Max directory-listing cache entries before eviction (#611). */

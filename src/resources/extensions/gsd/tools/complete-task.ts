@@ -10,9 +10,10 @@
  * back committed DB state.
  */
 
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-import type { CompleteTaskParams } from "../types.js";
+import type { CompleteTaskParams, EscalationArtifact } from "../types.js";
 import { isClosedStatus } from "../status-guards.js";
 import {
   transaction,
@@ -35,7 +36,8 @@ import { checkOwnership, taskUnitKey } from "../unit-ownership.js";
 import { saveFile, clearParseCache } from "../files.js";
 import { invalidateStateCache } from "../state.js";
 import { renderPlanCheckboxes } from "../markdown-renderer.js";
-import { renderAllProjections, renderSummaryContent } from "../workflow-projections.js";
+import { renderSummaryContent } from "../workflow-projections.js";
+import { flushWorkflowProjections } from "../projection-flush.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning, logError } from "../workflow-logger.js";
@@ -48,6 +50,14 @@ export interface CompleteTaskResult {
   sliceId: string;
   milestoneId: string;
   summaryPath: string;
+  escalation?: {
+    artifactPath: string;
+    question: string;
+    options: EscalationArtifact["options"];
+    recommendation: string;
+    recommendationRationale: string;
+    continueWithDefault: boolean;
+  };
   /**
    * True when this call re-completed an already-closed task from a turn that
    * had been superseded by timeout recovery or cancellation. The underlying
@@ -75,6 +85,49 @@ function taskSummaryPath(
     "tasks",
     `${taskId}-SUMMARY.md`,
   );
+}
+
+async function repairMissingTaskSummaryProjection(
+  artifactBasePath: string,
+  taskRow: TaskRow,
+): Promise<{ summaryPath: string; stale: boolean }> {
+  const summaryPath = taskSummaryPath(
+    artifactBasePath,
+    taskRow.milestone_id,
+    taskRow.slice_id,
+    taskRow.id,
+  );
+  const summaryMd = renderSummaryContent(taskRow, taskRow.slice_id, taskRow.milestone_id, []);
+  let stale = false;
+
+  try {
+    await saveFile(summaryPath, summaryMd);
+    await renderPlanCheckboxes(artifactBasePath, taskRow.milestone_id, taskRow.slice_id);
+  } catch (renderErr) {
+    stale = true;
+    logWarning(
+      "projection",
+      `complete_task missing-summary repair failed for ${taskRow.milestone_id}/${taskRow.slice_id}/${taskRow.id}`,
+      { error: (renderErr as Error).message },
+    );
+  }
+
+  invalidateStateCache();
+  clearPathCache();
+  clearParseCache();
+
+  try {
+    await flushWorkflowProjections(artifactBasePath, { milestoneId: taskRow.milestone_id });
+  } catch (projErr) {
+    logWarning("tool", `complete-task repair projection warning: ${(projErr as Error).message}`);
+  }
+  try {
+    writeManifest(artifactBasePath);
+  } catch (mfErr) {
+    logWarning("tool", `complete-task repair manifest warning: ${(mfErr as Error).message}`);
+  }
+
+  return { summaryPath, stale };
 }
 
 /**
@@ -199,6 +252,7 @@ export async function handleCompleteTask(
   const completedAt = new Date().toISOString();
   let guardError: string | null = null;
   let summaryMd = "";
+  let repairTaskSummaryRow: TaskRow | null = null;
 
   // ── ADR-011 Phase 2: validate escalation payload BEFORE any side effects ─
   // Building the artifact runs the full shape validation (2-4 options, unique
@@ -263,6 +317,17 @@ export async function handleCompleteTask(
         guardError = "__stale_duplicate__";
         return;
       }
+      const existingSummaryPath = taskSummaryPath(
+        artifactBasePath,
+        params.milestoneId,
+        params.sliceId,
+        params.taskId,
+      );
+      if (existingTask.full_summary_md.trim() && !existsSync(existingSummaryPath)) {
+        repairTaskSummaryRow = existingTask;
+        guardError = "__repair_missing_summary__";
+        return;
+      }
       guardError = `task ${params.taskId} is already complete — use gsd_task_reopen first if you need to redo it`;
       return;
     }
@@ -325,6 +390,18 @@ export async function handleCompleteTask(
       summaryPath: staleSummaryPath,
       duplicate: true,
       stale: true,
+    };
+  }
+
+  if (guardError === "__repair_missing_summary__" && repairTaskSummaryRow) {
+    const repair = await repairMissingTaskSummaryProjection(artifactBasePath, repairTaskSummaryRow);
+    return {
+      taskId: params.taskId,
+      sliceId: params.sliceId,
+      milestoneId: params.milestoneId,
+      summaryPath: repair.summaryPath,
+      duplicate: true,
+      ...(repair.stale ? { stale: true } : {}),
     };
   }
 
@@ -407,9 +484,18 @@ export async function handleCompleteTask(
   // overwrite it; gate rows are UPSERT-keyed per task and will also be
   // overwritten. This restores the invariant that deriveState() sees a
   // consistent "task not done" view so the loop re-dispatches the task.
+  let escalationMetadata: CompleteTaskResult["escalation"] | undefined;
   if (validatedEscalationArtifact) {
     try {
-      writeEscalationArtifact(artifactBasePath, validatedEscalationArtifact);
+      const escalationPath = writeEscalationArtifact(artifactBasePath, validatedEscalationArtifact);
+      escalationMetadata = {
+        artifactPath: escalationPath,
+        question: validatedEscalationArtifact.question,
+        options: validatedEscalationArtifact.options,
+        recommendation: validatedEscalationArtifact.recommendation,
+        recommendationRationale: validatedEscalationArtifact.recommendationRationale,
+        continueWithDefault: validatedEscalationArtifact.continueWithDefault,
+      };
     } catch (escalationErr) {
       const msg = `complete-task escalation write failed for ${params.milestoneId}/${params.sliceId}/${params.taskId}: ${(escalationErr as Error).message}`;
       logWarning("tool", msg);
@@ -435,6 +521,25 @@ export async function handleCompleteTask(
       }
     }
   } else if (params.escalation && !escalationWriteEnabled) {
+    if (params.escalation.continueWithDefault === false) {
+      const msg = `complete-task received a hard-blocker escalation (continueWithDefault=false) but phases.mid_execution_escalation is disabled for ${params.milestoneId}/${params.sliceId}/${params.taskId}; reverting to pending instead of silently advancing.`;
+      logWarning("tool", msg);
+      try {
+        deleteVerificationEvidence(params.milestoneId, params.sliceId, params.taskId);
+        updateTaskStatus(params.milestoneId, params.sliceId, params.taskId, 'pending');
+        invalidateStateCache();
+        logWarning(
+          "tool",
+          `complete-task rolled back DB completion for ${params.milestoneId}/${params.sliceId}/${params.taskId} because hard-blocker escalation handling is disabled; SUMMARY.md left on disk for retry.`,
+        );
+      } catch (rollbackErr) {
+        logWarning(
+          "tool",
+          `complete-task rollback failed after disabled hard-blocker escalation for ${params.milestoneId}/${params.sliceId}/${params.taskId}: ${(rollbackErr as Error).message}`,
+        );
+      }
+      return { error: msg };
+    }
     logWarning(
       "tool",
       `complete-task received escalation payload but phases.mid_execution_escalation is not enabled; ignoring (${params.milestoneId}/${params.sliceId}/${params.taskId})`,
@@ -450,7 +555,7 @@ export async function handleCompleteTask(
   // Separate try/catch per step so a projection failure doesn't prevent
   // the event log entry (critical for worktree reconciliation).
   try {
-    await renderAllProjections(artifactBasePath, params.milestoneId);
+    await flushWorkflowProjections(artifactBasePath, { milestoneId: params.milestoneId });
   } catch (projErr) {
     logWarning("tool", `complete-task projection warning: ${(projErr as Error).message}`);
   }
@@ -477,6 +582,7 @@ export async function handleCompleteTask(
     sliceId: params.sliceId,
     milestoneId: params.milestoneId,
     summaryPath,
+    ...(escalationMetadata ? { escalation: escalationMetadata } : {}),
     ...(projectionStale ? { stale: true } : {}),
   };
 }

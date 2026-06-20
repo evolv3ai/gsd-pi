@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { extractUatType } from '../../files.ts';
 import { resolveSliceFile } from '../../paths.ts';
 import { buildRunUatPrompt, checkNeedsRunUat } from '../../auto-prompts.ts';
+import { buildRunUatResultPresentation, RUN_UAT_TOOL_PRESENTATION_PLAN_ID } from '../../tool-presentation-plan.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const worktreePromptsDir = join(__dirname, '../..', 'prompts');
@@ -20,6 +21,8 @@ function loadPromptFromWorktree(name: string, vars: Record<string, string> = {})
   let content = readFileSync(path, 'utf-8');
   const effectiveVars = {
     skillActivation: 'If no installed skill clearly matches this unit, skip explicit skill activation and continue with the required workflow.',
+    canonicalPresentation: JSON.stringify(buildRunUatResultPresentation(), null, 2),
+    toolPresentationPlanId: RUN_UAT_TOOL_PRESENTATION_PLAN_ID,
     ...vars,
   };
   for (const [key, value] of Object.entries(effectiveVars)) {
@@ -68,6 +71,38 @@ function makeBrowserObservableUatContent(mode = 'artifact-driven'): string {
     '2. Add todos with distinct words',
     '3. Type into the search box',
     '4. Expected: only matching todos are visible',
+    '',
+  ].join('\n');
+}
+
+function makeDeferredBrowserUatContent(): string {
+  return [
+    '# UAT File',
+    '',
+    '## UAT Type',
+    '',
+    '- UAT mode: artifact-driven',
+    '- Why this mode is sufficient: Node interaction tests exercise the real app.js render/event/localStorage loop through a DOM harness. Live browser, keyboard, responsive, and visual-polish UAT remain intentionally deferred to S02.',
+    '',
+    '## Smoke Test',
+    '',
+    'Run `node --test tests/s01-static-interactions.test.js` and confirm all tests pass.',
+    '',
+    '## Test Cases',
+    '',
+    '1. Click the todo row edit control in the DOM harness.',
+    '2. Save changed text and reload/recreate the app from persisted localStorage.',
+    '3. Expected: the stored record shape remains unchanged.',
+    '',
+    '## Not Proven By This UAT',
+    '',
+    '- Final visual polish of edit controls.',
+    '- Keyboard usability through a real browser.',
+    '- Browser console and local network cleanliness.',
+    '',
+    '## Notes for Tester',
+    '',
+    'S02 should capture browser evidence for the full loop rather than changing this persisted model.',
     '',
   ].join('\n');
 }
@@ -232,8 +267,8 @@ test('(k) run-uat prompt template', () => {
     `prompt contains detected dynamic uatType value "${uatType}" after substitution`,
   );
   assert.ok(
-    promptResult?.includes(`uatType: ${uatType}`) ?? false,
-    `prompt contains dynamic uatType frontmatter value "${uatType}" after substitution`,
+    promptResult?.includes(`uatType: "${uatType}"`) ?? false,
+    `prompt contains dynamic uatType field "${uatType}" after substitution`,
   );
   assert.ok(
     !/\{\{[^}]+\}\}/.test(promptResult ?? ''),
@@ -249,7 +284,7 @@ test('(k) run-uat prompt template', () => {
   );
 });
 
-test('(k2) run-uat prompt references gsd_summary_save, not direct write', () => {
+test('(k2) run-uat prompt references gsd_uat_result_save, not direct write', () => {
   const promptResult = loadPromptFromWorktree('run-uat', {
     workingDirectory: '/tmp/test-project',
     milestoneId: 'M001',
@@ -261,17 +296,43 @@ test('(k2) run-uat prompt references gsd_summary_save, not direct write', () => 
   });
 
   assert.ok(
-    promptResult.includes('gsd_summary_save'),
-    'run-uat prompt should reference gsd_summary_save tool',
+    promptResult.includes('gsd_uat_result_save'),
+    'run-uat prompt should reference gsd_uat_result_save tool',
   );
   assert.ok(
-    promptResult.includes('artifact_type: "ASSESSMENT"'),
-    'run-uat prompt should specify ASSESSMENT artifact type',
+    promptResult.includes('presentedTools') && promptResult.includes('blockedTools'),
+    'run-uat prompt should specify the tool presentation contract',
+  );
+  assert.ok(
+    !promptResult.includes('Call `gsd_summary_save`'),
+    'run-uat prompt should not instruct direct summary-save UAT persistence',
   );
   assert.ok(
     !promptResult.includes('MUST write'),
     'run-uat prompt should not instruct direct file write in footer',
   );
+  assert.ok(
+    !promptResult.includes('Call `gsd_summary_save` with `artifact_type: "ASSESSMENT"`'),
+    'run-uat prompt should not instruct the legacy summary-save UAT path',
+  );
+});
+
+test('(k3) run-uat prompt warns that .gsd glob misses can be symlink traversal artifacts', async () => {
+  const base = createFixtureBase();
+  try {
+    const uatRel = '.gsd/milestones/M001/slices/S01/S01-UAT.md';
+    const uatContent = makeUatContent('runtime-executable');
+    writeSliceFile(base, 'M001', 'S01', 'UAT', uatContent);
+
+    const prompt = await buildRunUatPrompt('M001', 'S01', uatRel, uatContent, base);
+
+    assert.match(prompt, /\.gsd\/\*\*/);
+    assert.match(prompt, /symlink-backed/i);
+    assert.match(prompt, /do not infer that the GSD harness is missing/i);
+    assert.match(prompt, /use the preloaded UAT context/i);
+  } finally {
+    cleanup(base);
+  }
 });
 
 test('(l) dispatch preconditions via resolveSliceFile', () => {
@@ -482,8 +543,8 @@ test('(n) stale replay guard', async () => {
 });
 
 test('(q) verdict in ASSESSMENT file skips UAT dispatch (file-based path)', async () => {
-    // Regression test for #2644: run-uat prompt writes the verdict to
-    // S{sid}-ASSESSMENT.md (via gsd_summary_save artifact_type:"ASSESSMENT"),
+    // Regression test for #2644: run-uat writes the verdict to
+    // S{sid}-ASSESSMENT.md through the structured UAT save path,
     // but checkNeedsRunUat only checked S{sid}-UAT.md — causing a stuck loop.
     const base = createFixtureBase();
     try {
@@ -679,11 +740,229 @@ test('(u) run-uat prompt promotes artifact-driven browser specs to browser-execu
       const prompt = await buildRunUatPrompt('M001', 'S01', uatRel, uatContent, base);
 
       assert.match(prompt, /\*\*Detected UAT mode:\*\*\s*`browser-executable`/);
-      assert.match(prompt, /uatType: browser-executable/);
-      assert.match(prompt, /use gsd-browser tools/i);
+      assert.match(prompt, /uatType: "browser-executable"/);
+      assert.match(prompt, /use browser tools/i);
+      assert.match(prompt, /"browser_navigate"/);
+      assert.match(prompt, /"browser_assert"/);
     } finally {
       cleanup(base);
     }
 });
 
+test('(w) run-uat prompt promotes browser-executable harness specs to runtime-executable (M006/S01)', async () => {
+    const base = createFixtureBase();
+    try {
+      const uatRel = '.gsd/milestones/M006/slices/S01/S01-UAT.md';
+      const uatContent = [
+        '# S01 UAT',
+        '',
+        '## UAT Type',
+        '- UAT mode: browser-executable',
+        '',
+        '## Preconditions',
+        '- Start the local app server with `npm run start`.',
+        '- Open the app at `http://127.0.0.1:4173`.',
+        '',
+        '## Evidence',
+        '- Fresh closeout verification command: `npm run test:uat`',
+      ].join('\n');
+      writeSliceFile(base, 'M006', 'S01', 'UAT', uatContent);
+
+      const prompt = await buildRunUatPrompt('M006', 'S01', uatRel, uatContent, base);
+
+      assert.match(prompt, /\*\*Detected UAT mode:\*\*\s*`runtime-executable`/);
+      assert.match(prompt, /uatType: "runtime-executable"/);
+      assert.match(prompt, /Runtime harness override/i);
+      assert.match(prompt, /Do \*\*not\*\* call `uat-service-start`/);
+      assert.doesNotMatch(prompt, /uatType: "browser-executable"/);
+    } finally {
+      cleanup(base);
+    }
+});
+
+test('(w2) run-uat prompt promotes harness from slice context when UAT only names test:server (M007/S01)', async () => {
+    const base = createFixtureBase();
+    try {
+      const uatRel = '.gsd/milestones/M007/slices/S01/S01-UAT.md';
+      const uatContent = [
+        '# S01 UAT',
+        '',
+        '## UAT Type',
+        '- UAT mode: browser-executable',
+        '',
+        '## Preconditions',
+        '- Start the dev/local verification server with `npm run test:server`.',
+        '- Open the app at the localhost URL printed by the server.',
+      ].join('\n');
+      writeSliceFile(base, 'M007', 'S01', 'UAT', uatContent);
+      writeSliceFile(
+        base,
+        'M007',
+        'S01',
+        'SUMMARY',
+        [
+          '# S01 Summary',
+          '',
+          'Verification: `npm run test:uat` passed with clean browser diagnostics.',
+        ].join('\n'),
+      );
+
+      const prompt = await buildRunUatPrompt('M007', 'S01', uatRel, uatContent, base);
+
+      assert.match(prompt, /\*\*Detected UAT mode:\*\*\s*`runtime-executable`/);
+      assert.match(prompt, /Runtime harness override/i);
+      assert.match(prompt, /npm run test:server/);
+      assert.match(prompt, /uatType: "runtime-executable"/);
+    } finally {
+      cleanup(base);
+    }
+});
+
+test('(v) run-uat prompt keeps deferred browser work artifact-driven', async () => {
+    const base = createFixtureBase();
+    try {
+      const uatRel = '.gsd/milestones/M001/slices/S01/S01-UAT.md';
+      const uatContent = makeDeferredBrowserUatContent();
+      writeSliceFile(base, 'M001', 'S01', 'UAT', uatContent);
+
+      const prompt = await buildRunUatPrompt('M001', 'S01', uatRel, uatContent, base);
+
+      assert.match(prompt, /\*\*Detected UAT mode:\*\*\s*`artifact-driven`/);
+      assert.match(prompt, /uatType: "artifact-driven"/);
+      assert.doesNotMatch(prompt, /uatType: "browser-executable"/);
+      assert.doesNotMatch(prompt, /"browser_navigate"/);
+    } finally {
+      cleanup(base);
+    }
+});
+
+test('(x) checkNeedsRunUat returns runtime-executable when slice SUMMARY names a self-contained harness (M007/S01)', async () => {
+    // Regression: the dispatch gate must surface the same effective UAT mode
+    // that buildRunUatPrompt emits. When the UAT file alone declares
+    // `browser-executable` but the slice SUMMARY references `npm run test:uat`,
+    // the prompt promotes to `runtime-executable` — and so must the gate, or
+    // the auto-dispatch path requires browser tools / warms up the browser
+    // daemon (and may stop dispatch entirely) for a UAT that never touches
+    // the browser. See cursor[bot] review on PR #696.
+    const base = createFixtureBase();
+    try {
+      const roadmapDir = join(base, '.gsd', 'milestones', 'M007');
+      mkdirSync(roadmapDir, { recursive: true });
+      writeFileSync(
+        join(roadmapDir, 'M007-ROADMAP.md'),
+        [
+          '# M007: Test roadmap',
+          '',
+          '## Slices',
+          '',
+          '- [x] **S01: Only slice** `risk:low` `depends:[]`',
+          '',
+          '## Boundary Map',
+          '',
+        ].join('\n'),
+      );
+      writeSliceFile(
+        base,
+        'M007',
+        'S01',
+        'UAT',
+        [
+          '# S01 UAT',
+          '',
+          '## UAT Type',
+          '- UAT mode: browser-executable',
+          '',
+          '## Preconditions',
+          '- Start the dev/local verification server with `npm run test:server`.',
+        ].join('\n'),
+      );
+      writeSliceFile(
+        base,
+        'M007',
+        'S01',
+        'SUMMARY',
+        [
+          '# S01 Summary',
+          '',
+          'Verification: `npm run test:uat` passed with clean browser diagnostics.',
+        ].join('\n'),
+      );
+
+      const state = {
+        activeMilestone: { id: 'M007', title: 'Test roadmap' },
+        activeSlice: null,
+        activeTask: null,
+        phase: 'validating-milestone',
+        recentDecisions: [],
+        blockers: [],
+        nextAction: 'Validate M007',
+        registry: [],
+      } as const;
+
+      const result = await checkNeedsRunUat(base, 'M007', state as any, { uat_dispatch: true } as any);
+      assert.deepStrictEqual(
+        result,
+        { sliceId: 'S01', uatType: 'runtime-executable' },
+        'dispatch gate must mirror the prompt`s runtime-executable promotion so it does not require browser tools',
+      );
+    } finally {
+      cleanup(base);
+    }
+});
+
+test('(x2) checkNeedsRunUat leaves true browser-executable UAT unpromoted when no harness is referenced', async () => {
+    // Counter-test for (x): when the slice SUMMARY does NOT name a
+    // self-contained harness, the dispatch gate must still require browser
+    // tools for a genuinely browser-executable UAT.
+    const base = createFixtureBase();
+    try {
+      const roadmapDir = join(base, '.gsd', 'milestones', 'M008');
+      mkdirSync(roadmapDir, { recursive: true });
+      writeFileSync(
+        join(roadmapDir, 'M008-ROADMAP.md'),
+        [
+          '# M008: Test roadmap',
+          '',
+          '## Slices',
+          '',
+          '- [x] **S01: Only slice** `risk:low` `depends:[]`',
+          '',
+          '## Boundary Map',
+          '',
+        ].join('\n'),
+      );
+      writeSliceFile(base, 'M008', 'S01', 'UAT', makeBrowserObservableUatContent('browser-executable'));
+      writeSliceFile(
+        base,
+        'M008',
+        'S01',
+        'SUMMARY',
+        [
+          '# S01 Summary',
+          '',
+          'Verification: clicked through the UI and confirmed the search box filters todos.',
+        ].join('\n'),
+      );
+
+      const state = {
+        activeMilestone: { id: 'M008', title: 'Test roadmap' },
+        activeSlice: null,
+        activeTask: null,
+        phase: 'validating-milestone',
+        recentDecisions: [],
+        blockers: [],
+        nextAction: 'Validate M008',
+        registry: [],
+      } as const;
+
+      const result = await checkNeedsRunUat(base, 'M008', state as any, { uat_dispatch: true } as any);
+      assert.deepStrictEqual(
+        result,
+        { sliceId: 'S01', uatType: 'browser-executable' },
+        'a true browser-executable UAT without a harness reference must keep its browser-executable mode',
+      );
+    } finally {
+      cleanup(base);
+    }
+});
 });

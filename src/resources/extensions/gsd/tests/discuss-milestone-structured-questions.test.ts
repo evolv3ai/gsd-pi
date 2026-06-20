@@ -44,14 +44,26 @@ function setGsdHeadless(t: { after: (fn: () => void) => void }): void {
   });
 }
 
+function unsetGsdHeadless(t: { after: (fn: () => void) => void }): void {
+  const previous = process.env.GSD_HEADLESS;
+  delete process.env.GSD_HEADLESS;
+  t.after(() => {
+    if (previous === undefined) delete process.env.GSD_HEADLESS;
+    else process.env.GSD_HEADLESS = previous;
+  });
+}
+
 test("auto-dispatch passes structuredQuestionsAvailable=true into discuss-milestone prompt", async (t) => {
   const tmp = mkdtempSync(join(tmpdir(), "gsd-discuss-milestone-structured-"));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  unsetGsdHeadless(t);
 
   const result = await resolveDispatch(makeContext(tmp, "needs-discussion", "true"));
 
   assert.equal(result.action, "dispatch");
   assert.equal(result.unitType, "discuss-milestone");
+  assert.equal(result.pauseAfterDispatch, true);
   assert.match(
     result.prompt,
     /\*\*Structured questions available: true\*\*/,
@@ -62,10 +74,13 @@ test("auto-dispatch preserves structuredQuestionsAvailable=false for discuss-mil
   const tmp = mkdtempSync(join(tmpdir(), "gsd-discuss-milestone-plain-"));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
 
+  unsetGsdHeadless(t);
+
   const result = await resolveDispatch(makeContext(tmp, "pre-planning", "false"));
 
   assert.equal(result.action, "dispatch");
   assert.equal(result.unitType, "discuss-milestone");
+  assert.equal(result.pauseAfterDispatch, true);
   assert.match(
     result.prompt,
     /\*\*Structured questions available: false\*\*/,
@@ -82,6 +97,7 @@ test("auto-dispatch uses discuss-headless prompt when GSD_HEADLESS is set", asyn
 
   assert.equal(result.action, "dispatch");
   assert.equal(result.unitType, "discuss-milestone");
+  assert.equal(result.pauseAfterDispatch, false);
   assert.match(result.prompt, /This is a \*\*headless\*\* flow/);
   assert.doesNotMatch(result.prompt, /\*\*Structured questions available: true\*\*/);
 });
@@ -96,8 +112,22 @@ test("auto-dispatch uses discuss-headless prompt for needs-discussion when GSD_H
 
   assert.equal(result.action, "dispatch");
   assert.equal(result.unitType, "discuss-milestone");
+  assert.equal(result.pauseAfterDispatch, false);
   assert.match(result.prompt, /This is a \*\*headless\*\* flow/);
   assert.doesNotMatch(result.prompt, /\*\*Structured questions available: true\*\*/);
+});
+
+test("auto-dispatch pauses after execution-entry discuss-milestone recovery", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-discuss-milestone-executing-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  unsetGsdHeadless(t);
+
+  const result = await resolveDispatch(makeContext(tmp, "executing", "true"));
+
+  assert.equal(result.action, "dispatch");
+  assert.equal(result.unitType, "discuss-milestone");
+  assert.equal(result.pauseAfterDispatch, true);
 });
 
 test("auto-dispatch uses discuss-headless prompt for executing when GSD_HEADLESS is set", async (t) => {
@@ -110,6 +140,7 @@ test("auto-dispatch uses discuss-headless prompt for executing when GSD_HEADLESS
 
   assert.equal(result.action, "dispatch");
   assert.equal(result.unitType, "discuss-milestone");
+  assert.equal(result.pauseAfterDispatch, false);
   assert.match(result.prompt, /This is a \*\*headless\*\* flow/);
   assert.doesNotMatch(result.prompt, /\*\*Structured questions available: true\*\*/);
 });

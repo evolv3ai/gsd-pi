@@ -13,6 +13,7 @@ initTheme("dark", false);
 
 describe("chatTurnFollowsUser", () => {
 	test("treats tool rows after a user message as part of the pending assistant turn", () => {
+		// Variant A plain transcript does not use connected rails — chatTurnFollowsUser is a no-op.
 		const tool = new ToolExecutionComponent(
 			"read",
 			{ path: "README.md" },
@@ -21,7 +22,7 @@ describe("chatTurnFollowsUser", () => {
 			{ requestRender() {} } as any,
 		);
 
-		assert.equal(chatTurnFollowsUser([new UserMessageComponent("Inspect this"), tool]), true);
+		assert.equal(chatTurnFollowsUser([new UserMessageComponent("Inspect this"), tool]), false);
 	});
 
 	test("does not bridge past a previous assistant-like message", () => {

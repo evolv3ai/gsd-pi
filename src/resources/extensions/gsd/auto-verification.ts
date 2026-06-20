@@ -15,18 +15,16 @@
 
 import type { ExtensionContext, ExtensionAPI } from "@gsd/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { gsdProjectionRoot, resolveSliceFile, resolveSlicePath, resolveMilestoneFile } from "./paths.js";
+import { gsdProjectionRoot, resolveSliceFile, resolveSlicePath } from "./paths.js";
+import { resolveMilestoneValidationVerdict } from "./milestone-validation-verdict.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
 import { parseUnitId } from "./unit-id.js";
 import { isDbAvailable, getTask, getSliceTasks, getMilestoneSlices } from "./gsd-db.js";
 import type { TaskRow } from "./db-task-slice-rows.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 import type { GSDPreferences } from "./preferences-types.js";
-import { extractVerdict } from "./verdict-parser.js";
 import { isClosedStatus } from "./status-guards.js";
 import { loadFile } from "./files.js";
-import { parseRoadmap } from "./parsers-legacy.js";
-import { isMilestoneComplete } from "./state.js";
 import {
   runVerificationGate,
   runVerificationGateForTargets,
@@ -52,6 +50,7 @@ import { getSlice } from "./gsd-db.js";
 import { getLedger } from "./metrics.js";
 import { getUnitCostSpikeAction, resolveUnitCostSpikeMultiplier } from "./auto-budget.js";
 import { formatPostUnitStatusCard } from "./auto-status-message.js";
+import { detectWebApp } from "./web-app-uat.js";
 
 export interface VerificationContext {
   s: AutoSession;
@@ -269,18 +268,8 @@ async function runValidateMilestonePostCheck(
     mid,
     `${mid}-VALIDATION.md`,
   );
-  if (!validationFile) {
-    if (await reassessmentInvalidatedValidation()) {
-      clearValidationRetry();
-      return "continue";
-    }
-    return setToolFailureRetry(
-      "You must call gsd_validate_milestone to persist the validation results. No VALIDATION.md was created.",
-    );
-  }
-
   const validationContent = await loadFile(validationFile);
-  if (!validationContent) {
+  if (validationContent !== null && validationContent.trim() === "") {
     if (await reassessmentInvalidatedValidation()) {
       clearValidationRetry();
       return "continue";
@@ -290,7 +279,16 @@ async function runValidateMilestonePostCheck(
     );
   }
 
-  const verdict = extractVerdict(validationContent);
+  const verdict = await resolveMilestoneValidationVerdict(s.basePath, mid);
+  if (!verdict) {
+    if (await reassessmentInvalidatedValidation()) {
+      clearValidationRetry();
+      return "continue";
+    }
+    return setToolFailureRetry(
+      "You must call gsd_validate_milestone to persist the validation results. No VALIDATION.md was created.",
+    );
+  }
   if (verdict === "needs-attention") {
     ctx.ui.notify(
       `Milestone ${mid} validation returned verdict=needs-attention. Pausing for human review.`,
@@ -374,29 +372,13 @@ async function runValidateMilestonePostCheck(
  * DB-backed projects are authoritative (#4094 peer review); falls back to
  * roadmap parsing only when the DB is unavailable.
  */
-async function countIncompleteSlices(basePath: string, milestoneId: string): Promise<number> {
-  if (isDbAvailable()) {
-    const slices = getMilestoneSlices(milestoneId);
-    if (slices.length === 0) {
-      // No DB rows — treat as "unknown", do not pause.
-      return 1;
-    }
-    return slices.filter((slice) => !isClosedStatus(slice.status)).length;
-  }
-
-  // Filesystem fallback: parse the roadmap markdown.
-  try {
-    const roadmapFile = resolveMilestoneFile(basePath, milestoneId, "ROADMAP");
-    if (!roadmapFile) return 1;
-    const roadmapContent = await loadFile(roadmapFile);
-    if (!roadmapContent) return 1;
-    const roadmap = parseRoadmap(roadmapContent);
-    if (roadmap.slices.length === 0) return 1;
-    return isMilestoneComplete(roadmap) ? 0 : 1;
-  } catch {
-    // Parsing failures should not cause false-positive pauses.
-    return 1;
-  }
+async function countIncompleteSlices(_basePath: string, milestoneId: string): Promise<number> {
+  // DB-authoritative (ADR-017): no markdown fallback. DB unavailable or no
+  // rows means "unknown" — do not pause.
+  if (!isDbAvailable()) return 1;
+  const slices = getMilestoneSlices(milestoneId);
+  if (slices.length === 0) return 1;
+  return slices.filter((slice) => !isClosedStatus(slice.status)).length;
 }
 
 /**
@@ -806,17 +788,32 @@ export async function runPostUnitVerification(
       s.verificationRetryFailureHashes.delete(retryKey);
       s.pendingVerificationRetry = null;
       return "continue";
-    } else if (verdict.reason === "no-host-checks") {
+    } else if (
+      verdict.reason === "no-host-checks" &&
+      taskAlreadyComplete &&
+      detectWebApp(s.basePath) &&
+      !result.runtimeErrors?.some((e) => e.blocking)
+    ) {
       s.verificationRetryCount.delete(retryKey);
       s.verificationRetryFailureHashes.delete(retryKey);
       s.pendingVerificationRetry = null;
       ctx.ui.notify(
-        "Verification gate FAILED — no runnable host-owned verification checks were discovered. Pausing for human review.",
+        "No task-level host verification command was found for a completed browser-facing task; continuing so slice UAT can verify the UI with browser tools.",
+        "warning",
+      );
+      return "continue";
+    } else if (verdict.reason === "no-host-checks") {
+      s.verificationRetryCount.delete(retryKey);
+      s.verificationRetryFailureHashes.delete(retryKey);
+      s.pendingVerificationRetry = null;
+      const pauseMessage = `Verification failed: ${verdict.failureContext}`;
+      ctx.ui.notify(
+        `Verification gate FAILED — ${verdict.failureContext}`,
         "error",
       );
       process.stderr.write(`verification-gate: ${verdict.failureContext}\n`);
       await pauseAuto(ctx, pi, {
-        message: "Verification failed: no runnable host-owned verification checks were discovered.",
+        message: pauseMessage,
         category: "unknown",
       });
       return "pause";

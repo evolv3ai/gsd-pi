@@ -10,6 +10,7 @@ import { runTurnGitAction, type TurnGitActionMode, type TurnGitActionResult } fr
 import { _getAdapter, upsertTurnGitTransaction } from "./gsd-db.js";
 import { probeGitConflictState } from "./git-conflict-state.js";
 import { parseUnitId } from "./unit-id.js";
+import { worktreePathFor } from "./worktree-placement.js";
 
 export interface CloseoutFailureRecord {
   traceId: string;
@@ -156,7 +157,7 @@ export function resolveCloseoutRecoveryBasePath(projectRoot: string, record: Clo
   const parsed = parseUnitId(record.unitId);
   const milestoneId = parsed.milestone ?? (/^M\d+(?:-[a-z0-9]{6})?/.exec(record.unitId)?.[0] ?? "");
   if (milestoneId) {
-    const worktreePath = existingRealPath(join(projectRoot, ".gsd", "worktrees", milestoneId));
+    const worktreePath = existingRealPath(worktreePathFor(projectRoot, milestoneId));
     if (worktreePath) return worktreePath;
   }
 

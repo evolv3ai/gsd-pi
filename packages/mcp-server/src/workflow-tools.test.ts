@@ -21,9 +21,11 @@ import {
   insertSlice,
   openDatabase,
   upsertMilestonePlanning,
-} from "../../../src/resources/extensions/gsd/gsd-db.ts";
+} from "../../../src/resources/extensions/gsd/mcp-bridge.ts";
+import { createMemory } from "../../../src/resources/extensions/gsd/memory-store.ts";
 import { buildReassessRoadmapPrompt } from "../../../src/resources/extensions/gsd/auto-prompts.ts";
 import { invalidateAllCaches } from "../../../src/resources/extensions/gsd/cache.ts";
+import { resolveToolPresentationPlan } from "../../../src/resources/extensions/gsd/tool-presentation-plan.ts";
 import {
   _buildBridgeImportCandidates,
   _buildImportCandidates,
@@ -32,6 +34,8 @@ import {
   CANONICAL_WORKFLOW_TOOL_NAMES,
   WORKFLOW_TOOL_ALIAS_NAMES,
   validateProjectDir,
+  _parseWorkflowArgsForTest,
+  _sliceCompleteSchemaForTest,
 } from "./workflow-tools.ts";
 
 function makeTmpBase(): string {
@@ -153,6 +157,19 @@ function assertToolError(result: unknown, expected: RegExp | string): string {
   return text;
 }
 
+function runUatMcpPresentation() {
+  const plan = resolveToolPresentationPlan({
+    phase: "run-uat",
+    surface: "mcp",
+    workflowMcpServerName: "gsd-workflow",
+  });
+  return {
+    surface: plan.surface,
+    presentedTools: plan.presentedToolNames,
+    blockedTools: plan.blockedToolNames,
+  };
+}
+
 function cacheBustedWorkflowToolsImport(tag: string): string {
   const extension = import.meta.url.includes("/dist-test/") ? "js" : "ts";
   return `./workflow-tools.${extension}?${tag}=${randomUUID()}`;
@@ -167,6 +184,32 @@ process.env.GSD_WORKFLOW_WRITE_GATE_MODULE ??= fileURLToPath(new URL(
   `../../../src/resources/extensions/gsd/bootstrap/write-gate.${workflowBridgeExtension}`,
   import.meta.url,
 ));
+
+describe("warmWorkflowToolBridges", () => {
+  it("resolves when the executor and write-gate bridges load and shape-check", async () => {
+    const { warmWorkflowToolBridges: freshWarm } = await import(
+      cacheBustedWorkflowToolsImport("warm-ok")
+    );
+    await freshWarm();
+  });
+
+  it("rejects with an actionable error when the executor module config is broken", async () => {
+    const prevModule = process.env.GSD_WORKFLOW_EXECUTORS_MODULE;
+    try {
+      process.env.GSD_WORKFLOW_EXECUTORS_MODULE = "data:text/javascript,export default {}";
+      const { warmWorkflowToolBridges: freshWarm } = await import(
+        cacheBustedWorkflowToolsImport("warm-broken")
+      );
+      await assert.rejects(freshWarm(), /only supports file: URLs or filesystem paths/);
+    } finally {
+      if (prevModule === undefined) {
+        delete process.env.GSD_WORKFLOW_EXECUTORS_MODULE;
+      } else {
+        process.env.GSD_WORKFLOW_EXECUTORS_MODULE = prevModule;
+      }
+    }
+  });
+});
 
 describe("workflow MCP tools", () => {
   it("registers the full headless-safe workflow tool surface", () => {
@@ -244,6 +287,38 @@ describe("workflow MCP tools", () => {
       const walSizeAfter = existsSync(walPath) ? statSync(walPath).size : 0;
       assert.equal(walSizeAfter, 0, "WAL file should be truncated to 0 after MCP checkpoint");
     } finally {
+      cleanup(base);
+    }
+  });
+
+  it("gsd_memory_query opens the project DB when invoked from a GSD worktree without projectDir", async () => {
+    const base = makeTmpBase();
+    const dbPath = join(base, ".gsd", "gsd.db");
+    const worktree = join(base, ".gsd-worktrees", "M001");
+    const originalCwd = process.cwd();
+    try {
+      openDatabase(dbPath);
+      createMemory({
+        category: "gotcha",
+        content: "worktree memory query should use the project database",
+        confidence: 0.9,
+      });
+      closeDatabase();
+
+      mkdirSync(join(worktree, ".gsd"), { recursive: true });
+      writeFileSync(join(worktree, ".git"), `gitdir: ${join(base, ".git", "worktrees", "M001")}\n`, "utf-8");
+      const server = makeMockServer();
+      registerWorkflowTools(server as any);
+      const tool = server.tools.find((t) => t.name === "gsd_memory_query");
+      assert.ok(tool, "gsd_memory_query should be registered");
+
+      process.chdir(worktree);
+      const result = await tool.handler({ query: "worktree memory" });
+      const record = result as { isError?: boolean; content?: Array<{ text?: string }> };
+      assert.notEqual(record.isError, true, record.content?.[0]?.text ?? "memory query should not fail");
+      assert.match(record.content?.[0]?.text ?? "", /worktree memory query should use the project database/);
+    } finally {
+      process.chdir(originalCwd);
       cleanup(base);
     }
   });
@@ -351,6 +426,201 @@ describe("workflow MCP tools", () => {
       assert.equal(record.isError, false);
       assert.equal(record.structuredContent.runtime, "bash");
       assert.match(record.content[0].text as string, /mcp-command-alias-defaults-to-bash/);
+    } finally {
+      cleanup(base);
+    }
+  });
+
+  it("gsd_uat_exec records typed UAT metadata and blocks unsafe UAT commands", async () => {
+    const base = makeTmpBase();
+    const originalCwd = process.cwd();
+    try {
+      seedContextModeFixture(base);
+      const server = makeMockServer();
+      registerWorkflowTools(server as any);
+      const tool = server.tools.find((t) => t.name === "gsd_uat_exec");
+      assert.ok(tool, "UAT exec tool should be registered");
+
+      const result = await tool!.handler({
+        projectDir: base,
+        milestoneId: "M001",
+        sliceId: "S01",
+        checkId: "UAT-01",
+        intent: "uat-runtime-check",
+        command: "echo UAT_OK",
+        expected: "UAT_OK appears in stdout",
+      });
+
+      const record = result as any;
+      assert.equal(record.isError, false);
+      assert.equal(record.structuredContent.operation, "gsd_uat_exec");
+      assert.equal(record.structuredContent.milestoneId, "M001");
+      assert.equal(record.structuredContent.sliceId, "S01");
+      assert.equal(record.structuredContent.checkId, "UAT-01");
+      assert.equal(record.structuredContent.intent, "uat-runtime-check");
+      assert.equal(typeof record.structuredContent.id, "string");
+      assert.ok(existsSync(record.structuredContent.meta_path), "meta should be persisted");
+      const meta = JSON.parse(readFileSync(record.structuredContent.meta_path, "utf-8")) as {
+        metadata?: Record<string, unknown>;
+      };
+      assert.deepEqual(meta.metadata, {
+        kind: "uat_exec",
+        milestoneId: "M001",
+        sliceId: "S01",
+        checkId: "UAT-01",
+        intent: "uat-runtime-check",
+        expected: "UAT_OK appears in stdout",
+      });
+      assert.equal(process.cwd(), originalCwd, "gsd_uat_exec must not mutate process.cwd");
+
+      const blocked = await tool!.handler({
+        projectDir: base,
+        milestoneId: "M001",
+        sliceId: "S01",
+        checkId: "UAT-02",
+        intent: "uat-runtime-check",
+        command: "npm install left-pad",
+      });
+      assertToolError(blocked, /blocked command/);
+      assert.equal((blocked as any).structuredContent.operation, "gsd_uat_exec");
+      assert.equal((blocked as any).structuredContent.error, "uat_exec_policy_block");
+    } finally {
+      cleanup(base);
+    }
+  });
+
+  it("gsd_uat_result_save validates evidence and persists aggregate UAT gate state", async () => {
+    const base = makeTmpBase();
+    try {
+      seedContextModeFixture(base);
+      const server = makeMockServer();
+      registerWorkflowTools(server as any);
+      const execTool = server.tools.find((t) => t.name === "gsd_uat_exec");
+      const saveTool = server.tools.find((t) => t.name === "gsd_uat_result_save");
+      assert.ok(execTool, "UAT exec tool should be registered");
+      assert.ok(saveTool, "UAT result tool should be registered");
+
+      const execResult = await execTool!.handler({
+        projectDir: base,
+        milestoneId: "M001",
+        sliceId: "S01",
+        checkId: "UAT-01",
+        intent: "uat-runtime-check",
+        command: "echo UAT_RESULT_OK",
+      });
+      const evidenceId = (execResult as any).structuredContent.id;
+      assert.equal(typeof evidenceId, "string");
+
+      const invalidPresentation = runUatMcpPresentation();
+      invalidPresentation.presentedTools = invalidPresentation.presentedTools.filter(
+        (toolName) => !toolName.endsWith("__gsd_journal_query"),
+      );
+      const missingPresentedTool = await saveTool!.handler({
+        projectDir: base,
+        milestoneId: "M001",
+        sliceId: "S01",
+        uatType: "runtime-executable",
+        verdict: "PASS",
+        checks: [{
+          id: "UAT-01",
+          description: "Runtime check has evidence",
+          mode: "runtime",
+          result: "PASS",
+          evidence: [{ kind: "gsd_uat_exec", ref: evidenceId }],
+        }],
+        presentation: invalidPresentation,
+      });
+      assertToolError(missingPresentedTool, /missing required UAT tool "gsd_journal_query"/);
+
+      const incompletePresentation = await saveTool!.handler({
+        projectDir: base,
+        milestoneId: "M001",
+        sliceId: "S01",
+        uatType: "runtime-executable",
+        verdict: "PASS",
+        checks: [{
+          id: "UAT-01",
+          description: "Runtime check has evidence",
+          mode: "runtime",
+          result: "PASS",
+          evidence: [{ kind: "gsd_uat_exec", ref: evidenceId }],
+        }],
+        presentation: {
+          surface: "mcp",
+          presentedTools: ["gsd_uat_exec", "gsd_uat_result_save"],
+          blockedTools: [],
+        },
+      });
+      const incompletePresentationText = assertToolError(incompletePresentation, /missing required UAT tools/);
+      assert.match(incompletePresentationText, /"gsd_resume", "gsd_milestone_status", "gsd_journal_query"/);
+      assert.match(incompletePresentationText, /"gsd_exec", "gsd_summary_save", "gsd_save_gate_result" as blocked during run-uat/);
+
+      const missingEvidence = await saveTool!.handler({
+        projectDir: base,
+        milestoneId: "M001",
+        sliceId: "S01",
+        uatType: "runtime-executable",
+        verdict: "PASS",
+        checks: [{
+          id: "UAT-01",
+          description: "Runtime check has evidence",
+          mode: "runtime",
+          result: "PASS",
+          evidence: [],
+        }],
+        presentation: runUatMcpPresentation(),
+      });
+      assertToolError(missingEvidence, /objective evidence/);
+
+      const result = await saveTool!.handler({
+        projectDir: base,
+        milestoneId: "M001",
+        sliceId: "S01",
+        uatType: "runtime-executable",
+        verdict: "PASS",
+        checks: [{
+          id: "UAT-01",
+          description: "Runtime check has evidence",
+          mode: "runtime",
+          result: "PASS",
+          evidence: [{ kind: "gsd_uat_exec", ref: evidenceId }],
+          notes: "Command produced the expected marker.",
+        }],
+        presentation: runUatMcpPresentation(),
+        notes: "UAT passed with objective runtime evidence.",
+      });
+
+      const record = result as any;
+      assert.equal(record.isError, undefined);
+      assert.equal(record.structuredContent.operation, "save_uat_result");
+      assert.equal(record.structuredContent.verdict, "PASS");
+      assert.equal(record.structuredContent.gateVerdict, "pass");
+      assert.equal(record.structuredContent.attempt, 1);
+      assert.equal(record.structuredContent.recommendedNextUnit, null);
+      assert.ok(
+        existsSync(join(base, ".gsd", record.structuredContent.attemptPath)),
+        "attempt JSON should be persisted",
+      );
+      assert.ok(
+        existsSync(join(base, ".gsd", "milestones", "M001", "slices", "S01", "S01-ASSESSMENT.md")),
+        "ASSESSMENT artifact should be persisted",
+      );
+
+      const gateRow = _getAdapter()!.prepare(
+        "SELECT status, verdict, rationale FROM quality_gates WHERE milestone_id = ? AND slice_id = ? AND gate_id = ? AND task_id = ''",
+      ).get("M001", "S01", "UAT") as Record<string, unknown> | undefined;
+      assert.ok(gateRow, "aggregate UAT quality gate row should exist");
+      assert.equal(gateRow["status"], "complete");
+      assert.equal(gateRow["verdict"], "pass");
+
+      const gateRun = _getAdapter()!.prepare(
+        "SELECT gate_type, unit_type, outcome, failure_class FROM gate_runs WHERE milestone_id = ? AND slice_id = ? AND gate_id = ?",
+      ).get("M001", "S01", "UAT") as Record<string, unknown> | undefined;
+      assert.ok(gateRun, "UAT gate run should be recorded");
+      assert.equal(gateRun["gate_type"], "uat");
+      assert.equal(gateRun["unit_type"], "run-uat");
+      assert.equal(gateRun["outcome"], "pass");
+      assert.equal(gateRun["failure_class"], "none");
     } finally {
       cleanup(base);
     }
@@ -1071,6 +1341,7 @@ export const executeValidateMilestone = noop;
 export const executeReassessRoadmap = noop;
 export const executeSaveGateResult = noop;
 export const executeSummarySave = noop;
+export const executeUatResultSave = noop;
 export const executeTaskReopen = noop;
 export const executeSliceReopen = noop;
 export const executeMilestoneReopen = noop;
@@ -1249,8 +1520,8 @@ export const executeTaskComplete = async (params, projectDir) => {
             estimate: "15m",
             files: ["src/resources/extensions/gsd/tools/workflow-tool-executors.ts"],
             verify: "node --test",
-            inputs: [".gsd/milestones/M001/M001-ROADMAP.md"],
-            expectedOutput: ["S01-PLAN.md", "T01-PLAN.md"],
+            inputs: [],
+            expectedOutput: ["src/bridge-status.md"],
           },
         ],
       });
@@ -2009,6 +2280,19 @@ export const executeTaskComplete = async (params, projectDir) => {
     }
   });
 
+  it("gsd_slice_complete accepts omitted verification at the schema layer", () => {
+    const parsed = _parseWorkflowArgsForTest(_sliceCompleteSchemaForTest, {
+      projectDir: join(tmpdir(), "gsd-slice-complete-schema"),
+      sliceId: "S01",
+      milestoneId: "M001",
+      sliceTitle: "Test slice",
+      oneLiner: "Did the thing",
+      narrative: "We did it step by step.",
+      uatContent: "## UAT\n- [x] Works",
+    });
+    assert.equal(parsed.verification, undefined);
+  });
+
   it("gsd_validate_milestone and gsd_milestone_complete work end-to-end", async () => {
     const base = makeTmpBase();
     try {
@@ -2185,8 +2469,8 @@ export const executeTaskComplete = async (params, projectDir) => {
             estimate: "10m",
             files: ["packages/mcp-server/src/workflow-tools.ts"],
             verify: "node --test",
-            inputs: ["M006-ROADMAP.md"],
-            expectedOutput: ["S06-ASSESSMENT.md", "M006-ROADMAP.md"],
+            inputs: [],
+            expectedOutput: ["src/gate-seed.md"],
           },
         ],
       });

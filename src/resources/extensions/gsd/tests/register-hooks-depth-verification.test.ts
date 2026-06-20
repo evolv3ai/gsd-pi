@@ -1,16 +1,32 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { registerHooks } from "../bootstrap/register-hooks.ts";
 import {
+  clearPendingAutoStart,
+  setPendingAutoStart,
+} from "../guided-flow.ts";
+import { closeDatabase, getMilestone } from "../gsd-db.ts";
+import { deriveState, invalidateStateCache } from "../state.ts";
+import {
   getPendingGate,
+  loadWriteGateSnapshot,
+  markApprovalGateVerified,
+  markDepthVerified,
   resetWriteGateState,
+  setPendingGate,
   shouldBlockContextArtifactSave,
 } from "../bootstrap/write-gate.ts";
+import { classifyCommand } from "../safety/destructive-guard.ts";
 import { toRoundResultResponse } from "../../remote-questions/manager.ts";
+import {
+  markInteractiveElicitationStart,
+  markInteractiveElicitationEnd,
+  clearInFlightTools,
+} from "../auto-tool-tracking.ts";
 
 function makeTempDir(prefix: string): string {
   const dir = join(
@@ -34,6 +50,84 @@ async function armDepthGate(
     await handler({ toolName, args: input });
   }
 }
+
+test("destructive guard classifies infrastructure mutation commands", () => {
+  assert.deepEqual(classifyCommand("terraform destroy -auto-approve").labels, ["IaC apply/destroy"]);
+  assert.deepEqual(classifyCommand("terragrunt apply").labels, ["IaC apply/destroy"]);
+  assert.deepEqual(classifyCommand("aws s3 delete-bucket --bucket example").labels, ["AWS mutation"]);
+  assert.deepEqual(classifyCommand("kubectl delete namespace prod").labels, ["kubectl mutation"]);
+});
+
+test("register-hooks hard-blocks destructive bash commands outside auto-mode", async () => {
+  const handlers = new Map<string, Array<(event: any, ctx?: any) => Promise<any> | any>>();
+  const pi = {
+    on(event: string, handler: (event: any, ctx?: any) => Promise<any> | any) {
+      const existing = handlers.get(event) ?? [];
+      existing.push(handler);
+      handlers.set(event, existing);
+    },
+  } as any;
+
+  registerHooks(pi, []);
+
+  let block: any;
+  for (const handler of handlers.get("tool_call") ?? []) {
+    const result = await handler({
+      toolCallId: "call-1",
+      toolName: "bash",
+      input: { command: "terraform apply -auto-approve" },
+    });
+    if (result?.block) block = result;
+  }
+
+  assert.equal(block?.block, true);
+  assert.match(block?.reason ?? "", /HARD BLOCK: destructive Bash command requires explicit human confirmation/);
+  assert.match(block?.reason ?? "", /IaC apply\/destroy/);
+});
+
+test("register-hooks keeps depth-gate reason model-facing and adds displayReason", async (t) => {
+  const dir = makeTempDir("display-reason");
+  const originalCwd = process.cwd();
+  process.chdir(dir);
+  resetWriteGateState(dir);
+
+  t.after(() => {
+    try {
+      resetWriteGateState(dir);
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  const handlers = new Map<string, Array<(event: any, ctx?: any) => Promise<any> | any>>();
+  const pi = {
+    on(event: string, handler: (event: any, ctx?: any) => Promise<any> | any) {
+      const existing = handlers.get(event) ?? [];
+      existing.push(handler);
+      handlers.set(event, existing);
+    },
+  } as any;
+
+  registerHooks(pi, []);
+
+  let block: any;
+  for (const handler of handlers.get("tool_call") ?? []) {
+    const result = await handler({
+      toolName: "write",
+      input: {
+        path: join(dir, ".gsd", "milestones", "M001", "M001-CONTEXT.md"),
+        content: "# M001 Context\n",
+      },
+    });
+    if (result?.block) block = result;
+  }
+
+  assert.equal(block?.block, true);
+  assert.match(block?.reason ?? "", /HARD BLOCK: Cannot write to milestone CONTEXT\.md/);
+  assert.match(block?.reason ?? "", /ask_user_questions/);
+  assert.equal(block?.displayReason, "Depth check required before writing milestone context.");
+});
 
 test("register-hooks unlocks milestone depth verification from question id without guided-flow state (#4047)", async (t) => {
   const dir = makeTempDir("manual");
@@ -105,6 +199,100 @@ test("register-hooks unlocks milestone depth verification from question id witho
     false,
     "question-id milestone inference should unlock the matching milestone context write",
   );
+});
+
+test("register-hooks persists first structured question round for new milestone re-entry", async (t) => {
+  const dir = makeTempDir("question-draft");
+  mkdirSync(join(dir, ".gsd", "milestones"), { recursive: true });
+  const originalCwd = process.cwd();
+  process.chdir(dir);
+  resetWriteGateState(dir);
+  clearPendingAutoStart(dir);
+
+  t.after(() => {
+    try {
+      resetWriteGateState(dir);
+      clearPendingAutoStart(dir);
+      closeDatabase();
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  const handlers = new Map<string, Array<(event: any, ctx?: any) => Promise<void> | void>>();
+  const pi = {
+    on(event: string, handler: (event: any, ctx?: any) => Promise<void> | void) {
+      const existing = handlers.get(event) ?? [];
+      existing.push(handler);
+      handlers.set(event, existing);
+    },
+  } as any;
+  const ctx = { cwd: dir, ui: { notify: () => undefined } } as any;
+
+  registerHooks(pi, []);
+  setPendingAutoStart(dir, {
+    basePath: dir,
+    milestoneId: "M004",
+    ctx,
+    pi: { sendMessage: () => undefined } as any,
+  });
+
+  const questions = [
+    {
+      id: "m004_shape",
+      header: "M004 Shape",
+      question: "What are you picturing for M004?",
+      options: [
+        { label: "Planning metadata (Recommended)", description: "Plan the next metadata layer." },
+        { label: "Find and organize", description: "Improve searching and organizing." },
+      ],
+    },
+    {
+      id: "boundary",
+      header: "Boundary",
+      question: "Which boundary should I plan around?",
+      options: [
+        { label: "No new dependencies (Recommended)", description: "Keep implementation vanilla." },
+        { label: "Browser APIs OK", description: "Use browser-native capabilities." },
+      ],
+    },
+  ];
+
+  for (const handler of handlers.get("tool_result") ?? []) {
+    await handler({
+      toolName: "ask_user_questions",
+      input: { questions },
+      details: {
+        response: {
+          answers: {
+            m004_shape: { selected: "Planning metadata (Recommended)" },
+            boundary: { selected: "No new dependencies (Recommended)" },
+          },
+        },
+      },
+    }, ctx);
+  }
+
+  const milestoneDir = join(dir, ".gsd", "milestones", "M004");
+  const draftPath = join(milestoneDir, "M004-CONTEXT-DRAFT.md");
+  const discussionPath = join(milestoneDir, "M004-DISCUSSION.md");
+
+  assert.equal(existsSync(draftPath), true, "first answer round should create a resumable context draft");
+  assert.equal(existsSync(discussionPath), true, "first answer round should create a discussion log");
+
+  const draft = readFileSync(draftPath, "utf-8");
+  assert.match(draft, /What are you picturing for M004\?/);
+  assert.match(draft, /Planning metadata \(Recommended\)/);
+  assert.match(draft, /No new dependencies \(Recommended\)/);
+
+  const row = getMilestone("M004");
+  assert.equal(row?.status, "queued", "new milestone shell should be registered in the DB");
+
+  invalidateStateCache();
+  const state = await deriveState(dir);
+  assert.equal(state.activeMilestone?.id, "M004");
+  assert.equal(state.phase, "needs-discussion");
 });
 
 test("register-hooks clears depth gate when remote (Telegram/Slack/Discord) answer is normalized (#4406)", async (t) => {
@@ -528,4 +716,336 @@ test("register-hooks gates MCP ask_user_questions cancellation before requiremen
 
   assert.equal(requirementBlock?.block, true, "requirement save must be blocked while gate is pending");
   assert.match(requirementBlock?.reason ?? "", /has not been confirmed/);
+});
+
+// ─── Foreground self-cancel regression (#cc-elicitation-self-cancel) ───
+// Product-visible symptom: under claude-code-cli + gsd-MCP, ask_user_questions
+// is routed as an SDK elicitation (the human boundary). The message_update hook
+// would arm the approval-gate pause and emit the "waiting for your approval -
+// pausing" notice, tearing down that elicitation and looping a re-ask. The fix
+// makes message_update bail while an interactive elicitation is in flight, while
+// still pausing for prose-only approvals (native-TUI provider, where the marker
+// is always false). This drives the real registered hook end-to-end.
+test("register-hooks message_update does NOT pause while an interactive elicitation is the human boundary, but still pauses otherwise", async (t) => {
+  const dir = makeTempDir("elicitation-pause-guard");
+  const originalCwd = process.cwd();
+  process.chdir(dir);
+  resetWriteGateState(dir);
+  clearPendingAutoStart(dir);
+  clearInFlightTools();
+
+  t.after(() => {
+    try {
+      resetWriteGateState(dir);
+      clearPendingAutoStart(dir);
+      clearInFlightTools();
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  const handlers = new Map<string, Array<(event: any, ctx?: any) => Promise<any> | any>>();
+  const pi = {
+    on(event: string, handler: (event: any, ctx?: any) => Promise<any> | any) {
+      const existing = handlers.get(event) ?? [];
+      existing.push(handler);
+      handlers.set(event, existing);
+    },
+  } as any;
+
+  const notices: Array<{ text: string; level: string }> = [];
+  const ctx = {
+    cwd: dir,
+    ui: { notify: (text: string, level: string) => notices.push({ text, level }) },
+  } as any;
+
+  registerHooks(pi, []);
+
+  // A discuss-milestone is the active unit, so the approval text would normally
+  // arm the pause/notice path.
+  setPendingAutoStart(dir, {
+    basePath: dir,
+    milestoneId: "M001",
+    ctx,
+    pi: { sendMessage: () => undefined } as any,
+  });
+
+  // The model's plain-text approval question — identical in both phases.
+  const approvalMessage = {
+    role: "assistant",
+    content: [
+      { type: "text", text: "Here is the milestone plan.\n\nDid I capture the project correctly?" },
+    ],
+  };
+
+  const fireMessageUpdate = async () => {
+    for (const handler of handlers.get("message_update") ?? []) {
+      await handler({ message: approvalMessage }, ctx);
+    }
+  };
+
+  // Phase 1 — FIX: an interactive elicitation is in flight (claude-code-cli
+  // foreground). The pause/notice MUST be suppressed.
+  markInteractiveElicitationStart();
+  await fireMessageUpdate();
+  assert.equal(
+    notices.some((n) => /waiting for your approval - pausing/.test(n.text)),
+    false,
+    "must NOT emit the approval-pause notice while the elicitation is the human boundary",
+  );
+  markInteractiveElicitationEnd();
+
+  // Phase 2 — control: no elicitation in flight (native-TUI provider or a
+  // prose-only approval). The same message MUST still pause.
+  notices.length = 0;
+  await fireMessageUpdate();
+  assert.equal(
+    notices.some((n) => /discuss-milestone M001 is waiting for your approval - pausing/.test(n.text)),
+    true,
+    "prose-only approval with no elicitation in flight must still arm the pause notice",
+  );
+});
+
+test("register-hooks agent_end does not re-arm deferred gate after workflow MCP verified write-gate on disk", async (t) => {
+  const dir = makeTempDir("mcp-disk-sync");
+  const originalCwd = process.cwd();
+  const originalEnv = process.env.GSD_PERSIST_WRITE_GATE_STATE;
+  process.chdir(dir);
+  resetWriteGateState(dir);
+  clearPendingAutoStart(dir);
+  process.env.GSD_PERSIST_WRITE_GATE_STATE = "1";
+
+  const gateId = "depth_verification_M005_confirm";
+  const statePath = join(dir, ".gsd", "runtime", "write-gate-state.json");
+
+  t.after(() => {
+    try {
+      resetWriteGateState(dir);
+      clearPendingAutoStart(dir);
+    } finally {
+      if (originalEnv === undefined) {
+        delete process.env.GSD_PERSIST_WRITE_GATE_STATE;
+      } else {
+        process.env.GSD_PERSIST_WRITE_GATE_STATE = originalEnv;
+      }
+      process.chdir(originalCwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  const handlers = new Map<string, Array<(event: any, ctx?: any) => Promise<any> | any>>();
+  const pi = {
+    on(event: string, handler: (event: any, ctx?: any) => Promise<any> | any) {
+      const existing = handlers.get(event) ?? [];
+      existing.push(handler);
+      handlers.set(event, existing);
+    },
+  } as any;
+
+  const ctx = {
+    cwd: dir,
+    ui: { notify: () => undefined },
+  } as any;
+
+  registerHooks(pi, []);
+
+  setPendingAutoStart(dir, {
+    basePath: dir,
+    milestoneId: "M005",
+    ctx,
+    pi: { sendMessage: () => undefined } as any,
+  });
+
+  const approvalMessage = {
+    role: "assistant",
+    content: [
+      { type: "text", text: "Did I capture the depth right?" },
+    ],
+  };
+
+  for (const handler of handlers.get("message_update") ?? []) {
+    await handler({ message: approvalMessage }, ctx);
+  }
+
+  setPendingGate(gateId, dir);
+  mkdirSync(join(dir, ".gsd", "runtime"), { recursive: true });
+  writeFileSync(statePath, JSON.stringify({
+    verifiedDepthMilestones: ["M005"],
+    verifiedApprovalGates: [gateId],
+    activeQueuePhase: false,
+    pendingGateId: null,
+  }, null, 2), "utf-8");
+
+  for (const handler of handlers.get("agent_end") ?? []) {
+    await handler({ messages: [] }, ctx);
+  }
+
+  assert.equal(getPendingGate(dir), null, "agent_end must not re-arm a gate the MCP subprocess already verified");
+  assert.equal(
+    shouldBlockContextArtifactSave("CONTEXT", "M005", null, dir).block,
+    false,
+    "verified milestone context writes must stay unlocked after agent_end",
+  );
+  assert.deepEqual(loadWriteGateSnapshot(dir), {
+    verifiedDepthMilestones: ["M005"],
+    verifiedApprovalGates: [gateId],
+    activeQueuePhase: false,
+    pendingGateId: null,
+  });
+});
+
+// ── External-engine post-hoc gate replay (write-gate two-process sync) ──────
+// On claude-code-cli, pi ingests the SDK turn's tool blocks after the workflow
+// MCP child already executed them. The depth gate can therefore arrive at
+// tool_execution_start AFTER the child verified it and allowed the CONTEXT
+// save; re-arming then wipes the verification and permanently blocks the
+// discuss→auto handoff.
+
+function makeHookHarness(): {
+  handlers: Map<string, Array<(event: any, ctx?: any) => Promise<any> | any>>;
+  pi: any;
+} {
+  const handlers = new Map<string, Array<(event: any, ctx?: any) => Promise<any> | any>>();
+  const pi = {
+    on(event: string, handler: (event: any, ctx?: any) => Promise<any> | any) {
+      const existing = handlers.get(event) ?? [];
+      existing.push(handler);
+      handlers.set(event, existing);
+    },
+  } as any;
+  return { handlers, pi };
+}
+
+test("tool_execution_start does not re-arm a depth gate the MCP child already verified", async (t) => {
+  const dir = makeTempDir("posthoc-no-rearm");
+  resetWriteGateState(dir);
+  t.after(() => {
+    resetWriteGateState(dir);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const { handlers, pi } = makeHookHarness();
+  registerHooks(pi, []);
+  const ctx = { cwd: dir, ui: { notify: () => undefined } } as any;
+
+  // The child verified the gate and allowed the CONTEXT save before the host
+  // ever saw the tool block.
+  markApprovalGateVerified("depth_verification_M002_confirm", dir);
+  markDepthVerified("M002", dir);
+
+  for (const handler of handlers.get("tool_execution_start") ?? []) {
+    await handler({
+      toolCallId: "t-depth",
+      toolName: "mcp__gsd-workflow__ask_user_questions",
+      args: { questions: [{ id: "depth_verification_M002_confirm" }] },
+    }, ctx);
+  }
+
+  assert.equal(getPendingGate(dir), null, "post-hoc replay must not re-arm a verified gate");
+  const snapshot = loadWriteGateSnapshot(dir);
+  assert.ok(
+    snapshot.verifiedDepthMilestones.includes("M002"),
+    "re-arm wipes verifiedDepthMilestones — the verification must survive the replay",
+  );
+  assert.equal(
+    shouldBlockContextArtifactSave("CONTEXT", "M002", null, dir).block,
+    false,
+    "context saves must stay unlocked after the replayed tool_execution_start",
+  );
+});
+
+test("tool_execution_start still arms an unverified depth gate", async (t) => {
+  const dir = makeTempDir("live-arm");
+  resetWriteGateState(dir);
+  t.after(() => {
+    resetWriteGateState(dir);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const { handlers, pi } = makeHookHarness();
+  registerHooks(pi, []);
+  const ctx = { cwd: dir, ui: { notify: () => undefined } } as any;
+
+  for (const handler of handlers.get("tool_execution_start") ?? []) {
+    await handler({
+      toolCallId: "t-depth",
+      toolName: "ask_user_questions",
+      args: { questions: [{ id: "depth_verification_M002_confirm" }] },
+    }, ctx);
+  }
+
+  assert.equal(getPendingGate(dir), "depth_verification_M002_confirm");
+});
+
+test("tool_result verifies the gate from result.structuredContent when event.details is missing", async (t) => {
+  const dir = makeTempDir("structured-fallback");
+  resetWriteGateState(dir);
+  t.after(() => {
+    resetWriteGateState(dir);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const { handlers, pi } = makeHookHarness();
+  registerHooks(pi, []);
+  const ctx = { cwd: dir, ui: { notify: () => undefined } } as any;
+
+  setPendingGate("depth_verification_M002_confirm", dir);
+
+  const questions = [{
+    id: "depth_verification_M002_confirm",
+    options: [
+      { label: "Yes, you got it (Recommended)" },
+      { label: "Not quite — let me clarify" },
+    ],
+  }];
+  for (const handler of handlers.get("tool_result") ?? []) {
+    await handler({
+      toolCallId: "t-depth",
+      toolName: "mcp__gsd-workflow__ask_user_questions",
+      input: { questions },
+      // External MCP relay: no pi-native details, structured payload on result.
+      result: {
+        content: [{ type: "text", text: "answered" }],
+        structuredContent: {
+          questions,
+          response: {
+            answers: {
+              depth_verification_M002_confirm: { selected: "Yes, you got it (Recommended)", notes: "" },
+            },
+          },
+          cancelled: false,
+        },
+      },
+    }, ctx);
+  }
+
+  assert.equal(getPendingGate(dir), null, "structured fallback must clear the pending gate");
+  assert.ok(loadWriteGateSnapshot(dir).verifiedDepthMilestones.includes("M002"));
+});
+
+test("tool_result without details or structured content leaves the gate pending without crashing", async (t) => {
+  const dir = makeTempDir("no-details");
+  resetWriteGateState(dir);
+  t.after(() => {
+    resetWriteGateState(dir);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const { handlers, pi } = makeHookHarness();
+  registerHooks(pi, []);
+  const ctx = { cwd: dir, ui: { notify: () => undefined } } as any;
+
+  setPendingGate("depth_verification_M002_confirm", dir);
+
+  for (const handler of handlers.get("tool_result") ?? []) {
+    await handler({
+      toolCallId: "t-depth",
+      toolName: "ask_user_questions",
+      input: { questions: [{ id: "depth_verification_M002_confirm" }] },
+      result: { content: [{ type: "text", text: "answered" }] },
+    }, ctx);
+  }
+
+  assert.equal(getPendingGate(dir), "depth_verification_M002_confirm");
 });

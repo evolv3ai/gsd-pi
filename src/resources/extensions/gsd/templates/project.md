@@ -20,6 +20,7 @@
 
 - **Complexity:** {{simple | complex}}
 - **Why:** {{one-line rationale citing the signals that decided it}}
+- **Web stack:** {{browser-facing framework or "not a web UI" — e.g. Next.js + Playwright, static HTML, N/A for CLI/API-only}}
 
 ## Current State
 

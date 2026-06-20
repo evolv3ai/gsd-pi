@@ -20,10 +20,17 @@ export function normalizeWorktreePathForCompare(path: string): string {
 }
 
 /**
- * Find the GSD worktree segment in both direct project layout and the
- * symlink-resolved external-state layout used by ~/.gsd/projects/<hash>.
+ * Find the GSD worktree segment in the canonical layout (.gsd-worktrees/),
+ * the legacy direct layout (.gsd/worktrees/), and the symlink-resolved
+ * external-state layout used by ~/.gsd/projects/<hash>.
  */
 export function findWorktreeSegment(normalizedPath: string): WorktreeSegment | null {
+  const canonicalMarker = "/.gsd-worktrees/";
+  const canonicalIdx = normalizedPath.indexOf(canonicalMarker);
+  if (canonicalIdx !== -1) {
+    return { gsdIdx: canonicalIdx, afterWorktrees: canonicalIdx + canonicalMarker.length };
+  }
+
   const directMarker = "/.gsd/worktrees/";
   const directIdx = normalizedPath.indexOf(directMarker);
   if (directIdx !== -1) {
@@ -63,6 +70,18 @@ export function isGsdWorktreePath(path: string): boolean {
 }
 
 /**
+ * Project-root prefix of a GSD worktree path, or null when the path is not
+ * inside a recognized worktree layout. Pure string split — no env handling,
+ * HOME guard, or filesystem fallbacks (resolveWorktreeProjectRoot adds
+ * those). Separator normalization is 1:1 on characters, so the prefix is
+ * sliced from the ORIGINAL string and keeps its separators.
+ */
+export function projectRootFromWorktreePath(path: string): string | null {
+  const segment = findWorktreeSegment(path.replaceAll("\\", "/"));
+  return segment ? path.slice(0, segment.gsdIdx) : null;
+}
+
+/**
  * When a milestone worktree lives under the external-state layout
  * (`<gsdHome>/projects/<hash>/worktrees/<MID>/`, or the `GSD_STATE_DIR`
  * equivalent), return the parent project's authoritative external `.gsd`
@@ -72,7 +91,8 @@ export function isGsdWorktreePath(path: string): boolean {
 export function resolveExternalStateProjectGsdFromWorktreePath(projectPath: string): string | null {
   const normalized = resolve(projectPath).replaceAll("\\", "/");
 
-  // Direct layout — parent state is resolved via repoIdentity(git root).
+  // Canonical/direct layouts — parent state is resolved via repoIdentity(git root).
+  if (normalized.includes("/.gsd-worktrees/")) return null;
   if (normalized.includes("/.gsd/worktrees/") && !normalized.includes("/.gsd/projects/")) {
     return null;
   }
@@ -139,12 +159,15 @@ function resolveProjectRootFromPath(path: string): string {
     return resolveNearestBootstrappedGsdRoot(path) ?? resolveGitWorkingTreeRoot(path) ?? path;
   }
 
+  // Slice at the first `.gsd` boundary, but never past the worktree segment:
+  // in the canonical layout (`<root>/.gsd-worktrees/<MID>/.gsd/...`) the first
+  // `/.gsd/` occurrence is the worktree-local projection dir, not the project
+  // root's state dir.
   const sepChar = path.includes("\\") ? "\\" : "/";
   const gsdMarker = `${sepChar}.gsd${sepChar}`;
   const markerIdx = path.indexOf(gsdMarker);
-  const candidate = markerIdx !== -1
-    ? path.slice(0, markerIdx)
-    : path.slice(0, segment.gsdIdx);
+  const sliceIdx = markerIdx !== -1 ? Math.min(markerIdx, segment.gsdIdx) : segment.gsdIdx;
+  const candidate = path.slice(0, sliceIdx);
 
   const gsdHomeNorm = normalizeWorktreePathForCompare(gsdHome());
   const candidateGsdPath = normalizeWorktreePathForCompare(join(candidate, ".gsd"));

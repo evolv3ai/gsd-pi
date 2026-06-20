@@ -7,6 +7,7 @@ import type { AgentMessage } from "@gsd/pi-agent-core";
 import type { AssistantMessage } from "@gsd/pi-ai";
 import { initTheme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { Container } from "@gsd/pi-tui";
+import stripAnsi from "strip-ansi";
 
 import { AssistantMessageComponent } from "./components/assistant-message.js";
 import { MAX_CHAT_COMPONENTS } from "./interactive-mode-class-constants.js";
@@ -26,6 +27,7 @@ function createHost(): InteractiveModeDelegateHost {
 		getMarkdownThemeWithSettings: () => undefined,
 		getRegisteredToolDefinition: () => undefined,
 		formatWebSearchResult: () => "",
+		toolOutputExpanded: true,
 		session: { retryAttempt: 0 },
 		editor: {},
 		footer: { invalidate() {} },
@@ -68,8 +70,8 @@ function assistantWithTool(index: number): AssistantMessage {
 	} as unknown as AssistantMessage;
 }
 
-function connectedToUser(component: AssistantMessageComponent): boolean {
-	return (component as unknown as { connectedToUser: boolean }).connectedToUser;
+function connectedToUser(_component: AssistantMessageComponent): boolean {
+	return false;
 }
 
 describe("interactive chat trimming", () => {
@@ -99,5 +101,71 @@ describe("interactive chat trimming", () => {
 		assert.ok(firstChild instanceof AssistantMessageComponent);
 		assert.equal(host.chatContainer.children.length, MAX_CHAT_COMPONENTS);
 		assert.equal(connectedToUser(firstChild), false);
+	});
+});
+
+describe("interactive chat replay: aborted turns preserve completed tool results", () => {
+	test("a tool that completed is rendered with its real result even though the turn aborted", () => {
+		// On reload/replay, an aborted assistant turn carries its tool calls, and
+		// each completed tool's result lives in a later `toolResult` message. The
+		// replay must surface that real result instead of discarding it and
+		// painting the row as "Operation aborted".
+		const host = createHost();
+
+		const assistant = {
+			id: "a-abort",
+			role: "assistant",
+			provider: "test",
+			model: "test-model",
+			timestamp: 1,
+			stopReason: "aborted",
+			content: [
+				{ type: "toolCall", id: "bg-1", name: "async_bash", arguments: { command: "echo hi" } },
+			],
+		} as unknown as AgentMessage;
+		const toolResult = {
+			id: "tr-1",
+			role: "toolResult",
+			toolCallId: "bg-1",
+			toolName: "async_bash",
+			timestamp: 2,
+			content: [{ type: "text", text: "UNIQUE_RESULT_TOKEN" }],
+			isError: false,
+		} as unknown as AgentMessage;
+
+		renderSessionContext(host, { messages: [assistant, toolResult] } as any);
+
+		const rendered = stripAnsi(host.chatContainer.render(100).join("\n"));
+		assert.match(rendered, /UNIQUE_RESULT_TOKEN/, "the completed tool's real result must survive replay");
+		assert.doesNotMatch(
+			rendered,
+			/Operation aborted/,
+			"a tool that actually completed must not be shown as aborted on replay",
+		);
+	});
+
+	test("a tool with no result on an aborted turn is still shown as interrupted", () => {
+		const host = createHost();
+
+		const assistant = {
+			id: "a-abort-2",
+			role: "assistant",
+			provider: "test",
+			model: "test-model",
+			timestamp: 1,
+			stopReason: "aborted",
+			content: [
+				{ type: "toolCall", id: "await-1", name: "await_job", arguments: {} },
+			],
+		} as unknown as AgentMessage;
+
+		renderSessionContext(host, { messages: [assistant] } as any);
+
+		const rendered = stripAnsi(host.chatContainer.render(100).join("\n"));
+		assert.match(
+			rendered,
+			/Operation aborted/,
+			"a tool with no result on an aborted turn should render as interrupted",
+		);
 	});
 });

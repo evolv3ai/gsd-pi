@@ -1,6 +1,6 @@
 {
   "name": "@gsd/pi-ai",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Unified LLM API with automatic model discovery and provider configuration",
   "type": "module",
   "gsd": {
@@ -72,7 +72,8 @@
     "clean": "node ../../scripts/clean-package-dist.cjs",
     "generate-models": "node scripts/generate-models.ts",
     "generate-image-models": "node scripts/generate-image-models.ts",
-    "build": "node ../../scripts/clean-package-dist.cjs && node scripts/generate-models.ts && node scripts/generate-image-models.ts && tsc -p tsconfig.json --incremental false",
+    "generate": "pnpm run generate-models && pnpm run generate-image-models",
+    "build": "pnpm run clean && tsc -p tsconfig.json --incremental false",
     "test": "vitest --run",
     "prepublishOnly": "pnpm run clean && pnpm run build"
   },

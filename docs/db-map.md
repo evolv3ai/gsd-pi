@@ -18,9 +18,20 @@ tools/workflow-tool-executors.ts  ← business logic
        ├── validation reads (milestones, slices, tasks)
        │
        ▼
-gsd-db.ts  ← typed write API, transaction wrapper
+gsd-db.ts  ← compatibility barrel over the explicit single-writer allowlist
        │
-       ├── transaction()  (db-transaction.ts — depth counter, no nested BEGIN)
+       ├── db/engine.ts     ← connection/handle, schema/migrations, transaction primitives
+       ├── db/writers/*.ts  ← the Single Writer Layer (one write subsystem per file)
+       ├── db/{milestone-leases,unit-dispatches,auto-workers,runtime-kv,command-queue}.ts
+       │                    ← typed coordination/runtime writers
+       ├── db-memory-fts-schema.ts, db-schema-metadata.ts, db-verification-evidence-schema.ts
+       │                    ← allowlisted schema/migration helpers
+       ├── memory-backfill.ts
+       │                    ← allowlisted ADR migration/backfill helper
+       ├── db/queries.ts    ← the Query Module (read-only SELECT wrappers)
+       │
+       ├── transaction()/immediateTransaction()
+       │   (db/engine.ts via db-transaction.ts — depth counter, no nested BEGIN)
        │
        ▼
 db-adapter.ts  ← normalized prepared-statement cache
@@ -40,6 +51,7 @@ After commit: regenerate markdown artifacts → write to disk → invalidate cac
 - Sibling worktrees share the same `.gsd/gsd.db` via SQLite WAL
 - Only one connection is "active" at a time; others cached for fast re-activation
 - On process exit: checkpoint WAL → vacuum → close
+- Before file-backed schema migrations, `db-migration-backup.ts` checkpoints WAL and copies `.gsd/gsd.db` to `.gsd/gsd.db.backup-vN`; same-version backups are reused, and checkpoint/copy failures warn then fail closed before migration DDL.
 
 **Provider fallback chain:**
 1. `node:sqlite` (Node ≥ 22 built-in) — preferred
@@ -50,7 +62,7 @@ After commit: regenerate markdown artifacts → write to disk → invalidate cac
 
 ## 2. Schema Version History
 
-Current version: **V28**
+Current version: **V29**
 
 | Version | What Changed |
 |---------|-------------|
@@ -82,6 +94,7 @@ Current version: **V28**
 | V26 | milestone_commit_attributions |
 | V27 | artifacts.content_hash (SHA-256 of full_content, computed on every insertArtifact) |
 | V28 | memories.last_hit_at; incrementMemoryHitCount sets it; queryMemoriesRanked applies time-decay (1.0 → 0.7 floor over 90 days) |
+| V29 | slices.target_repositories and tasks.target_repositories for multi-repository planning |
 
 ---
 
@@ -112,7 +125,6 @@ made_by        TEXT NOT NULL DEFAULT 'agent'     ← V4
 source         TEXT NOT NULL DEFAULT 'discussion' ← V16
 superseded_by  TEXT DEFAULT NULL
 ```
-- Index: `idx_memories_active` (superseded_by)
 - View: `active_decisions` WHERE superseded_by IS NULL
 
 ---
@@ -196,6 +208,7 @@ success_criteria     TEXT NOT NULL DEFAULT ''           ← V8
 proof_level          TEXT NOT NULL DEFAULT ''           ← V8
 integration_closure  TEXT NOT NULL DEFAULT ''           ← V8
 observability_impact TEXT NOT NULL DEFAULT ''           ← V8
+target_repositories TEXT NOT NULL DEFAULT '[]'          ← V29, JSON
 sequence             INTEGER DEFAULT 0                  ← V9
 replan_triggered_at  TEXT DEFAULT NULL                  ← V10
 is_sketch            INTEGER NOT NULL DEFAULT 0         ← V16
@@ -239,6 +252,7 @@ inputs                      TEXT NOT NULL DEFAULT '[]'         ← V8, JSON
 expected_output             TEXT NOT NULL DEFAULT '[]'         ← V8, JSON
 observability_impact        TEXT NOT NULL DEFAULT ''           ← V8
 full_plan_md                TEXT NOT NULL DEFAULT ''           ← V11
+target_repositories         TEXT NOT NULL DEFAULT '[]'         ← V29, JSON
 sequence                    INTEGER DEFAULT 0                  ← V9
 PRIMARY KEY (milestone_id, slice_id, id)
 FOREIGN KEY (milestone_id, slice_id) → slices(milestone_id, id)
@@ -662,6 +676,23 @@ runtime_kv  (soft state KV)
 
 ---
 
+## 4b. Recovery And Worktree Merge Surfaces
+
+`.gsd/state-manifest.json` snapshots DB-backed correctness state: requirements,
+artifacts, milestones, slices, tasks, decisions, replan history, assessments,
+quality gates, verification evidence, and milestone commit attributions. Restore
+rebuilds decision mirror memories from the restored decisions and preserves
+optional rows when reading older manifests that predate the extended arrays.
+
+`reconcileWorktreeDb` merges hidden-worktree correctness rows back into the main
+DB, including hierarchy, requirements, artifacts, memories, replan history,
+assessments, quality gates, slice dependencies, verification evidence, gate
+runs, and milestone commit attributions. Runtime-only/audit substrates such as
+`runtime_kv`, `turn_git_transactions`, `audit_events`, and `audit_turn_index`
+remain outside manifest restore.
+
+---
+
 ## 5. Complete gsd_* Tool → Table Map
 
 | Tool | Tables READ | Tables WRITTEN | Disk Artifacts |
@@ -676,8 +707,9 @@ runtime_kv  (soft state KV)
 | `gsd_plan_task` | slices, tasks | tasks | T##-PLAN.md |
 | `gsd_task_complete` | tasks, slices | tasks, verification_evidence | T##-SUMMARY.md; toggles checkbox in S##-PLAN.md |
 | `gsd_slice_complete` | tasks, slices | slices, tasks (cascade skipped) | S##-SUMMARY.md, S##-UAT.md; toggles checkpoint in ROADMAP.md |
+| `gsd_uat_result_save` | slices, artifacts | artifacts, assessments, quality_gates, gate_runs | S##-ASSESSMENT.md; UAT attempt JSON |
 | `gsd_complete_milestone` | milestones, slices, tasks | milestones | M##-SUMMARY.md |
-| `gsd_validate_milestone` | milestones, slices, tasks | assessments | VALIDATION.md |
+| `gsd_validate_milestone` | milestones, slices, tasks | assessments, quality_gates, gate_runs | VALIDATION.md |
 | `gsd_reassess_roadmap` | milestones, slices | milestones, slices, assessments | ROADMAP.md, ASSESSMENT.md |
 | `gsd_replan_slice` | slices, tasks | slices, tasks, replan_history, quality_gates | S##-PLAN.md, S##-REPLAN.md |
 | `gsd_skip_slice` | slices, tasks | slices, tasks | STATE.md (via rebuildState) |
@@ -721,17 +753,20 @@ runtime_kv  (soft state KV)
 
 ## 7. Write Path Invariants
 
-1. **Single-writer rule**: all writes go through typed wrappers in `gsd-db.ts`. No raw SQL escapes to the adapter from outside this file. Enforced by structural test.
+1. **Single-writer rule**: all write SQL lives in the explicit single-writer *layer* — `db/engine.ts` for schema, migrations, lifecycle, and transaction primitives; `db/writers/**` for domain write subsystems; `gsd-db.ts` as the compatibility barrel and remaining mid-migration wrappers; the typed coordination/runtime writer modules `db/milestone-leases.ts`, `db/unit-dispatches.ts`, `db/auto-workers.ts`, `db/runtime-kv.ts`, and `db/command-queue.ts`; the schema/migration helpers `db-memory-fts-schema.ts`, `db-schema-metadata.ts`, and `db-verification-evidence-schema.ts`; and the ADR migration/backfill helper `memory-backfill.ts`. This is an allowlist, not permission for arbitrary raw writes under `db/`. `unit-ownership.ts` remains excluded because it owns a separate `.gsd/unit-claims.db`. `db/queries.ts` is the read-only Query Module and must contain no write SQL. No raw write SQL escapes to the adapter from anywhere else. Enforced by the structural `single-writer-invariant.test.ts`, which checks this allowlist.
 
-2. **Transaction wrapping**: every multi-table write uses `transaction()`. Rollback on any error. Re-entrant: nested calls increment depth counter; no nested BEGIN.
+2. **Transaction wrapping**: every multi-table write uses `transaction()` or `immediateTransaction()` when it needs SQLite's reserved writer lock up front. Rollback on any error. Re-entrant: nested calls increment the shared depth counter; no nested `BEGIN`.
 
-3. **Cascade semantics**:
-   - `gsd_slice_complete` cascades `pending` tasks → `skipped`
-   - `gsd_skip_slice` cascades `pending`/`active` tasks → `skipped`, preserves `complete`
-   - `gsd_milestone_reopen` cascades all slices → `in_progress`, all tasks → `pending`
+3. **Cascade semantics**: hierarchy status cascades are named **Domain Write Operations** in `db/writers/cascades.ts`, each owning its own `transaction()` so the milestone/slice/task subtree transitions atomically (callers keep only projection/file-cleanup/event logic):
+   - `gsd_slice_complete` (`completeSliceCascade`) cascades `pending` tasks → `skipped`
+   - `gsd_skip_slice` (`skipSliceCascade`) cascades `pending`/`active` tasks → `skipped`, preserves `complete`
+   - `gsd_milestone_reopen` (`reopenMilestoneCascade`) cascades all slices → `in_progress`, all tasks → `pending`
+   - `gsd_slice_reopen` (`reopenSliceCascade`) and `undo`'s reset (`resetSliceCascade`) reopen a slice's subtree atomically
 
 4. **Conflict guards**: `insertSlice`, `insertTask` use `ON CONFLICT` to preserve existing completed status and non-empty fields. Fresh INSERT of an already-complete row is a no-op.
 
 5. **FTS fallback**: if FTS5 unavailable, `memory_query` falls back to LIKE scan on `memories.content`.
 
 6. **Workspace isolation**: same `.gsd/gsd.db` for all worktrees of one project; separate `.gsd/gsd.db` per project root. Coordination tables assume single-host shared WAL. Multi-host needs external coordinator.
+
+7. **Pre-migration backup**: file-backed migrations checkpoint WAL before copying the base DB to `.gsd/gsd.db.backup-vN`. If the same-version backup already exists, backup is skipped and migrations continue; if checkpointing or copying fails, GSD warns and the error propagates before any migration DDL runs.

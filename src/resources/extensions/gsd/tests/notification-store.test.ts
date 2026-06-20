@@ -306,6 +306,38 @@ describe("notification-store", () => {
     rmSync(lockPath, { force: true });
   });
 
+  test("structured meta persists kind and scope on the entry", () => {
+    initNotificationStore(tmp);
+    appendNotification("Auto-mode blocked — validation gate", "warning", "notify", { kind: "auto-stop", scope: "M005" });
+
+    const entries = readNotifications();
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].kind, "auto-stop");
+    assert.equal(entries[0].scope, "M005");
+  });
+
+  test("dedup keys on kind+scope when present, not on prose", () => {
+    initNotificationStore(tmp);
+    appendNotification("Auto-mode blocked — validation gate", "warning", "notify", { kind: "auto-stop", scope: "M005" });
+    // Rephrased message, same structured identity → deduped within the window
+    appendNotification("Auto-mode blocked — gate rejected", "warning", "notify", { kind: "auto-stop", scope: "M005" });
+    // Same kind, different scope → distinct
+    appendNotification("Auto-mode blocked — validation gate", "warning", "notify", { kind: "auto-stop", scope: "M006" });
+
+    assert.equal(readNotifications().length, 2);
+  });
+
+  test("readNotifications filters by kind and scope", () => {
+    initNotificationStore(tmp);
+    appendNotification("a", "info", "notify", { kind: "auto-stop", scope: "M005" });
+    appendNotification("b", "info", "notify", { kind: "provider-error-pause", scope: "M005" });
+    appendNotification("c", "info");
+
+    assert.equal(readNotifications(tmp, { kind: "auto-stop" }).length, 1);
+    assert.equal(readNotifications(tmp, { scope: "M005" }).length, 2);
+    assert.equal(readNotifications(tmp, { kind: "provider-error-pause", scope: "M005" })[0].message, "b");
+  });
+
   test("listeners are notified on append, markAllRead, and clear", () => {
     initNotificationStore(tmp);
     let calls = 0;

@@ -21,6 +21,7 @@ import { join } from "node:path";
 import {
   extractPackageReferences,
   checkFilePathConsistency,
+  checkPlanningArtifactReferences,
   checkTaskOrdering,
   checkInterfaceContracts,
   checkVerificationCommands,
@@ -973,7 +974,12 @@ describe("runPreExecutionChecks", () => {
     }
   });
 
-  test("resolves .gsd metadata inputs from canonical project root in worktree mode (#5492)", async () => {
+  // Supersedes #5492: .gsd metadata inputs used to be accepted in worktree mode
+  // by resolving from the canonical project root. Task inputs are source files
+  // only (CONTEXT.md "Task Input") — planning artifacts are now blocked with a
+  // removal message regardless of where they resolve. The canonical-root
+  // resolution itself remains for merged-but-unsynced source files.
+  test("blocks .gsd metadata inputs even when resolvable from canonical project root in worktree mode", async () => {
     const projectRoot = join(tmpdir(), `pre-exec-project-root-${Date.now()}`);
     const worktreeRoot = join(tmpdir(), `pre-exec-worktree-root-${Date.now()}`);
     mkdirSync(join(projectRoot, ".gsd"), { recursive: true });
@@ -986,6 +992,35 @@ describe("runPreExecutionChecks", () => {
           id: "T01",
           files: [],
           inputs: [".gsd/DECISIONS.md"],
+          expected_output: [],
+        }),
+      ];
+
+      const result = await runPreExecutionChecks(tasks, worktreeRoot, {
+        canonicalProjectRoot: projectRoot,
+      });
+      assert.equal(result.status, "fail");
+      assert.equal(result.checks.length, 1);
+      assert.ok(result.checks[0].message.includes("preloaded as context"));
+    } finally {
+      rmSync(projectRoot, { recursive: true, force: true });
+      rmSync(worktreeRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("resolves source-file inputs from canonical project root in worktree mode (#5492)", async () => {
+    const projectRoot = join(tmpdir(), `pre-exec-project-root-src-${Date.now()}`);
+    const worktreeRoot = join(tmpdir(), `pre-exec-worktree-root-src-${Date.now()}`);
+    mkdirSync(join(projectRoot, "src"), { recursive: true });
+    mkdirSync(worktreeRoot, { recursive: true });
+    writeFileSync(join(projectRoot, "src", "merged.ts"), "// merged upstream");
+
+    try {
+      const tasks = [
+        createTask({
+          id: "T01",
+          files: [],
+          inputs: ["src/merged.ts"],
           expected_output: [],
         }),
       ];
@@ -2261,5 +2296,162 @@ describe("checkFilePathConsistency quote-wrapped annotation (#3747)", () => {
       0,
       "Annotated file paths and prose inputs should produce zero blocking errors",
     );
+  });
+});
+
+// ─── Planning Artifact Reference Tests ───────────────────────────────────────
+
+describe("checkPlanningArtifactReferences", () => {
+  function withTempDir(run: (tempDir: string) => void): void {
+    const tempDir = join(tmpdir(), `pre-exec-artifact-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tempDir, { recursive: true });
+    try {
+      run(tempDir);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  }
+
+  test("blocks .gsd/ paths in inputs even when the file exists", () => {
+    withTempDir((tempDir) => {
+      const artifactDir = join(tempDir, ".gsd", "milestones", "M001");
+      mkdirSync(artifactDir, { recursive: true });
+      writeFileSync(join(artifactDir, "M001-CONTEXT.md"), "# context");
+
+      const tasks = [
+        createTask({ id: "T01", inputs: [".gsd/milestones/M001/M001-CONTEXT.md"] }),
+      ];
+
+      const results = checkPlanningArtifactReferences(tasks, tempDir);
+      assert.equal(results.length, 1);
+      assert.equal(results[0].blocking, true);
+      assert.ok(results[0].message.includes("preloaded as context"));
+    });
+  });
+
+  test("blocks bare artifact names that do not resolve to a real file, with the truthful message", () => {
+    withTempDir((tempDir) => {
+      const tasks = [createTask({ id: "T01", inputs: ["M001-CONTEXT.md"] })];
+
+      const results = checkPlanningArtifactReferences(tasks, tempDir);
+      assert.equal(results.length, 1);
+      assert.ok(results[0].message.includes("preloaded as context"));
+      assert.ok(!results[0].message.includes("doesn't exist"));
+
+      // The consistency check must not double-report the same entry with the
+      // misleading "doesn't exist" message.
+      const consistency = checkFilePathConsistency(tasks, tempDir);
+      assert.deepEqual(consistency, []);
+    });
+  });
+
+  test("allows a bare artifact-style name that exists as a real source file", () => {
+    withTempDir((tempDir) => {
+      writeFileSync(join(tempDir, "M001-CONTEXT.md"), "# tracked source file");
+
+      const tasks = [createTask({ id: "T01", inputs: ["M001-CONTEXT.md"] })];
+      assert.deepEqual(checkPlanningArtifactReferences(tasks, tempDir), []);
+    });
+  });
+
+  test("leaves artifact-style names with directory components to the existence checks", () => {
+    withTempDir((tempDir) => {
+      const tasks = [createTask({ id: "T01", inputs: ["tests/fixtures/M001-CONTEXT.md"] })];
+
+      assert.deepEqual(checkPlanningArtifactReferences(tasks, tempDir), []);
+      const consistency = checkFilePathConsistency(tasks, tempDir);
+      assert.equal(consistency.length, 1);
+      assert.ok(consistency[0].message.includes("doesn't exist"));
+    });
+  });
+
+  test("blocks .planning/ and .audits/ paths in files", () => {
+    withTempDir((tempDir) => {
+      const tasks = [
+        createTask({ id: "T01", files: [".planning/codebase/STACK.md", ".audits/security.md"] }),
+      ];
+
+      const results = checkPlanningArtifactReferences(tasks, tempDir);
+      assert.equal(results.length, 2);
+      assert.ok(results.every((r) => r.blocking && r.message.includes("never task files")));
+    });
+  });
+
+  test("blocks .gsd/ paths in expectedOutput with the workflow-tools message and no ordering duplicate", () => {
+    withTempDir((tempDir) => {
+      const tasks = [
+        createTask({
+          id: "T01",
+          sequence: 0,
+          expected_output: [".gsd/milestones/M001/M001-SUMMARY.md"],
+        }),
+        createTask({
+          id: "T02",
+          sequence: 1,
+          inputs: [".gsd/milestones/M001/M001-SUMMARY.md"],
+        }),
+      ];
+
+      const results = checkPlanningArtifactReferences(tasks, tempDir);
+      assert.equal(results.length, 2);
+      const outputFinding = results.find((r) => r.message.includes("expectedOutput"));
+      assert.ok(outputFinding);
+      assert.ok(outputFinding.message.includes("written by workflow tools"));
+
+      assert.deepEqual(checkTaskOrdering(tasks, tempDir), []);
+    });
+  });
+
+  test("skips prose, sentinels, and runtime-only entries", () => {
+    withTempDir((tempDir) => {
+      const tasks = [
+        createTask({
+          id: "T01",
+          inputs: ["none", "Current enum shape", "server logs (runtime)"],
+        }),
+      ];
+
+      assert.deepEqual(checkPlanningArtifactReferences(tasks, tempDir), []);
+    });
+  });
+
+  test("runPreExecutionChecks surfaces artifact findings as blocking failures", async () => {
+    const tempDir = join(tmpdir(), `pre-exec-artifact-run-${Date.now()}`);
+    mkdirSync(tempDir, { recursive: true });
+    try {
+      const tasks = [createTask({ id: "T01", inputs: ["M001-CONTEXT.md"] })];
+      const result: PreExecutionResult = await runPreExecutionChecks(tasks, tempDir);
+      assert.equal(result.status, "fail");
+      assert.ok(
+        result.checks.some((c) => !c.passed && c.blocking && c.message.includes("preloaded as context")),
+      );
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("allows a bare artifact-style name that exists only at canonicalProjectRoot (not at worktree basePath)", () => {
+    withTempDir((canonicalRoot) => {
+      withTempDir((worktreeRoot) => {
+        writeFileSync(join(canonicalRoot, "M001-CONTEXT.md"), "# tracked source file");
+        const tasks = [createTask({ id: "T01", inputs: ["M001-CONTEXT.md"] })];
+        assert.deepEqual(
+          checkPlanningArtifactReferences(tasks, worktreeRoot, { canonicalProjectRoot: canonicalRoot }),
+          [],
+        );
+      });
+    });
+  });
+
+  test("blocks .GSD/ paths with mixed casing (case-insensitive metadata dir match)", () => {
+    withTempDir((tempDir) => {
+      const tasks = [
+        createTask({ id: "T01", inputs: [".GSD/milestones/M001/M001-CONTEXT.md"] }),
+      ];
+      const results = checkPlanningArtifactReferences(tasks, tempDir);
+      assert.equal(results.length, 1);
+      assert.equal(results[0].blocking, true);
+      assert.ok(results[0].message.includes("preloaded as context"));
+    });
   });
 });

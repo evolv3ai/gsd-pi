@@ -306,6 +306,57 @@ describe("TUI content shrinkage", () => {
 	});
 });
 
+describe("TUI mid-buffer reflow", () => {
+	it("triggers full repaint when a mid-buffer insertion shifts a change into committed scrollback", async () => {
+		// 9 lines in a height-5 terminal → previousContentViewportTop = 4.
+		// Indices 0–3 are committed scrollback, indices 4–8 are in the viewport.
+		const terminal = new VirtualTerminal(40, 5);
+		const tui = new TUI(terminal);
+		const component = new TestComponent();
+		tui.addChild(component);
+
+		component.lines = Array.from({ length: 9 }, (_, i) => `Line ${i}`);
+		tui.start();
+		await terminal.waitForRender();
+
+		const redrawsBefore = tui.fullRedraws;
+
+		// Insert "FENCE" at index 2 — well inside committed scrollback (< viewportTop=4).
+		// Buffer grows 9→10, so appendedLines=true.  This is the mid-buffer markdown-reflow
+		// scenario from issue #592: firstChanged(2) < previousContentViewportTop(4) AND
+		// appendedLines → must take fullRender, not the scrollback-clamp path that duplicates
+		// the boundary line.
+		component.lines = [
+			"Line 0",
+			"Line 1",
+			"FENCE",
+			"Line 2",
+			"Line 3",
+			"Line 4",
+			"Line 5",
+			"Line 6",
+			"Line 7",
+			"Line 8",
+		];
+		tui.requestRender();
+		await terminal.waitForRender();
+
+		assert.ok(
+			tui.fullRedraws > redrawsBefore,
+			"mid-buffer insertion reaching into committed scrollback must trigger a full repaint, not a differential clamp",
+		);
+
+		// Viewport must show the correct bottom 5 lines without duplicates.
+		const viewport = terminal.getViewport();
+		const text = viewport.join("\n");
+		assert.ok(text.includes("Line 4"), `viewport should include Line 4: ${JSON.stringify(viewport)}`);
+		assert.ok(text.includes("Line 8"), `viewport should include Line 8: ${JSON.stringify(viewport)}`);
+		assert.ok(!text.includes("FENCE"), `FENCE should be in scrollback, not the viewport: ${JSON.stringify(viewport)}`);
+
+		tui.stop();
+	});
+});
+
 describe("TUI differential rendering", () => {
 	it("tracks cursor correctly when content shrinks with unchanged remaining lines", async () => {
 		const terminal = new VirtualTerminal(40, 10);

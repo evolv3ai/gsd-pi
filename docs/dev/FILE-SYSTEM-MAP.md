@@ -15,7 +15,7 @@
 | **Auth / OAuth** | Authentication, OAuth flows, token storage |
 | **Auto Engine** | GSD autonomous execution loop, dispatch, supervision |
 | **Bg Shell** | Background process / interactive shell management |
-| **Browser Tools** | Playwright-based browser automation extension |
+| **Browser Tools** | Browser Automation Contract adapter; browser-facing projects prefer the managed gsd-browser engine when proven, falling back to Playwright (ADR-037) |
 | **Build System** | Scripts for build, packaging, version management, CI |
 | **CLI** | Command-line entry points and argument parsing |
 | **CMux** | Tmux/multiplexer session integration |
@@ -76,6 +76,7 @@
 | src/bundled-extension-paths.ts | Extension Registry | Serializes/parses bundled extension directory paths |
 | src/bundled-resource-path.ts | Loader/Bootstrap, Extension Registry | Resolves bundled raw resource files from package root |
 | src/cli.ts | CLI | Main CLI entry point — arg parsing, mode detection, plugin init |
+| src/cli-style.ts | CLI | Terminal presentation helpers for CLI-side stderr notices (tags, warnings, hints, banner lines) |
 | src/cli-web-branch.ts | CLI, Web Mode | Web CLI branch; session dir resolution, legacy migration |
 | src/extension-discovery.ts | Extension Registry | Discovers extension entry points from FS and package.json |
 | src/extension-registry.ts | Extension Registry | Extension manifests, registry persistence, enable/disable |
@@ -528,6 +529,8 @@
 | gsd/export-html.ts | GSD Workflow | HTML export of milestone reports |
 | gsd/reports.ts | GSD Workflow | Report generation and summaries |
 | gsd/notifications.ts | GSD Workflow | User notification and messaging |
+| gsd/guidance.ts | GSD Workflow, Doctor/Diagnostics | Single catalog mapping typed findings (recovery kinds, milestone blockers, doctor issue codes, crash unit classes) to remediation prose |
+| gsd/stop-notice.ts | Auto Engine, Headless Mode | Single owner of auto/step-mode stop/pause notice vocabulary — formatters and headless exit-code classifiers |
 | gsd/triage-ui.ts | GSD Workflow | Triage interface for issue categorization |
 | gsd/guided-flow.ts | GSD Workflow | User-guided workflow orchestration |
 | gsd/env-utils.ts | GSD Workflow | Environment variable utilities |
@@ -575,7 +578,7 @@
 | bg-shell/interaction.ts | Bg Shell | Interactive process communication |
 | bg-shell/output-formatter.ts | Bg Shell | Process output formatting |
 | bg-shell/overlay.ts | Bg Shell, TUI Components | Terminal overlay for process monitoring |
-| browser-tools/index.ts | Browser Tools | Playwright-based browser automation extension |
+| browser-tools/index.ts | Browser Tools | Browser Automation Contract adapter registration |
 | browser-tools/core.ts | Browser Tools | Core Playwright instance management |
 | browser-tools/lifecycle.ts | Browser Tools | Browser session lifecycle |
 | browser-tools/capture.ts | Browser Tools | Screenshot and media capture |
@@ -656,6 +659,11 @@
 | scout.md | Subagent | Scout/pathfinding agent definition |
 
 ### src/resources/skills/
+
+These are Pi-owned bundled skills copied into `~/.gsd/agent/skills/`. The
+managed `gsd-browser` skill is intentionally not stored here;
+`src/resource-loader.ts` installs it from the installed `@opengsd/gsd-browser`
+package and refreshes stale or incomplete managed copies.
 
 | Skill Directory | System Label(s) | Description |
 |-----------------|-----------------|-------------|
@@ -997,7 +1005,7 @@ Quick lookup: which files are part of each system?
 | **MCP Server/Client** | src/mcp-server.ts, src/resources/extensions/mcp-client/index.ts, vscode-extension/src/gsd-client.ts, modes/rpc/* |
 | **Memory Extension** | pi-coding-agent/src/resources/extensions/memory/* |
 | **Migration** | gsd/migrate/*, src/pi-migration.ts, pi-coding-agent/src/migrations.ts, scripts/recover-*.sh |
-| **Modes** | pi-coding-agent/src/modes/* |
+| **Modes** | gsd-agent-modes/src/modes/* |
 | **Model System** | pi-coding-agent/src/core/model-*.ts, pi-ai/src/models*.ts, pi-ai/src/api-registry.ts, gsd/model-router.ts |
 | **Native / Rust Tools** | native/crates/engine/src/* |
 | **Node.js Bindings** | packages/native/src/* |
@@ -1015,7 +1023,7 @@ Quick lookup: which files are part of each system?
 | **Text Processing** | native/crates/engine/src/diff.rs, html.rs, text.rs, truncate.rs, json_parse.rs, stream_process.rs |
 | **Tool System** | pi-coding-agent/src/core/tools/*, core/bash-executor.ts, core/exec.ts |
 | **TTSR** | src/resources/extensions/ttsr/*, native/crates/engine/src/ttsr.rs, packages/native/src/ttsr/* |
-| **TUI Components** | packages/pi-tui/src/*, pi-coding-agent/src/modes/interactive/components/*, pi-coding-agent/src/modes/interactive/controllers/* |
+| **TUI Components** | packages/pi-tui/src/*, packages/gsd-agent-modes/src/modes/interactive/components/*, packages/gsd-agent-modes/src/modes/interactive/controllers/* |
 | **Universal Config** | src/resources/extensions/universal-config/* |
 | **Voice** | src/resources/extensions/voice/* |
 | **VS Code Extension** | vscode-extension/src/* |

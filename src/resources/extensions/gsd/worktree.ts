@@ -224,7 +224,13 @@ export function resolveGitHeadPath(dir: string): string | null {
  */
 export function nudgeGitBranchCache(previousCwd: string): void {
   const now = new Date();
-  for (const dir of [previousCwd, process.cwd()]) {
+  let currentCwd: string | null = null;
+  try {
+    currentCwd = process.cwd();
+  } catch {
+    currentCwd = null;
+  }
+  for (const dir of [previousCwd, currentCwd].filter((dir): dir is string => Boolean(dir))) {
     try {
       const headPath = resolveGitHeadPath(dir);
       if (headPath) utimesSync(headPath, now, now);

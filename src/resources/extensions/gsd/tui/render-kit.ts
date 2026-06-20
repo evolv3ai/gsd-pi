@@ -1,7 +1,7 @@
 // Project/App: gsd-pi
 // File Purpose: Shared terminal rendering helpers for GSD extension TUI surfaces.
 
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@gsd/pi-tui";
+import { style, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@gsd/pi-tui";
 
 export interface ThemeLike {
   fg(color: string, text: string): string;
@@ -107,21 +107,64 @@ export function renderPanel(
   }
 
   const ruleColor = options.ruleColor ?? "borderAccent";
-  const indent = Math.max(0, options.indent ?? 2);
-  const rule = (text: string) => theme.fg(ruleColor, text);
+  const paddingX = Math.max(0, options.indent ?? 0);
+  const surface = style()
+    .border("open")
+    .title(title, (text) => theme.fg(ruleColor, text))
+    .borderColor((text) => theme.fg(ruleColor, text))
+    .paddingX(paddingX)
+    .bottomRule(true);
 
-  // Header rule: "── <title> ───────"
-  const lead = "── ";
-  const headerUsed = visibleWidth(lead) + visibleWidth(title) + 1;
-  const headerFill = Math.max(0, width - headerUsed);
-  const header = safeLine(rule(lead) + title + " " + rule("─".repeat(headerFill)), width, "");
+  const body = inner.length > 0 ? inner : [""];
+  return surface.render(body, width);
+}
 
-  // Body lines, indented so no chrome sits on copyable text.
-  const pad = " ".repeat(indent);
-  const contentWidth = Math.max(0, width - indent);
-  const body = inner.map((line) => safeLine(pad + safeLine(line, contentWidth), width, ""));
+export interface PlainOutcomeLayoutOptions {
+  /** Right side of the header row (e.g. elapsed time). */
+  headerRight?: string;
+  /** Full-width body rows with an optional right column. */
+  splitRows?: Array<{ left: string; right?: string }>;
+  /** Footer hints pinned to the bottom-right (e.g. slash commands). */
+  footerRight?: string;
+}
 
-  return [header, "", ...body, rule("─".repeat(width))];
+/**
+ * Plain transcript outcome — matches the GSD chat/tool speaker line (no rule box).
+ * Header: `GSD · <status>` with optional right meta; body copy-clean; optional footer right.
+ */
+export function renderPlainOutcome(
+  theme: ThemeLike,
+  width: number,
+  statusLine: string,
+  bodyLines: string[],
+  options?: PlainOutcomeLayoutOptions,
+): string[] {
+  const headerLeft =
+    theme.fg("accent", theme.bold("GSD")) + theme.fg("dim", " · ") + statusLine;
+  const header = options?.headerRight
+    ? rightAlign(headerLeft, options.headerRight, width)
+    : safeLine(headerLeft, width);
+
+  const out: string[] = [header];
+
+  if (options?.splitRows && options.splitRows.length > 0) {
+    for (const row of options.splitRows) {
+      out.push(row.right ? rightAlign(row.left, row.right, width) : safeLine(row.left, width));
+    }
+  } else {
+    for (const line of bodyLines.filter(Boolean)) {
+      out.push(safeLine(line, width));
+    }
+  }
+
+  if (options?.footerRight) {
+    out.push(rightAlign("", options.footerRight, width));
+  }
+
+  if (out.length === 1 && !options?.footerRight) {
+    return [header, ""];
+  }
+  return [...out, ""];
 }
 
 export function renderFrame(

@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 
 import { buildSliceSummaryExcerpt, buildCompleteMilestonePrompt, buildValidateMilestonePrompt } from "../auto-prompts.ts";
 import { invalidateAllCaches } from "../cache.ts";
+import { closeDatabase, insertMilestone, openDatabase } from "../gsd-db.ts";
 
 // ─── Fixture helpers ──────────────────────────────────────────────────────
 
@@ -363,4 +364,33 @@ test("validate-milestone prompt uses slice excerpts and on-demand paths instead 
     !prompt.includes("This very noisy assessment trace should stay out of the prompt."),
     "validate prompt must not inline full assessment traces",
   );
+});
+
+test("validate-milestone prompt inlines planned verification classes as canonical rows", async (t) => {
+  const base = createBase();
+  t.after(() => {
+    try { closeDatabase(); } catch { /* ignore */ }
+    cleanup(base);
+  });
+  invalidateAllCaches();
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({
+    id: "M001",
+    planning: {
+      verificationContract: "Local command exits 0.",
+      verificationOperational: "No long-running child process remains.",
+    },
+  });
+  writeRoadmap(base, makeRoadmap());
+  writeSummary(base, "S01", makeFatSummary("S01"));
+  writeSummary(base, "S02", makeFatSummary("S02"));
+
+  const prompt = await buildValidateMilestonePrompt("M001", "Test Milestone", base);
+
+  assert.match(prompt, /### Verification Classes \(from planning\)/);
+  assert.match(prompt, /Every row in this table must appear in `verificationClasses`/);
+  assert.match(prompt, /\| Class \| Planned Check \|/);
+  assert.match(prompt, /\| Contract \| Local command exits 0\. \|/);
+  assert.match(prompt, /\| Operational \| No long-running child process remains\. \|/);
 });

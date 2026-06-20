@@ -20,6 +20,7 @@ import {
   insertMilestone,
   insertSlice,
   insertTask,
+  setSliceSummaryMd,
 } from '../gsd-db.ts';
 import { handleCompleteSlice } from '../tools/complete-slice.ts';
 import type { CompleteSliceParams } from '../types.ts';
@@ -152,5 +153,206 @@ describe('complete-slice verification gate (#3580)', () => {
         `clean inputs should not be rejected by the BLOCKED_SIGNALS gate, got: ${result.error}`,
       );
     }
+  });
+
+  // ── Browser/web UAT classification gate (M001/S03 regression) ──────────
+  const BROWSER_UAT_BODY = [
+    '## UAT Type',
+    '- UAT mode: artifact-driven',
+    '',
+    '## Smoke Test',
+    '1. Open the page in a browser and perform add/edit/complete/delete once.',
+  ].join('\n');
+
+  test('rejects an artifact-driven UAT that drives a browser (open the page in a browser)', async () => {
+    const result = await handleCompleteSlice(
+      makeParams({ uatContent: BROWSER_UAT_BODY }),
+      basePath,
+    );
+    assert.ok('error' in result, 'expected handler to reject a browser UAT mislabeled artifact-driven');
+    assert.match((result as { error: string }).error, /requires browser verification/i);
+  });
+
+  test('allows a runtime-executable UAT that runs a browser test command (playwright)', async () => {
+    // Bugbot regression: runtime-executable legitimately drives a browser via a
+    // command captured by gsd_uat_exec — it must not be pushed to gsd-browser.
+    const body = [
+      '## UAT Type',
+      '- UAT mode: runtime-executable',
+      '',
+      '## Test Cases',
+      '1. Run `npx playwright test` and confirm a passing exit code; capture a screenshot artifact.',
+      '2. Hit http://localhost:3000/health and assert a 200 response.',
+    ].join('\n');
+    const result = await handleCompleteSlice(
+      makeParams({ uatContent: body }),
+      basePath,
+    );
+    if ('error' in result) {
+      assert.doesNotMatch(
+        result.error,
+        /artifact-driven|browser-capable|browser verification/i,
+        `runtime-executable command UATs must not be gated, got: ${result.error}`,
+      );
+    }
+  });
+
+  test('allows an artifact-driven UAT that only disclaims browser coverage (no false positive)', async () => {
+    // S01-style: genuinely artifact-driven persistence scaffolding that merely
+    // mentions "cross-browser" / "browser-level" in a Not-Proven disclaimer.
+    const body = [
+      '## UAT Type',
+      '- UAT mode: artifact-driven',
+      '',
+      '## Not Proven By This UAT',
+      '- Interactive browser-level CRUD and real cross-browser localStorage behavior.',
+    ].join('\n');
+    const result = await handleCompleteSlice(
+      makeParams({ uatContent: body }),
+      basePath,
+    );
+    if ('error' in result) {
+      assert.doesNotMatch(
+        result.error,
+        /requires browser verification/i,
+        `disclaimer-only mention must not trip the browser gate, got: ${result.error}`,
+      );
+    }
+  });
+
+  test('allows an artifact-driven UAT whose "navigate" step targets a file, not a browser', async () => {
+    // Bugbot regression: a bare "navigate to <file/API>" must not trip the gate
+    // just because it contains the word "navigate".
+    const body = [
+      '## UAT Type',
+      '- UAT mode: artifact-driven',
+      '',
+      '## Test Cases',
+      '1. Navigate to the generated report file and confirm the schema section exists.',
+    ].join('\n');
+    const result = await handleCompleteSlice(
+      makeParams({ uatContent: body }),
+      basePath,
+    );
+    if ('error' in result) {
+      assert.doesNotMatch(
+        result.error,
+        /requires browser verification/i,
+        `non-web "navigate" must not trip the browser gate, got: ${result.error}`,
+      );
+    }
+  });
+
+  test('allows a browser UAT when it is declared browser-executable', async () => {
+    const body = BROWSER_UAT_BODY.replace('artifact-driven', 'browser-executable');
+    const result = await handleCompleteSlice(
+      makeParams({ uatContent: body }),
+      basePath,
+    );
+    if ('error' in result) {
+      assert.doesNotMatch(
+        result.error,
+        /requires browser verification/i,
+        `browser-executable UAT must pass the browser gate, got: ${result.error}`,
+      );
+    }
+  });
+
+  test('allows a browser UAT declared as a bare keyword under ## UAT Type (M006/S01 format drift)', async () => {
+    // Regression: the agent wrote `## UAT Type\nbrowser-executable` (no
+    // `- UAT mode:` bullet). The old parser defaulted that to artifact-driven
+    // and the gate rejected the slice in a loop.
+    const body = [
+      '## UAT Type',
+      'browser-executable',
+      '',
+      '## Smoke Test',
+      '1. Open the page in a browser and perform add/edit/complete/delete once.',
+    ].join('\n');
+    const result = await handleCompleteSlice(
+      makeParams({ uatContent: body }),
+      basePath,
+    );
+    if ('error' in result) {
+      assert.doesNotMatch(
+        result.error,
+        /requires browser verification/i,
+        `bare browser-executable declaration must pass the browser gate, got: ${result.error}`,
+      );
+    }
+  });
+
+  test('explains the missing declaration when a browser UAT has no parseable UAT mode', async () => {
+    // When nothing was declared, the error must not claim the agent
+    // "declared artifact-driven" — it must show the expected bullet format.
+    const body = [
+      '## Smoke Test',
+      '1. Open the page in a browser and perform add/edit/complete/delete once.',
+    ].join('\n');
+    const result = await handleCompleteSlice(
+      makeParams({ uatContent: body }),
+      basePath,
+    );
+    assert.ok('error' in result, 'expected handler to reject an undeclared browser UAT');
+    const error = (result as { error: string }).error;
+    assert.match(error, /no parseable UAT mode declaration/i);
+    assert.match(error, /- UAT mode: browser-executable/);
+    assert.doesNotMatch(error, /but declares "UAT mode: artifact-driven"/);
+  });
+
+  test('allows a browser UAT when it is declared mixed (mixed receives browser tools)', async () => {
+    const body = BROWSER_UAT_BODY.replace('artifact-driven', 'mixed (artifact-driven + browser)');
+    const result = await handleCompleteSlice(
+      makeParams({ uatContent: body }),
+      basePath,
+    );
+    if ('error' in result) {
+      assert.doesNotMatch(
+        result.error,
+        /requires browser verification/i,
+        `mixed UAT must pass the browser gate, got: ${result.error}`,
+      );
+    }
+  });
+
+  test('backfills prior verification narrative when verification is omitted on re-completion', async () => {
+    // Seed full_summary_md with a prior verification narrative (simulates a
+    // previous completion where the verification text was recorded).
+    const priorVerification = 'All 12 API integration tests pass — zero regressions detected.';
+    const priorSummary = [
+      '---',
+      'verification_result: passed',
+      '---',
+      '',
+      '# S01: Test Slice',
+      '',
+      '## What Happened',
+      '',
+      'narrative goes here',
+      '',
+      '## Verification',
+      '',
+      priorVerification,
+      '',
+      '## Requirements Advanced',
+      '',
+    ].join('\n');
+    setSliceSummaryMd('M001', 'S01', priorSummary, '');
+
+    // Complete slice without providing verification — handler must backfill
+    // from the existing summary rather than writing an empty section.
+    const result = await handleCompleteSlice(
+      makeParams({ verification: undefined }),
+      basePath,
+    );
+
+    assert.ok(!('error' in result), `expected success, got: ${'error' in result ? (result as { error: string }).error : ''}`);
+
+    const { summaryPath } = result as { summaryPath: string };
+    const written = fs.readFileSync(summaryPath, 'utf8');
+    assert.ok(
+      written.includes(priorVerification),
+      `prior verification narrative must be preserved when verification is omitted; got:\n${written}`,
+    );
   });
 });

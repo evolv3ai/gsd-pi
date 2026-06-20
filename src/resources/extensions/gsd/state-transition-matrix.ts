@@ -131,6 +131,48 @@ export function findTransition(
   );
 }
 
+/**
+ * Edge-keyed legality check for the Phase Transition Invariant (ADR-030).
+ * `advance()` derives the next Phase and asserts the (from → to) edge here.
+ *
+ * The matrix is an assertion, not a decision-maker — `deriveState` already
+ * chose the Phase. A self-edge is trivially legal (no transition to assert). An
+ * edge is legal when some matrix entry permits it, honoring the `*` wildcard
+ * rows (e.g. any → blocked via manual-block, any → executing via
+ * retryable-failure).
+ *
+ * Note: the matrix is currently a sparse hardening spec, not a complete
+ * legal-edge graph, so `advance()` consumes this in advisory mode (telemetry
+ * only). It must be expanded to cover every edge `deriveState` emits before
+ * enforcement flips on.
+ */
+export function isLegalEdge(from: Phase, to: Phase): boolean {
+  if (from === to) return true;
+  return STATE_TRANSITION_MATRIX.some(
+    (entry) => (entry.from === from || entry.from === "*") && entry.to === to,
+  );
+}
+
+/**
+ * Thrown when an illegal derived Phase edge survives reconciliation. Carries
+ * both endpoints so Recovery Classification can report them. Recognized by
+ * class in `classifyFailure` and mapped to the `illegal-transition` kind.
+ */
+export class IllegalPhaseTransitionError extends Error {
+  // Explicit fields, not constructor parameter properties — strip-types
+  // consumers (workspace-index subprocess, integration tests) reject the
+  // parameter-property syntax with ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX.
+  readonly from: Phase;
+  readonly to: Phase;
+
+  constructor(from: Phase, to: Phase) {
+    super(`Illegal phase transition ${from} -> ${to} survived reconciliation`);
+    this.name = "IllegalPhaseTransitionError";
+    this.from = from;
+    this.to = to;
+  }
+}
+
 export function validateTransitionMatrix(requiredEvents: readonly string[]): MatrixValidationResult {
   const seen = new Set<string>();
   const duplicateKeys: string[] = [];

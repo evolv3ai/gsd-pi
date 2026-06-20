@@ -26,6 +26,24 @@ test("filterDoctorIssues keeps project and environment issues in scoped reports"
   );
 });
 
+test("filterDoctorIssues keeps invalid_preferences issues regardless of preferences file scope", () => {
+  // Both global and project preference diagnostics should survive scope filtering.
+  // doctor.ts uses unitId: "project" for all invalid_preferences issues so they
+  // pass through the scope filter the same way other project-level issues do.
+  const issues = [
+    { severity: "error", code: "invalid_preferences", scope: "project", unitId: "project", message: "global PREFERENCES.md parse error", fixable: false },
+    { severity: "error", code: "invalid_preferences", scope: "project", unitId: "project", message: "project PREFERENCES.md parse error", fixable: false },
+    { severity: "error", code: "invalid_preferences", scope: "project", unitId: "global", message: "stale unitId — should be filtered out", fixable: false },
+  ] as const;
+
+  const filtered = filterDoctorIssues([...issues], { scope: "M016", includeWarnings: true });
+  assert.deepEqual(
+    filtered.map((issue) => issue.message),
+    ["global PREFERENCES.md parse error", "project PREFERENCES.md parse error"],
+    "invalid_preferences issues with unitId: project survive scope filtering; unitId: global is dropped",
+  );
+});
+
 test("checkEngineHealth reports db_unavailable when gsd.db exists but the DB is closed", async (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-doctor-db-unavailable-"));
   t.after(() => rmSync(base, { recursive: true, force: true }));
@@ -109,22 +127,12 @@ test("checkEngineHealth treats explicit reopen as authoritative when dispatch ti
       worker_id, host, pid, started_at, version, last_heartbeat_at, status, project_root_realpath
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run("worker-1", "localhost", 1, "2026-01-01T00:00:00.000Z", "test", "2026-01-01T00:00:00.000Z", "stopped", base);
-  db.exec("PRAGMA writable_schema = ON");
   db.prepare(
-    `UPDATE sqlite_schema
-     SET sql = replace(sql, 'started_at TEXT NOT NULL', 'started_at TEXT')
-     WHERE type = 'table' AND name = 'unit_dispatches'`,
-  ).run();
-  db.exec("PRAGMA writable_schema = OFF");
-  closeDatabase();
-  openDatabase(join(gsdDir, "gsd.db"));
-  const reopenedDb = _getAdapter()!;
-  reopenedDb.prepare(
     `INSERT INTO unit_dispatches (
       trace_id, worker_id, milestone_lease_token, milestone_id,
       unit_type, unit_id, status, attempt_n, started_at, ended_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run("trace-1", "worker-1", 1, "M001", "complete-milestone", "M001", "completed", 1, null, null);
+  ).run("trace-1", "worker-1", 1, "M001", "complete-milestone", "M001", "completed", 1, "", "");
   appendEvent(base, {
     cmd: "reopen-milestone",
     params: { milestoneId: "M001" },

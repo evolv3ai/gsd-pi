@@ -472,16 +472,20 @@ export function ensureCodebaseMapFresh(
   const force = ensureOptions?.force === true;
   const now = Date.now();
 
-  if (!force && ttlMs > 0) {
-    const cached = freshnessCache.get(cacheKey);
-    if (cached && now - cached.checkedAt < ttlMs) {
-      return cached.result;
-    }
-  }
-
+  // Enumerate files and compute fingerprint before the TTL check so that
+  // file changes are always detected, even within the TTL window.
   const existing = readCodebaseMap(basePath);
   const listed = enumerateFiles(basePath, resolved.excludes, resolved.maxFiles);
   const fingerprint = computeCodebaseFingerprint(listed.files, resolved, listed.truncated);
+
+  // TTL short-circuit: only bypass regeneration when the fingerprint matches,
+  // confirming that no tracked files changed since the last check.
+  if (!force && ttlMs > 0) {
+    const cached = freshnessCache.get(cacheKey);
+    if (cached && now - cached.checkedAt < ttlMs && cached.result.fingerprint === fingerprint) {
+      return cached.result;
+    }
+  }
 
   const cacheAndReturn = (result: EnsureCodebaseMapResult): EnsureCodebaseMapResult => {
     freshnessCache.set(cacheKey, { checkedAt: now, result });

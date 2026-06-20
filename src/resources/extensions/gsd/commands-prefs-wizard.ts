@@ -22,6 +22,10 @@ import {
 } from "./preferences.js";
 import { loadFile, saveFile, splitFrontmatter, parseFrontmatterMap } from "./files.js";
 import { runClaudeImportFlow } from "./claude-import.js";
+import { clearSessionModelOverride } from "./session-model-override.js";
+
+const DEFAULT_WIDGET_MODE = "small";
+const WIDGET_MODE_OPTIONS = [DEFAULT_WIDGET_MODE, "full", "min", "off"] as const;
 
 /** Extract body content after frontmatter closing delimiter, or null if none. */
 function extractBodyAfterFrontmatter(content: string): string | null {
@@ -1282,7 +1286,7 @@ async function configureHooks(ctx: ExtensionCommandContext, prefs: Record<string
   if (geEnabled !== undefined) ge.enabled = geEnabled;
   const currentSliceGates = Array.isArray(ge.slice_gates) ? ge.slice_gates as string[] : [];
   const sgInput = await ctx.ui.input(
-    `Slice gates to evaluate (comma-separated, blank keeps)${currentSliceGates.length ? ` (current: ${currentSliceGates.join(", ")})` : " (default: Q3,Q4)"}:`,
+    `Gate-evaluate slice gates (Q3,Q4; comma-separated, blank keeps)${currentSliceGates.length ? ` (current: ${currentSliceGates.join(", ")})` : " (default: Q3,Q4)"}:`,
     currentSliceGates.join(", "),
   );
   if (sgInput !== null && sgInput !== undefined) {
@@ -1558,7 +1562,7 @@ async function configureAdvanced(ctx: ExtensionCommandContext, prefs: Record<str
     prefs.min_request_interval_ms = minRequestInterval;
   }
 
-  const widget = await promptEnum(ctx, "Auto-mode widget display", prefs.widget_mode, ["full", "small", "min", "off"], "full");
+  const widget = await promptEnum(ctx, "Auto-mode widget display", prefs.widget_mode, WIDGET_MODE_OPTIONS, DEFAULT_WIDGET_MODE);
   if (widget !== undefined) prefs.widget_mode = widget;
 
   const experimental = (prefs.experimental as Record<string, unknown> | undefined) ?? {};
@@ -1675,6 +1679,12 @@ export async function writePreferencesFile(
   await saveFile(path, content);
 
   if (ctx) {
+    // Per-phase model prefs must beat an earlier /gsd model session pin.
+    const models = prefs.models;
+    if (models && typeof models === "object" && Object.keys(models as object).length > 0) {
+      const sessionId = ctx.sessionManager?.getSessionId?.();
+      if (sessionId) clearSessionModelOverride(sessionId);
+    }
     await ctx.waitForIdle();
     await ctx.reload();
     if (opts?.notifyOnSave !== false) {
@@ -1748,7 +1758,7 @@ export function serializePreferencesToFrontmatter(prefs: Record<string, unknown>
   // Ordered keys for consistent output
   const orderedKeys = [
     "version", "mode", "always_use_skills", "prefer_skills", "avoid_skills",
-    "skill_rules", "custom_instructions", "models", "skill_discovery",
+    "skill_rules", "custom_instructions", "models", "thinking", "skill_discovery",
     "skill_staleness_days", "auto_supervisor", "uat_dispatch", "unique_milestone_ids",
     "budget_ceiling", "budget_enforcement", "context_pause_threshold",
     "notifications", "cmux", "remote_questions", "git",

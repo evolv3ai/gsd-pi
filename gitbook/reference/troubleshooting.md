@@ -137,13 +137,19 @@ Worktree merge fails on `.gsd/` files.
 
 Auto mode was paused, stopped, or crashed mid-milestone, and the work is still on the `milestone/<MID>` branch in `.gsd/worktrees/<MID>/` — never merged back to main. Next session reports the milestone as incomplete or behaving inconsistently.
 
-**Fix:** As of GSD 2.78, `/gsd auto` bootstrap automatically detects this condition and surfaces a warning naming the branch, commit count, and worktree location. Run `/gsd auto` to re-enter the worktree and resume; or merge `milestone/<MID>` into main manually if abandoning.
+**Fix:** As of GSD 2.78, `/gsd auto` bootstrap automatically detects this condition and surfaces a warning naming the branch, commit count, and worktree location. Run `/gsd auto` to re-enter the worktree and resume. If the worktree must be resolved manually, merge salvageable work with `/gsd worktree merge <MID>` or remove a stale worktree with `/gsd worktree remove <MID>`, then run `/gsd doctor fix`.
 
 **Diagnose:** Run `/gsd forensics` and look at the **Worktree Telemetry** section:
 - `Orphans detected > 0` with reason `in-progress-unmerged` confirms the condition
 - `Unmerged exits > 0` on the producer side confirms which exit type caused it
 
 **Prevent recurrence:** If your milestones are large or sessions are frequently interrupted, consider setting `git.collapse_cadence: "slice"` in preferences — validated slices merge to main immediately, shrinking the orphan window from milestone-size to slice-size. See [Git & Worktrees](../configuration/git-settings.md#collapse-cadence).
+
+### Milestone entry blocked by degraded worktree isolation
+
+Auto mode fails milestone entry with an isolation-degraded warning, often after a previous worktree cleanup or create problem on Windows.
+
+**Fix:** Close editors, terminals, antivirus tools, or Git clients that may be locking `.gsd/worktrees/*` paths. Merge salvageable work with `/gsd worktree merge <MID>` or remove a stale worktree with `/gsd worktree remove <MID>`, then run `/gsd doctor fix` and retry `/gsd auto`. If fallback already succeeded, work continues on `milestone/<MID>` in the project root for that milestone.
 
 ### `orphan_milestone_dir` doctor warning
 
@@ -174,6 +180,10 @@ See [Notifications](../configuration/notifications.md) for details.
 ### Server connection closed immediately
 
 **Fix:** Verify `command` and `args` paths are correct and absolute. Run the command manually to catch errors.
+
+### GSD workflow tool surface not ready
+
+**Fix:** Run `/gsd mcp init` from the project root, restart Claude Code, and check `/gsd mcp status`. Manual configs should set `GSD_WORKFLOW_PROJECT_ROOT` to the canonical project root. If stale process cleanup is involved, inspect `$GSD_HOME/mcp-instances.json` and remove only dead `gsd-mcp-server` entries.
 
 ## Recovery Procedures
 

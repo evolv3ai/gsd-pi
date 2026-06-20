@@ -6,24 +6,70 @@ import {
   readTransaction,
   restoreManifest,
 } from "./gsd-db.js";
-import type { MilestoneRow } from "./db-milestone-artifact-rows.js";
+import type { ArtifactRow, MilestoneRow } from "./db-milestone-artifact-rows.js";
 import type { SliceRow, TaskRow } from "./db-task-slice-rows.js";
 import type { VerificationEvidenceRow } from "./db-verification-evidence-rows.js";
-import type { Decision } from "./types.js";
+import type { Decision, GateRow, Requirement } from "./types.js";
 import { atomicWriteSync } from "./atomic-write.js";
+import { getAllDecisionsFromMemories } from "./context-store.js";
+import { backfillDecisionsToMemories } from "./memory-backfill.js";
+import { invalidateAllCaches } from "./cache.js";
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 // ─── Manifest Types ──────────────────────────────────────────────────────
+
+export interface ManifestArtifactRow extends ArtifactRow {
+  content_hash: string | null;
+}
+
+export interface ReplanHistoryManifestRow {
+  id: number;
+  milestone_id: string;
+  slice_id: string | null;
+  task_id: string | null;
+  summary: string;
+  previous_artifact_path: string | null;
+  replacement_artifact_path: string | null;
+  created_at: string;
+}
+
+export interface AssessmentManifestRow {
+  path: string;
+  milestone_id: string;
+  slice_id: string | null;
+  task_id: string | null;
+  status: string;
+  scope: string;
+  full_content: string;
+  created_at: string;
+}
+
+export interface MilestoneCommitAttributionManifestRow {
+  commit_sha: string;
+  milestone_id: string;
+  slice_id: string | null;
+  task_id: string | null;
+  source: string;
+  confidence: number;
+  files_json: string;
+  created_at: string;
+}
 
 export interface StateManifest {
   version: 1;
   exported_at: string; // ISO 8601
+  requirements?: Requirement[];
+  artifacts?: ManifestArtifactRow[];
   milestones: MilestoneRow[];
   slices: SliceRow[];
   tasks: TaskRow[];
   decisions: Decision[];
+  replan_history?: ReplanHistoryManifestRow[];
+  assessments?: AssessmentManifestRow[];
+  quality_gates?: GateRow[];
   verification_evidence: VerificationEvidenceRow[];
+  milestone_commit_attributions?: MilestoneCommitAttributionManifestRow[];
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────
@@ -51,11 +97,26 @@ export function toNumeric(value: unknown, fallback: number | null = null): numbe
   return fallback;
 }
 
+function mergeDecisionSurfaces(legacyDecisions: Decision[], memoryDecisions: Decision[]): Decision[] {
+  const byId = new Map<string, Decision>();
+  for (const decision of legacyDecisions) {
+    byId.set(decision.id, decision);
+  }
+  for (const decision of memoryDecisions) {
+    byId.set(decision.id, decision);
+  }
+  return Array.from(byId.values()).sort((a, b) => {
+    const seqDelta = (a.seq ?? 0) - (b.seq ?? 0);
+    return seqDelta === 0 ? a.id.localeCompare(b.id) : seqDelta;
+  });
+}
+
 // ─── snapshotState ───────────────────────────────────────────────────────
 
 /**
- * Capture complete DB state as a StateManifest.
- * Reads all rows from milestones, slices, tasks, decisions, verification_evidence.
+ * Capture DB-backed workflow state as a StateManifest.
+ * Runtime soft state and append-only audit streams stay outside this recovery
+ * substrate; correctness records and persisted evidence are included.
  *
  * Note: rows returned from raw queries are plain objects with TEXT columns for
  * JSON arrays. We parse them into typed Row objects using the same logic as
@@ -67,6 +128,34 @@ export function snapshotState(): StateManifest {
   // Wrap all reads in a deferred transaction so the snapshot is consistent
   // (all SELECTs see the same DB state even if a concurrent write lands between them).
   return readTransaction(() => {
+  const rawRequirements = db.prepare("SELECT * FROM requirements ORDER BY id").all() as Record<string, unknown>[];
+  const requirements: Requirement[] = rawRequirements.map((r) => ({
+    id: r["id"] as string,
+    class: (r["class"] as string) ?? "",
+    status: (r["status"] as string) ?? "",
+    description: (r["description"] as string) ?? "",
+    why: (r["why"] as string) ?? "",
+    source: (r["source"] as string) ?? "",
+    primary_owner: (r["primary_owner"] as string) ?? "",
+    supporting_slices: (r["supporting_slices"] as string) ?? "",
+    validation: (r["validation"] as string) ?? "",
+    notes: (r["notes"] as string) ?? "",
+    full_content: (r["full_content"] as string) ?? "",
+    superseded_by: (r["superseded_by"] as string) ?? null,
+  }));
+
+  const rawArtifacts = db.prepare("SELECT * FROM artifacts ORDER BY path").all() as Record<string, unknown>[];
+  const artifacts: ManifestArtifactRow[] = rawArtifacts.map((r) => ({
+    path: r["path"] as string,
+    artifact_type: (r["artifact_type"] as string) ?? "",
+    milestone_id: (r["milestone_id"] as string) ?? null,
+    slice_id: (r["slice_id"] as string) ?? null,
+    task_id: (r["task_id"] as string) ?? null,
+    full_content: (r["full_content"] as string) ?? "",
+    imported_at: (r["imported_at"] as string) ?? "",
+    content_hash: (r["content_hash"] as string) ?? null,
+  }));
+
   const rawMilestones = db.prepare(
     "SELECT * FROM milestones ORDER BY CASE WHEN sequence > 0 THEN 0 ELSE 1 END, sequence, id",
   ).all() as Record<string, unknown>[];
@@ -152,7 +241,7 @@ export function snapshotState(): StateManifest {
   }));
 
   const rawDecisions = db.prepare("SELECT * FROM decisions ORDER BY seq").all() as Record<string, unknown>[];
-  const decisions: Decision[] = rawDecisions.map((r) => ({
+  const legacyDecisions: Decision[] = rawDecisions.map((r) => ({
     seq: toNumeric(r["seq"], 0) as number,
     id: r["id"] as string,
     when_context: (r["when_context"] as string) ?? "",
@@ -164,6 +253,45 @@ export function snapshotState(): StateManifest {
     made_by: (r["made_by"] as string as Decision["made_by"]) ?? "agent",
     source: (r["source"] as string) ?? "discussion",
     superseded_by: (r["superseded_by"] as string) ?? null,
+  }));
+  const decisions = mergeDecisionSurfaces(legacyDecisions, getAllDecisionsFromMemories());
+
+  const rawReplanHistory = db.prepare("SELECT * FROM replan_history ORDER BY id").all() as Record<string, unknown>[];
+  const replan_history: ReplanHistoryManifestRow[] = rawReplanHistory.map((r) => ({
+    id: toNumeric(r["id"], 0) as number,
+    milestone_id: (r["milestone_id"] as string) ?? "",
+    slice_id: (r["slice_id"] as string) ?? null,
+    task_id: (r["task_id"] as string) ?? null,
+    summary: (r["summary"] as string) ?? "",
+    previous_artifact_path: (r["previous_artifact_path"] as string) ?? null,
+    replacement_artifact_path: (r["replacement_artifact_path"] as string) ?? null,
+    created_at: (r["created_at"] as string) ?? "",
+  }));
+
+  const rawAssessments = db.prepare("SELECT * FROM assessments ORDER BY path").all() as Record<string, unknown>[];
+  const assessments: AssessmentManifestRow[] = rawAssessments.map((r) => ({
+    path: r["path"] as string,
+    milestone_id: (r["milestone_id"] as string) ?? "",
+    slice_id: (r["slice_id"] as string) ?? null,
+    task_id: (r["task_id"] as string) ?? null,
+    status: (r["status"] as string) ?? "",
+    scope: (r["scope"] as string) ?? "",
+    full_content: (r["full_content"] as string) ?? "",
+    created_at: (r["created_at"] as string) ?? "",
+  }));
+
+  const rawQualityGates = db.prepare("SELECT * FROM quality_gates ORDER BY milestone_id, slice_id, gate_id, task_id").all() as Record<string, unknown>[];
+  const quality_gates: GateRow[] = rawQualityGates.map((r) => ({
+    milestone_id: r["milestone_id"] as string,
+    slice_id: r["slice_id"] as string,
+    gate_id: r["gate_id"] as GateRow["gate_id"],
+    scope: r["scope"] as GateRow["scope"],
+    task_id: (r["task_id"] as string) ?? "",
+    status: r["status"] as GateRow["status"],
+    verdict: r["status"] === "pending" ? null : (r["verdict"] as GateRow["verdict"]),
+    rationale: (r["rationale"] as string) ?? "",
+    findings: (r["findings"] as string) ?? "",
+    evaluated_at: (r["evaluated_at"] as string) ?? null,
   }));
 
   const rawEvidence = db.prepare("SELECT * FROM verification_evidence ORDER BY id").all() as Record<string, unknown>[];
@@ -179,14 +307,34 @@ export function snapshotState(): StateManifest {
     created_at: r["created_at"] as string,
   }));
 
+  const rawCommitAttributions = db.prepare(
+    "SELECT * FROM milestone_commit_attributions ORDER BY milestone_id, commit_sha",
+  ).all() as Record<string, unknown>[];
+  const milestone_commit_attributions: MilestoneCommitAttributionManifestRow[] = rawCommitAttributions.map((r) => ({
+    commit_sha: r["commit_sha"] as string,
+    milestone_id: r["milestone_id"] as string,
+    slice_id: (r["slice_id"] as string) ?? null,
+    task_id: (r["task_id"] as string) ?? null,
+    source: (r["source"] as string) ?? "recorded",
+    confidence: toNumeric(r["confidence"], 1) as number,
+    files_json: (r["files_json"] as string) ?? "[]",
+    created_at: (r["created_at"] as string) ?? "",
+  }));
+
   const result: StateManifest = {
     version: 1,
     exported_at: new Date().toISOString(),
+    requirements,
+    artifacts,
     milestones,
     slices,
     tasks,
     decisions,
+    replan_history,
+    assessments,
+    quality_gates,
     verification_evidence,
+    milestone_commit_attributions,
   };
 
   return result;
@@ -232,20 +380,55 @@ export function readManifest(basePath: string): StateManifest | null {
     throw new Error(`Unsupported manifest version: ${parsed.version}`);
   }
 
-  // Validate required fields to avoid cryptic errors during restore
+  // Validate required fields to avoid cryptic errors during restore.
   if (!Array.isArray(parsed.milestones) || !Array.isArray(parsed.slices) ||
       !Array.isArray(parsed.tasks) || !Array.isArray(parsed.decisions) ||
       !Array.isArray(parsed.verification_evidence)) {
     throw new Error("Malformed manifest: missing or invalid required arrays");
   }
 
+  for (const key of ["requirements", "artifacts", "replan_history", "assessments", "quality_gates", "milestone_commit_attributions"] as const) {
+    if (parsed[key] !== undefined && !Array.isArray(parsed[key])) {
+      throw new Error(`Malformed manifest: ${key} must be an array when present`);
+    }
+  }
+
   return parsed;
+}
+
+function stripGsdPrefix(path: string): string {
+  return path.startsWith(".gsd/") ? path.slice(".gsd/".length) : path;
+}
+
+function artifactProjectionPath(basePath: string, artifactPath: string): string {
+  const gsdDir = resolve(basePath, ".gsd");
+  const fullPath = resolve(gsdDir, stripGsdPrefix(artifactPath));
+  const rel = relative(gsdDir, fullPath);
+  if (rel.startsWith("..") || isAbsolute(rel)) {
+    throw new Error(`Malformed manifest: artifact path escapes .gsd: ${artifactPath}`);
+  }
+  return fullPath;
+}
+
+function restoreArtifactProjections(basePath: string, manifest: StateManifest): void {
+  if (manifest.artifacts === undefined) return;
+
+  for (const artifact of manifest.artifacts) {
+    atomicWriteSync(
+      artifactProjectionPath(basePath, artifact.path),
+      artifact.full_content ?? "",
+    );
+  }
 }
 
 // ─── bootstrapFromManifest ──────────────────────────────────────────────
 
 /**
  * Read state-manifest.json and restore DB state from it.
+ * Rehydrates artifact projection files for restored artifacts so file-based
+ * fallback paths see the same evidence as the DB.
+ * Re-mirrors restored legacy decisions into memories so the ADR-013
+ * memory-backed decision readers see bootstrapped decisions immediately.
  * Returns true if bootstrap succeeded, false if manifest file doesn't exist.
  */
 export function bootstrapFromManifest(basePath: string): boolean {
@@ -256,5 +439,8 @@ export function bootstrapFromManifest(basePath: string): boolean {
   }
 
   restoreManifest(manifest);
+  restoreArtifactProjections(basePath, manifest);
+  backfillDecisionsToMemories();
+  invalidateAllCaches();
   return true;
 }

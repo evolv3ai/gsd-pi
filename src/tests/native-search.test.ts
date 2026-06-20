@@ -101,11 +101,14 @@ test("before_provider_request injects web_search for claude models", async () =>
   assert.equal(nativeTool.max_uses, 5, "Should set max_uses to 5 to prevent search loops (#817)");
 });
 
-test("before_provider_request injects web_search for claude models even without model_select", async () => {
+test("before_provider_request does NOT inject web_search without model_select or event.model provider (#648)", async () => {
   const pi = createMockPI();
   registerNativeSearchHooks(pi);
 
-  // NO model_select fired — simulates session restore where modelsAreEqual suppresses the event
+  // NO model_select fired, NO event.model with provider info — simulates startup
+  // or a third-party proxy where the SDK omits provider details. Injecting
+  // web_search_20250305 without confirmed provider causes 400 "unsupported_value"
+  // errors on non-Anthropic endpoints that serve Claude-named models (#648).
   const payload: Record<string, unknown> = {
     model: "claude-opus-4-8",
     tools: [
@@ -120,13 +123,12 @@ test("before_provider_request injects web_search for claude models even without 
     payload,
   });
 
-  const tools = ((result as any)?.tools ?? payload.tools) as any[];
-  const names = tools.map((t: any) => t.name ?? t.type);
-
-  assert.ok(names.includes("web_search"), "Should inject native web_search based on model name");
-  assert.ok(!names.includes("search-the-web"), "Should remove search-the-web");
-  assert.ok(!names.includes("google_search"), "Should remove google_search");
-  assert.ok(names.includes("bash"), "Should keep non-search tools");
+  assert.equal(result, undefined, "Should not modify payload without authoritative provider info");
+  const tools = payload.tools as any[];
+  assert.ok(
+    !tools.some((t: any) => t.type === "web_search_20250305"),
+    "web_search_20250305 must NOT be injected without confirmed provider — causes 400 on proxies/copilot"
+  );
 });
 
 test("before_provider_request does NOT inject for non-claude models", async () => {
@@ -459,9 +461,9 @@ test("model_select disables all custom search tools when Anthropic even with BRA
   assert.ok(active.includes("fetch_page"), "fetch_page should remain active");
 });
 
-test("model_select re-enables Brave tools when switching away from Anthropic", async (t) => {
+test("model_select re-enables Brave tools when switching away from Anthropic (provider key present)", async (t) => {
   const originalKey = process.env.BRAVE_API_KEY;
-  delete process.env.BRAVE_API_KEY;
+  process.env.BRAVE_API_KEY = "test-key";
 
   t.after(() => {
     if (originalKey) process.env.BRAVE_API_KEY = originalKey;
@@ -481,7 +483,7 @@ test("model_select re-enables Brave tools when switching away from Anthropic", a
   let active = pi.getActiveTools();
   assert.ok(!active.includes("search-the-web"), "Should disable after Anthropic select");
 
-  // Second: switch to non-Anthropic — re-enables
+  // Second: switch to non-Anthropic — re-enables (a Brave key is configured)
   await pi.fire("model_select", {
     type: "model_select",
     model: { provider: "openai", name: "gpt-4o" },
@@ -493,6 +495,49 @@ test("model_select re-enables Brave tools when switching away from Anthropic", a
   assert.ok(active.includes("search-the-web"), "search-the-web should be re-enabled");
   assert.ok(active.includes("search_and_read"), "search_and_read should be re-enabled");
   assert.ok(active.includes("google_search"), "google_search should be re-enabled");
+});
+
+test("model_select does NOT re-enable Brave tools when no provider key is configured", async (t) => {
+  // Reversal of the prior "re-enable even if keys missing" behavior: an
+  // unconfigured Brave/Tavily/Ollama tool can only return an auth error, so it
+  // must not be re-advertised to the model. google_search has its own creds and
+  // is still re-enabled.
+  const originalBrave = process.env.BRAVE_API_KEY;
+  const originalTavily = process.env.TAVILY_API_KEY;
+  const originalOllama = process.env.OLLAMA_API_KEY;
+  delete process.env.BRAVE_API_KEY;
+  delete process.env.TAVILY_API_KEY;
+  delete process.env.OLLAMA_API_KEY;
+
+  t.after(() => {
+    if (originalBrave) process.env.BRAVE_API_KEY = originalBrave; else delete process.env.BRAVE_API_KEY;
+    if (originalTavily) process.env.TAVILY_API_KEY = originalTavily; else delete process.env.TAVILY_API_KEY;
+    if (originalOllama) process.env.OLLAMA_API_KEY = originalOllama; else delete process.env.OLLAMA_API_KEY;
+  });
+  const pi = createMockPI();
+  registerNativeSearchHooks(pi);
+
+  // First: select Anthropic — disables custom search tools
+  await pi.fire("model_select", {
+    type: "model_select",
+    model: { provider: "anthropic", api: "anthropic-messages", name: "claude-sonnet-4-6" },
+    previousModel: undefined,
+    source: "set",
+  });
+
+  // Second: switch to non-Anthropic — Brave tools stay hidden (no key)
+  await pi.fire("model_select", {
+    type: "model_select",
+    model: { provider: "openai", name: "gpt-4o" },
+    previousModel: { provider: "anthropic", name: "claude-sonnet-4-6" },
+    source: "set",
+  });
+
+  const active = pi.getActiveTools();
+  assert.ok(!active.includes("search-the-web"), "search-the-web must stay hidden without a provider key");
+  assert.ok(!active.includes("search_and_read"), "search_and_read must stay hidden without a provider key");
+  assert.ok(active.includes("google_search"), "google_search should still be re-enabled (own creds)");
+  assert.ok(active.includes("fetch_page"), "fetch_page should remain active");
 });
 
 test("model_select shows 'Native Anthropic web search active' for Anthropic provider", async () => {
@@ -654,8 +699,10 @@ test("before_provider_request removes all custom search tools from payload even 
 // ─── BUG-1 regression: duplicate Brave tools on repeated provider toggle ────
 
 test("model_select re-enable does not duplicate Brave tools across toggle cycles", async (t) => {
+  // A provider key is configured so the Brave tools are actually re-enabled on
+  // switch-away; this exercises the dedup guard (no accumulation across cycles).
   const originalKey = process.env.BRAVE_API_KEY;
-  delete process.env.BRAVE_API_KEY;
+  process.env.BRAVE_API_KEY = "test-key";
 
   t.after(() => {
     if (originalKey) process.env.BRAVE_API_KEY = originalKey;

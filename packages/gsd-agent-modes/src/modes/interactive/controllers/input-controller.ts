@@ -2,6 +2,7 @@ import type { ImageContent } from "@gsd/pi-ai";
 import { dispatchSlashCommand } from "../slash-command-handlers.js";
 import type { InteractiveModeStateHost } from "../interactive-mode-state.js";
 import type { ContextualTips } from "@gsd/agent-core";
+import * as modeInit from "../interactive-mode-init.js";
 
 /**
  * Consume and clear any pending pasted images from the host.
@@ -12,6 +13,21 @@ function consumePendingImages(host: InteractiveModeStateHost): ImageContent[] | 
 	const images = [...host.pendingImages];
 	host.pendingImages.length = 0;
 	return images;
+}
+
+function markEditorSubmitLatency(host: InteractiveModeStateHost, images: ImageContent[] | undefined): void {
+	host.session.beginTurnLatency?.({ source: "tui", trigger: "editor_submit" });
+	host.session.markTurnLatency?.("tui.editor_submit", { images: images?.length ?? 0 });
+}
+
+function wireEditorSubmitHandler(
+	host: InteractiveModeStateHost & { editor: { onSubmit?: (text: string) => void | Promise<void> } },
+	handler: (text: string) => Promise<void>,
+): void {
+	host.defaultEditor.onSubmit = handler;
+	if (host.editor !== host.defaultEditor) {
+		host.editor.onSubmit = handler;
+	}
 }
 
 export function setupEditorSubmitHandler(host: InteractiveModeStateHost & {
@@ -30,9 +46,15 @@ export function setupEditorSubmitHandler(host: InteractiveModeStateHost & {
 	getContextPercent: () => number | undefined;
 	options?: { submitPromptsDirectly?: boolean };
 }): void {
-	host.defaultEditor.onSubmit = async (text: string) => {
+	const onSubmit = async (text: string) => {
 		text = text.trim();
 		if (!text) return;
+
+		if (!host.session.isStreaming) {
+			host.clearBlockingError();
+		}
+
+		modeInit.dismissStartupHeader(host as Parameters<typeof modeInit.dismissStartupHeader>[0]);
 
 		if (text.startsWith("/") && !looksLikeFilePath(text)) {
 			const handled = await dispatchSlashCommand(text, host.getSlashCommandContext());
@@ -121,6 +143,7 @@ export function setupEditorSubmitHandler(host: InteractiveModeStateHost & {
 		if (host.options?.submitPromptsDirectly) {
 			host.editor.addToHistory?.(text);
 			try {
+				markEditorSubmitLatency(host, images);
 				await host.session.prompt(text, { images });
 			} catch (error: unknown) {
 				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
@@ -130,15 +153,18 @@ export function setupEditorSubmitHandler(host: InteractiveModeStateHost & {
 		}
 
 		host.editor.addToHistory?.(text);
-		// submitPromptsDirectly is false — still dispatch via session.prompt so user input
+		// submitPromptsDirectly is false; still dispatch via session.prompt so user input
 		// is not silently discarded.
 		try {
+			markEditorSubmitLatency(host, images);
 			await host.session.prompt(text, { images });
 		} catch (error: unknown) {
 			const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 			host.showError(errorMessage);
 		}
 	};
+
+	wireEditorSubmitHandler(host, onSubmit);
 }
 
 /**

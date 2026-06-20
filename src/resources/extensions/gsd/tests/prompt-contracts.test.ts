@@ -2,6 +2,23 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  RUN_UAT_BROWSER_TOOL_NAMES,
+  resolveToolPresentationPlan,
+  buildRunUatResultPresentation,
+  buildRunUatPresentationForType,
+  RUN_UAT_READ_ONLY_TOOL_NAMES,
+  RUN_UAT_TOOL_PRESENTATION_PLAN_ID,
+  RUN_UAT_WORKFLOW_TOOL_NAMES,
+} from "../tool-presentation-plan.ts";
+import {
+  buildMinimalAutoGsdToolSet,
+  MINIMAL_AUTO_BASE_TOOL_NAMES,
+  MINIMAL_GSD_TOOL_NAMES,
+} from "../bootstrap/register-hooks.ts";
+import { shouldBlockAutoUnitToolCall } from "../auto-unit-tool-scope.ts";
+import { UNIT_TOOL_CONTRACTS } from "../unit-tool-contracts.ts";
+import { uatTypeIncludesBrowser } from "../uat-policy.ts";
 
 const promptsDir = join(process.cwd(), "src/resources/extensions/gsd/prompts");
 const templatesDir = join(process.cwd(), "src/resources/extensions/gsd/templates");
@@ -14,10 +31,95 @@ function readTemplate(name: string): string {
   return readFileSync(join(templatesDir, `${name}.md`), "utf-8");
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+const registeredPhaseToolNames = [
+  ...new Set([
+    ...MINIMAL_AUTO_BASE_TOOL_NAMES,
+    ...MINIMAL_GSD_TOOL_NAMES,
+    ...Object.values(UNIT_TOOL_CONTRACTS).flatMap((contract) => contract.allowedGsdTools),
+  ]),
+];
+
+const PHASE_PROMPT_TOOL_CALLS: Record<string, readonly string[]> = {
+  "research-milestone": ["gsd_summary_save"],
+  "plan-milestone": [
+    "gsd_milestone_status",
+    "gsd_plan_milestone",
+    "gsd_plan_slice",
+    "gsd_decision_save",
+  ],
+  "research-slice": ["gsd_summary_save"],
+  "plan-slice": ["gsd_reassess_roadmap", "gsd_plan_slice", "gsd_decision_save"],
+  "refine-slice": ["gsd_plan_slice", "gsd_decision_save"],
+  "replan-slice": ["gsd_replan_slice"],
+  "execute-task": [
+    "gsd_task_complete",
+    "gsd_exec",
+    "gsd_exec_search",
+    "gsd_resume",
+    "gsd_capture_thought",
+  ],
+  "reactive-execute": ["gsd_summary_save"],
+  "complete-slice": [
+    "gsd_exec",
+    "gsd_task_reopen",
+    "gsd_replan_slice",
+    "gsd_requirement_update",
+    "gsd_capture_thought",
+    "gsd_slice_complete",
+    "gsd_summary_save",
+  ],
+  "reassess-roadmap": ["gsd_milestone_status", "gsd_reassess_roadmap"],
+  "validate-milestone": ["gsd_milestone_status", "gsd_validate_milestone", "gsd_reassess_roadmap"],
+  "run-uat": ["gsd_uat_exec", "gsd_uat_result_save"],
+  "gate-evaluate": ["gsd_save_gate_result"],
+  "complete-milestone": [
+    "gsd_milestone_status",
+    "gsd_requirement_update",
+    "gsd_summary_save",
+    "capture_thought",
+    "gsd_complete_milestone",
+  ],
+};
+
+test("auto phase prompt tool calls are available in scoped tool surfaces", () => {
+  for (const [unitType, promptTools] of Object.entries(PHASE_PROMPT_TOOL_CALLS)) {
+    const prompt = readPrompt(unitType);
+    const activeTools = buildMinimalAutoGsdToolSet(
+      registeredPhaseToolNames,
+      unitType,
+      registeredPhaseToolNames,
+    );
+
+    for (const toolName of promptTools) {
+      assert.match(
+        prompt,
+        new RegExp(`\\b${escapeRegExp(toolName)}\\b`),
+        `${unitType} prompt should mention ${toolName}`,
+      );
+      assert.ok(
+        activeTools.includes(toolName),
+        `${unitType} prompt mentions ${toolName}, but scoped tools are ${activeTools.join(", ")}`,
+      );
+
+      const scopeResult = shouldBlockAutoUnitToolCall(unitType, toolName);
+      assert.equal(
+        scopeResult.block,
+        false,
+        `${unitType} phase gate blocked ${toolName}: ${scopeResult.reason ?? "unknown reason"}`,
+      );
+    }
+  }
+});
+
 test("reactive-execute prompt keeps task summaries with subagents and avoids batch commits", () => {
   const prompt = readPrompt("reactive-execute");
   assert.match(prompt, /subagent-written summary as authoritative/i);
   assert.match(prompt, /Do NOT create a batch commit/i);
+  assert.match(prompt, /cwd:\s*"\{\{workingDirectory\}\}"/);
   assert.doesNotMatch(prompt, /\*\*Write task summaries\*\*/i);
   assert.doesNotMatch(prompt, /\*\*Commit\*\* all changes/i);
 });
@@ -25,17 +127,128 @@ test("reactive-execute prompt keeps task summaries with subagents and avoids bat
 test("run-uat prompt branches on dynamic UAT mode and supports runtime evidence", () => {
   const prompt = readPrompt("run-uat");
   assert.match(prompt, /\*\*Detected UAT mode:\*\*\s*`\{\{uatType\}\}`/);
-  assert.match(prompt, /uatType:\s*\{\{uatType\}\}/);
+  assert.match(prompt, /uatType:\s*"\{\{uatType\}\}"/);
+  assert.match(prompt, /gsd_uat_result_save/);
+  assert.match(prompt, /presentedTools/);
+  assert.match(prompt, /\{\{canonicalPresentation\}\}/);
   assert.match(prompt, /live-runtime/);
   assert.match(prompt, /browser\/runtime\/network/i);
   assert.match(prompt, /NEEDS-HUMAN/);
   assert.doesNotMatch(prompt, /uatType:\s*artifact-driven/);
+  assert.doesNotMatch(prompt, /Call `gsd_summary_save`/);
+});
+
+test("run-uat prompt lists canonical gsd_uat_exec intent values", () => {
+  const prompt = readPrompt("run-uat");
+  assert.match(prompt, /`uat-artifact-check`/);
+  assert.match(prompt, /`uat-runtime-check`/);
+  assert.match(prompt, /`uat-browser-check`/);
+  assert.match(prompt, /`uat-service-start`/);
+  assert.match(prompt, /`uat-log-inspection`/);
+  assert.match(prompt, /do not use `artifact`, `runtime`, or `human-follow-up` as `intent`/i);
+});
+
+test("run-uat prompt gives the complete UAT result-save presentation contract", () => {
+  const prompt = readPrompt("run-uat");
+  assert.match(prompt, /Call `gsd_uat_result_save` once after all checks are complete/);
+  assert.doesNotMatch(prompt, /Call `gsd_summary_save` with `artifact_type: "ASSESSMENT"`/);
+  assert.match(prompt, /\{\{canonicalPresentation\}\}/);
+  assert.match(prompt, /\{\{toolPresentationPlanId\}\}/);
+
+  const presentation = buildRunUatResultPresentation();
+  assert.equal(presentation.toolPresentationPlanId, RUN_UAT_TOOL_PRESENTATION_PLAN_ID);
+  for (const toolName of RUN_UAT_WORKFLOW_TOOL_NAMES) {
+    assert.ok(presentation.presentedTools.includes(toolName), `presentation should include required tool ${toolName}`);
+  }
+  for (const toolName of RUN_UAT_READ_ONLY_TOOL_NAMES) {
+    assert.ok(presentation.presentedTools.includes(toolName), `presentation should include read-only tool ${toolName}`);
+  }
+
+  for (const toolName of ["gsd_exec", "gsd_summary_save", "gsd_save_gate_result"] as const) {
+    assert.ok(
+      presentation.blockedTools.some((entry) => entry.name === toolName),
+      `presentation should include blocked tool ${toolName}`,
+    );
+  }
+
+  assert.ok(
+    presentation.blockedTools.every((entry) => entry.reason === "forbidden during run-uat"),
+    "presentation should explain blocked run-uat tools",
+  );
+});
+
+test("browser-executable UAT presentation uses direct browser tools", () => {
+  const presentation = buildRunUatPresentationForType("browser-executable");
+
+  assert.equal(presentation.surface, "hybrid");
+  for (const toolName of RUN_UAT_BROWSER_TOOL_NAMES) {
+    assert.ok(presentation.presentedTools.includes(toolName), `presentation should include browser tool ${toolName}`);
+  }
+  assert.ok(!presentation.presentedTools.some((toolName) => toolName.startsWith("mcp__gsd-browser__")));
+});
+
+test("run-uat presentation plans carry typed tool-surface snapshots", () => {
+  const plan = resolveToolPresentationPlan({
+    phase: "run-uat",
+    surface: "mcp",
+    workflowMcpServerName: "gsd-workflow",
+    availableToolNames: [
+      "gsd_uat_exec",
+      "gsd_uat_result_save",
+      "read",
+    ],
+    includeBrowserTools: [],
+  });
+
+  assert.equal(plan.toolSurface.source, "presentation-plan");
+  assert.equal(plan.toolSurface.phase, "run-uat");
+  assert.deepEqual(plan.toolSurface.scopedToolNames, [
+    "gsd_uat_exec",
+    "gsd_uat_result_save",
+    "read",
+  ]);
+  assert.deepEqual(plan.toolSurface.presentedToolNames, [
+    "mcp__gsd-workflow__gsd_uat_exec",
+    "mcp__gsd-workflow__gsd_uat_result_save",
+    "read",
+  ]);
+});
+
+test("live-runtime and mixed UAT presentations also surface browser tools", () => {
+  // Regression (M001/S03): the run-uat prompt tells live-runtime and mixed to
+  // drive a browser, so the runner must actually receive the browser tools and
+  // a hybrid surface — otherwise live checks silently downgrade to NEEDS-HUMAN.
+  for (const uatType of ["live-runtime", "mixed", "human-experience"] as const) {
+    assert.equal(uatTypeIncludesBrowser(uatType), true, `${uatType} policy should include browser tools`);
+    const presentation = buildRunUatPresentationForType(uatType);
+    assert.equal(presentation.surface, "hybrid", `${uatType} should use the hybrid surface`);
+    for (const toolName of RUN_UAT_BROWSER_TOOL_NAMES) {
+      assert.ok(
+        presentation.presentedTools.includes(toolName),
+        `${uatType} presentation should include browser tool ${toolName}`,
+      );
+    }
+  }
+});
+
+test("artifact-driven and runtime-executable UAT presentations stay browser-free", () => {
+  for (const uatType of ["artifact-driven", "runtime-executable"] as const) {
+    assert.equal(uatTypeIncludesBrowser(uatType), false, `${uatType} policy should stay browser-free`);
+    const presentation = buildRunUatPresentationForType(uatType);
+    assert.equal(presentation.surface, "mcp", `${uatType} should use the mcp surface`);
+    assert.ok(
+      !RUN_UAT_BROWSER_TOOL_NAMES.some((toolName) => presentation.presentedTools.includes(toolName)),
+      `${uatType} presentation should not include browser tools`,
+    );
+  }
 });
 
 test("workflow-start prompt defaults to autonomy instead of per-phase confirmation", () => {
   const prompt = readPrompt("workflow-start");
   assert.match(prompt, /Keep moving by default/i);
   assert.match(prompt, /Decision gates, not ceremony/i);
+  assert.match(prompt, /Persist workflow state/i);
+  assert.match(prompt, /completedAt/i);
   assert.doesNotMatch(prompt, /confirm with the user before proceeding/i);
   assert.doesNotMatch(prompt, /Gate between phases/i);
 });
@@ -341,6 +554,24 @@ test("plan-slice prompt clarifies gsd_plan_slice handles task persistence", () =
   assert.match(prompt, /gsd_plan_slice` handles task persistence/i);
 });
 
+test("plan-slice prompt references web app UAT guidance when planning browser work", () => {
+  const prompt = readPrompt("plan-slice");
+  assert.match(prompt, /Web App UAT guidance/i);
+  assert.match(prompt, /Playwright smoke scaffolding/i);
+});
+
+test("complete-slice prompt references web app UAT mode rules", () => {
+  const prompt = readPrompt("complete-slice");
+  assert.match(prompt, /Web App UAT guidance/i);
+  assert.match(prompt, /browser-executable|runtime-executable/i);
+});
+
+test("plan-milestone prompt seeds web verification strategy", () => {
+  const prompt = readPrompt("plan-milestone");
+  assert.match(prompt, /Web apps/i);
+  assert.match(prompt, /Playwright|browser_\*/i);
+});
+
 test("replan-slice prompt uses gsd_replan_slice as canonical DB-backed tool", () => {
   const prompt = readPrompt("replan-slice");
   assert.match(prompt, /gsd_replan_slice/);
@@ -386,6 +617,33 @@ test("validate-milestone prompt dispatches parallel reviewers", () => {
   assert.match(prompt, /Cross-Slice Integration/);
   assert.match(prompt, /Assessment & Acceptance Criteria/);
   assert.match(prompt, /assessment evidence/i);
+});
+
+// ─── ADR-029: forward preloaded evidence to validate reviewers ────────
+test("validate-milestone forwards preloaded evidence to reviewers and keeps full reads on-demand", () => {
+  const prompt = readPrompt("validate-milestone");
+  // Orchestrator is told to embed the preloaded evidence into reviewer tasks.
+  assert.match(prompt, /[Ee]mbed the relevant preloaded evidence/);
+  // Each reviewer is told to use the preloaded evidence, not re-read from disk.
+  const useCount = (prompt.match(/do not re-read them from disk/g) ?? []).length;
+  assert.ok(useCount >= 3, `expected all three reviewers to use preloaded evidence, found ${useCount}`);
+  // Full reads are explicitly the on-demand exception, not the routine path.
+  assert.match(prompt, /only if (its|the) preloaded (excerpt|evidence) is missing, truncated, or inconsistent/i);
+});
+
+// ─── ADR-029: research-milestone grounds instead of surveying ─────────
+test("research-milestone prompt grounds in preloaded context instead of open-ended survey", () => {
+  const prompt = readPrompt("research-milestone");
+  // Grounded-research invariant present.
+  assert.match(prompt, /do not re-survey/i);
+  assert.match(prompt, /Codebase Snapshot and Project Classification/);
+  // The old open-ended survey license is gone (no "use `scout` to build a broad map").
+  assert.doesNotMatch(prompt, /use `scout` to build a broad map/);
+  // resolve_library/docs lookups remain permitted (bounded, external).
+  assert.match(prompt, /resolve_library/);
+  // Incremental save enables resume after interruption.
+  assert.match(prompt, /Save \*\*incrementally\*\*/);
+  assert.match(prompt, /Resume — Prior Partial Research/);
 });
 
 // ─── Prompt migration: replan-slice → gsd_replan_slice ────────────────
@@ -465,6 +723,33 @@ test("reactive-execute prompt references tool calls instead of checkbox updates"
   assert.match(prompt, /completion tool calls/);
 });
 
+test("parallel subagent prompts forbid serialized tasks arrays", () => {
+  const expectations = [
+    { name: "reactive-execute", agent: "worker" },
+    { name: "parallel-research-slices", agent: "scout" },
+    { name: "gate-evaluate", agent: "tester" },
+  ] as const;
+
+  for (const { name, agent } of expectations) {
+    const prompt = readPrompt(name);
+    assert.match(prompt, /tasks:\s*\[\.\.\.\]/, `${name} must show the native array placeholder`);
+    assert.match(prompt, /native JSON array/i, `${name} must explicitly require a native JSON array`);
+    assert.match(prompt, /Do NOT JSON\.stringify/i, `${name} must forbid JSON.stringify on tasks`);
+    assert.match(prompt, /must be array/i, `${name} must mention the subagent validation failure`);
+    assert.match(
+      prompt,
+      new RegExp(`tasks:\\s*\\[\\{\\s*agent:\\s*"${agent}"`, "i"),
+      `${name} must show the concrete ${agent} task call shape`,
+    );
+  }
+});
+
+test("gate-evaluate prompt requires gate result findings field", () => {
+  const prompt = readPrompt("gate-evaluate");
+  assert.match(prompt, /`findings`/);
+  assert.match(prompt, /empty string if none/i);
+});
+
 // ─── Project-shape classifier + 3-or-4-options-with-Other-hatch contract ──
 
 test("guided-discuss-project classifies project shape and persists the verdict to PROJECT.md", () => {
@@ -497,8 +782,8 @@ test("guided-discuss prompts require 3-or-4 options plus Other-let-me-discuss in
     );
     assert.match(
       prompt,
-      /grounded in (the |your |)investigation/i,
-      `${name} must require options grounded in prior investigation`,
+      /grounded in (the |your |)(investigation|preloaded context)/i,
+      `${name} must require options grounded in the preloaded context / prior investigation`,
     );
   }
 });

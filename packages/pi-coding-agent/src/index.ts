@@ -58,6 +58,8 @@ export type {
 	ExtensionWidgetOptions,
 	FindToolCallEvent,
 	GrepToolCallEvent,
+	GsdProgressState,
+	GsdProgressWidgetMode,
 	InputEvent,
 	InputEventResult,
 	InputSource,
@@ -254,7 +256,13 @@ export { copyToClipboard } from "./utils/clipboard.js";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.js";
 export { formatDimensionNote, type ResizedImage, resizeImage } from "./utils/image-resize.js";
 // Shell utilities
-export { getShellConfig, sanitizeCommand } from "./utils/shell.js";
+export {
+	getShellConfig,
+	sanitizeCommand,
+	killProcessTree,
+	SIGKILL_GRACE_MS,
+	HARD_DEADLINE_MS,
+} from "./utils/shell.js";
 export {
 	SAFE_COMMAND_PREFIXES,
 	getAllowedCommandPrefixes,

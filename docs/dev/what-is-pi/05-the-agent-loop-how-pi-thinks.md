@@ -19,10 +19,11 @@ User sends prompt
 │                                                    │
 │  3. If tool calls present:                         │
 │     - For each tool call:                          │
-│       a. Fire tool_call event (can be blocked)     │
-│       b. Execute the tool                          │
-│       c. Fire tool_result event (can be modified)  │
-│       d. Append result to messages                 │
+│       a. Fire tool_execution_start/end events      │
+│       b. For native tools, tool_call can block      │
+│       c. Execute tool or consume externalResult     │
+│       d. For native tools, tool_result can modify   │
+│       e. Append result to messages                 │
 │     - Go back to step 1 (new turn with results)    │
 │                                                    │
 │  4. If no tool calls (LLM just responded):         │

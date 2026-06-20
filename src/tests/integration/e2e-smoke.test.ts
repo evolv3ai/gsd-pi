@@ -16,87 +16,18 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { execFileSync } from "node:child_process";
-import { killChildProcess } from "./child-process-guard.ts";
+import {
+  assertNoCrashMarkers,
+  createTempDir,
+  createTempGitRepo,
+  ensureBuiltLoader,
+  runGsd,
+  stripAnsi,
+} from "./cli-process.ts";
 
-const projectRoot = process.cwd();
-const loaderPath = join(projectRoot, "dist", "loader.js");
-
-if (!existsSync(loaderPath)) {
-  throw new Error("dist/loader.js not found — run: npm run build");
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-type RunResult = {
-  stdout: string;
-  stderr: string;
-  code: number | null;
-  timedOut: boolean;
-};
-
-/**
- * Spawn `node dist/loader.js ...args` and collect output.
- *
- * @param args    CLI arguments to pass after the script path
- * @param timeoutMs  Maximum time to wait before SIGTERM (default 8 s)
- * @param env     Additional / override environment variables
- * @param cwd     Working directory for the child process (default: projectRoot)
- */
-function runGsd(
-  args: string[],
-  timeoutMs = 8_000,
-  env: NodeJS.ProcessEnv = {},
-  cwd: string = projectRoot,
-): Promise<RunResult> {
-  return new Promise((resolve) => {
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-
-    const child = spawn("node", [loaderPath, ...args], {
-      cwd,
-      env: { ...process.env, ...env },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-
-    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
-
-    // Close stdin so the process sees a non-TTY environment.
-    child.stdin.end();
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      killChildProcess(child, "SIGTERM");
-    }, timeoutMs);
-
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      resolve({ stdout, stderr, code, timedOut });
-    });
-  });
-}
-
-/** Strip ANSI escape codes from a string. */
-function stripAnsi(s: string): string {
-  // eslint-disable-next-line no-control-regex
-  return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
-}
-
-function createTempGitRepo(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
-  execFileSync("git", ["init", "-b", "main"], { cwd: dir, stdio: "pipe" });
-  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir, stdio: "pipe" });
-  execFileSync("git", ["config", "user.name", "Test User"], { cwd: dir, stdio: "pipe" });
-  return dir;
-}
+ensureBuiltLoader();
 
 // ---------------------------------------------------------------------------
 // 1. gsd --version outputs a semver string and exits 0
@@ -423,7 +354,7 @@ test("gsd -h is equivalent to --help", async () => {
 // ---------------------------------------------------------------------------
 
 test("gsd headless without .gsd/ directory exits 1 with clean error", async (t) => {
-  const tmpDir = mkdtempSync(join(tmpdir(), "gsd-e2e-no-gsd-"));
+  const tmpDir = createTempDir("gsd-e2e-no-gsd-");
 
   t.after(() => { rmSync(tmpDir, { recursive: true, force: true }); });
 
@@ -446,7 +377,7 @@ test("gsd headless without .gsd/ directory exits 1 with clean error", async (t) 
 // ---------------------------------------------------------------------------
 
 test("gsd headless new-milestone without --context exits 1", async (t) => {
-  const tmpDir = mkdtempSync(join(tmpdir(), "gsd-e2e-no-ctx-"));
+  const tmpDir = createTempDir("gsd-e2e-no-ctx-");
 
   t.after(() => { rmSync(tmpDir, { recursive: true, force: true }); });
 
@@ -469,7 +400,7 @@ test("gsd headless new-milestone without --context exits 1", async (t) => {
 // ---------------------------------------------------------------------------
 
 test("gsd headless --timeout with invalid value exits 1", async (t) => {
-  const tmpDir = mkdtempSync(join(tmpdir(), "gsd-e2e-bad-timeout-"));
+  const tmpDir = createTempDir("gsd-e2e-bad-timeout-");
 
   t.after(() => { rmSync(tmpDir, { recursive: true, force: true }); });
 
@@ -497,7 +428,7 @@ test("gsd headless --timeout with invalid value exits 1", async (t) => {
 // ---------------------------------------------------------------------------
 
 test("gsd headless --timeout with negative value exits 1", async (t) => {
-  const tmpDir = mkdtempSync(join(tmpdir(), "gsd-e2e-neg-timeout-"));
+  const tmpDir = createTempDir("gsd-e2e-neg-timeout-");
 
   t.after(() => { rmSync(tmpDir, { recursive: true, force: true }); });
 
@@ -650,27 +581,3 @@ test("gsd headless help (positional) exits cleanly", async () => {
   assert.strictEqual(result.code, 0, `expected exit 0, got ${result.code}`);
   assert.ok(!result.timedOut, "process should not time out");
 });
-
-// ---------------------------------------------------------------------------
-// Shared crash marker assertion
-// ---------------------------------------------------------------------------
-
-function assertNoCrashMarkers(output: string): void {
-  const crashMarkers = [
-    "SyntaxError:",
-    "ReferenceError:",
-    "TypeError: Cannot read",
-    "FATAL ERROR",
-    "ERR_MODULE_NOT_FOUND",
-    "Error: Cannot find module",
-    "SIGSEGV",
-    "SIGABRT",
-  ];
-
-  for (const marker of crashMarkers) {
-    assert.ok(
-      !output.includes(marker),
-      `output should not contain crash marker '${marker}':\n${output.slice(0, 500)}`,
-    );
-  }
-}

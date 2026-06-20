@@ -24,6 +24,7 @@ import {
   openDatabase,
   closeDatabase,
   _getAdapter,
+  SCHEMA_VERSION,
 } from '../gsd-db.ts';
 
 const _require = createRequire(import.meta.url);
@@ -403,9 +404,10 @@ test('schema v21 migration: upgrading from v20 lands on current SCHEMA_VERSION',
     // The DB must reach the current SCHEMA_VERSION.  If the v21 block was
     // skipped (as it would be when SCHEMA_VERSION was still 20), this
     // assertion catches it.
-    assert.ok(
-      maxVersion >= 21,
-      `DB upgraded from v20 must reach at least schema version 21; got ${maxVersion}`,
+    assert.equal(
+      maxVersion,
+      SCHEMA_VERSION,
+      `DB upgraded from v20 must reach schema version ${SCHEMA_VERSION}; got ${maxVersion}`,
     );
   } finally {
     cleanup(base);

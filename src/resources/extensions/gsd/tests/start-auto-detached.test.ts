@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { _withDetachedAutoKeepaliveForTest } from "../auto.ts";
+import {
+  _resolveEffectiveUnitIsolationModeForTest,
+  _withDetachedAutoKeepaliveForTest,
+} from "../auto.ts";
 import {
   _scheduleAutoStartAfterIdleForTest,
   resolveGuidedExecuteLaunchMode,
@@ -336,20 +339,36 @@ test("resume path only hard-exits on blocked stop, not blocked pause (#6154)", (
   );
 });
 
-test("prepareForUnit skips worktree safety when isolation is not worktree (#6154)", () => {
-  const autoSrc = readGsdFile("auto.ts");
-  const prepareForUnitIdx = autoSrc.indexOf("async prepareForUnit(unitType, unitId) {");
-  const prepareForUnitBody = autoSrc.slice(prepareForUnitIdx, autoSrc.indexOf("async syncAfterUnit() {}", prepareForUnitIdx));
+test("prepareForUnit enforces worktree safety for all isolation modes (#6154)", () => {
+  const orchSrc = readGsdFile("auto/orchestrator.ts");
+  const prepareForUnitIdx = orchSrc.indexOf("private async prepareWorktreeForUnit(");
+  const prepareForUnitBody = orchSrc.slice(prepareForUnitIdx, orchSrc.indexOf("private classifyAndRecover(", prepareForUnitIdx));
 
   assert.ok(prepareForUnitIdx > -1, "prepareForUnit should exist");
   assert.ok(
-    prepareForUnitBody.includes('if (getIsolationMode(runtimeBasePath) !== "worktree")'),
-    "prepareForUnit should bypass worktree safety validation outside worktree isolation mode",
+    prepareForUnitBody.includes("const isolationMode = this.getEffectiveUnitIsolationMode(this.runtimeBasePath);"),
+    "prepareForUnit should resolve the effective isolation mode once",
   );
+  assert.ok(
+    prepareForUnitBody.includes('const writeScope ='),
+    "prepareForUnit should classify the unit's write scope before validating",
+  );
+  assert.ok(
+    !prepareForUnitBody.includes('if (isolationMode !== "worktree")'),
+    "prepareForUnit must not bypass worktree safety outside worktree isolation mode",
+  );
+});
+
+test("effective unit isolation follows degraded branch fallback", () => {
+  assert.equal(_resolveEffectiveUnitIsolationModeForTest("worktree", true), "branch");
+  assert.equal(_resolveEffectiveUnitIsolationModeForTest("worktree", false), "worktree");
+  assert.equal(_resolveEffectiveUnitIsolationModeForTest("branch", true), "branch");
+  assert.equal(_resolveEffectiveUnitIsolationModeForTest("none", true), "none");
 });
 
 test("discuss-to-auto handoff defaults to step mode unless explicitly disabled", () => {
   const guidedFlowSrc = readGsdFile("guided-flow.ts");
+  const discussionHandoffSrc = readGsdFile("discussion-handoff.ts");
   const workflowSrc = readGsdFile("commands/handlers/workflow.ts");
 
   assert.ok(
@@ -357,7 +376,7 @@ test("discuss-to-auto handoff defaults to step mode unless explicitly disabled",
     "guided-flow must not hardcode step: false on pending auto-start entries",
   );
   assert.match(
-    guidedFlowSrc,
+    discussionHandoffSrc,
     /scheduleAutoStartAfterIdle\(ctx, pi, basePath, false, \{ step: step \?\? true \}\)/,
     "checkAutoStartAfterDiscuss should default missing step flags to step mode",
   );

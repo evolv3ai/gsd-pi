@@ -1,4 +1,6 @@
 // GSD worktree session state
+import { findWorktreeSegment, projectRootFromWorktreePath } from "./worktree-root.js";
+
 let originalCwd: string | null = null;
 
 export function getWorktreeOriginalCwd(): string | null {
@@ -15,21 +17,19 @@ export function clearWorktreeOriginalCwd(): void {
 
 export function ensureWorktreeOriginalCwdFromPath(cwd: string = process.cwd()): string | null {
   if (originalCwd) return originalCwd;
-  const marker = `${/\\/.test(cwd) ? "\\" : "/"}.gsd${/\\/.test(cwd) ? "\\" : "/"}worktrees${/\\/.test(cwd) ? "\\" : "/"}`;
-  const markerIdx = cwd.indexOf(marker);
-  if (markerIdx !== -1) {
-    originalCwd = cwd.slice(0, markerIdx);
-  }
+  const root = projectRootFromWorktreePath(cwd);
+  if (root) originalCwd = root;
   return originalCwd;
 }
 
 export function getActiveWorktreeName(): string | null {
   if (!originalCwd) return null;
-  const cwd = process.cwd();
-  const wtDir = `${originalCwd.replace(/[\\/]+$/, "")}/.gsd/worktrees`.replaceAll("\\", "/");
-  const normalizedCwd = cwd.replaceAll("\\", "/");
-  if (!normalizedCwd.startsWith(`${wtDir}/`)) return null;
-  const rel = normalizedCwd.slice(wtDir.length + 1);
-  const name = rel.split("/")[0];
+  const normalizedCwd = process.cwd().replaceAll("\\", "/");
+  const normalizedOriginal = originalCwd.replace(/[\\/]+$/, "").replaceAll("\\", "/");
+  const segment = findWorktreeSegment(normalizedCwd);
+  if (!segment) return null;
+  // Only treat the cwd as an active worktree of OUR project root.
+  if (normalizedCwd.slice(0, segment.gsdIdx) !== normalizedOriginal) return null;
+  const name = normalizedCwd.slice(segment.afterWorktrees).split("/")[0];
   return name || null;
 }

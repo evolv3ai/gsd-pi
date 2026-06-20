@@ -7,6 +7,9 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   openDatabase,
   closeDatabase,
@@ -22,6 +25,17 @@ import {
   formatDecisionsForPrompt,
   formatRequirementsForPrompt,
 } from '../context-store.ts';
+import { inlineRequirementsFromDb } from '../auto-prompts.ts';
+import { migrateFromMarkdown } from '../md-importer.ts';
+
+function createDbProjectWithRequirements(content: string): { tmpDir: string; gsdDir: string } {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'prompt-db-requirements-'));
+  const gsdDir = join(tmpDir, '.gsd');
+  mkdirSync(gsdDir, { recursive: true });
+  writeFileSync(join(gsdDir, 'REQUIREMENTS.md'), content);
+  openDatabase(join(gsdDir, 'gsd.db'));
+  return { tmpDir, gsdDir };
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // prompt-db: DB-aware decisions helper returns scoped content
@@ -183,6 +197,116 @@ console.log('\n=== prompt-db: fallback when DB unavailable ===');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// prompt-db: DB-aware requirements helper does not fall back on empty DB rows
+// ═══════════════════════════════════════════════════════════════════════════
+
+test('prompt-db: inlineRequirementsFromDb returns null instead of full file when DB query is empty', async () => {
+  const { tmpDir } = createDbProjectWithRequirements(
+    `# Requirements\n\nFULL FILE SHOULD NOT BE INLINED\n\n${'large requirement body\n'.repeat(500)}`,
+  );
+  try {
+    const inlined = await inlineRequirementsFromDb(tmpDir, 'M999', undefined, 'full');
+
+    assert.equal(inlined, null);
+  } finally {
+    closeDatabase();
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('prompt-db: inlineRequirementsFromDb cascades from empty milestone query to active requirements', async () => {
+  const { tmpDir } = createDbProjectWithRequirements(
+    '# Requirements\n\nFULL FILE SHOULD NOT BE INLINED\n',
+  );
+  try {
+    insertRequirement({
+      id: 'R001',
+      class: 'functional',
+      status: 'active',
+      description: 'active requirement for another milestone',
+      why: 'needed',
+      source: 'M001',
+      primary_owner: 'M001/S01',
+      supporting_slices: '',
+      validation: 'test',
+      notes: '',
+      full_content: '',
+      superseded_by: null,
+    });
+    insertRequirement({
+      id: 'R002',
+      class: 'functional',
+      status: 'validated',
+      description: 'validated requirement should not be active fallback',
+      why: 'already done',
+      source: 'M001',
+      primary_owner: 'M001/S02',
+      supporting_slices: '',
+      validation: 'done',
+      notes: '',
+      full_content: '',
+      superseded_by: null,
+    });
+
+    const inlined = await inlineRequirementsFromDb(tmpDir, 'M999', undefined, 'full');
+
+    assert.ok(inlined);
+    assert.match(inlined, /### Requirements/);
+    assert.match(inlined, /# Requirements \(compact\)/);
+    assert.match(inlined, /R001/);
+    assert.match(inlined, /active requirement for another milestone/);
+    assert.doesNotMatch(inlined, /R002/);
+    assert.doesNotMatch(inlined, /FULL FILE SHOULD NOT BE INLINED/);
+  } finally {
+    closeDatabase();
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('prompt-db: inlineRequirementsFromDb keeps active fallback compact for slice-scoped full calls', async () => {
+  const { tmpDir } = createDbProjectWithRequirements(
+    '# Requirements\n\nFULL FILE SHOULD NOT BE INLINED\n',
+  );
+  try {
+    insertRequirement({
+      id: 'R001',
+      class: 'functional',
+      status: 'active',
+      description: 'active requirement for another milestone',
+      why: 'needed',
+      source: 'M001',
+      primary_owner: 'M001/S01',
+      supporting_slices: '',
+      validation: 'test',
+      notes: '',
+      full_content: '',
+      superseded_by: null,
+    });
+
+    // Slice-scoped call at inlineLevel "full" with no matching rows for the
+    // milestone+slice or milestone-only queries. The cascade should land on
+    // status: "active" rows from another milestone, and those project-wide
+    // active rows must be formatted compactly even though sliceId is set —
+    // otherwise the full per-requirement markdown would be inlined for every
+    // active row across the project.
+    const inlined = await inlineRequirementsFromDb(tmpDir, 'M999', 'S99', 'full');
+
+    assert.ok(inlined);
+    assert.match(inlined, /### Requirements/);
+    assert.match(inlined, /# Requirements \(compact\)/);
+    assert.match(inlined, /R001/);
+    // Full per-requirement markdown is forbidden here — its hallmark fields
+    // (Class:/Status:/Why: as bolded list items) are emitted only by
+    // formatRequirementsForPrompt, never by formatRequirementsCompact.
+    assert.doesNotMatch(inlined, /\*\*Class:\*\*/);
+    assert.doesNotMatch(inlined, /FULL FILE SHOULD NOT BE INLINED/);
+  } finally {
+    closeDatabase();
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // prompt-db: scoped filtering reduces content vs unscoped
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -315,12 +439,6 @@ console.log('\n=== prompt-db: DB helpers wrapper format matches expected pattern
 // ═══════════════════════════════════════════════════════════════════════════
 // prompt-db: re-import updates DB when source markdown changes
 // ═══════════════════════════════════════════════════════════════════════════
-
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { migrateFromMarkdown } from '../md-importer.ts';
-
 
 describe('prompt-db', () => {
 test('prompt-db: re-import updates DB when source markdown changes', () => {

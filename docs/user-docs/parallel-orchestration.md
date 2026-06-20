@@ -60,7 +60,7 @@ GSD scans your milestones, checks dependencies and file overlap, shows an eligib
 │  └──────────┘  └──────────┘  └──────────┘              │
 │       │              │              │                   │
 │       ▼              ▼              ▼                   │
-│  .gsd/worktrees/ .gsd/worktrees/ .gsd/worktrees/       │
+│  .gsd-worktrees/ .gsd-worktrees/ .gsd-worktrees/      │
 │  M001/           M003/           M005/                  │
 │  (milestone/     (milestone/     (milestone/            │
 │   M001 branch)    M003 branch)    M005 branch)          │
@@ -282,7 +282,7 @@ The coordinator runs stale detection during status refresh and either marks the 
 └── ...
 ```
 
-`.gsd/gsd.db*`, `.gsd/parallel/`, and `.gsd/worktrees/` are all local runtime artifacts and should remain gitignored.
+`.gsd/gsd.db*`, `.gsd/parallel/`, `.gsd/worktrees/`, and `.gsd-worktrees/` are all local runtime artifacts and should remain gitignored.
 
 ## Troubleshooting
 
@@ -305,7 +305,7 @@ Workers now persist coordination state in the shared runtime DB. If a worker pro
 ### Merge conflicts after parallel completion
 
 1. Run `/gsd parallel merge` to see which milestones have conflicts
-2. Resolve conflicts in the worktree at `.gsd/worktrees/<MID>/`
+2. Resolve conflicts in the worktree at `.gsd-worktrees/<MID>/`
 3. Retry with `/gsd parallel merge <MID>`
 
 ### Workers seem stuck

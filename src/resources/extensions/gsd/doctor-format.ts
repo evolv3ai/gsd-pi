@@ -1,4 +1,9 @@
-import type { DoctorIssue, DoctorIssueCode, DoctorReport, DoctorSummary } from "./doctor-types.js";
+import type { DoctorIssue, DoctorIssueCode, DoctorReport, DoctorSummary, DoctorSeverity } from "./doctor-types.js";
+import { doctorFixHint } from "./guidance.js";
+
+function severityTag(severity: DoctorSeverity): string {
+  return severity === "error" ? "ERROR" : severity === "warning" ? "WARN" : "INFO";
+}
 
 function matchesScope(unitId: string, scope?: string): boolean {
   if (!scope) return true;
@@ -53,8 +58,9 @@ export function formatDoctorReport(
   if (scopedIssues.length > 0) {
     lines.push("Priority issues:");
     for (const issue of scopedIssues.slice(0, maxIssues)) {
-      const prefix = issue.severity === "error" ? "ERROR" : issue.severity === "warning" ? "WARN" : "INFO";
-      lines.push(`- [${prefix}] ${issue.unitId}: ${issue.message}${issue.file ? ` (${issue.file})` : ""}`);
+      lines.push(`- [${severityTag(issue.severity)}] ${issue.unitId}: ${issue.message}${issue.file ? ` (${issue.file})` : ""}`);
+      const hint = doctorFixHint(issue.code);
+      if (hint && issue.severity !== "info") lines.push(`  Fix: ${hint}`);
     }
     if (scopedIssues.length > maxIssues) {
       lines.push(`- ...and ${scopedIssues.length - maxIssues} more in scope`);
@@ -72,10 +78,9 @@ export function formatDoctorReport(
 
 export function formatDoctorIssuesForPrompt(issues: DoctorIssue[]): string {
   if (issues.length === 0) return "- No remaining issues in scope.";
-  return issues.map(issue => {
-    const prefix = issue.severity === "error" ? "ERROR" : issue.severity === "warning" ? "WARN" : "INFO";
-    return `- [${prefix}] ${issue.unitId} | ${issue.code} | ${issue.message}${issue.file ? ` | file: ${issue.file}` : ""} | fixable: ${issue.fixable ? "yes" : "no"}`;
-  }).join("\n");
+  return issues.map(issue =>
+    `- [${severityTag(issue.severity)}] ${issue.unitId} | ${issue.code} | ${issue.message}${issue.file ? ` | file: ${issue.file}` : ""} | fixable: ${issue.fixable ? "yes" : "no"}`
+  ).join("\n");
 }
 
 /**

@@ -3,12 +3,25 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { buildGsdHomeModel, showGsdHome } from "../gsd-command-home.ts";
+import { buildIdleMenuSummary, detectIdleMilestoneResidueHint } from "../closeout-wizard.ts";
+import { closeDatabase, insertMilestone, openDatabase } from "../gsd-db.ts";
+import { createWorktree } from "../worktree-manager.ts";
 import type { GSDState } from "../types.ts";
+
+function initGitRepo(base: string): void {
+  execFileSync("git", ["init", "-b", "main"], { cwd: base, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Test User"], { cwd: base, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: base, stdio: "ignore" });
+  writeFileSync(join(base, "README.md"), "# test\n", "utf-8");
+  execFileSync("git", ["add", "README.md"], { cwd: base, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "init"], { cwd: base, stdio: "ignore" });
+}
 
 function baseState(overrides: Partial<GSDState> = {}): GSDState {
   return {
@@ -116,6 +129,146 @@ test("/gsd home recommends start or configure after all milestones complete", ()
   assert.equal(action(model, "continue_step").enabled, false);
   assert.equal(action(model, "run_auto").enabled, false);
   assert.match(model.summary.join("\n"), /All milestones complete/);
+});
+
+test("/gsd home recommends fix or recover when milestone git residue is stranded", () => {
+  const model = buildGsdHomeModel(baseState({
+    activeMilestone: null,
+    activeSlice: null,
+    activeTask: null,
+    phase: "complete",
+    nextAction: "All milestones complete.",
+  }), {
+    strandedQuick: null,
+    unmergedMilestones: [],
+    idleResidueHint: {
+      milestoneIds: ["M008"],
+      message:
+        "Stranded milestone git residue detected (M008: worktree dir and/or milestone/* branch). " +
+        "Run /gsd dispatch complete-milestone M008 or /gsd status to recover closeout before starting new work.",
+    },
+  });
+
+  assert.equal(action(model, "fix_recover").recommended, true);
+  assert.equal(action(model, "fix_recover").enabled, true);
+  assert.match(model.summary[0], /Stranded milestone git residue/);
+  assert.equal(action(model, "continue_step").enabled, false);
+});
+
+test("detectIdleMilestoneResidueHint reports missing workflow database in a git repo", () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-home-residue-"));
+  try {
+    execFileSync("git", ["init", "-b", "main"], { cwd: base, stdio: "ignore" });
+    const hint = detectIdleMilestoneResidueHint(base);
+    assert.ok(hint);
+    assert.match(hint!.message, /\.gsd\/gsd\.db/);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("detectIdleMilestoneResidueHint matches unique-format milestone ids (M###-abc123)", () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-home-residue-unique-"));
+  try {
+    initGitRepo(base);
+    createWorktree(base, "M042-abc123");
+    mkdirSync(join(base, ".gsd"), { recursive: true });
+
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    try {
+      // Closed milestone with a live git worktree still registered — classic residue.
+      insertMilestone({ id: "M042-abc123", title: "Closed Unique", status: "complete" });
+      const hint = detectIdleMilestoneResidueHint(base);
+      assert.ok(hint, "unique-format closed milestone with worktree should be detected");
+      assert.deepEqual(hint!.milestoneIds, ["M042-abc123"]);
+      assert.match(hint!.message, /M042-abc123/);
+    } finally {
+      closeDatabase();
+    }
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("detectIdleMilestoneResidueHint prunes bg-shell ghost dirs and does not warn", () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-home-residue-ghost-"));
+  try {
+    initGitRepo(base);
+    const ghostDir = join(base, ".gsd-worktrees", "M009");
+    mkdirSync(join(ghostDir, ".bg-shell"), { recursive: true });
+    writeFileSync(join(ghostDir, ".bg-shell", "manifest.json"), "[]\n", "utf-8");
+    mkdirSync(join(base, ".gsd"), { recursive: true });
+
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    try {
+      insertMilestone({ id: "M009", title: "Search Tasks", status: "complete" });
+      const hint = detectIdleMilestoneResidueHint(base);
+      assert.equal(hint, null, "bg-shell-only ghost worktree dir must not trigger residue hint");
+      assert.equal(existsSync(ghostDir), false, "ghost worktree dir should be auto-pruned");
+    } finally {
+      closeDatabase();
+    }
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("detectIdleMilestoneResidueHint ignores in-flight milestones with worktree artifacts", () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-home-residue-active-"));
+  try {
+    initGitRepo(base);
+    createWorktree(base, "M001");
+    createWorktree(base, "M002-abc123");
+    mkdirSync(join(base, ".gsd"), { recursive: true });
+
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    try {
+      // Active and pending milestones must not be flagged as stranded residue.
+      insertMilestone({ id: "M001", title: "Active milestone", status: "active" });
+      insertMilestone({ id: "M002-abc123", title: "Pending milestone", status: "pending" });
+      const hint = detectIdleMilestoneResidueHint(base);
+      assert.equal(hint, null, "active/pending milestone worktrees must not be classified as residue");
+    } finally {
+      closeDatabase();
+    }
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("buildIdleMenuSummary surfaces idle residue hint even when phase is complete", () => {
+  const summary = buildIdleMenuSummary(
+    {
+      activeMilestone: null,
+      activeSlice: null,
+      activeTask: null,
+      phase: "complete",
+      recentDecisions: [],
+      blockers: [],
+      nextAction: "All milestones complete.",
+      lastCompletedMilestone: { id: "M001", title: "Menu Cleanup" },
+      registry: [{ id: "M001", title: "Menu Cleanup", status: "complete" }],
+      requirements: { active: 0, validated: 0, deferred: 0, outOfScope: 0, blocked: 0, total: 0 },
+      progress: {
+        milestones: { done: 1, total: 1 },
+        slices: { done: 0, total: 0 },
+        tasks: { done: 0, total: 0 },
+      },
+    },
+    {
+      strandedQuick: null,
+      unmergedMilestones: [],
+      idleResidueHint: {
+        milestoneIds: ["M008"],
+        message:
+          "Stranded milestone git residue detected (M008: worktree dir and/or milestone/* branch). " +
+          "Run /gsd dispatch complete-milestone M008 or /gsd status to recover closeout before starting new work.",
+      },
+    },
+  );
+
+  assert.match(summary[0] ?? "", /Stranded milestone git residue/);
+  assert.doesNotMatch(summary.join("\n"), /All milestones complete/);
 });
 
 test("showGsdHome renders the five-slot home text without an interactive TUI", async () => {

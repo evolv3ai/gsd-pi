@@ -5,12 +5,19 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 
-import { cleanupAfterLoopExit, pauseAuto, rerootCommandSession, stopAuto } from "../auto.ts";
+import {
+  anchorProcessCwdForAutoResume,
+  cleanupAfterLoopExit,
+  pauseAuto,
+  rerootCommandSession,
+  stopAuto,
+} from "../auto.ts";
 import { autoSession } from "../auto-runtime-state.ts";
 import { closeDatabase, insertMilestone, insertSlice, openDatabase } from "../gsd-db.ts";
 import { getAutoWorker, registerAutoWorker } from "../db/auto-workers.ts";
+import { claimMilestoneLease, getMilestoneLease } from "../db/milestone-leases.ts";
 import { readPausedSessionMetadata } from "../interrupted-session.ts";
 import { WorktreeLifecycle } from "../worktree-lifecycle.ts";
 
@@ -19,6 +26,14 @@ function runGit(args: string[], cwd: string): void {
     cwd,
     stdio: ["ignore", "pipe", "pipe"],
   });
+}
+
+function renderOutcomeWidget(widget: unknown): string {
+  const component = (widget as any)(
+    { requestRender() {} },
+    { fg: (_color: string, text: string) => text, bold: (text: string) => text },
+  );
+  return component.render(100).join("\n");
 }
 
 test("cleanupAfterLoopExit preserves paused auto badge after provider pause", async () => {
@@ -99,6 +114,42 @@ test("cleanupAfterLoopExit preserves paused worktree session and visible failure
   }
 });
 
+test("anchorProcessCwdForAutoResume recovers when current cwd was deleted", () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-resume-cwd-anchor-"));
+  const deletedCwd = join(base, ".gsd-worktrees", "M002");
+  const previousCwd = process.cwd();
+
+  mkdirSync(deletedCwd, { recursive: true });
+
+  try {
+    process.chdir(deletedCwd);
+    rmSync(deletedCwd, { recursive: true, force: true });
+
+    assert.equal(anchorProcessCwdForAutoResume(base), true);
+    assert.equal(realpathSync(process.cwd()), realpathSync(base));
+  } finally {
+    process.chdir(previousCwd);
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("anchorProcessCwdForAutoResume falls back when primary basePath is missing", () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-resume-cwd-anchor-fallback-"));
+  const missingWorktree = join(base, ".gsd-worktrees", "M002");
+  const previousCwd = process.cwd();
+
+  mkdirSync(base, { recursive: true });
+  mkdirSync(dirname(missingWorktree), { recursive: true });
+
+  try {
+    assert.equal(anchorProcessCwdForAutoResume(missingWorktree, [base]), true);
+    assert.equal(realpathSync(process.cwd()), realpathSync(base));
+  } finally {
+    process.chdir(previousCwd);
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test("cleanupAfterLoopExit clears status and progress widget without replacing outcome surface", async () => {
   const statusCalls: unknown[] = [];
   const widgetCalls: unknown[] = [];
@@ -167,7 +218,43 @@ test("cleanupAfterLoopExit preserves completion closeout surface after stopAuto 
       false,
       "completion cleanup must not replace the closeout surface with a generic outcome card",
     );
-    assert.equal(autoSession.completionStopInProgress, false);
+    assert.equal(
+      autoSession.completionStopInProgress,
+      true,
+      "completion closeout preservation must survive post-loop cleanup until the next agent turn",
+    );
+  } finally {
+    autoSession.reset();
+  }
+});
+
+test("cleanupAfterLoopExit preserves completionStopInProgress even when preserveStepSurfaceAfterLoopExit is also set", async () => {
+  const statusCalls: unknown[] = [];
+  const widgetCalls: unknown[] = [];
+
+  autoSession.reset();
+  autoSession.active = true;
+  autoSession.paused = false;
+  autoSession.completionStopInProgress = true;
+  autoSession.preserveStepSurfaceAfterLoopExit = true;
+
+  try {
+    await cleanupAfterLoopExit({
+      hasUI: true,
+      ui: {
+        setStatus: (...args: unknown[]) => statusCalls.push(args),
+        setWidget: (...args: unknown[]) => widgetCalls.push(args),
+        setHeader: () => {},
+        notify: () => {},
+      },
+    } as any);
+
+    assert.equal(
+      autoSession.completionStopInProgress,
+      true,
+      "completionStopInProgress must survive cleanup even when preserveStepSurfaceAfterLoopExit was also set",
+    );
+    assert.equal(autoSession.preserveStepSurfaceAfterLoopExit, false);
   } finally {
     autoSession.reset();
   }
@@ -232,6 +319,56 @@ test("pauseAuto marks active worker as stopping and clears workerId", async () =
   }
 });
 
+test("pauseAuto preserves worker lease across transient provider auto-resume pauses", async () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-pause-provider-lease-"));
+  const previousCwd = process.cwd();
+  const dbPath = join(base, ".gsd", "gsd.db");
+  mkdirSync(join(base, ".gsd"), { recursive: true });
+
+  autoSession.reset();
+  autoSession.active = true;
+  autoSession.basePath = base;
+  autoSession.originalBasePath = base;
+  autoSession.currentMilestoneId = "M001";
+
+  try {
+    openDatabase(dbPath);
+    insertMilestone({ id: "M001", title: "Milestone 1", status: "active" });
+    const workerId = registerAutoWorker({ projectRootRealpath: base });
+    const lease = claimMilestoneLease(workerId, "M001");
+    assert.equal(lease.ok, true);
+    if (!lease.ok) return;
+
+    autoSession.workerId = workerId;
+    autoSession.milestoneLeaseToken = lease.token;
+    process.chdir(base);
+
+    await pauseAuto(undefined, undefined, {
+      message: "Provider error: socket closed",
+      category: "provider",
+      isTransient: true,
+    });
+
+    assert.equal(autoSession.paused, true);
+    assert.equal(autoSession.workerId, workerId);
+    assert.equal(autoSession.milestoneLeaseToken, lease.token);
+    assert.equal(getAutoWorker(workerId)?.status, "active");
+    const row = getMilestoneLease("M001");
+    assert.equal(row?.worker_id, workerId);
+    assert.equal(row?.status, "held");
+    assert.equal(row?.fencing_token, lease.token);
+  } finally {
+    autoSession.reset();
+    try {
+      closeDatabase();
+    } catch {
+      /* noop */
+    }
+    process.chdir(previousCwd);
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test("pauseAuto records the expected worktree path when paused from project root", async () => {
   const base = mkdtempSync(join(tmpdir(), "gsd-pause-worktree-path-"));
   const previousCwd = process.cwd();
@@ -262,7 +399,9 @@ test("pauseAuto records the expected worktree path when paused from project root
 
     const meta = readPausedSessionMetadata(base);
     assert.ok(meta);
-    assert.equal(meta.worktreePath, join(base, ".gsd", "worktrees", "M001"));
+    // No worktree exists yet, so the recorded path is the canonical
+    // .gsd-worktrees/ creation location (worktree-placement seam).
+    assert.equal(meta.worktreePath, join(base, ".gsd-worktrees", "M001"));
   } finally {
     autoSession.reset();
     try {
@@ -610,6 +749,10 @@ test("stopAuto foreground completion closeout reroots session and preserves the 
       "foreground completion stop must not install a replacement roll-up widget over the transcript",
     );
     assert.ok(
+      widgetCalls.some(([key, value]) => key === "gsd-progress" && value === undefined),
+      "foreground completion stop must clear stale progress controls in the rerooted session",
+    );
+    assert.ok(
       notifications.every(message => !message.includes("/gsd auto to resume")),
       "completion stop notification must not tell users to resume a finished auto run",
     );
@@ -617,10 +760,15 @@ test("stopAuto foreground completion closeout reroots session and preserves the 
       notifications.every(message => !message.includes("Auto-mode stopped") && !message.includes("Session:") && !message.includes("Debug log written")),
       "completion stop must not append generic stop/session/debug notifications after the report",
     );
-    assert.ok(
-      widgetCalls.every(([key, value]) => key !== "gsd-outcome" || value === undefined),
-      "foreground completion stop must not replace the transcript with a generic outcome card",
+    const outcome = widgetCalls.find(([key, value]) => key === "gsd-outcome" && typeof value === "function")?.[1];
+    assert.equal(
+      typeof outcome,
+      "function",
+      "foreground completion stop must install a durable closeout outcome in the rerooted session",
     );
+    const rendered = renderOutcomeWidget(outcome);
+    assert.match(rendered, /Milestone M003 complete/);
+    assert.match(rendered, /Review the closeout/);
 
     const widgetCallCountBeforePostLoopCleanup = widgetCalls.length;
     await cleanupAfterLoopExit(ctx);
@@ -714,7 +862,7 @@ test("stopAuto completion closeout emits a headless terminal notification withou
       "headless completion closeout must emit the terminal stop notification headless waits for",
     );
     assert.equal(
-      typeof widgetCalls.filter(([key]) => key === "gsd-progress").at(-1)?.[1],
+      typeof widgetCalls.filter(([key]) => key === "gsd-outcome").at(-1)?.[1],
       "function",
       "headless completion closeout must still leave the final roll-up widget installed",
     );
@@ -790,7 +938,7 @@ test("stopAuto closeout-transcript preservation suppresses generic stop widgets"
   }
 });
 
-test("stopAuto foreground all-complete closeout preserves the transcript surface", async () => {
+test("stopAuto foreground all-complete closeout installs a durable terminal outcome", async () => {
   const base = mkdtempSync(join(tmpdir(), "gsd-all-complete-closeout-"));
   const previousCwd = process.cwd();
   const widgetCalls: Array<[string, unknown]> = [];
@@ -843,8 +991,15 @@ test("stopAuto foreground all-complete closeout preserves the transcript surface
       false,
       "foreground all-complete closeout must not replace the visible transcript with a roll-up widget",
     );
-    const finalOutcome = widgetCalls.filter(([key]) => key === "gsd-outcome").at(-1);
-    assert.equal(finalOutcome?.[1], undefined, "foreground all-complete closeout must not add an outcome replacement");
+    const finalOutcome = widgetCalls.filter(([key]) => key === "gsd-outcome").at(-1)?.[1];
+    assert.equal(
+      typeof finalOutcome,
+      "function",
+      "foreground all-complete closeout must install a durable terminal outcome",
+    );
+    const rendered = renderOutcomeWidget(finalOutcome);
+    assert.match(rendered, /All milestones complete/);
+    assert.match(rendered, /start new work/);
   } finally {
     try { closeDatabase(); } catch { /* noop */ }
     autoSession.reset();

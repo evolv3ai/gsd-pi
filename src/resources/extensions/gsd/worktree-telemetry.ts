@@ -22,6 +22,7 @@
 import { randomUUID } from "node:crypto";
 import { emitJournalEvent, queryJournal } from "./journal.js";
 import type { JournalEntry } from "./journal.js";
+import type { AutoTerminalOutcome } from "./auto/contracts.js";
 
 function now(): string {
   return new Date().toISOString();
@@ -89,6 +90,21 @@ export function normalizeAutoExitReason(rawReason?: string): AutoExitReason {
                           : reasonLc === "stop" || reasonLc === "pause"
                             ? reasonLc
                             : "other";
+}
+
+export function autoExitReasonForTerminalOutcome(
+  outcome: AutoTerminalOutcome | undefined,
+): AutoExitReason | null {
+  switch (outcome?.code) {
+    case "all-complete":
+      return "all-complete";
+    case "settlement-blocked":
+      return "blocked";
+    case "no-remaining-units":
+      return "stop";
+    default:
+      return null;
+  }
 }
 
 // ─── Emitters ────────────────────────────────────────────────────────────

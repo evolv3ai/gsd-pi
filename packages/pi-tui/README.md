@@ -66,7 +66,15 @@ tui.requestRender(); // Request a re-render
 
 // Global debug key handler (Shift+Ctrl+D)
 tui.onDebug = () => console.log("Debug triggered");
+
+// Called once when stdout is closed or detached
+tui.onOutputClosed = () => {
+  tui.stop();
+  process.exit(0);
+};
 ```
+
+`TUI.onOutputClosed` fires when the terminal reports that stdout is no longer writable, such as after a parent process closes the pipe. Assigning the handler after output has already closed calls it immediately.
 
 ### Overlays
 
@@ -594,6 +602,7 @@ The TUI works with any object implementing the `Terminal` interface:
 interface Terminal {
   start(onInput: (data: string) => void, onResize: () => void): void;
   stop(): void;
+  drainInput(maxMs?: number, idleMs?: number): Promise<void>;
   write(data: string): void;
   get columns(): number;
   get rows(): number;
@@ -603,12 +612,18 @@ interface Terminal {
   clearLine(): void;
   clearFromCursor(): void;
   clearScreen(): void;
+  setTitle(title: string): void;
+  setProgress(active: boolean): void;
+  readonly outputClosed?: boolean;
+  setOutputClosedHandler?(handler: () => void): void;
 }
 ```
 
 **Built-in implementations:**
 - `ProcessTerminal` - Uses `process.stdin/stdout`
 - `VirtualTerminal` - For testing (uses `@xterm/headless`)
+
+`ProcessTerminal` treats `EPIPE`, write-side `EIO`, and stdout EOF as closed-output signals. It stops further writes, clears progress keepalives, and calls the output-closed handler once. Use `isStdoutClosedError(err)` when a custom `Terminal` implementation needs to recognize the same error class.
 
 ## Utilities
 

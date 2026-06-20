@@ -216,6 +216,30 @@ test("dispatch-rule-coverage: planning with active slice and skip_research → p
   );
 });
 
+test("dispatch-rule-coverage: planning boundary without planner handoff → research-slice", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-disp-cov-planning-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  writeMilestoneFile(tmp, "M001", "CONTEXT", "# Context\n");
+  writeMilestoneFile(tmp, "M001", "ROADMAP", "# Roadmap\n");
+
+  const state = makeState({
+    phase: "planning",
+    activeSlice: { id: "S01", title: "First Slice" },
+    nextAction: "Plan slice S01 (First Slice).",
+  });
+  const match = await findFirstMatch(makeCtx(tmp, state));
+  assertMatch(
+    match,
+    {
+      ruleName: "planning (no research, not S01) → research-slice",
+      action: "dispatch",
+      unitType: "research-slice",
+    },
+    "planning boundary without planner handoff",
+  );
+});
+
 test("dispatch-rule-coverage: executing with task plan present → execute-task", async (t) => {
   const tmp = mkdtempSync(join(tmpdir(), "gsd-disp-cov-exec-"));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));

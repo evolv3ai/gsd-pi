@@ -1,4 +1,4 @@
-import type { AgentTool, ThinkingLevel } from "@gsd/pi-agent-core";
+import type { Agent, AgentTool, ThinkingLevel } from "@gsd/pi-agent-core";
 import type { Model } from "@gsd/pi-ai";
 import { resetApiProviders } from "@gsd/pi-ai";
 import {
@@ -24,8 +24,24 @@ function normalizeSkillFilterName(name: string): string {
 	return name.trim().toLowerCase();
 }
 
+const extensionUiStreamBridgedAgents = new WeakSet<Agent>();
+
 export class AgentSessionExtensionsModule {
 	constructor(readonly host: AgentSessionHost) {}
+
+	/** Forward ExtensionUIContext into provider stream options (claude-code-cli elicitation). */
+	private ensureExtensionUiStreamBridge(): void {
+		const agent = this.host.agent;
+		if (extensionUiStreamBridgedAgents.has(agent)) return;
+
+		const baseStreamFn = agent.streamFn;
+		agent.streamFn = (model, context, options) =>
+			baseStreamFn(model, context, {
+				...options,
+				extensionUIContext: this.host._extensionUIContext,
+			} as typeof options);
+		extensionUiStreamBridgedAgents.add(agent);
+	}
 
 	installAgentToolHooks(): void {
 		this.host.agent.beforeToolCall = async ({ toolCall, args }) => {
@@ -80,6 +96,7 @@ export class AgentSessionExtensionsModule {
 	async bindExtensions(bindings: ExtensionBindings): Promise<void> {
 		if (bindings.uiContext !== undefined) {
 			this.host._extensionUIContext = bindings.uiContext;
+			this.ensureExtensionUiStreamBridge();
 		}
 		if (bindings.commandContextActions !== undefined) {
 			this.host._extensionCommandContextActions = bindings.commandContextActions;

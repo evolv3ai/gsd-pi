@@ -6,8 +6,9 @@ import { isDbAvailable, _getAdapter } from "./gsd-db.js";
 import { isAfter, latestExplicitReopenAt } from "./milestone-reopen-events.js";
 import { resolveGsdPathContract, resolveMilestoneFile } from "./paths.js";
 import { deriveState } from "./state.js";
+import { workflowEventLogPath } from "./workflow-event-ledger.js";
 import { readEvents } from "./workflow-events.js";
-import { renderAllProjections } from "./workflow-projections.js";
+import { flushWorkflowProjections } from "./projection-flush.js";
 
 export async function checkEngineHealth(
   basePath: string,
@@ -260,7 +261,7 @@ export async function checkEngineHealth(
   // relative to the event log and re-render them.
   try {
     if (isDbAvailable()) {
-      const eventLogPath = join(basePath, ".gsd", "event-log.jsonl");
+      const eventLogPath = workflowEventLogPath(basePath);
       const events = readEvents(eventLogPath);
       if (events.length > 0) {
         const lastEventTs = new Date(events[events.length - 1]!.ts).getTime();
@@ -270,7 +271,7 @@ export async function checkEngineHealth(
           const roadmapPath = resolveMilestoneFile(basePath, milestone.id, "ROADMAP");
           if (!roadmapPath || !existsSync(roadmapPath)) {
             try {
-              await renderAllProjections(basePath, milestone.id);
+              await flushWorkflowProjections(basePath, { milestoneId: milestone.id });
               fixesApplied.push(`re-rendered missing projections for ${milestone.id}`);
             } catch {
               // Non-fatal — projection re-render failed
@@ -280,7 +281,7 @@ export async function checkEngineHealth(
           const projectionMtime = statSync(roadmapPath).mtimeMs;
           if (lastEventTs > projectionMtime) {
             try {
-              await renderAllProjections(basePath, milestone.id);
+              await flushWorkflowProjections(basePath, { milestoneId: milestone.id });
               fixesApplied.push(`re-rendered stale projections for ${milestone.id}`);
             } catch {
               // Non-fatal — projection re-render failed

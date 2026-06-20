@@ -45,3 +45,30 @@ test("doctor fix respects git.manage_gitignore false (#4161)", async (t) => {
   assert.equal(readFileSync(join(dir, ".gitignore"), "utf-8"), "node_modules/\n");
   assert.equal(existsSync(join(dir, ".gsd", "PREFERENCES.md")), true);
 });
+
+test("doctor fix resets run-uat counters at the dispatch cap", async (t) => {
+  const dir = createGitProject();
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const runtimeDir = join(dir, ".gsd", "runtime");
+  mkdirSync(runtimeDir, { recursive: true });
+  const counterPath = join(runtimeDir, "uat-count-M002-S01.json");
+  writeFileSync(
+    counterPath,
+    JSON.stringify({ count: 3, updatedAt: "2026-06-02T19:40:23.289Z" }) + "\n",
+    "utf-8",
+  );
+
+  const detect = await runGSDDoctor(dir);
+  const issue = detect.issues.find((candidate) => candidate.code === "uat_retry_exhausted");
+  assert.ok(issue, "doctor reports the exhausted UAT retry counter at the dispatch cap");
+  assert.equal(issue.unitId, "M002/S01");
+  assert.match(issue.message, /3 attempt\(s\)/);
+
+  const fixed = await runGSDDoctor(dir, { fix: true, scope: "M002/S02" });
+  assert.ok(
+    fixed.fixesApplied.some((fix) => fix.includes("reset exhausted run-uat retry counter for M002/S01")),
+    "doctor --fix resets the blocked counter even when the current displayed scope has advanced",
+  );
+  assert.equal(existsSync(counterPath), false);
+});

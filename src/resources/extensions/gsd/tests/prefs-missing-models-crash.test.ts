@@ -11,7 +11,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -92,9 +92,40 @@ test("resolveModelWithFallbacksForUnit returns undefined when no preferences fil
 });
 
 test("resolveModelWithFallbacksForUnit returns undefined when preferences omit models", () => {
-  withGsdHome("---\nmode: solo\n---\n", () => {
+  withGsdHome("---\nmode: solo\ntoken_profile: burn-max\n---\n", () => {
     assert.equal(resolveModelWithFallbacksForUnit("execute-task"), undefined);
   });
+});
+
+test("resolveModelWithFallbacksForUnit honors project basePath when cwd differs", () => {
+  const oldHome = process.env.GSD_HOME;
+  const oldCwd = process.cwd();
+  const home = mkdtempSync(join(tmpdir(), "gsd-prefs-home-"));
+  const project = mkdtempSync(join(tmpdir(), "gsd-prefs-project-"));
+  const other = mkdtempSync(join(tmpdir(), "gsd-prefs-other-"));
+  try {
+    process.env.GSD_HOME = home;
+    writeFileSync(join(home, "PREFERENCES.md"), "---\nmode: solo\ntoken_profile: burn-max\n---\n");
+    const gsdDir = join(project, ".gsd");
+    mkdirSync(gsdDir, { recursive: true });
+    writeFileSync(
+      join(gsdDir, "PREFERENCES.md"),
+      "---\nmodels:\n  execution: anthropic/claude-opus-4-6\n---\n",
+    );
+    process.chdir(other);
+    assert.equal(resolveModelWithFallbacksForUnit("execute-task"), undefined);
+    assert.equal(
+      resolveModelWithFallbacksForUnit("execute-task", project)?.primary,
+      "anthropic/claude-opus-4-6",
+    );
+  } finally {
+    process.chdir(oldCwd);
+    if (oldHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = oldHome;
+    rmSync(home, { recursive: true, force: true });
+    rmSync(project, { recursive: true, force: true });
+    rmSync(other, { recursive: true, force: true });
+  }
 });
 
 test("resolveDefaultSessionModel returns undefined when no preferences file exists", () => {
@@ -104,13 +135,13 @@ test("resolveDefaultSessionModel returns undefined when no preferences file exis
 });
 
 test("resolveDefaultSessionModel returns undefined when preferences omit models", () => {
-  withGsdHome("---\nmode: solo\n---\n", () => {
+  withGsdHome("---\nmode: solo\ntoken_profile: burn-max\n---\n", () => {
     assert.equal(resolveDefaultSessionModel("anthropic"), undefined);
   });
 });
 
 test("readModelFromPreferences returns 'default' when preferences omit models", () => {
-  withGsdHome("---\nmode: solo\n---\n", () => {
+  withGsdHome("---\nmode: solo\ntoken_profile: burn-max\n---\n", () => {
     assert.equal(readModelFromPreferences(), "default");
   });
 });

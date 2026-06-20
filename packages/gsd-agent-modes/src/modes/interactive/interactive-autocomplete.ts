@@ -7,6 +7,7 @@ import type { Api, Model } from "@gsd/pi-ai";
 import { BUILTIN_SLASH_COMMANDS } from "@gsd/pi-coding-agent/core/slash-commands.js";
 import type { PromptTemplate } from "@gsd/pi-coding-agent/core/prompt-templates.js";
 import type { RegisteredCommand } from "@gsd/pi-coding-agent/core/extensions/index.js";
+import { getToolPath } from "@gsd/pi-coding-agent/utils/tools-manager.js";
 import { providerDisplayName } from "./components/model-selector.js";
 import type { InteractiveModeDelegateHost } from "./interactive-mode-delegate-host.js";
 
@@ -85,9 +86,12 @@ export function setupAutocomplete(host: InteractiveModeDelegateHost): void {
 		}
 	}
 
+	const fdPath = getToolPath("fd");
+
 	host.autocompleteProvider = new CombinedAutocompleteProvider(
 		[...slashCommands, ...templateCommands, ...extensionCommands, ...skillCommandList],
 		process.cwd(),
+		fdPath,
 	);
 	host.autocompleteProvider.setRespectGitignore(host.settingsManager.getRespectGitignoreInPicker());
 	host.defaultEditor.setAutocompleteProvider(host.autocompleteProvider);

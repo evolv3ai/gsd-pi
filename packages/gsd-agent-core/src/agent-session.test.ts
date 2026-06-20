@@ -26,6 +26,34 @@ Please review the patch.`;
 });
 
 describe("AgentSessionExtensionsModule", () => {
+  test("bindExtensions forwards extension UI context into provider stream options", async () => {
+    const uiContext = { notify: () => {} };
+    let received: Record<string, unknown> | undefined;
+    const host = {
+      _extensionUIContext: undefined as typeof uiContext | undefined,
+      _extensionRunner: {
+        setUIContext: () => {},
+        bindCommandContext: () => {},
+        onError: () => () => {},
+        emit: async () => {},
+        hasHandlers: () => false,
+      },
+      _sessionStartEvent: { type: "session_start", reason: "startup" },
+      agent: {
+        streamFn: (_model: unknown, _context: unknown, options?: Record<string, unknown>) => {
+          received = options;
+          return { type: "stream" } as any;
+        },
+      },
+    };
+
+    const mod = new AgentSessionExtensionsModule(host as any);
+    await mod.bindExtensions({ uiContext: uiContext as any });
+
+    host.agent.streamFn({}, {}, { maxTokens: 1 });
+    assert.equal(received?.extensionUIContext, uiContext);
+  });
+
   test("matches visible skills case-insensitively when rebuilding the prompt", () => {
     const host = {
       _cwd: "/tmp/project",

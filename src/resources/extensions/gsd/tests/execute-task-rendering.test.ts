@@ -38,6 +38,7 @@ test("execute-task prompt renders compact execution and completion gates", async
     planPath: ".gsd/milestones/M001/slices/S01/S01-PLAN.md",
     taskPlanPath: ".gsd/milestones/M001/slices/S01/tasks/T01-PLAN.md",
     priorTaskLines: "- None",
+    onDemandContext: "",
     skillActivation: "Load relevant skills.",
     inlinedTemplates: "### Output Template: Task Summary\nSource: `templates/task-summary.md`",
     templatesDir: join(fixtureRoot, "templates"),

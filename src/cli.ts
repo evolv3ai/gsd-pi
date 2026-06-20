@@ -13,13 +13,14 @@ import { loadStoredEnvKeys } from './wizard.js'
 import { migratePiCredentials } from './pi-migration.js'
 import { shouldRunOnboarding, runOnboarding } from './onboarding.js'
 import chalk from 'chalk'
-import { checkForUpdates } from './update-check.js'
+import { checkForGsdBrowserUpdates, checkForUpdates } from './update-check.js'
 import { shouldBypassManagedResourceMismatchGate } from './cli-policy.js'
 import { shouldRedirectAutoToHeadless } from './cli-auto-routing.js'
 import { printHelp, printSubcommandHelp } from './help-text.js'
 import { applySecurityOverrides } from './security-overrides.js'
 import { validateConfiguredModel } from './startup-model-validation.js'
-import { migrateAnthropicDefaultToClaudeCode } from './provider-migrations.js'
+import { migrateAnthropicDefaultToClaudeCode, migrateGeminiCliDefaultToAntigravity } from './provider-migrations.js'
+import { applyModelOverride } from './cli-model-override.js'
 import {
   buildHeadlessAutoArgs,
   parseCliArgs,
@@ -153,28 +154,6 @@ async function reapplyValidatedModelOnFallback(
   }
 }
 
-/**
- * Apply the --model CLI flag override to the active session.
- * Searches available models by exact id or provider/id pattern and warns
- * on stderr when the requested model is not found in the registry.
- */
-function applyModelOverride(
-  session: { setModel(model: { provider: string; id: string }): unknown | Promise<unknown> },
-  modelRegistry: ModelRegistryInstance,
-  modelFlag: string | undefined,
-): void {
-  if (!modelFlag) return
-  const available = modelRegistry.getAvailable()
-  const match =
-    available.find((m) => m.id === modelFlag) ||
-    available.find((m) => `${m.provider}/${m.id}` === modelFlag)
-  if (match) {
-    void session.setModel(match)
-  } else {
-    process.stderr.write(`[gsd] Warning: Model "${modelFlag}" not found. Using configured default.\n`)
-  }
-}
-
 const cliFlags = parseCliArgs(process.argv)
 const isPrintMode = cliFlags.print || cliFlags.mode !== undefined
 
@@ -246,7 +225,7 @@ function ensureRtkBootstrap(): Promise<void> {
 // actually upgrade out of the broken state. See shouldBypassManagedResourceMismatchGate.
 if (shouldBypassManagedResourceMismatchGate(cliFlags.messages[0])) {
   const { runUpdate } = await import('./update-cmd.js')
-  await runUpdate()
+  await runUpdate({ target: cliFlags.messages[1] })
   process.exit(0)
 }
 
@@ -594,7 +573,7 @@ markStartup('AuthStorage.create')
 loadStoredEnvKeys(authStorage)
 migratePiCredentials(authStorage)
 
-// Resolve models.json path with fallback to ~/.pi/agent/models.json
+// Resolve models.json path
 const { resolveModelsJsonPath } = await import('./models-resolver.js')
 const modelsJsonPath = resolveModelsJsonPath()
 
@@ -623,6 +602,7 @@ if (!isPrintMode && shouldRunOnboarding(authStorage, settingsManager.getDefaultP
 // available (using cached data or a background fetch) without blocking the TUI.
 if (!isPrintMode) {
   checkForUpdates().catch(() => {})
+  checkForGsdBrowserUpdates().catch(() => {})
 }
 
 // Warn if terminal is too narrow for readable output
@@ -705,6 +685,12 @@ if (isPrintMode) {
   migrateAnthropicDefaultToClaudeCode({
     authStorage,
     isClaudeCodeReady: () => modelRegistry.isProviderRequestReady('claude-code'),
+    settingsManager,
+    modelRegistry,
+  })
+  migrateGeminiCliDefaultToAntigravity({
+    authStorage,
+    isAntigravityReady: () => modelRegistry.isProviderRequestReady('google-antigravity'),
     settingsManager,
     modelRegistry,
   })
@@ -827,6 +813,12 @@ flushPendingProviderRegistrations(resourceLoader, modelRegistry)
 migrateAnthropicDefaultToClaudeCode({
   authStorage,
   isClaudeCodeReady: () => modelRegistry.isProviderRequestReady('claude-code'),
+  settingsManager,
+  modelRegistry,
+})
+migrateGeminiCliDefaultToAntigravity({
+  authStorage,
+  isAntigravityReady: () => modelRegistry.isProviderRequestReady('google-antigravity'),
   settingsManager,
   modelRegistry,
 })

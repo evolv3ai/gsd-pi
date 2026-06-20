@@ -18,6 +18,47 @@ import {
 
 import { logAliasUsage } from "./alias-telemetry.js";
 
+/** Local mirror of src/resources/extensions/gsd/mcp-bridge.ts.
+ *  Kept here so packages/mcp-server/tsconfig.json rootDir boundary is not crossed.
+ */
+interface GsdMcpBridge {
+  loadWriteGateSnapshot: (...args: any[]) => any;
+  shouldBlockPendingGateInSnapshot: (...args: any[]) => any;
+  shouldBlockQueueExecutionInSnapshot: (...args: any[]) => any;
+  ensureDbOpen: (...args: any[]) => any;
+  _getAdapter: (...args: any[]) => any;
+  checkpointDatabase: (...args: any[]) => any;
+  closeDatabase: (...args: any[]) => any;
+  getAllMilestones: (...args: any[]) => any;
+  getDb: (...args: any[]) => any;
+  getGateResults: (...args: any[]) => any;
+  getMilestoneSlices: (...args: any[]) => any;
+  getPendingGates: (...args: any[]) => any;
+  getSliceTasks: (...args: any[]) => any;
+  insertDecision: (...args: any[]) => any;
+  insertMilestone: (...args: any[]) => any;
+  insertSlice: (...args: any[]) => any;
+  openDatabase: (...args: any[]) => any;
+  upsertMilestonePlanning: (...args: any[]) => any;
+  invalidateStateCache: (...args: any[]) => any;
+  isReusableGhostMilestone: (...args: any[]) => any;
+  loadEffectiveGSDPreferences: (...args: any[]) => any;
+  saveDecisionToDb: (...args: any[]) => any;
+  saveRequirementToDb: (...args: any[]) => any;
+  updateRequirementInDb: (...args: any[]) => any;
+  rebuildState: (...args: any[]) => any;
+  queryJournal: (...args: any[]) => any;
+  claimReservedId: (...args: any[]) => any;
+  findMilestoneIds: (...args: any[]) => any;
+  getReservedMilestoneIds: (...args: any[]) => any;
+  milestoneIdSort: (...args: any[]) => any;
+  nextMilestoneId: (...args: any[]) => any;
+}
+
+async function importBridgeModule(): Promise<GsdMcpBridge> {
+  return importLocalModule<GsdMcpBridge>("../../../src/resources/extensions/gsd/mcp-bridge.js");
+}
+
 type WorkflowToolExecutors = {
   SUPPORTED_SUMMARY_ARTIFACT_TYPES: readonly string[];
   executeMilestoneStatus: (params: { milestoneId: string }, basePath?: string) => Promise<unknown>;
@@ -107,7 +148,7 @@ type WorkflowToolExecutors = {
       sliceTitle: string;
       oneLiner: string;
       narrative: string;
-      verification: string;
+      verification?: string;
       uatContent: string;
       deviations?: string;
       knownLimitations?: string;
@@ -196,6 +237,20 @@ type WorkflowToolExecutors = {
       verdict: "pass" | "flag" | "omitted";
       rationale: string;
       findings?: string;
+    },
+    basePath?: string,
+  ) => Promise<unknown>;
+  executeUatResultSave: (
+    params: {
+      milestoneId: string;
+      sliceId: string;
+      uatType: string;
+      verdict: "PASS" | "FAIL" | "PARTIAL";
+      checks: Array<Record<string, unknown>>;
+      presentation: Record<string, unknown>;
+      notes?: string;
+      attempt?: string;
+      previousAttemptId?: string;
     },
     basePath?: string,
   ) => Promise<unknown>;
@@ -404,36 +459,53 @@ function extractMilestoneId(parsed: Record<string, unknown>): string | null {
  * the shared project `.gsd/` and auto-mode's verifyExpectedArtifact (which
  * uses the worktree `.gsd/`) fails, triggering a guaranteed retry per unit.
  */
+/**
+ * Containers a GSD worktree may live in: canonical .gsd-worktrees/ first,
+ * legacy .gsd/worktrees/ second. Boundary copy of `worktreesDirs` in
+ * src/resources/extensions/gsd/worktree-placement.ts — the MCP server cannot
+ * statically import the extension tree. Keep the two lists synchronized.
+ */
+function worktreeContainers(projectRoot: string): string[] {
+  return [join(projectRoot, ".gsd-worktrees"), join(projectRoot, ".gsd", "worktrees")];
+}
+
 function resolveActiveWorktreeBasePath(
   projectRoot: string,
   milestoneId: string | null,
 ): string | null {
   if (!milestoneId) return null;
-  const wtPath = join(projectRoot, ".gsd", "worktrees", milestoneId);
-  if (!existsSync(wtPath)) return null;
-  // Sanity check: a real git worktree has a `.git` file with a gitdir pointer.
-  // Bare directories without it shouldn't hijack the write path.
-  if (!existsSync(join(wtPath, ".git"))) return null;
-  return wtPath;
+  for (const container of worktreeContainers(projectRoot)) {
+    const wtPath = join(container, milestoneId);
+    if (!existsSync(wtPath)) continue;
+    // Sanity check: a real git worktree has a `.git` file with a gitdir pointer.
+    // Bare directories without it shouldn't hijack the write path.
+    if (!existsSync(join(wtPath, ".git"))) continue;
+    return wtPath;
+  }
+  return null;
 }
 
 /**
  * Fallback when the tool call has no milestoneId: if exactly one auto-worktree
- * exists under `<projectRoot>/.gsd/worktrees/`, treat it as the active one.
+ * exists across the project's worktree containers, treat it as the active one.
  * Multiple worktrees → ambiguous, return null and let writes go to project root.
  */
 function resolveSoleActiveWorktree(projectRoot: string): string | null {
-  const worktreesDir = join(projectRoot, ".gsd", "worktrees");
-  if (!existsSync(worktreesDir)) return null;
-  let entries: string[];
-  try {
-    entries = readdirSync(worktreesDir);
-  } catch {
-    return null;
+  const live: string[] = [];
+  for (const worktreesDir of worktreeContainers(projectRoot)) {
+    if (!existsSync(worktreesDir)) continue;
+    let entries: string[];
+    try {
+      entries = readdirSync(worktreesDir);
+    } catch {
+      continue;
+    }
+    live.push(
+      ...entries
+        .map((name) => join(worktreesDir, name))
+        .filter((p) => existsSync(join(p, ".git"))),
+    );
   }
-  const live = entries
-    .map((name) => join(worktreesDir, name))
-    .filter((p) => existsSync(join(p, ".git")));
   if (live.length !== 1) return null;
   return live[0];
 }
@@ -514,6 +586,7 @@ function isWorkflowToolExecutors(value: unknown): value is WorkflowToolExecutors
     "executeReassessRoadmap",
     "executeSaveGateResult",
     "executeSummarySave",
+    "executeUatResultSave",
     "executeTaskComplete",
     "executeTaskReopen",
     "executeSliceReopen",
@@ -586,7 +659,7 @@ function getWriteGateModuleCandidates(): string[] {
   }
 
   candidates.push(
-    ...buildBridgeImportCandidates("../../../src/resources/extensions/gsd/bootstrap/write-gate.js")
+    ...buildBridgeImportCandidates("../../../src/resources/extensions/gsd/mcp-bridge.js")
       .map((p) => new URL(p, import.meta.url).href),
   );
 
@@ -646,12 +719,28 @@ async function importLocalModule<T>(relativePath: string): Promise<T> {
   throw lastErr;
 }
 
+async function importWorkflowRuntimeModule<T>(relativePath: string): Promise<T> {
+  const rawCandidates = import.meta.url.includes("/src/") || import.meta.url.includes("\\src\\")
+    ? _buildImportCandidates(relativePath)
+    : buildBridgeImportCandidates(relativePath);
+  const candidates = rawCandidates
+    .map((p) => new URL(p, import.meta.url).href);
+
+  let lastErr: unknown;
+  for (const candidate of candidates) {
+    try {
+      return await import(candidate) as T;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr;
+}
+
 async function loadProjectPreferences(projectDir: string): Promise<unknown | null> {
-  const { loadEffectiveGSDPreferences } = await importLocalModule<any>(
-    "../../../src/resources/extensions/gsd/preferences.js",
-  );
+  const bridge = await importBridgeModule();
   try {
-    return loadEffectiveGSDPreferences(projectDir).preferences;
+    return bridge.loadEffectiveGSDPreferences(projectDir).preferences;
   } catch {
     return null;
   }
@@ -701,6 +790,18 @@ async function getWorkflowToolExecutors(): Promise<WorkflowToolExecutors> {
     })();
   }
   return workflowToolExecutorsPromise;
+}
+
+/**
+ * Eagerly load and shape-check the workflow executor and write-gate bridges.
+ * The stdio CLI awaits this at startup so a broken bridge fails the spawn
+ * with an actionable error instead of presenting an available-looking tool
+ * surface that errors on the first call. Shares the cached promises the tool
+ * handlers use, so a successful warm-up also removes first-call import latency.
+ */
+export async function warmWorkflowToolBridges(): Promise<void> {
+  await getWorkflowToolExecutors();
+  await getWorkflowWriteGateModule();
 }
 
 async function getWorkflowWriteGateModule(): Promise<WorkflowWriteGateModule> {
@@ -851,10 +952,8 @@ async function runSerializedWorkflowDbOperation<T>(
   fn: () => Promise<T>,
 ): Promise<T> {
   return runSerializedWorkflowOperation(async () => {
-    const { ensureDbOpen } = await importLocalModule<WorkflowDbBootstrapModule>(
-      "../../../src/resources/extensions/gsd/bootstrap/dynamic-tools.js",
-    );
-    const dbAvailable = await ensureDbOpen(projectDir);
+    const bridge = await importBridgeModule();
+    const dbAvailable = await bridge.ensureDbOpen(projectDir);
     if (!dbAvailable) {
       throw new Error("GSD database is not available");
     }
@@ -1033,36 +1132,33 @@ async function inferSaveGateResultScope(
   if (stringValue(out.milestoneId) && stringValue(out.sliceId)) return out;
   if (!gateId) return out;
 
-  const { ensureDbOpen } = await importLocalModule<WorkflowDbBootstrapModule>(
-    "../../../src/resources/extensions/gsd/bootstrap/dynamic-tools.js",
-  );
-  if (!(await ensureDbOpen(projectDir))) return out;
+  const bridge = await importBridgeModule();
+  if (!(await bridge.ensureDbOpen(projectDir))) return out;
 
-  const db = await importLocalModule<GateDbModule>("../../../src/resources/extensions/gsd/gsd-db.js");
-  if (!db.getMilestoneSlices || !db.getPendingGates || !db.getGateResults) return out;
+  if (!bridge.getMilestoneSlices || !bridge.getPendingGates || !bridge.getGateResults) return out;
 
   const milestoneFilter = stringValue(out.milestoneId);
   const sliceFilter = stringValue(out.sliceId);
   const milestones = milestoneFilter
     ? [{ id: milestoneFilter }]
-    : (db.getAllMilestones?.() ?? []).filter((milestone) => stringValue(milestone.id));
+    : (bridge.getAllMilestones?.() ?? []).filter((milestone: unknown) => stringValue((milestone as { id?: unknown }).id));
 
   const candidates: Array<{ milestoneId: string; sliceId: string; taskId?: string }> = [];
   for (const milestone of milestones) {
     const milestoneId = stringValue(milestone.id);
     if (!milestoneId) continue;
-    const slices = db.getMilestoneSlices(milestoneId)
-      .filter((slice) => {
-        const sliceId = stringValue(slice.id);
+    const slices = bridge.getMilestoneSlices(milestoneId)
+      .filter((slice: unknown) => {
+        const sliceId = stringValue((slice as { id?: unknown }).id);
         return sliceId && (!sliceFilter || sliceId === sliceFilter);
       });
 
     for (const slice of slices) {
-      const sliceId = stringValue(slice.id);
+      const sliceId = stringValue((slice as { id?: unknown }).id);
       if (!sliceId) continue;
       const rows = [
-        ...db.getPendingGates(milestoneId, sliceId),
-        ...db.getGateResults(milestoneId, sliceId),
+        ...bridge.getPendingGates(milestoneId, sliceId),
+        ...bridge.getGateResults(milestoneId, sliceId),
       ];
       for (const row of rows) {
         if (stringValue(row.gate_id)?.toUpperCase() !== gateId) continue;
@@ -1102,8 +1198,8 @@ async function handleSaveGateResult(
 
 async function ensureMilestoneDbRow(milestoneId: string): Promise<void> {
   try {
-    const { insertMilestone } = await importLocalModule<any>("../../../src/resources/extensions/gsd/gsd-db.js");
-    insertMilestone({ id: milestoneId, status: "queued" });
+    const bridge = await importBridgeModule();
+    bridge.insertMilestone({ id: milestoneId, status: "queued" });
   } catch {
     // Ignore pre-existing rows or transient DB availability issues.
   }
@@ -1111,8 +1207,8 @@ async function ensureMilestoneDbRow(milestoneId: string): Promise<void> {
 
 async function findDatabaseMilestoneIds(): Promise<string[]> {
   try {
-    const { getAllMilestones } = await importLocalModule<any>("../../../src/resources/extensions/gsd/gsd-db.js");
-    return (getAllMilestones?.() ?? [])
+    const bridge = await importBridgeModule();
+    return (bridge.getAllMilestones?.() ?? [])
       .map((milestone: unknown) => {
         const id = (milestone as { id?: unknown })?.id;
         return typeof id === "string" ? id : null;
@@ -1132,13 +1228,14 @@ async function findDatabaseMilestoneIds(): Promise<string[]> {
  * from an earlier call to this same tool.
  */
 async function generateOrReuseMilestoneId(projectDir: string): Promise<string> {
+  const bridge = await importBridgeModule();
   const {
     claimReservedId,
     findMilestoneIds,
     getReservedMilestoneIds,
     nextMilestoneId,
     milestoneIdSort,
-  } = await importLocalModule<any>("../../../src/resources/extensions/gsd/milestone-ids.js");
+  } = bridge;
 
   const reserved = claimReservedId();
   if (reserved) {
@@ -1155,9 +1252,7 @@ async function generateOrReuseMilestoneId(projectDir: string): Promise<string> {
   ];
 
   // Attempt ghost-ID reuse before falling back to max+1.
-  const { isReusableGhostMilestone } = await importLocalModule<any>(
-    "../../../src/resources/extensions/gsd/state.js",
-  );
+  const { isReusableGhostMilestone } = bridge;
   const sorted = [...allIds].sort(milestoneIdSort);
   for (const candidate of sorted) {
     if (isReusableGhostMilestone(projectDir, candidate)) {
@@ -1166,9 +1261,7 @@ async function generateOrReuseMilestoneId(projectDir: string): Promise<string> {
     }
   }
 
-  const prefsMod = await importLocalModule<any>(
-    "../../../src/resources/extensions/gsd/preferences.js",
-  ).catch(() => null);
+  const prefsMod = await importBridgeModule().catch(() => null);
   // Graceful degradation: a corrupt preferences file should not crash
   // milestone-id generation. Fall back to non-unique IDs if anything
   // throws here — matches the pre-fix behavior for missing prefs.
@@ -1193,6 +1286,100 @@ const projectDirParam = z
   .describe("Optional. Omit this field — the server defaults to its current working directory, which is already the correct project or worktree root.");
 
 const unknownRecord = z.record(z.string(), z.unknown());
+
+/** Split "id — detail" / "id - detail" pairs used by legacy string payloads. */
+function splitPair(value: string): [string, string] {
+  const match = value.match(/^(.+?)\s*(?:—|-)\s+(.+)$/);
+  return match ? [match[1].trim(), match[2].trim()] : [value.trim(), ""];
+}
+
+/** Accept string or string[] at runtime; emit array-only JSON Schema (no anyOf). */
+const optionalStringOrStringArray = () =>
+  z.preprocess(
+    (value) => (value == null ? value : Array.isArray(value) ? value : [value]),
+    z.array(z.string()).optional(),
+  );
+
+function optionalStructuredStringArray<T extends z.ZodTypeAny>(
+  itemSchema: T,
+  coerceString: (value: string) => z.infer<T>,
+) {
+  return z.preprocess(
+    (value) => {
+      if (value == null) return value;
+      if (!Array.isArray(value)) return value;
+      return value.map((item) => (typeof item === "string" ? coerceString(item) : item));
+    },
+    z.array(itemSchema).optional(),
+  );
+}
+
+const requirementAdvancedItemSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const [id, how] = splitPair(value);
+    return { id, how };
+  },
+  z.object({ id: z.string(), how: z.string() }),
+);
+
+const requirementValidatedItemSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const [id, proof] = splitPair(value);
+    return { id, proof };
+  },
+  z.object({ id: z.string(), proof: z.string() }),
+);
+
+const requirementInvalidatedItemSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const [id, what] = splitPair(value);
+    return { id, what };
+  },
+  z.object({ id: z.string(), what: z.string() }),
+);
+
+const filesModifiedItemSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const [path, description] = splitPair(value);
+    return { path, description };
+  },
+  z.object({ path: z.string(), description: z.string() }),
+);
+
+const requiresItemSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    const [slice, provides] = splitPair(value);
+    return { slice, provides };
+  },
+  z.object({ slice: z.string(), provides: z.string() }),
+);
+
+// Accept either a string (legacy command-only form) or the structured object.
+// Mirrors `normalizeVerificationEvidence` in the executor: strings are coerced
+// into the canonical object shape before Zod validates, so the emitted JSON
+// Schema stays a single object type (no anyOf/oneOf) for Moonshot/Kimi.
+const verificationEvidenceItemSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value;
+    return {
+      command: value,
+      exitCode: -1,
+      verdict: "unknown (coerced from string)",
+      durationMs: 0,
+    };
+  },
+  z.object({
+    command: z.string(),
+    exitCode: z.number(),
+    verdict: z.string(),
+    durationMs: z.number(),
+  }),
+);
 
 const nonEmptyString = (field: string) =>
   z.string().trim().min(1, `${field} must be a non-empty string`);
@@ -1343,7 +1530,7 @@ const validateMilestoneParams = {
   sliceDeliveryAudit: z.string().describe("Markdown auditing each slice's claimed vs delivered output"),
   crossSliceIntegration: z.string().describe("Markdown describing cross-slice issues or closure"),
   requirementCoverage: z.string().describe("Markdown describing requirement coverage and gaps"),
-  verificationClasses: z.string().optional(),
+  verificationClasses: z.string().optional().describe("Complete markdown table with one canonical row for every applicable planned verification class: Contract, Integration, Operational, and UAT"),
   verdictRationale: z.string().describe("Why this verdict was chosen"),
   remediationPlan: z.string().optional(),
 };
@@ -1453,41 +1640,57 @@ const sliceCompleteParams = {
   sliceTitle: z.string().describe("Title of the slice"),
   oneLiner: z.string().describe("One-line summary of what the slice accomplished"),
   narrative: z.string().describe("Detailed narrative of what happened across all tasks"),
-  verification: z.string().describe("What was verified across all tasks"),
+  verification: z.string().optional().describe("What was verified across all tasks — if omitted, summary records verification as passed without detail."),
   uatContent: z.string().describe("UAT test content (markdown body)"),
   deviations: z.string().optional(),
   knownLimitations: z.string().optional(),
   followUps: z.string().optional(),
-  keyFiles: z.union([z.array(z.string()), z.string()]).optional(),
-  keyDecisions: z.union([z.array(z.string()), z.string()]).optional(),
-  patternsEstablished: z.union([z.array(z.string()), z.string()]).optional(),
-  observabilitySurfaces: z.union([z.array(z.string()), z.string()]).optional(),
-  provides: z.union([z.array(z.string()), z.string()]).optional(),
-  requirementsSurfaced: z.union([z.array(z.string()), z.string()]).optional(),
-  drillDownPaths: z.union([z.array(z.string()), z.string()]).optional(),
-  affects: z.union([z.array(z.string()), z.string()]).optional(),
-  requirementsAdvanced: z.array(z.union([
-    z.object({ id: z.string(), how: z.string() }),
-    z.string(),
-  ])).optional(),
-  requirementsValidated: z.array(z.union([
-    z.object({ id: z.string(), proof: z.string() }),
-    z.string(),
-  ])).optional(),
-  requirementsInvalidated: z.array(z.union([
-    z.object({ id: z.string(), what: z.string() }),
-    z.string(),
-  ])).optional(),
-  filesModified: z.array(z.union([
-    z.object({ path: z.string(), description: z.string() }),
-    z.string(),
-  ])).optional(),
-  requires: z.array(z.union([
-    z.object({ slice: z.string(), provides: z.string() }),
-    z.string(),
-  ])).optional(),
+  keyFiles: optionalStringOrStringArray(),
+  keyDecisions: optionalStringOrStringArray(),
+  patternsEstablished: optionalStringOrStringArray(),
+  observabilitySurfaces: optionalStringOrStringArray(),
+  provides: optionalStringOrStringArray(),
+  requirementsSurfaced: optionalStringOrStringArray(),
+  drillDownPaths: optionalStringOrStringArray(),
+  affects: optionalStringOrStringArray(),
+  requirementsAdvanced: optionalStructuredStringArray(
+    requirementAdvancedItemSchema,
+    (value) => {
+      const [id, how] = splitPair(value);
+      return { id, how };
+    },
+  ),
+  requirementsValidated: optionalStructuredStringArray(
+    requirementValidatedItemSchema,
+    (value) => {
+      const [id, proof] = splitPair(value);
+      return { id, proof };
+    },
+  ),
+  requirementsInvalidated: optionalStructuredStringArray(
+    requirementInvalidatedItemSchema,
+    (value) => {
+      const [id, what] = splitPair(value);
+      return { id, what };
+    },
+  ),
+  filesModified: optionalStructuredStringArray(
+    filesModifiedItemSchema,
+    (value) => {
+      const [path, description] = splitPair(value);
+      return { path, description };
+    },
+  ),
+  requires: optionalStructuredStringArray(
+    requiresItemSchema,
+    (value) => {
+      const [slice, provides] = splitPair(value);
+      return { slice, provides };
+    },
+  ),
 };
 const sliceCompleteSchema = z.object(sliceCompleteParams);
+export const _sliceCompleteSchemaForTest = sliceCompleteSchema;
 
 const summarySaveParams = {
   projectDir: projectDirParam,
@@ -1568,7 +1771,7 @@ const planTaskParams = {
   files: z.array(z.string()).describe("Files likely touched"),
   verify: nonEmptyString("verify").describe("Verification command or block"),
   inputs: z.array(z.string()).describe("Input files or references"),
-  expectedOutput: z.array(z.string()).describe("Expected output files or artifacts"),
+  expectedOutput: z.array(z.string()).describe("Files this task creates or overwrites"),
   observabilityImpact: optionalNonEmptyString("observabilityImpact").describe("Task observability impact"),
 };
 const planTaskSchema = z.object(planTaskParams);
@@ -1605,18 +1808,10 @@ const taskCompleteParams = {
     recommendation: z.string().describe("Option id the executor recommends."),
     recommendationRationale: z.string().describe("Why the recommendation — 1-2 sentences."),
     continueWithDefault: z.boolean().describe(
-      "When true, loop continues (artifact logged for later review). When false, auto-mode pauses until the user resolves via /gsd escalate resolve.",
+      "When true, the recommendation is recorded as the default, but auto-mode still pauses until the user resolves via /gsd escalate resolve.",
     ),
   }).optional().describe("ADR-011 Phase 2: optional escalation payload. Only honored when phases.mid_execution_escalation is true."),
-  verificationEvidence: z.array(z.union([
-    z.object({
-      command: z.string(),
-      exitCode: z.number(),
-      verdict: z.string(),
-      durationMs: z.number(),
-    }),
-    z.string(),
-  ])).optional().describe("Verification evidence entries"),
+  verificationEvidence: z.array(verificationEvidenceItemSchema).optional().describe("Verification evidence entries"),
 };
 const taskCompleteSchema = z.object(taskCompleteParams);
 
@@ -1687,6 +1882,80 @@ const execParams = {
   timeout_ms: z.number().int().min(1_000).max(600_000).optional().describe("Per-invocation timeout in milliseconds."),
 };
 const execSchema = z.object(execParams);
+
+const uatExecIntentSchema = z.enum([
+  "uat-artifact-check",
+  "uat-runtime-check",
+  "uat-browser-check",
+  "uat-service-start",
+  "uat-log-inspection",
+]);
+const uatExecParams = {
+  projectDir: projectDirParam,
+  milestoneId: nonEmptyString("milestoneId").describe("Milestone ID (e.g. M001)"),
+  sliceId: nonEmptyString("sliceId").describe("Slice ID (e.g. S01)"),
+  checkId: nonEmptyString("checkId").describe("Stable check ID from the UAT spec"),
+  intent: uatExecIntentSchema.describe("UAT command intent"),
+  runtime: execRuntimeSchema
+    .optional()
+    .describe("Optional interpreter. Defaults to bash. Supported: bash, node, python; sh/shell, js/nodejs, and py/python3 aliases are accepted."),
+  script: z.string().optional().describe("Script body. Keep output small; capped stdout/stderr are persisted under .gsd/exec."),
+  command: z.string().optional().describe("Alias for script; defaults to bash when runtime is omitted."),
+  cmd: z.string().optional().describe("Short alias for script."),
+  code: z.string().optional().describe("Alias for script, useful for node/python snippets."),
+  expected: z.string().optional().describe("Expected outcome for this UAT check."),
+  timeout_ms: z.number().int().min(1_000).max(600_000).optional().describe("Per-invocation timeout in milliseconds."),
+};
+const uatExecSchema = z.object(uatExecParams);
+
+const uatEvidenceRefSchema = z.object({
+  kind: z.enum(["gsd_uat_exec", "gsd_exec", "screenshot", "log", "url", "browser"]),
+  ref: nonEmptyString("ref"),
+  note: z.string().optional(),
+});
+const uatCheckSchema = z.object({
+  id: nonEmptyString("id"),
+  description: nonEmptyString("description"),
+  mode: z.enum(["artifact", "runtime", "browser", "human-follow-up"]),
+  result: z.enum(["PASS", "FAIL", "NEEDS-HUMAN"]),
+  evidence: z.array(uatEvidenceRefSchema).optional(),
+  notes: z.string().optional(),
+  nonAutomatable: z.boolean().optional(),
+});
+const uatPresentationSchema = z.object({
+  surface: z.enum(["provider-tools", "claude-code-sdk", "mcp", "hybrid"]),
+  model: z.object({
+    provider: z.string().optional(),
+    api: z.string().optional(),
+    id: z.string().optional(),
+  }).optional(),
+  presentedTools: z.array(z.string()),
+  blockedTools: z.array(z.object({ name: z.string(), reason: z.string() })),
+  aliases: z.array(z.object({ requested: z.string(), canonical: z.string() })).optional(),
+  fallbackToolsUsed: z.array(z.string()).optional(),
+  toolPresentationPlanId: z.string().optional(),
+  notes: z.string().optional(),
+});
+const uatResultSaveParams = {
+  projectDir: projectDirParam,
+  milestoneId: nonEmptyString("milestoneId").describe("Milestone ID (e.g. M001)"),
+  sliceId: nonEmptyString("sliceId").describe("Slice ID (e.g. S01)"),
+  uatType: z.enum(["artifact-driven", "browser-executable", "runtime-executable", "live-runtime", "mixed", "human-experience"]).describe("Declared UAT mode"),
+  verdict: z.enum(["PASS", "FAIL", "PARTIAL"]).describe("Overall UAT verdict"),
+  checks: z.array(uatCheckSchema).min(1).describe("Structured check results"),
+  presentation: uatPresentationSchema.describe("Tool-presentation evidence"),
+  notes: z.string().optional().describe("Overall verdict rationale"),
+  // Accept number (e.g. 1) or string (e.g. "1", "auto") and coerce to string
+  // before validation, so the emitted JSON Schema stays a single primitive type
+  // (no anyOf/oneOf) for Moonshot/Kimi. The executor still treats "auto" and
+  // numeric strings as previously.
+  attempt: z.preprocess(
+    (value) => (typeof value === "number" ? String(value) : value),
+    z.string().optional(),
+  ).describe("Attempt number or auto"),
+  previousAttemptId: z.string().optional(),
+};
+const uatResultSaveSchema = z.object(uatResultSaveParams);
 
 const execSearchParams = {
   projectDir: projectDirParam,
@@ -1770,8 +2039,8 @@ export function registerWorkflowTools(
       const { projectDir, ...params } = parsed;
       await enforceWorkflowWriteGate("gsd_decision_save", projectDir);
       const result = await runSerializedWorkflowDbOperation(projectDir, async () => {
-        const { saveDecisionToDb } = await importLocalModule<any>("../../../src/resources/extensions/gsd/db-writer.js");
-        return saveDecisionToDb(params, projectDir);
+        const bridge = await importBridgeModule();
+        return bridge.saveDecisionToDb(params, projectDir);
       });
       return { content: [{ type: "text" as const, text: `Saved decision ${result.id}` }] };
     },
@@ -1787,8 +2056,8 @@ export function registerWorkflowTools(
       const { projectDir, ...params } = parsed;
       await enforceWorkflowWriteGate("gsd_decision_save", projectDir);
       const result = await runSerializedWorkflowDbOperation(projectDir, async () => {
-        const { saveDecisionToDb } = await importLocalModule<any>("../../../src/resources/extensions/gsd/db-writer.js");
-        return saveDecisionToDb(params, projectDir);
+        const bridge = await importBridgeModule();
+        return bridge.saveDecisionToDb(params, projectDir);
       });
       return { content: [{ type: "text" as const, text: `Saved decision ${result.id}` }] };
     },
@@ -1803,8 +2072,8 @@ export function registerWorkflowTools(
       const { projectDir, id, ...updates } = parsed;
       await enforceWorkflowWriteGate("gsd_requirement_update", projectDir);
       await runSerializedWorkflowDbOperation(projectDir, async () => {
-        const { updateRequirementInDb } = await importLocalModule<any>("../../../src/resources/extensions/gsd/db-writer.js");
-        return updateRequirementInDb(id, updates, projectDir);
+        const bridge = await importBridgeModule();
+        return bridge.updateRequirementInDb(id, updates, projectDir);
       });
       return { content: [{ type: "text" as const, text: `Updated requirement ${id}` }] };
     },
@@ -1820,8 +2089,8 @@ export function registerWorkflowTools(
       const { projectDir, id, ...updates } = parsed;
       await enforceWorkflowWriteGate("gsd_requirement_update", projectDir);
       await runSerializedWorkflowDbOperation(projectDir, async () => {
-        const { updateRequirementInDb } = await importLocalModule<any>("../../../src/resources/extensions/gsd/db-writer.js");
-        return updateRequirementInDb(id, updates, projectDir);
+        const bridge = await importBridgeModule();
+        return bridge.updateRequirementInDb(id, updates, projectDir);
       });
       return { content: [{ type: "text" as const, text: `Updated requirement ${id}` }] };
     },
@@ -1836,8 +2105,8 @@ export function registerWorkflowTools(
       const { projectDir, ...params } = parsed;
       await enforceWorkflowWriteGate("gsd_requirement_save", projectDir);
       const result = await runSerializedWorkflowDbOperation(projectDir, async () => {
-        const { saveRequirementToDb } = await importLocalModule<any>("../../../src/resources/extensions/gsd/db-writer.js");
-        return saveRequirementToDb(params, projectDir);
+        const bridge = await importBridgeModule();
+        return bridge.saveRequirementToDb(params, projectDir);
       });
       return { content: [{ type: "text" as const, text: `Saved requirement ${result.id}` }] };
     },
@@ -1853,8 +2122,8 @@ export function registerWorkflowTools(
       const { projectDir, ...params } = parsed;
       await enforceWorkflowWriteGate("gsd_requirement_save", projectDir);
       const result = await runSerializedWorkflowDbOperation(projectDir, async () => {
-        const { saveRequirementToDb } = await importLocalModule<any>("../../../src/resources/extensions/gsd/db-writer.js");
-        return saveRequirementToDb(params, projectDir);
+        const bridge = await importBridgeModule();
+        return bridge.saveRequirementToDb(params, projectDir);
       });
       return { content: [{ type: "text" as const, text: `Saved requirement ${result.id}` }] };
     },
@@ -2045,15 +2314,14 @@ export function registerWorkflowTools(
       await enforceWorkflowWriteGate("gsd_skip_slice", projectDir, milestoneId);
       await runSerializedWorkflowDbOperation(projectDir, async () => {
         const { handleSkipSlice } = await importLocalModule<any>("../../../src/resources/extensions/gsd/tools/skip-slice.js");
-        const { invalidateStateCache } = await importLocalModule<any>("../../../src/resources/extensions/gsd/state.js");
-        const { rebuildState } = await importLocalModule<any>("../../../src/resources/extensions/gsd/doctor.js");
+        const bridge = await importBridgeModule();
         const result = handleSkipSlice({ milestoneId, sliceId, reason });
         if (result.error) {
           throw new Error(result.error);
         }
 
-        invalidateStateCache();
-        await rebuildState(projectDir);
+        bridge.invalidateStateCache();
+        await bridge.rebuildState(projectDir);
       });
       return {
         content: [{ type: "text" as const, text: `Skipped slice ${sliceId} (${milestoneId}). Reason: ${reason ?? "User-directed skip"}.` }],
@@ -2143,6 +2411,21 @@ export function registerWorkflowTools(
           : {};
       const parsed = parseWorkflowArgs(saveGateResultSchema, record);
       return handleSaveGateResult(parsed.projectDir, parsed);
+    },
+  );
+
+  server.tool(
+    "gsd_uat_result_save",
+    "Save structured UAT checks, evidence, verdict, and tool-presentation proof. Writes ASSESSMENT, attempt history, and aggregate UAT gate.",
+    uatResultSaveParams,
+    async (args: Record<string, unknown>) => {
+      const parsed = parseWorkflowArgs(uatResultSaveSchema, args);
+      const { projectDir, ...params } = parsed;
+      await enforceWorkflowWriteGate("gsd_uat_result_save", projectDir, params.milestoneId);
+      const { executeUatResultSave } = await getWorkflowToolExecutors();
+      return adaptExecutorResult(
+        await runSerializedWorkflowOperation(() => executeUatResultSave(params, projectDir)),
+      );
     },
   );
 
@@ -2308,10 +2591,8 @@ export function registerWorkflowTools(
     async (args: Record<string, unknown>) => {
       const { projectDir } = parseWorkflowArgs(checkpointDbSchema, args);
       await runSerializedWorkflowDbOperation(projectDir, async () => {
-        const { checkpointDatabase } = await importLocalModule<any>(
-          "../../../src/resources/extensions/gsd/gsd-db.js",
-        );
-        checkpointDatabase();
+        const bridge = await importBridgeModule();
+        bridge.checkpointDatabase();
       });
       return {
         content: [{
@@ -2329,12 +2610,33 @@ export function registerWorkflowTools(
     journalQueryParams,
     async (args: Record<string, unknown>) => {
       const { projectDir, limit, ...filters } = parseWorkflowArgs(journalQuerySchema, args);
-      const { queryJournal } = await importLocalModule<any>("../../../src/resources/extensions/gsd/journal.js");
-      const entries = queryJournal(projectDir, filters).slice(0, limit ?? 100);
+      const bridge = await importBridgeModule();
+      const entries = bridge.queryJournal(projectDir, filters).slice(0, limit ?? 100);
       if (entries.length === 0) {
         return { content: [{ type: "text" as const, text: "No matching journal entries found." }] };
       }
       return { content: [{ type: "text" as const, text: JSON.stringify(entries, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    "gsd_uat_exec",
+    "Run one UAT-scoped bash/node/python check with milestone/slice/check metadata. Evidence persists under .gsd/exec with kind=uat_exec.",
+    uatExecParams,
+    async (args: Record<string, unknown>) => {
+      const { projectDir, ...params } = parseWorkflowArgs(uatExecSchema, args);
+      await enforceWorkflowWriteGate("gsd_uat_exec", projectDir);
+      const { executeUatExec } = await importLocalModule<any>(
+        "../../../src/resources/extensions/gsd/tools/exec-tool.js",
+      );
+      return adaptExecutorResult(
+        await runSerializedWorkflowOperation(async () =>
+          executeUatExec(params, {
+            baseDir: projectDir,
+            preferences: await loadProjectPreferences(projectDir),
+          }),
+        ),
+      );
     },
   );
 
@@ -2441,7 +2743,7 @@ export function registerWorkflowTools(
       const { projectDir, ...params } = parseWorkflowArgs(captureThoughtSchema, args);
       await enforceWorkflowWriteGate("gsd_capture_thought", projectDir);
       return runSerializedWorkflowDbOperation(projectDir, async () => {
-        const { executeMemoryCapture } = await importLocalModule<any>(
+        const { executeMemoryCapture } = await importWorkflowRuntimeModule<any>(
           "../../../src/resources/extensions/gsd/tools/memory-tools.js",
         );
         return executeMemoryCapture(params);
@@ -2479,7 +2781,7 @@ export function registerWorkflowTools(
     async (args: Record<string, unknown>) => {
       const { projectDir, ...params } = parseWorkflowArgs(memoryQuerySchema, args);
       return runSerializedWorkflowDbOperation(projectDir, async () => {
-        const { executeMemoryQuery } = await importLocalModule<any>(
+        const { executeMemoryQuery } = await importWorkflowRuntimeModule<any>(
           "../../../src/resources/extensions/gsd/tools/memory-tools.js",
         );
         return executeMemoryQuery(params);
@@ -2512,7 +2814,7 @@ export function registerWorkflowTools(
     async (args: Record<string, unknown>) => {
       const { projectDir, ...params } = parseWorkflowArgs(memoryGraphSchema, args);
       return runSerializedWorkflowDbOperation(projectDir, async () => {
-        const { executeGsdGraph } = await importLocalModule<any>(
+        const { executeGsdGraph } = await importWorkflowRuntimeModule<any>(
           "../../../src/resources/extensions/gsd/tools/memory-tools.js",
         );
         return executeGsdGraph(params);

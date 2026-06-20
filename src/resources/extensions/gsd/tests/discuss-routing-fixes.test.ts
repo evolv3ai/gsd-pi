@@ -39,7 +39,11 @@ function makeDiscussPi() {
     tmp,
     pi: {
       getActiveTools: () => ["gsd_summary_save", "bash"],
+      emitAdjustToolSet: async () => undefined,
+      emitBeforeModelSelect: async () => undefined,
+      setModel: async () => true,
       setActiveTools: () => {},
+      setThinkingLevel: () => {},
       sendMessage: (message: { content?: unknown }) => {
         sent.push(message);
       },
@@ -53,6 +57,7 @@ function makeDiscussPi() {
 }
 
 function makeDiscussCtx(notifications: Array<{ message: string; level?: string }> = []) {
+  const model = { provider: "anthropic", id: "claude-sonnet-4-6", api: "anthropic-messages" };
   return {
     hasUI: true,
     sessionManager: {
@@ -65,8 +70,13 @@ function makeDiscussCtx(notifications: Array<{ message: string; level?: string }
       setStatus: () => {},
     },
     waitForIdle: async () => {},
-    model: undefined,
-    modelRegistry: { getProviderAuthMode: () => undefined },
+    model,
+    modelRegistry: {
+      getAvailable: () => [model],
+      getAll: () => [model],
+      getProviderAuthMode: () => "apiKey",
+      isProviderRequestReady: () => true,
+    },
   };
 }
 

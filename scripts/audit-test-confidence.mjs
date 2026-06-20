@@ -30,54 +30,36 @@ const CI_PR_BLOCKING_MAP = [
   },
   {
     ciJob: 'build',
-    local: 'verify:merge (partial)',
+    local: 'verify:merge',
     steps: [
       'build:core',
       'web ci + build:web-host',
       'typecheck:extensions',
       'validate-pack',
       'verify:workspace-coverage',
+      'test:compile',
+      'test:unit:compiled',
+      'test:packages:compiled (native skipped unless portability-changed)',
+      'playwright install chromium',
+      'test:integration',
+      'test:e2e (GSD_SMOKE_BINARY=dist/loader.js)',
     ],
-    enforcement: 'block',
-  },
-  {
-    ciJob: 'test-unit',
-    local: 'verify:merge (partial)',
-    steps: ['test:unit'],
-    enforcement: 'block',
-  },
-  {
-    ciJob: 'test-packages',
-    local: 'verify:merge (partial)',
-    steps: ['test:packages'],
-    enforcement: 'block',
-  },
-  {
-    ciJob: 'integration-tests',
-    local: 'verify:merge (partial)',
-    steps: ['test:integration'],
-    enforcement: 'block',
-  },
-  {
-    ciJob: 'e2e',
-    local: 'verify:merge (partial)',
-    steps: ['test:e2e (GSD_SMOKE_BINARY=dist/loader.js)'],
     enforcement: 'block',
   },
 ];
 
-const CI_MAIN_ONLY = [
+const CI_AUXILIARY = [
   {
-    ciJob: 'test-coverage',
-    local: 'test:coverage',
-    when: 'push to main/dev/test or workflow_dispatch run_coverage',
-    enforcement: 'block-main',
+    ciJob: 'coverage-report',
+    local: 'test:coverage + test:coverage:full',
+    when: 'manual, weekly schedule, or PR labeled coverage',
+    enforcement: 'separate-workflow',
   },
 ];
 
 const CI_CONDITIONAL = [
   {
-    ciJob: 'docker-e2e',
+    ciJob: 'build / docker e2e step',
     local: 'test:e2e:docker',
     when: 'docker-changed=true',
     enforcement: 'block-when-triggered',
@@ -107,26 +89,20 @@ const LOCAL_TIERS = [
   {
     name: 'verify:pr',
     when: 'Fast iteration while editing',
-    matchesCi: ['build (partial)', 'test-unit (partial)'],
+    matchesCi: ['build (partial: build:core + unit tests)'],
     scriptKey: 'verify:pr',
     gapNote: 'Unit-only preflight; does not replace verify:merge before review.',
   },
   {
     name: 'verify:merge',
     when: 'Before requesting PR review (default merge confidence)',
-    matchesCi: [
-      'build',
-      'test-unit',
-      'test-packages',
-      'integration-tests',
-      'e2e',
-    ],
+    matchesCi: ['build'],
     scriptKey: 'verify:merge',
   },
   {
     name: 'test:coverage',
-    when: 'After merge to main/dev/test (CI) or local spot-check',
-    matchesCi: ['test-coverage'],
+    when: 'Manual/scheduled coverage workflow or local spot-check',
+    matchesCi: ['coverage-report'],
     scriptKey: 'test:coverage',
   },
 ];
@@ -218,7 +194,7 @@ function buildReport() {
       script: scripts[tier.scriptKey] ?? null,
     })),
     ciPrBlocking: CI_PR_BLOCKING_MAP,
-    ciMainOnly: CI_MAIN_ONLY,
+    ciAuxiliary: CI_AUXILIARY,
     ciConditional: CI_CONDITIONAL,
     thinAreas,
     drift,
@@ -248,8 +224,8 @@ function printHuman(report) {
   }
   process.stdout.write('\n');
 
-  process.stdout.write('Main-only / conditional\n');
-  for (const row of [...report.ciMainOnly, ...report.ciConditional]) {
+  process.stdout.write('Auxiliary / conditional\n');
+  for (const row of [...report.ciAuxiliary, ...report.ciConditional]) {
     const note = row.note ? ` — ${row.note}` : '';
     process.stdout.write(`  ${row.ciJob} [${row.enforcement}] when ${row.when}${note}\n`);
   }

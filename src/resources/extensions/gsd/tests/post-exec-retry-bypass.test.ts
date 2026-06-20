@@ -145,7 +145,7 @@ function createBasicTask(): void {
   });
 }
 
-function createTaskWithoutVerify(): void {
+function createTaskWithoutVerify(status = "pending"): void {
   insertMilestone({ id: "M001" });
   insertSlice({
     id: "S01",
@@ -159,7 +159,7 @@ function createTaskWithoutVerify(): void {
     sliceId: "S01",
     milestoneId: "M001",
     title: "Task without host verification",
-    status: "pending",
+    status,
     planning: {
       description: "Task intentionally missing runnable verification",
       estimate: "1h",
@@ -558,12 +558,73 @@ describe("Post-execution blocking failure retry bypass", () => {
     assert.equal(pauseAutoMock.mock.callCount(), 1);
     assert.equal(s.pendingVerificationRetry, null);
 
+    const notifyMessages = ctx.ui.notify.mock.calls.map((c: { arguments: unknown[] }) =>
+      String(c.arguments[0])
+    );
+    assert.ok(
+      notifyMessages.some(
+        (m: string) =>
+          m.includes(".gsd/PREFERENCES.md") &&
+          m.includes("task-plan Verify command") &&
+          m.includes("/gsd next")
+      ),
+      "no-host-checks notification should guide the user to add verification and resume",
+    );
+
+    const pauseCalls = pauseAutoMock.mock.calls as Array<{ arguments: unknown[] }>;
+    const pauseCallArgs = pauseCalls[0]?.arguments[2] as
+      | { message?: string }
+      | undefined;
+    assert.ok(
+      pauseCallArgs?.message?.includes(".gsd/PREFERENCES.md"),
+      "pause reason should include the project verification configuration path",
+    );
+    assert.ok(
+      pauseCallArgs?.message?.includes("/gsd next"),
+      "pause reason should tell the user how to resume",
+    );
+
     const evidencePath = join(tempDir, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01-VERIFY.json");
     const evidence = JSON.parse(readFileSync(evidencePath, "utf-8"));
     assert.equal(evidence.passed, false);
     assert.equal(evidence.discoverySource, "none");
     assert.ok(!("retryAttempt" in evidence), "no-host-checks evidence must not include retryAttempt");
     assert.ok(!("maxRetries" in evidence), "no-host-checks evidence must not include maxRetries");
+  });
+
+  test("completed browser-facing execute-task with no host-owned verification continues toward browser UAT", async () => {
+    createTaskWithoutVerify("complete");
+    writeFileSync(join(tempDir, "index.html"), "<!doctype html><button>Import</button>", "utf-8");
+
+    const ctx = makeMockCtx();
+    const pi = makeMockPi();
+    const pauseAutoMock = mock.fn(async () => {});
+    const s = makeMockSession(tempDir, { type: "execute-task", id: "M001/S01/T01" });
+
+    const result = await runPostUnitVerification({ s, ctx, pi }, pauseAutoMock);
+
+    assert.equal(result, "continue");
+    assert.equal(pauseAutoMock.mock.callCount(), 0);
+    assert.equal(s.pendingVerificationRetry, null);
+
+    const notifyMessages = ctx.ui.notify.mock.calls.map((c: { arguments: unknown[] }) =>
+      String(c.arguments[0])
+    );
+    assert.ok(
+      notifyMessages.some(
+        (m: string) =>
+          m.includes("browser-facing task") &&
+          m.includes("slice UAT") &&
+          m.includes("browser tools")
+      ),
+      "completed web tasks without task-level commands should explain browser UAT handoff",
+    );
+
+    const evidencePath = join(tempDir, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01-VERIFY.json");
+    const evidence = JSON.parse(readFileSync(evidencePath, "utf-8"));
+    assert.equal(evidence.passed, false);
+    assert.equal(evidence.discoverySource, "none");
+    assert.ok(!("retryAttempt" in evidence), "browser-UAT handoff evidence must not request a task retry");
   });
 
   test("auto-discovered package.json verification failure retries instead of continuing", async () => {

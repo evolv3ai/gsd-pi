@@ -43,8 +43,11 @@ import {
   type ComputedArtifactId,
   type ComputedArtifactRegistry,
   type ContextModePolicy,
+  type ToolsPolicy,
   type UnitContextManifest,
 } from "./unit-context-manifest.js";
+import { getUnitToolSurfaceContract } from "./unit-tool-contracts.js";
+import type { UnitPromptContextContract } from "./tool-contract.js";
 
 /**
  * Async function mapping an artifact key to its inlined-content string,
@@ -132,6 +135,16 @@ const CONTEXT_MODE_GUIDANCE_BY_LANE: Record<Exclude<ContextModePolicy, "none">, 
     "Use `gsd_resume` for prior context, `gsd_exec_search` for saved evidence, and `gsd_exec` for noisy doc validation commands.",
 };
 
+// Per-unit overrides win over the lane default. run-uat's tool contract
+// forbids `gsd_exec`/`gsd_exec_search` (acceptance evidence must flow through
+// `gsd_uat_exec`) and Claude Code dispatch strips the tools entirely, so the
+// shared verification-lane guidance would steer the agent into calling an
+// unavailable tool.
+const CONTEXT_MODE_GUIDANCE_BY_UNIT: Record<string, string> = {
+  "run-uat":
+    "Use `gsd_uat_exec` for acceptance checks so evidence is typed as UAT-owned, and `gsd_resume` after compaction or resume.",
+};
+
 /**
  * Render the Context Mode instruction lane for a unit type. Unknown unit
  * types, disabled config, and explicit `contextMode: "none"` all omit the
@@ -146,7 +159,8 @@ export function composeContextModeInstructions(
   if (!manifest || manifest.contextMode === "none") return "";
 
   const lane = CONTEXT_MODE_LANE_LABELS[manifest.contextMode];
-  const guidance = CONTEXT_MODE_GUIDANCE_BY_LANE[manifest.contextMode];
+  const guidance =
+    CONTEXT_MODE_GUIDANCE_BY_UNIT[unitType] ?? CONTEXT_MODE_GUIDANCE_BY_LANE[manifest.contextMode];
   if (opts.renderMode === "nested") {
     return `Context Mode (${lane} lane): ${guidance}`;
   }
@@ -157,6 +171,103 @@ export function composeContextModeInstructions(
     `Lane: **${lane} lane**.`,
     guidance,
   ].join("\n");
+}
+
+// ─── Tool surface hardening ───────────────────────────────────────────────
+//
+// Upfront guidance for units whose runtime tool surface is narrower than the
+// default Claude/native set. Prevents wasted turns on tools that are blocked
+// by the write gate or Claude Code SDK allowlists (run-uat gsd_exec/Bash).
+
+export interface ComposeToolSurfaceInstructionOptions {
+  readonly renderMode: ContextModeRenderMode;
+}
+
+const TOOL_SURFACE_GUIDANCE_BY_UNIT: Record<string, string> = {
+  "run-uat":
+    "Do not call `gsd_exec`, `Bash`, `Write`, or `Edit` — they are unavailable in this unit. Run every automated check through `gsd_uat_exec` with the appropriate `intent`. For browser UAT modes, use `browser_*` tools when presented; if browser automation fails, record the failure honestly and use `gsd_uat_exec` for the best objective substitute.",
+  "complete-slice":
+    "Run slice-level verification through `gsd_exec` (or MCP-scoped `mcp__…__gsd_exec`), not direct `bash`. Capture learnings through `gsd_capture_thought` (or MCP-scoped `mcp__…__gsd_capture_thought`), not bare `capture_thought`, when workflow MCP tools are presented. Do not call `gsd_uat_result_save` — run-uat owns persisted UAT assessment. On verification failure, do not edit user source files in this unit.",
+  "gate-evaluate":
+    "Dispatch only **tester** subagents via `subagent`. Persist each gate with `gsd_save_gate_result`. Do not use `ToolSearch` — it is not available.",
+  "reactive-execute":
+    "Dispatch only **worker** subagents via `subagent`. Do not call `gsd_task_complete` from this parent batch — each worker owns its task completion. If a failed task left no summary, call `gsd_summary_save` with `blocker_discovered: true`.",
+  "execute-task":
+    "Complete only this task via `gsd_task_complete`. Do not call `gsd_slice_complete`, `gsd_validate_milestone`, or `gsd_complete_milestone` — the orchestrator owns phase transitions.",
+  "validate-milestone":
+    "Dispatch reviewer subagents in parallel, then persist the verdict via `gsd_validate_milestone`. Do not query `.gsd/gsd.db` directly — use `gsd_milestone_status` and inlined context.",
+  "complete-milestone":
+    "Persist completion only through `gsd_complete_milestone` after verification passes. Do not query `.gsd/gsd.db` directly. Do not write `.gsd/PROJECT.md` or `.gsd/REQUIREMENTS.md` by hand — use `gsd_summary_save` and `gsd_requirement_update`.",
+  "replan-slice":
+    "Persist replans through `gsd_replan_slice` only. Do not edit `PLAN.md` or task plans directly.",
+  "plan-slice":
+    "Persist planning through `gsd_plan_slice` only. Dispatch subagents only to **scout** or **planner** for reconnaissance — not implementation agents. Do not edit user source files outside `.gsd/**`.",
+  "refine-slice":
+    "Persist refinements through `gsd_plan_slice` only. Dispatch subagents only to **scout** or **planner**. Do not edit user source files outside `.gsd/**`.",
+  "plan-milestone":
+    "Persist milestone planning through `gsd_plan_milestone` / `gsd_plan_slice`. Do not edit user source files outside `.gsd/**`.",
+  "research-slice":
+    "Dispatch subagents only to **scout** or **planner** for reconnaissance. Do not edit user source files outside `.gsd/**`.",
+};
+
+function guidanceForToolsPolicy(policy: ToolsPolicy): string | null {
+  switch (policy.mode) {
+    case "planning":
+      return "Writes are restricted to `.gsd/**` under the working directory — do not edit user source files. `bash` is limited to read-only investigation commands. Do not dispatch subagents. For human elicitation, use workflow MCP `ask_user_questions` when available — not native `AskUserQuestion`.";
+    case "planning-dispatch": {
+      const agents = policy.allowedSubagents.map((agent) => `**${agent}**`).join(", ");
+      return `Writes are restricted to \`.gsd/**\`. Dispatch subagents only to: ${agents}. Do not edit user source files.`;
+    }
+    case "docs":
+      return "Writes are restricted to `.gsd/**` and project documentation paths (`docs/`, `README*`, `CHANGELOG.md`, root `*.md`). Do not edit application source.";
+    case "verification": {
+      const subagentLine = policy.allowedSubagents?.length
+        ? ` Dispatch subagents only to: ${policy.allowedSubagents.map((agent) => `**${agent}**`).join(", ")}.`
+        : " Do not dispatch subagents.";
+      return `\`bash\` is limited to build/test verification commands. Writes restricted to \`.gsd/**\`.${subagentLine}`;
+    }
+    default:
+      return null;
+  }
+}
+
+function formatForbiddenWorkflowToolsLine(
+  unitType: string,
+  unitGuidance: string | undefined,
+): string | null {
+  const forbidden = getUnitToolSurfaceContract(unitType)?.forbiddenGsdTools;
+  if (!forbidden) return null;
+  const names = Object.keys(forbidden).filter((name) => !unitGuidance?.includes(`\`${name}\``));
+  if (names.length === 0) return null;
+  return `Do not call ${names.map((name) => `\`${name}\``).join(", ")} in this unit.`;
+}
+
+/**
+ * Render upfront tool-surface guidance for a unit type. Unknown units and
+ * unrestricted (`tools.mode: "all"`) units omit the block unless they have
+ * unit-specific closeout guidance registered above.
+ */
+export function composeToolSurfaceInstructions(
+  unitType: string,
+  opts: ComposeToolSurfaceInstructionOptions,
+): string {
+  const manifest = resolveManifest(unitType);
+  if (!manifest) return "";
+
+  const unitGuidance = TOOL_SURFACE_GUIDANCE_BY_UNIT[unitType];
+  const policyGuidance = unitGuidance ? null : guidanceForToolsPolicy(manifest.tools);
+  const forbiddenLine = formatForbiddenWorkflowToolsLine(unitType, unitGuidance);
+  const parts = [unitGuidance, policyGuidance, forbiddenLine].filter(
+    (part): part is string => typeof part === "string" && part.length > 0,
+  );
+  if (parts.length === 0) return "";
+
+  const body = parts.join(" ");
+  if (opts.renderMode === "nested") {
+    return `Tool surface: ${body}`;
+  }
+
+  return ["## Tool Surface", "", body].join("\n");
 }
 
 // ─── v2 surface (#4924) ───────────────────────────────────────────────────
@@ -195,7 +306,31 @@ export interface ComposedUnitContext {
   readonly inline: string;
 }
 
+export type UnitContextBlockMode = "prepend" | "inline" | "excerpt" | "computed";
+
+export interface ComposedUnitContextBlock {
+  readonly key: string;
+  readonly mode: UnitContextBlockMode;
+  readonly body: string;
+}
+
+export interface ComposedContractedUnitContext extends ComposedUnitContext {
+  readonly blocks: readonly ComposedUnitContextBlock[];
+  readonly onDemand: readonly ArtifactKey[];
+}
+
 const SECTION_SEPARATOR = "\n\n---\n\n";
+
+interface UnitContextCompositionContract {
+  readonly unitType: string;
+  readonly artifacts: {
+    readonly inline: readonly ArtifactKey[];
+    readonly excerpt: readonly ArtifactKey[];
+    readonly onDemand: readonly ArtifactKey[];
+    readonly computed: readonly ComputedArtifactId[];
+    readonly prepend: readonly ComputedArtifactId[];
+  };
+}
 
 /**
  * Compose all manifest-declared context for a unit type using the v2
@@ -220,36 +355,73 @@ export async function composeUnitContext(
   const manifest: UnitContextManifest | null = resolveManifest(unitType);
   if (!manifest) return { prepend: "", inline: "" };
 
-  // Single-source `unitType`: the manifest is resolved against the
+  const composed = await composeDeclaredUnitContext({
+    unitType,
+    artifacts: {
+      inline: manifest.artifacts.inline,
+      excerpt: manifest.artifacts.excerpt,
+      onDemand: manifest.artifacts.onDemand,
+      computed: manifest.artifacts.computed ?? [],
+      prepend: manifest.prepend ?? [],
+    },
+  }, opts);
+  return {
+    prepend: composed.prepend,
+    inline: composed.inline,
+  };
+}
+
+export async function composeContractedUnitContext(
+  contract: UnitPromptContextContract,
+  opts: ComposeUnitContextOptions,
+): Promise<ComposedContractedUnitContext> {
+  return composeDeclaredUnitContext(contract, opts);
+}
+
+async function composeDeclaredUnitContext(
+  contract: UnitContextCompositionContract,
+  opts: ComposeUnitContextOptions,
+): Promise<ComposedContractedUnitContext> {
+  // Single-source `unitType`: contract/manifest selection comes from the
   // function arg, but computed builders read it from `base.unitType`.
-  // If those ever diverge (caller passes one type to composeUnitContext
-  // but a different one in opts.base), the composer would silently
-  // mix one unit's manifest with another unit's computed context.
-  // Normalize here so the composer dispatches a consistent identity
-  // through to every builder.
+  // Normalize here so every builder sees the same Unit identity.
   const normalizedOpts: ComposeUnitContextOptions = {
     ...opts,
-    base: { ...opts.base, unitType },
+    base: { ...opts.base, unitType: contract.unitType },
   };
 
-  const prependBlocks = await runComputed(manifest.prepend ?? [], normalizedOpts);
-  const inlineBlocks: string[] = [];
+  const prependBlocks = await runComputedBlocks(
+    contract.artifacts.prepend,
+    normalizedOpts,
+    "prepend",
+  );
+  const inlineBlocks: ComposedUnitContextBlock[] = [];
 
-  for (const key of manifest.artifacts.inline) {
+  for (const key of contract.artifacts.inline) {
     if (!normalizedOpts.resolveArtifact) break;
     const body = await normalizedOpts.resolveArtifact(key);
-    if (body && body.length > 0) inlineBlocks.push(body);
+    if (body && body.length > 0) {
+      inlineBlocks.push({ key, mode: "inline", body });
+    }
   }
-  for (const key of manifest.artifacts.excerpt) {
+  for (const key of contract.artifacts.excerpt) {
     if (!normalizedOpts.resolveExcerpt) break;
     const body = await normalizedOpts.resolveExcerpt(key);
-    if (body && body.length > 0) inlineBlocks.push(body);
+    if (body && body.length > 0) {
+      inlineBlocks.push({ key, mode: "excerpt", body });
+    }
   }
-  inlineBlocks.push(...await runComputed(manifest.artifacts.computed ?? [], normalizedOpts));
+  inlineBlocks.push(...await runComputedBlocks(
+    contract.artifacts.computed,
+    normalizedOpts,
+    "computed",
+  ));
 
   return {
-    prepend: prependBlocks.join(SECTION_SEPARATOR),
-    inline: inlineBlocks.join(SECTION_SEPARATOR),
+    prepend: prependBlocks.map((block) => block.body).join(SECTION_SEPARATOR),
+    inline: inlineBlocks.map((block) => block.body).join(SECTION_SEPARATOR),
+    blocks: [...prependBlocks, ...inlineBlocks],
+    onDemand: contract.artifacts.onDemand,
   };
 }
 
@@ -258,10 +430,11 @@ export async function composeUnitContext(
  * Missing registry entries (manifest declares the id but caller didn't
  * register it) are skipped silently — see composeUnitContext rationale.
  */
-async function runComputed(
+async function runComputedBlocks(
   ids: readonly ComputedArtifactId[],
   opts: ComposeUnitContextOptions,
-): Promise<string[]> {
+  mode: Extract<UnitContextBlockMode, "prepend" | "computed">,
+): Promise<ComposedUnitContextBlock[]> {
   if (ids.length === 0 || !opts.computed) return [];
   // Type safety lives at the registration boundary (caller-supplied
   // `computed` is typed against ComputedArtifactInputs[K] per id). Inside
@@ -274,12 +447,14 @@ async function runComputed(
     inputs: unknown;
   };
   const registry = opts.computed as Record<string, AnyEntry | undefined>;
-  const out: string[] = [];
+  const out: ComposedUnitContextBlock[] = [];
   for (const id of ids) {
     const entry = registry[id];
     if (!entry) continue;
     const body = await entry.build(entry.inputs, opts.base);
-    if (body && body.length > 0) out.push(body);
+    if (body && body.length > 0) {
+      out.push({ key: id, mode, body });
+    }
   }
   return out;
 }

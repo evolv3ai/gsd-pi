@@ -10,17 +10,12 @@
  */
 
 import {
-  getMilestone,
   getMilestoneSlices,
   getSliceTasks,
-  reopenMilestoneStatus,
-  updateSliceStatus,
-  updateTaskStatus,
-  transaction,
+  reopenMilestoneCascade,
 } from "../gsd-db.js";
 import { invalidateStateCache } from "../state.js";
-import { isClosedStatus } from "../status-guards.js";
-import { renderAllProjections } from "../workflow-projections.js";
+import { flushWorkflowProjections } from "../projection-flush.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning } from "../workflow-logger.js";
@@ -53,40 +48,18 @@ export async function handleReopenMilestone(
     return { error: "milestoneId is required and must be a non-empty string" };
   }
 
-  // ── Guards + DB writes inside a single transaction (prevents TOCTOU) ───
-  let guardError: string | null = null;
-  let slicesResetCount = 0;
-  let tasksResetCount = 0;
-
-  transaction(() => {
-    const milestone = getMilestone(params.milestoneId);
-    if (!milestone) {
-      guardError = `milestone not found: ${params.milestoneId}`;
-      return;
+  // ── Atomic reopen cascade (guards + writes in one transaction) ───────────
+  const outcome = reopenMilestoneCascade(params.milestoneId);
+  if (!outcome.ok) {
+    switch (outcome.reason) {
+      case "milestone-not-found":
+        return { error: `milestone not found: ${params.milestoneId}` };
+      case "milestone-not-closed":
+        return { error: `milestone ${params.milestoneId} is not closed (status: ${outcome.status}) — nothing to reopen` };
     }
-    if (!isClosedStatus(milestone.status)) {
-      guardError = `milestone ${params.milestoneId} is not closed (status: ${milestone.status}) — nothing to reopen`;
-      return;
-    }
-
-    reopenMilestoneStatus(params.milestoneId);
-
-    const slices = getMilestoneSlices(params.milestoneId);
-    slicesResetCount = slices.length;
-
-    for (const slice of slices) {
-      updateSliceStatus(params.milestoneId, slice.id, "in_progress");
-      const tasks = getSliceTasks(params.milestoneId, slice.id);
-      tasksResetCount += tasks.length;
-      for (const task of tasks) {
-        updateTaskStatus(params.milestoneId, slice.id, task.id, "pending");
-      }
-    }
-  });
-
-  if (guardError) {
-    return { error: guardError };
   }
+  const slicesResetCount = outcome.slicesReset;
+  const tasksResetCount = outcome.tasksReset;
 
   // ── Invalidate caches ────────────────────────────────────────────────────
   invalidateStateCache();
@@ -125,7 +98,7 @@ export async function handleReopenMilestone(
 
   // ── Post-mutation hook ───────────────────────────────────────────────────
   try {
-    await renderAllProjections(basePath, params.milestoneId);
+    await flushWorkflowProjections(basePath, { milestoneId: params.milestoneId });
     writeManifest(basePath);
     appendEvent(basePath, {
       cmd: "reopen-milestone",

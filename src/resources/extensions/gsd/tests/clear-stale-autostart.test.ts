@@ -73,4 +73,48 @@ describe("clear stale pending auto-start (#3667)", () => {
       "pending auto-start gate must clear stale map entries for completed discussions",
     );
   });
+
+  test("guided-flow recovers a finished-but-unconsumed discussion instead of dead-ending", () => {
+    // CONTEXT exists + no live turn means the discussion completed but the
+    // agent_end handoff never consumed the entry (e.g. an external-engine
+    // post-hoc gate re-arm wiped the depth verification after the save).
+    // Without recovery, every /gsd prints "Discussion already in progress"
+    // forever: the stale heuristic requires CONTEXT to be absent and
+    // discussPlanComplete requires a ROADMAP that planning never produced.
+    const source = readFileSync(join(__dirname, "..", "guided-flow.ts"), "utf-8");
+    assert.ok(
+      source.includes("milestoneHasContext && !isAgentTurnInFlight(ctx)"),
+      "pending-entry guard must have a recovery branch for CONTEXT-present, no-turn-in-flight entries",
+    );
+    assert.ok(
+      source.includes("extractDepthVerificationMilestoneId(pendingGateId) === entry.milestoneId"),
+      "recovery must only clear a pending gate belonging to the entry's own milestone",
+    );
+    assert.ok(
+      source.includes("if (checkAutoStartAfterDiscuss(basePath)) return;"),
+      "recovery must re-run the discuss→auto handoff after clearing the stale gate",
+    );
+  });
+
+  test("guided-flow does not treat a live discuss turn as a stale pending entry", () => {
+    const source = readFileSync(join(__dirname, "..", "guided-flow.ts"), "utf-8");
+    assert.ok(
+      source.includes("!isAgentTurnInFlight(ctx)"),
+      "stale-entry deletion must be gated on no agent turn being in flight — a dispatched " +
+      "discuss turn can think for over 30s before writing its first artifact, and deleting " +
+      "its entry re-dispatches the workflow (duplicate interview + duplicate completion message)",
+    );
+    assert.ok(
+      source.includes('const milestoneHasDraft = !!resolveMilestoneFile(basePath, entry.milestoneId, "CONTEXT-DRAFT");'),
+      "stale-entry check must treat an existing CONTEXT-DRAFT as proof of an in-progress interview",
+    );
+    assert.ok(
+      source.includes("!milestoneHasDraft"),
+      "stale-entry deletion must require the CONTEXT-DRAFT to be absent",
+    );
+    assert.ok(
+      source.includes("ctx.hasPendingMessages"),
+      "in-flight detection must also cover dispatched-but-not-yet-started queued messages",
+    );
+  });
 });

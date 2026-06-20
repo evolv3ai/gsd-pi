@@ -1,6 +1,6 @@
 import test, { describe } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,6 +56,17 @@ describe("formatMcpStatusReport", () => {
     const result = formatMcpStatusReport(servers);
     assert.match(result, /disabled-server/);
     assert.match(result, /disabled/i);
+  });
+
+  test("labels probe-only availability separately from live connections", () => {
+    const servers: McpServerStatus[] = [
+      { name: "gsd-workflow", transport: "stdio", connected: false, available: true, toolCount: 62, error: undefined },
+    ];
+    const result = formatMcpStatusReport(servers);
+    assert.match(result, /gsd-workflow/);
+    assert.match(result, /probe available — 62 tools/);
+    assert.doesNotMatch(result, /connected — 62 tools/);
+    assert.doesNotMatch(result, /disconnected/);
   });
 
   test("includes server count in header", () => {
@@ -122,6 +133,20 @@ describe("formatMcpServerDetail", () => {
     assert.match(result, /disconnected/i);
   });
 
+  test("shows probe-available status with tool names", () => {
+    const result = formatMcpServerDetail({
+      name: "gsd-workflow",
+      transport: "stdio",
+      connected: false,
+      available: true,
+      toolCount: 1,
+      tools: ["gsd_milestone_status"],
+      error: undefined,
+    });
+    assert.match(result, /probe available/i);
+    assert.match(result, /gsd_milestone_status/);
+  });
+
   test("shows env warnings for server detail", () => {
     const result = formatMcpServerDetail({
       name: "warned",
@@ -138,6 +163,62 @@ describe("formatMcpServerDetail", () => {
 });
 
 describe("handleMcpStatus", () => {
+  test("probes configured stdio servers before reporting disconnected", async () => {
+    const previousGsdHome = process.env.GSD_HOME;
+    const originalCwd = process.cwd();
+    const projectDir = mkdtempSync(join(tmpdir(), "gsd-mcp-status-project-"));
+    const gsdHomeDir = mkdtempSync(join(tmpdir(), "gsd-mcp-status-home-"));
+    try {
+      process.env.GSD_HOME = gsdHomeDir;
+      process.chdir(projectDir);
+      mkdirSync(join(projectDir, ".gsd"), { recursive: true });
+
+      const require = createRequire(import.meta.url);
+      const mcpModuleUrl = pathToFileURL(require.resolve("@modelcontextprotocol/sdk/server/mcp.js")).href;
+      const stdioModuleUrl = pathToFileURL(require.resolve("@modelcontextprotocol/sdk/server/stdio.js")).href;
+      const serverPath = join(projectDir, "fake-mcp-server.mjs");
+      writeFileSync(
+        serverPath,
+        [
+          `const { McpServer } = await import(${JSON.stringify(mcpModuleUrl)});`,
+          `const { StdioServerTransport } = await import(${JSON.stringify(stdioModuleUrl)});`,
+          'const server = new McpServer({ name: "fake", version: "1.0.0" }, { capabilities: { tools: {} } });',
+          'server.tool("fake_tool", "Probe-visible tool", {}, async () => ({ content: [{ type: "text", text: "ok" }] }));',
+          'await server.connect(new StdioServerTransport());',
+        ].join("\n"),
+        "utf-8",
+      );
+      writeFileSync(
+        join(projectDir, ".mcp.json"),
+        JSON.stringify({ mcpServers: { "gsd-workflow": { command: process.execPath, args: [serverPath] } } }),
+        "utf-8",
+      );
+
+      let message = "";
+      const ctx = {
+        getSystemPrompt: () => "",
+        ui: {
+          notify: (text: string) => {
+            message = text;
+          },
+        },
+      };
+
+      await handleMcpStatus("status", ctx as unknown as ExtensionCommandContext);
+
+      assert.match(message, /gsd-workflow/);
+      assert.match(message, /probe available — 1 tools/);
+      assert.doesNotMatch(message, /disconnected/);
+    } finally {
+      process.chdir(originalCwd);
+      if (previousGsdHome === undefined) delete process.env.GSD_HOME;
+      else process.env.GSD_HOME = previousGsdHome;
+      rmSync(projectDir, { recursive: true, force: true });
+      rmSync(gsdHomeDir, { recursive: true, force: true });
+      clearMcpConfigCache();
+    }
+  });
+
   test("discovers the only configured server when no server name is provided", async () => {
     const previousGsdHome = process.env.GSD_HOME;
     const originalCwd = process.cwd();
@@ -261,6 +342,8 @@ describe("formatMcpInitResult", () => {
     assert.match(result, /created project mcp config/i);
     assert.match(result, /\/tmp\/project\/\.mcp\.json/);
     assert.match(result, /mcp-capable clients/i);
+    assert.match(result, /workflow and gsd-browser MCP servers/i);
+    assert.match(result, /Pi Providers use built-in browser tools/i);
     assert.doesNotMatch(result, /claude code/i);
   });
 

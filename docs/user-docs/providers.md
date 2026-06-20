@@ -88,7 +88,7 @@ If you already have a Claude Pro or Max subscription and want to use GSD's plann
 
 **Automatic setup (recommended):**
 
-When GSD detects a Claude Code model during startup, it automatically writes a `.mcp.json` file in your project root with the GSD workflow MCP server configured. No manual steps needed — just start GSD once with Claude Code as the provider and the config is created for you.
+When GSD detects a Claude Code model during startup, it automatically writes a `.mcp.json` file in your project root with the GSD workflow and `gsd-browser` MCP servers configured. No manual steps needed — just start GSD once with Claude Code as the provider and the config is created for you.
 
 You can also trigger this manually from inside a GSD session:
 
@@ -96,7 +96,9 @@ You can also trigger this manually from inside a GSD session:
 /gsd mcp init
 ```
 
-This writes (or updates) the `gsd-workflow` entry in your project's `.mcp.json`. Claude Code discovers this file automatically on its next session start.
+This writes (or updates) the `gsd-workflow` and `gsd-browser` entries in your project's `.mcp.json`. Claude Code discovers this file automatically on its next session start.
+
+GSD's own Pi Providers, including Codex and non-Claude harnesses, do not need `.mcp.json` to use browser automation. They receive canonical `browser_*` tools from GSD. For browser-facing projects, the managed `@opengsd/gsd-browser` engine is preferred automatically when it is available and starts cleanly; otherwise (and for non-web projects) the tools are backed by Playwright, with the fallback reason recorded. Set `GSD_BROWSER_ENGINE=gsd-browser|playwright|off` to override the automatic choice.
 
 **Manual setup:**
 
@@ -133,6 +135,8 @@ You can also add this to `~/.claude/settings.json` under `mcpServers` to make GS
 **What's exposed:**
 
 The MCP server provides GSD's full workflow tool surface — milestone planning, task completion, slice management, roadmap reassessment, journal queries, and more. Session management tools (`gsd_execute`, `gsd_status`, `gsd_result`, `gsd_cancel`) let Claude Code start and monitor GSD auto-mode sessions. See [Commands → MCP Server Mode](./commands.md#mcp-server-mode) for the full tool list.
+
+Claude Code units that require workflow tools require a connected `gsd-workflow` MCP surface before the first model turn. If the server is absent, pending, failed, disabled, or missing required tools, GSD aborts and retries the unit rather than letting Claude Code improvise without the workflow tools.
 
 **Verify the connection:**
 

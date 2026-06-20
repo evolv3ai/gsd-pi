@@ -15,18 +15,23 @@ Skills contain claims about external things: APIs, CLI tools, frameworks, servic
 ## Step 1: Select the Skill
 
 ```bash
-ls ~/.claude/skills/
+# User-global skills
+ls ~/.agents/skills/ 2>/dev/null
+# Project-local skills
+ls .agents/skills/ 2>/dev/null
 ```
 
 Present numbered list, ask: "Which skill should I verify for accuracy?"
+
+Determine `{skill-path}`: use `.agents/skills/{skill-name}` (project-local) if found there, otherwise `~/.agents/skills/{skill-name}` (user-global). Project-local takes precedence because the skill catalog loads it first on name collision.
 
 ## Step 2: Read and Categorize
 
 Read the entire skill (SKILL.md + workflows/ + references/):
 ```bash
-cat ~/.claude/skills/{skill-name}/SKILL.md
-cat ~/.claude/skills/{skill-name}/workflows/*.md 2>/dev/null
-cat ~/.claude/skills/{skill-name}/references/*.md 2>/dev/null
+cat {skill-path}/SKILL.md
+cat {skill-path}/workflows/*.md 2>/dev/null
+cat {skill-path}/references/*.md 2>/dev/null
 ```
 
 Categorize by primary dependency type:

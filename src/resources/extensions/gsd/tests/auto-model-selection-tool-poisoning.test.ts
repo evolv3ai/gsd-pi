@@ -33,6 +33,8 @@ import {
   selectAndApplyModel,
   ModelPolicyDispatchBlockedError,
   clearToolBaseline,
+  getRegisteredToolSnapshot,
+  getToolBaselineSnapshot,
 } from "../auto-model-selection.js";
 import { applyModelPolicyFilter } from "../uok/model-policy.js";
 import {
@@ -139,7 +141,7 @@ function makeCtx(
 test("vacuous-truth (a): unit type with empty workflow-required tools → dispatch succeeds", async () => {
   const env = makeTempProject();
   try {
-    // `refine-slice` is not in the getRequiredWorkflowToolsForAutoUnit switch
+    // `rewrite-docs` has no required workflow tools
     // → returns []. Exercises the empty-requiredTools branch in
     // applyModelPolicyFilter (existing test used
     // gate-evaluate which has non-empty required tools and never hit this path).
@@ -161,7 +163,7 @@ test("vacuous-truth (a): unit type with empty workflow-required tools → dispat
     const result = await selectAndApplyModel(
       makeCtx(availableModels),
       pi as any,
-      "refine-slice",
+      "rewrite-docs",
       "x1",
       env.dir,
       undefined,
@@ -308,8 +310,8 @@ test("genuinely-impossible (a): pi-native required tool incompatible with candid
 test("genuinely-impossible (b): cross-provider routing disabled + provider mismatch → typed error", async () => {
   const env = makeTempProject();
   try {
-    // Use plan-slice (workflow-required: ["gsd_plan_slice"]) but pretend no
-    // candidate model can carry it.  The simplest way: provide a model whose
+    // Use plan-slice but pretend no candidate model can carry its required
+    // workflow tools. The simplest way: provide a model whose
     // api is a fictitious "no-tools" string — `filterToolsForProvider` returns
     // every tool as filtered for an unknown api with toolCalling=false, OR we
     // can pick a real api that also denies the tool.  We use an api that
@@ -332,9 +334,12 @@ test("genuinely-impossible (b): cross-provider routing disabled + provider misma
 
     // Set dynamic_routing.cross_provider=false via PREFERENCES so the policy
     // disables cross-provider routing.
+    // burn-max prevents the D046 balanced profile from injecting canonical
+    // anthropic models — without it, source:"explicit" forces allowCrossProvider=true
+    // and the cross-provider guard is bypassed before the test can exercise it.
     writeFileSync(
       join(env.dir, ".gsd", "PREFERENCES.md"),
-      ["---", "dynamic_routing:", "  enabled: true", "  cross_provider: false", "  tier_models:", "    heavy: other-provider/other-model", "---"].join("\n"),
+      ["---", "token_profile: burn-max", "dynamic_routing:", "  enabled: true", "  cross_provider: false", "  tier_models:", "    heavy: other-provider/other-model", "---"].join("\n"),
       "utf-8",
     );
 
@@ -432,9 +437,11 @@ test("restore baseline: setActiveTools(BASELINE) called between units before nex
 test("error carries deny reason fragment from applyModelPolicyFilter", async () => {
   const env = makeTempProject();
   try {
+    // burn-max: prevents D046 balanced default from injecting source:"explicit"
+    // which would force allowCrossProvider=true and bypass cross-provider denial.
     writeFileSync(
       join(env.dir, ".gsd", "PREFERENCES.md"),
-      ["---", "dynamic_routing:", "  enabled: true", "  cross_provider: false", "  tier_models:", "    heavy: other-provider/other-model", "---"].join("\n"),
+      ["---", "token_profile: burn-max", "dynamic_routing:", "  enabled: true", "  cross_provider: false", "  tier_models:", "    heavy: other-provider/other-model", "---"].join("\n"),
       "utf-8",
     );
 
@@ -710,4 +717,82 @@ test("cross-mode (#4965): auto → guided → auto preserves the original auto-e
     env.restoreEnv();
     env.cleanup();
   }
+});
+
+// ─── 8. Baseline union: MCP tools connected after baseline capture (#477) ─────
+//
+// `getToolBaselineSnapshot` must return the UNION of the frozen WeakMap baseline
+// and the current live tool set.  This ensures:
+//   (a) Provider-narrowed tools (in baseline, dropped from live) are still seen
+//       by transport preflight — the bug-5 fix from #477.
+//   (b) Tools connected after the baseline was captured (e.g. MCP server attached
+//       mid-session) are also visible — so a paused run that resumes after MCP
+//       reconnects clears the transport warning on the first iteration instead of
+//       repeating it indefinitely.
+
+test("baseline union (#477): getToolBaselineSnapshot includes live tools not present in frozen baseline", async () => {
+  const env = makeTempProject();
+  try {
+    const availableModels = [
+      { id: "claude-sonnet-4-6", provider: "anthropic", api: "anthropic-messages" },
+    ];
+
+    const initialTools = ["bash", "read", "write"];
+    const pi = makeRecordingPi(initialTools);
+    clearToolBaseline(pi as unknown as object);
+
+    // Capture baseline with only native tools (no MCP connected yet).
+    await selectAndApplyModel(
+      makeCtx(availableModels),
+      pi as any,
+      "execute-task",
+      "u1",
+      env.dir,
+      undefined,
+      false,
+      { provider: "anthropic", id: "claude-sonnet-4-6" },
+      undefined,
+      /* isAutoMode */ true,
+    );
+
+    // Simulate: provider narrows tools (Groq cap, hook override, etc.).
+    // The baseline in the WeakMap still has the full initial set.
+    pi.setActiveTools(["bash"]);
+
+    // Simulate: user connects MCP mid-session (after the baseline was captured).
+    const liveTools = pi.getActiveTools().concat(["mcp__gsd-workflow__gsd_uat_exec"]);
+    pi.setActiveTools(liveTools);
+
+    const snapshot = getToolBaselineSnapshot(pi as any);
+
+    // All baseline tools must be present (even the provider-narrowed ones).
+    for (const t of initialTools) {
+      assert.ok(snapshot.includes(t), `snapshot must include baseline tool: ${t}`);
+    }
+    // Newly connected MCP tool must also be present.
+    assert.ok(
+      snapshot.includes("mcp__gsd-workflow__gsd_uat_exec"),
+      "snapshot must include MCP tool connected after baseline capture",
+    );
+  } finally {
+    env.restoreEnv();
+    env.cleanup();
+  }
+});
+
+test("registered tool snapshot includes tools hidden from the active surface", () => {
+  const pi = {
+    getActiveTools: () => ["read"],
+    getAllTools: () => [
+      { name: "read" },
+      { name: "browser_navigate" },
+      { name: "mcp__gsd-browser__*" },
+    ],
+  };
+
+  assert.deepEqual(getRegisteredToolSnapshot(pi as any), [
+    "read",
+    "browser_navigate",
+    "mcp__gsd-browser__*",
+  ]);
 });

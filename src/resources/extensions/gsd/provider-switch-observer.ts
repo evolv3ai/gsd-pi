@@ -128,7 +128,7 @@ function emitAudit(report: ProviderSwitchReport): void {
 
 function emitNotification(report: ProviderSwitchReport): void {
   try {
-    appendNotification(summarize(report), "warning", "workflow-logger");
+    appendNotification(summarize(report), "warning", "workflow-logger", { kind: "provider-switch" });
   } catch {
     // Notification persistence is best-effort.
   }

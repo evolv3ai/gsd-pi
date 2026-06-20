@@ -9,7 +9,7 @@ import type { TruncationResult } from "@gsd/pi-coding-agent/core/tools/truncate.
 import { Container, Markdown, Spacer, Text } from "@gsd/pi-tui";
 import { theme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { AssistantMessageComponent } from "./components/assistant-message.js";
-import { chatTurnFollowsUser, reconcileChatTurnConnections } from "./components/chat-turn-connect.js";
+import { reconcileChatTurnConnections } from "./components/chat-turn-connect.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.js";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.js";
@@ -62,6 +62,14 @@ export function showStatus(host: InteractiveModeDelegateHost, message: string, o
 
 function addUserMessageComponent(host: InteractiveModeDelegateHost, userComponent: UserMessageComponent): void {
 	host.chatContainer.addChild(userComponent);
+}
+
+function hasAssistantVisibleContent(content: Array<any>, hideThinkingBlock: boolean): boolean {
+	return content.some((c: any) => {
+		if (c?.type === "text" && typeof c.text === "string" && c.text.trim().length > 0) return true;
+		if (!hideThinkingBlock && c?.type === "thinking" && typeof c.thinking === "string" && c.thinking.trim().length > 0) return true;
+		return false;
+	});
 }
 
 function finalizeChatMutation(host: InteractiveModeDelegateHost): void {
@@ -143,14 +151,14 @@ export function addMessageToChat(host: InteractiveModeDelegateHost, message: Age
 				break;
 			}
 			case "assistant": {
-				const connectedToUser = chatTurnFollowsUser(host.chatContainer.children);
+				const hasToolBlocks = message.content.some((c: any) => isToolContentBlock(c));
+				const isAbortOrError = message.stopReason === "aborted" || message.stopReason === "error";
+				if (!hasAssistantVisibleContent(message.content, host.hideThinkingBlock) && !(isAbortOrError && !hasToolBlocks)) break;
 				const assistantComponent = new AssistantMessageComponent(
 					message,
 					host.hideThinkingBlock,
 					host.getMarkdownThemeWithSettings(),
 					timestampFormat,
-					undefined,
-					connectedToUser,
 				);
 				host.chatContainer.addChild(assistantComponent);
 				break;
@@ -209,14 +217,14 @@ export function renderSessionContext(host: InteractiveModeDelegateHost,
 
 				for (const segment of replaySegments) {
 					if (segment.kind === "assistant") {
-						const connectedToUser = chatTurnFollowsUser(host.chatContainer.children);
+						const segContent = message.content.slice(segment.startIndex, segment.endIndex + 1);
+						if (!hasAssistantVisibleContent(segContent, host.hideThinkingBlock)) continue;
 						const assistantComponent = new AssistantMessageComponent(
 							message,
 							host.hideThinkingBlock,
 							host.getMarkdownThemeWithSettings(),
 							timestampFormat,
 							{ startIndex: segment.startIndex, endIndex: segment.endIndex },
-							connectedToUser,
 						);
 						host.chatContainer.addChild(assistantComponent);
 						assistantSegments.push(assistantComponent);
@@ -235,7 +243,22 @@ export function renderSessionContext(host: InteractiveModeDelegateHost,
 						component.setExpanded(host.toolOutputExpanded);
 						host.chatContainer.addChild(component);
 
-						if (message.stopReason === "aborted" || message.stopReason === "error") {
+						// On an aborted/errored turn, only the tool calls that never
+						// produced a result should render as interrupted. A tool that
+						// actually completed has its result in a later `toolResult`
+						// message (keyed by toolCallId) — register it as pending so the
+						// normal toolResult handler below renders the TRUE result with
+						// its real isError flag. Otherwise the successful result would be
+						// silently discarded and the row shown red.
+						const turnAbortedOrErrored =
+							message.stopReason === "aborted" || message.stopReason === "error";
+						const hasRealResult =
+							turnAbortedOrErrored &&
+							sessionContext.messages.some(
+								(m) => m.role === "toolResult" && m.toolCallId === content.id,
+							);
+
+						if (turnAbortedOrErrored && !hasRealResult) {
 							let errorMessage: string;
 							if (message.stopReason === "aborted") {
 								const retryAttempt = host.session.retryAttempt;

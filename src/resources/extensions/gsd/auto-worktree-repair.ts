@@ -5,6 +5,7 @@ import { existsSync, lstatSync, readdirSync, type Stats } from "node:fs";
 import { join } from "node:path";
 
 import { worktreePath } from "./worktree-manager.js";
+import { worktreesDirs } from "./worktree-placement.js";
 import { normalizeWorktreePathForCompare } from "./worktree-root.js";
 import type { WorktreeSafetyResult } from "./worktree-safety.js";
 
@@ -37,6 +38,16 @@ export function expectedAutoWorktreePath(
   const id = milestoneId?.trim();
   if (!id || !isValidMilestoneId(id)) return null;
   return worktreePath(projectRoot, id);
+}
+
+/** Every path the milestone worktree may legitimately live at (canonical + legacy). */
+function candidateAutoWorktreePaths(
+  projectRoot: string,
+  milestoneId: string | null | undefined,
+): string[] {
+  const id = milestoneId?.trim();
+  if (!id || !isValidMilestoneId(id)) return [];
+  return worktreesDirs(projectRoot).map((dir) => join(dir, id));
 }
 
 export function resolvePausedAutoWorktreePath(input: {
@@ -82,8 +93,8 @@ export function assessAutoWorktreeRepairTarget(input: {
   if (!expectedPath) {
     return { ok: false, reason: "missing expected worktree path" };
   }
-  const computedExpectedPath = expectedAutoWorktreePath(input.projectRoot, input.milestoneId);
-  if (!computedExpectedPath || !samePath(expectedPath, computedExpectedPath)) {
+  const candidatePaths = candidateAutoWorktreePaths(input.projectRoot, input.milestoneId);
+  if (candidatePaths.length === 0 || !candidatePaths.some((candidate) => samePath(expectedPath, candidate))) {
     return { ok: false, reason: "expected worktree path does not match milestone" };
   }
   if (!samePath(input.activeRoot, input.projectRoot) && !samePath(input.activeRoot, expectedPath)) {

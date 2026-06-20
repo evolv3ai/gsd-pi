@@ -123,8 +123,30 @@ export async function initExtensions(host: InteractiveModeDelegateHost): Promise
 
 export function setExtensionStatus(host: InteractiveModeDelegateHost, key: string, text: string | undefined): void {
 		host.footerDataProvider.setExtensionStatus(key, text);
+		host.footer.invalidate();
 		host.ui.requestRender();
 	}
+
+export function setGsdProgress(
+	host: InteractiveModeDelegateHost,
+	state: import("@gsd/pi-coding-agent/core/extensions/extension-upstream-types.js").GsdProgressState | undefined,
+	dispose?: () => void,
+): void {
+	if (dispose !== undefined) {
+		const prev = host.gsdProgressDispose;
+		host.gsdProgressDispose = dispose;
+		// Reset user's manual expansion for the new unit so widgetMode drives
+		// the initial state again (the user can re-collapse via ctrl+shift+d).
+		host.gsdStatusExpanded = undefined;
+		prev?.();
+	} else if (state === undefined) {
+		const prev = host.gsdProgressDispose;
+		host.gsdProgressDispose = undefined;
+		prev?.();
+	}
+	host.gsdProgressState = state;
+	host.ui.requestRender();
+}
 
 	/**
 	 * Set an extension widget (string array or custom component).
@@ -168,6 +190,12 @@ export function setExtensionWidget(host: InteractiveModeDelegateHost, key: strin
 		const targetMap = placement === "belowEditor" ? host.extensionWidgetsBelow : host.extensionWidgetsAbove;
 		targetMap.set(key, component);
 		renderWidgets(host, );
+		// Step-complete / handoff widgets replace the live progress panel and can
+		// shrink the layout after pinned streaming output is torn down. Force a
+		// full viewport realign so the transcript stays visible.
+		if (key === "gsd-outcome" && content !== undefined) {
+			host.ui.requestRender(true);
+		}
 	}
 
 export function clearExtensionWidgets(host: InteractiveModeDelegateHost): void {
@@ -197,6 +225,10 @@ export function resetExtensionUI(host: InteractiveModeDelegateHost): void {
 		host.setExtensionFooter(undefined);
 		host.setExtensionHeader(undefined);
 		clearExtensionWidgets(host, );
+		const prevGsdDispose = host.gsdProgressDispose;
+		host.gsdProgressDispose = undefined;
+		host.gsdProgressState = undefined;
+		prevGsdDispose?.();
 		host.footerDataProvider.clearExtensionStatuses();
 		host.footer.invalidate();
 		host.setCustomEditorComponent(undefined);
@@ -225,6 +257,9 @@ export function renderWidgets(host: InteractiveModeDelegateHost): void {
 			render: () => pinned.children.length > 0 ? [] : [""],
 			invalidate: () => {},
 		});
+		if (host.gsdStatusWidget) {
+			host.widgetContainerAbove.addChild(host.gsdStatusWidget);
+		}
 		for (const component of host.extensionWidgetsAbove.values()) {
 			host.widgetContainerAbove.addChild(component);
 		}

@@ -5,11 +5,11 @@
  * dependency satisfaction and file overlap across slice plans.
  */
 
-import { existsSync } from "node:fs";
 import { deriveState } from "./state.js";
-import { resolveGsdPathContract, resolveMilestoneFile, resolveSliceFile } from "./paths.js";
+import { resolveMilestoneFile, resolveSliceFile } from "./paths.js";
 import { findMilestoneIds } from "./guided-flow.js";
-import { isDbAvailable, getMilestoneSlices, getSliceTasks, openDatabase } from "./gsd-db.js";
+import { isDbAvailable, getMilestoneSlices, getSliceTasks } from "./gsd-db.js";
+import { openExistingWorkflowDatabase } from "./db-workspace.js";
 import type { MilestoneRegistryEntry } from "./types.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -98,8 +98,7 @@ export async function analyzeParallelEligibility(
   basePath: string,
 ): Promise<ParallelCandidates> {
   if (!isDbAvailable()) {
-    const { projectDb } = resolveGsdPathContract(basePath);
-    if (existsSync(projectDb)) openDatabase(projectDb);
+    openExistingWorkflowDatabase(basePath);
   }
 
   const milestoneIds = findMilestoneIds(basePath);

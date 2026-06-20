@@ -3,8 +3,8 @@
 // Focused tests for `resolveSkillManifest` and `filterSkillsByManifest`.
 // Covers the wildcard semantics, the newly seeded unit-type entries
 // (complete-milestone, validate-milestone, reassess-roadmap, research-slice,
-// plan-slice, refine-slice, replan-slice, run-uat), and the deliberate
-// wildcard fallback for the execute-task hot path (RFC #4779).
+// plan-slice, refine-slice, replan-slice, run-uat, complete-slice), and the
+// deliberate wildcard fallback for the execute-task hot path (RFC #4779).
 
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -23,6 +23,7 @@ const NEWLY_WIRED_UNIT_TYPES = [
   "refine-slice",
   "replan-slice",
   "run-uat",
+  "complete-slice",
 ] as const;
 
 test("resolveSkillManifest returns null for undefined unit type (wildcard)", () => {
@@ -65,7 +66,7 @@ test("resolveSkillManifest: slice-level manifests include decompose-into-slices"
 });
 
 test("resolveSkillManifest: validation / completion flows include verify-before-complete", () => {
-  for (const unitType of ["complete-milestone", "validate-milestone", "run-uat"] as const) {
+  for (const unitType of ["complete-milestone", "validate-milestone", "run-uat", "complete-slice"] as const) {
     const allowlist = resolveSkillManifest(unitType);
     assert.ok(
       allowlist?.includes("verify-before-complete"),

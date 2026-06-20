@@ -226,6 +226,33 @@ test("direct /gsd auto skips paused-session replay when recovered unit already c
   }
 });
 
+test("paused-session resume skips replay when unit identity was never recorded", () => {
+  const base = makeTmpBase();
+  try {
+    // No currentUnit and no persisted unit type/id — identity is unknown. The
+    // old code fell back to the literal "unknown" unit, which can neither be
+    // verified nor correctly targeted, and synthesized a full tool-call replay
+    // (the thrash that turns one stuck unit into several). The fix skips the
+    // replay and resumes from rebuilt disk state instead.
+    const state = {
+      pausedSessionFile: join(base, ".gsd", "activity", "paused-session.jsonl"),
+      currentUnit: null,
+      pausedUnitType: null,
+      pausedUnitId: null,
+      pendingCrashRecovery: "stale-recovery-prompt",
+    };
+
+    const result = _handlePausedSessionResumeRecoveryForTest(base, state);
+    assert.equal(result.skippedReplay, true);
+    assert.equal(state.pausedSessionFile, null);
+    assert.equal(state.pendingCrashRecovery, null, "must not synthesize a replay for an unknown unit");
+    assert.equal(state.pausedUnitType, null);
+    assert.equal(state.pausedUnitId, null);
+  } finally {
+    cleanup(base);
+  }
+});
+
 test("interrupted-session source preserves raw lock and excludes same-pid from running classification", async () => {
   const source = await import(`node:fs/promises`).then((fs) =>
     fs.readFile(new URL("../interrupted-session.ts", import.meta.url), "utf-8")

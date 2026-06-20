@@ -63,7 +63,7 @@ docker run --rm -v $(pwd):/workspace ghcr.io/open-gsd/gsd-pi:latest --version
 | Workflow | File | Trigger | Purpose |
 |----------|------|---------|---------|
 | CI | `ci.yml` | PR + push to main | Build, test, typecheck — **gate for all promotions** |
-| NPM Publish | `npm-publish.yml` | Manual dispatch | Publish approved `@dev`, `@next`, or `@latest` releases |
+| NPM Publish | `npm-publish.yml` | Manual dispatch | Publish approved `@dev` and `@next` releases; for `@latest`, publish and verify `@dev` first, then wait for Prod approval |
 | Release Pipeline | `pipeline.yml` | After CI succeeds on main | Three-stage promotion |
 | Native Binaries | `build-native.yml` | `v*` tags | Cross-compile platform binaries |
 | Dev Cleanup | `cleanup-dev-versions.yml` | Weekly (Monday 06:00 UTC) | Unpublish `-dev.` versions older than 30 days |
@@ -72,11 +72,11 @@ docker run --rm -v $(pwd):/workspace ghcr.io/open-gsd/gsd-pi:latest --version
 | Issue Dedupe | `issue-dedupe.yml` | Opened/edited/reopened issues + manual dispatch | Posts likely duplicate candidates once per issue |
 | Issue Lifecycle | `issue-lifecycle.yml` | Label changes + schedule + manual dispatch | Adds lifecycle guidance comments and sweeps stale `needs-info` issues |
 
-**CI optimization (v2.38):** GitHub Actions minutes were reduced ~60-70% (~10k → ~3-4k/month) through workflow consolidation and caching improvements.
+**CI optimization:** GitHub Actions minutes were reduced ~60-70% (~10k → ~3-4k/month) through workflow consolidation and caching improvements.
 
-**CI refactor (2026-05):** Single `fast-gates` job, build-once artifact fan-out, parallel test jobs, PR coverage moved to main push only. Local parity: `verify:fast`, `verify:pr` (fast loop), **`verify:merge`** (PR blocking). See [Test confidence stack](./test-confidence-stack.md).
+**CI refactor (2026-05):** Single `fast-gates` job, Linux build/test consolidation, path-gated Windows/Docker checks, and coverage moved out of the core CI path. Local parity: `verify:fast`, `verify:pr` (fast loop), **`verify:merge`** (PR blocking). See [Test confidence stack](./test-confidence-stack.md).
 
-**Pipeline optimization (v2.41):**
+**Pipeline optimization:**
 - **Shallow clones** — downstream jobs use shallow checkout + shared build artifacts
 - **npm cache in pipeline** — prerelease verification and production release use `cache: 'npm'` on setup-node, saving ~1-2 min per job on repeat runs
 - **Exponential backoff** — npm registry propagation waits in `build-native.yml` replaced hardcoded `sleep 30` + fixed 15s retries with exponential backoff (5s → 10s → 20s → 30s cap), typically finishing in <15s when the registry is fast
@@ -89,21 +89,20 @@ See [Test confidence stack](./test-confidence-stack.md) for the code-area → ru
 | Tier | Job(s) | When | Blocks merge? |
 |------|--------|------|---------------|
 | Fast gates | `fast-gates` | Every PR/push (secrets, docs injection, skill refs, PR policy, tier-map drift) | Yes |
-| Build | `build` | `heavy-code-changed=true` — compile once, upload `ci-build-artifacts` | Yes |
-| Tests (parallel) | `test-unit`, `test-packages`, `integration-tests`, `e2e` | After `build`; restore artifacts, no `build:core` repeat | Yes |
-| Coverage | `test-coverage` | Push to `main`/`dev`/`test` only (not PRs); or `workflow_dispatch` with `run_coverage` | Yes on main pipeline |
-| Platform | `docker-e2e`, `windows-portability` | Path-gated; use artifacts instead of rebuilding | Yes when triggered |
+| Build + Linux tests | `build` | `heavy-code-changed=true` — compile, package validation, unit/package/integration/e2e tests with one install | Yes |
+| Coverage | `Coverage report` workflow | Manual, weekly schedule, or PR labeled `coverage` | Separate workflow |
+| Platform | Docker e2e step in `build`, `windows-portability` | Path-gated; Docker runs only when `docker-changed=true`, Windows runs only when portability paths change | Yes when triggered |
 | Platform (warn) | Windows e2e smoke step inside `windows-portability` | `windows-e2e-changed=true` | **No** (`continue-on-error: true`) |
 
 **Local before review:** `npm run verify:merge` — sequential parity with PR blocking jobs above (except path-gated platform jobs).
 
-**Branch protection:** Required checks should include `fast-gates`, `build`, `test-unit`, `test-packages`, `integration-tests`, and `e2e` when you want full merge confidence.
+**Branch protection:** Required checks should include `fast-gates` and `build` for full Linux merge confidence. Keep `windows-portability` required only if GitHub branch protection is configured to handle skipped path-gated checks correctly.
 
 ### Build-Relevant Change Detection
 
 `scripts/ci-classify-changes.sh` (run inside `fast-gates`) classifies the diff before expensive jobs run.
 
-- **Skipped when doc/metadata only:** `build`, `test-*`, `integration-tests`, `e2e`, `docker-e2e`, `windows-portability`
+- **Skipped when doc/metadata only:** `build`, Linux test steps, Docker e2e, `windows-portability`
 - **Still runs:** `fast-gates` (all security and policy scans)
 - **`web-changed`:** reserved for future path gating (web host always builds in `build` because `validate-pack` requires `dist/web/standalone/server.js`)
 
@@ -136,7 +135,7 @@ The pipeline only triggers after `ci.yml` passes. Key gating tests include:
 ### Approving a Prod Release
 
 1. A version reaches the Test stage automatically
-2. In GitHub Actions, run **NPM Publish** with `channel=latest`; the workflow plans the release, builds all five native binaries, then the `prod-release` job will show "Waiting for review"
+2. In GitHub Actions, run **NPM Publish** with `channel=latest`; the workflow publishes and verifies `@dev` from `main`, then plans the release, builds all five native binaries, and the `prod-release` job will show "Waiting for review"
 3. Click **Review deployments** → select `prod` → **Approve**
 4. The workflow publishes the matching `@opengsd/engine-*` packages, verifies they are visible on npm, publishes `@opengsd/gsd-pi@latest`, pushes the release commit/tag, and creates a GitHub Release
 

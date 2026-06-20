@@ -17,7 +17,7 @@ Each slice flows through phases automatically:
 ```
 Plan → Execute (per task) → Complete → Reassess Roadmap → Next Slice
                                                            ↓ (all done)
-                                                   Validate Milestone
+                                           UAT PASS → Validate Milestone
 ```
 
 - **Plan** — scouts the codebase, researches docs, decomposes the slice into tasks
@@ -25,6 +25,14 @@ Plan → Execute (per task) → Complete → Reassess Roadmap → Next Slice
 - **Complete** — writes summary, UAT script, marks roadmap, commits
 - **Reassess** — checks if the roadmap still makes sense after what was learned
 - **Validate** — after all slices, verifies success criteria were actually met
+
+Before milestone closeout, every slice must have a UAT assessment with verdict `PASS`. If a slice is missing a PASS verdict, auto mode stops with guidance to run `/gsd dispatch uat`, request a slice-specific UAT rerun when needed, inspect `/gsd status`, or add remediation slices with `/gsd dispatch reassess`.
+
+## Idempotent Milestone Completion
+
+Milestone completion is safe to retry. If a `complete-milestone` unit is redispatched after the database already marks the milestone as closed, GSD treats the call as successful instead of returning an error. The existing summary projection is left intact, no duplicate completion event is appended, and the tool response includes `alreadyComplete: true` in its details so operators and integrations can distinguish a retry from the first completion.
+
+The auto loop applies the same idempotency at terminal closeout: if another session is already stopping for completion, or the database already shows the milestone closed, the loop exits as complete without replaying merge, desktop notification, cmux notification, or stop side effects.
 
 ## State Authority
 
@@ -187,6 +195,8 @@ Three timeout tiers prevent runaway sessions:
 | Soft | 20 min | Warns the AI to wrap up |
 | Idle | 10 min | Detects stalls, intervenes |
 | Hard | 30 min | Pauses auto mode |
+
+Interactive prompts that block waiting for human input (such as questions during discuss-phase/milestone, or secure value entry) are exempt: while one is in flight, the idle and hard watchdogs re-arm instead of firing, so a long human deliberation never cancels the prompt. Genuinely hung non-interactive units still hit the hard cap.
 
 Configure in preferences:
 

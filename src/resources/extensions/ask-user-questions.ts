@@ -9,7 +9,8 @@
  * Based on: https://github.com/openai/codex (codex-rs/core/src/tools/handlers/ask_user_questions.rs)
  */
 
-import type { ExtensionAPI } from "@gsd/pi-coding-agent";
+import type { ExtensionAPI, Theme } from "@gsd/pi-coding-agent";
+import type { NotificationPreferences } from "./gsd/types.js";
 import { sanitizeError } from "./shared/sanitize.js";
 import { Text } from "@gsd/pi-tui";
 import { Type } from "@sinclair/typebox";
@@ -188,6 +189,61 @@ function errorResult(
 	};
 }
 
+/** Parse the LLM-facing JSON payload back into a RoundResult for TUI rendering. */
+function parseLlmAnswersContent(text: string): RoundResult | null {
+	try {
+		const parsed = JSON.parse(text) as { answers?: Record<string, { answers?: string[] }> };
+		if (!parsed?.answers || typeof parsed.answers !== "object") return null;
+
+		const answers: RoundResult["answers"] = {};
+		for (const [id, entry] of Object.entries(parsed.answers)) {
+			const list = Array.isArray(entry?.answers) ? [...entry.answers] : [];
+			let notes = "";
+			const noteIdx = list.findIndex((item) => typeof item === "string" && item.startsWith("user_note:"));
+			if (noteIdx >= 0) {
+				notes = list.splice(noteIdx, 1)[0].replace(/^user_note:\s*/, "");
+			}
+			if (list.length === 0) continue;
+			answers[id] = {
+				selected: list.length === 1 ? list[0] : list,
+				notes,
+			};
+		}
+		if (Object.keys(answers).length === 0) return null;
+		return { endInterview: false, answers };
+	} catch {
+		return null;
+	}
+}
+
+function isCancelledResultContent(text: string): boolean {
+	return /\bwas cancelled before receiving a response\b/i.test(text)
+		|| /\bwas interrupted before receiving a response\b/i.test(text);
+}
+
+function renderAnswerLines(questions: Question[], response: RoundResult, theme: Theme): Text {
+	const lines: string[] = [];
+	for (const q of questions) {
+		const answer = response.answers[q.id];
+		if (!answer) {
+			lines.push(`${theme.fg("accent", q.header)}: ${theme.fg("dim", "(no answer)")}`);
+			continue;
+		}
+		const selected = answer.selected;
+		const notes = answer.notes;
+		const multiSel = !!q.allowMultiple;
+		const answerText = multiSel && Array.isArray(selected)
+			? selected.join(", ")
+			: (Array.isArray(selected) ? selected[0] : selected) ?? "(no answer)";
+		let line = `${theme.fg("success", "✓ ")}${theme.fg("accent", q.header)}: ${answerText}`;
+		if (notes) {
+			line += ` ${theme.fg("muted", `[note: ${notes}]`)}`;
+		}
+		lines.push(line);
+	}
+	return new Text(lines.join("\n"), 0, 0);
+}
+
 /** Convert the shared RoundResult into the JSON the LLM expects. */
 function formatForLLM(result: RoundResult): string {
 	const answers: Record<string, { answers: string[] }> = {};
@@ -206,10 +262,14 @@ function formatForLLM(result: RoundResult): string {
 	return JSON.stringify({ answers });
 }
 
-async function playQuestionBell(): Promise<void> {
+/** @internal Exported for testing only. */
+export async function playQuestionBell(
+	preferences?: NotificationPreferences,
+	stream?: { isTTY?: boolean; write(chunk: string): unknown },
+): Promise<void> {
 	try {
 		const { playNotificationBell } = await import("./gsd/notifications.js");
-		playNotificationBell("question");
+		playNotificationBell("question", preferences, stream);
 	} catch {
 		// Best-effort: question rendering must never depend on alert delivery.
 	}
@@ -433,11 +493,18 @@ export default function AskUserQuestions(pi: ExtensionAPI) {
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, _options, theme) {
+		renderResult(result, _options, theme, context) {
 			const details = result.details as AskUserQuestionsDetails | undefined;
+			const contentText = result.content[0]?.type === "text" ? result.content[0].text : "";
+			const questionsFromArgs = (context?.args as { questions?: Question[] } | undefined)?.questions;
+			const parsedResponse = contentText ? parseLlmAnswersContent(contentText) : null;
+
 			if (!details) {
-				const text = result.content[0];
-				return new Text(text?.type === "text" ? text.text : "", 0, 0);
+				const questions = questionsFromArgs;
+				if (questions?.length && parsedResponse) {
+					return renderAnswerLines(questions, parsedResponse, theme);
+				}
+				return new Text(contentText, 0, 0);
 			}
 
 			// Remote channel result (discriminated on details.remote === true)
@@ -474,6 +541,26 @@ export default function AskUserQuestions(pi: ExtensionAPI) {
 				return new Text(lines.join("\n"), 0, 0);
 			}
 
+			const questions = details.questions ?? questionsFromArgs;
+			const response = details.response ?? parsedResponse;
+			const explicitCancel = details.cancelled === true || isCancelledResultContent(contentText);
+			if (explicitCancel && !response) {
+				const interrupted = "interrupted" in details && details.interrupted === true;
+				return new Text(
+					theme.fg("warning", interrupted ? "Interrupted" : "Cancelled"),
+					0,
+					0,
+				);
+			}
+
+			if (questions?.length && response) {
+				return renderAnswerLines(questions, response, theme);
+			}
+
+			if (contentText) {
+				return new Text(contentText, 0, 0);
+			}
+
 			if (details.cancelled || !details.response) {
 				const interrupted = "interrupted" in details && details.interrupted === true;
 				return new Text(
@@ -483,26 +570,7 @@ export default function AskUserQuestions(pi: ExtensionAPI) {
 				);
 			}
 
-			const lines: string[] = [];
-			for (const q of details.questions) {
-				const answer = (details.response as RoundResult).answers[q.id];
-				if (!answer) {
-					lines.push(`${theme.fg("accent", q.header)}: ${theme.fg("dim", "(no answer)")}`);
-					continue;
-				}
-				const selected = answer.selected;
-				const notes = answer.notes;
-				const multiSel = !!q.allowMultiple;
-				const answerText = multiSel && Array.isArray(selected)
-					? selected.join(", ")
-					: (Array.isArray(selected) ? selected[0] : selected) ?? "(no answer)";
-				let line = `${theme.fg("success", "✓ ")}${theme.fg("accent", q.header)}: ${answerText}`;
-				if (notes) {
-					line += ` ${theme.fg("muted", `[note: ${notes}]`)}`;
-				}
-				lines.push(line);
-			}
-			return new Text(lines.join("\n"), 0, 0);
+			return new Text("", 0, 0);
 		},
 	});
 }

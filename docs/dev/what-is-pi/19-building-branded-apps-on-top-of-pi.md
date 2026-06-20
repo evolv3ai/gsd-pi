@@ -25,22 +25,22 @@ The rest of this document explains the architecture choices, storage choices, pa
 
 There are really three layers you can build on:
 
-1. **`@mariozechner/pi-coding-agent`**
+1. **`@gsd/pi-coding-agent`**
    - Highest-level embedding API
    - Best when you want pi's session system, resource loading, tools, extension model, and coding-agent behaviors
 2. **Pi CLI in RPC mode**
    - Best when you want process isolation or language-agnostic integration
-3. **`@mariozechner/pi-agent-core`**
+3. **`@gsd/pi-agent-core`**
    - Lower-level agent loop without the full pi coding-agent shell
    - Best when you want more of the engine than the product surface
 
-For most branded CLI or desktop app use cases, start with **`@mariozechner/pi-coding-agent`**.
+For most branded CLI or desktop app use cases, start with **`@gsd/pi-coding-agent`**.
 
 ### Rule of thumb
 
 - Want your own **CLI/TUI** with pi behavior under the hood -> use **SDK embedding** via `createAgentSession()`
 - Want your own app in a **different language** or want a **subprocess boundary** -> use **RPC mode**
-- Want a more generic **agent engine** and will build more infrastructure yourself -> use **`@mariozechner/pi-agent-core`**
+- Want a more generic **agent engine** and will build more infrastructure yourself -> use **`@gsd/pi-agent-core`**
 
 ---
 
@@ -50,11 +50,12 @@ If you are building a product on top of pi, your users do **not** need to instal
 
 You can ship your own app that depends on:
 
-- `@mariozechner/pi-coding-agent`
-- `@mariozechner/pi-agent-core`
-- `@mariozechner/pi-ai`
-- `@mariozechner/pi-tui`
-- `@mariozechner/pi-web-ui`
+- `@gsd/pi-coding-agent`
+- `@gsd/pi-agent-core`
+- `@gsd/pi-ai`
+- `@gsd/pi-tui`
+
+> The upstream `pi-web-ui` browser-chat package is **not** vendored into GSD. If you need a browser UI, use `gsd --web` (the built-in web interface) or pull `pi-web-ui` directly from the upstream `earendil-works/pi` monorepo.
 
 That means a branded command like:
 
@@ -69,7 +70,7 @@ can be **your** executable, backed by pi internals, without asking users to sepa
 Instead of telling users:
 
 ```bash
-npm install -g @mariozechner/pi-coding-agent
+npm install -g @gsd/pi-coding-agent
 pi
 ```
 
@@ -156,8 +157,8 @@ You create your own executable and call `createAgentSession()` directly.
 - easiest way to bundle built-in resources
 
 #### Typical stack
-- `@mariozechner/pi-coding-agent`
-- optionally `@mariozechner/pi-tui`
+- `@gsd/pi-coding-agent`
+- optionally `@gsd/pi-tui`
 - your own entrypoint and app directories
 
 ---
@@ -211,13 +212,13 @@ Use this decision table.
 
 | Goal | Best Starting Point |
 |------|---------------------|
-| Branded CLI like `gsd` | `@mariozechner/pi-coding-agent` SDK |
-| Branded TUI with coding tools | `@mariozechner/pi-coding-agent` SDK |
+| Branded CLI like `gsd` | `@gsd/pi-coding-agent` SDK |
+| Branded TUI with coding tools | `@gsd/pi-coding-agent` SDK |
 | Desktop app with subprocess boundary | pi RPC mode |
 | Non-Node integration | pi RPC mode |
-| Browser chat app | `@mariozechner/pi-web-ui` + `@mariozechner/pi-agent-core` |
-| Generic agent engine with custom infrastructure | `@mariozechner/pi-agent-core` |
-| Want pi sessions/resources/extensions but app-owned directories | `@mariozechner/pi-coding-agent` SDK |
+| Browser chat app | `gsd --web` (built-in), or upstream `pi-web-ui` + `@gsd/pi-agent-core` |
+| Generic agent engine with custom infrastructure | `@gsd/pi-agent-core` |
+| Want pi sessions/resources/extensions but app-owned directories | `@gsd/pi-coding-agent` SDK |
 
 ### More detailed tradeoff matrix
 
@@ -245,7 +246,7 @@ gsd
 and you want it to feel like your product rather than "pi but renamed," the default recommendation is:
 
 1. Build a Node/TypeScript app
-2. Depend on `@mariozechner/pi-coding-agent`
+2. Depend on `@gsd/pi-coding-agent`
 3. Create your own executable entrypoint
 4. Use `createAgentSession()` directly
 5. Set custom directories for config/auth/sessions
@@ -310,7 +311,7 @@ import {
   ModelRegistry,
   SessionManager,
   SettingsManager,
-} from "@mariozechner/pi-coding-agent";
+} from "@gsd/pi-coding-agent";
 
 const appRoot = path.join(os.homedir(), ".gsd");
 const agentDir = path.join(appRoot, "agent");
@@ -354,7 +355,7 @@ inside your own package or app bundle.
 ### Strategy 1: Use custom paths with `DefaultResourceLoader`
 
 ```typescript
-import { DefaultResourceLoader } from "@mariozechner/pi-coding-agent";
+import { DefaultResourceLoader } from "@gsd/pi-coding-agent";
 
 const loader = new DefaultResourceLoader({
   cwd: process.cwd(),
@@ -549,8 +550,8 @@ If your extension assumes pi's exact terminal UI surface, it may need adaptation
 
 If your app is a web app or browser-hosted UI, look closely at:
 
-- `@mariozechner/pi-agent-core`
-- `@mariozechner/pi-web-ui`
+- `@gsd/pi-agent-core`
+- the built-in `gsd --web` interface, or the upstream `pi-web-ui` package (not vendored into GSD)
 
 `pi-web-ui` already provides:
 - chat UI
@@ -583,11 +584,11 @@ This matters if you are building a white-labeled or branded product.
 Your product is closer to “pi as a subprocess.”
 That is fine, but many pi-level assumptions remain nearby.
 
-### If you embed `@mariozechner/pi-coding-agent`
+### If you embed `@gsd/pi-coding-agent`
 You can hide most pi branding and product surface decisions.
 You keep the coding-agent infrastructure but own the app UX.
 
-### If you use `@mariozechner/pi-agent-core`
+### If you use `@gsd/pi-agent-core`
 You are even lower-level. Pi becomes more of a library source than a user-visible product.
 
 ### Practical recommendation
@@ -740,7 +741,7 @@ import {
   ModelRegistry,
   SessionManager,
   SettingsManager,
-} from "@mariozechner/pi-coding-agent";
+} from "@gsd/pi-coding-agent";
 
 const appRoot = path.join(os.homedir(), ".gsd");
 const agentDir = path.join(appRoot, "agent");

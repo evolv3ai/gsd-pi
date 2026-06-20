@@ -134,6 +134,10 @@ Use relative paths from the skill directory:
 See [the reference guide](references/REFERENCE.md) for details.
 ```
 
+Frontmatter is parsed as YAML. Quote description values containing
+YAML-sensitive characters such as `:` or use a folded block (`description: >`)
+for longer trigger descriptions.
+
 ## Frontmatter
 
 Per the [Agent Skills specification](https://agentskills.io/specification#frontmatter-required):
@@ -166,6 +170,14 @@ The description determines when the agent loads the skill. Be specific.
 Good:
 ```yaml
 description: Extracts text and tables from PDF files, fills PDF forms, and merges multiple PDFs. Use when working with PDF documents.
+```
+
+For descriptions with colons, quote the value or use folded YAML:
+
+```yaml
+description: >
+  Browser automation for AI agents. Use when the task needs real browser
+  control: navigation, forms, screenshots, assertions, or diagnostics.
 ```
 
 Poor:

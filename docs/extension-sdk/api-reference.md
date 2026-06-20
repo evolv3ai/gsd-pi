@@ -364,11 +364,13 @@ Agent lifecycle events carry optional correlation metadata when the current prov
 
 | Event | Type | Return Type | Description |
 |-------|------|-------------|-------------|
-| `tool_call` | `ToolCallEvent` | `ToolCallEventResult` | Before a tool executes. Return `{ block: true, reason? }` to block. |
-| `tool_result` | `ToolResultEvent` | `ToolResultEventResult` | After a tool executes. Can modify `content`, `details`, or `isError`. |
-| `tool_execution_start` | `ToolExecutionStartEvent` | — | Tool started executing. May include `sessionId` and `turnId`. |
+| `tool_call` | `ToolCallEvent` | `ToolCallEventResult` | Before a natively executed tool runs. Return `{ block: true, reason? }` to block. External engines may pre-execute tools and skip this hook. |
+| `tool_result` | `ToolResultEvent` | `ToolResultEventResult` | After a natively executed tool finishes. Can modify `content`, `details`, or `isError`. External engines may pre-execute tools and skip this hook. |
+| `tool_execution_start` | `ToolExecutionStartEvent` | — | Tool started executing. Fires for native and external-engine tool calls. May include `sessionId` and `turnId`. |
 | `tool_execution_update` | `ToolExecutionUpdateEvent` | — | Tool streaming/partial output. May include `sessionId` and `turnId`. |
-| `tool_execution_end` | `ToolExecutionEndEvent` | — | Tool finished executing. May include `sessionId` and `turnId`. |
+| `tool_execution_end` | `ToolExecutionEndEvent` | — | Tool finished executing. Fires for native and external-engine tool calls. May include `sessionId` and `turnId`. |
+
+Use `tool_execution_start` / `tool_execution_end` for observation that must run across engines. Use `tool_call` / `tool_result` only for native-engine blocking or result rewriting.
 
 `ToolCallEvent` is a discriminated union by `toolName`. Use `isToolCallEventType()` and `isToolResultEventType()` type guards for narrowing:
 

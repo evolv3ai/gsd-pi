@@ -3,9 +3,9 @@
 Let's build a real component: an interactive todo list displayed via a command.
 
 ```typescript
-import type { ExtensionAPI, Theme } from "@mariozechner/pi-coding-agent";
-import { DynamicBorder } from "@mariozechner/pi-coding-agent";
-import { Container, Key, matchesKey, Text, truncateToWidth } from "@mariozechner/pi-tui";
+import type { ExtensionAPI, Theme } from "@gsd/pi-coding-agent";
+import { DynamicBorder } from "@gsd/agent-modes";
+import { Container, Key, matchesKey, Text, truncateToWidth } from "@gsd/pi-tui";
 
 interface TodoItem {
   text: string;

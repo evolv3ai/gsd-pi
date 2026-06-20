@@ -9,7 +9,8 @@
  * bypassed, sensitive endpoints still reject unauthenticated requests.
  *
  * Returns a 401 Response if the token is missing or invalid, or null if auth
- * passes (or no token is configured).
+ * passes. Explicit no-auth launches omit the token entirely, which keeps this
+ * guard open for externally protected deployments.
  */
 export function verifyAuthToken(request: Request): Response | null {
   const expectedToken = process.env.GSD_WEB_AUTH_TOKEN

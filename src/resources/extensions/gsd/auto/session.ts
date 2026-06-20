@@ -22,12 +22,14 @@ import type { Api, Model } from "@gsd/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent";
 import type { GitServiceImpl } from "../git-service.js";
 import type { CaptureEntry } from "../captures.js";
+import { SourceObservationStore, supportsSourceObservationsForUnit } from "../source-observations.js";
 import type { BudgetAlertLevel } from "../auto-budget.js";
 import type { AutoOrchestrationModule } from "./contracts.js";
 import { resolveWorktreeProjectRoot } from "../worktree-root.js";
 import { normalizeRealPath } from "../paths.js";
 import type { MilestoneScope } from "../workspace.js";
 import type { RootDirtySnapshot } from "../root-write-leak-guard.js";
+import type { MilestoneSettlementOutcome } from "../milestone-settlement.js";
 
 // ─── Exported Types ──────────────────────────────────────────────────────────
 
@@ -156,6 +158,7 @@ export class AutoSession {
   currentTurnId: string | null = null;
   currentUnitRouting: UnitRouting | null = null;
   currentMilestoneId: string | null = null;
+  readonly sourceObservations = new SourceObservationStore();
 
   // ── Model state ──────────────────────────────────────────────────────────
   autoModeStartModel: StartModel | null = null;
@@ -176,6 +179,7 @@ export class AutoSession {
   readonly verificationRetryCount = new Map<string, number>();
   readonly verificationRetryFailureHashes = new Map<string, string>();
   readonly exhaustedVerificationUnits = new Set<string>();
+  readonly zeroToolRetryCount = new Map<string, number>();
   pausedSessionFile: string | null = null;
   pausedUnitType: string | null = null;
   pausedUnitId: string | null = null;
@@ -208,6 +212,8 @@ export class AutoSession {
   /** Set when a GSD tool execution ends with isError due to malformed/truncated
    *  JSON arguments. Checked by postUnitPreVerification to break retry loops. */
   lastToolInvocationError: string | null = null;
+  /** Consecutive tool-unavailable retries for the current unit (MCP startup race). */
+  toolUnavailableRetries = 0;
   /** Agent-end messages from the just-finished unit, consumed during finalize. */
   lastUnitAgentEndMessages: unknown[] | null = null;
   /** Set when turn-level git action fails during closeout. */
@@ -227,6 +233,8 @@ export class AutoSession {
   /** Set to true after phases.ts successfully calls mergeAndExit, so that
    *  stopAuto does not attempt the same merge a second time (#2645). */
   milestoneMergedInPhases = false;
+  /** Last milestone settlement result observed by Auto Orchestration. */
+  milestoneSettlement: MilestoneSettlementOutcome | null = null;
 
   // #4765 — slice-cadence collapse: main-branch SHAs at the moment each
   // milestone's first slice merge began. Used by resquashMilestoneOnMain at
@@ -280,6 +288,25 @@ export class AutoSession {
   resetDispatchCounters(): void {
     this.unitDispatchCount.clear();
     this.unitLifetimeDispatches.clear();
+  }
+
+  setCurrentUnit(unit: CurrentUnit): void {
+    this.currentUnit = unit;
+    if (!supportsSourceObservationsForUnit(unit.type)) {
+      this.sourceObservations.clear();
+      return;
+    }
+    this.sourceObservations.beginUnit({
+      unitType: unit.type,
+      unitId: unit.id,
+      startedAt: unit.startedAt,
+      basePath: unit.workspaceRoot ?? this.basePath,
+    });
+  }
+
+  clearCurrentUnit(): void {
+    this.currentUnit = null;
+    this.sourceObservations.clear();
   }
 
   get lockBasePath(): string {
@@ -339,7 +366,7 @@ export class AutoSession {
     this.unitRecoveryCount.clear();
 
     // Unit
-    this.currentUnit = null;
+    this.clearCurrentUnit();
     this.currentTraceId = null;
     this.currentTurnId = null;
     this.currentUnitRouting = null;
@@ -362,6 +389,7 @@ export class AutoSession {
     this.verificationRetryCount.clear();
     this.verificationRetryFailureHashes.clear();
     this.exhaustedVerificationUnits.clear();
+    this.zeroToolRetryCount.clear();
     this.pausedSessionFile = null;
     this.pausedUnitType = null;
     this.pausedUnitId = null;
@@ -380,6 +408,7 @@ export class AutoSession {
     this.lastPreExecFailure = null;
     this.preExecRetryCount.clear();
     this.lastToolInvocationError = null;
+    this.toolUnavailableRetries = 0;
     this.lastUnitAgentEndMessages = null;
     this.lastGitActionFailure = null;
     this.lastGitActionStatus = null;
@@ -387,6 +416,7 @@ export class AutoSession {
     this.strandedRecoveryIsolationMode = null;
     this.rootWriteBaseline = null;
     this.milestoneMergedInPhases = false;
+    this.milestoneSettlement = null;
     this.milestoneStartShas = new Map();
     this.checkpointSha = null;
 

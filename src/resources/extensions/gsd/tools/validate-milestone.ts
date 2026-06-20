@@ -19,11 +19,11 @@ import {
   insertAssessment,
   getMilestoneSlices,
   getMilestone,
-  getArtifact,
 } from "../gsd-db.js";
-import { gsdProjectionRoot, clearPathCache, resolveSliceFile } from "../paths.js";
+import { gsdProjectionRoot, clearPathCache } from "../paths.js";
 import { resolveCanonicalMilestoneRoot } from "../worktree-manager.js";
-import { saveFile, clearParseCache, loadFile } from "../files.js";
+import { resolveWorktreeProjectRoot } from "../worktree-root.js";
+import { saveFile, clearParseCache } from "../files.js";
 import { invalidateStateCache } from "../state.js";
 import { VALIDATION_VERDICTS, isValidMilestoneVerdict } from "../verdict-parser.js";
 import { insertMilestoneValidationGates } from "../milestone-validation-gates.js";
@@ -31,7 +31,10 @@ import { logWarning } from "../workflow-logger.js";
 import { UokGateRunner } from "../uok/gate-runner.js";
 import { loadEffectiveGSDPreferences } from "../preferences.js";
 import { resolveUokFlags } from "../uok/flags.js";
-import { compactTextParts, hasBrowserEvidenceText, hasBrowserRequiredText } from "../browser-evidence.js";
+import {
+  applyBrowserEvidenceGate,
+  browserEvidenceGateRequiresAttention,
+} from "../milestone-validation-evidence.js";
 
 export interface ValidateMilestoneParams {
   milestoneId: string;
@@ -76,63 +79,6 @@ function getRequiredVerificationClasses(milestoneId: string): string[] {
   if (!isVerificationNotApplicable(milestone.verification_operational)) required.push("Operational");
   if (!isVerificationNotApplicable(milestone.verification_uat)) required.push("UAT");
   return required;
-}
-
-async function collectPersistedBrowserEvidence(basePath: string, milestoneId: string): Promise<string> {
-  const chunks: string[] = [];
-  for (const slice of getMilestoneSlices(milestoneId)) {
-    const artifactPath = `milestones/${milestoneId}/slices/${slice.id}/${slice.id}-ASSESSMENT.md`;
-    const artifact = getArtifact(artifactPath);
-    if (artifact?.full_content) chunks.push(artifact.full_content);
-
-    const assessmentPath = resolveSliceFile(basePath, milestoneId, slice.id, "ASSESSMENT");
-    const assessmentContent = assessmentPath ? await loadFile(assessmentPath) : null;
-    if (assessmentContent) chunks.push(assessmentContent);
-  }
-  return chunks.join("\n\n");
-}
-
-async function browserEvidenceGateRequiresAttention(
-  params: ValidateMilestoneParams,
-  basePath: string,
-): Promise<boolean> {
-  if (params.verdict !== "pass") return false;
-
-  const milestone = getMilestone(params.milestoneId);
-  const slices = getMilestoneSlices(params.milestoneId);
-  const requirementText = compactTextParts([
-    milestone?.vision,
-    milestone?.success_criteria,
-    milestone?.verification_uat,
-    params.successCriteriaChecklist,
-    params.verificationClasses,
-    ...slices.flatMap((slice) => [
-      slice.demo,
-      slice.goal,
-      slice.success_criteria,
-    ]),
-  ]);
-  if (!hasBrowserRequiredText(requirementText)) return false;
-
-  const persistedEvidence = await collectPersistedBrowserEvidence(basePath, params.milestoneId);
-  const validationEvidence = compactTextParts([
-    params.successCriteriaChecklist,
-    params.verificationClasses,
-    params.verdictRationale,
-    params.remediationPlan,
-  ]);
-  return !hasBrowserEvidenceText(`${persistedEvidence}\n\n${validationEvidence}`);
-}
-
-function applyBrowserEvidenceGate(params: ValidateMilestoneParams): ValidateMilestoneParams {
-  const note = "Browser evidence gate: Browser-observable acceptance criteria were detected, but no persisted ASSESSMENT or validation evidence recorded browser actions with assertions. Downgraded from pass to needs-attention.";
-  return {
-    ...params,
-    verdict: "needs-attention",
-    verdictRationale: params.verdictRationale.trim()
-      ? `${params.verdictRationale.trim()}\n\n${note}`
-      : note,
-  };
 }
 
 function renderValidationMarkdown(params: ValidateMilestoneParams): string {
@@ -184,12 +130,20 @@ export async function handleValidateMilestone(
   const requiredClasses = getRequiredVerificationClasses(params.milestoneId);
   if (requiredClasses.length > 0) {
     const verificationClasses = params.verificationClasses ?? "";
-    const missingClass = requiredClasses.find(
+    const missingClasses = requiredClasses.filter(
       (className) => !new RegExp(`\\b${className}\\b`, "i").test(verificationClasses),
     );
-    if (missingClass) {
+    if (missingClasses.length === 1) {
+      const missingClass = missingClasses[0];
       return {
         error: `verificationClasses must include canonical row "${missingClass}" because this milestone planned ${missingClass.toLowerCase()} verification`,
+      };
+    }
+    if (missingClasses.length > 1) {
+      const quotedClasses = missingClasses.map((className) => `"${className}"`).join(", ");
+      const plannedClasses = missingClasses.map((className) => className.toLowerCase()).join(", ");
+      return {
+        error: `verificationClasses must include canonical rows ${quotedClasses} because this milestone planned ${plannedClasses} verification`,
       };
     }
   }
@@ -248,6 +202,24 @@ export async function handleValidateMilestone(
   let projectionStale = false;
   try {
     await saveFile(validationPath, validationMd);
+    const projectRoot = resolveWorktreeProjectRoot(basePath);
+    if (projectRoot !== artifactBasePath) {
+      const projectValidationPath = join(
+        gsdProjectionRoot(projectRoot),
+        "milestones",
+        effectiveParams.milestoneId,
+        `${effectiveParams.milestoneId}-VALIDATION.md`,
+      );
+      try {
+        await saveFile(projectValidationPath, validationMd);
+      } catch (mirrorErr) {
+        logWarning(
+          "projection",
+          `validate_milestone project-root VALIDATION mirror failed for ${effectiveParams.milestoneId}`,
+          { error: (mirrorErr as Error).message },
+        );
+      }
+    }
   } catch (renderErr) {
     projectionStale = true;
     logWarning("projection", `validate_milestone projection write failed for ${effectiveParams.milestoneId}; DB validation remains committed`, {

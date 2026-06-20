@@ -11,14 +11,9 @@
  */
 
 import {
-  getSlice,
-  getSliceTasks,
   isDbAvailable,
-  transaction,
-  updateSliceStatus,
-  updateTaskStatus,
+  skipSliceCascade,
 } from "../gsd-db.js";
-import { isClosedStatus } from "../status-guards.js";
 
 /**
  * Input parameters for {@link handleSkipSlice}.
@@ -90,44 +85,23 @@ export function handleSkipSlice(params: SkipSliceParams): SkipSliceResult {
     throw new Error("handleSkipSlice: GSD database is not available");
   }
 
-  // ── Guards + DB writes inside a single transaction (prevents TOCTOU) ────
-  let guardError: string | null = null;
-  let guardCode: SkipSliceErrorCode | null = null;
-  let wasAlreadySkipped = false;
-  let tasksSkipped = 0;
-
-  transaction(() => {
-    const slice = getSlice(params.milestoneId, params.sliceId);
-    if (!slice) {
-      guardError = `Slice ${params.sliceId} not found in milestone ${params.milestoneId}`;
-      guardCode = "slice_not_found";
-      return;
+  // ── Atomic skip cascade (guards + writes in one transaction) ────────────
+  const outcome = skipSliceCascade(params.milestoneId, params.sliceId);
+  if (!outcome.ok) {
+    switch (outcome.reason) {
+      case "slice-not-found":
+        return {
+          ...base,
+          error: `Slice ${params.sliceId} not found in milestone ${params.milestoneId}`,
+          errorCode: "slice_not_found" as SkipSliceErrorCode,
+        };
+      case "slice-already-complete":
+        return {
+          ...base,
+          error: `Slice ${params.sliceId} is already complete — cannot skip.`,
+          errorCode: "already_complete" as SkipSliceErrorCode,
+        };
     }
-    if (slice.status === "complete" || slice.status === "done") {
-      guardError = `Slice ${params.sliceId} is already complete — cannot skip.`;
-      guardCode = "already_complete";
-      return;
-    }
-
-    wasAlreadySkipped = slice.status === "skipped";
-    if (!wasAlreadySkipped) {
-      updateSliceStatus(params.milestoneId, params.sliceId, "skipped");
-    }
-
-    // Cascade: mark every non-closed task as skipped so milestone completion
-    // doesn't trip the deep-task guard (#4375). Closed tasks (complete/done/
-    // skipped) are left untouched — we never downgrade.
-    const tasks = getSliceTasks(params.milestoneId, params.sliceId);
-    for (const task of tasks) {
-      if (!isClosedStatus(task.status)) {
-        updateTaskStatus(params.milestoneId, params.sliceId, task.id, "skipped");
-        tasksSkipped++;
-      }
-    }
-  });
-
-  if (guardError) {
-    return { ...base, error: guardError, errorCode: guardCode ?? undefined };
   }
-  return { ...base, tasksSkipped, wasAlreadySkipped };
+  return { ...base, tasksSkipped: outcome.tasksSkipped, wasAlreadySkipped: outcome.wasAlreadySkipped };
 }

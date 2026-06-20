@@ -3,7 +3,7 @@
 
 import { describe, test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -18,6 +18,7 @@ import {
   insertSlice,
 } from "../gsd-db.ts";
 import type { GateVerdict } from "../types.ts";
+import { closeQualityGatesFromEvidence } from "../quality-gate-closure.ts";
 
 describe("gate-state canonicalization (#4950)", () => {
   let tmpDir: string;
@@ -98,5 +99,51 @@ describe("gate-state canonicalization (#4950)", () => {
     for (const g of results) {
       assert.notEqual(g.verdict, "", `gate ${g.gate_id} verdict must not be empty string`);
     }
+  });
+
+  test("closeQualityGatesFromEvidence repairs pending gate from durable section", () => {
+    insertGateRow({ milestoneId: "M001", sliceId: "S01", gateId: "Q3", scope: "slice" });
+    mkdirSync(join(tmpDir, ".gsd", "milestones", "M001", "slices", "S01"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, ".gsd", "milestones", "M001", "slices", "S01", "S01-PLAN.md"),
+      [
+        "# S01",
+        "",
+        "## Threat Surface",
+        "",
+        "- Credential stuffing is rate-limited.",
+      ].join("\n"),
+    );
+
+    const result = closeQualityGatesFromEvidence("M001", { artifactBasePath: tmpDir });
+
+    assert.deepEqual(result.unresolved, []);
+    assert.deepEqual(result.repaired, [{ gateId: "Q3", sliceId: "S01", verdict: "pass" }]);
+    assert.equal(getPendingGates("M001", "S01").length, 0);
+    assert.equal(getGateResults("M001", "S01")[0].verdict, "pass");
+  });
+
+  test("closeQualityGatesFromEvidence omits stale pending gate after validation pass", () => {
+    insertGateRow({ milestoneId: "M001", sliceId: "S01", gateId: "Q4", scope: "slice" });
+
+    const result = closeQualityGatesFromEvidence("M001", {
+      artifactBasePath: tmpDir,
+      milestoneValidationPassed: true,
+    });
+
+    assert.deepEqual(result.unresolved, []);
+    assert.deepEqual(result.repaired, [{ gateId: "Q4", sliceId: "S01", verdict: "omitted" }]);
+    assert.equal(getGateResults("M001", "S01")[0].verdict, "omitted");
+  });
+
+  test("closeQualityGatesFromEvidence leaves pending gate unresolved without evidence", () => {
+    insertGateRow({ milestoneId: "M001", sliceId: "S01", gateId: "Q3", scope: "slice" });
+
+    const result = closeQualityGatesFromEvidence("M001", { artifactBasePath: tmpDir });
+
+    assert.deepEqual(result.repaired, []);
+    assert.equal(result.unresolved.length, 1);
+    assert.equal(result.unresolved[0].gate_id, "Q3");
+    assert.equal(getPendingGates("M001", "S01").length, 1);
   });
 });

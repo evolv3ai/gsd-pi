@@ -24,6 +24,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import type { TaskRow } from "./db-task-slice-rows.js";
 import type { PreExecutionCheckJSON } from "./verification-evidence.ts";
 import { validateVerificationCommand } from "./verification-gate.js";
+import { FRAMEWORK_METADATA_DIRS, PLANNING_ARTIFACT_NAME_RE } from "./paths.js";
 
 const NPM_COMMAND = process.platform === "win32" ? "npm.cmd" : "npm";
 
@@ -469,6 +470,13 @@ export function shouldValidatePlanningPathReference(raw: string): boolean {
   return shouldValidateInputAsPath(raw);
 }
 
+export function extractPlanningPathReference(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed || NON_PATH_SENTINEL_RE.test(trimmed)) return null;
+  if (!shouldValidateInputAsPath(trimmed)) return null;
+  return extractPathFromAnnotation(trimmed);
+}
+
 function shouldValidateInputAsPath(raw: string): boolean {
   const trimmed = raw.trim();
   if (!trimmed) return false;
@@ -483,7 +491,8 @@ function shouldValidateInputAsPath(raw: string): boolean {
   if (URL_SCHEME_PATTERN.test(candidate)) return false;
   if (SCP_PATTERN.test(candidate)) return false;
 
-  if (/^`+[^`]+`+/.test(trimmed)) {
+  const explicitlyWrappedPath = /^`+[^`]+`+/.test(trimmed) || /^(["'])([^"']+)\1$/.test(trimmed);
+  if (explicitlyWrappedPath && looksLikePathOrUrl(candidate)) {
     return true;
   }
 
@@ -496,7 +505,6 @@ function shouldValidateInputAsPath(raw: string): boolean {
     candidate.startsWith("./") ||
     candidate.startsWith("../") ||
     candidate.startsWith("~/") ||
-    /[\\/]/.test(candidate) ||
     /[*?[\]{}]/.test(candidate)
   );
 }
@@ -579,6 +587,9 @@ export function checkFilePathConsistency(
       // Skip empty strings
       if (!file.trim()) continue;
       if (!shouldValidateInputAsPath(file)) continue;
+      // Planning-artifact references are owned by checkPlanningArtifactReferences,
+      // which reports a precise removal message instead of "doesn't exist".
+      if (isPlanningArtifactReference(file, basePath, context)) continue;
 
       // Normalize path for consistent comparison
       const normalizedFile = toComparisonPath(file, basePath);
@@ -612,6 +623,85 @@ export function checkFilePathConsistency(
           target: file,
           passed: false,
           message: `Task ${task.id} references '${file}' which doesn't exist and isn't created by prior or same-task outputs`,
+          blocking: true,
+        });
+      }
+    }
+  }
+
+  return results;
+}
+
+// ─── Planning Artifact Reference Check ───────────────────────────────────────
+
+function isFrameworkMetadataPath(normalizedFile: string): boolean {
+  return normalizedFile.split("/").some((segment) => FRAMEWORK_METADATA_DIRS.includes(segment.toLowerCase()));
+}
+
+/**
+ * True when a task IO entry references a GSD planning artifact.
+ *
+ * Task inputs are source files only — planning artifacts are projections of DB
+ * state that the framework preloads as composed context (see CONTEXT.md "Task
+ * Input"). Two triggers, deliberately different in strictness:
+ *
+ * - Any path entering framework-owned metadata (.gsd/, .planning/, .audits/)
+ *   is always a violation, even when the file exists.
+ * - A bare artifact-style basename (M001-CONTEXT.md, S01-PLAN.md, …) is a
+ *   violation only when it does NOT resolve to a real file. When such a file
+ *   genuinely exists in the source tree (e.g. a fixture), it is a source file
+ *   and stays legal; a path with directory components is likewise left to the
+ *   ordinary existence checks.
+ */
+function isPlanningArtifactReference(
+  rawEntry: string,
+  basePath: string,
+  context?: PreExecutionCheckContext,
+): boolean {
+  if (!shouldValidateInputAsPath(rawEntry)) return false;
+  const normalized = toComparisonPath(rawEntry, basePath);
+  if (isFrameworkMetadataPath(normalized)) return true;
+  return (
+    !normalized.includes("/") &&
+    PLANNING_ARTIFACT_NAME_RE.test(normalized) &&
+    !inputExistsOnDisk(normalized, basePath, context)
+  );
+}
+
+/**
+ * Block GSD planning artifacts in task IO fields (inputs, files, expectedOutput).
+ *
+ * For inputs/files the violation smuggles a projection into the executor's
+ * preloaded source context; for expectedOutput it promises a write the runtime
+ * write-gate would reject mid-execution. Both get a precise message so the
+ * planning retry steers toward *removing* the reference, not creating the file.
+ * checkFilePathConsistency and checkTaskOrdering skip entries this check owns.
+ */
+export function checkPlanningArtifactReferences(
+  tasks: TaskRow[],
+  basePath: string,
+  context?: PreExecutionCheckContext,
+): PreExecutionCheckJSON[] {
+  const results: PreExecutionCheckJSON[] = [];
+
+  for (const task of tasks) {
+    const fields = [
+      { label: "inputs", entries: task.inputs },
+      { label: "files", entries: task.files },
+      { label: "expectedOutput", entries: task.expected_output },
+    ];
+    for (const { label, entries } of fields) {
+      for (const file of entries) {
+        if (!isPlanningArtifactReference(file, basePath, context)) continue;
+        const message =
+          label === "expectedOutput"
+            ? `Task ${task.id} lists '${file}' in expectedOutput — GSD planning artifacts are written by workflow tools (e.g. gsd_summary_save), never by tasks; remove it`
+            : `Task ${task.id} lists '${file}' in ${label} — GSD planning artifacts are projections preloaded as context, never task ${label}; remove it`;
+        results.push({
+          category: "file",
+          target: file,
+          passed: false,
+          message,
           blocking: true,
         });
       }
@@ -664,6 +754,9 @@ export function checkTaskOrdering(
     for (const file of filesToCheck) {
       if (isRuntimeOnlyInput(file)) continue;
       if (!shouldValidateInputAsPath(file)) continue;
+      // Owned by checkPlanningArtifactReferences — avoid a duplicate sequence
+      // finding on top of the removal message.
+      if (isPlanningArtifactReference(file, basePath, context)) continue;
 
       const normalizedFile = toComparisonPath(file, basePath);
       if (containsGlobPattern(normalizedFile)) continue;
@@ -691,6 +784,27 @@ export function checkTaskOrdering(
   }
 
   return results;
+}
+
+// ─── Shared Path-Check Composition ───────────────────────────────────────────
+
+/**
+ * The synchronous path-shaped checks, in order. One list shared by the
+ * plan-persist gate (gsd_plan_slice) and the dispatch gate
+ * (runPreExecutionChecks) so the two cannot drift — the checks coordinate
+ * ownership of planning-artifact entries via isPlanningArtifactReference
+ * skips, which only works when they run as a set.
+ */
+export function runTaskPathChecks(
+  tasks: TaskRow[],
+  basePath: string,
+  context?: PreExecutionCheckContext,
+): PreExecutionCheckJSON[] {
+  return [
+    ...checkPlanningArtifactReferences(tasks, basePath, context),
+    ...checkFilePathConsistency(tasks, basePath, context),
+    ...checkTaskOrdering(tasks, basePath, context),
+  ];
 }
 
 // ─── Interface Contract Check ────────────────────────────────────────────────
@@ -859,12 +973,11 @@ export async function runPreExecutionChecks(
   const allChecks: PreExecutionCheckJSON[] = [];
 
   // Run sync checks first
-  const fileChecks = checkFilePathConsistency(tasks, basePath, context);
-  const orderingChecks = checkTaskOrdering(tasks, basePath, context);
+  const pathChecks = runTaskPathChecks(tasks, basePath, context);
   const contractChecks = checkInterfaceContracts(tasks, basePath);
   const verificationChecks = checkVerificationCommands(tasks);
 
-  allChecks.push(...fileChecks, ...orderingChecks, ...contractChecks, ...verificationChecks);
+  allChecks.push(...pathChecks, ...contractChecks, ...verificationChecks);
 
   // Run async package checks
   const packageChecks = await checkPackageExistence(tasks, basePath);

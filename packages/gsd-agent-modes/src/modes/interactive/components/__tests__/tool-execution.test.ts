@@ -1,14 +1,30 @@
 // Project/App: gsd-pi
 // File Purpose: Tests for interactive terminal tool execution rendering.
-import { describe, test } from "node:test";
+import { afterEach, beforeEach, describe, mock, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import stripAnsi from "strip-ansi";
+import { isImageLine, resetCapabilitiesCache, setCapabilities, setCellDimensions } from "@gsd/pi-tui";
 import { ToolExecutionComponent, ToolPhaseSummaryComponent, type ToolExecutionPhase } from "../tool-execution.js";
+import { setRailAnimationEnabled } from "../transcript-design.js";
 import { initTheme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { READ_TUI_EXPANDED_MAX_LINES } from "@gsd/pi-coding-agent/core/tools/read.js";
 
 initTheme("dark", false);
+
+/**
+ * Build a minimal valid PNG header (signature + IHDR) with the given dimensions.
+ * getImageDimensions/getPngDimensions only read the 24-byte header, so this is
+ * enough to drive image rendering without a real encoded image.
+ */
+function tinyPngBase64(widthPx: number, heightPx: number): string {
+	const buf = Buffer.alloc(24);
+	// PNG signature
+	buf.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+	buf.writeUInt32BE(widthPx, 16);
+	buf.writeUInt32BE(heightPx, 20);
+	return buf.toString("base64");
+}
 
 function renderTool(
 	toolName: string,
@@ -55,6 +71,70 @@ function renderToolCollapsed(
 }
 
 describe("ToolExecutionComponent", () => {
+	test("running-rail animates at a constant cadence while in-flight, and not at all when the setting is off", (t) => {
+		// The running tool card animates its rail by re-rendering the transcript on a
+		// fixed-cadence timer while in-flight (isInFlight === !result). The cadence is
+		// constant (matched to the rail's per-cell step) and keeps going for as long as
+		// the tool runs — a 30-minute tool stays visibly alive, never frozen. When the
+		// `terminal.toolRailAnimation` setting is off the timer is never armed, so a
+		// long-running tool costs zero idle CPU.
+		mock.timers.enable({ apis: ["setInterval", "Date"] });
+		t.after(() => {
+			setRailAnimationEnabled(true); // module-global — restore default for other tests
+			mock.timers.reset();
+		});
+
+		// --- animation ON (default) ---
+		setRailAnimationEnabled(true);
+		let renderRequests = 0;
+		const onCard = new ToolExecutionComponent(
+			"bash",
+			{ command: "sleep 99999" },
+			{},
+			undefined,
+			{ requestRender() { renderRequests++; } } as any,
+		);
+		onCard.render(120); // arms the rail timer
+		assert.equal(renderRequests, 0, "render itself does not request a render");
+
+		// Each 70ms tick re-renders once — constant cadence, one cell of movement per frame.
+		mock.timers.tick(70);
+		mock.timers.tick(70);
+		assert.ok(renderRequests >= 2, `rail should animate while in-flight, got ${renderRequests}`);
+
+		// It keeps animating indefinitely while in-flight — no cap, no freeze. 200 ticks
+		// (~14s) each request a render at the constant rate.
+		const before = renderRequests;
+		for (let i = 0; i < 200; i++) mock.timers.tick(70);
+		assert.ok(
+			renderRequests - before >= 180,
+			`rail must keep animating at a constant rate (no cap), got ${renderRequests - before} over 200 ticks`,
+		);
+
+		// Stops once the result arrives.
+		onCard.updateResult({ content: [{ type: "text", text: "done" }], isError: false });
+		const afterResult = renderRequests;
+		mock.timers.tick(70);
+		mock.timers.tick(70);
+		assert.equal(renderRequests, afterResult, "rail stops once the tool has a result");
+
+		// --- animation OFF: the timer is never armed ---
+		setRailAnimationEnabled(false);
+		let offRenders = 0;
+		const offCard = new ToolExecutionComponent(
+			"bash",
+			{ command: "sleep 99999" },
+			{},
+			undefined,
+			{ requestRender() { offRenders++; } } as any,
+		);
+		offCard.render(120);
+		mock.timers.tick(70);
+		mock.timers.tick(70);
+		mock.timers.tick(70);
+		assert.equal(offRenders, 0, "no rail animation when the setting is off (zero idle CPU)");
+	});
+
 	test("reuses shared tool-argument normalization for pending invocation matching", () => {
 		const sourceUrl = existsSync(new URL("../tool-execution.ts", import.meta.url))
 			? new URL("../tool-execution.ts", import.meta.url)
@@ -85,6 +165,19 @@ describe("ToolExecutionComponent", () => {
 		assert.doesNotMatch(rendered, /Tool demo\u00b7do_thing/);
 		assert.match(rendered, /running/);
 		assert.match(rendered, /running · \d+(ms|s)/);
+		// Variant A uses a plain single-line compact card (no framed border/rail);
+		// the ━ rail sweep was removed from renderToolLineCard in fa2cf288.
+	});
+
+	test("does not render active rail sweep on completed cards", () => {
+		const rendered = renderToolCollapsed(
+			"mcp__demo__do_thing",
+			{ ok: true },
+			{ content: [{ type: "text", text: "done" }], isError: false },
+		);
+
+		assert.match(rendered, /success · \d+(ms|s)/);
+		assert.doesNotMatch(rendered, /━/);
 	});
 
 	test("does not duplicate running generic tool labels before args", () => {
@@ -116,6 +209,35 @@ describe("ToolExecutionComponent", () => {
 		assert.match(rendered, /failed/);
 		assert.match(rendered, /failed · \d+(ms|s)/);
 		assert.match(rendered, /boom/);
+	});
+
+	test("generic failed tools render displayReason instead of model-facing policy text", () => {
+		const modelFacingReason = [
+			'HARD BLOCK: unit "discuss-requirements" is constrained by auto-unit tool scope.',
+			'GSD lifecycle tool "gsd_milestone_status" is not permitted.',
+			"This is a mechanical phase-boundary gate. You MUST NOT proceed, retry the same call, or route around this block.",
+		].join(" ");
+		const rendered = renderTool(
+			"gsd_milestone_status",
+			{ milestoneId: "M001" },
+			{
+				content: [
+					{
+						type: "text",
+						text: modelFacingReason,
+					},
+				],
+				isError: true,
+				details: {
+					displayReason: "This GSD phase only allows its scoped workflow tools.",
+				},
+			},
+		);
+
+		assert.match(rendered, /This GSD phase only allows its scoped workflow tools/);
+		assert.doesNotMatch(rendered, /HARD BLOCK/);
+		assert.doesNotMatch(rendered, /phase-boundary gate/);
+		assert.doesNotMatch(rendered, /MUST NOT proceed/);
 	});
 
 	test("collapses successful low-signal tool cards by default", () => {
@@ -547,5 +669,100 @@ describe("ToolExecutionComponent", () => {
 		// Multi-line JSON dump for the complex payload
 		assert.match(rendered, /"payload"/);
 		assert.match(rendered, /"nested"/);
+	});
+});
+
+// Regression coverage for inline image (Kitty/Ghostty protocol) rendering inside
+// a tool card. The original bug ran collapseBlankLines() + trimOuterBlankLines()
+// over the card body, which crushed the (rows-1) blank padding lines an image
+// emits to reserve its height — framing a 24-row image as ~1 row so the terminal
+// painted the full image over the chat and footer below it.
+describe("ToolExecutionComponent inline image (Kitty) rendering", () => {
+	// Force the Kitty image protocol and a representative cell size for the whole
+	// block; restore the module-global capabilities/cell-size after each case so
+	// these tests never leak terminal state into the rest of the suite.
+	beforeEach(() => {
+		setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+		setCellDimensions({ widthPx: 8, heightPx: 20 });
+	});
+	afterEach(() => {
+		resetCapabilitiesCache();
+		setCellDimensions({ widthPx: 9, heightPx: 18 });
+	});
+
+	// Render a `read` tool result that carries one inline PNG and return the RAW
+	// card lines (not stripAnsi — image lines carry graphics escapes we assert on).
+	function renderImageToolRaw(widthPx: number, heightPx: number, termWidth = 120): string[] {
+		const component = new ToolExecutionComponent(
+			"read",
+			{ file_path: "/tmp/tall.png" },
+			{ showImages: true },
+			undefined as any,
+			{ requestRender() {} } as any,
+		);
+		component.setExpanded(true);
+		component.updateResult({
+			content: [
+				{ type: "text", text: "Read image file [image/png]" },
+				{ type: "image", data: tinyPngBase64(widthPx, heightPx), mimeType: "image/png" } as any,
+			],
+			isError: false,
+		});
+		return component.render(termWidth);
+	}
+
+	test("reserves the image's full row height inside the card (no overflow)", () => {
+		const lines = renderImageToolRaw(800, 2400); // very tall image (1:3)
+
+		const seqIdx = lines.findIndex((l) => isImageLine(l));
+		assert.ok(seqIdx >= 0, "card must contain the inline image sequence");
+
+		// The card must keep many blank padding rows after the sequence so content
+		// below the image is not overpainted. The original regression collapsed
+		// them to ~1, framing a tall image as a single row. We don't pin the exact
+		// row count (it depends on cell-size/maxHeight math); a tall image must
+		// reserve far more than the broken ~1 row.
+		const bottomBorderIdx = lines.length - 1;
+		const blankRowsAfterSeq = lines
+			.slice(seqIdx + 1, bottomBorderIdx)
+			.filter((l) => l.trim().length === 0).length;
+		assert.ok(
+			blankRowsAfterSeq >= 10,
+			`a tall image must reserve its height as blank padding rows; only ${blankRowsAfterSeq} were kept ` +
+				`(regression: padding rows were collapsed/trimmed → image overflows the card)`,
+		);
+	});
+
+	test("passes the image sequence through verbatim, left-aligned under the card text", () => {
+		const lines = renderImageToolRaw(800, 2400);
+		const seqLine = lines.find((l) => isImageLine(l));
+		assert.ok(seqLine, "image sequence line should be present");
+
+		// The raw Kitty sequence must be intact (no padRight/truncate corruption)…
+		const afterIndent = seqLine.replace(/^ +/, "");
+		assert.ok(afterIndent.startsWith("\x1b_G"), "Kitty sequence must survive verbatim after the indent");
+
+		// …and the image is offset to sit under the card text (indent + 3 spaces),
+		// not hugging column 0.
+		const leadingSpaces = seqLine.match(/^ */)?.[0].length ?? 0;
+		assert.ok(leadingSpaces >= 4, `image row should be indented under the card text, got ${leadingSpaces} spaces`);
+	});
+
+	test("non-image tool output still collapses blank rows (fix is image-scoped)", () => {
+		// A generic (expanded) tool's text output flows through collapseBlankLines.
+		// The image-preservation branch must NOT disable that for ordinary text —
+		// a run of consecutive blank lines should still collapse.
+		const rendered = renderTool(
+			"mcp__demo__blanks",
+			{ ok: true },
+			{ content: [{ type: "text", text: "first\n\n\n\n\nsecond" }], isError: false },
+		);
+		assert.match(rendered, /first/);
+		assert.match(rendered, /second/);
+		assert.doesNotMatch(
+			rendered,
+			/first[\s\S]*?\n\s*\n\s*\n\s*\nsecond/,
+			"plain text should still have consecutive blank rows collapsed",
+		);
 	});
 });

@@ -116,7 +116,7 @@ Auto-mode unit manifests declare a runtime-enforced `tools` policy. `write-gate.
 
 ---
 
-## 5. The 44 Prompt Files — Full Inventory
+## 5. The 43 Prompt Files — Full Inventory
 
 ### 5a. System & Foundation
 
@@ -205,21 +205,24 @@ guided-resume-task  (if task was interrupted)
 
 ```
 gate-evaluate  (parallel gate subagents)
+
+complete-slice  (writes the slice summary and UAT spec)
          │
          ▼
-validate-milestone  (3 parallel reviewers)
+run-uat  (per-slice user acceptance assessment)
          │
          ▼
-run-uat  (user acceptance tests)
+validate-milestone  (3 parallel reviewers after all slices close)
 ```
 
 | Prompt | Purpose | Key Tools Called |
 |--------|---------|-----------------|
 | `gate-evaluate.md` | Spawn one subagent per quality gate in parallel. Verifies `gsd_save_gate_result` called. | `subagent` × N |
 | `validate-milestone.md` | 3 parallel reviewers: (A) requirements, (B) integration, (C) acceptance. | `subagent` × 3, `gsd_validate_milestone` |
-| `run-uat.md` | Execute UAT. Modes: artifact-driven, runtime, browser, human-experience. Runs under `verification` tools policy, so Bash is limited to read-only inspection and build/test verification commands. | `gsd_summary_save(ASSESSMENT)`, verification Bash |
+| `run-uat.md` | Execute UAT. Modes: artifact-driven, browser-executable, runtime-executable, live-runtime, mixed, human-experience. Runs under `verification` tools policy with UAT-owned execution plus safe read-only/browser inspection tools. | `gsd_uat_result_save`, read-only/browser tools |
 
 `run-uat` completion verification requires a canonical verdict in the written `S##-ASSESSMENT.md` (for example `verdict: PASS | FAIL | PARTIAL`). A pre-existing assessment file without `verdict` does not satisfy artifact verification.
+`src/resources/extensions/gsd/uat-policy.ts` is the shared policy source for UAT mode classification, browser-tool requirements, dispatch decisions, and result-save mode validation.
 
 ### 5f. Completion Flow
 
@@ -245,6 +248,7 @@ complete-milestone
 |--------|---------|-----------------|
 | `replan-slice.md` | Replan after blocker discovered mid-slice. Preserves completed tasks. | `gsd_replan_slice` |
 | `rethink.md` | Reorder, park, unpark, skip, or discard milestones. | `gsd_skip_slice`, writes `QUEUE-ORDER.json` |
+| `worktree-merge.md` | Merge a worktree branch into a target branch from the main tree. | git merge (main tree CWD) |
 | `reassess-roadmap.md` | *(see Completion Flow above)* | — |
 | `rewrite-docs.md` | Apply OVERRIDES.md changes across all planning docs. | — |
 | `review-migration.md` | Audit `.planning → .gsd` migration correctness. | `deriveState` |
@@ -317,11 +321,11 @@ STATE.md
               ├── [gate]  gate-evaluate ────────────► N× subagent
               │              │ writes gate results
               │              │
+              ├── [sl]    complete-slice
+              │              │ writes S##-SUMMARY.md and S##-UAT.md
+              │              │
               ├── [sl]    run-uat
               │              │ writes S##-ASSESSMENT.md
-              │              │
-              ├── [sl]    complete-slice
-              │              │ writes S##-SUMMARY.md
               │              │
               ├── [ms]    reassess-roadmap
               │              │ updates M##-ROADMAP.md

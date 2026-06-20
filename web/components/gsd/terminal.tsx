@@ -41,7 +41,7 @@ function inputModePlaceholder(mode: InputMode, state: ReturnType<typeof useGSDWo
     case "follow_up":
       return "Agent is active — type a follow-up or /state"
     case "prompt":
-      return "Type a prompt, /state, /new, or /clear"
+      return "Type a prompt, !command for shell, /state, /new, or /clear"
   }
 }
 

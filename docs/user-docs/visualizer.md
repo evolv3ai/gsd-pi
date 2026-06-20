@@ -1,7 +1,5 @@
 # Workflow Visualizer
 
-*Introduced in v2.19.0*
-
 The workflow visualizer is an interactive view for project progress, execution history, dependencies, metrics, health, agent activity, changes, knowledge, captures, and exports.
 
 ## Opening the Visualizer
@@ -112,7 +110,7 @@ Download Markdown, JSON, or a current-view snapshot from the visualizer data.
 
 The visualizer refreshes data from disk every 2 seconds, so it stays current if opened alongside a running auto-mode session.
 
-## HTML Reports (v2.26)
+## HTML Reports
 
 For shareable reports outside the terminal, use `/gsd report`. This generates HTML reports for all milestones, opens the reports index in a browser, and uses the same data as the TUI visualizer — progress tree, dependency graph (SVG DAG), cost/token bar charts, execution timeline, changelog, and knowledge base. All CSS and JS are inlined — no external dependencies. Printable to PDF from any browser.
 

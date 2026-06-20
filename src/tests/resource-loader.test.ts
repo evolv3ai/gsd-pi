@@ -1,8 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, parse } from "node:path";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join, parse } from "node:path";
 import { tmpdir } from "node:os";
+import { parse as parseYaml } from "yaml";
+
+const requireFromTest = createRequire(import.meta.url);
 
 function overrideHomeEnv(homeDir: string): () => void {
   const original = {
@@ -46,6 +50,21 @@ function bundledSkillsDir(): string {
   return existsSync(join(process.cwd(), "dist", "resources", "skills"))
     ? join(process.cwd(), "dist", "resources", "skills")
     : join(process.cwd(), "src", "resources", "skills");
+}
+
+function currentPackageVersion(): string {
+  const packageJson = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf-8"));
+  return process.env.GSD_VERSION && process.env.GSD_VERSION !== "0.0.0"
+    ? process.env.GSD_VERSION
+    : packageJson.version;
+}
+
+function packagedGsdBrowserSkillPath(): string {
+  return requireFromTest.resolve("@opengsd/gsd-browser/SKILL.md");
+}
+
+function packagedGsdBrowserSkill(): string {
+  return readFileSync(packagedGsdBrowserSkillPath(), "utf-8");
 }
 
 test("getExtensionKey normalizes top-level .ts and .js entry names to the same key", async () => {
@@ -113,7 +132,7 @@ test("hasStaleCompiledExtensionSiblings detects nested bundled extension format 
   );
 });
 
-test("buildResourceLoader excludes duplicate top-level pi extensions when bundled resources use .js", async (t) => {
+test("buildResourceLoader does not load any pi extensions from ~/.pi/agent/extensions", async (t) => {
   const tmp = mkdtempSync(join(tmpdir(), "gsd-resource-loader-home-"));
   const piExtensionsDir = join(tmp, ".pi", "agent", "extensions");
   const fakeAgentDir = join(tmp, ".gsd", "agent");
@@ -135,12 +154,12 @@ test("buildResourceLoader excludes duplicate top-level pi extensions when bundle
   assert.equal(
     additionalExtensionPaths.some((entryPath) => entryPath.endsWith("ask-user-questions.ts")),
     false,
-    "bundled compiled extensions should suppress duplicate pi top-level .ts siblings",
+    "pi extensions should not be loaded even if they duplicate a bundled extension",
   );
   assert.equal(
     additionalExtensionPaths.some((entryPath) => entryPath.endsWith("custom-extension.ts")),
-    true,
-    "non-duplicate pi extensions should still load",
+    false,
+    "pi extensions should not be loaded even if they are not bundled duplicates",
   );
 });
 
@@ -231,6 +250,274 @@ test("initResources syncs bundled skills to the GSD agent dir by default", async
     existsSync(join(tmp, ".agents", "skills", "lint", "SKILL.md")),
     false,
     "initResources should not write bundled skills to ~/.agents/skills by default",
+  );
+});
+
+test("initResources syncs the gsd-browser skill from the installed gsd-browser package", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-resource-loader-browser-skill-"));
+  const fakeAgentDir = join(tmp, ".gsd", "agent");
+  const restoreHomeEnv = overrideHomeEnv(tmp);
+
+  t.after(() => {
+    restoreHomeEnv();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const { collectGsdBrowserPackageSkillReferences, initResources } = await import("../resource-loader.ts");
+  initResources(fakeAgentDir);
+  const packageSkill = packagedGsdBrowserSkill();
+
+  assert.equal(
+    readFileSync(join(fakeAgentDir, "skills", "gsd-browser", "SKILL.md"), "utf-8"),
+    packageSkill,
+    "managed gsd-browser skill should come from @opengsd/gsd-browser, not Pi's bundled skills",
+  );
+
+  const supportRefs = collectGsdBrowserPackageSkillReferences(packageSkill);
+  assert.ok(supportRefs.includes("docs/mcp.md"), "test package skill should reference MCP docs");
+
+  const packageSkillDir = dirname(packagedGsdBrowserSkillPath());
+
+  for (const relPath of supportRefs) {
+    const targetPath = join(fakeAgentDir, "skills", "gsd-browser", relPath);
+    const packagePath = join(packageSkillDir, relPath);
+    const packageShipsRef = existsSync(packagePath);
+
+    assert.equal(
+      existsSync(targetPath),
+      packageShipsRef,
+      `${relPath} install state should match whether @opengsd/gsd-browser ships it`,
+    );
+
+    if (packageShipsRef && relPath.startsWith("scripts/") && relPath.endsWith(".sh")) {
+      assert.notEqual(statSync(targetPath).mode & 0o111, 0, `${relPath} should be executable`);
+    }
+  }
+});
+
+test("initResources refreshes a stale managed gsd-browser package skill", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-resource-loader-browser-skill-stale-"));
+  const fakeAgentDir = join(tmp, ".gsd", "agent");
+  const restoreHomeEnv = overrideHomeEnv(tmp);
+
+  t.after(() => {
+    restoreHomeEnv();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const {
+    collectGsdBrowserPackageSkillReferences,
+    computeResourceFingerprint,
+    hasStaleGsdBrowserPackageSkill,
+    initResources,
+  } = await import("../resource-loader.ts");
+  initResources(fakeAgentDir);
+  const packageSkill = packagedGsdBrowserSkill();
+  const packageSkillDir = dirname(packagedGsdBrowserSkillPath());
+  const missingSupportRef = collectGsdBrowserPackageSkillReferences(packageSkill)
+    .find((relPath) => !existsSync(join(packageSkillDir, relPath)));
+
+  if (missingSupportRef) {
+    const placeholderPath = join(fakeAgentDir, "skills", "gsd-browser", missingSupportRef);
+    mkdirSync(dirname(placeholderPath), { recursive: true });
+    writeFileSync(placeholderPath, "stale placeholder\n");
+  }
+
+  writeFileSync(
+    join(fakeAgentDir, "skills", "gsd-browser", "SKILL.md"),
+    "---\nname: gsd-browser\ndescription: stale\n---\n",
+  );
+  rmSync(join(fakeAgentDir, "skills", "gsd-browser", "docs", "mcp.md"), { force: true });
+  writeFileSync(
+    join(fakeAgentDir, "managed-resources.json"),
+    JSON.stringify({
+      gsdVersion: currentPackageVersion(),
+      packageName: "@opengsd/gsd-pi",
+      contentHash: computeResourceFingerprint(),
+    }),
+  );
+
+  assert.equal(
+    hasStaleGsdBrowserPackageSkill(join(fakeAgentDir, "skills")),
+    true,
+    "test setup should simulate a stale managed gsd-browser skill under a current manifest",
+  );
+
+  initResources(fakeAgentDir);
+
+  assert.equal(
+    readFileSync(join(fakeAgentDir, "skills", "gsd-browser", "SKILL.md"), "utf-8"),
+    packageSkill,
+    "current managed-resource manifests must not skip stale package-owned gsd-browser skills",
+  );
+  if (missingSupportRef) {
+    assert.equal(
+      existsSync(join(fakeAgentDir, "skills", "gsd-browser", missingSupportRef)),
+      false,
+      "current managed-resource manifests must prune stale placeholder support files not shipped by @opengsd/gsd-browser",
+    );
+  }
+});
+
+test("syncGsdBrowserPackageSkill preserves existing managed skill when the package is unresolvable", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-resource-loader-browser-skill-preserve-"));
+  const fakeAgentDir = join(tmp, ".gsd", "agent");
+  const restoreHomeEnv = overrideHomeEnv(tmp);
+
+  t.after(() => {
+    restoreHomeEnv();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const { initResources, setGsdBrowserPackageSkillPathForTests } = await import("../resource-loader.ts");
+  t.after(() => setGsdBrowserPackageSkillPathForTests(undefined));
+
+  // Seed a known-good managed install from the real package while it is
+  // still resolvable.
+  initResources(fakeAgentDir);
+  const targetSkillPath = join(fakeAgentDir, "skills", "gsd-browser", "SKILL.md");
+  assert.equal(
+    existsSync(targetSkillPath),
+    true,
+    "test setup should install the managed gsd-browser skill",
+  );
+  const installedContent = readFileSync(targetSkillPath, "utf-8");
+
+  // Now make the package unresolvable without mutating shared node_modules.
+  setGsdBrowserPackageSkillPathForTests(null);
+
+  // Force a sync attempt by deleting the manifest so initResources cannot
+  // short-circuit on the fingerprint.
+  rmSync(join(fakeAgentDir, "managed-resources.json"), { force: true });
+  initResources(fakeAgentDir);
+
+  assert.equal(
+    existsSync(targetSkillPath),
+    true,
+    "existing managed gsd-browser skill must be preserved when the package is unresolvable",
+  );
+  assert.equal(
+    readFileSync(targetSkillPath, "utf-8"),
+    installedContent,
+    "existing managed gsd-browser SKILL.md content must be preserved when the package is unresolvable",
+  );
+});
+
+test("hasStaleGsdBrowserPackageSkill does not report stale when the package is unresolvable", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-resource-loader-browser-skill-unresolvable-"));
+  const fakeAgentDir = join(tmp, ".gsd", "agent");
+  const restoreHomeEnv = overrideHomeEnv(tmp);
+
+  t.after(() => {
+    restoreHomeEnv();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const {
+    hasStaleGsdBrowserPackageSkill,
+    initResources,
+    setGsdBrowserPackageSkillPathForTests,
+  } = await import("../resource-loader.ts");
+  t.after(() => setGsdBrowserPackageSkillPathForTests(undefined));
+  initResources(fakeAgentDir);
+
+  setGsdBrowserPackageSkillPathForTests(null);
+
+  assert.equal(
+    hasStaleGsdBrowserPackageSkill(join(fakeAgentDir, "skills")),
+    false,
+    "hasStale must agree with sync (no-op on unresolvable package) so launches do not run wasted full resyncs",
+  );
+});
+
+test("hasStaleGsdBrowserPackageSkill does not flag SKILL.md references the package itself does not ship", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-resource-loader-browser-skill-missing-refs-"));
+  const fakeAgentDir = join(tmp, ".gsd", "agent");
+  const restoreHomeEnv = overrideHomeEnv(tmp);
+
+  t.after(() => {
+    restoreHomeEnv();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const {
+    collectGsdBrowserPackageSkillReferences,
+    hasStaleGsdBrowserPackageSkill,
+    initResources,
+  } = await import("../resource-loader.ts");
+
+  initResources(fakeAgentDir);
+  const skillsDir = join(fakeAgentDir, "skills");
+  const installedSkill = readFileSync(
+    join(skillsDir, "gsd-browser", "SKILL.md"),
+    "utf-8",
+  );
+
+  // Sanity: the published package SKILL.md does reference at least one
+  // file the npm tarball does not actually ship (this regression exists
+  // precisely because upstream omits these supports). If a future package
+  // version ships every referenced path, this test's premise no longer
+  // applies and there is nothing to guard against.
+  const refs = collectGsdBrowserPackageSkillReferences(installedSkill);
+  const browserPkgRoot = join(process.cwd(), "node_modules", "@opengsd", "gsd-browser");
+  const missingFromPackage = refs.filter((rel) => !existsSync(join(browserPkgRoot, rel)));
+  if (missingFromPackage.length === 0) {
+    return; // upstream now ships everything; nothing to assert.
+  }
+
+  assert.equal(
+    hasStaleGsdBrowserPackageSkill(skillsDir),
+    false,
+    "hasStale must not loop forever on SKILL.md references the package itself does not ship",
+  );
+});
+
+test("bundled skill frontmatter is valid YAML", () => {
+  const skillsDir = join(process.cwd(), "src", "resources", "skills");
+  const skillNames = readdirSync(skillsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+
+  assert.ok(skillNames.length > 0, "expected bundled skills to be present");
+
+  const skillSources: Array<{ label: string; content: string }> = [];
+
+  for (const skillName of skillNames) {
+    const skillPath = join(skillsDir, skillName, "SKILL.md");
+    if (!existsSync(skillPath)) continue;
+    skillSources.push({
+      label: `${skillName}/SKILL.md`,
+      content: readFileSync(skillPath, "utf-8"),
+    });
+  }
+
+  // The managed gsd-browser skill is sourced from @opengsd/gsd-browser at
+  // install time rather than the bundled `src/resources/skills` tree, so the
+  // bundled-only walk above would let an invalid SKILL.md in the package
+  // through. Include it here so a future regression in the published package
+  // fails this guard before being copied to ~/.gsd/agent/skills/gsd-browser.
+  skillSources.push({
+    label: "@opengsd/gsd-browser/SKILL.md",
+    content: packagedGsdBrowserSkill(),
+  });
+
+  for (const { label, content } of skillSources) {
+    const frontmatter = content.match(/^---\n([\s\S]*?)\n---/);
+
+    assert.ok(frontmatter, `${label} should include YAML frontmatter`);
+    assert.doesNotThrow(
+      () => parseYaml(frontmatter[1]),
+      `${label} frontmatter should parse as YAML`,
+    );
+  }
+
+  const gsdBrowserSkill = packagedGsdBrowserSkill();
+  const gsdBrowserFrontmatter = gsdBrowserSkill.match(/^---\n([\s\S]*?)\n---/);
+
+  assert.ok(gsdBrowserFrontmatter, "gsd-browser/SKILL.md should include YAML frontmatter");
+  assert.doesNotThrow(
+    () => parseYaml(gsdBrowserFrontmatter[1]),
+    "gsd-browser/SKILL.md frontmatter should parse as YAML",
   );
 });
 

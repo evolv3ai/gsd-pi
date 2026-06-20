@@ -184,7 +184,7 @@ describe("auto-worktree workspace registry", () => {
     git(["commit", "-m", "add milestone"], tempDir);
 
     createAutoWorktree(tempDir, "M003");
-    const wtDir = join(tempDir, ".gsd", "worktrees", "M003");
+    const wtDir = join(tempDir, ".gsd-worktrees", "M003");
     writeFileSync(join(wtDir, "feature.txt"), "implemented\n");
     git(["add", "feature.txt"], wtDir);
     git(["commit", "-m", "feat: implement M003"], wtDir);
@@ -216,7 +216,7 @@ describe("auto-worktree workspace registry", () => {
     git(["commit", "-m", "add milestone"], tempDir);
 
     createAutoWorktree(tempDir, "M004");
-    const wtDir = join(tempDir, ".gsd", "worktrees", "M004");
+    const wtDir = join(tempDir, ".gsd-worktrees", "M004");
     writeFileSync(join(wtDir, "feature.txt"), "implemented\n");
     git(["add", "feature.txt"], wtDir);
     git(["commit", "-m", "feat: implement M004"], wtDir);

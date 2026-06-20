@@ -347,3 +347,48 @@ test('handlePlanMilestone updates depends_on when a queued milestone row already
     cleanup(base);
   }
 });
+
+// Regression #566: bracket-wrapped slice ID in depends should be rejected
+test('handlePlanMilestone rejects bracket-wrapped depends like ["[S01]"]', async () => {
+  const base = makeTmpBase();
+  const dbPath = join(base, '.gsd', 'gsd.db');
+  openDatabase(dbPath);
+
+  try {
+    const params = validParams();
+    // Simulate the LLM sending "[S01]" (the markdown fragment) instead of "S01"
+    const corruptSlices = [
+      params.slices[0],
+      { ...params.slices[1], depends: ['[S01]'] },
+    ];
+    const result = await handlePlanMilestone({ ...params, slices: corruptSlices }, base);
+    assert.ok('error' in result, 'should return an error for bracket-wrapped depends');
+    assert.match(result.error, /slices\[1\]\.depends must be an array of valid slice IDs/,
+      'error should mention invalid slice ID format');
+    assert.equal(getMilestoneSlices('M001').length, 0, 'no slices should persist on validation failure');
+  } finally {
+    cleanup(base);
+  }
+});
+
+// Regression #566: unknown slice ID in depends should be rejected
+test('handlePlanMilestone rejects depends referencing a slice not in the same milestone', async () => {
+  const base = makeTmpBase();
+  const dbPath = join(base, '.gsd', 'gsd.db');
+  openDatabase(dbPath);
+
+  try {
+    const params = validParams();
+    const corruptSlices = [
+      params.slices[0],
+      { ...params.slices[1], depends: ['S99'] },
+    ];
+    const result = await handlePlanMilestone({ ...params, slices: corruptSlices }, base);
+    assert.ok('error' in result, 'should return an error for unknown depends slice');
+    assert.match(result.error, /references unknown slice "S99"/,
+      'error should name the unknown slice');
+    assert.equal(getMilestoneSlices('M001').length, 0, 'no slices should persist on validation failure');
+  } finally {
+    cleanup(base);
+  }
+});

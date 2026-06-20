@@ -21,7 +21,7 @@ import { nativeGetCurrentBranch, nativeDetectMainBranch } from "./native-git-bri
 import { formatDuration } from "../shared/format-utils.js";
 import { parseEvalReviewFrontmatter, type Verdict } from "./eval-review-schema.js";
 import { currentDirectoryRoot } from "./commands/context.js";
-import { buildPrEvidence } from "./pr-evidence.js";
+import { buildPullRequestEvidence } from "./pull-request-process.js";
 
 function git(basePath: string, args: readonly string[]): string {
   return execFileSync("git", args, { cwd: basePath, encoding: "utf-8" }).trim();
@@ -178,7 +178,7 @@ function generatePRContent(basePath: string, milestoneId: string, milestoneTitle
     }
   }
 
-  return buildPrEvidence({
+  return buildPullRequestEvidence({
     milestoneId,
     milestoneTitle,
     changeType: "feat",

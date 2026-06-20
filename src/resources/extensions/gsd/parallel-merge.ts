@@ -9,6 +9,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolveGsdPathContract } from "./paths.js";
+import { worktreePathFor, worktreesDirs } from "./worktree-placement.js";
 import { getAutoWorktreePath } from "./auto-worktree.js";
 import { buildWorktreeLifecycleDeps } from "./auto.js";
 import {
@@ -42,7 +43,7 @@ export type MergeOrder = "sequential" | "by-completion";
  * Returns true when milestones.status = 'complete' in project gsd.db.
  */
 export function isMilestoneCompleteInProjectDb(basePath: string, mid: string): boolean {
-  const workRoot = join(basePath, ".gsd", "worktrees", mid);
+  const workRoot = worktreePathFor(basePath, mid);
   const dbPath = resolveGsdPathContract(workRoot, basePath).projectDb;
   if (!existsSync(dbPath)) return false;
 
@@ -65,15 +66,17 @@ export function isMilestoneCompleteInProjectDb(basePath: string, mid: string): b
  */
 function discoverDbCompletedMilestones(basePath: string): Set<string> {
   const completed = new Set<string>();
-  const worktreeDir = join(basePath, ".gsd", "worktrees");
-  try {
-    for (const entry of readdirSync(worktreeDir)) {
-      if (entry.startsWith("M") && isMilestoneCompleteInProjectDb(basePath, entry)) {
-        completed.add(entry);
+  for (const worktreeDir of worktreesDirs(basePath)) {
+    if (!existsSync(worktreeDir)) continue;
+    try {
+      for (const entry of readdirSync(worktreeDir)) {
+        if (entry.startsWith("M") && isMilestoneCompleteInProjectDb(basePath, entry)) {
+          completed.add(entry);
+        }
       }
+    } catch (e) {
+      logWarning("parallel", `readdirSync for completed set failed: ${(e as Error).message}`);
     }
-  } catch (e) {
-    logWarning("parallel", `readdirSync for completed set failed: ${(e as Error).message}`);
   }
   return completed;
 }
@@ -120,7 +123,7 @@ export function determineMergeOrder(
         title: mid,
         pid: 0,
         process: null,
-        worktreePath: basePath ? join(basePath, ".gsd", "worktrees", mid) : "",
+        worktreePath: basePath ? worktreePathFor(basePath, mid) : "",
         startedAt: 0,
         state: "stopped",
         cost: 0,

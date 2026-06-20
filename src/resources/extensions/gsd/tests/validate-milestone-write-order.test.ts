@@ -180,6 +180,35 @@ describe("handleValidateMilestone write ordering (#2725)", () => {
     assert.equal(row, undefined, "assessment row should not be written when verification classes are invalid");
   });
 
+  it("reports all missing planned verification class rows at once", async () => {
+    base = makeTmpBase();
+    const dbPath = join(base, ".gsd", "gsd.db");
+    openDatabase(dbPath);
+    insertMilestone({
+      id: "M001",
+      planning: {
+        verificationContract: "Contract command exits 0",
+        verificationOperational: "Process lifecycle proof",
+        verificationUat: "Browser-observable UAT proof",
+      },
+    });
+    insertSlice({ id: "S01", milestoneId: "M001" });
+
+    const result = await handleValidateMilestone(
+      { ...VALID_PARAMS, verificationClasses: "| Check | Result |\n| --- | --- |\n| Generic verification | PASS |" },
+      base,
+    );
+    assert.ok("error" in result, "expected validation to fail");
+    assert.match(result.error, /canonical rows "Contract", "Operational", "UAT"/);
+    assert.match(result.error, /planned contract, operational, uat verification/);
+
+    const adapter = _getAdapter()!;
+    const row = adapter.prepare(
+      `SELECT status FROM assessments WHERE milestone_id = 'M001' AND scope = 'milestone-validation'`,
+    ).get() as { status: string } | undefined;
+    assert.equal(row, undefined, "assessment row should not be written when verification classes are invalid");
+  });
+
   it("accepts verificationClasses when planned Operational class is present", async () => {
     base = makeTmpBase();
     const dbPath = join(base, ".gsd", "gsd.db");
@@ -404,6 +433,110 @@ describe("handleValidateMilestone write ordering (#2725)", () => {
 
     assert.ok(!("error" in result), `unexpected error: ${"error" in result ? result.error : ""}`);
     assert.equal(result.verdict, "pass");
+  });
+
+  it("keeps pass when browser-like criteria are verified by runtime-executable UAT", async () => {
+    base = makeTmpBase();
+    const dbPath = join(base, ".gsd", "gsd.db");
+    openDatabase(dbPath);
+    insertMilestone({
+      id: "M001",
+      planning: {
+        successCriteria: [
+          "Clicking Mark All Complete sets all todos completed",
+          "Reload keeps completed state",
+        ],
+        verificationUat: "Run the Node.js DOM-state script against the static app source.",
+      },
+    });
+    insertSlice({
+      id: "S01",
+      milestoneId: "M001",
+      // Uses localhost so hasBrowserRequiredText returns true and the gate is
+      // actually triggered before the runtime evidence bypasses it.
+      demo: "Visit localhost:3000 to verify DOM state after clicking Mark All Complete.",
+    });
+    const sliceDir = join(base, ".gsd", "milestones", "M001", "slices", "S01");
+    mkdirSync(sliceDir, { recursive: true });
+    writeFileSync(
+      join(sliceDir, "S01-ASSESSMENT.md"),
+      [
+        "---",
+        "sliceId: S01",
+        "uatType: runtime-executable",
+        "verdict: PASS",
+        "attempt: 1",
+        "---",
+        "# UAT Result - S01",
+        "",
+        "## Checks",
+        "",
+        "| Check | Mode | Result | Evidence | Notes |",
+        "|-------|------|--------|----------|-------|",
+        "| DOM-state script | runtime | PASS | gsd_uat_exec:.gsd/evidence/uat/M001/S01/dom-state.json | Runtime assertion verified completed state and reload persistence. |",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const result = await handleValidateMilestone(
+      {
+        ...VALID_PARAMS,
+        verificationClasses:
+          `${VALID_PARAMS.verificationClasses}\n| UAT | Runtime executable UAT verified static-app behavior. |`,
+      },
+      base,
+    );
+
+    assert.ok(!("error" in result), `unexpected error: ${"error" in result ? result.error : ""}`);
+    assert.equal(result.verdict, "pass");
+  });
+
+  it("downgrades to needs-attention when only one of two browser-requiring slices has runtime evidence", async () => {
+    base = makeTmpBase();
+    const dbPath = join(base, ".gsd", "gsd.db");
+    openDatabase(dbPath);
+    insertMilestone({ id: "M001" });
+    insertSlice({
+      id: "S01",
+      milestoneId: "M001",
+      demo: "Visit localhost:3000 to verify DOM state.",
+    });
+    insertSlice({
+      id: "S02",
+      milestoneId: "M001",
+      demo: "Visit localhost:3000 to confirm persistence after reload.",
+    });
+    // S01 has runtime-executable evidence; S02 has none.
+    mkdirSync(join(base, ".gsd", "milestones", "M001", "slices", "S01"), { recursive: true });
+    writeFileSync(
+      join(base, ".gsd", "milestones", "M001", "slices", "S01", "S01-ASSESSMENT.md"),
+      [
+        "---",
+        "sliceId: S01",
+        "uatType: runtime-executable",
+        "verdict: PASS",
+        "---",
+        "| DOM check | runtime | PASS | gsd_uat_exec:.gsd/evidence/uat/M001/S01/dom.json | Verified. |",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const result = await handleValidateMilestone(
+      {
+        ...VALID_PARAMS,
+        verificationClasses: `${VALID_PARAMS.verificationClasses}\n| UAT | S01 runtime verified; S02 still needs evidence. |`,
+      },
+      base,
+    );
+
+    assert.ok(!("error" in result), `unexpected error: ${"error" in result ? result.error : ""}`);
+    assert.equal(
+      result.verdict,
+      "needs-attention",
+      "S01 runtime evidence must not bypass the gate for S02 which has browser requirements but no evidence",
+    );
   });
 
   it("ignores slice full_uat_md planning text for browser requirement detection", async () => {

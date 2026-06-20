@@ -22,3 +22,7 @@ The worktree-level concerns this ADR would have touched were addressed by:
 
 - Cross-references to "ADR-002" from ADR-001 and ADR-003 should be read as "the work that became ADR-016/017."
 - No external state directory exists or is planned. `.gsd/` artifacts remain inside the working tree as projections.
+
+## Amendment (2026-06-09, see ADR-031)
+
+The closure statement above did not survive contact with the codebase: an external state directory **was** subsequently shipped. `repo-identity.ts` manages the `<project>/.gsd → ~/.gsd/projects/<hash>/` symlink and `migrate-external.ts` migrates in-tree `.gsd/` state into it. The DB-authoritative model holds (markdown stays projection-only), but the physical `.gsd` directory may live externally behind the symlink. ADR-031 documents the shipped layout, its environment contracts (`GSD_PROJECT_ROOT`, `GSD_STATE_DIR`), and moves worktree placement out from under the symlink to the canonical `<projectRoot>/.gsd-worktrees/` sibling.

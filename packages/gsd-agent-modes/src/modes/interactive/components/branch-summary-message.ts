@@ -1,46 +1,39 @@
 // gsd-pi + packages/pi-coding-agent/src/modes/interactive/components/branch-summary-message.ts - Branch summary message renderer.
 
-import { Box, Markdown, type MarkdownTheme, Spacer, Text } from "@gsd/pi-tui";
+import { Markdown, type MarkdownTheme, Text } from "@gsd/pi-tui";
 import type { BranchSummaryMessage } from "@gsd/pi-coding-agent/core/messages.js";
 import { getMarkdownTheme, theme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { CollapsibleMessageComponent } from "./collapsible-message.js";
+import { renderChatFrame } from "./transcript-design.js";
 import { editorKey } from "./keybinding-hints.js";
 
 /**
- * Component that renders a branch summary message with collapsed/expanded state.
- * Uses same background color as custom messages for visual consistency.
+ * Renders a branch summary as a plain system line (◇ branch header,
+ * copy-clean body) matching compaction and skill notices.
  */
 export class BranchSummaryMessageComponent extends CollapsibleMessageComponent {
 	private message: BranchSummaryMessage;
 	private markdownTheme: MarkdownTheme;
-	private box: Box;
 
 	constructor(message: BranchSummaryMessage, markdownTheme: MarkdownTheme = getMarkdownTheme()) {
 		super();
 		this.message = message;
 		this.markdownTheme = markdownTheme;
-		this.box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
 		this.rebuildContent();
 	}
 
 	protected rebuildContent(): void {
 		this.clear();
-		this.box.clear();
-		this.addChild(this.box);
-
-		const label = theme.fg("customMessageLabel", theme.bold("[branch]"));
-		this.box.addChild(new Text(label, 0, 0));
-		this.box.addChild(new Spacer(1));
 
 		if (this.expanded) {
 			const header = "**Branch Summary**\n\n";
-			this.box.addChild(
+			this.addChild(
 				new Markdown(header + this.message.summary, 0, 0, this.markdownTheme, {
 					color: (text: string) => theme.fg("customMessageText", text),
 				}),
 			);
 		} else {
-			this.box.addChild(
+			this.addChild(
 				new Text(
 					theme.fg("customMessageText", "Branch summary (") +
 						theme.fg("dim", editorKey("expandTools")) +
@@ -50,5 +43,20 @@ export class BranchSummaryMessageComponent extends CollapsibleMessageComponent {
 				),
 			);
 		}
+	}
+
+	override render(width: number): string[] {
+		const cached = this.getCachedRender(width);
+		if (cached) return cached;
+
+		const frameWidth = Math.max(20, width);
+		const lines = super.render(frameWidth);
+		const framed = renderChatFrame(lines, frameWidth, {
+			label: "branch",
+			tone: "skill",
+			timestampFormat: "date-time-iso",
+			showTimestamp: false,
+		});
+		return this.setCachedRender(width, framed.length > 0 ? ["", ...framed] : framed);
 	}
 }

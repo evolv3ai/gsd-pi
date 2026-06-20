@@ -58,7 +58,7 @@ const CLI_AUTH_PROVIDERS = new Set([
 const PROVIDER_ROUTES: Record<string, string[]> = {
   anthropic: ["github-copilot", "claude-code"],
   openai: ["github-copilot", "openai-codex"],
-  google: ["google-gemini-cli"],
+  google: ["google-antigravity", "google-gemini-cli"],
 };
 
 // ── Model → Provider ID mapping ───────────────────────────────────────────────

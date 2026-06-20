@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 
 import { verifyExpectedArtifact, hasImplementationArtifacts, resolveExpectedArtifactPath, diagnoseExpectedArtifact, diagnoseWorktreeIntegrityFailure, buildLoopRemediationSteps, writeBlockerPlaceholder, refreshRecoveryDbForArtifact, writeReactiveExecuteBlocker } from "../auto-recovery.ts";
 import { resolveMilestoneFile } from "../paths.ts";
-import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertGateRow, insertTask, insertAssessment, getMilestone, getMilestoneCommitAttributionShas, getTask } from "../gsd-db.ts";
+import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertGateRow, insertTask, insertAssessment, getMilestone, getMilestoneCommitAttributionShas, getTask, saveGateResult } from "../gsd-db.ts";
 import { readEvents } from "../workflow-events.ts";
 import { clearParseCache } from "../files.ts";
 import { parseRoadmap } from "../parsers-legacy.ts";
@@ -1558,6 +1558,14 @@ test("verifyExpectedArtifact complete-milestone passes when DB milestone is comp
 
     openDatabase(join(base, ".gsd", "gsd.db"));
     insertMilestone({ id: "M001", title: "Milestone One", status: "complete" });
+    insertSlice({ id: "S01", milestoneId: "M001", title: "Done Slice", status: "complete" });
+    insertAssessment({
+      path: "milestones/M001/M001-VALIDATION.md",
+      milestoneId: "M001",
+      status: "pass",
+      scope: "milestone-validation",
+      fullContent: "verdict: pass",
+    });
 
     const result = verifyExpectedArtifact("complete-milestone", "M001", base);
     assert.equal(result, true, "complete-milestone should pass when DB status is complete");
@@ -1566,7 +1574,7 @@ test("verifyExpectedArtifact complete-milestone passes when DB milestone is comp
   }
 });
 
-test("verifyExpectedArtifact complete-milestone tolerates transient DB lag when SUMMARY is canonical success (#4658)", () => {
+test("verifyExpectedArtifact complete-milestone rejects success SUMMARY when DB milestone is still open (#4658)", () => {
   const base = makeGitBase();
   try {
     execFileSync("git", ["checkout", "-b", "feat/ms-db-lag-success"], { cwd: base, stdio: "ignore" });
@@ -1591,7 +1599,7 @@ test("verifyExpectedArtifact complete-milestone tolerates transient DB lag when 
     insertMilestone({ id: "M001", title: "Milestone One", status: "active" });
 
     const result = verifyExpectedArtifact("complete-milestone", "M001", base);
-    assert.equal(result, true, "canonical success SUMMARY should pass verification during transient DB lag");
+    assert.equal(result, false, "success SUMMARY must not overrule an open DB milestone");
   } finally {
     cleanup(base);
   }
@@ -1603,6 +1611,27 @@ test("verifyExpectedArtifact checks pending gate-evaluate artifacts without ESM 
   const verified = verifyExpectedArtifact("gate-evaluate", "M001/S01/gates+Q3", base);
 
   assert.equal(verified, false, "pending gates should keep gate-evaluate unverified");
+});
+
+test("verifyExpectedArtifact fails closed for gate-evaluate when the DB is unavailable", () => {
+  const base = makeTmpProject();
+  closeDatabase();
+
+  const verified = verifyExpectedArtifact("gate-evaluate", "M001/S01/gates+Q3", base);
+
+  assert.equal(verified, false, "gate-evaluate must verify against the DB-backed gate rows");
+});
+
+test("verifyExpectedArtifact ignores complete-slice gates in stale gate-evaluate unit ids", () => {
+  const base = makeTmpProject();
+  insertGateRow({ milestoneId: "M001", sliceId: "S01", gateId: "Q4", scope: "slice" });
+  insertGateRow({ milestoneId: "M001", sliceId: "S01", gateId: "Q8", scope: "slice" });
+  saveGateResult({ milestoneId: "M001", sliceId: "S01", gateId: "Q3", verdict: "pass", rationale: "OK", findings: "" });
+  saveGateResult({ milestoneId: "M001", sliceId: "S01", gateId: "Q4", verdict: "pass", rationale: "OK", findings: "" });
+
+  const verified = verifyExpectedArtifact("gate-evaluate", "M001/S01/gates+Q3,Q4,Q8", base);
+
+  assert.equal(verified, true, "pending Q8 belongs to complete-slice and must not keep gate-evaluate unverified");
 });
 
 // ─── #4414 regressions ────────────────────────────────────────────────────────

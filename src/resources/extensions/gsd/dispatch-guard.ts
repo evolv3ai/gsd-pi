@@ -3,9 +3,8 @@
 import { resolveMilestoneFile } from "./paths.js";
 import { findMilestoneIds } from "./guided-flow.js";
 import { parseUnitId } from "./unit-id.js";
-import { isDbAvailable, getMilestoneSlices, getMilestone } from "./gsd-db.js";
-import { parseRoadmap } from "./parsers-legacy.js";
-import { isClosedStatus, isSkippedForDispatch } from "./status-guards.js";
+import { isDbAvailable, getMilestoneSliceSummaries, getMilestone } from "./gsd-db.js";
+import { isSkippedForDispatch } from "./status-guards.js";
 import { classifyMilestoneSummaryContent } from "./milestone-summary-classifier.js";
 import { readFileSync } from "node:fs";
 import type { LoopState } from "./auto/types.js";
@@ -117,34 +116,12 @@ export function getPriorSliceCompletionBlocker(
       }
     }
 
-    // Normalised slice list from DB or file fallback
-    type NormSlice = { id: string; done: boolean; depends: string[] };
-    let slices: NormSlice[] | null = null;
-
-    if (isDbAvailable()) {
-      const rows = getMilestoneSlices(mid);
-      if (rows.length > 0) {
-        slices = rows.map((r) => ({
-          id: r.id,
-          done: isClosedStatus(r.status),
-          depends: r.depends ?? [],
-        }));
-      }
-    }
-    if (!slices) {
-      // File-based fallback: parse roadmap checkboxes
-      const roadmapPath = resolveMilestoneFile(base, mid, "ROADMAP");
-      if (!roadmapPath) continue;
-      let roadmapContent: string;
-      try { roadmapContent = readFileSync(roadmapPath, "utf-8"); } catch { continue; }
-      const parsed = parseRoadmap(roadmapContent);
-      if (parsed.slices.length === 0) continue;
-      slices = parsed.slices.map((s) => ({
-        id: s.id,
-        done: s.done,
-        depends: s.depends ?? [],
-      }));
-    }
+    // DB-authoritative eligibility list (ADR-017) — markdown projections are
+    // never parsed for dispatch decisions. No DB / no rows → skip this
+    // milestone's check (unknown is not a blocker).
+    if (!isDbAvailable()) continue;
+    const slices = getMilestoneSliceSummaries(mid);
+    if (slices.length === 0) continue;
 
     if (mid !== targetMid) {
       const incomplete = slices.find((slice) => !slice.done);

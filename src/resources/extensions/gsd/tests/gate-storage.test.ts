@@ -83,6 +83,21 @@ describe("quality_gates CRUD", () => {
     assert.ok(results[0].evaluated_at);
   });
 
+  test("saveGateResult throws when the gate row does not exist", () => {
+    assert.throws(
+      () => saveGateResult({
+        milestoneId: "M001",
+        sliceId: "S01",
+        gateId: "Q3",
+        verdict: "pass",
+        rationale: "No row exists.",
+        findings: "",
+      }),
+      /quality gate row not found/,
+    );
+    assert.equal(getGateResults("M001", "S01").length, 0);
+  });
+
   test("getPendingGates filters by scope", () => {
     insertGateRow({ milestoneId: "M001", sliceId: "S01", gateId: "Q3", scope: "slice" });
     insertGateRow({ milestoneId: "M001", sliceId: "S01", gateId: "Q5", scope: "task", taskId: "T01" });

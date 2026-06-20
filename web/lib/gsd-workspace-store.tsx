@@ -57,6 +57,8 @@ import type {
 import { isGitSummaryResponse, type GitSummaryResponse } from "./git-summary-contract"
 import type { PendingImage } from "./image-utils"
 import type { ChatMessage } from "./pty-chat-parser"
+import { WorkspaceEventStream } from "./workspace-event-stream"
+import { createTerminalLine, withTerminalLine } from "./workspace-terminal-log"
 import type {
   SessionBrowserNameFilter,
   SessionBrowserResponse,
@@ -66,6 +68,18 @@ import type {
 } from "./session-browser-contract"
 import { authFetch, appendAuthParam } from "./auth"
 import { ContextualTips } from "@gsd/agent-core/contextual-tips.js"
+import {
+  applyBootToLiveState,
+  createInitialWorkspaceLiveState,
+  createWorkspaceRecoverySummary,
+  getLiveAutoDashboard,
+  getLiveResumableSessions,
+  getLiveWorkspaceIndex,
+  withFreshnessFailed,
+  withFreshnessInvalidated,
+  withFreshnessRequested,
+  withFreshnessSucceeded,
+} from "./workspace-live-state"
 import type {
   WorkspaceIndex,
   WorkspaceScopeTarget,
@@ -73,6 +87,13 @@ import type {
   WorkspaceValidationIssue,
 } from "../../src/shared/workspace-types.ts"
 import type { RpcExtensionUIRequest } from "@opengsd/contracts"
+
+export {
+  createWorkspaceRecoverySummary,
+  getLiveAutoDashboard,
+  getLiveResumableSessions,
+  getLiveWorkspaceIndex,
+} from "./workspace-live-state"
 
 export type WorkspaceStatus = "idle" | "loading" | "ready" | "error" | "unauthenticated"
 export type WorkspaceConnectionState =
@@ -579,7 +600,6 @@ export interface WorkspaceStoreState {
   editorTextBuffer: string | null
 }
 
-const MAX_TERMINAL_LINES = 250
 export const MAX_TRANSCRIPT_BLOCKS = 100
 export const COMMAND_TIMEOUT_MS = 90_000
 export const VISIBILITY_REFRESH_THRESHOLD_MS = 30_000
@@ -618,28 +638,6 @@ const IMPLEMENTED_BROWSER_COMMAND_SURFACES = new Set<BrowserSlashCommandSurface>
   "gsd-cleanup",
   "gsd-queue",
 ])
-
-function timestampLabel(date = new Date()): string {
-  return date.toLocaleTimeString("en-US", {
-    hour12: false,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  })
-}
-
-function createTerminalLine(type: TerminalLineType, content: string): WorkspaceTerminalLine {
-  return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
-    type,
-    content,
-    timestamp: timestampLabel(),
-  }
-}
-
-function withTerminalLine(lines: WorkspaceTerminalLine[], line: WorkspaceTerminalLine): WorkspaceTerminalLine[] {
-  return [...lines, line].slice(-MAX_TERMINAL_LINES)
-}
 
 function hasAttachedSession(bridge: BridgeRuntimeSnapshot | null | undefined): boolean {
   return Boolean(bridge?.activeSessionId || bridge?.sessionState?.sessionId)
@@ -1032,6 +1030,22 @@ function responseToLine(response: WorkspaceCommandResponse): WorkspaceTerminalLi
       return createTerminalLine("success", "Prompt accepted by the live bridge")
     case "follow_up":
       return createTerminalLine("success", "Follow-up queued on the live bridge")
+    case "bash": {
+      const data = response.data as
+        | { output?: string; exitCode?: number; cancelled?: boolean }
+        | undefined
+      if (data?.output?.trim()) {
+        return createTerminalLine("output", data.output.trimEnd())
+      }
+      if (data?.cancelled) {
+        return createTerminalLine("system", "Bash command cancelled")
+      }
+      const exitCode = data?.exitCode ?? 0
+      return createTerminalLine(
+        exitCode === 0 ? "success" : "error",
+        exitCode === 0 ? "Bash command completed" : `Bash command exited with code ${exitCode}`,
+      )
+    }
     default:
       return createTerminalLine("success", `Command accepted (${response.command})`)
   }
@@ -1582,226 +1596,6 @@ export function getStatusPresentation(
   }
 }
 
-function createFreshnessBucket(): WorkspaceFreshnessBucket {
-  return {
-    status: "idle",
-    stale: false,
-    reloadCount: 0,
-    lastRequestedAt: null,
-    lastSuccessAt: null,
-    lastFailureAt: null,
-    lastFailure: null,
-    invalidatedAt: null,
-    invalidationReason: null,
-    invalidationSource: null,
-  }
-}
-
-function createInitialRecoverySummary(): WorkspaceRecoverySummary {
-  return {
-    visible: false,
-    tone: "healthy",
-    label: "Recovery summary pending",
-    detail: "Waiting for the first live workspace snapshot.",
-    validationCount: 0,
-    retryInProgress: false,
-    retryAttempt: 0,
-    autoRetryEnabled: false,
-    isCompacting: false,
-    currentUnitId: null,
-    freshness: "idle",
-    entrypointLabel: "Inspect recovery",
-    lastError: null,
-  }
-}
-
-function createInitialWorkspaceLiveFreshnessState(): WorkspaceLiveFreshnessState {
-  return {
-    auto: createFreshnessBucket(),
-    workspace: createFreshnessBucket(),
-    recovery: createFreshnessBucket(),
-    resumableSessions: createFreshnessBucket(),
-    gitSummary: createFreshnessBucket(),
-    sessionBrowser: createFreshnessBucket(),
-    sessionStats: createFreshnessBucket(),
-  }
-}
-
-function createInitialWorkspaceLiveState(): WorkspaceLiveState {
-  return {
-    auto: null,
-    workspace: null,
-    resumableSessions: [],
-    recoverySummary: createInitialRecoverySummary(),
-    freshness: createInitialWorkspaceLiveFreshnessState(),
-    softBootRefreshCount: 0,
-    targetedRefreshCount: 0,
-  }
-}
-
-function withFreshnessRequested(bucket: WorkspaceFreshnessBucket): WorkspaceFreshnessBucket {
-  return {
-    ...bucket,
-    status: "refreshing",
-    lastRequestedAt: new Date().toISOString(),
-    lastFailure: null,
-  }
-}
-
-function withFreshnessInvalidated(
-  bucket: WorkspaceFreshnessBucket,
-  reason: LiveStateInvalidationReason,
-  source: LiveStateInvalidationSource,
-): WorkspaceFreshnessBucket {
-  return {
-    ...bucket,
-    status: bucket.lastSuccessAt ? "stale" : bucket.status,
-    stale: true,
-    invalidatedAt: new Date().toISOString(),
-    invalidationReason: reason,
-    invalidationSource: source,
-  }
-}
-
-function withFreshnessSucceeded(bucket: WorkspaceFreshnessBucket): WorkspaceFreshnessBucket {
-  return {
-    ...bucket,
-    status: "fresh",
-    stale: false,
-    reloadCount: bucket.reloadCount + 1,
-    lastSuccessAt: new Date().toISOString(),
-    lastFailureAt: null,
-    lastFailure: null,
-  }
-}
-
-function withFreshnessFailed(bucket: WorkspaceFreshnessBucket, error: string): WorkspaceFreshnessBucket {
-  return {
-    ...bucket,
-    status: "error",
-    stale: true,
-    lastFailureAt: new Date().toISOString(),
-    lastFailure: error,
-  }
-}
-
-export function getLiveWorkspaceIndex(
-  state: Pick<WorkspaceStoreState, "boot" | "live">,
-): WorkspaceIndex | null {
-  return state.live.workspace ?? state.boot?.workspace ?? null
-}
-
-export function getLiveAutoDashboard(
-  state: Pick<WorkspaceStoreState, "boot" | "live">,
-): AutoDashboardData | null {
-  return state.live.auto ?? state.boot?.auto ?? null
-}
-
-export function getLiveResumableSessions(
-  state: Pick<WorkspaceStoreState, "boot" | "live">,
-): BootResumableSession[] {
-  return state.live.resumableSessions.length > 0 ? state.live.resumableSessions : state.boot?.resumableSessions ?? []
-}
-
-export function createWorkspaceRecoverySummary(state: Pick<WorkspaceStoreState, "boot" | "live">): WorkspaceRecoverySummary {
-  const bridge = state.boot?.bridge ?? null
-  const workspace = getLiveWorkspaceIndex(state)
-  const auto = getLiveAutoDashboard(state)
-  const validationCount = workspace?.validationIssues.length ?? 0
-  const retryInProgress = Boolean(bridge?.sessionState?.retryInProgress)
-  const retryAttempt = bridge?.sessionState?.retryAttempt ?? 0
-  const autoRetryEnabled = Boolean(bridge?.sessionState?.autoRetryEnabled)
-  const isCompacting = Boolean(bridge?.sessionState?.isCompacting)
-  const freshnessBucket = state.live.freshness.recovery
-  const freshness =
-    freshnessBucket.status === "error"
-      ? "error"
-      : freshnessBucket.stale
-        ? "stale"
-        : freshnessBucket.lastSuccessAt
-          ? "fresh"
-          : "idle"
-  const lastError = bridge?.lastError
-    ? {
-        message: bridge.lastError.message,
-        phase: bridge.lastError.phase,
-        at: bridge.lastError.at,
-      }
-    : null
-
-  let tone: WorkspaceRecoverySummary["tone"] = "healthy"
-  let label = "Recovery summary healthy"
-  let detail = "No retry, compaction, bridge, or validation recovery signals are active."
-
-  if (!workspace && !auto && !bridge) {
-    return createInitialRecoverySummary()
-  }
-
-  if (lastError || freshness === "error") {
-    tone = "danger"
-    label = "Recovery attention required"
-    detail = lastError?.message ?? freshnessBucket.lastFailure ?? "A targeted live refresh failed."
-  } else if (validationCount > 0) {
-    tone = "warning"
-    label = `Recovery summary: ${validationCount} validation issue${validationCount === 1 ? "" : "s"}`
-    detail = "Workspace validation surfaced issues that may need doctor or audit follow-up."
-  } else if (retryInProgress) {
-    tone = "warning"
-    label = `Recovery retry active (attempt ${Math.max(1, retryAttempt)})`
-    detail = "The live bridge is retrying the current unit after a transient failure."
-  } else if (isCompacting) {
-    tone = "warning"
-    label = "Recovery compaction active"
-    detail = "The live session is compacting context before continuing."
-  } else if (freshness === "stale") {
-    tone = "warning"
-    label = "Recovery summary stale"
-    detail = freshnessBucket.invalidationReason
-      ? `Waiting for a targeted refresh after ${freshnessBucket.invalidationReason.replaceAll("_", " ")}.`
-      : "Waiting for the next targeted refresh."
-  }
-
-  return {
-    visible: true,
-    tone,
-    label,
-    detail,
-    validationCount,
-    retryInProgress,
-    retryAttempt,
-    autoRetryEnabled,
-    isCompacting,
-    currentUnitId: auto?.currentUnit?.id ?? null,
-    freshness,
-    entrypointLabel: tone === "danger" || tone === "warning" ? "Inspect recovery" : "Review recovery",
-    lastError,
-  }
-}
-
-function applyBootToLiveState(
-  current: WorkspaceLiveState,
-  boot: WorkspaceBootPayload,
-  options: { soft?: boolean } = {},
-): WorkspaceLiveState {
-  const next: WorkspaceLiveState = {
-    ...current,
-    auto: boot.auto,
-    workspace: boot.workspace,
-    resumableSessions: boot.resumableSessions,
-    freshness: {
-      ...current.freshness,
-      auto: withFreshnessSucceeded(current.freshness.auto),
-      workspace: withFreshnessSucceeded(current.freshness.workspace),
-      recovery: withFreshnessSucceeded(current.freshness.recovery),
-      resumableSessions: withFreshnessSucceeded(current.freshness.resumableSessions),
-    },
-    softBootRefreshCount: current.softBootRefreshCount + (options.soft ? 1 : 0),
-  }
-
-  next.recoverySummary = createWorkspaceRecoverySummary({ boot, live: next })
-  return next
-}
-
 function createInitialState(): WorkspaceStoreState {
   return {
     bootStatus: "idle",
@@ -1853,13 +1647,18 @@ export class GSDWorkspaceStore {
   private state = createInitialState()
   private readonly listeners = new Set<() => void>()
   private readonly contextualTips = new ContextualTips()
+  private readonly eventStream = new WorkspaceEventStream({
+    canConnect: () => !this.disposed && !this.state.boot?.onboarding.locked,
+    streamUrl: () => appendAuthParam(this.buildUrl("/api/session/events")),
+    onOpen: ({ wasDisconnected }) => this.handleEventStreamOpen(wasDisconnected),
+    onMessage: (data) => this.handleEventStreamMessage(data),
+    onError: ({ nextConnectionState, changed }) => this.handleEventStreamError(nextConnectionState, changed),
+  })
   private bootPromise: Promise<void> | null = null
-  private eventSource: EventSource | null = null
   private onboardingPollTimer: ReturnType<typeof setInterval> | null = null
   private started = false
   private disposed = false
   private lastBridgeDigest: string | null = null
-  private lastStreamState: WorkspaceConnectionState = "idle"
   private commandTimeoutTimer: ReturnType<typeof setTimeout> | null = null
   private lastBootRefreshAt = 0
   private visibilityHandler: (() => void) | null = null
@@ -4051,6 +3850,9 @@ export class GSDWorkspaceStore {
     }
 
     switch (outcome.kind) {
+      case "bash":
+        await this.sendCommand(outcome.command, { displayInput: trimmed })
+        return outcome
       case "prompt":
       case "rpc": {
         const imagePayload = images?.map((i) => ({ type: "image" as const, data: i.data, mimeType: i.mimeType }))
@@ -4170,7 +3972,7 @@ export class GSDWorkspaceStore {
           live,
           connectionState: boot.onboarding.locked
             ? "idle"
-            : this.eventSource
+            : this.eventStream.isOpen()
               ? this.state.connectionState
               : "connecting",
           lastBridgeError: boot.bridge.lastError,
@@ -4869,71 +4671,66 @@ export class GSDWorkspaceStore {
   }
 
   private ensureEventStream(): void {
-    if (this.eventSource || this.disposed || this.state.boot?.onboarding.locked) return
-
-    const stream = new EventSource(appendAuthParam(this.buildUrl("/api/session/events")))
-    this.eventSource = stream
-
-    stream.onopen = () => {
-      const previousState = this.lastStreamState
-      const wasDisconnected = previousState === "reconnecting" || previousState === "disconnected" || previousState === "error"
-      if (wasDisconnected) {
-        this.patchState({
-          terminalLines: withTerminalLine(this.state.terminalLines, createTerminalLine("success", "Live event stream reconnected")),
-        })
-      }
-      this.lastStreamState = "connected"
-      this.patchState({ connectionState: "connected", lastClientError: null })
-      if (wasDisconnected) {
-        void this.refreshBoot({ soft: true })
-      }
-    }
-
-    stream.onmessage = (message) => {
-      try {
-        const parsed: unknown = JSON.parse(message.data)
-        if (!isWorkspaceEvent(parsed)) {
-          this.patchState({
-            lastClientError: "Malformed event received from stream",
-            terminalLines: withTerminalLine(this.state.terminalLines, createTerminalLine("error", "Malformed event received from stream")),
-          })
-          return
-        }
-        this.handleEvent(parsed)
-      } catch (error) {
-        const text = normalizeClientError(error)
-        this.patchState({
-          lastClientError: text,
-          terminalLines: withTerminalLine(this.state.terminalLines, createTerminalLine("error", `Failed to parse stream event — ${text}`)),
-        })
-      }
-    }
-
-    stream.onerror = () => {
-      const nextConnectionState = this.lastStreamState === "connected" ? "reconnecting" : "error"
-      if (nextConnectionState !== this.lastStreamState) {
-        this.patchState({
-          connectionState: nextConnectionState,
-          terminalLines: withTerminalLine(
-            this.state.terminalLines,
-            createTerminalLine(
-              nextConnectionState === "reconnecting" ? "system" : "error",
-              nextConnectionState === "reconnecting"
-                ? "Live event stream disconnected — retrying…"
-                : "Live event stream failed before connection was established",
-            ),
-          ),
-        })
-      } else {
-        this.patchState({ connectionState: nextConnectionState })
-      }
-      this.lastStreamState = nextConnectionState
-    }
+    this.eventStream.ensure()
   }
 
   private closeEventStream(): void {
-    this.eventSource?.close()
-    this.eventSource = null
+    this.eventStream.close()
+  }
+
+  private handleEventStreamOpen(wasDisconnected: boolean): void {
+    if (wasDisconnected) {
+      this.patchState({
+        terminalLines: withTerminalLine(this.state.terminalLines, createTerminalLine("success", "Live event stream reconnected")),
+      })
+    }
+    this.patchState({ connectionState: "connected", lastClientError: null })
+    if (wasDisconnected) {
+      void this.refreshBoot({ soft: true })
+    }
+  }
+
+  private handleEventStreamMessage(data: string): void {
+    try {
+      const parsed: unknown = JSON.parse(data)
+      if (!isWorkspaceEvent(parsed)) {
+        this.patchState({
+          lastClientError: "Malformed event received from stream",
+          terminalLines: withTerminalLine(this.state.terminalLines, createTerminalLine("error", "Malformed event received from stream")),
+        })
+        return
+      }
+      this.handleEvent(parsed)
+    } catch (error) {
+      const text = normalizeClientError(error)
+      this.patchState({
+        lastClientError: text,
+        terminalLines: withTerminalLine(this.state.terminalLines, createTerminalLine("error", `Failed to parse stream event — ${text}`)),
+      })
+    }
+  }
+
+  private handleEventStreamError(
+    nextConnectionState: Extract<WorkspaceConnectionState, "reconnecting" | "error">,
+    changed: boolean,
+  ): void {
+    if (changed) {
+      this.patchState({
+        connectionState: nextConnectionState,
+        terminalLines: withTerminalLine(
+          this.state.terminalLines,
+          createTerminalLine(
+            nextConnectionState === "reconnecting" ? "system" : "error",
+            nextConnectionState === "reconnecting"
+              ? "Live event stream disconnected — retrying…"
+              : "Live event stream failed before connection was established",
+          ),
+        ),
+      })
+      return
+    }
+
+    this.patchState({ connectionState: nextConnectionState })
   }
 
   private handleEvent(event: WorkspaceEvent): void {

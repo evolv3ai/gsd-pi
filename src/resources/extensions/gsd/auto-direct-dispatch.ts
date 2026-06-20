@@ -10,10 +10,9 @@ import type {
 
 import { deriveState } from "./state.js";
 import { loadFile } from "./files.js";
-import { isDbAvailable, getMilestoneSlices } from "./gsd-db.js";
-import { parseRoadmap } from "./parsers-legacy.js";
+import { isDbAvailable, getClosedSliceIds } from "./gsd-db.js";
 import {
-  resolveMilestoneFile, resolveSliceFile, relSliceFile,
+  resolveSliceFile, relSliceFile,
 } from "./paths.js";
 import {
   buildResearchSlicePrompt,
@@ -32,19 +31,29 @@ import { loadEffectiveGSDPreferences } from "./preferences.js";
 import type { MinimalModelRegistry } from "./context-budget.js";
 import { pauseAuto } from "./auto.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
-import {
-  getWorkflowTransportSupportError,
-  getRequiredWorkflowToolsForAutoUnit,
-} from "./workflow-mcp.js";
+import { getUnitWorkflowDispatchReadinessError } from "./tool-contract.js";
+
+export function parseDirectDispatchPhase(raw: string): { phase: string; milestoneId?: string } {
+  const tokens = raw.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return { phase: "" };
+  const phase = tokens[0].toLowerCase();
+  const milestoneToken = tokens.find((token, index) => index > 0 && /^M\d/i.test(token));
+  return {
+    phase,
+    milestoneId: milestoneToken?.replace(/[.,;:!?]+$/, ""),
+  };
+}
 
 export async function dispatchDirectPhase(
   ctx: ExtensionCommandContext,
   pi: ExtensionAPI,
   phase: string,
   base: string,
+  opts: { milestoneId?: string } = {},
 ): Promise<void> {
+  const parsed = parseDirectDispatchPhase(phase);
   const state = await deriveState(base);
-  const mid = state.activeMilestone?.id;
+  const mid = opts.milestoneId ?? parsed.milestoneId ?? state.activeMilestone?.id;
   const midTitle = state.activeMilestone?.title ?? "";
 
   if (!mid) {
@@ -60,7 +69,7 @@ export async function dispatchDirectPhase(
   // though the milestone's actual code lives in the worktree.
   const dispatchBase = resolveCanonicalMilestoneRoot(base, mid);
 
-  const normalized = phase.toLowerCase();
+  const normalized = parsed.phase;
   let unitType: string;
   let unitId: string;
   let prompt: string;
@@ -182,21 +191,9 @@ export async function dispatchDirectPhase(
 
     case "reassess":
     case "reassess-roadmap": {
-      // DB primary path — get completed slices, fall back to file parsing when DB has no data
-      let completedSliceIds: string[] = [];
-      if (isDbAvailable()) {
-        completedSliceIds = getMilestoneSlices(mid).filter(s => s.status === "complete").map(s => s.id);
-      }
-      if (completedSliceIds.length === 0) {
-        // File-based fallback: parse roadmap checkboxes
-        const roadmapPath = resolveMilestoneFile(dispatchBase, mid, "ROADMAP");
-        if (roadmapPath) {
-          const roadmapContent = await loadFile(roadmapPath);
-          if (roadmapContent) {
-            completedSliceIds = parseRoadmap(roadmapContent).slices.filter(s => s.done).map(s => s.id);
-          }
-        }
-      }
+      // DB-authoritative read (ADR-017) — markdown projections are never
+      // consulted for dispatch decisions. No DB rows means no completed slices.
+      const completedSliceIds = isDbAvailable() ? getClosedSliceIds(mid) : [];
       if (completedSliceIds.length === 0) {
         ctx.ui.notify("Cannot dispatch reassess-roadmap: no completed slices.", "warning");
         return;
@@ -222,20 +219,9 @@ export async function dispatchDirectPhase(
       // incomplete) slice. After slice completion, state.activeSlice advances
       // to the next incomplete slice, so we find the last done slice from the
       // roadmap instead (#1693).
-      let uatCompletedSliceIds: string[] = [];
-      if (isDbAvailable()) {
-        uatCompletedSliceIds = getMilestoneSlices(mid).filter(s => s.status === "complete").map(s => s.id);
-      }
-      if (uatCompletedSliceIds.length === 0) {
-        // File-based fallback: parse roadmap checkboxes
-        const roadmapPath = resolveMilestoneFile(dispatchBase, mid, "ROADMAP");
-        if (roadmapPath) {
-          const roadmapContent = await loadFile(roadmapPath);
-          if (roadmapContent) {
-            uatCompletedSliceIds = parseRoadmap(roadmapContent).slices.filter(s => s.done).map(s => s.id);
-          }
-        }
-      }
+      // DB-authoritative read (ADR-017) — no markdown fallback for dispatch
+      // decisions.
+      const uatCompletedSliceIds = isDbAvailable() ? getClosedSliceIds(mid) : [];
       if (uatCompletedSliceIds.length === 0) {
         ctx.ui.notify("Cannot dispatch run-uat: no completed slices.", "warning");
         return;
@@ -280,18 +266,15 @@ export async function dispatchDirectPhase(
       return;
   }
 
-  const compatibilityError = getWorkflowTransportSupportError(
-    ctx.model?.provider,
-    getRequiredWorkflowToolsForAutoUnit(unitType),
-    {
-      projectRoot,
-      surface: "direct phase dispatch",
-      unitType,
-      authMode: ctx.model?.provider ? ctx.modelRegistry.getProviderAuthMode(ctx.model.provider) : undefined,
-      baseUrl: ctx.model?.baseUrl,
-      activeTools: typeof pi.getActiveTools === "function" ? pi.getActiveTools() : [],
-    },
-  );
+  const compatibilityError = getUnitWorkflowDispatchReadinessError({
+    provider: ctx.model?.provider,
+    projectRoot,
+    surface: "direct phase dispatch",
+    unitType,
+    authMode: ctx.model?.provider ? ctx.modelRegistry.getProviderAuthMode(ctx.model.provider) : undefined,
+    baseUrl: ctx.model?.baseUrl,
+    activeTools: typeof pi.getActiveTools === "function" ? pi.getActiveTools() : [],
+  });
   if (compatibilityError) {
     ctx.ui.notify(compatibilityError, "error");
     return;

@@ -9,7 +9,7 @@
  * for the `gh` CLI body parameters.
  */
 
-import { buildPrEvidence } from "../gsd/pr-evidence.js";
+import { buildPullRequestEvidence } from "../gsd/pull-request-process.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -116,7 +116,7 @@ export function formatSlicePRBody(data: SliceData): string {
     .filter((issueNumber): issueNumber is number => typeof issueNumber === "number")
     .map((issueNumber) => `#${issueNumber}`);
 
-  return buildPrEvidence({
+  return buildPullRequestEvidence({
     milestoneId: data.id,
     subjectId: data.id,
     subjectKind: "slice",
@@ -267,7 +267,7 @@ export function formatSwarmLanePRBody(data: SwarmLanePRData): string {
     `### Transition risks\n${checkedList(data.transitionRisks, "No transition risks identified").join("\n")}`,
   ].filter(Boolean);
 
-  return buildPrEvidence({
+  return buildPullRequestEvidence({
     milestoneId: laneLabel,
     subjectId: laneLabel,
     subjectKind: "workflow",

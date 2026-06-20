@@ -101,7 +101,7 @@ export class Input implements Component, Focusable {
 		}
 
 		// Submit
-		if (kb.matches(data, "tui.input.submit") || data === "\n") {
+		if (kb.matches(data, "tui.input.submit")) {
 			if (this.onSubmit) this.onSubmit(this.value);
 			return;
 		}
@@ -328,7 +328,7 @@ export class Input implements Component, Focusable {
 		// Delete the previously yanked text (still at end of ring before rotation)
 		const prevText = this.killRing.peek() || "";
 		this.value = this.value.slice(0, this.cursor - prevText.length) + this.value.slice(this.cursor);
-		this.cursor -= prevText.length;
+		this.cursor = Math.max(0, this.cursor - prevText.length);
 
 		// Rotate and insert new entry
 		this.killRing.rotate();

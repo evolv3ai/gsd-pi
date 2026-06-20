@@ -6,6 +6,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 type AuthModule = typeof import('../../../web/lib/auth.ts')
+type AuthGuardModule = typeof import('../../../web/lib/auth-guard.ts')
 type ProxyAuthModule = typeof import('../../../web/lib/proxy-auth.ts')
 
 type FakeWindow = {
@@ -37,6 +38,10 @@ async function importAuth(caseName: string): Promise<AuthModule> {
 
 async function importProxyAuth(caseName: string): Promise<ProxyAuthModule> {
   return import(`../../../web/lib/proxy-auth.ts?case=${caseName}-${Date.now()}-${Math.random()}`)
+}
+
+async function importAuthGuard(caseName: string): Promise<AuthGuardModule> {
+  return import(`../../../web/lib/auth-guard.ts?case=${caseName}-${Date.now()}-${Math.random()}`)
 }
 
 function installBrowserState(options: {
@@ -174,14 +179,24 @@ test('storage events update auth headers and URL token parameters', async () => 
   }
 })
 
-test('authFetch short-circuits missing tokens and preserves explicit Authorization headers', async () => {
+test('authFetch forwards missing-token requests and preserves explicit Authorization headers', async () => {
   const missingTokenBrowser = installBrowserState()
+  const missingTokenCalls: Array<{ input: RequestInfo | URL; authorization: string | null }> = []
   try {
     const auth = await importAuth('missing-auth-fetch-token')
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers)
+      missingTokenCalls.push({ input, authorization: headers.get('Authorization') })
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }) as typeof fetch
+
     const response = await auth.authFetch('/api/status')
 
-    assert.equal(response.status, 401)
-    assert.deepEqual(await response.json(), { error: 'No auth token available' })
+    assert.equal(response.status, 200)
+    assert.deepEqual(missingTokenCalls, [{ input: '/api/status', authorization: null }])
   } finally {
     missingTokenBrowser.restore()
   }
@@ -204,6 +219,27 @@ test('authFetch short-circuits missing tokens and preserves explicit Authorizati
     assert.deepEqual(calls, [{ input: '/api/status', authorization: 'Bearer caller-token' }])
   } finally {
     browser.restore()
+  }
+})
+
+test('route auth guard allows disabled auth and rejects missing tokens when configured', async () => {
+  const previousToken = process.env.GSD_WEB_AUTH_TOKEN
+
+  try {
+    const { verifyAuthToken } = await importAuthGuard('auth-guard')
+
+    delete process.env.GSD_WEB_AUTH_TOKEN
+    assert.equal(verifyAuthToken(new Request('http://127.0.0.1:3888/api/shutdown')), null)
+
+    process.env.GSD_WEB_AUTH_TOKEN = 'expected'
+    assert.equal(verifyAuthToken(new Request('http://127.0.0.1:3888/api/shutdown', {
+      headers: { authorization: 'Bearer expected' },
+    })), null)
+
+    const response = verifyAuthToken(new Request('http://127.0.0.1:3888/api/shutdown'))
+    assert.equal(response?.status, 401)
+  } finally {
+    restoreEnv('GSD_WEB_AUTH_TOKEN', previousToken)
   }
 })
 

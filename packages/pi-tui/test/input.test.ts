@@ -1,6 +1,7 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
 import { Input } from "../src/components/input.ts";
+import { setKittyProtocolActive } from "../src/keys.ts";
 import { visibleWidth } from "../src/utils.ts";
 
 describe("Input component", () => {
@@ -23,6 +24,26 @@ describe("Input component", () => {
 
 		// Input is single-line, no backslash+Enter workaround
 		assert.strictEqual(submitted, "hello\\");
+	});
+
+	it("does not submit raw linefeed while Kitty protocol is active", () => {
+		const input = new Input();
+		let submitted: string | undefined;
+
+		input.onSubmit = (value) => {
+			submitted = value;
+		};
+
+		setKittyProtocolActive(true);
+		try {
+			input.setValue("pasted");
+			input.handleInput("\n");
+		} finally {
+			setKittyProtocolActive(false);
+		}
+
+		assert.strictEqual(submitted, undefined);
+		assert.strictEqual(input.getValue(), "pasted");
 	});
 
 	it("inserts backslash as regular character", () => {

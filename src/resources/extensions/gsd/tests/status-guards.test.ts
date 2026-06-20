@@ -9,7 +9,10 @@ import {
   isDeferredStatus,
   isInactiveStatus,
   isSkippedForDispatch,
+  toStatus,
+  RAW_CLOSED_STATUSES,
 } from '../status-guards.ts';
+import { TERMINAL_STATUS_SQL } from '../db/sql-constants.ts';
 
 test('isClosedStatus: "complete" returns true', () => {
   assert.equal(isClosedStatus('complete'), true);
@@ -94,4 +97,39 @@ test('isSkippedForDispatch does NOT skip pending/active/planned', () => {
   for (const s of ['pending', 'active', 'planned', 'queued']) {
     assert.equal(isSkippedForDispatch(s), false, `${s} should block dispatch ordering`);
   }
+});
+
+// ─── ADR-030: canonical Status vocabulary + normalization ──────────────────
+
+test('toStatus passes canonical values through unchanged', () => {
+  for (const s of ['pending', 'queued', 'active', 'parked', 'in_progress', 'blocked', 'complete', 'skipped', 'deferred']) {
+    assert.equal(toStatus(s), s, `${s} is canonical and should be returned verbatim`);
+  }
+});
+
+test('toStatus maps known aliases to canonical', () => {
+  assert.equal(toStatus('done'), 'complete');
+  assert.equal(toStatus('closed'), 'complete');
+  assert.equal(toStatus('planned'), 'pending');
+  assert.equal(toStatus('in-progress'), 'in_progress');
+});
+
+test('toStatus trims surrounding whitespace before matching', () => {
+  assert.equal(toStatus('  complete  '), 'complete');
+  assert.equal(toStatus(' done '), 'complete');
+});
+
+test('toStatus quarantines unknown values verbatim (tolerant read, no throw)', () => {
+  assert.equal(toStatus('weird-legacy-value'), 'weird-legacy-value');
+});
+
+test('RAW_CLOSED_STATUSES is the single source: every member is closed', () => {
+  for (const s of RAW_CLOSED_STATUSES) {
+    assert.equal(isClosedStatus(s), true, `${s} is in RAW_CLOSED_STATUSES so must be closed`);
+  }
+});
+
+test('TERMINAL_STATUS_SQL is derived from RAW_CLOSED_STATUSES and renders identically', () => {
+  assert.equal(TERMINAL_STATUS_SQL, "'complete', 'done', 'skipped', 'closed'");
+  assert.equal(TERMINAL_STATUS_SQL, RAW_CLOSED_STATUSES.map((s) => `'${s}'`).join(', '));
 });

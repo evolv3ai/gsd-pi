@@ -76,11 +76,22 @@ test("plan-slice prompt: compact planning gates survive template substitution", 
   assert.ok(result.includes("Bias toward \"roadmap is fine.\""), "roadmap reassessment brake should remain visible");
   assert.ok(result.includes("Self-audit before finishing"), "self-audit gate should remain visible");
   assert.ok(result.includes("Quality gates: non-trivial slices/tasks include specific Q3-Q7 coverage where applicable."));
-  assert.ok(result.includes("C:\\Users\\Test\\.gsd\\agent\\extensions\\gsd\\templates\\plan.md"));
-  assert.ok(result.includes("C:\\Users\\Test\\.gsd\\agent\\extensions\\gsd\\templates\\task-plan.md"));
+  assert.ok(result.includes("Use the inlined Output Template sections already present in this prompt."));
+  assert.ok(result.includes("Do not read template files from disk."));
+  assert.ok(!result.includes("C:\\Users\\Test\\.gsd\\agent\\extensions\\gsd\\templates\\plan.md"));
+  assert.ok(!result.includes("C:\\Users\\Test\\.gsd\\agent\\extensions\\gsd\\templates\\task-plan.md"));
   assert.ok(!result.includes("{{templatesDir}}/plan.md"));
   assert.ok(!result.includes("{{templatesDir}}/task-plan.md"));
   assert.ok(!result.includes("{{"));
+});
+
+test("plan-slice prompt: absence checks use negated quiet searches", () => {
+  const result = loadPrompt("plan-slice", { ...BASE_VARS, commitInstruction: "Do not commit." });
+  assert.ok(result.includes("For absence checks"));
+  assert.ok(result.includes("`! grep -q 'pattern' file`"));
+  assert.ok(result.includes("`! rg -q 'pattern' file`"));
+  assert.ok(result.includes("do not use `grep -c` or `rg -c`"));
+  assert.ok(result.includes("count commands exit 1 when they find zero matches"));
 });
 
 test("plan-slice prompt: footer references gsd_plan_slice tool, not direct write", () => {
@@ -126,6 +137,7 @@ test("skillActivation default leaves no unresolved placeholder", () => {
     carryForwardSection: "Carry forward",
     resumeSection: "Resume",
     priorTaskLines: "- (no prior tasks)",
+    onDemandContext: "",
     templatesDir: join(fixtureRoot, "templates"),
     taskSummaryPath: join(fixtureRoot, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01-SUMMARY.md"),
     inlinedTemplates: "Template",
@@ -152,6 +164,7 @@ test("custom skillActivation is substituted into execute-task", () => {
     carryForwardSection: "Carry forward",
     resumeSection: "Resume",
     priorTaskLines: "- (no prior tasks)",
+    onDemandContext: "",
     templatesDir: join(fixtureRoot, "templates"),
     taskSummaryPath: join(fixtureRoot, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01-SUMMARY.md"),
     inlinedTemplates: "Template",

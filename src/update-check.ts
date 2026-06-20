@@ -1,18 +1,24 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { execSync } from 'node:child_process'
-import { dirname, join, resolve as resolvePath, sep } from 'node:path'
+import { execSync, execFileSync } from 'node:child_process'
+import { dirname, join, resolve as resolvePath, sep, win32 as pathWin32 } from 'node:path'
 import { homedir } from 'node:os'
+import { createRequire } from 'node:module'
 import chalk from 'chalk'
 import { appRoot } from './app-paths.js'
 import { isPnpmInstall } from './resources/shared/package-manager-detection.js'
 
 export { isPnpmInstall }
 
+export const GSD_PI_PACKAGE_NAME = '@opengsd/gsd-pi'
+export const GSD_BROWSER_PACKAGE_NAME = '@opengsd/gsd-browser'
+
 const CACHE_FILE = join(appRoot, '.update-check')
-const NPM_PACKAGE_NAME = '@opengsd/gsd-pi'
+const GSD_BROWSER_CACHE_FILE = join(appRoot, '.update-check-gsd-browser')
+const NPM_PACKAGE_NAME = GSD_PI_PACKAGE_NAME
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000 // 24 hours
 const FETCH_TIMEOUT_MS = 5000
-const DEFAULT_REGISTRY_URL = `https://registry.npmjs.org/@opengsd%2fgsd-pi/latest`
+export const DEFAULT_REGISTRY_URL = `https://registry.npmjs.org/@opengsd%2fgsd-pi/latest`
+export const GSD_BROWSER_REGISTRY_URL = `https://registry.npmjs.org/@opengsd%2fgsd-browser/latest`
 
 interface UpdateCheckCache {
   lastCheck: number
@@ -65,6 +71,44 @@ function normalizeLatestVersion(version: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null
 }
 
+export function resolveInstalledPackageVersion(packageName: string): string | null {
+  try {
+    const requireFromHere = createRequire(import.meta.url)
+    const packageJsonPath = requireFromHere.resolve(`${packageName}/package.json`)
+    const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf-8')) as { version?: unknown }
+    return normalizeLatestVersion(pkg.version)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Resolves the gsd-browser version from PATH (via `gsd-browser --version`).
+ * Respects GSD_BROWSER_PATH_VERSION env override for testing.
+ * Returns null if gsd-browser is not on PATH or times out.
+ */
+export function resolveGsdBrowserPathVersion(env: NodeJS.ProcessEnv = process.env): string | null {
+  const explicit = env.GSD_BROWSER_PATH_VERSION?.trim()
+  if (explicit) return explicit.match(/\b(\d+\.\d+\.\d+)\b/)?.[1] ?? null
+  try {
+    const out = execFileSync('gsd-browser', ['--version'], {
+      encoding: 'utf-8',
+      env,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
+    })
+    return out.match(/\b(\d+\.\d+\.\d+)\b/)?.[1] ?? null
+  } catch {
+    return null
+  }
+}
+
+export function pickHigherVersion(a: string | null, b: string | null): string | null {
+  if (!a) return b
+  if (!b) return a
+  return compareSemver(a, b) >= 0 ? a : b
+}
+
 export async function fetchLatestVersionFromRegistry(
   registryUrl: string = DEFAULT_REGISTRY_URL,
   fetchTimeoutMs: number = FETCH_TIMEOUT_MS,
@@ -108,15 +152,53 @@ export function isBunInstall(argv1: string | undefined = process.argv[1]): boole
 
 export function resolveInstallCommand(
   pkg: string,
-  options: { argv1?: string; env?: NodeJS.ProcessEnv } = {},
+  options: {
+    argv1?: string
+    env?: NodeJS.ProcessEnv
+    platform?: NodeJS.Platform
+    existsFn?: (path: string) => boolean
+  } = {},
 ): string {
   if (isBunInstall(options.argv1)) return `bun add -g ${pkg}`
   if (isPnpmInstall(options.argv1, options.env)) return `pnpm add -g ${pkg}`
+  const npmPrefix = resolveWindowsNpmGlobalPrefix(options.argv1, options.platform, options.existsFn)
+  if (npmPrefix) return `npm --prefix ${quoteWindowsArg(npmPrefix)} install -g ${pkg}`
   return `npm install -g ${pkg}`
 }
 
-function printUpdateBanner(current: string, latest: string): void {
-  const installCmd = resolveInstallCommand('@opengsd/gsd-pi@latest')
+function resolveWindowsNpmGlobalPrefix(
+  argv1: string | undefined = process.argv[1],
+  platform: NodeJS.Platform = process.platform,
+  existsFn: (path: string) => boolean = existsSync,
+): string | null {
+  if (platform !== 'win32' || !argv1) return null
+  const normalized = pathWin32.normalize(argv1)
+  const marker = `${pathWin32.sep}node_modules${pathWin32.sep}`
+  const index = normalized.toLowerCase().lastIndexOf(marker)
+  if (index <= 0) return null
+  const prefix = normalized.slice(0, index)
+  // Verify this is a real npm global prefix: such a directory always contains
+  // npm's own bin shim (`npm.cmd`) as a sibling of `node_modules/`. Local
+  // project `node_modules/`, npx caches, and other non-global layouts do not,
+  // so without this check `--prefix` would target the wrong directory.
+  if (!existsFn(pathWin32.join(prefix, 'npm.cmd'))) return null
+  return prefix
+}
+
+function quoteWindowsArg(value: string): string {
+  return `"${value.replace(/"/g, '\\"')}"`
+}
+
+function printUpdateBanner(current: string, latest: string, packageName: string = GSD_PI_PACKAGE_NAME): void {
+  if (packageName === GSD_BROWSER_PACKAGE_NAME) {
+    process.stderr.write(
+      `  ${chalk.yellow('gsd-browser update available:')} ${chalk.dim(`v${current}`)} → ${chalk.bold(`v${latest}`)}\n` +
+      `  ${chalk.dim('Run')} gsd update browser ${chalk.dim('to upgrade browser automation')}\n\n`,
+    )
+    return
+  }
+
+  const installCmd = resolveInstallCommand(`${GSD_PI_PACKAGE_NAME}@latest`)
   process.stderr.write(
     `  ${chalk.yellow('Update available:')} ${chalk.dim(`v${current}`)} → ${chalk.bold(`v${latest}`)}\n` +
     `  ${chalk.dim('Run')} ${installCmd} ${chalk.dim('or')} /gsd upgrade ${chalk.dim('to upgrade')}\n\n`,
@@ -124,12 +206,32 @@ function printUpdateBanner(current: string, latest: string): void {
 }
 
 export interface UpdateCheckOptions {
+  packageName?: string
   currentVersion?: string
   cachePath?: string
   registryUrl?: string
   checkIntervalMs?: number
   fetchTimeoutMs?: number
-  onUpdate?: (current: string, latest: string) => void
+  onUpdate?: (current: string, latest: string, packageName: string) => void
+}
+
+function defaultCurrentVersion(packageName: string): string | null {
+  if (packageName === GSD_PI_PACKAGE_NAME) {
+    return process.env.GSD_VERSION || '0.0.0'
+  }
+  const bundled = resolveInstalledPackageVersion(packageName)
+  if (packageName === GSD_BROWSER_PACKAGE_NAME) {
+    return pickHigherVersion(bundled, resolveGsdBrowserPathVersion())
+  }
+  return bundled
+}
+
+function defaultCachePath(packageName: string): string {
+  return packageName === GSD_BROWSER_PACKAGE_NAME ? GSD_BROWSER_CACHE_FILE : CACHE_FILE
+}
+
+function defaultRegistryUrl(packageName: string): string {
+  return packageName === GSD_BROWSER_PACKAGE_NAME ? GSD_BROWSER_REGISTRY_URL : DEFAULT_REGISTRY_URL
 }
 
 /**
@@ -137,18 +239,21 @@ export interface UpdateCheckOptions {
  * caches the result, and prints a banner if a newer version is available.
  */
 export async function checkForUpdates(options: UpdateCheckOptions = {}): Promise<void> {
-  const currentVersion = options.currentVersion || process.env.GSD_VERSION || '0.0.0'
-  const cachePath = options.cachePath || CACHE_FILE
-  const registryUrl = options.registryUrl || DEFAULT_REGISTRY_URL
+  const packageName = options.packageName || GSD_PI_PACKAGE_NAME
+  const currentVersion = options.currentVersion || defaultCurrentVersion(packageName)
+  if (!currentVersion) return
+
+  const cachePath = options.cachePath || defaultCachePath(packageName)
+  const registryUrl = options.registryUrl || defaultRegistryUrl(packageName)
   const checkIntervalMs = options.checkIntervalMs ?? CHECK_INTERVAL_MS
   const fetchTimeoutMs = options.fetchTimeoutMs ?? FETCH_TIMEOUT_MS
   const onUpdate = options.onUpdate || printUpdateBanner
 
   // Check cache — skip network if checked recently
-  const cache = readUpdateCache(cachePath)
+  const cache = readUpdateCache(cachePath, packageName)
   if (cache && Date.now() - cache.lastCheck < checkIntervalMs) {
     if (compareSemver(cache.latestVersion, currentVersion) > 0) {
-      onUpdate(currentVersion, cache.latestVersion)
+      onUpdate(currentVersion, cache.latestVersion, packageName)
     }
     return
   }
@@ -157,14 +262,21 @@ export async function checkForUpdates(options: UpdateCheckOptions = {}): Promise
     const latestVersion = await fetchLatestVersionFromRegistry(registryUrl, fetchTimeoutMs)
     if (!latestVersion) return
 
-    writeUpdateCache({ lastCheck: Date.now(), latestVersion }, cachePath)
+    writeUpdateCache({ lastCheck: Date.now(), latestVersion }, cachePath, packageName)
 
     if (compareSemver(latestVersion, currentVersion) > 0) {
-      onUpdate(currentVersion, latestVersion)
+      onUpdate(currentVersion, latestVersion, packageName)
     }
   } catch {
     // Network error or timeout — silently ignore, don't block startup
   }
+}
+
+export async function checkForGsdBrowserUpdates(options: UpdateCheckOptions = {}): Promise<void> {
+  await checkForUpdates({
+    ...options,
+    packageName: GSD_BROWSER_PACKAGE_NAME,
+  })
 }
 
 const PROMPT_TIMEOUT_MS = 30_000

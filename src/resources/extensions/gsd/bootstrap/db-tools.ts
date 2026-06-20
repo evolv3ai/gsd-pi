@@ -12,6 +12,7 @@ import { logError } from "../workflow-logger.js";
 import { getErrorMessage } from "../error-utils.js";
 import { incrementLegacyTelemetry } from "../legacy-telemetry.js";
 import { prepareSaveGateResultArguments } from "../tools/save-gate-result-args.js";
+import { aliasesForWorkflowTool } from "../workflow-tool-surface.js";
 
 async function loadWorkflowExecutors(): Promise<typeof import("../tools/workflow-tool-executors.js")> {
   return importWorkflowExecutorsModule();
@@ -53,6 +54,14 @@ function registerAlias(pi: ExtensionAPI, toolDef: any, aliasName: string, canoni
   });
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- toolDef shape matches ToolDefinition but varies by schema
+function registerWorkflowTool(pi: ExtensionAPI, toolDef: any): void {
+  pi.registerTool(toolDef);
+  for (const alias of aliasesForWorkflowTool(toolDef.name)) {
+    registerAlias(pi, toolDef, alias, toolDef.name);
+  }
+}
+
 function requirementRootWriteGuard(operation: string, basePath: string): { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown>; isError: true } | null {
   const guard = shouldBlockRootArtifactSaveInSnapshot(loadWriteGateSnapshot(basePath), "REQUIREMENTS");
   if (!guard.block) return null;
@@ -78,6 +87,9 @@ function readDetails(result: any): any {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- result shape varies by tool
 function formatToolErrorText(result: any, details: any): string {
+  if (typeof details?.displayReason === "string" && details.displayReason) {
+    return details.displayReason;
+  }
   const message = details?.error
     ?? result?.content?.find((entry: { type?: string; text?: string }) => entry.type === "text")?.text
     ?? "unknown";
@@ -168,8 +180,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     },
   };
 
-  pi.registerTool(decisionSaveTool);
-  registerAlias(pi, decisionSaveTool, "gsd_save_decision", "gsd_decision_save");
+  registerWorkflowTool(pi, decisionSaveTool);
 
   // ─── gsd_requirement_update (formerly gsd_update_requirement) ───────────
 
@@ -249,8 +260,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     },
   };
 
-  pi.registerTool(requirementUpdateTool);
-  registerAlias(pi, requirementUpdateTool, "gsd_update_requirement", "gsd_requirement_update");
+  registerWorkflowTool(pi, requirementUpdateTool);
 
   // ─── gsd_requirement_save ─────────────────────────────────────────────
 
@@ -352,8 +362,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     },
   };
 
-  pi.registerTool(requirementSaveTool);
-  registerAlias(pi, requirementSaveTool, "gsd_save_requirement", "gsd_requirement_save");
+  registerWorkflowTool(pi, requirementSaveTool);
 
   // ─── gsd_summary_save (formerly gsd_save_summary) ──────────────────────
 
@@ -410,8 +419,96 @@ export function registerDbTools(pi: ExtensionAPI): void {
     },
   };
 
-  pi.registerTool(summarySaveTool);
-  registerAlias(pi, summarySaveTool, "gsd_save_summary", "gsd_summary_save");
+  registerWorkflowTool(pi, summarySaveTool);
+
+  // ─── gsd_uat_result_save ─────────────────────────────────────────────────
+
+  const uatResultSaveExecute = async (_toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
+    const { executeUatResultSave } = await loadWorkflowExecutors();
+    return executeUatResultSave(params, resolveWorkflowToolBasePath(_ctx, params));
+  };
+
+  const uatEvidenceRef = Type.Object({
+    kind: StringEnum(["gsd_uat_exec", "gsd_exec", "screenshot", "log", "url", "browser"], { description: "Evidence kind" }),
+    ref: Type.String({ description: "Evidence ID, approved .gsd path, or URL" }),
+    note: Type.Optional(Type.String({ description: "Short evidence note" })),
+    unitType: Type.Optional(Type.String({ description: "Unit that produced the evidence" })),
+    tool: Type.Optional(Type.String({ description: "Tool that produced the evidence" })),
+    executionId: Type.Optional(Type.String({ description: "Stable execution or artifact id" })),
+  });
+
+  const uatCheck = Type.Object({
+    id: Type.String({ description: "Stable check ID from the UAT spec" }),
+    description: Type.String({ description: "Check description" }),
+    mode: StringEnum(["artifact", "runtime", "browser", "human-follow-up"], { description: "Evidence mode" }),
+    result: StringEnum(["PASS", "FAIL", "NEEDS-HUMAN"], { description: "Check result" }),
+    evidence: Type.Optional(Type.Array(uatEvidenceRef, { description: "Objective evidence references" })),
+    notes: Type.Optional(Type.String({ description: "Observed result, failure notes, or human instruction" })),
+    nonAutomatable: Type.Optional(Type.Boolean({ description: "True when the check is explicitly non-automatable" })),
+  });
+
+  const toolPresentationBlock = Type.Object({
+    surface: Type.Optional(StringEnum(["provider-tools", "claude-code-sdk", "mcp", "hybrid"], { description: "Tool presentation surface" })),
+    model: Type.Optional(Type.Object({
+      provider: Type.Optional(Type.String()),
+      api: Type.Optional(Type.String()),
+      id: Type.Optional(Type.String()),
+    })),
+    presentedTools: Type.Optional(Type.Array(Type.String(), { description: "Tool names actually presented to the model" })),
+    blockedTools: Type.Optional(Type.Array(Type.Object({
+      name: Type.String(),
+      reason: Type.String(),
+    }), { description: "Tool names blocked from the model with reasons" })),
+    aliases: Type.Optional(Type.Array(Type.Object({
+      requested: Type.String(),
+      canonical: Type.String(),
+    }))),
+    fallbackToolsUsed: Type.Optional(Type.Array(Type.String())),
+    toolPresentationPlanId: Type.Optional(Type.String()),
+    notes: Type.Optional(Type.String()),
+  });
+
+  const uatResultSaveTool = {
+    name: "gsd_uat_result_save",
+    label: "Save UAT Result",
+    description:
+      "Save a structured UAT result for a slice. Validates evidence, writes the ASSESSMENT artifact, " +
+      "records attempt history, and saves the aggregate UAT gate result.",
+    promptSnippet: "Save structured UAT checks, evidence, verdict, and tool-presentation proof",
+    promptGuidelines: [
+      "Call gsd_uat_result_save once after all UAT checks have been executed.",
+      "Every PASS or FAIL check must cite objective evidence, preferably a gsd_uat_exec evidence ID.",
+      "Include the presented and blocked tool set in presentation so tool timing is auditable.",
+      "Do not use raw gsd_summary_save as a substitute for UAT results.",
+    ],
+    parameters: Type.Object({
+      milestoneId: Type.Optional(Type.String({ description: "Milestone ID (e.g. M001)" })),
+      sliceId: Type.Optional(Type.String({ description: "Slice ID (e.g. S01)" })),
+      uatType: Type.Optional(Type.String({ description: "Declared UAT mode" })),
+      verdict: Type.Optional(Type.String({ description: "Overall UAT verdict: PASS, FAIL, or PARTIAL" })),
+      checks: Type.Optional(Type.Array(uatCheck, { description: "Structured check results" })),
+      presentation: Type.Optional(toolPresentationBlock),
+      notes: Type.Optional(Type.String({ description: "Overall verdict rationale" })),
+      attempt: Type.Optional(Type.String({ description: "Attempt number or auto" })),
+      previousAttemptId: Type.Optional(Type.String({ description: "Prior attempt ID, when retrying" })),
+    }),
+    execute: uatResultSaveExecute,
+    renderCall(args: any, theme: any) {
+      let text = theme.fg("toolTitle", theme.bold("uat_result_save "));
+      text += theme.fg("accent", `${args.milestoneId ?? "?"}/${args.sliceId ?? "?"}`);
+      if (args.verdict) text += theme.fg("dim", ` → ${args.verdict}`);
+      return new Text(text, 0, 0);
+    },
+    renderResult(result: any, _options: any, theme: any) {
+      const d = readDetails(result);
+      if (result.isError || d?.error) {
+        return new Text(theme.fg("error", formatToolErrorText(result, d)), 0, 0);
+      }
+      return new Text(theme.fg("success", `UAT ${d?.sliceId ?? ""}: ${d?.verdict ?? "saved"}`), 0, 0);
+    },
+  };
+
+  registerWorkflowTool(pi, uatResultSaveTool);
 
   // ─── gsd_milestone_generate_id (formerly gsd_generate_milestone_id) ────
 
@@ -500,8 +597,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     },
   };
 
-  pi.registerTool(milestoneGenerateIdTool);
-  registerAlias(pi, milestoneGenerateIdTool, "gsd_generate_milestone_id", "gsd_milestone_generate_id");
+  registerWorkflowTool(pi, milestoneGenerateIdTool);
 
   // ─── gsd_plan_milestone (gsd_milestone_plan alias) ─────────────────────
 
@@ -572,8 +668,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     execute: planMilestoneExecute,
   };
 
-  pi.registerTool(planMilestoneTool);
-  registerAlias(pi, planMilestoneTool, "gsd_milestone_plan", "gsd_plan_milestone");
+  registerWorkflowTool(pi, planMilestoneTool);
 
   // ─── gsd_plan_slice (gsd_slice_plan alias) ─────────────────────────────
 
@@ -607,7 +702,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
         files: Type.Array(Type.String(), { description: "Array<string> of files likely touched; pass [\"path\"] or [], never a single string" }),
         verify: Type.String({ description: "Verification command or block" }),
         inputs: Type.Array(Type.String(), { description: "Array<string> of input files or references; pass [\"path\"] or [], never a single string" }),
-        expectedOutput: Type.Array(Type.String(), { description: "Array<string> of expected output files or artifacts; pass [\"path\"] or [], never a single string" }),
+        expectedOutput: Type.Array(Type.String(), { description: "Array<string> of files this task creates or overwrites; pass [\"path\"] or [], never prose or a single string" }),
         observabilityImpact: Type.Optional(Type.String({ description: "Task observability impact" })),
       }), { description: "Planned tasks for the slice" }),
       // ── Enrichment metadata (optional — defaults to empty) ────────────
@@ -622,8 +717,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     execute: planSliceExecute,
   };
 
-  pi.registerTool(planSliceTool);
-  registerAlias(pi, planSliceTool, "gsd_slice_plan", "gsd_plan_slice");
+  registerWorkflowTool(pi, planSliceTool);
 
   // ─── gsd_plan_task (gsd_task_plan alias) ───────────────────────────────
 
@@ -687,7 +781,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
       files: Type.Array(Type.String(), { description: "Array<string> of files likely touched; pass [\"path\"] or [], never a single string" }),
       verify: Type.String({ description: "Verification command or block" }),
       inputs: Type.Array(Type.String(), { description: "Array<string> of input files or references; pass [\"path\"] or [], never a single string" }),
-      expectedOutput: Type.Array(Type.String(), { description: "Array<string> of expected output files or artifacts; pass [\"path\"] or [], never a single string" }),
+      expectedOutput: Type.Array(Type.String(), { description: "Array<string> of files this task creates or overwrites; pass [\"path\"] or [], never prose or a single string" }),
       observabilityImpact: Type.Optional(Type.String({ description: "Task observability impact" })),
       // Single-writer v3 audit trail (Stream 2): caller-provided actor identity + causation.
       actorName: Type.Optional(Type.String({ description: "Caller-provided actor identity for the audit trail (e.g. 'executor-01', 'gsd-orchestrator')" })),
@@ -696,8 +790,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     execute: planTaskExecute,
   };
 
-  pi.registerTool(planTaskTool);
-  registerAlias(pi, planTaskTool, "gsd_task_plan", "gsd_plan_task");
+  registerWorkflowTool(pi, planTaskTool);
 
   // ─── gsd_task_complete (gsd_complete_task alias) ────────────────────────
 
@@ -746,7 +839,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
         recommendation: Type.String({ description: "Option id the executor recommends." }),
         recommendationRationale: Type.String({ description: "Why the recommendation — 1–2 sentences." }),
         continueWithDefault: Type.Boolean({
-          description: "When true, loop continues (artifact logged for later review). When false, auto-mode pauses until the user resolves via /gsd escalate resolve.",
+          description: "When true, the recommendation is recorded as the default, but auto-mode still pauses until the user resolves via /gsd escalate resolve.",
         }),
       }, { description: "ADR-011 Phase 2: optional escalation payload. Only honored when phases.mid_execution_escalation is true." })),
       verificationEvidence: Type.Optional(Type.Array(
@@ -765,8 +858,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     execute: taskCompleteExecute,
   };
 
-  pi.registerTool(taskCompleteTool);
-  registerAlias(pi, taskCompleteTool, "gsd_complete_task", "gsd_task_complete");
+  registerWorkflowTool(pi, taskCompleteTool);
 
   // ─── gsd_slice_complete (gsd_complete_slice alias) ─────────────────────
 
@@ -795,7 +887,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
       sliceTitle: Type.String({ description: "Title of the slice" }),
       oneLiner: Type.String({ description: "One-line summary of what the slice accomplished" }),
       narrative: Type.String({ description: "Detailed narrative of what happened across all tasks" }),
-      verification: Type.String({ description: "What was verified across all tasks" }),
+      verification: Type.Optional(Type.String({ description: "What was verified across all tasks — if omitted, summary records verification as passed without detail." })),
       uatContent: Type.String({ description: "UAT test content (markdown body)" }),
       // ── Enrichment metadata (optional — defaults to empty) ────────────
       deviations: Type.Optional(Type.String({ description: "Deviations from the slice plan, or 'None.'" })),
@@ -851,8 +943,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     execute: sliceCompleteExecute,
   };
 
-  pi.registerTool(sliceCompleteTool);
-  registerAlias(pi, sliceCompleteTool, "gsd_complete_slice", "gsd_slice_complete");
+  registerWorkflowTool(pi, sliceCompleteTool);
 
   // ─── gsd_skip_slice (#3477 / #3487) ───────────────────────────────────
 
@@ -924,7 +1015,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     }
   };
 
-  pi.registerTool({
+  registerWorkflowTool(pi, {
     name: "gsd_skip_slice",
     label: "Skip Slice",
     description:
@@ -989,8 +1080,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     execute: milestoneCompleteExecute,
   };
 
-  pi.registerTool(milestoneCompleteTool);
-  registerAlias(pi, milestoneCompleteTool, "gsd_milestone_complete", "gsd_complete_milestone");
+  registerWorkflowTool(pi, milestoneCompleteTool);
 
   // ─── gsd_validate_milestone (gsd_milestone_validate alias) ─────────────
 
@@ -1009,7 +1099,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     promptGuidelines: [
       "Use gsd_validate_milestone when all slices are done and the milestone needs validation before completion.",
       "Parameters: milestoneId, verdict, remediationRound, successCriteriaChecklist, sliceDeliveryAudit, crossSliceIntegration, requirementCoverage, verificationClasses (optional), verdictRationale, remediationPlan (optional).",
-      "If verification classes were planned, verificationClasses must include canonical class rows using the exact class names Contract, Integration, Operational, and UAT when present in planning.",
+      "If verification classes were planned, verificationClasses must be a complete canonical table with one row for every applicable planned class using the exact class names Contract, Integration, Operational, and UAT. Do not submit a partial table.",
       "Planned verification text marked as none/not required/not applicable/N/A (including suffixed variants such as 'not required - backend-only') is treated as not applicable and does not require a class row.",
       "If verdict is 'needs-remediation', also provide remediationPlan and use gsd_reassess_roadmap to add remediation slices to the roadmap.",
       "On success, returns validationPath where VALIDATION.md was written.",
@@ -1022,15 +1112,14 @@ export function registerDbTools(pi: ExtensionAPI): void {
       sliceDeliveryAudit: Type.String({ description: "Markdown table auditing each slice's claimed vs delivered output" }),
       crossSliceIntegration: Type.String({ description: "Markdown describing any cross-slice boundary mismatches" }),
       requirementCoverage: Type.String({ description: "Markdown describing any unaddressed requirements" }),
-      verificationClasses: Type.Optional(Type.String({ description: "Markdown describing verification class compliance and gaps using canonical class names (Contract, Integration, Operational, UAT) for each applicable planned class" })),
+      verificationClasses: Type.Optional(Type.String({ description: "Complete markdown table describing verification class compliance and gaps; include one canonical row for every applicable planned class (Contract, Integration, Operational, UAT)" })),
       verdictRationale: Type.String({ description: "Why this verdict was chosen" }),
       remediationPlan: Type.Optional(Type.String({ description: "Remediation plan (required if verdict is needs-remediation)" })),
     }),
     execute: milestoneValidateExecute,
   };
 
-  pi.registerTool(milestoneValidateTool);
-  registerAlias(pi, milestoneValidateTool, "gsd_milestone_validate", "gsd_validate_milestone");
+  registerWorkflowTool(pi, milestoneValidateTool);
 
   // ─── gsd_replan_slice (gsd_slice_replan alias) ─────────────────────────
 
@@ -1068,7 +1157,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
           files: Type.Array(Type.String(), { description: "Files likely touched" }),
           verify: Type.String({ description: "Verification command or block" }),
           inputs: Type.Array(Type.String(), { description: "Input files or references" }),
-          expectedOutput: Type.Array(Type.String(), { description: "Expected output files or artifacts" }),
+          expectedOutput: Type.Array(Type.String(), { description: "Files this task creates or overwrites" }),
         }),
         { description: "Tasks to upsert (update existing or insert new)" },
       ),
@@ -1080,8 +1169,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     execute: replanSliceExecute,
   };
 
-  pi.registerTool(replanSliceTool);
-  registerAlias(pi, replanSliceTool, "gsd_slice_replan", "gsd_replan_slice");
+  registerWorkflowTool(pi, replanSliceTool);
 
   // ─── gsd_reassess_roadmap (gsd_roadmap_reassess alias) ─────────────────
 
@@ -1139,8 +1227,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     execute: reassessRoadmapExecute,
   };
 
-  pi.registerTool(reassessRoadmapTool);
-  registerAlias(pi, reassessRoadmapTool, "gsd_roadmap_reassess", "gsd_reassess_roadmap");
+  registerWorkflowTool(pi, reassessRoadmapTool);
 
   // ─── gsd_task_reopen (gsd_reopen_task alias) ───────────────────────────
   // Single-writer v3, Stream 3: reversibility tools for closed units.
@@ -1207,8 +1294,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     execute: reopenTaskExecute,
   };
 
-  pi.registerTool(reopenTaskTool);
-  registerAlias(pi, reopenTaskTool, "gsd_reopen_task", "gsd_task_reopen");
+  registerWorkflowTool(pi, reopenTaskTool);
 
   // ─── gsd_slice_reopen (gsd_reopen_slice alias) ─────────────────────────
 
@@ -1274,8 +1360,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     execute: reopenSliceExecute,
   };
 
-  pi.registerTool(reopenSliceTool);
-  registerAlias(pi, reopenSliceTool, "gsd_reopen_slice", "gsd_slice_reopen");
+  registerWorkflowTool(pi, reopenSliceTool);
 
   // ─── gsd_milestone_reopen (gsd_reopen_milestone alias) ─────────────────
 
@@ -1339,8 +1424,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
     execute: reopenMilestoneExecute,
   };
 
-  pi.registerTool(reopenMilestoneTool);
-  registerAlias(pi, reopenMilestoneTool, "gsd_reopen_milestone", "gsd_milestone_reopen");
+  registerWorkflowTool(pi, reopenMilestoneTool);
 
   // ─── gsd_save_gate_result ──────────────────────────────────────────────
 
@@ -1408,5 +1492,5 @@ export function registerDbTools(pi: ExtensionAPI): void {
     },
   };
 
-  pi.registerTool(saveGateResultTool);
+  registerWorkflowTool(pi, saveGateResultTool);
 }

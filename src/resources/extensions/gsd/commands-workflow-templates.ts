@@ -80,13 +80,13 @@ function datePrefix(): string {
 
 // ─── State Types ─────────────────────────────────────────────────────────────
 
-interface WorkflowPhaseState {
+export interface WorkflowPhaseState {
   name: string;
   index: number;
   status: "pending" | "active" | "completed";
 }
 
-interface WorkflowState {
+export interface WorkflowState {
   template: string;
   templateName: string;
   description: string;
@@ -97,6 +97,13 @@ interface WorkflowState {
   updatedAt: string;
   completedAt?: string;
   artifactDir: string;
+}
+
+export function isWorkflowStateComplete(state: WorkflowState): boolean {
+  if (state.completedAt) return true;
+  return Array.isArray(state.phases) &&
+    state.phases.length > 0 &&
+    state.phases.every((phase) => phase.status === "completed");
 }
 
 /**
@@ -133,7 +140,7 @@ function writeWorkflowState(
  * Scan all workflow artifact directories for in-progress STATE.json files.
  * Returns workflows that were started but not completed.
  */
-function findInProgressWorkflows(basePath: string): WorkflowState[] {
+export function findInProgressWorkflows(basePath: string): WorkflowState[] {
   const workflowsRoot = join(gsdRoot(basePath), "workflows");
   if (!existsSync(workflowsRoot)) return [];
 
@@ -152,7 +159,7 @@ function findInProgressWorkflows(basePath: string): WorkflowState[] {
         try {
           const raw = readFileSync(statePath, "utf-8");
           const state = JSON.parse(raw) as WorkflowState;
-          if (!state.completedAt) {
+          if (!isWorkflowStateComplete(state)) {
             results.push(state);
           }
         } catch { /* corrupted state file — skip */ }

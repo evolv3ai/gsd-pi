@@ -43,11 +43,13 @@ session-control flow rather than a user/provider failure when settling work from
 
 | Event | When | Can Return |
 |-------|------|------------|
-| `tool_call` | Before tool executes | `{ block: true, reason: "..." }` |
-| `tool_execution_start` | Tool begins executing | — |
+| `tool_call` | Before a natively executed tool runs | `{ block: true, reason: "..." }` |
+| `tool_execution_start` | Tool begins executing on any engine | — |
 | `tool_execution_update` | Tool sends progress | — |
-| `tool_execution_end` | Tool finishes | — |
-| `tool_result` | After tool executes | `{ content: [...], details: {...}, isError: bool }` (modify result) |
+| `tool_execution_end` | Tool finishes on any engine | — |
+| `tool_result` | After a natively executed tool finishes | `{ content: [...], details: {...}, isError: bool }` (modify result) |
+
+`tool_call` and `tool_result` wrap tools the Pi loop executes itself. External engines may pre-execute tools and hand Pi an `externalResult`, which skips those two hooks; use `tool_execution_start` / `tool_execution_end` for cross-engine observation.
 
 ### 7.4 Input Events
 

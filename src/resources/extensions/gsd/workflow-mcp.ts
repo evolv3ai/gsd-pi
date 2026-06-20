@@ -1,7 +1,19 @@
 import { execSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { dirname, resolve, sep } from "node:path";
+import { basename, dirname, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { getRequiredWorkflowToolsForUnit } from "./unit-tool-contracts.js";
+import { mcpToolMatchesBaseName } from "./mcp-tool-name.js";
+import {
+  supportsStructuredQuestions,
+  usesWorkflowMcpTransport,
+} from "./question-transport.js";
+import {
+  WORKFLOW_TOOL_SURFACE_NAMES,
+  isWorkflowToolSurfaceName,
+} from "./workflow-tool-surface.js";
+
+export { supportsStructuredQuestions, usesWorkflowMcpTransport };
 
 type WorkflowExecutorsModule = typeof import("./tools/workflow-tool-executors.js");
 
@@ -41,71 +53,9 @@ export function resolveWorkflowMcpProjectRoot(sessionCwd: string): string {
   return resolved;
 }
 
-const MCP_WORKFLOW_TOOL_SURFACE = new Set([
-  "gsd_cancel",
-  "gsd_captures",
-  "ask_user_questions",
-  "gsd_capture_thought",
-  "gsd_doctor",
-  "gsd_execute",
-  "gsd_memory_query",
-  "gsd_memory_graph",
-  "gsd_decision_save",
-  "gsd_exec",
-  "gsd_exec_search",
-  "gsd_graph",
-  "gsd_history",
-  "gsd_knowledge",
-  "gsd_progress",
-  "gsd_query",
-  "gsd_resume",
-  "gsd_result",
-  "gsd_resolve_blocker",
-  "gsd_roadmap",
-  "gsd_status",
-  "gsd_complete_milestone",
-  "gsd_complete_task",
-  "gsd_complete_slice",
-  "gsd_generate_milestone_id",
-  "gsd_journal_query",
-  "gsd_milestone_complete",
-  "gsd_milestone_generate_id",
-  "gsd_milestone_reopen",
-  "gsd_checkpoint_db",
-  "gsd_milestone_plan",
-  "gsd_milestone_status",
-  "gsd_milestone_validate",
-  "gsd_plan_task",
-  "gsd_plan_milestone",
-  "gsd_plan_slice",
-  "gsd_replan_slice",
-  "gsd_reassess_roadmap",
-  "gsd_reopen_milestone",
-  "gsd_reopen_slice",
-  "gsd_reopen_task",
-  "gsd_requirement_save",
-  "gsd_requirement_update",
-  "gsd_roadmap_reassess",
-  "gsd_save_decision",
-  "gsd_save_gate_result",
-  "gsd_save_requirement",
-  "gsd_save_summary",
-  "gsd_skip_slice",
-  "gsd_slice_plan",
-  "gsd_slice_replan",
-  "gsd_slice_complete",
-  "gsd_slice_reopen",
-  "gsd_summary_save",
-  "gsd_task_plan",
-  "gsd_task_complete",
-  "gsd_task_reopen",
-  "gsd_update_requirement",
-  "gsd_validate_milestone",
-]);
-
 /** Workflow MCP tools are validated by transport compatibility, not pi tool-compat profiles. */
 export function isWorkflowMcpSurfaceTool(toolName: string): boolean {
-  return MCP_WORKFLOW_TOOL_SURFACE.has(toolName);
+  return isWorkflowToolSurfaceName(toolName);
 }
 
 function parseLookupOutput(output: Buffer | string): string {
@@ -273,8 +223,12 @@ function getBundledWorkflowWriteGateModulePath(): string | null {
 
 function getResolveTsHookPath(): string | null {
   const repoRoot = findGsdPiRepoRoot(dirname(fileURLToPath(import.meta.url)));
+  const sourceRepoRoot = repoRoot && basename(repoRoot) === "dist-test" ? dirname(repoRoot) : repoRoot;
   return firstExistingPath([
-    ...(repoRoot
+    ...(sourceRepoRoot
+      ? [resolve(sourceRepoRoot, "src", "resources", "extensions", "gsd", "tests", "resolve-ts.mjs")]
+      : []),
+    ...(repoRoot && repoRoot !== sourceRepoRoot
       ? [resolve(repoRoot, "src", "resources", "extensions", "gsd", "tests", "resolve-ts.mjs")]
       : []),
     resolve(fileURLToPath(new URL("./tests/resolve-ts.mjs", import.meta.url))),
@@ -411,128 +365,18 @@ export function buildWorkflowMcpServers(
 }
 
 export function getRequiredWorkflowToolsForGuidedUnit(unitType: string): string[] {
-  switch (unitType) {
-    case "discuss-project":
-      return ["ask_user_questions", "gsd_summary_save"];
-    case "discuss-requirements":
-      return ["ask_user_questions", "gsd_requirement_save", "gsd_summary_save"];
-    case "research-decision":
-      return ["ask_user_questions"];
-    case "discuss-milestone":
-      return [
-        "gsd_summary_save",
-        "gsd_requirement_save",
-        "gsd_requirement_update",
-        "gsd_plan_milestone",
-        "gsd_milestone_generate_id",
-      ];
-    case "discuss-slice":
-      return ["gsd_summary_save"];
-    case "research-milestone":
-    case "research-slice":
-      return ["gsd_summary_save"];
-    case "plan-milestone":
-      return ["gsd_plan_milestone"];
-    case "plan-slice":
-      return ["gsd_plan_slice"];
-    case "execute-task":
-      return ["gsd_task_complete"];
-    case "complete-slice":
-      return ["gsd_slice_complete", "gsd_task_reopen", "gsd_replan_slice"];
-    default:
-      return [];
-  }
+  return getRequiredWorkflowToolsForUnit(unitType);
 }
 
 export function getRequiredWorkflowToolsForAutoUnit(unitType: string): string[] {
-  switch (unitType) {
-    case "discuss-project":
-      return ["ask_user_questions", "gsd_summary_save"];
-    case "discuss-requirements":
-      return ["ask_user_questions", "gsd_requirement_save", "gsd_summary_save"];
-    case "research-decision":
-      return ["ask_user_questions"];
-    case "discuss-milestone":
-      return [
-        "gsd_summary_save",
-        "gsd_requirement_save",
-        "gsd_requirement_update",
-        "gsd_plan_milestone",
-        "gsd_milestone_generate_id",
-      ];
-    case "research-milestone":
-    case "research-slice":
-    case "run-uat":
-      return ["gsd_summary_save"];
-    case "plan-milestone":
-      return ["gsd_plan_milestone"];
-    case "plan-slice":
-      return ["gsd_plan_slice"];
-    case "execute-task":
-    case "execute-task-simple":
-    case "reactive-execute":
-      return ["gsd_task_complete"];
-    case "complete-slice":
-      return ["gsd_slice_complete", "gsd_task_reopen", "gsd_replan_slice"];
-    case "replan-slice":
-      return ["gsd_replan_slice"];
-    case "reassess-roadmap":
-      return ["gsd_milestone_status", "gsd_reassess_roadmap"];
-    case "gate-evaluate":
-      return ["gsd_save_gate_result"];
-    case "validate-milestone":
-      return ["gsd_milestone_status", "gsd_validate_milestone", "gsd_reassess_roadmap"];
-    case "complete-milestone":
-      return ["gsd_milestone_status", "gsd_complete_milestone"];
-    default:
-      return [];
-  }
-}
-
-export function usesWorkflowMcpTransport(
-  authMode: WorkflowCapabilityOptions["authMode"],
-  baseUrl: string | undefined,
-): boolean {
-  return authMode === "externalCli" && typeof baseUrl === "string" && baseUrl.startsWith("local://");
-}
-
-function hasAskUserQuestionsTool(activeTools: string[]): boolean {
-  return activeTools.some((toolName) => {
-    if (toolName === "ask_user_questions") return true;
-    if (!toolName.startsWith("mcp__")) return false;
-    const toolSeparator = toolName.indexOf("__", "mcp__".length);
-    return toolSeparator >= 0 && toolName.slice(toolSeparator + 2) === "ask_user_questions";
-  });
+  return getRequiredWorkflowToolsForUnit(unitType);
 }
 
 function hasRequiredTool(requiredTool: string, activeTools: string[]): boolean {
   return activeTools.some((toolName) => {
     if (toolName === requiredTool) return true;
-    if (!toolName.startsWith("mcp__")) return false;
-    const toolSeparator = toolName.indexOf("__", "mcp__".length);
-    return toolSeparator >= 0 && toolName.slice(toolSeparator + 2) === requiredTool;
+    return mcpToolMatchesBaseName(toolName, requiredTool);
   });
-}
-
-function workflowMcpStructuredQuestionsOptIn(env: NodeJS.ProcessEnv = process.env): boolean {
-  const value = env.GSD_WORKFLOW_MCP_STRUCTURED_QUESTIONS;
-  return value === "1" || value === "true";
-}
-
-export function supportsStructuredQuestions(
-  activeTools: string[],
-  options: Pick<WorkflowCapabilityOptions, "authMode" | "baseUrl" | "env"> = {},
-): boolean {
-  if (!hasAskUserQuestionsTool(activeTools)) return false;
-  if (usesWorkflowMcpTransport(options.authMode, options.baseUrl)) {
-    // Claude Code local workflow-MCP exposes ask_user_questions, but form
-    // elicitation can return an immediate cancel outside GSD's chat turn. Keep
-    // checkpoints in plain chat unless a caller deliberately opts into testing
-    // that transport.
-    return workflowMcpStructuredQuestionsOptIn(options.env);
-  }
-
-  return true;
 }
 
 export function getWorkflowTransportSupportError(
@@ -555,15 +399,14 @@ export function getWorkflowTransportSupportError(
   }
 
   const uniqueRequired = [...new Set(requiredTools)];
-  const piRuntimeRequired = uniqueRequired.filter((tool) => !MCP_WORKFLOW_TOOL_SURFACE.has(tool));
   const missing = (options.activeTools && options.activeTools.length > 0)
-    ? piRuntimeRequired.filter((tool) => !hasRequiredTool(tool, options.activeTools!))
-    : piRuntimeRequired;
+    ? uniqueRequired.filter((tool) => !isWorkflowToolSurfaceName(tool) && !hasRequiredTool(tool, options.activeTools!))
+    : uniqueRequired.filter((tool) => !isWorkflowToolSurfaceName(tool));
   if (missing.length === 0) return null;
 
   if (options.activeTools && options.activeTools.length > 0) {
     return `Provider ${providerLabel} cannot run ${surface}${unitLabel}: this unit requires ${missing.join(", ")}, but the active runtime toolset currently exposes only ${options.activeTools.slice().sort().join(", ")}.`;
   }
 
-  return `Provider ${providerLabel} cannot run ${surface}${unitLabel}: this unit requires ${missing.join(", ")}, but the workflow MCP transport currently exposes only ${Array.from(MCP_WORKFLOW_TOOL_SURFACE).sort().join(", ")}.`;
+  return `Provider ${providerLabel} cannot run ${surface}${unitLabel}: this unit requires ${missing.join(", ")}, but the workflow MCP transport currently exposes only ${[...WORKFLOW_TOOL_SURFACE_NAMES].sort().join(", ")}.`;
 }

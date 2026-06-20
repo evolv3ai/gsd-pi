@@ -4,11 +4,14 @@
 import type { ExtensionCommandContext } from "@gsd/pi-coding-agent";
 
 import { loadFile } from "./files.js";
-import { resolveMilestoneFile } from "./paths.js";
+import { gsdProjectionRoot, resolveMilestoneFile } from "./paths.js";
+import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
+import { join } from "node:path";
 import { deriveState } from "./state.js";
 import { executeValidateMilestone } from "./tools/workflow-tool-executors.js";
 import { ensureDbOpen } from "./bootstrap/dynamic-tools.js";
 import { getLatestAssessmentByScope } from "./gsd-db.js";
+import { checkpointWorkflowDatabase } from "./db-workspace.js";
 import {
   VALIDATION_VERDICTS,
   extractVerdict,
@@ -122,8 +125,20 @@ async function loadExistingValidation(
   basePath: string,
   milestoneId: string,
 ): Promise<ExistingValidation | null> {
+  const canonicalBase = resolveCanonicalMilestoneRoot(basePath, milestoneId);
+  const canonicalValidationPath = join(
+    gsdProjectionRoot(canonicalBase),
+    "milestones",
+    milestoneId,
+    `${milestoneId}-VALIDATION.md`,
+  );
+  const canonicalContent = await loadFile(canonicalValidationPath);
+  if (canonicalContent) {
+    return { content: canonicalContent, source: canonicalValidationPath };
+  }
+
   const validationPath = resolveMilestoneFile(basePath, milestoneId, "VALIDATION");
-  if (validationPath) {
+  if (validationPath && validationPath !== canonicalValidationPath) {
     const content = await loadFile(validationPath);
     if (content) return { content, source: validationPath };
   }
@@ -222,6 +237,8 @@ export async function handleVerdict(
     return;
   }
 
+  checkpointWorkflowDatabase();
+
   const prevVerdict = current.verdict ?? "unknown";
   const effectiveVerdict = extractEffectiveVerdict(result.details, parsed.verdict);
   if (effectiveVerdict !== parsed.verdict) {
@@ -238,7 +255,7 @@ export async function handleVerdict(
 
   if (effectiveVerdict === "needs-remediation") {
     ctx.ui.notify(
-      "Follow up with gsd_reassess_roadmap to add remediation slices, then re-run /gsd auto.",
+      "Follow up with /gsd dispatch reassess to add remediation slices, then re-run /gsd auto.",
       "info",
     );
   }

@@ -22,19 +22,23 @@ const SUBCOMMAND_HELP: Record<string, string> = {
   ].join('\n'),
 
   update: [
-    'Usage: gsd update',
+    'Usage: gsd update [browser]',
     '',
-    'Update GSD to the latest version.',
+    'Update GSD to the latest version, or update browser automation only.',
     '',
-    'Equivalent to: npm install -g @opengsd/gsd-pi@latest',
+    'Examples:',
+    '  gsd update',
+    '  gsd update browser',
   ].join('\n'),
 
   upgrade: [
-    'Usage: gsd upgrade',
+    'Usage: gsd upgrade [browser]',
     '',
-    'Upgrade GSD to the latest @opengsd package.',
+    'Alias for update. Upgrade GSD, or upgrade browser automation only.',
     '',
-    'Equivalent to: npm install -g @opengsd/gsd-pi@latest',
+    'Examples:',
+    '  gsd upgrade',
+    '  gsd upgrade browser',
   ].join('\n'),
 
   sessions: [
@@ -210,6 +214,11 @@ export function printHelp(version: string): void {
   process.stdout.write('  --worktree, -w [name]    Start in an isolated worktree (auto-named if omitted)\n')
   process.stdout.write('  --model <id>             Override model (e.g. provider/model-id)\n')
   process.stdout.write('  --no-session             Disable session persistence\n')
+  process.stdout.write('  --web [path]             Start browser-only web mode\n')
+  process.stdout.write('  --host <host>            Web mode bind address\n')
+  process.stdout.write('  --port <port>            Web mode port\n')
+  process.stdout.write('  --allowed-origins <csv>  Additional allowed web origins\n')
+  process.stdout.write('  --no-auth                Disable web token auth; requires external access control\n')
   process.stdout.write('  --extension <path>       Load additional extension\n')
   process.stdout.write('  --tools <a,b,c>          Restrict available tools\n')
   process.stdout.write('  --list-models [search]   List available models and exit\n')

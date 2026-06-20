@@ -35,6 +35,8 @@
 // existing entry is the place to lift any of these out of default-deny
 // when the analysis has been done.
 
+import { canonicalWorkflowSurfaceToolName } from "./workflow-tool-surface.js";
+
 export type BackgroundabilityVerdict = "good" | "risky" | "no";
 
 export interface DelegationPolicyEntry {
@@ -123,18 +125,8 @@ const POLICY: Record<string, DelegationPolicyEntry> = {
   },
 };
 
-// Alias map keyed on the secondary name; resolves to the canonical entry above.
-// Sourced from packages/mcp-server/src/workflow-tools.ts alias registrations
-// (gsd_milestone_validate, gsd_roadmap_reassess, gsd_slice_replan, gsd_task_plan).
-const ALIASES: Record<string, string> = {
-  gsd_milestone_validate: "gsd_validate_milestone",
-  gsd_roadmap_reassess: "gsd_reassess_roadmap",
-  gsd_slice_replan: "gsd_replan_slice",
-  gsd_task_plan: "gsd_plan_task",
-};
-
 function resolveCanonical(name: string): string {
-  return ALIASES[name] ?? name;
+  return canonicalWorkflowSurfaceToolName(name);
 }
 
 export function getDelegationVerdict(toolName: string): DelegationPolicyEntry | null {

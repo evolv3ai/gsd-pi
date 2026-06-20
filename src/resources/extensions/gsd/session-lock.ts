@@ -22,6 +22,7 @@ import { join, dirname } from "node:path";
 import { gsdRoot, normalizeRealPath } from "./paths.js";
 import { atomicWriteSync } from "./atomic-write.js";
 import { markWorkerStoppingByPid } from "./db/auto-workers.js";
+import { logWarning } from "./workflow-logger.js";
 
 const _require = createRequire(import.meta.url);
 
@@ -223,15 +224,17 @@ function createLockCompromisedHandler(lockFilePath: string): () => void {
   return () => {
     const elapsed = Date.now() - _lockAcquiredAt;
     if (elapsed < 1_800_000) {
-      process.stderr.write(
-        `[gsd] Lock heartbeat caught up after ${Math.round(elapsed / 1000)}s — long LLM call, no action needed.\n`,
+      logWarning(
+        "session",
+        `Lock heartbeat caught up after ${Math.round(elapsed / 1000)}s — long LLM call, no action needed.`,
       );
       return;
     }
     const existing = readExistingLockDataWithRetry(lockFilePath);
     if (existing && existing.pid === process.pid) {
-      process.stderr.write(
-        `[gsd] Lock heartbeat mismatch after ${Math.round(elapsed / 1000)}s — lock file still owned by PID ${process.pid}, treating as false positive.\n`,
+      logWarning(
+        "session",
+        `Lock heartbeat mismatch after ${Math.round(elapsed / 1000)}s — lock file still owned by PID ${process.pid}, treating as false positive.`,
       );
       return;
     }
@@ -387,7 +390,7 @@ export function acquireSessionLock(basePath: string): SessionLockResult {
     // #3218: Provide actionable workaround when lock recovery fails
     const lockDirPath = lockTarget + ".lock";
     const reason = existingPid
-      ? `Another auto-mode session (PID ${existingPid}) appears to be running.\nStop it with \`kill ${existingPid}\` before starting a new session.`
+      ? `Another auto-mode session (PID ${existingPid}) appears to be running.\nRun \`/gsd stop\` for graceful shutdown, or choose "Force start" from \`/gsd auto\` to terminate it.`
       : `Another auto-mode session lock is stuck on this project.\nRun: rm -rf "${lockDirPath}" && rm -f "${lp}"`;
 
     return { acquired: false, reason, existingPid };
@@ -476,9 +479,7 @@ export function getSessionLockStatus(basePath: string): SessionLockStatus {
       try {
         const result = acquireSessionLock(basePath);
         if (result.acquired) {
-          process.stderr.write(
-            `[gsd] Lock recovered after onCompromised — lock file PID matched, re-acquired.\n`,
-          );
+          logWarning("session", "Lock recovered after onCompromised — lock file PID matched, re-acquired.");
           return { valid: true, recovered: true };
         }
       } catch {

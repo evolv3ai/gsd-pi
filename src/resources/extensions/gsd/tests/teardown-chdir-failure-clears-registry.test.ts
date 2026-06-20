@@ -159,4 +159,21 @@ describe("teardown chdir failure clears registry", () => {
     assert.strictEqual(getAutoWorktreeOriginalBase(), null, "registry null after successful teardown");
     assert.strictEqual(getActiveAutoWorktreeContext(), null, "context null after successful teardown");
   });
+
+  test("teardown survives when current working directory was deleted", () => {
+    repoDir = createTempRepo();
+    seedMilestone(repoDir, "M003");
+
+    const worktreePath = createAutoWorktree(repoDir, "M003");
+    process.chdir(worktreePath);
+    rmSync(worktreePath, { recursive: true, force: true });
+
+    assert.doesNotThrow(
+      () => teardownAutoWorktree(repoDir, "M003"),
+      "teardownAutoWorktree should not call process.cwd() unguarded from a deleted cwd",
+    );
+
+    assert.strictEqual(getAutoWorktreeOriginalBase(), null, "registry null after deleted-cwd teardown");
+    assert.strictEqual(getActiveAutoWorktreeContext(), null, "context null after deleted-cwd teardown");
+  });
 });

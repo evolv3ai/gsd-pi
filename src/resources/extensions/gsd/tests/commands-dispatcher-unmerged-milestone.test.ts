@@ -9,6 +9,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { handleGSDCommand } from "../commands/dispatcher.ts";
 import {
   closeDatabase,
+  insertAssessment,
   insertMilestone,
   insertSlice,
   openDatabase,
@@ -39,6 +40,7 @@ function makeMockCtx(base: string): {
   return {
     ctx: {
       cwd: base,
+      hasUI: true,
       ui: {
         notify: (message: string, kind: string) => {
           calls.push({ message, kind });
@@ -106,6 +108,13 @@ function seedRegisteredCompletedWorktreeWithoutRoadmap(base: string): void {
     title: "Live Text Search",
     status: "complete",
   });
+  insertAssessment({
+    path: "milestones/M008/M008-VALIDATION.md",
+    milestoneId: "M008",
+    status: "pass",
+    scope: "milestone-validation",
+    fullContent: "verdict: pass",
+  });
   writeFileSync(
     join(base, ".gsd", "PREFERENCES.md"),
     "---\ngit:\n  isolation: worktree\n---\n",
@@ -124,6 +133,19 @@ function seedRegisteredCompletedWorktree(base: string): void {
   mkdirSync(join(base, ".gsd"), { recursive: true });
   openDatabase(join(base, ".gsd", "gsd.db"));
   insertMilestone({ id: "M008", title: "Live Text Search", status: "complete" });
+  insertSlice({
+    id: "S01",
+    milestoneId: "M008",
+    title: "Live Text Search",
+    status: "complete",
+  });
+  insertAssessment({
+    path: "milestones/M008/M008-VALIDATION.md",
+    milestoneId: "M008",
+    status: "pass",
+    scope: "milestone-validation",
+    fullContent: "verdict: pass",
+  });
   writeWorktreePreferencesAndRoadmap(base);
 
   const worktreePath = join(base, ".gsd", "worktrees", "M008");
@@ -196,7 +218,7 @@ test("dispatcher recovers a completed unmerged milestone through complete-milest
   const base = makeTempRepo("gsd-dispatch-unmerged-");
   try {
     seedRegisteredCompletedWorktree(base);
-    const { ctx, calls } = makeMockCtx(base);
+    const { ctx, calls, widgets, statuses } = makeMockCtx(base);
     const { pi, messages } = makeMockPi();
 
     await handleGSDCommand("dispatch complete-milestone M008", ctx, pi);
@@ -209,6 +231,30 @@ test("dispatcher recovers a completed unmerged milestone through complete-milest
     assert.ok(
       calls.some((call) => call.message.includes("Milestone M008 merged to main")),
       "user sees merge recovery success",
+    );
+    assert.ok(
+      calls.some((call) => call.message.includes("Closeout is complete")),
+      "merge recovery ends at a closeout-complete message",
+    );
+    assert.ok(
+      calls.every((call) => !call.message.includes("Run /gsd again when ready")),
+      "merge recovery must not send the user past the closeout endpoint",
+    );
+    assert.ok(
+      statuses.some(([key, value]) => key === "gsd-auto" && value === undefined),
+      "merge recovery clears stale auto status so the run timer stops",
+    );
+    assert.ok(
+      statuses.some(([key, value]) => key === "gsd-step" && value === undefined),
+      "merge recovery clears stale step status",
+    );
+    assert.ok(
+      widgets.some(([key, value]) => key === "gsd-progress" && value === undefined),
+      "merge recovery clears stale progress/timer controls",
+    );
+    assert.ok(
+      widgets.some(([key, value]) => key === "gsd-outcome" && typeof value === "function"),
+      "merge recovery installs a durable closeout outcome",
     );
     assert.equal(readFileSync(join(base, "index.html"), "utf-8"), "<h1>M008</h1>\n");
     assert.equal(git(base, "branch", "--list", "milestone/M008"), "");

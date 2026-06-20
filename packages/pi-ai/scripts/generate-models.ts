@@ -187,6 +187,8 @@ function isAnthropicAdaptiveThinkingModel(modelId: string): boolean {
 		modelId.includes("opus-4.7") ||
 		modelId.includes("opus-4-8") ||
 		modelId.includes("opus-4.8") ||
+		modelId.includes("fable-5") ||
+		modelId.includes("fable.5") ||
 		modelId.includes("sonnet-4-6") ||
 		modelId.includes("sonnet-4.6")
 	);
@@ -239,7 +241,9 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 		model.id.includes("opus-4-7") ||
 		model.id.includes("opus-4.7") ||
 		model.id.includes("opus-4-8") ||
-		model.id.includes("opus-4.8")
+		model.id.includes("opus-4.8") ||
+		model.id.includes("fable-5") ||
+		model.id.includes("fable.5")
 	) {
 		mergeThinkingLevelMap(model, { xhigh: "xhigh" });
 	}
@@ -1219,14 +1223,20 @@ async function generateModels() {
 		if (
 			(candidate.provider === "anthropic" ||
 				candidate.provider === "opencode" ||
-				candidate.provider === "opencode-go" ||
-				candidate.provider === "github-copilot") &&
+				candidate.provider === "opencode-go") &&
 			(candidate.id === "claude-opus-4-6" ||
 				candidate.id === "claude-sonnet-4-6" ||
 				candidate.id === "claude-opus-4.6" ||
 				candidate.id === "claude-sonnet-4.6")
 		) {
 			candidate.contextWindow = 1000000;
+		}
+		if (
+			candidate.provider === "github-copilot" &&
+			(candidate.id === "claude-opus-4.6" || candidate.id === "claude-sonnet-4.6")
+		) {
+			candidate.contextWindow = 200000;
+			candidate.maxTokens = 32000;
 		}
 
 		// OpenCode variants list Claude Sonnet 4/4.5 with 1M context, actual limit is 200K
@@ -1357,6 +1367,76 @@ async function generateModels() {
 			contextWindow: 1000000,
 			maxTokens: 64000,
 		});
+	}
+
+	// Add missing Claude Fable 5 (direct Anthropic) until models.dev includes it.
+	if (!allModels.some(m => m.provider === "anthropic" && m.id === "claude-fable-5")) {
+		allModels.push({
+			id: "claude-fable-5",
+			name: "Claude Fable 5",
+			api: "anthropic-messages",
+			baseUrl: "https://api.anthropic.com",
+			provider: "anthropic",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 10,
+				output: 50,
+				cacheRead: 1,
+				cacheWrite: 12.5,
+			},
+			contextWindow: 1000000,
+			maxTokens: 128000,
+		});
+	}
+
+	// Add missing Claude Fable 5 (Anthropic on Vertex) until models.dev includes it.
+	if (!allModels.some(m => m.provider === "anthropic-vertex" && m.id === "claude-fable-5")) {
+		allModels.push({
+			id: "claude-fable-5",
+			name: "Claude Fable 5 (Vertex)",
+			api: "anthropic-vertex",
+			baseUrl: VERTEX_BASE_URL,
+			provider: "anthropic-vertex",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 10,
+				output: 50,
+				cacheRead: 1,
+				cacheWrite: 12.5,
+			},
+			contextWindow: 1000000,
+			maxTokens: 128000,
+		});
+	}
+
+	// Add missing Claude Fable 5 Bedrock profiles until models.dev includes them.
+	for (const [bedrockId, regionLabel] of [
+		["anthropic.claude-fable-5", ""],
+		["us.anthropic.claude-fable-5", " (US)"],
+		["eu.anthropic.claude-fable-5", " (EU)"],
+		["global.anthropic.claude-fable-5", " (Global)"],
+	] as const) {
+		if (!allModels.some(m => m.provider === "amazon-bedrock" && m.id === bedrockId)) {
+			allModels.push({
+				id: bedrockId,
+				name: `Claude Fable 5${regionLabel}`,
+				api: "bedrock-converse-stream",
+				baseUrl: getBedrockBaseUrl(bedrockId),
+				provider: "amazon-bedrock",
+				reasoning: true,
+				input: ["text", "image"],
+				cost: {
+					input: 10,
+					output: 50,
+					cacheRead: 1,
+					cacheWrite: 12.5,
+				},
+				contextWindow: 1000000,
+				maxTokens: 128000,
+			});
+		}
 	}
 
 	// Add missing Gemini 3.1 Flash Lite Preview until models.dev includes it.
@@ -1555,15 +1635,25 @@ async function generateModels() {
 		}
 	}
 
-	const minimaxDirectSupportedIds = new Set(["MiniMax-M2.7", "MiniMax-M2.7-highspeed"]);
+	const minimaxDirectModelOverrides = new Map([
+		["MiniMax-M2.7", { contextWindow: 204800, maxTokens: 131072 }],
+		["MiniMax-M2.7-highspeed", { contextWindow: 204800, maxTokens: 131072 }],
+		// MiniMax's API overview advertises a 1M context window for M3; models.dev
+		// currently reports the documented guaranteed 512K floor.
+		["MiniMax-M3", { contextWindow: 1000000, maxTokens: 131072 }],
+	]);
+	const minimaxDirectSupportedIds = new Set(minimaxDirectModelOverrides.keys());
 
 	for (const candidate of allModels) {
 		if (
 			(candidate.provider === "minimax" || candidate.provider === "minimax-cn") &&
 			minimaxDirectSupportedIds.has(candidate.id)
 		) {
-			candidate.contextWindow = 204800;
-			candidate.maxTokens = 131072;
+			const override = minimaxDirectModelOverrides.get(candidate.id);
+			if (override) {
+				candidate.contextWindow = override.contextWindow;
+				candidate.maxTokens = override.maxTokens;
+			}
 		}
 	}
 

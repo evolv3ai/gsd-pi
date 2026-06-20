@@ -1,0 +1,87 @@
+name: Coverage report
+
+on:
+  pull_request:
+    branches: [main, dev, test]
+    # No `synchronize`: this is a 90-minute job gated on the `coverage` label.
+    # Re-running it on every push to a labeled PR is pure cost — it runs when the
+    # label is applied (or the PR reopens), plus the weekly cron below.
+    types: [labeled, reopened]
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-report-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage-report:
+    name: coverage-report
+    timeout-minutes: 90
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'coverage')
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+
+    steps:
+      - name: Checkout repository without GITHUB_TOKEN
+        shell: bash
+        env:
+          FETCH_DEPTH: '1'
+        run: |
+          set -euo pipefail
+          git init "$GITHUB_WORKSPACE"
+          cd "$GITHUB_WORKSPACE"
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+          git -c protocol.version=2 fetch --no-tags --prune --depth="$FETCH_DEPTH" origin \
+            "+${GITHUB_REF}:refs/checkout-ref"
+          git checkout --force --detach "$GITHUB_SHA"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+        with:
+          version: 10.12.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - uses: ./.github/actions/setup-linux-native-build-deps
+
+      - name: Install dependencies
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+          GSD_SKIP_RTK_INSTALL: '1'
+          GSD_SKIP_DEP_REPAIR: '1'
+        run: pnpm install --frozen-lockfile
+
+      - name: Build core
+        run: pnpm run build:core
+
+      - name: Check test coverage thresholds
+        run: pnpm run test:coverage
+
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install chromium
+
+      - name: Generate merged coverage report
+        run: pnpm run test:coverage:full
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: |
+            coverage/lcov.info
+            coverage/file-index.json
+          if-no-files-found: error
+          retention-days: 14

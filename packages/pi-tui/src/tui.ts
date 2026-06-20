@@ -9,7 +9,14 @@ import { performance } from "node:perf_hooks";
 import { isKeyRelease, matchesKey } from "./keys.js";
 import { isMouseEvent, type MouseEvent, parseMouseEvent } from "./mouse.js";
 import type { Terminal } from "./terminal.js";
-import { deleteKittyImage, getCapabilities, isImageLine, setCellDimensions } from "./terminal-image.js";
+import { isStdoutClosedError } from "./terminal.js";
+import {
+	deleteKittyImage,
+	getCapabilities,
+	isImageLine,
+	parseCellSizeResponse,
+	setCellDimensions,
+} from "./terminal-image.js";
 import {
 	extractSegments,
 	normalizeTerminalOutput,
@@ -316,6 +323,9 @@ export class TUI extends Container {
 
 	/** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
 	public onDebug?: () => void;
+	/** Called once when terminal output is no longer writable (pipe closed). */
+	private outputClosedHandler?: () => void;
+	private outputClosedHandled = false;
 	private renderRequested = false;
 	private renderTimer: NodeJS.Timeout | undefined;
 	private lastRenderAt = 0;
@@ -370,6 +380,17 @@ export class TUI extends Container {
 
 	get fullRedraws(): number {
 		return this.fullRedrawCount;
+	}
+
+	get onOutputClosed(): (() => void) | undefined {
+		return this.outputClosedHandler;
+	}
+
+	set onOutputClosed(handler: (() => void) | undefined) {
+		this.outputClosedHandler = handler;
+		if (handler && this.outputClosedHandled) {
+			handler();
+		}
 	}
 
 	getShowHardwareCursor(): boolean {
@@ -525,14 +546,17 @@ export class TUI extends Container {
 
 	override invalidate(): void {
 		super.invalidate();
+		this._lastRenderedComponents = null;
 		for (const overlay of this.overlayStack) overlay.component.invalidate?.();
 	}
 
 	start(): void {
 		this.stopped = false;
+		this.outputClosedHandled = false;
 		if (!this.terminal.isTTY) {
 			return;
 		}
+		this.terminal.setOutputClosedHandler?.(() => this.notifyOutputClosed());
 		this.terminal.start(
 			(data) => this.handleInput(data),
 			() => this.requestRender(),
@@ -540,6 +564,31 @@ export class TUI extends Container {
 		this.terminal.hideCursor();
 		this.queryCellSize();
 		this.requestRender();
+	}
+
+	private notifyOutputClosed(): void {
+		if (this.outputClosedHandled) return;
+		this.outputClosedHandled = true;
+		this.stopped = true;
+		if (this.renderTimer) {
+			clearTimeout(this.renderTimer);
+			this.renderTimer = undefined;
+		}
+		this.renderRequested = false;
+		this.outputClosedHandler?.();
+	}
+
+	private safeDoRender(): void {
+		if (this.stopped || this.terminal.outputClosed) return;
+		try {
+			this.doRender();
+		} catch (err) {
+			if (isStdoutClosedError(err)) {
+				this.notifyOutputClosed();
+				return;
+			}
+			throw err;
+		}
 	}
 
 	addInputListener(listener: InputListener): () => void {
@@ -554,13 +603,23 @@ export class TUI extends Container {
 	}
 
 	private queryCellSize(): void {
+		const caps = getCapabilities();
 		// Only query if terminal supports images (cell size is only used for image rendering)
-		if (!getCapabilities().images) {
+		if (!caps.images) {
 			return;
 		}
-		// Query terminal for cell size in pixels: CSI 16 t
-		// Response format: CSI 6 ; height ; width t
+		// xterm cell-size query: CSI 16 t → reply CSI 6 ; height ; width t.
 		this.terminal.write("\x1b[16t");
+		// iTerm2 does NOT answer CSI 16t — its only cell-size mechanism is the
+		// proprietary OSC 1337 ; ReportCellSize query → reply
+		// OSC 1337 ; ReportCellSize=height;width[;scale] ST. Without this, pi falls
+		// back to a default cell size on iTerm2 and sizes inline images with the
+		// wrong cell aspect (leaving trailing slack / mis-fit). Both replies are
+		// handled by parseCellSizeResponse; sending both queries is harmless on
+		// terminals that ignore one of them.
+		if (caps.images === "iterm2") {
+			this.terminal.write("\x1b]1337;ReportCellSize\x07");
+		}
 	}
 
 	stop(): void {
@@ -586,7 +645,7 @@ export class TUI extends Container {
 	}
 
 	requestRender(force = false): void {
-		if (!this.terminal.isTTY) {
+		if (!this.terminal.isTTY || this.terminal.outputClosed) {
 			return;
 		}
 		if (force) {
@@ -608,7 +667,7 @@ export class TUI extends Container {
 				}
 				this.renderRequested = false;
 				this.lastRenderAt = performance.now();
-				this.doRender();
+				this.safeDoRender();
 			});
 			return;
 		}
@@ -630,7 +689,7 @@ export class TUI extends Container {
 			}
 			this.renderRequested = false;
 			this.lastRenderAt = performance.now();
-			this.doRender();
+			this.safeDoRender();
 			if (this.renderRequested) {
 				this.scheduleRender();
 			}
@@ -768,19 +827,15 @@ export class TUI extends Container {
 	}
 
 	private consumeCellSizeResponse(data: string): boolean {
-		// Response format: ESC [ 6 ; height ; width t
-		const match = data.match(/^\x1b\[6;(\d+);(\d+)t$/);
-		if (!match) {
+		// Handles both the xterm CSI 16t reply and the iTerm2 OSC 1337;ReportCellSize
+		// reply (see parseCellSizeResponse). Returns false for unrelated input so it
+		// flows on to the other input handlers.
+		const dims = parseCellSizeResponse(data);
+		if (!dims) {
 			return false;
 		}
 
-		const heightPx = parseInt(match[1], 10);
-		const widthPx = parseInt(match[2], 10);
-		if (heightPx <= 0 || widthPx <= 0) {
-			return true;
-		}
-
-		setCellDimensions({ widthPx, heightPx });
+		setCellDimensions(dims);
 		// Invalidate all components so images re-render with correct dimensions.
 		this.invalidate();
 		this.requestRender();
@@ -1024,6 +1079,18 @@ export class TUI extends Container {
 		return ids;
 	}
 
+	/**
+	 * Record the lines committed in the frame we just rendered. We snapshot the
+	 * Kitty image ids here (not just at the start of the next render) because a
+	 * forced full render resets previousLines to [] before doRender runs — the
+	 * persistent previousKittyImageIds set is what lets the full-repaint paths
+	 * delete the prior frame's GPU placements even after that reset.
+	 */
+	private commitRenderedLines(newLines: string[]): void {
+		this.previousLines = newLines;
+		this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+	}
+
 	private deleteKittyImages(ids: Iterable<number>): string {
 		let buffer = "";
 		for (const id of ids) {
@@ -1183,6 +1250,17 @@ export class TUI extends Container {
 		const fullRender = (clear: boolean): void => {
 			this.fullRedrawCount += 1;
 			let buffer = this.useSynchronizedOutput ? "\x1b[?2026h" : "";
+			// Delete every Kitty placement from the previous frame before repainting.
+			// \x1b[2J clears graphics on Ghostty but NOT on upstream Kitty, and the
+			// no-clear branch never erases graphics at all — so an unconditional
+			// delete of the prior frame's image ids is the only terminal-agnostic way
+			// to stop placements from lingering/stacking across a full repaint. We use
+			// previousKittyImageIds (not previousLines) because a forced full render
+			// resets previousLines to [] before we get here, but the GPU placements
+			// from the prior frame are still on screen and must be cleared. Any image
+			// still in newLines is re-emitted below and replaces its (now-deleted)
+			// prior placement via its stable id.
+			buffer += this.deleteKittyImages(this.previousKittyImageIds);
 			const startRow = Math.max(1, height - Math.max(1, newLines.length) + 1);
 			if (clear) {
 				buffer += `\x1b[2J\x1b[${startRow};1H`;
@@ -1208,7 +1286,7 @@ export class TUI extends Container {
 			}
 			this.previousViewportTop = getViewportTop(this.maxLinesRendered);
 			this.positionHardwareCursor(cursorPos, newLines.length);
-			this.previousLines = newLines;
+			this.commitRenderedLines(newLines);
 			this.previousWidth = width;
 			this.previousHeight = height;
 		};
@@ -1224,6 +1302,10 @@ export class TUI extends Container {
 		const repaintBottomAnchoredShortBlock = (): void => {
 			const startRow = Math.max(1, height - Math.max(1, newLines.length) + 1);
 			let buffer = this.useSynchronizedOutput ? "\x1b[?2026h" : "";
+			// Same rationale as fullRender: this path repaints whole lines with
+			// \x1b[2K, which does not remove Kitty graphics. Delete the prior frame's
+			// placements so re-emitted images replace rather than stack.
+			buffer += this.deleteKittyImages(this.previousKittyImageIds);
 			buffer += `\x1b[${startRow};1H`;
 			for (let i = 0; i < newLines.length; i++) {
 				if (i > 0) buffer += "\r\n";
@@ -1241,7 +1323,7 @@ export class TUI extends Container {
 			this.maxLinesRendered = Math.max(this.maxLinesRendered, newLines.length);
 			this.previousViewportTop = getViewportTop(this.maxLinesRendered);
 			this.positionHardwareCursor(cursorPos, newLines.length);
-			this.previousLines = newLines;
+			this.commitRenderedLines(newLines);
 			this.previousWidth = width;
 			this.previousHeight = height;
 		};
@@ -1277,6 +1359,9 @@ export class TUI extends Container {
 			const newViewportTop = getViewportTop(newLines.length);
 			const currentScreenRow = Math.max(0, hardwareCursorRow - prevViewportTop);
 			let buffer = this.useSynchronizedOutput ? "\x1b[?2026h" : "";
+			// This viewport repaint also clears lines with \x1b[2K only; delete prior
+			// Kitty placements so images displaced by the realign don't linger/stack.
+			buffer += this.deleteKittyImages(this.previousKittyImageIds);
 			if (currentScreenRow > 0) {
 				buffer += `\x1b[${currentScreenRow}A`;
 			}
@@ -1298,7 +1383,7 @@ export class TUI extends Container {
 			this.maxLinesRendered = newLines.length;
 			this.previousViewportTop = newViewportTop;
 			this.positionHardwareCursor(cursorPos, newLines.length);
-			this.previousLines = newLines;
+			this.commitRenderedLines(newLines);
 			this.previousWidth = width;
 			this.previousHeight = height;
 			this._shrinkDebounceActive = false;
@@ -1392,7 +1477,7 @@ export class TUI extends Container {
 				this.hardwareCursorRow = targetRow;
 			}
 			this.positionHardwareCursor(cursorPos, newLines.length);
-			this.previousLines = newLines;
+			this.commitRenderedLines(newLines);
 			this.previousWidth = width;
 			this.previousHeight = height;
 			this.previousViewportTop = getViewportTop(this.maxLinesRendered);
@@ -1402,6 +1487,17 @@ export class TUI extends Container {
 		const previousContentViewportTop = getViewportTop(this.previousLines.length);
 		let clampedToViewport = false;
 		if (firstChanged < previousContentViewportTop) {
+			if (appendedLines) {
+				// A mid-buffer insertion (e.g. a markdown code-fence border materialising)
+				// shifted a line across the scrollback/viewport boundary.  Clamping would
+				// leave the displaced line frozen in scrollback AND re-emit it in the live
+				// region, producing a verbatim duplicate.  Fall back to a clean repaint.
+				logRedraw(
+					`firstChanged < viewportTop + buffer grew (${firstChanged} < ${previousContentViewportTop}) — full repaint to avoid duplicate`,
+				);
+				fullRender(true);
+				return;
+			}
 			const newViewportTop = getViewportTop(newLines.length);
 			const clampedFirst = Math.max(0, Math.min(previousContentViewportTop, newViewportTop));
 			logRedraw(
@@ -1413,6 +1509,15 @@ export class TUI extends Container {
 		}
 
 		let buffer = this.useSynchronizedOutput ? "\x1b[?2026h" : "";
+		// Free any Kitty image placements that lived on the changed lines before we
+		// repaint them. Kitty/Ghostty placements are GPU-side graphics that text
+		// erasure (\x1b[2K) does NOT remove; without an explicit delete the old
+		// placement lingers while the redraw adds a new one, stacking copies over
+		// the chat and footer. Stable placement ids (see encodeKitty) make the
+		// common in-place redraw replace rather than stack, but a line whose image
+		// is being replaced by different content (or a different image id) still
+		// needs the prior id explicitly deleted.
+		buffer += this.deleteChangedKittyImages(firstChanged, lastChanged);
 		const prevViewportBottom = prevViewportTop + height - 1;
 		const moveTargetRow = appendStart ? firstChanged - 1 : firstChanged;
 		if (moveTargetRow > prevViewportBottom) {
@@ -1522,7 +1627,7 @@ export class TUI extends Container {
 		// Position hardware cursor for IME
 		this.positionHardwareCursor(cursorPos, newLines.length);
 
-		this.previousLines = newLines;
+		this.commitRenderedLines(newLines);
 		this.previousWidth = width;
 		this.previousHeight = height;
 	}

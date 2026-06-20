@@ -2,7 +2,7 @@
   "id": "browser-tools",
   "name": "Browser Tools",
   "version": "1.0.0",
-  "description": "Playwright-based web automation, screenshots, and analysis",
+  "description": "GSD browser automation contract adapter backed by Playwright with optional managed gsd-browser support",
   "tier": "bundled",
   "requires": { "platform": ">=2.29.0" },
   "provides": {
@@ -32,6 +32,6 @@
     "hooks": ["session_start", "session_shutdown"]
   },
   "dependencies": {
-    "runtime": ["playwright"]
+    "runtime": ["@opengsd/gsd-browser"]
   }
 }
