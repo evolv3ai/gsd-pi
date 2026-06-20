@@ -28,7 +28,7 @@ async function importUtilities(): Promise<typeof import("../../test/utilities.ts
 					"@earendil-works/pi-ai": "export function getModel() { return { provider: 'faux', id: 'model' }; }",
 					"@earendil-works/pi-ai/oauth": `
 						export async function getOAuthApiKey() {
-							return { apiKey: "oauth-key", newCredentials: { accessToken: "new-token" } };
+							return { apiKey: "oauth-key", newCredentials: { accessToken: "tok" } };
 						}
 					`,
 					"@gsd/agent-core": `
