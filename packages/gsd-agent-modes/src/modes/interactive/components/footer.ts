@@ -42,8 +42,9 @@ function formatTokens(count: number): string {
 export function formatCwdForFooter(cwd: string, home = process.env.HOME ?? process.env.USERPROFILE ?? ""): string {
 	if (!home) return cwd;
 	if (cwd === home) return "~";
-	const withSep = home.endsWith("/") ? home : `${home}/`;
-	if (cwd.startsWith(withSep)) {
+	const withForwardSep = home.endsWith("/") ? home : `${home}/`;
+	const withBackSep = home.endsWith("\\") ? home : `${home}\\`;
+	if (cwd.startsWith(withForwardSep) || cwd.startsWith(withBackSep)) {
 		return `~${cwd.slice(home.length)}`;
 	}
 	return cwd;
