@@ -19,7 +19,7 @@ function withPreferences<T>(frontmatter: string[], fn: () => T): T {
   const home = mkdtempSync(join(tmpdir(), "gsd-thinking-"));
   try {
     process.env.GSD_HOME = home;
-    writeFileSync(join(home, "preferences.md"), ["---", ...frontmatter, "---", ""].join("\n"));
+    writeFileSync(join(home, "preferences.md"), ["---", "token_profile: burn-max", ...frontmatter, "---", ""].join("\n"));
     return fn();
   } finally {
     if (oldHome === undefined) delete process.env.GSD_HOME;

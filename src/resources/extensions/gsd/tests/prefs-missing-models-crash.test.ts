@@ -92,7 +92,7 @@ test("resolveModelWithFallbacksForUnit returns undefined when no preferences fil
 });
 
 test("resolveModelWithFallbacksForUnit returns undefined when preferences omit models", () => {
-  withGsdHome("---\nmode: solo\n---\n", () => {
+  withGsdHome("---\nmode: solo\ntoken_profile: burn-max\n---\n", () => {
     assert.equal(resolveModelWithFallbacksForUnit("execute-task"), undefined);
   });
 });
@@ -105,7 +105,7 @@ test("resolveModelWithFallbacksForUnit honors project basePath when cwd differs"
   const other = mkdtempSync(join(tmpdir(), "gsd-prefs-other-"));
   try {
     process.env.GSD_HOME = home;
-    writeFileSync(join(home, "PREFERENCES.md"), "---\nmode: solo\n---\n");
+    writeFileSync(join(home, "PREFERENCES.md"), "---\nmode: solo\ntoken_profile: burn-max\n---\n");
     const gsdDir = join(project, ".gsd");
     mkdirSync(gsdDir, { recursive: true });
     writeFileSync(
@@ -135,13 +135,13 @@ test("resolveDefaultSessionModel returns undefined when no preferences file exis
 });
 
 test("resolveDefaultSessionModel returns undefined when preferences omit models", () => {
-  withGsdHome("---\nmode: solo\n---\n", () => {
+  withGsdHome("---\nmode: solo\ntoken_profile: burn-max\n---\n", () => {
     assert.equal(resolveDefaultSessionModel("anthropic"), undefined);
   });
 });
 
 test("readModelFromPreferences returns 'default' when preferences omit models", () => {
-  withGsdHome("---\nmode: solo\n---\n", () => {
+  withGsdHome("---\nmode: solo\ntoken_profile: burn-max\n---\n", () => {
     assert.equal(readModelFromPreferences(), "default");
   });
 });

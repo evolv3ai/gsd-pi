@@ -113,7 +113,7 @@ function makeFixture(opts: FixtureOptions = {}): Fixture {
   session.resourceVersionOnStart = null;
 
   const ctx: OrchestratorContext = {
-    ctx: { model: {}, modelRegistry: { getAll: () => [] }, ui: { notify() {} } } as never,
+    ctx: { model: {}, modelRegistry: { getAll: () => [], getAvailable: () => [] }, ui: { notify() {} } } as never,
     pi: { getActiveTools: () => [] } as never,
     dispatchBasePath: base,
     runtimeBasePath: base,
@@ -275,7 +275,7 @@ test("advance() logs an engine warning when the post-settlement projection rebui
   session.resourceVersionOnStart = null;
 
   const ctx: OrchestratorContext = {
-    ctx: { model: {}, modelRegistry: { getAll: () => [] }, ui: { notify() {} } } as never,
+    ctx: { model: {}, modelRegistry: { getAll: () => [], getAvailable: () => [] }, ui: { notify() {} } } as never,
     pi: { getActiveTools: () => [] } as never,
     dispatchBasePath: worktree,
     runtimeBasePath: worktree,

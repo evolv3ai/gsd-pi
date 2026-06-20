@@ -43,7 +43,7 @@ function makeState(): GSDState {
 
 const fakeCtx = {
   model: { provider: "anthropic", baseUrl: "https://api.anthropic.com", contextWindow: 200_000 },
-  modelRegistry: { getAll: () => [], getProviderAuthMode: (_p: string) => "apiKey" as const },
+  modelRegistry: { getAll: () => [], getAvailable: () => [], getProviderAuthMode: (_p: string) => "apiKey" as const },
 } as never;
 const fakePi = { getActiveTools: () => ["read_file", "write_file"] } as never;
 const BASE = "/tmp/orchestrator-legacy-parity";

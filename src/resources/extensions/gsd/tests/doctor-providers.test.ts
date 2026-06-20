@@ -338,6 +338,7 @@ test("runProviderChecks detects custom provider keys from models.json", () => {
     join(repo, ".gsd", "PREFERENCES.md"),
     [
       "---",
+      "token_profile: burn-max",
       "models:",
       "  execution:",
       "    model: custom-model",
@@ -514,6 +515,7 @@ test("runProviderChecks uses provider-qualified anthropic-vertex model IDs", () 
     join(repo, ".gsd", "PREFERENCES.md"),
     [
       "---",
+      "token_profile: burn-max",
       "models:",
       "  execution: anthropic-vertex/claude-sonnet-4-6",
       "---",

@@ -13,6 +13,7 @@ function makeCtx(customResult: unknown) {
   const customCalls: Array<{ options: any }> = [];
   return {
     hasUI: true,
+    modelRegistry: { getAvailable: () => [] },
     ui: {
       custom: async (_factory: unknown, options: any) => {
         customCalls.push({ options });
