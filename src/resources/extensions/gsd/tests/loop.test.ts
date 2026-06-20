@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { autoLoop, runLegacyAutoLoop, runUokKernelLoop } from "../loop.js";
+import { autoLoop, runLegacyAutoLoop, runUokKernelLoop } from "../auto/loop.js";
 
 function createInactiveSession(basePath: string) {
 	return {

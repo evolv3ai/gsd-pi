@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { build, type Plugin } from "esbuild";
@@ -11,7 +11,7 @@ type RuntimeState = {
 	started: boolean;
 };
 
-const root = resolve(new URL("../../../", import.meta.url).pathname);
+const root = process.cwd();
 
 async function importKeyTester(): Promise<RuntimeState> {
 	const cacheDir = join(root, ".cache");

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { build, type Plugin } from "esbuild";
@@ -10,7 +10,7 @@ type RunResult = {
 	errors: string[];
 };
 
-const root = resolve(new URL("../../../", import.meta.url).pathname);
+const root = process.cwd();
 
 async function runThemeColorScript(args: string[]): Promise<RunResult> {
 	const cacheDir = join(root, ".cache");

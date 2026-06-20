@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { build, type Plugin } from "esbuild";
@@ -9,7 +9,7 @@ type MarkedState = {
 	configured?: unknown;
 };
 
-const root = resolve(new URL("../../../../", import.meta.url).pathname);
+const root = process.cwd();
 
 async function importHelper(): Promise<{ loadVendoredMarked(): { configured?: boolean; parse(text: string): string } }> {
 	const cacheDir = join(root, ".cache");

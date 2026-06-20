@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { build, type Plugin } from "esbuild";
 
-const root = resolve(new URL("../../../", import.meta.url).pathname);
+const root = process.cwd();
 
-async function importUtilities(): Promise<typeof import("./utilities.ts")> {
+async function importUtilities(): Promise<typeof import("../../test/utilities.ts")> {
 	const cacheDir = join(root, ".cache");
 	await mkdir(cacheDir, { recursive: true });
 	const outdir = await mkdtemp(join(cacheDir, "pi-coding-agent-utilities-"));

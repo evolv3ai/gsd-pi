@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import { build, type Plugin } from "esbuild";
@@ -13,7 +13,7 @@ type RuntimeState = {
 	stopped: boolean;
 };
 
-const root = resolve(new URL("../../../", import.meta.url).pathname);
+const root = process.cwd();
 
 async function drainUntilStopped(state: RuntimeState): Promise<void> {
 	for (let i = 0; i < 1000 && !state.stopped; i += 1) await Promise.resolve();
