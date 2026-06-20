@@ -9,7 +9,7 @@ GSD 支持三种隔离模式，通过 `git.isolation` 偏好设置：
 | 模式 | 工作目录 | 分支 | 适用场景 |
 |------|----------|------|----------|
 | `none`（默认） | 项目根目录 | 当前分支（不建 milestone 分支） | 大多数项目，不增加隔离开销 |
-| `worktree` | `.gsd/worktrees/<MID>/` | `milestone/<MID>` | 需要 milestone 之间完整文件隔离的项目 |
+| `worktree` | `.gsd-worktrees/<MID>/` | `milestone/<MID>` | 需要 milestone 之间完整文件隔离的项目 |
 | `branch` | 项目根目录 | `milestone/<MID>` | 子模块较多、worktree 表现不佳的仓库 |
 
 ### `none` 模式（默认）
@@ -20,7 +20,7 @@ GSD 支持三种隔离模式，通过 `git.isolation` 偏好设置：
 
 ### `worktree` 模式
 
-每个 milestone 都会在 `.gsd/worktrees/<MID>/` 下拥有自己的 git worktree，对应一个 `milestone/<MID>` 分支。所有执行都发生在该 worktree 中。完成后，worktree 会被 squash merge 回主分支，形成一个干净的提交，然后清理对应 worktree 和分支。
+每个 milestone 都会在 `.gsd-worktrees/<MID>/` 下拥有自己的 git worktree，对应一个 `milestone/<MID>` 分支。所有执行都发生在该 worktree 中。完成后，worktree 会被 squash merge 回主分支，形成一个干净的提交，然后清理对应 worktree 和分支。
 
 这提供了完整的文件隔离，某个 milestone 的变更不会干扰你的主工作副本。
 
@@ -97,7 +97,7 @@ GSD-Task: M001/S01/T02
 
 自动模式会自动创建并管理 worktrees：
 
-1. milestone 启动时，在 `.gsd/worktrees/<MID>/` 创建 worktree，并切到 `milestone/<MID>` 分支
+1. milestone 启动时，在 `.gsd-worktrees/<MID>/` 创建 worktree，并切到 `milestone/<MID>` 分支
 2. 将 `.gsd/milestones/` 下的规划产物复制到该 worktree
 3. 所有执行都发生在 worktree 内部
 4. milestone 完成后，把该 worktree squash merge 回集成分支
@@ -185,4 +185,4 @@ GSD 内置了对常见 git 问题的自动恢复：
 
 ## 原生 Git 操作
 
-从 v2.16 起，GSD 在派发热路径中的读密集 git 操作改用 libgit2 原生绑定。这消除了每次派发周期中约 70 次进程拉起，从而提升了自动模式吞吐量。
+GSD 在派发热路径中的读密集 git 操作改用 libgit2 原生绑定。这消除了每次派发周期中约 70 次进程拉起，从而提升了自动模式吞吐量。

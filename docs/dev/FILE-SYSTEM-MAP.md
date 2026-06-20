@@ -1005,7 +1005,7 @@ Quick lookup: which files are part of each system?
 | **MCP Server/Client** | src/mcp-server.ts, src/resources/extensions/mcp-client/index.ts, vscode-extension/src/gsd-client.ts, modes/rpc/* |
 | **Memory Extension** | pi-coding-agent/src/resources/extensions/memory/* |
 | **Migration** | gsd/migrate/*, src/pi-migration.ts, pi-coding-agent/src/migrations.ts, scripts/recover-*.sh |
-| **Modes** | pi-coding-agent/src/modes/* |
+| **Modes** | gsd-agent-modes/src/modes/* |
 | **Model System** | pi-coding-agent/src/core/model-*.ts, pi-ai/src/models*.ts, pi-ai/src/api-registry.ts, gsd/model-router.ts |
 | **Native / Rust Tools** | native/crates/engine/src/* |
 | **Node.js Bindings** | packages/native/src/* |
@@ -1023,7 +1023,7 @@ Quick lookup: which files are part of each system?
 | **Text Processing** | native/crates/engine/src/diff.rs, html.rs, text.rs, truncate.rs, json_parse.rs, stream_process.rs |
 | **Tool System** | pi-coding-agent/src/core/tools/*, core/bash-executor.ts, core/exec.ts |
 | **TTSR** | src/resources/extensions/ttsr/*, native/crates/engine/src/ttsr.rs, packages/native/src/ttsr/* |
-| **TUI Components** | packages/pi-tui/src/*, pi-coding-agent/src/modes/interactive/components/*, pi-coding-agent/src/modes/interactive/controllers/* |
+| **TUI Components** | packages/pi-tui/src/*, packages/gsd-agent-modes/src/modes/interactive/components/*, packages/gsd-agent-modes/src/modes/interactive/controllers/* |
 | **Universal Config** | src/resources/extensions/universal-config/* |
 | **Voice** | src/resources/extensions/voice/* |
 | **VS Code Extension** | vscode-extension/src/* |

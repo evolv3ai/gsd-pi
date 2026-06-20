@@ -33,6 +33,7 @@ Share planning artifacts (milestones, roadmaps, decisions) while keeping runtime
 .gsd/activity/
 .gsd/runtime/
 .gsd/worktrees/
+.gsd-worktrees/
 .gsd/milestones/**/continue.md
 .gsd/milestones/**/*-CONTINUE.md
 ```
@@ -117,7 +118,7 @@ This pauses auto-mode when a slice is missing its slice `CONTEXT` file and requi
 
 Multiple developers can run auto mode simultaneously on different milestones. Each developer:
 
-- Gets their own worktree (`.gsd/worktrees/<MID>/`, gitignored)
+- Gets their own worktree (`.gsd-worktrees/<MID>/`, gitignored)
 - Works on a unique `milestone/<MID>` branch
 - Squash-merges to main independently
 

@@ -115,7 +115,7 @@ const result = await ctx.ui.custom<string | null>(
 ### 12.5 Custom Editor (Replace Main Input)
 
 ```typescript
-import { CustomEditor } from "@gsd/pi-coding-agent";
+import { CustomEditor } from "@gsd/agent-modes";
 import { matchesKey, truncateToWidth } from "@gsd/pi-tui";
 
 class VimEditor extends CustomEditor {
@@ -159,7 +159,7 @@ Import from `@gsd/pi-tui`:
 | `SettingsList` | Toggle settings UI |
 | `Input` | Text input field |
 
-Import from `@gsd/pi-coding-agent`:
+Import from `@gsd/agent-modes`:
 
 | Component | Purpose |
 |-----------|---------|

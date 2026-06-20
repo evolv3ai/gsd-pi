@@ -115,7 +115,7 @@ mode: team
 
 This enables unique milestone IDs, branch pushing, and pre-merge checks — preventing milestone ID collisions when multiple contributors run auto-mode simultaneously. Each developer gets their own isolated worktree; squash merges to `main` happen independently.
 
-For full details see [docs/working-in-teams.md](docs/working-in-teams.md) and [docs/git-strategy.md](docs/git-strategy.md).
+For full details see [docs/user-docs/working-in-teams.md](docs/user-docs/working-in-teams.md) and [docs/user-docs/git-strategy.md](docs/user-docs/git-strategy.md).
 
 ## Opening a pull request
 

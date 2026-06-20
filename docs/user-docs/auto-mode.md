@@ -160,7 +160,7 @@ You can also tune sandbox behavior with `context_mode.exec_timeout_ms`, `context
 GSD isolates milestone work using one of three modes (configured via `git.isolation` in preferences):
 
 - **`none`** (default): Work happens directly on your current branch. No worktree, no milestone branch. Ideal for hot-reload workflows where file isolation breaks dev tooling.
-- **`worktree`**: Each milestone runs in its own git worktree at `.gsd/worktrees/<MID>/` on a `milestone/<MID>` branch. Worktree mode requires at least one commit; in a zero-commit repo with no committed `HEAD`, GSD temporarily runs as `none` until the first commit exists. All slice work commits sequentially, and the milestone is squash-merged to main as one clean commit.
+- **`worktree`**: Each milestone runs in its own git worktree at `.gsd-worktrees/<MID>/` on a `milestone/<MID>` branch. Worktree mode requires at least one commit; in a zero-commit repo with no committed `HEAD`, GSD temporarily runs as `none` until the first commit exists. All slice work commits sequentially, and the milestone is squash-merged to main as one clean commit.
 - **`branch`**: Work happens in the project root on a `milestone/<MID>` branch. Useful for submodule-heavy repos where worktrees don't work well.
 
 See [Git Strategy](./git-strategy.md) for details.
@@ -173,7 +173,7 @@ When your project has independent milestones, you can run them simultaneously. E
 
 Auto mode persists worker state, unit-dispatch state, and paused-session metadata in the project-root SQLite database. If the session dies, the next `/gsd auto` reconstructs the interrupted unit from DB-backed runtime state, reads the surviving session file, synthesizes a recovery briefing from every tool call that made it to disk, and resumes with full context.
 
-**Headless auto-restart (v2.26):** When running `gsd headless auto`, crashes trigger automatic restart with exponential backoff (5s → 10s → 30s cap, default 3 attempts). Configure with `--max-restarts N`. SIGINT/SIGTERM bypasses restart. Combined with crash recovery, this enables true overnight "run until done" execution.
+**Headless auto-restart:** When running `gsd headless auto`, crashes trigger automatic restart with exponential backoff (5s → 10s → 30s cap, default 3 attempts). Configure with `--max-restarts N`. SIGINT/SIGTERM bypasses restart. Combined with crash recovery, this enables true overnight "run until done" execution.
 
 ### Provider Error Recovery
 
@@ -187,21 +187,21 @@ GSD classifies provider errors and auto-resumes when safe:
 
 No manual intervention needed for transient errors — the session pauses briefly and continues automatically.
 
-### Incremental Memory (v2.26)
+### Incremental Memory
 
 GSD maintains durable project memory in the `memories` table and projects selected knowledge back into `.gsd/KNOWLEDGE.md` for review. `KNOWLEDGE.md` keeps manual Rules as file-canonical entries, while Patterns and Lessons are captured as memories, backfilled from existing rows, and rendered into the file on session start.
 
 At the start of each unit, GSD injects the manual Rules from project `KNOWLEDGE.md`; Patterns and Lessons reach the agent through the memory block. Global `~/.gsd/agent/KNOWLEDGE.md` remains user-maintained and is injected unchanged.
 
-### Context Pressure Monitor (v2.26)
+### Context Pressure Monitor
 
 When context usage reaches 70%, GSD sends a wrap-up signal to the agent, nudging it to finish durable output (commit, write summaries) before the context window fills. This prevents sessions from hitting the hard context limit mid-task with no artifacts written.
 
-### Meaningful Commit Messages (v2.26)
+### Meaningful Commit Messages
 
 Commits are generated from task summaries — not generic "complete task" messages. Each commit message reflects what was actually built, giving clean `git log` output that reads like a changelog.
 
-### Stuck Detection (v2.39)
+### Stuck Detection
 
 GSD uses a sliding-window analysis to detect stuck loops. Instead of a simple "same unit dispatched twice" counter, the detector examines recent dispatch history for repeated patterns — catching cycles like A→B→A→B as well as single-unit repeats. On detection, GSD retries once with a deep diagnostic prompt. If it fails again, auto mode stops so you can intervene.
 
@@ -223,7 +223,7 @@ For `run-uat`, existence alone is not sufficient: a pre-existing `S##-ASSESSMENT
 
 Artifact verification retries are capped at 3 attempts. If the expected artifact is still missing after those retries, GSD pauses auto mode with an "Artifact still missing..." error instead of relying on loop detection or an unbounded dispatch counter.
 
-### Post-Mortem Investigation (v2.40)
+### Post-Mortem Investigation
 
 `/gsd forensics` is a full-access GSD debugger for post-mortem analysis of auto-mode failures. It provides:
 
@@ -281,7 +281,7 @@ See [Cost Management](./cost-management.md).
 
 After each slice completes, the roadmap is reassessed. If the work revealed new information that changes the plan, slices are reordered, added, or removed before continuing. This can be skipped with the `balanced` or `budget` token profiles.
 
-### Verification Enforcement (v2.26)
+### Verification Enforcement
 
 Configure shell commands that run automatically after every task execution:
 
@@ -299,7 +299,7 @@ Commands must be directly runnable checks such as `npm run lint`, `npm run test`
 
 If you do not configure commands and the task plan does not provide a `verify` command, GSD attempts project discovery. It checks `package.json` scripts first, then Python pytest markers through the `python-project` discovery source: test files under `tests/`, `pytest.ini`, or pytest configuration in `pyproject.toml`.
 
-### Slice Discussion Gate (v2.26)
+### Slice Discussion Gate
 
 For projects where you want human review before each slice begins:
 
@@ -309,7 +309,7 @@ require_slice_discussion: true
 
 Auto-mode pauses before each slice, presenting the slice context for discussion. After you confirm, execution continues. Useful for high-stakes projects where you want to review the plan before the agent builds.
 
-### HTML Reports (v2.26)
+### HTML Reports
 
 After a milestone completes, GSD auto-generates a self-contained HTML report in `.gsd/reports/`. Reports include project summary, progress tree, slice dependency graph (SVG DAG), cost/token metrics with bar charts, execution timeline, changelog, and knowledge base. No external dependencies — all CSS and JS are inlined.
 
@@ -317,13 +317,13 @@ After a milestone completes, GSD auto-generates a self-contained HTML report in 
 auto_report: true    # enabled by default
 ```
 
-Generate all missing milestone reports and open the reports index anytime with `/gsd report`. Use `/gsd report --html` for a single active-milestone snapshot, or `/gsd report --html --all` for the explicit all-milestones form (v2.28).
+Generate all missing milestone reports and open the reports index anytime with `/gsd report`. Use `/gsd report --html` for a single active-milestone snapshot, or `/gsd report --html --all` for the explicit all-milestones form.
 
-### Failure Recovery (v2.28)
+### Failure Recovery
 
-v2.28 hardens auto-mode reliability with multiple safeguards: atomic file writes prevent corruption on crash, OAuth fetch timeouts (30s) prevent indefinite hangs, RPC subprocess exit is detected and reported, and blob garbage collection prevents unbounded disk growth. Combined with the existing crash recovery and headless auto-restart, auto-mode is designed for true "fire and forget" overnight execution.
+Auto-mode reliability is hardened with multiple safeguards: atomic file writes prevent corruption on crash, OAuth fetch timeouts (30s) prevent indefinite hangs, RPC subprocess exit is detected and reported, and blob garbage collection prevents unbounded disk growth. Combined with the existing crash recovery and headless auto-restart, auto-mode is designed for true "fire and forget" overnight execution.
 
-### Pipeline Architecture (v2.40)
+### Pipeline Architecture
 
 The auto-loop is structured as a linear phase pipeline rather than recursive dispatch. Each iteration flows through explicit stages:
 
@@ -335,7 +335,7 @@ The auto-loop is structured as a linear phase pipeline rather than recursive dis
 
 This linear flow is easier to debug, uses less memory (no recursive call stack), and provides cleaner error recovery since each phase has well-defined entry and exit conditions.
 
-### Real-Time Health Visibility (v2.40)
+### Real-Time Health Visibility
 
 Doctor issues (from `/gsd doctor`) now surface in real time across three places:
 
@@ -345,7 +345,7 @@ Doctor issues (from `/gsd doctor`) now surface in real time across three places:
 
 Issues are classified by severity: `error` (blocks auto-mode), `warning` (non-blocking), and `info` (advisory). Auto-mode checks health at dispatch time and can pause on critical issues.
 
-### Skill Activation in Prompts (v2.39)
+### Skill Activation in Prompts
 
 Configured skills are automatically resolved and injected into dispatch prompts. The agent receives an "Available Skills" block listing skills that match the current context, based on:
 

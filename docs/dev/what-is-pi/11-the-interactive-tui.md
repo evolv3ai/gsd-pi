@@ -1,6 +1,6 @@
 # The Interactive TUI
 
-Pi's terminal interface is built with a custom TUI framework (`@mariozechner/pi-tui`).
+Pi's terminal interface is built with a custom TUI framework (`@gsd/pi-tui`).
 
 ### Layout (top to bottom)
 

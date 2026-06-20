@@ -22,7 +22,7 @@
 | `/gsd debug status <slug>` | 查看指定 debug 会话 slug 的状态 |
 | `/gsd debug continue <slug>` | 恢复一个已有的 debug 会话 slug |
 | `/gsd debug --diagnose` | 检查 malformed artifacts 与会话健康（`--diagnose [<slug> | <issue text>]`） |
-| `/gsd dispatch` | 直接派发一个指定阶段（research、plan、execute、complete、reassess、uat、replan） |
+| `/gsd dispatch` | 直接派发一个指定阶段（research、plan、execute、complete、validate、reassess、uat、replan） |
 | `/gsd history` | 查看执行历史（支持 `--cost`、`--phase`、`--model` 过滤） |
 | `/gsd forensics` | 全访问 GSD 调试器：用于分析自动模式失败，支持结构化异常检测、单元追踪和 LLM 引导的根因分析 |
 | `/gsd cleanup` | 清理 GSD 状态文件和过期 worktrees |
@@ -68,9 +68,9 @@
 |------|------|
 | `/gsd prefs` | 模型选择、超时和预算上限 |
 | `/gsd mode` | 切换工作流模式（solo / team），同时应用与 milestone ID、git 提交行为和文档相关的协调默认值 |
-| `/gsd config` | 重新运行 provider 配置向导（LLM provider + 工具 key） |
+| `/gsd config` | （已弃用）设置工具 API key —— 请改用 `/gsd keys`（工具 key）或 `/gsd setup`（provider 配置向导） |
 | `/gsd keys` | API key 管理器：列出、添加、移除、测试、轮换、doctor |
-| `/gsd doctor` | 运行时健康检查与自动修复；问题会实时显示在 widget、visualizer 和 HTML reports 中（v2.40） |
+| `/gsd doctor` | 运行时健康检查与自动修复；问题会实时显示在 widget、visualizer 和 HTML reports 中 |
 | `/gsd inspect` | 查看 SQLite DB 诊断信息 |
 | `/gsd init` | 项目初始化向导：检测、配置并 bootstrap `.gsd/` |
 | `/gsd setup` | 查看全局 setup 状态和配置 |
@@ -108,7 +108,7 @@
 
 完整文档见 [并行编排](./parallel-orchestration.md)。
 
-## Workflow Templates（v2.42）
+## Workflow Templates
 
 | 命令 | 说明 |
 |------|------|
@@ -117,7 +117,7 @@
 | `/gsd templates` | 列出可用 workflow templates |
 | `/gsd templates info <name>` | 查看某个 template 的详细信息 |
 
-## 自定义 Workflows（v2.42）
+## 自定义 Workflows
 
 | 命令 | 说明 |
 |------|------|
@@ -148,14 +148,14 @@
 | `/gsd cmux sidebar on/off` | 切换 cmux 侧边栏元数据 |
 | `/gsd cmux splits on/off` | 切换 cmux subagent 可视化分屏 |
 
-## GitHub Sync（v2.39）
+## GitHub Sync
 
 | 命令 | 说明 |
 |------|------|
 | `/github-sync bootstrap` | 初始配置：根据当前 `.gsd/` 状态创建 GitHub Milestones、Issues 和 draft PRs |
 | `/github-sync status` | 显示同步映射数量（milestones、slices、tasks） |
 
-在偏好设置里启用 `github.enabled: true`。要求已安装并认证 `gh` CLI。同步映射会保存在 `.gsd/.github-sync.json`。
+在偏好设置里启用 `github.enabled: true`。要求已安装并认证 `gh` CLI。同步映射会保存在 `.gsd/github-sync.json`。
 
 ## Git 命令
 
@@ -315,9 +315,9 @@ gsd --mode mcp
 
 ```bash
 /gsd update
-# Current version: v2.36.0
+# Current version: 1.2.0
 # Checking npm registry...
-# Updated to v2.37.0. Restart GSD to use the new version.
+# Updated to 1.3.0. Restart GSD to use the new version.
 ```
 
 如果已经是最新版本，它会给出提示且不做任何操作。

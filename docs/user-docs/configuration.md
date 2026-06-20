@@ -152,11 +152,13 @@ If you prefer to maintain the MCP entry manually, add:
   "mcpServers": {
     "gsd-browser": {
       "command": "gsd-browser",
-      "args": ["mcp", "--session", "gsd-my-project", "--identity-scope", "project", "--identity-project", "/path/to/project"]
+      "args": ["mcp", "--session", "gsd-my-project", "--identity-scope", "project", "--identity-key", "my-project", "--identity-project", "my-project"]
     }
   }
 }
 ```
+
+`--identity-key` and `--identity-project` are stable project identifiers (not filesystem paths) — they may not contain path separators.
 
 Keep this in `.gsd/mcp.json` when browser paths, vault settings, or session state are machine-local. Use `.mcp.json` only when the team should share the same server entry. Set `GSD_BROWSER_MCP_ENABLED=0` only to skip writing the external MCP entry; it does not disable Pi browser tools. Browser-facing projects automatically prefer the managed `gsd-browser` engine when it is available and starts cleanly, falling back to Playwright otherwise. Use `GSD_BROWSER_ENGINE=gsd-browser` to force the managed engine, `GSD_BROWSER_ENGINE=playwright` (or `legacy`) to force the Playwright engine, or `GSD_BROWSER_ENGINE=off` to disable Pi browser tools.
 
@@ -267,8 +269,8 @@ With this configuration, a Haiku-4-5 subagent sees only `gsd-workflow` and `goog
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GSD_HOME` | `~/.gsd` | Global GSD directory. All paths derive from this unless individually overridden. Affects preferences, skills, sessions, and per-project state. (v2.39) |
-| `GSD_PROJECT_ID` | (auto-hash) | Override the automatic project identity hash. Per-project state goes to `$GSD_HOME/projects/<GSD_PROJECT_ID>/` instead of the computed hash. Useful for CI/CD or sharing state across clones of the same repo. (v2.39) |
+| `GSD_HOME` | `~/.gsd` | Global GSD directory. All paths derive from this unless individually overridden. Affects preferences, skills, sessions, and per-project state. |
+| `GSD_PROJECT_ID` | (auto-hash) | Override the automatic project identity hash. Per-project state goes to `$GSD_HOME/projects/<GSD_PROJECT_ID>/` instead of the computed hash. Useful for CI/CD or sharing state across clones of the same repo. |
 | `GSD_STATE_DIR` | `$GSD_HOME` | Per-project state root. Controls where `projects/<repo-hash>/` directories are created. Takes precedence over `GSD_HOME` for project state. |
 | `GSD_CODING_AGENT_DIR` | `$GSD_HOME/agent` | Agent directory containing managed resources, extensions, and auth. Takes precedence over `GSD_HOME` for agent paths. |
 | `GSD_WORKFLOW_PROJECT_ROOT` | current working directory | Canonical project root for the packaged `gsd-workflow` MCP server. Used by workflow tools and by the stale-process registry key in `$GSD_HOME/mcp-instances.json`. |
@@ -338,7 +340,7 @@ models:
   subagent: claude-sonnet-4-6
 ```
 
-**Phases:** `research`, `planning`, `execution`, `execution_simple`, `completion`, `subagent`
+**Phases:** `research`, `planning`, `discuss`, `execution`, `execution_simple`, `completion`, `validation`, `subagent`, `uat`
 
 - `execution_simple` — used for tasks classified as "simple" by the [complexity router](./token-optimization.md#complexity-based-task-routing)
 - `subagent` — model for delegated subagent tasks (scout, researcher, worker)
@@ -529,6 +531,7 @@ auto_supervisor:
   soft_timeout_minutes: 20    # warn LLM to wrap up
   idle_timeout_minutes: 10    # detect stalls
   hard_timeout_minutes: 30    # pause auto mode
+  stalled_tool_timeout_minutes: 5  # recover a tool that hangs mid-call (default: 5)
 ```
 
 ### `min_request_interval_ms`
@@ -579,7 +582,7 @@ uat_dispatch: true
 
 When enabled, auto-mode runs UAT after slice completion. Non-PASS verdicts on closed slices do not hard-stop dispatch progression, so downstream remediation slices can continue, but automatic milestone closure is still gated on explicit UAT PASS sign-off for closed slices.
 
-### Verification (v2.26)
+### Verification
 
 Configure shell commands that run automatically after every task execution. Failures trigger auto-fix retries before advancing.
 
@@ -680,7 +683,7 @@ Allowed hostnames bypass the blocklist checks. The protocol restriction (HTTP/HT
 
 > **Note:** This setting is global-only. Project-level settings.json cannot override the URL allowlist — this prevents a cloned repo from directing `fetch_page` at internal infrastructure.
 
-### `auto_report` (v2.26)
+### `auto_report`
 
 Auto-generate HTML reports after milestone completion:
 
@@ -786,7 +789,7 @@ git:
 
 If `pr_target_branch` is not set, the PR targets the `main_branch` (or auto-detected main branch). PR creation failure is non-fatal — GSD logs and continues.
 
-### `github` (v2.39)
+### `github`
 
 GitHub sync configuration. When enabled, GSD auto-syncs milestones, slices, and tasks to GitHub Issues, PRs, and Milestones.
 
@@ -807,14 +810,14 @@ github:
 
 **Requirements:**
 - `gh` CLI installed and authenticated (`gh auth login`)
-- Sync mapping is persisted in `.gsd/.github-sync.json`
+- Sync mapping is persisted in `.gsd/github-sync.json`
 - Rate-limit aware — skips sync when GitHub API rate limit is low
 
 **Commands:**
 - `/github-sync bootstrap` — initial setup and sync
 - `/github-sync status` — show sync mapping counts
 
-### `workspace` (v2.49)
+### `workspace`
 
 Multi-repository parent workspace configuration. This lets one `.gsd` state manage multiple child repositories and constrains planning file paths to declared repository roots.
 
@@ -989,7 +992,7 @@ custom_instructions:
 
 For project-specific knowledge, use the GSD knowledge and memory surfaces instead. `.gsd/KNOWLEDGE.md` is a hybrid projection: manually maintained Rules stay in the file, while generated Patterns and Lessons are backed by the `memories` table and rendered back into the file for review. Add durable operating rules with `/gsd knowledge rule <description>`; agent-discovered patterns and lessons are stored as memories and selected for prompt injection automatically.
 
-### `RUNTIME.md` — Runtime Context (v2.39)
+### `RUNTIME.md` — Runtime Context
 
 Declare project-level runtime context in `.gsd/RUNTIME.md`. This file is inlined into task execution prompts, giving the agent accurate information about your runtime environment without relying on hallucinated paths or URLs.
 
@@ -1022,7 +1025,7 @@ Complexity-based model routing. See [Dynamic Model Routing](./dynamic-model-rout
 ```yaml
 dynamic_routing:
   enabled: true
-  capability_routing: true          # score models by task capability (v2.59)
+  capability_routing: true          # score models by task capability
   tier_models:
     light: claude-haiku-4-5
     standard: claude-sonnet-4-6
@@ -1032,7 +1035,7 @@ dynamic_routing:
   cross_provider: true
 ```
 
-### `disabled_model_providers` (v2.60)
+### `disabled_model_providers`
 
 Hide specific providers from model selection and routing without removing their auth credentials. Useful when you want a provider for tools (like `google_search`) but never want its models in `/model` or auto routing.
 
@@ -1041,7 +1044,7 @@ disabled_model_providers:
   - google-gemini-cli
 ```
 
-### `context_management` (v2.59)
+### `context_management`
 
 Controls observation masking and tool result truncation during auto-mode sessions. Reduces context bloat between compactions with zero LLM overhead.
 
@@ -1049,11 +1052,11 @@ Controls observation masking and tool result truncation during auto-mode session
 context_management:
   observation_masking: true          # replace old tool results with placeholders (default: true)
   observation_mask_turns: 8          # keep results from last N user turns (1-50, default: 8)
-  compaction_threshold_percent: 0.70 # target compaction at 70% context usage (0.5-0.95, default: 0.70)
+  compaction_threshold_percent: 0.60 # target compaction at 60% context usage (0.5-0.95, default: 0.60)
   tool_result_max_chars: 800         # cap individual tool result content (200-10000, default: 800)
 ```
 
-### `service_tier` (v2.42)
+### `service_tier`
 
 OpenAI service tier preference for supported models. Toggle with `/gsd fast`.
 
@@ -1067,7 +1070,7 @@ OpenAI service tier preference for supported models. Toggle with `/gsd fast`.
 service_tier: priority
 ```
 
-### `forensics_dedup` (v2.43)
+### `forensics_dedup`
 
 Opt-in: search existing issues and PRs before filing from `/gsd forensics`. Uses additional AI tokens.
 
@@ -1075,7 +1078,7 @@ Opt-in: search existing issues and PRs before filing from `/gsd forensics`. Uses
 forensics_dedup: true    # default: false
 ```
 
-### `show_token_cost` (v2.44)
+### `show_token_cost`
 
 Opt-in: show per-prompt and cumulative session token cost in the footer.
 

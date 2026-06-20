@@ -1,10 +1,8 @@
 # Dynamic Model Routing
 
-*Introduced in v2.19.0. Capability scoring introduced in v2.52.0.*
-
 Dynamic model routing automatically selects cheaper models for simple work and reserves expensive models for complex tasks. This reduces token consumption by 20-50% on capped plans without sacrificing quality where it matters.
 
-Starting in v2.52.0, the router uses **capability-aware scoring** to select the *best fit* model for each task, not just the cheapest one in the tier.
+The router uses **capability-aware scoring** to select the *best fit* model for each task, not just the cheapest one in the tier.
 
 ## How It Works
 
@@ -129,7 +127,7 @@ Each model has a built-in **capability profile** — a 7-dimension score (0–10
 | `longContext` | Handling large codebases and long documents |
 | `instruction` | Following structured instructions precisely |
 
-**Built-in profiles** ship for the Claude 4.6/4.7 family, the OpenAI GPT-4.x and GPT-5.x lines (including GPT-5.5, added v2.78), the o-series reasoning models (`o1`, `o3`, `o4-mini`, `o4-mini-deep-research`), Gemini 2.0/2.5, and `deepseek-chat`. The full table lives in `src/resources/extensions/gsd/model-router.ts` (`MODEL_CAPABILITY_PROFILES`).
+**Built-in profiles** ship for the Claude 4.6/4.7 family, the OpenAI GPT-4.x and GPT-5.x lines (including GPT-5.5), the o-series reasoning models (`o1`, `o3`, `o4-mini`, `o4-mini-deep-research`), Gemini 2.0/2.5, and `deepseek-chat`. The full table lives in `src/resources/extensions/gsd/model-router.ts` (`MODEL_CAPABILITY_PROFILES`).
 
 Models without a built-in profile receive **uniform scores of 50** across all dimensions. This is a cold-start policy — unknown models compete but don't have an advantage. From the user's perspective, routing behaves the same as before capability scoring was introduced for those models.
 

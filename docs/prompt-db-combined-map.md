@@ -332,7 +332,7 @@ unit completes
 | `db-memory-fts-schema.ts` | memories_fts (FTS5 virtual table), memories_ai/ad/au triggers |
 | `db-runtime-kv-schema.ts` | runtime_kv |
 | `db-verification-evidence-schema.ts` | verification_evidence dedup index (helper for V13 migration) |
-| `eval-review-schema.ts` | eval_reviews (EVAL-REVIEW status tracking, separate from milestone validation) |
+| `eval-review-schema.ts` | YAML frontmatter schema + parser for `/gsd eval-review` output (no SQL table — the eval-review contract lives in markdown frontmatter) |
 
 ---
 

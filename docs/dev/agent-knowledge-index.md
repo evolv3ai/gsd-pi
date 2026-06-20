@@ -202,21 +202,21 @@ Use when:
 
 Read first:
 
-- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@mariozechner/pi-coding-agent/README.md`
+- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@gsd/pi-coding-agent/README.md`
 
 Read together when relevant:
 
-- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@mariozechner/pi-coding-agent/docs/extensions.md`
-- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@mariozechner/pi-coding-agent/docs/themes.md`
-- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@mariozechner/pi-coding-agent/docs/skills.md`
-- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@mariozechner/pi-coding-agent/docs/prompt-templates.md`
-- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@mariozechner/pi-coding-agent/docs/tui.md`
-- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@mariozechner/pi-coding-agent/docs/keybindings.md`
-- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@mariozechner/pi-coding-agent/docs/sdk.md`
-- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@mariozechner/pi-coding-agent/docs/custom-provider.md`
-- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@mariozechner/pi-coding-agent/docs/models.md`
-- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@mariozechner/pi-coding-agent/docs/packages.md`
+- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@gsd/pi-coding-agent/docs/extensions.md`
+- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@gsd/pi-coding-agent/docs/themes.md`
+- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@gsd/pi-coding-agent/docs/skills.md`
+- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@gsd/pi-coding-agent/docs/prompt-templates.md`
+- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@gsd/pi-coding-agent/docs/tui.md`
+- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@gsd/pi-coding-agent/docs/keybindings.md`
+- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@gsd/pi-coding-agent/docs/sdk.md`
+- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@gsd/pi-coding-agent/docs/custom-provider.md`
+- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@gsd/pi-coding-agent/docs/models.md`
+- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@gsd/pi-coding-agent/docs/packages.md`
 
 Follow-up if needed:
 
-- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@mariozechner/pi-coding-agent/examples`
+- `~/.nvm/versions/node/v22.20.0/lib/node_modules/@gsd/pi-coding-agent/examples`

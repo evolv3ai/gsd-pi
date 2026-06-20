@@ -72,11 +72,11 @@ docker run --rm -v $(pwd):/workspace ghcr.io/open-gsd/gsd-pi:latest --version
 | Issue Dedupe | `issue-dedupe.yml` | Opened/edited/reopened issues + manual dispatch | Posts likely duplicate candidates once per issue |
 | Issue Lifecycle | `issue-lifecycle.yml` | Label changes + schedule + manual dispatch | Adds lifecycle guidance comments and sweeps stale `needs-info` issues |
 
-**CI optimization (v2.38):** GitHub Actions minutes were reduced ~60-70% (~10k → ~3-4k/month) through workflow consolidation and caching improvements.
+**CI optimization:** GitHub Actions minutes were reduced ~60-70% (~10k → ~3-4k/month) through workflow consolidation and caching improvements.
 
 **CI refactor (2026-05):** Single `fast-gates` job, Linux build/test consolidation, path-gated Windows/Docker checks, and coverage moved out of the core CI path. Local parity: `verify:fast`, `verify:pr` (fast loop), **`verify:merge`** (PR blocking). See [Test confidence stack](./test-confidence-stack.md).
 
-**Pipeline optimization (v2.41):**
+**Pipeline optimization:**
 - **Shallow clones** — downstream jobs use shallow checkout + shared build artifacts
 - **npm cache in pipeline** — prerelease verification and production release use `cache: 'npm'` on setup-node, saving ~1-2 min per job on repeat runs
 - **Exponential backoff** — npm registry propagation waits in `build-native.yml` replaced hardcoded `sleep 30` + fixed 15s retries with exponential backoff (5s → 10s → 20s → 30s cap), typically finishing in <15s when the registry is fast

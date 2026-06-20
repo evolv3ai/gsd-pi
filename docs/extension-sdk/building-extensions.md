@@ -71,7 +71,7 @@ Tools can customize how they appear in the TUI:
 
 ```typescript
 import { Text } from "@gsd/pi-tui";
-import { keyHint } from "@gsd/pi-coding-agent";
+import { keyHint } from "@gsd/agent-modes";
 
 pi.registerTool({
   name: "my_tool",
@@ -326,7 +326,9 @@ pi.on("tool_call", async (event, ctx) => {
 ```typescript
 pi.on("tool_result", async (event, ctx) => {
   if (event.toolName === "my_tool") {
-    return { result: { ...event.result, modified: true } };
+    // The event carries { content, details, isError }. Return an object of the
+    // same shape to replace what the agent sees (all fields optional).
+    return { content: [...event.content, "post-processed note"], isError: false };
   }
 });
 ```
@@ -525,7 +527,7 @@ Import from `@gsd/pi-tui`:
 | `SettingsList` | Toggle settings UI |
 | `Input` | Text input field |
 
-Import from `@gsd/pi-coding-agent`:
+Import from `@gsd/agent-modes`:
 
 | Component | Purpose |
 |-----------|---------|
@@ -771,8 +773,9 @@ When a model/provider has request-time tool limits, Pi applies built-in provider
 ## Model Management
 
 ```typescript
-// Switch model (returns false if no API key)
-pi.setModel("claude-sonnet-4-20250514");
+// Switch model (returns false if no API key); setModel takes a Model object, not a string
+const model = pi.modelRegistry.find("anthropic", "claude-sonnet-4-5");
+if (model) await pi.setModel(model, { persist: true });
 
 // Thinking level control
 const level = pi.getThinkingLevel();

@@ -225,7 +225,7 @@ pi.on("tool_call", async (event, ctx) => {
 
 **Type narrowing:**
 ```typescript
-import { isToolCallEventType } from "@mariozechner/pi-coding-agent";
+import { isToolCallEventType } from "@gsd/pi-coding-agent";
 
 pi.on("tool_call", async (event, ctx) => {
   if (isToolCallEventType("bash", event)) {

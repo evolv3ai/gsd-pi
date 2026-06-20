@@ -1,13 +1,13 @@
 # Slash Command Subcommand Patterns
 
-Pi does not have a separate built-in concept of "nested slash commands" like `/wt new` or `/foo delete`.
+Pi does not have a separate built-in concept of "nested slash commands" like `/wt create` or `/foo delete`.
 
 Instead, this UX is built by registering a single slash command and using **argument completions** to make the first argument behave like a subcommand.
 
-This is the pattern used by the built-in worktree extension:
+This is the pattern used by the built-in worktree command:
 - `/wt`
-- `/wt new`
-- `/wt ls`
+- `/wt list`
+- `/wt create my-branch`
 - `/wt switch my-branch`
 
 The key API is:
@@ -28,18 +28,18 @@ So this:
 
 ```text
 /wt
-  new
-  ls
+  list
   switch
   merge
-  rm
-  status
+  remove
+  create
+  return
 ```
 
 is really just:
 
 - command: `wt`
-- first arg: one of `new | ls | switch | merge | rm | status`
+- first arg: one of `list | switch | merge | remove | create | return`
 
 ## The Core Pattern
 
@@ -169,24 +169,24 @@ getArgumentCompletions: (prefix) => {
 }
 ```
 
-This is how `/wt switch`, `/wt merge`, and `/wt rm` can suggest current worktree names.
+This is how `/wt switch`, `/wt merge`, and `/wt remove` can suggest current worktree names.
 
 ## Real Example: `/wt`
 
-The worktree extension uses this exact structure in:
+The bundled worktree command uses this exact structure in:
 
-- `~/.gsd/agent/extensions/worktree/index.ts`
+- `src/resources/extensions/gsd/worktree-command.ts` (registered as `/worktree`, with `/wt` as an alias)
 
 It defines:
 
 ```typescript
-const subcommands = ["new", "ls", "switch", "merge", "rm", "status"];
+const subcommands = ["list", "merge", "remove", "switch", "create", "return"];
 ```
 
 Then:
 
 - when the first argument is still being typed, it suggests those subcommands
-- when the first argument is `switch`, `merge`, or `rm`, it suggests matching worktree names for the second argument
+- when the first argument is `switch`, `merge`, `remove`, or `create`, it suggests matching worktree names for the second argument
 
 That is why typing:
 
@@ -197,12 +197,12 @@ That is why typing:
 shows:
 
 ```text
-new
-ls
-switch
+list
 merge
-rm
-status
+remove
+switch
+create
+return
 ```
 
 and typing:
@@ -255,7 +255,7 @@ Use a single command with subcommand-style completions when:
 
 Examples:
 
-- `/wt new|switch|merge|rm|status`
+- `/wt list|switch|merge|remove|create|return`
 - `/preset save|load|delete`
 - `/workflow start|list|abort`
 - `/foo new|list|delete`

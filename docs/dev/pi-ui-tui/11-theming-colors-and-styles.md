@@ -49,7 +49,7 @@ theme.bg("selectedBg", theme.fg("text", " Selected "))
 ### Syntax Highlighting
 
 ```typescript
-import { highlightCode, getLanguageFromPath } from "@mariozechner/pi-coding-agent";
+import { highlightCode, getLanguageFromPath } from "@gsd/pi-coding-agent";
 
 // Highlight with explicit language
 const highlighted = highlightCode("const x = 1;", "typescript", theme);
@@ -62,8 +62,8 @@ const highlighted = highlightCode(code, lang, theme);
 ### Markdown Theme
 
 ```typescript
-import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
-import { Markdown } from "@mariozechner/pi-tui";
+import { getMarkdownTheme } from "@gsd/pi-coding-agent";
+import { Markdown } from "@gsd/pi-tui";
 
 const mdTheme = getMarkdownTheme();
 const md = new Markdown(content, 1, 1, mdTheme);

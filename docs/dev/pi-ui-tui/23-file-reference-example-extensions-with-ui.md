@@ -2,7 +2,7 @@
 
 All paths relative to:
 ```
-~/.nvm/versions/node/v22.20.0/lib/node_modules/@mariozechner/pi-coding-agent/examples/extensions/
+~/.nvm/versions/node/v22.20.0/lib/node_modules/@gsd/pi-coding-agent/examples/extensions/
 ```
 
 ### Full Custom Components
@@ -83,9 +83,9 @@ Captures the raw ANSI stream for debugging rendering issues.
 
 *This document was generated from Pi's TUI and extension documentation. Source files:*
 ```
-~/.nvm/versions/node/v22.20.0/lib/node_modules/@mariozechner/pi-coding-agent/docs/tui.md
-~/.nvm/versions/node/v22.20.0/lib/node_modules/@mariozechner/pi-coding-agent/docs/extensions.md
-~/.nvm/versions/node/v22.20.0/lib/node_modules/@mariozechner/pi-coding-agent/examples/extensions/
+~/.nvm/versions/node/v22.20.0/lib/node_modules/@gsd/pi-coding-agent/docs/tui.md
+~/.nvm/versions/node/v22.20.0/lib/node_modules/@gsd/pi-coding-agent/docs/extensions.md
+~/.nvm/versions/node/v22.20.0/lib/node_modules/@gsd/pi-coding-agent/examples/extensions/
 ```
 
 *Companion documents on Desktop:*

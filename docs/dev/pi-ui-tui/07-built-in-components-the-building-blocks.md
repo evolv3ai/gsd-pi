@@ -1,13 +1,13 @@
 # Built-in Components — The Building Blocks
 
-Import from `@mariozechner/pi-tui`:
+Import from `@gsd/pi-tui`:
 
 ### Text
 
 Multi-line text with automatic word wrapping and optional background.
 
 ```typescript
-import { Text } from "@mariozechner/pi-tui";
+import { Text } from "@gsd/pi-tui";
 
 const text = new Text(
   "Hello World\nSecond line",  // content (supports \n)
@@ -26,7 +26,7 @@ text.setText("Updated content");  // Update text dynamically
 Container with padding and background color. Add children inside it.
 
 ```typescript
-import { Box } from "@mariozechner/pi-tui";
+import { Box } from "@gsd/pi-tui";
 
 const box = new Box(
   1,                // paddingX
@@ -44,7 +44,7 @@ box.setBgFn((s) => bgBlue(s));  // Change background dynamically
 Groups child components vertically (stacked). No visual styling of its own.
 
 ```typescript
-import { Container } from "@mariozechner/pi-tui";
+import { Container } from "@gsd/pi-tui";
 
 const container = new Container();
 container.addChild(component1);
@@ -60,7 +60,7 @@ container.clear();  // Remove all children
 Empty vertical space.
 
 ```typescript
-import { Spacer } from "@mariozechner/pi-tui";
+import { Spacer } from "@gsd/pi-tui";
 
 const spacer = new Spacer(2);  // 2 empty lines
 ```
@@ -72,8 +72,8 @@ const spacer = new Spacer(2);  // 2 empty lines
 Renders markdown with full formatting and syntax highlighting.
 
 ```typescript
-import { Markdown } from "@mariozechner/pi-tui";
-import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
+import { Markdown } from "@gsd/pi-tui";
+import { getMarkdownTheme } from "@gsd/pi-coding-agent";
 
 const md = new Markdown(
   "# Title\n\nSome **bold** text\n\n```js\nconst x = 1;\n```",
@@ -92,7 +92,7 @@ md.setText("Updated markdown content");
 Renders images in supported terminals (Kitty, iTerm2, Ghostty, WezTerm).
 
 ```typescript
-import { Image } from "@mariozechner/pi-tui";
+import { Image } from "@gsd/pi-tui";
 
 const image = new Image(
   base64Data,    // base64-encoded image data
@@ -109,7 +109,7 @@ const image = new Image(
 Interactive selection from a list with search, scrolling, and descriptions.
 
 ```typescript
-import { SelectList, type SelectItem } from "@mariozechner/pi-tui";
+import { SelectList, type SelectItem } from "@gsd/pi-tui";
 
 const items: SelectItem[] = [
   { value: "opt1", label: "Option 1", description: "First option" },
@@ -140,8 +140,8 @@ selectList.onCancel = () => { /* escape pressed */ };
 Toggle settings with left/right arrow keys.
 
 ```typescript
-import { SettingsList, type SettingItem } from "@mariozechner/pi-tui";
-import { getSettingsListTheme } from "@mariozechner/pi-coding-agent";
+import { SettingsList, type SettingItem } from "@gsd/pi-tui";
+import { getSettingsListTheme } from "@gsd/pi-coding-agent";
 
 const items: SettingItem[] = [
   { id: "verbose", label: "Verbose mode", currentValue: "off", values: ["on", "off"] },
@@ -165,7 +165,7 @@ const settingsList = new SettingsList(
 Text input field with cursor.
 
 ```typescript
-import { Input } from "@mariozechner/pi-tui";
+import { Input } from "@gsd/pi-tui";
 
 const input = new Input();
 input.setText("initial value");
@@ -177,7 +177,7 @@ input.setText("initial value");
 Multi-line text editor with undo, word deletion, cursor movement.
 
 ```typescript
-import { Editor, type EditorTheme } from "@mariozechner/pi-tui";
+import { Editor, type EditorTheme } from "@gsd/pi-tui";
 
 const editorTheme: EditorTheme = {
   borderColor: (s) => theme.fg("accent", s),

@@ -251,7 +251,7 @@ This is context-efficient: the system prompt grows by one line per rule file, no
 Tools support pluggable `operations` that replace the underlying I/O:
 
 ```typescript
-import { createBashTool } from "@mariozechner/pi-coding-agent";
+import { createBashTool } from "@gsd/pi-coding-agent";
 
 // Create a bash tool that executes via SSH
 const remoteBash = createBashTool(cwd, {

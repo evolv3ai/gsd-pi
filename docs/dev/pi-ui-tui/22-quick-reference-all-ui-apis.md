@@ -70,14 +70,14 @@ import {
   type Terminal,
 } from "@gsd/pi-tui";
 
-// From @mariozechner/pi-coding-agent
+// From @gsd/pi-coding-agent
 import {
   DynamicBorder, BorderedLoader, CustomEditor,
   getMarkdownTheme, getSettingsListTheme,
   highlightCode, getLanguageFromPath,
   keyHint, appKeyHint, editorKey, rawKeyHint,
   type ExtensionAPI, type ExtensionContext, type Theme,
-} from "@mariozechner/pi-coding-agent";
+} from "@gsd/pi-coding-agent";
 ```
 
 ---

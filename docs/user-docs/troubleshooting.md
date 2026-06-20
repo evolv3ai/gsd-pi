@@ -144,7 +144,7 @@ Replace the path with the exact global bin directory from your pnpm error messag
 
 **Cause:** The LLM wrote to the main repo instead of the worktree.
 
-**Fix:** This was fixed in v2.14+. If you're on an older version, update. The dispatch prompt now includes explicit working directory instructions.
+**Fix:** This was fixed in a recent release. If you're on an older version, update. The dispatch prompt now includes explicit working directory instructions.
 
 ### Milestone entry blocked by degraded worktree isolation
 
@@ -153,7 +153,7 @@ Replace the path with the exact global bin directory from your pnpm error messag
 **Current behavior:** When isolation is configured as `worktree`, GSD now attempts a safe fallback to milestone `branch` mode instead of hard-failing immediately. Bootstrap also surfaces a specific isolation-degraded notification so the cause is visible.
 
 **Fix:**
-- Close editors, terminals, or antivirus tools that may be locking `.gsd/worktrees/*` paths.
+- Close editors, terminals, or antivirus tools that may be locking `.gsd-worktrees/*` paths.
 - If the old worktree has salvageable changes, merge it with `/gsd worktree merge <MID>`.
 - If the old worktree is stale and should be discarded, remove it with `/gsd worktree remove <MID>`.
 - Run `/gsd doctor fix`, then retry `/gsd auto`. If fallback already succeeded, work continues on `milestone/<MID>` in the project root for that milestone.
@@ -200,8 +200,8 @@ source ~/.zshrc
 ### `npm install -g @opengsd/gsd-pi@latest` fails
 
 **Common causes:**
-- Missing workspace packages — fixed in v2.10.4+
-- `postinstall` hangs on Linux (Playwright `--with-deps` triggering sudo) — fixed in v2.3.6+
+- Missing workspace packages — fixed in a recent release
+- `postinstall` hangs on Linux (Playwright `--with-deps` triggering sudo) — fixed in a recent release
 - Node.js version too old — requires ≥ 22.0.0
 - `ETARGET: No matching version found` / `notarget` — the `@opengsd/gsd-pi` package has not been published to the npm registry yet for the requested version (see below)
 
@@ -232,7 +232,7 @@ Options:
 
 **Symptoms:** Auto mode pauses with a provider error (rate limit, server error, auth failure).
 
-**How GSD handles it (v2.26):**
+**How GSD handles it:**
 
 | Error type | Auto-resume? | Delay |
 |-----------|-------------|-------|
@@ -330,7 +330,7 @@ In these states GSD does not auto-stash and does not auto-fix; it stops so you c
 
 **Symptoms:** `/gsd doctor` shows a warning like `Orphan milestone directory: M003` with issue code `orphan_milestone_dir`.
 
-**What it means:** `.gsd/milestones/<MID>/` exists on disk, but GSD cannot find a DB milestone row, a matching `.gsd/worktrees/<MID>/` worktree, or any milestone content files. These disk-only stub directories can be left behind by interrupted or stale forward references and can skew the next milestone ID that GSD generates.
+**What it means:** `.gsd/milestones/<MID>/` exists on disk, but GSD cannot find a DB milestone row, a matching `.gsd-worktrees/<MID>/` worktree, or any milestone content files. These disk-only stub directories can be left behind by interrupted or stale forward references and can skew the next milestone ID that GSD generates.
 
 **Fix:** Run `/gsd doctor fix` to remove the orphan milestone stub directory automatically. The auto-fix only targets disk-only stubs with no DB row, no worktree, and no content files; populated milestone directories and in-flight worktree-only milestones are not removed.
 
@@ -361,7 +361,7 @@ In these states GSD does not auto-stash and does not auto-fix; it stops so you c
 
 **Cause:** Node v24 changed type-stripping behavior for `node_modules`, breaking the Next.js web build.
 
-**Fix:** Fixed in v2.42.0+ (#1864). Upgrade to the latest version.
+**Fix:** Fixed in a recent release. Upgrade to the latest version.
 
 ### Orphan web server process
 
@@ -369,15 +369,15 @@ In these states GSD does not auto-stash and does not auto-fix; it stops so you c
 
 **Cause:** A previous web server process was not cleaned up on exit.
 
-**Fix:** Fixed in v2.42.0+. GSD now cleans up stale web server processes automatically. If you're on an older version, kill the orphan process manually: `lsof -ti:3000 | xargs kill`.
+**Fix:** Fixed in a recent release. GSD now cleans up stale web server processes automatically. If you're on an older version, kill the orphan process manually: `lsof -ti:3000 | xargs kill`.
 
 ### Non-JS project blocked by worktree health check
 
 **Symptoms:** Worktree health check fails or blocks auto-mode in projects that don't use Node.js (e.g., Rust, Go, Python).
 
-**Cause:** The worktree health check only recognized JavaScript ecosystems prior to v2.42.0.
+**Cause:** The worktree health check only recognized JavaScript ecosystems in older releases.
 
-**Fix:** Fixed in v2.42.0+ (#1860). The health check now supports 17+ ecosystems. Upgrade to the latest version.
+**Fix:** Fixed in a recent release. The health check now supports 17+ ecosystems. Upgrade to the latest version.
 
 ### German/non-English locale git errors
 
@@ -385,7 +385,7 @@ In these states GSD does not auto-stash and does not auto-fix; it stops so you c
 
 **Cause:** GSD parsed git output assuming English locale strings.
 
-**Fix:** Fixed in v2.42.0+. All git commands now force `LC_ALL=C` to ensure consistent English output regardless of system locale.
+**Fix:** Fixed in a recent release. All git commands now force `LC_ALL=C` to ensure consistent English output regardless of system locale.
 
 ## MCP Client Issues
 
@@ -481,13 +481,13 @@ In these states GSD does not auto-stash and does not auto-fix; it stops so you c
 
 **Symptoms:** Running `/gsd` (step mode) in a second terminal causes a running auto-mode session to lose its lock.
 
-**Fix:** Fixed in v2.36.0. Bare `/gsd` no longer steals the session lock from a running auto-mode session. Upgrade to the latest version.
+**Fix:** Fixed in a recent release. Bare `/gsd` no longer steals the session lock from a running auto-mode session. Upgrade to the latest version.
 
 ### Worktree commits landing on main instead of milestone branch
 
 **Symptoms:** Auto-mode commits in a worktree end up on `main` instead of the `milestone/<MID>` branch.
 
-**Fix:** Fixed in v2.37.1. CWD is now realigned before dispatch and stale merge state is cleaned on failure. Upgrade to the latest version.
+**Fix:** Fixed in a recent release. CWD is now realigned before dispatch and stale merge state is cleaned on failure. Upgrade to the latest version.
 
 ### Extension loader fails with subpath export error
 
@@ -495,7 +495,7 @@ In these states GSD does not auto-stash and does not auto-fix; it stops so you c
 
 **Cause:** Dynamic imports in the extension loader didn't resolve npm subpath exports (e.g., `@pkg/foo/bar`).
 
-**Fix:** Fixed in v2.38+. The extension loader now auto-resolves npm subpath exports and creates a `node_modules` symlink for dynamic import resolution. Upgrade to the latest version.
+**Fix:** Fixed in a recent release. The extension loader now auto-resolves npm subpath exports and creates a `node_modules` symlink for dynamic import resolution. Upgrade to the latest version.
 
 ## Recovery Procedures
 
@@ -533,7 +533,7 @@ Use this only when the database is missing, damaged, or known to be stale but th
 
 `/gsd recover --confirm` clears the database hierarchy tables plus persisted validation/gate state from prior runs, including quality-gate rows and skipped-validation assessments, then reconstructs the hierarchy from markdown and derives state again to verify the result. Normal runtime does not silently import markdown projections, and worktree markdown is not synced back as authoritative state.
 
-For non-TTY environments (CI, cron, scripted automation), v2.79 adds `gsd headless recover` — same semantics, no interactive prompt. Exits non-zero on failure.
+For non-TTY environments (CI, cron, scripted automation), `gsd headless recover` — same semantics, no interactive prompt. Exits non-zero on failure.
 
 ## Getting Help
 
@@ -560,7 +560,7 @@ For non-TTY environments (CI, cron, scripted automation), v2.79 adds `gsd headle
 
 **Cause:** The `which` command in MSYS2/Git Bash returns POSIX paths that Node.js `spawn()` can't resolve.
 
-**Fix:** Updated in v2.29+ to use `where.exe` on Windows. Upgrade to the latest version.
+**Fix:** Updated recently to use `where.exe` on Windows. Upgrade to the latest version.
 
 ### EBUSY errors during WXT/extension builds
 
@@ -588,7 +588,7 @@ For non-TTY environments (CI, cron, scripted automation), v2.79 adds `gsd headle
 
 **Cause:** A description-like string (e.g., `All 10 checks pass (build, lint)`) was treated as a shell command. This can happen when task plans have `verify:` fields with prose instead of actual commands.
 
-**Fix:** Updated in v2.29+ to filter preference commands through `isLikelyCommand()`. Ensure `verification_commands` in preferences contains only valid shell commands, not descriptions.
+**Fix:** Updated recently to filter preference commands through `isLikelyCommand()`. Ensure `verification_commands` in preferences contains only valid shell commands, not descriptions.
 
 ### Verification command is rejected as unsafe or non-runnable
 
