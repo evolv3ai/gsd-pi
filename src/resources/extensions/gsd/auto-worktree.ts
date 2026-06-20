@@ -242,6 +242,17 @@ function stripGsdDisplayPrefix(value: string | undefined | null, id: string): st
 /** Active workspace registry — replaces the legacy `originalBase` singleton. */
 let activeWorkspace: GsdWorkspace | null = null;
 
+/**
+ * Optional override for the shelter restore copy step (milestone merge #2505).
+ * Production leaves this null so restoreShelter uses the real cpSync; tests
+ * inject a throwing function to deterministically exercise the best-effort
+ * failure path (auto-worktree.ts:1809) and the shelter-retention guarantee,
+ * which is otherwise unreachable because shelter and restore run synchronously
+ * in one mergeMilestoneToMain call (the filesystem cannot change between them).
+ * @internal
+ */
+let _restoreEntryFn: ((src: string, dest: string) => void) | null = null;
+
 function setActiveWorkspace(ws: GsdWorkspace | null): void {
   activeWorkspace = ws;
 }
@@ -1394,6 +1405,22 @@ export function _resetAutoWorktreeOriginalBaseForTests(): void {
   setActiveWorkspace(null);
 }
 
+/**
+ * Inject an override for the shelter restore copy step, returning a function
+ * that restores the default (real cpSync) behavior. Used by tests to
+ * deterministically exercise the best-effort restore-failure path
+ * (auto-worktree.ts:1809) and the #2505 shelter-retention guarantee — which is
+ * otherwise unreachable because shelter + restore run synchronously in one
+ * mergeMilestoneToMain call. No production caller.
+ * @internal
+ */
+export function _setRestoreEntryFnForTests(
+  fn: ((src: string, dest: string) => void) | null,
+): () => void {
+  _restoreEntryFn = fn;
+  return () => { _restoreEntryFn = null; };
+}
+
 export function getActiveAutoWorktreeContext(): {
   originalBase: string;
   worktreeName: string;
@@ -1803,7 +1830,15 @@ export function mergeMilestoneToMain(
       }
       try {
         mkdirSync(milestonesDir, { recursive: true });
-        cpSync(src, join(milestonesDir, dirName), { recursive: true, force: true });
+        // Test seam: when _restoreEntryFn is injected, route the copy through it
+        // so the best-effort failure path (and shelter-retention guarantee) can
+        // be exercised deterministically. Production leaves it null → real cpSync.
+        const dest = join(milestonesDir, dirName);
+        if (_restoreEntryFn) {
+          _restoreEntryFn(src, dest);
+        } else {
+          cpSync(src, dest, { recursive: true, force: true });
+        }
       } catch (err) { /* best-effort */
         restoreFailed = true;
         logError("worktree", `shelter restore failed (${dirName}): ${err instanceof Error ? err.message : String(err)}`);

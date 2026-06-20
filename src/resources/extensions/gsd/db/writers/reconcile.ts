@@ -11,6 +11,29 @@ import { logError, logWarning } from "../../workflow-logger.js";
 import { getDbOrNull, openDatabase } from "../engine.js";
 import { TERMINAL_STATUS_SQL } from "../sql-constants.js";
 
+/**
+ * Optional override for the project-root DB open inside reconcileWorktreeDb.
+ * Production leaves this null so the real engine.openDatabase runs; tests
+ * inject a function returning false to deterministically exercise the
+ * cannot-open-main-DB branch (reconcile.ts:82), which is otherwise unreachable
+ * without a contrived provider/OS fault (openDatabase rethrows on real failures
+ * rather than returning false across providers).
+ * @internal
+ */
+let _mainDbOpenerFn: ((mainDbPath: string) => boolean) | null = null;
+
+export function _setMainDbOpenerFnForTests(
+  fn: ((mainDbPath: string) => boolean) | null,
+): () => void {
+  const previous = _mainDbOpenerFn;
+  _mainDbOpenerFn = fn;
+  return () => { _mainDbOpenerFn = previous; };
+}
+
+function openMainDb(mainDbPath: string): boolean {
+  return _mainDbOpenerFn ? _mainDbOpenerFn(mainDbPath) : openDatabase(mainDbPath);
+}
+
 export function copyWorktreeDb(srcDbPath: string, destDbPath: string): boolean {
   try {
     if (!existsSync(srcDbPath)) return false;
@@ -77,7 +100,7 @@ export function reconcileWorktreeDb(
     return zero;
   }
   if (!getDbOrNull()!) {
-    const opened = openDatabase(mainDbPath);
+    const opened = openMainDb(mainDbPath);
     if (!opened) {
       logError("db", "worktree DB reconciliation failed: cannot open main DB");
       return zero;

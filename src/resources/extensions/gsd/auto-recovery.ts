@@ -83,6 +83,53 @@ export {
 } from "./milestone-summary-classifier.js";
 export { hasImplementationArtifacts } from "./milestone-implementation-evidence.js";
 
+/**
+ * Optional override for the legacy roadmap parser used by verifyExpectedArtifact.
+ * Production leaves this null so the real parseLegacyRoadmap runs; tests inject
+ * a throwing function to deterministically exercise the parse-failure catches
+ * (auto-recovery.ts:515 plan-milestone and :622 complete-slice). Those catches
+ * are otherwise unreachable because parseLegacyRoadmap is internally defensive
+ * against every malformed input.
+ * @internal
+ */
+let _roadmapParserFn: ((content: string) => { slices: Array<{ id: string; done: boolean; depends?: string[] }> }) | null = null;
+
+/**
+ * Inject an override for the legacy roadmap parser, returning a function that
+ * restores the default (real parser) behavior. No production caller.
+ * @internal
+ */
+export function _setRoadmapParserFnForTests(
+  fn: ((content: string) => { slices: Array<{ id: string; done: boolean; depends?: string[] }> }) | null,
+): () => void {
+  const previous = _roadmapParserFn;
+  _roadmapParserFn = fn;
+  return () => { _roadmapParserFn = previous; };
+}
+
+function parseRoadmapForRecovery(content: string): ReturnType<NonNullable<typeof _roadmapParserFn>> {
+  if (_roadmapParserFn) return _roadmapParserFn(content);
+  return parseLegacyRoadmap(content) as unknown as ReturnType<NonNullable<typeof _roadmapParserFn>>;
+}
+
+/**
+ * Optional override for the detached GitHub milestone finalize invoked after DB
+ * closeout in refreshRecoveryDbForArtifact. Production leaves this null so the
+ * real finalizeMilestoneGitHubSync runs; tests inject a throwing function to
+ * deterministically exercise the best-effort catch (auto-recovery.ts:232),
+ * which otherwise needs a real GitHub remote + network failure.
+ * @internal
+ */
+let _githubFinalizeFn: ((basePath: string, mid: string) => void | Promise<void>) | null = null;
+
+export function _setGithubFinalizeFnForTests(
+  fn: ((basePath: string, mid: string) => void | Promise<void>) | null,
+): () => void {
+  const previous = _githubFinalizeFn;
+  _githubFinalizeFn = fn;
+  return () => { _githubFinalizeFn = previous; };
+}
+
 // ─── Artifact Resolution & Verification ───────────────────────────────────────
 
 export function diagnoseWorktreeIntegrityFailure(basePath: string): string | null {
@@ -197,11 +244,18 @@ export function refreshRecoveryDbForArtifact(
     }
 
     updateMilestoneStatus(mid, "complete", new Date().toISOString());
-    void import("../github-sync/sync.js")
-      .then(({ finalizeMilestoneGitHubSync }) => finalizeMilestoneGitHubSync(basePath, mid))
-      .catch((err) => {
-        logWarning("recovery", `GitHub milestone finalize failed after DB closeout: ${getErrorMessage(err)}`);
-      });
+    // Detached GitHub sync — best-effort. Test seam: when
+    // _githubFinalizeFn is injected, route through it so the catch
+    // (:232) is deterministically reachable (otherwise it needs a real
+    // GitHub remote + network failure). Production leaves it null. The
+    // seam is wrapped so a synchronous throw becomes a rejected promise,
+    // matching the real import-then-call deferred semantics.
+    const finalizePromise = _githubFinalizeFn
+      ? new Promise<void>((resolve) => { resolve(_githubFinalizeFn!(basePath, mid)); })
+      : import("../github-sync/sync.js").then(({ finalizeMilestoneGitHubSync }) => finalizeMilestoneGitHubSync(basePath, mid));
+    void finalizePromise.catch((err) => {
+      logWarning("recovery", `GitHub milestone finalize failed after DB closeout: ${getErrorMessage(err)}`);
+    });
     return { ok: true };
   }
 
@@ -446,7 +500,7 @@ export function verifyExpectedArtifact(
       return false;
     }
     try {
-      const roadmap = parseLegacyRoadmap(readFileSync(roadmapFile, "utf-8"));
+      const roadmap = parseRoadmapForRecovery(readFileSync(roadmapFile, "utf-8"));
       const milestoneResearchFile = resolveExpectedArtifactPath("research-milestone", mid, base);
       const hasMilestoneResearch = !!milestoneResearchFile && existsSync(milestoneResearchFile);
       for (const slice of roadmap.slices) {
@@ -506,7 +560,7 @@ export function verifyExpectedArtifact(
 
   if (unitType === "plan-milestone") {
     try {
-      const roadmap = parseLegacyRoadmap(readFileSync(absPath, "utf-8"));
+      const roadmap = parseRoadmapForRecovery(readFileSync(absPath, "utf-8"));
       if (roadmap.slices.length === 0) {
         logWarning("recovery", `verify-fail ${unitType} ${unitId}: roadmap has zero slices at ${absPath}`);
         return false;
@@ -615,7 +669,7 @@ export function verifyExpectedArtifact(
         if (roadmapFile && existsSync(roadmapFile)) {
           try {
             const roadmapContent = readFileSync(roadmapFile, "utf-8");
-            const roadmap = parseLegacyRoadmap(roadmapContent);
+            const roadmap = parseRoadmapForRecovery(roadmapContent);
             const slice = roadmap.slices.find((s) => s.id === sid);
             if (slice && !slice.done) return false;
           } catch (e) {

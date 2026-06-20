@@ -80,6 +80,17 @@ function now(): number {
   return Date.now();
 }
 
+/**
+ * Optional override for the post-settlement markdown projection rebuild
+ * (mergePendingCompleteMilestone). Production leaves this null so the real
+ * rebuild runs; tests inject a throwing function to deterministically exercise
+ * the best-effort failure path (orchestrator.ts:637), which is otherwise only
+ * reachable by driving advance() through a full merge-pending milestone
+ * settlement and then contriving a projection-rebuild fault.
+ * @internal
+ */
+let _projectionRebuildFn: ((projectRoot: string) => Promise<void>) | null = null;
+
 function noRemainingUnitsOutcome(stateSnapshot: GSDState): AutoTerminalOutcome {
   if (stateSnapshot.phase === "complete") {
     return {
@@ -631,8 +642,15 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
     this.s.milestoneSettlement = { ok: true, reason: "settled" };
     try {
       const projectRoot = this.s.originalBasePath || this.s.canonicalProjectRoot || this.runtimeBasePath;
-      const { rebuildMarkdownProjectionsFromDb } = await import("../commands-maintenance.js");
-      await rebuildMarkdownProjectionsFromDb(projectRoot);
+      // Test seam: when _projectionRebuildFn is injected, route the rebuild
+      // through it so the best-effort failure path (:637) is deterministically
+      // reachable. Production leaves it null → real rebuildMarkdownProjectionsFromDb.
+      if (_projectionRebuildFn) {
+        await _projectionRebuildFn(projectRoot);
+      } else {
+        const { rebuildMarkdownProjectionsFromDb } = await import("../commands-maintenance.js");
+        await rebuildMarkdownProjectionsFromDb(projectRoot);
+      }
     } catch (err) {
       logWarning(
         "engine",
@@ -1424,4 +1442,20 @@ export function resolveLiveOrchestratorBasePath(input: {
 
 export function createAutoOrchestrator(context: OrchestratorContext): AutoOrchestrationModule {
   return new AutoOrchestrator(context);
+}
+
+/**
+ * Inject an override for the post-settlement markdown projection rebuild,
+ * returning a function that restores the default (real rebuild) behavior. Used
+ * by tests to deterministically exercise the best-effort rebuild-failure path
+ * (orchestrator.ts:637) — otherwise only reachable by driving advance() through
+ * a full merge-pending milestone settlement and then contriving a projection
+ * fault. No production caller.
+ * @internal
+ */
+export function _setProjectionRebuildFnForTests(
+  fn: ((projectRoot: string) => Promise<void>) | null,
+): () => void {
+  _projectionRebuildFn = fn;
+  return () => { _projectionRebuildFn = null; };
 }

@@ -12,7 +12,7 @@
  * without modifying orchestration code.
  */
 
-import type { GSDState } from "./types.js";
+import type { GSDState, TaskIO } from "./types.js";
 import type { GSDPreferences } from "./preferences.js";
 import type { MinimalModelRegistry } from "./context-budget.js";
 import { loadFile, extractUatType, loadActiveOverrides } from "./files.js";
@@ -178,6 +178,26 @@ type ResearchProjectPromptBuilder = typeof buildResearchProjectPrompt;
 
 let reassessmentChecker: ReassessmentChecker = checkNeedsReassessment;
 let researchProjectPromptBuilder: ResearchProjectPromptBuilder = buildResearchProjectPrompt;
+
+/**
+ * Optional override for the reactive graph derivation step inside the
+ * "executing → reactive-execute" rule. Production leaves this null so the rule
+ * uses the real loadSliceTaskIO + deriveTaskGraph; tests inject a throwing
+ * function to deterministically exercise the best-effort failure path
+ * (auto-dispatch.ts:1494). The catch is otherwise unreachable because every
+ * operation it wraps (loadSliceTaskIO, deriveTaskGraph, saveReactiveState) is
+ * internally defensive.
+ * @internal
+ */
+let _reactiveGraphDeriveFn: ((basePath: string, mid: string, sid: string) => Promise<TaskIO[]>) | null = null;
+
+export function setReactiveGraphDeriveFnForTest(
+  fn: ((basePath: string, mid: string, sid: string) => Promise<TaskIO[]>) | null,
+): () => void {
+  const previous = _reactiveGraphDeriveFn;
+  _reactiveGraphDeriveFn = fn;
+  return () => { _reactiveGraphDeriveFn = previous; };
+}
 
 function shouldBypassMilestoneDepthGateInAuto(prefs: GSDPreferences | undefined): boolean {
   return isAutoActive() && prefs?.planning_depth !== "deep";
@@ -1421,7 +1441,9 @@ export const DISPATCH_RULES: DispatchRule[] = [
           graphMetrics,
         } = await import("./reactive-graph.js");
 
-        const taskIO = await loadSliceTaskIO(basePath, mid, sid);
+        const taskIO = _reactiveGraphDeriveFn
+          ? await _reactiveGraphDeriveFn(basePath, mid, sid)
+          : await loadSliceTaskIO(basePath, mid, sid);
         if (taskIO.length < 2) return null; // single task, no point
 
         const graph = deriveTaskGraph(taskIO);
