@@ -247,6 +247,7 @@ function createHost(options: HostOptions = {}) {
 			return undefined;
 		},
 		headerContainer: { clear() {}, addChild() {} },
+		clearBlockingError() {},
 	};
 
 	setupEditorSubmitHandler(host as any);
