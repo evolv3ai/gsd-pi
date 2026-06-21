@@ -91,6 +91,12 @@ export function isValidationBlockAllowedCommand(trimmed: string): boolean {
   if (name === "progress") {
     return !hasFlag(command, "--next") && !hasFlag(command, "--do");
   }
+  if (name === "code-review") {
+    return !hasFlag(command, "--fix");
+  }
+  if (name === "audit-fix") {
+    return hasFlag(command, "--dry-run");
+  }
   return !VALIDATION_BLOCKED_COMMANDS.has(name);
 }
 

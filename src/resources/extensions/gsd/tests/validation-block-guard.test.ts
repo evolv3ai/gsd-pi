@@ -82,8 +82,10 @@ test("validation block allows recovery, diagnostics, and unrelated commands", ()
     "parallel watch",
     "progress",
     "progress --forensic",
+    // code-review is allowed when not applying fixes
     "code-review",
-    "code-review --depth quick",
+    "code-review --depth deep",
+    // audit-fix is allowed in dry-run mode (read-only review, no commits)
     "audit-fix --dry-run",
   ];
 
@@ -124,9 +126,12 @@ test("validation block rejects workflow-start and advancing commands", () => {
     "dispatch uat",
     "complete-milestone",
     "ship",
-    "audit-fix",
-    "audit-fix --severity high",
+    // code-review --fix applies changes and should be blocked
     "code-review --fix",
+    "code-review --depth deep --fix",
+    // audit-fix without --dry-run applies fixes and commits
+    "audit-fix",
+    "audit-fix --verbose",
   ];
 
   for (const command of blocked) {
