@@ -126,7 +126,7 @@ export async function capturePlanningCompatIfNeeded(
     invalidateStateCache();
   } catch (e) {
     logWarning(
-      "compat",
+      "reconcile",
       `planning DB import failed on initial capture — writePlanningDirectory may overwrite gsd-core content: ${(e as Error).message}`,
     );
   }
