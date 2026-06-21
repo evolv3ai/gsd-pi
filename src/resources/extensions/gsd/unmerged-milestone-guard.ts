@@ -25,12 +25,28 @@ export interface UnmergedMilestoneBlocker {
 const BLOCKED_COMMANDS = new Set([
   "auto",
   "next",
-  "parallel",
   "start",
   "workflow",
   "new-milestone",
   "new-project",
   "do",
+  "discuss-phase",
+  "plan-phase",
+  "execute-phase",
+  "spec-phase",
+  "mvp-phase",
+  "ui-phase",
+  "ai-integration-phase",
+  "ultraplan-phase",
+  "validate-phase",
+  "docs-update",
+  "review-backlog",
+  "import",
+  "ingest-docs",
+  "secure-phase",
+  "plan-review-convergence",
+  "autonomous",
+  "resume-work",
   "execute-task",
   "research-milestone",
   "plan-slice",
@@ -41,6 +57,11 @@ const BLOCKED_COMMANDS = new Set([
   "complete-milestone",
 ]);
 
+const UNMERGED_SAFE_PARALLEL_SUBCOMMANDS = new Set([
+  "status",
+  "watch",
+]);
+
 function isRuntimePath(path: string): boolean {
   return path === ".gsd" || path.startsWith(".gsd/");
 }
@@ -48,6 +69,16 @@ function isRuntimePath(path: string): boolean {
 function formatCommandLabel(attemptedCommand: string): string {
   const trimmed = attemptedCommand.trim();
   return trimmed ? `/gsd ${trimmed}` : "/gsd";
+}
+
+function hasFlag(command: string, flag: string): boolean {
+  const escaped = flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|\\s)${escaped}(?=\\s|$)`).test(command);
+}
+
+function isMutatingPhaseCommand(subcommand: string | undefined): boolean {
+  if (!subcommand) return false;
+  return ["add", "create", "new", "insert", "remove", "edit"].includes(subcommand);
 }
 
 function resolveIntegrationBranch(base: string, milestoneId: string): string | null {
@@ -74,6 +105,24 @@ export function isUnmergedMilestoneAllowedCommand(trimmed: string): boolean {
   const [name, subcommand] = command.split(/\s+/, 2);
   if (name === "dispatch") {
     return subcommand === "complete" || subcommand === "complete-milestone";
+  }
+  if (name === "audit-fix") {
+    return hasFlag(command, "--dry-run");
+  }
+  if (name === "code-review") {
+    return !hasFlag(command, "--fix");
+  }
+  if (name === "docs-update") {
+    return hasFlag(command, "--verify-only");
+  }
+  if (name === "parallel") {
+    return UNMERGED_SAFE_PARALLEL_SUBCOMMANDS.has(subcommand ?? "");
+  }
+  if (name === "phase") {
+    return !isMutatingPhaseCommand(subcommand);
+  }
+  if (name === "progress") {
+    return !hasFlag(command, "--next") && !hasFlag(command, "--do");
   }
   return !BLOCKED_COMMANDS.has(name);
 }

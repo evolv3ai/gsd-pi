@@ -5,6 +5,8 @@ import { loadRegistry } from "../workflow-templates.js";
 import { gsdHome } from "../gsd-home.js";
 import { resolveWorktreeProjectRoot } from "../worktree-root.js";
 import { VISUAL_BRIEF_MODES } from "../../visual-brief/prompts.js";
+import { GSD_CORE_ALIAS_CATALOG } from "./gsd-core-aliases.js";
+import { GSD_CORE_IMPLEMENTED_CATALOG } from "../commands-gsd-core.js";
 
 
 export interface GsdCommandDefinition {
@@ -96,6 +98,10 @@ export const TOP_LEVEL_SUBCOMMANDS: readonly GsdCommandDefinition[] = [
   { cmd: "language", desc: "Set or clear the global response language (e.g. /gsd language Chinese)" },
   { cmd: "worktree", desc: "Manage worktrees from the TUI (list, merge, clean, remove)" },
   { cmd: "eval-review", desc: "Audit a slice's AI evaluation strategy and write a scored EVAL-REVIEW.md (--force, --show)" },
+  // Additional commands (commands-gsd-core.ts) run real prompt-driven workflows;
+  // namespace aliases (gsd-core-aliases.ts) redirect to /gsd help.
+  ...GSD_CORE_IMPLEMENTED_CATALOG,
+  ...GSD_CORE_ALIAS_CATALOG,
 ];
 
 const NESTED_COMPLETIONS: CompletionMap = {

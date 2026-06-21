@@ -95,6 +95,57 @@
 | `/gsd unpark` | 重新激活一个已 park 的 milestone |
 | Discard milestone | 在 `/gsd` 向导的 “Milestone actions” → “Discard” 中可用 |
 
+## 额外的 Prompt 驱动 Workflows
+
+这些顶层命令是原生 GSD workflows，会针对 milestone、slice 和 `.gsd/` 模型派发专用 prompt。完整的动态命令列表可查看 `/gsd help full`。
+
+| 命令 | 说明 |
+|------|------|
+| `/gsd explore` | 以苏格拉底式提问梳理想法，然后再决定是否进入 backlog、knowledge、research、spike、sketch 或 milestone |
+| `/gsd spike` | 通过一次性实验验证想法；支持 `--quick`、`--text` 和 frontier 模式 |
+| `/gsd sketch` | 用一次性 HTML mockup 探索 UI / 设计方向 |
+| `/gsd map-codebase` | 在 `.gsd/codebase/` 下生成结构化代码库参考文档 |
+| `/gsd docs-update` | 根据当前代码生成、更新或校验项目文档 |
+| `/gsd graphify` | 构建、查询、检查或 diff `.gsd/knowledge/` 知识图谱 |
+| `/gsd stats` | 显示项目统计、milestone 状态、git 指标和时间线 |
+| `/gsd progress` | 总结最近工作与下一步；可用 `--next` 或 `--do "..."` 路由动作 |
+| `/gsd health` | 检查 `.gsd/` 完整性；支持 `--repair` 和 `--context` |
+| `/gsd surface` | 管理当前会话 surfaced skills 和 extensions |
+| `/gsd code-review` | 审查已变更源码的 bug、安全性和质量问题 |
+| `/gsd review` | 从多个 reviewer 视角 peer-review 最近工作 |
+| `/gsd audit-milestone` | 校验 milestone 是否满足完成定义 |
+| `/gsd audit-uat` | 审计未完成的 UAT / verification 项 |
+| `/gsd audit-fix` | 分类并修复 audit findings |
+| `/gsd ui-review` | 对前端工作执行六维视觉审计 |
+| `/gsd secure-phase` | 校验已完成工作的威胁缓解措施 |
+| `/gsd validate-phase` | 审计并补齐验证或测试覆盖缺口 |
+| `/gsd verify-work` | 对已构建功能执行对话式 UAT |
+| `/gsd plan-review-convergence` | 通过多轮 review 推动 plan 收敛 |
+| `/gsd discuss-phase` | 通过自适应提问收集 milestone 或 slice 上下文 |
+| `/gsd plan-phase` | 创建带验证闭环的详细 slice plan |
+| `/gsd execute-phase` | 执行 slice tasks，支持 wave 化 |
+| `/gsd spec-phase` | 澄清 milestone 要交付什么，并评估歧义 |
+| `/gsd mvp-phase` | 将 milestone 规划成一个垂直 MVP slice |
+| `/gsd ui-phase` | 为前端 milestone 生成 `UI-SPEC` |
+| `/gsd ai-integration-phase` | 为 AI milestone 生成 `AI-SPEC` |
+| `/gsd ultraplan-phase` | 执行 extended-reasoning plan、review，然后 import |
+| `/gsd autonomous` | 持续推进剩余 lifecycle work |
+| `/gsd pause-work` | 暂停中途工作时创建上下文交接 |
+| `/gsd resume-work` | 通过完整上下文恢复工作 |
+| `/gsd manager` | 用 command-center workflow 管理多个 milestones |
+| `/gsd phase` | 管理 milestone 队列顺序 |
+| `/gsd thread` | 管理跨会话持久上下文 threads |
+| `/gsd workstreams` | 将 workstream 动作路由到 `/gsd parallel` |
+| `/gsd workspace` | 将 workspace 动作路由到 `/gsd worktree` |
+| `/gsd milestone-summary` | 生成项目或 milestone onboarding summary |
+| `/gsd review-backlog` | 审查并提升 backlog items |
+| `/gsd inbox` | 根据项目约定 triage GitHub issues 和 PRs |
+| `/gsd import` | 带冲突检测地导入外部 plans |
+| `/gsd ingest-docs` | 从 ADR、PRD、spec 或 docs bootstrap / merge `.gsd/` 状态 |
+| `/gsd profile-user` | 生成并持久化 developer behavior profile |
+| `/gsd settings` | 配置 workflow toggles 和 model profile |
+| `/gsd ns-context`、`/gsd ns-ideate`、`/gsd ns-manage`、`/gsd ns-project`、`/gsd ns-review`、`/gsd ns-workflow` | 旧命令集中的 namespace grouping 名称；由于 GSD 使用扁平命令列表，它们都会重定向到 `/gsd help` |
+
 ## 并行编排
 
 | 命令 | 说明 |

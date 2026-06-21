@@ -14,6 +14,8 @@ import { projectRoot } from "../context.js";
 import { formattedShortcutPair } from "../../shortcut-defs.js";
 import { getVisualBriefOutputDir } from "../../../visual-brief/artifact-policy.js";
 import { buildVisualBriefPrompt, parseVisualBriefArgs, VISUAL_BRIEF_USAGE } from "../../../visual-brief/prompts.js";
+import { GSD_CORE_IMPLEMENTED_CATALOG } from "../../commands-gsd-core.js";
+import { GSD_CORE_ALIAS_CATALOG } from "../gsd-core-aliases.js";
 
 export function showHelp(ctx: ExtensionCommandContext, args = ""): void {
   const summaryLines = [
@@ -57,6 +59,11 @@ export function showHelp(ctx: ExtensionCommandContext, args = ""): void {
     "  /gsd doctor         Diagnose and repair .gsd/ state",
     "  /gsd closeout       Recover failed git closeout actions",
     "  /gsd rebuild        Rebuild markdown projections from the DB  [markdown]",
+    "",
+    "ADDITIONAL COMMANDS",
+    "  /gsd map-codebase, /gsd stats, /gsd code-review, /gsd spike, /gsd explore …",
+    "  Additional workflows for exploration, review, codebase intel, and more.",
+    "  See /gsd help full for the complete list.",
     "",
     "Use /gsd help full for the complete command reference.",
   ];
@@ -158,9 +165,32 @@ export function showHelp(ctx: ExtensionCommandContext, args = ""): void {
     "  /gsd update         Update GSD to the latest version via npm",
     "  /gsd upgrade        Alias for /gsd update",
     "  /gsd language       Set or clear the global response language  [off|clear|<language>]",
+    "",
+    // The ADDITIONAL COMMANDS block is generated below from the implemented + alias catalogs
+    // so it can never drift from TOP_LEVEL_SUBCOMMANDS (which the help-coverage test asserts).
+    ...buildAdditionalCommandsHelpLines(),
   ];
   const full = ["full", "--full", "all"].includes(args.trim().toLowerCase());
   ctx.ui.notify((full ? fullLines : summaryLines).join("\n"), "info");
+}
+
+/**
+ * Build the ADDITIONAL COMMANDS help lines from the implemented-workflow and alias catalogs.
+ * Kept in sync with TOP_LEVEL_SUBCOMMANDS automatically — every command appears here.
+ */
+function buildAdditionalCommandsHelpLines(): string[] {
+  const lines: string[] = [
+    "ADDITIONAL COMMANDS",
+    "  Additional workflows for exploration, review, codebase intel, and project management.",
+  ];
+  const pad = (cmd: string, width = 20) => cmd.padEnd(width);
+  for (const entry of GSD_CORE_IMPLEMENTED_CATALOG) {
+    lines.push(`  /gsd ${pad(entry.cmd)} ${entry.desc}`);
+  }
+  for (const entry of GSD_CORE_ALIAS_CATALOG) {
+    lines.push(`  /gsd ${pad(entry.cmd)} ${entry.desc}`);
+  }
+  return lines;
 }
 
 export async function handleStatus(ctx: ExtensionCommandContext): Promise<void> {

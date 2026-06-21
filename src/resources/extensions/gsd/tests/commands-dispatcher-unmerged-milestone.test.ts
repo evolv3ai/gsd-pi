@@ -191,6 +191,24 @@ test("dispatcher blocks workflow-advancing commands while completed branch is un
     "start",
     "workflow run release",
     "do mark all complete",
+    "audit-fix --severity high",
+    "code-review --fix",
+    "docs-update",
+    "review-backlog",
+    "import --from plan.md",
+    "ingest-docs docs/",
+    "secure-phase",
+    "validate-phase",
+    "plan-phase",
+    "execute-phase --milestone M009",
+    "autonomous --from 1",
+    "phase add M009",
+    "phase create M009",
+    "phase new M009",
+    "phase insert M009 after M008",
+    "phase remove M008",
+    "phase edit M008",
+    "workstreams create",
   ];
 
   for (const command of blockedCommands) {
@@ -211,6 +229,77 @@ test("dispatcher blocks workflow-advancing commands while completed branch is un
       invalidateStateCache();
       cleanup(base);
     }
+  }
+});
+
+test("dispatcher keeps manager read-only while completed branch is unmerged", async () => {
+  const base = makeTempRepo("gsd-dispatch-unmerged-");
+  try {
+    seedCompletedUnmergedMilestone(base);
+    const { ctx, calls } = makeMockCtx(base);
+    const { pi, messages } = makeMockPi();
+
+    await handleGSDCommand("manager", ctx, pi);
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].kind, "info");
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].customType, "gsd-manager");
+    assert.match(messages[0].content, /read-only/i);
+    assert.match(messages[0].content, /M008 is complete but not merged/);
+    assert.doesNotMatch(messages[0].content, /Start\/stop auto-mode/);
+    assert.doesNotMatch(messages[0].content, /Run parallel milestones/);
+    assert.doesNotMatch(messages[0].content, /Act on the selection/);
+  } finally {
+    closeDatabase();
+    invalidateStateCache();
+    cleanup(base);
+  }
+});
+
+test("dispatcher allows read-only workstreams routes while completed branch is unmerged", async () => {
+  const commands = ["workstreams list", "workstreams status", "workstreams progress"];
+
+  for (const command of commands) {
+    const base = makeTempRepo("gsd-dispatch-unmerged-");
+    try {
+      seedCompletedUnmergedMilestone(base);
+      const { ctx } = makeMockCtx(base);
+      const { pi, messages } = makeMockPi();
+
+      await handleGSDCommand(command, ctx, pi);
+
+      assert.equal(messages.length, 1, command);
+      assert.equal(messages[0].customType, "gsd-parallel", command);
+      assert.match(messages[0].content, /No parallel orchestration/, command);
+      assert.doesNotMatch(messages[0].content, /cannot start new workflow work/, command);
+    } finally {
+      closeDatabase();
+      invalidateStateCache();
+      cleanup(base);
+    }
+  }
+});
+
+test("dispatcher allows audit-fix dry-run while completed branch is unmerged", async () => {
+  const base = makeTempRepo("gsd-dispatch-unmerged-");
+  try {
+    seedCompletedUnmergedMilestone(base);
+    const { ctx, calls } = makeMockCtx(base);
+    const { pi, messages } = makeMockPi();
+
+    await handleGSDCommand("audit-fix --dry-run", ctx, pi);
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].kind, "info");
+    assert.match(calls[0].message, /audit-fix/);
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].customType, "gsd-audit-fix");
+    assert.doesNotMatch(messages[0].content, /cannot start new workflow work/);
+  } finally {
+    closeDatabase();
+    invalidateStateCache();
+    cleanup(base);
   }
 });
 

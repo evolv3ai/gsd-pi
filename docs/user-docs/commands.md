@@ -146,6 +146,57 @@ See [Parallel Orchestration](./parallel-orchestration.md) for full documentation
 | `/gsd scan` | Run a rapid codebase assessment (`--focus tech`, `arch`, `quality`, `concerns`, `tech+arch`) |
 | `/gsd codebase` | Generate, refresh, and inspect the `.gsd/CODEBASE.md` cache (`generate`, `update`, `stats`) |
 
+## Additional Prompt-Driven Workflows
+
+These commands are native GSD workflows surfaced in `/gsd help full`. They dispatch purpose-built prompts against the milestone, slice, and `.gsd/` model instead of acting as aliases.
+
+| Command | Description |
+|---------|-------------|
+| `/gsd explore [topic]` | Socratic ideation before committing an idea to backlog, knowledge, research, spike, sketch, or a milestone |
+| `/gsd spike [idea]` | Focused throwaway experiment; supports `--quick`, `--text`, and frontier mode |
+| `/gsd sketch [idea]` | UI/design exploration with throwaway HTML mockups; supports `--quick`, `--text`, and frontier mode |
+| `/gsd map-codebase` | Generate structured codebase reference docs under `.gsd/codebase/`; supports `--paths` and `--focus` |
+| `/gsd docs-update` | Generate, update, or verify project docs against live code; supports `--force` and `--verify-only` |
+| `/gsd graphify` | Build, query, inspect, or diff a lightweight knowledge graph under `.gsd/knowledge/` |
+| `/gsd stats` | Display project statistics, milestones, slices, git metrics, and timeline |
+| `/gsd progress` | Summarize recent work and next steps; `--next` dispatches `/gsd next`, and `--do "..."` routes through `/gsd do` |
+| `/gsd health` | Check `.gsd/` integrity; supports `--repair` and `--context` |
+| `/gsd surface` | Manage which skills and extensions are surfaced in the session |
+| `/gsd code-review` | Review changed source for bugs, security, and quality; supports `--depth`, `--files`, and `--fix` |
+| `/gsd review` | Peer-review recent work across reviewer perspectives; external reviewer flags are simulated in-prompt when unavailable |
+| `/gsd audit-milestone` | Verify a milestone met its definition of done |
+| `/gsd audit-uat` | Audit outstanding UAT/verification items; supports `--verify` |
+| `/gsd audit-fix` | Classify and remediate audit findings; supports `--source`, `--severity`, `--max`, and `--dry-run` |
+| `/gsd ui-review` | Run a retroactive six-pillar visual audit for frontend work |
+| `/gsd secure-phase` | Verify threat mitigations for completed work |
+| `/gsd validate-phase` | Audit and fill validation or test coverage gaps |
+| `/gsd verify-work` | Run conversational UAT of built features |
+| `/gsd plan-review-convergence` | Iterate a plan through review cycles until concerns resolve |
+| `/gsd discuss-phase` | Gather milestone or slice context through adaptive questioning |
+| `/gsd plan-phase` | Create a detailed slice plan with a verification loop |
+| `/gsd execute-phase` | Execute slice tasks with wave-based parallelization |
+| `/gsd spec-phase` | Clarify what a milestone delivers, with ambiguity scoring |
+| `/gsd mvp-phase` | Plan a milestone as a vertical MVP slice |
+| `/gsd ui-phase` | Produce a UI design contract (`UI-SPEC`) for frontend milestones |
+| `/gsd ai-integration-phase` | Produce an AI design contract (`AI-SPEC`) for AI milestones |
+| `/gsd ultraplan-phase` | Run an extended-reasoning planning pass, review, then import |
+| `/gsd autonomous` | Continuously run the remaining lifecycle work with explicit phase ceremony |
+| `/gsd pause-work` | Create a context handoff when pausing mid-stream |
+| `/gsd resume-work` | Resume work with full context restoration |
+| `/gsd manager` | Open a command-center workflow for multiple milestones |
+| `/gsd phase` | Manage milestone queue ordering; structural actions route to existing GSD commands |
+| `/gsd thread` | Manage persistent context threads for cross-session work |
+| `/gsd workstreams` | Manage parallel workstreams through `/gsd parallel` |
+| `/gsd workspace` | Manage isolated workspaces through `/gsd worktree` |
+| `/gsd milestone-summary` | Generate a project or milestone summary for onboarding |
+| `/gsd review-backlog` | Review and promote backlog items to milestones |
+| `/gsd inbox` | Triage GitHub issues and PRs against project conventions |
+| `/gsd import` | Ingest external plans with conflict detection |
+| `/gsd ingest-docs` | Bootstrap or merge `.gsd/` state from existing ADRs, PRDs, specs, or docs |
+| `/gsd profile-user` | Generate and persist a developer behavior profile |
+| `/gsd settings` | Configure workflow toggles and model profile |
+| `/gsd ns-context`, `/gsd ns-ideate`, `/gsd ns-manage`, `/gsd ns-project`, `/gsd ns-review`, `/gsd ns-workflow` | Namespace grouping commands from older command sets; each redirects to `/gsd help` because GSD uses a flat command list |
+
 ## Workflow Templates
 
 | Command | Description |

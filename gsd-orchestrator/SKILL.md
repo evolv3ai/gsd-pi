@@ -210,6 +210,9 @@ Available types: `agent_start`, `agent_end`, `tool_execution_start`, `tool_execu
 | `history` | View execution history |
 | `doctor` | Health check + auto-fix |
 | `knowledge <rule\|pattern\|lesson>` | Add persistent project knowledge |
+| `explore` / `spike` / `sketch` | Prompt-driven ideation and experiment workflows |
+| `map-codebase` / `docs-update` / `graphify` | Codebase documentation and knowledge workflows |
+| `code-review` / `review` / `audit-*` / `verify-work` | Review, audit, and UAT workflows |
 
 See `references/commands.md` for the complete reference.
 </all_commands>

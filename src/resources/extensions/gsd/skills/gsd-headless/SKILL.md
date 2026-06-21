@@ -240,3 +240,6 @@ Quick reference — see [references/commands.md](references/commands.md) for the
 | `skip` / `undo` | Unit control |
 | `doctor` | Health check + auto-fix |
 | `steer <desc>` | Hard-steer plan mid-execution |
+| `explore` / `spike` / `sketch` | Prompt-driven ideation and experiment workflows |
+| `map-codebase` / `docs-update` / `graphify` | Codebase documentation and knowledge workflows |
+| `code-review` / `review` / `audit-*` / `verify-work` | Review, audit, and UAT workflows |

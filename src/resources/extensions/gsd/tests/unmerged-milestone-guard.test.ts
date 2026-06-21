@@ -117,11 +117,17 @@ test("isUnmergedMilestoneAllowedCommand permits inspection and explicit recovery
   assert.equal(isUnmergedMilestoneAllowedCommand("queue"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("quick"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("config"), true);
+  assert.equal(isUnmergedMilestoneAllowedCommand("progress"), true);
+  assert.equal(isUnmergedMilestoneAllowedCommand("progress --forensic"), true);
+  assert.equal(isUnmergedMilestoneAllowedCommand("parallel status"), true);
+  assert.equal(isUnmergedMilestoneAllowedCommand("parallel watch"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("worktree list"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("dispatch complete"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("dispatch complete M008"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("dispatch complete-milestone"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("dispatch complete-milestone M008"), true);
+  assert.equal(isUnmergedMilestoneAllowedCommand("docs-update --verify-only"), true);
+  assert.equal(isUnmergedMilestoneAllowedCommand("phase list"), true);
 });
 
 test("isUnmergedMilestoneAllowedCommand blocks direct dispatch aliases", () => {
@@ -134,9 +140,37 @@ test("isUnmergedMilestoneAllowedCommand blocks direct dispatch aliases", () => {
     "complete-slice",
     "validate-milestone",
     "complete-milestone",
+    "docs-update",
+    "review-backlog",
+    "import",
+    "ingest-docs",
+    "secure-phase",
+    "plan-review-convergence",
+    "resume-work",
+    "progress --next",
+    'progress --do "fix the login bug"',
+    "parallel start",
+    "parallel resume",
+    "parallel merge",
+    "parallel pause",
   ];
 
   for (const alias of aliases) {
     assert.equal(isUnmergedMilestoneAllowedCommand(alias), false, alias);
+  }
+});
+
+test("isUnmergedMilestoneAllowedCommand blocks mutating phase subcommands", () => {
+  const commands = [
+    "phase add M009",
+    "phase create M009",
+    "phase new M009",
+    "phase insert M009 after M008",
+    "phase remove M008",
+    "phase edit M008",
+  ];
+
+  for (const command of commands) {
+    assert.equal(isUnmergedMilestoneAllowedCommand(command), false, command);
   }
 });
