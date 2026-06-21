@@ -375,6 +375,15 @@ export function parseProgressMode(args: string): string {
 
 /** /gsd progress [--forensic|--next|--do "..."] — situational awareness. */
 export async function handleProgress(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
+  if (/(?:^|\s)--next(?=\s|$)/.test(args)) {
+    await dispatchGSDCommand("next", ctx, pi);
+    return;
+  }
+  const doMatch = args.match(/--do\s+"([^"]*)"/);
+  if (doMatch) {
+    await dispatchGSDCommand(`do ${doMatch[1]}`, ctx, pi);
+    return;
+  }
   const mode = parseProgressMode(args);
   dispatchPrompt(
     { prompt: "progress", customType: "gsd-progress", verb: "Progress", vars: { mode } },

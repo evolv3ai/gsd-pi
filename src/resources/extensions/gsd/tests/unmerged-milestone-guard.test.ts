@@ -117,6 +117,8 @@ test("isUnmergedMilestoneAllowedCommand permits inspection and explicit recovery
   assert.equal(isUnmergedMilestoneAllowedCommand("queue"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("quick"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("config"), true);
+  assert.equal(isUnmergedMilestoneAllowedCommand("progress"), true);
+  assert.equal(isUnmergedMilestoneAllowedCommand("progress --forensic"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("worktree list"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("dispatch complete"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("dispatch complete M008"), true);
@@ -141,6 +143,9 @@ test("isUnmergedMilestoneAllowedCommand blocks direct dispatch aliases", () => {
     "import",
     "ingest-docs",
     "secure-phase",
+    "resume-work",
+    "progress --next",
+    'progress --do "fix the login bug"',
   ];
 
   for (const alias of aliases) {

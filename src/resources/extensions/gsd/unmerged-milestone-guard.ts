@@ -46,6 +46,7 @@ const BLOCKED_COMMANDS = new Set([
   "ingest-docs",
   "secure-phase",
   "autonomous",
+  "resume-work",
   "execute-task",
   "research-milestone",
   "plan-slice",
@@ -111,6 +112,9 @@ export function isUnmergedMilestoneAllowedCommand(trimmed: string): boolean {
   }
   if (name === "phase") {
     return !isMutatingPhaseCommand(subcommand);
+  }
+  if (name === "progress") {
+    return !hasFlag(command, "--next") && !hasFlag(command, "--do");
   }
   return !BLOCKED_COMMANDS.has(name);
 }

@@ -3,7 +3,7 @@
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -102,6 +102,10 @@ function createTempGsdProject(prefix: string): string {
   const base = mkdtempSync(join(tmpdir(), prefix));
   mkdirSync(join(base, ".gsd"), { recursive: true });
   return base;
+}
+
+function createTempDirectory(prefix: string): string {
+  return mkdtempSync(join(tmpdir(), prefix));
 }
 
 async function withTempCommandCwd(
@@ -370,6 +374,31 @@ describe("Batch 2 handlers dispatch", () => {
     const ctx = createMockCtx();
     await handleProgress("--forensic", ctx as any, pi as any);
     assert.match(pi.sent[0].content, /forensic/);
+  });
+
+  test("handleProgress --next redispatches instead of prompt tunneling", async () => {
+    const base = createTempDirectory("gsd-progress-next-no-project-");
+    try {
+      const pi = createMockPi();
+      const ctx = createMockCtxWithCwd(base);
+      await handleProgress("--next", ctx as any, pi as any);
+      assert.equal(pi.sent.length, 0);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test("handleProgress --do redispatches instead of prompt tunneling", async () => {
+    const base = createTempDirectory("gsd-progress-do-no-project-");
+    try {
+      const pi = createMockPi();
+      const ctx = createMockCtxWithCwd(base);
+      await handleProgress('--do "fix the login bug"', ctx as any, pi as any);
+      assert.equal(pi.sent.length, 0);
+      assert.match(ctx.notifications[0].message, /\/gsd quick fix the login bug/);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 
   test("handleHealth repair flag on", async () => {

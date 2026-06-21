@@ -80,6 +80,8 @@ test("validation block allows recovery, diagnostics, and unrelated commands", ()
     "parallel stop M007",
     "parallel pause M007",
     "parallel watch",
+    "progress",
+    "progress --forensic",
   ];
 
   for (const command of allowed) {
@@ -95,6 +97,8 @@ test("validation block rejects workflow-start and advancing commands", () => {
     "next",
     "next M006",
     "do mark all complete",
+    "progress --next",
+    'progress --do "mark all complete"',
     "start bugfix",
     "plan-phase",
     "execute-phase --milestone M009",
@@ -104,6 +108,7 @@ test("validation block rejects workflow-start and advancing commands", () => {
     "ui-phase M009",
     "ai-integration-phase M009",
     "ultraplan-phase M009",
+    "resume-work",
     "workflow resume",
     "workflow run release-checklist",
     "workflow release-checklist",

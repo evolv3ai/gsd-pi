@@ -36,6 +36,7 @@ const VALIDATION_BLOCKED_COMMANDS = new Set([
   "ai-integration-phase",
   "ultraplan-phase",
   "autonomous",
+  "resume-work",
 ]);
 
 const VALIDATION_BLOCKED_PARALLEL_SUBCOMMANDS = new Set([
@@ -56,6 +57,11 @@ const VALIDATION_SAFE_WORKFLOW_SUBCOMMANDS = new Set([
   "uninstall",
 ]);
 
+function hasFlag(command: string, flag: string): boolean {
+  const escaped = flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|\\s)${escaped}(?=\\s|$)`).test(command);
+}
+
 export function isValidationBlockedState(state: GSDState): boolean {
   if (state.phase !== "blocked") return false;
   return state.blockers.some((blocker) => VALIDATION_BLOCK_RE.test(blocker));
@@ -74,6 +80,9 @@ export function isValidationBlockAllowedCommand(trimmed: string): boolean {
   }
   if (name === "workflow") {
     return VALIDATION_SAFE_WORKFLOW_SUBCOMMANDS.has(subcommand ?? "");
+  }
+  if (name === "progress") {
+    return !hasFlag(command, "--next") && !hasFlag(command, "--do");
   }
   return !VALIDATION_BLOCKED_COMMANDS.has(name);
 }
