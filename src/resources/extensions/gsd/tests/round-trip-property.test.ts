@@ -5,7 +5,7 @@
 // that would otherwise silently destroy state across cross-tool round-trips.
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, mkdtempSync, rmSync, readdirSync, readFileSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync, readdirSync, readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -60,8 +60,10 @@ function snapshotHierarchy(): HierarchySnapshot {
 }
 
 test("round-trip is stable: import → render → import produces the same hierarchy snapshot", async () => {
+  // Only .gsd/-bearing fixtures — the .planning/ fixtures belong to the
+  // planning round-trip suite (different layout, no .gsd/ to import from).
   const fixtures = readdirSync(FIXTURE_ROOT, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
+    .filter((d) => d.isDirectory() && existsSync(join(FIXTURE_ROOT, d.name, ".gsd")))
     .map((d) => d.name);
 
   assert.ok(fixtures.length > 0, "expected at least one round-trip fixture");
@@ -98,7 +100,7 @@ test("round-trip is stable: import → render → import produces the same hiera
 
 test("round-trip is idempotent: rendering twice produces stable markdown", async () => {
   const fixtures = readdirSync(FIXTURE_ROOT, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
+    .filter((d) => d.isDirectory() && existsSync(join(FIXTURE_ROOT, d.name, ".gsd")))
     .map((d) => d.name);
 
   for (const name of fixtures) {

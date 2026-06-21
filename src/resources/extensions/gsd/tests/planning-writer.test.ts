@@ -22,7 +22,8 @@ function makeTmp(): string {
   });
   insertTask({
     milestoneId: "M001", sliceId: "S01", id: "T01", title: "Init repo",
-    status: "pending", estimate: "30m", sequence: 1,
+    status: "pending", sequence: 1,
+    planning: { estimate: "30m" },
   });
   tmpDirs.push(base);
   return base;

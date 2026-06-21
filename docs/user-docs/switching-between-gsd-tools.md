@@ -60,6 +60,18 @@ Compat health:      2 file(s) drifted — run /gsd sync
 
 gsd-core is unaware of gsd-pi. It sees `.gsd/*.md` as ordinary markdown and edits them directly. gsd-pi's `.gsd/.compat.json` and `gsd.db` files are ignored by gsd-core (it preserves unknown files, so they won't be deleted).
 
+## `.planning/` projects
+
+If your project uses gsd-core's `.planning/` layout (flat `phases/NN-name/` directories, root `ROADMAP.md` / `STATE.md`), gsd-pi projects DB state back to `.planning/` automatically — you don't need to run `/gsd migrate`.
+
+- The first time gsd-pi sees a `.planning/` project, it records the layout in `.gsd/.compat.json` under `planning.layout`.
+- On every projection, gsd-pi writes back to `.planning/` using that recorded layout.
+- `/gsd sync` imports gsd-core's `.planning/` edits; `/gsd doctor` reports `.planning/` drift separately from `.gsd/` drift.
+
+**Un-modeled docs** (phase `DISCUSSION-LOG.md`, `PATTERNS.md`, `REVIEWS.md`, `codebase/`, `research/`) are pass-through: gsd-pi detects edits to them but never overwrites them. They are gsd-core-owned.
+
+**v1 limitation:** only the `flat-phases` layout is supported for round-trip projection. `multi-milestone` and `legacy-milestone-dir` layouts will be supported after fixtures validate the reverse-mapping. For those layouts today, run `/gsd migrate` once to move to `.gsd/`.
+
 ## Conflicts: same entity edited in both
 
 If both tools edit the *same* entity (e.g., both change the status of slice `S01`) between syncs, the last writer wins after the next reconcile, and gsd-pi surfaces the resolution in the `/gsd sync` output. Git review remains the final safety net — that's why the "commit before switching" workflow matters.
