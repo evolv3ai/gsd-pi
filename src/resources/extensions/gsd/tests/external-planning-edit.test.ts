@@ -1,0 +1,136 @@
+// Project/App: gsd-pi
+// File Purpose: Tests for the external-planning-edit drift handler.
+import test, { afterEach } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
+
+import { externalPlanningEditHandler } from "../state-reconciliation/drift/external-planning-edit.ts";
+import { writeCompatMarker } from "../compat/compat-marker.ts";
+import type { DriftContext } from "../state-reconciliation/types.ts";
+import type { GSDState } from "../types.ts";
+
+const tmpDirs: string[] = [];
+function makeTmpBase(): string {
+  const base = mkdtempSync(join(tmpdir(), `gsd-pedit-${randomUUID()}`));
+  mkdirSync(join(base, ".gsd"), { recursive: true });
+  mkdirSync(join(base, ".planning"), { recursive: true });
+  tmpDirs.push(base);
+  return base;
+}
+const stubState = { phase: "idle" } as unknown as GSDState;
+function ctx(base: string): DriftContext {
+  return { basePath: base, state: stubState };
+}
+afterEach(() => {
+  for (const d of tmpDirs) { try { rmSync(d, { recursive: true, force: true }); } catch { /* */ } }
+  tmpDirs.length = 0;
+});
+
+test("detect returns no drift when planning inactive", async () => {
+  const base = makeTmpBase();
+  const drift = await externalPlanningEditHandler.detect(stubState, ctx(base));
+  assert.equal(drift.length, 0);
+});
+
+test("detect returns drift when planning projection sha mismatches", async () => {
+  const base = makeTmpBase();
+  const rel = "ROADMAP.md";
+  writeFileSync(join(base, ".planning", rel), "# edited by gsd-core\n", "utf-8");
+  writeCompatMarker(base, {
+    schema: 2,
+    lastWriter: "gsd-pi",
+    lastProjectedAt: "2026-06-21T00:00:00.000Z",
+    projections: {},
+    planning: {
+      active: true,
+      layout: "flat-phases",
+      projections: { [rel]: { sha: "stale000000000000", entities: ["M001"] } },
+      passthrough: {},
+    },
+    piVersion: "1.4.0",
+  });
+
+  const drift = await externalPlanningEditHandler.detect(stubState, ctx(base));
+  assert.equal(drift.length, 1);
+  assert.equal(drift[0]!.kind, "external-planning-edit");
+  assert.equal(drift[0]!.projectionPath, rel);
+  assert.equal(drift[0]!.passthrough, false);
+});
+
+test("detect flags passthrough files separately with passthrough=true", async () => {
+  const base = makeTmpBase();
+  const rel = "codebase/STACK.md";
+  mkdirSync(join(base, ".planning", "codebase"), { recursive: true });
+  writeFileSync(join(base, ".planning", rel), "# new stack content\n", "utf-8");
+  writeCompatMarker(base, {
+    schema: 2,
+    lastWriter: "gsd-pi",
+    lastProjectedAt: "2026-06-21T00:00:00.000Z",
+    projections: {},
+    planning: {
+      active: true,
+      layout: "flat-phases",
+      projections: {},
+      passthrough: { [rel]: { sha: "old0000000000000", entities: [] } },
+    },
+    piVersion: "1.4.0",
+  });
+
+  const drift = await externalPlanningEditHandler.detect(stubState, ctx(base));
+  assert.equal(drift.length, 1);
+  assert.equal(drift[0]!.passthrough, true);
+});
+
+test("detect returns no drift when sha matches", async () => {
+  const base = makeTmpBase();
+  const rel = "ROADMAP.md";
+  const content = "# unchanged\n";
+  writeFileSync(join(base, ".planning", rel), content, "utf-8");
+  const { computeProjectionSha } = await import("../compat/compat-marker.ts");
+  writeCompatMarker(base, {
+    schema: 2,
+    lastWriter: "gsd-pi",
+    lastProjectedAt: "2026-06-21T00:00:00.000Z",
+    projections: {},
+    planning: {
+      active: true,
+      layout: "flat-phases",
+      projections: { [rel]: { sha: computeProjectionSha(content), entities: ["M001"] } },
+      passthrough: {},
+    },
+    piVersion: "1.4.0",
+  });
+
+  const drift = await externalPlanningEditHandler.detect(stubState, ctx(base));
+  assert.equal(drift.length, 0);
+});
+
+test("repair refreshes passthrough marker sha (idempotent on second detect)", async () => {
+  const base = makeTmpBase();
+  const rel = "codebase/STACK.md";
+  mkdirSync(join(base, ".planning", "codebase"), { recursive: true });
+  writeFileSync(join(base, ".planning", rel), "# new stack content\n", "utf-8");
+  writeCompatMarker(base, {
+    schema: 2,
+    lastWriter: "gsd-pi",
+    lastProjectedAt: "2026-06-21T00:00:00.000Z",
+    projections: {},
+    planning: {
+      active: true,
+      layout: "flat-phases",
+      projections: {},
+      passthrough: { [rel]: { sha: "old0000000000000", entities: [] } },
+    },
+    piVersion: "1.4.0",
+  });
+
+  const drift1 = await externalPlanningEditHandler.detect(stubState, ctx(base));
+  assert.equal(drift1.length, 1);
+  await externalPlanningEditHandler.repair(drift1[0]!, ctx(base));
+
+  const drift2 = await externalPlanningEditHandler.detect(stubState, ctx(base));
+  assert.equal(drift2.length, 0);
+});

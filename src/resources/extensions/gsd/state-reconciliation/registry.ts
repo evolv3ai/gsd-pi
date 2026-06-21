@@ -10,6 +10,7 @@ import {
 } from "./drift/artifact-db.js";
 import { mergeStateHandler } from "./drift/merge-state.js";
 import { externalMarkdownEditHandler } from "./drift/external-markdown-edit.js";
+import { externalPlanningEditHandler } from "./drift/external-planning-edit.js";
 import { unregisteredMilestoneHandler } from "./drift/project-md.js";
 import { roadmapDivergenceHandler } from "./drift/roadmap.js";
 import { sketchFlagHandler } from "./drift/sketch-flag.js";
@@ -32,6 +33,7 @@ export const DRIFT_REGISTRY: ReadonlyArray<DriftHandler<any>> = [
   // the DB is updated to reflect the gsd-core edit before stale-render
   // re-renders, so the canonical re-projection preserves the edit's intent.
   externalMarkdownEditHandler,
+  externalPlanningEditHandler,
   sketchFlagHandler,
   mergeStateHandler,
   staleRenderHandler,
