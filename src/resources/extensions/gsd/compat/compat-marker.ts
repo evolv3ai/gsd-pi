@@ -65,13 +65,13 @@ export function computeProjectionSha(content: string): string {
  */
 export function readCompatMarker(basePath: string): CompatMarker {
   const path = compatMarkerPath(basePath);
-  if (!existsSync(path)) return { ...EMPTY_MARKER };
+  if (!existsSync(path)) return emptyMarker();
 
   let raw: string;
   try {
     raw = readFileSync(path, "utf-8");
   } catch {
-    return { ...EMPTY_MARKER };
+    return emptyMarker();
   }
 
   let parsed: unknown;
@@ -79,19 +79,34 @@ export function readCompatMarker(basePath: string): CompatMarker {
     parsed = JSON.parse(raw);
   } catch {
     quarantine(basePath, raw);
-    return { ...EMPTY_MARKER };
+    return emptyMarker();
   }
 
   if (!isValidMarker(parsed)) {
     quarantine(basePath, raw);
-    return { ...EMPTY_MARKER };
+    return emptyMarker();
   }
   if (parsed.schema !== COMPAT_MARKER_SCHEMA) {
     // Future schema: refuse rather than guess. Re-running reconcile regenerates.
     quarantine(basePath, raw);
-    return { ...EMPTY_MARKER };
+    return emptyMarker();
   }
   return parsed;
+}
+
+/**
+ * Fresh deep copy of EMPTY_MARKER. Callers mutate the returned `projections`
+ * object (e.g. repair refreshes an entry), so a shallow copy would share the
+ * reference and pollute the module constant across calls. Always deep-copy.
+ */
+function emptyMarker(): CompatMarker {
+  return {
+    schema: EMPTY_MARKER.schema,
+    lastWriter: EMPTY_MARKER.lastWriter,
+    lastProjectedAt: EMPTY_MARKER.lastProjectedAt,
+    projections: {},
+    piVersion: EMPTY_MARKER.piVersion,
+  };
 }
 
 /**
