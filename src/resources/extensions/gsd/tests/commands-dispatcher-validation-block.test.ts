@@ -143,6 +143,8 @@ test("dispatcher blocks workflow-advancing aliases while validation is blocked",
     "plan-phase",
     "execute-phase --milestone M009",
     "autonomous --from 1",
+    "workstreams resume",
+    "workstreams complete",
     "workflow resume",
     "workflow release-checklist",
   ];
@@ -159,7 +161,13 @@ test("dispatcher blocks workflow-advancing aliases while validation is blocked",
       assert.equal(calls.length, 0, command);
       assert.equal(messages.length, 1, command);
       assert.equal(messages[0].display, true, command);
-      assert.match(messages[0].content, new RegExp(`/gsd ${command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} cannot run`), command);
+      let blockedLabel = command;
+      if (command === "workstreams resume") {
+        blockedLabel = "parallel resume";
+      } else if (command === "workstreams complete") {
+        blockedLabel = "parallel merge";
+      }
+      assert.match(messages[0].content, new RegExp(`/gsd ${blockedLabel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} cannot run`), command);
     } finally {
       closeDatabase();
       invalidateStateCache();

@@ -13,9 +13,6 @@ import { join } from "node:path";
 
 import { loadPrompt } from "./prompt-loader.js";
 import { currentDirectoryRoot } from "./commands/context.js";
-import { handleWorktree } from "./commands-worktree.js";
-import { handleParallelCommand } from "./commands/handlers/parallel.js";
-import { handleWorkflowCommand } from "./commands/handlers/workflow.js";
 
 /**
  * Catalog entries for commands IMPLEMENTED natively in this module.
@@ -167,6 +164,15 @@ function splitAction(args: string): { action: string; rest: string } {
   if (!trimmed) return { action: "", rest: "" };
   const [action = "", ...rest] = trimmed.split(/\s+/);
   return { action: action.toLowerCase(), rest: rest.join(" ") };
+}
+
+async function dispatchGSDCommand(
+  command: string,
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI,
+): Promise<void> {
+  const { handleGSDCommand } = await import("./commands/dispatcher.js");
+  await handleGSDCommand(command, ctx, pi);
 }
 
 // ─── Individual command handlers ─────────────────────────────────────────────
@@ -757,15 +763,15 @@ export async function handlePhase(args: string, ctx: ExtensionCommandContext, pi
   const action = args.trim() || "list";
   const parsed = splitAction(action);
   if (parsed.action === "list" || parsed.action === "status") {
-    await handleWorkflowCommand("queue", ctx, pi);
+    await dispatchGSDCommand("queue", ctx, pi);
     return;
   }
   if (["add", "create", "insert", "new"].includes(parsed.action)) {
-    await handleWorkflowCommand(`new-milestone ${parsed.rest}`.trim(), ctx, pi);
+    await dispatchGSDCommand(`new-milestone ${parsed.rest}`.trim(), ctx, pi);
     return;
   }
   if (parsed.action === "remove" && parsed.rest) {
-    await handleWorkflowCommand(`park ${parsed.rest}`.trim(), ctx, pi);
+    await dispatchGSDCommand(`park ${parsed.rest}`.trim(), ctx, pi);
     return;
   }
   dispatchPrompt(
@@ -802,7 +808,14 @@ export async function handleWorkstreams(args: string, ctx: ExtensionCommandConte
     parallelAction = parsed.action;
   }
   if (parallelAction) {
-    await handleParallelCommand(`parallel ${parallelAction} ${parsed.rest}`.trim(), ctx, pi);
+    if ((parsed.action === "create" || parsed.action === "start") && parsed.rest) {
+      ctx.ui.notify(
+        "workstreams create does not accept a milestone target. Run /gsd parallel start to start all eligible milestones.",
+        "warning",
+      );
+      return;
+    }
+    await dispatchGSDCommand(`parallel ${parallelAction} ${parsed.rest}`.trim(), ctx, pi);
     return;
   }
   dispatchPrompt(
@@ -817,19 +830,19 @@ export async function handleWorkspace(args: string, ctx: ExtensionCommandContext
   const action = args.trim() || "--list";
   const parsed = splitAction(action);
   if (parsed.action === "--list" || parsed.action === "list" || parsed.action === "ls") {
-    await handleWorktree("list", ctx);
+    await dispatchGSDCommand("worktree list", ctx, pi);
     return;
   }
   if (parsed.action === "--remove" || parsed.action === "remove" || parsed.action === "rm") {
-    await handleWorktree(`remove ${parsed.rest}`.trim(), ctx);
+    await dispatchGSDCommand(`worktree remove ${parsed.rest}`.trim(), ctx, pi);
     return;
   }
   if (parsed.action === "--merge" || parsed.action === "merge") {
-    await handleWorktree(`merge ${parsed.rest}`.trim(), ctx);
+    await dispatchGSDCommand(`worktree merge ${parsed.rest}`.trim(), ctx, pi);
     return;
   }
   if (parsed.action === "--clean" || parsed.action === "clean") {
-    await handleWorktree("clean", ctx);
+    await dispatchGSDCommand("worktree clean", ctx, pi);
     return;
   }
   if (parsed.action === "--new" || parsed.action === "new" || parsed.action === "create") {

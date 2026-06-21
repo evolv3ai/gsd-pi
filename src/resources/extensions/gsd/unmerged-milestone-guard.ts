@@ -30,7 +30,6 @@ const BLOCKED_COMMANDS = new Set([
   "workflow",
   "new-milestone",
   "new-project",
-  "audit-fix",
   "do",
   "discuss-phase",
   "plan-phase",
@@ -40,6 +39,7 @@ const BLOCKED_COMMANDS = new Set([
   "ui-phase",
   "ai-integration-phase",
   "ultraplan-phase",
+  "validate-phase",
   "autonomous",
   "execute-task",
   "research-milestone",
@@ -58,6 +58,11 @@ function isRuntimePath(path: string): boolean {
 function formatCommandLabel(attemptedCommand: string): string {
   const trimmed = attemptedCommand.trim();
   return trimmed ? `/gsd ${trimmed}` : "/gsd";
+}
+
+function hasFlag(command: string, flag: string): boolean {
+  const escaped = flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|\\s)${escaped}(?=\\s|$)`).test(command);
 }
 
 function resolveIntegrationBranch(base: string, milestoneId: string): string | null {
@@ -86,7 +91,10 @@ export function isUnmergedMilestoneAllowedCommand(trimmed: string): boolean {
     return subcommand === "complete" || subcommand === "complete-milestone";
   }
   if (name === "audit-fix") {
-    return /(?:^|\s)--dry-run(?=\s|$)/.test(command);
+    return hasFlag(command, "--dry-run");
+  }
+  if (name === "code-review") {
+    return !hasFlag(command, "--fix");
   }
   return !BLOCKED_COMMANDS.has(name);
 }

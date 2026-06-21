@@ -192,9 +192,13 @@ test("dispatcher blocks workflow-advancing commands while completed branch is un
     "workflow run release",
     "do mark all complete",
     "audit-fix --severity high",
+    "code-review --fix",
+    "validate-phase",
     "plan-phase",
     "execute-phase --milestone M009",
     "autonomous --from 1",
+    "phase add M009",
+    "workstreams create",
   ];
 
   for (const command of blockedCommands) {

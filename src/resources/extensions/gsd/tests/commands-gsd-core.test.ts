@@ -619,6 +619,15 @@ describe("Batch 5 handlers dispatch", () => {
     assert.equal(pi.sent[0].customType, "gsd-parallel");
     assert.match(pi.sent[0].content, /No parallel orchestration/);
   });
+  test("dispatcher rejects targeted workstreams create", async () => {
+    const base = createTempGsdProject("gsd-workstreams-target-");
+    const pi = createMockPi(); const ctx = createMockCtxWithCwd(base);
+    await handleGSDCommand("workstreams create M001", ctx as any, pi as any);
+    assert.equal(pi.sent.length, 0);
+    assert.equal(ctx.notifications[0].level, "warning");
+    assert.match(ctx.notifications[0].message, /workstreams create does not accept a milestone target/);
+    assert.match(ctx.notifications[0].message, /\/gsd parallel start/);
+  });
   test("handleWorkspace rejects unsupported new action", async () => {
     const pi = createMockPi(); const ctx = createMockCtx();
     await handleWorkspace("--new experiment", ctx as any, pi as any);
