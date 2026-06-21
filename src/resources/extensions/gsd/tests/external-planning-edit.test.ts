@@ -29,10 +29,37 @@ afterEach(() => {
   tmpDirs.length = 0;
 });
 
-test("detect returns no drift when planning inactive", async () => {
+test("detect returns no drift when planning inactive and dir is empty", async () => {
   const base = makeTmpBase();
+  // .planning/ exists (created by makeTmpBase) but has no ROADMAP.md → no
+  // layout signal → detectPlanningLayout returns null → stays inactive.
   const drift = await externalPlanningEditHandler.detect(stubState, ctx(base));
   assert.equal(drift.length, 0);
+
+  const { readCompatMarker } = await import("../compat/compat-marker.ts");
+  const marker = readCompatMarker(base);
+  assert.equal(marker.planning?.active, false, "should not activate without a recognisable layout");
+});
+
+test("detect auto-activates marker when .planning/ has a recognisable layout", async () => {
+  const base = makeTmpBase();
+  // Write a minimal flat-phases ROADMAP so detectPlanningLayout returns "flat-phases".
+  writeFileSync(
+    join(base, ".planning", "ROADMAP.md"),
+    "# Roadmap\n\n## Phases\n\n- [ ] 01 — Foundation\n",
+    "utf-8",
+  );
+  // No compat marker written → planning.active = false by default.
+
+  const drift = await externalPlanningEditHandler.detect(stubState, ctx(base));
+  // First pass returns no drift records (just activates the marker).
+  assert.equal(drift.length, 0);
+
+  // Marker must now have planning.active = true and layout = "flat-phases".
+  const { readCompatMarker } = await import("../compat/compat-marker.ts");
+  const marker = readCompatMarker(base);
+  assert.equal(marker.planning?.active, true, "planning.active should be set after auto-detection");
+  assert.equal(marker.planning?.layout, "flat-phases");
 });
 
 test("detect returns drift when planning projection sha mismatches", async () => {

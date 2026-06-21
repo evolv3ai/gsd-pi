@@ -46,12 +46,38 @@ function detectOne(
   return records;
 }
 
-function detectExternalPlanningEdit(
+async function detectExternalPlanningEdit(
   _state: GSDState,
   ctx: DriftContext,
-): ExternalPlanningEditDrift[] {
+): Promise<ExternalPlanningEditDrift[]> {
   const marker = readCompatMarker(ctx.basePath);
-  if (!marker.planning?.active) return [];
+  if (!marker.planning?.active) {
+    // Auto-activate: .planning/ exists on disk but the marker has not recorded
+    // it yet. Parse → detect layout → stamp planning.active so renderAllFromDb
+    // and subsequent reconcile passes see it immediately, without requiring a
+    // manual /gsd sync. Returns [] so this pass is a no-op on drift records;
+    // the next reconcile pass (or the same call's second pass if other repairs
+    // fired) will detect and import real SHA drift.
+    const planningDir = join(ctx.basePath, ".planning");
+    if (!existsSync(planningDir)) return [];
+    try {
+      const { parsePlanningDirectory } = await import("../../migrate/parser.js");
+      const { detectPlanningLayout } = await import("../../migrate/layout-detect.js");
+      const parsed = await parsePlanningDirectory(planningDir);
+      const layout = detectPlanningLayout(parsed);
+      if (layout) {
+        const m = readCompatMarker(ctx.basePath);
+        m.planning = { active: true, layout, projections: {}, passthrough: {} };
+        writeCompatMarker(ctx.basePath, m);
+      }
+    } catch (e) {
+      logWarning(
+        "reconcile",
+        `planning layout auto-detection failed: ${(e as Error).message}`,
+      );
+    }
+    return [];
+  }
   return [
     ...detectOne(ctx, marker.planning.projections, false),
     ...detectOne(ctx, marker.planning.passthrough, true),
