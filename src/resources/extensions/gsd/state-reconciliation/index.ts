@@ -67,8 +67,8 @@ export async function reconcileBeforeDispatch(
   const repaired: DriftRecord[] = [];
 
   // Capture-on-first-read: infer .planning/ layout, import content into DB, and
-  // seed compat marker SHAs so drift detection has a baseline. Skipped in
-  // dry-run mode to keep the reconcile pass fully read-only — no marker writes.
+  // activate the compat marker. Skipped in dry-run mode to keep the reconcile
+  // pass fully read-only — no marker writes.
   if (!deps.dryRun) {
     const { capturePlanningCompatIfNeeded } = await import("../compat/planning-compat.js");
     await capturePlanningCompatIfNeeded(basePath);
@@ -77,7 +77,7 @@ export async function reconcileBeforeDispatch(
   for (let pass = 0; pass < MAX_PASSES; pass++) {
     deps.invalidateStateCache();
     const stateSnapshot = await deps.deriveState(basePath, deps.deriveStateOptions);
-    const ctx: DriftContext = { basePath, state: stateSnapshot };
+    const ctx: DriftContext = { basePath, state: stateSnapshot, dryRun: deps.dryRun };
 
     const detection = await detectAllDrift(stateSnapshot, ctx, registry);
     const drift = detection.records;
@@ -176,7 +176,7 @@ export async function reconcileBeforeDispatch(
   // After MAX_PASSES, one more derive+detect to verify nothing persists.
   deps.invalidateStateCache();
   const finalState = await deps.deriveState(basePath, deps.deriveStateOptions);
-  const finalCtx: DriftContext = { basePath, state: finalState };
+  const finalCtx: DriftContext = { basePath, state: finalState, dryRun: deps.dryRun };
   const finalDetection = await detectAllDrift(finalState, finalCtx, registry);
   const persistent = finalDetection.records;
 

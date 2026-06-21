@@ -67,6 +67,8 @@ export type DriftRecord =
 export interface DriftContext {
   basePath: string;
   state: GSDState;
+  /** When true, detectors must not persist compat marker changes. */
+  dryRun?: boolean;
 }
 
 /**

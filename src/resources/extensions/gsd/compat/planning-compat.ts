@@ -19,7 +19,7 @@ export interface PlanningProjectionWrite {
   passthrough?: boolean;
 }
 
-function isPlanningPassthroughRelPath(relPath: string): boolean {
+export function isPlanningPassthroughRelPath(relPath: string): boolean {
   if (relPath.startsWith("codebase/") || relPath.startsWith("research/")) return true;
   if (relPath === "config.json") return true;
   const name = relPath.split("/").pop() ?? relPath;
@@ -29,7 +29,7 @@ function isPlanningPassthroughRelPath(relPath: string): boolean {
   return false;
 }
 
-function walkPlanningRelPaths(planningDir: string, prefix = ""): string[] {
+export function walkPlanningRelPaths(planningDir: string, prefix = ""): string[] {
   const paths: string[] = [];
   let entries;
   try {
@@ -77,54 +77,29 @@ export function applyPlanningProjectionWrites(
   writeCompatMarker(basePath, marker);
 }
 
-function seedPlanningShasFromDisk(basePath: string): void {
-  const planningDir = join(basePath, ".planning");
-  const marker = readCompatMarker(basePath);
-  if (!marker.planning) {
-    marker.planning = { active: true, layout: null, projections: {}, passthrough: {} };
-  }
-  for (const relPath of walkPlanningRelPaths(planningDir)) {
-    const abs = join(planningDir, relPath);
-    const entry = {
-      sha: computeProjectionSha(readFileSync(abs, "utf-8")),
-      entities: [] as string[],
-    };
-    const map = isPlanningPassthroughRelPath(relPath)
-      ? marker.planning.passthrough
-      : marker.planning.projections;
-    map[relPath] = entry;
-  }
-  marker.lastWriter = "gsd-pi";
-  marker.lastProjectedAt = new Date().toISOString();
-  writeCompatMarker(basePath, marker);
+export interface CapturePlanningCompatOptions {
+  dryRun?: boolean;
 }
 
 /**
  * Capture-on-first-read: infer `.planning/` layout from disk, import content
  * into the DB so gsd-pi's projection reflects gsd-core's tree instead of
- * overwriting it, then activate the compat marker so drift detection has a
- * baseline on the next reconcile pass.
+ * overwriting it, then activate the compat marker. Projection shas are seeded
+ * by drift repair / write-time hooks — not from raw disk here.
  *
  * Must only be called when !dryRun — it writes both the DB and the marker.
  */
-export async function capturePlanningCompatIfNeeded(basePath: string): Promise<void> {
+export async function capturePlanningCompatIfNeeded(
+  basePath: string,
+  options?: CapturePlanningCompatOptions,
+): Promise<void> {
+  if (options?.dryRun) return;
+
   const planningDir = join(basePath, ".planning");
   if (!existsSync(planningDir)) return;
 
   const marker = readCompatMarker(basePath);
-  const mapsEmpty =
-    Object.keys(marker.planning?.projections ?? {}).length === 0 &&
-    Object.keys(marker.planning?.passthrough ?? {}).length === 0;
-
-  if (marker.planning?.active && marker.planning.layout) {
-    if (!mapsEmpty) return;
-    // Layout is known and SHAs are absent. This can happen when activation
-    // completed on a prior run but writePlanningDirectory hasn't populated
-    // applyPlanningProjectionWrites yet. Seed from disk so the next detect
-    // pass has something to compare against.
-    seedPlanningShasFromDisk(basePath);
-    return;
-  }
+  if (marker.planning?.active && marker.planning.layout) return;
 
   // First encounter: parse layout, import .planning/ content into the DB, then
   // activate the marker. We import before writing to disk so that

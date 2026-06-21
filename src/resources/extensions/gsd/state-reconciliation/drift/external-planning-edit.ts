@@ -14,6 +14,10 @@ import {
   readCompatMarker,
   writeCompatMarker,
 } from "../../compat/compat-marker.js";
+import {
+  isPlanningPassthroughRelPath,
+  walkPlanningRelPaths,
+} from "../../compat/planning-compat.js";
 import { logWarning } from "../../workflow-logger.js";
 import type { GSDState } from "../../types.js";
 import type { DriftContext, DriftHandler, DriftRecord } from "../types.js";
@@ -46,21 +50,71 @@ function detectOne(
   return records;
 }
 
+function detectUnseededPlanningFiles(
+  ctx: DriftContext,
+  projections: Record<string, { sha: string; entities: string[] }>,
+  passthrough: Record<string, { sha: string; entities: string[] }>,
+): ExternalPlanningEditDrift[] {
+  const planningDir = join(ctx.basePath, ".planning");
+  if (!existsSync(planningDir)) return [];
+
+  const records: ExternalPlanningEditDrift[] = [];
+  for (const relPath of walkPlanningRelPaths(planningDir)) {
+    const isPassthrough = isPlanningPassthroughRelPath(relPath);
+    const map = isPassthrough ? passthrough : projections;
+    if (map[relPath]) continue;
+    const abs = join(planningDir, relPath);
+    const actual = computeProjectionSha(readFileSync(abs, "utf-8"));
+    records.push({
+      kind: "external-planning-edit",
+      projectionPath: relPath,
+      expectedSha: "",
+      actualSha: actual,
+      entities: [],
+      passthrough: isPassthrough,
+    });
+  }
+  return records;
+}
+
 async function detectExternalPlanningEdit(
   _state: GSDState,
   ctx: DriftContext,
 ): Promise<ExternalPlanningEditDrift[]> {
   const marker = readCompatMarker(ctx.basePath);
   if (!marker.planning?.active) {
-    // Not yet activated. Activation (layout parse + DB import + SHA seeding) is
-    // owned by capturePlanningCompatIfNeeded, called from reconcileBeforeDispatch
-    // before the detect loop when !dryRun. detect() must never write the marker
-    // — it is called in both dry-run and non-dry-run contexts.
+    // Not yet activated. Activation (layout parse + DB import) is owned by
+    // capturePlanningCompatIfNeeded, called from reconcileBeforeDispatch when
+    // !dryRun. detect() must never write the marker — it is called in both
+    // dry-run and non-dry-run contexts. In dry-run, preview unseeded files
+    // without persisting activation.
+    if (!ctx.dryRun) return [];
+
+    const planningDir = join(ctx.basePath, ".planning");
+    if (!existsSync(planningDir)) return [];
+    try {
+      const { parsePlanningDirectory } = await import("../../migrate/parser.js");
+      const { detectPlanningLayout } = await import("../../migrate/layout-detect.js");
+      const parsed = await parsePlanningDirectory(planningDir);
+      const layout = detectPlanningLayout(parsed);
+      if (!layout) return [];
+      return detectUnseededPlanningFiles(ctx, {}, {});
+    } catch (e) {
+      logWarning(
+        "reconcile",
+        `planning layout auto-detection failed: ${(e as Error).message}`,
+      );
+    }
     return [];
   }
   return [
     ...detectOne(ctx, marker.planning.projections, false),
     ...detectOne(ctx, marker.planning.passthrough, true),
+    ...detectUnseededPlanningFiles(
+      ctx,
+      marker.planning.projections,
+      marker.planning.passthrough,
+    ),
   ];
 }
 
