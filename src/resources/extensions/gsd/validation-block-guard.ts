@@ -107,6 +107,9 @@ export function isValidationBlockAllowedCommand(trimmed: string): boolean {
   if (name === "docs-update") {
     return hasFlag(command, "--verify-only");
   }
+  if (name === "phase") {
+    return !isMutatingPhaseSubcommand(subcommand);
+  }
   if (name === "progress") {
     return !hasFlag(command, "--next") && !hasFlag(command, "--do");
   }

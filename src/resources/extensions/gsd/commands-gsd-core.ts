@@ -1067,17 +1067,26 @@ export async function handleInbox(args: string, ctx: ExtensionCommandContext, pi
   );
 }
 
-/** /gsd import --from <filepath> | --from-gsd2 */
+/** /gsd import --from <filepath> | --from-gsd2 [--resolve auto|interactive] */
 export async function handleImport(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
   const fromMatch = args.match(/--from\s+(\S+)/);
   const isGsd2 = /(?:^|\s)--from-gsd2(?=\s|$)/.test(args);
+  const resolveMatch = args.match(/--resolve\s+(auto|interactive)/i);
   const source = fromMatch
     ? `External plan file: ${fromMatch[1]}`
     : isGsd2
       ? "legacy .planning/ directory (migration source)"
       : "(no source specified — ask for --from <filepath> or --from-gsd2)";
   dispatchPrompt(
-    { prompt: "import", customType: "gsd-import", verb: "Import", vars: { source } },
+    {
+      prompt: "import",
+      customType: "gsd-import",
+      verb: "Import",
+      vars: {
+        source,
+        resolveFlag: resolveMatch ? resolveMatch[1] : "interactive",
+      },
+    },
     ctx,
     pi,
   );

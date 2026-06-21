@@ -832,6 +832,16 @@ describe("Batch 5 handlers dispatch", () => {
     await handleImport("--from-gsd2", ctx as any, pi as any);
     assert.match(pi.sent[0].content, /\.planning/);
   });
+  test("handleImport --resolve auto is threaded into prompt", async () => {
+    const pi = createMockPi(); const ctx = createMockCtx();
+    await handleImport("--from plan.md --resolve auto", ctx as any, pi as any);
+    assert.match(pi.sent[0].content, /auto/);
+  });
+  test("handleImport defaults to interactive resolve mode", async () => {
+    const pi = createMockPi(); const ctx = createMockCtx();
+    await handleImport("--from plan.md", ctx as any, pi as any);
+    assert.match(pi.sent[0].content, /interactive/);
+  });
   test("handleIngestDocs mode + manifest", async () => {
     const pi = createMockPi(); const ctx = createMockCtx();
     await handleIngestDocs("docs/ --mode merge --manifest docs/m.json", ctx as any, pi as any);

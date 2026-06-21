@@ -89,6 +89,8 @@ test("validation block allows recovery, diagnostics, and unrelated commands", ()
     "audit-fix --dry-run",
     // docs-update is allowed in verify-only mode (read-only check, no writes)
     "docs-update --verify-only",
+    // phase read-only subcommands are fine while validation-blocked
+    "phase",
     "phase list",
     "phase status",
   ];
@@ -149,9 +151,10 @@ test("validation block rejects workflow-start and advancing commands", () => {
     // docs-update without --verify-only applies writes
     "docs-update",
     "docs-update --milestone M006",
+    // phase mutating subcommands change milestone queue state and must be blocked
     "phase add M009",
     "phase create M009",
-    "phase new M009",
+    "phase new",
     "phase insert M009 after M008",
     "phase remove M008",
     "phase edit M008",

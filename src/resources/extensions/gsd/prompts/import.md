@@ -1,5 +1,9 @@
 You are running the GSD **import** workflow — ingest an external plan with conflict detection against existing project decisions before writing anything.
 
+## Flags
+
+- `--resolve auto|interactive` — {{resolveFlag}}
+
 ## Source
 
 {{source}}
@@ -12,7 +16,7 @@ You are running the GSD **import** workflow — ingest an external plan with con
 
 3. **Present the conflict report.** List conflicts by severity (blocking / warning / info). Do not write anything yet.
 
-4. **Resolve.** For each conflict, propose a resolution (adopt source, keep ours, merge). In `--resolve auto`, apply the safe merges and flag the rest; otherwise confirm each.
+4. **Resolve.** For each conflict, propose a resolution (adopt source, keep ours, merge). In `--resolve auto`, apply the safe merges and flag the rest; in `--resolve interactive`, confirm each resolution with the user.
 
 5. **Import.** On approval, translate the source into gsd-pi artifacts: phases → milestones, requirements → CONTEXT/requirements, decisions → Decisions Register (`/gsd knowledge rule`), tasks → slice tasks. Prefer `/gsd migrate` machinery for whole `.planning/` imports.
 
