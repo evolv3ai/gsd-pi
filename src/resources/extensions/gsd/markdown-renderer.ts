@@ -886,13 +886,14 @@ export async function renderAllFromDb(basePath: string): Promise<RenderAllResult
   }
 
   // Project to .planning/ if the compat marker says it's active. Dynamic
-  // import mirrors the regenerateDecisionsMarkdown pattern above to avoid a
-  // static-import cycle. Gated on planning.active so the double-write cost
-  // only hits projects that actually use the .planning/ layout.
+  // import for writePlanningDirectory avoids a static-import cycle. Gated on
+  // planning.active so the double-write cost only hits projects that use
+  // .planning/. writePlanningDirectory records per-file SHAs via
+  // applyPlanningProjectionWrites so the reconcile detector has a baseline.
+  // capturePlanningCompatIfNeeded seeds the layout and SHAs on first encounter.
   try {
     const { capturePlanningCompatIfNeeded } = await import("./compat/planning-compat.js");
     await capturePlanningCompatIfNeeded(basePath);
-    const { readCompatMarker } = await import("./compat/compat-marker.js");
     const marker = readCompatMarker(basePath);
     if (marker.planning?.active && marker.planning.layout) {
       const { writePlanningDirectory } = await import("./migrate/planning-writer.js");

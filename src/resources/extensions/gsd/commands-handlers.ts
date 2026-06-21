@@ -185,8 +185,10 @@ export function isDoctorHealActionable(issue: { fixable: boolean; severity: stri
  * presence and the count of projection files whose on-disk sha has drifted
  * from the recorded baseline. Returns "" if the marker module is unavailable
  * (defensive — doctor must never fail because of compat reporting).
+ *
+ * Exported for unit testing.
  */
-async function formatCompatHealthLine(basePath: string): Promise<string> {
+export async function formatCompatHealthLine(basePath: string): Promise<string> {
   try {
     const { readCompatMarker, computeProjectionSha } = await import("./compat/compat-marker.js");
     const marker = readCompatMarker(basePath);

@@ -873,17 +873,24 @@ export async function handleSync(
       for (const e of renderResult.errors) lines.push(`    • ${e}`);
     }
 
-    // Refresh the marker to reflect the freshly re-projected state.
+    // Refresh the marker to reflect the freshly re-projected state. The
+    // planning hook inside renderAllFromDb already recorded per-file SHAs
+    // into marker.planning.projections; we read back the fully-populated
+    // marker here so the timestamp is the last thing written.
     const marker = readCompatMarker(basePath);
     marker.lastWriter = "gsd-pi";
     marker.lastProjectedAt = new Date().toISOString();
     writeCompatMarker(basePath, marker);
+    const planningShaCnt = Object.keys(marker.planning?.projections ?? {}).length;
+    const planningNote = planningShaCnt > 0
+      ? ` + ${planningShaCnt} .planning/ SHA${planningShaCnt !== 1 ? "s" : ""}`
+      : "";
 
     const state = await deriveState(basePath);
     lines.push(
       "",
       `  Phase:  ${state.phase}`,
-      `  Marker: .gsd/.compat.json refreshed`,
+      `  Marker: .gsd/.compat.json refreshed${planningNote}`,
     );
     if (state.activeMilestone) {
       lines.push(`  Active: ${state.activeMilestone.id}: ${state.activeMilestone.title}`);
