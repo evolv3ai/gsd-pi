@@ -26,7 +26,7 @@
 | `/gsd forensics` | Full debugger for auto-mode failures (includes worktree lifecycle telemetry) |
 | `/gsd cleanup` | Clean up state files and stale worktrees |
 | `/gsd worktree` (`/gsd wt`) | Manage GSD worktrees from the TUI |
-| `/gsd visualize` | Open workflow visualizer (progress, timeline, deps, metrics, health, agent, changes, knowledge, captures, export) |
+| `/gsd visualize` | Open workflow visualizer (progress, timeline, deps, metrics, health, agent, changes, knowledge, memories, captures, export) |
 | `/gsd export --html` | Generate HTML report for current milestone |
 | `/gsd export --html --all` | Generate reports for all milestones |
 | `/gsd update` | Update GSD to the latest version |

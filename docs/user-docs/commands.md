@@ -33,7 +33,7 @@
 | `/gsd cleanup` | Clean up GSD state files and stale worktrees |
 | `/gsd closeout` | Recover failed git closeout actions (`status`, `retry`, `resolve`) |
 | `/gsd worktree` (`/gsd wt`) | Manage GSD worktrees from the TUI |
-| `/gsd visualize` | Open workflow visualizer (progress, timeline, deps, metrics, health, agent, changes, knowledge, captures, export) |
+| `/gsd visualize` | Open workflow visualizer (progress, timeline, deps, metrics, health, agent, changes, knowledge, memories, captures, export) |
 | `/gsd brief <mode> [topic] [--slides]` | Generate a self-contained visual HTML brief. Modes: `diagram`, `plan`, `diff`, `recap`, `table`, `slides`. |
 | `/gsd report` | Generate HTML reports for all milestones and open the reports index in a browser |
 | `/gsd report --html` | Generate self-contained HTML report for current or completed milestone |
@@ -547,4 +547,4 @@ If already up to date, it reports so and takes no action.
 /gsd report --html --all
 ```
 
-Reports are saved to `.gsd/reports/` with a browseable `index.html` that links to all generated snapshots.
+Reports are saved to `.gsd/reports/` with a browseable `index.html` that links to all generated snapshots. Each report includes the active memory feed in its Knowledge section when memory rows are available.

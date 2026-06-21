@@ -180,7 +180,7 @@ require_slice_discussion: true
 
 ### HTML 报告
 
-每当 milestone 完成后，GSD 都会在 `.gsd/reports/` 中自动生成一个自包含的 HTML 报告。报告包括项目摘要、进度树、slice 依赖图（SVG DAG）、成本 / Token 柱状图、执行时间线、变更日志和知识库。没有外部依赖，所有 CSS 和 JS 都会内联。
+每当 milestone 完成后，GSD 都会在 `.gsd/reports/` 中自动生成一个自包含的 HTML 报告。报告包括项目摘要、进度树、slice 依赖图（SVG DAG）、成本 / Token 柱状图、执行时间线、变更日志、知识库和活跃记忆。没有外部依赖，所有 CSS 和 JS 都会内联。
 
 ```yaml
 auto_report: true    # 默认开启
@@ -274,7 +274,7 @@ auto_report: true    # 默认开启
 /gsd visualize
 ```
 
-打开工作流可视化器，交互式查看进度、依赖、指标和时间线。详见 [工作流可视化器](./visualizer.md)。
+打开工作流可视化器，交互式查看进度、依赖、指标、时间线、知识、记忆、捕获和导出。详见 [工作流可视化器](./visualizer.md)。
 
 ## 仪表板
 

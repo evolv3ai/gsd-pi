@@ -311,7 +311,7 @@ Auto-mode pauses before each slice, presenting the slice context for discussion.
 
 ### HTML Reports
 
-After a milestone completes, GSD auto-generates a self-contained HTML report in `.gsd/reports/`. Reports include project summary, progress tree, slice dependency graph (SVG DAG), cost/token metrics with bar charts, execution timeline, changelog, and knowledge base. No external dependencies — all CSS and JS are inlined.
+After a milestone completes, GSD auto-generates a self-contained HTML report in `.gsd/reports/`. Reports include project summary, progress tree, slice dependency graph (SVG DAG), cost/token metrics with bar charts, execution timeline, changelog, knowledge base, and active memories. No external dependencies — all CSS and JS are inlined.
 
 ```yaml
 auto_report: true    # enabled by default
@@ -405,7 +405,7 @@ Fire-and-forget thought capture. Captures are triaged automatically between task
 /gsd visualize
 ```
 
-Open the workflow visualizer — interactive tabs for progress, dependencies, metrics, and timeline. See [Workflow Visualizer](./visualizer.md).
+Open the workflow visualizer — interactive tabs for progress, dependencies, metrics, timeline, knowledge, memories, captures, and export. See [Workflow Visualizer](./visualizer.md).
 
 ### Remote Control via Telegram
 

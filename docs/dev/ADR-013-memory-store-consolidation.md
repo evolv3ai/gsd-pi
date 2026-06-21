@@ -43,7 +43,7 @@ After PR #4469 landed, GSD has **two parallel knowledge persistence surfaces** t
 |---|---|---|---|---|---|
 | `decisions` table | DB-backed; `.gsd/DECISIONS.md` is a projection | Yes — `inlineDecisionsFromDb` (`src/resources/extensions/gsd/auto-prompts.ts:336`) | Structured: `scope`, `decision`, `choice`, `rationale`, `made_by`, `revisable` | `gsd_save_decision` | Yes (`gsd_knowledge`, `gsd_save_decision`) |
 | `.gsd/KNOWLEDGE.md` | File-canonical (no DB) | Yes — `loadKnowledgeBlock` (`src/resources/extensions/gsd/bootstrap/system-context.ts`) | Three markdown tables: Rules / Patterns / Lessons | Direct file append (no tool) | Yes (`gsd_knowledge`) |
-| `memories` table | DB-backed (`src/resources/extensions/gsd/bootstrap/memory-tools.ts`) | **No** | Flat: `category` (architecture / convention / gotcha / pattern / preference / environment), `content`, `confidence`, tags | `capture_thought`, `memory_query`, `gsd_graph` | **No** |
+| `memories` table | DB-backed (`src/resources/extensions/gsd/bootstrap/memory-tools.ts`) | Yes — relevant rows are injected by `loadMemoryBlock`; active rows are reviewable in the visualizer Knowledge tab and report/export payloads | Flat: `category` (architecture / convention / gotcha / pattern / preference / environment), `content`, `confidence`, tags | `capture_thought`, `memory_query`, `gsd_graph` | **No** |
 
 A 3-agent parallel audit (Issue #4495) found:
 
@@ -62,7 +62,7 @@ The two surfaces are not just redundant; they fragment durable knowledge across 
 
 | Artifact | Role |
 |---|---|
-| `memories` table | **Canonical** durable knowledge store. All `capture_thought` writes land here. All `memory_query` reads come from here. Auto-injected via a new `loadMemoryBlock` analogous to `loadKnowledgeBlock`. |
+| `memories` table | **Canonical** durable knowledge store. All `capture_thought` writes land here. All `memory_query` reads come from here. Auto-injected via a new `loadMemoryBlock` analogous to `loadKnowledgeBlock`; active rows are also reviewable in the visualizer Knowledge tab and report/export payloads. |
 | `.gsd/DECISIONS.md` | **Read-only projection** rendered from `memories` rows where `category = "architecture"`. Continues to satisfy human review and external MCP consumers. |
 | `.gsd/KNOWLEDGE.md` | **Hybrid projection**. The Rules table remains manually authored and preserved from the file. Existing Patterns and Lessons are backfilled into `memories`, then projected from memory rows that carry `structuredFields.sourceKnowledgeId`. Continues to satisfy human review, reports, and external MCP consumers. |
 | `.gsd/milestones/*/M*-LEARNINGS.md` | **Audit trail** of each extraction. Unchanged — written by `buildExtractionStepsBlock` Step 2; never read back by automation. |

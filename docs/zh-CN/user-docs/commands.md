@@ -26,7 +26,7 @@
 | `/gsd history` | 查看执行历史（支持 `--cost`、`--phase`、`--model` 过滤） |
 | `/gsd forensics` | 全访问 GSD 调试器：用于分析自动模式失败，支持结构化异常检测、单元追踪和 LLM 引导的根因分析 |
 | `/gsd cleanup` | 清理 GSD 状态文件和过期 worktrees |
-| `/gsd visualize` | 打开工作流可视化器（进度、依赖、指标、时间线） |
+| `/gsd visualize` | 打开工作流可视化器（进度、时间线、依赖、指标、健康、agent、变更、知识、记忆、捕获、导出） |
 | `/gsd brief <mode> [topic] [--slides]` | 生成自包含的可视化 HTML 简报。模式：`diagram`、`plan`、`diff`、`recap`、`table`、`slides`。 |
 | `/gsd export --html` | 为当前或已完成的 milestone 生成自包含 HTML 报告 |
 | `/gsd export --html --all` | 一次性为所有 milestones 生成回顾报告 |
@@ -385,4 +385,4 @@ gsd --mode mcp
 /gsd export --html --all
 ```
 
-报告会保存到 `.gsd/reports/`，并生成一个可浏览的 `index.html`，链接到所有已生成的快照。
+报告会保存到 `.gsd/reports/`，并生成一个可浏览的 `index.html`，链接到所有已生成的快照。存在记忆条目时，每个报告都会在 Knowledge 区域包含活跃记忆列表。

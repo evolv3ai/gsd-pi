@@ -1,6 +1,6 @@
 # Workflow Visualizer
 
-The workflow visualizer is an interactive view for project progress, execution history, dependencies, metrics, health, agent activity, changes, knowledge, captures, and export.
+The workflow visualizer is an interactive view for project progress, execution history, dependencies, metrics, health, agent activity, changes, knowledge, memories, captures, and export.
 
 ## Opening
 
@@ -71,7 +71,7 @@ Completed slice summaries, modified files, verification decisions, and establish
 
 ### 8. Knowledge
 
-Persistent project rules, patterns, and lessons.
+Persistent project rules, patterns, and lessons, plus active memory-store entries ranked by confidence and usage. Memory rows include their ID, category, scope, confidence, hit count, tags, and truncated content.
 
 ### 9. Captures
 
@@ -79,7 +79,7 @@ Captured notes grouped by pending, triaged, and resolved state.
 
 ### 0. Export
 
-Download Markdown, JSON, or a current-view snapshot.
+Download Markdown, JSON, or a current-view snapshot. Markdown and JSON exports include the same bounded active-memory feed that appears in the Knowledge tab.
 
 ## Controls
 
@@ -104,7 +104,7 @@ For shareable reports outside the terminal:
 /gsd export --html --all        # all milestones
 ```
 
-Generates self-contained HTML files in `.gsd/reports/` with progress tree, dependency graph, cost charts, timeline, and changelog. All CSS and JS are inlined — no external dependencies. Printable to PDF from any browser.
+Generates self-contained HTML files in `.gsd/reports/` with progress tree, dependency graph, cost charts, timeline, changelog, knowledge, and active memories. All CSS and JS are inlined — no external dependencies. Printable to PDF from any browser.
 
 ```yaml
 auto_report: true    # auto-generate after milestone completion (default)
