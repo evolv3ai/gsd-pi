@@ -34,7 +34,6 @@ export const DRIFT_REGISTRY: ReadonlyArray<DriftHandler<any>> = [
   externalMarkdownEditHandler,
   sketchFlagHandler,
   mergeStateHandler,
-  externalMarkdownEditHandler,
   staleRenderHandler,
   staleWorkerHandler,
   unregisteredMilestoneHandler,
