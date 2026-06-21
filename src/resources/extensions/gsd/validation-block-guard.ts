@@ -74,6 +74,11 @@ function hasFlag(command: string, flag: string): boolean {
   return new RegExp(`(?:^|\\s)${escaped}(?=\\s|$)`).test(command);
 }
 
+function isMutatingPhaseCommand(subcommand: string | undefined): boolean {
+  if (!subcommand) return false;
+  return ["add", "create", "new", "insert", "remove", "edit"].includes(subcommand);
+}
+
 export function isValidationBlockedState(state: GSDState): boolean {
   if (state.phase !== "blocked") return false;
   return state.blockers.some((blocker) => VALIDATION_BLOCK_RE.test(blocker));
@@ -104,6 +109,9 @@ export function isValidationBlockAllowedCommand(trimmed: string): boolean {
   }
   if (name === "progress") {
     return !hasFlag(command, "--next") && !hasFlag(command, "--do");
+  }
+  if (name === "phase") {
+    return !isMutatingPhaseCommand(subcommand);
   }
   return !VALIDATION_BLOCKED_COMMANDS.has(name);
 }
