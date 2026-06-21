@@ -82,6 +82,12 @@ export function isValidationBlockAllowedCommand(trimmed: string): boolean {
   if (name === "workflow") {
     return VALIDATION_SAFE_WORKFLOW_SUBCOMMANDS.has(subcommand ?? "");
   }
+  if (name === "audit-fix") {
+    return hasFlag(command, "--dry-run");
+  }
+  if (name === "code-review") {
+    return !hasFlag(command, "--fix");
+  }
   if (name === "progress") {
     return !hasFlag(command, "--next") && !hasFlag(command, "--do");
   }

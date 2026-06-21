@@ -82,6 +82,9 @@ test("validation block allows recovery, diagnostics, and unrelated commands", ()
     "parallel watch",
     "progress",
     "progress --forensic",
+    "code-review",
+    "code-review --depth quick",
+    "audit-fix --dry-run",
   ];
 
   for (const command of allowed) {
@@ -121,6 +124,9 @@ test("validation block rejects workflow-start and advancing commands", () => {
     "dispatch uat",
     "complete-milestone",
     "ship",
+    "audit-fix",
+    "audit-fix --severity high",
+    "code-review --fix",
   ];
 
   for (const command of blocked) {
