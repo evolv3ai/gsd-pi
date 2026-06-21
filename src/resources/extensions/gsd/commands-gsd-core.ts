@@ -12,7 +12,7 @@ import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { loadPrompt } from "./prompt-loader.js";
-import { currentDirectoryRoot, projectRoot, withCommandCwd } from "./commands/context.js";
+import { currentDirectoryRoot, GSDNoProjectError, projectRoot, withCommandCwd } from "./commands/context.js";
 import { getUnmergedMilestoneBlockMessageForBase } from "./unmerged-milestone-guard.js";
 import { getValidationBlockMessageForBase } from "./validation-block-guard.js";
 
@@ -244,9 +244,9 @@ async function resolveManagerVars(
         managerSuccessCriteria: MANAGER_SUCCESS_READ_ONLY,
       };
     });
-  } catch {
-    // No project context available — return normal vars (can't determine blocker state).
-    return vars;
+  } catch (err) {
+    if (err instanceof GSDNoProjectError) return vars;
+    throw err;
   }
 }
 
@@ -340,9 +340,7 @@ export async function handleMapCodebase(args: string, ctx: ExtensionCommandConte
   const outputDir = join(basePath, ".gsd", "codebase");
   mkdirSync(outputDir, { recursive: true });
   const paths = parsePathsFlag(args);
-  // Support --focus "quoted multi-word" or --focus unquoted-words (up to the next flag).
-  const focusMatch = args.match(/--focus\s+"([^"]*)"/i) ?? args.match(/--focus\s+(.+?)(?=\s+--|$)/i);
-  const focus = focusMatch ? focusMatch[1].trim() : "";
+  const focus = parseFlagValue(args, "--focus") ?? "";
   const scopeParts: string[] = [];
   if (paths) scopeParts.push(`Incremental remap — scope exploration to: ${paths}`);
   else scopeParts.push("Whole-repo scan.");
