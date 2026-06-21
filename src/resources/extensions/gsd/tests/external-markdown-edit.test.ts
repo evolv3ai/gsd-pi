@@ -34,7 +34,7 @@ afterEach(() => {
   tmpDirs.length = 0;
 });
 
-test("detect returns no drift when file sha matches marker", () => {
+test("detect returns no drift when file sha matches marker", async () => {
   const base = makeTmpBase();
   const rel = "m1/roadmap.md";
   mkdirSync(join(base, ".gsd", "m1"), { recursive: true });
@@ -47,11 +47,11 @@ test("detect returns no drift when file sha matches marker", () => {
     piVersion: "1.4.0",
   });
 
-  const drift = externalMarkdownEditHandler.detect(stubState, ctx(base));
+  const drift = await externalMarkdownEditHandler.detect(stubState, ctx(base));
   assert.equal(drift.length, 0);
 });
 
-test("detect returns drift when file content differs from marker", () => {
+test("detect returns drift when file content differs from marker", async () => {
   const base = makeTmpBase();
   const rel = "m1/roadmap.md";
   mkdirSync(join(base, ".gsd", "m1"), { recursive: true });
@@ -64,14 +64,14 @@ test("detect returns drift when file content differs from marker", () => {
     piVersion: "1.4.0",
   });
 
-  const drift = externalMarkdownEditHandler.detect(stubState, ctx(base));
+  const drift = await externalMarkdownEditHandler.detect(stubState, ctx(base));
   assert.equal(drift.length, 1);
   assert.equal(drift[0].kind, "external-markdown-edit");
   assert.equal(drift[0].projectionPath, rel);
   assert.deepEqual(drift[0].entities, ["m1"]);
 });
 
-test("detect treats missing marker as drift on every tracked projection file", () => {
+test("detect treats missing marker as drift on every tracked projection file", async () => {
   const base = makeTmpBase();
   const rel = "m1/roadmap.md";
   mkdirSync(join(base, ".gsd", "m1"), { recursive: true });
@@ -82,11 +82,11 @@ test("detect treats missing marker as drift on every tracked projection file", (
   // no-op (the reconcile pipeline's other handlers cover the "import everything"
   // case via the existing /gsd recover flow). This is by design: this handler
   // only fires when we HAVE a baseline to compare.
-  const drift = externalMarkdownEditHandler.detect(stubState, ctx(base));
+  const drift = await externalMarkdownEditHandler.detect(stubState, ctx(base));
   assert.equal(drift.length, 0);
 });
 
-test("detect ignores files missing from disk (other handlers cover that)", () => {
+test("detect ignores files missing from disk (other handlers cover that)", async () => {
   const base = makeTmpBase();
   const rel = "m1/roadmap.md";
   writeCompatMarker(base, {
@@ -98,7 +98,7 @@ test("detect ignores files missing from disk (other handlers cover that)", () =>
   });
   // No file written.
 
-  const drift = externalMarkdownEditHandler.detect(stubState, ctx(base));
+  const drift = await externalMarkdownEditHandler.detect(stubState, ctx(base));
   assert.equal(drift.length, 0);
 });
 
@@ -116,7 +116,7 @@ test("repair is idempotent: running twice produces no further drift on second de
     piVersion: "1.4.0",
   });
 
-  const drift1 = externalMarkdownEditHandler.detect(stubState, ctx(base));
+  const drift1 = await externalMarkdownEditHandler.detect(stubState, ctx(base));
   assert.equal(drift1.length, 1);
   // repair may call migrateHierarchyToDb which requires a DB; we only assert
   // that detect after repair produces no further drift on THIS handler. Wrap
@@ -132,6 +132,6 @@ test("repair is idempotent: running twice produces no further drift on second de
   }
 
   // After repair, marker should reflect the file's actual sha → no drift.
-  const drift2 = externalMarkdownEditHandler.detect(stubState, ctx(base));
+  const drift2 = await externalMarkdownEditHandler.detect(stubState, ctx(base));
   assert.equal(drift2.length, 0);
 });

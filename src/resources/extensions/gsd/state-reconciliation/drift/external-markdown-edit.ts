@@ -15,8 +15,6 @@ import {
   readCompatMarker,
   writeCompatMarker,
 } from "../../compat/compat-marker.js";
-import { migrateHierarchyToDb } from "../../md-importer.js";
-import { invalidateStateCache } from "../../state.js";
 import { logWarning } from "../../workflow-logger.js";
 import type { GSDState } from "../../types.js";
 import type { DriftContext, DriftHandler, DriftRecord } from "../types.js";
@@ -71,6 +69,11 @@ async function repairExternalMarkdownEdit(
   ctx: DriftContext,
 ): Promise<void> {
   try {
+    // Dynamic imports break a module-init cycle: this handler ← registry ←
+    // state.ts ← guided-flow.ts ← md-importer.ts ← (this handler's old static
+    // import). Deferring to repair time keeps module load cycle-free.
+    const { migrateHierarchyToDb } = await import("../../md-importer.js");
+    const { invalidateStateCache } = await import("../../state.js");
     // Scoped re-import. migrateHierarchyToDb walks the whole tree but is a
     // cheap upsert; per-entity scoping would require decomposing it, which is
     // out of scope for v1. The cost is bounded by tree size and runs at most
@@ -79,7 +82,7 @@ async function repairExternalMarkdownEdit(
     invalidateStateCache();
   } catch (err) {
     logWarning(
-      "compat",
+      "reconcile",
       `external-markdown-edit repair failed for ${record.projectionPath}: ${(err as Error).message}`,
     );
     throw err;
