@@ -59,10 +59,31 @@ test("readCompatMarker quarantines malformed JSON and returns EMPTY_MARKER", () 
   writeFileSync(compatMarkerPath(base), "{ not valid json", "utf-8");
   const marker = readCompatMarker(base);
   assert.deepEqual(marker, EMPTY_MARKER);
-  // Quarantine backup should exist
   const files = readdirSync(join(base, ".gsd"));
+  // Quarantine backup should exist.
   const quarantined = files.some((f: string) => f.startsWith(".compat.json.bad-"));
   assert.ok(quarantined, "expected a quarantined .compat.json.bad-* file");
+  // Original should be gone — the quarantine fix removes it so repeated reads
+  // don't accumulate unbounded .bad-* files.
+  assert.ok(!files.includes(".compat.json"), "corrupt original should be deleted after quarantine");
+});
+
+test("quarantine does not grow unbounded .bad-* files on repeated reads", () => {
+  const base = makeTmpBase();
+  writeFileSync(compatMarkerPath(base), "not valid json at all", "utf-8");
+
+  // First read quarantines and removes the original.
+  readCompatMarker(base);
+  const filesAfterFirst = readdirSync(join(base, ".gsd"));
+  const badCountAfterFirst = filesAfterFirst.filter((f: string) => f.startsWith(".compat.json.bad-")).length;
+  assert.equal(badCountAfterFirst, 1, "expected exactly one .bad-* file after first read");
+  assert.ok(!filesAfterFirst.includes(".compat.json"), "corrupt original should be gone after first read");
+
+  // Second read sees no file → EMPTY_MARKER fast path, no new .bad-* created.
+  readCompatMarker(base);
+  const filesAfterSecond = readdirSync(join(base, ".gsd"));
+  const badCountAfterSecond = filesAfterSecond.filter((f: string) => f.startsWith(".compat.json.bad-")).length;
+  assert.equal(badCountAfterSecond, 1, "second read must not create an additional .bad-* file");
 });
 
 test("normalizeForHash trims trailing whitespace and converts CRLF to LF", () => {
