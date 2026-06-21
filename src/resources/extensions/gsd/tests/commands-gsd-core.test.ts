@@ -3,7 +3,7 @@
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -62,6 +62,7 @@ import {
   parseInboxFocus,
 } from "../commands-gsd-core.ts";
 import { handleGSDCommand } from "../commands/dispatcher.ts";
+import { withCommandCwd } from "../commands/context.ts";
 import { loadPrompt } from "../prompt-loader.ts";
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
@@ -101,6 +102,14 @@ function createTempGsdProject(prefix: string): string {
   const base = mkdtempSync(join(tmpdir(), prefix));
   mkdirSync(join(base, ".gsd"), { recursive: true });
   return base;
+}
+
+async function withTempCommandCwd(
+  fn: (ctx: ReturnType<typeof createMockCtxWithCwd>, base: string) => Promise<void>,
+): Promise<void> {
+  const base = createTempGsdProject("gsd-core-handler-");
+  const ctx = createMockCtxWithCwd(base);
+  await withCommandCwd(base, async () => fn(ctx, base));
 }
 
 // ─── Pure helpers ───────────────────────────────────────────────────────────
@@ -211,8 +220,10 @@ describe("handleExplore", () => {
 describe("handleSpike", () => {
   test("dispatches a spike prompt with parsed flags", async () => {
     const pi = createMockPi();
-    const ctx = createMockCtx();
-    await handleSpike("validate websocket reconnect --quick", ctx as any, pi as any);
+    await withTempCommandCwd(async (ctx, base) => {
+      await handleSpike("validate websocket reconnect --quick", ctx as any, pi as any);
+      assert.equal(existsSync(join(base, ".gsd", "spikes")), true);
+    });
 
     assert.equal(pi.sent.length, 1);
     assert.equal(pi.sent[0].customType, "gsd-spike");
@@ -230,8 +241,10 @@ describe("handleSpike", () => {
 describe("handleSketch", () => {
   test("dispatches a sketch prompt", async () => {
     const pi = createMockPi();
-    const ctx = createMockCtx();
-    await handleSketch("dashboard empty state", ctx as any, pi as any);
+    await withTempCommandCwd(async (ctx, base) => {
+      await handleSketch("dashboard empty state", ctx as any, pi as any);
+      assert.equal(existsSync(join(base, ".gsd", "sketches")), true);
+    });
 
     assert.equal(pi.sent.length, 1);
     assert.equal(pi.sent[0].customType, "gsd-sketch");
@@ -317,8 +330,10 @@ describe("Batch 2 prompt templates resolve", () => {
 describe("Batch 2 handlers dispatch", () => {
   test("handleMapCodebase dispatches and creates the output dir", async () => {
     const pi = createMockPi();
-    const ctx = createMockCtx();
-    await handleMapCodebase("--paths src --focus arch", ctx as any, pi as any);
+    await withTempCommandCwd(async (ctx, base) => {
+      await handleMapCodebase("--paths src --focus arch", ctx as any, pi as any);
+      assert.equal(existsSync(join(base, ".gsd", "codebase")), true);
+    });
     assert.equal(pi.sent.length, 1);
     assert.equal(pi.sent[0].customType, "gsd-map-codebase");
     assert.match(pi.sent[0].content, /src/);
@@ -336,8 +351,10 @@ describe("Batch 2 handlers dispatch", () => {
 
   test("handleGraphify defaults to build action", async () => {
     const pi = createMockPi();
-    const ctx = createMockCtx();
-    await handleGraphify("", ctx as any, pi as any);
+    await withTempCommandCwd(async (ctx, base) => {
+      await handleGraphify("", ctx as any, pi as any);
+      assert.equal(existsSync(join(base, ".gsd", "knowledge")), true);
+    });
     assert.match(pi.sent[0].content, /build/);
   });
 
@@ -433,15 +450,21 @@ describe("Batch 3 prompt templates resolve", () => {
 
 describe("Batch 3 handlers dispatch", () => {
   test("handleCodeReview depth flag parsed", async () => {
-    const pi = createMockPi(); const ctx = createMockCtx();
-    await handleCodeReview("--depth deep --files a.ts", ctx as any, pi as any);
+    const pi = createMockPi();
+    await withTempCommandCwd(async (ctx, base) => {
+      await handleCodeReview("--depth deep --files a.ts", ctx as any, pi as any);
+      assert.equal(existsSync(join(base, ".gsd", "reviews")), true);
+    });
     assert.equal(pi.sent[0].customType, "gsd-code-review");
     assert.match(pi.sent[0].content, /deep/);
     assert.match(pi.sent[0].content, /a\.ts/);
   });
   test("handleCodeReview fix flag on", async () => {
-    const pi = createMockPi(); const ctx = createMockCtx();
-    await handleCodeReview("--fix", ctx as any, pi as any);
+    const pi = createMockPi();
+    await withTempCommandCwd(async (ctx, base) => {
+      await handleCodeReview("--fix", ctx as any, pi as any);
+      assert.equal(existsSync(join(base, ".gsd", "reviews")), true);
+    });
     assert.match(pi.sent[0].content, /Fix mode[\s\S]*ON/);
   });
   test("handleReview milestone + reviewers", async () => {
@@ -469,8 +492,11 @@ describe("Batch 3 handlers dispatch", () => {
     assert.match(c, /Dry run[\s\S]*ON/);
   });
   test("handleUiReview target + reviewId", async () => {
-    const pi = createMockPi(); const ctx = createMockCtx();
-    await handleUiReview("dashboard", ctx as any, pi as any);
+    const pi = createMockPi();
+    await withTempCommandCwd(async (ctx, base) => {
+      await handleUiReview("dashboard", ctx as any, pi as any);
+      assert.equal(existsSync(join(base, ".gsd", "reviews")), true);
+    });
     assert.match(pi.sent[0].content, /dashboard/);
   });
   test("handleSecurePhase default target", async () => {

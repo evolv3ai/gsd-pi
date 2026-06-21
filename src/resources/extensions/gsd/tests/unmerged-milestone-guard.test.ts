@@ -137,6 +137,10 @@ test("isUnmergedMilestoneAllowedCommand blocks direct dispatch aliases", () => {
     "validate-milestone",
     "complete-milestone",
     "docs-update",
+    "review-backlog",
+    "import",
+    "ingest-docs",
+    "secure-phase",
   ];
 
   for (const alias of aliases) {
