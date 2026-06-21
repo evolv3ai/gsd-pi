@@ -35,6 +35,7 @@ const VALIDATION_BLOCKED_COMMANDS = new Set([
   "ui-phase",
   "ai-integration-phase",
   "ultraplan-phase",
+  "plan-review-convergence",
   "autonomous",
   "resume-work",
 ]);

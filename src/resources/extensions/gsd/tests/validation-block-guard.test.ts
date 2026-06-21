@@ -108,6 +108,7 @@ test("validation block rejects workflow-start and advancing commands", () => {
     "ui-phase M009",
     "ai-integration-phase M009",
     "ultraplan-phase M009",
+    "plan-review-convergence M009",
     "resume-work",
     "workflow resume",
     "workflow run release-checklist",

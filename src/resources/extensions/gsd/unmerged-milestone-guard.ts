@@ -44,6 +44,7 @@ const BLOCKED_COMMANDS = new Set([
   "import",
   "ingest-docs",
   "secure-phase",
+  "plan-review-convergence",
   "autonomous",
   "resume-work",
   "execute-task",

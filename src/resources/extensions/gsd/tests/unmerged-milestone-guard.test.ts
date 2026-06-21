@@ -145,6 +145,7 @@ test("isUnmergedMilestoneAllowedCommand blocks direct dispatch aliases", () => {
     "import",
     "ingest-docs",
     "secure-phase",
+    "plan-review-convergence",
     "resume-work",
     "progress --next",
     'progress --do "fix the login bug"',
