@@ -101,33 +101,40 @@ export async function capturePlanningCompatIfNeeded(
   const marker = readCompatMarker(basePath);
   if (marker.planning?.active && marker.planning.layout) return;
 
-  // First encounter: parse layout, import .planning/ content into the DB, then
-  // activate the marker. We import before writing to disk so that
-  // writePlanningDirectory (called later by renderAllFromDb) reconstructs the
-  // .planning/ tree from a DB that already reflects gsd-core's content rather
-  // than overwriting it with stale or empty DB state.
+  // First encounter: parse layout, import content into the DB, then activate the
+  // marker. When `.gsd/` already exists (coexistence), import from disk via
+  // migrateHierarchyToDb and do not call writeGSDDirectory — reconcile runs
+  // external-markdown-edit before external-planning-edit and must not destroy
+  // gsd-core `.gsd/` edits before that pipeline can see them. Planning-only
+  // projects materialize `.gsd/` from the parsed tree first, then import.
   const { parsePlanningDirectory } = await import("../migrate/parser.js");
   const { detectPlanningLayout } = await import("../migrate/layout-detect.js");
   const parsed = await parsePlanningDirectory(planningDir);
   const layout: PlanningLayout | null = detectPlanningLayout(parsed);
   if (!layout) return;
 
-  // Import .planning/ into the DB. Dynamic imports break the module-init cycle
+  // Import into the DB. Dynamic imports break the module-init cycle
   // (planning-compat ← reconcile ← state ← md-importer). Matches the import
   // pattern in repairExternalPlanningEdit.
+  const gsdDir = join(basePath, ".gsd");
+  const gsdTreeHasContent =
+    existsSync(gsdDir) &&
+    readdirSync(gsdDir).some((name) => name !== ".compat.json" && !name.startsWith("."));
   try {
-    const { transformToGSD } = await import("../migrate/transformer.js");
-    const { writeGSDDirectory } = await import("../migrate/writer.js");
     const { migrateHierarchyToDb } = await import("../md-importer.js");
     const { invalidateStateCache } = await import("../state.js");
-    const gsdProject = transformToGSD(parsed);
-    await writeGSDDirectory(gsdProject, basePath);
+    if (!gsdTreeHasContent) {
+      const { transformToGSD } = await import("../migrate/transformer.js");
+      const { writeGSDDirectory } = await import("../migrate/writer.js");
+      const gsdProject = transformToGSD(parsed);
+      await writeGSDDirectory(gsdProject, basePath);
+    }
     migrateHierarchyToDb(basePath);
     invalidateStateCache();
   } catch (e) {
     logWarning(
       "reconcile",
-      `planning DB import failed on initial capture — writePlanningDirectory may overwrite gsd-core content: ${(e as Error).message}`,
+      `planning DB import failed on initial capture — reconcile may overwrite gsd-core content: ${(e as Error).message}`,
     );
   }
 
