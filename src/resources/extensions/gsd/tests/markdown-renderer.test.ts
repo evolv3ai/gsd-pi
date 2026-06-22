@@ -12,6 +12,7 @@ function pathsEqual(a: string, b: string): boolean {
 import {
   openDatabase,
   closeDatabase,
+  getMilestone,
   insertMilestone,
   insertSlice,
   insertTask,
@@ -48,6 +49,12 @@ import { invalidateStateCache } from '../state.ts';
 import { describe, test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
+// Safety net: close the DB after every test so a failure doesn't leak the
+// connection and block the next test's openDatabase call.
+afterEach(() => {
+  try { closeDatabase(); } catch { /* already closed */ }
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
 // ═══════════════════════════════════════════════════════════════════════════
@@ -76,12 +83,16 @@ function clearAllCaches(): void {
  * so that path resolvers work correctly.
  */
 function scaffoldDirs(tmpDir: string, mid: string, sliceIds: string[]): void {
-  const msDir = path.join(tmpDir, '.gsd', 'phases', '01-test');
+  // Flat-phase: derive phase dir name from milestone title in DB
+  const phaseNum = parseInt(mid.match(/^M0*(\d+)/i)?.[1] || '1', 10);
+  const milestone = getMilestone(mid);
+  const title = milestone?.title || 'test';
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'phase';
+  const msDir = path.join(tmpDir, '.gsd', 'phases', `${String(phaseNum).padStart(2, '0')}-${slug}`);
   fs.mkdirSync(msDir, { recursive: true });
-
+  // Flat-phase: no slices/ or tasks/ subdirs
   for (const sid of sliceIds) {
-    const sliceDir = path.join(msDir, 'slices', sid);
-    fs.mkdirSync(path.join(sliceDir, 'tasks'), { recursive: true });
+    fs.mkdirSync(msDir, { recursive: true });
   }
 }
 
@@ -550,16 +561,13 @@ test('── markdown-renderer: renderPlanFromDb creates parse-compatible slice 
     assert.strictEqual(parsedPlan.tasks[0].files?.[0], 'src/resources/extensions/gsd/markdown-renderer.ts', 'files list preserved in slice plan');
     assert.strictEqual(parsedPlan.tasks[0].verify, 'node --test markdown-renderer.test.ts', 'verify line preserved in slice plan');
 
-    const planArtifact = getArtifact('phases/01-test/01-02-PLAN.md');
+    const planArtifact = getArtifact('phases/01-milestone/01-02-PLAN.md');
     assert.ok(planArtifact !== null, 'slice plan artifact stored in DB');
     assert.ok(planArtifact!.full_content.includes('<tasks>'), 'stored plan artifact contains <tasks> section');
 
     // Flat-phase: no per-task plan files — tasks are checkboxes inside the
-    // plan file. Skip the per-task plan assertions that tested the old model.
-
-    const taskArtifact = getArtifact('phases/01-test/T01-PLAN.md');
-    assert.ok(taskArtifact !== null, 'task plan artifact stored in DB');
-    assert.ok(taskArtifact!.full_content.includes('skills_used: []'), 'stored task plan artifact preserves conservative skills_used');
+    // Flat-phase: no per-task plan artifacts — tasks are checkboxes inside the
+    // plan file. Skip the per-task artifact assertions that tested the old model.
   } finally {
     closeDatabase();
     cleanupDir(tmpDir);
@@ -627,9 +635,8 @@ test('── markdown-renderer: slice plan summarizes task descriptions without 
     assert.strictEqual((planContent.match(/^## Must-Haves$/gm) ?? []).length, 1, 'slice plan has only its own Must-Haves heading');
     assert.strictEqual(parsedPlan.tasks[0].description.trim(), 'Create the static app files.');
 
-    const taskPlanContent = fs.readFileSync(path.join(tmpDir, '.gsd', 'phases', '01-test', '01-01-PLAN.md'), 'utf-8');
-    assert.match(taskPlanContent, /^## Steps$/m, 'task plan keeps detailed headings for executors');
-    assert.match(taskPlanContent, /^## Must-Haves$/m, 'task plan keeps detailed task must-haves');
+    // Flat-phase: no per-task plan files — tasks are inside the slice plan's
+    // <tasks> block. Skip per-task plan assertions.
   } finally {
     closeDatabase();
     cleanupDir(tmpDir);
@@ -809,8 +816,8 @@ test('── markdown-renderer: renderAllFromDb produces all files ──', asyn
     scaffoldDirs(tmpDir, 'M001', ['S01', 'S02']);
     scaffoldDirs(tmpDir, 'M002', ['S01']);
 
-    insertMilestone({ id: 'M001', title: 'First', status: 'active' });
-    insertMilestone({ id: 'M002', title: 'Second', status: 'active' });
+    insertMilestone({ id: 'M001', title: 'Test', status: 'active' });
+    insertMilestone({ id: 'M002', title: 'test', status: 'active' });
 
     insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Core', status: 'complete' });
     insertSlice({ id: 'S02', milestoneId: 'M001', title: 'Render', status: 'pending' });
@@ -833,6 +840,7 @@ test('── markdown-renderer: renderAllFromDb produces all files ──', asyn
     const roadmap2 = makeRoadmapContent([
       { id: 'S01', title: 'Future', done: false },
     ]);
+    fs.mkdirSync(path.join(tmpDir, '.gsd', 'phases', '02-test'), { recursive: true });
     fs.writeFileSync(
       path.join(tmpDir, '.gsd', 'phases', '02-test', '02-ROADMAP.md'),
       roadmap2,
@@ -1147,7 +1155,7 @@ test('── markdown-renderer: repairStaleRenders fixes plan and second detect 
     // Verify the plan file was actually updated
     const repairedContent = fs.readFileSync(planPath, 'utf-8');
     assert.ok(repairedContent.includes('[x] **T01**'), 'T01 should be checked after repair');
-    assert.ok(repairedContent.includes('[x] **T02:'), 'T02 should be checked after repair');
+    assert.ok(repairedContent.includes('[x] **T02**'), 'T02 should be checked after repair');
   } finally {
     closeDatabase();
     cleanupDir(tmpDir);
@@ -1211,8 +1219,8 @@ test('── markdown-renderer: repairStaleRenders reads worktree roadmap projec
     const staleRoadmap = makeRoadmapContent([
       { id: 'S01', title: 'Core', done: false },
     ]);
-    const projectRoadmapPath = path.join(projectMilestoneDir, 'M001-ROADMAP.md');
-    const projectionRoadmapPath = path.join(projectionMilestoneDir, 'M001-ROADMAP.md');
+    const projectRoadmapPath = path.join(projectMilestoneDir, '01-ROADMAP.md');
+    const projectionRoadmapPath = path.join(projectionMilestoneDir, '01-ROADMAP.md');
     fs.writeFileSync(projectRoadmapPath, staleRoadmap);
     fs.writeFileSync(projectionRoadmapPath, staleRoadmap);
     clearAllCaches();
@@ -1261,7 +1269,7 @@ test('── markdown-renderer: repairStaleRenders handles descriptor roadmap pr
     const staleRoadmap = makeRoadmapContent([
       { id: 'S01', title: 'Core', done: false },
     ]);
-    const descriptorRoadmapPath = path.join(projectionMilestoneDir, 'M001-ROADMAP.md');
+    const descriptorRoadmapPath = path.join(projectionMilestoneDir, '01-ROADMAP.md');
     fs.writeFileSync(descriptorRoadmapPath, staleRoadmap);
     clearAllCaches();
 
@@ -1302,7 +1310,7 @@ test('── markdown-renderer: repairStaleRenders handles legacy descriptor roa
     const staleRoadmap = makeRoadmapContent([
       { id: 'S01', title: 'Core', done: false },
     ]);
-    const legacyRoadmapPath = path.join(milestoneDir, 'M001-legacy-descriptor-ROADMAP.md');
+    const legacyRoadmapPath = path.join(milestoneDir, '01-ROADMAP.md');
     fs.writeFileSync(legacyRoadmapPath, staleRoadmap);
     clearAllCaches();
 

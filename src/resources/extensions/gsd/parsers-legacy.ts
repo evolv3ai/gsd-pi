@@ -228,11 +228,12 @@ function _parsePlanImpl(content: string): SlicePlan {
   const mhSection = extractSection(body, 'Must-Haves');
   const mustHaves = mhSection ? parseBullets(mhSection) : [];
 
-  // Parse tasks from ## Tasks section first, then scan the full body for any
-  // task checkboxes that were missed. Multi-task plans can interleave T01 detail
-  // headings (## Steps, ## Must-Haves) before T02's checkbox, which causes
-  // extractSection("Tasks") to stop at the first ## heading and miss T02+ (#3105).
+  // Parse tasks from ## Tasks section or <tasks> XML block, then scan the full
+  // body for any task checkboxes that were missed.
   const tasksSection = extractSection(body, 'Tasks');
+  // Flat-phase: extract <tasks>...</tasks> block content
+  const tasksBlockMatch = body.match(/<tasks>([\s\S]*?)<\/tasks>/);
+  const tasksBlock = tasksBlockMatch ? tasksBlockMatch[1] : null;
   const tasks: TaskPlanEntry[] = [];
 
   // Parse task entries from a set of lines, appending to `tasks`.
@@ -309,7 +310,7 @@ function _parsePlanImpl(content: string): SlicePlan {
         if (verifyMatch) {
           currentTask.verify = verifyMatch[1].trim();
         }
-      } else if (currentTask && line.trim() && !line.startsWith('#')) {
+      } else if (currentTask && line.trim() && !line.startsWith('#') && !line.match(/<\/?tasks>/) && !line.match(/^\s*-\s+(Files|Verify):/)) {
         const desc = line.trim();
         if (desc) {
           currentTask.description = currentTask.description
@@ -325,10 +326,18 @@ function _parsePlanImpl(content: string): SlicePlan {
     parseTaskLines(tasksSection.split('\n'), new Set());
   }
 
+  // Flat-phase: parse <tasks> block
+  if (tasksBlock) {
+    parseTaskLines(tasksBlock.split('\n'), new Set());
+  }
+
   // Second pass: scan the full body for task checkboxes outside ## Tasks.
-  // This handles interleaved plans where T02+ appear after T01's detail headings.
-  const foundIds = new Set(tasks.map(t => t.id));
-  parseTaskLines(body.split('\n'), foundIds);
+  // Only do this for legacy plans (no <tasks> block) — flat-phase plans
+  // have all tasks inside <tasks> and the second pass would pick up noise.
+  if (!tasksBlock && !tasksSection) {
+    const foundIds = new Set(tasks.map(t => t.id));
+    parseTaskLines(body.split('\n'), foundIds);
+  }
 
   const filesSection = extractSection(body, 'Files Likely Touched');
   const filesLikelyTouched = filesSection ? parseBullets(filesSection) : [];

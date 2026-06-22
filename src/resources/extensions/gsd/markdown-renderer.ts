@@ -94,7 +94,9 @@ function taskSummaryForSlicePlan(description: string): string {
   const meaningful = meaningfulSection(description);
   if (!meaningful) return "";
 
-  const beforeHeading = meaningful.split(/\n#{1,6}\s+/)[0]?.trim() ?? "";
+  // Strip XML tags (flat-phase <tasks> format) so they don't leak into summaries
+  const cleaned = meaningful.replace(/<\/?tasks>/g, "").trim();
+  const beforeHeading = cleaned.split(/\n#{1,6}\s+/)[0]?.trim() ?? "";
   const firstBlock = beforeHeading.split(/\n\s*\n/)[0]?.trim() ?? "";
   return firstBlock || beforeHeading;
 }
@@ -620,9 +622,9 @@ export async function renderSliceSummary(
 
   let wrote = false;
 
-  // Write SUMMARY
+  // Write SUMMARY — flat-phase: NN-MM-SUMMARY.md inside phase dir
   if (slice.full_summary_md) {
-    const summaryName = buildSliceFileName(sliceId, "SUMMARY");
+    const summaryName = planFileName(milestoneIdToPhaseNum(milestoneId), sliceIdToPlanNum(sliceId), "SUMMARY");
     const summaryAbs = join(slicePath, summaryName);
     const summaryArtifact = toArtifactPath(summaryAbs, basePath);
 
@@ -634,9 +636,9 @@ export async function renderSliceSummary(
     wrote = true;
   }
 
-  // Write UAT
+  // Write UAT — flat-phase: NN-MM-UAT.md inside phase dir
   if (slice.full_uat_md) {
-    const uatName = buildSliceFileName(sliceId, "UAT");
+    const uatName = planFileName(milestoneIdToPhaseNum(milestoneId), sliceIdToPlanNum(sliceId), "UAT");
     const uatAbs = join(slicePath, uatName);
     const uatArtifact = toArtifactPath(uatAbs, basePath);
 
