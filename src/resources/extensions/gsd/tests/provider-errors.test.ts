@@ -7,16 +7,21 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { classifyError, isTransient, isTransientNetworkError } from "../error-classifier.ts";
 import { pauseAutoForProviderError } from "../provider-error-pause.ts";
 import { resumeAutoAfterProviderDelay } from "../bootstrap/provider-error-resume.ts";
 import {
   MAX_TRANSIENT_AUTO_RESUMES,
+  handleAgentEnd,
   isTerminalDeletedWorktreeProviderError,
   resetTransientRetryState,
   shouldDeferTransientErrorToCoreRetry,
   suppressTerminalDeletedWorktreeMessageEnd,
 } from "../bootstrap/agent-end-recovery.ts";
+import { blockModelUntil, clearTemporaryModelBlocksForTest } from "../blocked-models.ts";
 import { _buildCancelledUnitStopReason } from "../auto/phase-helpers.ts";
 import { _classifyZeroToolProviderMessageForTest } from "../auto/unit-phase.ts";
 import { autoSession } from "../auto-runtime-state.ts";
@@ -481,6 +486,100 @@ test("pauseAutoForProviderError falls back to indefinite pause when not rate lim
   assert.deepEqual(notifications, [
     { message: "Auto-mode paused due to provider error: connection refused", level: "warning" },
   ]);
+});
+
+test("rate-limit agent_end walks past unavailable fallback models before pausing (#716 follow-up)", async () => {
+  const originalCwd = process.cwd();
+  const originalSetTimeout = globalThis.setTimeout;
+  const base = mkdtempSync(join(tmpdir(), "gsd-rate-limit-agent-end-"));
+  const notifications: Array<{ message: string; level?: string }> = [];
+  const setModelCalls: string[] = [];
+  const sendMessageCalls: unknown[][] = [];
+  const timers: Array<{ delay: number }> = [];
+
+  globalThis.setTimeout = ((_fn: (...args: unknown[]) => void, delay?: number) => {
+    timers.push({ delay: delay ?? 0 });
+    return 0 as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
+
+  try {
+    clearTemporaryModelBlocksForTest();
+    autoSession.reset();
+    mkdirSync(join(base, ".gsd"), { recursive: true });
+    writeFileSync(
+      join(base, ".gsd", "PREFERENCES.md"),
+      [
+        "---",
+        "models:",
+        "  execution:",
+        "    model: gpt-5.5",
+        "    provider: openai-codex",
+        "    fallbacks:",
+        "      - anthropic/claude-sonnet-4-6",
+        "      - google-gemini-cli/gemini-2.5-pro",
+        "---",
+      ].join("\n"),
+      "utf-8",
+    );
+    process.chdir(base);
+
+    autoSession.active = true;
+    autoSession.basePath = base;
+    autoSession.currentUnit = { type: "execute-task", id: "M001/S01/T01", startedAt: Date.now() };
+    autoSession.autoModeStartModel = { provider: "openai-codex", id: "gpt-5.5" };
+
+    blockModelUntil(base, "anthropic", "claude-sonnet-4-6", Date.now() + 60_000, "fallback also limited");
+
+    const availableModels = [
+      { id: "gpt-5.5", provider: "openai-codex", api: "responses" },
+      { id: "claude-sonnet-4-6", provider: "anthropic", api: "anthropic-messages" },
+      { id: "gemini-2.5-pro", provider: "google-gemini-cli", api: "google-genai" },
+    ];
+    const ctx = {
+      model: availableModels[0],
+      modelRegistry: { getAvailable: () => availableModels },
+      ui: {
+        notify(message: string, level?: "info" | "warning" | "error" | "success") {
+          notifications.push({ message, level });
+        },
+        setStatus: () => {},
+        setWidget: () => {},
+        setWorkingMessage: () => {},
+      },
+    } as any;
+    const pi = {
+      setModel: async (model: { provider: string; id: string }) => {
+        setModelCalls.push(`${model.provider}/${model.id}`);
+        return true;
+      },
+      sendMessage: (...args: unknown[]) => {
+        sendMessageCalls.push(args);
+      },
+    } as any;
+
+    await handleAgentEnd(pi, {
+      messages: [{
+        role: "assistant",
+        stopReason: "error",
+        errorMessage: "You've hit your session limit · resets 7:20 pm (Europe/Rome)",
+      }],
+    } as any, ctx);
+
+    assert.deepEqual(setModelCalls, ["google-gemini-cli/gemini-2.5-pro"]);
+    assert.equal(sendMessageCalls.length, 1, "fallback recovery must immediately trigger a continuation turn");
+    assert.deepEqual(sendMessageCalls[0][1], { triggerTurn: true, deliverAs: "steer" });
+    assert.equal(timers.length, 0, "must not pause with a retry timer when a later fallback is available");
+    assert.ok(
+      notifications.some((n) => n.message.includes("google-gemini-cli/gemini-2.5-pro")),
+      "user-facing notification should name the fallback actually selected",
+    );
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    process.chdir(originalCwd);
+    clearTemporaryModelBlocksForTest();
+    autoSession.reset();
+    rmSync(base, { recursive: true, force: true });
+  }
 });
 
 test("isTerminalDeletedWorktreeProviderError matches removed auto-worktree paths only", () => {

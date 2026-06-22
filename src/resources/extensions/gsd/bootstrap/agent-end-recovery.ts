@@ -156,7 +156,7 @@ async function tryProviderModelFallback(params: ProviderModelFallbackParams): Pr
           switchedNotify(`${candidate.provider}/${candidate.id}`);
           pi.sendMessage(
             { customType: "gsd-auto-timeout-recovery", content: "Continue execution.", display: false },
-            { triggerTurn: true },
+            { triggerTurn: true, deliverAs: "steer" },
           );
           return true;
         }
@@ -183,7 +183,7 @@ async function tryProviderModelFallback(params: ProviderModelFallbackParams): Pr
         switchedNotify(`${startModel.provider}/${startModel.id}`);
         pi.sendMessage(
           { customType: "gsd-auto-timeout-recovery", content: "Continue execution.", display: false },
-          { triggerTurn: true },
+          { triggerTurn: true, deliverAs: "steer" },
         );
         return true;
       }
@@ -732,58 +732,22 @@ export async function handleAgentEnd(
     // --- Transient errors: try model fallback first, then pause ---
     // Rate limits are often per-model, so switching models can bypass them.
     if (cls.kind === "rate-limit" || cls.kind === "network" || cls.kind === "server" || cls.kind === "connection" || cls.kind === "stream") {
-      // Try model fallback
       const dash = getAutoDashboardData();
-      if (dash.currentUnit) {
-        const modelConfig = resolveModelWithFallbacksForUnit(dash.currentUnit.type);
-        if (modelConfig && modelConfig.fallbacks.length > 0) {
-          const availableModels = ctx.modelRegistry.getAvailable();
-          const nextModelId = getNextFallbackModel(ctx.model?.id, modelConfig);
-          if (nextModelId) {
-            retryState.networkRetryCount = 0;
-            retryState.currentRetryModelId = undefined;
-            const modelToSet = resolveModelId(nextModelId, availableModels, ctx.model?.provider);
-            const modelUnavailable = dash.basePath && modelToSet
-              ? isModelBlocked(dash.basePath, modelToSet.provider, modelToSet.id) ||
-                isModelTemporarilyUnavailable(dash.basePath, modelToSet.provider, modelToSet.id)
-              : false;
-            if (modelToSet && !modelUnavailable) {
-              const ok = await pi.setModel(modelToSet, { persist: false });
-              if (ok) {
-                setCurrentUnitModelForRecovery(modelToSet);
-                setCurrentDispatchedModelId({ provider: modelToSet.provider, id: modelToSet.id });
-                ctx.ui.notify(`Model error${errorDetail}. Switched to fallback: ${nextModelId} and resuming.`, "warning");
-                pi.sendMessage({ customType: "gsd-auto-timeout-recovery", content: "Continue execution.", display: false }, { triggerTurn: true });
-                return;
-              }
-            }
-          }
-        }
-      }
-
-      // Try restoring session model
-      const sessionModel = getAutoModeStartModel();
-      if (sessionModel) {
-        const dash = getAutoDashboardData();
-        const sessionModelUnavailable = dash.basePath
-          ? isModelBlocked(dash.basePath, sessionModel.provider, sessionModel.id) ||
-            isModelTemporarilyUnavailable(dash.basePath, sessionModel.provider, sessionModel.id)
-          : false;
-        if (!sessionModelUnavailable && (ctx.model?.id !== sessionModel.id || ctx.model?.provider !== sessionModel.provider)) {
-          const startModel = ctx.modelRegistry.getAvailable().find((m) => m.provider === sessionModel.provider && m.id === sessionModel.id);
-          if (startModel) {
-            const ok = await pi.setModel(startModel, { persist: false });
-            if (ok) {
-              setCurrentUnitModelForRecovery(startModel);
-              setCurrentDispatchedModelId({ provider: startModel.provider, id: startModel.id });
-              retryState.networkRetryCount = 0;
-              retryState.currentRetryModelId = undefined;
-              ctx.ui.notify(`Model error${errorDetail}. Restored session model: ${sessionModel.provider}/${sessionModel.id} and resuming.`, "warning");
-              pi.sendMessage({ customType: "gsd-auto-timeout-recovery", content: "Continue execution.", display: false }, { triggerTurn: true });
-              return;
-            }
-          }
-        }
+      const switched = await tryProviderModelFallback({
+        ctx,
+        pi,
+        rejectedProvider: ctx.model?.provider,
+        rejectedId: ctx.model?.id,
+        basePath: dash.basePath,
+        unitType: dash.currentUnit?.type,
+        switchedNotify: (label) => {
+          retryState.networkRetryCount = 0;
+          retryState.currentRetryModelId = undefined;
+          ctx.ui.notify(`Model error${errorDetail}. Switched to fallback: ${label} and resuming.`, "warning");
+        },
+      });
+      if (switched) {
+        return;
       }
     }
 
