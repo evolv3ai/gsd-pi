@@ -11,8 +11,23 @@ import { countDbHierarchy } from "./migration-auto-check.js";
 import { logWarning } from "./workflow-logger.js";
 import { LAYOUT_SEGMENTS } from "./layout-policy.js";
 
-function rollbackPartialMigration(basePath: string): void {
+function rollbackPartialMigration(basePath: string, backupDir: string): void {
+  // Remove the partially-written phases/ dir.
   rmSync(join(basePath, ".gsd", LAYOUT_SEGMENTS.level1), { recursive: true, force: true });
+  // Restore milestones/ from backup — it was removed before render, so
+  // a failed migration would otherwise leave the project with no hierarchy.
+  const milestonesPath = join(basePath, ".gsd", "milestones");
+  try {
+    if (existsSync(backupDir)) {
+      cpSync(backupDir, milestonesPath, { recursive: true });
+    }
+  } catch (restoreErr) {
+    logWarning(
+      "migration",
+      `rollback: could not restore milestones/ from backup ${backupDir}: ${(restoreErr as Error).message}`,
+    );
+    // Non-fatal: backup still exists at backupDir for manual recovery.
+  }
 }
 
 /**
@@ -77,7 +92,7 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
     renderResult = await renderAllFromDb(basePath);
   } catch (err) {
     logWarning("migration", `flat-phase render failed: ${(err as Error).message}`);
-    rollbackPartialMigration(basePath);
+    rollbackPartialMigration(basePath, backupDir);
     throw err;
   }
 
@@ -87,7 +102,7 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
       "migration",
       `flat-phase render had ${renderResult.errors.length} error(s): ${renderResult.errors.join("; ")}`,
     );
-    rollbackPartialMigration(basePath);
+    rollbackPartialMigration(basePath, backupDir);
     throw new Error(
       `flat-phase migration render failed: ${renderResult.errors.slice(0, 3).join("; ")}`,
     );
@@ -96,8 +111,10 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
   const db = countDbHierarchy();
   let renderedDirCount = 0;
   try {
+    // /^\d+-/ matches any numeric prefix (01-, 10-, 100-) so M100+ milestones
+    // whose dirs start with "100-slug" are counted correctly.
     renderedDirCount = readdirSync(phasesPath, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && /^\d{2}-/.test(entry.name)).length;
+      .filter((entry) => entry.isDirectory() && /^\d+-/.test(entry.name)).length;
   } catch {
     // phases/ doesn't exist or is unreadable — same as zero dirs
   }
@@ -106,7 +123,7 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
       "migration",
       `phases/ dir count mismatch: expected ${db.milestones}, found ${renderedDirCount}`,
     );
-    rollbackPartialMigration(basePath);
+    rollbackPartialMigration(basePath, backupDir);
     throw new Error("flat-phase migration verification failed: phases dir milestone count mismatch");
   }
   if (db.slices > 0 && renderResult.rendered === 0) {
@@ -114,7 +131,7 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
       "migration",
       "flat-phase migration verification failed: render produced no artifacts for populated DB",
     );
-    rollbackPartialMigration(basePath);
+    rollbackPartialMigration(basePath, backupDir);
     throw new Error("flat-phase migration verification failed: no artifacts rendered");
   }
 
