@@ -144,15 +144,22 @@ function scanMilestoneIdsFromDir(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true })
     .filter((d) => d.isDirectory())
     .map((d) => {
+      // Legacy layout: exact M001 or M001-abcdef directory name
+      if (MILESTONE_ID_RE.test(d.name)) {
+        return d.name;
+      }
+      // Legacy layout: M001-abcdef-slug descriptor directories
+      const legacyMatch = d.name.match(/^(M\d{3}(?:-[a-z0-9]{6})?)-/);
+      if (legacyMatch) {
+        return legacyMatch[1]!;
+      }
       // Flat-phase layout: NN-slug → M00N
       const flatMatch = d.name.match(/^(\d+)-/);
       if (flatMatch) {
         const phaseNum = parseInt(flatMatch[1]!, 10);
         return `M${String(phaseNum).padStart(3, "0")}`;
       }
-      // Legacy layout: M001 or M001-abcdef
-      const match = d.name.match(/^(M\d+(?:-[a-z0-9]{6})?)/);
-      return match ? match[1] : null;
+      return null;
     })
     .filter((id): id is string => id !== null);
 }

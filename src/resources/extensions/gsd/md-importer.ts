@@ -31,6 +31,7 @@ import {
   resolveTaskFiles,
 } from './paths.js';
 import { findMilestoneIds } from './guided-flow.js';
+import { milestoneIdToPhaseNum } from './layout-policy.js';
 import { parseRoadmap, parsePlan } from './parsers-legacy.js';
 import { parseContextDependsOn } from './files.js';
 import { logWarning } from './workflow-logger.js';
@@ -366,7 +367,7 @@ function importHierarchyArtifacts(gsdDir: string): number {
   for (const milestoneId of milestoneIds) {
     // Find the phase directory (flat-phase: NN-slug, or legacy M001-slug)
     let phaseDirName: string | null = null;
-    const phaseNum = parseInt(milestoneId.match(/^M0*(\d+)$/i)?.[1] || '0', 10);
+    const phaseNum = milestoneIdToPhaseNum(milestoneId);
     const flatPrefix = `${String(phaseNum).padStart(2, '0')}-`;
     try {
       for (const entry of readdirSync(phasesDir, { withFileTypes: true })) {
