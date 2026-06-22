@@ -431,13 +431,12 @@ test("handleResetSlice with --force resets slice and all tasks", async () => {
     assert.match(planContent, /\[ \] \*\*T01\*\*:/);
     assert.match(planContent, /\[ \] \*\*T02\*\*:/);
 
-    // Roadmap checkbox unchecked
-    // Flat-phase renderer: slices are bold on ID only — "**S01**: title"
+    // Roadmap checkbox unchecked — legacy milestones/ dir uses legacy format "**S01: title**"
     const roadmapContent = readFileSync(
       join(base, ".gsd", "milestones", "M001", "M001-ROADMAP.md"),
       "utf-8",
     );
-    assert.match(roadmapContent, /\[ \] \*\*S01\*\*:/);
+    assert.match(roadmapContent, /\[ \] \*\*S01:/);
 
     // Success notification
     assert.equal(notifications[0]?.level, "success");

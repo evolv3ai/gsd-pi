@@ -482,7 +482,17 @@ export async function runGSDDoctor(basePath: string, options?: { fix?: boolean; 
 
     const roadmapPath = resolveMilestoneFile(basePath, milestoneId, "ROADMAP");
     const roadmapContent = roadmapPath ? await loadFile(roadmapPath) : null;
-    if (!roadmapContent) continue;
+    if (!roadmapContent) {
+      issues.push({
+        severity: "error",
+        code: "missing_roadmap",
+        scope: "milestone",
+        unitId: milestoneId,
+        message: `Milestone ${milestoneId} is missing its ROADMAP.md file.`,
+        fixable: false,
+      });
+      continue;
+    }
 
     // Normalize slices: prefer DB, fall back to parser
     type NormSlice = RoadmapSliceEntry & { pending?: boolean; skipped?: boolean };

@@ -193,7 +193,8 @@ test('handleReassessRoadmap succeeds when modifying only pending slices', async 
     assert.equal(s01?.status, 'complete');
 
     // Verify ROADMAP.md re-rendered on disk
-    const roadmapPath = join(base, '.gsd', 'phases', '01-test', 'M001-ROADMAP.md');
+    // Flat-phase renderer writes NN-ROADMAP.md (01-ROADMAP.md for M001)
+    const roadmapPath = join(base, '.gsd', 'phases', '01-test', '01-ROADMAP.md');
     assert.ok(existsSync(roadmapPath), 'ROADMAP.md should be rendered to disk');
     const roadmapContent = readFileSync(roadmapPath, 'utf-8');
     assert.ok(roadmapContent.includes('Updated Slice Two'), 'ROADMAP.md should contain updated S02 title');
