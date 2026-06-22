@@ -366,6 +366,12 @@ function renderSlicePlanMarkdown(slice: SliceRow, tasks: TaskRow[], gates: GateR
     if (summary) {
       pushIndented(lines, summary);
     }
+    if (task.files.length > 0) {
+      lines.push(`  - Files: ${task.files.map((file) => `\`${file}\``).join(", ")}`);
+    }
+    if (task.verify.trim()) {
+      lines.push(`  - Verify: ${task.verify.trim()}`);
+    }
   }
   lines.push("</tasks>");
   lines.push("");

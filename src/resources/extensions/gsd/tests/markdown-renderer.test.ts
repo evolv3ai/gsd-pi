@@ -552,18 +552,10 @@ test('── markdown-renderer: renderPlanFromDb creates parse-compatible slice 
 
     const planArtifact = getArtifact('phases/01-test/01-02-PLAN.md');
     assert.ok(planArtifact !== null, 'slice plan artifact stored in DB');
-    assert.ok(planArtifact!.full_content.includes('## Tasks'), 'stored plan artifact contains task section');
+    assert.ok(planArtifact!.full_content.includes('<tasks>'), 'stored plan artifact contains <tasks> section');
 
-    const taskPlanPath = path.join(tmpDir, '.gsd', 'phases', '01-test', 'T01-PLAN.md');
-    const taskPlanContent = fs.readFileSync(taskPlanPath, 'utf-8');
-    const taskPlanFile = parseTaskPlanFile(taskPlanContent);
-    assert.strictEqual(taskPlanFile.frontmatter.estimated_steps, 1, 'task plan frontmatter exposes estimated_steps');
-    assert.strictEqual(taskPlanFile.frontmatter.estimated_files, 1, 'task plan frontmatter exposes estimated_files');
-    assert.strictEqual(taskPlanFile.frontmatter.skills_used.length, 0, 'task plan frontmatter uses conservative empty skills list');
-    assert.match(taskPlanContent, /^# T01: Render slice plan/m, 'task plan renders task heading');
-    assert.match(taskPlanContent, /^## Inputs$/m, 'task plan renders Inputs section');
-    assert.match(taskPlanContent, /^## Expected Output$/m, 'task plan renders Expected Output section');
-    assert.match(taskPlanContent, /^## Verification$/m, 'task plan renders Verification section');
+    // Flat-phase: no per-task plan files — tasks are checkboxes inside the
+    // plan file. Skip the per-task plan assertions that tested the old model.
 
     const taskArtifact = getArtifact('phases/01-test/T01-PLAN.md');
     assert.ok(taskArtifact !== null, 'task plan artifact stored in DB');
