@@ -213,13 +213,21 @@ function detectArtifactDbStatusDriftForMilestone(
 
     for (const task of tasks) {
       if (isClosedStatus(task.status)) continue;
-      const diskTaskSummary = resolveTaskFile(
+      // Flat-phase: task summaries live in the phase dir as TID-SUMMARY.md
+      let diskTaskSummary = resolveTaskFile(
         basePath,
         milestoneId,
         slice.id,
         task.id,
         "SUMMARY",
       );
+      if (!diskTaskSummary) {
+        const phaseDir = resolveMilestonePath(basePath, milestoneId);
+        if (phaseDir) {
+          const flatSummary = join(phaseDir, `${task.id}-SUMMARY.md`);
+          if (existsSync(flatSummary)) diskTaskSummary = flatSummary;
+        }
+      }
       if (!diskTaskSummary || !existsSync(diskTaskSummary)) continue;
       addUniqueDrift(drifts, seen, {
         kind: "artifact-db-status-divergence",
@@ -302,11 +310,34 @@ function detectDiskSliceIdDivergenceForMilestone(
   const milestonePath = resolveMilestonePath(basePath, milestoneId);
   if (!milestonePath) return [];
 
-  const slicesDir = join(milestonePath, "slices");
-  if (!existsSync(slicesDir)) return [];
-
   const knownSliceIds = new Set(getMilestoneSlices(milestoneId).map((slice) => slice.id));
   const drifts: DiskSliceIdDivergenceDrift[] = [];
+
+  // Flat-phase: scan phase dir for plan files (NN-MM-PLAN.md) where MM
+  // doesn't match any known slice. Each plan file's slice id is S<MM>.
+  try {
+    for (const entry of readdirSync(milestonePath)) {
+      const planMatch = entry.match(/^\d+-(\d+)-PLAN\.md$/i);
+      if (!planMatch) continue;
+      const planNum = parseInt(planMatch[1]!, 10);
+      const sliceId = `S${String(planNum).padStart(2, "0")}`;
+      if (knownSliceIds.has(sliceId)) continue;
+      drifts.push({
+        kind: "disk-slice-id-divergence",
+        milestoneId,
+        sliceId,
+        sliceDir: join(milestonePath, entry),
+        disposition: "block-meaningful",
+        reason: `plan file ${entry} references unknown ${sliceId}`,
+      });
+    }
+  } catch {
+    // unreadable phase dir
+  }
+
+  // Legacy: scan slices/ subdir for unknown slice dirs
+  const slicesDir = join(milestonePath, "slices");
+  if (!existsSync(slicesDir)) return drifts;
 
   for (const entry of readdirSync(slicesDir)) {
     const sliceDir = join(slicesDir, entry);
