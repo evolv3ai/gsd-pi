@@ -376,7 +376,7 @@ function importHierarchyArtifacts(gsdDir: string): number {
           // and compare to the padded phase number.  Avoids '01-' matching '010-foo'.
           const numMatch = entry.name.match(/^(\d+)-/);
           if (numMatch && numMatch[1] === paddedPhase) { phaseDirName = entry.name; break; }
-          if (entry.name.startsWith(milestoneId)) { phaseDirName = entry.name; break; }
+          if (entry.name.startsWith(milestoneId + '-')) { phaseDirName = entry.name; break; }
         }
       }
     } catch { /* unreadable */ }
