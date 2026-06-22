@@ -26,7 +26,7 @@ import { deriveState } from "./state.js";
 import type { GSDState } from "./types.js";
 import { renderPlanFromDb, renderRoadmapFromDb } from "./markdown-renderer.js";
 import { readManifest } from "./workflow-manifest.js";
-import { gsdRoot } from "./paths.js";
+import { gsdRoot, resolveSliceFile } from "./paths.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -509,7 +509,9 @@ export async function regenerateIfMissing(
 
   switch (fileType) {
     case "PLAN":
-      filePath = join(basePath, ".gsd", "milestones", milestoneId, "slices", sliceId, `${sliceId}-PLAN.md`);
+      // Use resolveSliceFile so both flat-phase and legacy layouts are detected.
+      // Falls back to "" (non-existent) when the file hasn't been rendered yet.
+      filePath = resolveSliceFile(basePath, milestoneId, sliceId, "PLAN") ?? "";
       break;
     case "ROADMAP":
       filePath = join(basePath, ".gsd", "milestones", milestoneId, `${milestoneId}-ROADMAP.md`);
@@ -562,7 +564,9 @@ export async function regenerateIfMissing(
     switch (fileType) {
       case "PLAN":
         await renderPlanFromDb(basePath, milestoneId, sliceId);
-        return existsSync(filePath);
+        // Re-resolve after render: the rendered file may be at a different path
+        // from the pre-check (flat-phase vs legacy). resolveSliceFile finds it.
+        return !!(resolveSliceFile(basePath, milestoneId, sliceId, "PLAN"));
       case "ROADMAP":
         await renderRoadmapFromDb(basePath, milestoneId);
         return existsSync(filePath);

@@ -312,8 +312,9 @@ console.log('\n=== planning-crossval Test 4: ROADMAP worktree projection path ==
   const base = createFixtureBase();
   const worktreeBase = join(base, '.gsd', 'worktrees', 'M001');
   const worktreeGsd = join(worktreeBase, '.gsd');
-  const projectRoadmapPath = join(base, '.gsd', 'phases', '01-test', '01-ROADMAP.md');
-  const worktreeRoadmapPath = join(worktreeGsd, 'milestones', 'M001', '01-ROADMAP.md');
+  // Both base and worktree use the legacy milestones/ layout (no phases/ dir).
+  const projectRoadmapPath = join(base, '.gsd', 'milestones', 'M001', 'M001-ROADMAP.md');
+  const worktreeRoadmapPath = join(worktreeGsd, 'milestones', 'M001', 'M001-ROADMAP.md');
   const dbPath = join(base, '.gsd', 'gsd.db');
 
   openDatabase(dbPath);
@@ -359,7 +360,8 @@ console.log('\n=== planning-crossval Test 5: ROADMAP existing projection file pa
   const base = createFixtureBase();
   const worktreeBase = join(base, '.gsd', 'worktrees', 'M001');
   const worktreeGsd = join(worktreeBase, '.gsd');
-  const worktreeRoadmapPath = join(worktreeGsd, 'milestones', 'M001', '01-ROADMAP.md');
+  // Legacy milestones/ layout: roadmap filename is M001-ROADMAP.md (not NN-ROADMAP.md).
+  const worktreeRoadmapPath = join(worktreeGsd, 'milestones', 'M001', 'M001-ROADMAP.md');
   const dbPath = join(base, '.gsd', 'gsd.db');
   const originalCwd = process.cwd();
 
@@ -397,7 +399,8 @@ console.log('\n=== planning-crossval Test 6: ROADMAP descriptor projection dir =
   const worktreeBase = join(base, '.gsd', 'worktrees', 'M001');
   const worktreeGsd = join(worktreeBase, '.gsd');
   const descriptorMilestoneDir = join(worktreeGsd, 'milestones', 'M001-DESCRIPTOR');
-  const descriptorRoadmapPath = join(descriptorMilestoneDir, '01-ROADMAP.md');
+  // Legacy milestones/ layout: roadmap filename is M001-ROADMAP.md (not NN-ROADMAP.md).
+  const descriptorRoadmapPath = join(descriptorMilestoneDir, 'M001-ROADMAP.md');
   const bareMilestoneDir = join(worktreeGsd, 'milestones', 'M001');
   const dbPath = join(base, '.gsd', 'gsd.db');
 

@@ -5,7 +5,7 @@ import { loadFile, parseSummary, saveFile, parseTaskPlanMustHaves, countMustHave
 import { parseRoadmap as parseLegacyRoadmap, parsePlan as parseLegacyPlan } from "./parsers-legacy.js";
 import { isDbAvailable, getMilestoneSlices, getSliceTasks } from "./gsd-db.js";
 import { openExistingWorkflowDatabase } from "./db-workspace.js";
-import { resolveMilestoneFile, resolveMilestonePath, resolveSliceFile, resolveSlicePath, resolveTaskFile, resolveTasksDir, milestonesDir, gsdRoot, relMilestoneFile, relSliceFile, relTaskFile, relSlicePath, relGsdRootFile, resolveGsdRootFile, relMilestonePath, resolveGsdPathContract } from "./paths.js";
+import { resolveMilestoneFile, resolveMilestonePath, resolveSliceFile, resolveSlicePath, resolveTaskFile, resolveTasksDir, milestonesDir, legacyMilestonesDir, gsdRoot, relMilestoneFile, relSliceFile, relTaskFile, relSlicePath, relGsdRootFile, resolveGsdRootFile, relMilestonePath, resolveGsdPathContract } from "./paths.js";
 import { deriveState, isMilestoneComplete } from "./state.js";
 import { invalidateAllCaches } from "./cache.js";
 import { loadEffectiveGSDPreferences, type GSDPreferences } from "./preferences.js";
@@ -194,7 +194,8 @@ export async function selectDoctorScope(basePath: string, requestedScope?: strin
   }
 
   const milestonesPath = milestonesDir(basePath);
-  if (!existsSync(milestonesPath)) return undefined;
+  const legacyMilestonesPath = legacyMilestonesDir(basePath);
+  if (!existsSync(milestonesPath) && !existsSync(legacyMilestonesPath)) return undefined;
 
   for (const milestone of state.registry) {
     const roadmapPath = resolveMilestoneFile(basePath, milestone.id, "ROADMAP");
@@ -387,7 +388,8 @@ export async function runGSDDoctor(basePath: string, options?: { fix?: boolean; 
   await checkEngineHealth(basePath, issues, fixesApplied);
 
   const milestonesPath = milestonesDir(basePath);
-  if (!existsSync(milestonesPath)) {
+  const legacyMilestonesPath2 = legacyMilestonesDir(basePath);
+  if (!existsSync(milestonesPath) && !existsSync(legacyMilestonesPath2)) {
     const report: DoctorReport = { ok: issues.every(i => i.severity !== "error"), basePath, issues, fixesApplied, timing: { git: gitMs, runtime: runtimeMs, environment: envMs, gsdState: 0 } };
     await appendDoctorHistory(basePath, report);
     return report;

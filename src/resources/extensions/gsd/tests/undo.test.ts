@@ -250,9 +250,9 @@ test("handleUndoTask with --force resets task and re-renders plan", async () => 
     const summaryPath = join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01-SUMMARY.md");
     assert.equal(existsSync(summaryPath), false);
 
-    // Plan checkbox unchecked
+    // Plan checkbox unchecked — renderPlanCheckboxes re-renders to the flat-phase path
     const planContent = readFileSync(
-      join(base, ".gsd", "milestones", "M001", "slices", "S01", "S01-PLAN.md"),
+      join(base, ".gsd", "milestones", "M001", "01-01-PLAN.md"),
       "utf-8",
     );
     assert.match(planContent, /\[ \] \*\*T01:/);
@@ -424,8 +424,8 @@ test("handleResetSlice with --force resets slice and all tasks", async () => {
     assert.equal(existsSync(join(sliceDir, "S01-SUMMARY.md")), false);
     assert.equal(existsSync(join(sliceDir, "S01-UAT.md")), false);
 
-    // Plan checkboxes unchecked
-    const planContent = readFileSync(join(sliceDir, "S01-PLAN.md"), "utf-8");
+    // Plan checkboxes unchecked — renderPlanCheckboxes re-renders to flat-phase path
+    const planContent = readFileSync(join(base, ".gsd", "milestones", "M001", "01-01-PLAN.md"), "utf-8");
     assert.match(planContent, /\[ \] \*\*T01:/);
     assert.match(planContent, /\[ \] \*\*T02:/);
 

@@ -162,7 +162,7 @@ test('handleReassessRoadmap succeeds when modifying only pending slices', async 
     assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
 
     // Verify assessments row exists in DB
-    const assessmentPath = join('.gsd', 'phases', '01-test', 'S01-ASSESSMENT.md');
+    const assessmentPath = join('.gsd', 'phases', '01-test', '01-01-ASSESSMENT.md');
     const assessment = getAssessment(assessmentPath);
     assert.ok(assessment, 'assessment row should exist in DB');
     assert.equal(assessment['milestone_id'], 'M001');
@@ -199,7 +199,7 @@ test('handleReassessRoadmap succeeds when modifying only pending slices', async 
     assert.ok(roadmapContent.includes('Updated Slice Two'), 'ROADMAP.md should contain updated S02 title');
 
     // Verify ASSESSMENT.md exists on disk
-    const assessmentDiskPath = join(base, '.gsd', 'phases', '01-test', 'S01-ASSESSMENT.md');
+    const assessmentDiskPath = join(base, '.gsd', 'phases', '01-test', '01-01-ASSESSMENT.md');
     assert.ok(existsSync(assessmentDiskPath), 'ASSESSMENT.md should be rendered to disk');
     const assessmentContent = readFileSync(assessmentDiskPath, 'utf-8');
     assert.ok(assessmentContent.includes('confirmed'), 'ASSESSMENT.md should contain verdict');

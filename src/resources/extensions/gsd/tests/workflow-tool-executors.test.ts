@@ -1746,7 +1746,8 @@ test("executeSaveGateResult validates inputs and persists verdicts", async () =>
     assert.equal(row?.status, "complete");
     assert.equal(row?.verdict, "pass");
     assert.equal(row?.rationale, "Looks good.");
-    const planPath = join(base, ".gsd", "milestones", "M005", "slices", "S05", "S05-PLAN.md");
+    // Flat-phase: M005 title "Milestone Five" → phases/05-milestone-five/05-05-PLAN.md
+    const planPath = join(base, ".gsd", "phases", "05-milestone-five", "05-05-PLAN.md");
     assert.match(readFileSync(planPath, "utf-8"), /No issues found\./);
   } finally {
     closeDatabase();

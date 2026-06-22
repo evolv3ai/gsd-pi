@@ -234,7 +234,7 @@ test('handleReplanSlice succeeds when modifying only incomplete tasks', async ()
     assert.ok(existsSync(planPath), 'PLAN.md should be rendered to disk');
 
     // Verify REPLAN.md exists on disk
-    const replanPath = join(base, '.gsd', 'phases', '01-test', 'S01-REPLAN.md');
+    const replanPath = join(base, '.gsd', 'phases', '01-test', '01-01-REPLAN.md');
     assert.ok(existsSync(replanPath), 'REPLAN.md should be rendered to disk');
     const replanContent = readFileSync(replanPath, 'utf-8');
     assert.ok(replanContent.includes('Blocker Description'), 'REPLAN.md should contain blocker section');

@@ -151,14 +151,17 @@ test('handlePlanMilestone surfaces render failures and does not clear parse-visi
   openDatabase(dbPath);
 
   try {
-    const fallbackRoadmapPath = join(base, '.gsd', 'milestones', 'MISSING', 'MISSING-ROADMAP.md');
+    // Block the rendered roadmap path: M999 → phaseNum=999, slug='db-backed-planning'
+    // → renderer targets phases/999-db-backed-planning/999-ROADMAP.md.
+    // Creating that path as a directory causes EISDIR → render fails.
+    const fallbackRoadmapPath = join(base, '.gsd', 'phases', '999-db-backed-planning', '999-ROADMAP.md');
     mkdirSync(fallbackRoadmapPath, { recursive: true });
 
-    const result = await handlePlanMilestone({ ...validParams(), milestoneId: 'MISSING' }, base);
+    const result = await handlePlanMilestone({ ...validParams(), milestoneId: 'M999' }, base);
     assert.ok('error' in result);
     assert.match(result.error, /render failed:/);
 
-    const existingRoadmapPath = join(base, '.gsd', 'phases', '01-test', 'M001-ROADMAP.md');
+    const existingRoadmapPath = join(base, '.gsd', 'phases', '01-test', '01-ROADMAP.md');
     writeFileSync(existingRoadmapPath, '# M001: Cached roadmap\n\n**Vision:** old value\n\n## Slices\n\n', 'utf-8');
     const cachedAfter = parseRoadmap(readFileSync(existingRoadmapPath, 'utf-8'));
     assert.equal(cachedAfter.vision, 'old value');

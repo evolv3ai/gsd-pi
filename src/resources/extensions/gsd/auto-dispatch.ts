@@ -1690,7 +1690,10 @@ export const DISPATCH_RULES: DispatchRule[] = [
         // Use relMilestoneFile for the layout-aware filename:
         //   legacy   → milestones/M001/M001-VALIDATION.md
         //   flat-phase → phases/01-slug/01-VALIDATION.md
-        const validationPath = join(artifactBasePath, relMilestoneFile(artifactBasePath, mid, "VALIDATION"));
+        // When the milestone dir is only in the project root (worktree has none),
+        // write to the project root so the artifact lands in the canonical location.
+        const writeBase = resolveMilestonePath(artifactBasePath, mid) != null ? artifactBasePath : projectRoot;
+        const validationPath = join(writeBase, relMilestoneFile(writeBase, mid, "VALIDATION"));
         const skipSource = trivialVariant
           ? "trivial-scope pipeline variant"
           : "`skip_milestone_validation` preference";

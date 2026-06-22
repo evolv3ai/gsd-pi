@@ -12,7 +12,7 @@ import { ALWAYS_PRESERVED_SHIM_TOOL_NAMES } from "@gsd/pi-ai";
 import type { GSDEcosystemBeforeAgentStartHandler } from "../ecosystem/gsd-extension-api.js";
 import { updateSnapshot } from "../ecosystem/gsd-extension-api.js";
 
-import { buildMilestoneFileName, clearPathCache, milestonesDir, resolveMilestonePath, resolveSliceFile, resolveSlicePath } from "../paths.js";
+import { buildMilestoneFileName, clearPathCache, milestonesDir, legacyMilestonesDir, resolveMilestonePath, resolveSliceFile, resolveSlicePath } from "../paths.js";
 import { applyAskUserQuestionsGateResult, clearDiscussionFlowState, formatPendingAskUserQuestionsGateMessage, hostWriteGateAdapter, isApprovalGateVerifiedInSnapshot, isDepthConfirmationAnswer, isMilestoneDepthVerified, isMilestoneDepthVerifiedInSnapshot, isQueuePhaseActive, resetWriteGateState, shouldBlockContextWrite, shouldBlockPlanningUnit, shouldBlockQueueExecution, shouldBlockWorktreeBash, shouldBlockWorktreeWrite, isGateQuestionId, getPendingGate, shouldBlockPendingGate, shouldBlockPendingGateBash, extractDepthVerificationMilestoneId } from "./write-gate.js";
 import { canonicalToolName } from "../engine-hook-contract.js";
 import { resolveManifest } from "../unit-context-manifest.js";
@@ -734,8 +734,12 @@ function formatQuestionExchange(
 }
 
 async function ensureMilestoneShell(basePath: string, milestoneId: string): Promise<string> {
+  // When no milestone dir exists yet, prefer the legacy container when it is
+  // already present on disk; otherwise fall back to the flat-phase container.
+  const legacy = legacyMilestonesDir(basePath);
+  const container = existsSync(legacy) ? legacy : milestonesDir(basePath);
   const milestoneDir = resolveMilestonePath(basePath, milestoneId)
-    ?? join(milestonesDir(basePath), milestoneId);
+    ?? join(container, milestoneId);
   mkdirSync(milestoneDir, { recursive: true });
   clearPathCache();
 
@@ -769,14 +773,20 @@ async function saveDiscussionQuestionRound(
   const timestamp = new Date().toISOString();
   const exchange = formatQuestionExchange(questions, answers);
 
-  const discussionPath = join(milestoneDir, buildMilestoneFileName(milestoneId, "DISCUSSION"));
+  // Layout-aware filename: legacy dirs use MID-SUFFIX.md; flat-phase use NN-SUFFIX.md.
+  const legacyBase = legacyMilestonesDir(basePath);
+  const isLegacyDir = milestoneDir.startsWith(legacyBase + "/") || milestoneDir.startsWith(legacyBase + "\\");
+  const milestoneFileName = (suffix: string): string =>
+    isLegacyDir ? `${milestoneId}-${suffix}.md` : buildMilestoneFileName(milestoneId, suffix);
+
+  const discussionPath = join(milestoneDir, milestoneFileName("DISCUSSION"));
   const existingDiscussion = await loadFile(discussionPath) ?? `# ${milestoneId} Discussion Log\n\n`;
   await saveFile(
     discussionPath,
     `${existingDiscussion}## Exchange — ${timestamp}\n\n${exchange}---\n\n`,
   );
 
-  const draftPath = join(milestoneDir, buildMilestoneFileName(milestoneId, "CONTEXT-DRAFT"));
+  const draftPath = join(milestoneDir, milestoneFileName("CONTEXT-DRAFT"));
   const existingDraft = await loadFile(draftPath);
   const draftHeader = existingDraft
     ?? [
