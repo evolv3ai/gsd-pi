@@ -1526,14 +1526,12 @@ export const executeTaskComplete = async (params, projectDir) => {
         ],
       });
       assert.match((sliceResult as any).content[0].text as string, /Planned slice S01/);
+      // Flat-phase: M001 "Workflow MCP planning" → phases/01-workflow-mcp-planning/, S01 → 01-01-PLAN.md
       assert.ok(
-        existsSync(join(base, ".gsd", "milestones", "M001", "slices", "S01", "S01-PLAN.md")),
+        existsSync(join(base, ".gsd", "phases", "01-workflow-mcp-planning", "01-01-PLAN.md")),
         "slice plan should exist on disk",
       );
-      assert.ok(
-        existsSync(join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01-PLAN.md")),
-        "task plan should exist on disk",
-      );
+      // Flat-phase: tasks are checkboxes inside the slice plan file, no per-task T01-PLAN.md
     } finally {
       cleanup(base);
     }
@@ -1977,8 +1975,10 @@ export const executeTaskComplete = async (params, projectDir) => {
       });
 
       assert.match((result as any).content[0].text as string, /Planned task T11/);
+      // Flat-phase: M010 "Inline task planning DB reopen" → phases/10-inline-task-planning-db-reopen/
+      // S10 → 10-10-PLAN.md; T11 is a checkbox inside the slice plan, no per-task T11-PLAN.md
       assert.ok(
-        existsSync(join(base, ".gsd", "milestones", "M010", "slices", "S10", "tasks", "T11-PLAN.md")),
+        existsSync(join(base, ".gsd", "phases", "10-inline-task-planning-db-reopen", "10-10-PLAN.md")),
         "T11 plan should be written after reopening the DB",
       );
     } finally {
@@ -2115,12 +2115,13 @@ export const executeTaskComplete = async (params, projectDir) => {
         removedTaskIds: ["T11"],
       });
       assert.match((aliasResult as any).content[0].text as string, /Replanned slice S09/);
+      // Flat-phase: M099 "Slice replanning" → phases/99-slice-replanning/, S09 → 99-09-*
       assert.ok(
-        existsSync(join(base, ".gsd", "milestones", "M099", "slices", "S09", "S09-REPLAN.md")),
+        existsSync(join(base, ".gsd", "phases", "99-slice-replanning", "99-09-REPLAN.md")),
         "replan artifact should exist on disk",
       );
       assert.ok(
-        existsSync(join(base, ".gsd", "milestones", "M099", "slices", "S09", "S09-PLAN.md")),
+        existsSync(join(base, ".gsd", "phases", "99-slice-replanning", "99-09-PLAN.md")),
         "updated plan should exist on disk",
       );
       const removedTask = _getAdapter()!.prepare(
@@ -2267,12 +2268,13 @@ export const executeTaskComplete = async (params, projectDir) => {
         uatContent: "## UAT\n\nPASS",
       });
       assert.match((aliasResult as any).content[0].text as string, /Completed slice S04/);
+      // Flat-phase: M004 "Alias milestone" → phases/04-alias-milestone/, S04 → 04-04-*
       assert.ok(
-        existsSync(join(base, ".gsd", "milestones", "M004", "slices", "S04", "S04-SUMMARY.md")),
+        existsSync(join(base, ".gsd", "phases", "04-alias-milestone", "04-04-SUMMARY.md")),
         "alias should write slice summary to disk",
       );
       assert.ok(
-        existsSync(join(base, ".gsd", "milestones", "M004", "slices", "S04", "S04-UAT.md")),
+        existsSync(join(base, ".gsd", "phases", "04-alias-milestone", "04-04-UAT.md")),
         "alias should write slice UAT to disk",
       );
     } finally {
@@ -2592,12 +2594,13 @@ export const executeTaskComplete = async (params, projectDir) => {
         },
       });
       assert.match((reassessAliasResult as any).content[0].text as string, /Reassessed roadmap for milestone M006 after S06/);
+      // Flat-phase: M006 "Roadmap reassessment" → phases/06-roadmap-reassessment/, S06 → 06-06-*
       assert.ok(
-        existsSync(join(base, ".gsd", "milestones", "M006", "slices", "S06", "S06-ASSESSMENT.md")),
+        existsSync(join(base, ".gsd", "phases", "06-roadmap-reassessment", "06-06-ASSESSMENT.md")),
         "assessment artifact should exist on disk",
       );
       assert.ok(
-        existsSync(join(base, ".gsd", "milestones", "M006", "M006-ROADMAP.md")),
+        existsSync(join(base, ".gsd", "phases", "06-roadmap-reassessment", "06-ROADMAP.md")),
         "roadmap artifact should exist on disk",
       );
     } finally {
