@@ -16,6 +16,7 @@ import { dirname, join, relative } from "node:path";
 import {
   getAllMilestones,
   getMilestone,
+  getMilestoneScopedArtifacts,
   getMilestoneSlices,
   getSliceTasks,
   getTask,
@@ -33,6 +34,7 @@ import {
   resolveSlicePath,
   gsdProjectionRoot,
   gsdRoot,
+  buildMilestoneFileName,
   buildTaskFileName,
   buildSliceFileName,
 } from "./paths.js";
@@ -511,6 +513,43 @@ export async function renderRoadmapCheckboxes(
   return true;
 }
 
+/**
+ * Project milestone-level artifacts (CONTEXT, RESEARCH, VALIDATION, etc.) from
+ * the artifacts table into the flat-phase phase directory. ROADMAP is skipped
+ * because renderRoadmapFromDb regenerates it from hierarchy rows.
+ */
+export async function renderMilestoneArtifactsFromDb(
+  basePath: string,
+  milestoneId: string,
+): Promise<boolean> {
+  const artifacts = getMilestoneScopedArtifacts(milestoneId);
+  if (artifacts.length === 0) return false;
+
+  const phaseNum = milestoneIdToPhaseNum(milestoneId);
+  const phaseDir = resolveMilestonePath(basePath, milestoneId) ??
+    join(
+      milestonesDir(basePath),
+      phaseDirName(phaseNum, derivePhaseSlug(getMilestone(milestoneId)?.title || milestoneId)),
+    );
+  mkdirSync(phaseDir, { recursive: true });
+
+  let wrote = false;
+  for (const artifact of artifacts) {
+    if (artifact.artifact_type === "ROADMAP") continue;
+    if (!artifact.full_content.trim()) continue;
+
+    const absPath = join(phaseDir, buildMilestoneFileName(milestoneId, artifact.artifact_type));
+    const artifactPath = toArtifactPath(absPath, basePath);
+    await writeAndStore(absPath, artifactPath, artifact.full_content, {
+      artifact_type: artifact.artifact_type,
+      milestone_id: milestoneId,
+    });
+    wrote = true;
+  }
+
+  return wrote;
+}
+
 // ─── Plan Checkbox Rendering ──────────────────────────────────────────────
 
 /**
@@ -676,6 +715,14 @@ export async function renderAllFromDb(basePath: string): Promise<RenderAllResult
       else result.skipped++;
     } catch (err) {
       result.errors.push(`roadmap ${milestone.id}: ${(err as Error).message}`);
+    }
+
+    try {
+      const ok = await renderMilestoneArtifactsFromDb(basePath, milestone.id);
+      if (ok) result.rendered++;
+      else result.skipped++;
+    } catch (err) {
+      result.errors.push(`milestone artifacts ${milestone.id}: ${(err as Error).message}`);
     }
 
     // Iterate slices

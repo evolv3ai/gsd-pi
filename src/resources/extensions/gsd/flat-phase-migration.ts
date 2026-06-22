@@ -56,14 +56,12 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
   const milestonesPath = join(basePath, ".gsd", "milestones");
   const phasesPath = join(basePath, ".gsd", LAYOUT_SEGMENTS.level1);
 
-  // 1. Populate DB from markdown if empty so disk-only legacy projects can migrate.
+  // 1. Reconcile DB from legacy markdown before backup/removal so on-disk-only
+  // content is imported even when milestone rows already exist in SQLite.
   // Check BEFORE creating the backup — avoids accumulating .gsd-backups/ entries
   // on every session start when milestones/ exists but the DB has no rows.
-  let milestonesBefore = getAllMilestones().length;
-  if (milestonesBefore === 0) {
-    migrateFromMarkdown(basePath);
-    milestonesBefore = getAllMilestones().length;
-  }
+  migrateFromMarkdown(basePath);
+  const milestonesBefore = getAllMilestones().length;
   if (milestonesBefore === 0) {
     logWarning(
       "migration",
