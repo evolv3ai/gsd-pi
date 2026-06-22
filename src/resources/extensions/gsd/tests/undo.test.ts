@@ -70,7 +70,7 @@ test("handleUndo without --force only warns and leaves completed units intact", 
 test("uncheckTaskInPlan flips a checked task back to unchecked", () => {
   const base = makeTempDir("gsd-undo-plan");
   try {
-    const sliceDir = join(base, ".gsd", "milestones", "M001", "slices", "S01");
+    const sliceDir = join(base, ".gsd", "phases", "01-test");
     mkdirSync(sliceDir, { recursive: true });
     const planFile = join(sliceDir, "S01-PLAN.md");
     writeFileSync(
@@ -170,7 +170,7 @@ function makeCtx(): { notifications: Array<{ message: string; level: string }>; 
 
 function setupTaskFixture(base: string): void {
   // Create milestone/slice/task directory structure
-  const sliceDir = join(base, ".gsd", "milestones", "M001", "slices", "S01");
+  const sliceDir = join(base, ".gsd", "phases", "01-test");
   const tasksDir = join(sliceDir, "tasks");
   mkdirSync(tasksDir, { recursive: true });
 
@@ -197,7 +197,7 @@ function setupTaskFixture(base: string): void {
 
   // Set up DB
   openDatabase(":memory:");
-  insertMilestone({ id: "M001", title: "Test Milestone", status: "active" });
+  insertMilestone({ id: "M001", title: "Test", status: "active" });
   insertSlice({ id: "S01", milestoneId: "M001", title: "Test Slice", status: "active", risk: "low", depends: [] });
   insertTask({ id: "T01", sliceId: "S01", milestoneId: "M001", title: "First task", status: "complete" });
   insertTask({ id: "T02", sliceId: "S01", milestoneId: "M001", title: "Second task", status: "pending" });
@@ -247,12 +247,12 @@ test("handleUndoTask with --force resets task and re-renders plan", async () => 
     assert.equal(task?.status, "pending");
 
     // Summary file deleted
-    const summaryPath = join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01-SUMMARY.md");
+    const summaryPath = join(base, ".gsd", "phases", "01-test", "T01-SUMMARY.md");
     assert.equal(existsSync(summaryPath), false);
 
     // Plan checkbox unchecked — renderPlanCheckboxes re-renders to the flat-phase path
     const planContent = readFileSync(
-      join(base, ".gsd", "milestones", "M001", "01-01-PLAN.md"),
+      join(base, ".gsd", "phases", "01-test", "01-01-PLAN.md"),
       "utf-8",
     );
     // Flat-phase renderer: tasks are bold on ID only — "**T01**: title"
@@ -319,7 +319,7 @@ test("handleUndoTask accepts partial ID (T01) and resolves from state", async ()
 // ─── handleResetSlice tests ──────────────────────────────────────────────────
 
 function setupSliceFixture(base: string): void {
-  const mDir = join(base, ".gsd", "milestones", "M001");
+  const mDir = join(base, ".gsd", "phases", "01-test");
   const sliceDir = join(mDir, "slices", "S01");
   const tasksDir = join(sliceDir, "tasks");
   mkdirSync(tasksDir, { recursive: true });
@@ -362,7 +362,7 @@ function setupSliceFixture(base: string): void {
 
   // Set up DB
   openDatabase(":memory:");
-  insertMilestone({ id: "M001", title: "Test Milestone", status: "active" });
+  insertMilestone({ id: "M001", title: "Test", status: "active" });
   insertSlice({ id: "S01", milestoneId: "M001", title: "Test Slice", status: "complete", risk: "low", depends: [] });
   insertSlice({ id: "S02", milestoneId: "M001", title: "Next Slice", status: "pending", risk: "low", depends: ["S01"] });
   insertTask({ id: "T01", sliceId: "S01", milestoneId: "M001", title: "First task", status: "complete" });
@@ -416,24 +416,24 @@ test("handleResetSlice with --force resets slice and all tasks", async () => {
     assert.equal(t2?.status, "pending");
 
     // Task summaries deleted
-    const tasksDir = join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks");
+    const tasksDir = join(base, ".gsd", "phases", "01-test");
     assert.equal(existsSync(join(tasksDir, "T01-SUMMARY.md")), false);
     assert.equal(existsSync(join(tasksDir, "T02-SUMMARY.md")), false);
 
     // Slice summary and UAT deleted
-    const sliceDir = join(base, ".gsd", "milestones", "M001", "slices", "S01");
+    const sliceDir = join(base, ".gsd", "phases", "01-test");
     assert.equal(existsSync(join(sliceDir, "S01-SUMMARY.md")), false);
     assert.equal(existsSync(join(sliceDir, "S01-UAT.md")), false);
 
     // Plan checkboxes unchecked — renderPlanCheckboxes re-renders to flat-phase path
     // Flat-phase renderer: tasks are bold on ID only — "**T01**: title"
-    const planContent = readFileSync(join(base, ".gsd", "milestones", "M001", "01-01-PLAN.md"), "utf-8");
+    const planContent = readFileSync(join(base, ".gsd", "phases", "01-test", "01-01-PLAN.md"), "utf-8");
     assert.match(planContent, /\[ \] \*\*T01\*\*:/);
     assert.match(planContent, /\[ \] \*\*T02\*\*:/);
 
     // Roadmap checkbox unchecked — legacy milestones/ dir uses legacy format "**S01: title**"
     const roadmapContent = readFileSync(
-      join(base, ".gsd", "milestones", "M001", "M001-ROADMAP.md"),
+      join(base, ".gsd", "phases", "01-test", "M001-ROADMAP.md"),
       "utf-8",
     );
     assert.match(roadmapContent, /\[ \] \*\*S01:/);
