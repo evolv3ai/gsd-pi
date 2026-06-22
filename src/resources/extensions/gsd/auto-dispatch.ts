@@ -48,11 +48,12 @@ import {
   buildSliceFileName,
   buildTaskFileName,
   gsdProjectionRoot,
+  milestonesDir,
 } from "./paths.js";
 import { validateArtifact } from "./schemas/validate.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from "node:fs";
 import { logWarning, logError } from "./workflow-logger.js";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { hasImplementationArtifacts } from "./milestone-implementation-evidence.js";
 import {
   buildDiscussMilestonePrompt,
@@ -1532,8 +1533,16 @@ export const DISPATCH_RULES: DispatchRule[] = [
       // missing, the planner created S##-PLAN.md with task entries but never
       // wrote the tasks/ directory files. Dispatch plan-slice to regenerate
       // them rather than hard-stopping — fixes the infinite-loop described in
-      // issue #909.
+      // issue #909. Flat-phase layout embeds tasks in the slice plan file, so
+      // skip recovery when the plan lives under phases/.
       const taskPlanPath = resolveTaskFile(artifactBasePath, mid, sid, tid, "PLAN");
+      const slicePlanPath = resolveSliceFile(artifactBasePath, mid, sid, "PLAN");
+      const phasesRoot = milestonesDir(artifactBasePath);
+      const tasksEmbeddedInSlicePlan = Boolean(
+        slicePlanPath &&
+        existsSync(slicePlanPath) &&
+        (slicePlanPath === phasesRoot || slicePlanPath.startsWith(`${phasesRoot}${sep}`)),
+      );
       const projectionTaskPlanPath = join(
         gsdProjectionRoot(artifactBasePath),
         "milestones",
@@ -1543,7 +1552,11 @@ export const DISPATCH_RULES: DispatchRule[] = [
         "tasks",
         buildTaskFileName(tid, "PLAN"),
       );
-      if ((!taskPlanPath || !existsSync(taskPlanPath)) && !existsSync(projectionTaskPlanPath)) {
+      if (
+        (!taskPlanPath || !existsSync(taskPlanPath)) &&
+        !existsSync(projectionTaskPlanPath) &&
+        !tasksEmbeddedInSlicePlan
+      ) {
         if (isDebugEnabled()) {
           const expectedTaskPlanPath = join(artifactBasePath, relTaskFile(artifactBasePath, mid, sid, tid, "PLAN"));
           const originalProjectRoot = session?.originalBasePath || basePath;
