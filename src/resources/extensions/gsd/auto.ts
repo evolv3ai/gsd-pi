@@ -42,6 +42,11 @@ import { extractSection, getManifestStatus, splitFrontmatter, parseFrontmatterMa
 export { inlinePriorMilestoneSummary } from "./files.js";
 import { collectSecretsFromManifest } from "../get-secrets-from-user.js";
 import {
+  phaseDirName,
+  derivePhaseSlug,
+  milestoneIdToPhaseNum,
+} from "./layout-policy.js";
+import {
   gsdRoot,
   resolveMilestoneFile,
   resolveSliceFile,
@@ -3001,14 +3006,23 @@ export function ensurePreconditions(
     // Layout-aware: if the legacy milestones/ dir exists, place the new milestone dir
     // there (preserves the existing project layout). Otherwise use flat-phase phases/.
     const legacyBase = legacyMilestonesDir(base);
-    const targetBase = existsSync(legacyBase) ? legacyBase : milestonesDir(base);
-    const newDir = join(targetBase, mid);
-    // Legacy projects use a slices/ subdir; flat-phase uses top-level plan files (no slices/).
     const isLegacyLayout = existsSync(legacyBase);
+    const targetBase = isLegacyLayout ? legacyBase : milestonesDir(base);
+    const dirName = isLegacyLayout
+      ? mid
+      : phaseDirName(
+          milestoneIdToPhaseNum(mid),
+          derivePhaseSlug(getMilestone(mid)?.title || mid),
+        );
+    const newDir = join(targetBase, dirName);
+    // Legacy projects use a slices/ subdir; flat-phase uses top-level plan files (no slices/).
     mkdirSync(isLegacyLayout ? join(newDir, "slices") : newDir, { recursive: true });
   }
 
   if (sid !== undefined) {
+    const legacyBase = legacyMilestonesDir(base);
+    const isLegacyLayout = existsSync(legacyBase);
+    if (!isLegacyLayout) return;
 
     const mDirResolved = resolveMilestonePath(base, mid);
     if (mDirResolved) {
