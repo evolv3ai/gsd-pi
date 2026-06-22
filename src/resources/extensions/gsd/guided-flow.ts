@@ -40,7 +40,7 @@ import { listUnitRuntimeRecords, clearUnitRuntimeRecord, isInFlightRuntimePhase 
 import { resolveExpectedArtifactPath } from "./auto.js";
 import { gsdHome } from "./gsd-home.js";
 import {
-  gsdRoot, milestonesDir, resolveMilestoneFile,
+  gsdRoot, milestonesDir, legacyMilestonesDir, resolveMilestoneFile,
   resolveSliceFile, resolveSlicePath, resolveGsdRootFile, relGsdRootFile,
   relMilestoneFile, relSliceFile,
 } from "./paths.js";
@@ -366,8 +366,11 @@ function hasNestedFileOrSymlink(dir: string): boolean {
   return false;
 }
 
-function clearEmptyLegacyDeepSetupPseudoMilestones(basePath: string, entries: string[]): string[] {
-  const mDir = milestonesDir(basePath);
+function clearEmptyLegacyDeepSetupPseudoMilestones(basePath: string, entries: string[], dir?: string): string[] {
+  // These are LEGACY pseudo-milestone dirs — prefer legacyMilestonesDir (milestones/)
+  // when it exists; caller may also supply the dir directly.
+  const legacyDir = legacyMilestonesDir(basePath);
+  const mDir = dir ?? (existsSync(legacyDir) ? legacyDir : milestonesDir(basePath));
   const remaining: string[] = [];
   for (const entry of entries) {
     if (!LEGACY_DEEP_SETUP_PSEUDO_MILESTONE_DIRS.has(entry)) {
@@ -2106,9 +2109,12 @@ export async function showSmartEntry(
     // cwd, etc). Warn instead of silently starting a new-project flow.
     if (milestoneIds.length === 0) {
       const mDir = milestonesDir(basePath);
-      if (existsSync(mDir)) {
+      const legDir = legacyMilestonesDir(basePath);
+      // Check flat-phase dir first; fall back to legacy milestones/ dir
+      const checkDir = existsSync(mDir) ? mDir : existsSync(legDir) ? legDir : null;
+      if (checkDir) {
         try {
-          const entries = clearEmptyLegacyDeepSetupPseudoMilestones(basePath, readdirSync(mDir));
+          const entries = clearEmptyLegacyDeepSetupPseudoMilestones(basePath, readdirSync(checkDir), checkDir);
           if (entries.length > 0) {
             ctx.ui.notify(
               `Milestone directory has ${entries.length} entries but none were recognized as milestones. ` +

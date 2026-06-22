@@ -732,7 +732,11 @@ export function resolveSliceFile(
   const flatName = planFileName(phaseNum, planNum, suffix);
   const flatPath = join(phaseDir, flatName);
   if (existsSync(flatPath)) return flatPath;
-  // Try prefix match for the plan number (handles suffix variations)
+  // Also check plan-number-only format MM-SUFFIX.md (written by buildSliceFileName)
+  const planOnlyName = `${String(planNum).padStart(2, "0")}-${suffix}.md`;
+  const planOnlyPath = join(phaseDir, planOnlyName);
+  if (existsSync(planOnlyPath)) return planOnlyPath;
+  // Try prefix match for the phase+plan number (handles suffix variations)
   const planPrefix = `${String(phaseNum).padStart(2, "0")}-${String(planNum).padStart(2, "0")}-`;
   try {
     for (const entry of readdirSync(phaseDir, { withFileTypes: true })) {
@@ -890,13 +894,21 @@ export function relSliceFile(
 
 /**
  * Build relative .gsd/ path to a task file.
+ *
+ * Legacy layout:  slices/SID/tasks/TID-SUFFIX.md (inside a slices/ subdir)
+ * Flat-phase:     tasks are checkboxes inside the slice plan — return the plan path.
  */
 export function relTaskFile(
   basePath: string, milestoneId: string, sliceId: string,
   taskId: string, suffix: string
 ): string {
-  // Flat-phase: tasks live inside the plan file as checkboxes, not as files.
-  // Return the plan file path — callers that need task-level granularity
-  // should reference the <tasks> block inside the plan.
+  const sDir = resolveSlicePath(basePath, milestoneId, sliceId);
+  const phaseDir = resolveMilestonePath(basePath, milestoneId);
+  // Legacy: slice path is a slices/SID/ subdir inside the milestone dir
+  if (sDir && phaseDir && sDir !== phaseDir) {
+    const relS = relSlicePath(basePath, milestoneId, sliceId);
+    return `${relS}/tasks/${taskId}-${suffix}.md`;
+  }
+  // Flat-phase: tasks are checkboxes inside the slice plan file
   return relSliceFile(basePath, milestoneId, sliceId, "PLAN");
 }

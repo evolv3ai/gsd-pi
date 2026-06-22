@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { EscalationArtifact, EscalationOption } from "./types.js";
-import { resolveSlicePath } from "./paths.js";
+import { resolveTasksDir } from "./paths.js";
 import { atomicWriteSync } from "./atomic-write.js";
 import {
   getTask,
@@ -35,9 +35,13 @@ import { logWarning } from "./workflow-logger.js";
 export function escalationArtifactPath(
   basePath: string, milestoneId: string, sliceId: string, taskId: string,
 ): string | null {
-  const sDir = resolveSlicePath(basePath, milestoneId, sliceId);
-  if (!sDir) return null;
-  return join(sDir, "tasks", `${taskId}-ESCALATION.json`);
+  // Use resolveTasksDir: returns null when there is no tasks/ subdir on disk,
+  // preserving the "null → throw" contract in writeEscalationArtifact.
+  // resolveSlicePath would fall back to the phase dir and return non-null even
+  // when the slice's tasks dir doesn't exist yet (flat-phase fallback).
+  const tDir = resolveTasksDir(basePath, milestoneId, sliceId);
+  if (!tDir) return null;
+  return join(tDir, `${taskId}-ESCALATION.json`);
 }
 
 // ─── Artifact I/O ─────────────────────────────────────────────────────────

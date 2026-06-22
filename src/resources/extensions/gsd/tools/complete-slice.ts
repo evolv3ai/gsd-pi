@@ -22,8 +22,7 @@ import {
   getPendingGatesForTurn,
 } from "../gsd-db.js";
 import { getGatesForTurn } from "../gate-registry.js";
-import { gsdProjectionRoot, clearPathCache, resolveMilestoneFile, resolveMilestonePath, resolveSliceFile, milestonesDir } from "../paths.js";
-import { planFileName, milestoneIdToPhaseNum, sliceIdToPlanNum } from "../layout-policy.js";
+import { gsdProjectionRoot, clearPathCache, resolveMilestoneFile, relSliceFile } from "../paths.js";
 import { resolveCanonicalMilestoneRoot } from "../worktree-manager.js";
 import { checkOwnership, sliceUnitKey } from "../unit-ownership.js";
 import { saveFile, clearParseCache } from "../files.js";
@@ -68,13 +67,11 @@ function sliceGateFieldForId(
 }
 
 function sliceSummaryPath(basePath: string, milestoneId: string, sliceId: string): string {
-  // Flat-phase: use resolveSliceFile which checks phases/ then legacy milestones/
-  const resolved = resolveSliceFile(basePath, milestoneId, sliceId, "SUMMARY");
-  if (resolved) return resolved;
-  // Fallback: construct the canonical flat-phase path
-  const phaseDir = resolveMilestonePath(basePath, milestoneId)
-    ?? join(milestonesDir(basePath), "01-test");
-  return join(phaseDir, planFileName(milestoneIdToPhaseNum(milestoneId), sliceIdToPlanNum(sliceId), "SUMMARY"));
+  // Layout-aware: flat-phase projects use NN-MM-SUMMARY.md inside the phase dir;
+  // legacy projects use milestones/MID/slices/SID/SID-SUMMARY.md.
+  // relSliceFile returns a path relative to basePath (e.g. ".gsd/phases/01-test/01-01-SUMMARY.md"),
+  // so join with basePath (not gsdProjectionRoot which would double the ".gsd/" segment).
+  return join(basePath, relSliceFile(basePath, milestoneId, sliceId, "SUMMARY"));
 }
 
 function hasCompleteSliceArtifactContract(basePath: string, milestoneId: string, sliceId: string): boolean {

@@ -44,6 +44,7 @@ import {
   resolveTaskFile,
   relTaskFile,
   relSliceFile,
+  relMilestoneFile,
   buildMilestoneFileName,
   buildTaskFileName,
   gsdProjectionRoot,
@@ -1686,10 +1687,10 @@ export const DISPATCH_RULES: DispatchRule[] = [
           };
         }
         if (!existsSync(mDir)) mkdirSync(mDir, { recursive: true });
-        const validationPath = join(
-          mDir,
-          buildMilestoneFileName(mid, "VALIDATION"),
-        );
+        // Use relMilestoneFile for the layout-aware filename:
+        //   legacy   → milestones/M001/M001-VALIDATION.md
+        //   flat-phase → phases/01-slug/01-VALIDATION.md
+        const validationPath = join(artifactBasePath, relMilestoneFile(artifactBasePath, mid, "VALIDATION"));
         const skipSource = trivialVariant
           ? "trivial-scope pipeline variant"
           : "`skip_milestone_validation` preference";

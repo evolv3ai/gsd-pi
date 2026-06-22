@@ -32,6 +32,7 @@ import {
   resolveFile,
   resolveSliceFile,
   resolveSlicePath,
+  resolveTasksDir,
   gsdProjectionRoot,
   gsdRoot,
   buildMilestoneFileName,
@@ -41,7 +42,7 @@ import {
 import { saveFile, clearParseCache, registerCacheClearCallback } from "./files.js";
 import { parseRoadmap, parsePlan } from "./parsers-legacy.js";
 import { invalidateStateCache } from "./state.js";
-import { clearPathCache, milestonesDir, resolveMilestonePath } from "./paths.js";
+import { clearPathCache, milestonesDir, legacyMilestonesDir, resolveMilestonePath } from "./paths.js";
 import type { RiskLevel } from "./types.js";
 import {
   phaseDirName,
@@ -119,13 +120,17 @@ function sanitizeInlineRoadmapText(value: string | null | undefined): string {
 }
 
 function resolveRoadmapProjectionPath(basePath: string, milestoneId: string): string {
-  // Flat-phase: phases/NN-slug/NN-ROADMAP.md (was milestones/MID/MID-ROADMAP.md)
   const phasesDir = milestonesDir(basePath);
   const phaseNum = milestoneIdToPhaseNum(milestoneId);
-  // Resolve existing dir by phase-number prefix, or build canonical name
+  // Resolve existing dir by phase-number prefix, or build canonical flat-phase name
   const existing = resolveMilestonePath(basePath, milestoneId);
   const phaseDir = existing ?? join(phasesDir, phaseDirName(phaseNum, derivePhaseSlug(getMilestone(milestoneId)?.title || milestoneId)));
-  const roadmapFileName = `${String(phaseNum).padStart(2, "0")}-ROADMAP.md`;
+  // Layout-aware filename: legacy dirs → MID-ROADMAP.md; flat-phase dirs → NN-ROADMAP.md
+  const legacyBase = legacyMilestonesDir(basePath);
+  const isLegacy = phaseDir.startsWith(legacyBase + "/") || phaseDir.startsWith(legacyBase + "\\");
+  const roadmapFileName = isLegacy
+    ? `${milestoneId}-ROADMAP.md`
+    : `${String(phaseNum).padStart(2, "0")}-ROADMAP.md`;
   return join(phaseDir, roadmapFileName);
 }
 
@@ -612,9 +617,9 @@ export async function renderTaskSummary(
     return false;
   }
 
-  // Flat-phase: task summaries live in the phase dir alongside plan files.
-  // (Legacy: was tasks/ subdir inside slice dir.)
-  const tasksDir = slicePath;
+  // Use the tasks/ subdir when it exists (legacy layout), otherwise use the
+  // slice path directly (flat-phase: task summaries live alongside plan files).
+  const tasksDir = resolveTasksDir(basePath, milestoneId, sliceId) ?? slicePath;
   const fileName = buildTaskFileName(taskId, "SUMMARY");
   const absPath = join(tasksDir, fileName);
   const artifactPath = toArtifactPath(absPath, basePath);
