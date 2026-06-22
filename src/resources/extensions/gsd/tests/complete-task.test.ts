@@ -60,10 +60,10 @@ function cleanupDir(dirPath: string): void {
  */
 function createTempProject(): { basePath: string; planPath: string } {
   const basePath = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-handler-'));
-  const tasksDir = path.join(basePath, '.gsd', 'milestones', 'M001', 'slices', 'S01', 'tasks');
+  const tasksDir = path.join(basePath, '.gsd', 'phases', '01-test');
   fs.mkdirSync(tasksDir, { recursive: true });
 
-  const planPath = path.join(basePath, '.gsd', 'milestones', 'M001', 'slices', 'S01', 'S01-PLAN.md');
+  const planPath = path.join(basePath, '.gsd', 'phases', '01-test', '01-01-PLAN.md');
   fs.writeFileSync(planPath, `# S01: Test Slice
 
 ## Tasks
@@ -584,7 +584,7 @@ console.log('\n=== complete-task: handler with missing plan file ===');
 
   // Create a temp dir WITHOUT a plan file
   const basePath = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-no-plan-'));
-  const tasksDir = path.join(basePath, '.gsd', 'milestones', 'M001', 'slices', 'S01', 'tasks');
+  const tasksDir = path.join(basePath, '.gsd', 'phases', '01-test');
   fs.mkdirSync(tasksDir, { recursive: true });
 
   // Seed milestone + slice so state machine guards pass
@@ -598,7 +598,7 @@ console.log('\n=== complete-task: handler with missing plan file ===');
   assertTrue(!('error' in result), 'handler should succeed without plan file');
   if (!('error' in result)) {
     assertTrue(fs.existsSync(result.summaryPath), 'summary should be written even without plan file');
-    const planPath = path.join(basePath, '.gsd', 'milestones', 'M001', 'slices', 'S01', 'S01-PLAN.md');
+    const planPath = path.join(basePath, '.gsd', 'phases', '01-test', '01-01-PLAN.md');
     assertTrue(fs.existsSync(planPath), 'missing plan projection should be regenerated from DB');
     assertTrue(fs.readFileSync(planPath, 'utf-8').includes('[x] **T01:'), 'regenerated plan should reflect DB task completion');
   }

@@ -19,9 +19,9 @@ import { handleReassessRoadmap } from '../tools/reassess-roadmap.ts';
 
 function makeTmpBase(): string {
   const base = mkdtempSync(join(tmpdir(), 'gsd-reassess-'));
-  mkdirSync(join(base, '.gsd', 'milestones', 'M001', 'slices', 'S01'), { recursive: true });
-  mkdirSync(join(base, '.gsd', 'milestones', 'M001', 'slices', 'S02'), { recursive: true });
-  mkdirSync(join(base, '.gsd', 'milestones', 'M001', 'slices', 'S03'), { recursive: true });
+  mkdirSync(join(base, '.gsd', 'phases', '01-test'), { recursive: true });
+  mkdirSync(join(base, '.gsd', 'phases', '01-test'), { recursive: true });
+  mkdirSync(join(base, '.gsd', 'phases', '01-test', 'slices', 'S03'), { recursive: true });
   return base;
 }
 
@@ -162,7 +162,7 @@ test('handleReassessRoadmap succeeds when modifying only pending slices', async 
     assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
 
     // Verify assessments row exists in DB
-    const assessmentPath = join('.gsd', 'milestones', 'M001', 'slices', 'S01', 'S01-ASSESSMENT.md');
+    const assessmentPath = join('.gsd', 'phases', '01-test', 'S01-ASSESSMENT.md');
     const assessment = getAssessment(assessmentPath);
     assert.ok(assessment, 'assessment row should exist in DB');
     assert.equal(assessment['milestone_id'], 'M001');
@@ -193,13 +193,13 @@ test('handleReassessRoadmap succeeds when modifying only pending slices', async 
     assert.equal(s01?.status, 'complete');
 
     // Verify ROADMAP.md re-rendered on disk
-    const roadmapPath = join(base, '.gsd', 'milestones', 'M001', 'M001-ROADMAP.md');
+    const roadmapPath = join(base, '.gsd', 'phases', '01-test', 'M001-ROADMAP.md');
     assert.ok(existsSync(roadmapPath), 'ROADMAP.md should be rendered to disk');
     const roadmapContent = readFileSync(roadmapPath, 'utf-8');
     assert.ok(roadmapContent.includes('Updated Slice Two'), 'ROADMAP.md should contain updated S02 title');
 
     // Verify ASSESSMENT.md exists on disk
-    const assessmentDiskPath = join(base, '.gsd', 'milestones', 'M001', 'slices', 'S01', 'S01-ASSESSMENT.md');
+    const assessmentDiskPath = join(base, '.gsd', 'phases', '01-test', 'S01-ASSESSMENT.md');
     assert.ok(existsSync(assessmentDiskPath), 'ASSESSMENT.md should be rendered to disk');
     const assessmentContent = readFileSync(assessmentDiskPath, 'utf-8');
     assert.ok(assessmentContent.includes('confirmed'), 'ASSESSMENT.md should contain verdict');
@@ -340,7 +340,7 @@ test('handleReassessRoadmap invalidates stale milestone-validation when roadmap 
     insertSlice({ id: 'S04', milestoneId: 'M001', title: 'Slice Four', status: 'complete', demo: 'Demo' });
 
     // Insert milestone-validation assessment with needs-remediation verdict (stale)
-    const validationPath = join('.gsd', 'milestones', 'M001', 'M001-VALIDATION.md');
+    const validationPath = join('.gsd', 'phases', '01-test', 'M001-VALIDATION.md');
     insertAssessment({
       path: validationPath,
       milestoneId: 'M001',
@@ -404,7 +404,7 @@ test('handleReassessRoadmap does NOT invalidate validation when no roadmap struc
     insertSlice({ id: 'S02', milestoneId: 'M001', title: 'Slice Two', status: 'pending', demo: 'Demo' });
 
     // Insert milestone-validation assessment with pass verdict
-    const validationPath = join('.gsd', 'milestones', 'M001', 'M001-VALIDATION.md');
+    const validationPath = join('.gsd', 'phases', '01-test', 'M001-VALIDATION.md');
     insertAssessment({
       path: validationPath,
       milestoneId: 'M001',

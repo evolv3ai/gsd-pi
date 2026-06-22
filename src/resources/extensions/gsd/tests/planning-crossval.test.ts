@@ -312,7 +312,7 @@ console.log('\n=== planning-crossval Test 4: ROADMAP worktree projection path ==
   const base = createFixtureBase();
   const worktreeBase = join(base, '.gsd', 'worktrees', 'M001');
   const worktreeGsd = join(worktreeBase, '.gsd');
-  const projectRoadmapPath = join(base, '.gsd', 'milestones', 'M001', 'M001-ROADMAP.md');
+  const projectRoadmapPath = join(base, '.gsd', 'phases', '01-test', 'M001-ROADMAP.md');
   const worktreeRoadmapPath = join(worktreeGsd, 'milestones', 'M001', 'M001-ROADMAP.md');
   const dbPath = join(base, '.gsd', 'gsd.db');
 

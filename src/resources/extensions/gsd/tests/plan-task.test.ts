@@ -10,7 +10,7 @@ import { parseTaskPlanFile } from '../files.ts';
 
 function makeTmpBase(): string {
   const base = mkdtempSync(join(tmpdir(), 'gsd-plan-task-'));
-  mkdirSync(join(base, '.gsd', 'milestones', 'M001', 'slices', 'S02', 'tasks'), { recursive: true });
+  mkdirSync(join(base, '.gsd', 'phases', '01-test'), { recursive: true });
   return base;
 }
 
@@ -55,7 +55,7 @@ test('handlePlanTask writes planning state and renders task plan', async () => {
     assert.equal(task?.description, 'Implement the DB-backed task planning handler.');
     assert.equal(task?.estimate, '30m');
 
-    const taskPlanPath = join(base, '.gsd', 'milestones', 'M001', 'slices', 'S02', 'tasks', 'T02-PLAN.md');
+    const taskPlanPath = join(base, '.gsd', 'phases', '01-test', 'T02-PLAN.md');
     assert.ok(existsSync(taskPlanPath), 'task plan should be rendered to disk');
     const taskPlan = parseTaskPlanFile(readFileSync(taskPlanPath, 'utf-8'));
     assert.equal(taskPlan.frontmatter.estimated_files, 1);
@@ -157,7 +157,7 @@ test('handlePlanTask surfaces render failures without changing parse-visible tas
   try {
     seedParent();
     insertTask({ id: 'T02', sliceId: 'S02', milestoneId: 'M001', title: 'Cached task', status: 'pending' });
-    const taskPlanPath = join(base, '.gsd', 'milestones', 'M001', 'slices', 'S02', 'tasks', 'T02-PLAN.md');
+    const taskPlanPath = join(base, '.gsd', 'phases', '01-test', 'T02-PLAN.md');
     writeFileSync(taskPlanPath, '---\nestimated_steps: 1\nestimated_files: 1\nskills_used: []\n---\n\n# T02: Cached task\n', 'utf-8');
     rmSync(taskPlanPath, { force: true });
     mkdirSync(taskPlanPath, { recursive: true });
@@ -176,7 +176,7 @@ test('handlePlanTask reruns idempotently and refreshes parse-visible state', asy
 
   try {
     seedParent();
-    const taskPlanPath = join(base, '.gsd', 'milestones', 'M001', 'slices', 'S02', 'tasks', 'T02-PLAN.md');
+    const taskPlanPath = join(base, '.gsd', 'phases', '01-test', 'T02-PLAN.md');
     writeFileSync(taskPlanPath, '---\nestimated_steps: 1\nestimated_files: 1\nskills_used: []\n---\n\n# T02: Cached task\n', 'utf-8');
 
     const first = await handlePlanTask(validParams(), base);
