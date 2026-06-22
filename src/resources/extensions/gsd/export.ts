@@ -13,6 +13,84 @@ import type { UnitMetrics } from "./metrics.js";
 import { gsdRoot } from "./paths.js";
 import { formatDuration, fileLink } from "../shared/format-utils.js";
 import { getErrorMessage } from "./error-utils.js";
+import { isDbAvailable } from "./gsd-db.js";
+import { openExistingWorkflowDatabase } from "./db-workspace.js";
+import { getActiveMemories, getActiveMemoriesRanked } from "./memory-store.js";
+import type { MemoryInfo } from "./visualizer-data.js";
+
+const EXPORT_MEMORY_LIMIT = 20;
+const EXPORT_MEMORY_CONTENT_LIMIT = 2000;
+
+interface ExportVisualizerData {
+  totals: any;
+  byPhase: any[];
+  bySlice: any[];
+  byModel: any[];
+  units: any[];
+  criticalPath?: any;
+  remainingSliceCount?: number;
+  memories?: MemoryInfo;
+}
+
+function ensureExportDb(basePath: string): void {
+  if (isDbAvailable()) return;
+  openExistingWorkflowDatabase(basePath);
+}
+
+function loadExportMemories(basePath: string, visualizerData?: ExportVisualizerData): MemoryInfo {
+  if (visualizerData?.memories) return limitMemoryInfo(visualizerData.memories);
+  ensureExportDb(basePath);
+  try {
+    const allActive = getActiveMemories();
+    const ranked = getActiveMemoriesRanked(EXPORT_MEMORY_LIMIT);
+    return {
+      totalCount: allActive.length,
+      entries: ranked.map((memory) => ({
+        id: memory.id,
+        category: memory.category,
+        content: limitMemoryContent(memory.content),
+        confidence: memory.confidence,
+        hitCount: memory.hit_count,
+        scope: memory.scope,
+        tags: memory.tags,
+        updatedAt: memory.updated_at,
+      })),
+    };
+  } catch {
+    return { entries: [], totalCount: 0 };
+  }
+}
+
+function limitMemoryInfo(memories: MemoryInfo): MemoryInfo {
+  return {
+    totalCount: memories.totalCount,
+    entries: memories.entries.map((memory) => ({
+      ...memory,
+      content: limitMemoryContent(memory.content),
+    })),
+  };
+}
+
+function limitMemoryContent(content: string): string {
+  if (content.length <= EXPORT_MEMORY_CONTENT_LIMIT) return content;
+  return `${content.slice(0, EXPORT_MEMORY_CONTENT_LIMIT).trimEnd()}...`;
+}
+
+function formatMemoryLines(memories: MemoryInfo): string[] {
+  if (memories.entries.length === 0) return [];
+  return [
+    `## Memories`,
+    ``,
+    `Active memories: ${memories.totalCount}`,
+    ``,
+    ...memories.entries.map((memory) => {
+      const scope = memory.scope ? `, scope ${memory.scope}` : "";
+      const tags = memory.tags.length > 0 ? `, tags ${memory.tags.join(", ")}` : "";
+      return `- **${memory.id}** (${memory.category}, confidence ${Math.round(memory.confidence * 100)}%, hits ${memory.hitCount}${scope}${tags}): ${memory.content}`;
+    }),
+    ``,
+  ];
+}
 
 /**
  * Open a file in the user's default browser.
@@ -37,7 +115,7 @@ export function openInBrowser(filePath: string): void {
 export function writeExportFile(
   basePath: string,
   format: "markdown" | "json",
-  visualizerData?: { totals: any; byPhase: any[]; bySlice: any[]; byModel: any[]; units: any[]; criticalPath?: any; remainingSliceCount?: number },
+  visualizerData?: ExportVisualizerData,
 ): string | null {
   const ledger = getLedger();
   let units: UnitMetrics[];
@@ -58,6 +136,7 @@ export function writeExportFile(
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 
   if (format === "json") {
+    const memories = loadExportMemories(basePath, visualizerData);
     const report = {
       exportedAt: new Date().toISOString(),
       project: projectName,
@@ -65,6 +144,7 @@ export function writeExportFile(
       byPhase: visualizerData?.byPhase ?? aggregateByPhase(units),
       bySlice: visualizerData?.bySlice ?? aggregateBySlice(units),
       byModel: visualizerData?.byModel ?? aggregateByModel(units),
+      memories,
       units,
     };
     const outPath = join(exportDir, `export-${timestamp}.json`);
@@ -74,6 +154,8 @@ export function writeExportFile(
     const totals = visualizerData?.totals ?? getProjectTotals(units);
     const phases = visualizerData?.byPhase ?? aggregateByPhase(units);
     const slices = visualizerData?.bySlice ?? aggregateBySlice(units);
+
+    const memories = loadExportMemories(basePath, visualizerData);
 
     const md = [
       `# GSD Session Report — ${projectName}`,
@@ -101,6 +183,7 @@ export function writeExportFile(
         `| ${s.sliceId} | ${s.units} | ${formatCost(s.cost)} | ${formatTokenCount(s.tokens.total)} | ${formatDuration(s.duration)} |`,
       ),
       ``,
+      ...formatMemoryLines(memories),
     ].join("\n");
 
     const outPath = join(exportDir, `export-${timestamp}.md`);
@@ -258,6 +341,7 @@ export async function handleExport(args: string, ctx: ExtensionCommandContext, b
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 
   if (format === "json") {
+    const memories = loadExportMemories(basePath);
     const report = {
       exportedAt: new Date().toISOString(),
       project: projectName,
@@ -265,6 +349,7 @@ export async function handleExport(args: string, ctx: ExtensionCommandContext, b
       byPhase: aggregateByPhase(units),
       bySlice: aggregateBySlice(units),
       byModel: aggregateByModel(units),
+      memories,
       units,
     };
     const outPath = join(exportDir, `export-${timestamp}.json`);
@@ -274,6 +359,7 @@ export async function handleExport(args: string, ctx: ExtensionCommandContext, b
     const totals = getProjectTotals(units);
     const phases = aggregateByPhase(units);
     const slices = aggregateBySlice(units);
+    const memories = loadExportMemories(basePath);
 
     const md = [
       `# GSD Session Report — ${projectName}`,
@@ -301,6 +387,7 @@ export async function handleExport(args: string, ctx: ExtensionCommandContext, b
         `| ${s.sliceId} | ${s.units} | ${formatCost(s.cost)} | ${formatTokenCount(s.tokens.total)} | ${formatDuration(s.duration)} |`,
       ),
       ``,
+      ...formatMemoryLines(memories),
       `## Unit History`,
       ``,
       `| Type | ID | Model | Cost | Tokens | Duration |`,

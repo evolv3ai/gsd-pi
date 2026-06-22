@@ -195,6 +195,10 @@ function filterVisualizerData(data: VisualizerData, rawQuery: string): Visualize
       patterns: filterRecord(data.knowledge.patterns, query),
       lessons: filterRecord(data.knowledge.lessons, query),
     },
+    memories: {
+      ...data.memories,
+      entries: filterRecord(data.memories.entries, query),
+    },
     captures: {
       ...data.captures,
       entries: captureEntries,
@@ -1562,15 +1566,34 @@ function ChangesTab({ data }: { data: VisualizerData }) {
 
 // ─── Knowledge Tab ────────────────────────────────────────────────────────────
 
-function KnowledgeTab({ data }: { data: VisualizerData }) {
+function KnowledgeTab({ data, unfilteredData }: { data: VisualizerData; unfilteredData: VisualizerData }) {
   const knowledge = data.knowledge
+  const memories = data.memories
+  const sourceKnowledge = unfilteredData.knowledge
+  const sourceMemories = unfilteredData.memories
 
-  if (!knowledge.exists) {
+  if (!sourceKnowledge.exists && sourceMemories.entries.length === 0) {
     return <EmptyState message="No project knowledge file found." icon={BookOpen} />
   }
 
-  if (knowledge.rules.length === 0 && knowledge.patterns.length === 0 && knowledge.lessons.length === 0) {
+  if (
+    sourceKnowledge.exists &&
+    sourceKnowledge.rules.length === 0 &&
+    sourceKnowledge.patterns.length === 0 &&
+    sourceKnowledge.lessons.length === 0 &&
+    sourceMemories.entries.length === 0
+  ) {
     return <EmptyState message="Project knowledge exists but has no entries yet." icon={BookOpen} />
+  }
+
+  const hasFilteredContent =
+    knowledge.rules.length > 0 ||
+    knowledge.patterns.length > 0 ||
+    knowledge.lessons.length > 0 ||
+    memories.entries.length > 0
+
+  if (!hasFilteredContent) {
+    return <EmptyState message="No knowledge entries match your search." icon={BookOpen} />
   }
 
   return (
@@ -1614,6 +1637,36 @@ function KnowledgeTab({ data }: { data: VisualizerData }) {
               <div key={lesson.id} className="rounded-lg bg-muted/50 px-4 py-3">
                 <p className="font-mono text-xs font-semibold text-info">{lesson.id}</p>
                 <p className="mt-2 text-sm text-muted-foreground">{lesson.content}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {memories.entries.length > 0 && (
+        <div className="rounded-xl border border-border bg-card p-6">
+          <SectionLabel>Memories</SectionLabel>
+          <div className="mt-5 space-y-3">
+            {memories.entries.map((memory) => (
+              <div key={memory.id} className="rounded-lg bg-muted/50 px-4 py-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-xs font-semibold text-info">{memory.id}</span>
+                  <span className="rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">{memory.category}</span>
+                  {memory.scope !== "project" && (
+                    <span className="rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">{memory.scope}</span>
+                  )}
+                  <span className="text-xs text-muted-foreground">
+                    {Math.round(memory.confidence * 100)}% confidence · {memory.hitCount} hits
+                  </span>
+                </div>
+                <p className="mt-2 text-sm text-muted-foreground">{memory.content}</p>
+                {memory.tags.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {memory.tags.map((tag) => (
+                      <span key={tag} className="text-xs text-muted-foreground">#{tag}</span>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -1787,6 +1840,14 @@ function ExportTab({ data }: { data: VisualizerData }) {
       for (const rule of data.knowledge.rules) lines.push(`- Rule ${rule.id} [${rule.scope}]: ${rule.content}`)
       for (const pattern of data.knowledge.patterns) lines.push(`- Pattern ${pattern.id}: ${pattern.content}`)
       for (const lesson of data.knowledge.lessons) lines.push(`- Lesson ${lesson.id}: ${lesson.content}`)
+      lines.push("")
+    }
+    if (data.memories.entries.length > 0) {
+      lines.push("## Memories")
+      lines.push("")
+      for (const memory of data.memories.entries) {
+        lines.push(`- ${memory.id} (${memory.category}, ${memory.scope}): ${memory.content}`)
+      }
       lines.push("")
     }
     if (data.captures.entries.length > 0) {
@@ -1972,9 +2033,12 @@ export function VisualizerView() {
   }, [projectCwd])
 
   useEffect(() => {
-    fetchData()
+    const timeout = setTimeout(fetchData, 0)
     const interval = setInterval(fetchData, 10_000)
-    return () => clearInterval(interval)
+    return () => {
+      clearTimeout(timeout)
+      clearInterval(interval)
+    }
   }, [fetchData])
 
   useEffect(() => {
@@ -2157,7 +2221,7 @@ export function VisualizerView() {
               <ChangesTab data={visibleData} />
             </TabsPrimitive.Content>
             <TabsPrimitive.Content value="knowledge" className="outline-none">
-              <KnowledgeTab data={visibleData} />
+              <KnowledgeTab data={visibleData} unfilteredData={data} />
             </TabsPrimitive.Content>
             <TabsPrimitive.Content value="captures" className="outline-none">
               <CapturesTab data={visibleData} />

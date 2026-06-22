@@ -11,6 +11,8 @@ import {
   loadVisualizerData,
   type VisualizerMilestone,
 } from "../visualizer-data.ts";
+import { _getAdapter, closeDatabase, openDatabase } from "../gsd-db.ts";
+import { createMemory } from "../memory-store.ts";
 
 test("computeCriticalPath follows milestone dependencies", () => {
   const milestones: VisualizerMilestone[] = [
@@ -79,6 +81,91 @@ test("loadVisualizerData hydrates milestones, captures, stats, and health fields
     assert.ok(data.health);
     assert.ok(data.criticalPath.milestonePath.length >= 1);
   } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("loadVisualizerData includes active memory-store entries", async () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-visualizer-memories-"));
+  try {
+    mkdirSync(join(base, ".gsd"), { recursive: true });
+    openDatabase(":memory:");
+
+    createMemory({
+      category: "gotcha",
+      content: "Visualizer memory rows must come from the memory store",
+      confidence: 0.92,
+      scope: "M001/S01",
+      tags: ["visualizer", "memory"],
+    });
+    createMemory({
+      category: "pattern",
+      content: "Superseded rows should stay out of the visualizer",
+      confidence: 0.2,
+    });
+
+    const adapter = _getAdapter();
+    adapter?.prepare("UPDATE memories SET superseded_by = 'MEM999' WHERE id = 'MEM002'").run();
+
+    const data = await loadVisualizerData(base);
+
+    assert.equal(data.memories.totalCount, 1);
+    assert.equal(data.memories.entries[0]?.id, "MEM001");
+    assert.equal(data.memories.entries[0]?.category, "gotcha");
+    assert.equal(data.memories.entries[0]?.content, "Visualizer memory rows must come from the memory store");
+    assert.equal(data.memories.entries[0]?.scope, "M001/S01");
+    assert.deepEqual(data.memories.entries[0]?.tags, ["visualizer", "memory"]);
+  } finally {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("loadVisualizerData opens the project DB for memory entries when none is open", async () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-visualizer-memories-db-"));
+  try {
+    mkdirSync(join(base, ".gsd"), { recursive: true });
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    createMemory({
+      category: "gotcha",
+      content: "Browser visualizer child processes must open the project DB",
+      confidence: 0.88,
+      tags: ["browser", "visualizer"],
+    });
+    closeDatabase();
+
+    const data = await loadVisualizerData(base);
+
+    assert.equal(data.memories.totalCount, 1);
+    assert.equal(data.memories.entries[0]?.id, "MEM001");
+    assert.equal(data.memories.entries[0]?.content, "Browser visualizer child processes must open the project DB");
+  } finally {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("loadVisualizerData caps memory content for visualizer payloads", async () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-visualizer-memory-cap-"));
+  try {
+    mkdirSync(join(base, ".gsd"), { recursive: true });
+    openDatabase(":memory:");
+    const largeContent = "A".repeat(2500);
+    createMemory({
+      category: "gotcha",
+      content: largeContent,
+      confidence: 0.9,
+    });
+
+    const data = await loadVisualizerData(base);
+
+    const content = data.memories.entries[0]?.content ?? "";
+    assert.equal(data.memories.totalCount, 1);
+    assert.ok(content.length < largeContent.length);
+    assert.ok(content.length <= 2003);
+    assert.ok(content.endsWith("..."));
+  } finally {
+    closeDatabase();
     rmSync(base, { recursive: true, force: true });
   }
 });

@@ -49,6 +49,7 @@ function makeVisualizerData(overrides: Partial<VisualizerData> = {}): Visualizer
     changelog: { entries: [] },
     sliceVerifications: [],
     knowledge: { rules: [], patterns: [], lessons: [], exists: false },
+    memories: { entries: [], totalCount: 0 },
     captures: { entries: [], pendingCount: 0, totalCount: 0 },
     health: {
       budgetCeiling: undefined,
@@ -615,6 +616,32 @@ console.log("\n=== renderKnowledgeView ===");
   });
   const lines = renderKnowledgeView(data, mockTheme, 80);
   assert.ok(lines.some(l => l.includes("No KNOWLEDGE.md found")), "shows no-knowledge message");
+}
+
+{
+  const data = makeVisualizerData({
+    memories: {
+      totalCount: 1,
+      entries: [
+        {
+          id: "MEM001",
+          category: "gotcha",
+          content: "Use memory store rows for durable project facts",
+          confidence: 0.91,
+          hitCount: 3,
+          scope: "M001/S01",
+          tags: ["visualizer"],
+          updatedAt: "2026-06-21T12:00:00.000Z",
+        },
+      ],
+    },
+  });
+  const lines = renderKnowledgeView(data, mockTheme, 100);
+  assert.ok(lines.some(l => l.includes("Memories")), "shows memories section");
+  assert.ok(lines.some(l => l.includes("MEM001")), "shows memory ID");
+  assert.ok(lines.some(l => l.includes("(gotcha")), "shows memory category");
+  assert.ok(lines.some(l => l.includes("Use memory store rows")), "shows memory content");
+  assert.ok(lines.some(l => l.includes("M001/S01")), "shows memory scope");
 }
 
 // ─── renderCapturesView ─────────────────────────────────────────────────────

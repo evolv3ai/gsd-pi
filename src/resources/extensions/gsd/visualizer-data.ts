@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { deriveState } from './state.js';
 import { parseSummary, loadFile } from './files.js';
 import { isDbAvailable, getMilestoneSlices, getSliceTasks } from './gsd-db.js';
+import { openExistingWorkflowDatabase } from './db-workspace.js';
 import { parseRoadmap, parsePlan } from './parsers-legacy.js';
 import { findMilestoneIds } from './milestone-ids.js';
 import { resolveMilestoneFile, resolveSliceFile, resolveGsdRootFile, gsdRoot } from './paths.js';
@@ -26,6 +27,7 @@ import { generateSkillHealthReport } from './skill-health.js';
 import { runEnvironmentChecks, type EnvironmentCheckResult } from './doctor-environment.js';
 import { computeProgressScore } from './progress-score.js';
 import { getHealthHistory } from './doctor-proactive.js';
+import { getActiveMemories, getActiveMemoriesRanked } from './memory-store.js';
 
 import type { Phase } from './types.js';
 import type { CaptureEntry } from './captures.js';
@@ -144,6 +146,22 @@ export interface KnowledgeInfo {
   exists: boolean;
 }
 
+export interface VisualizerMemoryEntry {
+  id: string;
+  category: string;
+  content: string;
+  confidence: number;
+  hitCount: number;
+  scope: string;
+  tags: string[];
+  updatedAt: string;
+}
+
+export interface MemoryInfo {
+  entries: VisualizerMemoryEntry[];
+  totalCount: number;
+}
+
 export interface CapturesInfo {
   entries: CaptureEntry[];
   pendingCount: number;
@@ -222,6 +240,7 @@ export interface VisualizerData {
   changelog: ChangelogInfo;
   sliceVerifications: SliceVerification[];
   knowledge: KnowledgeInfo;
+  memories: MemoryInfo;
   captures: CapturesInfo;
   health: HealthInfo;
   discussion: VisualizerDiscussionState[];
@@ -588,6 +607,39 @@ function loadKnowledge(basePath: string): KnowledgeInfo {
   return { rules, patterns, lessons, exists: true };
 }
 
+// ─── Memory Loader ────────────────────────────────────────────────────────────
+
+const VISUALIZER_MEMORY_LIMIT = 20;
+const VISUALIZER_MEMORY_CONTENT_LIMIT = 2000;
+
+function ensureVisualizerDb(basePath: string): void {
+  if (isDbAvailable()) return;
+  openExistingWorkflowDatabase(basePath);
+}
+
+function loadMemories(): MemoryInfo {
+  const allActive = getActiveMemories();
+  const ranked = getActiveMemoriesRanked(VISUALIZER_MEMORY_LIMIT);
+  return {
+    totalCount: allActive.length,
+    entries: ranked.map((memory) => ({
+      id: memory.id,
+      category: memory.category,
+      content: limitMemoryContent(memory.content),
+      confidence: memory.confidence,
+      hitCount: memory.hit_count,
+      scope: memory.scope,
+      tags: memory.tags,
+      updatedAt: memory.updated_at,
+    })),
+  };
+}
+
+function limitMemoryContent(content: string): string {
+  if (content.length <= VISUALIZER_MEMORY_CONTENT_LIMIT) return content;
+  return `${content.slice(0, VISUALIZER_MEMORY_CONTENT_LIMIT).trimEnd()}...`;
+}
+
 // ─── Health Loader ────────────────────────────────────────────────────────────
 
 function loadHealth(units: UnitMetrics[], totals: ProjectTotals | null, basePath: string): HealthInfo {
@@ -783,6 +835,7 @@ function readFileCached(filePath: string): string | null {
 // ─── Loader ───────────────────────────────────────────────────────────────────
 
 export async function loadVisualizerData(basePath: string): Promise<VisualizerData> {
+  ensureVisualizerDb(basePath);
   const state = await deriveState(basePath);
   const milestoneIds = findMilestoneIds(basePath);
 
@@ -917,6 +970,7 @@ export async function loadVisualizerData(basePath: string): Promise<VisualizerDa
   const { changelog, verifications: sliceVerifications } = await loadChangelogAndVerifications(basePath, milestones);
 
   const knowledge = loadKnowledge(basePath);
+  const memories = loadMemories();
   const allCaptures = loadAllCaptures(basePath);
   const pendingCount = countPendingCaptures(basePath);
   const captures: CapturesInfo = {
@@ -945,6 +999,7 @@ export async function loadVisualizerData(basePath: string): Promise<VisualizerDa
     changelog,
     sliceVerifications,
     knowledge,
+    memories,
     captures,
     health,
     discussion,

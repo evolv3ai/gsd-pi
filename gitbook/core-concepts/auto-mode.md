@@ -261,7 +261,7 @@ Every unit's token usage and cost is captured, broken down by phase, slice, and 
 
 ## HTML Reports
 
-After a milestone completes, GSD generates a self-contained HTML report in `.gsd/reports/` with project summary, progress tree, dependency graph, cost metrics, timeline, and changelog. Generate manually with:
+After a milestone completes, GSD generates a self-contained HTML report in `.gsd/reports/` with project summary, progress tree, dependency graph, cost metrics, timeline, changelog, knowledge, and active memories. Generate manually with:
 
 ```
 /gsd export --html

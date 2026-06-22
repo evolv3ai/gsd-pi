@@ -30,6 +30,7 @@ function makeVisualizerData(overrides: Partial<VisualizerData> = {}): Visualizer
     changelog: { entries: [] },
     sliceVerifications: [],
     knowledge: { rules: [], patterns: [], lessons: [], exists: false },
+    memories: { entries: [], totalCount: 0 },
     captures: { entries: [], pendingCount: 0, totalCount: 0 },
     health: {
       budgetCeiling: undefined,
@@ -88,6 +89,21 @@ describe("visualizer browser payload contract", () => {
         patterns: [],
         lessons: [],
       },
+      memories: {
+        totalCount: 1,
+        entries: [
+          {
+            id: "MEM001",
+            category: "gotcha",
+            content: "Visualizer shows active memory-store rows.",
+            confidence: 0.9,
+            hitCount: 2,
+            scope: "project",
+            tags: ["visualizer"],
+            updatedAt: "2026-05-11T12:00:00Z",
+          },
+        ],
+      },
       captures: {
         pendingCount: 1,
         totalCount: 3,
@@ -135,6 +151,7 @@ describe("visualizer browser payload contract", () => {
     assert.equal(data.byTier[0]?.downgraded, 1);
     assert.equal(data.health.progressScore?.level, "green");
     assert.equal(data.knowledge.rules[0]?.scope, "web");
+    assert.equal(data.memories.entries[0]?.id, "MEM001");
     assert.equal(data.discussion[0]?.state, "discussed");
   });
 

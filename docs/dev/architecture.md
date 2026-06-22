@@ -154,8 +154,8 @@ Model routing (complexity classification, budget pressure, routing history, capa
 | `captures.ts` | Fire-and-forget thought capture and triage classification |
 | `triage-resolution.ts` | Capture resolution (inject, defer, replan, quick-task) |
 | `visualizer-overlay.ts` | Workflow visualizer TUI overlay |
-| `visualizer-data.ts` | Data loading for visualizer tabs |
-| `visualizer-views.ts` | Tab renderers (progress, timeline, deps, metrics, health, agent, changes, knowledge, captures, export) |
+| `visualizer-data.ts` | Data loading for visualizer tabs, including active memory-store rows |
+| `visualizer-views.ts` | Tab renderers (progress, timeline, deps, metrics, health, agent, changes, knowledge, memories, captures, export) |
 | `metrics.ts` | Token and cost tracking ledger |
 | `state.ts` | DB-authoritative state derivation with explicit legacy markdown fallback for tests/recovery |
 | `session-lock.ts` | OS-level exclusive session locking (proper-lockfile) |

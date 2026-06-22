@@ -1,6 +1,6 @@
 # Workflow Visualizer
 
-The workflow visualizer is an interactive view for project progress, execution history, dependencies, metrics, health, agent activity, changes, knowledge, captures, and exports.
+The workflow visualizer is an interactive view for project progress, execution history, dependencies, metrics, health, agent activity, changes, knowledge, memories, captures, and exports.
 
 ## Opening the Visualizer
 
@@ -84,7 +84,7 @@ Completed slice summaries, modified files, verification decisions, and establish
 
 ### 8. Knowledge
 
-Persistent project rules, patterns, and lessons from `.gsd/KNOWLEDGE.md`.
+Persistent project rules, patterns, and lessons from `.gsd/KNOWLEDGE.md`, plus active memory-store entries ranked by confidence and usage. Memory rows show their ID, category, scope, confidence, hit count, tags, and truncated content.
 
 ### 9. Captures
 
@@ -92,7 +92,7 @@ Captured notes grouped by pending, triaged, and resolved state.
 
 ### 0. Export
 
-Download Markdown, JSON, or a current-view snapshot from the visualizer data.
+Download Markdown, JSON, or a current-view snapshot from the visualizer data. Markdown and JSON exports include the same bounded active-memory feed that appears in the Knowledge tab.
 
 ## Controls
 
@@ -112,7 +112,7 @@ The visualizer refreshes data from disk every 2 seconds, so it stays current if 
 
 ## HTML Reports
 
-For shareable reports outside the terminal, use `/gsd report`. This generates HTML reports for all milestones, opens the reports index in a browser, and uses the same data as the TUI visualizer — progress tree, dependency graph (SVG DAG), cost/token bar charts, execution timeline, changelog, and knowledge base. All CSS and JS are inlined — no external dependencies. Printable to PDF from any browser.
+For shareable reports outside the terminal, use `/gsd report`. This generates HTML reports for all milestones, opens the reports index in a browser, and uses the same data as the TUI visualizer — progress tree, dependency graph (SVG DAG), cost/token bar charts, execution timeline, changelog, knowledge base, and active memories. All CSS and JS are inlined — no external dependencies. Printable to PDF from any browser.
 
 An auto-generated `index.html` shows all reports with progression metrics across milestones.
 
