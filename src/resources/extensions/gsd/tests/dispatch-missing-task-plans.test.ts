@@ -97,15 +97,9 @@ function scaffoldMilestoneContext(basePath: string, mid: string): void {
 }
 
 function scaffoldTaskPlan(basePath: string, mid: string, sid: string, tid: string): void {
-  const dir = join(basePath, ".gsd", "milestones", mid, "slices", sid, "tasks");
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `${tid}-PLAN.md`), [
-    `# ${tid}: Do something`,
-    "",
-    "## Steps",
-    "- [ ] Step 1",
-    "",
-  ].join("\n"));
+  // Flat-phase: no per-task plan files. This is a no-op — tasks live as
+  // checkboxes inside the slice plan. Kept for backward-compat with tests
+  // that call it; does nothing in flat-phase.
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
