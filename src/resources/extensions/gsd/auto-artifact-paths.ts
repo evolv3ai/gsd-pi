@@ -19,7 +19,7 @@ import {
   buildSliceFileName,
   buildTaskFileName,
 } from "./paths.js";
-import { milestoneIdToPhaseNum } from "./layout-policy.js";
+import { milestoneIdToPhaseNum, planFileName, sliceIdToPlanNum } from "./layout-policy.js";
 import { parseUnitId } from "./unit-id.js";
 import { join } from "node:path";
 
@@ -59,7 +59,19 @@ function resolveSliceArtifactPath(
   const flatPhase = resolveSliceFile(base, mid, sid, suffix);
   if (flatPhase) return flatPhase;
   const dir = resolveProjectedSlicePath(base, mid, sid) ?? resolveProjectSlicePath(base, mid, sid);
-  return dir ? join(dir, buildSliceFileName(sid, suffix)) : null;
+  if (dir) return join(dir, buildSliceFileName(sid, suffix));
+  // Flat-phase fallback: plans live at phases/NN-slug/NN-MM-SUFFIX.md
+  const phaseDir = resolveMilestonePath(base, mid);
+  if (phaseDir) {
+    const legacyBase = join(gsdProjectionRoot(base), "milestones");
+    const isLegacy = phaseDir.startsWith(legacyBase + "/") || phaseDir.startsWith(legacyBase + "\\");
+    if (!isLegacy) {
+      const phaseNum = milestoneIdToPhaseNum(mid);
+      const planNum = sliceIdToPlanNum(sid);
+      return join(phaseDir, planFileName(phaseNum, planNum, suffix));
+    }
+  }
+  return null;
 }
 
 function resolveProjectMilestonePath(base: string, mid: string): string | null {

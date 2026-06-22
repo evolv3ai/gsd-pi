@@ -7,6 +7,7 @@ import { join } from "node:path";
 
 import { renderAllFromDb } from "./markdown-renderer.js";
 import { getAllMilestones } from "./gsd-db.js";
+import { migrateFromMarkdown } from "./md-importer.js";
 import { countDbHierarchy } from "./migration-auto-check.js";
 import { logWarning } from "./workflow-logger.js";
 import { LAYOUT_SEGMENTS } from "./layout-policy.js";
@@ -66,13 +67,14 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
     throw err;
   }
 
-  // 2. Skip (not throw) when the DB has no milestone rows — legacy milestones/
-  // exists but there is nothing in the DB to project into flat-phase.  Throwing
-  // here leaves the project permanently stuck: needsFlatPhaseMigration stays
-  // true on every startup and the migration never runs.  A graceful return lets
-  // the project continue in legacy layout until the DB is populated (e.g. via
-  // `/gsd recover --confirm`), at which point the next startup can migrate.
-  const milestonesBefore = getAllMilestones().length;
+  // 2. Import from markdown when the DB is empty so legacy milestones/ can be
+  // projected before the tree is removed. Skip (not throw) when still empty —
+  // needsFlatPhaseMigration stays true and migration retries after recover.
+  let milestonesBefore = getAllMilestones().length;
+  if (milestonesBefore === 0) {
+    migrateFromMarkdown(basePath);
+    milestonesBefore = getAllMilestones().length;
+  }
   if (milestonesBefore === 0) {
     logWarning(
       "migration",
