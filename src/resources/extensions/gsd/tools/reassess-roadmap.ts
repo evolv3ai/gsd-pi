@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { existsSync, unlinkSync } from "node:fs";
+import { relSliceFile } from "../paths.js";
 import { clearParseCache } from "../files.js";
 import { isClosedStatus } from "../status-guards.js";
 import { isNonEmptyString } from "../validation.js";
@@ -119,12 +120,9 @@ export async function handleReassessRoadmap(
   }
 
   // ── Compute assessment artifact path ──────────────────────────────
-  // Assessment lives in the completed slice's directory
-  const assessmentRelPath = join(
-    ".gsd", "milestones", params.milestoneId,
-    "slices", params.completedSliceId,
-    `${params.completedSliceId}-ASSESSMENT.md`,
-  );
+  // Assessment lives in the completed slice's directory.
+  // Use relSliceFile so the path is layout-aware (flat-phase or legacy).
+  const assessmentRelPath = relSliceFile(basePath, params.milestoneId, params.completedSliceId, "ASSESSMENT");
 
   // ── Guards + DB writes inside a single transaction (prevents TOCTOU) ───
   // Guards must be inside the transaction so the state they check cannot

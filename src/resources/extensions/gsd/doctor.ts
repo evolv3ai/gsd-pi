@@ -6,6 +6,7 @@ import { parseRoadmap as parseLegacyRoadmap, parsePlan as parseLegacyPlan } from
 import { isDbAvailable, getMilestoneSlices, getSliceTasks } from "./gsd-db.js";
 import { openExistingWorkflowDatabase } from "./db-workspace.js";
 import { resolveMilestoneFile, resolveMilestonePath, resolveSliceFile, resolveSlicePath, resolveTaskFile, resolveTasksDir, milestonesDir, legacyMilestonesDir, gsdRoot, relMilestoneFile, relSliceFile, relTaskFile, relSlicePath, relGsdRootFile, resolveGsdRootFile, relMilestonePath, resolveGsdPathContract } from "./paths.js";
+import { findMilestoneIds } from "./milestone-ids.js";
 import { deriveState, isMilestoneComplete } from "./state.js";
 import { invalidateAllCaches } from "./cache.js";
 import { loadEffectiveGSDPreferences, type GSDPreferences } from "./preferences.js";
@@ -434,7 +435,15 @@ export async function runGSDDoctor(basePath: string, options?: { fix?: boolean; 
     }
   }
 
-  for (const milestone of state.registry) {
+  // When DB is unavailable, state.registry is empty. Fall back to a direct
+  // filesystem scan so the doctor can still report issues (e.g. missing ROADMAP)
+  // for milestone dirs that exist on disk.
+  const milestoneEntries: Array<{ id: string; title: string }> =
+    state.registry.length > 0
+      ? state.registry
+      : findMilestoneIds(basePath).map(id => ({ id, title: id }));
+
+  for (const milestone of milestoneEntries) {
     const milestoneId = milestone.id;
     const milestonePath = resolveMilestonePath(basePath, milestoneId);
     if (!milestonePath) continue;

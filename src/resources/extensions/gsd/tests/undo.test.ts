@@ -255,7 +255,8 @@ test("handleUndoTask with --force resets task and re-renders plan", async () => 
       join(base, ".gsd", "milestones", "M001", "01-01-PLAN.md"),
       "utf-8",
     );
-    assert.match(planContent, /\[ \] \*\*T01:/);
+    // Flat-phase renderer: tasks are bold on ID only — "**T01**: title"
+    assert.match(planContent, /\[ \] \*\*T01\*\*:/);
 
     // Success notification
     assert.equal(notifications[0]?.level, "success");
@@ -425,16 +426,18 @@ test("handleResetSlice with --force resets slice and all tasks", async () => {
     assert.equal(existsSync(join(sliceDir, "S01-UAT.md")), false);
 
     // Plan checkboxes unchecked — renderPlanCheckboxes re-renders to flat-phase path
+    // Flat-phase renderer: tasks are bold on ID only — "**T01**: title"
     const planContent = readFileSync(join(base, ".gsd", "milestones", "M001", "01-01-PLAN.md"), "utf-8");
-    assert.match(planContent, /\[ \] \*\*T01:/);
-    assert.match(planContent, /\[ \] \*\*T02:/);
+    assert.match(planContent, /\[ \] \*\*T01\*\*:/);
+    assert.match(planContent, /\[ \] \*\*T02\*\*:/);
 
     // Roadmap checkbox unchecked
+    // Flat-phase renderer: slices are bold on ID only — "**S01**: title"
     const roadmapContent = readFileSync(
       join(base, ".gsd", "milestones", "M001", "M001-ROADMAP.md"),
       "utf-8",
     );
-    assert.match(roadmapContent, /\[ \] \*\*S01:/);
+    assert.match(roadmapContent, /\[ \] \*\*S01\*\*:/);
 
     // Success notification
     assert.equal(notifications[0]?.level, "success");
