@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { renderAllFromDb } from "./markdown-renderer.js";
 import { getAllMilestones } from "./gsd-db.js";
 import { logWarning } from "./workflow-logger.js";
+import { LAYOUT_SEGMENTS } from "./layout-policy.js";
 
 /**
  * Detect whether the project uses the legacy nested layout.
@@ -46,24 +47,38 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
 
   // 2. Render flat-phase from DB
   const milestonesBefore = getAllMilestones().length;
+  const phasesPath = join(basePath, ".gsd", LAYOUT_SEGMENTS.level1);
+  let renderResult: { rendered: number; skipped: number; errors: string[] };
   try {
-    await renderAllFromDb(basePath);
+    renderResult = await renderAllFromDb(basePath);
   } catch (err) {
     logWarning("migration", `flat-phase render failed: ${(err as Error).message}`);
     // Restore from backup on failure — remove partial phases/ dir
-    rmSync(join(basePath, ".gsd", "phases"), { recursive: true, force: true });
+    rmSync(phasesPath, { recursive: true, force: true });
     throw err;
   }
 
-  // 3. Verify
-  const milestonesAfter = getAllMilestones().length;
-  if (milestonesAfter !== milestonesBefore) {
-    logWarning("migration", `count mismatch after migration: ${milestonesBefore} → ${milestonesAfter}`);
-    rmSync(join(basePath, ".gsd", "phases"), { recursive: true, force: true });
-    throw new Error("flat-phase migration verification failed: milestone count mismatch");
+  // 3. Verify: no render errors and phases/ contains the expected number of dirs.
+  // (getAllMilestones() is unchanged by rendering — always use the disk count.)
+  if (renderResult.errors.length > 0) {
+    logWarning("migration", `flat-phase render errors: ${renderResult.errors.join("; ")}`);
+    rmSync(phasesPath, { recursive: true, force: true });
+    throw new Error(`flat-phase migration render failed with ${renderResult.errors.length} error(s): ${renderResult.errors[0]}`);
+  }
+  let renderedDirCount = 0;
+  try {
+    renderedDirCount = readdirSync(phasesPath, { withFileTypes: true })
+      .filter(d => d.isDirectory()).length;
+  } catch {
+    // phases/ doesn't exist or is unreadable — same as zero dirs
+  }
+  if (milestonesBefore > 0 && renderedDirCount !== milestonesBefore) {
+    logWarning("migration", `phases/ dir count mismatch: expected ${milestonesBefore}, found ${renderedDirCount}`);
+    rmSync(phasesPath, { recursive: true, force: true });
+    throw new Error("flat-phase migration verification failed: phases dir milestone count mismatch");
   }
 
-  // 4. Remove old tree
+  // 4. Remove old tree (backup exists; phases/ is verified written)
   try {
     rmSync(milestonesPath, { recursive: true, force: true });
   } catch (err) {

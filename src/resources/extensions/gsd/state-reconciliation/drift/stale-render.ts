@@ -17,7 +17,7 @@ import {
   renderTaskSummary,
 } from "../../markdown-renderer.js";
 import { getMilestone, getMilestoneSlices, getSlice, getSliceTasks, setSliceSummaryMd } from "../../gsd-db.js";
-import { buildSliceFileName } from "../../paths.js";
+import { resolveSliceFile } from "../../paths.js";
 import type { GSDState } from "../../types.js";
 import { logWarning } from "../../workflow-logger.js";
 import type { DriftContext, DriftHandler, DriftRecord } from "../types.js";
@@ -223,9 +223,11 @@ async function repairStaleRenderFromBasePath(
       sliceId = reasonSlice ? reasonSlice[1] : "S01";
     }
     const slice = getSlice(milestoneId, sliceId);
-    const uatPath = join(dirname(record.renderPath), buildSliceFileName(sliceId, "UAT"));
+    // Use resolveSliceFile so the UAT existence check matches the NN-MM-UAT.md
+    // name that renderSliceSummary actually writes (buildSliceFileName only yields MM-UAT.md).
+    const uatPath = resolveSliceFile(basePath, milestoneId, sliceId, "UAT");
     // renderSliceSummary writes both artifacts, so clear deleted UAT first.
-    if (slice?.full_uat_md && !existsSync(uatPath)) {
+    if (slice?.full_uat_md && !uatPath) {
       setSliceSummaryMd(milestoneId, sliceId, slice.full_summary_md ?? "", "");
     }
     const wrote = await renderSliceSummary(basePath, milestoneId, sliceId);

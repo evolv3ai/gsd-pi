@@ -893,7 +893,7 @@ export function registerHooks(
         }
       }
     } catch (err) {
-      logWarning("bootstrap", `flat-phase migration: ${err instanceof Error ? err.message : String(err)}`);
+      safetyLogWarning("bootstrap", `flat-phase migration: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // Apply show_token_cost preference (#1515)
