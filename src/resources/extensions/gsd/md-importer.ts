@@ -379,7 +379,7 @@ function importHierarchyArtifacts(gsdDir: string): number {
           if (entry.name.startsWith(milestoneId + '-')) { phaseDirName = entry.name; break; }
         }
       }
-    } catch { logWarning("import", `phases dir unreadable for ${milestoneId} — skipping phase scan`); }
+    } catch { logWarning("migration", `phases dir unreadable for ${milestoneId} — skipping phase scan`); }
 
     if (!phaseDirName) {
       const legacyDir = legacyMilestonesDir(gsdDir);
