@@ -2021,9 +2021,12 @@ export function VisualizerView() {
   }, [projectCwd])
 
   useEffect(() => {
-    fetchData()
+    const timeout = setTimeout(fetchData, 0)
     const interval = setInterval(fetchData, 10_000)
-    return () => clearInterval(interval)
+    return () => {
+      clearTimeout(timeout)
+      clearInterval(interval)
+    }
   }, [fetchData])
 
   useEffect(() => {
