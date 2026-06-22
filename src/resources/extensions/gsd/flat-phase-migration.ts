@@ -53,23 +53,12 @@ export function needsFlatPhaseMigration(basePath: string): boolean {
 export async function migrateToFlatPhase(basePath: string): Promise<void> {
   if (!needsFlatPhaseMigration(basePath)) return;
 
-  const ts = Date.now();
-  const backupDir = join(basePath, ".gsd-backups", `migrate-${ts}`);
   const milestonesPath = join(basePath, ".gsd", "milestones");
   const phasesPath = join(basePath, ".gsd", LAYOUT_SEGMENTS.level1);
 
-  // 1. Backup
-  try {
-    mkdirSync(join(basePath, ".gsd-backups"), { recursive: true });
-    cpSync(milestonesPath, backupDir, { recursive: true });
-  } catch (err) {
-    logWarning("migration", `flat-phase migration backup failed: ${(err as Error).message}`);
-    throw err;
-  }
-
-  // 2. Import from markdown when the DB is empty so legacy milestones/ can be
-  // projected before the tree is removed. Skip (not throw) when still empty —
-  // needsFlatPhaseMigration stays true and migration retries after recover.
+  // 1. Populate DB from markdown if empty so disk-only legacy projects can migrate.
+  // Check BEFORE creating the backup — avoids accumulating .gsd-backups/ entries
+  // on every session start when milestones/ exists but the DB has no rows.
   let milestonesBefore = getAllMilestones().length;
   if (milestonesBefore === 0) {
     migrateFromMarkdown(basePath);
@@ -81,6 +70,17 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
       "flat-phase migration skipped: legacy milestones/ exists but DB has no milestone rows — will retry when DB is populated",
     );
     return;
+  }
+
+  // 2. Backup (only reached when the DB has rows and migration will proceed)
+  const ts = Date.now();
+  const backupDir = join(basePath, ".gsd-backups", `migrate-${ts}`);
+  try {
+    mkdirSync(join(basePath, ".gsd-backups"), { recursive: true });
+    cpSync(milestonesPath, backupDir, { recursive: true });
+  } catch (err) {
+    logWarning("migration", `flat-phase migration backup failed: ${(err as Error).message}`);
+    throw err;
   }
 
   // 3. Remove legacy tree before rendering so path resolvers target phases/

@@ -15,11 +15,9 @@ import {
   resolveSliceFile,
   relMilestoneFile,
   relSliceFile,
-  buildMilestoneFileName,
-  buildSliceFileName,
   buildTaskFileName,
 } from "./paths.js";
-import { milestoneIdToPhaseNum, planFileName, sliceIdToPlanNum } from "./layout-policy.js";
+import { milestoneIdToPhaseNum } from "./layout-policy.js";
 import { parseUnitId } from "./unit-id.js";
 import { join } from "node:path";
 
@@ -58,19 +56,12 @@ function resolveSliceArtifactPath(
   // Flat-phase: plan files live at phases/NN-slug/NN-MM-SUFFIX.md — resolveSliceFile handles both layouts.
   const flatPhase = resolveSliceFile(base, mid, sid, suffix);
   if (flatPhase) return flatPhase;
+  // File doesn't exist yet — use relSliceFile for the canonical "where to create it" path.
+  // buildSliceFileName only has sliceId, so it emits MM-SUFFIX.md, wrong for both layouts.
   const dir = resolveProjectedSlicePath(base, mid, sid) ?? resolveProjectSlicePath(base, mid, sid);
-  if (dir) return join(dir, buildSliceFileName(sid, suffix));
-  // Flat-phase fallback: plans live at phases/NN-slug/NN-MM-SUFFIX.md
-  const phaseDir = resolveMilestonePath(base, mid);
-  if (phaseDir) {
-    const legacyBase = join(gsdProjectionRoot(base), "milestones");
-    const isLegacy = phaseDir.startsWith(legacyBase + "/") || phaseDir.startsWith(legacyBase + "\\");
-    if (!isLegacy) {
-      const phaseNum = milestoneIdToPhaseNum(mid);
-      const planNum = sliceIdToPlanNum(sid);
-      return join(phaseDir, planFileName(phaseNum, planNum, suffix));
-    }
-  }
+  // File doesn't exist yet — use relSliceFile for the layout-aware canonical path.
+  // buildSliceFileName(sid) only has sliceId → MM-SUFFIX.md, wrong for both layouts.
+  if (dir) return join(base, relSliceFile(base, mid, sid, suffix));
   return null;
 }
 

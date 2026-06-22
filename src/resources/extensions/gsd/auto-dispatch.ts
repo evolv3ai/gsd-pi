@@ -45,7 +45,6 @@ import {
   relTaskFile,
   relSliceFile,
   buildMilestoneFileName,
-  buildSliceFileName,
   buildTaskFileName,
   gsdProjectionRoot,
   milestonesDir,
@@ -524,8 +523,10 @@ function backfillMissingAssessmentsFromSummaries(basePath: string, mid: string):
     if (!summaryPath || !existsSync(summaryPath)) continue;
 
     const slicePath = resolveSlicePath(basePath, mid, sliceId);
+    // Use relSliceFile as the "not yet created" fallback — buildSliceFileName lacks the
+    // phase number so it produces MM-SUFFIX.md, which is wrong for both layouts.
     const assessmentPath = resolveSliceFile(basePath, mid, sliceId, "ASSESSMENT")
-      ?? (slicePath ? join(slicePath, buildSliceFileName(sliceId, "ASSESSMENT")) : null);
+      ?? join(basePath, relSliceFile(basePath, mid, sliceId, "ASSESSMENT"));
     if (!assessmentPath) continue;
 
     const assessmentRelPath = relSliceFile(basePath, mid, sliceId, "ASSESSMENT");
