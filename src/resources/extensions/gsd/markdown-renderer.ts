@@ -894,7 +894,8 @@ export function detectStaleRenders(basePath: string): StaleEntry[] {
         const slicePath = resolveSlicePath(basePath, milestone.id, slice.id);
         if (slicePath) {
           if (sliceRow.full_summary_md) {
-            const summaryName = buildSliceFileName(slice.id, "SUMMARY");
+            // Flat-phase: NN-MM-SUMMARY.md (matches what renderSliceSummary writes)
+            const summaryName = planFileName(milestoneIdToPhaseNum(milestone.id), sliceIdToPlanNum(slice.id), "SUMMARY");
             const summaryAbsPath = join(slicePath, summaryName);
             if (!existsSync(summaryAbsPath)) {
               stale.push({
@@ -905,7 +906,8 @@ export function detectStaleRenders(basePath: string): StaleEntry[] {
           }
 
           if (sliceRow.full_uat_md) {
-            const uatName = buildSliceFileName(slice.id, "UAT");
+            // Flat-phase: NN-MM-UAT.md (matches what renderSliceSummary writes)
+            const uatName = planFileName(milestoneIdToPhaseNum(milestone.id), sliceIdToPlanNum(slice.id), "UAT");
             const uatAbsPath = join(slicePath, uatName);
             if (!existsSync(uatAbsPath)) {
               stale.push({
