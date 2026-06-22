@@ -427,19 +427,6 @@ export async function renderPlanFromDb(
     slice_id: sliceId,
   });
 
-  // Transition compatibility: also write to the legacy milestones/ path so
-  // existing tests and code that reads old-style paths continue to work.
-  // Removed in Stage 2 when gsd-core adopts .gsd/.
-  const legacyPhasesDir = join(gsdProjectionRoot(basePath), "milestones");
-  const legacyPhaseDir = join(legacyPhasesDir, milestoneId, "slices", sliceId);
-  try {
-    mkdirSync(legacyPhaseDir, { recursive: true });
-    const legacyPath = join(legacyPhaseDir, buildSliceFileName(sliceId, "PLAN"));
-    await saveFile(legacyPath, content);
-  } catch {
-    // Non-fatal — the canonical write at absPath already succeeded.
-  }
-
   // Flat-phase: tasks are checkboxes inside the plan file, not separate files.
   // No per-task render loop — task state is in the <tasks> block above.
   const taskPlanPaths: string[] = [];
@@ -496,13 +483,6 @@ export async function renderRoadmapFromDb(
     artifact_type: "ROADMAP",
     milestone_id: milestoneId,
   });
-
-  // Transition compatibility: also write to the legacy milestones/ path
-  try {
-    const legacyDir = join(gsdProjectionRoot(basePath), "milestones", milestoneId);
-    mkdirSync(legacyDir, { recursive: true });
-    await saveFile(join(legacyDir, buildMilestoneFileName(milestoneId, "ROADMAP")), content);
-  } catch { /* non-fatal */ }
 
   return { roadmapPath: absPath, content };
 }
@@ -642,9 +622,9 @@ export async function renderSliceSummary(
 
   let wrote = false;
 
-  // Write SUMMARY — use buildSliceFileName for backward-compatible naming
+  // Write SUMMARY — flat-phase: NN-MM-SUMMARY.md inside phase dir
   if (slice.full_summary_md) {
-    const summaryName = buildSliceFileName(sliceId, "SUMMARY");
+    const summaryName = planFileName(milestoneIdToPhaseNum(milestoneId), sliceIdToPlanNum(sliceId), "SUMMARY");
     const summaryAbs = join(slicePath, summaryName);
     const summaryArtifact = toArtifactPath(summaryAbs, basePath);
 
@@ -656,9 +636,9 @@ export async function renderSliceSummary(
     wrote = true;
   }
 
-  // Write UAT — use buildSliceFileName for backward-compatible naming
+  // Write UAT — flat-phase: NN-MM-UAT.md inside phase dir
   if (slice.full_uat_md) {
-    const uatName = buildSliceFileName(sliceId, "UAT");
+    const uatName = planFileName(milestoneIdToPhaseNum(milestoneId), sliceIdToPlanNum(sliceId), "UAT");
     const uatAbs = join(slicePath, uatName);
     const uatArtifact = toArtifactPath(uatAbs, basePath);
 
@@ -668,20 +648,6 @@ export async function renderSliceSummary(
       slice_id: sliceId,
     });
     wrote = true;
-  }
-
-  // Transition compatibility: also write to legacy milestones/ paths
-  if (wrote) {
-    try {
-      const legacySliceDir = join(gsdProjectionRoot(basePath), "milestones", milestoneId, "slices", sliceId);
-      mkdirSync(legacySliceDir, { recursive: true });
-      if (slice.full_summary_md) {
-        await saveFile(join(legacySliceDir, buildSliceFileName(sliceId, "SUMMARY")), slice.full_summary_md);
-      }
-      if (slice.full_uat_md) {
-        await saveFile(join(legacySliceDir, buildSliceFileName(sliceId, "UAT")), slice.full_uat_md);
-      }
-    } catch { /* non-fatal */ }
   }
 
   return wrote;
@@ -928,7 +894,8 @@ export function detectStaleRenders(basePath: string): StaleEntry[] {
         const slicePath = resolveSlicePath(basePath, milestone.id, slice.id);
         if (slicePath) {
           if (sliceRow.full_summary_md) {
-            const summaryName = buildSliceFileName(slice.id, "SUMMARY");
+            // Flat-phase: NN-MM-SUMMARY.md (matches what renderSliceSummary writes)
+            const summaryName = planFileName(milestoneIdToPhaseNum(milestone.id), sliceIdToPlanNum(slice.id), "SUMMARY");
             const summaryAbsPath = join(slicePath, summaryName);
             if (!existsSync(summaryAbsPath)) {
               stale.push({
@@ -939,7 +906,8 @@ export function detectStaleRenders(basePath: string): StaleEntry[] {
           }
 
           if (sliceRow.full_uat_md) {
-            const uatName = buildSliceFileName(slice.id, "UAT");
+            // Flat-phase: NN-MM-UAT.md (matches what renderSliceSummary writes)
+            const uatName = planFileName(milestoneIdToPhaseNum(milestone.id), sliceIdToPlanNum(slice.id), "UAT");
             const uatAbsPath = join(slicePath, uatName);
             if (!existsSync(uatAbsPath)) {
               stale.push({

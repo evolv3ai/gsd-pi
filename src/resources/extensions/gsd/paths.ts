@@ -194,7 +194,9 @@ export const PLANNING_ARTIFACT_NAME_RE = new RegExp(
  * ("M001", "CONTEXT") → "M001-CONTEXT.md"
  */
 export function buildMilestoneFileName(milestoneId: string, suffix: string): string {
-  return `${milestoneId}-${suffix}.md`;
+  // Flat-phase: phase-level files are NN-SUFFIX.md (e.g. "01-CONTEXT.md")
+  const phaseNum = milestoneIdToPhaseNum(milestoneId);
+  return `${String(phaseNum).padStart(2, "0")}-${suffix}.md`;
 }
 
 /**
@@ -202,7 +204,12 @@ export function buildMilestoneFileName(milestoneId: string, suffix: string): str
  * ("S01", "PLAN") → "S01-PLAN.md"
  */
 export function buildSliceFileName(sliceId: string, suffix: string): string {
-  return `${sliceId}-${suffix}.md`;
+  // Flat-phase: plan files need both phase and plan numbers (NN-MM-SUFFIX.md),
+  // but this helper only has the sliceId. Callers needing the full name should
+  // use planFileName() from layout-policy. This returns MM-SUFFIX.md for any
+  // incremental callers that haven't migrated yet.
+  const planNum = sliceIdToPlanNum(sliceId);
+  return `${String(planNum).padStart(2, "0")}-${suffix}.md`;
 }
 
 /**
@@ -717,15 +724,10 @@ export function resolveSliceFile(
   // Flat-phase: plan files are NN-MM-SUFFIX.md inside the phase dir
   const phaseNum = milestoneIdToPhaseNum(milestoneId);
   const planNum = sliceIdToPlanNum(sliceId);
-  // Check flat-phase naming (NN-MM-SUFFIX.md) first
   const flatName = planFileName(phaseNum, planNum, suffix);
   const flatPath = join(phaseDir, flatName);
   if (existsSync(flatPath)) return flatPath;
-  // Check backward-compatible naming (SID-SUFFIX.md) inside phase dir
-  const compatName = buildSliceFileName(sliceId, suffix);
-  const compatPath = join(phaseDir, compatName);
-  if (existsSync(compatPath)) return compatPath;
-  // Try prefix match for the plan number
+  // Try prefix match for the plan number (handles suffix variations)
   const planPrefix = `${String(phaseNum).padStart(2, "0")}-${String(planNum).padStart(2, "0")}-`;
   try {
     for (const entry of readdirSync(phaseDir, { withFileTypes: true })) {
