@@ -600,7 +600,7 @@ export function milestonesDir(basePath: string): string {
  * projects that haven't been migrated yet. The migration (flat-phase-migration.ts)
  * moves content from here to phases/ on startup.
  */
-function legacyMilestonesDir(basePath: string): string {
+export function legacyMilestonesDir(basePath: string): string {
   return join(gsdProjectionRoot(basePath), "milestones");
 }
 

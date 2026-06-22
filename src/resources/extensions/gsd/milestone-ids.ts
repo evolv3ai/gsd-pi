@@ -8,7 +8,7 @@
 import { randomInt } from "node:crypto";
 import { logWarning } from "./workflow-logger.js";
 import { readdirSync, existsSync } from "node:fs";
-import { milestonesDir } from "./paths.js";
+import { legacyMilestonesDir, milestonesDir } from "./paths.js";
 import { loadQueueOrder, sortByQueueOrder } from "./queue-order.js";
 import { getErrorMessage } from "./error-utils.js";
 
@@ -142,8 +142,11 @@ export function clearReservedMilestoneIds(): void {
 /** Scan the milestones directory and return IDs sorted by queue order (or numeric fallback). */
 export function findMilestoneIds(basePath: string): string[] {
   const dir = milestonesDir(basePath);
+  // Fall back to legacy milestones/ when phases/ hasn't been created yet
+  // (pre-migration projects or the window before migrateToFlatPhase runs at startup).
+  const scanDir = existsSync(dir) ? dir : legacyMilestonesDir(basePath);
   try {
-    const ids = readdirSync(dir, { withFileTypes: true })
+    const ids = readdirSync(scanDir, { withFileTypes: true })
       .filter((d) => d.isDirectory())
       .map((d) => {
         // Flat-phase layout: NN-slug → M00N
@@ -162,8 +165,8 @@ export function findMilestoneIds(basePath: string): string[] {
     const customOrder = loadQueueOrder(basePath);
     return sortByQueueOrder(ids, customOrder);
   } catch (err) {
-    if (existsSync(dir)) {
-      logWarning("engine", `findMilestoneIds: ${dir} exists but readdirSync failed — ${getErrorMessage(err)}`);
+    if (existsSync(scanDir)) {
+      logWarning("engine", `findMilestoneIds: ${scanDir} exists but readdirSync failed — ${getErrorMessage(err)}`);
     }
     return [];
   }

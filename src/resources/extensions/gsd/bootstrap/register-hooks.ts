@@ -876,6 +876,26 @@ export function registerHooks(
     await applyCompactionThresholdOverride(ctx);
     await prepareWorkflowMcpForHookContext(ctx, basePath);
 
+    // Migrate legacy .gsd/milestones/ to flat-phase .gsd/phases/ when detected.
+    // Best-effort — never blocks session startup. Skipped inside auto-worktrees
+    // (migration already ran on the project root before the worktree was created).
+    try {
+      const { isInAutoWorktree } = await import("../auto-worktree.js");
+      if (!isInAutoWorktree(basePath)) {
+        const { needsFlatPhaseMigration } = await import("../flat-phase-migration.js");
+        if (needsFlatPhaseMigration(basePath)) {
+          const { ensureDbOpen } = await import("./dynamic-tools.js");
+          const opened = await ensureDbOpen(basePath);
+          if (opened) {
+            const { migrateToFlatPhase } = await import("../flat-phase-migration.js");
+            await migrateToFlatPhase(basePath);
+          }
+        }
+      }
+    } catch (err) {
+      logWarning("bootstrap", `flat-phase migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // Apply show_token_cost preference (#1515)
     try {
       const { loadEffectiveGSDPreferences } = await import("../preferences.js");
