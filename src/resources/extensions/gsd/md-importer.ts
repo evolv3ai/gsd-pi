@@ -721,14 +721,15 @@ export function migrateHierarchyToDb(basePath: string): {
         // Per K002: use 'complete' not 'done'
         let taskStatus: string = taskEntry.done ? 'complete' : 'pending';
 
-        // Pre-migration consistency: if task is marked done in the plan but has
-        // no completion evidence on disk, import as 'pending' so it gets
-        // re-executed rather than silently importing bad state as the new DB authority.
+        // Pre-migration consistency (legacy layout only): if a task is marked
+        // done but has no per-task SUMMARY.md, import it as pending so it gets
+        // re-executed rather than silently entering the DB as complete.
+        // Flat-phase has no per-task summary files by design — the checkbox
+        // state is the authoritative completion signal and is imported as-is.
         if (taskStatus === 'complete') {
           const tDir = resolveTasksDir(basePath, milestoneId, sliceEntry.id);
-          const summaryDir = tDir ?? resolveSlicePath(basePath, milestoneId, sliceEntry.id);
-          if (summaryDir) {
-            const summaryFile = join(summaryDir, `${taskEntry.id}-SUMMARY.md`);
+          if (tDir) {
+            const summaryFile = join(tDir, `${taskEntry.id}-SUMMARY.md`);
             if (!existsSync(summaryFile)) {
               taskStatus = 'pending';
               process.stderr.write(
