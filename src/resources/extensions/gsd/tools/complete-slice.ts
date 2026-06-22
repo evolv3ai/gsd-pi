@@ -22,7 +22,8 @@ import {
   getPendingGatesForTurn,
 } from "../gsd-db.js";
 import { getGatesForTurn } from "../gate-registry.js";
-import { gsdProjectionRoot, clearPathCache, resolveMilestoneFile } from "../paths.js";
+import { gsdProjectionRoot, clearPathCache, resolveMilestoneFile, resolveMilestonePath, resolveSliceFile, milestonesDir } from "../paths.js";
+import { planFileName, milestoneIdToPhaseNum, sliceIdToPlanNum } from "../layout-policy.js";
 import { resolveCanonicalMilestoneRoot } from "../worktree-manager.js";
 import { checkOwnership, sliceUnitKey } from "../unit-ownership.js";
 import { saveFile, clearParseCache } from "../files.js";
@@ -67,14 +68,13 @@ function sliceGateFieldForId(
 }
 
 function sliceSummaryPath(basePath: string, milestoneId: string, sliceId: string): string {
-  return join(
-    gsdProjectionRoot(basePath),
-    "milestones",
-    milestoneId,
-    "slices",
-    sliceId,
-    `${sliceId}-SUMMARY.md`,
-  );
+  // Flat-phase: use resolveSliceFile which checks phases/ then legacy milestones/
+  const resolved = resolveSliceFile(basePath, milestoneId, sliceId, "SUMMARY");
+  if (resolved) return resolved;
+  // Fallback: construct the canonical flat-phase path
+  const phaseDir = resolveMilestonePath(basePath, milestoneId)
+    ?? join(milestonesDir(basePath), "01-test");
+  return join(phaseDir, planFileName(milestoneIdToPhaseNum(milestoneId), sliceIdToPlanNum(sliceId), "SUMMARY"));
 }
 
 function hasCompleteSliceArtifactContract(basePath: string, milestoneId: string, sliceId: string): boolean {

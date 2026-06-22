@@ -65,7 +65,7 @@ function createTempProject(): { basePath: string; roadmapPath: string } {
   const tasksDir = path.join(sliceDir, 'tasks');
   fs.mkdirSync(tasksDir, { recursive: true });
 
-  const roadmapPath = path.join(basePath, '.gsd', 'phases', '01-test', 'M001-ROADMAP.md');
+  const roadmapPath = path.join(basePath, '.gsd', 'phases', '01-test', '01-ROADMAP.md');
   fs.writeFileSync(roadmapPath, `# M001: Test Milestone
 
 ## Slices
@@ -211,8 +211,8 @@ console.log('\n=== complete-slice: handler happy path ===');
   if (!('error' in result)) {
     assertEq(result.sliceId, 'S01', 'result sliceId');
     assertEq(result.milestoneId, 'M001', 'result milestoneId');
-    assertTrue(result.summaryPath.endsWith('01-01-SUMMARY.md'), 'summaryPath should end with S01-SUMMARY.md');
-    assertTrue(result.uatPath.endsWith('S01-UAT.md'), 'uatPath should end with S01-UAT.md');
+    assertTrue(result.summaryPath.endsWith('01-01-SUMMARY.md'), 'summaryPath should end with 01-01-SUMMARY.md');
+    assertTrue(result.uatPath.endsWith('01-01-UAT.md'), 'uatPath should end with 01-01-UAT.md');
 
     // (a) Verify SUMMARY.md exists on disk with correct YAML frontmatter
     assertTrue(fs.existsSync(result.summaryPath), 'summary file should exist on disk');

@@ -359,9 +359,9 @@ console.log('\n=== complete-task: handler happy path ===');
 
     // (d) Verify plan checkbox changed to [x]
     const planContent = fs.readFileSync(planPath, 'utf-8');
-    assertMatch(planContent, /\[x\]\s+\*\*T01:/, 'T01 should be checked in plan');
+    assertMatch(planContent, /\[x\]\s+\*\*T01\*\*/, 'T01 should be checked in plan');
     // T02 should still be unchecked
-    assertMatch(planContent, /\[ \]\s+\*\*T02:/, 'T02 should still be unchecked in plan');
+    assertMatch(planContent, /\[ \]\s+\*\*T02\*\*/, 'T02 should still be unchecked in plan');
 
     // (e) Verify full_summary_md stored in DB for D004 recovery
     const taskAfter = getTask('M001', 'S01', 'T01');
@@ -600,7 +600,7 @@ console.log('\n=== complete-task: handler with missing plan file ===');
     assertTrue(fs.existsSync(result.summaryPath), 'summary should be written even without plan file');
     const planPath = path.join(basePath, '.gsd', 'phases', '01-test', '01-01-PLAN.md');
     assertTrue(fs.existsSync(planPath), 'missing plan projection should be regenerated from DB');
-    assertTrue(fs.readFileSync(planPath, 'utf-8').includes('[x] **T01:'), 'regenerated plan should reflect DB task completion');
+    assertTrue(fs.readFileSync(planPath, 'utf-8').includes('[x] **T01**'), 'regenerated plan should reflect DB task completion');
   }
 
   cleanupDir(basePath);
