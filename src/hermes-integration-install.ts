@@ -23,7 +23,12 @@ export interface HermesInstallResult {
 const PLUGIN_NAME = 'open-gsd-hermes'
 
 export async function runHermesIntegrationCommand(argv: string[]): Promise<number> {
-  const sub = argv[3]
+  const hermesIndex = argv.indexOf('hermes', 2)
+  if (hermesIndex === -1) {
+    printHermesHelp()
+    return 0
+  }
+  const sub = argv[hermesIndex + 1]
   if (!sub || sub === 'help' || sub === '--help' || sub === '-h') {
     printHermesHelp()
     return 0
@@ -36,7 +41,7 @@ export async function runHermesIntegrationCommand(argv: string[]): Promise<numbe
 
   let options: HermesInstallOptions
   try {
-    options = parseHermesInstallArgs(argv.slice(4))
+    options = parseHermesInstallArgs(argv.slice(hermesIndex + 2))
   } catch (err) {
     process.stderr.write(`[gsd] hermes install: ${err instanceof Error ? err.message : String(err)}\n`)
     return 1
