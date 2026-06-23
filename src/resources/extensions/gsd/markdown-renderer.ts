@@ -423,7 +423,12 @@ export async function renderPlanFromDb(
   const milestone = getMilestone(milestoneId);
   const phaseDir = resolveMilestonePath(basePath, milestoneId) ??
     join(phasesDir, phaseDirName(phaseNum, derivePhaseSlug(milestone?.title || milestoneId)));
-  const defaultPlanPath = existingPlanPath ?? join(phaseDir, planFileName(phaseNum, planNum, "PLAN"));
+  // Layout-aware fallback: legacy projects need slices/SID/SID-PLAN.md, not NN-MM-PLAN.md.
+  const legacyBase = legacyMilestonesDir(basePath);
+  const isLegacy = phaseDir.startsWith(legacyBase + "/") || phaseDir.startsWith(legacyBase + "\\");
+  const defaultPlanPath = existingPlanPath ?? (isLegacy
+    ? join(phaseDir, "slices", sliceId, `${sliceId}-PLAN.md`)
+    : join(phaseDir, planFileName(phaseNum, planNum, "PLAN")));
   const absPath = outputPath ?? defaultPlanPath;
   mkdirSync(dirname(absPath), { recursive: true });
   const artifactPath = toArtifactPath(absPath, basePath);

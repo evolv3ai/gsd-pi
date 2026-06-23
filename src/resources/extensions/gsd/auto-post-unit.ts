@@ -2515,7 +2515,7 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
         // Write evidence JSON to slice artifacts directory
         const slicePath = resolveSlicePath(s.canonicalProjectRoot, mid, sid);
         const evidenceFileName = `${sid}-PRE-EXEC-VERIFY.json`;
-        let evidencePath = join(".gsd", "phases", mid, "slices", sid, evidenceFileName);
+        let evidencePath = evidenceFileName; // fallback: just the filename when path is unresolved
         if (slicePath) {
           writePreExecutionEvidence(result, slicePath, mid, sid);
           evidencePath = relative(s.canonicalProjectRoot, join(slicePath, evidenceFileName)) || evidenceFileName;
