@@ -368,7 +368,7 @@ describe("workflow MCP tools", () => {
       assert.match(text, /Saved SUMMARY artifact/);
       assert.equal(process.cwd(), originalCwd, "workflow MCP tools should not mutate process.cwd");
       assert.ok(
-        existsSync(join(base, ".gsd", "milestones", "M001", "slices", "S01", "S01-SUMMARY.md")),
+        existsSync(join(base, ".gsd", "phases", "01-m001", "01-01-SUMMARY.md")),
         "summary file should exist on disk",
       );
     } finally {
@@ -2394,11 +2394,11 @@ export const executeTaskComplete = async (params, projectDir) => {
       });
       assert.match((completionResult as any).content[0].text as string, /Completed milestone M005/);
       assert.ok(
-        existsSync(join(base, ".gsd", "milestones", "M005", "M005-VALIDATION.md")),
+        existsSync(join(base, ".gsd", "phases", "05-milestone-lifecycle", "05-VALIDATION.md")),
         "validation artifact should exist on disk",
       );
       assert.ok(
-        existsSync(join(base, ".gsd", "milestones", "M005", "M005-SUMMARY.md")),
+        existsSync(join(base, ".gsd", "phases", "05-milestone-lifecycle", "05-SUMMARY.md")),
         "milestone summary should exist on disk",
       );
     } finally {
