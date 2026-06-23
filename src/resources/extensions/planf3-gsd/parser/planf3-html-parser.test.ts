@@ -26,3 +26,13 @@ describe("parsePlanf3Html — title + metadata", () => {
     assert.deepEqual(plan.metadata.forwardRefs, []);
   });
 });
+
+describe("parsePlanf3Html — narrative sections", () => {
+  test("extracts purpose, problem, solution, notes", () => {
+    const plan = parsePlanf3Html(minimal);
+    assert.equal(plan.purpose, "Verify the parser.");
+    assert.equal(plan.problem, "Need a deterministic fixture.");
+    assert.equal(plan.solution, "Handwrite one.");
+    assert.equal(plan.notes, "Test scaffolding only.");
+  });
+});
