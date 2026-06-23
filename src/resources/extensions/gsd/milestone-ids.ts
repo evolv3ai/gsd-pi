@@ -154,10 +154,14 @@ function scanMilestoneIdsFromDir(dir: string): string[] {
       if (legacyMatch) {
         return legacyMatch[1]!;
       }
-      // Flat-phase layout: NN-slug → M00N
-      const flatMatch = d.name.match(/^(\d+)-/);
+      // Flat-phase layout: NN-slug → M00N (slug may encode M00N or M00N-abcdef)
+      const flatMatch = d.name.match(/^(\d+)-(.+)$/);
       if (flatMatch) {
         const phaseNum = parseInt(flatMatch[1]!, 10);
+        const fromSlug = normalizeDiscussMilestoneId(flatMatch[2]!);
+        if (MILESTONE_ID_RE.test(fromSlug)) {
+          return fromSlug;
+        }
         return `M${String(phaseNum).padStart(3, "0")}`;
       }
       return null;
