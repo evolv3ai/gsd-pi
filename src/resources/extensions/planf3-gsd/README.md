@@ -1,0 +1,233 @@
+# planf3-gsd
+
+Bridges a Planf3 HTML plan into a GSD milestone via the headless CLI.
+
+The extension parses a `*.html` plan exported by Planf3, writes a sibling
+GSD spec markdown + bridge manifest beside it, then shells out to
+`gsd headless new-milestone --context <spec> [--auto]` and
+`gsd headless query` to create and track the milestone.
+
+- **Tier:** bundled (ships inside `@opengsd/gsd-pi`)
+- **Platform requirement:** `gsd-pi >= 2.29.0`
+- **Version:** 0.1.0 (M0+M1 MVP — see [Out of scope](#out-of-scope) for the road from here)
+
+## Quickstart
+
+```sh
+# Workspace setup
+cd /path/to/your/project
+ls my-plan.html                       # the Planf3 export
+
+# 1. Parse the HTML and write spec + manifest beside it (no GSD run yet)
+gsd /planf3-gsd-export my-plan.html
+
+# 2. Same as (1) plus: create a GSD milestone from the spec (step mode)
+gsd /planf3-gsd-build my-plan.html
+
+# 3. Same as (2) but kick off auto-mode (loops until the milestone completes)
+gsd /planf3-gsd-build my-plan.html --auto
+
+# 4. See where the build is at any time
+gsd /planf3-gsd-status
+```
+
+After `/planf3-gsd-build` the workspace contains:
+
+```
+my-plan.html                     # input (unchanged)
+my-plan.gsd.md                   # generated GSD spec (rebuilt every export)
+my-plan.manifest.json            # bridge manifest — milestone id + mapping (rebuilt every export, milestoneId stamped after build)
+.gsd/                            # GSD project state (managed by gsd-pi)
+  STATE.md
+  milestones/M001/...
+  ...
+```
+
+`<stem>.gsd.md` and `<stem>.manifest.json` are siblings of the input
+HTML — they go wherever the HTML lives.
+
+## Slash commands
+
+### `/planf3-gsd-export <path-to-plan.html>`
+
+Parse the HTML and write `<stem>.gsd.md` + `<stem>.manifest.json` beside
+it. Does not touch GSD state. Re-run to refresh both files after the
+Planf3 plan changes.
+
+Notification on success: `Exported → <specPath>\n             <manifestPath>`.
+
+### `/planf3-gsd-build <path-to-plan.html> [--auto]`
+
+Runs export (above), then `gsd headless new-milestone --context
+<specPath>` and `gsd headless query`. Writes the resulting milestone id
+back into `<stem>.manifest.json` as `gsd.milestoneId`.
+
+- Without `--auto` (**step mode**): creates the milestone and plans its
+  slices, then returns. You drive task execution yourself with normal
+  GSD commands. Manifest gets `mode: "step"` and the active milestone
+  id.
+- With `--auto`: creates the milestone and runs auto-mode until the
+  milestone completes (or is blocked/cancelled). Manifest gets
+  `mode: "auto"` and the last-completed milestone id.
+
+Notification on success: `Built milestone <id>\nphase=<state>\nspec=<specPath>\nmanifest=<manifestPath>`.
+
+> **Note on auto cost.** `--auto` blocks until the entire GSD auto loop
+> finishes — that is real LLM spend on whichever model your GSD
+> preferences resolve to. Run step mode first if you want to inspect
+> the plan before committing tokens.
+
+### `/planf3-gsd-status`
+
+Calls `gsd headless query` and prints a multi-line block:
+
+```
+phase:           <state>
+active milestone: <id> (<title>)   |  —
+active task:      <id> (<title>)   |  —
+progress:         milestones x/y · slices x/y · tasks x/y   |  —
+cost:            <float>
+next:            <suggested action>   |  —
+blockers:        none | <count>
+```
+
+`phase` is the GSD state-machine phase string (e.g. `pre-planning`,
+`planning`, `evaluating-gates`, `executing`, …) or `unknown` if the
+query payload lacked the expected shape.
+
+## ExtensionAPI tools
+
+For agent/LLM callers (the LLM picks these up automatically from the
+tool catalog; they're not a separate user surface).
+
+| Tool | Parameters | Returns (`details`) |
+| --- | --- | --- |
+| `planf3_gsd_export` | `htmlPath: string`, `mode?: "auto" \| "step"`, `userPrompt?: string` | `{ phaseCount, taskCount, specPath, manifestPath }` |
+| `planf3_gsd_status` | none | `BridgeStatus` (see [Status output](#status-output)) |
+
+There is intentionally **no** `planf3_gsd_build` tool. `build` is a
+slash-command-only surface — agents that want to create a milestone
+should call `gsd headless new-milestone` directly after `planf3_gsd_export`
+to keep control over auto vs. step mode.
+
+## Bridge manifest schema
+
+Written by `/planf3-gsd-export` (or its `--build` wrapper) at
+`<stem>.manifest.json`. Schema version `1`.
+
+```jsonc
+{
+  "schemaVersion": 1,
+  "planf3": {
+    "htmlPath": "my-plan.html",
+    "title": "<plan title>",
+    "created": "<iso8601 | null>",
+    "modified": ["<iso8601>", ...]
+  },
+  "gsd": {
+    "specPath": "my-plan.gsd.md",
+    "projectRoot": ".",
+    "milestoneId": "M001",       // null until /planf3-gsd-build runs
+    "headlessSessionId": null,   // reserved for future use
+    "mode": "auto" | "step"
+  },
+  "mapping": {
+    "phases": [
+      {
+        "planf3Selector": "section#phases > div.phase:nth-of-type(1)",
+        "title": "<phase title>",
+        "gsdMilestone": null,    // reserved for future per-phase milestone mapping
+        "gsdSlice": null,        // reserved for future per-phase slice mapping
+        "tasks": [
+          { "title": "<task title>", "gsdTask": null }
+        ]
+      }
+    ]
+  },
+  "validation": {
+    "commands": ["pnpm test", ...],   // extracted from the Planf3 plan
+    "lastSyncedAt": null,
+    "lastStatus": "planned" | "running" | "passed" | "failed" | "blocked"
+  },
+  "provenance": {
+    "userPrompt": null,
+    "generator": "planf3-gsd-pi",
+    "generatorVersion": "0.1.0"
+  }
+}
+```
+
+The `gsd.*` and `mapping.phases[].gsd*` slots are write-once: the
+extension fills them in after the matching GSD operation succeeds. Hand
+edits to the manifest are clobbered by the next `/planf3-gsd-export`.
+
+## Status output
+
+The `BridgeStatus` shape returned by `planf3_gsd_status` and rendered by
+`/planf3-gsd-status`:
+
+```ts
+interface BridgeStatus {
+  phase: string;                                // "unknown" if missing
+  activeMilestone: { id, title } | null;
+  lastCompletedMilestone: { id, title } | null;
+  activeSlice: { id, title } | null;
+  activeTask: { id, title } | null;
+  progress: {
+    milestones: { done, total },
+    slices: { done, total },
+    tasks: { done, total }
+  } | null;
+  cost: number;                                 // total $ across workers
+  nextAction: string | null;
+  blockers: unknown[];                          // shape passes through
+  sessionId: string | null;
+}
+```
+
+The mapper is tolerant of missing keys — anything absent comes back as
+`null`/`0`/`'unknown'` rather than throwing. If GSD ever renames a
+top-level key, the status output will silently lose that field; the
+extension's compatibility brief in `gsd-pi/CLAUDE.md` tracks this.
+
+## Errors you may see
+
+| Message | What it means | Fix |
+| --- | --- | --- |
+| `Plan file not found: <path>` | The HTML path you passed doesn't exist | Check the path; relative paths resolve against the workspace cwd |
+| `gsd binary not found — is it on your PATH?` | The extension tried to spawn `gsd headless …` and got `ENOENT` | Ensure the `gsd` shim is on PATH (it normally is for any environment that ran the slash command — this fires when the env was sanitized between parent and child) |
+| `Built milestone (unknown id) phase=pre-planning` (notification, not an error) | `gsd headless new-milestone` exited 0 but no milestone was actually created (usually the LLM session errored — e.g. provider auth — and the headless run didn't push past pre-planning) | Check `~/.gsd/PREFERENCES.md` model config; inspect the latest session at `~/.gsd/agent/sessions/<project-slug>/` for the real error; the manifest's `milestoneId: null` is the authoritative signal |
+
+## Requirements
+
+- `@opengsd/gsd-pi >= 2.29.0` (the extension declares
+  `requires.platform: ">=2.29.0"` in `extension-manifest.json`).
+- A reachable `gsd` binary on PATH at runtime — the build/status commands
+  spawn it as a child process via the headless interface.
+- A working GSD model preference. The extension itself doesn't call any
+  LLM, but `/planf3-gsd-build` spawns `gsd headless new-milestone` which
+  does. If that session errors silently, the manifest will end up with
+  `milestoneId: null` — see [Errors](#errors-you-may-see).
+- A Planf3 HTML export with the standard structure (the parser keys off
+  `section#phases > div.phase:nth-of-type(N)`).
+
+## Out of scope (deferred to later milestones)
+
+The current 0.1.0 release covers **M0 (parser + spec exporter)** and
+**M1 (manifest + headless bridge)**. The following slash commands and
+features are intentionally not implemented yet — see
+`/home/wsladmin/dev/planf3-gsd/docs/superpowers/plans/2026-06-22-planf3-gsd-mvp.md`
+for the full PRD coverage map:
+
+- `/planf3-gsd plan` and `/run` — M2
+- `/sync` (push GSD state back into the Planf3 HTML) — M3
+- Steer / pause / stop + the blocker-flow UI — M4
+- Lore / RAC promotion — M5
+
+## Where things live
+
+- **Extension source:** `gsd-pi/src/resources/extensions/planf3-gsd/`
+- **PRD:** `~/dev/planf3-gsd/planf3-gsd.md`
+- **Implementation plan + PRD coverage map:** `~/dev/planf3-gsd/docs/superpowers/plans/2026-06-22-planf3-gsd-mvp.md`
+- **SDD ledger + per-task reports:** `gsd-pi/.superpowers/sdd/`
+- **Compatibility / monitoring brief:** `~/dev/gsd-pi/CLAUDE.md` (Pointers → planf3-gsd entry, plus the dated smoke entry in Current state)
