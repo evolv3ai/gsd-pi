@@ -1,7 +1,6 @@
 // gsd-pi - Claude Code stream adapter regression tests
 import { describe, test } from "node:test";
 import { clearGuidedUnitContext, setGuidedUnitContext } from "../../gsd/guided-unit-context.ts";
-import { _setAutoActiveForTest } from "../../gsd/auto.ts";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -51,6 +50,7 @@ import { CLAUDE_CODE_MODELS } from "../models.ts";
 import type { AssistantMessage, Context, Message } from "@gsd/pi-ai";
 import type { SDKUserMessage } from "../sdk-types.ts";
 import { _setAutoActiveForTest } from "../../gsd/auto.ts";
+import { autoSession } from "../../gsd/auto-runtime-state.ts";
 import { getInFlightToolCount, hasInteractiveToolInFlight, clearInFlightTools, isInteractiveElicitationInFlight } from "../../gsd/auto-tool-tracking.ts";
 import { clearMcpConfigCache } from "../../mcp-client/manager.ts";
 import { UNIT_TOOL_CONTRACTS } from "../../gsd/unit-tool-contracts.ts";
@@ -1624,12 +1624,43 @@ describe("stream-adapter — session persistence (#2859)", () => {
 		}
 	});
 
-	test("resolveGsdPhaseForSdk infers from the UNIT header only while auto-mode is active", () => {
-		// Defence-in-depth fallback: a genuinely dispatched unit whose guided
-		// context was not recorded for this root can still be classified from its
-		// UNIT header — but only while auto is running.
+	test("resolveGsdPhaseForSdk uses the authoritative auto currentUnit, even with no UNIT header in the prompt", () => {
+		// gate-evaluate / validate-milestone dispatch prompts have no `UNIT:`
+		// header, so header inference alone would drop their phase (and their
+		// workflow-MCP preflight). The dispatched unit type is authoritative.
 		clearGuidedUnitContext();
 		_setAutoActiveForTest(true);
+		autoSession.currentUnit = { type: "gate-evaluate", id: "M001/S001", startedAt: 0, workspaceRoot: "/tmp/p" } as never;
+		try {
+			const context = {
+				messages: [{ role: "user", content: "Quality Gate Evaluation — Parallel Dispatch. Call gsd_save_gate_result." }],
+			} as Context;
+			assert.equal(resolveGsdPhaseForSdk(context, "/tmp/p"), "gate-evaluate");
+		} finally {
+			autoSession.currentUnit = null;
+			_setAutoActiveForTest(false);
+		}
+	});
+
+	test("resolveGsdPhaseForSdk ignores hook/* pseudo-units from currentUnit", () => {
+		clearGuidedUnitContext();
+		_setAutoActiveForTest(true);
+		autoSession.currentUnit = { type: "hook/agent-end", id: "x", startedAt: 0, workspaceRoot: "/tmp/p" } as never;
+		try {
+			const context = { messages: [{ role: "user", content: "no phase here" }] } as Context;
+			assert.equal(resolveGsdPhaseForSdk(context, "/tmp/p"), undefined);
+		} finally {
+			autoSession.currentUnit = null;
+			_setAutoActiveForTest(false);
+		}
+	});
+
+	test("resolveGsdPhaseForSdk infers from the UNIT header only while auto-mode is active and no currentUnit is recorded", () => {
+		// Last-resort fallback: auto running but currentUnit unexpectedly absent.
+		// Classifies from the `UNIT:` dispatch header only.
+		clearGuidedUnitContext();
+		_setAutoActiveForTest(true);
+		autoSession.currentUnit = null;
 		try {
 			const context = {
 				messages: [{ role: "user", content: "## UNIT: Run UAT — M001/S001" }],

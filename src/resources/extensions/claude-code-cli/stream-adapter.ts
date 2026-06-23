@@ -74,7 +74,7 @@ import {
 	endWorkflowMcpSdkSession,
 } from "../gsd/workflow-mcp-readiness-cache.js";
 import { getGuidedUnitContext } from "../gsd/guided-unit-context.js";
-import { isAutoActive } from "../gsd/auto-runtime-state.js";
+import { getActiveAutoUnitType, isAutoActive } from "../gsd/auto-runtime-state.js";
 import { hasBrowserContractPrefix } from "../shared/browser-contract.js";
 import { showInterviewRound, type Question, type RoundResult } from "../shared/tui.js";
 import type {
@@ -394,6 +394,9 @@ const GSD_PHASE_PATTERNS: Array<[string, RegExp]> = [
 	["discuss-requirements", /\bUNIT:\s*Discuss Requirements\b/i],
 ];
 
+/** The set of GSD phases this adapter recognises, derived from the patterns above. */
+const KNOWN_GSD_PHASES = new Set(GSD_PHASE_PATTERNS.map(([phase]) => phase));
+
 export function inferGsdPhaseFromContext(context: Context): string | undefined {
 	// Scan only the system prompt and the most recent user directive. Scanning
 	// the entire scrollback let a phase header that merely appeared in history
@@ -427,16 +430,24 @@ export function resolveGsdPhaseForSdk(context: Context, projectRoot: string): st
 			return guided.unitType;
 		}
 	}
-	// No authoritative guided/auto context for this root → this is an ad-hoc
-	// turn. Do NOT regex-infer a phase from prose: that would fire the workflow
-	// MCP preflight and, for run-uat, strip Bash/Write/Edit/gsd_exec for the
-	// rest of the session the moment the conversation happened to mention a
-	// phase header. An ad-hoc turn keeps the full tool surface.
+	// Auto-mode records the dispatched unit type before each turn — that is the
+	// authoritative phase, so prefer it over any inference. (Guided interactive
+	// dispatch is handled above via getGuidedUnitContext.) Ignore `hook/*`
+	// pseudo-units and anything not a recognised GSD phase.
+	const autoUnit = getActiveAutoUnitType();
+	if (autoUnit && KNOWN_GSD_PHASES.has(autoUnit)) {
+		return autoUnit;
+	}
+
+	// No authoritative guided/auto signal → ad-hoc turn. Do NOT regex-infer a
+	// phase from prose: that would fire the workflow MCP preflight and, for
+	// run-uat, strip Bash/Write/Edit/gsd_exec for the rest of the session the
+	// moment the conversation (or the GSD system prompt itself) happened to
+	// mention a phase token. An ad-hoc turn keeps the full tool surface.
 	//
-	// Only fall back to header inference while auto-mode is genuinely running
-	// (defence in depth for a dispatched unit whose guided context was not
-	// recorded for this root); even then the patterns match the `UNIT:` header
-	// only, never bare slugs in scrollback.
+	// The header-anchored inference remains only as a last resort while auto is
+	// running but the current unit wasn't recorded for some reason; even then it
+	// matches the `UNIT:` dispatch header only, never bare slugs in scrollback.
 	if (!isAutoActive()) {
 		return undefined;
 	}

@@ -65,6 +65,19 @@ export function isAutoActive(): boolean {
   return autoSession.active;
 }
 
+/**
+ * The unit type of the unit auto-mode is currently dispatching, or undefined
+ * when auto is inactive or between units. This is the authoritative phase
+ * signal for auto-mode (set in auto/unit-phase.ts before each dispatch), so
+ * consumers never have to regex-infer the phase from prompt text. Can be a
+ * `hook/<name>` pseudo-type during hook dispatch — callers that need a real
+ * GSD phase should validate against their known phase set.
+ */
+export function getActiveAutoUnitType(): string | undefined {
+  if (!autoSession.active) return undefined;
+  return autoSession.currentUnit?.type ?? undefined;
+}
+
 export function isAutoPaused(): boolean {
   return autoSession.paused;
 }
