@@ -1,6 +1,6 @@
 import { parse, type HTMLElement } from "node-html-parser";
-import type { ParsedPlan, PlanMetadata, PlanFile, PlanPhase, PlanTask, PlanChecklistItem, PlanAmendment, PlanStatus } from "./types.ts";
-import { STATUS_FROM_MARKER } from "./types.ts";
+import type { ParsedPlan, PlanMetadata, PlanFile, PlanPhase, PlanTask, PlanChecklistItem, PlanAmendment, PlanStatus } from "./types.js";
+import { STATUS_FROM_MARKER } from "./types.js";
 
 const EMPTY_METADATA: PlanMetadata = {
   created: null,

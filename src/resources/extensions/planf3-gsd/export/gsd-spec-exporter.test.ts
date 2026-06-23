@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { parsePlanf3Html } from "../parser/planf3-html-parser.ts";
-import { exportGsdSpec } from "./gsd-spec-exporter.ts";
+import { parsePlanf3Html } from "../parser/planf3-html-parser.js";
+import { exportGsdSpec } from "./gsd-spec-exporter.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const minimal = readFileSync(

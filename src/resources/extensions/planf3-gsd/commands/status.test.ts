@@ -1,7 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { runStatus } from "./status.ts";
-import type { Spawner } from "../gsd/headless-runner.ts";
+import { runStatus } from "./status.js";
+import type { Spawner } from "../gsd/headless-runner.js";
 
 describe("runStatus", () => {
   test("returns mapped status from query", async () => {

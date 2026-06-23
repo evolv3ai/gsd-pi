@@ -4,8 +4,8 @@ import { mkdtemp, copyFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runBuild } from "./build.ts";
-import type { Spawner } from "../gsd/headless-runner.ts";
+import { runBuild } from "./build.js";
+import type { Spawner } from "../gsd/headless-runner.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 

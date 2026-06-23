@@ -1,6 +1,6 @@
 import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
-import { runStatus } from "../commands/status.ts";
+import { runStatus } from "../commands/status.js";
 
 function format(status: Awaited<ReturnType<typeof runStatus>>): string {
   const am = status.activeMilestone ? `${status.activeMilestone.id} (${status.activeMilestone.title})` : "—";

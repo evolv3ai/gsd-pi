@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
-import { runBuild } from "./build.ts";
+import { runBuild } from "./build.js";
 
 export function registerBuildCommand(pi: ExtensionAPI): void {
   pi.registerCommand("planf3-gsd-build", {

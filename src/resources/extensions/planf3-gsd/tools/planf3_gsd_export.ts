@@ -1,6 +1,6 @@
 import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
-import { runExport } from "../commands/export.ts";
+import { runExport } from "../commands/export.js";
 
 export function registerExportTool(pi: ExtensionAPI): void {
   pi.registerTool({

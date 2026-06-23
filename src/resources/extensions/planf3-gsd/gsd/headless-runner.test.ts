@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { GsdRunner, type Spawner } from "./headless-runner.ts";
+import { GsdRunner, type Spawner } from "./headless-runner.js";
 
 function fakeSpawner(plan: { exitCode: number; stdout: string; stderr: string; }, captured: { cmd: string; args: string[]; }[] = []): Spawner {
   return async (cmd, args) => {
