@@ -42,7 +42,7 @@ import {
 import { saveFile, clearParseCache, registerCacheClearCallback } from "./files.js";
 import { parseRoadmap, parsePlan } from "./parsers-legacy.js";
 import { invalidateStateCache } from "./state.js";
-import { clearPathCache, milestonesDir, legacyMilestonesDir, resolveMilestonePath } from "./paths.js";
+import { clearPathCache, milestonesDir, legacyMilestonesDir, resolveMilestonePath, relSliceFile } from "./paths.js";
 import type { RiskLevel } from "./types.js";
 import {
   phaseDirName,
@@ -120,15 +120,17 @@ function sanitizeInlineRoadmapText(value: string | null | undefined): string {
 }
 
 function resolveRoadmapProjectionPath(basePath: string, milestoneId: string): string {
-  const phasesDir = milestonesDir(basePath);
   const phaseNum = milestoneIdToPhaseNum(milestoneId);
-  // Resolve existing dir by phase-number prefix, or build canonical flat-phase name
   const existing = resolveMilestonePath(basePath, milestoneId);
-  const phaseDir = existing ?? join(phasesDir, phaseDirName(phaseNum, derivePhaseSlug(getMilestone(milestoneId)?.title || milestoneId)));
-  // Layout-aware filename: legacy dirs → MID-ROADMAP.md; flat-phase dirs → NN-ROADMAP.md
   const legacyBase = legacyMilestonesDir(basePath);
-  const isLegacy = phaseDir.startsWith(legacyBase + "/") || phaseDir.startsWith(legacyBase + "\\");
-  const roadmapFileName = isLegacy
+  const isLegacyLayout = existing
+    ? existing.startsWith(legacyBase + "/") || existing.startsWith(legacyBase + "\\")
+    : existsSync(legacyBase);
+  const phaseDir = existing ?? join(
+    isLegacyLayout ? legacyBase : milestonesDir(basePath),
+    isLegacyLayout ? milestoneId : phaseDirName(phaseNum, derivePhaseSlug(getMilestone(milestoneId)?.title || milestoneId)),
+  );
+  const roadmapFileName = isLegacyLayout
     ? `${milestoneId}-ROADMAP.md`
     : `${String(phaseNum).padStart(2, "0")}-ROADMAP.md`;
   return join(phaseDir, roadmapFileName);
@@ -417,18 +419,7 @@ export async function renderPlanFromDb(
   // stay in place (legacy: milestones/MID/slices/SID/SID-PLAN.md;
   // flat-phase: phases/NN-slug/NN-MM-PLAN.md).
   const existingPlanPath = resolveSliceFile(basePath, milestoneId, sliceId, "PLAN");
-  const phasesDir = milestonesDir(basePath);
-  const phaseNum = milestoneIdToPhaseNum(milestoneId);
-  const planNum = sliceIdToPlanNum(sliceId);
-  const milestone = getMilestone(milestoneId);
-  const phaseDir = resolveMilestonePath(basePath, milestoneId) ??
-    join(phasesDir, phaseDirName(phaseNum, derivePhaseSlug(milestone?.title || milestoneId)));
-  // Layout-aware fallback: legacy projects need slices/SID/SID-PLAN.md, not NN-MM-PLAN.md.
-  const legacyBase = legacyMilestonesDir(basePath);
-  const isLegacy = phaseDir.startsWith(legacyBase + "/") || phaseDir.startsWith(legacyBase + "\\");
-  const defaultPlanPath = existingPlanPath ?? (isLegacy
-    ? join(phaseDir, "slices", sliceId, `${sliceId}-PLAN.md`)
-    : join(phaseDir, planFileName(phaseNum, planNum, "PLAN")));
+  const defaultPlanPath = existingPlanPath ?? join(basePath, relSliceFile(basePath, milestoneId, sliceId, "PLAN"));
   const absPath = outputPath ?? defaultPlanPath;
   mkdirSync(dirname(absPath), { recursive: true });
   const artifactPath = toArtifactPath(absPath, basePath);
