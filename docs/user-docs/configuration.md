@@ -200,7 +200,7 @@ Recommended verification order:
 - If a server is team-shared and safe to commit, `.mcp.json` is usually the better home.
 - If a server depends on machine-local paths, personal services, or local-only secrets, prefer `.gsd/mcp.json`.
 - For the built-in `gsd-workflow` server, set `GSD_WORKFLOW_PROJECT_ROOT` to the canonical project root when launching from a worktree or wrapper. The packaged server uses it for workflow tool paths and the per-project stale-process registry at `$GSD_HOME/mcp-instances.json`.
-- Claude Code sessions that require GSD workflow tools are fail-closed: if `gsd-workflow` is absent, still pending, failed, disabled, or missing required tools at startup, GSD aborts the unit before the first model turn and retries instead of allowing tool calls against an incomplete surface.
+- Claude Code sessions that require GSD workflow tools are fail-closed: GSD preflights the same inline `mcpServers.gsd-workflow` entry passed to the Claude SDK, and if `gsd-workflow` is absent, still pending, failed, disabled, missing required tools at startup, or cannot be probed, GSD aborts the unit before the first model turn and retries instead of allowing tool calls against an incomplete surface. Timeout diagnostics include the last MCP probe error when available.
 
 ### Per-Model MCP Filtering
 

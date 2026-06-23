@@ -1,7 +1,12 @@
 // Project/App: gsd-pi
 // File Purpose: Tool Contract module's runtime face — verify the live SDK tool surface covers a Unit's required workflow tools.
 
-import { testMcpServerConnection } from "../mcp-client/manager.js";
+import {
+  collectMcpEnvWarnings,
+  detectTransport,
+  testMcpServerConnection,
+  type ManagedMcpServerConfig,
+} from "../mcp-client/manager.js";
 import { mcpToolMatchesBaseName } from "./mcp-tool-name.js";
 import { getRequiredWorkflowToolsForUnit } from "./unit-tool-contracts.js";
 import {
@@ -45,11 +50,15 @@ export interface LiveToolSurfaceObservation {
 export interface WorkflowMcpToolProbeResult {
   ok: boolean;
   tools: readonly string[];
+  error?: string;
 }
+
+export type WorkflowMcpInlineServerConfig = Record<string, unknown>;
 
 export type WorkflowMcpToolProbe = (
   serverName: string,
   projectRoot: string,
+  workflowServerConfig?: WorkflowMcpInlineServerConfig,
 ) => Promise<WorkflowMcpToolProbeResult>;
 
 export const DEFAULT_WORKFLOW_MCP_PREFLIGHT_TIMEOUT_MS = 30_000;
@@ -70,10 +79,59 @@ export function probeCoversRequiredWorkflowTools(
   );
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function stringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const strings = value.filter((entry): entry is string => typeof entry === "string");
+  return strings.length > 0 ? strings : undefined;
+}
+
+function stringRecord(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) return undefined;
+  const entries = Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string");
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function normalizeInlineWorkflowMcpServerConfig(
+  serverName: string,
+  config: WorkflowMcpInlineServerConfig | undefined,
+): ManagedMcpServerConfig | undefined {
+  if (!config) return undefined;
+  const command = typeof config.command === "string" ? config.command : undefined;
+  const url = typeof config.url === "string" ? config.url : undefined;
+  const transport = detectTransport(config);
+  const args = stringArray(config.args);
+  const env = stringRecord(config.env);
+  const headers = stringRecord(config.headers);
+  return {
+    name: serverName,
+    transport,
+    sourcePath: "[inline workflow MCP config]",
+    sourceKind: "project-local",
+    disabled: config.disabled === true,
+    ...(command ? { command } : {}),
+    ...(url ? { url } : {}),
+    ...(args ? { args } : {}),
+    ...(env ? { env } : {}),
+    ...(typeof config.cwd === "string" ? { cwd: config.cwd } : {}),
+    ...(headers ? { headers } : {}),
+    ...(isRecord(config.oauth) ? { oauth: config.oauth as ManagedMcpServerConfig["oauth"] } : {}),
+    envWarnings: collectMcpEnvWarnings([
+      ["url", url],
+      ...Object.entries(env ?? {}).map(([key, value]) => [`env.${key}`, value] as [string, string | undefined]),
+      ...Object.entries(headers ?? {}).map(([key, value]) => [`headers.${key}`, value] as [string, string | undefined]),
+    ]),
+  };
+}
+
 export async function awaitWorkflowMcpToolRegistration(input: {
   unitType: string | undefined;
   workflowServerName: string | undefined;
   projectRoot: string;
+  workflowServerConfig?: WorkflowMcpInlineServerConfig;
   timeoutMs?: number;
   pollMs?: number;
   probe?: WorkflowMcpToolProbe;
@@ -85,29 +143,37 @@ export async function awaitWorkflowMcpToolRegistration(input: {
   const required = getRequiredWorkflowToolsForUnit(unitType).filter(isWorkflowToolSurfaceName);
   if (required.length === 0) return null;
 
-  const probe = input.probe ?? (async (serverName, root) => {
-    const result = await testMcpServerConnection(serverName, {
+  const probe = input.probe ?? (async (serverName, root, workflowServerConfig) => {
+    const inlineConfig = normalizeInlineWorkflowMcpServerConfig(serverName, workflowServerConfig);
+    const result = await testMcpServerConnection(inlineConfig ?? serverName, {
       projectDir: resolveWorkflowMcpProjectRoot(root),
       timeoutMs: WORKFLOW_MCP_PROBE_TIMEOUT_MS,
     });
-    return { ok: result.ok, tools: result.tools };
+    return { ok: result.ok, tools: result.tools, error: result.error };
   });
 
   const deadline = Date.now() + (input.timeoutMs ?? resolveWorkflowMcpPreflightTimeoutMs(unitType));
   const pollMs = input.pollMs ?? DEFAULT_WORKFLOW_MCP_PREFLIGHT_POLL_MS;
+  let lastProbeError: string | undefined;
 
   while (Date.now() < deadline) {
     throwIfAborted(input.signal);
-    const result = await probe(workflowServerName, projectRoot);
+    const result = await probe(workflowServerName, projectRoot, input.workflowServerConfig).catch((err: unknown) => {
+      if (input.signal?.aborted) throw err;
+      lastProbeError = err instanceof Error ? err.message : String(err);
+      return undefined;
+    });
     throwIfAborted(input.signal);
-    if (result.ok && probeCoversRequiredWorkflowTools(result.tools, required)) {
+    if (result) lastProbeError = result.error;
+    if (result?.ok && probeCoversRequiredWorkflowTools(result.tools, required)) {
       recordWorkflowMcpProbe(projectRoot, workflowServerName, result.tools);
       return null;
     }
     await sleep(pollMs, input.signal);
   }
 
-  return `${TOOL_SURFACE_NOT_READY} for ${unitType}: MCP server "${workflowServerName}" did not register required tools before session start: ${required.join(", ")}`;
+  const probeError = lastProbeError ? `; last probe error: ${lastProbeError}` : "";
+  return `${TOOL_SURFACE_NOT_READY} for ${unitType}: MCP server "${workflowServerName}" did not register required tools before session start: ${required.join(", ")}${probeError}`;
 }
 
 function makeAbortError(): Error {

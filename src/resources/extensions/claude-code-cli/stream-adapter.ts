@@ -1724,6 +1724,15 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 	return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
 }
 
+export function resolveWorkflowMcpPreflightServerConfig(
+	mcpServers: unknown,
+	workflowServerName: string | undefined,
+): Record<string, unknown> | undefined {
+	if (!workflowServerName || !isRecord(mcpServers)) return undefined;
+	const workflowServerConfig = mcpServers[workflowServerName];
+	return isRecord(workflowServerConfig) ? workflowServerConfig : undefined;
+}
+
 function cloneSdkMcpServerConfig(config: unknown): Record<string, unknown> | undefined {
 	if (!isRecord(config)) return undefined;
 	const cloned: Record<string, unknown> = {};
@@ -2239,6 +2248,10 @@ async function pumpSdkMessages(
 						unitType: gsdPhase,
 						workflowServerName: workflowMcpServerName,
 						projectRoot,
+						workflowServerConfig: resolveWorkflowMcpPreflightServerConfig(
+							sdkOpts.mcpServers,
+							workflowMcpServerName,
+						),
 						signal: options?.signal,
 					});
 					if (preflightError) {

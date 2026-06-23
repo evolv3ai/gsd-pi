@@ -490,7 +490,7 @@ function normalizeRawServerConfig(
 		cwd: typeof config.cwd === "string" ? config.cwd : undefined,
 		headers,
 		oauth: config.oauth && typeof config.oauth === "object" ? config.oauth as McpHttpAuthConfig["oauth"] : undefined,
-		envWarnings: collectEnvWarnings([
+		envWarnings: collectMcpEnvWarnings([
 			["url", url],
 			...Object.entries(env ?? {}).map(([key, value]) => [`env.${key}`, value] as [string, string | undefined]),
 			...Object.entries(headers ?? {}).map(([key, value]) => [`headers.${key}`, value] as [string, string | undefined]),
@@ -498,7 +498,7 @@ function normalizeRawServerConfig(
 	};
 }
 
-function detectTransport(config: Record<string, unknown>): ManagedMcpTransport {
+export function detectTransport(config: Record<string, unknown>): ManagedMcpTransport {
 	const type = typeof config.type === "string" ? config.type.toLowerCase() : undefined;
 	if (type && type !== "stdio" && type !== "http") return "unsupported";
 	if (typeof config.command === "string") return "stdio";
@@ -530,7 +530,7 @@ function serializeServerInput(input: ManagedMcpServerInput): Record<string, unkn
 	});
 }
 
-function collectEnvWarnings(values: Array<[string, string | undefined]>): string[] {
+export function collectMcpEnvWarnings(values: Array<[string, string | undefined]>): string[] {
 	const warnings: string[] = [];
 	for (const [label, value] of values) {
 		if (!value) continue;

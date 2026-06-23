@@ -45,6 +45,7 @@ import {
 	shouldRetryClaudeCodeToolSurfaceReadiness,
 	buildWorkflowMcpReadinessProgressMessage,
 	pushWorkflowMcpReadinessProgressEvent,
+	resolveWorkflowMcpPreflightServerConfig,
 } from "../stream-adapter.ts";
 import { CLAUDE_CODE_MODELS } from "../models.ts";
 import type { AssistantMessage, Context, Message } from "@gsd/pi-ai";
@@ -1913,6 +1914,90 @@ describe("stream-adapter — session persistence (#2859)", () => {
 });
 
 describe("stream-adapter — workflow MCP readiness", () => {
+	test("resolves the workflow MCP preflight config from SDK mcpServers", () => {
+		const workflowConfig = { command: "node", args: ["workflow-server.js"] };
+		const browserConfig = { command: "gsd-browser" };
+
+		assert.equal(
+			resolveWorkflowMcpPreflightServerConfig(
+				{ "gsd-workflow": workflowConfig, "gsd-browser": browserConfig },
+				"gsd-workflow",
+			),
+			workflowConfig,
+		);
+		assert.equal(resolveWorkflowMcpPreflightServerConfig({ "gsd-workflow": "invalid" }, "gsd-workflow"), undefined);
+		assert.equal(resolveWorkflowMcpPreflightServerConfig({ "gsd-workflow": workflowConfig }, undefined), undefined);
+	});
+
+	test("workflow MCP preflight uses the same inline config passed to the SDK", async () => {
+		const projectRoot = realpathSync(mkdtempSync(join(tmpdir(), "claude-sdk-inline-preflight-")));
+		const restore = setWorkflowMcpEnv({});
+		let queryCalls = 0;
+		try {
+			const require = createRequire(import.meta.url);
+			const mcpModuleUrl = pathToFileURL(require.resolve("@modelcontextprotocol/sdk/server/mcp.js")).href;
+			const stdioModuleUrl = pathToFileURL(require.resolve("@modelcontextprotocol/sdk/server/stdio.js")).href;
+			const serverPath = join(projectRoot, "fake-workflow-mcp-server.mjs");
+			writeFileSync(
+				serverPath,
+				[
+					`const { McpServer } = await import(${JSON.stringify(mcpModuleUrl)});`,
+					`const { StdioServerTransport } = await import(${JSON.stringify(stdioModuleUrl)});`,
+					'const server = new McpServer({ name: "fake", version: "1.0.0" }, { capabilities: { tools: {} } });',
+					'server.tool("gsd_plan_slice", "Plan slice", {}, async () => ({ content: [{ type: "text", text: "ok" }] }));',
+					'server.tool("gsd_reassess_roadmap", "Reassess roadmap", {}, async () => ({ content: [{ type: "text", text: "ok" }] }));',
+					'await server.connect(new StdioServerTransport());',
+				].join("\n"),
+				"utf-8",
+			);
+			process.env.GSD_WORKFLOW_MCP_COMMAND = process.execPath;
+			process.env.GSD_WORKFLOW_MCP_ARGS = JSON.stringify([serverPath]);
+			process.env.GSD_WORKFLOW_MCP_NAME = "gsd-workflow";
+
+			const stream = streamViaClaudeCode(
+				{ id: "claude-sonnet-4-6" } as any,
+				{
+					systemPrompt: "UNIT: Plan Slice",
+					messages: [{ role: "user", content: "Plan the next slice." } as Message],
+				},
+				{
+					cwd: projectRoot,
+					async *_sdkQueryForTest() {
+						queryCalls += 1;
+						yield {
+							type: "result",
+							subtype: "success",
+							uuid: "result-1",
+							session_id: "session-1",
+							duration_ms: 1,
+							duration_api_ms: 1,
+							is_error: false,
+							num_turns: 1,
+							result: "planned",
+							stop_reason: "end_turn",
+							total_cost_usd: 0,
+							usage: {
+								input_tokens: 0,
+								output_tokens: 0,
+								cache_read_input_tokens: 0,
+								cache_creation_input_tokens: 0,
+							},
+						};
+					},
+				} as any,
+			);
+
+			const message = await stream.result();
+
+			assert.equal(queryCalls, 1);
+			assert.deepEqual(message.content, [{ type: "text", text: "planned" }]);
+		} finally {
+			restore();
+			rmSync(projectRoot, { recursive: true, force: true });
+			clearMcpConfigCache();
+		}
+	});
+
 	test("emits visible progress text before workflow MCP readiness waits", () => {
 		const partial: AssistantMessage = {
 			role: "assistant",
