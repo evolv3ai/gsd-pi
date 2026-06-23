@@ -4,6 +4,7 @@ export interface ProgressCounts { done: number; total: number; }
 export interface BridgeStatus {
   phase: string;
   activeMilestone: ActiveRef | null;
+  lastCompletedMilestone: ActiveRef | null;
   activeSlice: ActiveRef | null;
   activeTask: ActiveRef | null;
   progress: { milestones: ProgressCounts; slices: ProgressCounts; tasks: ProgressCounts; } | null;
@@ -16,6 +17,7 @@ export interface BridgeStatus {
 const EMPTY: BridgeStatus = {
   phase: "unknown",
   activeMilestone: null,
+  lastCompletedMilestone: null,
   activeSlice: null,
   activeTask: null,
   progress: null,
@@ -61,12 +63,25 @@ export function mapQuerySnapshot(json: unknown): BridgeStatus {
   return {
     phase: typeof state.phase === "string" ? state.phase : "unknown",
     activeMilestone: activeRef(state.activeMilestone),
+    lastCompletedMilestone: activeRef(state.lastCompletedMilestone),
     activeSlice: activeRef(state.activeSlice),
     activeTask: activeRef(state.activeTask),
     progress: progressBlock,
     cost: typeof cost?.total === "number" ? (cost.total as number) : 0,
-    nextAction: typeof state.nextAction === "string" ? (state.nextAction as string) : null,
+    // B2: nextAction — try state.nextAction first, fallback to root.next.action
+    nextAction:
+      typeof state.nextAction === "string"
+        ? (state.nextAction as string)
+        : typeof (obj(root.next) as { action?: string } | null)?.action === "string"
+        ? ((obj(root.next) as { action?: string })!.action as string)
+        : null,
     blockers: Array.isArray(state.blockers) ? (state.blockers as unknown[]) : [],
-    sessionId: typeof root.sessionId === "string" ? (root.sessionId as string) : null,
+    // B2: sessionId — try root.sessionId first, fallback to state.sessionId
+    sessionId:
+      typeof root.sessionId === "string"
+        ? (root.sessionId as string)
+        : typeof (state as { sessionId?: string }).sessionId === "string"
+        ? ((state as { sessionId?: string }).sessionId as string)
+        : null,
   };
 }

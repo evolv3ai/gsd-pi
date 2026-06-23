@@ -1,6 +1,14 @@
 import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import { runExport } from "../commands/export.js";
+import { friendlyError } from "../commands/error-message.js";
+
+export interface ExportToolDetails {
+  phaseCount: number;
+  taskCount: number;
+  specPath: string;
+  manifestPath: string;
+}
 
 export function registerExportTool(pi: ExtensionAPI): void {
   pi.registerTool({
@@ -15,17 +23,31 @@ export function registerExportTool(pi: ExtensionAPI): void {
       userPrompt: Type.Optional(Type.String()),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-      const result = await runExport(params.htmlPath, {
-        mode: params.mode,
-        userPrompt: params.userPrompt ?? null,
-      });
-      return {
-        content: [{
-          type: "text" as const,
-          text: `Exported ${result.phaseCount} phases (${result.taskCount} tasks) to ${result.specPath} and ${result.manifestPath}.`,
-        }],
-        details: undefined as unknown,
-      };
+      try {
+        const result = await runExport(params.htmlPath, {
+          mode: params.mode,
+          userPrompt: params.userPrompt ?? null,
+        });
+        const details: ExportToolDetails = {
+          phaseCount: result.phaseCount,
+          taskCount: result.taskCount,
+          specPath: result.specPath,
+          manifestPath: result.manifestPath,
+        };
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Exported ${result.phaseCount} phases (${result.taskCount} tasks) to ${result.specPath} and ${result.manifestPath}.`,
+          }],
+          details,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: friendlyError(err) }],
+          isError: true,
+          details: undefined as unknown,
+        };
+      }
     },
   });
 }
@@ -39,11 +61,15 @@ export function registerExportCommand(pi: ExtensionAPI): void {
         ctx.ui.notify("Usage: /planf3-gsd-export <path-to-plan.html>", "error");
         return;
       }
-      const result = await runExport(htmlPath);
-      ctx.ui.notify(
-        `Exported → ${result.specPath}\n             ${result.manifestPath}`,
-        "info",
-      );
+      try {
+        const result = await runExport(htmlPath);
+        ctx.ui.notify(
+          `Exported → ${result.specPath}\n             ${result.manifestPath}`,
+          "info",
+        );
+      } catch (err) {
+        ctx.ui.notify(friendlyError(err), "error");
+      }
     },
   });
 }

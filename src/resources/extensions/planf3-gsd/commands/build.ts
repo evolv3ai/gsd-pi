@@ -1,7 +1,9 @@
 import { readFile, writeFile } from "node:fs/promises";
-import { GsdRunner, realSpawner, type Spawner } from "../gsd/headless-runner.js";
+import { GsdRunner, type Spawner } from "../gsd/headless-runner.js";
+import { realSpawner } from "../gsd/real-spawner.js";
 import { mapQuerySnapshot, type BridgeStatus } from "../gsd/status-mapper.js";
 import { runExport, type ExportResult } from "./export.js";
+import { friendlyError } from "./error-message.js";
 
 export interface BuildResult {
   specPath: string;
@@ -19,13 +21,32 @@ export interface BuildOptions {
 
 export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promise<BuildResult> {
   const cwd = opts.cwd ?? process.cwd();
-  const exportResult: ExportResult = await runExport(htmlPath, { mode: opts.auto ? "auto" : "step", projectRoot: cwd });
+  let exportResult: ExportResult;
+  try {
+    exportResult = await runExport(htmlPath, { mode: opts.auto ? "auto" : "step", projectRoot: cwd });
+  } catch (err) {
+    throw new Error(friendlyError(err));
+  }
 
   const runner = new GsdRunner({ binary: opts.binary, cwd, spawn: opts.spawn ?? realSpawner });
-  await runner.newMilestone(exportResult.specPath, { auto: opts.auto === true });
-  const queryResult = await runner.query();
+  try {
+    await runner.newMilestone(exportResult.specPath, { auto: opts.auto === true });
+  } catch (err) {
+    throw new Error(friendlyError(err, opts.binary ?? "gsd"));
+  }
+
+  let queryResult;
+  try {
+    queryResult = await runner.query();
+  } catch (err) {
+    throw new Error(friendlyError(err, opts.binary ?? "gsd"));
+  }
+
   const status = mapQuerySnapshot(queryResult.json);
-  const milestoneId = status.activeMilestone?.id ?? null;
+
+  // A1: In auto mode, newMilestone blocks until the run completes, so
+  // activeMilestone is null afterwards. Fall back to lastCompletedMilestone.
+  const milestoneId = status.activeMilestone?.id ?? status.lastCompletedMilestone?.id ?? null;
 
   if (milestoneId) {
     const manifestText = await readFile(exportResult.manifestPath, "utf8");
