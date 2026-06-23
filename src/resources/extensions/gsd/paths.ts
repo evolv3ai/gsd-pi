@@ -23,6 +23,7 @@ import {
   phaseDirName,
   planFileName,
   milestoneIdToPhaseNum,
+  milestoneIdUniqueSuffix,
   sliceIdToPlanNum,
   derivePhaseSlug,
 } from "./layout-policy.js";
@@ -644,19 +645,33 @@ function pickPreferredPhaseDir(phasesDir: string, matches: string[]): string {
   return best;
 }
 
+function phaseDirMatchesMilestoneId(dirName: string, milestoneId: string, phaseNum: number): boolean {
+  const numMatch = dirName.match(/^(\d+)-(.*)$/);
+  if (!numMatch || parseInt(numMatch[1]!, 10) !== phaseNum) return false;
+  const slugPart = numMatch[2]!;
+  const suffix = milestoneIdUniqueSuffix(milestoneId);
+  if (suffix) {
+    return slugPart === suffix || slugPart.startsWith(`${suffix}-`);
+  }
+  // Plain sequential IDs must not resolve to unique-suffix phase dirs.
+  return !/^[a-z0-9]{6}(-|$)/.test(slugPart);
+}
+
 function resolvePhaseDir(basePath: string, milestoneId: string): string | null {
   // Try flat-phase layout first: phases/NN-slug/ (always scan phases/, even when
   // legacy milestones/ coexists during partial migration).
   const phasesDir = join(gsdProjectionRoot(basePath), LAYOUT_SEGMENTS.level1);
   if (existsSync(phasesDir)) {
     const phaseNum = milestoneIdToPhaseNum(milestoneId);
+    const canonical = canonicalPhaseDirName(milestoneId);
+    if (existsSync(join(phasesDir, canonical))) {
+      return join(phasesDir, canonical);
+    }
     const matches: string[] = [];
     try {
       for (const entry of readdirSync(phasesDir, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
-        // Numeric prefix match via parseInt so 001-slug resolves to M001.
-        const numMatch = entry.name.match(/^(\d+)-/);
-        if (numMatch && parseInt(numMatch[1]!, 10) === phaseNum) {
+        if (phaseDirMatchesMilestoneId(entry.name, milestoneId, phaseNum)) {
           matches.push(entry.name);
         }
       }
@@ -664,7 +679,6 @@ function resolvePhaseDir(basePath: string, milestoneId: string): string | null {
       // unreadable — fall through
     }
     if (matches.length > 0) {
-      const canonical = canonicalPhaseDirName(milestoneId);
       const preferred = matches.includes(canonical)
         ? canonical
         : pickPreferredPhaseDir(phasesDir, matches);
@@ -688,6 +702,10 @@ function resolvePhaseDir(basePath: string, milestoneId: string): string | null {
 export function canonicalPhaseDirName(milestoneId: string, title?: string): string {
   const phaseNum = milestoneIdToPhaseNum(milestoneId);
   const slug = derivePhaseSlug(title || milestoneId);
+  const suffix = milestoneIdUniqueSuffix(milestoneId);
+  if (suffix) {
+    return phaseDirName(phaseNum, `${suffix}-${slug}`);
+  }
   return phaseDirName(phaseNum, slug);
 }
 

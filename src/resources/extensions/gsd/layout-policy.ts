@@ -52,6 +52,12 @@ export function milestoneIdToPhaseNum(milestoneId: string): number {
   return m ? Number.parseInt(m[1]!, 10) : 1;
 }
 
+/** Team-mode suffix from milestone ids like M001-abc123. */
+export function milestoneIdUniqueSuffix(milestoneId: string): string | undefined {
+  const m = milestoneId.match(/^M(\d{3})(?:-([a-z0-9]{6}))?$/);
+  return m?.[2];
+}
+
 /**
  * Extract the numeric portion of a slice id (S01 → 1).
  * Used by the renderer to derive the plan number from the DB's slice_id.
