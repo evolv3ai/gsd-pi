@@ -137,6 +137,14 @@ function resolveRoadmapProjectionPath(basePath: string, milestoneId: string): st
   return join(phaseDir, roadmapFileName);
 }
 
+function isMilestoneFlatPhaseLayout(basePath: string, milestoneId: string): boolean {
+  const existing = resolveMilestonePath(basePath, milestoneId);
+  const legacyBase = legacyMilestonesDir(basePath);
+  return existing
+    ? !(existing.startsWith(legacyBase + "/") || existing.startsWith(legacyBase + "\\"))
+    : !isLegacyMilestonesLayout(basePath);
+}
+
 /**
  * Write rendered content to disk and update the artifacts table.
  */
@@ -880,17 +888,10 @@ export function detectStaleRenders(basePath: string): StaleEntry[] {
   // checks are still valid for flat-phase and must run.
   // TODO(flat-phase): re-enable plan-checkbox checks once the native parser
   // supports <tasks> blocks.
-  const isFlatPhase = !isLegacyMilestonesLayout(basePath);
-  return detectStaleRendersImpl(basePath, {
-    skipPlanCheckboxCheck: isFlatPhase,
-    skipTaskSummaryCheck: isFlatPhase,
-  });
+  return detectStaleRendersImpl(basePath);
 }
 
-function detectStaleRendersImpl(
-  basePath: string,
-  options: { skipPlanCheckboxCheck?: boolean; skipTaskSummaryCheck?: boolean } = {},
-): StaleEntry[] {
+function detectStaleRendersImpl(basePath: string): StaleEntry[] {
   // per-call createRequire("./parsers-legacy") that used to live here ran on
   // every dispatch. The static `./parsers-legacy.js` specifier resolves in
   // both packaged (.js) and source (.ts via the strip-types loader) contexts —
@@ -900,6 +901,7 @@ function detectStaleRendersImpl(
 
   for (const milestone of milestones) {
     const slices = getMilestoneSlices(milestone.id);
+    const isFlatPhase = isMilestoneFlatPhaseLayout(basePath, milestone.id);
 
     // ── Check roadmap checkbox state ──────────────────────────────────
     const roadmapPath = resolveRoadmapProjectionPath(basePath, milestone.id);
@@ -933,7 +935,7 @@ function detectStaleRendersImpl(
     for (const slice of slices) {
       const tasks = getSliceTasks(milestone.id, slice.id);
 
-      if (!options.skipPlanCheckboxCheck) {
+      if (!isFlatPhase) {
         // Check plan checkboxes
         const planPath = resolveSliceFile(basePath, milestone.id, slice.id, "PLAN");
         if (planPath && existsSync(planPath!)) {
@@ -974,7 +976,7 @@ function detectStaleRendersImpl(
 
       // Check missing task summary files (legacy layout only — flat-phase keeps
       // task state in plan <tasks> blocks and does not project Txx-SUMMARY.md)
-      if (!options.skipTaskSummaryCheck) {
+      if (!isFlatPhase) {
         for (const task of tasks) {
           if (isClosedStatus(task.status) && task.full_summary_md) {
             const slicePath = resolveSlicePath(basePath, milestone.id, slice.id);
