@@ -1,7 +1,7 @@
 // gsd-pi + Workspace handle: single source of truth for path resolution per milestone
 
 import { join, resolve } from "node:path";
-import { type GsdPathContract, resolveGsdPathContract, normalizeRealPath } from "./paths.js";
+import { type GsdPathContract, resolveGsdPathContract, normalizeRealPath, resolveMilestoneFile, resolveMilestonePath } from "./paths.js";
 import { isGsdWorktreePath, resolveWorktreeProjectRoot } from "./worktree-root.js";
 
 export type GsdWorkspaceMode = "project" | "worktree";
@@ -81,14 +81,27 @@ export function scopeMilestone(workspace: GsdWorkspace, milestoneId: string): Mi
   const { contract } = workspace;
   const gsd = contract.projectGsd;
 
+  // Legacy path builders — returned when the file/dir doesn't exist on disk yet
+  // (e.g. before the discuss unit runs). Once the discuss unit creates the files
+  // in the flat-phase layout, the layout-aware resolvers below find them instead.
+  const legacyContextFile = join(gsd, "milestones", milestoneId, `${milestoneId}-CONTEXT.md`);
+  const legacyRoadmapFile = join(gsd, "milestones", milestoneId, `${milestoneId}-ROADMAP.md`);
+  const legacyMilestoneDir = join(gsd, "milestones", milestoneId);
+
   const scope: MilestoneScope = Object.freeze({
     workspace,
     milestoneId,
-    contextFile: () => join(gsd, "milestones", milestoneId, `${milestoneId}-CONTEXT.md`),
-    roadmapFile: () => join(gsd, "milestones", milestoneId, `${milestoneId}-ROADMAP.md`),
+    // Layout-aware: try the flat-phase resolver first; fall back to the legacy
+    // path when the file/dir doesn't exist yet (preserves cwd-drift stability
+    // because all paths are absolute regardless of which branch is taken).
+    contextFile: () =>
+      resolveMilestoneFile(workspace.projectRoot, milestoneId, "CONTEXT") ?? legacyContextFile,
+    roadmapFile: () =>
+      resolveMilestoneFile(workspace.projectRoot, milestoneId, "ROADMAP") ?? legacyRoadmapFile,
+    milestoneDir: () =>
+      resolveMilestonePath(workspace.projectRoot, milestoneId) ?? legacyMilestoneDir,
     stateFile: () => join(gsd, "STATE.md"),
     dbPath: () => contract.projectDb,
-    milestoneDir: () => join(gsd, "milestones", milestoneId),
     metaJson: () => join(gsd, `${milestoneId}-META.json`),
   });
 
