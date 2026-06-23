@@ -589,11 +589,26 @@ function probeGsdRoot(rawBasePath: string): string {
   // 4. Fallback for init/creation
   return local;
 }
+function legacyMilestonesHasSubdirs(basePath: string): boolean {
+  const legacy = join(gsdProjectionRoot(basePath), "milestones");
+  if (!existsSync(legacy)) return false;
+  try {
+    return readdirSync(legacy).some(e => statSync(join(legacy, e)).isDirectory());
+  } catch {
+    return false;
+  }
+}
+
+export function isLegacyMilestonesLayout(basePath: string): boolean {
+  return legacyMilestonesHasSubdirs(basePath);
+}
+
 export function milestonesDir(basePath: string): string {
-  // Layout-aware: return milestones/ when it exists (legacy), otherwise phases/ (flat-phase).
+  // Layout-aware: return milestones/ when it has legacy content, otherwise phases/.
   const root = gsdProjectionRoot(basePath);
-  const legacy = join(root, "milestones");
-  if (existsSync(legacy)) return legacy;
+  if (legacyMilestonesHasSubdirs(basePath)) {
+    return join(root, "milestones");
+  }
   return join(root, LAYOUT_SEGMENTS.level1);
 }
 

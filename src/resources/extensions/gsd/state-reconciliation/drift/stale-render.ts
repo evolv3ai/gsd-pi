@@ -171,13 +171,19 @@ async function repairStaleRenderFromBasePath(
       sliceId = pathMatch[2];
     } else {
       // Flat-phase: scan milestone's slices for the task
-      sliceId = "S01";
+      let foundSliceId: string | undefined;
       for (const s of getMilestoneSlices(milestoneId)) {
         if (getSliceTasks(milestoneId, s.id).some(t => t.id === taskMatch[1])) {
-          sliceId = s.id;
+          foundSliceId = s.id;
           break;
         }
       }
+      if (!foundSliceId) {
+        throw new Error(
+          `stale-render drift: task ${taskMatch[1]} not found in any slice of ${milestoneId} (${record.renderPath})`,
+        );
+      }
+      sliceId = foundSliceId;
     }
     const wrote = await renderTaskSummary(basePath, milestoneId, sliceId, taskMatch[1]!);
     if (!wrote) {

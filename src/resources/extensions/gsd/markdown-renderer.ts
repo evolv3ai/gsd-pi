@@ -43,7 +43,7 @@ import {
 import { saveFile, clearParseCache, registerCacheClearCallback } from "./files.js";
 import { parseRoadmap, parsePlan } from "./parsers-legacy.js";
 import { invalidateStateCache } from "./state.js";
-import { clearPathCache, milestonesDir, legacyMilestonesDir, resolveMilestonePath, relSliceFile } from "./paths.js";
+import { clearPathCache, milestonesDir, legacyMilestonesDir, isLegacyMilestonesLayout, resolveMilestonePath, relSliceFile } from "./paths.js";
 import type { RiskLevel } from "./types.js";
 import {
   phaseDirName,
@@ -126,7 +126,7 @@ function resolveRoadmapProjectionPath(basePath: string, milestoneId: string): st
   const legacyBase = legacyMilestonesDir(basePath);
   const isLegacyLayout = existing
     ? existing.startsWith(legacyBase + "/") || existing.startsWith(legacyBase + "\\")
-    : existsSync(legacyBase);
+    : isLegacyMilestonesLayout(basePath);
   const phaseDir = existing ?? join(
     isLegacyLayout ? legacyBase : milestonesDir(basePath),
     isLegacyLayout ? milestoneId : phaseDirName(phaseNum, derivePhaseSlug(getMilestone(milestoneId)?.title || milestoneId)),
@@ -471,7 +471,7 @@ export async function renderTaskPlanFromDb(
       const legacyBase = legacyMilestonesDir(basePath);
       const isLegacyLayout = existing
         ? existing.startsWith(legacyBase + "/") || existing.startsWith(legacyBase + "\\")
-        : existsSync(legacyBase);
+        : isLegacyMilestonesLayout(basePath);
       const phaseDir = existing ?? join(
         isLegacyLayout ? legacyBase : milestonesDir(basePath),
         isLegacyLayout ? milestoneId : phaseDirName(milestoneIdToPhaseNum(milestoneId), derivePhaseSlug(getMilestone(milestoneId)?.title || milestoneId)),

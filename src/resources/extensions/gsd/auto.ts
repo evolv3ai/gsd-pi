@@ -57,6 +57,7 @@ import {
   resolveTaskFile,
   milestonesDir,
   legacyMilestonesDir,
+  isLegacyMilestonesLayout,
   buildTaskFileName,
 } from "./paths.js";
 import { invalidateAllCaches } from "./cache.js";
@@ -3006,7 +3007,7 @@ export function ensurePreconditions(
     // Layout-aware: if the legacy milestones/ dir exists, place the new milestone dir
     // there (preserves the existing project layout). Otherwise use flat-phase phases/.
     const legacyBase = legacyMilestonesDir(base);
-    const isLegacyLayout = existsSync(legacyBase);
+    const isLegacyLayout = isLegacyMilestonesLayout(base);
     const targetBase = isLegacyLayout ? legacyBase : milestonesDir(base);
     // Flat-phase: look up the milestone title to build the canonical NN-slug dir name
     // (e.g. "01-foundation") that resolveMilestonePath will later find by prefix.
@@ -3023,8 +3024,7 @@ export function ensurePreconditions(
   }
 
   if (sid !== undefined) {
-    const legacyBase = legacyMilestonesDir(base);
-    const isLegacyLayout = existsSync(legacyBase);
+    const isLegacyLayout = isLegacyMilestonesLayout(base);
     // Flat-phase: tasks are checkboxes in NN-MM-PLAN.md — no slices/ subdir needed.
     if (!isLegacyLayout) return;
 
