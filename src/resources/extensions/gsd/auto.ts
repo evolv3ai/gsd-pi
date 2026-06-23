@@ -41,11 +41,7 @@ import {
 import { extractSection, getManifestStatus, splitFrontmatter, parseFrontmatterMap } from "./files.js";
 export { inlinePriorMilestoneSummary } from "./files.js";
 import { collectSecretsFromManifest } from "../get-secrets-from-user.js";
-import {
-  phaseDirName,
-  derivePhaseSlug,
-  milestoneIdToPhaseNum,
-} from "./layout-policy.js";
+
 import {
   gsdRoot,
   resolveMilestoneFile,
@@ -59,6 +55,7 @@ import {
   legacyMilestonesDir,
   isLegacyMilestonesLayout,
   buildTaskFileName,
+  canonicalPhaseDirName,
 } from "./paths.js";
 import { invalidateAllCaches } from "./cache.js";
 import { clearActivityLogState } from "./activity-log.js";
@@ -3014,10 +3011,7 @@ export function ensurePreconditions(
     // Legacy layout keeps the raw milestone id (e.g. "M001").
     const dirName = isLegacyLayout
       ? mid
-      : phaseDirName(
-          milestoneIdToPhaseNum(mid),
-          derivePhaseSlug(getMilestone(mid)?.title || mid),
-        );
+      : canonicalPhaseDirName(mid, getMilestone(mid)?.title);
     const newDir = join(targetBase, dirName);
     // Legacy projects use a slices/ subdir; flat-phase uses top-level plan files (no slices/).
     mkdirSync(isLegacyLayout ? join(newDir, "slices") : newDir, { recursive: true });

@@ -14,6 +14,7 @@ import {
   closeDatabase,
   insertMilestone,
 } from "../gsd-db.ts";
+import { canonicalPhaseDirName } from "../paths.ts";
 
 import type { GSDState } from "../types.ts";
 
@@ -50,7 +51,8 @@ describe("ensurePreconditions phantom-dir guard (#4996)", () => {
 
     ensurePreconditions("execute-task", "M003/S01", base, state);
 
-    const milestoneDir = join(base, ".gsd", "phases", "03-test");
+    // Flat-phase: phantom guard must not create any phase dir for an unrecognised milestone.
+    const milestoneDir = join(base, ".gsd", "phases", canonicalPhaseDirName("M003"));
     assert.ok(!existsSync(milestoneDir), "M003 dir must not be created for phantom slice dispatch");
   });
 
@@ -63,22 +65,26 @@ describe("ensurePreconditions phantom-dir guard (#4996)", () => {
 
     ensurePreconditions("execute-task", "M003/S01", base, state);
 
-    const milestoneDir = join(base, ".gsd", "phases", "03-test");
-    assert.ok(existsSync(milestoneDir), "M003 dir must be created when DB row exists");
+    // Flat-phase: dir is created under phases/ using the canonical phase dir name.
+    const milestoneDir = join(base, ".gsd", "phases", canonicalPhaseDirName("M003"));
+    assert.ok(existsSync(milestoneDir), "M003 phase dir must be created when DB row exists");
   });
 
-  it("(c) slice unit ID for existing milestone dir with CONTEXT.md content file uses normal scaffolding", () => {
+  it("(c) slice unit ID for existing milestone dir with CONTEXT.md content file does not clobber it", () => {
     base = makeBase();
     const mid = "M003";
-    const milestoneDir = join(base, ".gsd", "phases", "03-test");
+    // Use canonicalPhaseDirName so the dir is found by resolveMilestonePath.
+    const milestoneDir = join(base, ".gsd", "phases", canonicalPhaseDirName(mid));
     mkdirSync(milestoneDir, { recursive: true });
     writeFileSync(join(milestoneDir, `${mid}-CONTEXT.md`), "# Context\n");
     const state = makeMinimalState();
 
     ensurePreconditions("execute-task", "M003/S01", base, state);
 
-    const slicesDir = join(milestoneDir, "slices");
-    assert.ok(existsSync(slicesDir), "existing milestone dir should allow slice scaffolding");
+    // Flat-phase: ensurePreconditions returns early when the phase dir already exists.
+    // Tasks are checkboxes in plan files — no slices/ subdir is created.
+    assert.ok(existsSync(milestoneDir), "existing milestone dir must survive ensurePreconditions");
+    assert.ok(!existsSync(join(milestoneDir, "slices")), "flat-phase must not scaffold slices/ subdir");
   });
 
   it("(d) milestone-only unit ID (no slice) still creates dir even with no DB row", () => {
@@ -87,7 +93,8 @@ describe("ensurePreconditions phantom-dir guard (#4996)", () => {
 
     ensurePreconditions("discuss-milestone", "M003", base, state);
 
-    const milestoneDir = join(base, ".gsd", "phases", "03-test");
-    assert.ok(existsSync(milestoneDir), "M003 dir must be created for milestone-only dispatch");
+    // Flat-phase: dir is created under phases/ using the canonical phase dir name.
+    const milestoneDir = join(base, ".gsd", "phases", canonicalPhaseDirName("M003"));
+    assert.ok(existsSync(milestoneDir), "M003 phase dir must be created for milestone-only dispatch");
   });
 });
