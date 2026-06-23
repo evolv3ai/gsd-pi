@@ -19,7 +19,7 @@ import type { GSDState } from "../types.ts";
 
 function makeBase(prefix = "gsd-precond-"): string {
   const base = mkdtempSync(join(tmpdir(), prefix));
-  mkdirSync(join(base, ".gsd", "milestones"), { recursive: true });
+  mkdirSync(join(base, ".gsd", "phases"), { recursive: true });
   return base;
 }
 
@@ -50,7 +50,7 @@ describe("ensurePreconditions phantom-dir guard (#4996)", () => {
 
     ensurePreconditions("execute-task", "M003/S01", base, state);
 
-    const milestoneDir = join(base, ".gsd", "milestones", "M003");
+    const milestoneDir = join(base, ".gsd", "phases", "03-test");
     assert.ok(!existsSync(milestoneDir), "M003 dir must not be created for phantom slice dispatch");
   });
 
@@ -63,14 +63,14 @@ describe("ensurePreconditions phantom-dir guard (#4996)", () => {
 
     ensurePreconditions("execute-task", "M003/S01", base, state);
 
-    const milestoneDir = join(base, ".gsd", "milestones", "M003");
+    const milestoneDir = join(base, ".gsd", "phases", "03-test");
     assert.ok(existsSync(milestoneDir), "M003 dir must be created when DB row exists");
   });
 
   it("(c) slice unit ID for existing milestone dir with CONTEXT.md content file uses normal scaffolding", () => {
     base = makeBase();
     const mid = "M003";
-    const milestoneDir = join(base, ".gsd", "milestones", mid);
+    const milestoneDir = join(base, ".gsd", "phases", "03-test");
     mkdirSync(milestoneDir, { recursive: true });
     writeFileSync(join(milestoneDir, `${mid}-CONTEXT.md`), "# Context\n");
     const state = makeMinimalState();
@@ -87,7 +87,7 @@ describe("ensurePreconditions phantom-dir guard (#4996)", () => {
 
     ensurePreconditions("discuss-milestone", "M003", base, state);
 
-    const milestoneDir = join(base, ".gsd", "milestones", "M003");
+    const milestoneDir = join(base, ".gsd", "phases", "03-test");
     assert.ok(existsSync(milestoneDir), "M003 dir must be created for milestone-only dispatch");
   });
 });
