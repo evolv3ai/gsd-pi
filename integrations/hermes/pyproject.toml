@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "open-gsd-hermes"
+version = "1.2.0"
+description = "Hermes Agent plugin — GSD structured delivery engine integration"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+  "PyYAML>=6.0",
+  "packaging>=23.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.entry-points."hermes_agent.plugins"]
+open_gsd_hermes = "open_gsd_hermes:register"
+
+[project.scripts]
+hermes-gsd-cron = "open_gsd_hermes.cron:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["open_gsd_hermes*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -1088,6 +1088,26 @@ export async function createMcpServer(
   );
 
   // -----------------------------------------------------------------------
+  // gsd_cancel_by_project — cancel by projectDir only (Hermes /gsd cancel)
+  // -----------------------------------------------------------------------
+  server.tool(
+    'gsd_cancel_by_project',
+    'Cancel the active GSD session for a project directory. Use when sessionId is unknown (e.g. Hermes gateway /gsd cancel).',
+    {
+      projectDir: z.string().describe('Absolute path to the project directory'),
+    },
+    async (args: Record<string, unknown>) => {
+      const { projectDir } = args as { projectDir: string };
+      try {
+        await sessionManager.cancelSessionByDir(validateProjectDir(projectDir));
+        return jsonContent({ cancelled: true, projectDir });
+      } catch (err) {
+        return errorContent(err instanceof Error ? err.message : String(err));
+      }
+    },
+  );
+
+  // -----------------------------------------------------------------------
   // gsd_query — read project state from filesystem (no session needed).
   //
   // `query` is optional: when omitted the tool returns all fields (STATE.md,

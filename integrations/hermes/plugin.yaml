@@ -1,0 +1,38 @@
+name: open-gsd-hermes
+version: 1.2.0
+description: GSD structured delivery — gateway supervision, cron headless, memory provider
+entry_point: open_gsd_hermes:register
+config_schema:
+  type: object
+  properties:
+    gsd:
+      type: object
+      properties:
+        cli_path:
+          type: string
+          description: Path to gsd CLI binary
+        mcp_server_path:
+          type: string
+          description: Path to gsd-mcp-server binary
+        credential_source:
+          type: string
+          enum: [gsd, hermes]
+          default: gsd
+        default_project:
+          type: string
+        bindings:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: string
+        poll_interval_seconds:
+          type: integer
+          default: 12
+        cache_ttl_seconds:
+          type: integer
+          default: 45
+        notification_level:
+          type: string
+          enum: [quiet, normal, verbose]
+          default: normal

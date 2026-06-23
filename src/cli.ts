@@ -321,6 +321,7 @@ const subcommandsExemptFromEarlyTtyCheck = new Set([
   'config',
   'graph',
   'headless',
+  'read',
   'install',
   'list',
   'remove',
@@ -453,6 +454,12 @@ if (cliFlags.messages[0] === 'sessions') {
   // Mark for the interactive session below to open this specific session
   cliFlags.continue = true
   cliFlags._selectedSessionPath = selected.path
+}
+
+// `gsd read` — JSON read seam for integrations (Hermes 6c)
+if (cliFlags.messages[0] === 'read') {
+  const { runReadCli } = await import('./read-cli.js')
+  process.exit(await runReadCli(process.argv))
 }
 
 // `gsd headless` — run auto-mode without TUI

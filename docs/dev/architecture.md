@@ -178,3 +178,9 @@ Model routing (complexity classification, budget pressure, routing history, capa
 | `preferences-models.ts` | Model preferences configuration |
 | `preferences-validation.ts` | Preferences validation |
 | `preferences-types.ts` | Preferences type definitions |
+
+## External Integrations
+
+| Integration | Location | Description |
+|-------------|----------|-------------|
+| **Hermes Agent** | [`integrations/hermes/`](../../integrations/hermes/) | Open GSD plugin (`open-gsd-hermes`) — gateway slash commands, `pre_llm_call` project snapshots, background supervisor, cron headless, memory provider. Uses `gsd-mcp-server` for orchestration (not `gsd --mode mcp`). See [`hermes-integration-plan.md`](hermes-integration-plan.md). |

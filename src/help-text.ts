@@ -133,6 +133,18 @@ const SUBCOMMAND_HELP: Record<string, string> = {
     '  gsd graph diff                         Show changes since last snapshot',
   ].join('\n'),
 
+  read: [
+    'Usage: gsd read <progress|roadmap|memory> --json --project <path>',
+    '',
+    'JSON read seam for external integrations (e.g. open-gsd-hermes).',
+    'Emits envelope: { integration_version, kind, projectDir, data }.',
+    '',
+    'Examples:',
+    '  gsd read progress --json --project ~/code/myapp',
+    '  gsd read roadmap --json --project ~/code/myapp --milestone M001',
+    '  gsd read memory --json --project ~/code/myapp --query auth',
+  ].join('\n'),
+
   headless: [
     'Usage: gsd headless [flags] [command] [args...]',
     '',
