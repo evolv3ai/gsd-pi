@@ -614,10 +614,13 @@ test("undo/reset: undo task and reset slice revert DB + markdown", async (t) => 
     assert.equal(existsSync(sliceSummaryPath), false, "Slice summary should be deleted after reset");
     assert.equal(existsSync(sliceUatPath), false, "Slice UAT should be deleted after reset");
 
-    // Plan checkboxes should be unchecked
+    // Plan checkboxes should be unchecked.
+    // renderSlicePlanMarkdown renders tasks as "- [ ] **TID**: title" (colon after
+    // the closing **), so we match both the original fixture format (**T01: title**)
+    // and the DB-rendered format (**T01**: title) with a flexible regex.
     const planAfterReset = readFileSync(planPath, "utf-8");
-    assert.ok(planAfterReset.includes("[ ] **T01:"), "T01 should be unchecked after reset");
-    assert.ok(planAfterReset.includes("[ ] **T02:"), "T02 should be unchecked after reset");
+    assert.ok(/\[ \]\s+\*\*T01(\*\*)?:/.test(planAfterReset), "T01 should be unchecked after reset");
+    assert.ok(/\[ \]\s+\*\*T02(\*\*)?:/.test(planAfterReset), "T02 should be unchecked after reset");
 
     // DB state is authoritative — verify slice status in DB rather than roadmap file
     // (roadmap projection format changed and undo module may not re-render it)

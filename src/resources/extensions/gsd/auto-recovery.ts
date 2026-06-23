@@ -608,10 +608,13 @@ export function verifyExpectedArtifact(
           if (plan.tasks.length > 0) taskIds = plan.tasks.map((t: { id: string }) => t.id);
         }
 
-        // Per-task plan file check only applies in legacy (non-DB-primary) path.
-        // When DB is authoritative, task rows are sufficient proof — the per-task
-        // plan files are projections, not the source of truth (#plan-slice-db-primary).
-        if (!dbPrimary && taskIds && taskIds.length > 0) {
+        // Per-task plan file check: applies when a tasks/ directory is present on
+        // disk (legacy layout), regardless of whether DB is primary. Flat-phase
+        // projects have no tasks/ dir, so the check is naturally skipped there.
+        // When DB is NOT primary and there is no tasks/ dir either, the missing
+        // dir itself is evidence of an incomplete plan (non-flat-phase projects must
+        // have a tasks/ dir).
+        if (taskIds && taskIds.length > 0) {
           const tasksDir = join(dirname(absPath), "tasks");
           if (existsSync(tasksDir)) {
             for (const tid of taskIds) {
@@ -621,7 +624,7 @@ export function verifyExpectedArtifact(
                 return false;
               }
             }
-          } else if (!absPath.includes(join(".gsd", LAYOUT_SEGMENTS.level1))) {
+          } else if (!dbPrimary && !absPath.includes(join(".gsd", LAYOUT_SEGMENTS.level1))) {
             logWarning("recovery", `verify-fail ${unitType} ${unitId}: tasks dir missing at ${tasksDir}`);
             return false;
           }
