@@ -419,8 +419,11 @@ export async function renderPlanFromDb(
   // Layout-aware path: prefer an existing plan file's location so re-renders
   // stay in place (legacy: milestones/MID/slices/SID/SID-PLAN.md;
   // flat-phase: phases/NN-slug/NN-MM-PLAN.md).
+  // Pass the milestone title so the fallback flat-phase dir uses the human-readable
+  // slug ("05-milestone-five") rather than the bare ID slug ("05-m005").
+  const milestoneTitle = getMilestone(milestoneId)?.title;
   const existingPlanPath = resolveSliceFile(basePath, milestoneId, sliceId, "PLAN");
-  const defaultPlanPath = existingPlanPath ?? join(basePath, relSliceFile(basePath, milestoneId, sliceId, "PLAN"));
+  const defaultPlanPath = existingPlanPath ?? join(basePath, relSliceFile(basePath, milestoneId, sliceId, "PLAN", milestoneTitle));
   const absPath = outputPath ?? defaultPlanPath;
   mkdirSync(dirname(absPath), { recursive: true });
   const artifactPath = toArtifactPath(absPath, basePath);

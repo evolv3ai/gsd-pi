@@ -873,9 +873,14 @@ export function relMilestoneFile(
  * Build relative .gsd/ path to a slice directory.
  * Layout-aware: legacy projects include a slices/S01/ subdir;
  * flat-phase projects use the phase dir directly.
+ *
+ * @param milestoneTitle - Optional milestone title passed through to
+ *   relMilestonePath so the flat-phase fallback dir name uses the human-readable
+ *   slug ("05-milestone-five") rather than the bare ID slug ("05-m005").
+ *   Only consulted when no phase directory exists on disk yet.
  */
 export function relSlicePath(
-  basePath: string, milestoneId: string, sliceId: string
+  basePath: string, milestoneId: string, sliceId: string, milestoneTitle?: string
 ): string {
   const mDir = resolveMilestonePath(basePath, milestoneId);
   if (mDir) {
@@ -889,17 +894,21 @@ export function relSlicePath(
     }
   }
   // Flat-phase: plans are files inside the phase dir, no slices/ subdir.
-  return relMilestonePath(basePath, milestoneId);
+  return relMilestonePath(basePath, milestoneId, milestoneTitle);
 }
 
 /**
  * Build relative .gsd/ path to a slice file.
  * Layout-aware: legacy uses S01-SUFFIX.md; flat-phase uses NN-MM-SUFFIX.md.
+ *
+ * @param milestoneTitle - Optional milestone title forwarded to relSlicePath /
+ *   relMilestonePath for title-aware flat-phase fallback dir naming. Only used
+ *   when the phase directory does not yet exist on disk.
  */
 export function relSliceFile(
-  basePath: string, milestoneId: string, sliceId: string, suffix: string
+  basePath: string, milestoneId: string, sliceId: string, suffix: string, milestoneTitle?: string
 ): string {
-  const sRel = relSlicePath(basePath, milestoneId, sliceId);
+  const sRel = relSlicePath(basePath, milestoneId, sliceId, milestoneTitle);
   const absPath = resolveSliceFile(basePath, milestoneId, sliceId, suffix);
   if (absPath) {
     const fileName = absPath.split(/[/\\]/).pop()!;
