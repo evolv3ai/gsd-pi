@@ -8,10 +8,10 @@
 
 import {
   gsdRoot,
-  gsdProjectionRoot,
   resolveDir,
   resolveFile,
   resolveMilestonePath,
+  resolveMilestoneFile,
   resolveSliceFile,
   legacyMilestonesDir,
   relMilestoneFile,
@@ -93,16 +93,11 @@ function resolveProjectSliceFile(base: string, mid: string, sid: string, suffix:
 }
 
 function resolveProjectedMilestonePath(base: string, mid: string): string | null {
-  const milestonesDir = join(gsdProjectionRoot(base), "phases");
-  const dir = resolveDir(milestonesDir, mid);
-  return dir ? join(milestonesDir, dir) : null;
+  return resolveMilestonePath(base, mid);
 }
 
 function resolveProjectedMilestoneFile(base: string, mid: string, suffix: string): string | null {
-  const dir = resolveProjectedMilestonePath(base, mid);
-  if (!dir) return null;
-  const file = resolveFile(dir, mid, suffix);
-  return file ? join(dir, file) : null;
+  return resolveMilestoneFile(base, mid, suffix);
 }
 
 function resolveProjectedSlicePath(base: string, mid: string, sid: string): string | null {
