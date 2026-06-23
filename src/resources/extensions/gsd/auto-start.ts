@@ -1115,7 +1115,7 @@ export async function bootstrapAutoSession(
     // Check milestones/ directly — ensureGsdSymlink above already created .gsd/,
     // so checking .gsd/ existence would be dead code (#2942).
     const gsdDir = join(base, ".gsd");
-    const milestonesPath = join(gsdDir, "phases");
+    const milestonesPath = join(gsdDir, "milestones");
     if (!existsSync(milestonesPath)) {
       mkdirSync(milestonesPath, { recursive: true });
       try {
