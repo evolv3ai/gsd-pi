@@ -1,8 +1,12 @@
 import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import { runStatus } from "../commands/status.js";
+import type { BridgeStatus } from "../gsd/status-mapper.js";
+import { friendlyError } from "../commands/error-message.js";
 
-function format(status: Awaited<ReturnType<typeof runStatus>>): string {
+export type StatusToolDetails = BridgeStatus;
+
+function format(status: BridgeStatus): string {
   const am = status.activeMilestone ? `${status.activeMilestone.id} (${status.activeMilestone.title})` : "—";
   const at = status.activeTask ? `${status.activeTask.id} (${status.activeTask.title})` : "—";
   const p = status.progress;
@@ -30,11 +34,20 @@ export function registerStatusTool(pi: ExtensionAPI): void {
     promptGuidelines: ["Use whenever the user asks how the GSD build is progressing."],
     parameters: Type.Object({}),
     async execute(_toolCallId, _params, _signal, _onUpdate, _ctx) {
-      const status = await runStatus();
-      return {
-        content: [{ type: "text" as const, text: format(status) }],
-        details: undefined as unknown,
-      };
+      try {
+        const status = await runStatus();
+        const details: StatusToolDetails = status;
+        return {
+          content: [{ type: "text" as const, text: format(status) }],
+          details,
+        };
+      } catch (err) {
+        return {
+          content: [{ type: "text" as const, text: friendlyError(err) }],
+          isError: true,
+          details: undefined as unknown,
+        };
+      }
     },
   });
 }
@@ -43,8 +56,12 @@ export function registerStatusCommand(pi: ExtensionAPI): void {
   pi.registerCommand("planf3-gsd-status", {
     description: "Show GSD build status for this workspace.",
     async handler(_args, ctx) {
-      const status = await runStatus();
-      ctx.ui.notify(format(status), "info");
+      try {
+        const status = await runStatus();
+        ctx.ui.notify(format(status), "info");
+      } catch (err) {
+        ctx.ui.notify(friendlyError(err), "error");
+      }
     },
   });
 }

@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { GsdRunner, type Spawner } from "./headless-runner.js";
+import { GsdRunner, parseJsonLines, type Spawner } from "./headless-runner.js";
 
 function fakeSpawner(plan: { exitCode: number; stdout: string; stderr: string; }, captured: { cmd: string; args: string[]; }[] = []): Spawner {
   return async (cmd, args) => {
@@ -42,6 +42,20 @@ describe("GsdRunner.query", () => {
     const result = await runner.query();
     assert.equal(result.exitCode, 10);
   });
+
+  // C1: exit code 1 with stderr error — does NOT throw
+  test("accepts exit code 1 (error) without throwing, returns result", async () => {
+    const runner = new GsdRunner({ binary: "gsd", cwd: "/tmp", spawn: fakeSpawner({ exitCode: 1, stdout: "", stderr: "some gsd error" }) });
+    const result = await runner.query();
+    assert.equal(result.exitCode, 1);
+  });
+
+  // C1: exit code 11 (cancelled) — does NOT throw
+  test("accepts exit code 11 (cancelled) without throwing, returns result", async () => {
+    const runner = new GsdRunner({ binary: "gsd", cwd: "/tmp", spawn: fakeSpawner({ exitCode: 11, stdout: "", stderr: "" }) });
+    const result = await runner.query();
+    assert.equal(result.exitCode, 11);
+  });
 });
 
 describe("GsdRunner.newMilestone", () => {
@@ -54,5 +68,31 @@ describe("GsdRunner.newMilestone", () => {
 
     await runner.newMilestone("specs/x.gsd.md", { auto: true });
     assert.deepEqual(captured[1].args, ["headless", "--output-format", "json", "new-milestone", "--context", "specs/x.gsd.md", "--auto"]);
+  });
+});
+
+describe("parseJsonLines", () => {
+  // A2: parses N JSONL lines
+  test("returns N parsed values for N-line JSONL stdout", () => {
+    const line1 = { type: "progress", pct: 0.1 };
+    const line2 = { type: "progress", pct: 0.5 };
+    const line3 = { type: "done", result: "ok" };
+    const stdout = [JSON.stringify(line1), JSON.stringify(line2), JSON.stringify(line3)].join("\n") + "\n";
+    const result = parseJsonLines(stdout);
+    assert.equal(result.length, 3);
+    assert.deepEqual(result[0], line1);
+    assert.deepEqual(result[1], line2);
+    assert.deepEqual(result[2], line3);
+  });
+
+  // A2: skips non-JSON line without failing
+  test("skips a non-JSON line in the middle without failing", () => {
+    const line1 = { type: "start" };
+    const line3 = { type: "end" };
+    const stdout = [JSON.stringify(line1), "[headless] noise line", JSON.stringify(line3)].join("\n");
+    const result = parseJsonLines(stdout);
+    assert.equal(result.length, 2);
+    assert.deepEqual(result[0], line1);
+    assert.deepEqual(result[1], line3);
   });
 });

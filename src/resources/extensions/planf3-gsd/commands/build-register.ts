@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import { runBuild } from "./build.js";
+import { friendlyError } from "./error-message.js";
 
 export function registerBuildCommand(pi: ExtensionAPI): void {
   pi.registerCommand("planf3-gsd-build", {
@@ -12,11 +13,15 @@ export function registerBuildCommand(pi: ExtensionAPI): void {
         ctx.ui.notify("Usage: /planf3-gsd-build <path-to-plan.html> [--auto]", "error");
         return;
       }
-      const result = await runBuild(htmlPath, { auto });
-      ctx.ui.notify(
-        `Built milestone ${result.milestoneId ?? "(unknown id)"}\nphase=${result.status.phase}\nspec=${result.specPath}\nmanifest=${result.manifestPath}`,
-        "info",
-      );
+      try {
+        const result = await runBuild(htmlPath, { auto });
+        ctx.ui.notify(
+          `Built milestone ${result.milestoneId ?? "(unknown id)"}\nphase=${result.status.phase}\nspec=${result.specPath}\nmanifest=${result.manifestPath}`,
+          "info",
+        );
+      } catch (err) {
+        ctx.ui.notify(friendlyError(err), "error");
+      }
     },
   });
 }

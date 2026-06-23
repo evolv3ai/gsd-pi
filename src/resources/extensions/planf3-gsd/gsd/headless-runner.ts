@@ -37,6 +37,25 @@ function parseStdoutJson(stdout: string): unknown | null {
   }
 }
 
+/**
+ * Parse every newline-delimited JSON line in stdout, skipping non-JSON lines.
+ * Returns parsed values in order. Use for streaming subcommands (JSONL events).
+ */
+export function parseJsonLines(stdout: string): unknown[] {
+  const results: unknown[] = [];
+  const lines = stdout.split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      results.push(JSON.parse(trimmed));
+    } catch {
+      // skip non-JSON lines
+    }
+  }
+  return results;
+}
+
 export class GsdRunner {
   private binary: string;
   private cwd: string;
@@ -58,6 +77,14 @@ export class GsdRunner {
     return this.run(args, { signal: opts.signal });
   }
 
+  /**
+   * Extract all JSONL events from a GsdResult's stdout.
+   * Use for streaming subcommands that emit line-by-line JSON.
+   */
+  extractEvents(result: GsdResult): unknown[] {
+    return parseJsonLines(result.stdout);
+  }
+
   private async run(args: string[], opts: { signal?: AbortSignal }): Promise<GsdResult> {
     const { exitCode, stdout, stderr } = await this.spawn(this.binary, args, { cwd: this.cwd, signal: opts.signal });
     if (!VALID_EXIT_CODES.has(exitCode)) {
@@ -67,19 +94,6 @@ export class GsdRunner {
   }
 }
 
-import { spawn } from "node:child_process";
-
-export const realSpawner: Spawner = (cmd, args, opts) =>
-  new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd: opts.cwd, signal: opts.signal });
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
-    child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
-    child.on("error", reject);
-    child.on("close", (code) => resolve({ exitCode: code ?? -1, stdout, stderr }));
-    if (opts.stdin !== undefined) {
-      child.stdin?.write(opts.stdin);
-      child.stdin?.end();
-    }
-  });
+// NOTE: realSpawner has been moved to ./real-spawner.ts to isolate the
+// child_process dependency. Import from there instead.
+export { realSpawner } from "./real-spawner.js";

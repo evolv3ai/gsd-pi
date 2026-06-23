@@ -3,6 +3,7 @@ import { dirname, basename, extname, join } from "node:path";
 import { parsePlanf3Html } from "../parser/planf3-html-parser.js";
 import { exportGsdSpec } from "../export/gsd-spec-exporter.js";
 import { buildManifest } from "../export/manifest-exporter.js";
+import { friendlyError } from "./error-message.js";
 
 export interface ExportResult {
   specPath: string;
@@ -25,7 +26,12 @@ function siblingPath(htmlPath: string, suffix: string): string {
 }
 
 export async function runExport(htmlPath: string, opts: ExportOptions = {}): Promise<ExportResult> {
-  const html = await readFile(htmlPath, "utf8");
+  let html: string;
+  try {
+    html = await readFile(htmlPath, "utf8");
+  } catch (err) {
+    throw new Error(friendlyError(err));
+  }
   const plan = parsePlanf3Html(html);
 
   const specPath = siblingPath(htmlPath, ".gsd.md");
