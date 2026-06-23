@@ -873,12 +873,7 @@ function parseProjectionByIdentity(path: string, parse: (content: string) => unk
 }
 
 export function detectStaleRenders(basePath: string): StaleEntry[] {
-  // TODO(flat-phase): stale-render detection is temporarily disabled during the
-  // flat-phase layout transition. The SUMMARY/UAT file path mismatch between the
-  // detector and renderer causes a drift loop that crashes the headless binary.
-  // Re-enable after all path construction is unified through layout-policy.
-  if (false) return detectStaleRendersImpl(basePath);
-  return [];
+  return detectStaleRendersImpl(basePath);
 }
 
 function detectStaleRendersImpl(basePath: string): StaleEntry[] {
