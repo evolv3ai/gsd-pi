@@ -46,6 +46,14 @@ function parseMetadata(root: HTMLElement): PlanMetadata {
   };
 }
 
+function sectionText(root: HTMLElement, id: string): string {
+  const section = root.querySelector(`section#${id}`);
+  if (!section) return "";
+  const heading = section.querySelector("h2");
+  if (heading) heading.remove();
+  return section.text.replace(/\s+/g, " ").trim();
+}
+
 export function parsePlanf3Html(html: string): ParsedPlan {
   const root = parse(html);
   const title = root.querySelector("header h1")?.text.trim() ?? "";
@@ -54,14 +62,14 @@ export function parsePlanf3Html(html: string): ParsedPlan {
     title,
     tagline,
     metadata: parseMetadata(root),
-    purpose: "",
-    problem: "",
-    solution: "",
+    purpose: sectionText(root, "purpose"),
+    problem: sectionText(root, "problem"),
+    solution: sectionText(root, "solution"),
     existingFiles: [],
     newFiles: [],
     phases: [],
     validationCommands: [],
-    notes: "",
+    notes: sectionText(root, "notes"),
     amendments: [],
     openDecisions: [],
   };
