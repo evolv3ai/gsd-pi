@@ -32,6 +32,7 @@ import { ensureGsdSymlink, isInheritedRepo, validateProjectId } from "./repo-ide
 import { migrateToExternalState, recoverFailedMigration } from "./migrate-external.js";
 import { collectSecretsFromManifest } from "../get-secrets-from-user.js";
 import { gsdRoot, resolveMilestoneFile } from "./paths.js";
+import { findMilestoneIds } from "./milestone-ids.js";
 import { milestoneEntryBlockedGuidance } from "./guidance.js";
 import { invalidateAllCaches } from "./cache.js";
 import { writeLock, clearLock, readCrashLock, isLockProcessAlive } from "./crash-recovery.js";
@@ -1889,37 +1890,32 @@ export async function bootstrapAutoSession(
 
     // Pre-flight: validate milestone queue
     try {
-      const msDir = join(base, ".gsd", "phases");
-      if (existsSync(msDir)) {
-        const milestoneIds = readdirSync(msDir, { withFileTypes: true })
-          .filter((d) => d.isDirectory() && /^M\d{3}/.test(d.name))
-          .map((d) => d.name.match(/^(M\d{3})/)?.[1] ?? d.name);
-        if (milestoneIds.length > 1) {
-          const issues: string[] = [];
-          for (const id of milestoneIds) {
-            // Skip completed/parked milestones — a leftover CONTEXT-DRAFT.md
-            // on a finished milestone is harmless residue, not an actionable warning.
-            if (isDbAvailable()) {
-              const ms = getMilestone(id);
-              if (ms?.status === "complete" || ms?.status === "parked") continue;
-            }
-            const draft = resolveMilestoneFile(base, id, "CONTEXT-DRAFT");
-            if (draft)
-              issues.push(
-                `${id}: has CONTEXT-DRAFT.md (will pause for discussion)`,
-              );
+      const milestoneIds = findMilestoneIds(base);
+      if (milestoneIds.length > 1) {
+        const issues: string[] = [];
+        for (const id of milestoneIds) {
+          // Skip completed/parked milestones — a leftover CONTEXT-DRAFT.md
+          // on a finished milestone is harmless residue, not an actionable warning.
+          if (isDbAvailable()) {
+            const ms = getMilestone(id);
+            if (ms?.status === "complete" || ms?.status === "parked") continue;
           }
-          if (issues.length > 0) {
-            ctx.ui.notify(
-              `Pre-flight: ${milestoneIds.length} milestones queued.\n${issues.map((i) => `  ⚠ ${i}`).join("\n")}`,
-              "warning",
+          const draft = resolveMilestoneFile(base, id, "CONTEXT-DRAFT");
+          if (draft)
+            issues.push(
+              `${id}: has CONTEXT-DRAFT.md (will pause for discussion)`,
             );
-          } else {
-            ctx.ui.notify(
-              `Pre-flight: ${milestoneIds.length} milestones queued. All have full context.`,
-              "info",
-            );
-          }
+        }
+        if (issues.length > 0) {
+          ctx.ui.notify(
+            `Pre-flight: ${milestoneIds.length} milestones queued.\n${issues.map((i) => `  ⚠ ${i}`).join("\n")}`,
+            "warning",
+          );
+        } else {
+          ctx.ui.notify(
+            `Pre-flight: ${milestoneIds.length} milestones queued. All have full context.`,
+            "info",
+          );
         }
       }
     } catch (err) {

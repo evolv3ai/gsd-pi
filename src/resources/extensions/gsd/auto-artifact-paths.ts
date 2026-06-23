@@ -13,6 +13,7 @@ import {
   resolveFile,
   resolveMilestonePath,
   resolveSliceFile,
+  legacyMilestonesDir,
   relMilestoneFile,
   relSliceFile,
   buildTaskFileName,
@@ -36,7 +37,7 @@ function resolveMilestoneArtifactPath(
   // Flat-phase fallback: use resolveMilestonePath which handles phases/ and milestones/.
   const dir = resolveMilestonePath(base, mid);
   if (dir) {
-    const legacyBase = join(gsdProjectionRoot(base), "phases");
+    const legacyBase = legacyMilestonesDir(base);
     const isLegacy = dir.startsWith(legacyBase + "/") || dir.startsWith(legacyBase + "\\");
     const phaseNum = milestoneIdToPhaseNum(mid);
     const filename = isLegacy
