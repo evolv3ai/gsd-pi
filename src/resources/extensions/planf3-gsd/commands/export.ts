@@ -1,8 +1,8 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, basename, extname, join } from "node:path";
-import { parsePlanf3Html } from "../parser/planf3-html-parser.ts";
-import { exportGsdSpec } from "../export/gsd-spec-exporter.ts";
-import { buildManifest } from "../export/manifest-exporter.ts";
+import { parsePlanf3Html } from "../parser/planf3-html-parser.js";
+import { exportGsdSpec } from "../export/gsd-spec-exporter.js";
+import { buildManifest } from "../export/manifest-exporter.js";
 
 export interface ExportResult {
   specPath: string;

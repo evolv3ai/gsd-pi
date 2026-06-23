@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { mapQuerySnapshot } from "./status-mapper.ts";
+import { mapQuerySnapshot } from "./status-mapper.js";
 
 describe("mapQuerySnapshot", () => {
   test("maps a full snapshot", () => {

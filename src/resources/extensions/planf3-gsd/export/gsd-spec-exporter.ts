@@ -1,5 +1,5 @@
-import type { ParsedPlan, PlanFile, PlanPhase } from "../parser/types.ts";
-import { STATUS_TO_MARKER } from "../parser/types.ts";
+import type { ParsedPlan, PlanFile, PlanPhase } from "../parser/types.js";
+import { STATUS_TO_MARKER } from "../parser/types.js";
 
 export interface ExportCtx {
   htmlPath: string;

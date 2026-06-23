@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { parsePlanf3Html } from "./planf3-html-parser.ts";
+import { parsePlanf3Html } from "./planf3-html-parser.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const minimal = readFileSync(join(here, "..", "fixtures", "minimal-plan.html"), "utf8");

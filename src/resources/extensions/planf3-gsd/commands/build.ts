@@ -1,7 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
-import { GsdRunner, realSpawner, type Spawner } from "../gsd/headless-runner.ts";
-import { mapQuerySnapshot, type BridgeStatus } from "../gsd/status-mapper.ts";
-import { runExport, type ExportResult } from "./export.ts";
+import { GsdRunner, realSpawner, type Spawner } from "../gsd/headless-runner.js";
+import { mapQuerySnapshot, type BridgeStatus } from "../gsd/status-mapper.js";
+import { runExport, type ExportResult } from "./export.js";
 
 export interface BuildResult {
   specPath: string;

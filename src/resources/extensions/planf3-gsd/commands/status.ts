@@ -1,5 +1,5 @@
-import { GsdRunner, realSpawner, type Spawner } from "../gsd/headless-runner.ts";
-import { mapQuerySnapshot, type BridgeStatus } from "../gsd/status-mapper.ts";
+import { GsdRunner, realSpawner, type Spawner } from "../gsd/headless-runner.js";
+import { mapQuerySnapshot, type BridgeStatus } from "../gsd/status-mapper.js";
 
 export interface StatusOptions {
   binary?: string;

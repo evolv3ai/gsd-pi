@@ -1,4 +1,4 @@
-import type { ParsedPlan } from "../parser/types.ts";
+import type { ParsedPlan } from "../parser/types.js";
 
 export interface TaskMapping { title: string; gsdTask: string | null; }
 export interface PhaseMapping {
