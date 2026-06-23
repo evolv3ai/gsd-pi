@@ -53,7 +53,7 @@ export function buildManifest(plan: ParsedPlan, paths: ManifestPaths, prov: Mani
     },
     mapping: {
       phases: plan.phases.map((phase, i) => ({
-        planf3Selector: `section#phases div.phase:nth-of-type(${i + 1})`,
+        planf3Selector: `section#phases > div.phase:nth-of-type(${i + 1})`,
         title: phase.title,
         gsdMilestone: null,
         gsdSlice: null,

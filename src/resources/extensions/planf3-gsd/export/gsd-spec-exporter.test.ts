@@ -46,8 +46,10 @@ describe("exportGsdSpec", () => {
     assert.match(md, /## Validation Commands\n- pnpm run verify:pr/);
   });
 
-  test("is deterministic across two calls with identical inputs", () => {
-    const plan = parsePlanf3Html(minimal);
-    assert.equal(exportGsdSpec(plan, CTX), exportGsdSpec(plan, CTX));
+  test("is deterministic across two calls with identical inputs (parses twice)", () => {
+    // C3: parse twice independently to exercise determinism through the parser
+    const planA = parsePlanf3Html(minimal);
+    const planB = parsePlanf3Html(minimal);
+    assert.equal(exportGsdSpec(planA, CTX), exportGsdSpec(planB, CTX));
   });
 });

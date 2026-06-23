@@ -35,7 +35,7 @@ describe("buildManifest", () => {
 
     assert.equal(mf.mapping.phases.length, 2);
     assert.equal(mf.mapping.phases[0].title, "Phase 1: Setup");
-    assert.equal(mf.mapping.phases[0].planf3Selector, "section#phases div.phase:nth-of-type(1)");
+    assert.equal(mf.mapping.phases[0].planf3Selector, "section#phases > div.phase:nth-of-type(1)");
     assert.equal(mf.mapping.phases[0].gsdMilestone, null);
     assert.equal(mf.mapping.phases[0].gsdSlice, null);
     assert.equal(mf.mapping.phases[0].tasks.length, 2);

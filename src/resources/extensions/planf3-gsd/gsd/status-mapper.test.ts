@@ -43,4 +43,25 @@ describe("mapQuerySnapshot", () => {
     const status = mapQuerySnapshot(null);
     assert.equal(status.phase, "unknown");
   });
+
+  // B2: nextAction fallback from root.next.action
+  test("reads nextAction from root.next.action when state.nextAction is absent", () => {
+    const snap = {
+      state: { phase: "ready" },
+      next: { action: "X" },
+      cost: { total: 0 },
+    };
+    const status = mapQuerySnapshot(snap);
+    assert.equal(status.nextAction, "X");
+  });
+
+  // B2: sessionId fallback from state.sessionId
+  test("reads sessionId from state.sessionId when root.sessionId is absent", () => {
+    const snap = {
+      state: { phase: "ready", sessionId: "S1" },
+      cost: { total: 0 },
+    };
+    const status = mapQuerySnapshot(snap);
+    assert.equal(status.sessionId, "S1");
+  });
 });
