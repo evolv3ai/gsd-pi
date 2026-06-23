@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Minimal Plan</title></head>
+  <body>
+    <header>
+      <h1>Minimal Plan</h1>
+      <p class="tagline">A tiny plan used for parser unit tests.</p>
+      <details class="meta">
+        <summary>Metadata</summary>
+        <dl>
+          <dt>created</dt><dd>2026-06-22T10:00:00-05:00</dd>
+          <dt>modified</dt><dd>2026-06-22T10:00:00-05:00</dd>
+          <dt>commits</dt><dd>—</dd>
+          <dt>agent name</dt><dd>test</dd>
+          <dt>session id</dt><dd>planf3-minimal</dd>
+          <dt>back refs</dt><dd>—</dd>
+          <dt>forward refs</dt><dd>—</dd>
+        </dl>
+      </details>
+    </header>
+
+    <section id="purpose"><h2>Purpose</h2><p>Verify the parser.</p></section>
+    <section id="problem"><h2>Problem</h2><p>Need a deterministic fixture.</p></section>
+    <section id="solution"><h2>Solution</h2><p>Handwrite one.</p></section>
+
+    <section id="files" class="files">
+      <h2>Relevant Files</h2>
+      <h3>Existing Files</h3>
+      <ul>
+        <li><span class="tag existing">existing</span> <code>src/a.ts</code> — current entry.</li>
+      </ul>
+      <h3>New Files</h3>
+      <ul>
+        <li><span class="tag new">new</span> <code>src/b.ts</code> — parser output.</li>
+      </ul>
+    </section>
+
+    <section id="phases">
+      <h2>Implementation Phases</h2>
+      <div class="phase">
+        <h3><code class="status">[wip]</code> Phase 1: Setup</h3>
+        <p>Stand up the skeleton.</p>
+        <h4>1. Scaffolding</h4>
+        <ul class="checklist">
+          <li><code class="status">[x]</code> Create the dir.</li>
+          <li><code class="status">[]</code> Add the file.</li>
+        </ul>
+        <h4>2. Testing Strategy</h4>
+        <p>Run the unit tests.</p>
+        <ul class="checklist">
+          <li><code class="status">[]</code> <code>pnpm test</code></li>
+        </ul>
+        <div class="loop">🔁 <strong>Do not exit this phase until tests are green.</strong></div>
+      </div>
+      <div class="phase">
+        <h3><code class="status">[]</code> Phase 2: Wire-up</h3>
+        <h4>1. Bind the handler</h4>
+        <ul class="checklist">
+          <li><code class="status">[f]</code> First attempt failed.</li>
+          <li><code class="status">[]</code> Retry with mocked spawn.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="validation">
+      <h2>Validation Commands</h2>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>pnpm run verify:pr</code></li>
+      </ul>
+    </section>
+
+    <section id="notes"><h2>Notes</h2><p>Test scaffolding only.</p></section>
+    <section id="amendments">
+      <h2>Amendments</h2>
+      <details><summary>2026-06-22T11:00:00-05:00 — Added phase 2.</summary><p>Detail.</p></details>
+    </section>
+  </body>
+</html>

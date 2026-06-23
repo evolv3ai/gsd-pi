@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plan: coms-net on iroh — Serverless P2P Agent Mesh</title>
+<style>
+  :root {
+    /* ── Synced visual identity (shared by CSS + generated images) ── */
+    --bg:        #0E1116;   /* deep slate, near-black            */
+    --surface:   #161B22;   /* raised panels                    */
+    --surface-2: #1C2230;   /* nested panels                    */
+    --border:    #2A3344;   /* hairline borders                 */
+    --text:      #E6EAF2;   /* primary text                     */
+    --muted:     #9AA7BD;   /* secondary text                   */
+    --dim:       #5C6B85;   /* tertiary text                    */
+    --violet:    #8B7FF7;   /* primary accent (iroh-ish)        */
+    --cyan:      #2DD4BF;   /* secondary accent (mesh links)    */
+    --amber:     #F5B547;   /* highlight / warnings             */
+    --green:     #4ADE80;   /* success / complete               */
+    --red:       #F87171;   /* failure                          */
+    --radius:    14px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 600px at 80% -10%, rgba(139,127,247,0.10), transparent 60%),
+      radial-gradient(1000px 500px at -10% 10%, rgba(45,212,191,0.07), transparent 55%),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.65;
+    font-size: 16px;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 920px; margin: 0 auto; padding: 56px 24px 120px; }
+
+  /* ── Header ── */
+  header h1 {
+    font-size: clamp(1.9rem, 4vw, 2.7rem);
+    line-height: 1.12;
+    margin: 0 0 6px;
+    letter-spacing: -0.02em;
+    background: linear-gradient(100deg, var(--text) 30%, var(--violet) 70%, var(--cyan));
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .tagline { color: var(--muted); font-size: 1.05rem; margin: 0 0 18px; }
+
+  details.meta {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 16px;
+    margin-bottom: 8px;
+    font-size: 0.86rem;
+  }
+  details.meta summary {
+    cursor: pointer; color: var(--violet); font-weight: 600;
+    font-family: var(--mono); letter-spacing: 0.02em;
+  }
+  details.meta dl {
+    display: grid; grid-template-columns: 130px 1fr;
+    gap: 4px 14px; margin: 12px 0 4px;
+  }
+  details.meta dt { color: var(--dim); font-family: var(--mono); font-size: 0.8rem; }
+  details.meta dd { margin: 0; color: var(--muted); font-family: var(--mono); font-size: 0.8rem; word-break: break-word; }
+
+  /* ── Sections ── */
+  section { margin-top: 52px; scroll-margin-top: 24px; }
+  h2 {
+    font-size: 1.6rem; letter-spacing: -0.01em; margin: 0 0 14px;
+    padding-bottom: 8px; border-bottom: 1px solid var(--border);
+  }
+  h2::before { content: "▚ "; color: var(--violet); }
+  h3 { font-size: 1.18rem; margin: 26px 0 10px; color: var(--text); }
+  h4 { font-size: 1rem; margin: 20px 0 8px; color: var(--cyan); font-family: var(--mono); }
+  p { color: var(--text); }
+  a { color: var(--cyan); }
+
+  /* ── Figures / images ── */
+  figure { margin: 22px 0; text-align: center; }
+  figure img {
+    max-width: 100%; height: auto; border-radius: var(--radius);
+    border: 1px solid var(--border);
+    box-shadow: 0 10px 40px rgba(0,0,0,0.45);
+  }
+  figcaption { color: var(--dim); font-size: 0.82rem; margin-top: 10px; font-style: italic; }
+  .img-placeholder {
+    border: 1px dashed var(--border); border-radius: var(--radius);
+    padding: 30px; color: var(--dim); font-family: var(--mono); font-size: 0.8rem;
+    background: var(--surface);
+  }
+
+  /* ── Code ── */
+  code {
+    font-family: var(--mono); font-size: 0.86em;
+    background: var(--surface-2); color: var(--cyan);
+    padding: 1px 6px; border-radius: 6px; border: 1px solid var(--border);
+  }
+  pre {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px 18px; overflow-x: auto;
+    font-size: 0.84rem; line-height: 1.55;
+  }
+  pre code { background: none; border: none; padding: 0; color: var(--text); }
+  .tok-k { color: var(--violet); }
+  .tok-s { color: var(--green); }
+  .tok-c { color: var(--dim); font-style: italic; }
+  .tok-f { color: var(--cyan); }
+
+  /* ── Lists ── */
+  ul, ol { padding-left: 22px; }
+  li { margin: 5px 0; }
+  ul.checklist { list-style: none; padding-left: 4px; }
+  ul.checklist > li { margin: 7px 0; }
+
+  /* ── Tags ── */
+  .tag {
+    font-family: var(--mono); font-size: 0.68rem; text-transform: uppercase;
+    letter-spacing: 0.06em; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid var(--border); vertical-align: middle;
+  }
+  .tag.existing { color: var(--amber); border-color: rgba(245,181,71,0.4); background: rgba(245,181,71,0.08); }
+  .tag.new { color: var(--green); border-color: rgba(74,222,128,0.4); background: rgba(74,222,128,0.08); }
+
+  .status { font-weight: 700; color: var(--dim); }
+
+  /* ── Phase blocks ── */
+  .phase {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--violet);
+    border-radius: var(--radius);
+    padding: 4px 22px 22px;
+    margin: 22px 0;
+  }
+  .phase h3 { color: var(--text); }
+  .phase h3 .status { margin-right: 6px; }
+
+  .loop {
+    margin-top: 16px; padding: 12px 16px;
+    background: rgba(45,212,191,0.06);
+    border: 1px solid rgba(45,212,191,0.3);
+    border-radius: 10px; font-size: 0.9rem; color: var(--text);
+  }
+
+  /* ── Callouts ── */
+  .callout {
+    border-radius: var(--radius); padding: 14px 18px; margin: 18px 0;
+    border: 1px solid var(--border); background: var(--surface-2);
+  }
+  .callout.warn { border-color: rgba(245,181,71,0.4); background: rgba(245,181,71,0.06); }
+  .callout.key  { border-color: rgba(139,127,247,0.45); background: rgba(139,127,247,0.07); }
+  .callout .lbl { font-family: var(--mono); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--violet); display:block; margin-bottom: 4px; }
+  .callout.warn .lbl { color: var(--amber); }
+
+  /* ── Tables ── */
+  table { width: 100%; border-collapse: collapse; margin: 18px 0; font-size: 0.88rem; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--violet); font-family: var(--mono); font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  td code { font-size: 0.82em; }
+  .yes { color: var(--green); } .no { color: var(--red); } .chg { color: var(--amber); }
+
+  details.qa, details.amend {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 16px; margin: 10px 0;
+  }
+  details.qa summary, details.amend summary { cursor: pointer; color: var(--cyan); font-weight: 600; }
+  .qa-answer { color: var(--muted); margin-top: 10px; }
+
+  hr.soft { border: none; border-top: 1px solid var(--border); margin: 34px 0; }
+  .pill { font-family: var(--mono); font-size: 0.72rem; color: var(--cyan); border: 1px solid var(--border); padding: 2px 8px; border-radius: 999px; }
+</style>
+</head>
+<body>
+<main>
+
+  <!-- ===== HEADER + UPDATABLE METADATA ===== -->
+  <header>
+    <h1>coms-net on iroh</h1>
+    <p class="tagline">Reimplement the pi agent communication network as a <strong>serverless, peer-to-peer-to-peer</strong> mesh on <strong>iroh</strong> — one env var, zero servers, zero tokens, full feature parity.</p>
+    <details class="meta">
+      <summary>Metadata</summary>
+      <dl>
+        <dt>created</dt>      <dd>2026-06-16T13:39:57-05:00</dd>
+        <dt>modified</dt>     <dd>2026-06-16T13:39:57-05:00</dd>
+        <dt>commits</dt>      <dd>4235190</dd>
+        <dt>agent name</dt>   <dd>claude-opus-4-8[1m]</dd>
+        <dt>session id</dt>   <dd>planf3-pi-iroh-coms-net</dd>
+        <dt>back refs</dt>    <dd>pi-iroh-coms.md, github:disler/pi-vs-claude-code (extensions/coms-net.ts, scripts/coms-net-server.ts)</dd>
+        <dt>forward refs</dt> <dd>—</dd>
+      </dl>
+    </details>
+  </header>
+
+  <!-- Hero image — synced to the :root visual identity. -->
+  <figure>
+    <img src="pi-iroh-coms-net/hero.png" alt="A decentralized mesh of glowing pi agent nodes connected peer-to-peer over iroh, no central server.">
+
+    <figcaption>pi agents forming a direct iroh gossip mesh — the swarm <em>is</em> the hub.</figcaption>
+  </figure>
+
+  <!-- ===== PURPOSE ===== -->
+  <section id="purpose">
+    <h2>Purpose</h2>
+    <p>
+      Port <code>extensions/coms-net.ts</code> (the pi agent-to-agent communication network) off its central
+      <strong>Bun HTTP/SSE hub</strong> and onto <strong>iroh</strong> — a fast, secure, NAT-traversing peer-to-peer
+      transport — using the <strong>iroh Python SDK</strong>. The new system reaches <strong>1:1 feature parity</strong>
+      with the existing tool surface (<code>coms_net_list</code>, <code>coms_net_send</code>, <code>coms_net_get</code>,
+      <code>coms_net_await</code>, the <code>/coms-net</code> command, the pool widget, heartbeats, hop limits, TTLs, and
+      the auto-reply-at-end-of-turn behaviour) while deleting everything that made setup multi-step: the standalone server
+      process, the <code>server.json</code> discovery file, the <code>server.secret.json</code> bearer token, and the
+      <code>--server-url</code> / <code>PI_COMS_NET_SERVER_URL</code> plumbing.
+    </p>
+    <div class="callout key">
+      <span class="lbl">North-star requirement</span>
+      <strong>1 step, 1 time configuration.</strong> An operator sets at most one env var
+      (<code>PI_COMS_NET_PROJECT</code>, default <code>"default"</code>) once. No agent is ever pointed at a URL, a token,
+      or a running resource. The only shared resources are <em>static and derived</em>: the gossip <em>topic id</em> is a
+      pure function of the project name, and identity is a persisted key on disk.
+    </div>
+  </section>
+
+  <!-- ===== PROBLEM ===== -->
+  <section id="problem">
+    <h2>Problem</h2>
+    <p>
+      The current <code>coms-net</code> is a hub-and-spoke design. A dedicated <code>scripts/coms-net-server.ts</code>
+      Bun process holds all state and exposes a REST + Server-Sent-Events API; every pi agent is a client that must be
+      told <em>where the hub is</em> and <em>how to authenticate</em>. That creates real configuration friction and
+      operational fragility:
+    </p>
+    <ul>
+      <li><strong>Multi-step setup.</strong> Start the server → it writes <code>~/.pi/coms-net/projects/&lt;project&gt;/server.json</code> + <code>server.secret.json</code> (mode 0600) → each agent reads/derives a URL + bearer token. Three moving parts before two agents can talk.</li>
+      <li><strong>A single point of failure.</strong> If the hub dies, the whole mesh is dark; clients fall into SSE reconnect backoff (<code>scheduleReconnect</code>) until it returns.</li>
+      <li><strong>Bound to one host.</strong> The default bind is loopback <code>127.0.0.1</code>; cross-machine use forces a non-loopback bind, an explicit token, and exposed ports — i.e. <em>more</em> config, plus your own NAT/firewall problem.</li>
+      <li><strong>Bearer-token surface.</strong> A long-lived secret on disk that must never be logged and must be redacted from every error string (<code>safeError</code>).</li>
+    </ul>
+    <figure>
+      <img src="pi-iroh-coms-net/problem.png" alt="A central hub server as a single point of failure, spokes labeled server.json, token, url.">
+
+      <figcaption>Hub-and-spoke today: a central process plus URL + token config every client must resolve.</figcaption>
+    </figure>
+  </section>
+
+  <!-- ===== SOLUTION ===== -->
+  <section id="solution">
+    <h2>Solution</h2>
+    <p>
+      Replace the central hub with an <strong>iroh gossip swarm</strong>. Each pi agent embeds a tiny iroh node and
+      subscribes to one <strong>topic derived from the project name</strong>. Presence and messaging both flow as signed,
+      encrypted gossip messages over that topic — so <em>the swarm itself is the hub</em>. There is nothing to start and
+      nothing to point at.
+    </p>
+    <p>
+      Because pi extensions run in TypeScript/Bun and the gossip-capable iroh bindings are Python, the design is a
+      <strong>two-process pair per agent</strong>:
+    </p>
+    <ol>
+      <li>A <strong>Python iroh sidecar</strong> (<code>scripts/coms_net_iroh.py</code>) owns the iroh node, joins the topic, runs presence + messaging, and speaks newline-delimited JSON over <strong>stdio</strong>.</li>
+      <li>The <strong>TS pi extension</strong> (<code>extensions/coms-net-iroh.ts</code>) keeps the <em>exact</em> tool/command/widget surface but spawns and owns that sidecar as a child process — so the operator does literally nothing extra.</li>
+    </ol>
+    <p>The “static resources” that make this 1-time-config:</p>
+    <ul>
+      <li><span class="pill">topic</span> <code>topic = SHA-256("pi.coms-net.v1." + project)</code> → a deterministic 32-byte id. Same project ⇒ same swarm, computed identically by every agent. No registry lookup.</li>
+      <li><span class="pill">identity</span> a persisted 32-byte secret key at <code>~/.pi/coms-net-iroh/identity/&lt;project&gt;.key</code> ⇒ a stable <code>NodeId</code> across restarts.</li>
+      <li><span class="pill">rendezvous</span> a well-known dir <code>~/.pi/coms-net-iroh/projects/&lt;project&gt;/peers/</code> where each node drops its <code>NodeId</code>; peers read it as the gossip <em>bootstrap list</em>. A path, not a process.</li>
+      <li><span class="pill">discovery</span> iroh’s default n0 discovery (pkarr/DNS on <code>iroh.link</code> + LAN mDNS) resolves <code>NodeId → address</code>, so only node ids are exchanged — NAT traversal and relay fallback are automatic.</li>
+    </ul>
+    <p>
+      Security gets <em>simpler and stronger</em>: iroh gives QUIC transport encryption and cryptographic node identity for
+      free, so the bearer token disappears entirely. Knowledge of the project name (hence the topic) is the capability.
+    </p>
+    <figure>
+      <img src="pi-iroh-coms-net/solution.png" alt="A serverless gossip ring of equal peer nodes on a shared topic with a single '1 env var' badge.">
+
+      <figcaption>Serverless gossip swarm: one derived topic, persisted identities, peers discover by NodeId.</figcaption>
+    </figure>
+  </section>
+
+  <!-- ===== RELEVANT FILES ===== -->
+  <section id="files" class="files">
+    <h2>Relevant Files</h2>
+
+    <h3>Existing Files (reference — cloned to a tmp dir, not edited)</h3>
+    <ul>
+      <li><span class="tag existing">existing</span> <code>extensions/coms-net.ts</code> — the client to port: identity resolution, tools, widget, slash command, <code>agent_end</code> auto-reply, shutdown. Surface must be reproduced 1:1.</li>
+      <li><span class="tag existing">existing</span> <code>scripts/coms-net-server.ts</code> — the hub whose <em>semantics</em> (register/heartbeat/list/send/get/await/response, stale &amp; TTL scans, hop limit, inbox cap, name uniqueness) move into the peer-local sidecar.</li>
+      <li><span class="tag existing">existing</span> <code>extensions/coms.ts</code> — the v1 (Unix-socket) ancestor; source of the <code>ulid</code>, <code>hexFg</code>, <code>fallbackColor</code>, <code>parseFrontmatter</code> helpers reused verbatim by coms-net.</li>
+      <li><span class="tag existing">existing</span> <code>extensions/themeMap.ts</code> — <code>applyExtensionDefaults()</code>; reused unchanged by the new extension.</li>
+      <li><span class="tag existing">existing</span> <code>specs/coms-net-v1.md</code> — the canonical HTTP protocol spec; the parity checklist is derived from it.</li>
+    </ul>
+
+    <h3>New Files</h3>
+    <ul>
+      <li><span class="tag new">new</span> <code>scripts/coms_net_iroh.py</code> — the iroh sidecar: node lifecycle, topic subscribe, presence loop, message engine, stdio JSON line protocol. The heart of the port.</li>
+      <li><span class="tag new">new</span> <code>scripts/iroh_gossip_poc.py</code> — throwaway two-node gossip proof-of-concept used in Phase 1 to validate the binding before building on it.</li>
+      <li><span class="tag new">new</span> <code>scripts/pyproject.toml</code> — pins <code>iroh==0.35.0</code> (the last release with gossip) for reproducible <code>uv</code> runs.</li>
+      <li><span class="tag new">new</span> <code>extensions/coms-net-iroh.ts</code> — the TS pi extension: spawns/owns the sidecar, bridges stdio events to the existing handlers, identical tools/command/widget.</li>
+      <li><span class="tag new">new</span> <code>extensions/coms-net-iroh.README.md</code> — operator docs: the one env var, how discovery works, cross-machine notes, troubleshooting.</li>
+    </ul>
+  </section>
+
+  <!-- ===== IMPLEMENTATION PHASES ===== -->
+  <section id="phases">
+    <h2>Implementation Phases</h2>
+    <p><strong>IMPORTANT:</strong> Execute every phase and task step by step, in order, top to bottom.</p>
+    <p>Status markers: <code>[]</code> idle · <code>[wip]</code> in progress · <code>[x]</code> complete · <code>[f]</code> failed. All start as <code>[]</code>; the Build Plan workflow updates them as it works.</p>
+
+    <!-- ───────── PHASE 1 ───────── -->
+    <div class="phase">
+      <h3><code class="status">[]</code> Phase 1: Foundation &amp; iroh gossip proof-of-concept</h3>
+      <p>
+        De-risk the single hardest dependency first: confirm two iroh Python nodes can exchange gossip messages on this
+        machine. Establish the project skeleton, pin the gossip-capable version, and lock in the static-resource
+        primitives (topic derivation, persistent identity, peers-dir rendezvous) before any protocol work.
+      </p>
+      <figure>
+        <img src="pi-iroh-coms-net/phase1.png" alt="Two iroh nodes exchanging a gossip hello message over a shared 32-byte topic.">
+
+        <figcaption>Phase 1 — prove the gossip primitive: two nodes, one topic, a message round-trips.</figcaption>
+      </figure>
+
+      <h4>1. Project skeleton &amp; pinned dependency</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> Create <code>scripts/pyproject.toml</code> declaring <code>requires-python &gt;= 3.10</code> and <code>dependencies = ["iroh==0.35.0"]</code> (1.0 dropped gossip — see Notes/Risks).</li>
+        <li><code class="status">[]</code> Verify the wheel installs on this platform: <code>uv run --with iroh==0.35.0 python -c "import iroh; print(iroh.__file__)"</code>.</li>
+        <li><code class="status">[]</code> Decide IPC = newline-delimited JSON over the sidecar’s stdin/stdout (no ports, no token — the extension owns the child).</li>
+      </ul>
+
+      <h4>2. Static-resource primitives</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> Implement <code>topic_for(project)</code> = <code>hashlib.sha256(f"pi.coms-net.v1.{project}".encode()).digest()</code> (exactly 32 bytes; iroh validates length).</li>
+        <li><code class="status">[]</code> Implement persistent identity: load/create 32-byte secret at <code>~/.pi/coms-net-iroh/identity/&lt;project&gt;.key</code> (mode 0600, <code>os.urandom(32)</code> if absent); pass via <code>NodeOptions.secret_key</code> for a stable <code>NodeId</code>.</li>
+        <li><code class="status">[]</code> Implement the peers-dir rendezvous: write self <code>NodeId</code>/<code>NodeAddr</code> to <code>~/.pi/coms-net-iroh/projects/&lt;project&gt;/peers/&lt;short&gt;.json</code>; read sibling files → bootstrap list for <code>subscribe</code>.</li>
+      </ul>
+
+      <h4>3. Two-node gossip PoC</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> Write <code>scripts/iroh_gossip_poc.py</code> modeled on iroh-ffi <code>python/gossip_test.py</code>: <code>iroh.iroh_ffi.uniffi_set_event_loop(asyncio.get_running_loop())</code> first, two <code>Iroh.memory()</code> nodes, cross-seed via <code>add_node_addr</code>, <code>gossip().subscribe(topic, [peer_id], cb)</code>, wait for <code>MessageType.JOINED</code>, broadcast, assert <code>RECEIVED</code> with matching <code>content</code> + <code>delivered_from</code>.</li>
+        <li><code class="status">[]</code> Confirm the receive model: a <code>GossipMessageCallback</code> subclass whose <code>async def on_message(self, msg)</code> pushes to an <code>asyncio.Queue</code> (never block in the callback).</li>
+      </ul>
+
+      <h4>4. Testing Strategy</h4>
+      <p>Run the PoC end-to-end on this machine; a single deterministic script proves the binding, the event loop bridge, topic length, and the JOINED→broadcast→RECEIVED sequence. This is the gate for all later work.</p>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>uv run scripts/iroh_gossip_poc.py</code> — exits 0 and prints the round-tripped "hello" with the sender NodeId.</li>
+        <li><code class="status">[]</code> <code>uv run python -c "import hashlib; print(len(hashlib.sha256(b'pi.coms-net.v1.default').digest()))"</code> — prints <code>32</code>.</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If the PoC cannot round-trip a message, stop and resolve the binding/version/discovery issue before proceeding — everything downstream assumes it.
+      </div>
+    </div>
+
+    <!-- ───────── PHASE 2 ───────── -->
+    <div class="phase">
+      <h3><code class="status">[]</code> Phase 2: The iroh sidecar — presence + messaging engine</h3>
+      <p>
+        Build <code>scripts/coms_net_iroh.py</code>: a long-lived process that joins the swarm and re-implements the hub’s
+        semantics <em>peer-locally</em>. Every former HTTP route + SSE event becomes either a gossip envelope or a stdio
+        line to the extension.
+      </p>
+      <figure>
+        <img src="pi-iroh-coms-net/phase2.png" alt="A python iroh sidecar with a stdio pipe and presence, prompt, response envelopes flowing to a topic.">
+
+        <figcaption>Phase 2 — the sidecar: stdio on one side, signed gossip envelopes (presence / prompt / response) on the other.</figcaption>
+      </figure>
+
+      <h4>1. Node lifecycle &amp; envelope schema</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> Boot the node with persisted <code>secret_key</code> + default discovery; subscribe to <code>topic_for(project)</code> with the peers-dir bootstrap list; emit a <code>ready</code> stdio line carrying our <code>NodeId</code>.</li>
+        <li><code class="status">[]</code> Define the gossip envelope: <code>{ v, kind, from, ts, ... }</code> where <code>kind ∈ {presence, presence_bye, prompt, response}</code>; serialize as UTF-8 JSON bytes for <code>sink.broadcast(...)</code>.</li>
+        <li><code class="status">[]</code> Define the stdio line protocol — <strong>in</strong> (extension→sidecar): <code>identity</code>, <code>send</code>, <code>list</code>, <code>get</code>, <code>await</code>, <code>response</code>, <code>shutdown</code>; <strong>out</strong> (sidecar→extension): <code>ready</code>, <code>peer_joined</code>, <code>peer_updated</code>, <code>peer_stale</code>, <code>peer_left</code>, <code>prompt</code>, <code>response</code>, <code>status</code>, <code>error</code>.</li>
+      </ul>
+
+      <h4>2. Presence (replaces register + heartbeat + pool snapshot)</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> Broadcast a <code>presence</code> envelope (the <code>AgentCard</code>: name, purpose, model, color, cwd, project, explicit, started_at, context_used_pct, queue_depth, status) on join and every <code>HEARTBEAT_MS</code> (default 10s).</li>
+        <li><code class="status">[]</code> Maintain a local <code>peers: dict[NodeId, AgentCard]</code>; on each inbound <code>presence</code> upsert + emit <code>peer_joined</code>/<code>peer_updated</code> to the extension (diff to suppress no-op renders, like <code>poolSnapshotKey</code>).</li>
+        <li><code class="status">[]</code> Run the local stale scan: no presence within <code>STALE_AFTER_MS</code> (30s) → <code>peer_stale</code>; within <code>OFFLINE_AFTER_MS</code> (60s) → drop + <code>peer_left</code>. Broadcast <code>presence_bye</code> on clean shutdown.</li>
+      </ul>
+
+      <h4>3. Messaging (send / get / await / response, hops, TTL, inbox)</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>send</code>: resolve <code>target</code> (peer name → NodeId via the local <code>peers</code> map; ambiguous-name and not-found errors as in the server); mint a ULID <code>msg_id</code>; enforce <code>hops &lt; MAX_HOPS</code> (5) and per-target inbox cap (<code>MAX_INBOX</code> 100); broadcast a <code>prompt</code> envelope carrying <code>target_node</code>; reply to the extension with <code>{ msg_id, target_node }</code>.</li>
+        <li><code class="status">[]</code> Inbound <code>prompt</code>: ignore unless <code>target_node == self</code>; otherwise enqueue + emit a <code>prompt</code> stdio line (the extension turns it into a follow-up turn). Track outbound msg_ids → pending, resolved by matching <code>response</code> (powers <code>get</code>/<code>await</code>).</li>
+        <li><code class="status">[]</code> <code>response</code> from extension: broadcast a <code>response</code> envelope (<code>msg_id</code>, payload, error) addressed back to the original sender NodeId; sender side resolves the pending entry and emits <code>response</code> + terminal <code>status</code>. Enforce message TTL (<code>MESSAGE_TTL_MS</code> 30min) with a local scan → <code>timeout</code>.</li>
+      </ul>
+
+      <h4>4. Testing Strategy</h4>
+      <p>Drive two sidecars directly over stdio with a Python harness (no pi involved) and assert the full message lifecycle and presence transitions — the sidecar must be correct in isolation before the TS bridge is added.</p>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>uv run python -m py_compile scripts/coms_net_iroh.py</code> — sidecar compiles.</li>
+        <li><code class="status">[]</code> <code>uv run scripts/test_two_sidecars.py</code> — spawn two sidecars, feed <code>identity</code> + <code>send</code>, assert a <code>prompt</code> arrives at the target and a matching <code>response</code> returns to the sender; assert <code>peer_joined</code> then <code>peer_left</code> after a kill.</li>
+        <li><code class="status">[]</code> Assert hop-limit, ambiguous-target, and TTL-timeout paths each return the correct <code>status</code>/<code>error</code>.</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If any lifecycle assertion fails, fix the engine and re-run the two-sidecar harness — loop until green.
+      </div>
+    </div>
+
+    <!-- ───────── PHASE 3 ───────── -->
+    <div class="phase">
+      <h3><code class="status">[]</code> Phase 3: The TS pi extension — identical surface, sidecar-backed</h3>
+      <p>
+        Write <code>extensions/coms-net-iroh.ts</code> by transplanting <code>coms-net.ts</code> and swapping its
+        HTTP/SSE transport for a spawned Python sidecar. Identity resolution, the four tools, the <code>/coms-net</code>
+        command, the pool widget, and the <code>agent_end</code> auto-reply stay behaviourally identical.
+      </p>
+      <figure>
+        <img src="pi-iroh-coms-net/phase3.png" alt="A pi extension box bridged by stdio to an iroh node, with four coms_net tools and the pool widget.">
+
+        <figcaption>Phase 3 — the bridge: pi extension ⇄ stdio ⇄ iroh sidecar, same four tools, same widget.</figcaption>
+      </figure>
+
+      <h4>1. Sidecar process management (replaces SSE connection)</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> On <code>session_start</code>, resolve identity exactly as before (CLI <code>--cname/--purpose/--project/--color/--explicit</code> &gt; frontmatter &gt; defaults) and spawn <code>uv run scripts/coms_net_iroh.py</code> as a child; send the <code>identity</code> line.</li>
+        <li><code class="status">[]</code> Parse the sidecar’s newline-JSON stdout; route each event to the existing handlers (<code>peer_*</code> → <code>peerCards</code> + widget; <code>prompt</code> → <code>handleInboundPrompt</code>; <code>response</code>/<code>status</code> → <code>handleInboundResponse</code>).</li>
+        <li><code class="status">[]</code> Respawn-with-backoff if the child exits unexpectedly (mirror <code>scheduleReconnect</code>’s 500ms→10s backoff + the ceiling notify); drop <code>--server-url</code>/<code>--auth-token</code> flags and all token/redaction code.</li>
+      </ul>
+
+      <h4>2. Tools, command, widget, auto-reply (parity)</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> Reimplement <code>coms_net_list</code> (sidecar <code>list</code>), <code>coms_net_send</code> (<code>send</code> → returns <code>msg_id</code>), <code>coms_net_get</code> (non-blocking poll of pending), <code>coms_net_await</code> (block on the pending promise / <code>await</code> with timeout) — same descriptions, params, and <code>renderCall</code>/<code>renderResult</code>.</li>
+        <li><code class="status">[]</code> Reinstall the <code>coms-net-pool</code> belowEditor widget (<code>renderPool</code> unchanged) and the <code>/coms-net</code> command (<code>--all</code> toggle explicit, <code>--reconnect</code> → respawn sidecar, <code>--project</code> filter, bare → refresh; replace <code>--server</code> health with <code>--node</code> showing our <code>NodeId</code> + peer count).</li>
+        <li><code class="status">[]</code> Keep <code>agent_end</code> auto-reply: capture the last assistant text, JSON-parse when a <code>response_schema</code> was attached, send a <code>response</code> line for the open inbound <code>msg_id</code>; keep the audit log channel <code>coms-net-log</code> and the <code>coms-net</code> status key.</li>
+      </ul>
+
+      <h4>3. Testing Strategy</h4>
+      <p>Validate inside real pi sessions: two agents in the same project must list each other and complete a send→reply round-trip with the operator setting nothing but (optionally) <code>PI_COMS_NET_PROJECT</code>.</p>
+      <ul class="checklist">
+        <li><code class="status">[]</code> <code>bun build extensions/coms-net-iroh.ts --target node</code> (or <code>tsc --noEmit</code>) — extension type-checks/builds.</li>
+        <li><code class="status">[]</code> Launch two <code>pi -e extensions/coms-net-iroh.ts --cname planner</code> / <code>--cname worker</code>; confirm each appears in the other’s pool widget and <code>coms_net_list</code> with <strong>zero</strong> URL/token config.</li>
+        <li><code class="status">[]</code> From <code>planner</code>, <code>coms_net_send</code> to <code>worker</code> + <code>coms_net_await</code>; confirm <code>worker</code>’s end-of-turn text returns as the reply.</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        If a round-trip fails, trace the stdio line at the boundary (extension log vs sidecar stderr) and fix — loop until two live agents converse.
+      </div>
+    </div>
+
+    <!-- ───────── PHASE 4 ───────── -->
+    <div class="phase">
+      <h3><code class="status">[]</code> Phase 4: Parity verification, resilience &amp; docs</h3>
+      <p>
+        Prove 1:1 parity against the original, harden the failure modes that change when the substrate becomes p2p, and
+        write the operator docs that make the one-step promise real.
+      </p>
+      <figure>
+        <img src="pi-iroh-coms-net/phase4.png" alt="A parity checklist with green checks beside two agents completing a prompt-response round trip.">
+
+        <figcaption>Phase 4 — parity matrix green, resilience proven, one-env-var setup documented.</figcaption>
+      </figure>
+
+      <h4>1. Parity matrix &amp; resilience</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> Walk the <a href="#parity">parity matrix</a> below; for every original capability confirm an equivalent exists or is consciously dropped with rationale.</li>
+        <li><code class="status">[]</code> Resilience: kill a peer mid-conversation → sender sees <code>timeout</code> at TTL; kill+restart the sidecar → stable <code>NodeId</code> (persisted key) and auto-rejoin; offline-then-online peer reappears via presence.</li>
+        <li><code class="status">[]</code> Confirm the deny-by-default posture: an agent in project <code>A</code> never sees or is addressable by project <code>B</code> (different topic).</li>
+      </ul>
+
+      <h4>2. Documentation &amp; cross-machine notes</h4>
+      <ul class="checklist">
+        <li><code class="status">[]</code> Write <code>extensions/coms-net-iroh.README.md</code>: the single env var, how the topic/identity/peers-dir work, the optional <code>PI_COMS_NET_IROH_BOOTSTRAP</code> (comma-sep NodeIds) escape hatch for cross-machine swarms, and troubleshooting (no peers → check discovery/topic).</li>
+        <li><code class="status">[]</code> Document all env knobs and their defaults (<code>PI_COMS_NET_PROJECT</code>, <code>*_HEARTBEAT_MS</code>, <code>*_MAX_HOPS</code>, <code>*_MESSAGE_TTL_MS</code>, <code>*_STALE_AFTER_MS</code>, <code>*_OFFLINE_AFTER_MS</code>, <code>*_MAX_INBOX</code>) — same names/semantics as the server, minus URL/TOKEN.</li>
+      </ul>
+
+      <h4>3. Testing Strategy</h4>
+      <p>Final acceptance: a clean-machine run with no prior state reaches a working two-agent conversation using only the default project, and the parity matrix is fully accounted for.</p>
+      <ul class="checklist">
+        <li><code class="status">[]</code> Fresh-state run: delete <code>~/.pi/coms-net-iroh/</code>, launch two agents with no env vars, confirm discovery → list → round-trip.</li>
+        <li><code class="status">[]</code> Three-agent relay (<code>peer-to-peer-to-peer</code>): A→B→C forwarding increments <code>hops</code> and the chain halts at <code>MAX_HOPS</code>.</li>
+      </ul>
+      <div class="loop">
+        🔁 <strong>Do not exit this phase until every box above is checked.</strong>
+        Any parity gap must be either closed or explicitly recorded as an intentional drop in Amendments before completion.
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== GLOBAL VALIDATION ===== -->
+  <section id="validation">
+    <h2>Validation Commands</h2>
+    <p>Execute these commands to validate the entire plan is complete:</p>
+    <ul class="checklist">
+      <li><code class="status">[]</code> <code>uv run scripts/iroh_gossip_poc.py</code> — the iroh gossip primitive round-trips on this machine.</li>
+      <li><code class="status">[]</code> <code>uv run python -m py_compile scripts/coms_net_iroh.py</code> — the sidecar compiles cleanly.</li>
+      <li><code class="status">[]</code> <code>uv run scripts/test_two_sidecars.py</code> — full send→prompt→response lifecycle + presence join/leave pass at the sidecar layer.</li>
+      <li><code class="status">[]</code> <code>tsc --noEmit -p extensions</code> (or <code>bun build extensions/coms-net-iroh.ts</code>) — the extension type-checks.</li>
+      <li><code class="status">[]</code> Two live <code>pi -e extensions/coms-net-iroh.ts</code> agents in the default project list each other and complete a <code>coms_net_send</code>/<code>coms_net_await</code> round-trip with no URL/token configuration.</li>
+      <li><code class="status">[]</code> Fresh-state run (no <code>~/.pi/coms-net-iroh/</code>, no env vars) reaches a working conversation — proves 1-step / 1-time config.</li>
+    </ul>
+    <div class="loop">
+      🔁 <strong>The plan is not complete until every box is checked and every command passes. If for some reason a step is not possible to complete, mark it with [f] and move on if possible.</strong>
+    </div>
+  </section>
+
+  <!-- ===== NOTES ===== -->
+  <section id="notes">
+    <h2>Notes</h2>
+
+    <h3 id="parity">Feature-parity matrix (original → iroh)</h3>
+    <table>
+      <thead>
+        <tr><th>Original (HTTP/SSE hub)</th><th>iroh port</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>POST /v1/agents/register</code> + name uniqueness</td><td>First <code>presence</code> broadcast; names deduped locally for display (NodeId is the true key)</td><td class="yes">parity</td></tr>
+        <tr><td><code>POST /v1/agents/:id/heartbeat</code></td><td>Periodic <code>presence</code> re-broadcast (same <code>HEARTBEAT_MS</code>)</td><td class="yes">parity</td></tr>
+        <tr><td><code>GET /v1/agents</code> (+ <code>include_explicit</code>)</td><td>Local <code>peers</code> map snapshot; <code>explicit</code> hidden unless requested</td><td class="yes">parity</td></tr>
+        <tr><td>SSE <code>pool_snapshot/agent_joined/updated/stale/left</code></td><td><code>presence</code>/<code>presence_bye</code> + local stale scan → <code>peer_*</code> stdio events</td><td class="yes">parity</td></tr>
+        <tr><td><code>POST /v1/messages</code> (send, hops, inbox cap)</td><td><code>prompt</code> envelope addressed to <code>target_node</code>; hop + inbox checks peer-local</td><td class="yes">parity</td></tr>
+        <tr><td><code>GET /v1/messages/:id</code> / <code>/await</code></td><td>Pending-reply map resolved by matching <code>response</code> envelope; <code>get</code>=poll, <code>await</code>=block+timeout</td><td class="yes">parity</td></tr>
+        <tr><td><code>POST /v1/messages/:id/response</code></td><td><code>response</code> envelope back to sender NodeId; <code>agent_end</code> auto-submit unchanged</td><td class="yes">parity</td></tr>
+        <tr><td>Stale/TTL scan loops on server</td><td>Identical loops run inside each sidecar (state is peer-local)</td><td class="yes">parity</td></tr>
+        <tr><td>Bearer token + <code>server.secret.json</code> + redaction</td><td><strong>Dropped</strong> — QUIC encryption + NodeId auth are intrinsic; topic name is the capability</td><td class="chg">simplified</td></tr>
+        <tr><td><code>server.json</code> discovery + <code>--server-url</code></td><td><strong>Dropped</strong> — topic derived from project; discovery by NodeId via n0/mDNS</td><td class="chg">simplified</td></tr>
+        <tr><td>Central <code>scripts/coms-net-server.ts</code> process</td><td><strong>Dropped</strong> — no central process; per-agent sidecar joins the swarm</td><td class="chg">simplified</td></tr>
+      </tbody>
+    </table>
+
+    <h3>End-to-end data flow</h3>
+    <figure>
+      <img src="pi-iroh-coms-net/notes.png" alt="End-to-end data flow pipeline: pi extension, stdio, iroh node, gossip topic, peer.">
+
+      <figcaption>One message’s journey: tool call → stdio line → gossip broadcast → peer sidecar → follow-up turn → response home.</figcaption>
+    </figure>
+
+    <h3>Reference: the proven gossip primitive (iroh-ffi 0.35)</h3>
+    <pre><code><span class="tok-c"># the load-bearing lines, verbatim from iroh-ffi python/gossip_test.py</span>
+iroh.iroh_ffi.<span class="tok-f">uniffi_set_event_loop</span>(asyncio.get_running_loop())   <span class="tok-c"># MUST be first</span>
+
+<span class="tok-k">class</span> <span class="tok-f">Callback</span>(GossipMessageCallback):
+    <span class="tok-k">async def</span> <span class="tok-f">on_message</span>(self, msg):
+        <span class="tok-k">await</span> self.chan.put(msg)                 <span class="tok-c"># never block here</span>
+
+topic  = hashlib.sha256(<span class="tok-s">b"pi.coms-net.v1.default"</span>).digest()  <span class="tok-c"># 32 bytes</span>
+sink   = <span class="tok-k">await</span> node.<span class="tok-f">gossip</span>().<span class="tok-f">subscribe</span>(topic, [peer_id], cb)
+<span class="tok-k">await</span> sink.<span class="tok-f">broadcast</span>(<span class="tok-s">b'{"kind":"presence",...}'</span>)
+<span class="tok-c"># inbound: event.type()==MessageType.RECEIVED -> event.as_received().content / .delivered_from</span></code></pre>
+
+    <h3>Dependencies &amp; tooling</h3>
+    <ul>
+      <li><strong>Python:</strong> <code>iroh==0.35.0</code> via <code>uv</code> (PEP-723 inline metadata or <code>scripts/pyproject.toml</code>). No Rust toolchain needed — prebuilt wheels ship for macOS arm64/x86_64, manylinux, win amd64.</li>
+      <li><strong>TS/Bun:</strong> reuses <code>@mariozechner/pi-coding-agent</code>, <code>@mariozechner/pi-tui</code>, <code>@sinclair/typebox</code> — same imports as <code>coms-net.ts</code>; no new TS deps.</li>
+      <li><strong>Process model:</strong> the extension spawns the sidecar with the project workspace’s <code>uv</code>; sidecar stderr is surfaced to the audit log for debugging.</li>
+    </ul>
+
+    <div class="callout warn">
+      <span class="lbl">Risk — gossip lives only on the 0.x line</span>
+      iroh-ffi <strong>1.0 removed gossip, blobs, and docs</strong> from the Python bindings (endpoints/connections only). This port pins <code>iroh==0.35.0</code>, which is feature-frozen. <strong>Mitigation / fallback:</strong> if forced to 1.0, reimplement pubsub over raw <code>Endpoint</code> QUIC streams (the peers-dir already gives the member list), or build custom bindings to the Rust <code>iroh-gossip</code> crate. Keep the envelope schema transport-agnostic so the substrate can swap without touching the extension.
+    </div>
+
+    <div class="callout">
+      <span class="lbl">Open decisions (folded here since QUESTIONABLE=false)</span>
+      <ul style="margin:6px 0 0;">
+        <li><strong>Broadcast-and-filter vs unicast.</strong> Prompts go to the whole topic and non-targets ignore them — simplest, fine for the small per-project swarms pi uses. If swarms grow, switch directed messages to a unicast iroh QUIC connection keyed by NodeId; presence stays gossip.</li>
+        <li><strong>Cross-machine bootstrap.</strong> The peers-dir rendezvous assumes a shared filesystem (the common single-machine multi-agent case). Cross-machine relies on the optional <code>PI_COMS_NET_IROH_BOOTSTRAP</code> env (one known NodeId is enough; gossip + n0 discovery handle the rest).</li>
+        <li><strong>Private swarms.</strong> Optionally fold a shared passphrase into the topic hash (<code>sha256("pi.coms-net.v1." + project + ":" + secret)</code>) so the project name alone is not the capability — still 1-time config (one extra env var).</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ===== AMENDMENTS ===== -->
+  <section id="amendments">
+    <h2>Amendments</h2>
+    <details class="amend">
+      <summary>—  no amendments yet</summary>
+      <p>Running history of post-execution changes will be appended here (newest at the bottom) by the Update Plan / Update References workflows.</p>
+    </details>
+  </section>
+
+</main>
+</body>
+</html>
