@@ -36,3 +36,15 @@ describe("parsePlanf3Html — narrative sections", () => {
     assert.equal(plan.notes, "Test scaffolding only.");
   });
 });
+
+describe("parsePlanf3Html — relevant files", () => {
+  test("extracts existing and new file entries", () => {
+    const plan = parsePlanf3Html(minimal);
+    assert.deepEqual(plan.existingFiles, [
+      { kind: "existing", path: "src/a.ts", description: "current entry." },
+    ]);
+    assert.deepEqual(plan.newFiles, [
+      { kind: "new", path: "src/b.ts", description: "parser output." },
+    ]);
+  });
+});

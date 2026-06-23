@@ -1,5 +1,5 @@
 import { parse, type HTMLElement } from "node-html-parser";
-import type { ParsedPlan, PlanMetadata } from "./types.ts";
+import type { ParsedPlan, PlanMetadata, PlanFile } from "./types.ts";
 
 const EMPTY_METADATA: PlanMetadata = {
   created: null,
@@ -54,6 +54,24 @@ function sectionText(root: HTMLElement, id: string): string {
   return section.text.replace(/\s+/g, " ").trim();
 }
 
+function parseFileGroup(root: HTMLElement, headingText: string, kind: PlanFile["kind"]): PlanFile[] {
+  const section = root.querySelector("section#files");
+  if (!section) return [];
+  const headings = section.querySelectorAll("h3");
+  const heading = headings.find((h) => h.text.trim().toLowerCase() === headingText.toLowerCase());
+  if (!heading) return [];
+  const list = heading.nextElementSibling;
+  if (!list || list.tagName !== "UL") return [];
+  return list.querySelectorAll("li").map((li) => {
+    const code = li.querySelector("code");
+    const path = code?.text.trim() ?? "";
+    code?.remove();
+    li.querySelector("span.tag")?.remove();
+    const description = li.text.replace(/^\s*[—–-]\s*/, "").trim();
+    return { kind, path, description };
+  });
+}
+
 export function parsePlanf3Html(html: string): ParsedPlan {
   const root = parse(html);
   const title = root.querySelector("header h1")?.text.trim() ?? "";
@@ -65,8 +83,8 @@ export function parsePlanf3Html(html: string): ParsedPlan {
     purpose: sectionText(root, "purpose"),
     problem: sectionText(root, "problem"),
     solution: sectionText(root, "solution"),
-    existingFiles: [],
-    newFiles: [],
+    existingFiles: parseFileGroup(root, "Existing Files", "existing"),
+    newFiles: parseFileGroup(root, "New Files", "new"),
     phases: [],
     validationCommands: [],
     notes: sectionText(root, "notes"),
