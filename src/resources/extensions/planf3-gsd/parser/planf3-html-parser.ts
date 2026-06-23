@@ -1,5 +1,6 @@
 import { parse, type HTMLElement } from "node-html-parser";
-import type { ParsedPlan, PlanMetadata, PlanFile } from "./types.ts";
+import type { ParsedPlan, PlanMetadata, PlanFile, PlanPhase, PlanTask, PlanChecklistItem, PlanAmendment, PlanStatus } from "./types.ts";
+import { STATUS_FROM_MARKER } from "./types.ts";
 
 const EMPTY_METADATA: PlanMetadata = {
   created: null,
@@ -72,6 +73,78 @@ function parseFileGroup(root: HTMLElement, headingText: string, kind: PlanFile["
   });
 }
 
+function statusFromCode(code: HTMLElement | null): PlanStatus {
+  const marker = code?.text.trim() ?? "[]";
+  return STATUS_FROM_MARKER[marker] ?? "todo";
+}
+
+function parseChecklist(ul: HTMLElement | undefined): PlanChecklistItem[] {
+  if (!ul) return [];
+  return ul.querySelectorAll("li").map((li) => {
+    const code = li.querySelector("code.status");
+    const status = statusFromCode(code);
+    code?.remove();
+    const text = li.text.replace(/\s+/g, " ").trim();
+    return { status, text };
+  });
+}
+
+function parsePhase(div: HTMLElement): PlanPhase {
+  const h3 = div.querySelector("h3");
+  const phaseStatus = statusFromCode(h3?.querySelector("code.status") ?? null);
+  h3?.querySelector("code.status")?.remove();
+  const title = (h3?.text ?? "").replace(/\s+/g, " ").trim();
+
+  const description = div.querySelector("p")?.text.replace(/\s+/g, " ").trim() ?? "";
+
+  const tasks: PlanTask[] = [];
+  const headings = div.querySelectorAll("h4");
+  for (const h4 of headings) {
+    const taskTitle = h4.text.replace(/\s+/g, " ").trim();
+    let sib = h4.nextElementSibling;
+    let ul: HTMLElement | undefined;
+    while (sib && sib.tagName !== "H4") {
+      if (sib.tagName === "UL" && sib.classList.contains("checklist")) {
+        ul = sib;
+        break;
+      }
+      sib = sib.nextElementSibling;
+    }
+    tasks.push({ title: taskTitle, checklist: parseChecklist(ul) });
+  }
+
+  return { title, status: phaseStatus, description, tasks };
+}
+
+function parsePhases(root: HTMLElement): PlanPhase[] {
+  return root.querySelectorAll("section#phases div.phase").map(parsePhase);
+}
+
+function parseValidationCommands(root: HTMLElement): string[] {
+  const items = root.querySelectorAll("section#validation ul.checklist li");
+  return items.map((li) => {
+    li.querySelector("code.status")?.remove();
+    return li.text.replace(/\s+/g, " ").trim();
+  }).filter((s) => s.length > 0);
+}
+
+function parseAmendments(root: HTMLElement): PlanAmendment[] {
+  return root.querySelectorAll("section#amendments details").map((det) => {
+    const summary = det.querySelector("summary")?.text.trim() ?? "";
+    const m = /^([0-9T:\-+.]+)\s+—\s+(.*)$/.exec(summary);
+    const iso = m?.[1] ?? "";
+    const summaryText = m?.[2] ?? summary;
+    det.querySelector("summary")?.remove();
+    return { iso, summary: summaryText, body: det.text.replace(/\s+/g, " ").trim() };
+  });
+}
+
+function parseOpenDecisions(root: HTMLElement): string[] {
+  return root.querySelectorAll("section#questionables details summary").map((s) =>
+    s.text.replace(/\s+/g, " ").trim(),
+  );
+}
+
 export function parsePlanf3Html(html: string): ParsedPlan {
   const root = parse(html);
   const title = root.querySelector("header h1")?.text.trim() ?? "";
@@ -85,10 +158,10 @@ export function parsePlanf3Html(html: string): ParsedPlan {
     solution: sectionText(root, "solution"),
     existingFiles: parseFileGroup(root, "Existing Files", "existing"),
     newFiles: parseFileGroup(root, "New Files", "new"),
-    phases: [],
-    validationCommands: [],
+    phases: parsePhases(root),
+    validationCommands: parseValidationCommands(root),
     notes: sectionText(root, "notes"),
-    amendments: [],
-    openDecisions: [],
+    amendments: parseAmendments(root),
+    openDecisions: parseOpenDecisions(root),
   };
 }
