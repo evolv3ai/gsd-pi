@@ -879,14 +879,12 @@ function parseProjectionByIdentity(path: string, parse: (content: string) => unk
 }
 
 export function detectStaleRenders(basePath: string): StaleEntry[] {
-  // TODO(flat-phase): stale-render detection is temporarily fully disabled.
-  // Multiple detection paths (plan checkboxes, roadmap checkboxes, slice
-  // summaries) produce false positives or repair failures in flat-phase layout
-  // because path construction and file naming changed. The headless binary
-  // crashes with ReconciliationFailedError. Re-enable after all path
-  // construction is unified through layout-policy and the repair functions
-  // are updated for flat-phase paths.
-  return [];
+  // TODO(flat-phase): detection paths (plan checkboxes, roadmap checkboxes,
+  // slice summaries) produce false positives or repair failures in flat-phase
+  // layout because path construction and file naming changed. Gate on legacy
+  // layout; re-enable for flat-phase after path construction is unified.
+  if (!isLegacyMilestonesLayout(basePath)) return [];
+  return detectStaleRendersImpl(basePath);
 }
 
 function detectStaleRendersImpl(basePath: string): StaleEntry[] {
