@@ -110,7 +110,7 @@ export function crossReferenceEvidence(
 const INFRA_SPAWN_FAILURE_SIGNATURES: readonly RegExp[] = [
   /execvpe\([^)]*\)\s+failed/i,   // WSL: execvpe(/bin/bash) failed: No such file or directory
   /WSL \(.*\) ERROR/i,            // WSL relay error banner
-  /command not found:\s*\S+/i,    // missing shell: command not found: bash
+  /command not found:\s*(?:bash|sh|zsh|dash|fish|ash|ksh)\b/i, // missing shell only
 ];
 
 /**
