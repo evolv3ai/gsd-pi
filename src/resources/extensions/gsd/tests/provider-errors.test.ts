@@ -498,7 +498,15 @@ test("rate-limit agent_end walks past unavailable fallback models before pausing
   const timers: Array<{ delay: number }> = [];
 
   globalThis.setTimeout = ((_fn: (...args: unknown[]) => void, delay?: number) => {
-    timers.push({ delay: delay ?? 0 });
+    if ((delay ?? 0) === 0) {
+      // delay-0 is a macrotask deferral (scheduleFallbackContinuation): invoke
+      // immediately in tests so sendMessage assertions can fire synchronously.
+      _fn();
+    } else {
+      // delay>0 is a pause/backoff timer: capture without firing so the test
+      // stays synchronous and can assert no pause was scheduled.
+      timers.push({ delay: delay ?? 0 });
+    }
     return 0 as unknown as ReturnType<typeof setTimeout>;
   }) as typeof setTimeout;
 
@@ -566,9 +574,9 @@ test("rate-limit agent_end walks past unavailable fallback models before pausing
     } as any, ctx);
 
     assert.deepEqual(setModelCalls, ["google-gemini-cli/gemini-2.5-pro"]);
-    assert.equal(sendMessageCalls.length, 1, "fallback recovery must immediately trigger a continuation turn");
-    assert.deepEqual(sendMessageCalls[0][1], { triggerTurn: true, deliverAs: "steer" });
-    assert.equal(timers.length, 0, "must not pause with a retry timer when a later fallback is available");
+    assert.equal(sendMessageCalls.length, 1, "fallback recovery must trigger a deferred continuation turn");
+    assert.deepEqual(sendMessageCalls[0][1], { triggerTurn: true }, "continuation must use plain triggerTurn — no deliverAs:steer — to start a fresh turn, not steer the dying one");
+    assert.equal(timers.length, 0, "must not schedule a delay-backoff pause timer when a fallback is available");
     assert.ok(
       notifications.some((n) => n.message.includes("google-gemini-cli/gemini-2.5-pro")),
       "user-facing notification should name the fallback actually selected",
