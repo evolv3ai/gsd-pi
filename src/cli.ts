@@ -230,6 +230,15 @@ if (shouldBypassManagedResourceMismatchGate(cliFlags.messages[0])) {
 }
 
 // ---------------------------------------------------------------------------
+// Hermes integration subcommand — `gsd hermes install`
+// ---------------------------------------------------------------------------
+if (cliFlags.messages[0] === 'hermes') {
+  const { runHermesIntegrationCommand } = await import('./hermes-integration-install.js')
+  const exitCode = await runHermesIntegrationCommand(process.argv)
+  process.exit(exitCode)
+}
+
+// ---------------------------------------------------------------------------
 // Graph subcommand — `gsd graph build|status|query|diff`
 // ---------------------------------------------------------------------------
 if (cliFlags.messages[0] === 'graph') {
@@ -321,6 +330,7 @@ const subcommandsExemptFromEarlyTtyCheck = new Set([
   'config',
   'graph',
   'headless',
+  'hermes',
   'read',
   'install',
   'list',
