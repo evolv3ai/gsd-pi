@@ -12,6 +12,7 @@ import {
   getArtifact,
   getAssessment,
   insertAssessment,
+  insertMilestone,
   upsertRequirement,
   getAllMilestones,
 } from "../gsd-db.ts";
@@ -2042,6 +2043,60 @@ test("executeSummarySave registers PROJECT milestone sequence for the next run",
     assert.equal(state.phase, "pre-planning");
     assert.equal(state.registry[0]?.status, "active");
     assert.equal(state.registry[1]?.status, "pending");
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executeSummarySave reconciles bare PROJECT milestone IDs onto existing unique-ID rows (no phantom row) (#807)", async () => {
+  const base = makeTmpBase();
+  try {
+    openTestDb(base);
+
+    // Planner already minted a unique-ID milestone for sequence 1.
+    insertMilestone({ id: "M001-b1nole", title: "Foundation", status: "active" });
+
+    // A faithfully-authored PROJECT.md uses the template's bare sequence IDs.
+    const result = await inProjectDir(base, () => executeSummarySave({
+      artifact_type: "PROJECT",
+      content: [
+        "# Project",
+        "",
+        "## What This Is",
+        "",
+        "Deep project setup output.",
+        "",
+        "## Project Shape",
+        "",
+        "**Complexity:** complex",
+        "**Why:** It spans multiple delivery steps.",
+        "",
+        "## Capability Contract",
+        "",
+        "See .gsd/REQUIREMENTS.md.",
+        "",
+        "## Milestone Sequence",
+        "",
+        "- [ ] M001: Foundation - Establish the first runnable slice.",
+        "- [ ] M002: Polish - Follow-up experience work.",
+        "",
+      ].join("\n"),
+    }, base));
+
+    assert.equal(result.isError, undefined);
+    // Bare M001 maps onto the planner's canonical row; M002 is genuinely new.
+    assert.deepEqual(result.details.registeredMilestones, ["M001-b1nole", "M002"]);
+
+    const milestones = getAllMilestones();
+    // No phantom bare "M001" row — the unique-ID row is preserved and not demoted.
+    assert.deepEqual(
+      milestones.map((m) => [m.id, m.title, m.status]).sort(),
+      [
+        ["M001-b1nole", "Foundation", "active"],
+        ["M002", "Polish", "queued"],
+      ].sort(),
+    );
   } finally {
     closeDatabase();
     cleanup(base);
