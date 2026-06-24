@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 
 import { normalizeWorktreePathForCompare } from "./worktree-root.js";
 import { worktreesDirs } from "./worktree-placement.js";
-import { listWorktrees } from "./worktree-manager.js";
+import { listWorktrees, removeStaleWorktreeDirectory } from "./worktree-manager.js";
 import { getCurrentBranch } from "./worktree.js";
 
 export type WorktreeSafetyWriteScope = "planning-only" | "source-writing";
@@ -74,6 +74,7 @@ export interface WorktreeSafetyDeps {
   lstatSync(path: string): Pick<Stats, "isFile">;
   listRegisteredWorktrees?(projectRoot: string): readonly RegisteredWorktree[];
   pruneRegisteredWorktrees?(projectRoot: string): void;
+  removeStaleWorktreeDirectory?(unitRoot: string, milestoneId: string): void;
   getCurrentBranch?(unitRoot: string): string;
 }
 
@@ -100,6 +101,7 @@ const defaultDeps: WorktreeSafetyDeps = {
       stdio: "pipe",
     });
   },
+  removeStaleWorktreeDirectory,
   getCurrentBranch,
 };
 
@@ -127,8 +129,6 @@ function errorMessage(error: unknown): string {
 export function createWorktreeSafetyModule(
   deps: WorktreeSafetyDeps = defaultDeps,
 ): WorktreeSafetyModule {
-  const unregisteredRecoveryFailed = new Set<string>();
-
   return {
     validateUnitRoot(input) {
       if (input.writeScope === "planning-only") {
@@ -230,22 +230,17 @@ export function createWorktreeSafetyModule(
           );
         }
         if (registered && !registered.some((worktree) => samePath(worktree.path, unitRoot))) {
-          const wasPreviouslyTracked = unregisteredRecoveryFailed.has(unitRoot);
           let attemptedPrune = false;
 
-          if (!wasPreviouslyTracked && deps.pruneRegisteredWorktrees) {
+          if (deps.pruneRegisteredWorktrees) {
             attemptedPrune = true;
             try {
               deps.pruneRegisteredWorktrees(projectRoot);
               const rechecked = deps.listRegisteredWorktrees?.(projectRoot);
               if (rechecked?.some((worktree) => samePath(worktree.path, unitRoot))) {
-                unregisteredRecoveryFailed.delete(unitRoot);
                 registered = rechecked;
-              } else {
-                unregisteredRecoveryFailed.add(unitRoot);
               }
             } catch (error) {
-              unregisteredRecoveryFailed.add(unitRoot);
               return failure(
                 "worktree-git-probe-failed",
                 `Unable to recover unregistered worktree root ${unitRoot}.`,
@@ -256,13 +251,38 @@ export function createWorktreeSafetyModule(
           }
 
           if (!registered?.some((worktree) => samePath(worktree.path, unitRoot))) {
+            // The directory exists on disk with a .git marker but git no longer
+            // tracks it as a worktree (e.g. a prior removeWorktree crash left the
+            // directory while `git worktree prune` cleaned the registry). Remove
+            // the orphaned directory — the same cleanup createWorktree performs —
+            // so the next dispatch recreates the milestone worktree from scratch
+            // instead of looping forever on worktree-unregistered (#803, #590).
+            if (deps.removeStaleWorktreeDirectory) {
+              try {
+                deps.removeStaleWorktreeDirectory(unitRoot, milestoneId);
+                return failure(
+                  "worktree-missing",
+                  `Worktree root ${unitRoot} was not registered with git; removed the orphaned directory so it can be recreated.`,
+                  "Recreate the milestone worktree before dispatching the source-writing Unit. Auto-mode recreates it automatically on the next dispatch.",
+                  { unitRoot, attemptedPrune, removedStaleDirectory: true },
+                );
+              } catch (error) {
+                return failure(
+                  "worktree-unregistered",
+                  `Worktree root ${unitRoot} is not registered with git worktree list and the orphaned directory could not be removed.`,
+                  "Remove the orphaned worktree directory manually (it may be locked by another process), then recreate or re-register the milestone worktree before dispatching the source-writing Unit.",
+                  { unitRoot, attemptedPrune, removedStaleDirectory: false, error: errorMessage(error) },
+                );
+              }
+            }
+
             return failure(
               "worktree-unregistered",
               `Worktree root ${unitRoot} is not registered with git worktree list.`,
-              attemptedPrune || wasPreviouslyTracked
+              attemptedPrune
                 ? "Worktree recovery was attempted but the root is still unregistered. Recreate or re-register the milestone worktree before dispatching the source-writing Unit."
                 : "Run 'git worktree prune'. If still unregistered, recreate or re-register the milestone worktree before dispatching the source-writing Unit.",
-              { unitRoot, attemptedPrune, trackedAsFailed: unregisteredRecoveryFailed.has(unitRoot) },
+              { unitRoot, attemptedPrune },
             );
           }
         }
