@@ -307,22 +307,26 @@ describe("Worktree Safety module", () => {
     assert.equal(result.kind, "worktree-unregistered");
   });
 
-  test("attempts prune recovery once for unregistered worktrees and tracks failed roots", () => {
+  test("removes an orphaned worktree directory when prune cannot recover it", () => {
     let pruneCalls = 0;
-    let listCalls = 0;
+    let removeCalls = 0;
+    let removedUnitRoot: string | undefined;
+    let removedMilestoneId: string | undefined;
     const safety = createWorktreeSafetyModule({
       existsSync: () => true,
       lstatSync: () => ({ isFile: () => true }),
       pruneRegisteredWorktrees: () => {
         pruneCalls += 1;
       },
-      listRegisteredWorktrees: () => {
-        listCalls += 1;
-        return [];
+      listRegisteredWorktrees: () => [],
+      removeStaleWorktreeDirectory: (root, milestoneId) => {
+        removeCalls += 1;
+        removedUnitRoot = root;
+        removedMilestoneId = milestoneId;
       },
     });
 
-    const first = safety.validateUnitRoot({
+    const result = safety.validateUnitRoot({
       unitType: "execute-task",
       unitId: "M001/S01/T01",
       writeScope: "source-writing",
@@ -330,14 +334,32 @@ describe("Worktree Safety module", () => {
       unitRoot,
       milestoneId: "M001",
     });
-    assert.equal(first.ok, false);
-    assert.equal(first.kind, "worktree-unregistered");
-    assert.equal(first.details?.attemptedPrune, true);
-    assert.equal(first.details?.trackedAsFailed, true);
-    assert.equal(pruneCalls, 1);
-    assert.equal(listCalls, 2);
 
-    const second = safety.validateUnitRoot({
+    // Orphaned directory is cleaned up and the failure degrades to the
+    // recoverable worktree-missing kind so the next dispatch can recreate it,
+    // instead of looping forever on worktree-unregistered (#803).
+    assert.equal(result.ok, false);
+    assert.equal(result.kind, "worktree-missing");
+    assert.equal(result.details?.removedStaleDirectory, true);
+    assert.equal(result.details?.attemptedPrune, true);
+    assert.equal(pruneCalls, 1);
+    assert.equal(removeCalls, 1);
+    assert.equal(removedUnitRoot, unitRoot);
+    assert.equal(removedMilestoneId, "M001");
+  });
+
+  test("keeps worktree-unregistered when the orphaned directory cannot be removed", () => {
+    const safety = createWorktreeSafetyModule({
+      existsSync: () => true,
+      lstatSync: () => ({ isFile: () => true }),
+      pruneRegisteredWorktrees: () => {},
+      listRegisteredWorktrees: () => [],
+      removeStaleWorktreeDirectory: () => {
+        throw new Error("directory may be locked by another process");
+      },
+    });
+
+    const result = safety.validateUnitRoot({
       unitType: "execute-task",
       unitId: "M001/S01/T01",
       writeScope: "source-writing",
@@ -345,12 +367,11 @@ describe("Worktree Safety module", () => {
       unitRoot,
       milestoneId: "M001",
     });
-    assert.equal(second.ok, false);
-    assert.equal(second.kind, "worktree-unregistered");
-    assert.equal(second.details?.attemptedPrune, false);
-    assert.equal(second.details?.trackedAsFailed, true);
-    assert.equal(pruneCalls, 1);
-    assert.equal(listCalls, 3);
+
+    assert.equal(result.ok, false);
+    assert.equal(result.kind, "worktree-unregistered");
+    assert.equal(result.details?.removedStaleDirectory, false);
+    assert.match(String(result.details?.error), /locked by another process/);
   });
 
   test("converts registered worktree list failures into typed failures", () => {

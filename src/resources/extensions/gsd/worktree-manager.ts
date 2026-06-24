@@ -287,7 +287,7 @@ export function pruneEphemeralGhostWorktreeDirectories(basePath: string): string
   return removed;
 }
 
-function removeStaleWorktreeDirectory(wtPath: string, name: string): void {
+export function removeStaleWorktreeDirectory(wtPath: string, name: string): void {
   logWarning(
     "reconcile",
     `Removing stale worktree directory (not registered with git): ${wtPath}`,
