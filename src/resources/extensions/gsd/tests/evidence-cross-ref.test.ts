@@ -86,6 +86,32 @@ test("stale verification evidence batches are ignored when a newer completion ba
   assert.deepEqual(mismatches, []);
 });
 
+test("WSL bash-spawn failure is not flagged as a falsified passing verification", () => {
+  // Issue #814: on Windows, `gsd_exec runtime=bash` resolves to a WSL with no
+  // /bin/bash. The bash-runtime verification call exits 1 with a spawn-failure
+  // banner (the command never ran); the LLM re-ran via a node runtime (exit 0)
+  // that findMatches does not capture. The infra failure must not block.
+  const command = "npx playwright test e2e/m039-s05-comparison-legibility.spec.ts";
+  const mismatches = crossReferenceEvidence(
+    [{ command, exitCode: 0, verdict: "passed" }],
+    [
+      {
+        kind: "bash",
+        toolCallId: "call-1",
+        command: `${command} --reporter=line 2>&1 | tail -40`,
+        exitCode: 1,
+        outputSnippet:
+          "<3>WSL (12 - Relay) ERROR: CreateProcessCommon:800: execvpe(/bin/bash) failed: No such file or directory",
+        timestamp: 1,
+      },
+    ] as EvidenceEntry[],
+  );
+
+  assert.equal(mismatches.length, 1);
+  assert.equal(mismatches[0].severity, "warning");
+  assert.match(mismatches[0].reason, /inconclusive/);
+});
+
 test("missing recorded bash evidence remains a warning", () => {
   const mismatches = crossReferenceEvidence(
     [{ command: "npm test", exitCode: 0, verdict: "passed" }],

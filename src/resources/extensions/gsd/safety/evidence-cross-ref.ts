@@ -66,8 +66,28 @@ export function crossReferenceEvidence(
       continue;
     }
 
+    // A shell-spawn/infra failure means the command never ran (e.g. on Windows
+    // `gsd_exec runtime=bash` resolves to a WSL with no /bin/bash). The LLM
+    // typically recovers by re-running via another runtime, and that genuine
+    // run may not even be in the match set. Such a failure is inconclusive, not
+    // a falsified pass — exclude it before judging the exit code.
+    const commandRuns = matches.filter((m) => !isInfraSpawnFailure(m));
+    if (commandRuns.length === 0) {
+      if (claimed.exitCode === 0) {
+        mismatches.push({
+          severity: "warning",
+          claimed,
+          actual: latestMatch(matches),
+          reason:
+            `Matched execution failed to spawn (infrastructure error, not a command failure); ` +
+            `treating as inconclusive`,
+        });
+      }
+      continue;
+    }
+
     // Exit code mismatch: LLM claims success but actual command failed
-    const match = latestMatch(matches);
+    const match = latestMatch(commandRuns);
     if (claimed.exitCode === 0 && match.exitCode !== 0) {
       mismatches.push({
         severity: "error",
@@ -79,6 +99,30 @@ export function crossReferenceEvidence(
   }
 
   return mismatches;
+}
+
+/**
+ * Runtime-spawn / shell-infra failure signatures. When a bash-runtime call
+ * fails to *spawn* (rather than the command running and exiting non-zero), the
+ * recorded exitCode is an ordinary non-zero but the output carries one of these
+ * markers. Such a call is not evidence that a verification failed.
+ */
+const INFRA_SPAWN_FAILURE_SIGNATURES: readonly RegExp[] = [
+  /execvpe\([^)]*\)\s+failed/i,   // WSL: execvpe(/bin/bash) failed: No such file or directory
+  /WSL \(.*\) ERROR/i,            // WSL relay error banner
+  /command not found:\s*\S+/i,    // missing shell: command not found: bash
+];
+
+/**
+ * True when a non-zero bash call looks like a shell-spawn/infra failure (the
+ * command never started) rather than a real command failure. A successful run
+ * (exitCode 0) is never an infra failure.
+ */
+function isInfraSpawnFailure(call: BashEvidence): boolean {
+  if (call.exitCode === 0) return false;
+  const snippet = call.outputSnippet ?? "";
+  if (snippet.length === 0) return false;
+  return INFRA_SPAWN_FAILURE_SIGNATURES.some((re) => re.test(snippet));
 }
 
 // ─── Internals ──────────────────────────────────────────────────────────────
