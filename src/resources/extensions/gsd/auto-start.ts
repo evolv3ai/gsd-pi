@@ -488,6 +488,17 @@ export function auditOrphanedMilestoneBranches(
     mergedBranches = new Set();
   }
 
+  // Detect the branch currently checked out at the project root once — it
+  // does not change across loop iterations and is used below to avoid
+  // requesting a worktree creation for a branch that git already considers
+  // "in use" by the main worktree.
+  let currentRootBranch: string | null = null;
+  try {
+    currentRootBranch = nativeGetCurrentBranch(basePath) || null;
+  } catch {
+    currentRootBranch = null;
+  }
+
   for (const branch of milestoneBranches) {
     const milestoneId = branch.replace(/^milestone\//, "");
     const milestone = getMilestone(milestoneId);
@@ -525,14 +536,18 @@ export function auditOrphanedMilestoneBranches(
       // recover as "worktree" so adoptStrandedMilestone re-materializes the
       // worktree from the existing branch (createAutoWorktree with
       // reuseExistingBranch) instead of degrading to branch-mode-in-root.
-      // If the milestone branch is already checked out at the project root
-      // (leftover from the old #812 branch-mode recovery), stay on "branch" so
-      // adoption resumes the existing root checkout instead of failing worktree
-      // creation with "branch already in use".
-      const branchCheckedOutAtRoot = nativeGetCurrentBranch(basePath) === branch;
+      //
+      // Exception (#812-followup): if the milestone branch is already checked
+      // out at the project root (e.g. a leftover from the pre-fix #812 recovery
+      // that ran `git checkout milestone/<id>` in the root), git considers that
+      // branch "in use by another worktree" and will refuse `git worktree add`,
+      // causing bootstrap to abort. Degrade to "branch" in that case — the
+      // session resumes on the already-checked-out branch without worktree
+      // creation, same as pre-fix behavior, and the configured isolation is
+      // restored for subsequent milestones after merge/teardown.
+      const isBranchCheckedOutAtRoot = currentRootBranch === branch;
       const recoveryMode: StrandedWorkRecoveryMode =
-        worktreeEvidence.path ||
-        (isolationMode === "worktree" && !branchCheckedOutAtRoot)
+        worktreeEvidence.path || (isolationMode === "worktree" && !isBranchCheckedOutAtRoot)
           ? "worktree"
           : "branch";
       const message = strandedWorkMessage({

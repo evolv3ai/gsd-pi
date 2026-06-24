@@ -189,6 +189,36 @@ describe("auditOrphanedMilestoneBranches", () => {
     assert.equal(result.blockingStrandedWork?.recoveryMode, "branch");
   });
 
+  test("#812-followup — worktree-mode project degrades to branch recovery when branch is already checked out at root", () => {
+    // Simulates the leftover state from the pre-fix #812 recovery path: the
+    // old code checked out milestone/<id> in the project root instead of
+    // creating a worktree. On the next bootstrap:
+    //   - isolationMode === "worktree"
+    //   - HEAD at project root === "milestone/M001"
+    //   - no linked worktree directory on disk
+    //
+    // Requesting worktree recovery in this state calls `git worktree add` for
+    // a branch git already considers "in use by another worktree" (the main
+    // worktree counts), causing bootstrap to abort with GSD_LOCK_HELD.
+    // The fix detects the root checkout and degrades to "branch" so the
+    // session resumes on the already-checked-out branch without failing.
+    run("git checkout -b milestone/M001", dir);
+    writeFileSync(join(dir, "feature.txt"), "in-progress work\n");
+    run("git add feature.txt", dir);
+    run("git commit -m \"in-progress work on M001\"", dir);
+    // NOTE: stay on milestone/M001 — do NOT check out main.
+    // This simulates the project root being on the milestone branch.
+
+    insertMilestone({ id: "M001", title: "Test", status: "active" });
+
+    const result = auditOrphanedMilestoneBranches(dir, "worktree");
+
+    assert.equal(result.blockingStrandedWork?.milestoneId, "M001");
+    // Must degrade to "branch" — worktree creation would fail because the
+    // branch is already checked out at the project root.
+    assert.equal(result.blockingStrandedWork?.recoveryMode, "branch");
+  });
+
   test("#4762 — also surfaces worktree directory for in-progress orphan when present", () => {
     // In-progress + unmerged + physical worktree directory — the full primary scenario.
     run("git checkout -b milestone/M001", dir);
