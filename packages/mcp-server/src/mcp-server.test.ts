@@ -30,10 +30,12 @@ import { MAX_EVENTS } from './types.js';
 import type { ManagedSession, CostAccumulator, PendingBlocker } from './types.js';
 
 describe('installGlobalErrorHandlers', () => {
-  it('logs uncaught exceptions and unhandled rejections to stderr', () => {
+  it('logs uncaught exceptions and unhandled rejections to stderr, then terminates (#783)', () => {
     const writes: string[] = [];
+    const exits: number[] = [];
     const runtime = new EventEmitter() as EventEmitter & {
       stderr: { write(message: string): boolean };
+      exit: (code: number) => never;
     };
     runtime.stderr = {
       write(message: string): boolean {
@@ -41,14 +43,23 @@ describe('installGlobalErrorHandlers', () => {
         return true;
       },
     };
+    runtime.exit = (code: number): never => {
+      exits.push(code);
+      // Throw to short-circuit the handler so assertions run, mirroring how
+      // process.exit never returns in the real process.
+      throw new Error(`exit:${code}`);
+    };
 
     installGlobalErrorHandlers(runtime);
-    runtime.emit('uncaughtException', new Error('boom'));
-    runtime.emit('unhandledRejection', 'bad rejection');
+    assert.throws(() => runtime.emit('uncaughtException', new Error('boom')), /exit:1/);
+    assert.throws(() => runtime.emit('unhandledRejection', 'bad rejection'), /exit:1/);
 
     const output = writes.join('');
     assert.match(output, /\[gsd-mcp-server\] Uncaught exception: Error: boom/);
     assert.match(output, /\[gsd-mcp-server\] Unhandled rejection: bad rejection/);
+    // Each handler must terminate after logging — a repeating throw against a
+    // dead stdio pipe would otherwise log-and-loop, pegging CPU (#783).
+    assert.deepEqual(exits, [1, 1]);
   });
 });
 

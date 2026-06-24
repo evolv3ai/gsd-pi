@@ -10,7 +10,7 @@
  * @see https://github.com/open-gsd/gsd-pi/issues/2577
  */
 
-import { TOOL_SURFACE_NOT_READY } from "./tool-surface-readiness.js";
+import { TOOL_SURFACE_NOT_READY, isTerminalToolSurfaceError } from "./tool-surface-readiness.js";
 
 // ── ErrorClass discriminated union ──────────────────────────────────────────
 
@@ -114,7 +114,20 @@ export function classifyError(errorMsg: string, retryAfterMs?: number): ErrorCla
     return { kind: "tool-schema", retryAfterMs: 0 };
   }
 
+  // Terminal tool-surface failure: the workflow MCP server is in a
+  // non-self-healing status (failed / needs-auth / disabled). This is NOT
+  // transient — retrying the same model cannot repair a dead server, so it
+  // must escalate / pause rather than retrying every ~3s into the per-unit
+  // cost cap. Checked ahead of the transient readiness branch below, which
+  // shares the TOOL_SURFACE_NOT_READY prefix and would otherwise collapse the
+  // terminal case into a transient `network` retry. See #783.
+  if (isTerminalToolSurfaceError(errorMsg)) {
+    return { kind: "permanent" };
+  }
+
   // Tool-surface readiness abort — transient; retry the same model shortly.
+  // This covers the not-yet-connected variants (absent, pending, connected but
+  // not registered); terminal statuses were handled by the branch above.
   if (TOOL_SURFACE_NOT_READY_RE.test(errorMsg)) {
     return { kind: "network", retryAfterMs: retryAfterMs ?? 3_000 };
   }

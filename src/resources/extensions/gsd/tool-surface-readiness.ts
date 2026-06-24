@@ -24,7 +24,39 @@ import { isWorkflowToolSurfaceName } from "./workflow-tool-surface.js";
 export const TOOL_SURFACE_NOT_READY = "workflow tool surface not ready";
 
 /** MCP server statuses that will not self-heal within the session. */
-const TERMINAL_MCP_SERVER_STATUSES = new Set(["failed", "needs-auth", "disabled"]);
+export const TERMINAL_MCP_SERVER_STATUSES = new Set(["failed", "needs-auth", "disabled"]);
+
+/**
+ * Marker embedded in the terminal readiness error message. The readiness layer
+ * appends it to the terminal branch so the classifier can distinguish a
+ * non-self-healing failure (failed/needs-auth/disabled) from the genuinely
+ * transient not-yet-connected branches, which all share the
+ * {@link TOOL_SURFACE_NOT_READY} prefix.
+ */
+export const TOOL_SURFACE_TERMINAL_MARKER = "(terminal)";
+
+/**
+ * True when a tool-surface readiness error describes a *terminal* MCP server
+ * failure (failed / needs-auth / disabled). These statuses will not self-heal
+ * within the session, so they must not be retried as transient — the caller
+ * should escalate / pause instead of same-model retrying indefinitely.
+ *
+ * Detection is driven by the embedded marker string and the terminal status
+ * set above (single source of truth), not by re-deriving either independently.
+ */
+export function isTerminalToolSurfaceError(errorMsg: string | null | undefined): boolean {
+  if (!errorMsg || !errorMsg.includes(TOOL_SURFACE_NOT_READY)) return false;
+  if (!/\bterminal\b/i.test(errorMsg)) return false;
+  // Belt-and-braces: confirm one of the canonical terminal statuses is present
+  // so a stray "(terminal)" in unrelated text doesn't trigger this.
+  return [...TERMINAL_MCP_SERVER_STATUSES].some(
+    (status) => new RegExp(`status is "${escapeRegExp(status)}"`, "i").test(errorMsg),
+  );
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 export interface LiveToolSurfaceObservation {
   /** Tool names the session reported at init (MCP tools appear as mcp__<server>__<tool>). */

@@ -305,23 +305,42 @@ describe("awaitWorkflowMcpToolRegistration", () => {
 });
 
 describe("readiness error classification contract", () => {
-  const readinessError = getToolSurfaceReadinessError({
+  const terminalReadinessError = getToolSurfaceReadinessError({
     unitType: "run-uat",
     workflowServerName: SERVER,
     observation: { tools: [], mcpServers: [{ name: SERVER, status: "failed" }] },
   })!;
+  const transientReadinessError = getToolSurfaceReadinessError({
+    unitType: "run-uat",
+    workflowServerName: SERVER,
+    observation: { tools: [], mcpServers: [{ name: SERVER, status: "pending" }] },
+  })!;
 
-  test("auto-tool-tracking treats the readiness error as tool-unavailable", () => {
-    assert.equal(isToolUnavailableError(readinessError), true);
+  test("auto-tool-tracking treats both readiness error variants as tool-unavailable", () => {
+    assert.equal(isToolUnavailableError(terminalReadinessError), true);
+    assert.equal(isToolUnavailableError(transientReadinessError), true);
   });
 
-  test("error-classifier treats the readiness error as transient", () => {
-    const cls = classifyError(`Claude Code error: ${readinessError}`);
+  test("error-classifier treats a TERMINAL readiness error as non-transient (#783)", () => {
+    const cls = classifyError(`Claude Code error: ${terminalReadinessError}`);
+    assert.equal(isTransient(cls), false);
+    assert.equal(cls.kind, "permanent");
+  });
+
+  test("error-classifier still treats a TRANSIENT readiness error as transient", () => {
+    const cls = classifyError(`Claude Code error: ${transientReadinessError}`);
     assert.equal(isTransient(cls), true);
+    assert.equal(cls.kind, "network");
   });
 
-  test("Recovery Classification maps the readiness error to tool-unavailable → retry", () => {
-    const recovery = classifyFailure({ error: new Error(readinessError), unitType: "run-uat", unitId: "M001" });
+  test("Recovery Classification escalates a TERMINAL readiness error instead of retrying (#783)", () => {
+    const recovery = classifyFailure({ error: new Error(terminalReadinessError), unitType: "run-uat", unitId: "M001" });
+    assert.equal(recovery.action, "escalate");
+    assert.notEqual(recovery.failureKind, "tool-unavailable");
+  });
+
+  test("Recovery Classification still retries a TRANSIENT readiness error", () => {
+    const recovery = classifyFailure({ error: new Error(transientReadinessError), unitType: "run-uat", unitId: "M001" });
     assert.equal(recovery.failureKind, "tool-unavailable");
     assert.equal(recovery.action, "retry");
     assert.equal(recovery.exitReason, "tool-unavailable");
