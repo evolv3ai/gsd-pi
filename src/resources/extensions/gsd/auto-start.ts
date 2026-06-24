@@ -525,8 +525,14 @@ export function auditOrphanedMilestoneBranches(
       // recover as "worktree" so adoptStrandedMilestone re-materializes the
       // worktree from the existing branch (createAutoWorktree with
       // reuseExistingBranch) instead of degrading to branch-mode-in-root.
+      // If the milestone branch is already checked out at the project root
+      // (leftover from the old #812 branch-mode recovery), stay on "branch" so
+      // adoption resumes the existing root checkout instead of failing worktree
+      // creation with "branch already in use".
+      const branchCheckedOutAtRoot = nativeGetCurrentBranch(basePath) === branch;
       const recoveryMode: StrandedWorkRecoveryMode =
-        worktreeEvidence.path || isolationMode === "worktree"
+        worktreeEvidence.path ||
+        (isolationMode === "worktree" && !branchCheckedOutAtRoot)
           ? "worktree"
           : "branch";
       const message = strandedWorkMessage({
