@@ -19,6 +19,7 @@ import {
   resetWriteGateState,
   setPendingGate,
   shouldBlockContextArtifactSave,
+  shouldBlockContextWrite,
 } from "../bootstrap/write-gate.ts";
 import { classifyCommand } from "../safety/destructive-guard.ts";
 import { toRoundResultResponse } from "../../remote-questions/manager.ts";
@@ -198,6 +199,80 @@ test("register-hooks unlocks milestone depth verification from question id witho
     shouldBlockContextArtifactSave("CONTEXT", "M001").block,
     false,
     "question-id milestone inference should unlock the matching milestone context write",
+  );
+});
+
+test("register-hooks canonicalizes lower-case milestone ids in depth-verification question ids", async (t) => {
+  const dir = makeTempDir("lowercase-mid");
+  const originalCwd = process.cwd();
+  process.chdir(dir);
+  resetWriteGateState(dir);
+
+  t.after(() => {
+    try {
+      resetWriteGateState(dir);
+    } finally {
+      process.chdir(originalCwd);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  const handlers = new Map<string, Array<(event: any, ctx?: any) => Promise<void> | void>>();
+  const pi = {
+    on(event: string, handler: (event: any, ctx?: any) => Promise<void> | void) {
+      const existing = handlers.get(event) ?? [];
+      existing.push(handler);
+      handlers.set(event, existing);
+    },
+  } as any;
+
+  registerHooks(pi, []);
+
+  const questionId = "depth_verification_m001_confirm";
+  const questions = [
+    {
+      id: questionId,
+      question: "Do you agree?",
+      options: [
+        { label: "Yes, you got it (Recommended)" },
+        { label: "Needs adjustment" },
+      ],
+    },
+  ];
+
+  await armDepthGate(handlers, "ask_user_questions", questions);
+  assert.equal(getPendingGate(), questionId);
+
+  for (const handler of handlers.get("tool_result") ?? []) {
+    await handler({
+      toolName: "ask_user_questions",
+      input: { questions },
+      details: {
+        response: {
+          answers: {
+            [questionId]: { selected: "Yes, you got it (Recommended)" },
+          },
+        },
+      },
+    });
+  }
+
+  assert.equal(getPendingGate(), null, "confirming lower-case m001 gate should clear pending state");
+  assert.deepEqual(
+    loadWriteGateSnapshot(dir).verifiedDepthMilestones,
+    ["M001"],
+    "verified milestone id should be stored canonically",
+  );
+  assert.equal(
+    shouldBlockContextWrite(
+      "write",
+      ".gsd/milestones/M001/M001-CONTEXT.md",
+      null,
+      false,
+      dir,
+    ).block,
+    false,
+    "lower-case question id should unlock the matching upper-case CONTEXT.md path",
   );
 });
 
