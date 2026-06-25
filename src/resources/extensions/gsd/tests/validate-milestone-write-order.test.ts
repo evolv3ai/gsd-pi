@@ -15,7 +15,12 @@ import { clearParseCache } from "../files.js";
 
 function makeTmpBase(): string {
   const base = join(tmpdir(), `gsd-val-handler-${randomUUID()}`);
-  mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
+  const mDir = join(base, ".gsd", "milestones", "M001");
+  mkdirSync(mDir, { recursive: true });
+  // A content-bearing legacy milestone dir requires at least one non-META file
+  // (dirIsContentBearingLegacyMilestone) so the layout sniffer treats it as a
+  // real legacy milestone rather than a metadata-only placeholder.
+  writeFileSync(join(mDir, "M001-CONTEXT.md"), "# M001\n");
   return base;
 }
 

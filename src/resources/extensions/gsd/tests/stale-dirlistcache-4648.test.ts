@@ -13,7 +13,13 @@ import { resolveMilestoneFile, clearPathCache } from "../paths.ts";
 
 function mkBase(): string {
   const base = mkdtempSync(join(tmpdir(), "gsd-4648-"));
-  mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
+  const mDir = join(base, ".gsd", "milestones", "M001");
+  mkdirSync(mDir, { recursive: true });
+  // Seed one content file so the dir is recognised as a content-bearing legacy
+  // milestone by dirIsContentBearingLegacyMilestone. The stale-cache tests then
+  // verify that a SECOND file written to the same dir is NOT detected until the
+  // path cache is cleared (the original behaviour under test is preserved).
+  writeFileSync(join(mDir, "M001-RESEARCH.md"), "# M001 research\n");
   return base;
 }
 

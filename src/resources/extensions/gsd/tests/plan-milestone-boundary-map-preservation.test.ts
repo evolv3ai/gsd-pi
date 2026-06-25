@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -86,7 +86,12 @@ function planParams() {
 
 test('#4402 plan-milestone preserves ## Boundary Map after post-mutation projections', async (t) => {
   const base = mkdtempSync(join(tmpdir(), 'gsd-4402-'));
-  mkdirSync(join(base, '.gsd', 'milestones', 'M001'), { recursive: true });
+  const mDir = join(base, '.gsd', 'milestones', 'M001');
+  mkdirSync(mDir, { recursive: true });
+  // A content-bearing legacy milestone dir requires at least one non-META file
+  // (dirIsContentBearingLegacyMilestone) so the layout sniffer treats it as a
+  // real legacy milestone rather than a metadata-only placeholder.
+  writeFileSync(join(mDir, 'M001-CONTEXT.md'), '# M001\n');
   openDatabase(join(base, '.gsd', 'gsd.db'));
 
   t.after(() => {

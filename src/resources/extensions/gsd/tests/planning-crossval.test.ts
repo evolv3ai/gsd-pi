@@ -325,6 +325,10 @@ console.log('\n=== planning-crossval Test 4: ROADMAP worktree projection path ==
   try {
     scaffoldDirs(base, 'M001', []);
     mkdirSync(join(worktreeGsd, 'milestones', 'M001'), { recursive: true });
+    // Add a content file so the worktree M001 dir passes dirIsContentBearingLegacyMilestone.
+    // Without this, an empty dir is treated as a metadata-only dir (post-#852 guard) and
+    // resolveMilestonePath returns null, causing the renderer to write to a flat-phase path.
+    writeFileSync(join(worktreeGsd, 'milestones', 'M001', 'M001-CONTEXT.md'), '# M001\n');
     writeFileSync(projectRoadmapPath, '# stale project roadmap\n');
 
     insertMilestone({
