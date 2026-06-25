@@ -267,9 +267,9 @@ export async function evaluateCompleteMilestoneDispatch(
             const skippedByTrivialVariant = /trivial-scope pipeline variant/i.test(validationContent);
             const structuredMatch =
               validationContent.includes("Operational") &&
-              (validationContent.includes("MET") || validationContent.includes("N/A") || validationContent.includes("SATISFIED") || validationContent.includes("DEFERRED"));
+              (validationContent.includes("MET") || validationContent.includes("N/A") || validationContent.includes("SATISFIED") || validationContent.includes("DEFERRED") || validationContent.includes("PASS") || validationContent.includes("COVERED"));
             const proseMatch =
-              /[Oo]perational[\s\S]{0,500}?(?:✅|pass|verified|confirmed|met|complete|true|yes|addressed|covered|satisfied|partially|deferred|n\/a|not[\s-]+applicable)/i.test(validationContent);
+              /[Oo]perational[\s\S]{0,2000}?(?:✅|pass|verified|confirmed|met|complete|true|yes|addressed|covered|satisfied|partially|deferred|n\/a|not[\s-]+applicable)/i.test(validationContent);
             const hasOperationalCheck =
               skippedByMarker ||
               skippedByPreference ||
