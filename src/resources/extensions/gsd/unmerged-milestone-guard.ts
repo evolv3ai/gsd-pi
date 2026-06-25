@@ -5,6 +5,7 @@ import {
   nativeBranchExists,
   nativeDetectMainBranch,
   nativeDiffNumstat,
+  nativeIsAncestor,
 } from "./native-git-bridge.js";
 import { autoWorktreeBranch } from "./auto-worktree.js";
 import { ensureDbOpen } from "./bootstrap/dynamic-tools.js";
@@ -141,6 +142,15 @@ export async function findUnmergedCompletedMilestones(base: string): Promise<Unm
 
     const integrationBranch = resolveIntegrationBranch(base, milestone.id);
     if (!integrationBranch || integrationBranch === branch) continue;
+
+    // The milestone is merged when its branch tip is reachable from the
+    // integration branch tip — true for fast-forward, --no-ff, and squash
+    // merges alike. A raw diff is the wrong predicate: a --no-ff merge that
+    // took main's side for some conflicts leaves the branch tip differing from
+    // main, which the diff check would misread as "unmerged" (#825). The diff
+    // below remains the correct fallback only when the branch is NOT yet an
+    // ancestor — i.e. the merge is genuinely still pending.
+    if (nativeIsAncestor(base, branch, integrationBranch)) continue;
 
     const files = nativeDiffNumstat(base, integrationBranch, branch)
       .map((entry) => entry.path)
