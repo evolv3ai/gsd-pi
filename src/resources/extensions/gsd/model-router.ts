@@ -500,7 +500,7 @@ export function resolveModelForComplexity(
       modelId: preferred,
       fallbacks,
       tier: requestedTier,
-      wasDowngraded: bareModelId(preferred) !== bareModelId(configuredPrimary),
+      wasDowngraded: !isModelAvailable(configuredPrimary, [preferred]),
       reason: `preferred session model ${preferred} satisfies ${requestedTier} tier`,
       selectionMethod: "tier-only",
     };
