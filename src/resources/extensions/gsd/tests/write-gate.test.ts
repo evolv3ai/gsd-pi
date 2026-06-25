@@ -140,6 +140,7 @@ test('write-gate: blocked reason contains depth_verification keyword and anti-by
   );
   assert.strictEqual(result.block, true);
   assert.ok(result.reason!.includes('depth_verification'), 'reason should mention depth_verification question id');
+  assert.ok(result.reason!.includes('depth_verification_M999_confirm'), 'reason should mention the exact milestone gate id');
   assert.ok(result.reason!.includes('ask_user_questions'), 'reason should mention ask_user_questions tool');
   assert.ok(result.reason!.includes('MUST NOT'), 'reason should include anti-bypass language');
   assert.ok(result.reason!.includes('(Recommended)'), 'reason should specify the required confirmation option');

@@ -25,6 +25,12 @@ export const MILESTONE_CONTEXT_RE = /M\d+(?:-[a-z0-9]{6})?-CONTEXT\.md$/;
 const CONTEXT_MILESTONE_RE = /(?:^|[/\\])(M\d+(?:-[a-z0-9]{6})?)-CONTEXT\.md$/i;
 const DEPTH_VERIFICATION_MILESTONE_RE = /depth_verification[_-](M\d+(?:-[a-z0-9]{6})?)/i;
 
+function normalizeMilestoneId(milestoneId: string): string {
+  const match = milestoneId.match(/^(M)(\d+)(?:-([a-z0-9]{6}))?$/i);
+  if (!match) return milestoneId;
+  return `M${match[2]}${match[3] ? `-${match[3].toLowerCase()}` : ""}`;
+}
+
 /**
  * Path segment that identifies .gsd/ planning artifacts.
  * Writes to these paths are allowed during queue mode.
@@ -228,7 +234,9 @@ function clearPersistedWriteGateSnapshot(basePath: string): void {
 function normalizeWriteGateSnapshot(value: unknown): WriteGateSnapshot {
   const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const verified = Array.isArray(record.verifiedDepthMilestones)
-    ? record.verifiedDepthMilestones.filter((item): item is string => typeof item === "string")
+    ? record.verifiedDepthMilestones
+        .filter((item): item is string => typeof item === "string")
+        .map(normalizeMilestoneId)
     : [];
   const verifiedGates = Array.isArray(record.verifiedApprovalGates)
     ? record.verifiedApprovalGates.filter((item): item is string => typeof item === "string")
@@ -289,7 +297,7 @@ export function loadWriteGateSnapshot(basePath: string): WriteGateSnapshot {
  *     guard that previously protected only the tool_execution_start window.
  */
 function mergeSnapshotIntoState(state: InMemoryWriteGateState, disk: WriteGateSnapshot): void {
-  for (const milestone of disk.verifiedDepthMilestones) state.verifiedDepthMilestones.add(milestone);
+  for (const milestone of disk.verifiedDepthMilestones) state.verifiedDepthMilestones.add(normalizeMilestoneId(milestone));
   for (const gate of disk.verifiedApprovalGates ?? []) state.verifiedApprovalGates.add(gate);
   state.activeQueuePhase = disk.activeQueuePhase;
   state.pendingGateId = disk.pendingGateId;
@@ -395,7 +403,7 @@ export function isMilestoneDepthVerified(
 ): boolean {
   if (!milestoneId) return false;
   refreshWriteGateStateFromDisk(basePath);
-  return getWriteGateState(basePath).verifiedDepthMilestones.has(milestoneId);
+  return getWriteGateState(basePath).verifiedDepthMilestones.has(normalizeMilestoneId(milestoneId));
 }
 
 export function isMilestoneDepthVerifiedInSnapshot(
@@ -403,7 +411,7 @@ export function isMilestoneDepthVerifiedInSnapshot(
   milestoneId: string | null | undefined,
 ): boolean {
   if (!milestoneId) return false;
-  return snapshot.verifiedDepthMilestones.includes(milestoneId);
+  return snapshot.verifiedDepthMilestones.includes(normalizeMilestoneId(milestoneId));
 }
 
 export function isQueuePhaseActive(basePath: string = process.cwd()): boolean {
@@ -466,7 +474,7 @@ export function isGateQuestionId(questionId: string): boolean {
  */
 export function extractDepthVerificationMilestoneId(questionId: string): string | null {
   const match = questionId.match(DEPTH_VERIFICATION_MILESTONE_RE);
-  return match?.[1] ?? null;
+  return match?.[1] ? normalizeMilestoneId(match[1]) : null;
 }
 
 /**
@@ -474,7 +482,7 @@ export function extractDepthVerificationMilestoneId(questionId: string): string 
  */
 function extractContextMilestoneId(inputPath: string): string | null {
   const match = inputPath.match(CONTEXT_MILESTONE_RE);
-  return match?.[1] ?? null;
+  return match?.[1] ? normalizeMilestoneId(match[1]) : null;
 }
 
 /**
@@ -560,7 +568,7 @@ export const hostWriteGateAdapter: WriteGateStateAdapter = {
   markDepthVerified(milestoneId, basePath): void {
     if (!milestoneId) return;
     mutateWriteGateState(basePath, (state) => {
-      state.verifiedDepthMilestones.add(milestoneId);
+      state.verifiedDepthMilestones.add(normalizeMilestoneId(milestoneId));
     }, { writer: "host" });
   },
   markApprovalGateVerified(gateId, basePath): void {
@@ -601,7 +609,7 @@ export const childWriteGateAdapter: WriteGateStateAdapter = {
   markDepthVerified(milestoneId, basePath): void {
     if (!milestoneId) return;
     childMutate(basePath, (state) => {
-      state.verifiedDepthMilestones.add(milestoneId);
+      state.verifiedDepthMilestones.add(normalizeMilestoneId(milestoneId));
     });
   },
   markApprovalGateVerified(gateId, basePath): void {
@@ -865,7 +873,7 @@ export function shouldBlockContextWrite(
   if (toolName !== "write") return { block: false };
   if (!MILESTONE_CONTEXT_RE.test(inputPath)) return { block: false };
 
-  const targetMilestoneId = extractContextMilestoneId(inputPath) ?? milestoneId;
+  const targetMilestoneId = extractContextMilestoneId(inputPath) ?? (milestoneId ? normalizeMilestoneId(milestoneId) : null);
   if (!targetMilestoneId) {
     return {
       block: true,
@@ -884,8 +892,8 @@ export function shouldBlockContextWrite(
     reason: [
       `HARD BLOCK: Cannot write to milestone CONTEXT.md without depth verification.`,
       `This is a mechanical gate — you MUST NOT proceed, retry, or rationalize past this block.`,
-      `Required action: call ask_user_questions with question id containing "depth_verification".`,
-      `The user MUST select the "(Recommended)" confirmation option to unlock this gate.`,
+      `Required action: call ask_user_questions with question id "depth_verification_${targetMilestoneId}_confirm".`,
+      `The user MUST select the first "(Recommended)" confirmation option to unlock this gate.`,
       `If the user declines, cancels, or the tool fails, you must re-ask — not bypass.`,
     ].join(" "),
   };
