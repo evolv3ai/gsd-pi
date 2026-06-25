@@ -98,8 +98,11 @@ export function resolveModelWithFallbacksForUnit(
   unitType: string,
   basePath?: string,
   availableModelIds?: string[],
+  preferredModelId?: string,
 ): ResolvedModelConfig | undefined {
-  const loadOpts = availableModelIds !== undefined ? { availableModelIds } : undefined;
+  const loadOpts = availableModelIds !== undefined || preferredModelId !== undefined
+    ? { availableModelIds, preferredModelId }
+    : undefined;
   const prefs = loadEffectiveGSDPreferences(basePath, loadOpts);
   const chain = phaseChainForUnit(unitType);
   if (!chain) return undefined;
@@ -188,7 +191,9 @@ export function resolveThinkingLevelForUnit(
  * `openai-codex/gpt-5.4`).  When a bare ID is found and sessionProvider
  * is available, the session provider is used.  Without sessionProvider,
  * bare IDs are still returned with provider set to the bare ID itself
- * so downstream resolution (resolveModelId) can match it.
+ * so downstream resolution (resolveModelId) can match it. Accepts an optional
+ * `sessionModelId` so token-profile defaults can preserve the selected model
+ * before auto-mode captures its start snapshot.
  *
  * Returns `{ provider, id }` or `undefined` if no model preference is
  * configured.
@@ -197,8 +202,14 @@ export function resolveDefaultSessionModel(
   sessionProvider?: string,
   basePath?: string,
   availableModelIds?: string[],
+  sessionModelId?: string,
 ): { provider: string; id: string } | undefined {
-  const loadOpts = availableModelIds !== undefined ? { availableModelIds } : undefined;
+  const preferredModelId = sessionModelId && sessionProvider
+    ? `${sessionProvider}/${sessionModelId}`
+    : sessionModelId;
+  const loadOpts = availableModelIds !== undefined || preferredModelId !== undefined
+    ? { availableModelIds, preferredModelId }
+    : undefined;
   const prefs = loadEffectiveGSDPreferences(basePath, loadOpts);
   const models = prefs?.preferences?.models;
   if (!models) return undefined;
@@ -477,18 +488,21 @@ const PROFILE_TIER_MAP: Record<TokenProfile, Record<string, ComplexityTier>> = {
  * the best match on the anchor provider (session / auto-start model). Callers
  * scope the available-model list via `modelIdsForProfileResolution` so token
  * profiles do not hop to a cheaper provider (e.g. Gemini Flash) when the user
- * is working on OpenAI or Anthropic. When not known (e.g., early startup),
- * falls back to canonical Anthropic model IDs.
+ * is working on OpenAI or Anthropic. When the selected/session model is known,
+ * it is preferred for tiers it can satisfy. When the registry is unavailable
+ * (e.g., early startup), falls back to canonical Anthropic model IDs.
  *
  * @param profile           The token profile to resolve
  * @param availableModelIds Optional list of available model IDs for cross-provider resolution.
  *                          Undefined means the registry is unavailable.
  * @param routingConfig     Optional routing config for tier model pins.
+ * @param preferredModelId  Optional selected/session model ID to prefer.
  */
 export function resolveProfileDefaults(
   profile: TokenProfile,
   availableModelIds?: string[],
   routingConfig: DynamicRoutingConfig = defaultRoutingConfig(),
+  preferredModelId?: string,
 ): Partial<GSDPreferences> {
   // burn-max never writes model defaults — preserve user-selected models.
   // For the other three profiles, derive concrete model IDs from the tier map
@@ -496,7 +510,7 @@ export function resolveProfileDefaults(
   // omit the registry entirely, use canonical fallbacks explicitly.
   const tierMap = PROFILE_TIER_MAP[profile];
   const resolveTierModel = (tier: ComplexityTier): string => Array.isArray(availableModelIds)
-    ? resolveModelForTier(tier, availableModelIds, routingConfig)
+    ? resolveModelForTier(tier, availableModelIds, routingConfig, undefined, preferredModelId)
     : canonicalModelForTier(tier);
   const models: GSDModelConfigV2 | undefined = profile === "burn-max"
     ? undefined
