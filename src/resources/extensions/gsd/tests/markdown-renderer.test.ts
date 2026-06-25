@@ -32,6 +32,7 @@ import {
   renderAllFromDb,
   renderPlanFromDb,
   renderTaskPlanFromDb,
+  renderRoadmapFromDb,
   detectStaleRenders,
 } from '../markdown-renderer.ts';
 import { repairStaleRenders } from '../state-reconciliation/drift/stale-render.ts';
@@ -1505,6 +1506,136 @@ test('── markdown-renderer: detectStaleRenders finds missing slice summary a
 
     assert.ok(!!summaryStale, 'should detect missing S01-SUMMARY.md');
     assert.ok(!!uatStale, 'should detect missing S01-UAT.md');
+  } finally {
+    closeDatabase();
+    cleanupDir(tmpDir);
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// renderRoadmapFromDb — unplanned-milestone guard (#852 follow-up)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// A milestone row created by gsd_milestone_generate_id / ensureMilestoneDbRow
+// starts with title="" / vision="" and zero slices. Rendering that produced a
+// 38-byte stub (`# M015: M015\n\n**Vision:** \n\n## Slices`) that passed
+// existsSync but failed the plan-milestone "zero slices" content check —
+// trapping auto-mode in a finalize-retry loop. The guard now refuses to render
+// a ROADMAP for a milestone with zero slices AND empty vision, so verification
+// sees a genuinely missing file (clear "write the ROADMAP" failure) instead of
+// a misleading stub.
+
+test('── markdown-renderer: renderRoadmapFromDb skips unplanned milestone (zero slices, empty vision) ──', async () => {
+  const tmpDir = makeTmpDir();
+  const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
+  openDatabase(dbPath);
+  clearAllCaches();
+
+  try {
+    // Reserved placeholder row — exactly what ensureMilestoneDbRow creates: no
+    // title, no vision, no slices (the never-planned state).
+    insertMilestone({ id: 'M015', title: '', status: 'queued' });
+    scaffoldDirs(tmpDir, 'M015', []);
+
+    const result = await renderRoadmapFromDb(tmpDir, 'M015');
+
+    assert.deepEqual(result, { skipped: 'unplanned-milestone' });
+
+    // No stub ROADMAP must land on disk — that's the whole point of the guard.
+    const phaseDir = path.join(tmpDir, '.gsd', 'phases', '15-m015');
+    const roadmapPath = path.join(phaseDir, '15-ROADMAP.md');
+    assert.equal(
+      fs.existsSync(roadmapPath),
+      false,
+      'renderRoadmapFromDb must NOT write a stub ROADMAP for an unplanned milestone',
+    );
+  } finally {
+    closeDatabase();
+    cleanupDir(tmpDir);
+  }
+});
+
+test('── markdown-renderer: renderRoadmapFromDb removes a pre-existing stub ROADMAP for unplanned milestone ──', async () => {
+  // Brownfield scenario: a previous run (before the unplanned-milestone guard
+  // existed) already wrote a stub ROADMAP to disk. renderRoadmapFromDb must
+  // delete it so plan-milestone verification sees a genuinely missing file
+  // rather than failing on "zero slices" again (#852 follow-up).
+  const tmpDir = makeTmpDir();
+  const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
+  openDatabase(dbPath);
+  clearAllCaches();
+
+  try {
+    insertMilestone({ id: 'M015', title: '', status: 'queued' });
+    scaffoldDirs(tmpDir, 'M015', []);
+
+    // Simulate a stub ROADMAP written by an older run.
+    const phaseDir = path.join(tmpDir, '.gsd', 'phases', '15-m015');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    const stubRoadmapPath = path.join(phaseDir, '15-ROADMAP.md');
+    fs.writeFileSync(stubRoadmapPath, '# M015: M015\n\n**Vision:** \n\n## Slices\n');
+    assert.equal(fs.existsSync(stubRoadmapPath), true, 'stub exists before guard runs');
+
+    const result = await renderRoadmapFromDb(tmpDir, 'M015');
+
+    assert.deepEqual(result, { skipped: 'unplanned-milestone' });
+    assert.equal(
+      fs.existsSync(stubRoadmapPath),
+      false,
+      'renderRoadmapFromDb must delete the pre-existing stub ROADMAP',
+    );
+  } finally {
+    closeDatabase();
+    cleanupDir(tmpDir);
+  }
+});
+
+test('── markdown-renderer: renderRoadmapFromDb renders a planned milestone (≥1 slice) ──', async () => {
+  const tmpDir = makeTmpDir();
+  const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
+  openDatabase(dbPath);
+  clearAllCaches();
+
+  try {
+    insertMilestone({ id: 'M016', title: 'Planned', status: 'active' });
+    insertSlice({ id: 'S01', milestoneId: 'M016', title: 'First slice', status: 'pending' });
+    scaffoldDirs(tmpDir, 'M016', ['S01']);
+
+    const result = await renderRoadmapFromDb(tmpDir, 'M016');
+
+    assert.ok(!('skipped' in result), 'planned milestone must not be skipped');
+    assert.ok('roadmapPath' in result && result.roadmapPath, 'returns a roadmapPath');
+    assert.ok('content' in result && result.content.includes('## Slices'), 'content has a Slices section');
+    assert.ok(
+      'content' in result && result.content.includes('S01'),
+      'content includes the planned slice',
+    );
+  } finally {
+    closeDatabase();
+    cleanupDir(tmpDir);
+  }
+});
+
+test('── markdown-renderer: renderRoadmapFromDb renders milestone with vision but zero slices ──', async () => {
+  // A milestone with a non-empty vision but zero slices is NOT unplanned — it
+  // may be mid-plan or intentionally slice-less. The guard must not skip it.
+  const tmpDir = makeTmpDir();
+  const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
+  openDatabase(dbPath);
+  clearAllCaches();
+
+  try {
+    insertMilestone({ id: 'M017', title: 'Visionary', status: 'active' });
+    // upsertMilestonePlanning sets the vision; insertMilestone leaves it "".
+    // Simulate a planned-but-not-yet-sliced milestone via the planning upsert.
+    const { upsertMilestonePlanning } = await import('../gsd-db.ts');
+    upsertMilestonePlanning('M017', { vision: 'A slice-less milestone', title: 'Visionary', status: 'active', depends_on: [] });
+    scaffoldDirs(tmpDir, 'M017', []);
+
+    const result = await renderRoadmapFromDb(tmpDir, 'M017');
+
+    assert.ok(!('skipped' in result), 'milestone with vision must not be skipped even with zero slices');
+    assert.ok('content' in result && result.content.includes('A slice-less milestone'), 'vision is rendered');
   } finally {
     closeDatabase();
     cleanupDir(tmpDir);

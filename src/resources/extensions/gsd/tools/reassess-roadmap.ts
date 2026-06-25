@@ -274,6 +274,9 @@ export async function handleReassessRoadmap(
   // ── Render artifacts ──────────────────────────────────────────────
   try {
     const roadmapResult = await renderRoadmapFromDb(basePath, params.milestoneId);
+    if ("skipped" in roadmapResult) {
+      return { error: `roadmap render skipped: milestone ${params.milestoneId} has no planned slices` };
+    }
     const assessmentResult = await renderAssessmentFromDb(basePath, params.milestoneId, params.completedSliceId, {
       verdict: params.verdict,
       assessment: params.assessment,

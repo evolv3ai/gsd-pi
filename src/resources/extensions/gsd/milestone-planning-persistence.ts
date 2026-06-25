@@ -161,6 +161,14 @@ async function renderPlanArtifacts(
 ): Promise<string | { error: string }> {
   try {
     const renderResult = await renderRoadmapFromDb(basePath, params.milestoneId);
+    // renderRoadmapFromDb only skips for unplanned milestones (zero slices +
+    // empty vision); persistMilestonePlan always populates both via writePlanRows
+    // before this render, so the skipped branch is unreachable here. Fall back to
+    // resolving the projected path so a future invariant still surfaces a clear
+    // render failure rather than an undefined dereference.
+    if ("skipped" in renderResult) {
+      return { error: `render skipped: milestone ${params.milestoneId} has no planned slices` };
+    }
     return renderResult.roadmapPath;
   } catch (renderErr) {
     logWarning("tool", `plan_milestone — render failed (DB rows preserved for debugging): ${(renderErr as Error).message}`);

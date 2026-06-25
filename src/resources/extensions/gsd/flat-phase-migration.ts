@@ -11,6 +11,7 @@ import { migrateFromMarkdown } from "./md-importer.js";
 import { countDbHierarchy } from "./migration-auto-check.js";
 import { logWarning } from "./workflow-logger.js";
 import { LAYOUT_SEGMENTS } from "./layout-policy.js";
+import { canonicalPhaseDirName, milestonesDir, resolveMilestonePath } from "./paths.js";
 
 const LEGACY_MIGRATING_SEGMENT = "milestones.migrating";
 
@@ -138,7 +139,13 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
     // Slice-less milestones still need a phase directory for flat-phase layout.
     for (const milestone of getAllMilestones()) {
       if (getMilestoneSlices(milestone.id).length > 0) continue;
-      await renderRoadmapFromDb(basePath, milestone.id);
+      const roadmapResult = await renderRoadmapFromDb(basePath, milestone.id);
+      if ("skipped" in roadmapResult) {
+        const phaseDir = resolveMilestonePath(basePath, milestone.id) ??
+          join(milestonesDir(basePath), canonicalPhaseDirName(milestone.id, milestone.title));
+        mkdirSync(phaseDir, { recursive: true });
+        continue;
+      }
       renderResult.rendered++;
     }
   } catch (err) {

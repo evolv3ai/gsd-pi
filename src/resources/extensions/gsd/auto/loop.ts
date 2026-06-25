@@ -1331,7 +1331,17 @@ export async function autoLoop(
         finalizeResult.action === "break"
           ? { action: "break", reason: finalizeResult.reason }
           : finalizeResult.action === "continue"
-            ? { action: "continue" }
+            ? {
+                action: "continue",
+                // Surface the specific verification failure (e.g. "roadmap has
+                // zero slices") in the ledger/stuck-loop reason instead of the
+                // opaque bare "finalize-retry" token. The retry paths in
+                // runFinalize set s.pendingVerificationRetry.failureContext
+                // from describeArtifactVerificationFailure before returning
+                // continue; it is cleared on the next dispatch, so reading it
+                // here captures the reason for THIS finalize (#852 follow-up).
+                failureDetail: s.pendingVerificationRetry?.failureContext,
+              }
             : { action: "next" },
       );
       if (finalizeDecision.action === "stop") {

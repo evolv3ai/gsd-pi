@@ -90,6 +90,8 @@ console.log('\n=== planning-crossval Test 1: ROADMAP round-trip parity ===');
 
     // Render ROADMAP.md from DB
     const rendered = await renderRoadmapFromDb(base, 'M001');
+    // Milestone has planned slices — skipped variant is unreachable here.
+    if ('skipped' in rendered) throw new Error('unexpected: milestone has planned slices');
     const content = readFileSync(rendered.roadmapPath, 'utf-8');
 
     // Parse back
@@ -279,6 +281,8 @@ console.log('\n=== planning-crossval Test 3: Sequence ordering parity ===');
 
     // Render ROADMAP from DB — should produce slices in sequence order
     const rendered = await renderRoadmapFromDb(base, 'M001');
+    // Milestone has planned slices — skipped variant is unreachable here.
+    if ('skipped' in rendered) throw new Error('unexpected: milestone has planned slices');
     const content = readFileSync(rendered.roadmapPath, 'utf-8');
 
     // Parse back
@@ -341,6 +345,8 @@ console.log('\n=== planning-crossval Test 4: ROADMAP worktree projection path ==
     });
 
     const rendered = await renderRoadmapFromDb(worktreeBase, 'M001');
+    // Milestone has a planned slice — skipped variant is unreachable here.
+    if ('skipped' in rendered) throw new Error('unexpected: milestone has planned slices');
 
     assertEq(rendered.roadmapPath, worktreeRoadmapPath, 'T4: roadmap path uses worktree projection');
     assertTrue(existsSync(worktreeRoadmapPath), 'T4: worktree roadmap exists');
@@ -379,6 +385,8 @@ console.log('\n=== planning-crossval Test 5: ROADMAP existing projection file pa
     });
 
     const rendered = await renderRoadmapFromDb(worktreeBase, 'M001');
+    // Milestone has a non-empty vision — skipped variant is unreachable here.
+    if ('skipped' in rendered) throw new Error('unexpected: milestone has non-empty vision');
 
     assertEq(rendered.roadmapPath, worktreeRoadmapPath, 'T5: existing roadmap path remains absolute');
     assertTrue(existsSync(worktreeRoadmapPath), 'T5: worktree roadmap still exists');
@@ -417,6 +425,8 @@ console.log('\n=== planning-crossval Test 6: ROADMAP descriptor projection dir =
     });
 
     const rendered = await renderRoadmapFromDb(worktreeBase, 'M001');
+    // Milestone has a non-empty vision — skipped variant is unreachable here.
+    if ('skipped' in rendered) throw new Error('unexpected: milestone has non-empty vision');
 
     assertEq(rendered.roadmapPath, descriptorRoadmapPath, 'T6: roadmap path uses descriptor milestone dir');
     assertTrue(existsSync(descriptorRoadmapPath), 'T6: descriptor roadmap exists');
@@ -458,6 +468,8 @@ console.log('\n=== planning-crossval Test 7: renderer recovers bracket-wrapped d
       .run('["[S01]"]', 'S02', 'M001');
 
     const rendered = await renderRoadmapFromDb(base, 'M001');
+    // Milestone has planned slices — skipped variant is unreachable here.
+    if ('skipped' in rendered) throw new Error('unexpected: milestone has planned slices');
     const content = readFileSync(rendered.roadmapPath, 'utf-8');
     const parsed = parseRoadmapSlices(content);
 

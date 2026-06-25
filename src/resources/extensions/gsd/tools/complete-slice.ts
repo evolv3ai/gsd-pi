@@ -476,6 +476,12 @@ export async function handleCompleteSlice(
 
     const roadmap = await renderRoadmapFromDb(artifactBasePath, params.milestoneId);
     clearParseCache();
+    // complete-slice runs after a slice is committed in the DB, so the milestone
+    // always has ≥1 slice — the skipped (unplanned) branch is unreachable. Guard
+    // for type-safety so a future invariant surfaces a clear error.
+    if ("skipped" in roadmap) {
+      throw new Error(`roadmap render skipped: milestone ${params.milestoneId} has no planned slices`);
+    }
     // Render verification (ADR-017): confirms the just-written projection
     // reflects the DB completion; the DB row is already committed.
     if (!roadmapRenderMarksSliceDone(roadmap.content, params.sliceId)) {
