@@ -86,6 +86,101 @@ test("stale verification evidence batches are ignored when a newer completion ba
   assert.deepEqual(mismatches, []);
 });
 
+test("WSL bash-spawn failure is not flagged as a falsified passing verification", () => {
+  // Issue #814: on Windows, `gsd_exec runtime=bash` resolves to a WSL with no
+  // /bin/bash. The bash-runtime verification call exits 1 with a spawn-failure
+  // banner (the command never ran); the LLM re-ran via a node runtime (exit 0)
+  // that findMatches does not capture. The infra failure must not block.
+  const command = "npx playwright test e2e/m039-s05-comparison-legibility.spec.ts";
+  const mismatches = crossReferenceEvidence(
+    [{ command, exitCode: 0, verdict: "passed" }],
+    [
+      {
+        kind: "bash",
+        toolCallId: "call-1",
+        command: `${command} --reporter=line 2>&1 | tail -40`,
+        exitCode: 1,
+        outputSnippet:
+          "<3>WSL (12 - Relay) ERROR: CreateProcessCommon:800: execvpe(/bin/bash) failed: No such file or directory",
+        timestamp: 1,
+      },
+    ] as EvidenceEntry[],
+  );
+
+  assert.equal(mismatches.length, 1);
+  assert.equal(mismatches[0].severity, "warning");
+  assert.match(mismatches[0].reason, /inconclusive/);
+});
+
+test("missing tool failure (command not found: eslint) is a real error, not an infra spawn failure", () => {
+  // Regression for overly-broad spawn signature: `command not found: eslint`
+  // is a genuine verification failure (eslint not installed), not a missing
+  // shell interpreter. It must produce a blocking error, not a warning.
+  const command = "eslint src/";
+  const mismatches = crossReferenceEvidence(
+    [{ command, exitCode: 0, verdict: "passed" }],
+    [
+      {
+        kind: "bash",
+        toolCallId: "call-1",
+        command,
+        exitCode: 1,
+        outputSnippet: "zsh: command not found: eslint",
+        timestamp: Date.now(),
+      },
+    ] as EvidenceEntry[],
+  );
+
+  assert.equal(mismatches.length, 1);
+  assert.equal(mismatches[0].severity, "error");
+  assert.match(mismatches[0].reason, /Claimed exitCode=0/);
+});
+
+test("missing tool failure (command not found: node) is a real error, not an infra spawn failure", () => {
+  // node is not a shell interpreter; its absence is a genuine env problem,
+  // not a shell-spawn infra failure.
+  const command = "node --test tests/verify.test.js";
+  const mismatches = crossReferenceEvidence(
+    [{ command, exitCode: 0, verdict: "passed" }],
+    [
+      {
+        kind: "bash",
+        toolCallId: "call-1",
+        command,
+        exitCode: 127,
+        outputSnippet: "bash: command not found: node",
+        timestamp: Date.now(),
+      },
+    ] as EvidenceEntry[],
+  );
+
+  assert.equal(mismatches.length, 1);
+  assert.equal(mismatches[0].severity, "error");
+  assert.match(mismatches[0].reason, /Claimed exitCode=0/);
+});
+
+test("missing shell interpreter (command not found: bash) is treated as an infra spawn failure", () => {
+  // bash itself missing is the shell-spawn infra case; must remain a warning.
+  const command = "npm test";
+  const mismatches = crossReferenceEvidence(
+    [{ command, exitCode: 0, verdict: "passed" }],
+    [
+      {
+        kind: "bash",
+        toolCallId: "call-1",
+        command,
+        exitCode: 1,
+        outputSnippet: "command not found: bash",
+        timestamp: Date.now(),
+      },
+    ] as EvidenceEntry[],
+  );
+
+  assert.equal(mismatches.length, 1);
+  assert.equal(mismatches[0].severity, "warning");
+  assert.match(mismatches[0].reason, /inconclusive/);
+});
+
 test("missing recorded bash evidence remains a warning", () => {
   const mismatches = crossReferenceEvidence(
     [{ command: "npm test", exitCode: 0, verdict: "passed" }],
