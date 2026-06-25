@@ -13,7 +13,7 @@ import type { GSDEcosystemBeforeAgentStartHandler } from "../ecosystem/gsd-exten
 import { updateSnapshot } from "../ecosystem/gsd-extension-api.js";
 
 import { buildMilestoneFileName, canonicalPhaseDirName, clearPathCache, milestonesDir, legacyMilestonesDir, resolveMilestonePath, resolveSliceFile, resolveSlicePath } from "../paths.js";
-import { applyAskUserQuestionsGateResult, clearDiscussionFlowState, formatPendingAskUserQuestionsGateMessage, hostWriteGateAdapter, isApprovalGateVerifiedInSnapshot, isDepthConfirmationAnswer, isMilestoneDepthVerified, isMilestoneDepthVerifiedInSnapshot, isQueuePhaseActive, resetWriteGateState, shouldBlockContextWrite, shouldBlockPlanningUnit, shouldBlockQueueExecution, shouldBlockWorktreeBash, shouldBlockWorktreeWrite, isGateQuestionId, getPendingGate, shouldBlockPendingGate, shouldBlockPendingGateBash, extractDepthVerificationMilestoneId } from "./write-gate.js";
+import { applyAskUserQuestionsGateResult, clearDiscussionFlowState, formatPendingAskUserQuestionsGateMessage, formatTimedOutAskUserQuestionsGateMessage, hostWriteGateAdapter, isApprovalGateVerifiedInSnapshot, isDepthConfirmationAnswer, isMilestoneDepthVerified, isMilestoneDepthVerifiedInSnapshot, isQueuePhaseActive, resetWriteGateState, shouldBlockContextWrite, shouldBlockPlanningUnit, shouldBlockQueueExecution, shouldBlockWorktreeBash, shouldBlockWorktreeWrite, isGateQuestionId, getPendingGate, shouldBlockPendingGate, shouldBlockPendingGateBash, extractDepthVerificationMilestoneId } from "./write-gate.js";
 import { canonicalToolName } from "../engine-hook-contract.js";
 import { resolveManifest } from "../unit-context-manifest.js";
 import { isBlockedStateFile, isBashWriteToStateFile, BLOCKED_WRITE_ERROR } from "../write-intercept.js";
@@ -680,7 +680,7 @@ function isContextDraftSummarySave(toolName: string, input: unknown): boolean {
 function resolveAskUserQuestionsGateDetails(event: { details?: unknown; result?: unknown }): any {
   const hasRoundShape = (value: any): boolean =>
     !!value && typeof value === "object" &&
-    (value.cancelled !== undefined || value.response !== undefined);
+    (value.cancelled !== undefined || value.timed_out !== undefined || value.response !== undefined);
 
   const details = event.details as any;
   if (hasRoundShape(details)) return details;
@@ -1621,6 +1621,28 @@ export function registerHooks(
         }],
       };
     }
+    if (gateResult.status === "timeout") {
+      // Host elicitation timed out before the user answered. The gate stays
+      // pending (fail-closed), but we reset the loop guard and return a
+      // timeout-specific message so the model does NOT immediately re-ask —
+      // that would just hit the same timeout again. Auto-mode pauses and
+      // waits for the user to respond on a new turn (#852).
+      resetToolCallLoopGuard();
+      if (ctx) {
+        await maybePauseAutoForApprovalGate(
+          ctx,
+          pi,
+          true,
+          "Depth confirmation timed out waiting for a response — pausing auto-mode. Reply to resume.",
+        );
+      }
+      return {
+        content: [{
+          type: "text" as const,
+          text: formatTimedOutAskUserQuestionsGateMessage(gateResult.pendingGateId),
+        }],
+      };
+    }
     if (gateResult.status === "verified") {
       clearDeferredApprovalGate(basePath);
     }
@@ -1640,6 +1662,21 @@ export function registerHooks(
           pi,
           true,
           "ask_user_questions was cancelled before receiving a response — pausing auto-mode until you respond.",
+        );
+      }
+      return;
+    }
+    if (roundOutcome === "timeout") {
+      // Non-gate (consent/decision) question timed out at the host elicitation.
+      // Same policy as the gate-timeout branch above: reset the loop guard and
+      // pause-and-wait so the model does not re-ask into the same timeout (#852).
+      resetToolCallLoopGuard();
+      if (ctx) {
+        await maybePauseAutoForApprovalGate(
+          ctx,
+          pi,
+          true,
+          "A user question timed out waiting for a response — pausing auto-mode. Reply to resume.",
         );
       }
       return;

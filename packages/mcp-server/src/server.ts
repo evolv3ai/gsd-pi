@@ -417,6 +417,13 @@ interface AskUserQuestionsStructuredContent {
   questions: AskUserQuestion[];
   response: AskUserQuestionsRoundResult | null;
   cancelled: boolean;
+  /**
+   * True when the host elicitation timed out before the user answered.
+   * Distinct from `cancelled` (deliberate user dismissal): a timeout must not
+   * be laundered into a re-ask loop, so the gate hook treats it as "waiting"
+   * and pauses auto-mode (#852).
+   */
+  timed_out?: boolean;
 }
 
 interface AskUserQuestionsWriteGateModule {
@@ -539,6 +546,24 @@ export function formatAskUserQuestionsElicitResult(
   }
 
   return JSON.stringify({ answers });
+}
+
+/**
+ * Format the user-visible message returned when the host elicitation times out
+ * before the user answers. The message is LLM-facing: it tells the model the
+ * question was not answered, that it must NOT re-ask in the same turn, and that
+ * auto-mode is paused until the user responds. The gate hook routes this to a
+ * `timed_out` verdict so the depth-verification gate stays pending (fail-closed)
+ * without becoming a permanent block (#852).
+ */
+export function formatAskUserQuestionsTimeoutMessage(err: unknown): string {
+  const reason = err instanceof Error ? err.message : 'host elicitation timed out';
+  return [
+    `ask_user_questions timed out waiting for a response (${reason}).`,
+    'The user did not answer within the host elicitation window.',
+    'Do not re-ask the same question in this turn — that will only time out again.',
+    'Auto-mode is paused. Wait for the user to respond, or re-ask on a new turn once they confirm readiness.',
+  ].join(' ');
 }
 
 /**
@@ -675,11 +700,33 @@ async function recordAskUserQuestionsGateResult(
   }
 }
 
-function isLocalElicitFallbackError(err: unknown): boolean {
+/**
+ * Detect an elicitation-side timeout error so the handler returns a clean
+ * "timed_out" result rather than a raw error the model will retry.
+ *
+ * The Claude Agent SDK enforces its own ~60s elicitation timeout
+ * (`MCP error -32001: Request timed out`); `withElicitTimeout` enforces a
+ * longer 10-minute timeout (`… timed out after … minutes`). Both surface as
+ * elicitation fallback errors that should never become a raw `errorContent`
+ * response — without recognition they re-throw, skip
+ * `recordAskUserQuestionsGateResult`, leave the depth-verification gate
+ * pending, and the model loops on the blocked call (#852).
+ */
+export function isLocalElicitTimeoutError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const message = err.message.toLowerCase();
   return (
-    message.includes('timed out after') ||
+    message.includes('-32001') ||
+    message.includes('request timed out') ||
+    message.includes('timed out after')
+  );
+}
+
+function isLocalElicitFallbackError(err: unknown): boolean {
+  if (isLocalElicitTimeoutError(err)) return true;
+  if (!(err instanceof Error)) return false;
+  const message = err.message.toLowerCase();
+  return (
     message.includes('elicit') ||
     message.includes('elicitation') ||
     message.includes('host') ||
@@ -720,6 +767,7 @@ export async function askUserQuestionsHandler(
     // remote (e.g. expired Discord token returning 401) must not block the
     // depth-verification gate when the user is sitting in front of the host.
     let localElicitError: unknown;
+    let localElicitTimedOut = false;
     try {
       const elicitation = await withElicitTimeout(
         deps.elicitInput(buildAskUserQuestionsElicitRequest(questions)),
@@ -740,7 +788,32 @@ export async function askUserQuestionsHandler(
     } catch (err) {
       if (!isLocalElicitFallbackError(err)) throw err;
       localElicitError = err;
-      console.warn(`[gsd:mcp] ask_user_questions local elicitation unavailable; trying remote fallback: ${formatErrorMessage(err)}`);
+      // A timeout is the host user not answering, not a channel failure.
+      // Returning here (instead of falling through to remote) gives the gate
+      // hook a clean `timed_out` signal so it pauses auto-mode and waits for
+      // the user instead of looping on the blocked call (#852).
+      if (isLocalElicitTimeoutError(err)) {
+        localElicitTimedOut = true;
+      } else {
+        console.warn(`[gsd:mcp] ask_user_questions local elicitation unavailable; trying remote fallback: ${formatErrorMessage(err)}`);
+      }
+    }
+
+    // Host-side timeout: the user is at the host but didn't respond. Do not
+    // fall through to remote (no one is there to answer it either). Return a
+    // clean `timed_out` result so the gate hook pauses and the model stops
+    // retrying the blocked call.
+    if (localElicitTimedOut) {
+      const timedOutStructured: AskUserQuestionsStructuredContent = {
+        questions,
+        response: null,
+        cancelled: true,
+        timed_out: true,
+      };
+      return {
+        content: [{ type: 'text' as const, text: formatAskUserQuestionsTimeoutMessage(localElicitError) }],
+        structuredContent: timedOutStructured as unknown as Record<string, unknown>,
+      };
     }
 
     // Local cancelled / unavailable — fall back to the configured remote

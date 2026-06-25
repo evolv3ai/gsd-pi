@@ -348,6 +348,7 @@ test('write-gate: reopening a gate revokes its previous verified approval', () =
 import {
   applyAskUserQuestionsGateResult,
   formatPendingAskUserQuestionsGateMessage,
+  formatTimedOutAskUserQuestionsGateMessage,
   isGateQuestionId,
   shouldBlockPendingGate,
   shouldBlockPendingGateBash,
@@ -518,6 +519,107 @@ test('write-gate: applyAskUserQuestionsGateResult keeps empty-selection pending 
     assert.deepEqual(result, { status: 'waiting', pendingGateId: gateId, interrupted: false });
     assert.strictEqual(getPendingGate(base), gateId, 'unanswered gate must stay pending');
     assert.strictEqual(isMilestoneDepthVerified('M001', base), false, 'unanswered gate must not verify depth');
+  } finally {
+    clearDiscussionFlowState(base);
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+// ─── Scenario 20d: applyAskUserQuestionsGateResult reports timed_out gate (#852) ──
+//
+// A host elicitation timeout must NOT be laundered into "waiting" (which tells
+// the model to re-ask — that just hits the same timeout again) nor into
+// "verified" (a timeout is never approval). The gate stays pending (fail-
+// closed) but the status is "timeout" so the caller pauses-and-waits.
+
+test('write-gate: applyAskUserQuestionsGateResult reports timed_out pending gate (#852)', () => {
+  const base = join(tmpdir(), `gsd-write-gate-ask-timeout-${randomUUID()}`);
+  const gateId = 'depth_verification_M001_confirm';
+
+  try {
+    mkdirSync(base, { recursive: true });
+    clearDiscussionFlowState(base);
+    setPendingGate(gateId, base);
+
+    const result = applyAskUserQuestionsGateResult({
+      basePath: base,
+      questions: [{
+        id: gateId,
+        options: [{ label: 'Confirm depth (Recommended)' }, { label: 'Needs adjustment' }],
+      }],
+      // A timed-out round is marked cancelled:true + timed_out:true (the
+      // structuredContent the MCP child returns on host timeout).
+      details: { cancelled: true, timed_out: true, interrupted: false },
+    });
+
+    assert.deepEqual(result, {
+      status: 'timeout',
+      pendingGateId: gateId,
+      interrupted: false,
+    });
+    assert.strictEqual(getPendingGate(base), gateId, 'timed-out gate must stay pending (fail-closed)');
+    assert.strictEqual(isMilestoneDepthVerified('M001', base), false, 'timed-out gate must not verify depth');
+    // The timeout message must NOT tell the model to immediately re-ask.
+    const message = formatTimedOutAskUserQuestionsGateMessage(gateId);
+    assert.match(message, /timed out/, 'message says timed out');
+    assert.doesNotMatch(message, /Re-call ask_user_questions/, 'message must NOT invite immediate re-ask');
+    assert.match(message, /do not re-ask/i, 'message explicitly says do not re-ask');
+  } finally {
+    clearDiscussionFlowState(base);
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('write-gate: applyAskUserQuestionsGateResult reports timed_out even with interrupted:true', () => {
+  // timed_out wins over the interrupted flag — both are host-side failures,
+  // but timeout is the more specific signal and must reach the caller.
+  const base = join(tmpdir(), `gsd-write-gate-ask-timeout-interrupted-${randomUUID()}`);
+  const gateId = 'depth_verification_M002_confirm';
+
+  try {
+    mkdirSync(base, { recursive: true });
+    clearDiscussionFlowState(base);
+    setPendingGate(gateId, base);
+
+    const result = applyAskUserQuestionsGateResult({
+      basePath: base,
+      questions: [{
+        id: gateId,
+        options: [{ label: 'Confirm depth (Recommended)' }, { label: 'Needs adjustment' }],
+      }],
+      details: { cancelled: true, timed_out: true, interrupted: true },
+    });
+
+    assert.deepEqual(result, {
+      status: 'timeout',
+      pendingGateId: gateId,
+      interrupted: true,
+    });
+  } finally {
+    clearDiscussionFlowState(base);
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('write-gate: timed_out gate with no pending gate returns not-gate', () => {
+  // A timed-out round arriving when no gate is armed (e.g. informational
+  // question) is not a gate concern — fail-open here, matching cancelled.
+  const base = join(tmpdir(), `gsd-write-gate-ask-timeout-nogate-${randomUUID()}`);
+
+  try {
+    mkdirSync(base, { recursive: true });
+    clearDiscussionFlowState(base);
+
+    const result = applyAskUserQuestionsGateResult({
+      basePath: base,
+      questions: [{
+        id: 'depth_verification_M001_confirm',
+        options: [{ label: 'Confirm depth (Recommended)' }, { label: 'Needs adjustment' }],
+      }],
+      details: { cancelled: true, timed_out: true },
+    });
+
+    assert.deepEqual(result, { status: 'not-gate' });
   } finally {
     clearDiscussionFlowState(base);
     rmSync(base, { recursive: true, force: true });

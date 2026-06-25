@@ -83,6 +83,8 @@ const POLICY_TABLE: Row[] = [
   { name: "gate × missing response → waiting", question: gateQ, details: {}, expected: "waiting" },
   { name: "gate × notes-only → waiting (notes never satisfy a gate)", question: gateQ, details: { response: { answers: { [gateQ.id]: { notes: "looks fine" } } } }, expected: "waiting" },
   { name: "gate × cancelled → cancelled", question: gateQ, details: { cancelled: true, response: null }, expected: "cancelled" },
+  { name: "gate × timed_out → timeout (#852)", question: gateQ, details: { cancelled: true, timed_out: true, response: null }, expected: "timeout" },
+  { name: "gate × timed_out + interrupted → timeout (timeout wins, #852)", question: gateQ, details: { cancelled: true, timed_out: true, interrupted: true, response: null }, expected: "timeout" },
   // consent
   { name: "consent × valid selected → answered", question: consentQ, details: { response: { answers: { [consentQ.id]: { selected: "Option B" } } } }, expected: "answered" },
   { name: "consent × empty selected → waiting (#528)", question: consentQ, details: { response: { answers: { [consentQ.id]: { selected: "" } } } }, expected: "waiting" },
@@ -90,6 +92,7 @@ const POLICY_TABLE: Row[] = [
   { name: "consent × missing response → waiting", question: consentQ, details: {}, expected: "waiting" },
   { name: "consent × notes-only → answered (a real user utterance)", question: consentQ, details: { response: { answers: { [consentQ.id]: { notes: "neither — keep it simple" } } } }, expected: "answered" },
   { name: "consent × cancelled → cancelled", question: consentQ, details: { cancelled: true, response: null }, expected: "cancelled" },
+  { name: "consent × timed_out → timeout (#852)", question: consentQ, details: { cancelled: true, timed_out: true, response: null }, expected: "timeout" },
 ];
 
 for (const row of POLICY_TABLE) {
@@ -122,6 +125,48 @@ test("evaluateAskUserQuestionsRound: most blocking outcome wins", () => {
   );
   // Empty round with no response is a no-op for callers.
   assert.equal(evaluateAskUserQuestionsRound([], {}), "answered");
+});
+
+// ── #852: host elicitation timeout → "timeout" round outcome ────────────────
+
+test("#852: timed_out round → timeout (does NOT become waiting/answered)", () => {
+  // A timeout must not be laundered into "waiting" (which tells the model to
+  // re-ask — that just hits the same timeout again) or "answered".
+  assert.equal(
+    evaluateAskUserQuestionsRound([consentQ], { cancelled: true, timed_out: true, response: null }),
+    "timeout",
+  );
+  assert.equal(
+    evaluateAskUserQuestionsRound([gateQ], { cancelled: true, timed_out: true, response: null }),
+    "timeout",
+  );
+});
+
+test("#852: timeout wins over answered in a mixed round (most blocking)", () => {
+  // One answered question + one timed_out question → the whole round is timeout.
+  const details = {
+    timed_out: true,
+    cancelled: true,
+    response: null,
+  };
+  assert.equal(
+    evaluateAskUserQuestionsRound(
+      [consentQ, { id: "other", options: CONSENT_OPTIONS }],
+      // The timed_out flag is round-level, so even if one question "answered"
+      // the timeout on the round dominates.
+      details,
+    ),
+    "timeout",
+  );
+});
+
+test("#852: cancelled still beats timeout when both flags absent on the round", () => {
+  // Round-level cancelled without timed_out stays cancelled (deliberate user
+  // dismissal is a stronger signal than a host timeout).
+  assert.equal(
+    evaluateAskUserQuestionsRound([consentQ], { cancelled: true, response: null }),
+    "cancelled",
+  );
 });
 
 // ── Regression: #528 empty selected on a consent question never answers ─────

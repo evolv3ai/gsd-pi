@@ -743,6 +743,13 @@ export interface AskUserQuestionsGateQuestion {
 export interface AskUserQuestionsGateDetails {
   cancelled?: boolean;
   interrupted?: boolean;
+  /**
+   * True when the host elicitation channel timed out before the user answered.
+   * Distinct from `cancelled` (deliberate dismissal): the gate verdict maps
+   * this to "timeout" so callers pause-and-wait instead of letting the model
+   * re-ask into the same timeout loop (#852).
+   */
+  timed_out?: boolean;
   response?: {
     answers?: Record<string, { selected?: unknown } | undefined>;
   } | null;
@@ -752,7 +759,8 @@ export type AskUserQuestionsGateResult =
   | { status: "not-gate" }
   | { status: "waiting"; pendingGateId: string; interrupted: boolean }
   | { status: "verified"; gateId: string; milestoneId: string | null }
-  | { status: "declined"; gateId: string };
+  | { status: "declined"; gateId: string }
+  | { status: "timeout"; pendingGateId: string; interrupted: boolean };
 
 function findGateQuestion(
   questions: AskUserQuestionsGateQuestion[],
@@ -776,11 +784,22 @@ function verifyAnsweredGate(
 
 /** Map an unresolved (non-verified) gate verdict to the caller-facing result. */
 function unresolvedGateResult(
-  verdict: "declined" | "waiting" | "cancelled",
+  verdict: "declined" | "waiting" | "cancelled" | "timeout",
   gateId: string,
   details: AskUserQuestionsGateDetails,
 ): AskUserQuestionsGateResult {
   if (verdict === "declined") return { status: "declined", gateId };
+  if (verdict === "timeout") {
+    // Host elicitation expired before the user answered. The gate stays
+    // pending (fail-closed — a timeout is never approval), but the status is
+    // "timeout" so the caller pauses-and-waits instead of re-asking into the
+    // same timeout loop (#852).
+    return {
+      status: "timeout",
+      pendingGateId: gateId,
+      interrupted: details.interrupted === true,
+    };
+  }
   // "waiting" (and the unreachable post-cancel case): an empty selection is
   // not an answer — keep the gate pending and make the caller pause.
   return {
@@ -811,6 +830,16 @@ export function applyAskUserQuestionsGateResult(options: {
   const { basePath, questions, details, fallbackMilestoneId } = options;
   const currentPendingGate = getPendingGate(basePath);
   if (currentPendingGate) {
+    if (details.timed_out) {
+      // Host elicitation timed out before the user answered. Keep the gate
+      // pending (fail-closed) but report "timeout" so the caller pauses-and-
+      // waits instead of re-asking into the same timeout loop (#852).
+      return {
+        status: "timeout",
+        pendingGateId: currentPendingGate,
+        interrupted: details.interrupted === true,
+      };
+    }
     if (details.cancelled || !details.response) {
       return {
         status: "waiting",
@@ -829,6 +858,7 @@ export function applyAskUserQuestionsGateResult(options: {
     }
   }
 
+  if (details.timed_out) return { status: "not-gate" };
   if (details.cancelled || !details.response) return { status: "not-gate" };
 
   for (const question of questions) {
@@ -860,6 +890,24 @@ export function formatPendingAskUserQuestionsGateMessage(
     "Do not infer approval from earlier or prior messages.",
     "Do not proceed, write files, save artifacts, or call other tools.",
     `Re-call ask_user_questions with the same gate question id ("${pendingGateId}") and wait for the user's response.`,
+  ].join(" ");
+}
+
+/**
+ * Format the LLM-facing message returned when a depth-confirmation gate
+ * elicitation times out. Distinct from {@link formatPendingAskUserQuestionsGateMessage}:
+ * a timeout must NOT tell the model to immediately re-ask (that re-triggers
+ * the same timeout loop). Instead it tells the model to stop, that auto-mode
+ * is paused, and that the user will respond on their own (#852).
+ */
+export function formatTimedOutAskUserQuestionsGateMessage(
+  pendingGateId: string,
+): string {
+  return [
+    `Depth confirmation on gate "${pendingGateId}" timed out waiting for a response.`,
+    "The user did not answer within the host elicitation window — do not re-ask in this turn, it will time out again.",
+    "Auto-mode is paused. Stop calling tools and wait for the user to respond on a new turn.",
+    "When the user replies with confirmation, the gate will be satisfied and work will resume.",
   ].join(" ");
 }
 

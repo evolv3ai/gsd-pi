@@ -24,6 +24,7 @@ import {
   buildAskUserQuestionsElicitRequest,
   createMcpServer,
   formatAskUserQuestionsElicitResult,
+  isLocalElicitTimeoutError,
   withElicitTimeout,
 } from './server.js';
 import { MAX_EVENTS } from './types.js';
@@ -1410,6 +1411,79 @@ describe('createMcpServer tool registration', () => {
     assert.match(result.content[0]?.text ?? '', /schema validation blew up/);
   });
 
+  it('ask_user_questions returns a timeout result and does NOT fall through to remote on a local host timeout (#852)', async () => {
+    // A host-side elicitation timeout means the user is at the host but didn't
+    // answer. Falling through to remote would be wrong (no one is there to
+    // answer it either) and would lose the timeout signal that the gate hook
+    // needs to pause-and-wait. The handler returns a `timed_out` result instead.
+    const questions = [
+      {
+        id: 'depth_verification_M001',
+        header: 'Depth Check',
+        question: 'Did I capture the depth right?',
+        options: [
+          { label: 'Yes, you got it (Recommended)', description: 'Continue with the current summary.' },
+          { label: 'Not quite', description: 'I need to clarify the depth further.' },
+        ],
+      },
+    ];
+    let remoteCalls = 0;
+
+    const result = await askUserQuestionsHandler(questions, undefined, {
+      async elicitInput() {
+        // The Claude Agent SDK's internal ~60s timeout surfaces as this error.
+        throw new Error('MCP error -32001: Request timed out');
+      },
+      isRemoteConfigured() {
+        return true;
+      },
+      async tryRemoteQuestions() {
+        remoteCalls++;
+        return { content: [{ type: 'text', text: 'remote response' }] };
+      },
+    });
+
+    assert.equal(remoteCalls, 0, 'host timeout must NOT fall through to remote');
+    assert.equal('isError' in result && result.isError, false, 'timeout is not an error result');
+    assert.match(result.content[0]?.text ?? '', /timed out/i);
+    assert.deepEqual(
+      (result as { structuredContent?: unknown }).structuredContent,
+      { questions, response: null, cancelled: true, timed_out: true },
+    );
+  });
+
+  it('ask_user_questions recognizes the 10-minute withElicitTimeout error as a host timeout (#852)', async () => {
+    const questions = [
+      {
+        id: 'depth_verification_M001',
+        header: 'Depth Check',
+        question: 'Did I capture the depth right?',
+        options: [
+          { label: 'Yes, you got it (Recommended)', description: 'Continue.' },
+          { label: 'Not quite', description: 'Clarify.' },
+        ],
+      },
+    ];
+
+    const result = await askUserQuestionsHandler(questions, undefined, {
+      async elicitInput() {
+        throw new Error('ask_user_questions timed out after 10 minutes — no user response received');
+      },
+      isRemoteConfigured() {
+        return false;
+      },
+      async tryRemoteQuestions() {
+        throw new Error('should not be called');
+      },
+    });
+
+    assert.equal('isError' in result && result.isError, false);
+    assert.deepEqual(
+      (result as { structuredContent?: unknown }).structuredContent,
+      { questions, response: null, cancelled: true, timed_out: true },
+    );
+  });
+
   it('ask_user_questions reports both local and remote errors when both paths fail', async () => {
     const questions = [
       {
@@ -1425,7 +1499,8 @@ describe('createMcpServer tool registration', () => {
 
     const result = await askUserQuestionsHandler(questions, undefined, {
       async elicitInput() {
-        throw new Error('ask_user_questions timed out after 10 minutes');
+        // Non-timeout fallback error → falls through to remote, which also fails.
+        throw new Error('MCP host does not support elicitation');
       },
       isRemoteConfigured() {
         return true;
@@ -1438,6 +1513,42 @@ describe('createMcpServer tool registration', () => {
     assert.equal('isError' in result && result.isError, true);
     assert.match(result.content[0]?.text ?? '', /Local elicitation failed/);
     assert.match(result.content[0]?.text ?? '', /remote transport failed/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isLocalElicitTimeoutError (#852)
+// ---------------------------------------------------------------------------
+
+describe('isLocalElicitTimeoutError', () => {
+  it('recognizes the Claude Agent SDK -32001 timeout', () => {
+    assert.equal(
+      isLocalElicitTimeoutError(new Error('MCP error -32001: Request timed out')),
+      true,
+    );
+    assert.equal(
+      isLocalElicitTimeoutError(new Error('Request timed out')),
+      true,
+    );
+  });
+
+  it('recognizes the 10-minute withElicitTimeout error', () => {
+    assert.equal(
+      isLocalElicitTimeoutError(new Error('ask_user_questions timed out after 10 minutes — no user response received')),
+      true,
+    );
+  });
+
+  it('does not misclassify non-timeout elicitation errors', () => {
+    assert.equal(isLocalElicitTimeoutError(new Error('MCP host does not support elicitation')), false);
+    assert.equal(isLocalElicitTimeoutError(new Error('-32601 method not found')), false);
+    assert.equal(isLocalElicitTimeoutError(new Error('schema validation blew up')), false);
+  });
+
+  it('does not misclassify non-Error values', () => {
+    assert.equal(isLocalElicitTimeoutError('timed out'), false);
+    assert.equal(isLocalElicitTimeoutError(undefined), false);
+    assert.equal(isLocalElicitTimeoutError(null), false);
   });
 });
 

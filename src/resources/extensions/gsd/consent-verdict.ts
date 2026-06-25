@@ -9,7 +9,20 @@
  * cycle. It must not import from either module (ADR-039).
  */
 
-export type GateAnswerVerdict = "waiting" | "verified" | "declined" | "cancelled";
+/**
+ * Per-question verdict for a gate answer.
+ *
+ *   - "verified" — the confirmation option was selected (depth unlocked).
+ *   - "declined" — a real but non-confirming selection (gate stays pending,
+ *     model should not treat as approval).
+ *   - "cancelled" — the round was cancelled by the user (deliberate dismissal).
+ *   - "waiting" — no answer (fail-closed; not an answer).
+ *   - "timeout" — the host elicitation timed out before the user answered.
+ *     Distinct from "waiting" so callers can pause-and-wait instead of letting
+ *     the model re-ask into the same timeout loop (#852). Still fail-closed:
+ *     the gate stays pending — a timeout is never approval.
+ */
+export type GateAnswerVerdict = "waiting" | "verified" | "declined" | "cancelled" | "timeout";
 
 export interface VerdictQuestionShape {
   id?: unknown;
@@ -19,6 +32,13 @@ export interface VerdictQuestionShape {
 export interface VerdictAnswerDetails {
   cancelled?: boolean;
   interrupted?: boolean;
+  /**
+   * True when the host elicitation channel timed out before the user answered.
+   * Distinct from `cancelled` (deliberate dismissal): a timeout must not be
+   * laundered into a re-ask loop. Gate verdicts map this to "timeout" so the
+   * caller pauses-and-waits instead of looping on the blocked call (#852).
+   */
+  timed_out?: boolean;
   response?: {
     answers?: Record<string, { selected?: unknown; notes?: unknown } | undefined>;
   } | null;
@@ -67,16 +87,25 @@ export function hasNotesValue(notes: unknown): boolean {
 /**
  * THE per-question verdict for gate questions (fail-closed):
  *
+ * - timed_out rounds → "timeout" (host elicitation expired before the user
+ *   answered; fail-closed — the gate stays pending — but the caller pauses
+ *   instead of re-asking into the same timeout loop, #852).
  * - cancelled rounds → "cancelled".
  * - the confirmation option (structural match) → "verified".
  * - any other real selection → "declined".
  * - empty/missing selection → "waiting" — an empty answer is NEVER an answer,
  *   so notes can never satisfy a gate either.
+ *
+ * `timed_out` is checked first: the handler marks a timed-out round with both
+ * `cancelled: true` and `timed_out: true` (see
+ * `askUserQuestionsHandler`), so the timeout must win to avoid the cancelled
+ * branch's re-ask semantics.
  */
 export function evaluateGateAnswer(
   question: VerdictQuestionShape,
   details: VerdictAnswerDetails,
 ): GateAnswerVerdict {
+  if (details.timed_out) return "timeout";
   if (details.cancelled) return "cancelled";
   const questionId = typeof question.id === "string" ? question.id : "";
   const answer = details.response?.answers?.[questionId];
