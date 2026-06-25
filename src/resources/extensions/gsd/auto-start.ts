@@ -433,7 +433,7 @@ function formatStrandedWorkBlockerMessage(
 
 export function auditOrphanedMilestoneBranches(
   basePath: string,
-  _isolationMode: "worktree" | "branch" | "none",
+  isolationMode: "worktree" | "branch" | "none",
   gitDeps: {
     branchList?: typeof nativeBranchList;
     branchExists?: typeof nativeBranchExists;
@@ -488,6 +488,17 @@ export function auditOrphanedMilestoneBranches(
     mergedBranches = new Set();
   }
 
+  // Detect the branch currently checked out at the project root once — it
+  // does not change across loop iterations and is used below to avoid
+  // requesting a worktree creation for a branch that git already considers
+  // "in use" by the main worktree.
+  let currentRootBranch: string | null = null;
+  try {
+    currentRootBranch = nativeGetCurrentBranch(basePath) || null;
+  } catch {
+    currentRootBranch = null;
+  }
+
   for (const branch of milestoneBranches) {
     const milestoneId = branch.replace(/^milestone\//, "");
     const milestone = getMilestone(milestoneId);
@@ -516,9 +527,29 @@ export function auditOrphanedMilestoneBranches(
       }
       if ((isMerged || commitsAhead === 0) && !worktreeEvidence.dirty) continue;
 
-      const recoveryMode: StrandedWorkRecoveryMode = worktreeEvidence.path
-        ? "worktree"
-        : "branch";
+      // #812 — the worktree directory being absent on disk does NOT mean the
+      // project is branch-mode. getAutoWorktreePath() returns null whenever the
+      // directory is merely missing (transient/permanent loss after an
+      // interrupted session), which previously collapsed to recoveryMode:
+      // "branch" — silently checking out milestone/<id> in the project root with
+      // no worktree. When the project is *configured* for worktree isolation,
+      // recover as "worktree" so adoptStrandedMilestone re-materializes the
+      // worktree from the existing branch (createAutoWorktree with
+      // reuseExistingBranch) instead of degrading to branch-mode-in-root.
+      //
+      // Exception (#812-followup): if the milestone branch is already checked
+      // out at the project root (e.g. a leftover from the pre-fix #812 recovery
+      // that ran `git checkout milestone/<id>` in the root), git considers that
+      // branch "in use by another worktree" and will refuse `git worktree add`,
+      // causing bootstrap to abort. Degrade to "branch" in that case — the
+      // session resumes on the already-checked-out branch without worktree
+      // creation, same as pre-fix behavior, and the configured isolation is
+      // restored for subsequent milestones after merge/teardown.
+      const isBranchCheckedOutAtRoot = currentRootBranch === branch;
+      const recoveryMode: StrandedWorkRecoveryMode =
+        worktreeEvidence.path || (isolationMode === "worktree" && !isBranchCheckedOutAtRoot)
+          ? "worktree"
+          : "branch";
       const message = strandedWorkMessage({
         milestoneId,
         branch,
