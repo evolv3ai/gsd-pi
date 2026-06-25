@@ -29,12 +29,17 @@ Use `subagent` only when useful: reviewer, security, or tester. Apply findings b
 1. Use the inlined Slice Summary and UAT templates.
 2. {{skillActivation}}
 3. Run all slice-level verification through `gsd_exec` / Context Mode evidence; refresh current state if needed. Do not use direct `bash` for verification commands. See the prepended **Tool Surface** block for unavailable tools.
-4. Complete only when every required check passes. If verification fails or source changes are needed, do **not** edit source files in this unit and do **not** call `gsd_slice_complete`.
+4. Complete only when every required check passes. If verification fails or source changes are needed, do **not** edit source files in this unit and do **not** call `gsd_slice_complete` for normal slice completion.
 5. If verification fails:
    - Task-specific regressions: if the failure is in files the task touched and pre-task verification evidence shows it was absent before that task ran, call `gsd_task_reopen` with that task and reason.
    - Inherited/out-of-scope failures, including failures present before the task ran or failures without pre-task evidence: do **not** reopen completed tasks; call `gsd_replan_slice` with adjusted verification scope or follow-up tasks.
    - Other plan-invalidating failures: call `gsd_replan_slice` with the blocker and updated execution tasks.
-   Then stop with: "Slice {{sliceId}} needs execution follow-up."
+   After any failure-handoff tool call, the unit is done. The `gsd_task_reopen` or `gsd_replan_slice` call is the handoff signal for the orchestrator to dispatch the next unit.
+   - Never call `gsd_replan_slice` after calling `gsd_task_reopen`; reopened tasks are pending, and replan requires a complete blocker task.
+   - Do not call `gsd_plan_slice`; that tool belongs to `plan-slice` and is hard-blocked here.
+   - Do not read source code, run `gsd_exec`, invoke subagents, or do implementation/planning work after the first `gsd_task_reopen` or `gsd_replan_slice` handoff call.
+   - Terminal reopen sequence: call `gsd_task_reopen` for the unfinished task(s), then stop with: "Slice {{sliceId}} needs execution follow-up."
+   - Terminal replan sequence: call `gsd_replan_slice` once, then stop with: "Slice {{sliceId}} needs execution follow-up."
 6. Task summaries use a flat file layout under `tasks/` such as `T01-SUMMARY.md`, not inside per-task subdirectories like `tasks/T01/SUMMARY.md`. Never use `tasks/*/SUMMARY.md`.
 7. If observability/diagnostics were planned, verify them unless the slice is simple.
 8. Address every Gate to Close. Q8 = **Operational Readiness**: health signal, failure signal, recovery, monitoring gaps. Omit empty sections.

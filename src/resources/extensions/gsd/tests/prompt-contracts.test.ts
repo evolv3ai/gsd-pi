@@ -467,6 +467,18 @@ test("complete-slice prompt keeps source fixes in execution units", () => {
   assert.doesNotMatch(prompt, /Fix failures before marking done/i);
 });
 
+test("complete-slice prompt terminates after reopen or replan handoff", () => {
+  const prompt = readPrompt("complete-slice");
+  assert.match(prompt, /After any failure-handoff tool call, the unit is done/i);
+  assert.match(prompt, /`gsd_task_reopen` or `gsd_replan_slice` call is the handoff signal/i);
+  assert.match(prompt, /Never call `gsd_replan_slice` after calling `gsd_task_reopen`/i);
+  assert.match(prompt, /reopened tasks are pending/i);
+  assert.match(prompt, /Do not call `gsd_plan_slice`/i);
+  assert.match(prompt, /Do not read source code, run `gsd_exec`, invoke subagents/i);
+  assert.match(prompt, /Terminal reopen sequence/i);
+  assert.match(prompt, /Terminal replan sequence/i);
+});
+
 test("complete-slice prompt binds all file operations to workingDirectory", () => {
   const prompt = readPrompt("complete-slice");
   assert.match(prompt, /Your working directory is `\{\{workingDirectory\}\}`/);
