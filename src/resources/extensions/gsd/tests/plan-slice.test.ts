@@ -338,6 +338,36 @@ test('handlePlanSlice renders plan artifacts under worktree-local .gsd while usi
   }
 });
 
+test('handlePlanSlice does not regenerate unrelated completed-task summaries during planning', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    insertMilestone({ id: 'M001', title: 'Milestone', status: 'active' });
+    insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Finished slice', status: 'complete', demo: 'Existing work.' });
+    insertSlice({ id: 'S02', milestoneId: 'M001', title: 'Planning slice', status: 'pending', demo: 'Rendered plans exist.' });
+    insertTask({
+      id: 'T99',
+      sliceId: 'S01',
+      milestoneId: 'M001',
+      title: 'Already complete',
+      status: 'complete',
+      fullSummaryMd: '# T99 Summary\n\nAlready done.\n',
+    });
+
+    const unrelatedSummaryPath = join(base, '.gsd', 'phases', '01-test', 'T99-SUMMARY.md');
+    assert.equal(existsSync(unrelatedSummaryPath), false, 'fixture should start without unrelated summary projection');
+
+    const result = await handlePlanSlice(validParams(), base);
+    assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
+
+    assert.equal(existsSync(unrelatedSummaryPath), false, 'plan-slice should not flush all milestone summaries');
+    assert.ok(existsSync(join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md')), 'current slice plan still renders');
+  } finally {
+    cleanup(base);
+  }
+});
+
 test('handlePlanSlice preserves completed task closeout state when replanning the same task', async () => {
   const base = makeTmpBase();
   openDatabase(join(base, '.gsd', 'gsd.db'));
