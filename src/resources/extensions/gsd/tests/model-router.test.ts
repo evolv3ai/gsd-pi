@@ -313,6 +313,25 @@ test("resolveModelForComplexity: preferred GLM session model wins over cheaper s
   assert.equal(result.selectionMethod, "tier-only");
 });
 
+test("resolveModelForComplexity: wasDowngraded is false when preferred session model matches configuredPrimary with different ID format", () => {
+  // configuredPrimary is bare ("claude-opus-4-6"), preferred comes back as provider-prefixed
+  // ("anthropic/claude-opus-4-6") from availableModelIds. They refer to the same model —
+  // wasDowngraded must NOT be true, which would otherwise trigger a spurious UI notification.
+  const config: DynamicRoutingConfig = { ...defaultRoutingConfig(), enabled: true, capability_routing: false };
+  const result = resolveModelForComplexity(
+    makeClassification("standard"),
+    { primary: "claude-opus-4-6", fallbacks: [] },
+    config,
+    ["anthropic/claude-opus-4-6"],
+    "execute-task",
+    undefined,
+    undefined,
+    "anthropic/claude-opus-4-6",
+  );
+  assert.equal(result.modelId, "anthropic/claude-opus-4-6");
+  assert.equal(result.wasDowngraded, false);
+});
+
 // ─── resolveModelForTier (provider-agnostic tier resolution) ────────────────
 
 test("resolveModelForTier: returns canonical Anthropic model when no available models", () => {
