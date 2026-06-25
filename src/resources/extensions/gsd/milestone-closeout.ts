@@ -26,6 +26,7 @@ import { logWarning } from "./workflow-logger.js";
 import { hasImplementationArtifacts } from "./milestone-implementation-evidence.js";
 import { buildCompleteMilestonePrompt } from "./auto-prompts.js";
 import { proveMilestoneCloseout } from "./milestone-closeout-proof.js";
+import { checkCloseoutConsistencyGate } from "./closeout-consistency-gate.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
 import type { DispatchAction, DispatchContext } from "./auto-dispatch.js";
 import {
@@ -208,6 +209,16 @@ export async function evaluateCompleteMilestoneDispatch(
         };
       }
     }
+  }
+
+  if (isDbAvailable()) {
+    // Repair only the missing-validation closeout case here; existing guards below
+    // and post-unit proof remain responsible for blocking incomplete closeouts.
+    checkCloseoutConsistencyGate(mid, {
+      allowOpenMilestone: true,
+      allowPassThroughValidation: true,
+      artifactBasePath: resolveCanonicalMilestoneRoot(basePath, mid),
+    });
   }
 
   const validationFile = resolveMilestoneFile(basePath, mid, "VALIDATION");

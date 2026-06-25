@@ -7,7 +7,7 @@
 
 import { describe, test, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
@@ -16,6 +16,7 @@ import { DISPATCH_RULES, resolveDispatch, type DispatchContext } from "../auto-d
 import { AutoSession } from "../auto/session.ts";
 import {
   closeDatabase,
+  getLatestAssessmentByScope,
   getPendingGates,
   insertAssessment,
   insertGateRow,
@@ -97,6 +98,23 @@ describe("completing-milestone dispatch guard (#4324)", () => {
     assert.equal(result?.action, "dispatch");
     assert.equal(result?.unitType, "complete-milestone");
     assert.equal(result?.unitId, "M001");
+  });
+
+  test("records pass-through validation before completing-milestone dispatch when validation is absent (#823)", async () => {
+    base = makeBase();
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "M001", title: "Milestone One", status: "active" });
+    insertSlice({ milestoneId: "M001", id: "S01", title: "Done", status: "complete" });
+
+    const result = await rule.match(buildDispatchCtx(base));
+
+    assert.equal(result?.action, "dispatch");
+    assert.equal(result?.unitType, "complete-milestone");
+    const validation = getLatestAssessmentByScope("M001", "milestone-validation");
+    assert.equal(validation?.status, "pass");
+    const validationPath = join(base, ".gsd", "milestones", "M001", "M001-VALIDATION.md");
+    assert.equal(existsSync(validationPath), true);
+    assert.match(readFileSync(validationPath, "utf-8"), /skip_validation_reason: closeout-recovery/);
   });
 
   test("resolveDispatch stops complete-milestone when unit is exhausted in-session (#5662)", async () => {
@@ -303,6 +321,7 @@ describe("complete phase dispatch guard (#5683)", () => {
     assert.equal(result?.level, "warning");
     assert.match(result?.reason ?? "", /closeout-consistency-blocked/);
     assert.match(result?.reason ?? "", /latest milestone validation is "absent"/);
+    assert.match(result?.reason ?? "", /\/gsd validate-milestone M001/);
   });
 });
 
