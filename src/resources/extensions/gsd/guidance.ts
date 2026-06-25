@@ -192,8 +192,8 @@ export function crashResumeHint(unitType: string, unitId: string): string | unde
 const DOCTOR_FIX_HINTS: Partial<Record<DoctorIssueCode, string>> = {
   db_unavailable:
     "The workflow database could not be opened — state derivation is degraded. Restart the session; if it persists, run `/gsd doctor` from the project root.",
-  stale_crash_lock: "Run `/gsd doctor` to clear the stale lock, then `/gsd auto` to resume.",
-  stale_parallel_session: "Run `/gsd doctor` to clear the stale session registration.",
+  stale_crash_lock: "Run `/gsd doctor fix` to clear the stale lock, then `/gsd auto` to resume.",
+  stale_parallel_session: "Run `/gsd doctor fix` to clear the stale session registration.",
   unresolved_git_conflicts:
     "Resolve the conflict markers, commit, then re-run `/gsd auto`.",
   conflict_markers_in_tracked_files:
@@ -201,14 +201,14 @@ const DOCTOR_FIX_HINTS: Partial<Record<DoctorIssueCode, string>> = {
   worktree_dirty:
     "Commit or merge the worktree's changes (`gsd worktree merge <name>`) before removing it.",
   worktree_branch_merged: "The branch is merged — remove the worktree to reclaim space.",
-  orphaned_auto_worktree: "Run `/gsd doctor` to fix, or merge salvageable work with `gsd worktree merge <name>`.",
-  gitignore_missing_patterns: "Run `/gsd doctor` to append the missing .gitignore patterns.",
+  orphaned_auto_worktree: "Run `/gsd doctor fix` to fix, or merge salvageable work with `gsd worktree merge <name>`.",
+  gitignore_missing_patterns: "Run `/gsd doctor fix` to append the missing .gitignore patterns.",
   invalid_preferences: "Edit .gsd/PREFERENCES.md to fix the invalid field, then re-run the command.",
   provider_key_missing: "Add the provider API key to your environment or provider config, then retry.",
   provider_key_backedoff: "The key is cooling down after repeated failures — wait, or switch the phase model in .gsd/PREFERENCES.md.",
-  state_file_stale: "Run `/gsd doctor` to rebuild the projection from the database.",
-  state_file_missing: "Run `/gsd doctor` to rebuild the projection from the database.",
-  projection_drift: "Run `/gsd doctor` to rebuild markdown projections from the database (DB is the source of truth).",
+  state_file_stale: "Run `/gsd doctor fix` to rebuild the projection from the database.",
+  state_file_missing: "Run `/gsd doctor fix` to rebuild the projection from the database.",
+  projection_drift: "Run `/gsd doctor fix` to rebuild markdown projections from the database (DB is the source of truth).",
   uat_retry_exhausted: "Review the failing UAT criteria via `/gsd status`, fix the issue, then re-run `/gsd auto`.",
 };
 
