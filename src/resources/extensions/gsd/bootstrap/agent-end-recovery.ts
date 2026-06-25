@@ -659,7 +659,28 @@ export async function handleAgentEnd(
       return;
     }
 
+    // ── Tool-schema overload: the active model repeatedly emitted tool-call
+    //    arguments that fail schema validation (e.g. a model whose tool-call
+    //    grammar can't satisfy GSD's schemas). Before hard-pausing, try the
+    //    unit's configured fallbacks and the auto-mode start model — the model
+    //    the user actually selected. This lets auto-mode recover by switching
+    //    back to a schema-capable model instead of aborting outright (#813).
+    //    Do not persistently block the model: schema-overload is request-shape
+    //    specific, mirroring the model-error path above.
     if (cls.kind === "tool-schema") {
+      const dash = getAutoDashboardData();
+      const switched = await tryProviderModelFallback({
+        ctx,
+        pi,
+        rejectedProvider: ctx.model?.provider,
+        rejectedId: ctx.model?.id,
+        basePath: dash.basePath,
+        unitType: dash.currentUnit?.type,
+        switchedNotify: (label) =>
+          ctx.ui.notify(`Switched to ${label} after repeated tool schema validation failures.`, "warning"),
+      });
+      if (switched) return;
+
       await pauseAutoForProviderError(ctx.ui, errorDetail, () => pauseAuto(ctx, pi, {
         message: `Tool schema error${errorDetail}`,
         category: "tool-schema",
