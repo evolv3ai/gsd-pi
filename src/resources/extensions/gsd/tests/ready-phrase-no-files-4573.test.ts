@@ -58,7 +58,14 @@ function mkPi(cap: MockCapture, opts: { sendThrows?: boolean } = {}): any {
 
 function mkBase(): string {
   const base = mkdtempSync(join(tmpdir(), "gsd-4573-"));
-  mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
+  const mDir = join(base, ".gsd", "milestones", "M001");
+  mkdirSync(mDir, { recursive: true });
+  // Seed one content file so the dir is recognised as a content-bearing legacy
+  // milestone by dirIsContentBearingLegacyMilestone. Tests that check for
+  // "no CONTEXT/ROADMAP yet" still work because RESEARCH is not checked by
+  // maybeHandleReadyPhraseWithoutFiles; the stale-cache tests then verify that
+  // a file written to the same dir is NOT found until clearPathCache runs.
+  writeFileSync(join(mDir, "M001-RESEARCH.md"), "# M001 research\n");
   return base;
 }
 
@@ -181,32 +188,32 @@ describe("#4573 maybeHandleReadyPhraseWithoutFiles", () => {
 
   test("stale path cache from a prior listing → fresh writes are detected (regression)", () => {
     // Repro the live binary failure where:
-    //   1. paths.ts cached dir listings were populated when M001/ was empty
-    //      (or the milestone dir didn't yet exist).
+    //   1. paths.ts cached dir listings were populated before M001-CONTEXT.md
+    //      and M001-ROADMAP.md existed (the dir had only M001-RESEARCH.md).
     //   2. The LLM then wrote M001-CONTEXT.md and M001-ROADMAP.md via the
     //      standard Write tool — which has no awareness of paths.ts caches.
     //   3. maybeHandleReadyPhraseWithoutFiles called resolveMilestoneFile,
-    //      which read the stale cache and reported the artifacts missing,
+    //      which read the stale dirListCache and reported the artifacts missing,
     //      firing a false rejection nudge until MAX_READY_REJECTS aborted
     //      the auto-start with `LLM signaled "ready" 3 times without
     //      writing files`.
     //
     // The fix busts the path cache at the top of the validator before
     // re-resolving. This test fails pre-fix (handled === true) because the
-    // cache returns the empty listing it captured in step (a).
+    // dirListCache still holds the stale per-file listing for M001/ from
+    // step (a), so resolveFile cannot see the newly written CONTEXT/ROADMAP.
     const base = mkBase();
     try {
       const mDir = join(base, ".gsd", "milestones", "M001");
 
-      // (a) Prime the cache with a listing that DOES NOT include M001's
-      //     CONTEXT/ROADMAP files. mkBase() has already created the M001
-      //     directory but nothing inside it yet — so this readdir caches an
-      //     empty entry list keyed by the M001 dir path.
+      // (a) Prime the dirListCache for M001/ with only M001-RESEARCH.md.
+      //     mkBase() already created M001-RESEARCH.md; this first resolver
+      //     call caches that listing so CONTEXT/ROADMAP are unknown to it.
       clearPathCache();
       assert.equal(
         resolveMilestoneFile(base, "M001", "CONTEXT"),
         null,
-        "precondition: resolver must report missing before files are written",
+        "precondition: resolver must report CONTEXT missing before files are written",
       );
 
       // (b) Write the artifacts directly to disk (simulates the LLM Write
@@ -215,12 +222,14 @@ describe("#4573 maybeHandleReadyPhraseWithoutFiles", () => {
       writeFileSync(join(mDir, "M001-CONTEXT.md"), "# ctx");
       writeFileSync(join(mDir, "M001-ROADMAP.md"), "# roadmap");
 
-      // (c) Sanity: the cache is still stale. Without the fix, the
-      //     validator would still see the empty cached listing.
+      // (c) Sanity: the dirListCache for M001/ is still stale (only
+      //     M001-RESEARCH.md). dirIsContentBearingLegacyMilestone reads fresh
+      //     so resolveMilestonePath finds the dir, but resolveFile still
+      //     misses CONTEXT because cachedReaddir(M001/) is not yet cleared.
       assert.equal(
         resolveMilestoneFile(base, "M001", "CONTEXT"),
         null,
-        "stale cache still reports missing pre-clearPathCache",
+        "stale dirListCache still reports CONTEXT missing pre-clearPathCache",
       );
 
       // (d) Run the validator. With the fix it busts the cache before

@@ -261,6 +261,10 @@ test("advance() logs an engine warning when the post-settlement projection rebui
   // summary artifact path (resolveExpectedArtifactPath needs the dir to exist).
   const milestoneProjDir = join(worktree, ".gsd", "milestones", "M001");
   mkdirSync(milestoneProjDir, { recursive: true });
+  // A content-bearing legacy milestone dir requires at least one non-META file
+  // (dirIsContentBearingLegacyMilestone) so the layout sniffer treats it as a
+  // real legacy milestone rather than a metadata-only placeholder.
+  writeFileSync(join(milestoneProjDir, "M001-CONTEXT.md"), "# M001\n");
   const summaryPath = resolveExpectedArtifactPath("complete-milestone", "M001", worktree);
   assert.ok(summaryPath, "complete-milestone summary path must resolve");
   mkdirSync(dirname(summaryPath), { recursive: true });

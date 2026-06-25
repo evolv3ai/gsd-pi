@@ -594,7 +594,30 @@ function legacyMilestonesHasSubdirs(basePath: string): boolean {
   const legacy = join(gsdProjectionRoot(basePath), "milestones");
   if (!existsSync(legacy)) return false;
   try {
-    return readdirSync(legacy).some(e => statSync(join(legacy, e)).isDirectory());
+    return readdirSync(legacy).some(e => statSync(join(legacy, e)).isDirectory() && dirIsContentBearingLegacyMilestone(join(legacy, e)));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A `milestones/<MID>/` directory is only a real legacy layout entry if it
+ * contains content files (CONTEXT/ROADMAP/SUMMARY/…). git-service.ts creates
+ * `milestones/<MID>/` to store the integration-branch metadata
+ * (`<MID>-META.json`) even in flat-phase projects, so a directory holding only
+ * `*-META.json` must NOT count as legacy — otherwise layout detection flips to
+ * legacy and artifact verification resolves to the wrong path
+ * (`milestones/<MID>/<MID>-CONTEXT.md` instead of `phases/NN-slug/NN-CONTEXT.md`),
+ * trapping the unit in a finalize-retry loop (#852 follow-up).
+ *
+ * See the matching TODO in markdown-renderer.ts detectStaleRenders, which
+ * disabled stale-render detection for the same reason.
+ */
+function dirIsContentBearingLegacyMilestone(dir: string): boolean {
+  try {
+    const entries = readdirSync(dir);
+    // Any non-meta file means this is a real legacy milestone dir with content.
+    return entries.some(name => !name.endsWith("-META.json"));
   } catch {
     return false;
   }
@@ -685,11 +708,16 @@ function resolvePhaseDir(basePath: string, milestoneId: string): string | null {
       return join(phasesDir, preferred);
     }
   }
-  // Legacy fallback: milestones/M001/ (pre-flat-phase layout)
+  // Legacy fallback: milestones/M001/ (pre-flat-phase layout). Only consider a
+  // milestone dir legacy if it actually carries content — git-service.ts creates
+  // milestones/<MID>/ for integration-branch metadata even in flat-phase
+  // projects, so a metadata-only dir must not flip the layout (#852 follow-up).
   const legacyDir = legacyMilestonesDir(basePath);
   if (existsSync(legacyDir)) {
-    const legacy = resolveDir(legacyDir, milestoneId);
-    if (legacy) return join(legacyDir, legacy);
+    const candidate = resolveDir(legacyDir, milestoneId);
+    if (candidate && dirIsContentBearingLegacyMilestone(join(legacyDir, candidate))) {
+      return join(legacyDir, candidate);
+    }
   }
   return null;
 }
@@ -734,11 +762,16 @@ export function resolveMilestonePath(basePath: string, milestoneId: string): str
   // Flat-phase: scan phases/ for NN-slug dir matching the milestone number.
   const phaseDir = resolvePhaseDir(basePath, milestoneId);
   if (phaseDir) return phaseDir;
-  // Legacy fallback: try old milestones/ dir (pre-flat-phase layout)
+  // Legacy fallback: try old milestones/ dir (pre-flat-phase layout). Same
+  // content-bearing guard as resolvePhaseDir — a metadata-only milestones/<MID>/
+  // (created by git-service.ts for the integration branch) must not be treated
+  // as a real legacy milestone dir (#852 follow-up).
   const oldMilestonesDir = join(gsdProjectionRoot(basePath), "milestones");
   if (existsSync(oldMilestonesDir)) {
     const legacyDir = resolveDir(oldMilestonesDir, milestoneId);
-    if (legacyDir) return join(oldMilestonesDir, legacyDir);
+    if (legacyDir && dirIsContentBearingLegacyMilestone(join(oldMilestonesDir, legacyDir))) {
+      return join(oldMilestonesDir, legacyDir);
+    }
   }
   return null;
 }

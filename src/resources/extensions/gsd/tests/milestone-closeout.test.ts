@@ -154,7 +154,12 @@ test("isCompletedMilestoneTerminal accepts validation-pass with all slices close
 test("evaluateCompleteMilestoneDispatch repairs missing SUMMARY when DB is closed", async () => {
   const base = mkdtempSync(join(tmpdir(), "gsd-dispatch-repair-summary-"));
   tmpDirs.push(base);
-  mkdirSync(join(base, ".gsd", "milestones", "M008"), { recursive: true });
+  const m008Dir = join(base, ".gsd", "milestones", "M008");
+  mkdirSync(m008Dir, { recursive: true });
+  // A content-bearing legacy milestone dir requires at least one non-META file
+  // (dirIsContentBearingLegacyMilestone) so the layout sniffer treats it as a
+  // real legacy milestone rather than a metadata-only placeholder.
+  writeFileSync(join(m008Dir, "M008-CONTEXT.md"), "# M008\n");
   openDatabase(join(base, ".gsd", "gsd.db"));
   insertMilestone({ id: "M008", title: "Live Text Search", status: "complete" });
   insertSlice({ id: "S01", milestoneId: "M008", title: "Slice", status: "complete" });
