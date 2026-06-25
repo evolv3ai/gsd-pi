@@ -616,9 +616,16 @@ function legacyMilestonesHasSubdirs(basePath: string): boolean {
 function dirIsContentBearingLegacyMilestone(dir: string): boolean {
   try {
     const entries = readdirSync(dir, { withFileTypes: true });
-    // Any non-meta file means this is a real legacy milestone dir with content.
-    // Subdirs (e.g. empty slices/ scaffolding) must not count — only files do.
-    return entries.some(e => e.isFile() && !e.name.endsWith("-META.json"));
+    // 1. Any non-META regular file → real legacy content.
+    if (entries.some(e => e.isFile() && !e.name.endsWith("-META.json"))) return true;
+    // 2. A non-empty subdirectory → real legacy content (e.g. slices/ with slice dirs).
+    //    An *empty* subdir is treated as scaffolding (e.g. git-service.ts may create
+    //    an empty slices/ alongside the integration META file) and must NOT flip the
+    //    layout — that is the Bugbot finding this guard addresses.
+    return entries.some(e => {
+      if (!e.isDirectory()) return false;
+      try { return readdirSync(join(dir, e.name)).length > 0; } catch { return false; }
+    });
   } catch {
     return false;
   }

@@ -118,6 +118,30 @@ test("milestones/<MID>/ with only META.json + subdir does not flip layout to leg
   }
 });
 
+test("milestones/<MID>/ with non-empty slices/ subdir is detected as legacy (no files in milestone root)", () => {
+  // The common real-legacy fixture pattern: milestones/M001/slices/S01/ with no
+  // file directly in milestones/M001/.  The non-empty slices/ subdir must still
+  // trigger legacy detection so artifact resolution stays on the milestones/ path.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "gsd-legacy-subdir-")));
+  try {
+    const legacyDir = join(root, ".gsd", "milestones", "M001");
+    mkdirSync(join(legacyDir, "slices", "S01", "tasks"), { recursive: true });
+
+    _clearGsdRootCache();
+    clearPathCache();
+
+    assert.equal(
+      isLegacyMilestonesLayout(root),
+      true,
+      "non-empty slices/ subdir must still detect as legacy",
+    );
+  } finally {
+    _clearGsdRootCache();
+    clearPathCache();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("content-bearing milestones/<MID>/ still resolves to legacy (#852 regression guard)", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "gsd-legacy-real-")));
   try {
