@@ -365,7 +365,7 @@ export async function runGSDDoctor(basePath: string, options?: { fix?: boolean; 
   const isolationMode: "none" | "worktree" | "branch" = options?.isolationMode ??
     (prefs?.preferences?.git?.isolation === "worktree" ? "worktree" :
     prefs?.preferences?.git?.isolation === "branch" ? "branch" : "none");
-  await checkGitHealth(basePath, issues, fixesApplied, shouldFix, isolationMode);
+  await checkGitHealth(basePath, issues, fixesApplied, shouldFix, isolationMode, dryRun);
   const gitMs = Date.now() - t0git;
 
   // Runtime health checks — timed
