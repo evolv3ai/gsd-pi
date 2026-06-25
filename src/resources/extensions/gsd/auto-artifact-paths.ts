@@ -19,6 +19,7 @@ import {
   buildTaskFileName,
   resolveSlicePath,
   resolveTasksDir,
+  dirIsMetaOnlyLegacyMilestone,
 } from "./paths.js";
 import { milestoneIdToPhaseNum } from "./layout-policy.js";
 import { parseUnitId } from "./unit-id.js";
@@ -67,7 +68,19 @@ function resolveSliceArtifactPath(
 function resolveProjectMilestonePath(base: string, mid: string): string | null {
   const milestonesDir = join(gsdRoot(base), "milestones");
   const dir = resolveDir(milestonesDir, mid);
-  return dir ? join(milestonesDir, dir) : null;
+  if (!dir) return null;
+  // git-service.ts creates milestones/<MID>/ for integration-branch metadata
+  // (<MID>-META.json) even in flat-phase projects. A dir that holds ONLY
+  // *-META.json files must not be treated as a real legacy milestone dir —
+  // otherwise this early-return resolves CONTEXT/ROADMAP/SUMMARY to the legacy
+  // path (milestones/<MID>/<MID>-<SUFFIX>.md) before the flat-phase fallback
+  // can run, trapping the unit in a finalize-retry loop (#852 follow-up).
+  //
+  // We use dirIsMetaOnlyLegacyMilestone rather than !dirIsContentBearingLegacyMilestone
+  // so that an EMPTY dir (a new milestone before any content is written) is NOT
+  // blocked — it is a valid legacy target that write-paths should resolve to.
+  if (dirIsMetaOnlyLegacyMilestone(join(milestonesDir, dir))) return null;
+  return join(milestonesDir, dir);
 }
 
 function resolveProjectMilestoneFile(base: string, mid: string, suffix: string): string | null {

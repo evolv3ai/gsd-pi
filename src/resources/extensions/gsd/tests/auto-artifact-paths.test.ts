@@ -164,3 +164,85 @@ test("content-bearing milestones/<MID>/ still resolves to legacy (#852 regressio
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ── #852 follow-up: the EXACT failure path that survived #858 ────────────────
+//
+// #858 fixed legacyMilestonesHasSubdirs/resolvePhaseDir/resolveMilestonePath in
+// paths.ts, but resolveMilestoneArtifactPath (auto-artifact-paths.ts:35) has an
+// EARLY-RETURN legacy check via resolveProjectMilestonePath that bypassed all of
+// those. With a flat-phase project + a META-only milestones/M015/ dir (created
+// by git-service.ts), the early-return resolved CONTEXT to
+// milestones/M015/M015-CONTEXT.md (never exists) instead of
+// phases/15-m015/15-CONTEXT.md — reproducing the production loop:
+//   verify-fail discuss-milestone M015: existsSync false for
+//     .../milestones/M015/M015-CONTEXT.md
+// This test guards the project-root legacy lookup, not just paths.ts.
+
+test("resolveProjectMilestonePath ignores META-only dir: flat-phase wins (#852 follow-up to #858)", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "gsd-meta-bypass-")));
+  try {
+    const gsd = join(root, ".gsd");
+
+    // Flat-phase layout: phases/15-m015/ with real CONTEXT content.
+    const phaseDir = join(gsd, "phases", "15-m015");
+    mkdirSync(phaseDir, { recursive: true });
+    writeFileSync(join(phaseDir, "15-CONTEXT.md"), "# M015 context\n");
+
+    // Pollution: git-service.ts:450 created milestones/M015/ for META only.
+    // This is the dir that previously flipped the early-return to legacy.
+    const metaDir = join(gsd, "milestones", "M015");
+    mkdirSync(metaDir, { recursive: true });
+    writeFileSync(join(metaDir, "M015-META.json"), '{"branch":"milestone/M015"}');
+
+    _clearGsdRootCache();
+    clearPathCache();
+
+    const resolved = resolveExpectedArtifactPath("discuss-milestone", "M015", root);
+
+    // MUST resolve to the flat-phase path, NOT the legacy META-only path.
+    assert.equal(
+      resolved,
+      join(phaseDir, "15-CONTEXT.md"),
+      "META-only milestones/M015/ must not produce the legacy path; flat-phase wins",
+    );
+    // Explicitly assert the bug does NOT reproduce — the legacy path is wrong.
+    assert.notEqual(
+      resolved,
+      join(metaDir, "M015-CONTEXT.md"),
+      "must NOT resolve to the legacy milestones/M015/M015-CONTEXT.md path",
+    );
+  } finally {
+    _clearGsdRootCache();
+    clearPathCache();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resolveProjectMilestonePath ignores META-only dir even when phases/ has no matching dir yet", () => {
+  // The worktree/early-run edge case: phases/ doesn't exist yet (or doesn't have
+  // 15-m015/), but milestones/M015/ exists with only META. The resolver must
+  // return null (file genuinely not found yet) rather than the wrong legacy
+  // path — so the caller reports a clear "missing" instead of looping on a
+  // path that will never exist.
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "gsd-meta-no-phase-")));
+  try {
+    const metaDir = join(root, ".gsd", "milestones", "M015");
+    mkdirSync(metaDir, { recursive: true });
+    writeFileSync(join(metaDir, "M015-META.json"), '{"branch":"milestone/M015"}');
+    // Note: no phases/ dir at all.
+
+    _clearGsdRootCache();
+    clearPathCache();
+
+    const resolved = resolveExpectedArtifactPath("discuss-milestone", "M015", root);
+    // Must not produce the legacy path; null or a non-legacy path is correct.
+    assert.ok(
+      resolved === null || !resolved.includes(join("milestones", "M015")),
+      `META-only dir with no phases/ must not resolve to legacy; got: ${resolved}`,
+    );
+  } finally {
+    _clearGsdRootCache();
+    clearPathCache();
+    rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -613,7 +613,7 @@ function legacyMilestonesHasSubdirs(basePath: string): boolean {
  * See the matching TODO in markdown-renderer.ts detectStaleRenders, which
  * disabled stale-render detection for the same reason.
  */
-function dirIsContentBearingLegacyMilestone(dir: string): boolean {
+export function dirIsContentBearingLegacyMilestone(dir: string): boolean {
   try {
     const entries = readdirSync(dir, { withFileTypes: true });
     // 1. Any non-META regular file → real legacy content.
@@ -626,6 +626,26 @@ function dirIsContentBearingLegacyMilestone(dir: string): boolean {
       if (!e.isDirectory()) return false;
       try { return readdirSync(join(dir, e.name)).length > 0; } catch { return false; }
     });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Returns true iff the directory exists, is non-empty, and ALL entries are
+ * `*-META.json` files (git-service integration-branch metadata pollution in a
+ * flat-phase project). Used by resolveProjectMilestonePath to skip dirs that
+ * only hold metadata — not as a layout-detection guard.
+ *
+ * Deliberately distinct from dirIsContentBearingLegacyMilestone: an EMPTY dir
+ * (new milestone, no content written yet) returns false here because it is not
+ * META-only — it is a valid placeholder that a writer may target.
+ */
+export function dirIsMetaOnlyLegacyMilestone(dir: string): boolean {
+  try {
+    const entries = readdirSync(dir);
+    if (entries.length === 0) return false; // empty = not META-only
+    return entries.every(name => name.endsWith("-META.json"));
   } catch {
     return false;
   }
