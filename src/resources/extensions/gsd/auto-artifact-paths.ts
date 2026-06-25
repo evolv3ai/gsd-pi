@@ -19,7 +19,7 @@ import {
   buildTaskFileName,
   resolveSlicePath,
   resolveTasksDir,
-  dirIsContentBearingLegacyMilestone,
+  dirIsMetaOnlyLegacyMilestone,
 } from "./paths.js";
 import { milestoneIdToPhaseNum } from "./layout-policy.js";
 import { parseUnitId } from "./unit-id.js";
@@ -70,14 +70,16 @@ function resolveProjectMilestonePath(base: string, mid: string): string | null {
   const dir = resolveDir(milestonesDir, mid);
   if (!dir) return null;
   // git-service.ts creates milestones/<MID>/ for integration-branch metadata
-  // (<MID>-META.json) even in flat-phase projects. A metadata-only dir must not
-  // be treated as a real legacy milestone dir — otherwise this early-return path
-  // resolves CONTEXT/ROADMAP/SUMMARY to milestones/<MID>/<MID>-<SUFFIX>.md (a
-  // path that never exists in a flat-phase project) before the flat-phase
-  // fallback runs, trapping the unit in a finalize-retry loop (#852 follow-up).
-  // This guard mirrors the one in paths.ts resolvePhaseDir/resolveMilestonePath;
-  // without it the project-root legacy lookup bypassed those fixes.
-  if (!dirIsContentBearingLegacyMilestone(join(milestonesDir, dir))) return null;
+  // (<MID>-META.json) even in flat-phase projects. A dir that holds ONLY
+  // *-META.json files must not be treated as a real legacy milestone dir —
+  // otherwise this early-return resolves CONTEXT/ROADMAP/SUMMARY to the legacy
+  // path (milestones/<MID>/<MID>-<SUFFIX>.md) before the flat-phase fallback
+  // can run, trapping the unit in a finalize-retry loop (#852 follow-up).
+  //
+  // We use dirIsMetaOnlyLegacyMilestone rather than !dirIsContentBearingLegacyMilestone
+  // so that an EMPTY dir (a new milestone before any content is written) is NOT
+  // blocked — it is a valid legacy target that write-paths should resolve to.
+  if (dirIsMetaOnlyLegacyMilestone(join(milestonesDir, dir))) return null;
   return join(milestonesDir, dir);
 }
 
