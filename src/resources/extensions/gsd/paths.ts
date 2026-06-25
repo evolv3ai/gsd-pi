@@ -613,7 +613,7 @@ function legacyMilestonesHasSubdirs(basePath: string): boolean {
  * See the matching TODO in markdown-renderer.ts detectStaleRenders, which
  * disabled stale-render detection for the same reason.
  */
-function dirIsContentBearingLegacyMilestone(dir: string): boolean {
+export function dirIsContentBearingLegacyMilestone(dir: string): boolean {
   try {
     const entries = readdirSync(dir);
     // Any non-meta file means this is a real legacy milestone dir with content.

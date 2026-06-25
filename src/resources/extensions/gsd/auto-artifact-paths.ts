@@ -19,6 +19,7 @@ import {
   buildTaskFileName,
   resolveSlicePath,
   resolveTasksDir,
+  dirIsContentBearingLegacyMilestone,
 } from "./paths.js";
 import { milestoneIdToPhaseNum } from "./layout-policy.js";
 import { parseUnitId } from "./unit-id.js";
@@ -67,7 +68,17 @@ function resolveSliceArtifactPath(
 function resolveProjectMilestonePath(base: string, mid: string): string | null {
   const milestonesDir = join(gsdRoot(base), "milestones");
   const dir = resolveDir(milestonesDir, mid);
-  return dir ? join(milestonesDir, dir) : null;
+  if (!dir) return null;
+  // git-service.ts creates milestones/<MID>/ for integration-branch metadata
+  // (<MID>-META.json) even in flat-phase projects. A metadata-only dir must not
+  // be treated as a real legacy milestone dir — otherwise this early-return path
+  // resolves CONTEXT/ROADMAP/SUMMARY to milestones/<MID>/<MID>-<SUFFIX>.md (a
+  // path that never exists in a flat-phase project) before the flat-phase
+  // fallback runs, trapping the unit in a finalize-retry loop (#852 follow-up).
+  // This guard mirrors the one in paths.ts resolvePhaseDir/resolveMilestonePath;
+  // without it the project-root legacy lookup bypassed those fixes.
+  if (!dirIsContentBearingLegacyMilestone(join(milestonesDir, dir))) return null;
+  return join(milestonesDir, dir);
 }
 
 function resolveProjectMilestoneFile(base: string, mid: string, suffix: string): string | null {
