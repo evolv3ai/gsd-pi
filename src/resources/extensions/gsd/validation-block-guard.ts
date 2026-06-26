@@ -28,6 +28,27 @@ const VALIDATION_BLOCKED_COMMANDS = new Set([
   "ship",
   "complete-milestone",
   "do",
+  "discuss-phase",
+  "import",
+  "ingest-docs",
+  "review-backlog",
+  "docs-update",
+  "secure-phase",
+  "plan-phase",
+  "execute-phase",
+  "spec-phase",
+  "mvp-phase",
+  "ui-phase",
+  "ai-integration-phase",
+  "ultraplan-phase",
+  "plan-review-convergence",
+  "autonomous",
+  "resume-work",
+  "discuss-phase",
+  "import",
+  "ingest-docs",
+  "review-backlog",
+  "secure-phase",
 ]);
 
 const VALIDATION_BLOCKED_PARALLEL_SUBCOMMANDS = new Set([
@@ -48,6 +69,16 @@ const VALIDATION_SAFE_WORKFLOW_SUBCOMMANDS = new Set([
   "uninstall",
 ]);
 
+function hasFlag(command: string, flag: string): boolean {
+  const escaped = flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|\\s)${escaped}(?=\\s|$)`).test(command);
+}
+
+function isMutatingPhaseCommand(subcommand: string | undefined): boolean {
+  if (!subcommand) return false;
+  return ["add", "create", "new", "insert", "remove", "edit"].includes(subcommand);
+}
+
 export function isValidationBlockedState(state: GSDState): boolean {
   if (state.phase !== "blocked") return false;
   return state.blockers.some((blocker) => VALIDATION_BLOCK_RE.test(blocker));
@@ -66,6 +97,21 @@ export function isValidationBlockAllowedCommand(trimmed: string): boolean {
   }
   if (name === "workflow") {
     return VALIDATION_SAFE_WORKFLOW_SUBCOMMANDS.has(subcommand ?? "");
+  }
+  if (name === "audit-fix") {
+    return hasFlag(command, "--dry-run");
+  }
+  if (name === "code-review") {
+    return !hasFlag(command, "--fix");
+  }
+  if (name === "docs-update") {
+    return hasFlag(command, "--verify-only");
+  }
+  if (name === "phase") {
+    return !isMutatingPhaseCommand(subcommand);
+  }
+  if (name === "progress") {
+    return !hasFlag(command, "--next") && !hasFlag(command, "--do");
   }
   return !VALIDATION_BLOCKED_COMMANDS.has(name);
 }

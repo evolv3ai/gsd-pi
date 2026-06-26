@@ -1,16 +1,13 @@
 /**
  * Behavioural regression test for #5837.
  *
- * /gsd discuss silently exited on cold-start because showDiscuss() derived
- * workflow state before opening the DB. On a cold-start session the DB file
- * exists on disk but is not open in-process, so deriveState() takes the
- * "DB unavailable" branch, reports no active milestone, and showDiscuss()
- * exits as if the project had no milestones.
+ * /gsd discuss and /gsd auto can cold-start with a DB file on disk but no
+ * in-process connection yet. State derivation must open that existing DB
+ * before it decides whether DB-backed state is available.
  *
- * The fix moves `ensureDbOpen(basePath)` ahead of `deriveState()`. This test
- * pins that ordering contract at the behavioural level: with a milestone
- * living only in the DB, deriveState() surfaces nothing until the DB is
- * opened, and surfaces the milestone once ensureDbOpen() has run.
+ * This test pins that behavioural contract: with a milestone living only in
+ * the DB, deriveState() surfaces it even when the process begins with no DB
+ * handle open.
  */
 
 import { describe, test, afterEach } from "node:test";
@@ -19,7 +16,6 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { ensureDbOpen } from "../bootstrap/dynamic-tools.ts";
 import { openDatabase, closeDatabase, isDbAvailable, insertMilestone } from "../gsd-db.ts";
 import { deriveState, invalidateStateCache } from "../state.ts";
 
@@ -29,7 +25,7 @@ afterEach(() => {
 });
 
 describe("discuss cold-start DB ordering (#5837)", () => {
-  test("deriveState only surfaces a DB-resident milestone after ensureDbOpen runs", async () => {
+  test("deriveState opens an existing DB before reading a DB-resident milestone", async () => {
     const base = realpathSync(mkdtempSync(join(tmpdir(), "gsd-discuss-cold-")));
     try {
       mkdirSync(join(base, ".gsd"), { recursive: true });
@@ -42,26 +38,13 @@ describe("discuss cold-start DB ordering (#5837)", () => {
       closeDatabase();
       invalidateStateCache();
 
-      // Before ensureDbOpen(): showDiscuss's pre-fix ordering. The DB is not
-      // open, so state derivation cannot see the milestone — the silent exit.
       const coldState = await deriveState(base);
       assert.equal(
-        coldState.activeMilestone,
-        null,
-        "without an open DB, deriveState must not surface the milestone — this is the cold-start silent-exit bug",
-      );
-      assert.equal(isDbAvailable(), false, "DB must still be closed before ensureDbOpen");
-
-      // The fix: ensureDbOpen(basePath) runs before deriveState.
-      assert.equal(await ensureDbOpen(base), true, "ensureDbOpen must open the cold-start DB");
-      invalidateStateCache();
-
-      const warmState = await deriveState(base);
-      assert.equal(
-        warmState.activeMilestone?.id,
+        coldState.activeMilestone?.id,
         "M001",
-        "after ensureDbOpen, deriveState must surface the DB-resident milestone so /gsd discuss does not silently exit",
+        "cold-start deriveState must open and read the existing workflow DB",
       );
+      assert.equal(isDbAvailable(), true, "deriveState must leave the existing DB open for downstream reads");
     } finally {
       if (isDbAvailable()) closeDatabase();
       invalidateStateCache();

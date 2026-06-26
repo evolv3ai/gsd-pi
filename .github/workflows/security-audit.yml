@@ -36,7 +36,7 @@ jobs:
             artifact: "vscode-extension"
             audit_command: "npm audit --json --omit=dev"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v6
         with:
@@ -115,7 +115,7 @@ jobs:
     name: cargo audit
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@1cacf5c5198b25f60b90968ce45860e926d584b0 # cargo-audit
@@ -170,7 +170,7 @@ jobs:
     name: full-tree secret scan
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v6
         with:

@@ -13,7 +13,7 @@
 | `/gsd pause` | Pause auto-mode (preserves state, `/gsd auto` to resume) |
 | `/gsd steer` | Hard-steer plan documents during execution |
 | `/gsd discuss` | Discuss architecture and decisions (stop auto-mode first with `/gsd stop`) |
-| `/gsd status` | Open workflow visualizer |
+| `/gsd status` | Open the status dashboard |
 | `/gsd widget` | Cycle dashboard widget: full / small / min / off |
 | `/gsd notifications` | View, filter, and clear persistent notification history |
 | `/gsd queue` | Queue and reorder future milestones (`pending`, `queued`, and legacy `planned`; safe during auto mode) |
@@ -24,7 +24,7 @@
 | `/gsd debug status <slug>` | Show status for one debug session slug |
 | `/gsd debug continue <slug>` | Resume an existing debug session slug |
 | `/gsd debug --diagnose` | Inspect malformed artifacts and session health (`--diagnose [<slug> | <issue text>]`) |
-| `/gsd dispatch` | Dispatch a specific phase directly (research, plan, execute, complete, reassess, uat, replan) |
+| `/gsd dispatch` | Dispatch a specific phase directly (research, plan, execute, complete, validate, reassess, uat, replan) |
 | `/gsd verdict <pass\|needs-attention\|needs-remediation>` | Override the recorded milestone validation verdict with an explicit rationale |
 | `/gsd history` | View execution history (supports `--cost`, `--phase`, `--model` filters) |
 | `/gsd usage` | Show current LLM context-window usage and session token totals |
@@ -33,7 +33,7 @@
 | `/gsd cleanup` | Clean up GSD state files and stale worktrees |
 | `/gsd closeout` | Recover failed git closeout actions (`status`, `retry`, `resolve`) |
 | `/gsd worktree` (`/gsd wt`) | Manage GSD worktrees from the TUI |
-| `/gsd visualize` | Open workflow visualizer (progress, timeline, deps, metrics, health, agent, changes, knowledge, captures, export) |
+| `/gsd visualize` | Open workflow visualizer (progress, timeline, deps, metrics, health, agent, changes, knowledge, memories, captures, export) |
 | `/gsd brief <mode> [topic] [--slides]` | Generate a self-contained visual HTML brief. Modes: `diagram`, `plan`, `diff`, `recap`, `table`, `slides`. |
 | `/gsd report` | Generate HTML reports for all milestones and open the reports index in a browser |
 | `/gsd report --html` | Generate self-contained HTML report for current or completed milestone |
@@ -83,9 +83,9 @@ After writing the file, GSD attempts to open it in a browser using the local pla
 | `/gsd prefs` | Model selection, timeouts, budget ceiling |
 | `/gsd model` | Switch the active session model or open a picker |
 | `/gsd mode` | Switch workflow mode (solo/team) with coordinated defaults for milestone IDs, git commit behavior, and documentation |
-| `/gsd config` | Re-run the provider setup wizard (LLM provider + tool keys) |
+| `/gsd config` | (deprecated) Set tool API keys — use `/gsd keys` (tool keys) or `/gsd setup` (provider wizard) instead |
 | `/gsd keys` | API key manager — list, add, remove, test, rotate, doctor |
-| `/gsd doctor` | Runtime health checks with auto-fix — issues surface in real time across widget, visualizer, and HTML reports (v2.40) |
+| `/gsd doctor` | Runtime health checks with auto-fix — issues surface in real time across widget, visualizer, and HTML reports |
 | `/gsd inspect` | Show SQLite DB diagnostics |
 | `/gsd show-config` | Show effective configuration, including models, routing, and toggles |
 | `/gsd init` | Project init wizard — detect, configure, bootstrap `.gsd/`; if `.gsd/` already exists, opens an "Already Initialized" menu with `Re-configure preferences`, `Suggest & install skills`, or `Cancel` |
@@ -146,7 +146,58 @@ See [Parallel Orchestration](./parallel-orchestration.md) for full documentation
 | `/gsd scan` | Run a rapid codebase assessment (`--focus tech`, `arch`, `quality`, `concerns`, `tech+arch`) |
 | `/gsd codebase` | Generate, refresh, and inspect the `.gsd/CODEBASE.md` cache (`generate`, `update`, `stats`) |
 
-## Workflow Templates (v2.42)
+## Additional Prompt-Driven Workflows
+
+These commands are native GSD workflows surfaced in `/gsd help full`. They dispatch purpose-built prompts against the milestone, slice, and `.gsd/` model instead of acting as aliases.
+
+| Command | Description |
+|---------|-------------|
+| `/gsd explore [topic]` | Socratic ideation before committing an idea to backlog, knowledge, research, spike, sketch, or a milestone |
+| `/gsd spike [idea]` | Focused throwaway experiment; supports `--quick`, `--text`, and frontier mode |
+| `/gsd sketch [idea]` | UI/design exploration with throwaway HTML mockups; supports `--quick`, `--text`, and frontier mode |
+| `/gsd map-codebase` | Generate structured codebase reference docs under `.gsd/codebase/`; supports `--paths` and `--focus` |
+| `/gsd docs-update` | Generate, update, or verify project docs against live code; supports `--force` and `--verify-only` |
+| `/gsd graphify` | Build, query, inspect, or diff a lightweight knowledge graph under `.gsd/knowledge/` |
+| `/gsd stats` | Display project statistics, milestones, slices, git metrics, and timeline |
+| `/gsd progress` | Summarize recent work and next steps; `--next` dispatches `/gsd next`, and `--do "..."` routes through `/gsd do` |
+| `/gsd health` | Check `.gsd/` integrity; supports `--repair` and `--context` |
+| `/gsd surface` | Manage which skills and extensions are surfaced in the session |
+| `/gsd code-review` | Review changed source for bugs, security, and quality; supports `--depth`, `--files`, and `--fix` |
+| `/gsd review` | Peer-review recent work across reviewer perspectives; external reviewer flags are simulated in-prompt when unavailable |
+| `/gsd audit-milestone` | Verify a milestone met its definition of done |
+| `/gsd audit-uat` | Audit outstanding UAT/verification items; supports `--verify` |
+| `/gsd audit-fix` | Classify and remediate audit findings; supports `--source`, `--severity`, `--max`, and `--dry-run` |
+| `/gsd ui-review` | Run a retroactive six-pillar visual audit for frontend work |
+| `/gsd secure-phase` | Verify threat mitigations for completed work |
+| `/gsd validate-phase` | Audit and fill validation or test coverage gaps |
+| `/gsd verify-work` | Run conversational UAT of built features |
+| `/gsd plan-review-convergence` | Iterate a plan through review cycles until concerns resolve |
+| `/gsd discuss-phase` | Gather milestone or slice context through adaptive questioning |
+| `/gsd plan-phase` | Create a detailed slice plan with a verification loop |
+| `/gsd execute-phase` | Execute slice tasks with wave-based parallelization |
+| `/gsd spec-phase` | Clarify what a milestone delivers, with ambiguity scoring |
+| `/gsd mvp-phase` | Plan a milestone as a vertical MVP slice |
+| `/gsd ui-phase` | Produce a UI design contract (`UI-SPEC`) for frontend milestones |
+| `/gsd ai-integration-phase` | Produce an AI design contract (`AI-SPEC`) for AI milestones |
+| `/gsd ultraplan-phase` | Run an extended-reasoning planning pass, review, then import |
+| `/gsd autonomous` | Continuously run the remaining lifecycle work with explicit phase ceremony |
+| `/gsd pause-work` | Create a context handoff when pausing mid-stream |
+| `/gsd resume-work` | Resume work with full context restoration |
+| `/gsd manager` | Open a command-center workflow for multiple milestones |
+| `/gsd phase` | Manage milestone queue ordering; structural actions route to existing GSD commands |
+| `/gsd thread` | Manage persistent context threads for cross-session work |
+| `/gsd workstreams` | Manage parallel workstreams through `/gsd parallel` |
+| `/gsd workspace` | Manage isolated workspaces through `/gsd worktree` |
+| `/gsd milestone-summary` | Generate a project or milestone summary for onboarding |
+| `/gsd review-backlog` | Review and promote backlog items to milestones |
+| `/gsd inbox` | Triage GitHub issues and PRs against project conventions |
+| `/gsd import` | Ingest external plans with conflict detection |
+| `/gsd ingest-docs` | Bootstrap or merge `.gsd/` state from existing ADRs, PRDs, specs, or docs |
+| `/gsd profile-user` | Generate and persist a developer behavior profile |
+| `/gsd settings` | Configure workflow toggles and model profile |
+| `/gsd ns-context`, `/gsd ns-ideate`, `/gsd ns-manage`, `/gsd ns-project`, `/gsd ns-review`, `/gsd ns-workflow` | Namespace grouping commands from older command sets; each redirects to `/gsd help` because GSD uses a flat command list |
+
+## Workflow Templates
 
 | Command | Description |
 |---------|-------------|
@@ -219,10 +270,10 @@ Plugins are plain YAML (`.yaml`) or markdown (`.md`) files. See
 | `/gsd extensions enable <id>` | Enable a disabled extension |
 | `/gsd extensions disable <id>` | Disable an extension |
 | `/gsd extensions info <id>` | Show extension details |
-| `/gsd extensions install <spec>` | Install a user extension. `<spec>` is an npm package, a git URL, or a local path. Restart GSD to activate. (v2.78) |
-| `/gsd extensions uninstall <id>` | Remove a user-installed extension. Warns if other extensions depend on it. (v2.78) |
-| `/gsd extensions update [id]` | Update a single user-installed npm extension to its latest version, or all of them when `id` is omitted. Git/local installs are skipped — reinstall to update. (v2.78) |
-| `/gsd extensions validate <path>` | Validate an extension package directory against the manifest schema before publishing or installing. (v2.78) |
+| `/gsd extensions install <spec>` | Install a user extension. `<spec>` is an npm package, a git URL, or a local path. Restart GSD to activate. |
+| `/gsd extensions uninstall <id>` | Remove a user-installed extension. Warns if other extensions depend on it. |
+| `/gsd extensions update [id]` | Update a single user-installed npm extension to its latest version, or all of them when `id` is omitted. Git/local installs are skipped — reinstall to update. |
+| `/gsd extensions validate <path>` | Validate an extension package directory against the manifest schema before publishing or installing. |
 
 Install sources are auto-detected: starts with `http(s)://` or ends with `.git` → git clone; contains `/` or `.` and exists on disk → local copy; otherwise → `npm pack`. Installed extensions land in `~/.gsd/extensions/<id>/` and the registry records the source so `update` can re-fetch.
 
@@ -243,14 +294,14 @@ Install sources are auto-detected: starts with `http(s)://` or ends with `.git` 
 |---------|-------------|
 | `/subagent` | List available user and project subagents. Run records, status checks, and follow-up resume are handled through the `subagent` tool; see [Subagents](./subagents.md). |
 
-## GitHub Sync (v2.39)
+## GitHub Sync
 
 | Command | Description |
 |---------|-------------|
 | `/github-sync bootstrap` | Initial setup — creates GitHub Milestones, Issues, and draft PRs from current `.gsd/` state |
 | `/github-sync status` | Show sync mapping counts (milestones, slices, tasks) |
 
-Enable with `github.enabled: true` in preferences. Requires `gh` CLI installed and authenticated. Sync mapping is persisted in `.gsd/.github-sync.json`.
+Enable with `github.enabled: true` in preferences. Requires `gh` CLI installed and authenticated. Sync mapping is persisted in `.gsd/github-sync.json`.
 
 ## Git Commands
 
@@ -337,9 +388,13 @@ The following commands are sent directly in your **Telegram chat** to a configur
 | `gsd --version` (`-v`) | Print version and exit |
 | `gsd --help` (`-h`) | Print help and exit |
 | `gsd sessions` | Interactive session picker — list all saved sessions for the current directory and choose one to resume |
-| `gsd --debug` | Enable structured JSONL diagnostic logging for troubleshooting dispatch and state issues |
 | `gsd config` | Set up global API keys for search and docs tools (saved to `~/.gsd/agent/auth.json`, applies to all projects). See [Global API Keys](./configuration.md#global-api-keys-gsd-config). |
-| `gsd update` | Update GSD to the latest version |
+| `gsd update` | Update GSD to the latest version (use `gsd update browser` to update the managed browser) |
+| `gsd install <source>` | Install an extension from npm, git, a URL, or a local path (e.g. `gsd install npm:@foo/bar`) |
+| `gsd remove <source>` | Remove a previously installed extension |
+| `gsd list` | List installed extensions |
+| `gsd graph <subcommand>` | Build, query, status, or diff the project knowledge graph built from `.gsd/` artifacts |
+| `gsd headless --json` | Structured JSONL event stream to stdout for scripting, CI, and troubleshooting (alias: `--output-format stream-json`) |
 | `gsd headless new-milestone` | Create a new milestone from a context file (headless — no TUI required) |
 
 ## Headless Mode
@@ -388,7 +443,7 @@ In JSON output summaries, headless can also return `status: "no-work-determinist
 
 Any `/gsd` subcommand works as a positional argument — `gsd headless status`, `gsd headless doctor`, `gsd headless dispatch execute`, etc.
 
-### `gsd headless recover` (v2.79)
+### `gsd headless recover`
 
 Non-TTY equivalent of `/gsd recover --confirm` — resets the DB hierarchy plus persisted validation and quality-gate state, then reconstructs from rendered markdown. Designed for CI, cron, and any environment where the interactive recover prompt cannot run.
 
@@ -470,9 +525,9 @@ When the `claude-code` provider is configured, update may also warn if the local
 
 ```bash
 /gsd update
-# Current version: v2.36.0
+# Current version: 1.2.0
 # Checking npm registry...
-# Updated to v2.37.0. Restart GSD to use the new version.
+# Updated to 1.3.0. Restart GSD to use the new version.
 ```
 
 If already up to date, it reports so and takes no action.
@@ -492,4 +547,4 @@ If already up to date, it reports so and takes no action.
 /gsd report --html --all
 ```
 
-Reports are saved to `.gsd/reports/` with a browseable `index.html` that links to all generated snapshots.
+Reports are saved to `.gsd/reports/` with a browseable `index.html` that links to all generated snapshots. Each report includes the active memory feed in its Knowledge section when memory rows are available.

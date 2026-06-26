@@ -102,4 +102,8 @@ checks: [{
 
 **You MUST call `gsd_uat_result_save` before finishing. Do not write the assessment file directly, and do not call `gsd_summary_save` as a substitute.**
 
-When done, say: "UAT {{sliceId}} complete." Say this exactly once — if you already said it in a prior message, do not repeat it.
+### Closeout messaging (auto-mode)
+
+You submit UAT results; **GSD auto-mode** decides when UAT is actually **done**. Never say "UAT {{sliceId}} complete" in this unit — not even after `gsd_uat_result_save` succeeds. GSD announces completion only after post-unit verification passes.
+
+When done, say: "UAT {{sliceId}} results submitted." Do not say UAT is complete. Say this exactly once — if you already said it in a prior message, do not repeat it.

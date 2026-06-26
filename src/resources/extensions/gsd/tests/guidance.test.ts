@@ -145,4 +145,29 @@ describe("doctor fix hints", () => {
   test("codes without authored guidance resolve to undefined", () => {
     assert.equal(doctorFixHint("delimiter_in_title"), undefined);
   });
+
+  test("fixable issue codes instruct /gsd doctor fix, not bare /gsd doctor", () => {
+    const fixableCodes = [
+      "stale_crash_lock",
+      "stale_parallel_session",
+      "orphaned_auto_worktree",
+      "gitignore_missing_patterns",
+      "state_file_stale",
+      "state_file_missing",
+      "projection_drift",
+    ] as const;
+
+    for (const code of fixableCodes) {
+      const hint = doctorFixHint(code);
+      assert.ok(hint, `expected a hint for ${code}`);
+      assert.match(hint, /\/gsd doctor fix/, `hint for ${code} must use /gsd doctor fix`);
+    }
+  });
+
+  test("db_unavailable uses bare /gsd doctor (diagnostic only, no auto-fix)", () => {
+    const hint = doctorFixHint("db_unavailable");
+    assert.ok(hint);
+    assert.match(hint, /\/gsd doctor/);
+    assert.doesNotMatch(hint, /\/gsd doctor fix/);
+  });
 });

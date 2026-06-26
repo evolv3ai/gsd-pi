@@ -14,9 +14,16 @@
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import { CLAUDE_CODE_MODELS } from "./models.js";
 import { isClaudeCodeReady } from "./readiness.js";
-import { streamViaClaudeCode } from "./stream-adapter.js";
+import { setClaudeCodeUIContext, streamViaClaudeCode } from "./stream-adapter.js";
 
 export default function claudeCodeCli(pi: ExtensionAPI) {
+	// Core calls `streamSimple` with a plain `SimpleStreamOptions` (no UI
+	// context), so the elicitation handler used by `ask_user_questions` is
+	// otherwise never wired and self-cancels. Capture the live UI context here.
+	pi.on("before_provider_request", (_event, ctx) => {
+		setClaudeCodeUIContext(ctx.hasUI ? ctx.ui : undefined);
+	});
+
 	pi.registerProvider("claude-code", {
 		authMode: "externalCli",
 		api: "anthropic-messages",

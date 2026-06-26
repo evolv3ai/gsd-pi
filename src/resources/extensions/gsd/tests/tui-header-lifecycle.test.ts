@@ -10,14 +10,18 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { visibleWidth } from "@gsd/pi-tui";
-
 import {
   _resetWidgetModeForTests,
   setCompletionProgressWidget,
   setWidgetMode,
   updateProgressWidget,
 } from "../auto-dashboard.ts";
+import {
+  createProgressStripUiMock,
+  renderProgressStrip,
+  renderProgressStripLines,
+  assertLinesFit,
+} from "./progress-strip-test-helpers.ts";
 import type { GSDState } from "../types.ts";
 
 interface CapturedSetHeader {
@@ -51,15 +55,6 @@ const baseAccessors = {
   isSessionSwitching: () => false,
   getCurrentDispatchedModelId: () => null,
 };
-
-function assertLinesFit(lines: string[], width: number): void {
-  for (const line of lines) {
-    assert.ok(
-      visibleWidth(line) <= width,
-      `line exceeds width ${width}: ${visibleWidth(line)} "${line}"`,
-    );
-  }
-}
 
 // ── Header lifecycle ────────────────────────────────────────────────────
 
@@ -148,7 +143,7 @@ test("updateProgressWidget gracefully no-ops when ctx.ui lacks setHeader/setStat
 
 // ── NEXT-mode footer guidance ───────────────────────────────────────────
 
-test("auto-dashboard full widget render output includes /gsd next guidance when isStepMode is true", (t) => {
+test("progress strip uses NEXT mode tag when step mode is active", (t) => {
   const dir = makeTempDir("step-hint");
   mkdirSync(join(dir, ".gsd"), { recursive: true });
   const projectPrefsPath = join(dir, ".gsd", "preferences.md");
@@ -156,21 +151,17 @@ test("auto-dashboard full widget render output includes /gsd next guidance when 
   writeFileSync(projectPrefsPath, "---\nversion: 1\n---\n", "utf-8");
   _resetWidgetModeForTests();
   setWidgetMode("full", projectPrefsPath, globalPrefsPath);
+  const mock = createProgressStripUiMock();
   t.after(() => {
+    mock.disposeProgress();
     _resetWidgetModeForTests();
     cleanup(dir);
   });
 
-  let widgetFactory: ((tui: unknown, theme: unknown) => any) | undefined;
-
   updateProgressWidget(
     {
       hasUI: true,
-      ui: {
-        setWidget(_key: string, factory: any) { widgetFactory = factory; },
-        setHeader() {},
-        setStatus() {},
-      },
+      ui: mock.ui,
     } as any,
     "execute-task",
     "M001/S01/T01",
@@ -178,24 +169,14 @@ test("auto-dashboard full widget render output includes /gsd next guidance when 
     { ...baseAccessors, getBasePath: () => dir, isStepMode: () => true },
   );
 
-  assert.ok(widgetFactory, "widget factory must be installed");
-
-  const fakeTui = { requestRender() {} };
-  const fakeTheme = {
-    fg: (_color: string, text: string) => text,
-    bold: (text: string) => text,
-  };
-  const component = widgetFactory!(fakeTui, fakeTheme);
-  t.after(() => component.dispose?.());
-  const lines = component.render(120);
-
-  const hasStepHint = lines.some((line: string) => line.includes("/gsd next to advance one step"));
-  assert.ok(hasStepHint, `expected step-mode hint in render output; got:\n${lines.join("\n")}`);
-
-  if (component.dispose) component.dispose();
+  const progress = mock.getProgressState();
+  assert.ok(progress, "progress strip state should be published");
+  assert.equal(progress!.modeTag, "NEXT");
+  const rendered = renderProgressStrip(progress!, 120, { cwd: dir });
+  assert.match(rendered, /NEXT/);
 });
 
-test("auto-dashboard full widget render output omits /gsd next guidance when isStepMode is false", (t) => {
+test("progress strip uses AUTO mode tag when step mode is inactive", (t) => {
   const dir = makeTempDir("no-step-hint");
   mkdirSync(join(dir, ".gsd"), { recursive: true });
   const projectPrefsPath = join(dir, ".gsd", "preferences.md");
@@ -203,21 +184,17 @@ test("auto-dashboard full widget render output omits /gsd next guidance when isS
   writeFileSync(projectPrefsPath, "---\nversion: 1\n---\n", "utf-8");
   _resetWidgetModeForTests();
   setWidgetMode("full", projectPrefsPath, globalPrefsPath);
+  const mock = createProgressStripUiMock();
   t.after(() => {
+    mock.disposeProgress();
     _resetWidgetModeForTests();
     cleanup(dir);
   });
 
-  let widgetFactory: ((tui: unknown, theme: unknown) => any) | undefined;
-
   updateProgressWidget(
     {
       hasUI: true,
-      ui: {
-        setWidget(_key: string, factory: any) { widgetFactory = factory; },
-        setHeader() {},
-        setStatus() {},
-      },
+      ui: mock.ui,
     } as any,
     "execute-task",
     "M001/S01/T01",
@@ -225,38 +202,27 @@ test("auto-dashboard full widget render output omits /gsd next guidance when isS
     { ...baseAccessors, getBasePath: () => dir, isStepMode: () => false },
   );
 
-  assert.ok(widgetFactory);
-
-  const fakeTui = { requestRender() {} };
-  const fakeTheme = {
-    fg: (_color: string, text: string) => text,
-    bold: (text: string) => text,
-  };
-  const component = widgetFactory!(fakeTui, fakeTheme);
-  t.after(() => component.dispose?.());
-  const lines = component.render(120);
-
-  const hasStepHint = lines.some((line: string) => line.includes("/gsd next to advance one step"));
-  assert.equal(hasStepHint, false, "step-mode hint must NOT appear when isStepMode is false");
-
-  if (component.dispose) component.dispose();
+  const progress = mock.getProgressState();
+  assert.ok(progress, "progress strip state should be published");
+  assert.equal(progress!.modeTag, "AUTO");
+  const rendered = renderProgressStrip(progress!, 120, { cwd: dir });
+  assert.match(rendered, /AUTO/);
+  assert.doesNotMatch(rendered, /NEXT/);
 });
 
-test("auto-dashboard widget render output fits common terminal widths", (t) => {
+test("progress strip render output fits common terminal widths", (t) => {
   const dir = makeTempDir("width-safe");
   mkdirSync(join(dir, ".gsd"), { recursive: true });
-  t.after(() => cleanup(dir));
-
-  let widgetFactory: ((tui: unknown, theme: unknown) => any) | undefined;
+  const mock = createProgressStripUiMock();
+  t.after(() => {
+    mock.disposeProgress();
+    cleanup(dir);
+  });
 
   updateProgressWidget(
     {
       hasUI: true,
-      ui: {
-        setWidget(_key: string, factory: any) { widgetFactory = factory; },
-        setHeader() {},
-        setStatus() {},
-      },
+      ui: mock.ui,
     } as any,
     "execute-task",
     "M001/S01/T01",
@@ -264,23 +230,12 @@ test("auto-dashboard widget render output fits common terminal widths", (t) => {
     { ...baseAccessors, getBasePath: () => dir },
   );
 
-  assert.ok(widgetFactory);
-
-  const component = widgetFactory!(
-    { requestRender() {} },
-    {
-      fg: (_color: string, text: string) => text,
-      bold: (text: string) => text,
-    },
-  );
-  t.after(() => component.dispose?.());
+  const progress = mock.getProgressState();
+  assert.ok(progress, "progress strip state should be published");
 
   for (const width of [40, 80, 120]) {
-    assertLinesFit(component.render(width), width);
-    component.invalidate();
+    assertLinesFit(renderProgressStripLines(progress!, width, { cwd: dir }), width);
   }
-
-  if (component.dispose) component.dispose();
 });
 
 test("completion dashboard keeps final milestone roll-up in the progress widget", (t) => {
@@ -341,12 +296,11 @@ test("completion dashboard keeps final milestone roll-up in the progress widget"
   assert.match(output, /Users can see what shipped/);
   assert.match(output, /Keep completion closeout/);
   assert.match(output, /Verification/);
-  assert.match(output, /Files: src\/resources\/extensions\/gsd\/auto-dashboard\.ts/);
-  assert.match(output, /Run totals 3\/3 slices/);
-  assert.match(output, /100% cache hit/);
-  assert.match(output, /\$21\.29/);
-  assert.match(output, /1\.0M tokens/);
-  assert.match(output, /8 units/);
+  assert.match(output, /Files:/);
+  assert.match(output, /auto-dashboard\.ts/);
+  assert.doesNotMatch(output, /Run totals/);
+  assert.doesNotMatch(output, /\$21\.29/);
+  assert.doesNotMatch(output, /1\.0M tokens/);
   assert.doesNotMatch(output, /COMPLETE-MILESTONE/);
 
   if (component.dispose) component.dispose();

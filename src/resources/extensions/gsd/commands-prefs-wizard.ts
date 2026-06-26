@@ -22,6 +22,7 @@ import {
 } from "./preferences.js";
 import { loadFile, saveFile, splitFrontmatter, parseFrontmatterMap } from "./files.js";
 import { runClaudeImportFlow } from "./claude-import.js";
+import { clearSessionModelOverride } from "./session-model-override.js";
 
 const DEFAULT_WIDGET_MODE = "small";
 const WIDGET_MODE_OPTIONS = [DEFAULT_WIDGET_MODE, "full", "min", "off"] as const;
@@ -1678,6 +1679,12 @@ export async function writePreferencesFile(
   await saveFile(path, content);
 
   if (ctx) {
+    // Per-phase model prefs must beat an earlier /gsd model session pin.
+    const models = prefs.models;
+    if (models && typeof models === "object" && Object.keys(models as object).length > 0) {
+      const sessionId = ctx.sessionManager?.getSessionId?.();
+      if (sessionId) clearSessionModelOverride(sessionId);
+    }
     await ctx.waitForIdle();
     await ctx.reload();
     if (opts?.notifyOnSave !== false) {

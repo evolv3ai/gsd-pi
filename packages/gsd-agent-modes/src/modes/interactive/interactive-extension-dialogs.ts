@@ -12,7 +12,7 @@ import { ExtensionEditorComponent } from "./components/extension-editor.js";
 import { ExtensionInputComponent } from "./components/extension-input.js";
 import { ExtensionSelectorComponent } from "./components/extension-selector.js";
 import type { ExtensionNotifyType } from "./interactive-notify-render.js";
-import { renderBlockingErrorBanner, renderExtensionNotifyInChat } from "./interactive-notify-render.js";
+import { renderExtensionNotifyInChat } from "./interactive-notify-render.js";
 import { createExtensionUIContext as buildExtensionUIContext } from "./controllers/extension-ui-controller.js";
 import { MAX_WIDGET_LINES } from "./interactive-mode-class-constants.js";
 import type { InteractiveModeDelegateHost } from "./interactive-mode-delegate-host.js";
@@ -275,7 +275,7 @@ export function setCustomEditorComponent(
 export function showExtensionNotify(host: InteractiveModeDelegateHost, message: string, type?: ExtensionNotifyType): void {
 		if (type === "error") {
 			host.lastBlockingError = message;
-			renderBlockingErrorBanner(host.blockingErrorContainer, host.lastBlockingError);
+			renderExtensionNotifyInChat(host.chatContainer, message, type);
 			host.ui.requestRender();
 			return;
 		}

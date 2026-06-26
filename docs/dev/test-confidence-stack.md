@@ -24,11 +24,18 @@ Run the inventory anytime:
 npm run audit:test-confidence
 npm run audit:test-confidence -- --strict   # fail if tier map drifts from package.json
 npm run audit:test-gaps                     # unwired tests, zero-test extensions, thin packages
-npm run audit:test-gaps -- --strict-unwired # fail if any test file is unreachable
+npm run audit:test-gaps -- --strict-unwired # fail if any test file is unwired/unknown
 npm run audit:test-matrix                   # per-source-file status matrix
-npm run audit:test-matrix -- --strict       # fail if P0 extensions remain untested
+npm run audit:test-matrix -- --strict       # fail unless the audit matrix is fully covered
 npm run audit:test-matrix -- --write-report # regenerate docs/dev/test-evaluation-report.md
 ```
+
+`audit:test-matrix --strict` is the repo audit definition for source coverage:
+zero untested source files, zero critical/high untested files, zero source
+files mapped only to unwired tests, zero unwired test files, and zero
+unreachable test files. A source file can count as `indirect` when a reachable
+suite-level test covers its package, root area, or extension even without a
+same-stem test file.
 
 ## Test runners by code area
 
@@ -88,9 +95,9 @@ It is intentionally lighter than CI. Do not treat a passing `verify:pr` as merge
 
 These are tracked limitations, not bugs to hide:
 
-1. **Web UI** — few unit tests; use `audit:test-matrix` to track file-level gaps
+1. **Web UI** — many files rely on suite-level indirect coverage; use `audit:test-matrix` to separate named coverage from indirect coverage
 2. **Windows smoke** — non-blocking until flake rate is acceptable
-3. **Single-file extensions** — may still lack dedicated tests (below extension gate threshold)
+3. **Single-file extensions** — may rely on root-level suite coverage instead of dedicated extension-local tests
 
 ## Related docs
 

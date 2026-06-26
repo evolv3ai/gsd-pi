@@ -226,9 +226,9 @@ test('workflow-projections: regenerateIfMissing PLAN restores slice plan and tas
       planning: { description: 'Do the second thing.', estimate: '2h' },
     });
 
+    // Legacy layout: renderer writes milestones/M001/slices/S01/S01-PLAN.md
+    // (relSliceFile detects milestones/ prefix → uses legacy S01-PLAN.md filename).
     const slicePlanPath = join(base, '.gsd', 'milestones', 'M001', 'slices', 'S01', 'S01-PLAN.md');
-    const t1PlanPath = join(base, '.gsd', 'milestones', 'M001', 'slices', 'S01', 'tasks', 'T01-PLAN.md');
-    const t2PlanPath = join(base, '.gsd', 'milestones', 'M001', 'slices', 'S01', 'tasks', 'T02-PLAN.md');
 
     assert.ok(!existsSync(slicePlanPath), 'precondition: slice plan absent');
 
@@ -236,8 +236,7 @@ test('workflow-projections: regenerateIfMissing PLAN restores slice plan and tas
 
     assert.equal(regenerated, true, 'regenerateIfMissing reports the PLAN was rebuilt');
     assert.ok(existsSync(slicePlanPath), 'slice PLAN restored on disk');
-    assert.ok(existsSync(t1PlanPath), 'T01 task plan restored');
-    assert.ok(existsSync(t2PlanPath), 'T02 task plan restored');
+    // Flat-phase: tasks are checkboxes inside the plan file, not separate task plan files.
   } finally {
     closeDatabase();
     rmSync(base, { recursive: true, force: true });

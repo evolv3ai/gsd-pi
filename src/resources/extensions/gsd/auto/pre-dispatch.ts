@@ -38,12 +38,18 @@ import {
 } from "./closeout.js";
 import type { IterationContext, LoopState, PhaseResult, PreDispatchData } from "./types.js";
 
-type BlockerKind = "needs-remediation-dead-end" | "other";
+type BlockerKind = "needs-remediation-dead-end" | "completed-milestone-reopened" | "other";
 
 function classifyBlocker(blocker: string): BlockerKind {
   const normalized = blocker.toLowerCase();
   if (normalized.includes("needs-remediation") && normalized.includes("all slices are complete")) {
     return "needs-remediation-dead-end";
+  }
+  if (
+    normalized.includes("completed closeout dispatch history") ||
+    normalized.includes("completed complete-milestone dispatch history")
+  ) {
+    return "completed-milestone-reopened";
   }
   return "other";
 }
@@ -66,6 +72,12 @@ function formatBlockedResumeMessage(blockers: string[]): string {
   );
   if (hasNeedsRemediationDeadEnd) {
     return "Blocked: milestone validation requires remediation but all slices are complete. Run /gsd dispatch reassess to add remediation slices, then /gsd auto to continue.";
+  }
+  const completedMilestoneReopened = classifiedBlockers.find(
+    (classifiedBlocker) => classifiedBlocker.kind === "completed-milestone-reopened",
+  );
+  if (completedMilestoneReopened) {
+    return completedMilestoneReopened.blocker;
   }
   return `Blocked: ${classifiedBlockers.map((classifiedBlocker) => classifiedBlocker.blocker).join(", ")}. Fix and run /gsd auto to resume.`;
 }

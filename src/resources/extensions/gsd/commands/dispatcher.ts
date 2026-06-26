@@ -9,6 +9,7 @@ import { handleCoreCommand } from "./handlers/core.js";
 import { handleOpsCommand } from "./handlers/ops.js";
 import { handleParallelCommand } from "./handlers/parallel.js";
 import { handleWorkflowCommand } from "./handlers/workflow.js";
+import { handleGsdCoreAlias } from "./gsd-core-aliases-handler.js";
 import {
   getValidationBlockMessageForBase,
   isValidationBlockAllowedCommand,
@@ -44,6 +45,8 @@ export async function handleGSDCommand(
   const trimmed = (typeof args === "string" ? args : "").trim();
 
   const handlers = [
+    // Namespace alias redirects (ns-*) run first so they resolve before the standard handlers.
+    () => handleGsdCoreAlias(trimmed, ctx, pi),
     () => handleCoreCommand(trimmed, ctx, pi),
     () => handleAutoCommand(trimmed, ctx, pi),
     () => handleParallelCommand(trimmed, ctx, pi),

@@ -80,6 +80,19 @@ test("validation block allows recovery, diagnostics, and unrelated commands", ()
     "parallel stop M007",
     "parallel pause M007",
     "parallel watch",
+    "progress",
+    "progress --forensic",
+    // code-review is allowed when not applying fixes
+    "code-review",
+    "code-review --depth deep",
+    // audit-fix is allowed in dry-run mode (read-only review, no commits)
+    "audit-fix --dry-run",
+    // docs-update is allowed in verify-only mode (read-only check, no writes)
+    "docs-update --verify-only",
+    // phase read-only subcommands are fine while validation-blocked
+    "phase",
+    "phase list",
+    "phase status",
   ];
 
   for (const command of allowed) {
@@ -95,7 +108,19 @@ test("validation block rejects workflow-start and advancing commands", () => {
     "next",
     "next M006",
     "do mark all complete",
+    "progress --next",
+    'progress --do "mark all complete"',
     "start bugfix",
+    "plan-phase",
+    "execute-phase --milestone M009",
+    "autonomous --from 1",
+    "spec-phase M009",
+    "mvp-phase --milestone M009",
+    "ui-phase M009",
+    "ai-integration-phase M009",
+    "ultraplan-phase M009",
+    "plan-review-convergence M009",
+    "resume-work",
     "workflow resume",
     "workflow run release-checklist",
     "workflow release-checklist",
@@ -107,6 +132,32 @@ test("validation block rejects workflow-start and advancing commands", () => {
     "dispatch uat",
     "complete-milestone",
     "ship",
+    // code-review --fix applies changes and should be blocked
+    "code-review --fix",
+    "code-review --depth deep --fix",
+    // audit-fix without --dry-run applies fixes and commits
+    "audit-fix",
+    "audit-fix --verbose",
+    // mutating workflow-advancing commands added in v2
+    "discuss-phase",
+    "discuss-phase M006",
+    "import",
+    "import milestones.json",
+    "ingest-docs",
+    "ingest-docs --path docs/",
+    "review-backlog",
+    "secure-phase",
+    "secure-phase --milestone M006",
+    // docs-update without --verify-only applies writes
+    "docs-update",
+    "docs-update --milestone M006",
+    // phase mutating subcommands change milestone queue state and must be blocked
+    "phase add M009",
+    "phase create M009",
+    "phase new",
+    "phase insert M009 after M008",
+    "phase remove M008",
+    "phase edit M008",
   ];
 
   for (const command of blocked) {

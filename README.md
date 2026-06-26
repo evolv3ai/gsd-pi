@@ -27,13 +27,19 @@ See [CHANGELOG.md](./CHANGELOG.md) for release-by-release fixes and [Legacy Rele
 
 ## Latest Release Highlights
 
-- **Claude Opus 4.8 support** — Add the latest Claude model option to the generated model catalog.
-- **Better `/gsd` observability** — Add `/gsd usage` and `/gsd context` commands for inspecting session usage and context state.
-- **Sharper skill scoping** — Scope the skill catalog per unit, trim duplicate prompt surfaces, and apply unit-context manifest policy during auto-mode dispatch.
-- **Improved guided installs** — Redesign the `npx @opengsd/gsd-pi@latest` flow so first-time and scripted installs are clearer and more reliable.
-- **Smoother auto-mode progress** — Improve requirements backlog handling, completion summaries, quick branch inference, cleanup logic, and milestone closeout behavior.
-- **Cloud MCP gateway runtime** — Add the local cloud MCP gateway runtime with persisted auth state.
-- **More reliable installs** — Resolve native engine packages to the matching release version across npm installs and Docker images.
+<!-- release-highlights:start -->
+Latest release: **v1.3.0**
+
+- **update:** Reconcile stale PATH gsd-browser binary after install.
+- **gsd:** Route UAT sign-off and worktree-degradation blockers through the guidance catalog.
+- **gsd:** Fix shell-tool selection — uncapped sync bash, interruptible await, graceful kills.
+- **browser-tools:** Proven engine resolution — gsd-browser primary for web apps (ADR-037).
+- **gsd:** Add the Unit Closeout module with the Interactive Closeout adapter (ADR-032).
+- **gsd:** Tool Surface Readiness gate — verify live tool surface at SDK init before the first model turn.
+- **claude-code-cli:** Expose Claude Fable 5 as an Opus-tier model.
+- **pi-ai:** Add Claude Fable 5 with Opus-tier thinking.
+
+<!-- release-highlights:end -->
 
 ## Status
 

@@ -9,7 +9,7 @@ import { handleDoctor, handleCapture, handleKnowledge, handleRunHook, handleSkil
 import { handleInspect } from "../../commands-inspect.js";
 import { handleLogs } from "../../commands-logs.js";
 import { handleDebug } from "../../commands-debug.js";
-import { handleCleanupBranches, handleCleanupSnapshots, handleSkip, handleCleanupProjects, handleCleanupWorktrees, handleRecover, handleRebuild } from "../../commands-maintenance.js";
+import { handleCleanupBranches, handleCleanupSnapshots, handleSkip, handleCleanupProjects, handleCleanupWorktrees, handleRecover, handleRebuild, handleSync } from "../../commands-maintenance.js";
 import { handleExport } from "../../export.js";
 import { handleHistory } from "../../history.js";
 import { handleUndo } from "../../undo.js";
@@ -58,7 +58,7 @@ export async function handleOpsCommand(trimmed: string, ctx: ExtensionCommandCon
     ["execute-task", "execute"],
     ["complete-slice", "complete"],
     ["validate-milestone", "validate-milestone"],
-    ["complete-milestone", "complete"],
+    ["complete-milestone", "complete-milestone"],
   ]);
   const aliasPhase = directDispatchAlias.get(trimmed);
   if (aliasPhase) {
@@ -137,6 +137,10 @@ export async function handleOpsCommand(trimmed: string, ctx: ExtensionCommandCon
   }
   if (trimmed === "rebuild" || trimmed.startsWith("rebuild ")) {
     await handleRebuild(ctx, projectRoot(), trimmed.replace(/^rebuild\s*/, "").trim());
+    return true;
+  }
+  if (trimmed === "sync" || trimmed.startsWith("sync ")) {
+    await handleSync(ctx, projectRoot(), trimmed.replace(/^sync\s*/, "").trim());
     return true;
   }
   if (trimmed === "closeout" || trimmed.startsWith("closeout ")) {
@@ -238,7 +242,10 @@ Examples:
   if (trimmed === "dispatch" || trimmed.startsWith("dispatch ")) {
     const phase = trimmed.replace(/^dispatch\s*/, "").trim();
     if (!phase) {
-      ctx.ui.notify("Usage: /gsd dispatch <phase>  (research|plan|execute|complete|validate|reassess|uat|replan)", "warning");
+      ctx.ui.notify(
+        "Usage: /gsd dispatch <phase>  (research|plan|execute|complete|complete-milestone|validate|reassess|uat|replan)",
+        "warning",
+      );
       return true;
     }
     const basePath = projectRoot();
@@ -342,6 +349,226 @@ Examples:
   ) {
     const { handleWorktree } = await import("../../commands-worktree.js");
     await handleWorktree(trimmed.replace(/^(worktree|wt)\s*/, "").trim(), ctx);
+    return true;
+  }
+  // Additional commands — ideation/exploration workflows (implemented, not aliased).
+  if (trimmed === "explore" || trimmed.startsWith("explore ")) {
+    const { handleExplore } = await import("../../commands-gsd-core.js");
+    await handleExplore(trimmed.replace(/^explore\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "spike" || trimmed.startsWith("spike ")) {
+    const { handleSpike } = await import("../../commands-gsd-core.js");
+    await handleSpike(trimmed.replace(/^spike\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "sketch" || trimmed.startsWith("sketch ")) {
+    const { handleSketch } = await import("../../commands-gsd-core.js");
+    await handleSketch(trimmed.replace(/^sketch\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  // Additional commands — codebase intelligence workflows (implemented, not aliased).
+  if (trimmed === "map-codebase" || trimmed.startsWith("map-codebase ")) {
+    const { handleMapCodebase } = await import("../../commands-gsd-core.js");
+    await handleMapCodebase(trimmed.replace(/^map-codebase\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "docs-update" || trimmed.startsWith("docs-update ")) {
+    const { handleDocsUpdate } = await import("../../commands-gsd-core.js");
+    await handleDocsUpdate(trimmed.replace(/^docs-update\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "graphify" || trimmed.startsWith("graphify ")) {
+    const { handleGraphify } = await import("../../commands-gsd-core.js");
+    await handleGraphify(trimmed.replace(/^graphify\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "stats") {
+    const { handleStats } = await import("../../commands-gsd-core.js");
+    await handleStats("", ctx, pi);
+    return true;
+  }
+  if (trimmed === "progress" || trimmed.startsWith("progress ")) {
+    const { handleProgress } = await import("../../commands-gsd-core.js");
+    await handleProgress(trimmed.replace(/^progress\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "health" || trimmed.startsWith("health ")) {
+    const { handleHealth } = await import("../../commands-gsd-core.js");
+    await handleHealth(trimmed.replace(/^health\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "surface" || trimmed.startsWith("surface ")) {
+    const { handleSurface } = await import("../../commands-gsd-core.js");
+    await handleSurface(trimmed.replace(/^surface\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  // Additional commands — review / audit workflows (implemented, not aliased).
+  if (trimmed === "code-review" || trimmed.startsWith("code-review ")) {
+    const { handleCodeReview } = await import("../../commands-gsd-core.js");
+    await handleCodeReview(trimmed.replace(/^code-review\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "review" || trimmed.startsWith("review ")) {
+    const { handleReview } = await import("../../commands-gsd-core.js");
+    await handleReview(trimmed.replace(/^review\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "audit-milestone" || trimmed.startsWith("audit-milestone ")) {
+    const { handleAuditMilestone } = await import("../../commands-gsd-core.js");
+    await handleAuditMilestone(trimmed.replace(/^audit-milestone\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "audit-uat" || trimmed.startsWith("audit-uat ")) {
+    const { handleAuditUat } = await import("../../commands-gsd-core.js");
+    await handleAuditUat(trimmed.replace(/^audit-uat\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "audit-fix" || trimmed.startsWith("audit-fix ")) {
+    const { handleAuditFix } = await import("../../commands-gsd-core.js");
+    await handleAuditFix(trimmed.replace(/^audit-fix\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "ui-review" || trimmed.startsWith("ui-review ")) {
+    const { handleUiReview } = await import("../../commands-gsd-core.js");
+    await handleUiReview(trimmed.replace(/^ui-review\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "secure-phase" || trimmed.startsWith("secure-phase ")) {
+    const { handleSecurePhase } = await import("../../commands-gsd-core.js");
+    await handleSecurePhase(trimmed.replace(/^secure-phase\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "validate-phase" || trimmed.startsWith("validate-phase ")) {
+    const { handleValidatePhase } = await import("../../commands-gsd-core.js");
+    await handleValidatePhase(trimmed.replace(/^validate-phase\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "verify-work" || trimmed.startsWith("verify-work ")) {
+    const { handleVerifyWork } = await import("../../commands-gsd-core.js");
+    await handleVerifyWork(trimmed.replace(/^verify-work\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "plan-review-convergence" || trimmed.startsWith("plan-review-convergence ")) {
+    const { handlePlanReviewConvergence } = await import("../../commands-gsd-core.js");
+    await handlePlanReviewConvergence(trimmed.replace(/^plan-review-convergence\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  // Additional commands — workflow phase commands (implemented, not aliased).
+  if (trimmed === "discuss-phase" || trimmed.startsWith("discuss-phase ")) {
+    const { handleDiscussPhase } = await import("../../commands-gsd-core.js");
+    await handleDiscussPhase(trimmed.replace(/^discuss-phase\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "plan-phase" || trimmed.startsWith("plan-phase ")) {
+    const { handlePlanPhase } = await import("../../commands-gsd-core.js");
+    await handlePlanPhase(trimmed.replace(/^plan-phase\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "execute-phase" || trimmed.startsWith("execute-phase ")) {
+    const { handleExecutePhase } = await import("../../commands-gsd-core.js");
+    await handleExecutePhase(trimmed.replace(/^execute-phase\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "spec-phase" || trimmed.startsWith("spec-phase ")) {
+    const { handleSpecPhase } = await import("../../commands-gsd-core.js");
+    await handleSpecPhase(trimmed.replace(/^spec-phase\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "mvp-phase" || trimmed.startsWith("mvp-phase ")) {
+    const { handleMvpPhase } = await import("../../commands-gsd-core.js");
+    await handleMvpPhase(trimmed.replace(/^mvp-phase\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "ui-phase" || trimmed.startsWith("ui-phase ")) {
+    const { handleUiPhase } = await import("../../commands-gsd-core.js");
+    await handleUiPhase(trimmed.replace(/^ui-phase\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "ai-integration-phase" || trimmed.startsWith("ai-integration-phase ")) {
+    const { handleAiIntegrationPhase } = await import("../../commands-gsd-core.js");
+    await handleAiIntegrationPhase(trimmed.replace(/^ai-integration-phase\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "ultraplan-phase" || trimmed.startsWith("ultraplan-phase ")) {
+    const { handleUltraplanPhase } = await import("../../commands-gsd-core.js");
+    await handleUltraplanPhase(trimmed.replace(/^ultraplan-phase\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "autonomous" || trimmed.startsWith("autonomous ")) {
+    const { handleAutonomous } = await import("../../commands-gsd-core.js");
+    await handleAutonomous(trimmed.replace(/^autonomous\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "pause-work" || trimmed.startsWith("pause-work ")) {
+    const { handlePauseWork } = await import("../../commands-gsd-core.js");
+    await handlePauseWork(trimmed.replace(/^pause-work\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "resume-work" || trimmed.startsWith("resume-work ")) {
+    const { handleResumeWork } = await import("../../commands-gsd-core.js");
+    await handleResumeWork(trimmed.replace(/^resume-work\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  // Additional commands — project management commands (implemented, not aliased).
+  if (trimmed === "manager" || trimmed.startsWith("manager ")) {
+    const { handleManager } = await import("../../commands-gsd-core.js");
+    await handleManager(trimmed.replace(/^manager\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "phase" || trimmed.startsWith("phase ")) {
+    const { handlePhase } = await import("../../commands-gsd-core.js");
+    await handlePhase(trimmed.replace(/^phase\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "thread" || trimmed.startsWith("thread ")) {
+    const { handleThread } = await import("../../commands-gsd-core.js");
+    await handleThread(trimmed.replace(/^thread\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "workstreams" || trimmed.startsWith("workstreams ")) {
+    const { handleWorkstreams } = await import("../../commands-gsd-core.js");
+    await handleWorkstreams(trimmed.replace(/^workstreams\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "workspace" || trimmed.startsWith("workspace ")) {
+    const { handleWorkspace } = await import("../../commands-gsd-core.js");
+    await handleWorkspace(trimmed.replace(/^workspace\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "milestone-summary" || trimmed.startsWith("milestone-summary ")) {
+    const { handleMilestoneSummary } = await import("../../commands-gsd-core.js");
+    await handleMilestoneSummary(trimmed.replace(/^milestone-summary\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "review-backlog" || trimmed.startsWith("review-backlog ")) {
+    const { handleReviewBacklog } = await import("../../commands-gsd-core.js");
+    await handleReviewBacklog(trimmed.replace(/^review-backlog\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "inbox" || trimmed.startsWith("inbox ")) {
+    const { handleInbox } = await import("../../commands-gsd-core.js");
+    await handleInbox(trimmed.replace(/^inbox\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "import" || trimmed.startsWith("import ")) {
+    const { handleImport } = await import("../../commands-gsd-core.js");
+    await handleImport(trimmed.replace(/^import\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "ingest-docs" || trimmed.startsWith("ingest-docs ")) {
+    const { handleIngestDocs } = await import("../../commands-gsd-core.js");
+    await handleIngestDocs(trimmed.replace(/^ingest-docs\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "profile-user" || trimmed.startsWith("profile-user ")) {
+    const { handleProfileUser } = await import("../../commands-gsd-core.js");
+    await handleProfileUser(trimmed.replace(/^profile-user\s*/, "").trim(), ctx, pi);
+    return true;
+  }
+  if (trimmed === "settings" || trimmed.startsWith("settings ")) {
+    const { handleSettings } = await import("../../commands-gsd-core.js");
+    await handleSettings(trimmed.replace(/^settings\s*/, "").trim(), ctx, pi);
     return true;
   }
   return false;

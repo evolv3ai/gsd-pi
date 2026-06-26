@@ -57,6 +57,7 @@ import {
 } from "node:fs";
 import { execFileSync } from "node:child_process";
 
+import { LAYOUT_SEGMENTS } from "./layout-policy.js";
 import { dirname, join } from "node:path";
 import {
   resolveExpectedArtifactPath,
@@ -82,6 +83,53 @@ export {
   type MilestoneSummaryOutcome,
 } from "./milestone-summary-classifier.js";
 export { hasImplementationArtifacts } from "./milestone-implementation-evidence.js";
+
+/**
+ * Optional override for the legacy roadmap parser used by verifyExpectedArtifact.
+ * Production leaves this null so the real parseLegacyRoadmap runs; tests inject
+ * a throwing function to deterministically exercise the parse-failure catches
+ * (auto-recovery.ts:515 plan-milestone and :622 complete-slice). Those catches
+ * are otherwise unreachable because parseLegacyRoadmap is internally defensive
+ * against every malformed input.
+ * @internal
+ */
+let _roadmapParserFn: ((content: string) => { slices: Array<{ id: string; done: boolean; depends?: string[] }> }) | null = null;
+
+/**
+ * Inject an override for the legacy roadmap parser, returning a function that
+ * restores the default (real parser) behavior. No production caller.
+ * @internal
+ */
+export function _setRoadmapParserFnForTests(
+  fn: ((content: string) => { slices: Array<{ id: string; done: boolean; depends?: string[] }> }) | null,
+): () => void {
+  const previous = _roadmapParserFn;
+  _roadmapParserFn = fn;
+  return () => { _roadmapParserFn = previous; };
+}
+
+function parseRoadmapForRecovery(content: string): ReturnType<NonNullable<typeof _roadmapParserFn>> {
+  if (_roadmapParserFn) return _roadmapParserFn(content);
+  return parseLegacyRoadmap(content) as unknown as ReturnType<NonNullable<typeof _roadmapParserFn>>;
+}
+
+/**
+ * Optional override for the detached GitHub milestone finalize invoked after DB
+ * closeout in refreshRecoveryDbForArtifact. Production leaves this null so the
+ * real finalizeMilestoneGitHubSync runs; tests inject a throwing function to
+ * deterministically exercise the best-effort catch (auto-recovery.ts:232),
+ * which otherwise needs a real GitHub remote + network failure.
+ * @internal
+ */
+let _githubFinalizeFn: ((basePath: string, mid: string) => void | Promise<void>) | null = null;
+
+export function _setGithubFinalizeFnForTests(
+  fn: ((basePath: string, mid: string) => void | Promise<void>) | null,
+): () => void {
+  const previous = _githubFinalizeFn;
+  _githubFinalizeFn = fn;
+  return () => { _githubFinalizeFn = previous; };
+}
 
 // ─── Artifact Resolution & Verification ───────────────────────────────────────
 
@@ -197,11 +245,18 @@ export function refreshRecoveryDbForArtifact(
     }
 
     updateMilestoneStatus(mid, "complete", new Date().toISOString());
-    void import("../github-sync/sync.js")
-      .then(({ finalizeMilestoneGitHubSync }) => finalizeMilestoneGitHubSync(basePath, mid))
-      .catch((err) => {
-        logWarning("recovery", `GitHub milestone finalize failed after DB closeout: ${getErrorMessage(err)}`);
-      });
+    // Detached GitHub sync — best-effort. Test seam: when
+    // _githubFinalizeFn is injected, route through it so the catch
+    // (:232) is deterministically reachable (otherwise it needs a real
+    // GitHub remote + network failure). Production leaves it null. The
+    // seam is wrapped so a synchronous throw becomes a rejected promise,
+    // matching the real import-then-call deferred semantics.
+    const finalizePromise = _githubFinalizeFn
+      ? new Promise<void>((resolve) => { resolve(_githubFinalizeFn!(basePath, mid)); })
+      : import("../github-sync/sync.js").then(({ finalizeMilestoneGitHubSync }) => finalizeMilestoneGitHubSync(basePath, mid));
+    void finalizePromise.catch((err) => {
+      logWarning("recovery", `GitHub milestone finalize failed after DB closeout: ${getErrorMessage(err)}`);
+    });
     return { ok: true };
   }
 
@@ -267,15 +322,15 @@ function escapeRegExp(value: string): string {
 }
 
 function hasCheckedTaskCompletionOnDisk(base: string, mid: string, sid: string, tid: string): boolean {
-  const tasksDir = resolveTasksDir(base, mid, sid);
-  if (!tasksDir) return false;
-  if (!existsSync(join(tasksDir, `${tid}-SUMMARY.md`))) return false;
+  const slicePath = resolveSlicePath(base, mid, sid);
+  if (!slicePath) return false;
 
   const planAbs = resolveSliceFile(base, mid, sid, "PLAN");
   if (!planAbs || !existsSync(planAbs)) return false;
 
   const planContent = readFileSync(planAbs, "utf-8");
-  const cbRe = new RegExp(`^\\s*-\\s+\\[[xX]\\]\\s+\\*\\*${escapeRegExp(tid)}:`, "m");
+  // Match legacy (`**T01: Title**`) and flat-phase (`**T01**: Title`) checkbox lines.
+  const cbRe = new RegExp(`^\\s*-\\s+\\[[xX]\\]\\s+\\*\\*${escapeRegExp(tid)}(?:\\*\\*)?:`, "m");
   return cbRe.test(planContent);
 }
 
@@ -358,11 +413,13 @@ export function verifyExpectedArtifact(
     if (blockerPath && existsSync(blockerPath)) {
       return true;
     }
+    const slicePath = resolveSlicePath(base, mid, sid);
+    if (!slicePath) return false;
+
     const plusIdx = batchPart.indexOf("+");
     if (plusIdx === -1) {
       // Legacy format "reactive" without batch IDs — fall back to "any summary"
-      const tDir = resolveTasksDir(base, mid, sid);
-      if (!tDir) return false;
+      const tDir = resolveTasksDir(base, mid, sid) ?? slicePath;
       const summaryFiles = resolveTaskFiles(tDir, "SUMMARY");
       return summaryFiles.length > 0;
     }
@@ -370,8 +427,7 @@ export function verifyExpectedArtifact(
     const batchIds = batchPart.slice(plusIdx + 1).split(",").filter(Boolean);
     if (batchIds.length === 0) return false;
 
-    const tDir = resolveTasksDir(base, mid, sid);
-    if (!tDir) return false;
+    const tDir = resolveTasksDir(base, mid, sid) ?? slicePath;
 
     const existingSummaries = new Set(
       resolveTaskFiles(tDir, "SUMMARY").map((f) =>
@@ -446,7 +502,7 @@ export function verifyExpectedArtifact(
       return false;
     }
     try {
-      const roadmap = parseLegacyRoadmap(readFileSync(roadmapFile, "utf-8"));
+      const roadmap = parseRoadmapForRecovery(readFileSync(roadmapFile, "utf-8"));
       const milestoneResearchFile = resolveExpectedArtifactPath("research-milestone", mid, base);
       const hasMilestoneResearch = !!milestoneResearchFile && existsSync(milestoneResearchFile);
       for (const slice of roadmap.slices) {
@@ -506,7 +562,7 @@ export function verifyExpectedArtifact(
 
   if (unitType === "plan-milestone") {
     try {
-      const roadmap = parseLegacyRoadmap(readFileSync(absPath, "utf-8"));
+      const roadmap = parseRoadmapForRecovery(readFileSync(absPath, "utf-8"));
       if (roadmap.slices.length === 0) {
         logWarning("recovery", `verify-fail ${unitType} ${unitId}: roadmap has zero slices at ${absPath}`);
         return false;
@@ -525,11 +581,15 @@ export function verifyExpectedArtifact(
     if (mid && sid) {
       try {
         let taskIds: string[] | null = null;
+        let dbPrimary = false;
         if (isDbAvailable()) {
           const refreshed = refreshWorkflowDatabaseFromDisk();
           if (refreshed) {
             const tasks = getSliceTasks(mid, sid);
-            if (tasks.length > 0) taskIds = tasks.map(t => t.id);
+            if (tasks.length > 0) {
+              taskIds = tasks.map(t => t.id);
+              dbPrimary = true;
+            }
           }
         }
 
@@ -537,7 +597,7 @@ export function verifyExpectedArtifact(
           // LEGACY: DB unavailable or no tasks in DB. Require actual task
           // entries so an empty scaffold cannot advance the pipeline (#699).
           const planContent = readFileSync(absPath, "utf-8");
-          const hasCheckboxTask = /^\s*- \[[xX ]\] \*\*T\d+:/m.test(planContent);
+          const hasCheckboxTask = /^\s*- \[[xX ]\] \*\*T\d+/m.test(planContent);
           const hasHeadingTask = /^\s*#{2,4}\s+T\d+\s*(?:--|—|:)/m.test(planContent);
           if (!hasCheckboxTask && !hasHeadingTask) {
             logWarning("recovery", `verify-fail ${unitType} ${unitId}: plan has no task checkbox/heading (len=${planContent.length}) at ${absPath}`);
@@ -547,18 +607,25 @@ export function verifyExpectedArtifact(
           if (plan.tasks.length > 0) taskIds = plan.tasks.map((t: { id: string }) => t.id);
         }
 
+        // Per-task plan file check: applies when a tasks/ directory is present on
+        // disk (legacy layout), regardless of whether DB is primary. Flat-phase
+        // projects have no tasks/ dir, so the check is naturally skipped there.
+        // When DB is NOT primary and there is no tasks/ dir either, the missing
+        // dir itself is evidence of an incomplete plan (non-flat-phase projects must
+        // have a tasks/ dir).
         if (taskIds && taskIds.length > 0) {
           const tasksDir = join(dirname(absPath), "tasks");
-          if (!existsSync(tasksDir)) {
+          if (existsSync(tasksDir)) {
+            for (const tid of taskIds) {
+              const taskPlanFile = join(tasksDir, `${tid}-PLAN.md`);
+              if (!existsSync(taskPlanFile)) {
+                logWarning("recovery", `verify-fail ${unitType} ${unitId}: task plan missing ${taskPlanFile}`);
+                return false;
+              }
+            }
+          } else if (!dbPrimary && !absPath.replace(/\\/g, "/").includes(`.gsd/${LAYOUT_SEGMENTS.level1}`)) {
             logWarning("recovery", `verify-fail ${unitType} ${unitId}: tasks dir missing at ${tasksDir}`);
             return false;
-          }
-          for (const tid of taskIds) {
-            const taskPlanFile = join(tasksDir, `${tid}-PLAN.md`);
-            if (!existsSync(taskPlanFile)) {
-              logWarning("recovery", `verify-fail ${unitType} ${unitId}: task plan missing ${taskPlanFile}`);
-              return false;
-            }
           }
         }
       } catch (err) {
@@ -598,11 +665,12 @@ export function verifyExpectedArtifact(
   if (unitType === "complete-slice") {
     const { milestone: mid, slice: sid } = parseUnitId(unitId);
     if (mid && sid) {
-      const dir = resolveSlicePath(base, mid, sid);
-      if (dir) {
-        const uatPath = join(dir, buildSliceFileName(sid, "UAT"));
-        if (!existsSync(uatPath)) return false;
-      }
+      // resolveSliceFile only finds existing files; UAT may not exist yet.
+      // Fall back to the canonical expected location so a missing UAT always
+      // returns false (not a silent pass when resolveSliceFile returns null).
+      const uatPath = resolveSliceFile(base, mid, sid, "UAT")
+        ?? join(base, relSliceFile(base, mid, sid, "UAT"));
+      if (!existsSync(uatPath)) return false;
 
       const dbSlice = getSlice(mid, sid);
       if (dbSlice) {
@@ -615,7 +683,7 @@ export function verifyExpectedArtifact(
         if (roadmapFile && existsSync(roadmapFile)) {
           try {
             const roadmapContent = readFileSync(roadmapFile, "utf-8");
-            const roadmap = parseLegacyRoadmap(roadmapContent);
+            const roadmap = parseRoadmapForRecovery(roadmapContent);
             const slice = roadmap.slices.find((s) => s.id === sid);
             if (slice && !slice.done) return false;
           } catch (e) {
@@ -687,11 +755,12 @@ export function writeReactiveExecuteBlocker(
   const blockerPath = resolveExpectedArtifactPath("reactive-execute", unitId, base);
   if (!blockerPath) return null;
 
-  const tasksDir = resolveTasksDir(base, mid, sid);
+  const slicePath = resolveSlicePath(base, mid, sid);
+  if (!slicePath) return null;
+
+  const tasksDir = resolveTasksDir(base, mid, sid) ?? slicePath;
   const existingSummaries = new Set(
-    tasksDir
-      ? resolveTaskFiles(tasksDir, "SUMMARY").map((f) => f.replace(/-SUMMARY\.md$/i, "").toUpperCase())
-      : [],
+    resolveTaskFiles(tasksDir, "SUMMARY").map((f) => f.replace(/-SUMMARY\.md$/i, "").toUpperCase()),
   );
 
   const summaryPresent = batchIds.filter((tid) => existingSummaries.has(tid.toUpperCase()));

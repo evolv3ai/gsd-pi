@@ -7,7 +7,7 @@ Tools can provide `renderCall` (how the tool call looks) and `renderResult` (how
 
 ```typescript
 import { Text } from "@gsd/pi-tui";
-import { keyHint } from "@gsd/pi-coding-agent";
+import { keyHint } from "@gsd/agent-modes";
 
 pi.registerTool({
   name: "my_tool",

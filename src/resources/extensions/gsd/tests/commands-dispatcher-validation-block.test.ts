@@ -140,6 +140,11 @@ test("dispatcher blocks workflow-advancing aliases while validation is blocked",
     "auto",
     "do mark all complete",
     "dispatch complete",
+    "plan-phase",
+    "execute-phase --milestone M009",
+    "autonomous --from 1",
+    "workstreams resume",
+    "workstreams complete",
     "workflow resume",
     "workflow release-checklist",
   ];
@@ -156,12 +161,43 @@ test("dispatcher blocks workflow-advancing aliases while validation is blocked",
       assert.equal(calls.length, 0, command);
       assert.equal(messages.length, 1, command);
       assert.equal(messages[0].display, true, command);
-      assert.match(messages[0].content, new RegExp(`/gsd ${command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} cannot run`), command);
+      let blockedLabel = command;
+      if (command === "workstreams resume") {
+        blockedLabel = "parallel resume";
+      } else if (command === "workstreams complete") {
+        blockedLabel = "parallel merge";
+      }
+      assert.match(messages[0].content, new RegExp(`/gsd ${blockedLabel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} cannot run`), command);
     } finally {
       closeDatabase();
       invalidateStateCache();
       cleanup(base);
     }
+  }
+});
+
+test("dispatcher keeps manager read-only while validation is blocked", async () => {
+  const base = makeBase();
+  try {
+    seedValidationBlockedMilestone(base);
+    const { ctx, calls } = makeMockCtx(base);
+    const { pi, messages } = makeMockPi();
+
+    await handleGSDCommand("manager", ctx, pi);
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].kind, "info");
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].customType, "gsd-manager");
+    assert.match(messages[0].content, /read-only/i);
+    assert.match(messages[0].content, /active milestone is blocked by validation/);
+    assert.doesNotMatch(messages[0].content, /Start\/stop auto-mode/);
+    assert.doesNotMatch(messages[0].content, /Run parallel milestones/);
+    assert.doesNotMatch(messages[0].content, /Act on the selection/);
+  } finally {
+    closeDatabase();
+    invalidateStateCache();
+    cleanup(base);
   }
 });
 

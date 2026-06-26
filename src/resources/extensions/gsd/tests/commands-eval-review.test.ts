@@ -140,7 +140,7 @@ describe("detectEvalReviewState", () => {
   });
 
   function setupSliceLayout(sliceFiles: Record<string, string>): void {
-    const sliceDir = join(basePath, ".gsd", "milestones", "M001", "slices", "S07");
+    const sliceDir = join(basePath, ".gsd", "phases", "01-test");
     mkdirSync(sliceDir, { recursive: true });
     for (const [filename, content] of Object.entries(sliceFiles)) {
       writeFileSync(join(sliceDir, filename), content, "utf-8");
@@ -148,7 +148,9 @@ describe("detectEvalReviewState", () => {
   }
 
   it("returns no-slice-dir when the slice directory is missing (regression: no-slice-dir vs no-summary must be distinct states)", () => {
-    mkdirSync(join(basePath, ".gsd", "milestones", "M001", "slices"), { recursive: true });
+    // In flat-phase, the "slice dir" is the phase dir. Create a different phase dir
+    // so the target phase doesn't exist.
+    mkdirSync(join(basePath, ".gsd", "phases", "02-other"), { recursive: true });
     const result = detectEvalReviewState(
       { sliceId: "S07", force: false, show: false },
       basePath,
@@ -157,7 +159,6 @@ describe("detectEvalReviewState", () => {
     assert.equal(result.kind, "no-slice-dir");
     if (result.kind === "no-slice-dir") {
       assert.equal(result.sliceId, "S07");
-      assert.ok(result.expectedDir.includes("S07"));
     }
   });
 
@@ -172,7 +173,7 @@ describe("detectEvalReviewState", () => {
   });
 
   it("returns no-summary with specPath populated when only AI-SPEC.md is present", () => {
-    setupSliceLayout({ "S07-AI-SPEC.md": "# spec" });
+    setupSliceLayout({ "07-AI-SPEC.md": "# spec" });
     const result = detectEvalReviewState(
       { sliceId: "S07", force: false, show: false },
       basePath,
@@ -180,12 +181,12 @@ describe("detectEvalReviewState", () => {
     );
     assert.equal(result.kind, "no-summary");
     if (result.kind === "no-summary") {
-      assert.ok(result.specPath?.endsWith("S07-AI-SPEC.md"));
+      assert.ok(result.specPath?.endsWith("07-AI-SPEC.md"));
     }
   });
 
   it("returns ready when SUMMARY.md is present, with specPath null when AI-SPEC.md is absent", () => {
-    setupSliceLayout({ "S07-SUMMARY.md": "# summary" });
+    setupSliceLayout({ "07-SUMMARY.md": "# summary" });
     const result = detectEvalReviewState(
       { sliceId: "S07", force: false, show: false },
       basePath,
@@ -193,15 +194,15 @@ describe("detectEvalReviewState", () => {
     );
     assert.equal(result.kind, "ready");
     if (result.kind === "ready") {
-      assert.ok(result.summaryPath.endsWith("S07-SUMMARY.md"));
+      assert.ok(result.summaryPath.endsWith("07-SUMMARY.md"));
       assert.equal(result.specPath, null);
     }
   });
 
   it("returns ready with both paths populated when both files exist", () => {
     setupSliceLayout({
-      "S07-SUMMARY.md": "# summary",
-      "S07-AI-SPEC.md": "# spec",
+      "07-SUMMARY.md": "# summary",
+      "07-AI-SPEC.md": "# spec",
     });
     const result = detectEvalReviewState(
       { sliceId: "S07", force: false, show: false },
@@ -210,8 +211,8 @@ describe("detectEvalReviewState", () => {
     );
     assert.equal(result.kind, "ready");
     if (result.kind === "ready") {
-      assert.ok(result.summaryPath.endsWith("S07-SUMMARY.md"));
-      assert.ok(result.specPath?.endsWith("S07-AI-SPEC.md"));
+      assert.ok(result.summaryPath.endsWith("07-SUMMARY.md"));
+      assert.ok(result.specPath?.endsWith("07-AI-SPEC.md"));
     }
   });
 });
@@ -224,7 +225,7 @@ describe("buildEvalReviewContext", () => {
 
   beforeEach(() => {
     basePath = join(tmpdir(), `gsd-eval-ctx-test-${randomUUID()}`);
-    sliceDir = join(basePath, ".gsd", "milestones", "M001", "slices", "S07");
+    sliceDir = join(basePath, ".gsd", "phases", "01-test");
     mkdirSync(sliceDir, { recursive: true });
     process.chdir(basePath);
   });
@@ -239,12 +240,12 @@ describe("buildEvalReviewContext", () => {
     summaryBytes?: number;
     specBytes?: number | null;
   } = {}): Extract<EvalReviewState, { kind: "ready" }> {
-    const summaryPath = join(sliceDir, "S07-SUMMARY.md");
+    const summaryPath = join(sliceDir, "07-SUMMARY.md");
     writeFileSync(summaryPath, "S".repeat(opts.summaryBytes ?? 512), "utf-8");
 
     let specPath: string | null = null;
     if (opts.specBytes != null) {
-      specPath = join(sliceDir, "S07-AI-SPEC.md");
+      specPath = join(sliceDir, "07-AI-SPEC.md");
       writeFileSync(specPath, "P".repeat(opts.specBytes), "utf-8");
     }
 
@@ -315,7 +316,7 @@ describe("buildEvalReviewContext", () => {
   });
 
   it("does not emit a U+FFFD replacement character when the cap falls mid multi-byte UTF-8 sequence", async () => {
-    const path = join(sliceDir, "S07-SUMMARY.md");
+    const path = join(sliceDir, "07-SUMMARY.md");
     const filler = "x".repeat(MAX_CONTEXT_BYTES - 1);
     const fourByteCodepoint = "\u{1F600}";
     writeFileSync(path, filler + fourByteCodepoint, "utf-8");
@@ -332,8 +333,8 @@ describe("buildEvalReviewContext", () => {
   });
 
   it("keeps total summary+spec byte length within MAX_CONTEXT_BYTES under truncation", async () => {
-    const summaryPath = join(sliceDir, "S07-SUMMARY.md");
-    const specPath = join(sliceDir, "S07-AI-SPEC.md");
+    const summaryPath = join(sliceDir, "07-SUMMARY.md");
+    const specPath = join(sliceDir, "07-AI-SPEC.md");
     writeFileSync(summaryPath, "S".repeat(MAX_CONTEXT_BYTES * 2), "utf-8");
     writeFileSync(specPath, "P".repeat(MAX_CONTEXT_BYTES * 2), "utf-8");
     const state: Extract<EvalReviewState, { kind: "ready" }> = {
@@ -354,7 +355,7 @@ describe("buildEvalReviewContext", () => {
   });
 
   it("keeps single-file truncation within maxBytes (regression: marker bytes count toward cap)", async () => {
-    const summaryPath = join(sliceDir, "S07-SUMMARY.md");
+    const summaryPath = join(sliceDir, "07-SUMMARY.md");
     writeFileSync(summaryPath, "S".repeat(MAX_CONTEXT_BYTES * 2), "utf-8");
     const state: Extract<EvalReviewState, { kind: "ready" }> = {
       kind: "ready",
@@ -373,7 +374,7 @@ describe("buildEvalReviewContext", () => {
   it("populates outputPath using the canonical slice file naming", async () => {
     const state = fakeReady({ summaryBytes: 64 });
     const ctx = await buildEvalReviewContext(state, "M001");
-    assert.ok(ctx.outputPath.endsWith("S07-EVAL-REVIEW.md"));
+    assert.ok(ctx.outputPath.endsWith("07-EVAL-REVIEW.md"));
   });
 
   it("emits the short fallback marker when AI-SPEC read fails with a verbose error", async () => {
@@ -387,7 +388,7 @@ describe("buildEvalReviewContext", () => {
   });
 
   it("does not load the full file into memory beyond the cap (regression: streaming readCapped)", async () => {
-    const summaryPath = join(sliceDir, "S07-SUMMARY.md");
+    const summaryPath = join(sliceDir, "07-SUMMARY.md");
     const giant = MAX_CONTEXT_BYTES * 8;
     writeFileSync(summaryPath, "S".repeat(giant), "utf-8");
     const state: Extract<EvalReviewState, { kind: "ready" }> = {
@@ -427,15 +428,15 @@ describe("buildEvalReviewContext", () => {
 
 describe("evalReviewWritePath", () => {
   it("computes the canonical write path purely from inputs", () => {
-    const sliceDir = join("/repo", ".gsd", "milestones", "M001", "slices", "S07");
-    const expected = join(sliceDir, "S07-EVAL-REVIEW.md");
+    const sliceDir = join("/repo", ".gsd", "phases", "01-test");
+    const expected = join(sliceDir, "07-EVAL-REVIEW.md");
     assert.equal(evalReviewWritePath(sliceDir, "S07"), expected);
   });
 
   it("does not touch the filesystem", () => {
     const sliceDir = join("/nonexistent", "path", "abc");
     const result = evalReviewWritePath(sliceDir, "S99");
-    assert.ok(result.endsWith("S99-EVAL-REVIEW.md"));
+    assert.ok(result.endsWith("99-EVAL-REVIEW.md"));
   });
 });
 
@@ -446,7 +447,7 @@ describe("findEvalReviewFile", () => {
 
   beforeEach(() => {
     basePath = join(tmpdir(), `gsd-find-eval-${randomUUID()}`);
-    mkdirSync(join(basePath, ".gsd", "milestones", "M001", "slices", "S07"), { recursive: true });
+    mkdirSync(join(basePath, ".gsd", "phases", "01-test"), { recursive: true });
   });
 
   afterEach(() => {
@@ -459,7 +460,7 @@ describe("findEvalReviewFile", () => {
   });
 
   it("returns the absolute path when EVAL-REVIEW.md is present", () => {
-    const target = join(basePath, ".gsd", "milestones", "M001", "slices", "S07", "S07-EVAL-REVIEW.md");
+    const target = join(basePath, ".gsd", "phases", "01-test", "07-EVAL-REVIEW.md");
     writeFileSync(target, "---\nschema: eval-review/v1\n---\n", "utf-8");
     const found = findEvalReviewFile(basePath, "M001", "S07");
     assert.equal(found, realpathSync(target));
@@ -538,11 +539,11 @@ describe("buildEvalReviewPrompt", () => {
       milestoneId: "M001",
       sliceId: "S07",
       summary: "The slice did stuff.",
-      summaryPath: "/abs/.gsd/milestones/M001/slices/S07/S07-SUMMARY.md",
+      summaryPath: "/abs/.gsd/phases/01-test/S07-SUMMARY.md",
       spec: "Required: log every LLM call.",
-      specPath: "/abs/.gsd/milestones/M001/slices/S07/S07-AI-SPEC.md",
-      outputPath: "/abs/.gsd/milestones/M001/slices/S07/S07-EVAL-REVIEW.md",
-      relativeOutputPath: ".gsd/milestones/M001/slices/S07/S07-EVAL-REVIEW.md",
+      specPath: "/abs/.gsd/phases/01-test/S07-AI-SPEC.md",
+      outputPath: "/abs/.gsd/phases/01-test/07-EVAL-REVIEW.md",
+      relativeOutputPath: ".gsd/phases/01-test/07-EVAL-REVIEW.md",
       truncated: false,
       generatedAt: "2026-04-28T14:00:00Z",
       ...overrides,
@@ -574,7 +575,7 @@ describe("buildEvalReviewPrompt", () => {
 
   it("instructs the agent to write to the canonical output path", () => {
     const prompt = buildEvalReviewPrompt(ctxFixture());
-    assert.ok(prompt.includes("/abs/.gsd/milestones/M001/slices/S07/S07-EVAL-REVIEW.md"));
+    assert.ok(prompt.includes("/abs/.gsd/phases/01-test/07-EVAL-REVIEW.md"));
   });
 
   it("surfaces the truncation marker into the prompt body when inputs were truncated", () => {

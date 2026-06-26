@@ -69,9 +69,12 @@ function makeContextFor(
 // ─── Scaffold helpers ──────────────────────────────────────────────────────
 
 function scaffoldSlicePlan(basePath: string, mid: string, sid: string): void {
-  const dir = join(basePath, ".gsd", "milestones", mid, "slices", sid);
+  // Flat-phase: phases/NN-slug/NN-MM-PLAN.md
+  const phaseNum = parseInt(mid.match(/^M0*(\d+)/i)?.[1] || '1', 10);
+  const planNum = parseInt(sid.match(/^S0*(\d+)/i)?.[1] || '1', 10);
+  const dir = join(basePath, ".gsd", "phases", `${String(phaseNum).padStart(2, '0')}-test`);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `${sid}-PLAN.md`), [
+  writeFileSync(join(dir, `${String(phaseNum).padStart(2, '0')}-${String(planNum).padStart(2, '0')}-PLAN.md`), [
     `# ${sid}: Third Slice`,
     "",
     "## Tasks",
@@ -82,9 +85,10 @@ function scaffoldSlicePlan(basePath: string, mid: string, sid: string): void {
 }
 
 function scaffoldMilestoneContext(basePath: string, mid: string): void {
-  const dir = join(basePath, ".gsd", "milestones", mid);
+  const phaseNum = parseInt(mid.match(/^M0*(\d+)/i)?.[1] || '1', 10);
+  const dir = join(basePath, ".gsd", "phases", `${String(phaseNum).padStart(2, '0')}-test`);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `${mid}-CONTEXT.md`), [
+  writeFileSync(join(dir, `${String(phaseNum).padStart(2, '0')}-CONTEXT.md`), [
     `# ${mid}: Test Milestone`,
     "",
     "Context for dispatch recovery tests.",
@@ -93,15 +97,9 @@ function scaffoldMilestoneContext(basePath: string, mid: string): void {
 }
 
 function scaffoldTaskPlan(basePath: string, mid: string, sid: string, tid: string): void {
-  const dir = join(basePath, ".gsd", "milestones", mid, "slices", sid, "tasks");
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `${tid}-PLAN.md`), [
-    `# ${tid}: Do something`,
-    "",
-    "## Steps",
-    "- [ ] Step 1",
-    "",
-  ].join("\n"));
+  // Flat-phase: no per-task plan files. This is a no-op — tasks live as
+  // checkboxes inside the slice plan. Kept for backward-compat with tests
+  // that call it; does nothing in flat-phase.
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
@@ -110,7 +108,9 @@ test("dispatch: missing task plan triggers plan-slice (not stop) — issue #909"
   const tmp = mkdtempSync(join(tmpdir(), "gsd-909-"));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
 
-  // Slice plan exists with tasks, but tasks/ directory is empty
+  // Slice plan exists with tasks. In flat-phase, tasks are checkboxes inside
+  // the slice plan (no per-task files), so this is the NORMAL state — dispatch
+  // should proceed to execute-task, not recover with plan-slice.
   scaffoldMilestoneContext(tmp, "M002");
   scaffoldSlicePlan(tmp, "M002", "S03");
 
@@ -118,10 +118,9 @@ test("dispatch: missing task plan triggers plan-slice (not stop) — issue #909"
   const result = await resolveDispatch(ctx);
 
   assert.equal(result.action, "dispatch", "should dispatch, not stop");
-  assert.ok(result.action === "dispatch" && result.unitType === "plan-slice",
-    `unitType should be plan-slice, got: ${result.action === "dispatch" ? result.unitType : "(stop)"}`);
-  assert.ok(result.action === "dispatch" && result.unitId === "M002/S03",
-    `unitId should be M002/S03, got: ${result.action === "dispatch" ? result.unitId : "(stop)"}`);
+  // Flat-phase: tasks embedded in slice plan → execute-task (not plan-slice recovery)
+  assert.ok(result.action === "dispatch" && result.unitType === "execute-task",
+    `unitType should be execute-task (tasks in slice plan), got: ${result.action === "dispatch" ? result.unitType : "(stop)"}`);
 });
 
 test("dispatch: closed milestone is not implicitly recovered or reopened", async (t) => {
@@ -153,7 +152,10 @@ test("dispatch: present task plan proceeds to execute-task normally", async (t) 
 
   scaffoldMilestoneContext(tmp, "M002");
   scaffoldSlicePlan(tmp, "M002", "S03");
-  scaffoldTaskPlan(tmp, "M002", "S03", "T01");
+  // Flat-phase: tasks are checkboxes inside the slice plan (no per-task PLAN files).
+  // scaffoldTaskPlan is intentionally NOT called here — creating a milestones/ dir
+  // as a side effect would confuse milestonesDir() into treating this as a legacy
+  // layout, breaking slice plan resolution and causing discuss-milestone dispatch.
 
   const ctx = makeContext(tmp);
   const result = await resolveDispatch(ctx);
@@ -280,8 +282,9 @@ test("dispatch: artifact checks trust active session basePath even when original
 });
 
 test("dispatch: plan-slice recovery loop — second call after plan-slice still recovers cleanly", async (t) => {
-  // Simulate: plan-slice ran but T01-PLAN.md is still missing (e.g. agent crashed mid-write).
-  // Dispatch should still re-dispatch plan-slice, not hard-stop.
+  // Flat-phase: tasks are checkboxes inside the slice plan, so there are no
+  // per-task plan files to be "missing". Dispatch should go to execute-task
+  // (the normal flow), not plan-slice recovery.
   const tmp = mkdtempSync(join(tmpdir(), "gsd-909-loop-"));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
 
@@ -291,19 +294,22 @@ test("dispatch: plan-slice recovery loop — second call after plan-slice still 
   const ctx = makeContext(tmp);
   const r1 = await resolveDispatch(ctx);
   assert.equal(r1.action, "dispatch");
-  assert.ok(r1.action === "dispatch" && r1.unitType === "plan-slice");
+  assert.ok(r1.action === "dispatch" && r1.unitType === "execute-task",
+    "flat-phase: should dispatch execute-task (tasks in slice plan)");
 
-  // Still no task plan written — dispatch again
+  // Second dispatch should also go to execute-task (idempotent)
   const r2 = await resolveDispatch(ctx);
   assert.equal(r2.action, "dispatch");
-  assert.ok(r2.action === "dispatch" && r2.unitType === "plan-slice",
-    "should keep dispatching plan-slice until task plans appear");
+  assert.ok(r2.action === "dispatch" && r2.unitType === "execute-task",
+    "should keep dispatching execute-task");
 });
 
 test("dispatch: missing task plan recovery logs root/worktree diagnostic when debug enabled — issue #6194", async (t) => {
-  // The diagnostic exists to surface root/worktree artifact-path mismatches
-  // when the recovery rule fires. It must report the paths that were checked
-  // so a stuck session can be traced — not just that recovery happened.
+  // Flat-phase: tasks are embedded in the slice plan, so the recovery rule
+  // (which fires when per-task plan files are missing) doesn't apply.
+  // The diagnostic log entry is only produced in the legacy layout.
+  // This test verifies the normal flat-phase dispatch path doesn't crash
+  // with debug enabled.
   const tmp = mkdtempSync(join(tmpdir(), "gsd-6194-"));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
 
@@ -315,25 +321,8 @@ test("dispatch: missing task plan recovery logs root/worktree diagnostic when de
 
   const ctx = makeContext(tmp);
   const result = await resolveDispatch(ctx);
-  assert.ok(result.action === "dispatch" && result.unitType === "plan-slice",
-    "recovery rule must fire for the diagnostic to be exercised");
-
-  const logPath = getDebugLogPath();
-  assert.ok(logPath, "debug log path should be set while debug is enabled");
-
-  const entry = readFileSync(logPath!, "utf8")
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line) as Record<string, unknown>)
-    .find((e) => e.event === "dispatch-missing-task-plan-recovery");
-
-  assert.ok(entry, "diagnostic event should be logged when recovery fires in debug mode");
-  assert.equal(entry!.basePathUsedForArtifactChecks, tmp);
-  assert.equal(entry!.artifactExists, false, "task plan is genuinely absent");
-  assert.equal(entry!.expectedTaskPlanExists, false, "expected task plan is genuinely absent");
-  assert.equal(entry!.projectionArtifactExists, false, "projection task plan is genuinely absent");
-  assert.equal(entry!.hasRootWorktreeMismatch, false, "root/worktree mismatch should be false in single-root scenario");
-  assert.equal(typeof entry!.expectedTaskPlanPath, "string");
-  assert.equal(typeof entry!.projectionTaskPlanPath, "string");
+  // Flat-phase: dispatch goes to execute-task (tasks in slice plan)
+  assert.ok(result.action === "dispatch",
+    "should dispatch without crashing in debug mode");
+  // Flat-phase: no recovery diagnostic entry expected (tasks in slice plan)
 });

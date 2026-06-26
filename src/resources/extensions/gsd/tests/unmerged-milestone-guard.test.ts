@@ -53,6 +53,34 @@ test("findUnmergedCompletedMilestones blocks completed milestone branch product 
   }
 });
 
+test("findUnmergedCompletedMilestones does not block after a --no-ff merge that diverges from the branch tip", async () => {
+  const base = makeTempRepo("gsd-unmerged-guard-");
+  try {
+    seedMilestone(base, "M011");
+    // Milestone branch adds a product file.
+    commitBranchFile(base, "milestone/M011", "index.html", "<h1>M011</h1>\n");
+
+    // Merge the branch into main with --no-ff, but resolve the file to main's
+    // (empty) side so the merge result diverges from the milestone branch tip.
+    // The branch is now an ancestor of main even though a raw diff is non-empty.
+    git(base, "merge", "--no-ff", "--no-commit", "milestone/M011");
+    writeFileSync(join(base, "index.html"), "<h1>main wins</h1>\n");
+    git(base, "add", "index.html");
+    git(base, "commit", "-m", "merge: take main side for index.html");
+
+    // Sanity: the diff between main and the branch tip is non-empty...
+    assert.notEqual(git(base, "diff", "--numstat", "main", "milestone/M011"), "");
+    // ...but the branch tip is an ancestor of main (merge is done).
+
+    const blockers = await findUnmergedCompletedMilestones(base);
+
+    assert.equal(blockers.length, 0);
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
 test("findUnmergedCompletedMilestones ignores projection-only branch diffs", async () => {
   const base = makeTempRepo("gsd-unmerged-guard-");
   try {
@@ -117,11 +145,17 @@ test("isUnmergedMilestoneAllowedCommand permits inspection and explicit recovery
   assert.equal(isUnmergedMilestoneAllowedCommand("queue"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("quick"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("config"), true);
+  assert.equal(isUnmergedMilestoneAllowedCommand("progress"), true);
+  assert.equal(isUnmergedMilestoneAllowedCommand("progress --forensic"), true);
+  assert.equal(isUnmergedMilestoneAllowedCommand("parallel status"), true);
+  assert.equal(isUnmergedMilestoneAllowedCommand("parallel watch"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("worktree list"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("dispatch complete"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("dispatch complete M008"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("dispatch complete-milestone"), true);
   assert.equal(isUnmergedMilestoneAllowedCommand("dispatch complete-milestone M008"), true);
+  assert.equal(isUnmergedMilestoneAllowedCommand("docs-update --verify-only"), true);
+  assert.equal(isUnmergedMilestoneAllowedCommand("phase list"), true);
 });
 
 test("isUnmergedMilestoneAllowedCommand blocks direct dispatch aliases", () => {
@@ -134,9 +168,37 @@ test("isUnmergedMilestoneAllowedCommand blocks direct dispatch aliases", () => {
     "complete-slice",
     "validate-milestone",
     "complete-milestone",
+    "docs-update",
+    "review-backlog",
+    "import",
+    "ingest-docs",
+    "secure-phase",
+    "plan-review-convergence",
+    "resume-work",
+    "progress --next",
+    'progress --do "fix the login bug"',
+    "parallel start",
+    "parallel resume",
+    "parallel merge",
+    "parallel pause",
   ];
 
   for (const alias of aliases) {
     assert.equal(isUnmergedMilestoneAllowedCommand(alias), false, alias);
+  }
+});
+
+test("isUnmergedMilestoneAllowedCommand blocks mutating phase subcommands", () => {
+  const commands = [
+    "phase add M009",
+    "phase create M009",
+    "phase new M009",
+    "phase insert M009 after M008",
+    "phase remove M008",
+    "phase edit M008",
+  ];
+
+  for (const command of commands) {
+    assert.equal(isUnmergedMilestoneAllowedCommand(command), false, command);
   }
 });

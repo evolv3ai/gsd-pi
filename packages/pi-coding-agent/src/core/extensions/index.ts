@@ -108,6 +108,8 @@ export type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
+	GsdProgressState,
+	GsdProgressWidgetMode,
 	FindToolCallEvent,
 	FindToolResultEvent,
 	GetActiveToolsHandler,

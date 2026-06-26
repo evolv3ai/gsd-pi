@@ -61,7 +61,7 @@ jobs:
     outputs:
       version: ${{ steps.stamp.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.channel == 'latest' && 'main' || github.event.inputs.ref || (github.event.inputs.channel == 'next' && 'next' || 'main') }}
           token: ${{ github.token }}
@@ -208,7 +208,7 @@ jobs:
     needs: prerelease-publish
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.inputs.channel == 'latest' && 'main' || github.event.inputs.ref || (github.event.inputs.channel == 'next' && 'next' || 'main') }}
 
@@ -271,7 +271,7 @@ jobs:
       source_sha: ${{ steps.release.outputs.source_sha }}
       version: ${{ steps.release.outputs.version }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
@@ -322,7 +322,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prod-release-plan.outputs.source_sha }}
 
@@ -387,7 +387,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: prod
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0

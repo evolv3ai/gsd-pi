@@ -49,7 +49,7 @@ function renderMarkdown(report) {
   md += `| Metric | Count |\n|--------|------:|\n`;
   md += `| Source files | ${s.totalSourceFiles} |\n`;
   md += `| Covered (named test) | ${s.covered} |\n`;
-  md += `| Indirect (stem/other-name tests) | ${s.indirect} |\n`;
+  md += `| Indirect (stem/other-name/suite tests) | ${s.indirect} |\n`;
   md += `| Untested | ${s.untested} |\n`;
   md += `| Unwired | ${s.unwired} |\n`;
   md += `| Critical untested | ${s.criticalUntested} |\n`;

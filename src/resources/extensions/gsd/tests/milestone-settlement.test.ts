@@ -55,7 +55,12 @@ function seedClosedMilestone(root: string, worktree: string): void {
     fullContent: "verdict: pass\n",
   });
 
-  mkdirSync(join(worktree, ".gsd", "milestones", "M001"), { recursive: true });
+  const worktreeMilestoneDir = join(worktree, ".gsd", "milestones", "M001");
+  mkdirSync(worktreeMilestoneDir, { recursive: true });
+  // A content-bearing legacy milestone dir requires at least one non-META file
+  // (dirIsContentBearingLegacyMilestone) so the layout sniffer treats it as a
+  // real legacy milestone rather than a metadata-only placeholder.
+  writeFileSync(join(worktreeMilestoneDir, "M001-CONTEXT.md"), "# M001\n");
   const summaryPath = resolveExpectedArtifactPath("complete-milestone", "M001", worktree);
   assert.ok(summaryPath, "complete-milestone summary path should resolve");
   mkdirSync(dirname(summaryPath), { recursive: true });

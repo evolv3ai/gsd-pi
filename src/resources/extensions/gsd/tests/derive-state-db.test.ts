@@ -254,6 +254,29 @@ describe('derive-state-db', async () => {
     }
   });
 
+  test('derive-state-db: opens existing project DB before querying milestones', async (t) => {
+    const base = createFixtureBase();
+    t.after(() => {
+      closeDatabase();
+      cleanup(base);
+    });
+
+    const dbPath = join(base, '.gsd', 'gsd.db');
+    assert.equal(openDatabase(dbPath), true);
+    insertMilestone({ id: 'M001', title: 'Cold DB Milestone', status: 'active' });
+    insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Ready Slice', status: 'active', risk: 'low', depends: [] });
+    insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', title: 'Ready Task', status: 'pending' });
+    closeDatabase();
+    assert.equal(isDbAvailable(), false);
+
+    const state = await deriveStateFromDb(base);
+
+    assert.equal(state.activeMilestone?.id, 'M001');
+    assert.equal(state.activeSlice?.id, 'S01');
+    assert.equal(state.activeTask?.id, 'T01');
+    assert.notEqual(state.nextAction, 'No milestones found. Run /gsd to create one.');
+  });
+
   // ─── Test 4: Partial DB content does not fill gaps from disk ──────────
   test('derive-state-db: partial DB does not fill requirements from disk', async () => {
     const base = createFixtureBase();

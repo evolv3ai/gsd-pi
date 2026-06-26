@@ -44,7 +44,7 @@ export type GateSubKind = "depth-verification" | "approval" | "destructive-confi
 
 export type FailPolicy = "closed" | "open";
 
-export type AnswerOutcome = "waiting" | "answered" | "verified" | "declined" | "cancelled";
+export type AnswerOutcome = "waiting" | "answered" | "verified" | "declined" | "cancelled" | "timeout";
 
 export interface ClassifiedQuestion {
   kind: QuestionKind;
@@ -234,6 +234,9 @@ export type ConsentAnswerDetails = VerdictAnswerDetails;
 /**
  * THE single policy point for whether a question's answer counts as answered.
  *
+ * - timed_out rounds → "timeout" for every kind (host elicitation expired
+ *   before the user answered; fail-closed, but the caller pauses-and-waits
+ *   instead of re-asking into the same timeout loop, #852).
  * - cancelled rounds → "cancelled" for every kind.
  * - gate: delegates to evaluateGateAnswer in the consent-verdict leaf — the
  *   same verdict engine write-gate's applyAskUserQuestionsGateResult consumes;
@@ -248,6 +251,7 @@ export function evaluateAnswer(options: {
   details: ConsentAnswerDetails;
 }): AnswerOutcome {
   const { question, details } = options;
+  if (details.timed_out) return "timeout";
   if (details.cancelled) return "cancelled";
 
   const { kind } = classifyQuestion({ id: question.id, options: question.options });
@@ -271,6 +275,7 @@ export function evaluateAnswer(options: {
 
 const OUTCOME_PRECEDENCE: AnswerOutcome[] = [
   "cancelled",
+  "timeout",
   "waiting",
   "declined",
   "verified",
@@ -289,6 +294,11 @@ export function evaluateAskUserQuestionsRound(
   questions: ConsentQuestionShape[],
   details: ConsentAnswerDetails,
 ): AnswerOutcome {
+  // timed_out is checked before cancelled: a host elicitation timeout is a
+  // more specific signal than the deliberate-dismissal cancelled it is also
+  // marked with, and callers must pause-and-wait instead of treating it as a
+  // re-ask-able cancel (#852).
+  if (details.timed_out) return "timeout";
   if (details.cancelled) return "cancelled";
   let worst: AnswerOutcome = "answered";
   for (const question of questions) {

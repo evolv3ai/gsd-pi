@@ -5,7 +5,7 @@
 ### Utilities
 
 ```typescript
-import { visibleWidth, truncateToWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
+import { visibleWidth, truncateToWidth, wrapTextWithAnsi } from "@gsd/pi-tui";
 
 // Get display width (ignores ANSI escape codes)
 visibleWidth("\x1b[32mHello\x1b[0m");  // Returns 5, not 14

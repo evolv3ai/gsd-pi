@@ -68,7 +68,7 @@ import {
   getLatestAssessmentByScope,
   getPendingGateCountForTurn,
 } from './gsd-db.js';
-import { wasWorkflowDatabaseOpenAttempted } from './db-workspace.js';
+import { openExistingWorkflowDatabase, wasWorkflowDatabaseOpenAttempted } from './db-workspace.js';
 import { formatCompletePhaseNextAction, countUnmappedActiveRequirements } from './requirements-backlog.js';
 import type { MilestoneRow } from './db-milestone-artifact-rows.js';
 import type { SliceRow, TaskRow } from './db-task-slice-rows.js';
@@ -269,6 +269,26 @@ export function invalidateStateCache(): void {
   _stateCache = null;
 }
 
+function ensureExistingWorkflowDbOpen(basePath: string): boolean {
+  if (isDbAvailable()) return true;
+  return openExistingWorkflowDatabase(basePath).ok;
+}
+
+function buildDbUnavailableState(): GSDState {
+  return {
+    activeMilestone: null,
+    activeSlice: null,
+    activeTask: null,
+    phase: "pre-planning",
+    recentDecisions: [],
+    blockers: ["DB unavailable — runtime markdown state derivation is disabled"],
+    nextAction: "Open or create the canonical GSD database before deriving workflow state. If this project only has markdown state, run /gsd migrate explicitly.",
+    registry: [],
+    requirements: { active: 0, validated: 0, deferred: 0, outOfScope: 0, blocked: 0, total: 0 },
+    progress: { milestones: { done: 0, total: 0 } },
+  };
+}
+
 /**
  * Returns the ID of the first incomplete milestone, or null if all are complete.
  */
@@ -382,6 +402,8 @@ export async function deriveState(
   // DB-backed derivation is authoritative whenever the DB is open. Runtime
   // degrade must not infer state from ROADMAP.md, PLAN.md, SUMMARY.md,
   // REQUIREMENTS.md, or flag files.
+  ensureExistingWorkflowDbOpen(basePath);
+
   if (isDbAvailable()) {
     const stopDbTimer = debugTime("derive-state-db");
     result = await deriveStateFromDb(basePath, opts?.projectRootForReads ?? basePath);
@@ -391,18 +413,7 @@ export async function deriveState(
     if (wasWorkflowDatabaseOpenAttempted()) {
       logWarning("state", "DB unavailable — refusing implicit markdown state derivation");
     }
-    result = {
-      activeMilestone: null,
-      activeSlice: null,
-      activeTask: null,
-      phase: "pre-planning",
-      recentDecisions: [],
-      blockers: ["DB unavailable — runtime markdown state derivation is disabled"],
-      nextAction: "Open or create the canonical GSD database before deriving workflow state. If this project only has markdown state, run /gsd migrate explicitly.",
-      registry: [],
-      requirements: { active: 0, validated: 0, deferred: 0, outOfScope: 0, blocked: 0, total: 0 },
-      progress: { milestones: { done: 0, total: 0 } },
-    };
+    result = buildDbUnavailableState();
   }
 
   result.recentDecisions = await loadRecentDecisions(cacheKey);
@@ -730,6 +741,10 @@ export async function deriveStateFromDb(
   basePath: string,
   artifactReadRoot: string = basePath,
 ): Promise<GSDState> {
+  if (!ensureExistingWorkflowDbOpen(basePath)) {
+    return buildDbUnavailableState();
+  }
+
   const requirements = getRequirementCounts();
 
   const allMilestones = getAllMilestones();

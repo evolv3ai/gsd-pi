@@ -139,8 +139,12 @@ describe("integration: /gsd eval-review helper chain on a real on-disk slice", (
     assert.ok(prompt.includes("src/llm/budget.ts:42"));
     assert.ok(prompt.includes("langfuse"));
 
-    // Output path is the canonical slice file path
-    assert.ok(prompt.includes(`${layout.sliceId}-EVAL-REVIEW.md`));
+    // Output path is the canonical slice file path — buildSliceFileName("S07", ...)
+    // produces "07-EVAL-REVIEW.md" (flat-phase MM-SUFFIX.md format).
+    assert.ok(
+      prompt.includes("07-EVAL-REVIEW.md") || prompt.includes(`${layout.sliceId}-EVAL-REVIEW.md`),
+      `prompt should include eval-review output filename (got: ${ctx.outputPath})`,
+    );
   });
 
   it("falls back to the no-spec audit mode when AI-SPEC.md is absent", async () => {

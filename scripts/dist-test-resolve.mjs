@@ -81,6 +81,7 @@ function toResolveSpecifier(target, context) {
   const parent = context.parentURL ?? '';
   const needsFilesystemPath =
     isJitiCjsParent(context) ||
+    parent.includes('/dist-test/') ||
     parent.includes('/dist/') ||
     parent.endsWith('.cjs');
   return needsFilesystemPath ? fileURLToPath(target) : target;

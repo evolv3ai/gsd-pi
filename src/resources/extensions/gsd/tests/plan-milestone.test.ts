@@ -13,7 +13,7 @@ import { parseRoadmap } from '../parsers-legacy.ts';
 
 function makeTmpBase(): string {
   const base = mkdtempSync(join(tmpdir(), 'gsd-plan-milestone-'));
-  mkdirSync(join(base, '.gsd', 'milestones', 'M001'), { recursive: true });
+  mkdirSync(join(base, '.gsd', 'phases', '01-test'), { recursive: true });
   return base;
 }
 
@@ -91,7 +91,7 @@ test('handlePlanMilestone writes milestone and slice planning state and renders 
     assert.equal(slices[0]?.goal, 'Wire the handler.');
     assert.equal(slices[1]?.depends[0], 'S01');
 
-    const roadmapPath = join(base, '.gsd', 'milestones', 'M001', 'M001-ROADMAP.md');
+    const roadmapPath = join(base, '.gsd', 'phases', '01-test', '01-ROADMAP.md');
     assert.ok(existsSync(roadmapPath), 'roadmap should be rendered to disk');
     const roadmap = readFileSync(roadmapPath, 'utf-8');
     assert.match(roadmap, /# M001: DB-backed planning/);
@@ -151,14 +151,17 @@ test('handlePlanMilestone surfaces render failures and does not clear parse-visi
   openDatabase(dbPath);
 
   try {
-    const fallbackRoadmapPath = join(base, '.gsd', 'milestones', 'MISSING', 'MISSING-ROADMAP.md');
+    // Block the rendered roadmap path: M999 → phaseNum=999, slug='db-backed-planning'
+    // → renderer targets phases/999-db-backed-planning/999-ROADMAP.md.
+    // Creating that path as a directory causes EISDIR → render fails.
+    const fallbackRoadmapPath = join(base, '.gsd', 'phases', '999-db-backed-planning', '999-ROADMAP.md');
     mkdirSync(fallbackRoadmapPath, { recursive: true });
 
-    const result = await handlePlanMilestone({ ...validParams(), milestoneId: 'MISSING' }, base);
+    const result = await handlePlanMilestone({ ...validParams(), milestoneId: 'M999' }, base);
     assert.ok('error' in result);
     assert.match(result.error, /render failed:/);
 
-    const existingRoadmapPath = join(base, '.gsd', 'milestones', 'M001', 'M001-ROADMAP.md');
+    const existingRoadmapPath = join(base, '.gsd', 'phases', '01-test', '01-ROADMAP.md');
     writeFileSync(existingRoadmapPath, '# M001: Cached roadmap\n\n**Vision:** old value\n\n## Slices\n\n', 'utf-8');
     const cachedAfter = parseRoadmap(readFileSync(existingRoadmapPath, 'utf-8'));
     assert.equal(cachedAfter.vision, 'old value');
@@ -173,7 +176,7 @@ test('handlePlanMilestone clears parse-visible roadmap state after successful re
   openDatabase(dbPath);
 
   try {
-    const roadmapPath = join(base, '.gsd', 'milestones', 'M001', 'M001-ROADMAP.md');
+    const roadmapPath = join(base, '.gsd', 'phases', '01-test', '01-ROADMAP.md');
     writeFileSync(roadmapPath, '# M001: Cached roadmap\n\n**Vision:** old value\n\n## Slices\n\n', 'utf-8');
 
     const cachedBefore = parseRoadmap(readFileSync(roadmapPath, 'utf-8'));

@@ -18,6 +18,19 @@ const STDIN_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const STDIN_IDLE_CHECK_INTERVAL_MS = 60 * 1000;
 const CLEANUP_STEP_TIMEOUT_MS = 2 * 1000;
 
+/**
+ * Cadence for the ref-held parent-liveness monitor.
+ *
+ * Separate from the `.unref()`'d idle watchdog: a process already pegged at
+ * ~100% CPU starves its event loop, so the watchdog timer may never fire and a
+ * spinning orphan lingers until the next spawn sweeps it. This monitor is
+ * ref-held (NOT `.unref()`'d) so the libuv loop keeps scheduling it under load,
+ * and it exits the process itself the moment the parent is gone — independent
+ * of the external PID-registry sweep that only runs on the next launch. See
+ * #783.
+ */
+const ORPHAN_PARENT_LOSS_CHECK_INTERVAL_MS = 10 * 1000;
+
 interface SessionManagerLike {
   cleanup(): Promise<void>;
 }
@@ -101,6 +114,7 @@ export async function runMcpServerCli(options: RunMcpServerCliOptions = {}): Pro
   let registered = false;
   let cleaningUp = false;
   let idleWatchdog: ReturnType<typeof setInterval> | undefined;
+  let orphanMonitor: ReturnType<typeof setInterval> | undefined;
   let trackedStdin: ActivityTrackingInput | undefined;
   let sessionManager: SessionManagerLike | undefined;
   let server: McpServerLike | undefined;
@@ -126,6 +140,7 @@ export async function runMcpServerCli(options: RunMcpServerCliOptions = {}): Pro
 
   async function stopRuntime(): Promise<void> {
     if (idleWatchdog) stopInterval(idleWatchdog);
+    if (orphanMonitor) stopInterval(orphanMonitor);
     trackedStdin?.close();
     if (registered) unregisterInstance(projectDir);
     await runCleanupStep('session manager cleanup', () => sessionManager?.cleanup());
@@ -171,6 +186,25 @@ export async function runMcpServerCli(options: RunMcpServerCliOptions = {}): Pro
       }
     }, STDIN_IDLE_CHECK_INTERVAL_MS);
     idleWatchdog.unref();
+
+    // Ref-held parent-liveness monitor (#783). The idle watchdog above is
+    // `.unref()`'d, so a process pegged at ~100% CPU (e.g. a repeating throw
+    // against a dead stdio pipe) starves its event loop and the watchdog never
+    // fires — the orphan spins until the next launch sweeps it. This monitor is
+    // NOT unref'd: the loop keeps scheduling it under load, so parent loss is
+    // detected in seconds regardless of CPU state. It still requires the same
+    // idle gate as the watchdog so an active session whose parent briefly
+    // appears gone is not killed (#783 "stays alive when parent is gone but
+    // stdin is still active").
+    orphanMonitor = startInterval(() => {
+      if (!isOrphaned()) return;
+      const idleMs = trackedStdin ? now() - trackedStdin.lastActivityAt() : 0;
+      if (idleMs <= STDIN_IDLE_TIMEOUT_MS) return;
+      stderr.write(
+        `[gsd-mcp-server] Parent process is gone; shutting down to avoid orphan spin\n`,
+      );
+      void cleanup();
+    }, ORPHAN_PARENT_LOSS_CHECK_INTERVAL_MS);
 
     // Fail closed (ADR-036): warm the executor / write-gate bridges BEFORE
     // connecting the transport. If a bridge is broken we must not advertise the

@@ -64,10 +64,22 @@ const PRECEDENCE_CASES: Array<{
     expected: "github-copilot",
   },
   {
+    label: "Antigravity beats Gemini CLI beats Google API (gemini-2.5-pro)",
+    modelId: "gemini-2.5-pro",
+    providers: ["google", "google-gemini-cli", "google-antigravity"],
+    expected: "google-antigravity",
+  },
+  {
     label: "Gemini CLI beats Google API (gemini-2.5-pro)",
     modelId: "gemini-2.5-pro",
     providers: ["google", "google-gemini-cli"],
     expected: "google-gemini-cli",
+  },
+  {
+    label: "Antigravity beats Copilot beats Google API",
+    modelId: "gemini-2.5-pro",
+    providers: ["google", "github-copilot", "google-antigravity"],
+    expected: "google-antigravity",
   },
   {
     label: "Gemini CLI beats Copilot beats Google API",
@@ -103,10 +115,10 @@ for (const row of PRECEDENCE_CASES) {
 test("BARE_ID_SUBSCRIPTION_PROVIDER_PRECEDENCE covers known OAuth/subscription providers", () => {
   const expected = [
     "openai-codex",
+    "google-antigravity",
     "google-gemini-cli",
     "anthropic",
     "github-copilot",
-    "google-antigravity",
   ];
   assert.deepEqual([...BARE_ID_SUBSCRIPTION_PROVIDER_PRECEDENCE], expected);
 });

@@ -15,11 +15,13 @@ import {
   insertGateRun,
   readTransaction,
   saveGateResult,
+  upsertMilestonePlanning,
   upsertQualityGate,
 } from "../gsd-db.js";
+import { extractMilestoneSeq } from "../milestone-ids.js";
 import { GATE_REGISTRY } from "../gate-registry.js";
 import { generateRequirementsMd, saveArtifactToDb } from "../db-writer.js";
-import { clearPathCache, normalizeRealPath, relSliceFile, resolveGsdPathContract, resolveMilestoneFile, resolveSliceFile } from "../paths.js";
+import { clearPathCache, normalizeRealPath, relMilestoneFile, relSliceFile, relSlicePath, resolveGsdPathContract, resolveMilestoneFile, resolveSliceFile } from "../paths.js";
 import { saveFile, clearParseCache } from "../files.js";
 import { unlinkSync } from "node:fs";
 import { hostname } from "node:os";
@@ -143,7 +145,34 @@ export interface SummarySaveParams {
 function registerProjectMilestoneSequence(content: string): string[] {
   const parsed = parseProject(content);
   const registered: string[] = [];
+  // Reconcile parsed IDs against existing DB milestones before inserting (#807).
+  // Under unique_milestone_ids the planner mints suffixed IDs (e.g. "M001-b1nole"),
+  // while PROJECT.md's template uses bare sequence IDs (e.g. "M001"). Inserting the
+  // bare ID verbatim mints a phantom milestone row that collides with the planner's
+  // canonical one: the bare row gets its own git worktree, and at dispatch time the
+  // worktree/session scope ("M001") disagrees with ctx.mid ("M001-b1nole"), pausing
+  // auto-mode with "Dispatch milestone mismatch". A project DB holds at most one
+  // milestone per sequence number, so map each parsed line onto the existing row
+  // that shares its sequence number instead of minting a duplicate bare-ID row.
+  const existingBySeq = new Map<number, string>();
+  for (const existing of getAllMilestones()) {
+    const seq = extractMilestoneSeq(existing.id);
+    if (seq > 0 && !existingBySeq.has(seq)) existingBySeq.set(seq, existing.id);
+  }
   for (const milestone of parsed.milestones) {
+    const canonicalId = existingBySeq.get(extractMilestoneSeq(milestone.id));
+    if (canonicalId && canonicalId !== milestone.id) {
+      // An existing milestone already owns this sequence number. Treat the markdown
+      // line as referring to it: refresh the human title, and promote to complete
+      // when the line is checked — but never demote an in-flight milestone back to
+      // "queued" (the planner's row stays the single source of truth).
+      upsertMilestonePlanning(canonicalId, {
+        title: milestone.title,
+        ...(milestone.done ? { status: "complete" } : {}),
+      });
+      registered.push(canonicalId);
+      continue;
+    }
     insertMilestone({
       id: milestone.id,
       title: milestone.title,
@@ -353,11 +382,21 @@ export async function executeSummarySave(
     } else if (params.artifact_type === "REQUIREMENTS-DRAFT") {
       relativePath = "REQUIREMENTS-DRAFT.md";
     } else if (params.task_id && params.slice_id) {
-      relativePath = `milestones/${params.milestone_id}/slices/${params.slice_id}/tasks/${params.task_id}-${params.artifact_type}.md`;
+      // Layout-aware path for task-scoped artifacts.
+      // Flat-phase: <phaseDir>/TID-TYPE.md  Legacy: milestones/MID/slices/SID/tasks/TID-TYPE.md
+      // relSlicePath returns ".gsd/phases/NN-slug" (flat) or ".gsd/milestones/MID/slices/SID" (legacy).
+      const sRel = relSlicePath(basePath, params.milestone_id!, params.slice_id).replace(/^\.gsd\//, "");
+      relativePath = sRel.startsWith("milestones/")
+        ? `${sRel}/tasks/${params.task_id}-${params.artifact_type}.md`
+        : `${sRel}/${params.task_id}-${params.artifact_type}.md`;
     } else if (params.slice_id) {
-      relativePath = `milestones/${params.milestone_id}/slices/${params.slice_id}/${params.slice_id}-${params.artifact_type}.md`;
+      // Layout-aware path for slice-scoped artifacts.
+      // relSliceFile returns ".gsd/..." prefix — strip it to get the DB-relative path.
+      relativePath = relSliceFile(basePath, params.milestone_id!, params.slice_id, params.artifact_type).replace(/^\.gsd\//, "");
     } else {
-      relativePath = `milestones/${params.milestone_id}/${params.milestone_id}-${params.artifact_type}.md`;
+      // Layout-aware path for milestone-scoped artifacts.
+      // relMilestoneFile returns ".gsd/..." prefix — strip it to get the DB-relative path.
+      relativePath = relMilestoneFile(basePath, params.milestone_id!, params.artifact_type).replace(/^\.gsd\//, "");
     }
 
     const activeRequirements = params.artifact_type === "REQUIREMENTS"

@@ -20,13 +20,16 @@ import { loadFile, parseSummary, resolveAllOverrides } from "./files.js";
 import { loadPrompt } from "./prompt-loader.js";
 import { isAwaitingUserInput } from "./consent-question.js";
 import {
-  resolveMilestonePath,
   resolveSliceFile,
   resolveSlicePath,
+  relSlicePath,
   resolveTaskFile,
   resolveMilestoneFile,
   resolveTasksDir,
-  buildTaskFileName,
+  resolveFile,
+  relMilestoneFile,
+  relSliceFile,
+  relTaskFile,
 } from "./paths.js";
 import { invalidateAllCaches } from "./cache.js";
 import { rebuildState } from "./doctor.js";
@@ -233,7 +236,6 @@ function completeSliceReopenReplanHandoffDetected(
   return (
     agentEndMessagesIncludeSuccessfulToolResult(agentEndMessages, "gsd_task_reopen") ||
     agentEndMessagesIncludeToolCall(agentEndMessages, "gsd_task_reopen") ||
-    agentEndMessagesMentionTool(agentEndMessages, "gsd_task_reopen") ||
     unitActivityMentionsTool(s.basePath, unitType, unitId, "gsd_task_reopen") ||
     unitActivityMentionsTool(s.canonicalProjectRoot, unitType, unitId, "gsd_task_reopen")
   );
@@ -247,7 +249,6 @@ function completeSliceReplanSignalDetected(
   return (
     agentEndMessagesIncludeSuccessfulToolResult(agentEndMessages, "gsd_replan_slice") ||
     agentEndMessagesIncludeToolCall(agentEndMessages, "gsd_replan_slice") ||
-    agentEndMessagesMentionTool(agentEndMessages, "gsd_replan_slice") ||
     unitActivityMentionsTool(s.basePath, s.currentUnit.type, s.currentUnit.id, "gsd_replan_slice") ||
     unitActivityMentionsTool(s.canonicalProjectRoot, s.currentUnit.type, s.currentUnit.id, "gsd_replan_slice")
   );
@@ -441,6 +442,22 @@ function getPlannedKeyFiles(tasks: Array<
 export const _parseReactiveBatchTaskIdsForTest = parseReactiveBatchTaskIds;
 export const _getPlannedKeyFilesForTest = getPlannedKeyFiles;
 
+function resolveTaskArtifactPath(
+  basePath: string,
+  mid: string,
+  sid: string,
+  tid: string,
+  suffix: string,
+): string | null {
+  const legacy = resolveTaskFile(basePath, mid, sid, tid, suffix);
+  if (legacy) return legacy;
+  const slicePath = resolveSlicePath(basePath, mid, sid);
+  if (!slicePath) return null;
+  const taskDir = resolveTasksDir(basePath, mid, sid) ?? slicePath;
+  const file = resolveFile(taskDir, tid, suffix);
+  return file ? join(taskDir, file) : null;
+}
+
 function resolveVerificationFailureMarkerPath(
   unitType: string,
   unitId: string,
@@ -451,20 +468,17 @@ function resolveVerificationFailureMarkerPath(
     case "complete-milestone": {
       const existing = resolveMilestoneFile(basePath, mid, "VERIFICATION-FAILED");
       if (existing) return existing;
-      const milestoneDir = resolveMilestonePath(basePath, mid);
-      return milestoneDir ? join(milestoneDir, `${mid}-VERIFICATION-FAILED.md`) : null;
+      return join(basePath, relMilestoneFile(basePath, mid, "VERIFICATION-FAILED"));
     }
     case "complete-slice": {
       const existing = resolveSliceFile(basePath, mid, sid!, "VERIFICATION-FAILED");
       if (existing) return existing;
-      const sliceDir = resolveSlicePath(basePath, mid, sid!);
-      return sliceDir ? join(sliceDir, `${sid}-VERIFICATION-FAILED.md`) : null;
+      return join(basePath, relSliceFile(basePath, mid, sid!, "VERIFICATION-FAILED"));
     }
     case "execute-task": {
-      const existing = resolveTaskFile(basePath, mid, sid!, tid!, "VERIFICATION-FAILED");
+      const existing = resolveTaskArtifactPath(basePath, mid, sid!, tid!, "VERIFICATION-FAILED");
       if (existing) return existing;
-      const tasksDir = resolveTasksDir(basePath, mid, sid!);
-      return tasksDir ? join(tasksDir, buildTaskFileName(tid!, "VERIFICATION-FAILED")) : null;
+      return join(basePath, relTaskFile(basePath, mid, sid!, tid!, "VERIFICATION-FAILED"));
     }
     default:
       return null;
@@ -483,7 +497,7 @@ async function buildTaskCommitContextForUnit(
   const task = isDbAvailable() ? getTask(mid, sid, tid) : null;
   let summary: ReturnType<typeof parseSummary> | null = null;
 
-  const summaryPath = resolveTaskFile(basePath, mid, sid, tid, "SUMMARY");
+  const summaryPath = resolveTaskArtifactPath(basePath, mid, sid, tid, "SUMMARY");
   if (summaryPath) {
     try {
       const summaryContent = await loadFile(summaryPath);
@@ -696,7 +710,7 @@ export function detectRogueFileWrites(
   if (unitType === "execute-task") {
     if (!mid || !sid || !tid) return [];
 
-    const summaryPath = resolveTaskFile(basePath, mid, sid, tid, "SUMMARY");
+    const summaryPath = resolveTaskArtifactPath(basePath, mid, sid, tid, "SUMMARY");
     if (!summaryPath || !existsSync(summaryPath)) return [];
 
     const dbRow = getTask(mid, sid, tid);
@@ -762,7 +776,7 @@ export function detectRogueFileWrites(
   } else if (unitType === "plan-task") {
     if (!mid || !sid || !tid) return [];
 
-    const taskPlanPath = resolveTaskFile(basePath, mid, sid, tid, "PLAN");
+    const taskPlanPath = resolveTaskArtifactPath(basePath, mid, sid, tid, "PLAN");
     if (!taskPlanPath || !existsSync(taskPlanPath)) return [];
 
     const dbRow = getTask(mid, sid, tid);
@@ -2041,7 +2055,10 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
             return "dispatched";
           }
           s.toolUnavailableRetries++;
-          const delayMs = s.toolUnavailableRetries * 1000;
+          // Exponential backoff starting at 10s (10s, 20s, 40s capped at 45s). MCP server
+          // startup can take tens of seconds; a 1s/2s/3s linear delay re-dispatches before
+          // the server finishes connecting, causing a stuck loop. See #817.
+          const delayMs = Math.min(10_000 * Math.pow(2, s.toolUnavailableRetries - 1), 45_000);
           debugLog("postUnit", { phase: "tool-unavailable-retry", unitType: s.currentUnit.type, unitId: s.currentUnit.id, error: s.lastToolInvocationError, attempt: s.toolUnavailableRetries, delayMs });
           ctx.ui.notify(
             `Tool unavailable for ${s.currentUnit.type}: ${s.lastToolInvocationError}. Waiting ${delayMs}ms for MCP server — retry ${s.toolUnavailableRetries}/${MAX_TOOL_UNAVAIL_RETRIES}.`,
@@ -2100,9 +2117,6 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
             return "dispatched";
           }
           if (getUnitCostSpikeAction(unitCostUsd, rollingAvgUsd, resolveUnitCostSpikeMultiplier(prefs)) === "pause") {
-            s.pendingVerificationRetry = null;
-            s.verificationRetryCount.delete(retryKey);
-            s.verificationRetryFailureHashes.delete(retryKey);
             const advancedPastUnit = await hasArtifactCostGuardAdvancedPastUnit(
               s,
               ctx,
@@ -2111,6 +2125,9 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
               prefs,
             );
             if (advancedPastUnit) {
+              s.pendingVerificationRetry = null;
+              s.verificationRetryCount.delete(retryKey);
+              s.verificationRetryFailureHashes.delete(retryKey);
               debugLog("postUnit", {
                 phase: "artifact-cost-spike-continue-after-advance",
                 unitType: s.currentUnit.type,
@@ -2131,14 +2148,21 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
               unitCostUsd,
               rollingAvgUsd,
             );
+            if (parallelBlocker) {
+              s.pendingVerificationRetry = null;
+              s.verificationRetryCount.delete(retryKey);
+              s.verificationRetryFailureHashes.delete(retryKey);
+              ctx.ui.notify(
+                `Unit ${s.currentUnit.id} cost spike detected (${unitCostUsd.toFixed(2)} vs avg ${rollingAvgUsd.toFixed(2)}) — wrote parallel blocker and pausing auto-mode.`,
+                "error",
+              );
+              await pauseAuto(ctx, pi);
+              return "dispatched";
+            }
             ctx.ui.notify(
-              parallelBlocker
-                ? `Unit ${s.currentUnit.id} cost spike detected (${unitCostUsd.toFixed(2)} vs avg ${rollingAvgUsd.toFixed(2)}) — wrote parallel blocker and pausing auto-mode.`
-                : `Unit ${s.currentUnit.id} cost spike detected (${unitCostUsd.toFixed(2)} vs avg ${rollingAvgUsd.toFixed(2)}) — pausing auto-mode.`,
-              "error",
+              `Unit ${s.currentUnit.id} cost spike detected (${unitCostUsd.toFixed(2)} vs avg ${rollingAvgUsd.toFixed(2)}) during artifact verification retry; keeping verification failure as the authoritative blocker.`,
+              "warning",
             );
-            await pauseAuto(ctx, pi);
-            return "dispatched";
           }
           const attempt = (s.verificationRetryCount.get(retryKey) ?? 0) + 1;
           const failureDetails = describeArtifactVerificationFailure(
@@ -2344,12 +2368,9 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
           // 2. Delete SUMMARY.md for the task
           if (mid && sid && tid) {
             // Phase C: read+delete via canonical project root.
-            const tasksDir = resolveTasksDir(s.canonicalProjectRoot, mid, sid);
-            if (tasksDir) {
-              const summaryFile = join(tasksDir, buildTaskFileName(tid, "SUMMARY"));
-              if (existsSync(summaryFile)) {
-                unlinkSync(summaryFile);
-              }
+            const summaryPath = resolveTaskArtifactPath(s.canonicalProjectRoot, mid, sid, tid, "SUMMARY");
+            if (summaryPath && existsSync(summaryPath)) {
+              unlinkSync(summaryPath);
             }
           }
 
@@ -2508,7 +2529,7 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
         // Write evidence JSON to slice artifacts directory
         const slicePath = resolveSlicePath(s.canonicalProjectRoot, mid, sid);
         const evidenceFileName = `${sid}-PRE-EXEC-VERIFY.json`;
-        let evidencePath = join(".gsd", "milestones", mid, "slices", sid, evidenceFileName);
+        let evidencePath = join(relSlicePath(s.canonicalProjectRoot, mid, sid), evidenceFileName);
         if (slicePath) {
           writePreExecutionEvidence(result, slicePath, mid, sid);
           evidencePath = relative(s.canonicalProjectRoot, join(slicePath, evidenceFileName)) || evidenceFileName;

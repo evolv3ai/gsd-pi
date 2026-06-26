@@ -874,9 +874,10 @@ function buildChangelogSection(data: VisualizerData): string {
 
 function buildKnowledgeSection(data: VisualizerData): string {
   const k = data.knowledge;
-  if (!k.exists) return section('knowledge', 'Knowledge', '<p class="empty">No KNOWLEDGE.md found.</p>');
+  const memories = data.memories;
+  if (!k.exists && memories.entries.length === 0) return section('knowledge', 'Knowledge', '<p class="empty">No KNOWLEDGE.md found.</p>');
   const total = k.rules.length + k.patterns.length + k.lessons.length;
-  if (total === 0) return section('knowledge', 'Knowledge', '<p class="empty">KNOWLEDGE.md exists but no entries parsed.</p>');
+  if (total === 0 && memories.entries.length === 0) return section('knowledge', 'Knowledge', '<p class="empty">KNOWLEDGE.md exists but no entries parsed.</p>');
 
   const rulesHtml = k.rules.length > 0 ? `
     <h3>Rules <span class="count">${k.rules.length}</span></h3>
@@ -899,7 +900,14 @@ function buildKnowledgeSection(data: VisualizerData): string {
       <tbody>${k.lessons.map(l => `<tr><td class="mono">${esc(l.id)}</td><td>${esc(l.content)}</td></tr>`).join('')}</tbody>
     </table>` : '';
 
-  return section('knowledge', `Knowledge <span class="count">${total}</span>`, `${rulesHtml}${patternsHtml}${lessonsHtml}`);
+  const memoriesHtml = memories.entries.length > 0 ? `
+    <h3>Memories <span class="count">${memories.entries.length}/${memories.totalCount}</span></h3>
+    <table class="tbl">
+      <thead><tr><th>ID</th><th>Category</th><th>Scope</th><th>Memory</th></tr></thead>
+      <tbody>${memories.entries.map(m => `<tr><td class="mono">${esc(m.id)}</td><td>${esc(m.category)}</td><td>${esc(m.scope)}</td><td>${esc(m.content)}</td></tr>`).join('')}</tbody>
+    </table>` : '';
+
+  return section('knowledge', `Knowledge <span class="count">${total + memories.totalCount}</span>`, `${rulesHtml}${patternsHtml}${lessonsHtml}${memoriesHtml}`);
 }
 
 // ─── Section: Captures ────────────────────────────────────────────────────────
@@ -1005,4 +1013,3 @@ function hRow(label: string, value: string, status?: 'ok' | 'caution' | 'warn'):
 
 function shortModel(m: string) { return m.replace(/^claude-/, '').replace(/^anthropic\//, ''); }
 function truncStr(s: string, n: number) { return s.length > n ? s.slice(0, n - 1) + '\u2026' : s; }
-

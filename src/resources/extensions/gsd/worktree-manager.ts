@@ -19,7 +19,7 @@
  *   4. remove()  — git worktree remove + branch cleanup
  */
 
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve, sep } from "node:path";
 import { GSDError, GSD_PARSE_ERROR, GSD_STALE_STATE, GSD_LOCK_HELD, GSD_GIT_ERROR, GSD_MERGE_CONFLICT } from "./errors.js";
@@ -49,6 +49,7 @@ import {
   normalizeWorktreePathForCompare,
   resolveWorktreeProjectRoot,
 } from "./worktree-root.js";
+import { MILESTONE_ID_RE } from "./milestone-ids.js";
 import { canonicalWorktreesDir, worktreePathFor, worktreesDirs } from "./worktree-placement.js";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -197,7 +198,96 @@ function isRegisteredGitWorktreeAtPath(basePath: string, wtPath: string): boolea
   }
 }
 
-function removeStaleWorktreeDirectory(wtPath: string, name: string): void {
+/** True when `wtPath` has a git worktree checkout marker (`.git` file with gitdir pointer). */
+export function isLiveGitWorktreeCheckout(wtPath: string): boolean {
+  const gitPath = join(wtPath, ".git");
+  if (!existsSync(gitPath)) return false;
+  try {
+    return lstatSync(gitPath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** True when a worktree directory should count toward idle milestone residue detection. */
+export function isMilestoneWorktreeResidueCandidate(basePath: string, wtPath: string): boolean {
+  return isRegisteredGitWorktreeAtPath(basePath, wtPath) || isLiveGitWorktreeCheckout(wtPath);
+}
+
+const EPHEMERAL_GHOST_WORKTREE_ENTRIES = new Set([".bg-shell", ".DS_Store"]);
+
+function isEphemeralGhostWorktreeContents(dirPath: string): boolean {
+  let entries: string[];
+  try {
+    entries = readdirSync(dirPath);
+  } catch {
+    return false;
+  }
+  if (entries.length === 0) return true;
+  for (const entry of entries) {
+    if (EPHEMERAL_GHOST_WORKTREE_ENTRIES.has(entry)) continue;
+    if (entry === ".gsd") {
+      try {
+        const gsdEntries = readdirSync(join(dirPath, ".gsd"));
+        if (gsdEntries.length <= 1 && gsdEntries.every((e) => e === "doctor-history.jsonl")) {
+          continue;
+        }
+      } catch {
+        return false;
+      }
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Remove milestone worktree directories that are not registered with git and
+ * contain only ephemeral runtime content (e.g. bg-shell manifests recreated
+ * after teardown). Returns removed directory paths.
+ */
+export function pruneEphemeralGhostWorktreeDirectories(basePath: string): string[] {
+  const removed: string[] = [];
+  for (const container of allWorktreesDirs(basePath)) {
+    if (!existsSync(container)) continue;
+    let entries: string[];
+    try {
+      entries = readdirSync(container);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!MILESTONE_ID_RE.test(entry)) continue;
+      const fullPath = join(container, entry);
+      try {
+        if (!statSync(fullPath).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      if (isRegisteredGitWorktreeAtPath(basePath, fullPath)) continue;
+      if (isLiveGitWorktreeCheckout(fullPath)) continue;
+      if (!isEphemeralGhostWorktreeContents(fullPath)) continue;
+      try {
+        rmSync(fullPath, { recursive: true, force: true });
+        logWarning(
+          "reconcile",
+          `Removed ephemeral ghost worktree directory (not registered with git): ${fullPath}`,
+          { worktree: entry },
+        );
+        removed.push(fullPath);
+      } catch (err) {
+        logWarning(
+          "worktree",
+          `ghost worktree directory removal failed for ${fullPath}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+  return removed;
+}
+
+export function removeStaleWorktreeDirectory(wtPath: string, name: string): void {
   logWarning(
     "reconcile",
     `Removing stale worktree directory (not registered with git): ${wtPath}`,

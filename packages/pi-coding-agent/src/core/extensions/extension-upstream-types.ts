@@ -148,6 +148,26 @@ export interface WorkingIndicatorOptions {
 export type AutocompleteProviderFactory = (current: AutocompleteProvider) => AutocompleteProvider;
 export type EditorFactory = (tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => EditorComponent;
 
+/** Widget density from GSD preferences — maps to strip line count. */
+export type GsdProgressWidgetMode = "min" | "small" | "full";
+
+/** Structured auto-mode progress for the built-in GSD status strip above the editor. */
+export interface GsdProgressState {
+	phase: string;
+	modeTag?: "AUTO" | "NEXT";
+	taskProgress?: { done: number; total: number };
+	/** Milestone slice completion — completed count vs total slices. */
+	sliceProgress?: { done: number; total: number };
+	sliceLabel?: string;
+	taskLabel?: string;
+	unitLabel?: string;
+	elapsed?: string;
+	eta?: string;
+	healthSummary?: string;
+	path?: string;
+	widgetMode?: GsdProgressWidgetMode;
+}
+
 /**
  * UI context for extensions to request interactive UI.
  * Each mode (interactive, RPC, print) provides its own implementation.
@@ -170,6 +190,9 @@ export interface ExtensionUIContext {
 
 	/** Set status text in the footer/status bar. Pass undefined to clear. */
 	setStatus(key: string, text: string | undefined): void;
+
+	/** Feed structured auto-mode progress to the built-in GSD status strip. */
+	setGsdProgress(state: GsdProgressState | undefined, dispose?: () => void): void;
 
 	/** Set the working/loading message shown during streaming. Call with no argument to restore default. */
 	setWorkingMessage(message?: string | null): void;
@@ -257,12 +280,12 @@ export interface ExtensionUIContext {
 	 * - `keybindings`: KeybindingsManager for app-level keybindings
 	 *
 	 * For full app keybinding support (escape, ctrl+d, model switching, etc.),
-	 * extend `CustomEditor` from `@gsd/pi-coding-agent` and call
+	 * extend `CustomEditor` from `@gsd/agent-modes` and call
 	 * `super.handleInput(data)` for keys you don't handle.
 	 *
 	 * @example
 	 * ```ts
-	 * import { CustomEditor } from "@gsd/pi-coding-agent";
+	 * import { CustomEditor } from "@gsd/agent-modes";
 	 *
 	 * class VimEditor extends CustomEditor {
 	 *   private mode: "normal" | "insert" = "insert";

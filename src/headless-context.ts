@@ -54,6 +54,5 @@ export async function loadContext(options: ContextOptions): Promise<string> {
  */
 export function bootstrapGsdProject(basePath: string): void {
   const gsdDir = join(basePath, '.gsd')
-  mkdirSync(join(gsdDir, 'milestones'), { recursive: true })
   mkdirSync(join(gsdDir, 'runtime'), { recursive: true })
 }

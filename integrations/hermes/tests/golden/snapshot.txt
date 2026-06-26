@@ -1,0 +1,8 @@
+## GSD Project Snapshot
+Phase: execute
+Active milestone: M001: Hermes Integration
+Active slice: S01: Gateway MVP
+Active task: T01: Plugin scaffold
+Milestones: 0/1 done (1 active)
+Requirements: 2 active, 0 validated
+Next: Run contract tests for binding and snapshot golden.

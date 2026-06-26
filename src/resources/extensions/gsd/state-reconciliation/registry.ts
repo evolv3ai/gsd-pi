@@ -9,6 +9,8 @@ import {
   diskSliceIdDivergenceHandler,
 } from "./drift/artifact-db.js";
 import { mergeStateHandler } from "./drift/merge-state.js";
+import { externalMarkdownEditHandler } from "./drift/external-markdown-edit.js";
+import { externalPlanningEditHandler } from "./drift/external-planning-edit.js";
 import { unregisteredMilestoneHandler } from "./drift/project-md.js";
 import { roadmapDivergenceHandler } from "./drift/roadmap.js";
 import { sketchFlagHandler } from "./drift/sketch-flag.js";
@@ -22,6 +24,16 @@ import type { DriftHandler } from "./types.js";
 // by kind before invoking repair, so this is sound at runtime.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const DRIFT_REGISTRY: ReadonlyArray<DriftHandler<any>> = [
+  // ⚠ ORDER IS SIGNIFICANT for repairs within a single pass.
+  // external-markdown-edit MUST run before any handler that re-projects
+  // markdown from DB (stale-render, roadmap-divergence). If a DB-projection
+  // handler runs first it overwrites the gsd-core file and the subsequent
+  // external-markdown-edit repair imports the already-overwritten content —
+  // silently discarding the cross-tool edit. With external-markdown-edit first
+  // the DB is updated to reflect the gsd-core edit before stale-render
+  // re-renders, so the canonical re-projection preserves the edit's intent.
+  externalMarkdownEditHandler,
+  externalPlanningEditHandler,
   sketchFlagHandler,
   mergeStateHandler,
   staleRenderHandler,

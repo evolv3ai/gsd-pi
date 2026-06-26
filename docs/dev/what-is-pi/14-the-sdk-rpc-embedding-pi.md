@@ -7,7 +7,7 @@ Pi isn't just a terminal tool. It's designed to be embedded in other application
 For Node.js/TypeScript applications, import and use pi directly:
 
 ```typescript
-import { AuthStorage, createAgentSession, ModelRegistry, SessionManager } from "@mariozechner/pi-coding-agent";
+import { AuthStorage, createAgentSession, ModelRegistry, SessionManager } from "@gsd/pi-coding-agent";
 
 const authStorage = AuthStorage.create();
 const modelRegistry = new ModelRegistry(authStorage);

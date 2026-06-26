@@ -74,6 +74,7 @@ import {
 	endWorkflowMcpSdkSession,
 } from "../gsd/workflow-mcp-readiness-cache.js";
 import { getGuidedUnitContext } from "../gsd/guided-unit-context.js";
+import { getActiveAutoUnitType, isAutoActive } from "../gsd/auto-runtime-state.js";
 import { hasBrowserContractPrefix } from "../shared/browser-contract.js";
 import { showInterviewRound, type Question, type RoundResult } from "../shared/tui.js";
 import type {
@@ -365,31 +366,46 @@ function extractMessageText(msg: { role: string; content: unknown }): string {
 	return "";
 }
 
+// Patterns are anchored to the `UNIT: <Phase>` dispatch header ONLY. The old
+// patterns also matched bare slugs (`run-uat`, `plan-slice`, `gsd_plan_slice`,
+// …) anywhere in the text, so any incidental occurrence — a branch name like
+// `milestone/M039`, an untracked file `m039-s05-…spec.ts`, a forensic report,
+// or the user literally typing "slice"/"UAT" while describing a problem — would
+// misclassify the turn as a dispatched unit. Only the dispatch header is an
+// authoritative phase signal, so match nothing else.
 const GSD_PHASE_PATTERNS: Array<[string, RegExp]> = [
-	["run-uat", /\b(?:UNIT:\s*Run UAT|run-uat)\b/i],
-	["complete-milestone", /\b(?:UNIT:\s*Complete Milestone|complete-milestone)\b/i],
-	["validate-milestone", /\b(?:UNIT:\s*Validate Milestone|validate-milestone)\b/i],
-	["reassess-roadmap", /\b(?:UNIT:\s*Reassess Roadmap|reassess-roadmap)\b/i],
-	["complete-slice", /\b(?:UNIT:\s*Complete Slice|complete-slice)\b/i],
-	["replan-slice", /\b(?:UNIT:\s*Replan Slice|replan-slice)\b/i],
-	["refine-slice", /\b(?:UNIT:\s*Refine Slice|refine-slice)\b/i],
-	["plan-slice", /\b(?:UNIT:\s*Plan Slice|plan-slice|gsd_plan_slice)\b/i],
-	["plan-milestone", /\b(?:UNIT:\s*Plan Milestone|plan-milestone|gsd_plan_milestone)\b/i],
-	["execute-task", /\b(?:UNIT:\s*Execute Task|execute-task|execute-task-simple|reactive-execute)\b/i],
-	["gate-evaluate", /\b(?:UNIT:\s*Gate Evaluate|gate-evaluate|gsd_save_gate_result)\b/i],
-	["research-milestone", /\b(?:UNIT:\s*Research Milestone|research-milestone)\b/i],
-	["research-slice", /\b(?:UNIT:\s*Research Slice|research-slice)\b/i],
-	["research-decision", /\b(?:research decision|research-decision)\b/i],
-	["discuss-milestone", /\b(?:Discuss milestone|discuss-milestone)\b/i],
-	["discuss-slice", /\b(?:Discuss slice|discuss-slice)\b/i],
-	["discuss-project", /\b(?:discuss-project|Discuss project)\b/i],
-	["discuss-requirements", /\b(?:discuss-requirements|Discuss requirements)\b/i],
+	["run-uat", /\bUNIT:\s*Run UAT\b/i],
+	["complete-milestone", /\bUNIT:\s*Complete Milestone\b/i],
+	["validate-milestone", /\bUNIT:\s*Validate Milestone\b/i],
+	["reassess-roadmap", /\bUNIT:\s*Reassess Roadmap\b/i],
+	["complete-slice", /\bUNIT:\s*Complete Slice\b/i],
+	["replan-slice", /\bUNIT:\s*Replan Slice\b/i],
+	["refine-slice", /\bUNIT:\s*Refine Slice\b/i],
+	["plan-slice", /\bUNIT:\s*Plan Slice\b/i],
+	["plan-milestone", /\bUNIT:\s*Plan Milestone\b/i],
+	["execute-task", /\bUNIT:\s*Execute Task\b/i],
+	["gate-evaluate", /\bUNIT:\s*Gate Evaluate\b/i],
+	["research-milestone", /\bUNIT:\s*Research Milestone\b/i],
+	["research-slice", /\bUNIT:\s*Research Slice\b/i],
+	["research-decision", /\bUNIT:\s*Research Decision\b/i],
+	["discuss-milestone", /\bUNIT:\s*Discuss Milestone\b/i],
+	["discuss-slice", /\bUNIT:\s*Discuss Slice\b/i],
+	["discuss-project", /\bUNIT:\s*Discuss Project\b/i],
+	["discuss-requirements", /\bUNIT:\s*Discuss Requirements\b/i],
 ];
 
+/** The set of GSD phases this adapter recognises, derived from the patterns above. */
+const KNOWN_GSD_PHASES = new Set(GSD_PHASE_PATTERNS.map(([phase]) => phase));
+
 export function inferGsdPhaseFromContext(context: Context): string | undefined {
+	// Scan only the system prompt and the most recent user directive. Scanning
+	// the entire scrollback let a phase header that merely appeared in history
+	// (e.g. a SUMMARY the agent read, or a pasted prior dispatch) re-classify
+	// every subsequent turn.
+	const lastUser = [...context.messages].reverse().find((m) => m.role === "user");
 	const text = [
 		context.systemPrompt ?? "",
-		...context.messages.map((message) => extractMessageText(message)),
+		lastUser ? extractMessageText(lastUser) : "",
 	].join("\n");
 	for (const [phase, pattern] of GSD_PHASE_PATTERNS) {
 		if (pattern.test(text)) return phase;
@@ -413,6 +429,27 @@ export function resolveGsdPhaseForSdk(context: Context, projectRoot: string): st
 		if (guidedRoot === resolvedRoot) {
 			return guided.unitType;
 		}
+	}
+	// Auto-mode records the dispatched unit type before each turn — that is the
+	// authoritative phase, so prefer it over any inference. (Guided interactive
+	// dispatch is handled above via getGuidedUnitContext.) Ignore `hook/*`
+	// pseudo-units and anything not a recognised GSD phase.
+	const autoUnit = getActiveAutoUnitType();
+	if (autoUnit && KNOWN_GSD_PHASES.has(autoUnit)) {
+		return autoUnit;
+	}
+
+	// No authoritative guided/auto signal → ad-hoc turn. Do NOT regex-infer a
+	// phase from prose: that would fire the workflow MCP preflight and, for
+	// run-uat, strip Bash/Write/Edit/gsd_exec for the rest of the session the
+	// moment the conversation (or the GSD system prompt itself) happened to
+	// mention a phase token. An ad-hoc turn keeps the full tool surface.
+	//
+	// The header-anchored inference remains only as a last resort while auto is
+	// running but the current unit wasn't recorded for some reason; even then it
+	// matches the `UNIT:` dispatch header only, never bare slugs in scrollback.
+	if (!isAutoActive()) {
+		return undefined;
 	}
 	return inferGsdPhaseFromContext(context);
 }
@@ -1724,6 +1761,15 @@ function isStringRecord(value: unknown): value is Record<string, string> {
 	return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
 }
 
+export function resolveWorkflowMcpPreflightServerConfig(
+	mcpServers: unknown,
+	workflowServerName: string | undefined,
+): Record<string, unknown> | undefined {
+	if (!workflowServerName || !isRecord(mcpServers)) return undefined;
+	const workflowServerConfig = mcpServers[workflowServerName];
+	return isRecord(workflowServerConfig) ? workflowServerConfig : undefined;
+}
+
 function cloneSdkMcpServerConfig(config: unknown): Record<string, unknown> | undefined {
 	if (!isRecord(config)) return undefined;
 	const cloned: Record<string, unknown> = {};
@@ -2103,6 +2149,19 @@ export function buildSdkOptions(
 // streamSimple implementation
 // ---------------------------------------------------------------------------
 
+let capturedClaudeCodeUIContext: ExtensionUIContext | undefined;
+
+/**
+ * Capture the active extension UI context from `before_provider_request`. Core
+ * invokes `streamSimple` with a plain `SimpleStreamOptions` (no
+ * `extensionUIContext`), so without this the elicitation handler is never wired
+ * and `ask_user_questions` immediately returns cancelled. See index.ts, which
+ * registers the hook that calls this.
+ */
+export function setClaudeCodeUIContext(ui: ExtensionUIContext | undefined): void {
+	capturedClaudeCodeUIContext = ui;
+}
+
 /**
  * GSD streamSimple function that delegates to the Claude Agent SDK.
  *
@@ -2152,7 +2211,7 @@ async function pumpSdkMessages(
 	try {
 		const permissionMode = await resolveClaudePermissionMode();
 		const claudeOptions = options as ClaudeCodeStreamOptions | undefined;
-		const uiContext = claudeOptions?.extensionUIContext;
+		const uiContext = claudeOptions?.extensionUIContext ?? capturedClaudeCodeUIContext;
 		const onExternalToolCall = claudeOptions?.onExternalToolCall;
 		const onExternalToolResult = claudeOptions?.onExternalToolResult;
 		const sdkQueryForTest = claudeOptions?._sdkQueryForTest;
@@ -2239,6 +2298,10 @@ async function pumpSdkMessages(
 						unitType: gsdPhase,
 						workflowServerName: workflowMcpServerName,
 						projectRoot,
+						workflowServerConfig: resolveWorkflowMcpPreflightServerConfig(
+							sdkOpts.mcpServers,
+							workflowMcpServerName,
+						),
 						signal: options?.signal,
 					});
 					if (preflightError) {

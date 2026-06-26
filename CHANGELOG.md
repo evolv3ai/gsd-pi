@@ -8,7 +8,316 @@ This changelog starts from the `open-gsd/gsd-pi` ownership baseline. Earlier pro
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-06-21
+
+### Added
+- **update**: reconcile stale PATH gsd-browser binary after install
+- **gsd**: route UAT sign-off and worktree-degradation blockers through the guidance catalog
+- **gsd**: fix shell-tool selection — uncapped sync bash, interruptible await, graceful kills
+- **browser-tools**: proven engine resolution — gsd-browser primary for web apps (ADR-037)
+- **gsd**: add the Unit Closeout module with the Interactive Closeout adapter (ADR-032)
+- **gsd**: Tool Surface Readiness gate — verify live tool surface at SDK init before the first model turn
+- **claude-code-cli**: expose Claude Fable 5 as an Opus-tier model
+- **pi-ai**: add Claude Fable 5 with Opus-tier thinking
+- **gsd**: gate all-complete auto exit on milestone settlement
+- **update**: warn on stale claude code runtime
+- **web**: allow disabling web token auth
+
 ### Fixed
+- **browser-tools**: fall back to PATH when bundled gsd-browser lacks native bin
+- **test**: restore verify:full unit test parity after prompt and dist-test drift
+- **gsd**: keep implicit token profile from skipping research
+- **test**: update provider order in web-onboarding-contract.test.ts
+- **test**: add clearBlockingError stub to createHost() in input-controller.test.ts
+- **test**: bump execute-task prompt baseline to 13770 (actual ~8259 chars)
+- escape Windows path in test-theme-colors regex assertion
+- **test**: don't add stale_crash_lock to issues when it has been fixed
+- **test**: fix remaining fed0172a test failures across 9 files
+- start activity pulse on agent_start when default loader is suppressed
+- **tui**: stop activity loader before clearing status container on agent_start
+- allowlist harness.test.ts and utilities.test.ts in pi boundary check
+- **test**: update mocks for fed0172a registry/profile-default changes
+- **footer**: abbreviate Windows home paths with backslash separators
+- **test**: use short oauth fixture to pass secret scan in CI
+- **test**: avoid ya29-shaped token in provider migration test
+- **gsd**: anchor token profiles, harden worktree dispatch, and expand logging
+- **agent-core**: forward resolved model in before_provider_request event
+- **gsd**: gate provider-keyed web search tools on configured credentials
+- **pi-agent-core**: terminate tool batch on external results to stop duplicate assistant bubbles
+- update package tests broken by Variant A transcript migration
+- **mcp-server**: do not resolve POSIX absolute paths on Windows in resolveComparableProjectPath
+- remove duplicate assertLinesFit declaration in tui-header-lifecycle test
+- export GsdProgressState and GsdProgressWidgetMode from @gsd/pi-coding-agent
+- restore autoCompact footer hint and implement small widgetMode layout
+- **pi-tui**: graceful shutdown when stdout pipe dies with EIO
+- build error, session-switch strip, manual collapse, tool collapse, OSC zone
+- **tui**: preserve progress strip timers, collapse toggles, and OSC zones
+- **gsd**: clear progress strip on completion and session switch
+- prevent dispose recursion in setGsdProgress and clear strip at completion
+- **gsd**: route queue order writes through transaction runner (#778)
+- **gsd**: fail closed on incomplete migration backups (#779)
+- **gsd**: anchor cwd before auto resume (#776)
+- **mcp-server**: avoid cwd lookup for project-qualified MCP orphans (#774)
+- **mcp-server**: gate workflow readiness and MCP server lifecycle (#760)
+- **gsd**: surface actionable SQLite db-open warnings (#756)
+- **gsd**: harden auto-loop worktree safety, dispatch history, and modularize phases (#755)
+- **issue**: models.json custom headers not applied to outgoing requests
+- **gsd**: reject disabled hard-blocker escalation
+- **tui**: fix inline image rendering in tool cards (overflow, stacking, alignment)
+- **gsd**: ignore completed workflow template state
+- **update**: refresh bundled gsd-browser
+- **auto-start**: scope strandedRecoveryAction to locked milestone
+- **issue**: [Bug]: Deadlock when trying to resume a parallel workflow
+- **issue**: Bug: gsd_decision_save sets active slice to 'deferred' when decision text mentions the slice ID + contains 'defer'
+- **resource-loader**: keep hasStale and sync in agreement to avoid endless resyncs
+- **resource-loader**: detect missing gsd-browser support files and preserve skill on resolve failure
+- stop installing placeholder gsd-browser skill support files
+- source gsd-browser skill from package
+- **issue**: ENOENT: process.cwd() crash in teardownAutoWorktree when cwd was deleted during milestone merge
+- deepen workflow event ledger
+- revert orchestrator/runFinalize closeout-skip guard
+- **gsd**: clear toolUnavailableRetries on verification success
+- apply milestone closeout idempotency guard on production auto paths
+- defer transport check to runUnitPhase and preserve closeout idempotency on git errors
+- restore transportGate + add regression tests for transport gate and double-complete guard
+- allow terminal closeout recovery when milestone DB is closed but merge is pending
+- apply terminal closeout idempotency guard on canonical complete path
+- refresh workflow DB before milestone closed-status guard
+- **prompts**: suppress repeated completion banner across orchestrator re-entries
+- centralized transport gate + milestone double-complete guard
+- **auto**: preserve tool-unavailable retry counter across unit re-dispatches
+- MCP tool-availability race — faster startup + bounded retry
+- **auto**: force-stop remote auto-mode sessions
+- **gsd**: hand off completed web tasks to browser UAT
+- **gsd**: relax looksLikeTable to allow prose preamble and missing separators
+- **issue**: roadmap-divergence reconciliation drift persists after repair: parseTableSlices false-positive on demo text containing | characters
+- **gsd**: follow milestone lease creation contract
+- **update**: make gsd-browser path reconcile fail-soft
+- **bug-2**: Primary model is not retried after limit reset rate-limited primary models are temporarily skipped until their reset window expires, then retried.
+- **bug-1**: Fallback model is selected but not used immediately runtime fallback now updates the active unit model before immediately continuing.
+- **mcp**: coerce legacy verificationEvidence strings and numeric attempt
+- **mcp**: import sanitizeSchemaForMoonshot into local scope
+- **mcp**: sanitize tool schemas for Moonshot/Kimi APIs
+- **auto**: skip stale verification retry when no milestone is active
+- **issue**: Orchestrator bails on dispatch when all milestones parked — pre-planning rules never fire
+- **gsd**: keep milestone-closeout off the parsers-legacy decision path (ADR-017)
+- **gsd**: address bugbot review findings on idle residue detection
+- use written summary path in repair and unify terminal detection
+- **gsd**: treat stale SUMMARY repair as failure and honor closed status aliases
+- **gsd**: surface idle milestone residue recovery on /gsd home
+- **gsd**: use shared terminal milestone check in doctor git cleanup
+- **gsd**: broaden milestone terminal detection and repair missing SUMMARY
+- **gsd**: treat a corrupt write-gate snapshot as a full reset
+- **issue**: [Bug]: GSD runs in a loop doing it's job until all tokens are gone.
+- **issue**: [Bug]: GitHub Copilot login doss not work in v1.1.1
+- **update-check**: require npm.cmd sibling for Windows --prefix pinning
+- **gsd**: only delete milestone placeholder this call inserted
+- **issue**: [Bug]: gsd-pi upgrade does not work after v1.0.2
+- **gsd**: prevent orphan milestones and refresh plan-milestone leases
+- **gsd**: ensure milestone exists and block active lease before one-shot plan
+- **issue**: [Bug]: Cant do anything: Error: spawn ENAMETOOLONG
+- **issue**: One-shot mutating commands (`new-milestone` / `gsd_ln`) bypass the Phase B lease layer — unsafe to co-run with an active `gsd auto` worker
+- **ci**: pin install-action to existing cargo-audit tag commit
+- **dependabot**: use root npm entry only for pnpm monorepo
+- **gsd**: mirror runtime-harness UAT promotion in checkNeedsRunUat dispatch gate
+- **gsd**: promote browser-executable UAT to runtime harness when self-contained
+- **gsd**: parse bare UAT Type declarations instead of defaulting to artifact-driven
+- **gsd**: parse bare UAT Type declarations instead of defaulting to artifact-driven
+- **gsd**: keep active requirements fallback compact for slice-scoped full calls
+- **gsd**: avoid full requirements fallback on empty db query
+- **gsd**: tolerate legacy retry-store sessions
+- **auth**: keep blocked oauth providers in api-key login
+- **ci**: restore pnpm-lock.yaml overrides section dropped during lockfile refresh
+- **issue**: Verification retry budget resets on every /gsd auto restart — verificationRetryCount and exhaustedVerificationUnits not persisted, causing unbounded redispatch
+- **auth**: fall back to stored API key when OAuth refresh fails
+- **auth**: prefer OAuth subscription routes over platform API keys
+- **gsd**: honor PREFERENCES.md models over session default in /gsd auto
+- **web**: restore ! prefix for raw shell commands in browser input
+- **gsd**: gate browser daemon warm-up on active engine and surface forbidden tools
+- **ci**: stabilize browser daemon tests and prompt golden gate
+- **test**: use t.skip for conditional browser daemon prep tests
+- **gsd**: pre-warm gsd-browser daemon before browser UAT dispatch
+- **gsd**: prepend Tool Surface guidance to auto-mode unit prompts
+- **gsd**: make destructive-command HARD BLOCK escapable via confirmation
+- **lockfile**: align web postcss specifier with workspace override to fix pnpm 10 frozen install
+- **lockfile**: restore overrides section dropped in prior lockfile regeneration
+- **issue**: [Bug]: TUI streaming renderer duplicates the prose line before a code fence (mid-buffer reflow misclassified as tail append; scrollback-clamp re-emits boundary line)
+- **issue**: [Bug]: Error: 400 {"error":{"message":"The use of the web search tool is not supported.","code":"unsupported_value"}}
+- **skills**: prefer project-local skill path over user-global in create-skill workflows
+- **bug-1**: Package @opengsd/gsd-pi not published to npm registry added ETARGET/notarget troubleshooting section with wait-and-retry, npx, and build-from-source options to docs/user-docs/troubleshooting.md.
+- **issue**: update stale ~/.claude/skills path in executable-code.md reference example
+- **issue**: [Bug]: Skill docs and workflows reference the wrong project-local skill directory
+- **browser-tools**: satisfy contract tools browser_click/type/verify/reload via gsd-browser translations
+- **gsd**: fail loud on missing workflow tools
+- **gsd**: address reviewer feedback on artifact reference check
+- **gsd**: block planning-artifact references in task IO fields
+- **gsd**: stop run-uat context-mode guidance steering to forbidden gsd_exec
+- **gsd**: external-engine post-hoc gate replay must not clobber verified depth gates
+- **overlay**: remove runtime fallback to ~/.pi/ directories
+- **gsd**: correct terminal MCP status set to match SDK literals
+- **gsd**: tool surface readiness must pass pending MCP servers through, not abort
+- add package.json to src/resources/shared so Node.js treats compiled files as ESM
+- **gsd**: closeout hook resolves basePath from tool input, not ctx.cwd
+- revert accidental pnpm-lock.yaml churn — restore overrides matching package.json
+- **gsd**: block readiness gate when workflow server is absent from init surface
+- **mcp-server**: warm workflow bridges at stdio startup, fail spawn on broken bridge
+- **gsd**: classify 'No such tool available' as transient tool-unavailable, retry instead of pausing
+- **issue**: checkoutBranchWithStashGuard: untracked-restore collision resolver scoped to .gsd/ only — non-.gsd/ files (e.g. .claude/settings.local.json) still throw isolationDegraded (incomplete fix for #134)
+- **issue**: Idempotent re-advance cancels the in-flight unit and hard-stops auto-mode (category:unknown)
+- **gsd**: restore project-root walk for tab completion from subdirectories
+- **gsd**: remove stale canonical dir when legacy worktree is cleaned in createWorktree
+- **gsd**: stale canonical dir must not shadow live legacy worktree in worktreePathFor
+- **gsd**: honor stranded branch recovery on milestone re-entry instead of recreating the worktree
+- **gsd**: eliminate safety-harness false positives for external engines and degraded isolation
+- **skills**: quote gsd-browser SKILL.md description to fix YAML parse error
+- **gsd**: clear pending auto-start when a fresh conversation replaces the interview
+- **gsd**: exclude discussion-scratch milestone dirs from startup drift check
+- **test**: add MCP-scoped gsd_plan_slice regression test and fix lockfile mismatch
+- **test**: restore discuss-slice tool-gating contract broken by #627 fix
+- **lockfile**: restore postcss specifier to match root override
+- **issue**: [Bug]: GSD Auto not working because toolset is not exposed?
+- **gsd**: drop constructor parameter properties from IllegalPhaseTransitionError
+- **gsd-db**: thread dbPath into migrateSchema; use RunResult.changes for tasksReset
+- **gsd**: add logWarning statement to empty catch in isAgentTurnInFlight
+- **gsd**: don't reap live discuss sessions as stale pending auto-start
+- **gsd**: hydrate write-gate state from disk so MCP-child gate verifications survive agent_end
+- **gsd-db**: atomic resetSliceCascade — close non-atomic undo reset (candidate 1)
+- **gsd-db**: atomic resetSliceCascade — close non-atomic undo reset (candidate 1)
+- **release**: build core before prod typecheck:extensions parity gate
+- **gsd**: re-project markdown after milestone transitions and startup drift
+- **web-app-uat**: exclude playwright install scripts from test-script detection
+- **gsd**: remove dead always-truthy guards from validation path reads
+- **web-app-uat**: tighten playwright script detection and dependency fallback
+- **tui**: realign viewport after phase-complete pinned output teardown
+- **gsd**: honor manual validation verdict overrides in auto-mode
+- **workflow-tools**: make verification field optional in sliceCompleteSchema
+- **user-input-boundary**: handle serverToolUse blocks in messageHasPendingAskUserQuestionsTool
+- **user-input-boundary**: use externalResult to detect completed ask_user_questions tool calls
+- **user-input-boundary**: treat externalResult as completion signal in messageHasPendingAskUserQuestionsTool
+- **claude-code-cli**: render MCP elicitation answers and skip duplicate approval pause
+- **claude-code-cli**: keep in-flight ask_user_questions elicitation alive through the foreground approval pause
+- **claude-code-cli**: render MCP elicitation answers and skip duplicate approval pause
+- **claude-code-cli**: resolve self-cancel loop for ask_user_questions elicitation
+- **claude-code-cli**: keep in-flight ask_user_questions elicitation alive through the foreground approval pause
+- **register-hooks**: alias fallback must not resurface when canonical is already present
+- **issue**: execute-task: gsd_task_complete missing from tool surface when MCP registers alias gsd_complete_task (adjust_tool_set strips alias before resolveScopedToolNames)
+- **tui**: scope isSubTurnTextReplacement orphan to replaced segment only
+- **tui**: tighten isHandoffWaitRestatement to prevent over-suppression
+- **claude-code-cli**: keep in-flight ask_user_questions elicitation alive through the foreground approval pause
+- **claude-code-cli**: await dialog fallback so in-flight guard is held during the wait
+- **claude-code-cli**: stop auto-mode watchdogs from self-cancelling ask_user_questions
+- **issue**: [Bug]: Stuck in git conflict state
+- **ci**: restore pnpm-lock.yaml overrides block dropped by drift
+- **issue**: [Bug]: Unable to run forensics when there is a git conflict
+- **issue**: Discuss flow emits two next-step blocks: global system.md convention collides with discuss.md "Next steps:" handoff
+- **issue**: Bug: createWorktree throws stale-state error for orphaned worktree directories not registered with git
+- **gsd**: stop duplicate claude code question fallback
+- **gsd**: use unitId: project for all invalid_preferences doctor issues
+- **gsd**: restore browser UAT tool availability
+- **gsd**: treat malformed global preferences symmetrically with malformed project
+- **pi-tui**: handle Kitty keyboard release events
+- **gsd**: surface preference diagnostics
+- restore pnpm-lock.yaml overrides block dropped in fix commit
+- **gsd**: suppress external cli structured questions
+- **issue**: 'Stream ended without finish_reason' misclassified as unknown → auto-mode pauses indefinitely (OpenAI-completions provider mid-stream cut)
+- **issue**: [Bug]: CODEBASE.md TTL blocks fingerprint check — timestamp stale for 30s after file changes
+- **bug-2**: Orchestrator stuck-window reset on pause/resume (`auto/orchestrator.js:889, 909`) removed `dispatchKeyWindow` reset from `resume()` and guarded the reset in `stop()` to only fire on hard stops (not on `"pause"` reason)
+- **bug-1**: Over-broad transient classification in `auto/run-unit.js:98` added `isStructural` check in session-error catch; `TypeError`/`is not a function` errors now set `isTransient: false` instead of always `true`
+- **issue**: strip bracket-wrapped depends in renderer and importer (#566)
+- **issue**: widen SLICE_ID_RE and add reassess cross-milestone depends validation (#566)
+- **roadmap-slices**: preserve range tokens through depends filter before expandDependencies
+- **issue**: add md-importer and gsd-db defense-in-depth for #566 bracket-wrapped depends
+- **issue**: Bug: gsd_plan_milestone accepts depends values like ["[S01]"] — corrupts DB and produces unrecoverable 'No slice eligible' block
+- **gsd**: restore workflow MCP transport gate for scoped runtime tools
+- **issue**: bug: /gsd verdict pass leaves WAL un-checkpointed; next /gsd auto re-shows blocked
+- **ci**: repair Discord release changelog announcements (#560)
+- **ci**: revert pnpm/action-setup to v4 (v6 drops node-gyp, breaks native builds)
+- **ci**: update npm-publish test to match upload-artifact@v7 bump
+- **ci**: drop pnpm cache from build-native publish job
+- **issue**: [Bug]: merge_strategy: merge is not respected
+- **publish**: restore npm overrides to package.json for published consumers
+- **ci**: key concurrency group on PR number, not branch name
+- **ci**: commit live-workflow harness + fix cleanup TARGET_VERSION pipe
+- **ci**: extend heavy-code gate to all .github/ paths
+- **ci**: address three new Bugbot findings on c1a1d564
+- **lockfile**: regenerate to include restored overrides from cf8fe573
+- **ci**: restore dropped overrides + classify workflow changes as heavy-code
+- **publish**: verify dist-tag after workspace package skip or race
+- **test**: accept dist/ parent as coverage for dist/web in files assertion
+- **ci**: let timestamp parse failures abort cleanup-dev-versions job
+- **publish**: verify prerelease dist-tag after race; derive workspace auth guard from package manifest
+- **publish**: guard empty workspace-package list in CLI and shell consumer
+- **security**: override transitive uuid + postcss to patched versions
+- **release**: publish all required packages to npm and verify before cutting the GitHub release
+- **ci**: harden CI and supply-chain from multi-agent review
+- **release**: make workspace package publish resilient to npm propagation
+- **release**: install optional deps before web build in native publish
+- **release**: publish @opengsd workspace packages from their dirs
+- update release lockfile
+- **release**: restore native engine packages in lockfile and prevent recurrence
+- **agent-modes**: detach spawned URL opener to avoid holding event loop
+- **tui**: preserve completed tool card status
+
+### Changed
+- **deps**: bump undici from 7.26.0 to 7.28.0
+- faster text measurement, leaner startup, snappier interactive open + render (#762)
+- ignore local .opencode/ agent state
+- **gsd**: deepen workflow architecture seams
+- **gsd**: single consent verdict engine; delete user-input-boundary shim; streaming pre-filter
+- **gsd**: drop write-only epoch, collapse double snapshot reads, route host gate writes through the host adapter
+- **deps-dev**: bump esbuild from 0.25.12 to 0.28.1
+- **gsd**: canonical closed-status in assessment backfill; getClosedSliceIds helper; slice summary carries title
+- **gsd**: single dispatch-key grammar, leaner ledger lookups, drop dead suppression entry point
+- **gsd**: declare the engine hook contract; consolidate tool-name normalizer seam
+- **gsd**: name the write-gate two-process seam — host/child adapters, epoch-stamped snapshot, per-basePath deferred gates
+- **gsd**: deepen consent questions behind one module with per-kind fail policy (#528, #682)
+- **gsd**: route dispatch decisions through DB queries, ban parsers-legacy from decision paths (ADR-017)
+- **gsd**: deepen dispatch history behind one module; rehydrate stuck window across sessions (#482)
+- **pi-ai**: decouple model generation from build
+- **tests**: deepen integration e2e fixtures
+- **browser-tools**: commit verified engine outcome back into the resolution record (simplify-review)
+- **gsd**: compose web-app UAT guidance from the resolved browser engine
+- **browser-tools**: key the managed adapter's surface to the contract; verify server coverage at warm-up
+- **gsd**: pair browser MCP server recognition with its launch-config owner
+- **gsd**: make the Browser Automation Contract a real module
+- **gsd**: apply simplify-review findings to notice modules
+- **gsd**: deepen user-facing notice & guidance modules
+- trigger CI
+- **gsd**: extract the Publication module from mergeMilestoneToMain (ADR-034)
+- **gsd**: introduce the Unit Registry as the single declaration point for unit types (ADR-033)
+- **gsd**: simplify-pass cleanups on the tool-surface readiness seam
+- **gsd**: single tool-naming seam — typed unit tool lists, one MCP name parser
+- **gsd**: apply simplify-pass cleanups to worktree placement seam
+- **gsd**: extract git checkout/stash recovery from auto-worktree into worktree-git-recovery
+- **gsd**: introduce worktree-placement seam with canonical .gsd-worktrees/ location
+- **gsd**: collapse worktree path-identity detection into worktree-root seam
+- **gsd**: two-altitude state machine — phase invariant, status core, typed vocabulary (ADR-030)
+- **gsd-db**: fold complete-slice cascade into db/writers/cascades.ts (candidate 1)
+- **gsd-db**: fold skip-slice cascade into db/writers/cascades.ts (candidate 1)
+- **gsd-db**: fold reopen cascades into db/writers/cascades.ts (candidate 1)
+- **gsd-db**: lift reads into db/queries.ts — the read seam (candidate 3)
+- **gsd-db**: peel manifest restore + legacy import into db/writers/import-restore.ts
+- **gsd-db**: peel worktree reconciliation into db/writers/reconcile.ts
+- **gsd-db**: peel memory writers into db/writers/memory.ts
+- **gsd-db**: extract db/engine.ts — connection + lifecycle + schema keystone
+- **gsd**: two-altitude state machine — phase invariant, status core, typed vocabulary (ADR-030)
+- **gsd-db**: fold complete-slice cascade into db/writers/cascades.ts (candidate 1)
+- **gsd-db**: fold skip-slice cascade into db/writers/cascades.ts (candidate 1)
+- **gsd-db**: fold reopen cascades into db/writers/cascades.ts (candidate 1)
+- **gsd-db**: lift reads into db/queries.ts — the read seam (candidate 3)
+- **gsd-db**: peel manifest restore + legacy import into db/writers/import-restore.ts
+- **gsd-db**: peel worktree reconciliation into db/writers/reconcile.ts
+- **gsd-db**: peel memory writers into db/writers/memory.ts
+- **gsd-db**: extract db/engine.ts — connection + lifecycle + schema keystone
+- **gsd**: modularize git closeout workflow
+- **gsd**: extract discussion handoff boundaries
+- **gsd**: deepen claude code question flow
+- **gsd**: deepen orchestration architecture
+- **issue**: rename cleanupSquashConflictState and update stale comments (#549)
+- **package**: add publish access:public, drop dead overrides + TUI prototypes
+
+### Fixed
+- **tui**: exit gracefully when stdout closes during interactive shutdown instead of crashing on terminal write errors
 - **gsd**: stop external engines from getting permanently stuck on "Discussion already in progress" — on claude-code-cli the host ingests the model turn's tool blocks after the workflow subprocess already verified the discuss depth gate, so re-arming the gate post-hoc wiped that verification and silently blocked the discuss→auto handoff; the re-arm is now skipped for an already-verified gate, relayed MCP gate answers are read from `result.structuredContent`, and a milestone left stuck by an earlier clobber self-recovers on the next `/gsd`
 - **gsd**: durably commit interactive milestone completions — completing a milestone outside auto-mode now commits the working tree where the work sits instead of silently bypassing `git.isolation`; under configured worktree/branch isolation a milestone closed outside its milestone worktree/branch surfaces a Needs Attention notice rather than finishing with untracked source files and no merge
 - **gsd**: honor an adopted stranded-milestone branch when auto mode re-enters the milestone — resuming saved milestone work no longer fails worktree creation with "already in use by another worktree" and stops emitting a degraded-isolation warning on every re-entry; configured worktree isolation is restored for the next milestone once the recovered one merges

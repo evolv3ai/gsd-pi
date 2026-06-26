@@ -11,7 +11,7 @@ import { atomicWriteSync } from "./atomic-write.js";
 import { parseUnitId } from "./unit-id.js";
 import { deriveState } from "./state.js";
 import { invalidateAllCaches } from "./cache.js";
-import { gsdRoot, resolveTasksDir, resolveSlicePath, resolveTaskFile, buildTaskFileName, buildSliceFileName } from "./paths.js";
+import { gsdRoot, resolveTasksDir, resolveSlicePath, resolveSliceFile, resolveTaskFile, buildTaskFileName, buildSliceFileName } from "./paths.js";
 import { sendDesktopNotification } from "./notifications.js";
 import { getTask, getSlice, getSliceTasks, updateTaskStatus, resetSliceCascade } from "./gsd-db.js";
 import { renderPlanCheckboxes, renderRoadmapCheckboxes } from "./markdown-renderer.js";
@@ -348,15 +348,14 @@ export async function handleResetSlice(
   }
 
   // Delete slice summary and UAT files
+  // Use resolveSliceFile so the legacy S01-SUMMARY.md filename is found even
+  // when buildSliceFileName now returns the flat-phase 01-SUMMARY.md format.
   let sliceFilesDeleted = 0;
-  const slicePath = resolveSlicePath(basePath, mid, sid);
-  if (slicePath) {
-    for (const suffix of ["SUMMARY", "UAT"]) {
-      const filePath = join(slicePath, buildSliceFileName(sid, suffix));
-      if (existsSync(filePath)) {
-        unlinkSync(filePath);
-        sliceFilesDeleted++;
-      }
+  for (const suffix of ["SUMMARY", "UAT"] as const) {
+    const filePath = resolveSliceFile(basePath, mid, sid, suffix);
+    if (filePath && existsSync(filePath)) {
+      unlinkSync(filePath);
+      sliceFilesDeleted++;
     }
   }
 

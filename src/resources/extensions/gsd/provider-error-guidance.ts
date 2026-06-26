@@ -60,6 +60,34 @@ function defaultAlternateModel(provider: string | undefined, modelId: string | u
   return undefined;
 }
 
+function isGeminiCliDeprecatedError(errorMsg: string): boolean {
+  return (
+    /IneligibleTierError/i.test(errorMsg)
+    || /UNSUPPORTED_CLIENT/i.test(errorMsg)
+    || /no longer supported for Gemini Code Assist for individuals/i.test(errorMsg)
+    || /migrate to the Antigravity suite/i.test(errorMsg)
+  );
+}
+
+function resolveGeminiCliDeprecationGuidance(input: ProviderErrorGuidanceInput): ProviderErrorGuidance {
+  const { provider, modelId, unitType } = input;
+  const modelLabel =
+    provider && modelId ? `${provider}/${modelId}` : modelId ?? provider ?? "google-gemini-cli";
+  const unitSuffix = unitType ? ` during ${unitType}` : "";
+
+  return {
+    summary:
+      `Provider error on ${modelLabel}${unitSuffix}. ` +
+      "Google no longer supports Gemini CLI for individual-tier users — migrate to Antigravity CLI.",
+    steps: [
+      "Install Antigravity CLI: curl -fsSL https://antigravity.google/cli/install.sh | bash",
+      "Run `agy` in a terminal and complete authentication.",
+      "In GSD, run `/login` and select Antigravity, or restart GSD to auto-migrate when `agy` is on PATH.",
+      "Run /gsd next to resume the paused unit.",
+    ],
+  };
+}
+
 /**
  * Build concrete next steps for a provider/model rejection pause.
  */
@@ -72,6 +100,10 @@ export function resolveProviderErrorGuidance(input: ProviderErrorGuidanceInput):
     preferencesPath,
     hasConfiguredFallbacks,
   } = input;
+
+  if (isGeminiCliDeprecatedError(errorMsg)) {
+    return resolveGeminiCliDeprecationGuidance(input);
+  }
 
   const modelLabel =
     provider && modelId ? `${provider}/${modelId}` : modelId ?? provider ?? "current model";

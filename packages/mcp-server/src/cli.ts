@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * @opengsd/mcp-server CLI — stdio transport entry point.
  *

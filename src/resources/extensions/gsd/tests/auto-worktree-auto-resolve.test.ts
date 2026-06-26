@@ -47,6 +47,23 @@ describe("isSafeToAutoResolve", () => {
     assert.ok(isSafeToAutoResolve("out/bundle.css.map"));
   });
 
+  // ─── Regenerable dependency lockfiles ────────────────────────────────────
+  test("returns true for common lockfiles", () => {
+    assert.ok(isSafeToAutoResolve("pnpm-lock.yaml"));
+    assert.ok(isSafeToAutoResolve("packages/app/pnpm-lock.yaml"));
+    assert.ok(isSafeToAutoResolve("package-lock.json"));
+    assert.ok(isSafeToAutoResolve("npm-shrinkwrap.json"));
+    assert.ok(isSafeToAutoResolve("yarn.lock"));
+    assert.ok(isSafeToAutoResolve("bun.lockb"));
+    assert.ok(isSafeToAutoResolve("bun.lock"));
+    assert.ok(isSafeToAutoResolve("Cargo.lock"));
+    assert.ok(isSafeToAutoResolve("crates/core/Cargo.lock"));
+    assert.ok(isSafeToAutoResolve("composer.lock"));
+    assert.ok(isSafeToAutoResolve("Gemfile.lock"));
+    assert.ok(isSafeToAutoResolve("Pipfile.lock"));
+    assert.ok(isSafeToAutoResolve("poetry.lock"));
+  });
+
   // ─── Real source files (should NOT be auto-resolved) ─────────────────────
   test("returns false for .ts source files", () => {
     assert.ok(!isSafeToAutoResolve("src/index.ts"));

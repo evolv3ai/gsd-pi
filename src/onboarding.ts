@@ -410,15 +410,17 @@ export async function runLlmStep(p: ClackModule, pc: PicoModule, authStorage: Au
     )
   }
 
-  if (isGeminiCliReady()) {
-    authOptions.push(
-      { value: 'gemini-cli', label: 'Use Google Gemini CLI', hint: 'uses your existing Gemini CLI session' },
-    )
-  }
-
   if (isAntigravityCliReady()) {
     authOptions.push(
-      { value: 'antigravity-cli', label: 'Use Antigravity CLI', hint: 'uses your existing Antigravity session' },
+      { value: 'antigravity-cli', label: 'Use Antigravity CLI', hint: 'recommended — replaces Gemini CLI for individuals' },
+    )
+  } else if (isGeminiCliReady()) {
+    authOptions.push(
+      {
+        value: 'gemini-cli',
+        label: 'Use Google Gemini CLI (deprecated)',
+        hint: 'individual tier no longer supported — install Antigravity from https://antigravity.google',
+      },
     )
   }
 
@@ -448,6 +450,7 @@ export async function runLlmStep(p: ClackModule, pc: PicoModule, authStorage: Au
   }
 
   if (method === 'gemini-cli') {
+    p.log.warn('Google Gemini CLI is deprecated for individual users — install Antigravity: https://antigravity.google')
     p.log.success('Google Gemini CLI detected — routing through local CLI')
     p.log.info('Your Gemini CLI session will be used for inference. No API key needed.')
     authStorage.set('google-gemini-cli', { type: 'api_key', key: 'cli' })

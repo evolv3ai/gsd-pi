@@ -1,11 +1,13 @@
 // Project/App: gsd-pi
 // File Purpose: GSD engine — connection ownership, lifecycle, schema/migrations,
 // and transaction primitives for the single-writer layer. The shared handle
-// (currentDb) lives here; writers (db/writers/*) and the Query Module
-// (db/queries.ts) read it through getDb()/getDbOrNull().
+// (currentDb) lives here; domain writers, allowlisted coordination/runtime
+// writers, schema/migration helpers, and the Query Module (db/queries.ts) read
+// it through getDb()/getDbOrNull().
 //
 // This file legitimately holds DDL and BEGIN/COMMIT control, so it is
-// allowlisted in tests/single-writer-invariant.test.ts alongside db/writers/.
+// allowlisted in tests/single-writer-invariant.test.ts alongside the explicit
+// writer layer.
 import { createRequire } from "node:module";
 import { existsSync, copyFileSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -16,7 +18,7 @@ import { createDbAdapter, type DbAdapter } from "../db-adapter.js";
 import { createBaseSchemaObjects } from "../db-base-schema.js";
 import { createCoordinationTablesV24 } from "../db-coordination-schema.js";
 import { createDbConnectionCache, type DbConnectionCacheEntry } from "../db-connection-cache.js";
-import { backupDatabaseBeforeMigration } from "../db-migration-backup.js";
+import { backupDatabaseBeforeMigration, isMigrationBackupError } from "../db-migration-backup.js";
 import {
   applyMigrationV2Artifacts,
   applyMigrationV3Memories,
@@ -601,8 +603,9 @@ export function openDatabase(path: string): boolean {
     initSchema(adapter, fileBacked, path);
   } catch (err) {
     // Corrupt freelist: DDL fails with "malformed" but VACUUM can rebuild.
-    // Attempt VACUUM recovery before giving up (see #2519).
-    if (fileBacked && err instanceof Error && err.message?.includes("malformed")) {
+    // Pre-migration backup failures are already pre-DDL and must propagate
+    // instead of being masked by VACUUM recovery (see #2519).
+    if (shouldAttemptVacuumRecovery(fileBacked, err)) {
       try {
         adapter.exec("VACUUM");
         initSchema(adapter, fileBacked, path);
@@ -633,6 +636,12 @@ export function openDatabase(path: string): boolean {
 
   return true;
 }
+
+function shouldAttemptVacuumRecovery(fileBacked: boolean, err: unknown): boolean {
+  return fileBacked && err instanceof Error && err.message.includes("malformed") && !isMigrationBackupError(err);
+}
+
+export const _shouldAttemptVacuumRecoveryForTest = shouldAttemptVacuumRecovery;
 
 export function closeDatabase(): void {
   if (currentDb) {
@@ -735,6 +744,7 @@ function createTransactionControls(db: DbAdapter) {
   return {
     begin: () => db.exec("BEGIN"),
     beginRead: () => db.exec("BEGIN DEFERRED"),
+    beginImmediate: () => db.exec("BEGIN IMMEDIATE"),
     commit: () => db.exec("COMMIT"),
     rollback: () => db.exec("ROLLBACK"),
   };
@@ -753,6 +763,16 @@ export function isInTransaction(): boolean {
 export function transaction<T>(fn: () => T): T {
   if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
   return _transactionRunner.transaction(createTransactionControls(currentDb), fn);
+}
+
+/**
+ * Run a BEGIN IMMEDIATE write transaction for operations that need SQLite's
+ * reserved writer lock before issuing updates. Re-entrant like transaction():
+ * nested calls run inside the outer transaction without a nested BEGIN.
+ */
+export function immediateTransaction<T>(fn: () => T): T {
+  if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  return _transactionRunner.immediateTransaction(createTransactionControls(currentDb), fn);
 }
 
 /**

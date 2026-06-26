@@ -14,7 +14,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     ...localBash,
     async execute(id, params, signal, onUpdate, ctx) {
-      const sshTarget = pi.getFlag("--ssh");
+      const sshTarget = pi.getFlag("ssh");
       if (sshTarget) {
         const remoteBash = createBashTool(process.cwd(), {
           operations: createSSHOperations(sshTarget),

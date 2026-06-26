@@ -165,7 +165,8 @@ describe("ToolExecutionComponent", () => {
 		assert.doesNotMatch(rendered, /Tool demo\u00b7do_thing/);
 		assert.match(rendered, /running/);
 		assert.match(rendered, /running · \d+(ms|s)/);
-		assert.match(rendered, /━/, "running cards should show the active rail sweep");
+		// Variant A uses a plain single-line compact card (no framed border/rail);
+		// the ━ rail sweep was removed from renderToolLineCard in fa2cf288.
 	});
 
 	test("does not render active rail sweep on completed cards", () => {

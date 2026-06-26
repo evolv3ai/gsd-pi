@@ -71,6 +71,25 @@ export const BUNDLED_SKILL_TRIGGERS: Array<{ trigger: string; skill: string }> =
   { trigger: "Deep code optimization audit — perf anti-patterns, memory leaks, algorithmic complexity, bundle size, I/O, caching, dead code (parallel pattern-based hunt)", skill: "code-optimizer" },
 ];
 
+/**
+ * Remove the volatile lines from a CODEBASE.md map before it is injected into
+ * the cached system-prompt prefix: the human-readable `Generated: <timestamp>`
+ * header and the `<!-- gsd:codebase-meta {...} -->` comment. Both carry a
+ * per-regeneration timestamp (and fingerprint) that change whenever the map is
+ * refreshed, which would otherwise invalidate the provider KV cache prefix on
+ * every turn even when the underlying file structure is identical. (#847)
+ */
+export function stripVolatileCodebaseMetadata(content: string): string {
+  return content
+    .split("\n")
+    .filter((line) => {
+      const trimmed = line.trimStart();
+      return !trimmed.startsWith("Generated:") && !trimmed.startsWith("<!-- gsd:codebase-meta");
+    })
+    .join("\n")
+    .trim();
+}
+
 function warnDeprecatedAgentInstructions(): void {
   const paths = [
     join(gsdHome(), "agent-instructions.md"),
@@ -132,6 +151,16 @@ export async function buildBeforeAgentStartResult(
         "warning",
       );
     }
+  }
+
+  // DB-backed memory backfills and projections run below. On a cold session
+  // the database file may exist without an active in-process adapter, so open
+  // the canonical project DB before those best-effort operations inspect it.
+  try {
+    const { ensureDbOpen } = await import("./dynamic-tools.js");
+    await ensureDbOpen(basePath);
+  } catch (e) {
+    logWarning("bootstrap", `project DB open failed before memory projection: ${(e as Error).message}`);
   }
 
   // ADR-013 step 5: opportunistic decisions->memories backfill. Idempotent
@@ -203,16 +232,21 @@ export async function buildBeforeAgentStartResult(
   const rawCodebase = readCodebaseMap(process.cwd());
   if (existsSync(codebasePath) && rawCodebase) {
     try {
-      const rawContent = rawCodebase.trim();
+      // Strip the volatile `Generated: <timestamp>` header line and the
+      // machine-readable `gsd:codebase-meta` comment before injecting. Both
+      // embed a per-regeneration timestamp/fingerprint; because this block
+      // rides the cached system-prompt prefix, leaving the timestamp in would
+      // invalidate the provider KV cache on every map refresh even when the
+      // file structure is unchanged. The full map (with timestamp) remains at
+      // .gsd/CODEBASE.md. (#847)
+      const rawContent = stripVolatileCodebaseMetadata(rawCodebase.trim());
       if (rawContent) {
         // Cap injection size to ~2 000 tokens to avoid bloating every request.
         // Full map is always available at .gsd/CODEBASE.md.
-        const generatedMatch = rawContent.match(/Generated: (\S+)/);
-        const generatedAt = generatedMatch?.[1] ?? "unknown";
         const content = rawContent.length > DEFAULT_CODEBASE_MAX_CHARS
           ? rawContent.slice(0, DEFAULT_CODEBASE_MAX_CHARS) + "\n\n*(truncated — see .gsd/CODEBASE.md for full map)*"
           : rawContent;
-        codebaseBlock = `\n\n[PROJECT CODEBASE — File structure and descriptions (generated ${generatedAt}, auto-refreshed when GSD detects tracked file changes; use /gsd codebase stats for status)]\n\n${content}`;
+        codebaseBlock = `\n\n[PROJECT CODEBASE — File structure and descriptions (auto-refreshed when GSD detects tracked file changes; use /gsd codebase stats for status)]\n\n${content}`;
       }
     } catch (e) {
       logWarning("bootstrap", `CODEBASE file read failed: ${(e as Error).message}`);

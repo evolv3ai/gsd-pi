@@ -1,0 +1,5 @@
+## GSD memories
+- Auth uses JWT with refresh rotation
+
+## Hermes MEMORY.md (read-only)
+User prefers concise Slack updates.

@@ -22,7 +22,7 @@ import type { ExtensionRunner } from "@gsd/pi-coding-agent/core/extensions/index
 import { FooterDataProvider } from "@gsd/pi-coding-agent/core/footer-data-provider.js";
 import { KeybindingsManager } from "@gsd/agent-core";
 import { ensureTool } from "@gsd/pi-coding-agent/utils/tools-manager.js";
-import { AdaptiveLayoutComponent } from "./components/adaptive-layout.js";
+import { GsdStatusWidget } from "./components/gsd-status-widget.js";
 import { AssistantMessageComponent } from "./components/assistant-message.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
 import { CustomEditor } from "./components/custom-editor.js";
@@ -97,7 +97,10 @@ export class InteractiveMode {
 	private ui: TUI;
 	private chatContainer: Container;
 	private pendingMessagesContainer: Container;
-	private adaptiveLayout: AdaptiveLayoutComponent;
+	private gsdStatusWidget: GsdStatusWidget;
+	private gsdStatusExpanded: boolean | undefined = undefined;
+	private gsdProgressState: import("@gsd/pi-coding-agent/core/extensions/extension-upstream-types.js").GsdProgressState | undefined;
+	private gsdProgressDispose?: () => void;
 	private statusContainer: Container;
 	private pinnedMessageContainer: Container;
 	private blockingErrorContainer: Container;
@@ -112,6 +115,7 @@ export class InteractiveMode {
 	private isInitialized = false;
 	private onInputCallback?: (text: string) => void;
 	private loadingAnimation: Loader | undefined = undefined;
+	private activityLoader: Loader | undefined = undefined;
 	private pendingWorkingMessage: string | null | undefined = undefined;
 	private readonly defaultWorkingMessage = "Working...";
 	private lastBlockingError: string | undefined = undefined;
@@ -119,6 +123,7 @@ export class InteractiveMode {
 	private lastSigintTime = 0;
 	private lastEscapeTime = 0;
 	private changelogMarkdown: string | undefined = undefined;
+	private startupHeaderDismissed = false;
 
 	private lastStatusSpacer: Spacer | undefined = undefined;
 	private lastStatusText: Text | undefined = undefined;
@@ -182,13 +187,16 @@ export class InteractiveMode {
 		this.headerContainer = new Container();
 		this.chatContainer = new Container();
 		this.pendingMessagesContainer = new Container();
-		this.adaptiveLayout = new AdaptiveLayoutComponent(() => ({
+		this.gsdStatusWidget = new GsdStatusWidget(() => ({
 			override: this.settingsManager.getAdaptiveMode(),
 			activeToolCount: this.pendingTools.size,
-			gsdPhase: this.pendingWorkingMessage ?? undefined,
+			gsdPhase: this.gsdProgressState?.phase ?? this.pendingWorkingMessage ?? undefined,
 			lastError: this.lastBlockingError,
 			sessionName: this.sessionManager.getSessionName(),
-			cwd: process.cwd(),
+			cwd: this.gsdProgressState?.path ?? process.cwd(),
+			manuallyExpanded: this.gsdStatusExpanded,
+			gsdProgress: this.gsdProgressState,
+			isStreaming: this.session.isStreaming,
 		}));
 		this.statusContainer = new Container();
 		this.pinnedMessageContainer = new Container();
@@ -206,7 +214,15 @@ export class InteractiveMode {
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor as import("@gsd/pi-tui").Component);
 		this.footerDataProvider = new FooterDataProvider(process.cwd());
-		this.footer = new FooterComponent(session, this.footerDataProvider);
+		this.footer = new FooterComponent(session, this.footerDataProvider, () => ({
+			override: this.settingsManager.getAdaptiveMode(),
+			activeToolCount: this.pendingTools.size,
+			gsdPhase: this.gsdProgressState?.phase ?? this.pendingWorkingMessage ?? undefined,
+			lastError: this.lastBlockingError,
+			cwd: this.gsdProgressState?.path ?? process.cwd(),
+			manuallyExpanded: this.gsdStatusExpanded,
+			gsdProgress: this.gsdProgressState,
+		}));
 		this.footer.setAutoCompactEnabled(session.autoCompactionEnabled);
 		this.toolOutputExpanded = this.settingsManager.getToolsExpanded();
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
@@ -231,7 +247,6 @@ export class InteractiveMode {
 		this.ui.addChild(this.headerContainer);
 		modeInit.mountStartupHeader(this);
 
-		this.ui.addChild(this.adaptiveLayout);
 		this.ui.addChild(this.chatContainer);
 		this.ui.addChild(this.pendingMessagesContainer);
 		this.ui.addChild(this.statusContainer);
@@ -250,6 +265,10 @@ export class InteractiveMode {
 		this.renderInitialMessages();
 
 		this.ui.start();
+		this.ui.onOutputClosed = () => {
+			if (this.isShuttingDown) return;
+			void keyHandlers.shutdown(this);
+		};
 		this.installStdinErrorRecovery();
 		this.isInitialized = true;
 
@@ -454,6 +473,7 @@ export class InteractiveMode {
 	private formatWebSearchResult(content: unknown): string { return extensionSystem.formatWebSearchResult(this, content); }
 	private setupExtensionShortcuts(extensionRunner: ExtensionRunner): void { extensionSystem.setupExtensionShortcuts(this, extensionRunner); }
 	private setExtensionStatus(key: string, text: string | undefined): void { extensionSystem.setExtensionStatus(this, key, text); }
+	private setGsdProgress(state: Parameters<typeof extensionSystem.setGsdProgress>[1], dispose?: () => void): void { extensionSystem.setGsdProgress(this, state, dispose); }
 	private setExtensionWidget(key: string, content: Parameters<typeof extensionSystem.setExtensionWidget>[2], options?: Parameters<typeof extensionSystem.setExtensionWidget>[3]): void { extensionSystem.setExtensionWidget(this, key, content, options); }
 	private clearExtensionWidgets(): void { extensionSystem.clearExtensionWidgets(this); }
 	private resetExtensionUI(): void { extensionSystem.resetExtensionUI(this); }
@@ -511,6 +531,17 @@ export class InteractiveMode {
 	private async cycleModel(direction: "forward" | "backward"): Promise<void> { return keyHandlers.cycleModel(this, direction); }
 	private toggleToolOutputExpansion(): void { keyHandlers.toggleToolOutputExpansion(this); }
 	private setToolsExpanded(expanded: boolean): void { keyHandlers.setToolsExpanded(this, expanded); }
+	toggleGsdStatusWidget(): void {
+		// Compute the effective expansion so the toggle always visually flips:
+		// undefined = use widgetMode default, otherwise use the explicit value.
+		const progress = this.gsdProgressState;
+		const defaultExpanded = progress !== undefined && progress.widgetMode !== "min";
+		const currentlyExpanded = this.gsdStatusExpanded !== undefined ? this.gsdStatusExpanded : defaultExpanded;
+		this.gsdStatusExpanded = !currentlyExpanded;
+		this.gsdStatusWidget.invalidate();
+		this.footer.invalidate();
+		this.ui.requestRender();
+	}
 	private setToolRailAnimation(enabled: boolean): void {
 		this.settingsManager.setToolRailAnimation(enabled);
 		setRailAnimationEnabled(enabled);

@@ -58,6 +58,8 @@ export type {
 	ExtensionWidgetOptions,
 	FindToolCallEvent,
 	GrepToolCallEvent,
+	GsdProgressState,
+	GsdProgressWidgetMode,
 	InputEvent,
 	InputEventResult,
 	InputSource,

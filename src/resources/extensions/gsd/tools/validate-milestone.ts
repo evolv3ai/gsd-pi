@@ -20,7 +20,7 @@ import {
   getMilestoneSlices,
   getMilestone,
 } from "../gsd-db.js";
-import { gsdProjectionRoot, clearPathCache } from "../paths.js";
+import { gsdProjectionRoot, clearPathCache, relMilestoneFile } from "../paths.js";
 import { resolveCanonicalMilestoneRoot } from "../worktree-manager.js";
 import { resolveWorktreeProjectRoot } from "../worktree-root.js";
 import { saveFile, clearParseCache } from "../files.js";
@@ -160,12 +160,11 @@ export async function handleValidateMilestone(
   // worktree exists for this milestone, validation reads/writes the
   // worktree's artifacts instead of stale project-root state.
   const validationMd = renderValidationMarkdown(effectiveParams);
-  const validationPath = join(
-    gsdProjectionRoot(artifactBasePath),
-    "milestones",
-    effectiveParams.milestoneId,
-    `${effectiveParams.milestoneId}-VALIDATION.md`,
-  );
+  // Layout-aware: flat-phase → phases/NN-slug/NN-VALIDATION.md;
+  // legacy → milestones/MID/MID-VALIDATION.md.
+  // join(artifactBasePath, relMilestoneFile) gives the absolute path; relMilestoneFile
+  // returns ".gsd/..."-relative so joining with basePath (project/worktree root) is correct.
+  const validationPath = join(artifactBasePath, relMilestoneFile(artifactBasePath, effectiveParams.milestoneId, "VALIDATION"));
 
   // ── DB write first — matches complete-task/complete-slice pattern ───
   // Write DB before disk so a crash between the two leaves a recoverable
@@ -204,12 +203,8 @@ export async function handleValidateMilestone(
     await saveFile(validationPath, validationMd);
     const projectRoot = resolveWorktreeProjectRoot(basePath);
     if (projectRoot !== artifactBasePath) {
-      const projectValidationPath = join(
-        gsdProjectionRoot(projectRoot),
-        "milestones",
-        effectiveParams.milestoneId,
-        `${effectiveParams.milestoneId}-VALIDATION.md`,
-      );
+      // Mirror to project root using the project root's layout (same logic as above).
+      const projectValidationPath = join(projectRoot, relMilestoneFile(projectRoot, effectiveParams.milestoneId, "VALIDATION"));
       try {
         await saveFile(projectValidationPath, validationMd);
       } catch (mirrorErr) {

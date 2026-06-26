@@ -38,7 +38,7 @@ import { checkResourcesStale, autoWorktreeBranch, mergeMilestoneToMain } from ".
 import { getSessionLockStatus } from "../session-lock.js";
 import { resolveUokFlags } from "../uok/flags.js";
 import { emitJournalEvent as _emitJournalEvent } from "../journal.js";
-import { loadEffectiveGSDPreferences, getIsolationMode, resolveEffectiveUnitIsolationMode } from "../preferences.js";
+import { loadEffectiveGSDPreferences, loadEffectiveGSDPreferencesWithRegistry, getIsolationMode, resolveEffectiveUnitIsolationMode, resolveProfileAnchorProvider } from "../preferences.js";
 import {
   detectWorktreeName,
   getMainBranch,
@@ -79,6 +79,17 @@ import { hasHeldMilestoneLease, reclaimMissingMilestoneLease } from "./milestone
 function now(): number {
   return Date.now();
 }
+
+/**
+ * Optional override for the post-settlement markdown projection rebuild
+ * (mergePendingCompleteMilestone). Production leaves this null so the real
+ * rebuild runs; tests inject a throwing function to deterministically exercise
+ * the best-effort failure path (orchestrator.ts:637), which is otherwise only
+ * reachable by driving advance() through a full merge-pending milestone
+ * settlement and then contriving a projection-rebuild fault.
+ * @internal
+ */
+let _projectionRebuildFn: ((projectRoot: string) => Promise<void>) | null = null;
 
 function noRemainingUnitsOutcome(stateSnapshot: GSDState): AutoTerminalOutcome {
   if (stateSnapshot.phase === "complete") {
@@ -196,7 +207,14 @@ export async function decideOrchestratorDispatch(
   const active = state.activeMilestone;
   const activeSession = input.session ?? session;
   const activeDispatchBasePath = activeSession?.basePath || dispatchBasePath;
-  const prefs = loadEffectiveGSDPreferences(activeDispatchBasePath)?.preferences;
+  const prefs = loadEffectiveGSDPreferencesWithRegistry(
+    ctx.modelRegistry,
+    activeDispatchBasePath,
+    resolveProfileAnchorProvider(ctx.model?.provider, session?.autoModeStartModel?.provider),
+    activeSession?.autoModeStartModel
+      ? `${activeSession.autoModeStartModel.provider}/${activeSession.autoModeStartModel.id}`
+      : undefined,
+  )?.preferences;
   if (!active) {
     if (state.phase !== "pre-planning") return null;
     if (!hasPendingDeepStage(prefs, activeDispatchBasePath)) {
@@ -509,7 +527,14 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
     milestoneId?: string;
   }): Promise<void> {
     const activeBasePath = this.getLiveDispatchBasePath();
-    const prefs = loadEffectiveGSDPreferences(activeBasePath)?.preferences;
+    const prefs = loadEffectiveGSDPreferencesWithRegistry(
+      this.ctx.modelRegistry,
+      activeBasePath,
+      resolveProfileAnchorProvider(this.ctx.model?.provider, this.s.autoModeStartModel?.provider),
+      this.s.autoModeStartModel
+        ? `${this.s.autoModeStartModel.provider}/${this.s.autoModeStartModel.id}`
+        : undefined,
+    )?.preferences;
     const uokFlags = resolveUokFlags(prefs);
     if (!uokFlags.gates) return;
     const milestoneId = input.milestoneId ?? this.s.currentMilestoneId ?? undefined;
@@ -631,8 +656,15 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
     this.s.milestoneSettlement = { ok: true, reason: "settled" };
     try {
       const projectRoot = this.s.originalBasePath || this.s.canonicalProjectRoot || this.runtimeBasePath;
-      const { rebuildMarkdownProjectionsFromDb } = await import("../commands-maintenance.js");
-      await rebuildMarkdownProjectionsFromDb(projectRoot);
+      // Test seam: when _projectionRebuildFn is injected, route the rebuild
+      // through it so the best-effort failure path (:637) is deterministically
+      // reachable. Production leaves it null → real rebuildMarkdownProjectionsFromDb.
+      if (_projectionRebuildFn) {
+        await _projectionRebuildFn(projectRoot);
+      } else {
+        const { rebuildMarkdownProjectionsFromDb } = await import("../commands-maintenance.js");
+        await rebuildMarkdownProjectionsFromDb(projectRoot);
+      }
     } catch (err) {
       logWarning(
         "engine",
@@ -1424,4 +1456,20 @@ export function resolveLiveOrchestratorBasePath(input: {
 
 export function createAutoOrchestrator(context: OrchestratorContext): AutoOrchestrationModule {
   return new AutoOrchestrator(context);
+}
+
+/**
+ * Inject an override for the post-settlement markdown projection rebuild,
+ * returning a function that restores the default (real rebuild) behavior. Used
+ * by tests to deterministically exercise the best-effort rebuild-failure path
+ * (orchestrator.ts:637) — otherwise only reachable by driving advance() through
+ * a full merge-pending milestone settlement and then contriving a projection
+ * fault. No production caller.
+ * @internal
+ */
+export function _setProjectionRebuildFnForTests(
+  fn: ((projectRoot: string) => Promise<void>) | null,
+): () => void {
+  _projectionRebuildFn = fn;
+  return () => { _projectionRebuildFn = null; };
 }

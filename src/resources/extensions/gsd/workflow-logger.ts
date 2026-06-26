@@ -109,6 +109,11 @@ export function setStderrLoggingEnabled(enabled: boolean): boolean {
   return previous;
 }
 
+/** Whether GSD extension diagnostics may write directly to process.stderr. */
+export function isGsdExtensionStderrEnabled(): boolean {
+  return _stderrEnabled;
+}
+
 // ─── Public API ─────────────────────────────────────────────────────────
 
 /**

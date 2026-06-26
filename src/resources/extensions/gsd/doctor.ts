@@ -5,7 +5,8 @@ import { loadFile, parseSummary, saveFile, parseTaskPlanMustHaves, countMustHave
 import { parseRoadmap as parseLegacyRoadmap, parsePlan as parseLegacyPlan } from "./parsers-legacy.js";
 import { isDbAvailable, getMilestoneSlices, getSliceTasks } from "./gsd-db.js";
 import { openExistingWorkflowDatabase } from "./db-workspace.js";
-import { resolveMilestoneFile, resolveMilestonePath, resolveSliceFile, resolveSlicePath, resolveTaskFile, resolveTasksDir, milestonesDir, gsdRoot, relMilestoneFile, relSliceFile, relTaskFile, relSlicePath, relGsdRootFile, resolveGsdRootFile, relMilestonePath, resolveGsdPathContract } from "./paths.js";
+import { resolveMilestoneFile, resolveMilestonePath, resolveSliceFile, resolveSlicePath, resolveTaskFile, resolveTasksDir, milestonesDir, legacyMilestonesDir, gsdRoot, relMilestoneFile, relSliceFile, relTaskFile, relSlicePath, relGsdRootFile, resolveGsdRootFile, relMilestonePath, resolveGsdPathContract } from "./paths.js";
+import { findMilestoneIds } from "./milestone-ids.js";
 import { deriveState, isMilestoneComplete } from "./state.js";
 import { invalidateAllCaches } from "./cache.js";
 import { loadEffectiveGSDPreferences, type GSDPreferences } from "./preferences.js";
@@ -194,7 +195,8 @@ export async function selectDoctorScope(basePath: string, requestedScope?: strin
   }
 
   const milestonesPath = milestonesDir(basePath);
-  if (!existsSync(milestonesPath)) return undefined;
+  const legacyMilestonesPath = legacyMilestonesDir(basePath);
+  if (!existsSync(milestonesPath) && !existsSync(legacyMilestonesPath)) return undefined;
 
   for (const milestone of state.registry) {
     const roadmapPath = resolveMilestoneFile(basePath, milestone.id, "ROADMAP");
@@ -363,7 +365,7 @@ export async function runGSDDoctor(basePath: string, options?: { fix?: boolean; 
   const isolationMode: "none" | "worktree" | "branch" = options?.isolationMode ??
     (prefs?.preferences?.git?.isolation === "worktree" ? "worktree" :
     prefs?.preferences?.git?.isolation === "branch" ? "branch" : "none");
-  await checkGitHealth(basePath, issues, fixesApplied, shouldFix, isolationMode);
+  await checkGitHealth(basePath, issues, fixesApplied, shouldFix, isolationMode, dryRun);
   const gitMs = Date.now() - t0git;
 
   // Runtime health checks — timed
@@ -387,7 +389,8 @@ export async function runGSDDoctor(basePath: string, options?: { fix?: boolean; 
   await checkEngineHealth(basePath, issues, fixesApplied);
 
   const milestonesPath = milestonesDir(basePath);
-  if (!existsSync(milestonesPath)) {
+  const legacyMilestonesPath2 = legacyMilestonesDir(basePath);
+  if (!existsSync(milestonesPath) && !existsSync(legacyMilestonesPath2)) {
     const report: DoctorReport = { ok: issues.every(i => i.severity !== "error"), basePath, issues, fixesApplied, timing: { git: gitMs, runtime: runtimeMs, environment: envMs, gsdState: 0 } };
     await appendDoctorHistory(basePath, report);
     return report;
@@ -432,7 +435,15 @@ export async function runGSDDoctor(basePath: string, options?: { fix?: boolean; 
     }
   }
 
-  for (const milestone of state.registry) {
+  // When DB is unavailable, state.registry is empty. Fall back to a direct
+  // filesystem scan so the doctor can still report issues (e.g. missing ROADMAP)
+  // for milestone dirs that exist on disk.
+  const milestoneEntries: Array<{ id: string; title: string }> =
+    state.registry.length > 0
+      ? state.registry
+      : findMilestoneIds(basePath).map(id => ({ id, title: id }));
+
+  for (const milestone of milestoneEntries) {
     const milestoneId = milestone.id;
     const milestonePath = resolveMilestonePath(basePath, milestoneId);
     if (!milestonePath) continue;
@@ -471,7 +482,17 @@ export async function runGSDDoctor(basePath: string, options?: { fix?: boolean; 
 
     const roadmapPath = resolveMilestoneFile(basePath, milestoneId, "ROADMAP");
     const roadmapContent = roadmapPath ? await loadFile(roadmapPath) : null;
-    if (!roadmapContent) continue;
+    if (!roadmapContent) {
+      issues.push({
+        severity: "error",
+        code: "missing_roadmap",
+        scope: "milestone",
+        unitId: milestoneId,
+        message: `Milestone ${milestoneId} is missing its ROADMAP.md file.`,
+        fixable: false,
+      });
+      continue;
+    }
 
     // Normalize slices: prefer DB, fall back to parser
     type NormSlice = RoadmapSliceEntry & { pending?: boolean; skipped?: boolean };
@@ -612,6 +633,8 @@ export async function runGSDDoctor(basePath: string, options?: { fix?: boolean; 
         // Pending slices haven't been planned yet — tasks/ is created on demand.
         // Skipped slices may legitimately never create tasks/.
         if (slice.pending || slice.skipped) continue;
+        // Flat-phase: tasks are embedded in plan files; no tasks/ subdir expected.
+        if (!existsSync(legacyMilestonesDir(basePath))) continue;
         issues.push({
           severity: slice.done ? "warning" : "error",
           code: "missing_tasks_dir",

@@ -4,7 +4,35 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { buildContextMessage } from "../bootstrap/system-context.ts";
+import { buildContextMessage, stripVolatileCodebaseMetadata } from "../bootstrap/system-context.ts";
+
+describe("stripVolatileCodebaseMetadata (#847 — KV cache stability)", () => {
+  const map = [
+    "# Codebase Map",
+    "",
+    "Generated: 2026-03-23T14:00:00Z | Files: 3 | Described: 2/3",
+    `<!-- gsd:codebase-meta {"generatedAt":"2026-03-23T14:00:00Z","fingerprint":"abc","fileCount":3,"truncated":false} -->`,
+    "",
+    "### src/",
+    "- `a.ts` — does a",
+    "- `b.ts`",
+  ].join("\n");
+
+  test("removes the Generated timestamp and meta comment lines", () => {
+    const stripped = stripVolatileCodebaseMetadata(map);
+    assert.ok(!stripped.includes("Generated:"));
+    assert.ok(!stripped.includes("gsd:codebase-meta"));
+    assert.ok(stripped.includes("- `a.ts` — does a"));
+    assert.ok(stripped.includes("### src/"));
+  });
+
+  test("is stable across regenerations that only change the timestamp", () => {
+    const later = map
+      .replace("2026-03-23T14:00:00Z | Files", "2026-03-24T09:30:00Z | Files")
+      .replace('"generatedAt":"2026-03-23T14:00:00Z"', '"generatedAt":"2026-03-24T09:30:00Z"');
+    assert.equal(stripVolatileCodebaseMetadata(map), stripVolatileCodebaseMetadata(later));
+  });
+});
 
 describe("buildContextMessage (#5019 — memory routing)", () => {
   const markedMemory = "[GSD Context Metadata]\n- Memory supplied: yes\n\n[MEMORY]\nrule one";

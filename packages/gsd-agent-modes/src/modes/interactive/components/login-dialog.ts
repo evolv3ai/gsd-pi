@@ -3,7 +3,7 @@
 import type { OAuthDeviceCodeInfo } from "@gsd/pi-ai";
 import { getOAuthProviders } from "@gsd/pi-ai/oauth";
 import { Container, type Focusable, getEditorKeybindings, Input, Spacer, Text, truncateToWidth, type TUI } from "@gsd/pi-tui";
-import { execFile } from "child_process";
+import * as childProcess from "node:child_process";
 import { theme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 import { keyHint } from "./keybinding-hints.js";
@@ -29,15 +29,36 @@ export function buildAuthUrlPresentation(url: string, terminalColumns: number): 
 	};
 }
 
-function openExternalUrl(url: string): void {
-	// PowerShell's Start-Process handles URLs with '&' safely; cmd /c start does not.
-	if (process.platform === "win32") {
-		execFile("powershell", ["-c", `Start-Process '${url.replace(/'/g, "''")}'`], () => {});
-		return;
+export function buildExternalUrlOpenCommand(url: string, platform: NodeJS.Platform = process.platform): {
+	command: string;
+	args: string[];
+} {
+	switch (platform) {
+		case "win32":
+			return {
+				command: "powershell",
+				args: ["-c", `Start-Process '${url.replace(/'/g, "''")}'`],
+			};
+		case "darwin":
+			return { command: "open", args: [url] };
+		default:
+			return { command: "xdg-open", args: [url] };
 	}
+}
 
-	const openCmd = process.platform === "darwin" ? "open" : "xdg-open";
-	execFile(openCmd, [url], () => {});
+type UrlOpenerSpawn = (
+	command: string,
+	args: readonly string[],
+	options: childProcess.SpawnOptions,
+) => Pick<childProcess.ChildProcess, "unref">;
+
+export function openExternalUrl(url: string, spawnUrlOpener: UrlOpenerSpawn = childProcess.spawn): void {
+	const { command, args } = buildExternalUrlOpenCommand(url);
+	const child = spawnUrlOpener(command, args, {
+		detached: true,
+		stdio: "ignore",
+	});
+	child.unref();
 }
 
 /**

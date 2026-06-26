@@ -119,3 +119,18 @@ test("#4929: formatDoctorReportJson preserves the stale-lock issue + PID for --j
     `JSON output must include the stale PID in some issue message. Got: ${messages.slice(0, 300)}`,
   );
 });
+
+test("#4929: runGSDDoctor fix clears stale auto-mode worker state", async (t) => {
+  const base = makeStaleLockFixture();
+  t.after(() => {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  const before = await runGSDDoctor(base);
+  assert.ok(before.issues.some((issue) => issue.code === "stale_crash_lock"));
+
+  const fixed = await runGSDDoctor(base, { fix: true });
+  assert.ok(fixed.fixesApplied.some((fix) => fix.includes("stale auto-mode worker")));
+  assert.equal(fixed.issues.some((issue) => issue.code === "stale_crash_lock"), false);
+});

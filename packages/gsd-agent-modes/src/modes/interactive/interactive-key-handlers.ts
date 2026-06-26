@@ -64,6 +64,7 @@ export function setupKeyHandlers(host: InteractiveModeDelegateHost): void {
 		host.ui.onDebug = () => host.handleDebugCommand();
 		host.defaultEditor.onAction("selectModel", () => host.showModelSelector());
 		host.defaultEditor.onAction("expandTools", () => host.toggleToolOutputExpansion());
+		host.defaultEditor.onToggleGsdStatus = () => host.toggleGsdStatusWidget?.();
 		host.defaultEditor.onAction("toggleThinking", () => host.toggleThinkingBlockVisibility());
 		host.defaultEditor.onAction("externalEditor", () => host.openExternalEditor());
 		host.defaultEditor.onAction("followUp", () => host.handleFollowUp());

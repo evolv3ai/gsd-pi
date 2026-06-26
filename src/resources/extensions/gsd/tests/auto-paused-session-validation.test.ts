@@ -36,7 +36,12 @@ test("resolveMilestonePath returns null for missing milestone", (t) => {
 
 test("resolveMilestonePath returns path for existing milestone", (t) => {
   const base = makeTmpBase();
-  mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
+  const mDir = join(base, ".gsd", "milestones", "M001");
+  mkdirSync(mDir, { recursive: true });
+  // A content-bearing legacy milestone dir requires at least one non-META file
+  // (dirIsContentBearingLegacyMilestone); an empty dir is now treated as a
+  // metadata-only placeholder left by git-service.ts and is not legacy layout.
+  writeFileSync(join(mDir, "M001-CONTEXT.md"), "# M001\n");
   t.after(() => cleanup(base));
 
   const result = resolveMilestonePath(base, "M001");
@@ -93,7 +98,11 @@ test("stale milestone: completed (has SUMMARY) means paused session should be di
 
 test("valid milestone: exists and has no SUMMARY means paused session is valid", (t) => {
   const base = makeTmpBase();
-  mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
+  const mDir = join(base, ".gsd", "milestones", "M001");
+  mkdirSync(mDir, { recursive: true });
+  // A content-bearing legacy milestone dir requires at least one non-META file;
+  // use CONTEXT as the existing content, with no SUMMARY (milestone still active).
+  writeFileSync(join(mDir, "M001-CONTEXT.md"), "# M001\n");
   t.after(() => cleanup(base));
 
   const dir = resolveMilestonePath(base, "M001");

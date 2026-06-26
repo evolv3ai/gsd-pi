@@ -33,6 +33,7 @@ import { shouldIgnoreAgentEndForActiveUnit } from "../auto/unit-runner-events.js
 import { resolveModelId } from "../auto-model-selection.js";
 import { resolveProjectRoot } from "../worktree.js";
 import { clearDiscussionFlowState } from "./write-gate.js";
+import { scheduleFallbackContinuation } from "./fallback-continuation.js";
 import { clearGuidedUnitContext } from "../guided-unit-context.js";
 import { resumeAutoAfterProviderDelay } from "./provider-error-resume.js";
 import {
@@ -154,10 +155,7 @@ async function tryProviderModelFallback(params: ProviderModelFallbackParams): Pr
           setCurrentUnitModelForRecovery(candidate);
           setCurrentDispatchedModelId({ provider: candidate.provider, id: candidate.id });
           switchedNotify(`${candidate.provider}/${candidate.id}`);
-          pi.sendMessage(
-            { customType: "gsd-auto-timeout-recovery", content: "Continue execution.", display: false },
-            { triggerTurn: true },
-          );
+          scheduleFallbackContinuation(pi);
           return true;
         }
       }
@@ -181,10 +179,7 @@ async function tryProviderModelFallback(params: ProviderModelFallbackParams): Pr
         setCurrentUnitModelForRecovery(startModel);
         setCurrentDispatchedModelId({ provider: startModel.provider, id: startModel.id });
         switchedNotify(`${startModel.provider}/${startModel.id}`);
-        pi.sendMessage(
-          { customType: "gsd-auto-timeout-recovery", content: "Continue execution.", display: false },
-          { triggerTurn: true },
-        );
+        scheduleFallbackContinuation(pi);
         return true;
       }
     }
@@ -664,7 +659,28 @@ export async function handleAgentEnd(
       return;
     }
 
+    // ── Tool-schema overload: the active model repeatedly emitted tool-call
+    //    arguments that fail schema validation (e.g. a model whose tool-call
+    //    grammar can't satisfy GSD's schemas). Before hard-pausing, try the
+    //    unit's configured fallbacks and the auto-mode start model — the model
+    //    the user actually selected. This lets auto-mode recover by switching
+    //    back to a schema-capable model instead of aborting outright (#813).
+    //    Do not persistently block the model: schema-overload is request-shape
+    //    specific, mirroring the model-error path above.
     if (cls.kind === "tool-schema") {
+      const dash = getAutoDashboardData();
+      const switched = await tryProviderModelFallback({
+        ctx,
+        pi,
+        rejectedProvider: ctx.model?.provider,
+        rejectedId: ctx.model?.id,
+        basePath: dash.basePath,
+        unitType: dash.currentUnit?.type,
+        switchedNotify: (label) =>
+          ctx.ui.notify(`Switched to ${label} after repeated tool schema validation failures.`, "warning"),
+      });
+      if (switched) return;
+
       await pauseAutoForProviderError(ctx.ui, errorDetail, () => pauseAuto(ctx, pi, {
         message: `Tool schema error${errorDetail}`,
         category: "tool-schema",
@@ -677,11 +693,15 @@ export async function handleAgentEnd(
       return;
     }
 
-    // Cap rate-limit backoff for CLI-style providers (openai-codex, google-gemini-cli)
+    // Cap rate-limit backoff for CLI-style providers (openai-codex, google-gemini-cli, google-antigravity)
     // which use per-user quotas with shorter windows (#2922).
     if (cls.kind === "rate-limit") {
       const currentProvider = ctx.model?.provider;
-      if (currentProvider === "openai-codex" || currentProvider === "google-gemini-cli") {
+      if (
+        currentProvider === "openai-codex"
+        || currentProvider === "google-gemini-cli"
+        || currentProvider === "google-antigravity"
+      ) {
         cls.retryAfterMs = Math.min(cls.retryAfterMs, 30_000);
       }
       const dash = getAutoDashboardData();
@@ -728,58 +748,22 @@ export async function handleAgentEnd(
     // --- Transient errors: try model fallback first, then pause ---
     // Rate limits are often per-model, so switching models can bypass them.
     if (cls.kind === "rate-limit" || cls.kind === "network" || cls.kind === "server" || cls.kind === "connection" || cls.kind === "stream") {
-      // Try model fallback
       const dash = getAutoDashboardData();
-      if (dash.currentUnit) {
-        const modelConfig = resolveModelWithFallbacksForUnit(dash.currentUnit.type);
-        if (modelConfig && modelConfig.fallbacks.length > 0) {
-          const availableModels = ctx.modelRegistry.getAvailable();
-          const nextModelId = getNextFallbackModel(ctx.model?.id, modelConfig);
-          if (nextModelId) {
-            retryState.networkRetryCount = 0;
-            retryState.currentRetryModelId = undefined;
-            const modelToSet = resolveModelId(nextModelId, availableModels, ctx.model?.provider);
-            const modelUnavailable = dash.basePath && modelToSet
-              ? isModelBlocked(dash.basePath, modelToSet.provider, modelToSet.id) ||
-                isModelTemporarilyUnavailable(dash.basePath, modelToSet.provider, modelToSet.id)
-              : false;
-            if (modelToSet && !modelUnavailable) {
-              const ok = await pi.setModel(modelToSet, { persist: false });
-              if (ok) {
-                setCurrentUnitModelForRecovery(modelToSet);
-                setCurrentDispatchedModelId({ provider: modelToSet.provider, id: modelToSet.id });
-                ctx.ui.notify(`Model error${errorDetail}. Switched to fallback: ${nextModelId} and resuming.`, "warning");
-                pi.sendMessage({ customType: "gsd-auto-timeout-recovery", content: "Continue execution.", display: false }, { triggerTurn: true });
-                return;
-              }
-            }
-          }
-        }
-      }
-
-      // Try restoring session model
-      const sessionModel = getAutoModeStartModel();
-      if (sessionModel) {
-        const dash = getAutoDashboardData();
-        const sessionModelUnavailable = dash.basePath
-          ? isModelBlocked(dash.basePath, sessionModel.provider, sessionModel.id) ||
-            isModelTemporarilyUnavailable(dash.basePath, sessionModel.provider, sessionModel.id)
-          : false;
-        if (!sessionModelUnavailable && (ctx.model?.id !== sessionModel.id || ctx.model?.provider !== sessionModel.provider)) {
-          const startModel = ctx.modelRegistry.getAvailable().find((m) => m.provider === sessionModel.provider && m.id === sessionModel.id);
-          if (startModel) {
-            const ok = await pi.setModel(startModel, { persist: false });
-            if (ok) {
-              setCurrentUnitModelForRecovery(startModel);
-              setCurrentDispatchedModelId({ provider: startModel.provider, id: startModel.id });
-              retryState.networkRetryCount = 0;
-              retryState.currentRetryModelId = undefined;
-              ctx.ui.notify(`Model error${errorDetail}. Restored session model: ${sessionModel.provider}/${sessionModel.id} and resuming.`, "warning");
-              pi.sendMessage({ customType: "gsd-auto-timeout-recovery", content: "Continue execution.", display: false }, { triggerTurn: true });
-              return;
-            }
-          }
-        }
+      const switched = await tryProviderModelFallback({
+        ctx,
+        pi,
+        rejectedProvider: ctx.model?.provider,
+        rejectedId: ctx.model?.id,
+        basePath: dash.basePath,
+        unitType: dash.currentUnit?.type,
+        switchedNotify: (label) => {
+          retryState.networkRetryCount = 0;
+          retryState.currentRetryModelId = undefined;
+          ctx.ui.notify(`Model error${errorDetail}. Switched to fallback: ${label} and resuming.`, "warning");
+        },
+      });
+      if (switched) {
+        return;
       }
     }
 

@@ -39,6 +39,7 @@ export interface SerializedVisualizerData {
   changelog: unknown
   sliceVerifications: unknown[]
   knowledge: unknown
+  memories: unknown
   captures: unknown
   health: unknown
   discussion: unknown[]

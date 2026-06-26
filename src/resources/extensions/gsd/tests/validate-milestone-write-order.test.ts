@@ -15,7 +15,12 @@ import { clearParseCache } from "../files.js";
 
 function makeTmpBase(): string {
   const base = join(tmpdir(), `gsd-val-handler-${randomUUID()}`);
-  mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
+  const mDir = join(base, ".gsd", "milestones", "M001");
+  mkdirSync(mDir, { recursive: true });
+  // A content-bearing legacy milestone dir requires at least one non-META file
+  // (dirIsContentBearingLegacyMilestone) so the layout sniffer treats it as a
+  // real legacy milestone rather than a metadata-only placeholder.
+  writeFileSync(join(mDir, "M001-CONTEXT.md"), "# M001\n");
   return base;
 }
 
@@ -101,6 +106,9 @@ describe("handleValidateMilestone write ordering (#2725)", () => {
     const milestoneDir = join(base, ".gsd", "milestones", "M001");
     rmSync(milestoneDir, { recursive: true, force: true });
     writeFileSync(milestoneDir, "not-a-directory");
+    // Also block the flat-phase fallback path: write a regular file named
+    // "phases" so mkdir("phases/01-m001", {recursive:true}) throws ENOTDIR.
+    writeFileSync(join(base, ".gsd", "phases"), "not-a-directory");
 
     const result = await handleValidateMilestone(VALID_PARAMS, base);
 

@@ -372,12 +372,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				headers,
 			});
 		},
-		onPayload: async (payload, _model) => {
+		onPayload: async (payload, model) => {
 			const runner = extensionRunnerRef.current;
 			if (!runner?.hasHandlers("before_provider_request")) {
 				return payload;
 			}
-			return runner.emitBeforeProviderRequest(payload);
+			// Thread the resolved model into the event so extensions can gate on
+			// provider/api (e.g. native web_search injection). Without this the
+			// before_provider_request event carries no model and provider-shape
+			// detection silently fails.
+			return runner.emitBeforeProviderRequest(payload, model);
 		},
 		onResponse: async (response, _model) => {
 			const runner = extensionRunnerRef.current;

@@ -12,7 +12,7 @@
  * without modifying orchestration code.
  */
 
-import type { GSDState } from "./types.js";
+import type { GSDState, TaskIO } from "./types.js";
 import type { GSDPreferences } from "./preferences.js";
 import type { MinimalModelRegistry } from "./context-budget.js";
 import { loadFile, extractUatType, loadActiveOverrides } from "./files.js";
@@ -44,15 +44,15 @@ import {
   resolveTaskFile,
   relTaskFile,
   relSliceFile,
+  relMilestoneFile,
   buildMilestoneFileName,
-  buildSliceFileName,
   buildTaskFileName,
   gsdProjectionRoot,
 } from "./paths.js";
 import { validateArtifact } from "./schemas/validate.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from "node:fs";
 import { logWarning, logError } from "./workflow-logger.js";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { hasImplementationArtifacts } from "./milestone-implementation-evidence.js";
 import {
   buildDiscussMilestonePrompt,
@@ -178,6 +178,26 @@ type ResearchProjectPromptBuilder = typeof buildResearchProjectPrompt;
 
 let reassessmentChecker: ReassessmentChecker = checkNeedsReassessment;
 let researchProjectPromptBuilder: ResearchProjectPromptBuilder = buildResearchProjectPrompt;
+
+/**
+ * Optional override for the reactive graph derivation step inside the
+ * "executing → reactive-execute" rule. Production leaves this null so the rule
+ * uses the real loadSliceTaskIO + deriveTaskGraph; tests inject a throwing
+ * function to deterministically exercise the best-effort failure path
+ * (auto-dispatch.ts:1494). The catch is otherwise unreachable because every
+ * operation it wraps (loadSliceTaskIO, deriveTaskGraph, saveReactiveState) is
+ * internally defensive.
+ * @internal
+ */
+let _reactiveGraphDeriveFn: ((basePath: string, mid: string, sid: string) => Promise<TaskIO[]>) | null = null;
+
+export function setReactiveGraphDeriveFnForTest(
+  fn: ((basePath: string, mid: string, sid: string) => Promise<TaskIO[]>) | null,
+): () => void {
+  const previous = _reactiveGraphDeriveFn;
+  _reactiveGraphDeriveFn = fn;
+  return () => { _reactiveGraphDeriveFn = previous; };
+}
 
 function shouldBypassMilestoneDepthGateInAuto(prefs: GSDPreferences | undefined): boolean {
   return isAutoActive() && prefs?.planning_depth !== "deep";
@@ -502,9 +522,8 @@ function backfillMissingAssessmentsFromSummaries(basePath: string, mid: string):
     const summaryPath = resolveSliceFile(basePath, mid, sliceId, "SUMMARY");
     if (!summaryPath || !existsSync(summaryPath)) continue;
 
-    const slicePath = resolveSlicePath(basePath, mid, sliceId);
     const assessmentPath = resolveSliceFile(basePath, mid, sliceId, "ASSESSMENT")
-      ?? (slicePath ? join(slicePath, buildSliceFileName(sliceId, "ASSESSMENT")) : null);
+      ?? join(basePath, relSliceFile(basePath, mid, sliceId, "ASSESSMENT"));
     if (!assessmentPath) continue;
 
     const assessmentRelPath = relSliceFile(basePath, mid, sliceId, "ASSESSMENT");
@@ -1421,7 +1440,9 @@ export const DISPATCH_RULES: DispatchRule[] = [
           graphMetrics,
         } = await import("./reactive-graph.js");
 
-        const taskIO = await loadSliceTaskIO(basePath, mid, sid);
+        const taskIO = _reactiveGraphDeriveFn
+          ? await _reactiveGraphDeriveFn(basePath, mid, sid)
+          : await loadSliceTaskIO(basePath, mid, sid);
         if (taskIO.length < 2) return null; // single task, no point
 
         const graph = deriveTaskGraph(taskIO);
@@ -1510,8 +1531,25 @@ export const DISPATCH_RULES: DispatchRule[] = [
       // missing, the planner created S##-PLAN.md with task entries but never
       // wrote the tasks/ directory files. Dispatch plan-slice to regenerate
       // them rather than hard-stopping — fixes the infinite-loop described in
-      // issue #909.
+      // issue #909. Flat-phase layout embeds tasks in the slice plan file, so
+      // skip recovery when tasks are embedded (<tasks> block or task checkboxes in phases/ plan).
       const taskPlanPath = resolveTaskFile(artifactBasePath, mid, sid, tid, "PLAN");
+      const slicePlanPath = resolveSliceFile(artifactBasePath, mid, sid, "PLAN");
+      const phasesRoot = join(gsdProjectionRoot(artifactBasePath), "phases");
+      const slicePlanContent = slicePlanPath && existsSync(slicePlanPath)
+        ? readFileSync(slicePlanPath, "utf-8")
+        : "";
+      const isPhasesSlicePlan =
+        slicePlanPath !== null &&
+        (slicePlanPath === phasesRoot || slicePlanPath.startsWith(`${phasesRoot}${sep}`));
+      const hasTaskCheckboxes = /^-\s+\[[ xX]\]\s+\*\*[\w.]+/m.test(slicePlanContent);
+      const tasksEmbeddedInSlicePlan = Boolean(
+        slicePlanPath &&
+        existsSync(slicePlanPath) &&
+        (slicePlanContent.includes("<tasks>") || (isPhasesSlicePlan && hasTaskCheckboxes)),
+      );
+      // tasksEmbeddedInSlicePlan is true when tasks live inside the slice plan
+      // (flat-phase phases/ layout with task checkboxes or renderPlanFromDb <tasks> block).
       const projectionTaskPlanPath = join(
         gsdProjectionRoot(artifactBasePath),
         "milestones",
@@ -1521,7 +1559,11 @@ export const DISPATCH_RULES: DispatchRule[] = [
         "tasks",
         buildTaskFileName(tid, "PLAN"),
       );
-      if ((!taskPlanPath || !existsSync(taskPlanPath)) && !existsSync(projectionTaskPlanPath)) {
+      if (
+        (!taskPlanPath || !existsSync(taskPlanPath)) &&
+        !existsSync(projectionTaskPlanPath) &&
+        !tasksEmbeddedInSlicePlan
+      ) {
         if (isDebugEnabled()) {
           const expectedTaskPlanPath = join(artifactBasePath, relTaskFile(artifactBasePath, mid, sid, tid, "PLAN"));
           const originalProjectRoot = session?.originalBasePath || basePath;
@@ -1653,10 +1695,13 @@ export const DISPATCH_RULES: DispatchRule[] = [
           };
         }
         if (!existsSync(mDir)) mkdirSync(mDir, { recursive: true });
-        const validationPath = join(
-          mDir,
-          buildMilestoneFileName(mid, "VALIDATION"),
-        );
+        // Use relMilestoneFile for the layout-aware filename:
+        //   legacy   → milestones/M001/M001-VALIDATION.md
+        //   flat-phase → phases/01-slug/01-VALIDATION.md
+        // When the milestone dir is only in the project root (worktree has none),
+        // write to the project root so the artifact lands in the canonical location.
+        const writeBase = resolveMilestonePath(artifactBasePath, mid) != null ? artifactBasePath : projectRoot;
+        const validationPath = join(writeBase, relMilestoneFile(writeBase, mid, "VALIDATION"));
         const skipSource = trivialVariant
           ? "trivial-scope pipeline variant"
           : "`skip_milestone_validation` preference";

@@ -5,7 +5,7 @@
 > **When to read this:** At the start of any session working on GSD-managed work, or when loaded by `/gsd`.
 >
 > **After reading this, always read `.gsd/STATE.md` to find out what's next.**
-> If the milestone has a `M###-CONTEXT.md`, read that too. If the active slice has an `S##-CONTEXT.md`, read that as well — these files contain project-specific decisions, reference paths, and implementation guidance that this generic methodology doc does not.
+> If the milestone has a `CONTEXT.md`, read that too. If the active slice has an `S##-CONTEXT.md`, read that as well — these files contain project-specific decisions, reference paths, and implementation guidance that this generic methodology doc does not.
 
 ---
 
@@ -14,8 +14,8 @@
 Read these files in order and act on what they say:
 
 1. **`.gsd/STATE.md`** — Where are we? What's the next action?
-2. **`.gsd/milestones/<active>/M###-ROADMAP.md`** — What's the plan? Which slices are done? (`STATE.md` tells you which milestone is active)
-3. **`.gsd/milestones/<active>/M###-CONTEXT.md`** — Milestone-level project decisions, reference paths, constraints. Read this before doing implementation work.
+2. **`.gsd/phases/<active>/ROADMAP.md`** — What's the plan? Which slices are done? (`STATE.md` tells you which milestone is active)
+3. **`.gsd/phases/<active>/CONTEXT.md`** — Milestone-level project decisions, reference paths, constraints. Read this before doing implementation work.
 4. If a slice is active and has one, read **`S##-CONTEXT.md`** — Slice-specific decisions and constraints.
 5. If a slice is active, read its **`S##-PLAN.md`** — Which tasks exist? Which are done?
 6. If `.gsd/CODEBASE.md` exists, skim it for fast structural orientation before broad code exploration.
@@ -46,7 +46,7 @@ All artifacts live in `.gsd/` at the project root:
   STATE.md                                  # Dashboard — always read first (derived cache; runtime, gitignored)
   DECISIONS.md                              # Append-only decisions register
   CODEBASE.md                               # Generated codebase map cache (auto-refreshed by GSD)
-  milestones/
+  phases/
     M001/
       M001-ROADMAP.md                       # Milestone plan (checkboxes = state)
       M001-CONTEXT.md                       # Optional: user decisions from discuss phase
@@ -69,7 +69,7 @@ All artifacts live in `.gsd/` at the project root:
 
 ## File Format Reference
 
-### `M###-ROADMAP.md`
+### `ROADMAP.md`
 
 ```markdown
 # M001: Title of the Milestone
@@ -96,7 +96,7 @@ All artifacts live in `.gsd/` at the project root:
 
 **Parsing rules:** `- [x]` = done, `- [ ]` = not done. The `risk:` and `depends:[]` tags are inline metadata parsed from the line. `depends:[]` lists slice IDs this slice requires to be complete first.
 
-**Boundary Map** (required section in M###-ROADMAP.md):
+**Boundary Map** (required section in ROADMAP.md):
 
 After the slices section, include a `## Boundary Map` that shows what each slice produces and consumes:
 
@@ -212,7 +212,7 @@ Critical wiring between artifacts:
 Exact next thing to do.
 ```
 
-### `M###-CONTEXT.md` / `S##-CONTEXT.md` (from discuss phase)
+### `CONTEXT.md` / `S##-CONTEXT.md` (from discuss phase)
 
 ```markdown
 # M001: Milestone or Slice Title — Context
@@ -268,7 +268,7 @@ Work flows through these phases. Each phase produces a file.
 ### Phase 1: Discuss (Optional)
 
 **Purpose:** Capture user decisions on gray areas before planning.
-**Produces:** `M###-CONTEXT.md` for milestone-level discussion or `S##-CONTEXT.md` for slice-level discussion.
+**Produces:** `CONTEXT.md` for milestone-level discussion or `S##-CONTEXT.md` for slice-level discussion.
 **When to use:** When the scope has ambiguities the user should weigh in on.
 **When to skip:** When the user already knows exactly what they want, or told you to just go.
 
@@ -276,7 +276,7 @@ Work flows through these phases. Each phase produces a file.
 1. Read the roadmap to understand the scope.
 2. Identify 3-5 gray areas — implementation decisions the user cares about.
 3. Use `ask_user_questions` to discuss each area, one round at a time. Never fabricate user input; wait for the user's actual response before the next round.
-4. Write decisions to the appropriate context file (`M###-CONTEXT.md` or `S##-CONTEXT.md`).
+4. Write decisions to the appropriate context file (`CONTEXT.md` or `S##-CONTEXT.md`).
 5. Do NOT discuss how to implement — only what the user wants.
 
 ### Phase 2: Research (Optional)
@@ -287,7 +287,7 @@ Work flows through these phases. Each phase produces a file.
 **When to skip:** When the codebase is familiar and the work is straightforward.
 
 **How to do it manually:**
-1. Read `M###-CONTEXT.md` and/or `S##-CONTEXT.md` if they exist — know what decisions are locked.
+1. Read `CONTEXT.md` and/or `S##-CONTEXT.md` if they exist — know what decisions are locked.
 2. Scout relevant code: `rg`, `find`, read key files.
 3. Use `resolve_library` / `get_library_docs` if needed.
 4. Write findings to `research.md` with these sections:
@@ -330,15 +330,15 @@ The **Don't Hand-Roll** and **Common Pitfalls** sections prevent the most expens
 **Produces:** `S##-PLAN.md` + individual `T01-PLAN.md` files.
 
 **For a milestone (roadmap):**
-1. Read `M###-CONTEXT.md`, `M###-RESEARCH.md`, and `.gsd/DECISIONS.md` if they exist.
+1. Read `CONTEXT.md`, `M###-RESEARCH.md`, and `.gsd/DECISIONS.md` if they exist.
 2. Decompose the vision into 1-10 demoable vertical slices. Prefer one slice for tiny, single-file, or static work unless the request clearly spans independent capabilities.
 3. Order by risk (high-risk first to validate feasibility early).
-4. Write `M###-ROADMAP.md` with checkboxes, risk levels, dependencies, demo sentences.
+4. Write `ROADMAP.md` with checkboxes, risk levels, dependencies, demo sentences.
 5. **Write the boundary map** — for each slice, specify what it produces (functions, types, interfaces, endpoints) and what it consumes from upstream slices. This forces interface thinking before implementation and enables deterministic verification that slices actually connect.
 
 **For a slice (task decomposition):**
-1. Read the slice's entry in `M###-ROADMAP.md` **and its boundary map section** — know what interfaces this slice must produce and consume.
-2. Read `M###-CONTEXT.md`, `S##-CONTEXT.md`, `M###-RESEARCH.md`, `S##-RESEARCH.md`, and `.gsd/DECISIONS.md` if they exist for this slice.
+1. Read the slice's entry in `ROADMAP.md` **and its boundary map section** — know what interfaces this slice must produce and consume.
+2. Read `CONTEXT.md`, `S##-CONTEXT.md`, `M###-RESEARCH.md`, `S##-RESEARCH.md`, and `.gsd/DECISIONS.md` if they exist for this slice.
 3. Read summaries from dependency slices (check `depends:[]` in roadmap).
 4. Verify that upstream slices' actual outputs match what the boundary map says this slice consumes. If they diverge, update the boundary map.
 5. Decompose into 1-7 tasks, each fitting one context window.
@@ -424,7 +424,7 @@ key_decisions:
 patterns_established:
   - "Pattern name and where it lives"
 drill_down_paths:
-  - .gsd/milestones/M001/slices/S01/tasks/T01-PLAN.md
+  - .gsd/phases/M001/slices/S01/tasks/T01-PLAN.md
 duration: 15min
 verification_result: pass
 completed_at: 2026-03-07T16:00:00Z
@@ -466,12 +466,12 @@ key_decisions: []
 **After a task completes:**
 1. Mark the task done in `S##-PLAN.md` (checkbox).
 2. Check if there's a next task in the slice → execute it.
-3. If slice is complete → write slice summary, mark slice done in `M###-ROADMAP.md`.
+3. If slice is complete → write slice summary, mark slice done in `ROADMAP.md`.
 
 **After a slice completes:**
 1. Write slice `S##-SUMMARY.md` (compresses all task summaries).
 2. Write slice `S##-UAT.md` — a human test script derived from the slice's must-haves and demo sentence.
-3. Mark the slice checkbox in `M###-ROADMAP.md` as `[x]`.
+3. Mark the slice checkbox in `ROADMAP.md` as `[x]`.
 4. Update `STATE.md` with new position.
 5. Update milestone `M###-SUMMARY.md` with the completed slice's contributions.
 6. Continue to next slice immediately. UAT can run after slice completion; automatic milestone closure requires each slice assessment to record `PASS`.
@@ -528,7 +528,7 @@ The EXACT first thing to do when resuming. Not vague. Specific.
 It is NOT the source of truth. It's a convenience dashboard.
 
 **Sources of truth:**
-- `M###-ROADMAP.md` → which slices exist and which are done
+- `ROADMAP.md` → which slices exist and which are done
 - `S##-PLAN.md` → which tasks exist within a slice
 - `T##-SUMMARY.md` → what happened during a task
 - `S##-SUMMARY.md` and `M###-SUMMARY.md` → compressed slice and milestone outcomes
@@ -614,7 +614,7 @@ Commit types: `feat`, `fix`, `test`, `refactor`, `docs`, `perf`, `chore`
 
 When planning or executing a task, load relevant prior context:
 
-1. Check the current slice's `depends:[]` in `M###-ROADMAP.md`.
+1. Check the current slice's `depends:[]` in `ROADMAP.md`.
 2. Load summaries from those dependency slices.
 3. Start with the **highest available level** — milestone `M###-SUMMARY.md` first.
 4. Only drill down to slice/task summaries if you need specific detail.
@@ -635,10 +635,10 @@ These are soft caps — exceed them when genuinely needed, but don't let summari
 
 This methodology doc is generic. Project-specific guidance belongs in the milestone and slice context files:
 
-- **`.gsd/milestones/<active>/M###-CONTEXT.md`** — milestone-level architecture decisions, reference file paths, and implementation constraints
-- **`.gsd/milestones/<active>/slices/S##/S##-CONTEXT.md`** — slice-level decisions, edge cases, and narrow implementation guidance when present
+- **`.gsd/phases/<active>/CONTEXT.md`** — milestone-level architecture decisions, reference file paths, and implementation constraints
+- **`.gsd/phases/<active>/slices/S##/S##-CONTEXT.md`** — slice-level decisions, edge cases, and narrow implementation guidance when present
 
-**Always read the active milestone's `M###-CONTEXT.md` before starting implementation work.** If the active slice also has `S##-CONTEXT.md`, read that too. These files tell you what decisions are locked, what files to reference, and how to verify your work in this specific project.
+**Always read the active milestone's `CONTEXT.md` before starting implementation work.** If the active slice also has `S##-CONTEXT.md`, read that too. These files tell you what decisions are locked, what files to reference, and how to verify your work in this specific project.
 
 ---
 

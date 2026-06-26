@@ -143,8 +143,12 @@ test("executeBacktrack writes trigger and regression markers", () => {
   const tmp = makeTempDir("exec-bt");
   setupGsdDir(tmp);
 
-  // Create target milestone directory
-  mkdirSync(join(tmp, ".gsd", "milestones", "M003"), { recursive: true });
+  // Create target milestone directory with a content file so it is recognised as
+  // a content-bearing legacy milestone by dirIsContentBearingLegacyMilestone
+  // (a metadata-only dir would be ignored by resolveMilestonePath).
+  const m003Dir = join(tmp, ".gsd", "milestones", "M003");
+  mkdirSync(m003Dir, { recursive: true });
+  writeFileSync(join(m003Dir, "M003-CONTEXT.md"), "# M003\n");
 
   const targetMid = executeBacktrack(tmp, "M005", {
     id: "CAP-test123",

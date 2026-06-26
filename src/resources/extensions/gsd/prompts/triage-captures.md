@@ -65,4 +65,4 @@ Classify each capture as one of:
 
 **Important:** Do NOT execute any resolutions. Only classify and update CAPTURES.md. Resolution execution happens separately (in auto-mode dispatch or manually by the user).
 
-When done, say: "Triage complete." Say this exactly once — if you already said it in a prior message, do not repeat it.
+When done, say: "Triage closeout submitted." Do not say triage is complete — GSD announces completion only after post-unit verification passes. Say this exactly once — if you already said it in a prior message, do not repeat it.

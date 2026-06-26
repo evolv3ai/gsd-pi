@@ -22,11 +22,11 @@
 | `/gsd debug status <slug>` | 查看指定 debug 会话 slug 的状态 |
 | `/gsd debug continue <slug>` | 恢复一个已有的 debug 会话 slug |
 | `/gsd debug --diagnose` | 检查 malformed artifacts 与会话健康（`--diagnose [<slug> | <issue text>]`） |
-| `/gsd dispatch` | 直接派发一个指定阶段（research、plan、execute、complete、reassess、uat、replan） |
+| `/gsd dispatch` | 直接派发一个指定阶段（research、plan、execute、complete、validate、reassess、uat、replan） |
 | `/gsd history` | 查看执行历史（支持 `--cost`、`--phase`、`--model` 过滤） |
 | `/gsd forensics` | 全访问 GSD 调试器：用于分析自动模式失败，支持结构化异常检测、单元追踪和 LLM 引导的根因分析 |
 | `/gsd cleanup` | 清理 GSD 状态文件和过期 worktrees |
-| `/gsd visualize` | 打开工作流可视化器（进度、依赖、指标、时间线） |
+| `/gsd visualize` | 打开工作流可视化器（进度、时间线、依赖、指标、健康、agent、变更、知识、记忆、捕获、导出） |
 | `/gsd brief <mode> [topic] [--slides]` | 生成自包含的可视化 HTML 简报。模式：`diagram`、`plan`、`diff`、`recap`、`table`、`slides`。 |
 | `/gsd export --html` | 为当前或已完成的 milestone 生成自包含 HTML 报告 |
 | `/gsd export --html --all` | 一次性为所有 milestones 生成回顾报告 |
@@ -68,9 +68,9 @@
 |------|------|
 | `/gsd prefs` | 模型选择、超时和预算上限 |
 | `/gsd mode` | 切换工作流模式（solo / team），同时应用与 milestone ID、git 提交行为和文档相关的协调默认值 |
-| `/gsd config` | 重新运行 provider 配置向导（LLM provider + 工具 key） |
+| `/gsd config` | （已弃用）设置工具 API key —— 请改用 `/gsd keys`（工具 key）或 `/gsd setup`（provider 配置向导） |
 | `/gsd keys` | API key 管理器：列出、添加、移除、测试、轮换、doctor |
-| `/gsd doctor` | 运行时健康检查与自动修复；问题会实时显示在 widget、visualizer 和 HTML reports 中（v2.40） |
+| `/gsd doctor` | 运行时健康检查与自动修复；问题会实时显示在 widget、visualizer 和 HTML reports 中 |
 | `/gsd inspect` | 查看 SQLite DB 诊断信息 |
 | `/gsd init` | 项目初始化向导：检测、配置并 bootstrap `.gsd/` |
 | `/gsd setup` | 查看全局 setup 状态和配置 |
@@ -95,6 +95,57 @@
 | `/gsd unpark` | 重新激活一个已 park 的 milestone |
 | Discard milestone | 在 `/gsd` 向导的 “Milestone actions” → “Discard” 中可用 |
 
+## 额外的 Prompt 驱动 Workflows
+
+这些顶层命令是原生 GSD workflows，会针对 milestone、slice 和 `.gsd/` 模型派发专用 prompt。完整的动态命令列表可查看 `/gsd help full`。
+
+| 命令 | 说明 |
+|------|------|
+| `/gsd explore` | 以苏格拉底式提问梳理想法，然后再决定是否进入 backlog、knowledge、research、spike、sketch 或 milestone |
+| `/gsd spike` | 通过一次性实验验证想法；支持 `--quick`、`--text` 和 frontier 模式 |
+| `/gsd sketch` | 用一次性 HTML mockup 探索 UI / 设计方向 |
+| `/gsd map-codebase` | 在 `.gsd/codebase/` 下生成结构化代码库参考文档 |
+| `/gsd docs-update` | 根据当前代码生成、更新或校验项目文档 |
+| `/gsd graphify` | 构建、查询、检查或 diff `.gsd/knowledge/` 知识图谱 |
+| `/gsd stats` | 显示项目统计、milestone 状态、git 指标和时间线 |
+| `/gsd progress` | 总结最近工作与下一步；可用 `--next` 或 `--do "..."` 路由动作 |
+| `/gsd health` | 检查 `.gsd/` 完整性；支持 `--repair` 和 `--context` |
+| `/gsd surface` | 管理当前会话 surfaced skills 和 extensions |
+| `/gsd code-review` | 审查已变更源码的 bug、安全性和质量问题 |
+| `/gsd review` | 从多个 reviewer 视角 peer-review 最近工作 |
+| `/gsd audit-milestone` | 校验 milestone 是否满足完成定义 |
+| `/gsd audit-uat` | 审计未完成的 UAT / verification 项 |
+| `/gsd audit-fix` | 分类并修复 audit findings |
+| `/gsd ui-review` | 对前端工作执行六维视觉审计 |
+| `/gsd secure-phase` | 校验已完成工作的威胁缓解措施 |
+| `/gsd validate-phase` | 审计并补齐验证或测试覆盖缺口 |
+| `/gsd verify-work` | 对已构建功能执行对话式 UAT |
+| `/gsd plan-review-convergence` | 通过多轮 review 推动 plan 收敛 |
+| `/gsd discuss-phase` | 通过自适应提问收集 milestone 或 slice 上下文 |
+| `/gsd plan-phase` | 创建带验证闭环的详细 slice plan |
+| `/gsd execute-phase` | 执行 slice tasks，支持 wave 化 |
+| `/gsd spec-phase` | 澄清 milestone 要交付什么，并评估歧义 |
+| `/gsd mvp-phase` | 将 milestone 规划成一个垂直 MVP slice |
+| `/gsd ui-phase` | 为前端 milestone 生成 `UI-SPEC` |
+| `/gsd ai-integration-phase` | 为 AI milestone 生成 `AI-SPEC` |
+| `/gsd ultraplan-phase` | 执行 extended-reasoning plan、review，然后 import |
+| `/gsd autonomous` | 持续推进剩余 lifecycle work |
+| `/gsd pause-work` | 暂停中途工作时创建上下文交接 |
+| `/gsd resume-work` | 通过完整上下文恢复工作 |
+| `/gsd manager` | 用 command-center workflow 管理多个 milestones |
+| `/gsd phase` | 管理 milestone 队列顺序 |
+| `/gsd thread` | 管理跨会话持久上下文 threads |
+| `/gsd workstreams` | 将 workstream 动作路由到 `/gsd parallel` |
+| `/gsd workspace` | 将 workspace 动作路由到 `/gsd worktree` |
+| `/gsd milestone-summary` | 生成项目或 milestone onboarding summary |
+| `/gsd review-backlog` | 审查并提升 backlog items |
+| `/gsd inbox` | 根据项目约定 triage GitHub issues 和 PRs |
+| `/gsd import` | 带冲突检测地导入外部 plans |
+| `/gsd ingest-docs` | 从 ADR、PRD、spec 或 docs bootstrap / merge `.gsd/` 状态 |
+| `/gsd profile-user` | 生成并持久化 developer behavior profile |
+| `/gsd settings` | 配置 workflow toggles 和 model profile |
+| `/gsd ns-context`、`/gsd ns-ideate`、`/gsd ns-manage`、`/gsd ns-project`、`/gsd ns-review`、`/gsd ns-workflow` | 旧命令集中的 namespace grouping 名称；由于 GSD 使用扁平命令列表，它们都会重定向到 `/gsd help` |
+
 ## 并行编排
 
 | 命令 | 说明 |
@@ -108,7 +159,7 @@
 
 完整文档见 [并行编排](./parallel-orchestration.md)。
 
-## Workflow Templates（v2.42）
+## Workflow Templates
 
 | 命令 | 说明 |
 |------|------|
@@ -117,7 +168,7 @@
 | `/gsd templates` | 列出可用 workflow templates |
 | `/gsd templates info <name>` | 查看某个 template 的详细信息 |
 
-## 自定义 Workflows（v2.42）
+## 自定义 Workflows
 
 | 命令 | 说明 |
 |------|------|
@@ -148,14 +199,14 @@
 | `/gsd cmux sidebar on/off` | 切换 cmux 侧边栏元数据 |
 | `/gsd cmux splits on/off` | 切换 cmux subagent 可视化分屏 |
 
-## GitHub Sync（v2.39）
+## GitHub Sync
 
 | 命令 | 说明 |
 |------|------|
 | `/github-sync bootstrap` | 初始配置：根据当前 `.gsd/` 状态创建 GitHub Milestones、Issues 和 draft PRs |
 | `/github-sync status` | 显示同步映射数量（milestones、slices、tasks） |
 
-在偏好设置里启用 `github.enabled: true`。要求已安装并认证 `gh` CLI。同步映射会保存在 `.gsd/.github-sync.json`。
+在偏好设置里启用 `github.enabled: true`。要求已安装并认证 `gh` CLI。同步映射会保存在 `.gsd/github-sync.json`。
 
 ## Git 命令
 
@@ -315,9 +366,9 @@ gsd --mode mcp
 
 ```bash
 /gsd update
-# Current version: v2.36.0
+# Current version: 1.2.0
 # Checking npm registry...
-# Updated to v2.37.0. Restart GSD to use the new version.
+# Updated to 1.3.0. Restart GSD to use the new version.
 ```
 
 如果已经是最新版本，它会给出提示且不做任何操作。
@@ -334,4 +385,4 @@ gsd --mode mcp
 /gsd export --html --all
 ```
 
-报告会保存到 `.gsd/reports/`，并生成一个可浏览的 `index.html`，链接到所有已生成的快照。
+报告会保存到 `.gsd/reports/`，并生成一个可浏览的 `index.html`，链接到所有已生成的快照。存在记忆条目时，每个报告都会在 Knowledge 区域包含活跃记忆列表。

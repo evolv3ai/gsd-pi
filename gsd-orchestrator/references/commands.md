@@ -191,6 +191,57 @@ Add persistent project knowledge. Rules append to `KNOWLEDGE.md`; patterns and l
 gsd headless knowledge "Always use UTC timestamps in API responses"
 ```
 
+## Additional Prompt-Driven Workflows
+
+These commands dispatch native GSD prompts adapted to the milestone, slice, and `.gsd/` model. Use them as `gsd headless <command> [args...]`.
+
+| Command | Description |
+|---------|-------------|
+| `explore` | Socratic ideation before committing an idea |
+| `spike` | Focused throwaway experiment (`--quick`, `--text`, or frontier mode) |
+| `sketch` | UI/design exploration with throwaway HTML mockups |
+| `map-codebase` | Generate structured codebase docs under `.gsd/codebase/` |
+| `docs-update` | Generate, update, or verify docs against live code |
+| `graphify` | Build, query, inspect, or diff `.gsd/knowledge/` |
+| `stats` | Show project statistics, milestone state, git metrics, and timeline |
+| `progress` | Summarize recent work; can route `--next` or `--do "..."` |
+| `health` | Check `.gsd/` integrity (`--repair`, `--context`) |
+| `surface` | Manage surfaced skills and extensions |
+| `code-review` | Review changed source for bugs, security, and quality |
+| `review` | Peer-review recent work across reviewer perspectives |
+| `audit-milestone` | Verify a milestone met its definition of done |
+| `audit-uat` | Audit outstanding UAT/verification items |
+| `audit-fix` | Classify and remediate audit findings |
+| `ui-review` | Run a six-pillar frontend visual audit |
+| `secure-phase` | Verify threat mitigations |
+| `validate-phase` | Fill validation and test coverage gaps |
+| `verify-work` | Run conversational UAT |
+| `plan-review-convergence` | Iterate a plan through review cycles |
+| `discuss-phase` | Gather milestone or slice context through questions |
+| `plan-phase` | Create a detailed slice plan |
+| `execute-phase` | Execute slice tasks with wave support |
+| `spec-phase` | Clarify what a milestone delivers |
+| `mvp-phase` | Plan a vertical MVP milestone |
+| `ui-phase` | Produce a `UI-SPEC` |
+| `ai-integration-phase` | Produce an `AI-SPEC` |
+| `ultraplan-phase` | Run extended planning and review |
+| `autonomous` | Run remaining lifecycle work continuously |
+| `pause-work` | Create a pause handoff |
+| `resume-work` | Resume work with restored context |
+| `manager` | Manage multiple milestones from a command-center workflow |
+| `phase` | Manage milestone queue ordering |
+| `thread` | Manage persistent context threads |
+| `workstreams` | Route workstream actions through `parallel` |
+| `workspace` | Route workspace actions through `worktree` |
+| `milestone-summary` | Generate a project or milestone summary |
+| `review-backlog` | Review and promote backlog items |
+| `inbox` | Triage GitHub issues and PRs |
+| `import` | Ingest external plans with conflict detection |
+| `ingest-docs` | Bootstrap or merge `.gsd/` state from docs |
+| `profile-user` | Generate and persist a developer profile |
+| `settings` | Configure workflow toggles and model profile |
+| `ns-context`, `ns-ideate`, `ns-manage`, `ns-project`, `ns-review`, `ns-workflow` | Namespace-grouping names that redirect to `help` |
+
 ## Phases
 
 GSD workflows progress through these phases:

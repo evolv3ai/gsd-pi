@@ -62,19 +62,19 @@ export async function checkRuntimeHealth(
     if (lock) {
       const alive = isLockProcessAlive(lock);
       if (!alive) {
-        issues.push({
-          severity: "error",
-          code: "stale_crash_lock",
-          scope: "project",
-          unitId: "project",
-          message: `Stale auto-mode worker (PID ${lock.pid}, started ${lock.startedAt}, was executing ${lock.unitType} ${lock.unitId}) — process is no longer running`,
-          file: "<workers table>",
-          fixable: true,
-        });
-
         if (shouldFix("stale_crash_lock")) {
           clearStaleWorkerLock(basePath);
           fixesApplied.push("cleared stale auto-mode worker state");
+        } else {
+          issues.push({
+            severity: "error",
+            code: "stale_crash_lock",
+            scope: "project",
+            unitId: "project",
+            message: `Stale auto-mode worker (PID ${lock.pid}, started ${lock.startedAt}, was executing ${lock.unitType} ${lock.unitId}) — process is no longer running`,
+            file: "<workers table>",
+            fixable: true,
+          });
         }
       }
     }

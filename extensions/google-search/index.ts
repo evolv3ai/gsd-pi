@@ -174,7 +174,20 @@ function cacheKey(query: string): string {
 
 // ── Extension ────────────────────────────────────────────────────────────────
 
-export default function (pi: ExtensionAPI) {
+// Track which ExtensionAPI instances have already registered the tool, so a
+// real single-instance process registers once across repeated session_start
+// fires, while tests that construct a fresh pi per case each register cleanly.
+const googleSearchRegisteredFor = new WeakSet<object>();
+
+/**
+ * Register the google_search tool. Gated on credential availability by the
+ * session_start hook: the tool is never advertised to the model when it cannot
+ * authenticate (GEMINI_API_KEY or Google OAuth), so the agent does not reach
+ * for a tool that can only return an auth error. Idempotent per pi instance.
+ */
+function registerGoogleSearchTool(pi: ExtensionAPI): void {
+	if (googleSearchRegisteredFor.has(pi)) return;
+	googleSearchRegisteredFor.add(pi);
 	pi.registerTool({
 		name: "google_search",
 		label: "Google Search",
@@ -411,7 +424,9 @@ export default function (pi: ExtensionAPI) {
 			return new Text(text, 0, 0);
 		},
 	});
+}
 
+export default function (pi: ExtensionAPI) {
 	// ── Session cleanup ─────────────────────────────────────────────────────
 
 	pi.on("session_shutdown", async () => {
@@ -419,18 +434,33 @@ export default function (pi: ExtensionAPI) {
 		client = null;
 	});
 
-	// ── Startup notification ─────────────────────────────────────────────────
+	// ── Credential-gated registration ────────────────────────────────────────
+	// Only register google_search when it can actually authenticate. Without
+	// credentials the tool can only return an auth error, so presenting it to
+	// the model is pure confusion — the agent reaches for a tool that cannot
+	// work. Re-evaluated each session so a key or Google login added before a
+	// later session is picked up without a restart.
 
 	pi.on("session_start", async (_event, ctx) => {
-		if (process.env.GEMINI_API_KEY) return;
-
-		const hasOAuth = await ctx.modelRegistry.authStorage.hasAuth("google-gemini-cli");
-		if (!hasOAuth) {
-			ctx.ui.notify(
-				"Google Search: No authentication set. Log in via Google or set GEMINI_API_KEY to use google_search.",
-				"warning",
-			);
+		const hasGeminiKey = !!process.env.GEMINI_API_KEY;
+		let hasOAuth = false;
+		if (!hasGeminiKey) {
+			try {
+				hasOAuth = await ctx.modelRegistry.authStorage.hasAuth("google-gemini-cli");
+			} catch {
+				hasOAuth = false;
+			}
 		}
+
+		if (hasGeminiKey || hasOAuth) {
+			registerGoogleSearchTool(pi);
+			return;
+		}
+
+		ctx.ui.notify(
+			"Google Search: No authentication set. Log in via Google or set GEMINI_API_KEY to use google_search.",
+			"warning",
+		);
 	});
 }
 

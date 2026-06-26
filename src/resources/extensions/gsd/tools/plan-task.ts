@@ -3,7 +3,8 @@ import { isClosedStatus } from "../status-guards.js";
 import { isNonEmptyString, validateStringArray } from "../validation.js";
 import { transaction, getSlice, getTask, insertTask, upsertTaskPlanning } from "../gsd-db.js";
 import { invalidateStateCache } from "../state.js";
-import { renderTaskPlanFromDb } from "../markdown-renderer.js";
+import { renderTaskPlanFromDb, renderPlanFromDb } from "../markdown-renderer.js";
+import { resolveSliceFile, resolveTasksDir } from "../paths.js";
 import { flushWorkflowProjections } from "../projection-flush.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
@@ -137,6 +138,21 @@ export async function handlePlanTask(
 
   try {
     const renderResult = await renderTaskPlanFromDb(basePath, params.milestoneId, params.sliceId, params.taskId);
+
+    // Flat-phase: tasks live as checkboxes in the slice plan's <tasks> block,
+    // not as standalone TID-PLAN.md files. Re-render the slice plan so the
+    // new/updated task appears in the plan file that gsd-core reads.
+    // Guard: resolveTasksDir is null in flat-phase (no tasks/ subdir exists);
+    //        only sync if a slice plan already exists (guards pre-plan-slice calls).
+    try {
+      const tDir = resolveTasksDir(basePath, params.milestoneId, params.sliceId);
+      if (!tDir && resolveSliceFile(basePath, params.milestoneId, params.sliceId, "PLAN")) {
+        await renderPlanFromDb(basePath, params.milestoneId, params.sliceId);
+      }
+    } catch (syncErr) {
+      logWarning("tool", `plan-task: slice-plan sync failed: ${(syncErr as Error).message}`);
+    }
+
     invalidateStateCache();
     clearParseCache();
 

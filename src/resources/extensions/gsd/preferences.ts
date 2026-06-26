@@ -20,7 +20,12 @@ import type { PostUnitHookConfig, PreDispatchHookConfig, TokenProfile } from "./
 import type { DynamicRoutingConfig } from "./model-router.js";
 import { normalizeStringArray } from "../shared/format-utils.js";
 import { logWarning } from "./workflow-logger.js";
-import { resolveProfileDefaults as _resolveProfileDefaults } from "./preferences-models.js";
+import {
+  DEFAULT_TOKEN_PROFILE,
+  resolveProfileDefaults as _resolveProfileDefaults,
+  VALID_TOKEN_PROFILES,
+  resolveDisabledModelProvidersFromPreferences,
+} from "./preferences-models.js";
 import { nativeHasCommittedHead, nativeIsRepo } from "./native-git-bridge.js";
 
 import {
@@ -142,6 +147,94 @@ export function getProjectGSDPreferencesPath(basePath?: string): string {
   return projectPreferencesPath(basePath);
 }
 
+/** Minimal model-registry surface for provider-aware preference resolution. */
+export type PreferencesModelRegistry = {
+  getAvailable: () => ReadonlyArray<{ provider: string; id: string }>;
+};
+
+/** Format registry models the same way tier resolution and prefs persistence use. */
+export function availableModelIdsFromRegistry(registry: PreferencesModelRegistry): string[] {
+  return registry.getAvailable().map((m) => `${m.provider}/${m.id}`);
+}
+
+/**
+ * Keep only provider-qualified model IDs for a single provider (case-insensitive).
+ * Bare IDs are excluded — tier resolution requires provider/model form.
+ */
+export function restrictModelIdsToProvider(modelIds: string[], provider: string): string[] {
+  const normalized = provider.trim().toLowerCase();
+  if (!normalized) return modelIds;
+  return modelIds.filter((id) => {
+    const slash = id.indexOf("/");
+    if (slash <= 0) return false;
+    return id.slice(0, slash).toLowerCase() === normalized;
+  });
+}
+
+/**
+ * Model IDs for token-profile tier resolution. When an anchor provider is known
+ * (session model / auto-start snapshot), stay on that provider instead of picking
+ * the globally cheapest tier match across every logged-in provider (e.g. Gemini
+ * Flash beating GPT mini on cost).
+ */
+export function modelIdsForProfileResolution(
+  registry: PreferencesModelRegistry,
+  anchorProvider?: string,
+  disabledProviders?: string[],
+): string[] | undefined {
+  let all = availableModelIdsFromRegistry(registry);
+  if (disabledProviders?.length) {
+    const blocked = new Set(
+      disabledProviders.map((p) => p.trim().toLowerCase()).filter((p) => p.length > 0),
+    );
+    all = all.filter((id) => {
+      const slash = id.indexOf("/");
+      if (slash <= 0) return true;
+      return !blocked.has(id.slice(0, slash).toLowerCase());
+    });
+  }
+  if (all.length === 0) return undefined;
+  if (!anchorProvider?.trim()) return all;
+  // Stay on the anchor provider — do not fall back to the full registry when the
+  // scoped list is empty (that reintroduces cross-provider cost picks like Gemini).
+  return restrictModelIdsToProvider(all, anchorProvider);
+}
+
+/** Provider anchor for token-profile tier resolution (auto-start model wins). */
+export function resolveProfileAnchorProvider(
+  sessionProvider?: string,
+  autoModeStartProvider?: string | null,
+): string | undefined {
+  const start = autoModeStartProvider?.trim();
+  if (start) return start;
+  const session = sessionProvider?.trim();
+  return session || undefined;
+}
+
+/**
+ * Load effective preferences with token-profile tiers resolved against models
+ * the user can actually call (from the live registry), not canonical Anthropic
+ * fallbacks.
+ */
+export function loadEffectiveGSDPreferencesWithRegistry(
+  registry: PreferencesModelRegistry | undefined,
+  basePath?: string,
+  anchorProvider?: string,
+  preferredModelId?: string,
+): LoadedGSDPreferences | null {
+  const preferenceOpts = preferredModelId !== undefined
+    ? { preferredModelId }
+    : undefined;
+  if (!registry) {
+    return loadEffectiveGSDPreferences(basePath, preferenceOpts);
+  }
+  const disabledProviders = resolveDisabledModelProvidersFromPreferences();
+  const availableModelIds = modelIdsForProfileResolution(registry, anchorProvider, disabledProviders);
+  if (!availableModelIds) {
+    return loadEffectiveGSDPreferences(basePath, preferenceOpts);
+  }
+  return loadEffectiveGSDPreferences(basePath, { availableModelIds, preferredModelId });
+}
 
 /**
  * Normalize a value loaded from disk (or passed from another component) into
@@ -191,7 +284,7 @@ export function loadProjectGSDPreferences(basePath?: string): LoadedGSDPreferenc
 
 export function loadEffectiveGSDPreferences(
   basePath?: string,
-  opts?: { availableModelIds?: string[] },
+  opts?: { availableModelIds?: string[]; preferredModelId?: string },
 ): LoadedGSDPreferences | null {
   const globalPreferences = loadGlobalGSDPreferences();
   const projectPreferences = loadProjectGSDPreferences(basePath);
@@ -220,16 +313,28 @@ export function loadEffectiveGSDPreferences(
   // Apply token-profile defaults as the lowest-priority layer so that
   // `token_profile: budget` sets models and phase-skips automatically.
   // Explicit user preferences always override profile defaults.
-  const profile = result.preferences.token_profile as TokenProfile | undefined;
-  if (profile) {
+  const explicitProfile = result.preferences.token_profile as TokenProfile | undefined;
+  let profileForDefaults: TokenProfile | undefined;
+  if (explicitProfile) {
+    if (VALID_TOKEN_PROFILES.has(explicitProfile)) {
+      profileForDefaults = explicitProfile;
+    }
+  } else {
+    profileForDefaults = DEFAULT_TOKEN_PROFILE;
+  }
+  if (profileForDefaults) {
     const profileDefaults = _resolveProfileDefaults(
-      profile,
+      profileForDefaults,
       opts?.availableModelIds,
       result.preferences.dynamic_routing,
+      opts?.preferredModelId,
     );
+    const defaultsToApply = explicitProfile
+      ? profileDefaults
+      : withoutProfilePhaseDefaults(profileDefaults);
     result = {
       ...result,
-      preferences: mergePreferences(profileDefaults as GSDPreferences, result.preferences),
+      preferences: mergePreferences(defaultsToApply as GSDPreferences, result.preferences),
     };
   }
 
@@ -244,6 +349,12 @@ export function loadEffectiveGSDPreferences(
   result = stripInheritedPlanningDepth(result, projectHasPlanningDepth);
 
   return result;
+}
+
+function withoutProfilePhaseDefaults(defaults: Partial<GSDPreferences>): Partial<GSDPreferences> {
+  if (defaults.phases === undefined) return defaults;
+  const { phases: _phases, ...rest } = defaults;
+  return rest;
 }
 
 function mergePreferenceMetadata(

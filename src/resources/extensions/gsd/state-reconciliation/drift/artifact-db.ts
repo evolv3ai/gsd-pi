@@ -213,13 +213,21 @@ function detectArtifactDbStatusDriftForMilestone(
 
     for (const task of tasks) {
       if (isClosedStatus(task.status)) continue;
-      const diskTaskSummary = resolveTaskFile(
+      // Flat-phase: task summaries live in the phase dir as TID-SUMMARY.md
+      let diskTaskSummary = resolveTaskFile(
         basePath,
         milestoneId,
         slice.id,
         task.id,
         "SUMMARY",
       );
+      if (!diskTaskSummary) {
+        const phaseDir = resolveMilestonePath(basePath, milestoneId);
+        if (phaseDir) {
+          const flatSummary = join(phaseDir, `${task.id}-SUMMARY.md`);
+          if (existsSync(flatSummary)) diskTaskSummary = flatSummary;
+        }
+      }
       if (!diskTaskSummary || !existsSync(diskTaskSummary)) continue;
       addUniqueDrift(drifts, seen, {
         kind: "artifact-db-status-divergence",
@@ -302,11 +310,34 @@ function detectDiskSliceIdDivergenceForMilestone(
   const milestonePath = resolveMilestonePath(basePath, milestoneId);
   if (!milestonePath) return [];
 
-  const slicesDir = join(milestonePath, "slices");
-  if (!existsSync(slicesDir)) return [];
-
   const knownSliceIds = new Set(getMilestoneSlices(milestoneId).map((slice) => slice.id));
   const drifts: DiskSliceIdDivergenceDrift[] = [];
+
+  // Flat-phase: scan phase dir for plan files (NN-MM-PLAN.md) where MM
+  // doesn't match any known slice. Each plan file's slice id is S<MM>.
+  try {
+    for (const entry of readdirSync(milestonePath)) {
+      const planMatch = entry.match(/^\d+-(\d+)-PLAN\.md$/i);
+      if (!planMatch) continue;
+      const planNum = parseInt(planMatch[1]!, 10);
+      const sliceId = `S${String(planNum).padStart(2, "0")}`;
+      if (knownSliceIds.has(sliceId)) continue;
+      drifts.push({
+        kind: "disk-slice-id-divergence",
+        milestoneId,
+        sliceId,
+        sliceDir: join(milestonePath, entry),
+        disposition: "block-meaningful",
+        reason: `plan file ${entry} references unknown ${sliceId}`,
+      });
+    }
+  } catch {
+    // unreadable phase dir
+  }
+
+  // Legacy: scan slices/ subdir for unknown slice dirs
+  const slicesDir = join(milestonePath, "slices");
+  if (!existsSync(slicesDir)) return drifts;
 
   for (const entry of readdirSync(slicesDir)) {
     const sliceDir = join(slicesDir, entry);
@@ -410,6 +441,27 @@ function quarantineSliceDir(record: DiskSliceIdDivergenceDrift, basePath: string
   renameSync(record.sliceDir, target);
 }
 
+export function completedMilestoneReopenedGuidance(
+  record: Pick<CompletedMilestoneReopenedDrift, "milestoneId" | "dbStatus" | "completedDispatchAt">,
+): string {
+  const when = record.completedDispatchAt ?? "time unknown";
+  const intro =
+    `Milestone ${record.milestoneId} has completed closeout dispatch history (${when}) ` +
+    `but DB status is still ${record.dbStatus}.`;
+
+  if (isClosedStatus(record.dbStatus)) {
+    return (
+      `${intro} Use gsd_milestone_reopen for ${record.milestoneId} to redo this milestone, then run /gsd next.`
+    );
+  }
+
+  return (
+    `${intro} Finish closeout with \`/gsd dispatch complete-milestone ${record.milestoneId}\`, ` +
+    `review with \`/gsd status ${record.milestoneId}\`, then run /gsd next. ` +
+    "Running /gsd next again before fixing this will pause immediately."
+  );
+}
+
 function diskSliceIdDivergenceGuidance(record: DiskSliceIdDivergenceDrift): string {
   const quarantineExample = `.gsd/quarantine/milestones/${record.milestoneId}/slices/${record.sliceId}-manual-review`;
   return (
@@ -444,11 +496,7 @@ export function repairArtifactDbDrift(
   }
 
   if (record.kind === "completed-milestone-reopened") {
-    throw new Error(
-      `Milestone ${record.milestoneId} has completed complete-milestone dispatch history` +
-        ` (${record.completedDispatchAt ?? "time unknown"}) but the DB status is ${record.dbStatus}. ` +
-        "Refusing to plan it again without an explicit reopen or recovery.",
-    );
+    throw new Error(completedMilestoneReopenedGuidance(record));
   }
 
   throw new Error(
@@ -472,11 +520,7 @@ export function describeArtifactDbDriftBlocker(
   }
 
   if (record.kind === "completed-milestone-reopened") {
-    return (
-      `Milestone ${record.milestoneId} has completed complete-milestone dispatch history` +
-      ` (${record.completedDispatchAt ?? "time unknown"}) but the DB status is ${record.dbStatus}. ` +
-      "Refusing to plan it again without an explicit reopen or recovery."
-    );
+    return completedMilestoneReopenedGuidance(record);
   }
 
   return (

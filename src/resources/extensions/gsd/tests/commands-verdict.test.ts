@@ -363,7 +363,7 @@ test("handleVerdict pass override works when validation only exists in DB", asyn
     const { ctx, calls } = makeMockCtx();
     await handleVerdict('pass --milestone M001 --rationale "reviewed and accepted"', ctx, base);
 
-    const validationPath = join(base, ".gsd", "milestones", "M001", "M001-VALIDATION.md");
+    const validationPath = join(base, ".gsd", "phases", "01-m001", "01-VALIDATION.md");
     const rewritten = readFileSync(validationPath, "utf-8");
     assert.match(rewritten, /^verdict: pass$/m, "DB-backed validation should be rewritten as pass");
     assert.match(rewritten, /reviewed and accepted/, "explicit rationale should be persisted");

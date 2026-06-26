@@ -3,9 +3,10 @@
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import stripAnsi from "strip-ansi";
 import { isImageLine, padRight, truncateToWidth, visibleWidth } from "@gsd/pi-tui";
 import { initTheme } from "@gsd/pi-coding-agent/theme/theme.js";
-import { renderConnectedCard, renderTranscriptCard } from "../transcript-design.js";
+import { renderConnectedCard, renderStepDots, renderTranscriptCard, formatStepProgress } from "../transcript-design.js";
 
 initTheme("dark", false);
 
@@ -53,6 +54,30 @@ describe("renderConnectedCard", () => {
 			blanksAfter >= rows - 1,
 			`expected >= ${rows - 1} reserved blank rows after the image, got ${blanksAfter}`,
 		);
+	});
+});
+
+describe("renderStepDots", () => {
+	test("renders filled and pending dots for in-progress position mode", () => {
+		const plain = stripAnsi(renderStepDots(3, 5, { mode: "position" }));
+		assert.equal(plain, "●●●○○");
+	});
+
+	test("renders all success dots when complete", () => {
+		const plain = stripAnsi(renderStepDots(3, 3, { mode: "position" }));
+		assert.equal(plain, "●●●");
+	});
+
+	test("completed mode uses only finished count", () => {
+		const plain = stripAnsi(renderStepDots(3, 6, { mode: "completed" }));
+		assert.equal(plain, "●●●○○○");
+	});
+
+	test("formatStepProgress includes label and count", () => {
+		const plain = stripAnsi(formatStepProgress("tasks", 2, 5, { mode: "position" }));
+		assert.match(plain, /tasks/);
+		assert.match(plain, /2\/5/);
+		assert.match(plain, /●/);
 	});
 });
 

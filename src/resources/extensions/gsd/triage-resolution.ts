@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { atomicWriteSync } from "./atomic-write.js";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import { gsdRoot, milestonesDir } from "./paths.js";
+import { gsdRoot, milestonesDir, legacyMilestonesDir, resolveMilestonePath } from "./paths.js";
 import { MILESTONE_ID_RE } from "./milestone-ids.js";
 import type { Classification, CaptureEntry } from "./captures.js";
 import {
@@ -185,8 +185,9 @@ export function executeBacktrack(
     // so deriveState() will re-enter it as the active milestone.
     if (targetMilestoneId) {
       try {
-        const targetDir = join(milestonesDir(basePath), targetMilestoneId);
-        if (existsSync(targetDir)) {
+        // Use resolveMilestonePath to locate the dir in either legacy or flat-phase layout.
+        const targetDir = resolveMilestonePath(basePath, targetMilestoneId);
+        if (targetDir && existsSync(targetDir)) {
           // Write a regression marker so the state machine knows this milestone
           // needs re-discussion, not just re-execution
           const regressionPath = join(targetDir, `${targetMilestoneId}-REGRESSION.md`);
@@ -334,8 +335,13 @@ export function ensureDeferMilestoneDir(
 ): boolean {
   if (!MILESTONE_ID_RE.test(targetMilestone)) return false;
 
-  const msDir = join(milestonesDir(basePath), targetMilestone);
-  if (existsSync(msDir)) return true;
+  // Check if the milestone dir already exists in either layout.
+  const existingDir = resolveMilestonePath(basePath, targetMilestone);
+  if (existingDir && existsSync(existingDir)) return true;
+  // Create new dir in the layout-appropriate location.
+  const legacyBase = legacyMilestonesDir(basePath);
+  const msBase = existsSync(legacyBase) ? legacyBase : milestonesDir(basePath);
+  const msDir = join(msBase, targetMilestone);
 
   try {
     mkdirSync(msDir, { recursive: true });
@@ -495,8 +501,9 @@ export function executeTriageResolutions(
       }
     }
     for (const [milestoneId, captures] of byMilestone) {
-      const msDir = join(milestonesDir(basePath), milestoneId);
-      if (!existsSync(msDir)) {
+      // Use resolveMilestonePath to check existence in either layout.
+      const existingMs = resolveMilestonePath(basePath, milestoneId);
+      if (!existingMs || !existsSync(existingMs)) {
         const created = ensureDeferMilestoneDir(basePath, milestoneId, captures);
         if (created) {
           result.deferredMilestones++;

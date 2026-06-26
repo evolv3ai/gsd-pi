@@ -26,6 +26,7 @@ import { logWarning } from "./workflow-logger.js";
 import { hasImplementationArtifacts } from "./milestone-implementation-evidence.js";
 import { buildCompleteMilestonePrompt } from "./auto-prompts.js";
 import { proveMilestoneCloseout } from "./milestone-closeout-proof.js";
+import { checkCloseoutConsistencyGate } from "./closeout-consistency-gate.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
 import type { DispatchAction, DispatchContext } from "./auto-dispatch.js";
 import {
@@ -210,6 +211,16 @@ export async function evaluateCompleteMilestoneDispatch(
     }
   }
 
+  if (isDbAvailable()) {
+    // Repair only the missing-validation closeout case here; existing guards below
+    // and post-unit proof remain responsible for blocking incomplete closeouts.
+    checkCloseoutConsistencyGate(mid, {
+      allowOpenMilestone: true,
+      allowPassThroughValidation: true,
+      artifactBasePath: resolveCanonicalMilestoneRoot(basePath, mid),
+    });
+  }
+
   const validationFile = resolveMilestoneFile(basePath, mid, "VALIDATION");
   if (validationFile) {
     const validationContent = await loadFile(validationFile);
@@ -256,9 +267,9 @@ export async function evaluateCompleteMilestoneDispatch(
             const skippedByTrivialVariant = /trivial-scope pipeline variant/i.test(validationContent);
             const structuredMatch =
               validationContent.includes("Operational") &&
-              (validationContent.includes("MET") || validationContent.includes("N/A") || validationContent.includes("SATISFIED") || validationContent.includes("DEFERRED"));
+              (validationContent.includes("MET") || validationContent.includes("N/A") || validationContent.includes("SATISFIED") || validationContent.includes("DEFERRED") || validationContent.includes("PASS") || validationContent.includes("COVERED"));
             const proseMatch =
-              /[Oo]perational[\s\S]{0,500}?(?:✅|pass|verified|confirmed|met|complete|true|yes|addressed|covered|satisfied|partially|deferred|n\/a|not[\s-]+applicable)/i.test(validationContent);
+              /[Oo]perational[\s\S]{0,2000}?(?:✅|pass|verified|confirmed|met|complete|true|yes|addressed|covered|satisfied|partially|deferred|n\/a|not[\s-]+applicable)/i.test(validationContent);
             const hasOperationalCheck =
               skippedByMarker ||
               skippedByPreference ||

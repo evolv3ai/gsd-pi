@@ -19,7 +19,9 @@ export interface InteractiveModeStateHost {
 	onInputCallback?: (text: string) => void;
 	isInitialized: boolean;
 	loadingAnimation?: any;
+	activityLoader?: any;
 	pendingWorkingMessage?: string | null;
+	gsdProgressState?: { phase?: string };
 	clearBlockingError(): void;
 	defaultWorkingMessage: string;
 	streamingComponent?: any;

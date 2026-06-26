@@ -20,7 +20,7 @@
 | [Token 优化](./user-docs/token-optimization.md) | Token 配置、上下文压缩、复杂度路由和自适应学习 |
 | [动态模型路由](./user-docs/dynamic-model-routing.md) | 基于复杂度的模型选择、成本表、升级策略和预算压力 |
 | [捕获与分流](./user-docs/captures-triage.md) | 自动模式中的随手记录，以及自动分流处理 |
-| [工作流可视化器](./user-docs/visualizer.md) | 用于查看进度、依赖、指标和时间线的交互式 TUI 叠层 |
+| [工作流可视化器](./user-docs/visualizer.md) | 用于查看进度、依赖、指标、知识、记忆和导出的交互式 TUI 叠层 |
 | [成本管理](./user-docs/cost-management.md) | 预算上限、成本跟踪、成本预测和执行策略 |
 | [Git 策略](./user-docs/git-strategy.md) | 工作树隔离、分支模型和合并行为 |
 | [并行编排](./user-docs/parallel-orchestration.md) | 通过隔离的工作线程和协调机制同时运行多个 milestones |

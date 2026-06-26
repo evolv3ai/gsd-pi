@@ -43,6 +43,21 @@ export type DriftRecord =
       kind: "missing-completion-timestamp";
       entity: "task" | "slice" | "milestone";
       ids: string[];
+    }
+  | {
+      kind: "external-markdown-edit";
+      projectionPath: string;       // relative to basePath, e.g. "m1/plan.md"
+      expectedSha: string;          // sha recorded in .compat.json
+      actualSha: string;            // freshly computed from disk
+      entities: string[];           // DB entity ids to re-import
+    }
+  | {
+      kind: "external-planning-edit";
+      projectionPath: string;       // relative to .planning/, e.g. "phases/01-foo/01-01-PLAN.md"
+      expectedSha: string;
+      actualSha: string;
+      entities: string[];
+      passthrough: boolean;         // true = content-only, no re-import, just refresh sha
     };
 
 /**
@@ -52,6 +67,8 @@ export type DriftRecord =
 export interface DriftContext {
   basePath: string;
   state: GSDState;
+  /** When true, detectors must not persist compat marker changes. */
+  dryRun?: boolean;
 }
 
 /**
@@ -111,4 +128,6 @@ export interface ReconciliationDeps {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   registry?: ReadonlyArray<DriftHandler<any>>;
   deriveStateOptions?: DeriveStateOptions;
+  /** When true, detect drift but do not run repairs (read-only preview). */
+  dryRun?: boolean;
 }

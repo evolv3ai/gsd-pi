@@ -5,6 +5,7 @@ import {
   nativeBranchExists,
   nativeDetectMainBranch,
   nativeDiffNumstat,
+  nativeIsAncestor,
 } from "./native-git-bridge.js";
 import { autoWorktreeBranch } from "./auto-worktree.js";
 import { ensureDbOpen } from "./bootstrap/dynamic-tools.js";
@@ -25,12 +26,28 @@ export interface UnmergedMilestoneBlocker {
 const BLOCKED_COMMANDS = new Set([
   "auto",
   "next",
-  "parallel",
   "start",
   "workflow",
   "new-milestone",
   "new-project",
   "do",
+  "discuss-phase",
+  "plan-phase",
+  "execute-phase",
+  "spec-phase",
+  "mvp-phase",
+  "ui-phase",
+  "ai-integration-phase",
+  "ultraplan-phase",
+  "validate-phase",
+  "docs-update",
+  "review-backlog",
+  "import",
+  "ingest-docs",
+  "secure-phase",
+  "plan-review-convergence",
+  "autonomous",
+  "resume-work",
   "execute-task",
   "research-milestone",
   "plan-slice",
@@ -41,6 +58,11 @@ const BLOCKED_COMMANDS = new Set([
   "complete-milestone",
 ]);
 
+const UNMERGED_SAFE_PARALLEL_SUBCOMMANDS = new Set([
+  "status",
+  "watch",
+]);
+
 function isRuntimePath(path: string): boolean {
   return path === ".gsd" || path.startsWith(".gsd/");
 }
@@ -48,6 +70,16 @@ function isRuntimePath(path: string): boolean {
 function formatCommandLabel(attemptedCommand: string): string {
   const trimmed = attemptedCommand.trim();
   return trimmed ? `/gsd ${trimmed}` : "/gsd";
+}
+
+function hasFlag(command: string, flag: string): boolean {
+  const escaped = flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|\\s)${escaped}(?=\\s|$)`).test(command);
+}
+
+function isMutatingPhaseCommand(subcommand: string | undefined): boolean {
+  if (!subcommand) return false;
+  return ["add", "create", "new", "insert", "remove", "edit"].includes(subcommand);
 }
 
 function resolveIntegrationBranch(base: string, milestoneId: string): string | null {
@@ -75,6 +107,24 @@ export function isUnmergedMilestoneAllowedCommand(trimmed: string): boolean {
   if (name === "dispatch") {
     return subcommand === "complete" || subcommand === "complete-milestone";
   }
+  if (name === "audit-fix") {
+    return hasFlag(command, "--dry-run");
+  }
+  if (name === "code-review") {
+    return !hasFlag(command, "--fix");
+  }
+  if (name === "docs-update") {
+    return hasFlag(command, "--verify-only");
+  }
+  if (name === "parallel") {
+    return UNMERGED_SAFE_PARALLEL_SUBCOMMANDS.has(subcommand ?? "");
+  }
+  if (name === "phase") {
+    return !isMutatingPhaseCommand(subcommand);
+  }
+  if (name === "progress") {
+    return !hasFlag(command, "--next") && !hasFlag(command, "--do");
+  }
   return !BLOCKED_COMMANDS.has(name);
 }
 
@@ -92,6 +142,15 @@ export async function findUnmergedCompletedMilestones(base: string): Promise<Unm
 
     const integrationBranch = resolveIntegrationBranch(base, milestone.id);
     if (!integrationBranch || integrationBranch === branch) continue;
+
+    // The milestone is merged when its branch tip is reachable from the
+    // integration branch tip — true for fast-forward, --no-ff, and squash
+    // merges alike. A raw diff is the wrong predicate: a --no-ff merge that
+    // took main's side for some conflicts leaves the branch tip differing from
+    // main, which the diff check would misread as "unmerged" (#825). The diff
+    // below remains the correct fallback only when the branch is NOT yet an
+    // ancestor — i.e. the merge is genuinely still pending.
+    if (nativeIsAncestor(base, branch, integrationBranch)) continue;
 
     const files = nativeDiffNumstat(base, integrationBranch, branch)
       .map((entry) => entry.path)

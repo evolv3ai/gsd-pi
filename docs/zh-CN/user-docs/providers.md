@@ -135,7 +135,7 @@ GSD 会检测你本地的 Claude Code 安装，并把它作为已认证的 Anthr
 
 MCP server 会暴露 GSD 的完整 workflow 工具面：milestone planning、task completion、slice 管理、roadmap reassessment、journal 查询等。会话管理工具（`gsd_execute`、`gsd_status`、`gsd_result`、`gsd_cancel`）允许 Claude Code 启动并监控 GSD 自动模式会话。完整工具列表见 [命令 → MCP Server 模式](./commands.md#mcp-server-mode)。
 
-需要 workflow 工具的 Claude Code unit 会要求 `gsd-workflow` MCP surface 在第一个 model turn 前已经进入 connected 状态。如果 server 不存在、仍是 pending、failed、disabled，或缺少必需工具，GSD 会中止并重试该 unit，而不是让 Claude Code 在没有 workflow 工具的情况下自行处理。
+需要 workflow 工具的 Claude Code unit 会要求 `gsd-workflow` MCP surface 在第一个 model turn 前已经进入 connected 状态。GSD 会预检传给 Claude SDK 的同一份 inline `mcpServers.gsd-workflow` 配置，因此即使 server 条目是生成的或仅存在于当前会话中、还未被 Claude 按名称持久化/发现，也会被验证。如果 server 不存在、仍是 pending、failed、disabled、缺少必需工具，或预检 probe 失败，GSD 会中止并重试该 unit，而不是让 Claude Code 在没有 workflow 工具的情况下自行处理；超时消息会在可用时包含最后一次 probe error。
 
 **验证连接**
 

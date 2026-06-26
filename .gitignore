@@ -31,10 +31,22 @@ bun.lock
 .gsd/
 .gsd
 .gsd-id
+
+# Exception: committed test fixtures that legitimately contain a .gsd/ tree
+# (round-trip property tests for gsd-core ↔ gsd-pi compatibility).
+!src/resources/extensions/gsd/tests/__fixtures__/**/.gsd/
+!src/resources/extensions/gsd/tests/__fixtures__/**/.gsd/**/*
+# Note: .planning/ fixtures under tests/__fixtures__/ are force-added (git add -f)
+# because git cannot re-include files under an excluded parent directory. The
+# bare .planning/ rule below excludes the dir; force-add overrides it for
+# tracked test fixtures only.
 .bg_shell
 .bg-shell/
 .artifacts/
 .planning/
+# Hermes integration test fixtures (minimal tracked GSD projects)
+!integrations/hermes/tests/fixtures/minimal-project/.gsd/
+!integrations/hermes/tests/fixtures/minimal-project/.gsd/**
 .audits/
 .plans/
 docs/coherence-audit/
@@ -86,3 +98,4 @@ AGENTS.md
 
 # opencode local config
 .opencode/
+test-results/

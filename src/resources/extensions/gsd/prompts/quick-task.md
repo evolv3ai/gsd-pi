@@ -37,4 +37,4 @@ You are executing a GSD quick task — a lightweight, focused unit of work outsi
 - <what was tested/verified>
 ```
 
-When done, say: "Quick task {{taskNum}} complete." Say this exactly once — if you already said it in a prior message, do not repeat it.
+When done, say: "Quick task {{taskNum}} closeout submitted." Do not say the task is complete. Say this exactly once — if you already said it in a prior message, do not repeat it.

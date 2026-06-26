@@ -847,4 +847,33 @@ describe("ExtensionRunner", () => {
 			expect(runner.hasHandlers("agent_end")).toBe(false);
 		});
 	});
+
+	// Regression: the before_provider_request event must carry the resolved model.
+	// Extensions (e.g. native Anthropic web_search injection) gate on
+	// event.model.provider/api; previously the runner dropped the model, so the
+	// event arrived with model=undefined and provider-shape detection silently
+	// failed. See gsd-agent-core sdk.ts onPayload bridge.
+	it("emitBeforeProviderRequest forwards the resolved model into the event", async () => {
+		const extCode = `
+			export default function(pi) {
+				pi.on("before_provider_request", (event) => {
+					globalThis.__bprEventModel = event.model
+						? { provider: event.model.provider, api: event.model.api, id: event.model.id }
+						: null;
+					return event.payload;
+				});
+			}
+		`;
+		fs.writeFileSync(path.join(extensionsDir, "bpr-model.ts"), extCode);
+
+		const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+		const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+
+		const model = { provider: "anthropic", id: "claude-opus-4-8", api: "anthropic-messages" };
+		await runner.emitBeforeProviderRequest({ model: "claude-opus-4-8", tools: [] }, model);
+
+		const captured = (globalThis as unknown as { __bprEventModel?: unknown }).__bprEventModel;
+		expect(captured).toEqual(model);
+		delete (globalThis as unknown as { __bprEventModel?: unknown }).__bprEventModel;
+	});
 });

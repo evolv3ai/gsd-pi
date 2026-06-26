@@ -25,19 +25,28 @@ import {
 
 const DEFAULT_WIDGET_MODE = "small";
 
-// ─── Data Collection ──────────────────────────────────────────────────────
-
 interface ConfigSection {
   title: string;
   rows: Array<{ label: string; value: string; accent?: boolean }>;
 }
 
-function collectConfigSections(): ConfigSection[] {
+// ─── Data Collection ──────────────────────────────────────────────────────
+
+export interface CollectConfigOptions {
+  basePath?: string;
+  availableModelIds?: string[];
+  preferredModelId?: string;
+}
+
+function collectConfigSections(options?: CollectConfigOptions): ConfigSection[] {
   const sections: ConfigSection[] = [];
 
   const globalPrefs = loadGlobalGSDPreferences();
-  const projectPrefs = loadProjectGSDPreferences();
-  const effective = loadEffectiveGSDPreferences();
+  const projectPrefs = loadProjectGSDPreferences(options?.basePath);
+  const loadOpts = options?.availableModelIds
+    ? { availableModelIds: options.availableModelIds, preferredModelId: options.preferredModelId }
+    : undefined;
+  const effective = loadEffectiveGSDPreferences(options?.basePath, loadOpts);
   const prefs = effective?.preferences;
 
   // ─── Sources ─────────────────────────────────────────────────────────
@@ -69,7 +78,12 @@ function collectConfigSections(): ConfigSection[] {
 
   const modelRows: ConfigSection["rows"] = [];
   for (const [label, unitType] of unitTypes) {
-    const resolved = resolveModelWithFallbacksForUnit(unitType);
+    const resolved = resolveModelWithFallbacksForUnit(
+      unitType,
+      options?.basePath,
+      options?.availableModelIds,
+      options?.preferredModelId,
+    );
     if (resolved) {
       let val = resolved.primary;
       if (resolved.fallbacks.length > 0) {
@@ -204,8 +218,8 @@ function collectConfigSections(): ConfigSection[] {
 
 // ─── Plain Text Formatter (headless/RPC fallback) ─────────────────────────
 
-export function formatConfigText(): string {
-  const sections = collectConfigSections();
+export function formatConfigText(options?: CollectConfigOptions): string {
+  const sections = collectConfigSections(options);
   const lines: string[] = ["GSD Configuration\n"];
 
   let maxLabel = 0;
@@ -243,11 +257,12 @@ export class GSDConfigOverlay {
     tui: { requestRender: () => void },
     theme: Theme,
     onClose: () => void,
+    options?: CollectConfigOptions,
   ) {
     this.tui = tui;
     this.theme = theme;
     this.onClose = onClose;
-    this.sections = collectConfigSections();
+    this.sections = collectConfigSections(options);
   }
 
   invalidate(): void {

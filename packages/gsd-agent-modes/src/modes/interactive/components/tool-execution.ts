@@ -16,6 +16,7 @@ import {
 	type TUI,
 	truncateToWidth,
 	visibleWidth,
+	padRight,
 } from "@gsd/pi-tui";
 import stripAnsi from "strip-ansi";
 import type { ToolDefinition, ToolRenderContext } from "@gsd/pi-coding-agent/core/extensions/types.js";
@@ -32,11 +33,11 @@ import { renderDiff } from "./diff.js";
 import { keyHint } from "./keybinding-hints.js";
 import {
 	renderCommandCard,
-	renderToolLineCard,
-	renderTranscriptCard,
-	TRANSCRIPT_CARD_INDENT,
+	renderCompactToolStrip,
+	renderPlainToolMessage,
 	collapseBlankLines,
 	isRailAnimationEnabled,
+	rightAlign,
 	type StatusTone,
 } from "./transcript-design.js";
 import { truncateToVisualLines } from "./visual-truncate.js";
@@ -352,6 +353,7 @@ export class ToolExecutionComponent extends Container {
 	private toolName: string;
 	private args: any;
 	private expanded = false;
+	private explicitlyCollapsed = false;
 	private showImages: boolean;
 	private isPartial = true;
 	private toolDefinition?: ToolDefinition;
@@ -769,7 +771,21 @@ export class ToolExecutionComponent extends Container {
 
 	setExpanded(expanded: boolean): void {
 		this.expanded = expanded;
+		this.explicitlyCollapsed = !expanded;
 		this.updateDisplay();
+	}
+
+	private shouldDefaultExpandBody(): boolean {
+		// If the user explicitly collapsed (ctrl+o), don't auto-expand even for
+		// edit/write tools — the global collapse must be respected.
+		if (this.explicitlyCollapsed) return false;
+		if (this.expanded) return true;
+		if (this.result?.isError) return false;
+		return false;
+	}
+
+	private showExpandedBody(): boolean {
+		return this.shouldDefaultExpandBody();
 	}
 
 	setShowImages(show: boolean): void {
@@ -787,7 +803,7 @@ export class ToolExecutionComponent extends Container {
 			return [];
 		}
 		const frameWidth = Math.max(20, width);
-		const contentWidth = Math.max(1, frameWidth - TRANSCRIPT_CARD_INDENT - 3);
+		const contentWidth = Math.max(1, frameWidth);
 		const frameTone: "pending" | "success" | "error" =
 			this.result?.isError ? "error" : this.isPartial || !this.result ? "pending" : "success";
 		const elapsed = formatElapsed((this.endedAt ?? Date.now()) - this.startedAt);
@@ -800,7 +816,7 @@ export class ToolExecutionComponent extends Container {
 		const recommendedTone: StatusTone =
 			frameTone === "pending" ? "running" : frameTone === "error" ? "error" : "success";
 
-		if (this.normalizedToolName === "bash" && !this.expanded && !this.result?.isError) {
+		if (this.normalizedToolName === "bash" && !this.showExpandedBody() && !this.result?.isError) {
 			const command = str(this.args?.command);
 			return renderCommandCard(command && command.length > 0 ? formatCommandPreview(command) : frameLabel, frameWidth, {
 				status: frameStatus,
@@ -808,9 +824,9 @@ export class ToolExecutionComponent extends Container {
 			});
 		}
 		const hasImages = this.result?.content?.some((block) => block.type === "image") ?? false;
-		if (!this.expanded && !this.result?.isError && !hasImages) {
+		if (!this.showExpandedBody() && !this.result?.isError && !hasImages) {
 			const compactTarget = this.getCompactTarget();
-			return renderToolLineCard(frameLabel, compactTarget, frameWidth, {
+			return renderCompactToolStrip(frameLabel, compactTarget, frameWidth, {
 				status: frameStatus,
 				tone: recommendedTone,
 				hidden: !this.isPartial && !!this.result,
@@ -825,12 +841,15 @@ export class ToolExecutionComponent extends Container {
 		const lines = hasImages || renderedBody.some((l) => isImageLine(l))
 			? renderedBody
 			: collapseBlankLines(renderedBody);
-		return renderTranscriptCard(lines, frameWidth, {
+		const rightParts = [frameStatus];
+		if (this.expanded) {
+			rightParts.push("ctrl+o collapse");
+		}
+		return renderPlainToolMessage(lines, frameWidth, {
 			title: frameLabel,
-			right: frameStatus,
+			target: this.getCompactTarget(),
+			meta: rightParts.join(" · "),
 			tone: recommendedTone,
-			footerLeft: this.expanded ? "output expanded" : undefined,
-			footerRight: this.expanded ? "ctrl+o collapse" : undefined,
 		});
 	}
 
@@ -1589,12 +1608,15 @@ export class ToolPhaseSummaryComponent extends Container {
 			const contentWidth = Math.max(1, frameWidth - 2);
 			const leftWidth = Math.max(1, contentWidth - visibleWidth(right) - 1);
 			const leftText = truncateToWidth(left, leftWidth, "");
-			const gap = Math.max(1, contentWidth - visibleWidth(leftText) - visibleWidth(right));
-			const summaryRow = `${theme.fg("toolSuccess", leftText)}${" ".repeat(gap)}${theme.fg("toolSuccess", right)}`;
-			const targetRow = summarizePhaseTargets(phase, contentWidth);
-			return targetRow ? [summaryRow, theme.fg("muted", targetRow)] : [summaryRow];
+			const leftStyled = theme.fg("toolSuccess", leftText);
+			const rightStyled = theme.fg("toolSuccess", right);
+			const summaryRow = padRight(truncateToWidth(rightAlign(leftStyled, rightStyled, frameWidth), frameWidth, ""), frameWidth);
+			const targetRow = summarizePhaseTargets(phase, frameWidth);
+			return targetRow
+				? [summaryRow, padRight(truncateToWidth(theme.fg("muted", truncateToWidth(targetRow, frameWidth, "…")), frameWidth, ""), frameWidth)]
+				: [summaryRow];
 		});
 
-		return ["", ...style().border("minimal").borderColor((text) => theme.fg("toolSuccess", text)).render(rows, frameWidth)];
+		return rows.length > 0 ? ["", ...rows] : [];
 	}
 }

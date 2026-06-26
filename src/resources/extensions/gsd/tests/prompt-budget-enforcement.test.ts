@@ -620,6 +620,8 @@ describe("prompt-budget: reactive-execute builder", () => {
 
       assert.match(prompt, /\[\.\.\.truncated/);
       assert.ok(prompt.length < hugeSummary.length * 2, "reactive prompt should not include full dependency summaries");
+      assert.match(prompt, /Your working directory is/);
+      assert.doesNotMatch(prompt, /Work only in the repository root/i);
     } finally {
       cleanup(base);
     }

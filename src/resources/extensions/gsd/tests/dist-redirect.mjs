@@ -44,6 +44,11 @@ export function resolve(specifier, context, nextResolve) {
   } else if (specifier.startsWith("@earendil-works/pi-agent-core/") || specifier.startsWith("@gsd/pi-agent-core/")) {
     const subpath = specifier.replace(/^@[^/]+\/pi-agent-core\//, "").replace(/\.js$/, ".ts");
     specifier = new URL(`packages/pi-agent-core/src/${subpath}`, ROOT).href;
+  } else if (specifier === "@gsd/agent-core") {
+    specifier = new URL("packages/gsd-agent-core/src/index.ts", ROOT).href;
+  } else if (specifier.startsWith("@gsd/agent-core/")) {
+    const subpath = specifier.replace(/^@gsd\/agent-core\//, "").replace(/\.js$/, ".ts");
+    specifier = new URL(`packages/gsd-agent-core/src/${subpath}`, ROOT).href;
   } else if (specifier === "@gsd/native") {
     specifier = new URL("packages/native/src/index.ts", ROOT).href;
   } else if (specifier.startsWith("@gsd/native/")) {
@@ -115,6 +120,8 @@ export function load(url, context, nextLoad) {
     url = url.replace('/dist/index.js', '/src/index.ts');
   } else if (url.includes('/packages/pi-agent-core/dist/index.js')) {
     url = url.replace('/dist/index.js', '/src/index.ts');
+  } else if (url.includes('/packages/gsd-agent-core/dist/')) {
+    url = url.replace('/dist/', '/src/').replace(/\.js$/, '.ts');
   } else if (url.includes('/packages/pi-tui/dist/index.js')) {
     url = url.replace('/dist/index.js', '/src/index.ts');
   }

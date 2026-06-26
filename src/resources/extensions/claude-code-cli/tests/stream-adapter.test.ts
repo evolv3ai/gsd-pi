@@ -45,11 +45,13 @@ import {
 	shouldRetryClaudeCodeToolSurfaceReadiness,
 	buildWorkflowMcpReadinessProgressMessage,
 	pushWorkflowMcpReadinessProgressEvent,
+	resolveWorkflowMcpPreflightServerConfig,
 } from "../stream-adapter.ts";
 import { CLAUDE_CODE_MODELS } from "../models.ts";
 import type { AssistantMessage, Context, Message } from "@gsd/pi-ai";
 import type { SDKUserMessage } from "../sdk-types.ts";
 import { _setAutoActiveForTest } from "../../gsd/auto.ts";
+import { autoSession } from "../../gsd/auto-runtime-state.ts";
 import { getInFlightToolCount, hasInteractiveToolInFlight, clearInFlightTools, isInteractiveElicitationInFlight } from "../../gsd/auto-tool-tracking.ts";
 import { clearMcpConfigCache } from "../../mcp-client/manager.ts";
 import { UNIT_TOOL_CONTRACTS } from "../../gsd/unit-tool-contracts.ts";
@@ -405,6 +407,10 @@ describe("stream-adapter — image prompt forwarding (#4183)", () => {
 			systemPrompt: "UNIT: Run UAT",
 			messages: [{ role: "user", content: "Run UAT." } as Message],
 		};
+		// The test requires a resolved GSD phase so the readiness gate fires.
+		// Auto-mode with a currentUnit provides the authoritative phase signal.
+		_setAutoActiveForTest(true);
+		autoSession.currentUnit = { type: "run-uat", id: "M001/S001", startedAt: 0, workspaceRoot: cwd } as never;
 		try {
 			const stream = streamViaClaudeCode(
 				{ id: "claude-sonnet-4-6" } as any,
@@ -473,6 +479,8 @@ describe("stream-adapter — image prompt forwarding (#4183)", () => {
 			assert.equal(queryCalls, 2);
 			assert.deepEqual(message.content, [{ type: "text", text: "fresh retry result" }]);
 		} finally {
+			autoSession.currentUnit = null;
+			_setAutoActiveForTest(false);
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
@@ -1543,16 +1551,41 @@ describe("stream-adapter — session persistence (#2859)", () => {
 		assert.equal(inferGsdPhaseFromContext(context), "plan-milestone");
 	});
 
-	test("inferGsdPhaseFromContext recognizes discuss-slice and refine-slice prompts", () => {
-		const discussSlice = {
-			messages: [{ role: "user", content: "Discuss slice S001 in milestone M001." }],
-		} as Context;
+	test("inferGsdPhaseFromContext recognizes the refine-slice UNIT header", () => {
 		const refineSlice = {
 			messages: [{ role: "user", content: "## UNIT: Refine Slice S001 (\"Auth\") - Milestone M001" }],
 		} as Context;
 
-		assert.equal(inferGsdPhaseFromContext(discussSlice), "discuss-slice");
 		assert.equal(inferGsdPhaseFromContext(refineSlice), "refine-slice");
+	});
+
+	test("inferGsdPhaseFromContext ignores bare phase slugs and prose (only the UNIT header counts)", () => {
+		// Prose mentioning a phase must NOT classify the turn — this was the leak
+		// that stripped tools the moment a user said "slice" or "UAT".
+		const prose = {
+			messages: [{ role: "user", content: "Can you discuss the slice S001 and then run UAT for me?" }],
+		} as Context;
+		const bareSlug = {
+			messages: [{ role: "user", content: "I edited e2e/m039-s05-comparison-legibility.spec.ts (plan-slice, run-uat)" }],
+		} as Context;
+
+		assert.equal(inferGsdPhaseFromContext(prose), undefined);
+		assert.equal(inferGsdPhaseFromContext(bareSlug), undefined);
+	});
+
+	test("inferGsdPhaseFromContext does not match a UNIT header buried in scrollback", () => {
+		// A UNIT header from a prior turn (e.g. a SUMMARY the agent read) must not
+		// re-classify later ad-hoc turns. Only the system prompt + latest user
+		// message are scanned.
+		const context = {
+			messages: [
+				{ role: "user", content: "## UNIT: Run UAT — M001/S001" },
+				{ role: "assistant", content: "Done." },
+				{ role: "user", content: "Thanks, now what files changed?" },
+			],
+		} as Context;
+
+		assert.equal(inferGsdPhaseFromContext(context), undefined);
 	});
 
 	test("resolveGsdPhaseForSdk prefers guided unit context over prompt inference", () => {
@@ -1582,12 +1615,67 @@ describe("stream-adapter — session persistence (#2859)", () => {
 		}
 	});
 
-	test("resolveGsdPhaseForSdk falls back to prompt inference when guided context is absent", () => {
+	test("resolveGsdPhaseForSdk returns undefined for ad-hoc turns (no guided context, auto inactive)", () => {
+		// The core bug: an ad-hoc turn must keep the full tool surface even when
+		// its text contains a UNIT header (e.g. pasted from a prior unit). No
+		// guided context + auto inactive => no phase, no preflight, no stripping.
 		clearGuidedUnitContext();
-		const context = {
-			messages: [{ role: "user", content: "## UNIT: Run UAT — M001/S001" }],
-		} as Context;
-		assert.equal(resolveGsdPhaseForSdk(context, "/tmp/unrelated-project"), "run-uat");
+		_setAutoActiveForTest(false);
+		try {
+			const context = {
+				messages: [{ role: "user", content: "## UNIT: Run UAT — M001/S001 (pasted from earlier)" }],
+			} as Context;
+			assert.equal(resolveGsdPhaseForSdk(context, "/tmp/unrelated-project"), undefined);
+		} finally {
+			_setAutoActiveForTest(false);
+		}
+	});
+
+	test("resolveGsdPhaseForSdk uses the authoritative auto currentUnit, even with no UNIT header in the prompt", () => {
+		// gate-evaluate / validate-milestone dispatch prompts have no `UNIT:`
+		// header, so header inference alone would drop their phase (and their
+		// workflow-MCP preflight). The dispatched unit type is authoritative.
+		clearGuidedUnitContext();
+		_setAutoActiveForTest(true);
+		autoSession.currentUnit = { type: "gate-evaluate", id: "M001/S001", startedAt: 0, workspaceRoot: "/tmp/p" } as never;
+		try {
+			const context = {
+				messages: [{ role: "user", content: "Quality Gate Evaluation — Parallel Dispatch. Call gsd_save_gate_result." }],
+			} as Context;
+			assert.equal(resolveGsdPhaseForSdk(context, "/tmp/p"), "gate-evaluate");
+		} finally {
+			autoSession.currentUnit = null;
+			_setAutoActiveForTest(false);
+		}
+	});
+
+	test("resolveGsdPhaseForSdk ignores hook/* pseudo-units from currentUnit", () => {
+		clearGuidedUnitContext();
+		_setAutoActiveForTest(true);
+		autoSession.currentUnit = { type: "hook/agent-end", id: "x", startedAt: 0, workspaceRoot: "/tmp/p" } as never;
+		try {
+			const context = { messages: [{ role: "user", content: "no phase here" }] } as Context;
+			assert.equal(resolveGsdPhaseForSdk(context, "/tmp/p"), undefined);
+		} finally {
+			autoSession.currentUnit = null;
+			_setAutoActiveForTest(false);
+		}
+	});
+
+	test("resolveGsdPhaseForSdk infers from the UNIT header only while auto-mode is active and no currentUnit is recorded", () => {
+		// Last-resort fallback: auto running but currentUnit unexpectedly absent.
+		// Classifies from the `UNIT:` dispatch header only.
+		clearGuidedUnitContext();
+		_setAutoActiveForTest(true);
+		autoSession.currentUnit = null;
+		try {
+			const context = {
+				messages: [{ role: "user", content: "## UNIT: Run UAT — M001/S001" }],
+			} as Context;
+			assert.equal(resolveGsdPhaseForSdk(context, "/tmp/unrelated-project"), "run-uat");
+		} finally {
+			_setAutoActiveForTest(false);
+		}
 	});
 
 	test("buildSdkOptions presents ask_user_questions for discuss phases", () => {
@@ -1913,6 +2001,90 @@ describe("stream-adapter — session persistence (#2859)", () => {
 });
 
 describe("stream-adapter — workflow MCP readiness", () => {
+	test("resolves the workflow MCP preflight config from SDK mcpServers", () => {
+		const workflowConfig = { command: "node", args: ["workflow-server.js"] };
+		const browserConfig = { command: "gsd-browser" };
+
+		assert.equal(
+			resolveWorkflowMcpPreflightServerConfig(
+				{ "gsd-workflow": workflowConfig, "gsd-browser": browserConfig },
+				"gsd-workflow",
+			),
+			workflowConfig,
+		);
+		assert.equal(resolveWorkflowMcpPreflightServerConfig({ "gsd-workflow": "invalid" }, "gsd-workflow"), undefined);
+		assert.equal(resolveWorkflowMcpPreflightServerConfig({ "gsd-workflow": workflowConfig }, undefined), undefined);
+	});
+
+	test("workflow MCP preflight uses the same inline config passed to the SDK", async () => {
+		const projectRoot = realpathSync(mkdtempSync(join(tmpdir(), "claude-sdk-inline-preflight-")));
+		const restore = setWorkflowMcpEnv({});
+		let queryCalls = 0;
+		try {
+			const require = createRequire(import.meta.url);
+			const mcpModuleUrl = pathToFileURL(require.resolve("@modelcontextprotocol/sdk/server/mcp.js")).href;
+			const stdioModuleUrl = pathToFileURL(require.resolve("@modelcontextprotocol/sdk/server/stdio.js")).href;
+			const serverPath = join(projectRoot, "fake-workflow-mcp-server.mjs");
+			writeFileSync(
+				serverPath,
+				[
+					`const { McpServer } = await import(${JSON.stringify(mcpModuleUrl)});`,
+					`const { StdioServerTransport } = await import(${JSON.stringify(stdioModuleUrl)});`,
+					'const server = new McpServer({ name: "fake", version: "1.0.0" }, { capabilities: { tools: {} } });',
+					'server.tool("gsd_plan_slice", "Plan slice", {}, async () => ({ content: [{ type: "text", text: "ok" }] }));',
+					'server.tool("gsd_reassess_roadmap", "Reassess roadmap", {}, async () => ({ content: [{ type: "text", text: "ok" }] }));',
+					'await server.connect(new StdioServerTransport());',
+				].join("\n"),
+				"utf-8",
+			);
+			process.env.GSD_WORKFLOW_MCP_COMMAND = process.execPath;
+			process.env.GSD_WORKFLOW_MCP_ARGS = JSON.stringify([serverPath]);
+			process.env.GSD_WORKFLOW_MCP_NAME = "gsd-workflow";
+
+			const stream = streamViaClaudeCode(
+				{ id: "claude-sonnet-4-6" } as any,
+				{
+					systemPrompt: "UNIT: Plan Slice",
+					messages: [{ role: "user", content: "Plan the next slice." } as Message],
+				},
+				{
+					cwd: projectRoot,
+					async *_sdkQueryForTest() {
+						queryCalls += 1;
+						yield {
+							type: "result",
+							subtype: "success",
+							uuid: "result-1",
+							session_id: "session-1",
+							duration_ms: 1,
+							duration_api_ms: 1,
+							is_error: false,
+							num_turns: 1,
+							result: "planned",
+							stop_reason: "end_turn",
+							total_cost_usd: 0,
+							usage: {
+								input_tokens: 0,
+								output_tokens: 0,
+								cache_read_input_tokens: 0,
+								cache_creation_input_tokens: 0,
+							},
+						};
+					},
+				} as any,
+			);
+
+			const message = await stream.result();
+
+			assert.equal(queryCalls, 1);
+			assert.deepEqual(message.content, [{ type: "text", text: "planned" }]);
+		} finally {
+			restore();
+			rmSync(projectRoot, { recursive: true, force: true });
+			clearMcpConfigCache();
+		}
+	});
+
 	test("emits visible progress text before workflow MCP readiness waits", () => {
 		const partial: AssistantMessage = {
 			role: "assistant",

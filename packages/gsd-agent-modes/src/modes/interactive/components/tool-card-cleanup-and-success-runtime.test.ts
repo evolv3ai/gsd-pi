@@ -83,7 +83,7 @@ describe("Extension warning notifications", () => {
 		}
 	});
 
-	it("routes extension errors to the sticky blocker without duplicating chat output", () => {
+	it("routes extension errors into chat without a sticky bottom banner", () => {
 		const chat = new Container();
 		const blocker = new Container();
 		const host = {
@@ -97,13 +97,13 @@ describe("Extension warning notifications", () => {
 
 		assert.equal(host.lastBlockingError, "stranded work blocks auto-mode");
 		assert.match(
-			blocker.render(100).map(stripAnsi).join("\n"),
+			chat.render(100).map(stripAnsi).join("\n"),
 			/Error: stranded work blocks auto-mode/,
 		);
 		assert.equal(
-			chat.render(100).map(stripAnsi).join("\n"),
+			blocker.render(100).map(stripAnsi).join("\n"),
 			"",
-			"extension error notifications must not duplicate the sticky blocker in chat",
+			"extension error notifications must not pin a duplicate banner above the editor",
 		);
 		assert.equal(host.ui.renderCount, 1);
 	});

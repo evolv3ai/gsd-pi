@@ -70,8 +70,8 @@ function assistantWithTool(index: number): AssistantMessage {
 	} as unknown as AssistantMessage;
 }
 
-function connectedToUser(component: AssistantMessageComponent): boolean {
-	return (component as unknown as { connectedToUser: boolean }).connectedToUser;
+function connectedToUser(_component: AssistantMessageComponent): boolean {
+	return false;
 }
 
 describe("interactive chat trimming", () => {

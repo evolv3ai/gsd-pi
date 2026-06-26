@@ -6,7 +6,7 @@ import { getMarkdownTheme, theme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { type TimestampFormat } from "./timestamp.js";
 import { formatTimestamp } from "./timestamp.js";
 import { RenderCache } from "./render-cache.js";
-import { renderAssistantRail } from "./transcript-design.js";
+import { renderPlainSpeakerMessage } from "./transcript-design.js";
 import { asServerToolUse, asWebSearchResult, isToolContentBlock } from "../gsd-content-blocks.js";
 
 export interface ContentRange {
@@ -27,8 +27,6 @@ export class AssistantMessageComponent extends Container {
 	private timestampFormat: TimestampFormat;
 	private range?: ContentRange;
 	private showMetadata: boolean;
-	private connectedToUser: boolean;
-	private continuesToUser = false;
 	private renderCache = new RenderCache();
 	private renderVersion = 0;
 
@@ -38,7 +36,6 @@ export class AssistantMessageComponent extends Container {
 		markdownTheme: MarkdownTheme = getMarkdownTheme(),
 		timestampFormat: TimestampFormat = "date-time-iso",
 		range?: ContentRange,
-		connectedToUser = false,
 	) {
 		super();
 
@@ -46,7 +43,6 @@ export class AssistantMessageComponent extends Container {
 		this.markdownTheme = markdownTheme;
 		this.timestampFormat = timestampFormat;
 		this.range = range;
-		this.connectedToUser = connectedToUser;
 		// No range = legacy full-message rendering; show metadata by default.
 		// Ranged (interleaved) instances start with metadata hidden; chat-controller
 		// calls setShowMetadata(true) on the last segment at message_end.
@@ -93,17 +89,11 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
-	setContinuesToUser(value: boolean): void {
-		if (this.continuesToUser === value) return;
-		this.continuesToUser = value;
-		this.clearRenderCache();
-	}
+	/** @deprecated Plain transcript has no connected rails. */
+	setContinuesToUser(_value: boolean): void {}
 
-	setConnectedToUser(value: boolean): void {
-		if (this.connectedToUser === value) return;
-		this.connectedToUser = value;
-		this.clearRenderCache();
-	}
+	/** @deprecated Plain transcript has no connected rails. */
+	setConnectedToUser(_value: boolean): void {}
 
 	updateContent(message: AssistantMessage): void {
 		this.lastMessage = message;
@@ -185,30 +175,23 @@ export class AssistantMessageComponent extends Container {
 	}
 
 	override render(width: number): string[] {
-		const cached = this.renderCache.get(
-			`${width}:${this.renderVersion}:${this.connectedToUser ? 1 : 0}:${this.continuesToUser ? 1 : 0}`,
-		);
+		const cached = this.renderCache.get(`${width}:${this.renderVersion}`);
 		if (cached) return cached;
 
 		const frameWidth = Math.max(20, width);
-		const contentWidth = Math.max(1, frameWidth - 3);
-		const lines = super.render(contentWidth);
+		const lines = super.render(frameWidth);
 		if (lines.length === 0) return [];
 		const metaParts = [];
 		if (this.lastMessage?.model) metaParts.push(this.lastMessage.model);
 		if (this.showMetadata && this.lastMessage?.timestamp != null) {
 			metaParts.push(formatTimestamp(this.lastMessage.timestamp, this.timestampFormat));
 		}
-		const rendered = renderAssistantRail(lines, frameWidth, {
+		const rendered = renderPlainSpeakerMessage(lines, frameWidth, {
 			label: "GSD",
-			meta: metaParts.length > 0 ? `· ${metaParts.join(" · ")}` : undefined,
-			connected: this.connectedToUser,
-			continuesToUser: this.continuesToUser,
+			meta: metaParts.length > 0 ? metaParts.join(" · ") : undefined,
+			tone: "assistant",
 		});
-		return this.renderCache.set(
-			`${width}:${this.renderVersion}:${this.connectedToUser ? 1 : 0}:${this.continuesToUser ? 1 : 0}`,
-			this.connectedToUser || rendered.length === 0 ? rendered : ["", ...rendered],
-		);
+		return this.renderCache.set(`${width}:${this.renderVersion}`, rendered);
 	}
 
 	private clearRenderCache(): void {

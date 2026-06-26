@@ -195,4 +195,57 @@ describe("registerGsdExtension defensive registration", () => {
     assert.ok(!registeredTools.includes("gsd_plan_slice"));
     drainLogs();
   });
+
+  // ── #852 follow-up: assertCriticalGsdWorkflowToolsRegistered tolerates pre-bind ──
+  //
+  // During extension loading, getAllTools() is a throwing stub
+  // ("Extension runtime not initialized"). The assertion used to call it
+  // synchronously and throw, propagating to index.ts's catch and firing
+  // "Extension setup partially failed" — leaving the tool surface incomplete
+  // under Claude Code CLI. It must tolerate the pre-bind throw.
+
+  test("registerGsdExtension does not throw when getAllTools is the pre-bind stub", () => {
+    const registeredTools: string[] = [];
+    const pi = {
+      registerCommand: () => {},
+      registerTool: (tool: { name: string }) => { registeredTools.push(tool.name); },
+      registerHook: () => {},
+      registerShortcut: () => {},
+      events: { on: () => {}, off: () => {}, emit: () => {} },
+      // Simulate the pre-bind throwing stub (loader.ts:182).
+      getAllTools: () => {
+        throw new Error("Extension runtime not initialized. Action methods cannot be called during extension loading.");
+      },
+    };
+
+    // Must not throw — the old code let this propagate as "Extension setup partially failed".
+    assert.doesNotThrow(() => registerGsdExtension(pi as any));
+    // Critical tools should still have been registered (registerTool is valid during load).
+    assert.ok(registeredTools.includes("gsd_plan_milestone"));
+    assert.ok(registeredTools.includes("gsd_plan_slice"));
+    drainLogs();
+  });
+
+  test("registerGsdExtension still throws when getAllTools works and critical tools are missing (post-bind)", () => {
+    // The assertion must still fire when getAllTools returns a real value but
+    // a critical tool is missing — just not during the pre-bind window.
+    const registeredTools: string[] = [];
+    const pi = {
+      registerCommand: () => {},
+      registerTool: (tool: { name: string }) => {
+        if (tool.name === "gsd_plan_slice") throw new Error("simulated failure");
+        registeredTools.push(tool.name);
+      },
+      registerHook: () => {},
+      registerShortcut: () => {},
+      events: { on: () => {}, off: () => {}, emit: () => {} },
+      getAllTools: () => registeredTools.map((name) => ({ name })),
+    };
+
+    assert.throws(
+      () => registerGsdExtension(pi as any),
+      /Critical GSD workflow tool registration failed/,
+    );
+    drainLogs();
+  });
 });

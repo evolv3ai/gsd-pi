@@ -1,7 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Shared DB-backed guard for milestone closeout finalization.
 
-import { dirname } from "node:path";
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 import {
   getLatestAssessmentByScope,
@@ -9,7 +10,9 @@ import {
   getMilestoneSlices,
   getPendingGates,
   getSliceTasks,
+  insertAssessment,
   isDbAvailable,
+  transaction,
 } from "./gsd-db.js";
 import {
   getWorkflowDatabasePath,
@@ -17,6 +20,9 @@ import {
 } from "./db-workspace.js";
 import { isClosedStatus } from "./status-guards.js";
 import { closeQualityGatesFromEvidence } from "./quality-gate-closure.js";
+import { insertMilestoneValidationGates } from "./milestone-validation-gates.js";
+import { relMilestoneFile, resolveSliceFile } from "./paths.js";
+import { invalidateAllCaches } from "./cache.js";
 
 export const CLOSEOUT_CONSISTENCY_BLOCKED_REASON = "closeout-consistency-blocked";
 
@@ -44,6 +50,7 @@ export interface CloseoutConsistencyOptions {
   refreshFromDisk?: boolean;
   allowOpenMilestone?: boolean;
   artifactBasePath?: string;
+  allowPassThroughValidation?: boolean;
 }
 
 function blocked(reason: CloseoutConsistencyFailureReason, message: string): CloseoutConsistencyResult {
@@ -63,6 +70,87 @@ function artifactBasePathFromDb(): string | undefined {
   const dbPath = getWorkflowDatabasePath();
   if (!isFileBackedDbPath(dbPath)) return undefined;
   return dirname(dirname(dbPath!));
+}
+
+function allSlicesHaveCloseoutSummaryEvidence(milestoneId: string, artifactBasePath: string): boolean {
+  const slices = getMilestoneSlices(milestoneId);
+  if (slices.length === 0) return false;
+
+  return slices.every((slice) => {
+    if (!isClosedStatus(slice.status)) return false;
+    for (const task of getSliceTasks(milestoneId, slice.id)) {
+      if (!isClosedStatus(task.status)) return false;
+    }
+    const summaryPath = resolveSliceFile(artifactBasePath, milestoneId, slice.id, "SUMMARY");
+    return Boolean(summaryPath && existsSync(summaryPath));
+  });
+}
+
+function renderCloseoutPassThroughValidation(milestoneId: string): string {
+  return [
+    "---",
+    "verdict: pass",
+    "skip_validation: true",
+    "skip_validation_reason: closeout-recovery",
+    "remediation_round: 0",
+    "---",
+    "",
+    "# Milestone Validation (skipped)",
+    "",
+    `Milestone validation was recorded during closeout for ${milestoneId} because all slices already had SUMMARY evidence and no milestone-validation assessment was present.`,
+    "",
+  ].join("\n");
+}
+
+function recordCloseoutPassThroughValidationIfReady(
+  milestoneId: string,
+  artifactBasePath?: string,
+): boolean {
+  const basePath = artifactBasePath ?? artifactBasePathFromDb();
+  if (!basePath) return false;
+
+  const existing = getLatestAssessmentByScope(milestoneId, "milestone-validation");
+  if (existing?.status === "pass") return true;
+  if (existing) return false;
+  if (!allSlicesHaveCloseoutSummaryEvidence(milestoneId, basePath)) return false;
+
+  const validationPath = join(basePath, relMilestoneFile(basePath, milestoneId, "VALIDATION"));
+  const content = renderCloseoutPassThroughValidation(milestoneId);
+  mkdirSync(dirname(validationPath), { recursive: true });
+  writeFileSync(validationPath, content, "utf-8");
+
+  try {
+    transaction(() => {
+      insertAssessment({
+        path: validationPath,
+        milestoneId,
+        sliceId: null,
+        taskId: null,
+        status: "pass",
+        scope: "milestone-validation",
+        fullContent: content,
+      });
+      const gateSliceId = getMilestoneSlices(milestoneId)[0]?.id;
+      if (gateSliceId) {
+        insertMilestoneValidationGates(
+          milestoneId,
+          gateSliceId,
+          "pass",
+          new Date().toISOString(),
+        );
+      }
+    });
+  } catch (err) {
+    try {
+      unlinkSync(validationPath);
+    } catch {
+      // best effort cleanup
+    }
+    throw err;
+  }
+
+  invalidateAllCaches();
+  return true;
 }
 
 export function checkCloseoutConsistencyGate(
@@ -97,14 +185,30 @@ export function checkCloseoutConsistencyGate(
     );
   }
 
-  const validation = milestone.status === "skipped"
+  let validation = milestone.status === "skipped"
     ? null
     : getLatestAssessmentByScope(milestoneId, "milestone-validation");
+  if (
+    milestone.status !== "skipped" &&
+    validation?.status !== "pass" &&
+    options.allowPassThroughValidation &&
+    recordCloseoutPassThroughValidationIfReady(
+      milestoneId,
+      options.artifactBasePath ?? artifactBasePathFromDb(),
+    )
+  ) {
+    validation = getLatestAssessmentByScope(milestoneId, "milestone-validation");
+  }
   if (milestone.status !== "skipped") {
     if (validation?.status !== "pass") {
+      const validationStatus = validation?.status ?? "absent";
+      const recovery =
+        validationStatus === "absent"
+          ? ` Run \`/gsd validate-milestone ${milestoneId}\` to create the validation, or set \`phases.skip_milestone_validation: true\` in .gsd/PREFERENCES.md to skip it.`
+          : "";
       return blocked(
         "validation-not-pass",
-        `Closeout consistency blocked for ${milestoneId}: latest milestone validation is "${validation?.status ?? "absent"}".`,
+        `Closeout consistency blocked for ${milestoneId}: latest milestone validation is "${validationStatus}".${recovery}`,
       );
     }
   }

@@ -1,7 +1,14 @@
 # TUI Audit — Findings & Fix Plan
 
+> **Status: historical snapshot (2026-05-18).** This audit captured the TUI as it
+> existed before the visual-simplification work. Many recommendations below have
+> since been implemented; several files it references (e.g. `chat-frame.ts`,
+> `tui-style-kit.ts`) were removed during that refactor, and the interactive
+> components have moved to `packages/gsd-agent-modes/src/modes/interactive/`.
+> Read this as the rationale for the redesign, not a description of current code.
+
 Audit date: 2026-05-18. Scope: `packages/pi-tui` (render engine) and
-`packages/pi-coding-agent/src/modes/interactive` (components, theme, orchestration).
+`packages/gsd-agent-modes/src/modes/interactive` (components, theme, orchestration).
 Assumption going in: everything is broken until proven otherwise.
 
 ---

@@ -41,28 +41,43 @@
 | `invalidate(): void` | Yes | Clear caches |
 | `wantsKeyRelease?: boolean` | No | Receive key release events |
 
+### Low-Level TUI Lifecycle
+
+| API | Description |
+|-----|-------------|
+| `new TUI(terminal)` | Create the root renderer for a `Terminal` implementation |
+| `tui.start()` / `tui.stop()` | Enter and leave terminal raw/rendering mode |
+| `tui.requestRender(force?)` | Schedule a render |
+| `tui.onDebug` | Global Shift+Ctrl+D handler |
+| `tui.onOutputClosed` | Called once when stdout closes; late assignment runs immediately if closure was already observed |
+| `terminal.outputClosed` | Optional terminal state flag that stops new renders |
+| `terminal.setOutputClosedHandler(handler)` | Optional terminal hook used by `TUI` to detect closed stdout |
+| `isStdoutClosedError(err)` | Helper for recognizing `EPIPE`, write-side `EIO`, and stdout EOF |
+
 ### Key Imports
 
 ```typescript
-// From @mariozechner/pi-tui
+// From @gsd/pi-tui
 import {
+  TUI, ProcessTerminal,
   Text, Box, Container, Spacer, Markdown, Image,
   SelectList, SettingsList, Input, Editor,
-  matchesKey, Key,
+  matchesKey, Key, isStdoutClosedError,
   visibleWidth, truncateToWidth, wrapTextWithAnsi,
   CURSOR_MARKER,
   type Component, type Focusable, type SelectItem, type SettingItem,
   type EditorTheme, type OverlayAnchor, type OverlayOptions, type OverlayHandle,
-} from "@mariozechner/pi-tui";
+  type Terminal,
+} from "@gsd/pi-tui";
 
-// From @mariozechner/pi-coding-agent
+// From @gsd/pi-coding-agent
 import {
   DynamicBorder, BorderedLoader, CustomEditor,
   getMarkdownTheme, getSettingsListTheme,
   highlightCode, getLanguageFromPath,
   keyHint, appKeyHint, editorKey, rawKeyHint,
   type ExtensionAPI, type ExtensionContext, type Theme,
-} from "@mariozechner/pi-coding-agent";
+} from "@gsd/pi-coding-agent";
 ```
 
 ---

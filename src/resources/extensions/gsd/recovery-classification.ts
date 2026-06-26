@@ -4,6 +4,7 @@
 import { isToolUnavailableError } from "./auto-tool-tracking.js";
 import { classifyError, isTransient, type ErrorClass } from "./error-classifier.js";
 import { recoveryRemediation } from "./guidance.js";
+import { isTerminalToolSurfaceError } from "./tool-surface-readiness.js";
 import { ReconciliationFailedError } from "./state-reconciliation.js";
 import { IllegalPhaseTransitionError } from "./state-transition-matrix.js";
 
@@ -94,6 +95,12 @@ const FAILURE_TAXONOMY: Record<
 };
 
 function inferFailureKind(message: string): RecoveryFailureKind {
+  // A terminal tool-surface failure (workflow MCP server in failed/needs-auth/
+  // disabled) will not self-heal, so it must escalate rather than retry the
+  // same model into the per-unit cost cap. Checked before the generic
+  // tool-unavailable branch, which matches the same readiness prefix and
+  // would otherwise route it to retry. See #783.
+  if (isTerminalToolSurfaceError(message)) return "runtime-unknown";
   if (isToolUnavailableError(message)) return "tool-unavailable";
   if (/tool contract|auto-unit tool scope|phase-boundary gate|not permitted.*own/i.test(message)) return "tool-contract";
   if (/lifecycle progression|required artifact|missing .*assessment|missing .*closeout|cannot legally (?:advance|progress)/i.test(message)) return "lifecycle-progression";

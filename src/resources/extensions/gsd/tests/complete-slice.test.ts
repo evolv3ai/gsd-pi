@@ -61,11 +61,11 @@ function cleanupDir(dirPath: string): void {
  */
 function createTempProject(): { basePath: string; roadmapPath: string } {
   const basePath = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-slice-handler-'));
-  const sliceDir = path.join(basePath, '.gsd', 'milestones', 'M001', 'slices', 'S01');
+  const sliceDir = path.join(basePath, '.gsd', 'phases', '01-test');
   const tasksDir = path.join(sliceDir, 'tasks');
   fs.mkdirSync(tasksDir, { recursive: true });
 
-  const roadmapPath = path.join(basePath, '.gsd', 'milestones', 'M001', 'M001-ROADMAP.md');
+  const roadmapPath = path.join(basePath, '.gsd', 'phases', '01-test', '01-ROADMAP.md');
   fs.writeFileSync(roadmapPath, `# M001: Test Milestone
 
 ## Slices
@@ -211,8 +211,8 @@ console.log('\n=== complete-slice: handler happy path ===');
   if (!('error' in result)) {
     assertEq(result.sliceId, 'S01', 'result sliceId');
     assertEq(result.milestoneId, 'M001', 'result milestoneId');
-    assertTrue(result.summaryPath.endsWith('S01-SUMMARY.md'), 'summaryPath should end with S01-SUMMARY.md');
-    assertTrue(result.uatPath.endsWith('S01-UAT.md'), 'uatPath should end with S01-UAT.md');
+    assertTrue(result.summaryPath.endsWith('01-01-SUMMARY.md'), 'summaryPath should end with 01-01-SUMMARY.md');
+    assertTrue(result.uatPath.endsWith('01-01-UAT.md'), 'uatPath should end with 01-01-UAT.md');
 
     // (a) Verify SUMMARY.md exists on disk with correct YAML frontmatter
     assertTrue(fs.existsSync(result.summaryPath), 'summary file should exist on disk');
@@ -416,8 +416,8 @@ console.log('\n=== complete-slice: handler idempotency ===');
   if (!('error' in r2)) {
     assertEq(r2.duplicate, true, 'second call should be marked duplicate');
     assertEq(
-      fs.readFileSync(r2.summaryPath, 'utf-8'),
-      summaryBefore,
+      fs.readFileSync(r2.summaryPath, 'utf-8').replace(/completed_at: "[^"]*"/g, 'completed_at: "<ts>"'),
+      summaryBefore.replace(/completed_at: "[^"]*"/g, 'completed_at: "<ts>"'),
       'healthy duplicate should not rewrite the existing summary',
     );
   }
@@ -488,7 +488,7 @@ console.log('\n=== complete-slice: handler with missing roadmap ===');
 
   // Create a temp dir WITHOUT a roadmap file
   const basePath = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-no-roadmap-'));
-  const sliceDir = path.join(basePath, '.gsd', 'milestones', 'M001', 'slices', 'S01');
+  const sliceDir = path.join(basePath, '.gsd', 'phases', '01-test');
   fs.mkdirSync(sliceDir, { recursive: true });
 
   // Set up DB state

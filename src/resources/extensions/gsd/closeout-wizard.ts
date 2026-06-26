@@ -22,7 +22,11 @@ import {
 } from "./unmerged-milestone-guard.js";
 import { appendRequirementsBacklogToSummary } from "./requirements-backlog.js";
 import { nativeBranchList, nativeIsRepo } from "./native-git-bridge.js";
-import { allWorktreesDirs } from "./worktree-manager.js";
+import {
+  allWorktreesDirs,
+  isMilestoneWorktreeResidueCandidate,
+  pruneEphemeralGhostWorktreeDirectories,
+} from "./worktree-manager.js";
 
 export type CloseoutActionId = "finish_quick" | "finish_milestone";
 
@@ -50,8 +54,11 @@ function listMilestoneWorktreeIds(basePath: string): string[] {
     if (!existsSync(wtDir)) continue;
     for (const entry of readdirSync(wtDir)) {
       if (!MILESTONE_ID_RE.test(entry)) continue;
+      const fullPath = join(wtDir, entry);
       try {
-        if (statSync(join(wtDir, entry)).isDirectory()) ids.add(entry);
+        if (!statSync(fullPath).isDirectory()) continue;
+        if (!isMilestoneWorktreeResidueCandidate(basePath, fullPath)) continue;
+        ids.add(entry);
       } catch {
         // skip unreadable entries
       }
@@ -89,6 +96,8 @@ function isStrandedMilestoneId(milestoneId: string): boolean {
 /** Surface stranded milestone git residue when closeout guards did not classify it. */
 export function detectIdleMilestoneResidueHint(basePath: string): IdleMilestoneResidueHint | null {
   if (!nativeIsRepo(basePath)) return null;
+
+  pruneEphemeralGhostWorktreeDirectories(basePath);
 
   const gsdDir = join(basePath, ".gsd");
   const dbPath = join(gsdDir, "gsd.db");

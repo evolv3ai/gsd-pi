@@ -165,7 +165,7 @@ function makeFixture(opts: FixtureOptions = {}): Fixture {
   session.resourceVersionOnStart = null;
 
   const ctx: OrchestratorContext = {
-    ctx: { model: {}, modelRegistry: { getAll: () => [] }, ui: { notify() {} } } as never,
+    ctx: { model: {}, modelRegistry: { getAll: () => [], getAvailable: () => [] }, ui: { notify() {} } } as never,
     pi: { getActiveTools: () => [] } as never,
     dispatchBasePath: base,
     runtimeBasePath: base,
@@ -1109,6 +1109,7 @@ test("decideOrchestratorDispatch forwards session-derived dispatch inputs identi
   try {
     const fakeModelRegistry = {
       getAll: () => [],
+      getAvailable: () => [],
       getProviderAuthMode: (_provider: string) => "apiKey" as const,
     };
     const ctx = {
@@ -1208,10 +1209,12 @@ test("decideOrchestratorDispatch prefers caller-supplied dispatch inputs over ct
   try {
     const ctxModelRegistry = {
       getAll: () => [],
+      getAvailable: () => [],
       getProviderAuthMode: (_provider: string) => "apiKey" as const,
     };
     const overrideModelRegistry = {
       getAll: () => [],
+      getAvailable: () => [],
       getProviderAuthMode: (_provider: string) => "oauth" as const,
     };
     const ctx = {
@@ -1268,7 +1271,7 @@ test("decideOrchestratorDispatch forwards constructor session when advance input
   setRegistry(new RuleRegistry([captureRule]));
 
   try {
-    const ctx = { model: {}, modelRegistry: { getAll: () => [] } } as never;
+    const ctx = { model: {}, modelRegistry: { getAll: () => [], getAvailable: () => [] } } as never;
     const pi = { getActiveTools: () => [] } as never;
     const session = {
       basePath: "/tmp/worktree-fixture",
@@ -1313,7 +1316,7 @@ test("decideOrchestratorDispatch evaluates deep pre-planning rules without an ac
     nextAction: "All remaining milestones are parked (M027). Run /gsd unpark M027 or create a new milestone.",
     registry: [{ id: "M027", title: "Parked", status: "parked" }],
   };
-  const ctx = { model: {}, modelRegistry: { getAll: () => [] } } as never;
+  const ctx = { model: {}, modelRegistry: { getAll: () => [], getAvailable: () => [] } } as never;
   const pi = { getActiveTools: () => [] } as never;
   const session = {
     basePath: base,
@@ -1354,7 +1357,7 @@ test("decideOrchestratorDispatch does not replay milestone-scoped verification r
     nextAction: "All remaining milestones are parked (M027). Run /gsd unpark M027 or create a new milestone.",
     registry: [{ id: "M027", title: "Parked", status: "parked" }],
   };
-  const ctx = { model: {}, modelRegistry: { getAll: () => [] } } as never;
+  const ctx = { model: {}, modelRegistry: { getAll: () => [], getAvailable: () => [] } } as never;
   const pi = { getActiveTools: () => [] } as never;
   const stalePendingRetry = {
     unitType: "execute-task",
@@ -1415,7 +1418,7 @@ test("decideOrchestratorDispatch adopts next active milestone after the session 
   setRegistry(new RuleRegistry([captureRule]));
 
   try {
-    const ctx = { model: {}, modelRegistry: { getAll: () => [] } } as never;
+    const ctx = { model: {}, modelRegistry: { getAll: () => [], getAvailable: () => [] } } as never;
     const pi = { getActiveTools: () => [] } as never;
     const session = {
       basePath: base,
@@ -1449,7 +1452,7 @@ test("decideOrchestratorDispatch keeps blocking stale milestone worktree scope",
   };
   const worktreePath = join(base, ".gsd", "worktrees", "M001");
   mkdirSync(worktreePath, { recursive: true });
-  const ctx = { model: {}, modelRegistry: { getAll: () => [] } } as never;
+  const ctx = { model: {}, modelRegistry: { getAll: () => [], getAvailable: () => [] } } as never;
   const pi = { getActiveTools: () => [] } as never;
   const session = {
     basePath: worktreePath,
@@ -1470,7 +1473,7 @@ test("decideOrchestratorDispatch keeps blocking stale milestone worktree scope",
 
 test("decideOrchestratorDispatch replays pending verification retry dispatch", async () => {
   const stateSnapshot = makeState();
-  const ctx = { model: {}, modelRegistry: { getAll: () => [] } } as never;
+  const ctx = { model: {}, modelRegistry: { getAll: () => [], getAvailable: () => [] } } as never;
   const pi = { getActiveTools: () => [] } as never;
   const session = {
     basePath: "/tmp/worktree-fixture",
@@ -1527,7 +1530,7 @@ test("decideOrchestratorDispatch clears verification retry state when skipping a
     };
     setRegistry(new RuleRegistry([retryRule]));
 
-    const ctx = { model: {}, modelRegistry: { getAll: () => [] } } as never;
+    const ctx = { model: {}, modelRegistry: { getAll: () => [], getAvailable: () => [] } } as never;
     const pi = { getActiveTools: () => [] } as never;
     const session = {
       basePath: base,
@@ -1571,7 +1574,7 @@ test("decideOrchestratorDispatch preserves stop reason as a blocked decision", a
   setRegistry(new RuleRegistry([stopRule]));
 
   try {
-    const ctx = { model: {}, modelRegistry: { getAll: () => [] } } as never;
+    const ctx = { model: {}, modelRegistry: { getAll: () => [], getAvailable: () => [] } } as never;
     const pi = { getActiveTools: () => [] } as never;
 
     const result = await decideOrchestratorDispatch(ctx, pi, "/tmp/parity-fixture", undefined, { stateSnapshot });
@@ -1601,7 +1604,7 @@ test("decideOrchestratorDispatch preserves dispatch skip instead of collapsing i
   setRegistry(new RuleRegistry([skipRule]));
 
   try {
-    const ctx = { model: {}, modelRegistry: { getAll: () => [] } } as never;
+    const ctx = { model: {}, modelRegistry: { getAll: () => [], getAvailable: () => [] } } as never;
     const pi = { getActiveTools: () => [] } as never;
 
     const result = await decideOrchestratorDispatch(ctx, pi, "/tmp/parity-fixture", undefined, { stateSnapshot });

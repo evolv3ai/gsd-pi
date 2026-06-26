@@ -21,6 +21,10 @@ import { loadFile, getManifestStatus } from "./files.js";
 import type { InterruptedSessionAssessment } from "./interrupted-session.js";
 import {
   loadEffectiveGSDPreferences,
+  loadEffectiveGSDPreferencesWithRegistry,
+  modelIdsForProfileResolution,
+  resolveProfileAnchorProvider,
+  resolveDisabledModelProvidersFromPreferences,
   resolveSkillDiscoveryMode,
   getIsolationMode,
 } from "./preferences.js";
@@ -28,6 +32,7 @@ import { ensureGsdSymlink, isInheritedRepo, validateProjectId } from "./repo-ide
 import { migrateToExternalState, recoverFailedMigration } from "./migrate-external.js";
 import { collectSecretsFromManifest } from "../get-secrets-from-user.js";
 import { gsdRoot, resolveMilestoneFile } from "./paths.js";
+import { findMilestoneIds } from "./milestone-ids.js";
 import { milestoneEntryBlockedGuidance } from "./guidance.js";
 import { invalidateAllCaches } from "./cache.js";
 import { writeLock, clearLock, readCrashLock, isLockProcessAlive } from "./crash-recovery.js";
@@ -428,7 +433,7 @@ function formatStrandedWorkBlockerMessage(
 
 export function auditOrphanedMilestoneBranches(
   basePath: string,
-  _isolationMode: "worktree" | "branch" | "none",
+  isolationMode: "worktree" | "branch" | "none",
   gitDeps: {
     branchList?: typeof nativeBranchList;
     branchExists?: typeof nativeBranchExists;
@@ -483,6 +488,17 @@ export function auditOrphanedMilestoneBranches(
     mergedBranches = new Set();
   }
 
+  // Detect the branch currently checked out at the project root once — it
+  // does not change across loop iterations and is used below to avoid
+  // requesting a worktree creation for a branch that git already considers
+  // "in use" by the main worktree.
+  let currentRootBranch: string | null = null;
+  try {
+    currentRootBranch = nativeGetCurrentBranch(basePath) || null;
+  } catch {
+    currentRootBranch = null;
+  }
+
   for (const branch of milestoneBranches) {
     const milestoneId = branch.replace(/^milestone\//, "");
     const milestone = getMilestone(milestoneId);
@@ -511,9 +527,29 @@ export function auditOrphanedMilestoneBranches(
       }
       if ((isMerged || commitsAhead === 0) && !worktreeEvidence.dirty) continue;
 
-      const recoveryMode: StrandedWorkRecoveryMode = worktreeEvidence.path
-        ? "worktree"
-        : "branch";
+      // #812 — the worktree directory being absent on disk does NOT mean the
+      // project is branch-mode. getAutoWorktreePath() returns null whenever the
+      // directory is merely missing (transient/permanent loss after an
+      // interrupted session), which previously collapsed to recoveryMode:
+      // "branch" — silently checking out milestone/<id> in the project root with
+      // no worktree. When the project is *configured* for worktree isolation,
+      // recover as "worktree" so adoptStrandedMilestone re-materializes the
+      // worktree from the existing branch (createAutoWorktree with
+      // reuseExistingBranch) instead of degrading to branch-mode-in-root.
+      //
+      // Exception (#812-followup): if the milestone branch is already checked
+      // out at the project root (e.g. a leftover from the pre-fix #812 recovery
+      // that ran `git checkout milestone/<id>` in the root), git considers that
+      // branch "in use by another worktree" and will refuse `git worktree add`,
+      // causing bootstrap to abort. Degrade to "branch" in that case — the
+      // session resumes on the already-checked-out branch without worktree
+      // creation, same as pre-fix behavior, and the configured isolation is
+      // restored for subsequent milestones after merge/teardown.
+      const isBranchCheckedOutAtRoot = currentRootBranch === branch;
+      const recoveryMode: StrandedWorkRecoveryMode =
+        worktreeEvidence.path || (isolationMode === "worktree" && !isBranchCheckedOutAtRoot)
+          ? "worktree"
+          : "branch";
       const message = strandedWorkMessage({
         milestoneId,
         branch,
@@ -1012,9 +1048,14 @@ export async function bootstrapAutoSession(
   // run /login" before pausing and resetting to claude-code/claude-sonnet-4-6.
   const manualSessionOverride = getSessionModelOverride(ctx.sessionManager.getSessionId());
   const sessionProviderIsCustom = isCustomProvider(ctx.model?.provider);
+  const profileModelIds = modelIdsForProfileResolution(
+    ctx.modelRegistry,
+    resolveProfileAnchorProvider(ctx.model?.provider),
+    resolveDisabledModelProvidersFromPreferences(),
+  );
   const preferredModel = sessionProviderIsCustom
     ? null
-    : resolveDefaultSessionModel(ctx.model?.provider, base);
+    : resolveDefaultSessionModel(ctx.model?.provider, base, profileModelIds, ctx.model?.id);
   // Validate the preferred model against the live registry + provider auth so
   // an unconfigured PREFERENCES.md entry (no API key / OAuth) can't become the
   // start-model snapshot. Without this, every subsequent unit would try to
@@ -1456,7 +1497,12 @@ export async function bootstrapAutoSession(
       }
     }
 
-    const effectivePrefs = loadEffectiveGSDPreferences(base)?.preferences;
+    const effectivePrefs = loadEffectiveGSDPreferencesWithRegistry(
+      ctx.modelRegistry,
+      base,
+      resolveProfileAnchorProvider(ctx.model?.provider, startModelSnapshot?.provider),
+      startModelSnapshot ? `${startModelSnapshot.provider}/${startModelSnapshot.id}` : undefined,
+    )?.preferences;
     const { shouldRunDeepProjectSetup } = await import("./auto-dispatch.js");
     const deepProjectStagePending = shouldRunDeepProjectSetup(
       state,
@@ -1808,7 +1854,12 @@ export async function bootstrapAutoSession(
     // FlatRateContext used by selectAndApplyModel so user-declared
     // flat-rate providers and externalCli auto-detection are respected.
     const { isFlatRateProvider, buildFlatRateContext } = await import("./auto-model-selection.js");
-    const bannerPrefs = loadEffectiveGSDPreferences(base)?.preferences;
+    const bannerPrefs = loadEffectiveGSDPreferencesWithRegistry(
+      ctx.modelRegistry,
+      base,
+      resolveProfileAnchorProvider(ctx.model?.provider, s.autoModeStartModel?.provider),
+      s.autoModeStartModel ? `${s.autoModeStartModel.provider}/${s.autoModeStartModel.id}` : undefined,
+    )?.preferences;
     const effectiveProvider = s.autoModeStartModel?.provider ?? ctx.model?.provider;
     const effectivelyEnabled = routingConfig.enabled
       && (routingConfig.allow_flat_rate_providers
@@ -1872,37 +1923,32 @@ export async function bootstrapAutoSession(
 
     // Pre-flight: validate milestone queue
     try {
-      const msDir = join(base, ".gsd", "milestones");
-      if (existsSync(msDir)) {
-        const milestoneIds = readdirSync(msDir, { withFileTypes: true })
-          .filter((d) => d.isDirectory() && /^M\d{3}/.test(d.name))
-          .map((d) => d.name.match(/^(M\d{3})/)?.[1] ?? d.name);
-        if (milestoneIds.length > 1) {
-          const issues: string[] = [];
-          for (const id of milestoneIds) {
-            // Skip completed/parked milestones — a leftover CONTEXT-DRAFT.md
-            // on a finished milestone is harmless residue, not an actionable warning.
-            if (isDbAvailable()) {
-              const ms = getMilestone(id);
-              if (ms?.status === "complete" || ms?.status === "parked") continue;
-            }
-            const draft = resolveMilestoneFile(base, id, "CONTEXT-DRAFT");
-            if (draft)
-              issues.push(
-                `${id}: has CONTEXT-DRAFT.md (will pause for discussion)`,
-              );
+      const milestoneIds = findMilestoneIds(base);
+      if (milestoneIds.length > 1) {
+        const issues: string[] = [];
+        for (const id of milestoneIds) {
+          // Skip completed/parked milestones — a leftover CONTEXT-DRAFT.md
+          // on a finished milestone is harmless residue, not an actionable warning.
+          if (isDbAvailable()) {
+            const ms = getMilestone(id);
+            if (ms?.status === "complete" || ms?.status === "parked") continue;
           }
-          if (issues.length > 0) {
-            ctx.ui.notify(
-              `Pre-flight: ${milestoneIds.length} milestones queued.\n${issues.map((i) => `  ⚠ ${i}`).join("\n")}`,
-              "warning",
+          const draft = resolveMilestoneFile(base, id, "CONTEXT-DRAFT");
+          if (draft)
+            issues.push(
+              `${id}: has CONTEXT-DRAFT.md (will pause for discussion)`,
             );
-          } else {
-            ctx.ui.notify(
-              `Pre-flight: ${milestoneIds.length} milestones queued. All have full context.`,
-              "info",
-            );
-          }
+        }
+        if (issues.length > 0) {
+          ctx.ui.notify(
+            `Pre-flight: ${milestoneIds.length} milestones queued.\n${issues.map((i) => `  ⚠ ${i}`).join("\n")}`,
+            "warning",
+          );
+        } else {
+          ctx.ui.notify(
+            `Pre-flight: ${milestoneIds.length} milestones queued. All have full context.`,
+            "info",
+          );
         }
       }
     } catch (err) {

@@ -15,7 +15,6 @@ export function clearEditor(host: InteractiveModeDelegateHost): void {
 
 export function showError(host: InteractiveModeDelegateHost, errorMessage: string): void {
 	host.lastBlockingError = errorMessage;
-	renderBlockingErrorBanner(host.blockingErrorContainer, host.lastBlockingError);
 	host.chatContainer.addChild(new Spacer(1));
 	host.chatContainer.addChild(new Text(theme.fg("error", `Error: ${errorMessage}`), 1, 0));
 	host.ui.requestRender();

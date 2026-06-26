@@ -21,7 +21,7 @@ import { parsePlan } from '../parsers-legacy.ts';
 
 function makeTmpBase(): string {
   const base = mkdtempSync(join(tmpdir(), 'gsd-replan-'));
-  mkdirSync(join(base, '.gsd', 'milestones', 'M001', 'slices', 'S01', 'tasks'), { recursive: true });
+  mkdirSync(join(base, '.gsd', 'phases', '01-test'), { recursive: true });
   return base;
 }
 
@@ -230,11 +230,11 @@ test('handleReplanSlice succeeds when modifying only incomplete tasks', async ()
     assert.equal(t01?.status, 'complete');
 
     // Verify rendered PLAN.md exists on disk
-    const planPath = join(base, '.gsd', 'milestones', 'M001', 'slices', 'S01', 'S01-PLAN.md');
+    const planPath = join(base, '.gsd', 'phases', '01-test', '01-01-PLAN.md');
     assert.ok(existsSync(planPath), 'PLAN.md should be rendered to disk');
 
     // Verify REPLAN.md exists on disk
-    const replanPath = join(base, '.gsd', 'milestones', 'M001', 'slices', 'S01', 'S01-REPLAN.md');
+    const replanPath = join(base, '.gsd', 'phases', '01-test', '01-01-REPLAN.md');
     assert.ok(existsSync(replanPath), 'REPLAN.md should be rendered to disk');
     const replanContent = readFileSync(replanPath, 'utf-8');
     assert.ok(replanContent.includes('Blocker Description'), 'REPLAN.md should contain blocker section');
@@ -272,7 +272,7 @@ test('handleReplanSlice cache invalidation: re-parsing PLAN.md reflects mutation
     assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
 
     // Re-parse PLAN.md from disk to verify cache invalidation worked
-    const planPath = join(base, '.gsd', 'milestones', 'M001', 'slices', 'S01', 'S01-PLAN.md');
+    const planPath = join(base, '.gsd', 'phases', '01-test', '01-01-PLAN.md');
     const content = readFileSync(planPath, 'utf-8');
     const parsed = parsePlan(content);
 

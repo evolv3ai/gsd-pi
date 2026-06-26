@@ -20,6 +20,7 @@ function withRoutingPrefs<T>(fn: () => T): T {
       join(tempProject, ".gsd", "PREFERENCES.md"),
       [
         "---",
+        "token_profile: burn-max",
         "dynamic_routing:",
         "  enabled: true",
         "  tier_models:",

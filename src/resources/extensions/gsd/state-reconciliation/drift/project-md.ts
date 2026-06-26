@@ -9,7 +9,7 @@ import { existsSync } from "node:fs";
 
 import { getMilestone, isDbAvailable } from "../../gsd-db.js";
 import { findMilestoneIds } from "../../milestone-ids.js";
-import { resolveMilestoneFile } from "../../paths.js";
+import { resolveMilestoneFile, resolveMilestonePath } from "../../paths.js";
 import type { GSDState } from "../../types.js";
 import type { DriftContext, DriftHandler, DriftRecord } from "../types.js";
 
@@ -46,16 +46,29 @@ export function detectUnregisteredMilestoneDrift(
 
 /**
  * Repair intentionally fails closed. The project-root DB is authoritative at
- * runtime; markdown-only milestones must be imported through an explicit
- * migration/recovery command so operators opt into changing canonical state.
+ * runtime; markdown-only milestones must be reconciled through an explicit,
+ * operator-controlled action so operators opt into changing canonical state.
+ *
+ * The hint deliberately leads with the *targeted*, non-destructive options. The
+ * common cause of this drift is a directory left under an old ID after a
+ * `unique_milestone_ids` rename, where the right fix is to rename (move) the
+ * directory — not a full DB reimport. `/gsd recover --confirm` is a destructive
+ * clear-and-reimport of the entire DB and is offered only as a last resort, so
+ * users do not reach for it expecting a targeted repair (see issue #826).
  */
 export function repairUnregisteredMilestone(
   record: UnregisteredMilestoneDrift,
-  _ctx: DriftContext,
+  ctx: DriftContext,
 ): void {
+  const dir = resolveMilestonePath(ctx.basePath, record.milestoneId);
+  const dirHint = dir ?? `the .gsd directory for ${record.milestoneId}`;
   throw new Error(
-    `Milestone ${record.milestoneId} exists only as markdown projection. ` +
-      "Runtime reconciliation will not import markdown into the authoritative DB; run `/gsd recover --confirm` if this markdown should repopulate the database.",
+    `Milestone ${record.milestoneId} exists only as markdown projection ` +
+      "(on-disk ROADMAP/CONTEXT/SUMMARY with no authoritative DB row). " +
+      "Runtime reconciliation will not import markdown into the DB. Choose one:\n" +
+      `  • Rename: if this directory is the same milestone under an old ID (e.g. a unique_milestone_ids rename), move \`${dirHint}\` to the current ID's directory and re-run.\n` +
+      `  • Discard: if this milestone is no longer relevant, delete \`${dirHint}\` and re-run.\n` +
+      "  • Last resort: `/gsd recover --confirm` performs a destructive full DB clear-and-reimport — it does NOT do a targeted import and can replace or duplicate existing DB milestones.",
   );
 }
 

@@ -1,0 +1,59 @@
+// Project/App: gsd-pi
+// File Purpose: Tests for the flat-phase layout policy.
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  LAYOUT_ROOT,
+  LAYOUT_SEGMENTS,
+  phaseDirName,
+  planFileName,
+  dbPath,
+  milestoneIdToPhaseNum,
+  sliceIdToPlanNum,
+  derivePhaseSlug,
+} from "../layout-policy.ts";
+
+test("LAYOUT_ROOT is .gsd", () => {
+  assert.equal(LAYOUT_ROOT, ".gsd");
+});
+
+test("LAYOUT_SEGMENTS.level1 is phases", () => {
+  assert.equal(LAYOUT_SEGMENTS.level1, "phases");
+});
+
+test("phaseDirName produces NN-slug", () => {
+  assert.equal(phaseDirName(1, "foundation"), "01-foundation");
+  assert.equal(phaseDirName(12, "auth-system"), "12-auth-system");
+});
+
+test("planFileName produces NN-MM-SUFFIX.md", () => {
+  assert.equal(planFileName(1, 1, "PLAN"), "01-01-PLAN.md");
+  assert.equal(planFileName(3, 2, "SUMMARY"), "03-02-SUMMARY.md");
+});
+
+test("dbPath resolves under .gsd", () => {
+  assert.equal(dbPath("/project"), "/project/.gsd/gsd.db");
+});
+
+test("milestoneIdToPhaseNum extracts the numeric portion", () => {
+  assert.equal(milestoneIdToPhaseNum("M001"), 1);
+  assert.equal(milestoneIdToPhaseNum("M012"), 12);
+});
+
+test("sliceIdToPlanNum extracts the numeric portion", () => {
+  assert.equal(sliceIdToPlanNum("S01"), 1);
+  assert.equal(sliceIdToPlanNum("S03"), 3);
+});
+
+test("derivePhaseSlug is stable and deterministic", () => {
+  assert.equal(derivePhaseSlug("Foundation"), "foundation");
+  assert.equal(derivePhaseSlug("Set Up Tooling!"), "set-up-tooling");
+  assert.equal(derivePhaseSlug("auth/API layer"), "auth-api-layer");
+  assert.equal(derivePhaseSlug("Foundation"), derivePhaseSlug("Foundation"));
+});
+
+test("derivePhaseSlug falls back when title is empty or punctuation-only", () => {
+  assert.equal(derivePhaseSlug(""), "phase");
+  assert.equal(derivePhaseSlug("---"), "phase");
+});

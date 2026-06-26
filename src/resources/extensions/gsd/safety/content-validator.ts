@@ -46,7 +46,8 @@ export function validateContent(
 
 type ContentValidatorFn = (content: string) => ContentViolation[];
 
-const TASK_MARKER_RE = /^\s*(?:-\s+\[[ xX]\]\s+\*\*T\d+:|#{2,4}\s+T\d+\b)/gm;
+// Matches both legacy "**T01: title**" and flat-phase "**T01**: title" checkbox formats.
+const TASK_MARKER_RE = /^\s*(?:-\s+\[[ xX]\]\s+\*\*T\d+(?:\*\*)?:|#{2,4}\s+T\d+\b)/gm;
 const SLICE_MARKER_RE = /^\s*(?:-\s+\[[ xX]\]\s+\*\*S\d+:|#{2,4}\s+S\d+\b)/gm;
 
 const VALIDATORS: Record<string, ContentValidatorFn> = {

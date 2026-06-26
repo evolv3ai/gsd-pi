@@ -17,6 +17,7 @@ import { unitPhaseLabel } from "./auto-dashboard.js";
 import { getSessionModelOverride } from "./session-model-override.js";
 import { logWarning } from "./workflow-logger.js";
 import { resolveUokFlags } from "./uok/flags.js";
+import { modelIdsForProfileResolution, resolveProfileAnchorProvider, resolveDisabledModelProvidersFromPreferences } from "./preferences.js";
 import { applyModelPolicyFilter } from "./uok/model-policy.js";
 import { isModelBlocked, isModelTemporarilyUnavailable } from "./blocked-models.js";
 import { getRequiredWorkflowToolsForAutoUnit, isWorkflowMcpSurfaceTool } from "./workflow-mcp.js";
@@ -404,8 +405,11 @@ export function resolvePreferredModelConfig(
   unitType: string,
   autoModeStartModel: { provider: string; id: string; flatRateCtx?: FlatRateContext } | null,
   isAutoMode = true,
+  basePath?: string,
+  availableModelIds?: string[],
+  preferredModelId?: string,
 ): PreferredModelConfig | undefined {
-  const explicitConfig = resolveModelWithFallbacksForUnit(unitType);
+  const explicitConfig = resolveModelWithFallbacksForUnit(unitType, basePath, availableModelIds, preferredModelId);
   if (explicitConfig) {
     return {
       ...explicitConfig,
@@ -475,8 +479,14 @@ export async function selectAndApplyModel(
   // With no explicit level, fall back to the auto-start session level and raise
   // the code-writing floor — preserving prior behavior exactly. Recomputed per
   // dispatch so neither the floor nor a phase override leaks to other units.
+  const anchorProvider = resolveProfileAnchorProvider(ctx.model?.provider, autoModeStartModel?.provider);
+  const profileResolutionIds = modelIdsForProfileResolution(
+    ctx.modelRegistry,
+    anchorProvider,
+    resolveDisabledModelProvidersFromPreferences(),
+  );
   const explicitThinkingLevel =
-    resolveThinkingLevelForUnit(unitType) as ReturnType<ExtensionAPI["getThinkingLevel"]> | undefined;
+    resolveThinkingLevelForUnit(unitType, basePath, profileResolutionIds) as ReturnType<ExtensionAPI["getThinkingLevel"]> | undefined;
   const desiredThinkingLevel = explicitThinkingLevel
     ?? floorThinkingLevelForUnit(unitType, autoModeStartThinkingLevel);
   if (explicitThinkingLevel) {
@@ -518,9 +528,19 @@ export async function selectAndApplyModel(
       flatRateCtx: buildFlatRateContext(autoModeStartModel.provider, ctx, prefs),
     };
   }
+  const preferredModelId = autoModeStartModel
+    ? `${autoModeStartModel.provider}/${autoModeStartModel.id}`
+    : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
   const modelConfig = effectiveSessionModelOverride
     ? undefined
-    : resolvePreferredModelConfig(unitType, autoModeStartModel, isAutoMode);
+    : resolvePreferredModelConfig(
+      unitType,
+      autoModeStartModel,
+      isAutoMode,
+      basePath,
+      profileResolutionIds,
+      preferredModelId,
+    );
   let routing: { tier: string; modelDowngraded: boolean } | null = null;
   let appliedModel: Model<Api> | null = null;
 
@@ -722,6 +742,7 @@ export async function selectAndApplyModel(
             classification.tier,
             availableModelIds,
             routingConfig,
+            preferredModelId,
           );
           const hookResult = await pi.emitBeforeModelSelect({
             unitType,
@@ -766,6 +787,7 @@ export async function selectAndApplyModel(
             unitType,
             classification.taskMetadata,
             capabilityOverrides,
+            preferredModelId,
           );
         }
 
@@ -1068,16 +1090,16 @@ export function resolveModelId<T extends { id: string; provider: string }>(
  *
  * Order rationale:
  * - openai-codex before github-copilot: ChatGPT-native for shared GPT IDs
- * - google-gemini-cli before github-copilot: first-party Gemini CLI
+ * - google-antigravity before google-gemini-cli: Antigravity replaced Gemini CLI for individuals
  * - anthropic before github-copilot: first-party Claude API/OAuth over Copilot
  * - github-copilot before openai/google: Copilot OAuth over platform API keys
  */
 export const BARE_ID_SUBSCRIPTION_PROVIDER_PRECEDENCE = [
   "openai-codex",
+  "google-antigravity",
   "google-gemini-cli",
   "anthropic",
   "github-copilot",
-  "google-antigravity",
 ] as const;
 
 /**

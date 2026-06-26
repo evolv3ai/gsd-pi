@@ -19,7 +19,7 @@ import { shouldRedirectAutoToHeadless } from './cli-auto-routing.js'
 import { printHelp, printSubcommandHelp } from './help-text.js'
 import { applySecurityOverrides } from './security-overrides.js'
 import { validateConfiguredModel } from './startup-model-validation.js'
-import { migrateAnthropicDefaultToClaudeCode } from './provider-migrations.js'
+import { migrateAnthropicDefaultToClaudeCode, migrateGeminiCliDefaultToAntigravity } from './provider-migrations.js'
 import { applyModelOverride } from './cli-model-override.js'
 import {
   buildHeadlessAutoArgs,
@@ -230,6 +230,15 @@ if (shouldBypassManagedResourceMismatchGate(cliFlags.messages[0])) {
 }
 
 // ---------------------------------------------------------------------------
+// Hermes integration subcommand — `gsd hermes install`
+// ---------------------------------------------------------------------------
+if (cliFlags.messages[0] === 'hermes') {
+  const { runHermesIntegrationCommand } = await import('./hermes-integration-install.js')
+  const exitCode = await runHermesIntegrationCommand(process.argv)
+  process.exit(exitCode)
+}
+
+// ---------------------------------------------------------------------------
 // Graph subcommand — `gsd graph build|status|query|diff`
 // ---------------------------------------------------------------------------
 if (cliFlags.messages[0] === 'graph') {
@@ -321,6 +330,8 @@ const subcommandsExemptFromEarlyTtyCheck = new Set([
   'config',
   'graph',
   'headless',
+  'hermes',
+  'read',
   'install',
   'list',
   'remove',
@@ -453,6 +464,12 @@ if (cliFlags.messages[0] === 'sessions') {
   // Mark for the interactive session below to open this specific session
   cliFlags.continue = true
   cliFlags._selectedSessionPath = selected.path
+}
+
+// `gsd read` — JSON read seam for integrations (Hermes 6c)
+if (cliFlags.messages[0] === 'read') {
+  const { runReadCli } = await import('./read-cli.js')
+  process.exit(await runReadCli(process.argv))
 }
 
 // `gsd headless` — run auto-mode without TUI
@@ -681,6 +698,12 @@ if (isPrintMode) {
     settingsManager,
     modelRegistry,
   })
+  migrateGeminiCliDefaultToAntigravity({
+    authStorage,
+    isAntigravityReady: () => modelRegistry.isProviderRequestReady('google-antigravity'),
+    settingsManager,
+    modelRegistry,
+  })
 
   const { session, extensionsResult, modelFallbackMessage } = await createAgentSession({
     authStorage,
@@ -800,6 +823,12 @@ flushPendingProviderRegistrations(resourceLoader, modelRegistry)
 migrateAnthropicDefaultToClaudeCode({
   authStorage,
   isClaudeCodeReady: () => modelRegistry.isProviderRequestReady('claude-code'),
+  settingsManager,
+  modelRegistry,
+})
+migrateGeminiCliDefaultToAntigravity({
+  authStorage,
+  isAntigravityReady: () => modelRegistry.isProviderRequestReady('google-antigravity'),
   settingsManager,
   modelRegistry,
 })

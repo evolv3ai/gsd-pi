@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 import { ensureDbOpen } from "./bootstrap/dynamic-tools.js";
 import {
@@ -9,8 +9,8 @@ import {
 } from "./gsd-db.js";
 import { refreshWorkflowDatabaseFromDisk } from "./db-workspace.js";
 import { parsePlan, parseRoadmap } from "./parsers-legacy.js";
+import { findMilestoneIds } from "./milestone-ids.js";
 import {
-  milestonesDir,
   resolveMilestoneFile,
   resolveSliceFile,
 } from "./paths.js";
@@ -102,18 +102,9 @@ export function recoverWouldDeleteDbRows(basePath: string): boolean {
 }
 
 export function scanMarkdownHierarchy(basePath: string): HierarchyScan {
-  const root = milestonesDir(basePath);
-  if (!existsSync(root)) return emptyScan();
-
   const scan = emptyScan();
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !/^M\d+/.test(entry.name)) continue;
-    // Use the CANONICAL milestone id (e.g. "M001" or "M001-a1b2c3"), matching
-    // scanDbHierarchy's milestone.id — not the raw directory name, which may
-    // carry a legacy descriptor (e.g. "M001-some-descriptor"). The canonical id
-    // both keys the identity sets AND resolves files correctly: resolveFile's
-    // prefix/legacy-pattern matching handles the descriptor dir either way.
-    const milestoneId = entry.name.match(/^(M\d+(?:-[a-z0-9]{6})?)/)?.[1] ?? entry.name;
+  // findMilestoneIds handles both flat-phase (NN-slug) and legacy (M###) dirs.
+  for (const milestoneId of findMilestoneIds(basePath)) {
     scan.counts.milestones++;
     scan.milestones.add(milestoneId);
 

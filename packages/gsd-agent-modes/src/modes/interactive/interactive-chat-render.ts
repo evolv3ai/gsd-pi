@@ -9,7 +9,7 @@ import type { TruncationResult } from "@gsd/pi-coding-agent/core/tools/truncate.
 import { Container, Markdown, Spacer, Text } from "@gsd/pi-tui";
 import { theme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { AssistantMessageComponent } from "./components/assistant-message.js";
-import { chatTurnFollowsUser, reconcileChatTurnConnections } from "./components/chat-turn-connect.js";
+import { reconcileChatTurnConnections } from "./components/chat-turn-connect.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
 import { BranchSummaryMessageComponent } from "./components/branch-summary-message.js";
 import { CompactionSummaryMessageComponent } from "./components/compaction-summary-message.js";
@@ -154,14 +154,11 @@ export function addMessageToChat(host: InteractiveModeDelegateHost, message: Age
 				const hasToolBlocks = message.content.some((c: any) => isToolContentBlock(c));
 				const isAbortOrError = message.stopReason === "aborted" || message.stopReason === "error";
 				if (!hasAssistantVisibleContent(message.content, host.hideThinkingBlock) && !(isAbortOrError && !hasToolBlocks)) break;
-				const connectedToUser = chatTurnFollowsUser(host.chatContainer.children);
 				const assistantComponent = new AssistantMessageComponent(
 					message,
 					host.hideThinkingBlock,
 					host.getMarkdownThemeWithSettings(),
 					timestampFormat,
-					undefined,
-					connectedToUser,
 				);
 				host.chatContainer.addChild(assistantComponent);
 				break;
@@ -222,14 +219,12 @@ export function renderSessionContext(host: InteractiveModeDelegateHost,
 					if (segment.kind === "assistant") {
 						const segContent = message.content.slice(segment.startIndex, segment.endIndex + 1);
 						if (!hasAssistantVisibleContent(segContent, host.hideThinkingBlock)) continue;
-						const connectedToUser = chatTurnFollowsUser(host.chatContainer.children);
 						const assistantComponent = new AssistantMessageComponent(
 							message,
 							host.hideThinkingBlock,
 							host.getMarkdownThemeWithSettings(),
 							timestampFormat,
 							{ startIndex: segment.startIndex, endIndex: segment.endIndex },
-							connectedToUser,
 						);
 						host.chatContainer.addChild(assistantComponent);
 						assistantSegments.push(assistantComponent);

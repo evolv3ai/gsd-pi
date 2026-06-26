@@ -3,13 +3,15 @@
 //
 // ─── Single-writer invariant ─────────────────────────────────────────────
 // Every write-SQL statement against `.gsd/gsd.db` lives behind a typed
-// wrapper in the single-writer layer (this file plus db/writers/*). Connection
-// ownership, lifecycle, schema/migrations and transaction primitives live in
-// db/engine.ts and are re-exported here for backward compatibility, so callers
-// keep importing from "./gsd-db.js".
+// wrapper in the explicit writer allowlist: this compatibility barrel,
+// db/writers/*, typed coordination/runtime writers, schema/migration helpers,
+// and ADR backfill helpers. Connection ownership, lifecycle, schema/migrations,
+// and transaction primitives live in db/engine.ts and are re-exported here for
+// backward compatibility, so callers keep importing from "./gsd-db.js".
 //
 // `_getAdapter()` (re-exported from the engine) is retained for read-only
-// SELECTs in query modules. Do NOT use it for writes — add a wrapper here.
+// SELECTs in query modules. Do NOT use it for writes — add or call a typed
+// wrapper in the explicit writer layer.
 //
 // The separate `.gsd/unit-claims.db` (unit-ownership.ts) is an intentionally
 // independent store and is excluded from this invariant.
@@ -46,11 +48,11 @@ import { rowToSlice, rowToTask, type SliceRow, type TaskRow } from "./db-task-sl
 // primitives now live in the engine; re-export the full public surface so
 // existing `from "./gsd-db.js"` imports keep working.
 export * from "./db/engine.js";
-import { transaction, getDb, getDbOrNull } from "./db/engine.js";
+import { immediateTransaction, transaction, getDb, getDbOrNull } from "./db/engine.js";
 
 // ─── Single Writer Layer re-exports ──────────────────────────────────────
-// Write subsystems live in db/writers/*; re-exported here so callers keep
-// importing from "./gsd-db.js".
+// Domain write subsystems live in db/writers/*; re-exported here so callers
+// keep importing from "./gsd-db.js".
 export * from "./db/writers/memory.js";
 export * from "./db/writers/reconcile.js";
 export * from "./db/writers/import-restore.js";
@@ -707,19 +709,14 @@ export function insertVerificationEvidence(e: {
 
 
 export function setMilestoneQueueOrder(order: string[]): void {
-  if (!getDbOrNull()!) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
-  getDbOrNull()!.exec("BEGIN IMMEDIATE");
-  try {
-    getDbOrNull()!.prepare("UPDATE milestones SET sequence = 0").run();
-    const stmt = getDbOrNull()!.prepare("UPDATE milestones SET sequence = :sequence WHERE id = :id");
+  const db = getDb();
+  immediateTransaction(() => {
+    db.prepare("UPDATE milestones SET sequence = 0").run();
+    const stmt = db.prepare("UPDATE milestones SET sequence = :sequence WHERE id = :id");
     order.forEach((id, index) => {
       stmt.run({ ":id": id, ":sequence": index + 1 });
     });
-    getDbOrNull()!.exec("COMMIT");
-  } catch (err) {
-    getDbOrNull()!.exec("ROLLBACK");
-    throw err;
-  }
+  });
 }
 
 function getMilestoneStatusForUpdate(milestoneId: string): string | null {
@@ -1442,4 +1439,3 @@ export function upsertQualityGate(g: {
     ":evaluated_at": g.evaluatedAt,
   });
 }
-

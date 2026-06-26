@@ -211,6 +211,16 @@ Cancel a running session. Aborts the current operation and stops the agent proce
 
 **Returns:** `{ cancelled: true }`
 
+### `gsd_cancel_by_project`
+
+Cancel the active session for a project directory when `sessionId` is unavailable (e.g. Hermes `/gsd cancel`).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `projectDir` | `string` | ✅ | Absolute path to the project directory |
+
+**Returns:** `{ cancelled: true, projectDir: "..." }`
+
 ### `gsd_query`
 
 Query GSD project state from the filesystem without an active session. Returns STATE.md, PROJECT.md, requirements, and milestone listing.

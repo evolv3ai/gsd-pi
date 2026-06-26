@@ -108,6 +108,7 @@ function mockData(overrides: Partial<VisualizerData> = {}): VisualizerData {
     changelog: { entries: [] },
     sliceVerifications: [],
     knowledge: { rules: [], patterns: [], lessons: [], exists: false },
+    memories: { entries: [], totalCount: 0 },
     captures: { entries: [], pendingCount: 0, totalCount: 0 },
     health: {
       budgetCeiling: undefined,
@@ -147,6 +148,30 @@ test("report uses the shared GSD HTML shell", () => {
   assert.ok(html.includes('<span class="kind-chip">Report</span>'), "should render report kind chip");
   assert.ok(html.includes('<nav class="toc" aria-label="Report sections">'), "should render shared shell TOC");
   assert.ok(html.includes('<main>'), "should render content inside shared shell main");
+});
+
+test("knowledge section renders active memories", () => {
+  const html = generateHtmlReport(mockData({
+    memories: {
+      totalCount: 1,
+      entries: [
+        {
+          id: "MEM001",
+          category: "gotcha",
+          content: "Memory rows must be visible in exported visualizer reports",
+          confidence: 0.9,
+          hitCount: 2,
+          scope: "project",
+          tags: ["visualizer"],
+          updatedAt: "2026-06-21T12:00:00.000Z",
+        },
+      ],
+    },
+  }), mockOpts());
+
+  assert.ok(html.includes("Memories"), "should render memories heading");
+  assert.ok(html.includes("MEM001"), "should render memory ID");
+  assert.ok(html.includes("Memory rows must be visible"), "should render memory content");
 });
 
 test("Feature 1: executive summary includes budget context when set", () => {

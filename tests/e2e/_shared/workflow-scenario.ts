@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -82,7 +82,52 @@ export class WorkflowOutcomeProbe {
 	}
 
 	assertArtifact(relativePath: string, message: string): void {
-		assert.ok(existsSync(join(this.projectDir, relativePath)), message);
+		const fullPath = join(this.projectDir, relativePath);
+		if (existsSync(fullPath)) return;
+		// Flat-phase fallback: translate old milestones/ paths to phases/ equivalents.
+		// Old: .gsd/milestones/M001/M001-VALIDATION.md → .gsd/phases/*/01-VALIDATION.md
+		// Old: .gsd/milestones/M001/slices/S01/S01-SUMMARY.md → .gsd/phases/*/01-01-SUMMARY.md
+		// Old: .gsd/milestones/M001/slices/S01/tasks/T01-SUMMARY.md → .gsd/phases/*/T01-SUMMARY.md
+		if (relativePath.includes("milestones/")) {
+			const phasesDir = join(this.projectDir, ".gsd", "phases");
+			if (existsSync(phasesDir)) {
+				try {
+					// Extract the milestone id from the path (e.g. "M001", "M002") so we
+					// can derive the correct flat-phase numeric prefix (01, 02, …).
+					const milestoneIdMatch = relativePath.match(/milestones\/(M(\d+))\//);
+					const phasePrefix = milestoneIdMatch
+						? String(parseInt(milestoneIdMatch[2]!, 10)).padStart(2, "0")
+						: "01";
+					for (const phaseEntry of readdirSync(phasesDir, { withFileTypes: true })) {
+						if (!phaseEntry.isDirectory()) continue;
+						const phaseDir = join(phasesDir, phaseEntry.name);
+						// Extract the file suffix from the old path
+						const oldFileName = relativePath.split("/").pop()!;
+						// Try old filename as-is in the phase dir
+						if (existsSync(join(phaseDir, oldFileName))) return;
+						// Try flat-phase naming: M001-SUFFIX.md → 01-SUFFIX.md
+						// Use the milestone's actual phase number (not hardcoded "01").
+						const flatFileName = oldFileName.replace(/^M\d+-/, `${phasePrefix}-`);
+						if (existsSync(join(phaseDir, flatFileName))) return;
+						// Try slice file: S01-SUMMARY.md → NN-01-SUMMARY.md
+						const sliceMatch = oldFileName.match(/^S0*(\d+)-(.+\.md)$/);
+						if (sliceMatch) {
+							const planNum = parseInt(sliceMatch[1]!, 10);
+							const suffix = sliceMatch[2];
+							const planFile = `${phasePrefix}-${String(planNum).padStart(2, "0")}-${suffix}`;
+							if (existsSync(join(phaseDir, planFile))) return;
+						}
+						// Try task file: T01-SUMMARY.md as-is (stays in phase dir)
+						if (oldFileName.match(/^T\d+-/)) {
+							if (existsSync(join(phaseDir, oldFileName))) return;
+						}
+					}
+				} catch {
+					// unreadable phases dir
+				}
+			}
+		}
+		assert.ok(existsSync(fullPath), message);
 	}
 
 	openDb(t: { after: (fn: () => void) => void }): DatabaseSync {

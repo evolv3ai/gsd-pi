@@ -5,7 +5,7 @@
 A horizontal border line with themed color. Use for framing dialogs.
 
 ```typescript
-import { DynamicBorder } from "@mariozechner/pi-coding-agent";
+import { DynamicBorder } from "@gsd/agent-modes";
 
 // ⚠️ MUST explicitly type the parameter as string
 const border = new DynamicBorder((s: string) => theme.fg("accent", s));
@@ -16,7 +16,7 @@ const border = new DynamicBorder((s: string) => theme.fg("accent", s));
 Spinner with cancel support. Shows a message and an animated spinner while async work runs.
 
 ```typescript
-import { BorderedLoader } from "@mariozechner/pi-coding-agent";
+import { BorderedLoader } from "@gsd/agent-modes";
 
 const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
   const loader = new BorderedLoader(tui, theme, "Fetching data...");
@@ -36,7 +36,7 @@ const result = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
 Base class for custom editors that replace the input. Provides app keybindings (escape to abort, ctrl+d, model switching) automatically.
 
 ```typescript
-import { CustomEditor } from "@mariozechner/pi-coding-agent";
+import { CustomEditor } from "@gsd/agent-modes";
 
 class MyEditor extends CustomEditor {
   handleInput(data: string): void {

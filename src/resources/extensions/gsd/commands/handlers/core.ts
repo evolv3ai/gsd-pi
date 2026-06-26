@@ -4,7 +4,7 @@ import type { GSDState } from "../../types.js";
 import { createRequire } from "node:module";
 
 import { computeProgressScore, formatProgressLine } from "../../progress-score.js";
-import { loadEffectiveGSDPreferences, getGlobalGSDPreferencesPath, getProjectGSDPreferencesPath } from "../../preferences.js";
+import { loadEffectiveGSDPreferences, getGlobalGSDPreferencesPath, getProjectGSDPreferencesPath, availableModelIdsFromRegistry, modelIdsForProfileResolution, resolveProfileAnchorProvider, resolveDisabledModelProvidersFromPreferences } from "../../preferences.js";
 import { ensurePreferencesFile, handlePrefs, handlePrefsMode, handlePrefsWizard, handleLanguage } from "../../commands-prefs-wizard.js";
 import { runEnvironmentChecks } from "../../doctor-environment.js";
 import { deriveState } from "../../state.js";
@@ -14,6 +14,8 @@ import { projectRoot } from "../context.js";
 import { formattedShortcutPair } from "../../shortcut-defs.js";
 import { getVisualBriefOutputDir } from "../../../visual-brief/artifact-policy.js";
 import { buildVisualBriefPrompt, parseVisualBriefArgs, VISUAL_BRIEF_USAGE } from "../../../visual-brief/prompts.js";
+import { GSD_CORE_IMPLEMENTED_CATALOG } from "../../commands-gsd-core.js";
+import { GSD_CORE_ALIAS_CATALOG } from "../gsd-core-aliases.js";
 
 export function showHelp(ctx: ExtensionCommandContext, args = ""): void {
   const summaryLines = [
@@ -57,6 +59,11 @@ export function showHelp(ctx: ExtensionCommandContext, args = ""): void {
     "  /gsd doctor         Diagnose and repair .gsd/ state",
     "  /gsd closeout       Recover failed git closeout actions",
     "  /gsd rebuild        Rebuild markdown projections from the DB  [markdown]",
+    "",
+    "ADDITIONAL COMMANDS",
+    "  /gsd map-codebase, /gsd stats, /gsd code-review, /gsd spike, /gsd explore …",
+    "  Additional workflows for exploration, review, codebase intel, and more.",
+    "  See /gsd help full for the complete list.",
     "",
     "Use /gsd help full for the complete command reference.",
   ];
@@ -158,9 +165,32 @@ export function showHelp(ctx: ExtensionCommandContext, args = ""): void {
     "  /gsd update         Update GSD to the latest version via npm",
     "  /gsd upgrade        Alias for /gsd update",
     "  /gsd language       Set or clear the global response language  [off|clear|<language>]",
+    "",
+    // The ADDITIONAL COMMANDS block is generated below from the implemented + alias catalogs
+    // so it can never drift from TOP_LEVEL_SUBCOMMANDS (which the help-coverage test asserts).
+    ...buildAdditionalCommandsHelpLines(),
   ];
   const full = ["full", "--full", "all"].includes(args.trim().toLowerCase());
   ctx.ui.notify((full ? fullLines : summaryLines).join("\n"), "info");
+}
+
+/**
+ * Build the ADDITIONAL COMMANDS help lines from the implemented-workflow and alias catalogs.
+ * Kept in sync with TOP_LEVEL_SUBCOMMANDS automatically — every command appears here.
+ */
+function buildAdditionalCommandsHelpLines(): string[] {
+  const lines: string[] = [
+    "ADDITIONAL COMMANDS",
+    "  Additional workflows for exploration, review, codebase intel, and project management.",
+  ];
+  const pad = (cmd: string, width = 20) => cmd.padEnd(width);
+  for (const entry of GSD_CORE_IMPLEMENTED_CATALOG) {
+    lines.push(`  /gsd ${pad(entry.cmd)} ${entry.desc}`);
+  }
+  for (const entry of GSD_CORE_ALIAS_CATALOG) {
+    lines.push(`  /gsd ${pad(entry.cmd)} ${entry.desc}`);
+  }
+  return lines;
 }
 
 export async function handleStatus(ctx: ExtensionCommandContext): Promise<void> {
@@ -282,7 +312,10 @@ export async function handleSetup(args: string, ctx: ExtensionCommandContext, pi
     return;
   }
   if (args === "model") {
-    await handleModel("", ctx, pi);
+    // Default model picker: persist settings.json default only — do not pin the
+    // session override that /gsd model uses, or PREFERENCES.md per-phase models
+    // are ignored for the rest of this session (#model-prefs-precedence).
+    await handleModel("", ctx, pi, { pinSession: false });
     return;
   }
   if (args === "keys") {
@@ -412,7 +445,12 @@ async function resolveRequestedModel(
   return selectModelByProvider(`Multiple models match "${query}"`, partialMatches, ctx, ctx.model);
 }
 
-async function handleModel(trimmedArgs: string, ctx: ExtensionCommandContext, pi: ExtensionAPI | undefined): Promise<void> {
+async function handleModel(
+  trimmedArgs: string,
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI | undefined,
+  options?: { pinSession?: boolean },
+): Promise<void> {
   const availableModels = ctx.modelRegistry.getAvailable();
   if (availableModels.length === 0) {
     ctx.ui.notify("No available models found. Check provider auth and model discovery.", "warning");
@@ -451,16 +489,19 @@ async function handleModel(trimmedArgs: string, ctx: ExtensionCommandContext, pi
 
   // /gsd model is an explicit per-session pin for GSD dispatches.
   // This is captured at auto bootstrap so it survives internal session
-  // switches during /gsd auto and /gsd next runs.
+  // switches during /gsd auto and /gsd next runs. /gsd setup model skips
+  // this pin so PREFERENCES.md per-phase models keep precedence.
+  const pinSession = options?.pinSession !== false;
   const sessionId = ctx.sessionManager?.getSessionId?.();
-  if (sessionId) {
+  if (pinSession && sessionId) {
     setSessionModelOverride(sessionId, {
       provider: targetModel.provider,
       id: targetModel.id,
     });
   }
 
-  ctx.ui.notify(`Model: ${targetModel.provider}/${targetModel.id}`, "info");
+  const pinNote = pinSession ? "" : " (default updated; per-phase prefs still apply in auto)";
+  ctx.ui.notify(`Model: ${targetModel.provider}/${targetModel.id}${pinNote}`, "info");
 }
 
 export async function handleCoreCommand(
@@ -531,8 +572,17 @@ export async function handleCoreCommand(
   }
   if (trimmed === "show-config") {
     const { GSDConfigOverlay, formatConfigText } = await import("../../config-overlay.js");
+    const basePath = projectRoot();
+    const anchorProvider = resolveProfileAnchorProvider(ctx.model?.provider);
+    const disabledProviders = resolveDisabledModelProvidersFromPreferences();
+    const availableModelIds = modelIdsForProfileResolution(ctx.modelRegistry, anchorProvider, disabledProviders);
+    const configOptions = {
+      basePath,
+      ...(availableModelIds && availableModelIds.length > 0 ? { availableModelIds } : {}),
+      ...(ctx.model ? { preferredModelId: `${ctx.model.provider}/${ctx.model.id}` } : {}),
+    };
     const result = await ctx.ui.custom<boolean>(
-      (tui, theme, _kb, done) => new GSDConfigOverlay(tui, theme, () => done(true)),
+      (tui, theme, _kb, done) => new GSDConfigOverlay(tui, theme, () => done(true), configOptions),
       {
         overlay: true,
         overlayOptions: {
@@ -544,7 +594,7 @@ export async function handleCoreCommand(
       },
     );
     if (result === undefined) {
-      ctx.ui.notify(formatConfigText(), "info");
+      ctx.ui.notify(formatConfigText(configOptions), "info");
     }
     return true;
   }

@@ -26,7 +26,7 @@
 | `/gsd forensics` | Full debugger for auto-mode failures (includes worktree lifecycle telemetry) |
 | `/gsd cleanup` | Clean up state files and stale worktrees |
 | `/gsd worktree` (`/gsd wt`) | Manage GSD worktrees from the TUI |
-| `/gsd visualize` | Open workflow visualizer (progress, timeline, deps, metrics, health, agent, changes, knowledge, captures, export) |
+| `/gsd visualize` | Open workflow visualizer (progress, timeline, deps, metrics, health, agent, changes, knowledge, memories, captures, export) |
 | `/gsd export --html` | Generate HTML report for current milestone |
 | `/gsd export --html --all` | Generate reports for all milestones |
 | `/gsd update` | Update GSD to the latest version |
@@ -69,6 +69,57 @@
 | `/gsd reset-slice` | Reset a slice and all its tasks |
 | `/gsd park` | Park a milestone (skip without deleting) |
 | `/gsd unpark` | Reactivate a parked milestone |
+
+## Additional Prompt-Driven Workflows
+
+These top-level commands dispatch native GSD workflows against the milestone, slice, and `.gsd/` model. Run `/gsd help full` for the generated command list.
+
+| Command | Description |
+|---------|-------------|
+| `/gsd explore` | Socratic ideation before committing an idea |
+| `/gsd spike` | Focused throwaway experiment (`--quick`, `--text`, or frontier mode) |
+| `/gsd sketch` | UI/design exploration with throwaway HTML mockups |
+| `/gsd map-codebase` | Generate structured codebase docs under `.gsd/codebase/` |
+| `/gsd docs-update` | Generate, update, or verify docs against live code |
+| `/gsd graphify` | Build, query, inspect, or diff `.gsd/knowledge/` |
+| `/gsd stats` | Show project statistics, milestone state, git metrics, and timeline |
+| `/gsd progress` | Summarize recent work; can route `--next` or `--do "..."` |
+| `/gsd health` | Check `.gsd/` integrity (`--repair`, `--context`) |
+| `/gsd surface` | Manage surfaced skills and extensions |
+| `/gsd code-review` | Review changed source for bugs, security, and quality |
+| `/gsd review` | Peer-review recent work across reviewer perspectives |
+| `/gsd audit-milestone` | Verify a milestone met its definition of done |
+| `/gsd audit-uat` | Audit outstanding UAT/verification items |
+| `/gsd audit-fix` | Classify and remediate audit findings |
+| `/gsd ui-review` | Run a six-pillar frontend visual audit |
+| `/gsd secure-phase` | Verify threat mitigations |
+| `/gsd validate-phase` | Fill validation and test coverage gaps |
+| `/gsd verify-work` | Run conversational UAT |
+| `/gsd plan-review-convergence` | Iterate a plan through review cycles |
+| `/gsd discuss-phase` | Gather milestone or slice context through questions |
+| `/gsd plan-phase` | Create a detailed slice plan |
+| `/gsd execute-phase` | Execute slice tasks with wave support |
+| `/gsd spec-phase` | Clarify what a milestone delivers |
+| `/gsd mvp-phase` | Plan a vertical MVP milestone |
+| `/gsd ui-phase` | Produce a `UI-SPEC` |
+| `/gsd ai-integration-phase` | Produce an `AI-SPEC` |
+| `/gsd ultraplan-phase` | Run extended planning and review |
+| `/gsd autonomous` | Run remaining lifecycle work continuously |
+| `/gsd pause-work` | Create a pause handoff |
+| `/gsd resume-work` | Resume work with restored context |
+| `/gsd manager` | Manage multiple milestones from a command-center workflow |
+| `/gsd phase` | Manage milestone queue ordering |
+| `/gsd thread` | Manage persistent context threads |
+| `/gsd workstreams` | Route workstream actions through `/gsd parallel` |
+| `/gsd workspace` | Route workspace actions through `/gsd worktree` |
+| `/gsd milestone-summary` | Generate a project or milestone summary |
+| `/gsd review-backlog` | Review and promote backlog items |
+| `/gsd inbox` | Triage GitHub issues and PRs |
+| `/gsd import` | Ingest external plans with conflict detection |
+| `/gsd ingest-docs` | Bootstrap or merge `.gsd/` state from docs |
+| `/gsd profile-user` | Generate and persist a developer profile |
+| `/gsd settings` | Configure workflow toggles and model profile |
+| `/gsd ns-context`, `/gsd ns-ideate`, `/gsd ns-manage`, `/gsd ns-project`, `/gsd ns-review`, `/gsd ns-workflow` | Namespace-grouping names that redirect to `/gsd help` |
 
 ## Parallel Orchestration
 

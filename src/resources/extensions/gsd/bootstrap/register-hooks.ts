@@ -1,7 +1,7 @@
 // Project/App: gsd-pi
 // File Purpose: Registers GSD extension runtime hooks and token-saving tool policies.
 
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -12,8 +12,8 @@ import { ALWAYS_PRESERVED_SHIM_TOOL_NAMES } from "@gsd/pi-ai";
 import type { GSDEcosystemBeforeAgentStartHandler } from "../ecosystem/gsd-extension-api.js";
 import { updateSnapshot } from "../ecosystem/gsd-extension-api.js";
 
-import { buildMilestoneFileName, clearPathCache, milestonesDir, resolveMilestonePath, resolveSliceFile, resolveSlicePath } from "../paths.js";
-import { applyAskUserQuestionsGateResult, clearDiscussionFlowState, formatPendingAskUserQuestionsGateMessage, hostWriteGateAdapter, isApprovalGateVerifiedInSnapshot, isDepthConfirmationAnswer, isMilestoneDepthVerified, isMilestoneDepthVerifiedInSnapshot, isQueuePhaseActive, resetWriteGateState, shouldBlockContextWrite, shouldBlockPlanningUnit, shouldBlockQueueExecution, shouldBlockWorktreeWrite, isGateQuestionId, getPendingGate, shouldBlockPendingGate, shouldBlockPendingGateBash, extractDepthVerificationMilestoneId } from "./write-gate.js";
+import { buildMilestoneFileName, canonicalPhaseDirName, clearPathCache, milestonesDir, legacyMilestonesDir, resolveMilestonePath, resolveSliceFile, resolveSlicePath } from "../paths.js";
+import { applyAskUserQuestionsGateResult, clearDiscussionFlowState, formatPendingAskUserQuestionsGateMessage, formatTimedOutAskUserQuestionsGateMessage, hostWriteGateAdapter, isApprovalGateVerifiedInSnapshot, isDepthConfirmationAnswer, isMilestoneDepthVerified, isMilestoneDepthVerifiedInSnapshot, isQueuePhaseActive, resetWriteGateState, shouldBlockContextWrite, shouldBlockPlanningUnit, shouldBlockQueueExecution, shouldBlockWorktreeBash, shouldBlockWorktreeWrite, isGateQuestionId, getPendingGate, shouldBlockPendingGate, shouldBlockPendingGateBash, extractDepthVerificationMilestoneId } from "./write-gate.js";
 import { canonicalToolName } from "../engine-hook-contract.js";
 import { resolveManifest } from "../unit-context-manifest.js";
 import { isBlockedStateFile, isBashWriteToStateFile, BLOCKED_WRITE_ERROR } from "../write-intercept.js";
@@ -46,7 +46,7 @@ import {
   isDestructiveConfirmGateId,
   requestDestructiveConfirmation,
 } from "../safety/destructive-confirmation.js";
-import { logWarning as safetyLogWarning } from "../workflow-logger.js";
+import { logWarning as safetyLogWarning, setStderrLoggingEnabled } from "../workflow-logger.js";
 import { isUnitCloseoutTool, runInteractiveUnitCloseout } from "../unit-closeout.js";
 import { installNotifyInterceptor } from "./notify-interceptor.js";
 import { initNotificationStore } from "../notification-store.js";
@@ -146,6 +146,15 @@ async function installWelcomeHeader(ctx: ExtensionContext): Promise<void> {
   } catch {
     /* non-fatal */
   }
+}
+
+/** Suppress the startup welcome banner without restoring the built-in pi header. */
+function suppressWelcomeHeader(ctx: ExtensionContext): void {
+  if (!ctx.hasUI || typeof ctx.ui?.setHeader !== "function") return;
+  ctx.ui.setHeader(() => ({
+    render(): string[] { return []; },
+    invalidate(): void {},
+  }));
 }
 
 /**
@@ -671,7 +680,7 @@ function isContextDraftSummarySave(toolName: string, input: unknown): boolean {
 function resolveAskUserQuestionsGateDetails(event: { details?: unknown; result?: unknown }): any {
   const hasRoundShape = (value: any): boolean =>
     !!value && typeof value === "object" &&
-    (value.cancelled !== undefined || value.response !== undefined);
+    (value.cancelled !== undefined || value.timed_out !== undefined || value.response !== undefined);
 
   const details = event.details as any;
   if (hasRoundShape(details)) return details;
@@ -725,8 +734,21 @@ function formatQuestionExchange(
 }
 
 async function ensureMilestoneShell(basePath: string, milestoneId: string): Promise<string> {
+  // When no milestone dir exists yet, prefer the legacy container when it has
+  // at least one milestone subdirectory; an empty milestones/ dir (e.g. one
+  // created by an old bootstrapGsdProject) is not a real legacy layout.
+  const legacy = legacyMilestonesDir(basePath);
+  const isLegacyLayout = existsSync(legacy) && (() => {
+    try {
+      return readdirSync(legacy).some(e => statSync(join(legacy, e)).isDirectory());
+    } catch { return false; }
+  })();
+  const container = isLegacyLayout ? legacy : milestonesDir(basePath);
+  const fallbackDirName = isLegacyLayout
+    ? milestoneId
+    : canonicalPhaseDirName(milestoneId, `New milestone ${milestoneId}`);
   const milestoneDir = resolveMilestonePath(basePath, milestoneId)
-    ?? join(milestonesDir(basePath), milestoneId);
+    ?? join(container, fallbackDirName);
   mkdirSync(milestoneDir, { recursive: true });
   clearPathCache();
 
@@ -760,14 +782,20 @@ async function saveDiscussionQuestionRound(
   const timestamp = new Date().toISOString();
   const exchange = formatQuestionExchange(questions, answers);
 
-  const discussionPath = join(milestoneDir, buildMilestoneFileName(milestoneId, "DISCUSSION"));
+  // Layout-aware filename: legacy dirs use MID-SUFFIX.md; flat-phase use NN-SUFFIX.md.
+  const legacyBase = legacyMilestonesDir(basePath);
+  const isLegacyDir = milestoneDir.startsWith(legacyBase + "/") || milestoneDir.startsWith(legacyBase + "\\");
+  const milestoneFileName = (suffix: string): string =>
+    isLegacyDir ? `${milestoneId}-${suffix}.md` : buildMilestoneFileName(milestoneId, suffix);
+
+  const discussionPath = join(milestoneDir, milestoneFileName("DISCUSSION"));
   const existingDiscussion = await loadFile(discussionPath) ?? `# ${milestoneId} Discussion Log\n\n`;
   await saveFile(
     discussionPath,
     `${existingDiscussion}## Exchange — ${timestamp}\n\n${exchange}---\n\n`,
   );
 
-  const draftPath = join(milestoneDir, buildMilestoneFileName(milestoneId, "CONTEXT-DRAFT"));
+  const draftPath = join(milestoneDir, milestoneFileName("CONTEXT-DRAFT"));
   const existingDraft = await loadFile(draftPath);
   const draftHeader = existingDraft
     ?? [
@@ -819,6 +847,9 @@ function initSessionNotifications(ctx: ExtensionContext): void {
   installNotifyInterceptor(ctx);
   initNotificationWidget(ctx);
   notifyPreferenceDiagnostics(ctx, contextBasePath(ctx), { surface: "session-start" });
+  if (ctx.hasUI) {
+    setStderrLoggingEnabled(false);
+  }
 }
 
 async function prepareWorkflowMcpForHookContext(
@@ -864,6 +895,31 @@ export function registerHooks(
     await applyCompactionThresholdOverride(ctx);
     await prepareWorkflowMcpForHookContext(ctx, basePath);
 
+    // Migrate legacy .gsd/milestones/ to flat-phase .gsd/phases/ when detected.
+    // Best-effort — never blocks session startup. Skipped inside auto-worktrees
+    // (migration already ran on the project root before the worktree was created).
+    try {
+      const { isInAutoWorktree } = await import("../auto-worktree.js");
+      if (!isInAutoWorktree(basePath)) {
+        const { needsFlatPhaseMigration } = await import("../flat-phase-migration.js");
+        if (needsFlatPhaseMigration(basePath)) {
+          const { ensureDbOpen } = await import("./dynamic-tools.js");
+          const opened = await ensureDbOpen(basePath);
+          if (opened) {
+            const { migrateToFlatPhase } = await import("../flat-phase-migration.js");
+            await migrateToFlatPhase(basePath);
+          } else {
+            safetyLogWarning(
+              "bootstrap",
+              "flat-phase migration deferred: legacy .gsd/milestones/ layout detected but the workflow database could not be opened — will retry on next session",
+            );
+          }
+        }
+      }
+    } catch (err) {
+      safetyLogWarning("bootstrap", `flat-phase migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // Apply show_token_cost preference (#1515)
     try {
       const { loadEffectiveGSDPreferences } = await import("../preferences.js");
@@ -871,7 +927,14 @@ export function registerHooks(
       process.env.GSD_SHOW_TOKEN_COST = prefs?.preferences.show_token_cost ? "1" : "";
     } catch { /* non-fatal */ }
     if (!preserveCloseoutSurface) {
-      await installWelcomeHeader(ctx);
+      // Per-unit newSession() during auto/step runs fires session_start again.
+      // Keep the welcome banner startup-only — do not overwrite the empty header
+      // that updateProgressWidget installs once work begins.
+      if (isAutoActive() || isAutoPaused()) {
+        suppressWelcomeHeader(ctx);
+      } else {
+        await installWelcomeHeader(ctx);
+      }
     }
     await loadToolApiKeysForSession();
     if (isAutoActive() || preserveCloseoutSurface) {
@@ -1033,6 +1096,10 @@ export function registerHooks(
   pi.on("message_end", async (event) => {
     const { suppressTerminalDeletedWorktreeMessageEnd } = await import("./agent-end-recovery.js");
     suppressTerminalDeletedWorktreeMessageEnd(event);
+    if (isAutoActive()) {
+      const { sanitizePrematureCloseoutMessageEnd } = await import("../auto-closeout-messaging.js");
+      sanitizePrematureCloseoutMessageEnd(event);
+    }
   });
 
   // Squash-merge quick-task branch back to the original branch after the
@@ -1364,6 +1431,16 @@ export function registerHooks(
       if (wtGuard.block) return wtGuard;
     }
 
+    if (isToolCallEventType("bash", event)) {
+      const wtBashGuard = shouldBlockWorktreeBash(
+        event.input.command,
+        dash.basePath ?? discussionBasePath,
+        isAutoActive(),
+        dash.currentUnit?.type,
+      );
+      if (wtBashGuard.block) return wtBashGuard;
+    }
+
     // ── Single-writer engine: block direct writes to STATE.md ──────────
     // Covers write, edit, and bash tools to prevent bypass vectors.
     if (isToolCallEventType("write", event)) {
@@ -1544,6 +1621,28 @@ export function registerHooks(
         }],
       };
     }
+    if (gateResult.status === "timeout") {
+      // Host elicitation timed out before the user answered. The gate stays
+      // pending (fail-closed), but we reset the loop guard and return a
+      // timeout-specific message so the model does NOT immediately re-ask —
+      // that would just hit the same timeout again. Auto-mode pauses and
+      // waits for the user to respond on a new turn (#852).
+      resetToolCallLoopGuard();
+      if (ctx) {
+        await maybePauseAutoForApprovalGate(
+          ctx,
+          pi,
+          true,
+          "Depth confirmation timed out waiting for a response — pausing auto-mode. Reply to resume.",
+        );
+      }
+      return {
+        content: [{
+          type: "text" as const,
+          text: formatTimedOutAskUserQuestionsGateMessage(gateResult.pendingGateId),
+        }],
+      };
+    }
     if (gateResult.status === "verified") {
       clearDeferredApprovalGate(basePath);
     }
@@ -1563,6 +1662,21 @@ export function registerHooks(
           pi,
           true,
           "ask_user_questions was cancelled before receiving a response — pausing auto-mode until you respond.",
+        );
+      }
+      return;
+    }
+    if (roundOutcome === "timeout") {
+      // Non-gate (consent/decision) question timed out at the host elicitation.
+      // Same policy as the gate-timeout branch above: reset the loop guard and
+      // pause-and-wait so the model does not re-ask into the same timeout (#852).
+      resetToolCallLoopGuard();
+      if (ctx) {
+        await maybePauseAutoForApprovalGate(
+          ctx,
+          pi,
+          true,
+          "A user question timed out waiting for a response — pausing auto-mode. Reply to resume.",
         );
       }
       return;

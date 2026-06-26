@@ -3,7 +3,7 @@
 For components that display a text cursor and need IME (Input Method Editor) support for CJK languages:
 
 ```typescript
-import { CURSOR_MARKER, type Component, type Focusable } from "@mariozechner/pi-tui";
+import { CURSOR_MARKER, type Component, type Focusable } from "@gsd/pi-tui";
 
 class MyInput implements Component, Focusable {
   focused: boolean = false;  // Set by TUI when focus changes

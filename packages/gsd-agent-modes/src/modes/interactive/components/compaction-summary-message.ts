@@ -8,10 +8,8 @@ import { renderChatFrame } from "./transcript-design.js";
 import { editorKey } from "./keybinding-hints.js";
 
 /**
- * Renders a compaction notice in the shared chat-frame style (top rule,
- * `• compaction` header, `│ ` body margin) with purple border/label so it
- * visually matches the other framed messages (user / assistant / tool
- * execution) while standing apart from the conversation flow.
+ * Renders a compaction notice as a plain system line (◇ compaction header,
+ * copy-clean body) — visually distinct from chat dialog without rule boxes.
  */
 export class CompactionSummaryMessageComponent extends CollapsibleMessageComponent {
 	private message: CompactionSummaryMessage;

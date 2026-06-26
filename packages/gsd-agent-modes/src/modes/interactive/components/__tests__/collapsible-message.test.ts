@@ -100,6 +100,8 @@ describe("collapsible message components", () => {
 			timestamp: 1,
 		});
 
+		assert.match(plain(component), /branch/i);
+		assert.match(plain(component), /branch/i);
 		assert.match(plain(component), /Branch summary/);
 		assert.doesNotMatch(plain(component), /Branch detail line/);
 

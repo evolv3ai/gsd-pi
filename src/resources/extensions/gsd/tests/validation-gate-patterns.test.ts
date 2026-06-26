@@ -1,11 +1,11 @@
 /**
  * Unit tests for the milestone completion validation gate pattern matching.
  *
- * The gate in auto-dispatch accepts two evidence formats:
- *   1. Structured template: content contains "Operational" AND ("MET" or "N/A")
- *   2. Prose evidence: matches /[Oo]perational[\s:][^\n]*(?:pass|verified|...)/i
+ * The milestone closeout gate accepts two evidence formats:
+ *   1. Structured template: content contains "Operational" AND an accepted verdict
+ *   2. Prose evidence: matches an Operational-local accepted verdict
  *
- * These tests exercise the exact same expressions used in auto-dispatch.ts
+ * These tests exercise the exact same expressions used in milestone-closeout.ts
  * to ensure both formats are correctly recognized, and that content without
  * operational evidence is properly rejected.
  */
@@ -23,9 +23,9 @@ import assert from "node:assert/strict";
 function hasOperationalEvidence(validationContent: string): boolean {
   const structuredMatch =
     validationContent.includes("Operational") &&
-    (validationContent.includes("MET") || validationContent.includes("N/A") || validationContent.includes("SATISFIED") || validationContent.includes("DEFERRED"));
+    (validationContent.includes("MET") || validationContent.includes("N/A") || validationContent.includes("SATISFIED") || validationContent.includes("DEFERRED") || validationContent.includes("PASS") || validationContent.includes("COVERED"));
   const proseMatch =
-    /[Oo]perational[\s\S]{0,500}?(?:✅|pass|verified|confirmed|met|complete|true|yes|addressed|covered|satisfied|partially|deferred|n\/a|not[\s-]+applicable)/i.test(
+    /[Oo]perational[\s\S]{0,2000}?(?:✅|pass|verified|confirmed|met|complete|true|yes|addressed|covered|satisfied|partially|deferred|n\/a|not[\s-]+applicable)/i.test(
       validationContent,
     );
   return structuredMatch || proseMatch;
@@ -113,6 +113,34 @@ test("structured: Operational + DEFERRED passes", () => {
   const content = `| Criteria       | Status   |
 | Operational    | DEFERRED |
 | Functional     | MET      |`;
+  assert.ok(hasOperationalEvidence(content));
+});
+
+test("structured: Operational + PASS passes", () => {
+  const content = `| Class | Planned Check | Evidence | Verdict |
+| --- | --- | --- | --- |
+| Operational | Process lifecycle proof | Validation command exited cleanly. | PASS |`;
+  assert.ok(content.includes("PASS"));
+  assert.ok(hasOperationalEvidence(content));
+});
+
+test("structured: Operational + COVERED passes", () => {
+  const content = `| Class | Planned Check | Evidence | Verdict |
+| --- | --- | --- | --- |
+| Operational | Process lifecycle proof | Validation command exited cleanly. | COVERED |`;
+  assert.ok(content.includes("COVERED"));
+  assert.ok(hasOperationalEvidence(content));
+});
+
+test("prose: evidence-rich Operational row can place verdict after 500 characters", () => {
+  const evidence = "Lifecycle evidence from restart, reconnect, supervision, cleanup, and operator notification checks. ".repeat(7);
+  const content = `| Class | Planned Check | Evidence | Verdict |
+| --- | --- | --- | --- |
+| Operational | Headless process exits cleanly without orphaned subprocesses and preserves operator-visible state through restart. | ${evidence} | pass |`;
+  assert.ok(
+    content.toLowerCase().indexOf("pass", content.indexOf("Operational")) > content.indexOf("Operational") + 500,
+    "test fixture should place pass beyond the old 500-character window",
+  );
   assert.ok(hasOperationalEvidence(content));
 });
 

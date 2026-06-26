@@ -12,6 +12,7 @@ import {
   getArtifact,
   getAssessment,
   insertAssessment,
+  insertMilestone,
   upsertRequirement,
   getAllMilestones,
 } from "../gsd-db.ts";
@@ -153,9 +154,9 @@ test("executeSummarySave persists artifact and returns computed path", async () 
     }, base));
 
     assert.equal(result.details.operation, "save_summary");
-    assert.equal(result.details.path, "milestones/M001/slices/S01/S01-SUMMARY.md");
+    assert.equal(result.details.path, "phases/01-m001/01-01-SUMMARY.md");
 
-    const filePath = join(base, ".gsd", "milestones", "M001", "slices", "S01", "S01-SUMMARY.md");
+    const filePath = join(base, ".gsd", "phases", "01-m001", "01-01-SUMMARY.md");
     assert.ok(existsSync(filePath), "summary artifact should be written to disk");
     assert.match(readFileSync(filePath, "utf-8"), /# Summary/);
   } finally {
@@ -180,7 +181,7 @@ test("executeSummarySave mirrors milestone artifacts into the active worktree pr
     }, worktree));
 
     assert.equal(result.details.operation, "save_summary");
-    const relPath = "milestones/M001/slices/S02/S02-RESEARCH.md";
+    const relPath = "phases/01-m001/01-02-RESEARCH.md";
     const projectPath = join(base, ".gsd", relPath);
     const worktreePath = join(worktree, ".gsd", relPath);
     assert.equal(existsSync(projectPath), true, "canonical artifact should be written");
@@ -889,7 +890,7 @@ test("executeUatResultSave accepts gsd_uat_exec evidence written in a milestone 
     assert.equal(attempt.browserToolsPresented, false);
     assert.deepEqual(attempt.modePolicy?.requiredAnyModes, ["runtime"]);
     const assessment = readFileSync(
-      join(base, ".gsd", "milestones", "M001", "slices", "S02", "S02-ASSESSMENT.md"),
+      join(base, ".gsd", "phases", "01-m001", "01-02-ASSESSMENT.md"),
       "utf-8",
     );
     assert.match(assessment, /runId: uat:M001:S02:attempt-1/);
@@ -897,7 +898,7 @@ test("executeUatResultSave accepts gsd_uat_exec evidence written in a milestone 
     assert.match(assessment, /Runtime path C:\\\\tmp\\\|uat evidence/);
     assert.match(assessment, /backslash \\\\ and pipe \\\|/);
 
-    const artifactPath = "milestones/M001/slices/S02/S02-ASSESSMENT.md";
+    const artifactPath = "phases/01-m001/01-02-ASSESSMENT.md";
     const assessmentPath = `.gsd/${artifactPath}`;
     assert.equal(getArtifact(artifactPath)?.artifact_type, "ASSESSMENT");
     assert.equal(getAssessment(assessmentPath)?.scope, "run-uat");
@@ -1158,7 +1159,7 @@ test("executeUatResultSave surfaces the worktree validation path for NEEDS-HUMAN
     assert.ok(returnedText.includes(worktree), "tool return should include the worktree path");
 
     const assessment = readFileSync(
-      join(base, ".gsd", "milestones", "M001", "slices", "S07", "S07-ASSESSMENT.md"),
+      join(base, ".gsd", "phases", "01-m001", "01-07-ASSESSMENT.md"),
       "utf-8",
     );
     assert.match(assessment, /## Manual Validation/);
@@ -1217,7 +1218,7 @@ test("executeUatResultSave omits manual-validation guidance when no human checks
     assert.equal(returnedText.includes("Manual validation needed"), false);
 
     const assessment = readFileSync(
-      join(base, ".gsd", "milestones", "M001", "slices", "S08", "S08-ASSESSMENT.md"),
+      join(base, ".gsd", "phases", "01-m001", "01-08-ASSESSMENT.md"),
       "utf-8",
     );
     assert.equal(assessment.includes("## Manual Validation"), false);
@@ -1746,7 +1747,8 @@ test("executeSaveGateResult validates inputs and persists verdicts", async () =>
     assert.equal(row?.status, "complete");
     assert.equal(row?.verdict, "pass");
     assert.equal(row?.rationale, "Looks good.");
-    const planPath = join(base, ".gsd", "milestones", "M005", "slices", "S05", "S05-PLAN.md");
+    // Flat-phase: M005 title "Milestone Five" → phases/05-milestone-five/05-05-PLAN.md
+    const planPath = join(base, ".gsd", "phases", "05-milestone-five", "05-05-PLAN.md");
     assert.match(readFileSync(planPath, "utf-8"), /No issues found\./);
   } finally {
     closeDatabase();
@@ -2041,6 +2043,60 @@ test("executeSummarySave registers PROJECT milestone sequence for the next run",
     assert.equal(state.phase, "pre-planning");
     assert.equal(state.registry[0]?.status, "active");
     assert.equal(state.registry[1]?.status, "pending");
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executeSummarySave reconciles bare PROJECT milestone IDs onto existing unique-ID rows (no phantom row) (#807)", async () => {
+  const base = makeTmpBase();
+  try {
+    openTestDb(base);
+
+    // Planner already minted a unique-ID milestone for sequence 1.
+    insertMilestone({ id: "M001-b1nole", title: "Foundation", status: "active" });
+
+    // A faithfully-authored PROJECT.md uses the template's bare sequence IDs.
+    const result = await inProjectDir(base, () => executeSummarySave({
+      artifact_type: "PROJECT",
+      content: [
+        "# Project",
+        "",
+        "## What This Is",
+        "",
+        "Deep project setup output.",
+        "",
+        "## Project Shape",
+        "",
+        "**Complexity:** complex",
+        "**Why:** It spans multiple delivery steps.",
+        "",
+        "## Capability Contract",
+        "",
+        "See .gsd/REQUIREMENTS.md.",
+        "",
+        "## Milestone Sequence",
+        "",
+        "- [ ] M001: Foundation - Establish the first runnable slice.",
+        "- [ ] M002: Polish - Follow-up experience work.",
+        "",
+      ].join("\n"),
+    }, base));
+
+    assert.equal(result.isError, undefined);
+    // Bare M001 maps onto the planner's canonical row; M002 is genuinely new.
+    assert.deepEqual(result.details.registeredMilestones, ["M001-b1nole", "M002"]);
+
+    const milestones = getAllMilestones();
+    // No phantom bare "M001" row — the unique-ID row is preserved and not demoted.
+    assert.deepEqual(
+      milestones.map((m) => [m.id, m.title, m.status]).sort(),
+      [
+        ["M001-b1nole", "Foundation", "active"],
+        ["M002", "Polish", "queued"],
+      ].sort(),
+    );
   } finally {
     closeDatabase();
     cleanup(base);

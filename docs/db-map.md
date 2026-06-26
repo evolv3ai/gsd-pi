@@ -18,13 +18,20 @@ tools/workflow-tool-executors.ts  ← business logic
        ├── validation reads (milestones, slices, tasks)
        │
        ▼
-gsd-db.ts  ← barrel: re-exports the single-writer layer (callers import from here)
+gsd-db.ts  ← compatibility barrel over the explicit single-writer allowlist
        │
        ├── db/engine.ts     ← connection/handle, schema/migrations, transaction primitives
        ├── db/writers/*.ts  ← the Single Writer Layer (one write subsystem per file)
+       ├── db/{milestone-leases,unit-dispatches,auto-workers,runtime-kv,command-queue}.ts
+       │                    ← typed coordination/runtime writers
+       ├── db-memory-fts-schema.ts, db-schema-metadata.ts, db-verification-evidence-schema.ts
+       │                    ← allowlisted schema/migration helpers
+       ├── memory-backfill.ts
+       │                    ← allowlisted ADR migration/backfill helper
        ├── db/queries.ts    ← the Query Module (read-only SELECT wrappers)
        │
-       ├── transaction()  (db/engine.ts via db-transaction.ts — depth counter, no nested BEGIN)
+       ├── transaction()/immediateTransaction()
+       │   (db/engine.ts via db-transaction.ts — depth counter, no nested BEGIN)
        │
        ▼
 db-adapter.ts  ← normalized prepared-statement cache
@@ -44,6 +51,7 @@ After commit: regenerate markdown artifacts → write to disk → invalidate cac
 - Sibling worktrees share the same `.gsd/gsd.db` via SQLite WAL
 - Only one connection is "active" at a time; others cached for fast re-activation
 - On process exit: checkpoint WAL → vacuum → close
+- Before file-backed schema migrations, `db-migration-backup.ts` checkpoints WAL and copies `.gsd/gsd.db` to `.gsd/gsd.db.backup-vN`; same-version backups are reused, and checkpoint/copy failures warn then fail closed before migration DDL.
 
 **Provider fallback chain:**
 1. `node:sqlite` (Node ≥ 22 built-in) — preferred
@@ -745,9 +753,9 @@ remain outside manifest restore.
 
 ## 7. Write Path Invariants
 
-1. **Single-writer rule**: all write SQL lives in the single-writer *layer* — `db/engine.ts` (schema/migrations + transaction primitives) and `db/writers/**` (one write subsystem per file). `gsd-db.ts` is a barrel re-exporting that layer (and still holds some wrappers mid-migration), so callers keep importing from it unchanged. `db/queries.ts` is the read-only Query Module and must contain no write SQL. No raw write SQL escapes to the adapter from anywhere else. Enforced by the structural `single-writer-invariant.test.ts`, which checks a directory predicate (not a single filename).
+1. **Single-writer rule**: all write SQL lives in the explicit single-writer *layer* — `db/engine.ts` for schema, migrations, lifecycle, and transaction primitives; `db/writers/**` for domain write subsystems; `gsd-db.ts` as the compatibility barrel and remaining mid-migration wrappers; the typed coordination/runtime writer modules `db/milestone-leases.ts`, `db/unit-dispatches.ts`, `db/auto-workers.ts`, `db/runtime-kv.ts`, and `db/command-queue.ts`; the schema/migration helpers `db-memory-fts-schema.ts`, `db-schema-metadata.ts`, and `db-verification-evidence-schema.ts`; and the ADR migration/backfill helper `memory-backfill.ts`. This is an allowlist, not permission for arbitrary raw writes under `db/`. `unit-ownership.ts` remains excluded because it owns a separate `.gsd/unit-claims.db`. `db/queries.ts` is the read-only Query Module and must contain no write SQL. No raw write SQL escapes to the adapter from anywhere else. Enforced by the structural `single-writer-invariant.test.ts`, which checks this allowlist.
 
-2. **Transaction wrapping**: every multi-table write uses `transaction()`. Rollback on any error. Re-entrant: nested calls increment depth counter; no nested BEGIN.
+2. **Transaction wrapping**: every multi-table write uses `transaction()` or `immediateTransaction()` when it needs SQLite's reserved writer lock up front. Rollback on any error. Re-entrant: nested calls increment the shared depth counter; no nested `BEGIN`.
 
 3. **Cascade semantics**: hierarchy status cascades are named **Domain Write Operations** in `db/writers/cascades.ts`, each owning its own `transaction()` so the milestone/slice/task subtree transitions atomically (callers keep only projection/file-cleanup/event logic):
    - `gsd_slice_complete` (`completeSliceCascade`) cascades `pending` tasks → `skipped`
@@ -760,3 +768,5 @@ remain outside manifest restore.
 5. **FTS fallback**: if FTS5 unavailable, `memory_query` falls back to LIKE scan on `memories.content`.
 
 6. **Workspace isolation**: same `.gsd/gsd.db` for all worktrees of one project; separate `.gsd/gsd.db` per project root. Coordination tables assume single-host shared WAL. Multi-host needs external coordinator.
+
+7. **Pre-migration backup**: file-backed migrations checkpoint WAL before copying the base DB to `.gsd/gsd.db.backup-vN`. If the same-version backup already exists, backup is skipped and migrations continue; if checkpointing or copying fails, GSD warns and the error propagates before any migration DDL runs.

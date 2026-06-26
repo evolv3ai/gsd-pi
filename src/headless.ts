@@ -540,6 +540,13 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
 
   // Idle timeout — fallback completion detection
   let idleTimer: ReturnType<typeof setTimeout> | null = null
+  // Quick commands (status, history, help, …) are short extension-layer
+  // operations that never enter the LLM agent loop, so they emit no
+  // execution_complete and make no tool calls. The idle timer is what
+  // resolves them; without arming it for zero-tool quick commands the run
+  // hangs and exits with a spurious "cancelled" (11). See
+  // shouldArmHeadlessIdleTimeout.
+  const isQuickCmd = isQuickCommand(options.command, options.commandArgs)
   let effectiveIdleTimeout = isNewMilestone
     ? NEW_MILESTONE_IDLE_TIMEOUT_MS
     : isAutoMode
@@ -550,7 +557,7 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
     if (idleTimer) clearTimeout(idleTimer)
     if (
       effectiveIdleTimeout > 0 &&
-      shouldArmHeadlessIdleTimeout(toolCallCount, interactiveToolCallIds.size)
+      shouldArmHeadlessIdleTimeout(toolCallCount, interactiveToolCallIds.size, isQuickCmd)
     ) {
       idleTimer = setTimeout(() => {
         completed = true

@@ -59,19 +59,52 @@ const defaultDeps: ReconciliationDeps = {
  */
 export async function reconcileBeforeDispatch(
   basePath: string,
-  deps: ReconciliationDeps = defaultDeps,
+  partialDeps: Partial<ReconciliationDeps> = {},
 ): Promise<ReconciliationResult> {
+  const deps: ReconciliationDeps = { ...defaultDeps, ...partialDeps };
   const registry = deps.registry ?? DRIFT_REGISTRY;
   const clearParseCache = deps.clearParseCache ?? defaultClearParseCache;
   const repaired: DriftRecord[] = [];
 
+  // Capture-on-first-read: infer .planning/ layout, import content into DB, and
+  // activate the compat marker. Skipped in dry-run mode to keep the reconcile
+  // pass fully read-only — no marker writes.
+  if (!deps.dryRun) {
+    const { capturePlanningCompatIfNeeded } = await import("../compat/planning-compat.js");
+    await capturePlanningCompatIfNeeded(basePath);
+  }
+
   for (let pass = 0; pass < MAX_PASSES; pass++) {
     deps.invalidateStateCache();
     const stateSnapshot = await deps.deriveState(basePath, deps.deriveStateOptions);
-    const ctx: DriftContext = { basePath, state: stateSnapshot };
+    const ctx: DriftContext = { basePath, state: stateSnapshot, dryRun: deps.dryRun };
 
     const detection = await detectAllDrift(stateSnapshot, ctx, registry);
     const drift = detection.records;
+    if (deps.dryRun && drift.length > 0) {
+      const wouldRepair: DriftRecord[] = [];
+      const blockers: string[] = [...detection.detectBlockers];
+      for (const record of drift) {
+        const handler = registry.find((h) => h.kind === record.kind);
+        const blocker = handler?.blocker ? await handler.blocker(record, ctx) : null;
+        if (blocker) {
+          blockers.push(blocker);
+        } else {
+          wouldRepair.push(record);
+        }
+      }
+      return {
+        ok: true,
+        stateSnapshot,
+        repaired: wouldRepair,
+        blockers: [
+          ...new Set([
+            ...(stateSnapshot.blockers ?? []),
+            ...blockers,
+          ]),
+        ],
+      };
+    }
     if (drift.length === 0) {
       return {
         ok: true,
@@ -143,7 +176,7 @@ export async function reconcileBeforeDispatch(
   // After MAX_PASSES, one more derive+detect to verify nothing persists.
   deps.invalidateStateCache();
   const finalState = await deps.deriveState(basePath, deps.deriveStateOptions);
-  const finalCtx: DriftContext = { basePath, state: finalState };
+  const finalCtx: DriftContext = { basePath, state: finalState, dryRun: deps.dryRun };
   const finalDetection = await detectAllDrift(finalState, finalCtx, registry);
   const persistent = finalDetection.records;
 

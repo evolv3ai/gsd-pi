@@ -23,6 +23,7 @@ import {
   createAutoWorktree,
   mergeMilestoneToMain,
   getAutoWorktreeOriginalBase,
+  _setRestoreEntryFnForTests,
 } from "../../auto-worktree.ts";
 import { getSliceBranchName } from "../../worktree.ts";
 import { nativeMergeSquash } from "../../native-git-bridge.ts";
@@ -1011,5 +1012,79 @@ describe("auto-worktree-milestone-merge", { timeout: 300_000 }, () => {
     assert.ok(existsSync(join(queuedDir, "CONTEXT.md")), "queued milestone restored from shelter");
     assert.ok(!existsSync(join(repo, ".gsd", ".milestone-shelter")), "shelter removed on successful restore");
     assert.ok(result.commitMessage.length > 0, "merge completed");
+  });
+
+  // #2505 log coverage: when the per-entry shelter restore throws (here via the
+  // _setRestoreEntryFnForTests seam — the only deterministic way to reach this
+  // path, since shelter + restore run synchronously in one merge call), the
+  // merge must log a `worktree` ERROR naming the entry (auto-worktree.ts:1809),
+  // emit a retention warning (:1816), and PRESERVE the shelter dir so the
+  // queued milestone files (whose on-disk sources were deleted during the
+  // shelter step) remain recoverable. The existing #2505 test only covered the
+  // success path; this pins the failure-path log + the data-loss guard.
+  test("#2505 logs: shelter restore failure logs a worktree error and retains the shelter", () => {
+    const repo = freshRepo();
+    const wtPath = createAutoWorktree(repo, "M210");
+
+    addSliceToMilestone(repo, wtPath, "M210", "S01", "Feature", [
+      { file: "feature.ts", content: "export const f = 1;\n", message: "add feature" },
+    ]);
+
+    // Seed a queued (non-target) milestone that will be sheltered then restored.
+    const queuedDir = join(repo, ".gsd", "milestones", "M211");
+    mkdirSync(queuedDir, { recursive: true });
+    writeFileSync(join(queuedDir, "CONTEXT.md"), "# queued\n");
+
+    const roadmap = makeRoadmap("M210", "Milestone w/ failing restore", [
+      { id: "S01", title: "Feature" },
+    ]);
+
+    // Inject a restore entry fn that always throws, forcing the best-effort
+    // failure path. restoreDefault() is invoked in finally so no other test in
+    // the process observes the injected behavior.
+    const restoreDefault = _setRestoreEntryFnForTests(() => {
+      throw new Error("forced restore failure");
+    });
+
+    const previousStderr = setStderrLoggingEnabled(false);
+    let logs: ReturnType<typeof drainLogs> = [];
+    try {
+      mergeMilestoneToMain(repo, "M210", roadmap);
+      logs = drainLogs();
+    } finally {
+      setStderrLoggingEnabled(previousStderr);
+      restoreDefault();
+    }
+
+    const worktreeLogs = logs.filter((e) => e.component === "worktree");
+
+    const restoreError = worktreeLogs.find(
+      (e) => e.severity === "error" && /shelter restore failed/u.test(e.message),
+    );
+    assert.ok(
+      restoreError,
+      "a worktree ERROR must be logged when the shelter restore fails (got: " +
+        worktreeLogs.map((e) => e.message).join(" | ") + ")",
+    );
+    assert.match(
+      restoreError!.message,
+      /shelter restore failed \(M211\)/u,
+      "the error must name the unrestored milestone entry",
+    );
+    assert.match(
+      restoreError!.message,
+      /forced restore failure/u,
+      "the error must carry the underlying restore failure detail",
+    );
+
+    // #2505 data-loss guard: the shelter must survive so files stay recoverable.
+    assert.ok(
+      worktreeLogs.some((e) => /shelter retained/u.test(e.message)),
+      "a retention warning must be logged when a restore entry fails",
+    );
+    assert.ok(
+      existsSync(join(repo, ".gsd", ".milestone-shelter")),
+      "the shelter dir must be retained when a restore entry fails",
+    );
   });
 });

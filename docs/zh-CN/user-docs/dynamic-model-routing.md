@@ -1,10 +1,8 @@
 # 动态模型路由
 
-*引入于 v2.19.0。Capability scoring 引入于 v2.52.0。*
-
 动态模型路由会为简单工作自动选择更便宜的模型，并把昂贵模型留给复杂 task。这样在有成本上限的套餐下，通常可以减少 20-50% 的 token 消耗，同时在关键位置保持质量。
 
-从 v2.52.0 开始，router 使用 **capability-aware scoring**，为每个 task 选择最合适的 model，而不只是简单挑选该 tier 里最便宜的。
+router 使用 **capability-aware scoring**，为每个 task 选择最合适的 model，而不只是简单挑选该 tier 里最便宜的。
 
 ## 工作原理
 

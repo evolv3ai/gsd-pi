@@ -26,7 +26,7 @@ import { deriveState } from "./state.js";
 import type { GSDState } from "./types.js";
 import { renderPlanFromDb, renderRoadmapFromDb } from "./markdown-renderer.js";
 import { readManifest } from "./workflow-manifest.js";
-import { gsdRoot } from "./paths.js";
+import { gsdRoot, resolveSliceFile, resolveMilestonePath, resolveSlicePath, gsdProjectionRoot } from "./paths.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -328,7 +328,23 @@ export function renderSummaryProjection(basePath: string, milestoneId: string, s
 
   const evidenceRows = getVerificationEvidence(milestoneId, sliceId, taskId);
   const content = renderSummaryContent(taskRow, sliceId, milestoneId, evidenceRows);
-  const dir = join(basePath, ".gsd", "milestones", milestoneId, "slices", sliceId, "tasks");
+
+  // Layout-aware: avoid creating a milestones/ directory as a side effect for
+  // flat-phase projects. If milestonesDir() sees a freshly-created milestones/
+  // dir it treats the project as legacy, breaking all subsequent path resolution.
+  const slicePath = resolveSlicePath(basePath, milestoneId, sliceId);
+  const phaseDir = resolveMilestonePath(basePath, milestoneId);
+  let dir: string;
+  if (slicePath && phaseDir && slicePath !== phaseDir) {
+    // Legacy layout: slice has its own slices/SID/ subdir → tasks/ subdir
+    dir = join(slicePath, "tasks");
+  } else if (phaseDir) {
+    // Flat-phase: task summaries go in the phase dir (no tasks/ subdir needed)
+    dir = phaseDir;
+  } else {
+    // Fallback: legacy hardcoded path (milestone dir not on disk yet)
+    dir = join(gsdProjectionRoot(basePath), "milestones", milestoneId, "slices", sliceId, "tasks");
+  }
   mkdirSync(dir, { recursive: true });
   atomicWriteSync(join(dir, `${taskId}-SUMMARY.md`), content);
 }
@@ -509,7 +525,9 @@ export async function regenerateIfMissing(
 
   switch (fileType) {
     case "PLAN":
-      filePath = join(basePath, ".gsd", "milestones", milestoneId, "slices", sliceId, `${sliceId}-PLAN.md`);
+      // Use resolveSliceFile so both flat-phase and legacy layouts are detected.
+      // Falls back to "" (non-existent) when the file hasn't been rendered yet.
+      filePath = resolveSliceFile(basePath, milestoneId, sliceId, "PLAN") ?? "";
       break;
     case "ROADMAP":
       filePath = join(basePath, ".gsd", "milestones", milestoneId, `${milestoneId}-ROADMAP.md`);
@@ -562,7 +580,9 @@ export async function regenerateIfMissing(
     switch (fileType) {
       case "PLAN":
         await renderPlanFromDb(basePath, milestoneId, sliceId);
-        return existsSync(filePath);
+        // Re-resolve after render: the rendered file may be at a different path
+        // from the pre-check (flat-phase vs legacy). resolveSliceFile finds it.
+        return !!(resolveSliceFile(basePath, milestoneId, sliceId, "PLAN"));
       case "ROADMAP":
         await renderRoadmapFromDb(basePath, milestoneId);
         return existsSync(filePath);

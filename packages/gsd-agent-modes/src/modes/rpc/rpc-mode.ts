@@ -17,6 +17,7 @@ import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
+	GsdProgressState,
 } from "@gsd/pi-coding-agent/core/extensions/index.js";
 import { InteractiveMode } from "../interactive/interactive-mode.js";
 import { type Theme, theme } from "@gsd/pi-coding-agent/theme/theme.js";
@@ -264,6 +265,10 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 			void withEmbeddedUiContext((ui) => {
 				ui.setStatus(key, text);
 			});
+		},
+
+		setGsdProgress(_state: GsdProgressState | undefined, _dispose?: () => void): void {
+			// Structured GSD strip is interactive-mode only
 		},
 
 		setWorkingMessage(message?: string | null): void {

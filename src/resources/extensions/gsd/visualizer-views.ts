@@ -935,13 +935,20 @@ export function renderKnowledgeView(
 ): string[] {
   const lines: string[] = [];
   const knowledge = data.knowledge;
+  const memories = data.memories;
 
-  if (!knowledge.exists) {
+  if (!knowledge.exists && memories.entries.length === 0) {
     lines.push(th.fg("dim", "No KNOWLEDGE.md found"));
     return lines;
   }
 
-  if (knowledge.rules.length === 0 && knowledge.patterns.length === 0 && knowledge.lessons.length === 0) {
+  if (
+    knowledge.exists &&
+    knowledge.rules.length === 0 &&
+    knowledge.patterns.length === 0 &&
+    knowledge.lessons.length === 0 &&
+    memories.entries.length === 0
+  ) {
     lines.push(th.fg("dim", "KNOWLEDGE.md exists but is empty"));
     return lines;
   }
@@ -981,6 +988,24 @@ export function renderKnowledgeView(
         `  ${th.fg("accent", lesson.id)}  ${lesson.content}`,
         width,
       ));
+    }
+    lines.push("");
+  }
+
+  if (memories.entries.length > 0) {
+    const countLabel = memories.totalCount > memories.entries.length
+      ? `${memories.entries.length}/${memories.totalCount}`
+      : `${memories.totalCount}`;
+    lines.push(th.fg("accent", th.bold(`Memories (${countLabel})`)));
+    lines.push("");
+    for (const memory of memories.entries) {
+      const scope = memory.scope && memory.scope !== "project" ? ` ${th.fg("dim", `[${memory.scope}]`)}` : "";
+      const tags = memory.tags.length > 0 ? ` ${th.fg("dim", `#${memory.tags.join(" #")}`)}` : "";
+      lines.push(truncateToWidth(
+        `  ${th.fg("accent", memory.id)}  (${memory.category}, ${memory.confidence.toFixed(2)}, hits ${memory.hitCount})${scope}${tags}`,
+        width,
+      ));
+      lines.push(truncateToWidth(`    ${memory.content}`, width));
     }
     lines.push("");
   }

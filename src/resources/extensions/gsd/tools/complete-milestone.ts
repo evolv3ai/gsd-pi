@@ -21,7 +21,7 @@ import {
   getLatestAssessmentByScope,
   updateMilestoneStatus,
 } from "../gsd-db.js";
-import { gsdProjectionRoot, clearPathCache } from "../paths.js";
+import { gsdProjectionRoot, clearPathCache, relMilestoneFile } from "../paths.js";
 import { resolveCanonicalMilestoneRoot } from "../worktree-manager.js";
 import { isClosedStatus } from "../status-guards.js";
 import { saveFile, clearParseCache } from "../files.js";
@@ -209,12 +209,9 @@ export async function handleCompleteMilestone(
   // ── Filesystem operations (outside transaction) ─────────────────────────
   const summaryMd = renderMilestoneSummaryMarkdown(params, completedAt);
 
-  const summaryPath = join(
-    gsdProjectionRoot(artifactBasePath),
-    "milestones",
-    params.milestoneId,
-    `${params.milestoneId}-SUMMARY.md`,
-  );
+  // Layout-aware: flat-phase → phases/NN-slug/NN-SUMMARY.md;
+  // legacy → milestones/MID/MID-SUMMARY.md.
+  const summaryPath = join(artifactBasePath, relMilestoneFile(artifactBasePath, params.milestoneId, "SUMMARY"));
 
   // Guard (#4598): if SUMMARY.md already exists on disk, do not overwrite it.
   // This handles re-dispatch scenarios (DB/disk state divergence) where a prior

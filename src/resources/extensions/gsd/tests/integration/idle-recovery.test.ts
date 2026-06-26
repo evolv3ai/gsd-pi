@@ -112,10 +112,11 @@ test('writeBlockerPlaceholder: creates directory if missing', () => {
   try {
     // Only create milestone dir, not slice dir
     mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
-    // resolveSlicePath needs the slice dir to exist to resolve, so this should return null
+    // resolveSliceArtifactPath now returns a canonical path even when the dir
+    // doesn't exist (relSliceFile fallback), so writeBlockerPlaceholder creates
+    // the directory and writes the placeholder file — returning a non-null diagnosis.
     const result = writeBlockerPlaceholder("research-slice", "M001/S01", base, "test reason");
-    // Since the slice dir doesn't exist, resolveExpectedArtifactPath returns null
-    assert.deepStrictEqual(result, null, "returns null when directory structure doesn't exist");
+    assert.ok(result !== null, "should return a diagnosis string when the dir is missing (creates it)");
   } finally {
     cleanup(base);
   }

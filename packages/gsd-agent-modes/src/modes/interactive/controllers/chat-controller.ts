@@ -5,7 +5,7 @@ import { Loader, Markdown, Spacer, Text } from "@gsd/pi-tui";
 import type { InteractiveModeEvent, InteractiveModeStateHost } from "../interactive-mode-state.js";
 import { theme } from "@gsd/pi-coding-agent/theme/theme.js";
 import { AssistantMessageComponent } from "../components/assistant-message.js";
-import { chatTurnFollowsUser, reconcileChatTurnConnections } from "../components/chat-turn-connect.js";
+import { reconcileChatTurnConnections } from "../components/chat-turn-connect.js";
 import {
 	ToolExecutionComponent,
 	ToolPhaseSummaryComponent,
@@ -112,6 +112,7 @@ function startLoadingAnimation(host: InteractiveModeStateHost): void {
 	if (host.pendingWorkingMessage === null) {
 		host.loadingAnimation = undefined;
 		host.statusContainer.clear();
+		startActivityIndicator(host);
 		return;
 	}
 
@@ -127,6 +128,32 @@ function startLoadingAnimation(host: InteractiveModeStateHost): void {
 			host.loadingAnimation.setMessage(host.pendingWorkingMessage);
 		}
 		host.pendingWorkingMessage = undefined;
+	}
+}
+
+/** Compact activity pulse used when extensions suppress the default working loader. */
+export function startActivityIndicator(host: InteractiveModeStateHost, message?: string): void {
+	stopActivityIndicator(host);
+	const phase =
+		message?.trim() ||
+		(host as { gsdProgressState?: { phase?: string } }).gsdProgressState?.phase ||
+		host.defaultWorkingMessage;
+	host.activityLoader = new Loader(
+		host.ui,
+		(spinner) => theme.fg("accent", spinner),
+		(text) => theme.fg("muted", text),
+		phase,
+	);
+	host.statusContainer.addChild(host.activityLoader);
+	host.ui.requestRender();
+}
+
+export function stopActivityIndicator(host: InteractiveModeStateHost): void {
+	if (!host.activityLoader) return;
+	host.activityLoader.stop();
+	host.activityLoader = undefined;
+	if (!host.loadingAnimation && !host.autoCompactionLoader && !host.retryLoader) {
+		host.statusContainer.clear();
 	}
 }
 
@@ -746,6 +773,7 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 			if (host.loadingAnimation) {
 				host.loadingAnimation.stop();
 			}
+			stopActivityIndicator(host);
 			host.statusContainer.clear();
 			startLoadingAnimation(host);
 			markTuiLatency(host, "tui.loader_visible");
@@ -1015,17 +1043,12 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 								) {
 									continue;
 								}
-								const connectedToUser =
-									renderedSegments.filter((s) => s.kind === "text-run").length === 0 &&
-									orphanedSegments.filter((s) => s.kind === "text-run").length === 0 &&
-									chatTurnFollowsUser(host.chatContainer.children);
 								const comp = new AssistantMessageComponent(
 									undefined,
 									host.hideThinkingBlock,
 									host.getMarkdownThemeWithSettings(),
 									timestampFormat,
 									{ startIndex: seg.startIndex, endIndex: seg.endIndex },
-									connectedToUser,
 								);
 								host.chatContainer.addChild(comp);
 								markFirstVisibleAssistantOutput(host, seg.contentType, {
@@ -1244,16 +1267,12 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 								continue;
 							}
 
-							const connectedToUser =
-								renderedSegments.filter((s) => s.kind === "text-run").length === 0 &&
-								chatTurnFollowsUser(host.chatContainer.children);
 							const comp = new AssistantMessageComponent(
 								undefined,
 								host.hideThinkingBlock,
 								host.getMarkdownThemeWithSettings(),
 								timestampFormat,
 								{ startIndex: seg.startIndex, endIndex: seg.endIndex },
-								connectedToUser,
 							);
 							comp.updateContent(host.streamingMessage);
 							const segmentText = getTextFromContentBlocks(finalBlocks, seg.startIndex, seg.endIndex);
@@ -1284,14 +1303,12 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 					}
 
 					if (!host.streamingComponent && shouldRenderAssistant && !suppressRedundantHandoff) {
-						const connectedToUser = chatTurnFollowsUser(host.chatContainer.children);
 						host.streamingComponent = new AssistantMessageComponent(
 							undefined,
 							host.hideThinkingBlock,
 							host.getMarkdownThemeWithSettings(),
 							timestampFormat,
 							undefined,
-							connectedToUser,
 						);
 						host.chatContainer.addChild(host.streamingComponent);
 						markFirstVisibleAssistantOutput(host, "message_end_only");
@@ -1390,6 +1407,7 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 				host.loadingAnimation = undefined;
 				host.statusContainer.clear();
 			}
+			stopActivityIndicator(host);
 			if (host.streamingComponent && host.streamingMessage) {
 				host.streamingComponent.setShowMetadata(true);
 				host.streamingComponent.updateContent(host.streamingMessage);

@@ -12,6 +12,7 @@ import { compileSubagentPermissionContract, type ToolsPolicy } from "../unit-con
 import { logWarning } from "../workflow-logger.js";
 import { isGsdWorktreePath, resolveWorktreeProjectRoot } from "../worktree-root.js";
 import { worktreesDirs } from "../worktree-placement.js";
+import { bashReferencesProjectRootOutsideWorktree } from "../worktree-shell-guard.js";
 import { evaluateGateAnswer } from "../consent-verdict.js";
 
 /**
@@ -23,6 +24,12 @@ import { evaluateGateAnswer } from "../consent-verdict.js";
 export const MILESTONE_CONTEXT_RE = /M\d+(?:-[a-z0-9]{6})?-CONTEXT\.md$/;
 const CONTEXT_MILESTONE_RE = /(?:^|[/\\])(M\d+(?:-[a-z0-9]{6})?)-CONTEXT\.md$/i;
 const DEPTH_VERIFICATION_MILESTONE_RE = /depth_verification[_-](M\d+(?:-[a-z0-9]{6})?)/i;
+
+function normalizeMilestoneId(milestoneId: string): string {
+  const match = milestoneId.match(/^(M)(\d+)(?:-([a-z0-9]{6}))?$/i);
+  if (!match) return milestoneId;
+  return `M${match[2]}${match[3] ? `-${match[3].toLowerCase()}` : ""}`;
+}
 
 /**
  * Path segment that identifies .gsd/ planning artifacts.
@@ -227,7 +234,9 @@ function clearPersistedWriteGateSnapshot(basePath: string): void {
 function normalizeWriteGateSnapshot(value: unknown): WriteGateSnapshot {
   const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const verified = Array.isArray(record.verifiedDepthMilestones)
-    ? record.verifiedDepthMilestones.filter((item): item is string => typeof item === "string")
+    ? record.verifiedDepthMilestones
+        .filter((item): item is string => typeof item === "string")
+        .map(normalizeMilestoneId)
     : [];
   const verifiedGates = Array.isArray(record.verifiedApprovalGates)
     ? record.verifiedApprovalGates.filter((item): item is string => typeof item === "string")
@@ -288,7 +297,7 @@ export function loadWriteGateSnapshot(basePath: string): WriteGateSnapshot {
  *     guard that previously protected only the tool_execution_start window.
  */
 function mergeSnapshotIntoState(state: InMemoryWriteGateState, disk: WriteGateSnapshot): void {
-  for (const milestone of disk.verifiedDepthMilestones) state.verifiedDepthMilestones.add(milestone);
+  for (const milestone of disk.verifiedDepthMilestones) state.verifiedDepthMilestones.add(normalizeMilestoneId(milestone));
   for (const gate of disk.verifiedApprovalGates ?? []) state.verifiedApprovalGates.add(gate);
   state.activeQueuePhase = disk.activeQueuePhase;
   state.pendingGateId = disk.pendingGateId;
@@ -394,7 +403,7 @@ export function isMilestoneDepthVerified(
 ): boolean {
   if (!milestoneId) return false;
   refreshWriteGateStateFromDisk(basePath);
-  return getWriteGateState(basePath).verifiedDepthMilestones.has(milestoneId);
+  return getWriteGateState(basePath).verifiedDepthMilestones.has(normalizeMilestoneId(milestoneId));
 }
 
 export function isMilestoneDepthVerifiedInSnapshot(
@@ -402,7 +411,7 @@ export function isMilestoneDepthVerifiedInSnapshot(
   milestoneId: string | null | undefined,
 ): boolean {
   if (!milestoneId) return false;
-  return snapshot.verifiedDepthMilestones.includes(milestoneId);
+  return snapshot.verifiedDepthMilestones.includes(normalizeMilestoneId(milestoneId));
 }
 
 export function isQueuePhaseActive(basePath: string = process.cwd()): boolean {
@@ -465,7 +474,7 @@ export function isGateQuestionId(questionId: string): boolean {
  */
 export function extractDepthVerificationMilestoneId(questionId: string): string | null {
   const match = questionId.match(DEPTH_VERIFICATION_MILESTONE_RE);
-  return match?.[1] ?? null;
+  return match?.[1] ? normalizeMilestoneId(match[1]) : null;
 }
 
 /**
@@ -473,7 +482,7 @@ export function extractDepthVerificationMilestoneId(questionId: string): string 
  */
 function extractContextMilestoneId(inputPath: string): string | null {
   const match = inputPath.match(CONTEXT_MILESTONE_RE);
-  return match?.[1] ?? null;
+  return match?.[1] ? normalizeMilestoneId(match[1]) : null;
 }
 
 /**
@@ -559,7 +568,7 @@ export const hostWriteGateAdapter: WriteGateStateAdapter = {
   markDepthVerified(milestoneId, basePath): void {
     if (!milestoneId) return;
     mutateWriteGateState(basePath, (state) => {
-      state.verifiedDepthMilestones.add(milestoneId);
+      state.verifiedDepthMilestones.add(normalizeMilestoneId(milestoneId));
     }, { writer: "host" });
   },
   markApprovalGateVerified(gateId, basePath): void {
@@ -600,7 +609,7 @@ export const childWriteGateAdapter: WriteGateStateAdapter = {
   markDepthVerified(milestoneId, basePath): void {
     if (!milestoneId) return;
     childMutate(basePath, (state) => {
-      state.verifiedDepthMilestones.add(milestoneId);
+      state.verifiedDepthMilestones.add(normalizeMilestoneId(milestoneId));
     });
   },
   markApprovalGateVerified(gateId, basePath): void {
@@ -734,6 +743,13 @@ export interface AskUserQuestionsGateQuestion {
 export interface AskUserQuestionsGateDetails {
   cancelled?: boolean;
   interrupted?: boolean;
+  /**
+   * True when the host elicitation channel timed out before the user answered.
+   * Distinct from `cancelled` (deliberate dismissal): the gate verdict maps
+   * this to "timeout" so callers pause-and-wait instead of letting the model
+   * re-ask into the same timeout loop (#852).
+   */
+  timed_out?: boolean;
   response?: {
     answers?: Record<string, { selected?: unknown } | undefined>;
   } | null;
@@ -743,7 +759,8 @@ export type AskUserQuestionsGateResult =
   | { status: "not-gate" }
   | { status: "waiting"; pendingGateId: string; interrupted: boolean }
   | { status: "verified"; gateId: string; milestoneId: string | null }
-  | { status: "declined"; gateId: string };
+  | { status: "declined"; gateId: string }
+  | { status: "timeout"; pendingGateId: string; interrupted: boolean };
 
 function findGateQuestion(
   questions: AskUserQuestionsGateQuestion[],
@@ -767,11 +784,22 @@ function verifyAnsweredGate(
 
 /** Map an unresolved (non-verified) gate verdict to the caller-facing result. */
 function unresolvedGateResult(
-  verdict: "declined" | "waiting" | "cancelled",
+  verdict: "declined" | "waiting" | "cancelled" | "timeout",
   gateId: string,
   details: AskUserQuestionsGateDetails,
 ): AskUserQuestionsGateResult {
   if (verdict === "declined") return { status: "declined", gateId };
+  if (verdict === "timeout") {
+    // Host elicitation expired before the user answered. The gate stays
+    // pending (fail-closed — a timeout is never approval), but the status is
+    // "timeout" so the caller pauses-and-waits instead of re-asking into the
+    // same timeout loop (#852).
+    return {
+      status: "timeout",
+      pendingGateId: gateId,
+      interrupted: details.interrupted === true,
+    };
+  }
   // "waiting" (and the unreachable post-cancel case): an empty selection is
   // not an answer — keep the gate pending and make the caller pause.
   return {
@@ -802,6 +830,16 @@ export function applyAskUserQuestionsGateResult(options: {
   const { basePath, questions, details, fallbackMilestoneId } = options;
   const currentPendingGate = getPendingGate(basePath);
   if (currentPendingGate) {
+    if (details.timed_out) {
+      // Host elicitation timed out before the user answered. Keep the gate
+      // pending (fail-closed) but report "timeout" so the caller pauses-and-
+      // waits instead of re-asking into the same timeout loop (#852).
+      return {
+        status: "timeout",
+        pendingGateId: currentPendingGate,
+        interrupted: details.interrupted === true,
+      };
+    }
     if (details.cancelled || !details.response) {
       return {
         status: "waiting",
@@ -820,6 +858,7 @@ export function applyAskUserQuestionsGateResult(options: {
     }
   }
 
+  if (details.timed_out) return { status: "not-gate" };
   if (details.cancelled || !details.response) return { status: "not-gate" };
 
   for (const question of questions) {
@@ -854,6 +893,24 @@ export function formatPendingAskUserQuestionsGateMessage(
   ].join(" ");
 }
 
+/**
+ * Format the LLM-facing message returned when a depth-confirmation gate
+ * elicitation times out. Distinct from {@link formatPendingAskUserQuestionsGateMessage}:
+ * a timeout must NOT tell the model to immediately re-ask (that re-triggers
+ * the same timeout loop). Instead it tells the model to stop, that auto-mode
+ * is paused, and that the user will respond on their own (#852).
+ */
+export function formatTimedOutAskUserQuestionsGateMessage(
+  pendingGateId: string,
+): string {
+  return [
+    `Depth confirmation on gate "${pendingGateId}" timed out waiting for a response.`,
+    "The user did not answer within the host elicitation window — do not re-ask in this turn, it will time out again.",
+    "Auto-mode is paused. Stop calling tools and wait for the user to respond on a new turn.",
+    "When the user replies with confirmation, the gate will be satisfied and work will resume.",
+  ].join(" ");
+}
+
 export function shouldBlockContextWrite(
   toolName: string,
   inputPath: string,
@@ -864,7 +921,7 @@ export function shouldBlockContextWrite(
   if (toolName !== "write") return { block: false };
   if (!MILESTONE_CONTEXT_RE.test(inputPath)) return { block: false };
 
-  const targetMilestoneId = extractContextMilestoneId(inputPath) ?? milestoneId;
+  const targetMilestoneId = extractContextMilestoneId(inputPath) ?? (milestoneId ? normalizeMilestoneId(milestoneId) : null);
   if (!targetMilestoneId) {
     return {
       block: true,
@@ -883,8 +940,8 @@ export function shouldBlockContextWrite(
     reason: [
       `HARD BLOCK: Cannot write to milestone CONTEXT.md without depth verification.`,
       `This is a mechanical gate — you MUST NOT proceed, retry, or rationalize past this block.`,
-      `Required action: call ask_user_questions with question id containing "depth_verification".`,
-      `The user MUST select the "(Recommended)" confirmation option to unlock this gate.`,
+      `Required action: call ask_user_questions with question id "depth_verification_${targetMilestoneId}_confirm".`,
+      `The user MUST select the first "(Recommended)" confirmation option to unlock this gate.`,
       `If the user declines, cancels, or the tool fails, you must re-ask — not bypass.`,
     ].join(" "),
   };
@@ -1373,6 +1430,37 @@ function isPathContained(target: string, container: string): boolean {
   return target.startsWith(container.endsWith(sep) ? container : container + sep);
 }
 
+function formatWorktreeIsolationBlockReason(
+  tool: string,
+  displayTarget: string,
+  isAutoLive: boolean,
+  effectiveBasePath: string,
+): string {
+  if (isGsdWorktreePath(effectiveBasePath)) {
+    return [
+      `HARD BLOCK: ${tool} target "${displayTarget}" is outside the active milestone worktree`,
+      `while \`git.isolation: worktree\` is configured. Source edits must stay inside`,
+      `\`.gsd-worktrees/<MID>/\` (or \`.gsd/\` planning artifacts) so the auto-mode commit`,
+      `pipeline captures them. Writing to the project root leaks changes that block milestone merge.`,
+      `Use a relative path under the worktree cwd or an absolute path inside the worktree directory.`,
+      ...(isAutoLive ? [] : [
+        "This guard also applies to subagent children spawned from the worktree — do not",
+        "`cd` to the project root or reference its paths in shell commands.",
+      ]),
+    ].join(" ");
+  }
+
+  return [
+    `HARD BLOCK: Worktree isolation is configured (\`git.isolation: worktree\`) but auto-mode is`,
+    `not running and the target "${displayTarget}" is not inside \`.gsd/worktrees/<MID>/\`.`,
+    `Code edits at the project root would be lost — only the auto-mode commit pipeline`,
+    `(auto-post-unit) commits work, and it never runs outside the loop.`,
+    `Required action: start auto-mode with \`/gsd\` so the milestone worktree is created,`,
+    `then write inside it. To disable this guard for self-hosting development, set`,
+    `GSD_DISABLE_WORKTREE_WRITE_GUARD=1.`,
+  ].join(" ");
+}
+
 /**
  * Block planning-write tool calls that would land code at the project root
  * while `git.isolation: worktree` is in effect and auto-mode hasn't created
@@ -1390,10 +1478,9 @@ function isPathContained(target: string, container: string): boolean {
  *   5. Target is inside `<projectRoot>/.gsd/worktrees/` (a real worktree).
  *   6. Target is inside `<projectRoot>/.gsd/` and isn't masquerading as a
  *      worktrees sibling (rejects the `.gsd/worktrees-extra/…` prefix trick).
- *   7. Auto is live AND `effectiveBasePath` is itself a `.gsd/worktrees/…` path.
  *
- * Otherwise: block with a message that points the agent at `/gsd` to start
- * auto-mode.
+ * Otherwise: block with a message that points the agent at the active worktree
+ * or `/gsd` to start auto-mode.
  */
 export function shouldBlockWorktreeWrite(
   toolName: string,
@@ -1442,24 +1529,46 @@ export function shouldBlockWorktreeWrite(
     // fall through: looks like worktrees<something> sibling — block
   }
 
-  // Auto is live and the caller is operating inside a worktree path —
-  // host tool's write happens in worktree context; let it through.
-  if (isAutoLive && isGsdWorktreePath(effectiveBasePath)) return { block: false };
-
   // Block. Provide enough context that the agent can self-correct.
   const displayTarget = isPathContained(realTarget, realRoot)
     ? relative(realRoot, realTarget) || "."
     : realTarget;
   return {
     block: true,
-    reason: [
-      `HARD BLOCK: Worktree isolation is configured (\`git.isolation: worktree\`) but auto-mode is`,
-      `not running and the target "${displayTarget}" is not inside \`.gsd/worktrees/<MID>/\`.`,
-      `Code edits at the project root would be lost — only the auto-mode commit pipeline`,
-      `(auto-post-unit) commits work, and it never runs outside the loop.`,
-      `Required action: start auto-mode with \`/gsd\` so the milestone worktree is created,`,
-      `then write inside it. To disable this guard for self-hosting development, set`,
-      `GSD_DISABLE_WORKTREE_WRITE_GUARD=1.`,
-    ].join(" "),
+    reason: formatWorktreeIsolationBlockReason(tool, displayTarget, isAutoLive, effectiveBasePath),
+  };
+}
+
+/**
+ * Block bash commands that reference the project root while executing inside an
+ * active milestone worktree under `git.isolation: worktree`.
+ *
+ * Mirrors the gsd_exec sandbox rule so native bash cannot bypass write/edit gates.
+ */
+export function shouldBlockWorktreeBash(
+  command: string,
+  effectiveBasePath: string,
+  isAutoLive: boolean,
+  currentUnitType?: string | null,
+): { block: boolean; reason?: string } {
+  if (process.env.GSD_DISABLE_WORKTREE_WRITE_GUARD === "1") return { block: false };
+  if (getIsolationMode(effectiveBasePath) !== "worktree") return { block: false };
+  if (currentUnitType && WORKTREE_GATE_BOOTSTRAP_UNITS.has(currentUnitType)) return { block: false };
+  // Block whenever the effective cwd is inside a milestone worktree — not only
+  // during live auto-mode. Reactive-execute subagents run as fresh pi children
+  // without an auto session, but still inherit the worktree cwd and must not
+  // shell out to the project root (the native bash bypass that caused root-write leaks).
+  if (!isGsdWorktreePath(effectiveBasePath)) return { block: false };
+  if (!command.trim()) return { block: false };
+  if (!bashReferencesProjectRootOutsideWorktree(command, effectiveBasePath)) return { block: false };
+
+  return {
+    block: true,
+    reason: formatWorktreeIsolationBlockReason(
+      "bash",
+      "project root path reference in shell command",
+      isAutoLive,
+      effectiveBasePath,
+    ),
   };
 }

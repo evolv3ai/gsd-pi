@@ -8,7 +8,8 @@ All paths relative to the `@gsd/pi-coding-agent` package root (e.g., `<pi-instal
 | `docs/extensions.md` | **Primary reference** — Full extensions API (1,972 lines) |
 | `docs/tui.md` | TUI component system — `Component` interface, built-in components, keyboard input, theming, overlay system, performance, patterns |
 | `docs/packages.md` | Creating and distributing pi packages (npm, git, local) |
-| `docs/session.md` | Session file format, entry types, message types, SessionManager API |
+| `docs/session-format.md` | Session file format, entry types, and message types |
+| `docs/sessions.md` | SessionManager API and session lifecycle |
 | `docs/compaction.md` | Auto-compaction, branch summarization, custom compaction hooks |
 | `docs/rpc.md` | RPC mode protocol for headless/embedded operation |
 | `docs/sdk.md` | SDK integrations |

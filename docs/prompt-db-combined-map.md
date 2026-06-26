@@ -38,10 +38,10 @@ See also:
               bootstrap/db-tools.ts
                        │
                        ▼
-              gsd-db.ts  (barrel over the single-writer layer:
-                          db/engine.ts + db/writers/**)
+              gsd-db.ts  (compatibility barrel over the explicit
+                          single-writer allowlist)
                        │
-                 transaction()
+                 transaction()/immediateTransaction()
                        │
                        ▼
                SQLite writes
@@ -332,7 +332,7 @@ unit completes
 | `db-memory-fts-schema.ts` | memories_fts (FTS5 virtual table), memories_ai/ad/au triggers |
 | `db-runtime-kv-schema.ts` | runtime_kv |
 | `db-verification-evidence-schema.ts` | verification_evidence dedup index (helper for V13 migration) |
-| `eval-review-schema.ts` | eval_reviews (EVAL-REVIEW status tracking, separate from milestone validation) |
+| `eval-review-schema.ts` | YAML frontmatter schema + parser for `/gsd eval-review` output (no SQL table — the eval-review contract lives in markdown frontmatter) |
 
 ---
 
@@ -353,13 +353,13 @@ unit completes
 
 | Invariant | Where Enforced |
 |-----------|---------------|
-| Single-writer: all write SQL in the single-writer layer (`db/engine.ts` + `db/writers/**`); `gsd-db.ts` is the barrel re-exporting it; `db/queries.ts` is read-only | structural test `single-writer-invariant.test.ts` (directory predicate) |
+| Single-writer: all write SQL in the explicit single-writer allowlist (`db/engine.ts`, `db/writers/**`, `gsd-db.ts`, typed coordination/runtime writers `db/milestone-leases.ts`, `db/unit-dispatches.ts`, `db/auto-workers.ts`, `db/runtime-kv.ts`, `db/command-queue.ts`, schema/migration helpers `db-memory-fts-schema.ts`, `db-schema-metadata.ts`, `db-verification-evidence-schema.ts`, and ADR migration/backfill helper `memory-backfill.ts`); this is not permission for arbitrary writes under `db/`; `unit-ownership.ts` owns separate `.gsd/unit-claims.db`; `db/queries.ts` is read-only | structural test `single-writer-invariant.test.ts` (explicit allowlist) |
 | Cascade on slice complete: pending tasks → skipped | `gsd_slice_complete` transaction |
 | Cascade on milestone reopen: all slices → in_progress, tasks → pending | `gsd_milestone_reopen` transaction |
-| No nested transactions | `db-transaction.ts` depth counter |
+| No nested write transactions: `transaction()` and `immediateTransaction()` share one depth counter | `db-transaction.test.ts` |
 | Workspace isolation: one DB per project root, shared across worktrees via WAL | `db-connection-cache.ts` identityKey |
 | Coordination: one active dispatch per unit_id at a time | `idx_unit_dispatches_active_per_unit` unique partial index |
 | Memory FTS fallback: LIKE scan if FTS5 unavailable | `tryCreateMemoriesFtsSchema` onUnavailable callback |
-| Pre-migration backup: .db.bak-vN before any migration run | `db-migration-backup.ts` |
+| Pre-migration backup: file-backed migrations checkpoint WAL before copying `.gsd/gsd.db.backup-vN`; existing same-version backups are reused/skipped, and checkpoint/copy failures warn then stop before migration DDL | `db-migration-backup.ts` |
 | Prompt template vars: all `{{vars}}` must be provided before substitution | `prompt-loader.ts` pre-substitution validation |
 | Prompt cache stability: static sections always before dynamic | `prompt-ordering.ts` reorderForCaching |

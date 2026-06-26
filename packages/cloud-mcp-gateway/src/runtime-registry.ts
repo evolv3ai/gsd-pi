@@ -34,10 +34,17 @@ export interface GatewayToolCall {
   signal?: AbortSignal;
 }
 
+export interface RuntimeRegistryOptions {
+  onOnline?: (runtimeId: string) => void;
+  onOffline?: (runtimeId: string) => void;
+}
+
 export class RuntimeRegistry {
   private readonly runtimes = new Map<string, RuntimeConnection>();
   private readonly pending = new Map<string, PendingCall>();
   private readonly projectQueues = new Map<string, Promise<unknown>>();
+
+  constructor(private readonly options: RuntimeRegistryOptions = {}) {}
 
   attachRuntime(params: {
     userId: string;
@@ -60,16 +67,24 @@ export class RuntimeRegistry {
       lastSeenAt: Date.now(),
     };
     this.runtimes.set(params.runtimeId, runtime);
+    this.options.onOnline?.(params.runtimeId);
 
     params.socket.on("message", (data) => {
       this.handleMessage(params.runtimeId, data.toString("utf8"));
     });
     params.socket.on("close", () => {
       if (this.runtimes.get(params.runtimeId)?.socket === params.socket) {
-        this.runtimes.delete(params.runtimeId);
-        this.failPendingForRuntime(params.runtimeId, `Local GSD Runtime disconnected: ${params.runtimeId}`);
+        this.detachRuntime(params.runtimeId);
       }
     });
+  }
+
+  sweepStaleConnections(maxIdleMs: number, now = Date.now()): void {
+    for (const runtime of this.runtimes.values()) {
+      if (now - runtime.lastSeenAt < maxIdleMs) continue;
+      this.detachRuntime(runtime.runtimeId);
+      runtime.socket.close(4000, "stale");
+    }
   }
 
   listProjects(userId: string): CloudProjectRecord[] {
@@ -243,5 +258,11 @@ export class RuntimeRegistry {
       pending.removeAbortListener();
       pending.reject(new Error(`${message} while waiting for ${pending.toolName}`));
     }
+  }
+
+  private detachRuntime(runtimeId: string): void {
+    this.runtimes.delete(runtimeId);
+    this.failPendingForRuntime(runtimeId, `Local GSD Runtime disconnected: ${runtimeId}`);
+    this.options.onOffline?.(runtimeId);
   }
 }

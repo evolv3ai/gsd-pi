@@ -16,7 +16,7 @@ import { registerScheduleWakeupTool } from "./schedule-wakeup-tool.js";
 import { registerHooks } from "./register-hooks.js";
 import { registerShortcuts } from "./register-shortcuts.js";
 import { writeCrashLog } from "./crash-log.js";
-import { logWarning } from "../workflow-logger.js";
+import { logWarning, isGsdExtensionStderrEnabled } from "../workflow-logger.js";
 import { UNIT_TOOL_CONTRACTS } from "../unit-tool-contracts.js";
 // Static import so cmux event listeners are registered synchronously during
 // extension bootstrap. Prior implementation used `void import().then()` which
@@ -47,6 +47,7 @@ export const CRITICAL_GSD_WORKFLOW_TOOL_NAMES = [...new Set(
 /** Write to stderr without ever re-throwing — stderr can EPIPE too, which would
  *  re-enter this handler and re-loop. */
 function safeStderr(msg: string): void {
+  if (!isGsdExtensionStderrEnabled()) return;
   try {
     process.stderr.write(msg);
   } catch { /* stderr is also broken; nothing we can do */ }
@@ -140,10 +141,30 @@ export function installEpipeGuard(): void {
   }
 }
 
+/**
+ * Assert that critical GSD workflow tools were registered.
+ *
+ * During extension loading, getAllTools() is a throwing stub
+ * ("Extension runtime not initialized") that only becomes real after
+ * runner.bindCore(). Calling it here used to throw, propagating to index.ts's
+ * catch and firing "Extension setup partially failed" — which, under Claude
+ * Code CLI, left the model's tool surface incomplete and trapped units in a
+ * finalize-retry loop. Tolerate the pre-bind throw and defer the real check to
+ * the first before_agent_start (where applyMinimalGsdToolSurface already
+ * re-reads the registered surface post-bind).
+ */
 function assertCriticalGsdWorkflowToolsRegistered(pi: ExtensionAPI): void {
   if (typeof pi.getAllTools !== "function") return;
 
-  const registered = new Set(pi.getAllTools().map((tool) => tool.name));
+  let registered: Set<string>;
+  try {
+    registered = new Set(pi.getAllTools().map((tool) => tool.name));
+  } catch {
+    // Pre-bind runtime: getAllTools() is not yet wired. The critical-tools
+    // invariant is re-checked post-bind during the first before_agent_start.
+    return;
+  }
+
   const missing = CRITICAL_GSD_WORKFLOW_TOOL_NAMES.filter((toolName) => !registered.has(toolName));
   if (missing.length === 0) return;
 

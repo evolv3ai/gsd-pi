@@ -299,6 +299,74 @@ test("session_start installs the welcome screen as the TUI header", async (t) =>
   assert.deepEqual(header.render(123), ["welcome 9.9.9-test none 123"]);
 });
 
+test("session_start suppresses the welcome header while auto-mode is active", async (t) => {
+  const dir = join(
+    tmpdir(),
+    `gsd-welcome-header-auto-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  );
+  mkdirSync(join(dir, ".gsd"), { recursive: true });
+  mkdirSync(join(dir, "dist"), { recursive: true });
+  writeFileSync(
+    join(dir, "dist", "welcome-screen.js"),
+    "export function buildWelcomeScreenLines() { return ['welcome header']; }\n",
+    "utf-8",
+  );
+
+  const originalCwd = process.cwd();
+  const originalGsdPkgRoot = process.env.GSD_PKG_ROOT;
+  process.chdir(dir);
+  process.env.GSD_PKG_ROOT = dir;
+  autoSession.reset();
+  autoSession.active = true;
+  t.after(() => {
+    autoSession.reset();
+    process.chdir(originalCwd);
+    if (originalGsdPkgRoot === undefined) delete process.env.GSD_PKG_ROOT;
+    else process.env.GSD_PKG_ROOT = originalGsdPkgRoot;
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+
+  const handlers = new Map<string, (event: unknown, ctx: any) => Promise<void> | void>();
+  const pi = {
+    on(event: string, handler: (event: unknown, ctx: any) => Promise<void> | void) {
+      handlers.set(event, handler);
+    },
+  } as any;
+
+  registerHooks(pi, []);
+
+  const sessionStart = handlers.get("session_start");
+  assert.ok(sessionStart, "session_start handler must be registered");
+
+  let headerFactory: ((tui: unknown, theme: unknown) => { render(width: number): string[] }) | undefined;
+  await sessionStart!({}, {
+    hasUI: true,
+    ui: {
+      notify: () => {},
+      setStatus: () => {},
+      setFooter: () => {},
+      setHeader: (factory: typeof headerFactory) => {
+        headerFactory = factory;
+      },
+      setWorkingMessage: () => {},
+      onTerminalInput: () => () => {},
+      setWidget: () => {},
+    },
+    sessionManager: { getSessionId: () => null },
+    model: null,
+    setCompactionThresholdOverride: () => {},
+    modelRegistry: {
+      setDisabledModelProviders: () => {},
+      getProviderAuthMode: () => undefined,
+      isProviderRequestReady: () => false,
+    },
+  } as any);
+
+  assert.equal(typeof headerFactory, "function", "session_start should install a header factory during auto-mode");
+  const header = headerFactory!({}, {});
+  assert.deepEqual(header.render(120), [], "auto-mode session_start must keep the welcome banner suppressed");
+});
+
 test("session hooks preserve closeout-boundary UI during completion reroot", async (t) => {
   const dir = join(
     tmpdir(),

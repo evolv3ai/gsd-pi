@@ -228,11 +228,12 @@ function _parsePlanImpl(content: string): SlicePlan {
   const mhSection = extractSection(body, 'Must-Haves');
   const mustHaves = mhSection ? parseBullets(mhSection) : [];
 
-  // Parse tasks from ## Tasks section first, then scan the full body for any
-  // task checkboxes that were missed. Multi-task plans can interleave T01 detail
-  // headings (## Steps, ## Must-Haves) before T02's checkbox, which causes
-  // extractSection("Tasks") to stop at the first ## heading and miss T02+ (#3105).
+  // Parse tasks from ## Tasks section or <tasks> XML block, then scan the full
+  // body for any task checkboxes that were missed.
   const tasksSection = extractSection(body, 'Tasks');
+  // Flat-phase: extract <tasks>...</tasks> block content
+  const tasksBlockMatch = body.match(/<tasks>([\s\S]*?)<\/tasks>/);
+  const tasksBlock = tasksBlockMatch ? tasksBlockMatch[1] : null;
   const tasks: TaskPlanEntry[] = [];
 
   // Parse task entries from a set of lines, appending to `tasks`.
@@ -240,7 +241,11 @@ function _parsePlanImpl(content: string): SlicePlan {
     let currentTask: TaskPlanEntry | null = null;
 
     for (const line of lines) {
-      const cbMatch = line.match(/^-\s+\[([ xX])\]\s+\*\*([\w.]+):\s+(.+?)\*\*\s*(.*)/);
+      // Match both formats:
+      //   Legacy:  - [x] **T01: Title** `est:30m`
+      //   Flat-phase: - [x] **T01**: Title _(30m)_
+      const cbMatch = line.match(/^-\s+\[([ xX])\]\s+\*\*([\w.]+):\s+(.+?)\*\*\s*(.*)/)
+        || line.match(/^-\s+\[([ xX])\]\s+\*\*([\w.]+)\*\*:\s+(.+?)\s*(?:_\(([^)]*)\)_\s*)?$/);
       // Heading-style: ### T01 -- Title, ### T01: Title, ### T01 — Title
       const hdMatch = !cbMatch
         ? line.match(/^#{2,4}\s+([A-Z]+\d+(?:\.[A-Z]+\d+)*)\s*(?:--|—|:)\s*(.+)/)
@@ -252,18 +257,31 @@ function _parsePlanImpl(content: string): SlicePlan {
           currentTask = null;
           continue;
         }
+        knownIds.add(taskId);
         if (currentTask) tasks.push(currentTask);
 
         if (cbMatch) {
-          const rest = cbMatch[4] || '';
-          const estMatch = rest.match(/`est:([^`]+)`/);
-          const estimate = estMatch ? estMatch[1] : '';
+          // Two regex alternatives — distinguish by the shape of group 4.
+          // Legacy: group 4 = trailing text (may contain `est:X`). Title in group 3.
+          // Flat-phase: group 4 = estimate value directly (e.g. "30m"). Title in group 3.
+          const group4 = cbMatch[4] || '';
+          const title = (cbMatch[3] || '').trim();
+          let estimate = '';
+
+          // Legacy `est:X` tag
+          const estMatch = group4.match(/`est:([^`]+)`/);
+          if (estMatch) {
+            estimate = estMatch[1]!;
+          } else if (group4) {
+            // Flat-phase: the estimate value was captured directly
+            estimate = group4;
+          }
 
           currentTask = {
             id: cbMatch[2],
-            title: cbMatch[3],
+            title,
             description: '',
-            done: cbMatch[1].toLowerCase() === 'x',
+            done: cbMatch[1]!.toLowerCase() === 'x',
             estimate,
           };
         } else {
@@ -293,7 +311,7 @@ function _parsePlanImpl(content: string): SlicePlan {
         if (verifyMatch) {
           currentTask.verify = verifyMatch[1].trim();
         }
-      } else if (currentTask && line.trim() && !line.startsWith('#')) {
+      } else if (currentTask && line.trim() && !line.startsWith('#') && !line.match(/<\/?tasks>/) && !line.match(/^\s*-\s+(Files|Verify):/)) {
         const desc = line.trim();
         if (desc) {
           currentTask.description = currentTask.description
@@ -305,14 +323,23 @@ function _parsePlanImpl(content: string): SlicePlan {
     if (currentTask) tasks.push(currentTask);
   };
 
+  const knownTaskIds = new Set<string>();
   if (tasksSection) {
-    parseTaskLines(tasksSection.split('\n'), new Set());
+    parseTaskLines(tasksSection.split('\n'), knownTaskIds);
+  }
+
+  // Flat-phase: parse <tasks> block
+  if (tasksBlock) {
+    parseTaskLines(tasksBlock.split('\n'), knownTaskIds);
   }
 
   // Second pass: scan the full body for task checkboxes outside ## Tasks.
-  // This handles interleaved plans where T02+ appear after T01's detail headings.
-  const foundIds = new Set(tasks.map(t => t.id));
-  parseTaskLines(body.split('\n'), foundIds);
+  // Only do this for legacy plans (no <tasks> block) — flat-phase plans
+  // have all tasks inside <tasks> and the second pass would pick up noise.
+  if (!tasksBlock && !tasksSection) {
+    const foundIds = new Set(tasks.map(t => t.id));
+    parseTaskLines(body.split('\n'), foundIds);
+  }
 
   const filesSection = extractSection(body, 'Files Likely Touched');
   const filesLikelyTouched = filesSection ? parseBullets(filesSection) : [];

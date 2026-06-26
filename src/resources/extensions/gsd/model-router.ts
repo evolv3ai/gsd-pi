@@ -312,6 +312,8 @@ export function scoreEligibleModels(
 
 /**
  * Return all models eligible for a given tier, sorted cheapest first.
+ * A runtime preferred model (the user's selected/session model) is returned
+ * first when it is available and satisfies the requested tier.
  * If routingConfig.tier_models[tier] is set and available, returns only that
  * model. Otherwise filters availableModelIds by tier from MODEL_CAPABILITY_TIER.
  */
@@ -319,6 +321,7 @@ export function getEligibleModels(
   tier: ComplexityTier,
   availableModelIds: string[],
   routingConfig: DynamicRoutingConfig,
+  preferredModelId?: string,
 ): string[] {
   // 1. Check explicit tier_models config
   const explicitModel = routingConfig.tier_models?.[tier];
@@ -332,13 +335,17 @@ export function getEligibleModels(
   }
 
   // 2. Auto-detect: filter by tier, sort cheapest first
-  return availableModelIds
+  const tierMatches = availableModelIds
     .filter(id => getModelTier(id) === tier)
     .sort((a, b) => {
       const costA = getModelCost(a);
       const costB = getModelCost(b);
       return costA - costB;
     });
+
+  const preferred = findPreferredModelForTier(tier, availableModelIds, preferredModelId);
+  if (!preferred) return tierMatches;
+  return [preferred, ...tierMatches.filter(id => id !== preferred)];
 }
 
 /**
@@ -398,6 +405,7 @@ export function resolveModelForComplexity(
   unitType?: string,
   taskMetadata?: TaskMetadata,
   capabilityOverrides?: Record<string, Partial<ModelCapabilities>>,
+  preferredModelId?: string,
 ): RoutingDecision {
   // If no phase config or routing disabled, pass through
   if (!phaseConfig || !routingConfig.enabled) {
@@ -453,6 +461,7 @@ export function resolveModelForComplexity(
       routingConfig,
       availableModelIds,
       routingConfig.cross_provider !== false,
+      preferredModelId,
     );
 
     return {
@@ -470,7 +479,7 @@ export function resolveModelForComplexity(
   }
 
   // STEP 1: Get all eligible models for the requested tier
-  const eligible = getEligibleModels(requestedTier, availableModelIds, routingConfig);
+  const eligible = getEligibleModels(requestedTier, availableModelIds, routingConfig, preferredModelId);
 
   if (eligible.length === 0) {
     // No suitable model found — use configured primary
@@ -480,6 +489,19 @@ export function resolveModelForComplexity(
       tier: requestedTier,
       wasDowngraded: false,
       reason: `no ${requestedTier}-tier model available`,
+      selectionMethod: "tier-only",
+    };
+  }
+
+  const preferred = findPreferredModelForTier(requestedTier, availableModelIds, preferredModelId);
+  if (preferred && eligible.includes(preferred)) {
+    const fallbacks = buildFallbackChain(preferred, phaseConfig);
+    return {
+      modelId: preferred,
+      fallbacks,
+      tier: requestedTier,
+      wasDowngraded: !isModelAvailable(configuredPrimary, [preferred]),
+      reason: `preferred session model ${preferred} satisfies ${requestedTier} tier`,
       selectionMethod: "tier-only",
     };
   }
@@ -551,15 +573,15 @@ export function defaultRoutingConfig(): DynamicRoutingConfig {
 // ─── Tier-Based Model Resolution (for profile defaults) ─────────────────────
 
 /**
- * Fallback-only canonical model IDs per tier. Returned when the
+ * Fallback-only canonical model IDs per tier. Returned only when the
  * available-model list is empty (e.g., preferences are loaded before the
- * model registry is populated at bootstrap), or when a non-empty registry has
- * no model at the requested tier.
+ * model registry is populated at bootstrap).
  *
  * Precedence (resolveModelForTier):
  *   1. configured `tier_models[tier]` (via getEligibleModels) — exact/bare match
- *   2. cheapest available model whose tier matches `tier`
- *   3. CANONICAL_TIER_MODELS[tier] as last-resort fallback
+ *   2. preferred/session model when it is available and satisfies `tier`
+ *   3. cheapest available model whose tier matches `tier`
+ *   4. CANONICAL_TIER_MODELS[tier] when the registry is empty
  */
 const CANONICAL_TIER_MODELS: Record<ComplexityTier, string> = {
   light: "claude-haiku-4-5",
@@ -573,9 +595,10 @@ export function canonicalModelForTier(tier: ComplexityTier): string {
 
 /**
  * Single source of truth for tier-based model selection.
- * Returns the cheapest available model whose capability tier matches `tier`,
- * honoring `routingConfig.tier_models[tier]` when set. Returns undefined when
- * no available model matches the tier.
+ * Returns the preferred/session model when it satisfies `tier`, otherwise the
+ * cheapest available model whose capability tier matches `tier`, honoring
+ * `routingConfig.tier_models[tier]` when set. Returns undefined when no
+ * available model satisfies the tier.
  *
  * `crossProvider`: when false, restricts the search to models that share the
  * canonical (Anthropic) provider for the tier. When true, any provider is
@@ -586,8 +609,9 @@ function findModelForTier(
   routingConfig: DynamicRoutingConfig,
   availableModelIds: string[],
   crossProvider: boolean,
+  preferredModelId?: string,
 ): string | undefined {
-  const eligible = getEligibleModels(tier, availableModelIds, routingConfig);
+  const eligible = getEligibleModels(tier, availableModelIds, routingConfig, preferredModelId);
   if (eligible.length === 0) return undefined;
 
   if (crossProvider) {
@@ -600,6 +624,13 @@ function findModelForTier(
     const bare = bareModelId(id);
     return MODEL_CAPABILITY_TIER[bare] === tier && bare.startsWith("claude-");
   });
+
+  // Honor the preferred/session model only when it is itself a same-provider
+  // (Anthropic/Claude) model. A non-Anthropic session model must not bypass
+  // the cross_provider:false restriction.
+  const preferred = findPreferredModelForTier(tier, availableModelIds, preferredModelId);
+  if (preferred && sameProvider.includes(preferred)) return preferred;
+
   return sameProvider[0];
 }
 
@@ -610,9 +641,11 @@ function findModelForTier(
  *
  * Precedence:
  *   1. configured `tier_models[tier]`, if provided and available
- *   2. tier-matching model from any provider in `availableModelIds`
- *   3. canonical Anthropic ID as a fallback only when nothing else matches
- *      (or `availableModelIds` is empty, e.g., during early bootstrap)
+ *   2. preferred/session model when available and satisfying the tier
+ *   3. tier-matching model from any provider in `availableModelIds`
+ *   4. preferred/session model, then first available model, when the registry
+ *      is non-empty but has no tier match
+ *   5. canonical Anthropic ID only when `availableModelIds` is empty
  *
  * @param tier              The capability tier to resolve
  * @param availableModelIds List of available model IDs (REQUIRED for
@@ -620,6 +653,7 @@ function findModelForTier(
  *                          the model registry is genuinely unavailable)
  * @param routingConfig     Optional routing config, or legacy crossProvider boolean
  * @param crossProvider     Whether to consider models from other providers
+ * @param preferredModelId  Optional selected/session model ID to prefer
  */
 export function resolveModelForTier(
   tier: ComplexityTier,
@@ -631,12 +665,14 @@ export function resolveModelForTier(
   availableModelIds: string[],
   routingConfig?: DynamicRoutingConfig,
   crossProvider?: boolean,
+  preferredModelId?: string,
 ): string;
 export function resolveModelForTier(
   tier: ComplexityTier,
   availableModelIds: string[],
   routingConfigOrCrossProvider: DynamicRoutingConfig | boolean = defaultRoutingConfig(),
   crossProvider?: boolean,
+  preferredModelId?: string,
 ): string {
   const routingConfig = typeof routingConfigOrCrossProvider === "boolean"
     ? defaultRoutingConfig()
@@ -645,23 +681,67 @@ export function resolveModelForTier(
     ? routingConfigOrCrossProvider
     : crossProvider ?? routingConfig.cross_provider !== false;
 
-  // No available models known — return canonical fallback
+  // No available models known — prefer the session model when provided, else canonical
   if (availableModelIds.length === 0) {
+    if (preferredModelId) {
+      return normalizeResolvedTierModelId(preferredModelId, tier, routingConfig);
+    }
     incrementLegacyTelemetry("legacy.providerDefaultUsed");
     return canonicalModelForTier(tier);
   }
 
   // Cross-provider tier search
-  const resolved = findModelForTier(tier, routingConfig, availableModelIds, allowCrossProvider);
+  const resolved = findModelForTier(tier, routingConfig, availableModelIds, allowCrossProvider, preferredModelId);
   if (resolved) {
     return normalizeResolvedTierModelId(resolved, tier, routingConfig);
   }
 
-  incrementLegacyTelemetry("legacy.providerDefaultUsed");
-  return canonicalModelForTier(tier);
+  const providerLocalFallback = findAvailableModelId(preferredModelId, availableModelIds)
+    ?? availableModelIds[0]
+    ?? canonicalModelForTier(tier);
+  return normalizeResolvedTierModelId(providerLocalFallback, tier, routingConfig);
 }
 
 // ─── Internal ────────────────────────────────────────────────────────────────
+
+function modelProvider(modelId: string): string | undefined {
+  const slash = modelId.indexOf("/");
+  return slash > 0 ? modelId.slice(0, slash) : undefined;
+}
+
+function findAvailableModelId(
+  preferredModelId: string | undefined,
+  availableModelIds: string[],
+): string | undefined {
+  if (!preferredModelId) return undefined;
+  if (availableModelIds.includes(preferredModelId)) return preferredModelId;
+
+  const preferredBare = bareModelId(preferredModelId);
+  if (!preferredBare) return undefined;
+  const preferredProvider = modelProvider(preferredModelId)?.toLowerCase();
+  if (preferredProvider) {
+    const providerMatch = availableModelIds.find(id =>
+      modelProvider(id)?.toLowerCase() === preferredProvider && bareModelId(id) === preferredBare
+    );
+    if (providerMatch) return providerMatch;
+  }
+
+  return availableModelIds.find(id => bareModelId(id) === preferredBare);
+}
+
+function modelSatisfiesTier(modelId: string, tier: ComplexityTier): boolean {
+  return tierOrdinal(getModelTier(modelId)) >= tierOrdinal(tier);
+}
+
+function findPreferredModelForTier(
+  tier: ComplexityTier,
+  availableModelIds: string[],
+  preferredModelId: string | undefined,
+): string | undefined {
+  const preferred = findAvailableModelId(preferredModelId, availableModelIds);
+  if (!preferred) return undefined;
+  return modelSatisfiesTier(preferred, tier) ? preferred : undefined;
+}
 
 /**
  * Check whether a model ID is present in the available models list.

@@ -117,15 +117,48 @@ function resolvePathGsdBrowserVersion(env: NodeJS.ProcessEnv): string | null {
   return cachedPathProbeVersion;
 }
 
+function resolveGsdBrowserNativeBinaryPath(launcherPath: string, platform: NodeJS.Platform = process.platform): string {
+  const binDir = resolve(launcherPath, "..");
+  const nativeName = platform === "win32" ? "gsd-browser.exe" : "gsd-browser-bin";
+  return resolve(binDir, nativeName);
+}
+
+function isNodeShLauncher(launcherPath: string): boolean {
+  try {
+    return readFileSync(launcherPath, "utf-8").startsWith("#!");
+  } catch {
+    // Non-text launchers (native binaries) are runnable without a sibling shim.
+    return false;
+  }
+}
+
+/**
+ * The npm package ships a node launcher that execs `gsd-browser-bin` beside it.
+ * pnpm can skip postinstall, leaving only the launcher — which exits immediately
+ * and surfaces as MCP "Connection closed". Treat that layout as unavailable.
+ */
+function isGsdBrowserPackageLauncherRunnable(launcherPath: string): boolean {
+  if (!existsSync(launcherPath)) return false;
+  const nativePath = resolveGsdBrowserNativeBinaryPath(launcherPath);
+  if (existsSync(nativePath)) return true;
+  return !isNodeShLauncher(launcherPath);
+}
+
 function shouldPreferPathGsdBrowser(env: NodeJS.ProcessEnv): boolean {
   const pathVersion = resolvePathGsdBrowserVersion(env);
   if (!pathVersion) return false;
 
   const bundledVersion = resolveBundledGsdBrowserPackageVersion();
-  return !bundledVersion || compareSemverLocal(pathVersion, bundledVersion) > 0;
+  if (!bundledVersion || compareSemverLocal(pathVersion, bundledVersion) > 0) {
+    return true;
+  }
+
+  // Same or newer bundled semver still loses when the package launcher cannot run.
+  const bundledLauncher = resolveBundledGsdBrowserLauncherPath(env);
+  return bundledLauncher !== null && !isGsdBrowserPackageLauncherRunnable(bundledLauncher);
 }
 
-export function resolveBundledGsdBrowserCliPath(env: NodeJS.ProcessEnv = process.env): string | null {
+function resolveBundledGsdBrowserLauncherPath(env: NodeJS.ProcessEnv = process.env): string | null {
   const explicit = resolveExplicitGsdBrowserCliPath(env);
   if (explicit) return explicit;
 
@@ -148,6 +181,12 @@ export function resolveBundledGsdBrowserCliPath(env: NodeJS.ProcessEnv = process
   }
 
   return null;
+}
+
+export function resolveBundledGsdBrowserCliPath(env: NodeJS.ProcessEnv = process.env): string | null {
+  const launcher = resolveBundledGsdBrowserLauncherPath(env);
+  if (!launcher || !isGsdBrowserPackageLauncherRunnable(launcher)) return null;
+  return launcher;
 }
 
 export type GsdBrowserCliAvailability =

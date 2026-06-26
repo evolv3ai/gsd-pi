@@ -45,6 +45,9 @@ test("formatConfigText provides a text fallback", () => {
 test("core handler routes show-config to overlay with text fallback", async () => {
   const notifications: Array<{ message: string; level: string }> = [];
   const ctx = {
+    modelRegistry: {
+      getAvailable: () => [],
+    },
     ui: {
       custom: async () => undefined,
       notify: (message: string, level: string) => {

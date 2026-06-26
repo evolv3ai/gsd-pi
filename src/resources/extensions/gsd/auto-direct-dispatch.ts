@@ -33,14 +33,27 @@ import { pauseAuto } from "./auto.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
 import { getUnitWorkflowDispatchReadinessError } from "./tool-contract.js";
 
+export function parseDirectDispatchPhase(raw: string): { phase: string; milestoneId?: string } {
+  const tokens = raw.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return { phase: "" };
+  const phase = tokens[0].toLowerCase();
+  const milestoneToken = tokens.find((token, index) => index > 0 && /^M\d/i.test(token));
+  return {
+    phase,
+    milestoneId: milestoneToken?.replace(/[.,;:!?]+$/, ""),
+  };
+}
+
 export async function dispatchDirectPhase(
   ctx: ExtensionCommandContext,
   pi: ExtensionAPI,
   phase: string,
   base: string,
+  opts: { milestoneId?: string } = {},
 ): Promise<void> {
+  const parsed = parseDirectDispatchPhase(phase);
   const state = await deriveState(base);
-  const mid = state.activeMilestone?.id;
+  const mid = opts.milestoneId ?? parsed.milestoneId ?? state.activeMilestone?.id;
   const midTitle = state.activeMilestone?.title ?? "";
 
   if (!mid) {
@@ -56,7 +69,7 @@ export async function dispatchDirectPhase(
   // though the milestone's actual code lives in the worktree.
   const dispatchBase = resolveCanonicalMilestoneRoot(base, mid);
 
-  const normalized = phase.toLowerCase();
+  const normalized = parsed.phase;
   let unitType: string;
   let unitId: string;
   let prompt: string;

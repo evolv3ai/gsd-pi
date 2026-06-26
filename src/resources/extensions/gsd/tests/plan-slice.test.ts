@@ -9,12 +9,11 @@ import { tmpdir } from 'node:os';
 import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask, getSlice, getSliceTasks, getTask, getGateResults, updateTaskStatus } from '../gsd-db.ts';
 import { handlePlanSlice } from '../tools/plan-slice.ts';
 import { parsePlan } from '../parsers-legacy.ts';
-import { parseTaskPlanFile } from '../files.ts';
 import { deriveState, invalidateStateCache } from '../state.ts';
 
 function makeTmpBase(): string {
   const base = mkdtempSync(join(tmpdir(), 'gsd-plan-slice-'));
-  mkdirSync(join(base, '.gsd', 'milestones', 'M001', 'slices', 'S02', 'tasks'), { recursive: true });
+  mkdirSync(join(base, '.gsd', 'phases', '01-test'), { recursive: true });
   mkdirSync(join(base, 'src', 'resources', 'extensions', 'gsd', 'tools'), { recursive: true });
   writeFileSync(join(base, 'src', 'resources', 'extensions', 'gsd', 'tools', 'plan-milestone.ts'), '// fixture\n', 'utf-8');
   writeFileSync(join(base, 'src', 'resources', 'extensions', 'gsd', 'tools', 'plan-task.ts'), '// fixture\n', 'utf-8');
@@ -91,17 +90,14 @@ test('handlePlanSlice writes slice/task planning state and renders plan artifact
     assert.deepEqual(slice?.target_repositories, ['project']);
     assert.deepEqual(tasks[0]?.target_repositories, ['project']);
 
-    const planPath = join(base, '.gsd', 'milestones', 'M001', 'slices', 'S02', 'S02-PLAN.md');
+    const planPath = join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md');
     assert.ok(existsSync(planPath), 'slice plan should be rendered to disk');
     const parsedPlan = parsePlan(readFileSync(planPath, 'utf-8'));
     assert.equal(parsedPlan.goal, 'Persist slice planning through the DB.');
     assert.equal(parsedPlan.tasks.length, 2);
     assert.equal(parsedPlan.tasks[0]?.id, 'T01');
 
-    const taskPlanPath = join(base, '.gsd', 'milestones', 'M001', 'slices', 'S02', 'tasks', 'T01-PLAN.md');
-    assert.ok(existsSync(taskPlanPath), 'task plan should be rendered to disk');
-    const taskPlan = parseTaskPlanFile(readFileSync(taskPlanPath, 'utf-8'));
-    assert.deepEqual(taskPlan.frontmatter.skills_used, []);
+    // Flat-phase: no per-task plan files — tasks are checkboxes inside the slice plan.
   } finally {
     cleanup(base);
   }
@@ -318,6 +314,9 @@ test('handlePlanSlice renders plan artifacts under worktree-local .gsd while usi
   const base = makeTmpBase();
   const worktree = join(base, '.gsd', 'worktrees', 'M001');
   mkdirSync(join(worktree, '.gsd'), { recursive: true });
+  // Mirror the project's phase dir into the worktree so resolveMilestonePath
+  // finds it and the renderer targets the correct flat-phase location.
+  mkdirSync(join(worktree, '.gsd', 'phases', '01-test'), { recursive: true });
   mkdirSync(join(worktree, 'src', 'resources', 'extensions', 'gsd', 'tools'), { recursive: true });
   writeFileSync(join(worktree, 'src', 'resources', 'extensions', 'gsd', 'tools', 'plan-milestone.ts'), '// fixture\n', 'utf-8');
   writeFileSync(join(worktree, 'src', 'resources', 'extensions', 'gsd', 'tools', 'plan-task.ts'), '// fixture\n', 'utf-8');
@@ -329,11 +328,41 @@ test('handlePlanSlice renders plan artifacts under worktree-local .gsd while usi
     const result = await handlePlanSlice(validParams(), worktree);
     assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
 
-    const worktreePlan = join(worktree, '.gsd', 'milestones', 'M001', 'slices', 'S02', 'S02-PLAN.md');
-    const projectPlan = join(base, '.gsd', 'milestones', 'M001', 'slices', 'S02', 'S02-PLAN.md');
+    const worktreePlan = join(worktree, '.gsd', 'phases', '01-test', '01-02-PLAN.md');
+    const projectPlan = join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md');
     assert.ok(existsSync(worktreePlan), 'slice plan should be rendered to worktree-local .gsd');
     assert.ok(!existsSync(projectPlan), 'slice plan should not be rendered to project .gsd');
     assert.equal(result.planPath, realpathSync(worktreePlan));
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanSlice does not regenerate unrelated completed-task summaries during planning', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    insertMilestone({ id: 'M001', title: 'Milestone', status: 'active' });
+    insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Finished slice', status: 'complete', demo: 'Existing work.' });
+    insertSlice({ id: 'S02', milestoneId: 'M001', title: 'Planning slice', status: 'pending', demo: 'Rendered plans exist.' });
+    insertTask({
+      id: 'T99',
+      sliceId: 'S01',
+      milestoneId: 'M001',
+      title: 'Already complete',
+      status: 'complete',
+      fullSummaryMd: '# T99 Summary\n\nAlready done.\n',
+    });
+
+    const unrelatedSummaryPath = join(base, '.gsd', 'phases', '01-test', 'T99-SUMMARY.md');
+    assert.equal(existsSync(unrelatedSummaryPath), false, 'fixture should start without unrelated summary projection');
+
+    const result = await handlePlanSlice(validParams(), base);
+    assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
+
+    assert.equal(existsSync(unrelatedSummaryPath), false, 'plan-slice should not flush all milestone summaries');
+    assert.ok(existsSync(join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md')), 'current slice plan still renders');
   } finally {
     cleanup(base);
   }
@@ -435,9 +464,10 @@ test('handlePlanSlice preserves sketch flag when render fails before artifacts e
     insertMilestone({ id: 'M001', title: 'Milestone', status: 'active' });
     insertSlice({ id: 'S02', milestoneId: 'M001', title: 'Planning slice', status: 'pending', demo: 'Rendered plans exist.', isSketch: true });
 
-    const sliceDir = join(base, '.gsd', 'milestones', 'M001', 'slices', 'S02');
-    rmSync(sliceDir, { recursive: true, force: true });
-    writeFileSync(sliceDir, 'not a directory', 'utf-8');
+    // Block the rendered plan path by creating a directory where the file would go.
+    // The renderer resolves M001/S02 → phases/01-test/01-02-PLAN.md; creating that
+    // path as a directory causes EISDIR on write → render fails → sketch flag preserved.
+    mkdirSync(join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md'), { recursive: true });
 
     const result = await handlePlanSlice(validParams(), base);
     assert.ok('error' in result);
@@ -470,7 +500,7 @@ test('handlePlanSlice leaves omitted enrichment fields empty instead of renderin
     assert.equal(slice?.integration_closure, '');
     assert.equal(slice?.observability_impact, '');
 
-    const planPath = join(base, '.gsd', 'milestones', 'M001', 'slices', 'S02', 'S02-PLAN.md');
+    const planPath = join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md');
     const content = readFileSync(planPath, 'utf-8');
     assert.doesNotMatch(content, /Not provided/i);
     assert.doesNotMatch(content, /^## Proof Level$/m);
@@ -644,8 +674,9 @@ test('handlePlanSlice surfaces render failures without changing parse-visible ta
 
   try {
     seedParentSlice();
-    const failingTaskPlanPath = join(base, '.gsd', 'milestones', 'M001', 'slices', 'S02', 'tasks', 'T01-PLAN.md');
-    writeFileSync(failingTaskPlanPath, '---\nestimated_steps: 1\nestimated_files: 1\nskills_used: []\n---\n\n# T01: Cached task\n', 'utf-8');
+    // Flat-phase: per-task plan files don't exist; simulate a write failure on the slice plan
+    const failingTaskPlanPath = join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md');
+    writeFileSync(failingTaskPlanPath, '---\nestimated_steps: 1\nestimated_files: 1\nskills_used: []\n---\n\n# Cached plan\n', 'utf-8');
     rmSync(failingTaskPlanPath, { force: true });
     mkdirSync(failingTaskPlanPath, { recursive: true });
 
@@ -683,7 +714,7 @@ test('handlePlanSlice reruns idempotently and refreshes parse-visible state', as
 
   try {
     seedParentSlice();
-    writeFileSync(join(base, '.gsd', 'milestones', 'M001', 'slices', 'S02', 'S02-PLAN.md'), '# S02: Cached\n\n**Goal:** old value\n\n## Tasks\n\n- [ ] **T01: Cached task**\n', 'utf-8');
+    writeFileSync(join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md'), '# S02: Cached\n\n**Goal:** old value\n\n## Tasks\n\n- [ ] **T01: Cached task**\n', 'utf-8');
 
     const first = await handlePlanSlice(validParams(), base);
     assert.ok(!('error' in first));
@@ -698,7 +729,7 @@ test('handlePlanSlice reruns idempotently and refreshes parse-visible state', as
     }, base);
     assert.ok(!('error' in second));
 
-    const parsedAfter = parsePlan(readFileSync(join(base, '.gsd', 'milestones', 'M001', 'slices', 'S02', 'S02-PLAN.md'), 'utf-8'));
+    const parsedAfter = parsePlan(readFileSync(join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md'), 'utf-8'));
     assert.equal(parsedAfter.goal, 'Updated goal from rerun.');
     const task = getTask('M001', 'S02', 'T01');
     assert.equal(task?.description, 'Updated slice handler description.');
@@ -724,8 +755,10 @@ test('handlePlanSlice removes omitted pending tasks when replanning a smaller ta
 
     const first = await handlePlanSlice(fourTaskPlan, base);
     assert.ok(!('error' in first), `unexpected error: ${'error' in first ? first.error : ''}`);
-    const staleTaskPlanPath = join(base, '.gsd', 'milestones', 'M001', 'slices', 'S02', 'tasks', 'T04-PLAN.md');
-    assert.ok(existsSync(staleTaskPlanPath), 'initial plan should render T04');
+    // In flat-phase mode tasks are checkboxes in the slice plan; no per-task plan files.
+    const slicePlanPath = join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md');
+    assert.ok(existsSync(slicePlanPath), 'initial plan should exist');
+    assert.match(readFileSync(slicePlanPath, 'utf-8'), /T04/, 'initial plan should contain T04');
 
     const second = await handlePlanSlice({
       ...validParams(),
@@ -735,7 +768,7 @@ test('handlePlanSlice removes omitted pending tasks when replanning a smaller ta
 
     assert.deepEqual(getSliceTasks('M001', 'S02').map((task) => task.id), ['T01', 'T02', 'T03']);
     assert.equal(getGateResults('M001', 'S02', 'task').some((gate) => gate.task_id === 'T04'), false);
-    assert.equal(existsSync(staleTaskPlanPath), false, 'omitted task plan artifact should be removed');
+    assert.doesNotMatch(readFileSync(slicePlanPath, 'utf-8'), /T04/, 'omitted T04 should be removed from plan');
   } finally {
     cleanup(base);
   }
@@ -758,8 +791,10 @@ test('handlePlanSlice rejects omitted completed tasks without changing slice or 
 
     const first = await handlePlanSlice(fourTaskPlan, base);
     assert.ok(!('error' in first), `unexpected error: ${'error' in first ? first.error : ''}`);
-    const staleTaskPlanPath = join(base, '.gsd', 'milestones', 'M001', 'slices', 'S02', 'tasks', 'T04-PLAN.md');
-    assert.ok(existsSync(staleTaskPlanPath), 'initial plan should render T04');
+    // In flat-phase mode tasks are checkboxes in the slice plan; no per-task plan files.
+    const slicePlanPathR = join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md');
+    assert.ok(existsSync(slicePlanPathR), 'initial plan should exist');
+    assert.match(readFileSync(slicePlanPathR, 'utf-8'), /T04/, 'initial plan should contain T04');
 
     updateTaskStatus('M001', 'S02', 'T04', 'complete', '2026-05-12T00:00:00.000Z');
     const tasksBefore = getSliceTasks('M001', 'S02');
@@ -775,7 +810,7 @@ test('handlePlanSlice rejects omitted completed tasks without changing slice or 
     assert.equal(getSlice('M001', 'S02')?.goal, 'Persist slice planning through the DB.');
     assert.deepEqual(getSliceTasks('M001', 'S02'), tasksBefore);
     assert.deepEqual(getGateResults('M001', 'S02', 'task'), gatesBefore);
-    assert.ok(existsSync(staleTaskPlanPath), 'completed task plan artifact should remain after rejected replan');
+    assert.match(readFileSync(slicePlanPathR, 'utf-8'), /T04/, 'completed task T04 should remain in plan after rejected replan');
   } finally {
     cleanup(base);
   }

@@ -526,16 +526,12 @@ test("workflow MCP launch config reaches mutation tools over stdio", async () =>
       ((sliceResult.content as Array<{ text?: string }>)?.[0])?.text ?? "",
       /Planned slice S01/,
     );
+    // Flat-phase: M001 title "Transport planning" → phases/01-transport-planning/01-01-PLAN.md
     assert.ok(
-      existsSync(join(projectRoot, ".gsd", "milestones", "M001", "slices", "S01", "S01-PLAN.md")),
+      existsSync(join(projectRoot, ".gsd", "phases", "01-transport-planning", "01-01-PLAN.md")),
       "expected slice plan artifact to be written through stdio MCP",
     );
-    assert.ok(
-      existsSync(
-        join(projectRoot, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01-PLAN.md"),
-      ),
-      "expected task plan artifact to be written through stdio MCP",
-    );
+    // Flat-phase: tasks are checkboxes in the slice plan file, no per-task plan files.
   } finally {
     await client.close().catch(() => {});
     rmSync(projectRoot, { recursive: true, force: true });

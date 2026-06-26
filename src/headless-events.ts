@@ -141,8 +141,28 @@ export function isInteractiveHeadlessTool(toolName: string | undefined): boolean
   return INTERACTIVE_HEADLESS_TOOLS.has(canonicalHeadlessToolName(toolName))
 }
 
-export function shouldArmHeadlessIdleTimeout(toolCallCount: number, interactiveToolCount: number): boolean {
-  return toolCallCount > 0 && interactiveToolCount === 0
+/**
+ * Decide whether to arm the headless idle-completion timer.
+ *
+ * Arms once at least one tool call has started (and no interactive tool —
+ * ask_user_questions / secure_env_collect — is still awaiting a human answer),
+ * so a multi-step command that pauses between tool calls still resolves.
+ *
+ * Also arms for *quick commands* that are handled entirely in the extension
+ * layer (e.g. `/gsd status`, `/gsd history`, `/gsd help`). These never enter
+ * the LLM agent loop, so they emit no `agent_end` / `execution_complete` and
+ * make zero tool calls. Without this branch the idle timer never arms, the
+ * completion promise never resolves, and the process exits with a spurious
+ * "cancelled" (11) code once the event loop drains. See live-regression
+ * scenario `headless status exits 0 on a seeded project`.
+ */
+export function shouldArmHeadlessIdleTimeout(
+  toolCallCount: number,
+  interactiveToolCount: number,
+  isQuickCommand = false,
+): boolean {
+  if (interactiveToolCount > 0) return false
+  return toolCallCount > 0 || isQuickCommand
 }
 
 export interface HeadlessTrackedEventLike {

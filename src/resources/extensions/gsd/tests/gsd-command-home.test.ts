@@ -3,7 +3,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -11,7 +11,17 @@ import { tmpdir } from "node:os";
 import { buildGsdHomeModel, showGsdHome } from "../gsd-command-home.ts";
 import { buildIdleMenuSummary, detectIdleMilestoneResidueHint } from "../closeout-wizard.ts";
 import { closeDatabase, insertMilestone, openDatabase } from "../gsd-db.ts";
+import { createWorktree } from "../worktree-manager.ts";
 import type { GSDState } from "../types.ts";
+
+function initGitRepo(base: string): void {
+  execFileSync("git", ["init", "-b", "main"], { cwd: base, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Test User"], { cwd: base, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: base, stdio: "ignore" });
+  writeFileSync(join(base, "README.md"), "# test\n", "utf-8");
+  execFileSync("git", ["add", "README.md"], { cwd: base, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "init"], { cwd: base, stdio: "ignore" });
+}
 
 function baseState(overrides: Partial<GSDState> = {}): GSDState {
   return {
@@ -160,13 +170,13 @@ test("detectIdleMilestoneResidueHint reports missing workflow database in a git 
 test("detectIdleMilestoneResidueHint matches unique-format milestone ids (M###-abc123)", () => {
   const base = mkdtempSync(join(tmpdir(), "gsd-home-residue-unique-"));
   try {
-    execFileSync("git", ["init", "-b", "main"], { cwd: base, stdio: "ignore" });
-    mkdirSync(join(base, ".gsd-worktrees", "M042-abc123"), { recursive: true });
+    initGitRepo(base);
+    createWorktree(base, "M042-abc123");
     mkdirSync(join(base, ".gsd"), { recursive: true });
 
     openDatabase(join(base, ".gsd", "gsd.db"));
     try {
-      // Closed milestone with lingering worktree dir — classic residue.
+      // Closed milestone with a live git worktree still registered — classic residue.
       insertMilestone({ id: "M042-abc123", title: "Closed Unique", status: "complete" });
       const hint = detectIdleMilestoneResidueHint(base);
       assert.ok(hint, "unique-format closed milestone with worktree should be detected");
@@ -180,12 +190,35 @@ test("detectIdleMilestoneResidueHint matches unique-format milestone ids (M###-a
   }
 });
 
+test("detectIdleMilestoneResidueHint prunes bg-shell ghost dirs and does not warn", () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-home-residue-ghost-"));
+  try {
+    initGitRepo(base);
+    const ghostDir = join(base, ".gsd-worktrees", "M009");
+    mkdirSync(join(ghostDir, ".bg-shell"), { recursive: true });
+    writeFileSync(join(ghostDir, ".bg-shell", "manifest.json"), "[]\n", "utf-8");
+    mkdirSync(join(base, ".gsd"), { recursive: true });
+
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    try {
+      insertMilestone({ id: "M009", title: "Search Tasks", status: "complete" });
+      const hint = detectIdleMilestoneResidueHint(base);
+      assert.equal(hint, null, "bg-shell-only ghost worktree dir must not trigger residue hint");
+      assert.equal(existsSync(ghostDir), false, "ghost worktree dir should be auto-pruned");
+    } finally {
+      closeDatabase();
+    }
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test("detectIdleMilestoneResidueHint ignores in-flight milestones with worktree artifacts", () => {
   const base = mkdtempSync(join(tmpdir(), "gsd-home-residue-active-"));
   try {
-    execFileSync("git", ["init", "-b", "main"], { cwd: base, stdio: "ignore" });
-    mkdirSync(join(base, ".gsd-worktrees", "M001"), { recursive: true });
-    mkdirSync(join(base, ".gsd-worktrees", "M002-abc123"), { recursive: true });
+    initGitRepo(base);
+    createWorktree(base, "M001");
+    createWorktree(base, "M002-abc123");
     mkdirSync(join(base, ".gsd"), { recursive: true });
 
     openDatabase(join(base, ".gsd", "gsd.db"));

@@ -63,6 +63,10 @@ Keep about **{{verificationBudget}}** for verification and summary. If context i
 
 ## Completion Contract
 
+### Closeout messaging (auto-mode)
+
+You write task closeout artifacts; **GSD auto-mode** decides when the task is actually **done**. Never say "Task {{taskId}} complete" in this unit — not even after `gsd_task_complete` succeeds. GSD announces completion only after post-unit verification passes.
+
 - If the plan is fundamentally invalid, set `blocker_discovered: true` in the summary and explain.
 - For downstream-impacting ambiguity that cannot be resolved from code, plans, or decisions, include an `escalation` object with question, options, recommendation, rationale, and `continueWithDefault`.
 - Capture meaningful architecture/pattern/observability decisions with `gsd_capture_thought` (or MCP-scoped `mcp__...__gsd_capture_thought`) when workflow MCP tools are presented; capture non-obvious gotchas or conventions only when they save future investigation.
@@ -77,4 +81,4 @@ Keep about **{{verificationBudget}}** for verification and summary. If context i
 
 **You MUST call `gsd_task_complete` before finishing, including when the stale-path safety rule stops execution.**
 
-When done, say: "Task {{taskId}} complete." Say this exactly once — if you already said it in a prior message, do not repeat it.
+When done, say: "Task {{taskId}} closeout submitted." Do not say the task is complete. Say this exactly once — if you already said it in a prior message, do not repeat it.

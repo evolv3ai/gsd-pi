@@ -40,6 +40,7 @@ function createMockHost() {
 		statusContainer: {},
 		chatContainer: {},
 		pinnedMessageContainer: {},
+		headerContainer: { clear: () => {}, addChild: () => {} },
 		settingsManager: {},
 		pendingTools: new Map(),
 		toolOutputExpanded: false,
@@ -245,6 +246,8 @@ function createHost(options: HostOptions = {}) {
 		getContextPercent() {
 			return undefined;
 		},
+		headerContainer: { clear() {}, addChild() {} },
+		clearBlockingError() {},
 	};
 
 	setupEditorSubmitHandler(host as any);

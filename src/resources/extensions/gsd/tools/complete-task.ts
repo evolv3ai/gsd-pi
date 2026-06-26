@@ -30,7 +30,7 @@ import {
   getPendingGatesForTurn,
 } from "../gsd-db.js";
 import { getGatesForTurn } from "../gate-registry.js";
-import { gsdProjectionRoot, clearPathCache } from "../paths.js";
+import { gsdProjectionRoot, clearPathCache, resolveMilestonePath, resolveSlicePath } from "../paths.js";
 import { resolveCanonicalMilestoneRoot } from "../worktree-manager.js";
 import { checkOwnership, taskUnitKey } from "../unit-ownership.js";
 import { saveFile, clearParseCache } from "../files.js";
@@ -76,6 +76,20 @@ function taskSummaryPath(
   sliceId: string,
   taskId: string,
 ): string {
+  // Layout-aware: avoid creating a milestones/ directory for flat-phase projects.
+  // When that directory is created as a side effect, milestonesDir() detects it as
+  // a legacy layout and breaks all subsequent path resolution for the session.
+  const slicePath = resolveSlicePath(basePath, milestoneId, sliceId);
+  const phaseDir = resolveMilestonePath(basePath, milestoneId);
+  if (slicePath && phaseDir && slicePath !== phaseDir) {
+    // Legacy layout: the slice has its own slices/SID/ subdir → tasks/ subdir
+    return join(slicePath, "tasks", `${taskId}-SUMMARY.md`);
+  }
+  if (phaseDir) {
+    // Flat-phase: task summaries go in the phase dir (no tasks/ subdir)
+    return join(phaseDir, `${taskId}-SUMMARY.md`);
+  }
+  // Fallback: legacy hardcoded path (milestone/slice dir not on disk yet)
   return join(
     gsdProjectionRoot(basePath),
     "milestones",

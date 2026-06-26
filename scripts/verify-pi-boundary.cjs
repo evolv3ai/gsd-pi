@@ -44,6 +44,8 @@ const ALLOWLIST = new Set([
   join(ROOT, 'packages/pi-coding-agent/src/tests/system-prompt-file-safety.test.ts'),
   join(ROOT, 'packages/pi-coding-agent/src/tests/system-prompt-cache-stability.test.ts'),
   join(ROOT, 'packages/pi-coding-agent/src/tests/path-display.test.ts'),
+  join(ROOT, 'packages/pi-coding-agent/src/tests/harness.test.ts'),
+  join(ROOT, 'packages/pi-coding-agent/src/tests/utilities.test.ts'),
 ])
 
 function walk(dir, fn) {

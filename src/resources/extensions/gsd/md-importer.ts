@@ -5,7 +5,7 @@
 // Exports: parseDecisionsTable, parseRequirementsSections, migrateFromMarkdown
 
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, basename } from 'node:path';
 import type { Decision, Requirement } from './types.js';
 import {
   upsertDecision,
@@ -24,13 +24,14 @@ import {
   resolveGsdRootFile,
   resolveMilestoneFile,
   resolveSliceFile,
-  resolveSlicePath,
   resolveTasksDir,
-  milestonesDir,
+  legacyMilestonesDir,
   gsdRoot,
   resolveTaskFiles,
+  resolveMilestonePath,
 } from './paths.js';
 import { findMilestoneIds } from './guided-flow.js';
+import { milestoneIdToPhaseNum } from './layout-policy.js';
 import { parseRoadmap, parsePlan } from './parsers-legacy.js';
 import { parseContextDependsOn } from './files.js';
 import { logWarning } from './workflow-logger.js';
@@ -359,75 +360,220 @@ function importHierarchyArtifacts(gsdDir: string): number {
     }
   }
 
-  // Walk milestones
+  // Walk phases (flat-phase layout: phases/NN-slug/, legacy: milestones/M001/)
   const milestoneIds = findMilestoneIds(gsdDir);
-  const msDir = milestonesDir(gsdDir);
+  const legacyDir = legacyMilestonesDir(gsdDir);
 
   for (const milestoneId of milestoneIds) {
-    // Find the actual milestone directory name (handles legacy naming)
-    const milestoneDirName = findDirByPrefix(msDir, milestoneId);
-    if (!milestoneDirName) continue;
-    const milestoneFullPath = join(msDir, milestoneDirName);
+    // Use resolveMilestonePath so canonical-name / newest-dir selection matches
+    // the same logic used by the renderer and reconciler, preventing import and
+    // render from landing on different phase trees for the same milestone.
+    const resolvedPhaseFullPath = resolveMilestonePath(gsdDir, milestoneId);
 
-    // Milestone-level files
-    count += importFilesAtLevel(
-      milestoneFullPath,
-      milestoneId,
+    if (!resolvedPhaseFullPath) {
+      // Last resort: findDirByPrefix for legacy dirs
+      const milestoneDirName = findDirByPrefix(legacyDir, milestoneId);
+      if (!milestoneDirName) continue;
+      count += importLegacyMilestoneArtifacts(
+        join(legacyDir, milestoneDirName),
+        milestoneDirName,
+        milestoneId,
+      );
+      continue;
+    }
+
+    // Determine if this is a legacy (milestones/) or flat-phase (phases/) dir.
+    const legacyDirNorm = legacyDir.replace(/\\/g, "/");
+    const resolvedNorm = resolvedPhaseFullPath.replace(/\\/g, "/");
+    const isLegacyResolved = resolvedNorm.startsWith(legacyDirNorm + "/") || resolvedNorm === legacyDirNorm;
+
+    const phaseDirName = basename(resolvedPhaseFullPath);
+    if (isLegacyResolved) {
+      count += importLegacyMilestoneArtifacts(resolvedPhaseFullPath, phaseDirName, milestoneId);
+      continue;
+    }
+    const phaseFullPath = resolvedPhaseFullPath;
+    const phaseNum = milestoneIdToPhaseNum(milestoneId);
+
+    // Phase-level files (flat-phase: NN-SUFFIX.md, legacy: M001-SUFFIX.md)
+    const phasePrefix = `${String(phaseNum).padStart(2, "0")}`;
+    const artifactBase = `phases/${phaseDirName}`;
+    let phaseArtifacts = importFilesAtLevel(
+      phaseFullPath,
+      phasePrefix,
       MILESTONE_SUFFIXES,
-      `milestones/${milestoneDirName}`,
+      artifactBase,
       milestoneId,
       null,
       null,
     );
-
-    // Walk slices
-    const slicesDir = join(milestoneFullPath, 'slices');
-    if (!existsSync(slicesDir)) continue;
-
-    const sliceDirs = readdirSync(slicesDir, { withFileTypes: true })
-      .filter(d => d.isDirectory() && /^S\d+/.test(d.name))
-      .map(d => d.name)
-      .sort();
-
-    for (const sliceDirName of sliceDirs) {
-      const sliceId = sliceDirName.match(/^(S\d+)/)?.[1] ?? sliceDirName;
-      const sliceFullPath = join(slicesDir, sliceDirName);
-
-      // Slice-level files
-      count += importFilesAtLevel(
-        sliceFullPath,
-        sliceId,
-        SLICE_SUFFIXES,
-        `milestones/${milestoneDirName}/slices/${sliceDirName}`,
+    if (phaseArtifacts === 0) {
+      phaseArtifacts = importFilesAtLevel(
+        phaseFullPath,
         milestoneId,
-        sliceId,
+        MILESTONE_SUFFIXES,
+        artifactBase,
+        milestoneId,
+        null,
         null,
       );
+    }
+    count += phaseArtifacts;
 
-      // Walk tasks
-      const tasksDir = join(sliceFullPath, 'tasks');
-      if (!existsSync(tasksDir)) continue;
+    // Flat-phase: plan files are NN-MM-SUFFIX.md inside the phase dir.
+    // Also check legacy slices/ subdir for backward compat.
+    const planFiles = readdirSync(phaseFullPath, { withFileTypes: true })
+      .filter(f => f.isFile() && /^\d+-\d+-/.test(f.name))
+      .map(f => f.name)
+      .sort();
 
-      for (const suffix of TASK_SUFFIXES) {
-        const taskFiles = resolveTaskFiles(tasksDir, suffix);
-        for (const taskFileName of taskFiles) {
-          const taskId = taskFileName.match(/^(T\d+)/)?.[1] ?? null;
-          const taskFilePath = join(tasksDir, taskFileName);
-          if (!existsSync(taskFilePath)) continue;
+    for (const planFile of planFiles) {
+      const planMatch = planFile.match(/^\d+-(\d+)-(\w+)\.md$/i);
+      if (!planMatch) continue;
+      const planNum = parseInt(planMatch[1]!, 10);
+      const sliceId = `S${String(planNum).padStart(2, '0')}`;
+      const suffix = planMatch[2]!.toUpperCase();
+      const filePath = join(phaseFullPath, planFile);
+      if (!existsSync(filePath)) continue;
 
-          const content = readFileSync(taskFilePath, 'utf-8');
-          const relPath = `milestones/${milestoneDirName}/slices/${sliceDirName}/tasks/${taskFileName}`;
+      const content = readFileSync(filePath, 'utf-8');
+      insertArtifact({
+        path: `${artifactBase}/${planFile}`,
+        artifact_type: suffix,
+        milestone_id: milestoneId,
+        slice_id: sliceId,
+        task_id: null,
+        full_content: content,
+      });
+      count++;
+    }
 
-          insertArtifact({
-            path: relPath,
-            artifact_type: suffix,
-            milestone_id: milestoneId,
-            slice_id: sliceId,
-            task_id: taskId,
-            full_content: content,
-          });
-          count++;
+    // Legacy fallback: walk slices/ subdir if it exists
+    const slicesDir = join(phaseFullPath, 'slices');
+    if (existsSync(slicesDir)) {
+      const sliceDirs = readdirSync(slicesDir, { withFileTypes: true })
+        .filter(d => d.isDirectory() && /^S\d+/.test(d.name))
+        .map(d => d.name)
+        .sort();
+
+      for (const sliceDirName of sliceDirs) {
+        const sliceId = sliceDirName.match(/^(S\d+)/)?.[1] ?? sliceDirName;
+        const sliceFullPath = join(slicesDir, sliceDirName);
+
+        count += importFilesAtLevel(
+          sliceFullPath,
+          sliceId,
+          SLICE_SUFFIXES,
+          `phases/${phaseDirName}/slices/${sliceDirName}`,
+          milestoneId,
+          sliceId,
+          null,
+        );
+
+        // Legacy tasks walk
+        const tasksDir = join(sliceFullPath, 'tasks');
+        if (!existsSync(tasksDir)) continue;
+
+        for (const suffix of TASK_SUFFIXES) {
+          const taskFiles = resolveTaskFiles(tasksDir, suffix);
+          for (const taskFileName of taskFiles) {
+            const taskId = taskFileName.match(/^(T\d+)/)?.[1] ?? null;
+            const taskFilePath = join(tasksDir, taskFileName);
+            if (!existsSync(taskFilePath)) continue;
+
+            const content = readFileSync(taskFilePath, 'utf-8');
+            const relPath = `phases/${phaseDirName}/slices/${sliceDirName}/tasks/${taskFileName}`;
+
+            insertArtifact({
+              path: relPath,
+              artifact_type: suffix,
+              milestone_id: milestoneId,
+              slice_id: sliceId,
+              task_id: taskId,
+              full_content: content,
+            });
+            count++;
+          }
         }
+      }
+    }
+
+    // Partial migration may leave nested milestones/M00N/ content alongside phases/.
+    const milestoneDirName = findDirByPrefix(legacyDir, milestoneId);
+    if (milestoneDirName) {
+      count += importLegacyMilestoneArtifacts(
+        join(legacyDir, milestoneDirName),
+        milestoneDirName,
+        milestoneId,
+      );
+    }
+  }
+
+  return count;
+}
+
+/** Walk a pre-flat-phase milestones/M001/ tree when no phases/NN-slug dir exists. */
+function importLegacyMilestoneArtifacts(
+  milestoneFullPath: string,
+  milestoneDirName: string,
+  milestoneId: string,
+): number {
+  let count = 0;
+
+  count += importFilesAtLevel(
+    milestoneFullPath,
+    milestoneId,
+    MILESTONE_SUFFIXES,
+    `milestones/${milestoneDirName}`,
+    milestoneId,
+    null,
+    null,
+  );
+
+  const slicesDir = join(milestoneFullPath, 'slices');
+  if (!existsSync(slicesDir)) return count;
+
+  const sliceDirs = readdirSync(slicesDir, { withFileTypes: true })
+    .filter(d => d.isDirectory() && /^S\d+/.test(d.name))
+    .map(d => d.name)
+    .sort();
+
+  for (const sliceDirName of sliceDirs) {
+    const sliceId = sliceDirName.match(/^(S\d+)/)?.[1] ?? sliceDirName;
+    const sliceFullPath = join(slicesDir, sliceDirName);
+
+    count += importFilesAtLevel(
+      sliceFullPath,
+      sliceId,
+      SLICE_SUFFIXES,
+      `milestones/${milestoneDirName}/slices/${sliceDirName}`,
+      milestoneId,
+      sliceId,
+      null,
+    );
+
+    const tasksDir = join(sliceFullPath, 'tasks');
+    if (!existsSync(tasksDir)) continue;
+
+    for (const suffix of TASK_SUFFIXES) {
+      const taskFiles = resolveTaskFiles(tasksDir, suffix);
+      for (const taskFileName of taskFiles) {
+        const taskId = taskFileName.match(/^(T\d+)/)?.[1] ?? null;
+        const taskFilePath = join(tasksDir, taskFileName);
+        if (!existsSync(taskFilePath)) continue;
+
+        const content = readFileSync(taskFilePath, 'utf-8');
+        const relPath = `milestones/${milestoneDirName}/slices/${sliceDirName}/tasks/${taskFileName}`;
+
+        insertArtifact({
+          path: relPath,
+          artifact_type: suffix,
+          milestone_id: milestoneId,
+          slice_id: sliceId,
+          task_id: taskId,
+          full_content: content,
+        });
+        count++;
       }
     }
   }
@@ -504,9 +650,10 @@ function findFileByPrefixAndSuffix(dir: string, idPrefix: string, suffix: string
     const target = `${idPrefix}-${suffix}.md`.toUpperCase();
     const direct = entries.find(e => e.toUpperCase() === target);
     if (direct) return direct;
-    // Legacy: ID-DESCRIPTOR-SUFFIX.md
+    // Legacy: ID-DESCRIPTOR-SUFFIX.md — exclude double-numbered (NN-NN-*) slice
+    // files so a phase-prefix like "01" never matches a slice file "01-01-SUMMARY.md".
     const pattern = new RegExp(`^${idPrefix}-.*-${suffix}\\.md$`, 'i');
-    const match = entries.find(e => pattern.test(e));
+    const match = entries.find(e => pattern.test(e) && !/^\d+-\d+-/.test(e));
     return match ?? null;
   } catch {
     return null;
@@ -669,9 +816,11 @@ export function migrateHierarchyToDb(basePath: string): {
         // Per K002: use 'complete' not 'done'
         let taskStatus: string = taskEntry.done ? 'complete' : 'pending';
 
-        // Pre-migration consistency: if task is marked done in the plan but has
-        // no summary file on disk, import as 'pending' so it gets re-executed
-        // rather than silently importing bad state as the new DB authority.
+        // Pre-migration consistency (legacy layout only): if a task is marked
+        // done but has no per-task SUMMARY.md, import it as pending so it gets
+        // re-executed rather than silently entering the DB as complete.
+        // Flat-phase has no per-task summary files by design — the checkbox
+        // state is the authoritative completion signal and is imported as-is.
         if (taskStatus === 'complete') {
           const tDir = resolveTasksDir(basePath, milestoneId, sliceEntry.id);
           if (tDir) {
@@ -709,10 +858,11 @@ export function migrateHierarchyToDb(basePath: string): {
         const sliceSummaryPath = resolveSliceFile(basePath, milestoneId, sliceEntry.id, 'SUMMARY');
         const hasSliceSummary = sliceSummaryPath !== null && existsSync(sliceSummaryPath);
         const allTasksDone = plan.tasks.length > 0 && plan.tasks.every(t => {
+          if (!t.done) return false;
           const tDir = resolveTasksDir(basePath, milestoneId, sliceEntry.id);
-          if (!tDir) return t.done;
-          const summaryFile = join(tDir, `${t.id}-SUMMARY.md`);
-          return t.done && existsSync(summaryFile);
+          // Flat-phase has no per-task summary files — checkbox state is authoritative.
+          if (!tDir) return true;
+          return existsSync(join(tDir, `${t.id}-SUMMARY.md`));
         });
         if (allTasksDone && hasSliceSummary) {
           if (_getAdapter()) {

@@ -496,13 +496,100 @@ describe('runMcpServerCli', () => {
       isOrphaned: () => true,
     });
 
-    assert.equal(intervals.length, 1);
+    assert.equal(intervals.length, 2);
     stdin.write('{"jsonrpc":"2.0","method":"initialize"}\n');
     now = 1_000;
-    intervals[0]();
+    for (const tick of intervals) tick();
 
     assert.ok(!calls.includes('exit:0'));
     assert.ok(!calls.includes('unregister:/workspace/project'));
+  });
+
+  test('self-terminates on parent loss once stdin goes idle (#783)', async () => {
+    const calls: string[] = [];
+    const intervals: Array<() => void> = [];
+    const stdin = new PassThrough();
+    let now = 0;
+    let resolveExit!: (code: number) => void;
+    const exitPromise = new Promise<number>((resolve) => {
+      resolveExit = resolve;
+    });
+
+    await runMcpServerCli({
+      cwd: () => '/workspace/project',
+      env: {},
+      exit(code) {
+        calls.push(`exit:${code}`);
+        resolveExit(code);
+        return undefined as never;
+      },
+      loadStoredCredentialEnvKeys() {},
+      registerMcpInstance(projectDir) {
+        calls.push(`register:${projectDir}`);
+      },
+      sweepProjectOrphanMcpServers() {},
+      unregisterMcpInstance(projectDir) {
+        calls.push(`unregister:${projectDir}`);
+      },
+      createSessionManager() {
+        return {
+          async cleanup() {
+            calls.push('cleanup-session-manager');
+          },
+        };
+      },
+      async createMcpServer() {
+        return {
+          server: {
+            async connect() {
+              calls.push('connect');
+            },
+            async close() {
+              calls.push('close-server');
+            },
+          },
+        };
+      },
+      async importStdioServerTransport() {
+        return {
+          StdioServerTransport: class {},
+        };
+      },
+      warmWorkflowToolBridges() {},
+      stdin,
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      onSignal() {},
+      now: () => now,
+      setInterval(callback: Parameters<typeof setInterval>[0]) {
+        intervals.push(callback as () => void);
+        return { unref() {} } as ReturnType<typeof setInterval>;
+      },
+      clearInterval() {
+        calls.push('clear-interval');
+      },
+      isOrphaned: () => true,
+    });
+
+    // Two timers are scheduled: the idle watchdog and the orphan monitor.
+    assert.equal(intervals.length, 2);
+
+    // First, an active session must NOT exit even though the parent is gone.
+    stdin.write('{"jsonrpc":"2.0","method":"initialize"}\n');
+    now = 1_000;
+    for (const tick of intervals) tick();
+    assert.ok(!calls.includes('exit:0'), 'active session must survive parent loss');
+
+    // Then, once stdin has been idle past the 5-minute gate, the orphan monitor
+    // self-terminates the process — independent of the external sweep.
+    now = 1_000 + 6 * 60 * 1000;
+    for (const tick of intervals) tick();
+
+    assert.equal(await waitFor(exitPromise), 0);
+    assert.ok(calls.includes('unregister:/workspace/project'));
+    assert.ok(calls.includes('cleanup-session-manager'));
+    assert.ok(calls.includes('close-server'));
+    assert.ok(calls.includes('exit:0'));
   });
 
   test('exits shutdown when server close hangs', async () => {

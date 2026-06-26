@@ -7,6 +7,7 @@
 
 import { isAnthropicApi } from "@gsd/pi-ai";
 import { resolveSearchProviderFromPreferences } from "../gsd/preferences.js";
+import { resolveSearchProvider } from "./provider.js";
 
 /** Tool names for the Brave-backed custom search tools */
 export const BRAVE_TOOL_NAMES = ["search-the-web", "search_and_read"];
@@ -194,11 +195,22 @@ export function registerNativeSearchHooks(pi: NativeSearchPI): { getIsAnthropic:
         active.filter((t: string) => !CUSTOM_SEARCH_TOOL_NAMES.includes(t))
       );
     } else if (!isAnthropicProvider && wasAnthropic) {
-      // Switching away from Anthropic — re-enable custom search tools (they
-      // were disabled while native search was active). If keys are missing,
-      // user sees the error rather than tools silently vanishing.
+      // Switching away from Anthropic — re-enable custom search tools that were
+      // disabled while native search was active. Only re-add the Brave/Tavily/
+      // Ollama-backed tools when a provider key is actually configured: without
+      // a key they can only return an auth error, and re-adding their names
+      // would advertise a tool the model cannot use (and, when unregistered,
+      // leak a schema-less phantom name into the tool surface). google_search
+      // is owned by its own extension (which now gates its registration on
+      // Gemini creds); re-adding its name here is harmless either way — it
+      // activates if registered, or is dropped as a no-op if not.
       const active = pi.getActiveTools();
-      const toAdd = CUSTOM_SEARCH_TOOL_NAMES.filter((t) => !active.includes(t));
+      const providerConfigured = resolveSearchProvider() !== null;
+      const toAdd = CUSTOM_SEARCH_TOOL_NAMES.filter((t) => {
+        if (active.includes(t)) return false;
+        if (BRAVE_TOOL_NAMES.includes(t)) return providerConfigured;
+        return true;
+      });
       if (toAdd.length > 0) {
         pi.setActiveTools([...active, ...toAdd]);
       }

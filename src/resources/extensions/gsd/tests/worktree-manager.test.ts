@@ -14,6 +14,7 @@ import {
   getWorktreeLog,
   worktreeBranchName,
   worktreePath,
+  pruneEphemeralGhostWorktreeDirectories,
 } from "../worktree-manager.ts";
 
 function run(command: string, cwd: string): string {
@@ -343,5 +344,40 @@ describe("removeWorktree — missing worktree", () => {
       () => removeWorktree(base, "nonexistent", { deleteBranch: true }),
       "missing branch should be treated as already cleaned up",
     );
+  });
+});
+
+describe("pruneEphemeralGhostWorktreeDirectories", () => {
+  let base: string;
+  beforeEach(() => { base = makeBaseRepo(); });
+  afterEach(() => { rmSync(base, { recursive: true, force: true }); });
+
+  test("removes bg-shell-only ghost milestone directories", () => {
+    const ghostDir = join(base, ".gsd-worktrees", "M009");
+    mkdirSync(join(ghostDir, ".bg-shell"), { recursive: true });
+    writeFileSync(join(ghostDir, ".bg-shell", "manifest.json"), "[]\n", "utf-8");
+
+    const removed = pruneEphemeralGhostWorktreeDirectories(base);
+    assert.deepEqual(removed, [ghostDir]);
+    assert.ok(!existsSync(ghostDir));
+  });
+
+  test("preserves registered git worktrees", () => {
+    createWorktree(base, "M001");
+    const livePath = worktreePath(base, "M001");
+
+    const removed = pruneEphemeralGhostWorktreeDirectories(base);
+    assert.deepEqual(removed, []);
+    assert.ok(existsSync(livePath));
+  });
+
+  test("preserves unregistered dirs with source content", () => {
+    const staleDir = join(base, ".gsd-worktrees", "M020");
+    mkdirSync(staleDir, { recursive: true });
+    writeFileSync(join(staleDir, "orphan.txt"), "salvage me\n", "utf-8");
+
+    const removed = pruneEphemeralGhostWorktreeDirectories(base);
+    assert.deepEqual(removed, []);
+    assert.ok(existsSync(staleDir));
   });
 });

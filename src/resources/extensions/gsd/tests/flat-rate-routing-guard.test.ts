@@ -51,6 +51,7 @@ describe("flat-rate provider routing guard (#3453)", () => {
         join(tempProject, ".gsd", "PREFERENCES.md"),
         [
           "---",
+          "token_profile: burn-max",
           "dynamic_routing:",
           "  enabled: true",
           "  tier_models:",
@@ -231,7 +232,7 @@ describe("flat-rate routing opt-in (#4386)", () => {
       mkdirSync(join(tempProject, ".gsd"), { recursive: true });
       writeFileSync(
         join(tempProject, ".gsd", "PREFERENCES.md"),
-        ["---", "version: 1", prefsYaml, "---"].join("\n"),
+        ["---", "version: 1", "token_profile: burn-max", prefsYaml, "---"].join("\n"),
         "utf-8",
       );
       process.env.GSD_HOME = tempGsdHome;

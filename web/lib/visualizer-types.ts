@@ -116,6 +116,22 @@ export interface KnowledgeInfo {
   exists: boolean
 }
 
+export interface VisualizerMemoryEntry {
+  id: string
+  category: string
+  content: string
+  confidence: number
+  hitCount: number
+  scope: string
+  tags: string[]
+  updatedAt: string
+}
+
+export interface MemoryInfo {
+  entries: VisualizerMemoryEntry[]
+  totalCount: number
+}
+
 export type CaptureClassification = "quick-task" | "inject" | "defer" | "replan" | "note" | "stop" | "backtrack"
 
 export interface CaptureEntry {
@@ -294,6 +310,7 @@ export interface VisualizerData {
   changelog: ChangelogInfo
   sliceVerifications: SliceVerification[]
   knowledge: KnowledgeInfo
+  memories: MemoryInfo
   captures: CapturesInfo
   health: HealthInfo
   discussion: VisualizerDiscussionState[]

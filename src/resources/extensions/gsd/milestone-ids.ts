@@ -6,9 +6,11 @@
  */
 
 import { randomInt } from "node:crypto";
+import { join } from "node:path";
 import { logWarning } from "./workflow-logger.js";
 import { readdirSync, existsSync } from "node:fs";
-import { milestonesDir } from "./paths.js";
+import { milestonesDir, gsdProjectionRoot } from "./paths.js";
+import { LAYOUT_SEGMENTS } from "./layout-policy.js";
 import { loadQueueOrder, sortByQueueOrder } from "./queue-order.js";
 import { getErrorMessage } from "./error-utils.js";
 
@@ -139,26 +141,54 @@ export function clearReservedMilestoneIds(): void {
 
 // ─── Discovery ──────────────────────────────────────────────────────────────
 
+function scanMilestoneIdsFromDir(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => {
+      // Legacy layout: exact M001 or M001-abcdef directory name
+      if (MILESTONE_ID_RE.test(d.name)) {
+        return d.name;
+      }
+      // Legacy layout: M001-abcdef-slug descriptor directories
+      const legacyMatch = d.name.match(/^(M\d{3}(?:-[a-z0-9]{6})?)-/);
+      if (legacyMatch) {
+        return legacyMatch[1]!;
+      }
+      // Flat-phase layout: NN-slug → M00N (slug may encode M00N or M00N-abcdef)
+      const flatMatch = d.name.match(/^(\d+)-(.+)$/);
+      if (flatMatch) {
+        const phaseNum = parseInt(flatMatch[1]!, 10);
+        const fromSlug = normalizeDiscussMilestoneId(flatMatch[2]!);
+        if (MILESTONE_ID_RE.test(fromSlug)) {
+          return fromSlug;
+        }
+        return `M${String(phaseNum).padStart(3, "0")}`;
+      }
+      return null;
+    })
+    .filter((id): id is string => id !== null);
+}
+
 /** Scan the milestones directory and return IDs sorted by queue order (or numeric fallback). */
 export function findMilestoneIds(basePath: string): string[] {
-  const dir = milestonesDir(basePath);
-  try {
-    const ids = readdirSync(dir, { withFileTypes: true })
-      .filter((d) => d.isDirectory())
-      .map((d) => {
-        const match = d.name.match(/^(M\d+(?:-[a-z0-9]{6})?)/);
-        return match ? match[1] : null;
-      })
-      .filter((id): id is string => id !== null);
+  const root = gsdProjectionRoot(basePath);
+  const dirs = [milestonesDir(basePath)];
+  const legacyDir = join(root, "milestones");
+  if (legacyDir !== dirs[0] && existsSync(legacyDir)) dirs.push(legacyDir);
+  const phasesDir = join(root, LAYOUT_SEGMENTS.level1);
+  if (phasesDir !== dirs[0] && existsSync(phasesDir)) dirs.push(phasesDir);
 
-    // Apply custom queue order if available, else fall back to numeric sort
-    const customOrder = loadQueueOrder(basePath);
-    return sortByQueueOrder(ids, customOrder);
-  } catch (err) {
-    // Log why milestone scanning failed — silent [] here causes infinite loops (#456)
-    if (existsSync(dir)) {
-      logWarning("engine", `findMilestoneIds: .gsd/milestones/ exists but readdirSync failed — ${getErrorMessage(err)}`);
+  const ids = new Set<string>();
+  for (const dir of dirs) {
+    try {
+      for (const id of scanMilestoneIdsFromDir(dir)) ids.add(id);
+    } catch (err) {
+      if (existsSync(dir)) {
+        logWarning("engine", `findMilestoneIds: ${dir} exists but readdirSync failed — ${getErrorMessage(err)}`);
+      }
     }
-    return [];
   }
+
+  const customOrder = loadQueueOrder(basePath);
+  return sortByQueueOrder([...ids], customOrder);
 }

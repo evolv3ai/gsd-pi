@@ -31,3 +31,26 @@ describe("toolUnavailableRetries on AutoSession", () => {
     assert.equal(s.toolUnavailableRetries, 3);
   });
 });
+
+describe("tool-unavailable retry backoff (#817)", () => {
+  // Mirrors the delay formula in auto-post-unit.ts. The MCP workflow server can
+  // take tens of seconds to finish connecting, so the backoff must start high
+  // enough that re-dispatch does not land before the server is ready.
+  const backoffMs = (retry: number) =>
+    Math.min(10_000 * Math.pow(2, retry - 1), 45_000);
+
+  test("starts at 10s, doubles, and caps at 45s", () => {
+    assert.equal(backoffMs(1), 10_000);
+    assert.equal(backoffMs(2), 20_000);
+    assert.equal(backoffMs(3), 40_000);
+  });
+
+  test("never exceeds the 45s cap", () => {
+    assert.equal(backoffMs(4), 45_000);
+    assert.equal(backoffMs(10), 45_000);
+  });
+
+  test("first retry survives a multi-second MCP startup (regression for 1s delay)", () => {
+    assert.ok(backoffMs(1) >= 10_000, "first retry must wait at least 10s");
+  });
+});

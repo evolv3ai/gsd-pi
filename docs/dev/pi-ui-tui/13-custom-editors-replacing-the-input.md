@@ -5,8 +5,9 @@ Replace the main input editor with a custom implementation. The editor persists 
 ### The Pattern
 
 ```typescript
-import { CustomEditor, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { matchesKey, truncateToWidth } from "@mariozechner/pi-tui";
+import type { ExtensionAPI } from "@gsd/pi-coding-agent";
+import { CustomEditor } from "@gsd/agent-modes";
+import { matchesKey, truncateToWidth } from "@gsd/pi-tui";
 
 class VimEditor extends CustomEditor {
   private mode: "normal" | "insert" = "insert";

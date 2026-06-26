@@ -20,7 +20,7 @@ import {
   unlinkSync,
   lstatSync as lstatSyncFn,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { GSDError, GSD_IO_ERROR, GSD_GIT_ERROR } from "./errors.js";
 import {
   reconcileWorktreeDb,
@@ -36,7 +36,13 @@ import {
 } from "./db-workspace.js";
 import { atomicWriteSync } from "./atomic-write.js";
 import { execFileSync } from "node:child_process";
-import { gsdRoot, resolveGsdPathContract } from "./paths.js";
+import {
+  canonicalPhaseDirName,
+  gsdRoot,
+  milestonesDir,
+  resolveGsdPathContract,
+  resolveMilestonePath,
+} from "./paths.js";
 import {
   createWorktree,
   removeWorktree,
@@ -242,6 +248,17 @@ function stripGsdDisplayPrefix(value: string | undefined | null, id: string): st
 /** Active workspace registry — replaces the legacy `originalBase` singleton. */
 let activeWorkspace: GsdWorkspace | null = null;
 
+/**
+ * Optional override for the shelter restore copy step (milestone merge #2505).
+ * Production leaves this null so restoreShelter uses the real cpSync; tests
+ * inject a throwing function to deterministically exercise the best-effort
+ * failure path (auto-worktree.ts:1809) and the shelter-retention guarantee,
+ * which is otherwise unreachable because shelter and restore run synchronously
+ * in one mergeMilestoneToMain call (the filesystem cannot change between them).
+ * @internal
+ */
+let _restoreEntryFn: ((src: string, dest: string) => void) | null = null;
+
 function setActiveWorkspace(ws: GsdWorkspace | null): void {
   activeWorkspace = ws;
 }
@@ -406,10 +423,25 @@ export const SAFE_AUTO_RESOLVE_PATTERNS: RegExp[] = [
   /\/__pycache__\//,
   /\.DS_Store$/,
   /\.map$/,
+  // Regenerable dependency lockfiles. These are fully derivable from their
+  // manifests by the package manager, so accepting the merge side during
+  // auto-resolve clears the conflict markers without losing meaningful edits —
+  // and stops auto-mode from hard-pausing on a lockfile conflict (issue #828).
+  /(?:^|\/)pnpm-lock\.yaml$/,
+  /(?:^|\/)package-lock\.json$/,
+  /(?:^|\/)npm-shrinkwrap\.json$/,
+  /(?:^|\/)yarn\.lock$/,
+  /(?:^|\/)bun\.lockb?$/,
+  /(?:^|\/)Cargo\.lock$/,
+  /(?:^|\/)composer\.lock$/,
+  /(?:^|\/)Gemfile\.lock$/,
+  /(?:^|\/)Pipfile\.lock$/,
+  /(?:^|\/)poetry\.lock$/,
 ];
 
 /** Returns true if the file path is safe to auto-resolve during merge.
- * Covers `.gsd/` state files and common build artifacts. */
+ * Covers `.gsd/` state files, common build artifacts, and regenerable
+ * dependency lockfiles. */
 export const isSafeToAutoResolve = (filePath: string): boolean =>
   filePath.startsWith(".gsd/") ||
   SAFE_AUTO_RESOLVE_PATTERNS.some((re) => re.test(filePath));
@@ -683,9 +715,11 @@ export function syncGsdStateToWorktree(
     }
   }
 
-  // Sync milestones: copy entire milestone directories that are missing
-  const mainMilestonesDir = join(mainGsd, "milestones");
-  const wtMilestonesDir = join(wtGsd, "milestones");
+  // Sync milestone/phase trees: copy entire directories that are missing.
+  // Support both flat-phase (phases/) and legacy (milestones/) layouts.
+  for (const layoutSegment of ["phases", "milestones"] as const) {
+  const mainMilestonesDir = join(mainGsd, layoutSegment);
+  const wtMilestonesDir = join(wtGsd, layoutSegment);
   if (existsSync(mainMilestonesDir)) {
     try {
       mkdirSync(wtMilestonesDir, { recursive: true });
@@ -774,6 +808,7 @@ export function syncGsdStateToWorktree(
       /* non-fatal */
       logWarning("worktree", `milestone directory sync failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
   }
 
   return { synced };
@@ -1394,6 +1429,22 @@ export function _resetAutoWorktreeOriginalBaseForTests(): void {
   setActiveWorkspace(null);
 }
 
+/**
+ * Inject an override for the shelter restore copy step, returning a function
+ * that restores the default (real cpSync) behavior. Used by tests to
+ * deterministically exercise the best-effort restore-failure path
+ * (auto-worktree.ts:1809) and the #2505 shelter-retention guarantee — which is
+ * otherwise unreachable because shelter + restore run synchronously in one
+ * mergeMilestoneToMain call. No production caller.
+ * @internal
+ */
+export function _setRestoreEntryFnForTests(
+  fn: ((src: string, dest: string) => void) | null,
+): () => void {
+  _restoreEntryFn = fn;
+  return () => { _restoreEntryFn = null; };
+}
+
 export function getActiveAutoWorktreeContext(): {
   originalBase: string;
   worktreeName: string;
@@ -1772,10 +1823,19 @@ export function mergeMilestoneToMain(
   // MUST run BEFORE the pre-merge stash (step 7a) so `--include-untracked`
   // does not sweep queued CONTEXT files into the stash. If stash pop later
   // fails, files trapped inside the stash are permanently lost (#2505).
-  const milestonesDir = join(gsdRoot(originalBasePath_), "milestones");
+  const planningDir = milestonesDir(originalBasePath_);
   const shelterDir = join(gsdRoot(originalBasePath_), ".milestone-shelter");
   const shelteredDirs: string[] = [];
   let shelterRestored = false;
+  const mergeDirNames = new Set<string>([milestoneId]);
+  const resolvedMergeDir = resolveMilestonePath(originalBasePath_, milestoneId);
+  if (resolvedMergeDir) {
+    mergeDirNames.add(basename(resolvedMergeDir));
+  } else {
+    mergeDirNames.add(
+      canonicalPhaseDirName(milestoneId, getMilestone(milestoneId)?.title),
+    );
+  }
 
   // Helper: restore sheltered milestone directories (#2505).
   // Called on both success and error paths to ensure queued CONTEXT files
@@ -1802,8 +1862,16 @@ export function mergeMilestoneToMain(
         continue;
       }
       try {
-        mkdirSync(milestonesDir, { recursive: true });
-        cpSync(src, join(milestonesDir, dirName), { recursive: true, force: true });
+        mkdirSync(planningDir, { recursive: true });
+        // Test seam: when _restoreEntryFn is injected, route the copy through it
+        // so the best-effort failure path (and shelter-retention guarantee) can
+        // be exercised deterministically. Production leaves it null → real cpSync.
+        const dest = join(planningDir, dirName);
+        if (_restoreEntryFn) {
+          _restoreEntryFn(src, dest);
+        } else {
+          cpSync(src, dest, { recursive: true, force: true });
+        }
       } catch (err) { /* best-effort */
         restoreFailed = true;
         logError("worktree", `shelter restore failed (${dirName}): ${err instanceof Error ? err.message : String(err)}`);
@@ -1824,13 +1892,13 @@ export function mergeMilestoneToMain(
   };
 
   try {
-    if (existsSync(milestonesDir)) {
-      const entries = readdirSync(milestonesDir, { withFileTypes: true });
+    if (existsSync(planningDir)) {
+      const entries = readdirSync(planningDir, { withFileTypes: true });
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
         // Only shelter directories that do NOT belong to the milestone being merged
-        if (entry.name === milestoneId) continue;
-        const srcDir = join(milestonesDir, entry.name);
+        if (mergeDirNames.has(entry.name)) continue;
+        const srcDir = join(planningDir, entry.name);
         const dstDir = join(shelterDir, entry.name);
         try {
           mkdirSync(shelterDir, { recursive: true });
@@ -1854,8 +1922,8 @@ export function mergeMilestoneToMain(
   //     branch. Passing NO pathspec lets git skip gitignored paths silently;
   //     adding an explicit pathspec trips a `git add`-style fatal on ignored
   //     entries (e.g. a gitignored `.gsd` symlink under ADR-002) (#4573).
-  //     Queued CONTEXT files under `.gsd/milestones/*` are already sheltered
-  //     in step 7 above, so they won't be swept into the stash.
+  //     Queued CONTEXT files under `.gsd/phases/*` (or legacy milestones/*)
+  //     are already sheltered in step 7 above, so they won't be swept into the stash.
   // On Windows, SQLite holds mandatory file locks on the gsd.db WAL/SHM
   // sidecars while the connection is open. `git stash --include-untracked`
   // walks those files and fails with EBUSY (#4704). Close the DB before

@@ -310,6 +310,18 @@ test('shouldArmHeadlessIdleTimeout: stays disarmed before any tool call has star
   assert.equal(shouldArmHeadlessIdleTimeout(0, 1), false)
 })
 
+test('shouldArmHeadlessIdleTimeout: arms for quick commands even with zero tool calls', () => {
+  // Quick commands (status/history/help/config) are handled entirely in the
+  // extension layer — no LLM agent loop, no execution_complete, zero tool
+  // calls. Without arming, the completion promise never resolves and the
+  // process exits with a spurious "cancelled" (11).
+  assert.equal(shouldArmHeadlessIdleTimeout(0, 0, true), true)
+  // Tool calls still arm for non-quick commands (default isQuickCommand=false).
+  assert.equal(shouldArmHeadlessIdleTimeout(1, 0, false), true)
+  // Interactive tools in flight always disarm, even for quick commands.
+  assert.equal(shouldArmHeadlessIdleTimeout(0, 1, true), false)
+})
+
 test('hasDeterministicNoWorkTail: detects select -> input -> notify(cancelled)', () => {
   const recentEvents = [
     { type: 'extension_ui_request', detail: 'select: choose milestone' },

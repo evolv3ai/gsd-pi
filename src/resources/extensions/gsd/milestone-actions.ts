@@ -17,6 +17,7 @@ import {
   resolveMilestonePath,
   resolveMilestoneFile,
   buildMilestoneFileName,
+  relMilestoneFile,
 } from "./paths.js";
 import { invalidateAllCaches } from "./cache.js";
 import { loadQueueOrder, saveQueueOrder } from "./queue-order.js";
@@ -61,7 +62,8 @@ export function parkMilestone(basePath: string, milestoneId: string, reason: str
     if (summaryFile) return false;
   }
 
-  const parkedPath = join(mDir, buildMilestoneFileName(milestoneId, "PARKED"));
+  // Use relMilestoneFile for layout-aware path (legacy: M001-PARKED.md, flat-phase: 01-PARKED.md)
+  const parkedPath = join(basePath, relMilestoneFile(basePath, milestoneId, "PARKED"));
   if (existsSync(parkedPath)) return false; // already parked
 
   const content = [
@@ -100,7 +102,8 @@ export function unparkMilestone(basePath: string, milestoneId: string): boolean 
   const mDir = resolveMilestonePath(basePath, milestoneId);
   if (!mDir || !existsSync(mDir)) return false;
 
-  const parkedPath = join(mDir, buildMilestoneFileName(milestoneId, "PARKED"));
+  // Use relMilestoneFile for layout-aware path (legacy: M001-PARKED.md, flat-phase: 01-PARKED.md)
+  const parkedPath = join(basePath, relMilestoneFile(basePath, milestoneId, "PARKED"));
   const hadParkedFile = existsSync(parkedPath);
   const dbThinksParked = isDbAvailable() && getMilestone(milestoneId)?.status === "parked";
 

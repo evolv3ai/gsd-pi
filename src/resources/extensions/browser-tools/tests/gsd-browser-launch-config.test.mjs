@@ -1,7 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+
 const {
+  resolveBundledGsdBrowserCliPath,
   resolveGsdBrowserDaemonStartInvocation,
   resolveGsdBrowserMcpLaunchConfig,
 } = await import("../../shared/gsd-browser-cli.ts");
@@ -54,6 +60,80 @@ describe("resolveGsdBrowserMcpLaunchConfig identity flags", () => {
     const projectId = args[args.indexOf("--identity-project") + 1];
     assert.equal(typeof projectId, "string");
     assert.doesNotMatch(projectId, /[\\/]/);
+  });
+});
+
+describe("bundled launcher without native binary", () => {
+  it("treats npm launcher-only explicit CLI paths as unavailable", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "gsd-browser-launcher-only-"));
+    const binDir = join(tempRoot, "bin");
+    mkdirSync(binDir, { recursive: true });
+    const launcherPath = join(binDir, "gsd-browser");
+    writeFileSync(
+      launcherPath,
+      [
+        "#!/usr/bin/env node",
+        '"use strict";',
+        "process.exit(1);",
+        "",
+      ].join("\n"),
+    );
+    chmodSync(launcherPath, 0o755);
+
+    const env = {
+      ...process.env,
+      GSD_BROWSER_CLI_PATH: launcherPath,
+    };
+
+    assert.equal(resolveBundledGsdBrowserCliPath(env), null);
+  });
+
+  it("prefers PATH launch when bundled npm launcher lacks native binary", (t) => {
+    const requireFromHere = createRequire(import.meta.url);
+    let bundledLauncher;
+    try {
+      const packageJsonPath = requireFromHere.resolve("@opengsd/gsd-browser/package.json");
+      bundledLauncher = join(dirname(packageJsonPath), "bin", "gsd-browser");
+    } catch {
+      return t.skip("bundled @opengsd/gsd-browser is not installed");
+    }
+
+    const nativePath = join(dirname(bundledLauncher), "gsd-browser-bin");
+    if (!existsSync(bundledLauncher) || existsSync(nativePath)) {
+      return t.skip("bundled launcher-only layout not present in this install");
+    }
+
+    const launch = resolveGsdBrowserMcpLaunchConfig("/tmp/example-project", process.env, { sessionSuffix: "pi-test" });
+    assert.equal(launch.command, "gsd-browser");
+    assert.equal(launch.args[0], "mcp");
+  });
+
+  it("accepts bundled launchers when the native binary is present", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "gsd-browser-runnable-"));
+    const binDir = join(tempRoot, "bin");
+    mkdirSync(binDir, { recursive: true });
+    const launcherPath = join(binDir, "gsd-browser");
+    const nativePath = join(binDir, "gsd-browser-bin");
+    writeFileSync(
+      launcherPath,
+      [
+        "#!/usr/bin/env node",
+        '"use strict";',
+        "process.exit(0);",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(nativePath, "native");
+    chmodSync(launcherPath, 0o755);
+    chmodSync(nativePath, 0o755);
+
+    const env = {
+      ...process.env,
+      GSD_BROWSER_CLI_PATH: launcherPath,
+      GSD_BROWSER_PATH_VERSION: "0.1.0",
+    };
+
+    assert.equal(resolveBundledGsdBrowserCliPath(env), launcherPath);
   });
 });
 

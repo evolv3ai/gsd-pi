@@ -16,7 +16,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { shouldBlockWorktreeWrite } from "../bootstrap/write-gate.js";
+import { shouldBlockWorktreeBash, shouldBlockWorktreeWrite } from "../bootstrap/write-gate.js";
 import { invalidateAllCaches } from "../cache.js";
 
 function makeProject(isolation: "none" | "worktree" | "branch" | null): string {
@@ -163,6 +163,40 @@ describe("shouldBlockWorktreeWrite (#5199)", () => {
     assert.match(result.reason ?? "", /HARD BLOCK/);
   });
 
+  test("Case 7c: auto active in worktree blocks absolute project-root source writes", () => {
+    projectRoot = makeProject("worktree");
+    const inside = join(projectRoot, ".gsd-worktrees", "M004");
+    mkdirSync(inside, { recursive: true });
+    writeFileSync(join(projectRoot, "style.css"), "/* root */\n");
+
+    const result = shouldBlockWorktreeWrite(
+      "write",
+      join(projectRoot, "style.css"),
+      inside,
+      /* isAutoLive */ true,
+      "execute-task",
+    );
+    assert.equal(result.block, true);
+    assert.match(result.reason ?? "", /outside the active milestone worktree/);
+    assert.match(result.reason ?? "", /style\.css/);
+  });
+
+  test("Case 7d: auto active in canonical .gsd-worktrees/ blocks root-relative escape via ..", () => {
+    projectRoot = makeProject("worktree");
+    const inside = join(projectRoot, ".gsd-worktrees", "M004");
+    mkdirSync(inside, { recursive: true });
+
+    const result = shouldBlockWorktreeWrite(
+      "edit",
+      join(inside, "..", "..", "app.js"),
+      inside,
+      /* isAutoLive */ true,
+      "execute-task",
+    );
+    assert.equal(result.block, true);
+    assert.match(result.reason ?? "", /outside the active milestone worktree/);
+  });
+
   test("Case 8: bootstrap unit type active → allow", () => {
     projectRoot = makeProject("worktree");
     for (const unitType of ["discuss-milestone", "plan-milestone", "init"]) {
@@ -190,7 +224,7 @@ describe("shouldBlockWorktreeWrite (#5199)", () => {
     assert.equal(result.block, false);
   });
 
-  test("non-planning tools (read/grep/bash) pass through unconditionally", () => {
+  test("non-planning tools (read/grep/bash) pass through unconditionally when not in active worktree auto", () => {
     projectRoot = makeProject("worktree");
     for (const tool of ["read", "grep", "bash", "ls"]) {
       const result = shouldBlockWorktreeWrite(
@@ -200,7 +234,45 @@ describe("shouldBlockWorktreeWrite (#5199)", () => {
         false,
         null,
       );
-      assert.equal(result.block, false, `tool ${tool} must not be gated`);
+      assert.equal(result.block, false, `tool ${tool} must not be gated by write guard`);
     }
+  });
+
+  test("bash blocks project-root path references during active worktree auto-mode", () => {
+    projectRoot = makeProject("worktree");
+    const inside = join(projectRoot, ".gsd-worktrees", "M004");
+    mkdirSync(inside, { recursive: true });
+
+    const blocked = shouldBlockWorktreeBash(
+      `sed -i '' 's/foo/bar/' ${join(projectRoot, "style.css")}`,
+      inside,
+      /* isAutoLive */ true,
+      "execute-task",
+    );
+    assert.equal(blocked.block, true);
+    assert.match(blocked.reason ?? "", /outside the active milestone worktree/);
+
+    const allowed = shouldBlockWorktreeBash(
+      "npm test",
+      inside,
+      /* isAutoLive */ true,
+      "execute-task",
+    );
+    assert.equal(allowed.block, false);
+  });
+
+  test("bash blocks project-root path references from worktree cwd without live auto (subagent children)", () => {
+    projectRoot = makeProject("worktree");
+    const inside = join(projectRoot, ".gsd-worktrees", "M004");
+    mkdirSync(inside, { recursive: true });
+
+    const blocked = shouldBlockWorktreeBash(
+      `cd ${projectRoot} && npm test`,
+      inside,
+      /* isAutoLive */ false,
+      null,
+    );
+    assert.equal(blocked.block, true);
+    assert.match(blocked.reason ?? "", /outside the active milestone worktree/);
   });
 });
