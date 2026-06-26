@@ -38,9 +38,10 @@ my-plan.html                     # input (unchanged)
 my-plan.gsd.md                   # generated GSD spec (rebuilt every export)
 my-plan.manifest.json            # bridge manifest — milestone id + mapping (rebuilt every export, milestoneId stamped after build)
 .gsd/                            # GSD project state (managed by gsd-pi)
-  STATE.md
-  milestones/M001/...
-  ...
+  STATE.md                       # state-machine snapshot
+  ...                            # plan tree (legacy `milestones/<MID>/...` on
+                                 # gsd-pi <= 1.3.0; flat-phase `phases/NN-slug/`
+                                 # on gsd-pi > 1.3.0 — layout owned by gsd-pi)
 ```
 
 `<stem>.gsd.md` and `<stem>.manifest.json` are siblings of the input
