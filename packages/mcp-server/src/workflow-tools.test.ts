@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 
 import { symlinkSync, realpathSync } from "node:fs";
@@ -37,6 +38,7 @@ import {
   validateProjectDir,
   _parseWorkflowArgsForTest,
   _summarySaveSchemaForTest,
+  _runSerializedWorkflowOperationForTest,
   _sliceCompleteSchemaForTest,
 } from "./workflow-tools.ts";
 
@@ -208,6 +210,68 @@ describe("warmWorkflowToolBridges", () => {
         delete process.env.GSD_WORKFLOW_EXECUTORS_MODULE;
       } else {
         process.env.GSD_WORKFLOW_EXECUTORS_MODULE = prevModule;
+      }
+    }
+  });
+});
+
+describe("runSerializedWorkflowOperation", () => {
+  it("keeps the queue held until a timed-out operation settles", async () => {
+    const previousTimeout = process.env.GSD_MCP_WORKFLOW_TIMEOUT_MS;
+    const events: string[] = [];
+    let releaseFirst: (() => void) | undefined;
+    const firstCanFinish = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let second: Promise<string> | undefined;
+
+    try {
+      process.env.GSD_MCP_WORKFLOW_TIMEOUT_MS = "20";
+
+      const first = _runSerializedWorkflowOperationForTest(async () => {
+        events.push("first-start");
+        await firstCanFinish;
+        events.push("first-finish");
+        return "first";
+      });
+
+      await assert.rejects(first, /Workflow operation exceeded 20ms deadline/);
+      events.push("first-timeout-returned");
+
+      let secondSettled = false;
+      second = _runSerializedWorkflowOperationForTest(async () => {
+        events.push("second-start");
+        return "second";
+      }).then((value) => {
+        secondSettled = true;
+        events.push("second-finish");
+        return value;
+      });
+
+      await delay(30);
+      assert.equal(
+        secondSettled,
+        false,
+        "retry should remain queued while the timed-out operation is still running",
+      );
+      assert.deepEqual(events, ["first-start", "first-timeout-returned"]);
+
+      releaseFirst?.();
+      assert.equal(await second, "second");
+      assert.deepEqual(events, [
+        "first-start",
+        "first-timeout-returned",
+        "first-finish",
+        "second-start",
+        "second-finish",
+      ]);
+    } finally {
+      releaseFirst?.();
+      if (second) await second.catch(() => undefined);
+      if (previousTimeout === undefined) {
+        delete process.env.GSD_MCP_WORKFLOW_TIMEOUT_MS;
+      } else {
+        process.env.GSD_MCP_WORKFLOW_TIMEOUT_MS = previousTimeout;
       }
     }
   });
