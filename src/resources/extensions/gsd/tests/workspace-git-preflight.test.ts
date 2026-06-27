@@ -93,7 +93,7 @@ test("probeGitConflictState reports clean repo", () => {
   }
 });
 
-test("ensureWorkspaceGitReadyForPath re-probes clean targets on every call", async () => {
+test("ensureWorkspaceGitReadyForPath caches clean target probes briefly", async () => {
   const base = makeTempRepo("gsd-ws-git-clean-cache-");
   const binDir = makeTempDir("gsd-ws-git-shim-");
   const logPath = join(binDir, "git.log");
@@ -117,9 +117,10 @@ test("ensureWorkspaceGitReadyForPath re-probes clean targets on every call", asy
 
     const second = await ensureWorkspaceGitReadyForPath(base);
     assert.equal(second.ok, true);
-    assert.ok(
-      countGitShimInvocations(logPath) > firstCount,
-      "second clean probe must spawn git again so fresh conflict state is observed",
+    assert.equal(
+      countGitShimInvocations(logPath),
+      firstCount,
+      "second clean probe within the cache window must not spawn git again",
     );
   } finally {
     if (originalProcessPath === undefined) delete process.env.PATH;

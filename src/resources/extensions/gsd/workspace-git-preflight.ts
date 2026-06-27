@@ -7,6 +7,7 @@ import { getAutoWorktreePath } from "./auto-worktree.js";
 import { isSafeToAutoResolve } from "./auto-worktree.js";
 import { ensureDbOpen } from "./bootstrap/dynamic-tools.js";
 import {
+  listMergeStateBlockers,
   probeGitConflictState,
   reconcileGitConflictsOnSignal,
   type GitConflictProbeResult,
@@ -29,6 +30,9 @@ export type WorkspaceGitReadyResult =
       conflictedPaths: string[];
       targets: string[];
     };
+
+const CLEAN_TARGET_CACHE_TTL_MS = 10_000;
+const cleanTargetProbeCache = new Map<string, number>();
 
 function normalizeTargetPath(path: string): string {
   try {
@@ -110,6 +114,25 @@ function formatBlockReason(
 
 async function ensureTargetGitReady(target: string): Promise<WorkspaceGitReadyResult> {
   const fixesApplied: string[] = [];
+  const cacheKey = normalizeTargetPath(target);
+  const cachedCleanAt = cleanTargetProbeCache.get(cacheKey);
+  if (cachedCleanAt !== undefined) {
+    if (Date.now() - cachedCleanAt < CLEAN_TARGET_CACHE_TTL_MS) {
+      // Merge-state markers (MERGE_HEAD, rebase-apply, rebase-merge) are the most
+      // common way a repo transitions from clean to dirty within the TTL window,
+      // including when a non-git folder is initialized as a repo mid-TTL and a
+      // merge immediately introduces conflicts. Check them here — they are pure
+      // existsSync calls with no git subprocess — and fall through to a full probe
+      // only when markers are present.
+      if (listMergeStateBlockers(cacheKey).length === 0) {
+        return { ok: true, fixesApplied };
+      }
+      cleanTargetProbeCache.delete(cacheKey);
+    } else {
+      cleanTargetProbeCache.delete(cacheKey);
+    }
+  }
+
   let probe = probeGitConflictState(target);
 
   for (let attempt = 0; attempt < 3 && probe.status === "dirty"; attempt++) {
@@ -129,6 +152,7 @@ async function ensureTargetGitReady(target: string): Promise<WorkspaceGitReadyRe
   }
 
   if (probe.status === "unknown") {
+    cleanTargetProbeCache.delete(cacheKey);
     return {
       ok: false,
       reason: formatBlockReason("unrecoverable", [], [target]),
@@ -141,6 +165,7 @@ async function ensureTargetGitReady(target: string): Promise<WorkspaceGitReadyRe
 
   const conflictedPaths = productConflictPaths(probe);
   if (conflictedPaths.length > 0 || probe.checkFailures.length > 0) {
+    cleanTargetProbeCache.delete(cacheKey);
     return {
       ok: false,
       reason: formatBlockReason("product-conflicts", conflictedPaths, [target]),
@@ -149,6 +174,12 @@ async function ensureTargetGitReady(target: string): Promise<WorkspaceGitReadyRe
       conflictedPaths,
       targets: [target],
     };
+  }
+
+  if (probe.status === "clean") {
+    cleanTargetProbeCache.set(cacheKey, Date.now());
+  } else {
+    cleanTargetProbeCache.delete(cacheKey);
   }
 
   return { ok: true, fixesApplied };
