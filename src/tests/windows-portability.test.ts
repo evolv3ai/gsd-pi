@@ -44,3 +44,18 @@ test("Google CLI run plan pipes prompt on Windows to avoid command-line length l
 	assert.ok(!plan.args.some((arg) => arg.includes(prompt)));
 	assert.deepEqual(antigravityPlan, { command: "cmd", args: ["/c", "agy"], stdin: prompt });
 });
+
+test("Google CLI run plan passes prompt as -p arg on non-Windows platforms", () => {
+	const prompt = "hello ".repeat(10_000);
+	const plan = buildGoogleCliRunPlan("google-gemini-cli", "gemini-2.5-pro", prompt, "linux");
+	const antigravityPlan = buildGoogleCliRunPlan("google-antigravity", "default", prompt, "linux");
+
+	assert.equal(plan.command, "gemini");
+	assert.ok(plan.args.includes("-p"));
+	assert.ok(plan.args.includes(prompt));
+	assert.equal(plan.stdin, undefined);
+	assert.equal(antigravityPlan.command, "agy");
+	assert.ok(antigravityPlan.args.includes("-p"));
+	assert.ok(antigravityPlan.args.includes(prompt));
+	assert.equal(antigravityPlan.stdin, undefined);
+});
