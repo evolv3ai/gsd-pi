@@ -234,6 +234,58 @@ test("health widget async refresh does not block timers while git log is slow", 
   assert.ok(maxGap < 750, `slow git log must not starve timers; max gap was ${Math.round(maxGap)}ms`);
 });
 
+test("initHealthWidget: synchronous first-paint render never contains last-commit info (regression #964)", (t) => {
+  // Before the fix, loadHealthWidgetData with includeChecks:true called
+  // loadLastCommitInfo — synchronous native-git-bridge ops (nativeIsRepo,
+  // nativeGetCurrentBranch, nativeLastCommitEpoch, nativeCommitSubject) — which
+  // froze the TUI on slow repos. The fix removes that synchronous git path
+  // entirely: lastCommitEpoch/lastCommitMessage are now always null from the
+  // synchronous loader; only the async refresh (loadLastCommitInfoAsync) fills
+  // them in. This test guards that contract by verifying that the initial
+  // string-array setWidget call never contains "Last commit:" even on a real
+  // git repo where native git queries would succeed.
+  const dir = makeTempRepo("sync-last-commit-regression");
+  mkdirSync(join(dir, ".gsd", "milestones", "M001"), { recursive: true });
+
+  const originalCwd = process.cwd();
+  process.chdir(dir);
+
+  let widget: { dispose(): void } | undefined;
+  t.after(() => {
+    if (widget) widget.dispose();
+    process.chdir(originalCwd);
+    cleanup(dir);
+  });
+
+  const initialRenders: string[][] = [];
+
+  initHealthWidget({
+    hasUI: true,
+    ui: {
+      setWidget: (_key: string, value: unknown) => {
+        if (Array.isArray(value)) {
+          initialRenders.push(value as string[]);
+        } else if (typeof value === "function") {
+          // Instantiate the factory to satisfy dispose(), but do not await the
+          // async refresh — we are only inspecting the synchronous first-paint.
+          widget = (value as unknown as HealthWidgetFactory)(
+            { requestRender: () => {} },
+            { fg: (_style: string, text: string) => text },
+          );
+        }
+      },
+    },
+  } as any);
+
+  assert.ok(initialRenders.length > 0, "at least one synchronous setWidget call");
+
+  const combined = initialRenders.flat().join("\n");
+  assert.ok(
+    !combined.includes("Last commit:"),
+    "synchronous first-paint render must not contain 'Last commit:' — sync git path removed (regression #964)",
+  );
+});
+
 test("buildHealthLines: active state with budget ceiling shows percent summary", (t) => {
   const lines = buildHealthLines(activeData({ budgetSpent: 2.5, budgetCeiling: 10 }));
   assert.equal(lines.length, 1);
