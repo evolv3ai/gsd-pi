@@ -93,7 +93,7 @@ test("probeGitConflictState reports clean repo", () => {
   }
 });
 
-test("ensureWorkspaceGitReadyForPath caches clean target probes briefly", async () => {
+test("ensureWorkspaceGitReadyForPath re-probes clean targets on every call", async () => {
   const base = makeTempRepo("gsd-ws-git-clean-cache-");
   const binDir = makeTempDir("gsd-ws-git-shim-");
   const logPath = join(binDir, "git.log");
@@ -117,10 +117,9 @@ test("ensureWorkspaceGitReadyForPath caches clean target probes briefly", async 
 
     const second = await ensureWorkspaceGitReadyForPath(base);
     assert.equal(second.ok, true);
-    assert.equal(
-      countGitShimInvocations(logPath),
-      firstCount,
-      "second clean probe within the cache window must not spawn git again",
+    assert.ok(
+      countGitShimInvocations(logPath) > firstCount,
+      "second clean probe must spawn git again so fresh conflict state is observed",
     );
   } finally {
     if (originalProcessPath === undefined) delete process.env.PATH;
@@ -136,7 +135,7 @@ test("ensureWorkspaceGitReadyForPath caches clean target probes briefly", async 
   }
 });
 
-test("ensureWorkspaceGitReadyForPath re-probes when merge state appears within the cache window", async () => {
+test("ensureWorkspaceGitReadyForPath detects merge state that appears after a clean probe", async () => {
   const base = makeTempRepo("gsd-ws-git-cache-stale-");
   const binDir = makeTempDir("gsd-ws-git-shim2-");
   const logPath = join(binDir, "git2.log");
@@ -179,6 +178,32 @@ test("ensureWorkspaceGitReadyForPath re-probes when merge state appears within t
     if (originalEnvRealPath === undefined) delete GIT_NO_PROMPT_ENV.GSD_REAL_PATH;
     else GIT_NO_PROMPT_ENV.GSD_REAL_PATH = originalEnvRealPath;
     cleanup(binDir);
+    cleanup(base);
+  }
+});
+
+test("ensureWorkspaceGitReadyForPath detects conflicts after a non-git folder becomes a repo", async () => {
+  const base = makeTempDir("gsd-ws-git-non-repo-cache-");
+  try {
+    const first = await ensureWorkspaceGitReadyForPath(base);
+    assert.equal(first.ok, true);
+
+    git(base, "init");
+    git(base, "config", "user.email", "test@test.com");
+    git(base, "config", "user.name", "Test");
+    git(base, "config", "core.autocrlf", "false");
+    writeFileSync(join(base, "README.md"), "# init\n");
+    git(base, "add", "-A");
+    git(base, "commit", "-m", "init");
+    git(base, "branch", "-M", "main");
+    seedProductConflict(base);
+
+    const second = await ensureWorkspaceGitReadyForPath(base);
+    assert.equal(second.ok, false);
+    if (second.ok) return;
+    assert.equal(second.severity, "product-conflicts");
+    assert.ok(second.conflictedPaths.includes("app.ts"));
+  } finally {
     cleanup(base);
   }
 });
