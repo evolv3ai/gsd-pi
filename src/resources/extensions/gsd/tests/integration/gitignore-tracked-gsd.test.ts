@@ -113,6 +113,61 @@ test("ensureGitignore does NOT add .gsd when .gsd/ has tracked files (#1364)", (
   }
 });
 
+test("ensureGitignore adds granular runtime patterns when .gsd/ has tracked files", (t) => {
+  // Regression: pre-completion close-out gate (auto-dispatch.ts) blocks when
+  // RUNTIME_EXCLUSION_PATHS artifacts appear as untracked. They are excluded
+  // from smartStage by design, so the auto-commit can never absorb them; the
+  // umbrella .gsd ignore pattern would normally cover them, but it is stripped
+  // when .gsd/ has tracked files. Without a granular fallback, runtime paths
+  // surface as `??` in `git status` and trip the close-out gate forever.
+  const dir = makeTempRepo();
+  try {
+    // Set up .gsd/ with tracked files (mirrors the close-out smoke scenario).
+    mkdirSync(join(dir, ".gsd", "milestones"), { recursive: true });
+    writeFileSync(join(dir, ".gsd", "PROJECT.md"), "# Test Project\n");
+    git(dir, "add", ".gsd/");
+    git(dir, "commit", "-m", "track gsd state");
+
+    ensureGitignore(dir);
+
+    const gitignore = readFileSync(join(dir, ".gitignore"), "utf-8");
+    const lines = new Set(gitignore.split("\n").map((l) => l.trim()));
+
+    // The umbrella pattern must still be omitted (preserves #1364).
+    assert.ok(!lines.has(".gsd"), `.gsd should not appear when tracked; got:\n${gitignore}`);
+
+    // The runtime artifacts that break the close-out gate must be ignored.
+    for (const pattern of [
+      ".gsd/STATE.md",
+      ".gsd/runtime/",
+      ".gsd/activity/",
+      ".gsd/audit/",
+      ".gsd/journal/",
+      ".gsd/gsd.db*",
+      ".gsd/event-log.jsonl",
+      ".gsd/metrics.json",
+      ".gsd/state-manifest.json",
+    ]) {
+      assert.ok(
+        lines.has(pattern),
+        `Expected ${pattern} in .gitignore so close-out gate sees a clean tree; got:\n${gitignore}`,
+      );
+    }
+
+    // BASELINE and GSD_RUNTIME both contain .gsd-worktrees/ — must not duplicate.
+    const worktreeOccurrences = gitignore
+      .split("\n")
+      .filter((l) => l.trim() === ".gsd-worktrees/").length;
+    assert.equal(
+      worktreeOccurrences,
+      1,
+      `.gsd-worktrees/ should appear exactly once; got ${worktreeOccurrences} in:\n${gitignore}`,
+    );
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("ensureGitignore adds .gsd when .gsd/ has NO tracked files", (t) => {
   const dir = makeTempRepo();
   try {
