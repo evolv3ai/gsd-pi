@@ -135,9 +135,18 @@ const CONTEXT_MODE_GUIDANCE_BY_LANE: Record<Exclude<ContextModePolicy, "none">, 
     "Use `gsd_resume` for prior context, `gsd_exec_search` for saved evidence, and `gsd_exec` for noisy doc validation commands.",
 };
 
-// Per-unit overrides win over the lane default for units whose tool contracts
-// are narrower than the shared lane guidance.
-const CONTEXT_MODE_GUIDANCE_BY_UNIT: Record<string, string> = {
+// Per-unit overrides win over the lane default. Some units intentionally run
+// with narrower tool contracts than their shared Context Mode lane, so their
+// guidance must name only tools the unit can actually call.
+export const CONTEXT_MODE_GUIDANCE_BY_UNIT: Readonly<Record<string, string>> = {
+  "discuss-milestone":
+    "Use `ask_user_questions` to continue the milestone interview, then persist outcomes with `gsd_summary_save`, `gsd_decision_save`, `gsd_requirement_save`, `gsd_requirement_update`, `gsd_plan_milestone`, or `gsd_milestone_generate_id` as appropriate.",
+  "discuss-slice":
+    "Use `ask_user_questions` to continue the slice interview, then persist outcomes with `gsd_summary_save` or `gsd_decision_save` as appropriate.",
+  "discuss-project":
+    "Use `ask_user_questions` to continue the project interview, then persist outcomes with `gsd_summary_save`, `gsd_decision_save`, or `gsd_requirement_save` as appropriate.",
+  "discuss-requirements":
+    "Use `ask_user_questions` to continue the requirements interview, then persist outcomes with `gsd_requirement_save` or `gsd_summary_save` as appropriate.",
   "replan-slice":
     "Use `gsd_replan_slice` to persist the revised slice plan, and `gsd_decision_save` for planning decisions that need durable rationale.",
   "reassess-roadmap":

@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  CONTEXT_MODE_GUIDANCE_BY_UNIT,
   composeContractedUnitContext,
   composeContextModeInstructions,
   composeInlinedContext,
@@ -158,11 +159,45 @@ const laneLabelByMode: Record<string, string> = {
   triage: "triage",
 };
 
-const unitSpecificContextModeGuidanceUnits = new Set([
-  "run-uat",
-  "replan-slice",
-  "reassess-roadmap",
-]);
+const contextModeGuidanceOverrideExpectedTools: Record<string, readonly string[]> = {
+  "discuss-milestone": [
+    "ask_user_questions",
+    "gsd_summary_save",
+    "gsd_decision_save",
+    "gsd_requirement_save",
+    "gsd_requirement_update",
+    "gsd_plan_milestone",
+    "gsd_milestone_generate_id",
+  ],
+  "discuss-project": [
+    "ask_user_questions",
+    "gsd_summary_save",
+    "gsd_decision_save",
+    "gsd_requirement_save",
+  ],
+  "discuss-requirements": [
+    "ask_user_questions",
+    "gsd_requirement_save",
+    "gsd_summary_save",
+  ],
+  "discuss-slice": [
+    "ask_user_questions",
+    "gsd_summary_save",
+    "gsd_decision_save",
+  ],
+  "replan-slice": [
+    "gsd_replan_slice",
+    "gsd_decision_save",
+  ],
+  "reassess-roadmap": [
+    "gsd_milestone_status",
+    "gsd_reassess_roadmap",
+  ],
+  "run-uat": [
+    "gsd_uat_exec",
+    "gsd_resume",
+  ],
+};
 
 test("Context Mode composer: every known eligible unit renders its configured lane and required tools", () => {
   for (const unitType of KNOWN_UNIT_TYPES) {
@@ -176,25 +211,65 @@ test("Context Mode composer: every known eligible unit renders its configured la
     assert.ok(out.startsWith("## Context Mode"), `${unitType} should render standalone Context Mode heading`);
     assert.match(out, new RegExp(`Lane: \\*\\*${laneLabelByMode[manifest.contextMode]} lane\\*\\*\\.`, "i"));
     const forbidden = getUnitToolSurfaceContract(unitType)?.forbiddenGsdTools ?? {};
-    if (unitSpecificContextModeGuidanceUnits.has(unitType)) {
-      // Unit-specific guidance replaces the lane default, so it must not
-      // advertise the exec tools that narrow contracts do not allow.
+    const overrideExpectedTools = contextModeGuidanceOverrideExpectedTools[unitType];
+    if ("gsd_exec" in forbidden || overrideExpectedTools) {
+      // Unit overrides are the contract-specific exception to lane defaults.
+      // Steering to the lane default here can produce unavailable-tool loops.
       assert.doesNotMatch(out, /`gsd_exec`/, `${unitType} guidance must not steer to gsd_exec`);
       assert.doesNotMatch(out, /`gsd_exec_search`/, `${unitType} guidance must not steer to gsd_exec_search`);
-      continue;
-    }
-    if ("gsd_exec" in forbidden) {
-      // Units that forbid gsd_exec (run-uat) have it stripped from their
-      // Claude Code dispatch surface; guidance steering to it produces
-      // "No such tool available" loops in the dispatched agent.
-      assert.doesNotMatch(out, /`gsd_exec`/, `${unitType} forbids gsd_exec; guidance must not steer to it`);
-      assert.doesNotMatch(out, /`gsd_exec_search`/, `${unitType} guidance must not steer to gsd_exec_search`);
-      assert.match(out, /`gsd_uat_exec`/, `${unitType} guidance should steer to gsd_uat_exec instead`);
+      for (const toolName of overrideExpectedTools ?? []) {
+        assert.match(out, new RegExp(`\`${toolName}\``), `${unitType} guidance should mention ${toolName}`);
+      }
     } else {
       assert.match(out, /`gsd_exec`/, `${unitType} should mention gsd_exec`);
       assert.match(out, /`gsd_exec_search`/, `${unitType} should mention gsd_exec_search`);
     }
-    assert.match(out, /`gsd_resume`/, `${unitType} should mention gsd_resume`);
+    if (!overrideExpectedTools || overrideExpectedTools.includes("gsd_resume")) {
+      assert.match(out, /`gsd_resume`/, `${unitType} should mention gsd_resume`);
+    } else {
+      assert.doesNotMatch(out, /`gsd_resume`/, `${unitType} guidance must not steer to gsd_resume`);
+    }
+  }
+});
+
+test("Context Mode composer: discuss interview overrides stay within unit contracts", () => {
+  const discussUnits = [
+    "discuss-milestone",
+    "discuss-project",
+    "discuss-requirements",
+    "discuss-slice",
+  ];
+
+  for (const unitType of discussUnits) {
+    const guidance = CONTEXT_MODE_GUIDANCE_BY_UNIT[unitType];
+    assert.ok(guidance, `${unitType} should have a Context Mode override`);
+    assert.doesNotMatch(guidance, /`gsd_exec`/, `${unitType} guidance must not mention gsd_exec`);
+    assert.doesNotMatch(guidance, /`gsd_exec_search`/, `${unitType} guidance must not mention gsd_exec_search`);
+    assert.doesNotMatch(guidance, /`gsd_resume`/, `${unitType} guidance must not mention gsd_resume`);
+
+    const expectedTools = contextModeGuidanceOverrideExpectedTools[unitType] ?? [];
+    assert.ok(expectedTools.length > 0, `${unitType} should declare expected override tools`);
+    const contract = getUnitToolSurfaceContract(unitType);
+    assert.ok(contract, `${unitType} should have a tool contract`);
+    const contractTools = new Set([
+      ...contract.allowedGsdTools,
+      ...contract.requiredWorkflowTools,
+    ]);
+
+    for (const toolName of expectedTools) {
+      assert.match(guidance, new RegExp(`\`${toolName}\``), `${unitType} guidance should mention ${toolName}`);
+      assert.ok(contractTools.has(toolName as UnitGsdToolName), `${unitType} contract should allow ${toolName}`);
+      const scope = shouldBlockAutoUnitToolCall(unitType, toolName);
+      assert.equal(scope.block, false, `${unitType} should not hard-block ${toolName}: ${scope.reason ?? ""}`);
+    }
+
+    const out = composeContextModeInstructions(unitType, { enabled: true, renderMode: "standalone" });
+    if (out) {
+      assert.match(out, /interview lane/i);
+      assert.doesNotMatch(out, /`gsd_exec`/);
+      assert.doesNotMatch(out, /`gsd_exec_search`/);
+      assert.doesNotMatch(out, /`gsd_resume`/);
+    }
   }
 });
 
