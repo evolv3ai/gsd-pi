@@ -86,3 +86,45 @@ test("guided milestone prompt builder preloads milestone planning context", asyn
     rmSync(base, { recursive: true, force: true });
   }
 });
+
+test("guided milestone prompt builder caps prior draft seed before interpolation", async () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-guided-milestone-draft-cap-"));
+  const previousGsdHome = process.env.GSD_HOME;
+  process.env.GSD_HOME = join(base, ".gsd-home");
+
+  try {
+    const currentDir = join(base, ".gsd", "milestones", "M001");
+    mkdirSync(currentDir, { recursive: true });
+
+    const draftPath = join(currentDir, "M001-CONTEXT-DRAFT.md");
+    writeFileSync(draftPath, "# Draft\n\nSMALL-DRAFT-SIGNAL", "utf-8");
+    const smallPrompt = await buildDiscussMilestonePrompt("M001", "Draft Resume", base, "true", {
+      includeContextMode: false,
+    });
+
+    writeFileSync(
+      draftPath,
+      ["# Draft", "", "SMALL-DRAFT-SIGNAL", "", "A".repeat(200_000), "", "OVERSIZED-DRAFT-TAIL-SIGNAL"].join("\n"),
+      "utf-8",
+    );
+    const largePrompt = await buildDiscussMilestonePrompt("M001", "Draft Resume", base, "true", {
+      includeContextMode: false,
+    });
+
+    const addedChars = largePrompt.length - smallPrompt.length;
+
+    assert.match(largePrompt, /## Prior Discussion \(Draft Seed\)/);
+    assert.match(largePrompt, /### Prior Discussion Draft/);
+    assert.match(largePrompt, /SMALL-DRAFT-SIGNAL/);
+    assert.doesNotMatch(largePrompt, /OVERSIZED-DRAFT-TAIL-SIGNAL/);
+    assert.match(
+      largePrompt,
+      /Draft seed truncated; read the full draft at `\.gsd\/milestones\/M001\/M001-CONTEXT-DRAFT\.md` if needed\./,
+    );
+    assert.ok(addedChars < 25_000, `large draft should add bounded seed chars, added ${addedChars}`);
+  } finally {
+    if (previousGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = previousGsdHome;
+    rmSync(base, { recursive: true, force: true });
+  }
+});
