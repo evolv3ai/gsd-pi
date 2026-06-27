@@ -555,9 +555,9 @@ export async function handleAgentEnd(
       });
       return;
     }
-    // #3588: When errorMessage is uninformative, extract the real error from
-    // the assistant message text content for display purposes only.
-    // Classification still uses rawErrorMsg to avoid false positives from prose.
+    // #3588/#956: When errorMessage is uninformative, extract the real error
+    // from assistant text. Prefer rawErrorMsg for classification to avoid
+    // prose false-positives, but use display text when rawErrorMsg is empty.
     const displayMsg = resolveAgentEndErrorDisplay(
       rawErrorMsg,
       "content" in lastMsg ? lastMsg.content : undefined,
@@ -576,8 +576,8 @@ export async function handleAgentEnd(
     const errorDetail = displayMsg ? `: ${displayMsg}` : "";
     const explicitRetryAfterMs = ("retryAfterMs" in lastMsg && typeof lastMsg.retryAfterMs === "number") ? lastMsg.retryAfterMs : undefined;
 
-    // ── 1. Classify using rawErrorMsg to avoid prose false-positives ────
-    const cls = classifyError(rawErrorMsg, explicitRetryAfterMs);
+    // ── 1. Classify, preserving non-empty errorMessage precedence ──────
+    const cls = classifyError(rawErrorMsg || displayMsg, explicitRetryAfterMs);
 
     // ── 1a. Unsupported-model: provider rejected this model for the current
     //        account/plan at request time (#4513).  Persist a block so the

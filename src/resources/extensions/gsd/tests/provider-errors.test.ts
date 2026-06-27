@@ -488,6 +488,56 @@ test("pauseAutoForProviderError falls back to indefinite pause when not rate lim
   ]);
 });
 
+test("agent_end retries when empty errorMessage has stream failure in content (#956)", async () => {
+  const originalSetTimeout = globalThis.setTimeout;
+  const notifications: Array<{ message: string; level?: string }> = [];
+  const sendMessageCalls: unknown[][] = [];
+  const timers: Array<{ fn: () => void; delay: number }> = [];
+
+  resetTransientRetryState();
+  globalThis.setTimeout = ((fn: () => void, delay?: number) => {
+    timers.push({ fn, delay: delay ?? 0 });
+    return 0 as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
+
+  try {
+    await handleAgentEnd({
+      sendMessage: (...args: unknown[]) => {
+        sendMessageCalls.push(args);
+      },
+    } as any, {
+      messages: [{
+        role: "assistant",
+        stopReason: "error",
+        errorMessage: "",
+        content: [{ type: "text", text: "API Error: stream idle timeout - partial response received" }],
+      }],
+    } as any, {
+      model: { provider: "openai-codex", id: "gpt-5.5" },
+      ui: {
+        notify(message: string, level?: "info" | "warning" | "error" | "success") {
+          notifications.push({ message, level });
+        },
+      },
+    } as any);
+
+    assert.equal(timers.length, 1, "empty errorMessage stream failures should use the network retry path");
+    assert.equal(timers[0].delay, 3_000);
+    assert.deepEqual(notifications[0], {
+      message: "Network error on gpt-5.5: API Error: stream idle timeout - partial response received. Retry 1/2 in 3s...",
+      level: "warning",
+    });
+
+    timers[0].fn();
+    assert.equal(sendMessageCalls.length, 1);
+    assert.deepEqual(sendMessageCalls[0][1], { triggerTurn: true });
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    resetTransientRetryState();
+    autoSession.reset();
+  }
+});
+
 test("rate-limit agent_end walks past unavailable fallback models before pausing (#716 follow-up)", async () => {
   const originalCwd = process.cwd();
   const originalSetTimeout = globalThis.setTimeout;
