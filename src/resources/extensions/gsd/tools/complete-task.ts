@@ -472,10 +472,12 @@ export async function handleCompleteTask(
       throw new Error(`plan projection write returned false for ${params.milestoneId}/${params.sliceId}`);
     }
   } catch (renderErr) {
-    const msg = `complete_task projection write failed for ${params.milestoneId}/${params.sliceId}/${params.taskId}; rolled completion back to pending`;
-    logWarning("projection", msg, {
-      error: (renderErr as Error).message,
-    });
+    logWarning(
+      "projection",
+      `complete_task projection write failed for ${params.milestoneId}/${params.sliceId}/${params.taskId}`,
+      { error: (renderErr as Error).message },
+    );
+    let rollbackSucceeded = false;
     try {
       if (!isDbAvailable() && rollbackDbPath && rollbackDbPath !== ":memory:") {
         openWorkflowDatabasePath(rollbackDbPath);
@@ -483,6 +485,7 @@ export async function handleCompleteTask(
       deleteVerificationEvidence(params.milestoneId, params.sliceId, params.taskId);
       updateTaskStatus(params.milestoneId, params.sliceId, params.taskId, "pending");
       invalidateStateCache();
+      rollbackSucceeded = true;
     } catch (rollbackErr) {
       logWarning(
         "projection",
@@ -497,7 +500,14 @@ export async function handleCompleteTask(
         `complete_task could not remove SUMMARY.md after projection write failure for ${params.milestoneId}/${params.sliceId}/${params.taskId}: ${(summaryErr as Error).message}`,
       );
     }
-    return { error: msg };
+    // Clear path/parse caches regardless of rollback outcome so stale
+    // entries from the failed write attempt don't leak into subsequent calls.
+    clearPathCache();
+    clearParseCache();
+    const returnMsg = rollbackSucceeded
+      ? `complete_task projection write failed for ${params.milestoneId}/${params.sliceId}/${params.taskId}; rolled completion back to pending`
+      : `complete_task projection write failed for ${params.milestoneId}/${params.sliceId}/${params.taskId}; rollback also failed — task may remain complete with stale plan`;
+    return { error: returnMsg };
   }
 
   // ── Close gates owned by execute-task (Q5/Q6/Q7) for this task ────────
