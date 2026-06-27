@@ -3,8 +3,11 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+
+const _require = createRequire(import.meta.url);
 
 import {
   formatValidationBlockedMessage,
@@ -56,18 +59,16 @@ function makeBase(): string {
   return base;
 }
 
-function seedNonBlockedMilestone(base: string): void {
-  openDatabase(join(base, ".gsd", "gsd.db"));
-  insertMilestone({ id: "M001", title: "Active Milestone", status: "active" });
-  insertSlice({
-    id: "S01",
-    milestoneId: "M001",
-    title: "Pending Slice",
-    status: "pending",
-    risk: "low",
-    depends: [],
-  });
-  invalidateStateCache();
+function openRawSqliteForTest(dbPath: string): { exec(sql: string): void; close(): void } {
+  try {
+    const mod = _require("node:sqlite") as { DatabaseSync: new (path: string) => { exec(sql: string): void; close(): void } };
+    return new mod.DatabaseSync(dbPath);
+  } catch {
+    type SqliteCtor = new (path: string) => { exec(sql: string): void; close(): void };
+    const mod = _require("better-sqlite3") as SqliteCtor | { default: SqliteCtor };
+    const DatabaseCtor: SqliteCtor = typeof mod === "function" ? mod : mod.default;
+    return new DatabaseCtor(dbPath);
+  }
 }
 
 test("validation block detection only matches validation blockers", () => {
@@ -227,21 +228,45 @@ test("validation block message can guide remediation through dispatch reassess",
   assert.doesNotMatch(message, /gsd_reassess_roadmap/);
 });
 
-test("validation block guard does not refresh the database when state is not blocked", async () => {
+test("validation block guard refreshes from disk and sees external validation blocks", async () => {
   const base = makeBase();
+  const dbPath = join(base, ".gsd", "gsd.db");
+  const validationPath = join(base, ".gsd", "milestones", "M001", "M001-VALIDATION.md");
   try {
-    seedNonBlockedMilestone(base);
+    openDatabase(dbPath);
+    insertMilestone({ id: "M001", title: "Active Milestone", status: "active" });
+    insertSlice({
+      id: "S01",
+      milestoneId: "M001",
+      title: "Done Slice",
+      status: "complete",
+      risk: "low",
+      depends: [],
+    });
+    invalidateStateCache();
+
     const adapterBefore = _getAdapter();
     assert.ok(adapterBefore);
 
+    const externalDb = openRawSqliteForTest(dbPath);
+    try {
+      externalDb.exec(`
+        INSERT OR REPLACE INTO assessments (path, milestone_id, slice_id, task_id, status, scope, full_content, created_at)
+        VALUES (
+          '${validationPath.replace(/'/g, "''")}',
+          'M001', NULL, NULL, 'needs-attention', 'milestone-validation',
+          '---\nverdict: needs-attention\n---', datetime('now')
+        )
+      `);
+    } finally {
+      externalDb.close();
+    }
+
     const message = await getValidationBlockMessageForBase(base, "next");
 
-    assert.equal(message, null);
-    assert.equal(
-      _getAdapter(),
-      adapterBefore,
-      "non-blocked validation guard should not close and reopen the active database",
-    );
+    assert.ok(message);
+    assert.match(message, /cannot run because the active milestone is blocked by validation/);
+    assert.notEqual(_getAdapter(), adapterBefore, "guard must refresh stale database handle");
   } finally {
     closeDatabase();
     invalidateStateCache();

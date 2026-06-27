@@ -156,12 +156,8 @@ export async function getValidationBlockMessageForBase(
   attemptedCommand = "",
 ): Promise<string | null> {
   await ensureDbOpen(base);
-  let state = await deriveValidationBlockState(base);
-  if (!isValidationBlockedState(state)) return null;
-
   refreshWorkflowDatabaseFromDisk();
   invalidateStateCache();
-  state = await deriveValidationBlockState(base);
-
+  const state = await deriveValidationBlockState(base);
   return formatValidationBlockedMessage(state, attemptedCommand);
 }
