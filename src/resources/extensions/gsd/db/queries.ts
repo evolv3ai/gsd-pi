@@ -28,6 +28,7 @@ import {
 import { rowToGate } from "../db-gate-rows.js";
 import { rowToArtifact, rowToMilestone, type ArtifactRow, type MilestoneRow } from "../db-milestone-artifact-rows.js";
 import { rowToSlice, rowToTask, type SliceRow, type TaskRow } from "../db-task-slice-rows.js";
+import { TERMINAL_STATUS_SQL } from "./sql-constants.js";
 
 
 function parseStringArrayColumn(raw: unknown): string[] {
@@ -47,6 +48,59 @@ function parseStringArrayColumn(raw: unknown): string[] {
 
 function normalizeRepoPath(file: string): string {
   return file.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+}
+
+export interface HierarchyCompletionCounts {
+  milestones: number;
+  milestonesTotal: number;
+  slices: number;
+  slicesTotal: number;
+  tasks: number;
+  tasksTotal: number;
+}
+
+function numberColumn(row: Record<string, unknown> | undefined, column: string): number {
+  const value = row?.[column];
+  if (typeof value === "number") return value;
+  if (typeof value === "bigint") return Number(value);
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function getCompletionCount(table: "milestones" | "slices" | "tasks"): { completed: number; total: number } {
+  const row = getDbOrNull()!.prepare(
+    `SELECT
+       COUNT(*) AS total,
+       COALESCE(SUM(CASE WHEN status IN (${TERMINAL_STATUS_SQL}) THEN 1 ELSE 0 END), 0) AS completed
+     FROM ${table}`,
+  ).get();
+
+  return {
+    completed: numberColumn(row, "completed"),
+    total: numberColumn(row, "total"),
+  };
+}
+
+export function getHierarchyCompletionCounts(): HierarchyCompletionCounts {
+  if (!getDbOrNull()!) {
+    return { milestones: 0, milestonesTotal: 0, slices: 0, slicesTotal: 0, tasks: 0, tasksTotal: 0 };
+  }
+
+  const milestones = getCompletionCount("milestones");
+  const slices = getCompletionCount("slices");
+  const tasks = getCompletionCount("tasks");
+
+  return {
+    milestones: milestones.completed,
+    milestonesTotal: milestones.total,
+    slices: slices.completed,
+    slicesTotal: slices.total,
+    tasks: tasks.completed,
+    tasksTotal: tasks.total,
+  };
 }
 
 export function getDecisionById(id: string): Decision | null {
