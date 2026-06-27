@@ -318,8 +318,16 @@ test("Context Mode composer: narrow planning guidance steers only to contracted 
   }
 });
 
-test("Context Mode composer: slice planning and research guidance tools pass unit contracts", () => {
-  const affectedUnits = ["research-milestone", "research-slice", "plan-slice", "refine-slice", "complete-slice"];
+test("Context Mode composer: lane guidance tools pass unit contracts", () => {
+  const affectedUnits = [
+    "research-milestone",
+    "research-slice",
+    "plan-slice",
+    "refine-slice",
+    "complete-slice",
+    "validate-milestone",
+    "complete-milestone",
+  ];
   const contextModeTools: UnitGsdToolName[] = ["gsd_exec", "gsd_exec_search", "gsd_resume"];
   const readOnlyOrientationTools: UnitGsdToolName[] = ["gsd_milestone_status", ...contextModeTools];
 

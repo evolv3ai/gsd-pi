@@ -160,7 +160,15 @@ export const UNIT_REGISTRY = {
     scopeClass: "section-close",
     phaseChain: ["validation", "planning"],
     toolContract: {
-      allowedGsdTools: ["gsd_milestone_status", "gsd_validate_milestone", "gsd_reassess_roadmap", "subagent"],
+      allowedGsdTools: [
+        "gsd_milestone_status",
+        "gsd_exec",
+        "gsd_exec_search",
+        "gsd_resume",
+        "gsd_validate_milestone",
+        "gsd_reassess_roadmap",
+        "subagent",
+      ],
       requiredWorkflowTools: ["gsd_milestone_status", "gsd_validate_milestone", "gsd_reassess_roadmap"],
     },
   },
@@ -171,6 +179,9 @@ export const UNIT_REGISTRY = {
     toolContract: {
       allowedGsdTools: [
         "gsd_milestone_status",
+        "gsd_exec",
+        "gsd_exec_search",
+        "gsd_resume",
         "gsd_requirement_update",
         "gsd_summary_save",
         "gsd_complete_milestone",
