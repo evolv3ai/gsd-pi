@@ -64,6 +64,7 @@ import {
   type UatType,
 } from "./uat-policy.js";
 import { buildWebAppUatGuidanceBlock } from "./web-app-uat.js";
+import { resolveExpectedArtifactPath } from "./auto-artifact-paths.js";
 
 export { buildSkillActivationBlock, buildSkillDiscoveryVars };
 
@@ -330,7 +331,8 @@ function renderExecuteTaskOnDemandContext(
   artifacts: readonly ArtifactKey[],
 ): string {
   if (!artifacts.includes("slice-research")) return "";
-  if (!resolveSliceFile(base, mid, sid, "RESEARCH")) return "";
+  const researchAbsPath = resolveExpectedArtifactPath("research-slice", `${mid}/${sid}`, base);
+  if (!researchAbsPath || !existsSync(researchAbsPath)) return "";
   const researchPath = relSliceFile(base, mid, sid, "RESEARCH");
   return [
     "## On-demand Context",
@@ -2815,12 +2817,13 @@ export async function buildExecuteTaskPrompt(
   const contractedCarryForward = requireComposedArtifactBlock(contractedContext.blocks, "execute-task", "prior-task-summaries");
   const contractedTemplates = requireComposedArtifactBlock(contractedContext.blocks, "execute-task", "templates");
   const onDemandContext = renderExecuteTaskOnDemandContext(base, mid, sid, contractedContext.onDemand);
+  const sliceResearchDeclared = contractedContext.onDemand.includes("slice-research");
   trackPromptContext(
     contextTelemetry,
     "slice-research",
     onDemandContext ? "on-demand" : "skipped",
     onDemandContext,
-    onDemandContext ? undefined : "not declared by contract",
+    onDemandContext ? undefined : sliceResearchDeclared ? "missing" : "not declared by contract",
   );
 
   const prompt = loadPrompt("execute-task", {
