@@ -119,3 +119,33 @@ describe("extractTrace error filtering (#2539)", () => {
     assert.equal(trace.errors.length, 1, "lint error with output should be counted");
   });
 });
+
+describe("extractTrace pending tool calls (#945)", () => {
+  test("tool call without a toolResult is counted as an error", () => {
+    const entries = [
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "toolu_missing",
+              name: "gsd_summary_save",
+              arguments: { content: "unfinished summary" },
+            },
+          ],
+        },
+      },
+    ];
+
+    const trace = extractTrace(entries);
+
+    assert.equal(trace.toolCalls.length, 1);
+    assert.equal(trace.toolCalls[0]?.name, "gsd_summary_save");
+    assert.equal(trace.toolCalls[0]?.isError, true);
+    assert.equal(trace.toolCalls[0]?.result, "missing tool result (stream/tool-call abort before execution)");
+    assert.equal(trace.errors.length, 1);
+    assert.equal(trace.errors[0], "Tool call gsd_summary_save started but no toolResult was recorded");
+  });
+});

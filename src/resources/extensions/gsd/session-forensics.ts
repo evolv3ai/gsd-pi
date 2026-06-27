@@ -223,11 +223,14 @@ export function extractTrace(entries: unknown[]): ExecutionTrace {
 
   // Flush any pending tool calls that never got results (crash mid-tool)
   for (const [, pending] of pendingTools) {
+    const missingResultError = `Tool call ${pending.name} started but no toolResult was recorded`;
     toolCalls.push({
       name: pending.name,
       input: redactInput(pending.name, pending.input),
-      isError: false,
+      result: "missing tool result (stream/tool-call abort before execution)",
+      isError: true,
     });
+    errors.push(missingResultError);
   }
 
   return {
