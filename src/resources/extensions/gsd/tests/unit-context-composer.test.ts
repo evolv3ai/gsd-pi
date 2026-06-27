@@ -308,6 +308,14 @@ test("Context Mode composer: research-project guidance steers to scout orchestra
     assert.doesNotMatch(out, /`gsd_exec_search`/);
     assert.doesNotMatch(out, /`gsd_resume`/);
   }
+
+  const contract = getUnitToolSurfaceContract("research-project");
+  assert.deepEqual(contract?.allowedGsdTools, []);
+  assert.deepEqual(contract?.requiredWorkflowTools, []);
+  for (const toolName of ["gsd_summary_save", "gsd_decision_save"]) {
+    const scope = shouldBlockAutoUnitToolCall("research-project", toolName);
+    assert.equal(scope.block, true, `research-project should not allow ${toolName}`);
+  }
 });
 
 test("Context Mode composer: narrow planning guidance steers only to contracted tools", () => {

@@ -426,7 +426,7 @@ export const UNIT_REGISTRY = {
     scopeClass: "standard",
     phaseChain: ["research"],
     toolContract: {
-      allowedGsdTools: ["gsd_summary_save", "gsd_decision_save"],
+      allowedGsdTools: [],
       requiredWorkflowTools: [],
     },
   },
