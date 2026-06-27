@@ -35,9 +35,13 @@ import { resolveCanonicalMilestoneRoot } from "../worktree-manager.js";
 import { checkOwnership, taskUnitKey } from "../unit-ownership.js";
 import { saveFile, clearParseCache } from "../files.js";
 import { invalidateStateCache } from "../state.js";
-import { renderPlanCheckboxes } from "../markdown-renderer.js";
-import { renderSummaryContent } from "../workflow-projections.js";
-import { flushWorkflowProjections } from "../projection-flush.js";
+import { renderPlanCheckboxes, renderRoadmapFromDb } from "../markdown-renderer.js";
+import {
+  renderStateProjection,
+  renderSummaryContent,
+  renderTopLevelQueueFromDb,
+  renderTopLevelRoadmapFromDb,
+} from "../workflow-projections.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning, logError } from "../workflow-logger.js";
@@ -101,6 +105,29 @@ function taskSummaryPath(
   );
 }
 
+async function renderCompleteTaskProjections(basePath: string, milestoneId: string): Promise<void> {
+  try {
+    await renderRoadmapFromDb(basePath, milestoneId);
+  } catch (err) {
+    logWarning("projection", `renderRoadmapFromDb failed for ${milestoneId}: ${(err as Error).message}`);
+  }
+  try {
+    renderTopLevelRoadmapFromDb(basePath);
+  } catch (err) {
+    logWarning("projection", `renderTopLevelRoadmapFromDb failed: ${(err as Error).message}`);
+  }
+  try {
+    renderTopLevelQueueFromDb(basePath);
+  } catch (err) {
+    logWarning("projection", `renderTopLevelQueueFromDb failed: ${(err as Error).message}`);
+  }
+  try {
+    await renderStateProjection(basePath);
+  } catch (err) {
+    logWarning("projection", `renderStateProjection failed: ${(err as Error).message}`);
+  }
+}
+
 async function repairMissingTaskSummaryProjection(
   artifactBasePath: string,
   taskRow: TaskRow,
@@ -131,7 +158,7 @@ async function repairMissingTaskSummaryProjection(
   clearParseCache();
 
   try {
-    await flushWorkflowProjections(artifactBasePath, { milestoneId: taskRow.milestone_id });
+    await renderCompleteTaskProjections(artifactBasePath, taskRow.milestone_id);
   } catch (projErr) {
     logWarning("tool", `complete-task repair projection warning: ${(projErr as Error).message}`);
   }
@@ -569,7 +596,7 @@ export async function handleCompleteTask(
   // Separate try/catch per step so a projection failure doesn't prevent
   // the event log entry (critical for worktree reconciliation).
   try {
-    await flushWorkflowProjections(artifactBasePath, { milestoneId: params.milestoneId });
+    await renderCompleteTaskProjections(artifactBasePath, params.milestoneId);
   } catch (projErr) {
     logWarning("tool", `complete-task projection warning: ${(projErr as Error).message}`);
   }

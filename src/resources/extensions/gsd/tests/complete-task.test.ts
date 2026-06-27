@@ -381,6 +381,39 @@ console.log('\n=== complete-task: handler happy path ===');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// complete-task: Handler does not re-render completed sibling summaries
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n=== complete-task: handler leaves completed sibling summaries untouched ===');
+{
+  const dbPath = tempDbPath();
+  openDatabase(dbPath);
+
+  const { basePath, planPath } = createTempProject();
+
+  insertMilestone({ id: 'M001', title: 'Test Milestone' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice', risk: 'high', depends: [], demo: 'basic functionality works', sequence: 1 });
+  insertTask({ id: 'T00', sliceId: 'S01', milestoneId: 'M001', status: 'complete', title: 'Already complete task', oneLiner: 'Previously completed' });
+  insertTask({ id: 'T02', sliceId: 'S01', milestoneId: 'M001', status: 'pending', title: 'Second task' });
+
+  const siblingSummaryPath = path.join(path.dirname(planPath), 'T00-SUMMARY.md');
+  const siblingSummaryContent = 'existing sibling summary marker\n';
+  fs.writeFileSync(siblingSummaryPath, siblingSummaryContent);
+
+  const result = await handleCompleteTask(makeValidParams(), basePath);
+
+  assertTrue(!('error' in result), 'handler should succeed without error');
+  assertEq(
+    fs.readFileSync(siblingSummaryPath, 'utf-8'),
+    siblingSummaryContent,
+    'complete-task should not re-render summaries for already-completed sibling tasks',
+  );
+
+  cleanupDir(basePath);
+  cleanup(dbPath);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // complete-task: hard-blocker escalation with mid-execution escalation disabled
 // ═══════════════════════════════════════════════════════════════════════════
 
