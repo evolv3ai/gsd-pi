@@ -1724,17 +1724,22 @@ export function serializePreferencesToFrontmatter(prefs: Record<string, unknown>
           const entries = Object.entries(item as Record<string, unknown>);
           if (entries.length > 0) {
             const [firstKey, firstVal] = entries[0];
-            lines.push(`${prefix}  - ${firstKey}: ${yamlSafeString(firstVal)}`);
+            if (Array.isArray(firstVal)) {
+              lines.push(`${prefix}  - ${firstKey}:`);
+              for (const arrItem of firstVal) {
+                lines.push(`${prefix}      - ${yamlSafeString(arrItem)}`);
+              }
+            } else if (typeof firstVal === "object" && firstVal !== null) {
+              lines.push(`${prefix}  - ${firstKey}:`);
+              for (const [k, v] of Object.entries(firstVal as Record<string, unknown>)) {
+                serializeValue(k, v, indent + 3);
+              }
+            } else {
+              lines.push(`${prefix}  - ${firstKey}: ${yamlSafeString(firstVal)}`);
+            }
             for (let i = 1; i < entries.length; i++) {
               const [k, v] = entries[i];
-              if (Array.isArray(v)) {
-                lines.push(`${prefix}    ${k}:`);
-                for (const arrItem of v) {
-                  lines.push(`${prefix}      - ${yamlSafeString(arrItem)}`);
-                }
-              } else {
-                lines.push(`${prefix}    ${k}: ${yamlSafeString(v)}`);
-              }
+              serializeValue(k, v, indent + 2);
             }
           }
         } else {
