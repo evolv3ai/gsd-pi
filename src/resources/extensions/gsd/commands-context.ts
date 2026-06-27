@@ -11,6 +11,7 @@ import { formatPercent, formatTokenCount } from "./metrics.js";
 import { countTokensSync, type TokenProvider } from "./token-counter.js";
 import { writeContextChartHtml } from "./context-chart-html.js";
 import { openInBrowser } from "./export.js";
+import { truncateWithEllipsis } from "../shared/format-utils.js";
 
 export interface ContextSectionBreakdown {
   label: string;
@@ -34,6 +35,7 @@ export interface ContextBreakdownReport {
   subagentSpawns: number;
 }
 
+const REDACTED_TOOL_ARGUMENT_KEYS = new Set(["content", "oldText", "newText"]);
 
 function resolveProvider(provider: string | undefined): TokenProvider {
   const normalized = (provider ?? "unknown").toLowerCase();
@@ -206,6 +208,21 @@ export function parseSystemPromptSections(systemPrompt: string, provider: TokenP
   return sections;
 }
 
+function redactToolCallArguments(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactToolCallArguments);
+  if (!value || typeof value !== "object") return value;
+
+  const safe: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (REDACTED_TOOL_ARGUMENT_KEYS.has(key)) {
+      safe[key] = typeof child === "string" ? truncateWithEllipsis(child, 101) : "[redacted]";
+    } else {
+      safe[key] = redactToolCallArguments(child);
+    }
+  }
+  return safe;
+}
+
 function messageToText(message: SessionMessageEntry["message"]): string {
   const role = message.role;
 
@@ -220,7 +237,7 @@ function messageToText(message: SessionMessageEntry["message"]): string {
         if (typed.type === "thinking" && typed.thinking) parts.push(typed.thinking);
         if (typed.type === "toolCall") {
           parts.push(typed.name ?? "tool");
-          parts.push(JSON.stringify(typed.arguments ?? {}));
+          parts.push(JSON.stringify(redactToolCallArguments(typed.arguments ?? {})));
         }
       }
     }
