@@ -24,7 +24,7 @@ import { isContextModeEnabled } from "./preferences-types.js";
 import { parseRoadmap } from "./parsers-legacy.js";
 import type { GSDState, InlineLevel } from "./types.js";
 import type { GSDPreferences } from "./preferences.js";
-import { join, basename } from "node:path";
+import { join, basename, relative } from "node:path";
 import { existsSync } from "node:fs";
 import { computeBudgets, resolveExecutorContextWindow, truncateAtSectionBoundary, type MinimalModelRegistry } from "./context-budget.js";
 import { getPendingGates, getPendingGatesForTurn } from "./gsd-db.js";
@@ -48,6 +48,7 @@ import {
   type ExcerptResolver,
 } from "./unit-context-composer.js";
 import { resolveManifest, type ArtifactKey } from "./unit-context-manifest.js";
+import { resolveExpectedArtifactPath } from "./auto-artifact-paths.js";
 import { compileUnitContextContract, type UnitPromptContextContract } from "./tool-contract.js";
 import { readCompactionSnapshot } from "./compaction-snapshot.js";
 import { logWarning } from "./workflow-logger.js";
@@ -324,21 +325,53 @@ function requireComposedArtifactBlock(
   return block.body;
 }
 
+interface ExecuteTaskOnDemandResult {
+  /** Rendered block for the prompt; empty string when not shown. */
+  text: string;
+  /**
+   * Telemetry skip reason when the block was suppressed; null when the block
+   * is included. Callers pass this directly to `trackPromptContext`.
+   */
+  skipReason: string | null;
+}
+
 function renderExecuteTaskOnDemandContext(
   base: string,
   mid: string,
   sid: string,
   artifacts: readonly ArtifactKey[],
-): string {
-  if (!artifacts.includes("slice-research")) return "";
-  const researchAbsPath = resolveExpectedArtifactPath("research-slice", `${mid}/${sid}`, base);
-  if (!researchAbsPath || !existsSync(researchAbsPath)) return "";
-  const researchPath = relSliceFile(base, mid, sid, "RESEARCH");
-  return [
-    "## On-demand Context",
-    "",
-    `Slice research is available at \`${researchPath}\`. Read it only if the inlined task plan, slice plan excerpt, and carry-forward context do not explain a required implementation detail.`,
-  ].join("\n");
+): ExecuteTaskOnDemandResult {
+  if (!artifacts.includes("slice-research")) {
+    return { text: "", skipReason: "not declared by contract" };
+  }
+  // Mirror dispatch's dual-resolution logic: worktree projection path first,
+  // then the authoritative project-root path via resolveExpectedArtifactPath.
+  // In worktree layouts the RESEARCH file may live under the project-root .gsd
+  // and not have been copied into the worktree projection, so resolveSliceFile
+  // (which looks only at gsdProjectionRoot) would miss it while dispatch would
+  // still treat research as satisfied.
+  const projectedFile = resolveSliceFile(base, mid, sid, "RESEARCH");
+  const researchFile: string | null = projectedFile ?? (() => {
+    const p = resolveExpectedArtifactPath("research-slice", `${mid}/${sid}`, base);
+    return p && existsSync(p) ? p : null;
+  })();
+  if (!researchFile) {
+    return { text: "", skipReason: "missing" };
+  }
+  // Use the layout-aware relative path when the file is in the worktree
+  // projection (relSliceFile), or fall back to node:path relative() when the
+  // file was only found via the project-root resolution path.
+  const researchPath = projectedFile
+    ? relSliceFile(base, mid, sid, "RESEARCH")
+    : relative(base, researchFile);
+  return {
+    text: [
+      "## On-demand Context",
+      "",
+      `Slice research is available at \`${researchPath}\`. Read it only if the inlined task plan, slice plan excerpt, and carry-forward context do not explain a required implementation detail.`,
+    ].join("\n"),
+    skipReason: null,
+  };
 }
 
 // ─── Executor Constraints ─────────────────────────────────────────────────────
@@ -2816,14 +2849,14 @@ export async function buildExecuteTaskPrompt(
   const slicePlanExcerpt = requireComposedArtifactBlock(contractedContext.blocks, "execute-task", "slice-plan");
   const contractedCarryForward = requireComposedArtifactBlock(contractedContext.blocks, "execute-task", "prior-task-summaries");
   const contractedTemplates = requireComposedArtifactBlock(contractedContext.blocks, "execute-task", "templates");
-  const onDemandContext = renderExecuteTaskOnDemandContext(base, mid, sid, contractedContext.onDemand);
-  const sliceResearchDeclared = contractedContext.onDemand.includes("slice-research");
+  const onDemandResult = renderExecuteTaskOnDemandContext(base, mid, sid, contractedContext.onDemand);
+  const onDemandContext = onDemandResult.text;
   trackPromptContext(
     contextTelemetry,
     "slice-research",
     onDemandContext ? "on-demand" : "skipped",
     onDemandContext,
-    onDemandContext ? undefined : sliceResearchDeclared ? "missing" : "not declared by contract",
+    onDemandContext ? undefined : onDemandResult.skipReason ?? undefined,
   );
 
   const prompt = loadPrompt("execute-task", {
