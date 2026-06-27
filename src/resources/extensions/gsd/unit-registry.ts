@@ -250,6 +250,8 @@ export const UNIT_REGISTRY = {
       allowedGsdTools: [
         "gsd_milestone_status",
         "gsd_exec",
+        "gsd_exec_search",
+        "gsd_resume",
         "gsd_slice_complete",
         "gsd_task_reopen",
         "gsd_replan_slice",
