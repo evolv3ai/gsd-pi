@@ -136,6 +136,53 @@ test("ensureWorkspaceGitReadyForPath caches clean target probes briefly", async 
   }
 });
 
+test("ensureWorkspaceGitReadyForPath re-probes when merge state appears within the cache window", async () => {
+  const base = makeTempRepo("gsd-ws-git-cache-stale-");
+  const binDir = makeTempDir("gsd-ws-git-shim2-");
+  const logPath = join(binDir, "git2.log");
+  const originalProcessPath = process.env.PATH;
+  const originalEnvPath = GIT_NO_PROMPT_ENV.PATH;
+  const originalEnvGitLog = GIT_NO_PROMPT_ENV.GSD_GIT_LOG;
+  const originalEnvRealPath = GIT_NO_PROMPT_ENV.GSD_REAL_PATH;
+
+  try {
+    installCountingGitShim(binDir, logPath);
+    const shimmedPath = `${binDir}${delimiter}${originalProcessPath ?? ""}`;
+    process.env.PATH = shimmedPath;
+    GIT_NO_PROMPT_ENV.PATH = shimmedPath;
+    GIT_NO_PROMPT_ENV.GSD_GIT_LOG = logPath;
+    GIT_NO_PROMPT_ENV.GSD_REAL_PATH = originalProcessPath ?? "";
+
+    // First call — repo is clean, cache is populated.
+    const first = await ensureWorkspaceGitReadyForPath(base);
+    assert.equal(first.ok, true);
+    const afterFirstCount = countGitShimInvocations(logPath);
+    assert.ok(afterFirstCount > 0, "first probe must have called git");
+
+    // Introduce MERGE_HEAD to simulate merge state appearing mid-TTL window.
+    writeFileSync(join(base, ".git", "MERGE_HEAD"), "0000000000000000000000000000000000000000\n");
+
+    // Second call — cache should be bypassed because merge state markers are present.
+    await ensureWorkspaceGitReadyForPath(base);
+    const afterSecondCount = countGitShimInvocations(logPath);
+    assert.ok(
+      afterSecondCount > afterFirstCount,
+      "cache must be invalidated when merge state appears, causing a fresh git probe",
+    );
+  } finally {
+    if (originalProcessPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalProcessPath;
+    if (originalEnvPath === undefined) delete GIT_NO_PROMPT_ENV.PATH;
+    else GIT_NO_PROMPT_ENV.PATH = originalEnvPath;
+    if (originalEnvGitLog === undefined) delete GIT_NO_PROMPT_ENV.GSD_GIT_LOG;
+    else GIT_NO_PROMPT_ENV.GSD_GIT_LOG = originalEnvGitLog;
+    if (originalEnvRealPath === undefined) delete GIT_NO_PROMPT_ENV.GSD_REAL_PATH;
+    else GIT_NO_PROMPT_ENV.GSD_REAL_PATH = originalEnvRealPath;
+    cleanup(binDir);
+    cleanup(base);
+  }
+});
+
 test("ensureWorkspaceGitReadyForPath allows fresh non-git project setup folders", async () => {
   const base = makeTempDir("gsd-ws-git-non-repo-");
   try {

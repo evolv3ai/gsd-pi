@@ -7,6 +7,7 @@ import { getAutoWorktreePath } from "./auto-worktree.js";
 import { isSafeToAutoResolve } from "./auto-worktree.js";
 import { ensureDbOpen } from "./bootstrap/dynamic-tools.js";
 import {
+  listMergeStateBlockers,
   probeGitConflictState,
   reconcileGitConflictsOnSignal,
   type GitConflictProbeResult,
@@ -117,9 +118,17 @@ async function ensureTargetGitReady(target: string): Promise<WorkspaceGitReadyRe
   const cachedCleanAt = cleanTargetProbeCache.get(cacheKey);
   if (cachedCleanAt !== undefined) {
     if (Date.now() - cachedCleanAt < CLEAN_TARGET_CACHE_TTL_MS) {
-      return { ok: true, fixesApplied };
+      // Merge-state markers (MERGE_HEAD, rebase-apply, rebase-merge) are the most
+      // common way a repo transitions from clean to dirty within the TTL window.
+      // Check them here — they are pure existsSync calls with no git subprocess —
+      // and fall through to a full probe only when markers are present.
+      if (listMergeStateBlockers(cacheKey).length === 0) {
+        return { ok: true, fixesApplied };
+      }
+      cleanTargetProbeCache.delete(cacheKey);
+    } else {
+      cleanTargetProbeCache.delete(cacheKey);
     }
-    cleanTargetProbeCache.delete(cacheKey);
   }
 
   let probe = probeGitConflictState(target);
