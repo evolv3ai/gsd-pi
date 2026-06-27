@@ -840,7 +840,7 @@ interface McpToolServer {
     name: string,
     description: string,
     params: Record<string, unknown>,
-    handler: (args: Record<string, unknown>) => Promise<unknown>,
+    handler: (args: Record<string, unknown>, extra?: { signal?: AbortSignal }) => Promise<unknown>,
   ): unknown;
 }
 
@@ -2000,9 +2000,9 @@ const resumeSchema = z.object(resumeParams);
 function wrapServerWithErrorHandler(realServer: McpToolServer): McpToolServer {
   return {
     tool(name, description, params, handler) {
-      return realServer.tool(name, description, params, async (args) => {
+      return realServer.tool(name, description, params, async (args, extra) => {
         try {
-          return await handler(args);
+          return await handler(args, extra);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           return {
@@ -2636,7 +2636,7 @@ export function registerWorkflowTools(
     "gsd_uat_exec",
     "Run one UAT-scoped bash/node/python check with milestone/slice/check metadata. Evidence persists under .gsd/exec with kind=uat_exec.",
     uatExecParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: { signal?: AbortSignal }) => {
       const { projectDir, ...params } = parseWorkflowArgs(uatExecSchema, args);
       await enforceWorkflowWriteGate("gsd_uat_exec", projectDir);
       const { executeUatExec } = await importLocalModule<any>(
@@ -2647,6 +2647,7 @@ export function registerWorkflowTools(
           executeUatExec(params, {
             baseDir: projectDir,
             preferences: await loadProjectPreferences(projectDir),
+            signal: extra?.signal,
           }),
         ),
       );
@@ -2657,7 +2658,7 @@ export function registerWorkflowTools(
     "gsd_exec",
     "Run a short bash/node/python script in the project directory. Capped stdout/stderr and metadata persist under .gsd/exec; only a digest returns to MCP.",
     execParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: { signal?: AbortSignal }) => {
       const { projectDir, ...params } = parseWorkflowArgs(execSchema, args);
       await enforceWorkflowWriteGate("gsd_exec", projectDir);
       const { executeGsdExec } = await importLocalModule<any>(
@@ -2668,6 +2669,7 @@ export function registerWorkflowTools(
           executeGsdExec(params, {
             baseDir: projectDir,
             preferences: await loadProjectPreferences(projectDir),
+            signal: extra?.signal,
           }),
         ),
       );

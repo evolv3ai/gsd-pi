@@ -48,6 +48,8 @@ export interface ExecSandboxOptions {
   now?: () => Date;
   /** Optional override for id generation (tests). */
   generateId?: () => string;
+  /** Optional request cancellation signal. Aborting kills the child process tree. */
+  signal?: AbortSignal;
   /**
    * Grace period (ms) between SIGTERM and SIGKILL on timeout.
    * Defaults to SIGKILL_GRACE_MS. Exposed as a test seam.
@@ -67,6 +69,8 @@ export interface ExecSandboxResult {
   exit_code: number | null;
   signal: NodeJS.Signals | null;
   timed_out: boolean;
+  /** True when an external AbortSignal terminated the child process tree. */
+  aborted?: boolean;
   /**
    * True when the result came from the hard-deadline force-resolve (a non-closing
    * D-state child that never emitted 'close') rather than an observed process exit.
@@ -260,11 +264,23 @@ export function runExecSandbox(
     const effectiveForceResolveDelay = opts.force_resolve_delay_ms ?? (effectiveGraceMs + HARD_DEADLINE_MS);
 
     let timedOut = false;
+    let aborted = false;
     let settled = false;
+    let killInitiated = false;
+    let timer: NodeJS.Timeout | undefined;
     let forceResolveTimer: NodeJS.Timeout | undefined;
+    let abortListener: (() => void) | undefined;
 
-    const timer = setTimeout(() => {
-      timedOut = true;
+    const removeAbortListener = () => {
+      if (opts.signal && abortListener) {
+        opts.signal.removeEventListener("abort", abortListener);
+        abortListener = undefined;
+      }
+    };
+
+    const initiateKill = () => {
+      if (killInitiated) return;
+      killInitiated = true;
       // killProcessTree handles both platforms and kills the whole tree: on Unix
       // it signals the process group (SIGTERM -> grace -> SIGKILL); on Windows it
       // force-kills the tree via taskkill /F /T. Using child.kill("SIGTERM") here
@@ -281,14 +297,14 @@ export function runExecSandbox(
         finalize(null, "SIGKILL", true);
       }, effectiveForceResolveDelay);
       forceResolveTimer.unref?.();
-    }, timeoutMs);
-    timer.unref?.();
+    };
 
     const finalize = (exitCode: number | null, signal: NodeJS.Signals | null, forceResolved = false) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       clearTimeout(forceResolveTimer);
+      removeAbortListener();
       const duration = Date.now() - started;
       const stdoutBuf = Buffer.concat(stdoutChunks);
       const stderrBuf = Buffer.concat(stderrChunks);
@@ -301,11 +317,13 @@ export function runExecSandbox(
       const digest =
         digestBody.length > 0
           ? digestBody
-          : timedOut
-            ? "[no stdout — timed out]"
-            : stderrBuf.length > 0
-              ? `[no stdout — tail of stderr]\n${tail(stderrBuf, opts.digest_chars)}`
-              : "[no output]";
+          : aborted
+            ? "[no stdout — aborted]"
+            : timedOut
+              ? "[no stdout — timed out]"
+              : stderrBuf.length > 0
+                ? `[no stdout — tail of stderr]\n${tail(stderrBuf, opts.digest_chars)}`
+                : "[no output]";
 
       const result: ExecSandboxResult = {
         id,
@@ -313,6 +331,7 @@ export function runExecSandbox(
         exit_code: exitCode,
         signal,
         timed_out: timedOut,
+        aborted,
         force_resolved: forceResolved,
         duration_ms: duration,
         stdout_bytes: stdoutBytes,
@@ -327,6 +346,26 @@ export function runExecSandbox(
       writeMeta(metaPath, result, request, now);
       resolveP(result);
     };
+
+    timer = setTimeout(() => {
+      timedOut = true;
+      initiateKill();
+    }, timeoutMs);
+    timer.unref?.();
+
+    if (opts.signal) {
+      abortListener = () => {
+        if (settled || timedOut) return;
+        aborted = true;
+        clearTimeout(timer);
+        initiateKill();
+      };
+      if (opts.signal.aborted) {
+        abortListener();
+      } else {
+        opts.signal.addEventListener("abort", abortListener, { once: true });
+      }
+    }
 
     child.on("error", (err) => {
       const message = err instanceof Error ? err.message : String(err);
@@ -364,6 +403,7 @@ function writeMeta(
     exit_code: result.exit_code,
     signal: result.signal,
     timed_out: result.timed_out,
+    aborted: result.aborted === true,
     force_resolved: result.force_resolved,
     duration_ms: result.duration_ms,
     stdout_bytes: result.stdout_bytes,
