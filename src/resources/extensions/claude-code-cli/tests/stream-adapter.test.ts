@@ -2001,7 +2001,7 @@ describe("stream-adapter — session persistence (#2859)", () => {
 });
 
 describe("stream-adapter — workflow MCP readiness", () => {
-	test("strict phase prompt omits workflow MCP question guidance when allowedTools omit it", async () => {
+	test("strict slice phase prompt omits workflow MCP question guidance when allowedTools omit it", async () => {
 		const cwd = realpathSync(mkdtempSync(join(tmpdir(), "claude-sdk-strict-question-prompt-")));
 		const restore = setWorkflowMcpEnv({
 			GSD_WORKFLOW_MCP_COMMAND: process.execPath,
@@ -2009,59 +2009,69 @@ describe("stream-adapter — workflow MCP readiness", () => {
 			GSD_WORKFLOW_MCP_ARGS: JSON.stringify(["-e", ""]),
 			GSD_WORKFLOW_MCP_CWD: cwd,
 		});
-		let capturedPrompt: unknown;
-		let capturedAllowedTools: string[] | undefined;
+		const phases = [
+			{ type: "research-slice", label: "Research Slice", expectedTool: "mcp__gsd-workflow__gsd_summary_save" },
+			{ type: "plan-slice", label: "Plan Slice", expectedTool: "mcp__gsd-workflow__gsd_plan_slice" },
+			{ type: "refine-slice", label: "Refine Slice", expectedTool: "mcp__gsd-workflow__gsd_plan_slice" },
+		] as const;
 		clearGuidedUnitContext();
 		_setAutoActiveForTest(true);
-		autoSession.currentUnit = { type: "plan-slice", id: "M001/S001", startedAt: 0, workspaceRoot: cwd } as never;
 		try {
-			const stream = streamViaClaudeCode(
-				{ id: "claude-sonnet-4-6" } as any,
-				{
-					systemPrompt: "UNIT: Plan Slice",
-					messages: [{ role: "user", content: "Plan the next slice." } as Message],
-				},
-				{
-					cwd,
-					_skipWorkflowMcpPreflightForTest: true,
-					async *_sdkQueryForTest(args: {
-						prompt: string | AsyncIterable<unknown>;
-						options?: Record<string, unknown>;
-					}) {
-						capturedPrompt = args.prompt;
-						capturedAllowedTools = args.options?.allowedTools as string[] | undefined;
-						yield {
-							type: "result",
-							subtype: "success",
-							uuid: "result-1",
-							session_id: "session-1",
-							duration_ms: 1,
-							duration_api_ms: 1,
-							is_error: false,
-							num_turns: 1,
-							result: "planned",
-							stop_reason: "end_turn",
-							total_cost_usd: 0,
-							usage: {
-								input_tokens: 0,
-								output_tokens: 0,
-								cache_read_input_tokens: 0,
-								cache_creation_input_tokens: 0,
-							},
-						};
+			for (const phase of phases) {
+				let capturedPrompt: unknown;
+				let capturedAllowedTools: string[] | undefined;
+				autoSession.currentUnit = { type: phase.type, id: "M001/S001", startedAt: 0, workspaceRoot: cwd } as never;
+				const stream = streamViaClaudeCode(
+					{ id: "claude-sonnet-4-6" } as any,
+					{
+						systemPrompt: `UNIT: ${phase.label}`,
+						messages: [{ role: "user", content: "Complete the strict slice phase." } as Message],
 					},
-				} as any,
-			);
+					{
+						cwd,
+						_skipWorkflowMcpPreflightForTest: true,
+						async *_sdkQueryForTest(args: {
+							prompt: string | AsyncIterable<unknown>;
+							options?: Record<string, unknown>;
+						}) {
+							capturedPrompt = args.prompt;
+							capturedAllowedTools = args.options?.allowedTools as string[] | undefined;
+							yield {
+								type: "result",
+								subtype: "success",
+								uuid: `result-${phase.type}`,
+								session_id: `session-${phase.type}`,
+								duration_ms: 1,
+								duration_api_ms: 1,
+								is_error: false,
+								num_turns: 1,
+								result: "completed",
+								stop_reason: "end_turn",
+								total_cost_usd: 0,
+								usage: {
+									input_tokens: 0,
+									output_tokens: 0,
+									cache_read_input_tokens: 0,
+									cache_creation_input_tokens: 0,
+								},
+							};
+						},
+					} as any,
+				);
 
-			await stream.result();
+				await stream.result();
 
-			assert.equal(typeof capturedPrompt, "string");
-			const prompt = capturedPrompt as string;
-			assert.ok(capturedAllowedTools?.includes("mcp__gsd-workflow__gsd_plan_slice"));
-			assert.ok(!capturedAllowedTools?.includes("mcp__gsd-workflow__ask_user_questions"));
-			assert.ok(!prompt.includes("mcp__gsd-workflow__ask_user_questions"));
-			assert.ok(!prompt.includes("Do not call bare ask_user_questions"));
-			assert.ok(prompt.includes("ToolSearch is available only for Claude Code deferred workflow MCP hydration"));
+				assert.equal(typeof capturedPrompt, "string", phase.type);
+				const prompt = capturedPrompt as string;
+				assert.ok(capturedAllowedTools?.includes(phase.expectedTool), phase.type);
+				assert.ok(!capturedAllowedTools?.includes("mcp__gsd-workflow__ask_user_questions"), phase.type);
+				assert.ok(!prompt.includes("mcp__gsd-workflow__ask_user_questions"), phase.type);
+				assert.ok(!prompt.includes("Do not call bare ask_user_questions"), phase.type);
+				assert.ok(
+					prompt.includes("ToolSearch is available only for Claude Code deferred workflow MCP hydration"),
+					phase.type,
+				);
+			}
 		} finally {
 			autoSession.currentUnit = null;
 			_setAutoActiveForTest(false);
