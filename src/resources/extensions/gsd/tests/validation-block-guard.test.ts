@@ -3,13 +3,25 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 
 import {
   formatValidationBlockedMessage,
+  getValidationBlockMessageForBase,
   isValidationBlockAllowedCommand,
   isValidationBlockedState,
 } from "../validation-block-guard.ts";
+import {
+  _getAdapter,
+  closeDatabase,
+  insertMilestone,
+  insertSlice,
+  openDatabase,
+} from "../gsd-db.ts";
+import { invalidateStateCache } from "../state.ts";
 import type { GSDState } from "../types.ts";
+import { cleanup, makeTempDir } from "./test-utils.ts";
 
 function blockedState(): GSDState {
   return {
@@ -36,6 +48,26 @@ function blockedState(): GSDState {
       slices: { done: 1, total: 1 },
     },
   };
+}
+
+function makeBase(): string {
+  const base = makeTempDir("gsd-validation-block-");
+  mkdirSync(join(base, ".gsd"), { recursive: true });
+  return base;
+}
+
+function seedNonBlockedMilestone(base: string): void {
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M001", title: "Active Milestone", status: "active" });
+  insertSlice({
+    id: "S01",
+    milestoneId: "M001",
+    title: "Pending Slice",
+    status: "pending",
+    risk: "low",
+    depends: [],
+  });
+  invalidateStateCache();
 }
 
 test("validation block detection only matches validation blockers", () => {
@@ -193,4 +225,26 @@ test("validation block message can guide remediation through dispatch reassess",
   assert.ok(message);
   assert.match(message, /\/gsd dispatch reassess/);
   assert.doesNotMatch(message, /gsd_reassess_roadmap/);
+});
+
+test("validation block guard does not refresh the database when state is not blocked", async () => {
+  const base = makeBase();
+  try {
+    seedNonBlockedMilestone(base);
+    const adapterBefore = _getAdapter();
+    assert.ok(adapterBefore);
+
+    const message = await getValidationBlockMessageForBase(base, "next");
+
+    assert.equal(message, null);
+    assert.equal(
+      _getAdapter(),
+      adapterBefore,
+      "non-blocked validation guard should not close and reopen the active database",
+    );
+  } finally {
+    closeDatabase();
+    invalidateStateCache();
+    cleanup(base);
+  }
 });
