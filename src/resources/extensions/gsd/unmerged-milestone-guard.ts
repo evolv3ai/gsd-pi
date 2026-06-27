@@ -1,6 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Block new workflow entry when completed milestone branches are still unmerged.
 
+import { execFileSync } from "node:child_process";
+
 import {
   nativeBranchExists,
   nativeDetectMainBranch,
@@ -12,16 +14,22 @@ import { ensureDbOpen } from "./bootstrap/dynamic-tools.js";
 import { getAllMilestones } from "./gsd-db.js";
 import { resolveMilestoneIntegrationBranch } from "./git-service.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
-import { captureRootDirtySnapshot, type RootDirtyEntry } from "./root-write-leak-guard.js";
 import { isClosedStatus } from "./status-guards.js";
+
+export interface UnmergedMilestoneDirtyEntry {
+  path: string;
+  status: string;
+}
 
 export interface UnmergedMilestoneBlocker {
   milestoneId: string;
   branch: string;
   integrationBranch: string;
   files: string[];
-  dirtyOverlap: RootDirtyEntry[];
+  dirtyOverlap: UnmergedMilestoneDirtyEntry[];
 }
+
+type UnmergedMilestoneDirtySnapshot = Map<string, UnmergedMilestoneDirtyEntry>;
 
 const BLOCKED_COMMANDS = new Set([
   "auto",
@@ -65,6 +73,32 @@ const UNMERGED_SAFE_PARALLEL_SUBCOMMANDS = new Set([
 
 function isRuntimePath(path: string): boolean {
   return path === ".gsd" || path.startsWith(".gsd/");
+}
+
+function captureDirtyPathStatusSnapshot(rootPath: string): UnmergedMilestoneDirtySnapshot {
+  const snapshot: UnmergedMilestoneDirtySnapshot = new Map();
+  let status = "";
+  try {
+    status = execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], {
+      cwd: rootPath,
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf-8",
+    });
+  } catch {
+    return snapshot;
+  }
+
+  for (const line of status.split("\n")) {
+    if (!line.trim()) continue;
+    const code = line.slice(0, 2);
+    const path = line.slice(3).replace(/^"|"$/g, "");
+    if (!path || isRuntimePath(path)) continue;
+    snapshot.set(path, {
+      path,
+      status: code.trim() || code,
+    });
+  }
+  return snapshot;
 }
 
 function formatCommandLabel(attemptedCommand: string): string {
@@ -132,7 +166,7 @@ export async function findUnmergedCompletedMilestones(base: string): Promise<Unm
   await ensureDbOpen(base);
 
   const blockers: UnmergedMilestoneBlocker[] = [];
-  const dirtyByPath = captureRootDirtySnapshot(base);
+  let dirtyByPath: UnmergedMilestoneDirtySnapshot | null = null;
 
   for (const milestone of getAllMilestones()) {
     if (!isClosedStatus(milestone.status)) continue;
@@ -158,14 +192,16 @@ export async function findUnmergedCompletedMilestones(base: string): Promise<Unm
     const uniqueFiles = [...new Set(files)].sort();
     if (uniqueFiles.length === 0) continue;
 
+    if (!dirtyByPath) dirtyByPath = captureDirtyPathStatusSnapshot(base);
+    const dirtySnapshot = dirtyByPath;
     blockers.push({
       milestoneId: milestone.id,
       branch,
       integrationBranch,
       files: uniqueFiles,
       dirtyOverlap: uniqueFiles
-        .map((path) => dirtyByPath.get(path))
-        .filter((entry): entry is RootDirtyEntry => Boolean(entry)),
+        .map((path) => dirtySnapshot.get(path))
+        .filter((entry): entry is UnmergedMilestoneDirtyEntry => Boolean(entry)),
     });
   }
 
