@@ -495,7 +495,13 @@ test("agent_end retries when empty errorMessage has stream failure in content (#
   const timers: Array<{ fn: () => void; delay: number }> = [];
 
   resetTransientRetryState();
+  autoSession.reset();
+  // handleAgentEnd returns at the isAutoActive() guard unless auto-mode is
+  // active. Set the minimum fields needed to reach the stopReason === "error"
+  // branch without requiring a real DB or worktree.
   autoSession.active = true;
+  autoSession.currentUnit = { type: "execute-task", id: "M001/S01/T01", startedAt: Date.now() };
+
   globalThis.setTimeout = ((fn: () => void, delay?: number) => {
     timers.push({ fn, delay: delay ?? 0 });
     return 0 as unknown as ReturnType<typeof setTimeout>;
