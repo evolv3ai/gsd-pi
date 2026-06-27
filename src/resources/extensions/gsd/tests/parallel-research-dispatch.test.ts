@@ -145,6 +145,32 @@ describe("parallel-research-slices dispatch rule", () => {
     }
   });
 
+  test("dispatches parallel research for S01 even when milestone research exists", async () => {
+    writeRoadmap(base, "M001", [
+      { id: "S01", title: "Alpha" },
+      { id: "S02", title: "Beta" },
+    ]);
+    writeFileSync(
+      join(base, ".gsd", "milestones", "M001", "M001-RESEARCH.md"),
+      "# Milestone Research\n",
+      "utf-8",
+    );
+
+    const action = await resolveDispatch({
+      basePath: base,
+      mid: "M001",
+      midTitle: "Parallel Research Milestone",
+      state: baseState(),
+      prefs: undefined,
+    });
+
+    assert.equal(action.action, "dispatch");
+    if (action.action === "dispatch") {
+      assert.equal(action.unitType, "research-slice");
+      assert.equal(action.unitId, "M001/parallel-research");
+    }
+  });
+
   test("does not dispatch parallel research with only one ready slice", async () => {
     writeRoadmap(base, "M001", [{ id: "S01", title: "Alpha" }]);
 

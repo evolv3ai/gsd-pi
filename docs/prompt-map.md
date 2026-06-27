@@ -480,7 +480,7 @@ Priority  Rule                                          Fires When
 16        pre-planning (has research) → plan-milestone  CONTEXT + RESEARCH done, ROADMAP missing
 17        planning (require_slice_discussion) → pause   slice flagged for discussion (#3454)
 18        planning (multi slices need research) → par…  ROADMAP done, slice RESEARCH missing × ≥2
-19        planning (no research, not S01) → research…   single slice needs RESEARCH
+19        planning (no research) → research-slice       single slice needs RESEARCH
 20        refining → refine-slice                       slice is sketch, needs expansion
 21        planning → plan-slice                         slice CONTEXT done, PLAN missing
 22        evaluating-gates → gate-evaluate              gates pending evaluation

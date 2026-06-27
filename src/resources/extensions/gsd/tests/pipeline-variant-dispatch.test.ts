@@ -22,7 +22,7 @@ import { invalidateAllCaches } from "../cache.ts";
 import type { GSDState } from "../types.ts";
 
 const PARALLEL_RESEARCH_RULE = "planning (multiple slices need research) → parallel-research-slices";
-const SINGLE_RESEARCH_RULE = "planning (no research, not S01) → research-slice";
+const SINGLE_RESEARCH_RULE = "planning (no research) → research-slice";
 const VALIDATE_RULE = "validating-milestone → validate-milestone";
 
 // ─── Fixture helpers ──────────────────────────────────────────────────────

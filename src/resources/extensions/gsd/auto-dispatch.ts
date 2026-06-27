@@ -1142,16 +1142,13 @@ export const DISPATCH_RULES: DispatchRule[] = [
       const dbSlices = getMilestoneSliceSummaries(mid);
       if (dbSlices.length === 0) return null;
 
-      // Find slices that need research (no RESEARCH file, dependencies done)
-      const milestoneResearchFile =
-        resolveExistingExpectedArtifact("research-milestone", mid, basePath) ??
-        resolveMilestoneFile(basePath, mid, "RESEARCH");
+      // Find slices that need research (no RESEARCH file, dependencies done).
+      // Milestone research informs slice research; it does not satisfy the
+      // per-slice RESEARCH artifact contract.
       const researchReadySlices: Array<{ id: string; title: string }> = [];
 
       for (const slice of dbSlices) {
         if (slice.done) continue;
-        // Skip S01 when milestone research exists
-        if (milestoneResearchFile && slice.id === "S01") continue;
         // Skip if already has research
         if (resolveExistingExpectedArtifact("research-slice", `${mid}/${slice.id}`, basePath)) continue;
         // Skip if dependencies aren't done (check for SUMMARY files)
@@ -1190,7 +1187,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
     },
   },
   {
-    name: "planning (no research, not S01) → research-slice",
+    name: "planning (no research) → research-slice",
     match: async ({ state, mid, midTitle, basePath, prefs }) => {
       if (state.phase !== "planning") return null;
       // Phase skip: skip research when preference or profile says so
@@ -1205,16 +1202,6 @@ export const DISPATCH_RULES: DispatchRule[] = [
         resolveExistingExpectedArtifact("research-slice", `${mid}/${sid}`, basePath) ??
         resolveSliceFile(basePath, mid, sid, "RESEARCH");
       if (researchFile) return null; // has research, fall through
-      // Skip slice research for S01 when milestone research already exists —
-      // the milestone research already covers the same ground for the first slice.
-      const milestoneResearchFile =
-        resolveExistingExpectedArtifact("research-milestone", mid, basePath) ??
-        resolveMilestoneFile(
-          basePath,
-          mid,
-          "RESEARCH",
-        );
-      if (milestoneResearchFile && sid === "S01") return null; // fall through to plan-slice
       return {
         action: "dispatch",
         unitType: "research-slice",

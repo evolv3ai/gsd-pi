@@ -232,11 +232,36 @@ test("dispatch-rule-coverage: planning boundary without planner handoff → rese
   assertMatch(
     match,
     {
-      ruleName: "planning (no research, not S01) → research-slice",
+      ruleName: "planning (no research) → research-slice",
       action: "dispatch",
       unitType: "research-slice",
     },
     "planning boundary without planner handoff",
+  );
+});
+
+test("dispatch-rule-coverage: S01 still researches when only milestone research exists", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-disp-cov-s01-research-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  writeMilestoneFile(tmp, "M001", "CONTEXT", "# Context\n");
+  writeMilestoneFile(tmp, "M001", "ROADMAP", "# Roadmap\n");
+  writeMilestoneFile(tmp, "M001", "RESEARCH", "# Milestone Research\n");
+
+  const state = makeState({
+    phase: "planning",
+    activeSlice: { id: "S01", title: "First Slice" },
+    nextAction: "Plan slice S01 (First Slice).",
+  });
+  const match = await findFirstMatch(makeCtx(tmp, state));
+  assertMatch(
+    match,
+    {
+      ruleName: "planning (no research) → research-slice",
+      action: "dispatch",
+      unitType: "research-slice",
+    },
+    "S01 missing slice research despite milestone research",
   );
 });
 
