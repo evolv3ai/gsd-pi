@@ -16,6 +16,7 @@ import { execSync } from "node:child_process";
 
 import { captureIntegrationBranch, getCurrentBranch } from "../../worktree.ts";
 import { readIntegrationBranch, QUICK_BRANCH_RE } from "../../git-service.ts";
+import { disableDebug, enableDebug, getDebugCounters } from "../../debug-logger.ts";
 
 function run(command: string, cwd: string): string {
   return execSync(command, { cwd, stdio: ["ignore", "pipe", "pipe"], encoding: "utf-8" }).trim();
@@ -205,16 +206,25 @@ test('cleanupQuickBranch: recovers from disk state (cross-session)', async () =>
 test('cleanupQuickBranch: no-op without pending state', async () => {
     const repo = createTestRepo();
     const origCwd = process.cwd();
-    process.chdir(repo);
+    try {
+      process.chdir(repo);
+      enableDebug(repo);
 
-    const { cleanupQuickBranch } = await import("../../quick.ts");
-    const result = cleanupQuickBranch();
+      const { cleanupQuickBranch } = await import("../../quick.ts");
+      const result = cleanupQuickBranch();
+      const firstGitInvocations = getDebugCounters().gitInvocations;
+      const secondResult = cleanupQuickBranch();
 
-    assert.ok(!result, "returns false when no pending state");
-    assert.deepStrictEqual(getCurrentBranch(repo), "main", "stays on main");
-
-    process.chdir(origCwd);
-    rmSync(repo, { recursive: true, force: true });
+      assert.ok(!result, "returns false when no pending state");
+      assert.ok(!secondResult, "still returns false when no pending state");
+      assert.deepStrictEqual(getDebugCounters().gitInvocations, firstGitInvocations,
+        "cached no-state cleanup does not re-run git branch inference");
+      assert.deepStrictEqual(getCurrentBranch(repo), "main", "stays on main");
+    } finally {
+      disableDebug();
+      process.chdir(origCwd);
+      rmSync(repo, { recursive: true, force: true });
+    }
 });
 
 test('cleanupQuickBranch: infers return state from current gsd/quick branch', async () => {
@@ -234,6 +244,43 @@ test('cleanupQuickBranch: infers return state from current gsd/quick branch', as
       assert.deepStrictEqual(getCurrentBranch(repo), "main", "returns to main");
       assert.throws(() => run("git rev-parse --verify gsd/quick/1-fix-typo", repo));
       assert.match(run("git log -1 --oneline", repo), /quick\(Q1\): fix-typo/);
+    } finally {
+      process.chdir(origCwd);
+      rmSync(repo, { recursive: true, force: true });
+    }
+});
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // cleanupQuickBranch: stale miss invalidated after mid-session branch switch
+  // ═══════════════════════════════════════════════════════════════════════
+test('cleanupQuickBranch: clears stale miss when branch switches to gsd/quick mid-session', async () => {
+    const repo = createTestRepo();
+    const origCwd = process.cwd();
+    try {
+      // Create a quick branch with real product work (so inference finds a diff)
+      run("git checkout -b gsd/quick/3-stale-miss", repo);
+      writeFileSync(join(repo, "stale.txt"), "stale miss test\n");
+      run("git add stale.txt", repo);
+      run('git commit -m "test: stale miss"', repo);
+      // Return to main so the first cleanupQuickBranch call records a miss
+      run("git checkout main", repo);
+
+      process.chdir(repo);
+      const { cleanupQuickBranch } = await import("../../quick.ts");
+
+      // First call: on main with no disk state → miss recorded (keyed to "main")
+      const result1 = cleanupQuickBranch();
+      assert.ok(!result1, "first call (on main) returns false — miss recorded");
+
+      // Simulate mid-session external branch switch to the stranded quick branch
+      run("git checkout gsd/quick/3-stale-miss", repo);
+
+      // Second call: branch changed from the recorded miss, so cache is invalidated
+      // and inferQuickReturnFromBranch runs — cleanup must succeed
+      const result2 = cleanupQuickBranch();
+      assert.ok(result2, "second call returns true after mid-session switch to quick branch");
+      assert.deepStrictEqual(getCurrentBranch(repo), "main",
+        "cleanup merged back to main after stale-miss invalidation");
     } finally {
       process.chdir(origCwd);
       rmSync(repo, { recursive: true, force: true });

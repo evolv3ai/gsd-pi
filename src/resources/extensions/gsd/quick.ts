@@ -10,8 +10,8 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { QUICK_BRANCH_RE } from "./branch-patterns.js";
 import { loadPrompt } from "./prompt-loader.js";
 import { gsdRoot } from "./paths.js";
@@ -31,6 +31,7 @@ interface QuickReturnState {
 }
 
 let pendingQuickReturn: QuickReturnState | null = null;
+const pendingQuickReturnMisses = new Map<string, string>();
 
 // ─── Quick Task Helpers ───────────────────────────────────────────────────────
 
@@ -189,12 +190,35 @@ export function buildQuickCommitInstruction(basePath: string, root: string): str
   ].join("\n");
 }
 
+function readHeadBranchName(basePath: string): string | null {
+  try {
+    const gitPath = join(basePath, ".git");
+    if (!existsSync(gitPath)) return null;
+
+    let headPath: string;
+    if (lstatSync(gitPath).isDirectory()) {
+      headPath = join(gitPath, "HEAD");
+    } else {
+      const gitFile = readFileSync(gitPath, "utf-8").trim();
+      if (!gitFile.startsWith("gitdir: ")) return null;
+      headPath = join(resolve(basePath, gitFile.slice("gitdir: ".length)), "HEAD");
+    }
+
+    const head = readFileSync(headPath, "utf-8").trim();
+    if (!head.startsWith("ref: refs/heads/")) return null;
+    return head.slice("ref: refs/heads/".length);
+  } catch {
+    return null;
+  }
+}
+
 function quickReturnStatePath(basePath: string): string {
   return join(gsdRoot(basePath), "runtime", "quick-return.json");
 }
 
 function persistPendingReturn(state: QuickReturnState): void {
   pendingQuickReturn = state;
+  pendingQuickReturnMisses.delete(state.basePath);
   mkdirSync(join(gsdRoot(state.basePath), "runtime"), { recursive: true });
   writeFileSync(quickReturnStatePath(state.basePath), JSON.stringify(state) + "\n", "utf-8");
 }
@@ -202,6 +226,13 @@ function persistPendingReturn(state: QuickReturnState): void {
 function readPendingReturn(basePath: string): QuickReturnState | null {
   if (pendingQuickReturn && pendingQuickReturn.basePath === basePath) {
     return pendingQuickReturn;
+  }
+  if (pendingQuickReturnMisses.has(basePath)) {
+    const statePath = quickReturnStatePath(basePath);
+    if (!existsSync(statePath) && readHeadBranchName(basePath) === pendingQuickReturnMisses.get(basePath)) {
+      return null;
+    }
+    pendingQuickReturnMisses.delete(basePath);
   }
 
   try {
@@ -216,6 +247,7 @@ function readPendingReturn(basePath: string): QuickReturnState | null {
       && typeof parsed.description === "string"
     ) {
       pendingQuickReturn = parsed as QuickReturnState;
+      pendingQuickReturnMisses.delete(basePath);
       return pendingQuickReturn;
     }
   } catch {
@@ -225,15 +257,24 @@ function readPendingReturn(basePath: string): QuickReturnState | null {
   const inferred = inferQuickReturnFromBranch(basePath);
   if (inferred) {
     pendingQuickReturn = inferred;
+    pendingQuickReturnMisses.delete(basePath);
     return inferred;
   }
 
+  const branchAtMiss = readHeadBranchName(basePath);
+  if (branchAtMiss) {
+    pendingQuickReturnMisses.set(basePath, branchAtMiss);
+  }
   return null;
 }
 
 function clearPendingReturn(basePath: string): void {
   if (pendingQuickReturn?.basePath === basePath) {
     pendingQuickReturn = null;
+  }
+  const branchAtMiss = readHeadBranchName(basePath);
+  if (branchAtMiss) {
+    pendingQuickReturnMisses.set(basePath, branchAtMiss);
   }
   rmSync(quickReturnStatePath(basePath), { force: true });
 }
