@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { encodeCwd } from "../resources/extensions/subagent/isolation.ts";
-import { buildGoogleCliRunPlan, buildGoogleCliSpawnInvocation } from "../resources/extensions/google-cli/stream-adapter.ts";
+import {
+	buildGoogleCliChildEnv,
+	buildGoogleCliRunPlan,
+	buildGoogleCliSpawnInvocation,
+} from "../resources/extensions/google-cli/stream-adapter.ts";
 import { buildGsdClientSpawnPlan } from "../../vscode-extension/src/gsd-client-spawn.ts";
 
 test("encodeCwd produces a filesystem-safe token for Windows paths", () => {
@@ -58,4 +62,42 @@ test("Google CLI run plan passes prompt as -p arg on non-Windows platforms", () 
 	assert.ok(antigravityPlan.args.includes("-p"));
 	assert.ok(antigravityPlan.args.includes(prompt));
 	assert.equal(antigravityPlan.stdin, undefined);
+});
+
+test("Google CLI child env omits large GSD internals on Windows", () => {
+	const hugeInternalValue = "x".repeat(70_000);
+	const env = buildGoogleCliChildEnv({
+		Path: "C:\\Windows\\System32;C:\\Tools",
+		USERPROFILE: "C:\\Users\\Alice",
+		APPDATA: "C:\\Users\\Alice\\AppData\\Roaming",
+		LOCALAPPDATA: "C:\\Users\\Alice\\AppData\\Local",
+		COMSPEC: "C:\\Windows\\System32\\cmd.exe",
+		systemroot: "C:\\Windows",
+		GEMINI_API_KEY: "gemini-key",
+		HTTPS_PROXY: "http://proxy.local:8080",
+		GSD_BUNDLED_EXTENSION_PATHS: hugeInternalValue,
+		GSD_WORKFLOW_EXECUTORS_MODULE: hugeInternalValue,
+		NODE_PATH: hugeInternalValue,
+	}, "win32");
+
+	assert.equal(env.Path, "C:\\Windows\\System32;C:\\Tools");
+	assert.equal(env.USERPROFILE, "C:\\Users\\Alice");
+	assert.equal(env.APPDATA, "C:\\Users\\Alice\\AppData\\Roaming");
+	assert.equal(env.LOCALAPPDATA, "C:\\Users\\Alice\\AppData\\Local");
+	assert.equal(env.COMSPEC, "C:\\Windows\\System32\\cmd.exe");
+	assert.equal(env.systemroot, "C:\\Windows");
+	assert.equal(env.GEMINI_API_KEY, "gemini-key");
+	assert.equal(env.HTTPS_PROXY, "http://proxy.local:8080");
+	assert.equal(env.GSD_BUNDLED_EXTENSION_PATHS, undefined);
+	assert.equal(env.GSD_WORKFLOW_EXECUTORS_MODULE, undefined);
+	assert.equal(env.NODE_PATH, undefined);
+});
+
+test("Google CLI child env is unchanged on non-Windows platforms", () => {
+	const env = {
+		PATH: "/usr/bin",
+		GSD_BUNDLED_EXTENSION_PATHS: "/tmp/extensions",
+	};
+
+	assert.equal(buildGoogleCliChildEnv(env, "linux"), env);
 });

@@ -35,6 +35,71 @@ interface CliRunResult {
 	signal: NodeJS.Signals | null;
 }
 
+const WINDOWS_CHILD_ENV_KEYS = new Set([
+	"ALLUSERSPROFILE",
+	"APPDATA",
+	"COMSPEC",
+	"COMMONPROGRAMFILES",
+	"COMMONPROGRAMFILES(X86)",
+	"FORCE_COLOR",
+	"HOME",
+	"HOMEDRIVE",
+	"HOMEPATH",
+	"LANG",
+	"LC_ALL",
+	"LOCALAPPDATA",
+	"NODE_EXTRA_CA_CERTS",
+	"NO_COLOR",
+	"NO_PROXY",
+	"PATHEXT",
+	"PATH",
+	"PROGRAMDATA",
+	"PROGRAMFILES",
+	"PROGRAMFILES(X86)",
+	"SSL_CERT_FILE",
+	"SYSTEMROOT",
+	"TEMP",
+	"TERM",
+	"TMP",
+	"TMPDIR",
+	"USER",
+	"USERNAME",
+	"USERPROFILE",
+	"WINDIR",
+	"XDG_CACHE_HOME",
+	"XDG_CONFIG_HOME",
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+]);
+
+const WINDOWS_CHILD_ENV_PREFIXES = [
+	"AGY_",
+	"ANTIGRAVITY_",
+	"CLOUDSDK_",
+	"GEMINI_",
+	"GOOGLE_",
+];
+
+export function buildGoogleCliChildEnv(
+	env: NodeJS.ProcessEnv = process.env,
+	platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+	if (platform !== "win32") return env;
+
+	const childEnv: NodeJS.ProcessEnv = {};
+	for (const [key, value] of Object.entries(env)) {
+		if (typeof value !== "string") continue;
+		const upperKey = key.toUpperCase();
+		if (
+			WINDOWS_CHILD_ENV_KEYS.has(upperKey) ||
+			WINDOWS_CHILD_ENV_PREFIXES.some((prefix) => upperKey.startsWith(prefix))
+		) {
+			childEnv[key] = value;
+		}
+	}
+	return childEnv;
+}
+
 function textBlocks(content: (TextContent | { type: string })[]): string {
 	return content
 		.map((block) => block.type === "text" ? (block as TextContent).text : `[${block.type} omitted]`)
@@ -167,7 +232,7 @@ function runCli(plan: GoogleCliRunPlan, options?: SimpleStreamOptions): Promise<
 	return new Promise((resolve, reject) => {
 		const child = spawn(plan.command, plan.args, {
 			cwd: options?.cwd || process.cwd(),
-			env: process.env,
+			env: buildGoogleCliChildEnv(),
 			stdio: [plan.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
 		});
 
