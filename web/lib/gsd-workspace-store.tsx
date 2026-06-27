@@ -1662,6 +1662,9 @@ export class GSDWorkspaceStore {
   private commandTimeoutTimer: ReturnType<typeof setTimeout> | null = null
   private lastBootRefreshAt = 0
   private visibilityHandler: (() => void) | null = null
+  private emitScheduled = false
+  private emitFrame: number | null = null
+  private emitTimer: ReturnType<typeof setTimeout> | null = null
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)
@@ -1691,6 +1694,7 @@ export class GSDWorkspaceStore {
   dispose = (): void => {
     this.disposed = true
     this.started = false
+    this.cancelScheduledEmit()
     this.stopOnboardingPoller()
     this.closeEventStream()
     this.clearCommandTimeout()
@@ -4632,10 +4636,43 @@ export class GSDWorkspaceStore {
     }
   }
 
+  private scheduleEmit(): void {
+    if (this.emitScheduled || this.listeners.size === 0) return
+    this.emitScheduled = true
+
+    if (typeof requestAnimationFrame === "function") {
+      this.emitFrame = requestAnimationFrame(this.flushEmit)
+      return
+    }
+
+    this.emitTimer = setTimeout(this.flushEmit, 0)
+  }
+
+  private flushEmit = (): void => {
+    this.emitScheduled = false
+    this.emitFrame = null
+    this.emitTimer = null
+    if (this.disposed) return
+    this.emit()
+  }
+
+  private cancelScheduledEmit(): void {
+    if (!this.emitScheduled) return
+    if (this.emitFrame !== null && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(this.emitFrame)
+    }
+    if (this.emitTimer !== null) {
+      clearTimeout(this.emitTimer)
+    }
+    this.emitScheduled = false
+    this.emitFrame = null
+    this.emitTimer = null
+  }
+
   private patchState(patch: Partial<WorkspaceStoreState>): void {
     this.state = { ...this.state, ...patch }
     this.syncOnboardingPoller()
-    this.emit()
+    this.scheduleEmit()
   }
 
   private syncOnboardingPoller(): void {
