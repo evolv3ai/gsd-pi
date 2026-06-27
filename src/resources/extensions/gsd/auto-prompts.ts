@@ -65,7 +65,6 @@ import {
   type UatType,
 } from "./uat-policy.js";
 import { buildWebAppUatGuidanceBlock } from "./web-app-uat.js";
-import { resolveExpectedArtifactPath } from "./auto-artifact-paths.js";
 
 export { buildSkillActivationBlock, buildSkillDiscoveryVars };
 
