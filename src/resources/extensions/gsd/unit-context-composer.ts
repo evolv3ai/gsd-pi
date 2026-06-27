@@ -153,6 +153,8 @@ export const CONTEXT_MODE_GUIDANCE_BY_UNIT: Readonly<Record<string, string>> = {
     "Use `gsd_milestone_status` to inspect current milestone state, then `gsd_reassess_roadmap` to persist the roadmap reassessment.",
   "run-uat":
     "Use `gsd_uat_exec` for acceptance checks so evidence is typed as UAT-owned, and `gsd_resume` after compaction or resume.",
+  "research-project":
+    "Dispatch parallel scout subagents for stack, features, architecture, and pitfalls research; each writes one file under `.gsd/research/` (`STACK.md`, `FEATURES.md`, `ARCHITECTURE.md`, `PITFALLS.md`).",
   "gate-evaluate":
     "Use `subagent` to dispatch tester agents, then persist each gate with `gsd_save_gate_result`; rely on testers for verification evidence.",
 };

@@ -74,12 +74,12 @@ Workflow Preferences -> Project Context -> Requirements -> Research Decision -> 
 | `.gsd/PROJECT.md` | `discuss-project` | Project vision, users, anti-goals, constraints, and rough milestone sequence |
 | `.gsd/REQUIREMENTS.md` | `discuss-requirements` | Capability contract using `R###` requirements grouped by Active, Validated, Deferred, and Out of Scope |
 | `.gsd/runtime/research-decision.json` | `research-decision` | Records `research` or `skip`; this unit only asks the question and writes the marker |
-| `.gsd/research/STACK.md`, `FEATURES.md`, `ARCHITECTURE.md`, `PITFALLS.md` | `research-project`, only when the decision is `research` | Four parallel project-level research outputs for stack, feature norms, architecture, and pitfalls |
+| `.gsd/research/STACK.md`, `FEATURES.md`, `ARCHITECTURE.md`, `PITFALLS.md` | `research-project`, only when the decision is `research` | Four scout-backed project research outputs for stack, feature norms, architecture, and pitfalls |
 | `.gsd/milestones/<MID>/M###-CONTEXT.md` and `M###-ROADMAP.md` | Normal milestone discussion/planning | Milestone-specific context and executable roadmap; `` `[sketch]` `` marks slices awaiting `refine-slice` |
 
 `REQUIREMENTS.md` is rendered from the requirements stored in the GSD database. Agents should save individual requirements with `gsd_requirement_save`; a final `gsd_summary_save` for `REQUIREMENTS` will fail if no active requirement rows exist instead of treating caller-supplied markdown as canonical.
 
-Project research is informational, not binding. It cross-checks the requirements and surfaces table stakes, risks, and omissions; any new commitment should be added to `.gsd/REQUIREMENTS.md` before planning depends on it.
+Project research is informational, not binding. The `research-project` parent dispatches parallel scout subagents for the four research dimensions; each scout writes one file under `.gsd/research/` (`STACK.md`, `FEATURES.md`, `ARCHITECTURE.md`, `PITFALLS.md`). The outputs cross-check the requirements and surface table stakes, risks, and omissions; any new commitment should be added to `.gsd/REQUIREMENTS.md` before planning depends on it.
 
 ## Key Properties
 
@@ -144,11 +144,11 @@ The amount of context inlined is controlled by your [token profile](./token-opti
 
 ### Context Mode
 
-Context Mode is enabled by default for auto-mode runs. Eligible auto-mode units receive manifest-driven guidance to preserve the conversation window: use `gsd_exec` for noisy codebase scans, builds, tests, and diagnostics; use `gsd_exec_search` before repeating a prior sandboxed run; and use `gsd_resume` after compaction or session resume to read a prior compaction snapshot from `.gsd/last-snapshot.md` when one exists.
+Context Mode is enabled by default for auto-mode runs. Eligible auto-mode units receive manifest-driven guidance based on their context lane and any unit-specific override. Most execution-style lanes preserve the conversation window with `gsd_exec` for noisy codebase scans, builds, tests, and diagnostics, `gsd_exec_search` before repeating a prior sandboxed run, and `gsd_resume` after compaction or session resume. Some units name narrower tools instead; for example, `research-project` dispatches parallel scout subagents so each dimension writes one file under `.gsd/research/`.
 
 `contextMode: triage` is used specifically for capture triage turns so they stay focused on classification and routing decisions instead of implementation work.
 
-`gsd_exec` writes capped stdout/stderr and metadata under `.gsd/exec/`; output may be truncated. It then returns only a short digest to the agent. This keeps large command output out of the LLM context while preserving exact evidence on disk. In milestone worktree mode, `gsd_exec` also rejects scripts that target the original project root (including traversal patterns such as `cd ../../..`) so execution stays inside the active worktree boundary. To opt out of Context Mode guidance, snapshot injection, `gsd_exec`, `gsd_exec_search`, and `gsd_resume`, set:
+When present in a unit's tool contract, `gsd_exec` writes capped stdout/stderr and metadata under `.gsd/exec/`; output may be truncated. It then returns only a short digest to the agent. This keeps large command output out of the LLM context while preserving exact evidence on disk. In milestone worktree mode, `gsd_exec` also rejects scripts that target the original project root (including traversal patterns such as `cd ../../..`) so execution stays inside the active worktree boundary. To opt out of Context Mode guidance, snapshot injection, and context-mode execution tools, set:
 
 ```yaml
 context_mode:
