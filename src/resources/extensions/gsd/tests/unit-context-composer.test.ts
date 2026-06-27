@@ -236,7 +236,7 @@ test("Context Mode composer: narrow planning guidance steers only to contracted 
 });
 
 test("Context Mode composer: slice planning and research guidance tools pass unit contracts", () => {
-  const affectedUnits = ["research-slice", "plan-slice", "refine-slice"];
+  const affectedUnits = ["research-milestone", "research-slice", "plan-slice", "refine-slice"];
   const contextModeTools: UnitGsdToolName[] = ["gsd_exec", "gsd_exec_search", "gsd_resume"];
   const readOnlyOrientationTools: UnitGsdToolName[] = ["gsd_milestone_status", ...contextModeTools];
 
@@ -247,7 +247,10 @@ test("Context Mode composer: slice planning and research guidance tools pass uni
     for (const toolName of contextModeTools) {
       assert.ok(out.includes(`\`${toolName}\``), `${unitType} guidance should mention ${toolName}`);
     }
-    for (const toolName of readOnlyOrientationTools) {
+    const expectedContractTools = unitType === "research-milestone"
+      ? contextModeTools
+      : readOnlyOrientationTools;
+    for (const toolName of expectedContractTools) {
       assert.ok(allowed.has(toolName), `${unitType} contract should allow ${toolName}`);
       const scope = shouldBlockAutoUnitToolCall(unitType, toolName);
       assert.equal(scope.block, false, `${unitType} should not hard-block ${toolName}: ${scope.reason ?? ""}`);
