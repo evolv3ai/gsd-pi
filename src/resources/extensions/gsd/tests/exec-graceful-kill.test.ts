@@ -97,6 +97,7 @@ test(
     );
     const meta = JSON.parse(readFileSync(result.meta_path, 'utf-8'));
     assert.equal(meta.aborted, true, 'meta.json must persist the aborted marker');
+    assert.equal(meta.timed_out, false, 'meta.json must not report timed_out when abort caused the kill');
   },
 );
 
