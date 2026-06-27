@@ -251,6 +251,43 @@ test('cleanupQuickBranch: infers return state from current gsd/quick branch', as
 });
 
   // ═══════════════════════════════════════════════════════════════════════
+  // cleanupQuickBranch: stale miss invalidated after mid-session branch switch
+  // ═══════════════════════════════════════════════════════════════════════
+test('cleanupQuickBranch: clears stale miss when branch switches to gsd/quick mid-session', async () => {
+    const repo = createTestRepo();
+    const origCwd = process.cwd();
+    try {
+      // Create a quick branch with real product work (so inference finds a diff)
+      run("git checkout -b gsd/quick/3-stale-miss", repo);
+      writeFileSync(join(repo, "stale.txt"), "stale miss test\n");
+      run("git add stale.txt", repo);
+      run('git commit -m "test: stale miss"', repo);
+      // Return to main so the first cleanupQuickBranch call records a miss
+      run("git checkout main", repo);
+
+      process.chdir(repo);
+      const { cleanupQuickBranch } = await import("../../quick.ts");
+
+      // First call: on main with no disk state → miss recorded (keyed to "main")
+      const result1 = cleanupQuickBranch();
+      assert.ok(!result1, "first call (on main) returns false — miss recorded");
+
+      // Simulate mid-session external branch switch to the stranded quick branch
+      run("git checkout gsd/quick/3-stale-miss", repo);
+
+      // Second call: branch changed from the recorded miss, so cache is invalidated
+      // and inferQuickReturnFromBranch runs — cleanup must succeed
+      const result2 = cleanupQuickBranch();
+      assert.ok(result2, "second call returns true after mid-session switch to quick branch");
+      assert.deepStrictEqual(getCurrentBranch(repo), "main",
+        "cleanup merged back to main after stale-miss invalidation");
+    } finally {
+      process.chdir(origCwd);
+      rmSync(repo, { recursive: true, force: true });
+    }
+});
+
+  // ═══════════════════════════════════════════════════════════════════════
   // End-to-end: quick branch does NOT contaminate integration branch
   // ═══════════════════════════════════════════════════════════════════════
 test('E2E: quick branch does not contaminate integration branch', () => {
