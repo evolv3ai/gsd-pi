@@ -127,6 +127,31 @@ test("formatUnmergedMilestoneBlockMessage includes files, branch, and dirty over
   }
 });
 
+test("findUnmergedCompletedMilestones reports dirty overlap without content fingerprints", async () => {
+  const base = makeTempRepo("gsd-unmerged-guard-");
+  try {
+    const relPath = "build/output.bin";
+    const absPath = join(base, relPath);
+    mkdirSync(dirname(absPath), { recursive: true });
+    writeFileSync(absPath, "main artifact\n");
+    git(base, "add", relPath);
+    git(base, "commit", "-m", "test: track build output fixture");
+
+    seedMilestone(base, "M012");
+    commitBranchFile(base, "milestone/M012", relPath, "milestone artifact\n");
+    writeFileSync(absPath, "dirty root artifact\n");
+
+    const [blocker] = await findUnmergedCompletedMilestones(base);
+    assert.ok(blocker);
+    assert.deepEqual(blocker.files, [relPath]);
+    assert.deepEqual(blocker.dirtyOverlap, [{ path: relPath, status: "M" }]);
+    assert.equal(Object.hasOwn(blocker.dirtyOverlap[0], "fingerprint"), false);
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
 test("isUnmergedMilestoneAllowedCommand permits inspection and explicit recovery commands", () => {
   assert.equal(isUnmergedMilestoneAllowedCommand(""), false);
   assert.equal(isUnmergedMilestoneAllowedCommand("auto"), false);
