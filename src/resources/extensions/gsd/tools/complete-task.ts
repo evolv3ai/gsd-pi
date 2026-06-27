@@ -131,6 +131,12 @@ async function renderCompleteTaskProjections(basePath: string, milestoneId: stri
   }
 }
 
+function ensureCompleteTaskDbOpen(dbPath: string | null): boolean {
+  if (!dbPath || dbPath === ":memory:") return isDbAvailable();
+  if (isDbAvailable() && getWorkflowDatabasePath() === dbPath) return true;
+  return openWorkflowDatabasePath(dbPath);
+}
+
 async function repairMissingTaskSummaryProjection(
   artifactBasePath: string,
   taskRow: TaskRow,
@@ -467,6 +473,9 @@ export async function handleCompleteTask(
 
     // Toggle or regenerate the plan projection from DB. Missing projection
     // files are rebuilt by the renderer instead of being skipped.
+    if (!ensureCompleteTaskDbOpen(rollbackDbPath)) {
+      throw new Error(`database unavailable before plan projection render for ${params.milestoneId}/${params.sliceId}`);
+    }
     const wrotePlan = await renderPlanCheckboxes(artifactBasePath, params.milestoneId, params.sliceId);
     if (!wrotePlan) {
       throw new Error(`plan projection write returned false for ${params.milestoneId}/${params.sliceId}`);
@@ -479,9 +488,7 @@ export async function handleCompleteTask(
     );
     let rollbackSucceeded = false;
     try {
-      if (!isDbAvailable() && rollbackDbPath && rollbackDbPath !== ":memory:") {
-        openWorkflowDatabasePath(rollbackDbPath);
-      }
+      ensureCompleteTaskDbOpen(rollbackDbPath);
       deleteVerificationEvidence(params.milestoneId, params.sliceId, params.taskId);
       updateTaskStatus(params.milestoneId, params.sliceId, params.taskId, "pending");
       invalidateStateCache();
