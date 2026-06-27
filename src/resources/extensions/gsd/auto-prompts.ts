@@ -330,6 +330,7 @@ function renderExecuteTaskOnDemandContext(
   artifacts: readonly ArtifactKey[],
 ): string {
   if (!artifacts.includes("slice-research")) return "";
+  if (!resolveSliceFile(base, mid, sid, "RESEARCH")) return "";
   const researchPath = relSliceFile(base, mid, sid, "RESEARCH");
   return [
     "## On-demand Context",

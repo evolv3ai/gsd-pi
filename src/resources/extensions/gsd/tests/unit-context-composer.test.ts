@@ -518,13 +518,31 @@ test("#4782 phase 2: buildReassessRoadmapPrompt emits composer-shaped context wi
   assert.ok(!prompt.includes("Slice Context (from discussion)"));
 });
 
-test("execute-task prompt surfaces contract-declared on-demand slice research", async (t) => {
+test("execute-task prompt omits on-demand slice research when the artifact is absent", async (t) => {
   const base = makeFixtureBase();
   t.after(() => cleanup(base));
   invalidateAllCaches();
 
   seed(base, "M001");
   writeArtifacts(base);
+
+  const prompt = await buildExecuteTaskPrompt("M001", "S01", "First", "T01", "Task", base);
+
+  assert.doesNotMatch(prompt, /## On-demand Context/);
+  assert.doesNotMatch(prompt, /\.gsd\/milestones\/M001\/slices\/S01\/S01-RESEARCH\.md/);
+});
+
+test("execute-task prompt surfaces on-demand slice research when the artifact exists", async (t) => {
+  const base = makeFixtureBase();
+  t.after(() => cleanup(base));
+  invalidateAllCaches();
+
+  seed(base, "M001");
+  writeArtifacts(base);
+  writeFileSync(
+    join(base, ".gsd", "milestones", "M001", "slices", "S01", "S01-RESEARCH.md"),
+    "# S01 Research\n",
+  );
 
   const prompt = await buildExecuteTaskPrompt("M001", "S01", "First", "T01", "Task", base);
 
