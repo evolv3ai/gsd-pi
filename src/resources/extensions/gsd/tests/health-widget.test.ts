@@ -172,6 +172,39 @@ test("getCachedProjectState: force=true bypasses TTL and returns fresh state wit
   assert.equal(getCachedProjectState(dir), "active");
 });
 
+test("initHealthWidget: re-init paints fresh project state within cache TTL", (t) => {
+  const dir = makeTempDir("reinit-state");
+  t.after(() => { cleanup(dir); });
+
+  let now = 3_000_000;
+  const dateNow = t.mock.method(Date, "now", () => now);
+  t.after(() => { dateNow.mock.restore(); });
+
+  const originalCwd = process.cwd();
+  process.chdir(dir);
+  t.after(() => { process.chdir(originalCwd); });
+
+  const initialLineSets: string[][] = [];
+  const ctx = {
+    hasUI: true,
+    ui: {
+      setWidget: (_key: string, value: unknown) => {
+        if (Array.isArray(value)) initialLineSets.push(value as string[]);
+      },
+    },
+  } as any;
+
+  mkdirSync(join(dir, ".gsd"), { recursive: true });
+  initHealthWidget(ctx);
+  assert.equal(initialLineSets.at(-1)?.[0], "  GSD  Project Initialized");
+
+  mkdirSync(join(dir, ".gsd", "milestones", "M001"), { recursive: true });
+  now += 1_000;
+
+  initHealthWidget(ctx);
+  assert.match(initialLineSets.at(-1)?.[0] ?? "", /System OK/);
+});
+
 test("buildHealthLines: none state shows single onboarding line pointing at /gsd", (t) => {
   const lines = buildHealthLines(activeData({ projectState: "none" }));
   assert.equal(lines.length, 1, "renders exactly one line");
