@@ -540,6 +540,11 @@ export async function handleCompleteSlice(
   // Separate try/catch per step so a projection failure doesn't prevent
   // the event log entry (critical for worktree reconciliation).
   try {
+    await renderRoadmapFromDb(artifactBasePath, params.milestoneId);
+  } catch (projErr) {
+    logWarning("tool", `complete-slice milestone roadmap projection warning for ${params.milestoneId}/${params.sliceId}: ${(projErr as Error).message}`);
+  }
+  try {
     renderTopLevelRoadmapFromDb(artifactBasePath);
   } catch (projErr) {
     logWarning("tool", `complete-slice roadmap projection warning for ${params.milestoneId}/${params.sliceId}: ${(projErr as Error).message}`);
