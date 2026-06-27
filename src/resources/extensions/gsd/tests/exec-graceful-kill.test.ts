@@ -63,6 +63,43 @@ function wallClockGuard<T>(promise: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
+test(
+  'runExecSandbox: aborted signal terminates promptly without waiting for timeout',
+  { timeout: 10_000 },
+  async (t) => {
+    const base = freshBase();
+    t.after(() => cleanup(base));
+
+    const controller = new AbortController();
+    controller.abort();
+    const TIMEOUT_MS = 10_000;
+
+    const start = Date.now();
+    const result = await wallClockGuard(
+      runExecSandbox(
+        { runtime: 'node', script: 'setTimeout(() => {}, 30_000);', timeout_ms: TIMEOUT_MS },
+        baseOpts(base, {
+          signal: controller.signal,
+          kill_grace_ms: 500,
+          force_resolve_delay_ms: 2_000,
+        }),
+      ),
+      5_000,
+    );
+    const elapsed = Date.now() - start;
+
+    assert.equal(result.aborted, true, 'aborted signal must be recorded on the sandbox result');
+    assert.equal(result.timed_out, false, 'client abort must not be reported as a sandbox timeout');
+    assert.ok(elapsed < TIMEOUT_MS, `expected abort before ${TIMEOUT_MS}ms timeout, took ${elapsed}ms`);
+    assert.ok(
+      result.duration_ms < TIMEOUT_MS,
+      `expected result duration before timeout, got ${result.duration_ms}ms`,
+    );
+    const meta = JSON.parse(readFileSync(result.meta_path, 'utf-8'));
+    assert.equal(meta.aborted, true, 'meta.json must persist the aborted marker');
+  },
+);
+
 // Clean up a detached child (and its process group) that a large kill_grace_ms
 // intentionally leaves alive past the force-resolve deadline.
 function cleanupByPidFile(pidFile: string): void {

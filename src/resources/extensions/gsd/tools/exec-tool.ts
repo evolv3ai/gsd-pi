@@ -31,6 +31,7 @@ export interface ExecToolDeps {
   env?: NodeJS.ProcessEnv;
   now?: () => Date;
   generateId?: () => string;
+  signal?: AbortSignal;
 }
 
 export type UatExecIntent =
@@ -74,7 +75,7 @@ const UAT_EXEC_INTENT_ALIASES: Record<string, UatExecIntent> = {
 export function buildExecOptions(
   baseDir: string,
   cfg: ContextModeConfig | undefined,
-  extras?: Pick<ExecSandboxOptions, "env" | "now" | "generateId">,
+  extras?: Pick<ExecSandboxOptions, "env" | "now" | "generateId" | "signal">,
 ): ExecSandboxOptions {
   const allowlist = Array.isArray(cfg?.exec_env_allowlist) ? cfg!.exec_env_allowlist! : EXEC_DEFAULTS.envAllowlist;
   const stdoutCap = clampNumber(
@@ -209,7 +210,7 @@ export async function executeGsdExec(
   const opts = buildExecOptions(
     deps.baseDir,
     deps.preferences?.context_mode,
-    { env: deps.env, now: deps.now, generateId: deps.generateId },
+    { env: deps.env, now: deps.now, generateId: deps.generateId, signal: deps.signal },
   );
   const run = deps.run ?? runExecSandbox;
 
@@ -308,6 +309,7 @@ function formatResult(result: ExecSandboxResult): ToolExecutionResult {
       exit_code: result.exit_code,
       signal: result.signal,
       timed_out: result.timed_out,
+      aborted: result.aborted === true,
       force_resolved: result.force_resolved,
       duration_ms: result.duration_ms,
       stdout_bytes: result.stdout_bytes,
@@ -318,13 +320,15 @@ function formatResult(result: ExecSandboxResult): ToolExecutionResult {
       stderr_path: result.stderr_path,
       meta_path: result.meta_path,
     },
-    isError: result.timed_out || result.signal !== null || result.exit_code !== 0,
+    isError: result.aborted === true || result.timed_out || result.signal !== null || result.exit_code !== 0,
   };
 }
 
 function formatExit(result: ExecSandboxResult): string {
   // force_resolved means a non-closing (D-state) child was force-resolved past its
   // hard deadline rather than observed exiting; distinguish it from a clean timeout.
+  if (result.aborted && result.force_resolved) return "aborted(force-killed)";
+  if (result.aborted) return "aborted";
   if (result.force_resolved) return "timeout(force-killed)";
   if (result.timed_out) return "timeout";
   if (result.signal) return `signal:${result.signal}`;

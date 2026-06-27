@@ -133,7 +133,7 @@ function makeMockServer() {
     name: string;
     description: string;
     params: Record<string, unknown>;
-    handler: (args: Record<string, unknown>) => Promise<unknown>;
+    handler: (args: Record<string, unknown>, extra?: { signal?: AbortSignal }) => Promise<unknown>;
   }> = [];
   return {
     tools,
@@ -141,7 +141,7 @@ function makeMockServer() {
       name: string,
       description: string,
       params: Record<string, unknown>,
-      handler: (args: Record<string, unknown>) => Promise<unknown>,
+      handler: (args: Record<string, unknown>, extra?: { signal?: AbortSignal }) => Promise<unknown>,
     ) {
       tools.push({ name, description, params, handler });
     },
@@ -511,6 +511,45 @@ describe("workflow MCP tools", () => {
       assert.equal(record.isError, false);
       assert.equal(record.structuredContent.runtime, "bash");
       assert.match(record.content[0].text as string, /mcp-command-alias-defaults-to-bash/);
+    } finally {
+      cleanup(base);
+    }
+  });
+
+  it("gsd_exec honors MCP abort signal before the sandbox timeout", async () => {
+    const base = makeTmpBase();
+    try {
+      const server = makeMockServer();
+      registerWorkflowTools(server as any);
+      const tool = server.tools.find((t) => t.name === "gsd_exec");
+      assert.ok(tool, "exec tool should be registered");
+
+      const controller = new AbortController();
+      controller.abort();
+      const timeoutMs = 5_000;
+
+      const result = await tool!.handler(
+        {
+          projectDir: base,
+          runtime: "node",
+          script: "setTimeout(() => {}, 30_000);",
+          timeout_ms: timeoutMs,
+        },
+        { signal: controller.signal },
+      );
+
+      const record = result as any;
+      assert.equal(record.isError, true);
+      assert.equal(record.structuredContent.operation, "gsd_exec");
+      assert.equal(record.structuredContent.aborted, true);
+      assert.equal(record.structuredContent.timed_out, false);
+      assert.ok(
+        record.structuredContent.duration_ms < timeoutMs,
+        `expected abort before ${timeoutMs}ms timeout, got ${record.structuredContent.duration_ms}ms`,
+      );
+      assert.match(record.content[0].text as string, /exit=aborted/);
+      const meta = JSON.parse(readFileSync(record.structuredContent.meta_path, "utf-8"));
+      assert.equal(meta.aborted, true);
     } finally {
       cleanup(base);
     }
