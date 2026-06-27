@@ -908,18 +908,15 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 async function runSerializedWorkflowOperation<T>(fn: () => Promise<T>): Promise<T> {
   // The shared DB adapter and workflow log base path are process-global, so
   // workflow MCP mutations must not overlap within a single server process.
-  // A per-operation deadline prevents a single stuck call from wedging every
-  // subsequent write for the lifetime of the process.
+  // A per-operation deadline prevents a single stuck call from wedging its
+  // caller for the lifetime of the process.
   //
-  // Known limitation: on timeout we surface an error and release the queue,
-  // but Promise.race cannot cancel the underlying `fn()` — it may continue
-  // running in the background and overlap with the next admitted operation.
-  // Proper cancellation requires threading an AbortSignal through every
-  // workflow executor (`workflow-tool-executors.ts` and friends), which is
-  // a larger change. The current trade-off: risk a theoretical overlap after
-  // a 5-minute wall-clock timeout vs permanently wedging the server. The
-  // overlap window is bounded by how long the zombie `fn()` keeps running;
-  // in practice DB writes complete quickly even when the caller gave up.
+  // Promise.race cannot cancel the underlying `fn()`. On timeout, surface an
+  // error to the caller but keep the queue held until `fn()` actually settles
+  // so a retry cannot overlap with the still-running operation. True
+  // cancellation remains a larger deferred design: it requires threading an
+  // AbortSignal through every workflow executor (`workflow-tool-executors.ts`
+  // and friends).
   const prior = workflowExecutionQueue;
   let release!: () => void;
   workflowExecutionQueue = new Promise<void>((resolve) => {
@@ -928,24 +925,36 @@ async function runSerializedWorkflowOperation<T>(fn: () => Promise<T>): Promise<
 
   await prior;
   const timeoutMs = getWorkflowOpTimeoutMs();
+  const operationPromise = Promise.resolve().then(fn);
+  let timedOut = false;
   try {
     if (timeoutMs === 0) {
-      return await fn();
+      return await operationPromise;
     }
     let timer: NodeJS.Timeout | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
+        timedOut = true;
         reject(new Error(`Workflow operation exceeded ${timeoutMs}ms deadline (GSD_MCP_WORKFLOW_TIMEOUT_MS)`));
       }, timeoutMs);
     });
     try {
-      return await Promise.race([fn(), timeoutPromise]);
+      return await Promise.race([operationPromise, timeoutPromise]);
     } finally {
       if (timer) clearTimeout(timer);
     }
   } finally {
-    release();
+    if (timedOut) {
+      void operationPromise.then(release, release);
+    } else {
+      release();
+    }
   }
+}
+
+/** @internal — exported for testing only */
+export function _runSerializedWorkflowOperationForTest<T>(fn: () => Promise<T>): Promise<T> {
+  return runSerializedWorkflowOperation(fn);
 }
 
 async function runSerializedWorkflowDbOperation<T>(
