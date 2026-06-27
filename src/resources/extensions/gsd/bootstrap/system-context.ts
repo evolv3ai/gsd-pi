@@ -28,9 +28,10 @@ const DEFAULT_CODEBASE_MAX_CHARS = 8_000;
 const MIN_CONTEXT_MESSAGE_MAX_CHARS = 1_000;
 const MIN_KNOWLEDGE_MAX_CHARS = 1_000;
 
-const contextMaintenanceCompletedForBasePath = new Set<string>();
-const contextMaintenanceInFlightByBasePath = new Map<string, Promise<boolean>>();
-const deferredContextMaintenanceByBasePath = new Map<string, Promise<void>>();
+const CONTEXT_MAINTENANCE_KEY_SEPARATOR = "\0";
+const contextMaintenanceCompletedForSession = new Set<string>();
+const contextMaintenanceInFlightBySession = new Map<string, Promise<boolean>>();
+const deferredContextMaintenanceBySession = new Map<string, Promise<void>>();
 
 /**
  * Bundled skill triggers — resolved dynamically at runtime instead of
@@ -114,7 +115,8 @@ async function runSessionStartupMaintenanceOnce(
   basePath: string,
   ctx: ExtensionContext,
 ): Promise<boolean> {
-  if (contextMaintenanceCompletedForBasePath.has(basePath)) {
+  const maintenanceKey = getContextMaintenanceKey(basePath, ctx);
+  if (contextMaintenanceCompletedForSession.has(maintenanceKey)) {
     // Backfills are session-once, but memory queries and other DB-backed
     // prompt assembly still need an active adapter on every turn.
     try {
@@ -126,16 +128,16 @@ async function runSessionStartupMaintenanceOnce(
     return false;
   }
 
-  const existing = contextMaintenanceInFlightByBasePath.get(basePath);
+  const existing = contextMaintenanceInFlightBySession.get(maintenanceKey);
   const isInitiator = !existing;
   // Use a definite Promise<boolean> so `await inFlight` has a known return type.
   let inFlight: Promise<boolean>;
   if (isInitiator) {
-    inFlight = performSessionStartupMaintenance(basePath, ctx);
-    contextMaintenanceInFlightByBasePath.set(basePath, inFlight);
+    inFlight = performSessionStartupMaintenance(basePath, ctx, maintenanceKey);
+    contextMaintenanceInFlightBySession.set(maintenanceKey, inFlight);
     void inFlight.finally(() => {
-      if (contextMaintenanceInFlightByBasePath.get(basePath) === inFlight) {
-        contextMaintenanceInFlightByBasePath.delete(basePath);
+      if (contextMaintenanceInFlightBySession.get(maintenanceKey) === inFlight) {
+        contextMaintenanceInFlightBySession.delete(maintenanceKey);
       }
     });
   } else {
@@ -149,6 +151,7 @@ async function runSessionStartupMaintenanceOnce(
 async function performSessionStartupMaintenance(
   basePath: string,
   ctx: ExtensionContext,
+  maintenanceKey: string,
 ): Promise<boolean> {
   // DB-backed memory backfills run below. On a cold session the database file
   // may exist without an active in-process adapter, so open the canonical
@@ -172,9 +175,38 @@ async function performSessionStartupMaintenance(
 
   // Mark session complete before scheduling deferred work so any concurrent
   // caller that observes the completed state does not re-enter maintenance.
-  contextMaintenanceCompletedForBasePath.add(basePath);
-  scheduleDeferredContextMaintenance(basePath);
+  contextMaintenanceCompletedForSession.add(maintenanceKey);
+  scheduleDeferredContextMaintenance(basePath, maintenanceKey);
   return true;
+}
+
+function getContextMaintenanceKey(basePath: string, ctx: ExtensionContext): string {
+  return `${basePath}${CONTEXT_MAINTENANCE_KEY_SEPARATOR}${getContextSessionPart(ctx)}`;
+}
+
+function getContextSessionPart(ctx: ExtensionContext): string {
+  const sessionManager = (ctx as {
+    sessionManager?: {
+      getSessionId?: () => string | undefined;
+      getSessionFile?: () => string | undefined;
+    };
+  }).sessionManager;
+
+  try {
+    const sessionId = sessionManager?.getSessionId?.();
+    if (typeof sessionId === "string" && sessionId.length > 0) return `id:${sessionId}`;
+  } catch (e) {
+    logWarning("bootstrap", `session-id fetch failed: ${(e as Error).message}`);
+  }
+
+  try {
+    const sessionFile = sessionManager?.getSessionFile?.();
+    if (typeof sessionFile === "string" && sessionFile.length > 0) return `file:${sessionFile}`;
+  } catch (e) {
+    logWarning("bootstrap", `session-file fetch failed: ${(e as Error).message}`);
+  }
+
+  return "process";
 }
 
 async function runDecisionsMemoryBackfill(ctx: ExtensionContext): Promise<void> {
@@ -210,8 +242,8 @@ async function runKnowledgeMemoryBackfill(
   }
 }
 
-function scheduleDeferredContextMaintenance(basePath: string): void {
-  if (deferredContextMaintenanceByBasePath.has(basePath)) return;
+function scheduleDeferredContextMaintenance(basePath: string, maintenanceKey: string): void {
+  if (deferredContextMaintenanceBySession.has(maintenanceKey)) return;
 
   const task = new Promise<void>((resolve) => {
     setTimeout(() => {
@@ -219,10 +251,10 @@ function scheduleDeferredContextMaintenance(basePath: string): void {
     }, 0);
   });
 
-  deferredContextMaintenanceByBasePath.set(basePath, task);
+  deferredContextMaintenanceBySession.set(maintenanceKey, task);
   void task.finally(() => {
-    if (deferredContextMaintenanceByBasePath.get(basePath) === task) {
-      deferredContextMaintenanceByBasePath.delete(basePath);
+    if (deferredContextMaintenanceBySession.get(maintenanceKey) === task) {
+      deferredContextMaintenanceBySession.delete(maintenanceKey);
     }
   });
 }
@@ -257,8 +289,10 @@ async function reportConsolidationGapsDeferred(basePath: string): Promise<void> 
 
 export async function _flushDeferredContextMaintenanceForTest(basePath?: string): Promise<void> {
   const tasks = basePath
-    ? [deferredContextMaintenanceByBasePath.get(basePath)].filter((task): task is Promise<void> => Boolean(task))
-    : [...deferredContextMaintenanceByBasePath.values()];
+    ? [...deferredContextMaintenanceBySession.entries()]
+        .filter(([key]) => key.startsWith(`${basePath}${CONTEXT_MAINTENANCE_KEY_SEPARATOR}`))
+        .map(([, task]) => task)
+    : [...deferredContextMaintenanceBySession.values()];
   await Promise.allSettled(tasks);
 }
 

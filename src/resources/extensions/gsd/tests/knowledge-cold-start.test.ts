@@ -136,8 +136,10 @@ test("#896 startup maintenance skips repeated sentinel work in one session", asy
   closeDatabase();
   assert.equal(isDbAvailable(), false);
 
+  let sessionId = "session-one";
   const ctx = {
     projectRoot: base,
+    sessionManager: { getSessionId: () => sessionId },
     ui: { notify: () => undefined },
   } as unknown as ExtensionContext;
 
@@ -190,6 +192,18 @@ test("#896 startup maintenance skips repeated sentinel work in one session", asy
     .prepare("SELECT COUNT(*) AS count FROM memories WHERE structured_fields LIKE '%\"sourceKnowledgeId\":\"P002\"%'")
     .get() as { count: number };
   assert.equal(secondPass.count, 0, "second startup in same session should not re-run KNOWLEDGE.md sentinel backfill");
+
+  sessionId = "session-two";
+  await buildBeforeAgentStartResult(
+    { prompt: "Inspect project knowledge in a new session", systemPrompt: "base system prompt" },
+    ctx,
+  );
+  await _flushDeferredContextMaintenanceForTest(base);
+
+  const nextSessionPass = adapter
+    .prepare("SELECT COUNT(*) AS count FROM memories WHERE structured_fields LIKE '%\"sourceKnowledgeId\":\"P002\"%'")
+    .get() as { count: number };
+  assert.equal(nextSessionPass.count, 1, "startup maintenance should run once for a later session");
 });
 
 test("#896 later turns reopen the project DB after startup maintenance is complete", async (t) => {

@@ -16,6 +16,7 @@ import {
   openDatabase,
   closeDatabase,
   insertDecision,
+  _getAdapter,
 } from "../gsd-db.ts";
 import { createMemory } from "../memory-store.ts";
 import {
@@ -266,6 +267,83 @@ test("scanConsolidationGaps combines decisions and KNOWLEDGE.md gaps in summary"
     assert.equal(report.totalGaps, 2);
     assert.match(report.summary, /1 of 1 active decisions/);
     assert.match(report.summary, /1 of 1 KNOWLEDGE\.md rows/);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("scanConsolidationGaps collects memory source markers with one memories scan", () => {
+  const base = makeTmpBase();
+  try {
+    insertDecision({
+      id: "D001",
+      when_context: "2026-01-01",
+      scope: "M001",
+      decision: "Unmigrated decision",
+      choice: "A",
+      rationale: "x",
+      revisable: "yes",
+      made_by: "agent",
+      superseded_by: null,
+    });
+    insertDecision({
+      id: "D002",
+      when_context: "2026-01-02",
+      scope: "M001",
+      decision: "Migrated decision",
+      choice: "B",
+      rationale: "y",
+      revisable: "yes",
+      made_by: "agent",
+      superseded_by: null,
+    });
+    createMemory({
+      category: "architecture",
+      content: "Migrated decision Chose: B. Rationale: y.",
+      scope: "M001",
+      structuredFields: { sourceDecisionId: "D002" },
+    });
+    createMemory({
+      category: "pattern",
+      content: "Migrated knowledge pattern",
+      scope: "project",
+      structuredFields: { sourceKnowledgeId: "P001" },
+    });
+    writeKnowledgeMd(
+      base,
+      `## Patterns
+
+| # | Pattern | Where | Notes |
+|---|---------|-------|-------|
+| P001 | Migrated knowledge pattern | scanner | covered |
+| P002 | Unmigrated knowledge pattern | scanner | gap |
+`,
+    );
+
+    const adapter = _getAdapter();
+    assert.ok(adapter);
+    const originalPrepare = adapter.prepare.bind(adapter);
+    const memorySql: string[] = [];
+    adapter.prepare = (sql: string) => {
+      if (sql.includes("FROM memories")) memorySql.push(sql);
+      return originalPrepare(sql);
+    };
+
+    const report = scanConsolidationGaps(base);
+    assert.equal(report.decisions.migrated, 1);
+    assert.equal(report.decisions.unmigrated, 1);
+    assert.equal(report.knowledge.migrated, 1);
+    assert.equal(report.knowledge.unmigrated, 1);
+    assert.equal(
+      memorySql.filter((sql) => sql.includes("SELECT structured_fields FROM memories")).length,
+      1,
+      "source marker detection should read memories once",
+    );
+    assert.equal(
+      memorySql.some((sql) => sql.includes("LIKE :pattern")),
+      false,
+      "scanner must not reintroduce per-row LIKE marker probes",
+    );
   } finally {
     cleanup(base);
   }
