@@ -255,7 +255,7 @@ function isSubTurnTextReplacement(
 		if (seg.kind !== "text-run") continue;
 		const oldText = (seg.cachedText ?? "").trim();
 		if (!oldText) continue;
-		const newText = getTextFromContentBlocks(blocks, seg.startIndex, seg.endIndex).trim();
+		const newText = getTextFromContentBlocks(blocks, seg.startIndex, seg.endIndex, seg.contentType).trim();
 		if (!newText || newText === oldText) continue;
 		// Streaming growth extends prior text; a new sub-turn replaces it wholesale.
 		if (!newText.startsWith(oldText) && !oldText.startsWith(newText)) return seg.startIndex;
@@ -263,12 +263,24 @@ function isSubTurnTextReplacement(
 	return null;
 }
 
-function getTextFromContentBlocks(blocks: Array<any>, startIndex: number, endIndex: number): string {
+function getTextFromContentBlocks(
+	blocks: Array<any>,
+	startIndex: number,
+	endIndex: number,
+	contentType: "text" | "thinking" = "text",
+): string {
 	const parts: string[] = [];
 	for (let i = startIndex; i <= endIndex && i < blocks.length; i++) {
 		const block = blocks[i];
-		if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
+		if (contentType === "text" && block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
 			parts.push(block.text.trim());
+		} else if (
+			contentType === "thinking"
+			&& block?.type === "thinking"
+			&& typeof block.thinking === "string"
+			&& block.thinking.trim()
+		) {
+			parts.push(block.thinking.trim());
 		}
 	}
 	return parts.join("\n\n");
@@ -1032,8 +1044,9 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 								(s) => s.kind === "text-run" && s.startIndex === seg.startIndex && s.contentType === seg.contentType,
 							);
 							if (!existing) {
-								const segmentText = getTextFromContentBlocks(blocks, seg.startIndex, seg.endIndex);
+								const segmentText = getTextFromContentBlocks(blocks, seg.startIndex, seg.endIndex, seg.contentType);
 								if (
+									seg.contentType === "text" &&
 									shouldSuppressRedundantHandoffText(
 										host.session.messages,
 										segmentText,
@@ -1051,6 +1064,7 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 									{ startIndex: seg.startIndex, endIndex: seg.endIndex },
 								);
 								host.chatContainer.addChild(comp);
+								comp.updateContent(host.streamingMessage);
 								markFirstVisibleAssistantOutput(host, seg.contentType, {
 									contentIndex: seg.startIndex,
 								});
@@ -1080,8 +1094,11 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 								seg.endIndex = d.endIndex;
 								seg.component.setRange({ startIndex: seg.startIndex, endIndex: seg.endIndex });
 							}
-							seg.cachedText = getTextFromContentBlocks(blocks, seg.startIndex, seg.endIndex);
-							seg.component.updateContent(host.streamingMessage);
+							const newText = getTextFromContentBlocks(blocks, seg.startIndex, seg.endIndex, seg.contentType);
+							if (newText !== seg.cachedText) {
+								seg.cachedText = newText;
+								seg.component.updateContent(host.streamingMessage);
+							}
 						}
 					}
 
@@ -1275,13 +1292,16 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 								{ startIndex: seg.startIndex, endIndex: seg.endIndex },
 							);
 							comp.updateContent(host.streamingMessage);
-							const segmentText = getTextFromContentBlocks(finalBlocks, seg.startIndex, seg.endIndex);
-							if (shouldSuppressRedundantHandoffText(
-								host.session.messages,
-								segmentText,
-								orphanedSegments,
-								renderedSegments,
-							)) {
+							const segmentText = getTextFromContentBlocks(finalBlocks, seg.startIndex, seg.endIndex, seg.contentType);
+							if (
+								seg.contentType === "text" &&
+								shouldSuppressRedundantHandoffText(
+									host.session.messages,
+									segmentText,
+									orphanedSegments,
+									renderedSegments,
+								)
+							) {
 								continue;
 							}
 							host.chatContainer.addChild(comp);
