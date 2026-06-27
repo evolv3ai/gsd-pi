@@ -221,10 +221,14 @@ export function ensureGitignore(
   );
 
   // Determine which patterns to apply. If .gsd/ has tracked files,
-  // exclude the ".gsd" pattern to prevent deleting tracked state.
+  // exclude the ".gsd" pattern to prevent deleting tracked state, but
+  // substitute the granular GSD_RUNTIME_PATTERNS so transient artifacts
+  // (STATE.md, runtime/, gsd.db, event-log.jsonl, …) still get ignored.
+  // Without this fallback, the pre-completion commit gate sees those
+  // runtime paths as untracked and blocks milestone close-out forever.
   const gsdIsTracked = hasGitTrackedGsdFiles(basePath);
-  const patternsToApply = gsdIsTracked
-    ? BASELINE_PATTERNS.filter((p) => p !== ".gsd")
+  const patternsToApply: readonly string[] = gsdIsTracked
+    ? Array.from(new Set([...BASELINE_PATTERNS.filter((p) => p !== ".gsd"), ...GSD_RUNTIME_PATTERNS]))
     : BASELINE_PATTERNS;
 
   // Find patterns not yet present
