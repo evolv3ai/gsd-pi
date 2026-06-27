@@ -846,12 +846,22 @@ function defaultLedger(): MetricsLedger {
   return { version: 1, projectStartedAt: Date.now(), units: [] };
 }
 
+export const METRICS_LEDGER_KEEP_UNITS = 1500;
+
+function compareUnitsByTime(a: UnitMetrics, b: UnitMetrics): number {
+  return a.finishedAt - b.finishedAt || a.startedAt - b.startedAt;
+}
+
+function keepNewestUnits(units: UnitMetrics[], keepCount = METRICS_LEDGER_KEEP_UNITS): UnitMetrics[] {
+  return units.length > keepCount ? [...units].sort(compareUnitsByTime).slice(-keepCount) : units;
+}
+
 /**
  * Prune the metrics ledger to at most `keepCount` most-recent unit entries.
  *
  * Called by the doctor when the ledger exceeds the bloat threshold.
- * Keeps the newest entries (highest index = most recent) and discards
- * the oldest from the head of the array. Preserves `projectStartedAt`.
+ * Keeps the newest entries by unit timestamps and discards the oldest.
+ * Preserves `projectStartedAt`.
  *
  * Updates both the on-disk file and the in-memory ledger if it is loaded,
  * so the current session sees the pruned state immediately.
@@ -862,11 +872,11 @@ export function pruneMetricsLedger(base: string, keepCount: number): number {
   const disk = loadLedgerFromDisk(base);
   if (!disk || disk.units.length <= keepCount) return 0;
   const removed = disk.units.length - keepCount;
-  disk.units = disk.units.slice(-keepCount);
+  disk.units = keepNewestUnits(disk.units, keepCount);
   saveJsonFile(metricsPath(base), disk);
   // Keep the in-memory ledger in sync if it is loaded for this session.
   if (ledger) {
-    ledger.units = ledger.units.slice(-keepCount);
+    ledger.units = keepNewestUnits(ledger.units, keepCount);
   }
   // Invalidate all scoped ledger cache entries. Prune is rare; clearing the
   // entire map is simpler than tracking which entry belongs to `base`. Without
@@ -1024,12 +1034,14 @@ function saveLedger(base: string, data: MetricsLedger): void {
       // Read current on-disk state and merge with worker's in-memory units.
       // Worker units take precedence on conflict (by finishedAt in deduplicateUnits).
       const onDisk = loadJsonFileOrNull(path, isMetricsLedger);
-      if (onDisk && onDisk.units.length > 0) {
-        const merged = deduplicateUnits([...onDisk.units, ...data.units]);
-        saveJsonFile(path, { ...data, units: merged });
-      } else {
-        saveJsonFile(path, data);
-      }
+      const dataUnits = keepNewestUnits(data.units);
+      const merged =
+        onDisk && onDisk.units.length > 0
+          ? deduplicateUnits([...keepNewestUnits(onDisk.units), ...dataUnits])
+          : dataUnits;
+      merged.sort(compareUnitsByTime);
+      data.units = keepNewestUnits(merged);
+      saveJsonFile(path, data);
     } finally {
       releaseLock(lockPath);
     }
@@ -1040,6 +1052,7 @@ function saveLedger(base: string, data: MetricsLedger): void {
     // to a torn write caused by two writers simultaneously executing the
     // read-merge-write sequence without mutual exclusion.
     logWarning("fs", "saveLedger: lock not acquired — falling back to direct write (no merge)");
+    data.units = keepNewestUnits(data.units);
     saveJsonFile(path, data);
   }
 }
