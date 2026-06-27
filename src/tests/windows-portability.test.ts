@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { encodeCwd } from "../resources/extensions/subagent/isolation.ts";
-import { buildGoogleCliSpawnInvocation } from "../resources/extensions/google-cli/stream-adapter.ts";
+import { buildGoogleCliRunPlan, buildGoogleCliSpawnInvocation } from "../resources/extensions/google-cli/stream-adapter.ts";
 import { buildGsdClientSpawnPlan } from "../../vscode-extension/src/gsd-client-spawn.ts";
 
 test("encodeCwd produces a filesystem-safe token for Windows paths", () => {
@@ -22,13 +22,25 @@ test("VS Code RPC launch plan uses shell mode for Windows command shims", () => 
 });
 
 test("Google CLI spawn plan uses cmd.exe on Windows command shims", () => {
-	const plan = buildGoogleCliSpawnInvocation("gemini", ["-p", "hello"], "win32");
+	const plan = buildGoogleCliSpawnInvocation("gemini", ["--output-format", "json"], "win32");
 	assert.equal(plan.command, "cmd");
-	assert.deepEqual(plan.args, ["/c", "gemini", "-p", "hello"]);
+	assert.deepEqual(plan.args, ["/c", "gemini", "--output-format", "json"]);
 });
 
 test("Google CLI spawn plan keeps direct execution on non-Windows platforms", () => {
 	const plan = buildGoogleCliSpawnInvocation("agy", ["-p", "hello"], "linux");
 	assert.equal(plan.command, "agy");
 	assert.deepEqual(plan.args, ["-p", "hello"]);
+});
+
+test("Google CLI run plan pipes prompt on Windows to avoid command-line length limits", () => {
+	const prompt = "hello ".repeat(10_000);
+	const plan = buildGoogleCliRunPlan("google-gemini-cli", "gemini-2.5-pro", prompt, "win32");
+	const antigravityPlan = buildGoogleCliRunPlan("google-antigravity", "default", prompt, "win32");
+
+	assert.equal(plan.command, "cmd");
+	assert.deepEqual(plan.args, ["/c", "gemini", "-m", "gemini-2.5-pro", "--output-format", "json"]);
+	assert.equal(plan.stdin, prompt);
+	assert.ok(!plan.args.some((arg) => arg.includes(prompt)));
+	assert.deepEqual(antigravityPlan, { command: "cmd", args: ["/c", "agy"], stdin: prompt });
 });
