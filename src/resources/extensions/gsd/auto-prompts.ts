@@ -1691,7 +1691,13 @@ export async function buildDiscussMilestonePrompt(
   const draftContent = draftPath ? await loadFile(draftPath) : null;
 
   if (includeDraftSeed && draftContent) {
-    return `${promptWithContextMode}\n\n## Prior Discussion (Draft Seed)\n\nThe following draft was captured from a prior multi-milestone discussion. Use it as seed material — the user has already provided this context. Start with a brief reflection on what the draft covers, then probe for any gaps or open questions before writing the full CONTEXT.md.\n\n${draftContent}`;
+    const draftRelPath = relMilestoneFile(base, mid, "CONTEXT-DRAFT");
+    const draftSeed = `### Prior Discussion Draft\nSource: \`${draftRelPath}\`\n\n${draftContent.trim()}`;
+    const cappedDraftSeed = capPreamble(draftSeed);
+    const truncationNote = cappedDraftSeed !== draftSeed
+      ? `\n\n_(Draft seed truncated; read the full draft at \`${draftRelPath}\` if needed.)`
+      : "";
+    return `${promptWithContextMode}\n\n## Prior Discussion (Draft Seed)\n\nThe following draft was captured from a prior multi-milestone discussion. Use it as seed material — the user has already provided this context. Start with a brief reflection on what the draft covers, then probe for any gaps or open questions before writing the full CONTEXT.md.\n\n${cappedDraftSeed}${truncationNote}`;
   }
 
   return promptWithContextMode;
