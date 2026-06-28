@@ -47,16 +47,19 @@ const BASH_PREVIEW_LINES = 5;
 // During partial write tool-call streaming, re-highlight the first N lines fully
 // to keep multiline tokenization mostly correct without re-highlighting the full file.
 const WRITE_PARTIAL_FULL_HIGHLIGHT_LINES = 50;
-// The in-flight tool card animates its rail by re-rendering the transcript on a
-// fixed-cadence timer. The cadence is matched to the rail's own step
+// Expanded in-flight tool cards animate their rail by re-rendering the transcript
+// on a fixed-cadence timer. The cadence is matched to the rail's own step
 // (RUNNING_RAIL_FRAME_MS in transcript-design): one re-render == one cell of head
-// movement, so the motion is smooth and no frame is wasted. Animation is gated by
-// the `terminal.toolRailAnimation` user setting (isRailAnimationEnabled): when it
-// is off, the timer is never armed and the rail renders statically, so even a tool
+// movement, so the motion is smooth and no frame is wasted. Collapsed strips have
+// no animated rail; their only self-changing field is the elapsed whole-second
+// counter, so they refresh on a slower cadence. Both timers are gated by the
+// `terminal.toolRailAnimation` user setting (isRailAnimationEnabled): when it is
+// off, the timer is never armed and the rail renders statically, so even a tool
 // that runs for 30 minutes costs zero idle CPU. (A genuinely hung tool is finalized
 // at the source by agent-loop's raceToolExecutionAgainstAbort, which gives the card
 // a result and lets the timer stop on its own.)
 const RUNNING_RAIL_RENDER_INTERVAL_MS = 70;
+const RUNNING_COMPACT_RENDER_INTERVAL_MS = 1000;
 
 /**
  * Replace tabs with spaces for consistent rendering
@@ -388,6 +391,7 @@ export class ToolExecutionComponent extends Container {
 	private hideComponent = false;
 	private toolRenderState: Record<string, unknown> = {};
 	private runningRailTimer: ReturnType<typeof setInterval> | undefined;
+	private runningRailTimerIntervalMs: number | undefined;
 
 	private createRenderContext(): ToolRenderContext {
 		return {
@@ -481,21 +485,32 @@ export class ToolExecutionComponent extends Container {
 		this.result = undefined;
 	}
 
-	private syncRunningRailTimer(): void {
+	private getRunningRenderIntervalMs(): number | undefined {
 		if (!this.isInFlight() || this.hideComponent || !isRailAnimationEnabled()) {
+			return undefined;
+		}
+		return this.showExpandedBody() ? RUNNING_RAIL_RENDER_INTERVAL_MS : RUNNING_COMPACT_RENDER_INTERVAL_MS;
+	}
+
+	private syncRunningRailTimer(): void {
+		const intervalMs = this.getRunningRenderIntervalMs();
+		if (intervalMs === undefined) {
 			this.stopRunningRailTimer();
 			return;
 		}
-		if (this.runningRailTimer) return;
+		if (this.runningRailTimer && this.runningRailTimerIntervalMs === intervalMs) return;
 
+		this.stopRunningRailTimer();
+		this.runningRailTimerIntervalMs = intervalMs;
 		this.runningRailTimer = setInterval(() => {
-			// Stop once the tool finishes, is hidden, or the animation setting is off.
-			if (!this.isInFlight() || this.hideComponent || !isRailAnimationEnabled()) {
-				this.stopRunningRailTimer();
+			// Stop or re-arm if the tool finishes, is hidden, the animation setting is
+			// toggled, or the card switches between compact and expanded rendering.
+			if (this.getRunningRenderIntervalMs() !== intervalMs) {
+				this.syncRunningRailTimer();
 				return;
 			}
 			this.ui.requestRender();
-		}, RUNNING_RAIL_RENDER_INTERVAL_MS);
+		}, intervalMs);
 		this.runningRailTimer.unref?.();
 	}
 
@@ -513,6 +528,7 @@ export class ToolExecutionComponent extends Container {
 		if (!this.runningRailTimer) return;
 		clearInterval(this.runningRailTimer);
 		this.runningRailTimer = undefined;
+		this.runningRailTimerIntervalMs = undefined;
 	}
 
 	updateArgs(args: any): void {
