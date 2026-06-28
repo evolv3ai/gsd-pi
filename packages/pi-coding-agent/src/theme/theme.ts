@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@gsd/pi-tui";
-import { TypeCompiler } from "@sinclair/typebox/compiler";
+import { Compile } from "typebox/compile";
+import type { TLocalizedValidationError } from "typebox/error";
 import chalk from "chalk";
 import {
 	highlightCode as nativeHighlightCode,
@@ -21,7 +22,11 @@ const NATIVE_TUI_HIGHLIGHT_ENABLED = process.env.GSD_ENABLE_NATIVE_TUI_HIGHLIGHT
 // Types & Schema
 // ============================================================================
 
-const validateThemeJson = TypeCompiler.Compile(ThemeJsonSchema);
+const validateThemeJson = Compile(ThemeJsonSchema);
+
+function formatThemeValidationPath(error: TLocalizedValidationError): string {
+	return error.instancePath.replace(/^\//, "").replace(/\//g, ".") || "root";
+}
 
 export type ThemeColor =
 	| "accent"
@@ -459,17 +464,18 @@ export function getAvailableThemesWithPaths(): ThemeInfo[] {
 
 function parseThemeJson(label: string, json: unknown): ThemeJson {
 	if (!validateThemeJson.Check(json)) {
-		const errors = Array.from(validateThemeJson.Errors(json));
+		const errors = validateThemeJson.Errors(json);
 		const missingColors: string[] = [];
 		const otherErrors: string[] = [];
 
-		for (const e of errors) {
+		for (const error of errors) {
+			const path = formatThemeValidationPath(error);
 			// Check for missing required color properties
-			const match = e.path.match(/^\/colors\/(\w+)$/);
-			if (match && e.message.includes("Required")) {
+			const match = path.match(/^colors\.(\w+)$/);
+			if (match && error.keyword === "required") {
 				missingColors.push(match[1]);
 			} else {
-				otherErrors.push(`  - ${e.path}: ${e.message}`);
+				otherErrors.push(`  - ${path}: ${error.message}`);
 			}
 		}
 

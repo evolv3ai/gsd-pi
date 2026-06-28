@@ -11,12 +11,14 @@ import {
 	priorAssistantTextFromSession,
 	textInvitesUserReply,
 } from "./chat-controller.js";
+import { createStreamingRenderState } from "../streaming-render-state.js";
 import { AssistantMessageComponent } from "../components/assistant-message.js";
 import { initTheme } from "@gsd/pi-coding-agent/theme/theme.js";
 
 function createStreamingHost(chatContainer: Container): any {
 	return {
 		isInitialized: true,
+		streamingRenderState: createStreamingRenderState(),
 		footer: { invalidate() {} },
 		settingsManager: {
 			getTimestampFormat() {
@@ -479,6 +481,7 @@ test("handleAgentEvent: agent_start suppresses loader when extension requested n
 	let requestedRender = false;
 	const host = {
 		isInitialized: true,
+		streamingRenderState: createStreamingRenderState(),
 		clearBlockingError() {},
 		retryEscapeHandler: undefined,
 		retryLoader: undefined,
@@ -550,6 +553,7 @@ test("handleAgentEvent: standalone completed tool events roll up incrementally",
 	let renderCount = 0;
 	const host = {
 		isInitialized: true,
+		streamingRenderState: createStreamingRenderState(),
 		footer: { invalidate() {} },
 		settingsManager: {
 			getTimestampFormat() {
@@ -782,6 +786,7 @@ test("handleAgentEvent: agent_end does not force-render viewport when pinned zon
 	let forceRenderCalled = false;
 	const host = {
 		isInitialized: true,
+		streamingRenderState: createStreamingRenderState(),
 		footer: { invalidate() {} },
 		settingsManager: {
 			getTimestampFormat() {
@@ -827,6 +832,7 @@ test("handleAgentEvent: agent_end finalizes orphaned pending tool cards", async 
 	const chatContainer = new Container();
 	const host = {
 		isInitialized: true,
+		streamingRenderState: createStreamingRenderState(),
 		footer: { invalidate() {} },
 		settingsManager: {
 			getTimestampFormat() {

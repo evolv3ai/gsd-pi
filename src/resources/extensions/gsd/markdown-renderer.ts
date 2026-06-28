@@ -632,16 +632,8 @@ export async function renderRoadmapCheckboxes(
   basePath: string,
   milestoneId: string,
 ): Promise<boolean> {
-  const slices = getMilestoneSlices(milestoneId);
-  if (slices.length === 0) {
-    process.stderr.write(
-      `markdown-renderer: no slices found for milestone ${milestoneId}\n`,
-    );
-    return false;
-  }
-
-  await renderRoadmapFromDb(basePath, milestoneId);
-  return true;
+  const rendered = await renderRoadmapFromDb(basePath, milestoneId);
+  return !("skipped" in rendered);
 }
 
 /**

@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react"
 import { GSDWorkspaceStore } from "./gsd-workspace-store"
+import { normalizeProjectPath } from "./normalize-project-path"
 
 /**
  * ProjectStoreManager maintains a Map<string, GSDWorkspaceStore> of per-project
@@ -41,24 +42,26 @@ export class ProjectStoreManager {
    * creates a new store if needed (lazily), reconnects SSE on re-activated stores.
    */
   switchProject(projectCwd: string): GSDWorkspaceStore {
+    const canonicalCwd = normalizeProjectPath(projectCwd)
+
     // Disconnect SSE on current active store
-    if (this.activeProjectCwd && this.activeProjectCwd !== projectCwd) {
+    if (this.activeProjectCwd && this.activeProjectCwd !== canonicalCwd) {
       const prev = this.stores.get(this.activeProjectCwd)
       if (prev) prev.disconnectSSE()
     }
 
     // Get or create store for new project
-    let store = this.stores.get(projectCwd)
+    let store = this.stores.get(canonicalCwd)
     if (!store) {
-      store = new GSDWorkspaceStore(projectCwd)
-      this.stores.set(projectCwd, store)
+      store = new GSDWorkspaceStore(canonicalCwd)
+      this.stores.set(canonicalCwd, store)
       store.start()
     } else {
       // Reconnect SSE on re-activated store
       store.reconnectSSE()
     }
 
-    this.activeProjectCwd = projectCwd
+    this.activeProjectCwd = canonicalCwd
     this.notify()
     return store
   }
@@ -75,14 +78,15 @@ export class ProjectStoreManager {
 
   /** Close a single project's store and switch to another if it was active. */
   closeProject(projectCwd: string): void {
-    const store = this.stores.get(projectCwd)
+    const canonicalCwd = normalizeProjectPath(projectCwd)
+    const store = this.stores.get(canonicalCwd)
     if (!store) return
 
     store.dispose()
-    this.stores.delete(projectCwd)
+    this.stores.delete(canonicalCwd)
 
     // If we closed the active project, switch to another or clear
-    if (this.activeProjectCwd === projectCwd) {
+    if (this.activeProjectCwd === canonicalCwd) {
       const remaining = Array.from(this.stores.keys())
       if (remaining.length > 0) {
         // Switch to the first remaining project

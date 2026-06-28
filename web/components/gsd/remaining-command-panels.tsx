@@ -46,7 +46,7 @@ import type {
 import { cn } from "@/lib/utils"
 import {
   formatCost,
-  getLiveWorkspaceIndex,
+  resolveWorkspaceIndex,
   useGSDWorkspaceActions,
   useGSDWorkspaceState,
   type WorkspaceMilestoneTarget,
@@ -1073,7 +1073,7 @@ function sliceProgress(slices: WorkspaceSliceTarget[]): { done: number; total: n
 
 export function QueuePanel() {
   const workspace = useGSDWorkspaceState()
-  const workspaceIndex = getLiveWorkspaceIndex(workspace)
+  const workspaceIndex = resolveWorkspaceIndex(workspace)
   const milestones = workspaceIndex?.milestones ?? []
   const active = workspaceIndex?.active
 
@@ -1176,7 +1176,7 @@ export function QueuePanel() {
 
 export function StatusPanel() {
   const workspace = useGSDWorkspaceState()
-  const workspaceIndex = getLiveWorkspaceIndex(workspace)
+  const workspaceIndex = resolveWorkspaceIndex(workspace)
   const active = workspaceIndex?.active
   const milestones = workspaceIndex?.milestones ?? []
 

@@ -12,6 +12,7 @@
     "test": "node --experimental-strip-types --test \"lib/__tests__/*.test.ts\""
   },
   "dependencies": {
+    "@gsd/agent-core": "workspace:*",
     "@opengsd/contracts": "workspace:*",
     "@hookform/resolvers": "^3.9.1",
     "@lezer/highlight": "^1.2.3",

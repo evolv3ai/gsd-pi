@@ -30,6 +30,7 @@ import { normalizeRealPath } from "../paths.js";
 import type { MilestoneScope } from "../workspace.js";
 import type { RootDirtySnapshot } from "../root-write-leak-guard.js";
 import type { MilestoneSettlementOutcome } from "../milestone-settlement.js";
+import type { ToolSurfaceSnapshot } from "../tool-surface-snapshot.js";
 
 // ─── Exported Types ──────────────────────────────────────────────────────────
 
@@ -159,6 +160,9 @@ export class AutoSession {
   currentUnitRouting: UnitRouting | null = null;
   currentMilestoneId: string | null = null;
   readonly sourceObservations = new SourceObservationStore();
+
+  /** Live tool-surface snapshot for dashboard / runtime telemetry while auto is active. */
+  toolSurfaceSnapshot: ToolSurfaceSnapshot | null = null;
 
   // ── Model state ──────────────────────────────────────────────────────────
   autoModeStartModel: StartModel | null = null;
@@ -367,6 +371,7 @@ export class AutoSession {
 
     // Unit
     this.clearCurrentUnit();
+    this.toolSurfaceSnapshot = null;
     this.currentTraceId = null;
     this.currentTurnId = null;
     this.currentUnitRouting = null;

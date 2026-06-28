@@ -25,7 +25,7 @@ import {
   wasDbOpenAttempted,
 } from "./gsd-db.js";
 import { resolveGsdPathContract, gsdRoot } from "./paths.js";
-import { setLogBasePath } from "./workflow-logger.js";
+import { logWarning, setLogBasePath } from "./workflow-logger.js";
 
 export interface WorkflowDatabaseLocation {
   projectRoot: string;
@@ -56,6 +56,20 @@ export type WorkflowDatabaseOpenResult =
 export type WorkflowDatabaseStatus = ReturnType<typeof getDbStatus>;
 export type WorkflowDatabaseProvider = ReturnType<typeof getDbProvider>;
 
+/**
+ * Global SQLite handle invariants:
+ *
+ * - `openWorkflowDatabase` / `openDatabase` switch the process-global handle consumed by
+ *   deriveState, dispatch, reconciliation repairs, and domain writers. Only one active
+ *   project database should own the global handle at a time.
+ * - `openWorkflowDatabaseIsolated` opens a caller-owned connection that does not clobber
+ *   the global handle. Use for read-only observers (parallel monitor) and other background
+ *   probes that must not disturb the active workflow session.
+ * - Reconciliation repairs that write markdown/DB state must use `ensureWorkflowDbForBase`
+ *   so repairs target the correct project; those paths intentionally re-open the global handle.
+ * - Pair ad-hoc project switches with `closeWorkflowDatabase()` or restore via
+ *   `ensureWorkflowDbForBase(..., { refresh: true })` before returning to derive/dispatch.
+ */
 export function resolveWorkflowDatabaseLocation(basePath: string): WorkflowDatabaseLocation {
   const contract = resolveGsdPathContract(basePath);
   return {
@@ -187,7 +201,8 @@ export function ensureWorkflowDbAtPath(dbPath: string | null): boolean {
   if (!existsSync(dbPath)) return false;
   try {
     return openWorkflowDatabasePath(dbPath);
-  } catch {
+  } catch (err) {
+    logWarning("reconcile", `ensureWorkflowDbAtPath could not reopen DB: ${(err as Error).message}`);
     return false;
   }
 }
@@ -209,7 +224,8 @@ export function ensureWorkflowDbForBase(
 
     if (isDbAvailable() && getWorkflowDatabasePath() === dbPath) return true;
     return openWorkflowDatabasePath(dbPath);
-  } catch {
+  } catch (err) {
+    logWarning("reconcile", `ensureWorkflowDbForBase could not reopen DB: ${(err as Error).message}`);
     return false;
   }
 }

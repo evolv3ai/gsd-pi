@@ -429,3 +429,73 @@ test("rebuildMarkdownProjectionsFromDb realigns markdown when DB holds extra row
     cleanup(base);
   }
 });
+
+test("rebuildMarkdownProjectionsFromDb realigns markdown for numeric milestone IDs", async () => {
+  const base = makeBase();
+  try {
+    await writeGSDDirectory({ projectContent: "# P\n", decisionsContent: "", requirements: [], milestones: [] }, base);
+    assert.equal(await ensureDbOpen(base), true);
+    insertMilestone({ id: "15", title: "Numeric milestone", status: "active" });
+    insertSlice({
+      id: "S01",
+      milestoneId: "15",
+      title: "Numeric slice",
+      status: "pending",
+      risk: "medium",
+      depends: [],
+      demo: "d",
+      sequence: 1,
+    });
+    insertTask({
+      id: "T01",
+      sliceId: "S01",
+      milestoneId: "15",
+      title: "Numeric task",
+      status: "pending",
+    });
+
+    const before = await checkMarkdownHierarchyAgainstDb(base);
+    assert.equal(before.recoveryCommand, "/gsd rebuild markdown");
+
+    const { rebuildMarkdownProjectionsFromDb } = await import("../commands-maintenance.ts");
+    const rebuild = await rebuildMarkdownProjectionsFromDb(base);
+    assert.ok(rebuild.rendered > 0, "expected markdown projections to render");
+
+    const after = await checkMarkdownHierarchyAgainstDb(base);
+    assert.equal(after.action, "none");
+    assert.equal(after.reason, "in-sync");
+    assert.deepEqual(after.markdown, { milestones: 1, slices: 1, tasks: 1 });
+    assert.deepEqual(after.beforeDb, { milestones: 1, slices: 1, tasks: 1 });
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("rebuildMarkdownProjectionsFromDb realigns markdown for planned zero-slice milestones", async () => {
+  const base = makeBase();
+  try {
+    await writeGSDDirectory({ projectContent: "# P\n", decisionsContent: "", requirements: [], milestones: [] }, base);
+    assert.equal(await ensureDbOpen(base), true);
+    insertMilestone({
+      id: "M016",
+      title: "Queued milestone",
+      status: "queued",
+      planning: { vision: "Defined but not sliced yet" },
+    });
+
+    const before = await checkMarkdownHierarchyAgainstDb(base);
+    assert.equal(before.recoveryCommand, "/gsd rebuild markdown");
+
+    const { rebuildMarkdownProjectionsFromDb } = await import("../commands-maintenance.ts");
+    const rebuild = await rebuildMarkdownProjectionsFromDb(base);
+    assert.ok(rebuild.rendered > 0, "expected markdown projections to render");
+
+    const after = await checkMarkdownHierarchyAgainstDb(base);
+    assert.equal(after.action, "none");
+    assert.equal(after.reason, "in-sync");
+    assert.deepEqual(after.markdown, { milestones: 1, slices: 0, tasks: 0 });
+    assert.deepEqual(after.beforeDb, { milestones: 1, slices: 0, tasks: 0 });
+  } finally {
+    cleanup(base);
+  }
+});

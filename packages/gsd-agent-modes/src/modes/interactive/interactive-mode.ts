@@ -17,7 +17,7 @@ import {
 	TUI,
 } from "@gsd/pi-tui";
 import { VERSION } from "@gsd/pi-coding-agent/config.js";
-import { type AgentSession, type AgentSessionEvent } from "@gsd/agent-core";
+import { type AgentSession, type AgentSessionEvent, createInitialTranscriptState, type TranscriptState } from "@gsd/agent-core";
 import type { ExtensionRunner } from "@gsd/pi-coding-agent/core/extensions/index.js";
 import { FooterDataProvider } from "@gsd/pi-coding-agent/core/footer-data-provider.js";
 import { KeybindingsManager } from "@gsd/agent-core";
@@ -34,6 +34,8 @@ import { ToolExecutionComponent } from "./components/tool-execution.js";
 import { setRailAnimationEnabled } from "./components/transcript-design.js";
 import { ContextualTips } from "@gsd/agent-core";
 import { handleAgentEvent } from "./controllers/chat-controller.js";
+import { createInteractiveModeUiState } from "./interactive-mode-ui-state.js";
+import { applyAgentEventToTranscript } from "./tui-transcript-tracker.js";
 import { setupEditorSubmitHandler as setupEditorSubmitHandlerController } from "./controllers/input-controller.js";
 import {
 	getEditorTheme,
@@ -158,6 +160,8 @@ export class InteractiveMode {
 	private stdinErrorHandler: ((err: Error) => void) | undefined = undefined;
 	private extensionWidgetsAbove = new Map<string, import("@gsd/pi-tui").Component & { dispose?(): void }>();
 	private extensionWidgetsBelow = new Map<string, import("@gsd/pi-tui").Component & { dispose?(): void }>();
+	private readonly uiState = createInteractiveModeUiState();
+	transcriptState: TranscriptState = createInitialTranscriptState();
 	private widgetContainerAbove!: Container;
 	private widgetContainerBelow!: Container;
 	private customFooter: (import("@gsd/pi-tui").Component & { dispose?(): void }) | undefined = undefined;
@@ -173,6 +177,10 @@ export class InteractiveMode {
 	}
 	private get settingsManager() {
 		return this.session.settingsManager;
+	}
+
+	get streamingRenderState() {
+		return this.uiState.streaming.streamingRenderState;
 	}
 
 	constructor(
@@ -372,6 +380,7 @@ export class InteractiveMode {
 	}
 
 	private async handleEvent(event: AgentSessionEvent): Promise<void> {
+		this.transcriptState = applyAgentEventToTranscript(this.transcriptState, event);
 		await handleAgentEvent(this as any, event);
 	}
 

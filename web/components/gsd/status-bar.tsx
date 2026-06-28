@@ -8,8 +8,8 @@ import {
   buildProjectUrl,
   getCurrentBranch,
   getCurrentScopeLabel,
-  getLiveAutoDashboard,
-  getLiveWorkspaceIndex,
+  resolveAutoDashboard,
+  resolveWorkspaceIndex,
   getModelLabel,
   getStatusPresentation,
   getVisibleWorkspaceError,
@@ -40,8 +40,8 @@ function toneClass(tone: ReturnType<typeof getStatusPresentation>["tone"]): stri
 export function StatusBar() {
   const workspace = useGSDWorkspaceState()
   const status = getStatusPresentation(workspace)
-  const liveWorkspace = getLiveWorkspaceIndex(workspace)
-  const auto = getLiveAutoDashboard(workspace)
+  const liveWorkspace = resolveWorkspaceIndex(workspace)
+  const auto = resolveAutoDashboard(workspace)
   const branch = getCurrentBranch(liveWorkspace) ?? "project scope"
   const model = getModelLabel(workspace.boot?.bridge)
   const unitLabel = auto?.currentUnit?.id ?? getCurrentScopeLabel(liveWorkspace)
@@ -49,7 +49,7 @@ export function StatusBar() {
   const titleOverride = workspace.titleOverride?.trim() || null
   const statusTexts = workspace.statusTexts
   const recoverySummary = workspace.live.recoverySummary
-  const validationCount = getLiveWorkspaceIndex(workspace)?.validationIssues.length ?? 0
+  const validationCount = resolveWorkspaceIndex(workspace)?.validationIssues.length ?? 0
   const statusTextEntries = Object.entries(statusTexts)
   const latestStatusText = statusTextEntries.length > 0 ? statusTextEntries[statusTextEntries.length - 1][1] : null
   const isConnecting = workspace.bootStatus === "idle" || workspace.bootStatus === "loading"

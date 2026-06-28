@@ -2,7 +2,7 @@
 
 import { CheckCircle2, Circle, Play, AlertTriangle, ChevronRight, SkipForward } from "lucide-react"
 import { cn } from "@/lib/utils"
-import { getLiveWorkspaceIndex, useGSDWorkspaceState, type RiskLevel } from "@/lib/gsd-workspace-store"
+import { resolveWorkspaceIndex, useGSDWorkspaceState, type RiskLevel } from "@/lib/gsd-workspace-store"
 import { getMilestoneStatus, getSliceStatus, type ItemStatus } from "@/lib/workspace-status"
 
 const StatusIcon = ({
@@ -43,10 +43,10 @@ const RiskBadge = ({ risk }: { risk: RiskLevel }) => {
 
 export function Roadmap() {
   const workspace = useGSDWorkspaceState()
-  const liveWorkspace = getLiveWorkspaceIndex(workspace)
+  const liveWorkspace = resolveWorkspaceIndex(workspace)
   const milestones = liveWorkspace?.milestones ?? []
   const activeScope = liveWorkspace?.active ?? {}
-  const workspaceFreshness = workspace.live.freshness.workspace.stale ? "stale" : workspace.live.freshness.workspace.status
+  const workspaceFreshness = workspace.live.workspace.stale ? "stale" : workspace.live.workspace.status
 
   return (
     <div className="flex h-full flex-col overflow-hidden">

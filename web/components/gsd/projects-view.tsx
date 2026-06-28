@@ -25,8 +25,8 @@ import { cn } from "@/lib/utils"
 import { useProjectStoreManager } from "@/lib/project-store-manager"
 import {
   useGSDWorkspaceState,
-  getLiveWorkspaceIndex,
-  getLiveAutoDashboard,
+  resolveWorkspaceIndex,
+  resolveAutoDashboard,
   formatCost,
   getCurrentSlice,
 } from "@/lib/gsd-workspace-store"
@@ -522,8 +522,8 @@ export function ProjectsPanel({
 // ─── Active project inline summary (compact for panel card) ────────────
 
 function ActiveProjectSummary({ workspaceState }: { workspaceState: ReturnType<typeof useGSDWorkspaceState> }) {
-  const workspace = getLiveWorkspaceIndex(workspaceState)
-  const dashboard = getLiveAutoDashboard(workspaceState)
+  const workspace = resolveWorkspaceIndex(workspaceState)
+  const dashboard = resolveAutoDashboard(workspaceState)
   const currentSlice = getCurrentSlice(workspace)
 
   if (!workspace) return null

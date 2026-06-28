@@ -13,6 +13,7 @@
 
 import * as crypto from "node:crypto";
 import type { AgentSession } from "@gsd/agent-core";
+import { extensionUiSnapshotFromRpcMaps } from "@gsd/agent-core";
 import type {
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -107,6 +108,19 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 	let workingMessageState: string | null | undefined;
 	let titleState: string | undefined;
 	let editorTextState: string | undefined;
+
+	const emitExtensionUiSnapshot = (): void => {
+		const snapshot = extensionUiSnapshotFromRpcMaps({
+			statusState,
+			widgetState,
+			workingMessageState,
+			titleState,
+			editorTextState,
+			hasCustomHeader: headerFactory !== undefined,
+			hasCustomFooter: footerFactory !== undefined,
+		});
+		output({ type: "extension_ui_snapshot", snapshot });
+	};
 
 	const withEmbeddedUiContext = async (apply: (ui: ExtensionUIContext) => void | Promise<void>): Promise<void> => {
 		if (!embeddedInteractiveMode) {
@@ -262,6 +276,7 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 				statusKey: key,
 				statusText: text,
 			} as RpcExtensionUIRequest);
+			emitExtensionUiSnapshot();
 			void withEmbeddedUiContext((ui) => {
 				ui.setStatus(key, text);
 			});
@@ -273,6 +288,7 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 
 		setWorkingMessage(message?: string | null): void {
 			workingMessageState = message;
+			emitExtensionUiSnapshot();
 			void withEmbeddedUiContext((ui) => {
 				ui.setWorkingMessage(message);
 			});
@@ -304,6 +320,7 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 			void withEmbeddedUiContext((ui) => {
 				ui.setWidget(key, content as any, options);
 			});
+			emitExtensionUiSnapshot();
 		},
 
 		setFooter(factory: Parameters<ExtensionUIContext["setFooter"]>[0]): void {
@@ -329,6 +346,7 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 				method: "setTitle",
 				title,
 			} as RpcExtensionUIRequest);
+			emitExtensionUiSnapshot();
 			void withEmbeddedUiContext((ui) => {
 				ui.setTitle(title);
 			});
@@ -353,6 +371,7 @@ export async function runRpcMode(session: AgentSession): Promise<never> {
 				method: "set_editor_text",
 				text,
 			} as RpcExtensionUIRequest);
+			emitExtensionUiSnapshot();
 			void withEmbeddedUiContext((ui) => {
 				ui.setEditorText(text);
 			});

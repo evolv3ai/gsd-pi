@@ -15,7 +15,7 @@ import {
   ReconciliationFailedError,
   type ReconciliationFailureDetail,
 } from "./errors.js";
-import { DRIFT_REGISTRY } from "./registry.js";
+import { DRIFT_REGISTRY, RECONCILIATION_REPAIR_PHASES } from "./registry.js";
 import type {
   DriftContext,
   DriftHandler,
@@ -33,7 +33,7 @@ export type {
 } from "./types.js";
 export { ReconciliationFailedError } from "./errors.js";
 export type { ReconciliationFailureDetail } from "./errors.js";
-export { DRIFT_REGISTRY } from "./registry.js";
+export { DRIFT_REGISTRY, RECONCILIATION_REPAIR_PHASES, handlerPhaseIndex } from "./registry.js";
 
 const MAX_PASSES = 2;
 
@@ -122,28 +122,29 @@ export async function reconcileBeforeDispatch(
     const failures: ReconciliationFailureDetail[] = [];
     const blockers: string[] = [...detection.detectBlockers];
     let repairedThisPass = false;
-    for (const record of drift) {
-      const handler = registry.find((h) => h.kind === record.kind);
-      if (!handler) {
-        failures.push({
-          drift: record,
-          cause: new Error(
-            `No drift handler registered for kind "${record.kind}"`,
-          ),
-        });
-        continue;
-      }
-      const blocker = handler.blocker ? await handler.blocker(record, ctx) : null;
-      if (blocker) {
-        blockers.push(blocker);
-        continue;
-      }
-      try {
-        await handler.repair(record, ctx);
-        repaired.push(record);
-        repairedThisPass = true;
-      } catch (cause) {
-        failures.push({ drift: record, cause });
+    const repairedKindsThisPass = new Set<string>();
+
+    for (const phase of RECONCILIATION_REPAIR_PHASES) {
+      for (const record of drift) {
+        const recordKey = `${record.kind}:${JSON.stringify(record)}`;
+        if (repairedKindsThisPass.has(recordKey)) continue;
+
+        const handler = phase.handlers.find((h) => h.kind === record.kind);
+        if (!handler) continue;
+
+        const blocker = handler.blocker ? await handler.blocker(record, ctx) : null;
+        if (blocker) {
+          blockers.push(blocker);
+          continue;
+        }
+        try {
+          await handler.repair(record, ctx);
+          repaired.push(record);
+          repairedKindsThisPass.add(recordKey);
+          repairedThisPass = true;
+        } catch (cause) {
+          failures.push({ drift: record, cause });
+        }
       }
     }
 

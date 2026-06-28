@@ -42,6 +42,7 @@ import {
   type ReconciliationDeps,
 } from "../state-reconciliation.ts";
 import { classifyFailure } from "../recovery-classification.ts";
+import { handlerPhaseIndex, RECONCILIATION_REPAIR_PHASES } from "../state-reconciliation/registry.ts";
 import { staleRenderHandler } from "../state-reconciliation/drift/stale-render.ts";
 import type { GSDState } from "../types.ts";
 
@@ -1931,4 +1932,50 @@ test("ADR-017 (#5700): cascading drift triggers second pass within cap", async (
   assert.equal(result.ok, true);
   assert.equal(result.repaired.length, 2, "both passes' repairs collected");
   assert.equal(repaired.length, 2);
+});
+
+test("deriveState is pure: stale sketch healed only via reconcileBeforeDispatch", async (t) => {
+  const base = makeFixtureBase();
+  t.after(() => cleanup(base));
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M001", title: "Test", status: "active" });
+  insertSlice({
+    id: "S02",
+    milestoneId: "M001",
+    title: "Feature",
+    status: "pending",
+    risk: "medium",
+    depends: [],
+    demo: "S02 demo.",
+    sequence: 1,
+    isSketch: true,
+    sketchScope: "limited",
+  });
+  writeFileSync(
+    join(base, ".gsd", "phases", "01-test", "01-02-PLAN.md"),
+    "# S02 Plan\n",
+  );
+
+  const { deriveState } = await import("../state.ts");
+  invalidateStateCache();
+
+  const beforeReconcile = await deriveState(base);
+  assert.equal(beforeReconcile.phase, "refining", "derive alone must not heal stale sketch flag");
+  assert.equal(getSlice("M001", "S02")?.is_sketch, 1, "DB flag unchanged before reconcile");
+
+  const result = await reconcileBeforeDispatch(base);
+  assert.equal(result.ok, true);
+  assert.equal(getSlice("M001", "S02")?.is_sketch, 0, "reconcile clears sketch flag");
+
+  invalidateStateCache();
+  const afterReconcile = await deriveState(base);
+  assert.notEqual(afterReconcile.phase, "refining", "derive after reconcile advances past sketch gate");
+});
+
+test("reconciliation repair phases: external edits precede re-project handlers", () => {
+  assert.equal(RECONCILIATION_REPAIR_PHASES.length, 3);
+  assert.ok(handlerPhaseIndex("external-markdown-edit") < handlerPhaseIndex("stale-render"));
+  assert.ok(handlerPhaseIndex("external-planning-edit") < handlerPhaseIndex("roadmap-divergence"));
+  assert.ok(handlerPhaseIndex("stale-sketch-flag") < handlerPhaseIndex("stale-render"));
 });

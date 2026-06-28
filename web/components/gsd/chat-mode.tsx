@@ -2092,7 +2092,7 @@ const ToolExecutionBlock = memo(function ToolExecutionBlock({ tool }: { tool: Co
  * Consumes structured agent events from the workspace store:
  * - streamingAssistantText: live text deltas from the LLM
  * - streamingThinkingText: live thinking/reasoning deltas
- * - liveTranscript: completed text blocks from previous turns
+ * - completedTurns: completed turns with segment-ordered content
  * - activeToolExecution: currently running tool call
  *
  * User messages are tracked locally and sent via submitInput().
@@ -2176,56 +2176,41 @@ export function ChatPane({ className, onOpenAction }: ChatPaneProps) {
 
   const completedTimeline = useMemo((): TimelineItem[] => {
     const items: TimelineItem[] = []
-    const transcriptBlocks = state.liveTranscript
-    const segmentBlocks = state.completedTurnSegments
-    const userMsgs = state.chatUserMessages
 
-    // Interleave: user messages alternate with assistant turns.
-    // For completed turns, render from segments to preserve chronological order.
-    for (let i = 0; i < Math.max(userMsgs.length, transcriptBlocks.length); i++) {
-      if (i < userMsgs.length) {
-        items.push({ kind: "message", message: userMsgs[i] })
+    for (let i = 0; i < state.completedTurns.length; i++) {
+      const turn = state.completedTurns[i]!
+      if (turn.userMessage) {
+        items.push({ kind: "message", message: turn.userMessage })
       }
-      if (i < segmentBlocks.length && segmentBlocks[i].length > 0) {
-        // Render each segment in order
-        for (const seg of segmentBlocks[i]) {
-          if (seg.kind === "thinking") {
-            items.push({ kind: "thinking", content: seg.content, id: `turn-${i}-thinking-${items.length}` })
-          } else if (seg.kind === "text") {
-            items.push({
-              kind: "message",
-              message: {
-                id: `turn-${i}-text-${items.length}`,
-                role: "assistant",
-                content: seg.content,
-                complete: true,
-                timestamp: i + 1,
-              },
-            })
-          } else if (seg.kind === "tool") {
-            items.push({ kind: "tool", tool: seg.tool })
-          }
+      for (const seg of turn.segments) {
+        if (seg.kind === "thinking") {
+          items.push({ kind: "thinking", content: seg.content, id: `turn-${i}-thinking-${items.length}` })
+        } else if (seg.kind === "text") {
+          items.push({
+            kind: "message",
+            message: {
+              id: `turn-${i}-text-${items.length}`,
+              role: "assistant",
+              content: seg.content,
+              complete: true,
+              timestamp: i + 1,
+            },
+          })
+        } else if (seg.kind === "tool") {
+          items.push({ kind: "tool", tool: seg.tool })
         }
-      } else if (i < transcriptBlocks.length && transcriptBlocks[i].trim()) {
-        // Fallback: no segments stored yet (shouldn't happen for new turns, but safe)
-        items.push({
-          kind: "message",
-          message: {
-            id: `transcript-${i}`,
-            role: "assistant",
-            content: transcriptBlocks[i],
-            complete: true,
-            timestamp: i + 1,
-          },
-        })
       }
     }
 
     return items
-  }, [state.liveTranscript, state.completedTurnSegments, state.chatUserMessages])
+  }, [state.completedTurns])
 
   const streamingTimeline = useMemo((): TimelineItem[] => {
     const items: TimelineItem[] = []
+
+    if (state.pendingUserMessage) {
+      items.push({ kind: "message", message: state.pendingUserMessage })
+    }
 
     // Current turn: render finalized segments, then any in-flight content
     for (const seg of state.currentTurnSegments) {
@@ -2284,7 +2269,7 @@ export function ChatPane({ className, onOpenAction }: ChatPaneProps) {
     }
 
     return items
-  }, [state.currentTurnSegments, state.streamingAssistantText, state.streamingThinkingText, state.activeToolExecution, state.pendingUiRequests, isStreaming, renderTimestamp])
+  }, [state.pendingUserMessage, state.currentTurnSegments, state.streamingAssistantText, state.streamingThinkingText, state.activeToolExecution, state.pendingUiRequests, isStreaming, renderTimestamp])
 
   // Prompt submit handler for TUI prompts (select/text/password)
   const handlePromptSubmit = useCallback((data: string) => {

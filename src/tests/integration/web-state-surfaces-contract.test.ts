@@ -15,9 +15,9 @@ const workspaceStatus = await import("../../../web/lib/workspace-status.ts");
 const commandSurface = await import("../../../web/lib/command-surface-contract.ts");
 const {
   GSDWorkspaceStore,
-  getLiveAutoDashboard,
-  getLiveResumableSessions,
-  getLiveWorkspaceIndex,
+  resolveAutoDashboard,
+  resolveResumableSessions,
+  resolveWorkspaceIndex,
 } = await import("../../../web/lib/gsd-workspace-store.tsx");
 const { executeWorkflowActionInPowerMode } = await import("../../../web/lib/workflow-action-execution.ts");
 
@@ -397,7 +397,7 @@ test("workspace store keeps extension status, widgets, title overrides, and edit
   assert.equal(snapshot.activeToolExecution.name, "Bash");
 });
 
-test("live browser selectors prefer targeted live refresh data over boot seed data", () => {
+test("live browser selectors prefer targeted live refresh data over boot seed data", async () => {
   const store = new GSDWorkspaceStore("/tmp/project") as any;
   const snapshot = store.getSnapshot();
   const workspace = {
@@ -425,19 +425,21 @@ test("live browser selectors prefer targeted live refresh data over boot seed da
     isActive: true,
   };
 
+  const { withEntitySliceSucceeded } = await import("../../../web/lib/workspace-live-state.ts");
+
   store.patchState({
     live: {
       ...snapshot.live,
-      workspace,
-      auto,
-      resumableSessions: [session],
+      workspace: withEntitySliceSucceeded(snapshot.live.workspace, workspace as any),
+      auto: withEntitySliceSucceeded(snapshot.live.auto, auto as any),
+      resumableSessions: withEntitySliceSucceeded(snapshot.live.resumableSessions, [session]),
     },
   });
 
   const next = store.getSnapshot();
-  assert.equal(getLiveWorkspaceIndex(next), workspace);
-  assert.equal(getLiveAutoDashboard(next), auto);
-  assert.deepEqual(getLiveResumableSessions(next), [session]);
+  assert.equal(resolveWorkspaceIndex(next), workspace);
+  assert.equal(resolveAutoDashboard(next), auto);
+  assert.deepEqual(resolveResumableSessions(next), [session]);
 });
 
 test("git and recovery command surfaces expose explicit pending and result state", () => {

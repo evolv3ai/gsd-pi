@@ -47,8 +47,9 @@ export function dbPath(basePath: string): string {
  * Used by the renderer to derive the phase number from the DB's milestone_id.
  */
 export function milestoneIdToPhaseNum(milestoneId: string): number {
-  // No $ anchor: accepts bare (M012) and team-suffixed (M012-abc123) IDs.
+  // No $ anchor: accepts bare (M012), team-suffixed (M012-abc123), and legacy numeric IDs.
   const m = milestoneId.match(/^M0*(\d+)/i);
+  if (!m && /^\d+$/.test(milestoneId)) return Number.parseInt(milestoneId, 10);
   return m ? Number.parseInt(m[1]!, 10) : 1;
 }
 

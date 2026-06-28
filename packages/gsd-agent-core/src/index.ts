@@ -78,3 +78,29 @@ export {
 	type TurnLatencyStatus,
 	type TurnLatencyVisibleKind,
 } from "./turn-latency.js";
+export {
+	appendToolSegment,
+	applyTextDelta,
+	applyThinkingDelta,
+	completeTurn,
+	createInitialTranscriptState,
+	finalizeThinkingStream,
+	getFlatTranscript,
+	MAX_TRANSCRIPT_TURNS,
+	pushPendingUserMessage,
+	resetActiveTurn,
+	pickTranscriptState,
+	type CompletedToolExecution,
+	type CompletedTurn,
+	type TranscriptChatMessage,
+	type TranscriptState,
+	type TurnSegment,
+} from "./transcript-store.js";
+export {
+	applyExtensionUiSnapshotToWebFields,
+	createEmptyExtensionUiSnapshot,
+	extensionUiSnapshotFromRpcMaps,
+	extensionUiSnapshotFromWebFields,
+	type ExtensionUiSnapshot,
+	type WebExtensionUiFields,
+} from "./extension-ui-snapshot.js";

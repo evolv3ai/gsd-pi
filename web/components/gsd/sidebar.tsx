@@ -46,8 +46,8 @@ import { useTheme } from "next-themes"
 import { AnimatePresence, motion } from "motion/react"
 import {
   getCurrentScopeLabel,
-  getLiveWorkspaceIndex,
-  getLiveAutoDashboard,
+  resolveWorkspaceIndex,
+  resolveAutoDashboard,
   useGSDWorkspaceState,
   useGSDWorkspaceActions,
   buildPromptCommand,
@@ -339,10 +339,10 @@ export function MilestoneExplorer({ isConnecting = false, width, onCollapse }: {
   const [expandedMilestones, setExpandedMilestones] = useState<string[]>([])
   const [expandedSlices, setExpandedSlices] = useState<string[]>([])
 
-  const liveWorkspace = getLiveWorkspaceIndex(workspace)
+  const liveWorkspace = resolveWorkspaceIndex(workspace)
   const milestones = useMemo(() => liveWorkspace?.milestones ?? [], [liveWorkspace?.milestones])
   const activeScope = liveWorkspace?.active
-  const auto = getLiveAutoDashboard(workspace)
+  const auto = resolveAutoDashboard(workspace)
   const recoverySummary = workspace.live.recoverySummary
   const validationCount = liveWorkspace?.validationIssues.length ?? 0
   const currentScopeLabel = getCurrentScopeLabel(liveWorkspace)
@@ -648,9 +648,9 @@ export function CollapsedMilestoneSidebar({ onExpand }: { onExpand: () => void }
   const workspace = useGSDWorkspaceState()
   const { sendCommand } = useGSDWorkspaceActions()
 
-  const liveWorkspace = getLiveWorkspaceIndex(workspace)
+  const liveWorkspace = resolveWorkspaceIndex(workspace)
   const milestones = liveWorkspace?.milestones ?? []
-  const auto = getLiveAutoDashboard(workspace)
+  const auto = resolveAutoDashboard(workspace)
   const bridge = workspace.boot?.bridge ?? null
 
   const workflowAction = deriveWorkflowAction({
