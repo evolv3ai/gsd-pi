@@ -376,6 +376,10 @@ function capExistingMilestonesContext(
     return selected.join(QUEUE_CONTEXT_SECTION_SEPARATOR) + noticeSuffix;
   }
 
+  const compactTail = sections.slice(selected.length).map(compactSectionForQueueBudget);
+  const hybrid = [...selected, ...compactTail].join(QUEUE_CONTEXT_SECTION_SEPARATOR) + noticeSuffix;
+  if (hybrid.length <= cap) return hybrid;
+
   const compact = sections.map(compactSectionForQueueBudget);
   const compactContext = compact.join(QUEUE_CONTEXT_SECTION_SEPARATOR) + noticeSuffix;
   if (compactContext.length <= cap) return compactContext;
