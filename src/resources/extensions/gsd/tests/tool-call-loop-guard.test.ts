@@ -289,3 +289,42 @@ console.log('\n── Loop guard: ToolSearch (excluded from repeatable set) hits
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Block reasons instruct the model to stop tooling this turn
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Loop guard: block reasons tell model to respond in text ──');
+
+{
+  resetToolCallLoopGuard();
+
+  for (let i = 0; i < 4; i++) {
+    checkToolCallLoop('web_search', { query: 'same query' });
+  }
+  const identicalBlocked = checkToolCallLoop('web_search', { query: 'same query' });
+  assert.ok(identicalBlocked.block === true, 'identical-args guard should block');
+  assert.ok(
+    identicalBlocked.reason!.includes('respond to the user in text'),
+    'identical-args reason should tell the model to stop tooling',
+  );
+  assert.ok(
+    !identicalBlocked.reason!.includes('Try a different approach'),
+    'identical-args reason should not suggest retrying another tool',
+  );
+
+  resetToolCallLoopGuard();
+  for (let i = 0; i < 6; i++) {
+    checkToolCallLoop('gsd_complete_milestone', { milestone: `M${i}` });
+  }
+  const perToolBlocked = checkToolCallLoop('gsd_complete_milestone', { milestone: 'M7' });
+  assert.ok(perToolBlocked.block === true, 'per-tool guard should block');
+  assert.ok(
+    perToolBlocked.reason!.includes('respond to the user in text'),
+    'per-tool reason should tell the model to stop tooling',
+  );
+  assert.ok(
+    perToolBlocked.reason!.includes('Do not retry this tool'),
+    'per-tool reason should forbid retrying the blocked tool',
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════

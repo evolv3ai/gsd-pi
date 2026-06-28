@@ -162,7 +162,7 @@ These commands are native GSD workflows surfaced in `/gsd help full`. They dispa
 | `/gsd progress` | Summarize recent work and next steps; `--next` dispatches `/gsd next`, and `--do "..."` routes through `/gsd do` |
 | `/gsd health` | Check `.gsd/` integrity; supports `--repair` and `--context` |
 | `/gsd surface` | Manage which skills and extensions are surfaced in the session |
-| `/gsd code-review` | Review changed source for bugs, security, and quality; supports `--depth`, `--files`, and `--fix` |
+| `/gsd code-review` | Review changed source diff-first for bugs, security, and quality; supports `--depth`, `--files`, and `--fix` |
 | `/gsd review` | Peer-review recent work across reviewer perspectives; external reviewer flags are simulated in-prompt when unavailable |
 | `/gsd audit-milestone` | Verify a milestone met its definition of done |
 | `/gsd audit-uat` | Audit outstanding UAT/verification items; supports `--verify` |

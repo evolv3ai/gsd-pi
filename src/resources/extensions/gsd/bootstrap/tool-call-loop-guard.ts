@@ -1,18 +1,20 @@
 /**
  * Tool-call loop guard.
  *
- * Detects when a model calls the same tool with identical arguments
- * repeatedly within a single agent turn. Works in both auto-mode and
- * interactive sessions by hooking into the `tool_call` event, which
- * fires before execution and can block the call.
+ * Detects when a model repeats tool calls within a single Agent Turn.
+ * Works in both auto-mode and interactive sessions by hooking into the
+ * native engine's `tool_call` event, which fires before execution and can
+ * block the call.
  *
- * The guard uses a sliding window: it tracks the last N tool signatures
- * and blocks when the same signature appears more than MAX_CONSECUTIVE
- * times in a row. Resets on each agent turn (session_start, agent_end)
- * and when a different tool call breaks the streak.
+ * The guard has two independent checks: a sliding window for identical
+ * tool signatures, and a per-tool-name cap for repeated calls with varied
+ * arguments. State resets at Agent Turn boundaries (session_start,
+ * agent_end) and the identical-signature streak also resets when a
+ * different tool call breaks the streak. Block messages instruct the model
+ * to stop tooling for the rest of that turn and answer in text.
  *
- * A second, independent check (#783 Brief C) tracks per-tool-name call
- * counts within a turn regardless of args. This catches improvisation
+ * The per-tool-name check (#783 Brief C) tracks call counts within a
+ * turn regardless of args. This catches improvisation
  * loops where the model attempts the same missing workflow tool through
  * varied surfaces (bash → `node -e` → CLI), each with a different
  * signature, so the identical-args streak never trips. Whichever guard
@@ -104,7 +106,7 @@ export function checkToolCallLoop(
       reason:
         `Tool loop detected (identical args): ${toolName} called ${consecutiveCount} times ` +
         `with identical arguments. Blocking to prevent infinite loop. ` +
-        `Try a different approach or modify your arguments.`,
+        `Do not retry this tool or call other tools this turn — stop and respond to the user in text.`,
       count: consecutiveCount,
     };
   }
@@ -124,7 +126,8 @@ export function checkToolCallLoop(
       reason:
         `Tool loop detected (repeated tool): ${toolName} called ${perToolCount} times ` +
         `this turn (cap ${perToolCap}). Blocking to prevent infinite loop. ` +
-        `The tool may be unavailable or failing repeatedly — try a different approach.`,
+        `The tool may be unavailable or failing repeatedly. ` +
+        `Do not retry this tool or pivot to other tools this turn — stop and respond to the user in text.`,
       count: perToolCount,
     };
   }
