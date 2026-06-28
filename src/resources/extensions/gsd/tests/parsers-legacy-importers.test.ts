@@ -54,7 +54,8 @@ const ALLOWED_IMPORTERS = new Set([
   // explicit degraded-mode fallback when DB has no task rows (warns on use)
   "gsd/reactive-graph.ts",
   // recovery path: explicit pre-migration/DB-unavailable fallback branches
-  "gsd/auto-recovery.ts",
+  // (verifyExpectedArtifact extracted here from auto-recovery.ts)
+  "gsd/artifact-verification.ts",
   // diagnostics-only surfaces: report on projections, make no dispatch decisions
   "gsd/doctor.ts",
   // display/telemetry-only surfaces

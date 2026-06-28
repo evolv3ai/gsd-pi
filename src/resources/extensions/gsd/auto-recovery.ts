@@ -14,7 +14,6 @@ import { MILESTONE_ID_RE } from "./milestone-ids.js";
 import { appendEvent } from "./workflow-events.js";
 import { atomicWriteSync } from "./atomic-write.js";
 import { clearParseCache } from "./files.js";
-import { parseRoadmap as parseLegacyRoadmap, parsePlan as parseLegacyPlan } from "./parsers-legacy.js";
 import {
   isDbAvailable,
   getTask,
