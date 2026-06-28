@@ -772,6 +772,51 @@ test("#1003: stale-render plan repair switches back from an open wrong DB", asyn
   assert.equal(getSliceTasks("M001", "S01").length, 1, "repair should leave the project DB active");
 });
 
+test("#1034: validation-blocked milestone summary drift returns blocker instead of exhausting repair passes", async () => {
+  const drift: DriftRecord = {
+    kind: "stale-render",
+    renderPath: "/repo/.gsd/milestones/M001/M001-SUMMARY.md",
+    reason: "M001 is complete with summary in DB but SUMMARY.md missing on disk",
+  };
+  let repairCalled = false;
+  const handler: DriftHandler = {
+    kind: "stale-render",
+    detect: () => [drift],
+    blocker: staleRenderHandler.blocker!,
+    repair: () => {
+      repairCalled = true;
+    },
+  };
+
+  const validationBlocker = [
+    "Milestone M001 is blocked because milestone validation returned needs-attention.",
+    "Fix options:",
+    "1. Review the validation details: `/gsd status`",
+  ].join("\n");
+
+  const result = await reconcileBeforeDispatch("/repo", {
+    invalidateStateCache: () => {},
+    deriveState: async () =>
+      makeState({
+        phase: "blocked",
+        blockers: [validationBlocker],
+        nextAction: "Resolve M001 validation attention before proceeding.",
+      }),
+    registry: [handler],
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(repairCalled, false, "validation-blocked milestone summary drift should not attempt repair");
+  assert.ok(
+    result.blockers.some((blocker) => blocker.includes("milestone validation returned needs-attention")),
+    "validation blocker should be returned to the caller",
+  );
+  assert.ok(
+    result.blockers.some((blocker) => blocker.includes("Stale milestone summary render")),
+    "stale-render blocker should explain why repair did not run",
+  );
+});
+
 test("ADR-017 (#5702): stale-render detector reason strings match repair contract", (t) => {
   t.skip("TODO(flat-phase): stale-render detection temporarily disabled during layout transition"); return;
   const base = mkdtempSync(join(tmpdir(), "gsd-adr017-render-reasons-"));

@@ -36,6 +36,9 @@ import type { DriftContext, DriftHandler, DriftRecord } from "../types.js";
 
 type StaleRenderDrift = Extract<DriftRecord, { kind: "stale-render" }>;
 
+const VALIDATION_BLOCK_RE =
+  /milestone validation returned needs-(?:attention|remediation)|validation verdict is needs-(?:attention|remediation)/i;
+
 // ─── Core (basePath-only — usable by both drift API and legacy wrapper) ──────
 
 function detectStaleRenderDriftFromBasePath(basePath: string): StaleRenderDrift[] {
@@ -70,6 +73,22 @@ function isRepairableStaleRenderReason(reason: string): boolean {
     (reason.includes("SUMMARY.md missing") && /^T\d+/.test(reason)) ||
     (reason.includes("SUMMARY.md missing") && /^S\d+/.test(reason)) ||
     reason.includes("UAT.md missing")
+  );
+}
+
+function validationBlocker(state: GSDState): string | null {
+  if (state.phase !== "blocked") return null;
+  return state.blockers.find((blocker) => VALIDATION_BLOCK_RE.test(blocker)) ?? null;
+}
+
+function isMilestoneSummaryMissing(record: StaleRenderDrift): boolean {
+  const normPath = record.renderPath.replace(/\\/g, "/");
+  return (
+    record.reason.includes("SUMMARY.md missing") &&
+    (
+      /^M\d+(?:\b|[-_:])/.test(record.reason) ||
+      /(?:^|\/)M\d+(?:-[a-z0-9]+)?-SUMMARY\.md$/i.test(normPath)
+    )
   );
 }
 
@@ -364,9 +383,22 @@ export async function repairStaleRender(
   await repairStaleRenderFromBasePath(record, ctx.basePath);
 }
 
+export function staleRenderBlocker(
+  record: StaleRenderDrift,
+  ctx: DriftContext,
+): string | null {
+  const blocker = validationBlocker(ctx.state);
+  if (!blocker || !isMilestoneSummaryMissing(record)) return null;
+  return [
+    `Stale milestone summary render at ${record.renderPath} is blocked by milestone validation.`,
+    blocker,
+  ].join("\n");
+}
+
 export const staleRenderHandler: DriftHandler<StaleRenderDrift> = {
   kind: "stale-render",
   detect: detectStaleRenderDrift,
+  blocker: staleRenderBlocker,
   repair: repairStaleRender,
 };
 
