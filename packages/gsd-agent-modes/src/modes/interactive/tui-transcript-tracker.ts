@@ -63,6 +63,8 @@ export function applyAgentEventToTranscript(state: TranscriptState, event: Agent
 		case "tool_execution_start": {
 			return {
 				...state,
+				streamingAssistantText: "",
+				streamingThinkingText: "",
 				activeToolExecution: {
 					id: event.toolCallId,
 					name: event.toolName,
@@ -85,6 +87,9 @@ export function applyAgentEventToTranscript(state: TranscriptState, event: Agent
 			});
 			return { ...next, activeToolExecution: null } as TranscriptState;
 		}
+		case "agent_end":
+		case "turn_end":
+			return completeTurn(state);
 		default:
 			return state;
 	}
