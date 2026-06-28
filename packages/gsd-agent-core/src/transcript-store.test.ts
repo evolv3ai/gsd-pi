@@ -57,3 +57,14 @@ test("thinking then text delta finalizes thinking segment first", () => {
 	assert.equal(state.completedTurns[0]?.segments[0]?.kind, "thinking");
 	assert.equal(state.completedTurns[0]?.segments[1]?.kind, "text");
 });
+
+test("empty turn completion drops the pending user message", () => {
+	let state = createInitialTranscriptState();
+	state = pushPendingUserMessage(state, { role: "user", content: "aborted prompt" });
+	state = completeTurn(state);
+	state = applyTextDelta(state, "next response");
+	state = completeTurn(state);
+
+	assert.equal(state.completedTurns.length, 1);
+	assert.equal(state.completedTurns[0]?.userMessage, undefined);
+});

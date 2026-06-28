@@ -15,7 +15,7 @@ import {
   ReconciliationFailedError,
   type ReconciliationFailureDetail,
 } from "./errors.js";
-import { DRIFT_REGISTRY, RECONCILIATION_REPAIR_PHASES } from "./registry.js";
+import { DRIFT_REGISTRY, RECONCILIATION_REPAIR_PHASES, type ReconciliationRepairPhase } from "./registry.js";
 import type {
   DriftContext,
   DriftHandler,
@@ -63,6 +63,7 @@ export async function reconcileBeforeDispatch(
 ): Promise<ReconciliationResult> {
   const deps: ReconciliationDeps = { ...defaultDeps, ...partialDeps };
   const registry = deps.registry ?? DRIFT_REGISTRY;
+  const repairPhases = getRepairPhases(registry);
   const clearParseCache = deps.clearParseCache ?? defaultClearParseCache;
   const repaired: DriftRecord[] = [];
 
@@ -124,7 +125,7 @@ export async function reconcileBeforeDispatch(
     let repairedThisPass = false;
     const repairedKindsThisPass = new Set<string>();
 
-    for (const phase of RECONCILIATION_REPAIR_PHASES) {
+    for (const phase of repairPhases) {
       for (const record of drift) {
         const recordKey = `${record.kind}:${JSON.stringify(record)}`;
         if (repairedKindsThisPass.has(recordKey)) continue;
@@ -215,6 +216,30 @@ export async function reconcileBeforeDispatch(
       ]),
     ],
   };
+}
+
+function getRepairPhases(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  registry: ReadonlyArray<DriftHandler<any>>,
+): ReadonlyArray<ReconciliationRepairPhase> {
+  const assigned = new Set<DriftHandler>();
+  const phases = RECONCILIATION_REPAIR_PHASES.map((phase) => {
+    const phaseKinds = new Set(phase.handlers.map((handler) => handler.kind));
+    const handlers = registry.filter((handler) => phaseKinds.has(handler.kind));
+    for (const handler of handlers) assigned.add(handler);
+    return { name: phase.name, handlers };
+  }).filter((phase) => phase.handlers.length > 0);
+
+  const unphasedHandlers = registry.filter((handler) => !assigned.has(handler));
+  if (unphasedHandlers.length === 0) return phases;
+
+  return [
+    ...phases,
+    {
+      name: "custom",
+      handlers: unphasedHandlers,
+    },
+  ];
 }
 
 interface DetectionOutcome {

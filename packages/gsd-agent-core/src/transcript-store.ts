@@ -139,7 +139,9 @@ export function completeTurn(state: TranscriptState): TranscriptState {
   if (fullText.length === 0 && finalSegments.length === 0) {
     return {
       ...state,
+      pendingUserMessage: null,
       streamingThinkingText: "",
+      streamingAssistantText: "",
       currentTurnSegments: [],
     }
   }

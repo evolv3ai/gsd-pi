@@ -161,6 +161,29 @@ test("ADR-017 (#5700): repair failure throws ReconciliationFailedError with shap
   );
 });
 
+test("ADR-017 (#5700): custom registry handlers outside built-in phases are repaired", async () => {
+  const drift = { kind: "custom-drift", id: "D001" } as unknown as DriftRecord;
+  let repaired = false;
+  const handler = {
+    kind: "custom-drift",
+    detect: () => (repaired ? [] : [drift]),
+    repair: () => {
+      repaired = true;
+    },
+  } as unknown as DriftHandler;
+
+  const result = await reconcileBeforeDispatch("/project", {
+    invalidateStateCache: () => {},
+    deriveState: async () => makeState(),
+    registry: [handler],
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(repaired, true);
+  assert.equal(result.repaired.length, 1);
+  assert.equal(result.repaired[0]?.kind, "custom-drift");
+});
+
 test("ADR-017 (#5700): a detector failure degrades to a blocker without aborting other handlers", async () => {
   // A single detector throwing (e.g. a transient file read error) must NOT
   // abort the whole cycle and hide every later handler's drift. It is collected
