@@ -557,7 +557,9 @@ export class AgentSessionPromptModule {
 			this.host._retryAbortController = undefined;
 		}
 
-		this.lastNoProgressTerminalRetry = retryFingerprint;
+		if (retryFingerprint !== undefined) {
+			this.lastNoProgressTerminalRetry = retryFingerprint;
+		}
 		return true;
 	}
 
