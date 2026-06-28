@@ -537,14 +537,21 @@ export function verifyExpectedArtifact(
   // discuss-milestone unit with CONTEXT at phases/NN-slug/ in the project root
   // but not in the worktree resolves to null → "resolveExpectedArtifactPath
   // returned null" → finalize-retry loop (#852).
-  if (artifactBase !== base) {
+  //
+  // #870: the fallback must fire whenever the artifact is missing at
+  // `artifactBase`, NOT only when `artifactBase !== base`. When the real call
+  // site passes the worktree path as `base` (auto-post-unit.ts:1726 uses
+  // `s.currentUnit.workspaceRoot ?? s.basePath`), resolveCanonicalMilestoneRoot
+  // round-trips the worktree path back to itself, so `artifactBase === base`
+  // while still being a worktree path that lacks the projected artifact. The
+  // old `if (artifactBase !== base)` guard skipped the fallback in exactly that
+  // case, stranding CONTEXT at the project root and producing a stuck-loop.
+  if (!absPath || !existsSync(absPath)) {
     const projectRoot = resolve(resolveWorktreeProjectRoot(artifactBase));
     if (projectRoot && projectRoot !== artifactBase) {
-      if (!absPath || !existsSync(absPath)) {
-        const projectPath = resolveExpectedArtifactPath(unitType, unitId, projectRoot);
-        if (projectPath && existsSync(projectPath)) {
-          absPath = projectPath;
-        }
+      const projectPath = resolveExpectedArtifactPath(unitType, unitId, projectRoot);
+      if (projectPath && existsSync(projectPath)) {
+        absPath = projectPath;
       }
     }
   }

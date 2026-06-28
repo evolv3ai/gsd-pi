@@ -10,6 +10,7 @@ import {
   resetToolCallLoopGuard,
   disableToolCallLoopGuard,
   getToolCallLoopCount,
+  getToolCallCountForTool,
 } from '../bootstrap/tool-call-loop-guard.ts';
 
 
@@ -174,6 +175,73 @@ console.log('\n── Loop guard: nested key order is normalized ──');
   checkToolCallLoop('tool', { outer: { b: 2, a: 1 } });
   const result = checkToolCallLoop('tool', { outer: { a: 1, b: 2 } });
   assert.deepStrictEqual(getToolCallLoopCount(), 2, 'Same nested args in different key order should match');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Per-tool-name cap (#783 Brief C) — catches improvisation loops with varied args
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Loop guard: per-tool cap blocks varied-args improvisation (#783) ──');
+
+{
+  resetToolCallLoopGuard();
+
+  // A one-shot workflow tool called with DIFFERENT args each time (the reported
+  // improvisation pattern). The identical-signature streak alone would reset
+  // every call; the per-tool cap must catch it.
+  for (let i = 1; i <= 6; i++) {
+    const result = checkToolCallLoop('gsd_complete_milestone', { milestone: `M${i}` });
+    assert.ok(result.block === false, `one-shot call ${i} (varied args) should be allowed`);
+    assert.deepStrictEqual(getToolCallCountForTool('gsd_complete_milestone'), i, `per-tool count should be ${i}`);
+  }
+  // 7th call (cap 6 + 1) must be blocked by the per-tool guard.
+  const blocked = checkToolCallLoop('gsd_complete_milestone', { milestone: 'M7' });
+  assert.ok(blocked.block === true, '7th one-shot call (varied args) should be blocked by per-tool cap');
+  assert.ok(blocked.reason!.includes('repeated tool'), 'reason should identify the per-tool guard');
+  assert.ok(blocked.reason!.includes('gsd_complete_milestone'), 'reason should name the tool');
+  assert.ok(blocked.reason!.includes('7'), 'reason should mention the count');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Repeatable tools get the higher cap
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Loop guard: repeatable tools get the higher cap (#783) ──');
+
+{
+  resetToolCallLoopGuard();
+
+  // bash is repeatable: varied commands are legitimate up to the higher cap.
+  for (let i = 1; i <= 15; i++) {
+    const result = checkToolCallLoop('bash', { command: `echo ${i}` });
+    assert.ok(result.block === false, `bash call ${i} (varied args) should be allowed`);
+  }
+  // 16th call (cap 15 + 1) is blocked by the per-tool guard — this is the
+  // improvisation-through-bash case from the forensics (~51 calls).
+  const blocked = checkToolCallLoop('bash', { command: 'echo 16' });
+  assert.ok(blocked.block === true, '16th bash call (varied args) should be blocked by per-tool cap');
+  assert.ok(blocked.reason!.includes('cap 15'), 'reason should mention the repeatable cap');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Per-tool counts are independent per tool and reset together
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Loop guard: per-tool counts are independent and reset together (#783) ──');
+
+{
+  resetToolCallLoopGuard();
+
+  // Two different tools tracked separately.
+  for (let i = 0; i < 3; i++) checkToolCallLoop('read', { path: `f${i}` });
+  for (let i = 0; i < 3; i++) checkToolCallLoop('write', { path: `g${i}` });
+  assert.deepStrictEqual(getToolCallCountForTool('read'), 3, 'read tracked separately');
+  assert.deepStrictEqual(getToolCallCountForTool('write'), 3, 'write tracked separately');
+  assert.deepStrictEqual(getToolCallCountForTool('edit'), 0, 'uncalled tool reports 0');
+
+  resetToolCallLoopGuard();
+  assert.deepStrictEqual(getToolCallCountForTool('read'), 0, 'per-tool counts cleared on reset');
+  assert.deepStrictEqual(getToolCallCountForTool('write'), 0, 'per-tool counts cleared on reset');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

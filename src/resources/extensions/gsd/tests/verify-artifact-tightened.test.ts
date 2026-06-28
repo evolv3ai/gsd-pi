@@ -292,3 +292,69 @@ test("#852: discuss-milestone fails when CONTEXT is in neither worktree nor proj
     rmSync(projectRoot, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// #870: discuss-milestone verify-fail when the unit runs IN the worktree.
+//
+// The #852 tests above all pass `projectRoot` as the base. But the real call
+// site (auto-post-unit.ts:1726) passes `s.currentUnit.workspaceRoot ?? s.basePath`
+// — i.e. the WORKTREE path when the unit executed in a worktree. In the
+// canonical layout (`<root>/.gsd-worktrees/<MID>/`) resolveCanonicalMilestoneRoot
+// round-trips the worktree path back to itself, so `artifactBase === base` and
+// the worktree→project-root fallback (guarded by `artifactBase !== base`) is
+// skipped. CONTEXT is written to the project root, not projected into the
+// worktree, so verification finds nothing → "existsSync false" → re-dispatch
+// 3× → stuck-loop stop. These tests pin the real call site.
+// ---------------------------------------------------------------------------
+
+test("#870: discuss-milestone falls back to project root when base IS the canonical-layout worktree", () => {
+  closeDatabase();
+  const projectRoot = mkdtempSync(join(tmpdir(), "gsd-canonical-wt-"));
+  try {
+    // CONTEXT lives ONLY at the project root (flat-phase layout).
+    const phaseDir = join(projectRoot, ".gsd", "phases", "15-m015");
+    mkdirSync(phaseDir, { recursive: true });
+    writeFileSync(join(phaseDir, "15-CONTEXT.md"), "# M015 context\n");
+
+    // Canonical-layout worktree: <root>/.gsd-worktrees/<MID>/. Registered
+    // with git (.git file) so resolveCanonicalMilestoneRoot treats it as the
+    // canonical milestone root — but it has NO phases/ projection.
+    const wtRoot = join(projectRoot, ".gsd-worktrees", "M015");
+    mkdirSync(join(wtRoot, ".gsd", "milestones", "M015"), { recursive: true });
+    writeFileSync(join(wtRoot, ".gsd", "milestones", "M015", "M015-META.json"), '{"branch":"milestone/M015"}');
+    writeFileSync(join(wtRoot, ".git"), "gitdir: /fake/path");
+
+    // Real call site: base = worktree path (workspaceRoot).
+    assert.equal(
+      verifyExpectedArtifact("discuss-milestone", "M015", wtRoot),
+      true,
+      "must fall back to project root when base is the canonical-layout worktree",
+    );
+  } finally {
+    closeDatabase();
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
+test("#870: discuss-milestone also falls back when base is the legacy-layout worktree", () => {
+  closeDatabase();
+  const projectRoot = mkdtempSync(join(tmpdir(), "gsd-legacy-wt-"));
+  try {
+    const phaseDir = join(projectRoot, ".gsd", "phases", "15-m015");
+    mkdirSync(phaseDir, { recursive: true });
+    writeFileSync(join(phaseDir, "15-CONTEXT.md"), "# M015 context\n");
+
+    const wtRoot = join(projectRoot, ".gsd", "worktrees", "M015");
+    mkdirSync(join(wtRoot, ".gsd", "milestones", "M015"), { recursive: true });
+    writeFileSync(join(wtRoot, ".git"), "gitdir: /fake/path");
+
+    assert.equal(
+      verifyExpectedArtifact("discuss-milestone", "M015", wtRoot),
+      true,
+      "must fall back to project root when base is the legacy-layout worktree",
+    );
+  } finally {
+    closeDatabase();
+    rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
