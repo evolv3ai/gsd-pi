@@ -48,6 +48,16 @@ function makeRecordingPi() {
   } as any;
 }
 
+function makeRecordingCtx() {
+  const notifications: Array<{ message: string; level: string }> = [];
+  return {
+    notifications,
+    ui: {
+      notify: (message: string, level: string) => { notifications.push({ message, level }); },
+    },
+  } as any;
+}
+
 // ═══ #1855: empty RecoveryContext (basePath undefined) crashes ════════════════
 
 {
@@ -105,6 +115,52 @@ function makeRecordingPi() {
     const runtime = JSON.parse(readFileSync(join(base, ".gsd", "runtime", "units", "execute-task-M001-S01-T01.json"), "utf-8"));
     assert.equal(runtime.phase, "finalized", "db-complete task should be finalized");
     assert.equal(runtime.recovery.dbComplete, true, "runtime recovery should record DB completion");
+  } finally {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
+// ═══ plan-slice timeout recovery verifies stale PLAN before advancing ═══════
+
+{
+  console.log("\n=== plan-slice timeout recovery rejects stale placeholder PLAN ===");
+  const base = mkdtempSync(join(tmpdir(), "gsd-timeout-stale-plan-"));
+  const sliceDir = join(base, ".gsd", "milestones", "M001", "slices", "S01");
+  mkdirSync(sliceDir, { recursive: true });
+
+  try {
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "M001", title: "Milestone", status: "active" });
+    insertSlice({ id: "S01", milestoneId: "M001", title: "Slice", status: "pending" });
+    writeFileSync(
+      join(sliceDir, "S01-PLAN.md"),
+      "# S01: Slice\n\n## Tasks\n\nPlanning was interrupted before task rows were persisted.\n",
+      "utf-8",
+    );
+
+    const ctx = makeRecordingCtx();
+    const pi = makeRecordingPi();
+    const result = await recoverTimedOutUnit(ctx, pi, "plan-slice", "M001/S01", "idle", {
+      basePath: base,
+      verbose: false,
+      currentUnitStartedAt: Date.now(),
+      unitRecoveryCount: new Map(),
+    });
+
+    assert.equal(result, "recovered", "invalid existing plan should enter steering recovery");
+    assert.equal(pi.messages.length, 1, "invalid existing plan should trigger steering instead of advancing");
+    assert.ok(
+      ctx.notifications.some((entry: { message: string }) => entry.message.includes("steering plan-slice M001/S01")),
+      "recovery notification should describe steering, not artifact advance",
+    );
+    assert.ok(
+      !ctx.notifications.some((entry: { message: string }) => entry.message.includes("artifact already exists on disk. Advancing.")),
+      "stale placeholder plan should not use the advance-on-existence path",
+    );
+    const runtime = JSON.parse(readFileSync(join(base, ".gsd", "runtime", "units", "plan-slice-M001-S01.json"), "utf-8"));
+    assert.equal(runtime.phase, "recovered", "stale placeholder plan must not be finalized");
+    assert.equal(runtime.recoveryAttempts, 1, "steering recovery attempt should be recorded");
   } finally {
     closeDatabase();
     rmSync(base, { recursive: true, force: true });
