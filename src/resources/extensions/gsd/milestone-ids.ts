@@ -187,8 +187,13 @@ function idsWithLegacyNumericDirs(basePath: string): Set<string> {
     for (const entry of readdirSync(legacyDir, { withFileTypes: true })) {
       if (entry.isDirectory() && /^\d+$/.test(entry.name)) ids.add(entry.name);
     }
-  } catch {
-    // No legacy directory to consult.
+  } catch (err) {
+    // A missing legacy directory is the common, benign case (nothing to
+    // consult). Only surface a real failure when the directory exists but
+    // could not be read.
+    if (existsSync(legacyDir)) {
+      logWarning("engine", `idsWithLegacyNumericDirs: ${legacyDir} exists but readdirSync failed — ${getErrorMessage(err)}`);
+    }
   }
   return ids;
 }

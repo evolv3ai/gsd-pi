@@ -17,7 +17,8 @@ import {
   getSlice,
 } from "../gsd-db.ts";
 import { autoHealSketchFlags } from "../state-reconciliation/drift/sketch-flag.ts";
-import { deriveState, deriveStateFromDb } from "../state.ts";
+import { deriveState, deriveStateFromDb, invalidateStateCache } from "../state.ts";
+import { reconcileBeforeDispatch } from "../state-reconciliation.ts";
 import { resolveDispatch } from "../auto-dispatch.ts";
 import type { DispatchContext } from "../auto-dispatch.ts";
 
@@ -174,7 +175,7 @@ test("ADR-011: refining + flag flipped OFF mid-milestone → falls through to pl
   }
 });
 
-test("ADR-011: existing PLAN heals stale sketch flag via deriveStateFromDb (progressive_planning ON)", async (t) => {
+test("ADR-011: existing PLAN + stale sketch flag heals via reconcileBeforeDispatch, then dispatch routes past refining (progressive_planning ON)", async (t) => {
   const originalCwd = process.cwd();
   const base = makeFixtureBase();
   t.after(() => cleanup(base, originalCwd));
@@ -188,11 +189,22 @@ test("ADR-011: existing PLAN heals stale sketch flag via deriveStateFromDb (prog
   );
   process.chdir(base);
 
-  // deriveStateFromDb auto-heals the stale sketch flag when PLAN.md exists,
-  // regardless of the progressive_planning preference.
+  // Derivation is pure (ADR-017): a stale sketch flag (PLAN on disk but
+  // is_sketch=1) yields 'refining' and must NOT mutate the DB. Healing is
+  // owned by reconcileBeforeDispatch, which runs before every dispatch.
+  invalidateStateCache();
+  const beforeReconcile = await deriveStateFromDb(base);
+  assert.equal(beforeReconcile.activeSlice?.id, "S02");
+  assert.equal(beforeReconcile.phase, "refining", "derive alone must not heal the stale sketch flag");
+  assert.equal(getSlice("M001", "S02")?.is_sketch, 1, "derive must not mutate is_sketch");
+
+  const reconcile = await reconcileBeforeDispatch(base);
+  assert.equal(reconcile.ok, true);
+  assert.equal(getSlice("M001", "S02")?.is_sketch, 0, "reconcile clears the stale sketch flag once PLAN exists");
+
+  invalidateStateCache();
   const state = await deriveStateFromDb(base);
-  assert.equal(getSlice("M001", "S02")?.is_sketch, 0, "derive: flag cleared when PLAN exists");
-  assert.equal(state.phase, "planning", "derive: phase advances past refining once flag is healed");
+  assert.equal(state.phase, "planning", "re-derive advances past refining once the flag is healed");
 
   const ctx: DispatchContext = {
     basePath: base,
@@ -229,7 +241,7 @@ test("ADR-011: autoHealSketchFlags flips is_sketch=0 when PLAN file exists", asy
   assert.equal(getSlice("M001", "S02")?.is_sketch, 0, "post-heal: flag cleared");
 });
 
-test("ADR-011: deriveStateFromDb auto-heals stale sketch flag when PLAN exists", async (t) => {
+test("ADR-011: reconcileBeforeDispatch auto-heals stale sketch flag when PLAN exists", async (t) => {
   const originalCwd = process.cwd();
   const base = makeFixtureBase();
   t.after(() => cleanup(base, originalCwd));
@@ -244,12 +256,23 @@ test("ADR-011: deriveStateFromDb auto-heals stale sketch flag when PLAN exists",
   );
   process.chdir(base);
 
-  const state = await deriveStateFromDb(base);
-  assert.equal(getSlice("M001", "S02")?.is_sketch, 0, "derive should clear stale is_sketch");
-  assert.equal(state.phase, "planning", "state should advance past refining once stale flag is healed");
+  // Pure derivation reports the stale flag as 'refining' without repairing it.
+  invalidateStateCache();
+  const stale = await deriveStateFromDb(base);
+  assert.equal(stale.phase, "refining", "derive alone must not heal the stale flag");
+  assert.equal(getSlice("M001", "S02")?.is_sketch, 1, "is_sketch unchanged before reconcile");
+
+  // Reconciliation owns the repair (ADR-017 stale-sketch-flag drift handler).
+  const reconcile = await reconcileBeforeDispatch(base);
+  assert.equal(reconcile.ok, true);
+  assert.equal(getSlice("M001", "S02")?.is_sketch, 0, "reconcile should clear stale is_sketch");
+
+  invalidateStateCache();
+  const healed = await deriveStateFromDb(base);
+  assert.equal(healed.phase, "planning", "state advances past refining once the stale flag is healed");
 });
 
-test("ADR-011: deriveState uses canonical artifact root for sketch-flag healing", async (t) => {
+test("ADR-011: deriveState stays pure across worktree/canonical-root; healing belongs to reconcile at the canonical artifact root", async (t) => {
   const originalCwd = process.cwd();
   const base = makeFixtureBase();
   t.after(() => cleanup(base, originalCwd));
@@ -265,9 +288,22 @@ test("ADR-011: deriveState uses canonical artifact root for sketch-flag healing"
   mkdirSync(worktreePath, { recursive: true });
   process.chdir(worktreePath);
 
-  const state = await deriveState(worktreePath, { projectRootForReads: base });
-  assert.equal(getSlice("M001", "S02")?.is_sketch, 0, "deriveState should heal from canonical artifact root");
-  assert.equal(state.phase, "planning", "state should advance past refining when PLAN exists at canonical root");
+  // Deriving from the worktree with reads routed to the canonical artifact
+  // root resolves DB state but never mutates it (ADR-017: derive is pure).
+  // The legacy projectRootForReads-driven heal is gone; healing now happens
+  // in reconcileBeforeDispatch, which auto runs against canonicalProjectRoot.
+  invalidateStateCache();
+  const beforeReconcile = await deriveState(worktreePath, { projectRootForReads: base });
+  assert.equal(beforeReconcile.phase, "refining", "derive alone must not heal, even via projectRootForReads");
+  assert.equal(getSlice("M001", "S02")?.is_sketch, 1, "derive must not mutate is_sketch");
+
+  const reconcile = await reconcileBeforeDispatch(base);
+  assert.equal(reconcile.ok, true);
+  assert.equal(getSlice("M001", "S02")?.is_sketch, 0, "reconcile at the canonical root heals the stale flag");
+
+  invalidateStateCache();
+  const healed = await deriveState(worktreePath, { projectRootForReads: base });
+  assert.equal(healed.phase, "planning", "re-derive advances past refining once healed at the canonical root");
 });
 
 test("ADR-011: schema v16 is idempotent — re-opening DB preserves is_sketch and sketch_scope columns", async (t) => {
