@@ -48,7 +48,7 @@ import {
   type ExcerptResolver,
 } from "./unit-context-composer.js";
 import { resolveManifest, type ArtifactKey } from "./unit-context-manifest.js";
-import { resolveExpectedArtifactPath } from "./auto-artifact-paths.js";
+import { resolveSliceResearchLocation } from "./auto-artifact-paths.js";
 import { compileUnitContextContract, type UnitPromptContextContract } from "./tool-contract.js";
 import { readCompactionSnapshot } from "./compaction-snapshot.js";
 import { logWarning } from "./workflow-logger.js";
@@ -343,31 +343,15 @@ function renderExecuteTaskOnDemandContext(
   if (!artifacts.includes("slice-research")) {
     return { text: "", skipReason: "not declared by contract" };
   }
-  // Mirror dispatch's dual-resolution logic: worktree projection path first,
-  // then the authoritative project-root path via resolveExpectedArtifactPath.
-  // In worktree layouts the RESEARCH file may live under the project-root .gsd
-  // and not have been copied into the worktree projection, so resolveSliceFile
-  // (which looks only at gsdProjectionRoot) would miss it while dispatch would
-  // still treat research as satisfied.
-  const projectedFile = resolveSliceFile(base, mid, sid, "RESEARCH");
-  const researchFile: string | null = projectedFile ?? (() => {
-    const p = resolveExpectedArtifactPath("research-slice", `${mid}/${sid}`, base);
-    return p && existsSync(p) ? p : null;
-  })();
-  if (!researchFile) {
+  const research = resolveSliceResearchLocation(base, mid, sid);
+  if (!research.absolutePath || !research.relativePath) {
     return { text: "", skipReason: "missing" };
   }
-  // Use the layout-aware relative path when the file is in the worktree
-  // projection (relSliceFile), or fall back to node:path relative() when the
-  // file was only found via the project-root resolution path.
-  const researchPath = projectedFile
-    ? relSliceFile(base, mid, sid, "RESEARCH")
-    : relative(base, researchFile);
   return {
     text: [
       "## On-demand Context",
       "",
-      `Slice research is available at \`${researchPath}\`. Read it only if the inlined task plan, slice plan excerpt, and carry-forward context do not explain a required implementation detail.`,
+      `Slice research is available at \`${research.relativePath}\`. Read it only if the inlined task plan, slice plan excerpt, and carry-forward context do not explain a required implementation detail.`,
     ].join("\n"),
     skipReason: null,
   };

@@ -360,24 +360,31 @@ function capExistingMilestonesContext(
   if (fullContext.length <= cap) return fullContext;
 
   const notice = `[Existing milestones context truncated to ${cap} chars. Read source paths in this prompt or the corresponding .gsd artifacts for full details.]`;
-  const compactSections = sections.map(compactSectionForQueueBudget);
+  const noticeSuffix = `${QUEUE_CONTEXT_SECTION_SEPARATOR}${notice}`;
+
   const selected: string[] = [];
-
-  for (let i = 0; i < sections.length; i++) {
-    const withFullSection = [
-      ...selected,
-      sections[i],
-      ...compactSections.slice(i + 1),
-      notice,
-    ].join(QUEUE_CONTEXT_SECTION_SEPARATOR);
-
-    selected.push(withFullSection.length <= cap ? sections[i] : compactSections[i]);
+  for (const section of sections) {
+    const candidate = [...selected, section].join(QUEUE_CONTEXT_SECTION_SEPARATOR) + noticeSuffix;
+    if (candidate.length <= cap) {
+      selected.push(section);
+      continue;
+    }
+    break;
   }
 
-  const capped = [...selected, notice].join(QUEUE_CONTEXT_SECTION_SEPARATOR);
-  if (capped.length <= cap) return capped;
+  if (selected.length === sections.length) {
+    return selected.join(QUEUE_CONTEXT_SECTION_SEPARATOR) + noticeSuffix;
+  }
 
-  return `${capped.slice(0, Math.max(0, cap - notice.length - 2)).trimEnd()}\n\n${notice}`;
+  const compactTail = sections.slice(selected.length).map(compactSectionForQueueBudget);
+  const hybrid = [...selected, ...compactTail].join(QUEUE_CONTEXT_SECTION_SEPARATOR) + noticeSuffix;
+  if (hybrid.length <= cap) return hybrid;
+
+  const compact = sections.map(compactSectionForQueueBudget);
+  const compactContext = compact.join(QUEUE_CONTEXT_SECTION_SEPARATOR) + noticeSuffix;
+  if (compactContext.length <= cap) return compactContext;
+
+  return `${compactContext.slice(0, Math.max(0, cap - notice.length - 2)).trimEnd()}\n\n${notice}`;
 }
 
 function compactSectionForQueueBudget(section: string): string {

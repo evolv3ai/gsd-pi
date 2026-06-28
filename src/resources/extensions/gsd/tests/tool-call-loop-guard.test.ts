@@ -245,3 +245,47 @@ console.log('\n── Loop guard: per-tool counts are independent and reset toge
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Newly-repeatable tools from core-session-tools.ts get the higher cap.
+// bg_shell, find, ls, search_and_read were added to INHERENTLY_REPEATABLE_TOOL_SET
+// in the code-quality consolidation PR (previously only bash/read/write/etc).
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Loop guard: new repeatable tools (bg_shell, find, ls, search_and_read) get high cap ──');
+
+{
+  for (const toolName of ['bg_shell', 'find', 'ls', 'search_and_read']) {
+    resetToolCallLoopGuard();
+
+    // Should allow up to 15 varied calls without blocking.
+    for (let i = 1; i <= 15; i++) {
+      const result = checkToolCallLoop(toolName, { arg: `v${i}` });
+      assert.ok(result.block === false, `${toolName} call ${i} (varied args) should be allowed`);
+    }
+    // 16th call with varied args must be blocked by the per-tool repeatable cap.
+    const blocked = checkToolCallLoop(toolName, { arg: 'v16' });
+    assert.ok(blocked.block === true, `${toolName}: 16th call must be blocked by repeatable cap`);
+    assert.ok(blocked.reason?.includes('cap 15'), `${toolName}: reason must mention cap 15`);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Non-repeatable tools excluded from INHERENTLY_REPEATABLE_TOOL_SET use the
+// default cap (6), not the repeatable cap (15).
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Loop guard: ToolSearch (excluded from repeatable set) hits default cap ──');
+
+{
+  // ToolSearch is in MINIMAL_AUTO_BASE but explicitly excluded from repeatable.
+  // It should hit the default cap of 6, not 15.
+  resetToolCallLoopGuard();
+  for (let i = 1; i <= 6; i++) {
+    const result = checkToolCallLoop('ToolSearch', { query: `q${i}` });
+    assert.ok(result.block === false, `ToolSearch call ${i} should be allowed`);
+  }
+  const blocked = checkToolCallLoop('ToolSearch', { query: 'q7' });
+  assert.ok(blocked.block === true, 'ToolSearch: 7th varied call must be blocked by default cap');
+  assert.ok(!blocked.reason?.includes('cap 15'), 'ToolSearch must NOT use the repeatable cap');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════

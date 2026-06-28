@@ -20,6 +20,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { INHERENTLY_REPEATABLE_TOOL_SET } from "./core-session-tools.js";
 
 const MAX_CONSECUTIVE_IDENTICAL_CALLS = 4;
 
@@ -39,27 +40,6 @@ const MAX_CONSECUTIVE_STRICT = 1;
  */
 const PER_TOOL_DEFAULT_CAP = 6;
 const PER_TOOL_REPEATABLE_CAP = 15;
-
-/**
- * Inherently-repeatable tools: called many times per turn in normal work
- * (reading/writing several files, running several commands, searching). These
- * get PER_TOOL_REPEATABLE_CAP rather than the default. Keep this list
- * conservative — a tool here can be invoked up to PER_TOOL_REPEATABLE_CAP times
- * per turn before the guard blocks.
- */
-const REPEATABLE_TOOLS = new Set([
-  "read",
-  "write",
-  "edit",
-  "multi_edit",
-  "bash",
-  "grep",
-  "glob",
-  "search-the-web",
-  "fetch_page",
-  "todo_write",
-  "notebook_edit",
-]);
 
 let consecutiveCount = 0;
 let lastSignature = "";
@@ -134,7 +114,7 @@ export function checkToolCallLoop(
   // varied args (e.g. retrying a missing workflow tool via bash/node -e/CLI).
   const perToolCount = (perToolCounts.get(toolName) ?? 0) + 1;
   perToolCounts.set(toolName, perToolCount);
-  const perToolCap = REPEATABLE_TOOLS.has(toolName)
+  const perToolCap = INHERENTLY_REPEATABLE_TOOL_SET.has(toolName)
     ? PER_TOOL_REPEATABLE_CAP
     : PER_TOOL_DEFAULT_CAP;
 

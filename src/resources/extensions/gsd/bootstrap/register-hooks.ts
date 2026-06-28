@@ -35,6 +35,7 @@ import {
 import { applyProviderPayloadPolicy } from "../provider-payload-policy.js";
 
 import { checkToolCallLoop, resetToolCallLoopGuard } from "./tool-call-loop-guard.js";
+import { MINIMAL_AUTO_BASE_TOOL_NAMES } from "./core-session-tools.js";
 import { maybePauseAutoForApprovalGate, resetPendingGatePauseGuard } from "./pending-gate-pause.js";
 import { saveActivityLog } from "../activity-log.js";
 import { recordToolCall as safetyRecordToolCall, recordToolResult as safetyRecordToolResult, saveEvidenceToDisk } from "../safety/evidence-collector.js";
@@ -178,22 +179,7 @@ export const MINIMAL_GSD_TOOL_NAMES = [
   "gsd_capture_thought",
 ] as const;
 
-export const MINIMAL_AUTO_BASE_TOOL_NAMES = [
-  "ask_user_questions",
-  "bash",
-  "bg_shell",
-  "edit",
-  "find",
-  "glob",
-  "grep",
-  "fetch_page",
-  "search-the-web",
-  "ls",
-  "read",
-  "subagent",
-  "write",
-  "ToolSearch",
-] as const;
+export { MINIMAL_AUTO_BASE_TOOL_NAMES } from "./core-session-tools.js";
 
 function withPreservedShimTools(toolNames: readonly string[]): string[] {
   return [...new Set([...toolNames, ...ALWAYS_PRESERVED_SHIM_TOOL_NAMES])];

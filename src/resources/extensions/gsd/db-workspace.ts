@@ -2,7 +2,7 @@
 // File Purpose: Workspace-facing Interface for opening and maintaining the workflow database.
 
 import { existsSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { GsdWorkspace, MilestoneScope } from "./workspace.js";
 import type { DbAdapter } from "./db-adapter.js";
@@ -24,7 +24,7 @@ import {
   vacuumDatabase,
   wasDbOpenAttempted,
 } from "./gsd-db.js";
-import { resolveGsdPathContract } from "./paths.js";
+import { resolveGsdPathContract, gsdRoot } from "./paths.js";
 import { setLogBasePath } from "./workflow-logger.js";
 
 export interface WorkflowDatabaseLocation {
@@ -170,6 +170,48 @@ export function getWorkflowDatabasePath(): string | null {
 
 export function refreshWorkflowDatabaseFromDisk(): boolean {
   return refreshOpenDatabaseFromDisk();
+}
+
+export function expectedWorkflowDbPathForBase(basePath: string): string {
+  return join(gsdRoot(basePath), "gsd.db");
+}
+
+export interface EnsureWorkflowDbOptions {
+  /** When true, refresh from disk before reopening if already open on the correct path. */
+  refresh?: boolean;
+}
+
+export function ensureWorkflowDbAtPath(dbPath: string | null): boolean {
+  if (!dbPath || dbPath === ":memory:") return isDbAvailable();
+  if (isDbAvailable() && getWorkflowDatabasePath() === dbPath) return true;
+  if (!existsSync(dbPath)) return false;
+  try {
+    return openWorkflowDatabasePath(dbPath);
+  } catch {
+    return false;
+  }
+}
+
+export function ensureWorkflowDbForBase(
+  basePath: string,
+  options: EnsureWorkflowDbOptions = {},
+): boolean {
+  const dbPath = expectedWorkflowDbPathForBase(basePath);
+  if (!existsSync(dbPath)) return false;
+
+  try {
+    if (options.refresh) {
+      if (isDbAvailable() && getWorkflowDatabasePath() === dbPath && refreshWorkflowDatabaseFromDisk()) {
+        return true;
+      }
+      return openWorkflowDatabasePath(dbPath);
+    }
+
+    if (isDbAvailable() && getWorkflowDatabasePath() === dbPath) return true;
+    return openWorkflowDatabasePath(dbPath);
+  } catch {
+    return false;
+  }
 }
 
 export function checkpointWorkflowDatabase(): void {

@@ -29,21 +29,18 @@ import {
   deleteVerificationEvidence,
   saveGateResult,
   getPendingGatesForTurn,
-  isDbAvailable,
 } from "../gsd-db.js";
-import { getWorkflowDatabasePath, openWorkflowDatabasePath } from "../db-workspace.js";
+import { getWorkflowDatabasePath, ensureWorkflowDbAtPath } from "../db-workspace.js";
 import { getGatesForTurn } from "../gate-registry.js";
 import { gsdProjectionRoot, clearPathCache, resolveMilestonePath, resolveSlicePath } from "../paths.js";
 import { resolveCanonicalMilestoneRoot } from "../worktree-manager.js";
 import { checkOwnership, taskUnitKey } from "../unit-ownership.js";
 import { saveFile, clearParseCache } from "../files.js";
 import { invalidateStateCache } from "../state.js";
-import { renderPlanCheckboxes, renderRoadmapFromDb } from "../markdown-renderer.js";
+import { renderPlanCheckboxes } from "../markdown-renderer.js";
 import {
-  renderStateProjection,
+  renderMilestoneShellProjections,
   renderSummaryContent,
-  renderTopLevelQueueFromDb,
-  renderTopLevelRoadmapFromDb,
 } from "../workflow-projections.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
@@ -108,35 +105,6 @@ function taskSummaryPath(
   );
 }
 
-async function renderCompleteTaskProjections(basePath: string, milestoneId: string): Promise<void> {
-  try {
-    await renderRoadmapFromDb(basePath, milestoneId);
-  } catch (err) {
-    logWarning("projection", `renderRoadmapFromDb failed for ${milestoneId}: ${(err as Error).message}`);
-  }
-  try {
-    renderTopLevelRoadmapFromDb(basePath);
-  } catch (err) {
-    logWarning("projection", `renderTopLevelRoadmapFromDb failed: ${(err as Error).message}`);
-  }
-  try {
-    renderTopLevelQueueFromDb(basePath);
-  } catch (err) {
-    logWarning("projection", `renderTopLevelQueueFromDb failed: ${(err as Error).message}`);
-  }
-  try {
-    await renderStateProjection(basePath);
-  } catch (err) {
-    logWarning("projection", `renderStateProjection failed: ${(err as Error).message}`);
-  }
-}
-
-function ensureCompleteTaskDbOpen(dbPath: string | null): boolean {
-  if (!dbPath || dbPath === ":memory:") return isDbAvailable();
-  if (isDbAvailable() && getWorkflowDatabasePath() === dbPath) return true;
-  return openWorkflowDatabasePath(dbPath);
-}
-
 async function repairMissingTaskSummaryProjection(
   artifactBasePath: string,
   taskRow: TaskRow,
@@ -167,7 +135,7 @@ async function repairMissingTaskSummaryProjection(
   clearParseCache();
 
   try {
-    await renderCompleteTaskProjections(artifactBasePath, taskRow.milestone_id);
+    await renderMilestoneShellProjections(artifactBasePath, taskRow.milestone_id);
   } catch (projErr) {
     logWarning("tool", `complete-task repair projection warning: ${(projErr as Error).message}`);
   }
@@ -473,7 +441,7 @@ export async function handleCompleteTask(
 
     // Toggle or regenerate the plan projection from DB. Missing projection
     // files are rebuilt by the renderer instead of being skipped.
-    if (!ensureCompleteTaskDbOpen(rollbackDbPath)) {
+    if (!ensureWorkflowDbAtPath(rollbackDbPath)) {
       throw new Error(`database unavailable before plan projection render for ${params.milestoneId}/${params.sliceId}`);
     }
     const wrotePlan = await renderPlanCheckboxes(artifactBasePath, params.milestoneId, params.sliceId);
@@ -488,7 +456,7 @@ export async function handleCompleteTask(
     );
     let rollbackSucceeded = false;
     try {
-      ensureCompleteTaskDbOpen(rollbackDbPath);
+      ensureWorkflowDbAtPath(rollbackDbPath);
       deleteVerificationEvidence(params.milestoneId, params.sliceId, params.taskId);
       updateTaskStatus(params.milestoneId, params.sliceId, params.taskId, "pending");
       invalidateStateCache();
@@ -640,7 +608,7 @@ export async function handleCompleteTask(
   // Separate try/catch per step so a projection failure doesn't prevent
   // the event log entry (critical for worktree reconciliation).
   try {
-    await renderCompleteTaskProjections(artifactBasePath, params.milestoneId);
+    await renderMilestoneShellProjections(artifactBasePath, params.milestoneId);
   } catch (projErr) {
     logWarning("tool", `complete-task projection warning: ${(projErr as Error).message}`);
   }
