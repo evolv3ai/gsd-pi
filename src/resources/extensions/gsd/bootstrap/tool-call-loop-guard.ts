@@ -55,8 +55,8 @@ const REPEATABLE_TOOLS = new Set([
   "bash",
   "grep",
   "glob",
-  "web_search",
-  "web_fetch",
+  "search-the-web",
+  "fetch_page",
   "todo_write",
   "notebook_edit",
 ]);
