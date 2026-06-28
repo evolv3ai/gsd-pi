@@ -114,7 +114,7 @@ import { detectWorktreeName } from "./worktree.js";
 import { probeGitConflictState } from "./git-conflict-state.js";
 import { runTurnGitAction } from "./git-service.js";
 import { parseUnitId } from "./unit-id.js";
-import { resolveExpectedArtifactPath } from "./auto-artifact-paths.js";
+import { resolveExpectedArtifactPath, resolveExistingSliceResearchPath } from "./auto-artifact-paths.js";
 import {
   formatCloseoutProofBlock,
   proveMilestoneCloseout,
@@ -1164,7 +1164,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
       for (const slice of dbSlices) {
         if (slice.done) continue;
         // Skip if already has research
-        if (resolveExistingExpectedArtifact("research-slice", `${mid}/${slice.id}`, basePath)) continue;
+        if (resolveExistingSliceResearchPath(basePath, mid, slice.id)) continue;
         // Skip if dependencies aren't done (check for SUMMARY files)
         const depsComplete = slice.depends.every((depId) =>
           !!resolveExistingExpectedArtifact("complete-slice", `${mid}/${depId}`, basePath),
@@ -1212,10 +1212,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
       if (!state.activeSlice) return missingSliceStop(mid, state.phase);
       const sid = state.activeSlice!.id;
       const sTitle = state.activeSlice!.title;
-      const researchFile =
-        resolveExistingExpectedArtifact("research-slice", `${mid}/${sid}`, basePath) ??
-        resolveSliceFile(basePath, mid, sid, "RESEARCH");
-      if (researchFile) return null; // has research, fall through
+      if (resolveExistingSliceResearchPath(basePath, mid, sid)) return null; // has research, fall through
       return {
         action: "dispatch",
         unitType: "research-slice",

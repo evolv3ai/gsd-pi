@@ -6,7 +6,6 @@
 // had zero callers in production code — wiring it through
 // reconcileBeforeDispatch closes that gap.
 
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -21,15 +20,12 @@ import {
   getMilestoneSlices,
   getSlice,
   getSliceTasks,
-  isDbAvailable,
   setSliceSummaryMd,
 } from "../../gsd-db.js";
 import {
-  getWorkflowDatabasePath,
-  openWorkflowDatabasePath,
-  refreshWorkflowDatabaseFromDisk,
+  ensureWorkflowDbForBase,
 } from "../../db-workspace.js";
-import { gsdRoot, resolveSliceFile } from "../../paths.js";
+import { resolveSliceFile } from "../../paths.js";
 import type { GSDState } from "../../types.js";
 import { logWarning } from "../../workflow-logger.js";
 import type { DriftContext, DriftHandler, DriftRecord } from "../types.js";
@@ -122,34 +118,12 @@ function resolveRoadmapMilestoneIdFromPath(normPath: string): string {
   return fileMatch?.[1] ?? milestoneMatch[1];
 }
 
-function expectedDbPathForStaleRenderRepair(basePath: string): string {
-  return join(gsdRoot(basePath), "gsd.db");
-}
-
 function ensureDbForStaleRenderRepair(basePath: string): boolean {
-  const dbPath = expectedDbPathForStaleRenderRepair(basePath);
-  if (isDbAvailable() && getWorkflowDatabasePath() === dbPath) return true;
-  if (!existsSync(dbPath)) return false;
-  try {
-    return openWorkflowDatabasePath(dbPath);
-  } catch (err) {
-    logWarning("reconcile", `stale-render repair could not reopen DB: ${(err as Error).message}`);
-    return false;
-  }
+  return ensureWorkflowDbForBase(basePath);
 }
 
 function retryDbForStaleRenderRepair(basePath: string): boolean {
-  const dbPath = expectedDbPathForStaleRenderRepair(basePath);
-  if (!existsSync(dbPath)) return false;
-  try {
-    if (isDbAvailable() && getWorkflowDatabasePath() === dbPath && refreshWorkflowDatabaseFromDisk()) {
-      return true;
-    }
-    return openWorkflowDatabasePath(dbPath);
-  } catch (err) {
-    logWarning("reconcile", `stale-render repair could not reopen DB: ${(err as Error).message}`);
-    return false;
-  }
+  return ensureWorkflowDbForBase(basePath, { refresh: true });
 }
 
 async function repairStaleRenderFromBasePath(

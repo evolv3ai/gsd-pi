@@ -451,16 +451,14 @@ export async function renderStateProjection(basePath: string): Promise<void> {
   }
 }
 
-// ─── renderAllProjections ───────────────────────────────────────────────
+// ─── renderMilestoneShellProjections ─────────────────────────────────────
 
 /**
- * Regenerate all projection files for a milestone from DB state.
- * All calls are wrapped in try/catch — projection failure is non-fatal per D-02.
+ * Regenerate milestone-level projections (roadmap, top-level views, STATE.md).
+ * Does not touch slice PLAN.md or task SUMMARY.md — those have authoritative
+ * renderers in plan-slice / complete-task.
  */
-export async function renderAllProjections(basePath: string, milestoneId: string): Promise<void> {
-  // Delegate to the authoritative roadmap renderer — the reduced
-  // renderRoadmapProjection omits sections like ## Boundary Map and would
-  // clobber the output written by plan-milestone / reassess-roadmap.
+export async function renderMilestoneShellProjections(basePath: string, milestoneId: string): Promise<void> {
   try {
     await renderRoadmapFromDb(basePath, milestoneId);
   } catch (err) {
@@ -476,6 +474,21 @@ export async function renderAllProjections(basePath: string, milestoneId: string
   } catch (err) {
     logWarning("projection", `renderTopLevelQueueFromDb failed: ${(err as Error).message}`);
   }
+  try {
+    await renderStateProjection(basePath);
+  } catch (err) {
+    logWarning("projection", `renderStateProjection failed: ${(err as Error).message}`);
+  }
+}
+
+// ─── renderAllProjections ───────────────────────────────────────────────
+
+/**
+ * Regenerate all projection files for a milestone from DB state.
+ * All calls are wrapped in try/catch — projection failure is non-fatal per D-02.
+ */
+export async function renderAllProjections(basePath: string, milestoneId: string): Promise<void> {
+  await renderMilestoneShellProjections(basePath, milestoneId);
 
   // Query all slices for this milestone
   const sliceRows = getMilestoneSlices(milestoneId);
@@ -497,13 +510,6 @@ export async function renderAllProjections(basePath: string, milestoneId: string
         logWarning("projection", `renderSummaryProjection failed for ${milestoneId}/${slice.id}/${task.id}: ${(err as Error).message}`);
       }
     }
-  }
-
-  // Render STATE.md
-  try {
-    await renderStateProjection(basePath);
-  } catch (err) {
-    logWarning("projection", `renderStateProjection failed: ${(err as Error).message}`);
   }
 }
 

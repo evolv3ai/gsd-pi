@@ -30,7 +30,7 @@ import { classifyUatContent, escalatesArtifactUatToBrowser } from "../uat-policy
 import { invalidateStateCache } from "../state.js";
 import { renderRoadmapFromDb, roadmapRenderMarksSliceDone } from "../markdown-renderer.js";
 import { isStaleWrite } from "../auto/turn-epoch.js";
-import { renderStateProjection, renderTopLevelQueueFromDb, renderTopLevelRoadmapFromDb } from "../workflow-projections.js";
+import { renderMilestoneShellProjections } from "../workflow-projections.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning, logError } from "../workflow-logger.js";
@@ -539,37 +539,10 @@ export async function handleCompleteSlice(
   // ── Post-mutation hook: projections, manifest, event log ───────────────
   // Separate try/catch per step so a projection failure doesn't prevent
   // the event log entry (critical for worktree reconciliation).
-  //
-  // If the primary summary/UAT/roadmap write block failed (projectionStale),
-  // retry the milestone-level roadmap here so ROADMAP.md is not left stale
-  // after a committed slice completion. This restores the recovery that the
-  // removed flushWorkflowProjections/renderAllProjections provided.
-  if (projectionStale) {
-    try {
-      await renderRoadmapFromDb(artifactBasePath, params.milestoneId);
-    } catch (projErr) {
-      logWarning("tool", `complete-slice milestone roadmap retry warning for ${params.milestoneId}/${params.sliceId}: ${(projErr as Error).message}`);
-    }
-  }
   try {
-    await renderRoadmapFromDb(artifactBasePath, params.milestoneId);
+    await renderMilestoneShellProjections(artifactBasePath, params.milestoneId);
   } catch (projErr) {
-    logWarning("tool", `complete-slice milestone roadmap projection warning for ${params.milestoneId}/${params.sliceId}: ${(projErr as Error).message}`);
-  }
-  try {
-    renderTopLevelRoadmapFromDb(artifactBasePath);
-  } catch (projErr) {
-    logWarning("tool", `complete-slice roadmap projection warning for ${params.milestoneId}/${params.sliceId}: ${(projErr as Error).message}`);
-  }
-  try {
-    renderTopLevelQueueFromDb(artifactBasePath);
-  } catch (projErr) {
-    logWarning("tool", `complete-slice queue projection warning for ${params.milestoneId}/${params.sliceId}: ${(projErr as Error).message}`);
-  }
-  try {
-    await renderStateProjection(artifactBasePath);
-  } catch (projErr) {
-    logWarning("tool", `complete-slice state projection warning for ${params.milestoneId}/${params.sliceId}: ${(projErr as Error).message}`);
+    logWarning("tool", `complete-slice projection warning for ${params.milestoneId}/${params.sliceId}: ${(projErr as Error).message}`);
   }
   try {
     writeManifest(artifactBasePath);

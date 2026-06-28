@@ -22,7 +22,8 @@ import {
 } from "./paths.js";
 import { milestoneIdToPhaseNum } from "./layout-policy.js";
 import { parseUnitId } from "./unit-id.js";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
+import { existsSync } from "node:fs";
 
 function resolveMilestoneArtifactPath(
   base: string,
@@ -313,4 +314,49 @@ export function diagnoseExpectedArtifact(
     default:
       return null;
   }
+}
+
+export interface SliceResearchLocation {
+  /** Absolute path when research exists; null when missing. */
+  absolutePath: string | null;
+  /** Prompt-friendly relative path when research exists. */
+  relativePath: string | null;
+}
+
+/**
+ * Resolve slice RESEARCH with worktree projection first, then canonical
+ * project-root path. Shared by dispatch rules, execute-task prompts, and
+ * artifact verification.
+ */
+export function resolveSliceResearchLocation(
+  basePath: string,
+  mid: string,
+  sid: string,
+): SliceResearchLocation {
+  const projectedFile = resolveSliceFile(basePath, mid, sid, "RESEARCH");
+  if (projectedFile) {
+    return {
+      absolutePath: projectedFile,
+      relativePath: relSliceFile(basePath, mid, sid, "RESEARCH"),
+    };
+  }
+
+  const canonicalPath = resolveExpectedArtifactPath("research-slice", `${mid}/${sid}`, basePath);
+  if (canonicalPath && existsSync(canonicalPath)) {
+    return {
+      absolutePath: canonicalPath,
+      relativePath: relative(basePath, canonicalPath),
+    };
+  }
+
+  return { absolutePath: null, relativePath: null };
+}
+
+/** Returns the absolute RESEARCH path when it exists, otherwise null. */
+export function resolveExistingSliceResearchPath(
+  basePath: string,
+  mid: string,
+  sid: string,
+): string | null {
+  return resolveSliceResearchLocation(basePath, mid, sid).absolutePath;
 }
