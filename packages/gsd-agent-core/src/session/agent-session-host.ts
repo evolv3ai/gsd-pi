@@ -126,6 +126,7 @@ export interface AgentSessionHost {
 	disconnectFromAgent(): void;
 	reconnectToAgent(): void;
 	isRetryableError(message: AssistantMessage): boolean;
+	canPrepareRetry(message: AssistantMessage): boolean;
 	runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void>;
 	handlePostAgentRun(): Promise<boolean>;
 	flushPendingBashMessages(): void;

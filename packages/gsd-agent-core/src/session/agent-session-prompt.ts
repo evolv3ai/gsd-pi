@@ -10,7 +10,15 @@ import { sleep } from "@gsd/pi-coding-agent/utils/sleep.js";
 import type { PromptOptions } from "./agent-session-types.js";
 import type { AgentSessionHost } from "./agent-session-host.js";
 
+type NoProgressTerminalRetryFingerprint = {
+	errorKind: "terminated" | "timeout";
+	contextMessageCount: number;
+	lastContextMessage: AgentMessage | undefined;
+};
+
 export class AgentSessionPromptModule {
+	private lastNoProgressTerminalRetry: NoProgressTerminalRetryFingerprint | undefined;
+
 	constructor(readonly host: AgentSessionHost) {}
 
 	async runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
@@ -41,7 +49,7 @@ export class AgentSessionPromptModule {
 			return false;
 		}
 
-		if (this.isRetryableError(msg) && (await this.prepareRetry(msg))) {
+		if (this.canPrepareRetry(msg) && (await this.prepareRetry(msg))) {
 			return true;
 		}
 
@@ -488,12 +496,24 @@ export class AgentSessionPromptModule {
 		);
 	}
 
-	async prepareRetry(message: AssistantMessage): Promise<boolean> {
+	canPrepareRetry(message: AssistantMessage): boolean {
 		const settings = this.host.settingsManager.getRetrySettings();
-		if (!settings.enabled) {
+		if (!settings.enabled || this.host._retryAttempt >= settings.maxRetries) {
+			return false;
+		}
+		if (!this.isRetryableError(message)) {
+			return false;
+		}
+		return !this.isRepeatedNoProgressTerminalRetry(message);
+	}
+
+	async prepareRetry(message: AssistantMessage): Promise<boolean> {
+		if (!this.canPrepareRetry(message)) {
 			return false;
 		}
 
+		const settings = this.host.settingsManager.getRetrySettings();
+		const retryFingerprint = this.getNoProgressTerminalRetryFingerprint(message);
 		this.host._retryAttempt++;
 
 		if (this.host._retryAttempt > settings.maxRetries) {
@@ -537,7 +557,54 @@ export class AgentSessionPromptModule {
 			this.host._retryAbortController = undefined;
 		}
 
+		this.lastNoProgressTerminalRetry = retryFingerprint;
 		return true;
+	}
+
+	private isRepeatedNoProgressTerminalRetry(message: AssistantMessage): boolean {
+		if (this.host._retryAttempt === 0) {
+			return false;
+		}
+		const previous = this.lastNoProgressTerminalRetry;
+		const current = this.getNoProgressTerminalRetryFingerprint(message);
+		return (
+			previous !== undefined &&
+			current !== undefined &&
+			previous.errorKind === current.errorKind &&
+			previous.contextMessageCount === current.contextMessageCount &&
+			previous.lastContextMessage === current.lastContextMessage
+		);
+	}
+
+	private getNoProgressTerminalRetryFingerprint(
+		message: AssistantMessage,
+	): NoProgressTerminalRetryFingerprint | undefined {
+		const errorKind = this.getNoProgressTerminalRetryErrorKind(message.errorMessage);
+		if (!errorKind) {
+			return undefined;
+		}
+
+		const messages = this.host.agent.state.messages;
+		const hasTrailingAssistant = messages.length > 0 && messages[messages.length - 1].role === "assistant";
+		const contextMessageCount = messages.length - (hasTrailingAssistant ? 1 : 0);
+		return {
+			errorKind,
+			contextMessageCount,
+			lastContextMessage: messages[contextMessageCount - 1],
+		};
+	}
+
+	private getNoProgressTerminalRetryErrorKind(errorMessage: string | undefined): "terminated" | "timeout" | undefined {
+		if (!errorMessage) {
+			return undefined;
+		}
+		if (/terminated/i.test(errorMessage)) {
+			return "terminated";
+		}
+		if (/timed? out|timeout/i.test(errorMessage)) {
+			return "timeout";
+		}
+		return undefined;
 	}
 
 	abortRetry(): void {

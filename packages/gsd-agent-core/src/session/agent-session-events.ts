@@ -114,7 +114,7 @@ export class AgentSessionEventsModule {
 		for (let i = event.messages.length - 1; i >= 0; i--) {
 			const message = event.messages[i];
 			if (message.role === "assistant") {
-				return this.host.isRetryableError(message as AssistantMessage);
+				return this.host.canPrepareRetry(message as AssistantMessage);
 			}
 		}
 		return false;
