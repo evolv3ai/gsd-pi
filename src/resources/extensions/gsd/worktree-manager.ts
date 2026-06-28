@@ -91,8 +91,9 @@ function deleteBranchIfPresent(basePath: string, branch: string, warningPrefix: 
 function cleanupFailedSquashMergeState(basePath: string): void {
   try {
     nativeMergeAbort(basePath);
-  } catch {
-    // Squash conflicts may not create MERGE_HEAD; continue with reset/marker cleanup.
+  } catch (e) {
+    // Squash conflicts may not create MERGE_HEAD; this is expected.
+    logWarning("worktree", `merge abort skipped: ${(e as Error).message}`);
   }
   try {
     execFileSync("git", ["reset", "--merge"], {
