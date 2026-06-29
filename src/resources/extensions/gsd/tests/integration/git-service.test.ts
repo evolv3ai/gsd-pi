@@ -294,12 +294,13 @@ describe('git-service', async () => {
 
   assert.deepStrictEqual(
     RUNTIME_EXCLUSION_PATHS.length,
-    17,
-    "exactly 17 runtime exclusion paths"
+    18,
+    "exactly 18 runtime exclusion paths"
   );
 
   const expectedPaths = [
     ".gsd-worktrees/",
+    ".gsd-backups/**",
     ".gsd/activity/",
     ".gsd/audit/",
     ".gsd/forensics/",
@@ -1623,11 +1624,13 @@ process.exit(result.status ?? 0);
     // Create and track runtime files (simulates pre-.gitignore state)
     mkdirSync(join(repo, ".gsd", "activity"), { recursive: true });
     mkdirSync(join(repo, ".gsd", "runtime"), { recursive: true });
+    mkdirSync(join(repo, ".gsd-backups", "migrate-old"), { recursive: true });
     writeFileSync(join(repo, ".gsd", "completed-units.json"), '["u1"]');
     writeFileSync(join(repo, ".gsd", "metrics.json"), '{}');
     writeFileSync(join(repo, ".gsd", "STATE.md"), "# State");
     writeFileSync(join(repo, ".gsd", "activity", "log.jsonl"), "{}");
     writeFileSync(join(repo, ".gsd", "runtime", "data.json"), "{}");
+    writeFileSync(join(repo, ".gsd-backups", "migrate-old", "marker.txt"), "backup");
     writeFileSync(join(repo, "src.ts"), "code");
     runGit(repo, ["add", "-A"]);
     runGit(repo, ["commit", "-m", "init"]);
@@ -1636,6 +1639,8 @@ process.exit(result.status ?? 0);
     const trackedBefore = run("git ls-files .gsd/", repo);
     assert.ok(trackedBefore.includes("completed-units.json"), "untrack: precondition — completed-units tracked");
     assert.ok(trackedBefore.includes("metrics.json"), "untrack: precondition — metrics tracked");
+    const backupTrackedBefore = run("git ls-files .gsd-backups/", repo);
+    assert.ok(backupTrackedBefore.includes("marker.txt"), "untrack: precondition — migration backup tracked");
 
     // Run untrackRuntimeFiles
     untrackRuntimeFiles(repo);
@@ -1643,6 +1648,8 @@ process.exit(result.status ?? 0);
     // Runtime files should be removed from the index
     const trackedAfter = run("git ls-files .gsd/", repo);
     assert.deepStrictEqual(trackedAfter, "", "untrack: all runtime files removed from index");
+    const backupTrackedAfter = run("git ls-files .gsd-backups/", repo);
+    assert.deepStrictEqual(backupTrackedAfter, "", "untrack: migration backups removed from index");
 
     // Non-runtime files remain tracked
     const srcTracked = run("git ls-files src.ts", repo);
@@ -1653,6 +1660,8 @@ process.exit(result.status ?? 0);
       "untrack: completed-units.json still on disk");
     assert.ok(existsSync(join(repo, ".gsd", "metrics.json")),
       "untrack: metrics.json still on disk");
+    assert.ok(existsSync(join(repo, ".gsd-backups", "migrate-old", "marker.txt")),
+      "untrack: migration backup still on disk");
 
     // Idempotent — running again doesn't error
     untrackRuntimeFiles(repo);

@@ -21,6 +21,7 @@ The migration tool:
 - Treats an explicit path as the target project root, so `/gsd migrate ~/projects/my-old-project` writes to `~/projects/my-old-project/.gsd`
 - Blocks zero-slice migrations and refuses to run while active, paused, or worktree session state exists
 - Backs up any existing `.gsd/` to `.gsd-backups/migrate-YYYYMMDD-HHMMSS/`, deletes the old `.gsd/`, and restores the backup if migration fails
+- Keeps `.gsd-backups/` as local runtime data: GSD adds it to baseline `.gitignore` and runtime exclusions, and stale `.gsd-backups/migrate-*` snapshots are pruned after 30 days once the project has completed the flat-phase `.gsd/phases/` migration
 - Writes the imported hierarchy into the GSD database, then renders markdown projections from that database
 - Preserves completion state (`[x]` phases stay done, summaries carry over)
 - Consolidates research files into the new structure and archives the full legacy `.planning` source under `.gsd/migration/legacy/`

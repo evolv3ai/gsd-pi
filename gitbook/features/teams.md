@@ -40,6 +40,7 @@ Share planning artifacts while keeping runtime files local:
 .gsd/activity/
 .gsd/runtime/
 .gsd/worktrees/
+.gsd-backups/
 .gsd/milestones/**/continue.md
 .gsd/milestones/**/*-CONTINUE.md
 ```
@@ -52,7 +53,7 @@ Share planning artifacts while keeping runtime files local:
 - `.gsd/milestones/` — roadmaps, plans, summaries, research
 
 **What stays local** (gitignored):
-- Database files, lock files, metrics, state projections, activity logs, worktrees
+- Database files, lock files, metrics, state projections, activity logs, worktrees, and migration backups under `.gsd-backups/`. Stale `.gsd-backups/migrate-*` snapshots are pruned after 30 days once the flat-phase `.gsd/phases/` migration is complete.
 
 ## Commit the Config
 

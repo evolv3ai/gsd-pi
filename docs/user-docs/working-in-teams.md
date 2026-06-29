@@ -34,6 +34,7 @@ Share planning artifacts (milestones, roadmaps, decisions) while keeping runtime
 .gsd/runtime/
 .gsd/worktrees/
 .gsd-worktrees/
+.gsd-backups/
 .gsd/milestones/**/continue.md
 .gsd/milestones/**/*-CONTINUE.md
 ```
@@ -46,7 +47,7 @@ Share planning artifacts (milestones, roadmaps, decisions) while keeping runtime
 - `.gsd/milestones/` — roadmaps, plans, summaries, research
 
 **What stays local** (gitignored):
-- Database files, metrics, state projections, runtime records, worktrees, activity logs
+- Database files, metrics, state projections, runtime records, worktrees, activity logs, and migration backups under `.gsd-backups/`. Stale `.gsd-backups/migrate-*` snapshots are pruned after 30 days once the flat-phase `.gsd/phases/` migration is complete.
 
 ### 3. Commit the Preferences
 

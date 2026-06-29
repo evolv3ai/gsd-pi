@@ -67,6 +67,8 @@ The `.gsd/` directory looks like this:
             T01-SUMMARY.md — what the task accomplished
 ```
 
+GSD may also create sibling runtime directories next to `.gsd/`. `.gsd-worktrees/` holds isolated milestone checkouts, and `.gsd-backups/` holds migration snapshots such as `.gsd-backups/migrate-*`. These sibling directories are local-only and gitignored; stale `migrate-*` backup snapshots are pruned after 30 days once the project has completed the flat-phase `.gsd/phases/` migration.
+
 ### Key Files
 
 | File | Purpose |

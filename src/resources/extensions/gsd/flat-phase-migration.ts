@@ -70,6 +70,50 @@ export function needsFlatPhaseMigration(basePath: string): boolean {
   return hasLegacyMilestoneSubdirs(legacyMigratingPath(basePath));
 }
 
+/** Retention window before flat-phase migration backups are auto-pruned. */
+export const FLAT_PHASE_BACKUP_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Remove stale flat-phase migration backups after the retention window.
+ * Only runs when migration is complete (.gsd/phases/ exists, legacy layout gone).
+ * Returns the number of migrate-* directories removed.
+ */
+export function pruneStaleFlatPhaseBackups(basePath: string): number {
+  if (needsFlatPhaseMigration(basePath)) return 0;
+
+  const phasesPath = join(basePath, ".gsd", LAYOUT_SEGMENTS.level1);
+  if (!existsSync(phasesPath)) return 0;
+
+  const backupRoot = join(basePath, ".gsd-backups");
+  if (!existsSync(backupRoot)) return 0;
+
+  const now = Date.now();
+  let removed = 0;
+  for (const entry of readdirSync(backupRoot)) {
+    if (!entry.startsWith("migrate-")) continue;
+    const dirPath = join(backupRoot, entry);
+    try {
+      const st = statSync(dirPath);
+      if (!st.isDirectory()) continue;
+      if (now - st.mtimeMs < FLAT_PHASE_BACKUP_RETENTION_MS) continue;
+      rmSync(dirPath, { recursive: true, force: true });
+      removed++;
+    } catch {
+      // Non-fatal: leave backup for manual recovery.
+    }
+  }
+
+  try {
+    if (readdirSync(backupRoot).length === 0) {
+      rmSync(backupRoot, { recursive: true, force: true });
+    }
+  } catch {
+    // Non-fatal.
+  }
+
+  return removed;
+}
+
 /**
  * Migrate from legacy nested .gsd/milestones/ to flat-phase .gsd/phases/.
  *

@@ -906,6 +906,15 @@ export function registerHooks(
           }
         }
       }
+      const projectRoot = resolveWorktreeProjectRoot(basePath);
+      const { pruneStaleFlatPhaseBackups } = await import("../flat-phase-migration.js");
+      const pruned = pruneStaleFlatPhaseBackups(projectRoot);
+      if (pruned > 0) {
+        safetyLogWarning(
+          "bootstrap",
+          `pruned ${pruned} stale flat-phase migration backup(s) from .gsd-backups/ (retention exceeded)`,
+        );
+      }
     } catch (err) {
       safetyLogWarning("bootstrap", `flat-phase migration: ${err instanceof Error ? err.message : String(err)}`);
     }

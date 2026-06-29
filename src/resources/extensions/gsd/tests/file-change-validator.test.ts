@@ -116,6 +116,46 @@ test("effectiveFileChangeAllowlist keeps .gitignore auditable when management is
   assert.deepEqual(effectiveFileChangeAllowlist(["docs/**"], false), ["docs/**"]);
 });
 
+test("validateFileChanges excludes .gsd-backups/ migration snapshots from unexpected-change warnings", (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-file-change-validator-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const backupFile = join(
+    base,
+    ".gsd-backups",
+    "migrate-1782703701330",
+    "M010",
+    "slices",
+    "S01",
+    "S01-ASSESSMENT.md",
+  );
+  mkdirSync(join(base, "src"), { recursive: true });
+  mkdirSync(join(backupFile, ".."), { recursive: true });
+
+  git(base, "init");
+  git(base, "config", "user.email", "test@example.com");
+  git(base, "config", "user.name", "Test User");
+
+  writeFileSync(join(base, "src", "app.ts"), "initial\n");
+  writeFileSync(backupFile, "legacy assessment\n");
+  git(base, "add", ".");
+  git(base, "commit", "-m", "initial");
+
+  writeFileSync(join(base, "src", "app.ts"), "updated\n");
+  writeFileSync(backupFile, "legacy assessment touched\n");
+  git(base, "add", ".");
+  git(base, "commit", "-m", "task commit");
+
+  const audit = validateFileChanges(base, ["src/app.ts"], []);
+  assert.ok(audit, "audit should be produced");
+  assert.deepEqual(audit!.unexpectedFiles, [], ".gsd-backups/ must not trigger warnings");
+  assert.equal(
+    audit!.violations.filter(v => v.severity === "warning").length,
+    0,
+    "no warnings when only source and migration backup files changed",
+  );
+});
+
 test("GSD-managed .gitignore edit swept into a task commit is not flagged", (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-file-change-validator-"));
   t.after(() => rmSync(base, { recursive: true, force: true }));

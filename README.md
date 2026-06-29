@@ -158,7 +158,7 @@ Need help choosing settings? Use the [GSD Pi web configurator](https://pi.opengs
 gsd
 ```
 
-Run the setup flow, choose your preferred model provider, and open a project directory. GSD stores project planning and runtime state in `.gsd/`.
+Run the setup flow, choose your preferred model provider, and open a project directory. GSD stores project planning and runtime state in `.gsd/`, with gitignored sibling runtime directories such as `.gsd-backups/` for migration snapshots. Stale `.gsd-backups/migrate-*` snapshots are pruned after 30 days once the flat-phase `.gsd/phases/` migration is complete.
 
 For a full first-run walkthrough, see [Getting Started With gsd-pi](./docs/user-docs/getting-started.md).
 
