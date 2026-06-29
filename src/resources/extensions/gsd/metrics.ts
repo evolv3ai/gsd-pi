@@ -19,7 +19,7 @@ import { openSync, closeSync, unlinkSync, statSync, writeFileSync } from "node:f
 import type { ExtensionContext } from "@gsd/pi-coding-agent";
 import { gsdRoot } from "./paths.js";
 import { getAndClearSkills } from "./skill-telemetry.js";
-import { loadJsonFile, loadJsonFileOrNull, saveJsonFile } from "./json-persistence.js";
+import { loadJsonFile, loadJsonFileOrNull, saveJsonFileCompact } from "./json-persistence.js";
 import { parseUnitId } from "./unit-id.js";
 import { buildAuditEnvelope, emitUokAuditEvent } from "./uok/audit.js";
 import { isUnifiedAuditEnabled } from "./uok/audit-toggle.js";
@@ -873,7 +873,7 @@ export function pruneMetricsLedger(base: string, keepCount: number): number {
   if (!disk || disk.units.length <= keepCount) return 0;
   const removed = disk.units.length - keepCount;
   disk.units = keepNewestUnits(disk.units, keepCount);
-  saveJsonFile(metricsPath(base), disk);
+  saveJsonFileCompact(metricsPath(base), disk);
   // Keep the in-memory ledger in sync if it is loaded for this session.
   if (ledger) {
     ledger.units = keepNewestUnits(ledger.units, keepCount);
@@ -1041,7 +1041,7 @@ function saveLedger(base: string, data: MetricsLedger): void {
           : dataUnits;
       merged.sort(compareUnitsByTime);
       data.units = keepNewestUnits(merged);
-      saveJsonFile(path, data);
+      saveJsonFileCompact(path, data);
     } finally {
       releaseLock(lockPath);
     }
@@ -1053,6 +1053,6 @@ function saveLedger(base: string, data: MetricsLedger): void {
     // read-merge-write sequence without mutual exclusion.
     logWarning("fs", "saveLedger: lock not acquired — falling back to direct write (no merge)");
     data.units = keepNewestUnits(data.units);
-    saveJsonFile(path, data);
+    saveJsonFileCompact(path, data);
   }
 }

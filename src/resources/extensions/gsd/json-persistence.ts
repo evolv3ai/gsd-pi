@@ -63,6 +63,26 @@ export function saveJsonFile<T>(filePath: string, data: T): void {
 }
 
 /**
+ * Save a JSON file atomically using compact serialization.
+ *
+ * Intended for machine-only ledgers where pretty-printing has no consumer.
+ * Keeps the same write-tmp-rename safety and non-fatal error behavior as
+ * saveJsonFile.
+ */
+export function saveJsonFileCompact<T>(filePath: string, data: T): void {
+  try {
+    mkdirSync(dirname(filePath), { recursive: true });
+    // Use randomized tmp suffix to prevent concurrent-write data loss
+    const tmp = `${filePath}.tmp.${randomBytes(4).toString("hex")}`;
+    writeFileSync(tmp, JSON.stringify(data) + "\n", "utf-8");
+    renameSync(tmp, filePath);
+    // No cleanup needed — renameSync atomically removes tmp on success
+  } catch {
+    // Non-fatal — don't let persistence failures break operation
+  }
+}
+
+/**
  * Write a JSON file atomically (write to .tmp, then rename).
  * Creates parent directories as needed. Non-fatal on error.
  */

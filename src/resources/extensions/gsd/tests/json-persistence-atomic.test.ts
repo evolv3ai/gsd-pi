@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 
 import {
   saveJsonFile,
+  saveJsonFileCompact,
   loadJsonFile,
   writeJsonFileAtomic,
 } from "../json-persistence.ts";
@@ -56,6 +57,37 @@ test("saveJsonFile creates file with valid JSON content", () => {
   }
 });
 
+test("saveJsonFile keeps pretty-printed output for human-readable state", () => {
+  const dir = makeTempDir();
+  const filePath = join(dir, "pretty.json");
+
+  try {
+    const data = { foo: "bar", nested: { count: 42 } };
+    saveJsonFile(filePath, data);
+
+    const content = readFileSync(filePath, "utf-8");
+    assert.equal(content, JSON.stringify(data, null, 2) + "\n");
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("saveJsonFileCompact writes valid compact JSON content", () => {
+  const dir = makeTempDir();
+  const filePath = join(dir, "compact.json");
+
+  try {
+    const data = { foo: "bar", nested: { count: 42 } };
+    saveJsonFileCompact(filePath, data);
+
+    const content = readFileSync(filePath, "utf-8");
+    assert.equal(content, JSON.stringify(data) + "\n");
+    assert.deepEqual(JSON.parse(content), data);
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test("saveJsonFile does not leave .tmp files on success", () => {
   const dir = makeTempDir();
   const filePath = join(dir, "clean.json");
@@ -64,6 +96,21 @@ test("saveJsonFile does not leave .tmp files on success", () => {
     saveJsonFile(filePath, { test: true });
 
     // No .tmp files should remain
+    const files = readdirSync(dir);
+    const tmpFiles = files.filter(f => f.includes(".tmp"));
+    assert.equal(tmpFiles.length, 0, `Unexpected .tmp files: ${tmpFiles.join(", ")}`);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test("saveJsonFileCompact does not leave .tmp files on success", () => {
+  const dir = makeTempDir();
+  const filePath = join(dir, "compact-clean.json");
+
+  try {
+    saveJsonFileCompact(filePath, { test: true });
+
     const files = readdirSync(dir);
     const tmpFiles = files.filter(f => f.includes(".tmp"));
     assert.equal(tmpFiles.length, 0, `Unexpected .tmp files: ${tmpFiles.join(", ")}`);
