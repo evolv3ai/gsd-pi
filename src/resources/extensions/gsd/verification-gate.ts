@@ -244,6 +244,14 @@ export function formatFailureContext(result: VerificationResult): string {
   return header + body;
 }
 
+export function formatFailureSignature(result: VerificationResult): string {
+  return result.checks
+    .filter((check) => check.exitCode !== 0)
+    .map((check) => `${check.command.trim()}#${check.exitCode}`)
+    .sort()
+    .join("\n");
+}
+
 // ─── Gate Execution ─────────────────────────────────────────────────────────
 
 /** Characters that indicate shell control syntax when unquoted in a command string. */
