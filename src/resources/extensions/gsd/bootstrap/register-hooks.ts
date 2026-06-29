@@ -904,6 +904,15 @@ export function registerHooks(
               "flat-phase migration deferred: legacy .gsd/milestones/ layout detected but the workflow database could not be opened — will retry on next session",
             );
           }
+        } else {
+          const { pruneStaleFlatPhaseBackups } = await import("../flat-phase-migration.js");
+          const pruned = pruneStaleFlatPhaseBackups(basePath);
+          if (pruned > 0) {
+            safetyLogWarning(
+              "bootstrap",
+              `pruned ${pruned} stale flat-phase migration backup(s) from .gsd-backups/ (retention exceeded)`,
+            );
+          }
         }
       }
     } catch (err) {

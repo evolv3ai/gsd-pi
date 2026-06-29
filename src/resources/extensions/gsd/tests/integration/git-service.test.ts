@@ -294,12 +294,13 @@ describe('git-service', async () => {
 
   assert.deepStrictEqual(
     RUNTIME_EXCLUSION_PATHS.length,
-    17,
-    "exactly 17 runtime exclusion paths"
+    18,
+    "exactly 18 runtime exclusion paths"
   );
 
   const expectedPaths = [
     ".gsd-worktrees/",
+    ".gsd-backups/**",
     ".gsd/activity/",
     ".gsd/audit/",
     ".gsd/forensics/",

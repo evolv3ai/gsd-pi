@@ -51,6 +51,8 @@ const BASELINE_PATTERNS = [
   ".gsd",
   // Worktree container sibling — NOT covered by the ".gsd" pattern above.
   ".gsd-worktrees/",
+  // Flat-phase migration snapshots — NOT covered by the ".gsd" pattern above.
+  ".gsd-backups/",
   ".gsd-id",
   ".mcp.json",
   ".bg-shell/",

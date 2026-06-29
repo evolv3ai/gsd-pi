@@ -408,6 +408,9 @@ export async function checkRuntimeHealth(
       if (!existingLines.has(".gsd-worktrees/") && !existingLines.has(".gsd-worktrees")) {
         missing.push(".gsd-worktrees/");
       }
+      if (!existingLines.has(".gsd-backups/") && !existingLines.has(".gsd-backups")) {
+        missing.push(".gsd-backups/");
+      }
       if (!hasBlanketIgnore) {
         missing.push(...criticalPatterns.filter(p => !existingLines.has(p)));
       }
