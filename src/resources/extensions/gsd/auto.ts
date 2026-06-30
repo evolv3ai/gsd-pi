@@ -1394,7 +1394,19 @@ export async function maybeRerootStepSessionForHighContext(
   const prefs = loadEffectiveGSDPreferences(workspaceRoot);
   const compactionThreshold = prefs?.preferences.context_management?.compaction_threshold_percent;
 
-  if (!shouldWarnStepSessionForContext(contextPercent, compactionThreshold)) {
+  const shouldWarn = shouldWarnStepSessionForContext(contextPercent, compactionThreshold);
+  const shouldReroot = shouldRerootStepSessionForContext(contextPercent);
+  if (!shouldWarn && !shouldReroot) {
+    return { rerooted: false };
+  }
+
+  const displayPercent = (contextPercent as number).toFixed(1);
+  const thresholdDisplay = resolveCompactionThresholdPercent(compactionThreshold).toFixed(0);
+  if (!shouldReroot) {
+    ctx.ui.notify(
+      `Step complete — context at ${displayPercent}% (soft threshold: ${thresholdDisplay}%). Use /compact when convenient; continuing in this session is still safe.`,
+      "info",
+    );
     return { rerooted: false };
   }
 
@@ -1402,16 +1414,6 @@ export async function maybeRerootStepSessionForHighContext(
   const snapshotBase = resolveWorktreeProjectRoot(workspaceRoot, originalBasePath);
   const { writeContextModeCompactionSnapshot } = await import("./context-mode-snapshot.js");
   await writeContextModeCompactionSnapshot(snapshotBase);
-
-  const displayPercent = (contextPercent as number).toFixed(1);
-  const thresholdDisplay = resolveCompactionThresholdPercent(compactionThreshold).toFixed(0);
-  if (!shouldRerootStepSessionForContext(contextPercent)) {
-    ctx.ui.notify(
-      `Step complete — context at ${displayPercent}% (soft threshold: ${thresholdDisplay}%). Use /compact when convenient; continuing in this session is still safe.`,
-      "info",
-    );
-    return { rerooted: false };
-  }
 
   const result = await rerootCommandSession(cmdCtx, workspaceRoot);
   if (result.status === "ok") {
