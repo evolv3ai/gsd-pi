@@ -1,12 +1,13 @@
 import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { _getAdapter, closeDatabase, insertMilestone, openDatabase } from "../gsd-db.ts";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { _getAdapter, closeDatabase, insertMilestone, insertSlice, insertTask, openDatabase } from "../gsd-db.ts";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { filterDoctorIssues } from "../doctor-format.ts";
 import { checkEngineHealth } from "../doctor-engine-checks.ts";
 import { appendEvent } from "../workflow-events.ts";
+import { renderPlanFromDb, renderRoadmapFromDb } from "../markdown-renderer.ts";
 
 afterEach(() => {
   closeDatabase();
@@ -59,6 +60,35 @@ test("checkEngineHealth reports db_unavailable when gsd.db exists but the DB is 
   assert.ok(dbIssue, "doctor should surface degraded DB mode when a DB file exists");
   assert.equal(dbIssue.unitId, "project");
   assert.equal(dbIssue.file, ".gsd/gsd.db");
+});
+
+test("checkEngineHealth reports checkbox divergence against DB status", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-checkbox-drift-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  mkdirSync(gsdDir, { recursive: true });
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertMilestone({ id: "M001", title: "Foundation", status: "active" });
+  insertSlice({ id: "S01", milestoneId: "M001", title: "Slice", status: "pending", risk: "low", depends: [], sequence: 1 });
+  insertTask({ id: "T01", milestoneId: "M001", sliceId: "S01", title: "Task", status: "complete", sequence: 1 });
+
+  const roadmap = await renderRoadmapFromDb(base, "M001");
+  if ("skipped" in roadmap) assert.fail("planned milestone should render a roadmap");
+  const plan = await renderPlanFromDb(base, "M001", "S01");
+
+  writeFileSync(roadmap.roadmapPath, readFileSync(roadmap.roadmapPath, "utf-8").replace("- [ ] **S01:", "- [x] **S01:"), "utf-8");
+  writeFileSync(plan.planPath, readFileSync(plan.planPath, "utf-8").replace("- [x] **T01**:", "- [ ] **T01**:"), "utf-8");
+
+  const issues: any[] = [];
+  await checkEngineHealth(base, issues, []);
+
+  const divergences = issues.filter((issue) => issue.code === "checkbox_db_status_divergence");
+  assert.deepEqual(
+    divergences.map((issue) => issue.unitId).sort(),
+    ["M001/S01", "M001/S01/T01"],
+  );
 });
 
 test("checkEngineHealth reads canonical reopen events from worktree bases", async (t) => {

@@ -1,14 +1,104 @@
-import { existsSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { relative } from "node:path";
 
 import type { DoctorIssue } from "./doctor-types.js";
-import { isDbAvailable, _getAdapter } from "./gsd-db.js";
+import { getAllMilestones, getMilestoneSlices, getSliceTasks, isDbAvailable, _getAdapter } from "./gsd-db.js";
 import { isAfter, latestExplicitReopenAt } from "./milestone-reopen-events.js";
-import { resolveGsdPathContract, resolveMilestoneFile } from "./paths.js";
+import { resolveGsdPathContract, resolveMilestoneFile, resolveSliceFile } from "./paths.js";
 import { deriveState } from "./state.js";
+import { isClosedStatus } from "./status-guards.js";
 import { workflowEventLogPath } from "./workflow-event-ledger.js";
 import { readEvents } from "./workflow-events.js";
 import { flushWorkflowProjections } from "./projection-flush.js";
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function projectionCheckboxDone(content: string, unitId: string): boolean | null {
+  const id = escapeRegExp(unitId);
+  const match = content.match(new RegExp(`^\\s*-\\s*\\[([ xX])\\]\\s*\\*\\*${id}(?::|\\*\\*)`, "m"));
+  if (!match) return null;
+  return match[1]!.toLowerCase() === "x";
+}
+
+function relativeFile(basePath: string, filePath: string): string {
+  return relative(basePath, filePath).split("\\").join("/");
+}
+
+function reportCheckboxDbStatusDivergence(
+  issues: DoctorIssue[],
+  basePath: string,
+  filePath: string,
+  scope: "slice" | "task",
+  unitId: string,
+  status: string,
+  checkboxDone: boolean,
+): void {
+  const dbDone = isClosedStatus(status);
+  if (checkboxDone === dbDone) return;
+
+  issues.push({
+    severity: "error",
+    code: "checkbox_db_status_divergence",
+    scope,
+    unitId,
+    message: `${scope === "slice" ? "Slice" : "Task"} ${unitId} is ${dbDone ? "closed" : "open"} in the database (status: ${status}) but the markdown checkbox is ${checkboxDone ? "checked" : "unchecked"}.`,
+    file: relativeFile(basePath, filePath),
+    fixable: false,
+  });
+}
+
+function checkProjectionCheckboxDbStatus(basePath: string, milestoneIds: string[], issues: DoctorIssue[]): void {
+  for (const milestoneId of milestoneIds) {
+    const roadmapPath = resolveMilestoneFile(basePath, milestoneId, "ROADMAP");
+    const slices = getMilestoneSlices(milestoneId);
+
+    if (roadmapPath && existsSync(roadmapPath)) {
+      try {
+        const roadmap = readFileSync(roadmapPath, "utf-8");
+        for (const slice of slices) {
+          const checkboxDone = projectionCheckboxDone(roadmap, slice.id);
+          if (checkboxDone === null) continue;
+          reportCheckboxDbStatusDivergence(
+            issues,
+            basePath,
+            roadmapPath,
+            "slice",
+            `${milestoneId}/${slice.id}`,
+            slice.status,
+            checkboxDone,
+          );
+        }
+      } catch {
+        // Non-fatal — checkbox drift diagnostics must never block doctor.
+      }
+    }
+
+    for (const slice of slices) {
+      const planPath = resolveSliceFile(basePath, milestoneId, slice.id, "PLAN");
+      if (!planPath || !existsSync(planPath)) continue;
+      try {
+        const plan = readFileSync(planPath, "utf-8");
+        for (const task of getSliceTasks(milestoneId, slice.id)) {
+          const checkboxDone = projectionCheckboxDone(plan, task.id);
+          if (checkboxDone === null) continue;
+          reportCheckboxDbStatusDivergence(
+            issues,
+            basePath,
+            planPath,
+            "task",
+            `${milestoneId}/${slice.id}/${task.id}`,
+            task.status,
+            checkboxDone,
+          );
+        }
+      } catch {
+        // Non-fatal — checkbox drift diagnostics must never block doctor.
+      }
+    }
+  }
+}
 
 export async function checkEngineHealth(
   basePath: string,
@@ -289,6 +379,7 @@ export async function checkEngineHealth(
           }
         }
       }
+      checkProjectionCheckboxDbStatus(basePath, getAllMilestones().map((milestone) => milestone.id), issues);
     }
   } catch {
     // Non-fatal — projection drift check must never block doctor
