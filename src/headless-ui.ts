@@ -8,7 +8,8 @@
 
 import type { Readable } from 'node:stream'
 
-import { RpcClient, attachJsonlLineReader } from '@gsd/agent-modes'
+import type { RpcClient } from '@gsd/agent-modes/modes/rpc/rpc-client.js'
+import { attachJsonlLineReader } from '@gsd/agent-modes/modes/rpc/jsonl.js'
 
 // ---------------------------------------------------------------------------
 // Types
