@@ -31,6 +31,26 @@ describe("models.generated.ts", () => {
 		expect(MODELS.openrouter["anthropic/claude-fable-5"]).toBeDefined();
 	});
 
+	test("includes Claude Sonnet 5 across Anthropic providers with adaptive thinking", () => {
+		const anthropic = MODELS.anthropic["claude-sonnet-5"];
+		expect(anthropic).toBeDefined();
+		expect(anthropic.api).toBe("anthropic-messages");
+		expect(anthropic.name).toBe("Claude Sonnet 5");
+		expect(anthropic.contextWindow).toBe(1_000_000);
+		expect(anthropic.maxTokens).toBe(128_000);
+		expect(anthropic.thinkingLevelMap).toMatchObject({ xhigh: "xhigh" });
+		expect(anthropic.compat).toMatchObject({ forceAdaptiveThinking: true });
+
+		const vertex = MODELS["anthropic-vertex"]["claude-sonnet-5"];
+		expect(vertex).toBeDefined();
+		expect(vertex.api).toBe("anthropic-vertex");
+		expect(vertex.name).toBe("Claude Sonnet 5 (Vertex)");
+		expect(vertex.contextWindow).toBe(1_000_000);
+		expect(vertex.maxTokens).toBe(128_000);
+		expect(vertex.thinkingLevelMap).toMatchObject({ xhigh: "xhigh" });
+		expect(vertex.compat).toMatchObject({ forceAdaptiveThinking: true });
+	});
+
 	test("includes Anthropic Vertex models from the generated catalog", () => {
 		const models = MODELS["anthropic-vertex"];
 
