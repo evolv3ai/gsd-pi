@@ -29,6 +29,7 @@ import {
   runVerificationGate,
   runVerificationGateForTargets,
   formatFailureContext,
+  formatFailureSignature,
   captureRuntimeErrors,
   runDependencyAudit,
 } from "./verification-gate.js";
@@ -871,10 +872,13 @@ export async function runPostUnitVerification(
         );
       }
       const nextAttempt = attempt + 1;
+      const failureContext = verdict.failureContext || formatFailureContext(result);
+      const failureSignature = formatFailureSignature(result);
       s.verificationRetryCount.set(retryKey, nextAttempt);
       s.pendingVerificationRetry = {
         unitId: s.currentUnit.id,
-        failureContext: verdict.failureContext || formatFailureContext(result),
+        failureContext,
+        ...(failureSignature ? { signature: failureSignature } : {}),
         attempt: nextAttempt,
       };
       const failedCmds = result.checks

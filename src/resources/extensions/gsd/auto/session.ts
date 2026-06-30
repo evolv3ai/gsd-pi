@@ -56,6 +56,7 @@ export type ThinkingLevelSnapshot = ReturnType<ExtensionAPI["getThinkingLevel"]>
 export interface PendingVerificationRetry {
   unitId: string;
   failureContext: string;
+  signature?: string;
   attempt: number;
 }
 

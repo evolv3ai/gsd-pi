@@ -63,7 +63,9 @@ export function decideVerificationRetry(input: {
   }
 
   const key = verificationRetryKey(unitType, retryInfo.unitId);
-  const failureHash = hashVerificationFailureContext(retryInfo.failureContext);
+  const failureHash = hashVerificationFailureContext(
+    retryInfo.signature ?? retryInfo.failureContext,
+  );
   if (input.previousFailureHash === failureHash) {
     return {
       action: "pause",

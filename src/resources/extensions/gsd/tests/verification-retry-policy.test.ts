@@ -11,6 +11,8 @@ import {
   verificationRetryKey,
   VERIFICATION_RETRY_MAX_DELAY_MS,
 } from "../auto/verification-retry-policy.ts";
+import { formatFailureContext, formatFailureSignature } from "../verification-gate.ts";
+import type { VerificationResult } from "../types.ts";
 
 test("verificationRetryDelayMs uses exponential backoff with cap", () => {
   assert.deepEqual(verificationRetryDelayMs(1, () => 0.5), {
@@ -82,6 +84,56 @@ test("decideVerificationRetry delays changed failure context", () => {
   assert.equal(decision.key, verificationRetryKey("execute-task", "M001/S01/T01"));
   assert.equal(decision.delayMs, 4_000);
   assert.equal(decision.baseDelayMs, 4_000);
+});
+
+test("decideVerificationRetry pauses duplicate host-check failures with volatile stderr", () => {
+  const makeResult = (stderr: string): VerificationResult => ({
+    passed: false,
+    discoverySource: "package-json",
+    timestamp: Date.now(),
+    checks: [
+      {
+        command: "npm test",
+        exitCode: 1,
+        stdout: "",
+        stderr,
+        durationMs: 100,
+      },
+    ],
+  });
+  const first = makeResult("failed after 120ms in /tmp/gsd-a worker pid 101");
+  const second = makeResult("failed after 133ms in /tmp/gsd-b worker pid 202");
+  const firstContext = formatFailureContext(first);
+  const secondContext = formatFailureContext(second);
+
+  assert.notEqual(
+    hashVerificationFailureContext(firstContext),
+    hashVerificationFailureContext(secondContext),
+  );
+
+  const signature = formatFailureSignature(first);
+  assert.equal(signature, "npm test#1");
+  assert.equal(formatFailureSignature(second), signature);
+
+  const failureHash = hashVerificationFailureContext(signature);
+  const decision = decideVerificationRetry({
+    unitType: "execute-task",
+    retryInfo: {
+      unitId: "M001/S01/T01",
+      failureContext: secondContext,
+      signature: formatFailureSignature(second),
+      attempt: 2,
+    },
+    previousFailureHash: failureHash,
+    random: () => 0.5,
+  });
+
+  assert.deepEqual(decision, {
+    action: "pause",
+    reason: "duplicate-failure-context",
+    key: verificationRetryKey("execute-task", "M001/S01/T01"),
+    failureHash,
+  });
 });
 
 test("decideVerificationRetry pauses when retry context is missing", () => {
