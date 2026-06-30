@@ -224,6 +224,31 @@ console.log('\n── Loop guard: repeatable tools get the higher cap (#783) ─
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Distinct read calls are read-heavy context gathering, not repeated-tool loops.
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Loop guard: distinct read calls are not capped by per-tool count ──');
+
+{
+  resetToolCallLoopGuard();
+
+  for (let i = 1; i <= 20; i++) {
+    const result = checkToolCallLoop('read', { path: `file-${i}.ts` });
+    assert.ok(result.block === false, `distinct read call ${i} should be allowed`);
+  }
+
+  resetToolCallLoopGuard();
+  for (let i = 1; i <= 4; i++) {
+    const result = checkToolCallLoop('read', { path: 'same-file.ts' });
+    assert.ok(result.block === false, `identical read call ${i} should be allowed`);
+  }
+
+  const blocked = checkToolCallLoop('read', { path: 'same-file.ts' });
+  assert.ok(blocked.block === true, '5th identical read call should still be blocked');
+  assert.ok(blocked.reason?.includes('identical args'), 'read loops should be caught by Guard 1');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Per-tool counts are independent per tool and reset together
 // ═══════════════════════════════════════════════════════════════════════════
 
