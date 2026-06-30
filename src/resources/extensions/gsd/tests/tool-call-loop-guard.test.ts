@@ -303,14 +303,14 @@ console.log('\n── Loop guard: per-tool counts are independent and reset toge
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Non-exempt repeatable tools from core-session-tools.ts get the higher cap.
-// Read-only navigation tools are exempted earlier; mutating repeatable tools
-// must still trip the per-tool cap.
+// Read-only navigation tools are exempted earlier; mutating/execution repeatable
+// tools (e.g. gsd_exec) must still trip the per-tool cap.
 // ═══════════════════════════════════════════════════════════════════════════
 
 console.log('\n── Loop guard: non-exempt repeatable tools get high cap ──');
 
 {
-  for (const toolName of ['bg_shell', 'write']) {
+  for (const toolName of ['bg_shell', 'gsd_exec', 'write']) {
     resetToolCallLoopGuard();
 
     // Should allow up to 15 varied calls without blocking.
