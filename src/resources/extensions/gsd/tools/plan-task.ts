@@ -1,7 +1,8 @@
 import { clearParseCache } from "../files.js";
 import { isClosedStatus } from "../status-guards.js";
 import { isNonEmptyString, validateStringArray } from "../validation.js";
-import { transaction, getSlice, getTask, insertTask, upsertTaskPlanning } from "../gsd-db.js";
+import { getGateIdsForTurn } from "../gate-registry.js";
+import { transaction, getSlice, getTask, insertTask, upsertTaskPlanning, insertGateRow } from "../gsd-db.js";
 import { invalidateStateCache } from "../state.js";
 import { renderTaskPlanFromDb, renderPlanFromDb } from "../markdown-renderer.js";
 import { resolveSliceFile, resolveTasksDir } from "../paths.js";
@@ -9,7 +10,9 @@ import { flushWorkflowProjections } from "../projection-flush.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning } from "../workflow-logger.js";
+import { loadEffectiveGSDPreferences } from "../preferences.js";
 import { validatePathOnlyPlanningFields, validatePlanningPathScope } from "../planning-path-scope.js";
+import type { GateId } from "../types.js";
 
 export interface PlanTaskParams {
   milestoneId: string;
@@ -57,6 +60,12 @@ function validateParams(params: PlanTaskParams): PlanTaskParams {
   };
 }
 
+function resolveTaskGates(basePath: string): GateId[] {
+  const loaded = loadEffectiveGSDPreferences(basePath);
+  if (loaded?.preferences?.gate_evaluation?.task_gates === false) return [];
+  return [...getGateIdsForTurn("execute-task")];
+}
+
 export async function handlePlanTask(
   rawParams: PlanTaskParams,
   basePath: string,
@@ -82,6 +91,14 @@ export async function handlePlanTask(
   ]);
   if (pathScopeError) {
     return { error: `validation failed: ${pathScopeError}` };
+  }
+
+  let taskGates: GateId[];
+  try {
+    taskGates = resolveTaskGates(basePath);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `validation failed: ${message}` };
   }
 
   // ── Guards + DB writes inside a single transaction (prevents TOCTOU) ───
@@ -127,6 +144,9 @@ export async function handlePlanTask(
         observabilityImpact: params.observabilityImpact ?? "",
         fullPlanMd: params.fullPlanMd,
       });
+      for (const gid of taskGates) {
+        insertGateRow({ milestoneId: params.milestoneId, sliceId: params.sliceId, gateId: gid, scope: "task", taskId: params.taskId });
+      }
     });
   } catch (err) {
     return { error: `db write failed: ${(err as Error).message}` };

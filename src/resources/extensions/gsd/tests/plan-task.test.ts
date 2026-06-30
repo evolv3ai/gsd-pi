@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask, getTask } from '../gsd-db.ts';
+import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask, getTask, getGateResults } from '../gsd-db.ts';
 import { handlePlanTask } from '../tools/plan-task.ts';
 import { parseTaskPlanFile } from '../files.ts';
 
@@ -60,6 +60,25 @@ test('handlePlanTask writes planning state and renders task plan', async () => {
     const taskPlan = parseTaskPlanFile(readFileSync(taskPlanPath, 'utf-8'));
     assert.equal(taskPlan.frontmatter.estimated_files, 1);
     assert.deepEqual(taskPlan.frontmatter.skills_used, []);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanTask seeds execute-task gate rows for incremental planning', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParent();
+    const result = await handlePlanTask(validParams(), base);
+    assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
+
+    const gateIds = getGateResults('M001', 'S02', 'task')
+      .filter((gate) => gate.task_id === 'T02')
+      .map((gate) => gate.gate_id)
+      .sort();
+    assert.deepEqual(gateIds, ['Q5', 'Q6', 'Q7']);
   } finally {
     cleanup(base);
   }

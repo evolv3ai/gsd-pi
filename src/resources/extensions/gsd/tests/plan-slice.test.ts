@@ -511,15 +511,32 @@ test('handlePlanSlice leaves omitted enrichment fields empty instead of renderin
   }
 });
 
-test('handlePlanSlice rejects invalid payloads', async () => {
+test('handlePlanSlice accepts metadata-only payloads without deleting existing tasks', async () => {
   const base = makeTmpBase();
   openDatabase(join(base, '.gsd', 'gsd.db'));
 
   try {
     seedParentSlice();
-    const result = await handlePlanSlice({ ...validParams(), tasks: [] }, base);
-    assert.ok('error' in result);
-    assert.match(result.error, /validation failed: tasks must be a non-empty array/);
+    const first = await handlePlanSlice(validParams(), base);
+    assert.ok(!('error' in first), `unexpected error: ${'error' in first ? first.error : ''}`);
+    assert.equal(getSliceTasks('M001', 'S02').length, 2);
+
+    const second = await handlePlanSlice({
+      milestoneId: 'M001',
+      sliceId: 'S02',
+      goal: 'Persist updated slice metadata before incremental tasks.',
+      successCriteria: '- Metadata renders before task planning',
+      proofLevel: 'unit',
+      integrationClosure: 'Task details follow through gsd_plan_task.',
+      observabilityImpact: 'Progress survives between tool calls.',
+    }, base);
+    assert.ok(!('error' in second), `unexpected error: ${'error' in second ? second.error : ''}`);
+    assert.equal(getSlice('M001', 'S02')?.goal, 'Persist updated slice metadata before incremental tasks.');
+    assert.deepEqual(getSliceTasks('M001', 'S02').map((task) => task.id), ['T01', 'T02']);
+
+    const third = await handlePlanSlice({ ...validParams(), tasks: [] }, base);
+    assert.ok(!('error' in third), `unexpected error: ${'error' in third ? third.error : ''}`);
+    assert.deepEqual(getSliceTasks('M001', 'S02').map((task) => task.id), ['T01', 'T02']);
   } finally {
     cleanup(base);
   }

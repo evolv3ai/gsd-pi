@@ -781,22 +781,23 @@ test("executePlanSlice writes task planning state and rendered plan artifacts", 
   }
 });
 
-test("executePlanSlice marks validation failures with isError", async () => {
+test("executePlanSlice accepts metadata-only incremental planning payloads", async () => {
   const base = makeTmpBase();
   try {
     openTestDb(base);
+    await inProjectDir(base, () => executePlanMilestone(validMilestonePlan(), base));
 
     const result = await inProjectDir(base, () => executePlanSlice({
       milestoneId: "M001",
       sliceId: "S01",
-      goal: "Trigger validation failure for empty tasks.",
+      goal: "Persist slice metadata before tasks.",
       tasks: [],
     }, base));
 
-    assert.equal(result.isError, true);
     assert.equal(result.details.operation, "plan_slice");
-    assert.match(String(result.details.error), /validation failed: tasks must be a non-empty array/);
-    assert.match(result.content[0].text, /Error planning slice:/);
+    assert.equal(result.details.sliceId, "S01");
+    assert.equal(result.isError, undefined);
+    assert.match(result.content[0].text, /Planned slice S01/);
   } finally {
     closeDatabase();
     cleanup(base);

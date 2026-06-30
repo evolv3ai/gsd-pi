@@ -121,7 +121,7 @@ const POLICY: Record<string, DelegationPolicyEntry> = {
     toolName: "gsd_plan_task",
     verdict: "no",
     rationale:
-      "plan-slice prompt explicitly forbids calling gsd_plan_task separately; per-task granularity multiplies manifest writes and projection re-renders with no payoff.",
+      "Incremental task planning mutates the active slice plan and re-renders projections; keep it ordered in the foreground plan-slice unit.",
   },
 };
 

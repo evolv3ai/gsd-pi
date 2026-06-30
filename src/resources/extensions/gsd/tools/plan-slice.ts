@@ -51,7 +51,7 @@ export interface PlanSliceParams {
   milestoneId: string;
   sliceId: string;
   goal: string;
-  tasks: PlanSliceTaskInput[];
+  tasks?: PlanSliceTaskInput[];
   /** @optional — omitted fields render as conservative defaults */
   successCriteria?: string;
   /** @optional — omitted fields render as conservative defaults */
@@ -86,10 +86,12 @@ function validateRepositoryTargetIds(
   return deduped;
 }
 
-function validateTasks(value: unknown): PlanSliceTaskInput[] {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new Error("tasks must be a non-empty array");
+function validateTasks(value: unknown): PlanSliceTaskInput[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new Error("tasks must be an array");
   }
+  if (value.length === 0) return undefined;
 
   const seen = new Set<string>();
   return value.map((entry, index) => {
@@ -200,7 +202,7 @@ function validateReferencedRepositories(
   };
 
   for (const id of params.targetRepositories ?? defaultTargets) noteMissing(id);
-  for (const task of params.tasks) {
+  for (const task of params.tasks ?? []) {
     for (const id of task.targetRepositories ?? params.targetRepositories ?? defaultTargets) noteMissing(id);
   }
 
@@ -211,7 +213,7 @@ function validateReferencedRepositories(
 function resolveAllowedRootsForPathScope(params: PlanSliceParams, registry: RepositoryRegistry, defaultTargets: string[]): string[] {
   const requested = new Set<string>();
   for (const id of params.targetRepositories ?? defaultTargets) requested.add(id);
-  for (const task of params.tasks) {
+  for (const task of params.tasks ?? []) {
     for (const id of task.targetRepositories ?? params.targetRepositories ?? defaultTargets) requested.add(id);
   }
   if (requested.size === 0) return [registry.projectRoot];
@@ -222,7 +224,7 @@ function resolveAllowedRootsForPathScope(params: PlanSliceParams, registry: Repo
 }
 
 function toTaskRows(params: PlanSliceParams, defaultTargets: string[]): TaskRow[] {
-  return params.tasks.map((task, index) => ({
+  return (params.tasks ?? []).map((task, index) => ({
     milestone_id: params.milestoneId,
     slice_id: params.sliceId,
     id: task.taskId,
@@ -309,6 +311,8 @@ export async function handlePlanSlice(
     return { error: `validation failed: ${message}` };
   }
   const defaultTargets = defaultRepositoryTargets(repositoryRegistry);
+  const taskPayload = params.tasks ?? [];
+  const hasTaskPayload = taskPayload.length > 0;
   const repoValidationError = validateReferencedRepositories(params, repositoryRegistry, defaultTargets);
   if (repoValidationError) {
     return { error: `validation failed: ${repoValidationError}` };
@@ -317,7 +321,7 @@ export async function handlePlanSlice(
   const allowedAbsoluteRoots = resolveAllowedRootsForPathScope(params, repositoryRegistry, defaultTargets);
 
   const pathOnlyError = validatePathOnlyPlanningFields(
-    params.tasks.map((task, index) => ({
+    taskPayload.map((task, index) => ({
       field: `tasks[${index}].expectedOutput`,
       values: task.expectedOutput,
     })),
@@ -328,7 +332,7 @@ export async function handlePlanSlice(
 
   const pathScopeError = validatePlanningPathScope(
     basePath,
-    params.tasks.flatMap((task, index) => [
+    taskPayload.flatMap((task, index) => [
       { field: `tasks[${index}].files`, values: task.files },
       { field: `tasks[${index}].inputs`, values: task.inputs },
       { field: `tasks[${index}].expectedOutput`, values: task.expectedOutput },
@@ -372,16 +376,18 @@ export async function handlePlanSlice(
         return;
       }
 
-      const newTaskIds = new Set(params.tasks.map((task) => task.taskId));
+      const newTaskIds = new Set(taskPayload.map((task) => task.taskId));
       const existingTasks = getSliceTasks(params.milestoneId, params.sliceId);
-      omittedTaskIds = existingTasks
-        .filter((task) => !newTaskIds.has(task.id))
-        .map((task) => task.id);
+      if (hasTaskPayload) {
+        omittedTaskIds = existingTasks
+          .filter((task) => !newTaskIds.has(task.id))
+          .map((task) => task.id);
 
-      for (const task of existingTasks) {
-        if (!newTaskIds.has(task.id) && isClosedStatus(task.status)) {
-          guardError = `cannot remove completed task ${task.id}`;
-          return;
+        for (const task of existingTasks) {
+          if (!newTaskIds.has(task.id) && isClosedStatus(task.status)) {
+            guardError = `cannot remove completed task ${task.id}`;
+            return;
+          }
         }
       }
 
@@ -398,35 +404,37 @@ export async function handlePlanSlice(
         targetRepositories: params.targetRepositories ?? defaultTargets,
       });
 
-      for (const taskId of omittedTaskIds) {
-        deleteTask(params.milestoneId, params.sliceId, taskId);
-      }
-
-      const existingTaskById = new Map(existingTasks.map((task) => [task.id, task]));
-      for (const task of params.tasks) {
-        const planning = {
-          title: task.title,
-          description: task.description,
-          estimate: task.estimate,
-          files: task.files,
-          verify: task.verify,
-          inputs: task.inputs,
-          expectedOutput: task.expectedOutput,
-          observabilityImpact: task.observabilityImpact ?? "",
-          fullPlanMd: task.fullPlanMd,
-          targetRepositories: task.targetRepositories ?? params.targetRepositories ?? defaultTargets,
-        };
-        const existingTask = existingTaskById.get(task.taskId);
-        if (!existingTask || !isClosedStatus(existingTask.status)) {
-          insertTask({
-            id: task.taskId,
-            sliceId: params.sliceId,
-            milestoneId: params.milestoneId,
-            title: task.title,
-            status: "pending",
-          });
+      if (hasTaskPayload) {
+        for (const taskId of omittedTaskIds) {
+          deleteTask(params.milestoneId, params.sliceId, taskId);
         }
-        upsertTaskPlanning(params.milestoneId, params.sliceId, task.taskId, planning);
+
+        const existingTaskById = new Map(existingTasks.map((task) => [task.id, task]));
+        for (const task of taskPayload) {
+          const planning = {
+            title: task.title,
+            description: task.description,
+            estimate: task.estimate,
+            files: task.files,
+            verify: task.verify,
+            inputs: task.inputs,
+            expectedOutput: task.expectedOutput,
+            observabilityImpact: task.observabilityImpact ?? "",
+            fullPlanMd: task.fullPlanMd,
+            targetRepositories: task.targetRepositories ?? params.targetRepositories ?? defaultTargets,
+          };
+          const existingTask = existingTaskById.get(task.taskId);
+          if (!existingTask || !isClosedStatus(existingTask.status)) {
+            insertTask({
+              id: task.taskId,
+              sliceId: params.sliceId,
+              milestoneId: params.milestoneId,
+              title: task.title,
+              status: "pending",
+            });
+          }
+          upsertTaskPlanning(params.milestoneId, params.sliceId, task.taskId, planning);
+        }
       }
 
       // Seed quality gate rows inside the transaction — all-or-nothing with
@@ -436,7 +444,7 @@ export async function handlePlanSlice(
         insertGateRow({ milestoneId: params.milestoneId, sliceId: params.sliceId, gateId: gid, scope: "slice" });
       }
       const taskGates = resolveTaskGates(gateEvaluation);
-      for (const task of params.tasks) {
+      for (const task of taskPayload) {
         for (const gid of taskGates) {
           insertGateRow({ milestoneId: params.milestoneId, sliceId: params.sliceId, gateId: gid, scope: "task", taskId: task.taskId });
         }
