@@ -118,6 +118,7 @@ export function migrateToExternalState(basePath: string): MigrationResult {
 
     // Copy contents to external dir, skipping worktrees/
     const entries = readdirSync(migratingPath, { withFileTypes: true });
+    const copyFailures: string[] = [];
     for (const entry of entries) {
       if (entry.name === "worktrees") continue; // worktrees stay local
 
@@ -130,9 +131,14 @@ export function migrateToExternalState(basePath: string): MigrationResult {
         } else {
           cpSync(src, dst, { force: true });
         }
-      } catch {
-        // Non-fatal: continue with other files
+      } catch (copyErr) {
+        copyFailures.push(`${entry.name}: ${getErrorMessage(copyErr)}`);
       }
+    }
+    if (copyFailures.length > 0) {
+      try { rmSync(localGsd, { force: true }); } catch { /* may not exist */ }
+      renameSync(migratingPath, localGsd);
+      return { migrated: false, error: `Migration copy failed: ${copyFailures.join("; ")}` };
     }
 
     // Create symlink .gsd -> external path
