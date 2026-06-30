@@ -212,6 +212,13 @@ export class AutoSession {
    * the issues after MAX_PRE_EXEC_RETRIES re-attempts.
    */
   readonly preExecRetryCount: Map<string, number> = new Map();
+  /**
+   * Tracks how many times each slice unit has been re-dispatched to plan-slice
+   * because task plan files were missing. Keyed by unitId (e.g. "M001/S01").
+   * Separate from preExecRetryCount so pre-exec gate failures do not block or
+   * conflate with missing-task-plan recovery.
+   */
+  readonly missingTaskPlanRetryCount: Map<string, number> = new Map();
 
   // ── Tool invocation errors (#2883) ──────────────────────────────────
   /** Set when a GSD tool execution ends with isError due to malformed/truncated
@@ -413,6 +420,7 @@ export class AutoSession {
     this.consecutiveCompleteBootstraps = 0;
     this.lastPreExecFailure = null;
     this.preExecRetryCount.clear();
+    this.missingTaskPlanRetryCount.clear();
     this.lastToolInvocationError = null;
     this.toolUnavailableRetries = 0;
     this.lastUnitAgentEndMessages = null;

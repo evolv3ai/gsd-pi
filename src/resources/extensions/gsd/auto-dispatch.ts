@@ -1523,6 +1523,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
       const sid = state.activeSlice!.id;
       const sTitle = state.activeSlice!.title;
       const tid = state.activeTask.id;
+      const unitId = `${mid}/${sid}`;
       const artifactBasePath = resolveArtifactBasePath(basePath, mid, session);
 
       // Guard: if the slice plan exists but the individual task plan files are
@@ -1562,6 +1563,17 @@ export const DISPATCH_RULES: DispatchRule[] = [
         !existsSync(projectionTaskPlanPath) &&
         !tasksEmbeddedInSlicePlan
       ) {
+        const MAX_MISSING_TASK_PLAN_RETRIES = 2;
+        const retryCount = session?.missingTaskPlanRetryCount?.get(unitId) ?? 0;
+        if (retryCount >= MAX_MISSING_TASK_PLAN_RETRIES) {
+          session?.missingTaskPlanRetryCount?.delete(unitId);
+          return {
+            action: "stop",
+            reason: `Missing task-plan recovery failed ${retryCount} times for ${unitId} - manual intervention required. Task plan ${tid} is still missing after regenerating the slice plan. Fix the task-plan files manually, then run /gsd auto to resume.`,
+            level: "error",
+          };
+        }
+        session?.missingTaskPlanRetryCount?.set(unitId, retryCount + 1);
         if (isDebugEnabled()) {
           const expectedTaskPlanPath = join(artifactBasePath, relTaskFile(artifactBasePath, mid, sid, tid, "PLAN"));
           const originalProjectRoot = session?.originalBasePath || basePath;
@@ -1585,7 +1597,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
         return {
           action: "dispatch",
           unitType: "plan-slice",
-          unitId: `${mid}/${sid}`,
+          unitId,
           prompt: await buildPlanSlicePrompt(
             mid,
             midTitle,
@@ -1598,6 +1610,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
         };
       }
 
+      session?.missingTaskPlanRetryCount?.delete(unitId);
       return null;
     },
   },
