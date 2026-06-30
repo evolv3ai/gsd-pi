@@ -29,6 +29,13 @@ const DESTRUCTIVE_PATTERNS: readonly DestructivePattern[] = [
   { pattern: /\bkubectl\s+(delete|apply)\b/i, label: "kubectl mutation" },
 ];
 
+function stripQuotedAndComments(command: string): string {
+  return command
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+    .replace(/(^|\s)#.*$/g, "$1");
+}
+
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 export interface CommandClassification {
@@ -41,9 +48,10 @@ export interface CommandClassification {
  * Returns the list of matched destructive pattern labels.
  */
 export function classifyCommand(command: string): CommandClassification {
+  const commandToClassify = stripQuotedAndComments(command);
   const labels: string[] = [];
   for (const { pattern, label } of DESTRUCTIVE_PATTERNS) {
-    if (pattern.test(command)) {
+    if (pattern.test(commandToClassify)) {
       // Deduplicate labels (e.g., two force-push patterns)
       if (!labels.includes(label)) labels.push(label);
     }
