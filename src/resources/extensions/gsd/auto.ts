@@ -2102,7 +2102,7 @@ export function _selectStopAutoWorktreeExit(args: {
 /**
  * Pause auto-mode without destroying state. Context is preserved.
  * The user can interact with the agent, then `/gsd auto` resumes
- * from disk state. Called when the user presses Escape during auto-mode.
+ * from disk state. Called when the user presses Escape or runs `/gsd pause`.
  */
 export async function pauseAuto(
   ctx?: ExtensionContext,
@@ -2129,6 +2129,7 @@ export async function pauseAuto(
 
   s.active = false;
   s.paused = true;
+  if (options.abortActiveTurn && ctx && !ctx.isIdle()) ctx.abort();
   clearUnitTimeout();
   stopAutoCommandPolling();
 

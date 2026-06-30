@@ -14,6 +14,7 @@ import { capturePauseAutoUnitIdentity, pauseAuto, isAutoActive } from "../auto.t
 import { _resetPendingResolve, _setCurrentResolve } from "../auto/resolve.ts";
 import { autoSession } from "../auto-runtime-state.ts";
 import { _isPauseOriginCancelledResult } from "../auto/phase-helpers.ts";
+import { handleAutoCommand } from "../commands/handlers/auto.ts";
 
 test("pauseAuto sets s.active = false synchronously before first await (blocks concurrent re-entry)", async () => {
   const base = mkdtempSync(join(tmpdir(), "gsd-double-pause-guard-"));
@@ -76,6 +77,41 @@ test("pauseAuto marks paused and cancels the in-flight unit before first await",
     await pausePromise.catch(() => {});
   } finally {
     _resetPendingResolve();
+    autoSession.reset();
+  }
+});
+
+test("/gsd pause aborts the active pi turn before first await", async () => {
+  autoSession.reset();
+  autoSession.active = true;
+  let abortCount = 0;
+  const ctx = {
+    hasUI: false,
+    isIdle: () => false,
+    abort: () => {
+      abortCount += 1;
+    },
+    sessionManager: {
+      getSessionFile: () => null,
+    },
+    ui: {
+      setStatus() {},
+      setWidget() {},
+      notify() {},
+    },
+  } as any;
+
+  try {
+    const pausePromise = handleAutoCommand("pause", ctx, {} as any);
+
+    assert.equal(
+      abortCount,
+      1,
+      "pauseAuto must abort the active pi turn before reporting auto-mode paused",
+    );
+
+    await pausePromise.catch(() => {});
+  } finally {
     autoSession.reset();
   }
 });

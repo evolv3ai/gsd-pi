@@ -200,7 +200,7 @@ export async function handleAutoCommand(trimmed: string, ctx: ExtensionCommandCo
       }
       return true;
     }
-    await pauseAuto(ctx, pi);
+    await pauseAuto(ctx, pi, undefined, { abortActiveTurn: true });
     return true;
   }
 

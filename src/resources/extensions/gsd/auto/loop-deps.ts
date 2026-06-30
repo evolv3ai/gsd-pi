@@ -52,6 +52,7 @@ export type PauseAutoUnitIdentity = {
 
 export interface PauseAutoOptions {
   expectedCurrentUnit?: PauseAutoUnitIdentity | null;
+  abortActiveTurn?: boolean;
 }
 
 type PauseAutoFn = (
