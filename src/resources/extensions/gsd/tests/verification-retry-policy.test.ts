@@ -31,9 +31,22 @@ test("verificationRetryDelayMs uses exponential backoff with cap", () => {
   });
 });
 
-test("decideVerificationRetry pauses on duplicate failure context", () => {
+test("decideVerificationRetry pauses on repeated failure context across attempts", () => {
   const failureContext = "lint failed\n";
-  const failureHash = hashVerificationFailureContext(failureContext);
+  const firstDecision = decideVerificationRetry({
+    unitType: "execute-task",
+    retryInfo: {
+      unitId: "M001/S01/T01",
+      failureContext,
+      attempt: 1,
+    },
+    previousFailureHash: undefined,
+    random: () => 0.5,
+  });
+
+  assert.equal(firstDecision.action, "delay");
+  assert.equal(firstDecision.failureHash, hashVerificationFailureContext(failureContext));
+
   const decision = decideVerificationRetry({
     unitType: "execute-task",
     retryInfo: {
@@ -41,7 +54,7 @@ test("decideVerificationRetry pauses on duplicate failure context", () => {
       failureContext,
       attempt: 2,
     },
-    previousFailureHash: failureHash,
+    previousFailureHash: firstDecision.failureHash,
     random: () => 0.5,
   });
 
@@ -49,7 +62,7 @@ test("decideVerificationRetry pauses on duplicate failure context", () => {
     action: "pause",
     reason: "duplicate-failure-context",
     key: verificationRetryKey("execute-task", "M001/S01/T01"),
-    failureHash,
+    failureHash: firstDecision.failureHash,
   });
 });
 
