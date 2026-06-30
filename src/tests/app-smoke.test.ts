@@ -115,6 +115,11 @@ test("loader sets all 4 GSD_ env vars and PI_PACKAGE_DIR", async (t) => {
   rmSync(tmp, { recursive: true, force: true });
 });
 
+test("startup wires httpIdleTimeoutMs through configureHttpDispatcher", () => {
+  const cliSource = readFileSync(join(projectRoot, "src", "cli.ts"), "utf-8");
+  assert.match(cliSource, /configureHttpDispatcher\(\s*settingsManager\.getHttpIdleTimeoutMs\(\)\s*\)/);
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 2b. loader runtime dependency checks
 // ═══════════════════════════════════════════════════════════════════════════

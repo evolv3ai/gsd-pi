@@ -603,6 +603,9 @@ markStartup('ModelRegistry')
 const settingsManager = SettingsManager.create(process.cwd(), agentDir)
 applySecurityOverrides(settingsManager)
 markStartup('SettingsManager.create')
+const { configureHttpDispatcher } = await import('@gsd/pi-coding-agent/core/http-dispatcher.js')
+configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs())
+markStartup('configureHttpDispatcher')
 
 // Run onboarding wizard on first launch (no LLM provider configured)
 if (!isPrintMode && shouldRunOnboarding(authStorage, settingsManager.getDefaultProvider())) {
