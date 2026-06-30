@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 
 import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask, getSlice, getSliceTasks, getTask, getGateResults, updateTaskStatus } from '../gsd-db.ts';
 import { handlePlanSlice } from '../tools/plan-slice.ts';
+import { handlePlanTask } from '../tools/plan-task.ts';
 import { parsePlan } from '../parsers-legacy.ts';
 import { deriveState, invalidateStateCache } from '../state.ts';
 
@@ -537,6 +538,87 @@ test('handlePlanSlice accepts metadata-only payloads without deleting existing t
     const third = await handlePlanSlice({ ...validParams(), tasks: [] }, base);
     assert.ok(!('error' in third), `unexpected error: ${'error' in third ? third.error : ''}`);
     assert.deepEqual(getSliceTasks('M001', 'S02').map((task) => task.id), ['T01', 'T02']);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanSlice metadata-only on a fresh sketch slice keeps is_sketch set and renders no PLAN.md (#1027)', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    insertMilestone({ id: 'M001', title: 'Milestone', status: 'active' });
+    insertSlice({ id: 'S02', milestoneId: 'M001', title: 'Planning slice', status: 'pending', demo: 'Rendered plans exist.', isSketch: true });
+
+    // The incremental flow's first call carries metadata only (no tasks). It
+    // must NOT error (renderPlanFromDb throws on a task-less slice), and it must
+    // NOT clear the sketch flag — clearing it without a PLAN.md would leave the
+    // slice out of refining with no plan artifact, breaking sketch/plan signaling.
+    const result = await handlePlanSlice({
+      milestoneId: 'M001',
+      sliceId: 'S02',
+      goal: 'Persist slice metadata before any tasks exist.',
+    }, base);
+    assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
+    assert.equal(getSlice('M001', 'S02')?.goal, 'Persist slice metadata before any tasks exist.');
+    assert.equal(getSliceTasks('M001', 'S02').length, 0);
+    assert.equal(getSlice('M001', 'S02')?.is_sketch, 1, 'sketch flag must stay set until a task-bearing plan renders');
+
+    const planPath = join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md');
+    assert.ok(!existsSync(planPath), 'no PLAN.md should be rendered until the first task is planned');
+
+    invalidateStateCache();
+    const after = await deriveState(base);
+    assert.equal(after.phase, 'refining', 'a task-less sketch slice stays in refining');
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanTask materializes the slice PLAN.md and clears the sketch flag on the incremental path (#1027)', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    insertMilestone({ id: 'M001', title: 'Milestone', status: 'active' });
+    insertSlice({ id: 'S02', milestoneId: 'M001', title: 'Planning slice', status: 'pending', demo: 'Rendered plans exist.', isSketch: true });
+
+    const sliceResult = await handlePlanSlice({
+      milestoneId: 'M001',
+      sliceId: 'S02',
+      goal: 'Incrementally planned slice.',
+      successCriteria: '- The slice plan is built up one task at a time',
+    }, base);
+    assert.ok(!('error' in sliceResult), `unexpected error: ${'error' in sliceResult ? sliceResult.error : ''}`);
+
+    const taskResult = await handlePlanTask({
+      milestoneId: 'M001',
+      sliceId: 'S02',
+      taskId: 'T01',
+      title: 'First incremental task',
+      description: 'Implement the first task added through gsd_plan_task.',
+      estimate: '30m',
+      files: ['src/resources/extensions/gsd/tools/plan-task.ts'],
+      verify: 'node --test src/resources/extensions/gsd/tests/plan-task.test.ts',
+      inputs: ['src/resources/extensions/gsd/tools/plan-milestone.ts'],
+      expectedOutput: ['src/resources/extensions/gsd/tools/plan-task.ts'],
+    }, base);
+    assert.ok(!('error' in taskResult), `unexpected error: ${'error' in taskResult ? taskResult.error : ''}`);
+
+    // The first incremental task materializes the canonical slice PLAN.md with
+    // the task present, and clears the sketch flag now that a plan exists.
+    const planPath = join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md');
+    assert.ok(existsSync(planPath), 'slice PLAN.md should exist after the first task is planned');
+    const parsedPlan = parsePlan(readFileSync(planPath, 'utf-8'));
+    assert.equal(parsedPlan.goal, 'Incrementally planned slice.');
+    assert.equal(parsedPlan.tasks.length, 1);
+    assert.equal(parsedPlan.tasks[0]?.id, 'T01');
+    assert.equal(getSlice('M001', 'S02')?.is_sketch, 0, 'sketch flag must clear once the first task renders a plan');
+
+    invalidateStateCache();
+    const after = await deriveState(base);
+    assert.notEqual(after.phase, 'refining', 'a planned slice leaves refining');
   } finally {
     cleanup(base);
   }

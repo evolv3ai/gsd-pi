@@ -29,6 +29,7 @@ test("preflight uses inline workflow MCP config when no project config is persis
         `const { StdioServerTransport } = await import(${JSON.stringify(stdioModuleUrl)});`,
         'const server = new McpServer({ name: "fake", version: "1.0.0" }, { capabilities: { tools: {} } });',
         'server.tool("gsd_plan_slice", "Plan slice", {}, async () => ({ content: [{ type: "text", text: "ok" }] }));',
+        'server.tool("gsd_plan_task", "Plan task", {}, async () => ({ content: [{ type: "text", text: "ok" }] }));',
         'server.tool("gsd_reassess_roadmap", "Reassess roadmap", {}, async () => ({ content: [{ type: "text", text: "ok" }] }));',
         'await server.connect(new StdioServerTransport());',
       ].join("\n"),
