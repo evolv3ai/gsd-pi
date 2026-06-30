@@ -99,6 +99,7 @@ import {
   getContextPauseAction,
   resolveCompactionThresholdPercent,
   shouldRerootStepSessionForContext,
+  shouldWarnStepSessionForContext,
 } from "./auto-budget.js";
 import {
   markToolStart as _markToolStart,
@@ -701,6 +702,7 @@ export {
   getContextPauseAction,
   resolveCompactionThresholdPercent,
   shouldRerootStepSessionForContext,
+  shouldWarnStepSessionForContext,
 } from "./auto-budget.js";
 
 function closeOutSignalInterruptedUnit(currentBasePath: string): void {
@@ -1392,7 +1394,7 @@ export async function maybeRerootStepSessionForHighContext(
   const prefs = loadEffectiveGSDPreferences(workspaceRoot);
   const compactionThreshold = prefs?.preferences.context_management?.compaction_threshold_percent;
 
-  if (!shouldRerootStepSessionForContext(contextPercent, compactionThreshold)) {
+  if (!shouldWarnStepSessionForContext(contextPercent, compactionThreshold)) {
     return { rerooted: false };
   }
 
@@ -1403,6 +1405,14 @@ export async function maybeRerootStepSessionForHighContext(
 
   const displayPercent = (contextPercent as number).toFixed(1);
   const thresholdDisplay = resolveCompactionThresholdPercent(compactionThreshold).toFixed(0);
+  if (!shouldRerootStepSessionForContext(contextPercent)) {
+    ctx.ui.notify(
+      `Step complete — context at ${displayPercent}% (soft threshold: ${thresholdDisplay}%). Use /compact when convenient; continuing in this session is still safe.`,
+      "info",
+    );
+    return { rerooted: false };
+  }
+
   const result = await rerootCommandSession(cmdCtx, workspaceRoot);
   if (result.status === "ok") {
     ctx.ui.notify(

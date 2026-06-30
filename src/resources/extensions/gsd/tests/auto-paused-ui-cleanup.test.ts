@@ -478,8 +478,8 @@ test("cleanupAfterLoopExit preserves step-mode surface and worktree session afte
   }
 });
 
-test("cleanupAfterLoopExit re-roots step-mode session when context exceeds compaction threshold", async (t) => {
-  const base = mkdtempSync(join(tmpdir(), "gsd-step-reroot-"));
+test("cleanupAfterLoopExit warns but does not re-root step-mode session at soft compaction threshold", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-step-soft-context-"));
   const worktree = join(base, ".gsd", "worktrees", "M001");
   const previousCwd = process.cwd();
   const newSessionWorkspaces: string[] = [];
@@ -515,7 +515,59 @@ test("cleanupAfterLoopExit re-roots step-mode session when context exceeds compa
       },
     } as any);
 
-    assert.deepEqual(newSessionWorkspaces, [worktree], "hot step-mode cleanup should re-root in the active worktree");
+    assert.deepEqual(newSessionWorkspaces, [], "soft context pressure must not force a new command session");
+    assert.equal(
+      notifyMessages.some((msg) => msg.includes("context at 72.0%") && msg.includes("Use /compact")),
+      true,
+      "soft threshold should warn with a non-disruptive compaction prompt",
+    );
+    assert.equal(autoSession.basePath, worktree);
+    assert.equal(realpathSync(process.cwd()), realpathSync(worktree));
+  } finally {
+    autoSession.reset();
+    process.chdir(previousCwd);
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("cleanupAfterLoopExit re-roots step-mode session at hard context threshold", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-step-reroot-"));
+  const worktree = join(base, ".gsd", "worktrees", "M001");
+  const previousCwd = process.cwd();
+  const newSessionWorkspaces: string[] = [];
+  const notifyMessages: string[] = [];
+
+  t.mock.method(WorktreeLifecycle.prototype, "restoreToProjectRoot", function () {});
+
+  mkdirSync(worktree, { recursive: true });
+  process.chdir(worktree);
+  autoSession.reset();
+  autoSession.active = true;
+  autoSession.paused = false;
+  autoSession.stepMode = true;
+  autoSession.preserveStepSurfaceAfterLoopExit = true;
+  autoSession.basePath = worktree;
+  autoSession.originalBasePath = base;
+  autoSession.cmdCtx = {
+    getContextUsage: () => ({ percent: 92, tokens: 920_000, contextWindow: 1_000_000 }),
+    newSession: async ({ workspaceRoot }: { workspaceRoot: string }) => {
+      newSessionWorkspaces.push(workspaceRoot);
+      return { cancelled: false };
+    },
+  } as any;
+
+  try {
+    await cleanupAfterLoopExit({
+      hasUI: true,
+      ui: {
+        setStatus: () => {},
+        setWidget: () => {},
+        setHeader: () => {},
+        notify: (_msg: string) => notifyMessages.push(_msg),
+      },
+    } as any);
+
+    assert.deepEqual(newSessionWorkspaces, [worktree], "critical context pressure should re-root in the active worktree");
     assert.equal(
       notifyMessages.some((msg) => msg.includes("Fresh session ready for /gsd next")),
       true,
