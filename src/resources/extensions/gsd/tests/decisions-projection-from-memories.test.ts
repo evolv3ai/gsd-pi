@@ -142,6 +142,57 @@ test("backfill is idempotent — re-running over migrated rows is a no-op", () =
   }
 });
 
+test("backfill skips a decision whose memory insert throws and continues later rows", () => {
+  const base = makeTmpBase();
+  try {
+    seedRawDecision({
+      id: "D001",
+      when_context: "M001",
+      scope: "M001",
+      decision: "before poison",
+      choice: "A",
+      rationale: "first row",
+    });
+    seedRawDecision({
+      id: "D002",
+      when_context: "M001",
+      scope: "M001",
+      decision: "poison",
+      choice: "B",
+      rationale: "this insert throws",
+    });
+    seedRawDecision({
+      id: "D003",
+      when_context: "M001",
+      scope: "M001",
+      decision: "after poison",
+      choice: "C",
+      rationale: "tail row",
+    });
+
+    const adapter = _getAdapter();
+    assert.ok(adapter);
+    adapter.exec(`
+      CREATE TRIGGER fail_d002_memory_insert
+      BEFORE INSERT ON memories
+      WHEN json_extract(NEW.structured_fields, '$.sourceDecisionId') = 'D002'
+      BEGIN
+        SELECT RAISE(ABORT, 'poison decision D002');
+      END
+    `);
+
+    const written = backfillDecisionsToMemories();
+    assert.equal(written, 2, "one poisoned row should not abort the batch");
+    assert.deepEqual(
+      getAllDecisionsFromMemories().map((d) => d.id),
+      ["D001", "D003"],
+      "rows after the poisoned decision should still be migrated",
+    );
+  } finally {
+    cleanup(base);
+  }
+});
+
 // ─── Drift auto-heal ───────────────────────────────────────────────────────
 
 test("backfill auto-heals when a source decision's superseded_by changes after migration", () => {

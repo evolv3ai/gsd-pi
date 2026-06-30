@@ -49,8 +49,8 @@ type DecisionContentFields = Pick<DecisionRow, "decision" | "choice" | "rational
  *   decision is checked individually; only decisions whose id is already
  *   present in the memory store are skipped. A user-authored memory with
  *   their own `sourceDecisionId` does NOT abort the backfill.
- * - Best-effort: never throws. Logs and returns 0 on failure so a broken
- *   backfill cannot block agent startup.
+ * - Best-effort: never throws. Failed memory inserts are logged and skipped;
+ *   setup/read failures log and return 0 so backfill cannot block startup.
  * - Full migration (ADR-013 Stage 2a): both active and superseded rows are
  *   migrated. `structured_fields.superseded_by` preserves the supersedes
  *   chain so the DECISIONS.md projection regen can source from memories
@@ -146,24 +146,30 @@ export function backfillDecisionsToMemories(): number {
       }
 
       const content = synthesizeDecisionMemoryContent(row);
-      const id = createMemory({
-        category: "architecture",
-        content,
-        scope: row.scope || "project",
-        confidence: 0.85,
-        structuredFields: {
-          sourceDecisionId: row.id,
-          when_context: row.when_context,
-          scope: row.scope,
-          decision: row.decision,
-          choice: row.choice,
-          rationale: row.rationale,
-          made_by: row.made_by,
-          revisable: row.revisable,
-          superseded_by: row.superseded_by,
-        },
-      });
-      if (id) written += 1;
+      try {
+        const id = createMemory({
+          category: "architecture",
+          content,
+          scope: row.scope || "project",
+          confidence: 0.85,
+          structuredFields: {
+            sourceDecisionId: row.id,
+            when_context: row.when_context,
+            scope: row.scope,
+            decision: row.decision,
+            choice: row.choice,
+            rationale: row.rationale,
+            made_by: row.made_by,
+            revisable: row.revisable,
+            superseded_by: row.superseded_by,
+          },
+        });
+        if (id) written += 1;
+      } catch (rowErr) {
+        const message = rowErr instanceof Error ? rowErr.message : String(rowErr);
+        logWarning("memory-backfill", `decisions->memories backfill skipped ${row.id}: ${message}`);
+        continue;
+      }
     }
 
     if (healed > 0) {

@@ -35,8 +35,8 @@ interface SynthesizedRow {
  * - Idempotent (per-row): each migrated memory carries
  *   `structured_fields.sourceKnowledgeId = "<P|L>NNN"`. Rows whose ID is
  *   already present in the memory store are skipped.
- * - Best-effort: never throws. Logs and returns 0 on failure so a broken
- *   backfill cannot block agent startup.
+ * - Best-effort: never throws. Failed memory inserts are logged and skipped;
+ *   setup/read failures log and return 0 so backfill cannot block startup.
  * - Rules (K###) are intentionally skipped — they remain manually maintained
  *   in `KNOWLEDGE.md` per ADR-013.
  *
@@ -69,14 +69,20 @@ export function backfillKnowledgeToMemories(basePath: string): number {
       const matchPattern = `%"sourceKnowledgeId":"${synth.id}"%`;
       if (checkExisting.get({ ":pattern": matchPattern })) continue;
 
-      const id = createMemory({
-        category: synth.category,
-        content: synth.content,
-        scope: synth.scope,
-        confidence: 0.85,
-        structuredFields: synth.structuredFields,
-      });
-      if (id) written += 1;
+      try {
+        const id = createMemory({
+          category: synth.category,
+          content: synth.content,
+          scope: synth.scope,
+          confidence: 0.85,
+          structuredFields: synth.structuredFields,
+        });
+        if (id) written += 1;
+      } catch (rowErr) {
+        const message = rowErr instanceof Error ? rowErr.message : String(rowErr);
+        logWarning("knowledge-backfill", `KNOWLEDGE.md -> memories backfill skipped ${synth.id}: ${message}`);
+        continue;
+      }
     }
 
     return written;
