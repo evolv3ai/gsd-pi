@@ -65,14 +65,18 @@ test("auto execute-task requires canonical task completion tool", () => {
   assert.deepEqual(getRequiredWorkflowToolsForAutoUnit("execute-task"), expected);
 });
 
-test("plan-slice requires planning and roadmap reassessment tools", () => {
-  const expected = ["gsd_plan_slice", "gsd_reassess_roadmap"];
+test("plan-slice requires slice + incremental task planning and roadmap reassessment tools", () => {
+  // Incremental planning (#1027): gsd_plan_slice persists metadata, then
+  // gsd_plan_task adds tasks one at a time, so both must be on the surface.
+  const expected = ["gsd_plan_slice", "gsd_plan_task", "gsd_reassess_roadmap"];
   assert.deepEqual(getRequiredWorkflowToolsForGuidedUnit("plan-slice"), expected);
   assert.deepEqual(getRequiredWorkflowToolsForAutoUnit("plan-slice"), expected);
 });
 
-test("plan-milestone requires status, roadmap, and single-slice planning tools", () => {
-  const expected = ["gsd_milestone_status", "gsd_plan_milestone", "gsd_plan_slice"];
+test("plan-milestone requires status, roadmap, and slice + task planning tools", () => {
+  // gsd_plan_task is required alongside gsd_plan_slice for incremental
+  // milestone planning (#1027).
+  const expected = ["gsd_milestone_status", "gsd_plan_milestone", "gsd_plan_slice", "gsd_plan_task"];
   assert.deepEqual(getRequiredWorkflowToolsForGuidedUnit("plan-milestone"), expected);
   assert.deepEqual(getRequiredWorkflowToolsForAutoUnit("plan-milestone"), expected);
 });

@@ -1,15 +1,18 @@
 import { clearParseCache } from "../files.js";
 import { isClosedStatus } from "../status-guards.js";
 import { isNonEmptyString, validateStringArray } from "../validation.js";
-import { transaction, getSlice, getTask, insertTask, upsertTaskPlanning } from "../gsd-db.js";
+import { getGateIdsForTurn } from "../gate-registry.js";
+import { transaction, getSlice, getTask, insertTask, upsertTaskPlanning, insertGateRow, setSliceSketchFlag } from "../gsd-db.js";
 import { invalidateStateCache } from "../state.js";
 import { renderTaskPlanFromDb, renderPlanFromDb } from "../markdown-renderer.js";
-import { resolveSliceFile, resolveTasksDir } from "../paths.js";
+import { resolveTasksDir } from "../paths.js";
 import { flushWorkflowProjections } from "../projection-flush.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning } from "../workflow-logger.js";
+import { loadEffectiveGSDPreferences } from "../preferences.js";
 import { validatePathOnlyPlanningFields, validatePlanningPathScope } from "../planning-path-scope.js";
+import type { GateId } from "../types.js";
 
 export interface PlanTaskParams {
   milestoneId: string;
@@ -57,6 +60,12 @@ function validateParams(params: PlanTaskParams): PlanTaskParams {
   };
 }
 
+function resolveTaskGates(basePath: string): GateId[] {
+  const loaded = loadEffectiveGSDPreferences(basePath);
+  if (loaded?.preferences?.gate_evaluation?.task_gates === false) return [];
+  return [...getGateIdsForTurn("execute-task")];
+}
+
 export async function handlePlanTask(
   rawParams: PlanTaskParams,
   basePath: string,
@@ -82,6 +91,14 @@ export async function handlePlanTask(
   ]);
   if (pathScopeError) {
     return { error: `validation failed: ${pathScopeError}` };
+  }
+
+  let taskGates: GateId[];
+  try {
+    taskGates = resolveTaskGates(basePath);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { error: `validation failed: ${message}` };
   }
 
   // ── Guards + DB writes inside a single transaction (prevents TOCTOU) ───
@@ -127,6 +144,9 @@ export async function handlePlanTask(
         observabilityImpact: params.observabilityImpact ?? "",
         fullPlanMd: params.fullPlanMd,
       });
+      for (const gid of taskGates) {
+        insertGateRow({ milestoneId: params.milestoneId, sliceId: params.sliceId, gateId: gid, scope: "task", taskId: params.taskId });
+      }
     });
   } catch (err) {
     return { error: `db write failed: ${(err as Error).message}` };
@@ -142,15 +162,20 @@ export async function handlePlanTask(
     // Flat-phase: tasks live as checkboxes in the slice plan's <tasks> block,
     // not as standalone TID-PLAN.md files. Re-render the slice plan so the
     // new/updated task appears in the plan file that gsd-core reads.
-    // Guard: resolveTasksDir is null in flat-phase (no tasks/ subdir exists);
-    //        only sync if a slice plan already exists (guards pre-plan-slice calls).
+    // Guard: resolveTasksDir is null in flat-phase (no tasks/ subdir exists).
+    let slicePlanSynced = false;
     try {
       const tDir = resolveTasksDir(basePath, params.milestoneId, params.sliceId);
-      if (!tDir && resolveSliceFile(basePath, params.milestoneId, params.sliceId, "PLAN")) {
+      if (!tDir) {
         await renderPlanFromDb(basePath, params.milestoneId, params.sliceId);
+        slicePlanSynced = true;
       }
     } catch (syncErr) {
       logWarning("tool", `plan-task: slice-plan sync failed: ${(syncErr as Error).message}`);
+    }
+
+    if (slicePlanSynced) {
+      setSliceSketchFlag(params.milestoneId, params.sliceId, false);
     }
 
     invalidateStateCache();

@@ -104,8 +104,8 @@ If the preference is off, ignore this section and plan every slice fully.
 
 If the roadmap has one slice, also plan S01 and its tasks inline:
 
-1. After `gsd_plan_milestone` returns, call `gsd_plan_slice` for S01 with full task breakdown.
-2. Use inlined **Slice Plan** and **Task Plan** templates for tool parameters.
+1. After `gsd_plan_milestone` returns, call `gsd_plan_slice` for S01 with slice metadata only; omit `tasks`.
+2. Then call `gsd_plan_task` once per S01 task. Use inlined **Slice Plan** and **Task Plan** templates for tool parameters.
 3. Keep simple slices lean. Omit Proof Level, Integration Closure, and Observability if all would be "none"; executable verification commands are enough.
 
 Do **not** write plan files manually; use DB-backed tools so state stays consistent.

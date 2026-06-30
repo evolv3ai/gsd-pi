@@ -117,10 +117,11 @@ export const UNIT_REGISTRY = {
         "gsd_milestone_status",
         "gsd_plan_milestone",
         "gsd_plan_slice",
+        "gsd_plan_task",
         "gsd_decision_save",
         "gsd_requirement_update",
       ],
-      requiredWorkflowTools: ["gsd_milestone_status", "gsd_plan_milestone", "gsd_plan_slice"],
+      requiredWorkflowTools: ["gsd_milestone_status", "gsd_plan_milestone", "gsd_plan_slice", "gsd_plan_task"],
     },
   },
   "discuss-milestone": {
@@ -219,13 +220,14 @@ export const UNIT_REGISTRY = {
       allowedGsdTools: [
         "gsd_milestone_status",
         "gsd_plan_slice",
+        "gsd_plan_task",
         "gsd_reassess_roadmap",
         "gsd_decision_save",
         "gsd_exec",
         "gsd_exec_search",
         "gsd_resume",
       ],
-      requiredWorkflowTools: ["gsd_plan_slice", "gsd_reassess_roadmap"],
+      requiredWorkflowTools: ["gsd_plan_slice", "gsd_plan_task", "gsd_reassess_roadmap"],
     },
   },
   "refine-slice": {

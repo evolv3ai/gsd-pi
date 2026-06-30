@@ -705,9 +705,9 @@ remain outside manifest restore.
 | `gsd_requirement_update` | requirements | requirements | REQUIREMENTS.md |
 | `gsd_summary_save` | milestones, slices, tasks | artifacts | M##/S##/T## artifact files |
 | `gsd_milestone_generate_id` | milestones | milestones (INSERT OR IGNORE, queued) | — |
-| `gsd_plan_milestone` | milestones, slices | milestones, slices, tasks, replan_history | ROADMAP.md |
-| `gsd_plan_slice` | slices, tasks | slices, tasks | S##-PLAN.md |
-| `gsd_plan_task` | slices, tasks | tasks | T##-PLAN.md |
+| `gsd_plan_milestone` | milestones, slices | milestones, slices | ROADMAP.md |
+| `gsd_plan_slice` | milestones, slices, tasks | slices metadata; tasks only when a non-empty `tasks` payload performs full replacement/update | S##-PLAN.md and task plans when tasks exist |
+| `gsd_plan_task` | slices, tasks | one task planning row, task gate seeds | T##-PLAN.md; re-renders S##-PLAN.md |
 | `gsd_task_complete` | tasks, slices | tasks, verification_evidence | T##-SUMMARY.md; toggles checkbox in S##-PLAN.md |
 | `gsd_slice_complete` | tasks, slices | slices, tasks (cascade skipped) | S##-SUMMARY.md, S##-UAT.md; toggles checkpoint in ROADMAP.md |
 | `gsd_uat_result_save` | slices, artifacts | artifacts, assessments, quality_gates, gate_runs | S##-ASSESSMENT.md; UAT attempt JSON |

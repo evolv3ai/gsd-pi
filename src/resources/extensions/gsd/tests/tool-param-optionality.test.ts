@@ -385,14 +385,17 @@ test("gsd_plan_slice — enrichment fields are optional", () => {
 
   const required = new Set(getRequiredProps(tool));
 
-  // Core fields
-  const coreRequired = ["milestoneId", "sliceId", "goal", "tasks"];
+  // Core fields. `tasks` is intentionally NOT here: incremental planning
+  // (#1027) lets gsd_plan_slice persist slice metadata only, then add tasks
+  // one at a time via gsd_plan_task, so tasks must be optional.
+  const coreRequired = ["milestoneId", "sliceId", "goal"];
   for (const field of coreRequired) {
     assert.ok(required.has(field), `core field "${field}" must be required`);
   }
 
-  // Enrichment fields
+  // Enrichment fields (plus tasks, optional for incremental planning).
   const enrichmentFields = [
+    "tasks",
     "successCriteria",
     "proofLevel",
     "integrationClosure",

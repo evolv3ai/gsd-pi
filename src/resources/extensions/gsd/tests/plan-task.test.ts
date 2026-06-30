@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask, getTask } from '../gsd-db.ts';
+import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask, getSlice, getTask, getGateResults } from '../gsd-db.ts';
 import { handlePlanTask } from '../tools/plan-task.ts';
 import { parseTaskPlanFile } from '../files.ts';
 
@@ -60,6 +60,25 @@ test('handlePlanTask writes planning state and renders task plan', async () => {
     const taskPlan = parseTaskPlanFile(readFileSync(taskPlanPath, 'utf-8'));
     assert.equal(taskPlan.frontmatter.estimated_files, 1);
     assert.deepEqual(taskPlan.frontmatter.skills_used, []);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanTask seeds execute-task gate rows for incremental planning', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParent();
+    const result = await handlePlanTask(validParams(), base);
+    assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
+
+    const gateIds = getGateResults('M001', 'S02', 'task')
+      .filter((gate) => gate.task_id === 'T02')
+      .map((gate) => gate.gate_id)
+      .sort();
+    assert.deepEqual(gateIds, ['Q5', 'Q6', 'Q7']);
   } finally {
     cleanup(base);
   }
@@ -165,6 +184,30 @@ test('handlePlanTask surfaces render failures without changing parse-visible tas
     const result = await handlePlanTask(validParams(), base);
     assert.ok('error' in result);
     assert.match(result.error, /render failed:/);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanTask keeps the sketch flag set when the flat-phase slice plan sync fails (#1083)', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    insertMilestone({ id: 'M001', title: 'Milestone', status: 'active' });
+    insertSlice({ id: 'S02', milestoneId: 'M001', title: 'Planning slice', status: 'pending', demo: 'Rendered plans exist.', isSketch: true });
+
+    // The per-task render writes T02-PLAN.md and succeeds, but the flat-phase
+    // slice re-render (the canonical PLAN.md that embeds task checkboxes) targets
+    // phases/01-test/01-02-PLAN.md. Pre-creating that path as a directory forces
+    // EISDIR on the slice sync, so the canonical slice plan never reflects the
+    // task. The sketch flag must therefore stay set — the slice keeps refining —
+    // instead of leaving the slice out of refining over a stale plan.
+    mkdirSync(join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md'), { recursive: true });
+
+    const result = await handlePlanTask(validParams(), base);
+    assert.equal(getSlice('M001', 'S02')?.is_sketch, 1, 'sketch flag must stay set when the canonical slice plan could not sync');
+    assert.ok(getTask('M001', 'S02', 'T02'), 'the task itself is still persisted so the slice can re-sync on retry');
   } finally {
     cleanup(base);
   }

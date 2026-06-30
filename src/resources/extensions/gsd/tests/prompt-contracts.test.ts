@@ -533,6 +533,7 @@ test("plan-milestone prompt references DB-backed planning tool and explicitly fo
   assert.match(prompt, /Do \*\*not\*\* write `?\{\{outputPath\}\}`?, `?ROADMAP\.md`?, or other planning artifacts manually/i);
   assert.match(prompt, /NEVER call `gsd_plan_milestone` with only `milestoneId` and `sliceId`/);
   assert.match(prompt, /gsd_plan_slice/);
+  assert.match(prompt, /gsd_plan_task/);
 });
 
 test("discuss prompts forbid gsd_plan_milestone slice-only tool args", () => {
@@ -548,12 +549,12 @@ test("plan-slice prompt no longer frames direct PLAN writes as the source of tru
   assert.match(prompt, /Do \*\*not\*\* rely on direct `PLAN\.md` writes as the source of truth/i);
 });
 
-test("plan-slice prompt explicitly names gsd_plan_slice as DB-backed planning tool", () => {
+test("plan-slice prompt explicitly names incremental DB-backed planning tools", () => {
   const prompt = readPrompt("plan-slice");
   assert.match(prompt, /gsd_plan_slice/);
   assert.match(prompt, /gsd_plan_task/);
-  // The prompt should describe the DB-backed tool as the canonical write path
-  assert.match(prompt, /DB-backed tool is the canonical write path/i);
+  assert.match(prompt, /Persist incrementally through DB-backed tools/i);
+  assert.match(prompt, /DB-backed tools are the canonical write path/i);
 });
 
 test("plan-slice prompt does not instruct direct file writes as a primary step", () => {
@@ -562,11 +563,12 @@ test("plan-slice prompt does not instruct direct file writes as a primary step",
   assert.doesNotMatch(prompt, /^\d+\.\s+Write `?\{\{outputPath\}\}`?\s*$/m);
 });
 
-test("plan-slice prompt clarifies gsd_plan_slice handles task persistence", () => {
+test("plan-slice prompt requires per-task incremental persistence", () => {
   const prompt = readPrompt("plan-slice");
-  // gsd_plan_slice persists tasks in its transaction — no separate gsd_plan_task calls needed
   assert.match(prompt, /gsd_plan_task/);
-  assert.match(prompt, /gsd_plan_slice` handles task persistence/i);
+  assert.match(prompt, /omit `tasks` for this metadata call/i);
+  assert.match(prompt, /call `gsd_plan_task` once per task/i);
+  assert.doesNotMatch(prompt, /do not call `gsd_plan_task`/i);
 });
 
 test("plan-slice prompt references web app UAT guidance when planning browser work", () => {

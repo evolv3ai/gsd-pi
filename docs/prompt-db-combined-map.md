@@ -81,7 +81,7 @@ Each row = one prompt file. Columns show which DB tables it touches and how.
 | `discuss` / `guided-discuss-milestone` | milestones, artifacts | artifacts (CONTEXT) | M##-CONTEXT.md |
 | `discuss-headless` | milestones, artifacts | milestones, slices, decisions, artifacts | M##-CONTEXT.md, DECISIONS.md |
 | `research-milestone` | milestones, artifacts | artifacts (RESEARCH) | M##-RESEARCH.md |
-| `plan-milestone` | milestones, slices | milestones (UPDATE planning), slices (INSERT), tasks (INSERT), decisions | ROADMAP.md, S##-PLAN.md sketches |
+| `plan-milestone` | milestones, slices | milestones (UPDATE planning), slices (INSERT), optional single-slice metadata via `gsd_plan_slice`, optional single-slice tasks via `gsd_plan_task`, decisions | ROADMAP.md; S##-PLAN.md/T##-PLAN.md for single-slice fast path |
 | `queue` | milestones | milestones (INSERT queued), artifacts (CONTEXT) | PROJECT.md, QUEUE.md |
 
 ### Slice Planning Phase
@@ -91,8 +91,8 @@ Each row = one prompt file. Columns show which DB tables it touches and how.
 | `parallel-research-slices` | slices, artifacts | artifacts (RESEARCH per slice) | S##-RESEARCH.md × N |
 | `guided-discuss-slice` | slices, artifacts | artifacts (CONTEXT) | S##-CONTEXT.md |
 | `research-slice` / `guided-research-slice` | slices, memories | artifacts (RESEARCH), memories (hit_count++) | S##-RESEARCH.md |
-| `plan-slice` | slices, tasks, memories | slices (UPDATE planning), tasks (INSERT), memories (hit_count++) | S##-PLAN.md, T##-PLAN.md |
-| `refine-slice` | slices (is_sketch=1), tasks | slices (UPDATE is_sketch=0), tasks (INSERT/UPDATE) | S##-PLAN.md |
+| `plan-slice` | slices, tasks, memories | slices metadata via `gsd_plan_slice`, per-task rows via `gsd_plan_task`, memories (hit_count++) | S##-PLAN.md, T##-PLAN.md |
+| `refine-slice` | slices (is_sketch=1), tasks | slices metadata and full task replacement/update via `gsd_plan_slice` | S##-PLAN.md |
 
 ### Execution Phase
 
@@ -214,12 +214,22 @@ One task's full DB journey from creation to completion:
 plan-milestone prompt fires
   └─► gsd_plan_milestone tool
         └─► INSERT INTO slices (milestone_id, id, title, status='pending', is_sketch=1, sequence)
-        └─► INSERT INTO tasks (milestone_id, slice_id, id, title, status='pending', description, sequence)
+        └─► UPDATE slices SET goal, success_criteria, proof_level, ...
+
+plan-slice prompt fires
+  └─► gsd_plan_slice tool
+        └─► UPDATE slices SET goal, success_criteria, proof_level, ...
+        └─► If tasks omitted or empty: preserve existing tasks
+        └─► If tasks non-empty: full replacement/update for this slice's tasks
+  └─► gsd_plan_task tool (once per task for incremental planning)
+        └─► INSERT INTO tasks (if missing)
+        └─► UPDATE tasks SET full_plan_md, description, estimate, files, verify, ...
+        └─► INSERT INTO quality_gates for task-scoped gates
 
 refine-slice prompt fires (if is_sketch=1)
   └─► gsd_plan_slice tool
         └─► UPDATE slices SET is_sketch=0, goal, success_criteria, proof_level, ...
-        └─► INSERT INTO tasks (full task plans for this slice)
+        └─► INSERT/UPDATE tasks from full task payload
         └─► UPDATE tasks SET full_plan_md, description, estimate, files, verify, ...
 
 execute-task prompt fires

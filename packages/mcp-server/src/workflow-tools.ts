@@ -102,7 +102,7 @@ type WorkflowToolExecutors = {
       milestoneId: string;
       sliceId: string;
       goal: string;
-      tasks: Array<{
+      tasks?: Array<{
         taskId: string;
         title: string;
         description: string;
@@ -1505,7 +1505,7 @@ const planSliceParams = {
     inputs: nonEmptyStringArray("inputs"),
     expectedOutput: nonEmptyStringArray("expectedOutput"),
     observabilityImpact: optionalNonEmptyString("observabilityImpact"),
-  })).describe("Planned tasks for the slice"),
+  })).optional().describe("Optional full task replacement for the slice. Omit for incremental planning, then call gsd_plan_task once per task."),
   successCriteria: z.string().optional(),
   proofLevel: z.string().optional(),
   integrationClosure: z.string().optional(),
