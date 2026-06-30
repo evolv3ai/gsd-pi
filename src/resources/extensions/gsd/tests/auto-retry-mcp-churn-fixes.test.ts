@@ -15,14 +15,20 @@
 
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   resetEvidence,
   getEvidence,
   recordToolCall,
   recordToolResult,
+  saveEvidenceToDisk,
   type BashEvidence,
 } from "../safety/evidence-collector.js";
+
+const waitForMtimeTick = () => new Promise(resolve => setTimeout(resolve, 25));
 
 describe("evidence-collector: toolCallId-based matching (A-3)", () => {
   beforeEach(() => {
@@ -118,5 +124,29 @@ describe("evidence-collector: toolCallId-based matching (A-3)", () => {
     assert.equal(entries[0].command, "pnpm test");
     assert.equal(entries[1].kind, "bash");
     assert.equal(entries[1].command, "rg TODO");
+  });
+
+  it("skips byte-identical evidence file rewrites", async (t) => {
+    const base = mkdtempSync(join(tmpdir(), "gsd-evidence-dedupe-"));
+    t.after(() => rmSync(base, { recursive: true, force: true }));
+
+    recordToolCall("tc-bash-1", "bash", { command: "pnpm test" });
+    saveEvidenceToDisk(base, "M001", "S01", "T03");
+
+    const evidenceFile = join(base, ".gsd", "safety", "evidence-M001-S01-T03.json");
+    const firstMtime = statSync(evidenceFile, { bigint: true }).mtimeNs;
+
+    await waitForMtimeTick();
+    saveEvidenceToDisk(base, "M001", "S01", "T03");
+    const secondMtime = statSync(evidenceFile, { bigint: true }).mtimeNs;
+
+    assert.equal(secondMtime, firstMtime, "unchanged evidence must not rewrite the evidence file");
+
+    await waitForMtimeTick();
+    recordToolResult("tc-bash-1", "bash", "Command exited with code 0\nok\n", false);
+    saveEvidenceToDisk(base, "M001", "S01", "T03");
+    const thirdMtime = statSync(evidenceFile, { bigint: true }).mtimeNs;
+
+    assert.ok(thirdMtime > secondMtime, "changed evidence must still be persisted");
   });
 });

@@ -65,12 +65,16 @@ const MCP_EXECUTION_TOOL_RE = /^mcp__.+__gsd_(?:uat_)?exec(?:_search)?$/;
 // ─── Module State ───────────────────────────────────────────────────────────
 
 let unitEvidence: EvidenceEntry[] = [];
+let lastWritePath: string | null = null;
+let lastWriteSig: string | null = null;
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 /** Reset all evidence for a new unit. Call at unit start. */
 export function resetEvidence(): void {
   unitEvidence = [];
+  lastWritePath = null;
+  lastWriteSig = null;
 }
 
 /** Get a read-only view of all evidence collected for the current unit. */
@@ -145,10 +149,15 @@ export function saveEvidenceToDisk(
 ): void {
   try {
     const path = evidencePath(basePath, milestoneId, sliceId, taskId);
+    const body = JSON.stringify(unitEvidence, null, 2) + "\n";
+    if (path === lastWritePath && body === lastWriteSig) return;
+
     mkdirSync(dirname(path), { recursive: true });
     const tmp = `${path}.tmp.${randomBytes(4).toString("hex")}`;
-    writeFileSync(tmp, JSON.stringify(unitEvidence, null, 2) + "\n", "utf-8");
+    writeFileSync(tmp, body, "utf-8");
     renameSync(tmp, path);
+    lastWritePath = path;
+    lastWriteSig = body;
   } catch {
     // Non-fatal — don't let persistence failures break unit execution
   }
@@ -167,6 +176,8 @@ export function loadEvidenceFromDisk(
   taskId: string,
 ): void {
   try {
+    lastWritePath = null;
+    lastWriteSig = null;
     const path = evidencePath(basePath, milestoneId, sliceId, taskId);
     if (!existsSync(path)) return;
     const raw = readFileSync(path, "utf-8");
@@ -194,6 +205,10 @@ export function clearEvidenceFromDisk(
     const path = evidencePath(basePath, milestoneId, sliceId, taskId);
     if (existsSync(path)) {
       unlinkSync(path);
+    }
+    if (path === lastWritePath) {
+      lastWritePath = null;
+      lastWriteSig = null;
     }
   } catch {
     // Non-fatal
