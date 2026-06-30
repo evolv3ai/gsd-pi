@@ -735,13 +735,13 @@ dynamic_routing:
 
 ### `context_management`
 
-控制自动模式会话中的 observation masking 和 tool result truncation。可在不增加 LLM 开销的前提下，减少 compaction 之间的上下文膨胀。
+控制自动模式会话中的 observation masking 和 tool result truncation。可在不增加 LLM 开销的前提下，减少 compaction 之间的上下文膨胀。在 step mode 中，可配置阈值只触发软警告；自动 session re-root 只会在固定的 90% 硬上下文边界触发。
 
 ```yaml
 context_management:
   observation_masking: true          # 用占位符替换旧 tool result（默认：true）
   observation_mask_turns: 8          # 保留最近 N 个 user turn 的结果（1-50，默认：8）
-  compaction_threshold_percent: 0.60 # 在 60% 上下文使用率处触发 compaction（0.5-0.95，默认：0.60）
+  compaction_threshold_percent: 0.60 # 在 60% 上下文使用率处触发软警告（0.5-0.95，默认：0.60）
   tool_result_max_chars: 800         # 单个 tool result 的最大字符数（200-10000，默认：800）
 ```
 

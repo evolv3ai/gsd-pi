@@ -1228,7 +1228,7 @@ async function configureContextCodebase(ctx: ExtensionCommandContext, prefs: Rec
   const maskTurns = await promptInteger(ctx, "Observation mask turns (1–50)", cm.observation_mask_turns, "8");
   if (maskTurns !== undefined && maskTurns !== "clear") cm.observation_mask_turns = maskTurns;
   else if (maskTurns === "clear") delete cm.observation_mask_turns;
-  const thresh = await promptNumber(ctx, "Compaction threshold percent (0.5–0.95)", cm.compaction_threshold_percent, "0.60");
+  const thresh = await promptNumber(ctx, "Soft context warning threshold percent (0.5–0.95)", cm.compaction_threshold_percent, "0.60");
   if (thresh !== undefined && thresh !== "clear") cm.compaction_threshold_percent = thresh;
   else if (thresh === "clear") delete cm.compaction_threshold_percent;
   const toolMax = await promptInteger(ctx, "Tool result max chars (200–10000)", cm.tool_result_max_chars, "800");

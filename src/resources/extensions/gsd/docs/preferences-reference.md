@@ -273,10 +273,10 @@ This config sets a parent workspace with two child repositories. The implicit `p
   - `audit_unified.enabled`: boolean — dual-write unified audit envelope events. Default: `true`.
   - `plan_v2.enabled`: boolean — enable bounded clarify/research/draft/compile planning flow. Default: `true`.
 
-- `context_management`: configures context hygiene for auto-mode sessions. Keys:
+- `context_management`: configures context hygiene for auto-mode sessions. In step mode, the configurable threshold is a soft warning; automatic session re-rooting happens only at the fixed 90% hard context boundary. Keys:
   - `observation_masking`: boolean — mask old tool results to reduce context bloat. Default: `true`.
   - `observation_mask_turns`: number — keep this many recent turns verbatim (1-50). Default: `8`.
-  - `compaction_threshold_percent`: number — trigger compaction at this % of context window (0.5-0.95). Lower values fire compaction earlier, reducing drift. Default: `0.60`.
+  - `compaction_threshold_percent`: number — show a soft context warning at this fraction of the context window (0.5-0.95). Lower values warn earlier so operators can compact manually before drift accumulates. Default: `0.60`.
   - `tool_result_max_chars`: number — max chars per tool result in GSD sessions (200-10000). Default: `800`.
 
 - `auto_visualize`: boolean — show a visualizer hint after each milestone completion in auto-mode. Default: `false`.

@@ -3,13 +3,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 
 import {
   anchorProcessCwdForAutoResume,
   cleanupAfterLoopExit,
+  maybeRerootStepSessionForHighContext,
   pauseAuto,
   rerootCommandSession,
   stopAuto,
@@ -478,8 +479,8 @@ test("cleanupAfterLoopExit preserves step-mode surface and worktree session afte
   }
 });
 
-test("cleanupAfterLoopExit re-roots step-mode session when context exceeds compaction threshold", async (t) => {
-  const base = mkdtempSync(join(tmpdir(), "gsd-step-reroot-"));
+test("cleanupAfterLoopExit warns but does not re-root step-mode session at soft compaction threshold", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-step-soft-context-"));
   const worktree = join(base, ".gsd", "worktrees", "M001");
   const previousCwd = process.cwd();
   const newSessionWorkspaces: string[] = [];
@@ -515,7 +516,59 @@ test("cleanupAfterLoopExit re-roots step-mode session when context exceeds compa
       },
     } as any);
 
-    assert.deepEqual(newSessionWorkspaces, [worktree], "hot step-mode cleanup should re-root in the active worktree");
+    assert.deepEqual(newSessionWorkspaces, [], "soft context pressure must not force a new command session");
+    assert.equal(
+      notifyMessages.some((msg) => msg.includes("context at 72.0%") && msg.includes("Use /compact")),
+      true,
+      "soft threshold should warn with a non-disruptive compaction prompt",
+    );
+    assert.equal(autoSession.basePath, worktree);
+    assert.equal(realpathSync(process.cwd()), realpathSync(worktree));
+  } finally {
+    autoSession.reset();
+    process.chdir(previousCwd);
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("cleanupAfterLoopExit re-roots step-mode session at hard context threshold", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-step-reroot-"));
+  const worktree = join(base, ".gsd", "worktrees", "M001");
+  const previousCwd = process.cwd();
+  const newSessionWorkspaces: string[] = [];
+  const notifyMessages: string[] = [];
+
+  t.mock.method(WorktreeLifecycle.prototype, "restoreToProjectRoot", function () {});
+
+  mkdirSync(worktree, { recursive: true });
+  process.chdir(worktree);
+  autoSession.reset();
+  autoSession.active = true;
+  autoSession.paused = false;
+  autoSession.stepMode = true;
+  autoSession.preserveStepSurfaceAfterLoopExit = true;
+  autoSession.basePath = worktree;
+  autoSession.originalBasePath = base;
+  autoSession.cmdCtx = {
+    getContextUsage: () => ({ percent: 92, tokens: 920_000, contextWindow: 1_000_000 }),
+    newSession: async ({ workspaceRoot }: { workspaceRoot: string }) => {
+      newSessionWorkspaces.push(workspaceRoot);
+      return { cancelled: false };
+    },
+  } as any;
+
+  try {
+    await cleanupAfterLoopExit({
+      hasUI: true,
+      ui: {
+        setStatus: () => {},
+        setWidget: () => {},
+        setHeader: () => {},
+        notify: (_msg: string) => notifyMessages.push(_msg),
+      },
+    } as any);
+
+    assert.deepEqual(newSessionWorkspaces, [worktree], "critical context pressure should re-root in the active worktree");
     assert.equal(
       notifyMessages.some((msg) => msg.includes("Fresh session ready for /gsd next")),
       true,
@@ -527,6 +580,131 @@ test("cleanupAfterLoopExit re-roots step-mode session when context exceeds compa
     autoSession.reset();
     process.chdir(previousCwd);
     rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("maybeRerootStepSessionForHighContext re-roots at the hard threshold even when the soft pref is set above it", async () => {
+  // Regression: the hard 90% re-root must not be gated behind the configurable
+  // soft warn threshold, which is allowed up to 0.95. At 92% usage with a 0.95
+  // soft pref the soft warn predicate is false, but the session must still
+  // re-root because usage crossed the fixed hard boundary.
+  const dir = mkdtempSync(join(tmpdir(), "gsd-hard-reroot-high-soft-"));
+  const project = join(dir, "project");
+  const gsdHomeDir = join(dir, "home");
+  const previousCwd = process.cwd();
+  const previousGsdHome = process.env.GSD_HOME;
+
+  mkdirSync(join(project, ".gsd"), { recursive: true });
+  mkdirSync(gsdHomeDir, { recursive: true });
+  writeFileSync(
+    join(project, ".gsd", "PREFERENCES.md"),
+    ["---", "version: 1", "context_management:", "  compaction_threshold_percent: 0.95", "---", ""].join("\n"),
+    "utf-8",
+  );
+
+  process.env.GSD_HOME = gsdHomeDir;
+  process.chdir(project);
+
+  const newSessionWorkspaces: string[] = [];
+  const notifyMessages: string[] = [];
+  const cmdCtx = {
+    getContextUsage: () => ({ percent: 92, tokens: 920_000, contextWindow: 1_000_000 }),
+    newSession: async ({ workspaceRoot }: { workspaceRoot: string }) => {
+      newSessionWorkspaces.push(workspaceRoot);
+      return { cancelled: false };
+    },
+  } as any;
+  const ctx = { ui: { notify: (msg: string) => notifyMessages.push(msg) } } as any;
+
+  try {
+    const result = await maybeRerootStepSessionForHighContext(ctx, project, cmdCtx, project);
+
+    assert.equal(result.rerooted, true, "92% usage must re-root even when the soft pref is 95%");
+    assert.deepEqual(newSessionWorkspaces, [project], "hard context pressure must re-root the command session");
+    const rerootMessage = notifyMessages.find((msg) => msg.includes("Fresh session ready for /gsd next"));
+    assert.ok(rerootMessage, "hard re-root should notify the user");
+    // The re-root was triggered by the 90% hard limit, so the notification must
+    // cite that limit and not the configured 95% soft compaction threshold.
+    assert.match(
+      rerootMessage,
+      /hard threshold: 90%/,
+      "hard re-root notification must cite the 90% hard threshold",
+    );
+    assert.equal(
+      rerootMessage.includes("95%"),
+      false,
+      "hard re-root notification must not cite the configured soft compaction threshold",
+    );
+  } finally {
+    process.chdir(previousCwd);
+    if (previousGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = previousGsdHome;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("maybeRerootStepSessionForHighContext writes a compaction snapshot only at the hard boundary", async () => {
+  // Regression: the snapshot is reserved for the hard re-root. Soft-only
+  // pressure must warn without writing a compaction snapshot.
+  const dir = mkdtempSync(join(tmpdir(), "gsd-soft-no-snapshot-"));
+  const project = join(dir, "project");
+  const gsdHomeDir = join(dir, "home");
+  const previousCwd = process.cwd();
+  const previousGsdHome = process.env.GSD_HOME;
+
+  mkdirSync(join(project, ".gsd"), { recursive: true });
+  mkdirSync(gsdHomeDir, { recursive: true });
+  writeFileSync(
+    join(project, ".gsd", "PREFERENCES.md"),
+    ["---", "version: 1", "context_management:", "  compaction_threshold_percent: 0.6", "---", ""].join("\n"),
+    "utf-8",
+  );
+
+  process.env.GSD_HOME = gsdHomeDir;
+  process.chdir(project);
+
+  const newSessionWorkspaces: string[] = [];
+  const notifyMessages: string[] = [];
+  let contextPercent = 72;
+  const cmdCtx = {
+    getContextUsage: () => ({ percent: contextPercent, tokens: contextPercent * 10_000, contextWindow: 1_000_000 }),
+    newSession: async ({ workspaceRoot }: { workspaceRoot: string }) => {
+      newSessionWorkspaces.push(workspaceRoot);
+      return { cancelled: false };
+    },
+  } as any;
+  const ctx = { ui: { notify: (msg: string) => notifyMessages.push(msg) } } as any;
+  const snapshotPath = join(project, ".gsd", "last-snapshot.md");
+
+  try {
+    const softResult = await maybeRerootStepSessionForHighContext(ctx, project, cmdCtx, project);
+    assert.equal(softResult.rerooted, false, "soft pressure must not re-root");
+    assert.deepEqual(newSessionWorkspaces, [], "soft pressure must not open a new session");
+    assert.equal(
+      existsSync(snapshotPath),
+      false,
+      "soft-only pressure must not write a compaction snapshot",
+    );
+    assert.equal(
+      notifyMessages.some((msg) => msg.includes("context at 72.0%") && msg.includes("Use /compact")),
+      true,
+      "soft threshold should warn with a non-disruptive compaction prompt",
+    );
+
+    contextPercent = 92;
+    const hardResult = await maybeRerootStepSessionForHighContext(ctx, project, cmdCtx, project);
+    assert.equal(hardResult.rerooted, true, "hard pressure must re-root");
+    assert.deepEqual(newSessionWorkspaces, [project], "hard pressure should re-root once");
+    assert.equal(
+      existsSync(snapshotPath),
+      true,
+      "hard boundary must write the compaction snapshot",
+    );
+  } finally {
+    process.chdir(previousCwd);
+    if (previousGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = previousGsdHome;
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

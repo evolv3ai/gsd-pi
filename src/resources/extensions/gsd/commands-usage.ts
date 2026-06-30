@@ -112,7 +112,7 @@ function formatThresholdLines(): string[] {
 
   const compactionThreshold = prefs?.context_management?.compaction_threshold_percent;
   if (typeof compactionThreshold === "number") {
-    lines.push(`Compaction: ${Math.round(compactionThreshold * 100)}%`);
+    lines.push(`Soft context warning: ${Math.round(compactionThreshold * 100)}%`);
   }
 
   return lines;

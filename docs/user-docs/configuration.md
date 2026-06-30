@@ -1046,13 +1046,13 @@ disabled_model_providers:
 
 ### `context_management`
 
-Controls observation masking and tool result truncation during auto-mode sessions. Reduces context bloat between compactions with zero LLM overhead.
+Controls observation masking and tool result truncation during auto-mode sessions. Reduces context bloat between compactions with zero LLM overhead. In step mode, the configurable threshold is a soft warning; automatic session re-rooting happens only at the fixed 90% hard context boundary.
 
 ```yaml
 context_management:
   observation_masking: true          # replace old tool results with placeholders (default: true)
   observation_mask_turns: 8          # keep results from last N user turns (1-50, default: 8)
-  compaction_threshold_percent: 0.60 # target compaction at 60% context usage (0.5-0.95, default: 0.60)
+  compaction_threshold_percent: 0.60 # soft warning at 60% context usage (0.5-0.95, default: 0.60)
   tool_result_max_chars: 800         # cap individual tool result content (200-10000, default: 800)
 ```
 
