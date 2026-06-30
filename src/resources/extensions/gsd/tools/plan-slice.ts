@@ -472,7 +472,9 @@ export async function handlePlanSlice(
     const renderResult = sliceTasks.length === 0
       ? { planPath: "", taskPlanPaths: [] as string[] }
       : await renderPlanFromDb(basePath, params.milestoneId, params.sliceId);
-    setSliceSketchFlag(params.milestoneId, params.sliceId, false);
+    if (sliceTasks.length > 0) {
+      setSliceSketchFlag(params.milestoneId, params.sliceId, false);
+    }
     invalidateStateCache();
     clearParseCache();
 
