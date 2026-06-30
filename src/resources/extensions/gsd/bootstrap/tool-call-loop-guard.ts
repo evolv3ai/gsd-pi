@@ -42,6 +42,7 @@ const MAX_CONSECUTIVE_STRICT = 1;
  */
 const PER_TOOL_DEFAULT_CAP = 6;
 const PER_TOOL_REPEATABLE_CAP = 15;
+const PER_TOOL_CAP_EXEMPT_TOOLS = new Set(["read"]);
 
 let consecutiveCount = 0;
 let lastSignature = "";
@@ -116,6 +117,13 @@ export function checkToolCallLoop(
   // varied args (e.g. retrying a missing workflow tool via bash/node -e/CLI).
   const perToolCount = (perToolCounts.get(toolName) ?? 0) + 1;
   perToolCounts.set(toolName, perToolCount);
+
+  // Reading many distinct files is normal context gathering; Guard 1 still
+  // catches true reread loops with identical arguments.
+  if (PER_TOOL_CAP_EXEMPT_TOOLS.has(toolName)) {
+    return { block: false, count: consecutiveCount };
+  }
+
   const perToolCap = INHERENTLY_REPEATABLE_TOOL_SET.has(toolName)
     ? PER_TOOL_REPEATABLE_CAP
     : PER_TOOL_DEFAULT_CAP;
