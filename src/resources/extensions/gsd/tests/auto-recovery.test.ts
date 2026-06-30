@@ -1917,6 +1917,41 @@ test("#57: writeReactiveExecuteBlocker reconciles batch task statuses and append
   }
 });
 
+test("#1088: writeReactiveExecuteBlocker preserves deferred batch task statuses", () => {
+  const base = makeTmpBase();
+  try {
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "M001", title: "Milestone", status: "active" });
+    insertSlice({ id: "S01", milestoneId: "M001", title: "Slice", status: "pending" });
+    insertTask({ id: "T01", milestoneId: "M001", sliceId: "S01", title: "One", status: "deferred" });
+    insertTask({ id: "T02", milestoneId: "M001", sliceId: "S01", title: "Two", status: "deferred" });
+    writeFileSync(
+      join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01-SUMMARY.md"),
+      "# T01 Summary\n",
+      "utf-8",
+    );
+
+    const recovery = writeReactiveExecuteBlocker(
+      "M001/S01/reactive+T01,T02",
+      base,
+      "verification retries exhausted",
+    );
+
+    assert.ok(recovery, "recovery should run with DB available");
+    assert.deepEqual(recovery!.completedTaskIds, []);
+    assert.deepEqual(recovery!.skippedTaskIds, []);
+    assert.deepEqual(recovery!.unchangedTaskIds, ["T01", "T02"]);
+    assert.equal(getTask("M001", "S01", "T01")?.status, "deferred");
+    assert.equal(getTask("M001", "S01", "T02")?.status, "deferred");
+
+    const events = readEvents(join(base, ".gsd", "event-log.jsonl"));
+    assert.equal(events.some((e) => e.params.taskId === "T01" || e.params.taskId === "T02"), false);
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
 test("#4414: verifyExpectedArtifact parallel-research succeeds when all research-ready slices have RESEARCH", () => {
   const base = makeTmpBase();
   try {

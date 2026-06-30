@@ -35,7 +35,7 @@ import { isValidationTerminal } from "./state.js";
 import { getErrorMessage } from "./error-utils.js";
 import { logWarning, logError } from "./workflow-logger.js";
 import { readIntegrationBranch } from "./git-service.js";
-import { isClosedStatus } from "./status-guards.js";
+import { isClosedStatus, isInactiveStatus } from "./status-guards.js";
 import {
   resolveSlicePath,
   resolveSliceFile,
@@ -295,7 +295,7 @@ export function writeReactiveExecuteBlocker(
   transaction(() => {
     for (const tid of summaryPresent) {
       const task = getTask(mid, sid, tid);
-      if (!task || isClosedStatus(task.status)) {
+      if (!task || isInactiveStatus(task.status)) {
         unchangedTaskIds.push(tid);
         continue;
       }
@@ -304,7 +304,7 @@ export function writeReactiveExecuteBlocker(
     }
     for (const tid of summaryMissing) {
       const task = getTask(mid, sid, tid);
-      if (!task || isClosedStatus(task.status)) {
+      if (!task || isInactiveStatus(task.status)) {
         unchangedTaskIds.push(tid);
         continue;
       }
