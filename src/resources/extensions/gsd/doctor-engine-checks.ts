@@ -384,7 +384,16 @@ export async function checkEngineHealth(
     // Non-fatal — projection drift check must never block doctor
   }
 
-  if (isDbAvailable()) {
-    checkProjectionCheckboxDbStatus(basePath, getAllMilestones().map((milestone) => milestone.id), issues);
+  // Checkbox-vs-DB divergence detection runs independently of the projection
+  // drift pass above, and inside its own try/catch: getAllMilestones /
+  // getMilestoneSlices / getSliceTasks issue prepared queries that can throw on
+  // a corrupt or locked DB, and like every other DB-touching check here this
+  // diagnostic must never block doctor.
+  try {
+    if (isDbAvailable()) {
+      checkProjectionCheckboxDbStatus(basePath, getAllMilestones().map((milestone) => milestone.id), issues);
+    }
+  } catch {
+    // Non-fatal: checkbox-vs-DB divergence check must never block doctor
   }
 }
