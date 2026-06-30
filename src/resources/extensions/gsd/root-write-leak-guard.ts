@@ -5,8 +5,18 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { GSD_RUNTIME_PATTERNS } from "./gitignore.js";
 
 const MAX_SYNC_FINGERPRINT_BYTES = 1_500_000_000;
+const ROOT_RUNTIME_PATH_PREFIXES = Array.from(
+  new Set(
+    GSD_RUNTIME_PATTERNS.map((pattern) => {
+      const path = pattern.replace(/\/+$/, "");
+      const slash = path.indexOf("/");
+      return slash === -1 ? path : path.slice(0, slash);
+    }),
+  ),
+);
 
 export interface RootDirtyEntry {
   path: string;
@@ -25,7 +35,9 @@ export interface RootWriteLeak {
 export type RootDirtySnapshot = Map<string, RootDirtyEntry>;
 
 function isRootRuntimePath(path: string): boolean {
-  return path === ".gsd" || path.startsWith(".gsd/");
+  return ROOT_RUNTIME_PATH_PREFIXES.some(
+    (prefix) => path === prefix || path.startsWith(`${prefix}/`),
+  );
 }
 
 function fileFingerprint(rootPath: string, relPath: string): string {

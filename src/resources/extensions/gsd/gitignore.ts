@@ -24,7 +24,7 @@ import { GIT_NO_PROMPT_ENV } from "./git-constants.js";
  * With external state (symlink), these are a no-op in most cases,
  * but retained for backwards compatibility during migration.
  */
-const GSD_RUNTIME_PATTERNS = [
+export const GSD_RUNTIME_PATTERNS = [
   ".gsd-worktrees/",
   ".gsd-backups/",
   ".gsd/activity/",
