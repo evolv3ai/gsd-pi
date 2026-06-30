@@ -414,9 +414,12 @@ function restoreArtifactProjections(basePath: string, manifest: StateManifest): 
   if (manifest.artifacts === undefined) return;
 
   for (const artifact of manifest.artifacts) {
+    const content = artifact.full_content ?? "";
+    if (content === "") continue;
+
     atomicWriteSync(
       artifactProjectionPath(basePath, artifact.path),
-      artifact.full_content ?? "",
+      content,
     );
   }
 }

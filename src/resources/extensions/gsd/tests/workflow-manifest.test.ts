@@ -380,6 +380,60 @@ test('workflow-manifest: bootstrapFromManifest preserves target_repositories', (
   }
 });
 
+test('workflow-manifest: bootstrapFromManifest does not truncate projections when artifact content is empty', () => {
+  const base = tempDir();
+  openDatabase(tempDbPath(base));
+  try {
+    insertMilestone({ id: 'M001', title: 'Projection Milestone' });
+    insertArtifact({
+      path: '.gsd/milestones/M001/M001-PLAN.md',
+      artifact_type: 'PLAN',
+      milestone_id: 'M001',
+      slice_id: null,
+      task_id: null,
+      full_content: '# Manifest Plan',
+    });
+    insertArtifact({
+      path: '.gsd/milestones/M001/M001-VALIDATION.md',
+      artifact_type: 'VALIDATION',
+      milestone_id: 'M001',
+      slice_id: null,
+      task_id: null,
+      full_content: '# Manifest Validation',
+    });
+    writeManifest(base);
+
+    const planPath = path.join(base, '.gsd', 'milestones', 'M001', 'M001-PLAN.md');
+    const validationPath = path.join(base, '.gsd', 'milestones', 'M001', 'M001-VALIDATION.md');
+    fs.mkdirSync(path.dirname(planPath), { recursive: true });
+    fs.writeFileSync(planPath, '# Existing Plan\n\nKeep this.');
+    fs.writeFileSync(validationPath, '# Existing Validation\n\nKeep this.');
+
+    const manifestPath = path.join(base, '.gsd', 'state-manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+    const artifacts = manifest['artifacts'] as Array<Record<string, unknown>>;
+    const emptyArtifact = artifacts.find((r) => r['path'] === '.gsd/milestones/M001/M001-PLAN.md');
+    const absentArtifact = artifacts.find((r) => r['path'] === '.gsd/milestones/M001/M001-VALIDATION.md');
+    assert.ok(emptyArtifact !== undefined);
+    assert.ok(absentArtifact !== undefined);
+    emptyArtifact['full_content'] = '';
+    delete absentArtifact['full_content'];
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    closeDatabase();
+
+    const newDbPath = path.join(base, 'new.db');
+    openDatabase(newDbPath);
+    const restored = bootstrapFromManifest(base);
+    assert.strictEqual(restored, true);
+
+    assert.strictEqual(fs.readFileSync(planPath, 'utf-8'), '# Existing Plan\n\nKeep this.');
+    assert.strictEqual(fs.readFileSync(validationPath, 'utf-8'), '# Existing Validation\n\nKeep this.');
+  } finally {
+    closeDatabase();
+    cleanupDir(base);
+  }
+});
+
 test('workflow-manifest: bootstrapFromManifest preserves optional rows from old manifests', () => {
   const base = tempDir();
   openDatabase(tempDbPath(base));
