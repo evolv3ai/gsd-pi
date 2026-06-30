@@ -224,28 +224,32 @@ console.log('\n── Loop guard: repeatable tools get the higher cap (#783) ─
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Distinct read calls are read-heavy context gathering, not repeated-tool loops.
+// Distinct read-only navigation calls are context gathering, not repeated-tool loops.
 // ═══════════════════════════════════════════════════════════════════════════
 
-console.log('\n── Loop guard: distinct read calls are not capped by per-tool count ──');
+console.log('\n── Loop guard: distinct read-only navigation calls are not capped by per-tool count ──');
 
 {
-  resetToolCallLoopGuard();
+  const exemptTools = ['find', 'glob', 'grep', 'ls', 'read', 'search_and_read'];
 
-  for (let i = 1; i <= 20; i++) {
-    const result = checkToolCallLoop('read', { path: `file-${i}.ts` });
-    assert.ok(result.block === false, `distinct read call ${i} should be allowed`);
+  for (const toolName of exemptTools) {
+    resetToolCallLoopGuard();
+
+    for (let i = 1; i <= 20; i++) {
+      const result = checkToolCallLoop(toolName, { path: `file-${i}.ts` });
+      assert.ok(result.block === false, `distinct ${toolName} call ${i} should be allowed`);
+    }
+
+    resetToolCallLoopGuard();
+    for (let i = 1; i <= 4; i++) {
+      const result = checkToolCallLoop(toolName, { path: 'same-file.ts' });
+      assert.ok(result.block === false, `identical ${toolName} call ${i} should be allowed`);
+    }
+
+    const blocked = checkToolCallLoop(toolName, { path: 'same-file.ts' });
+    assert.ok(blocked.block === true, `5th identical ${toolName} call should still be blocked`);
+    assert.ok(blocked.reason?.includes('identical args'), `${toolName} loops should be caught by Guard 1`);
   }
-
-  resetToolCallLoopGuard();
-  for (let i = 1; i <= 4; i++) {
-    const result = checkToolCallLoop('read', { path: 'same-file.ts' });
-    assert.ok(result.block === false, `identical read call ${i} should be allowed`);
-  }
-
-  const blocked = checkToolCallLoop('read', { path: 'same-file.ts' });
-  assert.ok(blocked.block === true, '5th identical read call should still be blocked');
-  assert.ok(blocked.reason?.includes('identical args'), 'read loops should be caught by Guard 1');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -270,15 +274,15 @@ console.log('\n── Loop guard: per-tool counts are independent and reset toge
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Newly-repeatable tools from core-session-tools.ts get the higher cap.
-// bg_shell, find, ls, search_and_read were added to INHERENTLY_REPEATABLE_TOOL_SET
-// in the code-quality consolidation PR (previously only bash/read/write/etc).
+// Non-exempt repeatable tools from core-session-tools.ts get the higher cap.
+// Read-only navigation tools are exempted earlier; mutating repeatable tools
+// must still trip the per-tool cap.
 // ═══════════════════════════════════════════════════════════════════════════
 
-console.log('\n── Loop guard: new repeatable tools (bg_shell, find, ls, search_and_read) get high cap ──');
+console.log('\n── Loop guard: non-exempt repeatable tools get high cap ──');
 
 {
-  for (const toolName of ['bg_shell', 'find', 'ls', 'search_and_read']) {
+  for (const toolName of ['bg_shell', 'write']) {
     resetToolCallLoopGuard();
 
     // Should allow up to 15 varied calls without blocking.

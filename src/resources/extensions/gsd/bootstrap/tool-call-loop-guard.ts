@@ -42,7 +42,7 @@ const MAX_CONSECUTIVE_STRICT = 1;
  */
 const PER_TOOL_DEFAULT_CAP = 6;
 const PER_TOOL_REPEATABLE_CAP = 15;
-const PER_TOOL_CAP_EXEMPT_TOOLS = new Set(["read"]);
+const PER_TOOL_CAP_EXEMPT_TOOLS = new Set(["find", "glob", "grep", "ls", "read", "search_and_read"]);
 
 let consecutiveCount = 0;
 let lastSignature = "";
@@ -118,7 +118,7 @@ export function checkToolCallLoop(
   const perToolCount = (perToolCounts.get(toolName) ?? 0) + 1;
   perToolCounts.set(toolName, perToolCount);
 
-  // Reading many distinct files is normal context gathering; Guard 1 still
+  // Read-only navigation tools are normal context gathering; Guard 1 still
   // catches true reread loops with identical arguments.
   if (PER_TOOL_CAP_EXEMPT_TOOLS.has(toolName)) {
     return { block: false, count: consecutiveCount };
