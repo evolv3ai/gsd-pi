@@ -34,7 +34,7 @@ import {
 } from "../auto-runtime-state.js";
 import { applyProviderPayloadPolicy } from "../provider-payload-policy.js";
 
-import { checkToolCallLoop, resetToolCallLoopGuard } from "./tool-call-loop-guard.js";
+import { checkToolCallLoop, recordToolCallLoopMutation, resetToolCallLoopGuard } from "./tool-call-loop-guard.js";
 import { MINIMAL_AUTO_BASE_TOOL_NAMES } from "./core-session-tools.js";
 import { maybePauseAutoForApprovalGate, resetPendingGatePauseGuard } from "./pending-gate-pause.js";
 import { saveActivityLog } from "../activity-log.js";
@@ -1587,6 +1587,7 @@ export function registerHooks(
       }
     }
     if (!event.isError) {
+      recordToolCallLoopMutation(toolName);
       refreshSourceObservationAfterMutation(toolName, event.input, ctx);
       clearSourceObservationsAfterShell(toolName);
     }

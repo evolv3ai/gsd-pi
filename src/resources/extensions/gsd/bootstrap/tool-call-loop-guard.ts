@@ -14,10 +14,12 @@
  * to stop tooling for the rest of that turn and answer in text.
  *
  * The per-tool-name check (#783 Brief C) tracks call counts within a
- * turn regardless of args. This catches improvisation
+ * turn regardless of args, decaying after successful state-mutating tools.
+ * This catches improvisation
  * loops where the model attempts the same missing workflow tool through
  * varied surfaces (bash → `node -e` → CLI), each with a different
- * signature, so the identical-args streak never trips. Whichever guard
+ * signature, so the identical-args streak never trips, while allowing
+ * tool-heavy turns that are making file-mutation progress. Whichever guard
  * trips first blocks.
  */
 
@@ -43,6 +45,7 @@ const MAX_CONSECUTIVE_STRICT = 1;
 const PER_TOOL_DEFAULT_CAP = 6;
 const PER_TOOL_REPEATABLE_CAP = 15;
 const PER_TOOL_CAP_EXEMPT_TOOLS = new Set(["find", "glob", "grep", "ls", "read", "search_and_read"]);
+const STATE_MUTATING_TOOL_SET = new Set(["edit", "write", "multi_edit", "notebook_edit"]);
 
 let consecutiveCount = 0;
 let lastSignature = "";
@@ -51,6 +54,8 @@ let enabled = true;
 
 /** Per-tool-name call counts within the current turn (#783 Brief C). */
 const perToolCounts = new Map<string, number>();
+let mutationEpoch = 0;
+const perToolLastMutationEpoch = new Map<string, number>();
 
 /** Hash tool name + args into a compact signature for comparison. */
 function hashToolCall(toolName: string, args: Record<string, unknown>): string {
@@ -78,7 +83,8 @@ function hashToolCall(toolName: string, args: Record<string, unknown>): string {
  *  1. Identical-signature streak (MAX_CONSECUTIVE_IDENTICAL_CALLS, strict for
  *     ask_user_questions).
  *  2. Per-tool-name cap (PER_TOOL_DEFAULT_CAP / PER_TOOL_REPEATABLE_CAP),
- *     independent of args — catches improvisation loops (#783).
+ *     independent of args, reset after file-mutation progress — catches
+ *     improvisation loops (#783).
  */
 export function checkToolCallLoop(
   toolName: string,
@@ -115,8 +121,13 @@ export function checkToolCallLoop(
   // ── Guard 2: per-tool-name cap, independent of args (#783 Brief C) ──
   // Catches improvisation loops where the same tool is invoked many times with
   // varied args (e.g. retrying a missing workflow tool via bash/node -e/CLI).
-  const perToolCount = (perToolCounts.get(toolName) ?? 0) + 1;
+  const priorPerToolCount =
+    (perToolLastMutationEpoch.get(toolName) ?? mutationEpoch) < mutationEpoch
+      ? 0
+      : (perToolCounts.get(toolName) ?? 0);
+  const perToolCount = priorPerToolCount + 1;
   perToolCounts.set(toolName, perToolCount);
+  perToolLastMutationEpoch.set(toolName, mutationEpoch);
 
   // Read-only navigation tools are normal context gathering; Guard 1 still
   // catches true reread loops with identical arguments.
@@ -143,6 +154,13 @@ export function checkToolCallLoop(
   return { block: false, count: consecutiveCount };
 }
 
+/** Record successful mutation progress so Guard 2 can decay on the next count. */
+export function recordToolCallLoopMutation(toolName: string): void {
+  if (!enabled) return;
+  if (!STATE_MUTATING_TOOL_SET.has(toolName)) return;
+  mutationEpoch++;
+}
+
 /** Reset the guard state. Call at agent turn boundaries. */
 export function resetToolCallLoopGuard(): void {
   consecutiveCount = 0;
@@ -150,6 +168,8 @@ export function resetToolCallLoopGuard(): void {
   lastToolName = "";
   enabled = true;
   perToolCounts.clear();
+  mutationEpoch = 0;
+  perToolLastMutationEpoch.clear();
 }
 
 /** Disable the guard (e.g. during shutdown). */
@@ -159,6 +179,8 @@ export function disableToolCallLoopGuard(): void {
   lastSignature = "";
   lastToolName = "";
   perToolCounts.clear();
+  mutationEpoch = 0;
+  perToolLastMutationEpoch.clear();
 }
 
 /** Get current consecutive count for diagnostics. */

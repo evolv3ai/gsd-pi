@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   checkToolCallLoop,
+  recordToolCallLoopMutation,
   resetToolCallLoopGuard,
   disableToolCallLoopGuard,
   getToolCallLoopCount,
@@ -221,6 +222,33 @@ console.log('\n── Loop guard: repeatable tools get the higher cap (#783) ─
   const blocked = checkToolCallLoop('bash', { command: 'echo 16' });
   assert.ok(blocked.block === true, '16th bash call (varied args) should be blocked by per-tool cap');
   assert.ok(blocked.reason!.includes('cap 15'), 'reason should mention the repeatable cap');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Mutation progress decays per-tool counts (#1092)
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Loop guard: mutation progress decays per-tool counts (#1092) ──');
+
+{
+  resetToolCallLoopGuard();
+
+  // bash is called more than the repeatable cap, but each count is separated
+  // by a successful file mutation. Guard 2 should treat that as progress and
+  // avoid blocking the progressing unit.
+  for (let i = 1; i <= 20; i++) {
+    const result = checkToolCallLoop('bash', { command: `echo ${i}` });
+    assert.ok(result.block === false, `bash call ${i} after mutation progress should be allowed`);
+    assert.deepStrictEqual(getToolCallCountForTool('bash'), 1, `bash count should decay before call ${i}`);
+
+    const mutationTool = i % 2 === 0 ? 'write' : 'edit';
+    const mutation = checkToolCallLoop(mutationTool, {
+      path: `file-${i}.ts`,
+      content: `content ${i}`,
+    });
+    assert.ok(mutation.block === false, `${mutationTool} mutation ${i} should be allowed`);
+    recordToolCallLoopMutation(mutationTool);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
