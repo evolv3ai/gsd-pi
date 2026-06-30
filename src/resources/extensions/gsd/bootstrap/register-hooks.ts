@@ -584,6 +584,21 @@ function contextBasePath(ctx?: { cwd?: string }): string {
   return typeof ctx?.cwd === "string" ? ctx.cwd : process.cwd();
 }
 
+const LOOP_GUARD_INTERACTIVE_INSTRUCTIONS = [
+  "Do not retry this tool or call other tools this turn — stop and respond to the user in text.",
+  "Do not retry this tool or pivot to other tools this turn — stop and respond to the user in text.",
+];
+const LOOP_GUARD_AUTO_INSTRUCTION =
+  "Do not re-issue this blocked tool. In /gsd auto, stop tool calls for this turn and return control to the auto-mode recovery/replan path.";
+
+function formatLoopGuardBlockReason(reason: string | undefined): string | undefined {
+  if (!reason || !getAutoRuntimeSnapshot().active) return reason;
+  return LOOP_GUARD_INTERACTIVE_INSTRUCTIONS.reduce(
+    (formatted, instruction) => formatted.replace(instruction, LOOP_GUARD_AUTO_INSTRUCTION),
+    reason,
+  );
+}
+
 function beginSourceObservationStoreForCurrentUnit(
   ctx?: { cwd?: string },
 ): ReturnType<typeof getSourceObservationStore> | null {
@@ -1300,7 +1315,7 @@ export function registerHooks(
     // ── Loop guard: block repeated identical tool calls ──
     const loopCheck = checkToolCallLoop(toolName, event.input as Record<string, unknown>);
     if (loopCheck.block) {
-      return { block: true, reason: loopCheck.reason };
+      return { block: true, reason: formatLoopGuardBlockReason(loopCheck.reason) };
     }
 
     const deferredGateGuard = shouldBlockDeferredApprovalTool(
