@@ -522,6 +522,86 @@ describe("agentLoop with AgentMessage", () => {
 		);
 	});
 
+	it("should not count beforeToolCall blocks toward consecutive validation failures", async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		let executed = false;
+		const tool: AgentTool<typeof toolSchema> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			async execute() {
+				executed = true;
+				throw new Error("tool should have been blocked");
+			},
+		};
+
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [tool],
+		};
+
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			beforeToolCall: async () => ({
+				block: true,
+				reason: "Loop guard blocked repeated tool call.",
+			}),
+		};
+
+		let streamCallCount = 0;
+		const streamFn = () => {
+			streamCallCount++;
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (streamCallCount <= 3) {
+					const message = createAssistantMessage(
+						[
+							{
+								type: "toolCall",
+								id: `tool-${streamCallCount}`,
+								name: "echo",
+								arguments: { value: "hello" },
+							},
+						],
+						"toolUse",
+					);
+					stream.push({ type: "done", reason: "toolUse", message });
+				} else {
+					stream.push({
+						type: "done",
+						reason: "stop",
+						message: createAssistantMessage([{ type: "text", text: "recovered after blocks" }]),
+					});
+				}
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([createUserMessage("echo repeatedly")], context, config, undefined, streamFn);
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		const messages = await stream.result();
+		const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant");
+		const blockedResults = events.filter(
+			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+				event.type === "tool_execution_end",
+		);
+
+		expect(executed).toBe(false);
+		expect(streamCallCount).toBe(4);
+		expect(blockedResults).toHaveLength(3);
+		expect(blockedResults.every((event) => event.isError)).toBe(true);
+		expect(lastAssistant?.stopReason).toBe("stop");
+		expect(lastAssistant?.content).toEqual([{ type: "text", text: "recovered after blocks" }]);
+		expect(lastAssistant?.errorMessage).toBeUndefined();
+	});
+
 	it("should prepare tool arguments for validation", async () => {
 		const replaceSchema = Type.Object({ oldText: Type.String(), newText: Type.String() });
 		const toolSchema = Type.Object({ edits: Type.Array(replaceSchema) });

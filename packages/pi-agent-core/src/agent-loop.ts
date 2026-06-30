@@ -514,7 +514,7 @@ async function executeToolCallsSequential(
 		const preparation = await prepareToolCall(currentContext, assistantMessage, toolCall, config, signal);
 		let finalized: FinalizedToolCallOutcome;
 		if (preparation.kind === "immediate") {
-			if (preparation.isError) {
+			if (preparation.isError && preparation.countsTowardValidationFailure !== false) {
 				preparationErrorCount++;
 			}
 			finalized = {
@@ -573,7 +573,7 @@ async function executeToolCallsParallel(
 
 		const preparation = await prepareToolCall(currentContext, assistantMessage, toolCall, config, signal);
 		if (preparation.kind === "immediate") {
-			if (preparation.isError) {
+			if (preparation.isError && preparation.countsTowardValidationFailure !== false) {
 				preparationErrorCount++;
 			}
 			const finalized = {
@@ -635,6 +635,7 @@ type ImmediateToolCallOutcome = {
 	kind: "immediate";
 	result: AgentToolResult<any>;
 	isError: boolean;
+	countsTowardValidationFailure?: boolean;
 };
 
 type ExecutedToolCallOutcome = {
@@ -761,6 +762,7 @@ async function prepareToolCall(
 					kind: "immediate",
 					result: createErrorToolResult(reason, beforeResult.displayReason),
 					isError: true,
+					countsTowardValidationFailure: false,
 				};
 			}
 		}
