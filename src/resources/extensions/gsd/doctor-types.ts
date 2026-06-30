@@ -89,6 +89,7 @@ export type DoctorIssueCode =
   | "completed_milestone_reopened"
   | "db_duplicate_id"
   | "db_unavailable"
+  | "memories_fts_rebuild_missing"
   | "projection_drift"
   // Milestone filesystem/DB drift (#4996)
   | "orphan_milestone_dir"

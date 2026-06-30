@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { filterDoctorIssues } from "../doctor-format.ts";
 import { checkEngineHealth } from "../doctor-engine-checks.ts";
+import { MEMORIES_FTS_REBUILT_KEY } from "../db-memory-fts-schema.ts";
 import { appendEvent } from "../workflow-events.ts";
 import { renderPlanFromDb, renderRoadmapFromDb } from "../markdown-renderer.ts";
 
@@ -60,6 +61,33 @@ test("checkEngineHealth reports db_unavailable when gsd.db exists but the DB is 
   assert.ok(dbIssue, "doctor should surface degraded DB mode when a DB file exists");
   assert.equal(dbIssue.unitId, "project");
   assert.equal(dbIssue.file, ".gsd/gsd.db");
+});
+
+test("checkEngineHealth reports memories_fts without the rebuild marker", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-memory-fts-marker-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  mkdirSync(gsdDir, { recursive: true });
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  const adapter = _getAdapter()!;
+  const fts = adapter.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='memories_fts'").get();
+  if (!fts) return;
+
+  adapter.prepare(
+    "DELETE FROM runtime_kv WHERE scope = 'global' AND scope_id = '' AND key = :key",
+  ).run({ ":key": MEMORIES_FTS_REBUILT_KEY });
+
+  const issues: any[] = [];
+  await checkEngineHealth(base, issues, []);
+
+  const ftsIssue = issues.find((issue) => issue.code === "memories_fts_rebuild_missing");
+  assert.ok(ftsIssue, "doctor should surface a potentially desynced memory FTS index");
+  assert.equal(ftsIssue.severity, "warning");
+  assert.equal(ftsIssue.unitId, "project");
+  assert.equal(ftsIssue.file, ".gsd/gsd.db");
+  assert.equal(ftsIssue.fixable, false);
 });
 
 test("checkEngineHealth reports checkbox divergence against DB status", async (t) => {
