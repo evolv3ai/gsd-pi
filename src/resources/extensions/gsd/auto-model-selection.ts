@@ -409,7 +409,13 @@ export function resolvePreferredModelConfig(
   availableModelIds?: string[],
   preferredModelId?: string,
 ): PreferredModelConfig | undefined {
-  const explicitConfig = resolveModelWithFallbacksForUnit(unitType, basePath, availableModelIds, preferredModelId);
+  const explicitConfig = resolveModelWithFallbacksForUnit(
+    unitType,
+    basePath,
+    availableModelIds,
+    preferredModelId,
+    true,
+  );
   if (explicitConfig) {
     return {
       ...explicitConfig,
