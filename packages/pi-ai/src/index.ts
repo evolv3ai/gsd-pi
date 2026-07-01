@@ -38,6 +38,7 @@ export * from "./providers/api-family.js";
 export * from "./session-resources.js";
 export * from "./stream.js";
 export * from "./types.js";
+export * from "./tool-result-content.js";
 export * from "./utils/diagnostics.js";
 export * from "./utils/event-stream.js";
 export * from "./utils/json-parse.js";

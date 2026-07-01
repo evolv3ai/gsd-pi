@@ -1,5 +1,6 @@
 // Project/App: gsd-pi
 // File Purpose: Interactive TUI chat stream controller.
+import { normalizeToolResultContent } from "@gsd/pi-ai";
 import { Loader, Spacer, Text } from "@gsd/pi-tui";
 
 import type { InteractiveModeEvent, InteractiveModeStateHost } from "../interactive-mode-state.js";
@@ -202,7 +203,7 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 				const innerEvent = event.assistantMessageEvent;
 
 				let externalToolResult:
-					| { toolCallId: string; content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>; details: Record<string, unknown>; isError: boolean }
+					| { toolCallId: string; content: ReturnType<typeof normalizeToolResultContent>; details: Record<string, unknown>; isError: boolean }
 					| undefined;
 				if (innerEvent.type === "toolcall_end" && innerEvent.toolCall) {
 					const tc = innerEvent.toolCall as any;
@@ -210,7 +211,7 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 					if (ext) {
 						externalToolResult = {
 							toolCallId: tc.id,
-							content: ext.content ?? [{ type: "text", text: "" }],
+							content: normalizeToolResultContent(ext.content),
 							// Preserve undefined when MCP omits structuredContent — an empty
 							// object is truthy and makes ask_user_questions renderResult show
 							// "Cancelled" despite a successful text payload (#cc-elicitation).
@@ -225,7 +226,7 @@ export async function handleAgentEvent(host: InteractiveModeStateHost & {
 					if (block?.id && ext) {
 						externalToolResult = {
 							toolCallId: block.id,
-							content: ext.content ?? [{ type: "text", text: "" }],
+							content: normalizeToolResultContent(ext.content),
 							details: ext.details,
 							isError: ext.isError ?? false,
 						};

@@ -9,7 +9,7 @@ import {
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { agentLoop, agentLoopContinue } from "../src/agent-loop.ts";
-import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool } from "../src/types.ts";
+import type { AgentContext, AgentEvent, AgentLoopConfig, AgentMessage, AgentTool, AgentToolResult } from "../src/types.ts";
 
 // Mock stream for testing - mimics MockAssistantStream
 class MockAssistantStream extends EventStream<AssistantMessageEvent, AssistantMessage> {
@@ -391,6 +391,74 @@ describe("agentLoop with AgentMessage", () => {
 		}
 	});
 
+	it("normalizes missing tool result content before appending transcript messages", async () => {
+		const toolSchema = Type.Object({});
+		const tool: AgentTool<typeof toolSchema, Record<string, never>> = {
+			name: "empty-result",
+			label: "Empty result",
+			description: "Returns a malformed result with no content",
+			parameters: toolSchema,
+			async execute() {
+				return { details: {} } as unknown as AgentToolResult<Record<string, never>>;
+			},
+		};
+
+		const context: AgentContext = {
+			systemPrompt: "",
+			messages: [],
+			tools: [tool],
+		};
+		const userPrompt: AgentMessage = createUserMessage("run empty result");
+		let afterToolCallContent: unknown;
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			afterToolCall(event) {
+				afterToolCallContent = event.result.content;
+			},
+		};
+
+		let callIndex = 0;
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				if (callIndex === 0) {
+					stream.push({
+						type: "done",
+						reason: "toolUse",
+						message: createAssistantMessage(
+							[{ type: "toolCall", id: "tool-1", name: "empty-result", arguments: {} }],
+							"toolUse",
+						),
+					});
+				} else {
+					stream.push({ type: "done", reason: "stop", message: createAssistantMessage([{ type: "text", text: "done" }]) });
+				}
+				callIndex++;
+			});
+			return stream;
+		};
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([userPrompt], context, config, undefined, streamFn);
+		for await (const event of stream) events.push(event);
+
+		const expectedContent = [{ type: "text", text: "" }];
+		expect(afterToolCallContent).toEqual(expectedContent);
+
+		const toolEnd = events.find((event) => event.type === "tool_execution_end");
+		expect(toolEnd).toBeDefined();
+		if (toolEnd?.type === "tool_execution_end") {
+			expect(toolEnd.result.content).toEqual(expectedContent);
+		}
+
+		const toolResultMessage = events.find((event) => event.type === "message_end" && event.message.role === "toolResult");
+		expect(toolResultMessage).toBeDefined();
+		if (toolResultMessage?.type === "message_end" && toolResultMessage.message.role === "toolResult") {
+			expect(toolResultMessage.message.content).toEqual(expectedContent);
+		}
+	});
+
 	it("should execute mutated beforeToolCall args without revalidation", async () => {
 		const toolSchema = Type.Object({ value: Type.String() });
 		const executed: Array<string | number> = [];
@@ -768,11 +836,11 @@ describe("agentLoop with AgentMessage", () => {
 								name: "Glob",
 								arguments: { pattern: "*.ts" },
 								externalResult: {
-									content: [{ type: "text", text: "src/index.ts" }],
+									content: "src/index.ts",
 									details: { source: "claude-code" },
 									isError: false,
 								},
-							} as any,
+							},
 							{
 								type: "toolCall",
 								id: "tool-gsd",
@@ -783,7 +851,7 @@ describe("agentLoop with AgentMessage", () => {
 									details: { source: "gsd-workflow" },
 									isError: false,
 								},
-							} as any,
+							},
 						],
 						"toolUse",
 					);

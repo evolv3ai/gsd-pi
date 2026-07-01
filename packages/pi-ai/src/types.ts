@@ -247,6 +247,13 @@ export interface ImageContent {
 	mimeType: string; // e.g., "image/jpeg", "image/png"
 }
 
+export interface ExternalToolResult {
+	/** Raw content from an externally executed tool. Normalized at runtime before consumers receive it. */
+	content?: unknown;
+	details?: Record<string, unknown>;
+	isError?: boolean;
+}
+
 export interface ToolCall {
 	type: "toolCall";
 	id: string;
@@ -254,11 +261,7 @@ export interface ToolCall {
 	arguments: Record<string, any>;
 	thoughtSignature?: string; // Google-specific: opaque signature for reusing thought context
 	/** Result from an externally executed tool (e.g. Claude Code SDK). Skips local dispatch. */
-	externalResult?: {
-		content?: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
-		details?: Record<string, unknown>;
-		isError?: boolean;
-	};
+	externalResult?: ExternalToolResult;
 }
 
 /** GSD compat: server-side tool invocation block (e.g. web search). */
@@ -268,11 +271,7 @@ export interface ServerToolUse {
 	name: string;
 	input: unknown;
 	caller?: unknown;
-	externalResult?: {
-		content?: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
-		details?: Record<string, unknown>;
-		isError?: boolean;
-	};
+	externalResult?: ExternalToolResult;
 }
 
 /** GSD compat: server-side tool result block paired with serverToolUse. */

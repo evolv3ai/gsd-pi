@@ -13,6 +13,7 @@ import {
 	isEmptyPathToolArguments,
 	isToolSearchToolName,
 	streamSimple,
+	normalizeToolResultContent,
 	type ToolResultMessage,
 	validateToolArguments,
 } from "@gsd/pi-ai";
@@ -519,7 +520,7 @@ async function executeToolCallsSequential(
 			}
 			finalized = {
 				toolCall,
-				result: preparation.result,
+				result: normalizeAgentToolResult(preparation.result),
 				isError: preparation.isError,
 			};
 		} else {
@@ -578,7 +579,7 @@ async function executeToolCallsParallel(
 			}
 			const finalized = {
 				toolCall,
-				result: preparation.result,
+				result: normalizeAgentToolResult(preparation.result),
 				isError: preparation.isError,
 			} satisfies FinalizedToolCallOutcome;
 			await emitToolExecutionEnd(finalized, emit);
@@ -681,10 +682,7 @@ async function prepareToolCall(
 		return {
 			kind: "immediate",
 			result: {
-				content:
-					externalResult.content && externalResult.content.length > 0
-						? (externalResult.content as AgentToolResult<any>["content"])
-						: [{ type: "text", text: "" }],
+				content: normalizeToolResultContent(externalResult.content),
 				details: externalResult.details ?? {},
 				// The provider (claude-code-cli) already executed this tool inside its
 				// own agentic session and emitted ONE final assistant message carrying
@@ -879,7 +877,7 @@ async function finalizeExecutedToolCall(
 	config: AgentLoopConfig,
 	signal: AbortSignal | undefined,
 ): Promise<FinalizedToolCallOutcome> {
-	let result = executed.result;
+	let result = normalizeAgentToolResult(executed.result);
 	let isError = executed.isError;
 
 	if (config.afterToolCall) {
@@ -896,11 +894,11 @@ async function finalizeExecutedToolCall(
 				signal,
 			);
 			if (afterResult) {
-				result = {
+				result = normalizeAgentToolResult({
 					content: afterResult.content ?? result.content,
 					details: afterResult.details ?? result.details,
 					terminate: afterResult.terminate ?? result.terminate,
-				};
+				});
 				isError = afterResult.isError ?? isError;
 			}
 		} catch (error) {
@@ -920,6 +918,14 @@ function createErrorToolResult(message: string, displayReason?: string): AgentTo
 	return {
 		content: [{ type: "text", text: message }],
 		details: displayReason ? { displayReason } : {},
+	};
+}
+
+function normalizeAgentToolResult(result: Partial<AgentToolResult<any>> | undefined): AgentToolResult<any> {
+	return {
+		content: normalizeToolResultContent(result?.content),
+		details: result?.details,
+		terminate: result?.terminate,
 	};
 }
 

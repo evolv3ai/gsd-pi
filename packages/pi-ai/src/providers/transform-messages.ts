@@ -8,6 +8,7 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 } from "../types.js";
+import { normalizeToolResultContent } from "../tool-result-content.js";
 
 export interface ProviderSwitchReport {
 	fromApi: string;
@@ -93,7 +94,7 @@ function downgradeUnsupportedImages<TApi extends Api>(messages: Message[], model
 			};
 		}
 
-		if (msg.role === "toolResult") {
+		if (msg.role === "toolResult" && Array.isArray(msg.content)) {
 			return {
 				...msg,
 				content: replaceImagesWithPlaceholder(msg.content, NON_VISION_TOOL_IMAGE_PLACEHOLDER),
@@ -125,7 +126,10 @@ export function transformMessagesWithReport<TApi extends Api>(
 ): Message[] {
 	// Build a map of original tool call IDs to normalized IDs
 	const toolCallIdMap = new Map<string, string>();
-	const imageAwareMessages = downgradeUnsupportedImages(messages, model);
+	const contentNormalizedMessages = messages.map((msg) =>
+		msg.role === "toolResult" ? { ...msg, content: normalizeToolResultContent(msg.content) } : msg,
+	);
+	const imageAwareMessages = downgradeUnsupportedImages(contentNormalizedMessages, model);
 	const report = makeEmptyReport(sourceApi ?? model.api, model.api);
 
 	// First pass: transform messages (unsupported image downgrade, thinking blocks, tool call ID normalization)
@@ -135,7 +139,9 @@ export function transformMessagesWithReport<TApi extends Api>(
 			return msg;
 		}
 
-		// Handle toolResult messages - normalize toolCallId if we have a mapping
+		// Handle toolResult messages - normalize toolCallId if we have a mapping,
+		// and defensively hydrate content for older transcripts or tools that
+		// returned no visible payload. Downstream providers expect an array.
 		if (msg.role === "toolResult") {
 			const normalizedId = toolCallIdMap.get(msg.toolCallId);
 			if (normalizedId && normalizedId !== msg.toolCallId) {
