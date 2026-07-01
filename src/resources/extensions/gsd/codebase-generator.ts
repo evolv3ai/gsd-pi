@@ -258,31 +258,47 @@ function enumerateWorkspaceFiles(
   excludes: string[],
   maxFiles: number,
 ): EnumeratedFiles {
-  const files: string[] = [];
-  const repos: string[] = [];
+  type WorkspaceEntry = { workspacePath: string; repoId: string };
+  const perRepo: WorkspaceEntry[][] = [];
   const seen = new Set<string>();
-  let totalTrackable = 0;
+  let totalEligible = 0;
 
   for (const repo of registry.repositories) {
     const rawFiles = lsFiles(repo.root);
     const repoPrefix = relative(registry.projectRoot, repo.root).split(sep).join("/");
+    const repoEntries: WorkspaceEntry[] = [];
 
     for (const file of rawFiles) {
-      if (shouldExclude(file, excludes)) continue;
-      totalTrackable++;
-      // Rewrite to a workspace-relative path so locations are unambiguous across repos.
+      // Rewrite before exclusion so workspace-relative patterns (e.g. frontend/…) apply.
       const workspacePath = repoPrefix ? `${repoPrefix}/${file}` : file;
+      if (shouldExclude(workspacePath, excludes)) continue;
       if (seen.has(workspacePath)) continue;
       seen.add(workspacePath);
-      files.push(workspacePath);
-      repos.push(repo.id);
-      if (files.length >= maxFiles) {
-        return { files, repos, truncated: true };
-      }
+      totalEligible++;
+      repoEntries.push({ workspacePath, repoId: repo.id });
     }
+    perRepo.push(repoEntries);
   }
 
-  return { files, repos, truncated: totalTrackable > files.length };
+  const files: string[] = [];
+  const repos: string[] = [];
+  const indices = new Array(perRepo.length).fill(0);
+
+  while (files.length < maxFiles) {
+    let progressed = false;
+    for (let i = 0; i < perRepo.length; i++) {
+      if (indices[i] < perRepo[i].length) {
+        const entry = perRepo[i][indices[i]++];
+        files.push(entry.workspacePath);
+        repos.push(entry.repoId);
+        progressed = true;
+        if (files.length >= maxFiles) break;
+      }
+    }
+    if (!progressed) break;
+  }
+
+  return { files, repos, truncated: totalEligible > files.length };
 }
 
 function resolveGeneratorOptions(options?: CodebaseMapOptions): ResolvedCodebaseMapOptions {
