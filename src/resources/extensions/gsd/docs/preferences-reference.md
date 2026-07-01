@@ -172,6 +172,7 @@ Diagnostics record the file path, scope (global/project), severity (error/warnin
     - `verification`: optional array of verification commands for that repo.
     - `commit_policy`: optional `"auto"` or `"skip"` to include or skip commit actions per repo.
   - Planning tools consume repository IDs through `targetRepositories`: `gsd_plan_slice.targetRepositories` sets a slice-wide default, and `gsd_plan_task.targetRepositories` records the repositories an individual task touches. Values must be declared IDs or the implicit `project`; omit these fields in single-repo projects.
+  - In parent mode with declared child repositories, `/gsd codebase generate` and automatic `.gsd/CODEBASE.md` refreshes enumerate `project` plus each child repository, render repo-labeled sections, and store repository IDs in map metadata.
 
 ## Workspace Example
 
@@ -308,6 +309,7 @@ In `"parent"` mode, slice/task `targetRepositories` default to the declared chil
   - `project` is always an implicit repository target mapped to the project root for backward compatibility.
   - `targetRepositories` on `gsd_plan_slice` sets the slice-wide default. `targetRepositories` on `gsd_plan_task` records or overrides the repository IDs for an individual task.
   - Values must match declared repository IDs or the implicit `project`; omitted plan/task `targetRepositories` defaults to `["project"]`.
+  - `/gsd codebase` is workspace-aware in parent mode with declared child repositories: generated `.gsd/CODEBASE.md` uses workspace-relative paths, groups files under `## [repo-id]` headings, and refreshes when repository registry metadata changes.
 
 - `verification_commands`: string[] — shell commands to run as verification after task execution (e.g., `["npm test", "npm run lint"]`). Commands run in order; if any fails, the task is marked as needing fixes.
 

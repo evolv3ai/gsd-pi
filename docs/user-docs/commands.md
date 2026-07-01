@@ -144,7 +144,7 @@ See [Parallel Orchestration](./parallel-orchestration.md) for full documentation
 | `/gsd backlog` | Manage backlog items (`add`, `promote`, `remove`, `list`) |
 | `/gsd add-tests` | Generate tests for completed slices |
 | `/gsd scan` | Run a rapid codebase assessment (`--focus tech`, `arch`, `quality`, `concerns`, `tech+arch`) |
-| `/gsd codebase` | Generate, refresh, and inspect the `.gsd/CODEBASE.md` cache (`generate`, `update`, `stats`) |
+| `/gsd codebase` | Generate, refresh, and inspect the `.gsd/CODEBASE.md` cache (`generate`, `update`, `stats`); parent workspaces include declared child repositories under repo-labeled sections |
 
 ## Additional Prompt-Driven Workflows
 

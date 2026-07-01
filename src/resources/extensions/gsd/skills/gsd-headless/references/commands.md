@@ -22,6 +22,7 @@ All commands can be run via `gsd headless [command]`.
 | `status` | Progress dashboard (TUI overlay — useful interactively, not for parsing) |
 | `visualize` | Workflow visualizer (deps, metrics, timeline) |
 | `history` | Execution history (supports --cost, --phase, --model, limit) |
+| `codebase` | Manage `.gsd/CODEBASE.md`; parent workspaces include declared child repositories under repo-labeled sections |
 
 ## Unit Control
 

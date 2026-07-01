@@ -205,6 +205,8 @@ Validation rules:
 - Paths resolving outside the project root are rejected.
 - Unknown `workspace` keys are ignored with warnings.
 
+When `workspace.mode` is `parent` and child repositories are declared, `/gsd codebase generate` and automatic `CODEBASE.md` refreshes enumerate the implicit `project` repository plus each child repository. The generated `.gsd/CODEBASE.md` uses workspace-relative paths, groups files under `## [repo-id]` sections, and records the repository IDs in its metadata so changes to the workspace registry refresh the map.
+
 ### `phases`
 
 Fine-grained control over which phases run:
