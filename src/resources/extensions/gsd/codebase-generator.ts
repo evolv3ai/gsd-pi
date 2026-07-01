@@ -321,10 +321,12 @@ function computeCodebaseFingerprint(
   files: string[],
   resolved: ResolvedCodebaseMapOptions,
   truncated: boolean,
+  repos?: string[],
 ): string {
   return createHash("sha1")
     .update(JSON.stringify({
       files,
+      ...(repos ? { repos } : {}),
       truncated,
       optionSignature: resolved.optionSignature,
     }))
@@ -356,7 +358,23 @@ function groupByDirectory(
   }
 
   const groups: DirectoryGroup[] = [];
-  const sortedDirs = [...dirMap.keys()].sort();
+  const repoOrder = new Map<string, number>();
+  if (repos) {
+    for (let i = 0; i < repos.length; i++) {
+      if (!repoOrder.has(repos[i])) {
+        repoOrder.set(repos[i], repoOrder.size);
+      }
+    }
+  }
+  const sortedDirs = [...dirMap.keys()].sort((a, b) => {
+    if (!repos) return a.localeCompare(b);
+    const repoA = dirMap.get(a)![0]?.repo ?? "";
+    const repoB = dirMap.get(b)![0]?.repo ?? "";
+    const orderA = repoOrder.get(repoA) ?? 0;
+    const orderB = repoOrder.get(repoB) ?? 0;
+    if (orderA !== orderB) return orderA - orderB;
+    return a.localeCompare(b);
+  });
 
   for (const dir of sortedDirs) {
     const dirFiles = dirMap.get(dir)!;
@@ -399,8 +417,8 @@ function renderCodebaseMap(
     // In a workspace-aware map, partition directories under their declaring
     // repository. `## [repo-id]` headings are used (not `###`) so they never
     // collide with the per-directory `### <dir>/` headings or the
-    // `parseCodebaseMap` list-item regexes. Groups are path-sorted with
-    // workspace-relative prefixes, so a repo's directories are contiguous.
+    // `parseCodebaseMap` list-item regexes. Groups are sorted by declaring
+    // repo (enumeration order) then directory path so each repo is contiguous.
     if (group.repo && group.repo !== emittedRepo) {
       emittedRepo = group.repo;
       lines.push(`## [${group.repo}]`);
@@ -468,7 +486,7 @@ function buildCodebaseMap(
   const repoIds = listed.repos ? Array.from(new Set(listed.repos)) : undefined;
   const metadata: CodebaseMapMetadata = {
     generatedAt,
-    fingerprint: computeCodebaseFingerprint(listed.files, resolved, listed.truncated),
+    fingerprint: computeCodebaseFingerprint(listed.files, resolved, listed.truncated, listed.repos),
     fileCount: listed.files.length,
     truncated: listed.truncated,
     ...(repoIds ? { repositories: repoIds } : {}),
@@ -603,7 +621,7 @@ export function ensureCodebaseMapFresh(
   const existing = readCodebaseMap(basePath);
   const listed = resolveWorkspaceEnumeration(basePath, resolved)
     ?? enumerateFiles(basePath, resolved.excludes, resolved.maxFiles);
-  const fingerprint = computeCodebaseFingerprint(listed.files, resolved, listed.truncated);
+  const fingerprint = computeCodebaseFingerprint(listed.files, resolved, listed.truncated, listed.repos);
 
   const cacheAndReturn = (result: EnsureCodebaseMapResult): EnsureCodebaseMapResult => {
     freshnessCache.set(cacheKey, { checkedAt: now, result });
