@@ -15,7 +15,7 @@
 
 import type { ExtensionContext, ExtensionAPI } from "@gsd/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { gsdProjectionRoot, resolveSliceFile, resolveSlicePath } from "./paths.js";
+import { gsdProjectionRoot, relMilestoneFile, resolveSliceFile, resolveSlicePath } from "./paths.js";
 import { resolveMilestoneValidationVerdict } from "./milestone-validation-verdict.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
 import { parseUnitId } from "./unit-id.js";
@@ -29,6 +29,7 @@ import {
   runVerificationGate,
   runVerificationGateForTargets,
   formatFailureContext,
+  formatFailureSignature,
   captureRuntimeErrors,
   runDependencyAudit,
 } from "./verification-gate.js";
@@ -262,12 +263,10 @@ async function runValidateMilestonePostCheck(
   };
 
   const validationBasePath = resolveCanonicalMilestoneRoot(s.basePath, mid);
-  const validationFile = join(
-    gsdProjectionRoot(validationBasePath),
-    "milestones",
-    mid,
-    `${mid}-VALIDATION.md`,
-  );
+  // Layout-aware: matches the writer at tools/validate-milestone.ts:167.
+  // Flat-phase resolves to phases/NN-slug/NN-VALIDATION.md; legacy resolves
+  // to milestones/MID/MID-VALIDATION.md. See open-gsd/gsd-pi#876.
+  const validationFile = join(validationBasePath, relMilestoneFile(validationBasePath, mid, "VALIDATION"));
   const validationContent = await loadFile(validationFile);
   if (validationContent !== null && validationContent.trim() === "") {
     if (await reassessmentInvalidatedValidation()) {
@@ -873,10 +872,13 @@ export async function runPostUnitVerification(
         );
       }
       const nextAttempt = attempt + 1;
+      const failureContext = verdict.failureContext || formatFailureContext(result);
+      const failureSignature = formatFailureSignature(result);
       s.verificationRetryCount.set(retryKey, nextAttempt);
       s.pendingVerificationRetry = {
         unitId: s.currentUnit.id,
-        failureContext: verdict.failureContext || formatFailureContext(result),
+        failureContext,
+        ...(failureSignature ? { signature: failureSignature } : {}),
         attempt: nextAttempt,
       };
       const failedCmds = result.checks

@@ -98,7 +98,13 @@ export const UNIT_REGISTRY = {
     scopeClass: "standard",
     phaseChain: ["research"],
     toolContract: {
-      allowedGsdTools: ["gsd_summary_save", "gsd_decision_save"],
+      allowedGsdTools: [
+        "gsd_summary_save",
+        "gsd_decision_save",
+        "gsd_exec",
+        "gsd_exec_search",
+        "gsd_resume",
+      ],
       requiredWorkflowTools: ["gsd_summary_save"],
     },
   },
@@ -111,10 +117,11 @@ export const UNIT_REGISTRY = {
         "gsd_milestone_status",
         "gsd_plan_milestone",
         "gsd_plan_slice",
+        "gsd_plan_task",
         "gsd_decision_save",
         "gsd_requirement_update",
       ],
-      requiredWorkflowTools: ["gsd_milestone_status", "gsd_plan_milestone", "gsd_plan_slice"],
+      requiredWorkflowTools: ["gsd_milestone_status", "gsd_plan_milestone", "gsd_plan_slice", "gsd_plan_task"],
     },
   },
   "discuss-milestone": {
@@ -154,7 +161,15 @@ export const UNIT_REGISTRY = {
     scopeClass: "section-close",
     phaseChain: ["validation", "planning"],
     toolContract: {
-      allowedGsdTools: ["gsd_milestone_status", "gsd_validate_milestone", "gsd_reassess_roadmap", "subagent"],
+      allowedGsdTools: [
+        "gsd_milestone_status",
+        "gsd_exec",
+        "gsd_exec_search",
+        "gsd_resume",
+        "gsd_validate_milestone",
+        "gsd_reassess_roadmap",
+        "subagent",
+      ],
       requiredWorkflowTools: ["gsd_milestone_status", "gsd_validate_milestone", "gsd_reassess_roadmap"],
     },
   },
@@ -165,6 +180,9 @@ export const UNIT_REGISTRY = {
     toolContract: {
       allowedGsdTools: [
         "gsd_milestone_status",
+        "gsd_exec",
+        "gsd_exec_search",
+        "gsd_resume",
         "gsd_requirement_update",
         "gsd_summary_save",
         "gsd_complete_milestone",
@@ -183,7 +201,14 @@ export const UNIT_REGISTRY = {
     scopeClass: "standard",
     phaseChain: ["research"],
     toolContract: {
-      allowedGsdTools: ["gsd_summary_save", "gsd_decision_save"],
+      allowedGsdTools: [
+        "gsd_milestone_status",
+        "gsd_summary_save",
+        "gsd_decision_save",
+        "gsd_exec",
+        "gsd_exec_search",
+        "gsd_resume",
+      ],
       requiredWorkflowTools: ["gsd_summary_save"],
     },
   },
@@ -192,8 +217,17 @@ export const UNIT_REGISTRY = {
     scopeClass: "standard",
     phaseChain: ["planning"],
     toolContract: {
-      allowedGsdTools: ["gsd_plan_slice", "gsd_reassess_roadmap", "gsd_decision_save"],
-      requiredWorkflowTools: ["gsd_plan_slice", "gsd_reassess_roadmap"],
+      allowedGsdTools: [
+        "gsd_milestone_status",
+        "gsd_plan_slice",
+        "gsd_plan_task",
+        "gsd_reassess_roadmap",
+        "gsd_decision_save",
+        "gsd_exec",
+        "gsd_exec_search",
+        "gsd_resume",
+      ],
+      requiredWorkflowTools: ["gsd_plan_slice", "gsd_plan_task", "gsd_reassess_roadmap"],
     },
   },
   "refine-slice": {
@@ -201,7 +235,14 @@ export const UNIT_REGISTRY = {
     scopeClass: "standard",
     phaseChain: ["planning"],
     toolContract: {
-      allowedGsdTools: ["gsd_plan_slice", "gsd_decision_save"],
+      allowedGsdTools: [
+        "gsd_milestone_status",
+        "gsd_plan_slice",
+        "gsd_decision_save",
+        "gsd_exec",
+        "gsd_exec_search",
+        "gsd_resume",
+      ],
       requiredWorkflowTools: ["gsd_plan_slice"],
     },
   },
@@ -220,7 +261,10 @@ export const UNIT_REGISTRY = {
     phaseChain: ["completion"],
     toolContract: {
       allowedGsdTools: [
+        "gsd_milestone_status",
         "gsd_exec",
+        "gsd_exec_search",
+        "gsd_resume",
         "gsd_slice_complete",
         "gsd_task_reopen",
         "gsd_replan_slice",
@@ -231,6 +275,7 @@ export const UNIT_REGISTRY = {
         "subagent",
       ],
       requiredWorkflowTools: [
+        "gsd_milestone_status",
         "gsd_exec",
         "gsd_capture_thought",
         "gsd_slice_complete",
@@ -302,7 +347,13 @@ export const UNIT_REGISTRY = {
     scopeClass: "execute-task",
     phaseChain: ["execution"],
     toolContract: {
-      allowedGsdTools: ["gsd_task_complete", "gsd_summary_save", "gsd_decision_save"],
+      allowedGsdTools: [
+        "gsd_milestone_status",
+        "gsd_task_complete",
+        "gsd_exec",
+        "gsd_summary_save",
+        "gsd_decision_save",
+      ],
       requiredWorkflowTools: ["gsd_task_complete", "gsd_summary_save"],
     },
   },
@@ -389,12 +440,15 @@ export const UNIT_REGISTRY = {
       requiredWorkflowTools: ["ask_user_questions"],
     },
   },
+  // research-project dispatches 4 parallel scout subagents (Task calls); each scout
+  // writes one file under .gsd/research/ directly. The parent coordinator does not
+  // call gsd_summary_save or gsd_decision_save — the scouts own their own output.
   "research-project": {
     kind: "primary",
     scopeClass: "standard",
     phaseChain: ["research"],
     toolContract: {
-      allowedGsdTools: ["gsd_summary_save", "gsd_decision_save"],
+      allowedGsdTools: [],
       requiredWorkflowTools: [],
     },
   },

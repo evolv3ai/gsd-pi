@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import {
+  CONTEXT_MODE_GUIDANCE_BY_UNIT,
   composeContractedUnitContext,
   composeContextModeInstructions,
   composeInlinedContext,
@@ -26,6 +27,8 @@ import type {
 } from "../unit-context-manifest.ts";
 import { KNOWN_UNIT_TYPES, UNIT_MANIFESTS } from "../unit-context-manifest.ts";
 import { getUnitToolSurfaceContract } from "../unit-tool-contracts.ts";
+import { shouldBlockAutoUnitToolCall } from "../auto-unit-tool-scope.ts";
+import type { UnitGsdToolName } from "../unit-registry.ts";
 import {
   buildExecuteTaskPrompt,
   buildGateEvaluatePrompt,
@@ -139,9 +142,13 @@ test("Context Mode composer: nested output is compact single sentence", () => {
   assert.ok(!out.startsWith("## Context Mode"));
   assert.match(out, /^Context Mode \(verification lane\): /);
   assert.strictEqual(out.split(/\n/).length, 1);
-  assert.match(out, /`gsd_exec`/);
-  assert.match(out, /`gsd_exec_search`/);
-  assert.match(out, /`gsd_resume`/);
+  // Nested guidance is embedded into tester subagent prompts — it must instruct the tester
+  // to run verification and call gsd_save_gate_result, NOT to dispatch further subagents.
+  assert.doesNotMatch(out, /`subagent`/, "tester prompts must not be told to dispatch subagents");
+  assert.match(out, /`gsd_save_gate_result`/);
+  assert.doesNotMatch(out, /`gsd_exec`/);
+  assert.doesNotMatch(out, /`gsd_exec_search`/);
+  assert.doesNotMatch(out, /`gsd_resume`/);
   assert.ok(out.length < 240, `nested guidance should stay compact, got ${out.length} chars`);
 });
 
@@ -156,6 +163,53 @@ const laneLabelByMode: Record<string, string> = {
   triage: "triage",
 };
 
+const contextModeGuidanceOverrideExpectedTools: Record<string, readonly string[]> = {
+  "discuss-milestone": [
+    "ask_user_questions",
+    "gsd_summary_save",
+    "gsd_decision_save",
+    "gsd_requirement_save",
+    "gsd_requirement_update",
+    "gsd_plan_milestone",
+    "gsd_milestone_generate_id",
+  ],
+  "discuss-project": [
+    "ask_user_questions",
+    "gsd_summary_save",
+    "gsd_decision_save",
+    "gsd_requirement_save",
+  ],
+  "discuss-requirements": [
+    "ask_user_questions",
+    "gsd_requirement_save",
+    "gsd_summary_save",
+  ],
+  "discuss-slice": [
+    "ask_user_questions",
+    "gsd_summary_save",
+    "gsd_decision_save",
+  ],
+  "replan-slice": [
+    "gsd_replan_slice",
+    "gsd_decision_save",
+  ],
+  "reassess-roadmap": [
+    "gsd_milestone_status",
+    "gsd_reassess_roadmap",
+  ],
+  "run-uat": [
+    "gsd_uat_exec",
+    "gsd_resume",
+  ],
+  // research-project uses scout subagents that write .gsd/research/ files directly;
+  // the parent dispatches Task calls and verifies file outputs — no GSD save tools.
+  "research-project": [],
+  "gate-evaluate": [
+    "subagent",
+    "gsd_save_gate_result",
+  ],
+};
+
 test("Context Mode composer: every known eligible unit renders its configured lane and required tools", () => {
   for (const unitType of KNOWN_UNIT_TYPES) {
     const manifest = UNIT_MANIFESTS[unitType];
@@ -168,18 +222,65 @@ test("Context Mode composer: every known eligible unit renders its configured la
     assert.ok(out.startsWith("## Context Mode"), `${unitType} should render standalone Context Mode heading`);
     assert.match(out, new RegExp(`Lane: \\*\\*${laneLabelByMode[manifest.contextMode]} lane\\*\\*\\.`, "i"));
     const forbidden = getUnitToolSurfaceContract(unitType)?.forbiddenGsdTools ?? {};
-    if ("gsd_exec" in forbidden) {
-      // Units that forbid gsd_exec (run-uat) have it stripped from their
-      // Claude Code dispatch surface; guidance steering to it produces
-      // "No such tool available" loops in the dispatched agent.
-      assert.doesNotMatch(out, /`gsd_exec`/, `${unitType} forbids gsd_exec; guidance must not steer to it`);
+    const overrideExpectedTools = contextModeGuidanceOverrideExpectedTools[unitType];
+    if ("gsd_exec" in forbidden || overrideExpectedTools) {
+      // Unit overrides are the contract-specific exception to lane defaults.
+      // Steering to the lane default here can produce unavailable-tool loops.
+      assert.doesNotMatch(out, /`gsd_exec`/, `${unitType} guidance must not steer to gsd_exec`);
       assert.doesNotMatch(out, /`gsd_exec_search`/, `${unitType} guidance must not steer to gsd_exec_search`);
-      assert.match(out, /`gsd_uat_exec`/, `${unitType} guidance should steer to gsd_uat_exec instead`);
+      for (const toolName of overrideExpectedTools ?? []) {
+        assert.match(out, new RegExp(`\`${toolName}\``), `${unitType} guidance should mention ${toolName}`);
+      }
     } else {
       assert.match(out, /`gsd_exec`/, `${unitType} should mention gsd_exec`);
       assert.match(out, /`gsd_exec_search`/, `${unitType} should mention gsd_exec_search`);
     }
-    assert.match(out, /`gsd_resume`/, `${unitType} should mention gsd_resume`);
+    if (!overrideExpectedTools || overrideExpectedTools.includes("gsd_resume")) {
+      assert.match(out, /`gsd_resume`/, `${unitType} should mention gsd_resume`);
+    } else {
+      assert.doesNotMatch(out, /`gsd_resume`/, `${unitType} guidance must not steer to gsd_resume`);
+    }
+  }
+});
+
+test("Context Mode composer: discuss interview overrides stay within unit contracts", () => {
+  const discussUnits = [
+    "discuss-milestone",
+    "discuss-project",
+    "discuss-requirements",
+    "discuss-slice",
+  ];
+
+  for (const unitType of discussUnits) {
+    const guidance = CONTEXT_MODE_GUIDANCE_BY_UNIT[unitType];
+    assert.ok(guidance, `${unitType} should have a Context Mode override`);
+    assert.doesNotMatch(guidance, /`gsd_exec`/, `${unitType} guidance must not mention gsd_exec`);
+    assert.doesNotMatch(guidance, /`gsd_exec_search`/, `${unitType} guidance must not mention gsd_exec_search`);
+    assert.doesNotMatch(guidance, /`gsd_resume`/, `${unitType} guidance must not mention gsd_resume`);
+
+    const expectedTools = contextModeGuidanceOverrideExpectedTools[unitType] ?? [];
+    assert.ok(expectedTools.length > 0, `${unitType} should declare expected override tools`);
+    const contract = getUnitToolSurfaceContract(unitType);
+    assert.ok(contract, `${unitType} should have a tool contract`);
+    const contractTools = new Set([
+      ...contract.allowedGsdTools,
+      ...contract.requiredWorkflowTools,
+    ]);
+
+    for (const toolName of expectedTools) {
+      assert.match(guidance, new RegExp(`\`${toolName}\``), `${unitType} guidance should mention ${toolName}`);
+      assert.ok(contractTools.has(toolName as UnitGsdToolName), `${unitType} contract should allow ${toolName}`);
+      const scope = shouldBlockAutoUnitToolCall(unitType, toolName);
+      assert.equal(scope.block, false, `${unitType} should not hard-block ${toolName}: ${scope.reason ?? ""}`);
+    }
+
+    const out = composeContextModeInstructions(unitType, { enabled: true, renderMode: "standalone" });
+    if (out) {
+      assert.match(out, /interview lane/i);
+      assert.doesNotMatch(out, /`gsd_exec`/);
+      assert.doesNotMatch(out, /`gsd_exec_search`/);
+      assert.doesNotMatch(out, /`gsd_resume`/);
+    }
   }
 });
 
@@ -191,6 +292,88 @@ test("Context Mode composer: run-uat guidance steers to gsd_uat_exec in both ren
   const standalone = composeContextModeInstructions("run-uat", { enabled: true, renderMode: "standalone" });
   assert.match(standalone, /`gsd_uat_exec`/);
   assert.doesNotMatch(standalone, /`gsd_exec`/);
+});
+
+test("Context Mode composer: research-project guidance steers to scout orchestration", () => {
+  for (const renderMode of ["nested", "standalone"] as const) {
+    const out = composeContextModeInstructions("research-project", { enabled: true, renderMode });
+    assert.match(out, /research lane/i);
+    assert.match(out, /scout subagents/i);
+    assert.match(out, /\.gsd\/research\//);
+    assert.match(out, /STACK\.md/);
+    assert.match(out, /PITFALLS\.md/);
+    assert.doesNotMatch(out, /`gsd_summary_save`/);
+    assert.doesNotMatch(out, /`gsd_decision_save`/);
+    assert.doesNotMatch(out, /`gsd_exec`/);
+    assert.doesNotMatch(out, /`gsd_exec_search`/);
+    assert.doesNotMatch(out, /`gsd_resume`/);
+  }
+
+  const contract = getUnitToolSurfaceContract("research-project");
+  assert.deepEqual(contract?.allowedGsdTools, []);
+  assert.deepEqual(contract?.requiredWorkflowTools, []);
+  for (const toolName of ["gsd_summary_save", "gsd_decision_save"]) {
+    const scope = shouldBlockAutoUnitToolCall("research-project", toolName);
+    assert.equal(scope.block, true, `research-project should not allow ${toolName}`);
+  }
+});
+
+test("Context Mode composer: narrow planning guidance steers only to contracted tools", () => {
+  const cases = [
+    {
+      unitType: "replan-slice",
+      expectedTools: ["gsd_replan_slice", "gsd_decision_save"],
+    },
+    {
+      unitType: "reassess-roadmap",
+      expectedTools: ["gsd_milestone_status", "gsd_reassess_roadmap"],
+    },
+  ];
+  const disallowedTools = ["gsd_exec", "gsd_exec_search", "gsd_resume"];
+
+  for (const { unitType, expectedTools } of cases) {
+    for (const renderMode of ["nested", "standalone"] as const) {
+      const out = composeContextModeInstructions(unitType, { enabled: true, renderMode });
+      assert.match(out, /planning lane/i, `${unitType} should still render planning lane guidance`);
+      for (const toolName of expectedTools) {
+        assert.ok(out.includes(`\`${toolName}\``), `${unitType} guidance should mention ${toolName}`);
+      }
+      for (const toolName of disallowedTools) {
+        assert.ok(!out.includes(`\`${toolName}\``), `${unitType} guidance must not mention ${toolName}`);
+      }
+    }
+  }
+});
+
+test("Context Mode composer: lane guidance tools pass unit contracts", () => {
+  const affectedUnits = [
+    "research-milestone",
+    "research-slice",
+    "plan-slice",
+    "refine-slice",
+    "complete-slice",
+    "validate-milestone",
+    "complete-milestone",
+  ];
+  const contextModeTools: UnitGsdToolName[] = ["gsd_exec", "gsd_exec_search", "gsd_resume"];
+  const readOnlyOrientationTools: UnitGsdToolName[] = ["gsd_milestone_status", ...contextModeTools];
+
+  for (const unitType of affectedUnits) {
+    const out = composeContextModeInstructions(unitType, { enabled: true, renderMode: "standalone" });
+    const allowed = new Set(getUnitToolSurfaceContract(unitType)?.allowedGsdTools ?? []);
+
+    for (const toolName of contextModeTools) {
+      assert.ok(out.includes(`\`${toolName}\``), `${unitType} guidance should mention ${toolName}`);
+    }
+    const expectedContractTools = unitType === "research-milestone"
+      ? contextModeTools
+      : readOnlyOrientationTools;
+    for (const toolName of expectedContractTools) {
+      assert.ok(allowed.has(toolName), `${unitType} contract should allow ${toolName}`);
+      const scope = shouldBlockAutoUnitToolCall(unitType, toolName);
+      assert.equal(scope.block, false, `${unitType} should not hard-block ${toolName}: ${scope.reason ?? ""}`);
+    }
+  }
 });
 
 test("Context Mode composer: workflow-preferences and research-decision render no Context Mode block", () => {
@@ -335,13 +518,31 @@ test("#4782 phase 2: buildReassessRoadmapPrompt emits composer-shaped context wi
   assert.ok(!prompt.includes("Slice Context (from discussion)"));
 });
 
-test("execute-task prompt surfaces contract-declared on-demand slice research", async (t) => {
+test("execute-task prompt omits on-demand slice research when the artifact is absent", async (t) => {
   const base = makeFixtureBase();
   t.after(() => cleanup(base));
   invalidateAllCaches();
 
   seed(base, "M001");
   writeArtifacts(base);
+
+  const prompt = await buildExecuteTaskPrompt("M001", "S01", "First", "T01", "Task", base);
+
+  assert.doesNotMatch(prompt, /## On-demand Context/);
+  assert.doesNotMatch(prompt, /\.gsd\/milestones\/M001\/slices\/S01\/S01-RESEARCH\.md/);
+});
+
+test("execute-task prompt surfaces on-demand slice research when the artifact exists", async (t) => {
+  const base = makeFixtureBase();
+  t.after(() => cleanup(base));
+  invalidateAllCaches();
+
+  seed(base, "M001");
+  writeArtifacts(base);
+  writeFileSync(
+    join(base, ".gsd", "milestones", "M001", "slices", "S01", "S01-RESEARCH.md"),
+    "# S01 Research\n",
+  );
 
   const prompt = await buildExecuteTaskPrompt("M001", "S01", "First", "T01", "Task", base);
 

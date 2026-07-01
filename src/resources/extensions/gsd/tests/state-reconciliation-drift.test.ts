@@ -42,6 +42,8 @@ import {
   type ReconciliationDeps,
 } from "../state-reconciliation.ts";
 import { classifyFailure } from "../recovery-classification.ts";
+import { handlerPhaseIndex, RECONCILIATION_REPAIR_PHASES } from "../state-reconciliation/registry.ts";
+import { staleRenderHandler } from "../state-reconciliation/drift/stale-render.ts";
 import type { GSDState } from "../types.ts";
 
 function makeState(overrides: Partial<GSDState> = {}): GSDState {
@@ -157,6 +159,29 @@ test("ADR-017 (#5700): repair failure throws ReconciliationFailedError with shap
       return true;
     },
   );
+});
+
+test("ADR-017 (#5700): custom registry handlers outside built-in phases are repaired", async () => {
+  const drift = { kind: "custom-drift", id: "D001" } as unknown as DriftRecord;
+  let repaired = false;
+  const handler = {
+    kind: "custom-drift",
+    detect: () => (repaired ? [] : [drift]),
+    repair: () => {
+      repaired = true;
+    },
+  } as unknown as DriftHandler;
+
+  const result = await reconcileBeforeDispatch("/project", {
+    invalidateStateCache: () => {},
+    deriveState: async () => makeState(),
+    registry: [handler],
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(repaired, true);
+  assert.equal(result.repaired.length, 1);
+  assert.equal(result.repaired[0]?.kind, "custom-drift");
 });
 
 test("ADR-017 (#5700): a detector failure degrades to a blocker without aborting other handlers", async () => {
@@ -696,6 +721,126 @@ test("ADR-017 (#5702): stale-render drift detected and repaired end-to-end", asy
   assert.match(repairedContent, /\[x\][^\n]*\*\*T02\*\*/, "T02 checkbox should be checked after repair");
 });
 
+test("#1003: stale-render plan repair reopens DB before rendering", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-stale-render-reopen-"));
+  const sliceDir = join(base, ".gsd", "phases", "01-test");
+  mkdirSync(sliceDir, { recursive: true });
+  t.after(() => {
+    try { closeDatabase(); } catch { /* noop */ }
+    rmTreeQuiet(base);
+  });
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  clearRendererCaches();
+  insertMilestone({ id: "M001", title: "Test", status: "active" });
+  insertSlice({ id: "S01", milestoneId: "M001", title: "Slice", status: "pending" });
+  insertTask({ id: "T01", sliceId: "S01", milestoneId: "M001", title: "First task", status: "done" });
+
+  const planPath = join(sliceDir, "01-01-PLAN.md");
+  writeFileSync(planPath, makeStalePlanContent("S01", [
+    { id: "T01", title: "First task", done: false },
+  ]));
+  closeDatabase();
+
+  await staleRenderHandler.repair(
+    {
+      kind: "stale-render",
+      renderPath: planPath,
+      reason: "T01 is done in DB but unchecked in plan",
+    },
+    { basePath: base, state: makeState() },
+  );
+
+  const repairedContent = readFileSync(planPath, "utf-8");
+  assert.match(repairedContent, /\[x\][^\n]*\*\*T01\*\*/, "T01 checkbox should be checked after DB reopen repair");
+  assert.equal(getSliceTasks("M001", "S01").length, 1, "DB should be reopened on the original project database");
+});
+
+test("#1003: stale-render plan repair switches back from an open wrong DB", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-stale-render-wrong-db-"));
+  const wrongBase = mkdtempSync(join(tmpdir(), "gsd-stale-render-other-db-"));
+  const sliceDir = join(base, ".gsd", "phases", "01-test");
+  mkdirSync(sliceDir, { recursive: true });
+  mkdirSync(join(wrongBase, ".gsd"), { recursive: true });
+  t.after(() => {
+    try { closeDatabase(); } catch { /* noop */ }
+    rmTreeQuiet(base);
+    rmTreeQuiet(wrongBase);
+  });
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  clearRendererCaches();
+  insertMilestone({ id: "M001", title: "Test", status: "active" });
+  insertSlice({ id: "S01", milestoneId: "M001", title: "Slice", status: "pending" });
+  insertTask({ id: "T01", sliceId: "S01", milestoneId: "M001", title: "First task", status: "done" });
+
+  const planPath = join(sliceDir, "01-01-PLAN.md");
+  writeFileSync(planPath, makeStalePlanContent("S01", [
+    { id: "T01", title: "First task", done: false },
+  ]));
+  closeDatabase();
+
+  openDatabase(join(wrongBase, ".gsd", "gsd.db"));
+
+  await staleRenderHandler.repair(
+    {
+      kind: "stale-render",
+      renderPath: planPath,
+      reason: "T01 is done in DB but unchecked in plan",
+    },
+    { basePath: base, state: makeState() },
+  );
+
+  const repairedContent = readFileSync(planPath, "utf-8");
+  assert.match(repairedContent, /\[x\][^\n]*\*\*T01\*\*/, "T01 checkbox should be checked after switching back to the project DB");
+  assert.equal(getSliceTasks("M001", "S01").length, 1, "repair should leave the project DB active");
+});
+
+test("#1034: validation-blocked milestone summary drift returns blocker instead of exhausting repair passes", async () => {
+  const drift: Extract<DriftRecord, { kind: "stale-render" }> = {
+    kind: "stale-render",
+    renderPath: "/repo/.gsd/milestones/M001/M001-SUMMARY.md",
+    reason: "M001 is complete with summary in DB but SUMMARY.md missing on disk",
+  };
+  let repairCalled = false;
+  const handler: DriftHandler<Extract<DriftRecord, { kind: "stale-render" }>> = {
+    kind: "stale-render",
+    detect: () => [drift],
+    blocker: staleRenderHandler.blocker!,
+    repair: () => {
+      repairCalled = true;
+    },
+  };
+
+  const validationBlocker = [
+    "Milestone M001 is blocked because milestone validation returned needs-attention.",
+    "Fix options:",
+    "1. Review the validation details: `/gsd status`",
+  ].join("\n");
+
+  const result = await reconcileBeforeDispatch("/repo", {
+    invalidateStateCache: () => {},
+    deriveState: async () =>
+      makeState({
+        phase: "blocked",
+        blockers: [validationBlocker],
+        nextAction: "Resolve M001 validation attention before proceeding.",
+      }),
+    registry: [handler],
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(repairCalled, false, "validation-blocked milestone summary drift should not attempt repair");
+  assert.ok(
+    result.blockers.some((blocker) => blocker.includes("milestone validation returned needs-attention")),
+    "validation blocker should be returned to the caller",
+  );
+  assert.ok(
+    result.blockers.some((blocker) => blocker.includes("Stale milestone summary render")),
+    "stale-render blocker should explain why repair did not run",
+  );
+});
+
 test("ADR-017 (#5702): stale-render detector reason strings match repair contract", (t) => {
   t.skip("TODO(flat-phase): stale-render detection temporarily disabled during layout transition"); return;
   const base = mkdtempSync(join(tmpdir(), "gsd-adr017-render-reasons-"));
@@ -1020,6 +1165,71 @@ test("ADR-017 (#391): roadmap-divergence skips slices before task planning compl
   );
   assert.equal(readFileSync(roadmapPath, "utf-8"), originalRoadmap);
   assert.deepEqual(getSlice("M001", "S02")?.depends, [], "DB remains unchanged");
+});
+
+test("ADR-017 (#870): roadmap-divergence accepts recovered S00 blocker sequence", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-adr017-roadmap-s00-"));
+  const milestoneId = "M002-a1rwmq";
+  const milestoneDir = join(base, ".gsd", "milestones", milestoneId);
+  const roadmapPath = join(milestoneDir, `${milestoneId}-ROADMAP.md`);
+  mkdirSync(milestoneDir, { recursive: true });
+  const originalRoadmap = [
+    "# M002-a1rwmq: Support Command Policy Hardening",
+    "",
+    "**Vision:** Recover DB-backed planning state.",
+    "",
+    "## Slices",
+    "",
+    "- [x] **S00-blocker: Blocker placeholder - planning failed** `risk:medium` `depends:[]`",
+    "  > After this: ",
+    "",
+    "- [ ] **S01: Source of truth contract** `risk:medium` `depends:[]`",
+    "  > After this: S01 tasks are planned.",
+    "",
+    "- [ ] **S02: Policy implementation** `risk:medium` `depends:[]`",
+    "  > After this: ",
+    "",
+    "- [ ] **S03: Verification coverage** `risk:medium` `depends:[]`",
+    "  > After this: ",
+    "",
+    "- [ ] **S04: Documentation handoff** `risk:medium` `depends:[]`",
+    "  > After this: ",
+    "",
+  ].join("\n");
+  writeFileSync(roadmapPath, originalRoadmap);
+  t.after(() => {
+    try { closeDatabase(); } catch { /* noop */ }
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({
+    id: milestoneId,
+    title: "Support Command Policy Hardening",
+    status: "active",
+    planning: { vision: "Recover DB-backed planning state." },
+  });
+  insertSlice({ id: "S00-blocker", milestoneId, title: "Blocker placeholder - planning failed", status: "complete", risk: "medium", depends: [], demo: "", sequence: 0 });
+  insertSlice({ id: "S01", milestoneId, title: "Source of truth contract", status: "pending", risk: "medium", depends: [], demo: "S01 tasks are planned.", sequence: 1 });
+  insertSlice({ id: "S02", milestoneId, title: "Policy implementation", status: "pending", risk: "medium", depends: [], demo: "", sequence: 2 });
+  insertSlice({ id: "S03", milestoneId, title: "Verification coverage", status: "pending", risk: "medium", depends: [], demo: "", sequence: 3 });
+  insertSlice({ id: "S04", milestoneId, title: "Documentation handoff", status: "pending", risk: "medium", depends: [], demo: "", sequence: 4 });
+  insertTask({ id: "T01", sliceId: "S01", milestoneId, title: "Map current support command policy inputs", status: "pending" });
+  insertTask({ id: "T02", sliceId: "S01", milestoneId, title: "Define shared policy surface shape", status: "pending" });
+  insertTask({ id: "T03", sliceId: "S01", milestoneId, title: "Lock source of truth contract coverage", status: "pending" });
+
+  const result = await reconcileBeforeDispatch(base, {
+    invalidateStateCache: () => {},
+    deriveState: async () => makeState({ activeMilestone: { id: milestoneId, title: "Support Command Policy Hardening" } }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.repaired.some((d) => d.kind === "roadmap-divergence"),
+    false,
+    "matching recovered DB/ROADMAP state must not report persistent roadmap-divergence",
+  );
+  assert.equal(readFileSync(roadmapPath, "utf-8"), originalRoadmap);
 });
 
 test("ADR-017 (#5705): roadmap-divergence re-renders projection without syncing depends into DB", async (t) => {
@@ -1745,4 +1955,50 @@ test("ADR-017 (#5700): cascading drift triggers second pass within cap", async (
   assert.equal(result.ok, true);
   assert.equal(result.repaired.length, 2, "both passes' repairs collected");
   assert.equal(repaired.length, 2);
+});
+
+test("deriveState is pure: stale sketch healed only via reconcileBeforeDispatch", async (t) => {
+  const base = makeFixtureBase();
+  t.after(() => cleanup(base));
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M001", title: "Test", status: "active" });
+  insertSlice({
+    id: "S02",
+    milestoneId: "M001",
+    title: "Feature",
+    status: "pending",
+    risk: "medium",
+    depends: [],
+    demo: "S02 demo.",
+    sequence: 1,
+    isSketch: true,
+    sketchScope: "limited",
+  });
+  writeFileSync(
+    join(base, ".gsd", "phases", "01-test", "01-02-PLAN.md"),
+    "# S02 Plan\n",
+  );
+
+  const { deriveState } = await import("../state.ts");
+  invalidateStateCache();
+
+  const beforeReconcile = await deriveState(base);
+  assert.equal(beforeReconcile.phase, "refining", "derive alone must not heal stale sketch flag");
+  assert.equal(getSlice("M001", "S02")?.is_sketch, 1, "DB flag unchanged before reconcile");
+
+  const result = await reconcileBeforeDispatch(base);
+  assert.equal(result.ok, true);
+  assert.equal(getSlice("M001", "S02")?.is_sketch, 0, "reconcile clears sketch flag");
+
+  invalidateStateCache();
+  const afterReconcile = await deriveState(base);
+  assert.notEqual(afterReconcile.phase, "refining", "derive after reconcile advances past sketch gate");
+});
+
+test("reconciliation repair phases: external edits precede re-project handlers", () => {
+  assert.equal(RECONCILIATION_REPAIR_PHASES.length, 3);
+  assert.ok(handlerPhaseIndex("external-markdown-edit") < handlerPhaseIndex("stale-render"));
+  assert.ok(handlerPhaseIndex("external-planning-edit") < handlerPhaseIndex("roadmap-divergence"));
+  assert.ok(handlerPhaseIndex("stale-sketch-flag") < handlerPhaseIndex("stale-render"));
 });

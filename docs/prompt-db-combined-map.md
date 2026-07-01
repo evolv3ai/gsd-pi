@@ -56,6 +56,8 @@ See also:
    auto.ts loop ──► back to auto-dispatch.ts
 ```
 
+`QUEUE-ORDER.json` is the exception to the usual generated-artifact projection rule. `/gsd rethink` and related phase-management flows write it as the durable milestone reorder contract, and state derivation mirrors it into `milestones.sequence` before dispatch so stale DB sequence can be repaired without importing arbitrary markdown projections.
+
 ---
 
 ## 2. Prompt → DB Read/Write Reference
@@ -79,7 +81,7 @@ Each row = one prompt file. Columns show which DB tables it touches and how.
 | `discuss` / `guided-discuss-milestone` | milestones, artifacts | artifacts (CONTEXT) | M##-CONTEXT.md |
 | `discuss-headless` | milestones, artifacts | milestones, slices, decisions, artifacts | M##-CONTEXT.md, DECISIONS.md |
 | `research-milestone` | milestones, artifacts | artifacts (RESEARCH) | M##-RESEARCH.md |
-| `plan-milestone` | milestones, slices | milestones (UPDATE planning), slices (INSERT), tasks (INSERT), decisions | ROADMAP.md, S##-PLAN.md sketches |
+| `plan-milestone` | milestones, slices | milestones (UPDATE planning), slices (INSERT), optional single-slice metadata via `gsd_plan_slice`, optional single-slice tasks via `gsd_plan_task`, decisions | ROADMAP.md; S##-PLAN.md/T##-PLAN.md for single-slice fast path |
 | `queue` | milestones | milestones (INSERT queued), artifacts (CONTEXT) | PROJECT.md, QUEUE.md |
 
 ### Slice Planning Phase
@@ -89,8 +91,8 @@ Each row = one prompt file. Columns show which DB tables it touches and how.
 | `parallel-research-slices` | slices, artifacts | artifacts (RESEARCH per slice) | S##-RESEARCH.md × N |
 | `guided-discuss-slice` | slices, artifacts | artifacts (CONTEXT) | S##-CONTEXT.md |
 | `research-slice` / `guided-research-slice` | slices, memories | artifacts (RESEARCH), memories (hit_count++) | S##-RESEARCH.md |
-| `plan-slice` | slices, tasks, memories | slices (UPDATE planning), tasks (INSERT), memories (hit_count++) | S##-PLAN.md, T##-PLAN.md |
-| `refine-slice` | slices (is_sketch=1), tasks | slices (UPDATE is_sketch=0), tasks (INSERT/UPDATE) | S##-PLAN.md |
+| `plan-slice` | slices, tasks, memories | slices metadata via `gsd_plan_slice`, per-task rows via `gsd_plan_task`, memories (hit_count++) | S##-PLAN.md, T##-PLAN.md |
+| `refine-slice` | slices (is_sketch=1), tasks | slices metadata and full task replacement/update via `gsd_plan_slice` | S##-PLAN.md |
 
 ### Execution Phase
 
@@ -122,7 +124,7 @@ Each row = one prompt file. Columns show which DB tables it touches and how.
 | Prompt | DB Reads | DB Writes | Disk Artifact Written |
 |--------|----------|-----------|----------------------|
 | `replan-slice` | slices, tasks | slices, tasks, replan_history, quality_gates | S##-PLAN.md, S##-REPLAN.md |
-| `rethink` | milestones, slices, artifacts | slices (UPDATE status=skipped), milestones (UPDATE sequence) | QUEUE-ORDER.json, PARKED.md |
+| `rethink` | milestones, slices, artifacts | slices (UPDATE status=skipped), milestones (UPDATE sequence; repaired from QUEUE-ORDER.json during state derivation) | QUEUE-ORDER.json, PARKED.md |
 | `rewrite-docs` | decisions, requirements, artifacts | decisions, requirements, artifacts | DECISIONS.md, REQUIREMENTS.md, task/slice plans |
 | `doctor-heal` | slices, tasks, artifacts | artifacts (repair CONTEXT/SUMMARY/UAT) | repairs existing artifacts |
 | `review-migration` | milestones, slices, tasks, artifacts, decisions, requirements | — (read-only audit) | — |
@@ -212,12 +214,22 @@ One task's full DB journey from creation to completion:
 plan-milestone prompt fires
   └─► gsd_plan_milestone tool
         └─► INSERT INTO slices (milestone_id, id, title, status='pending', is_sketch=1, sequence)
-        └─► INSERT INTO tasks (milestone_id, slice_id, id, title, status='pending', description, sequence)
+        └─► UPDATE slices SET goal, success_criteria, proof_level, ...
+
+plan-slice prompt fires
+  └─► gsd_plan_slice tool
+        └─► UPDATE slices SET goal, success_criteria, proof_level, ...
+        └─► If tasks omitted or empty: preserve existing tasks
+        └─► If tasks non-empty: full replacement/update for this slice's tasks
+  └─► gsd_plan_task tool (once per task for incremental planning)
+        └─► INSERT INTO tasks (if missing)
+        └─► UPDATE tasks SET full_plan_md, description, estimate, files, verify, ...
+        └─► INSERT INTO quality_gates for task-scoped gates
 
 refine-slice prompt fires (if is_sketch=1)
   └─► gsd_plan_slice tool
         └─► UPDATE slices SET is_sketch=0, goal, success_criteria, proof_level, ...
-        └─► INSERT INTO tasks (full task plans for this slice)
+        └─► INSERT/UPDATE tasks from full task payload
         └─► UPDATE tasks SET full_plan_md, description, estimate, files, verify, ...
 
 execute-task prompt fires
@@ -237,6 +249,11 @@ execute-task prompt fires
         └─► INSERT INTO gate_runs (audit)
         └─► Write T##-SUMMARY.md to disk
         └─► Toggle checkbox in S##-PLAN.md
+        └─► If summary or plan projection write fails:
+              DELETE verification_evidence for the task
+              UPDATE tasks SET status='pending'
+              remove attempted T##-SUMMARY.md
+              return an error instead of a stale success
 
 complete-slice prompt fires (after all tasks complete)
   └─► gsd_slice_complete tool

@@ -73,6 +73,54 @@ describe("AgentSession retry and event characterization", () => {
 		expect(harness.faux.state.callCount).toBe(3);
 	});
 
+	it("bounds repeated no-progress terminated retries", async () => {
+		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } } });
+		harnesses.push(harness);
+		const retryEvents: string[] = [];
+		harness.session.subscribe((event) => {
+			if (event.type === "auto_retry_start") retryEvents.push(`start:${event.attempt}`);
+			if (event.type === "auto_retry_end") retryEvents.push(`end:${event.success}`);
+		});
+
+		harness.setResponses([
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "terminated" }),
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "terminated" }),
+			fauxAssistantMessage("unexpected retry"),
+		]);
+
+		await harness.session.prompt("test");
+
+		expect(retryEvents).toEqual(["start:1", "end:false"]);
+		expect(harness.eventsOfType("agent_end").map((event) => event.willRetry)).toEqual([true, false]);
+		expect(harness.faux.state.callCount).toBe(2);
+		expect(harness.session.isRetrying).toBe(false);
+	});
+
+	it("bounds no-progress terminated retry even when interleaved with another retryable error", async () => {
+		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 1 } } });
+		harnesses.push(harness);
+		const retryEvents: string[] = [];
+		harness.session.subscribe((event) => {
+			if (event.type === "auto_retry_start") retryEvents.push(`start:${event.attempt}`);
+			if (event.type === "auto_retry_end") retryEvents.push(`end:${event.success}`);
+		});
+
+		// terminated → overloaded_error (clears fingerprint in the bug) → terminated again
+		// The second terminated has the same context, so the no-progress guard must still fire.
+		harness.setResponses([
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "terminated" }),
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" }),
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: "terminated" }),
+			fauxAssistantMessage("unexpected retry"),
+		]);
+
+		await harness.session.prompt("test");
+
+		expect(retryEvents).toEqual(["start:1", "start:2", "end:false"]);
+		expect(harness.faux.state.callCount).toBe(3);
+		expect(harness.session.isRetrying).toBe(false);
+	});
+
 	it("exhausts max retries and emits a failure event", async () => {
 		const harness = await createHarness({ settings: { retry: { enabled: true, maxRetries: 2, baseDelayMs: 1 } } });
 		harnesses.push(harness);

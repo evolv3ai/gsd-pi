@@ -14,6 +14,7 @@ import {
 import {
   resolveExpectedArtifactPath,
   diagnoseExpectedArtifact,
+  verifyExpectedArtifact,
   writeBlockerPlaceholder,
 } from "./auto-recovery.js";
 import { existsSync } from "node:fs";
@@ -194,10 +195,10 @@ export async function recoverTimedOutUnit(
     return "recovered";
   }
 
-  // Check if the artifact already exists on disk — agent may have written it
+  // Check if the artifact is already valid on disk — agent may have written it
   // without signaling completion.
   const artifactPath = resolveExpectedArtifactPath(unitType, unitId, basePath);
-  if (artifactPath && existsSync(artifactPath)) {
+  if (artifactPath && existsSync(artifactPath) && verifyExpectedArtifact(unitType, unitId, basePath)) {
     writeUnitRuntimeRecord(basePath, unitType, unitId, currentUnitStartedAt, {
       phase: "finalized",
       recoveryAttempts: recoveryAttempts + 1,

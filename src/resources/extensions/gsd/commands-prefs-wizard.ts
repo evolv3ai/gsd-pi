@@ -19,6 +19,7 @@ import {
   loadEffectiveGSDPreferences,
   normalizePreferencesShape,
   resolveAllSkillReferences,
+  clearGSDPreferencesCache,
 } from "./preferences.js";
 import { loadFile, saveFile, splitFrontmatter, parseFrontmatterMap } from "./files.js";
 import { runClaudeImportFlow } from "./claude-import.js";
@@ -298,6 +299,7 @@ export async function handleImportClaude(ctx: ExtensionCommandContext, scope: "g
       if (preserved) body = preserved;
     }
     await saveFile(path, `---\n${frontmatter}---${body}`);
+    clearGSDPreferencesCache();
   };
 
   await runClaudeImportFlow(ctx, scope, readPrefs, writePrefs);
@@ -322,6 +324,7 @@ export async function handlePrefsMode(ctx: ExtensionCommandContext, scope: "glob
 
   const content = `---\n${frontmatter}---${body}`;
   await saveFile(path, content);
+  clearGSDPreferencesCache();
   await ctx.waitForIdle();
   await ctx.reload();
   ctx.ui.notify(`Saved ${scope} preferences to ${path}`, "info");
@@ -1225,7 +1228,7 @@ async function configureContextCodebase(ctx: ExtensionCommandContext, prefs: Rec
   const maskTurns = await promptInteger(ctx, "Observation mask turns (1–50)", cm.observation_mask_turns, "8");
   if (maskTurns !== undefined && maskTurns !== "clear") cm.observation_mask_turns = maskTurns;
   else if (maskTurns === "clear") delete cm.observation_mask_turns;
-  const thresh = await promptNumber(ctx, "Compaction threshold percent (0.5–0.95)", cm.compaction_threshold_percent, "0.60");
+  const thresh = await promptNumber(ctx, "Soft context warning threshold percent (0.5–0.95)", cm.compaction_threshold_percent, "0.60");
   if (thresh !== undefined && thresh !== "clear") cm.compaction_threshold_percent = thresh;
   else if (thresh === "clear") delete cm.compaction_threshold_percent;
   const toolMax = await promptInteger(ctx, "Tool result max chars (200–10000)", cm.tool_result_max_chars, "800");
@@ -1677,6 +1680,7 @@ export async function writePreferencesFile(
 
   const content = `---\n${frontmatter}---${body}`;
   await saveFile(path, content);
+  clearGSDPreferencesCache();
 
   if (ctx) {
     // Per-phase model prefs must beat an earlier /gsd model session pin.
@@ -1720,17 +1724,22 @@ export function serializePreferencesToFrontmatter(prefs: Record<string, unknown>
           const entries = Object.entries(item as Record<string, unknown>);
           if (entries.length > 0) {
             const [firstKey, firstVal] = entries[0];
-            lines.push(`${prefix}  - ${firstKey}: ${yamlSafeString(firstVal)}`);
+            if (Array.isArray(firstVal)) {
+              lines.push(`${prefix}  - ${firstKey}:`);
+              for (const arrItem of firstVal) {
+                lines.push(`${prefix}      - ${yamlSafeString(arrItem)}`);
+              }
+            } else if (typeof firstVal === "object" && firstVal !== null) {
+              lines.push(`${prefix}  - ${firstKey}:`);
+              for (const [k, v] of Object.entries(firstVal as Record<string, unknown>)) {
+                serializeValue(k, v, indent + 3);
+              }
+            } else {
+              lines.push(`${prefix}  - ${firstKey}: ${yamlSafeString(firstVal)}`);
+            }
             for (let i = 1; i < entries.length; i++) {
               const [k, v] = entries[i];
-              if (Array.isArray(v)) {
-                lines.push(`${prefix}    ${k}:`);
-                for (const arrItem of v) {
-                  lines.push(`${prefix}      - ${yamlSafeString(arrItem)}`);
-                }
-              } else {
-                lines.push(`${prefix}    ${k}: ${yamlSafeString(v)}`);
-              }
+              serializeValue(k, v, indent + 2);
             }
           }
         } else {
@@ -1810,6 +1819,7 @@ export async function ensurePreferencesFile(
       return;
     }
     await saveFile(path, template);
+    clearGSDPreferencesCache();
     ctx.ui.notify(`Created ${scope} GSD skill preferences at ${path}`, "info");
   } else {
     ctx.ui.notify(`Using existing ${scope} GSD skill preferences at ${path}`, "info");
@@ -1866,6 +1876,7 @@ export async function handleLanguage(args: string, ctx: ExtensionCommandContext)
   const body = extractBodyAfterFrontmatter(rawContent)
     ?? "\n# GSD Skill Preferences\n\nSee `~/.gsd/agent/extensions/gsd/docs/preferences-reference.md` for full field documentation and examples.\n";
   await saveFile(path, `---\n${frontmatter}---${body}`);
+  clearGSDPreferencesCache();
   await ctx.waitForIdle();
   await ctx.reload();
 }

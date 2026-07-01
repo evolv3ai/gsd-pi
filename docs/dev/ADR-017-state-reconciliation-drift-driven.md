@@ -67,11 +67,14 @@ async function reconcileBeforeDispatch(
     }
 
     const failures: Array<{ drift: DriftRecord; cause: unknown }> = [];
-    for (const d of drift) {
-      try {
-        await applyRepair(d, deps);
-      } catch (cause) {
-        failures.push({ drift: d, cause });
+    for (const phase of getRepairPhases(deps.registry)) {
+      for (const d of drift) {
+        if (!phase.handles(d.kind)) continue;
+        try {
+          await phase.repair(d, deps);
+        } catch (cause) {
+          failures.push({ drift: d, cause });
+        }
       }
     }
     if (failures.length > 0) {
@@ -97,6 +100,7 @@ async function reconcileBeforeDispatch(
 - **Re-derive cycle is capped at 2.** The loop runs only when the prior pass fully succeeded and re-derive surfaces NEW drift (cascading repairs — e.g., fixing a milestone registration uncovers a downstream completion-timestamp drift). Persistent or failed drift after pass 2 throws.
 - **All repairs must be idempotent.** Re-derive can re-trigger detection on transient state; repairs must be safe under retry.
 - **Failure throws.** `ReconciliationFailedError` is caught by the caller and routed to `classifyFailure({ error, failureKind: "reconciliation-drift" })`.
+- **Repair ordering is phase-based, not a single flat list.** Detection still uses the flattened `DRIFT_REGISTRY`, but repairs run through `RECONCILIATION_REPAIR_PHASES`: `import-external-edits` first, `normalize-db` second, and `re-project` last. This preserves external markdown/planning edits before any DB-authoritative renderer rewrites projections.
 
 ### Module home
 
@@ -104,16 +108,16 @@ async function reconcileBeforeDispatch(
 
 ```text
 state-reconciliation/
-  index.ts          → reconcileBeforeDispatch
+  index.ts          → reconcileBeforeDispatch; runs repairs phase-by-phase
   errors.ts         → ReconciliationFailedError
   drift/
     sketch-flag.ts  → detect + repair (relocated from gsd-db.ts)
     merge-state.ts  → detect + repair (relocated from auto-recovery.ts)
-    stale-worker.ts → detect + repair (new)
-    project-md.ts   → detect + repair (new)
-    roadmap.ts      → detect + repair (new)
-    completion.ts   → detect + repair (new)
-  registry.ts       → DriftKind → { detect, repair }
+    stale-worker.ts → detect + repair
+    external-*.ts   → import external markdown/planning edits into DB
+    roadmap.ts      → detect + repair by re-projecting from DB
+    completion.ts   → detect + repair
+  registry.ts       → DRIFT_REGISTRY plus RECONCILIATION_REPAIR_PHASES
 ```
 
 Owning modules retain their raw primitives (e.g., `setSliceSketchFlag`, the SELECT query) but the **detection-and-repair composition** lives in the drift folder.

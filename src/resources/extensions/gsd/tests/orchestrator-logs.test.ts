@@ -36,6 +36,7 @@ import {
 import { resolveExpectedArtifactPath } from "../auto-artifact-paths.ts";
 import { AutoSession } from "../auto/session.ts";
 import { acquireSessionLock, releaseSessionLock } from "../session-lock.ts";
+import { clearGSDPreferencesCache } from "../preferences.ts";
 import { invalidateAllCaches } from "../cache.ts";
 import { invalidateStateCache } from "../state.ts";
 import {
@@ -63,12 +64,15 @@ interface FixtureOptions {
   dispatch?: UnifiedRule["where"];
   /** Drop the gate_runs table after seeding so emitUokGate's insertGateRun throws (:538 path). */
   dropGateRuns?: boolean;
+  /** Write project preferences that disable UOK gate telemetry. */
+  disableUokGates?: boolean;
 }
 
 interface Fixture {
   base: string;
   session: AutoSession;
   orchestrator: ReturnType<typeof createAutoOrchestrator>;
+  getAvailableCalls(): number;
   cleanup(): void;
 }
 
@@ -82,6 +86,7 @@ function makeFixture(opts: FixtureOptions = {}): Fixture {
 
   invalidateAllCaches();
   invalidateStateCache();
+  clearGSDPreferencesCache();
   openDatabase(join(base, ".gsd", "gsd.db"));
   insertMilestone({ id: "M001", title: "Milestone", status: "active" });
   insertSlice({ id: "S01", milestoneId: "M001", title: "Slice", status: "active", risk: "low", depends: [], demo: "", sequence: 1 });
@@ -100,6 +105,13 @@ function makeFixture(opts: FixtureOptions = {}): Fixture {
     join(sliceDir, "S01-PLAN.md"),
     ["# S01: Slice", "", "**Goal:** g", "**Demo:** d", "", "## Tasks", "", "- [ ] **T01: Task** `est:1h`", ""].join("\n"),
   );
+  if (opts.disableUokGates) {
+    writeFileSync(
+      join(base, ".gsd", "PREFERENCES.md"),
+      "---\nuok:\n  gates:\n    enabled: false\n---\n",
+    );
+    clearGSDPreferencesCache();
+  }
 
   acquireSessionLock(base);
 
@@ -112,8 +124,19 @@ function makeFixture(opts: FixtureOptions = {}): Fixture {
   session.currentMilestoneId = "M001";
   session.resourceVersionOnStart = null;
 
+  let getAvailableCalls = 0;
   const ctx: OrchestratorContext = {
-    ctx: { model: {}, modelRegistry: { getAll: () => [], getAvailable: () => [] }, ui: { notify() {} } } as never,
+    ctx: {
+      model: {},
+      modelRegistry: {
+        getAll: () => [],
+        getAvailable: () => {
+          getAvailableCalls += 1;
+          return [];
+        },
+      },
+      ui: { notify() {} },
+    } as never,
     pi: { getActiveTools: () => [] } as never,
     dispatchBasePath: base,
     runtimeBasePath: base,
@@ -140,8 +163,10 @@ function makeFixture(opts: FixtureOptions = {}): Fixture {
     base,
     session,
     orchestrator,
+    getAvailableCalls: () => getAvailableCalls,
     cleanup() {
       resetRegistry();
+      clearGSDPreferencesCache();
       try { releaseSessionLock(base); } catch { /* */ }
       try { closeDatabase(); } catch { /* */ }
       try { rmSync(base, { recursive: true, force: true }); } catch { /* */ }
@@ -208,6 +233,23 @@ test("advance() logs an engine warning when the uok gate emit fails (orchestrato
   assert.match(uokFail!.message, /uok gate emit failed/u);
   assert.equal(uokFail!.context?.file, "orchestrator.ts");
   assert.ok(uokFail!.context?.gateId, "the failing gate id must be captured in context");
+});
+
+test("advance() resolves disabled uok gate flags once before gate emission", async (t) => {
+  const f = makeFixture({ dropGateRuns: true, disableUokGates: true });
+  t.after(() => f.cleanup());
+
+  const { logs } = await captureLogs(() => f.orchestrator.advance());
+
+  assert.equal(
+    logs.some((e) => e.component === "engine" && /uok gate emit failed/u.test(e.message)),
+    false,
+    "disabled uok gates must not construct the runner or write gate rows",
+  );
+  assert.ok(
+    f.getAvailableCalls() <= 2,
+    `uok gate preferences should be resolved once per advance, not once per emitted gate (getAvailable calls: ${f.getAvailableCalls()})`,
+  );
 });
 
 // orchestrator.ts:637 — mergePendingCompleteMilestone catches a

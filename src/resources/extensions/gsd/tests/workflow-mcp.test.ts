@@ -65,14 +65,18 @@ test("auto execute-task requires canonical task completion tool", () => {
   assert.deepEqual(getRequiredWorkflowToolsForAutoUnit("execute-task"), expected);
 });
 
-test("plan-slice requires planning and roadmap reassessment tools", () => {
-  const expected = ["gsd_plan_slice", "gsd_reassess_roadmap"];
+test("plan-slice requires slice + incremental task planning and roadmap reassessment tools", () => {
+  // Incremental planning (#1027): gsd_plan_slice persists metadata, then
+  // gsd_plan_task adds tasks one at a time, so both must be on the surface.
+  const expected = ["gsd_plan_slice", "gsd_plan_task", "gsd_reassess_roadmap"];
   assert.deepEqual(getRequiredWorkflowToolsForGuidedUnit("plan-slice"), expected);
   assert.deepEqual(getRequiredWorkflowToolsForAutoUnit("plan-slice"), expected);
 });
 
-test("plan-milestone requires status, roadmap, and single-slice planning tools", () => {
-  const expected = ["gsd_milestone_status", "gsd_plan_milestone", "gsd_plan_slice"];
+test("plan-milestone requires status, roadmap, and slice + task planning tools", () => {
+  // gsd_plan_task is required alongside gsd_plan_slice for incremental
+  // milestone planning (#1027).
+  const expected = ["gsd_milestone_status", "gsd_plan_milestone", "gsd_plan_slice", "gsd_plan_task"];
   assert.deepEqual(getRequiredWorkflowToolsForGuidedUnit("plan-milestone"), expected);
   assert.deepEqual(getRequiredWorkflowToolsForAutoUnit("plan-milestone"), expected);
 });
@@ -82,8 +86,9 @@ test("refine-slice requires canonical slice planning tool", () => {
   assert.deepEqual(getRequiredWorkflowToolsForAutoUnit("refine-slice"), ["gsd_plan_slice"]);
 });
 
-test("complete-slice requires closeout and execution handoff tools", () => {
+test("complete-slice requires status, closeout, and execution handoff tools", () => {
   const expected = [
+    "gsd_milestone_status",
     "gsd_exec",
     "gsd_capture_thought",
     "gsd_slice_complete",
@@ -281,6 +286,35 @@ test("detectWorkflowMcpLaunchConfig resolves the bundled server from GSD_BIN_PAT
   assert.equal(launch?.env?.GSD_WORKFLOW_PROJECT_ROOT, worktreeRoot);
   assert.match(launch?.env?.GSD_WORKFLOW_EXECUTORS_MODULE ?? "", /workflow-tool-executors\.(js|ts)$/);
   assert.match(launch?.env?.GSD_WORKFLOW_WRITE_GATE_MODULE ?? "", /write-gate\.(js|ts)$/);
+});
+
+test("detectWorkflowMcpLaunchConfig memoizes repo root discovery for the same deep GSD_BIN_PATH", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "gsd-workflow-root-cache-"));
+  const worktreeRoot = mkdtempSync(join(tmpdir(), "gsd-workflow-root-cache-wt-"));
+  const cliPath = join(repoRoot, "packages", "mcp-server", "dist", "cli.js");
+  const devCliPath = join(repoRoot, ".gsd", "worktrees", "M001", "S01", "deep", "bin", "gsd");
+
+  mkdirSync(join(repoRoot, "packages", "mcp-server", "dist"), { recursive: true });
+  mkdirSync(join(repoRoot, ".gsd", "worktrees", "M001", "S01", "deep", "bin"), { recursive: true });
+  writeFileSync(cliPath, "#!/usr/bin/env node\n", "utf-8");
+  writeFileSync(devCliPath, "#!/usr/bin/env node\n", "utf-8");
+
+  try {
+    const firstLaunch = detectWorkflowMcpLaunchConfig(worktreeRoot, {
+      GSD_BIN_PATH: devCliPath,
+    });
+    assert.equal(firstLaunch?.args?.[0], cliPath);
+
+    rmSync(cliPath, { force: true });
+
+    const secondLaunch = detectWorkflowMcpLaunchConfig(worktreeRoot, {
+      GSD_BIN_PATH: devCliPath,
+    });
+    assert.equal(secondLaunch?.args?.[0], cliPath);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(worktreeRoot, { recursive: true, force: true });
+  }
 });
 
 test("detectWorkflowMcpLaunchConfig resolves the bundled server from a symlinked GSD_BIN_PATH", () => {

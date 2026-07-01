@@ -11,11 +11,14 @@ import {
 	priorAssistantTextFromSession,
 	textInvitesUserReply,
 } from "./chat-controller.js";
+import { createStreamingRenderState } from "../streaming-render-state.js";
+import { AssistantMessageComponent } from "../components/assistant-message.js";
 import { initTheme } from "@gsd/pi-coding-agent/theme/theme.js";
 
 function createStreamingHost(chatContainer: Container): any {
 	return {
 		isInitialized: true,
+		streamingRenderState: createStreamingRenderState(),
 		footer: { invalidate() {} },
 		settingsManager: {
 			getTimestampFormat() {
@@ -359,6 +362,78 @@ test("handleAgentEvent: hidden thinking-only updates do not render transcript ca
 	assert.equal(stripAnsi(chatContainer.render(100).join("\n")).trim(), "");
 });
 
+test("handleAgentEvent: message_update does not rebuild unchanged earlier text-run segments", async () => {
+	initTheme("dark", false);
+	const chatContainer = new Container();
+	const host = createStreamingHost(chatContainer);
+	host.hideThinkingBlock = false;
+	const updateCalls = new WeakMap<AssistantMessageComponent, number>();
+	const originalUpdateContent = AssistantMessageComponent.prototype.updateContent;
+	AssistantMessageComponent.prototype.updateContent = function (
+		this: AssistantMessageComponent,
+		...args: Parameters<AssistantMessageComponent["updateContent"]>
+	): ReturnType<AssistantMessageComponent["updateContent"]> {
+		updateCalls.set(this, (updateCalls.get(this) ?? 0) + 1);
+		return originalUpdateContent.apply(this, args);
+	};
+	const makeMessage = (content: any[]): any => ({
+		id: "a-stream",
+		role: "assistant",
+		provider: "claude-code",
+		model: "claude-opus-4-8",
+		timestamp: 1,
+		stopReason: "stop",
+		content,
+	});
+	const first = makeMessage([
+		{ type: "thinking", thinking: "I am considering the answer." },
+		{ type: "text", text: "First visible text." },
+	]);
+	const second = makeMessage([
+		{ type: "thinking", thinking: "I am considering the answer." },
+		{ type: "text", text: "First visible text. More streamed text." },
+	]);
+
+	try {
+		await handleAgentEvent(host, { type: "message_start", message: makeMessage([]) } as any);
+		await handleAgentEvent(host, {
+			type: "message_update",
+			message: first,
+			assistantMessageEvent: {
+				type: "text_delta",
+				contentIndex: 1,
+				delta: "First visible text.",
+				partial: first,
+			},
+		} as any);
+
+		const [thinkingSegment, textSegment] = chatContainer.children as AssistantMessageComponent[];
+		assert.equal(updateCalls.get(thinkingSegment), 1);
+		assert.equal(updateCalls.get(textSegment), 1);
+
+		await handleAgentEvent(host, {
+			type: "message_update",
+			message: second,
+			assistantMessageEvent: {
+				type: "text_delta",
+				contentIndex: 1,
+				delta: " More streamed text.",
+				partial: second,
+			},
+		} as any);
+
+		assert.equal(
+			updateCalls.get(thinkingSegment),
+			1,
+			"unchanged earlier text-run segment must not rebuild on later deltas",
+		);
+		assert.equal(updateCalls.get(textSegment), 2);
+	} finally {
+		AssistantMessageComponent.prototype.updateContent = originalUpdateContent;
+		await handleAgentEvent(host, { type: "message_end", message: second } as any);
+	}
+});
+
 test("handleAgentEvent: agent_start clears stale adaptive blocking error", async () => {
 	initTheme("dark", false);
 	let cleared = false;
@@ -406,6 +481,7 @@ test("handleAgentEvent: agent_start suppresses loader when extension requested n
 	let requestedRender = false;
 	const host = {
 		isInitialized: true,
+		streamingRenderState: createStreamingRenderState(),
 		clearBlockingError() {},
 		retryEscapeHandler: undefined,
 		retryLoader: undefined,
@@ -477,6 +553,7 @@ test("handleAgentEvent: standalone completed tool events roll up incrementally",
 	let renderCount = 0;
 	const host = {
 		isInitialized: true,
+		streamingRenderState: createStreamingRenderState(),
 		footer: { invalidate() {} },
 		settingsManager: {
 			getTimestampFormat() {
@@ -709,6 +786,7 @@ test("handleAgentEvent: agent_end does not force-render viewport when pinned zon
 	let forceRenderCalled = false;
 	const host = {
 		isInitialized: true,
+		streamingRenderState: createStreamingRenderState(),
 		footer: { invalidate() {} },
 		settingsManager: {
 			getTimestampFormat() {
@@ -754,6 +832,7 @@ test("handleAgentEvent: agent_end finalizes orphaned pending tool cards", async 
 	const chatContainer = new Container();
 	const host = {
 		isInitialized: true,
+		streamingRenderState: createStreamingRenderState(),
 		footer: { invalidate() {} },
 		settingsManager: {
 			getTimestampFormat() {

@@ -23,7 +23,7 @@ import {
 } from "../gsd-db.js";
 import { gsdProjectionRoot, clearPathCache, relMilestoneFile } from "../paths.js";
 import { resolveCanonicalMilestoneRoot } from "../worktree-manager.js";
-import { isClosedStatus } from "../status-guards.js";
+import { isClosedStatus, isDeferredStatus } from "../status-guards.js";
 import { saveFile, clearParseCache } from "../files.js";
 import { invalidateStateCache } from "../state.js";
 import { stripIdPrefix } from "../workflow-projections.js";
@@ -180,7 +180,7 @@ export async function handleCompleteMilestone(
       return;
     }
 
-    const incompleteSlices = slices.filter(s => !isClosedStatus(s.status));
+    const incompleteSlices = slices.filter(s => !isClosedStatus(s.status) && !isDeferredStatus(s.status));
     if (incompleteSlices.length > 0) {
       const incompleteIds = incompleteSlices.map(s => `${s.id} (status: ${s.status})`).join(", ");
       guardError = `incomplete slices: ${incompleteIds}`;
@@ -189,6 +189,7 @@ export async function handleCompleteMilestone(
 
     // Deep check: verify all tasks in all slices are complete
     for (const slice of slices) {
+      if (isDeferredStatus(slice.status)) continue;
       const tasks = getSliceTasks(params.milestoneId, slice.id);
       const incompleteTasks = tasks.filter(t => !isClosedStatus(t.status));
       if (incompleteTasks.length > 0) {

@@ -804,7 +804,7 @@ export async function runGSDDoctor(basePath: string, options?: { fix?: boolean; 
         code: "all_slices_done_missing_milestone_validation",
         scope: "milestone",
         unitId: milestoneId,
-        message: `All slices are done but ${milestoneId}-VALIDATION.md is missing \u2014 milestone is in validating-milestone phase`,
+        message: `All slices are done but the milestone VALIDATION.md is missing \u2014 milestone is in validating-milestone phase`,
         file: relMilestoneFile(basePath, milestoneId, "VALIDATION"),
         fixable: false,
       });

@@ -7,7 +7,7 @@
  */
 
 import { readFileSync } from 'node:fs'
-import { serializeJsonLine } from '@gsd/agent-modes'
+import { serializeJsonLine } from '@gsd/agent-modes/modes/rpc/jsonl.js'
 import { canonicalHeadlessToolName } from './headless-events.js'
 
 // ---------------------------------------------------------------------------

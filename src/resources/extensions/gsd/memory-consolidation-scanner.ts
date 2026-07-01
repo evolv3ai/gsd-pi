@@ -142,23 +142,53 @@ function getActiveDecisions(): DecisionRow[] {
 }
 
 /**
- * True when a memory row has a `structured_fields` JSON payload containing
- * the given `markerKey: "value"` pair. Matches the LIKE pattern used by
- * `backfillDecisionsToMemories` so the scanner is consistent with the
- * backfill's idempotency check.
+ * Source IDs already present in memory `structured_fields`. Collected with one
+ * pass over the memories table so the scanner does not perform a non-indexable
+ * LIKE probe for every decision and KNOWLEDGE.md row.
  */
-function memoryHasSourceMarker(markerKey: string, value: string): boolean {
-  if (!isDbAvailable()) return false;
+interface MemorySourceMarkers {
+  decisionIds: Set<string>;
+  knowledgeIds: Set<string>;
+}
+
+function emptyMemorySourceMarkers(): MemorySourceMarkers {
+  return { decisionIds: new Set(), knowledgeIds: new Set() };
+}
+
+function getMemorySourceMarkers(): MemorySourceMarkers {
+  const markers = emptyMemorySourceMarkers();
+  if (!isDbAvailable()) return markers;
   const adapter = _getAdapter();
-  if (!adapter) return false;
+  if (!adapter) return markers;
   try {
-    const pattern = `%"${markerKey}":"${value}"%`;
-    const row = adapter
-      .prepare("SELECT 1 FROM memories WHERE structured_fields LIKE :pattern LIMIT 1")
-      .get({ ":pattern": pattern });
-    return row !== undefined;
+    const rows = adapter
+      .prepare("SELECT structured_fields FROM memories WHERE structured_fields IS NOT NULL")
+      .all() as Array<Record<string, unknown>>;
+    for (const row of rows) {
+      collectMemorySourceMarker(markers, row["structured_fields"]);
+    }
   } catch {
-    return false;
+    return markers;
+  }
+  return markers;
+}
+
+function collectMemorySourceMarker(markers: MemorySourceMarkers, raw: unknown): void {
+  if (typeof raw !== "string" || raw.length === 0) return;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+    const fields = parsed as Record<string, unknown>;
+    const decisionId = fields["sourceDecisionId"];
+    if (typeof decisionId === "string" && decisionId.length > 0) {
+      markers.decisionIds.add(decisionId);
+    }
+    const knowledgeId = fields["sourceKnowledgeId"];
+    if (typeof knowledgeId === "string" && knowledgeId.length > 0) {
+      markers.knowledgeIds.add(knowledgeId);
+    }
+  } catch {
+    return;
   }
 }
 
@@ -174,10 +204,14 @@ const SAMPLE_LIMIT = 5;
 export function scanConsolidationGaps(basePath: string): ConsolidationGapReport {
   // ── Decisions ────────────────────────────────────────────────────────
   const decisions = getActiveDecisions();
+  const knowledgeRows = parseKnowledgeRows(knowledgeMdContent(basePath));
+  const memorySourceMarkers = decisions.length > 0 || knowledgeRows.length > 0
+    ? getMemorySourceMarkers()
+    : emptyMemorySourceMarkers();
   const decisionSamples: DecisionsSurfaceReport["samples"] = [];
   let decisionMigrated = 0;
   for (const decision of decisions) {
-    if (memoryHasSourceMarker("sourceDecisionId", decision.id)) {
+    if (memorySourceMarkers.decisionIds.has(decision.id)) {
       decisionMigrated += 1;
       continue;
     }
@@ -190,16 +224,14 @@ export function scanConsolidationGaps(basePath: string): ConsolidationGapReport 
   }
 
   // ── KNOWLEDGE.md ─────────────────────────────────────────────────────
-  const knowledgeRows = parseKnowledgeRows(knowledgeMdContent(basePath));
   const knowledgeByTable = { rules: 0, patterns: 0, lessons: 0 };
   const knowledgeSamples: KnowledgeSurfaceReport["samples"] = [];
   let knowledgeMigrated = 0;
   for (const row of knowledgeRows) {
     knowledgeByTable[row.table] += 1;
-    // Phase 6 will introduce a `sourceKnowledgeId` marker as part of the
-    // KNOWLEDGE.md backfill. Until that path ships, this check returns
-    // false for every row, which is the honest state of the consolidation.
-    if (memoryHasSourceMarker("sourceKnowledgeId", row.id)) {
+    // KNOWLEDGE.md backfill writes `sourceKnowledgeId`; rows without that
+    // marker are still reported as consolidation gaps.
+    if (memorySourceMarkers.knowledgeIds.has(row.id)) {
       knowledgeMigrated += 1;
       continue;
     }

@@ -7,6 +7,10 @@ import { join } from "node:path";
 
 import { postUnitPreVerification } from "../auto-post-unit.ts";
 import { AutoSession } from "../auto/session.ts";
+import {
+  decideVerificationRetry,
+  hashVerificationFailureContext,
+} from "../auto/verification-retry-policy.ts";
 import { cleanup, makeTempRepo } from "./test-utils.ts";
 
 function makePostUnitContext(base: string, s: AutoSession, notifications: string[]) {
@@ -223,6 +227,71 @@ test("complete-slice with gsd_replan_slice but no REPLAN artifact retries", asyn
     assert.equal(result, "retry");
     assert.ok(s.pendingVerificationRetry);
     assert.equal(s.pendingVerificationRetry?.unitId, "M001/S01");
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("artifact retry context stays stable across attempts while notifications show attempt count", async () => {
+  const base = makeTempRepo("gsd-artifact-retry-stable-context-");
+  try {
+    mkdirSync(join(base, ".gsd", "milestones", "M001", "slices", "S01"), { recursive: true });
+
+    const s = new AutoSession();
+    s.active = true;
+    s.basePath = base;
+    s.currentUnit = { type: "complete-slice", id: "M001/S01", startedAt: Date.now() };
+
+    const notifications: string[] = [];
+    const pctx = makePostUnitContext(base, s, notifications);
+    const opts = {
+      skipSettleDelay: true,
+      skipWorktreeSync: true,
+      agentEndMessages: [
+        {
+          role: "toolResult",
+          toolName: "gsd_replan_slice",
+          isError: false,
+          content: "Slice replanned with reopened task T02.",
+        },
+      ],
+    };
+
+    assert.equal(await postUnitPreVerification(pctx, opts), "retry");
+    const firstRetry = s.pendingVerificationRetry;
+    assert.ok(firstRetry);
+    assert.equal(firstRetry.attempt, 1);
+    assert.doesNotMatch(firstRetry.failureContext, /\(attempt \d\/3\)\.$/);
+    const firstFailureHash = hashVerificationFailureContext(firstRetry.failureContext);
+
+    assert.equal(await postUnitPreVerification(pctx, opts), "retry");
+    const secondRetry = s.pendingVerificationRetry;
+    assert.ok(secondRetry);
+    assert.equal(secondRetry.attempt, 2);
+    assert.equal(secondRetry.failureContext, firstRetry.failureContext);
+    assert.equal(hashVerificationFailureContext(secondRetry.failureContext), firstFailureHash);
+    assert.deepEqual(
+      decideVerificationRetry({
+        unitType: s.currentUnit.type,
+        retryInfo: secondRetry,
+        previousFailureHash: firstFailureHash,
+        random: () => 0.5,
+      }),
+      {
+        action: "pause",
+        reason: "duplicate-failure-context",
+        key: "complete-slice:M001/S01",
+        failureHash: firstFailureHash,
+      },
+    );
+    assert.ok(
+      notifications.some((message) => message.includes("Retrying (attempt 1/3).")),
+      `expected first attempt notification, got: ${notifications.join("\n")}`,
+    );
+    assert.ok(
+      notifications.some((message) => message.includes("Retrying (attempt 2/3).")),
+      `expected second attempt notification, got: ${notifications.join("\n")}`,
+    );
   } finally {
     cleanup(base);
   }

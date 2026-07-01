@@ -1,4 +1,4 @@
-import { Type, type Static } from "@sinclair/typebox";
+import { Type, type Static } from "typebox";
 
 const ColorValueSchema = Type.Union([
   Type.String(), // hex "#ff0000", var ref "primary", or empty ""

@@ -313,6 +313,34 @@ console.log('\n=== complete-milestone: incomplete slices block closeout ===');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// complete-milestone: deferred slices are inactive for closeout
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n=== complete-milestone: deferred slices do not block closeout ===');
+{
+  const dbPath = tempDbPath();
+  openDatabase(dbPath);
+  const { basePath } = createTempProject();
+  seedCompletedMilestone({ basePath, validationVerdict: 'pass' });
+  insertSlice({ id: 'S02', milestoneId: 'M001', title: 'Deferred Slice', status: 'deferred' });
+  insertTask({
+    id: 'T02',
+    sliceId: 'S02',
+    milestoneId: 'M001',
+    status: 'pending',
+    title: 'Deferred Slice Task',
+  });
+
+  const result = await handleCompleteMilestone(makeValidParams(), basePath);
+
+  assertTrue(!('error' in result), 'deferred slice should not block milestone completion');
+  assertEq(getMilestone('M001')!.status, 'complete', 'milestone should complete with deferred inactive slice');
+
+  cleanupDir(basePath);
+  cleanup(dbPath);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // complete-milestone: deep task check (slice closed, task not)
 // ═══════════════════════════════════════════════════════════════════════════
 

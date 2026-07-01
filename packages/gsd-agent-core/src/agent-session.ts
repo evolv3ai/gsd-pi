@@ -318,6 +318,10 @@ export class AgentSession implements AgentSessionHost {
 		return this._prompt.isRetryableError(message);
 	}
 
+	canPrepareRetry(message: AssistantMessage): boolean {
+		return this._prompt.canPrepareRetry(message);
+	}
+
 	runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
 		return this._prompt.runAgentPrompt(messages);
 	}

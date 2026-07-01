@@ -6,9 +6,11 @@ import { join } from "node:path"
 import { pathToFileURL } from "node:url"
 
 import { resolveBridgeRuntimeConfig } from "./bridge-service.ts"
-import { resolveTypeStrippingFlag, resolveSubprocessModule, buildSubprocessPrefixArgs } from "./ts-subprocess-flags.ts"
+import { resolveSubprocessModule, buildSubprocessPrefixArgs } from "./ts-subprocess-flags.ts"
 
 const VISUALIZER_MAX_BUFFER = 2 * 1024 * 1024
+const VISUALIZER_CACHE_TTL_MS = 10_000
+const VISUALIZER_TIMEOUT_MS = 30_000
 const VISUALIZER_MODULE_ENV = "GSD_VISUALIZER_MODULE"
 
 /**
@@ -46,6 +48,15 @@ export interface SerializedVisualizerData {
   stats: unknown
 }
 
+type VisualizerRuntimeConfig = ReturnType<typeof resolveBridgeRuntimeConfig>
+type VisualizerCacheEntry = {
+  promise?: Promise<SerializedVisualizerData>
+  data?: SerializedVisualizerData
+  expiresAt: number
+}
+
+const visualizerDataCache = new Map<string, VisualizerCacheEntry>()
+
 function resolveTsLoaderPath(packageRoot: string): string {
   return join(packageRoot, "src", "resources", "extensions", "gsd", "tests", "resolve-ts.mjs")
 }
@@ -58,6 +69,46 @@ function resolveTsLoaderPath(packageRoot: string): string {
  */
 export async function collectVisualizerData(projectCwdOverride?: string): Promise<SerializedVisualizerData> {
   const config = resolveBridgeRuntimeConfig(undefined, projectCwdOverride)
+  const cacheKey = config.projectCwd
+  const cached = visualizerDataCache.get(cacheKey)
+  const now = Date.now()
+
+  if (cached?.promise && cached.expiresAt >= now) {
+    return cached.promise
+  }
+  if (cached?.data && cached.expiresAt >= now) {
+    return cached.data
+  }
+
+  const promise = loadVisualizerData(config)
+  visualizerDataCache.set(cacheKey, {
+    promise,
+    expiresAt: now + VISUALIZER_TIMEOUT_MS,
+  })
+
+  try {
+    const data = await promise
+    if (visualizerDataCache.get(cacheKey)?.promise === promise) {
+      visualizerDataCache.set(cacheKey, {
+        data,
+        expiresAt: Date.now() + VISUALIZER_CACHE_TTL_MS,
+      })
+    }
+    return data
+  } catch (error) {
+    if (visualizerDataCache.get(cacheKey)?.promise === promise) {
+      visualizerDataCache.delete(cacheKey)
+    }
+    throw error
+  }
+}
+
+/** @internal — test-only: reset the in-process visualizer data cache. */
+export function resetVisualizerDataCacheForTests(): void {
+  visualizerDataCache.clear()
+}
+
+async function loadVisualizerData(config: VisualizerRuntimeConfig): Promise<SerializedVisualizerData> {
   const { packageRoot, projectCwd } = config
 
   const resolveTsLoader = resolveTsLoaderPath(packageRoot)
@@ -109,6 +160,7 @@ export async function collectVisualizerData(projectCwdOverride?: string): Promis
           GSD_VISUALIZER_BASE: projectCwd,
         },
         maxBuffer: VISUALIZER_MAX_BUFFER,
+        timeout: VISUALIZER_TIMEOUT_MS,
         windowsHide: true,
       },
       (error, stdout, stderr) => {

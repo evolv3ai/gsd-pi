@@ -175,9 +175,9 @@ plan-slice  (per slice, sequential)
 | `guided-discuss-milestone.md` | Same as discuss.md but interview-driven, with draft saves. | `ask_user_questions`, `gsd_summary_save(CONTEXT)` |
 | `discuss-headless.md` | Create milestone CONTEXT from spec with no user interaction. | `gsd_plan_milestone`, `gsd_decision_save` |
 | `research-milestone.md` | Strategic research before planning. Narrates findings. | `gsd_summary_save(RESEARCH)` |
-| `plan-milestone.md` | Decompose milestone into slices. Plans first slice inline if single-slice. | `gsd_plan_milestone`, `gsd_decision_save` |
+| `plan-milestone.md` | Decompose milestone into slices. Plans first slice inline if single-slice. | `gsd_plan_milestone`, `gsd_plan_slice`, `gsd_plan_task`, `gsd_decision_save` |
 | `parallel-research-slices.md` | Spawn one scout subagent per slice simultaneously. Retries once on failure. | `subagent` × N |
-| `plan-slice.md` | Decompose single slice into tasks. Progressive planning: sketches for S02+. | `memory_query`, `gsd_plan_slice` |
+| `plan-slice.md` | Decompose single slice into tasks. Progressive planning: sketches for S02+. | `memory_query`, `gsd_plan_slice`, `gsd_plan_task` |
 | `refine-slice.md` | Expand sketched slice plan into full task breakdown. | `gsd_plan_slice` |
 | `guided-discuss-slice.md` | Interview-driven slice scoping. | `ask_user_questions`, `gsd_summary_save(CONTEXT)` |
 | `guided-research-slice.md` | Scout a slice. | `memory_query`, `gsd_summary_save(RESEARCH)` |
@@ -247,7 +247,7 @@ complete-milestone
 | Prompt | Purpose | Key Tools Called |
 |--------|---------|-----------------|
 | `replan-slice.md` | Replan after blocker discovered mid-slice. Preserves completed tasks. | `gsd_replan_slice` |
-| `rethink.md` | Reorder, park, unpark, skip, or discard milestones. | `gsd_skip_slice`, writes `QUEUE-ORDER.json` |
+| `rethink.md` | Reorder, park, unpark, skip, or discard milestones. | `gsd_skip_slice`, writes `QUEUE-ORDER.json` as the durable reorder contract; state derivation mirrors it into DB sequence |
 | `worktree-merge.md` | Merge a worktree branch into a target branch from the main tree. | git merge (main tree CWD) |
 | `reassess-roadmap.md` | *(see Completion Flow above)* | — |
 | `rewrite-docs.md` | Apply OVERRIDES.md changes across all planning docs. | — |
@@ -434,7 +434,8 @@ LLM sees: "load these skill files and follow their rules for this unit"
 | Tool | Persists To |
 |------|------------|
 | `gsd_plan_milestone` | milestones table, slices table |
-| `gsd_plan_slice` | slices table, tasks table |
+| `gsd_plan_slice` | slices table; tasks table only when a non-empty `tasks` payload performs full replacement/update |
+| `gsd_plan_task` | one task planning row; task plan artifact and slice plan projection |
 | `gsd_task_complete` | tasks table, T##-SUMMARY.md |
 | `gsd_slice_complete` | slices table, S##-SUMMARY.md |
 | `gsd_complete_milestone` | milestones table, M##-SUMMARY.md |
@@ -480,7 +481,7 @@ Priority  Rule                                          Fires When
 16        pre-planning (has research) → plan-milestone  CONTEXT + RESEARCH done, ROADMAP missing
 17        planning (require_slice_discussion) → pause   slice flagged for discussion (#3454)
 18        planning (multi slices need research) → par…  ROADMAP done, slice RESEARCH missing × ≥2
-19        planning (no research, not S01) → research…   single slice needs RESEARCH
+19        planning (no research) → research-slice       single slice needs RESEARCH
 20        refining → refine-slice                       slice is sketch, needs expansion
 21        planning → plan-slice                         slice CONTEXT done, PLAN missing
 22        evaluating-gates → gate-evaluate              gates pending evaluation

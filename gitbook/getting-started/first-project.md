@@ -122,6 +122,8 @@ GSD keeps authoritative runtime state in the project-root SQLite database and re
             T01-SUMMARY.md
 ```
 
+GSD may also create sibling runtime directories next to `.gsd/`: `.gsd-worktrees/` for isolated milestone checkouts and `.gsd-backups/` for migration snapshots. Keep those directories local and gitignored; stale `.gsd-backups/migrate-*` snapshots are pruned after 30 days once the project has completed the flat-phase `.gsd/phases/` migration.
+
 `KNOWLEDGE.md` has a split source of truth. Rules stay in the file and are visible immediately. Patterns and lessons added through `/gsd knowledge` are persisted to the `memories` table, then rendered into `KNOWLEDGE.md` the next time a GSD session starts, so they will not appear in the file immediately.
 
 Existing pattern and lesson rows are backfilled into `memories` during that startup path. The Patterns and Lessons sections in `KNOWLEDGE.md` are generated projections, so manual edits to those generated sections may be overwritten on regeneration.

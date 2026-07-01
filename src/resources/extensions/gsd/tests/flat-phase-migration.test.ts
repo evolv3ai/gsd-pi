@@ -2,29 +2,39 @@
 // File Purpose: Tests the one-time migration from nested to flat-phase layout.
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readdirSync, readFileSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 
-import { migrateToFlatPhase, needsFlatPhaseMigration } from "../flat-phase-migration.ts";
+import {
+  migrateToFlatPhase,
+  needsFlatPhaseMigration,
+  pruneStaleFlatPhaseBackups,
+} from "../flat-phase-migration.ts";
 import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask, getAllMilestones, getMilestoneSlices, getSliceTasks } from "../gsd-db.ts";
 
 const tmpDirs: string[] = [];
-function makeTmp(): string {
+function makeTmp(options: { withTask?: boolean } = {}): string {
   const base = mkdtempSync(join(tmpdir(), `gsd-mig-${randomUUID()}`));
   // Create legacy nested structure
-  mkdirSync(join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01"), { recursive: true });
+  const sliceDir = join(base, ".gsd", "milestones", "M001", "slices", "S01");
+  mkdirSync(
+    options.withTask === false ? join(sliceDir, "tasks") : join(sliceDir, "tasks", "T01"),
+    { recursive: true },
+  );
   openDatabase(join(base, ".gsd", "gsd.db"));
   insertMilestone({ id: "M001", title: "Foundation", status: "active" });
   insertSlice({
     milestoneId: "M001", id: "S01", title: "Set up tooling", status: "pending",
     risk: "low", depends: [], demo: "build runs", sequence: 1,
   });
-  insertTask({
-    milestoneId: "M001", sliceId: "S01", id: "T01", title: "Init repo",
-    status: "pending", sequence: 1,
-  });
+  if (options.withTask !== false) {
+    insertTask({
+      milestoneId: "M001", sliceId: "S01", id: "T01", title: "Init repo",
+      status: "pending", sequence: 1,
+    });
+  }
   tmpDirs.push(base);
   return base;
 }
@@ -80,4 +90,60 @@ test("migrateToFlatPhase is idempotent (second run is a no-op)", async () => {
   await migrateToFlatPhase(base);
   const backups = readdirSync(join(base, ".gsd-backups")).filter(d => d.startsWith("migrate-"));
   assert.equal(backups.length, 1, "should only have one backup");
+});
+
+test("migrateToFlatPhase preserves slice sidecar artifacts and skips recovery placeholder PLAN", async () => {
+  const base = makeTmp({ withTask: false });
+  const legacySliceDir = join(base, ".gsd", "milestones", "M001", "slices", "S01");
+  writeFileSync(join(legacySliceDir, "S01-CONTEXT.md"), "# Final Slice Context\n\nPrior discussion.", "utf-8");
+  writeFileSync(join(legacySliceDir, "S01-RESEARCH.md"), "# Slice Research\n\nPrior research.", "utf-8");
+  writeFileSync(join(legacySliceDir, "S01-CONTINUE.md"), "# Continue\n\nCompacted marker.", "utf-8");
+  writeFileSync(
+    join(legacySliceDir, "S01-PLAN.md"),
+    "# BLOCKER - auto-mode recovery failed\n\nUnit `plan-slice` failed to produce this artifact.",
+    "utf-8",
+  );
+
+  await migrateToFlatPhase(base);
+
+  const phaseDir = join(base, ".gsd", "phases", "01-foundation");
+  assert.equal(readFileSync(join(phaseDir, "01-01-CONTEXT.md"), "utf-8"), "# Final Slice Context\n\nPrior discussion.");
+  assert.equal(readFileSync(join(phaseDir, "01-01-RESEARCH.md"), "utf-8"), "# Slice Research\n\nPrior research.");
+  assert.equal(readFileSync(join(phaseDir, "01-01-CONTINUE.md"), "utf-8"), "# Continue\n\nCompacted marker.");
+  assert.equal(
+    existsSync(join(phaseDir, "01-01-PLAN.md")),
+    false,
+    "recovery placeholder PLAN should not be promoted when no DB tasks can render a real plan",
+  );
+});
+
+test("pruneStaleFlatPhaseBackups removes migrate-* dirs older than retention window", async () => {
+  const base = makeTmp();
+  await migrateToFlatPhase(base);
+
+  const backupRoot = join(base, ".gsd-backups");
+  assert.ok(existsSync(backupRoot), "backup should exist immediately after migration");
+
+  const staleDir = join(backupRoot, "migrate-stale");
+  mkdirSync(staleDir, { recursive: true });
+  writeFileSync(join(staleDir, "marker.txt"), "old backup\n", "utf-8");
+  const staleDate = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
+  utimesSync(staleDir, staleDate, staleDate);
+
+  const removed = pruneStaleFlatPhaseBackups(base);
+  assert.equal(removed, 1, "stale migrate-* dir should be pruned");
+  assert.equal(existsSync(staleDir), false, "stale backup dir should be gone");
+  assert.ok(existsSync(backupRoot), "fresh migration backup should remain");
+});
+
+test("pruneStaleFlatPhaseBackups is a no-op while flat-phase migration is still needed", () => {
+  const base = makeTmp();
+  const backupRoot = join(base, ".gsd-backups", "migrate-stale");
+  mkdirSync(backupRoot, { recursive: true });
+  writeFileSync(join(backupRoot, "marker.txt"), "old backup\n", "utf-8");
+  const staleDate = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
+  utimesSync(backupRoot, staleDate, staleDate);
+
+  assert.equal(pruneStaleFlatPhaseBackups(base), 0, "must not prune while migration is pending");
+  assert.ok(existsSync(backupRoot), "backup must remain until migration completes");
 });

@@ -12,6 +12,7 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import type { Dirent } from "node:fs";
 import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import { gsdRoot } from "./paths.js";
 import { GIT_NO_PROMPT_ENV } from "./git-constants.js";
@@ -360,6 +361,7 @@ export interface PreMergeCheckResult {
  */
 export const RUNTIME_EXCLUSION_PATHS: readonly string[] = [
   ".gsd-worktrees/",
+  ".gsd-backups/**",
   ".gsd/activity/",
   ".gsd/audit/",
   ".gsd/forensics/",
@@ -377,6 +379,8 @@ export const RUNTIME_EXCLUSION_PATHS: readonly string[] = [
   ".gsd/event-log.jsonl",
   ".gsd/DISCUSSION-MANIFEST.json",
 ];
+
+const runtimeFilesCleanedUpRepos = new Set<string>();
 
 // ─── Integration Branch Metadata ───────────────────────────────────────────
 
@@ -755,7 +759,8 @@ export class GitServiceImpl {
     // and the worktree is torn down. This prevents a mid-execution behavioral
     // discontinuity where the first half of a milestone has .gsd/ artifacts
     // committed but the second half doesn't (#1326).
-    if (!this._runtimeFilesCleanedUp) {
+    const cleanupRepoKey = resolve(this.basePath);
+    if (!runtimeFilesCleanedUpRepos.has(cleanupRepoKey)) {
       let cleaned = false;
       for (const exclusion of RUNTIME_EXCLUSION_PATHS) {
         const removed = nativeRmCached(this.basePath, [exclusion]);
@@ -764,7 +769,7 @@ export class GitServiceImpl {
       if (cleaned) {
         nativeCommit(this.basePath, "chore: untrack .gsd/ runtime files from git index", { allowEmpty: false });
       }
-      this._runtimeFilesCleanedUp = true;
+      runtimeFilesCleanedUpRepos.add(cleanupRepoKey);
     }
 
     // Stage everything using pathspec exclusions so excluded paths are never
@@ -893,9 +898,6 @@ export class GitServiceImpl {
     }
   }
 
-  /** Tracks whether runtime file cleanup has run this session. */
-  private _runtimeFilesCleanedUp = false;
-
   /**
    * Stage files (smart staging) and commit.
    * Returns the commit message string on success, or null if nothing to commit.
@@ -921,16 +923,19 @@ export class GitServiceImpl {
    *
    * Returns the commit message on success, or null if nothing to commit.
    * @param extraExclusions Additional paths to exclude from staging (e.g. [".gsd/"] for pre-switch commits).
+   * @param knownDirty Fresh caller-provided dirty status; when omitted, autoCommit probes the tree.
    */
   autoCommit(
     unitType: string,
     unitId: string,
     extraExclusions: readonly string[] = [],
     taskContext?: TaskCommitContext,
+    knownDirty?: boolean,
   ): string | null {
     // Quick check: is there anything dirty at all?
     // Native path uses libgit2 (single syscall), fallback spawns git.
-    if (!nativeHasChanges(this.basePath)) return null;
+    if (knownDirty === false) return null;
+    if (knownDirty !== true && !nativeHasChanges(this.basePath)) return null;
 
     const scoped = taskContext
       ? this.scopedStageTaskFiles(taskContext, extraExclusions)
@@ -1265,6 +1270,7 @@ function collectRepositoryDirtyStatus(basePath: string): Record<string, boolean>
   const preferences = loadEffectiveGSDPreferences(basePath)?.preferences;
   const registry = createRepositoryRegistryFromPreferences(basePath, preferences);
   const dirtyByRepository: Record<string, boolean> = {};
+  const registeredRoots = new Set(registry.repositories.map((repo) => resolve(repo.root)));
   for (const repo of registry.repositories) {
     try {
       dirtyByRepository[repo.id] = runGit(repo.root, ["status", "--porcelain"]).length > 0;
@@ -1273,7 +1279,68 @@ function collectRepositoryDirtyStatus(basePath: string): Record<string, boolean>
       dirtyByRepository[repo.id] = nativeHasChanges(repo.root);
     }
   }
+  for (const repoRoot of findUndeclaredNestedGitRepositories(registry.projectRoot, registeredRoots)) {
+    let dirty = false;
+    try {
+      dirty = runGit(repoRoot, ["status", "--porcelain"]).length > 0;
+    } catch {
+      dirty = nativeHasChanges(repoRoot);
+    }
+    if (!dirty) continue;
+
+    const relPath = relative(registry.projectRoot, repoRoot).split(sep).join("/") || repoRoot;
+    const label = `${relPath} (undeclared)`;
+    dirtyByRepository[label] = true;
+    logWarning(
+      "engine",
+      `undeclared dirty nested git repo ${relPath}; declare it under workspace.repositories or commit manually`,
+      { file: "git-service.ts" },
+    );
+  }
   return dirtyByRepository;
+}
+
+const UNDECLARED_NESTED_REPO_SCAN_MAX_DEPTH = 4;
+const UNDECLARED_NESTED_REPO_SKIP_DIRS = new Set([
+  ".git",
+  ".gsd",
+  ".gsd-worktrees",
+  "node_modules",
+  "dist",
+  "dist-test",
+]);
+
+function findUndeclaredNestedGitRepositories(projectRoot: string, registeredRoots: ReadonlySet<string>): string[] {
+  const found: string[] = [];
+
+  function visit(dir: string, depth: number): void {
+    if (depth >= UNDECLARED_NESTED_REPO_SCAN_MAX_DEPTH) return;
+
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (UNDECLARED_NESTED_REPO_SKIP_DIRS.has(entry.name)) continue;
+
+      const child = join(dir, entry.name);
+      const childRoot = resolve(child);
+      const hasGitDir = existsSync(join(child, ".git"));
+      const isRegistered = registeredRoots.has(childRoot);
+      if (hasGitDir && !isRegistered) {
+        found.push(childRoot);
+        continue;
+      }
+      visit(child, depth + 1);
+    }
+  }
+
+  visit(projectRoot, 0);
+  return found;
 }
 
 function runPerRepositoryCommitAction(args: {
@@ -1282,6 +1349,7 @@ function runPerRepositoryCommitAction(args: {
   unitId: string;
   taskContext?: TaskCommitContext;
   targetRepositories?: string[];
+  dirtyRepositories?: Record<string, boolean>;
 }): {
   commitMessages: Record<string, string>;
   commitErrors: Record<string, string>;
@@ -1313,6 +1381,7 @@ function runPerRepositoryCommitAction(args: {
           args.unitId,
           [],
           args.taskContext,
+          args.dirtyRepositories?.[repo.id],
         ) ?? "";
       if (message) {
         commitMessages[repo.id] = message;
@@ -1360,7 +1429,7 @@ export function runTurnGitAction(args: {
       };
     }
 
-    const repoCommitResult = runPerRepositoryCommitAction(args);
+    const repoCommitResult = runPerRepositoryCommitAction({ ...args, dirtyRepositories });
     if (Object.keys(repoCommitResult.commitErrors).length > 0) {
       return {
         action: args.action,

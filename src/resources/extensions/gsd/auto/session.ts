@@ -30,6 +30,7 @@ import { normalizeRealPath } from "../paths.js";
 import type { MilestoneScope } from "../workspace.js";
 import type { RootDirtySnapshot } from "../root-write-leak-guard.js";
 import type { MilestoneSettlementOutcome } from "../milestone-settlement.js";
+import type { ToolSurfaceSnapshot } from "../tool-surface-snapshot.js";
 
 // ─── Exported Types ──────────────────────────────────────────────────────────
 
@@ -55,6 +56,7 @@ export type ThinkingLevelSnapshot = ReturnType<ExtensionAPI["getThinkingLevel"]>
 export interface PendingVerificationRetry {
   unitId: string;
   failureContext: string;
+  signature?: string;
   attempt: number;
 }
 
@@ -160,6 +162,9 @@ export class AutoSession {
   currentMilestoneId: string | null = null;
   readonly sourceObservations = new SourceObservationStore();
 
+  /** Live tool-surface snapshot for dashboard / runtime telemetry while auto is active. */
+  toolSurfaceSnapshot: ToolSurfaceSnapshot | null = null;
+
   // ── Model state ──────────────────────────────────────────────────────────
   autoModeStartModel: StartModel | null = null;
   /** Explicit /gsd model pin captured at bootstrap (session-scoped policy override). */
@@ -207,6 +212,13 @@ export class AutoSession {
    * the issues after MAX_PRE_EXEC_RETRIES re-attempts.
    */
   readonly preExecRetryCount: Map<string, number> = new Map();
+  /**
+   * Tracks how many times each slice unit has been re-dispatched to plan-slice
+   * because task plan files were missing. Keyed by unitId (e.g. "M001/S01").
+   * Separate from preExecRetryCount so pre-exec gate failures do not block or
+   * conflate with missing-task-plan recovery.
+   */
+  readonly missingTaskPlanRetryCount: Map<string, number> = new Map();
 
   // ── Tool invocation errors (#2883) ──────────────────────────────────
   /** Set when a GSD tool execution ends with isError due to malformed/truncated
@@ -367,6 +379,7 @@ export class AutoSession {
 
     // Unit
     this.clearCurrentUnit();
+    this.toolSurfaceSnapshot = null;
     this.currentTraceId = null;
     this.currentTurnId = null;
     this.currentUnitRouting = null;
@@ -407,6 +420,7 @@ export class AutoSession {
     this.consecutiveCompleteBootstraps = 0;
     this.lastPreExecFailure = null;
     this.preExecRetryCount.clear();
+    this.missingTaskPlanRetryCount.clear();
     this.lastToolInvocationError = null;
     this.toolUnavailableRetries = 0;
     this.lastUnitAgentEndMessages = null;

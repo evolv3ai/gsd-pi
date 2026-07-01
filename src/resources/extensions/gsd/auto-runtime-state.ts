@@ -25,7 +25,6 @@ export type {
 } from "./tool-surface-snapshot.js";
 
 export const autoSession = new AutoSession();
-let currentToolSurfaceSnapshot: ToolSurfaceSnapshot | null = null;
 
 export type AutoRuntimeSnapshot = {
   active: boolean;
@@ -48,17 +47,17 @@ export function getAutoRuntimeSnapshot(): AutoRuntimeSnapshot {
     orchestrationPhase: orchestrationStatus?.phase,
     orchestrationTransitionCount: orchestrationStatus?.transitionCount,
     orchestrationLastTransitionAt: orchestrationStatus?.lastTransitionAt,
-    toolSurface: autoSession.active || autoSession.paused ? currentToolSurfaceSnapshot : null,
+    toolSurface: autoSession.active || autoSession.paused ? autoSession.toolSurfaceSnapshot : null,
   };
 }
 
 export function recordAutoToolSurfaceSnapshot(input: ToolSurfaceSnapshotInput): ToolSurfaceSnapshot {
-  currentToolSurfaceSnapshot = createToolSurfaceSnapshot(input);
-  return currentToolSurfaceSnapshot;
+  autoSession.toolSurfaceSnapshot = createToolSurfaceSnapshot(input);
+  return autoSession.toolSurfaceSnapshot;
 }
 
 export function clearAutoToolSurfaceSnapshot(): void {
-  currentToolSurfaceSnapshot = null;
+  autoSession.toolSurfaceSnapshot = null;
 }
 
 export function isAutoActive(): boolean {

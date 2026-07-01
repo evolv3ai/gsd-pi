@@ -179,6 +179,27 @@ test("main package publish validates tarball before publishing", () => {
   assert.ok(prodSteps.indexOf(prodValidate) < prodPublishIndex);
 });
 
+test("production release runs optional live workflow test on the configured OpenAI model", () => {
+  const steps = workflow.jobs["prod-release"].steps;
+  const idx = (name) => steps.findIndex((step) => step.name === name);
+
+  const buildRelease = idx("Build release");
+  const liveWorkflow = idx("Run live workflow LLM tests (optional)");
+  const liveRegression = idx("Run live regression tests (against release build)");
+
+  assert.ok(liveWorkflow > -1, "prod-release must include optional live workflow coverage");
+  assert.ok(buildRelease > -1 && buildRelease < liveWorkflow, "live workflow must use the built release binary");
+  assert.ok(liveWorkflow < liveRegression, "live workflow should run before non-LLM live regression checks");
+
+  const step = steps[liveWorkflow];
+  assert.equal(step["continue-on-error"], true);
+  assert.match(step.run, /GSD_SMOKE_BINARY="\$\(pwd\)\/dist\/loader\.js"/);
+  assert.match(step.run, /pnpm run test:live-workflow/);
+  assert.equal(step.env.OPENAI_API_KEY, "${{ secrets.OPENAI_API_KEY }}");
+  assert.equal(step.env.GSD_LIVE_TESTS, "1");
+  assert.equal(step.env.GSD_LIVE_WORKFLOW_MODEL, "openai/gpt-5.4-mini");
+});
+
 test("production release publishes workspace packages and verifies ALL packages before cutting the GitHub release", () => {
   const steps = workflow.jobs["prod-release"].steps;
   const idx = (name) => steps.findIndex((s) => s.name === name);

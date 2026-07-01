@@ -19,6 +19,16 @@ import { resolveTasksDir } from "./paths.js";
 
 /** Large enough for unbounded milestone-history git log scans in big repos. */
 const GIT_LOG_MAX_BUFFER = 16 * 1024 * 1024;
+const LOG_FIELD_SEPARATOR = "\x1f";
+const LOG_RECORD_SEPARATOR = "\x1e";
+
+type CommitRecord = {
+  hash: string;
+  parents: string;
+  committedAt: string;
+  message: string;
+  files: string[];
+};
 
 /**
  * Check whether a milestone produced implementation artifacts (non-`.gsd/`
@@ -198,7 +208,7 @@ function getChangedFilesFromMilestoneTaggedCommits(
   // Primary: path-scoped log against .gsd/milestones/<id>. Fast and unbounded
   // by depth when .gsd/ is tracked in git.
   const scoped = scanGsdTaggedCommits(basePath, milestoneId, [
-    "log", "--format=%H%x1f%B%x1e", "HEAD", "--", `.gsd/milestones/${milestoneId}`,
+    "log", "--full-diff", "--name-only", "--format=%x1e%H%x1f%B%x1f", "HEAD", "--", `.gsd/milestones/${milestoneId}`,
   ]);
   if (!scoped.ok) return scoped;
   if (scoped.matched && classifyImplementationFiles(scoped.files) === "present") return scoped;
@@ -213,7 +223,7 @@ function getChangedFilesFromMilestoneTaggedCommits(
   // reintroducing the rolling-depth failure class removed in #4699 where
   // milestone evidence aged out behind unrelated activity.
   const unscoped = scanGsdTaggedCommits(basePath, milestoneId, [
-    "log", "--format=%H%x1f%B%x1e", "HEAD",
+    "log", "--name-only", "--format=%x1e%H%x1f%B%x1f", "HEAD",
   ]);
   if (!unscoped.ok) return scoped.matched ? scoped : unscoped;
   if (!unscoped.matched) return scoped;
@@ -299,8 +309,7 @@ function backfillChangedFilesFromUntaggedMilestoneCommits(
       if (record.parents.trim().split(/\s+/).filter(Boolean).length > 1) continue;
       if (commitMessageHasGsdTrailer(record.message)) continue;
 
-      const commitFiles = getChangedFilesForCommit(basePath, record.hash);
-      const implementationFiles = commitFiles.map(normalizeRepoPath).filter(isImplementationPath);
+      const implementationFiles = record.files.map(normalizeRepoPath).filter(isImplementationPath);
       if (implementationFiles.length === 0) continue;
       if (!implementationFiles.some((file) => hintSet.has(file))) continue;
 
@@ -323,23 +332,28 @@ function backfillChangedFilesFromUntaggedMilestoneCommits(
   }
 }
 
-function getCommitRecords(basePath: string): Array<{ hash: string; parents: string; committedAt: string; message: string }> {
-  const logOutput = execFileSync("git", ["log", "--format=%H%x1f%P%x1f%cI%x1f%B%x1e", "HEAD"], {
+function getCommitRecords(basePath: string): CommitRecord[] {
+  const logOutput = execFileSync("git", ["log", "--name-only", "--format=%x1e%H%x1f%P%x1f%cI%x1f%B%x1f", "HEAD"], {
     cwd: basePath,
     stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf-8",
     maxBuffer: GIT_LOG_MAX_BUFFER,
   });
   return logOutput
-    .split("\x1e")
-    .map((record) => record.trim())
+    .split(LOG_RECORD_SEPARATOR)
     .filter(Boolean)
     .flatMap((record) => {
-      const parts = record.split("\x1f");
-      if (parts.length < 4) return [];
-      const [hash, parents, committedAt, ...messageParts] = parts;
-      return [{ hash: hash.trim(), parents: parents.trim(), committedAt: committedAt.trim(), message: messageParts.join("\x1f") }];
+      const parts = record.split(LOG_FIELD_SEPARATOR);
+      if (parts.length < 5) return [];
+      const [hash, parents, committedAt] = parts;
+      const files = parseNameOnlyFiles(parts.at(-1) ?? "");
+      const message = parts.slice(3, -1).join(LOG_FIELD_SEPARATOR);
+      return [{ hash: hash.trim(), parents: parents.trim(), committedAt: committedAt.trim(), message, files }];
     });
+}
+
+function parseNameOnlyFiles(rawFiles: string): string[] {
+  return rawFiles.split(/\r?\n/).map((file) => file.trim()).filter(Boolean);
 }
 
 function isFullCommitSha(value: string): boolean {
@@ -359,23 +373,23 @@ function scanGsdTaggedCommits(
       maxBuffer: GIT_LOG_MAX_BUFFER,
     });
     const records = logOutput
-      .split("\x1e")
-      .map((record) => record.trim())
+      .split(LOG_RECORD_SEPARATOR)
       .filter(Boolean)
       .flatMap((record) => {
-        const sep = record.indexOf("\x1f");
-        if (sep === -1) return [];
-        const hash = record.slice(0, sep).trim();
-        const message = record.slice(sep + 1);
-        return [{ hash, message }];
+        const parts = record.split(LOG_FIELD_SEPARATOR);
+        if (parts.length < 3) return [];
+        const hash = parts[0].trim();
+        if (!hash) return [];
+        const files = parseNameOnlyFiles(parts.at(-1) ?? "");
+        const message = parts.slice(1, -1).join(LOG_FIELD_SEPARATOR);
+        return [{ message, files }];
       });
 
     const files = new Set<string>();
     let matched = false;
-    for (const { hash, message } of records) {
+    for (const { message, files: commitFiles } of records) {
       if (!commitMessageHasGsdTrailer(message)) continue;
 
-      const commitFiles = getChangedFilesForCommit(basePath, hash);
       if (!commitMatchesMilestone(basePath, message, milestoneId, commitFiles)) continue;
 
       matched = true;

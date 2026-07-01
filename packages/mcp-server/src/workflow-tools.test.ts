@@ -8,9 +8,11 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 
 import { symlinkSync, realpathSync } from "node:fs";
+import { SUMMARY_SAVE_CONTENT_MAX_LENGTH } from "@opengsd/contracts";
 
 import {
   _getAdapter,
@@ -35,6 +37,8 @@ import {
   WORKFLOW_TOOL_ALIAS_NAMES,
   validateProjectDir,
   _parseWorkflowArgsForTest,
+  _summarySaveSchemaForTest,
+  _runSerializedWorkflowOperationForTest,
   _sliceCompleteSchemaForTest,
 } from "./workflow-tools.ts";
 
@@ -129,7 +133,7 @@ function makeMockServer() {
     name: string;
     description: string;
     params: Record<string, unknown>;
-    handler: (args: Record<string, unknown>) => Promise<unknown>;
+    handler: (args: Record<string, unknown>, extra?: { signal?: AbortSignal }) => Promise<unknown>;
   }> = [];
   return {
     tools,
@@ -137,7 +141,7 @@ function makeMockServer() {
       name: string,
       description: string,
       params: Record<string, unknown>,
-      handler: (args: Record<string, unknown>) => Promise<unknown>,
+      handler: (args: Record<string, unknown>, extra?: { signal?: AbortSignal }) => Promise<unknown>,
     ) {
       tools.push({ name, description, params, handler });
     },
@@ -211,6 +215,68 @@ describe("warmWorkflowToolBridges", () => {
   });
 });
 
+describe("runSerializedWorkflowOperation", () => {
+  it("keeps the queue held until a timed-out operation settles", async () => {
+    const previousTimeout = process.env.GSD_MCP_WORKFLOW_TIMEOUT_MS;
+    const events: string[] = [];
+    let releaseFirst: (() => void) | undefined;
+    const firstCanFinish = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let second: Promise<string> | undefined;
+
+    try {
+      process.env.GSD_MCP_WORKFLOW_TIMEOUT_MS = "20";
+
+      const first = _runSerializedWorkflowOperationForTest(async () => {
+        events.push("first-start");
+        await firstCanFinish;
+        events.push("first-finish");
+        return "first";
+      });
+
+      await assert.rejects(first, /Workflow operation exceeded 20ms deadline/);
+      events.push("first-timeout-returned");
+
+      let secondSettled = false;
+      second = _runSerializedWorkflowOperationForTest(async () => {
+        events.push("second-start");
+        return "second";
+      }).then((value) => {
+        secondSettled = true;
+        events.push("second-finish");
+        return value;
+      });
+
+      await delay(30);
+      assert.equal(
+        secondSettled,
+        false,
+        "retry should remain queued while the timed-out operation is still running",
+      );
+      assert.deepEqual(events, ["first-start", "first-timeout-returned"]);
+
+      releaseFirst?.();
+      assert.equal(await second, "second");
+      assert.deepEqual(events, [
+        "first-start",
+        "first-timeout-returned",
+        "first-finish",
+        "second-start",
+        "second-finish",
+      ]);
+    } finally {
+      releaseFirst?.();
+      if (second) await second.catch(() => undefined);
+      if (previousTimeout === undefined) {
+        delete process.env.GSD_MCP_WORKFLOW_TIMEOUT_MS;
+      } else {
+        process.env.GSD_MCP_WORKFLOW_TIMEOUT_MS = previousTimeout;
+      }
+    }
+  });
+});
+
 describe("workflow MCP tools", () => {
   it("registers the full headless-safe workflow tool surface", () => {
     const server = makeMockServer();
@@ -250,6 +316,25 @@ describe("workflow MCP tools", () => {
     assert.ok("sliceId" in taskReopen.params);
     assert.ok("taskId" in taskReopen.params);
     assert.ok("reason" in taskReopen.params);
+  });
+
+  it("caps gsd_summary_save content before executor invocation", () => {
+    assert.doesNotThrow(() => {
+      _parseWorkflowArgsForTest(_summarySaveSchemaForTest, {
+        milestone_id: "M001",
+        artifact_type: "CONTEXT-DRAFT",
+        content: "x".repeat(SUMMARY_SAVE_CONTENT_MAX_LENGTH),
+      });
+    });
+
+    assert.throws(
+      () => _parseWorkflowArgsForTest(_summarySaveSchemaForTest, {
+        milestone_id: "M001",
+        artifact_type: "CONTEXT-DRAFT",
+        content: "x".repeat(SUMMARY_SAVE_CONTENT_MAX_LENGTH + 1),
+      }),
+      /content must be at most 50000 characters per save/,
+    );
   });
 
   it("registers gsd_checkpoint_db and flushes the open WAL", async () => {
@@ -426,6 +511,45 @@ describe("workflow MCP tools", () => {
       assert.equal(record.isError, false);
       assert.equal(record.structuredContent.runtime, "bash");
       assert.match(record.content[0].text as string, /mcp-command-alias-defaults-to-bash/);
+    } finally {
+      cleanup(base);
+    }
+  });
+
+  it("gsd_exec honors MCP abort signal before the sandbox timeout", async () => {
+    const base = makeTmpBase();
+    try {
+      const server = makeMockServer();
+      registerWorkflowTools(server as any);
+      const tool = server.tools.find((t) => t.name === "gsd_exec");
+      assert.ok(tool, "exec tool should be registered");
+
+      const controller = new AbortController();
+      controller.abort();
+      const timeoutMs = 5_000;
+
+      const result = await tool!.handler(
+        {
+          projectDir: base,
+          runtime: "node",
+          script: "setTimeout(() => {}, 30_000);",
+          timeout_ms: timeoutMs,
+        },
+        { signal: controller.signal },
+      );
+
+      const record = result as any;
+      assert.equal(record.isError, true);
+      assert.equal(record.structuredContent.operation, "gsd_exec");
+      assert.equal(record.structuredContent.aborted, true);
+      assert.equal(record.structuredContent.timed_out, false);
+      assert.ok(
+        record.structuredContent.duration_ms < timeoutMs,
+        `expected abort before ${timeoutMs}ms timeout, got ${record.structuredContent.duration_ms}ms`,
+      );
+      assert.match(record.content[0].text as string, /exit=aborted/);
+      const meta = JSON.parse(readFileSync(record.structuredContent.meta_path, "utf-8"));
+      assert.equal(meta.aborted, true);
     } finally {
       cleanup(base);
     }

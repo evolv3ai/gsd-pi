@@ -12,6 +12,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { access, readFile } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { AuthStorage } from "@gsd/pi-coding-agent";
 import { getEnvApiKey } from "@gsd/pi-ai";
@@ -166,15 +167,11 @@ const CLI_AUTH_PATH_CHECK_PROVIDERS = new Set([
   "google-antigravity",
 ]);
 
-/**
- * Check if a CLI provider's binary exists anywhere in PATH.
- * Fast filesystem scan — no subprocess, no network, sub-1ms.
- */
-function isCliBinaryInPath(providerId: string): boolean {
-  const binaries = CLI_BINARY_MAP[providerId];
-  if (!binaries) return false;
+let asyncCliBinaryPathCache: Map<string, boolean> | null = null;
 
-  const pathDirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+function cliExecutableNames(providerId: string): string[] {
+  const binaries = CLI_BINARY_MAP[providerId];
+  if (!binaries) return [];
 
   // On Windows, command shims are commonly installed as .cmd/.exe/.bat/.com.
   // Scan PATHEXT candidates in addition to the bare binary name.
@@ -196,7 +193,49 @@ function isCliBinaryInPath(providerId: string): boolean {
     }
   }
 
+  return executableNames;
+}
+
+/**
+ * Check if a CLI provider's binary exists anywhere in PATH.
+ * Fast filesystem scan — no subprocess, no network, sub-1ms.
+ */
+function isCliBinaryInPath(providerId: string): boolean {
+  const cached = asyncCliBinaryPathCache?.get(providerId);
+  if (cached !== undefined) return cached;
+
+  const executableNames = cliExecutableNames(providerId);
+  if (executableNames.length === 0) return false;
+
+  const pathDirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+
   return pathDirs.some(dir => executableNames.some(name => existsSync(join(dir, name))));
+}
+
+async function isCliBinaryInPathAsync(providerId: string): Promise<boolean> {
+  const executableNames = cliExecutableNames(providerId);
+  if (executableNames.length === 0) return false;
+
+  const pathDirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+  const candidates = pathDirs.flatMap(dir => executableNames.map(name => join(dir, name)));
+  if (candidates.length === 0) return false;
+
+  try {
+    await Promise.any(candidates.map(candidate => access(candidate)));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function loadCliBinaryPathCache(): Promise<Map<string, boolean>> {
+  const entries = await Promise.all(
+    Object.keys(CLI_BINARY_MAP).map(async providerId => [
+      providerId,
+      await isCliBinaryInPathAsync(providerId),
+    ] as const),
+  );
+  return new Map(entries);
 }
 
 function modelsJsonPaths(): string[] {
@@ -208,7 +247,13 @@ function modelsJsonPaths(): string[] {
   ];
 }
 
+let asyncModelsJsonApiKeyCache: Set<string> | null = null;
+
 function hasModelsJsonApiKey(providerId: string): boolean {
+  if (asyncModelsJsonApiKeyCache) {
+    return asyncModelsJsonApiKeyCache.has(providerId);
+  }
+
   for (const path of modelsJsonPaths()) {
     if (!existsSync(path)) continue;
     try {
@@ -226,7 +271,27 @@ function hasModelsJsonApiKey(providerId: string): boolean {
   return false;
 }
 
-function resolveKey(providerId: string): KeyLookup {
+async function loadModelsJsonApiKeyCache(): Promise<Set<string>> {
+  const providersWithKeys = new Set<string>();
+  for (const path of modelsJsonPaths()) {
+    try {
+      const parsed = JSON.parse(await readFile(path, "utf-8")) as {
+        providers?: Record<string, { apiKey?: unknown }>;
+      };
+      for (const [providerId, provider] of Object.entries(parsed.providers ?? {})) {
+        const apiKey = provider.apiKey;
+        if (typeof apiKey === "string" && apiKey.trim().length > 0) {
+          providersWithKeys.add(providerId);
+        }
+      }
+    } catch {
+      // Missing or malformed models.json should not break dashboard health checks.
+    }
+  }
+  return providersWithKeys;
+}
+
+function resolveKeyFromAuthOrEnv(providerId: string): KeyLookup | null {
   const info = PROVIDER_REGISTRY.find(p => p.id === providerId);
 
   if (providerId === "anthropic-vertex" && process.env.ANTHROPIC_VERTEX_PROJECT_ID) {
@@ -275,6 +340,13 @@ function resolveKey(providerId: string): KeyLookup {
   if (info?.envVar && process.env[info.envVar]) {
     return { found: true, source: "env", backedOff: false };
   }
+
+  return null;
+}
+
+function resolveKey(providerId: string): KeyLookup {
+  const direct = resolveKeyFromAuthOrEnv(providerId);
+  if (direct) return direct;
 
   if (hasModelsJsonApiKey(providerId)) {
     return { found: true, source: "models.json", backedOff: false };
@@ -493,6 +565,28 @@ export function runProviderChecks(): ProviderCheckResult[] {
   results.push(...checkOptionalProviders());
 
   return results;
+}
+
+/**
+ * Non-blocking equivalent of `runProviderChecks` for the health-widget
+ * background refresh. PATH checks and custom models.json discovery use async
+ * filesystem APIs so periodic widget refreshes do not stall the input loop.
+ */
+export async function runProviderChecksAsync(): Promise<ProviderCheckResult[]> {
+  const [cliCache, modelsJsonCache] = await Promise.all([
+    loadCliBinaryPathCache(),
+    loadModelsJsonApiKeyCache(),
+  ]);
+  const previousCliCache = asyncCliBinaryPathCache;
+  const previousModelsJsonCache = asyncModelsJsonApiKeyCache;
+  asyncCliBinaryPathCache = cliCache;
+  asyncModelsJsonApiKeyCache = modelsJsonCache;
+  try {
+    return runProviderChecks();
+  } finally {
+    asyncCliBinaryPathCache = previousCliCache;
+    asyncModelsJsonApiKeyCache = previousModelsJsonCache;
+  }
 }
 
 /**

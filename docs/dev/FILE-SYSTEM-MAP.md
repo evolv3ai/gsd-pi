@@ -255,7 +255,11 @@
 | File | System Label(s) | Description |
 |------|-----------------|-------------|
 | core/agent-session.ts | Agent Core, State Machine | Core session abstraction, agent lifecycle, persistence |
-| core/session-manager.ts | Session Management | Session file I/O, branch/fork tree management |
+| core/session-manager.ts | Session Management | SessionManager facade and append-only JSONL session write API |
+| core/session-manager-types.ts | Session Management | Session file entry, header, tree, and info type definitions |
+| core/session-manager-context.ts | Session Management | Session branch-to-LLM-context construction and latest compaction lookup |
+| core/session-manager-list.ts | Session Management | Session directory scanning, session info summaries, and recent-session lookup |
+| core/session-manager-migration.ts | Session Management | Session JSONL parsing and version migration helpers |
 | core/event-bus.ts | Agent Core, Event System | Event publication and subscription |
 | core/messages.ts | State Machine | Message type definitions and constructors |
 | core/settings-manager.ts | Session Management, Config | Session-level settings persistence |
@@ -493,7 +497,11 @@
 | gsd/doctor-checks.ts | Doctor/Diagnostics | Individual diagnostic checks |
 | gsd/doctor-providers.ts | Doctor/Diagnostics | Diagnostic data source providers |
 | gsd/doctor-format.ts | Doctor/Diagnostics | Diagnostic output formatting |
-| gsd/state.ts | State Machine | Milestone and workflow state management |
+| gsd/state.ts | State Machine | State derivation compatibility barrel plus legacy markdown fallback helper |
+| gsd/state/derive/index.ts | State Machine | DB-backed deriveState orchestrator and cache integration |
+| gsd/state/derive/from-db.ts | State Machine | DB-to-GSDState projection and active unit selection |
+| gsd/state/derive/cache.ts | State Machine | Derive-state cache and telemetry |
+| gsd/state/derive/db-open.ts | State Machine | Workflow DB opening and DB-unavailable state construction |
 | gsd/history.ts | State Machine | State history and versioning |
 | gsd/json-persistence.ts | State Machine | JSON-based persistence layer |
 | gsd/memory-store.ts | State Machine | In-memory state storage |
@@ -804,7 +812,12 @@ package and refreshes stale or incomplete managed copies.
 | File | System Label(s) | Description |
 |------|-----------------|-------------|
 | web/lib/auth.ts | Auth/OAuth | Client-side auth token management from URL fragment |
-| web/lib/gsd-workspace-store.tsx | State Machine | Global workspace state store with external store |
+| web/lib/gsd-workspace-store.tsx | State Machine | Workspace store shell, React provider, bridge commands, and delegated slice wiring |
+| web/lib/command-surface-store.ts | Commands, State Machine | Command surface action store for git, recovery, diagnostics, sessions, settings, and captures |
+| web/lib/workspace-live-state.ts | State Machine | Live workspace freshness buckets, entity slices, and recovery summary derivation |
+| web/lib/transcript-store.ts | Web UI, State Machine | Browser transcript reducer shared with agent-core transcript semantics |
+| web/lib/workspace-boot-helpers.ts | State Machine | Boot payload patch helpers for active session and bridge state |
+| web/lib/workspace-coordinator.ts | State Machine | Live interaction event routing and targeted workspace refresh dispatch |
 | web/lib/project-store-manager.tsx | State Machine | Multi-project store manager with SSE lifecycle |
 | web/lib/shutdown-gate.ts | State Machine | Graceful shutdown coordination |
 | web/lib/browser-slash-command-dispatch.ts | Commands | Slash command dispatch |
@@ -1013,10 +1026,10 @@ Quick lookup: which files are part of each system?
 | **Permissions** | core/extensions/project-trust.ts, core/auth-storage.ts |
 | **Remote Questions** | src/resources/extensions/remote-questions/* |
 | **Search the Web** | src/resources/extensions/search-the-web/* |
-| **Session Management** | pi-coding-agent/src/core/session-manager.ts, core/settings-manager.ts, web/app/api/session/* |
+| **Session Management** | pi-coding-agent/src/core/session-manager*.ts, core/settings-manager.ts, web/app/api/session/* |
 | **Skills** | src/resources/skills/*, gsd/skill-telemetry.ts, gsd/preferences-skills.ts, core/skills.ts |
 | **Slash Commands** | src/resources/extensions/slash-commands/* |
-| **State Machine** | gsd/state.ts, gsd/history.ts, gsd/json-persistence.ts, gsd/memory-store.ts, gsd/reactive-graph.ts, core/agent-session.ts, web/lib/gsd-workspace-store.tsx |
+| **State Machine** | gsd/state.ts, gsd/state/derive/*, gsd/history.ts, gsd/json-persistence.ts, gsd/memory-store.ts, gsd/reactive-graph.ts, core/agent-session.ts, web/lib/gsd-workspace-store.tsx, web/lib/command-surface-store.ts, web/lib/workspace-live-state.ts |
 | **Studio App** | studio/* |
 | **Subagent** | src/resources/extensions/subagent/*, src/resources/agents/* |
 | **Syntax Highlighting** | native/crates/engine/src/highlight.rs, packages/native/src/highlight/* |

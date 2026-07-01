@@ -24,8 +24,9 @@ import { GIT_NO_PROMPT_ENV } from "./git-constants.js";
  * With external state (symlink), these are a no-op in most cases,
  * but retained for backwards compatibility during migration.
  */
-const GSD_RUNTIME_PATTERNS = [
+export const GSD_RUNTIME_PATTERNS = [
   ".gsd-worktrees/",
+  ".gsd-backups/",
   ".gsd/activity/",
   ".gsd/audit/",
   ".gsd/forensics/",
@@ -51,6 +52,8 @@ const BASELINE_PATTERNS = [
   ".gsd",
   // Worktree container sibling — NOT covered by the ".gsd" pattern above.
   ".gsd-worktrees/",
+  // Flat-phase migration snapshots — NOT covered by the ".gsd" pattern above.
+  ".gsd-backups/",
   ".gsd-id",
   ".mcp.json",
   ".bg-shell/",
@@ -221,10 +224,14 @@ export function ensureGitignore(
   );
 
   // Determine which patterns to apply. If .gsd/ has tracked files,
-  // exclude the ".gsd" pattern to prevent deleting tracked state.
+  // exclude the ".gsd" pattern to prevent deleting tracked state, but
+  // substitute the granular GSD_RUNTIME_PATTERNS so transient artifacts
+  // (STATE.md, runtime/, gsd.db, event-log.jsonl, …) still get ignored.
+  // Without this fallback, the pre-completion commit gate sees those
+  // runtime paths as untracked and blocks milestone close-out forever.
   const gsdIsTracked = hasGitTrackedGsdFiles(basePath);
-  const patternsToApply = gsdIsTracked
-    ? BASELINE_PATTERNS.filter((p) => p !== ".gsd")
+  const patternsToApply: readonly string[] = gsdIsTracked
+    ? Array.from(new Set([...BASELINE_PATTERNS.filter((p) => p !== ".gsd"), ...GSD_RUNTIME_PATTERNS]))
     : BASELINE_PATTERNS;
 
   // Find patterns not yet present

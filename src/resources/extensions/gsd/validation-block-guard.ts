@@ -7,7 +7,7 @@ import { getAutoWorktreePath, isInAutoWorktree } from "./auto-worktree.js";
 import { ensureDbOpen } from "./bootstrap/dynamic-tools.js";
 import { refreshWorkflowDatabaseFromDisk } from "./db-workspace.js";
 import { getIsolationMode } from "./preferences.js";
-import { deriveState } from "./state.js";
+import { deriveState, invalidateStateCache } from "./state.js";
 import type { GSDState } from "./types.js";
 import { detectWorktreeName } from "./worktree.js";
 
@@ -133,12 +133,7 @@ export function formatValidationBlockedMessage(
   ].join("\n\n");
 }
 
-export async function getValidationBlockMessageForBase(
-  base: string,
-  attemptedCommand = "",
-): Promise<string | null> {
-  await ensureDbOpen(base);
-  refreshWorkflowDatabaseFromDisk();
+async function deriveValidationBlockState(base: string): Promise<GSDState> {
   let state = await deriveState(base);
 
   if (
@@ -153,5 +148,16 @@ export async function getValidationBlockMessageForBase(
     }
   }
 
+  return state;
+}
+
+export async function getValidationBlockMessageForBase(
+  base: string,
+  attemptedCommand = "",
+): Promise<string | null> {
+  await ensureDbOpen(base);
+  refreshWorkflowDatabaseFromDisk();
+  invalidateStateCache();
+  const state = await deriveValidationBlockState(base);
   return formatValidationBlockedMessage(state, attemptedCommand);
 }

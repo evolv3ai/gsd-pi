@@ -101,6 +101,7 @@ export type {
 interface PromptToolContextOptions {
 	workflowMcpServerName?: string | null;
 	browserMcpServerName?: string | null;
+	questionToolAvailable?: boolean;
 }
 
 /** `SimpleStreamOptions` extended with an optional extension UI context for elicitation dialogs. */
@@ -480,8 +481,10 @@ export function buildPromptFromContext(context: Context, toolContext: PromptTool
 		? "- GSD workflow tools (gsd_exec, gsd_slice_complete, gsd_task_complete, gsd_plan_slice, gsd_save_gate_result, etc.) " +
 			`are MCP tools — call them as mcp__${toolContext.workflowMcpServerName}__<tool_name> ` +
 			`(e.g. mcp__${toolContext.workflowMcpServerName}__gsd_exec, mcp__${toolContext.workflowMcpServerName}__gsd_save_gate_result)\n` +
-			`- Structured user input: call mcp__${toolContext.workflowMcpServerName}__ask_user_questions. ` +
-			"Do not call bare ask_user_questions. Do not call native AskUserQuestion.\n"
+			(toolContext.questionToolAvailable !== false
+				? `- Structured user input: call mcp__${toolContext.workflowMcpServerName}__ask_user_questions. ` +
+					"Do not call bare ask_user_questions. Do not call native AskUserQuestion.\n"
+				: "")
 		: "- GSD workflow MCP tools are unavailable in this Claude Code run.\n";
 	const toolSearchLine = toolContext.workflowMcpServerName
 		? "- ToolSearch is available only for Claude Code deferred workflow MCP hydration. " +
@@ -1753,6 +1756,16 @@ function workflowMcpServerNameFromAllowedTools(allowedTools: unknown): string | 
 	return undefined;
 }
 
+function workflowQuestionToolAvailableFromAllowedTools(
+	allowedTools: unknown,
+	workflowMcpServerName: string | undefined,
+	gsdPhase: string | undefined,
+): boolean | undefined {
+	if (!workflowMcpServerName || !gsdPhase) return undefined;
+	return Array.isArray(allowedTools)
+		&& allowedTools.includes(`mcp__${workflowMcpServerName}__ask_user_questions`);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -2257,6 +2270,11 @@ async function pumpSdkMessages(
 		const prompt = buildPromptFromContext(context, {
 			workflowMcpServerName,
 			browserMcpServerName: browserMcpServerNameFromAllowedTools(sdkOpts.allowedTools),
+			questionToolAvailable: workflowQuestionToolAvailableFromAllowedTools(
+				sdkOpts.allowedTools,
+				workflowMcpServerName,
+				gsdPhase,
+			),
 		});
 		const queryPrompt = buildSdkQueryPrompt(context, prompt);
 

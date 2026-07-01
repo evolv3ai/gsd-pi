@@ -4,7 +4,7 @@
 // File Purpose: Browser chat mode shell with workflow actions and bridge-backed input.
 
 import Image from "next/image"
-import { useEffect, useRef, useCallback, useState, useMemo, KeyboardEvent, DragEvent, ClipboardEvent } from "react"
+import { useEffect, useRef, useCallback, useState, useMemo, memo, KeyboardEvent, DragEvent, ClipboardEvent } from "react"
 import { MessagesSquare, SendHorizonal, Check, Eye, EyeOff, Play, Loader2, Milestone, X, MessageCircle, FileEdit, FilePlus, Terminal, ChevronDown, ChevronRight, MoreHorizontal, Zap, Square, Pause, BarChart3, LayoutGrid, ListOrdered, History, Compass, PenLine, Inbox, SkipForward, Undo2, BookOpen, Settings, SlidersHorizontal, Stethoscope, FileOutput, Trash2, Globe, type LucideIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Input } from "@/components/ui/input"
@@ -20,7 +20,6 @@ import {
   type CompletedToolExecution,
   type ActiveToolExecution,
   type PendingUiRequest,
-  type TurnSegment,
 } from "@/lib/gsd-workspace-store"
 import { deriveWorkflowAction } from "@/lib/workflow-actions"
 import { useTerminalFontSize } from "@/lib/use-terminal-font-size"
@@ -303,9 +302,6 @@ function getChatHighlighter(): Promise<ShikiHighlighter> {
  * Renders markdown content using react-markdown + remark-gfm + shiki code blocks.
  * Dynamic imports keep the main bundle lean.
  * Falls back to plain text if modules fail to load.
- *
- * Observability:
- *   - console.debug("[ChatBubble] markdown modules loaded") fires once on first render
  */
 function MarkdownContent({ content }: { content: string }) {
   const [rendered, setRendered] = useState<React.ReactNode | null>(null)
@@ -322,7 +318,6 @@ function MarkdownContent({ content }: { content: string }) {
     ])
       .then(([ReactMarkdownMod, remarkGfmMod, highlighter]) => {
         if (cancelled) return
-        console.debug("[ChatBubble] markdown modules loaded")
 
         const ReactMarkdown = ReactMarkdownMod.default
         const remarkGfm = remarkGfmMod.default
@@ -900,7 +895,7 @@ function PlatformLogoIcon({ className }: { className?: string }) {
  * Shows a collapsible preview of the LLM's reasoning with a visible,
  * well-styled block that shows more context lines.
  */
-function InlineThinking({ content, isStreaming }: { content: string; isStreaming: boolean }) {
+const InlineThinking = memo(function InlineThinking({ content, isStreaming }: { content: string; isStreaming: boolean }) {
   const [expanded, setExpanded] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const lines = content.split("\n").filter((l) => l.trim())
@@ -976,7 +971,7 @@ function InlineThinking({ content, isStreaming }: { content: string; isStreaming
       </button>
     </div>
   )
-}
+})
 
 /* ─── ChatBubble ─── */
 
@@ -989,7 +984,7 @@ function InlineThinking({ content, isStreaming }: { content: string; isStreaming
  * - incomplete messages show an animated streaming cursor
  * - when message.prompt.kind === 'select', TuiSelectPrompt renders below content
  */
-function ChatBubble({
+const ChatBubble = memo(function ChatBubble({
   message,
   onSubmitPrompt,
   isThinking,
@@ -1070,7 +1065,15 @@ function ChatBubble({
             </span>
           </div>
         )}
-        {message.content && <MarkdownContent content={message.content} />}
+        {message.content && (
+          message.complete ? (
+            <MarkdownContent content={message.content} />
+          ) : (
+            <span className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
+              {message.content}
+            </span>
+          )
+        )}
         {!message.complete && !hasAnyPrompt && <StreamingCursor />}
         {hasSelectPrompt && (
           <TuiSelectPrompt
@@ -1093,68 +1096,8 @@ function ChatBubble({
       </div>
     </div>
   )
-}
+})
 
-/* ─── ChatMessageList ─── */
-
-/**
- * Renders ChatMessage[] as a scrollable list of ChatBubble components.
- *
- * Scroll behavior:
- *   - Auto-scrolls to bottom on new messages ONLY when the user is within 100px of bottom
- *   - If the user has scrolled up to read history, auto-scroll is suppressed
- */
-function ChatMessageList({
-  messages,
-  onSubmitPrompt,
-  fontSize,
-}: {
-  messages: ChatMessage[]
-  onSubmitPrompt: (data: string) => void
-  fontSize?: number
-}) {
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const isNearBottomRef = useRef(true)
-  const prevMessageCountRef = useRef(messages.length)
-
-  const handleScroll = useCallback(() => {
-    const el = scrollRef.current
-    if (!el) return
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    isNearBottomRef.current = distanceFromBottom < 100
-  }, [])
-
-  // Scroll to bottom on new messages (if user is near bottom)
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
-
-    const isNewMessage = messages.length !== prevMessageCountRef.current
-    prevMessageCountRef.current = messages.length
-
-    if (isNearBottomRef.current) {
-      el.scrollTop = el.scrollHeight
-    }
-
-    // If a new message arrives while scrolled up, still update the count but don't scroll
-    void isNewMessage
-  }, [messages])
-
-  return (
-    <div
-      ref={scrollRef}
-      onScroll={handleScroll}
-      className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
-      style={fontSize ? { fontSize: `${fontSize}px` } : undefined}
-    >
-      {messages.map((msg) => (
-        <ChatBubble key={msg.id} message={msg} onSubmitPrompt={onSubmitPrompt} />
-      ))}
-      {/* Bottom spacer for scroll anchor */}
-      <div className="h-2" />
-    </div>
-  )
-}
 
 /* ─── ChatInputBar ─── */
 
@@ -1968,7 +1911,7 @@ interface ChatPaneProps {
  * Bash tool shows the command and output.
  * Other tools show a compact summary.
  */
-function ToolExecutionBlock({ tool }: { tool: CompletedToolExecution }) {
+const ToolExecutionBlock = memo(function ToolExecutionBlock({ tool }: { tool: CompletedToolExecution }) {
   const [expanded, setExpanded] = useState(false)
   const autoExpandedRef = useRef(false)
   const normalizedToolName = typeof tool.name === "string" ? tool.name.toLowerCase() : ""
@@ -1993,8 +1936,8 @@ function ToolExecutionBlock({ tool }: { tool: CompletedToolExecution }) {
 
   // Result text (for bash output, read result, etc.)
   const resultText = tool.result?.content
-    ?.filter((c) => c.type === "text" && c.text)
-    .map((c) => c.text)
+    ?.filter((c: { type: string; text?: string }) => c.type === "text" && c.text)
+    .map((c: { type: string; text?: string }) => c.text)
     .join("\n") ?? ""
 
   useEffect(() => {
@@ -2080,7 +2023,7 @@ function ToolExecutionBlock({ tool }: { tool: CompletedToolExecution }) {
       </div>
     </div>
   )
-}
+})
 
 /**
  * ChatPane — bridge event-driven chat rendering.
@@ -2088,7 +2031,7 @@ function ToolExecutionBlock({ tool }: { tool: CompletedToolExecution }) {
  * Consumes structured agent events from the workspace store:
  * - streamingAssistantText: live text deltas from the LLM
  * - streamingThinkingText: live thinking/reasoning deltas
- * - liveTranscript: completed text blocks from previous turns
+ * - completedTurns: completed turns with segment-ordered content
  * - activeToolExecution: currently running tool call
  *
  * User messages are tracked locally and sent via submitInput().
@@ -2170,51 +2113,42 @@ export function ChatPane({ className, onOpenAction }: ChatPaneProps) {
     | { kind: "streaming-message"; content: string; isThinking: boolean }
     | { kind: "ui-request"; request: PendingUiRequest }
 
-  const timeline = useMemo((): TimelineItem[] => {
+  const completedTimeline = useMemo((): TimelineItem[] => {
     const items: TimelineItem[] = []
-    const transcriptBlocks = state.liveTranscript
-    const segmentBlocks = state.completedTurnSegments
-    const userMsgs = state.chatUserMessages
 
-    // Interleave: user messages alternate with assistant turns.
-    // For completed turns, render from segments to preserve chronological order.
-    for (let i = 0; i < Math.max(userMsgs.length, transcriptBlocks.length); i++) {
-      if (i < userMsgs.length) {
-        items.push({ kind: "message", message: userMsgs[i] })
+    for (let i = 0; i < state.completedTurns.length; i++) {
+      const turn = state.completedTurns[i]!
+      if (turn.userMessage) {
+        items.push({ kind: "message", message: turn.userMessage })
       }
-      if (i < segmentBlocks.length && segmentBlocks[i].length > 0) {
-        // Render each segment in order
-        for (const seg of segmentBlocks[i]) {
-          if (seg.kind === "thinking") {
-            items.push({ kind: "thinking", content: seg.content, id: `turn-${i}-thinking-${items.length}` })
-          } else if (seg.kind === "text") {
-            items.push({
-              kind: "message",
-              message: {
-                id: `turn-${i}-text-${items.length}`,
-                role: "assistant",
-                content: seg.content,
-                complete: true,
-                timestamp: i + 1,
-              },
-            })
-          } else if (seg.kind === "tool") {
-            items.push({ kind: "tool", tool: seg.tool })
-          }
+      for (const seg of turn.segments) {
+        if (seg.kind === "thinking") {
+          items.push({ kind: "thinking", content: seg.content, id: `turn-${i}-thinking-${items.length}` })
+        } else if (seg.kind === "text") {
+          items.push({
+            kind: "message",
+            message: {
+              id: `turn-${i}-text-${items.length}`,
+              role: "assistant",
+              content: seg.content,
+              complete: true,
+              timestamp: i + 1,
+            },
+          })
+        } else if (seg.kind === "tool") {
+          items.push({ kind: "tool", tool: seg.tool })
         }
-      } else if (i < transcriptBlocks.length && transcriptBlocks[i].trim()) {
-        // Fallback: no segments stored yet (shouldn't happen for new turns, but safe)
-        items.push({
-          kind: "message",
-          message: {
-            id: `transcript-${i}`,
-            role: "assistant",
-            content: transcriptBlocks[i],
-            complete: true,
-            timestamp: i + 1,
-          },
-        })
       }
+    }
+
+    return items
+  }, [state.completedTurns])
+
+  const streamingTimeline = useMemo((): TimelineItem[] => {
+    const items: TimelineItem[] = []
+
+    if (state.pendingUserMessage) {
+      items.push({ kind: "message", message: state.pendingUserMessage })
     }
 
     // Current turn: render finalized segments, then any in-flight content
@@ -2274,18 +2208,97 @@ export function ChatPane({ className, onOpenAction }: ChatPaneProps) {
     }
 
     return items
-  }, [state.liveTranscript, state.completedTurnSegments, state.currentTurnSegments, state.streamingAssistantText, state.streamingThinkingText, state.activeToolExecution, state.pendingUiRequests, state.chatUserMessages, isStreaming, renderTimestamp])
+  }, [state.pendingUserMessage, state.currentTurnSegments, state.streamingAssistantText, state.streamingThinkingText, state.activeToolExecution, state.pendingUiRequests, isStreaming, renderTimestamp])
 
   // Prompt submit handler for TUI prompts (select/text/password)
   const handlePromptSubmit = useCallback((data: string) => {
     void submitInput(data.replace(/\r$/, ""))
   }, [submitInput])
 
-  const showPlaceholder = timeline.length === 0 && !isStreaming
+  const hasTimelineContent = completedTimeline.length > 0 || streamingTimeline.length > 0
+
+  const renderTimelineItem = useCallback((item: TimelineItem) => {
+    switch (item.kind) {
+      case "message":
+        return (
+          <ChatBubble
+            key={item.message.id}
+            message={item.message}
+            onSubmitPrompt={handlePromptSubmit}
+          />
+        )
+      case "thinking":
+        return (
+          <div key={item.id} className="flex justify-start gap-3">
+            <div className="w-7 flex-shrink-0" />
+            <div className="max-w-[82%] min-w-0">
+              <InlineThinking content={item.content} isStreaming={false} />
+            </div>
+          </div>
+        )
+      case "streaming-thinking":
+        return (
+          <div key="streaming-thinking" className="flex justify-start gap-3">
+            <div className="w-7 flex-shrink-0" />
+            <div className="max-w-[82%] min-w-0">
+              <InlineThinking content={item.content} isStreaming={true} />
+            </div>
+          </div>
+        )
+      case "streaming-message":
+        return (
+          <ChatBubble
+            key="streaming-message"
+            message={{
+              id: "streaming-current",
+              role: "assistant",
+              content: item.content,
+              complete: false,
+              timestamp: renderTimestamp,
+            }}
+            isThinking={item.isThinking}
+          />
+        )
+      case "tool":
+        return <ToolExecutionBlock key={item.tool.id} tool={item.tool} />
+      case "active-tool":
+        return (
+          <div key={`active-${item.tool.id}`} className="flex justify-start gap-3">
+            <div className="w-7 flex-shrink-0" />
+            <div className="max-w-[82%] min-w-0">
+              <div className="flex items-center gap-2 rounded-lg border border-border/50 bg-muted/50 px-3.5 py-2">
+                <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+                <span className="font-mono text-xs text-muted-foreground">
+                  {item.tool.name}
+                </span>
+                {Boolean(item.tool.args?.path) && (
+                  <span className="font-mono text-xs text-info/80 truncate">
+                    {String(item.tool.args?.path)}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      case "ui-request":
+        return <InlineUiRequest key={item.request.id} request={item.request} />
+    }
+  }, [handlePromptSubmit, renderTimestamp])
+
+  const completedTimelineRows = useMemo(
+    () => completedTimeline.map(renderTimelineItem),
+    [completedTimeline, renderTimelineItem],
+  )
+  const streamingTimelineRows = useMemo(
+    () => streamingTimeline.map(renderTimelineItem),
+    [streamingTimeline, renderTimelineItem],
+  )
+
+  const showPlaceholder = !hasTimelineContent && !isStreaming
 
   // Show an "awaiting input" indicator when the session is idle (connected,
   // not streaming, has timeline content) so the UI does not appear stuck (#2707).
-  const showAwaitingInput = connected && !isStreaming && timeline.length > 0
+  const showAwaitingInput = connected && !isStreaming && hasTimelineContent
     && !state.activeToolExecution
     && state.pendingUiRequests.length === 0
 
@@ -2305,7 +2318,7 @@ export function ChatPane({ className, onOpenAction }: ChatPaneProps) {
     if (isNearBottomRef.current) {
       el.scrollTop = el.scrollHeight
     }
-  }, [timeline])
+  }, [completedTimeline, streamingTimeline])
 
   return (
     <div
@@ -2327,73 +2340,8 @@ export function ChatPane({ className, onOpenAction }: ChatPaneProps) {
             className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
             style={terminalFontSize !== 13 ? { fontSize: `${terminalFontSize}px` } : undefined}
           >
-            {timeline.map((item, idx) => {
-              switch (item.kind) {
-                case "message":
-                  return (
-                    <ChatBubble
-                      key={item.message.id}
-                      message={item.message}
-                      onSubmitPrompt={handlePromptSubmit}
-                    />
-                  )
-                case "thinking":
-                  return (
-                    <div key={item.id} className="flex justify-start gap-3">
-                      <div className="w-7 flex-shrink-0" />
-                      <div className="max-w-[82%] min-w-0">
-                        <InlineThinking content={item.content} isStreaming={false} />
-                      </div>
-                    </div>
-                  )
-                case "streaming-thinking":
-                  return (
-                    <div key="streaming-thinking" className="flex justify-start gap-3">
-                      <div className="w-7 flex-shrink-0" />
-                      <div className="max-w-[82%] min-w-0">
-                        <InlineThinking content={item.content} isStreaming={true} />
-                      </div>
-                    </div>
-                  )
-                case "streaming-message":
-                  return (
-                    <ChatBubble
-                      key="streaming-message"
-                      message={{
-                        id: "streaming-current",
-                        role: "assistant",
-                        content: item.content,
-                        complete: false,
-                        timestamp: renderTimestamp,
-                      }}
-                      isThinking={item.isThinking}
-                    />
-                  )
-                case "tool":
-                  return <ToolExecutionBlock key={item.tool.id} tool={item.tool} />
-                case "active-tool":
-                  return (
-                    <div key={`active-${item.tool.id}`} className="flex justify-start gap-3">
-                      <div className="w-7 flex-shrink-0" />
-                      <div className="max-w-[82%] min-w-0">
-                        <div className="flex items-center gap-2 rounded-lg border border-border/50 bg-muted/50 px-3.5 py-2">
-                          <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
-                          <span className="font-mono text-xs text-muted-foreground">
-                            {item.tool.name}
-                          </span>
-                          {Boolean(item.tool.args?.path) && (
-                            <span className="font-mono text-xs text-info/80 truncate">
-                              {String(item.tool.args?.path)}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )
-                case "ui-request":
-                  return <InlineUiRequest key={item.request.id} request={item.request} />
-              }
-            })}
+            {completedTimelineRows}
+            {streamingTimelineRows}
             {showAwaitingInput && (
               <div className="flex items-center gap-2 px-1 py-1 text-xs text-muted-foreground animate-in fade-in duration-500">
                 <span className="inline-block h-2 w-2 rounded-full bg-emerald-500/70 animate-pulse" />

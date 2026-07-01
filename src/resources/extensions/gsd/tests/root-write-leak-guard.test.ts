@@ -7,7 +7,26 @@ import { closeSync, ftruncateSync, openSync, statSync, writeFileSync } from "nod
 import { join } from "node:path";
 
 import { captureRootDirtySnapshot } from "../root-write-leak-guard.ts";
-import { cleanup, git, makeTempRepo } from "./test-utils.ts";
+import { cleanup, createFile, git, makeTempRepo } from "./test-utils.ts";
+
+test("captureRootDirtySnapshot ignores unignored GSD root runtime directories", () => {
+  const base = makeTempRepo("gsd-root-dirty-runtime-");
+  try {
+    createFile(base, ".gsd/STATE.md", "state\n");
+    createFile(base, ".gsd-backups/snap-001", "backup\n");
+    createFile(base, ".gsd-worktrees/M001/file.txt", "worktree\n");
+    createFile(base, "src/foo.ts", "export {};\n");
+
+    const snapshot = captureRootDirtySnapshot(base);
+
+    assert.equal(snapshot.has(".gsd/STATE.md"), false);
+    assert.equal(snapshot.has(".gsd-backups/snap-001"), false);
+    assert.equal(snapshot.has(".gsd-worktrees/M001/file.txt"), false);
+    assert.equal(snapshot.has("src/foo.ts"), true);
+  } finally {
+    cleanup(base);
+  }
+});
 
 test("captureRootDirtySnapshot does not read dirty files larger than Node's Buffer limit", () => {
   const base = makeTempRepo("gsd-root-dirty-large-");

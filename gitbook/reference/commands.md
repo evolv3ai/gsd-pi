@@ -86,7 +86,7 @@ These top-level commands dispatch native GSD workflows against the milestone, sl
 | `/gsd progress` | Summarize recent work; can route `--next` or `--do "..."` |
 | `/gsd health` | Check `.gsd/` integrity (`--repair`, `--context`) |
 | `/gsd surface` | Manage surfaced skills and extensions |
-| `/gsd code-review` | Review changed source for bugs, security, and quality |
+| `/gsd code-review` | Review changed source diff-first for bugs, security, and quality |
 | `/gsd review` | Peer-review recent work across reviewer perspectives |
 | `/gsd audit-milestone` | Verify a milestone met its definition of done |
 | `/gsd audit-uat` | Audit outstanding UAT/verification items |

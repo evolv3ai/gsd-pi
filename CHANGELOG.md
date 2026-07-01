@@ -8,6 +8,396 @@ This changelog starts from the `open-gsd/gsd-pi` ownership baseline. Earlier pro
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-07-01
+
+### Added
+- **models**: add Claude Sonnet 5
+- add Hermes plugin installer
+- **compat**: report .planning/ drift in /gsd sync and doctor
+- **compat**: project to .planning/ inside renderAllFromDb
+- **compat**: add external-planning-edit drift handler
+- **compat**: add DB → .planning/ projection writer
+- **compat**: extract .planning/ layout detector
+- **compat**: extend marker schema 1→2 with planning field
+- **compat**: add compat-health check to /gsd doctor
+- **compat**: add /gsd sync command
+- **compat**: refresh .gsd/.compat.json on every projection write
+- **compat**: register external-markdown-edit in DRIFT_REGISTRY
+- **compat**: add external-markdown-edit drift handler
+- **compat**: add .gsd/.compat.json marker module
+- **layout**: startup auto-migration nested → flat-phase
+- **layout**: importer walks .gsd/phases/ flat-phase structure
+- **layout**: renderer emits flat-phase paths + tasks as checkboxes
+- **layout**: route path resolvers through layout-policy
+- **layout**: add flat-phase layout-policy module
+- **visualizer**: show memory store entries
+- **gsd**: add 43 prompt-driven workflows for exploration, review, and project management
+- gsd read --json CLI and Hermes memory provider
+- **hermes**: cron headless and credential passthrough
+- **mcp-server**: add gsd_cancel_by_project tool
+- **hermes**: supervisor FSM and /gsd slash router
+- **hermes**: pre_llm_call snapshot injection
+- **hermes**: gsd-mcp-server sidecar MCP client
+- **hermes**: tiered project binding resolver
+- **hermes**: scaffold open-gsd-hermes plugin package
+
+### Fixed
+- **gsd**: resolve write-gate snapshots from project root in worktrees
+- **doctor**: report missing artifact files
+- **issue**: [Bug]: `/gsd doctor` has no probe for a never-built or desynced `memories_fts` index, so memory search silently degrades to a LIKE fallback
+- **issue**: [Bug]: The per-tool loop guard accumulates a tool's count across the entire auto unit with no progress signal, blocking a legitimately progressing tool-heavy unit
+- **issue**: [Bug]: `gsd_exec` is capped at 6 calls per unit by the tool-loop guard while equivalent execution tools get 15, blocking legitimate tool-heavy `/gsd auto` units
+- **gsd**: read PLAN task checkboxes from the <tasks> block via parsePlan
+- **gsd**: guard checkbox DB check so query failures never block doctor
+- **issue**: [Bug]: Harness tool-loop-guard blocks are counted as tool-schema validation failures, tripping the consecutive-failure breaker and aborting the auto unit
+- **gsd**: run checkbox DB check outside projection drift try/catch
+- **gsd**: isolate missing task-plan recovery retry counter from pre-exec
+- **issue**: [Bug]: `/gsd doctor` never compares ROADMAP/PLAN checkbox state against authoritative DB status, so DB↔projection divergence is reported as "no problems"
+- **issue**: [Bug]: The "recover missing task plan → plan-slice" auto-dispatch rule re-dispatches `plan-slice` with no retry counter, allowing an uncounted regenerate loop
+- **issue**: [Bug]: `writeReactiveExecuteBlocker` force-flips a `deferred` task to complete/skipped because it exempts only `isClosedStatus`, not `isInactiveStatus`
+- **issue**: [Bug]: In `/gsd auto`, the tool-loop-guard block tells the model to "respond to the user in text" — but there is no user, so it induces the repeat that aborts the unit
+- **issue**: [Bug]: Read-only navigation tools (`ls`/`glob`/`grep`/`find`/`search_and_read`) are capped at 15 by the loop guard, risking false-positive blocks on legitimate exploration
+- **gsd**: only clear sketch flag after slice plan sync succeeds
+- **gsd**: preserve sketch flag on metadata-only plan-slice calls
+- **issue**: [Bug]: writeManifest performs a synchronous full-manifest disk write on the streaming tool-executor thread during a workflow tool call
+- **issue**: [Bug]: gsd_plan_slice is structurally broken — it can only persist a slice plan as ONE monolithic tasks[] tool call, which fails 100% of the time on real slices; the contract must be redesigned for incremental persistence
+- **gsd**: soften context warning session reroot
+- **issue**: [Bug]: migrateToExternalState swallows a per-file copy failure then deletes the backup and reports success
+- **issue**: [Bug]: GSD startup never calls `configureHttpDispatcher()`, so the `httpIdleTimeoutMs` setting is silently ignored and streamed LLM requests are pinned to undici's fixed 300s idle timeout
+- **issue**: [Bug]: memories_fts stays empty when FTS5 becomes available after schema V19 already ran without it
+- **issue**: [Bug]: saveEvidenceToDisk rewrites the entire evidence file 3 times per native tool call within an execute-task unit
+- **issue**: [Bug]: destructive-command guard hard-blocks read-only commands that merely contain the text "rm … -rf" (grep / echo / commit message)
+- **issue**: [Bug]: Root-write-leak guard flags `.gsd-backups/` and `.gsd-worktrees/` as leaks, hard-pausing `/gsd auto`
+- **gsd**: route remaining headless siblings off the agent-modes barrel
+- **issue**: [Windows][v1.3.0] /gsd auto exits back to PowerShell and headless auto child crashes during bootstrap with code 0xC0000409
+- **issue**: Auto-mode silently ignores undeclared nested git repos: edits never committed, no warning
+- **issue**: gsd_exec bash runtime spawns bare "bash" instead of using getShellConfig() — routes into WSL on Windows
+- **issue**: [Bug]: Tool-call loop guard blocks legitimate distinct `read` calls in read-heavy turns — the 16th distinct file read in one turn is misclassified as a "repeated tool" / "infinite loop"
+- **issue**: [Bug]: `/gsd pause` reports "paused" but never interrupts the in-flight agent turn (auto-mode keeps streaming tool calls until the model ends the turn)
+- **issue**: [Bug]: Auto-mode execute-task prompt points the agent at a non-existent `tasks/T##-PLAN.md` in flat-phase projects (hand-built path ignores the layout-aware `relTaskFile` helper)
+- **gsd**: require full untracked-set match before treating orphan stash as restored
+- **issue**: [Bug]: Decision-deferred milestone slice is skipped by selection but counted incomplete at closeout, hard-stalling `/gsd auto`
+- **gsd**: align plan-slice npm rule scope with the gate's actual parser
+- **issue**: [Bug]: Startup orphan-stash audit re-applies a completed-milestone preflight stash onto the working tree without a clean-tree check
+- **gsd**: anchor undo activity-log parsing on known unit types
+- **issue**: [Bug]: Manifest restore truncates artifact projection files when full_content is empty
+- **issue**: [Bug]: Attempt counter baked into hashed failure context defeats the duplicate-failure-context retry breaker
+- **issue**: broaden plan-slice npm rule to cover require/import code examples
+- **gsd**: parse non-milestone unit IDs in undo activity log regex
+- **issue**: [Bug]: plan-slice prompt omits the npm package-existence rule its post-unit gate hard-blocks on
+- **issue**: [Bug]: `/gsd undo` unchecks the PLAN.md box but leaves the DB task row closed, so the undo is silently reverted on the next render
+- **issue**: [Bug]: A single throwing row aborts the entire decisions/knowledge to memories backfill, leaving a permanent tail desync
+- **issue**: [Bug]: Verification-gate retry hashes volatile stderr, defeating the duplicate-failure breaker for host-check failures
+- **issue**: [Bug]: metrics.json is rewritten with 2-space pretty-printing at unit closeout despite being read only by code
+- run flat-phase backup pruning from auto worktrees
+- **gsd**: treat .gsd-backups/ as runtime and stop safety false positives
+- **gsd**: realign ADR-011/012 conformance tests and heal empty catch
+- **deps**: sync pnpm-lock.yaml with web @gsd/agent-core workspace dependency
+- align TUI transcript reducer with web turn-boundary and pre-tool streaming behavior
+- **tui**: preserve tool args and finalize thinking on thinking_end
+- **gsd**: remove leftover parsers-legacy import from auto-recovery.ts
+- **gsd**: preserve full milestone prefix when capping queue context
+- **worktree**: add logWarning to comment-only catch block in cleanupFailedSquashMergeState
+- **types**: narrow DriftRecord/DriftHandler generics in #1034 stale-render blocker test
+- **bug-3**: stale-render reconciliation loops on validation-blocked milestones made validation-blocked milestone summary drift return validation blockers instead of repair-loop failure.
+- **bug-2**: Worktree merge failure teardown leaves orphan milestone branches cleaned failed milestone squash state and best-effort deleted milestone branches after conflict cleanup.
+- **bug-1**: reactive-execute blocks legitimate lifecycle and diagnostic tools widened reactive-execute's scoped tool contract for status and diagnostic execution.
+- **issue**: [Bug]: timeout/idle recovery advances a plan-slice unit when a stale PLAN.md merely exists, without verifying the DB has any tasks
+- **retry**: preserve no-progress fingerprint across interleaved non-terminal retries
+- **issue**: [Bug]: auto-retry re-streams the entire turn from scratch on a `terminated` stream error with no no-progress guard, turning one interrupted generation into 3 full re-streams
+- **issue**: [Bug]: an in-flight tool card arms a 70ms full-render timer even when it renders as a static collapsed strip, driving ~14 full-tree TUI renders/sec for the whole duration of a long tool call
+- **gsd**: tighten artifact and tool loop guards
+- **issue**: [Bug]: milestone closeout false-blocks on \"missing UAT PASS verdict\" when the ASSESSMENT artifact is orphaned by a path migration (#1022)
+- **auto-prompts**: remove duplicate resolveExpectedArtifactPath import
+- **auto-prompts**: broaden research path resolution and fix telemetry skip reason
+- **health-widget**: bypass project-state cache on widget re-init
+- **gsd**: refresh project state cache on health widget re-init
+- **issue**: [Bug]: the always-on gsd-health widget runs a synchronous recursive readdirSync project-state scan on every 60s refresh
+- **quick**: invalidate pending-return miss cache when git branch changes
+- **issue**: [Bug]: Cant do anything: Error: spawn ENAMETOOLONG
+- **bug-4**: Planning phase can miss required research artifact execute-task prompts only advertise slice research when the artifact exists, preventing ENOENT reads for skipped S01 research.
+- **bug-3**: DB connection can disappear after task transaction completes added regression coverage for DB loss across the summary write await boundary.
+- **bug-2**: Stale-render repair fails instead of recovering DB-backed renders stale-render repair now binds to the project DB and retries after thrown or empty plan renders.
+- **bug-1**: Task completion commits DB state when PLAN render fails task completion now reopens the captured DB before projection rollback so failed renders do not leave DB completion drift.
+- **issue**: [Bug]: the always-on gsd-health widget's 60s "async" refresh runs synchronous PATH existsSync sweep + models.json JSON.parse on the main thread
+- **issue**: [Bug]: in sessions that never used /gsd quick, each assistant turn_end re-spawns `git branch --show-current` because cleanupQuickBranch has no negative-result cache
+- **issue**: [Bug]: the per-delta message_update hook does synchronous readFileSync of the write-gate snapshot when the assistant streams a consent question
+- **issue**: [Bug]: Claude Code strict-phase prompt advertises ask_user_questions when the phase allowedTools omit it
+- **issue**: [Bug]: interactive chat rebuilds all earlier text-run segments per render frame during a single streamed assistant turn, defeating the Markdown parse cache and hitching the TUI
+- **issue**: [Bug]: The always-on health widget refresh ends with synchronous git-log spawns, freezing the TUI on slow repos
+- **issue**: [Bug]: Claude Code strict-phase prompt advertises ask_user_questions when the phase allowedTools omit it
+- **google-cli**: add non-null assertions for child.stdout and child.stderr
+- **issue**: [Bug]: Cant do anything: Error: spawn ENAMETOOLONG
+- **complete-task**: honest rollback error message and clear caches on projection failure
+- **ci**: route openDatabase/getDbPath through db-workspace; update rollback test
+- **issue**: gsd_task_complete: PLAN.md checkbox not toggled → stale-render reconciliation loop fails in pass 0
+- **research-project**: steer context guidance to scout subagent orchestration, not gsd_summary_save/gsd_decision_save
+- **health-widget-test**: double-cast factory through unknown to fix TS2349
+- **health-widget-test**: capture factory in const to fix TS2349 narrowing after setInterval
+- **gsd-exec**: clear timeout timer when abort signal fires
+- **context-mode**: gate-evaluate nested guidance must not tell testers to dispatch subagents
+- **issue**: [Bug]: An aborted gsd_exec keeps its child process alive until the timeout cap (up to 10 minutes)
+- **issue**: [Bug]: The always-on health widget refresh ends with synchronous git-log spawns, freezing the TUI on slow repos
+- **issue**: [Bug]: /gsd forensics re-queries every slice and task to compute six summary counts when three aggregate queries suffice
+- **issue**: [Bug]: /gsd queue and /gsd rethink existing-milestones context inlines full active/pending CONTEXT, CONTEXT-DRAFT, and ROADMAP with no size cap
+- **issue**: [Bug]: discuss-milestone CONTEXT-DRAFT resume seed is appended after the preamble cap, growing the prompt 1:1 with the draft
+- **issue**: [Bug]: gate-evaluate prompt advertises the verification exec trio its narrow contract hard-blocks
+- **issue**: [Bug]: milestone validate+complete closeout contracts omit the verification-lane exec trio their prompts advertise
+- **issue**: [Bug]: complete-slice verification prompt advertises gsd_exec_search/gsd_resume that its own tool contract hard-blocks
+- **issue**: [Bug]: guided discuss units advertise the interview-lane exec trio their contracts hard-block on live /gsd discuss turns
+- **preflight**: restore cache with merge-state guard; align tests
+- **issue**: [Bug]: research-milestone contract omits the research-lane exec trio its prompt advertises
+- **issue**: [Bug]: /gsd worktree list/clean re-detects the main branch three times per worktree within a single command (#974)
+- **issue**: [Bug]: replan-slice and reassess-roadmap inherit the planning-lane exec trio their narrow contracts hard-block (#973)
+- **issue**: [Bug]: A single timed-out workflow MCP operation releases the serial mutation queue while it keeps running, so the retry races the zombie write
+- **issue**: [Bug]: A cancelled secure_env_collect parks until the 10-minute elicitation timeout because the handler never passes the abort signal (#971)
+- **issue**: [Bug]: gsd_summary_save content has no size cap → oversized single-argument save loses all work on stream abort (#966)
+- **issue**: [Bug]: manual /gsd discuss terminal provider stream error returns before stopReason handling, so the failed turn is never surfaced (#957)
+- **issue**: [Bug]: /gsd context token analysis serializes full tool-call arguments (including large content) with no redaction
+- **preflight**: guard clean cache against mid-TTL merge-state changes
+- **forensics**: mark commandsRun entry as failed for pending bash/bg_shell calls with no toolResult
+- **issue**: refresh workflow DB before validation-block guard derives state
+- **ci**: replace empty catch blocks in getContextSessionPart with logWarning calls
+- **issue**: [Bug]: /gsd forensics reports "Errors: 0" for tool calls that started but never returned a result
+- **prefs**: use indent+3 for first-array-item nested-object children in serializer
+- align defer check with display text and enable auto-mode in #956 test
+- **issue**: [Bug]: Per-commit `git rm --cached` cleanup loop re-runs on every unit dispatch (17 git spawns each time)
+- **issue**: [Bug]: Preferences serializer writes `post_unit_hooks[].on_block` as literal `[object Object]`, breaking every reload of the gate config
+- **issue**: [Bug]: Opening or scrolling the dashboard overlay runs the synchronous environment-doctor subprocess suite, freezing the TUI
+- **agent-end-recovery**: do not defer to core retry when rawErrorMsg is empty
+- **issue**: [Bug]: Milestone implementation-evidence check spawns one `git diff-tree` per commit across full history (N+1)
+- **issue**: [Bug]: /api/visualizer forks a fresh Node subprocess on every poll with no caching (2/4/8 spawns/min)
+- **issue**: [Bug]: Conflict preflight spawns 3–6 synchronous git processes on every `/gsd` command, even on clean repos
+- **bug-2**: Consolidation scanner prepares LIKE query per row scanner source-marker detection now uses one memories-table pass with no per-row LIKE probe.
+- **bug-1**: Maintenance work reruns before every user turn startup maintenance is now keyed by session instead of rerunning per turn.
+- **issue**: [Bug]: `emitUokGate` reloads/parses preference files (plus a DB insert + audit write) on every `advance()` call, before the cheap disabled-flag check
+- **issue**: [Bug]: Validation-block guard closes and reopens the SQLite DB from disk on every blockable command, even when nothing is blocked
+- **issue**: [Bug]: Workspace store emits a new state object per streaming token, re-rendering every consumer (no emit coalescing)
+- **complete-slice**: retry milestone roadmap render in post-hook when primary write failed
+- **issue**: [Bug]: Unmerged-milestone command preflight SHA-256-hashes every dirty project file before checking whether any is relevant
+- **complete-slice**: isolate projection try/catch blocks to prevent partial skips
+- **issue**: [Bug]: gsd_complete_task re-renders every completed-task summary in the milestone within a single task completion, freezing the tool result
+- **issue**: [Bug]: gsd_slice_complete re-renders every completed-task summary in the milestone within a single slice completion, freezing the tool result
+- **issue**: [Bug]: empty errorMessage with a stream-failure signature in content classifies as `unknown` and pauses auto-mode instead of retrying
+- **issue**: [Bug]: Auto-loop re-runs the full `advance()` pipeline with no backoff on a persistent "skip", pinning a core until the 500-iteration runaway cap (#939)
+- **issue**: [Bug]: MCP config files re-read and re-parsed from disk 3–5× per Claude Code dispatch (#942)
+- **issue**: [Bug]: Reorder Milestones does not effect /gsd (#875)
+- **issue**: [Bug]: getWorktreeHealth re-detects the constant main branch per worktree (~4 spawns each), so health scans cost N×~9 git spawns (#940)
+- **issue**: [Bug]: ChatPane rebuilds the entire conversation timeline array on every streaming token (#941)
+- **issue**: [Bug]: Observability plan/complete boundary validators load artifact files sequentially in awaited loops (#929)
+- **issue**: [Bug]: Post-execution cross-task signature check re-reads and re-parses every prior task's files on each task completion (O(N²)) (#926)
+- **issue**: C:/Program Files/Git/gsd auto reports roadmap-divergence after DB-backed recovery even though milestone status and roadmap artifact are consistent (#930)
+- **issue**: [Bug]: DB-authoritative state derivation re-scans milestone directories from disk on every derive (#937)
+- **issue**: [Bug]: Working-tree status is read twice per commit (`git status --porcelain` then `git status --short`) (#938)
+- **issue**: [Bug]: `gsd-browser --version` is spawned synchronously on every interactive startup, before the 24h update-cache check (#936)
+- **issue**: [Bug]: metrics.json is fully read, de-duplicated, and rewritten on every unit completion (O(history)) (#935)
+- **issue**: [Bug]: Dashboard overlay re-parses preferences markdown every 2s while open via uncached loadEffectiveGSDPreferences (#932)
+- **issue**: Bootstrap migration leaves orphaned .gsd.migrating that never self-heals: recoverFailedMigration bails when junction exists, only /gsd doctor --fix recovers (#931)
+- **issue**: [Bug] complete-slice unit stuck-loop: closer LLM hits HARD BLOCK on gsd_milestone_status (#934)
+- **issue**: [Bug] DB migration to .gsd-backups/migrate-<ts>/ propagates only S##-PLAN.md (often a BLOCKER placeholder), orphaning S##-CONTEXT/RESEARCH/CONTINUE — strands the slice behind require_slice_discussion + repeated CONTEXT-DRAFT save failures (#933)
+- **gitignore**: append granular GSD_RUNTIME_PATTERNS when .gsd/ is tracked (#927)
+- **issue**: [Bug]: Workflow MCP repo-root discovery walks the directory tree ~4× per launch-config build and is uncached (#925)
+- **issue**: [Bug]: GSD preferences are re-read and re-parsed from disk on every call, with no memoization (~6–8× per turn) (#924)
+- **issue**: [Bug]: `git ls-files` is spawned synchronously on every `before_agent_start`, before the freshness TTL short-circuit (#923)
+- **issue**: [Bug]: Parallel monitor overlay spawns sqlite3 synchronously and reads whole worker NDJSON logs on its 5s refresh, blocking the TUI event loop (#922)
+- **issue**: [Bug]: Workflow MCP readiness preflight spawns a fresh stdio server child process on every 200 ms poll (#921)
+- **issue**: [Bug]: Desktop notification delivery runs synchronous execFileSync (which + terminal-notifier/osascript) on the event loop (#920)
+- **issue**: [Bug]: file-lock onLocked:"skip" callers burn ~250ms of Atomics.wait retries before skipping (#919)
+- **issue**: [Bug]: Session-lock recovery uses a CPU busy-wait that pegs a core and blocks the event loop for up to 400ms (#918)
+- **issue**: [Bug]: Worktree-log reconcile can freeze the entire Node event loop for up to 5s on sync-lock contention (#917)
+- **issue**: [Bug]: Streaming chat message is fully re-parsed and shiki-highlighted over the whole growing buffer on every token (O(N²)) (#916)
+- **issue**: [Bug]: notification-store `_withLock` busy-spins the event loop during lock contention (#915)
+- **auto-artifact-paths**: layout-aware filename for ALL dir branches (#873)
+- **issue**: [Bug]: nativeDetectMainBranch is uncached and re-invoked 5–6 times within a single worktree merge/diff operation (#914)
+- **issue**: [Bug]: `initResources()` fast-path performs ~2,500+ synchronous recursive directory walks before the early return, even when the content hash matches (#913)
+- **issue**: [Bug]: First-prompt `before_agent_start` runs a serial, un-gated chain of synchronous DB-open, backfills, projections, and scans (#909)
+- **gsd**: flat-phase validation-path readers use layout-aware helpers (#876) (#878)
+- **issue**: [Bug]: Planning/research unit prompts advertise GSD tools their contracts hard-block (#867)
+- **auto**: scope stuck window to current session so stale entries don't block (#868)
+- **auto-recovery**: fall back to project root when worktree lacks the artifact (#865)
+- **auto-artifact-paths**: use META-only guard, not content-bearing guard
+- **bootstrap**: assertCriticalGsdWorkflowToolsRegistered tolerates pre-bind
+- **auto-artifact-paths**: resolveProjectMilestonePath ignores META-only dir
+- **issue**: [Bug]: GSD TUI hangs/freezes, tool fails, when trying to execute gsd_plan_slice function during auto-mode
+- **paths**: non-empty subdir counts as legacy content in dirIsContentBearingLegacyMilestone
+- **paths**: ignore subdirs in dirIsContentBearingLegacyMilestone
+- **bug-1**: Operational structured check ignores PASS verdicts Structured Operational matching now recognizes PASS and COVERED verdicts.
+- **paths**: metadata-only milestones/<MID>/ must not flip layout to legacy
+- **bootstrap**: registerToolSearchShim tolerates pre-bind runtime
+- **renderer**: delete stale stub ROADMAP when skipping unplanned milestone
+- **gsd**: remove stale stub ROADMAP when skipping unplanned milestone
+- **gsd**: create phase dirs for unplanned milestones during flat-phase migration
+- **auto**: typecheck errors and stable finalize-retry ledger strings
+- **auto**: strip attempt counters from finalize-retry ledger summaries
+- **auto**: stop finalize-retry loop masking the real verification failure
+- **cc-cli**: distinguish ask_user_questions host timeout from cancel (#852)
+- **model-router**: cross_provider:false must not be bypassed by non-Anthropic preferred session model in findModelForTier
+- **model-router**: use bareModelId comparison for wasDowngraded to avoid false positives when preferred and configuredPrimary differ only in provider-prefix format
+- **bug-2**: Light-tier fallback silently switches to Anthropic light-tier profile resolution stays on the selected/provider model instead of falling back to Claude.
+- **bug-1**: Standard-tier routing ignores the selected session model standard-tier routing now prefers the selected session model over cheaper same-tier models.
+- **ci**: restore pinned prompt phrases broken by PatchDeck compaction (activity-log + prompt-duplication-cuts tests)
+- **ci**: update complete-slice Phase 2 gate baseline to accommodate issue #846 terminal-handoff rules
+- **issue**: complete-milestone blocks with 'validation absent' when validate-milestone was skipped (worktree-merge cleanup)
+- **issue**: depth-verification gate for milestone CONTEXT.md is permanent block: user confirmation does not unlock it
+- **issue**: complete-slice LLM does project work after gsd_task_reopen, hits HARD BLOCK on gsd_plan_slice, then loops until context-window pressure
+- skip git conflict reconciliation during doctor dry-run
+- **issue**: Doctor unresolved_git_conflicts blocks auto-mode before attempting autoResolveSafeConflictPaths
+- **issue**: [Bug]: KV Cache Completely Invalidated on Every User Turn
+- **issue**: unmerged-milestone-guard uses diff instead of ancestor check: false-positive blocks every workflow command after a --no-ff merge
+- **issue**: unregistered-milestone drift hints at /gsd recover --confirm but that is a destructive full reimport, not a targeted import
+- **issue**: gsd worktree merge crashes: extension imports packages/pi-ai/src/ which doesn't ship in v1.3.0 tarball
+- **issue**: doctor stale_crash_lock hint is wrong: 'Run /gsd doctor' doesn't clear; needs /gsd doctor fix
+- **issue**: fix(run-uat): tool-unavailable retry delay too short for MCP startup race, causing stuck loop
+- **issue**: [Bug]: auto mode is broken in 1.3.0
+- **issue**: degrade to branch recovery when milestone branch is already checked out at root (#812-followup)
+- **evidence-cross-ref**: narrow spawn signature to shell interpreters only
+- **issue**: narrow infra spawn signature to missing shells only
+- **issue**: Evidence cross-reference flags WSL bash-spawn failures as falsified verification, hard-pausing auto-mode on Windows
+- **issue**: Stranded-milestone recovery silently checks out milestone branch in project root instead of recreating worktree
+- **issue**: [Bug]: Switching to fallback models does not work correctly: switch but not start with new model
+- **issue**: Bug: worktree-unregistered stuck loop - orphaned directories not cleaned up by safety validation
+- **issue**: Auto-mode pause: PROJECT.md registers phantom bare-ID milestone colliding with planner's unique-ID milestone (unique_milestone_ids)
+- **issue**: auto-pause: regenerable lockfiles (pnpm-lock, package-lock, etc.) are not auto-resolved, hard-pausing auto-mode
+- **gsd**: open workflow db during state derivation
+- **gsd**: open db before knowledge projection
+- **mcp**: stop terminal server failures retrying forever + reap spinning orphans (#783)
+- **compat**: exclude gsd.db from gsdTreeHasContent and always write .gsd/ on planning repair
+- **compat**: skip writeGSDDirectory on capture when .gsd/ already exists
+- **02**: revise plans based on checker feedback
+- **compat**: use valid LogComponent in planning-compat warning
+- **gsd**: import unseeded .planning/ via drift and respect sync dry-run
+- **compat**: dry-run read-only and initial planning DB import
+- **compat**: record .planning/ SHAs and fix doctor no-baseline signal
+- **compat**: record planning projection shas and capture layout on first read
+- **compat**: auto-activate .planning/ layout on first reconcile detect
+- **compat**: add logWarning to empty catch in flushProjectionWritesToMarker
+- **test**: update receivedDeps type to match Partial<ReconciliationDeps> signature
+- **compat**: remove duplicate externalMarkdownEditHandler from registry
+- **gsd**: run external-markdown-edit repair before DB re-render handlers
+- **compat**: run external-markdown-edit repair before stale-render
+- **gsd**: make sync dry-run read-only and clear quarantined compat marker
+- **compat**: deep-copy EMPTY_MARKER to prevent shared-reference pollution
+- **compat**: break module-init cycle in external-markdown-edit handler
+- **db**: lazy-init Drizzle client to avoid import-time DATABASE_URL requirement
+- **e2e**: force-skip 3 multi-milestone e2e tests via skipReason
+- **e2e**: correct flat-phase artifact lookup for multi-milestone tests
+- **e2e**: skip 3 multi-milestone e2e tests during flat-phase transition
+- **auto-dispatch**: null-guard slicePlanPath before startsWith; re-enable stale detection test
+- **stale-render**: gate detection on legacy layout; flat-phase returns empty
+- **test**: re-skip recovery stale-render integration test
+- **layout**: fully disable detectStaleRenders during flat-phase transition
+- **gsd**: gate stale-render skips on resolved milestone layout
+- **gsd**: skip flat-phase task summary stale detection
+- **gsd**: re-enable flat-phase stale-render checks except plan checkboxes
+- **e2e**: skip per-task summary assertions in remaining e2e tests
+- **gsd**: defer flat-phase migration safely when DB unavailable
+- **stale-render**: re-enable detection for legacy layouts; keep disabled for flat-phase
+- **test**: skip recovery stale-render integration test during flat-phase transition
+- **test**: update ensure-preconditions tests for flat-phase layout; use canonicalPhaseDirName
+- **test**: ensure-preconditions test uses flat-phase paths
+- **claude-code-cli**: use authoritative auto currentUnit for phase, not regex
+- **layout**: use canonicalPhaseDirName in renderer; use resolveMilestonePath in importer
+- **claude-code-cli**: stop ad-hoc turns being misclassified as workflow units
+- **gsd**: resolve flat-phase task and verification-failure artifact paths in post-unit
+- **test**: skip #442 stale-render parse-cache test during flat-phase transition
+- **test**: declare base variable in skipped stale-render test for typecheck
+- **layout**: skip stale-render tests during flat-phase transition
+- **layout**: re-enable stale-render detection; clear path cache in checkAutoStartAfterDiscuss
+- **workspace**: use layout-aware file resolution in checkAutoStartAfterDiscuss
+- **layout**: disable stale-render detection + fix e2e assertions
+- **workspace**: make scopeMilestone contextFile/roadmapFile/milestoneDir layout-aware
+- **tests**: restore planFileName in stale-render detector; update register-hooks test to flat-phase
+- **e2e**: stop bootstrap from creating legacy milestones/ dir on new projects
+- **gsd**: relTaskFile returns correct path for flat-phase task summaries
+- **layout**: stale-render SUMMARY/UAT detection uses buildSliceFileName
+- **tests**: use flat-phase base in plan-slice DB tests; add @gsd/agent-core dist-redirect
+- **gsd**: detect embedded tasks via <tasks> block, not only phases/ path
+- **paths**: propagate milestone title to relSliceFile for flat-phase dir naming
+- **test**: update regenerateIfMissing assertion to legacy slice plan path
+- **gsd**: verify task completion from plan checkbox without summary file
+- **layout**: revert worktree/auto-start path changes
+- **test**: normalize completed_at timestamps in duplicate-slice comparison
+- **content-validator**: match flat-phase **T01**: format in TASK_MARKER_RE
+- **layout**: replace hardcoded 'milestones' path segments in production code
+- **layout**: e2e assertArtifact checks flat-phase paths as fallback
+- **layout**: use layout-aware paths in summary_save, validate, and complete
+- **layout**: sync slice plan after plan-task in flat-phase layout
+- **layout**: task-plan check applies when tasks/ exists; align checkbox assertions
+- **layout**: make task summary paths layout-aware to avoid milestones/ side effects
+- **gsd**: scan phases/ tree when milestones/ coexists
+- **layout**: undo + dispatch tests green for flat-phase
+- **layout**: undo test fixtures updated for flat-phase
+- **layout**: dispatch tests updated for flat-phase task model
+- 7 integration test failures for flat-phase layout
+- **tests**: T11 plan path is T11-PLAN.md in phase dir, not slice plan
+- **tests**: update workflow-tools.test.ts artifact paths for flat-phase layout
+- **types**: add missing_roadmap to DoctorIssueCode union
+- 3 remaining CI failures (roadmap path, slice regex, doctor missing_roadmap)
+- address 4 remaining CI failures for flat-phase layout
+- **types**: use valid LogComponent 'migration' in md-importer phases scan catch
+- update tests and src for flat-phase planning layout
+- replace empty catch with logWarning in md-importer phases scan
+- **layout**: layout-aware paths for escalation, slice completion, guided-flow pseudo-milestones
+- **import**: import shared phase dirs per milestone and merge legacy trees
+- **layout**: complete-slice/task + eval-review + planning-crossval fixtures
+- **layout**: update eval-review test fixtures for flat-phase
+- **layout**: slice filename fallbacks and migration backup ordering
+- **test**: remove stale taskPlanPath reference in plan-slice test
+- **layout**: prompt filenames, slice artifact resolver, migration empty-DB, importer dedup
+- **layout**: flat-phase ensurePreconditions and markdown scan
+- **layout**: address bugbot review — exact phase prefix, suffixed IDs, slice import, fallback slug
+- **layout**: update test fixtures for flat-phase paths and filenames
+- **layout**: parse team-suffixed milestone IDs for phase number mapping
+- **layout**: remove DB import from paths.ts; layout-aware path resolution and imports
+- **dispatch**: skip task-plan recovery when tasks live in flat-phase slice plan
+- **import**: flat-phase slice completion and legacy milestone artifact walk
+- **layout**: backward-compat file naming + dual-write transition
+- **layout**: path resolvers check old milestones/ dir as legacy fallback
+- **import**: flat-phase checkbox is authoritative — skip per-task summary check
+- **gsd**: restore milestones on migration rollback and flat-phase import checks
+- **import**: apply completion-evidence check for flat-phase tasks
+- **migration**: restore milestones/ on rollback; widen phase-dir regex
+- **layout**: harden flat-phase migration and stale-render UAT repair
+- **layout**: CI build error + migration verification + stale-render UAT path
+- **gsd**: flat-phase layout discovery, migration, and parsing bugs
+- **layout**: wire flat-phase migration at startup; add legacy fallback in findMilestoneIds
+- **layout**: detectStaleRenders uses NN-MM naming for SUMMARY/UAT
+- **gsd**: validate inline workflow MCP preflight config
+- **layout**: all markdown-renderer tests green (28/28)
+- **layout**: add files/verify to <tasks> block, update renderer test assertions
+- **layout**: renderSliceSummary creates phase dir if missing
+- **layout**: drift handlers + renderer tests for flat-phase
+- **layout**: update drift tests + stale-render for flat-phase
+- **layout**: parsePlan extracts tasks from <tasks> XML blocks
+- **visualizer**: use workflow db opener
+- **gsd**: continue fallback chain on rate limits
+- **visualizer**: bound exported memories
+- **visualizer**: load memories for exports
+- **test**: assert no progress prompt for /gsd progress --do
+- harden hermes cancel and progress fallback
+- **mcp-server**: add CLI shebang
+- harden Hermes cancel and cron project selection
+- handle hermes command MCP failures
+- respect Hermes GSD binding context
+- harden hermes supervisor restart
+- **hermes**: handle GSD fallback edge cases
+- harden Hermes progress fallback
+- harden Hermes bind and auto restart
+- reset hermes supervisor session state
+- correct Hermes supervisor notifications
+- address hermes integration edge cases
+- address hermes integration edge cases
+- **hermes**: wire read CLI path, fixture .gsd, and contract tests
+
+### Changed
+- Pi/TUI and web state management Phase 1
+- stop tracking .planning/ local workspace and research cache
+- **ci**: refresh PR merge ref
+- **test**: allow committed .gsd/ fixtures under tests/__fixtures__
+- gitignore test-results artifacts
+- trigger CI retry (web build import.meta intermittent)
+- **deps**: bump undici from 6.24.1 to 8.5.0
+
 ## [1.3.0] - 2026-06-21
 
 ### Added

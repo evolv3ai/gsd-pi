@@ -94,6 +94,16 @@ test("plan-slice prompt: absence checks use negated quiet searches", () => {
   assert.ok(result.includes("count commands exit 1 when they find zero matches"));
 });
 
+test("plan-slice prompt: npm package existence rule is stated during generation", () => {
+  const result = loadPrompt("plan-slice", { ...BASE_VARS, commitInstruction: "Do not commit." });
+  assert.ok(result.includes("reference only packages that exist on the public npm registry"));
+  assert.ok(result.includes("remove or correct any package name that is not real"));
+  // The post-unit pre-execution gate parses package names from require/import
+  // patterns too, not just install commands, so the rule must cover that scope.
+  assert.ok(result.includes("require('...')"));
+  assert.ok(result.includes("import ... from '...'"));
+});
+
 test("plan-slice prompt: footer references gsd_plan_slice tool, not direct write", () => {
   const result = loadPrompt("plan-slice", { ...BASE_VARS, commitInstruction: "Do not commit." });
   assert.ok(

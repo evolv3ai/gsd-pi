@@ -1,6 +1,15 @@
 import type { ImageContent } from "@gsd/pi-ai";
 import type { AgentSessionEvent } from "@gsd/agent-core";
 
+import type { StreamingRenderState } from "./streaming-render-state.js";
+
+export type { ExtensionUiSnapshot } from "@gsd/agent-core";
+export { createEmptyExtensionUiSnapshot } from "@gsd/agent-core";
+
+/**
+ * Structural host passed into interactive controllers.
+ * Uses `any` for TUI/session surfaces — same convention as InteractiveModeDelegateHost.
+ */
 export interface InteractiveModeStateHost {
 	defaultEditor: any;
 	editor: any;
@@ -21,7 +30,7 @@ export interface InteractiveModeStateHost {
 	loadingAnimation?: any;
 	activityLoader?: any;
 	pendingWorkingMessage?: string | null;
-	gsdProgressState?: { phase?: string };
+	gsdProgressState?: { phase?: string; path?: string };
 	clearBlockingError(): void;
 	defaultWorkingMessage: string;
 	streamingComponent?: any;
@@ -37,6 +46,7 @@ export interface InteractiveModeStateHost {
 	editorContainer: any;
 	keybindingsManager?: any;
 	pendingImages: ImageContent[];
+	streamingRenderState: StreamingRenderState;
 }
 
 export type InteractiveModeEvent = AgentSessionEvent;

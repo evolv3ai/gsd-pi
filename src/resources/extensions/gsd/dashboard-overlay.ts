@@ -15,6 +15,7 @@ import { isDbAvailable, getMilestoneSlices, getSliceTasks } from "./gsd-db.js";
 import { resolveMilestoneFile, resolveSliceFile } from "./paths.js";
 import { getAutoDashboardData } from "./auto.js";
 import type { AutoDashboardData } from "./auto-dashboard.js";
+import { getAutoRuntimeSnapshot } from "./auto-runtime-state.js";
 import {
   getLedger, getProjectTotals, aggregateByPhase, aggregateBySlice,
   aggregateByModel, aggregateCacheHitRate, formatCost, formatTokenCount, formatCostProjection,
@@ -22,12 +23,13 @@ import {
   type UnitMetrics,
 } from "./metrics.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
+import { countPendingCaptures } from "./captures.js";
 import { getActiveWorktreeName } from "./worktree-session-state.js";
 import { getWorkerBatches, hasActiveWorkers, type WorkerEntry } from "../subagent/worker-registry.js";
 import { formatDuration, padRight, joinColumns, centerLine, fitColumns, STATUS_GLYPH, STATUS_COLOR } from "../shared/mod.js";
 import { estimateTimeRemaining } from "./auto-dashboard.js";
 import { computeProgressScore, formatProgressLine } from "./progress-score.js";
-import { runEnvironmentChecks, type EnvironmentCheckResult } from "./doctor-environment.js";
+import { runEnvironmentChecksAsync, type EnvironmentCheckResult } from "./doctor-environment.js";
 import { formattedShortcutPair } from "./shortcut-defs.js";
 import { renderDialogFrame, renderKeyHints } from "./tui/render-kit.js";
 
@@ -69,6 +71,9 @@ export class GSDDashboardOverlay {
   private loading = true;
   private loadedDashboardIdentity?: string;
   private refreshInFlight: Promise<void> | null = null;
+  private envRefreshInFlight: Promise<void> | null = null;
+  private cachedEnvBasePath?: string;
+  private cachedEnvIssues: EnvironmentCheckResult[] = [];
   private disposed = false;
   private resizeHandler: (() => void) | null = null;
   private cachedMetrics: {
@@ -113,7 +118,9 @@ export class GSDDashboardOverlay {
       });
   }
 
-  private computeDashboardIdentity(dashData: AutoDashboardData): string {
+  private computeDashboardIdentity(
+    dashData: Pick<AutoDashboardData, "active" | "paused" | "currentUnit" | "basePath">,
+  ): string {
     const base = dashData.basePath || process.cwd();
     const currentUnit = dashData.currentUnit
       ? `${dashData.currentUnit.type}:${dashData.currentUnit.id}:${dashData.currentUnit.startedAt}`
@@ -126,28 +133,88 @@ export class GSDDashboardOverlay {
     ].join("|");
   }
 
+  private refreshVolatileDashboardData(snapshot = getAutoRuntimeSnapshot()): void {
+    let pendingCaptureCount = this.dashData.pendingCaptureCount;
+    try {
+      if (snapshot.basePath) {
+        pendingCaptureCount = countPendingCaptures(snapshot.basePath);
+      }
+    } catch {
+      // Non-fatal — keep last known value
+    }
+    this.dashData = {
+      ...this.dashData,
+      active: snapshot.active,
+      paused: snapshot.paused,
+      currentUnit: snapshot.currentUnit
+        ? {
+            type: snapshot.currentUnit.type,
+            id: snapshot.currentUnit.id,
+            startedAt: snapshot.currentUnit.startedAt,
+          }
+        : null,
+      basePath: snapshot.basePath,
+      elapsed: snapshot.active || snapshot.paused
+        ? (this.dashData.startTime > 0 ? Date.now() - this.dashData.startTime : 0)
+        : 0,
+      toolSurface: snapshot.toolSurface,
+      pendingCaptureCount,
+    };
+  }
+
   private async refreshDashboard(initial = false): Promise<void> {
     if (this.disposed) return;
-    this.dashData = getAutoDashboardData();
-    const nextIdentity = this.computeDashboardIdentity(this.dashData);
+    const runtimeSnapshot = getAutoRuntimeSnapshot();
+    const nextIdentity = this.computeDashboardIdentity(runtimeSnapshot);
 
     const identityChanged = initial || nextIdentity !== this.loadedDashboardIdentity;
     if (identityChanged) {
+      this.dashData = getAutoDashboardData();
+      const loadedIdentity = this.computeDashboardIdentity(this.dashData);
       const loaded = await this.loadData();
       if (this.disposed) return;
       if (loaded) {
-        this.loadedDashboardIdentity = nextIdentity;
+        this.loadedDashboardIdentity = loadedIdentity;
       }
+    } else {
+      this.refreshVolatileDashboardData(runtimeSnapshot);
     }
 
     if (initial) {
       this.loading = false;
     }
 
+    this.scheduleEnvironmentRefresh(this.dashData.basePath || process.cwd());
+
     if (identityChanged) {
       this.invalidate();
     }
     this.tui.requestRender();
+  }
+
+  private scheduleEnvironmentRefresh(basePath: string): void {
+    if (this.cachedEnvBasePath !== basePath) {
+      this.cachedEnvBasePath = basePath;
+      this.cachedEnvIssues = [];
+      this.invalidate();
+    }
+    if (this.envRefreshInFlight || this.disposed) return;
+    this.envRefreshInFlight = this.refreshEnvironmentHealth(basePath)
+      .finally(() => {
+        this.envRefreshInFlight = null;
+      });
+  }
+
+  private async refreshEnvironmentHealth(basePath: string): Promise<void> {
+    try {
+      const envResults = await runEnvironmentChecksAsync(basePath);
+      if (this.disposed || this.cachedEnvBasePath !== basePath) return;
+      this.cachedEnvIssues = envResults.filter(r => r.status !== "ok");
+      this.invalidate();
+      this.tui.requestRender();
+    } catch {
+      // Non-fatal — keep last known environment issues
+    }
   }
 
   private async loadData(): Promise<boolean> {
@@ -592,8 +659,7 @@ export class GSDDashboardOverlay {
     }
 
     // Environment health section (#1221) — only show issues
-    const envResults = runEnvironmentChecks(this.dashData.basePath || process.cwd());
-    const envIssues = envResults.filter(r => r.status !== "ok");
+    const envIssues = this.cachedEnvIssues;
     if (envIssues.length > 0) {
       lines.push(blank());
       lines.push(hr());

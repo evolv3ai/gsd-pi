@@ -17,7 +17,7 @@ import { join } from 'node:path'
 import { resolve } from 'node:path'
 import { ChildProcess } from 'node:child_process'
 
-import { RpcClient } from '@gsd/agent-modes'
+import { RpcClient } from '@gsd/agent-modes/modes/rpc/rpc-client.js'
 import { SessionManager } from '@gsd/pi-coding-agent'
 import type { SessionInfo } from '@gsd/pi-coding-agent'
 import { getProjectSessionsDir } from './project-sessions.js'

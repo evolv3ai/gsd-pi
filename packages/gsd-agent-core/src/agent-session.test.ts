@@ -2,6 +2,7 @@ import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { parseSkillBlock } from "./agent-session.ts";
 import { AgentSessionExtensionsModule } from "./session/agent-session-extensions.ts";
+import { AgentSessionPromptModule } from "./session/agent-session-prompt.ts";
 
 describe("parseSkillBlock", () => {
   test("parses a valid skill block with trailing user message", () => {
@@ -81,6 +82,52 @@ describe("AgentSessionExtensionsModule", () => {
   });
 });
 
+describe("AgentSessionPromptModule", () => {
+  test("keeps no-progress terminal fingerprint across other retryable errors", async () => {
+    const userMessage = {
+      role: "user",
+      content: [{ type: "text", text: "do the work" }],
+      timestamp: 1,
+    };
+    const events: Array<{ type: string }> = [];
+    const host = {
+      _retryAttempt: 0,
+      _retryAbortController: undefined,
+      settingsManager: {
+        getRetrySettings: () => ({
+          enabled: true,
+          maxRetries: 5,
+          baseDelayMs: 0,
+        }),
+      },
+      emit: (event: { type: string }) => {
+        events.push(event);
+      },
+      agent: {
+        state: {
+          messages: [] as any[],
+        },
+      },
+    };
+    const mod = new AgentSessionPromptModule(host as any);
+
+    const firstTerminalFailure = makeAssistantError("terminated before any output");
+    host.agent.state.messages = [userMessage, firstTerminalFailure];
+    assert.equal(await mod.prepareRetry(firstTerminalFailure as any), true);
+
+    const unrelatedRetryableFailure = makeAssistantError("overloaded_error: provider is busy");
+    host.agent.state.messages = [userMessage, unrelatedRetryableFailure];
+    assert.equal(await mod.prepareRetry(unrelatedRetryableFailure as any), true);
+
+    const repeatedTerminalFailure = makeAssistantError("terminated before any output");
+    host.agent.state.messages = [userMessage, repeatedTerminalFailure];
+    assert.equal(mod.canPrepareRetry(repeatedTerminalFailure as any), false);
+    assert.equal(await mod.prepareRetry(repeatedTerminalFailure as any), false);
+    assert.equal(host._retryAttempt, 2);
+    assert.equal(events.filter((event) => event.type === "auto_retry_start").length, 2);
+  });
+});
+
 function makeSkill(name: string) {
   return {
     name,
@@ -90,5 +137,31 @@ function makeSkill(name: string) {
     sourceInfo: { kind: "test" },
     source: "test",
     disableModelInvocation: false,
+  };
+}
+
+function makeAssistantError(errorMessage: string) {
+  return {
+    role: "assistant",
+    content: [],
+    api: "test",
+    provider: "test",
+    model: "test-model",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        total: 0,
+      },
+    },
+    stopReason: "error",
+    errorMessage,
+    timestamp: 1,
   };
 }

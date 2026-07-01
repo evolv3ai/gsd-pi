@@ -16,65 +16,31 @@ import {
   type BrowserSlashCommandSurface,
 } from "./browser-slash-command-dispatch"
 import {
-  applyCommandSurfaceActionResult,
   closeCommandSurfaceState,
   createInitialCommandSurfaceState,
   openCommandSurfaceState,
   selectCommandSurfaceStateTarget,
-  setCommandSurfacePending,
   setCommandSurfaceSection,
-  type CommandSurfaceCompactionResult,
-  type CommandSurfaceDiagnosticsPhaseState,
-  type CommandSurfaceDoctorState,
-  type CommandSurfaceForkMessage,
-  type CommandSurfaceGitSummaryState,
-  type CommandSurfaceModelOption,
-  type CommandSurfaceRecoveryState,
   type CommandSurfaceSection,
-  type CommandSurfaceSessionBrowserState,
-  type CommandSurfaceSessionStats,
   type CommandSurfaceTarget,
-  type CommandSurfaceThinkingLevel,
-  type CommandSurfaceKnowledgeCapturesState,
-  type WorkspaceCommandSurfaceState,
-  type WorkspaceRecoveryDiagnostics,
   type WorkspaceRecoverySummary,
+  type WorkspaceCommandSurfaceState,
 } from "./command-surface-contract"
-import type { DoctorFixResult, DoctorReport, ForensicReport, SkillHealthReport } from "./diagnostics-types"
-import type { KnowledgeData, CapturesData, CaptureResolveRequest, CaptureResolveResult } from "./knowledge-captures-types"
-import type { SettingsData } from "./settings-types"
-import type {
-  HistoryData,
-  InspectData,
-  HooksData,
-  ExportResult,
-  UndoInfo,
-  UndoResult,
-  CleanupData,
-  CleanupResult,
-  SteerData,
-} from "./remaining-command-types"
-import { isGitSummaryResponse, type GitSummaryResponse } from "./git-summary-contract"
 import type { PendingImage } from "./image-utils"
 import type { ChatMessage } from "./pty-chat-parser"
 import { WorkspaceEventStream } from "./workspace-event-stream"
 import { createTerminalLine, withTerminalLine } from "./workspace-terminal-log"
-import type {
-  SessionBrowserNameFilter,
-  SessionBrowserResponse,
-  SessionBrowserSession,
-  SessionBrowserSortMode,
-  SessionManageResponse,
-} from "./session-browser-contract"
 import { authFetch, appendAuthParam } from "./auth"
 import { ContextualTips } from "@gsd/agent-core/contextual-tips.js"
 import {
   applyBootToLiveState,
   createInitialWorkspaceLiveState,
   createWorkspaceRecoverySummary,
-  getLiveAutoDashboard,
-  getLiveResumableSessions,
-  getLiveWorkspaceIndex,
+  resolveResumableSessions,
+  withEntitySliceFailed,
+  withEntitySliceInvalidated,
+  withEntitySliceRequested,
+  withEntitySliceSucceeded,
   withFreshnessFailed,
   withFreshnessInvalidated,
   withFreshnessRequested,
@@ -90,10 +56,51 @@ import type { RpcExtensionUIRequest } from "@opengsd/contracts"
 
 export {
   createWorkspaceRecoverySummary,
-  getLiveAutoDashboard,
-  getLiveResumableSessions,
-  getLiveWorkspaceIndex,
+  resolveAutoDashboard,
+  resolveResumableSessions,
+  resolveWorkspaceIndex,
+  type EntitySlice,
 } from "./workspace-live-state"
+import {
+  applyTextDelta,
+  applyThinkingDelta,
+  appendToolSegment,
+  completeTurn,
+  finalizeThinkingStream,
+  pickTranscriptState,
+  pushPendingUserMessage,
+  type CompletedTurn,
+  type CompletedToolExecution,
+  type TurnSegment,
+} from "./transcript-store"
+import {
+  applyExtensionUiSnapshotToWebFields,
+  extensionUiSnapshotFromWebFields,
+  type ExtensionUiSnapshot,
+} from "./extension-ui-snapshot"
+
+export type { CompletedTurn, TurnSegment } from "./transcript-store"
+export { getFlatTranscript } from "./transcript-store"
+import {
+  CommandSurfaceStore,
+  refreshOpenCommandSurfacesForInvalidation,
+} from "./command-surface-store"
+import {
+  findOnboardingProviderLabel,
+  getCurrentModelSelection,
+  getPreferredOnboardingProviderId,
+  markRecoveryStateInvalidated,
+  normalizeClientError,
+  overlayLiveBridgeSessionState,
+  syncSessionBrowserStateWithBridge,
+} from "./command-surface-helpers"
+import {
+  cloneBootWithBridge,
+} from "./workspace-boot-helpers"
+import {
+  dispatchWorkspaceEvent,
+  routeLiveInteractionEvent,
+} from "./workspace-coordinator"
 
 export type WorkspaceStatus = "idle" | "loading" | "ready" | "error" | "unauthenticated"
 export type WorkspaceConnectionState =
@@ -383,19 +390,16 @@ export interface WorkspaceFreshnessBucket {
 }
 
 export interface WorkspaceLiveFreshnessState {
-  auto: WorkspaceFreshnessBucket
-  workspace: WorkspaceFreshnessBucket
   recovery: WorkspaceFreshnessBucket
-  resumableSessions: WorkspaceFreshnessBucket
   gitSummary: WorkspaceFreshnessBucket
   sessionBrowser: WorkspaceFreshnessBucket
   sessionStats: WorkspaceFreshnessBucket
 }
 
 export interface WorkspaceLiveState {
-  auto: AutoDashboardData | null
-  workspace: WorkspaceIndex | null
-  resumableSessions: BootResumableSession[]
+  auto: import("./workspace-live-state").EntitySlice<AutoDashboardData>
+  workspace: import("./workspace-live-state").EntitySlice<WorkspaceIndex>
+  resumableSessions: import("./workspace-live-state").EntitySlice<BootResumableSession[]>
   recoverySummary: WorkspaceRecoverySummary
   freshness: WorkspaceLiveFreshnessState
   softBootRefreshCount: number
@@ -459,10 +463,16 @@ export interface TurnEndEvent {
   [key: string]: unknown
 }
 
+export interface ExtensionUiSnapshotEvent {
+  type: "extension_ui_snapshot"
+  snapshot: ExtensionUiSnapshot
+}
+
 export type WorkspaceEvent =
   | BridgeStatusEvent
   | LiveStateInvalidationEvent
   | ExtensionUiRequestEvent
+  | ExtensionUiSnapshotEvent
   | ExtensionErrorEvent
   | MessageUpdateEvent
   | ToolExecutionStartEvent
@@ -530,16 +540,7 @@ export interface ActiveToolExecution {
 }
 
 /** Completed tool execution with result — kept for chat rendering */
-export interface CompletedToolExecution {
-  id: string
-  name: string
-  args: Record<string, unknown>
-  result?: {
-    content?: Array<{ type: string; text?: string }>
-    details?: Record<string, unknown>
-    isError?: boolean
-  }
-}
+export type { CompletedToolExecution } from "./transcript-store"
 
 /**
  * A chronologically-ordered segment within a single assistant turn.
@@ -547,10 +548,6 @@ export interface CompletedToolExecution {
  * is captured as separate segments so the chat UI can render them
  * in the correct interleaved order.
  */
-export type TurnSegment =
-  | { kind: "thinking"; content: string }
-  | { kind: "text"; content: string }
-  | { kind: "tool"; tool: CompletedToolExecution }
 
 export interface WidgetContent {
   lines: string[] | undefined
@@ -576,28 +573,16 @@ export interface WorkspaceStoreState {
   pendingUiRequests: PendingUiRequest[]
   streamingAssistantText: string
   streamingThinkingText: string
-  liveTranscript: string[]
-  /** Thinking text for each liveTranscript block (parallel array — same length) */
-  liveThinkingTranscript: string[]
+  completedTurns: CompletedTurn[]
+  pendingUserMessage: ChatMessage | null
+  currentTurnSegments: TurnSegment[]
   completedToolExecutions: CompletedToolExecution[]
   activeToolExecution: ActiveToolExecution | null
-  /**
-   * Ordered segments within the current streaming turn.
-   * Captures the chronological sequence: thinking → text → tool → thinking → text → ...
-   * Flushed to `completedTurnSegments` on turn boundary.
-   */
-  currentTurnSegments: TurnSegment[]
-  /**
-   * Segment history for completed turns. Each entry is a full turn's segments.
-   * Parallel to `liveTranscript` (same index = same turn).
-   */
-  completedTurnSegments: TurnSegment[][]
-  /** User messages in chat — persisted in store so they survive component unmount/remount */
-  chatUserMessages: ChatMessage[]
   statusTexts: Record<string, string>
   widgetContents: Record<string, WidgetContent>
   titleOverride: string | null
   editorTextBuffer: string | null
+  workingMessage: string | null
 }
 
 export const MAX_TRANSCRIPT_BLOCKS = 100
@@ -641,11 +626,6 @@ const IMPLEMENTED_BROWSER_COMMAND_SURFACES = new Set<BrowserSlashCommandSurface>
 
 function hasAttachedSession(bridge: BridgeRuntimeSnapshot | null | undefined): boolean {
   return Boolean(bridge?.activeSessionId || bridge?.sessionState?.sessionId)
-}
-
-function normalizeClientError(error: unknown): string {
-  if (error instanceof Error) return error.message
-  return String(error)
 }
 
 function getCommandInputLabel(command: WorkspaceBridgeCommand): string {
@@ -766,10 +746,6 @@ const TERMINAL_ONBOARDING_FLOW_STATUSES = new Set<WorkspaceOnboardingFlowState["
   "cancelled",
 ])
 
-function findOnboardingProviderLabel(onboarding: WorkspaceOnboardingState, providerId: string): string {
-  return onboarding.required.providers.find((provider) => provider.id === providerId)?.label ?? providerId
-}
-
 function mergeOnboardingState(
   current: WorkspaceOnboardingState,
   patch: Partial<WorkspaceOnboardingState>,
@@ -791,116 +767,6 @@ function mergeOnboardingState(
       ...current.bridgeAuthRefresh,
       ...(patch.bridgeAuthRefresh ?? {}),
     },
-  }
-}
-
-function cloneBootWithBridge(
-  boot: WorkspaceBootPayload | null,
-  bridge: BridgeRuntimeSnapshot,
-): WorkspaceBootPayload | null {
-  if (!boot) return null
-  const nextBoot = {
-    ...boot,
-    bridge,
-  }
-
-  return {
-    ...nextBoot,
-    resumableSessions: overlayLiveBridgeSessionState(nextBoot.resumableSessions, nextBoot),
-  }
-}
-
-function patchBootSessionState(
-  boot: WorkspaceBootPayload | null,
-  patch: Partial<WorkspaceSessionState>,
-): WorkspaceBootPayload | null {
-  if (!boot?.bridge.sessionState) return boot
-
-  return cloneBootWithBridge(boot, {
-    ...boot.bridge,
-    sessionState: {
-      ...boot.bridge.sessionState,
-      ...patch,
-    },
-  })
-}
-
-function patchBootSessionName(
-  boot: WorkspaceBootPayload | null,
-  sessionPath: string,
-  name: string,
-): WorkspaceBootPayload | null {
-  if (!boot) return null
-
-  const isActiveSession = getLiveActiveSessionPath(boot) === sessionPath
-  const nextBridge =
-    isActiveSession && boot.bridge.sessionState
-      ? {
-          ...boot.bridge,
-          sessionState: {
-            ...boot.bridge.sessionState,
-            sessionName: name,
-          },
-        }
-      : boot.bridge
-
-  const nextBoot = {
-    ...boot,
-    bridge: nextBridge,
-  }
-
-  return {
-    ...nextBoot,
-    resumableSessions: overlayLiveBridgeSessionState(
-      nextBoot.resumableSessions.map((session) =>
-        session.path === sessionPath
-          ? {
-              ...session,
-              name,
-            }
-          : session,
-      ),
-      nextBoot,
-    ),
-  }
-}
-
-function patchBootActiveSession(
-  boot: WorkspaceBootPayload | null,
-  sessionPath: string,
-  sessionName?: string,
-): WorkspaceBootPayload | null {
-  if (!boot) return null
-
-  const selectedSession = boot.resumableSessions.find((session) => session.path === sessionPath)
-  const nextBridge = {
-    ...boot.bridge,
-    activeSessionFile: sessionPath,
-    activeSessionId: selectedSession?.id ?? boot.bridge.activeSessionId,
-    sessionState: boot.bridge.sessionState
-      ? {
-          ...boot.bridge.sessionState,
-          sessionFile: sessionPath,
-          sessionId: selectedSession?.id ?? boot.bridge.sessionState.sessionId,
-          sessionName: sessionName ?? selectedSession?.name ?? boot.bridge.sessionState.sessionName,
-        }
-      : boot.bridge.sessionState,
-  }
-
-  const nextBoot = {
-    ...boot,
-    bridge: nextBridge,
-  }
-
-  return {
-    ...nextBoot,
-    resumableSessions: overlayLiveBridgeSessionState(
-      nextBoot.resumableSessions.map((session) => ({
-        ...session,
-        isActive: session.path === sessionPath,
-      })),
-      nextBoot,
-    ),
   }
 }
 
@@ -1126,308 +992,7 @@ export function getModelLabel(bridge: BridgeRuntimeSnapshot | null | undefined):
   return model.id || model.providerId || model.provider || "model pending"
 }
 
-function getCurrentModelSelection(
-  bridge: BridgeRuntimeSnapshot | null | undefined,
-): { provider?: string; modelId?: string } | null {
-  const model = bridge?.sessionState?.model
-  if (!model) return null
-  return {
-    provider: model.provider ?? model.providerId,
-    modelId: model.id,
-  }
-}
-
-function getPreferredOnboardingProviderId(onboarding: WorkspaceOnboardingState | null | undefined): string | null {
-  if (!onboarding) return null
-  if (onboarding.required.satisfiedBy?.providerId) {
-    return onboarding.required.satisfiedBy.providerId
-  }
-
-  const recommended = onboarding.required.providers.find((provider) => !provider.configured && provider.recommended)
-  if (recommended) return recommended.id
-
-  const firstUnconfigured = onboarding.required.providers.find((provider) => !provider.configured)
-  if (firstUnconfigured) return firstUnconfigured.id
-
-  return onboarding.required.providers[0]?.id ?? null
-}
-
-function normalizeAvailableModels(
-  payload: unknown,
-  currentModel: { provider?: string; modelId?: string } | null,
-): CommandSurfaceModelOption[] {
-  const models =
-    payload &&
-    typeof payload === "object" &&
-    "models" in payload &&
-    Array.isArray((payload as { models?: unknown[] }).models)
-      ? (payload as { models: Array<Record<string, unknown>> }).models
-      : []
-
-  const results: CommandSurfaceModelOption[] = []
-  for (const model of models) {
-    const provider =
-      typeof model.provider === "string"
-        ? model.provider
-        : typeof model.providerId === "string"
-          ? model.providerId
-          : undefined
-    const modelId = typeof model.id === "string" ? model.id : undefined
-    if (!provider || !modelId) continue
-    results.push({
-      provider,
-      modelId,
-      name: typeof model.name === "string" ? model.name : undefined,
-      reasoning: Boolean(model.reasoning),
-      isCurrent: provider === currentModel?.provider && modelId === currentModel?.modelId,
-    })
-  }
-  return results
-    .sort((left, right) => Number(right.isCurrent) - Number(left.isCurrent) || left.provider.localeCompare(right.provider) || left.modelId.localeCompare(right.modelId))
-}
-
-function normalizeSessionStats(payload: unknown): CommandSurfaceSessionStats | null {
-  if (!payload || typeof payload !== "object") return null
-  const stats = payload as Partial<CommandSurfaceSessionStats>
-  if (typeof stats.sessionId !== "string") return null
-
-  return {
-    sessionFile: typeof stats.sessionFile === "string" ? stats.sessionFile : undefined,
-    sessionId: stats.sessionId,
-    userMessages: Number(stats.userMessages ?? 0),
-    assistantMessages: Number(stats.assistantMessages ?? 0),
-    toolCalls: Number(stats.toolCalls ?? 0),
-    toolResults: Number(stats.toolResults ?? 0),
-    totalMessages: Number(stats.totalMessages ?? 0),
-    tokens: {
-      input: Number(stats.tokens?.input ?? 0),
-      output: Number(stats.tokens?.output ?? 0),
-      cacheRead: Number(stats.tokens?.cacheRead ?? 0),
-      cacheWrite: Number(stats.tokens?.cacheWrite ?? 0),
-      total: Number(stats.tokens?.total ?? 0),
-    },
-    cost: Number(stats.cost ?? 0),
-  }
-}
-
-function normalizeForkMessages(payload: unknown): CommandSurfaceForkMessage[] {
-  const messages =
-    payload &&
-    typeof payload === "object" &&
-    "messages" in payload &&
-    Array.isArray((payload as { messages?: unknown[] }).messages)
-      ? (payload as { messages: Array<Record<string, unknown>> }).messages
-      : []
-
-  return messages
-    .map((message) => {
-      const entryId = typeof message.entryId === "string" ? message.entryId : undefined
-      const text = typeof message.text === "string" ? message.text : undefined
-      if (!entryId || !text) return null
-      return { entryId, text } satisfies CommandSurfaceForkMessage
-    })
-    .filter((message): message is CommandSurfaceForkMessage => message !== null)
-}
-
-function normalizeCompactionResult(payload: unknown): CommandSurfaceCompactionResult | null {
-  if (!payload || typeof payload !== "object") return null
-  const result = payload as Partial<CommandSurfaceCompactionResult>
-  if (typeof result.summary !== "string" || typeof result.firstKeptEntryId !== "string") return null
-
-  return {
-    summary: result.summary,
-    firstKeptEntryId: result.firstKeptEntryId,
-    tokensBefore: Number(result.tokensBefore ?? 0),
-    details: result.details,
-  }
-}
-
-function normalizeGitSummaryPayload(payload: unknown): GitSummaryResponse | null {
-  return isGitSummaryResponse(payload) ? payload : null
-}
-
-function normalizeGitSummaryError(
-  current: CommandSurfaceGitSummaryState,
-  message: string,
-): CommandSurfaceGitSummaryState {
-  return {
-    ...current,
-    pending: false,
-    loaded: false,
-    error: message,
-  }
-}
-
-function normalizeRecoveryDiagnosticsPayload(payload: unknown): WorkspaceRecoveryDiagnostics | null {
-  if (!payload || typeof payload !== "object") return null
-
-  const candidate = payload as Partial<WorkspaceRecoveryDiagnostics>
-  if (candidate.status !== "ready" && candidate.status !== "unavailable") return null
-  if (typeof candidate.loadedAt !== "string") return null
-  if (!candidate.project || typeof candidate.project.cwd !== "string") return null
-  if (!candidate.summary || typeof candidate.summary.label !== "string" || typeof candidate.summary.detail !== "string") return null
-  if (!candidate.bridge || typeof candidate.bridge.phase !== "string") return null
-  if (!candidate.validation || typeof candidate.validation.total !== "number") return null
-  if (!candidate.doctor || typeof candidate.doctor.total !== "number") return null
-  if (!candidate.interruptedRun || typeof candidate.interruptedRun.available !== "boolean") return null
-  if (!candidate.actions || !Array.isArray(candidate.actions.browser) || !Array.isArray(candidate.actions.commands)) return null
-
-  return candidate as WorkspaceRecoveryDiagnostics
-}
-
-function createRecoveryStateFromDiagnostics(diagnostics: WorkspaceRecoveryDiagnostics): CommandSurfaceRecoveryState {
-  return {
-    phase: diagnostics.status === "ready" ? "ready" : "unavailable",
-    pending: false,
-    loaded: true,
-    stale: false,
-    diagnostics,
-    error: null,
-    lastLoadedAt: diagnostics.loadedAt,
-    lastInvalidatedAt: null,
-    lastFailureAt: null,
-  }
-}
-
-function markRecoveryStatePending(current: CommandSurfaceRecoveryState): CommandSurfaceRecoveryState {
-  return {
-    ...current,
-    pending: true,
-    error: null,
-    phase: current.loaded ? current.phase : "loading",
-  }
-}
-
-function markRecoveryStateInvalidated(current: CommandSurfaceRecoveryState): CommandSurfaceRecoveryState {
-  if (!current.loaded && !current.error) return current
-  return {
-    ...current,
-    stale: true,
-    lastInvalidatedAt: new Date().toISOString(),
-  }
-}
-
-function markRecoveryStateFailure(current: CommandSurfaceRecoveryState, message: string): CommandSurfaceRecoveryState {
-  return {
-    ...current,
-    phase: "error",
-    pending: false,
-    stale: true,
-    error: message,
-    lastFailureAt: new Date().toISOString(),
-  }
-}
-
-function normalizeSessionBrowserPayload(payload: unknown): CommandSurfaceSessionBrowserState | null {
-  if (!payload || typeof payload !== "object") return null
-
-  const response = payload as Partial<SessionBrowserResponse>
-  const project = response.project
-  const query = response.query
-  if (!project || !query || !Array.isArray(response.sessions)) return null
-  if (project.scope !== "current_project") return null
-  if (typeof project.cwd !== "string" || typeof project.sessionsDir !== "string") return null
-  if (typeof query.query !== "string" || typeof query.sortMode !== "string" || typeof query.nameFilter !== "string") return null
-
-  const sessions = response.sessions.filter((session): session is SessionBrowserSession => {
-    return (
-      typeof session?.id === "string" &&
-      typeof session?.path === "string" &&
-      typeof session?.cwd === "string" &&
-      typeof session?.createdAt === "string" &&
-      typeof session?.modifiedAt === "string" &&
-      typeof session?.messageCount === "number" &&
-      typeof session?.firstMessage === "string" &&
-      typeof session?.isActive === "boolean" &&
-      typeof session?.depth === "number" &&
-      typeof session?.isLastInThread === "boolean" &&
-      Array.isArray(session?.ancestorHasNextSibling)
-    )
-  })
-
-  return {
-    scope: project.scope,
-    projectCwd: project.cwd,
-    projectSessionsDir: project.sessionsDir,
-    activeSessionPath: typeof project.activeSessionPath === "string" ? project.activeSessionPath : null,
-    query: query.query,
-    sortMode: query.sortMode as SessionBrowserSortMode,
-    nameFilter: query.nameFilter as SessionBrowserNameFilter,
-    totalSessions: Number(response.totalSessions ?? sessions.length),
-    returnedSessions: Number(response.returnedSessions ?? sessions.length),
-    sessions,
-    loaded: true,
-    error: null,
-  }
-}
-
-function getLiveActiveSessionPath(boot: WorkspaceBootPayload | null): string | null {
-  return boot?.bridge.activeSessionFile ?? boot?.bridge.sessionState?.sessionFile ?? null
-}
-
-function getLiveActiveSessionName(boot: WorkspaceBootPayload | null): string | undefined {
-  const value = boot?.bridge.sessionState?.sessionName?.trim()
-  return value ? value : undefined
-}
-
-function overlayLiveBridgeSessionState<T extends { path: string; isActive: boolean; name?: string }>(
-  sessions: T[],
-  boot: WorkspaceBootPayload | null,
-): T[] {
-  const activeSessionPath = getLiveActiveSessionPath(boot)
-  const activeSessionName = getLiveActiveSessionName(boot)
-
-  return sessions.map((session) => {
-    const isActive = activeSessionPath ? session.path === activeSessionPath : session.isActive
-    return {
-      ...session,
-      isActive,
-      ...(isActive && activeSessionName ? { name: activeSessionName } : {}),
-    }
-  })
-}
-
-function syncSessionBrowserStateWithBridge(
-  sessionBrowser: CommandSurfaceSessionBrowserState,
-  boot: WorkspaceBootPayload | null,
-): CommandSurfaceSessionBrowserState {
-  return {
-    ...sessionBrowser,
-    activeSessionPath: getLiveActiveSessionPath(boot),
-    sessions: overlayLiveBridgeSessionState(sessionBrowser.sessions, boot),
-  }
-}
-
-function patchSessionBrowserSession(
-  sessionBrowser: CommandSurfaceSessionBrowserState,
-  sessionPath: string,
-  patch: Partial<Pick<SessionBrowserSession, "name" | "isActive">>,
-): CommandSurfaceSessionBrowserState {
-  return {
-    ...sessionBrowser,
-    activeSessionPath: patch.isActive ? sessionPath : sessionBrowser.activeSessionPath,
-    sessions: sessionBrowser.sessions.map((session) =>
-      session.path === sessionPath
-        ? {
-            ...session,
-            ...patch,
-          }
-        : patch.isActive
-          ? {
-              ...session,
-              isActive: false,
-            }
-          : session,
-    ),
-  }
-}
-
-function describeSessionPath(sessionPath: string, boot: WorkspaceBootPayload | null): string {
-  const knownSession = boot?.resumableSessions.find((session) => session.path === sessionPath)
-  if (knownSession?.name?.trim()) return knownSession.name.trim()
-  if (knownSession?.id) return knownSession.id
-  return shortenPath(sessionPath)
-}
+export { describeSessionPath } from "./workspace-boot-helpers"
 
 export interface WorkspaceOnboardingPresentation {
   phase:
@@ -1616,17 +1181,16 @@ function createInitialState(): WorkspaceStoreState {
     pendingUiRequests: [],
     streamingAssistantText: "",
     streamingThinkingText: "",
-    liveTranscript: [],
-    liveThinkingTranscript: [],
+    completedTurns: [],
+    pendingUserMessage: null,
+    currentTurnSegments: [],
     completedToolExecutions: [],
     activeToolExecution: null,
-    currentTurnSegments: [],
-    completedTurnSegments: [],
-    chatUserMessages: [],
     statusTexts: {},
     widgetContents: {},
     titleOverride: null,
     editorTextBuffer: null,
+    workingMessage: null,
   }
 }
 
@@ -1638,7 +1202,23 @@ export function buildProjectUrl(path: string, projectCwd?: string): string {
 }
 
 export class GSDWorkspaceStore {
-  constructor(private readonly projectCwd?: string) {}
+  constructor(private readonly projectCwd?: string) {
+    this.commandSurfaceActions = new CommandSurfaceStore({
+      getState: () => this.state,
+      patchState: (patch) => this.patchState(patch),
+      buildUrl: (path) => this.buildUrl(path),
+      sendCommand: (command, options) => this.sendCommand(command, options),
+      refreshBoot: (options) => this.refreshBoot(options),
+      refreshOnboarding: () => this.refreshOnboarding(),
+      logoutProvider: (providerId) => this.logoutProvider(providerId),
+      saveApiKey: (providerId, apiKey) => this.saveApiKey(providerId, apiKey),
+      startProviderFlow: (providerId) => this.startProviderFlow(providerId),
+      submitProviderFlowInput: (flowId, input) => this.submitProviderFlowInput(flowId, input),
+      cancelProviderFlow: (flowId) => this.cancelProviderFlow(flowId),
+    })
+  }
+
+  private readonly commandSurfaceActions: CommandSurfaceStore
 
   private buildUrl(path: string): string {
     return buildProjectUrl(path, this.projectCwd)
@@ -1662,6 +1242,9 @@ export class GSDWorkspaceStore {
   private commandTimeoutTimer: ReturnType<typeof setTimeout> | null = null
   private lastBootRefreshAt = 0
   private visibilityHandler: (() => void) | null = null
+  private emitScheduled = false
+  private emitFrame: number | null = null
+  private emitTimer: ReturnType<typeof setTimeout> | null = null
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)
@@ -1691,6 +1274,7 @@ export class GSDWorkspaceStore {
   dispose = (): void => {
     this.disposed = true
     this.started = false
+    this.cancelScheduledEmit()
     this.stopOnboardingPoller()
     this.closeEventStream()
     this.clearCommandTimeout()
@@ -1727,7 +1311,7 @@ export class GSDWorkspaceStore {
     surface: BrowserSlashCommandSurface,
     options: { source?: "slash" | "sidebar" | "surface"; args?: string; selectedTarget?: CommandSurfaceTarget | null } = {},
   ): void => {
-    const resumableSessions = getLiveResumableSessions(this.state)
+    const resumableSessions = resolveResumableSessions(this.state)
     this.patchState({
       commandSurface: openCommandSurfaceState(this.state.commandSurface, {
         surface,
@@ -1759,7 +1343,7 @@ export class GSDWorkspaceStore {
   }
 
   setCommandSurfaceSection = (section: CommandSurfaceSection): void => {
-    const resumableSessions = getLiveResumableSessions(this.state)
+    const resumableSessions = resolveResumableSessions(this.state)
     this.patchState({
       commandSurface: setCommandSurfaceSection(this.state.commandSurface, section, {
         onboardingLocked: this.state.boot?.onboarding.locked,
@@ -1785,1973 +1369,48 @@ export class GSDWorkspaceStore {
       commandSurface: selectCommandSurfaceStateTarget(this.state.commandSurface, target),
     })
   }
-
-  loadGitSummary = async (): Promise<GitSummaryResponse | null> => {
-    const requestedGitSummary: CommandSurfaceGitSummaryState = {
-      ...this.state.commandSurface.gitSummary,
-      pending: true,
-      error: null,
-    }
-
-    const requestedLive: WorkspaceLiveState = {
-      ...this.state.live,
-      freshness: {
-        ...this.state.live.freshness,
-        gitSummary: withFreshnessRequested(this.state.live.freshness.gitSummary),
-      },
-    }
-
-    this.patchState({
-      live: {
-        ...requestedLive,
-        recoverySummary: createWorkspaceRecoverySummary({ boot: this.state.boot, live: requestedLive }),
-      },
-      commandSurface: setCommandSurfacePending(
-        {
-          ...this.state.commandSurface,
-          gitSummary: requestedGitSummary,
-        },
-        "load_git_summary",
-      ),
-    })
-
-    try {
-      const response = await authFetch(this.buildUrl("/api/git"), {
-        method: "GET",
-        cache: "no-store",
-        headers: {
-          Accept: "application/json",
-        },
-      })
-
-      const payload = await response.json().catch(() => null)
-      const normalizedGitSummary = normalizeGitSummaryPayload(payload)
-      if (!response.ok || !normalizedGitSummary) {
-        const message =
-          payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string"
-            ? payload.error
-            : `Current-project git summary failed with ${response.status}`
-        const failedGitSummary = normalizeGitSummaryError(requestedGitSummary, message)
-        const failedLive: WorkspaceLiveState = {
-          ...this.state.live,
-          freshness: {
-            ...this.state.live.freshness,
-            gitSummary: withFreshnessFailed(this.state.live.freshness.gitSummary, message),
-          },
-        }
-        this.patchState({
-          live: {
-            ...failedLive,
-            recoverySummary: createWorkspaceRecoverySummary({ boot: this.state.boot, live: failedLive }),
-          },
-          commandSurface: applyCommandSurfaceActionResult(
-            {
-              ...this.state.commandSurface,
-              gitSummary: failedGitSummary,
-            },
-            {
-              action: "load_git_summary",
-              success: false,
-              message,
-              gitSummary: failedGitSummary,
-            },
-          ),
-        })
-        return null
-      }
-
-      const gitSummary: CommandSurfaceGitSummaryState = {
-        pending: false,
-        loaded: true,
-        result: normalizedGitSummary,
-        error: null,
-      }
-
-      const nextLive: WorkspaceLiveState = {
-        ...this.state.live,
-        freshness: {
-          ...this.state.live.freshness,
-          gitSummary: withFreshnessSucceeded(this.state.live.freshness.gitSummary),
-        },
-      }
-
-      this.patchState({
-        live: {
-          ...nextLive,
-          recoverySummary: createWorkspaceRecoverySummary({ boot: this.state.boot, live: nextLive }),
-        },
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "load_git_summary",
-          success: true,
-          message: "",
-          gitSummary,
-        }),
-      })
-
-      return normalizedGitSummary
-    } catch (error) {
-      const message = normalizeClientError(error)
-      const failedGitSummary = normalizeGitSummaryError(requestedGitSummary, message)
-      const failedLive: WorkspaceLiveState = {
-        ...this.state.live,
-        freshness: {
-          ...this.state.live.freshness,
-          gitSummary: withFreshnessFailed(this.state.live.freshness.gitSummary, message),
-        },
-      }
-      this.patchState({
-        live: {
-          ...failedLive,
-          recoverySummary: createWorkspaceRecoverySummary({ boot: this.state.boot, live: failedLive }),
-        },
-        commandSurface: applyCommandSurfaceActionResult(
-          {
-            ...this.state.commandSurface,
-            gitSummary: failedGitSummary,
-          },
-          {
-            action: "load_git_summary",
-            success: false,
-            message,
-            gitSummary: failedGitSummary,
-          },
-        ),
-      })
-      return null
-    }
-  }
-
-  loadRecoveryDiagnostics = async (): Promise<WorkspaceRecoveryDiagnostics | null> => {
-    const requestedRecovery = markRecoveryStatePending(this.state.commandSurface.recovery)
-    const requestedLive: WorkspaceLiveState = {
-      ...this.state.live,
-      freshness: {
-        ...this.state.live.freshness,
-        recovery: withFreshnessRequested(this.state.live.freshness.recovery),
-      },
-    }
-
-    this.patchState({
-      live: {
-        ...requestedLive,
-        recoverySummary: createWorkspaceRecoverySummary({ boot: this.state.boot, live: requestedLive }),
-      },
-      commandSurface: setCommandSurfacePending(
-        {
-          ...this.state.commandSurface,
-          recovery: requestedRecovery,
-        },
-        "load_recovery_diagnostics",
-      ),
-    })
-
-    try {
-      const response = await authFetch(this.buildUrl("/api/recovery"), {
-        method: "GET",
-        cache: "no-store",
-        headers: {
-          Accept: "application/json",
-        },
-      })
-
-      const payload = await response.json().catch(() => null)
-      const diagnostics = normalizeRecoveryDiagnosticsPayload(payload)
-      if (!response.ok || !diagnostics) {
-        const message =
-          payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string"
-            ? payload.error
-            : `Recovery diagnostics failed with ${response.status}`
-        const failedRecovery = markRecoveryStateFailure(requestedRecovery, message)
-        const failedLive: WorkspaceLiveState = {
-          ...this.state.live,
-          freshness: {
-            ...this.state.live.freshness,
-            recovery: withFreshnessFailed(this.state.live.freshness.recovery, message),
-          },
-        }
-        this.patchState({
-          lastClientError: message,
-          live: {
-            ...failedLive,
-            recoverySummary: createWorkspaceRecoverySummary({ boot: this.state.boot, live: failedLive }),
-          },
-          commandSurface: applyCommandSurfaceActionResult(
-            {
-              ...this.state.commandSurface,
-              recovery: failedRecovery,
-            },
-            {
-              action: "load_recovery_diagnostics",
-              success: false,
-              message,
-              recovery: failedRecovery,
-            },
-          ),
-        })
-        return null
-      }
-
-      const recovery = {
-        ...createRecoveryStateFromDiagnostics(diagnostics),
-        lastInvalidatedAt: this.state.commandSurface.recovery.lastInvalidatedAt,
-      }
-      const nextLive: WorkspaceLiveState = {
-        ...this.state.live,
-        freshness: {
-          ...this.state.live.freshness,
-          recovery: withFreshnessSucceeded(this.state.live.freshness.recovery),
-        },
-      }
-
-      this.patchState({
-        lastClientError: null,
-        live: {
-          ...nextLive,
-          recoverySummary: createWorkspaceRecoverySummary({ boot: this.state.boot, live: nextLive }),
-        },
-        commandSurface: applyCommandSurfaceActionResult(
-          {
-            ...this.state.commandSurface,
-            recovery,
-          },
-          {
-            action: "load_recovery_diagnostics",
-            success: true,
-            message:
-              diagnostics.status === "ready"
-                ? "Recovery diagnostics refreshed"
-                : "Recovery diagnostics are currently unavailable",
-            recovery,
-          },
-        ),
-      })
-
-      return diagnostics
-    } catch (error) {
-      const message = normalizeClientError(error)
-      const failedRecovery = markRecoveryStateFailure(requestedRecovery, message)
-      const failedLive: WorkspaceLiveState = {
-        ...this.state.live,
-        freshness: {
-          ...this.state.live.freshness,
-          recovery: withFreshnessFailed(this.state.live.freshness.recovery, message),
-        },
-      }
-      this.patchState({
-        lastClientError: message,
-        live: {
-          ...failedLive,
-          recoverySummary: createWorkspaceRecoverySummary({ boot: this.state.boot, live: failedLive }),
-        },
-        commandSurface: applyCommandSurfaceActionResult(
-          {
-            ...this.state.commandSurface,
-            recovery: failedRecovery,
-          },
-          {
-            action: "load_recovery_diagnostics",
-            success: false,
-            message,
-            recovery: failedRecovery,
-          },
-        ),
-      })
-      return null
-    }
-  }
-
-  // ─── Diagnostics panel fetch methods ────────────────────────────────────────
-
-  private patchDiagnosticsPhaseState<K extends "forensics" | "skillHealth">(
-    key: K,
-    patch: Partial<CommandSurfaceDiagnosticsPhaseState<K extends "forensics" ? ForensicReport : SkillHealthReport>>,
-  ): void {
-    this.patchState({
-      commandSurface: {
-        ...this.state.commandSurface,
-        diagnostics: {
-          ...this.state.commandSurface.diagnostics,
-          [key]: { ...this.state.commandSurface.diagnostics[key], ...patch },
-        },
-      },
-    })
-  }
-
-  private patchDoctorState(patch: Partial<CommandSurfaceDoctorState>): void {
-    this.patchState({
-      commandSurface: {
-        ...this.state.commandSurface,
-        diagnostics: {
-          ...this.state.commandSurface.diagnostics,
-          doctor: { ...this.state.commandSurface.diagnostics.doctor, ...patch },
-        },
-      },
-    })
-  }
-
-  private patchKnowledgeCapturesState(patch: Partial<CommandSurfaceKnowledgeCapturesState>): void {
-    this.patchState({
-      commandSurface: {
-        ...this.state.commandSurface,
-        knowledgeCaptures: { ...this.state.commandSurface.knowledgeCaptures, ...patch },
-      },
-    })
-  }
-
-  private patchKnowledgeCapturesPhaseState<K extends "knowledge" | "captures">(
-    key: K,
-    patch: Partial<CommandSurfaceDiagnosticsPhaseState<K extends "knowledge" ? KnowledgeData : CapturesData>>,
-  ): void {
-    this.patchState({
-      commandSurface: {
-        ...this.state.commandSurface,
-        knowledgeCaptures: {
-          ...this.state.commandSurface.knowledgeCaptures,
-          [key]: { ...this.state.commandSurface.knowledgeCaptures[key], ...patch },
-        },
-      },
-    })
-  }
-
-  private patchSettingsPhaseState(patch: Partial<CommandSurfaceDiagnosticsPhaseState<SettingsData>>): void {
-    this.patchState({
-      commandSurface: {
-        ...this.state.commandSurface,
-        settingsData: { ...this.state.commandSurface.settingsData, ...patch },
-      },
-    })
-  }
-
-  private patchRemainingCommandsPhaseState<
-    K extends keyof import("./command-surface-contract").CommandSurfaceRemainingState,
-  >(
-    key: K,
-    patch: Partial<CommandSurfaceDiagnosticsPhaseState<import("./command-surface-contract").CommandSurfaceRemainingState[K] extends CommandSurfaceDiagnosticsPhaseState<infer T> ? T : never>>,
-  ): void {
-    this.patchState({
-      commandSurface: {
-        ...this.state.commandSurface,
-        remainingCommands: {
-          ...this.state.commandSurface.remainingCommands,
-          [key]: { ...this.state.commandSurface.remainingCommands[key], ...patch },
-        },
-      },
-    })
-  }
-
-  loadForensicsDiagnostics = async (): Promise<ForensicReport | null> => {
-    this.patchDiagnosticsPhaseState("forensics", { phase: "loading", error: null })
-    try {
-      const response = await authFetch(this.buildUrl("/api/forensics"), { method: "GET", cache: "no-store", headers: { Accept: "application/json" } })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload) {
-        const message = payload?.error ?? `Forensics request failed with ${response.status}`
-        this.patchDiagnosticsPhaseState("forensics", { phase: "error", error: message })
-        return null
-      }
-      this.patchDiagnosticsPhaseState("forensics", { phase: "loaded", data: payload as ForensicReport, lastLoadedAt: new Date().toISOString() })
-      return payload as ForensicReport
-    } catch (error) {
-      const message = normalizeClientError(error)
-      this.patchDiagnosticsPhaseState("forensics", { phase: "error", error: message })
-      return null
-    }
-  }
-
-  loadDoctorDiagnostics = async (scope?: string): Promise<DoctorReport | null> => {
-    this.patchDoctorState({ phase: "loading", error: null })
-    try {
-      const url = scope ? `/api/doctor?scope=${encodeURIComponent(scope)}` : "/api/doctor"
-      const response = await authFetch(url, { method: "GET", cache: "no-store", headers: { Accept: "application/json" } })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload) {
-        const message = payload?.error ?? `Doctor request failed with ${response.status}`
-        this.patchDoctorState({ phase: "error", error: message })
-        return null
-      }
-      this.patchDoctorState({ phase: "loaded", data: payload as DoctorReport, lastLoadedAt: new Date().toISOString() })
-      return payload as DoctorReport
-    } catch (error) {
-      const message = normalizeClientError(error)
-      this.patchDoctorState({ phase: "error", error: message })
-      return null
-    }
-  }
-
-  applyDoctorFixes = async (scope?: string): Promise<DoctorFixResult | null> => {
-    this.patchDoctorState({ fixPending: true, lastFixError: null, lastFixResult: null })
-    try {
-      const response = await authFetch(this.buildUrl("/api/doctor"), {
-        method: "POST",
-        cache: "no-store",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify(scope ? { scope } : {}),
-      })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload) {
-        const message = payload?.error ?? `Doctor fix request failed with ${response.status}`
-        this.patchDoctorState({ fixPending: false, lastFixError: message })
-        return null
-      }
-      const fixResult = payload as DoctorFixResult
-      this.patchDoctorState({ fixPending: false, lastFixResult: fixResult })
-      // Reload doctor data after applying fixes so the issue list refreshes
-      void this.loadDoctorDiagnostics(scope)
-      return fixResult
-    } catch (error) {
-      const message = normalizeClientError(error)
-      this.patchDoctorState({ fixPending: false, lastFixError: message })
-      return null
-    }
-  }
-
-  loadSkillHealthDiagnostics = async (): Promise<SkillHealthReport | null> => {
-    this.patchDiagnosticsPhaseState("skillHealth", { phase: "loading", error: null })
-    try {
-      const response = await authFetch(this.buildUrl("/api/skill-health"), { method: "GET", cache: "no-store", headers: { Accept: "application/json" } })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload) {
-        const message = payload?.error ?? `Skill health request failed with ${response.status}`
-        this.patchDiagnosticsPhaseState("skillHealth", { phase: "error", error: message })
-        return null
-      }
-      this.patchDiagnosticsPhaseState("skillHealth", { phase: "loaded", data: payload as SkillHealthReport, lastLoadedAt: new Date().toISOString() })
-      return payload as SkillHealthReport
-    } catch (error) {
-      const message = normalizeClientError(error)
-      this.patchDiagnosticsPhaseState("skillHealth", { phase: "error", error: message })
-      return null
-    }
-  }
-
-  loadKnowledgeData = async (): Promise<KnowledgeData | null> => {
-    this.patchKnowledgeCapturesPhaseState("knowledge", { phase: "loading", error: null })
-    try {
-      const response = await authFetch(this.buildUrl("/api/knowledge"), { method: "GET", cache: "no-store", headers: { Accept: "application/json" } })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload) {
-        const message = payload?.error ?? `Knowledge request failed with ${response.status}`
-        this.patchKnowledgeCapturesPhaseState("knowledge", { phase: "error", error: message })
-        return null
-      }
-      this.patchKnowledgeCapturesPhaseState("knowledge", { phase: "loaded", data: payload as KnowledgeData, lastLoadedAt: new Date().toISOString() })
-      return payload as KnowledgeData
-    } catch (error) {
-      const message = normalizeClientError(error)
-      this.patchKnowledgeCapturesPhaseState("knowledge", { phase: "error", error: message })
-      return null
-    }
-  }
-
-  loadCapturesData = async (): Promise<CapturesData | null> => {
-    this.patchKnowledgeCapturesPhaseState("captures", { phase: "loading", error: null })
-    try {
-      const response = await authFetch(this.buildUrl("/api/captures"), { method: "GET", cache: "no-store", headers: { Accept: "application/json" } })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload) {
-        const message = payload?.error ?? `Captures request failed with ${response.status}`
-        this.patchKnowledgeCapturesPhaseState("captures", { phase: "error", error: message })
-        return null
-      }
-      this.patchKnowledgeCapturesPhaseState("captures", { phase: "loaded", data: payload as CapturesData, lastLoadedAt: new Date().toISOString() })
-      return payload as CapturesData
-    } catch (error) {
-      const message = normalizeClientError(error)
-      this.patchKnowledgeCapturesPhaseState("captures", { phase: "error", error: message })
-      return null
-    }
-  }
-
-  loadSettingsData = async (): Promise<SettingsData | null> => {
-    this.patchSettingsPhaseState({ phase: "loading", error: null })
-    try {
-      const response = await authFetch(this.buildUrl("/api/settings-data"), { method: "GET", cache: "no-store", headers: { Accept: "application/json" } })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload) {
-        const message = payload?.error ?? `Settings request failed with ${response.status}`
-        this.patchSettingsPhaseState({ phase: "error", error: message })
-        return null
-      }
-      this.patchSettingsPhaseState({ phase: "loaded", data: payload as SettingsData, lastLoadedAt: new Date().toISOString() })
-      return payload as SettingsData
-    } catch (error) {
-      const message = normalizeClientError(error)
-      this.patchSettingsPhaseState({ phase: "error", error: message })
-      return null
-    }
-  }
-
-  // ─── Remaining command surface load/mutation methods ──────────────────────────
-
-  loadHistoryData = async (): Promise<HistoryData | null> => {
-    this.patchRemainingCommandsPhaseState("history", { phase: "loading", error: null })
-    try {
-      const response = await authFetch(this.buildUrl("/api/history"), { method: "GET", cache: "no-store", headers: { Accept: "application/json" } })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload) {
-        const message = payload?.error ?? `History request failed with ${response.status}`
-        this.patchRemainingCommandsPhaseState("history", { phase: "error", error: message })
-        return null
-      }
-      this.patchRemainingCommandsPhaseState("history", { phase: "loaded", data: payload as HistoryData, lastLoadedAt: new Date().toISOString() })
-      return payload as HistoryData
-    } catch (error) {
-      const message = normalizeClientError(error)
-      this.patchRemainingCommandsPhaseState("history", { phase: "error", error: message })
-      return null
-    }
-  }
-
-  loadInspectData = async (): Promise<InspectData | null> => {
-    this.patchRemainingCommandsPhaseState("inspect", { phase: "loading", error: null })
-    try {
-      const response = await authFetch(this.buildUrl("/api/inspect"), { method: "GET", cache: "no-store", headers: { Accept: "application/json" } })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload) {
-        const message = payload?.error ?? `Inspect request failed with ${response.status}`
-        this.patchRemainingCommandsPhaseState("inspect", { phase: "error", error: message })
-        return null
-      }
-      this.patchRemainingCommandsPhaseState("inspect", { phase: "loaded", data: payload as InspectData, lastLoadedAt: new Date().toISOString() })
-      return payload as InspectData
-    } catch (error) {
-      const message = normalizeClientError(error)
-      this.patchRemainingCommandsPhaseState("inspect", { phase: "error", error: message })
-      return null
-    }
-  }
-
-  loadHooksData = async (): Promise<HooksData | null> => {
-    this.patchRemainingCommandsPhaseState("hooks", { phase: "loading", error: null })
-    try {
-      const response = await authFetch(this.buildUrl("/api/hooks"), { method: "GET", cache: "no-store", headers: { Accept: "application/json" } })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload) {
-        const message = payload?.error ?? `Hooks request failed with ${response.status}`
-        this.patchRemainingCommandsPhaseState("hooks", { phase: "error", error: message })
-        return null
-      }
-      this.patchRemainingCommandsPhaseState("hooks", { phase: "loaded", data: payload as HooksData, lastLoadedAt: new Date().toISOString() })
-      return payload as HooksData
-    } catch (error) {
-      const message = normalizeClientError(error)
-      this.patchRemainingCommandsPhaseState("hooks", { phase: "error", error: message })
-      return null
-    }
-  }
-
-  loadExportData = async (format?: "markdown" | "json"): Promise<ExportResult | null> => {
-    this.patchRemainingCommandsPhaseState("exportData", { phase: "loading", error: null })
-    try {
-      const url = format ? `/api/export-data?format=${encodeURIComponent(format)}` : "/api/export-data"
-      const response = await authFetch(url, { method: "GET", cache: "no-store", headers: { Accept: "application/json" } })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload) {
-        const message = payload?.error ?? `Export request failed with ${response.status}`
-        this.patchRemainingCommandsPhaseState("exportData", { phase: "error", error: message })
-        return null
-      }
-      this.patchRemainingCommandsPhaseState("exportData", { phase: "loaded", data: payload as ExportResult, lastLoadedAt: new Date().toISOString() })
-      return payload as ExportResult
-    } catch (error) {
-      const message = normalizeClientError(error)
-      this.patchRemainingCommandsPhaseState("exportData", { phase: "error", error: message })
-      return null
-    }
-  }
-
-  loadUndoInfo = async (): Promise<UndoInfo | null> => {
-    this.patchRemainingCommandsPhaseState("undo", { phase: "loading", error: null })
-    try {
-      const response = await authFetch(this.buildUrl("/api/undo"), { method: "GET", cache: "no-store", headers: { Accept: "application/json" } })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload) {
-        const message = payload?.error ?? `Undo info request failed with ${response.status}`
-        this.patchRemainingCommandsPhaseState("undo", { phase: "error", error: message })
-        return null
-      }
-      this.patchRemainingCommandsPhaseState("undo", { phase: "loaded", data: payload as UndoInfo, lastLoadedAt: new Date().toISOString() })
-      return payload as UndoInfo
-    } catch (error) {
-      const message = normalizeClientError(error)
-      this.patchRemainingCommandsPhaseState("undo", { phase: "error", error: message })
-      return null
-    }
-  }
-
-  loadCleanupData = async (): Promise<CleanupData | null> => {
-    this.patchRemainingCommandsPhaseState("cleanup", { phase: "loading", error: null })
-    try {
-      const response = await authFetch(this.buildUrl("/api/cleanup"), { method: "GET", cache: "no-store", headers: { Accept: "application/json" } })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload) {
-        const message = payload?.error ?? `Cleanup data request failed with ${response.status}`
-        this.patchRemainingCommandsPhaseState("cleanup", { phase: "error", error: message })
-        return null
-      }
-      this.patchRemainingCommandsPhaseState("cleanup", { phase: "loaded", data: payload as CleanupData, lastLoadedAt: new Date().toISOString() })
-      return payload as CleanupData
-    } catch (error) {
-      const message = normalizeClientError(error)
-      this.patchRemainingCommandsPhaseState("cleanup", { phase: "error", error: message })
-      return null
-    }
-  }
-
-  loadSteerData = async (): Promise<SteerData | null> => {
-    this.patchRemainingCommandsPhaseState("steer", { phase: "loading", error: null })
-    try {
-      const response = await authFetch(this.buildUrl("/api/steer"), { method: "GET", cache: "no-store", headers: { Accept: "application/json" } })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload) {
-        const message = payload?.error ?? `Steer data request failed with ${response.status}`
-        this.patchRemainingCommandsPhaseState("steer", { phase: "error", error: message })
-        return null
-      }
-      this.patchRemainingCommandsPhaseState("steer", { phase: "loaded", data: payload as SteerData, lastLoadedAt: new Date().toISOString() })
-      return payload as SteerData
-    } catch (error) {
-      const message = normalizeClientError(error)
-      this.patchRemainingCommandsPhaseState("steer", { phase: "error", error: message })
-      return null
-    }
-  }
-
-  executeUndoAction = async (): Promise<UndoResult | null> => {
-    try {
-      const response = await authFetch(this.buildUrl("/api/undo"), {
-        method: "POST",
-        cache: "no-store",
-        headers: { Accept: "application/json" },
-      })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload) {
-        const message = payload?.error ?? `Undo action failed with ${response.status}`
-        return { success: false, message }
-      }
-      // Reload undo info after executing
-      void this.loadUndoInfo()
-      return payload as UndoResult
-    } catch (error) {
-      const message = normalizeClientError(error)
-      return { success: false, message }
-    }
-  }
-
-  executeCleanupAction = async (branches: string[], snapshots: string[]): Promise<CleanupResult | null> => {
-    try {
-      const response = await authFetch(this.buildUrl("/api/cleanup"), {
-        method: "POST",
-        cache: "no-store",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify({ branches, snapshots }),
-      })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload) {
-        const message = payload?.error ?? `Cleanup action failed with ${response.status}`
-        return { deletedBranches: 0, prunedSnapshots: 0, message }
-      }
-      // Reload cleanup data after executing
-      void this.loadCleanupData()
-      return payload as CleanupResult
-    } catch (error) {
-      const message = normalizeClientError(error)
-      return { deletedBranches: 0, prunedSnapshots: 0, message }
-    }
-  }
-
-  resolveCaptureAction = async (request: CaptureResolveRequest): Promise<CaptureResolveResult | null> => {
-    this.patchKnowledgeCapturesState({ resolveRequest: { pending: true, lastError: null, lastResult: null } })
-    try {
-      const response = await authFetch(this.buildUrl("/api/captures"), {
-        method: "POST",
-        cache: "no-store",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
-        body: JSON.stringify(request),
-      })
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload) {
-        const message = payload?.error ?? `Capture resolve failed with ${response.status}`
-        this.patchKnowledgeCapturesState({ resolveRequest: { pending: false, lastError: message, lastResult: null } })
-        return null
-      }
-      const result = payload as CaptureResolveResult
-      this.patchKnowledgeCapturesState({ resolveRequest: { pending: false, lastError: null, lastResult: result } })
-      // Auto-reload captures after successful resolve
-      void this.loadCapturesData()
-      return result
-    } catch (error) {
-      const message = normalizeClientError(error)
-      this.patchKnowledgeCapturesState({ resolveRequest: { pending: false, lastError: message, lastResult: null } })
-      return null
-    }
-  }
-
-  updateSessionBrowserState = (
-    patch: Partial<Pick<CommandSurfaceSessionBrowserState, "query" | "sortMode" | "nameFilter">>,
-  ): void => {
-    this.patchState({
-      commandSurface: {
-        ...this.state.commandSurface,
-        sessionBrowser: {
-          ...this.state.commandSurface.sessionBrowser,
-          ...patch,
-          error: null,
-        },
-        lastError: null,
-        lastResult: null,
-      },
-    })
-  }
-
-  loadSessionBrowser = async (
-    overrides: Partial<Pick<CommandSurfaceSessionBrowserState, "query" | "sortMode" | "nameFilter">> = {},
-  ): Promise<CommandSurfaceSessionBrowserState | null> => {
-    const requestedSessionBrowser = {
-      ...this.state.commandSurface.sessionBrowser,
-      ...overrides,
-      error: null,
-    }
-
-    const requestedLive: WorkspaceLiveState = {
-      ...this.state.live,
-      freshness: {
-        ...this.state.live.freshness,
-        sessionBrowser: withFreshnessRequested(this.state.live.freshness.sessionBrowser),
-      },
-    }
-
-    this.patchState({
-      live: {
-        ...requestedLive,
-        recoverySummary: createWorkspaceRecoverySummary({ boot: this.state.boot, live: requestedLive }),
-      },
-      commandSurface: setCommandSurfacePending(
-        {
-          ...this.state.commandSurface,
-          sessionBrowser: requestedSessionBrowser,
-        },
-        "load_session_browser",
-      ),
-    })
-
-    const params = new URLSearchParams()
-    if (requestedSessionBrowser.query.trim()) {
-      params.set("query", requestedSessionBrowser.query.trim())
-    }
-    params.set("sortMode", requestedSessionBrowser.sortMode)
-    params.set("nameFilter", requestedSessionBrowser.nameFilter)
-
-    try {
-      const response = await authFetch(this.buildUrl(`/api/session/browser?${params.toString()}`), {
-        method: "GET",
-        cache: "no-store",
-        headers: {
-          Accept: "application/json",
-        },
-      })
-
-      const payload = await response.json().catch(() => null)
-      const normalizedSessionBrowser = normalizeSessionBrowserPayload(payload)
-      if (!response.ok || !normalizedSessionBrowser) {
-        const message =
-          payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string"
-            ? payload.error
-            : `Current-project session browser failed with ${response.status}`
-        const failedSessionBrowser = {
-          ...requestedSessionBrowser,
-          error: message,
-        }
-        const failedLive: WorkspaceLiveState = {
-          ...this.state.live,
-          freshness: {
-            ...this.state.live.freshness,
-            sessionBrowser: withFreshnessFailed(this.state.live.freshness.sessionBrowser, message),
-          },
-        }
-        this.patchState({
-          live: {
-            ...failedLive,
-            recoverySummary: createWorkspaceRecoverySummary({ boot: this.state.boot, live: failedLive }),
-          },
-          commandSurface: applyCommandSurfaceActionResult(
-            {
-              ...this.state.commandSurface,
-              sessionBrowser: failedSessionBrowser,
-            },
-            {
-              action: "load_session_browser",
-              success: false,
-              message,
-              sessionBrowser: failedSessionBrowser,
-            },
-          ),
-        })
-        return null
-      }
-
-      const sessionBrowser = syncSessionBrowserStateWithBridge(normalizedSessionBrowser, this.state.boot)
-      const currentTarget = this.state.commandSurface.selectedTarget
-      const defaultResumePath = sessionBrowser.sessions.find((session) => !session.isActive)?.path ?? sessionBrowser.sessions[0]?.path
-      const defaultRenameSession =
-        sessionBrowser.sessions.find((session) => session.path === sessionBrowser.activeSessionPath) ?? sessionBrowser.sessions[0]
-
-      let selectedTarget = currentTarget
-      if (currentTarget?.kind === "resume" || this.state.commandSurface.section === "resume") {
-        const visiblePath =
-          currentTarget?.kind === "resume" && currentTarget.sessionPath && sessionBrowser.sessions.some((session) => session.path === currentTarget.sessionPath)
-            ? currentTarget.sessionPath
-            : defaultResumePath
-        selectedTarget = { kind: "resume", sessionPath: visiblePath }
-      } else if (currentTarget?.kind === "name" || this.state.commandSurface.section === "name") {
-        const visibleSession =
-          currentTarget?.kind === "name" && currentTarget.sessionPath
-            ? sessionBrowser.sessions.find((session) => session.path === currentTarget.sessionPath) ?? defaultRenameSession
-            : defaultRenameSession
-        selectedTarget = {
-          kind: "name",
-          sessionPath: visibleSession?.path,
-          name:
-            currentTarget?.kind === "name" && currentTarget.sessionPath === visibleSession?.path
-              ? currentTarget.name
-              : visibleSession?.name ?? "",
-        }
-      }
-
-      const nextLive: WorkspaceLiveState = {
-        ...this.state.live,
-        freshness: {
-          ...this.state.live.freshness,
-          sessionBrowser: withFreshnessSucceeded(this.state.live.freshness.sessionBrowser),
-        },
-      }
-
-      this.patchState({
-        live: {
-          ...nextLive,
-          recoverySummary: createWorkspaceRecoverySummary({ boot: this.state.boot, live: nextLive }),
-        },
-        commandSurface: applyCommandSurfaceActionResult(
-          {
-            ...this.state.commandSurface,
-            sessionBrowser,
-          },
-          {
-            action: "load_session_browser",
-            success: true,
-            message: "",
-            selectedTarget,
-            sessionBrowser,
-          },
-        ),
-      })
-
-      return sessionBrowser
-    } catch (error) {
-      const message = normalizeClientError(error)
-      const failedSessionBrowser = {
-        ...requestedSessionBrowser,
-        error: message,
-      }
-      const failedLive: WorkspaceLiveState = {
-        ...this.state.live,
-        freshness: {
-          ...this.state.live.freshness,
-          sessionBrowser: withFreshnessFailed(this.state.live.freshness.sessionBrowser, message),
-        },
-      }
-      this.patchState({
-        live: {
-          ...failedLive,
-          recoverySummary: createWorkspaceRecoverySummary({ boot: this.state.boot, live: failedLive }),
-        },
-        commandSurface: applyCommandSurfaceActionResult(
-          {
-            ...this.state.commandSurface,
-            sessionBrowser: failedSessionBrowser,
-          },
-          {
-            action: "load_session_browser",
-            success: false,
-            message,
-            sessionBrowser: failedSessionBrowser,
-          },
-        ),
-      })
-      return null
-    }
-  }
-
-  renameSessionFromSurface = async (sessionPath: string, name?: string): Promise<SessionManageResponse | null> => {
-    const currentTarget = this.state.commandSurface.selectedTarget
-    const requestedName = name ?? (currentTarget?.kind === "name" ? currentTarget.name : "")
-    const trimmedName = requestedName.trim()
-    const selectedTarget: CommandSurfaceTarget = { kind: "name", sessionPath, name: requestedName }
-
-    if (!trimmedName) {
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "rename_session",
-          success: false,
-          message: "Session name cannot be empty",
-          selectedTarget,
-        }),
-      })
-      return null
-    }
-
-    this.patchState({
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "rename_session", selectedTarget),
-    })
-
-    try {
-      const response = await authFetch(this.buildUrl("/api/session/manage"), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
-          action: "rename",
-          sessionPath,
-          name: trimmedName,
-        }),
-      })
-
-      const payload = await response.json().catch(() => null)
-      if (!response.ok || !payload || typeof payload !== "object" || payload.success !== true) {
-        const message =
-          payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string"
-            ? payload.error
-            : `Session rename failed with ${response.status}`
-        this.patchState({
-          commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-            action: "rename_session",
-            success: false,
-            message,
-            selectedTarget,
-          }),
-        })
-        return null
-      }
-
-      const result = payload as SessionManageResponse & { success: true }
-      const nextBoot = patchBootSessionName(this.state.boot, result.sessionPath, result.name)
-      const nextSessionBrowser = syncSessionBrowserStateWithBridge(
-        patchSessionBrowserSession(this.state.commandSurface.sessionBrowser, result.sessionPath, {
-          name: result.name,
-          ...(result.isActiveSession ? { isActive: true } : {}),
-        }),
-        nextBoot,
-      )
-      const nextSelectedTarget: CommandSurfaceTarget = {
-        kind: "name",
-        sessionPath: result.sessionPath,
-        name: result.name,
-      }
-      const nextLiveBase: WorkspaceLiveState = {
-        ...this.state.live,
-        resumableSessions: overlayLiveBridgeSessionState(
-          getLiveResumableSessions(this.state).map((session) =>
-            session.path === result.sessionPath
-              ? {
-                  ...session,
-                  name: result.name,
-                }
-              : session,
-          ),
-          nextBoot,
-        ),
-      }
-
-      this.patchState({
-        ...(nextBoot ? { boot: nextBoot } : {}),
-        live: {
-          ...nextLiveBase,
-          recoverySummary: createWorkspaceRecoverySummary({ boot: nextBoot, live: nextLiveBase }),
-        },
-        commandSurface: applyCommandSurfaceActionResult(
-          {
-            ...this.state.commandSurface,
-            sessionBrowser: nextSessionBrowser,
-          },
-          {
-            action: "rename_session",
-            success: true,
-            message: `Session name set: ${result.name}`,
-            selectedTarget: nextSelectedTarget,
-            sessionBrowser: nextSessionBrowser,
-          },
-        ),
-      })
-
-      return result
-    } catch (error) {
-      const message = normalizeClientError(error)
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "rename_session",
-          success: false,
-          message,
-          selectedTarget,
-        }),
-      })
-      return null
-    }
-  }
-
-  loadAvailableModels = async (): Promise<CommandSurfaceModelOption[]> => {
-    this.patchState({
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "loading_models"),
-    })
-
-    const response = await this.sendCommand(
-      { type: "get_available_models" },
-      { appendInputLine: false, appendResponseLine: false },
-    )
-
-    if (!response || response.success === false) {
-      const message = response?.error ?? this.state.lastClientError ?? "Unknown error"
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "loading_models",
-          success: false,
-          message: `Couldn't load models — ${message}`,
-        }),
-      })
-      return []
-    }
-
-    const availableModels = normalizeAvailableModels(response.data, getCurrentModelSelection(this.state.boot?.bridge))
-    const currentTarget = this.state.commandSurface.selectedTarget
-    const selectedTarget =
-      currentTarget?.kind === "model"
-        ? currentTarget
-        : availableModels[0]
-          ? { kind: "model" as const, provider: availableModels[0].provider, modelId: availableModels[0].modelId }
-          : currentTarget
-
-    this.patchState({
-      commandSurface: {
-        ...this.state.commandSurface,
-        pendingAction: null,
-        lastError: null,
-        availableModels,
-        selectedTarget: selectedTarget ?? null,
-      },
-    })
-
-    return availableModels
-  }
-
-  applyModelSelection = async (provider: string, modelId: string): Promise<WorkspaceCommandResponse | null> => {
-    const selectedTarget: CommandSurfaceTarget = { kind: "model", provider, modelId }
-    this.patchState({
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "set_model", selectedTarget),
-    })
-
-    const response = await this.sendCommand(
-      { type: "set_model", provider, modelId },
-      { appendInputLine: false, appendResponseLine: false },
-    )
-
-    if (!response || response.success === false) {
-      const message = response?.error ?? this.state.lastClientError ?? "Unknown error"
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "set_model",
-          success: false,
-          message,
-          selectedTarget,
-        }),
-      })
-      return response
-    }
-
-    const nextBridge = this.state.boot?.bridge.sessionState
-      ? {
-          ...this.state.boot.bridge,
-          sessionState: {
-            ...this.state.boot.bridge.sessionState,
-            model: response.data as WorkspaceModelRef,
-          },
-        }
-      : null
-
-    const nextAvailableModels = this.state.commandSurface.availableModels.map((model) => ({
-      ...model,
-      isCurrent: model.provider === provider && model.modelId === modelId,
-    }))
-
-    this.patchState({
-      ...(nextBridge && this.state.boot ? { boot: cloneBootWithBridge(this.state.boot, nextBridge) } : {}),
-      commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-        action: "set_model",
-        success: true,
-        message: `Model set to ${provider}/${modelId}`,
-        selectedTarget,
-        availableModels: nextAvailableModels,
-      }),
-    })
-
-    return response
-  }
-
-  applyThinkingLevel = async (level: CommandSurfaceThinkingLevel): Promise<WorkspaceCommandResponse | null> => {
-    const selectedTarget: CommandSurfaceTarget = { kind: "thinking", level }
-    this.patchState({
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "set_thinking_level", selectedTarget),
-    })
-
-    const response = await this.sendCommand(
-      { type: "set_thinking_level", level },
-      { appendInputLine: false, appendResponseLine: false },
-    )
-
-    if (!response || response.success === false) {
-      const message = response?.error ?? this.state.lastClientError ?? "Unknown error"
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "set_thinking_level",
-          success: false,
-          message,
-          selectedTarget,
-        }),
-      })
-      return response
-    }
-
-    const nextBridge = this.state.boot?.bridge.sessionState
-      ? {
-          ...this.state.boot.bridge,
-          sessionState: {
-            ...this.state.boot.bridge.sessionState,
-            thinkingLevel: level,
-          },
-        }
-      : null
-
-    this.patchState({
-      ...(nextBridge && this.state.boot ? { boot: cloneBootWithBridge(this.state.boot, nextBridge) } : {}),
-      commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-        action: "set_thinking_level",
-        success: true,
-        message: `Thinking level set to ${level}`,
-        selectedTarget,
-      }),
-    })
-
-    return response
-  }
-
-  setSteeringModeFromSurface = async (
-    mode: WorkspaceSessionState["steeringMode"],
-  ): Promise<WorkspaceCommandResponse | null> => {
-    const selectedTarget = this.state.commandSurface.selectedTarget
-    this.patchState({
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "set_steering_mode", selectedTarget),
-    })
-
-    const response = await this.sendCommand(
-      { type: "set_steering_mode", mode },
-      { appendInputLine: false, appendResponseLine: false },
-    )
-
-    if (!response || response.success === false) {
-      const message = response?.error ?? this.state.lastClientError ?? "Unknown error"
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "set_steering_mode",
-          success: false,
-          message,
-          selectedTarget,
-        }),
-      })
-      return response
-    }
-
-    const nextBoot = patchBootSessionState(this.state.boot, { steeringMode: mode })
-    this.patchState({
-      ...(nextBoot ? { boot: nextBoot } : {}),
-      commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-        action: "set_steering_mode",
-        success: true,
-        message: `Steering mode set to ${mode}`,
-        selectedTarget,
-      }),
-    })
-
-    return response
-  }
-
-  setFollowUpModeFromSurface = async (
-    mode: WorkspaceSessionState["followUpMode"],
-  ): Promise<WorkspaceCommandResponse | null> => {
-    const selectedTarget = this.state.commandSurface.selectedTarget
-    this.patchState({
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "set_follow_up_mode", selectedTarget),
-    })
-
-    const response = await this.sendCommand(
-      { type: "set_follow_up_mode", mode },
-      { appendInputLine: false, appendResponseLine: false },
-    )
-
-    if (!response || response.success === false) {
-      const message = response?.error ?? this.state.lastClientError ?? "Unknown error"
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "set_follow_up_mode",
-          success: false,
-          message,
-          selectedTarget,
-        }),
-      })
-      return response
-    }
-
-    const nextBoot = patchBootSessionState(this.state.boot, { followUpMode: mode })
-    this.patchState({
-      ...(nextBoot ? { boot: nextBoot } : {}),
-      commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-        action: "set_follow_up_mode",
-        success: true,
-        message: `Follow-up mode set to ${mode}`,
-        selectedTarget,
-      }),
-    })
-
-    return response
-  }
-
-  setAutoCompactionFromSurface = async (enabled: boolean): Promise<WorkspaceCommandResponse | null> => {
-    const selectedTarget = this.state.commandSurface.selectedTarget
-    this.patchState({
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "set_auto_compaction", selectedTarget),
-    })
-
-    const response = await this.sendCommand(
-      { type: "set_auto_compaction", enabled },
-      { appendInputLine: false, appendResponseLine: false },
-    )
-
-    if (!response || response.success === false) {
-      const message = response?.error ?? this.state.lastClientError ?? "Unknown error"
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "set_auto_compaction",
-          success: false,
-          message,
-          selectedTarget,
-        }),
-      })
-      return response
-    }
-
-    const nextBoot = patchBootSessionState(this.state.boot, { autoCompactionEnabled: enabled })
-    this.patchState({
-      ...(nextBoot ? { boot: nextBoot } : {}),
-      commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-        action: "set_auto_compaction",
-        success: true,
-        message: `Auto-compaction ${enabled ? "enabled" : "disabled"}`,
-        selectedTarget,
-      }),
-    })
-
-    return response
-  }
-
-  setAutoRetryFromSurface = async (enabled: boolean): Promise<WorkspaceCommandResponse | null> => {
-    const selectedTarget = this.state.commandSurface.selectedTarget
-    this.patchState({
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "set_auto_retry", selectedTarget),
-    })
-
-    const response = await this.sendCommand(
-      { type: "set_auto_retry", enabled },
-      { appendInputLine: false, appendResponseLine: false },
-    )
-
-    if (!response || response.success === false) {
-      const message = response?.error ?? this.state.lastClientError ?? "Unknown error"
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "set_auto_retry",
-          success: false,
-          message,
-          selectedTarget,
-        }),
-      })
-      return response
-    }
-
-    const nextBoot = patchBootSessionState(this.state.boot, { autoRetryEnabled: enabled })
-    this.patchState({
-      ...(nextBoot ? { boot: nextBoot } : {}),
-      commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-        action: "set_auto_retry",
-        success: true,
-        message: `Auto-retry ${enabled ? "enabled" : "disabled"}`,
-        selectedTarget,
-      }),
-    })
-
-    return response
-  }
-
-  abortRetryFromSurface = async (): Promise<WorkspaceCommandResponse | null> => {
-    const selectedTarget = this.state.commandSurface.selectedTarget
-    this.patchState({
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "abort_retry", selectedTarget),
-    })
-
-    const response = await this.sendCommand(
-      { type: "abort_retry" },
-      { appendInputLine: false, appendResponseLine: false },
-    )
-
-    if (!response || response.success === false) {
-      const message = response?.error ?? this.state.lastClientError ?? "Unknown error"
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "abort_retry",
-          success: false,
-          message,
-          selectedTarget,
-        }),
-      })
-      return response
-    }
-
-    this.patchState({
-      commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-        action: "abort_retry",
-        success: true,
-        message: "Retry cancellation requested. Live retry state will update when the bridge confirms the abort.",
-        selectedTarget,
-      }),
-    })
-
-    return response
-  }
-
-  switchSessionFromSurface = async (sessionPath: string): Promise<WorkspaceCommandResponse | null> => {
-    const selectedTarget: CommandSurfaceTarget = { kind: "resume", sessionPath }
-    this.patchState({
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "switch_session", selectedTarget),
-    })
-
-    const response = await this.sendCommand(
-      { type: "switch_session", sessionPath },
-      { appendInputLine: false, appendResponseLine: false },
-    )
-
-    if (!response || response.success === false) {
-      const message = response?.error ?? this.state.lastClientError ?? "Unknown error"
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "switch_session",
-          success: false,
-          message,
-          selectedTarget,
-        }),
-      })
-      return response
-    }
-
-    if (response.data && typeof response.data === "object" && "cancelled" in response.data && response.data.cancelled) {
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "switch_session",
-          success: false,
-          message: "Session switch was cancelled before the browser changed sessions.",
-          selectedTarget,
-        }),
-      })
-      return response
-    }
-
-    const nextSessionName =
-      this.state.commandSurface.sessionBrowser.sessions.find((session) => session.path === sessionPath)?.name ??
-      this.state.boot?.resumableSessions.find((session) => session.path === sessionPath)?.name
-    const nextBoot = patchBootActiveSession(this.state.boot, sessionPath, nextSessionName)
-    const nextSessionBrowser = syncSessionBrowserStateWithBridge(
-      patchSessionBrowserSession(this.state.commandSurface.sessionBrowser, sessionPath, {
-        isActive: true,
-        ...(nextSessionName ? { name: nextSessionName } : {}),
-      }),
-      nextBoot,
-    )
-
-    const nextLiveBase: WorkspaceLiveState = {
-      ...this.state.live,
-      resumableSessions: overlayLiveBridgeSessionState(
-        getLiveResumableSessions(this.state).map((session) => ({
-          ...session,
-          isActive: session.path === sessionPath,
-          ...(session.path === sessionPath && nextSessionName ? { name: nextSessionName } : {}),
-        })),
-        nextBoot,
-      ),
-    }
-
-    this.patchState({
-      ...(nextBoot ? { boot: nextBoot } : {}),
-      live: {
-        ...nextLiveBase,
-        recoverySummary: createWorkspaceRecoverySummary({ boot: nextBoot, live: nextLiveBase }),
-      },
-      commandSurface: applyCommandSurfaceActionResult(
-        {
-          ...this.state.commandSurface,
-          sessionBrowser: nextSessionBrowser,
-        },
-        {
-          action: "switch_session",
-          success: true,
-          message: `Switched to ${describeSessionPath(sessionPath, nextBoot ?? this.state.boot)}`,
-          selectedTarget,
-          sessionBrowser: nextSessionBrowser,
-        },
-      ),
-    })
-
-    return response
-  }
-
-  loadSessionStats = async (): Promise<CommandSurfaceSessionStats | null> => {
-    const requestedLive: WorkspaceLiveState = {
-      ...this.state.live,
-      freshness: {
-        ...this.state.live.freshness,
-        sessionStats: withFreshnessRequested(this.state.live.freshness.sessionStats),
-      },
-    }
-
-    this.patchState({
-      live: {
-        ...requestedLive,
-        recoverySummary: createWorkspaceRecoverySummary({ boot: this.state.boot, live: requestedLive }),
-      },
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "load_session_stats"),
-    })
-
-    const response = await this.sendCommand(
-      { type: "get_session_stats" },
-      { appendInputLine: false, appendResponseLine: false },
-    )
-
-    if (!response || response.success === false) {
-      const message = response?.error ?? this.state.lastClientError ?? "Unknown error"
-      const failedLive: WorkspaceLiveState = {
-        ...this.state.live,
-        freshness: {
-          ...this.state.live.freshness,
-          sessionStats: withFreshnessFailed(this.state.live.freshness.sessionStats, message),
-        },
-      }
-      this.patchState({
-        live: {
-          ...failedLive,
-          recoverySummary: createWorkspaceRecoverySummary({ boot: this.state.boot, live: failedLive }),
-        },
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "load_session_stats",
-          success: false,
-          message: `Couldn't load session details — ${message}`,
-          sessionStats: null,
-        }),
-      })
-      return null
-    }
-
-    const sessionStats = normalizeSessionStats(response.data)
-    if (!sessionStats) {
-      const message = "Session details response was missing the expected fields."
-      const failedLive: WorkspaceLiveState = {
-        ...this.state.live,
-        freshness: {
-          ...this.state.live.freshness,
-          sessionStats: withFreshnessFailed(this.state.live.freshness.sessionStats, message),
-        },
-      }
-      this.patchState({
-        live: {
-          ...failedLive,
-          recoverySummary: createWorkspaceRecoverySummary({ boot: this.state.boot, live: failedLive }),
-        },
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "load_session_stats",
-          success: false,
-          message,
-          sessionStats: null,
-        }),
-      })
-      return null
-    }
-
-    const nextLive: WorkspaceLiveState = {
-      ...this.state.live,
-      freshness: {
-        ...this.state.live.freshness,
-        sessionStats: withFreshnessSucceeded(this.state.live.freshness.sessionStats),
-      },
-    }
-
-    this.patchState({
-      live: {
-        ...nextLive,
-        recoverySummary: createWorkspaceRecoverySummary({ boot: this.state.boot, live: nextLive }),
-      },
-      commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-        action: "load_session_stats",
-        success: true,
-        message: `Loaded session details for ${sessionStats.sessionId}`,
-        sessionStats,
-      }),
-    })
-
-    return sessionStats
-  }
-
-  exportSessionFromSurface = async (outputPath?: string): Promise<WorkspaceCommandResponse | null> => {
-    const normalizedOutputPath = outputPath?.trim() || undefined
-    const selectedTarget: CommandSurfaceTarget = { kind: "session", outputPath: normalizedOutputPath }
-    this.patchState({
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "export_html", selectedTarget),
-    })
-
-    const response = await this.sendCommand(
-      normalizedOutputPath ? { type: "export_html", outputPath: normalizedOutputPath } : { type: "export_html" },
-      { appendInputLine: false, appendResponseLine: false },
-    )
-
-    if (!response || response.success === false) {
-      const message = response?.error ?? this.state.lastClientError ?? "Unknown error"
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "export_html",
-          success: false,
-          message: `Couldn't export this session — ${message}`,
-          selectedTarget,
-        }),
-      })
-      return response
-    }
-
-    const exportedPath =
-      response.data && typeof response.data === "object" && "path" in response.data && typeof response.data.path === "string"
-        ? response.data.path
-        : "the generated file"
-
-    this.patchState({
-      commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-        action: "export_html",
-        success: true,
-        message: `Session exported to ${exportedPath}`,
-        selectedTarget,
-      }),
-    })
-
-    return response
-  }
-
-  loadForkMessages = async (): Promise<CommandSurfaceForkMessage[]> => {
-    this.patchState({
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "load_fork_messages"),
-    })
-
-    const response = await this.sendCommand(
-      { type: "get_fork_messages" },
-      { appendInputLine: false, appendResponseLine: false },
-    )
-
-    if (!response || response.success === false) {
-      const message = response?.error ?? this.state.lastClientError ?? "Unknown error"
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "load_fork_messages",
-          success: false,
-          message: `Couldn't load fork points — ${message}`,
-          forkMessages: [],
-        }),
-      })
-      return []
-    }
-
-    const forkMessages = normalizeForkMessages(response.data)
-    const currentTarget = this.state.commandSurface.selectedTarget
-    const selectedTarget =
-      currentTarget?.kind === "fork" && currentTarget.entryId
-        ? currentTarget
-        : forkMessages[0]
-          ? { kind: "fork" as const, entryId: forkMessages[0].entryId }
-          : currentTarget
-
-    this.patchState({
-      commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-        action: "load_fork_messages",
-        success: true,
-        message: forkMessages.length > 0 ? `Loaded ${forkMessages.length} fork points.` : "No fork points are available yet.",
-        selectedTarget: selectedTarget ?? null,
-        forkMessages,
-      }),
-    })
-
-    return forkMessages
-  }
-
-  forkSessionFromSurface = async (entryId: string): Promise<WorkspaceCommandResponse | null> => {
-    const selectedTarget: CommandSurfaceTarget = { kind: "fork", entryId }
-    this.patchState({
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "fork_session", selectedTarget),
-    })
-
-    const response = await this.sendCommand(
-      { type: "fork", entryId },
-      { appendInputLine: false, appendResponseLine: false },
-    )
-
-    if (!response || response.success === false) {
-      const message = response?.error ?? this.state.lastClientError ?? "Unknown error"
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "fork_session",
-          success: false,
-          message: `Couldn't create a fork — ${message}`,
-          selectedTarget,
-        }),
-      })
-      return response
-    }
-
-    if (response.data && typeof response.data === "object" && "cancelled" in response.data && response.data.cancelled) {
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "fork_session",
-          success: false,
-          message: "Fork creation was cancelled before a new session was created.",
-          selectedTarget,
-        }),
-      })
-      return response
-    }
-
-    const sourceText =
-      response.data && typeof response.data === "object" && "text" in response.data && typeof response.data.text === "string"
-        ? response.data.text.trim()
-        : ""
-
-    this.patchState({
-      commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-        action: "fork_session",
-        success: true,
-        message: sourceText ? `Forked from “${sourceText.slice(0, 120)}${sourceText.length > 120 ? "…" : ""}”` : "Created a forked session.",
-        selectedTarget,
-      }),
-    })
-
-    return response
-  }
-
-  compactSessionFromSurface = async (customInstructions?: string): Promise<WorkspaceCommandResponse | null> => {
-    const normalizedInstructions = customInstructions?.trim() ?? ""
-    const selectedTarget: CommandSurfaceTarget = { kind: "compact", customInstructions: normalizedInstructions }
-    this.patchState({
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "compact_session", selectedTarget),
-    })
-
-    const response = await this.sendCommand(
-      normalizedInstructions ? { type: "compact", customInstructions: normalizedInstructions } : { type: "compact" },
-      { appendInputLine: false, appendResponseLine: false },
-    )
-
-    if (!response || response.success === false) {
-      const message = response?.error ?? this.state.lastClientError ?? "Unknown error"
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "compact_session",
-          success: false,
-          message: `Couldn't compact the session — ${message}`,
-          selectedTarget,
-          lastCompaction: null,
-        }),
-      })
-      return response
-    }
-
-    const compactionResult = normalizeCompactionResult(response.data)
-    if (!compactionResult) {
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "compact_session",
-          success: false,
-          message: "Compaction finished but the browser could not read the compaction result.",
-          selectedTarget,
-          lastCompaction: null,
-        }),
-      })
-      return response
-    }
-
-    this.patchState({
-      commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-        action: "compact_session",
-        success: true,
-        message: `Compacted ${compactionResult.tokensBefore.toLocaleString()} tokens into a fresh summary${normalizedInstructions ? " with custom instructions" : ""}.`,
-        selectedTarget,
-        lastCompaction: compactionResult,
-      }),
-    })
-
-    return response
-  }
-
-  saveApiKeyFromSurface = async (providerId: string, apiKey: string): Promise<WorkspaceOnboardingState | null> => {
-    const selectedTarget: CommandSurfaceTarget = { kind: "auth", providerId, intent: "manage" }
-    this.patchState({
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "save_api_key", selectedTarget),
-    })
-
-    const onboarding = await this.saveApiKey(providerId, apiKey)
-    const providerLabel = onboarding ? findOnboardingProviderLabel(onboarding, providerId) : providerId
-
-    if (!onboarding) {
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "save_api_key",
-          success: false,
-          message: this.state.lastClientError ?? `${providerLabel} setup failed`,
-          selectedTarget,
-        }),
-      })
-      return null
-    }
-
-    if (onboarding.lastValidation?.status === "failed") {
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "save_api_key",
-          success: false,
-          message: onboarding.lastValidation.message,
-          selectedTarget,
-        }),
-      })
-      return onboarding
-    }
-
-    if (onboarding.bridgeAuthRefresh.phase === "failed") {
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "save_api_key",
-          success: false,
-          message: onboarding.bridgeAuthRefresh.error ?? `${providerLabel} credentials validated but bridge auth refresh failed`,
-          selectedTarget,
-        }),
-      })
-      return onboarding
-    }
-
-    this.patchState({
-      commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-        action: "save_api_key",
-        success: true,
-        message: `${providerLabel} credentials validated and saved.`,
-        selectedTarget,
-      }),
-    })
-
-    return onboarding
-  }
-
-  startProviderFlowFromSurface = async (providerId: string): Promise<WorkspaceOnboardingState | null> => {
-    const selectedTarget: CommandSurfaceTarget = { kind: "auth", providerId, intent: "login" }
-    this.patchState({
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "start_provider_flow", selectedTarget),
-    })
-
-    const onboarding = await this.startProviderFlow(providerId)
-    const providerLabel = onboarding ? findOnboardingProviderLabel(onboarding, providerId) : providerId
-
-    if (!onboarding) {
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "start_provider_flow",
-          success: false,
-          message: this.state.lastClientError ?? `${providerLabel} sign-in failed to start`,
-          selectedTarget,
-        }),
-      })
-      return null
-    }
-
-    this.patchState({
-      commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-        action: "start_provider_flow",
-        success: true,
-        message: `${providerLabel} sign-in started. Continue in the auth section.`,
-        selectedTarget,
-      }),
-    })
-
-    return onboarding
-  }
-
-  submitProviderFlowInputFromSurface = async (flowId: string, input: string): Promise<WorkspaceOnboardingState | null> => {
-    const providerId = this.state.boot?.onboarding.activeFlow?.providerId ?? undefined
-    const selectedTarget: CommandSurfaceTarget = { kind: "auth", providerId, intent: "login" }
-    this.patchState({
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "submit_provider_flow_input", selectedTarget),
-    })
-
-    const onboarding = await this.submitProviderFlowInput(flowId, input)
-    const providerLabel =
-      onboarding?.activeFlow?.providerLabel ??
-      (providerId && onboarding ? findOnboardingProviderLabel(onboarding, providerId) : providerId) ??
-      "Provider"
-
-    if (!onboarding) {
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "submit_provider_flow_input",
-          success: false,
-          message: this.state.lastClientError ?? `${providerLabel} sign-in failed`,
-          selectedTarget,
-        }),
-      })
-      return null
-    }
-
-    if (onboarding.activeFlow?.status === "failed") {
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "submit_provider_flow_input",
-          success: false,
-          message: onboarding.activeFlow.error ?? `${providerLabel} sign-in failed`,
-          selectedTarget,
-        }),
-      })
-      return onboarding
-    }
-
-    if (onboarding.bridgeAuthRefresh.phase === "failed") {
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "submit_provider_flow_input",
-          success: false,
-          message: onboarding.bridgeAuthRefresh.error ?? `${providerLabel} sign-in completed but bridge auth refresh failed`,
-          selectedTarget,
-        }),
-      })
-      return onboarding
-    }
-
-    const successMessage =
-      onboarding.activeFlow && ["running", "awaiting_browser_auth", "awaiting_input"].includes(onboarding.activeFlow.status)
-        ? `${providerLabel} sign-in advanced. Complete the remaining step in this panel.`
-        : `${providerLabel} sign-in complete.`
-
-    this.patchState({
-      commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-        action: "submit_provider_flow_input",
-        success: true,
-        message: successMessage,
-        selectedTarget,
-      }),
-    })
-
-    return onboarding
-  }
-
-  cancelProviderFlowFromSurface = async (flowId: string): Promise<WorkspaceOnboardingState | null> => {
-    const providerId = this.state.boot?.onboarding.activeFlow?.providerId ?? undefined
-    const selectedTarget: CommandSurfaceTarget = { kind: "auth", providerId, intent: "login" }
-    this.patchState({
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "cancel_provider_flow", selectedTarget),
-    })
-
-    const onboarding = await this.cancelProviderFlow(flowId)
-    const providerLabel =
-      onboarding?.activeFlow?.providerLabel ??
-      (providerId && onboarding ? findOnboardingProviderLabel(onboarding, providerId) : providerId) ??
-      "Provider"
-
-    if (!onboarding) {
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "cancel_provider_flow",
-          success: false,
-          message: this.state.lastClientError ?? `${providerLabel} sign-in cancellation failed`,
-          selectedTarget,
-        }),
-      })
-      return null
-    }
-
-    this.patchState({
-      commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-        action: "cancel_provider_flow",
-        success: true,
-        message: `${providerLabel} sign-in cancelled.`,
-        selectedTarget,
-      }),
-    })
-
-    return onboarding
-  }
-
-  logoutProviderFromSurface = async (providerId: string): Promise<WorkspaceOnboardingState | null> => {
-    const selectedTarget: CommandSurfaceTarget = { kind: "auth", providerId, intent: "logout" }
-    this.patchState({
-      commandSurface: setCommandSurfacePending(this.state.commandSurface, "logout_provider", selectedTarget),
-    })
-
-    const onboarding = await this.logoutProvider(providerId)
-    const providerLabel = onboarding ? findOnboardingProviderLabel(onboarding, providerId) : providerId
-
-    if (!onboarding) {
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "logout_provider",
-          success: false,
-          message: this.state.lastClientError ?? `${providerLabel} logout failed`,
-          selectedTarget,
-        }),
-      })
-      return null
-    }
-
-    if (onboarding.bridgeAuthRefresh.phase === "failed") {
-      this.patchState({
-        commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-          action: "logout_provider",
-          success: false,
-          message: onboarding.bridgeAuthRefresh.error ?? `${providerLabel} logout completed but bridge auth refresh failed`,
-          selectedTarget,
-        }),
-      })
-      return onboarding
-    }
-
-    const providerState = onboarding.required.providers.find((provider) => provider.id === providerId)
-    const resultMessage = providerState?.configured
-      ? `${providerLabel} saved credentials were removed, but ${providerState.configuredVia} auth still keeps the provider available.`
-      : onboarding.locked
-        ? `${providerLabel} logged out — required setup is needed again.`
-        : `${providerLabel} logged out.`
-
-    this.patchState({
-      commandSurface: applyCommandSurfaceActionResult(this.state.commandSurface, {
-        action: "logout_provider",
-        success: true,
-        message: resultMessage,
-        selectedTarget,
-      }),
-    })
-
-    return onboarding
-  }
+  // Command surface loaders/actions — delegated to CommandSurfaceStore
+  loadGitSummary = (...args: Parameters<CommandSurfaceStore["loadGitSummary"]>) => this.commandSurfaceActions.loadGitSummary(...args)
+  loadRecoveryDiagnostics = (...args: Parameters<CommandSurfaceStore["loadRecoveryDiagnostics"]>) => this.commandSurfaceActions.loadRecoveryDiagnostics(...args)
+  loadForensicsDiagnostics = (...args: Parameters<CommandSurfaceStore["loadForensicsDiagnostics"]>) => this.commandSurfaceActions.loadForensicsDiagnostics(...args)
+  loadDoctorDiagnostics = (...args: Parameters<CommandSurfaceStore["loadDoctorDiagnostics"]>) => this.commandSurfaceActions.loadDoctorDiagnostics(...args)
+  applyDoctorFixes = (...args: Parameters<CommandSurfaceStore["applyDoctorFixes"]>) => this.commandSurfaceActions.applyDoctorFixes(...args)
+  loadSkillHealthDiagnostics = (...args: Parameters<CommandSurfaceStore["loadSkillHealthDiagnostics"]>) => this.commandSurfaceActions.loadSkillHealthDiagnostics(...args)
+  loadKnowledgeData = (...args: Parameters<CommandSurfaceStore["loadKnowledgeData"]>) => this.commandSurfaceActions.loadKnowledgeData(...args)
+  loadCapturesData = (...args: Parameters<CommandSurfaceStore["loadCapturesData"]>) => this.commandSurfaceActions.loadCapturesData(...args)
+  loadSettingsData = (...args: Parameters<CommandSurfaceStore["loadSettingsData"]>) => this.commandSurfaceActions.loadSettingsData(...args)
+  loadHistoryData = (...args: Parameters<CommandSurfaceStore["loadHistoryData"]>) => this.commandSurfaceActions.loadHistoryData(...args)
+  loadInspectData = (...args: Parameters<CommandSurfaceStore["loadInspectData"]>) => this.commandSurfaceActions.loadInspectData(...args)
+  loadHooksData = (...args: Parameters<CommandSurfaceStore["loadHooksData"]>) => this.commandSurfaceActions.loadHooksData(...args)
+  loadExportData = (...args: Parameters<CommandSurfaceStore["loadExportData"]>) => this.commandSurfaceActions.loadExportData(...args)
+  loadUndoInfo = (...args: Parameters<CommandSurfaceStore["loadUndoInfo"]>) => this.commandSurfaceActions.loadUndoInfo(...args)
+  loadCleanupData = (...args: Parameters<CommandSurfaceStore["loadCleanupData"]>) => this.commandSurfaceActions.loadCleanupData(...args)
+  loadSteerData = (...args: Parameters<CommandSurfaceStore["loadSteerData"]>) => this.commandSurfaceActions.loadSteerData(...args)
+  executeUndoAction = (...args: Parameters<CommandSurfaceStore["executeUndoAction"]>) => this.commandSurfaceActions.executeUndoAction(...args)
+  executeCleanupAction = (...args: Parameters<CommandSurfaceStore["executeCleanupAction"]>) => this.commandSurfaceActions.executeCleanupAction(...args)
+  resolveCaptureAction = (...args: Parameters<CommandSurfaceStore["resolveCaptureAction"]>) => this.commandSurfaceActions.resolveCaptureAction(...args)
+  updateSessionBrowserState = (...args: Parameters<CommandSurfaceStore["updateSessionBrowserState"]>) => this.commandSurfaceActions.updateSessionBrowserState(...args)
+  loadSessionBrowser = (...args: Parameters<CommandSurfaceStore["loadSessionBrowser"]>) => this.commandSurfaceActions.loadSessionBrowser(...args)
+  renameSessionFromSurface = (...args: Parameters<CommandSurfaceStore["renameSessionFromSurface"]>) => this.commandSurfaceActions.renameSessionFromSurface(...args)
+  loadAvailableModels = (...args: Parameters<CommandSurfaceStore["loadAvailableModels"]>) => this.commandSurfaceActions.loadAvailableModels(...args)
+  applyModelSelection = (...args: Parameters<CommandSurfaceStore["applyModelSelection"]>) => this.commandSurfaceActions.applyModelSelection(...args)
+  applyThinkingLevel = (...args: Parameters<CommandSurfaceStore["applyThinkingLevel"]>) => this.commandSurfaceActions.applyThinkingLevel(...args)
+  setSteeringModeFromSurface = (...args: Parameters<CommandSurfaceStore["setSteeringModeFromSurface"]>) => this.commandSurfaceActions.setSteeringModeFromSurface(...args)
+  setFollowUpModeFromSurface = (...args: Parameters<CommandSurfaceStore["setFollowUpModeFromSurface"]>) => this.commandSurfaceActions.setFollowUpModeFromSurface(...args)
+  setAutoCompactionFromSurface = (...args: Parameters<CommandSurfaceStore["setAutoCompactionFromSurface"]>) => this.commandSurfaceActions.setAutoCompactionFromSurface(...args)
+  setAutoRetryFromSurface = (...args: Parameters<CommandSurfaceStore["setAutoRetryFromSurface"]>) => this.commandSurfaceActions.setAutoRetryFromSurface(...args)
+  abortRetryFromSurface = (...args: Parameters<CommandSurfaceStore["abortRetryFromSurface"]>) => this.commandSurfaceActions.abortRetryFromSurface(...args)
+  switchSessionFromSurface = (...args: Parameters<CommandSurfaceStore["switchSessionFromSurface"]>) => this.commandSurfaceActions.switchSessionFromSurface(...args)
+  loadSessionStats = (...args: Parameters<CommandSurfaceStore["loadSessionStats"]>) => this.commandSurfaceActions.loadSessionStats(...args)
+  exportSessionFromSurface = (...args: Parameters<CommandSurfaceStore["exportSessionFromSurface"]>) => this.commandSurfaceActions.exportSessionFromSurface(...args)
+  loadForkMessages = (...args: Parameters<CommandSurfaceStore["loadForkMessages"]>) => this.commandSurfaceActions.loadForkMessages(...args)
+  forkSessionFromSurface = (...args: Parameters<CommandSurfaceStore["forkSessionFromSurface"]>) => this.commandSurfaceActions.forkSessionFromSurface(...args)
+  compactSessionFromSurface = (...args: Parameters<CommandSurfaceStore["compactSessionFromSurface"]>) => this.commandSurfaceActions.compactSessionFromSurface(...args)
+  saveApiKeyFromSurface = (...args: Parameters<CommandSurfaceStore["saveApiKeyFromSurface"]>) => this.commandSurfaceActions.saveApiKeyFromSurface(...args)
+  startProviderFlowFromSurface = (...args: Parameters<CommandSurfaceStore["startProviderFlowFromSurface"]>) => this.commandSurfaceActions.startProviderFlowFromSurface(...args)
+  submitProviderFlowInputFromSurface = (...args: Parameters<CommandSurfaceStore["submitProviderFlowInputFromSurface"]>) => this.commandSurfaceActions.submitProviderFlowInputFromSurface(...args)
+  cancelProviderFlowFromSurface = (...args: Parameters<CommandSurfaceStore["cancelProviderFlowFromSurface"]>) => this.commandSurfaceActions.cancelProviderFlowFromSurface(...args)
+  logoutProviderFromSurface = (...args: Parameters<CommandSurfaceStore["logoutProviderFromSurface"]>) => this.commandSurfaceActions.logoutProviderFromSurface(...args)
 
   respondToUiRequest = async (id: string, response: Record<string, unknown>): Promise<void> => {
     this.patchState({ commandInFlight: "extension_ui_response" })
@@ -3814,7 +1473,7 @@ export class GSDWorkspaceStore {
   }
 
   pushChatUserMessage = (msg: ChatMessage) => {
-    this.patchState({ chatUserMessages: [...this.state.chatUserMessages, msg] })
+    this.patchTranscript((transcript) => pushPendingUserMessage(transcript, msg))
   }
 
   submitInput = async (input: string, images?: PendingImage[]): Promise<BrowserSlashCommandDispatchResult | null> => {
@@ -4026,29 +1685,28 @@ export class GSDWorkspaceStore {
     reason: LiveStateInvalidationReason,
     source: LiveStateInvalidationSource,
   ): WorkspaceLiveState {
-    const nextFreshness = { ...this.state.live.freshness }
+    const nextLive: WorkspaceLiveState = {
+      ...this.state.live,
+      freshness: { ...this.state.live.freshness },
+    }
 
     if (domains.includes("auto")) {
-      nextFreshness.auto = withFreshnessInvalidated(nextFreshness.auto, reason, source)
+      nextLive.auto = withEntitySliceInvalidated(nextLive.auto, reason, source)
     }
     if (domains.includes("workspace")) {
-      nextFreshness.workspace = withFreshnessInvalidated(nextFreshness.workspace, reason, source)
-      nextFreshness.gitSummary = withFreshnessInvalidated(nextFreshness.gitSummary, reason, source)
+      nextLive.workspace = withEntitySliceInvalidated(nextLive.workspace, reason, source)
+      nextLive.freshness.gitSummary = withFreshnessInvalidated(nextLive.freshness.gitSummary, reason, source)
     }
     if (domains.includes("recovery")) {
-      nextFreshness.recovery = withFreshnessInvalidated(nextFreshness.recovery, reason, source)
-      nextFreshness.sessionStats = withFreshnessInvalidated(nextFreshness.sessionStats, reason, source)
+      nextLive.freshness.recovery = withFreshnessInvalidated(nextLive.freshness.recovery, reason, source)
+      nextLive.freshness.sessionStats = withFreshnessInvalidated(nextLive.freshness.sessionStats, reason, source)
     }
     if (domains.includes("resumable_sessions")) {
-      nextFreshness.resumableSessions = withFreshnessInvalidated(nextFreshness.resumableSessions, reason, source)
-      nextFreshness.sessionBrowser = withFreshnessInvalidated(nextFreshness.sessionBrowser, reason, source)
-      nextFreshness.sessionStats = withFreshnessInvalidated(nextFreshness.sessionStats, reason, source)
+      nextLive.resumableSessions = withEntitySliceInvalidated(nextLive.resumableSessions, reason, source)
+      nextLive.freshness.sessionBrowser = withFreshnessInvalidated(nextLive.freshness.sessionBrowser, reason, source)
+      nextLive.freshness.sessionStats = withFreshnessInvalidated(nextLive.freshness.sessionStats, reason, source)
     }
 
-    const nextLive = {
-      ...this.state.live,
-      freshness: nextFreshness,
-    }
     return {
       ...nextLive,
       recoverySummary: createWorkspaceRecoverySummary({ boot: this.state.boot, live: nextLive }),
@@ -4056,43 +1714,23 @@ export class GSDWorkspaceStore {
   }
 
   private refreshOpenCommandSurfacesForInvalidation(event: LiveStateInvalidationEvent): void {
-    if (event.domains.includes("workspace") && this.state.commandSurface.open && this.state.commandSurface.section === "git") {
-      if (this.state.commandSurface.pendingAction !== "load_git_summary") {
-        void this.loadGitSummary()
-      }
-    }
-
-    if (event.domains.includes("recovery") && this.state.commandSurface.open && this.state.commandSurface.section === "recovery") {
-      if (this.state.commandSurface.pendingAction !== "load_recovery_diagnostics") {
-        void this.loadRecoveryDiagnostics()
-      }
-    }
-
-    if (event.domains.includes("resumable_sessions")) {
-      if (
-        this.state.commandSurface.open &&
-        (this.state.commandSurface.section === "resume" || this.state.commandSurface.section === "name") &&
-        this.state.commandSurface.pendingAction !== "load_session_browser"
-      ) {
-        void this.loadSessionBrowser()
-      }
-
-      if (this.state.commandSurface.open && this.state.commandSurface.section === "session") {
-        const activeSessionPath = this.state.boot?.bridge.activeSessionFile ?? this.state.boot?.bridge.sessionState?.sessionFile ?? null
-        this.patchState({
-          commandSurface: {
-            ...this.state.commandSurface,
-            sessionStats:
-              this.state.commandSurface.sessionStats && this.state.commandSurface.sessionStats.sessionFile === activeSessionPath
-                ? this.state.commandSurface.sessionStats
-                : null,
-          },
-        })
-        if (this.state.commandSurface.pendingAction !== "load_session_stats") {
-          void this.loadSessionStats()
-        }
-      }
-    }
+    refreshOpenCommandSurfacesForInvalidation(
+      {
+        getState: () => this.state,
+        patchState: (patch) => this.patchState(patch),
+        buildUrl: (path) => this.buildUrl(path),
+        sendCommand: (command, options) => this.sendCommand(command, options),
+        refreshBoot: (options) => this.refreshBoot(options),
+        refreshOnboarding: () => this.refreshOnboarding(),
+        logoutProvider: (providerId) => this.logoutProvider(providerId),
+        saveApiKey: (providerId, apiKey) => this.saveApiKey(providerId, apiKey),
+        startProviderFlow: (providerId) => this.startProviderFlow(providerId),
+        submitProviderFlowInput: (flowId, input) => this.submitProviderFlowInput(flowId, input),
+        cancelProviderFlow: (flowId) => this.cancelProviderFlow(flowId),
+      },
+      this.commandSurfaceActions,
+      event,
+    )
   }
 
   private async reloadLiveState(
@@ -4102,6 +1740,11 @@ export class GSDWorkspaceStore {
     const requestedDomains = domains.filter((domain) => domain === "auto" || domain === "workspace" || domain === "resumable_sessions")
 
     if (requestedDomains.length === 0) {
+      if (domains.includes("recovery")) {
+        await this.refreshBoot({ soft: true })
+        return
+      }
+
       const nextLive = {
         ...this.state.live,
         freshness: {
@@ -4119,19 +1762,26 @@ export class GSDWorkspaceStore {
     }
 
     const nextFreshness = { ...this.state.live.freshness }
+    let nextAuto = this.state.live.auto
+    let nextWorkspace = this.state.live.workspace
+    let nextResumableSessions = this.state.live.resumableSessions
+
     if (requestedDomains.includes("auto")) {
-      nextFreshness.auto = withFreshnessRequested(nextFreshness.auto)
+      nextAuto = withEntitySliceRequested(nextAuto)
     }
     if (requestedDomains.includes("workspace")) {
-      nextFreshness.workspace = withFreshnessRequested(nextFreshness.workspace)
+      nextWorkspace = withEntitySliceRequested(nextWorkspace)
     }
     if (requestedDomains.includes("resumable_sessions")) {
-      nextFreshness.resumableSessions = withFreshnessRequested(nextFreshness.resumableSessions)
+      nextResumableSessions = withEntitySliceRequested(nextResumableSessions)
     }
     nextFreshness.recovery = withFreshnessRequested(nextFreshness.recovery)
 
-    const requestedLive = {
+    const requestedLive: WorkspaceLiveState = {
       ...this.state.live,
+      auto: nextAuto,
+      workspace: nextWorkspace,
+      resumableSessions: nextResumableSessions,
       freshness: nextFreshness,
       targetedRefreshCount: this.state.live.targetedRefreshCount + 1,
     }
@@ -4173,8 +1823,7 @@ export class GSDWorkspaceStore {
       }
 
       if (requestedDomains.includes("auto") && payload.auto) {
-        nextLive.auto = payload.auto
-        nextLive.freshness.auto = withFreshnessSucceeded(nextLive.freshness.auto)
+        nextLive.auto = withEntitySliceSucceeded(nextLive.auto, payload.auto)
         nextBoot = nextBoot
           ? {
               ...nextBoot,
@@ -4184,8 +1833,7 @@ export class GSDWorkspaceStore {
       }
 
       if (requestedDomains.includes("workspace") && payload.workspace) {
-        nextLive.workspace = payload.workspace
-        nextLive.freshness.workspace = withFreshnessSucceeded(nextLive.freshness.workspace)
+        nextLive.workspace = withEntitySliceSucceeded(nextLive.workspace, payload.workspace)
         nextBoot = nextBoot
           ? {
               ...nextBoot,
@@ -4196,8 +1844,7 @@ export class GSDWorkspaceStore {
 
       if (requestedDomains.includes("resumable_sessions") && payload.resumableSessions) {
         const nextSessions = overlayLiveBridgeSessionState(payload.resumableSessions, nextBoot)
-        nextLive.resumableSessions = nextSessions
-        nextLive.freshness.resumableSessions = withFreshnessSucceeded(nextLive.freshness.resumableSessions)
+        nextLive.resumableSessions = withEntitySliceSucceeded(nextLive.resumableSessions, nextSessions)
         nextBoot = nextBoot
           ? {
               ...nextBoot,
@@ -4216,20 +1863,17 @@ export class GSDWorkspaceStore {
       const message = normalizeClientError(error)
       const failedLive: WorkspaceLiveState = {
         ...this.state.live,
+        auto: requestedDomains.includes("auto")
+          ? withEntitySliceFailed(this.state.live.auto, message)
+          : this.state.live.auto,
+        workspace: requestedDomains.includes("workspace")
+          ? withEntitySliceFailed(this.state.live.workspace, message)
+          : this.state.live.workspace,
+        resumableSessions: requestedDomains.includes("resumable_sessions")
+          ? withEntitySliceFailed(this.state.live.resumableSessions, message)
+          : this.state.live.resumableSessions,
         freshness: {
           ...this.state.live.freshness,
-          auto:
-            requestedDomains.includes("auto")
-              ? withFreshnessFailed(this.state.live.freshness.auto, message)
-              : this.state.live.freshness.auto,
-          workspace:
-            requestedDomains.includes("workspace")
-              ? withFreshnessFailed(this.state.live.freshness.workspace, message)
-              : this.state.live.freshness.workspace,
-          resumableSessions:
-            requestedDomains.includes("resumable_sessions")
-              ? withFreshnessFailed(this.state.live.freshness.resumableSessions, message)
-              : this.state.live.freshness.resumableSessions,
           recovery: withFreshnessFailed(this.state.live.freshness.recovery, message),
         },
       }
@@ -4632,10 +2276,54 @@ export class GSDWorkspaceStore {
     }
   }
 
+  private scheduleEmit(): void {
+    if (this.emitScheduled || this.listeners.size === 0) return
+    this.emitScheduled = true
+
+    if (typeof requestAnimationFrame === "function") {
+      this.emitFrame = requestAnimationFrame(this.flushEmit)
+      return
+    }
+
+    this.emitTimer = setTimeout(this.flushEmit, 0)
+  }
+
+  private flushEmit = (): void => {
+    this.emitScheduled = false
+    this.emitFrame = null
+    this.emitTimer = null
+    if (this.disposed) return
+    this.emit()
+  }
+
+  private cancelScheduledEmit(): void {
+    if (!this.emitScheduled) return
+    if (this.emitFrame !== null && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(this.emitFrame)
+    }
+    if (this.emitTimer !== null) {
+      clearTimeout(this.emitTimer)
+    }
+    this.emitScheduled = false
+    this.emitFrame = null
+    this.emitTimer = null
+  }
+
+  private patchTranscript(updater: (transcript: ReturnType<typeof pickTranscriptState>) => ReturnType<typeof pickTranscriptState>): void {
+    const next = updater(pickTranscriptState(this.state))
+    this.patchState({
+      completedTurns: next.completedTurns,
+      pendingUserMessage: next.pendingUserMessage,
+      currentTurnSegments: next.currentTurnSegments,
+      streamingAssistantText: next.streamingAssistantText,
+      streamingThinkingText: next.streamingThinkingText,
+    })
+  }
+
   private patchState(patch: Partial<WorkspaceStoreState>): void {
     this.state = { ...this.state, ...patch }
     this.syncOnboardingPoller()
-    this.emit()
+    this.scheduleEmit()
   }
 
   private syncOnboardingPoller(): void {
@@ -4734,59 +2422,69 @@ export class GSDWorkspaceStore {
   }
 
   private handleEvent(event: WorkspaceEvent): void {
-    this.patchState({ lastEventType: event.type })
-
-    if (event.type === "bridge_status") {
-      this.recordBridgeStatus((event as BridgeStatusEvent).bridge)
-      return
-    }
-
-    if (event.type === "live_state_invalidation") {
-      this.handleLiveStateInvalidation(event as LiveStateInvalidationEvent)
-    }
-
-    // Route into structured live-interaction state (additive — summary lines still produced below)
-    this.routeLiveInteractionEvent(event)
-
-    const summary = summarizeEvent(event)
-    if (!summary) return
-
-    this.patchState({
-      terminalLines: withTerminalLine(this.state.terminalLines, createTerminalLine(summary.type, summary.message)),
-    })
+    dispatchWorkspaceEvent(
+      event,
+      {
+        onLastEventType: (type) => this.patchState({ lastEventType: type }),
+        onBridgeStatus: (bridgeEvent) => this.recordBridgeStatus(bridgeEvent.bridge),
+        onLiveStateInvalidation: (invalidation) => this.handleLiveStateInvalidation(invalidation),
+        onLiveInteraction: (liveEvent) => this.routeLiveInteractionEvent(liveEvent),
+        onTerminalSummary: (summary) => {
+          this.patchState({
+            terminalLines: withTerminalLine(
+              this.state.terminalLines,
+              createTerminalLine(summary.type as TerminalLineType, summary.message),
+            ),
+          })
+        },
+      },
+      summarizeEvent,
+    )
   }
 
   private routeLiveInteractionEvent(event: WorkspaceEvent): void {
-    switch (event.type) {
-      case "extension_ui_request":
-        this.handleExtensionUiRequest(event as ExtensionUiRequestEvent)
-        break
-      case "message_update":
-        this.handleMessageUpdate(event as MessageUpdateEvent)
-        break
-      case "agent_end":
-      case "turn_end":
-        this.handleTurnBoundary()
-        break
-      case "tool_execution_start":
-        this.handleToolExecutionStart(event as ToolExecutionStartEvent)
-        break
-      case "tool_execution_update":
-        this.handleToolExecutionUpdate(event as ToolExecutionUpdateEvent)
-        break
-      case "tool_execution_end":
-        this.handleToolExecutionEnd(event as ToolExecutionEndEvent)
-        break
-      case "bridge_status":
-        // Handled upstream in handleEvent with early return — never reaches here
-        break
-      case "live_state_invalidation":
-        // Handled upstream in handleEvent via handleLiveStateInvalidation — no live interaction state update needed
-        break
-      case "extension_error":
-        // Terminal line produced by summarizeEvent — no live interaction state update needed
-        break
+    if (event.type === "extension_ui_snapshot") {
+      this.handleExtensionUiSnapshot(event.snapshot)
+      return
     }
+    routeLiveInteractionEvent(event, {
+      onExtensionUiRequest: (uiEvent) => this.handleExtensionUiRequest(uiEvent),
+      onMessageUpdate: (messageEvent) => this.handleMessageUpdate(messageEvent),
+      onTurnBoundary: () => this.handleTurnBoundary(),
+      onToolExecutionStart: (toolEvent) => this.handleToolExecutionStart(toolEvent),
+      onToolExecutionUpdate: (toolEvent) => this.handleToolExecutionUpdate(toolEvent),
+      onToolExecutionEnd: (toolEvent) => this.handleToolExecutionEnd(toolEvent),
+    })
+  }
+
+  private handleExtensionUiSnapshot(snapshot: ExtensionUiSnapshot): void {
+    const fields = applyExtensionUiSnapshotToWebFields(
+      {
+        statusTexts: this.state.statusTexts,
+        widgetContents: this.state.widgetContents,
+        titleOverride: this.state.titleOverride,
+        editorTextBuffer: this.state.editorTextBuffer,
+        workingMessage: this.state.workingMessage,
+      },
+      snapshot,
+    )
+    this.patchState({
+      statusTexts: fields.statusTexts,
+      widgetContents: fields.widgetContents,
+      titleOverride: fields.titleOverride,
+      editorTextBuffer: fields.editorTextBuffer,
+      workingMessage: fields.workingMessage ?? null,
+    })
+  }
+
+  getExtensionUiSnapshot(): ExtensionUiSnapshot {
+    return extensionUiSnapshotFromWebFields({
+      statusTexts: this.state.statusTexts,
+      widgetContents: this.state.widgetContents,
+      titleOverride: this.state.titleOverride,
+      editorTextBuffer: this.state.editorTextBuffer,
+      workingMessage: this.state.workingMessage,
+    })
   }
 
   private handleExtensionUiRequest(event: ExtensionUiRequestEvent): void {
@@ -4845,92 +2543,17 @@ export class GSDWorkspaceStore {
     const assistantEvent = event.assistantMessageEvent
     if (!assistantEvent) return
     if (assistantEvent.type === "text_delta" && typeof assistantEvent.delta === "string") {
-      // If we were accumulating thinking and now text arrives, finalize the thinking segment
-      if (this.state.streamingThinkingText.length > 0) {
-        this.patchState({
-          currentTurnSegments: [...this.state.currentTurnSegments, { kind: "thinking", content: this.state.streamingThinkingText }],
-          streamingThinkingText: "",
-        })
-      }
-      this.patchState({
-        streamingAssistantText: this.state.streamingAssistantText + assistantEvent.delta,
-      })
+      this.patchTranscript((transcript) => applyTextDelta(transcript, assistantEvent.delta as string))
     } else if (assistantEvent.type === "thinking_delta" && typeof assistantEvent.delta === "string") {
-      // If we were accumulating text and now thinking arrives, finalize the text segment
-      if (this.state.streamingAssistantText.length > 0) {
-        this.patchState({
-          currentTurnSegments: [...this.state.currentTurnSegments, { kind: "text", content: this.state.streamingAssistantText }],
-          streamingAssistantText: "",
-        })
-      }
-      this.patchState({
-        streamingThinkingText: this.state.streamingThinkingText + assistantEvent.delta,
-      })
+      this.patchTranscript((transcript) => applyThinkingDelta(transcript, assistantEvent.delta as string))
     } else if (assistantEvent.type === "thinking_end") {
-      // Finalize thinking segment
-      if (this.state.streamingThinkingText.length > 0) {
-        this.patchState({
-          currentTurnSegments: [...this.state.currentTurnSegments, { kind: "thinking", content: this.state.streamingThinkingText }],
-          streamingThinkingText: "",
-        })
-      }
+      this.patchTranscript((transcript) => finalizeThinkingStream(transcript))
     }
   }
 
   private handleTurnBoundary(): void {
-    // Finalize any remaining streaming content into segments
-    const pendingSegments: TurnSegment[] = []
-    if (this.state.streamingThinkingText.length > 0) {
-      pendingSegments.push({ kind: "thinking", content: this.state.streamingThinkingText })
-    }
-    if (this.state.streamingAssistantText.length > 0) {
-      pendingSegments.push({ kind: "text", content: this.state.streamingAssistantText })
-    }
-
-    const finalSegments = pendingSegments.length > 0
-      ? [...this.state.currentTurnSegments, ...pendingSegments]
-      : this.state.currentTurnSegments
-
-    // Build the flat transcript text (backward-compat for terminal.tsx / files-view.tsx)
-    const fullText = finalSegments
-      .filter((s): s is TurnSegment & { kind: "text" } => s.kind === "text")
-      .map((s) => s.content)
-      .join("")
-
-    if (fullText.length > 0 || finalSegments.length > 0) {
-      const nextTranscript = [...this.state.liveTranscript, fullText]
-      const nextThinking = [...this.state.liveThinkingTranscript, ""]
-      const nextSegments = [...this.state.completedTurnSegments, finalSegments]
-      const overflow = nextTranscript.length > MAX_TRANSCRIPT_BLOCKS ? nextTranscript.length - MAX_TRANSCRIPT_BLOCKS : 0
-      // When overflow trims the front of parallel arrays, also trim
-      // chatUserMessages to keep index-based interleaving aligned (#2707).
-      const trimmedUserMsgs = overflow > 0
-        ? this.state.chatUserMessages.slice(overflow)
-        : undefined
-      this.patchState({
-        liveTranscript: overflow > 0 ? nextTranscript.slice(overflow) : nextTranscript,
-        liveThinkingTranscript: overflow > 0 ? nextThinking.slice(overflow) : nextThinking,
-        completedTurnSegments: overflow > 0 ? nextSegments.slice(overflow) : nextSegments,
-        ...(trimmedUserMsgs !== undefined ? { chatUserMessages: trimmedUserMsgs } : {}),
-        streamingAssistantText: "",
-        streamingThinkingText: "",
-        currentTurnSegments: [],
-        completedToolExecutions: [],
-      })
-    } else if (this.state.streamingThinkingText.length > 0) {
-      // Turn ended with only thinking, no visible text — clear
-      this.patchState({
-        streamingThinkingText: "",
-        currentTurnSegments: [],
-        completedToolExecutions: [],
-      })
-    } else {
-      // Empty turn — just reset
-      this.patchState({
-        currentTurnSegments: [],
-        completedToolExecutions: [],
-      })
-    }
+    this.patchTranscript((transcript) => completeTurn(transcript))
+    this.patchState({ completedToolExecutions: [] })
   }
 
   private handleToolExecutionStart(event: ToolExecutionStartEvent): void {
@@ -4983,9 +2606,8 @@ export class GSDWorkspaceStore {
       this.patchState({
         activeToolExecution: null,
         completedToolExecutions: next.length > 50 ? next.slice(next.length - 50) : next,
-        // Also push tool segment into chronological order
-        currentTurnSegments: [...this.state.currentTurnSegments, { kind: "tool", tool: completed }],
       })
+      this.patchTranscript((transcript) => appendToolSegment(transcript, completed))
     } else {
       this.patchState({ activeToolExecution: null })
     }
@@ -4997,9 +2619,10 @@ export class GSDWorkspaceStore {
     this.lastBridgeDigest = digest
 
     const nextBoot = cloneBootWithBridge(this.state.boot, bridge)
+    const nextSessions = overlayLiveBridgeSessionState(resolveResumableSessions(this.state), nextBoot)
     const nextLiveBase: WorkspaceLiveState = {
       ...this.state.live,
-      resumableSessions: overlayLiveBridgeSessionState(this.state.live.resumableSessions, nextBoot),
+      resumableSessions: withEntitySliceSucceeded(this.state.live.resumableSessions, nextSessions),
     }
     const nextLive = {
       ...nextLiveBase,

@@ -1,6 +1,5 @@
 // Project/App: gsd-pi
-// File Purpose: ADR-017 drift handler registry. Single source of truth for
-// the catalog. Tests can override per-call via ReconciliationDeps.registry.
+// File Purpose: ADR-017 drift handler registry and explicit repair phases.
 
 import { completionTimestampHandler } from "./drift/completion.js";
 import {
@@ -18,30 +17,46 @@ import { staleRenderHandler } from "./drift/stale-render.js";
 import { staleWorkerHandler } from "./drift/stale-worker.js";
 import type { DriftHandler } from "./types.js";
 
-// Each handler is parameterized over its specific DriftRecord variant for
-// internal type safety. The registry stores them under DriftHandler<any> so
-// handlers with disjoint repair parameter types coexist; the lifecycle matches
-// by kind before invoking repair, so this is sound at runtime.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const DRIFT_REGISTRY: ReadonlyArray<DriftHandler<any>> = [
-  // ⚠ ORDER IS SIGNIFICANT for repairs within a single pass.
-  // external-markdown-edit MUST run before any handler that re-projects
-  // markdown from DB (stale-render, roadmap-divergence). If a DB-projection
-  // handler runs first it overwrites the gsd-core file and the subsequent
-  // external-markdown-edit repair imports the already-overwritten content —
-  // silently discarding the cross-tool edit. With external-markdown-edit first
-  // the DB is updated to reflect the gsd-core edit before stale-render
-  // re-renders, so the canonical re-projection preserves the edit's intent.
-  externalMarkdownEditHandler,
-  externalPlanningEditHandler,
-  sketchFlagHandler,
-  mergeStateHandler,
-  staleRenderHandler,
-  staleWorkerHandler,
-  unregisteredMilestoneHandler,
-  diskSliceIdDivergenceHandler,
-  roadmapDivergenceHandler,
-  completedMilestoneReopenedHandler,
-  artifactDbStatusDivergenceHandler,
-  completionTimestampHandler,
+export interface ReconciliationRepairPhase {
+  name: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  handlers: ReadonlyArray<DriftHandler<any>>;
+}
+
+/**
+ * Repairs run phase-by-phase; detection uses the flattened registry (all handlers).
+ * external-markdown-edit MUST complete before re-project handlers (stale-render,
+ * roadmap-divergence) so cross-tool edits are imported before DB re-projection.
+ */
+export const RECONCILIATION_REPAIR_PHASES: ReadonlyArray<ReconciliationRepairPhase> = [
+  {
+    name: "import-external-edits",
+    handlers: [externalMarkdownEditHandler, externalPlanningEditHandler],
+  },
+  {
+    name: "normalize-db",
+    handlers: [
+      sketchFlagHandler,
+      mergeStateHandler,
+      staleWorkerHandler,
+      unregisteredMilestoneHandler,
+      diskSliceIdDivergenceHandler,
+      completedMilestoneReopenedHandler,
+      artifactDbStatusDivergenceHandler,
+    ],
+  },
+  {
+    name: "re-project",
+    handlers: [staleRenderHandler, roadmapDivergenceHandler, completionTimestampHandler],
+  },
 ];
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const DRIFT_REGISTRY: ReadonlyArray<DriftHandler<any>> =
+  RECONCILIATION_REPAIR_PHASES.flatMap((phase) => phase.handlers);
+
+export function handlerPhaseIndex(kind: string): number {
+  return RECONCILIATION_REPAIR_PHASES.findIndex((phase) =>
+    phase.handlers.some((handler) => handler.kind === kind),
+  );
+}

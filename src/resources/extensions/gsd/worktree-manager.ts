@@ -19,7 +19,7 @@
  *   4. remove()  — git worktree remove + branch cleanup
  */
 
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve, sep } from "node:path";
 import { GSDError, GSD_PARSE_ERROR, GSD_STALE_STATE, GSD_LOCK_HELD, GSD_GIT_ERROR, GSD_MERGE_CONFLICT } from "./errors.js";
@@ -37,6 +37,7 @@ import {
   nativeGetCurrentBranch,
   nativeIsAncestor,
   nativeLogOneline,
+  nativeMergeAbort,
   nativeMergeSquash,
   nativeWorktreeAdd,
   nativeWorktreeList,
@@ -84,6 +85,34 @@ function deleteBranchIfPresent(basePath: string, branch: string, warningPrefix: 
     nativeBranchDelete(basePath, branch, true);
   } catch (e) {
     logWarning("worktree", `${warningPrefix}: ${(e as Error).message}`);
+  }
+}
+
+function cleanupFailedSquashMergeState(basePath: string): void {
+  try {
+    nativeMergeAbort(basePath);
+  } catch (e) {
+    // Squash conflicts may not create MERGE_HEAD; this is expected.
+    logWarning("worktree", `merge abort skipped: ${(e as Error).message}`);
+  }
+  try {
+    execFileSync("git", ["reset", "--merge"], {
+      cwd: basePath,
+      stdio: ["ignore", "pipe", "pipe"],
+      encoding: "utf-8",
+    });
+  } catch (e) {
+    logWarning("worktree", `failed squash merge reset failed: ${(e as Error).message}`);
+  }
+
+  const gitDir = resolveGitDir(basePath);
+  for (const marker of ["SQUASH_MSG", "MERGE_MSG", "MERGE_MODE", "MERGE_HEAD", "AUTO_MERGE"]) {
+    try {
+      const markerPath = join(gitDir, marker);
+      if (existsSync(markerPath)) unlinkSync(markerPath);
+    } catch (e) {
+      logWarning("worktree", `failed squash merge marker cleanup failed (${marker}): ${(e as Error).message}`);
+    }
   }
 }
 
@@ -964,11 +993,11 @@ function parseDiffNameStatus(entries: { status: string; path: string }[]): Workt
  * Diff the .gsd/ directory between the worktree branch and main branch.
  * Returns a summary of added, modified, and removed GSD artifacts.
  */
-export function diffWorktreeGSD(basePath: string, name: string): WorktreeDiffSummary {
+export function diffWorktreeGSD(basePath: string, name: string, mainBranchOverride?: string): WorktreeDiffSummary {
   basePath = normalizeBasePathForWorktreeOps(basePath);
 
   const branch = worktreeBranchName(name);
-  const mainBranch = nativeDetectMainBranch(basePath);
+  const mainBranch = mainBranchOverride ?? nativeDetectMainBranch(basePath);
 
   const entries = nativeDiffNameStatus(basePath, mainBranch, branch, ".gsd/", true);
 
@@ -981,11 +1010,16 @@ export function diffWorktreeGSD(basePath: string, name: string): WorktreeDiffSum
  * on main when the merge is applied. If both branches have identical
  * content, this correctly returns an empty diff.
  */
-export function diffWorktreeAll(basePath: string, name: string, branchOverride?: string): WorktreeDiffSummary {
+export function diffWorktreeAll(
+  basePath: string,
+  name: string,
+  branchOverride?: string,
+  mainBranchOverride?: string,
+): WorktreeDiffSummary {
   basePath = normalizeBasePathForWorktreeOps(basePath);
 
   const branch = branchOverride ?? worktreeBranchName(name);
-  const mainBranch = nativeDetectMainBranch(basePath);
+  const mainBranch = mainBranchOverride ?? nativeDetectMainBranch(basePath);
 
   const entries = nativeDiffNameStatus(basePath, mainBranch, branch);
 
@@ -996,11 +1030,16 @@ export function diffWorktreeAll(basePath: string, name: string, branchOverride?:
  * Get per-file line addition/deletion stats for what will change on main.
  * Uses direct diff (not merge-base) so the preview matches the actual merge outcome.
  */
-export function diffWorktreeNumstat(basePath: string, name: string, branchOverride?: string): FileLineStat[] {
+export function diffWorktreeNumstat(
+  basePath: string,
+  name: string,
+  branchOverride?: string,
+  mainBranchOverride?: string,
+): FileLineStat[] {
   basePath = normalizeBasePathForWorktreeOps(basePath);
 
   const branch = branchOverride ?? worktreeBranchName(name);
-  const mainBranch = nativeDetectMainBranch(basePath);
+  const mainBranch = mainBranchOverride ?? nativeDetectMainBranch(basePath);
 
   const rawStats = nativeDiffNumstat(basePath, mainBranch, branch);
 
@@ -1016,11 +1055,11 @@ export function diffWorktreeNumstat(basePath: string, name: string, branchOverri
  * Get the full diff content for .gsd/ between the worktree branch and main.
  * Returns the raw unified diff for LLM consumption.
  */
-export function getWorktreeGSDDiff(basePath: string, name: string): string {
+export function getWorktreeGSDDiff(basePath: string, name: string, mainBranchOverride?: string): string {
   basePath = normalizeBasePathForWorktreeOps(basePath);
 
   const branch = worktreeBranchName(name);
-  const mainBranch = nativeDetectMainBranch(basePath);
+  const mainBranch = mainBranchOverride ?? nativeDetectMainBranch(basePath);
 
   return nativeDiffContent(basePath, mainBranch, branch, ".gsd/", undefined, true);
 }
@@ -1029,11 +1068,11 @@ export function getWorktreeGSDDiff(basePath: string, name: string): string {
  * Get the full diff content for non-.gsd/ files between the worktree branch and main.
  * Returns the raw unified diff for LLM consumption.
  */
-export function getWorktreeCodeDiff(basePath: string, name: string): string {
+export function getWorktreeCodeDiff(basePath: string, name: string, mainBranchOverride?: string): string {
   basePath = normalizeBasePathForWorktreeOps(basePath);
 
   const branch = worktreeBranchName(name);
-  const mainBranch = nativeDetectMainBranch(basePath);
+  const mainBranch = mainBranchOverride ?? nativeDetectMainBranch(basePath);
 
   return nativeDiffContent(basePath, mainBranch, branch, undefined, ".gsd/", true);
 }
@@ -1041,11 +1080,11 @@ export function getWorktreeCodeDiff(basePath: string, name: string): string {
 /**
  * Get commit log for the worktree branch since it diverged from main.
  */
-export function getWorktreeLog(basePath: string, name: string): string {
+export function getWorktreeLog(basePath: string, name: string, mainBranchOverride?: string): string {
   basePath = normalizeBasePathForWorktreeOps(basePath);
 
   const branch = worktreeBranchName(name);
-  const mainBranch = nativeDetectMainBranch(basePath);
+  const mainBranch = mainBranchOverride ?? nativeDetectMainBranch(basePath);
 
   const entries = nativeLogOneline(basePath, mainBranch, branch);
 
@@ -1057,11 +1096,17 @@ export function getWorktreeLog(basePath: string, name: string): string {
  * Must be called from the main working tree (not the worktree itself).
  * Returns the merge commit message.
  */
-export function mergeWorktreeToMain(basePath: string, name: string, commitMessage: string, branchOverride?: string): string {
+export function mergeWorktreeToMain(
+  basePath: string,
+  name: string,
+  commitMessage: string,
+  branchOverride?: string,
+  mainBranchOverride?: string,
+): string {
   basePath = normalizeBasePathForWorktreeOps(basePath);
 
   const branch = branchOverride ?? worktreeBranchName(name);
-  const mainBranch = nativeDetectMainBranch(basePath);
+  const mainBranch = mainBranchOverride ?? nativeDetectMainBranch(basePath);
   const current = nativeGetCurrentBranch(basePath);
 
   if (current !== mainBranch) {
@@ -1070,6 +1115,17 @@ export function mergeWorktreeToMain(basePath: string, name: string, commitMessag
 
   const result = nativeMergeSquash(basePath, branch);
   if (!result.success) {
+    const dirtyWorkingTree = result.conflicts.includes("__dirty_working_tree__");
+    if (!dirtyWorkingTree) {
+      cleanupFailedSquashMergeState(basePath);
+    }
+    if (!dirtyWorkingTree && branch.startsWith("milestone/")) {
+      try {
+        removeWorktree(basePath, name, { branch, deleteBranch: true, force: true });
+      } catch (e) {
+        logWarning("worktree", `failed milestone branch cleanup after squash merge failure: ${(e as Error).message}`);
+      }
+    }
     throw new GSDError(GSD_MERGE_CONFLICT, `Merge conflicts detected in: ${result.conflicts.join(", ")}`);
   }
 

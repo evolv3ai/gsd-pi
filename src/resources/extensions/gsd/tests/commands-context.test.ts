@@ -101,6 +101,32 @@ test("analyzeSessionContext buckets injections, tool results, and loaded skills"
   assert.equal(result.subagentSpawns, 1);
 });
 
+test("analyzeSessionContext bounds large assistant tool-call arguments", () => {
+  const result = analyzeSessionContext(sessionEntries({
+    role: "assistant",
+    content: [
+      {
+        type: "toolCall",
+        id: "tc-save",
+        name: "gsd_summary_save",
+        arguments: {
+          path: ".gsd/milestones/M001/M001-SUMMARY.md",
+          artifact_type: "SUMMARY",
+          content: "x".repeat(20_000),
+        },
+      },
+    ],
+    timestamp: TS,
+  }), PROVIDER);
+
+  const assistant = result.conversationSections.find((section) => section.label === "Assistant responses");
+  assert.ok(assistant);
+  assert.ok(
+    assistant.tokens < 200,
+    `assistant tool-call arguments should be redacted before token counting, got ${assistant.tokens} tokens`,
+  );
+});
+
 test("formatContextReport lists skills and subagents", () => {
   const report = buildContextBreakdown({
     modelLabel: "claude-code/claude-sonnet-4-6",

@@ -13,7 +13,7 @@ import type { GSDEcosystemBeforeAgentStartHandler } from "../ecosystem/gsd-exten
 import { updateSnapshot } from "../ecosystem/gsd-extension-api.js";
 
 import { buildMilestoneFileName, canonicalPhaseDirName, clearPathCache, milestonesDir, legacyMilestonesDir, resolveMilestonePath, resolveSliceFile, resolveSlicePath } from "../paths.js";
-import { applyAskUserQuestionsGateResult, clearDiscussionFlowState, formatPendingAskUserQuestionsGateMessage, formatTimedOutAskUserQuestionsGateMessage, hostWriteGateAdapter, isApprovalGateVerifiedInSnapshot, isDepthConfirmationAnswer, isMilestoneDepthVerified, isMilestoneDepthVerifiedInSnapshot, isQueuePhaseActive, resetWriteGateState, shouldBlockContextWrite, shouldBlockPlanningUnit, shouldBlockQueueExecution, shouldBlockWorktreeBash, shouldBlockWorktreeWrite, isGateQuestionId, getPendingGate, shouldBlockPendingGate, shouldBlockPendingGateBash, extractDepthVerificationMilestoneId } from "./write-gate.js";
+import { applyAskUserQuestionsGateResult, clearDiscussionFlowState, currentWriteGateSnapshot, formatPendingAskUserQuestionsGateMessage, formatTimedOutAskUserQuestionsGateMessage, hostWriteGateAdapter, isApprovalGateVerifiedInSnapshot, isDepthConfirmationAnswer, isMilestoneDepthVerifiedInSnapshot, isQueuePhaseActive, resetWriteGateState, shouldBlockContextWrite, shouldBlockPlanningUnit, shouldBlockQueueExecution, shouldBlockWorktreeBash, shouldBlockWorktreeWrite, isGateQuestionId, getPendingGate, shouldBlockPendingGate, shouldBlockPendingGateBash, extractDepthVerificationMilestoneId, type WriteGateSnapshot } from "./write-gate.js";
 import { canonicalToolName } from "../engine-hook-contract.js";
 import { resolveManifest } from "../unit-context-manifest.js";
 import { isBlockedStateFile, isBashWriteToStateFile, BLOCKED_WRITE_ERROR } from "../write-intercept.js";
@@ -34,7 +34,8 @@ import {
 } from "../auto-runtime-state.js";
 import { applyProviderPayloadPolicy } from "../provider-payload-policy.js";
 
-import { checkToolCallLoop, resetToolCallLoopGuard } from "./tool-call-loop-guard.js";
+import { checkToolCallLoop, recordToolCallLoopMutation, resetToolCallLoopGuard } from "./tool-call-loop-guard.js";
+import { MINIMAL_AUTO_BASE_TOOL_NAMES } from "./core-session-tools.js";
 import { maybePauseAutoForApprovalGate, resetPendingGatePauseGuard } from "./pending-gate-pause.js";
 import { saveActivityLog } from "../activity-log.js";
 import { recordToolCall as safetyRecordToolCall, recordToolResult as safetyRecordToolResult, saveEvidenceToDisk } from "../safety/evidence-collector.js";
@@ -75,6 +76,7 @@ import { supportsSourceObservationsForUnit } from "../source-observations.js";
 import { clearPendingAutoStart } from "../pending-auto-start.js";
 import { resolveWorkflowToolBasePath } from "./dynamic-tools.js";
 import { getRequiredWorkflowToolsForUnit } from "../unit-tool-contracts.js";
+import { flushAllManifests } from "../workflow-manifest.js";
 
 let approvalQuestionAbortInFlight = false;
 
@@ -178,22 +180,7 @@ export const MINIMAL_GSD_TOOL_NAMES = [
   "gsd_capture_thought",
 ] as const;
 
-export const MINIMAL_AUTO_BASE_TOOL_NAMES = [
-  "ask_user_questions",
-  "bash",
-  "bg_shell",
-  "edit",
-  "find",
-  "glob",
-  "grep",
-  "fetch_page",
-  "search-the-web",
-  "ls",
-  "read",
-  "subagent",
-  "write",
-  "ToolSearch",
-] as const;
+export { MINIMAL_AUTO_BASE_TOOL_NAMES } from "./core-session-tools.js";
 
 function withPreservedShimTools(toolNames: readonly string[]): string[] {
   return [...new Set([...toolNames, ...ALWAYS_PRESERVED_SHIM_TOOL_NAMES])];
@@ -583,6 +570,10 @@ function deferApprovalGate(gateId: string, basePath: string): void {
   // workflow MCP child already verified this gate, deferring would block
   // tools for a gate that can never legitimately arm.
   const snapshot = hostWriteGateAdapter.readState(basePath);
+  deferApprovalGateFromSnapshot(gateId, basePath, snapshot);
+}
+
+function deferApprovalGateFromSnapshot(gateId: string, basePath: string, snapshot: WriteGateSnapshot): void {
   if (isApprovalGateVerifiedInSnapshot(snapshot, gateId)) return;
   const milestoneId = extractDepthVerificationMilestoneId(gateId);
   if (milestoneId && isMilestoneDepthVerifiedInSnapshot(snapshot, milestoneId)) return;
@@ -591,6 +582,21 @@ function deferApprovalGate(gateId: string, basePath: string): void {
 
 function contextBasePath(ctx?: { cwd?: string }): string {
   return typeof ctx?.cwd === "string" ? ctx.cwd : process.cwd();
+}
+
+const LOOP_GUARD_INTERACTIVE_INSTRUCTIONS = [
+  "Do not retry this tool or call other tools this turn — stop and respond to the user in text.",
+  "Do not retry this tool or pivot to other tools this turn — stop and respond to the user in text.",
+];
+const LOOP_GUARD_AUTO_INSTRUCTION =
+  "Do not re-issue this blocked tool. In /gsd auto, stop tool calls for this turn and return control to the auto-mode recovery/replan path.";
+
+function formatLoopGuardBlockReason(reason: string | undefined): string | undefined {
+  if (!reason || !getAutoRuntimeSnapshot().active) return reason;
+  return LOOP_GUARD_INTERACTIVE_INSTRUCTIONS.reduce(
+    (formatted, instruction) => formatted.replace(instruction, LOOP_GUARD_AUTO_INSTRUCTION),
+    reason,
+  );
 }
 
 function beginSourceObservationStoreForCurrentUnit(
@@ -916,6 +922,15 @@ export function registerHooks(
           }
         }
       }
+      const projectRoot = resolveWorktreeProjectRoot(basePath);
+      const { pruneStaleFlatPhaseBackups } = await import("../flat-phase-migration.js");
+      const pruned = pruneStaleFlatPhaseBackups(projectRoot);
+      if (pruned > 0) {
+        safetyLogWarning(
+          "bootstrap",
+          `pruned ${pruned} stale flat-phase migration backup(s) from .gsd-backups/ (retention exceeded)`,
+        );
+      }
     } catch (err) {
       safetyLogWarning("bootstrap", `flat-phase migration: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -1081,6 +1096,19 @@ export function registerHooks(
     const { handleAgentEnd } = await import("./agent-end-recovery.js");
     const agentEndBasePath = contextBasePath(ctx);
     try {
+      // The manifest is a non-critical projection (the append-only event log is
+      // the authoritative recovery source), so a flush failure must not skip
+      // agent_end recovery. drainManifestWrites still propagates write failures
+      // to explicit flush callers; here we deliberately log and continue so
+      // handleAgentEnd (and the finally below) always run.
+      try {
+        await flushAllManifests();
+      } catch (err) {
+        safetyLogWarning(
+          "manifest",
+          `flushAllManifests on agent_end failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       await handleAgentEnd(pi, event, ctx);
     } finally {
       activateDeferredApprovalGate(agentEndBasePath);
@@ -1233,13 +1261,15 @@ export function registerHooks(
 
     const gateId = approvalGateIdForUnit(unitType, unitId);
     if (gateId) {
+      const basePath = contextBasePath(ctx);
+      const gateSnapshot = currentWriteGateSnapshot(basePath);
       // Skip the gate if this milestone is already depth-verified — the approval
       // pattern matched again on post-verification text (a false-positive re-trigger).
       // Without this guard, the second firing blocks gsd_plan_milestone in the same
       // turn and leaves CONTEXT.md on disk with no DB row (#discuss-milestone-no-db).
       const gateMilestoneId = extractDepthVerificationMilestoneId(gateId);
-      if (gateMilestoneId && isMilestoneDepthVerified(gateMilestoneId, contextBasePath(ctx))) return;
-      deferApprovalGate(gateId, contextBasePath(ctx));
+      if (gateMilestoneId && isMilestoneDepthVerifiedInSnapshot(gateSnapshot, gateMilestoneId)) return;
+      deferApprovalGateFromSnapshot(gateId, basePath, gateSnapshot);
     }
 
     approvalQuestionAbortInFlight = true;
@@ -1285,7 +1315,7 @@ export function registerHooks(
     // ── Loop guard: block repeated identical tool calls ──
     const loopCheck = checkToolCallLoop(toolName, event.input as Record<string, unknown>);
     if (loopCheck.block) {
-      return { block: true, reason: loopCheck.reason };
+      return { block: true, reason: formatLoopGuardBlockReason(loopCheck.reason) };
     }
 
     const deferredGateGuard = shouldBlockDeferredApprovalTool(
@@ -1557,6 +1587,7 @@ export function registerHooks(
       }
     }
     if (!event.isError) {
+      recordToolCallLoopMutation(toolName);
       refreshSourceObservationAfterMutation(toolName, event.input, ctx);
       clearSourceObservationsAfterShell(toolName);
     }

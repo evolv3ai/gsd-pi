@@ -44,6 +44,8 @@ bun.lock
 .bg-shell/
 .artifacts/
 .planning/
+# GSD research fetch cache is regenerable — do not force-add under .planning/
+.planning/research/.cache/
 # Hermes integration test fixtures (minimal tracked GSD projects)
 !integrations/hermes/tests/fixtures/minimal-project/.gsd/
 !integrations/hermes/tests/fixtures/minimal-project/.gsd/**

@@ -259,6 +259,7 @@ test("initMetrics creates ledger, snapshotUnitMetrics persists across resets", (
     // Verify file content
     const raw = readFileSync(join(tmpBase, ".gsd", "metrics.json"), "utf-8");
     const parsed: MetricsLedger = JSON.parse(raw);
+    assert.equal(raw, JSON.stringify(parsed) + "\n", "metrics.json should be serialized compactly");
     assert.equal(parsed.version, 1);
     assert.equal(parsed.units.length, 1);
 

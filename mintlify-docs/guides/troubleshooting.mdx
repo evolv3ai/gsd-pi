@@ -13,6 +13,12 @@ The built-in diagnostic tool validates `.gsd/` integrity:
 
 It checks file structure, referential integrity, completion state consistency, git worktree health, and stale DB-backed runtime records.
 
+### Diagnostic-only DB/markdown drift
+
+If `/gsd doctor` reports `checkbox_db_status_divergence`, a `ROADMAP.md` or `PLAN.md` checkbox disagrees with the canonical SQLite database status for the listed slice or task. For example, the database may still show the unit as open while the markdown checkbox is checked, or the database may show the unit as closed while the checkbox is unchecked.
+
+This check is not auto-fixable. `/gsd doctor fix` will not rewrite either side because the drift can mean a manual markdown edit, a stale projection, or an interrupted status update. Inspect the listed file and unit first. If the database is correct, run `/gsd rebuild markdown` to re-render markdown projections from the DB; if markdown captures real work that is missing from the DB, recover or re-enter that state through the normal GSD workflow instead of treating the checkbox as authoritative.
+
 ## Common issues
 
 <AccordionGroup>

@@ -18,7 +18,7 @@ import {
   getWorkflowDatabasePath,
   refreshWorkflowDatabaseFromDisk,
 } from "./db-workspace.js";
-import { isClosedStatus } from "./status-guards.js";
+import { isClosedStatus, isDeferredStatus } from "./status-guards.js";
 import { closeQualityGatesFromEvidence } from "./quality-gate-closure.js";
 import { insertMilestoneValidationGates } from "./milestone-validation-gates.js";
 import { relMilestoneFile, resolveSliceFile } from "./paths.js";
@@ -229,6 +229,7 @@ export function checkCloseoutConsistencyGate(
   }
 
   for (const slice of slices) {
+    if (isDeferredStatus(slice.status)) continue;
     if (!isClosedStatus(slice.status)) {
       return blocked(
         "slice-open",

@@ -1,14 +1,148 @@
-import { existsSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { isAbsolute, join, relative } from "node:path";
 
 import type { DoctorIssue } from "./doctor-types.js";
-import { isDbAvailable, _getAdapter } from "./gsd-db.js";
+import {
+  getAllMilestones,
+  getMilestoneSlices,
+  getSliceTasks,
+  isDbAvailable,
+  isMemoriesFtsAvailable,
+  _getAdapter,
+} from "./gsd-db.js";
+import { MEMORIES_FTS_REBUILT_KEY } from "./db-memory-fts-schema.js";
 import { isAfter, latestExplicitReopenAt } from "./milestone-reopen-events.js";
-import { resolveGsdPathContract, resolveMilestoneFile } from "./paths.js";
+import { gsdProjectionRoot, gsdRoot, resolveGsdPathContract, resolveMilestoneFile, resolveSliceFile } from "./paths.js";
 import { deriveState } from "./state.js";
+import { isClosedStatus } from "./status-guards.js";
 import { workflowEventLogPath } from "./workflow-event-ledger.js";
 import { readEvents } from "./workflow-events.js";
 import { flushWorkflowProjections } from "./projection-flush.js";
+import { parseRoadmapSlices } from "./roadmap-slices.js";
+import { parsePlan } from "./parsers-legacy.js";
+
+function relativeFile(basePath: string, filePath: string): string {
+  return relative(basePath, filePath).split("\\").join("/");
+}
+
+function reportCheckboxDbStatusDivergence(
+  issues: DoctorIssue[],
+  basePath: string,
+  filePath: string,
+  scope: "slice" | "task",
+  unitId: string,
+  status: string,
+  checkboxDone: boolean,
+): void {
+  const dbDone = isClosedStatus(status);
+  if (checkboxDone === dbDone) return;
+
+  issues.push({
+    severity: "error",
+    code: "checkbox_db_status_divergence",
+    scope,
+    unitId,
+    message: `${scope === "slice" ? "Slice" : "Task"} ${unitId} is ${dbDone ? "closed" : "open"} in the database (status: ${status}) but the markdown checkbox is ${checkboxDone ? "checked" : "unchecked"}.`,
+    file: relativeFile(basePath, filePath),
+    fixable: false,
+  });
+}
+
+function checkProjectionCheckboxDbStatus(basePath: string, milestoneIds: string[], issues: DoctorIssue[]): void {
+  for (const milestoneId of milestoneIds) {
+    const roadmapPath = resolveMilestoneFile(basePath, milestoneId, "ROADMAP");
+    const slices = getMilestoneSlices(milestoneId);
+
+    if (roadmapPath && existsSync(roadmapPath)) {
+      try {
+        const roadmap = readFileSync(roadmapPath, "utf-8");
+        const sliceDoneById = new Map(parseRoadmapSlices(roadmap).map((entry) => [entry.id, entry.done]));
+        for (const slice of slices) {
+          const checkboxDone = sliceDoneById.get(slice.id);
+          if (checkboxDone === undefined) continue;
+          reportCheckboxDbStatusDivergence(
+            issues,
+            basePath,
+            roadmapPath,
+            "slice",
+            `${milestoneId}/${slice.id}`,
+            slice.status,
+            checkboxDone,
+          );
+        }
+      } catch {
+        // Non-fatal — checkbox drift diagnostics must never block doctor.
+      }
+    }
+
+    for (const slice of slices) {
+      const planPath = resolveSliceFile(basePath, milestoneId, slice.id, "PLAN");
+      if (!planPath || !existsSync(planPath)) continue;
+      try {
+        const plan = readFileSync(planPath, "utf-8");
+        // parsePlan reads the authoritative task checkboxes (the flat-phase
+        // <tasks> block / ## Tasks section), so a stray task-style checkbox
+        // line elsewhere in PLAN.md (e.g. a Must-Haves or Verification bullet
+        // above <tasks>) can no longer hide real drift or fake a divergence.
+        const taskDoneById = new Map(parsePlan(plan).tasks.map((entry) => [entry.id, entry.done]));
+        for (const task of getSliceTasks(milestoneId, slice.id)) {
+          const checkboxDone = taskDoneById.get(task.id);
+          if (checkboxDone === undefined) continue;
+          reportCheckboxDbStatusDivergence(
+            issues,
+            basePath,
+            planPath,
+            "task",
+            `${milestoneId}/${slice.id}/${task.id}`,
+            task.status,
+            checkboxDone,
+          );
+        }
+      } catch {
+        // Non-fatal — checkbox drift diagnostics must never block doctor.
+      }
+    }
+  }
+}
+
+function isClearedByMilestoneShellProjectionFlush(
+  basePath: string,
+  issue: DoctorIssue,
+  reRenderedMilestoneIds: Set<string>,
+): boolean {
+  if (issue.code !== "checkbox_db_status_divergence") return false;
+  if (issue.scope !== "slice") return false;
+
+  const milestoneId = issue.unitId.split("/")[0] ?? "";
+  if (!reRenderedMilestoneIds.has(milestoneId)) return false;
+
+  const roadmapPath = resolveMilestoneFile(basePath, milestoneId, "ROADMAP");
+  if (!roadmapPath || !issue.file) return false;
+
+  return issue.file === relativeFile(basePath, roadmapPath);
+}
+
+function artifactExistsOnDisk(basePath: string, artifactPath: string): boolean {
+  if (isAbsolute(artifactPath)) return existsSync(artifactPath);
+  return [
+    join(gsdProjectionRoot(basePath), artifactPath),
+    join(gsdRoot(basePath), artifactPath),
+  ].some((candidate) => existsSync(candidate));
+}
+
+function artifactUnitId(row: { milestone_id: string | null; slice_id: string | null; task_id: string | null }): string {
+  if (!row.milestone_id) return "project";
+  if (row.slice_id && row.task_id) return `${row.milestone_id}/${row.slice_id}/${row.task_id}`;
+  if (row.slice_id) return `${row.milestone_id}/${row.slice_id}`;
+  return row.milestone_id;
+}
+
+function artifactScope(row: { milestone_id: string | null; slice_id: string | null; task_id: string | null }): DoctorIssue["scope"] {
+  if (row.task_id) return "task";
+  if (row.slice_id) return "slice";
+  if (row.milestone_id) return "milestone";
+  return "project";
+}
 
 export async function checkEngineHealth(
   basePath: string,
@@ -33,6 +167,32 @@ export async function checkEngineHealth(
   try {
     if (isDbAvailable()) {
       const adapter = _getAdapter()!;
+
+      try {
+        if (isMemoriesFtsAvailable(adapter)) {
+          const runtimeKv = adapter
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='runtime_kv'")
+            .get();
+          const marker = runtimeKv
+            ? adapter.prepare(
+                "SELECT 1 as present FROM runtime_kv WHERE scope = 'global' AND scope_id = '' AND key = :key",
+              ).get({ ":key": MEMORIES_FTS_REBUILT_KEY })
+            : undefined;
+          if (!marker) {
+            issues.push({
+              severity: "warning",
+              code: "memories_fts_rebuild_missing",
+              scope: "project",
+              unitId: "project",
+              message: `Memory full-text index exists but runtime_kv has no ${MEMORIES_FTS_REBUILT_KEY} marker. The index may be stale or incomplete, so memory search can silently degrade to the LIKE fallback.`,
+              file: ".gsd/gsd.db",
+              fixable: false,
+            });
+          }
+        }
+      } catch {
+        // Non-fatal — memory FTS health check failed
+      }
 
       // a. Orphaned tasks (task.slice_id points to non-existent slice)
       try {
@@ -196,7 +356,41 @@ export async function checkEngineHealth(
         // Non-fatal — completed-milestone reopen check failed
       }
 
-      // f. Completion artifacts disagree with open DB hierarchy rows.
+      // f. Artifact rows reference files that no longer exist on disk.
+      try {
+        const artifactRows = adapter
+          .prepare(
+            `SELECT path, artifact_type, milestone_id, slice_id, task_id
+             FROM artifacts
+             WHERE path != ''
+             ORDER BY path`,
+          )
+          .all() as Array<{
+            path: string;
+            artifact_type: string;
+            milestone_id: string | null;
+            slice_id: string | null;
+            task_id: string | null;
+          }>;
+
+        for (const row of artifactRows) {
+          if (artifactExistsOnDisk(basePath, row.path)) continue;
+          const unitId = artifactUnitId(row);
+          issues.push({
+            severity: "error",
+            code: "artifact_file_missing",
+            scope: artifactScope(row),
+            unitId,
+            message: `Artifact ${row.path} is recorded in the database as ${row.artifact_type || "UNKNOWN"} but no matching file exists on disk`,
+            file: row.path,
+            fixable: false,
+          });
+        }
+      } catch {
+        // Non-fatal — artifact file existence check failed
+      }
+
+      // g. Completion artifacts disagree with open DB hierarchy rows.
       try {
         const rows = adapter
           .prepare(
@@ -225,6 +419,7 @@ export async function checkEngineHealth(
 
         const seen = new Set<string>();
         for (const row of rows) {
+          if (!artifactExistsOnDisk(basePath, row.path)) continue;
           const reopenAt = latestExplicitReopenAt(basePath, row.milestone_id);
           if (!isAfter(row.imported_at, reopenAt)) continue;
           const isSliceSummary = row.slice_id && !row.task_id && row.slice_status && !["complete", "done", "skipped", "closed"].includes(row.slice_status);
@@ -256,9 +451,24 @@ export async function checkEngineHealth(
     // Non-fatal — DB constraint checks failed entirely
   }
 
+  // Checkbox-vs-DB divergence detection runs before projection drift auto-fix
+  // so stale re-renders cannot overwrite manually edited markdown first. Runs
+  // inside its own try/catch: getAllMilestones / getMilestoneSlices /
+  // getSliceTasks issue prepared queries that can throw on a corrupt or locked
+  // DB, and like every other DB-touching check here this diagnostic must never
+  // block doctor.
+  try {
+    if (isDbAvailable()) {
+      checkProjectionCheckboxDbStatus(basePath, getAllMilestones().map((milestone) => milestone.id), issues);
+    }
+  } catch {
+    // Non-fatal: checkbox-vs-DB divergence check must never block doctor
+  }
+
   // ── Projection drift detection ──────────────────────────────────────────
   // If the DB is available, check whether markdown projections are stale
   // relative to the event log and re-render them.
+  const reRenderedMilestoneIds: string[] = [];
   try {
     if (isDbAvailable()) {
       const eventLogPath = workflowEventLogPath(basePath);
@@ -273,6 +483,7 @@ export async function checkEngineHealth(
             try {
               await flushWorkflowProjections(basePath, { milestoneId: milestone.id });
               fixesApplied.push(`re-rendered missing projections for ${milestone.id}`);
+              reRenderedMilestoneIds.push(milestone.id);
             } catch {
               // Non-fatal — projection re-render failed
             }
@@ -283,6 +494,7 @@ export async function checkEngineHealth(
             try {
               await flushWorkflowProjections(basePath, { milestoneId: milestone.id });
               fixesApplied.push(`re-rendered stale projections for ${milestone.id}`);
+              reRenderedMilestoneIds.push(milestone.id);
             } catch {
               // Non-fatal — projection re-render failed
             }
@@ -292,5 +504,21 @@ export async function checkEngineHealth(
     }
   } catch {
     // Non-fatal — projection drift check must never block doctor
+  }
+
+  if (reRenderedMilestoneIds.length > 0) {
+    const reRendered = new Set(reRenderedMilestoneIds);
+    for (let i = issues.length - 1; i >= 0; i--) {
+      const issue = issues[i]!;
+      // flushWorkflowProjections re-renders milestone shell projections (not
+      // slice PLAN.md files), so only clear stale ROADMAP checkbox diagnostics.
+      if (isClearedByMilestoneShellProjectionFlush(basePath, issue, reRendered)) {
+        issues.splice(i, 1);
+        continue;
+      }
+      if (issue.code === "artifact_file_missing" && issue.file && artifactExistsOnDisk(basePath, issue.file)) {
+        issues.splice(i, 1);
+      }
+    }
   }
 }

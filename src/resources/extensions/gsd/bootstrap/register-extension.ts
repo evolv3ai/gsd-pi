@@ -18,6 +18,7 @@ import { registerShortcuts } from "./register-shortcuts.js";
 import { writeCrashLog } from "./crash-log.js";
 import { logWarning, isGsdExtensionStderrEnabled } from "../workflow-logger.js";
 import { UNIT_TOOL_CONTRACTS } from "../unit-tool-contracts.js";
+import { installManifestFlushOnProcessTeardown } from "../workflow-manifest.js";
 // Static import so cmux event listeners are registered synchronously during
 // extension bootstrap. Prior implementation used `void import().then()` which
 // queued listener registration as a microtask — any CMUX_CHANNELS emit fired
@@ -196,6 +197,7 @@ export function registerGsdExtension(pi: ExtensionAPI): void {
     });
 
   installEpipeGuard();
+  installManifestFlushOnProcessTeardown();
 
   // Ecosystem handlers captured by the GSDExtensionAPI wrapper for the
   // GSD-owned `before_agent_start` dispatch step (#3338).

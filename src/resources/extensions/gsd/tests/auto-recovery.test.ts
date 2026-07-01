@@ -2,7 +2,7 @@
 // File Purpose: Tests auto-mode artifact verification and recovery behavior.
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -964,6 +964,45 @@ function makeGitBase(): string {
   return base;
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function withLoggedGitCommands<T>(base: string, action: () => T): { result: T; commands: string[] } {
+  const realGit = execFileSync("which", ["git"], {
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim().split(/\r?\n/)[0];
+  if (!realGit) throw new Error("Unable to resolve git executable for invocation logging test");
+  const binDir = join(base, ".git-wrapper-bin");
+  const logFile = join(base, "git-invocations.log");
+  mkdirSync(binDir, { recursive: true });
+  const wrapper = join(binDir, "git");
+  writeFileSync(
+    wrapper,
+    [
+      "#!/usr/bin/env bash",
+      `printf '%s\\n' "$1" >> ${shellQuote(logFile)}`,
+      `exec ${shellQuote(realGit)} "$@"`,
+      "",
+    ].join("\n"),
+  );
+  chmodSync(wrapper, 0o755);
+
+  const originalPath = process.env.PATH;
+  process.env.PATH = originalPath ? `${binDir}:${originalPath}` : binDir;
+  try {
+    const result = action();
+    const commands = existsSync(logFile)
+      ? readFileSync(logFile, "utf-8").split(/\r?\n/).filter(Boolean)
+      : [];
+    return { result, commands };
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+  }
+}
+
 test("hasImplementationArtifacts returns false when only .gsd/ files committed (#1703)", () => {
   const base = makeGitBase();
   try {
@@ -1339,6 +1378,77 @@ test("hasImplementationArtifacts finds implementation commits when .gsd/ is giti
       "present",
       "milestone-tagged commit binding must work when .gsd/ is gitignored",
     );
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("hasImplementationArtifacts scans GSD-tagged history without per-commit diff-tree forks (#892)", { skip: process.platform === "win32" }, () => {
+  const base = makeGitBase();
+  try {
+    writeFileSync(join(base, ".git", "info", "exclude"), ".gsd/\n");
+    mkdirSync(join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks"), { recursive: true });
+    writeFileSync(
+      join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01-SUMMARY.md"),
+      "# Summary",
+    );
+
+    mkdirSync(join(base, "src"), { recursive: true });
+    for (let i = 0; i < 3; i++) {
+      writeFileSync(join(base, "src", `feature-${i}.ts`), `export const feature${i} = true;\n`);
+      execFileSync("git", ["add", "src"], { cwd: base, stdio: "ignore" });
+      execFileSync(
+        "git",
+        ["commit", "-m", `feat: materialize M001 evidence ${i}\n\nGSD-Task: S01/T01`],
+        { cwd: base, stdio: "ignore" },
+      );
+    }
+
+    const { result, commands } = withLoggedGitCommands(base, () => hasImplementationArtifacts(base, "M001"));
+    assert.equal(result, "present", "milestone-tagged commits should still prove implementation evidence");
+    assert.ok(commands.includes("log"), "milestone evidence fallback should scan history with git log");
+    assert.equal(commands.filter((command) => command === "diff-tree").length, 0);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("hasImplementationArtifacts backfill scans commit records without per-commit diff-tree forks (#892)", { skip: process.platform === "win32" }, () => {
+  const base = makeGitBase();
+  try {
+    mkdirSync(join(base, ".gsd"), { recursive: true });
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "M001", title: "Milestone One", status: "active" });
+    insertSlice({
+      id: "S01",
+      milestoneId: "M001",
+      title: "Slice One",
+      status: "complete",
+      risk: "low",
+      depends: [],
+    });
+    insertTask({
+      id: "T01",
+      sliceId: "S01",
+      milestoneId: "M001",
+      title: "Task One",
+      status: "complete",
+      keyFiles: ["src/expected-0.ts", "src/expected-1.ts"],
+      planning: { files: ["src/expected-0.ts", "src/expected-1.ts"] },
+    });
+
+    mkdirSync(join(base, "src"), { recursive: true });
+    for (let i = 0; i < 2; i++) {
+      writeFileSync(join(base, "src", `expected-${i}.ts`), `export const expected${i} = true;\n`);
+      execFileSync("git", ["add", "src"], { cwd: base, stdio: "ignore" });
+      execFileSync("git", ["commit", "-m", `feat: untagged implementation ${i}`], { cwd: base, stdio: "ignore" });
+    }
+
+    const { result, commands } = withLoggedGitCommands(base, () => hasImplementationArtifacts(base, "M001"));
+    assert.equal(result, "present", "completed task file hints should still backfill untagged commits");
+    assert.equal(getMilestoneCommitAttributionShas("M001").length, 2);
+    assert.ok(commands.includes("log"), "backfill should scan commit records with git log");
+    assert.equal(commands.filter((command) => command === "diff-tree").length, 0);
   } finally {
     cleanup(base);
   }
@@ -1801,6 +1911,41 @@ test("#57: writeReactiveExecuteBlocker reconciles batch task statuses and append
     const events = readEvents(join(base, ".gsd", "event-log.jsonl"));
     assert.ok(events.some((e) => e.cmd === "complete-task" && e.params.taskId === "T01" && e.trigger_reason === "reactive-execute-blocker-recovery"));
     assert.ok(events.some((e) => e.cmd === "skip-task" && e.params.taskId === "T02" && e.trigger_reason === "reactive-execute-blocker-recovery"));
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("#1088: writeReactiveExecuteBlocker preserves deferred batch task statuses", () => {
+  const base = makeTmpBase();
+  try {
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "M001", title: "Milestone", status: "active" });
+    insertSlice({ id: "S01", milestoneId: "M001", title: "Slice", status: "pending" });
+    insertTask({ id: "T01", milestoneId: "M001", sliceId: "S01", title: "One", status: "deferred" });
+    insertTask({ id: "T02", milestoneId: "M001", sliceId: "S01", title: "Two", status: "deferred" });
+    writeFileSync(
+      join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01-SUMMARY.md"),
+      "# T01 Summary\n",
+      "utf-8",
+    );
+
+    const recovery = writeReactiveExecuteBlocker(
+      "M001/S01/reactive+T01,T02",
+      base,
+      "verification retries exhausted",
+    );
+
+    assert.ok(recovery, "recovery should run with DB available");
+    assert.deepEqual(recovery!.completedTaskIds, []);
+    assert.deepEqual(recovery!.skippedTaskIds, []);
+    assert.deepEqual(recovery!.unchangedTaskIds, ["T01", "T02"]);
+    assert.equal(getTask("M001", "S01", "T01")?.status, "deferred");
+    assert.equal(getTask("M001", "S01", "T02")?.status, "deferred");
+
+    const events = readEvents(join(base, ".gsd", "event-log.jsonl"));
+    assert.equal(events.some((e) => e.params.taskId === "T01" || e.params.taskId === "T02"), false);
   } finally {
     closeDatabase();
     cleanup(base);

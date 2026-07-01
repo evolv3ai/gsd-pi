@@ -13,7 +13,6 @@ import {
   resolveMilestonePath,
   resolveMilestoneFile,
   resolveSliceFile,
-  legacyMilestonesDir,
   relMilestoneFile,
   relSliceFile,
   buildTaskFileName,
@@ -23,7 +22,8 @@ import {
 } from "./paths.js";
 import { milestoneIdToPhaseNum } from "./layout-policy.js";
 import { parseUnitId } from "./unit-id.js";
-import { join } from "node:path";
+import { dirname, join, relative } from "node:path";
+import { existsSync } from "node:fs";
 
 function resolveMilestoneArtifactPath(
   base: string,
@@ -32,14 +32,27 @@ function resolveMilestoneArtifactPath(
 ): string | null {
   const existing = resolveProjectedMilestoneFile(base, mid, suffix) ?? resolveProjectMilestoneFile(base, mid, suffix);
   if (existing) return existing;
-  // Try legacy projected (worktree) path, then legacy project-root path.
-  const legacyDir = resolveProjectedMilestonePath(base, mid) ?? resolveProjectMilestonePath(base, mid);
-  if (legacyDir) return join(legacyDir, `${mid}-${suffix}.md`);
-  // Flat-phase fallback: use resolveMilestonePath which handles phases/ and milestones/.
-  const dir = resolveMilestonePath(base, mid);
+  // Try projected (worktree) path, then project-root path. Both can return
+  // either a legacy (milestones/<MID>/) or flat-phase (phases/NN-slug/) dir.
+  const dir = resolveProjectedMilestonePath(base, mid) ?? resolveProjectMilestonePath(base, mid) ?? resolveMilestonePath(base, mid);
   if (dir) {
-    const legacyBase = legacyMilestonesDir(base);
-    const isLegacy = dir.startsWith(legacyBase + "/") || dir.startsWith(legacyBase + "\\");
+    // The filename depends on the LAYOUT of the resolved directory, not on
+    // which resolver found it. A flat-phase dir (phases/NN-slug/) uses the
+    // phase-number prefix (15-CONTEXT.md); a legacy dir (milestones/<MID>/)
+    // uses the milestone-id prefix (M015-CONTEXT.md). Building the wrong
+    // filename for the resolved dir produces existsSync-false paths that trap
+    // the unit in a finalize-retry loop (#852).
+    //
+    // Layout is determined structurally from the resolved directory's parent
+    // segment name, NOT by comparing against a root-anchored legacyMilestonesDir
+    // base path. On a canonical worktree (<project>/.gsd-worktrees/M001/),
+    // legacyMilestonesDir uses gsdProjectionRoot (the worktree .gsd) while
+    // resolveProjectMilestonePath uses gsdRoot (the project .gsd) — two
+    // different roots. A dir returned by resolveProjectMilestonePath would
+    // fail the startsWith check against the worktree root and incorrectly
+    // produce a flat-phase filename for a legacy directory (#bugbot c5ee8eba).
+    const parentDir = dirname(dir);
+    const isLegacy = parentDir.endsWith("/milestones") || parentDir.endsWith("\\milestones");
     const phaseNum = milestoneIdToPhaseNum(mid);
     const filename = isLegacy
       ? `${mid}-${suffix}.md`
@@ -47,6 +60,26 @@ function resolveMilestoneArtifactPath(
     return join(dir, filename);
   }
   return null;
+}
+
+/**
+ * Build the layout-aware filename for a milestone artifact suffix.
+ * Exported so other callers (e.g. verification diagnostics) use the same
+ * naming policy: flat-phase dirs use the phase-number prefix (15-CONTEXT.md),
+ * legacy dirs use the milestone-id prefix (M015-CONTEXT.md).
+ *
+ * Layout is determined structurally: dirs whose immediate parent is named
+ * "milestones" are legacy; all others are flat-phase. This avoids the
+ * root-path ambiguity between gsdProjectionRoot (worktree .gsd) and gsdRoot
+ * (project .gsd) that caused wrong filenames on canonical worktrees.
+ */
+export function buildMilestoneArtifactFilename(mid: string, suffix: string, dir: string): string {
+  const parentDir = dirname(dir);
+  const isLegacy = parentDir.endsWith("/milestones") || parentDir.endsWith("\\milestones");
+  const phaseNum = milestoneIdToPhaseNum(mid);
+  return isLegacy
+    ? `${mid}-${suffix}.md`
+    : `${String(phaseNum).padStart(2, "0")}-${suffix}.md`;
 }
 
 function resolveSliceArtifactPath(
@@ -281,4 +314,49 @@ export function diagnoseExpectedArtifact(
     default:
       return null;
   }
+}
+
+export interface SliceResearchLocation {
+  /** Absolute path when research exists; null when missing. */
+  absolutePath: string | null;
+  /** Prompt-friendly relative path when research exists. */
+  relativePath: string | null;
+}
+
+/**
+ * Resolve slice RESEARCH with worktree projection first, then canonical
+ * project-root path. Shared by dispatch rules, execute-task prompts, and
+ * artifact verification.
+ */
+export function resolveSliceResearchLocation(
+  basePath: string,
+  mid: string,
+  sid: string,
+): SliceResearchLocation {
+  const projectedFile = resolveSliceFile(basePath, mid, sid, "RESEARCH");
+  if (projectedFile) {
+    return {
+      absolutePath: projectedFile,
+      relativePath: relSliceFile(basePath, mid, sid, "RESEARCH"),
+    };
+  }
+
+  const canonicalPath = resolveExpectedArtifactPath("research-slice", `${mid}/${sid}`, basePath);
+  if (canonicalPath && existsSync(canonicalPath)) {
+    return {
+      absolutePath: canonicalPath,
+      relativePath: relative(basePath, canonicalPath),
+    };
+  }
+
+  return { absolutePath: null, relativePath: null };
+}
+
+/** Returns the absolute RESEARCH path when it exists, otherwise null. */
+export function resolveExistingSliceResearchPath(
+  basePath: string,
+  mid: string,
+  sid: string,
+): string | null {
+  return resolveSliceResearchLocation(basePath, mid, sid).absolutePath;
 }

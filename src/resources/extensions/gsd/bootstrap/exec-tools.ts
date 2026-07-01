@@ -72,6 +72,7 @@ export function registerExecTools(pi: ExtensionAPI): void {
       return executeUatExec(params as Parameters<typeof executeUatExec>[0], {
         baseDir,
         preferences: await loadContextModePreferences(baseDir),
+        signal: _signal,
       });
     },
   });
@@ -119,6 +120,7 @@ export function registerExecTools(pi: ExtensionAPI): void {
       return executeGsdExec(params as Parameters<typeof executeGsdExec>[0], {
         baseDir,
         preferences: await loadContextModePreferences(baseDir),
+        signal: _signal,
       });
     },
   });

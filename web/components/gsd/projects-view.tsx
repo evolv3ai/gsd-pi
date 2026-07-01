@@ -19,16 +19,10 @@ import {
   Folder,
   CornerLeftUp,
   Search,
-  Clock,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useProjectStoreManager } from "@/lib/project-store-manager"
 import {
-  useGSDWorkspaceState,
-  getLiveWorkspaceIndex,
-  getLiveAutoDashboard,
-  formatCost,
-  getCurrentSlice,
 } from "@/lib/gsd-workspace-store"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -348,8 +342,6 @@ export function ProjectsPanel({
 
   const [newProjectOpen, setNewProjectOpen] = useState(false)
   const [changeRootOpen, setChangeRootOpen] = useState(false)
-  const workspaceState = useGSDWorkspaceState()
-
   const handleProjectCreated = useCallback(
     (newProject: ProjectMetadata) => {
       setProjects((prev) => [...prev, newProject].sort((a, b) => a.name.localeCompare(b.name)))
@@ -519,27 +511,6 @@ export function ProjectsPanel({
   )
 }
 
-// ─── Active project inline summary (compact for panel card) ────────────
-
-function ActiveProjectSummary({ workspaceState }: { workspaceState: ReturnType<typeof useGSDWorkspaceState> }) {
-  const workspace = getLiveWorkspaceIndex(workspaceState)
-  const dashboard = getLiveAutoDashboard(workspaceState)
-  const currentSlice = getCurrentSlice(workspace)
-
-  if (!workspace) return null
-
-  const activeMilestone = workspace.milestones.find((m) => m.id === workspace.active.milestoneId)
-  const cost = dashboard?.totalCost ?? 0
-
-  const parts: string[] = []
-  if (activeMilestone) parts.push(activeMilestone.id)
-  if (currentSlice) parts.push(currentSlice.id)
-  if (cost > 0) parts.push(formatCost(cost))
-
-  if (parts.length === 0) return null
-
-  return <div className="mt-1.5 text-[11px] text-muted-foreground">{parts.join(" · ")}</div>
-}
 
 // ─── New Project Dialog ────────────────────────────────────────────────
 
@@ -562,12 +533,16 @@ function NewProjectDialog({
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (open) {
+    if (!open) return
+    const resetTimer = window.setTimeout(() => {
       setName("")
       setError(null)
       setCreating(false)
-      const t = setTimeout(() => inputRef.current?.focus(), 100)
-      return () => clearTimeout(t)
+    }, 0)
+    const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 100)
+    return () => {
+      window.clearTimeout(resetTimer)
+      window.clearTimeout(focusTimer)
     }
   }, [open])
 
@@ -714,15 +689,18 @@ function FolderPickerDialog({
   }, [])
 
   useEffect(() => {
-    if (open) {
-      void browse(initialPath ?? undefined)
-    } else {
-      setCurrentPath("")
-      setParentPath(null)
-      setEntries([])
-      setError(null)
-      setPathInput("")
-    }
+    const timer = window.setTimeout(() => {
+      if (open) {
+        void browse(initialPath ?? undefined)
+      } else {
+        setCurrentPath("")
+        setParentPath(null)
+        setEntries([])
+        setError(null)
+        setPathInput("")
+      }
+    }, 0)
+    return () => window.clearTimeout(timer)
   }, [open, initialPath, browse])
 
   return (
@@ -1297,7 +1275,7 @@ export function ProjectSelectionGate() {
                   {/* Empty filter state */}
                   {filteredProjects.length === 0 && filter.trim() && (
                     <div className="px-4 py-8 text-center text-xs text-muted-foreground">
-                      No projects matching "{filter}"
+                      No projects matching &quot;{filter}&quot;
                     </div>
                   )}
                 </div>

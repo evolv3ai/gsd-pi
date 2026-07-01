@@ -28,6 +28,11 @@ const DEFAULT_CODEBASE_MAX_CHARS = 8_000;
 const MIN_CONTEXT_MESSAGE_MAX_CHARS = 1_000;
 const MIN_KNOWLEDGE_MAX_CHARS = 1_000;
 
+const CONTEXT_MAINTENANCE_KEY_SEPARATOR = "\0";
+const contextMaintenanceCompletedForSession = new Set<string>();
+const contextMaintenanceInFlightBySession = new Map<string, Promise<boolean>>();
+const deferredContextMaintenanceBySession = new Map<string, Promise<void>>();
+
 /**
  * Bundled skill triggers — resolved dynamically at runtime instead of
  * hardcoding absolute paths in the system prompt template. Only skills
@@ -106,6 +111,191 @@ function warnDeprecatedAgentInstructions(): void {
   }
 }
 
+async function runSessionStartupMaintenanceOnce(
+  basePath: string,
+  ctx: ExtensionContext,
+): Promise<boolean> {
+  const maintenanceKey = getContextMaintenanceKey(basePath, ctx);
+  if (contextMaintenanceCompletedForSession.has(maintenanceKey)) {
+    // Backfills are session-once, but memory queries and other DB-backed
+    // prompt assembly still need an active adapter on every turn.
+    try {
+      const { ensureDbOpen } = await import("./dynamic-tools.js");
+      await ensureDbOpen(basePath);
+    } catch (e) {
+      logWarning("bootstrap", `project DB open failed: ${(e as Error).message}`);
+    }
+    return false;
+  }
+
+  const existing = contextMaintenanceInFlightBySession.get(maintenanceKey);
+  const isInitiator = !existing;
+  // Use a definite Promise<boolean> so `await inFlight` has a known return type.
+  let inFlight: Promise<boolean>;
+  if (isInitiator) {
+    inFlight = performSessionStartupMaintenance(basePath, ctx, maintenanceKey);
+    contextMaintenanceInFlightBySession.set(maintenanceKey, inFlight);
+    void inFlight.finally(() => {
+      if (contextMaintenanceInFlightBySession.get(maintenanceKey) === inFlight) {
+        contextMaintenanceInFlightBySession.delete(maintenanceKey);
+      }
+    });
+  } else {
+    inFlight = existing;
+  }
+
+  const result = await inFlight;
+  return isInitiator ? result : false;
+}
+
+async function performSessionStartupMaintenance(
+  basePath: string,
+  ctx: ExtensionContext,
+  maintenanceKey: string,
+): Promise<boolean> {
+  // DB-backed memory backfills run below. On a cold session the database file
+  // may exist without an active in-process adapter, so open the canonical
+  // project DB before those best-effort operations inspect it.
+  let dbOpen = false;
+  try {
+    const { ensureDbOpen } = await import("./dynamic-tools.js");
+    dbOpen = await ensureDbOpen(basePath);
+  } catch (e) {
+    logWarning("bootstrap", `project DB open failed before memory projection: ${(e as Error).message}`);
+  }
+  if (!dbOpen) return false;
+
+  // These backfills are independent idempotent migrations. Keep them on the
+  // startup path because their rows can affect the MEMORY block for this turn,
+  // but do not make their import/IO latencies add serially.
+  await Promise.allSettled([
+    runDecisionsMemoryBackfill(ctx),
+    runKnowledgeMemoryBackfill(basePath, ctx),
+  ]);
+
+  // Mark session complete before scheduling deferred work so any concurrent
+  // caller that observes the completed state does not re-enter maintenance.
+  contextMaintenanceCompletedForSession.add(maintenanceKey);
+  scheduleDeferredContextMaintenance(basePath, maintenanceKey);
+  return true;
+}
+
+function getContextMaintenanceKey(basePath: string, ctx: ExtensionContext): string {
+  return `${basePath}${CONTEXT_MAINTENANCE_KEY_SEPARATOR}${getContextSessionPart(ctx)}`;
+}
+
+function getContextSessionPart(ctx: ExtensionContext): string {
+  const sessionManager = (ctx as {
+    sessionManager?: {
+      getSessionId?: () => string | undefined;
+      getSessionFile?: () => string | undefined;
+    };
+  }).sessionManager;
+
+  try {
+    const sessionId = sessionManager?.getSessionId?.();
+    if (typeof sessionId === "string" && sessionId.length > 0) return `id:${sessionId}`;
+  } catch (e) {
+    logWarning("bootstrap", `session-id fetch failed: ${(e as Error).message}`);
+  }
+
+  try {
+    const sessionFile = sessionManager?.getSessionFile?.();
+    if (typeof sessionFile === "string" && sessionFile.length > 0) return `file:${sessionFile}`;
+  } catch (e) {
+    logWarning("bootstrap", `session-file fetch failed: ${(e as Error).message}`);
+  }
+
+  return "process";
+}
+
+async function runDecisionsMemoryBackfill(ctx: ExtensionContext): Promise<void> {
+  // ADR-013 step 5: opportunistic decisions->memories backfill. Idempotent
+  // and best-effort — first run absorbs the existing decisions table into
+  // the memory store; repeated turns skip this session-once maintenance.
+  try {
+    const { backfillDecisionsToMemories } = await import("../memory-backfill.js");
+    const written = backfillDecisionsToMemories();
+    if (written > 0) {
+      ctx.ui.notify(`GSD: backfilled ${written} decision${written === 1 ? "" : "s"} into the memory store.`, "info");
+    }
+  } catch (e) {
+    logWarning("bootstrap", `decisions backfill failed: ${(e as Error).message}`);
+  }
+}
+
+async function runKnowledgeMemoryBackfill(
+  basePath: string,
+  ctx: ExtensionContext,
+): Promise<void> {
+  // ADR-013 Stage 2b: KNOWLEDGE.md Patterns + Lessons backfill. Idempotent
+  // and best-effort — first run migrates rows into memories; repeated turns
+  // skip this session-once maintenance.
+  try {
+    const { backfillKnowledgeToMemories } = await import("../knowledge-backfill.js");
+    const writtenK = backfillKnowledgeToMemories(basePath);
+    if (writtenK > 0) {
+      ctx.ui.notify(`GSD: backfilled ${writtenK} KNOWLEDGE.md row${writtenK === 1 ? "" : "s"} into the memory store.`, "info");
+    }
+  } catch (e) {
+    logWarning("bootstrap", `KNOWLEDGE.md backfill failed: ${(e as Error).message}`);
+  }
+}
+
+function scheduleDeferredContextMaintenance(basePath: string, maintenanceKey: string): void {
+  if (deferredContextMaintenanceBySession.has(maintenanceKey)) return;
+
+  const task = new Promise<void>((resolve) => {
+    setTimeout(() => {
+      void runDeferredContextMaintenance(basePath).finally(resolve);
+    }, 0);
+  });
+
+  deferredContextMaintenanceBySession.set(maintenanceKey, task);
+  void task.finally(() => {
+    if (deferredContextMaintenanceBySession.get(maintenanceKey) === task) {
+      deferredContextMaintenanceBySession.delete(maintenanceKey);
+    }
+  });
+}
+
+async function runDeferredContextMaintenance(basePath: string): Promise<void> {
+  // Projection rendering and consolidation-gap reporting do not contribute to
+  // the returned system prompt. Run them after startup context is assembled so
+  // their DB/file scans do not block the first response.
+  await Promise.allSettled([
+    renderKnowledgeProjectionDeferred(basePath),
+    reportConsolidationGapsDeferred(basePath),
+  ]);
+}
+
+async function renderKnowledgeProjectionDeferred(basePath: string): Promise<void> {
+  try {
+    const { renderKnowledgeProjection } = await import("../knowledge-projection.js");
+    renderKnowledgeProjection(basePath);
+  } catch (e) {
+    logWarning("bootstrap", `KNOWLEDGE.md projection render failed: ${(e as Error).message}`);
+  }
+}
+
+async function reportConsolidationGapsDeferred(basePath: string): Promise<void> {
+  try {
+    const { reportConsolidationGaps } = await import("../memory-consolidation-scanner.js");
+    reportConsolidationGaps(basePath);
+  } catch (e) {
+    logWarning("bootstrap", `memory consolidation scan failed: ${(e as Error).message}`);
+  }
+}
+
+export async function _flushDeferredContextMaintenanceForTest(basePath?: string): Promise<void> {
+  const tasks = basePath
+    ? [...deferredContextMaintenanceBySession.entries()]
+        .filter(([key]) => key.startsWith(`${basePath}${CONTEXT_MAINTENANCE_KEY_SEPARATOR}`))
+        .map(([, task]) => task)
+    : [...deferredContextMaintenanceBySession.values()];
+  await Promise.allSettled(tasks);
+}
+
 export async function buildBeforeAgentStartResult(
   event: { prompt: string; systemPrompt: string },
   ctx: ExtensionContext,
@@ -153,58 +343,7 @@ export async function buildBeforeAgentStartResult(
     }
   }
 
-  // DB-backed memory backfills and projections run below. On a cold session
-  // the database file may exist without an active in-process adapter, so open
-  // the canonical project DB before those best-effort operations inspect it.
-  try {
-    const { ensureDbOpen } = await import("./dynamic-tools.js");
-    await ensureDbOpen(basePath);
-  } catch (e) {
-    logWarning("bootstrap", `project DB open failed before memory projection: ${(e as Error).message}`);
-  }
-
-  // ADR-013 step 5: opportunistic decisions->memories backfill. Idempotent
-  // and best-effort — first run absorbs the existing decisions table into
-  // the memory store; subsequent runs are a single sentinel SELECT.
-  try {
-    const { backfillDecisionsToMemories } = await import("../memory-backfill.js");
-    const written = backfillDecisionsToMemories();
-    if (written > 0) {
-      ctx.ui.notify(`GSD: backfilled ${written} decision${written === 1 ? "" : "s"} into the memory store.`, "info");
-    }
-  } catch (e) {
-    logWarning("bootstrap", `decisions backfill failed: ${(e as Error).message}`);
-  }
-
-  // ADR-013 Stage 2b: KNOWLEDGE.md Patterns + Lessons backfill, then
-  // re-render the hybrid projection (manual Rules + projected Patterns +
-  // projected Lessons). Both are idempotent and best-effort — failures here
-  // can't block agent startup.
-  try {
-    const { backfillKnowledgeToMemories } = await import("../knowledge-backfill.js");
-    const writtenK = backfillKnowledgeToMemories(basePath);
-    if (writtenK > 0) {
-      ctx.ui.notify(`GSD: backfilled ${writtenK} KNOWLEDGE.md row${writtenK === 1 ? "" : "s"} into the memory store.`, "info");
-    }
-  } catch (e) {
-    logWarning("bootstrap", `KNOWLEDGE.md backfill failed: ${(e as Error).message}`);
-  }
-  try {
-    const { renderKnowledgeProjection } = await import("../knowledge-projection.js");
-    renderKnowledgeProjection(basePath);
-  } catch (e) {
-    logWarning("bootstrap", `KNOWLEDGE.md projection render failed: ${(e as Error).message}`);
-  }
-
-  // ADR-013 step 6 preflight: warn when decisions / KNOWLEDGE.md rows are not
-  // yet in the memories table. Read-only; never throws. Runs after the two
-  // backfills above so the gap report reflects post-backfill state.
-  try {
-    const { reportConsolidationGaps } = await import("../memory-consolidation-scanner.js");
-    reportConsolidationGaps(basePath);
-  } catch (e) {
-    logWarning("bootstrap", `memory consolidation scan failed: ${(e as Error).message}`);
-  }
+  await runSessionStartupMaintenanceOnce(basePath, ctx);
 
   const { block: knowledgeBlock, globalSizeKb } = loadKnowledgeBlock(gsdHome(), basePath);
   if (globalSizeKb > 4) {

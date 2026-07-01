@@ -1,12 +1,22 @@
 import { afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { _getAdapter, closeDatabase, insertMilestone, openDatabase } from "../gsd-db.ts";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  _getAdapter,
+  closeDatabase,
+  insertArtifact,
+  insertMilestone,
+  insertSlice,
+  insertTask,
+  openDatabase,
+} from "../gsd-db.ts";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { filterDoctorIssues } from "../doctor-format.ts";
 import { checkEngineHealth } from "../doctor-engine-checks.ts";
+import { MEMORIES_FTS_REBUILT_KEY } from "../db-memory-fts-schema.ts";
 import { appendEvent } from "../workflow-events.ts";
+import { renderPlanFromDb, renderRoadmapFromDb } from "../markdown-renderer.ts";
 
 afterEach(() => {
   closeDatabase();
@@ -59,6 +69,139 @@ test("checkEngineHealth reports db_unavailable when gsd.db exists but the DB is 
   assert.ok(dbIssue, "doctor should surface degraded DB mode when a DB file exists");
   assert.equal(dbIssue.unitId, "project");
   assert.equal(dbIssue.file, ".gsd/gsd.db");
+});
+
+test("checkEngineHealth reports memories_fts without the rebuild marker", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-memory-fts-marker-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  mkdirSync(gsdDir, { recursive: true });
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  const adapter = _getAdapter()!;
+  const fts = adapter.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='memories_fts'").get();
+  if (!fts) return;
+
+  adapter.prepare(
+    "DELETE FROM runtime_kv WHERE scope = 'global' AND scope_id = '' AND key = :key",
+  ).run({ ":key": MEMORIES_FTS_REBUILT_KEY });
+
+  const issues: any[] = [];
+  await checkEngineHealth(base, issues, []);
+
+  const ftsIssue = issues.find((issue) => issue.code === "memories_fts_rebuild_missing");
+  assert.ok(ftsIssue, "doctor should surface a potentially desynced memory FTS index");
+  assert.equal(ftsIssue.severity, "warning");
+  assert.equal(ftsIssue.unitId, "project");
+  assert.equal(ftsIssue.file, ".gsd/gsd.db");
+  assert.equal(ftsIssue.fixable, false);
+});
+
+test("checkEngineHealth reports checkbox divergence against DB status", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-checkbox-drift-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  mkdirSync(gsdDir, { recursive: true });
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertMilestone({ id: "M001", title: "Foundation", status: "active" });
+  insertSlice({ id: "S01", milestoneId: "M001", title: "Slice", status: "pending", risk: "low", depends: [], sequence: 1 });
+  insertTask({ id: "T01", milestoneId: "M001", sliceId: "S01", title: "Task", status: "complete", sequence: 1 });
+
+  const roadmap = await renderRoadmapFromDb(base, "M001");
+  if ("skipped" in roadmap) assert.fail("planned milestone should render a roadmap");
+  const plan = await renderPlanFromDb(base, "M001", "S01");
+
+  writeFileSync(roadmap.roadmapPath, readFileSync(roadmap.roadmapPath, "utf-8").replace("- [ ] **S01:", "- [x] **S01:"), "utf-8");
+  writeFileSync(plan.planPath, readFileSync(plan.planPath, "utf-8").replace("- [x] **T01**:", "- [ ] **T01**:"), "utf-8");
+
+  const issues: any[] = [];
+  await checkEngineHealth(base, issues, []);
+
+  const divergences = issues.filter((issue) => issue.code === "checkbox_db_status_divergence");
+  assert.deepEqual(
+    divergences.map((issue) => issue.unitId).sort(),
+    ["M001/S01", "M001/S01/T01"],
+  );
+});
+
+test("checkEngineHealth keeps PLAN checkbox divergence after stale projection flush", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-checkbox-plan-drift-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  mkdirSync(gsdDir, { recursive: true });
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertMilestone({ id: "M001", title: "Foundation", status: "active" });
+  insertSlice({ id: "S01", milestoneId: "M001", title: "Slice", status: "pending", risk: "low", depends: [], sequence: 1 });
+  insertTask({ id: "T01", milestoneId: "M001", sliceId: "S01", title: "Task", status: "complete", sequence: 1 });
+
+  const roadmap = await renderRoadmapFromDb(base, "M001");
+  if ("skipped" in roadmap) assert.fail("planned milestone should render a roadmap");
+  const plan = await renderPlanFromDb(base, "M001", "S01");
+
+  writeFileSync(roadmap.roadmapPath, readFileSync(roadmap.roadmapPath, "utf-8").replace("- [ ] **S01:", "- [x] **S01:"), "utf-8");
+  writeFileSync(plan.planPath, readFileSync(plan.planPath, "utf-8").replace("- [x] **T01**:", "- [ ] **T01**:"), "utf-8");
+  appendEvent(base, {
+    cmd: "complete-task",
+    params: { milestoneId: "M001", sliceId: "S01", taskId: "T01" },
+    ts: "2999-01-01T00:00:00.000Z",
+    actor: "agent",
+  });
+
+  const issues: any[] = [];
+  const fixes: string[] = [];
+  await checkEngineHealth(base, issues, fixes);
+
+  const divergences = issues.filter((issue) => issue.code === "checkbox_db_status_divergence");
+  assert.deepEqual(
+    divergences.map((issue) => issue.unitId),
+    ["M001/S01/T01"],
+    "stale ROADMAP divergence is cleared after re-render, but stale PLAN task divergence remains",
+  );
+  assert.ok(fixes.includes("re-rendered stale projections for M001"));
+  assert.match(readFileSync(plan.planPath, "utf-8"), /- \[ \] \*\*T01\*\*:/);
+});
+
+test("checkEngineHealth reads task checkboxes from the <tasks> block, not a stray line above it", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-task-section-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  mkdirSync(gsdDir, { recursive: true });
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertMilestone({ id: "M001", title: "Foundation", status: "active" });
+  insertSlice({ id: "S01", milestoneId: "M001", title: "Slice", status: "pending", risk: "low", depends: [], sequence: 1 });
+  insertTask({ id: "T01", milestoneId: "M001", sliceId: "S01", title: "Task", status: "complete", sequence: 1 });
+
+  const roadmap = await renderRoadmapFromDb(base, "M001");
+  if ("skipped" in roadmap) assert.fail("planned milestone should render a roadmap");
+  const plan = await renderPlanFromDb(base, "M001", "S01");
+
+  // Flip the authoritative <tasks> checkbox so it disagrees with the DB
+  // (DB: complete, markdown: unchecked = real drift), then inject a *checked*
+  // decoy line for the same task above the <tasks> block. The old whole-file
+  // regex matched the decoy first and hid the real drift; parsePlan reads the
+  // authoritative <tasks> block and still reports it. No events are appended,
+  // so the projection-drift re-render never runs and the crafted file stands.
+  const rendered = readFileSync(plan.planPath, "utf-8")
+    .replace("- [x] **T01**:", "- [ ] **T01**:")
+    .replace("<tasks>\n", "- [x] **T01**: stale duplicate above the tasks block\n\n<tasks>\n");
+  writeFileSync(plan.planPath, rendered, "utf-8");
+
+  const issues: any[] = [];
+  await checkEngineHealth(base, issues, []);
+
+  const divergences = issues.filter((issue) => issue.code === "checkbox_db_status_divergence");
+  assert.deepEqual(
+    divergences.map((issue) => issue.unitId),
+    ["M001/S01/T01"],
+    "task drift must be read from the authoritative <tasks> block, not a stray checkbox above it",
+  );
 });
 
 test("checkEngineHealth reads canonical reopen events from worktree bases", async (t) => {
@@ -147,5 +290,99 @@ test("checkEngineHealth treats explicit reopen as authoritative when dispatch ti
     issues.some((issue) => issue.code === "completed_milestone_reopened"),
     false,
     "explicit reopen should exempt reopened milestone even when completion dispatch timestamps are absent",
+  );
+});
+
+test("checkEngineHealth reports artifact rows whose files are missing on disk", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-missing-artifact-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  const worktree = join(gsdDir, "worktrees", "M001");
+  mkdirSync(join(worktree, ".gsd", "milestones", "M001"), { recursive: true });
+  writeFileSync(join(worktree, ".git"), "gitdir: ../../../../.git/worktrees/M001\n", "utf-8");
+  writeFileSync(join(worktree, ".gsd", "milestones", "M001", "M001-CONTEXT.md"), "# Context\n", "utf-8");
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertArtifact({
+    path: "milestones/M001/M001-CONTEXT.md",
+    artifact_type: "CONTEXT",
+    milestone_id: "M001",
+    slice_id: null,
+    task_id: null,
+    full_content: "# Context\n",
+  });
+  insertArtifact({
+    path: "milestones/M001/M001-MISSING.md",
+    artifact_type: "CONTEXT",
+    milestone_id: "M001",
+    slice_id: null,
+    task_id: null,
+    full_content: "# Missing\n",
+  });
+
+  const issues: any[] = [];
+  await checkEngineHealth(worktree, issues, []);
+
+  assert.equal(
+    issues.some((issue) => issue.code === "artifact_file_missing" && issue.file === "milestones/M001/M001-CONTEXT.md"),
+    false,
+    "worktree-local artifacts should resolve through the projection root",
+  );
+  const missing = issues.find((issue) => issue.code === "artifact_file_missing" && issue.file === "milestones/M001/M001-MISSING.md");
+  assert.ok(missing, "missing artifact rows should be reported");
+  assert.equal(missing.unitId, "M001");
+  assert.equal(missing.fixable, false);
+});
+
+test("checkEngineHealth clears artifact_file_missing after projection re-render recreates the file", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-stale-missing-artifact-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  mkdirSync(gsdDir, { recursive: true });
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertMilestone({ id: "M001", title: "Foundation", status: "active", planning: { vision: "Ship the foundation." } });
+  insertSlice({ id: "S01", milestoneId: "M001", title: "Slice", status: "pending", risk: "low", depends: [], sequence: 1 });
+  insertArtifact({
+    path: "phases/01-foundation/01-ROADMAP.md",
+    artifact_type: "ROADMAP",
+    milestone_id: "M001",
+    slice_id: null,
+    task_id: null,
+    full_content: "# stale row only\n",
+  });
+  // CONTEXT is not re-rendered by flushWorkflowProjections, so its missing-file
+  // diagnostic must survive the post-re-render cleanup (guards against the
+  // clearing logic over-broadening to artifacts the same run did not recreate).
+  insertArtifact({
+    path: "phases/01-foundation/01-CONTEXT.md",
+    artifact_type: "CONTEXT",
+    milestone_id: "M001",
+    slice_id: null,
+    task_id: null,
+    full_content: "# stale context row only\n",
+  });
+  appendEvent(base, {
+    cmd: "plan-milestone",
+    params: { milestoneId: "M001" },
+    ts: "2999-01-01T00:00:00.000Z",
+    actor: "agent",
+  });
+
+  const issues: any[] = [];
+  const fixes: string[] = [];
+  await checkEngineHealth(base, issues, fixes);
+
+  assert.ok(fixes.includes("re-rendered missing projections for M001"));
+  assert.equal(
+    issues.some((issue) => issue.code === "artifact_file_missing" && issue.file === "phases/01-foundation/01-ROADMAP.md"),
+    false,
+    "doctor should not report a missing artifact that projection repair recreated in the same run",
+  );
+  assert.ok(
+    issues.some((issue) => issue.code === "artifact_file_missing" && issue.file === "phases/01-foundation/01-CONTEXT.md"),
+    "doctor should still report a missing artifact that projection repair did not recreate",
   );
 });

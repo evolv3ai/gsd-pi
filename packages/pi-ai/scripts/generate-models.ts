@@ -189,6 +189,8 @@ function isAnthropicAdaptiveThinkingModel(modelId: string): boolean {
 		modelId.includes("opus-4.8") ||
 		modelId.includes("fable-5") ||
 		modelId.includes("fable.5") ||
+		modelId.includes("sonnet-5") ||
+		modelId.includes("sonnet.5") ||
 		modelId.includes("sonnet-4-6") ||
 		modelId.includes("sonnet-4.6")
 	);
@@ -243,7 +245,9 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 		model.id.includes("opus-4-8") ||
 		model.id.includes("opus-4.8") ||
 		model.id.includes("fable-5") ||
-		model.id.includes("fable.5")
+		model.id.includes("fable.5") ||
+		model.id.includes("sonnet-5") ||
+		model.id.includes("sonnet.5")
 	) {
 		mergeThinkingLevelMap(model, { xhigh: "xhigh" });
 	}
@@ -1366,6 +1370,48 @@ async function generateModels() {
 			},
 			contextWindow: 1000000,
 			maxTokens: 64000,
+		});
+	}
+
+	// Add missing Claude Sonnet 5 until models.dev includes it.
+	if (!allModels.some(m => m.provider === "anthropic" && m.id === "claude-sonnet-5")) {
+		allModels.push({
+			id: "claude-sonnet-5",
+			name: "Claude Sonnet 5",
+			api: "anthropic-messages",
+			baseUrl: "https://api.anthropic.com",
+			provider: "anthropic",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 3,
+				output: 15,
+				cacheRead: 0.3,
+				cacheWrite: 3.75,
+			},
+			contextWindow: 1000000,
+			maxTokens: 128000,
+		});
+	}
+
+	// Add missing Claude Sonnet 5 on Vertex until models.dev includes it.
+	if (!allModels.some(m => m.provider === "anthropic-vertex" && m.id === "claude-sonnet-5")) {
+		allModels.push({
+			id: "claude-sonnet-5",
+			name: "Claude Sonnet 5 (Vertex)",
+			api: "anthropic-vertex",
+			baseUrl: VERTEX_BASE_URL,
+			provider: "anthropic-vertex",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 3,
+				output: 15,
+				cacheRead: 0.3,
+				cacheWrite: 3.75,
+			},
+			contextWindow: 1000000,
+			maxTokens: 128000,
 		});
 	}
 

@@ -24,6 +24,7 @@ import {
 } from '../gsd-db.ts';
 import {
   writeManifest,
+  flushManifest,
   readManifest,
   snapshotState,
   bootstrapFromManifest,
@@ -40,6 +41,11 @@ function tempDbPath(base: string): string {
 
 function cleanupDir(dirPath: string): void {
   try { fs.rmSync(dirPath, { recursive: true, force: true }); } catch { /* best effort */ }
+}
+
+async function writeManifestAndFlush(base: string): Promise<void> {
+  writeManifest(base);
+  await flushManifest(base);
 }
 
 function insertMemoryBackedDecision(id: string): void {
@@ -83,12 +89,14 @@ test('workflow-manifest: readManifest returns null when file does not exist', ()
 
 // ─── writeManifest + readManifest round-trip ─────────────────────────────
 
-test('workflow-manifest: writeManifest creates state-manifest.json with version 1', () => {
+test('workflow-manifest: writeManifest creates state-manifest.json with version 1 after flush', async () => {
   const base = tempDir();
   openDatabase(tempDbPath(base));
   try {
     writeManifest(base);
     const manifestPath = path.join(base, '.gsd', 'state-manifest.json');
+    assert.equal(fs.existsSync(manifestPath), false, 'writeManifest should not synchronously write state-manifest.json');
+    await flushManifest(base);
     assert.ok(fs.existsSync(manifestPath), 'state-manifest.json should exist');
     const raw = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
     assert.strictEqual(raw.version, 1);
@@ -98,11 +106,11 @@ test('workflow-manifest: writeManifest creates state-manifest.json with version 
   }
 });
 
-test('workflow-manifest: readManifest parses manifest written by writeManifest', () => {
+test('workflow-manifest: readManifest parses manifest written by writeManifest', async () => {
   const base = tempDir();
   openDatabase(tempDbPath(base));
   try {
-    writeManifest(base);
+    await writeManifestAndFlush(base);
     const manifest = readManifest(base);
     assert.ok(manifest !== null);
     assert.strictEqual(manifest!.version, 1);
@@ -118,6 +126,25 @@ test('workflow-manifest: readManifest parses manifest written by writeManifest',
     assert.ok(Array.isArray(manifest!.quality_gates));
     assert.ok(Array.isArray(manifest!.milestone_commit_attributions));
     assert.ok(Array.isArray(manifest!.verification_evidence));
+  } finally {
+    closeDatabase();
+    cleanupDir(base);
+  }
+});
+
+test('workflow-manifest: flushManifest writes the latest queued payload', async () => {
+  const base = tempDir();
+  openDatabase(tempDbPath(base));
+  try {
+    insertMilestone({ id: 'M001', title: 'First Milestone' });
+    writeManifest(base);
+    insertMilestone({ id: 'M002', title: 'Latest Milestone' });
+    writeManifest(base);
+
+    await flushManifest(base);
+
+    const manifest = readManifest(base);
+    assert.ok(manifest?.milestones.some((m) => m.id === 'M002'), 'latest queued write should be durable');
   } finally {
     closeDatabase();
     cleanupDir(base);
@@ -181,7 +208,7 @@ test('workflow-manifest: snapshotState captures memory-backed decisions', () => 
   }
 });
 
-test('workflow-manifest: bootstrapFromManifest restores extended correctness rows', () => {
+test('workflow-manifest: bootstrapFromManifest restores extended correctness rows', async () => {
   const base = tempDir();
   openDatabase(tempDbPath(base));
   try {
@@ -256,7 +283,7 @@ test('workflow-manifest: bootstrapFromManifest restores extended correctness row
       createdAt: '2026-06-05T00:00:00.000Z',
     });
 
-    writeManifest(base);
+    await writeManifestAndFlush(base);
     closeDatabase();
 
     const newDbPath = path.join(base, 'new.db');
@@ -306,7 +333,7 @@ test('workflow-manifest: bootstrapFromManifest returns false when no manifest fi
   }
 });
 
-test('workflow-manifest: bootstrapFromManifest restores DB from manifest (round-trip)', () => {
+test('workflow-manifest: bootstrapFromManifest restores DB from manifest (round-trip)', async () => {
   const base = tempDir();
   openDatabase(tempDbPath(base));
   try {
@@ -326,7 +353,7 @@ test('workflow-manifest: bootstrapFromManifest restores DB from manifest (round-
       status: 'complete',
       planning: { fullPlanMd: '# Full Task Plan\n\nKeep this body.', targetRepositories: ['project'] },
     });
-    writeManifest(base);
+    await writeManifestAndFlush(base);
     closeDatabase();
 
     // Open a fresh DB and bootstrap from manifest
@@ -356,14 +383,14 @@ test('workflow-manifest: bootstrapFromManifest restores DB from manifest (round-
   }
 });
 
-test('workflow-manifest: bootstrapFromManifest preserves target_repositories', () => {
+test('workflow-manifest: bootstrapFromManifest preserves target_repositories', async () => {
   const base = tempDir();
   openDatabase(tempDbPath(base));
   try {
     insertMilestone({ id: 'M001', title: 'Restored Milestone' });
     insertSlice({ id: 'S01', milestoneId: 'M001', planning: { targetRepositories: ['frontend'] } });
     insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', planning: { targetRepositories: ['backend'] } });
-    writeManifest(base);
+    await writeManifestAndFlush(base);
     closeDatabase();
 
     const newDbPath = path.join(base, 'new.db');
@@ -380,14 +407,68 @@ test('workflow-manifest: bootstrapFromManifest preserves target_repositories', (
   }
 });
 
-test('workflow-manifest: bootstrapFromManifest preserves optional rows from old manifests', () => {
+test('workflow-manifest: bootstrapFromManifest does not truncate projections when artifact content is empty', async () => {
+  const base = tempDir();
+  openDatabase(tempDbPath(base));
+  try {
+    insertMilestone({ id: 'M001', title: 'Projection Milestone' });
+    insertArtifact({
+      path: '.gsd/milestones/M001/M001-PLAN.md',
+      artifact_type: 'PLAN',
+      milestone_id: 'M001',
+      slice_id: null,
+      task_id: null,
+      full_content: '# Manifest Plan',
+    });
+    insertArtifact({
+      path: '.gsd/milestones/M001/M001-VALIDATION.md',
+      artifact_type: 'VALIDATION',
+      milestone_id: 'M001',
+      slice_id: null,
+      task_id: null,
+      full_content: '# Manifest Validation',
+    });
+    await writeManifestAndFlush(base);
+
+    const planPath = path.join(base, '.gsd', 'milestones', 'M001', 'M001-PLAN.md');
+    const validationPath = path.join(base, '.gsd', 'milestones', 'M001', 'M001-VALIDATION.md');
+    fs.mkdirSync(path.dirname(planPath), { recursive: true });
+    fs.writeFileSync(planPath, '# Existing Plan\n\nKeep this.');
+    fs.writeFileSync(validationPath, '# Existing Validation\n\nKeep this.');
+
+    const manifestPath = path.join(base, '.gsd', 'state-manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+    const artifacts = manifest['artifacts'] as Array<Record<string, unknown>>;
+    const emptyArtifact = artifacts.find((r) => r['path'] === '.gsd/milestones/M001/M001-PLAN.md');
+    const absentArtifact = artifacts.find((r) => r['path'] === '.gsd/milestones/M001/M001-VALIDATION.md');
+    assert.ok(emptyArtifact !== undefined);
+    assert.ok(absentArtifact !== undefined);
+    emptyArtifact['full_content'] = '';
+    delete absentArtifact['full_content'];
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    closeDatabase();
+
+    const newDbPath = path.join(base, 'new.db');
+    openDatabase(newDbPath);
+    const restored = bootstrapFromManifest(base);
+    assert.strictEqual(restored, true);
+
+    assert.strictEqual(fs.readFileSync(planPath, 'utf-8'), '# Existing Plan\n\nKeep this.');
+    assert.strictEqual(fs.readFileSync(validationPath, 'utf-8'), '# Existing Validation\n\nKeep this.');
+  } finally {
+    closeDatabase();
+    cleanupDir(base);
+  }
+});
+
+test('workflow-manifest: bootstrapFromManifest preserves optional rows from old manifests', async () => {
   const base = tempDir();
   openDatabase(tempDbPath(base));
   try {
     insertMilestone({ id: 'M001', title: 'Old Manifest Milestone' });
     insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Old Manifest Slice' });
     insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', title: 'Old Manifest Task' });
-    writeManifest(base);
+    await writeManifestAndFlush(base);
 
     const manifestPath = path.join(base, '.gsd', 'state-manifest.json');
     const oldManifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
@@ -450,12 +531,12 @@ test('workflow-manifest: bootstrapFromManifest preserves optional rows from old 
   }
 });
 
-test('workflow-manifest: bootstrapFromManifest restores memory-backed decisions', () => {
+test('workflow-manifest: bootstrapFromManifest restores memory-backed decisions', async () => {
   const base = tempDir();
   openDatabase(tempDbPath(base));
   try {
     insertMemoryBackedDecision('D901');
-    writeManifest(base);
+    await writeManifestAndFlush(base);
     closeDatabase();
 
     const newDbPath = path.join(base, 'new.db');
@@ -472,12 +553,12 @@ test('workflow-manifest: bootstrapFromManifest restores memory-backed decisions'
   }
 });
 
-test('workflow-manifest: bootstrapFromManifest replaces stale memory-backed decisions', () => {
+test('workflow-manifest: bootstrapFromManifest replaces stale memory-backed decisions', async () => {
   const base = tempDir();
   openDatabase(tempDbPath(base));
   try {
     insertMemoryBackedDecision('D902');
-    writeManifest(base);
+    await writeManifestAndFlush(base);
     closeDatabase();
 
     const newDbPath = path.join(base, 'new.db');

@@ -15,6 +15,7 @@ import { gsdRoot, resolveTasksDir, resolveSlicePath, resolveSliceFile, resolveTa
 import { sendDesktopNotification } from "./notifications.js";
 import { getTask, getSlice, getSliceTasks, updateTaskStatus, resetSliceCascade } from "./gsd-db.js";
 import { renderPlanCheckboxes, renderRoadmapCheckboxes } from "./markdown-renderer.js";
+import { UNIT_REGISTRY } from "./unit-registry.js";
 
 /**
  * Undo the last completed unit: revert git commits,
@@ -42,16 +43,20 @@ export async function handleUndo(args: string, ctx: ExtensionCommandContext, _pi
     return;
   }
 
-  // Extract unit type and ID from the most recent activity log filename
-  // Format: <seq>-<unitType>-<unitId>.jsonl
-  const match = files[0].match(/^\d+-(.+?)-(.+)\.jsonl$/);
-  if (!match) {
+  // Extract unit type and ID from the most recent activity log filename.
+  // Both the unit type and the unit ID may contain hyphens, so anchor on the
+  // known unit-type vocabulary instead of guessing the unit-ID shape: a regex
+  // tuned to milestone-shaped IDs rejects project-level units whose IDs are
+  // symbolic (e.g. discuss-project uses PROJECT, workflow-preferences uses
+  // WORKFLOW-PREFS).
+  const parsed = parseActivityLogFilename(files[0]);
+  if (!parsed) {
     ctx.ui.notify("Nothing to undo — could not parse latest activity log.", "warning");
     return;
   }
 
-  const unitType = match[1];
-  const unitId = match[2].replace(/-/g, "/");
+  const unitType = parsed.unitType;
+  const unitId = parsed.unitId.replace(/-/g, "/");
 
   if (!force) {
     ctx.ui.notify(
@@ -100,6 +105,11 @@ export async function handleUndo(args: string, ctx: ExtensionCommandContext, _pi
   if (unitType === "execute-task" && task !== undefined && slice !== undefined) {
     const [mid, sid, tid] = [milestone, slice, task];
     planUpdated = uncheckTaskInPlan(basePath, mid, sid, tid);
+    if (getTask(mid, sid, tid)) {
+      updateTaskStatus(mid, sid, tid, "pending");
+      await renderPlanCheckboxes(basePath, mid, sid);
+      planUpdated = true;
+    }
   }
 
   // 3. Try to revert git commits from activity log
@@ -378,6 +388,37 @@ export async function handleResetSlice(
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+// Known unit types sorted longest-first so a more specific type (e.g.
+// "execute-task-simple") matches before a prefix of it ("execute-task") when
+// splitting "<seq>-<unitType>-<unitId>.jsonl".
+const UNIT_TYPES_BY_LENGTH_DESC: readonly string[] = Object.keys(UNIT_REGISTRY).sort(
+  (a, b) => b.length - a.length,
+);
+
+/**
+ * Parse an activity-log filename of the form `<seq>-<unitType>-<unitId>.jsonl`
+ * (the format written by activity-log.ts). Both the unit type and the unit ID
+ * may contain hyphens, so we anchor on the known unit-type vocabulary rather
+ * than guessing the ID shape. This keeps non-milestone IDs (e.g. PROJECT,
+ * WORKFLOW-PREFS) parseable. Returns null when the name has no sequence prefix
+ * or does not start with a recognised unit type.
+ */
+export function parseActivityLogFilename(
+  filename: string,
+): { unitType: string; unitId: string } | null {
+  const seqMatch = filename.match(/^\d+-(.+)\.jsonl$/);
+  if (!seqMatch) return null;
+  const rest = seqMatch[1];
+  for (const unitType of UNIT_TYPES_BY_LENGTH_DESC) {
+    const prefix = `${unitType}-`;
+    if (rest.startsWith(prefix)) {
+      const unitId = rest.slice(prefix.length);
+      if (unitId.length > 0) return { unitType, unitId };
+    }
+  }
+  return null;
+}
 
 export function uncheckTaskInPlan(basePath: string, mid: string, sid: string, tid: string): boolean {
   const slicePath = resolveSlicePath(basePath, mid, sid);

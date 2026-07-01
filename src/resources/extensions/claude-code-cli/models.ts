@@ -49,6 +49,15 @@ export const CLAUDE_CODE_MODELS = [
 		maxTokens: 128_000,
 	},
 	{
+		id: "claude-sonnet-5",
+		name: "Claude Sonnet 5 (via Claude Code)",
+		reasoning: true,
+		input: ["text", "image"] as ("text" | "image")[],
+		cost: ZERO_COST,
+		contextWindow: 1_000_000,
+		maxTokens: 128_000,
+	},
+	{
 		id: "claude-sonnet-4-6",
 		name: "Claude Sonnet 4.6 (via Claude Code)",
 		reasoning: true,

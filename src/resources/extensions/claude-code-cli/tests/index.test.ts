@@ -30,6 +30,20 @@ test("registers the claude-code provider with a streamSimple delegate", () => {
 	assert.equal(typeof providers[0].config.streamSimple, "function");
 });
 
+test("registers Claude Sonnet 5 as a Claude Code CLI model", () => {
+	const { pi, providers } = makeMockPi();
+	claudeCodeCli(pi as never);
+
+	const models = providers[0].config.models as Array<Record<string, unknown>>;
+	const sonnet5 = models.find((model) => model.id === "claude-sonnet-5");
+
+	assert.ok(sonnet5, "claude-sonnet-5 must be selectable via the claude-code provider");
+	assert.equal(sonnet5.name, "Claude Sonnet 5 (via Claude Code)");
+	assert.equal(sonnet5.reasoning, true);
+	assert.equal(sonnet5.contextWindow, 1_000_000);
+	assert.equal(sonnet5.maxTokens, 128_000);
+});
+
 test("registers a before_provider_request hook to capture the UI context", () => {
 	const { pi, handlers } = makeMockPi();
 	claudeCodeCli(pi as never);

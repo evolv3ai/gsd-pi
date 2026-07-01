@@ -141,12 +141,19 @@ export function clearReservedMilestoneIds(): void {
 
 // ─── Discovery ──────────────────────────────────────────────────────────────
 
-function scanMilestoneIdsFromDir(dir: string): string[] {
+function scanMilestoneIdsFromDir(basePath: string, dir: string): string[] {
+  const legacyNumericIds = idsWithLegacyNumericDirs(basePath);
   return readdirSync(dir, { withFileTypes: true })
     .filter((d) => d.isDirectory())
     .map((d) => {
       // Legacy layout: exact M001 or M001-abcdef directory name
       if (MILESTONE_ID_RE.test(d.name)) {
+        return d.name;
+      }
+      // Legacy recovery/imports may contain bare numeric milestone directories
+      // (for example `milestones/15/15-ROADMAP.md`). The DB can preserve that
+      // id, and rebuild renders it, so drift scans must see it too.
+      if (/^\d+$/.test(d.name)) {
         return d.name;
       }
       // Legacy layout: M001-abcdef-slug descriptor directories
@@ -162,11 +169,33 @@ function scanMilestoneIdsFromDir(dir: string): string[] {
         if (MILESTONE_ID_RE.test(fromSlug)) {
           return fromSlug;
         }
+        const numericId = String(phaseNum);
+        if (legacyNumericIds.has(numericId)) {
+          return numericId;
+        }
         return `M${String(phaseNum).padStart(3, "0")}`;
       }
       return null;
     })
     .filter((id): id is string => id !== null);
+}
+
+function idsWithLegacyNumericDirs(basePath: string): Set<string> {
+  const legacyDir = join(gsdProjectionRoot(basePath), "milestones");
+  const ids = new Set<string>();
+  try {
+    for (const entry of readdirSync(legacyDir, { withFileTypes: true })) {
+      if (entry.isDirectory() && /^\d+$/.test(entry.name)) ids.add(entry.name);
+    }
+  } catch (err) {
+    // A missing legacy directory is the common, benign case (nothing to
+    // consult). Only surface a real failure when the directory exists but
+    // could not be read.
+    if (existsSync(legacyDir)) {
+      logWarning("engine", `idsWithLegacyNumericDirs: ${legacyDir} exists but readdirSync failed — ${getErrorMessage(err)}`);
+    }
+  }
+  return ids;
 }
 
 /** Scan the milestones directory and return IDs sorted by queue order (or numeric fallback). */
@@ -181,7 +210,7 @@ export function findMilestoneIds(basePath: string): string[] {
   const ids = new Set<string>();
   for (const dir of dirs) {
     try {
-      for (const id of scanMilestoneIdsFromDir(dir)) ids.add(id);
+      for (const id of scanMilestoneIdsFromDir(basePath, dir)) ids.add(id);
     } catch (err) {
       if (existsSync(dir)) {
         logWarning("engine", `findMilestoneIds: ${dir} exists but readdirSync failed — ${getErrorMessage(err)}`);

@@ -30,6 +30,7 @@ import {
   setSliceSketchFlag,
   transaction,
   getAssessment,
+  getSliceRunUatAssessment,
 } from "./gsd-db.js";
 import { isClosedStatus } from "./status-guards.js";
 import { extractVerdict, isAcceptableUatVerdict } from "./verdict-parser.js";
@@ -113,7 +114,7 @@ import { detectWorktreeName } from "./worktree.js";
 import { probeGitConflictState } from "./git-conflict-state.js";
 import { runTurnGitAction } from "./git-service.js";
 import { parseUnitId } from "./unit-id.js";
-import { resolveExpectedArtifactPath } from "./auto-artifact-paths.js";
+import { resolveExpectedArtifactPath, resolveExistingSliceResearchPath } from "./auto-artifact-paths.js";
 import {
   formatCloseoutProofBlock,
   proveMilestoneCloseout,
@@ -320,6 +321,19 @@ export async function readUatGateVerdict(
     if (legacyUatVerdict) {
       return { verdict: legacyUatVerdict, uatType };
     }
+  }
+
+  // ADR-017 DB fallback: when the ASSESSMENT markdown is missing or orphaned
+  // from its canonical path (e.g. after a milestone artifact-layout migration
+  // moves slice artifacts from `phases/…` to `milestones/…`), consult the
+  // authoritative assessments table by (mid, slice) identity instead of path.
+  // `gsd_uat_result_save` always writes this row, so it is the source of truth.
+  const runUatAssessment = getSliceRunUatAssessment(mid, sliceId);
+  if (runUatAssessment?.status) {
+    return {
+      verdict: runUatAssessment.status,
+      uatType: uatType ?? extractUatType(runUatAssessment.fullContent),
+    };
   }
 
   return null;
@@ -1142,18 +1156,15 @@ export const DISPATCH_RULES: DispatchRule[] = [
       const dbSlices = getMilestoneSliceSummaries(mid);
       if (dbSlices.length === 0) return null;
 
-      // Find slices that need research (no RESEARCH file, dependencies done)
-      const milestoneResearchFile =
-        resolveExistingExpectedArtifact("research-milestone", mid, basePath) ??
-        resolveMilestoneFile(basePath, mid, "RESEARCH");
+      // Find slices that need research (no RESEARCH file, dependencies done).
+      // Milestone research informs slice research; it does not satisfy the
+      // per-slice RESEARCH artifact contract.
       const researchReadySlices: Array<{ id: string; title: string }> = [];
 
       for (const slice of dbSlices) {
         if (slice.done) continue;
-        // Skip S01 when milestone research exists
-        if (milestoneResearchFile && slice.id === "S01") continue;
         // Skip if already has research
-        if (resolveExistingExpectedArtifact("research-slice", `${mid}/${slice.id}`, basePath)) continue;
+        if (resolveExistingSliceResearchPath(basePath, mid, slice.id)) continue;
         // Skip if dependencies aren't done (check for SUMMARY files)
         const depsComplete = slice.depends.every((depId) =>
           !!resolveExistingExpectedArtifact("complete-slice", `${mid}/${depId}`, basePath),
@@ -1190,7 +1201,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
     },
   },
   {
-    name: "planning (no research, not S01) → research-slice",
+    name: "planning (no research) → research-slice",
     match: async ({ state, mid, midTitle, basePath, prefs }) => {
       if (state.phase !== "planning") return null;
       // Phase skip: skip research when preference or profile says so
@@ -1201,20 +1212,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
       if (!state.activeSlice) return missingSliceStop(mid, state.phase);
       const sid = state.activeSlice!.id;
       const sTitle = state.activeSlice!.title;
-      const researchFile =
-        resolveExistingExpectedArtifact("research-slice", `${mid}/${sid}`, basePath) ??
-        resolveSliceFile(basePath, mid, sid, "RESEARCH");
-      if (researchFile) return null; // has research, fall through
-      // Skip slice research for S01 when milestone research already exists —
-      // the milestone research already covers the same ground for the first slice.
-      const milestoneResearchFile =
-        resolveExistingExpectedArtifact("research-milestone", mid, basePath) ??
-        resolveMilestoneFile(
-          basePath,
-          mid,
-          "RESEARCH",
-        );
-      if (milestoneResearchFile && sid === "S01") return null; // fall through to plan-slice
+      if (resolveExistingSliceResearchPath(basePath, mid, sid)) return null; // has research, fall through
       return {
         action: "dispatch",
         unitType: "research-slice",
@@ -1525,6 +1523,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
       const sid = state.activeSlice!.id;
       const sTitle = state.activeSlice!.title;
       const tid = state.activeTask.id;
+      const unitId = `${mid}/${sid}`;
       const artifactBasePath = resolveArtifactBasePath(basePath, mid, session);
 
       // Guard: if the slice plan exists but the individual task plan files are
@@ -1564,6 +1563,17 @@ export const DISPATCH_RULES: DispatchRule[] = [
         !existsSync(projectionTaskPlanPath) &&
         !tasksEmbeddedInSlicePlan
       ) {
+        const MAX_MISSING_TASK_PLAN_RETRIES = 2;
+        const retryCount = session?.missingTaskPlanRetryCount?.get(unitId) ?? 0;
+        if (retryCount >= MAX_MISSING_TASK_PLAN_RETRIES) {
+          session?.missingTaskPlanRetryCount?.delete(unitId);
+          return {
+            action: "stop",
+            reason: `Missing task-plan recovery failed ${retryCount} times for ${unitId} - manual intervention required. Task plan ${tid} is still missing after regenerating the slice plan. Fix the task-plan files manually, then run /gsd auto to resume.`,
+            level: "error",
+          };
+        }
+        session?.missingTaskPlanRetryCount?.set(unitId, retryCount + 1);
         if (isDebugEnabled()) {
           const expectedTaskPlanPath = join(artifactBasePath, relTaskFile(artifactBasePath, mid, sid, tid, "PLAN"));
           const originalProjectRoot = session?.originalBasePath || basePath;
@@ -1587,7 +1597,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
         return {
           action: "dispatch",
           unitType: "plan-slice",
-          unitId: `${mid}/${sid}`,
+          unitId,
           prompt: await buildPlanSlicePrompt(
             mid,
             midTitle,
@@ -1600,6 +1610,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
         };
       }
 
+      session?.missingTaskPlanRetryCount?.delete(unitId);
       return null;
     },
   },

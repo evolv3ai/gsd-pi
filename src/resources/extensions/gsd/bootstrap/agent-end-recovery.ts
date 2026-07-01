@@ -1,6 +1,8 @@
 // gsd-pi + src/resources/extensions/gsd/bootstrap/agent-end-recovery.ts - Handles provider and agent-end recovery for GSD auto-mode.
 
 import type { ExtensionAPI, ExtensionContext } from "@gsd/pi-coding-agent";
+import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import type { AgentEndEvent, ErrorContext } from "../auto/types.js";
 import { logWarning } from "../workflow-logger.js";
@@ -11,7 +13,7 @@ import {
   maybeHandleEmptyIntentTurn,
   resetEmptyTurnCounter,
 } from "../guided-flow.js";
-import { clearPathCache } from "../paths.js";
+import { clearPathCache, gsdRoot } from "../paths.js";
 import {
   getAutoDashboardData,
   getAutoModeStartModel,
@@ -34,7 +36,7 @@ import { resolveModelId } from "../auto-model-selection.js";
 import { resolveProjectRoot } from "../worktree.js";
 import { clearDiscussionFlowState } from "./write-gate.js";
 import { scheduleFallbackContinuation } from "./fallback-continuation.js";
-import { clearGuidedUnitContext } from "../guided-unit-context.js";
+import { clearGuidedUnitContext, getGuidedUnitContext, type GuidedUnitContext } from "../guided-unit-context.js";
 import { resumeAutoAfterProviderDelay } from "./provider-error-resume.js";
 import {
   classifyError,
@@ -116,9 +118,14 @@ export function isUserInitiatedAbortMessage(message: string | undefined | null):
 export function shouldDeferTransientErrorToCoreRetry(
   cls: ErrorClass,
   rawErrorMsg: string,
+  deferCheckMsg: string = rawErrorMsg,
 ): boolean {
   if (!isTransient(cls) || cls.kind === "rate-limit") return false;
-  return !/retry failed after \d+ attempts:/i.test(rawErrorMsg);
+  // Empty rawErrorMsg means the SDK terminated the session without providing an
+  // error string — core is done, not mid-retry.  GSD must schedule its own
+  // retry rather than silently deferring to a core that has already exited.
+  if (!rawErrorMsg) return false;
+  return !/retry failed after \d+ attempts:/i.test(deferCheckMsg);
 }
 
 type ProviderModelFallbackParams = {
@@ -388,6 +395,108 @@ export function suppressTerminalDeletedWorktreeMessageEnd(event: MessageEndLike)
   return true;
 }
 
+function modelLabel(ctx: ExtensionContext): string {
+  const provider = ctx.model?.provider;
+  const id = ctx.model?.id;
+  return provider && id ? `${provider}/${id}` : "unknown model";
+}
+
+function isFatalManualGuidedTerminalFailure(lastMsg: unknown): boolean {
+  if (!isObjectRecord(lastMsg) || !("stopReason" in lastMsg)) return false;
+  if (lastMsg.stopReason === "error") {
+    const rawErrorMsg = ("errorMessage" in lastMsg && lastMsg.errorMessage) ? String(lastMsg.errorMessage) : "";
+    if (isUserInitiatedAbortMessage(rawErrorMsg)) return false;
+    return true;
+  }
+  if (lastMsg.stopReason !== "aborted") return false;
+
+  const content = "content" in lastMsg ? lastMsg.content : undefined;
+  const hasErrorMessage = "errorMessage" in lastMsg && !!lastMsg.errorMessage;
+  return hasErrorMessage || !_hasEmptyAgentEndContent(content);
+}
+
+function terminalFailureDetail(lastMsg: unknown): string {
+  if (!isObjectRecord(lastMsg)) return "Provider turn ended with an unknown terminal error.";
+  const rawErrorMsg = ("errorMessage" in lastMsg && lastMsg.errorMessage) ? String(lastMsg.errorMessage) : "";
+  const content = "content" in lastMsg ? lastMsg.content : undefined;
+  const displayMsg = resolveAgentEndErrorDisplay(rawErrorMsg, content).replace(/\s+/g, " ").trim();
+  if (displayMsg) return displayMsg.length > 300 ? `${displayMsg.slice(0, 300)}...` : displayMsg;
+  return lastMsg.stopReason === "aborted"
+    ? "Provider turn aborted with error context."
+    : "Provider stream ended with stopReason=error.";
+}
+
+function nextManualActivitySequence(activityDir: string): string {
+  let maxSeq = 0;
+  try {
+    for (const file of readdirSync(activityDir)) {
+      const match = /^(\d+)-/.exec(file);
+      if (match) maxSeq = Math.max(maxSeq, Number.parseInt(match[1]!, 10));
+    }
+  } catch {
+    return "001";
+  }
+  return String(maxSeq + 1).padStart(3, "0");
+}
+
+function writeManualGuidedTerminalErrorActivity(
+  basePath: string,
+  unitType: string,
+  model: string,
+  detail: string,
+  stopReason: unknown,
+): void {
+  const activityDir = join(gsdRoot(basePath), "activity");
+  mkdirSync(activityDir, { recursive: true });
+  const seq = nextManualActivitySequence(activityDir);
+  const safeUnitType = unitType.replace(/[^a-z0-9_.-]+/gi, "-");
+  const markerPath = join(activityDir, `${seq}-${safeUnitType}-manual-terminal-provider-error.jsonl`);
+  const message = `Manual guided ${unitType} turn ended with provider ${String(stopReason)} on ${model}: ${detail}`;
+  writeFileSync(
+    markerPath,
+    JSON.stringify({
+      type: "message",
+      message: {
+        role: "toolResult",
+        toolCallId: "manual-guided-terminal-provider-error",
+        toolName: "provider",
+        isError: true,
+        content: [{ type: "text", text: message }],
+      },
+    }) + "\n",
+    "utf-8",
+  );
+}
+
+function observeManualDiscussTerminalError(
+  ctx: ExtensionContext,
+  lastMsg: unknown,
+  guidedUnit: GuidedUnitContext | null,
+): void {
+  if (!guidedUnit?.unitType.startsWith("discuss-")) return;
+  if (!isFatalManualGuidedTerminalFailure(lastMsg)) return;
+
+  const model = modelLabel(ctx);
+  const detail = terminalFailureDetail(lastMsg);
+  ctx.ui.notify(
+    `Manual /gsd discuss ${guidedUnit.unitType} ended with a provider error on ${model}: ${detail}`,
+    "warning",
+  );
+
+  try {
+    writeManualGuidedTerminalErrorActivity(
+      guidedUnit.basePath,
+      guidedUnit.unitType,
+      model,
+      detail,
+      isObjectRecord(lastMsg) ? lastMsg.stopReason : "unknown",
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logWarning("bootstrap", `Failed to write manual guided terminal-error activity marker: ${message}`);
+  }
+}
+
 async function pauseTransientWithBackoff(
   cls: ErrorClass,
   pi: ExtensionAPI,
@@ -437,7 +546,9 @@ export async function handleAgentEnd(
   // rejected" loop even though the files are on disk.
   clearPathCache();
   const basePath = resolveAgentEndBasePath();
-  clearGuidedUnitContext(basePath);
+  const lastMsg = event.messages[event.messages.length - 1];
+  const guidedUnit = basePath ? getGuidedUnitContext(basePath) ?? getGuidedUnitContext() : getGuidedUnitContext();
+  clearGuidedUnitContext(guidedUnit?.basePath ?? basePath);
 
   try {
     if (await checkDeepProjectSetupAfterTurn(event, ctx, basePath)) {
@@ -466,13 +577,15 @@ export async function handleAgentEnd(
   // discussions (where isAutoActive may be false) still get recovered.
   if (maybeHandleEmptyIntentTurn(event, isAutoActive(), basePath)) return;
 
-  if (!isAutoActive()) return;
+  if (!isAutoActive()) {
+    observeManualDiscussTerminalError(ctx, lastMsg, guidedUnit);
+    return;
+  }
 
   if (shouldIgnoreAgentEndForActiveUnit(event)) {
     return;
   }
 
-  const lastMsg = event.messages[event.messages.length - 1];
   if (isSessionSwitchInFlight()) {
     _handleSessionSwitchAgentEnd(lastMsg, resolveAgentEndCancelled);
     return;
@@ -555,9 +668,9 @@ export async function handleAgentEnd(
       });
       return;
     }
-    // #3588: When errorMessage is uninformative, extract the real error from
-    // the assistant message text content for display purposes only.
-    // Classification still uses rawErrorMsg to avoid false positives from prose.
+    // #3588/#956: When errorMessage is uninformative, extract the real error
+    // from assistant text. Prefer rawErrorMsg for classification to avoid
+    // prose false-positives, but use display text when rawErrorMsg is empty.
     const displayMsg = resolveAgentEndErrorDisplay(
       rawErrorMsg,
       "content" in lastMsg ? lastMsg.content : undefined,
@@ -576,8 +689,8 @@ export async function handleAgentEnd(
     const errorDetail = displayMsg ? `: ${displayMsg}` : "";
     const explicitRetryAfterMs = ("retryAfterMs" in lastMsg && typeof lastMsg.retryAfterMs === "number") ? lastMsg.retryAfterMs : undefined;
 
-    // ── 1. Classify using rawErrorMsg to avoid prose false-positives ────
-    const cls = classifyError(rawErrorMsg, explicitRetryAfterMs);
+    // ── 1. Classify, preserving non-empty errorMessage precedence ──────
+    const cls = classifyError(rawErrorMsg || displayMsg, explicitRetryAfterMs);
 
     // ── 1a. Unsupported-model: provider rejected this model for the current
     //        account/plan at request time (#4513).  Persist a block so the
@@ -655,7 +768,7 @@ export async function handleAgentEnd(
     // Core retries transient failures in-session after this handler.
     // Keep that behavior for non-rate-limit classes to avoid pause/retry races,
     // but let rate-limit continue into model fallback logic below (#4373).
-    if (shouldDeferTransientErrorToCoreRetry(cls, rawErrorMsg)) {
+    if (shouldDeferTransientErrorToCoreRetry(cls, rawErrorMsg, rawErrorMsg || displayMsg)) {
       return;
     }
 

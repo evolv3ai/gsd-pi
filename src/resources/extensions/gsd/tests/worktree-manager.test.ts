@@ -10,8 +10,10 @@ import {
   listWorktrees,
   removeWorktree,
   diffWorktreeGSD,
+  diffWorktreeNumstat,
   getWorktreeGSDDiff,
   getWorktreeLog,
+  mergeWorktreeToMain,
   worktreeBranchName,
   worktreePath,
   pruneEphemeralGhostWorktreeDirectories,
@@ -291,6 +293,31 @@ describe("diffWorktreeGSD and getWorktreeGSDDiff", () => {
   });
 });
 
+describe("worktree diff target branch override", () => {
+  let base: string;
+  beforeEach(() => {
+    const repo = makeRepoWithChanges("feature-x");
+    base = repo.base;
+
+    run("git checkout -b integration main", base);
+    writeFileSync(join(base, "TARGET_ONLY.md"), "target branch only\n", "utf-8");
+    run("git add TARGET_ONLY.md", base);
+    run('git commit -m "chore: target branch only"', base);
+    run("git checkout main", base);
+  });
+  afterEach(() => { rmSync(base, { recursive: true, force: true }); });
+
+  test("uses supplied main branch for merge preview helper overrides", () => {
+    const defaultStats = diffWorktreeNumstat(base, "feature-x", undefined, "main");
+    const overrideStats = diffWorktreeNumstat(base, "feature-x", undefined, "integration");
+    const selfLog = getWorktreeLog(base, "feature-x", worktreeBranchName("feature-x"));
+
+    assert.ok(!defaultStats.some(s => s.file === "TARGET_ONLY.md"), "default main stats should not include target-only file");
+    assert.ok(overrideStats.some(s => s.file === "TARGET_ONLY.md"), "override stats should use the supplied target branch");
+    assert.strictEqual(selfLog, "", "override log should use the supplied branch");
+  });
+});
+
 // ─── getWorktreeLog ───────────────────────────────────────────────────────────
 
 describe("getWorktreeLog", () => {
@@ -304,6 +331,44 @@ describe("getWorktreeLog", () => {
   test("shows commits", () => {
     const log = getWorktreeLog(base, "feature-x");
     assert.ok(log.includes("add M002"), "log should include the commit message");
+  });
+});
+
+// ─── mergeWorktreeToMain ─────────────────────────────────────────────────────
+
+describe("mergeWorktreeToMain", () => {
+  let base: string;
+  let wtPath: string;
+
+  beforeEach(() => {
+    base = makeBaseRepo();
+    wtPath = worktreePath(base, "M900");
+    mkdirSync(join(base, ".gsd-worktrees"), { recursive: true });
+    run(`git worktree add -b milestone/M900 "${wtPath}"`, base);
+  });
+
+  afterEach(() => { rmSync(base, { recursive: true, force: true }); });
+
+  test("cleans failed milestone squash state and deletes orphan branch", () => {
+    writeFileSync(join(wtPath, "README.md"), "# Milestone change\n", "utf-8");
+    run("git add README.md", wtPath);
+    run('git commit -m "feat: milestone change"', wtPath);
+
+    writeFileSync(join(base, "README.md"), "# Main change\n", "utf-8");
+    run("git add README.md", base);
+    run('git commit -m "feat: main change"', base);
+
+    assert.throws(
+      () => mergeWorktreeToMain(base, "M900", "feat: merge M900", "milestone/M900"),
+      /Merge conflicts detected/,
+    );
+
+    assert.equal(run("git status --porcelain", base), "", "failed squash cleanup should leave main clean");
+    assert.ok(!existsSync(wtPath), "failed milestone worktree should be removed");
+    assert.ok(
+      !run("git branch", base).includes("milestone/M900"),
+      "failed milestone branch should be deleted after worktree removal",
+    );
   });
 });
 

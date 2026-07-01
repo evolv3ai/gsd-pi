@@ -28,6 +28,7 @@ import {
 import { rowToGate } from "../db-gate-rows.js";
 import { rowToArtifact, rowToMilestone, type ArtifactRow, type MilestoneRow } from "../db-milestone-artifact-rows.js";
 import { rowToSlice, rowToTask, type SliceRow, type TaskRow } from "../db-task-slice-rows.js";
+import { TERMINAL_STATUS_SQL } from "./sql-constants.js";
 
 
 function parseStringArrayColumn(raw: unknown): string[] {
@@ -47,6 +48,59 @@ function parseStringArrayColumn(raw: unknown): string[] {
 
 function normalizeRepoPath(file: string): string {
   return file.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+}
+
+export interface HierarchyCompletionCounts {
+  milestones: number;
+  milestonesTotal: number;
+  slices: number;
+  slicesTotal: number;
+  tasks: number;
+  tasksTotal: number;
+}
+
+function numberColumn(row: Record<string, unknown> | undefined, column: string): number {
+  const value = row?.[column];
+  if (typeof value === "number") return value;
+  if (typeof value === "bigint") return Number(value);
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
+function getCompletionCount(table: "milestones" | "slices" | "tasks"): { completed: number; total: number } {
+  const row = getDbOrNull()!.prepare(
+    `SELECT
+       COUNT(*) AS total,
+       COALESCE(SUM(CASE WHEN status IN (${TERMINAL_STATUS_SQL}) THEN 1 ELSE 0 END), 0) AS completed
+     FROM ${table}`,
+  ).get();
+
+  return {
+    completed: numberColumn(row, "completed"),
+    total: numberColumn(row, "total"),
+  };
+}
+
+export function getHierarchyCompletionCounts(): HierarchyCompletionCounts {
+  if (!getDbOrNull()!) {
+    return { milestones: 0, milestonesTotal: 0, slices: 0, slicesTotal: 0, tasks: 0, tasksTotal: 0 };
+  }
+
+  const milestones = getCompletionCount("milestones");
+  const slices = getCompletionCount("slices");
+  const tasks = getCompletionCount("tasks");
+
+  return {
+    milestones: milestones.completed,
+    milestonesTotal: milestones.total,
+    slices: slices.completed,
+    slicesTotal: slices.total,
+    tasks: tasks.completed,
+    tasksTotal: tasks.total,
+  };
 }
 
 export function getDecisionById(id: string): Decision | null {
@@ -270,6 +324,66 @@ export function getMilestoneSlices(milestoneId: string): SliceRow[] {
   return rows.map(rowToSlice);
 }
 
+export interface ParallelMonitorSliceProgress {
+  id: string;
+  status: string;
+  total: number;
+  done: number;
+}
+
+export function getParallelMonitorSliceProgress(milestoneId: string): ParallelMonitorSliceProgress[] {
+  const db = getDbOrNull();
+  if (!db) return [];
+  const rows = db.prepare(
+    `SELECT
+       s.id AS id,
+       s.status AS status,
+       COUNT(t.id) AS total,
+       COALESCE(SUM(CASE WHEN t.status='complete' THEN 1 ELSE 0 END), 0) AS done
+     FROM slices s
+     LEFT JOIN tasks t ON s.milestone_id=t.milestone_id AND s.id=t.slice_id
+     WHERE s.milestone_id=:mid
+     GROUP BY s.id
+     ORDER BY s.id`,
+  ).all({ ":mid": milestoneId });
+  return rows.map((row) => ({
+    id: String(row["id"] ?? ""),
+    status: String(row["status"] ?? ""),
+    total: Number(row["total"] ?? 0),
+    done: Number(row["done"] ?? 0),
+  }));
+}
+
+export interface ParallelMonitorCompletion {
+  taskId: string;
+  sliceId: string;
+  oneLiner: string;
+}
+
+export function getParallelMonitorRecentCompletions(
+  milestoneId: string,
+  limit: number = 5,
+): ParallelMonitorCompletion[] {
+  const db = getDbOrNull();
+  if (!db) return [];
+  const numericLimit = Number.isFinite(limit) ? Math.floor(limit) : 5;
+  const safeLimit = Math.max(1, Math.min(50, numericLimit));
+  const rows = db.prepare(
+    `SELECT id, slice_id, one_liner
+     FROM tasks
+     WHERE milestone_id=:mid
+       AND status='complete'
+       AND completed_at IS NOT NULL
+     ORDER BY completed_at DESC
+     LIMIT ${safeLimit}`,
+  ).all({ ":mid": milestoneId });
+  return rows.map((row) => ({
+    taskId: String(row["id"] ?? ""),
+    sliceId: String(row["slice_id"] ?? ""),
+    oneLiner: String(row["one_liner"] ?? ""),
+  }));
+}
+
 /**
  * Load slices for many milestones in a single query. Returns a Map keyed by
  * milestone_id, preserving `ORDER BY sequence, id` within each bucket.
@@ -351,6 +465,15 @@ export function getMilestoneScopedArtifacts(milestoneId: string): ArtifactRow[] 
   return rows.map(rowToArtifact);
 }
 
+/** Slice-level artifacts (CONTEXT, RESEARCH, CONTINUE, etc.) from the artifacts table. */
+export function getSliceScopedArtifacts(milestoneId: string, sliceId: string): ArtifactRow[] {
+  if (!getDbOrNull()!) return [];
+  const rows = getDbOrNull()!.prepare(
+    "SELECT * FROM artifacts WHERE milestone_id = :mid AND slice_id = :sid AND task_id IS NULL ORDER BY path",
+  ).all({ ":mid": milestoneId, ":sid": sliceId });
+  return rows.map(rowToArtifact);
+}
+
 /** Fast milestone status check — avoids deserializing JSON planning fields. */
 export function getActiveMilestoneIdFromDb(): IdStatusSummary | null {
   if (!getDbOrNull()!) return null;
@@ -419,6 +542,31 @@ export function getAssessment(path: string): Record<string, unknown> | null {
     `SELECT * FROM assessments WHERE path = :path`,
   ).get({ ":path": path });
   return row ?? null;
+}
+
+/**
+ * Look up a slice's `run-uat` assessment by (milestoneId, sliceId) identity,
+ * independent of the artifact `path`. Used as a DB fallback by the UAT
+ * closeout gate when a path migration orphans the ASSESSMENT markdown from its
+ * canonical expected path (ADR-017: DB-authoritative UAT sign-off).
+ *
+ * `status` holds the normalized verdict (`pass`/`fail`/…) written by
+ * `executeUatResultSave`; `fullContent` carries the ASSESSMENT body so callers
+ * can derive `uatType` without re-reading a file that may not exist.
+ */
+export function getSliceRunUatAssessment(
+  milestoneId: string,
+  sliceId: string,
+): { status: string; fullContent: string } | null {
+  if (!getDbOrNull()!) return null;
+  const row = getDbOrNull()!.prepare(
+    `SELECT status, full_content AS fullContent FROM assessments
+      WHERE milestone_id = :mid AND slice_id = :sid AND scope = 'run-uat'
+      ORDER BY created_at DESC, ROWID DESC
+      LIMIT 1`,
+  ).get({ ":mid": milestoneId, ":sid": sliceId });
+  if (!row) return null;
+  return { status: String(row["status"] ?? ""), fullContent: String(row["fullContent"] ?? "") };
 }
 
 export function getLatestAssessmentByScope(

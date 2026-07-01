@@ -20,6 +20,7 @@ import { tmpdir } from "node:os";
 
 import {
   runProviderChecks,
+  runProviderChecksAsync,
   formatProviderReport,
   summariseProviderIssues,
   type ProviderCheckResult,
@@ -47,6 +48,26 @@ function withEnv(vars: Record<string, string | undefined>, fn: () => void): void
   }
 }
 
+async function withEnvAsync(vars: Record<string, string | undefined>, fn: () => Promise<void>): Promise<void> {
+  const saved: Record<string, string | undefined> = {};
+  for (const [k, v] of Object.entries(vars)) {
+    saved[k] = process.env[k];
+    if (v === undefined) {
+      delete process.env[k];
+    } else {
+      process.env[k] = v;
+    }
+  }
+  try {
+    await fn();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
 function withCwd(nextCwd: string, fn: () => void): void {
   const saved = process.cwd();
   process.chdir(nextCwd);
@@ -55,6 +76,22 @@ function withCwd(nextCwd: string, fn: () => void): void {
   } finally {
     process.chdir(saved);
   }
+}
+
+async function withCwdAsync(nextCwd: string, fn: () => Promise<void>): Promise<void> {
+  const saved = process.cwd();
+  process.chdir(nextCwd);
+  try {
+    await fn();
+  } finally {
+    process.chdir(saved);
+  }
+}
+
+function normalizeProviderResults(results: ProviderCheckResult[]): string[] {
+  return results
+    .map(r => `${r.name}|${r.label}|${r.category}|${r.status}|${r.message}|${r.detail ?? ""}|${r.required}`)
+    .sort();
 }
 
 const PRESENT_TEST_VALUE = "configured";
@@ -375,6 +412,76 @@ test("runProviderChecks detects custom provider keys from models.json", () => {
 
   rmSync(repo, { recursive: true, force: true });
   rmSync(tmpHome, { recursive: true, force: true });
+});
+
+test("runProviderChecksAsync matches sync for models.json keys and PATH CLI checks", async () => {
+  const tmpHome = realpathSync(mkdtempSync(join(tmpdir(), "gsd-providers-async-home-")));
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "gsd-providers-async-repo-")));
+  const agentDir = join(tmpHome, ".gsd", "agent");
+  const binDir = join(tmpHome, "bin");
+  mkdirSync(agentDir, { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  mkdirSync(join(repo, ".gsd"), { recursive: true });
+
+  writeFileSync(
+    join(repo, ".gsd", "PREFERENCES.md"),
+    [
+      "---",
+      "models:",
+      "  execution:",
+      "    model: custom-model",
+      "    provider: custom-provider",
+      "  validation:",
+      "    model: gemini-2.5-pro",
+      "    provider: google-gemini-cli",
+      "---",
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(join(agentDir, "models.json"), JSON.stringify({
+    providers: {
+      "custom-provider": {
+        api: "openai-completions",
+        apiKey: "x",
+        baseUrl: "https://example.invalid/v1",
+        models: [{ id: "custom-model", name: "Custom Model" }],
+      },
+    },
+  }));
+
+  const fakeGemini = join(binDir, "gemini");
+  writeFileSync(fakeGemini, "#!/bin/sh\necho mock\n");
+  chmodSync(fakeGemini, 0o755);
+
+  try {
+    await withEnvAsync({
+      HOME: tmpHome,
+      CUSTOM_PROVIDER_API_KEY: undefined,
+      GEMINI_API_KEY: undefined,
+      GOOGLE_API_KEY: undefined,
+      PATH: binDir,
+    }, async () => {
+      await withCwdAsync(repo, async () => {
+        const syncResults = runProviderChecks();
+        const asyncResults = await runProviderChecksAsync();
+
+        assert.deepEqual(normalizeProviderResults(asyncResults), normalizeProviderResults(syncResults));
+        assert.equal(
+          asyncResults.find(r => r.name === "custom-provider")?.status,
+          "ok",
+          "models.json apiKey should satisfy custom provider auth",
+        );
+        assert.equal(
+          asyncResults.find(r => r.name === "google-gemini-cli")?.status,
+          "ok",
+          "gemini CLI binary should satisfy explicit CLI provider",
+        );
+      });
+    });
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(tmpHome, { recursive: true, force: true });
+  }
 });
 
 test("runProviderChecks reports missing custom provider key without models.json apiKey", () => {

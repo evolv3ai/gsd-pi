@@ -7,7 +7,10 @@ import {
   existsSync,
   mkdirSync,
   realpathSync,
+  readFileSync,
 } from "node:fs";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
@@ -112,6 +115,60 @@ describe("migrate-external worktree guard (#2970)", () => {
       assert.equal(result.migrated, true, "should migrate on main repo");
     } finally {
       rmSync(mainBase, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("migrateToExternalState copy failure rollback (#1047)", () => {
+  test("restores .gsd when a source entry fails to copy", () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "gsd-migrate-copy-fail-")));
+    const stateDir = realpathSync(mkdtempSync(join(tmpdir(), "gsd-state-copy-fail-")));
+    const previousStateDir = process.env.GSD_STATE_DIR;
+    const previousProjectId = process.env.GSD_PROJECT_ID;
+    const originalCpSync = fs.cpSync;
+    process.env.GSD_STATE_DIR = stateDir;
+    process.env.GSD_PROJECT_ID = "copy-fail";
+
+    try {
+      run("git init -b main", base);
+      mkdirSync(join(base, ".gsd"), { recursive: true });
+      writeFileSync(join(base, ".gsd", "PREFERENCES.md"), "# prefs\n", "utf-8");
+      writeFileSync(join(base, ".gsd", "gsd.db"), "state", "utf-8");
+      const failingSource = join(base, ".gsd.migrating", "gsd.db");
+      fs.cpSync = ((...args: Parameters<typeof fs.cpSync>) => {
+        const src = args[0];
+        if (String(src) === failingSource) {
+          const error = new Error("simulated copy failure") as NodeJS.ErrnoException;
+          error.code = "EACCES";
+          throw error;
+        }
+        return originalCpSync(...args);
+      }) as typeof fs.cpSync;
+      syncBuiltinESMExports();
+
+      const result = migrateToExternalState(base);
+
+      assert.equal(result.migrated, false, "copy failure must fail the migration");
+      assert.match(result.error ?? "", /Migration copy failed/);
+      assert.ok(existsSync(join(base, ".gsd", "gsd.db")), "source .gsd must be restored");
+      assert.equal(readFileSync(join(base, ".gsd", "PREFERENCES.md"), "utf-8"), "# prefs\n");
+      assert.ok(!existsSync(join(base, ".gsd.migrating")), "backup staging dir must not remain after restore");
+      assert.ok(!existsSync(join(stateDir, "projects", "copy-fail", "gsd.db")), "failed file must not be reported as migrated");
+    } finally {
+      fs.cpSync = originalCpSync;
+      syncBuiltinESMExports();
+      if (previousStateDir === undefined) {
+        delete process.env.GSD_STATE_DIR;
+      } else {
+        process.env.GSD_STATE_DIR = previousStateDir;
+      }
+      if (previousProjectId === undefined) {
+        delete process.env.GSD_PROJECT_ID;
+      } else {
+        process.env.GSD_PROJECT_ID = previousProjectId;
+      }
+      rmSync(base, { recursive: true, force: true });
+      rmSync(stateDir, { recursive: true, force: true });
     }
   });
 });

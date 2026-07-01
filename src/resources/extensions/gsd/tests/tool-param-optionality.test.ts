@@ -13,6 +13,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { SUMMARY_SAVE_CONTENT_MAX_LENGTH } from "@opengsd/contracts";
 import { registerDbTools } from "../bootstrap/db-tools.ts";
 import AjvModule from "ajv";
 
@@ -84,6 +85,31 @@ test("gsd_summary_save — validates UAT assessment params", () => {
   });
 
   assert.strictEqual(valid, true, `UAT assessment params should validate but got errors: ${JSON.stringify(validate.errors)}`);
+});
+
+test("gsd_summary_save — content has a provider-safe maxLength", () => {
+  const tool = getTool("gsd_summary_save");
+  assert.ok(tool, "gsd_summary_save must be registered");
+
+  const contentSchema = tool.parameters.properties.content;
+  assert.strictEqual(contentSchema.maxLength, SUMMARY_SAVE_CONTENT_MAX_LENGTH);
+
+  const validAtLimit = validateSchema(tool, {
+    milestone_id: "M001",
+    artifact_type: "CONTEXT-DRAFT",
+    content: "x".repeat(SUMMARY_SAVE_CONTENT_MAX_LENGTH),
+  });
+  assert.deepEqual(validAtLimit, []);
+
+  const overLimit = validateSchema(tool, {
+    milestone_id: "M001",
+    artifact_type: "CONTEXT-DRAFT",
+    content: "x".repeat(SUMMARY_SAVE_CONTENT_MAX_LENGTH + 1),
+  });
+  assert.ok(
+    overLimit.some((error) => error.includes(`must NOT have more than ${SUMMARY_SAVE_CONTENT_MAX_LENGTH} characters`)),
+    `expected maxLength validation error, got: ${overLimit.join("; ")}`,
+  );
 });
 
 // ─── gsd_slice_complete: enrichment arrays must be optional ──────────────────
@@ -359,14 +385,17 @@ test("gsd_plan_slice — enrichment fields are optional", () => {
 
   const required = new Set(getRequiredProps(tool));
 
-  // Core fields
-  const coreRequired = ["milestoneId", "sliceId", "goal", "tasks"];
+  // Core fields. `tasks` is intentionally NOT here: incremental planning
+  // (#1027) lets gsd_plan_slice persist slice metadata only, then add tasks
+  // one at a time via gsd_plan_task, so tasks must be optional.
+  const coreRequired = ["milestoneId", "sliceId", "goal"];
   for (const field of coreRequired) {
     assert.ok(required.has(field), `core field "${field}" must be required`);
   }
 
-  // Enrichment fields
+  // Enrichment fields (plus tasks, optional for incremental planning).
   const enrichmentFields = [
+    "tasks",
     "successCriteria",
     "proofLevel",
     "integrationClosure",

@@ -29,21 +29,22 @@ test("#2007 bug 1: MAX_ARTIFACT_VERIFICATION_RETRIES constant is defined", () =>
   assert.equal(MAX_ARTIFACT_VERIFICATION_RETRIES, 3);
 });
 
-test("#2007 bug 1: retry state can represent each allowed attempt before exhaustion", () => {
+test("#2007 bug 1: retry state keeps attempt separate from failure context", () => {
   const s = new AutoSession();
   const retryKey = "execute-task:M001/S01/T01";
+  const failureContext = "Missing expected artifact";
 
   for (let attempt = 1; attempt <= MAX_ARTIFACT_VERIFICATION_RETRIES; attempt++) {
     s.verificationRetryCount.set(retryKey, attempt);
     s.pendingVerificationRetry = {
       unitId: "M001/S01/T01",
-      failureContext: `Missing expected artifact (attempt ${attempt}/${MAX_ARTIFACT_VERIFICATION_RETRIES}).`,
+      failureContext,
       attempt,
     };
 
     assert.equal(s.verificationRetryCount.get(retryKey), attempt);
     assert.equal(s.pendingVerificationRetry.attempt, attempt);
-    assert.match(s.pendingVerificationRetry.failureContext, /attempt \d\/3/);
+    assert.equal(s.pendingVerificationRetry.failureContext, failureContext);
   }
 });
 

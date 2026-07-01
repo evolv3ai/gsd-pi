@@ -97,8 +97,19 @@ function createEmptyWriteGateState(): InMemoryWriteGateState {
 
 const writeGateStatesByBasePath = new Map<string, InMemoryWriteGateState>();
 
+/**
+ * Write-gate snapshots are project-scoped, not worktree-scoped. When auto-mode
+ * routes MCP tool writes to `.gsd-worktrees/<MID>/`, depth verification still
+ * lands in the authoritative project `.gsd/runtime/` tree (or external-state
+ * symlink target). Without this canonicalization, `loadWriteGateSnapshot(worktree)`
+ * sees an empty snapshot and CONTEXT saves loop forever (#M020 gate loop).
+ */
+function resolveWriteGateSnapshotRoot(basePath: string): string {
+  return resolve(resolveWorktreeProjectRoot(basePath));
+}
+
 function writeGateStateKey(basePath: string): string {
-  return resolve(basePath);
+  return resolveWriteGateSnapshotRoot(basePath);
 }
 
 function getWriteGateState(basePath: string = process.cwd()): InMemoryWriteGateState {
@@ -161,17 +172,18 @@ function shouldPersistWriteGateSnapshot(env: NodeJS.ProcessEnv = process.env): b
 }
 
 function writeGateSnapshotPath(basePath: string): string {
-  return join(basePath, ".gsd", "runtime", "write-gate-state.json");
+  return join(resolveWriteGateSnapshotRoot(basePath), ".gsd", "runtime", "write-gate-state.json");
 }
 
 function ensureWriteGateSnapshotDirectory(basePath: string): void {
-  const gsdPath = join(basePath, ".gsd");
+  const snapshotRoot = resolveWriteGateSnapshotRoot(basePath);
+  const gsdPath = join(snapshotRoot, ".gsd");
   if (!existsSync(gsdPath)) {
     try {
       const stat = lstatSync(gsdPath);
       if (stat.isSymbolicLink()) {
         const target = readlinkSync(gsdPath);
-        mkdirSync(isAbsolute(target) ? target : resolve(basePath, target), { recursive: true });
+        mkdirSync(isAbsolute(target) ? target : resolve(snapshotRoot, target), { recursive: true });
       }
     } catch {
       // If .gsd truly does not exist, the runtime mkdir below will create it.
@@ -180,7 +192,7 @@ function ensureWriteGateSnapshotDirectory(basePath: string): void {
   mkdirSync(join(gsdPath, "runtime"), { recursive: true });
 }
 
-function currentWriteGateSnapshot(basePath: string = process.cwd()): WriteGateSnapshot {
+export function currentWriteGateSnapshot(basePath: string = process.cwd()): WriteGateSnapshot {
   const state = getWriteGateState(basePath);
   return {
     verifiedDepthMilestones: [...state.verifiedDepthMilestones].sort(),

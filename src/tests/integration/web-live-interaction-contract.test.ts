@@ -13,6 +13,13 @@ const onboarding = await import("../../web/onboarding-service.ts");
 const { AuthStorage } = await import("@gsd/pi-coding-agent");
 const commandRoute = await import("../../../web/app/api/session/command/route.ts");
 const eventsRoute = await import("../../../web/app/api/session/events/route.ts");
+const {
+  applyTextDelta,
+  completeTurn,
+  createInitialTranscriptState,
+  getFlatTranscript,
+  pickTranscriptState,
+} = await import("../../../web/lib/transcript-store.ts");
 
 // ---------------------------------------------------------------------------
 // Test infrastructure (reused from web-bridge-contract.test.ts)
@@ -272,8 +279,11 @@ async function readSseEvents(response: Response, count: number): Promise<any[]> 
 
 interface MinimalLiveState {
   pendingUiRequests: any[];
+  completedTurns: ReturnType<typeof createInitialTranscriptState>["completedTurns"];
+  pendingUserMessage: ReturnType<typeof createInitialTranscriptState>["pendingUserMessage"];
+  currentTurnSegments: ReturnType<typeof createInitialTranscriptState>["currentTurnSegments"];
   streamingAssistantText: string;
-  liveTranscript: string[];
+  streamingThinkingText: string;
   activeToolExecution: { id: string; name: string } | null;
   statusTexts: Record<string, string>;
   widgetContents: Record<string, { lines: string[] | undefined; placement?: string }>;
@@ -282,15 +292,34 @@ interface MinimalLiveState {
 }
 
 function createMinimalLiveState(): MinimalLiveState {
+  const transcript = createInitialTranscriptState();
   return {
     pendingUiRequests: [],
-    streamingAssistantText: "",
-    liveTranscript: [],
+    completedTurns: transcript.completedTurns,
+    pendingUserMessage: transcript.pendingUserMessage,
+    currentTurnSegments: transcript.currentTurnSegments,
+    streamingAssistantText: transcript.streamingAssistantText,
+    streamingThinkingText: transcript.streamingThinkingText,
     activeToolExecution: null,
     statusTexts: {},
     widgetContents: {},
     titleOverride: null,
     editorTextBuffer: null,
+  };
+}
+
+function patchMinimalTranscript(
+  state: MinimalLiveState,
+  updater: (transcript: ReturnType<typeof pickTranscriptState>) => ReturnType<typeof pickTranscriptState>,
+): MinimalLiveState {
+  const next = updater(pickTranscriptState(state));
+  return {
+    ...state,
+    completedTurns: next.completedTurns,
+    pendingUserMessage: next.pendingUserMessage,
+    currentTurnSegments: next.currentTurnSegments,
+    streamingAssistantText: next.streamingAssistantText,
+    streamingThinkingText: next.streamingThinkingText,
   };
 }
 
@@ -344,17 +373,13 @@ function routeEvent(state: MinimalLiveState, event: any): MinimalLiveState {
     case "message_update": {
       const ae = event.assistantMessageEvent;
       if (ae && ae.type === "text_delta" && typeof ae.delta === "string") {
-        s.streamingAssistantText = s.streamingAssistantText + ae.delta;
+        return patchMinimalTranscript(s, (transcript) => applyTextDelta(transcript, ae.delta));
       }
       break;
     }
     case "agent_end":
     case "turn_end": {
-      if (s.streamingAssistantText.length > 0) {
-        s.liveTranscript = [...s.liveTranscript, s.streamingAssistantText];
-        s.streamingAssistantText = "";
-      }
-      break;
+      return patchMinimalTranscript(s, (transcript) => completeTurn(transcript));
     }
     case "tool_execution_start": {
       s.activeToolExecution = { id: event.toolCallId, name: event.toolName };
@@ -662,13 +687,13 @@ test("(f) agent_end moves streaming text to transcript and resets streaming text
     assistantMessageEvent: { type: "text_delta", delta: "First turn output" },
   });
   assert.equal(state.streamingAssistantText, "First turn output");
-  assert.equal(state.liveTranscript.length, 0);
+  assert.equal(getFlatTranscript(state.completedTurns).length, 0);
 
   // Agent end → moves to transcript
   state = routeEvent(state, { type: "agent_end" });
   assert.equal(state.streamingAssistantText, "");
-  assert.equal(state.liveTranscript.length, 1);
-  assert.equal(state.liveTranscript[0], "First turn output");
+  assert.equal(getFlatTranscript(state.completedTurns).length, 1);
+  assert.equal(getFlatTranscript(state.completedTurns)[0], "First turn output");
 
   // Second turn
   state = routeEvent(state, {
@@ -677,12 +702,12 @@ test("(f) agent_end moves streaming text to transcript and resets streaming text
   });
   state = routeEvent(state, { type: "turn_end" });
   assert.equal(state.streamingAssistantText, "");
-  assert.equal(state.liveTranscript.length, 2);
-  assert.equal(state.liveTranscript[1], "Second turn");
+  assert.equal(getFlatTranscript(state.completedTurns).length, 2);
+  assert.equal(getFlatTranscript(state.completedTurns)[1], "Second turn");
 
   // Agent end with no streaming text → no empty transcript entry
   state = routeEvent(state, { type: "agent_end" });
-  assert.equal(state.liveTranscript.length, 2);
+  assert.equal(getFlatTranscript(state.completedTurns).length, 2);
 });
 
 test("(g) setStatus/setWidget/setTitle/set_editor_text fire-and-forget events update correct store state", async () => {
@@ -850,7 +875,7 @@ test("(g-3) tool_execution_start clears provisional streaming text so only post-
   });
   state = routeEvent(state, { type: "turn_end" });
 
-  assert.deepEqual(state.liveTranscript, [
+  assert.deepEqual(getFlatTranscript(state.completedTurns), [
     "What are you working on? Once you answer I'll tailor my approach accordingly.",
   ]);
 });

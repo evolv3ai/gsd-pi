@@ -223,11 +223,21 @@ export function extractTrace(entries: unknown[]): ExecutionTrace {
 
   // Flush any pending tool calls that never got results (crash mid-tool)
   for (const [, pending] of pendingTools) {
+    const missingResultError = `Tool call ${pending.name} started but no toolResult was recorded`;
     toolCalls.push({
       name: pending.name,
       input: redactInput(pending.name, pending.input),
-      isError: false,
+      result: "missing tool result (stream/tool-call abort before execution)",
+      isError: true,
     });
+    errors.push(missingResultError);
+
+    // Mark the matching commandsRun entry as failed so it is consistent with
+    // the isError: true on the tool call above (bash/bg_shell only).
+    if (pending.name === "bash" || pending.name === "bg_shell") {
+      const lastCmd = findLast(commandsRun, c => c.command === String(pending.input.command));
+      if (lastCmd) lastCmd.failed = true;
+    }
   }
 
   return {

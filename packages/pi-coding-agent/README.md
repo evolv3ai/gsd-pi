@@ -436,7 +436,8 @@ See [docs/packages.md](docs/packages.md).
 ### SDK
 
 ```typescript
-import { AuthStorage, createAgentSession, ModelRegistry, SessionManager } from "@earendil-works/pi-coding-agent";
+import { AuthStorage, ModelRegistry, SessionManager } from "@earendil-works/pi-coding-agent";
+import { createAgentSession } from "@gsd/agent-core";
 
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
@@ -449,7 +450,7 @@ const { session } = await createAgentSession({
 await session.prompt("What files are in the current directory?");
 ```
 
-For advanced multi-session runtime replacement, use `createAgentSessionRuntime()` and `AgentSessionRuntime`.
+For advanced multi-session runtime replacement, use `createAgentSessionRuntime()` and `AgentSessionRuntime`. `SessionManager` remains the JSONL persistence handle; `createAgentSession()` creates the in-memory agent runtime that references it.
 
 See [docs/sdk.md](docs/sdk.md) and [examples/sdk/](examples/sdk/).
 

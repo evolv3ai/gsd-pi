@@ -6,11 +6,16 @@ import type {
   LiveStateInvalidationSource,
   WorkspaceBootPayload,
   WorkspaceFreshnessBucket,
+  WorkspaceFreshnessStatus,
   WorkspaceLiveFreshnessState,
   WorkspaceLiveState,
   WorkspaceStoreState,
 } from "./gsd-workspace-store"
 import type { WorkspaceIndex } from "../../src/shared/workspace-types.ts"
+
+export type EntitySlice<T> = WorkspaceFreshnessBucket & {
+  data: T | null
+}
 
 export function createFreshnessBucket(): WorkspaceFreshnessBucket {
   return {
@@ -25,6 +30,59 @@ export function createFreshnessBucket(): WorkspaceFreshnessBucket {
     invalidationReason: null,
     invalidationSource: null,
   }
+}
+
+export function createEntitySlice<T>(data: T | null = null): EntitySlice<T> {
+  return {
+    data,
+    ...createFreshnessBucket(),
+  }
+}
+
+export function withEntitySliceRequested<T>(slice: EntitySlice<T>): EntitySlice<T> {
+  return {
+    ...withFreshnessRequested(slice),
+    data: slice.data,
+  }
+}
+
+export function withEntitySliceInvalidated<T>(
+  slice: EntitySlice<T>,
+  reason: LiveStateInvalidationReason,
+  source: LiveStateInvalidationSource,
+): EntitySlice<T> {
+  return {
+    ...withFreshnessInvalidated(slice, reason, source),
+    data: slice.data,
+  }
+}
+
+export function withEntitySliceSucceeded<T>(slice: EntitySlice<T>, data?: T): EntitySlice<T> {
+  return {
+    ...withFreshnessSucceeded(slice),
+    data: data !== undefined ? data : slice.data,
+  }
+}
+
+export function withEntitySliceFailed<T>(slice: EntitySlice<T>, error: string): EntitySlice<T> {
+  return {
+    ...withFreshnessFailed(slice, error),
+    data: slice.data,
+  }
+}
+
+export function resolveWorkspaceIndex(state: Pick<WorkspaceStoreState, "boot" | "live">): WorkspaceIndex | null {
+  return state.live.workspace.data ?? state.boot?.workspace ?? null
+}
+
+export function resolveAutoDashboard(state: Pick<WorkspaceStoreState, "boot" | "live">): AutoDashboardData | null {
+  return state.live.auto.data ?? state.boot?.auto ?? null
+}
+
+export function resolveResumableSessions(state: Pick<WorkspaceStoreState, "boot" | "live">): BootResumableSession[] {
+  const liveSessions = state.live.resumableSessions.data
+  if (liveSessions && liveSessions.length > 0) return liveSessions
+  return state.boot?.resumableSessions ?? []
 }
 
 export function createInitialRecoverySummary(): WorkspaceRecoverySummary {
@@ -47,10 +105,7 @@ export function createInitialRecoverySummary(): WorkspaceRecoverySummary {
 
 export function createInitialWorkspaceLiveFreshnessState(): WorkspaceLiveFreshnessState {
   return {
-    auto: createFreshnessBucket(),
-    workspace: createFreshnessBucket(),
     recovery: createFreshnessBucket(),
-    resumableSessions: createFreshnessBucket(),
     gitSummary: createFreshnessBucket(),
     sessionBrowser: createFreshnessBucket(),
     sessionStats: createFreshnessBucket(),
@@ -59,9 +114,9 @@ export function createInitialWorkspaceLiveFreshnessState(): WorkspaceLiveFreshne
 
 export function createInitialWorkspaceLiveState(): WorkspaceLiveState {
   return {
-    auto: null,
-    workspace: null,
-    resumableSessions: [],
+    auto: createEntitySlice<AutoDashboardData>(),
+    workspace: createEntitySlice<WorkspaceIndex>(),
+    resumableSessions: createEntitySlice<BootResumableSession[]>([]),
     recoverySummary: createInitialRecoverySummary(),
     freshness: createInitialWorkspaceLiveFreshnessState(),
     softBootRefreshCount: 0,
@@ -115,35 +170,17 @@ export function withFreshnessFailed(bucket: WorkspaceFreshnessBucket, error: str
   }
 }
 
-export function getLiveWorkspaceIndex(
-  state: Pick<WorkspaceStoreState, "boot" | "live">,
-): WorkspaceIndex | null {
-  return state.live.workspace ?? state.boot?.workspace ?? null
-}
-
-export function getLiveAutoDashboard(
-  state: Pick<WorkspaceStoreState, "boot" | "live">,
-): AutoDashboardData | null {
-  return state.live.auto ?? state.boot?.auto ?? null
-}
-
-export function getLiveResumableSessions(
-  state: Pick<WorkspaceStoreState, "boot" | "live">,
-): BootResumableSession[] {
-  return state.live.resumableSessions.length > 0 ? state.live.resumableSessions : state.boot?.resumableSessions ?? []
-}
-
 export function createWorkspaceRecoverySummary(state: Pick<WorkspaceStoreState, "boot" | "live">): WorkspaceRecoverySummary {
   const bridge = state.boot?.bridge ?? null
-  const workspace = getLiveWorkspaceIndex(state)
-  const auto = getLiveAutoDashboard(state)
+  const workspace = resolveWorkspaceIndex(state)
+  const auto = resolveAutoDashboard(state)
   const validationCount = workspace?.validationIssues.length ?? 0
   const retryInProgress = Boolean(bridge?.sessionState?.retryInProgress)
   const retryAttempt = bridge?.sessionState?.retryAttempt ?? 0
   const autoRetryEnabled = Boolean(bridge?.sessionState?.autoRetryEnabled)
   const isCompacting = Boolean(bridge?.sessionState?.isCompacting)
   const freshnessBucket = state.live.freshness.recovery
-  const freshness =
+  const freshness: WorkspaceFreshnessStatus =
     freshnessBucket.status === "error"
       ? "error"
       : freshnessBucket.stale
@@ -215,15 +252,12 @@ export function applyBootToLiveState(
 ): WorkspaceLiveState {
   const next: WorkspaceLiveState = {
     ...current,
-    auto: boot.auto,
-    workspace: boot.workspace,
-    resumableSessions: boot.resumableSessions,
+    auto: withEntitySliceSucceeded(current.auto, boot.auto),
+    workspace: withEntitySliceSucceeded(current.workspace, boot.workspace),
+    resumableSessions: withEntitySliceSucceeded(current.resumableSessions, boot.resumableSessions),
     freshness: {
       ...current.freshness,
-      auto: withFreshnessSucceeded(current.freshness.auto),
-      workspace: withFreshnessSucceeded(current.freshness.workspace),
       recovery: withFreshnessSucceeded(current.freshness.recovery),
-      resumableSessions: withFreshnessSucceeded(current.freshness.resumableSessions),
     },
     softBootRefreshCount: current.softBootRefreshCount + (options.soft ? 1 : 0),
   }

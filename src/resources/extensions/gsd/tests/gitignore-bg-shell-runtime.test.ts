@@ -40,6 +40,10 @@ describe('ensureGitignore writes .bg-shell/ baseline (#4902)', () => {
         lines.has('.bg-shell/'),
         `.gitignore should include .bg-shell/. Got:\n${ignore}`,
       );
+      assert.ok(
+        lines.has('.gsd-backups/'),
+        `.gitignore should include .gsd-backups/. Got:\n${ignore}`,
+      );
     } finally {
       cleanup(dir);
     }

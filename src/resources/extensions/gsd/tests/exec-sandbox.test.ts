@@ -7,6 +7,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { getShellConfig } from '@gsd/pi-coding-agent';
 import { EXEC_DEFAULTS, runExecSandbox, type ExecSandboxOptions } from '../exec-sandbox.ts';
 import { buildExecOptions, executeGsdExec } from '../tools/exec-tool.ts';
 import { isContextModeEnabled } from '../preferences-types.ts';
@@ -48,6 +49,21 @@ test('runExecSandbox: captures stdout, persists artifacts, returns digest', asyn
     const meta = JSON.parse(readFileSync(result.meta_path, 'utf-8')) as Record<string, unknown>;
     assert.equal(meta.runtime, 'bash');
     assert.equal(meta.exit_code, 0);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('runExecSandbox: bash runtime uses resolved shell config', async () => {
+  const base = freshBase();
+  try {
+    const { shell } = getShellConfig();
+    const result = await runExecSandbox(
+      { runtime: 'bash', script: 'printf "%s" "$0"' },
+      baseOpts(base),
+    );
+    assert.equal(result.exit_code, 0);
+    assert.equal(readFileSync(result.stdout_path, 'utf-8'), shell);
   } finally {
     cleanup(base);
   }

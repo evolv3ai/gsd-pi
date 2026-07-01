@@ -10,11 +10,12 @@ import type { ArtifactRow, MilestoneRow } from "./db-milestone-artifact-rows.js"
 import type { SliceRow, TaskRow } from "./db-task-slice-rows.js";
 import type { VerificationEvidenceRow } from "./db-verification-evidence-rows.js";
 import type { Decision, GateRow, Requirement } from "./types.js";
-import { atomicWriteSync } from "./atomic-write.js";
+import { atomicWriteAsync, atomicWriteSync } from "./atomic-write.js";
 import { getAllDecisionsFromMemories } from "./context-store.js";
 import { backfillDecisionsToMemories } from "./memory-backfill.js";
 import { invalidateAllCaches } from "./cache.js";
-import { readFileSync, existsSync, mkdirSync } from "node:fs";
+import { logWarning } from "./workflow-logger.js";
+import { readFileSync, existsSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
 // ─── Manifest Types ──────────────────────────────────────────────────────
@@ -349,16 +350,146 @@ export function snapshotState(): StateManifest {
 
 // ─── writeManifest ───────────────────────────────────────────────────────
 
+interface ManifestWriteState {
+  filePath: string;
+  latestJson: string | null;
+  inFlightJson: string | null;
+  /** Set by sync exit flush so an in-flight async write cannot leave stale data on disk. */
+  syncFlushJson: string | null;
+  active: Promise<void> | null;
+}
+
+const manifestWrites = new Map<string, ManifestWriteState>();
+let processTeardownFlushInstalled = false;
+let beforeExitFlushStarted = false;
+
+function manifestWriteKey(basePath: string): string {
+  return resolve(basePath);
+}
+
+function manifestFilePath(basePath: string): string {
+  return join(resolve(basePath), ".gsd", "state-manifest.json");
+}
+
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function logManifestWriteFailure(filePath: string, err: unknown): void {
+  logWarning("manifest", `state manifest write failed: ${describeError(err)}`, { file: filePath });
+}
+
+async function drainManifestWrites(key: string, state: ManifestWriteState): Promise<void> {
+  let lastWriteError: unknown = null;
+  try {
+    while (state.latestJson !== null && state.syncFlushJson === null) {
+      const json = state.latestJson;
+      state.latestJson = null;
+      state.inFlightJson = json;
+      try {
+        await atomicWriteAsync(state.filePath, json);
+        if (state.syncFlushJson !== null) {
+          atomicWriteSync(state.filePath, state.syncFlushJson);
+          break;
+        }
+        lastWriteError = null;
+      } catch (err) {
+        lastWriteError = err;
+        logManifestWriteFailure(state.filePath, err);
+      } finally {
+        state.inFlightJson = null;
+      }
+    }
+  } finally {
+    state.active = null;
+    if (state.latestJson === null && state.inFlightJson === null) {
+      manifestWrites.delete(key);
+    }
+  }
+  if (lastWriteError !== null && state.syncFlushJson === null) {
+    throw lastWriteError;
+  }
+}
+
+function enqueueManifestWrite(basePath: string, json: string): void {
+  const key = manifestWriteKey(basePath);
+  let state = manifestWrites.get(key);
+  if (!state) {
+    state = {
+      filePath: manifestFilePath(basePath),
+      latestJson: null,
+      inFlightJson: null,
+      syncFlushJson: null,
+      active: null,
+    };
+    manifestWrites.set(key, state);
+  }
+
+  state.latestJson = json;
+  if (!state.active) {
+    const active = drainManifestWrites(key, state);
+    void active.catch(() => {});
+    state.active = active;
+  }
+}
+
 /**
- * Write current DB state to .gsd/state-manifest.json via atomicWriteSync.
+ * Queue current DB state for an async atomic write to .gsd/state-manifest.json.
  * Uses JSON.stringify with 2-space indent for git three-way merge friendliness.
  */
 export function writeManifest(basePath: string): void {
   const manifest = snapshotState();
   const json = JSON.stringify(manifest, null, 2);
-  const dir = join(basePath, ".gsd");
-  mkdirSync(dir, { recursive: true });
-  atomicWriteSync(join(dir, "state-manifest.json"), json);
+  enqueueManifestWrite(basePath, json);
+}
+
+async function flushManifestByKey(key: string): Promise<void> {
+  for (;;) {
+    const active = manifestWrites.get(key)?.active;
+    if (!active) return;
+    await active;
+  }
+}
+
+/**
+ * Wait for any queued manifest write for this base path to become durable.
+ */
+export async function flushManifest(basePath: string): Promise<void> {
+  await flushManifestByKey(manifestWriteKey(basePath));
+}
+
+export async function flushAllManifests(): Promise<void> {
+  await Promise.all(Array.from(manifestWrites.keys(), key => flushManifestByKey(key)));
+}
+
+function flushAllManifestsSync(): void {
+  for (const [key, state] of manifestWrites) {
+    const json = state.latestJson ?? state.inFlightJson;
+    if (json === null) continue;
+    try {
+      atomicWriteSync(state.filePath, json);
+      state.latestJson = null;
+      state.inFlightJson = null;
+      state.syncFlushJson = json;
+      manifestWrites.delete(key);
+    } catch (err) {
+      logManifestWriteFailure(state.filePath, err);
+    }
+  }
+}
+
+export function installManifestFlushOnProcessTeardown(): void {
+  if (processTeardownFlushInstalled) return;
+  processTeardownFlushInstalled = true;
+
+  process.once("beforeExit", () => {
+    if (beforeExitFlushStarted) return;
+    beforeExitFlushStarted = true;
+    void flushAllManifests();
+  });
+  process.once("exit", () => {
+    flushAllManifestsSync();
+  });
 }
 
 // ─── readManifest ────────────────────────────────────────────────────────
@@ -414,9 +545,12 @@ function restoreArtifactProjections(basePath: string, manifest: StateManifest): 
   if (manifest.artifacts === undefined) return;
 
   for (const artifact of manifest.artifacts) {
+    const content = artifact.full_content ?? "";
+    if (content === "") continue;
+
     atomicWriteSync(
       artifactProjectionPath(basePath, artifact.path),
-      artifact.full_content ?? "",
+      content,
     );
   }
 }

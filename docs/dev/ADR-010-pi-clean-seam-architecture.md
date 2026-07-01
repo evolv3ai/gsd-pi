@@ -97,6 +97,8 @@ export { SystemPromptBuilder } from './system-prompt.js'
 export { LifecycleHooks } from './lifecycle-hooks.js'
 export { ArtifactManager } from './artifact-manager.js'
 export { BlobStore } from './blob-store.js'
+export { createInitialTranscriptState, applyTextDelta, completeTurn } from './transcript-store.js'
+export { createEmptyExtensionUiSnapshot, extensionUiSnapshotFromRpcMaps } from './extension-ui-snapshot.js'
 ```
 
 **Files migrating in from `pi-coding-agent/src/core/`:**
@@ -211,8 +213,8 @@ Steps 2-5 are scoped to known files. No archaeology required.
 | Issue | Location | Fix |
 |---|---|---|
 | Internal-path import of `AgentSessionEvent` | `src/web/bridge-service.ts` | Import from `@gsd/agent-core` public export |
-| `clearQueue()` not in typed public API | `AgentSession` | Add to public interface in `@gsd/agent-core/index.ts` |
 | `buildSessionContext()` on `SessionManager` | Used by GSD code, not publicly exported | Evaluate: re-export from `@gsd/agent-core` or remove dependency |
+| Transcript and extension UI transport helpers | TUI/RPC/web bridges | Use the public `transcript-store` and `extension-ui-snapshot` exports from `@gsd/agent-core`; these are UI transport helpers, not session persistence |
 | Deprecated `session_switch`, `session_fork`, `session_directory` usage | 2+ files in `pi-coding-agent` | Migrate to `session_start` with `reason` field (required for v0.65.0 compat) — can be done as part of or after clean seam work |
 
 ---

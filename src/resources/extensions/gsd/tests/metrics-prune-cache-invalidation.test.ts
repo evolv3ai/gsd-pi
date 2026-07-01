@@ -112,6 +112,12 @@ describe("pruneMetricsLedger: invalidates scoped ledger cache", () => {
     // 3. Prune to keepCount=2 — should evict 3 old units from disk AND clear scopedLedgers.
     const removed = pruneMetricsLedger(tmpDir, 2);
     assert.equal(removed, 3, "pruneMetricsLedger should report 3 removed units");
+    const prunedRaw = readFileSync(metricsPath(tmpDir), "utf-8");
+    assert.equal(
+      prunedRaw,
+      JSON.stringify(JSON.parse(prunedRaw)) + "\n",
+      "pruneMetricsLedger should persist compact metrics.json",
+    );
 
     // 4. Snapshot a new unit via scope. This exercises the lazy-reload path
     //    (scopedLedgers was cleared by prune) and writes the result to disk.

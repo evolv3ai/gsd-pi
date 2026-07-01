@@ -1,6 +1,6 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync, promises as fsPromises } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -41,7 +41,7 @@ const VALID_PARAMS = {
   ],
 };
 
-describe("complete-task projection failures keep DB completion committed", () => {
+describe("complete-task projection failures roll back DB completion", () => {
   let base: string;
 
   afterEach(() => {
@@ -75,7 +75,44 @@ describe("complete-task projection failures keep DB completion committed", () =>
     assert.equal(rows.length, 2, "should have 2 evidence rows after success");
   });
 
-  it("keeps task completion and verification_evidence when disk projection write fails", async () => {
+  it("reopens the workflow DB when it disappears between SUMMARY.md write and plan render", async (t) => {
+    base = makeTmpBase();
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "M001" });
+    insertSlice({ id: "S01", milestoneId: "M001" });
+
+    const planPath = join(base, ".gsd", "milestones", "M001", "slices", "S01", "S01-PLAN.md");
+    writeFileSync(
+      planPath,
+      "# S01 Plan\n\n## Tasks\n\n- [ ] **T01: Test task**\n",
+    );
+
+    const originalRename = fsPromises.rename.bind(fsPromises);
+    let closedAfterSummaryWrite = false;
+    t.mock.method(fsPromises, "rename", async (...args: Parameters<typeof fsPromises.rename>) => {
+      await originalRename(...args);
+      const target = String(args[1]);
+      if (!closedAfterSummaryWrite && target.endsWith("T01-SUMMARY.md")) {
+        closedAfterSummaryWrite = true;
+        closeDatabase();
+      }
+    });
+
+    const result = await handleCompleteTask(VALID_PARAMS, base);
+    assert.ok(closedAfterSummaryWrite, "test fixture should close DB after SUMMARY.md atomic rename");
+    assert.ok(!("error" in result), `unexpected error: ${"error" in result ? result.error : ""}`);
+
+    const content = readFileSync(planPath, "utf-8");
+    assert.match(content, /\[x\][^\n]*\*\*T01\*\*/, "PLAN.md checkbox should be rendered after DB reopen");
+
+    const adapter = _getAdapter()!;
+    const task = adapter.prepare(
+      `SELECT status FROM tasks WHERE milestone_id = 'M001' AND slice_id = 'S01' AND id = 'T01'`,
+    ).get() as { status: string } | undefined;
+    assert.equal(task?.status, "complete", "task should remain complete after successful projection");
+  });
+
+  it("rolls back DB completion and clears verification_evidence when disk projection write fails", async () => {
     base = makeTmpBase();
     openDatabase(join(base, ".gsd", "gsd.db"));
     insertMilestone({ id: "M001" });
@@ -87,19 +124,22 @@ describe("complete-task projection failures keep DB completion committed", () =>
     writeFileSync(tasksDir, "not-a-directory");
 
     const result = await handleCompleteTask(VALID_PARAMS, base);
-    assert.ok(!("error" in result), `unexpected error: ${"error" in result ? result.error : ""}`);
-    assert.equal(result.stale, true, "result should report stale projection");
+    assert.ok("error" in result, "expected rollback error when projection write fails");
+    assert.ok(
+      (result as { error: string }).error.includes("rolled completion back to pending"),
+      `error should mention rollback; got: ${"error" in result ? result.error : ""}`,
+    );
 
     const adapter = _getAdapter()!;
     const task = adapter.prepare(
       `SELECT status FROM tasks WHERE milestone_id = 'M001' AND slice_id = 'S01' AND id = 'T01'`,
     ).get() as { status: string } | undefined;
-    assert.ok(task, "task row should still exist");
-    assert.equal(task!.status, "complete", "task status should remain complete");
+    assert.ok(task, "task row should still exist after rollback");
+    assert.equal(task!.status, "pending", "task status should be rolled back to pending");
 
     const evidenceRows = adapter.prepare(
       `SELECT * FROM verification_evidence WHERE task_id = 'T01' AND slice_id = 'S01' AND milestone_id = 'M001'`,
     ).all();
-    assert.equal(evidenceRows.length, 2, "verification_evidence should remain committed");
+    assert.equal(evidenceRows.length, 0, "verification_evidence should be deleted after rollback");
   });
 });

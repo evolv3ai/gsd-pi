@@ -79,12 +79,23 @@ export function resolveCompactionThresholdPercent(raw: number | undefined): numb
   return value <= 1 ? value * 100 : value;
 }
 
-export function shouldRerootStepSessionForContext(
+export const HARD_CONTEXT_REROOT_THRESHOLD_PERCENT = 90;
+
+export function shouldWarnStepSessionForContext(
   contextPercent: number | null | undefined,
   compactionThresholdPercent?: number,
 ): boolean {
   return getContextPauseAction(
     contextPercent,
     resolveCompactionThresholdPercent(compactionThresholdPercent),
+  ) === "pause";
+}
+
+export function shouldRerootStepSessionForContext(
+  contextPercent: number | null | undefined,
+): boolean {
+  return getContextPauseAction(
+    contextPercent,
+    HARD_CONTEXT_REROOT_THRESHOLD_PERCENT,
   ) === "pause";
 }

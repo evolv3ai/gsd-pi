@@ -12,8 +12,10 @@ import type { WorkspaceIndex } from "../../../src/shared/workspace-types.ts"
 
 import {
   applyBootToLiveState,
+  createFreshnessBucket,
   createInitialWorkspaceLiveState,
   createWorkspaceRecoverySummary,
+  withEntitySliceSucceeded,
   withFreshnessInvalidated,
   withFreshnessSucceeded,
 } from "../workspace-live-state.ts"
@@ -102,18 +104,18 @@ function createBoot(overrides: Partial<WorkspaceBootPayload> = {}): WorkspaceBoo
 }
 
 describe("workspace-live-state", () => {
-  test("initial live state creates independent freshness buckets", () => {
+  test("initial live state creates independent entity slices", () => {
     const live = createInitialWorkspaceLiveState()
 
-    assert.equal(live.auto, null)
-    assert.equal(live.workspace, null)
+    assert.equal(live.auto.data, null)
+    assert.equal(live.workspace.data, null)
     assert.equal(live.recoverySummary.visible, false)
-    assert.notEqual(live.freshness.auto, live.freshness.workspace)
+    assert.notEqual(live.auto, live.workspace)
     assert.notEqual(live.freshness.recovery, live.freshness.sessionStats)
   })
 
   test("freshness invalidation marks successful buckets stale without erasing success time", () => {
-    const fresh = withFreshnessSucceeded(createInitialWorkspaceLiveState().freshness.workspace)
+    const fresh = withFreshnessSucceeded(createFreshnessBucket())
     const invalidated = withFreshnessInvalidated(fresh, "turn_end", "bridge_event")
 
     assert.equal(invalidated.status, "stale")
@@ -127,11 +129,11 @@ describe("workspace-live-state", () => {
     const boot = createBoot()
     const live = applyBootToLiveState(createInitialWorkspaceLiveState(), boot, { soft: true })
 
-    assert.equal(live.auto, boot.auto)
-    assert.equal(live.workspace, boot.workspace)
-    assert.equal(live.resumableSessions, boot.resumableSessions)
+    assert.equal(live.auto.data, boot.auto)
+    assert.equal(live.workspace.data, boot.workspace)
+    assert.equal(live.resumableSessions.data, boot.resumableSessions)
     assert.equal(live.softBootRefreshCount, 1)
-    assert.equal(live.freshness.auto.status, "fresh")
+    assert.equal(live.auto.status, "fresh")
     assert.equal(live.recoverySummary.visible, true)
     assert.equal(live.recoverySummary.currentUnitId, "M001/S01/T01")
   })
@@ -149,8 +151,8 @@ describe("workspace-live-state", () => {
     })
     const live: WorkspaceLiveState = {
       ...createInitialWorkspaceLiveState(),
-      auto: boot.auto,
-      workspace: boot.workspace,
+      auto: withEntitySliceSucceeded(createInitialWorkspaceLiveState().auto, boot.auto),
+      workspace: withEntitySliceSucceeded(createInitialWorkspaceLiveState().workspace, boot.workspace),
     }
     const summary = createWorkspaceRecoverySummary({ boot, live } satisfies Pick<WorkspaceStoreState, "boot" | "live">)
 

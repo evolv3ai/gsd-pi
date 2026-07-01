@@ -20,13 +20,84 @@ const ZERO_USAGE = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
-type GoogleCliProviderId = "google-gemini-cli" | "google-antigravity";
+export type GoogleCliProviderId = "google-gemini-cli" | "google-antigravity";
+
+export interface GoogleCliRunPlan {
+	command: string;
+	args: string[];
+	stdin?: string;
+}
 
 interface CliRunResult {
 	stdout: string;
 	stderr: string;
 	code: number | null;
 	signal: NodeJS.Signals | null;
+}
+
+const WINDOWS_CHILD_ENV_KEYS = new Set([
+	"ALLUSERSPROFILE",
+	"APPDATA",
+	"COMSPEC",
+	"COMMONPROGRAMFILES",
+	"COMMONPROGRAMFILES(X86)",
+	"FORCE_COLOR",
+	"HOME",
+	"HOMEDRIVE",
+	"HOMEPATH",
+	"LANG",
+	"LC_ALL",
+	"LOCALAPPDATA",
+	"NODE_EXTRA_CA_CERTS",
+	"NO_COLOR",
+	"NO_PROXY",
+	"PATHEXT",
+	"PATH",
+	"PROGRAMDATA",
+	"PROGRAMFILES",
+	"PROGRAMFILES(X86)",
+	"SSL_CERT_FILE",
+	"SYSTEMROOT",
+	"TEMP",
+	"TERM",
+	"TMP",
+	"TMPDIR",
+	"USER",
+	"USERNAME",
+	"USERPROFILE",
+	"WINDIR",
+	"XDG_CACHE_HOME",
+	"XDG_CONFIG_HOME",
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+]);
+
+const WINDOWS_CHILD_ENV_PREFIXES = [
+	"AGY_",
+	"ANTIGRAVITY_",
+	"CLOUDSDK_",
+	"GEMINI_",
+	"GOOGLE_",
+];
+
+export function buildGoogleCliChildEnv(
+	env: NodeJS.ProcessEnv = process.env,
+	platform: NodeJS.Platform = process.platform,
+): NodeJS.ProcessEnv {
+	if (platform !== "win32") return env;
+
+	const childEnv: NodeJS.ProcessEnv = {};
+	for (const [key, value] of Object.entries(env)) {
+		if (typeof value !== "string") continue;
+		const upperKey = key.toUpperCase();
+		if (
+			WINDOWS_CHILD_ENV_KEYS.has(upperKey) ||
+			WINDOWS_CHILD_ENV_PREFIXES.some((prefix) => upperKey.startsWith(prefix))
+		) {
+			childEnv[key] = value;
+		}
+	}
+	return childEnv;
 }
 
 function textBlocks(content: (TextContent | { type: string })[]): string {
@@ -120,15 +191,15 @@ function commandForProvider(provider: GoogleCliProviderId): string {
 	return provider === "google-gemini-cli" ? "gemini" : "agy";
 }
 
-function argsForProvider(provider: GoogleCliProviderId, model: Model<Api>, prompt: string): string[] {
+function argsForProvider(provider: GoogleCliProviderId, modelId: string, prompt?: string): string[] {
 	if (provider === "google-gemini-cli") {
-		const args = ["-p", prompt, "--output-format", "json"];
-		if (model.id !== "default") args.unshift("-m", model.id);
+		const args = prompt === undefined ? ["--output-format", "json"] : ["-p", prompt, "--output-format", "json"];
+		if (modelId !== "default") args.unshift("-m", modelId);
 		return args;
 	}
 
-	const args = ["-p", prompt];
-	if (model.id !== "default") args.unshift("-m", model.id);
+	const args = prompt === undefined ? [] : ["-p", prompt];
+	if (modelId !== "default") args.unshift("-m", modelId);
 	return args;
 }
 
@@ -136,20 +207,33 @@ export function buildGoogleCliSpawnInvocation(
 	command: string,
 	args: string[],
 	platform: NodeJS.Platform = process.platform,
-): { command: string; args: string[] } {
+): Omit<GoogleCliRunPlan, "stdin"> {
 	if (platform === "win32") {
 		return { command: "cmd", args: ["/c", command, ...args] };
 	}
 	return { command, args };
 }
 
-function runCli(command: string, args: string[], options?: SimpleStreamOptions): Promise<CliRunResult> {
+export function buildGoogleCliRunPlan(
+	provider: GoogleCliProviderId,
+	modelId: string,
+	prompt: string,
+	platform: NodeJS.Platform = process.platform,
+): GoogleCliRunPlan {
+	const pipePrompt = platform === "win32";
+	const args = argsForProvider(provider, modelId, pipePrompt ? undefined : prompt);
+	return {
+		...buildGoogleCliSpawnInvocation(commandForProvider(provider), args, platform),
+		...(pipePrompt ? { stdin: prompt } : {}),
+	};
+}
+
+function runCli(plan: GoogleCliRunPlan, options?: SimpleStreamOptions): Promise<CliRunResult> {
 	return new Promise((resolve, reject) => {
-		const invocation = buildGoogleCliSpawnInvocation(command, args);
-		const child = spawn(invocation.command, invocation.args, {
+		const child = spawn(plan.command, plan.args, {
 			cwd: options?.cwd || process.cwd(),
-			env: process.env,
-			stdio: ["ignore", "pipe", "pipe"],
+			env: buildGoogleCliChildEnv(),
+			stdio: [plan.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
 		});
 
 		let stdout = "";
@@ -174,12 +258,17 @@ function runCli(command: string, args: string[], options?: SimpleStreamOptions):
 		}
 		options?.signal?.addEventListener("abort", onAbort);
 
-		child.stdout.setEncoding("utf8");
-		child.stderr.setEncoding("utf8");
-		child.stdout.on("data", (chunk) => {
+		if (plan.stdin !== undefined) {
+			child.stdin?.on("error", () => {});
+			child.stdin?.end(plan.stdin);
+		}
+
+		child.stdout!.setEncoding("utf8");
+		child.stderr!.setEncoding("utf8");
+		child.stdout!.on("data", (chunk) => {
 			stdout += chunk;
 		});
-		child.stderr.on("data", (chunk) => {
+		child.stderr!.on("data", (chunk) => {
 			stderr += chunk;
 		});
 
@@ -243,9 +332,7 @@ export function streamViaGoogleCli(
 	queueMicrotask(async () => {
 		try {
 			const prompt = buildGoogleCliPrompt(context);
-			const command = commandForProvider(provider);
-			const args = argsForProvider(provider, model, prompt);
-			const result = await runCli(command, args, options);
+			const result = await runCli(buildGoogleCliRunPlan(provider, model.id, prompt), options);
 
 			if (result.code !== 0) {
 				const detail = (result.stderr || result.stdout || `CLI exited with code ${result.code}`).trim();

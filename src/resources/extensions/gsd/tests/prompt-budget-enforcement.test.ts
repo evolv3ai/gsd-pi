@@ -72,6 +72,25 @@ function setupDependencyFixture(
   mkdirSync(targetSliceDir, { recursive: true });
 }
 
+function setupFlatPhaseSlicePlan(base: string): void {
+  const phaseDir = join(base, ".gsd", "phases", "01-flat-phase");
+  mkdirSync(phaseDir, { recursive: true });
+  writeFileSync(
+    join(phaseDir, "01-01-PLAN.md"),
+    [
+      "# S01: Flat phase slice",
+      "",
+      "## Tasks",
+      "",
+      "- [ ] **T01: Flat task** `est:15m`",
+      "",
+      "## Verification",
+      "",
+      "- Rendered prompt points at this slice plan.",
+    ].join("\n"),
+  );
+}
+
 // ─── inlineDependencySummaries truncation ─────────────────────────────────────
 
 describe("prompt-budget: inlineDependencySummaries truncation", () => {
@@ -412,6 +431,26 @@ describe("prompt-budget: execute-task template", () => {
     }
   });
 
+  it("flat-phase execute-task fallback points at the slice plan", async () => {
+    const base = createFixtureBase();
+    try {
+      setupFlatPhaseSlicePlan(base);
+
+      const prompt = await buildExecuteTaskPrompt("M001", "S01", "Slice", "T01", "Task", base, {
+        level: "minimal",
+        sessionContextWindow: 128_000,
+      });
+
+      assert.match(
+        prompt,
+        /Task plan not found at dispatch time\. Read `\.gsd\/phases\/01-flat-phase\/01-01-PLAN\.md` before executing\./,
+      );
+      assert.doesNotMatch(prompt, /\.gsd\/phases\/01-flat-phase\/tasks\/T01-PLAN\.md/);
+    } finally {
+      cleanup(base);
+    }
+  });
+
   it("verificationBudget format varies with context window size", () => {
     const budget128K = computeBudgets(128_000);
     const budget1M = computeBudgets(1_000_000);
@@ -566,6 +605,25 @@ describe("prompt-budget: execute-task builder truncation pattern", () => {
 });
 
 describe("prompt-budget: reactive-execute builder", () => {
+  it("flat-phase subagent fallback points at the slice plan", async () => {
+    const base = createFixtureBase();
+    try {
+      setupFlatPhaseSlicePlan(base);
+
+      const prompt = await buildReactiveExecutePrompt("M001", "Milestone", "S01", "Slice", ["T01"], base, undefined, {
+        sessionContextWindow: 128_000,
+      });
+
+      assert.match(
+        prompt,
+        /Task plan not found at dispatch time\. Read `\.gsd\/phases\/01-flat-phase\/01-01-PLAN\.md` before executing\./,
+      );
+      assert.doesNotMatch(prompt, /\.gsd\/phases\/01-flat-phase\/tasks\/T01-PLAN\.md/);
+    } finally {
+      cleanup(base);
+    }
+  });
+
   it("caps dependency carry-forward per ready subagent", async () => {
     const base = createFixtureBase();
     try {

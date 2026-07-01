@@ -135,14 +135,38 @@ const CONTEXT_MODE_GUIDANCE_BY_LANE: Record<Exclude<ContextModePolicy, "none">, 
     "Use `gsd_resume` for prior context, `gsd_exec_search` for saved evidence, and `gsd_exec` for noisy doc validation commands.",
 };
 
-// Per-unit overrides win over the lane default. run-uat's tool contract
-// forbids `gsd_exec`/`gsd_exec_search` (acceptance evidence must flow through
-// `gsd_uat_exec`) and Claude Code dispatch strips the tools entirely, so the
-// shared verification-lane guidance would steer the agent into calling an
-// unavailable tool.
-const CONTEXT_MODE_GUIDANCE_BY_UNIT: Record<string, string> = {
+// Per-unit overrides win over the lane default. Some units intentionally run
+// with narrower tool contracts than their shared Context Mode lane, so their
+// guidance must name only tools the unit can actually call.
+export const CONTEXT_MODE_GUIDANCE_BY_UNIT: Readonly<Record<string, string>> = {
+  "discuss-milestone":
+    "Use `ask_user_questions` to continue the milestone interview, then persist outcomes with `gsd_summary_save`, `gsd_decision_save`, `gsd_requirement_save`, `gsd_requirement_update`, `gsd_plan_milestone`, or `gsd_milestone_generate_id` as appropriate.",
+  "discuss-slice":
+    "Use `ask_user_questions` to continue the slice interview, then persist outcomes with `gsd_summary_save` or `gsd_decision_save` as appropriate.",
+  "discuss-project":
+    "Use `ask_user_questions` to continue the project interview, then persist outcomes with `gsd_summary_save`, `gsd_decision_save`, or `gsd_requirement_save` as appropriate.",
+  "discuss-requirements":
+    "Use `ask_user_questions` to continue the requirements interview, then persist outcomes with `gsd_requirement_save` or `gsd_summary_save` as appropriate.",
+  "replan-slice":
+    "Use `gsd_replan_slice` to persist the revised slice plan, and `gsd_decision_save` for planning decisions that need durable rationale.",
+  "reassess-roadmap":
+    "Use `gsd_milestone_status` to inspect current milestone state, then `gsd_reassess_roadmap` to persist the roadmap reassessment.",
   "run-uat":
     "Use `gsd_uat_exec` for acceptance checks so evidence is typed as UAT-owned, and `gsd_resume` after compaction or resume.",
+  "research-project":
+    "Dispatch parallel scout subagents for stack, features, architecture, and pitfalls research; each writes one file under `.gsd/research/` (`STACK.md`, `FEATURES.md`, `ARCHITECTURE.md`, `PITFALLS.md`).",
+  "gate-evaluate":
+    "Use `subagent` to dispatch tester agents, then persist each gate with `gsd_save_gate_result`; rely on testers for verification evidence.",
+};
+
+// Per-unit guidance for the nested render mode (renderMode: "nested"), used when this
+// unit's Context Mode line is embedded into a subagent prompt — e.g. the tester prompts
+// dispatched by gate-evaluate. Must instruct the subagent on what IT should do, not
+// re-state the parent coordinator's dispatch instructions. Falls back to
+// CONTEXT_MODE_GUIDANCE_BY_UNIT then the lane default when no nested entry exists.
+export const CONTEXT_MODE_NESTED_GUIDANCE_BY_UNIT: Readonly<Record<string, string>> = {
+  "gate-evaluate":
+    "Run verification checks to answer the gate question, then persist the verdict with `gsd_save_gate_result`.",
 };
 
 /**
@@ -160,7 +184,9 @@ export function composeContextModeInstructions(
 
   const lane = CONTEXT_MODE_LANE_LABELS[manifest.contextMode];
   const guidance =
-    CONTEXT_MODE_GUIDANCE_BY_UNIT[unitType] ?? CONTEXT_MODE_GUIDANCE_BY_LANE[manifest.contextMode];
+    (opts.renderMode === "nested" ? CONTEXT_MODE_NESTED_GUIDANCE_BY_UNIT[unitType] : undefined)
+    ?? CONTEXT_MODE_GUIDANCE_BY_UNIT[unitType]
+    ?? CONTEXT_MODE_GUIDANCE_BY_LANE[manifest.contextMode];
   if (opts.renderMode === "nested") {
     return `Context Mode (${lane} lane): ${guidance}`;
   }

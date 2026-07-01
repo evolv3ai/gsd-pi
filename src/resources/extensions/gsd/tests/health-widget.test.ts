@@ -3,8 +3,10 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { performance } from "node:perf_hooks";
+import { delimiter, join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   buildHealthLines,
@@ -12,8 +14,9 @@ import {
   formatRelativeTime,
   type HealthWidgetData,
 } from "../health-widget-core.ts";
-import { HEALTH_WIDGET_ACTIVE_HINTS } from "../health-widget.ts";
+import { HEALTH_WIDGET_ACTIVE_HINTS, getCachedProjectState, initHealthWidget } from "../health-widget.ts";
 import { registerHooks } from "../bootstrap/register-hooks.ts";
+import { GIT_NO_PROMPT_ENV } from "../git-constants.ts";
 
 function makeTempDir(prefix: string): string {
   const dir = join(
@@ -31,6 +34,58 @@ function cleanup(dir: string): void {
     // best-effort
   }
 }
+
+function runGit(cwd: string, ...args: string[]): string {
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf-8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+}
+
+function makeTempRepo(prefix: string): string {
+  const dir = makeTempDir(prefix);
+  runGit(dir, "init");
+  runGit(dir, "config", "user.email", "test@test.com");
+  runGit(dir, "config", "user.name", "Test");
+  writeFileSync(join(dir, "README.md"), "# test\n", "utf-8");
+  runGit(dir, "add", "README.md");
+  runGit(dir, "commit", "-m", "initial commit");
+  return dir;
+}
+
+function installSlowGitLogShim(binDir: string): void {
+  writeFileSync(
+    join(binDir, "git"),
+    [
+      "#!/bin/sh",
+      'if [ "$1" = "log" ]; then sleep 1; fi',
+      'PATH="$GSD_REAL_PATH"',
+      "export PATH",
+      'exec git "$@"',
+      "",
+    ].join("\n"),
+    "utf-8",
+  );
+  chmodSync(join(binDir, "git"), 0o755);
+
+  writeFileSync(
+    join(binDir, "git.cmd"),
+    [
+      "@echo off",
+      'if "%1"=="log" powershell -NoProfile -Command "Start-Sleep -Seconds 1"',
+      'set "PATH=%GSD_REAL_PATH%"',
+      "git %*",
+      "",
+    ].join("\r\n"),
+    "utf-8",
+  );
+}
+
+type HealthWidgetFactory = (
+  tui: { requestRender(): void },
+  theme: { fg(style: string, text: string): string },
+) => { dispose(): void };
 
 function activeData(overrides: Partial<HealthWidgetData> = {}): HealthWidgetData {
   return {
@@ -70,6 +125,86 @@ test("detectHealthWidgetProjectState: milestone without metrics returns active",
   assert.equal(detectHealthWidgetProjectState(dir), "active");
 });
 
+test("getCachedProjectState: reuses project state until the refresh TTL expires", (t) => {
+  const dir = makeTempDir("cached-state");
+  t.after(() => { cleanup(dir); });
+
+  let now = 1_000_000;
+  const dateNow = t.mock.method(Date, "now", () => now);
+  t.after(() => { dateNow.mock.restore(); });
+
+  mkdirSync(join(dir, ".gsd"), { recursive: true });
+  assert.equal(getCachedProjectState(dir), "initialized");
+
+  mkdirSync(join(dir, ".gsd", "milestones", "M001"), { recursive: true });
+  assert.equal(getCachedProjectState(dir), "initialized");
+
+  now += 60_000;
+  assert.equal(getCachedProjectState(dir), "initialized");
+
+  now += 1;
+  assert.equal(getCachedProjectState(dir), "active");
+});
+
+test("getCachedProjectState: force=true bypasses TTL and returns fresh state within TTL window", (t) => {
+  const dir = makeTempDir("forced-state");
+  t.after(() => { cleanup(dir); });
+
+  let now = 2_000_000;
+  const dateNow = t.mock.method(Date, "now", () => now);
+  t.after(() => { dateNow.mock.restore(); });
+
+  mkdirSync(join(dir, ".gsd"), { recursive: true });
+  // Prime the cache with "initialized".
+  assert.equal(getCachedProjectState(dir), "initialized");
+
+  // Disk changes within the TTL window.
+  mkdirSync(join(dir, ".gsd", "milestones", "M001"), { recursive: true });
+  now += 1_000; // well within 60s TTL
+
+  // Normal call still returns stale cached value.
+  assert.equal(getCachedProjectState(dir), "initialized");
+
+  // force=true bypasses TTL and returns the fresh disk state.
+  assert.equal(getCachedProjectState(dir, true), "active");
+
+  // Subsequent non-forced call also reflects the freshened cache.
+  assert.equal(getCachedProjectState(dir), "active");
+});
+
+test("initHealthWidget: re-init paints fresh project state within cache TTL", (t) => {
+  const dir = makeTempDir("reinit-state");
+  t.after(() => { cleanup(dir); });
+
+  let now = 3_000_000;
+  const dateNow = t.mock.method(Date, "now", () => now);
+  t.after(() => { dateNow.mock.restore(); });
+
+  const originalCwd = process.cwd();
+  process.chdir(dir);
+  t.after(() => { process.chdir(originalCwd); });
+
+  const initialLineSets: string[][] = [];
+  const ctx = {
+    hasUI: true,
+    ui: {
+      setWidget: (_key: string, value: unknown) => {
+        if (Array.isArray(value)) initialLineSets.push(value as string[]);
+      },
+    },
+  } as any;
+
+  mkdirSync(join(dir, ".gsd"), { recursive: true });
+  initHealthWidget(ctx);
+  assert.equal(initialLineSets.at(-1)?.[0], "  GSD  Project Initialized");
+
+  mkdirSync(join(dir, ".gsd", "milestones", "M001"), { recursive: true });
+  now += 1_000;
+
+  initHealthWidget(ctx);
+  assert.match(initialLineSets.at(-1)?.[0] ?? "", /System OK/);
+});
+
 test("buildHealthLines: none state shows single onboarding line pointing at /gsd", (t) => {
   const lines = buildHealthLines(activeData({ projectState: "none" }));
   assert.equal(lines.length, 1, "renders exactly one line");
@@ -99,6 +234,136 @@ test("health widget active hints include visualization and notifications", () =>
   assert.match(HEALTH_WIDGET_ACTIVE_HINTS, /\/gsd report for snapshots/);
   assert.match(HEALTH_WIDGET_ACTIVE_HINTS, /\/gsd notifications for history/);
   assert.match(HEALTH_WIDGET_ACTIVE_HINTS, /\/gsd help/);
+});
+
+test("health widget async refresh does not block timers while git log is slow", async (t) => {
+  const dir = makeTempRepo("slow-git-log");
+  const binDir = makeTempDir("slow-git-log-bin");
+  mkdirSync(join(dir, ".gsd", "milestones", "M001"), { recursive: true });
+  installSlowGitLogShim(binDir);
+
+  const originalCwd = process.cwd();
+  const originalProcessPath = process.env.PATH;
+  const originalEnvPath = GIT_NO_PROMPT_ENV.PATH;
+  const originalEnvRealPath = GIT_NO_PROMPT_ENV.GSD_REAL_PATH;
+  const shimmedPath = `${binDir}${delimiter}${originalProcessPath ?? ""}`;
+
+  process.chdir(dir);
+  process.env.PATH = shimmedPath;
+  GIT_NO_PROMPT_ENV.PATH = shimmedPath;
+  GIT_NO_PROMPT_ENV.GSD_REAL_PATH = originalProcessPath ?? "";
+
+  let factory: HealthWidgetFactory | null = null;
+  let resolveRefresh: (() => void) | undefined;
+  const refreshed = new Promise<void>((resolve) => { resolveRefresh = resolve; });
+  const gaps: number[] = [];
+  let lastTick = performance.now();
+  let heartbeat: NodeJS.Timeout | undefined;
+  let refreshTimeout: NodeJS.Timeout | undefined;
+  let widget: { dispose(): void } | undefined;
+
+  t.after(() => {
+    if (widget) widget.dispose();
+    if (heartbeat) clearInterval(heartbeat);
+    if (refreshTimeout) clearTimeout(refreshTimeout);
+    process.chdir(originalCwd);
+    if (originalProcessPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalProcessPath;
+    if (originalEnvPath === undefined) delete GIT_NO_PROMPT_ENV.PATH;
+    else GIT_NO_PROMPT_ENV.PATH = originalEnvPath;
+    if (originalEnvRealPath === undefined) delete GIT_NO_PROMPT_ENV.GSD_REAL_PATH;
+    else GIT_NO_PROMPT_ENV.GSD_REAL_PATH = originalEnvRealPath;
+    cleanup(binDir);
+    cleanup(dir);
+  });
+
+  initHealthWidget({
+    hasUI: true,
+    ui: {
+      setWidget: (_key: string, value: unknown) => {
+        if (typeof value === "function") factory = value as HealthWidgetFactory;
+      },
+    },
+  } as any);
+
+  assert.ok(factory, "health widget factory is registered");
+
+  heartbeat = setInterval(() => {
+    const now = performance.now();
+    gaps.push(now - lastTick);
+    lastTick = now;
+  }, 25);
+
+  // assert.ok above guards at runtime; double-cast is needed because TypeScript
+  // cannot track the factory assignment through the `as any` closure call.
+  widget = (factory as unknown as HealthWidgetFactory)(
+    { requestRender: () => { resolveRefresh?.(); } },
+    { fg: (_style: string, text: string) => text },
+  );
+
+  await Promise.race([
+    refreshed,
+    new Promise<never>((_, reject) => {
+      refreshTimeout = setTimeout(() => reject(new Error("health widget refresh did not complete")), 4_000);
+    }),
+  ]);
+  if (refreshTimeout) clearTimeout(refreshTimeout);
+
+  assert.ok(gaps.length > 0, "heartbeat ran while refresh was in flight");
+  const maxGap = Math.max(...gaps);
+  assert.ok(maxGap < 750, `slow git log must not starve timers; max gap was ${Math.round(maxGap)}ms`);
+});
+
+test("initHealthWidget: synchronous first-paint render never contains last-commit info (regression #964)", (t) => {
+  // Before the fix, loadHealthWidgetData with includeChecks:true called
+  // loadLastCommitInfo — synchronous native-git-bridge ops (nativeIsRepo,
+  // nativeGetCurrentBranch, nativeLastCommitEpoch, nativeCommitSubject) — which
+  // froze the TUI on slow repos. The fix removes that synchronous git path
+  // entirely: lastCommitEpoch/lastCommitMessage are now always null from the
+  // synchronous loader; only the async refresh (loadLastCommitInfoAsync) fills
+  // them in. This test guards that contract by verifying that the initial
+  // string-array setWidget call never contains "Last commit:" even on a real
+  // git repo where native git queries would succeed.
+  const dir = makeTempRepo("sync-last-commit-regression");
+  mkdirSync(join(dir, ".gsd", "milestones", "M001"), { recursive: true });
+
+  const originalCwd = process.cwd();
+  process.chdir(dir);
+
+  let widget: { dispose(): void } | undefined;
+  t.after(() => {
+    if (widget) widget.dispose();
+    process.chdir(originalCwd);
+    cleanup(dir);
+  });
+
+  const initialRenders: string[][] = [];
+
+  initHealthWidget({
+    hasUI: true,
+    ui: {
+      setWidget: (_key: string, value: unknown) => {
+        if (Array.isArray(value)) {
+          initialRenders.push(value as string[]);
+        } else if (typeof value === "function") {
+          // Instantiate the factory to satisfy dispose(), but do not await the
+          // async refresh — we are only inspecting the synchronous first-paint.
+          widget = (value as unknown as HealthWidgetFactory)(
+            { requestRender: () => {} },
+            { fg: (_style: string, text: string) => text },
+          );
+        }
+      },
+    },
+  } as any);
+
+  assert.ok(initialRenders.length > 0, "at least one synchronous setWidget call");
+
+  const combined = initialRenders.flat().join("\n");
+  assert.ok(
+    !combined.includes("Last commit:"),
+    "synchronous first-paint render must not contain 'Last commit:' — sync git path removed (regression #964)",
+  );
 });
 
 test("buildHealthLines: active state with budget ceiling shows percent summary", (t) => {

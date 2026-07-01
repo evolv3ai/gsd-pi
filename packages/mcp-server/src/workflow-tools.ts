@@ -14,6 +14,7 @@ import {
   WORKFLOW_TOOL_NAMES as CONTRACT_WORKFLOW_TOOL_NAMES,
   CANONICAL_WORKFLOW_TOOL_NAMES as CONTRACT_CANONICAL_WORKFLOW_TOOL_NAMES,
   WORKFLOW_TOOL_ALIAS_NAMES as CONTRACT_WORKFLOW_TOOL_ALIAS_NAMES,
+  SUMMARY_SAVE_CONTENT_MAX_LENGTH,
 } from "@opengsd/contracts";
 
 import { logAliasUsage } from "./alias-telemetry.js";
@@ -101,7 +102,7 @@ type WorkflowToolExecutors = {
       milestoneId: string;
       sliceId: string;
       goal: string;
-      tasks: Array<{
+      tasks?: Array<{
         taskId: string;
         title: string;
         description: string;
@@ -839,7 +840,7 @@ interface McpToolServer {
     name: string,
     description: string,
     params: Record<string, unknown>,
-    handler: (args: Record<string, unknown>) => Promise<unknown>,
+    handler: (args: Record<string, unknown>, extra?: { signal?: AbortSignal }) => Promise<unknown>,
   ): unknown;
 }
 
@@ -907,18 +908,15 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 async function runSerializedWorkflowOperation<T>(fn: () => Promise<T>): Promise<T> {
   // The shared DB adapter and workflow log base path are process-global, so
   // workflow MCP mutations must not overlap within a single server process.
-  // A per-operation deadline prevents a single stuck call from wedging every
-  // subsequent write for the lifetime of the process.
+  // A per-operation deadline prevents a single stuck call from wedging its
+  // caller for the lifetime of the process.
   //
-  // Known limitation: on timeout we surface an error and release the queue,
-  // but Promise.race cannot cancel the underlying `fn()` — it may continue
-  // running in the background and overlap with the next admitted operation.
-  // Proper cancellation requires threading an AbortSignal through every
-  // workflow executor (`workflow-tool-executors.ts` and friends), which is
-  // a larger change. The current trade-off: risk a theoretical overlap after
-  // a 5-minute wall-clock timeout vs permanently wedging the server. The
-  // overlap window is bounded by how long the zombie `fn()` keeps running;
-  // in practice DB writes complete quickly even when the caller gave up.
+  // Promise.race cannot cancel the underlying `fn()`. On timeout, surface an
+  // error to the caller but keep the queue held until `fn()` actually settles
+  // so a retry cannot overlap with the still-running operation. True
+  // cancellation remains a larger deferred design: it requires threading an
+  // AbortSignal through every workflow executor (`workflow-tool-executors.ts`
+  // and friends).
   const prior = workflowExecutionQueue;
   let release!: () => void;
   workflowExecutionQueue = new Promise<void>((resolve) => {
@@ -927,24 +925,36 @@ async function runSerializedWorkflowOperation<T>(fn: () => Promise<T>): Promise<
 
   await prior;
   const timeoutMs = getWorkflowOpTimeoutMs();
+  const operationPromise = Promise.resolve().then(fn);
+  let timedOut = false;
   try {
     if (timeoutMs === 0) {
-      return await fn();
+      return await operationPromise;
     }
     let timer: NodeJS.Timeout | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
+        timedOut = true;
         reject(new Error(`Workflow operation exceeded ${timeoutMs}ms deadline (GSD_MCP_WORKFLOW_TIMEOUT_MS)`));
       }, timeoutMs);
     });
     try {
-      return await Promise.race([fn(), timeoutPromise]);
+      return await Promise.race([operationPromise, timeoutPromise]);
     } finally {
       if (timer) clearTimeout(timer);
     }
   } finally {
-    release();
+    if (timedOut) {
+      void operationPromise.then(release, release);
+    } else {
+      release();
+    }
   }
+}
+
+/** @internal — exported for testing only */
+export function _runSerializedWorkflowOperationForTest<T>(fn: () => Promise<T>): Promise<T> {
+  return runSerializedWorkflowOperation(fn);
 }
 
 async function runSerializedWorkflowDbOperation<T>(
@@ -1495,7 +1505,7 @@ const planSliceParams = {
     inputs: nonEmptyStringArray("inputs"),
     expectedOutput: nonEmptyStringArray("expectedOutput"),
     observabilityImpact: optionalNonEmptyString("observabilityImpact"),
-  })).describe("Planned tasks for the slice"),
+  })).optional().describe("Optional full task replacement for the slice. Omit for incremental planning, then call gsd_plan_task once per task."),
   successCriteria: z.string().optional(),
   proofLevel: z.string().optional(),
   integrationClosure: z.string().optional(),
@@ -1698,7 +1708,9 @@ const summarySaveParams = {
   slice_id: z.string().optional().describe("Slice ID (e.g. S01)"),
   task_id: z.string().optional().describe("Task ID (e.g. T01)"),
   artifact_type: z.string().describe("Artifact type to save (SUMMARY, RESEARCH, CONTEXT, ASSESSMENT, CONTEXT-DRAFT, PROJECT, PROJECT-DRAFT, REQUIREMENTS, REQUIREMENTS-DRAFT)"),
-  content: z.string().describe("The full markdown content of the artifact"),
+  content: z.string()
+    .max(SUMMARY_SAVE_CONTENT_MAX_LENGTH, `content must be at most ${SUMMARY_SAVE_CONTENT_MAX_LENGTH} characters per save`)
+    .describe(`The full markdown content of the artifact. Maximum ${SUMMARY_SAVE_CONTENT_MAX_LENGTH} characters per save.`),
 };
 const ROOT_SUMMARY_ARTIFACT_TYPES = new Set([
   "PROJECT",
@@ -1716,6 +1728,7 @@ const summarySaveSchema = z.object(summarySaveParams).superRefine((value, ctx) =
     });
   }
 });
+export const _summarySaveSchemaForTest = summarySaveSchema;
 
 const decisionSaveParams = {
   projectDir: projectDirParam,
@@ -1987,9 +2000,9 @@ const resumeSchema = z.object(resumeParams);
 function wrapServerWithErrorHandler(realServer: McpToolServer): McpToolServer {
   return {
     tool(name, description, params, handler) {
-      return realServer.tool(name, description, params, async (args) => {
+      return realServer.tool(name, description, params, async (args, extra) => {
         try {
-          return await handler(args);
+          return await handler(args, extra);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           return {
@@ -2623,7 +2636,7 @@ export function registerWorkflowTools(
     "gsd_uat_exec",
     "Run one UAT-scoped bash/node/python check with milestone/slice/check metadata. Evidence persists under .gsd/exec with kind=uat_exec.",
     uatExecParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: { signal?: AbortSignal }) => {
       const { projectDir, ...params } = parseWorkflowArgs(uatExecSchema, args);
       await enforceWorkflowWriteGate("gsd_uat_exec", projectDir);
       const { executeUatExec } = await importLocalModule<any>(
@@ -2634,6 +2647,7 @@ export function registerWorkflowTools(
           executeUatExec(params, {
             baseDir: projectDir,
             preferences: await loadProjectPreferences(projectDir),
+            signal: extra?.signal,
           }),
         ),
       );
@@ -2644,7 +2658,7 @@ export function registerWorkflowTools(
     "gsd_exec",
     "Run a short bash/node/python script in the project directory. Capped stdout/stderr and metadata persist under .gsd/exec; only a digest returns to MCP.",
     execParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: { signal?: AbortSignal }) => {
       const { projectDir, ...params } = parseWorkflowArgs(execSchema, args);
       await enforceWorkflowWriteGate("gsd_exec", projectDir);
       const { executeGsdExec } = await importLocalModule<any>(
@@ -2655,6 +2669,7 @@ export function registerWorkflowTools(
           executeGsdExec(params, {
             baseDir: projectDir,
             preferences: await loadProjectPreferences(projectDir),
+            signal: extra?.signal,
           }),
         ),
       );

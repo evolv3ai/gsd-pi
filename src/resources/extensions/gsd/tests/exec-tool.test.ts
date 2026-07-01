@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { registerExecTools } from "../bootstrap/exec-tools.ts";
 import { executeGsdExec, executeUatExec } from "../tools/exec-tool.ts";
-import type { ExecSandboxRequest, ExecSandboxResult } from "../exec-sandbox.ts";
+import type { ExecSandboxOptions, ExecSandboxRequest, ExecSandboxResult } from "../exec-sandbox.ts";
 
 function makeExecResult(request: ExecSandboxRequest): ExecSandboxResult {
   return {
@@ -12,6 +12,7 @@ function makeExecResult(request: ExecSandboxRequest): ExecSandboxResult {
     exit_code: 0,
     signal: null,
     timed_out: false,
+    aborted: false,
     force_resolved: false,
     duration_ms: 1,
     stdout_bytes: 12,
@@ -50,6 +51,49 @@ test("executeUatExec accepts evidence-mode aliases for intent", async () => {
   assert.equal(result.details?.operation, "gsd_uat_exec");
   assert.equal(result.details?.intent, "uat-artifact-check");
   assert.equal(requests[0]?.metadata?.intent, "uat-artifact-check");
+});
+
+test("executeGsdExec passes AbortSignal into sandbox options", async () => {
+  const controller = new AbortController();
+  let capturedSignal: AbortSignal | undefined;
+
+  const result = await executeGsdExec(
+    { runtime: "bash", script: "sleep 60" },
+    {
+      baseDir: "/tmp/gsd-exec-abort-signal-test",
+      preferences: null,
+      signal: controller.signal,
+      run: async (request, opts: ExecSandboxOptions) => {
+        capturedSignal = opts.signal;
+        return makeExecResult(request);
+      },
+    },
+  );
+
+  assert.equal(result.isError, false);
+  assert.equal(capturedSignal, controller.signal);
+});
+
+test("gsd_exec surfaces aborted child termination distinctly from a clean exit", async () => {
+  const result = await executeGsdExec(
+    { runtime: "bash", script: "trap 'exit 0' TERM; sleep 60" },
+    {
+      baseDir: "/tmp/gsd-exec-aborted-test",
+      preferences: null,
+      run: async (request) => ({
+        ...makeExecResult(request),
+        aborted: true,
+        exit_code: 0,
+        signal: null,
+        digest: "[no stdout — aborted]",
+      }),
+    },
+  );
+
+  assert.equal(result.isError, true, "an aborted run must be an error even if the child exits 0");
+  assert.equal(result.details?.aborted, true, "details must expose aborted");
+  const text = result.content.map((c) => c.text ?? "").join("\n");
+  assert.match(text, /exit=aborted/, "summary must distinguish an aborted result");
 });
 
 test("gsd_exec surfaces a force-resolved (D-state) kill distinctly from a clean exit", async () => {

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { resolveExpectedArtifactPath } from "./auto-artifact-paths.js";
 import { loadFile } from "./files.js";
 import { getLatestAssessmentByScope, isDbAvailable } from "./gsd-db.js";
-import { gsdProjectionRoot } from "./paths.js";
+import { relMilestoneFile } from "./paths.js";
 import {
   extractVerdict,
   isValidMilestoneVerdict,
@@ -68,13 +68,11 @@ export async function resolveMilestoneValidationVerdict(
     if (projectVerdict) return projectVerdict;
   }
 
-  // Last resort: direct canonical projection path even when resolveDir helpers
-  // have not materialized the milestone directory yet.
-  const directPath = join(
-    gsdProjectionRoot(canonicalBase),
-    "milestones",
-    milestoneId,
-    `${milestoneId}-VALIDATION.md`,
-  );
+  // Last resort: layout-aware fallback path when resolveDir helpers
+  // haven't materialized the milestone directory yet. relMilestoneFile()
+  // builds the canonical NN-VALIDATION.md path for flat-phase and the
+  // legacy MID-VALIDATION.md path for projects that haven't migrated.
+  // See open-gsd/gsd-pi#876.
+  const directPath = join(canonicalBase, relMilestoneFile(canonicalBase, milestoneId, "VALIDATION"));
   return verdictFromValidationPath(directPath);
 }

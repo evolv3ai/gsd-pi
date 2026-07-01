@@ -15,7 +15,7 @@ import {
   ReconciliationFailedError,
   type ReconciliationFailureDetail,
 } from "./errors.js";
-import { DRIFT_REGISTRY } from "./registry.js";
+import { DRIFT_REGISTRY, RECONCILIATION_REPAIR_PHASES, type ReconciliationRepairPhase } from "./registry.js";
 import type {
   DriftContext,
   DriftHandler,
@@ -33,7 +33,7 @@ export type {
 } from "./types.js";
 export { ReconciliationFailedError } from "./errors.js";
 export type { ReconciliationFailureDetail } from "./errors.js";
-export { DRIFT_REGISTRY } from "./registry.js";
+export { DRIFT_REGISTRY, RECONCILIATION_REPAIR_PHASES, handlerPhaseIndex } from "./registry.js";
 
 const MAX_PASSES = 2;
 
@@ -63,6 +63,7 @@ export async function reconcileBeforeDispatch(
 ): Promise<ReconciliationResult> {
   const deps: ReconciliationDeps = { ...defaultDeps, ...partialDeps };
   const registry = deps.registry ?? DRIFT_REGISTRY;
+  const repairPhases = getRepairPhases(registry);
   const clearParseCache = deps.clearParseCache ?? defaultClearParseCache;
   const repaired: DriftRecord[] = [];
 
@@ -122,28 +123,29 @@ export async function reconcileBeforeDispatch(
     const failures: ReconciliationFailureDetail[] = [];
     const blockers: string[] = [...detection.detectBlockers];
     let repairedThisPass = false;
-    for (const record of drift) {
-      const handler = registry.find((h) => h.kind === record.kind);
-      if (!handler) {
-        failures.push({
-          drift: record,
-          cause: new Error(
-            `No drift handler registered for kind "${record.kind}"`,
-          ),
-        });
-        continue;
-      }
-      const blocker = handler.blocker ? await handler.blocker(record, ctx) : null;
-      if (blocker) {
-        blockers.push(blocker);
-        continue;
-      }
-      try {
-        await handler.repair(record, ctx);
-        repaired.push(record);
-        repairedThisPass = true;
-      } catch (cause) {
-        failures.push({ drift: record, cause });
+    const repairedKindsThisPass = new Set<string>();
+
+    for (const phase of repairPhases) {
+      for (const record of drift) {
+        const recordKey = `${record.kind}:${JSON.stringify(record)}`;
+        if (repairedKindsThisPass.has(recordKey)) continue;
+
+        const handler = phase.handlers.find((h) => h.kind === record.kind);
+        if (!handler) continue;
+
+        const blocker = handler.blocker ? await handler.blocker(record, ctx) : null;
+        if (blocker) {
+          blockers.push(blocker);
+          continue;
+        }
+        try {
+          await handler.repair(record, ctx);
+          repaired.push(record);
+          repairedKindsThisPass.add(recordKey);
+          repairedThisPass = true;
+        } catch (cause) {
+          failures.push({ drift: record, cause });
+        }
       }
     }
 
@@ -214,6 +216,30 @@ export async function reconcileBeforeDispatch(
       ]),
     ],
   };
+}
+
+function getRepairPhases(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  registry: ReadonlyArray<DriftHandler<any>>,
+): ReadonlyArray<ReconciliationRepairPhase> {
+  const assigned = new Set<DriftHandler>();
+  const phases = RECONCILIATION_REPAIR_PHASES.map((phase) => {
+    const phaseKinds = new Set(phase.handlers.map((handler) => handler.kind));
+    const handlers = registry.filter((handler) => phaseKinds.has(handler.kind));
+    for (const handler of handlers) assigned.add(handler);
+    return { name: phase.name, handlers };
+  }).filter((phase) => phase.handlers.length > 0);
+
+  const unphasedHandlers = registry.filter((handler) => !assigned.has(handler));
+  if (unphasedHandlers.length === 0) return phases;
+
+  return [
+    ...phases,
+    {
+      name: "custom",
+      handlers: unphasedHandlers,
+    },
+  ];
 }
 
 interface DetectionOutcome {

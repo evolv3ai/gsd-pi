@@ -3,11 +3,22 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
+import { GIT_NO_PROMPT_ENV } from "../git-constants.ts";
 import { handleTurnGitActionError, runTurnGitAction } from "../git-service.ts";
+import { _resetLogs, drainLogs } from "../workflow-logger.ts";
 
 function run(cmd: string, cwd: string): string {
   return execSync(cmd, { cwd, stdio: "pipe", encoding: "utf-8" }).trim();
@@ -101,6 +112,43 @@ workspace:
   }
 });
 
+test("uok gitops turn action status-only reports dirty undeclared nested git repositories", () => {
+  const root = mkdtempSync(join(tmpdir(), "gsd-uok-gitops-nested-"));
+  try {
+    initRepo(root);
+    mkdirSync(join(root, "nested"), { recursive: true });
+    initRepo(join(root, "nested"));
+    writeFileSync(join(root, ".gitignore"), "nested/\n", "utf-8");
+    run("git add .gitignore", root);
+    run('git commit -m "chore: ignore nested repo"', root);
+
+    writeFileSync(join(root, "nested", "README.md"), "# Dirty nested\n", "utf-8");
+
+    _resetLogs();
+    const result = runTurnGitAction({
+      basePath: root,
+      action: "status-only",
+      unitType: "execute-task",
+      unitId: "M001/S01/T01",
+    });
+    const warnings = drainLogs();
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.dirty, true);
+    assert.deepEqual(result.dirtyRepositories, {
+      project: false,
+      "nested (undeclared)": true,
+    });
+    assert.ok(
+      warnings.some((entry) => entry.message.includes("undeclared dirty nested git repo nested")),
+      "dirty undeclared nested repo should be logged as a warning",
+    );
+  } finally {
+    _resetLogs();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("uok gitops turn action snapshot writes snapshot refs", () => {
   const repo = makeRepo();
   try {
@@ -135,6 +183,67 @@ test("uok gitops turn action commit creates commit with unit trailer", () => {
     assert.ok(body.includes("GSD-Unit: M001/S01/T02"));
   } finally {
     rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("uok gitops turn action commit reuses the collected dirty status", () => {
+  const repo = makeRepo();
+  const wrapperDir = mkdtempSync(join(tmpdir(), "gsd-uok-git-wrapper-"));
+  const logPath = join(wrapperDir, "git.log");
+  const wrapperPath = join(wrapperDir, "git");
+  const realGit = execSync("command -v git", { encoding: "utf-8" }).trim();
+  const gitEnv = GIT_NO_PROMPT_ENV as NodeJS.ProcessEnv;
+  const previousPath = gitEnv.PATH;
+  const previousRealGit = gitEnv.GSD_TEST_REAL_GIT;
+  const previousLogPath = gitEnv.GSD_TEST_GIT_LOG;
+
+  writeFileSync(wrapperPath, [
+    "#!/bin/sh",
+    "printf '%s\\n' \"$*\" >> \"$GSD_TEST_GIT_LOG\"",
+    "exec \"$GSD_TEST_REAL_GIT\" \"$@\"",
+    "",
+  ].join("\n"), "utf-8");
+  chmodSync(wrapperPath, 0o755);
+
+  try {
+    gitEnv.PATH = `${wrapperDir}:${previousPath ?? ""}`;
+    gitEnv.GSD_TEST_REAL_GIT = realGit;
+    gitEnv.GSD_TEST_GIT_LOG = logPath;
+
+    writeFileSync(join(repo, "feature.ts"), "export const x = 1;\n", "utf-8");
+    const result = runTurnGitAction({
+      basePath: repo,
+      action: "commit",
+      unitType: "execute-task",
+      unitId: "M001/S01/T-status",
+    });
+
+    assert.equal(result.status, "ok");
+    const invocations = readFileSync(logPath, "utf-8").trim().split("\n");
+    assert.equal(
+      invocations.filter((line) => line === "status --porcelain").length,
+      1,
+      "turn status is collected once",
+    );
+    assert.equal(
+      invocations.includes("status --short"),
+      false,
+      "autoCommit should not re-read working-tree status when turn status is known",
+    );
+  } finally {
+    gitEnv.PATH = previousPath;
+    if (previousRealGit === undefined) {
+      delete gitEnv.GSD_TEST_REAL_GIT;
+    } else {
+      gitEnv.GSD_TEST_REAL_GIT = previousRealGit;
+    }
+    if (previousLogPath === undefined) {
+      delete gitEnv.GSD_TEST_GIT_LOG;
+    } else {
+      gitEnv.GSD_TEST_GIT_LOG = previousLogPath;
+    }
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(wrapperDir, { recursive: true, force: true });
   }
 });
 

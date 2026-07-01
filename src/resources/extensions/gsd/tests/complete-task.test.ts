@@ -381,6 +381,81 @@ console.log('\n=== complete-task: handler happy path ===');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// complete-task: Projection failure rolls DB completion back
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n=== complete-task: projection failure rolls DB completion back ===');
+{
+  const dbPath = tempDbPath();
+  openDatabase(dbPath);
+
+  const { basePath, planPath } = createTempProject();
+
+  insertMilestone({ id: 'M001', title: 'Test Milestone' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice' });
+
+  fs.unlinkSync(planPath);
+  fs.mkdirSync(planPath, { recursive: true });
+
+  const result = await handleCompleteTask(makeValidParams(), basePath);
+
+  assertTrue('error' in result, 'projection failure should return an error');
+  if ('error' in result) {
+    assertMatch(result.error, /projection write failed/, 'error should mention projection write failure');
+  }
+
+  const task = getTask('M001', 'S01', 'T01');
+  assertTrue(task !== null, 'task row should remain for retry');
+  assertEq(task!.status, 'pending', 'task status should be rolled back to pending');
+  assertEq(task!.completed_at, null, 'rolled back task should not keep completed_at');
+
+  const adapter = _getAdapter()!;
+  const evRows = adapter.prepare(
+    "SELECT * FROM verification_evidence WHERE task_id = 'T01' AND slice_id = 'S01' AND milestone_id = 'M001'"
+  ).all();
+  assertEq(evRows.length, 0, 'verification evidence should be deleted when projection rollback runs');
+
+  const summaryPath = path.join(path.dirname(planPath), 'T01-SUMMARY.md');
+  assertTrue(!fs.existsSync(summaryPath), 'SUMMARY.md should be removed so disk state stays pending');
+
+  cleanupDir(basePath);
+  cleanup(dbPath);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// complete-task: Handler does not re-render completed sibling summaries
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n=== complete-task: handler leaves completed sibling summaries untouched ===');
+{
+  const dbPath = tempDbPath();
+  openDatabase(dbPath);
+
+  const { basePath, planPath } = createTempProject();
+
+  insertMilestone({ id: 'M001', title: 'Test Milestone' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice', risk: 'high', depends: [], demo: 'basic functionality works', sequence: 1 });
+  insertTask({ id: 'T00', sliceId: 'S01', milestoneId: 'M001', status: 'complete', title: 'Already complete task', oneLiner: 'Previously completed' });
+  insertTask({ id: 'T02', sliceId: 'S01', milestoneId: 'M001', status: 'pending', title: 'Second task' });
+
+  const siblingSummaryPath = path.join(path.dirname(planPath), 'T00-SUMMARY.md');
+  const siblingSummaryContent = 'existing sibling summary marker\n';
+  fs.writeFileSync(siblingSummaryPath, siblingSummaryContent);
+
+  const result = await handleCompleteTask(makeValidParams(), basePath);
+
+  assertTrue(!('error' in result), 'handler should succeed without error');
+  assertEq(
+    fs.readFileSync(siblingSummaryPath, 'utf-8'),
+    siblingSummaryContent,
+    'complete-task should not re-render summaries for already-completed sibling tasks',
+  );
+
+  cleanupDir(basePath);
+  cleanup(dbPath);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // complete-task: hard-blocker escalation with mid-execution escalation disabled
 // ═══════════════════════════════════════════════════════════════════════════
 

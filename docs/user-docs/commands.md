@@ -162,7 +162,7 @@ These commands are native GSD workflows surfaced in `/gsd help full`. They dispa
 | `/gsd progress` | Summarize recent work and next steps; `--next` dispatches `/gsd next`, and `--do "..."` routes through `/gsd do` |
 | `/gsd health` | Check `.gsd/` integrity; supports `--repair` and `--context` |
 | `/gsd surface` | Manage which skills and extensions are surfaced in the session |
-| `/gsd code-review` | Review changed source for bugs, security, and quality; supports `--depth`, `--files`, and `--fix` |
+| `/gsd code-review` | Review changed source diff-first for bugs, security, and quality; supports `--depth`, `--files`, and `--fix` |
 | `/gsd review` | Peer-review recent work across reviewer perspectives; external reviewer flags are simulated in-prompt when unavailable |
 | `/gsd audit-milestone` | Verify a milestone met its definition of done |
 | `/gsd audit-uat` | Audit outstanding UAT/verification items; supports `--verify` |
@@ -368,6 +368,10 @@ The following commands are sent directly in your **Telegram chat** to a configur
 > **Note:** In terminals without Kitty keyboard protocol support (macOS Terminal.app, JetBrains IDEs), slash-command fallbacks are shown instead of `Ctrl+Alt` shortcuts.
 >
 > **Tip:** If `Ctrl+V` is intercepted by your terminal (e.g. Warp), use `Alt+V` instead for clipboard image paste.
+
+### Claude Code selected-text Quick Action (macOS)
+
+`scripts/claude-code-send-selection.sh` is an optional Automator Quick Action shim for Claude Code.app. It reads selected text from stdin (or the clipboard as a fallback), pastes it into Claude Code, submits it, and restores the previous clipboard. To use it, create an Automator **Quick Action** with **Run Shell Script**, point it at the script path, and bind your preferred macOS keyboard shortcut.
 
 ## CLI Flags
 

@@ -9,6 +9,9 @@
 import { describe, it, beforeEach, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.js";
 import type {
 	RpcCommand,
@@ -505,6 +508,29 @@ describe("RpcClient command serialization", () => {
 		assert.equal(parsed.runId, "run-uuid-abc");
 		assert.equal(parsed.command, "prompt");
 		assert.equal(parsed.success, true);
+	});
+});
+
+// ============================================================================
+// RpcClient process bootstrap tests
+// ============================================================================
+
+describe("RpcClient process bootstrap", () => {
+	it("starts the agent with the current Node executable", async () => {
+		const { RpcClient } = await import("./rpc-client.js");
+		const dir = mkdtempSync(join(tmpdir(), "gsd-agent-modes-rpc-client-"));
+		const scriptPath = join(dir, "agent.js");
+		writeFileSync(scriptPath, "setInterval(() => {}, 1000);\n");
+
+		const client = new RpcClient({ cliPath: scriptPath });
+
+		try {
+			await client.start();
+			assert.equal((client as any).process.spawnfile, process.execPath);
+		} finally {
+			await client.stop();
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });
 

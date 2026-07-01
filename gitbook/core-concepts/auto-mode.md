@@ -40,6 +40,8 @@ The GSD database is the runtime source of truth for milestones, slices, tasks, r
 
 Markdown files in `.gsd/` are rendered projections for review, prompts, and git-friendly history. `.gsd/DECISIONS.md` is projected from architecture memories, and the Patterns/Lessons sections of `.gsd/KNOWLEDGE.md` are projected from memory rows; editing those projections does not override the database unless a GSD command imports or saves the change. The Rules section of `KNOWLEDGE.md` remains manually authored and is preserved separately.
 
+Task completion only succeeds after its closeout-critical projections are on disk. `gsd_task_complete` writes the database completion and verification evidence first, then writes `T##-SUMMARY.md` and re-renders the slice plan. If the summary or plan projection write fails, the tool returns an error, deletes that task's verification evidence, restores the task to `pending`, and removes the attempted summary file instead of leaving the database complete with a stale plan projection.
+
 In worktree mode, the project-root database and project-root `.gsd/` state remain authoritative. Worktree markdown projections are diagnostics, not state to sync back. Runtime state derivation does not silently rebuild from markdown when the database is unavailable. The legacy markdown fallback is only enabled with `GSD_ALLOW_MARKDOWN_DERIVE_FALLBACK=1` for tests and explicit recovery work.
 
 ## Deep Planning Mode

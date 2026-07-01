@@ -47,7 +47,11 @@ import {
   applyMigrationV28MemoryLastHitAt,
   applyMigrationV29RepositoryTargets,
 } from "../db-migration-steps.js";
-import { isMemoriesFtsAvailableSchema, tryCreateMemoriesFtsSchema } from "../db-memory-fts-schema.js";
+import {
+  isMemoriesFtsAvailableSchema,
+  rebuildMemoriesFtsSchemaOnce,
+  tryCreateMemoriesFtsSchema,
+} from "../db-memory-fts-schema.js";
 import { createDbOpenState, type DbOpenPhase } from "../db-open-state.js";
 import { createRuntimeKvTableV25 } from "../db-runtime-kv-schema.js";
 import { getCurrentSchemaVersion, recordSchemaVersion } from "../db-schema-metadata.js";
@@ -134,6 +138,9 @@ function initSchema(db: DbAdapter, fileBacked: boolean, dbPath: string | null): 
   }
 
   migrateSchema(db, dbPath);
+  rebuildMemoriesFtsSchemaOnce(db, {
+    onRebuildFailed: (message) => logWarning("db", message),
+  });
 }
 
 export function _isLikelyWslDrvFsPathForTest(dbPath: string | null): boolean {
@@ -669,6 +676,32 @@ export function closeDatabase(): void {
   // Reset session-scoped state unconditionally so stale error info from a
   // failed open doesn't persist into the next open attempt or status check.
   _dbOpenState.reset();
+}
+
+/**
+ * Open an isolated database connection that does NOT touch the process-wide
+ * `currentDb` singleton. Intended for background observers (e.g. the parallel
+ * monitor overlay) that must read a database without displacing an active
+ * workflow session connection.
+ *
+ * The caller MUST call `adapter.close()` when done. Schema migrations are NOT
+ * run — the database must already exist and be fully migrated by the primary
+ * connection. Returns null if the connection cannot be opened.
+ */
+export function openIsolatedDatabase(path: string): DbAdapter | null {
+  try {
+    const rawDb = providerLoader.openRaw(path);
+    if (!rawDb) return null;
+    const adapter = createDbAdapter(rawDb);
+    // Minimal pragmas for a short-lived read-only observer connection.
+    // WAL mode is already set file-wide by the primary connection; repeating
+    // it here is a no-op on an existing WAL file and safe to issue.
+    adapter.exec("PRAGMA journal_mode=WAL");
+    adapter.exec("PRAGMA busy_timeout = 5000");
+    return adapter;
+  } catch {
+    return null;
+  }
 }
 
 /**

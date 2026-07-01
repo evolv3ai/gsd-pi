@@ -30,7 +30,7 @@ import { classifyUatContent, escalatesArtifactUatToBrowser } from "../uat-policy
 import { invalidateStateCache } from "../state.js";
 import { renderRoadmapFromDb, roadmapRenderMarksSliceDone } from "../markdown-renderer.js";
 import { isStaleWrite } from "../auto/turn-epoch.js";
-import { flushWorkflowProjections } from "../projection-flush.js";
+import { renderMilestoneShellProjections } from "../workflow-projections.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning, logError } from "../workflow-logger.js";
@@ -540,7 +540,7 @@ export async function handleCompleteSlice(
   // Separate try/catch per step so a projection failure doesn't prevent
   // the event log entry (critical for worktree reconciliation).
   try {
-    await flushWorkflowProjections(artifactBasePath, { milestoneId: params.milestoneId });
+    await renderMilestoneShellProjections(artifactBasePath, params.milestoneId);
   } catch (projErr) {
     logWarning("tool", `complete-slice projection warning for ${params.milestoneId}/${params.sliceId}: ${(projErr as Error).message}`);
   }

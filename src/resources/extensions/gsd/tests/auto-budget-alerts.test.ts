@@ -8,6 +8,7 @@ import {
   getNewBudgetAlertLevel,
   resolveCompactionThresholdPercent,
   shouldRerootStepSessionForContext,
+  shouldWarnStepSessionForContext,
 } from "../auto.js";
 import {
   getUnitCostSpikeAction,
@@ -73,11 +74,19 @@ test("resolveCompactionThresholdPercent defaults to 60 and accepts ratio prefs",
   assert.equal(resolveCompactionThresholdPercent(0.4), 60);
 });
 
-test("shouldRerootStepSessionForContext uses compaction threshold pref", () => {
-  assert.equal(shouldRerootStepSessionForContext(59.9, 0.6), false);
-  assert.equal(shouldRerootStepSessionForContext(60, 0.6), true);
-  assert.equal(shouldRerootStepSessionForContext(273.8, 0.6), true);
-  assert.equal(shouldRerootStepSessionForContext(undefined, 0.6), false);
+test("shouldWarnStepSessionForContext uses compaction threshold pref", () => {
+  assert.equal(shouldWarnStepSessionForContext(59.9, 0.6), false);
+  assert.equal(shouldWarnStepSessionForContext(60, 0.6), true);
+  assert.equal(shouldWarnStepSessionForContext(72, 0.6), true);
+  assert.equal(shouldWarnStepSessionForContext(undefined, 0.6), false);
+});
+
+test("shouldRerootStepSessionForContext only fires at the hard context threshold", () => {
+  assert.equal(shouldRerootStepSessionForContext(72), false);
+  assert.equal(shouldRerootStepSessionForContext(89.9), false);
+  assert.equal(shouldRerootStepSessionForContext(90), true);
+  assert.equal(shouldRerootStepSessionForContext(273.8), true);
+  assert.equal(shouldRerootStepSessionForContext(undefined), false);
 });
 
 test("resolveUnitCostSpikeMultiplier disables the spike pause for burn-max", () => {

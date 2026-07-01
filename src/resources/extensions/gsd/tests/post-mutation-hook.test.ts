@@ -10,7 +10,7 @@ import * as os from 'node:os';
 import { openDatabase, closeDatabase } from '../gsd-db.ts';
 import { handleCompleteTask } from '../tools/complete-task.ts';
 import { readEvents } from '../workflow-events.ts';
-import { readManifest } from '../workflow-manifest.ts';
+import { flushManifest, readManifest } from '../workflow-manifest.ts';
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-post-hook-'));
@@ -115,8 +115,9 @@ test('post-mutation-hook: state-manifest.json exists after handleCompleteTask', 
     const result = await handleCompleteTask(makeCompleteTaskParams(), base);
     assert.ok(!('error' in result), `handler should succeed, got: ${JSON.stringify(result)}`);
 
+    await flushManifest(base);
     const manifestPath = path.join(base, '.gsd', 'state-manifest.json');
-    assert.ok(fs.existsSync(manifestPath), 'state-manifest.json should exist after handler completes');
+    assert.ok(fs.existsSync(manifestPath), 'state-manifest.json should exist after manifest flush');
   } finally {
     closeDatabase();
     cleanupDir(base);
@@ -131,6 +132,7 @@ test('post-mutation-hook: manifest has version 1 and includes completed task', a
 
   try {
     await handleCompleteTask(makeCompleteTaskParams(), base);
+    await flushManifest(base);
 
     const manifest = readManifest(base);
     assert.ok(manifest !== null, 'manifest should be readable');

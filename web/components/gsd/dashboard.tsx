@@ -28,13 +28,12 @@ import {
   getCurrentScopeLabel,
   getCurrentBranch,
   getCurrentSlice,
-  getLiveAutoDashboard,
-  getLiveWorkspaceIndex,
+  resolveAutoDashboard,
+  resolveWorkspaceIndex,
   type WorkspaceTerminalLine,
   type TerminalLineType,
 } from "@/lib/gsd-workspace-store"
 import { getTaskStatus, type ItemStatus } from "@/lib/workspace-status"
-import { deriveWorkflowAction } from "@/lib/workflow-actions"
 import { executeWorkflowActionInPowerMode } from "@/lib/workflow-action-execution"
 import { deriveDashboardRtkMetric } from "@/lib/dashboard-metrics"
 import { Skeleton } from "@/components/ui/skeleton"
@@ -117,14 +116,13 @@ interface DashboardProps {
   onExpandTerminal?: () => void
 }
 
-export function Dashboard({ onSwitchView, onExpandTerminal }: DashboardProps = {}) {
+export function Dashboard({ onSwitchView }: DashboardProps = {}) {
   const state = useGSDWorkspaceState()
   const { sendCommand } = useGSDWorkspaceActions()
   const boot = state.boot
-  const workspace = getLiveWorkspaceIndex(state)
-  const auto = getLiveAutoDashboard(state)
+  const workspace = resolveWorkspaceIndex(state)
+  const auto = resolveAutoDashboard(state)
   const bridge = boot?.bridge ?? null
-  const freshness = state.live.freshness
   const projectCwd = boot?.project.cwd
 
   // ── Project-level totals from visualizer API ──
@@ -169,29 +167,13 @@ export function Dashboard({ onSwitchView, onExpandTerminal }: DashboardProps = {
   const branch = getCurrentBranch(workspace)
   const isAutoActive = auto?.active ?? false
   const currentUnitLabel = auto?.currentUnit?.id ?? scopeLabel
-  const currentUnitFreshness = freshness.auto.stale ? "stale" : freshness.auto.status
+  const currentUnitFreshness = state.live.auto.stale ? "stale" : state.live.auto.status
 
-  const workflowAction = deriveWorkflowAction({
-    phase: workspace?.active.phase ?? "pre-planning",
-    autoActive: auto?.active ?? false,
-    autoPaused: auto?.paused ?? false,
-    onboardingLocked: boot?.onboarding.locked ?? false,
-    commandInFlight: state.commandInFlight,
-    bootStatus: state.bootStatus,
-    hasMilestones: (workspace?.milestones.length ?? 0) > 0,
-    stepMode: auto?.stepMode ?? false,
-    projectDetectionKind: boot?.projectDetection?.kind ?? null,
-  })
 
   const handleWorkflowAction = (command: string) => {
     executeWorkflowActionInPowerMode({
       dispatch: () => sendCommand(buildPromptCommand(command, bridge)),
     })
-  }
-
-  const handlePrimaryAction = () => {
-    if (!workflowAction.primary) return
-    handleWorkflowAction(workflowAction.primary.command)
   }
 
   const recentLines: WorkspaceTerminalLine[] = (state.terminalLines ?? []).slice(-6)

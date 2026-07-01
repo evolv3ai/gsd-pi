@@ -460,6 +460,7 @@ describe("Batch 3 prompt templates resolve", () => {
     const out = loadPrompt("code-review", { scope: "s", depth: "deep", fixMode: "off", reviewId: "001" });
     assert.match(out, /deep/);
     assert.match(out, /001/);
+    assert.match(out, /diff-first/i, "code-review prompt should require diff-first context gathering");
   });
   test("review.md loads with target + reviewers", () => {
     const out = loadPrompt("review", { target: "t", reviewers: "claude, codex" });

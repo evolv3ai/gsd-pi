@@ -28,11 +28,10 @@ import { deriveState } from "./state.js";
 import { isAutoActive } from "./auto.js";
 import { loadPrompt } from "./prompt-loader.js";
 import { gsdRoot } from "./paths.js";
-import { isDbAvailable, getAllMilestones, getMilestoneSlices, getSliceTasks } from "./gsd-db.js";
-import { isClosedStatus } from "./status-guards.js";
+import { isDbAvailable, getHierarchyCompletionCounts } from "./gsd-db.js";
 import { formatDuration } from "../shared/format-utils.js";
 import { getAutoWorktreePath } from "./auto-worktree.js";
-import { loadEffectiveGSDPreferences, loadGlobalGSDPreferences, getGlobalGSDPreferencesPath } from "./preferences.js";
+import { clearGSDPreferencesCache, loadEffectiveGSDPreferences, loadGlobalGSDPreferences, getGlobalGSDPreferencesPath } from "./preferences.js";
 import { showNextAction } from "../shared/tui.js";
 import {
   isInteractiveCommandContext,
@@ -271,6 +270,7 @@ async function writeForensicsDedupPref(ctx: ExtensionCommandContext, enabled: bo
   }
 
   writeFileSync(prefsPath, `---\n${frontmatter}---${body}`, "utf-8");
+  clearGSDPreferencesCache();
 }
 
 // ─── Entry Point ──────────────────────────────────────────────────────────────
@@ -758,37 +758,7 @@ function loadCompletedKeys(basePath: string): string[] {
 function getDbCompletionCounts(): DbCompletionCounts | null {
   if (!isDbAvailable()) return null;
 
-  const milestones = getAllMilestones();
-  let completedMilestones = 0;
-  let totalSlices = 0;
-  let completedSlices = 0;
-  let totalTasks = 0;
-  let completedTasks = 0;
-
-  for (const m of milestones) {
-    if (isClosedStatus(m.status)) completedMilestones++;
-
-    const slices = getMilestoneSlices(m.id);
-    for (const s of slices) {
-      totalSlices++;
-      if (isClosedStatus(s.status)) completedSlices++;
-
-      const tasks = getSliceTasks(m.id, s.id);
-      for (const t of tasks) {
-        totalTasks++;
-        if (isClosedStatus(t.status)) completedTasks++;
-      }
-    }
-  }
-
-  return {
-    milestones: completedMilestones,
-    milestonesTotal: milestones.length,
-    slices: completedSlices,
-    slicesTotal: totalSlices,
-    tasks: completedTasks,
-    tasksTotal: totalTasks,
-  };
+  return getHierarchyCompletionCounts();
 }
 
 // ─── Anomaly Detectors ───────────────────────────────────────────────────────

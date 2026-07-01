@@ -2,9 +2,10 @@
 // File Purpose: Workspace-facing Interface for opening and maintaining the workflow database.
 
 import { existsSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { GsdWorkspace, MilestoneScope } from "./workspace.js";
+import type { DbAdapter } from "./db-adapter.js";
 import {
   backupDatabaseSnapshot,
   checkpointDatabase,
@@ -18,12 +19,13 @@ import {
   openDatabase,
   openDatabaseByScope,
   openDatabaseByWorkspace,
+  openIsolatedDatabase,
   refreshOpenDatabaseFromDisk,
   vacuumDatabase,
   wasDbOpenAttempted,
 } from "./gsd-db.js";
-import { resolveGsdPathContract } from "./paths.js";
-import { setLogBasePath } from "./workflow-logger.js";
+import { resolveGsdPathContract, gsdRoot } from "./paths.js";
+import { logWarning, setLogBasePath } from "./workflow-logger.js";
 
 export interface WorkflowDatabaseLocation {
   projectRoot: string;
@@ -54,6 +56,20 @@ export type WorkflowDatabaseOpenResult =
 export type WorkflowDatabaseStatus = ReturnType<typeof getDbStatus>;
 export type WorkflowDatabaseProvider = ReturnType<typeof getDbProvider>;
 
+/**
+ * Global SQLite handle invariants:
+ *
+ * - `openWorkflowDatabase` / `openDatabase` switch the process-global handle consumed by
+ *   deriveState, dispatch, reconciliation repairs, and domain writers. Only one active
+ *   project database should own the global handle at a time.
+ * - `openWorkflowDatabaseIsolated` opens a caller-owned connection that does not clobber
+ *   the global handle. Use for read-only observers (parallel monitor) and other background
+ *   probes that must not disturb the active workflow session.
+ * - Reconciliation repairs that write markdown/DB state must use `ensureWorkflowDbForBase`
+ *   so repairs target the correct project; those paths intentionally re-open the global handle.
+ * - Pair ad-hoc project switches with `closeWorkflowDatabase()` or restore via
+ *   `ensureWorkflowDbForBase(..., { refresh: true })` before returning to derive/dispatch.
+ */
 export function resolveWorkflowDatabaseLocation(basePath: string): WorkflowDatabaseLocation {
   const contract = resolveGsdPathContract(basePath);
   return {
@@ -113,6 +129,19 @@ export function openWorkflowDatabasePath(path: string): boolean {
   return openDatabase(path);
 }
 
+/**
+ * Open an isolated database connection for read-only observation without
+ * displacing the active workflow session's global DB handle. The caller is
+ * responsible for calling `adapter.close()` when done.
+ *
+ * Use this for background observers (e.g. the parallel monitor overlay) that
+ * need to query a database on a 5s tick without interfering with the primary
+ * connection. Returns null if the connection cannot be opened.
+ */
+export function openWorkflowDatabaseIsolated(path: string): DbAdapter | null {
+  return openIsolatedDatabase(path);
+}
+
 export function openWorkflowDatabaseByWorkspace(workspace: GsdWorkspace): boolean {
   return openDatabaseByWorkspace(workspace);
 }
@@ -155,6 +184,50 @@ export function getWorkflowDatabasePath(): string | null {
 
 export function refreshWorkflowDatabaseFromDisk(): boolean {
   return refreshOpenDatabaseFromDisk();
+}
+
+export function expectedWorkflowDbPathForBase(basePath: string): string {
+  return join(gsdRoot(basePath), "gsd.db");
+}
+
+export interface EnsureWorkflowDbOptions {
+  /** When true, refresh from disk before reopening if already open on the correct path. */
+  refresh?: boolean;
+}
+
+export function ensureWorkflowDbAtPath(dbPath: string | null): boolean {
+  if (!dbPath || dbPath === ":memory:") return isDbAvailable();
+  if (isDbAvailable() && getWorkflowDatabasePath() === dbPath) return true;
+  if (!existsSync(dbPath)) return false;
+  try {
+    return openWorkflowDatabasePath(dbPath);
+  } catch (err) {
+    logWarning("reconcile", `ensureWorkflowDbAtPath could not reopen DB: ${(err as Error).message}`);
+    return false;
+  }
+}
+
+export function ensureWorkflowDbForBase(
+  basePath: string,
+  options: EnsureWorkflowDbOptions = {},
+): boolean {
+  const dbPath = expectedWorkflowDbPathForBase(basePath);
+  if (!existsSync(dbPath)) return false;
+
+  try {
+    if (options.refresh) {
+      if (isDbAvailable() && getWorkflowDatabasePath() === dbPath && refreshWorkflowDatabaseFromDisk()) {
+        return true;
+      }
+      return openWorkflowDatabasePath(dbPath);
+    }
+
+    if (isDbAvailable() && getWorkflowDatabasePath() === dbPath) return true;
+    return openWorkflowDatabasePath(dbPath);
+  } catch (err) {
+    logWarning("reconcile", `ensureWorkflowDbForBase could not reopen DB: ${(err as Error).message}`);
+    return false;
+  }
 }
 
 export function checkpointWorkflowDatabase(): void {

@@ -76,6 +76,8 @@ import { join } from "node:path";
 import { evaluateAllCompleteSettlement } from "../milestone-settlement.js";
 import { hasHeldMilestoneLease, reclaimMissingMilestoneLease } from "./milestone-lease-reclaim.js";
 
+type UokFlags = ReturnType<typeof resolveUokFlags>;
+
 function now(): number {
   return Date.now();
 }
@@ -517,15 +519,7 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
 
   // ── UokGateAdapter (folded) ──────────────────────────────────────────────
 
-  private async emitUokGate(input: {
-    gateId: string;
-    gateType: "policy" | "execution";
-    outcome: "pass" | "fail" | "manual-attention";
-    failureClass: "none" | "policy" | "manual-attention";
-    rationale: string;
-    findings?: string;
-    milestoneId?: string;
-  }): Promise<void> {
+  private resolveUokGateContext(): { activeBasePath: string; uokFlags: UokFlags } {
     const activeBasePath = this.getLiveDispatchBasePath();
     const prefs = loadEffectiveGSDPreferencesWithRegistry(
       this.ctx.modelRegistry,
@@ -535,8 +529,22 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
         ? `${this.s.autoModeStartModel.provider}/${this.s.autoModeStartModel.id}`
         : undefined,
     )?.preferences;
-    const uokFlags = resolveUokFlags(prefs);
-    if (!uokFlags.gates) return;
+    return { activeBasePath, uokFlags: resolveUokFlags(prefs) };
+  }
+
+  private async emitUokGate(input: {
+    gateId: string;
+    gateType: "policy" | "execution";
+    outcome: "pass" | "fail" | "manual-attention";
+    failureClass: "none" | "policy" | "manual-attention";
+    rationale: string;
+    findings?: string;
+    milestoneId?: string;
+    activeBasePath: string;
+    uokFlags: UokFlags;
+  }): Promise<void> {
+    if (!input.uokFlags.gates) return;
+    const activeBasePath = input.activeBasePath;
     const milestoneId = input.milestoneId ?? this.s.currentMilestoneId ?? undefined;
     try {
       const { UokGateRunner } = await import("../uok/gate-runner.js");
@@ -918,12 +926,17 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
   public async start(_sessionContext: AutoSessionContext): Promise<AutoAdvanceResult> {
     this.lastAdvanceKey = null;
     this.lastFinalizedUnitKey = null;
-    // #482: the DB dispatch ledger is the source of truth across sessions.
-    // Discard any in-memory window and rebuild it from the ledger so a unit
-    // that was re-dispatched in previous sessions is detected as stuck here
-    // instead of silently re-dispatching forever.
+    // #852: a fresh user-triggered session must start with a clean stuck window.
+    // Cross-session rehydration at start() was removed because it caused false
+    // stuck-loop verdicts when prior sessions left consecutive finalize-retry
+    // entries in unit_dispatches — the new session would be killed before its
+    // first dispatch ran. Within-session stuck detection (accumulated through
+    // recordDispatch() calls during advance()) remains fully active and catches
+    // genuine stuck patterns after STUCK_WINDOW_SIZE dispatches.
+    //
+    // resume() retains cross-session rehydration: an interrupted session resuming
+    // after a crash should see the dispatch history it had been accumulating.
     this.dispatchHistory.clearOnRecovery();
-    this.dispatchHistory.rehydrate();
     this.lastStuckRecoveryKey = null;
     this.lastDerivedPhase = null;
     this.status.phase = "running";
@@ -938,10 +951,12 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
     const stopAdvanceTimer = debugTime("orchestrator-advance");
     try {
       this.ensureLockOwnership();
+      const uokGateContext = this.resolveUokGateContext();
 
       const staleMsg = this.checkResourcesStale();
       if (staleMsg) {
         await this.emitUokGate({
+          ...uokGateContext,
           gateId: "resource-version-guard",
           gateType: "policy",
           outcome: "fail",
@@ -955,6 +970,7 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
         return blocked;
       }
       await this.emitUokGate({
+        ...uokGateContext,
         gateId: "resource-version-guard",
         gateType: "policy",
         outcome: "pass",
@@ -965,6 +981,7 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
       const gate = await this.preAdvanceGate();
       if (gate.kind === "fail") {
         await this.emitUokGate({
+          ...uokGateContext,
           gateId: "pre-dispatch-health-gate",
           gateType: "execution",
           outcome: "manual-attention",
@@ -983,6 +1000,7 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
       }
       if (gate.kind === "threw") {
         await this.emitUokGate({
+          ...uokGateContext,
           gateId: "pre-dispatch-health-gate",
           gateType: "execution",
           outcome: "manual-attention",
@@ -993,6 +1011,7 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
         // intentional fall-through: matches runPreDispatch behaviour
       } else {
         await this.emitUokGate({
+          ...uokGateContext,
           gateId: "pre-dispatch-health-gate",
           gateType: "execution",
           outcome: "pass",

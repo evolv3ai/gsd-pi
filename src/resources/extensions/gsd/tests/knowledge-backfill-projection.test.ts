@@ -161,6 +161,41 @@ test("backfill is idempotent — second run on the same file is a no-op", () => 
   }
 });
 
+test("backfill skips a knowledge row whose memory insert throws and continues later rows", () => {
+  const base = makeTmpBase();
+  try {
+    writeKnowledgeMd(base, FIXTURE);
+
+    const adapter = _getAdapter();
+    assert.ok(adapter);
+    adapter.exec(`
+      CREATE TRIGGER fail_p002_memory_insert
+      BEFORE INSERT ON memories
+      WHEN json_extract(NEW.structured_fields, '$.sourceKnowledgeId') = 'P002'
+      BEGIN
+        SELECT RAISE(ABORT, 'poison knowledge P002');
+      END
+    `);
+
+    const written = backfillKnowledgeToMemories(base);
+    assert.equal(written, 2, "one poisoned row should not abort the batch");
+
+    const rows = adapter
+      .prepare(
+        "SELECT structured_fields FROM memories WHERE structured_fields LIKE '%\"sourceKnowledgeId\":\"%' ORDER BY seq",
+      )
+      .all() as Array<{ structured_fields: string }>;
+
+    assert.deepEqual(
+      rows.map((row) => JSON.parse(row.structured_fields).sourceKnowledgeId),
+      ["P001", "L001"],
+      "rows after the poisoned knowledge entry should still be migrated",
+    );
+  } finally {
+    cleanup(base);
+  }
+});
+
 test("backfill returns 0 when KNOWLEDGE.md is absent", () => {
   const base = makeTmpBase();
   try {

@@ -166,20 +166,20 @@ importers:
         specifier: 0.3.6
         version: 0.3.6
       '@opengsd/engine-darwin-arm64':
-        specifier: 1.3.0
-        version: 1.3.0
+        specifier: 1.4.0
+        version: 1.4.0
       '@opengsd/engine-darwin-x64':
-        specifier: 1.3.0
-        version: 1.3.0
+        specifier: 1.4.0
+        version: 1.4.0
       '@opengsd/engine-linux-arm64-gnu':
-        specifier: 1.3.0
-        version: 1.3.0
+        specifier: 1.4.0
+        version: 1.4.0
       '@opengsd/engine-linux-x64-gnu':
-        specifier: 1.3.0
-        version: 1.3.0
+        specifier: 1.4.0
+        version: 1.4.0
       '@opengsd/engine-win32-x64-msvc':
-        specifier: 1.3.0
-        version: 1.3.0
+        specifier: 1.4.0
+        version: 1.4.0
       fsevents:
         specifier: ~2.3.3
         version: 2.3.3
@@ -580,6 +580,9 @@ importers:
 
   web:
     dependencies:
+      '@gsd/agent-core':
+        specifier: workspace:*
+        version: link:../packages/gsd-agent-core
       '@hookform/resolvers':
         specifier: ^3.9.1
         version: 3.10.0(react-hook-form@7.76.1(react@19.2.5))
@@ -1931,34 +1934,35 @@ packages:
     resolution: {integrity: sha512-nn5ozdjYQpUCZlWGuxcJY/KpxkWQs4DcbMCmKojjyrYDEAGy4Ce19NN4v5MduafTwJlbKc99UA8YhSVqq9yPZA==}
     engines: {node: '>=12.4.0'}
 
-  '@opengsd/engine-darwin-arm64@1.3.0':
-    resolution: {integrity: sha512-xY3OIWJtdHj/tsa/IwIjhNS8+6oUlcnAYf01ruJe2VzdpWafh7AylxmAFjD3+Xbv8BJ/oLEBsWnO2O20I2wA5w==}
+  '@opengsd/engine-darwin-arm64@1.4.0':
+    resolution: {integrity: sha512-GgC9tiKrHmTprWta/9E0I2ybO7j0r/Du7rqKm4SjOG5RH0g9CdsvRL+/H7o7uUxUtubq+bJeGH8rzbcixHM0qA==}
     cpu: [arm64]
     os: [darwin]
 
-  '@opengsd/engine-darwin-x64@1.3.0':
-    resolution: {integrity: sha512-AX+edYFNhJCmbMtsf0qH6SCzKDpkT0Zl+KzZ3uOjH9FjjWsGT3cyK/ZS9ceROUVSM6E6CJu8bUM3xMhz+bN1TQ==}
+  '@opengsd/engine-darwin-x64@1.4.0':
+    resolution: {integrity: sha512-87k0HF/NGzQJdMkRyS61Pq/RmHr0pL2zlos+qZMU+GbigivDoDFegNDkaj8KlL/asKBPCPF+l1GRx41HRHgevg==}
     cpu: [x64]
     os: [darwin]
 
-  '@opengsd/engine-linux-arm64-gnu@1.3.0':
-    resolution: {integrity: sha512-DPhS40loBMWNF/R0z8Vq/27c/uUTEaC026J3YLOQLGeuGJ49BNxM17Qf5L0/4msJnj2QIEgdyzExJQlPFDCB6A==}
+  '@opengsd/engine-linux-arm64-gnu@1.4.0':
+    resolution: {integrity: sha512-hbldQu791KALtyOusFFZVslM4Bbu+K7bEgt6ZEWvQyolc5DfOHenob9XNwQMzzIhoznAv3tznRYmJORufnWaGQ==}
     cpu: [arm64]
     os: [linux]
 
-  '@opengsd/engine-linux-x64-gnu@1.3.0':
-    resolution: {integrity: sha512-jWVY51oPUVWaYCHYBX+XZLEIXuXTyAuHji9dL6FUkftQfWefTqqI/HVc14952jmC8Bs+h7UqShZKln/xobyU0g==}
+  '@opengsd/engine-linux-x64-gnu@1.4.0':
+    resolution: {integrity: sha512-ZPaK7nalUDRqErwUUU92rwdvCtQHknHJ2imM0Kp6E7JJbYAdjQOYZV/f4Zdeo6Zsjz5yJvzWyE4JChwl8pIUCQ==}
     cpu: [x64]
     os: [linux]
 
-  '@opengsd/engine-win32-x64-msvc@1.3.0':
-    resolution: {integrity: sha512-VAhk5+fu50deb1QjIf0r9lwquDE/4+l2rXXhmi+um6flr20KId2NmxGgYUsH3GxMDXA3pwp40x62Dz9lhgsmPg==}
+  '@opengsd/engine-win32-x64-msvc@1.4.0':
+    resolution: {integrity: sha512-TOvIMvSQ91ZBr8UX/J2NIK1STco4mU74Md5R+nxib/0z+B9EtuW+XH4EwiQ+tOZgtUH94aVL4GcMpnpj8CqcQw==}
     cpu: [x64]
     os: [win32]
 
   '@opengsd/gsd-browser@0.2.2':
     resolution: {integrity: sha512-ld4TOZKcXJF3v0KVlUqrOfHC+rYG8l00Dw0GkEuHtQTIYq7+blYO2acnGHN+P2Owod0xlq/2k1UQDaYgrRSKgw==}
     engines: {node: '>=16'}
+    cpu: [arm64, x64]
     os: [darwin, linux, win32]
     hasBin: true
 
@@ -7798,19 +7802,19 @@ snapshots:
 
   '@nolyfill/is-core-module@1.0.39': {}
 
-  '@opengsd/engine-darwin-arm64@1.3.0':
+  '@opengsd/engine-darwin-arm64@1.4.0':
     optional: true
 
-  '@opengsd/engine-darwin-x64@1.3.0':
+  '@opengsd/engine-darwin-x64@1.4.0':
     optional: true
 
-  '@opengsd/engine-linux-arm64-gnu@1.3.0':
+  '@opengsd/engine-linux-arm64-gnu@1.4.0':
     optional: true
 
-  '@opengsd/engine-linux-x64-gnu@1.3.0':
+  '@opengsd/engine-linux-x64-gnu@1.4.0':
     optional: true
 
-  '@opengsd/engine-win32-x64-msvc@1.3.0':
+  '@opengsd/engine-win32-x64-msvc@1.4.0':
     optional: true
 
   '@opengsd/gsd-browser@0.2.2': {}

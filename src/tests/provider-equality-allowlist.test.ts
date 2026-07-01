@@ -73,8 +73,8 @@ const ALLOWED_FILES: Record<string, string> = {
   // Claude-Code-specific SDK hooks (OAuth prep, streaming buffer sizing).
   "packages/gsd-agent-core/src/sdk.ts":
     "claude-code-specific SDK behavior",
-  "packages/gsd-agent-modes/src/modes/interactive/controllers/chat-controller.ts":
-    "claude-code-specific streaming UI",
+  "packages/gsd-agent-modes/src/modes/interactive/controllers/chat-handoff-filter.ts":
+    "claude-code-specific streaming UI (provisional pre-tool prose pruning)",
   "packages/gsd-agent-modes/src/modes/interactive/components/assistant-message.ts":
     "claude-code-specific message rendering",
 

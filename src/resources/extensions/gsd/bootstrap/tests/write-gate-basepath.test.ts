@@ -9,13 +9,14 @@
 
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   markDepthVerified,
   loadWriteGateSnapshot,
+  shouldBlockContextArtifactSaveInSnapshot,
   clearDiscussionFlowState,
 } from "../write-gate.js";
 
@@ -99,5 +100,52 @@ describe("write-gate basePath regression", () => {
       !snapshotB.verifiedDepthMilestones.includes("M001"),
       "loadWriteGateSnapshot(baseDirB) must not bleed state from baseDirA",
     );
+  });
+
+  test("worktree basePath reads depth verification from project-root snapshot", (t) => {
+    const prev = process.env.GSD_PERSIST_WRITE_GATE_STATE;
+    t.after(() => {
+      if (prev === undefined) {
+        delete process.env.GSD_PERSIST_WRITE_GATE_STATE;
+      } else {
+        process.env.GSD_PERSIST_WRITE_GATE_STATE = prev;
+      }
+    });
+    process.env.GSD_PERSIST_WRITE_GATE_STATE = "1";
+
+    const projectRoot = makeTempDir();
+    const worktreePath = join(projectRoot, ".gsd-worktrees", "M020");
+    t.after(() => {
+      rmSync(projectRoot, { recursive: true, force: true });
+    });
+
+    clearDiscussionFlowState(projectRoot);
+    clearDiscussionFlowState(worktreePath);
+
+    // Simulate MCP routing: verification recorded at project root.
+    markDepthVerified("M020", projectRoot);
+
+    // Worktree has a local .gsd projection but no write-gate snapshot file.
+    mkdirSync(join(worktreePath, ".gsd", "runtime"), { recursive: true });
+    mkdirSync(join(projectRoot, ".gsd", "milestones"), { recursive: true });
+
+    const projectSnapshotPath = join(projectRoot, ".gsd", "runtime", "write-gate-state.json");
+    const worktreeSnapshotPath = join(worktreePath, ".gsd", "runtime", "write-gate-state.json");
+    assert.ok(existsSync(projectSnapshotPath), "verification snapshot lives at project root");
+    assert.ok(!existsSync(worktreeSnapshotPath), "worktree must not have its own snapshot file");
+
+    const snapshotFromWorktree = loadWriteGateSnapshot(worktreePath);
+    assert.ok(
+      snapshotFromWorktree.verifiedDepthMilestones.includes("M020"),
+      "loadWriteGateSnapshot(worktree) must inherit project-root verification",
+    );
+
+    const guard = shouldBlockContextArtifactSaveInSnapshot(
+      snapshotFromWorktree,
+      "CONTEXT",
+      "M020",
+      null,
+    );
+    assert.equal(guard.block, false, "CONTEXT save must unblock once project-root gate is verified");
   });
 });

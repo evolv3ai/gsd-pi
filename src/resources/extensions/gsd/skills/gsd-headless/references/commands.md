@@ -66,7 +66,7 @@ These commands dispatch native GSD prompts adapted to the milestone, slice, and 
 | `progress` | Summarize recent work; can route `--next` or `--do "..."` |
 | `health` | Check `.gsd/` integrity (`--repair`, `--context`) |
 | `surface` | Manage surfaced skills and extensions |
-| `code-review` | Review changed source for bugs, security, and quality |
+| `code-review` | Review changed source diff-first for bugs, security, and quality |
 | `review` | Peer-review recent work across reviewer perspectives |
 | `audit-milestone` | Verify a milestone met its definition of done |
 | `audit-uat` | Audit outstanding UAT/verification items |

@@ -12,6 +12,7 @@ It checks:
 - File structure and naming conventions
 - Roadmap ↔ slice ↔ task referential integrity
 - Completion state consistency
+- Database artifact rows whose rendered files are missing on disk
 - Git worktree health (worktree and branch modes only — skipped in none mode)
 - Stale DB-backed runtime records and orphaned runtime files
 - Disk-only orphan milestone stub directories
@@ -333,6 +334,14 @@ In these states GSD does not auto-stash and does not auto-fix; it stops so you c
 **What it means:** `.gsd/milestones/<MID>/` exists on disk, but GSD cannot find a DB milestone row, a matching `.gsd-worktrees/<MID>/` worktree, or any milestone content files. These disk-only stub directories can be left behind by interrupted or stale forward references and can skew the next milestone ID that GSD generates.
 
 **Fix:** Run `/gsd doctor fix` to remove the orphan milestone stub directory automatically. The auto-fix only targets disk-only stubs with no DB row, no worktree, and no content files; populated milestone directories and in-flight worktree-only milestones are not removed.
+
+### `/gsd doctor` reports `artifact_file_missing`
+
+**Symptoms:** `/gsd doctor` shows an error with issue code `artifact_file_missing`, a scope such as `project`, `milestone`, `slice`, or `task`, and a file path like `milestones/M001/M001-CONTEXT.md`.
+
+**What it means:** The canonical database has an `artifacts` row for that path, but the rendered markdown file is missing from disk. In worktree mode, doctor checks both the active worktree-local `.gsd/` projection root and the project `.gsd/` root before reporting the issue, so the error usually means the artifact was deleted, skipped during a failed write, or left dangling by an interrupted migration/rebuild.
+
+**Fix:** If the database is still the source of truth, run `/gsd rebuild markdown` to re-render missing artifact projections from the DB, then rerun `/gsd doctor`. If the file represented work that should still exist but rebuild cannot recreate it, restore the file from git/backups or rerun the GSD workflow that generates that artifact. Use `/gsd recover --confirm` only when the database is lost or corrupt and the markdown on disk is the source you intentionally want to import; it is not the normal fix for a dangling artifact reference.
 
 ### Startup warns that memory consolidation is incomplete
 

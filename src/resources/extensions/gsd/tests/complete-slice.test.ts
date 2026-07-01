@@ -203,6 +203,10 @@ console.log('\n=== complete-slice: handler happy path ===');
   insertSlice({ id: 'S02', milestoneId: 'M001', title: 'Second Slice', risk: 'low', depends: ['S01'], demo: 'advanced stuff', sequence: 2 });
   insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', status: 'complete', title: 'Task 1' });
   insertTask({ id: 'T02', sliceId: 'S01', milestoneId: 'M001', status: 'complete', title: 'Task 2' });
+  insertTask({ id: 'T99', sliceId: 'S02', milestoneId: 'M001', status: 'complete', title: 'Sibling Task' });
+  const siblingSummaryPath = path.join(path.dirname(roadmapPath), 'T99-SUMMARY.md');
+  const siblingSummaryBefore = '# Existing sibling task summary\n\nDo not rewrite this file.\n';
+  fs.writeFileSync(siblingSummaryPath, siblingSummaryBefore);
 
   const params = makeValidSliceParams();
   const result = await handleCompleteSlice(params, basePath);
@@ -267,6 +271,13 @@ console.log('\n=== complete-slice: handler happy path ===');
     // (e) Verify slice status is complete in DB
     assertEq(sliceAfter!.status, 'complete', 'slice status should be complete in DB');
     assertTrue(sliceAfter!.completed_at !== null, 'completed_at should be set in DB');
+
+    // (f) Verify unrelated completed task summaries are not re-rendered during slice completion
+    assertEq(
+      fs.readFileSync(siblingSummaryPath, 'utf-8'),
+      siblingSummaryBefore,
+      'complete-slice should not re-render sibling completed task summaries',
+    );
   }
 
   cleanupDir(basePath);

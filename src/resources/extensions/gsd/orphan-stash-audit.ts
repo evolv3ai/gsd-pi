@@ -33,16 +33,87 @@ function _isAlreadyRestoredApplyError(err: unknown): boolean {
 
 export { _isAlreadyRestoredApplyError };
 
+function gitOutput(basePath: string, args: string[]): string {
+  return execFileSync("git", args, {
+    cwd: basePath,
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf-8",
+    env: GIT_NO_PROMPT_ENV,
+  });
+}
+
+function listStashUntrackedPaths(basePath: string, stashRef: string): string[] | null {
+  try {
+    return gitOutput(basePath, ["ls-tree", "-r", "-z", "--name-only", `${stashRef}^3`]).split("\0").filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+function listStashTrackedPaths(basePath: string, stashRef: string): string[] | null {
+  try {
+    return gitOutput(basePath, ["diff", "--name-only", "-z", `${stashRef}^1`, stashRef]).split("\0").filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+interface PorcelainEntry {
+  code: string;
+  path: string;
+}
+
+function readWorkingTreeStatus(basePath: string): PorcelainEntry[] | null {
+  try {
+    return gitOutput(basePath, ["status", "--porcelain", "-z", "--untracked-files=all"])
+      .split("\0")
+      .filter(Boolean)
+      .map((entry) => ({ code: entry.slice(0, 2), path: entry.slice(3) }));
+  } catch {
+    return null;
+  }
+}
+
+function isAlreadyRestoredUntrackedStatus(basePath: string, stashRef: string, statusEntries: PorcelainEntry[]): boolean {
+  if (statusEntries.length === 0 || statusEntries.some((entry) => entry.code !== "??")) return false;
+  const stashTrackedPaths = listStashTrackedPaths(basePath, stashRef);
+  if (!stashTrackedPaths || stashTrackedPaths.length > 0) return false;
+  const stashUntrackedPaths = listStashUntrackedPaths(basePath, stashRef);
+  if (!stashUntrackedPaths || stashUntrackedPaths.length === 0) return false;
+  const stashUntrackedPathSet = new Set(stashUntrackedPaths);
+  const workingTreeUntrackedPathSet = new Set(statusEntries.map((entry) => entry.path));
+  // "Already restored" requires the working tree's untracked paths to match the
+  // stash's untracked paths exactly, in BOTH directions:
+  //   1. every current untracked path comes from the stash (no unexplained user
+  //      work that an apply would clobber), AND
+  //   2. every stash untracked path is already present in the working tree.
+  // Without (2), a partial restore (where only some stash files were recovered)
+  // would be misread as fully restored: the audit would no-op without applying
+  // or warning, leaving the remaining pre-merge files missing.
+  return (
+    statusEntries.every((entry) => stashUntrackedPathSet.has(entry.path)) &&
+    stashUntrackedPaths.every((path) => workingTreeUntrackedPathSet.has(path))
+  );
+}
+
+function manualApplyWarning(stashRef: string, milestoneId: string, reason: string): string {
+  return (
+    `Pre-merge stash ${stashRef} for milestone ${milestoneId} not auto-applied: ${reason}; ` +
+    `run \`git stash apply ${stashRef}\` manually to restore your pre-merge changes.`
+  );
+}
+
 /**
  * Audit `git stash list` for orphaned `gsd-preflight-stash:M00x:*` entries.
  *
  * The matching merge code in `phases.ts` previously skipped the postflight
  * pop whenever `mergeAndExit` threw, leaking the user's pre-merge working
- * tree into the stash list. For every preflight-stash entry whose milestone
- * is now complete (per the supplied callback), `git stash apply` is invoked —
+ * tree into the stash list. Completed-milestone stashes are only auto-applied
+ * when the working tree is clean and the stash does not modify tracked files.
+ * Dirty trees and tracked-file stashes are left untouched with a manual
+ * recovery warning. When auto-apply is safe, `git stash apply` is invoked —
  * NOT `pop`. The stash entry stays in the list so the user retains a backup
- * if the apply produces unexpected merge results. Idempotent across repeated
- * startup runs.
+ * if the apply produces unexpected merge results.
  *
  * Failures are best-effort: a list error (no repo, git unavailable) returns
  * an empty result. An apply error becomes a warning the user sees alongside
@@ -56,16 +127,7 @@ export function auditOrphanedPreflightStashes(
 
   let listOutput: string;
   try {
-    listOutput = execFileSync(
-      "git",
-      ["stash", "list", "--format=%gd%x00%s"],
-      {
-        cwd: basePath,
-        stdio: ["ignore", "pipe", "pipe"],
-        encoding: "utf-8",
-        env: GIT_NO_PROMPT_ENV,
-      },
-    );
+    listOutput = gitOutput(basePath, ["stash", "list", "--format=%gd%x00%s"]);
   } catch {
     return result;
   }
@@ -93,13 +155,39 @@ export function auditOrphanedPreflightStashes(
     }
     if (!complete) continue;
 
+    const statusEntries = readWorkingTreeStatus(basePath);
+    if (!statusEntries) {
+      result.warnings.push(
+        manualApplyWarning(ref, milestoneId, "could not verify working tree status"),
+      );
+      continue;
+    }
+    if (statusEntries.length > 0) {
+      if (isAlreadyRestoredUntrackedStatus(basePath, ref, statusEntries)) continue;
+      result.warnings.push(manualApplyWarning(ref, milestoneId, "working tree not clean"));
+      continue;
+    }
+
+    const trackedPaths = listStashTrackedPaths(basePath, ref);
+    if (trackedPaths === null) {
+      result.warnings.push(
+        manualApplyWarning(ref, milestoneId, "could not inspect tracked paths in stash"),
+      );
+      continue;
+    }
+    if (trackedPaths.length > 0) {
+      // A retained tracked-file stash has no durable marker showing whether a
+      // clean tree needs first recovery or would be re-mutated by an old backup.
+      const preview = trackedPaths.slice(0, 5).join(", ");
+      const suffix = trackedPaths.length > 5 ? `, and ${trackedPaths.length - 5} more` : "";
+      result.warnings.push(
+        manualApplyWarning(ref, milestoneId, `stash modifies tracked files (${preview}${suffix})`),
+      );
+      continue;
+    }
+
     try {
-      execFileSync("git", ["stash", "apply", "--quiet", ref], {
-        cwd: basePath,
-        stdio: ["ignore", "pipe", "pipe"],
-        encoding: "utf-8",
-        env: GIT_NO_PROMPT_ENV,
-      });
+      gitOutput(basePath, ["stash", "apply", "--quiet", ref]);
       result.applied.push({ milestoneId, stashRef: ref });
     } catch (err) {
       // Idempotent steady state: stash was already applied in a prior audit

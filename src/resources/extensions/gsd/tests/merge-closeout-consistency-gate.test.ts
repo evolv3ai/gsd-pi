@@ -9,7 +9,15 @@ import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 
 import { mergeMilestoneToMain } from "../auto-worktree.ts";
-import { closeDatabase, insertMilestone, openDatabase } from "../gsd-db.ts";
+import { checkCloseoutConsistencyGate } from "../closeout-consistency-gate.ts";
+import {
+  closeDatabase,
+  insertAssessment,
+  insertMilestone,
+  insertSlice,
+  insertTask,
+  openDatabase,
+} from "../gsd-db.ts";
 
 function git(args: string[], cwd: string): string {
   return execFileSync("git", args, {
@@ -59,5 +67,27 @@ test("mergeMilestoneToMain blocks when project DB closeout is still open", () =>
     closeDatabase();
     process.chdir(savedCwd);
     if (existsSync(repo)) rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("closeout consistency treats deferred slices as inactive", () => {
+  try {
+    assert.equal(openDatabase(":memory:"), true);
+    insertMilestone({ id: "M001", title: "Milestone One", status: "complete" });
+    insertSlice({ milestoneId: "M001", id: "S01", title: "Done", status: "complete" });
+    insertTask({ milestoneId: "M001", sliceId: "S01", id: "T01", title: "Done", status: "complete" });
+    insertSlice({ milestoneId: "M001", id: "S02", title: "Deferred", status: "deferred" });
+    insertTask({ milestoneId: "M001", sliceId: "S02", id: "T02", title: "Deferred", status: "pending" });
+    insertAssessment({
+      path: "milestones/M001/M001-VALIDATION.md",
+      milestoneId: "M001",
+      status: "pass",
+      scope: "milestone-validation",
+      fullContent: "verdict: pass",
+    });
+
+    assert.deepEqual(checkCloseoutConsistencyGate("M001"), { ok: true });
+  } finally {
+    closeDatabase();
   }
 });

@@ -3,6 +3,7 @@
 import { Type, StringEnum } from "@gsd/pi-ai";
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import { Text } from "@gsd/pi-tui";
+import { SUMMARY_SAVE_CONTENT_MAX_LENGTH } from "@opengsd/contracts";
 
 import { loadEffectiveGSDPreferences } from "../preferences.js";
 import { ensureDbOpen, resolveCtxCwd, resolveWorkflowToolBasePath } from "./dynamic-tools.js";
@@ -392,13 +393,17 @@ export function registerDbTools(pi: ExtensionAPI): void {
       "Root-level artifact paths are PROJECT.md, PROJECT-DRAFT.md, REQUIREMENTS.md, and REQUIREMENTS-DRAFT.md.",
       "artifact_type must be one of: SUMMARY, RESEARCH, CONTEXT, ASSESSMENT, CONTEXT-DRAFT, PROJECT, PROJECT-DRAFT, REQUIREMENTS, REQUIREMENTS-DRAFT.",
       "Use CONTEXT-DRAFT for incremental draft persistence; use CONTEXT for the final milestone context after depth verification.",
+      `Keep each content payload under ${SUMMARY_SAVE_CONTENT_MAX_LENGTH} characters; save large context incrementally with CONTEXT-DRAFT/PROJECT-DRAFT/REQUIREMENTS-DRAFT instead of one oversized call.`,
     ],
     parameters: Type.Object({
       milestone_id: Type.Optional(Type.String({ description: "Milestone ID (e.g. M001). Omit only for root-level PROJECT/PROJECT-DRAFT/REQUIREMENTS/REQUIREMENTS-DRAFT artifacts." })),
       slice_id: Type.Optional(Type.String({ description: "Slice ID (e.g. S01)" })),
       task_id: Type.Optional(Type.String({ description: "Task ID (e.g. T01)" })),
       artifact_type: StringEnum(["SUMMARY", "RESEARCH", "CONTEXT", "ASSESSMENT", "CONTEXT-DRAFT", "PROJECT", "PROJECT-DRAFT", "REQUIREMENTS", "REQUIREMENTS-DRAFT"], { description: "Artifact type to save" }),
-      content: Type.String({ description: "The full markdown content of the artifact" }),
+      content: Type.String({
+        description: `The full markdown content of the artifact. Maximum ${SUMMARY_SAVE_CONTENT_MAX_LENGTH} characters per save.`,
+        maxLength: SUMMARY_SAVE_CONTENT_MAX_LENGTH,
+      }),
     }),
     execute: summarySaveExecute,
     renderCall(args: any, theme: any) {
@@ -685,8 +690,9 @@ export function registerDbTools(pi: ExtensionAPI): void {
     promptSnippet: "Plan a slice via DB write + PLAN render + cache invalidation",
     promptGuidelines: [
       "Use gsd_plan_slice for slice planning instead of writing S##-PLAN.md or task PLAN files directly.",
-      "Keep parameters flat and provide the full slice planning payload, including tasks.",
-      "The tool validates input, requires an existing parent slice, writes slice/task planning data, renders PLAN.md and task plan files from DB, and clears both state and parse caches after success.",
+      "For incremental planning, call gsd_plan_slice with slice metadata only, then call gsd_plan_task once per task.",
+      "When tasks is omitted or empty, the tool writes only slice planning metadata and preserves existing tasks.",
+      "When tasks is non-empty, the tool validates input, requires an existing parent slice, writes slice/task planning data, renders PLAN.md and task plan files from DB, and clears both state and parse caches after success.",
       "Use the canonical name gsd_plan_slice; gsd_slice_plan is only an alias.",
     ],
     parameters: Type.Object({
@@ -694,7 +700,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
       milestoneId: Type.String({ description: "Milestone ID (e.g. M001)" }),
       sliceId: Type.String({ description: "Slice ID (e.g. S01)" }),
       goal: Type.String({ description: "Slice goal" }),
-      tasks: Type.Array(Type.Object({
+      tasks: Type.Optional(Type.Array(Type.Object({
         taskId: Type.String({ description: "Task ID (e.g. T01)" }),
         title: Type.String({ description: "Task title" }),
         description: Type.String({ description: "Task description / steps block" }),
@@ -704,7 +710,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
         inputs: Type.Array(Type.String(), { description: "Array<string> of input files or references; pass [\"path\"] or [], never a single string" }),
         expectedOutput: Type.Array(Type.String(), { description: "Array<string> of files this task creates or overwrites; pass [\"path\"] or [], never prose or a single string" }),
         observabilityImpact: Type.Optional(Type.String({ description: "Task observability impact" })),
-      }), { description: "Planned tasks for the slice" }),
+      }), { description: "Optional full task replacement for the slice. Omit for incremental planning, then call gsd_plan_task once per task." })),
       // ── Enrichment metadata (optional — defaults to empty) ────────────
       successCriteria: Type.Optional(Type.String({ description: "Slice success criteria block" })),
       proofLevel: Type.Optional(Type.String({ description: "Slice proof level" })),

@@ -97,8 +97,10 @@ import {
   getNewBudgetAlertLevel,
   getBudgetEnforcementAction,
   getContextPauseAction,
+  HARD_CONTEXT_REROOT_THRESHOLD_PERCENT,
   resolveCompactionThresholdPercent,
   shouldRerootStepSessionForContext,
+  shouldWarnStepSessionForContext,
 } from "./auto-budget.js";
 import {
   markToolStart as _markToolStart,
@@ -701,6 +703,7 @@ export {
   getContextPauseAction,
   resolveCompactionThresholdPercent,
   shouldRerootStepSessionForContext,
+  shouldWarnStepSessionForContext,
 } from "./auto-budget.js";
 
 function closeOutSignalInterruptedUnit(currentBasePath: string): void {
@@ -1375,9 +1378,10 @@ export async function rerootCommandSession(
 }
 
 /**
- * After a completed step-mode unit, reclaim context headroom when usage is at
- * or above the compaction threshold. Writes a context-mode snapshot first, then
- * re-roots the visible command session while leaving the NEXT progress surface.
+ * After a completed step-mode unit, warn when usage reaches the configurable
+ * soft context threshold. At the fixed hard boundary, write a context-mode
+ * snapshot and re-root the visible command session while leaving the NEXT
+ * progress surface.
  */
 export async function maybeRerootStepSessionForHighContext(
   ctx: ExtensionContext,
@@ -1392,7 +1396,19 @@ export async function maybeRerootStepSessionForHighContext(
   const prefs = loadEffectiveGSDPreferences(workspaceRoot);
   const compactionThreshold = prefs?.preferences.context_management?.compaction_threshold_percent;
 
-  if (!shouldRerootStepSessionForContext(contextPercent, compactionThreshold)) {
+  const shouldWarn = shouldWarnStepSessionForContext(contextPercent, compactionThreshold);
+  const shouldReroot = shouldRerootStepSessionForContext(contextPercent);
+  if (!shouldWarn && !shouldReroot) {
+    return { rerooted: false };
+  }
+
+  const displayPercent = (contextPercent as number).toFixed(1);
+  const thresholdDisplay = resolveCompactionThresholdPercent(compactionThreshold).toFixed(0);
+  if (!shouldReroot) {
+    ctx.ui.notify(
+      `Step complete — context at ${displayPercent}% (soft threshold: ${thresholdDisplay}%). Use /compact when convenient; continuing in this session is still safe.`,
+      "info",
+    );
     return { rerooted: false };
   }
 
@@ -1401,12 +1417,10 @@ export async function maybeRerootStepSessionForHighContext(
   const { writeContextModeCompactionSnapshot } = await import("./context-mode-snapshot.js");
   await writeContextModeCompactionSnapshot(snapshotBase);
 
-  const displayPercent = (contextPercent as number).toFixed(1);
-  const thresholdDisplay = resolveCompactionThresholdPercent(compactionThreshold).toFixed(0);
   const result = await rerootCommandSession(cmdCtx, workspaceRoot);
   if (result.status === "ok") {
     ctx.ui.notify(
-      `Step complete — context at ${displayPercent}% (threshold: ${thresholdDisplay}%). Fresh session ready for /gsd next.`,
+      `Step complete — context at ${displayPercent}% (hard threshold: ${HARD_CONTEXT_REROOT_THRESHOLD_PERCENT}%). Fresh session ready for /gsd next.`,
       "info",
     );
     return { rerooted: true };
@@ -2102,7 +2116,7 @@ export function _selectStopAutoWorktreeExit(args: {
 /**
  * Pause auto-mode without destroying state. Context is preserved.
  * The user can interact with the agent, then `/gsd auto` resumes
- * from disk state. Called when the user presses Escape during auto-mode.
+ * from disk state. Called when the user presses Escape or runs `/gsd pause`.
  */
 export async function pauseAuto(
   ctx?: ExtensionContext,
@@ -2129,6 +2143,7 @@ export async function pauseAuto(
 
   s.active = false;
   s.paused = true;
+  if (options.abortActiveTurn && ctx && !ctx.isIdle()) ctx.abort();
   clearUnitTimeout();
   stopAutoCommandPolling();
 
@@ -2518,7 +2533,7 @@ export async function startAuto(
   // resume paths (#4416). The matching call in auto-start.ts covers the
   // bootstrap-only path; this call ensures the resume path is also protected.
   if (recoverFailedMigration(base)) {
-    ctx.ui.notify("Recovered unfinished migration (.gsd.migrating → .gsd).", "info");
+    ctx.ui.notify("Recovered unfinished external state migration.", "info");
   }
 
   const unmergedStartMessage = await getUnmergedMilestoneBlockMessageForBase(base, "auto");

@@ -2,11 +2,12 @@
 // File Purpose: Always-on ambient health signal rendered below the editor.
 
 import type { ExtensionContext } from "@gsd/pi-coding-agent";
+import { execFile } from "node:child_process";
 import type { GSDState } from "./types.js";
-import { runProviderChecks, summariseProviderIssues } from "./doctor-providers.js";
+import { runProviderChecks, runProviderChecksAsync, summariseProviderIssues } from "./doctor-providers.js";
 import { runEnvironmentChecks, runEnvironmentChecksAsync } from "./doctor-environment.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
-import { nativeIsRepo, nativeLastCommitEpoch, nativeGetCurrentBranch, nativeCommitSubject } from "./native-git-bridge.js";
+import { GIT_NO_PROMPT_ENV } from "./git-constants.js";
 import { loadLedgerFromDisk, getProjectTotals } from "./metrics.js";
 import { describeNextUnit, estimateTimeRemaining, updateSliceProgressCache } from "./auto-dashboard.js";
 import { projectRoot } from "./commands/context.js";
@@ -15,32 +16,75 @@ import {
   buildHealthLines,
   detectHealthWidgetProjectState,
   type HealthWidgetData,
+  type HealthWidgetProjectState,
 } from "./health-widget-core.js";
 
 export const HEALTH_WIDGET_ACTIVE_HINTS =
   "  /gsd auto to run  ·  /gsd status to inspect  ·  /gsd report for snapshots  ·  /gsd notifications for history  ·  /gsd help";
 
+const LAST_COMMIT_LOOKUP_TIMEOUT_MS = 3_000;
+const REFRESH_INTERVAL_MS = 60_000;
+const PROJECT_STATE_CACHE_TTL_MS = REFRESH_INTERVAL_MS;
+
 // ── Data loader ────────────────────────────────────────────────────────────────
 
-// Last-commit lookup is subprocess-backed (native-git-bridge → git spawns),
-// so it is treated like the other expensive checks: skipped on first paint,
-// run only by the background refresh.
-function loadLastCommitInfo(basePath: string): { epoch: number | null; message: string | null } {
+const projectStateCache = new Map<string, { state: HealthWidgetProjectState; computedAt: number }>();
+
+export function getCachedProjectState(basePath: string, force?: boolean): HealthWidgetProjectState {
+  const now = Date.now();
+  const cached = projectStateCache.get(basePath);
+  if (!force && cached && now - cached.computedAt <= PROJECT_STATE_CACHE_TTL_MS) {
+    return cached.state;
+  }
+
+  const state = detectHealthWidgetProjectState(basePath);
+  projectStateCache.set(basePath, { state, computedAt: now });
+  return state;
+}
+
+function runHealthWidgetGit(basePath: string, args: string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    const child = execFile(
+      "git",
+      args,
+      {
+        cwd: basePath,
+        timeout: LAST_COMMIT_LOOKUP_TIMEOUT_MS,
+        encoding: "utf-8",
+        env: GIT_NO_PROMPT_ENV,
+      },
+      (err, stdout) => resolve(err ? null : String(stdout).trimEnd()),
+    );
+    child.on("error", () => resolve(null));
+  });
+}
+
+async function loadLastCommitInfoAsync(basePath: string): Promise<{ epoch: number | null; message: string | null }> {
   try {
-    if (nativeIsRepo(basePath)) {
-      const branch = nativeGetCurrentBranch(basePath);
-      const epoch = nativeLastCommitEpoch(basePath, branch || "HEAD");
-      if (epoch > 0) {
-        return { epoch, message: nativeCommitSubject(basePath, branch || "HEAD") || null };
-      }
+    if ((await runHealthWidgetGit(basePath, ["rev-parse", "--git-dir"])) === null) {
+      return { epoch: null, message: null };
     }
-  } catch { /* non-fatal */ }
-  return { epoch: null, message: null };
+
+    const branch = await runHealthWidgetGit(basePath, ["branch", "--show-current"]);
+    const ref = branch || "HEAD";
+    const raw = await runHealthWidgetGit(basePath, ["log", "-1", "--format=%ct%x00%s", ref]);
+    if (!raw) return { epoch: null, message: null };
+
+    const separator = raw.indexOf("\0");
+    const epochText = separator >= 0 ? raw.slice(0, separator) : raw;
+    const epoch = parseInt(epochText.trim(), 10) || 0;
+    if (epoch <= 0) return { epoch: null, message: null };
+
+    const message = separator >= 0 ? raw.slice(separator + 1).trim() : "";
+    return { epoch, message: message || null };
+  } catch {
+    return { epoch: null, message: null };
+  }
 }
 
 function loadHealthWidgetData(
   basePath: string,
-  options?: { includeChecks?: boolean },
+  options?: { includeChecks?: boolean; forceProjectState?: boolean },
 ): HealthWidgetData {
   // `includeChecks` gates the expensive subprocess-backed checks (provider +
   // environment doctor: `lsof`, `docker`, `node --version`, ...). The initial
@@ -55,7 +99,7 @@ function loadHealthWidgetData(
   let lastCommitEpoch: number | null = null;
   let lastCommitMessage: string | null = null;
 
-  const projectState = detectHealthWidgetProjectState(basePath);
+  const projectState = getCachedProjectState(basePath, options?.forceProjectState);
 
   try {
     const prefs = loadEffectiveGSDPreferences();
@@ -83,13 +127,6 @@ function loadHealthWidgetData(
     } catch { /* non-fatal */ }
   }
 
-  // ── Last commit info ── (git spawns — gated like the other expensive checks)
-  if (includeChecks) {
-    const commit = loadLastCommitInfo(basePath);
-    lastCommitEpoch = commit.epoch;
-    lastCommitMessage = commit.message;
-  }
-
   return {
     projectState,
     budgetCeiling,
@@ -104,10 +141,8 @@ function loadHealthWidgetData(
 }
 
 // Non-blocking variant used by the widget's background refresh: the cheap fields
-// come from the synchronous snapshot, then provider + environment checks are
-// layered in off the event-loop critical path (env checks run concurrently via
-// runEnvironmentChecksAsync). Keeps the always-on widget from stalling the UI on
-// its initial enrichment or its 60s refresh.
+// come from the synchronous snapshot, then provider, environment, and last-commit
+// checks are layered in off the event-loop critical path.
 async function loadHealthWidgetDataAsync(basePath: string): Promise<HealthWidgetData> {
   const data = loadHealthWidgetData(basePath, { includeChecks: false });
   let providerIssue = data.providerIssue;
@@ -115,7 +150,7 @@ async function loadHealthWidgetDataAsync(basePath: string): Promise<HealthWidget
   let environmentWarningCount = 0;
 
   try {
-    providerIssue = summariseProviderIssues(runProviderChecks());
+    providerIssue = summariseProviderIssues(await runProviderChecksAsync());
   } catch { /* non-fatal */ }
 
   try {
@@ -126,7 +161,7 @@ async function loadHealthWidgetDataAsync(basePath: string): Promise<HealthWidget
     }
   } catch { /* non-fatal */ }
 
-  const commit = loadLastCommitInfo(basePath);
+  const commit = await loadLastCommitInfoAsync(basePath);
 
   return {
     ...data,
@@ -141,8 +176,6 @@ async function loadHealthWidgetDataAsync(basePath: string): Promise<HealthWidget
 
 // ── Widget init ────────────────────────────────────────────────────────────────
 
-const REFRESH_INTERVAL_MS = 60_000;
-
 /**
  * Initialize the always-on gsd-health widget (belowEditor).
  * Call once from the extension entry point after context is available.
@@ -152,13 +185,17 @@ export function initHealthWidget(ctx: ExtensionContext): void {
 
   const basePath = projectRoot();
 
+  // Re-init must reflect filesystem changes immediately; the TTL cache is for
+  // interval refreshes, not this one-off synchronous paint.
+  projectStateCache.delete(basePath);
+
   // String-array fallback — used in RPC mode (factory is a no-op there).
   // Skip the expensive provider/environment doctor checks here: this runs
   // synchronously on the interactive-startup path, where running them would
   // block first paint by ~0.9s (lsof/docker probes, otherwise run again
   // immediately by the factory below). The factory's async refresh fills in
   // real health once the screen is up.
-  const initialData = loadHealthWidgetData(basePath, { includeChecks: false });
+  const initialData = loadHealthWidgetData(basePath, { includeChecks: false, forceProjectState: true });
   ctx.ui.setWidget("gsd-health", buildHealthLines(initialData), { placement: "belowEditor" });
 
   // Factory-based widget for TUI mode — replaces the string-array above

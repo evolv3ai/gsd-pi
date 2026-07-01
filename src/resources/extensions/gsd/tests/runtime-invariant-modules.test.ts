@@ -177,10 +177,22 @@ test("auto Unit tool scope allows status/read helpers named by closeout prompts"
   }
 });
 
-test("auto Unit tool scope blocks stale per-task planner in slice planning phases", () => {
-  for (const unitType of ["plan-slice", "refine-slice", "replan-slice"]) {
+test("auto Unit tool scope allows reactive-execute status and diagnostic tools", () => {
+  for (const toolName of ["gsd_milestone_status", "gsd_exec"]) {
+    const result = shouldBlockAutoUnitToolCall("reactive-execute", toolName);
+    assert.equal(result.block, false, `reactive-execute should be able to call ${toolName}`);
+  }
+});
+
+test("auto Unit tool scope allows incremental task planning during plan-slice", () => {
+  const result = shouldBlockAutoUnitToolCall("plan-slice", "gsd_plan_task");
+  assert.equal(result.block, false, "plan-slice should be able to call gsd_plan_task incrementally");
+});
+
+test("auto Unit tool scope still blocks per-task planner outside plan-slice", () => {
+  for (const unitType of ["refine-slice", "replan-slice"]) {
     const result = shouldBlockAutoUnitToolCall(unitType, "gsd_plan_task");
-    assert.equal(result.block, true, `${unitType} should not call stale gsd_plan_task`);
+    assert.equal(result.block, true, `${unitType} should not call gsd_plan_task`);
   }
 });
 

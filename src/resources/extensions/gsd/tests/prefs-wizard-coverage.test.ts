@@ -6,7 +6,12 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { buildCategorySummaries, handlePrefsWizard } from "../commands-prefs-wizard.ts";
+import {
+  buildCategorySummaries,
+  handlePrefsWizard,
+  serializePreferencesToFrontmatter,
+} from "../commands-prefs-wizard.ts";
+import { parsePreferencesMarkdown, validatePreferences } from "../preferences.ts";
 import { KNOWN_PREFERENCE_KEYS } from "../preferences-types.ts";
 
 const PREF_SAMPLE_VALUES: Record<string, unknown> = {
@@ -102,6 +107,54 @@ const PREF_SAMPLE_VALUES: Record<string, unknown> = {
     },
   },
 };
+
+test("prefs serializer preserves nested hook on_block objects", () => {
+  const frontmatter = serializePreferencesToFrontmatter({
+    post_unit_hooks: [{
+      name: "plan-review",
+      after: ["execute-task"],
+      prompt: "write PLAN-REVIEW.md",
+      artifact: "PLAN-REVIEW.md",
+      criticality: "blocking",
+      on_block: { action: "pause" },
+    }],
+  });
+
+  assert.doesNotMatch(frontmatter, /\[object Object\]/);
+  assert.ok(frontmatter.includes("    on_block:\n      action: pause\n"));
+
+  const parsed = parsePreferencesMarkdown(`---\n${frontmatter}---\n`);
+  assert.notEqual(parsed, null);
+
+  const { errors, preferences } = validatePreferences(parsed!);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(preferences.post_unit_hooks?.[0]?.on_block, { action: "pause" });
+});
+
+test("prefs serializer correctly indents nested object when it is the first array-item property", () => {
+  // on_block is the FIRST property — exercises the first-key-is-object branch
+  const frontmatter = serializePreferencesToFrontmatter({
+    post_unit_hooks: [{
+      on_block: { action: "pause" }, // first property — exercises the first-key-is-object branch
+      name: "gate",                  // required fields come after so on_block stays first
+      after: ["execute-task"],
+      prompt: "review output",
+    }],
+  });
+
+  assert.doesNotMatch(frontmatter, /\[object Object\]/);
+  // Children of on_block must be indented deeper than on_block itself (not siblings)
+  assert.ok(
+    frontmatter.includes("  - on_block:\n      action: pause\n"),
+    `Expected on_block children indented as nested YAML, got:\n${frontmatter}`,
+  );
+  // Sanity: parse + validate round-trip
+  const parsed = parsePreferencesMarkdown(`---\n${frontmatter}---\n`);
+  assert.notEqual(parsed, null);
+  const { errors, preferences } = validatePreferences(parsed!);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(preferences.post_unit_hooks?.[0]?.on_block, { action: "pause" });
+});
 
 test("prefs wizard save path preserves every known preference key", async () => {
   const missingSamples = [...KNOWN_PREFERENCE_KEYS].filter((key) => !(key in PREF_SAMPLE_VALUES));

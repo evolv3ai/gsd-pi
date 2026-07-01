@@ -56,7 +56,9 @@ After commit: regenerate markdown artifacts → write to disk → invalidate cac
 **Provider fallback chain:**
 1. `node:sqlite` (Node ≥ 22 built-in) — preferred
 2. `better-sqlite3` (npm) — fallback if node:sqlite unavailable
-3. null → DB unavailable (non-fatal; GSD degrades gracefully)
+3. null → DB unavailable. Runtime `deriveState()` fails closed with an explicit blocker; markdown-only recovery is available only through explicit migration/recovery commands.
+
+**Runtime state derivation:** `deriveState()` opens the existing workflow DB through `state/derive/db-open.ts`, projects rows in `state/derive/from-db.ts`, and returns a DB-unavailable blocker instead of implicitly deriving runtime state from markdown projections. Markdown hierarchy import is explicit recovery/migration behavior, not the normal read path.
 
 ---
 
@@ -187,6 +189,7 @@ sequence                INTEGER DEFAULT 0                  ← V23
 ```
 - Index: `idx_milestones_status` (status)
 - Status values: `active`, `closed`, `queued`
+- `sequence` is the canonical DB ordering used to choose the next open milestone. `.gsd/QUEUE-ORDER.json` is the durable operator reorder contract for `/gsd rethink` and `/gsd phase`; when present, state derivation mirrors that file into `milestones.sequence` before dispatch.
 
 ---
 
@@ -702,9 +705,9 @@ remain outside manifest restore.
 | `gsd_requirement_update` | requirements | requirements | REQUIREMENTS.md |
 | `gsd_summary_save` | milestones, slices, tasks | artifacts | M##/S##/T## artifact files |
 | `gsd_milestone_generate_id` | milestones | milestones (INSERT OR IGNORE, queued) | — |
-| `gsd_plan_milestone` | milestones, slices | milestones, slices, tasks, replan_history | ROADMAP.md |
-| `gsd_plan_slice` | slices, tasks | slices, tasks | S##-PLAN.md |
-| `gsd_plan_task` | slices, tasks | tasks | T##-PLAN.md |
+| `gsd_plan_milestone` | milestones, slices | milestones, slices | ROADMAP.md |
+| `gsd_plan_slice` | milestones, slices, tasks | slices metadata; tasks only when a non-empty `tasks` payload performs full replacement/update | S##-PLAN.md and task plans when tasks exist |
+| `gsd_plan_task` | slices, tasks | one task planning row, task gate seeds | T##-PLAN.md; re-renders S##-PLAN.md |
 | `gsd_task_complete` | tasks, slices | tasks, verification_evidence | T##-SUMMARY.md; toggles checkbox in S##-PLAN.md |
 | `gsd_slice_complete` | tasks, slices | slices, tasks (cascade skipped) | S##-SUMMARY.md, S##-UAT.md; toggles checkpoint in ROADMAP.md |
 | `gsd_uat_result_save` | slices, artifacts | artifacts, assessments, quality_gates, gate_runs | S##-ASSESSMENT.md; UAT attempt JSON |
@@ -719,6 +722,8 @@ remain outside manifest restore.
 | `gsd_save_gate_result` | quality_gates | quality_gates, gate_runs | — |
 | `capture_thought` | memories | memories | KNOWLEDGE.md projection for Patterns/Lessons (both backfilled and newly captured) |
 | `memory_query` | memories, memories_fts, memory_embeddings | memories (hit_count++) | — |
+
+`gsd_task_complete` treats the task summary and slice plan projection as closeout-critical. If writing `T##-SUMMARY.md` or re-rendering `S##-PLAN.md` fails, the tool returns an error after deleting the task's verification evidence and reverting its task row to `pending`; it does not leave a committed `complete` task with a stale plan projection.
 
 ---
 

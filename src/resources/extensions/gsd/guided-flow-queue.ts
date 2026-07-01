@@ -20,6 +20,7 @@ import { invalidateAllCaches } from "./cache.js";
 import {
   gsdRoot, resolveMilestoneFile, resolveSliceFile,
   resolveGsdRootFile, relGsdRootFile, relSliceFile,
+  relMilestoneFile,
 } from "./paths.js";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { atomicWriteSync } from "./atomic-write.js";
@@ -28,6 +29,10 @@ import { loadEffectiveGSDPreferences } from "./preferences.js";
 import { loadQueueOrder, sortByQueueOrder, saveQueueOrder } from "./queue-order.js";
 import { findMilestoneIds, nextMilestoneId } from "./milestone-ids.js";
 import { isFutureMilestoneStatus } from "./status-guards.js";
+
+const QUEUE_ARTIFACT_EXCERPT_MAX_CHARS = 20_000;
+const QUEUE_EXISTING_MILESTONES_CONTEXT_MAX_CHARS = 120_000;
+const QUEUE_CONTEXT_SECTION_SEPARATOR = "\n\n---\n\n";
 
 // ─── Queue Entry Point ──────────────────────────────────────────────────────
 
@@ -280,7 +285,9 @@ export async function buildExistingMilestonesContext(
     if (contextFile) {
       const content = await loadFile(contextFile);
       if (content) {
-        parts.push(`\n**Context:**\n${content.trim()}`);
+        parts.push(
+          `\n**Context:**\n${summarizeArtifactForQueue(content, relMilestoneFile(basePath, mid, "CONTEXT"))}`,
+        );
       }
     } else {
       // No full CONTEXT.md — check for CONTEXT-DRAFT.md (draft seed from prior discussion)
@@ -288,7 +295,9 @@ export async function buildExistingMilestonesContext(
       if (draftFile) {
         const draftContent = await loadFile(draftFile);
         if (draftContent) {
-          parts.push(`\n**Draft context available:**\n${draftContent.trim()}`);
+          parts.push(
+            `\n**Draft context available:**\n${summarizeArtifactForQueue(draftContent, relMilestoneFile(basePath, mid, "CONTEXT-DRAFT"))}`,
+          );
         }
       }
     }
@@ -300,7 +309,9 @@ export async function buildExistingMilestonesContext(
       if (roadmapFile) {
         const content = await loadFile(roadmapFile);
         if (content) {
-          parts.push(`\n**Roadmap:**\n${content.trim()}`);
+          parts.push(
+            `\n**Roadmap:**\n${summarizeArtifactForQueue(content, relMilestoneFile(basePath, mid, "ROADMAP"))}`,
+          );
         }
       }
     }
@@ -317,7 +328,81 @@ export async function buildExistingMilestonesContext(
     }
   }
 
-  return sections.join("\n\n---\n\n");
+  return capExistingMilestonesContext(sections);
+}
+
+function summarizeArtifactForQueue(
+  content: string,
+  sourcePath: string,
+  cap = QUEUE_ARTIFACT_EXCERPT_MAX_CHARS,
+): string {
+  const trimmed = content.trim();
+  if (trimmed.length <= cap) {
+    return `Source: \`${sourcePath}\`\n\n${trimmed}`;
+  }
+
+  const excerpt = trimmed.slice(0, cap).trimEnd();
+  const omittedChars = trimmed.length - excerpt.length;
+  return [
+    `Source: \`${sourcePath}\``,
+    "",
+    excerpt,
+    "",
+    `[Truncated ${omittedChars} chars. Read \`${sourcePath}\` for full content.]`,
+  ].join("\n");
+}
+
+function capExistingMilestonesContext(
+  sections: string[],
+  cap = QUEUE_EXISTING_MILESTONES_CONTEXT_MAX_CHARS,
+): string {
+  const fullContext = sections.join(QUEUE_CONTEXT_SECTION_SEPARATOR);
+  if (fullContext.length <= cap) return fullContext;
+
+  const notice = `[Existing milestones context truncated to ${cap} chars. Read source paths in this prompt or the corresponding .gsd artifacts for full details.]`;
+  const noticeSuffix = `${QUEUE_CONTEXT_SECTION_SEPARATOR}${notice}`;
+
+  const selected: string[] = [];
+  for (const section of sections) {
+    const candidate = [...selected, section].join(QUEUE_CONTEXT_SECTION_SEPARATOR) + noticeSuffix;
+    if (candidate.length <= cap) {
+      selected.push(section);
+      continue;
+    }
+    break;
+  }
+
+  if (selected.length === sections.length) {
+    return selected.join(QUEUE_CONTEXT_SECTION_SEPARATOR) + noticeSuffix;
+  }
+
+  const compactTail = sections.slice(selected.length).map(compactSectionForQueueBudget);
+  const hybrid = [...selected, ...compactTail].join(QUEUE_CONTEXT_SECTION_SEPARATOR) + noticeSuffix;
+  if (hybrid.length <= cap) return hybrid;
+
+  const compact = sections.map(compactSectionForQueueBudget);
+  const compactContext = compact.join(QUEUE_CONTEXT_SECTION_SEPARATOR) + noticeSuffix;
+  if (compactContext.length <= cap) return compactContext;
+
+  return `${compactContext.slice(0, Math.max(0, cap - notice.length - 2)).trimEnd()}\n\n${notice}`;
+}
+
+function compactSectionForQueueBudget(section: string): string {
+  const lines = section.split("\n");
+  const compact: string[] = [];
+
+  if (lines[0]) compact.push(lines[0]);
+
+  const statusLine = lines.find(line => line.startsWith("**Status:**"));
+  if (statusLine) compact.push(statusLine);
+
+  const sourceLines = lines.filter(line => line.startsWith("Source: `"));
+  if (sourceLines.length > 0) {
+    compact.push("", "**Sources:**", ...sourceLines);
+    compact.push("", "[Artifact excerpts omitted due to total queue/rethink context budget.]");
+  }
+
+  return compact.join("\n");
 }
 
 // ─── Internal Helpers ───────────────────────────────────────────────────────

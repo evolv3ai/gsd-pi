@@ -17,14 +17,14 @@ import {
   resolveMilestoneFile, resolveSliceFile, resolveSlicePath,
   resolveTasksDir, resolveTaskFiles, resolveTaskFile,
   relMilestoneFile, relSliceFile, relSlicePath, relMilestonePath,
-  resolveGsdRootFile, relGsdRootFile, resolveRuntimeFile,
+  relTaskFile, resolveGsdRootFile, relGsdRootFile, resolveRuntimeFile,
 } from "./paths.js";
 import { resolveInlineLevel, loadEffectiveGSDPreferences } from "./preferences.js";
 import { isContextModeEnabled } from "./preferences-types.js";
 import { parseRoadmap } from "./parsers-legacy.js";
 import type { GSDState, InlineLevel } from "./types.js";
 import type { GSDPreferences } from "./preferences.js";
-import { join, basename } from "node:path";
+import { join, basename, relative } from "node:path";
 import { existsSync } from "node:fs";
 import { computeBudgets, resolveExecutorContextWindow, truncateAtSectionBoundary, type MinimalModelRegistry } from "./context-budget.js";
 import { getPendingGates, getPendingGatesForTurn } from "./gsd-db.js";
@@ -48,6 +48,7 @@ import {
   type ExcerptResolver,
 } from "./unit-context-composer.js";
 import { resolveManifest, type ArtifactKey } from "./unit-context-manifest.js";
+import { resolveSliceResearchLocation } from "./auto-artifact-paths.js";
 import { compileUnitContextContract, type UnitPromptContextContract } from "./tool-contract.js";
 import { readCompactionSnapshot } from "./compaction-snapshot.js";
 import { logWarning } from "./workflow-logger.js";
@@ -323,19 +324,37 @@ function requireComposedArtifactBlock(
   return block.body;
 }
 
+interface ExecuteTaskOnDemandResult {
+  /** Rendered block for the prompt; empty string when not shown. */
+  text: string;
+  /**
+   * Telemetry skip reason when the block was suppressed; null when the block
+   * is included. Callers pass this directly to `trackPromptContext`.
+   */
+  skipReason: string | null;
+}
+
 function renderExecuteTaskOnDemandContext(
   base: string,
   mid: string,
   sid: string,
   artifacts: readonly ArtifactKey[],
-): string {
-  if (!artifacts.includes("slice-research")) return "";
-  const researchPath = relSliceFile(base, mid, sid, "RESEARCH");
-  return [
-    "## On-demand Context",
-    "",
-    `Slice research is available at \`${researchPath}\`. Read it only if the inlined task plan, slice plan excerpt, and carry-forward context do not explain a required implementation detail.`,
-  ].join("\n");
+): ExecuteTaskOnDemandResult {
+  if (!artifacts.includes("slice-research")) {
+    return { text: "", skipReason: "not declared by contract" };
+  }
+  const research = resolveSliceResearchLocation(base, mid, sid);
+  if (!research.absolutePath || !research.relativePath) {
+    return { text: "", skipReason: "missing" };
+  }
+  return {
+    text: [
+      "## On-demand Context",
+      "",
+      `Slice research is available at \`${research.relativePath}\`. Read it only if the inlined task plan, slice plan excerpt, and carry-forward context do not explain a required implementation detail.`,
+    ].join("\n"),
+    skipReason: null,
+  };
 }
 
 // ─── Executor Constraints ─────────────────────────────────────────────────────
@@ -1691,7 +1710,13 @@ export async function buildDiscussMilestonePrompt(
   const draftContent = draftPath ? await loadFile(draftPath) : null;
 
   if (includeDraftSeed && draftContent) {
-    return `${promptWithContextMode}\n\n## Prior Discussion (Draft Seed)\n\nThe following draft was captured from a prior multi-milestone discussion. Use it as seed material — the user has already provided this context. Start with a brief reflection on what the draft covers, then probe for any gaps or open questions before writing the full CONTEXT.md.\n\n${draftContent}`;
+    const draftRelPath = relMilestoneFile(base, mid, "CONTEXT-DRAFT");
+    const draftSeed = `### Prior Discussion Draft\nSource: \`${draftRelPath}\`\n\n${draftContent.trim()}`;
+    const cappedDraftSeed = capPreamble(draftSeed);
+    const truncationNote = cappedDraftSeed !== draftSeed
+      ? `\n\n_(Draft seed truncated; read the full draft at \`${draftRelPath}\` if needed.)_`
+      : "";
+    return `${promptWithContextMode}\n\n## Prior Discussion (Draft Seed)\n\nThe following draft was captured from a prior multi-milestone discussion. Use it as seed material — the user has already provided this context. Start with a brief reflection on what the draft covers, then probe for any gaps or open questions before writing the full CONTEXT.md.\n\n${cappedDraftSeed}${truncationNote}`;
   }
 
   return promptWithContextMode;
@@ -2637,7 +2662,7 @@ export async function buildExecuteTaskPrompt(
 
   const taskPlanPath = resolveTaskFile(base, mid, sid, tid, "PLAN");
   const taskPlanContent = taskPlanPath ? await loadFile(taskPlanPath) : null;
-  const taskPlanRelPath = relSlicePath(base, mid, sid) + `/tasks/${tid}-PLAN.md`;
+  const taskPlanRelPath = relTaskFile(base, mid, sid, tid, "PLAN");
   const taskPlanContext = taskPlanContent
     ? [
       "## Inlined Task Plan (authoritative local execution contract)",
@@ -2807,13 +2832,14 @@ export async function buildExecuteTaskPrompt(
   const slicePlanExcerpt = requireComposedArtifactBlock(contractedContext.blocks, "execute-task", "slice-plan");
   const contractedCarryForward = requireComposedArtifactBlock(contractedContext.blocks, "execute-task", "prior-task-summaries");
   const contractedTemplates = requireComposedArtifactBlock(contractedContext.blocks, "execute-task", "templates");
-  const onDemandContext = renderExecuteTaskOnDemandContext(base, mid, sid, contractedContext.onDemand);
+  const onDemandResult = renderExecuteTaskOnDemandContext(base, mid, sid, contractedContext.onDemand);
+  const onDemandContext = onDemandResult.text;
   trackPromptContext(
     contextTelemetry,
     "slice-research",
     onDemandContext ? "on-demand" : "skipped",
     onDemandContext,
-    onDemandContext ? undefined : "not declared by contract",
+    onDemandContext ? undefined : onDemandResult.skipReason ?? undefined,
   );
 
   const prompt = loadPrompt("execute-task", {
@@ -3875,7 +3901,7 @@ export async function buildReactiveExecutePrompt(
 
     const taskPlanPath = resolveTaskFile(base, mid, sid, tid, "PLAN");
     const taskPlanContent = taskPlanPath ? await loadFile(taskPlanPath) : null;
-    const taskPlanRelPath = `${relSlicePath(base, mid, sid)}/tasks/${tid}-PLAN.md`;
+    const taskPlanRelPath = relTaskFile(base, mid, sid, tid, "PLAN");
     const taskPlanInline = taskPlanContent
       ? [
           "## Inlined Task Plan (authoritative local execution contract)",
