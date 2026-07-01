@@ -341,14 +341,16 @@ function groupByDirectory(
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     const dir = dirname(file);
-    const dirKey = dir === "." ? "" : dir;
-    if (!dirMap.has(dirKey)) {
-      dirMap.set(dirKey, []);
+    const dirPath = dir === "." ? "" : dir;
+    const repoId = repos?.[i];
+    const groupKey = repoId !== undefined ? `${repoId}\0${dirPath}` : dirPath;
+    if (!dirMap.has(groupKey)) {
+      dirMap.set(groupKey, []);
     }
-    dirMap.get(dirKey)!.push({
+    dirMap.get(groupKey)!.push({
       path: file,
       description: descriptions.get(file) ?? "",
-      repo: repos?.[i],
+      repo: repoId,
     });
   }
 
@@ -371,15 +373,16 @@ function groupByDirectory(
     return a.localeCompare(b);
   });
 
-  for (const dir of sortedDirs) {
-    const dirFiles = dirMap.get(dir)!;
+  for (const groupKey of sortedDirs) {
+    const dirFiles = dirMap.get(groupKey)!;
     dirFiles.sort((a, b) => a.path.localeCompare(b.path));
+    const dirPath = repos ? groupKey.slice(groupKey.indexOf("\0") + 1) : groupKey;
 
     groups.push({
-      path: dir,
+      path: dirPath,
       files: dirFiles,
       collapsed: dirFiles.length > collapseThreshold,
-      // A directory lives in exactly one repo in workspace-aware mode.
+      // Each group is scoped to one repo in workspace-aware mode.
       repo: dirFiles[0]?.repo,
     });
   }
