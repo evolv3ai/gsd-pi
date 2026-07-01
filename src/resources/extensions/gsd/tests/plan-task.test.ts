@@ -252,14 +252,14 @@ test('handlePlanTask persists targetRepositories for parent-workspace tasks', as
     seedParent();
     const result = await handlePlanTask({
       ...validParams(),
-      targetRepositories: ['frontend', 'backend'],
+      targetRepositories: ['project'],
     }, base);
     assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
 
     const tasks = getSliceTasks('M001', 'S02');
     const planned = tasks.find((t) => t.id === 'T02');
     assert.ok(planned, 'planned task should exist');
-    assert.deepEqual(planned?.target_repositories, ['frontend', 'backend']);
+    assert.deepEqual(planned?.target_repositories, ['project']);
   } finally {
     cleanup(base);
   }

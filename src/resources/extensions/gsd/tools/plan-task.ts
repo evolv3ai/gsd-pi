@@ -12,6 +12,7 @@ import { appendEvent } from "../workflow-events.js";
 import { logWarning } from "../workflow-logger.js";
 import { loadEffectiveGSDPreferences } from "../preferences.js";
 import { validatePathOnlyPlanningFields, validatePlanningPathScope } from "../planning-path-scope.js";
+import { createRepositoryRegistryFromPreferences, type RepositoryRegistry } from "../repository-registry.js";
 import type { GateId } from "../types.js";
 
 export interface PlanTaskParams {
@@ -42,6 +43,25 @@ export interface PlanTaskResult {
   taskPlanPath: string;
 }
 
+function validateRepositoryTargetIds(field: string, value: unknown): string[] {
+  const ids = validateStringArray(value, field);
+  if (ids.length === 0) throw new Error(`${field} must include at least one repository id when provided`);
+  const deduped = Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
+  if (deduped.length === 0) throw new Error(`${field} must include at least one repository id when provided`);
+  return deduped;
+}
+
+function validateReferencedRepositories(
+  targetRepositories: string[] | undefined,
+  registry: RepositoryRegistry,
+): string | null {
+  if (!targetRepositories) return null;
+  const known = new Set(registry.repositories.map((repo) => repo.id));
+  const missing = targetRepositories.filter((id) => !known.has(id));
+  if (missing.length === 0) return null;
+  return `unknown targetRepositories: ${missing.join(", ")}. Declared repositories: ${Array.from(known).join(", ")}`;
+}
+
 function validateParams(params: PlanTaskParams): PlanTaskParams {
   if (!isNonEmptyString(params?.milestoneId)) throw new Error("milestoneId is required");
   if (!isNonEmptyString(params?.sliceId)) throw new Error("sliceId is required");
@@ -59,7 +79,9 @@ function validateParams(params: PlanTaskParams): PlanTaskParams {
     files: validateStringArray(params.files, "files"),
     inputs: validateStringArray(params.inputs, "inputs"),
     expectedOutput: validateStringArray(params.expectedOutput, "expectedOutput"),
-    ...(params.targetRepositories ? { targetRepositories: validateStringArray(params.targetRepositories, "targetRepositories") } : {}),
+    ...(params.targetRepositories !== undefined
+      ? { targetRepositories: validateRepositoryTargetIds("targetRepositories", params.targetRepositories) }
+      : {}),
   };
 }
 
@@ -97,11 +119,19 @@ export async function handlePlanTask(
   }
 
   let taskGates: GateId[];
+  let repositoryRegistry: RepositoryRegistry;
   try {
     taskGates = resolveTaskGates(basePath);
+    const loaded = loadEffectiveGSDPreferences(basePath);
+    repositoryRegistry = createRepositoryRegistryFromPreferences(basePath, loaded?.preferences);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { error: `validation failed: ${message}` };
+  }
+
+  const repoValidationError = validateReferencedRepositories(params.targetRepositories, repositoryRegistry);
+  if (repoValidationError) {
+    return { error: `validation failed: ${repoValidationError}` };
   }
 
   // ── Guards + DB writes inside a single transaction (prevents TOCTOU) ───
