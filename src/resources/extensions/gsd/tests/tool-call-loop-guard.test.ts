@@ -385,3 +385,66 @@ console.log('\n── Loop guard: block reasons tell model to respond in text �
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Distinct-arg browser-automation calls are a legitimate UAT, not a loop (#1120)
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Loop guard: distinct-arg browser automation calls are not capped by per-tool count (#1120) ──');
+
+{
+  // A browser-backed UAT legitimately calls one browser verb many times with
+  // DIFFERENT arguments (read a validation message, count staged edits, inspect
+  // a control card, …). Guard 1's identical-signature streak never trips because
+  // the args vary; Guard 2's arg-independent per-tool cap must NOT block it.
+  for (const toolName of ['browser_evaluate', 'browser_act', 'browser_find']) {
+    resetToolCallLoopGuard();
+    for (let i = 1; i <= 12; i++) {
+      const result = checkToolCallLoop(toolName, { script: `step ${i}` });
+      assert.ok(result.block === false, `distinct ${toolName} call ${i} should be allowed`);
+    }
+  }
+
+  // MCP-prefixed browser tools canonicalize to `browser_*` and are exempt too.
+  resetToolCallLoopGuard();
+  for (let i = 1; i <= 12; i++) {
+    const result = checkToolCallLoop('mcp__agent-browser__browser_evaluate', { script: `step ${i}` });
+    assert.ok(result.block === false, `distinct MCP-prefixed browser_evaluate call ${i} should be allowed`);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Identical-arg browser loops are STILL caught by Guard 1 (#1120)
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Loop guard: identical-arg browser loops are still caught by Guard 1 (#1120) ──');
+
+{
+  resetToolCallLoopGuard();
+  for (let i = 1; i <= 4; i++) {
+    const result = checkToolCallLoop('browser_evaluate', { script: 'document.title' });
+    assert.ok(result.block === false, `identical browser_evaluate call ${i} should be allowed`);
+  }
+  const blocked = checkToolCallLoop('browser_evaluate', { script: 'document.title' });
+  assert.ok(blocked.block === true, '5th identical browser_evaluate call should be blocked by Guard 1');
+  assert.ok(blocked.reason?.includes('identical args'), 'identical browser loops should be caught by Guard 1, not Guard 2');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The browser exemption must NOT widen to other non-exempt tools (#1120)
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Loop guard: browser exemption does not widen to other tools (#1120) ──');
+
+{
+  // Negative invariant: an arbitrary non-exempt, non-browser tool called past
+  // the default cap with varied args must still be blocked by Guard 2.
+  resetToolCallLoopGuard();
+  for (let i = 1; i <= 6; i++) {
+    const result = checkToolCallLoop('some_workflow_tool', { arg: `v${i}` });
+    assert.ok(result.block === false, `non-exempt tool call ${i} should be allowed`);
+  }
+  const blocked = checkToolCallLoop('some_workflow_tool', { arg: 'v7' });
+  assert.ok(blocked.block === true, '7th varied-arg non-exempt call must still trip Guard 2');
+  assert.ok(blocked.reason?.includes('repeated tool'), 'non-exempt overflow should be caught by Guard 2');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
