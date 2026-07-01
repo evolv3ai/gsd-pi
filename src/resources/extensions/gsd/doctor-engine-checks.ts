@@ -2,7 +2,15 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 
 import type { DoctorIssue } from "./doctor-types.js";
-import { getAllMilestones, getMilestoneSlices, getSliceTasks, isDbAvailable, _getAdapter } from "./gsd-db.js";
+import {
+  getAllMilestones,
+  getMilestoneSlices,
+  getSliceTasks,
+  isDbAvailable,
+  isMemoriesFtsAvailable,
+  _getAdapter,
+} from "./gsd-db.js";
+import { MEMORIES_FTS_REBUILT_KEY } from "./db-memory-fts-schema.js";
 import { isAfter, latestExplicitReopenAt } from "./milestone-reopen-events.js";
 import { gsdProjectionRoot, gsdRoot, resolveGsdPathContract, resolveMilestoneFile, resolveSliceFile } from "./paths.js";
 import { deriveState } from "./state.js";
@@ -159,6 +167,32 @@ export async function checkEngineHealth(
   try {
     if (isDbAvailable()) {
       const adapter = _getAdapter()!;
+
+      try {
+        if (isMemoriesFtsAvailable(adapter)) {
+          const runtimeKv = adapter
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='runtime_kv'")
+            .get();
+          const marker = runtimeKv
+            ? adapter.prepare(
+                "SELECT 1 as present FROM runtime_kv WHERE scope = 'global' AND scope_id = '' AND key = :key",
+              ).get({ ":key": MEMORIES_FTS_REBUILT_KEY })
+            : undefined;
+          if (!marker) {
+            issues.push({
+              severity: "warning",
+              code: "memories_fts_rebuild_missing",
+              scope: "project",
+              unitId: "project",
+              message: `Memory full-text index exists but runtime_kv has no ${MEMORIES_FTS_REBUILT_KEY} marker. The index may be stale or incomplete, so memory search can silently degrade to the LIKE fallback.`,
+              file: ".gsd/gsd.db",
+              fixable: false,
+            });
+          }
+        }
+      } catch {
+        // Non-fatal — memory FTS health check failed
+      }
 
       // a. Orphaned tasks (task.slice_id points to non-existent slice)
       try {
