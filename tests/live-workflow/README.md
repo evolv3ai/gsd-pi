@@ -10,12 +10,13 @@ This is the live counterpart to the other two test layers:
 | --- | --- | --- | --- | --- |
 | Fake-LLM e2e | `tests/e2e` | scripted JSONL transcript | none | yes (required gate) |
 | Provider smoke | `tests/live` | real API, transport only | yes | no (manual) |
-| **Workflow** | `tests/live-workflow` | **real agent, single unit** | yes | no (manual) |
+| **Workflow** | `tests/live-workflow` | **real agent, single unit** | yes | optional release CI + manual |
 
 These exist to answer one question the other layers can't: *does a real agent,
 given a real plan, actually execute a dispatched unit to a correct, durable
 outcome through gsd's real gates?* They are slow and cost real tokens, so they
-never run in the default suite.
+never run in the default suite. Production release CI runs them as a non-blocking
+optional smoke against the configured live workflow model.
 
 > **Why `next`, not `auto`?** The harness dispatches a single unit with
 > `gsd headless next` rather than running the full `auto` loop. A real agent
@@ -50,7 +51,7 @@ failing.
 | `GSD_LIVE_TESTS` | — | Must be `1` or the suite is skipped entirely. |
 | `GSD_SMOKE_BINARY` | `gsd` on PATH | Built binary to drive (recommended). |
 | `*_API_KEY` / `*_OAUTH_TOKEN` | — | Provider credential, forwarded to the child. At least one required. Provider-agnostic. |
-| `GSD_LIVE_WORKFLOW_MODEL` | auto-resolved | Force a model id. Unset = gsd picks the default for whichever provider's credential is present. |
+| `GSD_LIVE_WORKFLOW_MODEL` | auto-resolved (`openai/gpt-5.4-mini` in optional release CI) | Force a model id. Unset = gsd picks the default for whichever provider's credential is present. |
 | `GSD_LIVE_WORKFLOW_TIMEOUT_MS` | `300000` | Per-run dispatch timeout (wall-clock budget). Raise for slower models. |
 | `GSD_LIVE_WORKFLOW_OUTPUT` | `text` | Output format. `text` = readable transcript; `stream-json` = machine-parseable JSONL. |
 
