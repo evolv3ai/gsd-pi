@@ -20,11 +20,12 @@ import {
   relTaskFile, resolveGsdRootFile, relGsdRootFile, resolveRuntimeFile,
 } from "./paths.js";
 import { resolveInlineLevel, loadEffectiveGSDPreferences } from "./preferences.js";
+import { createRepositoryRegistryFromPreferences } from "./repository-registry.js";
 import { isContextModeEnabled } from "./preferences-types.js";
 import { parseRoadmap } from "./parsers-legacy.js";
 import type { GSDState, InlineLevel } from "./types.js";
 import type { GSDPreferences } from "./preferences.js";
-import { join, basename, relative } from "node:path";
+import { join, basename, relative, sep } from "node:path";
 import { existsSync } from "node:fs";
 import { computeBudgets, resolveExecutorContextWindow, truncateAtSectionBoundary, type MinimalModelRegistry } from "./context-budget.js";
 import { getPendingGates, getPendingGatesForTurn } from "./gsd-db.js";
@@ -390,6 +391,37 @@ function formatExecutorConstraints(
     `- Recommended task count for this slice: **${min}–${max} tasks**`,
     `- Each task gets ~${perTaskBudgetK}K chars of inline context (plans, code, decisions)`,
     `- Keep individual tasks completable within a single context window — if a task needs more context than fits, split it`,
+  ].join("\n");
+}
+
+/**
+ * Builds the Declared Repositories block for parent-workspace planners.
+ * Returns "" for single-repo projects so the common-case prompt is unchanged;
+ * only parent mode with declared child repos gets the registry list and the
+ * targetRepositories assignment instruction.
+ */
+export function buildRepoRegistryBlock(base: string): string {
+  let registry;
+  try {
+    registry = createRepositoryRegistryFromPreferences(base, loadEffectiveGSDPreferences(base)?.preferences);
+  } catch {
+    return "";
+  }
+  const hasChildRepo = registry.repositories.some((repo) => repo.id !== "project");
+  if (registry.mode !== "parent" || !hasChildRepo) return "";
+
+  const lines = registry.repositories.map((repo) => {
+    const relPath = relative(registry.projectRoot, repo.root).split(sep).join("/") || ".";
+    const role = repo.role ? ` — ${repo.role}` : "";
+    const root = repo.id === "project" ? " (root)" : ` (${relPath})`;
+    return `- \`${repo.id}\`${root}${role}`;
+  });
+  return [
+    "### Declared Repositories",
+    "",
+    ...lines,
+    "",
+    "This is a parent workspace. Assign each task's `targetRepositories` to the repository id(s) it touches (from the list above). Omit only when a task genuinely spans the parent root.",
   ].join("\n");
 }
 
@@ -2504,6 +2536,7 @@ async function renderSlicePrompt(options: {
     inlinedContext,
     dependencySummaries: depContent,
     sourceFilePaths: buildSourceFilePaths(base, mid, sid),
+    repoRegistry: buildRepoRegistryBlock(base),
     executorContextConstraints,
     commitInstruction,
     skillActivation: buildSkillActivationBlock({

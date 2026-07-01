@@ -710,12 +710,14 @@ export function registerDbTools(pi: ExtensionAPI): void {
         inputs: Type.Array(Type.String(), { description: "Array<string> of input files or references; pass [\"path\"] or [], never a single string" }),
         expectedOutput: Type.Array(Type.String(), { description: "Array<string> of files this task creates or overwrites; pass [\"path\"] or [], never prose or a single string" }),
         observabilityImpact: Type.Optional(Type.String({ description: "Task observability impact" })),
+        targetRepositories: Type.Optional(Type.Array(Type.String(), { description: "Repository id(s) this task touches (parent workspace); must match a Declared Repository. Omit for single-repo projects." })),
       }), { description: "Optional full task replacement for the slice. Omit for incremental planning, then call gsd_plan_task once per task." })),
       // ── Enrichment metadata (optional — defaults to empty) ────────────
       successCriteria: Type.Optional(Type.String({ description: "Slice success criteria block" })),
       proofLevel: Type.Optional(Type.String({ description: "Slice proof level" })),
       integrationClosure: Type.Optional(Type.String({ description: "Slice integration closure" })),
       observabilityImpact: Type.Optional(Type.String({ description: "Slice observability impact" })),
+      targetRepositories: Type.Optional(Type.Array(Type.String(), { description: "Slice-wide default repository id(s) (parent workspace); must match a Declared Repository. Omit for single-repo projects." })),
       // Single-writer v3 audit trail (Stream 2): caller-provided actor identity + causation.
       actorName: Type.Optional(Type.String({ description: "Caller-provided actor identity for the audit trail (e.g. 'executor-01', 'gsd-orchestrator')" })),
       triggerReason: Type.Optional(Type.String({ description: "Caller-provided reason this action was triggered (e.g. 'plan-phase complete')" })),
@@ -789,6 +791,7 @@ export function registerDbTools(pi: ExtensionAPI): void {
       inputs: Type.Array(Type.String(), { description: "Array<string> of input files or references; pass [\"path\"] or [], never a single string" }),
       expectedOutput: Type.Array(Type.String(), { description: "Array<string> of files this task creates or overwrites; pass [\"path\"] or [], never prose or a single string" }),
       observabilityImpact: Type.Optional(Type.String({ description: "Task observability impact" })),
+      targetRepositories: Type.Optional(Type.Array(Type.String(), { description: "Repository id(s) this task touches (parent workspace); must match a Declared Repository. Omit for single-repo projects." })),
       // Single-writer v3 audit trail (Stream 2): caller-provided actor identity + causation.
       actorName: Type.Optional(Type.String({ description: "Caller-provided actor identity for the audit trail (e.g. 'executor-01', 'gsd-orchestrator')" })),
       triggerReason: Type.Optional(Type.String({ description: "Caller-provided reason this action was triggered (e.g. 'plan-phase complete')" })),

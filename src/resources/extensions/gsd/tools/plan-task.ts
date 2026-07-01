@@ -26,6 +26,8 @@ export interface PlanTaskParams {
   inputs: string[];
   expectedOutput: string[];
   observabilityImpact?: string;
+  /** Repository id(s) this task touches (parent workspace); omitted for single-repo projects. */
+  targetRepositories?: string[];
   fullPlanMd?: string;
   /** Optional caller-provided identity for audit trail */
   actorName?: string;
@@ -57,6 +59,7 @@ function validateParams(params: PlanTaskParams): PlanTaskParams {
     files: validateStringArray(params.files, "files"),
     inputs: validateStringArray(params.inputs, "inputs"),
     expectedOutput: validateStringArray(params.expectedOutput, "expectedOutput"),
+    ...(params.targetRepositories ? { targetRepositories: validateStringArray(params.targetRepositories, "targetRepositories") } : {}),
   };
 }
 
@@ -143,6 +146,7 @@ export async function handlePlanTask(
         expectedOutput: params.expectedOutput,
         observabilityImpact: params.observabilityImpact ?? "",
         fullPlanMd: params.fullPlanMd,
+        targetRepositories: params.targetRepositories,
       });
       for (const gid of taskGates) {
         insertGateRow({ milestoneId: params.milestoneId, sliceId: params.sliceId, gateId: gid, scope: "task", taskId: params.taskId });

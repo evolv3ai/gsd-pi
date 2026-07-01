@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask, getSlice, getTask, getGateResults } from '../gsd-db.ts';
+import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask, getSlice, getTask, getSliceTasks, getGateResults } from '../gsd-db.ts';
 import { handlePlanTask } from '../tools/plan-task.ts';
 import { parseTaskPlanFile } from '../files.ts';
 
@@ -239,6 +239,44 @@ test('handlePlanTask reruns idempotently and refreshes parse-visible state', asy
     const parsed = parseTaskPlanFile(readFileSync(taskPlanPath, 'utf-8'));
     assert.equal(parsed.frontmatter.estimated_steps, 1);
     assert.match(readFileSync(taskPlanPath, 'utf-8'), /Updated task handler description\./);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanTask persists targetRepositories for parent-workspace tasks', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParent();
+    const result = await handlePlanTask({
+      ...validParams(),
+      targetRepositories: ['frontend', 'backend'],
+    }, base);
+    assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
+
+    const tasks = getSliceTasks('M001', 'S02');
+    const planned = tasks.find((t) => t.id === 'T02');
+    assert.ok(planned, 'planned task should exist');
+    assert.deepEqual(planned?.target_repositories, ['frontend', 'backend']);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanTask rejects non-array targetRepositories', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParent();
+    const result = await handlePlanTask({
+      ...validParams(),
+      targetRepositories: 'frontend' as unknown as string[],
+    }, base);
+    assert.ok('error' in result);
+    assert.match(result.error, /validation failed: targetRepositories/);
   } finally {
     cleanup(base);
   }
