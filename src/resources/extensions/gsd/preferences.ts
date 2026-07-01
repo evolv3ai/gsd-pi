@@ -270,6 +270,12 @@ export function normalizePreferencesShape(
 const EFFECTIVE_PREFERENCES_CACHE_MAX = 64;
 const effectivePreferencesCache = new Map<string, LoadedGSDPreferences | null>();
 
+type EffectivePreferencesLoadOptions = {
+  availableModelIds?: string[];
+  preferredModelId?: string;
+  skipProfileDefaults?: boolean;
+};
+
 export function clearGSDPreferencesCache(): void {
   effectivePreferencesCache.clear();
 }
@@ -301,7 +307,7 @@ function preferencesFileSignature(path: string): string {
 
 function effectivePreferencesCacheKey(
   basePath?: string,
-  opts?: { availableModelIds?: string[]; preferredModelId?: string },
+  opts?: EffectivePreferencesLoadOptions,
 ): string {
   return JSON.stringify({
     basePath: basePath ?? null,
@@ -309,6 +315,7 @@ function effectivePreferencesCacheKey(
     project: projectPreferencesCandidatePaths(basePath).map(preferencesFileSignature),
     availableModelIds: opts?.availableModelIds ?? null,
     preferredModelId: opts?.preferredModelId ?? null,
+    skipProfileDefaults: opts?.skipProfileDefaults === true,
   });
 }
 
@@ -338,7 +345,7 @@ export function loadProjectGSDPreferences(basePath?: string): LoadedGSDPreferenc
 
 export function loadEffectiveGSDPreferences(
   basePath?: string,
-  opts?: { availableModelIds?: string[]; preferredModelId?: string },
+  opts?: EffectivePreferencesLoadOptions,
 ): LoadedGSDPreferences | null {
   const cacheKey = effectivePreferencesCacheKey(basePath, opts);
   if (effectivePreferencesCache.has(cacheKey)) {
@@ -384,7 +391,7 @@ export function loadEffectiveGSDPreferences(
   } else {
     profileForDefaults = DEFAULT_TOKEN_PROFILE;
   }
-  if (profileForDefaults) {
+  if (profileForDefaults && !opts?.skipProfileDefaults) {
     const profileDefaults = _resolveProfileDefaults(
       profileForDefaults,
       opts?.availableModelIds,

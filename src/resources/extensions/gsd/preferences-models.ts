@@ -100,9 +100,11 @@ export function resolveModelWithFallbacksForUnit(
   availableModelIds?: string[],
   preferredModelId?: string,
 ): ResolvedModelConfig | undefined {
-  const loadOpts = availableModelIds !== undefined || preferredModelId !== undefined
-    ? { availableModelIds, preferredModelId }
-    : undefined;
+  const loadOpts = {
+    ...(availableModelIds !== undefined ? { availableModelIds } : {}),
+    ...(preferredModelId !== undefined ? { preferredModelId } : {}),
+    skipProfileDefaults: true,
+  };
   const prefs = loadEffectiveGSDPreferences(basePath, loadOpts);
   const chain = phaseChainForUnit(unitType);
   if (!chain) return undefined;

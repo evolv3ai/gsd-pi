@@ -63,6 +63,62 @@ test("resolvePreferredModelConfig synthesizes heavy routing ceiling when models 
   }
 });
 
+test("resolvePreferredModelConfig treats token-profile model defaults as synthesized routing", () => {
+  const originalCwd = process.cwd();
+  const originalGsdHome = process.env.GSD_HOME;
+  const tempProject = makeTempDir("gsd-routing-profile-project-");
+  const tempGsdHome = makeTempDir("gsd-routing-profile-home-");
+
+  try {
+    mkdirSync(join(tempProject, ".gsd"), { recursive: true });
+    writeFileSync(
+      join(tempProject, ".gsd", "PREFERENCES.md"),
+      [
+        "---",
+        "token_profile: quality",
+        "dynamic_routing:",
+        "  enabled: true",
+        "  tier_models:",
+        "    light: claude-haiku-4-5",
+        "    standard: claude-sonnet-4-6",
+        "    heavy: claude-opus-4-6",
+        "---",
+      ].join("\n"),
+      "utf-8",
+    );
+    process.env.GSD_HOME = tempGsdHome;
+    process.chdir(tempProject);
+
+    const config = resolvePreferredModelConfig(
+      "plan-slice",
+      {
+        provider: "anthropic",
+        id: "claude-sonnet-4-6",
+      },
+      true,
+      tempProject,
+      [
+        "anthropic/claude-haiku-4-5",
+        "anthropic/claude-sonnet-4-6",
+        "anthropic/claude-opus-4-6",
+      ],
+      "anthropic/claude-sonnet-4-6",
+    );
+
+    assert.deepEqual(config, {
+      primary: "claude-opus-4-6",
+      fallbacks: [],
+      source: "synthesized",
+    });
+  } finally {
+    process.chdir(originalCwd);
+    if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = originalGsdHome;
+    rmSync(tempProject, { recursive: true, force: true });
+    rmSync(tempGsdHome, { recursive: true, force: true });
+  }
+});
+
 test("resolvePreferredModelConfig falls back to auto start model when heavy tier is absent", () => {
   const originalCwd = process.cwd();
   const originalGsdHome = process.env.GSD_HOME;
