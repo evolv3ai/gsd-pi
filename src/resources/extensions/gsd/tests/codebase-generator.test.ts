@@ -994,3 +994,96 @@ test("single-repo: directory order stays byte-identical code-unit sort (not loca
     cleanup(base);
   }
 });
+
+test("workspace-aware: an invalid workspace registry surfaces an error instead of silently falling back", () => {
+  // Regression guard: a broken parent-mode config (here a child path escaping the
+  // project root) must propagate as an error. Swallowing it and falling back to a
+  // single-root map would silently drop every child repo from planning context.
+  const base = makeTmpRepo();
+  try {
+    addFile(base, "src/main.ts");
+    writeFileSync(
+      join(base, ".gsd", "PREFERENCES.md"),
+      `---\nversion: 1\nworkspace:\n  mode: parent\n  repositories:\n    frontend:\n      path: ../escapes-root\n---\n`,
+      "utf-8",
+    );
+
+    assert.throws(() => generateCodebaseMap(base), /resolves outside project root/);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("workspace-aware: files sharing a directory across repos keep their own repo heading", () => {
+  // Regression guard: the implicit project repo and a child repo can own different
+  // files under the same workspace-relative directory (lib/). Groups are keyed by
+  // (repo, dir), so each file must render under its own `## [repo-id]` heading
+  // instead of collapsing into one section labelled with a single (wrong) repo.
+  const base = join(tmpdir(), `gsd-codebase-parent-${randomUUID()}`);
+  mkdirSync(join(base, ".gsd"), { recursive: true });
+  execSync("git init", { cwd: base, stdio: "ignore" });
+  writeFileSync(
+    join(base, ".gsd", "PREFERENCES.md"),
+    `---\nversion: 1\nworkspace:\n  mode: parent\n  repositories:\n    lib:\n      path: lib\n---\n`,
+    "utf-8",
+  );
+  try {
+    // Project repo tracks lib/app.ts before lib becomes its own repo; the child
+    // repo then tracks helper.ts → workspace path lib/helper.ts. Different files,
+    // same directory, different repos.
+    addFile(base, "lib/app.ts");
+    execSync("git init", { cwd: join(base, "lib"), stdio: "ignore" });
+    writeFileSync(join(base, "lib", "helper.ts"), "// helper\n", "utf-8");
+    execSync("git add helper.ts", { cwd: join(base, "lib"), stdio: "ignore" });
+
+    const content = generateCodebaseMap(base).content;
+
+    // Both files present, each under its own repo section (not merged under one).
+    assert.match(content, /## \[project\]/);
+    assert.match(content, /## \[lib\]/);
+    const projectIdx = content.indexOf("## [project]");
+    const appIdx = content.indexOf("`lib/app.ts`");
+    const libIdx = content.indexOf("## [lib]");
+    const helperIdx = content.indexOf("`lib/helper.ts`");
+    assert.ok(
+      projectIdx < appIdx && appIdx < libIdx && libIdx < helperIdx,
+      "lib/app.ts must sit under [project] and lib/helper.ts under [lib]",
+    );
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("ensureCodebaseMapFresh: editing declared repos within the TTL window bypasses the cache", () => {
+  // Regression guard: the freshness TTL cache key folds in the workspace signature
+  // (mode + declared repos). Adding a child repo must miss the cache and re-enumerate
+  // rather than serve a stale map that omits the new repo until the TTL expires.
+  const base = makeTmpParentWorkspace(["frontend"]);
+  try {
+    addChildFile(base, "frontend", "src/App.tsx");
+
+    const initial = ensureCodebaseMapFresh(base, undefined, { ttlMs: 60_000 });
+    assert.equal(initial.status, "generated");
+    assert.doesNotMatch(readCodebaseMap(base)!, /## \[backend\]/);
+
+    // Declare a second child repo and back it with a real nested repo + file.
+    mkdirSync(join(base, "backend"), { recursive: true });
+    execSync("git init", { cwd: join(base, "backend"), stdio: "ignore" });
+    addChildFile(base, "backend", "src/server.ts");
+    writeFileSync(
+      join(base, ".gsd", "PREFERENCES.md"),
+      `---\nversion: 1\nworkspace:\n  mode: parent\n  repositories:\n    frontend:\n      path: frontend\n    backend:\n      path: backend\n---\n`,
+      "utf-8",
+    );
+
+    // Same TTL window, no force: the changed workspace signature must miss the cache.
+    const refreshed = ensureCodebaseMapFresh(base, undefined, { ttlMs: 60_000 });
+    const written = readCodebaseMap(base)!;
+
+    assert.equal(refreshed.status, "updated");
+    assert.match(written, /## \[backend\]/);
+    assert.match(written, /`backend\/src\/server\.ts`/);
+  } finally {
+    cleanup(base);
+  }
+});
