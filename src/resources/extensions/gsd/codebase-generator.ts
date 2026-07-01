@@ -242,6 +242,18 @@ function loadWorkspaceRegistry(basePath: string): RepositoryRegistry | null {
   return registry.mode === "parent" && hasChildRepo ? registry : null;
 }
 
+/** Stable key fragment for workspace-aware enumeration inputs (mode + declared repos). */
+function workspaceEnumerationSignature(basePath: string): string {
+  const registry = loadWorkspaceRegistry(basePath);
+  if (!registry) return "single-root";
+  return JSON.stringify({
+    mode: registry.mode,
+    repositories: registry.repositories
+      .map((repo) => ({ id: repo.id, root: repo.root }))
+      .sort((a, b) => a.id.localeCompare(b.id)),
+  });
+}
+
 /**
  * Enumerate tracked files across every declared repository in a parent workspace.
  * Child-repo paths are rewritten to be workspace-relative (e.g. `frontend/src/x`)
@@ -603,7 +615,7 @@ export function ensureCodebaseMapFresh(
   ensureOptions?: EnsureCodebaseMapOptions,
 ): EnsureCodebaseMapResult {
   const resolved = resolveGeneratorOptions(options);
-  const cacheKey = `${basePath}::${resolved.optionSignature}`;
+  const cacheKey = `${basePath}::${resolved.optionSignature}::${workspaceEnumerationSignature(basePath)}`;
   const ttlMs = ensureOptions?.ttlMs ?? DEFAULT_REFRESH_TTL_MS;
   const force = ensureOptions?.force === true;
   const now = Date.now();
