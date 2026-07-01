@@ -1,6 +1,6 @@
 # Providers
 
-Pi supports subscription-based providers via OAuth and API key providers via environment variables or auth file. For each provider, pi knows all available models. The list is updated with every pi release.
+Pi supports subscription-based providers via OAuth or external CLIs, and API key providers via environment variables or auth file. For each provider, pi knows all available models. The list is updated with every pi release.
 
 ## Table of Contents
 
@@ -17,6 +17,7 @@ Use `/login` in interactive mode, then select a provider:
 
 - ChatGPT Plus/Pro (Codex)
 - Claude Pro/Max
+- Cursor Agent (local `cursor-agent` CLI)
 - GitHub Copilot
 
 Use `/logout` to clear credentials. Tokens are stored in `~/.pi/agent/auth.json` and auto-refresh when expired.
@@ -29,6 +30,12 @@ Use `/logout` to clear credentials. Tokens are stored in `~/.pi/agent/auth.json`
 ### Claude Pro/Max
 
 Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party harness usage draws from [extra usage](https://claude.ai/settings/usage) and is billed per token, not against Claude plan limits.
+
+### Cursor Agent
+
+The `cursor-agent` provider routes through Cursor's local Agent CLI. It requires the `cursor-agent` binary to be installed and authenticated, or `CURSOR_API_KEY` to be set; the local CLI is still required because requests are executed through it. In GSD, the provider id is `cursor-agent` and the default model is `composer-2.5`.
+
+Set `CURSOR_AGENT_BIN` if the binary is not on `PATH`. Set `GSD_CURSOR_DISABLE=1` to disable the bundled GSD Cursor provider.
 
 ### GitHub Copilot
 
@@ -49,6 +56,7 @@ pi
 | Provider | Environment Variable | `auth.json` key |
 |----------|----------------------|------------------|
 | Anthropic | `ANTHROPIC_API_KEY` | `anthropic` |
+| Cursor Agent | `CURSOR_API_KEY` | `cursor-agent` |
 | Azure OpenAI Responses | `AZURE_OPENAI_API_KEY` | `azure-openai-responses` |
 | OpenAI | `OPENAI_API_KEY` | `openai` |
 | DeepSeek | `DEEPSEEK_API_KEY` | `deepseek` |
