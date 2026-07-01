@@ -376,7 +376,12 @@ function groupByDirectory(
     }
   }
   const sortedDirs = [...dirMap.keys()].sort((a, b) => {
-    if (!repos) return a.localeCompare(b);
+    // Single-repo (project) mode must stay byte-identical to the pre-workspace
+    // output, which ordered directories with a bare `.sort()` (UTF-16 code-unit
+    // order, so uppercase sorts before lowercase). localeCompare would diverge
+    // for mixed-case names (e.g. "Zoo" before "apple" flips), so preserve
+    // code-unit ordering here; only the repo-partitioning key is added on top.
+    if (!repos) return a < b ? -1 : a > b ? 1 : 0;
     const repoA = dirMap.get(a)![0]?.repo ?? "";
     const repoB = dirMap.get(b)![0]?.repo ?? "";
     const orderA = repoOrder.get(repoA) ?? 0;

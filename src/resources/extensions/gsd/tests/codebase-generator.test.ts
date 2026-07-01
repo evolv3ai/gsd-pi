@@ -916,3 +916,81 @@ test("workspace-aware: overlapping paths dedupe without falsely reporting trunca
     cleanup(base);
   }
 });
+
+test("workspace-aware: project directories interleaving child prefixes stay under one heading", () => {
+  // Regression guard: the implicit project repo has an empty prefix, so its
+  // root-level dirs (aaa/, zzz/) sort lexically around a child prefix (mmm/).
+  // Groups must be ordered per repo so `## [project]` is emitted exactly once.
+  const base = makeTmpParentWorkspace(["mmm"]);
+  try {
+    addFile(base, "aaa/x.ts"); // project repo, sorts before "mmm"
+    addFile(base, "zzz/y.ts"); // project repo, sorts after "mmm"
+    addChildFile(base, "mmm", "src/thing.ts");
+
+    const result = generateCodebaseMap(base);
+
+    const projectHeadings = (result.content.match(/^## \[project\]$/gm) ?? []).length;
+    const mmmHeadings = (result.content.match(/^## \[mmm\]$/gm) ?? []).length;
+    const allHeadings = (result.content.match(/^## \[.+\]$/gm) ?? []).length;
+
+    assert.equal(projectHeadings, 1, "project section must not be split across headings");
+    assert.equal(mmmHeadings, 1);
+    assert.equal(allHeadings, 2);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("workspace-aware: renaming a declared repo id invalidates map freshness", () => {
+  // Regression guard: repo identity is rendered into the map, so renaming a repo id
+  // (path unchanged → identical file paths) must be caught by the freshness
+  // fingerprint rather than leaving a stale `## [old-id]` heading in place.
+  const base = makeTmpParentWorkspace(["frontend"]);
+  try {
+    addChildFile(base, "frontend", "src/App.tsx");
+
+    ensureCodebaseMapFresh(base, undefined, { ttlMs: 0, force: true });
+    assert.match(readCodebaseMap(base)!, /^## \[frontend\]$/m);
+
+    // Rename the repo id to `web`; the path (and therefore the file paths) is unchanged.
+    writeFileSync(
+      join(base, ".gsd", "PREFERENCES.md"),
+      `---\nversion: 1\nworkspace:\n  mode: parent\n  repositories:\n    web:\n      path: frontend\n---\n`,
+      "utf-8",
+    );
+
+    const refreshed = ensureCodebaseMapFresh(base, undefined, { ttlMs: 0, force: true });
+    const written = readCodebaseMap(base)!;
+
+    assert.equal(refreshed.status, "updated");
+    assert.match(written, /^## \[web\]$/m);
+    assert.doesNotMatch(written, /^## \[frontend\]$/m);
+    assert.deepEqual(parseCodebaseMapMetadata(written)?.repositories, ["web"]);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("single-repo: directory order stays byte-identical code-unit sort (not locale-aware)", () => {
+  // Byte-identical single-repo invariant: pre-workspace output ordered
+  // directories with a bare `.sort()` (UTF-16 code-unit order), so uppercase
+  // sorts before lowercase ("Zoo" < "apple"). A locale-aware comparator inverts
+  // these and silently changes project-mode CODEBASE.md, so guard the ordering.
+  const base = makeTmpRepo();
+  try {
+    addFile(base, "Zoo/keeper.ts"); // 'Z' (0x5A) < 'a' (0x61) → sorts first
+    addFile(base, "apple/tree.ts");
+
+    const content = generateCodebaseMap(base).content;
+    const zooIdx = content.indexOf("### Zoo/");
+    const appleIdx = content.indexOf("### apple/");
+
+    assert.notEqual(zooIdx, -1);
+    assert.notEqual(appleIdx, -1);
+    assert.ok(zooIdx < appleIdx, "code-unit order must place Zoo/ before apple/");
+    // Project mode emits no repo partition heading.
+    assert.doesNotMatch(content, /^## \[.+\]$/m);
+  } finally {
+    cleanup(base);
+  }
+});
