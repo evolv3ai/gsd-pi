@@ -18,6 +18,7 @@
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { verifyExpectedArtifact } from "../auto-recovery.ts";
 import { recoverTimedOutUnit, type RecoveryContext } from "../auto-timeout-recovery.ts";
 import { closeDatabase, insertMilestone, insertSlice, insertTask, openDatabase } from "../gsd-db.ts";
 import { test } from 'node:test';
@@ -161,6 +162,54 @@ function makeRecordingCtx() {
     const runtime = JSON.parse(readFileSync(join(base, ".gsd", "runtime", "units", "plan-slice-M001-S01.json"), "utf-8"));
     assert.equal(runtime.phase, "recovered", "stale placeholder plan must not be finalized");
     assert.equal(runtime.recoveryAttempts, 1, "steering recovery attempt should be recorded");
+  } finally {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
+// ═══ plan-slice verification accepts completed task summaries ═══════════════
+
+{
+  console.log("\n=== plan-slice verification accepts completed task summaries ===");
+  const base = mkdtempSync(join(tmpdir(), "gsd-plan-slice-complete-summary-"));
+  const sliceDir = join(base, ".gsd", "milestones", "M001", "slices", "S05");
+  const tasksDir = join(sliceDir, "tasks");
+  mkdirSync(tasksDir, { recursive: true });
+
+  try {
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "M001", title: "Milestone", status: "active" });
+    insertSlice({ id: "S05", milestoneId: "M001", title: "Slice", status: "in_progress" });
+    insertTask({ id: "T01", milestoneId: "M001", sliceId: "S05", title: "Done 1", status: "complete" });
+    insertTask({ id: "T02", milestoneId: "M001", sliceId: "S05", title: "Done 2", status: "complete" });
+    insertTask({ id: "T03", milestoneId: "M001", sliceId: "S05", title: "Pending 1", status: "pending" });
+    insertTask({ id: "T04", milestoneId: "M001", sliceId: "S05", title: "Pending 2", status: "pending" });
+    writeFileSync(
+      join(sliceDir, "S05-PLAN.md"),
+      [
+        "# S05: Slice",
+        "",
+        "## Tasks",
+        "",
+        "- [x] **T01: Done 1** `est:10m`",
+        "- [x] **T02: Done 2** `est:10m`",
+        "- [ ] **T03: Pending 1** `est:10m`",
+        "- [ ] **T04: Pending 2** `est:10m`",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    writeFileSync(join(tasksDir, "T01-SUMMARY.md"), "# T01 Summary\n", "utf-8");
+    writeFileSync(join(tasksDir, "T02-SUMMARY.md"), "# T02 Summary\n", "utf-8");
+    writeFileSync(join(tasksDir, "T03-PLAN.md"), "# T03 Plan\n", "utf-8");
+    writeFileSync(join(tasksDir, "T04-PLAN.md"), "# T04 Plan\n", "utf-8");
+
+    assert.equal(
+      verifyExpectedArtifact("plan-slice", "M001/S05", base),
+      true,
+      "completed DB tasks should be accounted for by SUMMARY files",
+    );
   } finally {
     closeDatabase();
     rmSync(base, { recursive: true, force: true });
