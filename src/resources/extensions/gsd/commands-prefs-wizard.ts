@@ -758,7 +758,10 @@ async function configureDynamicRouting(ctx: ExtensionCommandContext, prefs: Reco
   const hooks = await promptBoolean(ctx, "Route hook sessions dynamically", dr.hooks, true);
   if (hooks !== undefined) dr.hooks = hooks;
 
-  const flatRate = await promptBoolean(ctx, "Allow dynamic routing for flat-rate providers", dr.allow_flat_rate_providers, false);
+  // Opt-out flag (#1115): routing is allowed for flat-rate providers by
+  // default; only an explicit `false` suppresses it. The default hint reflects
+  // that allow-by-default behavior.
+  const flatRate = await promptBoolean(ctx, "Allow dynamic routing for flat-rate providers", dr.allow_flat_rate_providers, true);
   if (flatRate !== undefined) dr.allow_flat_rate_providers = flatRate;
 
   // tier_models.light / standard / heavy — optional model IDs
