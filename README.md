@@ -28,16 +28,16 @@ See [CHANGELOG.md](./CHANGELOG.md) for release-by-release fixes and [Legacy Rele
 ## Latest Release Highlights
 
 <!-- release-highlights:start -->
-Latest release: **v1.3.0**
+Latest release: **v1.4.0**
 
-- **update:** Reconcile stale PATH gsd-browser binary after install.
-- **gsd:** Route UAT sign-off and worktree-degradation blockers through the guidance catalog.
-- **gsd:** Fix shell-tool selection — uncapped sync bash, interruptible await, graceful kills.
-- **browser-tools:** Proven engine resolution — gsd-browser primary for web apps (ADR-037).
-- **gsd:** Add the Unit Closeout module with the Interactive Closeout adapter (ADR-032).
-- **gsd:** Tool Surface Readiness gate — verify live tool surface at SDK init before the first model turn.
-- **claude-code-cli:** Expose Claude Fable 5 as an Opus-tier model.
-- **pi-ai:** Add Claude Fable 5 with Opus-tier thinking.
+- **models:** Add Claude Sonnet 5.
+- **Added:** Add Hermes plugin installer.
+- **compat:** Report .planning/ drift in /gsd sync and doctor.
+- **compat:** Project to .planning/ inside renderAllFromDb.
+- **compat:** Add external-planning-edit drift handler.
+- **compat:** Add DB → .planning/ projection writer.
+- **compat:** Extract .planning/ layout detector.
+- **compat:** Extend marker schema 1→2 with planning field.
 
 <!-- release-highlights:end -->
 
