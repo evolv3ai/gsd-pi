@@ -421,7 +421,7 @@ export function buildRepoRegistryBlock(base: string): string {
     "",
     ...lines,
     "",
-    "This is a parent workspace. Assign each task's `targetRepositories` to the repository id(s) it touches (from the list above). Omit only when a task genuinely spans the parent root.",
+    "This is a parent workspace. Assign each task's `targetRepositories` to the repository id(s) it touches (from the list above). Omit `targetRepositories` to inherit the slice-wide default from `gsd_plan_slice`; set it explicitly when a task differs (e.g. `[\"project\"]` for parent-root work).",
   ].join("\n");
 }
 
