@@ -142,13 +142,9 @@ export async function handlePlanTask(
   }
 
   const defaultTargets = defaultRepositoryTargets(repositoryRegistry);
-  const existingTask = getTask(params.milestoneId, params.sliceId, params.taskId);
-  const storedTaskTargets = existingTask?.target_repositories?.length
-    ? existingTask.target_repositories
-    : undefined;
   const parentSliceTargets = getSlice(params.milestoneId, params.sliceId)?.target_repositories;
   const effectiveTargetRepositories = resolveEffectiveTargetRepositories(
-    params.targetRepositories ?? storedTaskTargets,
+    params.targetRepositories,
     parentSliceTargets,
     defaultTargets,
   );
@@ -191,6 +187,7 @@ export async function handlePlanTask(
         return;
       }
 
+      const existingTask = getTask(params.milestoneId, params.sliceId, params.taskId);
       if (existingTask && isClosedStatus(existingTask.status)) {
         guardError = `cannot re-plan task ${params.taskId}: it is already complete — use gsd_task_reopen first`;
         return;
@@ -215,9 +212,7 @@ export async function handlePlanTask(
         expectedOutput: params.expectedOutput,
         observabilityImpact: params.observabilityImpact ?? "",
         fullPlanMd: params.fullPlanMd,
-        ...(params.targetRepositories !== undefined || !existingTask
-          ? { targetRepositories: effectiveTargetRepositories }
-          : {}),
+        targetRepositories: effectiveTargetRepositories,
       });
       for (const gid of taskGates) {
         insertGateRow({ milestoneId: params.milestoneId, sliceId: params.sliceId, gateId: gid, scope: "task", taskId: params.taskId });
