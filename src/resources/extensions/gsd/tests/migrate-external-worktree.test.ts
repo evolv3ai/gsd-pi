@@ -119,6 +119,63 @@ describe("migrate-external worktree guard (#2970)", () => {
   });
 });
 
+describe("migrateToExternalState rename fallback (#1179)", () => {
+  test("falls back to copy/delete when rename fails with EACCES", () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "gsd-migrate-eacces-")));
+    const stateDir = realpathSync(mkdtempSync(join(tmpdir(), "gsd-state-eacces-")));
+    const previousStateDir = process.env.GSD_STATE_DIR;
+    const previousProjectId = process.env.GSD_PROJECT_ID;
+    const originalRenameSync = fs.renameSync;
+    const localGsd = join(base, ".gsd");
+    const migratingPath = join(base, ".gsd.migrating");
+    let renameAttempts = 0;
+
+    process.env.GSD_STATE_DIR = stateDir;
+    process.env.GSD_PROJECT_ID = "rename-eacces";
+
+    try {
+      run("git init -b main", base);
+      mkdirSync(localGsd, { recursive: true });
+      writeFileSync(join(localGsd, "PREFERENCES.md"), "# prefs\n", "utf-8");
+
+      fs.renameSync = ((src, dst) => {
+        if (String(src) === localGsd && String(dst) === migratingPath) {
+          renameAttempts += 1;
+          const error = new Error("simulated WSL/DrvFs rename lock") as NodeJS.ErrnoException;
+          error.code = "EACCES";
+          throw error;
+        }
+        return originalRenameSync(src, dst);
+      }) as typeof fs.renameSync;
+      syncBuiltinESMExports();
+
+      const result = migrateToExternalState(base);
+
+      assert.equal(result.migrated, true, "EACCES rename failure should use copy/delete fallback");
+      assert.equal(result.error, undefined);
+      assert.equal(renameAttempts, 1, "should exercise the EACCES rename fallback once");
+      assert.equal(readFileSync(join(stateDir, "projects", "rename-eacces", "PREFERENCES.md"), "utf-8"), "# prefs\n");
+      assert.equal(readFileSync(join(base, ".gsd", "PREFERENCES.md"), "utf-8"), "# prefs\n");
+      assert.ok(!existsSync(migratingPath), "backup staging dir must be removed after successful migration");
+    } finally {
+      fs.renameSync = originalRenameSync;
+      syncBuiltinESMExports();
+      if (previousStateDir === undefined) {
+        delete process.env.GSD_STATE_DIR;
+      } else {
+        process.env.GSD_STATE_DIR = previousStateDir;
+      }
+      if (previousProjectId === undefined) {
+        delete process.env.GSD_PROJECT_ID;
+      } else {
+        process.env.GSD_PROJECT_ID = previousProjectId;
+      }
+      rmSync(base, { recursive: true, force: true });
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("migrateToExternalState copy failure rollback (#1047)", () => {
   test("restores .gsd when a source entry fails to copy", () => {
     const base = realpathSync(mkdtempSync(join(tmpdir(), "gsd-migrate-copy-fail-")));

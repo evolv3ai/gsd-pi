@@ -94,12 +94,12 @@ export function migrateToExternalState(basePath: string): MigrationResult {
 
     // Rename .gsd -> .gsd.migrating (atomic lock).
     // On Windows, NTFS may reject rename with EPERM if file descriptors are
-    // open (VS Code watchers, antivirus on-access scan). Fall back to
-    // copy+delete (#1292).
+    // open (VS Code watchers, antivirus on-access scan). WSL/DrvFs can report
+    // the same transient lock as EACCES. Fall back to copy+delete (#1292).
     try {
       renameSync(localGsd, migratingPath);
     } catch (renameErr: any) {
-      if (renameErr?.code === "EPERM" || renameErr?.code === "EBUSY") {
+      if (renameErr?.code === "EPERM" || renameErr?.code === "EBUSY" || renameErr?.code === "EACCES") {
         try {
           cpSync(localGsd, migratingPath, { recursive: true, force: true });
           rmSync(localGsd, { recursive: true, force: true });
