@@ -12,7 +12,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -291,6 +291,68 @@ describe('SessionManager', () => {
     await sm.startSession('/tmp/test-cmd', { cliPath: '/usr/bin/gsd', command: '/gsd auto --resume' });
     assert.ok(sm.lastClient);
     assert.deepEqual(sm.lastClient.prompted, ['/gsd auto --resume']);
+  });
+
+  it('startSession delegates rpc mode to RpcClient exactly once', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-session-argv-'));
+    const argvPath = join(dir, 'argv.json');
+    const scriptPath = join(dir, 'agent.cjs');
+    writeFileSync(
+      scriptPath,
+      `
+        const fs = require('node:fs');
+        fs.writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)));
+        let buffer = '';
+        process.stdin.setEncoding('utf8');
+        process.stdin.on('data', (chunk) => {
+          buffer += chunk;
+          let idx;
+          while ((idx = buffer.indexOf('\\n')) >= 0) {
+            const line = buffer.slice(0, idx).trim();
+            buffer = buffer.slice(idx + 1);
+            if (!line) continue;
+            const msg = JSON.parse(line);
+            if (msg.type === 'init') {
+              process.stdout.write(JSON.stringify({
+                type: 'response',
+                id: msg.id,
+                success: true,
+                data: { protocolVersion: 2, sessionId: 'real-session', capabilities: {} },
+              }) + '\\n');
+            } else if (msg.id) {
+              process.stdout.write(JSON.stringify({
+                type: 'response',
+                id: msg.id,
+                success: true,
+                data: {},
+              }) + '\\n');
+            }
+          }
+        });
+        setInterval(() => {}, 1000);
+      `,
+    );
+    const manager = new SessionManager();
+
+    try {
+      const sessionId = await manager.startSession(dir, {
+        cliPath: scriptPath,
+        model: 'claude-sonnet',
+        bare: true,
+      });
+
+      assert.equal(sessionId, 'real-session');
+      assert.deepEqual(JSON.parse(readFileSync(argvPath, 'utf8')), [
+        '--mode',
+        'rpc',
+        '--model',
+        'claude-sonnet',
+        '--bare',
+      ]);
+    } finally {
+      await manager.cleanup();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('startSession rejects duplicate projectDir', async () => {

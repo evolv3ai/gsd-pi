@@ -119,7 +119,7 @@ export class SessionManager extends EventEmitter {
 
     const cliPath = options.cliPath ?? SessionManager.resolveCLIPath();
 
-    const args: string[] = ['--mode', 'rpc'];
+    const args: string[] = [];
     if (options.model) args.push('--model', options.model);
     if (options.bare) args.push('--bare');
 
