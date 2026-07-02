@@ -476,7 +476,9 @@
 | gsd/index.ts | GSD Workflow | Main GSD extension bootstrap and registration |
 | gsd/auto.ts | Auto Engine | Automatic workflow execution and loop management |
 | gsd/auto-dashboard.ts | Auto Engine, Web Mode | Real-time dashboard for auto-run progress |
-| gsd/auto-worktree.ts | Auto Engine, Worktree | Automatic worktree creation and branch management |
+| gsd/worktree-lifecycle.ts | Auto Engine, Worktree | Worktree Lifecycle module for milestone enter/exit, guarded merge ordering, teardown, and session root mutation |
+| gsd/auto/closeout.ts | Auto Engine | Auto closeout adapter for milestone merge results and stash recovery stops |
+| gsd/auto-worktree.ts | Auto Engine, Worktree | Lower-level worktree helpers and inner milestone merge primitive |
 | gsd/auto-recovery.ts | Auto Engine | Recovery for crashed/stalled workflows |
 | gsd/auto-start.ts | Auto Engine | Initialization sequence for automatic execution |
 | gsd/auto-worktree-sync.ts | Auto Engine, Worktree | State sync between worktrees and main |
