@@ -838,7 +838,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
     },
   },
   {
-    name: "uat-verdict-gate (non-PASS blocks progression)",
+    name: "uat-verdict-gate (non-PASS observed; closeout enforces)",
     match: async ({ mid, basePath, prefs }) => {
       // Only applies when UAT dispatch is enabled
       if (!prefs?.uat_dispatch) return null;
@@ -852,9 +852,9 @@ export const DISPATCH_RULES: DispatchRule[] = [
         const { verdict, uatType } = result;
 
         if (!isAcceptableUatVerdict(verdict, uatType)) {
-          // Do not hard-stop auto-mode on non-PASS verdicts. Allow progression
-          // so follow-up slices can remediate, while complete-milestone still
-          // enforces manual UAT PASS sign-off before closure.
+          // Observe non-PASS verdicts without hard-stopping auto-mode. Allow
+          // progression so follow-up slices can remediate, while
+          // complete-milestone still enforces manual UAT PASS sign-off before closure.
           continue;
         }
       }
