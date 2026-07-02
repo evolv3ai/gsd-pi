@@ -1179,6 +1179,14 @@ async function configureVerification(ctx: ExtensionCommandContext, prefs: Record
   const maxRetries = await promptInteger(ctx, "Verification max retries", prefs.verification_max_retries, "2");
   applyNumber(prefs, "verification_max_retries", maxRetries);
 
+  const perUnitCap = await promptNumber(
+    ctx,
+    "Per-unit cost cap (USD; retry cost ceiling, blank = clear to default)",
+    prefs.per_unit_cost_cap_usd,
+    "5.0",
+  );
+  applyNumber(prefs, "per_unit_cost_cap_usd", perUnitCap);
+
   const ev = await promptBoolean(ctx, "Enhanced verification (master toggle)", prefs.enhanced_verification, true);
   if (ev !== undefined) prefs.enhanced_verification = ev;
   const evPre = await promptBoolean(ctx, "Enhanced verification — pre-execution checks", prefs.enhanced_verification_pre, true);
@@ -1783,6 +1791,7 @@ export function serializePreferencesToFrontmatter(prefs: Record<string, unknown>
     "reactive_execution", "gate_evaluation",
     "auto_visualize", "auto_report",
     "verification_commands", "verification_auto_fix", "verification_max_retries",
+    "per_unit_cost_cap_usd",
     "enhanced_verification", "enhanced_verification_pre",
     "enhanced_verification_post", "enhanced_verification_strict",
     "safety_harness",

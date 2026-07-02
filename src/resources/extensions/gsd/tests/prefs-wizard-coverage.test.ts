@@ -182,6 +182,70 @@ test("prefs wizard save path preserves every known preference key", async () => 
   }
 });
 
+test("verification wizard prompts for per-unit cost cap and persists it (regression #1121)", async () => {
+  // Regression for #1121: the `/gsd prefs` Verification category never prompted for
+  // `per_unit_cost_cap_usd`, so the per-unit cost cap could only be set by hand-editing
+  // PREFERENCES.md. Drive the wizard into Verification, answer the cap prompt, and assert
+  // the prompt exists and the entered value is serialized + round-trips back as a number.
+  const dir = mkdtempSync(join(tmpdir(), "gsd-prefs-wizard-"));
+  const prefsPath = join(dir, "PREFERENCES.md");
+
+  const inputLabels: string[] = [];
+  let topMenuVisits = 0;
+
+  const ctx = {
+    ui: {
+      notify() {},
+      select: async (label: string, options: string[]) => {
+        if (label === "GSD Preferences") {
+          topMenuVisits += 1;
+          if (topMenuVisits === 1) {
+            const verification = options.find((o) => o.startsWith("Verification"));
+            assert.ok(verification, "wizard menu must offer a Verification category");
+            return verification;
+          }
+          return "── Save & Exit ──";
+        }
+        // verification_commands string-list sub-menu — leave it untouched
+        if (options.includes("Done")) return "Done";
+        // boolean/enum prompts within the category — keep the current value
+        if (options.includes("(keep current)")) return "(keep current)";
+        return options[options.length - 1];
+      },
+      input: async (label: string) => {
+        inputLabels.push(label);
+        if (label.includes("Per-unit cost cap")) return "12.5";
+        return null; // escape every other numeric/string prompt (no change)
+      },
+    },
+    waitForIdle: async () => {},
+    reload: async () => {},
+  } as any;
+
+  try {
+    await handlePrefsWizard(ctx, "project", {}, { pathOverride: prefsPath });
+
+    // The Verification wizard must actually ask for the per-unit cost cap.
+    assert.ok(
+      inputLabels.some((l) => l.includes("Per-unit cost cap")),
+      `Verification wizard must prompt for the per-unit cost cap; prompts seen:\n${inputLabels.join("\n")}`,
+    );
+
+    // The entered value must be serialized to PREFERENCES.md...
+    const saved = readFileSync(prefsPath, "utf-8");
+    assert.match(saved, /per_unit_cost_cap_usd:\s*12\.5(\s|$)/m);
+
+    // ...and round-trip back through the parser/validator as a number.
+    const parsed = parsePreferencesMarkdown(saved);
+    assert.notEqual(parsed, null);
+    const { errors, preferences } = validatePreferences(parsed!);
+    assert.deepEqual(errors, []);
+    assert.equal(preferences.per_unit_cost_cap_usd, 12.5);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("category summaries expose the wizard menu surface for configured prefs", () => {
   const summaries = buildCategorySummaries(PREF_SAMPLE_VALUES);
   assert.deepEqual(
