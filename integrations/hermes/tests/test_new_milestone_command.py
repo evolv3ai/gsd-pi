@@ -107,6 +107,31 @@ def test_new_milestone_bare_text_passes_context_text(project: Path) -> None:
     assert "started" in result.lower() or "S-1" in result
 
 
+def test_new_milestone_terminal_callback_clears_local_session_id(
+    project: Path,
+) -> None:
+    router, client = _make_router(project_dir=str(project))
+    client.create_milestone.return_value = "milestone-4242"
+
+    run(router, "new-milestone Build a REST API with auth")
+    ctx = router._get_supervisor_ctx()  # type: ignore[attr-defined]
+    ctx.pending_blocker_id = "blk-1"
+    assert ctx.session_id == "milestone-4242"
+
+    on_terminal = client.create_milestone.call_args.kwargs["on_terminal"]
+    on_terminal("complete")
+
+    ctx = router._get_supervisor_ctx()  # type: ignore[attr-defined]
+    assert ctx.state == SupervisorState.COMPLETE
+    assert ctx.session_id is None
+    assert ctx.pending_blocker_id is None
+    assert ctx.notified_terminal is True
+
+    result = run(router, "reply stale response")
+    client.resolve_blocker.assert_not_called()
+    assert "no active" in result.lower()
+
+
 def test_new_milestone_file_flag_passes_context_file(project: Path) -> None:
     router, client = _make_router(project_dir=str(project))
     spec = project / "spec.md"

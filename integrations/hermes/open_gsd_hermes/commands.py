@@ -286,6 +286,8 @@ class GsdCommandRouter:
                 milestone_ctx.state = SupervisorState.CANCELLED
             else:
                 milestone_ctx.state = SupervisorState.FAILED
+            milestone_ctx.session_id = None
+            milestone_ctx.pending_blocker_id = None
             milestone_ctx.notified_terminal = True
             self._set_supervisor_ctx(milestone_ctx)
 

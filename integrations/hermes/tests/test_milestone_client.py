@@ -134,15 +134,7 @@ def test_create_milestone_returns_local_session_id_from_pid() -> None:
 def test_stream_loop_captures_session_id_from_init_result() -> None:
     """The reader must pull sessionId out of the init_result stream event."""
     client = GsdMcpClient(_config())
-    fake_proc = _FakeProc()
-    # stdout yields one init_result line then EOF
-    fake_proc.stdout.readline.side_effect = [
-        (json.dumps({"type": "init_result", "sessionId": "S-789"}) + "\n").encode(),
-        b"",
-    ]
-
-    with patch.object(client, "_milestone_proc", fake_proc):
-        client._milestone_stream_loop(fake_proc)
+    client._handle_milestone_event({"type": "init_result", "sessionId": "S-789"})
 
     assert client.milestone_session_id() == "S-789"
 
@@ -151,7 +143,6 @@ def test_stream_loop_notifies_blocker_on_supervised_select_request() -> None:
     """Supervised planning prompts (select/input/confirm) must fire notify_blocker."""
     client = GsdMcpClient(_config())
     notifications = MagicMock()
-    fake_proc = _FakeProc()
     blocker_event = {
         "type": "extension_ui_request",
         "method": "select",
@@ -159,14 +150,8 @@ def test_stream_loop_notifies_blocker_on_supervised_select_request() -> None:
         "title": "Choose milestone scope",
         "options": ["A", "B"],
     }
-    fake_proc.stdout.readline.side_effect = [
-        (json.dumps(blocker_event) + "\n").encode(),
-        b"",
-    ]
-
-    with patch.object(client, "_milestone_proc", fake_proc):
-        with patch.object(client, "_milestone_notifications", notifications):
-            client._milestone_stream_loop(fake_proc)
+    with patch.object(client, "_milestone_notifications", notifications):
+        client._handle_milestone_event(blocker_event)
 
     notifications.notify_blocker.assert_called_once()
     assert client.milestone_pending_blocker_id() == "sel-1"
@@ -176,7 +161,6 @@ def test_stream_loop_notifies_blocker_on_extension_ui_request() -> None:
     """Blocked-notice notify events are fire-and-forget; they must not prompt /gsd reply."""
     client = GsdMcpClient(_config())
     notifications = MagicMock()
-    fake_proc = _FakeProc()
     # Realistic blocked-notice message — headless auto-acks notify in supervised mode.
     blocker_event = {
         "type": "extension_ui_request",
@@ -184,14 +168,8 @@ def test_stream_loop_notifies_blocker_on_extension_ui_request() -> None:
         "id": "blk-1",
         "message": "Auto-mode paused — blocked: choose an option",
     }
-    fake_proc.stdout.readline.side_effect = [
-        (json.dumps(blocker_event) + "\n").encode(),
-        b"",
-    ]
-
-    with patch.object(client, "_milestone_proc", fake_proc):
-        with patch.object(client, "_milestone_notifications", notifications):
-            client._milestone_stream_loop(fake_proc)
+    with patch.object(client, "_milestone_notifications", notifications):
+        client._handle_milestone_event(blocker_event)
 
     notifications.notify_blocker.assert_not_called()
     assert client.milestone_pending_blocker_id() is None
@@ -233,6 +211,9 @@ def test_stream_loop_notifies_terminal_on_process_exit() -> None:
     fake_proc = _FakeProc()
     fake_proc.poll.return_value = 0
     fake_proc.stdout.readline.side_effect = [b""]
+    client._milestone_session_id = "milestone-4242"
+    client._milestone_pending_blocker_id = "old-blocker"
+    client._milestone_pending_blocker_method = "input"
 
     with patch.object(client, "_milestone_proc", fake_proc):
         with patch.object(client, "_milestone_project_dir", "/proj"):
@@ -249,6 +230,9 @@ def test_stream_loop_notifies_terminal_on_process_exit() -> None:
     )
     notifications.notify_terminal.assert_not_called()
     assert client.milestone_active() is False
+    assert client.milestone_session_id() is None
+    assert client.milestone_pending_blocker_id() is None
+    assert client._milestone_pending_blocker_method is None
 
 
 def test_stream_loop_failure_reports_drained_stderr() -> None:
@@ -294,6 +278,7 @@ def test_stream_loop_releases_noninteractive_blocked_exit() -> None:
     fake_proc = _FakeProc()
     fake_proc.poll.return_value = 10
     fake_proc.stdout.readline.side_effect = [b""]
+    client._milestone_session_id = "milestone-4242"
 
     with patch.object(client, "_milestone_proc", fake_proc):
         with patch.object(client, "_milestone_notifications", notifications):
@@ -301,6 +286,7 @@ def test_stream_loop_releases_noninteractive_blocked_exit() -> None:
 
     notifications.notify_terminal.assert_called_once_with("failed", "Planning blocked")
     assert client.milestone_active() is False
+    assert client.milestone_session_id() is None
 
 
 def test_stream_loop_handles_blocking_command_block() -> None:
@@ -308,6 +294,7 @@ def test_stream_loop_handles_blocking_command_block() -> None:
     client = GsdMcpClient(_config())
     notifications = MagicMock()
     fake_proc = _FakeProc()
+    client._milestone_session_id = "milestone-4242"
     command_block = {
         "type": "message_start",
         "message": {
@@ -333,7 +320,9 @@ def test_stream_loop_handles_blocking_command_block() -> None:
         "failed",
         "/gsd auto cannot run because the active milestone is blocked by validation.",
     )
+    notifications.notify_milestone_complete.assert_not_called()
     assert client.milestone_active() is False
+    assert client.milestone_session_id() is None
 
 
 # ---------------------------------------------------------------------------
