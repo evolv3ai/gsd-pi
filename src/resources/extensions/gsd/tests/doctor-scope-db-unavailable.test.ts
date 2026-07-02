@@ -314,7 +314,7 @@ test("checkEngineHealth reports artifact rows whose files are missing on disk", 
   });
   insertArtifact({
     path: "milestones/M001/M001-MISSING.md",
-    artifact_type: "CONTEXT",
+    artifact_type: "PLAN",
     milestone_id: "M001",
     slice_id: null,
     task_id: null,
@@ -333,6 +333,64 @@ test("checkEngineHealth reports artifact rows whose files are missing on disk", 
   assert.ok(missing, "missing artifact rows should be reported");
   assert.equal(missing.unitId, "M001");
   assert.equal(missing.fixable, false);
+});
+
+test("checkEngineHealth reports missing CONTEXT and RESEARCH artifacts as user-content warnings", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-user-content-artifact-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  mkdirSync(gsdDir, { recursive: true });
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertArtifact({
+    path: "milestones/M002/M002-CONTEXT.md",
+    artifact_type: "CONTEXT",
+    milestone_id: "M002",
+    slice_id: null,
+    task_id: null,
+    full_content: "# Context\n",
+  });
+  insertArtifact({
+    path: "milestones/M002/M002-RESEARCH.md",
+    artifact_type: "RESEARCH",
+    milestone_id: "M002",
+    slice_id: null,
+    task_id: null,
+    full_content: "# Research\n",
+  });
+
+  const issues: any[] = [];
+  const fixes: string[] = [];
+  await checkEngineHealth(base, issues, fixes, { repair: true });
+
+  assert.equal(
+    issues.some((issue) => issue.code === "artifact_file_missing"),
+    false,
+    "missing user-authored artifacts should not be reported as blocking projection errors",
+  );
+
+  const contextIssue = issues.find((issue) => issue.code === "artifact_user_content_missing" && issue.file === "milestones/M002/M002-CONTEXT.md");
+  assert.ok(contextIssue, "missing CONTEXT should use the user-content code");
+  assert.equal(contextIssue.severity, "warning");
+  assert.equal(contextIssue.unitId, "M002");
+  assert.equal(
+    contextIssue.message,
+    "Artifact `milestones/M002/M002-CONTEXT.md` is a user-authored CONTEXT file recorded in the database but missing from disk. Re-run `/gsd context` in this milestone to regenerate it.",
+  );
+
+  const researchIssue = issues.find((issue) => issue.code === "artifact_user_content_missing" && issue.file === "milestones/M002/M002-RESEARCH.md");
+  assert.ok(researchIssue, "missing RESEARCH should use the user-content code");
+  assert.equal(researchIssue.severity, "warning");
+
+  assert.ok(
+    fixes.some((fix) => fix === "skipped user-authored CONTEXT artifact milestones/M002/M002-CONTEXT.md (content cannot be regenerated from the database)"),
+    "repair output should explain skipped CONTEXT content",
+  );
+  assert.ok(
+    fixes.some((fix) => fix === "skipped user-authored RESEARCH artifact milestones/M002/M002-RESEARCH.md (content cannot be regenerated from the database)"),
+    "repair output should explain skipped RESEARCH content",
+  );
 });
 
 test("checkEngineHealth clears artifact_file_missing after projection re-render recreates the file", async (t) => {
@@ -381,8 +439,7 @@ test("checkEngineHealth clears artifact_file_missing after projection re-render 
     false,
     "doctor should not report a missing artifact that projection repair recreated in the same run",
   );
-  assert.ok(
-    issues.some((issue) => issue.code === "artifact_file_missing" && issue.file === "phases/01-foundation/01-CONTEXT.md"),
-    "doctor should still report a missing artifact that projection repair did not recreate",
-  );
+  const contextIssue = issues.find((issue) => issue.code === "artifact_user_content_missing" && issue.file === "phases/01-foundation/01-CONTEXT.md");
+  assert.ok(contextIssue, "doctor should still report missing user content that projection repair did not recreate");
+  assert.equal(contextIssue.severity, "warning");
 });

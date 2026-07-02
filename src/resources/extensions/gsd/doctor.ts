@@ -386,7 +386,7 @@ export async function runGSDDoctor(basePath: string, options?: { fix?: boolean; 
   const envMs = Date.now() - t0env;
 
   // Engine health checks — DB constraints and projection drift
-  await checkEngineHealth(basePath, issues, fixesApplied);
+  await checkEngineHealth(basePath, issues, fixesApplied, { repair: fix && !dryRun });
 
   const milestonesPath = milestonesDir(basePath);
   const legacyMilestonesPath2 = legacyMilestonesDir(basePath);

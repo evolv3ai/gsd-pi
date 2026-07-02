@@ -21,8 +21,27 @@ import { flushWorkflowProjections } from "./projection-flush.js";
 import { parseRoadmapSlices } from "./roadmap-slices.js";
 import { parsePlan } from "./parsers-legacy.js";
 
+const USER_AUTHORED_ARTIFACT_TYPES = new Set(["CONTEXT", "RESEARCH"]);
+
 function relativeFile(basePath: string, filePath: string): string {
   return relative(basePath, filePath).split("\\").join("/");
+}
+
+function normalizedArtifactType(artifactType: string): string {
+  return artifactType.trim().toUpperCase();
+}
+
+function isUserAuthoredArtifactType(artifactType: string): boolean {
+  return USER_AUTHORED_ARTIFACT_TYPES.has(normalizedArtifactType(artifactType));
+}
+
+function userContentRecoveryCommand(artifactType: string): string {
+  return normalizedArtifactType(artifactType) === "CONTEXT" ? "/gsd context" : "/gsd auto";
+}
+
+function userContentMissingMessage(path: string, artifactType: string): string {
+  const type = normalizedArtifactType(artifactType) || "UNKNOWN";
+  return `Artifact \`${path}\` is a user-authored ${type} file recorded in the database but missing from disk. Re-run \`${userContentRecoveryCommand(type)}\` in this milestone to regenerate it.`;
 }
 
 function reportCheckboxDbStatusDivergence(
@@ -148,6 +167,7 @@ export async function checkEngineHealth(
   basePath: string,
   issues: DoctorIssue[],
   fixesApplied: string[],
+  options?: { repair?: boolean },
 ): Promise<void> {
   const dbPath = resolveGsdPathContract(basePath).projectDb;
 
@@ -357,6 +377,7 @@ export async function checkEngineHealth(
       }
 
       // f. Artifact rows reference files that no longer exist on disk.
+      const missingUserContentArtifacts: Array<{ path: string; artifactType: string }> = [];
       try {
         const artifactRows = adapter
           .prepare(
@@ -376,6 +397,20 @@ export async function checkEngineHealth(
         for (const row of artifactRows) {
           if (artifactExistsOnDisk(basePath, row.path)) continue;
           const unitId = artifactUnitId(row);
+          if (isUserAuthoredArtifactType(row.artifact_type)) {
+            const artifactType = normalizedArtifactType(row.artifact_type);
+            missingUserContentArtifacts.push({ path: row.path, artifactType });
+            issues.push({
+              severity: "warning",
+              code: "artifact_user_content_missing",
+              scope: artifactScope(row),
+              unitId,
+              message: userContentMissingMessage(row.path, artifactType),
+              file: row.path,
+              fixable: false,
+            });
+            continue;
+          }
           issues.push({
             severity: "error",
             code: "artifact_file_missing",
@@ -388,6 +423,13 @@ export async function checkEngineHealth(
         }
       } catch {
         // Non-fatal — artifact file existence check failed
+      }
+      if (options?.repair) {
+        for (const artifact of missingUserContentArtifacts) {
+          fixesApplied.push(
+            `skipped user-authored ${artifact.artifactType} artifact ${artifact.path} (content cannot be regenerated from the database)`,
+          );
+        }
       }
 
       // g. Completion artifacts disagree with open DB hierarchy rows.
