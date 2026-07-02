@@ -194,6 +194,9 @@ export class SessionManager {
 
 	newSession(options?: NewSessionOptions): string | undefined {
 		this.sessionId = options?.id ?? createSessionId();
+		if (options?.cwd) {
+			this.cwd = resolvePath(options.cwd);
+		}
 		const timestamp = new Date().toISOString();
 		const header: SessionHeader = {
 			type: "session",

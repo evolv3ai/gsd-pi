@@ -14,6 +14,7 @@ export interface SessionHeader {
 
 export interface NewSessionOptions {
 	id?: string;
+	cwd?: string;
 	parentSession?: string;
 }
 

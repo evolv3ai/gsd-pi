@@ -1,7 +1,9 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { SessionManager } from "@gsd/pi-coding-agent/core/session-manager.js";
 import { parseSkillBlock } from "./agent-session.ts";
 import { AgentSessionExtensionsModule } from "./session/agent-session-extensions.ts";
+import { AgentSessionNavigationModule } from "./session/agent-session-navigation.ts";
 import { AgentSessionPromptModule } from "./session/agent-session-prompt.ts";
 
 describe("parseSkillBlock", () => {
@@ -79,6 +81,52 @@ describe("AgentSessionExtensionsModule", () => {
 
     assert.match(prompt, /<name>Review-Skill<\/name>/);
     assert.doesNotMatch(prompt, /<name>other-skill<\/name>/);
+  });
+});
+
+describe("AgentSessionNavigationModule", () => {
+  test("records workspaceRoot as the new session header cwd", async () => {
+    const projectRoot = "/tmp/project-root";
+    const worktreeRoot = "/tmp/project-root/.gsd-worktrees/M001";
+    const sessionManager = SessionManager.inMemory(projectRoot);
+    let rebuiltRuntime = false;
+
+    const host = {
+      sessionFile: undefined,
+      _extensionRunner: undefined,
+      _cwd: projectRoot,
+      _steeringMessages: ["old"],
+      _followUpMessages: ["old"],
+      _pendingNextTurnMessages: ["old"],
+      thinkingLevel: "off",
+      agent: {
+        state: { isStreaming: false },
+        sessionId: sessionManager.getSessionId(),
+        waitForIdle: async () => {},
+        reset: () => {},
+      },
+      sessionManager,
+      abortRetry: () => {},
+      abort: async () => {},
+      disconnectFromAgent: () => {},
+      reconnectToAgent: () => {},
+      getActiveToolNames: () => [],
+      buildRuntime: () => {
+        rebuiltRuntime = true;
+      },
+      refreshToolRegistry: () => {},
+      emitSessionStartWithLegacySwitch: async () => {},
+    };
+
+    const result = await new AgentSessionNavigationModule(host as any).newSession({
+      workspaceRoot: worktreeRoot,
+    });
+
+    assert.equal(result, true);
+    assert.equal(host._cwd, worktreeRoot);
+    assert.equal(sessionManager.getHeader()?.cwd, worktreeRoot);
+    assert.equal(sessionManager.getCwd(), worktreeRoot);
+    assert.equal(rebuiltRuntime, true);
   });
 });
 
