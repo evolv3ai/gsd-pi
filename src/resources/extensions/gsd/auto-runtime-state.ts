@@ -18,6 +18,7 @@ import {
   type ToolSurfaceSnapshot,
   type ToolSurfaceSnapshotInput,
 } from "./tool-surface-snapshot.js";
+import { readUnitHarnessAbort } from "./unit-runtime.js";
 
 export type {
   ToolSurfaceSnapshot,
@@ -106,6 +107,16 @@ export function recordToolInvocationError(toolName: string, errorMsg: string): v
 
 export function clearToolInvocationError(): void {
   if (!autoSession.active) return;
+  const dash = getAutoRuntimeSnapshot();
+  if (dash.basePath && dash.currentUnit) {
+    const abort = readUnitHarnessAbort(
+      dash.basePath,
+      dash.currentUnit.type,
+      dash.currentUnit.id,
+      dash.currentUnit.startedAt,
+    );
+    if (abort) return;
+  }
   autoSession.lastToolInvocationError = null;
 }
 
