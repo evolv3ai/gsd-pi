@@ -227,7 +227,7 @@ test("plan-slice verify-fail logs a recovery warning when the tasks dir is missi
   }
 });
 
-test("plan-slice verify-fail logs a recovery warning when an individual task plan file is missing", () => {
+test("plan-slice verify-fail logs a recovery warning when an individual task artifact is missing", () => {
   const base = createFixtureBase("gsd-recovery-logs-taskplan-");
   try {
     const dir = sliceDir(base, "M001", "S01");
@@ -236,17 +236,17 @@ test("plan-slice verify-fail logs a recovery warning when an individual task pla
       "# S01: Has task\n\n## Tasks\n\n- [ ] **T01: A** `est:15m`\n",
       "utf-8",
     );
-    // Create the tasks dir but NOT the T01-PLAN.md file inside it.
+    // Create the tasks dir but NOT any T01 task artifact inside it.
     mkdirSync(join(dir, "tasks"), { recursive: true });
 
     const { result, logs } = verifyAndCaptureLogs("plan-slice", "M001/S01", base);
 
-    assert.equal(result, false, "a missing task plan file must fail verification");
+    assert.equal(result, false, "a missing task artifact must fail verification");
     const recovery = findRecovery(logs);
     assert.ok(recovery, "a recovery warning must be logged");
     assert.match(
       recovery!.message,
-      /verify-fail plan-slice M001\/S01: task plan missing .*T01-PLAN\.md/u,
+      /verify-fail plan-slice M001\/S01: task artifact missing for T01/u,
     );
   } finally {
     rmSync(base, { recursive: true, force: true });

@@ -381,8 +381,9 @@ export function verifyExpectedArtifact(
           if (existsSync(tasksDir)) {
             for (const tid of taskIds) {
               const taskPlanFile = join(tasksDir, `${tid}-PLAN.md`);
-              if (!existsSync(taskPlanFile)) {
-                logWarning("recovery", `verify-fail ${unitType} ${unitId}: task plan missing ${taskPlanFile}`);
+              const taskSummaryFile = join(tasksDir, `${tid}-SUMMARY.md`);
+              if (!existsSync(taskPlanFile) && !existsSync(taskSummaryFile)) {
+                logWarning("recovery", `verify-fail ${unitType} ${unitId}: task artifact missing for ${tid}`);
                 return false;
               }
             }
