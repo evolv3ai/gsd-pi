@@ -132,9 +132,22 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 
 /**
  * Calculate prompt-side context tokens from usage.
- * Completion/output tokens are not part of the reusable conversation context.
+ *
+ * Providers can normalize cumulative SDK usage into `totalTokens`, so prefer it
+ * when present. Completion/output tokens are not part of the reusable
+ * conversation context, so they are excluded — `totalTokens` includes them
+ * (direct-API providers report `input + output + cacheRead + cacheWrite`; the
+ * claude-code adapter reports `input + output + cacheWrite`), hence the
+ * subtraction. When `totalTokens` is unavailable, fall back to the prompt-side
+ * component sum.
+ *
+ * - Direct-API: `totalTokens - output === input + cacheRead + cacheWrite`
+ *   (behavior-preserving, token-for-token, vs. the fallback).
+ * - claude-code: `totalTokens - output === input + cacheWrite`, the
+ *   de-cumulated live-context proxy (the cumulative `cacheRead` is excluded).
  */
 export function calculateContextTokens(usage: Usage): number {
+	if (usage.totalTokens > 0) return Math.max(0, usage.totalTokens - usage.output);
 	return usage.input + usage.cacheRead + usage.cacheWrite;
 }
 
