@@ -5,6 +5,7 @@ const originalCopilotGitHubToken = process.env.COPILOT_GITHUB_TOKEN;
 const originalGhToken = process.env.GH_TOKEN;
 const originalGitHubToken = process.env.GITHUB_TOKEN;
 const originalAnthropicVertexProjectId = process.env.ANTHROPIC_VERTEX_PROJECT_ID;
+const originalCursorApiKey = process.env.CURSOR_API_KEY;
 const originalGoogleCloudProject = process.env.GOOGLE_CLOUD_PROJECT;
 const originalGcloudProject = process.env.GCLOUD_PROJECT;
 
@@ -31,6 +32,12 @@ afterEach(() => {
 		delete process.env.ANTHROPIC_VERTEX_PROJECT_ID;
 	} else {
 		process.env.ANTHROPIC_VERTEX_PROJECT_ID = originalAnthropicVertexProjectId;
+	}
+
+	if (originalCursorApiKey === undefined) {
+		delete process.env.CURSOR_API_KEY;
+	} else {
+		process.env.CURSOR_API_KEY = originalCursorApiKey;
 	}
 
 	if (originalGoogleCloudProject === undefined) {
@@ -63,6 +70,14 @@ describe("environment API keys", () => {
 
 		expect(findEnvKeys("github-copilot")).toEqual(["COPILOT_GITHUB_TOKEN"]);
 		expect(getEnvApiKey("github-copilot")).toBe("copilot-token");
+	});
+
+	it("resolves Cursor Agent credentials from CURSOR_API_KEY", () => {
+		process.env.CURSOR_API_KEY = "cursor-token";
+
+		expect(getApiKeyEnvVars("cursor-agent")).toEqual(["CURSOR_API_KEY"]);
+		expect(findEnvKeys("cursor-agent")).toEqual(["CURSOR_API_KEY"]);
+		expect(getEnvApiKey("cursor-agent")).toBe("cursor-token");
 	});
 
 	it("treats ANTHROPIC_VERTEX_PROJECT_ID as Anthropic Vertex auth", () => {

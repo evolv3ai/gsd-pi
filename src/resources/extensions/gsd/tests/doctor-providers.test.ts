@@ -1014,6 +1014,143 @@ test("runProviderChecks detects claude.exe in PATH on Windows (#4548)", { skip: 
   });
 });
 
+
+test("runProviderChecks reports error for required cursor-agent when binary is missing", () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "gsd-providers-cursor-repo-")));
+  mkdirSync(join(repo, ".gsd"), { recursive: true });
+  writeFileSync(
+    join(repo, ".gsd", "PREFERENCES.md"),
+    [
+      "---",
+      "models:",
+      "  execution:",
+      "    model: composer-2.5",
+      "    provider: cursor-agent",
+      "---",
+      "",
+    ].join("\n"),
+  );
+
+  const tmpHome = realpathSync(mkdtempSync(join(tmpdir(), "gsd-providers-cursor-home-")));
+
+  withEnv({
+    HOME: tmpHome,
+    PATH: tmpHome,
+    CURSOR_API_KEY: undefined,
+  }, () => {
+    withCwd(repo, () => {
+      const results = runProviderChecks();
+      const cursor = results.find(r => r.name === "cursor-agent");
+      assert.ok(cursor, "cursor-agent result should exist");
+      assert.equal(cursor!.status, "error", "cursor-agent should error when the CLI binary is missing");
+      assert.ok(cursor!.detail?.includes("Cursor Agent"), "should explain Cursor Agent must be installed");
+    });
+  });
+
+  rmSync(repo, { recursive: true, force: true });
+  rmSync(tmpHome, { recursive: true, force: true });
+});
+
+test("runProviderChecks does not route OpenAI via unauthenticated cursor-agent binary in PATH", () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "gsd-providers-cursor-route-repo-")));
+  mkdirSync(join(repo, ".gsd"), { recursive: true });
+  writeFileSync(
+    join(repo, ".gsd", "PREFERENCES.md"),
+    [
+      "---",
+      "models:",
+      "  execution: gpt-5.5",
+      "---",
+      "",
+    ].join("\n"),
+  );
+
+  const tmpHome = realpathSync(mkdtempSync(join(tmpdir(), "gsd-providers-cursor-route-home-")));
+  const binDir = join(tmpHome, "bin");
+  mkdirSync(binDir, { recursive: true });
+  const fakeCursor = join(binDir, "cursor-agent");
+  writeFileSync(fakeCursor, [
+    "#!/bin/sh",
+    "if [ \"$1\" = \"status\" ]; then echo \"Not logged in\"; exit 0; fi",
+    "echo mock",
+    "",
+  ].join("\n"));
+  chmodSync(fakeCursor, 0o755);
+
+  withEnv({
+    HOME: tmpHome,
+    OPENAI_API_KEY: undefined,
+    COPILOT_GITHUB_TOKEN: undefined,
+    GH_TOKEN: undefined,
+    GITHUB_TOKEN: undefined,
+    PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
+  }, () => {
+    try {
+      withCwd(repo, () => {
+        const results = runProviderChecks();
+        const openai = results.find(r => r.name === "openai");
+        assert.ok(openai, "openai result should exist");
+        assert.equal(openai!.status, "error", "binary-only cursor-agent must not satisfy OpenAI routing");
+        assert.ok(openai!.detail?.includes("OPENAI_API_KEY"), "should still tell the user how to configure OpenAI");
+      });
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+});
+
+test("runProviderChecks routes OpenAI via authenticated cursor-agent CLI", () => {
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), "gsd-providers-cursor-auth-route-repo-")));
+  mkdirSync(join(repo, ".gsd"), { recursive: true });
+  writeFileSync(
+    join(repo, ".gsd", "PREFERENCES.md"),
+    [
+      "---",
+      "models:",
+      "  execution: gpt-5.5",
+      "---",
+      "",
+    ].join("\n"),
+  );
+
+  const tmpHome = realpathSync(mkdtempSync(join(tmpdir(), "gsd-providers-cursor-auth-route-home-")));
+  const binDir = join(tmpHome, "bin");
+  mkdirSync(binDir, { recursive: true });
+  const fakeCursor = join(binDir, "cursor-agent");
+  writeFileSync(fakeCursor, [
+    "#!/bin/sh",
+    "if [ \"$1\" = \"--version\" ]; then echo cursor-agent 1.0; exit 0; fi",
+    "if [ \"$1\" = \"status\" ]; then echo \"Authenticated as user@example.com\"; exit 0; fi",
+    "echo mock",
+    "",
+  ].join("\n"));
+  chmodSync(fakeCursor, 0o755);
+
+  withEnv({
+    HOME: tmpHome,
+    OPENAI_API_KEY: undefined,
+    COPILOT_GITHUB_TOKEN: undefined,
+    GH_TOKEN: undefined,
+    GITHUB_TOKEN: undefined,
+    CURSOR_API_KEY: undefined,
+    PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}`,
+  }, () => {
+    try {
+      withCwd(repo, () => {
+        const results = runProviderChecks();
+        const openai = results.find(r => r.name === "openai");
+        assert.ok(openai, "openai result should exist");
+        assert.equal(openai!.status, "ok", "authenticated cursor-agent should satisfy OpenAI routing");
+        assert.ok(openai!.message.toLowerCase().includes("cursor"), "should mention cursor-agent as source");
+      });
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+      rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+});
+
 test("PROVIDER_ROUTES includes google-antigravity and google-gemini-cli as routes for google (#2922)", async () => {
   const { readFileSync: readFS } = await import("node:fs");
   const { dirname: dirn, join: joinPath } = await import("node:path");
@@ -1022,7 +1159,7 @@ test("PROVIDER_ROUTES includes google-antigravity and google-gemini-cli as route
   const src = readFS(joinPath(__dir, "..", "doctor-providers.ts"), "utf-8");
 
   assert.ok(
-    src.includes('google: ["google-antigravity", "google-gemini-cli"]'),
+    src.includes('google: ["google-antigravity", "google-gemini-cli", "cursor-agent"]'),
     'PROVIDER_ROUTES must prefer "google-antigravity" over "google-gemini-cli" for google (#2922)',
   );
 });

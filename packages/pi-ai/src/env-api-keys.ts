@@ -96,6 +96,10 @@ function hasVertexAdcCredentials(): boolean {
 export function getApiKeyEnvVars(provider: KnownProvider): readonly string[] | undefined;
 export function getApiKeyEnvVars(provider: string): readonly string[] | undefined;
 export function getApiKeyEnvVars(provider: string): readonly string[] | undefined {
+	if (provider === "cursor-agent") {
+		return ["CURSOR_API_KEY"];
+	}
+
 	if (provider === "github-copilot") {
 		return ["COPILOT_GITHUB_TOKEN"];
 	}

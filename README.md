@@ -19,7 +19,7 @@ It combines a terminal agent, project workflow tools, worktree-aware Git automat
 - **Autonomous project workflow** — Break work into milestones, slices, and tasks, then let auto mode plan, implement, verify, and advance.
 - **Worktree-aware Git automation** — Keep implementation work isolated while preserving a reviewable main checkout.
 - **Local project memory** — Store project requirements, decisions, runtime notes, generated plans, summaries, and validation evidence under `.gsd/`.
-- **Multi-provider model routing** — Use the provider your team already has, with configurable defaults and per-phase model preferences.
+- **Multi-provider model routing** — Use the provider your team already has, including API keys, OAuth providers, and external CLI providers such as Claude Code and Cursor Agent.
 - **Extension surface** — Add project-specific commands, tools, skills, and UI integrations through bundled or community extensions.
 - **Terminal and web surfaces** — Use the TUI by default, or launch `gsd --web` when a visual control plane fits the work better than a terminal.
 
@@ -158,7 +158,7 @@ Need help choosing settings? Use the [GSD Pi web configurator](https://pi.opengs
 gsd
 ```
 
-Run the setup flow, choose your preferred model provider, and open a project directory. GSD stores project planning and runtime state in `.gsd/`, with gitignored sibling runtime directories such as `.gsd-backups/` for migration snapshots. Stale `.gsd-backups/migrate-*` snapshots are pruned after 30 days once the flat-phase `.gsd/phases/` migration is complete.
+Run the setup flow, choose your preferred model provider, and open a project directory. Cursor Agent users can choose the `cursor-agent` provider after installing and authenticating the local `cursor-agent` CLI; its default model is `composer-2.5`, and `CURSOR_API_KEY` is supported as an auth signal. GSD stores project planning and runtime state in `.gsd/`, with gitignored sibling runtime directories such as `.gsd-backups/` for migration snapshots. Stale `.gsd-backups/migrate-*` snapshots are pruned after 30 days once the flat-phase `.gsd/phases/` migration is complete.
 
 For a full first-run walkthrough, see [Getting Started With gsd-pi](./docs/user-docs/getting-started.md).
 

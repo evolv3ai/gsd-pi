@@ -23,7 +23,7 @@ You can stay hands-on with **step mode** (reviewing each step) or let GSD run au
 ## Key Features
 
 - **Autonomous execution** — `/gsd auto` runs research, planning, coding, testing, and committing without intervention
-- **20+ LLM providers** — Anthropic, OpenAI, Google, OpenRouter, GitHub Copilot, Amazon Bedrock, local models, and more
+- **20+ LLM providers** — Anthropic, OpenAI, Google, OpenRouter, Cursor Agent, GitHub Copilot, Amazon Bedrock, local models, and more
 - **Git isolation** — Each milestone works in its own worktree branch, merged cleanly when done
 - **Cost tracking** — Real-time token usage, budget ceilings, and automatic model downgrading
 - **Crash recovery** — Sessions resume automatically after interruptions
@@ -62,4 +62,4 @@ The recommended workflow: run auto mode in one terminal, steer from another. See
 
 - **Node.js** 22.0.0 or later (24 LTS recommended)
 - **Git** installed and configured
-- An API key for at least one LLM provider (or use browser sign-in for Anthropic/GitHub Copilot)
+- An API key for at least one LLM provider, browser sign-in for GitHub Copilot, or an authenticated local CLI provider such as Cursor Agent

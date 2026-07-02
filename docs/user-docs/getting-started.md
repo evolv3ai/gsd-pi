@@ -97,7 +97,7 @@ Then run the setup wizard inside the GSD session:
 
 The wizard walks through:
 
-- model provider setup
+- model provider setup, including Cursor Agent when the local `cursor-agent` CLI is installed and authenticated
 - optional tool credentials
 - default model and reasoning preferences
 - local project/runtime settings
