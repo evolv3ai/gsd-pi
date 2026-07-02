@@ -49,6 +49,8 @@ class GsdMcpClient:
         self._milestone_proc: subprocess.Popen[bytes] | None = None
         self._milestone_session_id: str | None = None
         self._milestone_pending_blocker_id: str | None = None
+        self._milestone_pending_blocker_method: str | None = None
+        self._milestone_command_block_failure: str | None = None
         self._milestone_notifications: Any = None  # NotificationService | None
         self._milestone_on_terminal: Callable[[str], None] | None = None
         self._milestone_notified_terminal: bool = False
@@ -423,13 +425,43 @@ class GsdMcpClient:
         )
 
     def _is_milestone_blocker_event(self, event: dict[str, Any]) -> bool:
-        """True for blocked notices and supervised interactive UI requests."""
+        """True for supervised interactive UI requests (select/input/confirm/editor)."""
         method = str(event.get("method") or "")
         if method in self._FIRE_AND_FORGET_UI_METHODS:
-            if method != "notify":
-                return False
-            message = str(event.get("message") or "").lower()
-            return self._is_blocked_notice(message)
+            return False
+        return True
+
+    def _get_command_block_content(self, event: dict[str, Any]) -> str | None:
+        """Extract gsd-command-block message content from stream events."""
+        etype = event.get("type")
+        if etype not in ("message_start", "message_end"):
+            return None
+        message = event.get("message")
+        if not isinstance(message, dict):
+            return None
+        if message.get("customType") != "gsd-command-block":
+            return None
+        return str(message.get("content") or "")
+
+    def _is_blocking_command_block(self, event: dict[str, Any]) -> bool:
+        """Mirror headless-events isBlockingCommandBlock."""
+        content = self._get_command_block_content(event)
+        if not content:
+            return False
+        lowered = content.lower()
+        return (
+            (
+                "cannot start new workflow work" in lowered
+                and "complete but not merged" in lowered
+            )
+            or "cannot run because the active milestone is blocked by validation"
+            in lowered
+        )
+
+    def _parse_confirm_response(self, response: str) -> bool:
+        normalized = response.strip().lower()
+        if normalized in ("no", "n", "false", "0", "cancel", "decline"):
+            return False
         return True
 
     def create_milestone(
@@ -484,6 +516,8 @@ class GsdMcpClient:
         self._milestone_proc = proc
         self._milestone_session_id = None
         self._milestone_pending_blocker_id = None
+        self._milestone_pending_blocker_method = None
+        self._milestone_command_block_failure = None
         self._milestone_notifications = notifications
         self._milestone_on_terminal = on_terminal
         self._milestone_notified_terminal = False
@@ -543,10 +577,25 @@ class GsdMcpClient:
             except subprocess.TimeoutExpired:
                 exit_code = None
         if exit_code == self._EXIT_BLOCKED:
+            if self._milestone_pending_blocker_id:
+                return
+            if not self._milestone_notified_terminal:
+                if self._milestone_notifications is not None:
+                    self._milestone_notifications.notify_terminal(
+                        "failed", "Planning blocked"
+                    )
+                if self._milestone_on_terminal is not None:
+                    self._milestone_on_terminal("failed")
+                self._milestone_notified_terminal = True
+            self._release_milestone_proc()
             return
         if exit_code == 0:
-            status = "complete"
-            error: str | None = None
+            if self._milestone_command_block_failure:
+                status = "failed"
+                error = self._milestone_command_block_failure
+            else:
+                status = "complete"
+                error = None
         elif exit_code is not None:
             status = "failed"
             self._join_milestone_stderr_thread()
@@ -607,12 +656,23 @@ class GsdMcpClient:
             if sid:
                 self._milestone_session_id = str(sid)
             return
+        if self._is_blocking_command_block(event):
+            failure = self._get_command_block_content(event) or "Planning blocked"
+            self._milestone_command_block_failure = failure
+            if not self._milestone_notified_terminal:
+                if self._milestone_notifications is not None:
+                    self._milestone_notifications.notify_terminal("failed", failure)
+                if self._milestone_on_terminal is not None:
+                    self._milestone_on_terminal("failed")
+                self._milestone_notified_terminal = True
+            return
         if etype != "extension_ui_request":
             return
         if not self._is_milestone_blocker_event(event):
             return
         event_id = str(event.get("id") or "")
         self._milestone_pending_blocker_id = event_id or None
+        self._milestone_pending_blocker_method = str(event.get("method") or "") or None
         if self._milestone_notifications is not None:
             self._milestone_notifications.notify_blocker(
                 SessionStatus(
@@ -645,12 +705,15 @@ class GsdMcpClient:
         self._release_milestone_proc()
         self._milestone_session_id = None
         self._milestone_pending_blocker_id = None
+        self._milestone_pending_blocker_method = None
+        self._milestone_command_block_failure = None
 
     def respond_to_milestone_blocker(self, response: str) -> None:
         """Write an extension_ui_response to the milestone subprocess stdin.
 
         Uses the supervised-mode JSONL protocol (see startSupervisedStdinReader
-        in src/headless-ui.ts): {"type":"extension_ui_response","id":...,"value":...}.
+        in src/headless-ui.ts): {"type":"extension_ui_response","id":...,"value":...}
+        or {"type":"extension_ui_response","id":...,"confirmed":...} for confirm prompts.
         """
         proc = self._milestone_proc
         blocker_id = self._milestone_pending_blocker_id
@@ -659,12 +722,19 @@ class GsdMcpClient:
                 "No pending blocker for the active milestone session."
             )
         assert proc.stdin is not None
-        payload = json.dumps(
-            {"type": "extension_ui_response", "id": blocker_id, "value": response}
-        ).encode("utf-8")
+        response_payload: dict[str, Any] = {
+            "type": "extension_ui_response",
+            "id": blocker_id,
+        }
+        if self._milestone_pending_blocker_method == "confirm":
+            response_payload["confirmed"] = self._parse_confirm_response(response)
+        else:
+            response_payload["value"] = response
+        payload = json.dumps(response_payload).encode("utf-8")
         proc.stdin.write(payload + b"\n")
         proc.stdin.flush()
         self._milestone_pending_blocker_id = None
+        self._milestone_pending_blocker_method = None
 
     def milestone_active(self) -> bool:
         return self._milestone_proc is not None
