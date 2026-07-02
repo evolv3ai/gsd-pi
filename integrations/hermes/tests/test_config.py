@@ -21,6 +21,12 @@ def test_dict_fallback_gsd_version_range_matches_plugin_release_train() -> None:
     assert config.gsd_version_max == "3.0"
 
 
+def test_mcp_read_timeout_can_be_configured() -> None:
+    config = GsdConfig.from_dict({"gsd": {"mcp_read_timeout_seconds": 12.5}})
+
+    assert config.mcp_read_timeout_seconds == 12.5
+
+
 def test_config_path_respects_hermes_home(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("HERMES_GSD_CONFIG", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))

@@ -19,6 +19,7 @@ class GsdConfig:
     bindings: dict[str, dict[str, str]] = field(default_factory=dict)
     poll_interval_seconds: int = 12
     cache_ttl_seconds: int = 45
+    mcp_read_timeout_seconds: float = 60.0
     notification_level: str = "normal"
     gsd_version_min: str = "2.53"
     gsd_version_max: str = "3.0"
@@ -35,6 +36,7 @@ class GsdConfig:
             bindings=dict(gsd.get("bindings") or {}),
             poll_interval_seconds=int(gsd.get("poll_interval_seconds", 12)),
             cache_ttl_seconds=int(gsd.get("cache_ttl_seconds", 45)),
+            mcp_read_timeout_seconds=float(gsd.get("mcp_read_timeout_seconds", 60.0)),
             notification_level=str(gsd.get("notification_level", "normal")),
             gsd_version_min=str(gsd.get("gsd_version_min", "2.53")),
             gsd_version_max=str(gsd.get("gsd_version_max", "3.0")),

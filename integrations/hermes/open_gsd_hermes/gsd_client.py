@@ -36,6 +36,8 @@ class GsdMcpClient:
     def __init__(self, config: GsdConfig) -> None:
         self._config = config
         self._proc: subprocess.Popen[bytes] | None = None
+        self._proc_cwd: str | None = None
+        self._stdout_buffer = b""
         self._lock = threading.Lock()
         self._request_id = 0
         self._cache: dict[str, _CacheEntry] = {}
@@ -72,42 +74,122 @@ class GsdMcpClient:
             )
         self._version_checked = True
 
-    def _ensure_process(self) -> subprocess.Popen[bytes]:
+    def _ensure_process(self, project_dir: str | None = None) -> subprocess.Popen[bytes]:
+        cwd = os.path.abspath(project_dir) if project_dir else None
         if self._proc is not None and self._proc.poll() is None:
-            return self._proc
+            if cwd is None or self._proc_cwd == cwd:
+                return self._proc
+            self._terminate_process()
+        self._stdout_buffer = b""
+        self._proc_cwd = cwd
         self._proc = subprocess.Popen(
             [self._config.mcp_server_path],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=self._env(),
+            cwd=cwd,
         )
-        self._initialize()
+        try:
+            self._initialize()
+        except Exception:
+            self._terminate_process()
+            raise
         return self._proc
 
-    def _send(self, payload: dict[str, Any]) -> None:
-        proc = self._ensure_process()
+    def _terminate_process(self) -> None:
+        proc = self._proc
+        self._proc = None
+        self._proc_cwd = None
+        self._stdout_buffer = b""
+        if proc is None or proc.poll() is not None:
+            return
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    def _send(self, payload: dict[str, Any], *, project_dir: str | None = None) -> None:
+        proc = self._ensure_process(project_dir)
         assert proc.stdin is not None
         body = json.dumps(payload).encode("utf-8")
         header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
         proc.stdin.write(header + body)
         proc.stdin.flush()
 
-    def _read_message(self) -> dict[str, Any]:
+    def _read_stdout_chunk(self, deadline: float) -> None:
         proc = self._ensure_process()
         assert proc.stdout is not None
-        headers: dict[str, str] = {}
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            self._raise_read_timeout()
+
+        chunks: list[bytes] = []
+        errors: list[BaseException] = []
+
+        def read_chunk() -> None:
+            try:
+                chunks.append(os.read(proc.stdout.fileno(), 65536))
+            except BaseException as e:
+                errors.append(e)
+
+        reader = threading.Thread(target=read_chunk, daemon=True)
+        reader.start()
+        reader.join(remaining)
+        if reader.is_alive():
+            self._raise_read_timeout()
+        if errors:
+            self._terminate_process()
+            raise McpProtocolError(f"MCP server stdout read failed: {errors[0]}")
+        chunk = chunks[0] if chunks else b""
+        if not chunk:
+            self._terminate_process()
+            raise McpProtocolError("MCP server closed stdout")
+        self._stdout_buffer += chunk
+
+    def _raise_read_timeout(self) -> None:
+        self._terminate_process()
+        raise McpProtocolError(
+            f"MCP server response timed out after "
+            f"{self._config.mcp_read_timeout_seconds:g}s"
+        )
+
+    def _read_header(self, deadline: float) -> bytes:
         while True:
-            line = proc.stdout.readline()
-            if not line:
-                raise McpProtocolError("MCP server closed stdout")
-            decoded = line.decode("utf-8").strip()
-            if decoded == "":
-                break
+            crlf_idx = self._stdout_buffer.find(b"\r\n\r\n")
+            lf_idx = self._stdout_buffer.find(b"\n\n")
+            candidates = [
+                (idx, sep_len)
+                for idx, sep_len in ((crlf_idx, 4), (lf_idx, 2))
+                if idx >= 0
+            ]
+            if candidates:
+                idx, sep_len = min(candidates)
+                header = self._stdout_buffer[:idx]
+                self._stdout_buffer = self._stdout_buffer[idx + sep_len :]
+                return header
+            self._read_stdout_chunk(deadline)
+
+    def _read_exact(self, length: int, deadline: float) -> bytes:
+        while len(self._stdout_buffer) < length:
+            self._read_stdout_chunk(deadline)
+        body = self._stdout_buffer[:length]
+        self._stdout_buffer = self._stdout_buffer[length:]
+        return body
+
+    def _read_message(self) -> dict[str, Any]:
+        deadline = time.monotonic() + self._config.mcp_read_timeout_seconds
+        header = self._read_header(deadline)
+        headers: dict[str, str] = {}
+        for raw_line in header.splitlines():
+            decoded = raw_line.decode("utf-8").strip()
+            if not decoded:
+                continue
             key, _, val = decoded.partition(":")
             headers[key.strip().lower()] = val.strip()
         length = int(headers.get("content-length", "0"))
-        body = proc.stdout.read(length)
+        body = self._read_exact(length, deadline)
         return json.loads(body.decode("utf-8"))
 
     def _initialize(self) -> None:
@@ -128,7 +210,12 @@ class GsdMcpClient:
         self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
 
     def _call_tool(
-        self, name: str, arguments: dict[str, Any], *, check_version: bool = True
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        check_version: bool = True,
+        project_dir: str | None = None,
     ) -> dict[str, Any]:
         with self._lock:
             if check_version:
@@ -141,7 +228,8 @@ class GsdMcpClient:
                     "id": req_id,
                     "method": "tools/call",
                     "params": {"name": name, "arguments": arguments},
-                }
+                },
+                project_dir=project_dir,
             )
             while True:
                 msg = self._read_message()
@@ -219,6 +307,7 @@ class GsdMcpClient:
                     "gsd_progress",
                     {"projectDir": project_dir},
                     check_version=False,
+                    project_dir=project_dir,
                 )
                 return ProgressSnapshot.from_mcp(data)
 
@@ -231,21 +320,36 @@ class GsdMcpClient:
 
     def execute(self, project_dir: str, *, command: str = "/gsd auto") -> dict[str, Any]:
         self.invalidate_cache(project_dir)
-        return self._call_tool(
-            "gsd_execute",
-            {"projectDir": project_dir, "command": command},
-        )
+        args = {"projectDir": project_dir, "command": command}
+        try:
+            return self._call_tool("gsd_execute", args, project_dir=project_dir)
+        except GsdVersionError:
+            return self._call_tool(
+                "gsd_execute",
+                args,
+                check_version=False,
+                project_dir=project_dir,
+            )
 
-    def cancel(self, *, session_id: str | None = None, project_dir: str | None = None) -> dict[str, Any]:
+    def cancel(
+        self,
+        *,
+        session_id: str | None = None,
+        project_dir: str | None = None,
+    ) -> dict[str, Any]:
         args: dict[str, Any] = {}
         if session_id:
             args["sessionId"] = session_id
         if project_dir:
             args["projectDir"] = project_dir
-        return self._call_tool("gsd_cancel", args)
+        return self._call_tool("gsd_cancel", args, project_dir=project_dir)
 
     def cancel_by_project(self, project_dir: str) -> dict[str, Any]:
-        return self._call_tool("gsd_cancel_by_project", {"projectDir": project_dir})
+        return self._call_tool(
+            "gsd_cancel_by_project",
+            {"projectDir": project_dir},
+            project_dir=project_dir,
+        )
 
     def resolve_blocker(self, session_id: str, response: str) -> dict[str, Any]:
         return self._call_tool(
@@ -257,13 +361,8 @@ class GsdMcpClient:
         return self._call_tool(
             "gsd_memory_query",
             {"projectDir": project_dir, "query": query},
+            project_dir=project_dir,
         )
 
     def close(self) -> None:
-        if self._proc and self._proc.poll() is None:
-            self._proc.terminate()
-            try:
-                self._proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._proc.kill()
-        self._proc = None
+        self._terminate_process()
