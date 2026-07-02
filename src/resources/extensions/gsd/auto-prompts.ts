@@ -27,7 +27,7 @@ import type { GSDPreferences } from "./preferences.js";
 import { join, basename, relative } from "node:path";
 import { existsSync } from "node:fs";
 import { computeBudgets, resolveExecutorContextWindow, truncateAtSectionBoundary, type MinimalModelRegistry } from "./context-budget.js";
-import { getPendingGates, getPendingGatesForTurn } from "./gsd-db.js";
+import { getGateResults, getPendingGates, getPendingGatesForTurn } from "./gsd-db.js";
 import {
   GATE_REGISTRY,
   assertGateCoverage,
@@ -3360,6 +3360,44 @@ export async function buildValidateMilestonePrompt(
     const outstandingBlock = `### Outstanding Items (aggregated from slice summaries)\n\nThese follow-ups and known limitations were documented during slice completion but have not been resolved.\n\n${outstandingItems.join('\n')}`;
     inlined.push(outstandingBlock);
     trackPromptContext(contextTelemetry, "outstanding-items", "inline", outstandingBlock);
+  }
+
+  const persistedGateFlags: string[] = [];
+  try {
+    const gateLabels = {
+      Q3: "Threat Surface",
+      Q4: "Requirement Impact",
+    } as const;
+    for (const sid of seenValSlices) {
+      for (const gate of getGateResults(mid, sid, "slice")) {
+        if (gate.gate_id !== "Q3" && gate.gate_id !== "Q4") continue;
+        const findings = gate.findings.trim();
+        const rationale = gate.rationale.trim();
+        const verdict = gate.verdict ?? "";
+        const hasNonPassVerdict = verdict !== "" && verdict !== "pass" && verdict !== "omitted";
+        if (!findings && !hasNonPassVerdict) continue;
+
+        const displayVerdict = verdict || gate.status;
+        const detail = findings || rationale || "_No findings text recorded; reconcile the persisted non-pass verdict._";
+        persistedGateFlags.push(`- **${sid} / ${gate.gate_id} (${gateLabels[gate.gate_id]}) / ${displayVerdict}:** ${detail}`);
+        if (findings && rationale) persistedGateFlags.push(`  - Rationale: ${rationale}`);
+      }
+    }
+  } catch (err) {
+    logWarning("prompt", `buildValidateMilestonePrompt persisted gate flags lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (persistedGateFlags.length > 0) {
+    const persistedGateFlagsBlock = [
+      "### Persisted Slice-Level Gate Flags (from quality_gates)",
+      "",
+      "These slice gates recorded findings or non-pass verdicts during execution. Reconcile each against the milestone-level evidence before returning MV03/MV04 verdicts.",
+      "",
+      ...persistedGateFlags,
+    ].join("\n");
+    inlined.push(persistedGateFlagsBlock);
+    trackPromptContext(contextTelemetry, "persisted-slice-gate-flags", "inline", persistedGateFlagsBlock);
+  } else {
+    trackPromptContext(contextTelemetry, "persisted-slice-gate-flags", "skipped", null, "none");
   }
 
   // Inline existing VALIDATION file if this is a re-validation round

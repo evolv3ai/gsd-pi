@@ -12,7 +12,14 @@ import { tmpdir } from "node:os";
 
 import { buildSliceSummaryExcerpt, buildCompleteMilestonePrompt, buildValidateMilestonePrompt } from "../auto-prompts.ts";
 import { invalidateAllCaches } from "../cache.ts";
-import { closeDatabase, insertMilestone, openDatabase } from "../gsd-db.ts";
+import {
+  closeDatabase,
+  insertGateRow,
+  insertMilestone,
+  insertSlice,
+  openDatabase,
+  saveGateResult,
+} from "../gsd-db.ts";
 
 // ─── Fixture helpers ──────────────────────────────────────────────────────
 
@@ -363,6 +370,60 @@ test("validate-milestone prompt uses slice excerpts and on-demand paths instead 
   assert.ok(
     !prompt.includes("This very noisy assessment trace should stay out of the prompt."),
     "validate prompt must not inline full assessment traces",
+  );
+});
+
+test("validate-milestone prompt inlines persisted slice-level Q3/Q4 gate flags", async (t) => {
+  const base = createBase();
+  t.after(() => {
+    try { closeDatabase(); } catch { /* ignore */ }
+    cleanup(base);
+  });
+  invalidateAllCaches();
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M001", title: "Test Milestone", status: "active" });
+  insertSlice({ id: "S01", milestoneId: "M001", title: "Risky Slice", status: "complete" });
+  insertGateRow({ milestoneId: "M001", sliceId: "S01", gateId: "Q3", scope: "slice" });
+  insertGateRow({ milestoneId: "M001", sliceId: "S01", gateId: "Q4", scope: "slice" });
+  insertGateRow({ milestoneId: "M001", sliceId: "S01", gateId: "Q8", scope: "slice" });
+  saveGateResult({
+    milestoneId: "M001",
+    sliceId: "S01",
+    gateId: "Q3",
+    verdict: "flag",
+    rationale: "New callback boundary.",
+    findings: "Re-check token exposure in the web callback.",
+  });
+  saveGateResult({
+    milestoneId: "M001",
+    sliceId: "S01",
+    gateId: "Q4",
+    verdict: "flag",
+    rationale: "Requirement touched but not re-tested.",
+    findings: "R012 must be re-tested; revisit decision D-3.",
+  });
+  saveGateResult({
+    milestoneId: "M001",
+    sliceId: "S01",
+    gateId: "Q8",
+    verdict: "flag",
+    rationale: "Operational readiness gap.",
+    findings: "Operational finding should not be milestone validation input.",
+  });
+  writeRoadmap(base, makeRoadmap());
+  writeSummary(base, "S01", makeFatSummary("S01"));
+
+  const prompt = await buildValidateMilestonePrompt("M001", "Test Milestone", base);
+
+  assert.match(prompt, /### Persisted Slice-Level Gate Flags \(from quality_gates\)/);
+  assert.match(prompt, /S01 \/ Q3 \(Threat Surface\) \/ flag/);
+  assert.match(prompt, /Re-check token exposure in the web callback\./);
+  assert.match(prompt, /S01 \/ Q4 \(Requirement Impact\) \/ flag/);
+  assert.match(prompt, /R012 must be re-tested; revisit decision D-3\./);
+  assert.ok(
+    !prompt.includes("Operational finding should not be milestone validation input."),
+    "validate-milestone should not inline unrelated Q8 gate findings",
   );
 });
 
