@@ -376,7 +376,7 @@ test("checkEngineHealth reports missing CONTEXT and RESEARCH artifacts as user-c
   assert.equal(contextIssue.unitId, "M002");
   assert.equal(
     contextIssue.message,
-    "Artifact `milestones/M002/M002-CONTEXT.md` is a user-authored CONTEXT file recorded in the database but missing from disk. Re-run `/gsd context` in this milestone to regenerate it.",
+    "Artifact `milestones/M002/M002-CONTEXT.md` is a user-authored CONTEXT file recorded in the database but missing from disk. Re-run `/gsd discuss` in this milestone to regenerate it.",
   );
 
   const researchIssue = issues.find((issue) => issue.code === "artifact_user_content_missing" && issue.file === "milestones/M002/M002-RESEARCH.md");

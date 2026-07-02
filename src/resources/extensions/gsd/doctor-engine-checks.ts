@@ -36,7 +36,7 @@ function isUserAuthoredArtifactType(artifactType: string): boolean {
 }
 
 function userContentRecoveryCommand(artifactType: string): string {
-  return normalizedArtifactType(artifactType) === "CONTEXT" ? "/gsd context" : "/gsd auto";
+  return normalizedArtifactType(artifactType) === "CONTEXT" ? "/gsd discuss" : "/gsd auto";
 }
 
 function userContentMissingMessage(path: string, artifactType: string): string {

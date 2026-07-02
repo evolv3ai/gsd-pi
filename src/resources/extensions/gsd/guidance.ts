@@ -210,7 +210,7 @@ const DOCTOR_FIX_HINTS: Partial<Record<DoctorIssueCode, string>> = {
   state_file_missing: "Run `/gsd doctor fix` to rebuild the projection from the database.",
   projection_drift: "Run `/gsd doctor fix` to rebuild markdown projections from the database (DB is the source of truth).",
   artifact_user_content_missing:
-    "Doctor cannot recreate user-authored content from the database. Re-run `/gsd context` for CONTEXT artifacts or `/gsd auto` for RESEARCH artifacts in that milestone.",
+    "Doctor cannot recreate user-authored content from the database. Re-run `/gsd discuss` for CONTEXT artifacts or `/gsd auto` for RESEARCH artifacts in that milestone.",
   uat_retry_exhausted: "Review the failing UAT criteria via `/gsd status`, fix the issue, then re-run `/gsd auto`.",
 };
 
