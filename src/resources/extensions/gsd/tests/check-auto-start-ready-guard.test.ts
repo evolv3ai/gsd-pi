@@ -13,6 +13,7 @@ import {
   checkAutoStartAfterDiscuss,
   setPendingAutoStart,
   clearPendingAutoStart,
+  _getPendingAutoStart,
 } from "../guided-flow.ts";
 import { drainLogs } from "../workflow-logger.ts";
 import {
@@ -77,6 +78,7 @@ describe("checkAutoStartAfterDiscuss ready-notify DB guard (R3b)", () => {
   let cap: MockCapture;
 
   beforeEach(() => {
+    closeDatabase();
     clearPendingAutoStart();
     drainLogs();
   });
@@ -127,6 +129,33 @@ describe("checkAutoStartAfterDiscuss ready-notify DB guard (R3b)", () => {
         level: "success",
       },
     ]);
+  });
+
+  test("fails closed and keeps pending handoff when DB is unavailable", () => {
+    base = mkBase();
+    closeDatabase();
+
+    cap = mkCapture();
+    setPendingAutoStart(base, {
+      basePath: base,
+      milestoneId: "M001",
+      startAuto: false,
+      ctx: mkCtx(cap),
+      pi: mkPi(cap),
+    });
+
+    const result = checkAutoStartAfterDiscuss();
+    assert.equal(result, false, "DB-unavailable handoff must fail closed");
+    assert.equal(
+      _getPendingAutoStart(base)?.milestoneId,
+      "M001",
+      "failed closed handoff must remain pending for a later retry",
+    );
+    assert.equal(
+      cap.notifies.some(n => n.level === "success"),
+      false,
+      "must not notify success before the milestone row is verified",
+    );
   });
 
   test("announces 'ready' when DB row has executable slices", () => {

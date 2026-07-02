@@ -236,4 +236,25 @@ describe("validator-scope-parity: scope uses canonical projectRoot not worktree 
       "verifyExpectedArtifactForScope should return false when artifact is absent",
     );
   });
+
+  test("verifyExpectedArtifactForScope rejects zero-slice scoped plan-milestone roadmaps", () => {
+    const ws = createWorkspace(base);
+    const scope = scopeMilestone(ws, "M001");
+
+    writeFileSync(scope.roadmapFile(), [
+      "# M001: Placeholder",
+      "",
+      "## Slices",
+      "",
+      "_TBD_",
+      "",
+    ].join("\n"));
+
+    const ready = verifyExpectedArtifactForScope(scope, "plan-milestone", "M001");
+    assert.equal(
+      ready,
+      false,
+      "scoped plan-milestone verification must parse roadmap content, not only check existence",
+    );
+  });
 });
