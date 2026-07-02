@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import json
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -289,6 +290,35 @@ def test_stream_loop_releases_noninteractive_blocked_exit() -> None:
     notifications.notify_terminal.assert_called_once_with("failed", "Planning blocked")
     assert client.milestone_active() is False
     assert client.milestone_session_id() is None
+
+
+def test_stream_loop_retains_running_proc_on_stream_loss() -> None:
+    """If stdout closes while the child is alive, /gsd cancel must still work."""
+    client = GsdMcpClient(_config())
+    notifications = MagicMock()
+    on_terminal = MagicMock()
+    fake_proc = _FakeProc()
+    fake_proc.poll.return_value = None
+    fake_proc.wait.side_effect = subprocess.TimeoutExpired(cmd="gsd", timeout=5)
+    fake_proc.stdout.readline.side_effect = [b""]
+    client._milestone_session_id = "milestone-4242"
+
+    with patch.object(client, "_milestone_proc", fake_proc):
+        with patch.object(client, "_milestone_notifications", notifications):
+            with patch.object(client, "_milestone_on_terminal", on_terminal):
+                client._milestone_stream_loop(fake_proc)
+
+                notifications.notify_terminal.assert_called_once_with(
+                    "failed", "stream lost — run /gsd cancel"
+                )
+                on_terminal.assert_called_once_with("failed")
+                assert client.milestone_active() is True
+                assert client.milestone_session_id() == "milestone-4242"
+
+                client.cancel_milestone()
+
+    fake_proc.terminate.assert_called_once()
+    assert client.milestone_active() is False
 
 
 def test_stream_loop_handles_blocking_command_block() -> None:
