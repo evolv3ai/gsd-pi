@@ -73,6 +73,23 @@ function resolveAllowedRootsForPathScope(
   return roots.length > 0 ? roots : [registry.projectRoot];
 }
 
+function validatePathScopeForTargetRepositories(
+  params: PlanTaskParams,
+  basePath: string,
+  registry: RepositoryRegistry,
+  targetRepositories: string[],
+): string | null {
+  return validatePlanningPathScope(
+    basePath,
+    [
+      { field: "files", values: params.files },
+      { field: "inputs", values: params.inputs },
+      { field: "expectedOutput", values: params.expectedOutput },
+    ],
+    resolveAllowedRootsForPathScope(targetRepositories, registry),
+  );
+}
+
 function resolveEffectiveTargetRepositories(
   taskTargetRepositories: string[] | undefined,
   sliceTargetRepositories: string[] | undefined,
@@ -142,33 +159,6 @@ export async function handlePlanTask(
   }
 
   const defaultTargets = defaultRepositoryTargets(repositoryRegistry);
-  const parentSliceTargets = getSlice(params.milestoneId, params.sliceId)?.target_repositories;
-  const effectiveTargetRepositories = resolveEffectiveTargetRepositories(
-    params.targetRepositories,
-    parentSliceTargets,
-    defaultTargets,
-  );
-  const repoValidationError = validateReferencedRepositories(effectiveTargetRepositories, repositoryRegistry);
-  if (repoValidationError) {
-    return { error: `validation failed: ${repoValidationError}` };
-  }
-
-  const allowedAbsoluteRoots = resolveAllowedRootsForPathScope(
-    effectiveTargetRepositories,
-    repositoryRegistry,
-  );
-  const pathScopeError = validatePlanningPathScope(
-    basePath,
-    [
-      { field: "files", values: params.files },
-      { field: "inputs", values: params.inputs },
-      { field: "expectedOutput", values: params.expectedOutput },
-    ],
-    allowedAbsoluteRoots,
-  );
-  if (pathScopeError) {
-    return { error: `validation failed: ${pathScopeError}` };
-  }
 
   // ── Guards + DB writes inside a single transaction (prevents TOCTOU) ───
   // Guards must be inside the transaction so the state they check cannot
@@ -190,6 +180,44 @@ export async function handlePlanTask(
       const existingTask = getTask(params.milestoneId, params.sliceId, params.taskId);
       if (existingTask && isClosedStatus(existingTask.status)) {
         guardError = `cannot re-plan task ${params.taskId}: it is already complete — use gsd_task_reopen first`;
+        return;
+      }
+
+      let effectiveTargetRepositories = resolveEffectiveTargetRepositories(
+        params.targetRepositories,
+        parentSlice.target_repositories,
+        defaultTargets,
+      );
+      const repoValidationError = validateReferencedRepositories(effectiveTargetRepositories, repositoryRegistry);
+      if (repoValidationError) {
+        guardError = `validation failed: ${repoValidationError}`;
+        return;
+      }
+
+      let pathScopeError = validatePathScopeForTargetRepositories(
+        params,
+        basePath,
+        repositoryRegistry,
+        effectiveTargetRepositories,
+      );
+      const storedTaskTargets = existingTask?.target_repositories?.length
+        ? existingTask.target_repositories
+        : undefined;
+      // Omitted targetRepositories inherit the current slice default first.
+      // Fall back to the stored task target only when that inherited scope
+      // rejects the replan paths, preserving explicit per-task parent-root work.
+      if (pathScopeError && params.targetRepositories === undefined && storedTaskTargets) {
+        const storedRepoValidationError = validateReferencedRepositories(storedTaskTargets, repositoryRegistry);
+        const storedPathScopeError = storedRepoValidationError
+          ? storedRepoValidationError
+          : validatePathScopeForTargetRepositories(params, basePath, repositoryRegistry, storedTaskTargets);
+        if (!storedPathScopeError) {
+          effectiveTargetRepositories = storedTaskTargets;
+          pathScopeError = null;
+        }
+      }
+      if (pathScopeError) {
+        guardError = `validation failed: ${pathScopeError}`;
         return;
       }
 

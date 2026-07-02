@@ -24,6 +24,26 @@ function seedParent(): void {
   insertSlice({ id: 'S02', milestoneId: 'M001', title: 'Planning slice', status: 'pending', demo: 'Rendered plans exist.' });
 }
 
+function writeParentWorkspacePreferences(base: string): void {
+  mkdirSync(join(base, 'frontend', 'src'), { recursive: true });
+  mkdirSync(join(base, 'backend', 'src'), { recursive: true });
+  writeFileSync(
+    join(base, '.gsd', 'PREFERENCES.md'),
+    [
+      '---',
+      'workspace:',
+      '  mode: parent',
+      '  repositories:',
+      '    frontend:',
+      '      path: frontend',
+      '    backend:',
+      '      path: backend',
+      '---',
+    ].join('\n'),
+    'utf-8',
+  );
+}
+
 function validParams() {
   return {
     milestoneId: 'M001',
@@ -368,23 +388,7 @@ test('handlePlanTask inherits parent slice target repositories for path scope', 
       milestoneId: 'M001',
       planning: { targetRepositories: ['frontend'] },
     });
-    mkdirSync(join(base, 'frontend', 'src'), { recursive: true });
-    mkdirSync(join(base, 'backend', 'src'), { recursive: true });
-    writeFileSync(
-      join(base, '.gsd', 'PREFERENCES.md'),
-      [
-        '---',
-        'workspace:',
-        '  mode: parent',
-        '  repositories:',
-        '    frontend:',
-        '      path: frontend',
-        '    backend:',
-        '      path: backend',
-        '---',
-      ].join('\n'),
-      'utf-8',
-    );
+    writeParentWorkspacePreferences(base);
 
     const result = await handlePlanTask({
       ...validParams(),
@@ -395,6 +399,83 @@ test('handlePlanTask inherits parent slice target repositories for path scope', 
     assert.ok('error' in result);
     assert.match(result.error, /validation failed: files contains path outside allowed repository roots/);
     assert.equal(getTask('M001', 'S02', 'T02'), null, 'slice-scoped invalid paths must not persist');
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanTask preserves stored task target repositories when omitted replan needs them for path scope', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParent();
+    writeParentWorkspacePreferences(base);
+    insertSlice({
+      id: 'S02',
+      milestoneId: 'M001',
+      planning: { targetRepositories: ['frontend'] },
+    });
+    insertTask({
+      id: 'T02',
+      sliceId: 'S02',
+      milestoneId: 'M001',
+      title: 'Parent root work',
+      status: 'pending',
+      planning: { targetRepositories: ['project'] },
+    });
+
+    const rootFile = join(base, 'root-config.json');
+    const result = await handlePlanTask({
+      ...validParams(),
+      files: [rootFile],
+      inputs: [rootFile],
+      expectedOutput: [rootFile],
+    }, base);
+
+    assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
+    assert.deepEqual(getTask('M001', 'S02', 'T02')?.target_repositories, ['project']);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanTask follows the current slice target default when omitted replan paths validate there', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParent();
+    writeParentWorkspacePreferences(base);
+    insertSlice({
+      id: 'S02',
+      milestoneId: 'M001',
+      planning: { targetRepositories: ['frontend'] },
+    });
+    insertTask({
+      id: 'T02',
+      sliceId: 'S02',
+      milestoneId: 'M001',
+      title: 'Child repo work',
+      status: 'pending',
+      planning: { targetRepositories: ['frontend'] },
+    });
+    insertSlice({
+      id: 'S02',
+      milestoneId: 'M001',
+      planning: { targetRepositories: ['backend'] },
+    });
+
+    const backendFile = join(base, 'backend', 'src', 'server.ts');
+    const result = await handlePlanTask({
+      ...validParams(),
+      files: [backendFile],
+      inputs: [backendFile],
+      expectedOutput: [backendFile],
+    }, base);
+
+    assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
+    assert.deepEqual(getTask('M001', 'S02', 'T02')?.target_repositories, ['backend']);
   } finally {
     cleanup(base);
   }
