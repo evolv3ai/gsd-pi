@@ -12,7 +12,7 @@ It checks:
 - File structure and naming conventions
 - Roadmap ↔ slice ↔ task referential integrity
 - Completion state consistency
-- Database artifact rows whose rendered files are missing on disk
+- Database artifact rows whose rendered files are missing on disk, including warning-only diagnostics for missing user-authored context and research files
 - Git worktree health (worktree and branch modes only — skipped in none mode)
 - Stale DB-backed runtime records and orphaned runtime files
 - Disk-only orphan milestone stub directories
@@ -347,11 +347,19 @@ In these states GSD does not auto-stash and does not auto-fix; it stops so you c
 
 ### `/gsd doctor` reports `artifact_file_missing`
 
-**Symptoms:** `/gsd doctor` shows an error with issue code `artifact_file_missing`, a scope such as `project`, `milestone`, `slice`, or `task`, and a file path like `milestones/M001/M001-CONTEXT.md`.
+**Symptoms:** `/gsd doctor` shows an error with issue code `artifact_file_missing`, a scope such as `project`, `milestone`, `slice`, or `task`, and a file path like `milestones/M001/M001-ROADMAP.md`.
 
 **What it means:** The canonical database has an `artifacts` row for that path, but the rendered markdown file is missing from disk. In worktree mode, doctor checks both the active worktree-local `.gsd/` projection root and the project `.gsd/` root before reporting the issue, so the error usually means the artifact was deleted, skipped during a failed write, or left dangling by an interrupted migration/rebuild.
 
 **Fix:** If the database is still the source of truth, run `/gsd rebuild markdown` to re-render missing artifact projections from the DB, then rerun `/gsd doctor`. If the file represented work that should still exist but rebuild cannot recreate it, restore the file from git/backups or rerun the GSD workflow that generates that artifact. Use `/gsd recover --confirm` only when the database is lost or corrupt and the markdown on disk is the source you intentionally want to import; it is not the normal fix for a dangling artifact reference.
+
+### `/gsd doctor` reports `artifact_user_content_missing`
+
+**Symptoms:** `/gsd doctor` shows a warning with issue code `artifact_user_content_missing` for a missing `CONTEXT` or `RESEARCH` file, such as `milestones/M001/M001-CONTEXT.md` or `milestones/M001/M001-RESEARCH.md`. When `/gsd doctor fix` is running, it reports that the user-authored artifact was skipped instead of recreating a placeholder.
+
+**What it means:** The database remembers that the user-authored artifact should exist, but doctor cannot reconstruct its real content from structured DB rows. These warnings are separate from blocking `artifact_file_missing` projection errors because rebuilding from the DB would risk replacing user decisions or research with incomplete content.
+
+**Fix:** Re-run the workflow that authors the missing file in that milestone or slice. Use `/gsd discuss` for missing `CONTEXT` artifacts and `/gsd auto` for missing `RESEARCH` artifacts, then rerun `/gsd doctor`.
 
 ### Startup warns that memory consolidation is incomplete
 
