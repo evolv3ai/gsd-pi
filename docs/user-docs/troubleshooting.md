@@ -269,6 +269,16 @@ For common provider setup issues (role errors, streaming errors, model ID mismat
 
 **Fix:** Run `/gsd doctor` to see the file path, the parse/validation message, and (for YAML errors) the line and column. Fix the reported issue in the named file, then rerun the command. Auto-mode re-surfaces these diagnostics at preflight so they are visible before long-running automation proceeds.
 
+### Parent workspace repository warnings
+
+**Symptoms:** `/gsd doctor` reports `workspace_repo_path_missing` or `workspace_repo_not_a_repo` for a repository declared under `workspace.repositories` in `.gsd/PREFERENCES.md`.
+
+**What it means:** In `workspace.mode: parent`, each declared child path must exist and be a git repository at its own root. A typo such as `frontned` produces `workspace_repo_path_missing`; an ordinary directory inside the parent repo produces `workspace_repo_not_a_repo`.
+
+**Fix:** Create or clone the child repository at the configured path, initialize git in that directory if it should become a repository, or update `workspace.repositories.<id>.path` to the actual child repo root. Parent workspace paths must still resolve inside the project root; sibling paths such as `../frontend` are rejected by preference validation.
+
+If preferences combine `mode: team` with `workspace.mode: parent`, GSD also warns that team branch-push and PR behavior is still root-scoped and will not push child repositories. Push or open PRs for child repos manually, or switch to `mode: solo` when team branch automation is not needed.
+
 ### Auto mode says another session is running
 
 **Symptoms:** Auto mode won't start, says another session is running.

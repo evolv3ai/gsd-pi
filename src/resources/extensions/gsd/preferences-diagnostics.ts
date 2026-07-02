@@ -1,8 +1,10 @@
 import type { PreferenceDiagnostic } from "./preferences-types.js";
 import {
+  loadEffectiveGSDPreferences,
   loadGlobalGSDPreferences,
   loadProjectGSDPreferences,
 } from "./preferences.js";
+import { crossAxisPreferenceWarnings } from "./preferences-validation.js";
 
 interface PreferenceNotificationContext {
   ui: {
@@ -30,6 +32,28 @@ export function collectPreferenceDiagnostics(basePath?: string): PreferenceDiagn
     seen.add(signature);
     unique.push(diagnostic);
   }
+
+  const effective = loadEffectiveGSDPreferences(basePath);
+  if (effective) {
+    const existingMessages = new Set(unique.map((diagnostic) => diagnostic.message));
+    for (const message of crossAxisPreferenceWarnings(effective.preferences)) {
+      if (existingMessages.has(message)) continue;
+      const diagnostic: PreferenceDiagnostic = {
+        path: effective.path,
+        scope: effective.scope,
+        severity: "warning",
+        kind: "validation",
+        message,
+        sanitized: true,
+      };
+      const signature = preferenceDiagnosticSignature(diagnostic);
+      if (seen.has(signature)) continue;
+      seen.add(signature);
+      existingMessages.add(message);
+      unique.push(diagnostic);
+    }
+  }
+
   return unique;
 }
 

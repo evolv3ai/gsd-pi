@@ -69,6 +69,17 @@ workspace:
 
 Validation rules: repository ids must match `^[A-Za-z0-9][A-Za-z0-9._-]*$`; `project` is reserved; paths must be relative, unique, and resolve inside the project root; `mode: parent` requires at least one repository. See [configuration.md](./configuration.md#workspace) for the full schema.
 
+## Doctor and preference warnings
+
+Run `/gsd doctor` after changing parent-workspace preferences. In `workspace.mode: parent`, doctor checks each declared child repository path:
+
+| Issue code | What it means | Remediation |
+|------------|---------------|-------------|
+| `workspace_repo_path_missing` | The configured child repository path does not exist on disk. | Create or clone the child repository at that path, or fix the `workspace.repositories.<id>.path` value. |
+| `workspace_repo_not_a_repo` | The path exists, but it is not a git repository at its own root. A plain directory nested inside the parent repo is not enough. | Clone the child repo into that directory, run `git init` there if it should be a new repo, or point the preference at the actual child repo root. |
+
+GSD also warns when the effective merged preferences combine `mode: team` with `workspace.mode: parent`. Team branch-push and PR behavior still resolves at the project root, so it will not push child repositories. Keep using parent workspace mode for coordinated planning, verification, and commits, but push or open PRs for child repos manually, or use `mode: solo` if team branch automation is not needed.
+
 ## How it behaves
 
 Once configured, parent mode changes four things — all of which default to single-repo behavior when `mode` is `project` (the default):

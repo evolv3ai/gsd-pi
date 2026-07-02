@@ -51,6 +51,16 @@ const VALID_POST_UNIT_HOOK_ON_BLOCK_ACTIONS = new Set([
 ]);
 const VALID_GATE_EVALUATE_SLICE_GATES = new Set<string>(getGateIdsForTurn("gate-evaluate"));
 
+/** Cross-axis warnings that only apply to the effective (merged) preference shape. */
+export function crossAxisPreferenceWarnings(preferences: GSDPreferences): string[] {
+  if (preferences.mode === "team" && preferences.workspace?.mode === "parent") {
+    return [
+      "mode:team + workspace.mode:parent: team branch-push/PR resolves at the project root and will not push child repositories — see docs/dev/ADR-044",
+    ];
+  }
+  return [];
+}
+
 export function validatePreferences(preferences: GSDPreferences): {
   preferences: GSDPreferences;
   errors: string[];
@@ -1508,6 +1518,7 @@ export function validatePreferences(preferences: GSDPreferences): {
         errors.push('workspace.mode "parent" requires at least one repository under workspace.repositories');
       }
     }
+
   }
 
   // ─── Enhanced Verification ──────────────────────────────────────────────────
@@ -1580,6 +1591,8 @@ export function validatePreferences(preferences: GSDPreferences): {
       errors.push(`language must be a non-empty string up to 50 characters with no newlines (e.g. "Chinese", "de", "日本語")`);
     }
   }
+
+  warnings.push(...crossAxisPreferenceWarnings(validated));
 
   return { preferences: validated, errors, warnings };
 }
