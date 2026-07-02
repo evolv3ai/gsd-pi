@@ -90,6 +90,8 @@ import { clearPathCache } from "../../paths.ts";
 // Fixture Helpers
 // ═══════════════════════════════════════════════════════════════════════════
 
+const UAT_VERDICT_GATE_RULE_NAME = "uat-verdict-gate (non-PASS observed; closeout enforces)";
+
 function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), "gsd-edge-cases-"));
 }
@@ -280,7 +282,7 @@ function buildDispatchCtx(
 
 function getUatVerdictGate(): import("../../auto-dispatch.ts").DispatchRule {
   const rule = DISPATCH_RULES.find(
-    r => r.name === "uat-verdict-gate (non-PASS blocks progression)",
+    r => r.name === UAT_VERDICT_GATE_RULE_NAME,
   );
   assert.ok(rule, "uat-verdict-gate rule should be registered");
   return rule;
@@ -867,7 +869,7 @@ describe("dispatch failure modes", () => {
     // Verify critical ordering constraints
     const summarizeIdx = ruleNames.indexOf("summarizing → complete-slice");
     const runUatIdx = ruleNames.indexOf("run-uat (post-completion)");
-    const uatGateIdx = ruleNames.indexOf("uat-verdict-gate (non-PASS blocks progression)");
+    const uatGateIdx = ruleNames.indexOf(UAT_VERDICT_GATE_RULE_NAME);
     const executeIdx = ruleNames.indexOf("executing → execute-task");
 
     // summarizing should come before execute-task
