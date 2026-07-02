@@ -141,6 +141,26 @@ test("invalid value types produce errors and fall back to undefined", () => {
   }
 });
 
+test("remote_questions accepts object config and false disables without error", () => {
+  const disabled = validatePreferences({ remote_questions: false } as any);
+  assert.equal(disabled.errors.length, 0);
+  assert.equal(disabled.preferences.remote_questions, undefined);
+
+  const configured = validatePreferences({
+    remote_questions: { channel: "telegram", channel_id: "12345" },
+  });
+  assert.equal(configured.errors.length, 0);
+  assert.deepEqual(configured.preferences.remote_questions, {
+    channel: "telegram",
+    channel_id: "12345",
+  });
+
+  for (const value of ["telegram", 0]) {
+    const invalid = validatePreferences({ remote_questions: value } as any);
+    assert.ok(invalid.errors.includes("remote_questions must be an object"));
+  }
+});
+
 test("flat_rate_providers: accepts string array", () => {
   const { errors, preferences } = validatePreferences({
     flat_rate_providers: ["my-proxy", "private-cli"],

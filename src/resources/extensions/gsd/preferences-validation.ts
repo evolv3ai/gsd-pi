@@ -509,8 +509,11 @@ export function validatePreferences(preferences: GSDPreferences): {
 
   // ─── Remote Questions ───────────────────────────────────────────────
   if (preferences.remote_questions !== undefined) {
-    if (preferences.remote_questions && typeof preferences.remote_questions === "object") {
-      validated.remote_questions = preferences.remote_questions;
+    const remoteQuestions = preferences.remote_questions as unknown;
+    if (typeof remoteQuestions === "object" && remoteQuestions !== null) {
+      validated.remote_questions = remoteQuestions as GSDPreferences["remote_questions"];
+    } else if (remoteQuestions === false) {
+      // Explicit disable for a globally-configured remote questions channel.
     } else {
       errors.push("remote_questions must be an object");
     }
