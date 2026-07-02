@@ -369,6 +369,35 @@ test("workspace.mode parent with declared repositories is valid", () => {
   assert.equal(errors.length, 0);
 });
 
+test("mode:team + workspace.mode:parent warns about root-only push/PR", () => {
+  const { warnings } = validatePreferences({
+    mode: "team",
+    workspace: {
+      mode: "parent",
+      repositories: {
+        frontend: { path: "frontend" },
+      },
+    },
+  });
+
+  assert.ok(
+    warnings.some((w) =>
+      w.includes("mode:team + workspace.mode:parent") && w.includes("ADR-044"),
+    ),
+    "expected a cross-axis warning naming ADR-044",
+  );
+});
+
+test("mode:team without workspace.mode:parent does not warn about push", () => {
+  const { warnings } = validatePreferences({
+    mode: "team",
+  });
+
+  assert.ok(
+    !warnings.some((w) => w.includes("workspace.mode:parent")),
+    "team mode alone must not trigger the parent-workspace push warning",
+  );
+});
 
 test("workspace is a recognized preference key (no unknown warning)", () => {
   const { warnings } = validatePreferences({

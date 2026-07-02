@@ -1505,6 +1505,15 @@ export function validatePreferences(preferences: GSDPreferences): {
         errors.push('workspace.mode "parent" requires at least one repository under workspace.repositories');
       }
     }
+
+    // Cross-axis: team mode's branch-push/PR cycle runs through publishMilestone,
+    // which is single-root (publication.ts). Combining mode:team with
+    // workspace.mode:parent silently degrades team push/PR to the root repo only.
+    if (validated.mode === "team" && validated.workspace?.mode === "parent") {
+      warnings.push(
+        "mode:team + workspace.mode:parent: team branch-push/PR resolves at the project root and will not push child repositories — see docs/dev/ADR-044",
+      );
+    }
   }
 
   // ─── Enhanced Verification ──────────────────────────────────────────────────
