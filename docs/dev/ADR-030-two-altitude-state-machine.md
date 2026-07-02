@@ -79,13 +79,14 @@ export function toStatus(raw: string): Status;
 
 3 → 2 → 1. The vocabulary (3) is what the others lean on; the core (2) consumes `Status`/`toStatus`; the Phase guard (1) is independent and can land anytime. Typing the faces as `Status` in step 2 turns every site that writes an alias (`"done"`, etc.) into a compile error — each a latent bug surfaced, which is bounded, valuable churn.
 
-## Implementation status (2026-06-09)
+## Implementation status (updated 2026-07-02)
 
 Landed:
 
 - **③ Vocabulary** — `Status`, `toStatus`, `RAW_CLOSED_STATUSES` in `status-guards.ts`; `TERMINAL_STATUS_SQL` derived from the single source. `isClosedStatus` is behavior-preserving.
 - **② Core** — `applyStatusTransition` in `db/writers/status.ts`; the three `update*Status` faces delegate; the milestone closed→open guard moved into the core. Behavior-neutral.
 - **① Phase guard** — `isLegalEdge` + `IllegalPhaseTransitionError` in `state-transition-matrix.ts`; `illegal-transition` recovery kind recognized by class; `advance()` carries `lastDerivedPhase` (reset on start/resume/stop) and checks the edge after reconciliation.
+- **Read-side SQL adoption** — active milestone/slice/task selection and slice task counts in the Query Module now use `TERMINAL_STATUS_SQL` instead of re-deriving partial closed-status literals, so `closed`/`skipped` aliases cannot drift from `isClosedStatus`.
 
 Deferred, with reasons (each a clean follow-up):
 

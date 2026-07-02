@@ -33,6 +33,10 @@ import {
   getMilestoneSliceSummaries,
   getClosedSliceIds,
   getActiveMilestoneFromDb,
+  getActiveSliceFromDb,
+  getActiveTaskFromDb,
+  getActiveTaskIdFromDb,
+  getSliceTaskCounts,
   deleteMilestone,
   clearEngineHierarchy,
   recordMilestoneCommitAttribution,
@@ -238,6 +242,42 @@ describe('gsd-db', () => {
     assert.equal(active?.id, "M006", "closed/complete/done/skipped/parked should be excluded from active milestone selection");
 
     closeDatabase();
+  });
+
+  test("gsd-db: active readers use the shared closed-status vocabulary", () => {
+    openDatabase(":memory:");
+
+    try {
+      insertMilestone({ id: "M001", title: "Status vocabulary", status: "active" });
+      insertSlice({ id: "S01", milestoneId: "M001", title: "Closed dep", status: "closed", sequence: 1 });
+      insertSlice({ id: "S02", milestoneId: "M001", title: "Runnable", status: "pending", depends: ["S01"], sequence: 2 });
+      insertTask({ id: "T01", sliceId: "S02", milestoneId: "M001", title: "Skipped", status: "skipped", sequence: 1 });
+      insertTask({ id: "T02", sliceId: "S02", milestoneId: "M001", title: "Closed", status: "closed", sequence: 2 });
+      insertTask({ id: "T03", sliceId: "S02", milestoneId: "M001", title: "Pending", status: "pending", sequence: 3 });
+
+      assert.equal(
+        getActiveSliceFromDb("M001")?.id,
+        "S02",
+        "closed dependency slices must satisfy dependencies and be excluded from active slice selection",
+      );
+      assert.equal(
+        getActiveTaskFromDb("M001", "S02")?.id,
+        "T03",
+        "skipped/closed tasks must be excluded from active task selection",
+      );
+      assert.equal(
+        getActiveTaskIdFromDb("M001", "S02")?.id,
+        "T03",
+        "lightweight active task selection must use the same closed-status vocabulary",
+      );
+      assert.deepEqual(
+        getSliceTaskCounts("M001", "S02"),
+        { total: 3, done: 2, pending: 1 },
+        "slice task counts must derive done/pending from the shared closed-status vocabulary",
+      );
+    } finally {
+      closeDatabase();
+    }
   });
 
   test('gsd-db: active_decisions view excludes superseded', () => {
