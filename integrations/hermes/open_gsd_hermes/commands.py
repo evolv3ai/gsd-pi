@@ -279,6 +279,8 @@ class GsdCommandRouter:
 
         def _on_milestone_terminal(status: str) -> None:
             milestone_ctx = self._get_supervisor_ctx()
+            if milestone_ctx.session_id != session_id:
+                return
             normalized = status.lower()
             if normalized in ("complete", "completed", "done"):
                 milestone_ctx.state = SupervisorState.COMPLETE

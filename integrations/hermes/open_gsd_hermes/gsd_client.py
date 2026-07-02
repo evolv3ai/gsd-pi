@@ -627,6 +627,9 @@ class GsdMcpClient:
         self._milestone_notified_terminal = True
         if exit_code is not None:
             self._clear_milestone_state()
+        else:
+            self._milestone_pending_blocker_id = None
+            self._milestone_pending_blocker_method = None
 
     def _drain_milestone_stderr(self, proc: subprocess.Popen[bytes]) -> None:
         """Drain stderr so a full pipe cannot stall the child process."""
@@ -781,6 +784,11 @@ class GsdMcpClient:
         """
         proc = self._milestone_proc
         blocker_id = self._milestone_pending_blocker_id
+        if self._milestone_notified_terminal:
+            raise RuntimeError(
+                "Milestone session is no longer accepting replies. "
+                "Run `/gsd cancel` to clean up."
+            )
         if proc is None or not blocker_id:
             raise RuntimeError(
                 "No pending blocker for the active milestone session."
@@ -804,6 +812,9 @@ class GsdMcpClient:
         proc = self._milestone_proc
         if proc is None:
             return False
+        thread = self._milestone_thread
+        if thread is not None and thread.is_alive():
+            return True
         if proc.poll() is None:
             return True
         self._clear_milestone_state()
