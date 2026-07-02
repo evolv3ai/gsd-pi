@@ -209,8 +209,24 @@ const WORKFLOW_GSD_TOOL_NAMES = [
   ...Object.values(AUTO_UNIT_SCOPED_TOOLS).flat(),
 ].filter(isGsdManagedTool);
 
+const WORKFLOW_ONLY_AUTO_BASE_TOOL_NAMES = [
+  "find",
+  "glob",
+  "grep",
+  "ls",
+  "read",
+  "subagent",
+] as const;
+
 function isGsdManagedTool(name: string): boolean {
   return name.startsWith("gsd_") || name === "memory_query" || name === "capture_thought" || name === "gsd_graph";
+}
+
+function autoBaseToolNamesForUnit(unitType: string | undefined): readonly string[] {
+  const manifest = unitType ? resolveManifest(unitType) : null;
+  return manifest?.tools.mode === "workflow-only"
+    ? WORKFLOW_ONLY_AUTO_BASE_TOOL_NAMES
+    : MINIMAL_AUTO_BASE_TOOL_NAMES;
 }
 
 /**
@@ -275,7 +291,7 @@ export function buildMinimalAutoGsdToolSet(
     return buildRunUatGsdToolSet(activeToolNames, registeredToolNames);
   }
   const unitTools = unitType ? AUTO_UNIT_SCOPED_TOOLS[unitType] ?? [] : [];
-  const autoBaseTools = new Set<string>(MINIMAL_AUTO_BASE_TOOL_NAMES);
+  const autoBaseTools = new Set<string>(autoBaseToolNamesForUnit(unitType));
   const availableBaseTools = registeredToolNames.filter((name) => autoBaseTools.has(name));
   const preserved = [...new Set([
     ...activeToolNames.filter((name) => autoBaseTools.has(name)),

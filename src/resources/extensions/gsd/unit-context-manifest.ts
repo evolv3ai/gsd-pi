@@ -140,6 +140,10 @@ export type ContextModePolicy =
  *                    restricted to .gsd/**. Subagent dispatch is denied unless
  *                    `allowedSubagents` opts a unit into controlled read-only
  *                    specialist delegation.
+ *   - "workflow-only"
+ *                  — Read tools + GSD workflow tools only. No generic writes
+ *                    and no generic shell; used by lanes whose durable output
+ *                    must be produced by a dedicated DB-backed workflow tool.
  *
  * The allowlist for "docs" is declared per-manifest rather than hardcoded so
  * projects with non-standard doc layouts can extend it without forking the
@@ -152,7 +156,8 @@ export type ToolsPolicy =
   | { readonly mode: "planning" }
   | { readonly mode: "planning-dispatch"; readonly allowedSubagents: readonly string[] }
   | { readonly mode: "docs"; readonly allowedPathGlobs: readonly string[] }
-  | { readonly mode: "verification"; readonly allowedSubagents?: readonly string[] };
+  | { readonly mode: "verification"; readonly allowedSubagents?: readonly string[] }
+  | { readonly mode: "workflow-only"; readonly allowedSubagents?: readonly string[] };
 
 // ─── Computed-artifact registry (#4924 v2 contract) ───────────────────────
 
@@ -405,9 +410,10 @@ export const UNIT_MANIFESTS: Record<UnitType, UnitContextManifest> = {
     codebaseMap: false,
     preferences: "active-only",
     contextMode: "verification",
-    // Validation may need to run shell verification commands and apply source
-    // fixes before milestone closeout can proceed.
-    tools: TOOLS_ALL,
+    // Validation must persist its durable output through gsd_validate_milestone;
+    // generic write/bash tools can create filesystem artifacts that bypass DB
+    // state and trigger destructive recovery loops.
+    tools: { mode: "workflow-only", allowedSubagents: ["reviewer", "security", "tester"] },
     artifacts: {
       inline: ["roadmap", "requirements", "templates"],
       excerpt: ["slice-summary", "slice-assessment"],
@@ -774,7 +780,7 @@ export function compileSubagentPermissionContract(
     return { allowed: true, allowedSubagents: ["*"], toolsMode: policy.mode };
   }
   if (
-    (policy.mode === "planning-dispatch" || policy.mode === "verification") &&
+    (policy.mode === "planning-dispatch" || policy.mode === "verification" || policy.mode === "workflow-only") &&
     Array.isArray(policy.allowedSubagents)
   ) {
     return {

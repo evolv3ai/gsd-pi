@@ -1169,7 +1169,7 @@ function allowsControlledSubagentDispatch(
   policy: ToolsPolicy,
 ): policy is ToolsPolicy & { readonly allowedSubagents: readonly string[] } {
   return (
-    (policy.mode === "planning-dispatch" || policy.mode === "verification") &&
+    (policy.mode === "planning-dispatch" || policy.mode === "verification" || policy.mode === "workflow-only") &&
     Array.isArray((policy as { readonly allowedSubagents?: unknown }).allowedSubagents)
   );
 }
@@ -1265,6 +1265,9 @@ type PlanningUnitBlockResult = {
  *                  → allows Bash for project verification commands, keeps
  *                    writes restricted to .gsd/, and permits subagent dispatch
  *                    only when the manifest declares allowedSubagents.
+ *   - "workflow-only"
+ *                  → allows reads, GSD workflow tools, and declared read-only
+ *                    subagents; blocks generic Bash and direct file writes.
  *
  * `pathOrCommand` is the file path for write/edit-shaped tools and the
  * shell command for bash. Other tools ignore this argument.
@@ -1352,6 +1355,24 @@ export function shouldBlockPlanningUnit(
       return { block: false };
     }
     return planningBlock(unitType, policy.mode, "subagent dispatch is not permitted in planning units");
+  }
+
+  if (policy.mode === "workflow-only") {
+    if (tool === "bash") {
+      return planningBlock(
+        unitType,
+        policy.mode,
+        `bash is not permitted; use the unit's dedicated GSD workflow tools for durable validation output`,
+      );
+    }
+    if (PLANNING_WRITE_TOOLS.has(tool)) {
+      return planningBlock(
+        unitType,
+        policy.mode,
+        `cannot ${tool} "${pathOrCommand}" — direct artifact writes are disabled; call the required GSD workflow tool instead`,
+      );
+    }
+    return planningBlock(unitType, policy.mode, `tool "${tool}" is not on the workflow-only allowlist`);
   }
 
   if (tool === "bash") {
