@@ -902,28 +902,6 @@ export function removeWorktree(
     return true;
   }
 
-  if (force && resolvedPathSafe) {
-    const dirtyState = inspectUncommittedWorktreeState(resolvedWtPath);
-    if (dirtyState.dirty) {
-      const quarantinePath = quarantineDirtyWorktree(
-        basePath,
-        name,
-        branch,
-        resolvedWtPath,
-        dirtyState.status,
-      );
-      if (!quarantinePath) {
-        return false;
-      }
-
-      deleteBranchAfterRemoval = false;
-      if (!existsSync(resolvedWtPath)) {
-        nativeWorktreePrune(basePath);
-        return true;
-      }
-    }
-  }
-
   // Submodule safety (#2337): detect submodules with uncommitted changes
   // before force-removing the worktree. Force removal destroys all uncommitted
   // state, which is especially destructive for submodule directories.
@@ -999,6 +977,35 @@ export function removeWorktree(
           `Failed to remove nested .git directory — files may be lost as orphaned gitlink`,
           { worktree: name, nestedRepo: nestedDir },
         );
+      }
+    }
+  }
+
+  // Dirty-worktree quarantine (#2365): once submodule (#2337) and nested-.git
+  // (#2616) rescue have run — they commit/clean the tree first — quarantine any
+  // uncommitted state that remains instead of force-deleting it. Gate on a live
+  // git checkout so a stale local directory left behind by state-sync (which
+  // has no `.git` file and is not a registered worktree) is removed normally
+  // rather than quarantined; otherwise its branch would never be deleted and
+  // the worktree would never be unregistered (#1852).
+  if (force && resolvedPathSafe && isLiveGitWorktreeCheckout(resolvedWtPath)) {
+    const dirtyState = inspectUncommittedWorktreeState(resolvedWtPath);
+    if (dirtyState.dirty) {
+      const quarantinePath = quarantineDirtyWorktree(
+        basePath,
+        name,
+        branch,
+        resolvedWtPath,
+        dirtyState.status,
+      );
+      if (!quarantinePath) {
+        return false;
+      }
+
+      deleteBranchAfterRemoval = false;
+      if (!existsSync(resolvedWtPath)) {
+        nativeWorktreePrune(basePath);
+        return true;
       }
     }
   }
