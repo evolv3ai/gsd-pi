@@ -647,7 +647,7 @@ function isRetryableHarnessToolError(toolName: string, result: unknown, errorTex
   }
   if (isToolUnavailableError(errorText)) return true;
   if (isQueuedUserMessageSkip(errorText)) return true;
-  return true;
+  return false;
 }
 
 function recordRetryableHarnessToolError(toolName: string, result: unknown, errorText: string): void {

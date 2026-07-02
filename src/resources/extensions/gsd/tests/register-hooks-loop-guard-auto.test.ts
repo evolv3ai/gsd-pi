@@ -123,7 +123,7 @@ test("register-hooks rewrites loop-guard block reason for auto-mode per-tool blo
   assert.doesNotMatch(block.reason, /respond to the user in text/);
 });
 
-test("register-hooks records retryable tool execution errors as durable harness aborts", async (t) => {
+test("register-hooks does not record normal product tool failures as harness aborts", async (t) => {
   const base = makeRuntimeBase();
   const startedAt = Date.now();
   autoSession.reset();
@@ -147,9 +147,7 @@ test("register-hooks records retryable tool execution errors as durable harness 
   });
 
   const abort = readUnitHarnessAbort(base, "gate-evaluate", "M001/S01/gates+Q3", startedAt);
-  assert.equal(abort?.kind, "tool-error");
-  assert.equal(abort?.toolName, "browser_click");
-  assert.match(abort?.reason ?? "", /Element not found/);
+  assert.equal(abort, null);
 });
 
 test("register-hooks does not classify normal gsd_uat_exec nonzero exits as harness aborts", async (t) => {
