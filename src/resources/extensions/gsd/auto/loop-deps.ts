@@ -80,6 +80,7 @@ export interface LoopDeps {
   ) => Promise<void>;
   pauseAuto: PauseAutoFn;
   clearUnitTimeout: () => void;
+  checkpointWorkflowDatabase?: () => void;
   updateProgressWidget: (
     ctx: ExtensionContext,
     unitType: string,
