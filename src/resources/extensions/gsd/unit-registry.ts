@@ -20,8 +20,9 @@
 //
 // Not yet declared here (remaining ADR-033 steps): the manifest data
 // (`UNIT_MANIFESTS` stays in unit-context-manifest.ts, already type-enforced
-// against the registry's `UnitType`) and prompt-template association (still
-// implicit in auto-prompts.ts builders).
+// against the registry's `UnitType`). Prompt-template association is declared
+// for direct one-template units; conditional/composite prompt selection stays
+// with the prompt builders until it has a richer registry shape.
 
 import type { CanonicalWorkflowToolName } from "@opengsd/contracts";
 import { BROWSER_CONTRACT_TOOL_NAMES } from "../shared/browser-contract.js";
@@ -61,6 +62,12 @@ export interface UnitDescriptor {
    * resolves against session defaults).
    */
   readonly phaseChain: readonly GSDModelPhaseKey[] | null;
+  /**
+   * Prompt template id passed to loadPrompt for units with a direct
+   * one-template builder. Omitted for conditional, composite, or not-yet
+   * verified prompt associations.
+   */
+  readonly promptTemplate?: string;
   /** `null` = the unit has no scoped gsd-tool contract. */
   readonly toolContract: UnitToolSurfaceContract | null;
 }
@@ -97,6 +104,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "standard",
     phaseChain: ["research"],
+    promptTemplate: "research-milestone",
     toolContract: {
       allowedGsdTools: [
         "gsd_summary_save",
@@ -112,6 +120,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "standard",
     phaseChain: ["planning"],
+    promptTemplate: "plan-milestone",
     toolContract: {
       allowedGsdTools: [
         "gsd_milestone_status",
@@ -160,6 +169,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "section-close",
     phaseChain: ["validation", "planning"],
+    promptTemplate: "validate-milestone",
     toolContract: {
       allowedGsdTools: [
         "gsd_milestone_status",
@@ -177,6 +187,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "standard",
     phaseChain: ["completion"],
+    promptTemplate: "complete-milestone",
     toolContract: {
       allowedGsdTools: [
         "gsd_milestone_status",
@@ -200,6 +211,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "standard",
     phaseChain: ["research"],
+    promptTemplate: "research-slice",
     toolContract: {
       allowedGsdTools: [
         "gsd_milestone_status",
@@ -216,6 +228,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "standard",
     phaseChain: ["planning"],
+    promptTemplate: "plan-slice",
     toolContract: {
       allowedGsdTools: [
         "gsd_milestone_status",
@@ -234,6 +247,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "standard",
     phaseChain: ["planning"],
+    promptTemplate: "refine-slice",
     toolContract: {
       allowedGsdTools: [
         "gsd_milestone_status",
@@ -250,6 +264,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "standard",
     phaseChain: ["planning"],
+    promptTemplate: "replan-slice",
     toolContract: {
       allowedGsdTools: ["gsd_replan_slice", "gsd_decision_save"],
       requiredWorkflowTools: ["gsd_replan_slice"],
@@ -259,6 +274,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "section-close",
     phaseChain: ["completion"],
+    promptTemplate: "complete-slice",
     toolContract: {
       allowedGsdTools: [
         "gsd_milestone_status",
@@ -293,6 +309,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "standard",
     phaseChain: ["validation", "planning"],
+    promptTemplate: "reassess-roadmap",
     toolContract: {
       allowedGsdTools: ["gsd_milestone_status", "gsd_reassess_roadmap"],
       requiredWorkflowTools: ["gsd_milestone_status", "gsd_reassess_roadmap"],
@@ -302,6 +319,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "execute-task",
     phaseChain: ["execution"],
+    promptTemplate: "execute-task",
     toolContract: {
       allowedGsdTools: [
         "gsd_task_complete",
@@ -346,6 +364,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "execute-task",
     phaseChain: ["execution"],
+    promptTemplate: "reactive-execute",
     toolContract: {
       allowedGsdTools: [
         "gsd_milestone_status",
@@ -361,6 +380,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "standard",
     phaseChain: ["uat", "completion"],
+    promptTemplate: "run-uat",
     toolContract: {
       allowedGsdTools: [...RUN_UAT_WORKFLOW_TOOL_NAMES, "subagent"],
       requiredWorkflowTools: [...RUN_UAT_WORKFLOW_TOOL_NAMES],
@@ -375,6 +395,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "standard",
     phaseChain: ["validation", "planning"],
+    promptTemplate: "gate-evaluate",
     toolContract: {
       allowedGsdTools: ["gsd_save_gate_result"],
       requiredWorkflowTools: ["gsd_save_gate_result"],
@@ -384,6 +405,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "standard",
     phaseChain: ["validation", "planning"],
+    promptTemplate: "rewrite-docs",
     toolContract: {
       allowedGsdTools: ["gsd_summary_save", "gsd_decision_save"],
       requiredWorkflowTools: [],
@@ -408,6 +430,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "standard",
     phaseChain: ["discuss", "planning"],
+    promptTemplate: "guided-workflow-preferences",
     toolContract: {
       allowedGsdTools: ["gsd_summary_save"],
       requiredWorkflowTools: [],
@@ -417,6 +440,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "standard",
     phaseChain: ["discuss", "planning"],
+    promptTemplate: "guided-discuss-project",
     toolContract: {
       allowedGsdTools: ["gsd_summary_save", "gsd_decision_save", "gsd_requirement_save"],
       requiredWorkflowTools: ["ask_user_questions", "gsd_summary_save"],
@@ -426,6 +450,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "standard",
     phaseChain: ["discuss", "planning"],
+    promptTemplate: "guided-discuss-requirements",
     toolContract: {
       allowedGsdTools: ["gsd_requirement_save", "gsd_summary_save"],
       requiredWorkflowTools: ["ask_user_questions", "gsd_requirement_save", "gsd_summary_save"],
@@ -435,6 +460,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "standard",
     phaseChain: ["discuss", "planning"],
+    promptTemplate: "guided-research-decision",
     toolContract: {
       allowedGsdTools: ["gsd_summary_save"],
       requiredWorkflowTools: ["ask_user_questions"],
@@ -447,6 +473,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "standard",
     phaseChain: ["research"],
+    promptTemplate: "guided-research-project",
     toolContract: {
       allowedGsdTools: [],
       requiredWorkflowTools: [],
@@ -493,4 +520,9 @@ export function getUnitDescriptor(unitType: string): UnitDescriptor | undefined 
 /** Phase-bucket fallback chain for a unit type, or null when the registry has no routing for it. */
 export function getUnitPhaseChain(unitType: string): readonly GSDModelPhaseKey[] | null {
   return getUnitDescriptor(unitType)?.phaseChain ?? null;
+}
+
+/** Prompt template id for units with a direct one-template builder. */
+export function getUnitPromptTemplate(unitType: string): string | undefined {
+  return getUnitDescriptor(unitType)?.promptTemplate;
 }
