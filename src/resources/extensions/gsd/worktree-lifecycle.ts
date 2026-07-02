@@ -353,7 +353,7 @@ export interface MergeContext {
   originalBasePath: string;
   /**
    * Current worktree path or project root when in branch mode. Used as the
-   * cwd anchor for `mergeMilestoneToMain` and the source for
+   * cwd anchor for the milestone merge transaction and the source for
    * `Projection.finalizeProjectionForMerge`.
    */
   worktreeBasePath: string;
@@ -381,7 +381,8 @@ export interface MergeStandaloneResult {
   pushed: boolean;
   /**
    * Commit message produced by the squash merge, if available. Forwarded
-   * from `mergeMilestoneToMain`. Only populated when `merged === true`.
+   * from the milestone merge transaction. Only populated when
+   * `merged === true`.
    */
   commitMessage?: string;
 }
@@ -1373,8 +1374,9 @@ function _mergeBranchModeImpl(
  * **CWD anchor**: anchors `process.cwd()` at `originalBasePath` before
  * non-worktree merge paths to mirror the single-loop guard against ENOENT
  * after teardown (de73fb43d). Worktree-mode merge paths keep the real
- * worktree as cwd because `mergeMilestoneToMain()` infers source worktree
- * state from `process.cwd()`. Best-effort; silent on failure.
+ * worktree as cwd because the default milestone merge transaction delegates
+ * to the legacy merge primitive, which infers source worktree state from
+ * `process.cwd()`. Best-effort; silent on failure.
  *
  * **Failure handling**: `MergeConflictError` and other unrecoverable errors
  * propagate to the caller. The caller is responsible for any state restore
@@ -1475,8 +1477,8 @@ export function mergeMilestoneStandalone(
 
   // Set cwd to the correct anchor before dispatching to mode implementations.
   // Worktree mode / in-worktree override must run from the live worktree so
-  // mergeMilestoneToMain can find worktree-local state; branch mode runs from
-  // the original project root. Best-effort for synthetic test paths.
+  // The default merge transaction can find worktree-local state; branch mode
+  // runs from the original project root. Best-effort for synthetic test paths.
   const targetCwd = mode === "worktree" || inWorktree
     ? worktreeBasePath
     : originalBasePath;

@@ -146,7 +146,8 @@ Model routing (complexity classification, budget pressure, routing history, capa
 | `auto-verification.ts` | Post-unit verification gate (lint/test/typecheck with auto-fix retries) |
 | `auto-prompts.ts` | Prompt builders with inline level compression |
 | `worktree-lifecycle.ts` | Worktree Lifecycle module — enter, exit, merge guard ordering, teardown, and session root mutation |
-| `auto-worktree.ts` | Lower-level worktree helpers and inner milestone merge primitive wired through Worktree Lifecycle |
+| `milestone-merge-transaction.ts` | Milestone Merge Transaction module — production adapter that wraps the legacy merge primitive behind the Lifecycle runner seam |
+| `auto-worktree.ts` | Lower-level worktree helpers and inner milestone merge primitive consumed through the default transaction adapter |
 | `auto-recovery.ts` | Expected artifact resolution, completed-key persistence, self-healing |
 | `auto-timeout-recovery.ts` | Timed-out unit recovery and continuation |
 | `auto-timers.ts` | Unit supervision — soft/idle/hard timeouts, continue-here monitor |

@@ -32,7 +32,7 @@ The body does not mutate `s.basePath`. `restoreToProjectRoot()` is the mutator, 
 1. **Body doesn't move.** Option A exposes a session-less entry to the existing `_mergeWorktreeMode` and `_mergeBranchMode` bodies. Option B copies them out into a new Module. Option A has less mechanical churn for the same end-state.
 2. **Projection edge stays inside Lifecycle.** `_mergeWorktreeMode` calls `worktreeProjection.finalizeProjectionForMerge(scope)`. In Option B that edge moves to `MergeRunner`, so both Lifecycle and MergeRunner end up depending on Projection. ADR-016 names two sibling Modules (Lifecycle, Projection); a third Module spreads the dependency graph.
 3. **Deletion test on `MergeRunner`.** If `MergeRunner` were deleted, its body collapses straight back into Lifecycle — the same place it lives today. That's a failed deletion test: `MergeRunner` is a pass-through wrapper around code Lifecycle already owns.
-4. **Bypass closure is the same.** Once Option A lands, `parallel-merge.ts` constructs (or obtains) a `WorktreeLifecycle` and calls `mergeMilestoneStandalone`. A3 (#5619) unexports `mergeMilestoneToMain`. The closure invariant is enforced by file boundary, identical to the Option B end-state.
+4. **Bypass closure is the same.** Once Option A lands, `parallel-merge.ts` constructs (or obtains) a `WorktreeLifecycle` and calls `mergeMilestoneStandalone`. A3 (#5619) keeps direct invocation closed by wiring `mergeMilestoneToMain` only through the default milestone-merge transaction adapter. The closure invariant is enforced at the transaction seam, matching the Option B end-state without a direct caller.
 
 ### Sketch
 
@@ -69,7 +69,7 @@ class WorktreeLifecycle {
 ### Implementation order
 
 1. **A2 (#5618)** — extract the body of `_mergeWorktreeMode` and `_mergeBranchMode` into `mergeMilestoneStandalone`. `_mergeAndExit` keeps the session-bound shape and delegates. Migrate `parallel-merge.ts` to call `mergeMilestoneStandalone`.
-2. **A3 (#5619)** — remove the `export` keyword from `mergeMilestoneToMain` (or move the function inside `worktree-lifecycle.ts`). Verify with `grep -rn "mergeMilestoneToMain" src/` that no caller outside the Module references the symbol.
+2. **A3 (#5619)** — keep `mergeMilestoneToMain` reachable only through `createDefaultMilestoneMergeTransaction()` until the merge core moves. Verify with `grep -rn "mergeMilestoneToMain" src/` that production wiring does not import the legacy primitive outside the transaction module.
 
 ---
 

@@ -14,14 +14,15 @@
 
 CONTEXT.md names the Worktree Lifecycle module "sole owner of worktree
 create/enter/teardown/merge verbs." `exitMilestone` shipped
-(`worktree-lifecycle.ts:1459`) and callers route through it — but the verb's
-body still delegates to `mergeMilestoneToMain` in `auto-worktree.ts:1485`:
-an 875-line function that owns, in one implementation:
+(`worktree-lifecycle.ts`) and callers route through it — but the verb's
+production runner still reaches `mergeMilestoneToMain` through
+`createDefaultMilestoneMergeTransaction()`: an inner function that owns, in one
+implementation:
 
-- dirty-state commit (`auto-worktree.ts:1439`)
+- dirty-state commit
 - the squash merge itself, conflict handling
-- push when `prefs.auto_push` (`auto-worktree.ts:2261`)
-- PR creation when `prefs.auto_pr` (`auto-worktree.ts:2279`, shells `gh`)
+- publication handoff to `publishMilestone` when `prefs.auto_push` /
+  `prefs.auto_pr` apply
 
 Above it, the auto closeout adapter still translates merge outcomes into loop
 policy, but the stash-restore choreography itself now enters the Worktree

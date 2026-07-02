@@ -28,7 +28,7 @@ So a contributor picking up "Gap 4" should **not** rebuild per-repo commit or ve
 The existing seam splits cleanly along the commit axis vs. the isolation/push axis:
 
 - **Per-repo commit and verification already loop.** `runPerRepositoryCommitAction` (`git-service.ts`) commits per declared repository, honoring each repo's `commit_policy` (`auto`/`skip`); `collectRepositoryDirtyStatus` probes each repo independently; verification runs with `cwd: repo.root`.
-- **Branch, worktree, and push do not.** The milestone branch is `milestone/<MID>` (single, repo-agnostic — `auto-worktree.ts:846`). The worktree is one per milestone at the project root (`worktree-placement.ts`). `publishMilestone` pushes a single `integrationBranch`/`milestoneBranch` from a single `basePath` with scalar `auto_push`/`push_branches`/`remote` preferences (`publication.ts:67`). The squash-merge transaction (`mergeMilestoneToMain`) is single-root.
+- **Branch, worktree, and push do not.** The milestone branch is `milestone/<MID>` (single, repo-agnostic — `auto-worktree.ts:846`). The worktree is one per milestone at the project root (`worktree-placement.ts`). `publishMilestone` pushes a single `integrationBranch`/`milestoneBranch` from a single `basePath` with scalar `auto_push`/`push_branches`/`remote` preferences (`publication.ts:67`). The squash-merge transaction is constructed through `milestone-merge-transaction.ts` and remains single-root because its default adapter wraps `mergeMilestoneToMain`.
 
 This is the basis for the Tier A / Tier B split below.
 
@@ -51,7 +51,7 @@ Inverting the one-worktree-per-milestone model to one-worktree-per-repo-per-mile
 | Branch-mode entry | `auto-worktree.ts` (`enterBranchModeForMilestone`) | Single `basePath` |
 | Milestone entry dispatch | `worktree-lifecycle.ts` (`_enterMilestoneCore`) | Resolves a single `mode` per milestone |
 | Per-turn safety validation | `orchestrator.ts` (`prepareWorktreeForUnit`) | `buildExpectedBranch` returns one branch |
-| Merge transaction | `auto-worktree.ts` (`mergeMilestoneToMain`) | Single squash-merge, branch delete, worktree remove |
+| Merge transaction | `milestone-merge-transaction.ts` → `auto-worktree.ts` (`mergeMilestoneToMain`) | Single squash-merge, branch delete, worktree remove |
 | Session root / `activeWorkspace` | `auto-worktree.ts` | A singleton; per-repo worktrees break the "one active workspace" invariant |
 
 The deepest blocker is the **session-root singleton**: the agent runs in one working directory (`process.chdir` to one `activeWorkspace`). Per-repo worktrees would require either multiple concurrent cwd contexts (breaks agent-core) or a primary-worktree-plus-per-repo-branch-checkouts model. Either is a design-level change to the isolation lifecycle, not a surgical edit.

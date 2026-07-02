@@ -293,7 +293,7 @@ If auto mode has issues, GSD provides two diagnostic tools:
 - **Created / Merged / Conflicts** — counts of worktree creation and merge-back events, plus merge-conflict occurrences.
 - **Orphans detected** — milestones whose branch or worktree directory was stranded (e.g. after an interrupted session). Broken out by reason (in-progress-unmerged, complete-unmerged).
 - **Unmerged exits** — auto-mode sessions that exited (pause, stop, blocked, crash) without merging the active milestone. This is the producer-side signal for orphaned work; a non-zero count here points at sessions that should have merged but didn't.
-- **Merge duration p50 / p95** — how long `mergeMilestoneToMain` takes in practice. Useful when evaluating whether `collapse_cadence: "slice"` would help (long milestone merges often indicate large divergence that slice cadence would amortize).
+- **Merge duration p50 / p95** — how long the milestone merge transaction takes in practice. Useful when evaluating whether `collapse_cadence: "slice"` would help (long milestone merges often indicate large divergence that slice cadence would amortize).
 - **Canonical-root redirects** — how often validation correctly routed to a worktree instead of stale project-root state.
 
 Two anomaly types surface from telemetry:

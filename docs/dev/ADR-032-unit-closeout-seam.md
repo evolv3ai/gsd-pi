@@ -21,7 +21,7 @@ Everything that makes a Unit's completion *durable* lives only on the auto path:
 | artifact verification | `auto-post-unit.ts:2216` (`postUnitPostVerification`) | `auto/phases.ts runFinalize` |
 | Post-Unit Hooks | `post-unit-hooks.ts:21` | `auto-post-unit.ts:2257` only |
 | metrics / activity / memory extraction | `auto-unit-closeout.ts:82` (`closeoutUnit`) | auto loop + timers only |
-| milestone merge / push / PR | `worktree-lifecycle.ts:1459` (`exitMilestone`) → `auto-worktree.ts:1485` | `auto/phases.ts` (4 sites) |
+| milestone merge / push / PR | `worktree-lifecycle.ts` (`exitMilestone`) → `milestone-merge-transaction.ts` default adapter → `auto-worktree.ts` legacy merge primitive | `auto/phases.ts` (4 sites) |
 
 An interactive session completes the same Units through the same MCP tools
 (`tools/complete-task.ts`, `complete-slice.ts`, `complete-milestone.ts`), which
