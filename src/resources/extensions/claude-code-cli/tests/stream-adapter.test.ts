@@ -1,5 +1,5 @@
 // gsd-pi - Claude Code stream adapter regression tests
-import { describe, test } from "node:test";
+import { describe, mock, test } from "node:test";
 import { clearGuidedUnitContext, setGuidedUnitContext } from "../../gsd/guided-unit-context.ts";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -46,6 +46,7 @@ import {
 	buildWorkflowMcpReadinessProgressMessage,
 	pushWorkflowMcpReadinessProgressEvent,
 	resolveWorkflowMcpPreflightServerConfig,
+	CLAUDE_CODE_INTERVIEW_FORM_TIMEOUT_MS,
 } from "../stream-adapter.ts";
 import { CLAUDE_CODE_MODELS } from "../models.ts";
 import type { AssistantMessage, Context, Message } from "@gsd/pi-ai";
@@ -818,6 +819,121 @@ describe("stream-adapter — Claude Code external tool results", () => {
 			syntheticCompletions.map((completion) => completion.text),
 			["read result", "grep result"],
 		);
+	});
+
+	test("closes an in-flight interview when ask_user_questions reports timed_out first", async (t) => {
+		const notifications: Array<{ message: string; type?: string }> = [];
+		let elicitationPromise: Promise<unknown> | undefined;
+		let elicitationSignalController: AbortController | undefined;
+		let customOpened = false;
+		const ui = {
+			custom: async (factory: any) => new Promise((resolve) => {
+				customOpened = true;
+				factory({ requestRender() {} } as any, {} as any, {} as any, resolve);
+			}),
+			notify: (message: string, type?: string) => {
+				notifications.push({ message, type });
+			},
+		};
+		t.after(() => {
+			elicitationSignalController?.abort();
+		});
+
+		const stream = streamViaClaudeCode(
+			{ id: "claude-sonnet-4-6" } as any,
+			{ messages: [{ role: "user", content: "Ask me." } as Message] },
+			{
+				extensionUIContext: ui as any,
+				_skipWorkflowMcpPreflightForTest: true,
+				async *_sdkQueryForTest(args: {
+					prompt: string | AsyncIterable<unknown>;
+					options?: Record<string, unknown>;
+				}) {
+					const onElicitation = args.options?.onElicitation as
+						| ((request: unknown, options: { signal: AbortSignal }) => Promise<unknown>)
+						| undefined;
+					assert.equal(typeof onElicitation, "function");
+					elicitationSignalController = new AbortController();
+					elicitationPromise = onElicitation!(askUserQuestionsRequest, {
+						signal: elicitationSignalController.signal,
+					});
+					assert.equal(customOpened, true, "interview overlay should be open before the tool result arrives");
+
+					yield {
+						type: "stream_event",
+						event: {
+							type: "content_block_start",
+							index: 0,
+							content_block: {
+								type: "tool_use",
+								id: "ask-1",
+								name: "mcp__gsd-workflow__ask_user_questions",
+								input: {},
+							},
+						},
+						parent_tool_use_id: null,
+						uuid: "partial-1",
+						session_id: "session-1",
+					};
+					yield {
+						type: "user",
+						uuid: "user-result-1",
+						session_id: "session-1",
+						parent_tool_use_id: "ask-1",
+						message: {
+							role: "user",
+							content: [{
+								type: "mcp_tool_result",
+								tool_use_id: "ask-1",
+								content: [{ type: "text", text: "timed out" }],
+								structuredContent: { timed_out: true },
+								is_error: false,
+							}],
+						},
+					};
+					yield {
+						type: "result",
+						subtype: "success",
+						uuid: "result-1",
+						session_id: "session-1",
+						duration_ms: 1,
+						duration_api_ms: 1,
+						is_error: false,
+						num_turns: 1,
+						result: "done",
+						stop_reason: "end_turn",
+						total_cost_usd: 0,
+						usage: {
+							input_tokens: 0,
+							output_tokens: 0,
+							cache_read_input_tokens: 0,
+							cache_creation_input_tokens: 0,
+						},
+					};
+				},
+			} as any,
+		);
+
+		await stream.result();
+		assert.ok(elicitationPromise);
+		let guard: ReturnType<typeof setTimeout> | undefined;
+		const elicitationResult = await Promise.race([
+			elicitationPromise,
+			new Promise<never>((_, reject) => {
+				guard = setTimeout(
+					() => reject(new Error("timed out waiting for in-flight interview to close")),
+					250,
+				);
+			}),
+		]).finally(() => {
+			if (guard) clearTimeout(guard);
+		});
+
+		assert.deepEqual(elicitationResult, { action: "decline" });
+		assert.deepEqual(notifications, [{
+			message: "Question expired before you answered - the form was closed and no answers were sent.",
+			type: "warning",
+		}]);
 	});
 
 	test("serverToolUseToToolCallLike preserves object input for extension tool_result routing", () => {
@@ -3039,6 +3155,43 @@ describe("stream-adapter — MCP elicitation bridge", () => {
 
 		const result = await handler!(askUserQuestionsRequest, { signal: new AbortController().signal });
 		assert.deepEqual(result, { action: "decline" });
+	});
+
+	test("expires the interview overlay before the MCP elicitation response is dropped", async (t) => {
+		mock.timers.enable({ apis: ["setTimeout"] });
+		t.after(() => {
+			mock.timers.reset();
+		});
+
+		const notifications: Array<{ message: string; type?: string }> = [];
+		let customOpened = false;
+		const handler = createClaudeCodeElicitationHandler({
+			custom: async (factory: any) => new Promise((resolve) => {
+				customOpened = true;
+				factory({ requestRender() {} } as any, {} as any, {} as any, resolve);
+			}),
+			notify: (message: string, type?: string) => {
+				notifications.push({ message, type });
+			},
+			select: async () => {
+				throw new Error("expired interview must not re-open dialog fallback");
+			},
+		} as any);
+		assert.ok(handler);
+
+		const resultPromise = handler!(askUserQuestionsRequest, { signal: new AbortController().signal });
+		await Promise.resolve();
+		assert.equal(customOpened, true);
+
+		mock.timers.tick(CLAUDE_CODE_INTERVIEW_FORM_TIMEOUT_MS);
+		const result = await resultPromise;
+
+		assert.deepEqual(result, { action: "decline" });
+		assert.deepEqual(notifications, [{
+			message: "Question expired before you answered - the form was closed and no answers were sent.",
+			type: "warning",
+		}]);
+		assert.equal(isInteractiveElicitationInFlight(), false, "marker must clear after deadline expiry");
 	});
 
 	test("returns cancel (today's semantics) when the user genuinely dismisses", async () => {
