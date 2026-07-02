@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { clearParseCache } from "../files.js";
 import { isClosedStatus } from "../status-guards.js";
 import { isNonEmptyString, validateStringArray } from "../validation.js";
@@ -13,6 +14,7 @@ import { logWarning } from "../workflow-logger.js";
 import { loadEffectiveGSDPreferences } from "../preferences.js";
 import { validatePathOnlyPlanningFields, validatePlanningPathScope } from "../planning-path-scope.js";
 import { createRepositoryRegistryFromPreferences, defaultRepositoryTargets, type RepositoryRegistry } from "../repository-registry.js";
+import { isGsdWorktreePath } from "../worktree-root.js";
 import type { GateId } from "../types.js";
 
 export interface PlanTaskParams {
@@ -63,9 +65,11 @@ function validateReferencedRepositories(
 }
 
 function resolveAllowedRootsForPathScope(
+  basePath: string,
   targetRepositories: string[],
   registry: RepositoryRegistry,
 ): string[] {
+  if (isGsdWorktreePath(basePath)) return [resolve(basePath)];
   if (targetRepositories.length === 0) return [registry.projectRoot];
   const roots = targetRepositories
     .map((id) => registry.byId.get(id)?.root)
@@ -86,7 +90,7 @@ function validatePathScopeForTargetRepositories(
       { field: "inputs", values: params.inputs },
       { field: "expectedOutput", values: params.expectedOutput },
     ],
-    resolveAllowedRootsForPathScope(targetRepositories, registry),
+    resolveAllowedRootsForPathScope(basePath, targetRepositories, registry),
   );
 }
 
