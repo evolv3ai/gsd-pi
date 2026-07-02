@@ -17,14 +17,17 @@ import {
   clearPendingAutoStart,
   setPendingAutoStart,
 } from "../guided-flow.ts";
+import { closeDatabase, openDatabase } from "../gsd-db.ts";
 
 test.afterEach(() => {
+  closeDatabase();
   clearPendingAutoStart();
 });
 
 test("checkAutoStartAfterDiscuss waits until discussion artifacts exist before re-entering auto-mode", (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-bootstrap-await-"));
   const notifications: string[] = [];
+  openDatabase(":memory:");
   t.after(() => rmSync(base, { recursive: true, force: true }));
   mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
   setPendingAutoStart(base, {
