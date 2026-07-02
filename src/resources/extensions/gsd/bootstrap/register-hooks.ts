@@ -83,7 +83,7 @@ import { clearPendingAutoStart } from "../pending-auto-start.js";
 import { resolveWorkflowToolBasePath } from "./dynamic-tools.js";
 import { getRequiredWorkflowToolsForUnit } from "../unit-tool-contracts.js";
 import { flushAllManifests } from "../workflow-manifest.js";
-import { recordUnitHarnessAbort, type UnitHarnessAbortRecord } from "../unit-runtime.js";
+import { clearUnitHarnessAbort, recordUnitHarnessAbort, type UnitHarnessAbortRecord } from "../unit-runtime.js";
 
 let approvalQuestionAbortInFlight = false;
 
@@ -98,6 +98,17 @@ function recordCurrentUnitHarnessAbort(
     dash.currentUnit.id,
     dash.currentUnit.startedAt,
     abort,
+  );
+}
+
+function clearCurrentUnitHarnessAbort(): void {
+  const dash = getAutoRuntimeSnapshot();
+  if (!dash.active || !dash.basePath || !dash.currentUnit) return;
+  clearUnitHarnessAbort(
+    dash.basePath,
+    dash.currentUnit.type,
+    dash.currentUnit.id,
+    dash.currentUnit.startedAt,
   );
 }
 
@@ -1700,6 +1711,7 @@ export function registerHooks(
       recordRetryableHarnessToolError(toolName, resultPayload, errorText);
     } else if (isAutoActive()) {
       clearToolInvocationError();
+      clearCurrentUnitHarnessAbort();
     }
     // Interactive Closeout adapter (ADR-032): auto-mode owns closeout for its
     // own units; interactive completions get the durable git subset (commit +
@@ -1908,6 +1920,7 @@ export function registerHooks(
       recordRetryableHarnessToolError(toolName, event.result, errorText);
     } else if (isAutoActive()) {
       clearToolInvocationError();
+      clearCurrentUnitHarnessAbort();
     }
     // Safety harness: record tool execution results for evidence cross-referencing
     if (isAutoActive()) {
