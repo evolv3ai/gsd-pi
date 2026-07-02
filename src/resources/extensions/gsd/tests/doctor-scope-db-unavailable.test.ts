@@ -427,6 +427,118 @@ test("checkEngineHealth repair prunes stale phases artifact rows with present mi
   assert.deepEqual(rows.map((row) => row.path), []);
 });
 
+test("checkEngineHealth repair prunes stale phases task rows against tasks/<T>-<TYPE>.md replacements", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-prune-stale-task-phase-artifact-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  const stalePath = "phases/01-m001/01-01-T01-SUMMARY.md";
+  // Canonical legacy task layout has no per-task subdirectory: the SUMMARY lives
+  // at tasks/<T>-<TYPE>.md, not tasks/<T>/<T>-<TYPE>.md. If the expected-path
+  // builder adds an extra tasks/<T>/ segment, task-scoped stale rows never match
+  // their on-disk replacement and leak unpruned.
+  const replacementPath = "milestones/M001/slices/S01/tasks/T01-SUMMARY.md";
+  mkdirSync(join(gsdDir, "milestones", "M001", "slices", "S01", "tasks"), { recursive: true });
+  writeFileSync(join(gsdDir, replacementPath), "# Summary\n", "utf-8");
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertArtifact({
+    path: stalePath,
+    artifact_type: "SUMMARY",
+    milestone_id: "M001",
+    slice_id: "S01",
+    task_id: "T01",
+    full_content: "# stale summary\n",
+  });
+
+  const issues: any[] = [];
+  const fixes: string[] = [];
+  await checkEngineHealth(base, issues, fixes, { repair: true });
+
+  assert.equal(
+    issues.some((issue) => issue.code === "artifact_file_missing" && issue.file === stalePath),
+    false,
+    "task-scoped stale rows should prune against the tasks/<T>-<TYPE>.md replacement",
+  );
+  assert.ok(fixes.includes(`pruned stale flat-phase artifact row ${stalePath}`));
+
+  const rows = _getAdapter()!
+    .prepare("SELECT path FROM artifacts ORDER BY path")
+    .all() as Array<{ path: string }>;
+  assert.deepEqual(rows.map((row) => row.path), []);
+});
+
+test("checkEngineHealth repair prunes stale phases rows stored as escaped ../ paths", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-prune-escaped-phase-artifact-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  // Leaked row: the DB stores an escaped, absolute-ish path rather than a clean
+  // `phases/…` value. The prune must gate on the .gsd-relative path so the row
+  // this repair targets is not skipped just because the raw value starts with `../`.
+  const stalePath = "../../../Documents/Projects/project/.gsd/phases/01-m001/01-01-PLAN.md";
+  const replacementPath = "milestones/M001/slices/S01/S01-PLAN.md";
+  mkdirSync(join(gsdDir, "milestones", "M001", "slices", "S01"), { recursive: true });
+  writeFileSync(join(gsdDir, replacementPath), "# Plan\n", "utf-8");
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertArtifact({
+    path: stalePath,
+    artifact_type: "PLAN",
+    milestone_id: "M001",
+    slice_id: "S01",
+    task_id: null,
+    full_content: "# stale plan\n",
+  });
+
+  const issues: any[] = [];
+  const fixes: string[] = [];
+  await checkEngineHealth(base, issues, fixes, { repair: true });
+
+  assert.equal(
+    issues.some((issue) => issue.code === "artifact_file_missing"),
+    false,
+    "escaped phases rows should prune against the milestones replacement, not be reported missing",
+  );
+  assert.ok(
+    fixes.some((fix) => fix.startsWith("pruned stale flat-phase artifact row") && fix.includes("phases/01-m001/01-01-PLAN.md")),
+    "repair should record a prune for the escaped stale phases row",
+  );
+
+  const rows = _getAdapter()!
+    .prepare("SELECT path FROM artifacts ORDER BY path")
+    .all() as Array<{ path: string }>;
+  assert.deepEqual(rows.map((row) => row.path), [], "escaped stale phases row should be deleted from the DB");
+});
+
+test("checkEngineHealth marks escaped phases rows fixable when a milestones replacement exists", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-escaped-phase-fixable-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  const replacementPath = "milestones/M001/slices/S01/S01-PLAN.md";
+  mkdirSync(join(gsdDir, "milestones", "M001", "slices", "S01"), { recursive: true });
+  writeFileSync(join(gsdDir, replacementPath), "# Plan\n", "utf-8");
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertArtifact({
+    path: "../../../Documents/Projects/project/.gsd/phases/01-m001/01-01-PLAN.md",
+    artifact_type: "PLAN",
+    milestone_id: "M001",
+    slice_id: "S01",
+    task_id: null,
+    full_content: "# stale plan\n",
+  });
+
+  const issues: any[] = [];
+  await checkEngineHealth(base, issues, []);
+
+  const issue = issues.find((candidate) => candidate.code === "artifact_file_missing");
+  assert.ok(issue, "escaped stale row should still be reported when repair is off");
+  assert.equal(issue.file, "phases/01-m001/01-01-PLAN.md");
+  assert.equal(issue.fixable, true, "escaped phases rows with a milestones replacement must be marked fixable");
+});
+
 test("checkEngineHealth reports missing CONTEXT and RESEARCH artifacts as user-content warnings", async (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-doctor-user-content-artifact-"));
   t.after(() => rmSync(base, { recursive: true, force: true }));
