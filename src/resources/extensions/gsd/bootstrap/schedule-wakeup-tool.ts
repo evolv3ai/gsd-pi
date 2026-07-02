@@ -12,21 +12,26 @@ import { resolveCtxCwd } from "./dynamic-tools.js";
 const MAX_WAKEUP_DELAY_SECONDS = 24 * 60 * 60;
 const INTERACTIVE_WAKEUP_CUSTOM_TYPE = "gsd-schedule-wakeup";
 
-let pendingInteractiveWakeupHandle: ReturnType<typeof setTimeout> | null = null;
+// One pending interactive wakeup per session, keyed by base path — the same
+// scoping auto-mode uses for its wakeup map (see `wakeupKey`). Re-arming cancels
+// only that session's prior timer, so repeated polling never stacks overlapping
+// wakeups, and concurrent projects in one host process don't cancel each other.
+const pendingInteractiveWakeups = new Map<string, ReturnType<typeof setTimeout>>();
 
 function scheduleInteractiveWakeup(
   pi: ExtensionAPI,
+  key: string,
   delaySeconds: number,
   prompt: string,
   reason: string,
 ): void {
-  if (pendingInteractiveWakeupHandle !== null) {
-    clearTimeout(pendingInteractiveWakeupHandle);
-    pendingInteractiveWakeupHandle = null;
-  }
+  const existing = pendingInteractiveWakeups.get(key);
+  if (existing) clearTimeout(existing);
 
   const handle = setTimeout(() => {
-    pendingInteractiveWakeupHandle = null;
+    if (pendingInteractiveWakeups.get(key) === handle) {
+      pendingInteractiveWakeups.delete(key);
+    }
     try {
       void Promise.resolve(pi.sendMessage(
         {
@@ -49,7 +54,7 @@ function scheduleInteractiveWakeup(
       );
     }
   }, delaySeconds * 1000);
-  pendingInteractiveWakeupHandle = handle;
+  pendingInteractiveWakeups.set(key, handle);
   if (
     typeof handle === "object" &&
     handle !== null &&
@@ -58,6 +63,13 @@ function scheduleInteractiveWakeup(
   ) {
     handle.unref();
   }
+}
+
+export function _resetInteractiveWakeupsForTest(): void {
+  for (const handle of pendingInteractiveWakeups.values()) {
+    clearTimeout(handle);
+  }
+  pendingInteractiveWakeups.clear();
 }
 
 export function registerScheduleWakeupTool(pi: ExtensionAPI): void {
@@ -98,7 +110,8 @@ export function registerScheduleWakeupTool(pi: ExtensionAPI): void {
       const reason = params.reason ?? "";
 
       if (!dash.active || !currentUnit) {
-        scheduleInteractiveWakeup(pi, delaySeconds, params.prompt, reason);
+        const interactiveKey = dash.basePath || resolveCtxCwd(ctx);
+        scheduleInteractiveWakeup(pi, interactiveKey, delaySeconds, params.prompt, reason);
         return {
           content: [{
             type: "text",
