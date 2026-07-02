@@ -136,6 +136,12 @@ function meaningfulSection(value: string | null | undefined): string {
   return trimmed;
 }
 
+function renderGateFindings(gate: GateRow): string {
+  const findings = gate.findings.trim() || `- **Verdict:** ${gate.verdict}\n- **Rationale:** ${gate.rationale}`;
+  if (gate.verdict !== "flag") return findings;
+  return `> **Warning:** Verdict: flag - concerns recorded below\n\n${findings}`;
+}
+
 function pushIndented(lines: string[], value: string, indent = "  "): void {
   for (const line of value.split("\n")) {
     lines.push(`${indent}${line}`);
@@ -356,7 +362,7 @@ function renderTaskPlanMarkdown(task: TaskRow, taskGates: GateRow[] = []): strin
     if (gate && gate.verdict !== "omitted") {
       lines.push(`## ${label}`);
       lines.push("");
-      lines.push(gate.findings.trim() || `- **Verdict:** ${gate.verdict}\n- **Rationale:** ${gate.rationale}`);
+      lines.push(renderGateFindings(gate));
       lines.push("");
     }
   }
@@ -390,7 +396,7 @@ function renderSlicePlanMarkdown(slice: SliceRow, tasks: TaskRow[], gates: GateR
   if (q3 && q3.verdict !== "omitted") {
     lines.push("## Threat Surface");
     lines.push("");
-    lines.push(q3.findings.trim() || `- **Verdict:** ${q3.verdict}\n- **Rationale:** ${q3.rationale}`);
+    lines.push(renderGateFindings(q3));
     lines.push("");
   }
 
@@ -398,7 +404,7 @@ function renderSlicePlanMarkdown(slice: SliceRow, tasks: TaskRow[], gates: GateR
   if (q4 && q4.verdict !== "omitted") {
     lines.push("## Requirement Impact");
     lines.push("");
-    lines.push(q4.findings.trim() || `- **Verdict:** ${q4.verdict}\n- **Rationale:** ${q4.rationale}`);
+    lines.push(renderGateFindings(q4));
     lines.push("");
   }
 
