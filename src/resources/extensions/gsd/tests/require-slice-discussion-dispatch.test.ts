@@ -16,6 +16,13 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { DISPATCH_RULES, type DispatchContext } from "../auto-dispatch.ts";
+import {
+  closeDatabase,
+  insertAssessment,
+  insertMilestone,
+  insertSlice,
+  openDatabase,
+} from "../gsd-db.ts";
 import type { GSDState } from "../types.ts";
 import type { GSDPreferences } from "../preferences.ts";
 
@@ -84,6 +91,54 @@ describe("require_slice_discussion dispatch rule (#3454)", () => {
       }
     } finally {
       rmSync(basePath, { recursive: true, force: true });
+    }
+  });
+
+  test("includes prior non-PASS UAT warning when the just-closed slice failed", async () => {
+    const basePath = makeBasePath("prior-fail");
+    const dbDir = mkdtempSync(join(tmpdir(), "gsd-req-slice-db-"));
+    const dbPath = join(dbDir, "test.db");
+    try {
+      openDatabase(dbPath);
+      mkdirSync(join(basePath, ".gsd", "milestones", "M001", "slices", "S02"), { recursive: true });
+
+      insertMilestone({ id: "M001", title: "Test milestone" });
+      insertSlice({ id: "S01", milestoneId: "M001", title: "Completed slice", status: "complete", sequence: 1 });
+      insertSlice({ id: "S02", milestoneId: "M001", title: "Next slice", status: "pending", sequence: 2 });
+
+      const assessmentPath = ".gsd/milestones/M001/slices/S01/S01-ASSESSMENT.md";
+      const assessmentBody = [
+        "---",
+        "verdict: fail",
+        "---",
+        "",
+        "# S01 UAT Assessment",
+      ].join("\n");
+      writeFileSync(join(basePath, assessmentPath), assessmentBody, "utf-8");
+      insertAssessment({
+        path: assessmentPath,
+        milestoneId: "M001",
+        sliceId: "S01",
+        status: "fail",
+        scope: "run-uat",
+        fullContent: assessmentBody,
+      });
+
+      const prefs = { phases: { require_slice_discussion: true } } as unknown as GSDPreferences;
+      const state = buildState({ activeSlice: { id: "S02", title: "Next slice" } });
+      const action = await findRule().match(buildCtx(basePath, prefs, state));
+
+      assert.ok(action, "rule must still pause for discussion");
+      assert.strictEqual(action!.action, "stop");
+      if (action!.action === "stop") {
+        assert.match(action!.reason, /S02 requires discussion/);
+        assert.match(action!.reason, /slice just closed \(S01\)/);
+        assert.match(action!.reason, /non-PASS UAT verdict \(FAIL\)/);
+      }
+    } finally {
+      closeDatabase();
+      rmSync(basePath, { recursive: true, force: true });
+      rmSync(dbDir, { recursive: true, force: true });
     }
   });
 

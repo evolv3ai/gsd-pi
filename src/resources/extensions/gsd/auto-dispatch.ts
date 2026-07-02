@@ -1130,9 +1130,21 @@ export const DISPATCH_RULES: DispatchRule[] = [
       // call site.
       const sliceContextFile = resolveSliceFile(basePath, mid, state.activeSlice.id, "CONTEXT");
       if (sliceContextFile && existsSync(sliceContextFile)) return null; // discussion already done, proceed
+
+      const closedSliceIds = getClosedSliceIds(mid);
+      const justClosedSliceId = closedSliceIds[closedSliceIds.length - 1];
+      let priorVerdictWarning = "";
+      if (justClosedSliceId) {
+        const prior = await readUatGateVerdict(basePath, mid, justClosedSliceId);
+        if (prior && !isAcceptableUatVerdict(prior.verdict, prior.uatType)) {
+          priorVerdictWarning =
+            ` Note: the slice just closed (${justClosedSliceId}) recorded a non-PASS UAT verdict (${prior.verdict.toUpperCase()}); review before continuing.`;
+        }
+      }
+
       return {
         action: "stop" as const,
-        reason: `Slice ${state.activeSlice.id} requires discussion before planning (require_slice_discussion is enabled). Run /gsd discuss to discuss this slice, then /gsd auto to resume.`,
+        reason: `Slice ${state.activeSlice.id} requires discussion before planning (require_slice_discussion is enabled). Run /gsd discuss to discuss this slice, then /gsd auto to resume.${priorVerdictWarning}`,
         level: "warning" as const,
       };
     },
