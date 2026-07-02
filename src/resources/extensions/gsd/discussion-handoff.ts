@@ -87,7 +87,7 @@ function ensureMilestoneRowForAcceptedHandoff(
       "guided",
       `R3b: milestone ${entry.milestoneId} DB-row recovery skipped because DB is unavailable`,
     );
-    return false;
+    return true;
   }
 
   const { basePath, milestoneId } = entry;
