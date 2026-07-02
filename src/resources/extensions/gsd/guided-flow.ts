@@ -164,7 +164,7 @@ export const _scheduleAutoStartAfterIdleForTest = scheduleAutoStartAfterIdle;
 // These thin wrappers accept a MilestoneScope so callers that already hold a
 // pinned scope never have to re-derive (basePath, milestoneId) separately.
 // The underlying implementations in auto-recovery.ts / auto-artifact-paths.ts /
-// state.ts are unchanged — only the call surface in guided-flow.ts is migrated.
+// state.ts remain the default for non-scope-specific units.
 
 /**
  * Scope-based overload of verifyExpectedArtifact.
@@ -178,12 +178,35 @@ export function verifyExpectedArtifactForScope(
 ): boolean {
   if (
     unitId === scope.milestoneId &&
-    (unitType === "discuss-milestone" || unitType === "plan-milestone")
+    unitType === "discuss-milestone"
   ) {
     const path = resolveExpectedArtifactPathForScope(scope, unitType, unitId);
     return path ? existsSync(path) : false;
   }
+  if (unitId === scope.milestoneId && unitType === "plan-milestone") {
+    const path = resolveExpectedArtifactPathForScope(scope, unitType, unitId);
+    return verifyScopedPlanMilestoneArtifact(path, unitType, unitId);
+  }
   return verifyExpectedArtifact(unitType, unitId, scope.workspace.projectRoot);
+}
+
+function verifyScopedPlanMilestoneArtifact(
+  path: string | null,
+  unitType: string,
+  unitId: string,
+): boolean {
+  if (!path || !existsSync(path)) return false;
+  try {
+    const roadmapContent = readFileSync(path, "utf-8");
+    if (!_roadmapHasParseableSlicesForTest(roadmapContent)) {
+      logWarning("recovery", `verify-fail ${unitType} ${unitId}: roadmap has zero slices at ${path}`);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    logWarning("recovery", `plan-milestone roadmap verification failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
 }
 
 /**

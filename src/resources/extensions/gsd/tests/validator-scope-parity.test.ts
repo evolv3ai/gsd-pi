@@ -257,4 +257,35 @@ describe("validator-scope-parity: scope uses canonical projectRoot not worktree 
       "scoped plan-milestone verification must parse roadmap content, not only check existence",
     );
   });
+
+  test("verifyExpectedArtifactForScope verifies the scoped plan-milestone roadmap path", () => {
+    const ws = createWorkspace(base);
+    const realScope = scopeMilestone(ws, "M001");
+    const scopedRoadmap = join(base, "scoped-M001-ROADMAP.md");
+    const scope = {
+      ...realScope,
+      roadmapFile: () => scopedRoadmap,
+    };
+
+    writeFileSync(scopedRoadmap, [
+      "# M001: Scoped roadmap",
+      "",
+      "## Slices",
+      "",
+      "- [ ] **S01: First slice** `risk:low` `depends:[]`",
+      "  > After this: a real slice exists.",
+      "",
+    ].join("\n"));
+
+    assert.equal(
+      resolveExpectedArtifactPathForScope(scope, "plan-milestone", "M001"),
+      scopedRoadmap,
+      "scoped plan-milestone artifact path must come from scope.roadmapFile()",
+    );
+    assert.equal(
+      verifyExpectedArtifactForScope(scope, "plan-milestone", "M001"),
+      true,
+      "scoped plan-milestone verification must read the roadmap from scope.roadmapFile()",
+    );
+  });
 });
