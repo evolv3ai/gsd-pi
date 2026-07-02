@@ -37,6 +37,11 @@ import {
   executeValidateMilestone,
   executeUatResultSave,
 } from "../tools/workflow-tool-executors.ts";
+import {
+  initNotificationStore,
+  readNotifications,
+  _resetNotificationStore,
+} from "../notification-store.ts";
 
 function makeTmpBase(): string {
   const base = join(tmpdir(), `gsd-workflow-executors-${randomUUID()}`);
@@ -1100,13 +1105,14 @@ test("executeUatResultSave merges canonical plan ID and read-only tools when pre
   }
 });
 
-test("executeUatResultSave surfaces the worktree validation path for NEEDS-HUMAN checks", async () => {
+test("executeUatResultSave surfaces the worktree validation path and notification for NEEDS-HUMAN checks", async () => {
   const base = makeTmpBase();
   const worktree = join(base, ".gsd", "worktrees", "M001");
   const worktreeExecDir = join(worktree, ".gsd", "exec");
   const evidenceId = "uat-human-validation-evidence";
   try {
     openTestDb(base);
+    initNotificationStore(base);
     seedMilestone("M001", "Milestone One");
     seedSlice("M001", "S07", "complete");
     mkdirSync(worktreeExecDir, { recursive: true });
@@ -1166,7 +1172,17 @@ test("executeUatResultSave surfaces the worktree validation path for NEEDS-HUMAN
     assert.match(assessment, /## Manual Validation/);
     assert.ok(assessment.includes(worktree), "assessment should include the worktree checkout path");
     assert.match(assessment, /git worktree/);
+
+    const notifications = readNotifications(base, { kind: "uat-needs-human", scope: "M001/S07" });
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0].severity, "warning");
+    assert.equal(notifications[0].source, "notify");
+    assert.equal(
+      notifications[0].message,
+      "UAT for M001/S07 has NEEDS-HUMAN checks awaiting human validation",
+    );
   } finally {
+    _resetNotificationStore();
     closeDatabase();
     cleanup(base);
   }

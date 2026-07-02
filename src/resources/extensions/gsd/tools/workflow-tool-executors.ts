@@ -58,6 +58,7 @@ import {
   saveUatAttemptArtifact,
   type UatResultSaveParams,
 } from "../uat-run.js";
+import { appendNotification } from "../notification-store.js";
 import { registerAutoWorker, markWorkerStopping, getAutoWorker } from "../db/auto-workers.js";
 import {
   claimMilestoneLease,
@@ -1268,6 +1269,14 @@ export async function executeUatResultSave(
       evaluatedAt: run.evaluatedAt,
     });
     invalidateStateCache();
+    if (run.hasHuman) {
+      appendNotification(
+        `UAT for ${run.params.milestoneId}/${run.params.sliceId} has NEEDS-HUMAN checks awaiting human validation`,
+        "warning",
+        "notify",
+        { kind: "uat-needs-human", scope: `${run.params.milestoneId}/${run.params.sliceId}` },
+      );
+    }
     const savedText = `UAT result saved for ${run.params.milestoneId}/${run.params.sliceId}: ${run.params.verdict}`;
     return {
       content: [{
