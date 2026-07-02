@@ -400,6 +400,7 @@ class GsdMcpClient:
     # exit (the stream reader emits notify_terminal on stdout EOF), so only the
     # blocked-notice classifier is needed here.
     _PAUSED_NOTICE_PREFIXES = ("auto-mode paused", "step-mode paused")
+    _EXIT_BLOCKED = 10
 
     def _is_blocked_notice(self, message: str) -> bool:
         """Mirror of stop-notice.ts isBlockedNoticeMessage (lowercased input)."""
@@ -438,6 +439,8 @@ class GsdMcpClient:
                 "Provide exactly one milestone spec: context_text or context_file"
             )
         self.ensure_version()
+        if self._milestone_proc is not None and self._milestone_proc.poll() is None:
+            raise RuntimeError("Milestone creation already in progress.")
 
         args: list[str] = [
             self._config.cli_path,
@@ -461,11 +464,17 @@ class GsdMcpClient:
             cwd=project_dir,
             env=self._env(),
         )
+        self._milestone_proc = proc
         self._milestone_session_id = None
         self._milestone_pending_blocker_id = None
         self._milestone_notifications = notifications
         self._milestone_on_terminal = on_terminal
         self._milestone_notified_terminal = False
+        threading.Thread(
+            target=self._drain_milestone_stderr,
+            args=(proc,),
+            daemon=True,
+        ).start()
 
         # Read init_result synchronously so the caller gets the sessionId
         # before the ack returns. The stream loop then continues in the
@@ -479,8 +488,8 @@ class GsdMcpClient:
                 proc.wait(timeout=5)
             except Exception:
                 pass
+            self._clear_milestone_state()
             raise
-        self._milestone_proc = proc
         self._milestone_session_id = session_id
 
         self._milestone_thread = threading.Thread(
@@ -539,6 +548,8 @@ class GsdMcpClient:
                 exit_code = proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 exit_code = None
+        if exit_code == self._EXIT_BLOCKED:
+            return
         if exit_code == 0:
             status = "complete"
             error: str | None = None
@@ -558,6 +569,16 @@ class GsdMcpClient:
             self._milestone_on_terminal(status)
         self._milestone_notified_terminal = True
         self._release_milestone_proc()
+
+    def _drain_milestone_stderr(self, proc: subprocess.Popen[bytes]) -> None:
+        """Drain stderr so a full pipe cannot stall the child process."""
+        if proc.stderr is None:
+            return
+        try:
+            for _ in proc.stderr:
+                pass
+        except Exception:
+            pass
 
     def _handle_milestone_event(self, event: dict[str, Any]) -> None:
         etype = event.get("type")
@@ -619,11 +640,8 @@ class GsdMcpClient:
         payload = json.dumps(
             {"type": "extension_ui_response", "id": blocker_id, "value": response}
         ).encode("utf-8")
-        try:
-            proc.stdin.write(payload + b"\n")
-            proc.stdin.flush()
-        except Exception:
-            pass
+        proc.stdin.write(payload + b"\n")
+        proc.stdin.flush()
         self._milestone_pending_blocker_id = None
 
     def milestone_active(self) -> bool:
