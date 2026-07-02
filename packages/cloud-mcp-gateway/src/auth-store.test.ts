@@ -26,6 +26,44 @@ test("pairing code is one-time use", () => {
   assert.throws(() => auth.exchangePairingCode(code), /invalid or expired/);
 });
 
+test("pairing code has 64 bits of entropy (16 hex chars)", () => {
+  const auth = new InMemoryAuthStore({ token: "user-token", userId: "u1" });
+  const { code } = auth.createPairingCode("u1");
+  assert.match(code, /^[0-9A-F]{16}$/);
+});
+
+test("a new pairing code invalidates the user's prior un-redeemed code", () => {
+  const auth = new InMemoryAuthStore({ token: "user-token", userId: "u1" });
+  const { code: first } = auth.createPairingCode("u1");
+  const { code: second } = auth.createPairingCode("u1");
+  assert.notEqual(first, second);
+  assert.throws(() => auth.exchangePairingCode(first), /invalid or expired/);
+  // The newest code still works.
+  const issued = auth.exchangePairingCode(second);
+  assert.equal(typeof issued.deviceToken, "string");
+});
+
+test("codes for different users coexist", () => {
+  const auth = new InMemoryAuthStore({ token: "user-token", userId: "u1" });
+  auth.addUserToken("user-token-2", "u2");
+  const { code: c1 } = auth.createPairingCode("u1");
+  const { code: c2 } = auth.createPairingCode("u2");
+  assert.equal(auth.exchangePairingCode(c1).userId, "u1");
+  assert.equal(auth.exchangePairingCode(c2).userId, "u2");
+});
+
+test("expired pairing codes are swept on the next create/exchange", () => {
+  const auth = new InMemoryAuthStore({ token: "user-token", userId: "u1" });
+  // Create an already-expired code for u2 (negative ttl), then a fresh code for u1.
+  auth.addUserToken("user-token-2", "u2");
+  const { code: stale } = auth.createPairingCode("u2", -1);
+  auth.createPairingCode("u1"); // triggers the sweep
+  const snapshot = auth.snapshot();
+  // Only u1's live code remains; the expired u2 code was swept.
+  assert.equal(snapshot.pairingCodes.length, 1);
+  assert.throws(() => auth.exchangePairingCode(stale), /invalid or expired/);
+});
+
 test("extractBearerToken parses bearer auth header", () => {
   assert.equal(extractBearerToken("Bearer abc"), "abc");
   assert.equal(extractBearerToken("bearer abc"), "abc");

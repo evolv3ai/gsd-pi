@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { getShellConfig, killProcessTree, SIGKILL_GRACE_MS, HARD_DEADLINE_MS } from "@gsd/pi-coding-agent";
+import { redactSecrets } from "./redact-secrets.js";
 
 export interface ExecSandboxRequest {
   /** Interpreter to use. */
@@ -315,8 +316,11 @@ export function runExecSandbox(
       const stderrBuf = Buffer.concat(stderrChunks);
       const stdoutSuffix = stdoutTruncated ? "\n[truncated: stdout cap reached]\n" : "";
       const stderrSuffix = stderrTruncated ? "\n[truncated: stderr cap reached]\n" : "";
-      writeFileSync(stdoutPath, Buffer.concat([stdoutBuf, Buffer.from(stdoutSuffix, "utf-8")]));
-      writeFileSync(stderrPath, Buffer.concat([stderrBuf, Buffer.from(stderrSuffix, "utf-8")]));
+      // Redact secret-shaped substrings before persisting to .gsd/exec/ (skipped by
+      // the secret scanner). The returned digest is derived from the raw buffer
+      // below and is redacted downstream when the session is written to activity/.
+      writeFileSync(stdoutPath, redactSecrets(Buffer.concat([stdoutBuf, Buffer.from(stdoutSuffix, "utf-8")]).toString("utf-8")));
+      writeFileSync(stderrPath, redactSecrets(Buffer.concat([stderrBuf, Buffer.from(stderrSuffix, "utf-8")]).toString("utf-8")));
 
       const digestBody = tail(stdoutBuf, opts.digest_chars);
       const digest =

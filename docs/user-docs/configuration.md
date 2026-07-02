@@ -286,6 +286,18 @@ With this configuration, a Haiku-4-5 subagent sees only `gsd-workflow` and `goog
 | `PI_TUI_MOUSE` | (unset) | Set to literal `1` to enable terminal mouse reporting for TUI clicks and wheel events. Native drag selection is preserved by default; when mouse reporting is enabled, most terminals require Shift+drag to select text. |
 | `PI_TOKEN_TELEMETRY` | (unset) | Set to literal `1` to emit opt-in per-call token telemetry as JSONL on stderr. Other values are ignored. |
 
+### Developer and test environment variables
+
+These are for contributors debugging locally or running specific test tiers — not for normal use. See [CONTRIBUTING.md](../../CONTRIBUTING.md).
+
+| Variable | Scope | Description |
+|----------|-------|-------------|
+| `GSD_DEBUG` | dev | Set to `1` to enable verbose diagnostic tracing (`debugLog`) across the CLI and extensions. |
+| `GSD_STARTUP_TIMING` | dev | Set to `1` to print startup phase timings from the loader (alias of `PI_TIMING`). |
+| `GSD_TEST_CLONE_MARKETPLACES` | test | Set to `1` to enable clone-based marketplace fixtures used by `pnpm run test:marketplace`. |
+| `GSD_LIVE_TESTS` | test | Set to `1` (done automatically by `pnpm run test:live`) to run live provider/network tests. |
+| `GSD_SMOKE_BINARY` | test | Path to the built binary the smoke/e2e suite should exercise (e.g. `dist/loader.js`). |
+
 ### Token Telemetry
 
 Set `PI_TOKEN_TELEMETRY=1` when you need raw per-call token and cache data for cost analysis or prompt-cache tuning. The stream is off by default and writes to stderr, so stdout remains available for the TUI or for headless `--json` events.

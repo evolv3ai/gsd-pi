@@ -305,4 +305,52 @@ describe('MessageBatcher', () => {
       await batcher.destroy();
     });
   });
+
+  describe('buffer cap (maxBufferSize)', () => {
+    it('caps the buffer at maxBufferSize, dropping oldest', async () => {
+      const { fn, calls } = createSend();
+      // maxBatchSize high so capacity flush never fires; small maxBufferSize.
+      const batcher = new MessageBatcher(fn, undefined, { maxBatchSize: 100, maxBufferSize: 3, flushIntervalMs: 60_000 });
+      for (let i = 0; i < 10; i++) batcher.enqueue(fakeEvent(`e${i}`));
+      assert.equal(batcher.pending, 3);
+      await batcher.destroy();
+      // Only the newest three survived; e0..e6 were dropped.
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].content, 'e7\ne8\ne9');
+    });
+
+    it('warns once per saturation, not once per dropped event', async () => {
+      const { fn } = createSend();
+      const { logger, warns } = createLogger();
+      const batcher = new MessageBatcher(fn, logger, { maxBatchSize: 100, maxBufferSize: 3, flushIntervalMs: 60_000 });
+      for (let i = 0; i < 10; i++) batcher.enqueue(fakeEvent(`e${i}`));
+      assert.equal(warns.filter((w) => w.includes('saturated')).length, 1);
+      await batcher.destroy();
+    });
+
+    it('allows a fresh saturation warning after the buffer drains', async () => {
+      const { fn } = createSend();
+      const { logger, warns } = createLogger();
+      const batcher = new MessageBatcher(fn, logger, { maxBatchSize: 100, maxBufferSize: 3, flushIntervalMs: 60_000 });
+      for (let i = 0; i < 10; i++) batcher.enqueue(fakeEvent(`a${i}`));
+      // enqueueImmediate flushes the buffer first, draining it and resetting saturation.
+      await batcher.enqueueImmediate(fakeEvent('drain'));
+      assert.equal(batcher.pending, 0);
+      for (let i = 0; i < 10; i++) batcher.enqueue(fakeEvent(`b${i}`));
+      assert.equal(warns.filter((w) => w.includes('saturated')).length, 2);
+      await batcher.destroy();
+    });
+
+    it('does not drop or warn under default options', async () => {
+      const { fn, calls } = createSend();
+      const { logger, warns } = createLogger();
+      const batcher = new MessageBatcher(fn, logger, { flushIntervalMs: 60_000 }); // default cap 1000
+      batcher.enqueue(fakeEvent('1'));
+      batcher.enqueue(fakeEvent('2'));
+      assert.equal(batcher.pending, 2);
+      assert.equal(warns.filter((w) => w.includes('saturated')).length, 0);
+      await batcher.destroy();
+      assert.equal(calls[0].content, '1\n2');
+    });
+  });
 });

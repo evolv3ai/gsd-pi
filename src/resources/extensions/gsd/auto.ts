@@ -1051,6 +1051,12 @@ export function stopAutoRemote(projectRoot: string): {
  * The normal stop path stays SIGTERM-only so cooperative sessions can clean up;
  * this path is only for the explicit "Force start" action.
  */
+// Grace window between SIGTERM and SIGKILL so the target can run its cleanup
+// handler (lock release, DB snapshot flush, worktree teardown). Polled so a
+// process that exits early is not made to wait the full window.
+const FORCE_STOP_GRACE_MS = 3000;
+const FORCE_STOP_POLL_MS = 100;
+
 export function forceStopAutoRemote(projectRoot: string): {
   found: boolean;
   pid?: number;
@@ -1071,6 +1077,13 @@ export function forceStopAutoRemote(projectRoot: string): {
 
   try {
     process.kill(lock.pid, "SIGTERM");
+    // Poll for graceful exit before escalating. Synchronous sleep keeps this
+    // function sync for its callers (Atomics.wait times out with no notify).
+    const deadline = Date.now() + FORCE_STOP_GRACE_MS;
+    while (Date.now() < deadline) {
+      if (!isLockProcessAlive(lock)) break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, FORCE_STOP_POLL_MS);
+    }
     if (isLockProcessAlive(lock)) {
       process.kill(lock.pid, "SIGKILL");
     }

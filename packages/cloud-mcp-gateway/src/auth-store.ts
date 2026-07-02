@@ -70,7 +70,16 @@ export class InMemoryAuthStore {
   }
 
   createPairingCode(userId: string, ttlMs = 10 * 60 * 1000): { code: string; expiresAt: number } {
-    const code = randomBytes(4).toString("hex").toUpperCase();
+    this.sweepExpiredPairingCodes();
+    // One live pairing code per user: a new code invalidates any prior un-redeemed
+    // one, so the guessable set never grows beyond a single code per user (and the
+    // per-exchange scrypt cost stays bounded).
+    for (const [hash, record] of this.pairingCodes) {
+      if (record.userId === userId) this.pairingCodes.delete(hash);
+    }
+    // 64 bits of entropy (16 hex chars). Endpoint-level request rate limiting is the
+    // complementary defense and belongs at the HTTP layer, not here.
+    const code = randomBytes(8).toString("hex").toUpperCase();
     const expiresAt = Date.now() + ttlMs;
     const key = deriveSecretHash(code);
     this.pairingCodes.set(key.secretHash, { ...key, userId, expiresAt });
@@ -79,6 +88,7 @@ export class InMemoryAuthStore {
   }
 
   exchangePairingCode(code: string, runtimeName?: string): DeviceTokenIssue {
+    this.sweepExpiredPairingCodes();
     const normalized = code.trim().toUpperCase();
     const codeEntry = findSecretEntry(this.pairingCodes, normalized);
     if (!codeEntry || codeEntry[1].expiresAt < Date.now()) {
@@ -115,6 +125,15 @@ export class InMemoryAuthStore {
 
   protected afterMutation(): void {
     // Extension point for persistent stores.
+  }
+
+  // Drop expired pairing codes so a long-lived gateway does not accumulate codes
+  // that were generated but never redeemed. Best-effort: callers persist via their
+  // own afterMutation() after the create/exchange that triggered the sweep.
+  private sweepExpiredPairingCodes(now = Date.now()): void {
+    for (const [hash, record] of this.pairingCodes) {
+      if (record.expiresAt < now) this.pairingCodes.delete(hash);
+    }
   }
 
   private loadSnapshot(snapshot: AuthStoreSnapshot): void {

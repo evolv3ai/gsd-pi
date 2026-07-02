@@ -16,6 +16,7 @@ import { GSDError, GSD_IO_ERROR } from "./errors.js";
 const SEQ_PREFIX_RE = /^(\d+)-/;
 import type { ExtensionContext } from "@gsd/pi-coding-agent";
 import { gsdRoot } from "./paths.js";
+import { redactSecrets } from "./redact-secrets.js";
 import { buildAuditEnvelope, emitUokAuditEvent } from "./uok/audit.js";
 import { isUnifiedAuditEnabled } from "./uok/audit-toggle.js";
 
@@ -127,7 +128,9 @@ export function saveActivityLog(
     const fd = openSync(filePath, "w");
     try {
       for (const entry of entries) {
-        writeSync(fd, JSON.stringify(entry) + "\n");
+        // Redact secret-shaped substrings before persisting; .gsd/ is skipped by
+        // the secret scanner, so raw LLM/tool content could otherwise leak keys.
+        writeSync(fd, redactSecrets(JSON.stringify(entry)) + "\n");
       }
     } finally {
       closeSync(fd);

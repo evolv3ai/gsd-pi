@@ -157,7 +157,7 @@ export class RpcClient {
 			const timeout = setTimeout(() => {
 				this.process?.kill("SIGKILL");
 				resolve();
-			}, 1000);
+			}, 5000); // match shutdown()'s grace so a cooperative SIGTERM handler can finish
 
 			this.process?.on("exit", () => {
 				clearTimeout(timeout);

@@ -13,10 +13,12 @@ interface GatewayMessage {
 }
 
 export class CloudRuntime {
+  private static readonly MAX_OUTBOX = 200;
   private socket: WebSocket | undefined;
   private heartbeat: ReturnType<typeof setInterval> | undefined;
   private reconnect: ReturnType<typeof setTimeout> | undefined;
   private readonly inFlight = new Map<string, GatewayMessage>();
+  private outbox: string[] = [];
   private stopped = false;
 
   constructor(
@@ -37,6 +39,7 @@ export class CloudRuntime {
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = undefined;
     this.inFlight.clear();
+    this.outbox = [];
     const socket = this.socket;
     this.socket = undefined;
     socket?.close();
@@ -93,7 +96,17 @@ export class CloudRuntime {
   private handleSocketOpen(socket: WebSocket): void {
     if (socket !== this.socket) return;
     this.logger.info("cloud runtime connected", { gateway_url: this.cloud.gateway_url, runtime_id: this.cloud.runtime_id });
+    // Re-advertise projects (async: the hello is sent on a later microtask), then
+    // drain any messages buffered while disconnected. tool_results route by
+    // requestId on the authenticated connection, so drain order vs the hello is
+    // not significant.
     void this.advertiseProjects();
+    const pending = this.outbox;
+    this.outbox = [];
+    for (const text of pending) {
+      if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(text);
+      else this.outbox.push(text);
+    }
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = setInterval(() => this.send({ type: "heartbeat", at: Date.now() }), 30_000);
   }
@@ -181,8 +194,17 @@ export class CloudRuntime {
   }
 
   private send(message: unknown): void {
+    const text = JSON.stringify(message);
     if (this.socket?.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify(message));
+      this.socket.send(text);
+      return;
+    }
+    // Buffer while disconnected; flushed on reconnect in handleSocketOpen. Bounded
+    // so a long outage cannot grow memory without limit — a stale heartbeat is
+    // worth less than a fresh tool_result, so drop oldest first.
+    this.outbox.push(text);
+    if (this.outbox.length > CloudRuntime.MAX_OUTBOX) {
+      this.outbox.shift();
     }
   }
 }

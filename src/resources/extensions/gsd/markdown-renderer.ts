@@ -20,6 +20,7 @@ import {
   getSliceScopedArtifacts,
   getMilestoneSlices,
   getSliceTasks,
+  getTasksBySliceIds,
   getTask,
   getSlice,
   insertArtifact,
@@ -876,6 +877,17 @@ export async function renderAllFromDb(basePath: string): Promise<RenderAllResult
   const result: RenderAllResult = { rendered: 0, skipped: 0, errors: [] };
   const milestones = getAllMilestones();
 
+  // Pre-fetch slices once per milestone and batch-load all tasks in one query
+  // family, avoiding an N+1 (previously one task query per slice).
+  const slicesByMilestone = new Map<string, SliceRow[]>();
+  const slicePairs: Array<{ milestoneId: string; sliceId: string }> = [];
+  for (const milestone of milestones) {
+    const slices = getMilestoneSlices(milestone.id);
+    slicesByMilestone.set(milestone.id, slices);
+    for (const slice of slices) slicePairs.push({ milestoneId: milestone.id, sliceId: slice.id });
+  }
+  const tasksBySlice = getTasksBySliceIds(slicePairs);
+
   for (const milestone of milestones) {
     // Render roadmap checkboxes
     try {
@@ -894,8 +906,8 @@ export async function renderAllFromDb(basePath: string): Promise<RenderAllResult
       result.errors.push(`milestone artifacts ${milestone.id}: ${(err as Error).message}`);
     }
 
-    // Iterate slices
-    const slices = getMilestoneSlices(milestone.id);
+    // Iterate slices (pre-fetched above)
+    const slices = slicesByMilestone.get(milestone.id) ?? [];
     for (const slice of slices) {
       // Preserve slice-scoped artifacts imported from disk, including real PLAN
       // fallback content when task rows cannot regenerate it.
@@ -931,8 +943,8 @@ export async function renderAllFromDb(basePath: string): Promise<RenderAllResult
         );
       }
 
-      // Iterate tasks
-      const tasks = getSliceTasks(milestone.id, slice.id);
+      // Iterate tasks (batched above)
+      const tasks = tasksBySlice.get(`${milestone.id}\0${slice.id}`) ?? [];
       for (const task of tasks) {
         try {
           const ok = await renderTaskSummary(
