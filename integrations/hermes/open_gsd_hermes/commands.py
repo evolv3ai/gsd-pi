@@ -233,7 +233,7 @@ class GsdCommandRouter:
                 "(or `--file <path>`)"
             )
         # --auto is intentionally rejected (Q5): execution is /gsd auto's job.
-        if "--auto" in rest:
+        if rest[0] == "--auto":
             return (
                 "Execution isn't chained from `/gsd new-milestone`. "
                 "Create the milestone, then run `/gsd auto`."
