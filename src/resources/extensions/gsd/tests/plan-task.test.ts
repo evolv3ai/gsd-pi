@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask, getSlice, getTask, getGateResults } from '../gsd-db.ts';
+import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask, getSlice, getTask, getSliceTasks, getGateResults } from '../gsd-db.ts';
 import { handlePlanTask } from '../tools/plan-task.ts';
 import { parseTaskPlanFile } from '../files.ts';
 
@@ -22,6 +22,26 @@ function cleanup(base: string): void {
 function seedParent(): void {
   insertMilestone({ id: 'M001', title: 'Milestone', status: 'active' });
   insertSlice({ id: 'S02', milestoneId: 'M001', title: 'Planning slice', status: 'pending', demo: 'Rendered plans exist.' });
+}
+
+function writeParentWorkspacePreferences(base: string): void {
+  mkdirSync(join(base, 'frontend', 'src'), { recursive: true });
+  mkdirSync(join(base, 'backend', 'src'), { recursive: true });
+  writeFileSync(
+    join(base, '.gsd', 'PREFERENCES.md'),
+    [
+      '---',
+      'workspace:',
+      '  mode: parent',
+      '  repositories:',
+      '    frontend:',
+      '      path: frontend',
+      '    backend:',
+      '      path: backend',
+      '---',
+    ].join('\n'),
+    'utf-8',
+  );
 }
 
 function validParams() {
@@ -155,6 +175,32 @@ test('handlePlanTask rejects absolute task IO paths outside the active worktree'
   }
 });
 
+test('handlePlanTask rejects parent-checkout task IO paths from an active worktree', async () => {
+  const projectRoot = mkdtempSync(join(tmpdir(), 'gsd-plan-task-project-'));
+  const worktree = join(projectRoot, '.gsd', 'worktrees', 'M001');
+  mkdirSync(join(projectRoot, '.gsd'), { recursive: true });
+  mkdirSync(join(worktree, '.gsd', 'phases', '01-test'), { recursive: true });
+  openDatabase(join(projectRoot, '.gsd', 'gsd.db'));
+
+  try {
+    seedParent();
+    const parentCheckoutPath = join(projectRoot, 'src', 'index.ts');
+    const result = await handlePlanTask({
+      ...validParams(),
+      files: [parentCheckoutPath],
+      inputs: [parentCheckoutPath],
+      expectedOutput: [parentCheckoutPath],
+    }, worktree);
+
+    assert.ok('error' in result);
+    assert.match(result.error, /validation failed: files contains path outside allowed repository roots/);
+    assert.match(result.error, new RegExp(worktree.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.equal(getTask('M001', 'S02', 'T02'), null, 'parent-checkout paths must not persist worktree task planning');
+  } finally {
+    cleanup(projectRoot);
+  }
+});
+
 test('handlePlanTask rejects missing parent slice', async () => {
   const base = makeTmpBase();
   openDatabase(join(base, '.gsd', 'gsd.db'));
@@ -239,6 +285,223 @@ test('handlePlanTask reruns idempotently and refreshes parse-visible state', asy
     const parsed = parseTaskPlanFile(readFileSync(taskPlanPath, 'utf-8'));
     assert.equal(parsed.frontmatter.estimated_steps, 1);
     assert.match(readFileSync(taskPlanPath, 'utf-8'), /Updated task handler description\./);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanTask persists targetRepositories for parent-workspace tasks', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParent();
+    const result = await handlePlanTask({
+      ...validParams(),
+      targetRepositories: ['project'],
+    }, base);
+    assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
+
+    const tasks = getSliceTasks('M001', 'S02');
+    const planned = tasks.find((t) => t.id === 'T02');
+    assert.ok(planned, 'planned task should exist');
+    assert.deepEqual(planned?.target_repositories, ['project']);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanTask rejects non-array targetRepositories', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParent();
+    const result = await handlePlanTask({
+      ...validParams(),
+      targetRepositories: 'frontend' as unknown as string[],
+    }, base);
+    assert.ok('error' in result);
+    assert.match(result.error, /validation failed: targetRepositories/);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanTask rejects empty targetRepositories', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParent();
+    const result = await handlePlanTask({
+      ...validParams(),
+      targetRepositories: [],
+    }, base);
+    assert.ok('error' in result);
+    assert.match(result.error, /validation failed: targetRepositories must include at least one repository id when provided/);
+    assert.equal(getTask('M001', 'S02', 'T02'), null, 'invalid target repositories must not persist');
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanTask rejects unknown target repositories', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParent();
+    const result = await handlePlanTask({
+      ...validParams(),
+      targetRepositories: ['frontend'],
+    }, base);
+    assert.ok('error' in result);
+    assert.match(result.error, /validation failed: unknown targetRepositories:/);
+    assert.equal(getTask('M001', 'S02', 'T02'), null, 'unknown target repositories must not persist');
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanTask enforces path scope to declared target repositories', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParent();
+    mkdirSync(join(base, 'frontend', 'src'), { recursive: true });
+    mkdirSync(join(base, 'backend', 'src'), { recursive: true });
+    writeFileSync(
+      join(base, '.gsd', 'PREFERENCES.md'),
+      [
+        '---',
+        'workspace:',
+        '  mode: parent',
+        '  repositories:',
+        '    frontend:',
+        '      path: frontend',
+        '    backend:',
+        '      path: backend',
+        '---',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const result = await handlePlanTask({
+      ...validParams(),
+      targetRepositories: ['frontend'],
+      files: [join(base, 'backend', 'src', 'server.ts')],
+      inputs: ['app.js'],
+      expectedOutput: ['app.js'],
+    }, base);
+    assert.ok('error' in result);
+    assert.match(result.error, /validation failed: files contains path outside allowed repository roots/);
+    assert.equal(getTask('M001', 'S02', 'T02'), null, 'invalid scoped paths must not persist');
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanTask inherits parent slice target repositories for path scope', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParent();
+    insertSlice({
+      id: 'S02',
+      milestoneId: 'M001',
+      planning: { targetRepositories: ['frontend'] },
+    });
+    writeParentWorkspacePreferences(base);
+
+    const result = await handlePlanTask({
+      ...validParams(),
+      files: [join(base, 'backend', 'src', 'server.ts')],
+      inputs: ['app.js'],
+      expectedOutput: ['app.js'],
+    }, base);
+    assert.ok('error' in result);
+    assert.match(result.error, /validation failed: files contains path outside allowed repository roots/);
+    assert.equal(getTask('M001', 'S02', 'T02'), null, 'slice-scoped invalid paths must not persist');
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanTask preserves stored task target repositories when omitted replan needs them for path scope', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParent();
+    writeParentWorkspacePreferences(base);
+    insertSlice({
+      id: 'S02',
+      milestoneId: 'M001',
+      planning: { targetRepositories: ['frontend'] },
+    });
+    insertTask({
+      id: 'T02',
+      sliceId: 'S02',
+      milestoneId: 'M001',
+      title: 'Parent root work',
+      status: 'pending',
+      planning: { targetRepositories: ['project'] },
+    });
+
+    const rootFile = join(base, 'root-config.json');
+    const result = await handlePlanTask({
+      ...validParams(),
+      files: [rootFile],
+      inputs: [rootFile],
+      expectedOutput: [rootFile],
+    }, base);
+
+    assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
+    assert.deepEqual(getTask('M001', 'S02', 'T02')?.target_repositories, ['project']);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanTask follows the current slice target default when omitted replan paths validate there', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParent();
+    writeParentWorkspacePreferences(base);
+    insertSlice({
+      id: 'S02',
+      milestoneId: 'M001',
+      planning: { targetRepositories: ['frontend'] },
+    });
+    insertTask({
+      id: 'T02',
+      sliceId: 'S02',
+      milestoneId: 'M001',
+      title: 'Child repo work',
+      status: 'pending',
+      planning: { targetRepositories: ['frontend'] },
+    });
+    insertSlice({
+      id: 'S02',
+      milestoneId: 'M001',
+      planning: { targetRepositories: ['backend'] },
+    });
+
+    const backendFile = join(base, 'backend', 'src', 'server.ts');
+    const result = await handlePlanTask({
+      ...validParams(),
+      files: [backendFile],
+      inputs: [backendFile],
+      expectedOutput: [backendFile],
+    }, base);
+
+    assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
+    assert.deepEqual(getTask('M001', 'S02', 'T02')?.target_repositories, ['backend']);
   } finally {
     cleanup(base);
   }

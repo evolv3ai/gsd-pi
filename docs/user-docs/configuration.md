@@ -476,6 +476,7 @@ workspace:
 - `workspace.repositories.<id>.verification`: optional default verification commands for that repository.
 - `workspace.repositories.<id>.commit_policy`: optional per-repository auto-commit policy (`auto` or `skip`).
 - Omitted slice/task `targetRepositories` default to `["project"]` in `project` mode, and to the declared child repository IDs in `parent` mode.
+- In parent workspaces, `gsd_plan_slice.targetRepositories` sets a slice-wide default and `gsd_plan_task.targetRepositories` records the repository IDs an individual task touches. Use only declared repository IDs, plus the implicit `project` ID; omit these fields in single-repo projects.
 
 ### `reactive_execution`
 
@@ -633,6 +634,8 @@ workspace:
 ```
 
 `project` is always available as an implicit repository ID pointing at the project root. If plan/task `targetRepositories` is omitted, GSD defaults to `["project"]` in `project` mode, and to the declared child repository IDs in `parent` mode.
+
+In parent workspaces, use `gsd_plan_slice.targetRepositories` to set a slice-wide repository default. Use `gsd_plan_task.targetRepositories` when an individual task touches a different or more specific set of declared repositories.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -853,8 +856,10 @@ workspace:
 
 **Path-scope behavior:**
 - During planning (`plan-slice`/`replan-slice`), file paths are validated against the selected `targetRepositories`.
+- `gsd_plan_slice.targetRepositories` sets the slice-wide default repository IDs.
+- `gsd_plan_task.targetRepositories` records or overrides the repository IDs for an individual task.
 - Absolute and relative paths are both checked; paths that resolve outside declared repository roots are rejected.
-- If no explicit `targetRepositories` are provided, planning defaults to `["project"]` in `project` mode, and to the declared child repository IDs in `parent` mode.
+- Use only repository IDs declared under `workspace.repositories`, plus the implicit `project` ID. If no explicit `targetRepositories` are provided, planning defaults to `["project"]` in `project` mode, and to the declared child repository IDs in `parent` mode.
 
 ### `notifications`
 

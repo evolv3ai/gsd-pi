@@ -34,6 +34,7 @@ const BASE_VARS = {
   planTemplatePath: "C:\\Users\\Test\\.gsd\\agent\\extensions\\gsd\\templates\\plan.md",
   taskPlanTemplatePath: "C:\\Users\\Test\\.gsd\\agent\\extensions\\gsd\\templates\\task-plan.md",
   skillActivation: "Load the relevant skills.",
+  repoRegistry: "",
 };
 
 const DEFAULT_SKILL_ACTIVATION = "If a `GSD Skill Preferences` block is present in system context, use it and the `<available_skills>` catalog in your system prompt to decide which skills to load and follow for this unit, without relaxing required verification or artifact rules.";
@@ -59,6 +60,22 @@ test("plan-slice prompt: all variables substituted", () => {
   assert.ok(!result.includes("{{"));
   assert.ok(result.includes("M001"));
   assert.ok(result.includes("S01"));
+});
+
+test("plan-slice prompt: repoRegistry block surfaces declared repositories when non-empty", () => {
+  const block = "### Declared Repositories\n\n- `frontend` (frontend/)\n- `backend` (backend/)\n\nAssign each task's `targetRepositories`";
+  const result = loadPrompt("plan-slice", { ...BASE_VARS, repoRegistry: block, commitInstruction: "Do not commit." });
+  assert.ok(result.includes("### Declared Repositories"), "declared repositories block should appear when provided");
+  assert.ok(result.includes("`frontend`"), "declared repo ids should be visible to the planner");
+  assert.ok(result.includes("targetRepositories"), "repo-assignment guidance should appear");
+});
+
+test("plan-slice prompt: empty repoRegistry leaves no orphan marker", () => {
+  const result = loadPrompt("plan-slice", { ...BASE_VARS, repoRegistry: "", commitInstruction: "Do not commit." });
+  assert.ok(!result.includes("{{repoRegistry}}"), "the repoRegistry placeholder must be substituted");
+  // The block heading only renders when repoRegistry is non-empty; the rule-9
+  // guidance text mentions "Declared Repositories" but is not a rendered block.
+  assert.ok(!result.includes("### Declared Repositories"), "single-repo prompts must not show a declared-repositories block");
 });
 
 test("plan-slice prompt: DB-backed tool names survive template substitution", () => {

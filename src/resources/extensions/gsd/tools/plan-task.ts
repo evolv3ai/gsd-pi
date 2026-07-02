@@ -12,6 +12,7 @@ import { appendEvent } from "../workflow-events.js";
 import { logWarning } from "../workflow-logger.js";
 import { loadEffectiveGSDPreferences } from "../preferences.js";
 import { validatePathOnlyPlanningFields, validatePlanningPathScope } from "../planning-path-scope.js";
+import { createRepositoryRegistryFromPreferences, defaultRepositoryTargets, type RepositoryRegistry } from "../repository-registry.js";
 import type { GateId } from "../types.js";
 
 export interface PlanTaskParams {
@@ -26,6 +27,8 @@ export interface PlanTaskParams {
   inputs: string[];
   expectedOutput: string[];
   observabilityImpact?: string;
+  /** Repository id(s) this task touches (parent workspace); omitted for single-repo projects. */
+  targetRepositories?: string[];
   fullPlanMd?: string;
   /** Optional caller-provided identity for audit trail */
   actorName?: string;
@@ -38,6 +41,63 @@ export interface PlanTaskResult {
   sliceId: string;
   taskId: string;
   taskPlanPath: string;
+}
+
+function validateRepositoryTargetIds(field: string, value: unknown): string[] {
+  const ids = validateStringArray(value, field);
+  if (ids.length === 0) throw new Error(`${field} must include at least one repository id when provided`);
+  const deduped = Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
+  if (deduped.length === 0) throw new Error(`${field} must include at least one repository id when provided`);
+  return deduped;
+}
+
+function validateReferencedRepositories(
+  targetRepositories: string[] | undefined,
+  registry: RepositoryRegistry,
+): string | null {
+  if (!targetRepositories) return null;
+  const known = new Set(registry.repositories.map((repo) => repo.id));
+  const missing = targetRepositories.filter((id) => !known.has(id));
+  if (missing.length === 0) return null;
+  return `unknown targetRepositories: ${missing.join(", ")}. Declared repositories: ${Array.from(known).join(", ")}`;
+}
+
+function resolveAllowedRootsForPathScope(
+  targetRepositories: string[],
+  registry: RepositoryRegistry,
+): string[] {
+  if (targetRepositories.length === 0) return [registry.projectRoot];
+  const roots = targetRepositories
+    .map((id) => registry.byId.get(id)?.root)
+    .filter((root): root is string => typeof root === "string");
+  return roots.length > 0 ? roots : [registry.projectRoot];
+}
+
+function validatePathScopeForTargetRepositories(
+  params: PlanTaskParams,
+  basePath: string,
+  registry: RepositoryRegistry,
+  targetRepositories: string[],
+): string | null {
+  return validatePlanningPathScope(
+    basePath,
+    [
+      { field: "files", values: params.files },
+      { field: "inputs", values: params.inputs },
+      { field: "expectedOutput", values: params.expectedOutput },
+    ],
+    resolveAllowedRootsForPathScope(targetRepositories, registry),
+  );
+}
+
+function resolveEffectiveTargetRepositories(
+  taskTargetRepositories: string[] | undefined,
+  sliceTargetRepositories: string[] | undefined,
+  defaultTargets: string[],
+): string[] {
+  if (taskTargetRepositories) return taskTargetRepositories;
+  if (sliceTargetRepositories?.length) return sliceTargetRepositories;
+  return defaultTargets;
 }
 
 function validateParams(params: PlanTaskParams): PlanTaskParams {
@@ -57,6 +117,9 @@ function validateParams(params: PlanTaskParams): PlanTaskParams {
     files: validateStringArray(params.files, "files"),
     inputs: validateStringArray(params.inputs, "inputs"),
     expectedOutput: validateStringArray(params.expectedOutput, "expectedOutput"),
+    ...(params.targetRepositories !== undefined
+      ? { targetRepositories: validateRepositoryTargetIds("targetRepositories", params.targetRepositories) }
+      : {}),
   };
 }
 
@@ -84,22 +147,18 @@ export async function handlePlanTask(
     return { error: `validation failed: ${pathOnlyError}` };
   }
 
-  const pathScopeError = validatePlanningPathScope(basePath, [
-    { field: "files", values: params.files },
-    { field: "inputs", values: params.inputs },
-    { field: "expectedOutput", values: params.expectedOutput },
-  ]);
-  if (pathScopeError) {
-    return { error: `validation failed: ${pathScopeError}` };
-  }
-
   let taskGates: GateId[];
+  let repositoryRegistry: RepositoryRegistry;
   try {
     taskGates = resolveTaskGates(basePath);
+    const loaded = loadEffectiveGSDPreferences(basePath);
+    repositoryRegistry = createRepositoryRegistryFromPreferences(basePath, loaded?.preferences);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { error: `validation failed: ${message}` };
   }
+
+  const defaultTargets = defaultRepositoryTargets(repositoryRegistry);
 
   // ── Guards + DB writes inside a single transaction (prevents TOCTOU) ───
   // Guards must be inside the transaction so the state they check cannot
@@ -124,6 +183,44 @@ export async function handlePlanTask(
         return;
       }
 
+      let effectiveTargetRepositories = resolveEffectiveTargetRepositories(
+        params.targetRepositories,
+        parentSlice.target_repositories,
+        defaultTargets,
+      );
+      const repoValidationError = validateReferencedRepositories(effectiveTargetRepositories, repositoryRegistry);
+      if (repoValidationError) {
+        guardError = `validation failed: ${repoValidationError}`;
+        return;
+      }
+
+      let pathScopeError = validatePathScopeForTargetRepositories(
+        params,
+        basePath,
+        repositoryRegistry,
+        effectiveTargetRepositories,
+      );
+      const storedTaskTargets = existingTask?.target_repositories?.length
+        ? existingTask.target_repositories
+        : undefined;
+      // Omitted targetRepositories inherit the current slice default first.
+      // Fall back to the stored task target only when that inherited scope
+      // rejects the replan paths, preserving explicit per-task parent-root work.
+      if (pathScopeError && params.targetRepositories === undefined && storedTaskTargets) {
+        const storedRepoValidationError = validateReferencedRepositories(storedTaskTargets, repositoryRegistry);
+        const storedPathScopeError = storedRepoValidationError
+          ? storedRepoValidationError
+          : validatePathScopeForTargetRepositories(params, basePath, repositoryRegistry, storedTaskTargets);
+        if (!storedPathScopeError) {
+          effectiveTargetRepositories = storedTaskTargets;
+          pathScopeError = null;
+        }
+      }
+      if (pathScopeError) {
+        guardError = `validation failed: ${pathScopeError}`;
+        return;
+      }
+
       if (!existingTask) {
         insertTask({
           id: params.taskId,
@@ -143,6 +240,7 @@ export async function handlePlanTask(
         expectedOutput: params.expectedOutput,
         observabilityImpact: params.observabilityImpact ?? "",
         fullPlanMd: params.fullPlanMd,
+        targetRepositories: effectiveTargetRepositories,
       });
       for (const gid of taskGates) {
         insertGateRow({ milestoneId: params.milestoneId, sliceId: params.sliceId, gateId: gid, scope: "task", taskId: params.taskId });
