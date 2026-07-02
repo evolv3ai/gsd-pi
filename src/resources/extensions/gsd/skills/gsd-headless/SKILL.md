@@ -211,17 +211,15 @@ All state lives in `.gsd/` as markdown files (version-controllable):
 
 ```
 .gsd/
-  milestones/M001/
-    M001-CONTEXT.md      # Requirements, scope, decisions
-    M001-ROADMAP.md      # Slices with tasks, dependencies, checkboxes
-    M001-SUMMARY.md      # Completion summary
-    slices/S01/
-      S01-PLAN.md        # Task list
-      S01-SUMMARY.md     # Slice summary with frontmatter
-      tasks/T01-PLAN.md  # Individual task spec
+  phases/01-foundation/
+    01-CONTEXT.md        # Requirements, scope, decisions
+    01-ROADMAP.md        # Slices with tasks, dependencies, checkboxes
+    01-SUMMARY.md        # Completion summary
+    01-01-PLAN.md        # First slice task list
+    01-01-SUMMARY.md     # First slice summary with frontmatter
 ```
 
-State is derived from files on disk — checkboxes in ROADMAP.md are the source of truth for completion.
+Runtime state is stored in the project-root database; markdown files are reviewable projections written under `.gsd/phases/`. Legacy projects may still resolve to `.gsd/milestones/<MID>/` until migrated.
 
 ## All Headless Commands
 

@@ -41,6 +41,8 @@ Share planning artifacts while keeping runtime files local:
 .gsd/runtime/
 .gsd/worktrees/
 .gsd-backups/
+.gsd/phases/**/continue.md
+.gsd/phases/**/*-CONTINUE.md
 .gsd/milestones/**/continue.md
 .gsd/milestones/**/*-CONTINUE.md
 ```
@@ -50,7 +52,8 @@ Share planning artifacts while keeping runtime files local:
 - `.gsd/PROJECT.md` — living project description
 - `.gsd/REQUIREMENTS.md` — requirement contract
 - `.gsd/DECISIONS.md` — architectural decisions
-- `.gsd/milestones/` — roadmaps, plans, summaries, research
+- `.gsd/phases/` — flat-phase roadmaps, plans, summaries, and research
+- `.gsd/milestones/` — legacy milestone artifacts, if the project has not migrated yet
 
 **What stays local** (gitignored):
 - Database files, lock files, metrics, state projections, activity logs, worktrees, and migration backups under `.gsd-backups/`. Stale `.gsd-backups/migrate-*` snapshots are pruned after 30 days once the flat-phase `.gsd/phases/` migration is complete.
@@ -81,10 +84,9 @@ Multiple developers can run auto mode simultaneously on different milestones. Ea
 - Works on a unique `milestone/<MID>` branch
 - Squash-merges to main independently
 
-Milestone dependencies can be declared:
+Milestone dependencies can be declared in the phase context frontmatter:
 
 ```yaml
-# In M00X-CONTEXT.md frontmatter
 ---
 depends_on: [M001-eh88as]
 ---

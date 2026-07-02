@@ -35,6 +35,8 @@ Share planning artifacts (milestones, roadmaps, decisions) while keeping runtime
 .gsd/worktrees/
 .gsd-worktrees/
 .gsd-backups/
+.gsd/phases/**/continue.md
+.gsd/phases/**/*-CONTINUE.md
 .gsd/milestones/**/continue.md
 .gsd/milestones/**/*-CONTINUE.md
 ```
@@ -44,7 +46,8 @@ Share planning artifacts (milestones, roadmaps, decisions) while keeping runtime
 - `.gsd/PROJECT.md` — living project description
 - `.gsd/REQUIREMENTS.md` — requirement contract
 - `.gsd/DECISIONS.md` — architectural decisions
-- `.gsd/milestones/` — roadmaps, plans, summaries, research
+- `.gsd/phases/` — flat-phase roadmaps, plans, summaries, and research
+- `.gsd/milestones/` — legacy milestone artifacts, if the project has not migrated yet
 
 **What stays local** (gitignored):
 - Database files, metrics, state projections, runtime records, worktrees, activity logs, and migration backups under `.gsd-backups/`. Stale `.gsd-backups/migrate-*` snapshots are pruned after 30 days once the flat-phase `.gsd/phases/` migration is complete.
@@ -86,9 +89,9 @@ If you have an existing project with `.gsd/` blanket-ignored:
 
 ## Plan Review Workflow
 
-Teams configured to track planning artifacts in git (i.e. with `mode: team` and `.gsd/milestones/` not gitignored) can use a two-PR cycle to get plan approval before any code is written:
+Teams configured to track planning artifacts in git (i.e. with `mode: team` and `.gsd/phases/` not gitignored) can use a two-PR cycle to get plan approval before any code is written:
 
-1. **Plan PR** — developer runs `/gsd discuss` on `main`, which writes planning artifacts to `.gsd/milestones/<MID>/` (milestone files `<MID>-CONTEXT.md` and `<MID>-ROADMAP.md`) and updates the top-level `.gsd/REQUIREMENTS.md` and `.gsd/DECISIONS.md`. The developer commits these and opens a docs-only PR.
+1. **Plan PR** — developer runs `/gsd discuss` on `main`, which writes flat-phase planning artifacts to `.gsd/phases/<NN-slug>/` (phase files `<NN>-CONTEXT.md` and `<NN>-ROADMAP.md`) and updates the top-level `.gsd/REQUIREMENTS.md` and `.gsd/DECISIONS.md`. Legacy projects may still resolve to `.gsd/milestones/<MID>/<MID>-*.md` until migration. The developer commits these and opens a docs-only PR.
 2. **Review** — the team reviews scope, risks, slice breakdown, and definition of done directly in GitHub. No code to review yet, just the plan.
 3. **Code PR** — after the plan PR is merged, the developer pulls `main` and runs `/gsd auto`. GSD creates a worktree and executes against the approved plan. The result is a second PR with the actual implementation.
 
@@ -96,8 +99,8 @@ Teams configured to track planning artifacts in git (i.e. with `mode: team` and 
 
 ### What reviewers should look for
 
-- **`<MID>-CONTEXT.md`** — is the scope well-defined? Are constraints and non-goals clear?
-- **`<MID>-ROADMAP.md`** — does the slice breakdown make sense? Are slices ordered by dependency?
+- **`<NN>-CONTEXT.md`** — is the scope well-defined? Are constraints and non-goals clear?
+- **`<NN>-ROADMAP.md`** — does the slice breakdown make sense? Are slices ordered by dependency?
 - **`.gsd/DECISIONS.md`** — are the architectural choices justified?
 
 ### Steering during execution
@@ -123,7 +126,7 @@ Multiple developers can run auto mode simultaneously on different milestones. Ea
 - Works on a unique `milestone/<MID>` branch
 - Squash-merges to main independently
 
-Milestone dependencies can be declared in `M00X-CONTEXT.md` frontmatter:
+Milestone dependencies can be declared in the phase context frontmatter:
 
 ```yaml
 ---

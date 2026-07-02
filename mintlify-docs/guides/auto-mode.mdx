@@ -19,7 +19,7 @@ Plan → Execute (per task) → Complete → Reassess Roadmap → Next Slice
 - **Reassess** — checks if the roadmap still makes sense
 - **Validate** — reconciliation gate after all slices; catches gaps before sealing the milestone
 
-When progressive planning is enabled, GSD fully plans the first slice and may leave later slices as sketches. Those slices render in `M###-ROADMAP.md` with a `` `[sketch]` `` badge, meaning the slice has an approved scope boundary but has not yet been expanded into task plans. Auto mode runs `refine-slice` just before execution to convert the sketch into a full slice plan using the current codebase and prior slice summaries.
+When progressive planning is enabled, GSD fully plans the first slice and may leave later slices as sketches. Those slices render in the milestone roadmap projection (`NN-ROADMAP.md` under `.gsd/phases/<NN-slug>/` for flat-phase projects) with a `` `[sketch]` `` badge, meaning the slice has an approved scope boundary but has not yet been expanded into task plans. Auto mode runs `refine-slice` just before execution to convert the sketch into a full slice plan using the current codebase and prior slice summaries.
 
 `complete-milestone` enforces hard closeout prerequisites: every slice must have a UAT assessment with verdict `PASS`, and the latest `milestone-validation` assessment for the milestone must exist with verdict `pass`. If UAT is missing or non-PASS, auto mode stops with guidance to run `/gsd dispatch uat`, request a slice-specific UAT rerun when needed, inspect `/gsd status`, or add remediation slices with `/gsd dispatch reassess`. If milestone validation is `fail`, `partial`, or missing, closeout is blocked until `validate-milestone` records a fresh passing verdict.
 
@@ -44,7 +44,7 @@ Workflow Preferences -> Project Context -> Requirements -> Research Decision -> 
 | `.gsd/REQUIREMENTS.md`                                                    | `discuss-requirements`            | Capability contract with Active, Validated, Deferred, and Out of Scope requirements |
 | `.gsd/runtime/research-decision.json`                                     | `research-decision`               | Records whether to run project research or skip it                                  |
 | `.gsd/research/STACK.md`, `FEATURES.md`, `ARCHITECTURE.md`, `PITFALLS.md` | `research-project`                | Optional four-way project research when the decision is `research`                  |
-| `.gsd/milestones/<MID>/M###-ROADMAP.md`                                   | `plan-milestone`                  | Executable roadmap; `` `[sketch]` `` marks slices awaiting `refine-slice`           |
+| `.gsd/phases/<NN-slug>/<NN>-CONTEXT.md` and `<NN>-ROADMAP.md`             | `discuss-milestone` / `plan-milestone` | Milestone context and executable roadmap; `` `[sketch]` `` marks slices awaiting `refine-slice`. Legacy projects may still resolve to `.gsd/milestones/<MID>/<MID>-*.md` until migrated. |
 
 The research-decision unit only records the choice. If the decision is `research`, the next gate fans out four project research passes. Those outputs inform planning and requirement review; they do not silently create binding requirements.
 

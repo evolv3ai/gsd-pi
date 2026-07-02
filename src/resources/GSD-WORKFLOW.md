@@ -5,7 +5,7 @@
 > **When to read this:** At the start of any session working on GSD-managed work, or when loaded by `/gsd`.
 >
 > **After reading this, always read `.gsd/STATE.md` to find out what's next.**
-> If the milestone has a `CONTEXT.md`, read that too. If the active slice has an `S##-CONTEXT.md`, read that as well — these files contain project-specific decisions, reference paths, and implementation guidance that this generic methodology doc does not.
+> If the milestone has a `NN-CONTEXT.md`, read that too. If the active slice has an `NN-MM-CONTEXT.md`, read that as well — these files contain project-specific decisions, reference paths, and implementation guidance that this generic methodology doc does not.
 
 ---
 
@@ -14,10 +14,10 @@
 Read these files in order and act on what they say:
 
 1. **`.gsd/STATE.md`** — Where are we? What's the next action?
-2. **`.gsd/phases/<active>/ROADMAP.md`** — What's the plan? Which slices are done? (`STATE.md` tells you which milestone is active)
-3. **`.gsd/phases/<active>/CONTEXT.md`** — Milestone-level project decisions, reference paths, constraints. Read this before doing implementation work.
-4. If a slice is active and has one, read **`S##-CONTEXT.md`** — Slice-specific decisions and constraints.
-5. If a slice is active, read its **`S##-PLAN.md`** — Which tasks exist? Which are done?
+2. **`.gsd/phases/<NN-slug>/<NN>-ROADMAP.md`** — What's the plan? Which slices are done? (`STATE.md` tells you which milestone is active)
+3. **`.gsd/phases/<NN-slug>/<NN>-CONTEXT.md`** — Milestone-level project decisions, reference paths, constraints. Read this before doing implementation work.
+4. If a slice is active and has one, read **`<NN>-<MM>-CONTEXT.md`** — Slice-specific decisions and constraints.
+5. If a slice is active, read its **`<NN>-<MM>-PLAN.md`** — Which tasks exist? Which are done?
 6. If `.gsd/CODEBASE.md` exists, skim it for fast structural orientation before broad code exploration.
 7. If a task was interrupted, check for **`continue.md`** in the active slice directory — Resume from there.
 
@@ -47,22 +47,17 @@ All artifacts live in `.gsd/` at the project root:
   DECISIONS.md                              # Append-only decisions register
   CODEBASE.md                               # Generated codebase map cache (auto-refreshed by GSD)
   phases/
-    M001/
-      M001-ROADMAP.md                       # Milestone plan (checkboxes = state)
-      M001-CONTEXT.md                       # Optional: user decisions from discuss phase
-      M001-RESEARCH.md                      # Optional: codebase/tech research
-      M001-SUMMARY.md                       # Milestone rollup (updated as slices complete)
-      slices/
-        S01/
-          S01-PLAN.md                       # Task decomposition for this slice
-          S01-CONTEXT.md                    # Optional: slice-level user decisions
-          S01-RESEARCH.md                   # Optional: slice-level research
-          S01-SUMMARY.md                    # Slice summary (written on completion)
-          S01-UAT.md                        # Non-blocking human test script (written on completion)
-          continue.md                       # Ephemeral: resume point if interrupted
-          tasks/
-            T01-PLAN.md                     # Individual task plan
-            T01-SUMMARY.md                  # Task summary with frontmatter
+    01-foundation/
+      01-ROADMAP.md                         # Milestone plan (checkboxes = state)
+      01-CONTEXT.md                         # Optional: user decisions from discuss phase
+      01-RESEARCH.md                        # Optional: codebase/tech research
+      01-SUMMARY.md                         # Milestone rollup (updated as slices complete)
+      01-01-PLAN.md                         # Task decomposition for the first slice
+      01-01-CONTEXT.md                      # Optional: slice-level user decisions
+      01-01-RESEARCH.md                     # Optional: slice-level research
+      01-01-SUMMARY.md                      # Slice summary (written on completion)
+      01-01-UAT.md                          # Non-blocking human test script (written on completion)
+      01-01-CONTINUE.md                     # Ephemeral: resume point if interrupted
 ```
 
 ---
@@ -424,7 +419,7 @@ key_decisions:
 patterns_established:
   - "Pattern name and where it lives"
 drill_down_paths:
-  - .gsd/phases/M001/slices/S01/tasks/T01-PLAN.md
+  - .gsd/phases/01-foundation/01-01-PLAN.md
 duration: 15min
 verification_result: pass
 completed_at: 2026-03-07T16:00:00Z
@@ -635,10 +630,10 @@ These are soft caps — exceed them when genuinely needed, but don't let summari
 
 This methodology doc is generic. Project-specific guidance belongs in the milestone and slice context files:
 
-- **`.gsd/phases/<active>/CONTEXT.md`** — milestone-level architecture decisions, reference file paths, and implementation constraints
-- **`.gsd/phases/<active>/slices/S##/S##-CONTEXT.md`** — slice-level decisions, edge cases, and narrow implementation guidance when present
+- **`.gsd/phases/<NN-slug>/<NN>-CONTEXT.md`** — milestone-level architecture decisions, reference file paths, and implementation constraints
+- **`.gsd/phases/<NN-slug>/<NN>-<MM>-CONTEXT.md`** — slice-level decisions, edge cases, and narrow implementation guidance when present
 
-**Always read the active milestone's `CONTEXT.md` before starting implementation work.** If the active slice also has `S##-CONTEXT.md`, read that too. These files tell you what decisions are locked, what files to reference, and how to verify your work in this specific project.
+**Always read the active milestone's `<NN>-CONTEXT.md` before starting implementation work.** If the active slice also has `<NN>-<MM>-CONTEXT.md`, read that too. These files tell you what decisions are locked, what files to reference, and how to verify your work in this specific project.
 
 ---
 

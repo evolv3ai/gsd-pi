@@ -347,7 +347,7 @@ In these states GSD does not auto-stash and does not auto-fix; it stops so you c
 
 ### `/gsd doctor` reports `artifact_file_missing`
 
-**Symptoms:** `/gsd doctor` shows an error with issue code `artifact_file_missing`, a scope such as `project`, `milestone`, `slice`, or `task`, and a file path like `milestones/M001/M001-ROADMAP.md`.
+**Symptoms:** `/gsd doctor` shows an error with issue code `artifact_file_missing`, a scope such as `project`, `milestone`, `slice`, or `task`, and a file path like `phases/01-foundation/01-CONTEXT.md` or `milestones/M001/M001-ROADMAP.md`.
 
 **What it means:** The canonical database has an `artifacts` row for that path, but the rendered markdown file is missing from disk. In worktree mode, doctor checks both the active worktree-local `.gsd/` projection root and the project `.gsd/` root before reporting the issue, so the error usually means the artifact was deleted, skipped during a failed write, or left dangling by an interrupted migration/rebuild.
 
