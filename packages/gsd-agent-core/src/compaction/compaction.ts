@@ -131,10 +131,11 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 // ============================================================================
 
 /**
- * Calculate prompt-side context tokens from usage.
- * Completion/output tokens are not part of the reusable conversation context.
+ * Calculate context tokens from usage.
+ * Providers can normalize cumulative SDK usage into totalTokens.
  */
 export function calculateContextTokens(usage: Usage): number {
+	if (usage.totalTokens > 0) return usage.totalTokens;
 	return usage.input + usage.cacheRead + usage.cacheWrite;
 }
 

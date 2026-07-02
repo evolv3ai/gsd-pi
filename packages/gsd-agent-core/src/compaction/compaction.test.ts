@@ -197,13 +197,26 @@ describe("chunkMessages", () => {
 });
 
 describe("calculateContextTokens", () => {
-	it("uses prompt-relevant usage only (input + cacheRead + cacheWrite)", () => {
+	it("uses provider-authoritative totalTokens when present", () => {
 		const usage = {
 			input: 65,
 			output: 39_846,
 			cacheRead: 2_945_563,
 			cacheWrite: 243_452,
-			totalTokens: 3_228_926,
+			totalTokens: 283_363,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+
+		assert.equal(calculateContextTokens(usage), 283_363);
+	});
+
+	it("falls back to component context tokens when totalTokens is not available", () => {
+		const usage = {
+			input: 65,
+			output: 39_846,
+			cacheRead: 2_945_563,
+			cacheWrite: 243_452,
+			totalTokens: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		};
 
