@@ -3,6 +3,7 @@ import { isAbsolute, join, relative, sep } from "node:path";
 
 import type { DoctorIssue } from "./doctor-types.js";
 import {
+  deleteArtifactByPath,
   getAllMilestones,
   getMilestoneSlices,
   getSliceTasks,
@@ -453,7 +454,10 @@ export async function checkEngineHealth(
           const unitId = artifactUnitId(row);
           const issuePath = artifactPathRelativeToGsd(row.path);
           if (options?.repair && issuePath.startsWith("phases/") && hasPresentMilestonesReplacement(basePath, row, artifactRows)) {
-            adapter.prepare("DELETE FROM artifacts WHERE path = :path").run({ ":path": row.path });
+            // Route the write through the Single Writer owner (gsd-db.ts) instead
+            // of issuing raw DELETE SQL here — doctor is a read-only consumer and
+            // the single-writer invariant forbids write SQL outside the allowlist.
+            deleteArtifactByPath(row.path);
             fixesApplied.push(`pruned stale flat-phase artifact row ${row.path}`);
             continue;
           }
