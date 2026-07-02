@@ -84,7 +84,7 @@ export function createRepositoryRegistry(
 ): RepositoryRegistry {
   const contract = resolveGsdPathContract(basePath);
   const projectRoot = contract.isWorktree
-    ? resolveGitWorkingTreeRoot(contract.workRoot) ?? contract.projectRoot
+    ? resolveGitWorkingTreeRoot(contract.workRoot) ?? contract.workRoot
     : contract.projectRoot;
   const mode = workspacePrefs?.mode ?? "project";
   const repoMap = new Map<string, RegisteredRepository>();
