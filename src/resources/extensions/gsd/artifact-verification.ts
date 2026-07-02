@@ -45,8 +45,6 @@ import { resolveWorktreeProjectRoot } from "./worktree-root.js";
 import { hasImplementationArtifacts } from "./milestone-implementation-evidence.js";
 import { loadAllCaptures, loadPendingCaptures } from "./captures.js";
 import { proveMilestoneCloseout } from "./milestone-closeout-proof.js";
-import { parseRoadmapSlices } from "./roadmap-slices.js";
-
 /**
  * Optional override for the legacy roadmap parser used by verifyExpectedArtifact.
  * Production leaves this null so the real parseLegacyRoadmap runs; tests inject
@@ -75,10 +73,7 @@ function parseRoadmapForRecovery(content: string): ReturnType<NonNullable<typeof
 
 /** Slice count for plan-milestone verification; shared by scoped and legacy paths. */
 export function countPlanMilestoneRoadmapSlices(content: string): number {
-  if (_roadmapParserFn) {
-    return parseRoadmapForRecovery(content).slices.length;
-  }
-  return parseRoadmapSlices(content).length;
+  return parseRoadmapForRecovery(content).slices.length;
 }
 
 export function diagnoseWorktreeIntegrityFailure(basePath: string): string | null {
