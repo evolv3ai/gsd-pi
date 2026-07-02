@@ -15,7 +15,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { QUICK_BRANCH_RE } from "./branch-patterns.js";
 import { loadPrompt } from "./prompt-loader.js";
 import { gsdRoot } from "./paths.js";
-import { GitServiceImpl, runGit } from "./git-service.js";
+import { GitServiceImpl, runGit, taskBranchArgs } from "./git-service.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 import { nativeBranchExists, nativeDetectMainBranch, nativeDiffNumstat } from "./native-git-bridge.js";
 import { nativeHasStagedChanges } from "./native-git-bridge.js";
@@ -381,7 +381,7 @@ export async function handleQuick(
           }
         } catch { /* nothing to commit — fine */ }
 
-        runGit(basePath, ["checkout", "-b", branchName]);
+        runGit(basePath, taskBranchArgs(basePath, branchName, current));
         branchCreated = true;
       }
     } catch (err) {

@@ -704,6 +704,25 @@ export function runGit(basePath: string, args: string[], options: { allowFailure
   }
 }
 
+/**
+ * Arguments for creating a task/workflow branch. The new branch starts from the
+ * repo's main branch, not from whatever branch happens to be checked out —
+ * branching from HEAD silently stacks consecutive workflow branches on top of
+ * each other, so every new gsd/* branch (and its eventual PR) drags along the
+ * previous workflow's commits. Falls back to branching from HEAD when no main
+ * branch can be detected or the current branch is already the main branch.
+ */
+export function taskBranchArgs(basePath: string, branchName: string, currentBranch: string): string[] {
+  const args = ["checkout", "-b", branchName];
+  try {
+    const main = nativeDetectMainBranch(basePath);
+    if (main && main !== currentBranch) args.push(main);
+  } catch {
+    // Detection failed — keep legacy branch-from-HEAD behavior.
+  }
+  return args;
+}
+
 // ─── Commit Type Inference ─────────────────────────────────────────────────
 
 /**

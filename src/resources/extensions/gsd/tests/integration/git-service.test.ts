@@ -15,6 +15,7 @@ import {
   RUNTIME_EXCLUSION_PATHS,
   VALID_BRANCH_NAME,
   runGit,
+  taskBranchArgs,
   readIntegrationBranch,
   resolveMilestoneIntegrationBranch,
   writeIntegrationBranch,
@@ -1118,6 +1119,40 @@ process.exit(result.status ?? 0);
 
     rmSync(repo, { recursive: true, force: true });
   }
+
+  // ─── taskBranchArgs ───────────────────────────────────────────────────
+
+  test('taskBranchArgs starts new workflow branches from main, not from HEAD', () => {
+    const repo = initBranchTestRepo();
+
+    assert.deepStrictEqual(
+      taskBranchArgs(repo, "gsd/spike/first", "main"),
+      ["checkout", "-b", "gsd/spike/first"],
+      "branching while on main needs no explicit start point",
+    );
+
+    // Simulate a finished workflow left checked out with its own commit.
+    run("git checkout -b gsd/spike/first", repo);
+    createFile(repo, "first.txt", "first workflow output");
+    runGit(repo, ["add", "-A"]);
+    runGit(repo, ["commit", "-m", "first workflow work"]);
+
+    const args = taskBranchArgs(repo, "gsd/spike/second", "gsd/spike/first");
+    assert.deepStrictEqual(
+      args,
+      ["checkout", "-b", "gsd/spike/second", "main"],
+      "next workflow branch starts from main so workflows do not stack",
+    );
+
+    runGit(repo, args);
+    assert.deepStrictEqual(
+      run("git rev-parse HEAD", repo),
+      run("git rev-parse main", repo),
+      "second workflow branch points at main, without the first workflow's commit",
+    );
+
+    rmSync(repo, { recursive: true, force: true });
+  });
 
   // ═══════════════════════════════════════════════════════════════════════
   // S05: Enhanced features — snapshots, pre-merge checks
