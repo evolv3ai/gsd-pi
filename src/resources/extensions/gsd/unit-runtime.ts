@@ -191,17 +191,6 @@ export function recordUnitHarnessAbort(
   });
 }
 
-export function clearUnitHarnessAbort(
-  basePath: string,
-  unitType: string,
-  unitId: string,
-  startedAt: number,
-): AutoUnitRuntimeRecord {
-  return writeUnitRuntimeRecord(basePath, unitType, unitId, startedAt, {
-    harnessAbort: undefined,
-  });
-}
-
 export function readUnitRuntimeRecord(basePath: string, unitType: string, unitId: string): AutoUnitRuntimeRecord | null {
   const path = runtimePath(basePath, unitType, unitId);
   if (!existsSync(path)) return null;
