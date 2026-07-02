@@ -730,8 +730,22 @@ export function isLocalElicitTimeoutError(err: unknown): boolean {
   );
 }
 
+/**
+ * Detect a client-side cancellation of the tools/call. `withElicitTimeout`
+ * rejects with `<label> cancelled by client` when the tool-call AbortSignal
+ * fires. This is the caller tearing down the request, not a channel failure,
+ * so the handler must return a clean cancelled result rather than re-throwing
+ * into a raw `isError` response that skips `recordAskUserQuestionsGateResult`
+ * and leaves the depth-verification gate pending with no cancellation signal.
+ */
+export function isLocalElicitClientAbortError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.message.toLowerCase().includes('cancelled by client');
+}
+
 function isLocalElicitFallbackError(err: unknown): boolean {
   if (isLocalElicitTimeoutError(err)) return true;
+  if (isLocalElicitClientAbortError(err)) return true;
   if (!(err instanceof Error)) return false;
   const message = err.message.toLowerCase();
   return (
@@ -776,6 +790,7 @@ export async function askUserQuestionsHandler(
     // depth-verification gate when the user is sitting in front of the host.
     let localElicitError: unknown;
     let localElicitTimedOut = false;
+    let localElicitCancelledByClient = false;
     try {
       const elicitation = await withElicitTimeout(
         deps.elicitInput(buildAskUserQuestionsElicitRequest(questions), {
@@ -807,6 +822,11 @@ export async function askUserQuestionsHandler(
       // the user instead of looping on the blocked call (#852).
       if (isLocalElicitTimeoutError(err)) {
         localElicitTimedOut = true;
+      } else if (isLocalElicitClientAbortError(err)) {
+        // The caller aborted the tools/call. Handled below (do not fall
+        // through to remote; the signal is already aborted and no one is
+        // there to answer it either).
+        localElicitCancelledByClient = true;
       } else {
         console.warn(`[gsd:mcp] ask_user_questions local elicitation unavailable; trying remote fallback: ${formatErrorMessage(err)}`);
       }
@@ -826,6 +846,23 @@ export async function askUserQuestionsHandler(
       return {
         content: [{ type: 'text' as const, text: formatAskUserQuestionsTimeoutMessage(localElicitError) }],
         structuredContent: timedOutStructured as unknown as Record<string, unknown>,
+      };
+    }
+
+    // Client aborted the tools/call. Do not fall through to remote (the signal
+    // is already aborted and no one is there to answer). Return a clean
+    // `cancelled` result so the gate hook sees a cancellation (gate stays
+    // pending, model re-asks) instead of a raw `isError` that skips the gate
+    // result recording entirely.
+    if (localElicitCancelledByClient) {
+      const cancelledStructured: AskUserQuestionsStructuredContent = {
+        questions,
+        response: null,
+        cancelled: true,
+      };
+      return {
+        content: [{ type: 'text' as const, text: 'ask_user_questions was cancelled by the client' }],
+        structuredContent: cancelledStructured as unknown as Record<string, unknown>,
       };
     }
 

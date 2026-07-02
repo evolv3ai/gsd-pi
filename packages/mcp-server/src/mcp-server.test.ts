@@ -24,6 +24,7 @@ import {
   buildAskUserQuestionsElicitRequest,
   createMcpServer,
   formatAskUserQuestionsElicitResult,
+  isLocalElicitClientAbortError,
   isLocalElicitTimeoutError,
   withElicitTimeout,
 } from './server.js';
@@ -1614,6 +1615,44 @@ describe('createMcpServer tool registration', () => {
     assert.match(result.content[0]?.text ?? '', /Local elicitation failed/);
     assert.match(result.content[0]?.text ?? '', /remote transport failed/);
   });
+
+  it('ask_user_questions returns cancelled structuredContent (not isError) and does NOT fall through to remote when the client aborts', async () => {
+    const questions = [
+      {
+        id: 'depth_verification_M001',
+        header: 'Depth Check',
+        question: 'Did I capture the depth right?',
+        options: [
+          { label: 'Yes, you got it (Recommended)', description: 'Continue.' },
+          { label: 'Not quite', description: 'Clarify.' },
+        ],
+      },
+    ];
+    let remoteCalls = 0;
+
+    const result = await askUserQuestionsHandler(questions, undefined, {
+      async elicitInput() {
+        // withElicitTimeout rejects with this message when the tool-call
+        // AbortSignal fires (client tore down the request).
+        throw new Error('ask_user_questions cancelled by client');
+      },
+      isRemoteConfigured() {
+        return true;
+      },
+      async tryRemoteQuestions() {
+        remoteCalls++;
+        throw new Error('remote must not be called on client abort');
+      },
+    });
+
+    assert.equal(remoteCalls, 0, 'client abort must NOT fall through to remote');
+    assert.equal('isError' in result && result.isError, false, 'client abort is not an error result');
+    assert.deepEqual(
+      (result as { structuredContent?: unknown }).structuredContent,
+      { questions, response: null, cancelled: true },
+    );
+    assert.match(result.content[0]?.text ?? '', /cancelled by the client/i);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1649,6 +1688,31 @@ describe('isLocalElicitTimeoutError', () => {
     assert.equal(isLocalElicitTimeoutError('timed out'), false);
     assert.equal(isLocalElicitTimeoutError(undefined), false);
     assert.equal(isLocalElicitTimeoutError(null), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isLocalElicitClientAbortError
+// ---------------------------------------------------------------------------
+
+describe('isLocalElicitClientAbortError', () => {
+  it('recognizes the withElicitTimeout client-abort rejection', () => {
+    assert.equal(
+      isLocalElicitClientAbortError(new Error('ask_user_questions cancelled by client')),
+      true,
+    );
+  });
+
+  it('does not misclassify timeouts or other elicitation errors', () => {
+    assert.equal(isLocalElicitClientAbortError(new Error('ask_user_questions timed out after 10 minutes')), false);
+    assert.equal(isLocalElicitClientAbortError(new Error('MCP host does not support elicitation')), false);
+    assert.equal(isLocalElicitClientAbortError(new Error('MCP error -32001: Request timed out')), false);
+  });
+
+  it('does not misclassify non-Error values', () => {
+    assert.equal(isLocalElicitClientAbortError('cancelled by client'), false);
+    assert.equal(isLocalElicitClientAbortError(undefined), false);
+    assert.equal(isLocalElicitClientAbortError(null), false);
   });
 });
 
