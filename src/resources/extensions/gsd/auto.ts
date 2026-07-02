@@ -236,7 +236,7 @@ import {
   getSlice,
   getTask,
 } from "./gsd-db.js";
-import { closeWorkflowDatabase } from "./db-workspace.js";
+import { checkpointWorkflowDatabase, closeWorkflowDatabase } from "./db-workspace.js";
 import { markLatestActiveForWorkerCanceled } from "./db/unit-dispatches.js";
 import { writeUnitRuntimeRecord } from "./unit-runtime.js";
 import { countPendingCaptures } from "./captures.js";
@@ -1628,6 +1628,11 @@ export async function stopAuto(
   const installTerminalCloseoutOutcome = completionStopRequested && preserveCloseoutTranscript;
   const preserveCompletionSurface = completionStopRequested || preserveCloseoutTranscript;
   s.completionStopInProgress = preserveCompletionSurface;
+  try {
+    checkpointWorkflowDatabase();
+  } catch (e) {
+    debugLog("stop-checkpoint-failed", { error: e instanceof Error ? e.message : String(e) });
+  }
   playNotificationBell("stop", loadedPreferences?.notifications);
 
   // #4764 — telemetry: record the exit reason, isolation mode, whether an auto
@@ -2370,6 +2375,7 @@ function buildLoopDeps(pi: ExtensionAPI, ctx: ExtensionContext): LoopDeps {
     stopAuto,
     pauseAuto,
     clearUnitTimeout,
+    checkpointWorkflowDatabase,
     updateProgressWidget,
     ...cmux,
     handleLostSessionLock: (ctx: ExtensionContext | undefined, lockStatus: SessionLockStatus | undefined) => {

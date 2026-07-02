@@ -3,11 +3,11 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { closeSync, ftruncateSync, openSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, ftruncateSync, openSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-import { captureRootDirtySnapshot } from "../root-write-leak-guard.ts";
-import { cleanup, createFile, git, makeTempRepo } from "./test-utils.ts";
+import { captureRootDirtySnapshot, detectRootWriteLeak } from "../root-write-leak-guard.ts";
+import { cleanup, createFile, makeTempRepo } from "./test-utils.ts";
 
 test("captureRootDirtySnapshot ignores unignored GSD root runtime directories", () => {
   const base = makeTempRepo("gsd-root-dirty-runtime-");
@@ -34,11 +34,7 @@ test("captureRootDirtySnapshot does not read dirty files larger than Node's Buff
     const relPath = "large.bin";
     const absPath = join(base, relPath);
 
-    writeFileSync(absPath, "tracked\n", "utf-8");
-    git(base, "add", relPath);
-    git(base, "commit", "-m", "track large fixture");
-
-    const fd = openSync(absPath, "r+");
+    const fd = openSync(absPath, "w");
     try {
       ftruncateSync(fd, 2_200 * 1024 * 1024);
     } finally {
@@ -51,8 +47,34 @@ test("captureRootDirtySnapshot does not read dirty files larger than Node's Buff
     const snapshot = captureRootDirtySnapshot(base);
     const entry = snapshot.get(relPath);
 
-    assert.equal(entry?.status, "M");
+    assert.equal(entry?.status, "??");
     assert.match(entry?.fingerprint ?? "", /^large:\d+:/);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("detectRootWriteLeak reports changed baseline untracked root files", () => {
+  const base = makeTempRepo("gsd-root-dirty-baseline-");
+  try {
+    const relPath = "notes/todo.md";
+    createFile(base, relPath, "before\n");
+    const before = captureRootDirtySnapshot(base);
+
+    createFile(base, relPath, "after\n");
+    const leak = detectRootWriteLeak({
+      rootPath: base,
+      worktreePath: join(base, ".gsd", "worktrees", "M001"),
+      unitType: "execute-task",
+      unitId: "M001/S01/T01",
+      before,
+    });
+
+    assert.ok(leak, "changed baseline untracked file should be reported as a leak");
+    assert.deepEqual(
+      leak.files.map((file) => file.path),
+      [relPath],
+    );
   } finally {
     cleanup(base);
   }

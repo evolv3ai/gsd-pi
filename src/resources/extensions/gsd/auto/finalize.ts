@@ -373,6 +373,14 @@ export async function runFinalize(
         files: leak.files.map((file) => ({ path: file.path, status: file.status })),
       });
       ctx.ui.notify(message, "error");
+      try {
+        deps.checkpointWorkflowDatabase?.();
+      } catch (err) {
+        debugLog("autoLoop", {
+          phase: "root-write-leak-checkpoint-failed",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       await deps.stopAuto(ctx, pi, "Root-write leak during isolated auto-mode", {
         preserveCompletedMilestoneBranch: true,
       });

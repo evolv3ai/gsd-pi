@@ -381,6 +381,14 @@ In these states GSD does not auto-stash and does not auto-fix; it stops so you c
 
 **Fix:** If the database is still the source of truth, run `/gsd rebuild markdown` to re-render missing artifact projections from the DB, then rerun `/gsd doctor`. If the file represented work that should still exist but rebuild cannot recreate it, restore the file from git/backups or rerun the GSD workflow that generates that artifact. Use `/gsd recover --confirm` only when the database is lost or corrupt and the markdown on disk is the source you intentionally want to import; it is not the normal fix for a dangling artifact reference.
 
+### `/gsd doctor` reports `artifact_db_status_divergence`
+
+**Symptoms:** `/gsd doctor` shows an error with issue code `artifact_db_status_divergence` for a completion artifact such as `T01-SUMMARY.md`, while the database still shows that task as open or missing.
+
+**What it means:** A completion artifact exists on disk, but runtime will not silently trust it as task completion. `/gsd doctor fix` can repair task completion from a SUMMARY only when the SUMMARY frontmatter matches the task, has no blocker, has a valid `completed_at`, and its `verification_result` is passing.
+
+**Fix:** Run `/gsd doctor fix` when doctor marks the divergence as fixable. Non-passing, negated-passing such as `not passed`, blocker, invalid, or mismatched summaries stay manual-recovery cases; inspect the artifact, repair or rerun the task, then rerun `/gsd doctor`.
+
 ### `/gsd doctor` reports `artifact_user_content_missing`
 
 **Symptoms:** `/gsd doctor` shows a warning with issue code `artifact_user_content_missing` for a missing `CONTEXT` or `RESEARCH` file, such as `milestones/M001/M001-CONTEXT.md` or `milestones/M001/M001-RESEARCH.md`. When `/gsd doctor fix` is running, it reports that the user-authored artifact was skipped instead of recreating a placeholder.

@@ -65,11 +65,12 @@ export function captureRootDirtySnapshot(rootPath: string): RootDirtySnapshot {
   for (const line of status.split("\n")) {
     if (!line.trim()) continue;
     const code = line.slice(0, 2);
+    if (code !== "??") continue;
     const path = line.slice(3).replace(/^"|"$/g, "");
     if (!path || isRootRuntimePath(path)) continue;
     snapshot.set(path, {
       path,
-      status: code.trim() || code,
+      status: code,
       fingerprint: fileFingerprint(rootPath, path),
     });
   }
@@ -87,7 +88,7 @@ export function detectRootWriteLeak(input: {
   const leaked: RootDirtyEntry[] = [];
   for (const entry of after.values()) {
     const prior = input.before?.get(entry.path);
-    if (!prior || prior.status !== entry.status || prior.fingerprint !== entry.fingerprint) {
+    if (!prior || prior.fingerprint !== entry.fingerprint) {
       leaked.push(entry);
     }
   }

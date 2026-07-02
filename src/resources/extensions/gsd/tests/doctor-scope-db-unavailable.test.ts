@@ -7,6 +7,7 @@ import {
   insertMilestone,
   insertSlice,
   insertTask,
+  getTask,
   openDatabase,
 } from "../gsd-db.ts";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -537,6 +538,136 @@ test("checkEngineHealth marks escaped phases rows fixable when a milestones repl
   assert.ok(issue, "escaped stale row should still be reported when repair is off");
   assert.equal(issue.file, "phases/01-m001/01-01-PLAN.md");
   assert.equal(issue.fixable, true, "escaped phases rows with a milestones replacement must be marked fixable");
+});
+
+function taskSummary(id: string, verificationResult = "passed"): string {
+  return [
+    "---",
+    `id: ${id}`,
+    "parent: S01",
+    "milestone: M001",
+    "key_files:",
+    "  - src/example.ts",
+    "key_decisions:",
+    "  - Keep recovery conservative",
+    "duration: 5m",
+    `verification_result: ${verificationResult}`,
+    "completed_at: 2026-01-01T00:00:00.000Z",
+    "blocker_discovered: false",
+    "---",
+    "",
+    `# ${id}: Done`,
+    "",
+    "**Recovered task completion.**",
+    "",
+    "## What Happened",
+    "",
+    "The task finished and wrote its summary.",
+    "",
+    "## Deviations",
+    "",
+    "None.",
+    "",
+    "## Known Issues",
+    "",
+    "None.",
+    "",
+  ].join("\n");
+}
+
+test("checkEngineHealth marks valid task artifact DB divergence fixable and repairs it", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-artifact-db-repair-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  const tasksDir = join(gsdDir, "milestones", "M001", "slices", "S01", "tasks");
+  mkdirSync(tasksDir, { recursive: true });
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertMilestone({ id: "M001", title: "Foundation", status: "active" });
+  insertSlice({ id: "S01", milestoneId: "M001", title: "Slice", status: "active", risk: "low", depends: [], sequence: 1 });
+  insertTask({ id: "T01", milestoneId: "M001", sliceId: "S01", title: "Task", status: "pending", sequence: 1 });
+
+  const relSummaryPath = "milestones/M001/slices/S01/tasks/T01-SUMMARY.md";
+  const summary = taskSummary("T01");
+  writeFileSync(join(gsdDir, relSummaryPath), summary, "utf-8");
+  insertArtifact({
+    path: relSummaryPath,
+    artifact_type: "SUMMARY",
+    milestone_id: "M001",
+    slice_id: "S01",
+    task_id: "T01",
+    full_content: summary,
+  });
+
+  const detectIssues: any[] = [];
+  await checkEngineHealth(base, detectIssues, []);
+
+  const divergence = detectIssues.find((issue) => issue.code === "artifact_db_status_divergence" && issue.unitId === "M001/S01/T01");
+  assert.ok(divergence, "doctor should report the artifact/DB divergence");
+  assert.equal(divergence.fixable, true);
+
+  const repairIssues: any[] = [];
+  const fixes: string[] = [];
+  await checkEngineHealth(base, repairIssues, fixes, { repair: true });
+
+  assert.ok(
+    fixes.includes("repaired task completion from SUMMARY artifact for M001/S01/T01"),
+    "repair mode should report the task completion repair",
+  );
+  assert.equal(
+    repairIssues.some((issue) => issue.code === "artifact_db_status_divergence" && issue.unitId === "M001/S01/T01"),
+    false,
+    "repaired divergence should not be reported in the same doctor run",
+  );
+
+  const task = getTask("M001", "S01", "T01");
+  assert.equal(task?.status, "complete");
+  assert.equal(task?.completed_at, "2026-01-01T00:00:00.000Z");
+  assert.equal(task?.verification_result, "passed");
+  assert.match(task?.full_summary_md ?? "", /# T01: Done/);
+});
+
+test("checkEngineHealth keeps failed and negated-pass summaries non-fixable", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-artifact-db-failure-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  const tasksDir = join(gsdDir, "milestones", "M001", "slices", "S01", "tasks");
+  mkdirSync(tasksDir, { recursive: true });
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertMilestone({ id: "M001", title: "Foundation", status: "active" });
+  insertSlice({ id: "S01", milestoneId: "M001", title: "Slice", status: "active", risk: "low", depends: [], sequence: 1 });
+  const nonPassingResults = [
+    ["T02", "failed"],
+    ["T03", "not passed"],
+    ["T04", "not passing"],
+  ] as const;
+  for (const [taskId, verificationResult] of nonPassingResults) {
+    insertTask({ id: taskId, milestoneId: "M001", sliceId: "S01", title: "Task", status: "pending", sequence: 1 });
+
+    const relSummaryPath = `milestones/M001/slices/S01/tasks/${taskId}-SUMMARY.md`;
+    const summary = taskSummary(taskId, verificationResult);
+    writeFileSync(join(gsdDir, relSummaryPath), summary, "utf-8");
+    insertArtifact({
+      path: relSummaryPath,
+      artifact_type: "SUMMARY",
+      milestone_id: "M001",
+      slice_id: "S01",
+      task_id: taskId,
+      full_content: summary,
+    });
+  }
+
+  const issues: any[] = [];
+  await checkEngineHealth(base, issues, []);
+
+  for (const [taskId] of nonPassingResults) {
+    const divergence = issues.find((issue) => issue.code === "artifact_db_status_divergence" && issue.unitId === `M001/S01/${taskId}`);
+    assert.ok(divergence, "doctor should still report non-passing summary drift");
+    assert.equal(divergence.fixable, false);
+  }
 });
 
 test("checkEngineHealth reports missing CONTEXT and RESEARCH artifacts as user-content warnings", async (t) => {

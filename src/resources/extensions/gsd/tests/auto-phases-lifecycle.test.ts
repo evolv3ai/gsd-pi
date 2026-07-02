@@ -61,6 +61,7 @@ async function runSuccessfulFinalize(s: AutoSession) {
     },
     stopAuto: async () => {},
     pauseAuto: async () => {},
+    checkpointWorkflowDatabase() {},
     updateProgressWidget() {},
     postUnitPreVerification: async () => "continue",
     runPostUnitVerification: async () => "continue",
@@ -410,9 +411,13 @@ test("runFinalize stops before merge when an isolated unit leaks app files into 
   const notifications: Array<{ message: string; level?: string }> = [];
   const stopCalls: Array<{ reason?: string; preserve?: boolean }> = [];
   const mergeCalls: string[] = [];
+  const checkpointCalls: string[] = [];
   const result = await runFinalizeWithDeps(
     s,
     {
+      checkpointWorkflowDatabase() {
+        checkpointCalls.push("checkpoint");
+      },
       stopAuto: async (_ctx: unknown, _pi: unknown, reason?: string, options?: { preserveCompletedMilestoneBranch?: boolean }) => {
         stopCalls.push({ reason, preserve: options?.preserveCompletedMilestoneBranch });
       },
@@ -438,14 +443,51 @@ test("runFinalize stops before merge when an isolated unit leaks app files into 
 
   assert.equal(result.action, "break");
   assert.equal(result.reason, "root-write-leak");
+  assert.deepEqual(checkpointCalls, ["checkpoint"], "root-write leak should flush DB before stopAuto");
   assert.deepEqual(stopCalls, [{ reason: "Root-write leak during isolated auto-mode", preserve: true }]);
   assert.deepEqual(mergeCalls, [], "root-write leak must stop before merge preflight");
   const message = notifications.find((n) => n.level === "error")?.message ?? "";
   assert.match(message, /execute-task M001\/S01\/T01/);
   assert.match(message, /Project root:/);
   assert.match(message, /Expected worktree:/);
-  assert.match(message, /index\.html/);
+  assert.doesNotMatch(message, /index\.html/);
   assert.match(message, /tests\/verify-s09\.sh/);
+});
+
+test("runFinalize ignores tracked root artifact changes during isolated units", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "gsd-root-leak-tracked-"));
+  const worktree = join(root, ".gsd", "worktrees", "M001");
+  t.after(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+  initRepo(root);
+  writeFileSync(join(root, "openapi.json"), "{}\n");
+  runGit(root, ["add", "openapi.json"]);
+  runGit(root, ["commit", "-m", "chore: add generated spec"]);
+  mkdirSync(worktree, { recursive: true });
+
+  const s = new AutoSession();
+  s.basePath = worktree;
+  s.originalBasePath = root;
+  s.currentMilestoneId = "M001";
+  s.rootWriteBaseline = captureRootDirtySnapshot(root);
+  s.currentUnit = {
+    type: "execute-task",
+    id: "M001/S01/T01",
+    startedAt: Date.now(),
+  };
+
+  writeFileSync(join(root, "openapi.json"), "{\"generated\":true}\n");
+
+  const stopCalls: string[] = [];
+  const result = await runFinalizeWithDeps(s, {
+    stopAuto: async (_ctx: unknown, _pi: unknown, reason?: string) => {
+      stopCalls.push(reason ?? "");
+    },
+  });
+
+  assert.equal(result.action, "next");
+  assert.deepEqual(stopCalls, []);
 });
 
 test("runFinalize allows root .gsd-only changes during isolated units", async (t) => {
