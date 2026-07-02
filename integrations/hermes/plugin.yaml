@@ -32,6 +32,10 @@ config_schema:
         cache_ttl_seconds:
           type: integer
           default: 45
+        mcp_read_timeout_seconds:
+          type: number
+          default: 60
+          description: Seconds to wait for one gsd-mcp-server response before resetting the MCP sidecar
         notification_level:
           type: string
           enum: [quiet, normal, verbose]

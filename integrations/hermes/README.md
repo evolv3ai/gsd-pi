@@ -28,6 +28,8 @@ hermes plugins enable open-gsd-hermes
 
 `~/.hermes/gsd.yaml` — see [`docs/setup.md`](docs/setup.md) for Slack/Telegram gateway checklist.
 
+Common `gsd:` keys include `cli_path`, `mcp_server_path`, `default_project`, `bindings`, and `mcp_read_timeout_seconds`. The MCP read timeout defaults to 60 seconds; tune it only when Hermes times out waiting for `gsd-mcp-server` responses that complete locally on slow projects or filesystems.
+
 **Before gateway testing:**
 
 ```bash
