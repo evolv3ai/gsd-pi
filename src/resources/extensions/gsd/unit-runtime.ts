@@ -101,7 +101,7 @@ export interface ExecuteTaskRecoveryStatus {
 }
 
 export interface UnitHarnessAbortRecord {
-  kind: "tool-loop-guard";
+  kind: "tool-loop-guard" | "tool-error" | "turn-abort";
   reason: string;
   toolName?: string;
   count?: number;

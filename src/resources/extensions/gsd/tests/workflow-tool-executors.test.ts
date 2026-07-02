@@ -1873,7 +1873,7 @@ test("executeSaveGateResult validates inputs and persists verdicts", async () =>
   }
 });
 
-test("executeSaveGateResult leaves quality gates pending after a harness-aborted turn", async () => {
+test("executeSaveGateResult leaves quality gates pending after a retryable tool error", async () => {
   const base = makeTmpBase();
   const startedAt = Date.now();
   try {
@@ -1886,10 +1886,9 @@ test("executeSaveGateResult leaves quality gates pending after a harness-aborted
     autoSession.basePath = base;
     autoSession.currentUnit = { type: "plan-slice", id: "M005/S05", startedAt };
     recordUnitHarnessAbort(base, "plan-slice", "M005/S05", startedAt, {
-      kind: "tool-loop-guard",
-      reason: "Tool loop detected (identical args): read called 5 times with identical arguments.",
-      toolName: "read",
-      count: 5,
+      kind: "tool-error",
+      reason: "Input validation error: selector is required",
+      toolName: "browser_click",
     });
 
     const result = await inProjectDir(base, () => executeSaveGateResult({
@@ -1905,6 +1904,52 @@ test("executeSaveGateResult leaves quality gates pending after a harness-aborted
     assert.equal(result.details.operation, "save_gate_result");
     assert.equal(result.details.error, "harness_aborted_needs_retry");
     assert.equal(result.details.retryable, true);
+    assert.equal(result.details.harnessAbortKind, "tool-error");
+    const row = _getAdapter()!.prepare(
+      "SELECT status, verdict, rationale, findings FROM quality_gates WHERE milestone_id = ? AND slice_id = ? AND gate_id = ? AND task_id = ''",
+    ).get("M005", "S05", "Q3") as Record<string, unknown>;
+    assert.equal(row.status, "pending");
+    assert.equal(row.verdict, "");
+    assert.equal(row.rationale, "");
+    assert.equal(row.findings, "");
+  } finally {
+    autoSession.reset();
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executeSaveGateResult leaves quality gates pending after a turn abort", async () => {
+  const base = makeTmpBase();
+  const startedAt = Date.now();
+  try {
+    openTestDb(base);
+    seedMilestone("M005", "Milestone Five");
+    seedSlice("M005", "S05", "pending");
+    insertGateRow({ milestoneId: "M005", sliceId: "S05", gateId: "Q3", scope: "slice" });
+    autoSession.reset();
+    autoSession.active = true;
+    autoSession.basePath = base;
+    autoSession.currentUnit = { type: "plan-slice", id: "M005/S05", startedAt };
+    recordUnitHarnessAbort(base, "plan-slice", "M005/S05", startedAt, {
+      kind: "turn-abort",
+      reason: "Agent turn aborted before the gate evaluation completed. origin=timeout stopReason=aborted",
+    });
+
+    const result = await inProjectDir(base, () => executeSaveGateResult({
+      milestoneId: "M005",
+      sliceId: "S05",
+      gateId: "Q3",
+      verdict: "flag",
+      rationale: "Partial gate failure after a turn abort.",
+      findings: "This should not be persisted as a product-quality finding.",
+    }, base));
+
+    assert.equal(result.isError, true);
+    assert.equal(result.details.operation, "save_gate_result");
+    assert.equal(result.details.error, "harness_aborted_needs_retry");
+    assert.equal(result.details.retryable, true);
+    assert.equal(result.details.harnessAbortKind, "turn-abort");
     const row = _getAdapter()!.prepare(
       "SELECT status, verdict, rationale, findings FROM quality_gates WHERE milestone_id = ? AND slice_id = ? AND gate_id = ? AND task_id = ''",
     ).get("M005", "S05", "Q3") as Record<string, unknown>;
