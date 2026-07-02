@@ -193,7 +193,7 @@ Dispatch remains responsible for selecting the next Unit from reconciled state. 
 
   See `docs/dev/ADR-032-unit-closeout-seam.md`.
 
-- "What a Unit type is" should be declared once, in the **Unit Registry**. The parallel tables (`KNOWN_UNIT_TYPES`, `UNIT_TOOL_CONTRACTS`, the scope Sets in `auto-unit-tool-scope.ts`, direct prompt-template associations, and the unit→phase switch in `preferences-models.ts`) become derived views with stable import paths (the `gsd-db.ts` barrel discipline). Parity is pinned by one table-driven registry test. The Tool Contract module (ADR-015) compiles from the registry. Remaining steps: fold `UNIT_MANIFESTS` data into descriptor rows (already type-enforced against the registry's `UnitType`) and model conditional/composite prompt-template selection.
+- "What a Unit type is" should be declared once, in the **Unit Registry**. The parallel tables (`KNOWN_UNIT_TYPES`, `UNIT_TOOL_CONTRACTS`, the scope Sets in `auto-unit-tool-scope.ts`, verified prompt-template associations, and the unit→phase switch in `preferences-models.ts`) become derived views with stable import paths (the `gsd-db.ts` barrel discipline). Parity is pinned by one table-driven registry test. The Tool Contract module (ADR-015) compiles from the registry. Remaining steps: fold `UNIT_MANIFESTS` data into descriptor rows (already type-enforced against the registry's `UnitType`) and migrate additional conditional/composite prompt-template associations only after their builder choices are verified.
 
   See `docs/dev/ADR-033-unit-type-registry.md`.
 

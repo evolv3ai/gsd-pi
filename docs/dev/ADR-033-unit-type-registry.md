@@ -101,8 +101,9 @@ migrates to the registry.
   template sets, prompt association, tool surface, scope membership, and routing
   live in one registry row. Prompt composition and manifest data still require
   their existing files.
-- **Locality:** a Unit's direct prompt, tool surface, scope membership, and
-  routing change in one diff, reviewable as one unit of meaning.
+- **Locality:** a Unit's verified prompt association, tool surface, scope
+  membership, and routing change in one diff, reviewable as one unit of
+  meaning.
 - **Leverage for ADR-015:** the Tool Contract compiler reads one source;
   prompt/policy/schema parity tests collapse into the registry parity test.
 - **Migration:** mechanical — introduce the registry with entries copied from
