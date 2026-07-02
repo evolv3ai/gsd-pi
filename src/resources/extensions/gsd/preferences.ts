@@ -39,7 +39,7 @@ import {
   type SkillDiscoveryMode,
   formatSkillRef,
 } from "./preferences-types.js";
-import { validatePreferences } from "./preferences-validation.js";
+import { crossAxisPreferenceWarnings, validatePreferences } from "./preferences-validation.js";
 import { gsdHome } from "./gsd-home.js";
 
 // ─── Re-exports: types ──────────────────────────────────────────────────────
@@ -416,9 +416,36 @@ export function loadEffectiveGSDPreferences(
   }
 
   result = stripInheritedPlanningDepth(result, projectHasPlanningDepth);
+  result = appendCrossAxisPreferenceWarnings(result);
 
   cacheEffectivePreferences(cacheKey, result);
   return result;
+}
+
+function appendCrossAxisPreferenceWarnings(loaded: LoadedGSDPreferences): LoadedGSDPreferences {
+  const crossWarnings = crossAxisPreferenceWarnings(loaded.preferences);
+  const existingMessages = new Set([
+    ...(loaded.warnings ?? []),
+    ...(loaded.diagnostics ?? []).map((diagnostic) => diagnostic.message),
+  ]);
+  const newWarnings = crossWarnings.filter((message) => !existingMessages.has(message));
+  if (newWarnings.length === 0) return loaded;
+
+  return {
+    ...loaded,
+    warnings: [...(loaded.warnings ?? []), ...newWarnings],
+    diagnostics: [
+      ...(loaded.diagnostics ?? []),
+      ...newWarnings.map((message): PreferenceDiagnostic => ({
+        path: loaded.path,
+        scope: loaded.scope,
+        severity: "warning",
+        kind: "validation",
+        message,
+        sanitized: true,
+      })),
+    ],
+  };
 }
 
 function withoutProfilePhaseDefaults(defaults: Partial<GSDPreferences>): Partial<GSDPreferences> {

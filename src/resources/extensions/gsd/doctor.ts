@@ -383,7 +383,8 @@ function checkWorkspaceRepositoryHealth(
     // /var vs /private/var) don't cause a false mismatch.
     const toplevel = resolveGitToplevel(repo.root);
     const declaredReal = realpathSafe(repo.root);
-    if (toplevel !== declaredReal) {
+    const toplevelReal = toplevel ? realpathSafe(toplevel) : null;
+    if (toplevelReal !== declaredReal) {
       issues.push({
         severity: "warning",
         code: "workspace_repo_not_a_repo",
