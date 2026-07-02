@@ -358,6 +358,11 @@ test("merge succeeds but stash pop needs manual recovery -> postflight-stash-res
     reason: "postflight-stash-restore-failed",
   });
   assert.equal(log.postflightCalls, 1);
+  assert.equal(
+    log.milestoneMergedInPhases,
+    true,
+    "successful merge must set the flag before postflight recovery stops auto-mode",
+  );
   assert.equal(log.stopAutoCalls.length, 1);
   assert.match(
     log.stopAutoCalls[0] ?? "",

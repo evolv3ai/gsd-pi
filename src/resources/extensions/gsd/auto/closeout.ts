@@ -111,18 +111,12 @@ export async function _runMilestoneMergeWithStashRestore(
   });
 
   if (mergeResult.ok) {
-    s.milestoneMergedInPhases = true;
-    try {
-      const rebuildBasePath = s.originalBasePath || s.canonicalProjectRoot || s.basePath;
-      const { rebuildMarkdownProjectionsFromDb } = await import("../commands-maintenance.js");
-      await rebuildMarkdownProjectionsFromDb(rebuildBasePath);
-    } catch (err) {
-      logWarning(
-        "engine",
-        `markdown projection rebuild after milestone merge failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    await markMilestoneMergedAndRebuild(s);
     return null;
+  }
+
+  if (mergeResult.reason === "postflight-stash-restore-failed") {
+    await markMilestoneMergedAndRebuild(s);
   }
 
   if (mergeResult.reason === "preflight-dirty-overlap" || mergeResult.reason === "preflight-unmerged-conflicts") {
@@ -182,6 +176,20 @@ export async function _runMilestoneMergeWithStashRestore(
     return stopOnPostflightRecoveryNeeded(ic, mergeResult.postflight, milestoneId);
   }
   return null;
+}
+
+async function markMilestoneMergedAndRebuild(s: AutoSession): Promise<void> {
+  s.milestoneMergedInPhases = true;
+  try {
+    const rebuildBasePath = s.originalBasePath || s.canonicalProjectRoot || s.basePath;
+    const { rebuildMarkdownProjectionsFromDb } = await import("../commands-maintenance.js");
+    await rebuildMarkdownProjectionsFromDb(rebuildBasePath);
+  } catch (err) {
+    logWarning(
+      "engine",
+      `markdown projection rebuild after milestone merge failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 export async function _runMilestoneMergeOnceWithStashRestore(
