@@ -651,6 +651,8 @@ Validation rules:
 - `workspace.mode: "parent"` requires at least one repository under `workspace.repositories`; otherwise it is rejected (a parent workspace with no child repos is indistinguishable from `project` mode).
 - Unknown keys under `workspace` and each repository entry are ignored with warnings.
 
+**Layout constraint (nested-only).** Child repositories must live **inside** the project root — sibling-repo layouts (e.g. a path like `../frontend` or any path resolving outside the root) are **not supported** and are rejected. This is a deliberate safety guard, not an arbitrary limitation: declared repository roots back the task path-scope allowlist used during planning (`plan-slice` validates that every task `files`/`inputs`/`expectedOutput` path stays under a declared root). Allowing escapes would weaken that guard and let a typo'd or malicious path authorize edits outside the project. To coordinate sibling repos, nest them under a common parent directory and run GSD from that parent.
+
 ### URL Blocking (`fetch_page`)
 
 The `fetch_page` tool blocks requests to private and internal network addresses to prevent server-side request forgery (SSRF). This protects against the agent being tricked into accessing internal services, cloud metadata endpoints, or local files.
