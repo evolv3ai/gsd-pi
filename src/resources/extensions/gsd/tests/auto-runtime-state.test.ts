@@ -3,6 +3,9 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   autoSession,
@@ -11,6 +14,10 @@ import {
   getAutoRuntimeSnapshot,
   recordAutoToolSurfaceSnapshot,
 } from "../auto-runtime-state.ts";
+import {
+  readUnitHarnessAbort,
+  recordUnitHarnessAbort,
+} from "../unit-runtime.ts";
 
 test("getAutoRuntimeSnapshot includes orchestration phase when available", () => {
   autoSession.reset();
@@ -79,6 +86,40 @@ test("clearToolInvocationError clears stale tool error state for active auto ses
 
   assert.equal(autoSession.lastToolInvocationError, null);
   autoSession.reset();
+});
+
+test("clearToolInvocationError clears stale tool error even when a harness abort is durable", () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-auto-runtime-state-"));
+  const startedAt = 123456;
+  try {
+    autoSession.reset();
+    autoSession.active = true;
+    autoSession.basePath = base;
+    autoSession.setCurrentUnit({
+      type: "gate-evaluate",
+      id: "M001/S01/gates+Q3",
+      startedAt,
+      workspaceRoot: base,
+    });
+    autoSession.lastToolInvocationError = "gsd_save_gate_result: simulated stale tool error";
+    recordUnitHarnessAbort(base, "gate-evaluate", "M001/S01/gates+Q3", startedAt, {
+      kind: "tool-error",
+      reason: "Tool execution failed before the unit could complete its gate evaluation.",
+      toolName: "gsd_uat_exec",
+    });
+
+    clearToolInvocationError();
+
+    assert.equal(autoSession.lastToolInvocationError, null);
+    assert.equal(
+      readUnitHarnessAbort(base, "gate-evaluate", "M001/S01/gates+Q3", startedAt)?.kind,
+      "tool-error",
+      "durable harness abort remains available for result-save blocking",
+    );
+  } finally {
+    autoSession.reset();
+    rmSync(base, { recursive: true, force: true });
+  }
 });
 
 test("getAutoRuntimeSnapshot omits orchestration phase when seam not wired", () => {
