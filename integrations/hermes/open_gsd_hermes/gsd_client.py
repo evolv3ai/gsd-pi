@@ -713,7 +713,10 @@ class GsdMcpClient:
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            return
+            try:
+                proc.kill()
+            except Exception:
+                pass
         if self._milestone_proc is proc:
             self._clear_milestone_state()
 
