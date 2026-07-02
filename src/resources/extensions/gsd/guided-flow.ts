@@ -42,7 +42,7 @@ import { gsdHome } from "./gsd-home.js";
 import {
   gsdRoot, milestonesDir, legacyMilestonesDir, resolveMilestoneFile,
   resolveSliceFile, resolveSlicePath, resolveGsdRootFile, relGsdRootFile,
-  relMilestoneFile, relSliceFile,
+  relMilestoneFile, relSliceFile, clearPathCache,
 } from "./paths.js";
 import { join } from "node:path";
 import { readFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
@@ -101,6 +101,7 @@ import {
   formatPriorContextBrief,
 } from "./preparation.js";
 import { verifyExpectedArtifact } from "./auto-recovery.js";
+import { countPlanMilestoneRoadmapSlices } from "./artifact-verification.js";
 import type { MilestoneScope } from "./workspace.js";
 import { clearPendingGate, extractDepthVerificationMilestoneId, getPendingGate } from "./bootstrap/write-gate.js";
 import {
@@ -178,6 +179,14 @@ export function verifyExpectedArtifactForScope(
 ): boolean {
   if (
     unitId === scope.milestoneId &&
+    (unitType === "discuss-milestone" || unitType === "plan-milestone")
+  ) {
+    // Layout-aware scope paths use resolveMilestoneFile; clear stale dir listings
+    // primed before discuss/plan wrote CONTEXT.md or ROADMAP.md (see checkAutoStartAfterDiscuss).
+    clearPathCache();
+  }
+  if (
+    unitId === scope.milestoneId &&
     unitType === "discuss-milestone"
   ) {
     const path = resolveExpectedArtifactPathForScope(scope, unitType, unitId);
@@ -198,7 +207,7 @@ function verifyScopedPlanMilestoneArtifact(
   if (!path || !existsSync(path)) return false;
   try {
     const roadmapContent = readFileSync(path, "utf-8");
-    if (!_roadmapHasParseableSlicesForTest(roadmapContent)) {
+    if (countPlanMilestoneRoadmapSlices(roadmapContent) === 0) {
       logWarning("recovery", `verify-fail ${unitType} ${unitId}: roadmap has zero slices at ${path}`);
       return false;
     }
