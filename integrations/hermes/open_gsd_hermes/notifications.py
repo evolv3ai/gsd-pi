@@ -63,6 +63,9 @@ class NotificationService:
     def notify_transition(self, message: str) -> None:
         self.send(f"📋 GSD: {message}", kind="transition")
 
+    def notify_milestone_complete(self, message: str) -> None:
+        self.send(message, kind="complete")
+
     def notify_terminal(self, status: str, error: str | None = None) -> None:
         normalized_status = status.lower()
         if normalized_status in ("complete", "completed", "done"):

@@ -52,6 +52,7 @@ class GsdMcpClient:
         self._milestone_pending_blocker_method: str | None = None
         self._milestone_command_block_failure: str | None = None
         self._milestone_notifications: Any = None  # NotificationService | None
+        self._milestone_project_dir: str | None = None
         self._milestone_on_terminal: Callable[[str], None] | None = None
         self._milestone_notified_terminal: bool = False
         self._milestone_thread: threading.Thread | None = None
@@ -387,6 +388,12 @@ class GsdMcpClient:
             project_dir=project_dir,
         )
 
+    def project_query(self, project_dir: str, query: str) -> dict[str, Any]:
+        return self._call_tool(
+            "gsd_query",
+            {"projectDir": project_dir, "query": query},
+        )
+
     # ------------------------------------------------------------------
     # Milestone creation (issue #1162)
     #
@@ -410,6 +417,8 @@ class GsdMcpClient:
     )
     _EXIT_BLOCKED = 10
     _STDERR_TAIL_LIMIT = 64 * 1024
+    # Supervised headless defaults to 30s; chat /gsd reply needs much longer.
+    _SUPERVISED_RESPONSE_TIMEOUT_MS = 3_600_000
 
     def _is_blocked_notice(self, message: str) -> bool:
         """Mirror of stop-notice.ts isBlockedNoticeMessage (lowercased input)."""
@@ -495,6 +504,8 @@ class GsdMcpClient:
             self._config.cli_path,
             "headless",
             "--supervised",
+            "--response-timeout",
+            str(self._SUPERVISED_RESPONSE_TIMEOUT_MS),
             "--output-format",
             "stream-json",
         ]
@@ -519,6 +530,7 @@ class GsdMcpClient:
         self._milestone_pending_blocker_method = None
         self._milestone_command_block_failure = None
         self._milestone_notifications = notifications
+        self._milestone_project_dir = project_dir
         self._milestone_on_terminal = on_terminal
         self._milestone_notified_terminal = False
         self._clear_milestone_stderr()
@@ -604,7 +616,13 @@ class GsdMcpClient:
             status = "failed"
             error = "stream lost — run /gsd cancel"
         if self._milestone_notifications is not None:
-            self._milestone_notifications.notify_terminal(status, error)
+            if status == "complete":
+                summary = self._build_milestone_completion_message(
+                    self._milestone_project_dir or ""
+                )
+                self._milestone_notifications.notify_milestone_complete(summary)
+            else:
+                self._milestone_notifications.notify_terminal(status, error)
         if self._milestone_on_terminal is not None:
             self._milestone_on_terminal(status)
         self._milestone_notified_terminal = True
@@ -701,9 +719,47 @@ class GsdMcpClient:
         self._milestone_stderr_thread = None
         self._clear_milestone_stderr()
 
+    def _build_milestone_completion_message(self, project_dir: str) -> str:
+        fallback = "✅ Milestone created. Run `/gsd status` for details."
+        if not project_dir:
+            return fallback
+        try:
+            query_data = self.project_query(project_dir, "milestones")
+        except Exception:
+            return fallback
+        milestones = query_data.get("milestones")
+        if not milestones:
+            return fallback
+        try:
+            self.invalidate_cache(project_dir)
+            snap = self.progress(project_dir)
+        except Exception:
+            snap = None
+        milestone_id: str | None = None
+        if snap and snap.active_milestone:
+            milestone_id = snap.active_milestone.get("id")
+        if not milestone_id:
+            last = milestones[-1]
+            if isinstance(last, dict):
+                milestone_id = last.get("id")
+        if not milestone_id:
+            return fallback
+        slice_total = snap.slices.get("total", 0) if snap else 0
+        task_total = snap.tasks.get("total", 0) if snap else 0
+        msg = f"✅ Milestone {milestone_id} ready"
+        counts: list[str] = []
+        if slice_total:
+            counts.append(f"{slice_total} slice{'s' if slice_total != 1 else ''}")
+        if task_total:
+            counts.append(f"{task_total} task{'s' if task_total != 1 else ''}")
+        if counts:
+            msg += f" — {', '.join(counts)}"
+        return f"{msg}. Run `/gsd auto` to start."
+
     def _clear_milestone_state(self) -> None:
         self._release_milestone_proc()
         self._milestone_session_id = None
+        self._milestone_project_dir = None
         self._milestone_pending_blocker_id = None
         self._milestone_pending_blocker_method = None
         self._milestone_command_block_failure = None

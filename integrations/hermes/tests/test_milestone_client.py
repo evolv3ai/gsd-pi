@@ -17,6 +17,7 @@ import pytest
 
 from open_gsd_hermes.config import GsdConfig
 from open_gsd_hermes.gsd_client import GsdMcpClient
+from open_gsd_hermes.types import ProgressSnapshot
 
 
 def _config() -> GsdConfig:
@@ -64,6 +65,9 @@ def test_create_milestone_builds_supervised_new_milestone_command_with_context_t
     assert args[0] == "/usr/local/bin/gsd"
     assert "headless" in args
     assert "--supervised" in args
+    assert "--response-timeout" in args
+    timeout_idx = args.index("--response-timeout")
+    assert args[timeout_idx + 1] == str(GsdMcpClient._SUPERVISED_RESPONSE_TIMEOUT_MS)
     assert "new-milestone" in args
     assert "--context-text" in args
     text_idx = args.index("--context-text")
@@ -193,8 +197,37 @@ def test_stream_loop_notifies_blocker_on_extension_ui_request() -> None:
     assert client.milestone_pending_blocker_id() is None
 
 
+def test_build_milestone_completion_message_uses_query_and_progress() -> None:
+    client = GsdMcpClient(_config())
+    with patch.object(
+        client,
+        "project_query",
+        return_value={"milestones": [{"id": "M002", "hasRoadmap": True}]},
+    ):
+        with patch.object(
+            client,
+            "progress",
+            return_value=ProgressSnapshot(
+                active_milestone={"id": "M002"},
+                slices={"total": 3},
+                tasks={"total": 9},
+            ),
+        ):
+            msg = client._build_milestone_completion_message("/proj")
+
+    assert msg == "✅ Milestone M002 ready — 3 slices, 9 tasks. Run `/gsd auto` to start."
+
+
+def test_build_milestone_completion_message_falls_back_when_query_empty() -> None:
+    client = GsdMcpClient(_config())
+    with patch.object(client, "project_query", return_value={"milestones": []}):
+        msg = client._build_milestone_completion_message("/proj")
+
+    assert msg == "✅ Milestone created. Run `/gsd status` for details."
+
+
 def test_stream_loop_notifies_terminal_on_process_exit() -> None:
-    """When the stream ends (process exited), a terminal notification fires."""
+    """When the stream ends (process exited), a milestone completion notification fires."""
     client = GsdMcpClient(_config())
     notifications = MagicMock()
     fake_proc = _FakeProc()
@@ -202,11 +235,20 @@ def test_stream_loop_notifies_terminal_on_process_exit() -> None:
     fake_proc.stdout.readline.side_effect = [b""]
 
     with patch.object(client, "_milestone_proc", fake_proc):
-        with patch.object(client, "_milestone_notifications", notifications):
-            client._milestone_stream_loop(fake_proc)
+        with patch.object(client, "_milestone_project_dir", "/proj"):
+            with patch.object(
+                client,
+                "_build_milestone_completion_message",
+                return_value="✅ Milestone M001 ready — 2 slices, 5 tasks. Run `/gsd auto` to start.",
+            ):
+                with patch.object(client, "_milestone_notifications", notifications):
+                    client._milestone_stream_loop(fake_proc)
 
-            notifications.notify_terminal.assert_called_once_with("complete", None)
-            assert client.milestone_active() is False
+    notifications.notify_milestone_complete.assert_called_once_with(
+        "✅ Milestone M001 ready — 2 slices, 5 tasks. Run `/gsd auto` to start."
+    )
+    notifications.notify_terminal.assert_not_called()
+    assert client.milestone_active() is False
 
 
 def test_stream_loop_failure_reports_drained_stderr() -> None:
