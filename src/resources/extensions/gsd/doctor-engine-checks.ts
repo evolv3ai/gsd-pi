@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 
 import type { DoctorIssue } from "./doctor-types.js";
 import {
@@ -42,6 +42,18 @@ function userContentRecoveryCommand(artifactType: string): string {
 function userContentMissingMessage(path: string, artifactType: string): string {
   const type = normalizedArtifactType(artifactType) || "UNKNOWN";
   return `Artifact \`${path}\` is a user-authored ${type} file recorded in the database but missing from disk. Re-run \`${userContentRecoveryCommand(type)}\` in this milestone to regenerate it.`;
+}
+
+function artifactPathRelativeToGsd(artifactPath: string): string {
+  const parts = artifactPath.split(/[\\/]+/);
+  const gsdIndex = parts.lastIndexOf(".gsd");
+  if (gsdIndex < 0 || gsdIndex === parts.length - 1) return artifactPath;
+  return parts.slice(gsdIndex + 1).join("/");
+}
+
+function isPathInside(basePath: string, candidatePath: string): boolean {
+  const rel = relative(basePath, candidatePath);
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 function reportCheckboxDbStatusDivergence(
@@ -142,11 +154,14 @@ function isClearedByMilestoneShellProjectionFlush(
 }
 
 function artifactExistsOnDisk(basePath: string, artifactPath: string): boolean {
-  if (isAbsolute(artifactPath)) return existsSync(artifactPath);
-  return [
-    join(gsdProjectionRoot(basePath), artifactPath),
-    join(gsdRoot(basePath), artifactPath),
-  ].some((candidate) => existsSync(candidate));
+  const relativeArtifactPath = artifactPathRelativeToGsd(artifactPath);
+  if (isAbsolute(relativeArtifactPath)) return existsSync(relativeArtifactPath);
+
+  const roots = [gsdProjectionRoot(basePath), gsdRoot(basePath)];
+  return roots.some((root) => {
+    const candidate = join(root, relativeArtifactPath);
+    return isPathInside(root, candidate) && existsSync(candidate);
+  });
 }
 
 function artifactUnitId(row: { milestone_id: string | null; slice_id: string | null; task_id: string | null }): string {
@@ -161,6 +176,51 @@ function artifactScope(row: { milestone_id: string | null; slice_id: string | nu
   if (row.slice_id) return "slice";
   if (row.milestone_id) return "milestone";
   return "project";
+}
+
+type ArtifactRow = {
+  path: string;
+  artifact_type: string;
+  milestone_id: string | null;
+  slice_id: string | null;
+  task_id: string | null;
+};
+
+function sameArtifactIdentity(left: ArtifactRow, right: ArtifactRow): boolean {
+  return left.artifact_type === right.artifact_type &&
+    left.milestone_id === right.milestone_id &&
+    left.slice_id === right.slice_id &&
+    left.task_id === right.task_id;
+}
+
+function isMilestonesArtifactPath(artifactPath: string): boolean {
+  return artifactPathRelativeToGsd(artifactPath).startsWith("milestones/");
+}
+
+function expectedMilestonesArtifactPath(row: ArtifactRow): string | null {
+  if (!row.milestone_id) return null;
+  const artifactType = normalizedArtifactType(row.artifact_type);
+  if (!artifactType) return null;
+  if (row.slice_id && row.task_id) {
+    return `milestones/${row.milestone_id}/slices/${row.slice_id}/tasks/${row.task_id}/${row.task_id}-${artifactType}.md`;
+  }
+  if (row.slice_id) {
+    return `milestones/${row.milestone_id}/slices/${row.slice_id}/${row.slice_id}-${artifactType}.md`;
+  }
+  return `milestones/${row.milestone_id}/${row.milestone_id}-${artifactType}.md`;
+}
+
+function hasPresentMilestonesReplacement(basePath: string, row: ArtifactRow, artifactRows: ArtifactRow[]): boolean {
+  const expectedPath = expectedMilestonesArtifactPath(row);
+  if (expectedPath && artifactExistsOnDisk(basePath, expectedPath)) return true;
+
+  return artifactRows.some(
+    (other) =>
+      other.path !== row.path &&
+      isMilestonesArtifactPath(other.path) &&
+      sameArtifactIdentity(row, other) &&
+      artifactExistsOnDisk(basePath, other.path),
+  );
 }
 
 export async function checkEngineHealth(
@@ -386,27 +446,27 @@ export async function checkEngineHealth(
              WHERE path != ''
              ORDER BY path`,
           )
-          .all() as Array<{
-            path: string;
-            artifact_type: string;
-            milestone_id: string | null;
-            slice_id: string | null;
-            task_id: string | null;
-          }>;
+          .all() as ArtifactRow[];
 
         for (const row of artifactRows) {
           if (artifactExistsOnDisk(basePath, row.path)) continue;
           const unitId = artifactUnitId(row);
+          const issuePath = artifactPathRelativeToGsd(row.path);
+          if (options?.repair && row.path.startsWith("phases/") && hasPresentMilestonesReplacement(basePath, row, artifactRows)) {
+            adapter.prepare("DELETE FROM artifacts WHERE path = :path").run({ ":path": row.path });
+            fixesApplied.push(`pruned stale flat-phase artifact row ${row.path}`);
+            continue;
+          }
           if (isUserAuthoredArtifactType(row.artifact_type)) {
             const artifactType = normalizedArtifactType(row.artifact_type);
-            missingUserContentArtifacts.push({ path: row.path, artifactType });
+            missingUserContentArtifacts.push({ path: issuePath, artifactType });
             issues.push({
               severity: "warning",
               code: "artifact_user_content_missing",
               scope: artifactScope(row),
               unitId,
-              message: userContentMissingMessage(row.path, artifactType),
-              file: row.path,
+              message: userContentMissingMessage(issuePath, artifactType),
+              file: issuePath,
               fixable: false,
             });
             continue;
@@ -416,9 +476,9 @@ export async function checkEngineHealth(
             code: "artifact_file_missing",
             scope: artifactScope(row),
             unitId,
-            message: `Artifact ${row.path} is recorded in the database as ${row.artifact_type || "UNKNOWN"} but no matching file exists on disk`,
-            file: row.path,
-            fixable: false,
+            message: `Artifact ${issuePath} is recorded in the database as ${row.artifact_type || "UNKNOWN"} but no matching file exists on disk`,
+            file: issuePath,
+            fixable: row.path.startsWith("phases/") && hasPresentMilestonesReplacement(basePath, row, artifactRows),
           });
         }
       } catch {

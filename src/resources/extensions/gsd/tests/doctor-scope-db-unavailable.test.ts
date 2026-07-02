@@ -335,6 +335,98 @@ test("checkEngineHealth reports artifact rows whose files are missing on disk", 
   assert.equal(missing.fixable, false);
 });
 
+test("checkEngineHealth resolves escaped .gsd artifact rows against the project .gsd directory", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-escaped-artifact-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  const artifactPath = "phases/01-m001/01-01-ASSESSMENT.md";
+  mkdirSync(join(gsdDir, "phases", "01-m001"), { recursive: true });
+  writeFileSync(join(gsdDir, artifactPath), "# Assessment\n", "utf-8");
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertArtifact({
+    path: `../../../Documents/Projects/project/.gsd/${artifactPath}`,
+    artifact_type: "ASSESSMENT",
+    milestone_id: "M001",
+    slice_id: "S01",
+    task_id: null,
+    full_content: "# Assessment\n",
+  });
+
+  const issues: any[] = [];
+  await checkEngineHealth(base, issues, []);
+
+  assert.equal(
+    issues.some((issue) => issue.code === "artifact_file_missing"),
+    false,
+    "escaped .gsd paths should resolve to the project .gsd artifact",
+  );
+});
+
+test("checkEngineHealth reports escaped missing artifact rows with .gsd-relative paths", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-escaped-missing-artifact-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  mkdirSync(gsdDir, { recursive: true });
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertArtifact({
+    path: "../../../Documents/Projects/project/.gsd/phases/01-m001/01-01-PLAN.md",
+    artifact_type: "PLAN",
+    milestone_id: "M001",
+    slice_id: "S01",
+    task_id: null,
+    full_content: "# Plan\n",
+  });
+
+  const issues: any[] = [];
+  await checkEngineHealth(base, issues, []);
+
+  const issue = issues.find((candidate) => candidate.code === "artifact_file_missing");
+  assert.ok(issue, "missing escaped artifact row should still be reported");
+  assert.equal(issue.file, "phases/01-m001/01-01-PLAN.md");
+  assert.doesNotMatch(issue.message, /\.\.\//);
+});
+
+test("checkEngineHealth repair prunes stale phases artifact rows with present milestones files", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-prune-stale-phase-artifact-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  const stalePath = "phases/01-m001/01-01-PLAN.md";
+  const replacementPath = "milestones/M001/slices/S01/S01-PLAN.md";
+  mkdirSync(join(gsdDir, "milestones", "M001", "slices", "S01"), { recursive: true });
+  writeFileSync(join(gsdDir, replacementPath), "# Plan\n", "utf-8");
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertArtifact({
+    path: stalePath,
+    artifact_type: "PLAN",
+    milestone_id: "M001",
+    slice_id: "S01",
+    task_id: null,
+    full_content: "# stale plan\n",
+  });
+
+  const issues: any[] = [];
+  const fixes: string[] = [];
+  await checkEngineHealth(base, issues, fixes, { repair: true });
+
+  assert.equal(
+    issues.some((issue) => issue.code === "artifact_file_missing" && issue.file === stalePath),
+    false,
+    "repair should not report stale rows it pruned",
+  );
+  assert.ok(fixes.includes(`pruned stale flat-phase artifact row ${stalePath}`));
+
+  const rows = _getAdapter()!
+    .prepare("SELECT path FROM artifacts ORDER BY path")
+    .all() as Array<{ path: string }>;
+  assert.deepEqual(rows.map((row) => row.path), []);
+});
+
 test("checkEngineHealth reports missing CONTEXT and RESEARCH artifacts as user-content warnings", async (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-doctor-user-content-artifact-"));
   t.after(() => rmSync(base, { recursive: true, force: true }));
