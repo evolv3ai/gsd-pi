@@ -14,6 +14,7 @@ type Handler = (event: any, ctx?: any) => Promise<any> | any;
 
 function makeHookHarness(): {
   emitToolCall: (toolName: string, input: Record<string, unknown>) => Promise<any>;
+  emitToolResult: (event: Record<string, unknown>) => Promise<void>;
   emitToolExecutionEnd: (event: Record<string, unknown>) => Promise<void>;
   emitAgentEnd: (event: Record<string, unknown>) => Promise<void>;
 } {
@@ -39,6 +40,15 @@ function makeHookHarness(): {
       const loopGuardHandler = handlers.get("tool_call")?.[0];
       assert.ok(loopGuardHandler, "loop-guard tool_call handler should be registered");
       return loopGuardHandler({ toolCallId: `loop-${callId}`, toolName, input }, ctx);
+    },
+    async emitToolResult(event: Record<string, unknown>): Promise<void> {
+      callId += 1;
+      for (const handler of handlers.get("tool_result") ?? []) {
+        await handler({
+          toolCallId: `result-${callId}`,
+          ...event,
+        }, ctx);
+      }
     },
     async emitToolExecutionEnd(event: Record<string, unknown>): Promise<void> {
       callId += 1;
@@ -187,6 +197,60 @@ test("register-hooks does not classify normal gsd_uat_exec nonzero exits as harn
 
   const abort = readUnitHarnessAbort(base, "run-uat", "M001/S01", startedAt);
   assert.equal(abort, null);
+});
+
+test("register-hooks preserves retryable harness abort after later successful tools", async (t) => {
+  const base = makeRuntimeBase();
+  const startedAt = Date.now();
+  autoSession.reset();
+  resetToolCallLoopGuard();
+  autoSession.active = true;
+  autoSession.basePath = base;
+  autoSession.currentUnit = { type: "run-uat", id: "M001/S01", startedAt };
+  t.after(() => {
+    autoSession.reset();
+    resetToolCallLoopGuard();
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  const { emitToolExecutionEnd, emitToolResult } = makeHookHarness();
+  await emitToolExecutionEnd({
+    toolName: "mcp__gsd-workflow__browser_click",
+    isError: true,
+    result: {
+      content: [{ type: "text", text: "No such tool available: browser_click" }],
+    },
+  });
+
+  const recorded = readUnitHarnessAbort(base, "run-uat", "M001/S01", startedAt);
+  assert.equal(recorded?.kind, "tool-error");
+
+  await emitToolResult({
+    toolName: "read",
+    isError: false,
+    input: { path: "README.md" },
+    result: {
+      content: [{ type: "text", text: "file contents" }],
+    },
+  });
+  assert.equal(
+    readUnitHarnessAbort(base, "run-uat", "M001/S01", startedAt)?.kind,
+    "tool-error",
+    "successful native tool_result must not clear the harness abort",
+  );
+
+  await emitToolExecutionEnd({
+    toolName: "read",
+    isError: false,
+    result: {
+      content: [{ type: "text", text: "file contents" }],
+    },
+  });
+  assert.equal(
+    readUnitHarnessAbort(base, "run-uat", "M001/S01", startedAt)?.kind,
+    "tool-error",
+    "successful universal tool_execution_end must not clear the harness abort",
+  );
 });
 
 test("register-hooks does not record save-tool validation errors as harness aborts", async (t) => {
