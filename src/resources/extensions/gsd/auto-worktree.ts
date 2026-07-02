@@ -1533,9 +1533,8 @@ function autoCommitDirtyState(cwd: string): boolean {
  * for the Worktree Lifecycle Module (ADR-016 phase 2 / A3, issue #5619).
  * Production callers must go through `WorktreeLifecycle.mergeMilestoneStandalone`
  * or `WorktreeLifecycle.exitMilestone({ merge: true })`. The export keyword
- * is preserved only so `auto.ts:buildWorktreeLifecycleDeps()` can wire this
- * function through the Module's deps seam — that is the construction of the
- * seam, not a bypass.
+ * is preserved for legacy tests and the default transaction adapter; production
+ * wiring depends on `createDefaultMilestoneMergeTransaction()` instead.
  */
 export function mergeMilestoneToMain(
   originalBasePath_: string,

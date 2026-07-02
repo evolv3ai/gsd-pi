@@ -1,6 +1,8 @@
 // Project/App: gsd-pi
 // File Purpose: Process-level transaction wrapper for milestone merge closeout.
 
+import { mergeMilestoneToMain } from "./auto-worktree.js";
+
 export interface MilestoneMergeTransactionResult {
   pushed: boolean;
   codeFilesChanged: boolean;
@@ -44,4 +46,17 @@ export function createMilestoneMergeTransaction(
       { basePath, milestoneId, roadmapContent },
     );
   };
+}
+
+/**
+ * Production merge transaction adapter.
+ *
+ * This is the only production construction point that knows the legacy
+ * `auto-worktree.ts` merge primitive. Lifecycle callers depend on the
+ * transaction runner interface, not the legacy implementation module.
+ */
+export function createDefaultMilestoneMergeTransaction(
+  mergeMilestone: MilestoneMergeTransactionRunner = mergeMilestoneToMain,
+): MilestoneMergeTransactionRunner {
+  return createMilestoneMergeTransaction(mergeMilestone);
 }

@@ -185,7 +185,6 @@ import {
   isInAutoWorktree,
   getAutoWorktreePath,
   getAutoWorktreeOriginalBase,
-  mergeMilestoneToMain,
   autoWorktreeBranch,
   syncWorktreeStateBack,
   readResourceVersion,
@@ -194,7 +193,7 @@ import {
 } from "./auto-worktree.js";
 import { pruneQueueOrder } from "./queue-order.js";
 import { startCommandPolling as _startCommandPolling, isRemoteConfigured } from "../remote-questions/manager.js";
-import { createMilestoneMergeTransaction } from "./milestone-merge-transaction.js";
+import { createDefaultMilestoneMergeTransaction } from "./milestone-merge-transaction.js";
 
 import { debugLog, isDebugEnabled, writeDebugSummary } from "./debug-logger.js";
 import {
@@ -2326,7 +2325,7 @@ export function buildWorktreeLifecycleDeps(): WorktreeLifecycleDeps {
       return new GitServiceImpl(basePath, gitConfig);
     },
     worktreeProjection: new WorktreeStateProjection(),
-    mergeMilestone: createMilestoneMergeTransaction(mergeMilestoneToMain),
+    mergeMilestone: createDefaultMilestoneMergeTransaction(),
   };
 }
 

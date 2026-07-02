@@ -118,5 +118,12 @@ ordering directly, and marks the milestone merge complete before stopping for
 postflight stash recovery so a resume does not re-run an already completed
 merge.
 
+**Shipped 2026-07-02:** production construction of the merge transaction moved
+behind `createDefaultMilestoneMergeTransaction()`. Auto-mode wiring and the
+orchestrator no longer import the legacy `auto-worktree.ts` merge primitive
+directly; the Milestone Merge Transaction module is now the single production
+adapter that knows how to build the lifecycle-compatible runner from the legacy
+implementation.
+
 **Remaining:** relocate the merge core out of `auto-worktree.ts` into the
 Worktree Lifecycle module.

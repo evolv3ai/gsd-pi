@@ -34,7 +34,7 @@ import {
   preDispatchHealthGate,
   recordHealthSnapshot,
 } from "../doctor-proactive.js";
-import { checkResourcesStale, autoWorktreeBranch, mergeMilestoneToMain } from "../auto-worktree.js";
+import { checkResourcesStale, autoWorktreeBranch } from "../auto-worktree.js";
 import { getSessionLockStatus } from "../session-lock.js";
 import { resolveUokFlags } from "../uok/flags.js";
 import { emitJournalEvent as _emitJournalEvent } from "../journal.js";
@@ -49,7 +49,7 @@ import { getPriorSliceCompletionBlocker } from "../dispatch-guard.js";
 import { GitServiceImpl } from "../git-service.js";
 import { WorktreeStateProjection } from "../worktree-state-projection.js";
 import { WorktreeLifecycle } from "../worktree-lifecycle.js";
-import { createMilestoneMergeTransaction } from "../milestone-merge-transaction.js";
+import { createDefaultMilestoneMergeTransaction } from "../milestone-merge-transaction.js";
 import { createWorkspace, scopeMilestone } from "../workspace.js";
 import { supportsStructuredQuestions } from "../workflow-mcp.js";
 import { getRegisteredToolSnapshot, getToolBaselineSnapshot } from "../auto-model-selection.js";
@@ -731,7 +731,7 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
         return new GitServiceImpl(basePath, gitConfig);
       },
       worktreeProjection: new WorktreeStateProjection(),
-      mergeMilestone: createMilestoneMergeTransaction(mergeMilestoneToMain),
+      mergeMilestone: createDefaultMilestoneMergeTransaction(),
     });
   }
 
