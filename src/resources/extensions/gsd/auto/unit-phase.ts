@@ -29,7 +29,7 @@ import type { MinimalModelRegistry } from "../context-budget.js";
 import { parseUnitId } from "../unit-id.js";
 import { createCheckpoint, cleanupCheckpoint, rollbackToCheckpoint } from "../safety/git-checkpoint.js";
 import { resolveSafetyHarnessConfig } from "../safety/safety-harness.js";
-import { getUnitWorkflowDispatchReadinessError } from "../tool-contract.js";
+import { getUnitWorkflowDispatchReadinessErrorForModel } from "../tool-contract.js";
 import { prepareWorkflowMcpForProject } from "../workflow-mcp-auto-prep.js";
 import {
   applyThinkingLevelForModel,
@@ -343,17 +343,13 @@ export async function runUnitPhase(
     ? `${(s.currentUnitModel as any).provider ?? ""}/${(s.currentUnitModel as any).id ?? ""}`
     : null;
 
-  const compatibilityError = getUnitWorkflowDispatchReadinessError({
-    provider: s.currentUnitModel?.provider ?? ctx.model?.provider,
+  const compatibilityError = getUnitWorkflowDispatchReadinessErrorForModel({
+    model: s.currentUnitModel as any,
+    fallbackModel: ctx.model,
+    getProviderAuthMode: (provider) => ctx.modelRegistry.getProviderAuthMode(provider),
     projectRoot: s.basePath,
     surface: "auto-mode",
     unitType,
-    authMode: s.currentUnitModel?.provider
-      ? ctx.modelRegistry.getProviderAuthMode(s.currentUnitModel.provider)
-      : ctx.model?.provider
-        ? ctx.modelRegistry.getProviderAuthMode(ctx.model.provider)
-        : undefined,
-    baseUrl: (s.currentUnitModel as any)?.baseUrl ?? ctx.model?.baseUrl,
     activeTools: typeof pi.getActiveTools === "function" ? pi.getActiveTools() : [],
   });
   const workflowMcpPrepModel = s.currentUnitModel;

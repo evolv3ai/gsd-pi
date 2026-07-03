@@ -85,6 +85,18 @@ export interface UnitWorkflowDispatchReadinessInput {
   activeTools?: string[];
 }
 
+export interface WorkflowDispatchModelContext {
+  provider?: string;
+  baseUrl?: string;
+}
+
+export interface UnitWorkflowDispatchReadinessForModelInput
+  extends Omit<UnitWorkflowDispatchReadinessInput, "provider" | "authMode" | "baseUrl"> {
+  model?: WorkflowDispatchModelContext | null;
+  fallbackModel?: WorkflowDispatchModelContext | null;
+  getProviderAuthMode?: (provider: string) => WorkflowCapabilityOptions["authMode"] | undefined;
+}
+
 export function compileUnitContextContract(unitType: string): UnitContextContractResult {
   const manifest = resolveManifest(unitType);
   if (!manifest) {
@@ -113,6 +125,23 @@ export function getUnitWorkflowDispatchReadinessError(
       activeTools: input.activeTools,
     },
   );
+}
+
+export function getUnitWorkflowDispatchReadinessErrorForModel(
+  input: UnitWorkflowDispatchReadinessForModelInput,
+): string | null {
+  const provider = input.model?.provider ?? input.fallbackModel?.provider;
+  const baseUrl = input.model?.baseUrl ?? input.fallbackModel?.baseUrl;
+  return getUnitWorkflowDispatchReadinessError({
+    provider,
+    unitType: input.unitType,
+    projectRoot: input.projectRoot,
+    env: input.env,
+    surface: input.surface,
+    authMode: provider ? input.getProviderAuthMode?.(provider) : undefined,
+    baseUrl,
+    activeTools: input.activeTools,
+  });
 }
 
 export function compileUnitToolContract(unitType: string): ToolContractResult {

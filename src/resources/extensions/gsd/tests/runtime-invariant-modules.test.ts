@@ -10,6 +10,7 @@ import {
   compileUnitContextContract,
   compileUnitToolContract,
   getUnitWorkflowDispatchReadinessError,
+  getUnitWorkflowDispatchReadinessErrorForModel,
 } from "../tool-contract.js";
 import { shouldBlockAutoUnitToolCall } from "../auto-unit-tool-scope.js";
 import type { GSDState } from "../types.js";
@@ -109,6 +110,25 @@ test("Tool Contract derives dispatch readiness from Unit workflow tools", () => 
   });
 
   assert.equal(error, null);
+});
+
+test("Tool Contract derives dispatch readiness from selected model context", () => {
+  const authLookups: string[] = [];
+  const error = getUnitWorkflowDispatchReadinessErrorForModel({
+    model: { provider: "claude-code" },
+    fallbackModel: { provider: "openai-codex", baseUrl: "local://claude-code" },
+    getProviderAuthMode(provider) {
+      authLookups.push(provider);
+      return provider === "claude-code" ? "externalCli" : "oauth";
+    },
+    unitType: "plan-slice",
+    projectRoot: "/tmp/project",
+    env: { GSD_WORKFLOW_MCP_COMMAND: "node" },
+    surface: "auto-mode",
+  });
+
+  assert.equal(error, null);
+  assert.deepEqual(authLookups, ["claude-code"]);
 });
 
 test("Unit Context Contract exposes prompt context without workflow tool surface", () => {
