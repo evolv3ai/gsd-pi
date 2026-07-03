@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -62,7 +63,12 @@ class GsdMcpClient:
 
     def _env(self) -> dict[str, str]:
         env = os.environ.copy()
-        env["GSD_CLI_PATH"] = self._config.cli_path
+        # Resolve cli_path to an absolute path so the MCP server's
+        # resolveCLIPath() does not resolve a bare command name (e.g. "gsd")
+        # against the project directory, producing a non-existent
+        # project-relative path that hangs gsd_execute until timeout.
+        resolved = shutil.which(self._config.cli_path) or self._config.cli_path
+        env["GSD_CLI_PATH"] = resolved
         return env
 
     def ensure_version(self) -> None:
