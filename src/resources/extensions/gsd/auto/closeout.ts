@@ -233,7 +233,8 @@ function hasDirtyGsdMarkdownProjections(
         if (dest.endsWith(".md")) return true;
       }
     }
-  } catch {
+  } catch (err) {
+    void err;
     // Fall through to ignored-file snapshot comparison below.
   }
   return ignoredGsdMarkdownProjectionSnapshotChanged(basePath, ignoredProjectionSnapshot);
