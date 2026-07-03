@@ -66,6 +66,10 @@ import {
 } from "./auto-worktree-session-registry.js";
 import { removeWorktree } from "./worktree-manager.js";
 import { nudgeGitBranchCache } from "./worktree.js";
+import {
+  assertNoUnanchoredCodeChangesAfterEmptyMerge,
+  detectMergedCodeFilesChanged,
+} from "./auto-worktree-merge-code-changes.js";
 import { createPreMergeStash } from "./auto-worktree-merge-stash.js";
 import {
   cleanupConflictState,
@@ -616,67 +620,21 @@ export function mergeMilestoneToMain(
 
   // 9b. Safety check (#1792): if nothing was committed, verify the milestone
   // work is already on the integration branch before allowing teardown.
-  // Compare only non-.gsd/ paths — .gsd/ state files diverge normally and
-  // are auto-resolved during the squash merge.
-  if (nothingToCommit) {
-    const numstat = nativeDiffNumstat(
+  try {
+    assertNoUnanchoredCodeChangesAfterEmptyMerge(
       originalBasePath_,
       mainBranch,
       milestoneBranch,
+      effectiveStrategy,
+      nothingToCommit,
     );
-    const codeChanges = numstat.filter(
-      (entry) => !entry.path.startsWith(".gsd/"),
-    );
-    if (codeChanges.length > 0) {
-      // Milestone has unanchored code changes — abort teardown.
-      process.chdir(previousCwd);
-      throw new GSDError(
-        GSD_GIT_ERROR,
-        `${effectiveStrategy === "merge" ? "Merge" : "Squash merge"} produced nothing to commit but milestone branch "${milestoneBranch}" ` +
-          `has ${codeChanges.length} code file(s) not on "${mainBranch}". ` +
-          `Aborting worktree teardown to prevent data loss.`,
-      );
-    }
+  } catch (err) {
+    process.chdir(previousCwd);
+    throw err;
   }
 
   // 9c. Detect whether any non-.gsd/ code files were actually merged (#1906).
-  // When a milestone only produced .gsd/ metadata (summaries, roadmaps) but no
-  // real code, the user sees "milestone complete" but nothing changed in their
-  // codebase. Surface this so the caller can warn the user.
-  //
-  // Bug #4385 fix: use `git diff-tree --root` instead of `git diff HEAD~1 HEAD`.
-  // `HEAD~1` does not exist on initial commits and is unreliable on shallow clones
-  // and merge commits. `diff-tree --root` handles all three cases correctly.
-  // The empty-tree hash (4b825dc…) is the universal fallback for refs that don't exist.
-  const GIT_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-  let codeFilesChanged = false;
-  if (!nothingToCommit) {
-    try {
-      const diffTreeOutput = execFileSync(
-        "git",
-        ["diff-tree", "--root", "--no-commit-id", "-r", "--name-only", "HEAD"],
-        { cwd: originalBasePath_, stdio: ["ignore", "pipe", "pipe"], encoding: "utf-8" },
-      ).trim();
-      const mergedFiles = diffTreeOutput ? diffTreeOutput.split("\n").filter(Boolean) : [];
-      codeFilesChanged = mergedFiles.some((f) => !f.startsWith(".gsd/"));
-    } catch (e) {
-      // diff-tree failed (e.g. unborn HEAD in a brand-new repo) — fall back to
-      // comparing against the empty tree so initial-commit repos still report changes.
-      try {
-        const fallbackOutput = execFileSync(
-          "git",
-          ["diff", "--name-only", GIT_EMPTY_TREE, "HEAD"],
-          { cwd: originalBasePath_, stdio: ["ignore", "pipe", "pipe"], encoding: "utf-8" },
-        ).trim();
-        const fallbackFiles = fallbackOutput ? fallbackOutput.split("\n").filter(Boolean) : [];
-        codeFilesChanged = fallbackFiles.some((f) => !f.startsWith(".gsd/"));
-      } catch {
-        // Truly unable to determine — assume code was changed to avoid silent data loss
-        logWarning("worktree", `diff-tree and empty-tree fallback both failed (assuming code changed): ${(e as Error).message}`);
-        codeFilesChanged = true;
-      }
-    }
-  }
+  const codeFilesChanged = detectMergedCodeFilesChanged(originalBasePath_, nothingToCommit);
 
   const finalizeMilestoneCleanup = (): void => {
     // 12. Remove worktree directory first (must happen before branch deletion)
