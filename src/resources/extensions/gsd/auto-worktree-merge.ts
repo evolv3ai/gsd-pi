@@ -5,16 +5,8 @@
 // and safe teardown.
 
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
-
 import { atomicWriteSync } from "./atomic-write.js";
-import { CLOSEOUT_CONSISTENCY_BLOCKED_REASON } from "./closeout-consistency-gate.js";
 import { debugLog } from "./debug-logger.js";
-import {
-  closeWorkflowDatabase,
-  getWorkflowDatabasePath,
-  openWorkflowDatabasePath,
-} from "./db-workspace.js";
 import { GSDError, GSD_GIT_ERROR } from "./errors.js";
 import { autoResolveSafeConflictPaths } from "./git-conflict-resolve.js";
 import {
@@ -25,12 +17,7 @@ import {
 import {
   getMilestone,
   isDbAvailable,
-  reconcileWorktreeDb,
 } from "./gsd-db.js";
-import {
-  formatCloseoutProofBlock,
-  proveMilestoneCloseout,
-} from "./milestone-closeout-proof.js";
 import {
   nativeAddAllWithExclusions,
   nativeCheckoutBranch,
@@ -44,16 +31,12 @@ import {
   nativeMergeSquash,
   nativeWorkingTreeStatus,
 } from "./native-git-bridge.js";
-import { resolveGsdPathContract } from "./paths.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 import { publishMilestone } from "./publication.js";
 import {
   autoWorktreeBranch,
 } from "./auto-worktree-branch-lifecycle.js";
-import {
-  _shouldReconcileWorktreeDb,
-  clearProjectRootStateFiles,
-} from "./auto-worktree-cleanup.js";
+import { clearProjectRootStateFiles } from "./auto-worktree-cleanup.js";
 import { createMilestoneDirectoryShelter } from "./auto-worktree-milestone-shelter.js";
 import { getActiveWorkspace } from "./auto-worktree-session-registry.js";
 import {
@@ -62,6 +45,7 @@ import {
 } from "./auto-worktree-merge-code-changes.js";
 import { reconcileMilestoneBranchHead } from "./auto-worktree-merge-branch-head.js";
 import { cleanupMergedMilestoneWorktree } from "./auto-worktree-merge-cleanup.js";
+import { assertMilestoneDbReadyForMerge } from "./auto-worktree-merge-db-ready.js";
 import { buildMilestoneMergeMessage } from "./auto-worktree-merge-message.js";
 import { assertMilestoneWorktreeCleanBeforeTeardown } from "./auto-worktree-merge-pre-teardown.js";
 import { createPreMergeStash } from "./auto-worktree-merge-stash.js";
@@ -208,36 +192,12 @@ export function mergeMilestoneToMain(
     }
   }
 
-  // Reconcile worktree DB into main DB before leaving worktree context.
-  // Skip when both paths resolve to the same physical file (shared WAL /
-  // symlink layout) — ATTACHing a WAL-mode file to itself corrupts the
-  // database (#2823).
-  if (isDbAvailable()) {
-    const contract = resolveGsdPathContract(worktreeCwd, originalBasePath_);
-    const worktreeDbPath = join(contract.worktreeGsd ?? join(worktreeCwd, ".gsd"), "gsd.db");
-    const mainDbPath = contract.projectDb;
-    try {
-      const activeDbPath = getWorkflowDatabasePath();
-      if (activeDbPath && _shouldReconcileWorktreeDb(activeDbPath, mainDbPath)) {
-        closeWorkflowDatabase();
-        if (!openWorkflowDatabasePath(mainDbPath)) {
-          throw new Error(`cannot open project DB at ${mainDbPath}`);
-        }
-      }
-      if (_shouldReconcileWorktreeDb(worktreeDbPath, mainDbPath)) {
-        reconcileWorktreeDb(mainDbPath, worktreeDbPath);
-      }
-    } catch (err) {
-      const message = `DB reconciliation failed before milestone ${milestoneId} merge: ${err instanceof Error ? err.message : String(err)}`;
-      logError("worktree", message);
-      throw new GSDError(GSD_GIT_ERROR, `${message}. Recovery reason: ${CLOSEOUT_CONSISTENCY_BLOCKED_REASON}.`);
-    }
-
-    const closeoutProof = proveMilestoneCloseout(milestoneId);
-    if (!closeoutProof.ok) {
-      throw new GSDError(GSD_GIT_ERROR, formatCloseoutProofBlock(closeoutProof));
-    }
-  }
+  // Reconcile DB state and prove closeout before leaving worktree context.
+  assertMilestoneDbReadyForMerge({
+    milestoneId,
+    projectRoot: originalBasePath_,
+    worktreeCwd,
+  });
 
   // 2. Build completed-slice summaries and rich commit message.
   const { commitMessage, milestoneTitle, sliceSummaries } = buildMilestoneMergeMessage({
