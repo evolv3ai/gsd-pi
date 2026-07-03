@@ -4,8 +4,9 @@
 import { importExtensionModule, type ExtensionAPI, type ExtensionContext } from "@gsd/pi-coding-agent";
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { join, basename } from "node:path";
-import { existsSync, cpSync } from "node:fs";
+import { existsSync, cpSync, readFileSync } from "node:fs";
 import type { AutoSession } from "./session.js";
 import type { LoopDeps } from "./loop-deps.js";
 import type { GSDState } from "../types.js";
@@ -100,6 +101,7 @@ export async function _runMilestoneMergeWithStashRestore(
   const { ctx, pi, s, deps } = ic;
 
   const projectRoot = s.originalBasePath || s.basePath;
+  const ignoredProjectionSnapshot = snapshotIgnoredGsdMarkdownProjections(projectRoot);
   const mergeResult = deps.lifecycle.exitMilestone(
     milestoneId,
     {
@@ -114,12 +116,12 @@ export async function _runMilestoneMergeWithStashRestore(
   );
 
   if (mergeResult.ok) {
-    await markMilestoneMergedAndRebuild(s);
+    await markMilestoneMergedAndRebuild(s, ignoredProjectionSnapshot);
     return null;
   }
 
   if (mergeResult.reason === "postflight-stash-restore-failed") {
-    await markMilestoneMergedAndRebuild(s);
+    await markMilestoneMergedAndRebuild(s, ignoredProjectionSnapshot);
   }
 
   if (mergeResult.reason === "preflight-dirty-overlap" || mergeResult.reason === "preflight-unmerged-conflicts") {
@@ -181,10 +183,15 @@ export async function _runMilestoneMergeWithStashRestore(
   return null;
 }
 
-async function markMilestoneMergedAndRebuild(s: AutoSession): Promise<void> {
+type GsdMarkdownSnapshot = Map<string, string>;
+
+async function markMilestoneMergedAndRebuild(
+  s: AutoSession,
+  ignoredProjectionSnapshot: GsdMarkdownSnapshot | null,
+): Promise<void> {
   s.milestoneMergedInPhases = true;
   const rebuildBasePath = s.originalBasePath || s.canonicalProjectRoot || s.basePath;
-  if (hasDirtyGsdMarkdownProjections(rebuildBasePath)) {
+  if (hasDirtyGsdMarkdownProjections(rebuildBasePath, ignoredProjectionSnapshot)) {
     logWarning(
       "engine",
       "skipping markdown projection rebuild after milestone merge because restored .gsd edits are dirty",
@@ -203,19 +210,60 @@ async function markMilestoneMergedAndRebuild(s: AutoSession): Promise<void> {
   }
 }
 
-function hasDirtyGsdMarkdownProjections(basePath: string): boolean {
+function hasDirtyGsdMarkdownProjections(
+  basePath: string,
+  ignoredProjectionSnapshot: GsdMarkdownSnapshot | null,
+): boolean {
   try {
     const output = execFileSync(
       "git",
-      ["status", "--porcelain", "--", ".gsd"],
+      ["status", "--porcelain", "--untracked-files=all", "--", ".gsd"],
       { cwd: basePath, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
     );
-    return output
+    if (output
       .split(/\r?\n/)
-      .some((line) => /\.md$/.test(line.trim()));
+      .some((line) => /\.md$/.test(line.trim()))) {
+      return true;
+    }
   } catch {
-    return false;
+    // Fall through to ignored-file snapshot comparison below.
   }
+  return ignoredGsdMarkdownProjectionSnapshotChanged(basePath, ignoredProjectionSnapshot);
+}
+
+function snapshotIgnoredGsdMarkdownProjections(basePath: string): GsdMarkdownSnapshot | null {
+  try {
+    const output = execFileSync(
+      "git",
+      ["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", ".gsd"],
+      { cwd: basePath, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+    const snapshot: GsdMarkdownSnapshot = new Map();
+    for (const path of output.split("\0")) {
+      if (!path.endsWith(".md")) continue;
+      snapshot.set(path, hashFile(join(basePath, path)));
+    }
+    return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+function hashFile(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function ignoredGsdMarkdownProjectionSnapshotChanged(
+  basePath: string,
+  before: GsdMarkdownSnapshot | null,
+): boolean {
+  if (!before) return false;
+  const after = snapshotIgnoredGsdMarkdownProjections(basePath);
+  if (!after || after.size !== before.size) return true;
+  for (const [path, hash] of before) {
+    if (after.get(path) !== hash) return true;
+  }
+  return false;
 }
 
 export async function _runMilestoneMergeOnceWithStashRestore(

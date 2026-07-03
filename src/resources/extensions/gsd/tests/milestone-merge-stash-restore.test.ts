@@ -287,6 +287,19 @@ async function withProjectionBackedProject<T>(fn: (basePath: string, roadmapPath
   }
 }
 
+function insertFreshDbSlice(): void {
+  insertSlice({
+    id: "S02",
+    milestoneId: "M002",
+    title: "Fresh DB Slice",
+    status: "pending",
+    risk: "medium",
+    depends: [],
+    demo: "demo",
+    sequence: 2,
+  });
+}
+
 const POP_OK: PostflightResult = {
   restored: true,
   needsManualRecovery: false,
@@ -548,19 +561,102 @@ test("postflight-restored projection edits survive successful merge rebuild", as
   });
 });
 
+test("untracked markdown under a new .gsd directory suppresses successful merge rebuild", async () => {
+  await withProjectionBackedProject(async (basePath, roadmapPath) => {
+    insertFreshDbSlice();
+
+    const { ic } = buildIc({
+      preflightResult: STASH_PUSHED,
+      mergeBehavior: "succeed",
+      postflightResult: POP_OK,
+    });
+    (ic.s as { basePath: string; originalBasePath: string }).basePath = basePath;
+    (ic.s as { basePath: string; originalBasePath: string }).originalBasePath = basePath;
+    (ic.deps as unknown as { postflightPopStash: () => PostflightResult }).postflightPopStash = () => {
+      const restoredDir = join(basePath, ".gsd", "restored-projections");
+      mkdirSync(restoredDir, { recursive: true });
+      writeFileSync(join(restoredDir, "local.md"), "# restored local markdown\n", "utf8");
+      return POP_OK;
+    };
+
+    const result = await _runMilestoneMergeWithStashRestore(ic, "M002");
+
+    assert.equal(result, null);
+    assert.doesNotMatch(
+      readFileSync(roadmapPath, "utf8"),
+      /Fresh DB Slice/,
+      "untracked markdown projections inside new .gsd directories must suppress rebuild",
+    );
+  });
+});
+
+test("ignored untracked markdown under .gsd suppresses successful merge rebuild", async () => {
+  await withProjectionBackedProject(async (basePath, roadmapPath) => {
+    writeFileSync(join(basePath, ".gitignore"), ".gsd\n", "utf8");
+    git(basePath, ["add", ".gitignore"]);
+    git(basePath, ["commit", "-m", "ignore gsd projections"], "ignore");
+    insertFreshDbSlice();
+
+    const { ic } = buildIc({
+      preflightResult: STASH_PUSHED,
+      mergeBehavior: "succeed",
+      postflightResult: POP_OK,
+    });
+    (ic.s as { basePath: string; originalBasePath: string }).basePath = basePath;
+    (ic.s as { basePath: string; originalBasePath: string }).originalBasePath = basePath;
+    (ic.deps as unknown as { postflightPopStash: () => PostflightResult }).postflightPopStash = () => {
+      const restoredDir = join(basePath, ".gsd", "ignored-restored-projections");
+      mkdirSync(restoredDir, { recursive: true });
+      writeFileSync(join(restoredDir, "local.md"), "# ignored restored local markdown\n", "utf8");
+      return POP_OK;
+    };
+
+    const result = await _runMilestoneMergeWithStashRestore(ic, "M002");
+
+    assert.equal(result, null);
+    assert.doesNotMatch(
+      readFileSync(roadmapPath, "utf8"),
+      /Fresh DB Slice/,
+      "ignored .gsd markdown projections restored by postflight must suppress rebuild",
+    );
+  });
+});
+
+test("preexisting ignored markdown under .gsd does not suppress successful merge rebuild", async () => {
+  await withProjectionBackedProject(async (basePath, roadmapPath) => {
+    writeFileSync(join(basePath, ".gitignore"), ".gsd\n", "utf8");
+    git(basePath, ["add", ".gitignore"]);
+    git(basePath, ["commit", "-m", "ignore gsd projections"], "ignore");
+    mkdirSync(join(basePath, ".gsd", "ignored-existing-projections"), { recursive: true });
+    writeFileSync(
+      join(basePath, ".gsd", "ignored-existing-projections", "local.md"),
+      "# already ignored local markdown\n",
+      "utf8",
+    );
+    insertFreshDbSlice();
+
+    const { ic } = buildIc({
+      preflightResult: STASH_PUSHED,
+      mergeBehavior: "succeed",
+      postflightResult: POP_OK,
+    });
+    (ic.s as { basePath: string; originalBasePath: string }).basePath = basePath;
+    (ic.s as { basePath: string; originalBasePath: string }).originalBasePath = basePath;
+
+    const result = await _runMilestoneMergeWithStashRestore(ic, "M002");
+
+    assert.equal(result, null);
+    assert.match(
+      readFileSync(roadmapPath, "utf8"),
+      /Fresh DB Slice/,
+      "stable preexisting ignored .gsd markdown must not block the required projection rebuild",
+    );
+  });
+});
 
 test("non-projection .gsd dirt does not suppress successful merge rebuild", async () => {
   await withProjectionBackedProject(async (basePath, roadmapPath) => {
-    insertSlice({
-      id: "S02",
-      milestoneId: "M002",
-      title: "Fresh DB Slice",
-      status: "pending",
-      risk: "medium",
-      depends: [],
-      demo: "demo",
-      sequence: 2,
-    });
+    insertFreshDbSlice();
     mkdirSync(join(basePath, ".gsd", "runtime"), { recursive: true });
 
     const { ic } = buildIc({
