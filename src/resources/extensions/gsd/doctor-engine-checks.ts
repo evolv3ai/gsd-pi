@@ -678,6 +678,7 @@ export async function checkEngineHealth(
         for (const row of artifactRows) {
           const unitId = artifactUnitId(row);
           const issuePath = artifactPathRelativeToGsd(row.path);
+          if (artifactExistsOnDisk(basePath, row.path)) continue;
           if (options?.repair && staleArtifactRowFixable(basePath, row, artifactRows)) {
             // Route the write through the Single Writer owner (gsd-db.ts) instead
             // of issuing raw DELETE SQL here — doctor is a read-only consumer and
