@@ -36,7 +36,6 @@ import {
 } from "./milestone-closeout-proof.js";
 import {
   nativeAddAllWithExclusions,
-  nativeBranchDelete,
   nativeCheckoutBranch,
   nativeCommit,
   nativeConflictFiles,
@@ -60,16 +59,12 @@ import {
   clearProjectRootStateFiles,
 } from "./auto-worktree-cleanup.js";
 import { createMilestoneDirectoryShelter } from "./auto-worktree-milestone-shelter.js";
-import {
-  getActiveWorkspace,
-  setActiveWorkspace,
-} from "./auto-worktree-session-registry.js";
-import { removeWorktree } from "./worktree-manager.js";
-import { nudgeGitBranchCache } from "./worktree.js";
+import { getActiveWorkspace } from "./auto-worktree-session-registry.js";
 import {
   assertNoUnanchoredCodeChangesAfterEmptyMerge,
   detectMergedCodeFilesChanged,
 } from "./auto-worktree-merge-code-changes.js";
+import { cleanupMergedMilestoneWorktree } from "./auto-worktree-merge-cleanup.js";
 import { createPreMergeStash } from "./auto-worktree-merge-stash.js";
 import {
   cleanupConflictState,
@@ -450,48 +445,14 @@ export function mergeMilestoneToMain(
       milestoneBranch,
       mainBranch,
     });
-    try {
-      clearProjectRootStateFiles(originalBasePath_, milestoneId);
-    } catch (err) {
-      logWarning("worktree", `clearProjectRootStateFiles failed during already-merged cleanup: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    let worktreeRemoved = true;
-    try {
-      worktreeRemoved = removeWorktree(originalBasePath_, milestoneId, {
-        branch: milestoneBranch,
-        deleteBranch: false,
-      });
-    } catch (err) {
-      worktreeRemoved = false;
-      logWarning("worktree", `worktree removal failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
-    if (!worktreeRemoved) {
-      logWarning(
-        "worktree",
-        `Skipping milestone branch deletion for ${milestoneBranch}; worktree removal was aborted to preserve uncommitted milestone work.`,
-      );
-      nudgeGitBranchCache(previousCwd);
-      try {
-        process.chdir(originalBasePath_);
-      } catch (err) {
-        logWarning("worktree", `chdir to project root after already-merged cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      return { commitMessage, pushed: false, prCreated: false, codeFilesChanged: true };
-    }
-
-    try {
-      nativeBranchDelete(originalBasePath_, milestoneBranch);
-    } catch (err) {
-      logWarning("worktree", `git branch-delete failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    setActiveWorkspace(null);
-    nudgeGitBranchCache(previousCwd);
-    try {
-      process.chdir(originalBasePath_);
-    } catch (err) {
-      logWarning("worktree", `chdir to project root after already-merged cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    cleanupMergedMilestoneWorktree({
+      projectRoot: originalBasePath_,
+      milestoneId,
+      milestoneBranch,
+      previousCwd,
+      clearProjectRootState: true,
+      chdirWarningContext: "after already-merged cleanup",
+    });
     return { commitMessage, pushed: false, prCreated: false, codeFilesChanged: true };
   }
 
@@ -637,58 +598,13 @@ export function mergeMilestoneToMain(
   const codeFilesChanged = detectMergedCodeFilesChanged(originalBasePath_, nothingToCommit);
 
   const finalizeMilestoneCleanup = (): void => {
-    // 12. Remove worktree directory first (must happen before branch deletion)
-    let worktreeRemoved = true;
-    try {
-      worktreeRemoved = removeWorktree(originalBasePath_, milestoneId, {
-        branch: milestoneBranch,
-        deleteBranch: false,
-      });
-    } catch (err) {
-      worktreeRemoved = false;
-      // Best-effort -- worktree dir may already be gone
-      logWarning("worktree", `worktree removal failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
-    if (!worktreeRemoved) {
-      logWarning(
-        "worktree",
-        `Skipping milestone branch deletion for ${milestoneBranch}; worktree removal was aborted to preserve uncommitted milestone work.`,
-      );
-      return;
-    }
-
-    // 13. Delete milestone branch (after worktree removal so ref is unlocked)
-    try {
-      nativeBranchDelete(originalBasePath_, milestoneBranch);
-    } catch (err) {
-      // Best-effort
-      logWarning("worktree", `git branch-delete failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-
-    // 14. Clear module state
-    setActiveWorkspace(null);
-    nudgeGitBranchCache(previousCwd);
-
-    // 15. Anchor cwd at the project root on success-return. Step 12 removed
-    // the worktree dir; if cwd was inside it, every subsequent process.cwd()
-    // would throw ENOENT and trip auto/run-unit.ts:50's session-failed cancel
-    // path (the de73fb43d regression that closes headless gsd auto). Step 3
-    // already chdir'd here, but defending the success-return contract makes
-    // future maintainers safe against intervening chdir's between step 3 and
-    // here.
-    try {
-      // process.cwd() can throw ENOENT when cwd was removed, so attempt
-      // recovery directly.
-      process.chdir(originalBasePath_);
-    } catch (err) {
-      logWarning("worktree", `chdir to project root after merge failed: ${err instanceof Error ? err.message : String(err)}`);
-      debugLog("mergeMilestoneToMain", {
-        phase: "post-merge-chdir-failed",
-        target: originalBasePath_,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    cleanupMergedMilestoneWorktree({
+      projectRoot: originalBasePath_,
+      milestoneId,
+      milestoneBranch,
+      previousCwd,
+      chdirWarningContext: "after merge",
+    });
   };
 
   let shouldCleanup = false;
