@@ -8,7 +8,9 @@ import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createAutoWorktree, teardownAutoWorktree, _resetAutoWorktreeOriginalBaseForTests } from "../auto-worktree.ts";
+import { createAutoWorktree } from "../auto-worktree-creation.ts";
+import { _resetAutoWorktreeOriginalBaseForTests } from "../auto-worktree-session-registry.ts";
+import { teardownAutoWorktree } from "../auto-worktree-teardown.ts";
 import { classifyProject } from "../detection.ts";
 
 function runGit(args: string[], cwd: string): string {

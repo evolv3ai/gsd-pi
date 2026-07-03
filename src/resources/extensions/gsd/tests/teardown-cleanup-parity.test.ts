@@ -22,7 +22,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 
-import { teardownAutoWorktree, _resetAutoWorktreeOriginalBaseForTests } from "../auto-worktree.ts";
+import { _resetAutoWorktreeOriginalBaseForTests } from "../auto-worktree-session-registry.ts";
+import { teardownAutoWorktree } from "../auto-worktree-teardown.ts";
 
 function git(args: string[], cwd: string): void {
   execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
