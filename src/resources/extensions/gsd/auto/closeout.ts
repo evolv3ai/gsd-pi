@@ -101,7 +101,8 @@ export async function _runMilestoneMergeWithStashRestore(
   const { ctx, pi, s, deps } = ic;
 
   const projectRoot = s.originalBasePath || s.basePath;
-  const ignoredProjectionSnapshot = snapshotIgnoredGsdMarkdownProjections(projectRoot);
+  const projectionGuardPath = s.originalBasePath || s.canonicalProjectRoot || s.basePath;
+  const ignoredProjectionSnapshot = snapshotIgnoredGsdMarkdownProjections(projectionGuardPath);
   const mergeResult = deps.lifecycle.exitMilestone(
     milestoneId,
     {
@@ -217,13 +218,20 @@ function hasDirtyGsdMarkdownProjections(
   try {
     const output = execFileSync(
       "git",
-      ["status", "--porcelain", "--untracked-files=all", "--", ".gsd"],
+      ["status", "--porcelain", "-z", "--untracked-files=all", "--", ".gsd"],
       { cwd: basePath, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
     );
-    if (output
-      .split(/\r?\n/)
-      .some((line) => /\.md$/.test(line.trim()))) {
-      return true;
+    const entries = output.split("\0").filter(Boolean);
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (entry.length <= 3) continue;
+      const status = entry.slice(0, 2);
+      const path = entry.slice(3);
+      if (path.endsWith(".md")) return true;
+      if ((status === "R " || status === "C ") && i + 1 < entries.length) {
+        const dest = entries[++i];
+        if (dest.endsWith(".md")) return true;
+      }
     }
   } catch {
     // Fall through to ignored-file snapshot comparison below.
@@ -257,7 +265,7 @@ function ignoredGsdMarkdownProjectionSnapshotChanged(
   basePath: string,
   before: GsdMarkdownSnapshot | null,
 ): boolean {
-  if (!before) return false;
+  if (!before) return true;
   const after = snapshotIgnoredGsdMarkdownProjections(basePath);
   if (!after || after.size !== before.size) return true;
   for (const [path, hash] of before) {
