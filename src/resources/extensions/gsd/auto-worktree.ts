@@ -12,7 +12,6 @@
 import {
   existsSync,
   cpSync,
-  readFileSync,
   readdirSync,
   mkdirSync,
   rmSync,
@@ -51,8 +50,6 @@ import {
   nudgeGitBranchCache,
 } from "./worktree.js";
 import {
-  projectRootFromWorktreePath,
-  normalizeWorktreePathForCompare,
 } from "./worktree-root.js";
 import { autoResolveSafeConflictPaths } from "./git-conflict-resolve.js";
 import { MergeConflictError, resolveMilestoneIntegrationBranch, RUNTIME_EXCLUSION_PATHS } from "./git-service.js";
@@ -72,7 +69,6 @@ import {
   stashRefFromError,
 } from "./worktree-git-recovery.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
-import { MILESTONE_ID_RE } from "./milestone-ids.js";
 import {
   nativeGetCurrentBranch,
   nativeDetectMainBranch,
@@ -99,7 +95,6 @@ import {
   formatCloseoutProofBlock,
   proveMilestoneCloseout,
 } from "./milestone-closeout-proof.js";
-import { gsdHome } from "./gsd-home.js";
 import { createAutoWorktree } from "./auto-worktree-creation.js";
 import {
   enterAutoWorktree,
@@ -125,6 +120,16 @@ export { createAutoWorktree } from "./auto-worktree-creation.js";
 export { teardownAutoWorktree } from "./auto-worktree-teardown.js";
 
 export {
+  checkResourcesStale,
+  readResourceVersion,
+} from "./auto-worktree-resource-version.js";
+
+export {
+  cleanStaleRuntimeUnits,
+  escapeStaleWorktree,
+} from "./auto-worktree-runtime-cleanup.js";
+
+export {
   syncGsdStateToWorktree,
   syncGsdStateToWorktreeByScope,
   syncProjectRootToWorktree,
@@ -145,14 +150,6 @@ export {
   _isBranchCheckedOutElsewhere,
   _resolveAutoWorktreeStartPoint,
 } from "./auto-worktree-branch-lifecycle.js";
-
-const LEGACY_DEEP_SETUP_RUNTIME_UNIT_FILES = new Set([
-  "workflow-preferences-WORKFLOW-PREFS.json",
-  "discuss-project-PROJECT.json",
-  "discuss-requirements-REQUIREMENTS.json",
-  "research-decision-RESEARCH-DECISION.json",
-  "research-project-RESEARCH-PROJECT.json",
-]);
 
 export {
   _gitPathspecForWorktreePath,
@@ -234,142 +231,6 @@ export {
   isSafeToAutoResolve,
   SAFE_AUTO_RESOLVE_PATTERNS,
 } from "./auto-worktree-conflict-auto-resolve.js";
-
-// ─── Resource Staleness ───────────────────────────────────────────────────
-
-/**
- * Read the resource version (semver) from the managed-resources manifest.
- * Uses gsdVersion instead of syncedAt so that launching a second session
- * doesn't falsely trigger staleness (#804).
- */
-export function readResourceVersion(): string | null {
-  const agentDir =
-    process.env.GSD_CODING_AGENT_DIR || join(gsdHome(), "agent");
-  const manifestPath = join(agentDir, "managed-resources.json");
-  try {
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
-    return typeof manifest?.gsdVersion === "string"
-      ? manifest.gsdVersion
-      : null;
-  } catch (e) {
-    logWarning("worktree", `readResourceVersion failed: ${(e as Error).message}`);
-    return null;
-  }
-}
-
-/**
- * Check if managed resources have been updated since session start.
- * Returns a warning message if stale, null otherwise.
- */
-export function checkResourcesStale(
-  versionOnStart: string | null,
-): string | null {
-  if (versionOnStart === null) return null;
-  const current = readResourceVersion();
-  if (current === null) return null;
-  if (current !== versionOnStart) {
-    return "GSD resources were updated since this session started. Restart gsd to load the new code.";
-  }
-  return null;
-}
-
-// ─── Stale Worktree Escape ────────────────────────────────────────────────
-
-/**
- * Detect and escape a stale worktree cwd (#608).
- *
- * After milestone completion + merge, the worktree directory is removed but
- * the process cwd may still point inside `.gsd/worktrees/<MID>/`.
- * When a new session starts, `process.cwd()` is passed as `base` to startAuto
- * and all subsequent writes land in the wrong directory. This function detects
- * that scenario and chdir back to the project root.
- *
- * Returns the corrected base path.
- */
-export function escapeStaleWorktree(base: string): string {
-  const projectRoot = projectRootFromWorktreePath(base);
-  if (projectRoot === null) return base;
-
-  // Guard: If the candidate project root's .gsd IS the user-level ~/.gsd,
-  // the string-slice heuristic matched the wrong /.gsd/ boundary. This happens
-  // when .gsd is a symlink into ~/.gsd/projects/<hash> and process.cwd()
-  // resolved through the symlink. Returning ~ would be catastrophic (#1676).
-  const candidateGsd = normalizeWorktreePathForCompare(join(projectRoot, ".gsd"));
-  const gsdHomeNorm = normalizeWorktreePathForCompare(gsdHome());
-  if (candidateGsd === gsdHomeNorm || candidateGsd.startsWith(gsdHomeNorm + "/")) {
-    // Don't chdir to home — return base unchanged.
-    // resolveProjectRoot() in worktree.ts has the full git-file-based recovery
-    // and will be called by the caller (startAuto → projectRoot()).
-    return base;
-  }
-
-  try {
-    process.chdir(projectRoot);
-  } catch (e) {
-    // If chdir fails, return the original — caller will handle errors downstream
-    logWarning("worktree", `escapeStaleWorktree chdir failed: ${(e as Error).message}`);
-    return base;
-  }
-  return projectRoot;
-}
-
-/**
- * Clean stale runtime unit files for completed milestones.
- *
- * After restart, stale runtime/units/*.json from prior milestones can
- * cause deriveState to resume the wrong milestone (#887). Removes files
- * for milestones that have a SUMMARY (fully complete).
- */
-export function cleanStaleRuntimeUnits(
-  gsdRootPath: string,
-  hasMilestoneSummary: (mid: string) => boolean,
-): number {
-  const runtimeUnitsDir = join(gsdRootPath, "runtime", "units");
-  if (!existsSync(runtimeUnitsDir)) return 0;
-
-  let cleaned = 0;
-  try {
-    for (const file of readdirSync(runtimeUnitsDir)) {
-      if (!file.endsWith(".json")) continue;
-      if (LEGACY_DEEP_SETUP_RUNTIME_UNIT_FILES.has(file)) {
-        try {
-          unlinkSync(join(runtimeUnitsDir, file));
-          cleaned++;
-        } catch (err) {
-          /* non-fatal */
-          logWarning("worktree", `stale runtime unit unlink failed (${file}): ${err instanceof Error ? err.message : String(err)}`);
-        }
-        continue;
-      }
-      const staleDiscussMatch = file.match(/^discuss-milestone-(.+)\.json$/);
-      if (staleDiscussMatch && !MILESTONE_ID_RE.test(staleDiscussMatch[1])) {
-        try {
-          unlinkSync(join(runtimeUnitsDir, file));
-          cleaned++;
-        } catch (err) {
-          /* non-fatal */
-          logWarning("worktree", `stale runtime unit unlink failed (${file}): ${err instanceof Error ? err.message : String(err)}`);
-        }
-        continue;
-      }
-      const midMatch = file.match(/(M\d+(?:-[a-z0-9]{6})?)/);
-      if (!midMatch) continue;
-      if (hasMilestoneSummary(midMatch[1])) {
-        try {
-          unlinkSync(join(runtimeUnitsDir, file));
-          cleaned++;
-        } catch (err) {
-          /* non-fatal */
-          logWarning("worktree", `stale runtime unit unlink failed (${file}): ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-    }
-  } catch (err) {
-    /* non-fatal */
-    logWarning("worktree", `stale runtime unit cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  return cleaned;
-}
 
 export { runWorktreePostCreateHook } from "./worktree-post-create-hook.js";
 
