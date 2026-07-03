@@ -25,8 +25,6 @@ import {
 } from "./git-service.js";
 import {
   getMilestone,
-  getMilestoneSlices,
-  getSliceTasks,
   isDbAvailable,
   reconcileWorktreeDb,
 } from "./gsd-db.js";
@@ -65,6 +63,7 @@ import {
 } from "./auto-worktree-merge-code-changes.js";
 import { reconcileMilestoneBranchHead } from "./auto-worktree-merge-branch-head.js";
 import { cleanupMergedMilestoneWorktree } from "./auto-worktree-merge-cleanup.js";
+import { buildMilestoneMergeMessage } from "./auto-worktree-merge-message.js";
 import { createPreMergeStash } from "./auto-worktree-merge-stash.js";
 import {
   cleanupConflictState,
@@ -73,15 +72,6 @@ import {
 import { logError, logWarning } from "./workflow-logger.js";
 
 export { _setRestoreEntryFnForTests } from "./auto-worktree-milestone-shelter.js";
-
-function stripGsdDisplayPrefix(value: string | undefined | null, id: string): string | undefined {
-  const raw = String(value ?? "").trim();
-  if (!raw) return undefined;
-  const lower = raw.toLowerCase();
-  const idLower = id.toLowerCase();
-  if (lower.startsWith(`${idLower}:`)) return raw.slice(id.length + 1).trim() || undefined;
-  return raw;
-}
 
 function findRegularMergeChangedPaths(basePath: string, milestoneBranch: string, mainBranch: string): Set<string> {
   const changedPaths = new Set<string>();
@@ -249,30 +239,12 @@ export function mergeMilestoneToMain(
     }
   }
 
-  // 2. Get completed slices for commit message
-  let completedSlices: { id: string; title: string; tasks: Array<{ id: string; title: string }> }[] = [];
-  if (isDbAvailable()) {
-    completedSlices = getMilestoneSlices(milestoneId)
-      .filter(s => s.status === "complete")
-      .map(s => ({
-        id: s.id,
-        title: stripGsdDisplayPrefix(s.title, s.id) ?? s.id,
-        tasks: getSliceTasks(milestoneId, s.id)
-          .filter((task) => task.status === "complete")
-          .map((task) => ({
-            id: task.id,
-            title: stripGsdDisplayPrefix(task.title, task.id) ?? task.id,
-          })),
-      }));
-  }
-  // Fallback: parse roadmap content when DB is unavailable
-  if (completedSlices.length === 0 && roadmapContent) {
-    const sliceRe = /- \[x\] \*\*(\w+):\s*(.+?)\*\*/gi;
-    let m: RegExpExecArray | null;
-    while ((m = sliceRe.exec(roadmapContent)) !== null) {
-      completedSlices.push({ id: m[1], title: m[2], tasks: [] });
-    }
-  }
+  // 2. Build completed-slice summaries and rich commit message.
+  const { commitMessage, milestoneTitle, sliceSummaries } = buildMilestoneMergeMessage({
+    milestoneId,
+    milestoneBranch,
+    roadmapContent,
+  });
 
   // 3. chdir to original base
   // Note: previousCwd captures the cwd at this point — i.e. the worktree cwd
@@ -328,34 +300,6 @@ export function mergeMilestoneToMain(
   if (currentBranchAtBase !== mainBranch) {
     nativeCheckoutBranch(originalBasePath_, mainBranch);
   }
-
-  // 6. Build rich commit message
-  const dbMilestone = getMilestone(milestoneId);
-  let milestoneTitle = stripGsdDisplayPrefix(dbMilestone?.title, milestoneId) ?? "";
-  // Fallback: parse title from roadmap content header (e.g. "# M020: Backend foundation")
-  if (!milestoneTitle && roadmapContent) {
-    const titleMatch = roadmapContent.match(new RegExp(`^#\\s+${milestoneId}:\\s*(.+)`, "m"));
-    if (titleMatch) milestoneTitle = titleMatch[1].trim();
-  }
-  milestoneTitle = milestoneTitle || milestoneId;
-  const subject = `feat: ${milestoneTitle}`;
-  const milestoneContext = milestoneTitle === milestoneId
-    ? `Milestone: ${milestoneId}`
-    : `Milestone: ${milestoneId} - ${milestoneTitle}`;
-  let body = "";
-  if (completedSlices.length > 0) {
-    const sliceLines = completedSlices
-      .map((s) => `- ${s.id}: ${s.title}`)
-      .join("\n");
-    const taskLines = completedSlices
-      .flatMap((s) => s.tasks.map((task) => `- ${s.id}/${task.id}: ${task.title}`))
-      .join("\n");
-    const taskBlock = taskLines ? `\n\nCompleted tasks:\n${taskLines}` : "";
-    body = `\n\nCompleted slices:\n${sliceLines}${taskBlock}\n\n${milestoneContext}\nGSD-Milestone: ${milestoneId}\nBranch: ${milestoneBranch}`;
-  } else {
-    body = `\n\n${milestoneContext}\nGSD-Milestone: ${milestoneId}\nBranch: ${milestoneBranch}`;
-  }
-  const commitMessage = subject + body;
 
   // 6b. Reconcile worktree HEAD with milestone branch ref (#1846).
   //     The branch-head module owns the data-loss guard: fast-forward stale
@@ -570,7 +514,7 @@ export function mergeMilestoneToMain(
       milestoneTitle,
       integrationBranch: mainBranch,
       milestoneBranch,
-      sliceSummaries: completedSlices.map((slice) => `### ${slice.id}\n${slice.title}`),
+      sliceSummaries,
       nothingToCommit,
       prefs: {
         autoPush: prefs.auto_push === true,
