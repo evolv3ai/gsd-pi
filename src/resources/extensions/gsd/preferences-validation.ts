@@ -794,6 +794,75 @@ export function validatePreferences(preferences: GSDPreferences): {
     }
   }
 
+  // ─── Tool-call loop guard (#1198) ────────────────────────────────────────
+  if (preferences.tool_call_loop_guard !== undefined) {
+    if (typeof preferences.tool_call_loop_guard === "object" && preferences.tool_call_loop_guard !== null) {
+      const g = preferences.tool_call_loop_guard as unknown as Record<string, unknown>;
+      const validGuard: Record<string, unknown> = {};
+
+      if (g.enabled !== undefined) {
+        if (typeof g.enabled === "boolean") validGuard.enabled = g.enabled;
+        else errors.push("tool_call_loop_guard.enabled must be a boolean");
+      }
+
+      if (g.identical_args !== undefined) {
+        if (typeof g.identical_args === "object" && g.identical_args !== null) {
+          const ia = g.identical_args as Record<string, unknown>;
+          const validIa: Record<string, unknown> = {};
+          if (ia.enabled !== undefined) {
+            if (typeof ia.enabled === "boolean") validIa.enabled = ia.enabled;
+            else errors.push("tool_call_loop_guard.identical_args.enabled must be a boolean");
+          }
+          if (ia.max_consecutive_calls !== undefined) {
+            const n = ia.max_consecutive_calls;
+            if (typeof n === "number" && Number.isInteger(n) && n >= 1) validIa.max_consecutive_calls = n;
+            else errors.push("tool_call_loop_guard.identical_args.max_consecutive_calls must be an integer >= 1");
+          }
+          if (Object.keys(validIa).length > 0) validGuard.identical_args = validIa;
+        } else {
+          errors.push("tool_call_loop_guard.identical_args must be an object");
+        }
+      }
+
+      if (g.repeated_tool !== undefined) {
+        if (typeof g.repeated_tool === "object" && g.repeated_tool !== null) {
+          const rt = g.repeated_tool as Record<string, unknown>;
+          const validRt: Record<string, unknown> = {};
+          if (rt.enabled !== undefined) {
+            if (typeof rt.enabled === "boolean") validRt.enabled = rt.enabled;
+            else errors.push("tool_call_loop_guard.repeated_tool.enabled must be a boolean");
+          }
+          if (rt.default_cap !== undefined) {
+            const n = rt.default_cap;
+            if (typeof n === "number" && Number.isInteger(n) && n >= 1) validRt.default_cap = n;
+            else errors.push("tool_call_loop_guard.repeated_tool.default_cap must be an integer >= 1");
+          }
+          if (rt.repeatable_cap !== undefined) {
+            const n = rt.repeatable_cap;
+            if (typeof n === "number" && Number.isInteger(n) && n >= 1) validRt.repeatable_cap = n;
+            else errors.push("tool_call_loop_guard.repeated_tool.repeatable_cap must be an integer >= 1");
+          }
+          if (rt.exempt_tools !== undefined) {
+            if (Array.isArray(rt.exempt_tools) && rt.exempt_tools.every((t) => typeof t === "string")) {
+              validRt.exempt_tools = rt.exempt_tools;
+            } else {
+              errors.push("tool_call_loop_guard.repeated_tool.exempt_tools must be an array of strings");
+            }
+          }
+          if (Object.keys(validRt).length > 0) validGuard.repeated_tool = validRt;
+        } else {
+          errors.push("tool_call_loop_guard.repeated_tool must be an object");
+        }
+      }
+
+      if (Object.keys(validGuard).length > 0) {
+        validated.tool_call_loop_guard = validGuard as any;
+      }
+    } else {
+      errors.push("tool_call_loop_guard must be an object");
+    }
+  }
+
   // ─── Context Mode (gsd_exec sandbox) ────────────────────────────────────
   if (preferences.context_mode !== undefined) {
     if (typeof preferences.context_mode === "object" && preferences.context_mode !== null) {

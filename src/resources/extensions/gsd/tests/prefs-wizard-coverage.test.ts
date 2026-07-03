@@ -79,6 +79,11 @@ const PREF_SAMPLE_VALUES: Record<string, unknown> = {
   min_request_interval_ms: 250,
   stale_commit_threshold_minutes: 15,
   context_management: { enabled: true },
+  tool_call_loop_guard: {
+    enabled: true,
+    identical_args: { enabled: true, max_consecutive_calls: 4 },
+    repeated_tool: { enabled: true, default_cap: 6, repeatable_cap: 15, exempt_tools: ["ctx_execute"] },
+  },
   experimental: { rtk: true },
   codebase: { indexing: "auto" },
   slice_parallel: { enabled: true, max_workers: 2 },
