@@ -17,7 +17,6 @@ import {
   mkdirSync,
   rmSync,
   unlinkSync,
-  lstatSync as lstatSyncFn,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { GSDError, GSD_GIT_ERROR } from "./errors.js";
@@ -101,8 +100,6 @@ import {
   proveMilestoneCloseout,
 } from "./milestone-closeout-proof.js";
 import { gsdHome } from "./gsd-home.js";
-import { type MilestoneScope } from "./workspace.js";
-import { WorktreeStateProjection } from "./worktree-state-projection.js";
 import { createAutoWorktree } from "./auto-worktree-creation.js";
 import {
   enterAutoWorktree,
@@ -114,7 +111,6 @@ import {
   setActiveWorkspace,
 } from "./auto-worktree-session-registry.js";
 import {
-  _isSamePath as isSamePath,
   _shouldReconcileWorktreeDb,
   clearProjectRootStateFiles,
 } from "./auto-worktree-cleanup.js";
@@ -127,6 +123,14 @@ export {
 
 export { createAutoWorktree } from "./auto-worktree-creation.js";
 export { teardownAutoWorktree } from "./auto-worktree-teardown.js";
+
+export {
+  syncGsdStateToWorktree,
+  syncGsdStateToWorktreeByScope,
+  syncProjectRootToWorktree,
+  syncStateToProjectRoot,
+  syncWorktreeStateBack,
+} from "./auto-worktree-sync.js";
 
 export {
   enterAutoWorktree,
@@ -142,8 +146,6 @@ export {
   _resolveAutoWorktreeStartPoint,
 } from "./auto-worktree-branch-lifecycle.js";
 
-const PROJECT_PREFERENCES_FILE = "PREFERENCES.md";
-const LEGACY_PROJECT_PREFERENCES_FILE = "preferences.md";
 const LEGACY_DEEP_SETUP_RUNTIME_UNIT_FILES = new Set([
   "workflow-preferences-WORKFLOW-PREFS.json",
   "discuss-project-PROJECT.json",
@@ -151,28 +153,6 @@ const LEGACY_DEEP_SETUP_RUNTIME_UNIT_FILES = new Set([
   "research-decision-RESEARCH-DECISION.json",
   "research-project-RESEARCH-PROJECT.json",
 ]);
-
-// ─── Shared Constants & Helpers ─────────────────────────────────────────────
-
-/**
- * Root-level .gsd/ projections copied from project root into worktrees for
- * compatibility. Project root remains the canonical state/projection root.
- */
-const ROOT_STATE_FILES = [
-  "DECISIONS.md",
-  "REQUIREMENTS.md",
-  "PROJECT.md",
-  "KNOWLEDGE.md",
-  "OVERRIDES.md",
-  "QUEUE.md",
-  "completed-units.json",
-  "metrics.json",
-  "mcp.json",
-  // NOTE: project preferences are intentionally NOT in ROOT_STATE_FILES.
-  // Forward-sync (main → worktree) is handled explicitly in syncGsdStateToWorktree().
-  // Back-sync (worktree → main) must NEVER overwrite the project root's copy
-  // because the project root is authoritative for preferences (#2684).
-] as const;
 
 export {
   _gitPathspecForWorktreePath,
@@ -254,42 +234,6 @@ export {
   isSafeToAutoResolve,
   SAFE_AUTO_RESOLVE_PATTERNS,
 } from "./auto-worktree-conflict-auto-resolve.js";
-
-// ─── Dispatch-Level Sync (project root ↔ worktree) ──────────────────────────
-
-/**
- * Sync milestone artifacts from project root INTO worktree before deriveState.
- * Covers the case where the LLM wrote artifacts to the main repo filesystem
- * (e.g. via absolute paths) but the worktree has stale data. Also deletes
- * gsd.db in the worktree so it rebuilds from fresh disk state (#853).
- * Non-fatal — sync failure should never block dispatch.
- */
-/**
- * Path-string entry point to WorktreeStateProjection.projectRootToWorktree.
- * Production code goes through the Module class; this delegator survives so
- * the projection-invariant tests (#1886, #2184, #2478, #2821) can exercise
- * the bodies with raw paths.
- */
-export function syncProjectRootToWorktree(
-  projectRoot: string,
-  worktreePath_: string,
-  milestoneId: string | null,
-): void {
-  new WorktreeStateProjection().projectRootToWorktreePaths(projectRoot, worktreePath_, milestoneId);
-}
-
-/**
- * Path-string entry point to WorktreeStateProjection.projectWorktreeToRoot.
- * Production code goes through the Module class; this delegator survives so
- * the projection-invariant tests can exercise the body with raw paths.
- */
-export function syncStateToProjectRoot(
-  worktreePath_: string,
-  projectRoot: string,
-  milestoneId: string | null,
-): void {
-  new WorktreeStateProjection().projectWorktreeToRootPaths(worktreePath_, projectRoot, milestoneId);
-}
 
 // ─── Resource Staleness ───────────────────────────────────────────────────
 
@@ -427,226 +371,6 @@ export function cleanStaleRuntimeUnits(
   return cleaned;
 }
 
-// ─── Worktree ↔ Main Repo Sync (#1311) ──────────────────────────────────────
-
-/**
- * Scope-typed variant of syncGsdStateToWorktree.
- *
- * Takes an explicit (rootScope, worktreeScope) pair. Note: milestoneId is not
- * used by syncGsdStateToWorktree — this variant only requires workspace
- * identity. Asserts both scopes belong to the same workspace identity to
- * prevent silent mismatch bugs.
- */
-export function syncGsdStateToWorktreeByScope(
-  rootScope: MilestoneScope,
-  worktreeScope: MilestoneScope,
-): { synced: string[] } {
-  if (rootScope.workspace.identityKey !== worktreeScope.workspace.identityKey) {
-    throw new Error(
-      `syncGsdStateToWorktreeByScope: scope identity mismatch — ` +
-      `rootScope.identityKey="${rootScope.workspace.identityKey}" ` +
-      `worktreeScope.identityKey="${worktreeScope.workspace.identityKey}"`,
-    );
-  }
-  const mainBasePath = rootScope.workspace.projectRoot;
-  const worktreePath_ = worktreeScope.workspace.worktreeRoot ?? worktreeScope.workspace.projectRoot;
-  return syncGsdStateToWorktree(mainBasePath, worktreePath_);
-}
-
-/**
- * Sync .gsd/ state from the main repo into the worktree.
- *
- * When .gsd/ is a symlink to the external state directory, both the main
- * repo and worktree share the same directory — no sync needed.
- *
- * When .gsd/ is a real directory (e.g., git-tracked or manage_gitignore:false),
- * the worktree has its own copy that may be stale. This function copies
- * missing milestones, CONTEXT, ROADMAP, DECISIONS, REQUIREMENTS, and
- * PROJECT files from the main repo's .gsd/ into the worktree's .gsd/.
- *
- * Only adds missing content — never overwrites existing files in the worktree.
- * Worktree files are compatibility projections; DB/project root remains
- * authoritative for runtime state.
- * @deprecated Use syncGsdStateToWorktreeByScope instead.
- * TODO(C-future): remove once all callers migrated.
- */
-export function syncGsdStateToWorktree(
-  mainBasePath: string,
-  worktreePath_: string,
-): { synced: string[] } {
-  const contract = resolveGsdPathContract(worktreePath_, mainBasePath);
-  const mainGsd = contract.projectGsd;
-  const wtGsd = contract.worktreeGsd ?? join(worktreePath_, ".gsd");
-  const synced: string[] = [];
-
-  // If both resolve to the same directory (symlink), no sync needed
-  if (isSamePath(mainGsd, wtGsd)) return { synced };
-
-  if (!existsSync(mainGsd)) return { synced };
-  mkdirSync(wtGsd, { recursive: true });
-
-  // Sync root-level .gsd/ files (DECISIONS, REQUIREMENTS, PROJECT, KNOWLEDGE, etc.)
-  for (const f of ROOT_STATE_FILES) {
-    const src = join(mainGsd, f);
-    const dst = join(wtGsd, f);
-    if (existsSync(src) && !existsSync(dst)) {
-      try {
-        cpSync(src, dst);
-        synced.push(f);
-      } catch (err) {
-        /* non-fatal */
-        logWarning("worktree", `file copy failed (${f}): ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-  }
-
-  // Forward-sync project preferences from project root to worktree (additive only).
-  // Prefer the canonical uppercase file name, but keep the legacy lowercase
-  // fallback so older repos still work on case-sensitive filesystems.
-  {
-    const worktreeHasPreferences = existsSync(join(wtGsd, PROJECT_PREFERENCES_FILE))
-      || existsSync(join(wtGsd, LEGACY_PROJECT_PREFERENCES_FILE));
-    if (!worktreeHasPreferences) {
-      for (const file of [PROJECT_PREFERENCES_FILE, LEGACY_PROJECT_PREFERENCES_FILE] as const) {
-        const src = join(mainGsd, file);
-        const dst = join(wtGsd, file);
-        if (existsSync(src)) {
-          try {
-            cpSync(src, dst);
-            synced.push(file);
-          } catch (err) {
-            /* non-fatal */
-            logWarning("worktree", `preferences copy failed (${file}): ${err instanceof Error ? err.message : String(err)}`);
-          }
-          break;
-        }
-      }
-    }
-  }
-
-  // Sync milestone/phase trees: copy entire directories that are missing.
-  // Support both flat-phase (phases/) and legacy (milestones/) layouts.
-  for (const layoutSegment of ["phases", "milestones"] as const) {
-  const mainMilestonesDir = join(mainGsd, layoutSegment);
-  const wtMilestonesDir = join(wtGsd, layoutSegment);
-  if (existsSync(mainMilestonesDir)) {
-    try {
-      mkdirSync(wtMilestonesDir, { recursive: true });
-      const mainMilestones = readdirSync(mainMilestonesDir, {
-        withFileTypes: true,
-      })
-        .filter((d) => d.isDirectory())
-        .map((d) => d.name);
-
-      for (const mid of mainMilestones) {
-        const srcDir = join(mainMilestonesDir, mid);
-        const dstDir = join(wtMilestonesDir, mid);
-
-        if (!existsSync(dstDir)) {
-          // Entire milestone missing from worktree — copy it
-          try {
-            cpSync(srcDir, dstDir, { recursive: true });
-            synced.push(`milestones/${mid}/`);
-          } catch (err) {
-            /* non-fatal */
-            logWarning("worktree", `milestone copy failed (${mid}): ${err instanceof Error ? err.message : String(err)}`);
-          }
-        } else {
-          // Milestone directory exists but may be missing files (stale snapshot).
-          // Sync individual top-level milestone files (CONTEXT, ROADMAP, RESEARCH, etc.)
-          try {
-            const srcFiles = readdirSync(srcDir).filter(
-              (f) => f.endsWith(".md") || f.endsWith(".json"),
-            );
-            for (const f of srcFiles) {
-              const srcFile = join(srcDir, f);
-              const dstFile = join(dstDir, f);
-              if (!existsSync(dstFile)) {
-                try {
-                  const srcStat = lstatSyncFn(srcFile);
-                  if (srcStat.isFile()) {
-                    cpSync(srcFile, dstFile);
-                    synced.push(`milestones/${mid}/${f}`);
-                  }
-                } catch (err) {
-                  /* non-fatal */
-                  logWarning("worktree", `milestone file copy failed (${mid}/${f}): ${err instanceof Error ? err.message : String(err)}`);
-                }
-              }
-            }
-
-            // Sync slices directory if it exists in main but not in worktree
-            const srcSlicesDir = join(srcDir, "slices");
-            const dstSlicesDir = join(dstDir, "slices");
-            if (existsSync(srcSlicesDir) && !existsSync(dstSlicesDir)) {
-              try {
-                cpSync(srcSlicesDir, dstSlicesDir, { recursive: true });
-                synced.push(`milestones/${mid}/slices/`);
-              } catch (err) {
-                /* non-fatal */
-                logWarning("worktree", `slices copy failed (${mid}): ${err instanceof Error ? err.message : String(err)}`);
-              }
-            } else if (existsSync(srcSlicesDir) && existsSync(dstSlicesDir)) {
-              // Both exist — sync missing slice directories
-              const srcSlices = readdirSync(srcSlicesDir, {
-                withFileTypes: true,
-              })
-                .filter((d) => d.isDirectory())
-                .map((d) => d.name);
-              for (const sid of srcSlices) {
-                const srcSlice = join(srcSlicesDir, sid);
-                const dstSlice = join(dstSlicesDir, sid);
-                if (!existsSync(dstSlice)) {
-                  try {
-                    cpSync(srcSlice, dstSlice, { recursive: true });
-                    synced.push(`milestones/${mid}/slices/${sid}/`);
-                  } catch (err) {
-                    /* non-fatal */
-                    logWarning("worktree", `slice copy failed (${mid}/${sid}): ${err instanceof Error ? err.message : String(err)}`);
-                  }
-                }
-              }
-            }
-          } catch (err) {
-            /* non-fatal */
-            logWarning("worktree", `milestone file sync failed: ${err instanceof Error ? err.message : String(err)}`);
-          }
-        }
-      }
-    } catch (err) {
-      /* non-fatal */
-      logWarning("worktree", `milestone directory sync failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-  }
-
-  return { synced };
-}
-
-/**
- * Sync compatibility artifacts from worktree back to the main external state
- * directory. Canonical workflow state lives in the project DB; worktree .gsd
- * content is legacy projection/diagnostic data only.
- *
- * Syncs:
- *   1. Legacy worktree DBs are reconciled into the canonical project DB.
- *   2. Runtime diagnostic files may be copied for operator visibility.
- *
- * Markdown milestone directories are projections and are not copied from
- * worktrees into the project root. Current workflow state must arrive through
- * the shared project DB or the pre-upgrade DB reconciliation path above.
- */
-export function syncWorktreeStateBack(
-  mainBasePath: string,
-  worktreePath: string,
-  milestoneId: string,
-): { synced: string[] } {
-  return new WorktreeStateProjection().finalizeProjectionForMergePaths(
-    mainBasePath,
-    worktreePath,
-    milestoneId,
-  );
-}
 export { runWorktreePostCreateHook } from "./worktree-post-create-hook.js";
 
 function normalizeLocalBranchRef(branch: string): string {
