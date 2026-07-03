@@ -7,9 +7,9 @@ import {
   nativeCheckoutTheirs,
   nativeRmForce,
 } from "./native-git-bridge.js";
-import { isSafeToAutoResolve } from "./auto-worktree.js";
+import { isSafeToAutoResolve } from "./auto-worktree-conflict-auto-resolve.js";
 
-export { isSafeToAutoResolve } from "./auto-worktree.js";
+export { isSafeToAutoResolve } from "./auto-worktree-conflict-auto-resolve.js";
 
 export interface AutoResolveSafePathsResult {
   resolved: string[];
