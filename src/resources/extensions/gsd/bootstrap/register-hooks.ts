@@ -40,7 +40,7 @@ import {
 } from "../auto-tool-tracking.js";
 import { applyProviderPayloadPolicy } from "../provider-payload-policy.js";
 
-import { checkToolCallLoop, recordToolCallLoopMutation, resetToolCallLoopGuard } from "./tool-call-loop-guard.js";
+import { checkToolCallLoop, configureToolCallLoopGuard, recordToolCallLoopMutation, resetToolCallLoopGuard } from "./tool-call-loop-guard.js";
 import { MINIMAL_AUTO_BASE_TOOL_NAMES } from "./core-session-tools.js";
 import { maybePauseAutoForApprovalGate, resetPendingGatePauseGuard } from "./pending-gate-pause.js";
 import { saveActivityLog } from "../activity-log.js";
@@ -594,6 +594,22 @@ async function applyCompactionThresholdOverride(ctx: ExtensionContext): Promise<
   }
 }
 
+/**
+ * Apply user-tunable tool-call loop guard thresholds (#1198) from GSD
+ * preferences plus GSD_TOOL_LOOP_* env overrides. Runs at session boundaries
+ * so both interactive sessions and `/gsd auto` pick up the configuration.
+ * Non-fatal: falls back to built-in defaults when preferences cannot be loaded.
+ */
+async function applyToolCallLoopGuardConfig(basePath: string): Promise<void> {
+  try {
+    const { loadEffectiveGSDPreferences } = await import("../preferences.js");
+    const prefs = loadEffectiveGSDPreferences(basePath);
+    configureToolCallLoopGuard(prefs?.preferences.tool_call_loop_guard);
+  } catch {
+    configureToolCallLoopGuard(null);
+  }
+}
+
 function clearDeferredApprovalGate(basePath?: string): void {
   if (!basePath) {
     deferredApprovalGates.clear();
@@ -996,6 +1012,7 @@ export function registerHooks(
     }
     resetWriteGateState(basePath);
     resetToolCallLoopGuard();
+    await applyToolCallLoopGuardConfig(basePath);
     approvalQuestionAbortInFlight = false;
     clearDeferredApprovalGate();
     await resetAskUserQuestionsTurnCache();
@@ -1087,6 +1104,7 @@ export function registerHooks(
     initSessionNotifications(ctx);
     resetWriteGateState(basePath);
     resetToolCallLoopGuard();
+    await applyToolCallLoopGuardConfig(basePath);
     clearDeferredApprovalGate();
     await resetAskUserQuestionsTurnCache();
     clearDiscussionFlowState(basePath);

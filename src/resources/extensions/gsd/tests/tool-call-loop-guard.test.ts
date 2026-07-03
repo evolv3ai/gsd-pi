@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   checkToolCallLoop,
+  configureToolCallLoopGuard,
   recordToolCallLoopMutation,
   resetToolCallLoopGuard,
   disableToolCallLoopGuard,
@@ -448,3 +449,105 @@ console.log('\n── Loop guard: browser exemption does not widen to other tool
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Configurable thresholds (#1198)
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Loop guard: master switch disables both guards (#1198) ──');
+
+{
+  configureToolCallLoopGuard({ enabled: false });
+  resetToolCallLoopGuard();
+  // Neither identical-args nor per-tool cap should ever trip while disabled.
+  for (let i = 1; i <= 30; i++) {
+    const result = checkToolCallLoop('gsd_complete_milestone', { same: 'args' });
+    assert.ok(result.block === false, `disabled guard should allow call ${i}`);
+  }
+  // Restore defaults for subsequent tests.
+  configureToolCallLoopGuard(null);
+}
+
+console.log('\n── Loop guard: repeated_tool disabled keeps identical-args protection (#1198) ──');
+
+{
+  configureToolCallLoopGuard({ repeated_tool: { enabled: false } });
+  resetToolCallLoopGuard();
+  // Per-tool cap is off: many varied-arg calls are allowed.
+  for (let i = 1; i <= 20; i++) {
+    const result = checkToolCallLoop('gsd_exec', { cmd: `run-${i}` });
+    assert.ok(result.block === false, `repeated_tool disabled should allow varied call ${i}`);
+  }
+  // Identical-args guard is still active.
+  resetToolCallLoopGuard();
+  for (let i = 1; i <= 4; i++) {
+    assert.ok(checkToolCallLoop('gsd_exec', { cmd: 'same' }).block === false);
+  }
+  const blocked = checkToolCallLoop('gsd_exec', { cmd: 'same' });
+  assert.ok(blocked.block === true, 'identical-args guard should still trip when repeated_tool is off');
+  assert.ok(blocked.reason?.includes('identical args'));
+  configureToolCallLoopGuard(null);
+}
+
+console.log('\n── Loop guard: raised caps allow more repeated calls (#1198) ──');
+
+{
+  configureToolCallLoopGuard({ repeated_tool: { default_cap: 10 } });
+  resetToolCallLoopGuard();
+  for (let i = 1; i <= 10; i++) {
+    const result = checkToolCallLoop('gsd_complete_milestone', { arg: `v${i}` });
+    assert.ok(result.block === false, `raised-cap call ${i} should be allowed`);
+  }
+  const blocked = checkToolCallLoop('gsd_complete_milestone', { arg: 'v11' });
+  assert.ok(blocked.block === true, '11th call should trip the raised cap of 10');
+  assert.ok(blocked.reason?.includes('cap 10'), 'block message should mention the active cap');
+  assert.ok(blocked.reason?.includes('tool_call_loop_guard'), 'block message should mention the config key');
+  configureToolCallLoopGuard(null);
+}
+
+console.log('\n── Loop guard: user-added exempt tools bypass the per-tool cap (#1198) ──');
+
+{
+  configureToolCallLoopGuard({ repeated_tool: { exempt_tools: ['ctx_execute'] } });
+  resetToolCallLoopGuard();
+  for (let i = 1; i <= 30; i++) {
+    const result = checkToolCallLoop('ctx_execute', { arg: `v${i}` });
+    assert.ok(result.block === false, `exempt tool call ${i} should be allowed`);
+  }
+  // Built-in exempt defaults are preserved alongside the user-added tool.
+  resetToolCallLoopGuard();
+  for (let i = 1; i <= 30; i++) {
+    assert.ok(checkToolCallLoop('read', { path: `f${i}` }).block === false, 'built-in exempt read should remain exempt');
+  }
+  configureToolCallLoopGuard(null);
+}
+
+console.log('\n── Loop guard: identical-args max is configurable (#1198) ──');
+
+{
+  configureToolCallLoopGuard({ identical_args: { max_consecutive_calls: 2 } });
+  resetToolCallLoopGuard();
+  assert.ok(checkToolCallLoop('web_search', { q: 'x' }).block === false, 'call 1 allowed');
+  assert.ok(checkToolCallLoop('web_search', { q: 'x' }).block === false, 'call 2 allowed');
+  const blocked = checkToolCallLoop('web_search', { q: 'x' });
+  assert.ok(blocked.block === true, '3rd identical call should trip lowered max of 2');
+  assert.ok(blocked.reason?.includes('max 2'), 'block message should mention active max');
+  configureToolCallLoopGuard(null);
+}
+
+console.log('\n── Loop guard: env overrides win over preferences (#1198) ──');
+
+{
+  process.env.GSD_TOOL_LOOP_REPEATED_DEFAULT_CAP = '2';
+  configureToolCallLoopGuard({ repeated_tool: { default_cap: 6 } });
+  resetToolCallLoopGuard();
+  assert.ok(checkToolCallLoop('gsd_complete_milestone', { a: '1' }).block === false, 'call 1 allowed');
+  assert.ok(checkToolCallLoop('gsd_complete_milestone', { a: '2' }).block === false, 'call 2 allowed');
+  const blocked = checkToolCallLoop('gsd_complete_milestone', { a: '3' });
+  assert.ok(blocked.block === true, 'env override cap of 2 should win over preference cap of 6');
+  delete process.env.GSD_TOOL_LOOP_REPEATED_DEFAULT_CAP;
+  configureToolCallLoopGuard(null);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Reset restores default guard state after configuration tests
+// ═══════════════════════════════════════════════════════════════════════════
+resetToolCallLoopGuard();

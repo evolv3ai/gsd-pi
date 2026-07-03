@@ -21,6 +21,11 @@
  * signature, so the identical-args streak never trips, while allowing
  * tool-heavy turns that are making file-mutation progress. Whichever guard
  * trips first blocks.
+ *
+ * Thresholds, exempt tools, and enable flags are user-tunable (#1198) via the
+ * `tool_call_loop_guard` key in `.gsd/PREFERENCES.md` and `GSD_TOOL_LOOP_*`
+ * environment variables, applied through {@link configureToolCallLoopGuard}.
+ * Defaults preserve the original hardcoded behavior.
  */
 
 import { createHash } from "node:crypto";
@@ -28,26 +33,143 @@ import { INHERENTLY_REPEATABLE_TOOL_SET } from "./core-session-tools.js";
 import { hasBrowserContractPrefix } from "../../shared/browser-contract.js";
 import { canonicalToolName } from "../engine-hook-contract.js";
 
-const MAX_CONSECUTIVE_IDENTICAL_CALLS = 4;
+/** Built-in defaults. Preserved when preferences/env do not override them. */
+const DEFAULT_MAX_CONSECUTIVE_IDENTICAL_CALLS = 4;
+const DEFAULT_PER_TOOL_DEFAULT_CAP = 6;
+const DEFAULT_PER_TOOL_REPEATABLE_CAP = 15;
+const DEFAULT_PER_TOOL_CAP_EXEMPT_TOOLS = ["find", "glob", "grep", "ls", "read", "search_and_read"] as const;
 
 /** Interactive/user-facing tools where even 1 duplicate is confusing. */
 const STRICT_LOOP_TOOLS = new Set(["ask_user_questions"]);
 const MAX_CONSECUTIVE_STRICT = 1;
 
-/**
- * Per-turn cap on calls to the SAME tool name, regardless of args (#783).
- *
- * General-purpose execution tools are routinely called many times per turn
- * (touching multiple files, running several commands), so they get a higher
- * ceiling. Everything else — workflow one-shot tools (e.g. gsd_complete_milestone)
- * and any non-allowlisted tool — gets the default cap. The default is generous
- * enough to absorb legitimate retries but catches the reported improvisation
- * loop (~51 calls) well before a cost spike.
- */
-const PER_TOOL_DEFAULT_CAP = 6;
-const PER_TOOL_REPEATABLE_CAP = 15;
-const PER_TOOL_CAP_EXEMPT_TOOLS = new Set(["find", "glob", "grep", "ls", "read", "search_and_read"]);
 const STATE_MUTATING_TOOL_SET = new Set(["edit", "write", "multi_edit", "notebook_edit"]);
+
+/**
+ * User-tunable configuration shape for the loop guard (#1198).
+ *
+ * Mirrors the `tool_call_loop_guard` key in `.gsd/PREFERENCES.md`. All fields
+ * are optional; anything omitted falls back to the built-in defaults so that
+ * existing installs keep their current behavior.
+ */
+export interface ToolCallLoopGuardConfig {
+  enabled?: boolean;
+  identical_args?: {
+    enabled?: boolean;
+    max_consecutive_calls?: number;
+  };
+  repeated_tool?: {
+    enabled?: boolean;
+    default_cap?: number;
+    repeatable_cap?: number;
+    exempt_tools?: string[];
+  };
+}
+
+/**
+ * Active, resolved configuration. Set by {@link configureToolCallLoopGuard}
+ * from preferences + environment overrides, and deliberately NOT touched by
+ * {@link resetToolCallLoopGuard} so a session's tuning survives turn
+ * boundaries.
+ */
+interface ResolvedGuardConfig {
+  /** Master switch for both guards. */
+  guardEnabled: boolean;
+  identicalEnabled: boolean;
+  maxConsecutiveIdentical: number;
+  repeatedEnabled: boolean;
+  perToolDefaultCap: number;
+  perToolRepeatableCap: number;
+  /** Tool names exempt from Guard 2 (per-tool-name cap). */
+  perToolExempt: Set<string>;
+}
+
+function defaultGuardConfig(): ResolvedGuardConfig {
+  return {
+    guardEnabled: true,
+    identicalEnabled: true,
+    maxConsecutiveIdentical: DEFAULT_MAX_CONSECUTIVE_IDENTICAL_CALLS,
+    repeatedEnabled: true,
+    perToolDefaultCap: DEFAULT_PER_TOOL_DEFAULT_CAP,
+    perToolRepeatableCap: DEFAULT_PER_TOOL_REPEATABLE_CAP,
+    perToolExempt: new Set<string>(DEFAULT_PER_TOOL_CAP_EXEMPT_TOOLS),
+  };
+}
+
+let config: ResolvedGuardConfig = defaultGuardConfig();
+
+/** Parse a positive-integer env var, returning undefined when unset/invalid. */
+function envPositiveInt(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : undefined;
+}
+
+/** Parse a boolean env var (`true`/`1` vs `false`/`0`), undefined when unset. */
+function envBool(name: string): boolean | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const v = raw.trim().toLowerCase();
+  if (v === "true" || v === "1" || v === "yes" || v === "on") return true;
+  if (v === "false" || v === "0" || v === "no" || v === "off") return false;
+  return undefined;
+}
+
+/** Parse a comma-separated tool-name list env var. */
+function envToolList(name: string): string[] {
+  const raw = process.env[name];
+  if (!raw) return [];
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * Resolve preferences + environment overrides into the active configuration.
+ * Environment variables win over preferences; preferences win over built-in
+ * defaults. User-supplied exempt tools are additive to the built-in exempt
+ * set so defaults are always preserved.
+ *
+ * Applied to both interactive sessions and `/gsd auto` (called from the
+ * session_start / session_switch hooks).
+ */
+export function configureToolCallLoopGuard(prefs?: ToolCallLoopGuardConfig | null): void {
+  const next = defaultGuardConfig();
+
+  if (prefs) {
+    if (typeof prefs.enabled === "boolean") next.guardEnabled = prefs.enabled;
+    if (prefs.identical_args) {
+      if (typeof prefs.identical_args.enabled === "boolean") next.identicalEnabled = prefs.identical_args.enabled;
+      if (typeof prefs.identical_args.max_consecutive_calls === "number" && prefs.identical_args.max_consecutive_calls >= 1) {
+        next.maxConsecutiveIdentical = Math.floor(prefs.identical_args.max_consecutive_calls);
+      }
+    }
+    if (prefs.repeated_tool) {
+      if (typeof prefs.repeated_tool.enabled === "boolean") next.repeatedEnabled = prefs.repeated_tool.enabled;
+      if (typeof prefs.repeated_tool.default_cap === "number" && prefs.repeated_tool.default_cap >= 1) {
+        next.perToolDefaultCap = Math.floor(prefs.repeated_tool.default_cap);
+      }
+      if (typeof prefs.repeated_tool.repeatable_cap === "number" && prefs.repeated_tool.repeatable_cap >= 1) {
+        next.perToolRepeatableCap = Math.floor(prefs.repeated_tool.repeatable_cap);
+      }
+      for (const tool of prefs.repeated_tool.exempt_tools ?? []) {
+        if (typeof tool === "string" && tool.trim()) next.perToolExempt.add(tool.trim());
+      }
+    }
+  }
+
+  // Environment overrides (win over preferences).
+  const envEnabled = envBool("GSD_TOOL_LOOP_GUARD_ENABLED");
+  if (envEnabled !== undefined) next.guardEnabled = envEnabled;
+  const envIdenticalMax = envPositiveInt("GSD_TOOL_LOOP_IDENTICAL_MAX");
+  if (envIdenticalMax !== undefined) next.maxConsecutiveIdentical = envIdenticalMax;
+  const envDefaultCap = envPositiveInt("GSD_TOOL_LOOP_REPEATED_DEFAULT_CAP");
+  if (envDefaultCap !== undefined) next.perToolDefaultCap = envDefaultCap;
+  const envRepeatableCap = envPositiveInt("GSD_TOOL_LOOP_REPEATED_REPEATABLE_CAP");
+  if (envRepeatableCap !== undefined) next.perToolRepeatableCap = envRepeatableCap;
+  for (const tool of envToolList("GSD_TOOL_LOOP_EXEMPT_TOOLS")) next.perToolExempt.add(tool);
+
+  config = next;
+}
 
 let consecutiveCount = 0;
 let lastSignature = "";
@@ -82,17 +204,20 @@ function hashToolCall(toolName: string, args: Record<string, unknown>): string {
  * Returns `{ block: true, reason }` when the loop threshold is exceeded.
  *
  * Two independent guards run; whichever trips first blocks:
- *  1. Identical-signature streak (MAX_CONSECUTIVE_IDENTICAL_CALLS, strict for
+ *  1. Identical-signature streak (config.maxConsecutiveIdentical, strict for
  *     ask_user_questions).
- *  2. Per-tool-name cap (PER_TOOL_DEFAULT_CAP / PER_TOOL_REPEATABLE_CAP),
+ *  2. Per-tool-name cap (config.perToolDefaultCap / config.perToolRepeatableCap),
  *     independent of args, reset after file-mutation progress — catches
  *     improvisation loops (#783).
+ *
+ * Both guards, their thresholds, and the per-tool exempt set are user-tunable
+ * via {@link configureToolCallLoopGuard} (#1198).
  */
 export function checkToolCallLoop(
   toolName: string,
   args: Record<string, unknown>,
 ): { block: boolean; reason?: string; count?: number } {
-  if (!enabled) return { block: false, count: 0 };
+  if (!enabled || !config.guardEnabled) return { block: false, count: 0 };
 
   const sig = hashToolCall(toolName, args);
 
@@ -107,14 +232,16 @@ export function checkToolCallLoop(
   // ── Guard 1: identical-signature streak ──
   const threshold = STRICT_LOOP_TOOLS.has(toolName)
     ? MAX_CONSECUTIVE_STRICT
-    : MAX_CONSECUTIVE_IDENTICAL_CALLS;
+    : config.maxConsecutiveIdentical;
 
-  if (consecutiveCount > threshold) {
+  if (config.identicalEnabled && consecutiveCount > threshold) {
     return {
       block: true,
       reason:
         `Tool loop detected (identical args): ${toolName} called ${consecutiveCount} times ` +
-        `with identical arguments. Blocking to prevent infinite loop. ` +
+        `with identical arguments (max ${threshold}). Blocking to prevent infinite loop. ` +
+        `Raise tool_call_loop_guard.identical_args.max_consecutive_calls in .gsd/PREFERENCES.md ` +
+        `(or GSD_TOOL_LOOP_IDENTICAL_MAX) if this is expected. ` +
         `Do not retry this tool or call other tools this turn — stop and respond to the user in text.`,
       count: consecutiveCount,
     };
@@ -139,15 +266,16 @@ export function checkToolCallLoop(
   // Guard 1's identical-signature streak still catches a genuinely stuck
   // browser loop.
   if (
-    PER_TOOL_CAP_EXEMPT_TOOLS.has(toolName) ||
+    !config.repeatedEnabled ||
+    config.perToolExempt.has(toolName) ||
     hasBrowserContractPrefix(canonicalToolName(toolName))
   ) {
     return { block: false, count: consecutiveCount };
   }
 
   const perToolCap = INHERENTLY_REPEATABLE_TOOL_SET.has(toolName)
-    ? PER_TOOL_REPEATABLE_CAP
-    : PER_TOOL_DEFAULT_CAP;
+    ? config.perToolRepeatableCap
+    : config.perToolDefaultCap;
 
   if (perToolCount > perToolCap) {
     return {
@@ -156,6 +284,9 @@ export function checkToolCallLoop(
         `Tool loop detected (repeated tool): ${toolName} called ${perToolCount} times ` +
         `this turn (cap ${perToolCap}). Blocking to prevent infinite loop. ` +
         `The tool may be unavailable or failing repeatedly. ` +
+        `Raise tool_call_loop_guard.repeated_tool.default_cap/repeatable_cap or add "${toolName}" ` +
+        `to tool_call_loop_guard.repeated_tool.exempt_tools in .gsd/PREFERENCES.md ` +
+        `(or GSD_TOOL_LOOP_REPEATED_* / GSD_TOOL_LOOP_EXEMPT_TOOLS) if this is expected. ` +
         `Do not retry this tool or pivot to other tools this turn — stop and respond to the user in text.`,
       count: perToolCount,
     };

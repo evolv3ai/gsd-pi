@@ -285,6 +285,11 @@ With this configuration, a Haiku-4-5 subagent sees only `gsd-workflow` and `goog
 | `PI_DISABLE_SYNC_OUTPUT` | (unset) | Set to literal `1` to disable synchronized terminal output mode in the TUI on non-Windows platforms. By default synchronized output is enabled on macOS/Linux and always disabled on Windows. |
 | `PI_TUI_MOUSE` | (unset) | Set to literal `1` to enable terminal mouse reporting for TUI clicks and wheel events. Native drag selection is preserved by default; when mouse reporting is enabled, most terminals require Shift+drag to select text. |
 | `PI_TOKEN_TELEMETRY` | (unset) | Set to literal `1` to emit opt-in per-call token telemetry as JSONL on stderr. Other values are ignored. |
+| `GSD_TOOL_LOOP_GUARD_ENABLED` | (from preferences) | Master switch for the tool-call loop guard. `true`/`false`. Overrides `tool_call_loop_guard.enabled`. |
+| `GSD_TOOL_LOOP_IDENTICAL_MAX` | (from preferences) | Max consecutive identical-args calls before the guard trips. Overrides `tool_call_loop_guard.identical_args.max_consecutive_calls`. |
+| `GSD_TOOL_LOOP_REPEATED_DEFAULT_CAP` | (from preferences) | Per-turn per-tool cap for ordinary tools. Overrides `tool_call_loop_guard.repeated_tool.default_cap`. |
+| `GSD_TOOL_LOOP_REPEATED_REPEATABLE_CAP` | (from preferences) | Per-turn per-tool cap for inherently repeatable tools. Overrides `tool_call_loop_guard.repeated_tool.repeatable_cap`. |
+| `GSD_TOOL_LOOP_EXEMPT_TOOLS` | (from preferences) | Comma-separated tool names exempted from the per-tool cap. Added to the built-in exempt defaults and any `tool_call_loop_guard.repeated_tool.exempt_tools`. |
 
 ### Developer and test environment variables
 
@@ -589,6 +594,31 @@ context_pause_threshold: 80   # pause at 80% context usage
 ```
 
 Default: `0` (disabled)
+
+### `tool_call_loop_guard`
+
+Tunes the tool-call loop guard, which stops a model from repeating tool calls within a single turn. The two guards are configured independently:
+
+- **Identical-args guard** — blocks a streak of calls to the same tool with identical arguments. Catches real infinite loops; usually keep enabled.
+- **Repeated-tool-name cap** — caps how many times a tool name may be called per turn regardless of arguments. Catches improvisation loops, but is more likely to false-positive during legitimate automation (e.g. GSD-heavy or context-mode workflows). Tunable and disableable on its own.
+
+```yaml
+tool_call_loop_guard:
+  enabled: true                    # master switch for both guards (default: true)
+  identical_args:
+    enabled: true                  # default: true
+    max_consecutive_calls: 4       # default: 4
+  repeated_tool:
+    enabled: true                  # default: true
+    default_cap: 6                 # default: 6
+    repeatable_cap: 15             # default: 15 (for inherently repeatable tools like bash/edit/gsd_exec)
+    exempt_tools:                  # additive to built-in exempt defaults
+      - ctx_execute
+      - ctx_batch_execute
+      - ctx_search
+```
+
+Omitted fields fall back to built-in defaults, so existing installs keep their current behavior. `exempt_tools` is merged with the built-in exempt set (`find`, `glob`, `grep`, `ls`, `read`, `search_and_read`) rather than replacing it. Every field can also be overridden with `GSD_TOOL_LOOP_*` environment variables (see [Environment Variables](#environment-variables)), which win over the preferences file. When a call is blocked, the message names the active cap and the relevant config key. Applies to both interactive sessions and `/gsd auto`.
 
 ### `uat_dispatch`
 
