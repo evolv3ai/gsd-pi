@@ -163,7 +163,7 @@ Diagnostics record the file path, scope (global/project), severity (error/warnin
   - **Deprecated:** `merge_to_main` — no longer valid; milestone-level merge is always used. Remove this setting.
 
 - `workspace`: configures multi-repository parent workspaces. Keys:
-  - `mode`: `"project"` (default single-repo behavior) or `"parent"` (one `.gsd` controlling child repos).
+  - `mode`: `"project"` (default single-repo behavior) or `"parent"` (one `.gsd` controlling child repos). In `"parent"` mode at least one child repository must be declared under `repositories`, otherwise the setting is rejected at validation time.
   - `repositories`: object map of repository IDs to config.
     - Repository ID format: `^[A-Za-z0-9][A-Za-z0-9._-]*$`.
     - Reserved ID: `project` is implicit and always maps to the project root; user-defined `workspace.repositories.project` is rejected.
@@ -171,6 +171,8 @@ Diagnostics record the file path, scope (global/project), severity (error/warnin
     - `role`: optional short description of what the repo owns.
     - `verification`: optional array of verification commands for that repo.
     - `commit_policy`: optional `"auto"` or `"skip"` to include or skip commit actions per repo.
+  - Planning tools consume repository IDs through `targetRepositories`: `gsd_plan_slice.targetRepositories` sets a slice-wide default, and `gsd_plan_task.targetRepositories` records the repositories an individual task touches. Values must be declared IDs or the implicit `project`; omit these fields in single-repo projects.
+  - In parent mode with declared child repositories, `/gsd codebase generate` and automatic `.gsd/CODEBASE.md` refreshes enumerate `project` plus each child repository, render repo-labeled sections, and store repository IDs in map metadata.
 
 ## Workspace Example
 
@@ -197,6 +199,8 @@ workspace:
 ```
 
 This config sets a parent workspace with two child repositories. The implicit `project` repository is always created for the project root and cannot be user-defined.
+
+In `"parent"` mode, slice/task `targetRepositories` default to the declared child repositories (here `frontend` and `backend`) rather than the root `project` repo. In `"project"` mode (the default), `targetRepositories` defaults to `["project"]`.
 
 - `unique_milestone_ids`: boolean — when `true`, generates milestone IDs in `M{seq}-{rand6}` format (e.g. `M001-eh88as`) instead of plain sequential `M001`. Prevents ID collisions in team workflows where multiple contributors create milestones concurrently. Both formats coexist — existing `M001`-style milestones remain valid. Default: `false`.
 
@@ -303,7 +307,9 @@ This config sets a parent workspace with two child repositories. The implicit `p
     - `verification`: string[] (optional) — repository-specific verification commands used when global `verification_commands` is not set.
     - `commit_policy`: `"auto"` | `"skip"` (optional) — per-repository closeout commit behavior.
   - `project` is always an implicit repository target mapped to the project root for backward compatibility.
-  - Plan/task `targetRepositories` defaults to `["project"]` when omitted.
+  - `targetRepositories` on `gsd_plan_slice` sets the slice-wide default. `targetRepositories` on `gsd_plan_task` records or overrides the repository IDs for an individual task.
+  - Values must match declared repository IDs or the implicit `project`; omitted plan/task `targetRepositories` defaults to `["project"]`.
+  - `/gsd codebase` is workspace-aware in parent mode with declared child repositories: generated `.gsd/CODEBASE.md` uses workspace-relative paths, groups files under `## [repo-id]` headings, and refreshes when repository registry metadata changes.
 
 - `verification_commands`: string[] — shell commands to run as verification after task execution (e.g., `["npm test", "npm run lint"]`). Commands run in order; if any fails, the task is marked as needing fixes.
 

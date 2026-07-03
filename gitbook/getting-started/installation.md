@@ -52,7 +52,7 @@ gsd
 
 The setup wizard walks you through:
 
-1. **LLM Provider** — choose from 20+ providers (Anthropic, OpenAI, Google, OpenRouter, GitHub Copilot, Amazon Bedrock, Azure, and more). OAuth flows handle Claude Max and Copilot subscriptions automatically; otherwise paste an API key.
+1. **LLM Provider** — choose from 20+ providers (Anthropic, OpenAI, Google, OpenRouter, Cursor Agent, GitHub Copilot, Amazon Bedrock, Azure, and more). Cursor Agent requires the local `cursor-agent` CLI to be installed and authenticated; otherwise use an OAuth flow or paste an API key.
 2. **Tool API Keys** (optional) — Brave Search, Context7, Jina, Slack, Discord. Press Enter to skip any.
 
 Re-run the wizard anytime with:

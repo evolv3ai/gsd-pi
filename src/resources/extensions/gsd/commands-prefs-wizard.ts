@@ -551,6 +551,17 @@ export function buildCategorySummaries(prefs: Record<string, unknown>): Record<s
     if (parts.length > 0) integrationsSummary = parts.join(", ");
   }
 
+  // Workspace (parent-workspace multi-repo)
+  const workspace = prefs.workspace as Record<string, unknown> | undefined;
+  const workspaceRepos = workspace?.repositories as Record<string, unknown> | undefined;
+  let workspaceSummary = "(single-repo)";
+  {
+    const parts: string[] = [];
+    if (workspace?.mode) parts.push(`mode: ${workspace.mode}`);
+    if (workspaceRepos && Object.keys(workspaceRepos).length > 0) parts.push(`${Object.keys(workspaceRepos).length} repo(s)`);
+    if (parts.length > 0) workspaceSummary = parts.join(", ");
+  }
+
   return {
     mode: modeSummary,
     models: modelsSummary,
@@ -568,6 +579,7 @@ export function buildCategorySummaries(prefs: Record<string, unknown>): Record<s
     hooks: hooksSummary,
     uok: uokSummary,
     integrations: integrationsSummary,
+    workspace: workspaceSummary,
   };
 }
 
@@ -758,7 +770,10 @@ async function configureDynamicRouting(ctx: ExtensionCommandContext, prefs: Reco
   const hooks = await promptBoolean(ctx, "Route hook sessions dynamically", dr.hooks, true);
   if (hooks !== undefined) dr.hooks = hooks;
 
-  const flatRate = await promptBoolean(ctx, "Allow dynamic routing for flat-rate providers", dr.allow_flat_rate_providers, false);
+  // Opt-out flag (#1115): routing is allowed for flat-rate providers by
+  // default; only an explicit `false` suppresses it. The default hint reflects
+  // that allow-by-default behavior.
+  const flatRate = await promptBoolean(ctx, "Allow dynamic routing for flat-rate providers", dr.allow_flat_rate_providers, true);
   if (flatRate !== undefined) dr.allow_flat_rate_providers = flatRate;
 
   // tier_models.light / standard / heavy — optional model IDs
@@ -968,6 +983,114 @@ async function configureSkills(ctx: ExtensionCommandContext, prefs: Record<strin
   applyNumber(prefs, "skill_staleness_days", staleness);
 }
 
+async function configureWorkspace(ctx: ExtensionCommandContext, prefs: Record<string, unknown>): Promise<void> {
+  type RepoConfig = { path: string; role?: string; verification?: string[]; commit_policy?: "auto" | "skip" };
+  let workspace = (prefs.workspace ?? {}) as { mode?: "project" | "parent"; repositories?: Record<string, RepoConfig> };
+
+  // Mode
+  const mode = await promptEnum(ctx, "Workspace mode", workspace.mode, ["project", "parent"]);
+  if (mode !== undefined) workspace = { ...workspace, mode: mode as "project" | "parent" };
+
+  if (workspace.mode !== "parent") {
+    // Single-repo mode: drop any declared repositories and persist.
+    if (workspace.repositories && Object.keys(workspace.repositories).length > 0) {
+      const clear = await promptBoolean(ctx, "Clear declared repositories (switch to single-repo)?", false, false);
+      if (clear) workspace = { mode: workspace.mode };
+    }
+    persistWorkspace(prefs, workspace);
+    return;
+  }
+
+  // Parent mode — edit child repositories via a sub-menu.
+  let repositories = { ...(workspace.repositories ?? {}) };
+  while (true) {
+    const ids = Object.keys(repositories).sort();
+    const summary = ids.length === 0 ? "(no repositories — parent mode requires at least one)" : `${ids.length} repo(s)`;
+    const listLabels = ids.map((id) => {
+      const r = repositories[id];
+      const roleStr = r.role ? ` — ${r.role}` : "";
+      const policyStr = r.commit_policy === "skip" ? " [skip]" : "";
+      return `${id} (${r.path})${roleStr}${policyStr}`;
+    });
+    const choice = await ctx.ui.select(`Declared repositories — ${summary}`, [...listLabels, "Add repository", "Done"]);
+    const pick = typeof choice === "string" ? choice : "";
+    if (!pick || pick === "Done") break;
+    if (pick === "Add repository") {
+      const idInput = await ctx.ui.input("Repository id (letters, digits, . _ -; 'project' is reserved):", "");
+      const id = typeof idInput === "string" ? idInput.trim() : "";
+      if (!id || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id)) {
+        ctx.ui.notify("Invalid repository id — must match ^[A-Za-z0-9][A-Za-z0-9._-]*$ and cannot be 'project'.", "warning");
+        continue;
+      }
+      if (id === "project" || repositories[id]) {
+        ctx.ui.notify(`Repository id "${id}" is reserved or already declared.`, "warning");
+        continue;
+      }
+      const pathInput = await ctx.ui.input("Repository path (relative to project root, e.g. frontend):", "");
+      const path = typeof pathInput === "string" ? pathInput.trim() : "";
+      if (!path) { ctx.ui.notify("Repository path is required.", "warning"); continue; }
+      const repo: RepoConfig = { path };
+      const roleInput = await ctx.ui.input("Role/label (optional):", "");
+      if (typeof roleInput === "string" && roleInput.trim()) repo.role = roleInput.trim();
+      const verifyInput = await ctx.ui.input("Verification commands (comma- or newline-separated, optional):", "");
+      if (typeof verifyInput === "string" && verifyInput.trim()) {
+        const cmds = parseStringList(verifyInput);
+        if (cmds.length > 0) repo.verification = cmds;
+      }
+      const policy = await promptEnum(ctx, "Commit policy", undefined, ["auto", "skip"]);
+      if (policy === "skip") repo.commit_policy = "skip";
+      repositories[id] = repo;
+    } else {
+      // Edit/delete an existing repo (the first token is the id).
+      const id = pick.split(" ")[0];
+      if (!repositories[id]) continue;
+      const editChoice = await ctx.ui.select(
+        `Repository ${id}`,
+        ["Edit path", "Edit role", "Edit verification", "Edit commit policy", "Delete repository", "Cancel"],
+      );
+      const ec = typeof editChoice === "string" ? editChoice : "";
+      if (!ec || ec === "Cancel") continue;
+      if (ec === "Delete repository") {
+        delete repositories[id];
+      } else if (ec === "Edit path") {
+        const v = await ctx.ui.input("Repository path:", repositories[id].path);
+        if (typeof v === "string" && v.trim()) repositories[id] = { ...repositories[id], path: v.trim() };
+      } else if (ec === "Edit role") {
+        const v = await ctx.ui.input("Role/label (blank to clear):", repositories[id].role ?? "");
+        if (typeof v === "string" && v.trim()) repositories[id] = { ...repositories[id], role: v.trim() };
+        else if (typeof v === "string") { const { role, ...rest } = repositories[id]; void role; repositories[id] = rest; }
+      } else if (ec === "Edit verification") {
+        const v = await ctx.ui.input("Verification commands (blank to clear):", (repositories[id].verification ?? []).join(", "));
+        if (typeof v === "string" && v.trim()) {
+          const cmds = parseStringList(v);
+          if (cmds.length > 0) repositories[id] = { ...repositories[id], verification: cmds };
+        } else if (typeof v === "string") {
+          const { verification, ...rest } = repositories[id]; void verification; repositories[id] = rest;
+        }
+      } else if (ec === "Edit commit policy") {
+        const policy = await promptEnum(ctx, "Commit policy", repositories[id].commit_policy, ["auto", "skip"]);
+        if (policy === "skip") repositories[id] = { ...repositories[id], commit_policy: "skip" };
+        else { const { commit_policy, ...rest } = repositories[id]; void commit_policy; repositories[id] = rest; }
+      }
+    }
+  }
+
+  if (Object.keys(repositories).length === 0) {
+    ctx.ui.notify("Parent mode requires at least one repository — mode not saved.", "warning");
+    return;
+  }
+  persistWorkspace(prefs, { mode: "parent", repositories });
+}
+
+/** Persist the workspace config onto prefs, dropping it entirely when empty. */
+function persistWorkspace(prefs: Record<string, unknown>, workspace: { mode?: string; repositories?: Record<string, unknown> }): void {
+  if (!workspace.mode && (!workspace.repositories || Object.keys(workspace.repositories).length === 0)) {
+    delete prefs.workspace;
+    return;
+  }
+  prefs.workspace = workspace;
+}
+
 async function configureSkillRules(ctx: ExtensionCommandContext, prefs: Record<string, unknown>): Promise<void> {
   type Rule = { when: string; use?: string[]; prefer?: string[]; avoid?: string[] };
   let rules: Rule[] = Array.isArray(prefs.skill_rules) ? [...prefs.skill_rules as Rule[]] : [];
@@ -1175,6 +1298,14 @@ async function configureVerification(ctx: ExtensionCommandContext, prefs: Record
 
   const maxRetries = await promptInteger(ctx, "Verification max retries", prefs.verification_max_retries, "2");
   applyNumber(prefs, "verification_max_retries", maxRetries);
+
+  const perUnitCap = await promptNumber(
+    ctx,
+    "Per-unit cost cap (USD; retry cost ceiling, blank = clear to default)",
+    prefs.per_unit_cost_cap_usd,
+    "5.0",
+  );
+  applyNumber(prefs, "per_unit_cost_cap_usd", perUnitCap);
 
   const ev = await promptBoolean(ctx, "Enhanced verification (master toggle)", prefs.enhanced_verification, true);
   if (ev !== undefined) prefs.enhanced_verification = ev;
@@ -1621,6 +1752,7 @@ export async function handlePrefsWizard(
       `Hooks           ${summaries.hooks}`,
       `UoK             ${summaries.uok}`,
       `Integrations    ${summaries.integrations}`,
+      `Workspace       ${summaries.workspace}`,
       `Advanced        ${summaries.advanced}`,
       `── Save & Exit ──`,
     ];
@@ -1644,6 +1776,7 @@ export async function handlePrefsWizard(
     else if (choice.startsWith("Hooks"))         await configureHooks(ctx, prefs);
     else if (choice.startsWith("UoK"))           await configureUoK(ctx, prefs);
     else if (choice.startsWith("Integrations"))  await configureIntegrations(ctx, prefs);
+    else if (choice.startsWith("Workspace"))     await configureWorkspace(ctx, prefs);
     else if (choice.startsWith("Advanced"))      await configureAdvanced(ctx, prefs);
   }
 
@@ -1780,6 +1913,7 @@ export function serializePreferencesToFrontmatter(prefs: Record<string, unknown>
     "reactive_execution", "gate_evaluation",
     "auto_visualize", "auto_report",
     "verification_commands", "verification_auto_fix", "verification_max_retries",
+    "per_unit_cost_cap_usd",
     "enhanced_verification", "enhanced_verification_pre",
     "enhanced_verification_post", "enhanced_verification_strict",
     "safety_harness",

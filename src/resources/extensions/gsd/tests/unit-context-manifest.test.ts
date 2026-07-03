@@ -268,7 +268,7 @@ test("#4934: every manifest declares a tools policy", () => {
 });
 
 test("#4934: tools.mode is one of the declared policies", () => {
-  const validModes = new Set(["all", "read-only", "planning", "planning-dispatch", "docs", "verification"]);
+  const validModes = new Set(["all", "read-only", "planning", "planning-dispatch", "docs", "verification", "workflow-only"]);
   for (const [unitType, manifest] of Object.entries(UNIT_MANIFESTS)) {
     const mode = (manifest as { tools: { mode: string } }).tools.mode;
     assert.ok(
@@ -327,23 +327,71 @@ test("#5453: complete-milestone uses all tools so bash verification is not plann
   }
 });
 
-test("#5731: validate-milestone and complete-slice use all tools so closeout verification is not planning-dispatch blocked", () => {
-  for (const unitType of ["validate-milestone", "complete-slice"] as const) {
-    const manifest = UNIT_MANIFESTS[unitType];
-    assert.strictEqual(manifest.tools.mode, "all");
-    const result = shouldBlockPlanningUnit(
-      "bash",
-      "go test -short -count=1 ./...",
-      process.cwd(),
-      unitType,
-      manifest.tools,
-    );
-    assert.strictEqual(
-      result.block,
-      false,
-      `${unitType} must allow verification bash commands: ${result.reason}`,
-    );
-  }
+test("#5731: complete-slice uses all tools so closeout verification is not planning-dispatch blocked", () => {
+  const manifest = UNIT_MANIFESTS["complete-slice"];
+  assert.strictEqual(manifest.tools.mode, "all");
+  const result = shouldBlockPlanningUnit(
+    "bash",
+    "go test -short -count=1 ./...",
+    process.cwd(),
+    "complete-slice",
+    manifest.tools,
+  );
+  assert.strictEqual(
+    result.block,
+    false,
+    `complete-slice must allow verification bash commands: ${result.reason}`,
+  );
+});
+
+test("#1157: validate-milestone uses workflow-only tools and blocks manual artifact writes", () => {
+  const manifest = UNIT_MANIFESTS["validate-milestone"];
+  assert.strictEqual(manifest.tools.mode, "workflow-only");
+  assert.deepEqual(resolveSubagentPermissionContract("validate-milestone"), {
+    allowed: true,
+    allowedSubagents: ["reviewer", "security", "tester"],
+    toolsMode: "workflow-only",
+  });
+
+  const validationWrite = shouldBlockPlanningUnit(
+    "write",
+    ".gsd/milestones/M001/M001-VALIDATION.md",
+    process.cwd(),
+    "validate-milestone",
+    manifest.tools,
+  );
+  assert.strictEqual(validationWrite.block, true);
+  assert.match(validationWrite.reason!, /workflow-only/);
+  assert.match(validationWrite.reason!, /direct artifact writes are disabled/);
+
+  const bash = shouldBlockPlanningUnit(
+    "bash",
+    "npm test",
+    process.cwd(),
+    "validate-milestone",
+    manifest.tools,
+  );
+  assert.strictEqual(bash.block, true);
+  assert.match(bash.reason!, /bash is not permitted/);
+
+  const validateTool = shouldBlockPlanningUnit(
+    "gsd_validate_milestone",
+    "",
+    process.cwd(),
+    "validate-milestone",
+    manifest.tools,
+  );
+  assert.strictEqual(validateTool.block, false);
+
+  const reviewer = shouldBlockPlanningUnit(
+    "subagent",
+    "",
+    process.cwd(),
+    "validate-milestone",
+    manifest.tools,
+    ["reviewer"],
+  );
+  assert.strictEqual(reviewer.block, false, reviewer.reason);
 });
 
 test("#5843: run-uat uses verification tools policy so build/test commands can run", () => {

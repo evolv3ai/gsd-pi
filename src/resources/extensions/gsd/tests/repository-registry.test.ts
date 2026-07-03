@@ -83,7 +83,7 @@ test("defaultRepositoryTargets returns [project] for a single-repo project regis
   assert.deepEqual(defaultRepositoryTargets(registry), ["project"]);
 });
 
-test("defaultRepositoryTargets returns [project] for a parent-mode registry", (t) => {
+test("defaultRepositoryTargets returns declared child repos for a parent-mode registry", (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-repo-registry-"));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   mkdirSync(join(base, ".gsd"), { recursive: true });
@@ -98,7 +98,46 @@ test("defaultRepositoryTargets returns [project] for a parent-mode registry", (t
     },
   });
 
-  assert.deepEqual(defaultRepositoryTargets(registry), ["project"]);
+  assert.deepEqual(defaultRepositoryTargets(registry), ["frontend"]);
+});
+
+test("defaultRepositoryTargets returns all child repos (declaration order) in parent mode", (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-repo-registry-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  mkdirSync(join(base, ".gsd"), { recursive: true });
+  mkdirSync(join(base, "frontend"), { recursive: true });
+  mkdirSync(join(base, "backend"), { recursive: true });
+
+  const registry = createRepositoryRegistryFromPreferences(base, {
+    workspace: {
+      mode: "parent",
+      repositories: {
+        frontend: { path: "frontend" },
+        backend: { path: "backend" },
+      },
+    },
+  });
+
+  assert.deepEqual(defaultRepositoryTargets(registry), ["frontend", "backend"]);
+});
+
+test("defaultRepositoryTargets excludes the implicit project repo in parent mode", (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-repo-registry-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  mkdirSync(join(base, ".gsd"), { recursive: true });
+  mkdirSync(join(base, "frontend"), { recursive: true });
+
+  const registry = createRepositoryRegistryFromPreferences(base, {
+    workspace: {
+      mode: "parent",
+      repositories: {
+        frontend: { path: "frontend" },
+      },
+    },
+  });
+
+  const targets = defaultRepositoryTargets(registry);
+  assert.ok(!targets.includes("project"), "implicit project repo must not be a default target in parent mode");
 });
 
 test("repository registry keeps project root anchored to .gsd project in monorepo subdirectory", (t) => {

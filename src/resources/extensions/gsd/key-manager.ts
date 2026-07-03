@@ -43,6 +43,7 @@ export const PROVIDER_REGISTRY: ProviderInfo[] = [
   // must be in the canonical registry so all consumers see the same catalog.
   // See: https://github.com/open-gsd/gsd-pi/issues/4541
   { id: "claude-code",      label: "Claude Code CLI",         category: "llm",                                   authMode: "externalCli" },
+  { id: "cursor-agent",     label: "Cursor Agent",            category: "llm", envVar: "CURSOR_API_KEY",         authMode: "externalCli" },
   { id: "openai",           label: "OpenAI",                  category: "llm", envVar: "OPENAI_API_KEY",         prefixes: ["sk-"],     dashboardUrl: "platform.openai.com/api-keys" },
   { id: "github-copilot",   label: "GitHub Copilot",          category: "llm", envVar: "GITHUB_TOKEN",           authMode: "browserOAuth" },
   { id: "openai-codex",     label: "ChatGPT Plus/Pro (Codex)",category: "llm",                                   authMode: "browserOAuth" },

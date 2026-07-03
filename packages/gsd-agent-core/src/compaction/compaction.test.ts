@@ -197,13 +197,47 @@ describe("chunkMessages", () => {
 });
 
 describe("calculateContextTokens", () => {
-	it("uses prompt-relevant usage only (input + cacheRead + cacheWrite)", () => {
+	it("excludes cumulative output for claude-code totalTokens (de-cumulated live context)", () => {
+		// claude-code adapter reports totalTokens = input + output + cacheWrite
+		// (65 + 39_846 + 243_452), deliberately excluding the turn-cumulative
+		// cacheRead. Subtracting output yields input + cacheWrite = 243_517, the
+		// de-cumulated live-context proxy — not the inflated 283_363 nor the
+		// cumulative component sum.
+		const usage = {
+			input: 65,
+			output: 39_846,
+			cacheRead: 2_945_563,
+			cacheWrite: 243_452,
+			totalTokens: 283_363,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+
+		assert.equal(calculateContextTokens(usage), 243_517);
+	});
+
+	it("subtracts output for direct-API totalTokens (behavior-preserving vs. the component sum)", () => {
+		// Direct-API providers report a per-request totalTokens =
+		// input + output + cacheRead + cacheWrite (component-consistent), so
+		// totalTokens - output === input + cacheRead + cacheWrite exactly.
 		const usage = {
 			input: 65,
 			output: 39_846,
 			cacheRead: 2_945_563,
 			cacheWrite: 243_452,
 			totalTokens: 3_228_926,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+
+		assert.equal(calculateContextTokens(usage), 3_189_080);
+	});
+
+	it("falls back to component context tokens when totalTokens is not available", () => {
+		const usage = {
+			input: 65,
+			output: 39_846,
+			cacheRead: 2_945_563,
+			cacheWrite: 243_452,
+			totalTokens: 0,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		};
 

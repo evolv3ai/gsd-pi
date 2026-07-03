@@ -34,7 +34,12 @@ interface WorktreeLifecycle {
   enterMilestone(milestoneId: string, ctx: NotifyCtx): EnterResult;
   exitMilestone(
     milestoneId: string,
-    opts: { merge: boolean },
+    opts: {
+      merge: boolean;
+      preserveBranch?: boolean;
+      preserveWorktree?: boolean;
+      guardedMerge?: GuardedMilestoneMergeOptions;
+    },
     ctx: NotifyCtx,
   ): ExitResult;
   degradeToBranchMode(milestoneId: string, ctx: NotifyCtx): void;
@@ -49,7 +54,33 @@ type EnterResult =
 
 type ExitResult =
   | { ok: true; merged: boolean; codeFilesChanged: boolean }
-  | { ok: false; reason: "merge-conflict" | "teardown-failed"; cause?: unknown };
+  | {
+      ok: false;
+      reason:
+        | "merge-conflict"
+        | "teardown-failed"
+        | "preflight-dirty-overlap"
+        | "preflight-unmerged-conflicts"
+        | "merge-failed"
+        | "postflight-stash-restore-failed";
+      cause?: unknown;
+      postflight?: PostflightResult;
+    };
+
+interface GuardedMilestoneMergeOptions {
+  projectRoot: string;
+  preflightCleanRoot(
+    basePath: string,
+    milestoneId: string,
+    notify: NotifyCtx["notify"],
+  ): PreflightResult;
+  postflightPopStash(
+    basePath: string,
+    milestoneId: string,
+    stashMarker: string | undefined,
+    notify: NotifyCtx["notify"],
+  ): PostflightResult;
+}
 ```
 
 Constructor takes a small dep set (notify, leaseStore, gitServiceFactory, journal, telemetry). The 28-field `WorktreeResolverDeps` is retired.
@@ -75,7 +106,7 @@ Lifecycle calls Projection. Projection has no Lifecycle dependency. Lifecycle in
 - `Projection.projectRootToWorktree(scope)` from `enterMilestone` after a successful create or enter, before any Unit dispatches.
 - `Projection.finalizeProjectionForMerge(scope)` from `exitMilestone` after a successful merge, before teardown.
 
-Lifecycle entry/exit paths (`enterMilestone` and `exitMilestone`) construct the `MilestoneScope` from the active `milestoneId` and session root state before invoking `Projection.projectRootToWorktree(scope)` or `Projection.finalizeProjectionForMerge(scope)`; callers do not pass a pre-built `s.scope` into Lifecycle.
+Lifecycle entry/exit paths (`enterMilestone` and `exitMilestone`) construct the `MilestoneScope` from the active `milestoneId` and session root state before invoking `Projection.projectRootToWorktree(scope)` or `Projection.finalizeProjectionForMerge(scope)`; callers do not pass a pre-built `s.scope` into Lifecycle. When callers pass `merge: true` with `guardedMerge`, `exitMilestone` also owns the root-clean merge guard: preflight runs before the merge attempt, postflight stash restore runs after every attempted merge path, and guard failures are returned through the same `ExitResult` union.
 
 `Projection.projectWorktreeToRoot(scope)` is called by callers outside Lifecycle (post-unit pipeline; pre-merge sync paths). Lifecycle does not own that verb's invocation.
 
@@ -104,7 +135,7 @@ The single-owner invariants above are scoped to the **auto-loop worktree transit
 
 The following sites are explicit carve-outs from the single-owner invariants. They are not bypasses; they predate the Lifecycle Module and are out of scope for the auto-loop deepening this ADR drives.
 
-- **`mergeMilestoneToMain` is exported from `auto-worktree.ts`** (the `export` keyword is preserved). Its body contains the squash-merge primitive. ADR-016 phase 2 / A3 (#5619) closed the *invocation* closure: the function is invoked only by `WorktreeLifecycle`, via a `WorktreeLifecycleDeps.mergeMilestoneToMain` field that `auto.ts:buildWorktreeLifecycleDeps()` populates. The export is the construction of that dep seam, not a caller bypass. Tests substitute the merge primitive through the same dep field.
+- **`mergeMilestoneToMain` is exported from `auto-worktree.ts`** (the `export` keyword is preserved). Its body contains the squash-merge primitive. ADR-016 phase 2 / A3 (#5619) closed the *invocation* closure: the function is invoked only by `WorktreeLifecycle`, via a `WorktreeLifecycleDeps.mergeMilestone` field that `auto.ts:buildWorktreeLifecycleDeps()` populates with the named milestone-merge transaction wrapper. The export is the construction of that dep seam, not a caller bypass. Tests substitute the merge runner through the same dep field.
 - **User-facing CLI verbs in `worktree-command.ts`** (`gsd worktree create / switch / return / merge`) chdir directly. These are user-driven mutations of the user's shell cwd, not auto-loop transitions. They never run inside an auto loop.
 - **Transient cwd-swap-and-restore inside git-merge primitives** (`slice-cadence.ts:mergeSliceToMain` / `resquashMilestoneOnMain`, and `auto-worktree.ts:mergeMilestoneToMain`) chdirs to the merge target's project root to run `git merge`, then restores the previous cwd before returning. This is a transient git-op cwd swap, not a session-level basePath transition. The `s.basePath` field is never mutated by these primitives.
 - **Transient cwd-escape before `git worktree remove`** (`doctor-git-checks.ts` orphan-worktree cleanup and `worktree-manager.ts` removal helper) chdirs out of a worktree directory before invoking `git worktree remove`, because git refuses to remove a directory the process is currently inside. These are primitive operations called from both auto-loop teardown and user-CLI / `gsd doctor` maintenance paths. The chdir target is the project root (or an equivalent safe parent); `s.basePath` is never mutated.

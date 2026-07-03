@@ -2,12 +2,13 @@
 // File Purpose: Tests the one-time migration from nested to flat-phase layout.
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readdirSync, readFileSync, utimesSync } from "node:fs";
+import { mkdtempSync, mkdirSync, renameSync, rmSync, writeFileSync, existsSync, readdirSync, readFileSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 
 import {
+  _setFlatPhaseMigrationFsOpsForTest,
   migrateToFlatPhase,
   needsFlatPhaseMigration,
   pruneStaleFlatPhaseBackups,
@@ -62,6 +63,42 @@ test("migrateToFlatPhase moves content from milestones/ to phases/", async () =>
 
   assert.ok(existsSync(join(base, ".gsd", "phases")), "phases/ should exist");
   assert.ok(!existsSync(join(base, ".gsd", "milestones")), "milestones/ should be removed");
+});
+
+test("migrateToFlatPhase ignores and removes stale phase dirs from prior aborted runs", async () => {
+  const base = makeTmp();
+  const stalePhaseDir = join(base, ".gsd", "phases", "99-stale-aborted-run");
+  mkdirSync(stalePhaseDir, { recursive: true });
+
+  await migrateToFlatPhase(base);
+
+  assert.ok(existsSync(join(base, ".gsd", "phases", "01-foundation")), "current DB phase should render");
+  assert.equal(existsSync(stalePhaseDir), false, "stale pre-existing phase dir should be removed");
+});
+
+test("migrateToFlatPhase falls back to copy-delete when legacy rename is blocked", async (t) => {
+  const base = makeTmp();
+  const milestonesPath = join(base, ".gsd", "milestones");
+  const migratingPath = join(base, ".gsd", "milestones.migrating");
+  let blockedRenameAttempts = 0;
+
+  const restoreFsOps = _setFlatPhaseMigrationFsOpsForTest({
+    renameSync(src, dst) {
+      if (src === milestonesPath && dst === migratingPath) {
+        blockedRenameAttempts++;
+        throw Object.assign(new Error("simulated busy handle"), { code: "EPERM" });
+      }
+      return renameSync(src, dst);
+    },
+  });
+  t.after(restoreFsOps);
+
+  await migrateToFlatPhase(base);
+
+  assert.equal(blockedRenameAttempts, 1, "test should exercise the rename fallback path");
+  assert.ok(existsSync(join(base, ".gsd", "phases", "01-foundation")), "flat phase should render");
+  assert.equal(existsSync(milestonesPath), false, "legacy milestones dir should be removed");
+  assert.equal(existsSync(migratingPath), false, "staging dir should be removed after success");
 });
 
 test("migrateToFlatPhase creates a backup", async () => {

@@ -7,6 +7,7 @@ Step-by-step setup instructions for every LLM provider GSD supports. If you ran 
 | Provider | Auth Method | Environment Variable |
 |----------|-------------|---------------------|
 | Anthropic | OAuth or API key | `ANTHROPIC_API_KEY` |
+| Cursor Agent | Local CLI subscription or API key | `CURSOR_API_KEY` |
 | OpenAI | API key | `OPENAI_API_KEY` |
 | Google Gemini | API key | `GEMINI_API_KEY` |
 | OpenRouter | API key | `OPENROUTER_API_KEY` |
@@ -41,6 +42,35 @@ Or inside a session: `/login`
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
 ```
+
+### Cursor Agent
+
+Use Cursor Agent when you want GSD to route model calls through Cursor's local `cursor-agent` CLI and your existing Cursor session. The provider id is `cursor-agent`; its default model is `composer-2.5`.
+
+Requirements:
+
+1. Install Cursor's `cursor-agent` CLI and make sure the command is on `PATH`.
+2. Sign in through Cursor so `cursor-agent status` reports an authenticated session, or set `CURSOR_API_KEY`.
+3. Start GSD and choose "Use Cursor Agent" when the setup wizard offers it, or select a `cursor-agent/...` model from `/model`.
+
+```bash
+cursor-agent --version
+cursor-agent status
+gsd
+```
+
+The setup wizard shows this option only after GSD can run the CLI and detect authentication. Even when `CURSOR_API_KEY` is set, GSD still needs the local `cursor-agent` binary because requests are executed through that CLI.
+
+Environment variables:
+
+| Variable | Purpose |
+|----------|---------|
+| `CURSOR_API_KEY` | API key auth signal for the `cursor-agent` provider. |
+| `CURSOR_AGENT_BIN` | Override the binary command/path if `cursor-agent` is not on `PATH`. |
+| `GSD_CURSOR_DISABLE` | Set to `1` to disable the bundled Cursor Agent provider. |
+| `GSD_CURSOR_DEBUG` | Set to any value to print Cursor readiness probe diagnostics to stderr. |
+
+Built-in Cursor Agent models include `composer-2.5`, `claude-sonnet-4-6`, `claude-opus-4-7`, `gpt-5.5`, `gemini-2.5-pro`, and `grok-4`.
 
 ### OpenAI
 
@@ -270,6 +300,7 @@ If the model doesn't appear, check:
 |---------|-------|-----|
 | "Authentication failed" with valid key | Key not visible to GSD | Export in the same terminal, or save via `gsd config` |
 | OpenRouter models not in `/model` | No API key set | Set `OPENROUTER_API_KEY` and restart |
+| Cursor Agent models not in `/model` | `cursor-agent` CLI missing, not authenticated, or disabled | Run `cursor-agent --version` and `cursor-agent status`; unset `GSD_CURSOR_DISABLE` |
 | Ollama returns empty responses | Server not running or model not pulled | Run `ollama serve` and `ollama pull <model>` |
 | LM Studio model ID mismatch | ID doesn't match server | Check LM Studio's server tab for the exact identifier |
 | `developer` role error | Local server doesn't support it | Set `compat.supportsDeveloperRole: false` |

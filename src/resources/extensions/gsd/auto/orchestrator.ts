@@ -731,7 +731,7 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
         return new GitServiceImpl(basePath, gitConfig);
       },
       worktreeProjection: new WorktreeStateProjection(),
-      mergeMilestoneToMain: createMilestoneMergeTransaction(mergeMilestoneToMain),
+      mergeMilestone: createMilestoneMergeTransaction(mergeMilestoneToMain),
     });
   }
 

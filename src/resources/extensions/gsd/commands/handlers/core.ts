@@ -4,7 +4,9 @@ import type { GSDState } from "../../types.js";
 import { createRequire } from "node:module";
 
 import { computeProgressScore, formatProgressLine } from "../../progress-score.js";
+import { isRepositoryDirty } from "../../git-service.js";
 import { loadEffectiveGSDPreferences, getGlobalGSDPreferencesPath, getProjectGSDPreferencesPath, availableModelIdsFromRegistry, modelIdsForProfileResolution, resolveProfileAnchorProvider, resolveDisabledModelProvidersFromPreferences } from "../../preferences.js";
+import { createRepositoryRegistryFromPreferences } from "../../repository-registry.js";
 import { ensurePreferencesFile, handlePrefs, handlePrefsMode, handlePrefsWizard, handleLanguage } from "../../commands-prefs-wizard.js";
 import { runEnvironmentChecks } from "../../doctor-environment.js";
 import { deriveState } from "../../state.js";
@@ -220,7 +222,7 @@ export async function handleStatus(ctx: ExtensionCommandContext): Promise<void> 
   );
 
   if (result === undefined) {
-    ctx.ui.notify(formatTextStatus(state), "info");
+    ctx.ui.notify(formatTextStatus(state, basePath), "info");
   }
 }
 
@@ -610,7 +612,8 @@ export async function handleCoreCommand(
   return false;
 }
 
-export function formatTextStatus(state: GSDState): string {
+export function formatTextStatus(state: GSDState, basePath?: string): string {
+  const root = basePath ?? projectRoot();
   const lines: string[] = ["GSD Status\n"];
   lines.push(formatProgressLine(computeProgressScore()));
   lines.push("");
@@ -653,7 +656,7 @@ export function formatTextStatus(state: GSDState): string {
     }
   }
 
-  const envResults = runEnvironmentChecks(projectRoot());
+  const envResults = runEnvironmentChecks(root);
   const envIssues = envResults.filter((result) => result.status !== "ok");
   if (envIssues.length > 0) {
     lines.push("");
@@ -663,5 +666,38 @@ export function formatTextStatus(state: GSDState): string {
     }
   }
 
+  // Parent-workspace per-repository git health (#818). No-op for single-repo
+  // projects; surfaces which declared child repos have uncommitted changes.
+  const repoBlock = buildWorkspaceRepoStatusBlock(root);
+  if (repoBlock) {
+    lines.push("");
+    lines.push("Repositories:");
+    lines.push(repoBlock);
+  }
+
   return lines.join("\n");
+}
+
+/**
+ * Build a per-repository dirty/clean summary for parent-workspace status.
+ * Returns "" for single-repo (project-mode) projects so the status output is
+ * unchanged; otherwise one line per declared child repository.
+ */
+function buildWorkspaceRepoStatusBlock(basePath: string): string {
+  let registry;
+  try {
+    registry = createRepositoryRegistryFromPreferences(basePath, loadEffectiveGSDPreferences(basePath)?.preferences);
+  } catch {
+    return "";
+  }
+  if (registry.mode !== "parent") return "";
+  const childRepos = registry.repositories.filter((repo) => repo.id !== "project");
+  if (childRepos.length === 0) return "";
+
+  return childRepos
+    .map((repo) => {
+      const dirty = isRepositoryDirty(repo.root);
+      return `  ${dirty ? "✗" : "✓"} ${repo.id}${repo.role ? ` — ${repo.role}` : ""}${dirty ? " (uncommitted changes)" : " (clean)"}`;
+    })
+    .join("\n");
 }

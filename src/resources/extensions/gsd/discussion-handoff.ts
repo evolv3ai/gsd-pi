@@ -82,7 +82,13 @@ function ensureMilestoneRowForAcceptedHandoff(
   entry: PendingAutoStartEntry,
   contextFile: string | null,
 ): boolean {
-  if (!isDbAvailable()) return true;
+  if (!isDbAvailable()) {
+    logWarning(
+      "guided",
+      `R3b: milestone ${entry.milestoneId} DB-row recovery skipped because DB is unavailable`,
+    );
+    return false;
+  }
 
   const { basePath, milestoneId } = entry;
   const milestoneRow = getMilestone(milestoneId);
@@ -122,12 +128,14 @@ function ensureMilestoneRowForAcceptedHandoff(
     `(attempt ${entry.r3bRecoveryCount + 1}/${MAX_DB_ROW_RECOVERIES})`,
   );
 
+  let inserted = false;
   try {
-    insertMilestone({ id: milestoneId, title: milestoneId, status: "queued" });
+    inserted = insertMilestone({ id: milestoneId, title: milestoneId, status: "queued" });
   } catch (e) {
     logWarning("guided", `R3b: insertMilestone failed: ${(e as Error).message}`);
   }
 
+  if (inserted) return true;
   if (getMilestone(milestoneId)) return true;
 
   noteDbRowRecoveryMiss(entry);

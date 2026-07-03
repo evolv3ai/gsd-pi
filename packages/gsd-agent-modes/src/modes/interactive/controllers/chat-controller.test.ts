@@ -674,6 +674,64 @@ test("handleAgentEvent: assistant error finalization does not fail completed too
 	assert.doesNotMatch(rendered, /Model hit a transient error/);
 });
 
+test("handleAgentEvent: message_end reattaches orphaned tool components only once", async () => {
+	initTheme("dark", false);
+	const chatContainer = new Container();
+	const host = createStreamingHost(chatContainer);
+	const toolA = { type: "serverToolUse", id: "mcp-a", name: "mcp__gsd__ls", input: { path: ".gsd" } };
+	const toolB = { type: "serverToolUse", id: "mcp-b", name: "mcp__gsd__read", input: { path: "PLAN.md" } };
+	function makeMessage(content: any[]): any {
+		return {
+			id: "a-mcp-tools",
+			role: "assistant",
+			provider: "claude-code",
+			model: "claude-opus-4-8",
+			timestamp: 1,
+			stopReason: "stop",
+			content,
+		};
+	}
+	const countChild = (component: unknown) =>
+		chatContainer.children.filter((child) => child === component).length;
+
+	await handleAgentEvent(host, { type: "message_start", message: makeMessage([]) } as any);
+	await handleAgentEvent(host, {
+		type: "message_update",
+		message: makeMessage([toolA]),
+		assistantMessageEvent: { type: "server_tool_use", contentIndex: 0, partial: makeMessage([toolA]) },
+	} as any);
+
+	const toolAComponent = host.pendingTools.get(toolA.id);
+	assert.ok(toolAComponent);
+	assert.equal(countChild(toolAComponent), 1);
+
+	await handleAgentEvent(host, {
+		type: "message_update",
+		message: makeMessage([]),
+		assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "", partial: makeMessage([]) },
+	} as any);
+	assert.equal(host.streamingRenderState.renderedSegments.length, 0);
+	assert.equal(countChild(toolAComponent), 1);
+
+	await handleAgentEvent(host, {
+		type: "message_update",
+		message: makeMessage([toolB]),
+		assistantMessageEvent: { type: "server_tool_use", contentIndex: 0, partial: makeMessage([toolB]) },
+	} as any);
+
+	const toolBComponent = host.pendingTools.get(toolB.id);
+	assert.ok(toolBComponent);
+	assert.equal(countChild(toolBComponent), 1);
+
+	await handleAgentEvent(host, {
+		type: "message_end",
+		message: makeMessage([toolA, toolB]),
+	} as any);
+
+	assert.equal(countChild(toolAComponent), 1);
+	assert.equal(countChild(toolBComponent), 1);
+});
+
 test("handleAgentEvent: Claude Code MCP post-tool text does not erase user-facing pre-tool prose", async () => {
 	initTheme("dark", false);
 	const chatContainer = new Container();

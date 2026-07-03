@@ -22,13 +22,15 @@ Plan (with integrated research) → Execute (per task) → Complete → Reassess
 - **Reassess** — checks if the roadmap still makes sense
 - **Validate Milestone** — reconciliation gate after all slices complete; compares roadmap success criteria against actual results, catches gaps before sealing the milestone
 
-When progressive planning is enabled, GSD fully plans the first slice and may leave later slices as sketches. Those slices render in `M###-ROADMAP.md` with a `` `[sketch]` `` badge, meaning the slice has an approved scope boundary but has not yet been expanded into task plans. Auto mode runs `refine-slice` just before execution to convert the sketch into a full slice plan using the current codebase and prior slice summaries.
+When progressive planning is enabled, GSD fully plans the first slice and may leave later slices as sketches. Those slices render in the milestone roadmap projection (`NN-ROADMAP.md` under `.gsd/phases/<NN-slug>/` for flat-phase projects) with a `` `[sketch]` `` badge, meaning the slice has an approved scope boundary but has not yet been expanded into task plans. Auto mode runs `refine-slice` just before execution to convert the sketch into a full slice plan using the current codebase and prior slice summaries.
 
 ### Idempotent Milestone Completion
 
 Milestone completion is safe to retry. If a `complete-milestone` unit is redispatched after the database already marks the milestone as closed, GSD treats the call as successful instead of returning an error. The existing summary projection is left intact, no duplicate completion event is appended, and the tool response includes `alreadyComplete: true` in its details so operators and integrations can distinguish a retry from the first completion.
 
 The auto loop applies the same idempotency at terminal closeout: if another session is already stopping for completion, or the database already shows the milestone closed, the loop exits as complete without replaying merge, desktop notification, cmux notification, or stop side effects.
+
+If post-merge stash restore fails after a successful milestone merge, auto mode records the merge as complete before stopping for manual stash recovery. Resuming auto mode will not replay the completed merge.
 
 `complete-milestone` now also enforces hard closeout prerequisites: each slice must have a UAT assessment with verdict `PASS`, and the latest `milestone-validation` assessment for that milestone must exist with verdict `pass`. If UAT is missing or non-PASS, auto mode stops with guidance to run `/gsd dispatch uat`, request a slice-specific UAT rerun when needed, inspect `/gsd status`, or add remediation slices with `/gsd dispatch reassess`. If milestone validation is `fail`, `partial`, or absent, closeout is blocked until `validate-milestone` records a fresh passing verdict.
 
@@ -77,7 +79,7 @@ Workflow Preferences -> Project Context -> Requirements -> Research Decision -> 
 | `.gsd/REQUIREMENTS.md` | `discuss-requirements` | Capability contract using `R###` requirements grouped by Active, Validated, Deferred, and Out of Scope |
 | `.gsd/runtime/research-decision.json` | `research-decision` | Records `research` or `skip`; this unit only asks the question and writes the marker |
 | `.gsd/research/STACK.md`, `FEATURES.md`, `ARCHITECTURE.md`, `PITFALLS.md` | `research-project`, only when the decision is `research` | Four scout-backed project research outputs for stack, feature norms, architecture, and pitfalls |
-| `.gsd/milestones/<MID>/M###-CONTEXT.md` and `M###-ROADMAP.md` | Normal milestone discussion/planning | Milestone-specific context and executable roadmap; `` `[sketch]` `` marks slices awaiting `refine-slice` |
+| `.gsd/phases/<NN-slug>/<NN>-CONTEXT.md` and `<NN>-ROADMAP.md` | Normal milestone discussion/planning | Milestone-specific context and executable roadmap; `` `[sketch]` `` marks slices awaiting `refine-slice`. Legacy projects may still resolve to `.gsd/milestones/<MID>/<MID>-*.md` until migrated. |
 
 `REQUIREMENTS.md` is rendered from the requirements stored in the GSD database. Agents should save individual requirements with `gsd_requirement_save`; a final `gsd_summary_save` for `REQUIREMENTS` will fail if no active requirement rows exist instead of treating caller-supplied markdown as canonical.
 
@@ -93,17 +95,20 @@ Every task, research phase, and planning step gets a clean context window. No ac
 
 Each auto-mode unit has a `UnitContextManifest` with a `ToolsPolicy`, and GSD enforces that policy before tool calls execute. Execution units use `all` mode and may edit project files, run shell commands, and dispatch subagents. Most planning and discussion units use `planning` mode: they can read broadly, write planning artifacts under `.gsd/`, run only read-only shell commands, and cannot dispatch subagents. Selected planning and closeout units use `planning-dispatch` mode, which keeps the same source-write and bash restrictions but allows `subagent` dispatch for isolated recon, planning, or review work. Documentation units use `docs` mode, which keeps the same restrictions but also allows writes to the manifest's explicit documentation globs such as `docs/**`, top-level `README*.md`, `CHANGELOG.md`, and top-level `*.md`.
 
+`workflow-only` mode is stricter: read/list/search tools, GSD workflow tools, and manifest-declared read-only subagents are allowed, while generic `bash` and direct write/edit artifact tools are blocked. `validate-milestone` uses this mode so validation output must be persisted through `gsd_validate_milestone`; remediation changes must go through workflow tools such as `gsd_reassess_roadmap`, not manual `VALIDATION.md` or roadmap edits.
+
 The sidecar unit types now have distinct manifest behavior: `triage-captures` runs in `contextMode: triage` with `planning`-mode tools (read-heavy, `.gsd/`-scoped writes, no subagent dispatch), while `quick-task` runs in `contextMode: execution` with `all`-mode tools so it can apply and verify small inline fixes.
 
 Writes outside those allowed paths, unsafe bash commands, and subagent dispatch from non-dispatch planning units are blocked with a hard policy error instead of relying on prompt compliance. In `planning-dispatch` units, prompts steer the parent agent toward read-only specialists such as `scout`, `planner`, `researcher`, `reviewer`, `security`, or `tester`; implementation-tier agents still belong in `execute-task`.
 
 ### ScheduleWakeup Continuations
 
-`ScheduleWakeup` is an auto-mode tool for long external waits inside `execute-task` units. It keeps the same unit session alive by scheduling a delayed follow-up prompt instead of ending the unit as incomplete.
+`ScheduleWakeup` schedules a delayed follow-up prompt. In auto mode, it is used for long external waits inside `execute-task` units and keeps the same unit session alive instead of ending the unit as incomplete. Outside auto mode, it waits for the requested delay and then starts a new triggered turn with the supplied wakeup prompt.
 
 - Use it when a task kicked off external work (for example CI, deploy, or async jobs) and needs a later poll.
 - Include a concrete follow-up prompt that says what to check and what artifact to write when done.
 - Re-arm it on each poll turn while the external process is still running.
+- Outside auto mode, use it when you ask GSD to check back or poll later; the wakeup dispatches after the delay, not synchronously.
 
 Auto mode consumes the scheduled wakeup only for the same `basePath + unitType + unitId`, waits the requested delay, and then dispatches the follow-up prompt in the same session. For safety, wakeups are bounded per unit; hitting the cap stops the unit with a timeout-style cancellation.
 

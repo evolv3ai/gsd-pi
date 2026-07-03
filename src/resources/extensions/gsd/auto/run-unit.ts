@@ -26,7 +26,7 @@ import { debugLog } from "../debug-logger.js";
 import { logWarning, logError } from "../workflow-logger.js";
 import { resolveAutoSupervisorConfig } from "../preferences.js";
 import { readUnitRuntimeRecord, type AutoUnitRuntimeRecord } from "../unit-runtime.js";
-import { consumeAutoWakeup } from "./schedule-wakeup.js";
+import { clearAutoWakeup, consumeAutoWakeup } from "./schedule-wakeup.js";
 import { applyUnitSkillVisibility } from "../skill-scope.js";
 
 const UNIT_FAILSAFE_BUFFER_MS = 30_000;
@@ -248,7 +248,7 @@ export async function runUnit(
     ((supervisor.idle_timeout_minutes ?? 10) * 60 * 1000) + UNIT_FAILSAFE_BUFFER_MS,
   );
   let unitTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
-  let result: UnitResult;
+  let result: UnitResult = { status: "cancelled" };
   try {
     const awaitAgentEndWithTimeout = (agentEndPromise: Promise<UnitResult>): Promise<UnitResult> => {
       const timeoutResult = new Promise<UnitResult>((resolve) => {
@@ -360,6 +360,9 @@ export async function runUnit(
     }
   } finally {
     if (unitTimeoutHandle) clearTimeout(unitTimeoutHandle);
+    if (result.status !== "completed") {
+      clearAutoWakeup(s.basePath, unitType, unitId);
+    }
     ctx.ui.setWorkingMessage?.(undefined);
     setVisibleSkills?.(undefined);
   }

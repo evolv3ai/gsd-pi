@@ -166,20 +166,20 @@ importers:
         specifier: 0.3.6
         version: 0.3.6
       '@opengsd/engine-darwin-arm64':
-        specifier: 1.4.0
-        version: 1.4.0
+        specifier: 1.5.0
+        version: 1.5.0
       '@opengsd/engine-darwin-x64':
-        specifier: 1.4.0
-        version: 1.4.0
+        specifier: 1.5.0
+        version: 1.5.0
       '@opengsd/engine-linux-arm64-gnu':
-        specifier: 1.4.0
-        version: 1.4.0
+        specifier: 1.5.0
+        version: 1.5.0
       '@opengsd/engine-linux-x64-gnu':
-        specifier: 1.4.0
-        version: 1.4.0
+        specifier: 1.5.0
+        version: 1.5.0
       '@opengsd/engine-win32-x64-msvc':
-        specifier: 1.4.0
-        version: 1.4.0
+        specifier: 1.5.0
+        version: 1.5.0
       fsevents:
         specifier: ~2.3.3
         version: 2.3.3
@@ -1934,28 +1934,28 @@ packages:
     resolution: {integrity: sha512-nn5ozdjYQpUCZlWGuxcJY/KpxkWQs4DcbMCmKojjyrYDEAGy4Ce19NN4v5MduafTwJlbKc99UA8YhSVqq9yPZA==}
     engines: {node: '>=12.4.0'}
 
-  '@opengsd/engine-darwin-arm64@1.4.0':
-    resolution: {integrity: sha512-GgC9tiKrHmTprWta/9E0I2ybO7j0r/Du7rqKm4SjOG5RH0g9CdsvRL+/H7o7uUxUtubq+bJeGH8rzbcixHM0qA==}
+  '@opengsd/engine-darwin-arm64@1.5.0':
+    resolution: {integrity: sha512-f/dXDYO9/wuzc9QG2Iheo+fh3jM/ekh46+hSGWp9tg53eHKt6MZlRSoPcZV2ffcA2iQUkFnAjqGJXzVhmSXqcQ==}
     cpu: [arm64]
     os: [darwin]
 
-  '@opengsd/engine-darwin-x64@1.4.0':
-    resolution: {integrity: sha512-87k0HF/NGzQJdMkRyS61Pq/RmHr0pL2zlos+qZMU+GbigivDoDFegNDkaj8KlL/asKBPCPF+l1GRx41HRHgevg==}
+  '@opengsd/engine-darwin-x64@1.5.0':
+    resolution: {integrity: sha512-s6Pg+awBM2xkdLKjk+v00nN9659SYY4q8x6jMIzvI4Bw/N8GCoT9FL2khx+2bjYBoxtYuxS+LG1hx/FdJvtmrA==}
     cpu: [x64]
     os: [darwin]
 
-  '@opengsd/engine-linux-arm64-gnu@1.4.0':
-    resolution: {integrity: sha512-hbldQu791KALtyOusFFZVslM4Bbu+K7bEgt6ZEWvQyolc5DfOHenob9XNwQMzzIhoznAv3tznRYmJORufnWaGQ==}
+  '@opengsd/engine-linux-arm64-gnu@1.5.0':
+    resolution: {integrity: sha512-jq00mdfS0Wr7XShabbAlYgX4714DS7V+sWNijockF8rswZwrY/fVHu1gG3pHZhjQcRHAfkQ5LPYSyuPLYf4AWg==}
     cpu: [arm64]
     os: [linux]
 
-  '@opengsd/engine-linux-x64-gnu@1.4.0':
-    resolution: {integrity: sha512-ZPaK7nalUDRqErwUUU92rwdvCtQHknHJ2imM0Kp6E7JJbYAdjQOYZV/f4Zdeo6Zsjz5yJvzWyE4JChwl8pIUCQ==}
+  '@opengsd/engine-linux-x64-gnu@1.5.0':
+    resolution: {integrity: sha512-xHYXDzFXx+l4xtdHk0gHH2PxWJwVmyTVFbWRre4QXZZXn0gbMJpXL4SfhWcSg9pjKZdZU7yyKHkQUyp59pLwnQ==}
     cpu: [x64]
     os: [linux]
 
-  '@opengsd/engine-win32-x64-msvc@1.4.0':
-    resolution: {integrity: sha512-TOvIMvSQ91ZBr8UX/J2NIK1STco4mU74Md5R+nxib/0z+B9EtuW+XH4EwiQ+tOZgtUH94aVL4GcMpnpj8CqcQw==}
+  '@opengsd/engine-win32-x64-msvc@1.5.0':
+    resolution: {integrity: sha512-+h3FgOTkbUeWR+y1rdqTa5H1RWb/WdeQl+gDaUvaKRONs+cy3MEeyo1ml15ZheMdATlC9Zg6OFTrWefEAr7bYg==}
     cpu: [x64]
     os: [win32]
 
@@ -1987,9 +1987,6 @@ packages:
 
   '@protobufjs/float@1.0.2':
     resolution: {integrity: sha512-Ddb+kVXlXst9d+R9PfTIxh1EdNkgoRe5tOX6t01f1lYWOvJnSPDBlG241QLzcyPdoNTsblLUdujGSE4RzrTZGQ==}
-
-  '@protobufjs/inquire@1.1.2':
-    resolution: {integrity: sha512-pa0vFRuws4wkvaXKK1uXZMAwAX4/t8ANaJo45iw/oQHNQ9q5xUzwgFmVJGXiga2BeN+zpX7Vf9vmsiIa2J+MUw==}
 
   '@protobufjs/path@1.1.2':
     resolution: {integrity: sha512-6JOcJ5Tm08dOHAbdR3GrvP+yUUfkjG5ePsHYczMFLq3ZmMkAD98cDgcT2iA1lJ9NVwFd4tH/iSSoe44YWkltEA==}
@@ -5498,8 +5495,8 @@ packages:
   property-information@7.1.0:
     resolution: {integrity: sha512-TwEZ+X+yCJmYfL7TPUOcvBZ4QfoT5YenQiJuX//0th53DE6w0xxLEtfK3iyryQFddXuvkIk51EEgrJQ0WJkOmQ==}
 
-  protobufjs@7.6.1:
-    resolution: {integrity: sha512-4K0myLaWL5EteuSAro91EGFgcfVgxb64Jx+7oDAY6GOkXD4M69yuSEljNcInGVCA5sOPxmZ/EqDLj2x0Q0+Ygg==}
+  protobufjs@7.6.4:
+    resolution: {integrity: sha512-RJJPTTpvFfHcWLkIa2JFWK4XvtSzS0yEWDmunqHXli1h3JlkbcQZXDZdcWxv+JK3Xsl5/UFDPZ0iGm7DAengYw==}
     engines: {node: '>=12.0.0'}
 
   proxy-addr@2.0.7:
@@ -7379,7 +7376,7 @@ snapshots:
     dependencies:
       google-auth-library: 10.6.2
       p-retry: 4.6.2
-      protobufjs: 7.6.1
+      protobufjs: 7.6.4
       ws: 8.21.0
     optionalDependencies:
       '@modelcontextprotocol/sdk': 1.29.0(zod@3.25.76)
@@ -7392,7 +7389,7 @@ snapshots:
     dependencies:
       google-auth-library: 10.6.2
       p-retry: 4.6.2
-      protobufjs: 7.6.1
+      protobufjs: 7.6.4
       ws: 8.21.0
     optionalDependencies:
       '@modelcontextprotocol/sdk': 1.29.0(zod@4.4.3)
@@ -7802,19 +7799,19 @@ snapshots:
 
   '@nolyfill/is-core-module@1.0.39': {}
 
-  '@opengsd/engine-darwin-arm64@1.4.0':
+  '@opengsd/engine-darwin-arm64@1.5.0':
     optional: true
 
-  '@opengsd/engine-darwin-x64@1.4.0':
+  '@opengsd/engine-darwin-x64@1.5.0':
     optional: true
 
-  '@opengsd/engine-linux-arm64-gnu@1.4.0':
+  '@opengsd/engine-linux-arm64-gnu@1.5.0':
     optional: true
 
-  '@opengsd/engine-linux-x64-gnu@1.4.0':
+  '@opengsd/engine-linux-x64-gnu@1.5.0':
     optional: true
 
-  '@opengsd/engine-win32-x64-msvc@1.4.0':
+  '@opengsd/engine-win32-x64-msvc@1.5.0':
     optional: true
 
   '@opengsd/gsd-browser@0.2.2': {}
@@ -7835,8 +7832,6 @@ snapshots:
       '@protobufjs/aspromise': 1.1.2
 
   '@protobufjs/float@1.0.2': {}
-
-  '@protobufjs/inquire@1.1.2': {}
 
   '@protobufjs/path@1.1.2': {}
 
@@ -10038,7 +10033,7 @@ snapshots:
       eslint: 9.39.4(jiti@2.7.0)
       eslint-import-resolver-node: 0.3.10
       eslint-import-resolver-typescript: 3.10.1(eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.60.0(eslint@9.39.4(jiti@2.7.0))(typescript@5.7.3))(eslint@9.39.4(jiti@2.7.0)))(eslint@9.39.4(jiti@2.7.0))
-      eslint-plugin-import: 2.32.0(@typescript-eslint/parser@8.60.0(eslint@9.39.4(jiti@2.7.0))(typescript@5.7.3))(eslint-import-resolver-typescript@3.10.1(eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.60.0(eslint@9.39.4(jiti@2.7.0))(typescript@5.7.3))(eslint@9.39.4(jiti@2.7.0)))(eslint@9.39.4(jiti@2.7.0)))(eslint@9.39.4(jiti@2.7.0))
+      eslint-plugin-import: 2.32.0(@typescript-eslint/parser@8.60.0(eslint@9.39.4(jiti@2.7.0))(typescript@5.7.3))(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.7.0))
       eslint-plugin-jsx-a11y: 6.10.2(eslint@9.39.4(jiti@2.7.0))
       eslint-plugin-react: 7.37.5(eslint@9.39.4(jiti@2.7.0))
       eslint-plugin-react-hooks: 7.1.1(eslint@9.39.4(jiti@2.7.0))
@@ -10071,7 +10066,7 @@ snapshots:
       tinyglobby: 0.2.17
       unrs-resolver: 1.12.2
     optionalDependencies:
-      eslint-plugin-import: 2.32.0(@typescript-eslint/parser@8.60.0(eslint@9.39.4(jiti@2.7.0))(typescript@5.7.3))(eslint-import-resolver-typescript@3.10.1(eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.60.0(eslint@9.39.4(jiti@2.7.0))(typescript@5.7.3))(eslint@9.39.4(jiti@2.7.0)))(eslint@9.39.4(jiti@2.7.0)))(eslint@9.39.4(jiti@2.7.0))
+      eslint-plugin-import: 2.32.0(@typescript-eslint/parser@8.60.0(eslint@9.39.4(jiti@2.7.0))(typescript@5.7.3))(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.7.0))
     transitivePeerDependencies:
       - supports-color
 
@@ -10086,7 +10081,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.60.0(eslint@9.39.4(jiti@2.7.0))(typescript@5.7.3))(eslint-import-resolver-typescript@3.10.1(eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.60.0(eslint@9.39.4(jiti@2.7.0))(typescript@5.7.3))(eslint@9.39.4(jiti@2.7.0)))(eslint@9.39.4(jiti@2.7.0)))(eslint@9.39.4(jiti@2.7.0)):
+  eslint-plugin-import@2.32.0(@typescript-eslint/parser@8.60.0(eslint@9.39.4(jiti@2.7.0))(typescript@5.7.3))(eslint-import-resolver-typescript@3.10.1)(eslint@9.39.4(jiti@2.7.0)):
     dependencies:
       '@rtsao/scc': 1.1.0
       array-includes: 3.1.9
@@ -11852,7 +11847,7 @@ snapshots:
 
   property-information@7.1.0: {}
 
-  protobufjs@7.6.1:
+  protobufjs@7.6.4:
     dependencies:
       '@protobufjs/aspromise': 1.1.2
       '@protobufjs/base64': 1.1.2
@@ -11860,7 +11855,6 @@ snapshots:
       '@protobufjs/eventemitter': 1.1.1
       '@protobufjs/fetch': 1.1.1
       '@protobufjs/float': 1.0.2
-      '@protobufjs/inquire': 1.1.2
       '@protobufjs/path': 1.1.2
       '@protobufjs/pool': 1.1.0
       '@protobufjs/utf8': 1.1.1

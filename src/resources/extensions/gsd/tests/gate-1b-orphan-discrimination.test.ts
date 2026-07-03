@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 
 import {
   checkAutoStartAfterDiscuss,
+  _getPendingAutoStart,
   setPendingAutoStart,
   clearPendingAutoStart,
 } from "../guided-flow.ts";
@@ -21,6 +22,7 @@ import { drainLogs } from "../workflow-logger.ts";
 import {
   openDatabase,
   closeDatabase,
+  getMilestone,
   insertMilestone,
 } from "../gsd-db.ts";
 
@@ -59,9 +61,22 @@ function mkBase(): string {
   return base;
 }
 
+function mkFlatBase(): string {
+  const base = mkdtempSync(join(tmpdir(), "gsd-gate1b-flat-"));
+  mkdirSync(join(base, ".gsd", "phases", "01-m001"), { recursive: true });
+  return base;
+}
+
 function writeContext(base: string): void {
   writeFileSync(
     join(base, ".gsd", "milestones", "M001", "M001-CONTEXT.md"),
+    "# M001: Test Milestone\n\nContext written by discuss phase.\n",
+  );
+}
+
+function writeFlatContext(base: string): void {
+  writeFileSync(
+    join(base, ".gsd", "phases", "01-m001", "01-CONTEXT.md"),
     "# M001: Test Milestone\n\nContext written by discuss phase.\n",
   );
 }
@@ -141,5 +156,79 @@ describe("Gate 1b discussion handoff in checkAutoStartAfterDiscuss", () => {
       (e) => e.component === "guided" && /Gate 1b/.test(e.message),
     );
     assert.equal(gate1bLog, undefined, "Gate 1b must not log when CONTEXT.md is absent");
+  });
+
+  test("flat-phase CONTEXT.md accepts handoff without a legacy milestone context file", () => {
+    base = mkFlatBase();
+    openDatabase(":memory:");
+    insertMilestone({ id: "M001", title: "Test Milestone", status: "queued" });
+    writeFlatContext(base);
+
+    cap = mkCapture();
+    setPendingAutoStart(base, {
+      basePath: base,
+      milestoneId: "M001",
+      startAuto: false,
+      ctx: mkCtx(cap),
+      pi: mkPi(cap),
+    });
+
+    const result = checkAutoStartAfterDiscuss();
+
+    assert.equal(result, true, "flat-phase context must be found by the handoff");
+    assert.equal(cap.messages.length, 0, "startAuto=false must suppress scheduling");
+    assert.deepEqual(cap.notifies[0], {
+      msg: "Milestone M001 context captured. Continuing the planning pipeline.",
+      level: "success",
+    });
+  });
+
+  test("DB-unavailable recovery blocks handoff instead of reporting success", () => {
+    base = mkFlatBase();
+    writeFlatContext(base);
+
+    cap = mkCapture();
+    setPendingAutoStart(base, {
+      basePath: base,
+      milestoneId: "M001",
+      startAuto: false,
+      ctx: mkCtx(cap),
+      pi: mkPi(cap),
+    });
+
+    const result = checkAutoStartAfterDiscuss();
+
+    assert.equal(result, false, "handoff must fail closed when the DB row cannot be confirmed");
+    assert.equal(cap.messages.length, 0, "must not schedule auto-start when DB is unavailable");
+    assert.equal(
+      cap.notifies.some(n => n.level === "success"),
+      false,
+      "must not report a successful handoff when DB recovery was skipped",
+    );
+    assert.ok(_getPendingAutoStart(base), "pending handoff should remain for a later recovery attempt");
+  });
+
+  test("missing DB row with CONTEXT.md inserts a queued row and accepts handoff", () => {
+    base = mkFlatBase();
+    openDatabase(":memory:");
+    writeFlatContext(base);
+
+    cap = mkCapture();
+    setPendingAutoStart(base, {
+      basePath: base,
+      milestoneId: "M001",
+      startAuto: false,
+      ctx: mkCtx(cap),
+      pi: mkPi(cap),
+    });
+
+    const result = checkAutoStartAfterDiscuss();
+
+    assert.equal(result, true, "successful insert should recover the missing row");
+    assert.equal(getMilestone("M001")?.status, "queued");
+    assert.deepEqual(cap.notifies[0], {
+      msg: "Milestone M001 context captured. Continuing the planning pipeline.",
+      level: "success",
+    });
   });
 });

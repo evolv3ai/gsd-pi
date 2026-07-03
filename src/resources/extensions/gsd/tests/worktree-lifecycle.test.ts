@@ -46,7 +46,7 @@ function makeDeps(
 ): LegacyTestDeps & { calls: CallLog[] } {
   const calls: CallLog[] = [];
   // ADR-016 phase 2 / C-track close-out: WorktreeLifecycleDeps is now a
-  // 3-field bag (gitServiceFactory, worktreeProjection, mergeMilestoneToMain).
+  // 3-field bag (gitServiceFactory, worktreeProjection, mergeMilestone).
   // Tests still pass legacy override hooks via `LegacyTestDeps` — Lifecycle
   // ignores the extras structurally and reads them through the C1-healing
   // primitive-override pattern when stubs are needed.
@@ -73,7 +73,7 @@ function makeDeps(
     },
     autoWorktreeBranch: (mid: string) => `milestone/${mid}`,
     teardownAutoWorktree: () => {},
-    mergeMilestoneToMain: () => ({ pushed: false, codeFilesChanged: true }),
+    mergeMilestone: () => ({ pushed: false, codeFilesChanged: true }),
     ...overrides,
   };
   return deps;

@@ -8,6 +8,7 @@ import {
   rmSync,
   realpathSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -118,17 +119,17 @@ describe("scopeMilestone path methods", () => {
     rmSync(projectDir, { recursive: true, force: true });
   });
 
-  test("produces correct paths for a known milestone ID", () => {
+  test("produces flat-phase paths for a known milestone ID", () => {
     const ws = createWorkspace(projectDir);
     const scope = scopeMilestone(ws, MID);
     const gsd = ws.contract.projectGsd;
 
     assert.equal(scope.milestoneId, MID);
-    assert.equal(scope.contextFile(), join(gsd, "milestones", MID, `${MID}-CONTEXT.md`));
-    assert.equal(scope.roadmapFile(), join(gsd, "milestones", MID, `${MID}-ROADMAP.md`));
+    assert.equal(scope.contextFile(), join(gsd, "phases", "01-m001", "01-CONTEXT.md"));
+    assert.equal(scope.roadmapFile(), join(gsd, "phases", "01-m001", "01-ROADMAP.md"));
     assert.equal(scope.stateFile(), join(gsd, "STATE.md"));
     assert.equal(scope.dbPath(), ws.contract.projectDb);
-    assert.equal(scope.milestoneDir(), join(gsd, "milestones", MID));
+    assert.equal(scope.milestoneDir(), join(gsd, "phases", "01-m001"));
     assert.equal(scope.metaJson(), join(gsd, `${MID}-META.json`));
   });
 
@@ -143,6 +144,19 @@ describe("scopeMilestone path methods", () => {
     assert.equal(scope1.dbPath(), scope2.dbPath());
     assert.equal(scope1.milestoneDir(), scope2.milestoneDir());
     assert.equal(scope1.metaJson(), scope2.metaJson());
+  });
+
+  test("uses legacy milestone paths when legacy content exists", () => {
+    const legacyDir = join(projectDir, ".gsd", "milestones", MID);
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(join(legacyDir, `${MID}-CONTEXT.md`), "# Legacy context\n");
+
+    const ws = createWorkspace(projectDir);
+    const scope = scopeMilestone(ws, MID);
+
+    assert.equal(scope.contextFile(), join(legacyDir, `${MID}-CONTEXT.md`));
+    assert.equal(scope.roadmapFile(), join(legacyDir, `${MID}-ROADMAP.md`));
+    assert.equal(scope.milestoneDir(), legacyDir);
   });
 });
 

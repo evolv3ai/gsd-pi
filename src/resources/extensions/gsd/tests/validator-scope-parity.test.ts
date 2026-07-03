@@ -23,7 +23,7 @@ import {
 
 function makeProjectDir(label = "gsd-vsp-"): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), label)));
-  mkdirSync(join(dir, ".gsd", "milestones", "M001"), { recursive: true });
+  mkdirSync(join(dir, ".gsd", "phases", "01-m001"), { recursive: true });
   return dir;
 }
 
@@ -234,6 +234,58 @@ describe("validator-scope-parity: scope uses canonical projectRoot not worktree 
       ready,
       false,
       "verifyExpectedArtifactForScope should return false when artifact is absent",
+    );
+  });
+
+  test("verifyExpectedArtifactForScope rejects zero-slice scoped plan-milestone roadmaps", () => {
+    const ws = createWorkspace(base);
+    const scope = scopeMilestone(ws, "M001");
+
+    writeFileSync(scope.roadmapFile(), [
+      "# M001: Placeholder",
+      "",
+      "## Slices",
+      "",
+      "_TBD_",
+      "",
+    ].join("\n"));
+
+    const ready = verifyExpectedArtifactForScope(scope, "plan-milestone", "M001");
+    assert.equal(
+      ready,
+      false,
+      "scoped plan-milestone verification must parse roadmap content, not only check existence",
+    );
+  });
+
+  test("verifyExpectedArtifactForScope verifies the scoped plan-milestone roadmap path", () => {
+    const ws = createWorkspace(base);
+    const realScope = scopeMilestone(ws, "M001");
+    const scopedRoadmap = join(base, "scoped-M001-ROADMAP.md");
+    const scope = {
+      ...realScope,
+      roadmapFile: () => scopedRoadmap,
+    };
+
+    writeFileSync(scopedRoadmap, [
+      "# M001: Scoped roadmap",
+      "",
+      "## Slices",
+      "",
+      "- [ ] **S01: First slice** `risk:low` `depends:[]`",
+      "  > After this: a real slice exists.",
+      "",
+    ].join("\n"));
+
+    assert.equal(
+      resolveExpectedArtifactPathForScope(scope, "plan-milestone", "M001"),
+      scopedRoadmap,
+      "scoped plan-milestone artifact path must come from scope.roadmapFile()",
+    );
+    assert.equal(
+      verifyExpectedArtifactForScope(scope, "plan-milestone", "M001"),
+      true,
+      "scoped plan-milestone verification must read the roadmap from scope.roadmapFile()",
     );
   });
 });

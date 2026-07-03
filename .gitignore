@@ -1,3 +1,6 @@
+# Local git worktrees for development isolation
+.worktrees/
+
 # Compiled output
 /dist/
 dist-test/

@@ -276,11 +276,27 @@ With this configuration, a Haiku-4-5 subagent sees only `gsd-workflow` and `goog
 | `GSD_WORKFLOW_PROJECT_ROOT` | current working directory | Canonical project root for the packaged `gsd-workflow` MCP server. Used by workflow tools and by the stale-process registry key in `$GSD_HOME/mcp-instances.json`. |
 | `GSD_WORKFLOW_EXECUTORS_MODULE` | auto-discovered when possible | Optional absolute path or `file:` URL for the shared workflow executor module used by `gsd-workflow` mutation tools. |
 | `GSD_WORKFLOW_WRITE_GATE_MODULE` | auto-discovered when possible | Optional absolute path or `file:` URL for the shared write-gate module used by `gsd-workflow` mutation tools. |
+| `GSD_CURSOR_DISABLE` | (unset) | Set to literal `1` to disable the bundled `cursor-agent` model provider. |
+| `GSD_CURSOR_DEBUG` | (unset) | Set to any value to print Cursor Agent readiness probe diagnostics to stderr. |
+| `CURSOR_AGENT_BIN` | `cursor-agent` | Optional command or absolute path for the Cursor Agent CLI when it is not on `PATH`. |
+| `CURSOR_API_KEY` | (none) | Auth signal for the `cursor-agent` provider. GSD still requires the local `cursor-agent` CLI because requests run through the CLI. |
 | `GSD_ALLOWED_COMMAND_PREFIXES` | (built-in list) | Comma-separated command prefixes allowed for `!command` value resolution. Overrides `allowedCommandPrefixes` in settings.json. See [Custom Models — Command Allowlist](custom-models.md#command-allowlist). |
 | `GSD_FETCH_ALLOWED_URLS` | (none) | Comma-separated hostnames exempted from `fetch_page` URL blocking. Overrides `fetchAllowedUrls` in settings.json. See [URL Blocking](#url-blocking-fetch_page). |
 | `PI_DISABLE_SYNC_OUTPUT` | (unset) | Set to literal `1` to disable synchronized terminal output mode in the TUI on non-Windows platforms. By default synchronized output is enabled on macOS/Linux and always disabled on Windows. |
 | `PI_TUI_MOUSE` | (unset) | Set to literal `1` to enable terminal mouse reporting for TUI clicks and wheel events. Native drag selection is preserved by default; when mouse reporting is enabled, most terminals require Shift+drag to select text. |
 | `PI_TOKEN_TELEMETRY` | (unset) | Set to literal `1` to emit opt-in per-call token telemetry as JSONL on stderr. Other values are ignored. |
+
+### Developer and test environment variables
+
+These are for contributors debugging locally or running specific test tiers — not for normal use. See [CONTRIBUTING.md](../../CONTRIBUTING.md).
+
+| Variable | Scope | Description |
+|----------|-------|-------------|
+| `GSD_DEBUG` | dev | Set to `1` to enable verbose diagnostic tracing (`debugLog`) across the CLI and extensions. |
+| `GSD_STARTUP_TIMING` | dev | Set to `1` to print startup phase timings from the loader (alias of `PI_TIMING`). |
+| `GSD_TEST_CLONE_MARKETPLACES` | test | Set to `1` to enable clone-based marketplace fixtures used by `pnpm run test:marketplace`. |
+| `GSD_LIVE_TESTS` | test | Set to `1` (done automatically by `pnpm run test:live`) to run live provider/network tests. |
+| `GSD_SMOKE_BINARY` | test | Path to the built binary the smoke/e2e suite should exercise (e.g. `dist/loader.js`). |
 
 ### Token Telemetry
 
@@ -466,12 +482,14 @@ workspace:
       path: backend
 ```
 
-- `workspace.mode`: `project` (single-repo default) or `parent` (multi-repo workspace rooted at the current project).
+- `workspace.mode`: `project` (single-repo default) or `parent` (multi-repo workspace rooted at the current project). In `parent` mode, at least one repository must be declared under `workspace.repositories` or the setting is rejected.
 - `workspace.repositories.<id>.path`: required repository path (relative or absolute).
 - `workspace.repositories.<id>.role`: optional label used for planning/reporting context.
 - `workspace.repositories.<id>.verification`: optional default verification commands for that repository.
 - `workspace.repositories.<id>.commit_policy`: optional per-repository auto-commit policy (`auto` or `skip`).
-- Omitted slice/task `targetRepositories` default to `["project"]`.
+- Omitted slice/task `targetRepositories` default to `["project"]` in `project` mode, and to the declared child repository IDs in `parent` mode.
+- In parent workspaces, `gsd_plan_slice.targetRepositories` sets a slice-wide default and `gsd_plan_task.targetRepositories` records the repository IDs an individual task touches. Use only declared repository IDs, plus the implicit `project` ID; omit these fields in single-repo projects.
+- In parent mode with declared child repositories, `/gsd codebase generate` and automatic `CODEBASE.md` refreshes include the implicit `project` repository plus each child repository, using workspace-relative paths and repo-labeled sections.
 
 ### `reactive_execution`
 
@@ -628,11 +646,15 @@ workspace:
       commit_policy: skip
 ```
 
-`project` is always available as an implicit repository ID pointing at the project root. If plan/task `targetRepositories` is omitted, GSD defaults to `["project"]`.
+`project` is always available as an implicit repository ID pointing at the project root. If plan/task `targetRepositories` is omitted, GSD defaults to `["project"]` in `project` mode, and to the declared child repository IDs in `parent` mode.
+
+In parent workspaces, use `gsd_plan_slice.targetRepositories` to set a slice-wide repository default. Use `gsd_plan_task.targetRepositories` when an individual task touches a different or more specific set of declared repositories.
+
+In parent mode with declared child repositories, `/gsd codebase generate` and automatic `.gsd/CODEBASE.md` refreshes enumerate the implicit `project` repository plus each child repository. Generated maps group files under `## [repo-id]` sections, preserve workspace-relative paths, and record repository IDs in map metadata so registry changes refresh stale maps.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `workspace.mode` | `"project" \| "parent"` | `"project"` | Workspace operating mode. Use `parent` to declare and resolve child repositories. |
+| `workspace.mode` | `"project" \| "parent"` | `"project"` | Workspace operating mode. Use `parent` to declare and resolve child repositories; requires at least one entry under `workspace.repositories`. |
 | `workspace.repositories` | object | `{}` | Mapping of repository IDs to repository config. |
 | `workspace.repositories.<id>.path` | string | required | Child repository path, resolved relative to project root. Must stay inside the project root. |
 | `workspace.repositories.<id>.role` | string | optional | Human-oriented label used by prompts/reporting. |
@@ -644,7 +666,18 @@ Validation rules:
 - Repository IDs must match `^[A-Za-z0-9][A-Za-z0-9._-]*$`.
 - Repository paths are normalized and must be unique (case-insensitive).
 - Paths resolving outside the project root are rejected.
+- `workspace.mode: "parent"` requires at least one repository under `workspace.repositories`; otherwise it is rejected (a parent workspace with no child repos is indistinguishable from `project` mode).
+- `mode: "team"` combined with `workspace.mode: "parent"` produces a warning: team branch-push/PR resolves at the project root and does not push child repositories. This is a known limitation (see "Known limitations" below).
 - Unknown keys under `workspace` and each repository entry are ignored with warnings.
+
+**Layout constraint (nested-only).** Child repositories must live **inside** the project root — sibling-repo layouts (e.g. a path like `../frontend` or any path resolving outside the root) are **not supported** and are rejected. This is a deliberate safety guard, not an arbitrary limitation: declared repository roots back the task path-scope allowlist used during planning (`plan-slice` validates that every task `files`/`inputs`/`expectedOutput` path stays under a declared root). Allowing escapes would weaken that guard and let a typo'd or malicious path authorize edits outside the project. To coordinate sibling repos, nest them under a common parent directory and run GSD from that parent.
+
+**Known limitations of parent-workspace mode.** Per-repository *commits* and *verification* honor `commit_policy` and run in each repo's directory today. The following are **not** yet wired:
+
+- **Repo path-scope is enforced at planning time only.** When a task targets `frontend`, the planner is instructed its files must stay under `frontend/`'s root, but nothing mechanically blocks an executor from writing to `backend/` at runtime under `git.isolation: "none"`. Isolation modes (`worktree`/`branch`) provide stronger containment but operate at the project root, not per child repo.
+- **Per-repository git isolation (worktree/branch) is root-only.** One worktree/branch per milestone is created at the project root and shared across child repos. This inverts the isolation model and is RFC-gated; see `docs/dev/ADR-044-per-repository-git-isolation.md` when it lands.
+- **Parallel orchestration is root-only.** Each parallel worker gets one milestone worktree at the project root with no per-repo dimension — a known limit tied to the same isolation-model question (ADR-044).
+- **Per-repository push policy.** Push/PR at milestone merge resolves at the project root and pushes a single branch; child repos are not pushed individually.
 
 ### URL Blocking (`fetch_page`)
 
@@ -837,7 +870,7 @@ workspace:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `mode` | string | `project` | Workspace mode. `parent` enables multi-repo registry behavior. |
+| `mode` | string | `project` | Workspace mode. `parent` enables multi-repo registry behavior and requires at least one entry under `repositories`. |
 | `repositories` | object | `{}` | Map of repository ids to repository config objects. |
 | `repositories.<id>.path` | string | required | Repository root path. Relative paths resolve from project root and must stay inside project root. |
 | `repositories.<id>.role` | string | (none) | Optional human-oriented label for prompts/reporting. |
@@ -846,8 +879,12 @@ workspace:
 
 **Path-scope behavior:**
 - During planning (`plan-slice`/`replan-slice`), file paths are validated against the selected `targetRepositories`.
+- `gsd_plan_slice.targetRepositories` sets the slice-wide default repository IDs.
+- `gsd_plan_task.targetRepositories` records or overrides the repository IDs for an individual task.
 - Absolute and relative paths are both checked; paths that resolve outside declared repository roots are rejected.
-- If no explicit `targetRepositories` are provided, planning defaults to `["project"]`.
+- Use only repository IDs declared under `workspace.repositories`, plus the implicit `project` ID. If no explicit `targetRepositories` are provided, planning defaults to `["project"]` in `project` mode, and to the declared child repository IDs in `parent` mode.
+
+**Codebase-map behavior:** In parent mode with declared child repositories, `/gsd codebase generate` and automatic `.gsd/CODEBASE.md` refreshes include `project` plus each child repository, render repo-labeled `## [repo-id]` sections, and store repository metadata for freshness checks.
 
 ### `notifications`
 

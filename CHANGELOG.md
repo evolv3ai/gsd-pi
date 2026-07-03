@@ -8,6 +8,116 @@ This changelog starts from the `open-gsd/gsd-pi` ownership baseline. Earlier pro
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-02
+
+### Added
+- **hermes**: add /gsd new-milestone command for chat-driven milestone creation (#1162)
+- **gsd**: make CODEBASE.md workspace-aware in parent mode
+- **gsd**: doctor probe + validation for parent-workspace repos
+- **gsd**: surface per-repo git health in /gsd status + document limits
+- **gsd**: wire repository assignment into slice/task planning
+- **gsd**: add parent-workspace discovery UX + document nested-only layout
+- **provider**: add Cursor Agent provider
+- **gsd**: make workspace.mode parent behavioral (mode contract)
+
+### Fixed
+- **issue**: [Bug]: External-state migration re-fires on an already-migrated project when its `.gsd` symlink is replaced by a real directory, and can overwrite newer external state
+- **issue**: [Bug]: On WSL/`/mnt/c`, external-state migration hard-fails because the `.gsd` rename's copy-fallback matches only EPERM/EBUSY, not the EACCES that DrvFs reports for the same file lock
+- reject negated verification results and detect baseline untracked edits
+- **bug-3**: Root-write-leak guard fires on tracked generated artifacts root-write-leak guard now ignores tracked root modifications and only flags new untracked files.
+- **bug-2**: Doctor cannot heal artifact and DB status divergence doctor now repairs valid task SUMMARY/DB completion divergence.
+- **bug-1**: stopAuto interrupts task completion DB flush checkpointed the workflow DB before root-write-leak stop termination.
+- **test**: emit message_start so timed_out interview-close test asserts the abort
+- **doctor**: route stale-phase artifact prune through Single Writer
+- **test**: hoist askUserQuestionsRequest fixture to module scope
+- **schedule-wakeup**: key interactive wakeups by base path
+- **mcp-server**: treat ask_user_questions client abort as a clean cancellation
+- **hermes**: escalate to kill when milestone cancel times out
+- **gsd**: require task files when legacy tasks are outside <tasks> block
+- **issue**: [Bug]: interview form stays interactive after its elicitation expires — answers submitted to the dead form are silently discarded
+- **bug-2**: wakeups orphaned when the unit result is not "completed" Non-completed runUnit outcomes now clear pending wakeups to prevent stale replay.
+- **bug-1**: tool advertised globally, functional only inside a live auto-mode unit (feature gap) ScheduleWakeup now schedules an interactive host timer outside auto-mode.
+- **issue**: bug: doctor artifact_file_missing uses wrong base path (../../../ leakage) + stale phases/ rows not pruned
+- **issue**: [Bug]: plan-slice stuck-loop retries 3+ times with artifact-verification-retry when task plans use flat-phase layout
+- **issue**: [Bug]: ask_user_questions elicitation expires at the MCP SDK's hidden 60s default instead of the declared 10-minute ELICIT_TIMEOUT_MS, cutting off users mid-answer
+- **issue**: [Bug]: Session JSONL header cwd never updated after worktree chdir, all auto-mode sessions show project root
+- **hermes**: treat exit 10 as terminal when milestone stdout closes
+- **hermes**: include title in blocker notification text
+- **hermes**: supervised milestone timeout and completion summary
+- **hermes**: handle milestone stream blockers and confirm replies correctly
+- **hermes**: milestone stream init, reply routing, and supervised blockers
+- **bug-4**: MCP server starts without project cwd Project-scoped MCP calls now start the server in the project cwd.
+- **bug-3**: RPC mode flag is passed twice Session managers no longer pass a duplicate RPC mode flag.
+- **bug-2**: `execute()` lacks version-check fallback `execute()` retries `gsd_execute` with version checks disabled after `GsdVersionError`.
+- **bug-1**: MCP message reads can block forever MCP message reads now time out and reset the stalled server process.
+- **hermes**: support directory plugin loading
+- **bug-4**: Failed migration recovery leaves orphaned .gsd.migrating recovery now clears orphaned `.gsd.migrating` when current real `.gsd` validates intact.
+- **bug-3**: Bootstrap hides failed migration and runs mismatched layout bootstrap now rethrows required flat-phase migration failures instead of continuing in a mismatched layout.
+- **bug-1**: Flat-phase migration verifies stale folder contents migration now pre-cleans stale phases and verifies expected rendered phase dirs instead of total directory count.
+- **bug-3**: run dirty-worktree quarantine after submodule/nested-git rescue
+- honor removeWorktree false return in remaining callers
+- skip teardown rmSync fallback when quarantine preserves worktree
+- **bug-3**: Failed recovery destructively deletes isolated worktrees dirty worktrees are quarantined before forced removal, preserving uncommitted source changes.
+- **bug-2**: Auto-recovery corrupts existing .gsd artifacts recursive sync skips file/directory type collisions so existing SUMMARY/ASSESSMENT files are not replaced by directories.
+- **bug-1**: Strict validation lanes allow generic write/bash tools validate-milestone now uses a workflow-only tool surface and blocks manual artifact write/bash bypasses.
+- **issue**: [Bug]: per-tool durations in a finished claude-code turn show descending turn-elapsed times because synthetic toolcall_end is skipped once the message builder is cleared
+- **issue**: exclude output tokens from context-fill accounting (#1149)
+- **issue**: [Bug]: finished claude-code turn renders its tool-call list twice — orphaned tool components are re-added without dedup at message-end rebuild
+- **issue**: [Bug]: Context-fill counter reads a short claude-code turn as 853k–2.9M tokens (up to 230% of a 1M window) and triggers a compaction that then finds no history to summarize
+- **ci**: pin checkout to GITHUB_SHA instead of fetched ref tip
+- **gsd**: preserve harnessAbort until explicit recovery or rerun
+- **gsd**: only record harness aborts for truncation signals, not product tool failures
+- **issue**: [Bug]: a UAT/gate evaluation truncated by a GSD tool/harness failure is recorded as a genuine product FAIL, so auto-mode advances instead of re-running — no signal distinguishes tool-abort from product-fail at save time
+- **gsd**: use native roadmap parser for plan-milestone slice count
+- **gsd**: route plan-milestone verification through scope path resolver
+- **gsd**: allow discuss handoff without open database
+- **bug-3**: Milestone insert result is ignored during recovery Missing-row recovery now honors a successful `insertMilestone` result before follow-up reads.
+- **bug-2**: DB-unavailable handoff recovery reports success DB-unavailable handoff recovery now blocks auto-start instead of reporting success.
+- **bug-1**: Flat-phase context lookup uses legacy milestone path Flat-phase CONTEXT paths are now resolved through layout-aware milestone scope paths.
+- **gsd**: keep single-repo CODEBASE.md dir order byte-identical
+- **gsd**: include workspace config in codebase map freshness cache key
+- **gsd**: split directory groups by repo in workspace codebase maps
+- **gsd**: propagate workspace registry errors in codebase map generation
+- **gsd**: prevent duplicate repo headings and stale repo labels in CODEBASE.md
+- **gsd**: correct workspace file enumeration excludes, truncation, and maxFiles fairness
+- **deps**: cap protobufjs override to 7.x line
+- **gsd**: scope implicit project repo to worktree
+- **plan-task**: honor targetRepositories for path scope in worktrees
+- **gsd**: scope plan-task path validation to active worktree
+- **gsd**: remove duplicate cross-axis preference warning
+- **gsd**: point missing CONTEXT recovery to /gsd discuss
+- **issue**: bug: doctor --repair silently skips user-authored CONTEXT/RESEARCH artifacts, leaves blocking ERROR
+- **doctor**: use GIT_NO_PROMPT_ENV for workspace repo toplevel probe
+- **gsd**: reuse isRepositoryDirty for per-repo status checks
+- **issue**: bug: preferences validator rejects remote_questions: false with misleading error
+- **plan-task**: inherit slice default repos and re-read task inside transaction
+- **issue**: [Bug]: dispatch rule named "uat-verdict-gate (non-PASS blocks progression)" never blocks progression — the name asserts a control-flow guarantee the body does not implement
+- **issue**: [Bug]: milestone-validation prompt is never fed persisted slice-level Q3/Q4 gate flag findings, so closeout's enforcing gate is blind to the requirement/security flags it exists to reconcile
+- **issue**: [Bug]: UAT NEEDS-HUMAN checks leave no durable follow-up marker, so a PASS-with-NEEDS-HUMAN sign-off obligation is silently dropped
+- **gsd**: correct targetRepositories omit guidance in repo registry prompt
+- **plan-task**: persist resolved slice default target repositories
+- **gsd**: validate targetRepositories in handlePlanTask
+- **issue**: [Bug]: auto-mode "requires discussion" pause banner hides that the just-closed slice's UAT verdict was non-PASS
+- **issue**: [Bug]: slice PLAN.md renders a `flag` quality-gate verdict byte-identically to `pass`, dropping the concern signal the TUI displays as a warning
+- **gsd**: exempt browser automation tools from arg-independent loop cap
+- **issue**: [Bug]: `/gsd prefs` wizard omits `per_unit_cost_cap_usd`, so the per-unit cost cap can only be changed by hand-editing PREFERENCES.md
+- **issue**: [Bug]: plan-slice verification false-negatives when completed tasks lack T##-PLAN.md — getSliceTasks returns all tasks but only SUMMARY.md exists for completed ones
+- resolve profile per-phase models as synthesized routing when tier_models are unpinned
+- **prefs-wizard**: correct flat-rate routing default hint after opt-out flip
+- scope skipProfileDefaults to explicit model detection only
+- **bug-2**: Flat-rate providers silently block synthesized dynamic routing synthesized dynamic routing now runs for flat-rate providers unless explicitly opted out.
+- **bug-1**: Profile defaults are treated as explicit model selections profile-derived model defaults are skipped during explicit model detection.
+- **provider**: harden cursor agent auth and streaming
+- **gsd**: align turn commit defaults with mode-aware repository targets
+
+### Changed
+- **gsd**: declare unit prompt templates
+- **gsd**: rename lifecycle merge seam
+- ignore local .worktrees/ directory
+- **gsd**: fold guarded merge into lifecycle exit
+- **gsd**: centralize guarded milestone merge
+- apply audit fixes 009-017
+
 ## [1.4.0] - 2026-07-01
 
 ### Added

@@ -51,6 +51,16 @@ const VALID_POST_UNIT_HOOK_ON_BLOCK_ACTIONS = new Set([
 ]);
 const VALID_GATE_EVALUATE_SLICE_GATES = new Set<string>(getGateIdsForTurn("gate-evaluate"));
 
+/** Cross-axis warnings that only apply to the effective (merged) preference shape. */
+export function crossAxisPreferenceWarnings(preferences: GSDPreferences): string[] {
+  if (preferences.mode === "team" && preferences.workspace?.mode === "parent") {
+    return [
+      "mode:team + workspace.mode:parent: team branch-push/PR resolves at the project root and will not push child repositories — see docs/dev/ADR-044",
+    ];
+  }
+  return [];
+}
+
 export function validatePreferences(preferences: GSDPreferences): {
   preferences: GSDPreferences;
   errors: string[];
@@ -509,8 +519,11 @@ export function validatePreferences(preferences: GSDPreferences): {
 
   // ─── Remote Questions ───────────────────────────────────────────────
   if (preferences.remote_questions !== undefined) {
-    if (preferences.remote_questions && typeof preferences.remote_questions === "object") {
-      validated.remote_questions = preferences.remote_questions;
+    const remoteQuestions = preferences.remote_questions as unknown;
+    if (typeof remoteQuestions === "object" && remoteQuestions !== null) {
+      validated.remote_questions = remoteQuestions as GSDPreferences["remote_questions"];
+    } else if (remoteQuestions === false) {
+      // Explicit disable for a globally-configured remote questions channel.
     } else {
       errors.push("remote_questions must be an object");
     }
@@ -1495,6 +1508,17 @@ export function validatePreferences(preferences: GSDPreferences): {
     } else {
       errors.push("workspace must be an object");
     }
+
+    // parent mode is behavioral: it must coordinate at least one declared
+    // child repository. Without one it is indistinguishable from project
+    // mode, so reject it explicitly rather than silently degrading.
+    if (validated.workspace?.mode === "parent") {
+      const childRepoCount = validated.workspace.repositories ? Object.keys(validated.workspace.repositories).length : 0;
+      if (childRepoCount === 0) {
+        errors.push('workspace.mode "parent" requires at least one repository under workspace.repositories');
+      }
+    }
+
   }
 
   // ─── Enhanced Verification ──────────────────────────────────────────────────
@@ -1567,6 +1591,8 @@ export function validatePreferences(preferences: GSDPreferences): {
       errors.push(`language must be a non-empty string up to 50 characters with no newlines (e.g. "Chinese", "de", "日本語")`);
     }
   }
+
+  warnings.push(...crossAxisPreferenceWarnings(validated));
 
   return { preferences: validated, errors, warnings };
 }

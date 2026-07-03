@@ -1,7 +1,17 @@
 // gsd-pi + Workspace handle: single source of truth for path resolution per milestone
 
-import { join, resolve } from "node:path";
-import { type GsdPathContract, resolveGsdPathContract, normalizeRealPath } from "./paths.js";
+import { dirname, join, resolve } from "node:path";
+import {
+  buildMilestoneFileName,
+  canonicalPhaseDirName,
+  isLegacyMilestonesLayout,
+  milestonesDir,
+  type GsdPathContract,
+  resolveGsdPathContract,
+  resolveMilestoneFile,
+  resolveMilestonePath,
+  normalizeRealPath,
+} from "./paths.js";
 import { isGsdWorktreePath, resolveWorktreeProjectRoot } from "./worktree-root.js";
 
 export type GsdWorkspaceMode = "project" | "worktree";
@@ -29,6 +39,29 @@ export interface MilestoneScope {
 
 function tryRealpath(p: string): string {
   return normalizeRealPath(p);
+}
+
+function isLegacyMilestoneDirectory(dir: string): boolean {
+  const parent = dirname(dir);
+  return parent.endsWith("/milestones") || parent.endsWith("\\milestones");
+}
+
+function scopeMilestoneDir(basePath: string, milestoneId: string): string {
+  return resolveMilestonePath(basePath, milestoneId) ?? join(
+    milestonesDir(basePath),
+    isLegacyMilestonesLayout(basePath) ? milestoneId : canonicalPhaseDirName(milestoneId),
+  );
+}
+
+function scopeMilestoneFile(basePath: string, milestoneId: string, suffix: string): string {
+  const existing = resolveMilestoneFile(basePath, milestoneId, suffix);
+  if (existing) return existing;
+
+  const dir = scopeMilestoneDir(basePath, milestoneId);
+  const filename = isLegacyMilestoneDirectory(dir)
+    ? `${milestoneId}-${suffix}.md`
+    : buildMilestoneFileName(milestoneId, suffix);
+  return join(dir, filename);
 }
 
 /**
@@ -73,22 +106,23 @@ export function createWorkspace(rawBasePath: string): GsdWorkspace {
  * Bind a milestoneId to a workspace, producing an immutable MilestoneScope
  * with path-returning closures for DB-authoritative project state.
  *
- * These scope paths intentionally route to contract.projectGsd. In-flight
- * markdown artifact readers outside this scope use the projection-aware
- * resolvers in paths.ts so worktree units can see worktree-local projections.
+ * DB paths route to contract.projectGsd. Milestone artifact paths resolve from
+ * the pinned project root with the layout-aware resolvers, so flat-phase and
+ * legacy projects use the same scope surface.
  */
 export function scopeMilestone(workspace: GsdWorkspace, milestoneId: string): MilestoneScope {
   const { contract } = workspace;
   const gsd = contract.projectGsd;
+  const basePath = workspace.projectRoot;
 
   const scope: MilestoneScope = Object.freeze({
     workspace,
     milestoneId,
-    contextFile: () => join(gsd, "milestones", milestoneId, `${milestoneId}-CONTEXT.md`),
-    roadmapFile: () => join(gsd, "milestones", milestoneId, `${milestoneId}-ROADMAP.md`),
+    contextFile: () => scopeMilestoneFile(basePath, milestoneId, "CONTEXT"),
+    roadmapFile: () => scopeMilestoneFile(basePath, milestoneId, "ROADMAP"),
     stateFile: () => join(gsd, "STATE.md"),
     dbPath: () => contract.projectDb,
-    milestoneDir: () => join(gsd, "milestones", milestoneId),
+    milestoneDir: () => scopeMilestoneDir(basePath, milestoneId),
     metaJson: () => join(gsd, `${milestoneId}-META.json`),
   });
 

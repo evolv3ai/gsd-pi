@@ -11,18 +11,84 @@ import { migrateFromMarkdown } from "./md-importer.js";
 import { countDbHierarchy } from "./migration-auto-check.js";
 import { logWarning } from "./workflow-logger.js";
 import { LAYOUT_SEGMENTS } from "./layout-policy.js";
-import { canonicalPhaseDirName, milestonesDir, resolveMilestonePath } from "./paths.js";
+import {
+  canonicalPhaseDirName,
+  dirIsContentBearingLegacyMilestone,
+  milestonesDir,
+  resolveMilestonePath,
+} from "./paths.js";
 
 const LEGACY_MIGRATING_SEGMENT = "milestones.migrating";
+const RETRYABLE_FS_ERROR_CODES = new Set(["EPERM", "EBUSY", "ENOTEMPTY"]);
+const RM_RETRY_OPTIONS = { recursive: true, force: true, maxRetries: 5, retryDelay: 100 } as const;
+
+type FlatPhaseMigrationFsOps = {
+  cpSync: typeof cpSync;
+  renameSync: typeof renameSync;
+  rmSync: typeof rmSync;
+};
+
+let fsOps: FlatPhaseMigrationFsOps = { cpSync, renameSync, rmSync };
+
+export function _setFlatPhaseMigrationFsOpsForTest(
+  overrides: Partial<FlatPhaseMigrationFsOps>,
+): () => void {
+  const previous = fsOps;
+  fsOps = { ...fsOps, ...overrides };
+  return () => {
+    fsOps = previous;
+  };
+}
 
 function legacyMigratingPath(basePath: string): string {
   return join(basePath, ".gsd", LEGACY_MIGRATING_SEGMENT);
 }
 
+function removePathWithRetries(path: string): void {
+  fsOps.rmSync(path, { recursive: true, force: true, maxRetries: RM_RETRY_OPTIONS.maxRetries, retryDelay: RM_RETRY_OPTIONS.retryDelay });
+}
+
+function isRetryableFsError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" && RETRYABLE_FS_ERROR_CODES.has(code);
+}
+
+function movePathWithCopyDeleteFallback(src: string, dst: string): void {
+  try {
+    fsOps.renameSync(src, dst);
+    return;
+  } catch (err) {
+    if (!isRetryableFsError(err)) throw err;
+  }
+
+  try {
+    fsOps.cpSync(src, dst, { recursive: true, force: true });
+    removePathWithRetries(src);
+  } catch (fallbackErr) {
+    if (existsSync(src) && existsSync(dst)) {
+      try {
+        removePathWithRetries(dst);
+      } catch {
+        // Leave the original error intact; the next run can pre-clean dst.
+      }
+    }
+    throw fallbackErr;
+  }
+}
+
+function expectedPhaseDirs(basePath: string): string[] {
+  return getAllMilestones().map((milestone) =>
+    resolveMilestonePath(basePath, milestone.id) ??
+      join(milestonesDir(basePath), canonicalPhaseDirName(milestone.id, milestone.title)),
+  );
+}
+
 function hasLegacyMilestoneSubdirs(dirPath: string): boolean {
   if (!existsSync(dirPath)) return false;
   try {
-    return readdirSync(dirPath).some(e => statSync(join(dirPath, e)).isDirectory());
+    return readdirSync(dirPath).some(
+      (e) => statSync(join(dirPath, e)).isDirectory() && dirIsContentBearingLegacyMilestone(join(dirPath, e)),
+    );
   } catch {
     return false;
   }
@@ -34,19 +100,26 @@ function rollbackPartialMigration(
   migratingPath?: string,
 ): void {
   // Remove the partially-written phases/ dir.
-  rmSync(join(basePath, ".gsd", LAYOUT_SEGMENTS.level1), { recursive: true, force: true });
+  try {
+    removePathWithRetries(join(basePath, ".gsd", LAYOUT_SEGMENTS.level1));
+  } catch (removeErr) {
+    logWarning(
+      "migration",
+      `rollback: could not remove partial ${LAYOUT_SEGMENTS.level1}/: ${(removeErr as Error).message}`,
+    );
+  }
   // Restore milestones/ — prefer renaming the preserved migrating copy back.
   const milestonesPath = join(basePath, ".gsd", "milestones");
   try {
     if (migratingPath && existsSync(migratingPath) && !existsSync(milestonesPath)) {
-      renameSync(migratingPath, milestonesPath);
+      movePathWithCopyDeleteFallback(migratingPath, milestonesPath);
       return;
     }
     if (existsSync(backupDir)) {
       cpSync(backupDir, milestonesPath, { recursive: true });
     }
     if (migratingPath && existsSync(migratingPath)) {
-      rmSync(migratingPath, { recursive: true, force: true });
+      removePathWithRetries(migratingPath);
     }
   } catch (restoreErr) {
     logWarning(
@@ -162,18 +235,29 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
       throw err;
     }
 
+    if (existsSync(migratingPath)) {
+      removePathWithRetries(migratingPath);
+    }
+
     // 3. Rename legacy tree aside before rendering so path resolvers target
     // phases/ instead of writing back into the nested milestones/ layout.
     // Keep the full tree on disk until render+verify succeed (unlike rmSync).
     try {
-      renameSync(milestonesPath, migratingPath);
+      movePathWithCopyDeleteFallback(milestonesPath, migratingPath);
     } catch (err) {
       logWarning("migration", `failed to rename legacy milestones/ before render: ${(err as Error).message}`);
       throw err;
     }
-  } else {
-    // Interrupted run: clear any partial phases/ projection before retrying.
-    rmSync(phasesPath, { recursive: true, force: true });
+  }
+
+  // Clear any stale or partially-rendered flat projection before this run
+  // writes. Verification below checks the current DB render, not leftovers.
+  try {
+    removePathWithRetries(phasesPath);
+  } catch (err) {
+    logWarning("migration", `failed to clear stale phases/ before render: ${(err as Error).message}`);
+    rollbackPartialMigration(basePath, backupDir, migratingPath);
+    throw err;
   }
 
   // 4. Render flat-phase from DB
@@ -211,22 +295,14 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
   }
 
   const db = countDbHierarchy();
-  let renderedDirCount = 0;
-  try {
-    // /^\d+-/ matches any numeric prefix (01-, 10-, 100-) so M100+ milestones
-    // whose dirs start with "100-slug" are counted correctly.
-    renderedDirCount = readdirSync(phasesPath, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && /^\d+-/.test(entry.name)).length;
-  } catch {
-    // phases/ doesn't exist or is unreadable — same as zero dirs
-  }
-  if (db.milestones > 0 && renderedDirCount !== db.milestones) {
+  const missingPhaseDirs = expectedPhaseDirs(basePath).filter((phaseDir) => !existsSync(phaseDir));
+  if (db.milestones > 0 && missingPhaseDirs.length > 0) {
     logWarning(
       "migration",
-      `phases/ dir count mismatch: expected ${db.milestones}, found ${renderedDirCount}`,
+      `flat-phase migration missing ${missingPhaseDirs.length} expected phase dir(s): ${missingPhaseDirs.join(", ")}`,
     );
     rollbackPartialMigration(basePath, backupDir, migratingPath);
-    throw new Error("flat-phase migration verification failed: phases dir milestone count mismatch");
+    throw new Error("flat-phase migration verification failed: missing rendered phase directories");
   }
   if (db.slices > 0 && renderResult.rendered === 0) {
     logWarning(
@@ -239,7 +315,7 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
 
   // 6. Verified — remove the renamed legacy tree (backup already on disk).
   try {
-    rmSync(migratingPath, { recursive: true, force: true });
+    removePathWithRetries(migratingPath);
   } catch (err) {
     logWarning(
       "migration",

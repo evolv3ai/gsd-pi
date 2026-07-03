@@ -4,7 +4,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { _runMilestoneMergeWithStashRestore } from "../auto/closeout.js";
+import {
+  _runMilestoneMergeOnceWithStashRestore,
+  _runMilestoneMergeWithStashRestore,
+} from "../auto/closeout.js";
 import type { IterationContext } from "../auto/types.js";
 import { MergeConflictError } from "../git-service.js";
 import type {
@@ -58,6 +61,30 @@ function buildIc(opts: {
     },
   };
 
+  const plainExitMilestone = (exitOpts: { merge: boolean }) => {
+    log.mergeCalls += 1;
+    if (opts.mergeBehavior === "succeed") {
+      return { ok: true, merged: exitOpts.merge, codeFilesChanged: false } as const;
+    }
+    try {
+      opts.mergeBehavior();
+      return { ok: true, merged: exitOpts.merge, codeFilesChanged: false } as const;
+    } catch (err) {
+      // Mirror Lifecycle's typed-result wrapping of MergeConflictError
+      // and other thrown values per worktree-lifecycle.exitMilestone.
+      const isMergeConflict =
+        err !== null &&
+        typeof err === "object" &&
+        err !== undefined &&
+        (err as { name?: string }).name === "MergeConflictError";
+      return {
+        ok: false,
+        reason: isMergeConflict ? "merge-conflict" : "teardown-failed",
+        cause: err,
+      } as const;
+    }
+  };
+
   const deps = {
     preflightCleanRoot: () => {
       log.preflightCalls += 1;
@@ -76,28 +103,72 @@ function buildIc(opts: {
       },
     },
     lifecycle: {
-      exitMilestone: (_mid: string, exitOpts: { merge: boolean }) => {
-        log.mergeCalls += 1;
-        if (opts.mergeBehavior === "succeed") {
-          return { ok: true, merged: exitOpts.merge, codeFilesChanged: false };
+      exitMilestone: (
+        _mid: string,
+        exitOpts: {
+          merge: boolean;
+          guardedMerge?: {
+            projectRoot: string;
+            preflightCleanRoot: (
+              basePath: string,
+              milestoneId: string,
+              notify: (message: string, level: "info" | "warning" | "error") => void,
+            ) => PreflightResult;
+            postflightPopStash: (
+              basePath: string,
+              milestoneId: string,
+              stashMarker: string | undefined,
+              notify: (message: string, level: "info" | "warning" | "error") => void,
+            ) => PostflightResult;
+          };
+        },
+        exitCtx?: { notify: (message: string, level: "info" | "warning" | "error") => void },
+      ) => {
+        const notify = exitCtx?.notify ?? (() => {});
+        const guarded = exitOpts.guardedMerge;
+        if (exitOpts.merge && guarded) {
+          const preflight = guarded.preflightCleanRoot(guarded.projectRoot, _mid, notify);
+          if (preflight.blocked) {
+            return {
+              ok: false,
+              reason: preflight.blockedReason?.startsWith("unmerged-conflicts")
+                ? "preflight-unmerged-conflicts"
+                : "preflight-dirty-overlap",
+            } as const;
+          }
+
+          const mergeResult = plainExitMilestone({ merge: true });
+          const postflight = preflight.stashPushed
+            ? guarded.postflightPopStash(
+                guarded.projectRoot,
+                _mid,
+                preflight.stashMarker,
+                notify,
+              )
+            : undefined;
+
+          if (!mergeResult.ok) {
+            if (mergeResult.reason === "merge-conflict") {
+              return { ...mergeResult, postflight } as const;
+            }
+            return {
+              ok: false,
+              reason: "merge-failed",
+              cause: mergeResult.cause,
+              postflight,
+            } as const;
+          }
+          if (postflight?.needsManualRecovery) {
+            return {
+              ok: false,
+              reason: "postflight-stash-restore-failed",
+              postflight,
+            } as const;
+          }
+          return mergeResult;
         }
-        try {
-          opts.mergeBehavior();
-          return { ok: true, merged: exitOpts.merge, codeFilesChanged: false };
-        } catch (err) {
-          // Mirror Lifecycle's typed-result wrapping of MergeConflictError
-          // and other thrown values per worktree-lifecycle.exitMilestone.
-          const isMergeConflict =
-            err !== null &&
-            typeof err === "object" &&
-            err !== undefined &&
-            (err as { name?: string }).name === "MergeConflictError";
-          return {
-            ok: false,
-            reason: isMergeConflict ? "merge-conflict" : "teardown-failed",
-            cause: err,
-          } as const;
-        }
+
+        return plainExitMilestone(exitOpts);
       },
     },
     stopAuto: async (
@@ -153,6 +224,14 @@ const PREFLIGHT_UNMERGED: PreflightResult = {
   blockedReason: "unmerged-conflicts",
   conflictedPaths: ["todo.js", "test-todo-cli.js"],
   summary: "Working tree has unresolved Git conflicts before milestone M002 merge.",
+};
+
+const PREFLIGHT_UNMERGED_EVAL_FAILED: PreflightResult = {
+  stashPushed: false,
+  blocked: true,
+  blockedReason: "unmerged-conflicts-eval-failed",
+  conflictedPaths: ["todo.js"],
+  summary: "Unable to fully evaluate unresolved Git conflicts before milestone M002 merge.",
 };
 
 const POP_OK: PostflightResult = {
@@ -344,6 +423,52 @@ test("unmerged conflicts: preflight stops before merge and postflight restore", 
   );
 });
 
+test("unmerged conflict evaluation failure stops as preflight-unmerged-conflicts", async () => {
+  const { ic, log } = buildIc({
+    preflightResult: PREFLIGHT_UNMERGED_EVAL_FAILED,
+    mergeBehavior: "succeed",
+    postflightResult: POP_OK,
+  });
+
+  const result = await _runMilestoneMergeWithStashRestore(ic, "M002");
+
+  assert.deepEqual(result, {
+    action: "break",
+    reason: "preflight-unmerged-conflicts",
+  });
+  assert.equal(
+    log.mergeCalls,
+    0,
+    "failed conflict evaluation must not start milestone merge",
+  );
+  assert.equal(log.postflightCalls, 0, "blocked preflight must not attempt stash restore");
+  assert.equal(log.stopAutoCalls.length, 1);
+  assert.match(
+    log.stopAutoCalls[0] ?? "",
+    /Pre-merge unresolved Git conflicts block milestone M002/,
+  );
+});
+
+test("already-merged milestone skips guarded merge to terminate duplicate closeout loops", async () => {
+  const { ic, log } = buildIc({
+    preflightResult: STASH_PUSHED,
+    mergeBehavior: "succeed",
+    postflightResult: POP_OK,
+  });
+  log.milestoneMergedInPhases = true;
+
+  const result = await _runMilestoneMergeOnceWithStashRestore(ic, "M002");
+
+  assert.equal(result, null);
+  assert.equal(log.preflightCalls, 0, "already-merged guard must not re-trigger preflight");
+  assert.equal(log.mergeCalls, 0, "already-merged guard must not re-trigger merge");
+  assert.equal(
+    log.postflightCalls,
+    0,
+    "already-merged guard must not re-trigger stash restore",
+  );
+});
+
 test("merge succeeds but stash pop needs manual recovery -> postflight-stash-restore-failed break", async () => {
   const { ic, log } = buildIc({
     preflightResult: STASH_PUSHED,
@@ -358,6 +483,11 @@ test("merge succeeds but stash pop needs manual recovery -> postflight-stash-res
     reason: "postflight-stash-restore-failed",
   });
   assert.equal(log.postflightCalls, 1);
+  assert.equal(
+    log.milestoneMergedInPhases,
+    true,
+    "successful merge must set the flag before postflight recovery stops auto-mode",
+  );
   assert.equal(log.stopAutoCalls.length, 1);
   assert.match(
     log.stopAutoCalls[0] ?? "",

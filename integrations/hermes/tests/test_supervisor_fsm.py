@@ -138,6 +138,7 @@ def test_auto_resets_session_specific_supervisor_context(tmp_path) -> None:
     )
     supervisor = MockSupervisor()
     client = MagicMock()
+    client.milestone_active.return_value = False
     client.execute.return_value = {"sessionId": "new-session"}
 
     router = GsdCommandRouter(
@@ -179,6 +180,7 @@ def test_status_returns_friendly_message_when_mcp_progress_fails(tmp_path) -> No
 def test_auto_returns_friendly_message_when_mcp_execute_fails(tmp_path) -> None:
     supervisor = MockSupervisor()
     client = MagicMock()
+    client.milestone_active.return_value = False
     client.execute.side_effect = McpProtocolError("sidecar unavailable")
     router, _project_dir, _supervisor, _ctx, _stored = build_router(
         tmp_path, client, supervisor=supervisor
@@ -193,6 +195,7 @@ def test_auto_returns_friendly_message_when_mcp_execute_fails(tmp_path) -> None:
 def test_auto_rejects_missing_session_id_in_mcp_response(tmp_path) -> None:
     supervisor = MockSupervisor()
     client = MagicMock()
+    client.milestone_active.return_value = False
     client.execute.return_value = {}
     router, _project_dir, _supervisor, ctx, _stored = build_router(
         tmp_path, client, supervisor=supervisor
@@ -209,6 +212,7 @@ def test_auto_rejects_missing_session_id_in_mcp_response(tmp_path) -> None:
 def test_cancel_stops_supervisor_when_mcp_cancel_fails(tmp_path) -> None:
     supervisor = MockSupervisor()
     client = MagicMock()
+    client.milestone_active.return_value = False
     client.cancel_by_project.side_effect = McpProtocolError("sidecar unavailable")
     router, _project_dir, _supervisor, ctx, stored = build_router(
         tmp_path, client, supervisor=supervisor
@@ -226,6 +230,7 @@ def test_cancel_sends_terminal_notification_after_successful_mcp_cancel(tmp_path
     supervisor = MockSupervisor()
     notifications = MagicMock()
     client = MagicMock()
+    client.milestone_active.return_value = False
     ctx = SupervisorContext(
         session_id="s1",
         state=SupervisorState.RUNNING,
@@ -261,6 +266,7 @@ def test_cancel_prefers_supervisor_project_for_active_session(tmp_path) -> None:
     (running_project / ".gsd").mkdir()
     supervisor = MockSupervisor()
     client = MagicMock()
+    client.milestone_active.return_value = False
     ctx = SupervisorContext(
         session_id="s1",
         project_dir=str(running_project),
@@ -291,6 +297,7 @@ def test_cancel_prefers_supervisor_project_for_active_session(tmp_path) -> None:
 def test_cancel_stops_supervisor_when_binding_resolution_fails(tmp_path) -> None:
     supervisor = MockSupervisor()
     client = MagicMock()
+    client.milestone_active.return_value = False
     ctx = SupervisorContext(
         session_id="s1",
         project_dir=str(tmp_path / "missing"),
@@ -323,6 +330,7 @@ def test_cancel_stops_supervisor_when_binding_resolution_fails(tmp_path) -> None
 
 def test_reply_returns_friendly_message_when_mcp_resolve_fails(tmp_path) -> None:
     client = MagicMock()
+    client.milestone_active.return_value = False
     client.resolve_blocker.side_effect = McpProtocolError("sidecar unavailable")
     ctx = SupervisorContext(session_id="s1", project_dir="/tmp/project")
     router, _project_dir, _supervisor, _ctx, _stored = build_router(
@@ -368,6 +376,38 @@ def test_supervisor_detects_blocker() -> None:
     fsm._tick()
     assert ctx.state == SupervisorState.BLOCKED
     assert any("blocker" in t.lower() or "Approve" in t for t in sent)
+
+
+def test_notify_blocker_prefers_title_over_generic_message() -> None:
+    sent: list[str] = []
+
+    def dispatch(_name: str, args: dict) -> None:
+        sent.append(args.get("text", ""))
+
+    notifications = NotificationService(
+        MagicMock(),
+        GsdConfig(),
+        lambda: DeliveryTarget("slack", "channel", "C123"),
+        dispatch=dispatch,
+    )
+
+    notifications.notify_blocker(
+        SessionStatus(
+            status="blocked",
+            pending_blocker={
+                "type": "extension_ui_request",
+                "method": "select",
+                "id": "sel-1",
+                "title": "Choose milestone scope",
+                "message": "Action required",
+                "options": ["A", "B"],
+            },
+        )
+    )
+
+    assert len(sent) == 1
+    assert "GSD blocker: Choose milestone scope" in sent[0]
+    assert "GSD blocker: Action required" not in sent[0]
 
 
 def test_supervisor_terminal_tick_updates_progress_before_stopping() -> None:

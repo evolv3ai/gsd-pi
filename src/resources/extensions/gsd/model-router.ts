@@ -24,11 +24,10 @@ export interface DynamicRoutingConfig {
   cross_provider?: boolean;        // default: true
   hooks?: boolean;                 // default: true
   /**
-   * Opt into dynamic routing for flat-rate providers (e.g. claude-code,
-   * GitHub Copilot). Default false preserves the #3453 bypass that skips
-   * routing when the subscription makes per-request cost identical.
-   * Enable only when you want per-task model selection across a flat-rate
-   * subscription (e.g. haiku for research, opus for architecture). (#4386)
+   * Override dynamic routing for flat-rate providers (e.g. claude-code,
+   * GitHub Copilot). Omit or set true to honor `dynamic_routing.enabled`;
+   * set false to preserve one-model dispatch when the subscription makes
+   * per-request cost identical.
    */
   allow_flat_rate_providers?: boolean;
 }

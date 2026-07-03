@@ -34,6 +34,8 @@ mode: team
 .gsd/runtime/
 .gsd/worktrees/
 .gsd-worktrees/
+.gsd/phases/**/continue.md
+.gsd/phases/**/*-CONTINUE.md
 .gsd/milestones/**/continue.md
 .gsd/milestones/**/*-CONTINUE.md
 ```
@@ -44,7 +46,8 @@ mode: team
 - `.gsd/PROJECT.md`：持续维护的项目描述
 - `.gsd/REQUIREMENTS.md`：需求契约
 - `.gsd/DECISIONS.md`：架构决策
-- `.gsd/milestones/`：roadmaps、plans、summaries 和 research
+- `.gsd/phases/`：flat-phase roadmaps、plans、summaries 和 research
+- `.gsd/milestones/`：尚未迁移项目中的 legacy milestone 产物
 
 **仅保留本地的内容**（gitignore）：
 
@@ -93,7 +96,7 @@ git:
 - 在独立的 `milestone/<MID>` 分支上工作
 - 独立地 squash merge 回主分支
 
-milestone 依赖可以通过 `M00X-CONTEXT.md` frontmatter 声明：
+milestone 依赖可以通过 phase context frontmatter 声明：
 
 ```yaml
 ---

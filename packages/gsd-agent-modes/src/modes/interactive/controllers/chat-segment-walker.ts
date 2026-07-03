@@ -338,6 +338,7 @@ export function rebuildSegmentsOnMessageEnd(
 				toolComponentsById.set(finalBlock.id, component);
 			}
 			if (component) {
+				host.chatContainer.removeChild(component);
 				host.chatContainer.addChild(component);
 				rs.renderedSegments.push({ kind: "tool", contentIndex: seg.contentIndex, component });
 			}

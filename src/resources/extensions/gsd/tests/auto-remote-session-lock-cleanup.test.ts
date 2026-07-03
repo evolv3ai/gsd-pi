@@ -124,3 +124,44 @@ test("forceStopAutoRemote escalates a live remote PID and releases worker state"
   );
   assert.equal(readCrashLock(base), null, "force stop should remove the visible remote lock");
 });
+
+test("forceStopAutoRemote does not SIGKILL a PID that exits during the grace window", (t) => {
+  const base = makeBase();
+  t.after(() => cleanup(base));
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  const workerId = registerAutoWorker({ projectRootRealpath: normalizeRealPath(base) });
+  const pid = 525_252;
+  setWorkerPid(workerId, pid);
+  writeLegacyLock(base, pid);
+
+  // The process is alive until it receives SIGTERM, then exits cooperatively
+  // (liveness probe throws ESRCH) — so the grace loop should break before SIGKILL.
+  const signals: Array<NodeJS.Signals | 0> = [];
+  let alive = true;
+  const originalKill = process.kill;
+  process.kill = ((target: number, signal?: NodeJS.Signals | number) => {
+    assert.equal(target, pid);
+    if (signal === 0) {
+      if (!alive) {
+        const err = new Error("no such process") as NodeJS.ErrnoException;
+        err.code = "ESRCH";
+        throw err;
+      }
+      return true;
+    }
+    signals.push((signal ?? 0) as NodeJS.Signals | 0);
+    if (signal === "SIGTERM") alive = false; // cooperative exit on SIGTERM
+    return true;
+  }) as typeof process.kill;
+  t.after(() => {
+    process.kill = originalKill;
+  });
+
+  const result = forceStopAutoRemote(base);
+
+  assert.deepEqual(result, { found: true, pid });
+  assert.ok(signals.includes("SIGTERM"), "force stop should request graceful termination first");
+  assert.ok(!signals.includes("SIGKILL"), "force stop must not escalate when the PID exits during the grace window");
+  assert.equal(readCrashLock(base), null, "force stop should remove the visible remote lock");
+});

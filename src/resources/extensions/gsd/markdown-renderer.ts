@@ -20,6 +20,7 @@ import {
   getSliceScopedArtifacts,
   getMilestoneSlices,
   getSliceTasks,
+  getTasksBySliceIds,
   getTask,
   getSlice,
   insertArtifact,
@@ -134,6 +135,12 @@ function meaningfulSection(value: string | null | undefined): string {
   if (/^(not provided\.?|none\.?|n\/a)$/i.test(trimmed)) return "";
   if (/^\{\{[^}]+\}\}$/.test(trimmed)) return "";
   return trimmed;
+}
+
+function renderGateFindings(gate: GateRow): string {
+  const findings = gate.findings.trim() || `- **Verdict:** ${gate.verdict}\n- **Rationale:** ${gate.rationale}`;
+  if (gate.verdict !== "flag") return findings;
+  return `> **Warning:** Verdict: flag - concerns recorded below\n\n${findings}`;
 }
 
 function pushIndented(lines: string[], value: string, indent = "  "): void {
@@ -356,7 +363,7 @@ function renderTaskPlanMarkdown(task: TaskRow, taskGates: GateRow[] = []): strin
     if (gate && gate.verdict !== "omitted") {
       lines.push(`## ${label}`);
       lines.push("");
-      lines.push(gate.findings.trim() || `- **Verdict:** ${gate.verdict}\n- **Rationale:** ${gate.rationale}`);
+      lines.push(renderGateFindings(gate));
       lines.push("");
     }
   }
@@ -390,7 +397,7 @@ function renderSlicePlanMarkdown(slice: SliceRow, tasks: TaskRow[], gates: GateR
   if (q3 && q3.verdict !== "omitted") {
     lines.push("## Threat Surface");
     lines.push("");
-    lines.push(q3.findings.trim() || `- **Verdict:** ${q3.verdict}\n- **Rationale:** ${q3.rationale}`);
+    lines.push(renderGateFindings(q3));
     lines.push("");
   }
 
@@ -398,7 +405,7 @@ function renderSlicePlanMarkdown(slice: SliceRow, tasks: TaskRow[], gates: GateR
   if (q4 && q4.verdict !== "omitted") {
     lines.push("## Requirement Impact");
     lines.push("");
-    lines.push(q4.findings.trim() || `- **Verdict:** ${q4.verdict}\n- **Rationale:** ${q4.rationale}`);
+    lines.push(renderGateFindings(q4));
     lines.push("");
   }
 
@@ -876,6 +883,17 @@ export async function renderAllFromDb(basePath: string): Promise<RenderAllResult
   const result: RenderAllResult = { rendered: 0, skipped: 0, errors: [] };
   const milestones = getAllMilestones();
 
+  // Pre-fetch slices once per milestone and batch-load all tasks in one query
+  // family, avoiding an N+1 (previously one task query per slice).
+  const slicesByMilestone = new Map<string, SliceRow[]>();
+  const slicePairs: Array<{ milestoneId: string; sliceId: string }> = [];
+  for (const milestone of milestones) {
+    const slices = getMilestoneSlices(milestone.id);
+    slicesByMilestone.set(milestone.id, slices);
+    for (const slice of slices) slicePairs.push({ milestoneId: milestone.id, sliceId: slice.id });
+  }
+  const tasksBySlice = getTasksBySliceIds(slicePairs);
+
   for (const milestone of milestones) {
     // Render roadmap checkboxes
     try {
@@ -894,8 +912,8 @@ export async function renderAllFromDb(basePath: string): Promise<RenderAllResult
       result.errors.push(`milestone artifacts ${milestone.id}: ${(err as Error).message}`);
     }
 
-    // Iterate slices
-    const slices = getMilestoneSlices(milestone.id);
+    // Iterate slices (pre-fetched above)
+    const slices = slicesByMilestone.get(milestone.id) ?? [];
     for (const slice of slices) {
       // Preserve slice-scoped artifacts imported from disk, including real PLAN
       // fallback content when task rows cannot regenerate it.
@@ -931,8 +949,8 @@ export async function renderAllFromDb(basePath: string): Promise<RenderAllResult
         );
       }
 
-      // Iterate tasks
-      const tasks = getSliceTasks(milestone.id, slice.id);
+      // Iterate tasks (batched above)
+      const tasks = tasksBySlice.get(`${milestone.id}\0${slice.id}`) ?? [];
       for (const task of tasks) {
         try {
           const ok = await renderTaskSummary(

@@ -10,10 +10,15 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join, dirname, extname } from "node:path";
+import { join, dirname, extname, relative, sep } from "node:path";
 
 import { execSync } from "node:child_process";
 import { gsdRoot } from "./paths.js";
+import {
+  createRepositoryRegistryFromPreferences,
+  type RepositoryRegistry,
+} from "./repository-registry.js";
+import { loadEffectiveGSDPreferences } from "./preferences.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -28,6 +33,8 @@ export interface CodebaseMapMetadata {
   fingerprint: string;
   fileCount: number;
   truncated: boolean;
+  /** Repo ids whose files appear in a workspace-aware map (parent mode only). */
+  repositories?: string[];
 }
 
 export interface EnsureCodebaseMapOptions {
@@ -48,12 +55,16 @@ export interface EnsureCodebaseMapResult {
 interface FileEntry {
   path: string;
   description: string;
+  /** Declaring repo id for workspace-aware maps (parent mode); undefined otherwise. */
+  repo?: string;
 }
 
 interface DirectoryGroup {
   path: string;
   files: FileEntry[];
   collapsed: boolean;
+  /** Repo id this group belongs to for workspace-aware maps; undefined otherwise. */
+  repo?: string;
 }
 
 interface ResolvedCodebaseMapOptions {
@@ -66,6 +77,8 @@ interface ResolvedCodebaseMapOptions {
 interface EnumeratedFiles {
   files: string[];
   truncated: boolean;
+  /** Per-file repo labels aligned with `files` (workspace-aware maps only). */
+  repos?: string[];
 }
 
 // ─── Defaults ────────────────────────────────────────────────────────────────
@@ -209,11 +222,97 @@ function lsFiles(basePath: string): string[] {
  * Enumerate tracked files, applying exclusions and the maxFiles cap.
  * Returns both the file list and whether truncation occurred.
  */
-function enumerateFiles(basePath: string, excludes: string[], maxFiles: number): { files: string[]; truncated: boolean } {
+function enumerateFiles(basePath: string, excludes: string[], maxFiles: number): EnumeratedFiles {
   const allFiles = lsFiles(basePath);
   const filtered = allFiles.filter((f) => !shouldExclude(f, excludes));
   const truncated = filtered.length > maxFiles;
   return { files: truncated ? filtered.slice(0, maxFiles) : filtered, truncated };
+}
+
+/**
+ * Build a workspace-aware registry for parent mode, or null when the project is
+ * single-repo (no declared child repositories). Returns null so the caller falls
+ * back to the legacy single-root enumeration and produces byte-identical output.
+ */
+function loadWorkspaceRegistry(basePath: string): RepositoryRegistry | null {
+  const preferences = loadEffectiveGSDPreferences(basePath)?.preferences;
+  const workspace = preferences?.workspace;
+  const mode = workspace?.mode ?? "project";
+  // Parent mode is only meaningful with at least one declared child repo; the
+  // implicit "project" repo is always present, so require a declared non-project id.
+  const hasDeclaredChildRepo = workspace?.repositories
+    ? Object.keys(workspace.repositories).some((id) => id !== "project")
+    : false;
+  if (mode !== "parent" || !hasDeclaredChildRepo) {
+    return null;
+  }
+  return createRepositoryRegistryFromPreferences(basePath, preferences);
+}
+
+/** Stable key fragment for workspace-aware enumeration inputs (mode + declared repos). */
+function workspaceEnumerationSignature(basePath: string): string {
+  const registry = loadWorkspaceRegistry(basePath);
+  if (!registry) return "single-root";
+  return JSON.stringify({
+    mode: registry.mode,
+    repositories: registry.repositories
+      .map((repo) => ({ id: repo.id, root: repo.root }))
+      .sort((a, b) => a.id.localeCompare(b.id)),
+  });
+}
+
+/**
+ * Enumerate tracked files across every declared repository in a parent workspace.
+ * Child-repo paths are rewritten to be workspace-relative (e.g. `frontend/src/x`)
+ * and tagged with their declaring repo id so the map can render repo-labelled
+ * sections. The maxFiles cap is applied across the union of all repositories.
+ */
+function enumerateWorkspaceFiles(
+  registry: RepositoryRegistry,
+  excludes: string[],
+  maxFiles: number,
+): EnumeratedFiles {
+  type WorkspaceEntry = { workspacePath: string; repoId: string };
+  const perRepo: WorkspaceEntry[][] = [];
+  const seen = new Set<string>();
+  let totalEligible = 0;
+
+  for (const repo of registry.repositories) {
+    const rawFiles = lsFiles(repo.root);
+    const repoPrefix = relative(registry.projectRoot, repo.root).split(sep).join("/");
+    const repoEntries: WorkspaceEntry[] = [];
+
+    for (const file of rawFiles) {
+      // Rewrite before exclusion so workspace-relative patterns (e.g. frontend/…) apply.
+      const workspacePath = repoPrefix ? `${repoPrefix}/${file}` : file;
+      if (shouldExclude(workspacePath, excludes)) continue;
+      if (seen.has(workspacePath)) continue;
+      seen.add(workspacePath);
+      totalEligible++;
+      repoEntries.push({ workspacePath, repoId: repo.id });
+    }
+    perRepo.push(repoEntries);
+  }
+
+  const files: string[] = [];
+  const repos: string[] = [];
+  const indices = new Array(perRepo.length).fill(0);
+
+  while (files.length < maxFiles) {
+    let progressed = false;
+    for (let i = 0; i < perRepo.length; i++) {
+      if (indices[i] < perRepo[i].length) {
+        const entry = perRepo[i][indices[i]++];
+        files.push(entry.workspacePath);
+        repos.push(entry.repoId);
+        progressed = true;
+        if (files.length >= maxFiles) break;
+      }
+    }
+    if (!progressed) break;
+  }
+
+  return { files, repos, truncated: totalEligible > files.length };
 }
 
 function resolveGeneratorOptions(options?: CodebaseMapOptions): ResolvedCodebaseMapOptions {
@@ -236,10 +335,12 @@ function computeCodebaseFingerprint(
   files: string[],
   resolved: ResolvedCodebaseMapOptions,
   truncated: boolean,
+  repos?: string[],
 ): string {
   return createHash("sha1")
     .update(JSON.stringify({
       files,
+      ...(repos ? { repos } : {}),
       truncated,
       optionSignature: resolved.optionSignature,
     }))
@@ -252,32 +353,61 @@ function groupByDirectory(
   files: string[],
   descriptions: Map<string, string>,
   collapseThreshold: number,
+  repos?: string[],
 ): DirectoryGroup[] {
   const dirMap = new Map<string, FileEntry[]>();
 
-  for (const file of files) {
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
     const dir = dirname(file);
-    const dirKey = dir === "." ? "" : dir;
-    if (!dirMap.has(dirKey)) {
-      dirMap.set(dirKey, []);
+    const dirPath = dir === "." ? "" : dir;
+    const repoId = repos?.[i];
+    const groupKey = repoId !== undefined ? `${repoId}\0${dirPath}` : dirPath;
+    if (!dirMap.has(groupKey)) {
+      dirMap.set(groupKey, []);
     }
-    dirMap.get(dirKey)!.push({
+    dirMap.get(groupKey)!.push({
       path: file,
       description: descriptions.get(file) ?? "",
+      repo: repoId,
     });
   }
 
   const groups: DirectoryGroup[] = [];
-  const sortedDirs = [...dirMap.keys()].sort();
+  const repoOrder = new Map<string, number>();
+  if (repos) {
+    for (let i = 0; i < repos.length; i++) {
+      if (!repoOrder.has(repos[i])) {
+        repoOrder.set(repos[i], repoOrder.size);
+      }
+    }
+  }
+  const sortedDirs = [...dirMap.keys()].sort((a, b) => {
+    // Single-repo (project) mode must stay byte-identical to the pre-workspace
+    // output, which ordered directories with a bare `.sort()` (UTF-16 code-unit
+    // order, so uppercase sorts before lowercase). localeCompare would diverge
+    // for mixed-case names (e.g. "Zoo" before "apple" flips), so preserve
+    // code-unit ordering here; only the repo-partitioning key is added on top.
+    if (!repos) return a < b ? -1 : a > b ? 1 : 0;
+    const repoA = dirMap.get(a)![0]?.repo ?? "";
+    const repoB = dirMap.get(b)![0]?.repo ?? "";
+    const orderA = repoOrder.get(repoA) ?? 0;
+    const orderB = repoOrder.get(repoB) ?? 0;
+    if (orderA !== orderB) return orderA - orderB;
+    return a.localeCompare(b);
+  });
 
-  for (const dir of sortedDirs) {
-    const dirFiles = dirMap.get(dir)!;
+  for (const groupKey of sortedDirs) {
+    const dirFiles = dirMap.get(groupKey)!;
     dirFiles.sort((a, b) => a.path.localeCompare(b.path));
+    const dirPath = repos ? groupKey.slice(groupKey.indexOf("\0") + 1) : groupKey;
 
     groups.push({
-      path: dir,
+      path: dirPath,
       files: dirFiles,
       collapsed: dirFiles.length > collapseThreshold,
+      // Each group is scoped to one repo in workspace-aware mode.
+      repo: dirFiles[0]?.repo,
     });
   }
 
@@ -304,7 +434,19 @@ function renderCodebaseMap(
   }
   lines.push("");
 
+  let emittedRepo: string | undefined;
   for (const group of groups) {
+    // In a workspace-aware map, partition directories under their declaring
+    // repository. `## [repo-id]` headings are used (not `###`) so they never
+    // collide with the per-directory `### <dir>/` headings or the
+    // `parseCodebaseMap` list-item regexes. Groups are sorted by declaring
+    // repo (enumeration order) then directory path so each repo is contiguous.
+    if (group.repo && group.repo !== emittedRepo) {
+      emittedRepo = group.repo;
+      lines.push(`## [${group.repo}]`);
+      lines.push("");
+    }
+
     const heading = group.path || "(root)";
     lines.push(`### ${heading}/`);
 
@@ -361,13 +503,15 @@ function buildCodebaseMap(
 } {
   const listed = enumerated ?? enumerateFiles(basePath, resolved.excludes, resolved.maxFiles);
   const descriptions = existingDescriptions ?? new Map<string, string>();
-  const groups = groupByDirectory(listed.files, descriptions, resolved.collapseThreshold);
+  const groups = groupByDirectory(listed.files, descriptions, resolved.collapseThreshold, listed.repos);
   const generatedAt = new Date().toISOString().split(".")[0] + "Z";
+  const repoIds = listed.repos ? Array.from(new Set(listed.repos)) : undefined;
   const metadata: CodebaseMapMetadata = {
     generatedAt,
-    fingerprint: computeCodebaseFingerprint(listed.files, resolved, listed.truncated),
+    fingerprint: computeCodebaseFingerprint(listed.files, resolved, listed.truncated, listed.repos),
     fileCount: listed.files.length,
     truncated: listed.truncated,
+    ...(repoIds ? { repositories: repoIds } : {}),
   };
   const content = renderCodebaseMap(groups, listed.files.length, listed.truncated, metadata);
 
@@ -387,13 +531,28 @@ function buildCodebaseMap(
  * Generate a fresh CODEBASE.md from scratch.
  * Preserves existing descriptions if `existingDescriptions` is provided.
  */
+/**
+ * Resolve workspace-aware enumeration for parent mode, or undefined to fall
+ * back to the legacy single-root enumeration. Centralized so all three public
+ * entry points (generate/update/ensure) share one discovery path.
+ */
+function resolveWorkspaceEnumeration(
+  basePath: string,
+  resolved: ResolvedCodebaseMapOptions,
+): EnumeratedFiles | undefined {
+  const registry = loadWorkspaceRegistry(basePath);
+  if (!registry) return undefined;
+  return enumerateWorkspaceFiles(registry, resolved.excludes, resolved.maxFiles);
+}
+
 export function generateCodebaseMap(
   basePath: string,
   options?: CodebaseMapOptions,
   existingDescriptions?: Map<string, string>,
 ): { content: string; fileCount: number; truncated: boolean; files: string[]; fingerprint: string; generatedAt: string } {
   const resolved = resolveGeneratorOptions(options);
-  return buildCodebaseMap(basePath, resolved, existingDescriptions);
+  const enumerated = resolveWorkspaceEnumeration(basePath, resolved);
+  return buildCodebaseMap(basePath, resolved, existingDescriptions, enumerated);
 }
 
 /**
@@ -427,7 +586,8 @@ export function updateCodebaseMap(
 
   // Generate new map preserving descriptions — reuse the returned file list
   // to avoid a second enumeration (prevents race between content and stats).
-  const result = buildCodebaseMap(basePath, resolved, existingDescriptions);
+  const enumerated = resolveWorkspaceEnumeration(basePath, resolved);
+  const result = buildCodebaseMap(basePath, resolved, existingDescriptions, enumerated);
   const currentSet = new Set(result.files);
 
   // Count changes
@@ -467,7 +627,7 @@ export function ensureCodebaseMapFresh(
   ensureOptions?: EnsureCodebaseMapOptions,
 ): EnsureCodebaseMapResult {
   const resolved = resolveGeneratorOptions(options);
-  const cacheKey = `${basePath}::${resolved.optionSignature}`;
+  const cacheKey = `${basePath}::${resolved.optionSignature}::${workspaceEnumerationSignature(basePath)}`;
   const ttlMs = ensureOptions?.ttlMs ?? DEFAULT_REFRESH_TTL_MS;
   const force = ensureOptions?.force === true;
   const now = Date.now();
@@ -481,8 +641,9 @@ export function ensureCodebaseMapFresh(
   }
 
   const existing = readCodebaseMap(basePath);
-  const listed = enumerateFiles(basePath, resolved.excludes, resolved.maxFiles);
-  const fingerprint = computeCodebaseFingerprint(listed.files, resolved, listed.truncated);
+  const listed = resolveWorkspaceEnumeration(basePath, resolved)
+    ?? enumerateFiles(basePath, resolved.excludes, resolved.maxFiles);
+  const fingerprint = computeCodebaseFingerprint(listed.files, resolved, listed.truncated, listed.repos);
 
   const cacheAndReturn = (result: EnsureCodebaseMapResult): EnsureCodebaseMapResult => {
     freshnessCache.set(cacheKey, { checkedAt: now, result });

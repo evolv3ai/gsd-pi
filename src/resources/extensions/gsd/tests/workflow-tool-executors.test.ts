@@ -12,6 +12,7 @@ import {
   getArtifact,
   getAssessment,
   insertAssessment,
+  insertGateRow,
   insertMilestone,
   upsertRequirement,
   getAllMilestones,
@@ -21,6 +22,7 @@ import { claimMilestoneLease, getMilestoneLease } from "../db/milestone-leases.t
 import { deriveState, invalidateStateCache } from "../state.ts";
 import { autoSession } from "../auto-runtime-state.ts";
 import { normalizeRealPath } from "../paths.ts";
+import { recordUnitHarnessAbort } from "../unit-runtime.ts";
 import { markApprovalGateVerified, markDepthVerified, clearDiscussionFlowState, loadWriteGateSnapshot, setPendingGate } from "../bootstrap/write-gate.ts";
 import {
   executeCompleteMilestone,
@@ -37,6 +39,11 @@ import {
   executeValidateMilestone,
   executeUatResultSave,
 } from "../tools/workflow-tool-executors.ts";
+import {
+  initNotificationStore,
+  readNotifications,
+  _resetNotificationStore,
+} from "../notification-store.ts";
 
 function makeTmpBase(): string {
   const base = join(tmpdir(), `gsd-workflow-executors-${randomUUID()}`);
@@ -910,6 +917,104 @@ test("executeUatResultSave accepts gsd_uat_exec evidence written in a milestone 
   }
 });
 
+test("executeUatResultSave leaves UAT pending after a harness-aborted turn", async () => {
+  const base = makeTmpBase();
+  const worktree = join(base, ".gsd", "worktrees", "M001");
+  const worktreeExecDir = join(worktree, ".gsd", "exec");
+  const evidenceId = "harness-aborted-uat-evidence";
+  const startedAt = Date.now();
+  try {
+    openTestDb(base);
+    seedMilestone("M001", "Milestone One");
+    seedSlice("M001", "S04", "complete");
+    mkdirSync(worktreeExecDir, { recursive: true });
+    writeFileSync(
+      join(worktreeExecDir, `${evidenceId}.meta.json`),
+      JSON.stringify({
+        id: evidenceId,
+        metadata: {
+          kind: "uat_exec",
+          milestoneId: "M001",
+          sliceId: "S04",
+          checkId: "UAT-01",
+          intent: "uat-runtime-check",
+        },
+      }),
+      "utf-8",
+    );
+    _getAdapter()!.prepare(
+      `INSERT INTO quality_gates (milestone_id, slice_id, gate_id, scope, task_id, status)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run("M001", "S04", "UAT", "slice", "", "pending");
+    autoSession.reset();
+    autoSession.active = true;
+    autoSession.basePath = base;
+    autoSession.currentUnit = { type: "run-uat", id: "M001/S04", startedAt, workspaceRoot: worktree };
+    recordUnitHarnessAbort(base, "run-uat", "M001/S04", startedAt, {
+      kind: "tool-loop-guard",
+      reason: "Tool loop detected (repeated tool): browser_click called 7 times this turn.",
+      toolName: "browser_click",
+      count: 7,
+    });
+
+    const result = await inProjectDir(worktree, () => executeUatResultSave({
+      milestoneId: "M001",
+      sliceId: "S04",
+      uatType: "runtime-executable",
+      verdict: "FAIL",
+      checks: [{
+        id: "UAT-01",
+        description: "Runtime behavior could not be fully evaluated before harness abort",
+        mode: "runtime",
+        result: "FAIL",
+        evidence: [{ kind: "gsd_uat_exec", ref: evidenceId }],
+        notes: "Partial failure should be retried because the harness aborted the turn.",
+      }],
+      presentation: {
+        surface: "mcp",
+        presentedTools: [
+          "gsd_uat_exec",
+          "gsd_uat_result_save",
+          "gsd_resume",
+          "gsd_milestone_status",
+          "gsd_journal_query",
+        ],
+        blockedTools: [
+          { name: "gsd_exec", reason: "forbidden during run-uat" },
+          { name: "gsd_summary_save", reason: "forbidden during run-uat" },
+          { name: "gsd_save_gate_result", reason: "forbidden during run-uat" },
+        ],
+      },
+      notes: "Partial UAT result after harness abort.",
+    }, worktree));
+
+    assert.equal(result.isError, true);
+    assert.equal(result.details.operation, "save_uat_result");
+    assert.equal(result.details.error, "harness_aborted_needs_retry");
+    assert.equal(result.details.retryable, true);
+    assert.equal(result.details.harnessAbortKind, "tool-loop-guard");
+    assert.equal(
+      existsSync(join(base, ".gsd", "uat", "M001", "S04", "attempt-1.json")),
+      false,
+      "harness-aborted UAT should not persist an attempt artifact",
+    );
+    assert.equal(
+      existsSync(join(base, ".gsd", "phases", "01-m001", "01-04-ASSESSMENT.md")),
+      false,
+      "harness-aborted UAT should not write an ASSESSMENT verdict",
+    );
+    const row = _getAdapter()!.prepare(
+      "SELECT status, verdict FROM quality_gates WHERE milestone_id = ? AND slice_id = ? AND gate_id = ?",
+    ).get("M001", "S04", "UAT") as Record<string, unknown>;
+    assert.equal(row.status, "pending");
+    assert.equal(row.verdict, "");
+  } finally {
+    autoSession.reset();
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
 test("executeUatResultSave supplies canonical presentation and normalizes verdict casing", async () => {
   const base = makeTmpBase();
   const worktree = join(base, ".gsd", "worktrees", "M001");
@@ -1100,13 +1205,14 @@ test("executeUatResultSave merges canonical plan ID and read-only tools when pre
   }
 });
 
-test("executeUatResultSave surfaces the worktree validation path for NEEDS-HUMAN checks", async () => {
+test("executeUatResultSave surfaces the worktree validation path and notification for NEEDS-HUMAN checks", async () => {
   const base = makeTmpBase();
   const worktree = join(base, ".gsd", "worktrees", "M001");
   const worktreeExecDir = join(worktree, ".gsd", "exec");
   const evidenceId = "uat-human-validation-evidence";
   try {
     openTestDb(base);
+    initNotificationStore(base);
     seedMilestone("M001", "Milestone One");
     seedSlice("M001", "S07", "complete");
     mkdirSync(worktreeExecDir, { recursive: true });
@@ -1166,7 +1272,17 @@ test("executeUatResultSave surfaces the worktree validation path for NEEDS-HUMAN
     assert.match(assessment, /## Manual Validation/);
     assert.ok(assessment.includes(worktree), "assessment should include the worktree checkout path");
     assert.match(assessment, /git worktree/);
+
+    const notifications = readNotifications(base, { kind: "uat-needs-human", scope: "M001/S07" });
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0].severity, "warning");
+    assert.equal(notifications[0].source, "notify");
+    assert.equal(
+      notifications[0].message,
+      "UAT for M001/S07 has NEEDS-HUMAN checks awaiting human validation",
+    );
   } finally {
+    _resetNotificationStore();
     closeDatabase();
     cleanup(base);
   }
@@ -1752,6 +1868,97 @@ test("executeSaveGateResult validates inputs and persists verdicts", async () =>
     const planPath = join(base, ".gsd", "phases", "05-milestone-five", "05-05-PLAN.md");
     assert.match(readFileSync(planPath, "utf-8"), /No issues found\./);
   } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executeSaveGateResult leaves quality gates pending after a retryable tool error", async () => {
+  const base = makeTmpBase();
+  const startedAt = Date.now();
+  try {
+    openTestDb(base);
+    seedMilestone("M005", "Milestone Five");
+    seedSlice("M005", "S05", "pending");
+    insertGateRow({ milestoneId: "M005", sliceId: "S05", gateId: "Q3", scope: "slice" });
+    autoSession.reset();
+    autoSession.active = true;
+    autoSession.basePath = base;
+    autoSession.currentUnit = { type: "plan-slice", id: "M005/S05", startedAt };
+    recordUnitHarnessAbort(base, "plan-slice", "M005/S05", startedAt, {
+      kind: "tool-error",
+      reason: "Input validation error: selector is required",
+      toolName: "browser_click",
+    });
+
+    const result = await inProjectDir(base, () => executeSaveGateResult({
+      milestoneId: "M005",
+      sliceId: "S05",
+      gateId: "Q3",
+      verdict: "flag",
+      rationale: "Partial gate failure after harness abort.",
+      findings: "This should not be persisted as a product-quality finding.",
+    }, base));
+
+    assert.equal(result.isError, true);
+    assert.equal(result.details.operation, "save_gate_result");
+    assert.equal(result.details.error, "harness_aborted_needs_retry");
+    assert.equal(result.details.retryable, true);
+    assert.equal(result.details.harnessAbortKind, "tool-error");
+    const row = _getAdapter()!.prepare(
+      "SELECT status, verdict, rationale, findings FROM quality_gates WHERE milestone_id = ? AND slice_id = ? AND gate_id = ? AND task_id = ''",
+    ).get("M005", "S05", "Q3") as Record<string, unknown>;
+    assert.equal(row.status, "pending");
+    assert.equal(row.verdict, "");
+    assert.equal(row.rationale, "");
+    assert.equal(row.findings, "");
+  } finally {
+    autoSession.reset();
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executeSaveGateResult leaves quality gates pending after a turn abort", async () => {
+  const base = makeTmpBase();
+  const startedAt = Date.now();
+  try {
+    openTestDb(base);
+    seedMilestone("M005", "Milestone Five");
+    seedSlice("M005", "S05", "pending");
+    insertGateRow({ milestoneId: "M005", sliceId: "S05", gateId: "Q3", scope: "slice" });
+    autoSession.reset();
+    autoSession.active = true;
+    autoSession.basePath = base;
+    autoSession.currentUnit = { type: "plan-slice", id: "M005/S05", startedAt };
+    recordUnitHarnessAbort(base, "plan-slice", "M005/S05", startedAt, {
+      kind: "turn-abort",
+      reason: "Agent turn aborted before the gate evaluation completed. origin=timeout stopReason=aborted",
+    });
+
+    const result = await inProjectDir(base, () => executeSaveGateResult({
+      milestoneId: "M005",
+      sliceId: "S05",
+      gateId: "Q3",
+      verdict: "flag",
+      rationale: "Partial gate failure after a turn abort.",
+      findings: "This should not be persisted as a product-quality finding.",
+    }, base));
+
+    assert.equal(result.isError, true);
+    assert.equal(result.details.operation, "save_gate_result");
+    assert.equal(result.details.error, "harness_aborted_needs_retry");
+    assert.equal(result.details.retryable, true);
+    assert.equal(result.details.harnessAbortKind, "turn-abort");
+    const row = _getAdapter()!.prepare(
+      "SELECT status, verdict, rationale, findings FROM quality_gates WHERE milestone_id = ? AND slice_id = ? AND gate_id = ? AND task_id = ''",
+    ).get("M005", "S05", "Q3") as Record<string, unknown>;
+    assert.equal(row.status, "pending");
+    assert.equal(row.verdict, "");
+    assert.equal(row.rationale, "");
+    assert.equal(row.findings, "");
+  } finally {
+    autoSession.reset();
     closeDatabase();
     cleanup(base);
   }

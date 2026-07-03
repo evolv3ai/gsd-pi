@@ -535,6 +535,78 @@ export function updateTaskStatus(milestoneId: string, sliceId: string, taskId: s
   applyStatusTransition({ entity: "task", milestoneId, sliceId, taskId, status, completedAt });
 }
 
+export function repairTaskCompletionFromSummary(t: {
+  milestoneId: string;
+  sliceId: string;
+  taskId: string;
+  title?: string;
+  oneLiner?: string;
+  narrative?: string;
+  verificationResult: string;
+  duration?: string;
+  completedAt: string;
+  blockerDiscovered?: boolean;
+  deviations?: string;
+  knownIssues?: string;
+  keyFiles?: string[];
+  keyDecisions?: string[];
+  fullSummaryMd: string;
+}): void {
+  const db = getDbOrNull();
+  if (!db) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  transaction(() => {
+    const seq = db.prepare(
+      `SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence
+       FROM tasks
+       WHERE milestone_id = :mid AND slice_id = :sid`,
+    ).get({ ":mid": t.milestoneId, ":sid": t.sliceId }) as { next_sequence?: number } | undefined;
+    db.prepare(
+      `INSERT INTO tasks (
+        milestone_id, slice_id, id, title, status, one_liner, narrative,
+        verification_result, duration, completed_at, blocker_discovered,
+        deviations, known_issues, key_files, key_decisions, full_summary_md,
+        sequence
+      ) VALUES (
+        :milestone_id, :slice_id, :id, :title, 'complete', :one_liner, :narrative,
+        :verification_result, :duration, :completed_at, :blocker_discovered,
+        :deviations, :known_issues, :key_files, :key_decisions, :full_summary_md,
+        :sequence
+      )
+      ON CONFLICT(milestone_id, slice_id, id) DO UPDATE SET
+        title = CASE WHEN NULLIF(:title, '') IS NOT NULL THEN :title ELSE tasks.title END,
+        status = 'complete',
+        one_liner = CASE WHEN NULLIF(:one_liner, '') IS NOT NULL THEN :one_liner ELSE tasks.one_liner END,
+        narrative = CASE WHEN NULLIF(:narrative, '') IS NOT NULL THEN :narrative ELSE tasks.narrative END,
+        verification_result = :verification_result,
+        duration = CASE WHEN NULLIF(:duration, '') IS NOT NULL THEN :duration ELSE tasks.duration END,
+        completed_at = :completed_at,
+        blocker_discovered = :blocker_discovered,
+        deviations = CASE WHEN NULLIF(:deviations, '') IS NOT NULL THEN :deviations ELSE tasks.deviations END,
+        known_issues = CASE WHEN NULLIF(:known_issues, '') IS NOT NULL THEN :known_issues ELSE tasks.known_issues END,
+        key_files = :key_files,
+        key_decisions = :key_decisions,
+        full_summary_md = :full_summary_md`,
+    ).run({
+      ":milestone_id": t.milestoneId,
+      ":slice_id": t.sliceId,
+      ":id": t.taskId,
+      ":title": t.title ?? "",
+      ":one_liner": t.oneLiner ?? "",
+      ":narrative": t.narrative ?? "",
+      ":verification_result": t.verificationResult,
+      ":duration": t.duration ?? "",
+      ":completed_at": t.completedAt,
+      ":blocker_discovered": t.blockerDiscovered ? 1 : 0,
+      ":deviations": t.deviations ?? "",
+      ":known_issues": t.knownIssues ?? "",
+      ":key_files": JSON.stringify(t.keyFiles ?? []),
+      ":key_decisions": JSON.stringify(t.keyDecisions ?? []),
+      ":full_summary_md": t.fullSummaryMd,
+      ":sequence": seq?.next_sequence ?? 1,
+    });
+  });
+}
+
 export function setTaskBlockerDiscovered(milestoneId: string, sliceId: string, taskId: string, discovered: boolean): void {
   if (!getDbOrNull()!) return;
   getDbOrNull()!.prepare(

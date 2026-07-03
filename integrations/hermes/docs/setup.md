@@ -79,6 +79,7 @@ gsd:
   default_project: ~/code/myapp         # optional fallback
   poll_interval_seconds: 12
   cache_ttl_seconds: 45
+  mcp_read_timeout_seconds: 60          # per-response MCP read timeout
   notification_level: normal            # quiet | normal | verbose
   bindings:
     slack:
@@ -88,6 +89,8 @@ gsd:
 ```
 
 **Binding tiers (first match wins):** cron explicit → slash argument → `/gsd bind` session binding → channel map → `default_project` → cwd heuristic.
+
+**MCP read timeout:** `gsd.mcp_read_timeout_seconds` defaults to `60` seconds and bounds each response read from the `gsd-mcp-server` sidecar. Increase it for very slow projects, machines, or network-backed filesystems where Hermes reports MCP response timeouts but the same GSD command eventually completes locally; lower it only when you prefer faster failure detection. When the timeout fires, the plugin terminates the stuck sidecar and the next project-scoped call starts a fresh server in the bound project directory.
 
 **Credentials:** With `credential_source: gsd`, ensure GSD’s normal provider keys are configured (`~/.gsd/` or env). Hermes passthrough (`credential_source: hermes`) is 6b+.
 
@@ -224,6 +227,7 @@ Verify on **one** platform (Slack or Telegram):
 | `GsdVersionError` on start | `gsd` outside semver range | Set `gsd_version_min` in `gsd.yaml` or upgrade gsd |
 | MCP spawn fails | Wrong `mcp_server_path` | `which gsd-mcp-server`; set absolute path |
 | `/gsd status` hangs | MCP sidecar stuck | Check `GSD_CLI_PATH`; restart gateway; kill orphaned `gsd-mcp-server` |
+| MCP response times out after 60s | Slow project or filesystem, or wedged sidecar | Confirm the command locally; tune `mcp_read_timeout_seconds` if it completes after 60s |
 | No push notifications | Invalid session key / target | Key must match `agent:main:{platform}:{chat_type}:{chat_id}`; check Hermes gateway logs |
 | Notifications in CLI but not Slack | `DeliveryTarget.from_session_key` returned None | Run checklist in **gateway** mode, not CLI-only |
 | Cancel ignored | Stale session id | `/gsd cancel` uses `gsd_cancel_by_project` fallback when no session id |

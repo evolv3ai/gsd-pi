@@ -49,6 +49,24 @@ test("recoverFailedMigration returns false when both .gsd and .gsd.migrating exi
   assert.ok(existsSync(join(base, ".gsd.migrating")), ".gsd.migrating must still exist");
 });
 
+test("recoverFailedMigration removes orphan when .gsd is a real intact directory", (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-migrating-real-orphan-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const localGsd = join(base, ".gsd");
+  mkdirSync(join(localGsd, "phases"), { recursive: true });
+  mkdirSync(join(localGsd, "activity"), { recursive: true });
+  writeFileSync(join(localGsd, "STATE.md"), "# State\n", "utf-8");
+  writeFileSync(join(localGsd, "gsd.db"), "not empty\n", "utf-8");
+  mkdirSync(join(base, ".gsd.migrating"), { recursive: true });
+
+  const recovered = recoverFailedMigration(base);
+
+  assert.equal(recovered, true, "expected orphan cleanup to succeed");
+  assert.ok(existsSync(localGsd), ".gsd real directory must remain");
+  assert.ok(!existsSync(join(base, ".gsd.migrating")), ".gsd.migrating orphan must be removed");
+});
+
 test("recoverFailedMigration removes orphan when .gsd is an intact external-state junction", (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-migrating-orphan-"));
   const stateDir = mkdtempSync(join(tmpdir(), "gsd-migrating-state-"));

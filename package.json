@@ -1,6 +1,6 @@
 {
   "name": "@opengsd/gsd-pi",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "GSD Pi local-first coding agent",
   "license": "MIT",
   "repository": {
@@ -77,7 +77,7 @@
     "baseline:refactor:phase0": "pnpm run baseline:refactor:gate && node --import ./src/resources/extensions/gsd/tests/resolve-ts.mjs --experimental-strip-types --test src/resources/extensions/gsd/tests/derive-state-db.test.ts src/resources/extensions/gsd/tests/single-writer-invariant.test.ts src/resources/extensions/gsd/tests/auto-recovery.test.ts src/resources/extensions/gsd/tests/auto-worktree-registry.test.ts",
     "legacy:cleanup:gate": "node scripts/legacy-cleanup-gate.mjs",
     "legacy:cleanup:evidence": "node scripts/legacy-cleanup-evidence.mjs",
-    "test:unit:compiled": "node --import ./scripts/dist-test-resolve.mjs --experimental-test-isolation=process --test-reporter=./scripts/test-reporter-compact.mjs --test \"dist-test/src/tests/*.test.js\" \"dist-test/src/resources/extensions/gsd/tests/*.test.js\" \"dist-test/src/resources/extensions/gsd/tests/*.test.mjs\" \"dist-test/src/resources/extensions/shared/tests/*.test.js\" \"dist-test/src/resources/extensions/subagent/tests/*.test.js\" \"dist-test/src/resources/extensions/claude-code-cli/tests/*.test.js\" \"dist-test/src/resources/extensions/github-sync/tests/*.test.js\" \"dist-test/src/resources/extensions/universal-config/tests/*.test.js\" \"dist-test/src/resources/extensions/visual-brief/tests/*.test.js\" \"dist-test/src/resources/extensions/voice/tests/*.test.js\" \"dist-test/src/resources/extensions/mcp-client/tests/*.test.js\" \"dist-test/src/resources/extensions/remote-questions/tests/*.test.js\" \"dist-test/src/resources/extensions/planf3-gsd/parser/*.test.js\" \"dist-test/src/resources/extensions/planf3-gsd/export/*.test.js\" \"dist-test/src/resources/extensions/planf3-gsd/gsd/*.test.js\" \"dist-test/src/resources/extensions/planf3-gsd/commands/*.test.js\"",
+    "test:unit:compiled": "node --import ./scripts/dist-test-resolve.mjs --experimental-test-isolation=process --test-reporter=./scripts/test-reporter-compact.mjs --test \"dist-test/src/tests/*.test.js\" \"dist-test/src/resources/extensions/gsd/tests/*.test.js\" \"dist-test/src/resources/extensions/gsd/tests/*.test.mjs\" \"dist-test/src/resources/extensions/shared/tests/*.test.js\" \"dist-test/src/resources/extensions/subagent/tests/*.test.js\" \"dist-test/src/resources/extensions/claude-code-cli/tests/*.test.js\" \"dist-test/src/resources/extensions/cursor-cli/tests/*.test.js\" \"dist-test/src/resources/extensions/github-sync/tests/*.test.js\" \"dist-test/src/resources/extensions/universal-config/tests/*.test.js\" \"dist-test/src/resources/extensions/visual-brief/tests/*.test.js\" \"dist-test/src/resources/extensions/voice/tests/*.test.js\" \"dist-test/src/resources/extensions/mcp-client/tests/*.test.js\" \"dist-test/src/resources/extensions/remote-questions/tests/*.test.js\" \"dist-test/src/resources/extensions/planf3-gsd/parser/*.test.js\" \"dist-test/src/resources/extensions/planf3-gsd/export/*.test.js\" \"dist-test/src/resources/extensions/planf3-gsd/gsd/*.test.js\" \"dist-test/src/resources/extensions/planf3-gsd/commands/*.test.js\"",
     "test:unit": "pnpm run test:compile && pnpm run test:unit:compiled",
     "test:changed:src": "node scripts/verify-changed-src-tests.mjs",
     "test:packages": "pnpm run test:compile && pnpm run test:packages:compiled",
@@ -123,7 +123,7 @@
     "audit:test-gaps": "node scripts/audit-test-gaps.mjs",
     "audit:test-matrix": "node scripts/audit-test-matrix.mjs",
     "test:evaluation": "node scripts/run-test-evaluation.mjs",
-    "test:coverage:unit": "cross-env NODE_OPTIONS=--max-old-space-size=8192 c8 --reporter=lcovonly --report-dir=coverage/unit --temp-directory=coverage/.tmp-unit --exclude=\"**/*.test.*\" --exclude=\"**/tests/**\" --exclude=\"**/test/**\" --all node --import ./scripts/dist-test-resolve.mjs --experimental-test-isolation=process --test \"dist-test/src/tests/*.test.js\" \"dist-test/src/resources/extensions/gsd/tests/*.test.js\" \"dist-test/src/resources/extensions/gsd/tests/*.test.mjs\" \"dist-test/src/resources/extensions/shared/tests/*.test.js\" \"dist-test/src/resources/extensions/subagent/tests/*.test.js\" \"dist-test/src/resources/extensions/claude-code-cli/tests/*.test.js\" \"dist-test/src/resources/extensions/github-sync/tests/*.test.js\" \"dist-test/src/resources/extensions/universal-config/tests/*.test.js\" \"dist-test/src/resources/extensions/visual-brief/tests/*.test.js\" \"dist-test/src/resources/extensions/voice/tests/*.test.js\" \"dist-test/src/resources/extensions/mcp-client/tests/*.test.js\" \"dist-test/src/resources/extensions/remote-questions/tests/*.test.js\"",
+    "test:coverage:unit": "cross-env NODE_OPTIONS=--max-old-space-size=8192 c8 --reporter=lcovonly --report-dir=coverage/unit --temp-directory=coverage/.tmp-unit --exclude=\"**/*.test.*\" --exclude=\"**/tests/**\" --exclude=\"**/test/**\" --all node --import ./scripts/dist-test-resolve.mjs --experimental-test-isolation=process --test \"dist-test/src/tests/*.test.js\" \"dist-test/src/resources/extensions/gsd/tests/*.test.js\" \"dist-test/src/resources/extensions/gsd/tests/*.test.mjs\" \"dist-test/src/resources/extensions/shared/tests/*.test.js\" \"dist-test/src/resources/extensions/subagent/tests/*.test.js\" \"dist-test/src/resources/extensions/claude-code-cli/tests/*.test.js\" \"dist-test/src/resources/extensions/cursor-cli/tests/*.test.js\" \"dist-test/src/resources/extensions/github-sync/tests/*.test.js\" \"dist-test/src/resources/extensions/universal-config/tests/*.test.js\" \"dist-test/src/resources/extensions/visual-brief/tests/*.test.js\" \"dist-test/src/resources/extensions/voice/tests/*.test.js\" \"dist-test/src/resources/extensions/mcp-client/tests/*.test.js\" \"dist-test/src/resources/extensions/remote-questions/tests/*.test.js\"",
     "test:coverage:integration": "pnpm exec playwright install chromium && cross-env NODE_OPTIONS=--max-old-space-size=8192 c8 --reporter=lcovonly --report-dir=coverage/integration --temp-directory=coverage/.tmp-integration --exclude=\"**/*.test.*\" --exclude=\"**/tests/**\" --all node --import ./src/resources/extensions/gsd/tests/resolve-ts.mjs --experimental-strip-types --test --test-timeout=180000 \"src/tests/integration/*.test.ts\" \"src/resources/extensions/gsd/tests/integration/*.test.ts\" \"src/resources/extensions/async-jobs/*.test.ts\" \"src/resources/extensions/ollama/**/*.test.ts\" \"src/resources/extensions/ollama/*.test.ts\" \"src/resources/extensions/search-the-web/tests/*.test.ts\" \"src/resources/extensions/bg-shell/tests/*.test.ts\" \"src/resources/extensions/slash-commands/tests/*.test.ts\" \"src/resources/extensions/browser-tools/tests/*.test.mjs\"",
     "test:coverage:packages": "node scripts/run-coverage-packages.mjs",
     "test:coverage:merge": "node scripts/merge-coverage-reports.mjs",
@@ -211,11 +211,11 @@
   },
   "optionalDependencies": {
     "@mariozechner/clipboard": "0.3.6",
-    "@opengsd/engine-darwin-arm64": "1.4.0",
-    "@opengsd/engine-darwin-x64": "1.4.0",
-    "@opengsd/engine-linux-arm64-gnu": "1.4.0",
-    "@opengsd/engine-linux-x64-gnu": "1.4.0",
-    "@opengsd/engine-win32-x64-msvc": "1.4.0",
+    "@opengsd/engine-darwin-arm64": "1.5.0",
+    "@opengsd/engine-darwin-x64": "1.5.0",
+    "@opengsd/engine-linux-arm64-gnu": "1.5.0",
+    "@opengsd/engine-linux-x64-gnu": "1.5.0",
+    "@opengsd/engine-win32-x64-msvc": "1.5.0",
     "fsevents": "~2.3.3",
     "koffi": "^2.9.0"
   },

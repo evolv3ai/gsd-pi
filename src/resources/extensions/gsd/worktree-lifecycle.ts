@@ -21,6 +21,8 @@ import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
+import type { PreflightResult, PostflightResult } from "./clean-root-preflight.js";
+
 import type { AutoSession } from "./auto/session.js";
 import { debugLog } from "./debug-logger.js";
 import { logWarning } from "./workflow-logger.js";
@@ -153,11 +155,11 @@ export interface WorktreeLifecycleDeps {
   /**
    * Milestone Merge Transaction Module runner.
    *
-   * The field name is preserved for existing test fixtures, but production
-   * wiring now supplies the named transaction wrapper rather than the raw
-   * squash-merge primitive directly.
+   * The field name describes the lifecycle seam; production wiring supplies
+   * the named transaction wrapper rather than the raw legacy
+   * auto-worktree primitive directly.
    */
-  mergeMilestoneToMain: MilestoneMergeTransactionRunner;
+  mergeMilestone: MilestoneMergeTransactionRunner;
 
   // ADR-016 phase 2 / C1 + C2 + C3 + C4 inlined the following fields as
   // direct imports — leaf primitives that did not vary across callers:
@@ -238,7 +240,106 @@ export interface StrandedMilestoneAdoptionOptions {
 
 export type ExitResult =
   | { ok: true; merged: boolean; codeFilesChanged: boolean }
-  | { ok: false; reason: "merge-conflict" | "teardown-failed"; cause?: unknown };
+  | {
+      ok: false;
+      reason:
+        | "merge-conflict"
+        | "teardown-failed"
+        | "preflight-dirty-overlap"
+        | "preflight-unmerged-conflicts"
+        | "merge-failed"
+        | "postflight-stash-restore-failed";
+      cause?: unknown;
+      postflight?: PostflightResult;
+    };
+
+export interface GuardedMilestoneMergeDeps {
+  preflightCleanRoot: (
+    basePath: string,
+    milestoneId: string,
+    notify: NotifyCtx["notify"],
+  ) => PreflightResult;
+  postflightPopStash: (
+    basePath: string,
+    milestoneId: string,
+    stashMarker: string | undefined,
+    notify: NotifyCtx["notify"],
+  ) => PostflightResult;
+}
+
+/**
+ * Optional `exitMilestone(..., { merge: true, guardedMerge })` contract for callers
+ * that need root-clean preflight and postflight stash restoration around the
+ * lifecycle-owned merge attempt. `projectRoot` is the workspace root whose
+ * user changes are protected by the supplied guard functions.
+ */
+export interface GuardedMilestoneMergeOptions extends GuardedMilestoneMergeDeps {
+  projectRoot: string;
+}
+
+type GuardedMilestoneMergeResult = ExitResult;
+
+function preflightBlockedMergeReason(
+  blockedReason: PreflightResult["blockedReason"],
+): Extract<ExitResult, { ok: false }>["reason"] {
+  if (blockedReason?.startsWith("unmerged-conflicts")) {
+    return "preflight-unmerged-conflicts";
+  }
+  return "preflight-dirty-overlap";
+}
+
+/**
+ * Run a milestone merge behind the Worktree Lifecycle seam with the root-clean
+ * stash guard that protects user changes around merge.
+ *
+ * The helper owns the invariant ordering (preflight -> merge callback ->
+ * postflight on every attempted merge path) and returns the same typed result
+ * shape as `exitMilestone`. Auto closeout remains responsible for translating
+ * that result into loop policy (pause vs. stop, visible transcript
+ * preservation, projection rebuild).
+ */
+function runGuardedMilestoneMerge(request: {
+  merge: () => ExitResult;
+  guard: GuardedMilestoneMergeOptions;
+  milestoneId: string;
+  notify: NotifyCtx["notify"];
+}): GuardedMilestoneMergeResult {
+  const { merge, guard, milestoneId, notify } = request;
+  const preflight = guard.preflightCleanRoot(guard.projectRoot, milestoneId, notify);
+  if (preflight.blocked) {
+    return {
+      ok: false,
+      reason: preflightBlockedMergeReason(preflight.blockedReason),
+    };
+  }
+
+  let mergeError: unknown = null;
+  const exitResult = merge();
+  if (!exitResult.ok) {
+    mergeError = exitResult.cause ?? new Error(`exit ${exitResult.reason}`);
+  }
+
+  let postflight: PostflightResult | undefined;
+  if (preflight.stashPushed) {
+    postflight = guard.postflightPopStash(
+      guard.projectRoot,
+      milestoneId,
+      preflight.stashMarker,
+      notify,
+    );
+  }
+
+  if (mergeError instanceof MergeConflictError) {
+    return { ok: false, reason: "merge-conflict", cause: mergeError, postflight };
+  }
+  if (mergeError) {
+    return { ok: false, reason: "merge-failed", cause: mergeError, postflight };
+  }
+  if (postflight?.needsManualRecovery) {
+    return { ok: false, reason: "postflight-stash-restore-failed", postflight };
+  }
+  return exitResult;
+}
 
 /**
  * Session-less merge entry context. Per ADR-016 phase 2 / A1 (#5616), the
@@ -1046,7 +1147,7 @@ function _mergeWorktreeModeImpl(
       };
     }
 
-    const mergeResult = deps.mergeMilestoneToMain(
+    const mergeResult = deps.mergeMilestone(
       originalBasePath,
       milestoneId,
       roadmapResolution.content,
@@ -1213,7 +1314,7 @@ function _mergeBranchModeImpl(
       };
     }
 
-    const mergeResult = deps.mergeMilestoneToMain(
+    const mergeResult = deps.mergeMilestone(
       worktreeBasePath,
       milestoneId,
       roadmapResolution.content,
@@ -1444,18 +1545,41 @@ export class WorktreeLifecycle {
    * With `opts.merge === false`, runs auto-commit and teardown without
    * merging to main.
    *
+   * When `opts.guardedMerge` is present with `opts.merge === true`, the
+   * lifecycle verb also owns the root-clean guard around the merge: preflight
+   * runs before the inner merge, postflight stash restore runs after every
+   * attempted merge path, and guard failures are returned as typed
+   * `ExitResult` reasons.
+   *
    * Returns a typed `ExitResult`. `MergeConflictError` is surfaced as
    * `{ ok: false, reason: "merge-conflict", cause }` instead of thrown,
-   * giving callers a typed branch for the expected failure path.
-   * Unexpected failures (filesystem, git permissions, etc.) are wrapped
-   * as `{ ok: false, reason: "teardown-failed", cause }` so callers always
+   * giving callers a typed branch for the expected failure path. Guarded merge
+   * failures surface as `preflight-dirty-overlap`,
+   * `preflight-unmerged-conflicts`, `merge-failed`, or
+   * `postflight-stash-restore-failed`. Unexpected failures (filesystem, git
+   * permissions, etc.) are wrapped as
+   * `{ ok: false, reason: "teardown-failed", cause }` so callers always
    * receive a discriminated union — no exceptions for any expected outcome.
    */
   exitMilestone(
     milestoneId: string,
-    opts: { merge: boolean; preserveBranch?: boolean; preserveWorktree?: boolean },
+    opts: {
+      merge: boolean;
+      preserveBranch?: boolean;
+      preserveWorktree?: boolean;
+      guardedMerge?: GuardedMilestoneMergeOptions;
+    },
     ctx: NotifyCtx,
   ): ExitResult {
+    if (opts.merge && opts.guardedMerge) {
+      return runGuardedMilestoneMerge({
+        merge: () => this.exitMilestone(milestoneId, { merge: true }, ctx),
+        guard: opts.guardedMerge,
+        milestoneId,
+        notify: ctx.notify,
+      });
+    }
+
     if (opts.merge) {
       try {
         const merged = this._mergeAndExit(milestoneId, ctx);

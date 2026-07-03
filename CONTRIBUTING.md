@@ -37,6 +37,13 @@ pnpm run build    # Build
 pnpm test         # Run tests
 ```
 
+To iterate faster, test only what you changed instead of the full suite:
+
+```bash
+pnpm run test:changed:src              # run unit tests for your modified source files
+pnpm --filter @gsd/<package> test      # run one workspace package's tests
+```
+
 If `pnpm run build` fails after running tests (e.g. `Cannot find module '@gsd/*'` errors), run `pnpm install --frozen-lockfile` first to restore workspace symlinks, then try again.
 
 ### Before pushing

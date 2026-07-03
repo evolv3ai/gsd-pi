@@ -552,6 +552,41 @@ test("discuss-milestone dispatch keeps required headless milestone tools after t
   assert.ok(!activeTools.includes("gsd_complete_milestone"));
 });
 
+test("#1157: validate-milestone dispatch surface removes generic write and bash tools", () => {
+  const result = buildMinimalAutoGsdToolSet([
+    "ask_user_questions",
+    "bash",
+    "bg_shell",
+    "edit",
+    "find",
+    "glob",
+    "grep",
+    "ls",
+    "read",
+    "subagent",
+    "write",
+    "gsd_exec",
+    "gsd_exec_search",
+    "gsd_resume",
+    "gsd_milestone_status",
+    "gsd_validate_milestone",
+    "gsd_reassess_roadmap",
+  ], "validate-milestone");
+
+  assert.ok(result.includes("read"));
+  assert.ok(result.includes("find"));
+  assert.ok(result.includes("subagent"));
+  assert.ok(result.includes("gsd_validate_milestone"));
+  assert.ok(result.includes("gsd_milestone_status"));
+  assert.ok(result.includes("gsd_exec"));
+  assert.ok(result.includes("gsd_reassess_roadmap"));
+  assert.ok(!result.includes("bash"));
+  assert.ok(!result.includes("bg_shell"));
+  assert.ok(!result.includes("write"));
+  assert.ok(!result.includes("edit"));
+  assert.ok(!result.includes("ask_user_questions"));
+});
+
 test("scopeGsdWorkflowToolsForDispatch applies and restores per-unit skill visibility", () => {
   const calls: Array<{ kind: "tools" | "skills"; value: string[] | undefined }> = [];
   let activeTools = [

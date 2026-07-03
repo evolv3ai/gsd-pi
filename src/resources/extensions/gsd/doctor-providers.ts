@@ -13,12 +13,13 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { access, readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { AuthStorage } from "@gsd/pi-coding-agent";
 import { getEnvApiKey } from "@gsd/pi-ai";
+import { isCursorAgentReadyUncached } from "../cursor-cli/readiness.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 import { getAuthPath, PROVIDER_REGISTRY, supportsBrowserOAuth, type ProviderCategory } from "./key-manager.js";
-import { homedir } from "node:os";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -49,6 +50,7 @@ const CLI_AUTH_PROVIDERS = new Set([
   "claude-code",
   "google-gemini-cli",
   "google-antigravity",
+  "cursor-agent",
 ]);
 
 /**
@@ -57,9 +59,9 @@ const CLI_AUTH_PROVIDERS = new Set([
  * e.g. GitHub Copilot subscriptions can access Claude and GPT models.
  */
 const PROVIDER_ROUTES: Record<string, string[]> = {
-  anthropic: ["github-copilot", "claude-code"],
-  openai: ["github-copilot", "openai-codex"],
-  google: ["google-antigravity", "google-gemini-cli"],
+  anthropic: ["github-copilot", "claude-code", "cursor-agent"],
+  openai: ["github-copilot", "openai-codex", "cursor-agent"],
+  google: ["google-antigravity", "google-gemini-cli", "cursor-agent"],
 };
 
 // ── Model → Provider ID mapping ───────────────────────────────────────────────
@@ -86,6 +88,7 @@ function modelToProviderId(model: string): string | null {
       anthropic: "anthropic",
       openai: "openai",
       "github-copilot": "github-copilot",
+      "cursor-agent": "cursor-agent",
     };
     if (prefixMap[prefix]) return prefixMap[prefix];
     return rawPrefix;
@@ -95,6 +98,7 @@ function modelToProviderId(model: string): string | null {
   if (lower.startsWith("claude"))        return "anthropic";
   if (lower.startsWith("gpt-") || lower.startsWith("o1") || lower.startsWith("o3")) return "openai";
   if (lower.startsWith("gemini"))        return "google";
+  if (lower.startsWith("composer"))      return "cursor-agent";
   if (lower.startsWith("llama") || lower.startsWith("mixtral")) return "groq";
   if (lower.startsWith("grok"))          return "xai";
   if (lower.startsWith("mistral") || lower.startsWith("codestral")) return "mistral";
@@ -160,11 +164,13 @@ const CLI_BINARY_MAP: Record<string, string[]> = {
   "claude-code": ["claude", "claude-code"],
   "google-gemini-cli": ["gemini"],
   "google-antigravity": ["agy"],
+  "cursor-agent": ["cursor-agent"],
 };
 
 const CLI_AUTH_PATH_CHECK_PROVIDERS = new Set([
   "google-gemini-cli",
   "google-antigravity",
+  "cursor-agent",
 ]);
 
 let asyncCliBinaryPathCache: Map<string, boolean> | null = null;
@@ -210,6 +216,18 @@ function isCliBinaryInPath(providerId: string): boolean {
   const pathDirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
 
   return pathDirs.some(dir => executableNames.some(name => existsSync(join(dir, name))));
+}
+
+function isExternalCliProviderReady(providerId: string): boolean {
+  if (providerId === "cursor-agent") return isCursorAgentReadyUncached();
+  return isCliBinaryInPath(providerId);
+}
+
+function cursorAgentFailureDetail(): string {
+  if (!isCliBinaryInPath("cursor-agent")) {
+    return "Install Cursor Agent and ensure `cursor-agent` is on PATH";
+  }
+  return "Run `cursor-agent login` or set CURSOR_API_KEY";
 }
 
 async function isCliBinaryInPathAsync(providerId: string): Promise<boolean> {
@@ -345,6 +363,12 @@ function resolveKeyFromAuthOrEnv(providerId: string): KeyLookup | null {
 }
 
 function resolveKey(providerId: string): KeyLookup {
+  if (providerId === "cursor-agent") {
+    return isExternalCliProviderReady(providerId)
+      ? { found: true, source: "env", backedOff: false }
+      : { found: false, source: "none", backedOff: false };
+  }
+
   const direct = resolveKeyFromAuthOrEnv(providerId);
   if (direct) return direct;
 
@@ -354,7 +378,7 @@ function resolveKey(providerId: string): KeyLookup {
 
   // Cross-provider routes can use a local CLI when it is installed. Explicit
   // external CLI provider selections are handled in checkLlmProviders() below.
-  if (CLI_AUTH_PROVIDERS.has(providerId) && isCliBinaryInPath(providerId)) {
+  if (CLI_AUTH_PROVIDERS.has(providerId) && isExternalCliProviderReady(providerId)) {
     return { found: true, source: "env", backedOff: false };
   }
 
@@ -373,17 +397,22 @@ function checkLlmProviders(): ProviderCheckResult[] {
     if (CLI_AUTH_PROVIDERS.has(providerId)) {
       const info = PROVIDER_REGISTRY.find(p => p.id === providerId);
       const label = info?.label ?? providerId;
-      if (CLI_AUTH_PATH_CHECK_PROVIDERS.has(providerId) && !isCliBinaryInPath(providerId)) {
+      if (CLI_AUTH_PATH_CHECK_PROVIDERS.has(providerId) && !isExternalCliProviderReady(providerId)) {
         const binaries = CLI_BINARY_MAP[providerId]?.map(binary => `\`${binary}\``).join(" or ");
+        const detail = providerId === "cursor-agent"
+          ? cursorAgentFailureDetail()
+          : binaries
+          ? `Install ${label} and ensure ${binaries} is on PATH`
+          : `Install ${label} and ensure its CLI is on PATH`;
         results.push({
           name: providerId,
           label,
           category: "llm",
           status: "error",
-          message: `${label} — CLI not found`,
-          detail: binaries
-            ? `Install ${label} and ensure ${binaries} is on PATH`
-            : `Install ${label} and ensure its CLI is on PATH`,
+          message: providerId === "cursor-agent" && isCliBinaryInPath(providerId)
+            ? `${label} — CLI not authenticated`
+            : `${label} — CLI not found`,
+          detail,
           required: true,
         });
         continue;

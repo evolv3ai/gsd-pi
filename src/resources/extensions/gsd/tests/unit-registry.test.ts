@@ -7,6 +7,8 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 import {
   KNOWN_UNIT_TYPES,
@@ -15,6 +17,7 @@ import {
   SECTION_CLOSE_GATE_UNIT_TYPES,
   getUnitDescriptor,
   getUnitPhaseChain,
+  getUnitPromptTemplate,
 } from "../unit-registry.ts";
 import {
   AUTO_UNIT_SCOPED_TOOLS,
@@ -96,6 +99,37 @@ const EXPECTED_PHASE_CHAINS: Record<string, string[] | undefined> = {
   "no-such-unit": undefined,
 };
 
+const EXPECTED_DIRECT_PROMPT_TEMPLATES: Record<string, string> = {
+  "research-milestone": "research-milestone",
+  "plan-milestone": "plan-milestone",
+  "validate-milestone": "validate-milestone",
+  "complete-milestone": "complete-milestone",
+  "research-slice": "research-slice",
+  "plan-slice": "plan-slice",
+  "refine-slice": "refine-slice",
+  "replan-slice": "replan-slice",
+  "complete-slice": "complete-slice",
+  "reassess-roadmap": "reassess-roadmap",
+  "execute-task": "execute-task",
+  "reactive-execute": "reactive-execute",
+  "run-uat": "run-uat",
+  "gate-evaluate": "gate-evaluate",
+  "rewrite-docs": "rewrite-docs",
+  "workflow-preferences": "guided-workflow-preferences",
+  "discuss-project": "guided-discuss-project",
+  "discuss-requirements": "guided-discuss-requirements",
+  "research-decision": "guided-research-decision",
+  "research-project": "guided-research-project",
+};
+
+const EXPECTED_UNDECLARED_PROMPT_TEMPLATE_TYPES = [
+  "discuss-milestone",
+  "discuss-slice",
+  "execute-task-simple",
+  "triage-captures",
+  "quick-task",
+];
+
 // ─── Derived-view parity ──────────────────────────────────────────────────
 
 test("KNOWN_UNIT_TYPES derives exactly the pre-registry list, in order", () => {
@@ -130,6 +164,28 @@ test("phaseChainForUnit matches the pre-registry switch for every known input", 
       phaseChainForUnit(unitType),
       expected,
       `phase chain for ${unitType}`,
+    );
+  }
+});
+
+test("direct prompt-template associations live on the Unit Registry", () => {
+  for (const [unitType, promptTemplate] of Object.entries(EXPECTED_DIRECT_PROMPT_TEMPLATES)) {
+    assert.equal(
+      getUnitPromptTemplate(unitType),
+      promptTemplate,
+      `prompt template for ${unitType}`,
+    );
+    assert.ok(
+      existsSync(join(process.cwd(), "src/resources/extensions/gsd/prompts", `${promptTemplate}.md`)),
+      `prompt template file must exist for ${unitType}: ${promptTemplate}`,
+    );
+  }
+
+  for (const unitType of EXPECTED_UNDECLARED_PROMPT_TEMPLATE_TYPES) {
+    assert.equal(
+      getUnitPromptTemplate(unitType),
+      undefined,
+      `${unitType} prompt association is conditional or not verified yet`,
     );
   }
 });

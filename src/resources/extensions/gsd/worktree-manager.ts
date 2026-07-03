@@ -19,7 +19,7 @@
  *   4. remove()  — git worktree remove + branch cleanup
  */
 
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve, sep } from "node:path";
 import { GSDError, GSD_PARSE_ERROR, GSD_STALE_STATE, GSD_LOCK_HELD, GSD_GIT_ERROR, GSD_MERGE_CONFLICT } from "./errors.js";
@@ -225,6 +225,113 @@ function isRegisteredGitWorktreeAtPath(basePath: string, wtPath: string): boolea
   } catch {
     return false;
   }
+}
+
+function inspectUncommittedWorktreeState(wtPath: string): { dirty: boolean; status: string } {
+  try {
+    const status = execFileSync(
+      "git",
+      ["status", "--porcelain=v1", "--untracked-files=all"],
+      { cwd: wtPath, stdio: ["ignore", "pipe", "pipe"], encoding: "utf-8" },
+    ).trimEnd();
+    return { dirty: status.length > 0, status };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logWarning(
+      "worktree",
+      `dirty worktree inspection failed for ${wtPath}: ${message}`,
+    );
+    // Fail closed: unknown state must quarantine rather than force-remove.
+    return { dirty: true, status: `git status failed: ${message}` };
+  }
+}
+
+function timestampForPath(): string {
+  return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
+function uniqueQuarantinePath(basePath: string, name: string): string {
+  const root = join(basePath, ".gsd", "quarantine", "worktrees");
+  const baseName = `${name}-${timestampForPath()}`;
+  let candidate = join(root, baseName);
+  let suffix = 2;
+  while (existsSync(candidate)) {
+    candidate = join(root, `${baseName}-${suffix}`);
+    suffix++;
+  }
+  return candidate;
+}
+
+function quarantineDirtyWorktree(
+  basePath: string,
+  name: string,
+  branch: string,
+  wtPath: string,
+  status: string,
+): string | null {
+  const quarantinePath = uniqueQuarantinePath(basePath, name);
+  mkdirSync(join(basePath, ".gsd", "quarantine", "worktrees"), { recursive: true });
+
+  let moved = false;
+  try {
+    renameSync(wtPath, quarantinePath);
+    moved = true;
+  } catch (renameErr) {
+    logWarning(
+      "worktree",
+      `dirty worktree rename quarantine failed for ${name}: ${renameErr instanceof Error ? renameErr.message : String(renameErr)}; trying copy snapshot`,
+    );
+    try {
+      cpSync(wtPath, quarantinePath, { recursive: true, force: false, errorOnExist: true });
+    } catch (copyErr) {
+      logWarning(
+        "reconcile",
+        `Dirty worktree quarantine failed; preserving original worktree ${wtPath}: ${copyErr instanceof Error ? copyErr.message : String(copyErr)}`,
+        { worktree: name, path: wtPath },
+      );
+      return null;
+    }
+  }
+
+  try {
+    const gitFile = join(quarantinePath, ".git");
+    if (existsSync(gitFile) && lstatSync(gitFile).isFile()) {
+      unlinkSync(gitFile);
+    }
+  } catch (err) {
+    logWarning(
+      "worktree",
+      `failed to remove quarantined worktree git pointer: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  try {
+    writeFileSync(
+      join(quarantinePath, ".gsd-quarantine.json"),
+      JSON.stringify({
+        kind: "dirty-worktree",
+        worktree: name,
+        branch,
+        originalPath: wtPath,
+        moved,
+        quarantinedAt: new Date().toISOString(),
+        status,
+      }, null, 2) + "\n",
+      "utf-8",
+    );
+  } catch (err) {
+    logWarning(
+      "worktree",
+      `failed to write worktree quarantine metadata: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  logWarning(
+    "reconcile",
+    `Quarantined dirty worktree ${name} at ${quarantinePath} before removal. Branch ${branch} was preserved.`,
+    { worktree: name, path: quarantinePath, branch },
+  );
+  return quarantinePath;
 }
 
 /** True when `wtPath` has a git worktree checkout marker (`.git` file with gitdir pointer). */
@@ -730,12 +837,13 @@ export function removeWorktree(
   basePath: string,
   name: string,
   opts: { deleteBranch?: boolean; force?: boolean; branch?: string } = {},
-): void {
+): boolean {
   basePath = normalizeBasePathForWorktreeOps(basePath);
 
   let wtPath = worktreePath(basePath, name);
   const branch = opts.branch ?? worktreeBranchName(name);
   const { deleteBranch = true, force = true } = opts;
+  let deleteBranchAfterRemoval = deleteBranch;
 
   // Resolve the ACTUAL worktree path from git's worktree list.
   // The computed path may differ when .gsd/ is (or was) a symlink to an
@@ -788,10 +896,10 @@ export function removeWorktree(
 
   if (!existsSync(wtPath)) {
     nativeWorktreePrune(basePath);
-    if (deleteBranch) {
+    if (deleteBranchAfterRemoval) {
       deleteBranchIfPresent(basePath, branch, "nativeBranchDelete failed");
     }
-    return;
+    return true;
   }
 
   // Submodule safety (#2337): detect submodules with uncommitted changes
@@ -873,6 +981,35 @@ export function removeWorktree(
     }
   }
 
+  // Dirty-worktree quarantine (#2365): once submodule (#2337) and nested-.git
+  // (#2616) rescue have run — they commit/clean the tree first — quarantine any
+  // uncommitted state that remains instead of force-deleting it. Gate on a live
+  // git checkout so a stale local directory left behind by state-sync (which
+  // has no `.git` file and is not a registered worktree) is removed normally
+  // rather than quarantined; otherwise its branch would never be deleted and
+  // the worktree would never be unregistered (#1852).
+  if (force && resolvedPathSafe && isLiveGitWorktreeCheckout(resolvedWtPath)) {
+    const dirtyState = inspectUncommittedWorktreeState(resolvedWtPath);
+    if (dirtyState.dirty) {
+      const quarantinePath = quarantineDirtyWorktree(
+        basePath,
+        name,
+        branch,
+        resolvedWtPath,
+        dirtyState.status,
+      );
+      if (!quarantinePath) {
+        return false;
+      }
+
+      deleteBranchAfterRemoval = false;
+      if (!existsSync(resolvedWtPath)) {
+        nativeWorktreePrune(basePath);
+        return true;
+      }
+    }
+  }
+
   // Remove worktree — only use force/rmSync when the path is safely contained
   if (resolvedPathSafe) {
     // Remove worktree: try non-force first when submodules have changes,
@@ -923,9 +1060,10 @@ export function removeWorktree(
   // Prune stale entries so git knows the worktree is gone
   nativeWorktreePrune(basePath);
 
-  if (deleteBranch) {
+  if (deleteBranchAfterRemoval) {
     deleteBranchIfPresent(basePath, branch, "final branch delete failed");
   }
+  return true;
 }
 
 /**

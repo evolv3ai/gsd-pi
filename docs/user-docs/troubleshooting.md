@@ -12,7 +12,7 @@ It checks:
 - File structure and naming conventions
 - Roadmap ↔ slice ↔ task referential integrity
 - Completion state consistency
-- Database artifact rows whose rendered files are missing on disk
+- Database artifact rows whose rendered files are missing on disk, including warning-only diagnostics for missing user-authored context and research files
 - Git worktree health (worktree and branch modes only — skipped in none mode)
 - Stale DB-backed runtime records and orphaned runtime files
 - Disk-only orphan milestone stub directories
@@ -159,6 +159,14 @@ Replace the path with the exact global bin directory from your pnpm error messag
 - If the old worktree is stale and should be discarded, remove it with `/gsd worktree remove <MID>`.
 - Run `/gsd doctor fix`, then retry `/gsd auto`. If fallback already succeeded, work continues on `milestone/<MID>` in the project root for that milestone.
 
+### Forced worktree removal created a quarantine
+
+**Symptoms:** `/gsd worktree remove <MID> --force` reports that dirty worktree contents were quarantined under `.gsd/quarantine/worktrees/<name>-<timestamp>/`.
+
+**Current behavior:** GSD preserves uncommitted files instead of deleting them. The quarantine contains `.gsd-quarantine.json` with the original worktree path, branch, timestamp, and `git status --porcelain` output. The milestone branch is preserved, so recovery can use either the quarantined files or the branch.
+
+**Fix:** Inspect the quarantine and copy or merge anything you still need. Delete the quarantine directory only after confirming there is nothing left to salvage.
+
 ### Windows `EPERM` / `EBUSY` while removing stale worktree directories
 
 **Symptoms:** Startup or milestone entry fails during stale worktree cleanup with `EPERM` or `EBUSY` from directory removal.
@@ -170,6 +178,18 @@ Replace the path with the exact global bin directory from your pnpm error messag
 **Fix:**
 - Close apps that might hold file locks (editors, shells in old worktree paths, antivirus/indexers).
 - Retry the command after a short delay.
+
+### Startup fails during flat-phase migration
+
+**Symptoms:** GSD exits during startup with a message like `flat-phase migration failed` or `flat-phase migration required but the workflow database could not be opened`.
+
+**Cause:** The project still has the legacy nested `.gsd/milestones/` layout. On startup, GSD must migrate it to the flat `.gsd/phases/` layout before path resolvers and state checks run. This migration is fail-closed: if the SQLite database cannot be opened, the backup/rename/delete step fails, or the rendered flat-phase projection cannot be verified, startup stops instead of continuing against mixed disk state.
+
+**Fix:**
+- Make sure you are starting GSD from the project root and that `.gsd/gsd.db*`, `.gsd/`, and `.gsd-backups/` are readable and writable on local disk.
+- Close editors, shells, sync tools, antivirus/indexers, or other processes that may be locking `.gsd/milestones/`, `.gsd/milestones.migrating/`, `.gsd/phases/`, or `.gsd-backups/`.
+- If the database is damaged or missing, restore the database from backup when available. If the rendered markdown is the state you intentionally want to import, use `/gsd recover --confirm` after database access is restored.
+- Start GSD again after fixing the underlying issue. The migration retries on the next startup and can resume an interrupted run from `.gsd/milestones.migrating/`; keep `.gsd-backups/migrate-*` snapshots until the project starts successfully and `/gsd doctor` passes.
 
 ### `command not found: gsd` after install
 
@@ -269,6 +289,16 @@ For common provider setup issues (role errors, streaming errors, model ID mismat
 
 **Fix:** Run `/gsd doctor` to see the file path, the parse/validation message, and (for YAML errors) the line and column. Fix the reported issue in the named file, then rerun the command. Auto-mode re-surfaces these diagnostics at preflight so they are visible before long-running automation proceeds.
 
+### Parent workspace repository warnings
+
+**Symptoms:** `/gsd doctor` reports `workspace_repo_path_missing` or `workspace_repo_not_a_repo` for a repository declared under `workspace.repositories` in `.gsd/PREFERENCES.md`.
+
+**What it means:** In `workspace.mode: parent`, each declared child path must exist and be a git repository at its own root. A typo such as `frontned` produces `workspace_repo_path_missing`; an ordinary directory inside the parent repo produces `workspace_repo_not_a_repo`.
+
+**Fix:** Create or clone the child repository at the configured path, initialize git in that directory if it should become a repository, or update `workspace.repositories.<id>.path` to the actual child repo root. Parent workspace paths must still resolve inside the project root; sibling paths such as `../frontend` are rejected by preference validation.
+
+If preferences combine `mode: team` with `workspace.mode: parent`, GSD also warns that team branch-push and PR behavior is still root-scoped and will not push child repositories. Push or open PRs for child repos manually, or switch to `mode: solo` when team branch automation is not needed.
+
 ### Auto mode says another session is running
 
 **Symptoms:** Auto mode won't start, says another session is running.
@@ -309,6 +339,14 @@ In these states GSD does not auto-stash and does not auto-fix; it stops so you c
 - Commit, stash, or discard overlapping local edits outside GSD.
 - Re-run `/gsd auto` after `git status` is clean (or at least free of overlapping/conflicted paths).
 
+### Auto mode stops after merge with postflight stash recovery
+
+**Symptoms:** Auto mode reports `Post-merge stash restore failed for milestone <MID>` or `postflight-stash-restore-failed`.
+
+**What it means:** The milestone merge itself completed, but GSD could not automatically restore the pre-merge stash of local user changes. GSD records the merge as complete before stopping, so resuming auto mode will not rerun the already completed milestone merge.
+
+**Fix:** Inspect `git status` and the named stash, manually recover or drop the stashed local changes, then rerun `/gsd auto`.
+
 ### Pre-dispatch says the milestone integration branch no longer exists
 
 **Symptoms:** Auto mode or `/gsd doctor` reports that a milestone recorded an integration branch that no longer exists in git.
@@ -337,11 +375,27 @@ In these states GSD does not auto-stash and does not auto-fix; it stops so you c
 
 ### `/gsd doctor` reports `artifact_file_missing`
 
-**Symptoms:** `/gsd doctor` shows an error with issue code `artifact_file_missing`, a scope such as `project`, `milestone`, `slice`, or `task`, and a file path like `milestones/M001/M001-CONTEXT.md`.
+**Symptoms:** `/gsd doctor` shows an error with issue code `artifact_file_missing`, a scope such as `project`, `milestone`, `slice`, or `task`, and a file path like `phases/01-foundation/01-CONTEXT.md` or `milestones/M001/M001-ROADMAP.md`.
 
 **What it means:** The canonical database has an `artifacts` row for that path, but the rendered markdown file is missing from disk. In worktree mode, doctor checks both the active worktree-local `.gsd/` projection root and the project `.gsd/` root before reporting the issue, so the error usually means the artifact was deleted, skipped during a failed write, or left dangling by an interrupted migration/rebuild.
 
 **Fix:** If the database is still the source of truth, run `/gsd rebuild markdown` to re-render missing artifact projections from the DB, then rerun `/gsd doctor`. If the file represented work that should still exist but rebuild cannot recreate it, restore the file from git/backups or rerun the GSD workflow that generates that artifact. Use `/gsd recover --confirm` only when the database is lost or corrupt and the markdown on disk is the source you intentionally want to import; it is not the normal fix for a dangling artifact reference.
+
+### `/gsd doctor` reports `artifact_db_status_divergence`
+
+**Symptoms:** `/gsd doctor` shows an error with issue code `artifact_db_status_divergence` for a completion artifact such as `T01-SUMMARY.md`, while the database still shows that task as open or missing.
+
+**What it means:** A completion artifact exists on disk, but runtime will not silently trust it as task completion. `/gsd doctor fix` can repair task completion from a SUMMARY only when the SUMMARY frontmatter matches the task, has no blocker, has a valid `completed_at`, and its `verification_result` is passing.
+
+**Fix:** Run `/gsd doctor fix` when doctor marks the divergence as fixable. Non-passing, negated-passing such as `not passed`, blocker, invalid, or mismatched summaries stay manual-recovery cases; inspect the artifact, repair or rerun the task, then rerun `/gsd doctor`.
+
+### `/gsd doctor` reports `artifact_user_content_missing`
+
+**Symptoms:** `/gsd doctor` shows a warning with issue code `artifact_user_content_missing` for a missing `CONTEXT` or `RESEARCH` file, such as `milestones/M001/M001-CONTEXT.md` or `milestones/M001/M001-RESEARCH.md`. When `/gsd doctor fix` is running, it reports that the user-authored artifact was skipped instead of recreating a placeholder.
+
+**What it means:** The database remembers that the user-authored artifact should exist, but doctor cannot reconstruct its real content from structured DB rows. These warnings are separate from blocking `artifact_file_missing` projection errors because rebuilding from the DB would risk replacing user decisions or research with incomplete content.
+
+**Fix:** Re-run the workflow that authors the missing file in that milestone or slice. Use `/gsd discuss` for missing `CONTEXT` artifacts and `/gsd auto` for missing `RESEARCH` artifacts, then rerun `/gsd doctor`.
 
 ### Startup warns that memory consolidation is incomplete
 

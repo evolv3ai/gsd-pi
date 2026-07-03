@@ -236,7 +236,7 @@ import {
   getSlice,
   getTask,
 } from "./gsd-db.js";
-import { closeWorkflowDatabase } from "./db-workspace.js";
+import { checkpointWorkflowDatabase, closeWorkflowDatabase } from "./db-workspace.js";
 import { markLatestActiveForWorkerCanceled } from "./db/unit-dispatches.js";
 import { writeUnitRuntimeRecord } from "./unit-runtime.js";
 import { countPendingCaptures } from "./captures.js";
@@ -1051,6 +1051,12 @@ export function stopAutoRemote(projectRoot: string): {
  * The normal stop path stays SIGTERM-only so cooperative sessions can clean up;
  * this path is only for the explicit "Force start" action.
  */
+// Grace window between SIGTERM and SIGKILL so the target can run its cleanup
+// handler (lock release, DB snapshot flush, worktree teardown). Polled so a
+// process that exits early is not made to wait the full window.
+const FORCE_STOP_GRACE_MS = 3000;
+const FORCE_STOP_POLL_MS = 100;
+
 export function forceStopAutoRemote(projectRoot: string): {
   found: boolean;
   pid?: number;
@@ -1071,6 +1077,13 @@ export function forceStopAutoRemote(projectRoot: string): {
 
   try {
     process.kill(lock.pid, "SIGTERM");
+    // Poll for graceful exit before escalating. Synchronous sleep keeps this
+    // function sync for its callers (Atomics.wait times out with no notify).
+    const deadline = Date.now() + FORCE_STOP_GRACE_MS;
+    while (Date.now() < deadline) {
+      if (!isLockProcessAlive(lock)) break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, FORCE_STOP_POLL_MS);
+    }
     if (isLockProcessAlive(lock)) {
       process.kill(lock.pid, "SIGKILL");
     }
@@ -1615,6 +1628,11 @@ export async function stopAuto(
   const installTerminalCloseoutOutcome = completionStopRequested && preserveCloseoutTranscript;
   const preserveCompletionSurface = completionStopRequested || preserveCloseoutTranscript;
   s.completionStopInProgress = preserveCompletionSurface;
+  try {
+    checkpointWorkflowDatabase();
+  } catch (e) {
+    debugLog("stop-checkpoint-failed", { error: e instanceof Error ? e.message : String(e) });
+  }
   playNotificationBell("stop", loadedPreferences?.notifications);
 
   // #4764 — telemetry: record the exit reason, isolation mode, whether an auto
@@ -2299,7 +2317,7 @@ export function buildWorktreeLifecycleDeps(): WorktreeLifecycleDeps {
   //   C4 (#5627) — GitServiceImpl constructor → gitServiceFactory
   //
   // Final WorktreeLifecycleDeps shape: 3 fields (gitServiceFactory,
-  // worktreeProjection, mergeMilestoneToMain transaction runner). Down from 18 at slice-7
+  // worktreeProjection, mergeMilestone transaction runner). Down from 18 at slice-7
   // closure.
   return {
     gitServiceFactory: (basePath: string) => {
@@ -2308,7 +2326,7 @@ export function buildWorktreeLifecycleDeps(): WorktreeLifecycleDeps {
       return new GitServiceImpl(basePath, gitConfig);
     },
     worktreeProjection: new WorktreeStateProjection(),
-    mergeMilestoneToMain: createMilestoneMergeTransaction(mergeMilestoneToMain),
+    mergeMilestone: createMilestoneMergeTransaction(mergeMilestoneToMain),
   };
 }
 
@@ -2357,6 +2375,7 @@ function buildLoopDeps(pi: ExtensionAPI, ctx: ExtensionContext): LoopDeps {
     stopAuto,
     pauseAuto,
     clearUnitTimeout,
+    checkpointWorkflowDatabase,
     updateProgressWidget,
     ...cmux,
     handleLostSessionLock: (ctx: ExtensionContext | undefined, lockStatus: SessionLockStatus | undefined) => {

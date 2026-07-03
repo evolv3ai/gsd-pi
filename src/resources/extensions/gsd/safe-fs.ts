@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, cpSync, type CopySyncOptions } from "node:fs"
+import { existsSync, mkdirSync, cpSync, statSync, type CopySyncOptions } from "node:fs"
 import { dirname } from "node:path"
 import { logWarning } from "./workflow-logger.js"
 
@@ -39,7 +39,27 @@ export function safeCopyRecursive(src: string, dst: string, opts?: Omit<CopySync
   if (!existsSync(src)) return false
   try {
     mkdirSync(dirname(dst), { recursive: true })
-    cpSync(src, dst, { ...opts, recursive: true })
+    const userFilter = opts?.filter
+    cpSync(src, dst, {
+      ...opts,
+      recursive: true,
+      filter: (srcPath, dstPath) => {
+        if (existsSync(dstPath)) {
+          try {
+            const srcStat = statSync(srcPath)
+            const dstStat = statSync(dstPath)
+            if (srcStat.isDirectory() !== dstStat.isDirectory()) {
+              logWarning("fs", `recursive copy skipped type collision: ${srcPath} → ${dstPath}`)
+              return false
+            }
+          } catch (err) {
+            logWarning("fs", `recursive copy skipped unreadable path: ${srcPath} → ${dstPath}: ${(err as Error).message}`)
+            return false
+          }
+        }
+        return userFilter ? userFilter(srcPath, dstPath) : true
+      },
+    })
     return true
   } catch (err) {
     logWarning("fs", `recursive copy failed: ${src} → ${dst}: ${(err as Error).message}`)

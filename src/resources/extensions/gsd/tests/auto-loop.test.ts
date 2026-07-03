@@ -22,7 +22,7 @@ import {
   isSessionSwitchAbortGraceActive,
 } from "../auto/resolve.js";
 import { runUnit, shouldDeferUnitFailsafeTimeout } from "../auto/run-unit.js";
-import { scheduleAutoWakeup, _resetAutoWakeupsForTest } from "../auto/schedule-wakeup.js";
+import { consumeAutoWakeup, scheduleAutoWakeup, _resetAutoWakeupsForTest } from "../auto/schedule-wakeup.js";
 import { writeUnitRuntimeRecord, readUnitRuntimeRecord } from "../unit-runtime.js";
 import { autoLoop as rawAutoLoop } from "../auto/loop.js";
 import { runPreDispatch } from "../auto/pre-dispatch.js";
@@ -65,6 +65,76 @@ async function drainMicrotasks(turns = 20): Promise<void> {
   for (let i = 0; i < turns; i++) {
     await Promise.resolve();
   }
+}
+
+function guardedExitMilestoneForTest(
+  merge: (milestoneId: string, opts: { merge: boolean }) => {
+    ok: boolean;
+    merged?: boolean;
+    codeFilesChanged?: boolean;
+    reason?: string;
+    cause?: unknown;
+  },
+) {
+  return (
+    milestoneId: string,
+    opts: {
+      merge: boolean;
+      guardedMerge?: {
+        projectRoot: string;
+        preflightCleanRoot: (
+          basePath: string,
+          milestoneId: string,
+          notify: (message: string, level: "info" | "warning" | "error") => void,
+        ) => { blocked?: boolean; blockedReason?: string; stashPushed: boolean; stashMarker?: string };
+        postflightPopStash: (
+          basePath: string,
+          milestoneId: string,
+          stashMarker: string | undefined,
+          notify: (message: string, level: "info" | "warning" | "error") => void,
+        ) => { needsManualRecovery?: boolean };
+      };
+    },
+    ctx?: { notify: (message: string, level: "info" | "warning" | "error") => void },
+  ) => {
+    const notify = ctx?.notify ?? (() => {});
+    const guard = opts.guardedMerge;
+    if (opts.merge && guard) {
+      const preflight = guard.preflightCleanRoot(guard.projectRoot, milestoneId, notify);
+      if (preflight.blocked) {
+        return {
+          ok: false,
+          reason: preflight.blockedReason?.startsWith("unmerged-conflicts")
+            ? "preflight-unmerged-conflicts"
+            : "preflight-dirty-overlap",
+        };
+      }
+
+      const mergeResult = merge(milestoneId, { merge: true });
+      const postflight = preflight.stashPushed
+        ? guard.postflightPopStash(
+            guard.projectRoot,
+            milestoneId,
+            preflight.stashMarker,
+            notify,
+          )
+        : undefined;
+
+      if (!mergeResult.ok) {
+        return {
+          ok: false,
+          reason: mergeResult.reason === "merge-conflict" ? "merge-conflict" : "merge-failed",
+          cause: mergeResult.cause,
+          postflight,
+        };
+      }
+      if (postflight?.needsManualRecovery) {
+        return { ok: false, reason: "postflight-stash-restore-failed", postflight };
+      }
+      return mergeResult;
+    }
+    return merge(milestoneId, opts);
+  };
 }
 
 async function waitForMicrotasks(
@@ -480,6 +550,62 @@ test("runUnit honors ScheduleWakeup by continuing the same unit session", async 
   assert.equal(result.status, "completed");
   assert.deepEqual(result.event, secondEvent);
   assert.equal(pi.calls.length, 2);
+});
+
+test("runUnit clears scheduled wakeups when the unit is cancelled", async () => {
+  _resetPendingResolve();
+  _resetAutoWakeupsForTest();
+
+  const ctx = {
+    ...makeMockCtx(),
+    ui: {
+      notify: () => {},
+      setStatus: () => {},
+      setWorkingMessage: () => {},
+    },
+    sessionManager: {
+      getEntries: () => [],
+    },
+    modelRegistry: {
+      getProviderAuthMode: () => undefined,
+      isProviderRequestReady: () => true,
+    },
+  } as any;
+  const pi = makeMockPi();
+  const s = makeMockSession();
+
+  const resultPromise = runUnit(
+    ctx,
+    pi,
+    s,
+    "execute-task",
+    "M001/S01/T02",
+    "submit external job",
+  );
+
+  await waitForMicrotasks(() => pi.calls.length === 1, "initial unit dispatch");
+  scheduleAutoWakeup({
+    basePath: s.basePath,
+    unitType: "execute-task",
+    unitId: "M001/S01/T02",
+    delayMs: 0,
+    prompt: "stale prompt from cancelled unit",
+    reason: "poll external job",
+    createdAt: Date.now(),
+  });
+  resolveAgentEndCancelled({
+    message: "Auto-mode paused",
+    category: "aborted",
+    isTransient: true,
+  });
+
+  const result = await resultPromise;
+  assert.equal(result.status, "cancelled");
+  assert.equal(
+    consumeAutoWakeup(s.basePath, "execute-task", "M001/S01/T02"),
+    null,
+    "cancelled units must not leave stale ScheduleWakeup prompts for later retries",
+  );
 });
 
 test("runUnit suppresses the global working-message loader for auto dashboard runs", async () => {
@@ -1335,11 +1461,11 @@ function makeMockDeps(
     GitServiceImpl: class {} as any,
     lifecycle: {
       enterMilestone: () => ({ ok: true, mode: "worktree", path: "/tmp/project" }),
-      exitMilestone: (_mid: string, opts: { merge: boolean }) => ({
+      exitMilestone: guardedExitMilestoneForTest((_mid, opts) => ({
         ok: true,
         merged: opts.merge,
         codeFilesChanged: false,
-      }),
+      })),
     } as any,
     worktreeProjection: new WorktreeStateProjection(),
     postUnitPreVerification: async () => {
@@ -1762,10 +1888,10 @@ test("autoLoop marks transition merge complete before postflight recovery stop",
       enterMilestone: () => {
         assert.fail("must not enter the next milestone after postflight recovery fails");
       },
-      exitMilestone: (_mid: string, opts: { merge: boolean }) => {
+      exitMilestone: guardedExitMilestoneForTest((_mid, opts) => {
         if (opts.merge) mergeCalls += 1;
         return { ok: true, merged: opts.merge, codeFilesChanged: false };
-      },
+      }),
     } as any,
     stopAuto: async (_ctx, _pi, reason) => {
       deps.callLog.push("stopAuto");

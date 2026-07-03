@@ -182,6 +182,70 @@ test("prefs wizard save path preserves every known preference key", async () => 
   }
 });
 
+test("verification wizard prompts for per-unit cost cap and persists it (regression #1121)", async () => {
+  // Regression for #1121: the `/gsd prefs` Verification category never prompted for
+  // `per_unit_cost_cap_usd`, so the per-unit cost cap could only be set by hand-editing
+  // PREFERENCES.md. Drive the wizard into Verification, answer the cap prompt, and assert
+  // the prompt exists and the entered value is serialized + round-trips back as a number.
+  const dir = mkdtempSync(join(tmpdir(), "gsd-prefs-wizard-"));
+  const prefsPath = join(dir, "PREFERENCES.md");
+
+  const inputLabels: string[] = [];
+  let topMenuVisits = 0;
+
+  const ctx = {
+    ui: {
+      notify() {},
+      select: async (label: string, options: string[]) => {
+        if (label === "GSD Preferences") {
+          topMenuVisits += 1;
+          if (topMenuVisits === 1) {
+            const verification = options.find((o) => o.startsWith("Verification"));
+            assert.ok(verification, "wizard menu must offer a Verification category");
+            return verification;
+          }
+          return "── Save & Exit ──";
+        }
+        // verification_commands string-list sub-menu — leave it untouched
+        if (options.includes("Done")) return "Done";
+        // boolean/enum prompts within the category — keep the current value
+        if (options.includes("(keep current)")) return "(keep current)";
+        return options[options.length - 1];
+      },
+      input: async (label: string) => {
+        inputLabels.push(label);
+        if (label.includes("Per-unit cost cap")) return "12.5";
+        return null; // escape every other numeric/string prompt (no change)
+      },
+    },
+    waitForIdle: async () => {},
+    reload: async () => {},
+  } as any;
+
+  try {
+    await handlePrefsWizard(ctx, "project", {}, { pathOverride: prefsPath });
+
+    // The Verification wizard must actually ask for the per-unit cost cap.
+    assert.ok(
+      inputLabels.some((l) => l.includes("Per-unit cost cap")),
+      `Verification wizard must prompt for the per-unit cost cap; prompts seen:\n${inputLabels.join("\n")}`,
+    );
+
+    // The entered value must be serialized to PREFERENCES.md...
+    const saved = readFileSync(prefsPath, "utf-8");
+    assert.match(saved, /per_unit_cost_cap_usd:\s*12\.5(\s|$)/m);
+
+    // ...and round-trip back through the parser/validator as a number.
+    const parsed = parsePreferencesMarkdown(saved);
+    assert.notEqual(parsed, null);
+    const { errors, preferences } = validatePreferences(parsed!);
+    assert.deepEqual(errors, []);
+    assert.equal(preferences.per_unit_cost_cap_usd, 12.5);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("category summaries expose the wizard menu surface for configured prefs", () => {
   const summaries = buildCategorySummaries(PREF_SAMPLE_VALUES);
   assert.deepEqual(
@@ -203,11 +267,14 @@ test("category summaries expose the wizard menu surface for configured prefs", (
       "timeouts",
       "uok",
       "verification",
+      "workspace",
     ],
   );
   assert.match(summaries.models, /phase/);
   assert.match(summaries.integrations, /remote: C123/);
   assert.match(summaries.verification, /1 cmd/);
+  assert.match(summaries.workspace, /mode: parent/);
+  assert.match(summaries.workspace, /1 repo/);
 });
 
 test("models wizard offers discovered models for enabled providers", async () => {
@@ -272,6 +339,81 @@ test("models wizard offers discovered models for enabled providers", async () =>
     const saved = readFileSync(prefsPath, "utf-8");
     assert.match(saved, /research:\s+local\/discovered-model/);
     assert.doesNotMatch(saved, /hidden-model/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("workspace wizard category configures parent mode with a declared repository", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "gsd-prefs-wizard-workspace-"));
+  const prefsPath = join(dir, "PREFERENCES.md");
+  try {
+    // Drive: Workspace → parent mode → Add repository (id=frontend, path=frontend,
+    // role=ui, verification=npm test, commit policy auto) → Done → Save & Exit.
+    const selects = [
+      "Workspace       (single-repo)",       // pick the Workspace category
+      "parent",                               // promptEnum: workspace mode
+      "Add repository",                       // sub-menu
+      "(keep current)",                       // promptEnum: commit policy -> keep auto default
+      "Done",                                 // exit repo sub-menu
+      "── Save & Exit ──",                    // exit wizard
+    ];
+    const inputs = [
+      "frontend",                             // repository id
+      "frontend",                             // repository path
+      "ui",                                   // role
+      "npm test",                             // verification commands
+    ];
+    const ctx = {
+      ui: {
+        notify() {},
+        select: async () => selects.shift(),
+        input: async () => inputs.shift(),
+      },
+      waitForIdle: async () => {},
+      reload: async () => {},
+    } as any;
+
+    await handlePrefsWizard(ctx, "project", {}, { pathOverride: prefsPath });
+
+    const saved = readFileSync(prefsPath, "utf-8");
+    assert.match(saved, /mode: parent/);
+    assert.match(saved, /frontend:/);
+    assert.match(saved, /path: frontend/);
+    assert.match(saved, /role: ui/);
+    assert.match(saved, /npm test/);
+    assert.equal(selects.length, 0, "all queued selects should be consumed");
+    assert.equal(inputs.length, 0, "all queued inputs should be consumed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("workspace wizard does not save parent mode when no repository is declared", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "gsd-prefs-wizard-workspace-empty-"));
+  const prefsPath = join(dir, "PREFERENCES.md");
+  try {
+    // parent mode with no repos added → should warn and not persist workspace.
+    const selects = [
+      "Workspace       (single-repo)",
+      "parent",
+      "Done",                                 // add nothing
+      "── Save & Exit ──",
+    ];
+    const ctx = {
+      ui: {
+        notify() {},
+        select: async () => selects.shift(),
+        input: async () => "",
+      },
+      waitForIdle: async () => {},
+      reload: async () => {},
+    } as any;
+
+    await handlePrefsWizard(ctx, "project", {}, { pathOverride: prefsPath });
+
+    const saved = readFileSync(prefsPath, "utf-8");
+    assert.doesNotMatch(saved, /mode: parent/, "parent mode must not persist without a declared repo");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

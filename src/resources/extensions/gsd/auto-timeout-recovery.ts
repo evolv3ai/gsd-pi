@@ -97,6 +97,8 @@ export async function recoverTimedOutUnit(
         lastProgressAt: Date.now(),
         progressCount: (runtime?.progressCount ?? 0) + 1,
         lastProgressKind: reason === "idle" ? "idle-recovery-retry" : "hard-recovery-retry",
+        // This steering retry is a fresh chance for the same unit to save a valid result.
+        harnessAbort: undefined,
       });
 
       const steeringLines = isEscalation
@@ -222,6 +224,8 @@ export async function recoverTimedOutUnit(
       lastProgressAt: Date.now(),
       progressCount: (runtime?.progressCount ?? 0) + 1,
       lastProgressKind: reason === "idle" ? "idle-recovery-retry" : "hard-recovery-retry",
+      // This steering retry is a fresh chance for the same unit to save a valid result.
+      harnessAbort: undefined,
     });
 
     const steeringLines = isEscalation

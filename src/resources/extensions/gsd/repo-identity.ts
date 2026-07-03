@@ -355,6 +355,23 @@ export function externalProjectsRoot(): string {
   return join(base, "projects");
 }
 
+/**
+ * Check whether this project already has authoritative external state.
+ *
+ * Used by legacy `.gsd/` migration to avoid re-copying a re-materialized local
+ * directory over newer state when an already-migrated symlink was replaced.
+ */
+export function externalStateAlreadyExistsForProject(basePath: string): boolean {
+  const base = process.env.GSD_STATE_DIR || gsdHome();
+  const computedPath = join(base, "projects", repoIdentity(basePath));
+  if (hasProjectState(computedPath)) return true;
+
+  const markerId = readGsdIdMarker(resolveGitRoot(basePath));
+  if (!markerId) return false;
+
+  return hasProjectState(join(base, "projects", markerId));
+}
+
 // ─── Numbered Variant Cleanup ────────────────────────────────────────────────
 
 /**

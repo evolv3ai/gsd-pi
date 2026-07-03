@@ -1,7 +1,6 @@
 /**
- * Regression test for #3453: dynamic model routing must be disabled for
- * flat-rate providers like GitHub Copilot where all models cost the same
- * per request — routing only degrades quality with no cost benefit.
+ * Regression tests for flat-rate provider detection and the explicit opt-out
+ * that suppresses dynamic routing for subscription providers.
  */
 
 import { describe, test } from "node:test";
@@ -9,7 +8,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildFlatRateContext, isFlatRateProvider, resolvePreferredModelConfig } from "../auto-model-selection.ts";
+import { buildFlatRateContext, isFlatRateProvider, resolvePreferredModelConfig, selectAndApplyModel } from "../auto-model-selection.ts";
 
 describe("flat-rate provider routing guard (#3453)", () => {
 
@@ -35,23 +34,18 @@ describe("flat-rate provider routing guard (#3453)", () => {
     assert.equal(isFlatRateProvider("openai"), false);
   });
 
-  test("resolvePreferredModelConfig returns undefined for copilot start model", () => {
+  test("resolvePreferredModelConfig synthesizes routing config for copilot start model when routing is enabled", () => {
     const originalCwd = process.cwd();
     const originalGsdHome = process.env.GSD_HOME;
     const tempProject = mkdtempSync(join(tmpdir(), "gsd-flat-rate-project-"));
     const tempGsdHome = mkdtempSync(join(tmpdir(), "gsd-flat-rate-home-"));
 
-    // When the user's start model is on a flat-rate provider,
-    // resolvePreferredModelConfig should not synthesize a routing
-    // config from tier_models — it should return undefined so the
-    // user's selected model is preserved.
     try {
       mkdirSync(join(tempProject, ".gsd"), { recursive: true });
       writeFileSync(
         join(tempProject, ".gsd", "PREFERENCES.md"),
         [
           "---",
-          "token_profile: burn-max",
           "dynamic_routing:",
           "  enabled: true",
           "  tier_models:",
@@ -70,10 +64,83 @@ describe("flat-rate provider routing guard (#3453)", () => {
         id: "claude-sonnet-4",
       });
 
-      // Should be undefined (no routing config created for flat-rate)
-      // Note: this only tests the synthesis guard — explicit per-unit config
-      // still takes precedence when the user configured one.
-      assert.equal(result, undefined, "Should not create routing config for copilot");
+      assert.deepEqual(result, {
+        primary: "claude-opus-4-6",
+        fallbacks: [],
+        source: "synthesized",
+      });
+    } finally {
+      process.chdir(originalCwd);
+      if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+      else process.env.GSD_HOME = originalGsdHome;
+      rmSync(tempProject, { recursive: true, force: true });
+      rmSync(tempGsdHome, { recursive: true, force: true });
+    }
+  });
+
+  test("selectAndApplyModel runs synthesized dynamic routing for flat-rate start model", async () => {
+    const originalCwd = process.cwd();
+    const originalGsdHome = process.env.GSD_HOME;
+    const tempProject = mkdtempSync(join(tmpdir(), "gsd-flat-rate-project-"));
+    const tempGsdHome = mkdtempSync(join(tmpdir(), "gsd-flat-rate-home-"));
+    const setModelCalls: string[] = [];
+
+    try {
+      mkdirSync(join(tempProject, ".gsd"), { recursive: true });
+      writeFileSync(
+        join(tempProject, ".gsd", "PREFERENCES.md"),
+        [
+          "---",
+          "dynamic_routing:",
+          "  enabled: true",
+          "  hooks: false",
+          "  budget_pressure: false",
+          "  tier_models:",
+          "    light: claude-haiku-4-5",
+          "    standard: claude-sonnet-4-6",
+          "    heavy: claude-opus-4-6",
+          "---",
+        ].join("\n"),
+        "utf-8",
+      );
+      process.env.GSD_HOME = tempGsdHome;
+      process.chdir(tempProject);
+
+      const availableModels = [
+        { id: "claude-haiku-4-5", provider: "claude-code", api: "anthropic-messages" },
+        { id: "claude-sonnet-4-6", provider: "claude-code", api: "anthropic-messages" },
+        { id: "claude-opus-4-6", provider: "claude-code", api: "anthropic-messages" },
+      ];
+
+      const result = await selectAndApplyModel(
+        {
+          modelRegistry: { getAvailable: () => availableModels },
+          sessionManager: { getSessionId: () => "test-session" },
+          ui: { notify: () => {} },
+          model: { provider: "claude-code", id: "claude-opus-4-6", api: "anthropic-messages" },
+        } as any,
+        {
+          setModel: async (model: { provider: string; id: string }) => {
+            setModelCalls.push(`${model.provider}/${model.id}`);
+            return true;
+          },
+          emitBeforeModelSelect: async () => undefined,
+          getActiveTools: () => [],
+          emitAdjustToolSet: async () => undefined,
+          setActiveTools: () => {},
+        } as any,
+        "execute-task",
+        "M001/S01/T01",
+        tempProject,
+        undefined,
+        false,
+        { provider: "claude-code", id: "claude-opus-4-6" },
+        undefined,
+        true,
+      );
+
+      assert.deepEqual(setModelCalls, ["claude-code/claude-sonnet-4-6"]);
+      assert.deepEqual(result.routing, { tier: "standard", modelDowngraded: true });
     } finally {
       process.chdir(originalCwd);
       if (originalGsdHome === undefined) delete process.env.GSD_HOME;
@@ -220,9 +287,9 @@ describe("buildFlatRateContext()", () => {
   });
 });
 
-// ─── #4386: allow_flat_rate_providers opt-in ────────────────────────────────
+// ─── #4386/#1115: allow_flat_rate_providers override ────────────────────────
 
-describe("flat-rate routing opt-in (#4386)", () => {
+describe("flat-rate routing override (#4386/#1115)", () => {
   function withPrefs(prefsYaml: string, fn: () => void): void {
     const originalCwd = process.cwd();
     const originalGsdHome = process.env.GSD_HOME;
@@ -247,7 +314,7 @@ describe("flat-rate routing opt-in (#4386)", () => {
     }
   }
 
-  test("default (opt-in absent): flat-rate start model still returns undefined", () => {
+  test("default (allow absent): flat-rate start model still synthesizes routing config", () => {
     withPrefs(
       [
         "dynamic_routing:",
@@ -260,12 +327,13 @@ describe("flat-rate routing opt-in (#4386)", () => {
           provider: "claude-code",
           id: "claude-opus-4-6",
         });
-        assert.equal(result, undefined, "default must preserve #3453 bypass");
+        assert.ok(result, "routing config should be synthesized");
+        assert.equal(result!.primary, "claude-opus-4-6");
       },
     );
   });
 
-  test("opt-in: synthesizes a routing config for flat-rate start model", () => {
+  test("explicit allow: synthesizes a routing config for flat-rate start model", () => {
     withPrefs(
       [
         "dynamic_routing:",

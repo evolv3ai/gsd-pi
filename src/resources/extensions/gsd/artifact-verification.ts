@@ -45,7 +45,6 @@ import { resolveWorktreeProjectRoot } from "./worktree-root.js";
 import { hasImplementationArtifacts } from "./milestone-implementation-evidence.js";
 import { loadAllCaptures, loadPendingCaptures } from "./captures.js";
 import { proveMilestoneCloseout } from "./milestone-closeout-proof.js";
-
 /**
  * Optional override for the legacy roadmap parser used by verifyExpectedArtifact.
  * Production leaves this null so the real parseLegacyRoadmap runs; tests inject
@@ -70,6 +69,11 @@ export function _setRoadmapParserFnForTests(
 function parseRoadmapForRecovery(content: string): ReturnType<NonNullable<typeof _roadmapParserFn>> {
   if (_roadmapParserFn) return _roadmapParserFn(content);
   return parseLegacyRoadmap(content) as unknown as ReturnType<NonNullable<typeof _roadmapParserFn>>;
+}
+
+/** Slice count for plan-milestone verification; shared by scoped and legacy paths. */
+export function countPlanMilestoneRoadmapSlices(content: string): number {
+  return parseRoadmapForRecovery(content).slices.length;
 }
 
 export function diagnoseWorktreeIntegrityFailure(basePath: string): string | null {
@@ -336,8 +340,7 @@ export function verifyExpectedArtifact(
 
   if (unitType === "plan-milestone") {
     try {
-      const roadmap = parseRoadmapForRecovery(readFileSync(absPath, "utf-8"));
-      if (roadmap.slices.length === 0) {
+      if (countPlanMilestoneRoadmapSlices(readFileSync(absPath, "utf-8")) === 0) {
         logWarning("recovery", `verify-fail ${unitType} ${unitId}: roadmap has zero slices at ${absPath}`);
         return false;
       }
@@ -353,6 +356,19 @@ export function verifyExpectedArtifact(
       try {
         let taskIds: string[] | null = null;
         let dbPrimary = false;
+        const planContent = readFileSync(absPath, "utf-8");
+        let parsedTaskIds: string[] | null = null;
+        const getParsedTaskIds = (): string[] => {
+          if (parsedTaskIds) return parsedTaskIds;
+          parsedTaskIds = parseLegacyPlan(planContent).tasks.map((t: { id: string }) => t.id);
+          return parsedTaskIds;
+        };
+        const tasksBlockMatch = planContent.match(/<tasks>([\s\S]*?)<\/tasks>/i);
+        const tasksBlock = tasksBlockMatch?.[1] ?? "";
+        const hasEmbeddedTaskEntries =
+          tasksBlock.length > 0 &&
+          (/^\s*- \[[xX ]\] \*\*T\d+/m.test(tasksBlock) ||
+            /^\s*#{2,4}\s+T\d+\s*(?:--|—|:)/m.test(tasksBlock));
         if (isDbAvailable()) {
           const refreshed = refreshWorkflowDatabaseFromDisk();
           if (refreshed) {
@@ -365,24 +381,24 @@ export function verifyExpectedArtifact(
         }
 
         if (!taskIds) {
-          const planContent = readFileSync(absPath, "utf-8");
           const hasCheckboxTask = /^\s*- \[[xX ]\] \*\*T\d+/m.test(planContent);
           const hasHeadingTask = /^\s*#{2,4}\s+T\d+\s*(?:--|—|:)/m.test(planContent);
           if (!hasCheckboxTask && !hasHeadingTask) {
             logWarning("recovery", `verify-fail ${unitType} ${unitId}: plan has no task checkbox/heading (len=${planContent.length}) at ${absPath}`);
             return false;
           }
-          const plan = parseLegacyPlan(planContent);
-          if (plan.tasks.length > 0) taskIds = plan.tasks.map((t: { id: string }) => t.id);
+          const parsedIds = getParsedTaskIds();
+          if (parsedIds.length > 0) taskIds = parsedIds;
         }
 
-        if (taskIds && taskIds.length > 0) {
+        if (taskIds && taskIds.length > 0 && !hasEmbeddedTaskEntries) {
           const tasksDir = join(dirname(absPath), "tasks");
           if (existsSync(tasksDir)) {
             for (const tid of taskIds) {
               const taskPlanFile = join(tasksDir, `${tid}-PLAN.md`);
-              if (!existsSync(taskPlanFile)) {
-                logWarning("recovery", `verify-fail ${unitType} ${unitId}: task plan missing ${taskPlanFile}`);
+              const taskSummaryFile = join(tasksDir, `${tid}-SUMMARY.md`);
+              if (!existsSync(taskPlanFile) && !existsSync(taskSummaryFile)) {
+                logWarning("recovery", `verify-fail ${unitType} ${unitId}: task artifact missing for ${tid}`);
                 return false;
               }
             }

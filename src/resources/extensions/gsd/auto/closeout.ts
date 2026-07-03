@@ -79,13 +79,14 @@ export async function restorePreflightStashOrStop(
 }
 
 /**
- * Run a milestone merge surrounded by preflight stash + always-on postflight
- * pop. The previous code popped the stash only after a successful merge, which
- * leaked `gsd-preflight-stash:M00x:*` entries whenever `mergeAndExit` threw —
- * leaving the user's pre-merge working tree silently stashed away after a
- * merge-conflict or other merge error. This helper restores the stash on
- * every exit path, then surfaces the merge or stash failure (in priority
- * order) as the loop's stop reason.
+ * Run a milestone merge through Worktree Lifecycle's guarded merge option,
+ * which surrounds the inner merge with preflight stash + always-on postflight
+ * pop. The previous closeout code popped the stash only after a successful
+ * merge, which leaked `gsd-preflight-stash:M00x:*` entries whenever
+ * `mergeAndExit` threw — leaving the user's pre-merge working tree silently
+ * stashed away after a merge-conflict or other merge error. Lifecycle now
+ * restores the stash on every attempted merge path, then this adapter surfaces
+ * the merge or stash failure (in priority order) as the loop's stop reason.
  *
  * Returns a `break` action when auto-mode must stop, or `null` when the merge
  * succeeded and the stash (if any) was restored cleanly.
@@ -97,66 +98,45 @@ export async function _runMilestoneMergeWithStashRestore(
 ): Promise<{ action: "break"; reason: string } | null> {
   const { ctx, pi, s, deps } = ic;
 
-  const preflight = deps.preflightCleanRoot(
-    s.originalBasePath || s.basePath,
+  const projectRoot = s.originalBasePath || s.basePath;
+  const mergeResult = deps.lifecycle.exitMilestone(
     milestoneId,
-    ctx.ui.notify.bind(ctx.ui),
+    {
+      merge: true,
+      guardedMerge: {
+        projectRoot,
+        preflightCleanRoot: deps.preflightCleanRoot,
+        postflightPopStash: deps.postflightPopStash,
+      },
+    },
+    ctx.ui,
   );
-  if (preflight.blocked) {
-    const reason = preflight.blockedReason === "unmerged-conflicts"
+
+  if (mergeResult.ok) {
+    await markMilestoneMergedAndRebuild(s);
+    return null;
+  }
+
+  if (mergeResult.reason === "postflight-stash-restore-failed") {
+    await markMilestoneMergedAndRebuild(s);
+  }
+
+  if (mergeResult.reason === "preflight-dirty-overlap" || mergeResult.reason === "preflight-unmerged-conflicts") {
+    const reason = mergeResult.reason === "preflight-unmerged-conflicts"
       ? `Pre-merge unresolved Git conflicts block milestone ${milestoneId}`
       : `Pre-merge dirty working tree overlaps milestone ${milestoneId}`;
     await deps.stopAuto(ctx, pi, reason, {
       preserveCompletedMilestoneBranch: true,
       preserveCloseoutTranscript: options.preserveCloseoutTranscript,
     });
-    return {
-      action: "break",
-      reason: preflight.blockedReason === "unmerged-conflicts"
-        ? "preflight-unmerged-conflicts"
-        : "preflight-dirty-overlap",
-    };
-  }
-
-  let mergeError: unknown = null;
-  const exitResult = deps.lifecycle.exitMilestone(
-    milestoneId,
-    { merge: true },
-    ctx.ui,
-  );
-  if (exitResult.ok) {
-    s.milestoneMergedInPhases = true;
-    try {
-      const projectRoot = s.originalBasePath || s.canonicalProjectRoot || s.basePath;
-      const { rebuildMarkdownProjectionsFromDb } = await import("../commands-maintenance.js");
-      await rebuildMarkdownProjectionsFromDb(projectRoot);
-    } catch (err) {
-      logWarning(
-        "engine",
-        `markdown projection rebuild after milestone merge failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  } else {
-    mergeError = exitResult.cause ?? new Error(`exit ${exitResult.reason}`);
-  }
-
-  // Always attempt to restore the stashed working tree, even on merge error.
-  // postflightPopStash itself does not throw; failures surface via the
-  // PostflightResult.needsManualRecovery flag.
-  let stashResult: PostflightResult | null = null;
-  if (preflight.stashPushed) {
-    stashResult = deps.postflightPopStash(
-      s.originalBasePath || s.basePath,
-      milestoneId,
-      preflight.stashMarker,
-      ctx.ui.notify.bind(ctx.ui),
-    );
+    return { action: "break", reason: mergeResult.reason };
   }
 
   // Merge failure takes priority over stash recovery — the merge is the
   // authoritative gate. If the stash also needed manual recovery, the user
   // already saw the postflightPopStash notify above.
-  if (mergeError) {
+  if (mergeResult.reason === "merge-conflict") {
+    const mergeError = mergeResult.cause;
     if (mergeError instanceof MergeConflictError) {
       // A merge conflict is a recoverable human checkpoint, not an
       // infrastructure failure — the user resolves the conflict and runs
@@ -173,6 +153,10 @@ export async function _runMilestoneMergeWithStashRestore(
       });
       return { action: "break", reason: "merge-conflict" };
     }
+  }
+
+  if (mergeResult.reason === "merge-failed" || mergeResult.reason === "merge-conflict") {
+    const mergeError = mergeResult.cause;
     logError("engine", "Milestone merge failed with non-conflict error", {
       milestone: milestoneId,
       error: String(mergeError),
@@ -190,10 +174,24 @@ export async function _runMilestoneMergeWithStashRestore(
     return { action: "break", reason: "merge-failed" };
   }
 
-  if (stashResult) {
-    return stopOnPostflightRecoveryNeeded(ic, stashResult, milestoneId);
+  if (mergeResult.postflight) {
+    return stopOnPostflightRecoveryNeeded(ic, mergeResult.postflight, milestoneId);
   }
   return null;
+}
+
+async function markMilestoneMergedAndRebuild(s: AutoSession): Promise<void> {
+  s.milestoneMergedInPhases = true;
+  try {
+    const rebuildBasePath = s.originalBasePath || s.canonicalProjectRoot || s.basePath;
+    const { rebuildMarkdownProjectionsFromDb } = await import("../commands-maintenance.js");
+    await rebuildMarkdownProjectionsFromDb(rebuildBasePath);
+  } catch (err) {
+    logWarning(
+      "engine",
+      `markdown projection rebuild after milestone merge failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 export async function _runMilestoneMergeOnceWithStashRestore(

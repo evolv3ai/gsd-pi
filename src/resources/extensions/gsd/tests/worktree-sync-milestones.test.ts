@@ -23,7 +23,7 @@
  *   - syncWorktreeStateBack skips non-standard milestone projection dir names
  */
 
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -142,6 +142,36 @@ describe('worktree-sync-milestones', async () => {
       syncProjectRootToWorktree(mainBase, wtBase, 'M001');
 
       assert.ok(existsSync(join(wtBase, '.gsd', 'gsd.db')), '#2815: non-empty gsd.db preserved after sync');
+    } finally {
+      cleanup(mainBase);
+      cleanup(wtBase);
+    }
+  }
+
+  // ─── 3c. artifact file/dir collisions preserve existing worktree files ─
+  console.log('\n=== 3c. artifact file/dir collisions preserve existing worktree files (#1157) ===');
+  {
+    const mainBase = createBase('main');
+    const wtBase = createBase('wt');
+
+    try {
+      const mainSliceDir = join(mainBase, '.gsd', 'milestones', 'M001', 'slices', 'S01');
+      mkdirSync(join(mainSliceDir, 'S01-SUMMARY.md'), { recursive: true });
+      mkdirSync(join(mainSliceDir, 'S01-ASSESSMENT.md'), { recursive: true });
+
+      const wtSliceDir = join(wtBase, '.gsd', 'milestones', 'M001', 'slices', 'S01');
+      mkdirSync(wtSliceDir, { recursive: true });
+      writeFileSync(join(wtSliceDir, 'S01-SUMMARY.md'), '# Valid summary\n');
+      writeFileSync(join(wtSliceDir, 'S01-ASSESSMENT.md'), '---\nverdict: pass\n---\n# Valid assessment\n');
+
+      syncProjectRootToWorktree(mainBase, wtBase, 'M001');
+
+      const summaryPath = join(wtSliceDir, 'S01-SUMMARY.md');
+      const assessmentPath = join(wtSliceDir, 'S01-ASSESSMENT.md');
+      assert.ok(statSync(summaryPath).isFile(), 'existing SUMMARY.md stays a file');
+      assert.ok(statSync(assessmentPath).isFile(), 'existing ASSESSMENT.md stays a file');
+      assert.equal(readFileSync(summaryPath, 'utf-8'), '# Valid summary\n');
+      assert.equal(readFileSync(assessmentPath, 'utf-8'), '---\nverdict: pass\n---\n# Valid assessment\n');
     } finally {
       cleanup(mainBase);
       cleanup(wtBase);

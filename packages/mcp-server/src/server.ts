@@ -342,6 +342,11 @@ export interface McpToolExtra {
   sendNotification?: (notification: unknown) => void | Promise<void>;
 }
 
+interface ElicitRequestOptions {
+  timeout?: number;
+  signal?: AbortSignal;
+}
+
 interface McpServerInstance {
   tool(
     name: string,
@@ -352,7 +357,7 @@ interface McpServerInstance {
   server: {
     elicitInput(
       params: AskUserQuestionsElicitRequest | ElicitRequestFormParams,
-      options?: unknown,
+      options?: ElicitRequestOptions,
     ): Promise<AskUserQuestionsElicitResult>;
   };
   connect(transport: unknown): Promise<void>;
@@ -602,7 +607,10 @@ export function buildAskUserQuestionsRoundResult(
 }
 
 interface AskUserQuestionsHandlerDeps {
-  elicitInput(params: AskUserQuestionsElicitRequest): Promise<AskUserQuestionsElicitResult>;
+  elicitInput(
+    params: AskUserQuestionsElicitRequest,
+    options?: ElicitRequestOptions,
+  ): Promise<AskUserQuestionsElicitResult>;
   isRemoteConfigured(): boolean;
   tryRemoteQuestions(questions: AskUserQuestion[], signal?: AbortSignal): Promise<RemoteToolResult | null>;
   writeGate?: AskUserQuestionsWriteGateModule | null;
@@ -704,9 +712,9 @@ async function recordAskUserQuestionsGateResult(
  * Detect an elicitation-side timeout error so the handler returns a clean
  * "timed_out" result rather than a raw error the model will retry.
  *
- * The Claude Agent SDK enforces its own ~60s elicitation timeout
- * (`MCP error -32001: Request timed out`); `withElicitTimeout` enforces a
- * longer 10-minute timeout (`… timed out after … minutes`). Both surface as
+ * The MCP SDK surfaces request deadline expiry as
+ * (`MCP error -32001: Request timed out`); `withElicitTimeout` also enforces
+ * the 10-minute user window (`… timed out after … minutes`). Both surface as
  * elicitation fallback errors that should never become a raw `errorContent`
  * response — without recognition they re-throw, skip
  * `recordAskUserQuestionsGateResult`, leave the depth-verification gate
@@ -722,8 +730,22 @@ export function isLocalElicitTimeoutError(err: unknown): boolean {
   );
 }
 
+/**
+ * Detect a client-side cancellation of the tools/call. `withElicitTimeout`
+ * rejects with `<label> cancelled by client` when the tool-call AbortSignal
+ * fires. This is the caller tearing down the request, not a channel failure,
+ * so the handler must return a clean cancelled result rather than re-throwing
+ * into a raw `isError` response that skips `recordAskUserQuestionsGateResult`
+ * and leaves the depth-verification gate pending with no cancellation signal.
+ */
+export function isLocalElicitClientAbortError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.message.toLowerCase().includes('cancelled by client');
+}
+
 function isLocalElicitFallbackError(err: unknown): boolean {
   if (isLocalElicitTimeoutError(err)) return true;
+  if (isLocalElicitClientAbortError(err)) return true;
   if (!(err instanceof Error)) return false;
   const message = err.message.toLowerCase();
   return (
@@ -768,10 +790,16 @@ export async function askUserQuestionsHandler(
     // depth-verification gate when the user is sitting in front of the host.
     let localElicitError: unknown;
     let localElicitTimedOut = false;
+    let localElicitCancelledByClient = false;
     try {
       const elicitation = await withElicitTimeout(
-        deps.elicitInput(buildAskUserQuestionsElicitRequest(questions)),
+        deps.elicitInput(buildAskUserQuestionsElicitRequest(questions), {
+          timeout: ELICIT_TIMEOUT_MS,
+          ...(extra?.signal ? { signal: extra.signal } : {}),
+        }),
         'ask_user_questions',
+        undefined,
+        extra?.signal,
       );
       if (elicitation.action === 'accept' && elicitation.content) {
         const structured: AskUserQuestionsStructuredContent = {
@@ -794,6 +822,11 @@ export async function askUserQuestionsHandler(
       // the user instead of looping on the blocked call (#852).
       if (isLocalElicitTimeoutError(err)) {
         localElicitTimedOut = true;
+      } else if (isLocalElicitClientAbortError(err)) {
+        // The caller aborted the tools/call. Handled below (do not fall
+        // through to remote; the signal is already aborted and no one is
+        // there to answer it either).
+        localElicitCancelledByClient = true;
       } else {
         console.warn(`[gsd:mcp] ask_user_questions local elicitation unavailable; trying remote fallback: ${formatErrorMessage(err)}`);
       }
@@ -813,6 +846,23 @@ export async function askUserQuestionsHandler(
       return {
         content: [{ type: 'text' as const, text: formatAskUserQuestionsTimeoutMessage(localElicitError) }],
         structuredContent: timedOutStructured as unknown as Record<string, unknown>,
+      };
+    }
+
+    // Client aborted the tools/call. Do not fall through to remote (the signal
+    // is already aborted and no one is there to answer). Return a clean
+    // `cancelled` result so the gate hook sees a cancellation (gate stays
+    // pending, model re-asks) instead of a raw `isError` that skips the gate
+    // result recording entirely.
+    if (localElicitCancelledByClient) {
+      const cancelledStructured: AskUserQuestionsStructuredContent = {
+        questions,
+        response: null,
+        cancelled: true,
+      };
+      return {
+        content: [{ type: 'text' as const, text: 'ask_user_questions was cancelled by the client' }],
+        structuredContent: cancelledStructured as unknown as Record<string, unknown>,
       };
     }
 
@@ -1255,7 +1305,7 @@ export async function createMcpServer(
     async (args: Record<string, unknown>, extra?: McpToolExtra) => {
       const { questions } = args as unknown as AskUserQuestionsParams;
       return askUserQuestionsHandler(questions, extra, {
-        elicitInput: (params) => server.server.elicitInput(params),
+        elicitInput: (params, options) => server.server.elicitInput(params, options),
         isRemoteConfigured,
         tryRemoteQuestions,
       });

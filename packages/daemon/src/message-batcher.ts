@@ -39,6 +39,11 @@ export interface BatcherOptions {
   flushIntervalMs?: number;
   /** Max events before triggering an immediate capacity flush. Default: 4 */
   maxBatchSize?: number;
+  /**
+   * Hard cap on buffered events. When exceeded (e.g. Discord API is slow/down and
+   * flushes stall), the oldest events are dropped to bound memory. Default: 1000.
+   */
+  maxBufferSize?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -60,17 +65,20 @@ export class MessageBatcher {
   private readonly logger: BatcherLogger;
   private readonly flushIntervalMs: number;
   private readonly maxBatchSize: number;
+  private readonly maxBufferSize: number;
 
   private buffer: FormattedEvent[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
   private flushing = false;
   private destroyed = false;
+  private saturated = false;
 
   constructor(send: SendFn, logger?: BatcherLogger, options?: BatcherOptions) {
     this.send = send;
     this.logger = logger ?? noopLogger;
     this.flushIntervalMs = options?.flushIntervalMs ?? 1500;
     this.maxBatchSize = options?.maxBatchSize ?? 4;
+    this.maxBufferSize = options?.maxBufferSize ?? 1000;
   }
 
   // -----------------------------------------------------------------------
@@ -114,6 +122,15 @@ export class MessageBatcher {
    */
   enqueue(formatted: FormattedEvent): void {
     if (this.destroyed) return;
+    if (this.buffer.length >= this.maxBufferSize) {
+      // Discord is not draining fast enough; drop oldest to bound memory. Blockers
+      // use enqueueImmediate() and never sit in this buffer, so they're unaffected.
+      this.buffer.shift();
+      if (!this.saturated) {
+        this.saturated = true;
+        this.logger.warn('Batcher buffer saturated; dropping oldest events', { maxBufferSize: this.maxBufferSize });
+      }
+    }
     this.buffer.push(formatted);
     if (this.buffer.length >= this.maxBatchSize) {
       void this.flush();
@@ -152,6 +169,7 @@ export class MessageBatcher {
 
     this.flushing = true;
     const batch = this.buffer.splice(0); // take all
+    this.saturated = false; // buffer drained; allow a fresh saturation warning later
     try {
       await this.doSend(batch);
     } finally {

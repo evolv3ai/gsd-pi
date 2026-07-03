@@ -1,13 +1,15 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 
 import type { DoctorIssue } from "./doctor-types.js";
 import {
+  deleteArtifactByPath,
   getAllMilestones,
   getMilestoneSlices,
   getSliceTasks,
   isDbAvailable,
   isMemoriesFtsAvailable,
+  repairTaskCompletionFromSummary,
   _getAdapter,
 } from "./gsd-db.js";
 import { MEMORIES_FTS_REBUILT_KEY } from "./db-memory-fts-schema.js";
@@ -20,9 +22,45 @@ import { readEvents } from "./workflow-events.js";
 import { flushWorkflowProjections } from "./projection-flush.js";
 import { parseRoadmapSlices } from "./roadmap-slices.js";
 import { parsePlan } from "./parsers-legacy.js";
+import { parseSummary } from "./files.js";
+
+const USER_AUTHORED_ARTIFACT_TYPES = new Set(["CONTEXT", "RESEARCH"]);
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 function relativeFile(basePath: string, filePath: string): string {
   return relative(basePath, filePath).split("\\").join("/");
+}
+
+function normalizedArtifactType(artifactType: string): string {
+  return artifactType.trim().toUpperCase();
+}
+
+function isUserAuthoredArtifactType(artifactType: string): boolean {
+  return USER_AUTHORED_ARTIFACT_TYPES.has(normalizedArtifactType(artifactType));
+}
+
+function userContentRecoveryCommand(artifactType: string): string {
+  return normalizedArtifactType(artifactType) === "CONTEXT" ? "/gsd discuss" : "/gsd auto";
+}
+
+function userContentMissingMessage(path: string, artifactType: string): string {
+  const type = normalizedArtifactType(artifactType) || "UNKNOWN";
+  return `Artifact \`${path}\` is a user-authored ${type} file recorded in the database but missing from disk. Re-run \`${userContentRecoveryCommand(type)}\` in this milestone to regenerate it.`;
+}
+
+function artifactPathRelativeToGsd(artifactPath: string): string {
+  const parts = artifactPath.split(/[\\/]+/);
+  const gsdIndex = parts.lastIndexOf(".gsd");
+  if (gsdIndex < 0 || gsdIndex === parts.length - 1) return artifactPath;
+  return parts.slice(gsdIndex + 1).join("/");
+}
+
+function isPathInside(basePath: string, candidatePath: string): boolean {
+  const rel = relative(basePath, candidatePath);
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 function reportCheckboxDbStatusDivergence(
@@ -123,11 +161,137 @@ function isClearedByMilestoneShellProjectionFlush(
 }
 
 function artifactExistsOnDisk(basePath: string, artifactPath: string): boolean {
-  if (isAbsolute(artifactPath)) return existsSync(artifactPath);
-  return [
-    join(gsdProjectionRoot(basePath), artifactPath),
-    join(gsdRoot(basePath), artifactPath),
-  ].some((candidate) => existsSync(candidate));
+  return resolveArtifactDiskPath(basePath, artifactPath) !== null;
+}
+
+function resolveArtifactDiskPath(basePath: string, artifactPath: string): string | null {
+  const relativeArtifactPath = artifactPathRelativeToGsd(artifactPath);
+  if (isAbsolute(relativeArtifactPath)) {
+    return existsSync(relativeArtifactPath) ? relativeArtifactPath : null;
+  }
+  for (const root of [gsdProjectionRoot(basePath), gsdRoot(basePath)]) {
+    const candidate = join(root, relativeArtifactPath);
+    if (isPathInside(root, candidate) && existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+function taskExistsInPlan(basePath: string, milestoneId: string, sliceId: string, taskId: string): boolean {
+  const planPath = resolveSliceFile(basePath, milestoneId, sliceId, "PLAN");
+  if (!planPath || !existsSync(planPath)) return false;
+  try {
+    return parsePlan(readFileSync(planPath, "utf-8")).tasks.some((task) => task.id === taskId);
+  } catch {
+    return false;
+  }
+}
+
+function isPassingVerificationResult(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  if (/\b(fail(?:ed|ing)?|error|blocked|mixed|untested)\b/.test(normalized)) return false;
+  if (
+    /\b(?:not|never|no|didn't|did\s+not|cannot|can't|won't|couldn't)\s+(?:\w+\s+){0,3}?(?:pass(?:ed|ing)?|success(?:ful)?|succeeded)\b/.test(
+      normalized,
+    )
+  ) {
+    return false;
+  }
+  return /\b(pass(?:ed|ing)?|success(?:ful)?|succeeded)\b/.test(normalized) || normalized === "all-pass";
+}
+
+function readTaskCompletionEvidenceFromSummary(
+  basePath: string,
+  row: {
+    path: string;
+    milestone_id: string;
+    slice_id: string | null;
+    task_id: string | null;
+    task_status: string | null;
+    task_count: number;
+  },
+): {
+  completedAt: string;
+  verificationResult: string;
+  title: string;
+  oneLiner: string;
+  narrative: string;
+  duration: string;
+  blockerDiscovered: boolean;
+  deviations: string;
+  knownIssues: string;
+  keyFiles: string[];
+  keyDecisions: string[];
+  fullSummaryMd: string;
+} | null {
+  if (!row.slice_id || !row.task_id) return null;
+  if (!row.task_status && Number(row.task_count) > 0 && !taskExistsInPlan(basePath, row.milestone_id, row.slice_id, row.task_id)) {
+    return null;
+  }
+  const diskPath = resolveArtifactDiskPath(basePath, row.path);
+  if (!diskPath) return null;
+  try {
+    const fullSummaryMd = readFileSync(diskPath, "utf-8");
+    const summary = parseSummary(fullSummaryMd);
+    const fm = summary.frontmatter;
+    if (fm.id !== row.task_id || fm.parent !== row.slice_id || fm.milestone !== row.milestone_id) return null;
+    if (fm.blocker_discovered) return null;
+    if (!isPassingVerificationResult(fm.verification_result)) return null;
+    const completedAt = fm.completed_at.trim();
+    if (!completedAt || !Number.isFinite(Date.parse(completedAt))) return null;
+    return {
+      completedAt,
+      verificationResult: fm.verification_result.trim(),
+      title: summary.title.replace(new RegExp(`^${escapeRegExp(row.task_id)}:\\s*`), "").trim(),
+      oneLiner: summary.oneLiner,
+      narrative: summary.whatHappened,
+      duration: fm.duration,
+      blockerDiscovered: fm.blocker_discovered,
+      deviations: summary.deviations,
+      knownIssues: summary.knownLimitations,
+      keyFiles: fm.key_files.filter((file) => file !== "(none)"),
+      keyDecisions: fm.key_decisions.filter((decision) => decision !== "(none)"),
+      fullSummaryMd,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function repairTaskArtifactDbStatusDivergence(
+  basePath: string,
+  row: {
+    path: string;
+    milestone_id: string;
+    slice_id: string | null;
+    task_id: string | null;
+    task_status: string | null;
+    task_count: number;
+  },
+): boolean {
+  const evidence = readTaskCompletionEvidenceFromSummary(basePath, row);
+  if (!evidence || !row.slice_id || !row.task_id) return false;
+  repairTaskCompletionFromSummary({
+    milestoneId: row.milestone_id,
+    sliceId: row.slice_id,
+    taskId: row.task_id,
+    ...evidence,
+  });
+  return true;
+}
+
+function artifactDbStatusDivergenceFixable(
+  basePath: string,
+  row: {
+    path: string;
+    milestone_id: string;
+    slice_id: string | null;
+    task_id: string | null;
+    task_status: string | null;
+    task_count: number;
+  },
+): boolean {
+  return readTaskCompletionEvidenceFromSummary(basePath, row) !== null;
 }
 
 function artifactUnitId(row: { milestone_id: string | null; slice_id: string | null; task_id: string | null }): string {
@@ -144,10 +308,56 @@ function artifactScope(row: { milestone_id: string | null; slice_id: string | nu
   return "project";
 }
 
+type ArtifactRow = {
+  path: string;
+  artifact_type: string;
+  milestone_id: string | null;
+  slice_id: string | null;
+  task_id: string | null;
+};
+
+function sameArtifactIdentity(left: ArtifactRow, right: ArtifactRow): boolean {
+  return left.artifact_type === right.artifact_type &&
+    left.milestone_id === right.milestone_id &&
+    left.slice_id === right.slice_id &&
+    left.task_id === right.task_id;
+}
+
+function isMilestonesArtifactPath(artifactPath: string): boolean {
+  return artifactPathRelativeToGsd(artifactPath).startsWith("milestones/");
+}
+
+function expectedMilestonesArtifactPath(row: ArtifactRow): string | null {
+  if (!row.milestone_id) return null;
+  const artifactType = normalizedArtifactType(row.artifact_type);
+  if (!artifactType) return null;
+  if (row.slice_id && row.task_id) {
+    return `milestones/${row.milestone_id}/slices/${row.slice_id}/tasks/${row.task_id}-${artifactType}.md`;
+  }
+  if (row.slice_id) {
+    return `milestones/${row.milestone_id}/slices/${row.slice_id}/${row.slice_id}-${artifactType}.md`;
+  }
+  return `milestones/${row.milestone_id}/${row.milestone_id}-${artifactType}.md`;
+}
+
+function hasPresentMilestonesReplacement(basePath: string, row: ArtifactRow, artifactRows: ArtifactRow[]): boolean {
+  const expectedPath = expectedMilestonesArtifactPath(row);
+  if (expectedPath && artifactExistsOnDisk(basePath, expectedPath)) return true;
+
+  return artifactRows.some(
+    (other) =>
+      other.path !== row.path &&
+      isMilestonesArtifactPath(other.path) &&
+      sameArtifactIdentity(row, other) &&
+      artifactExistsOnDisk(basePath, other.path),
+  );
+}
+
 export async function checkEngineHealth(
   basePath: string,
   issues: DoctorIssue[],
   fixesApplied: string[],
+  options?: { repair?: boolean },
 ): Promise<void> {
   const dbPath = resolveGsdPathContract(basePath).projectDb;
 
@@ -357,6 +567,7 @@ export async function checkEngineHealth(
       }
 
       // f. Artifact rows reference files that no longer exist on disk.
+      const missingUserContentArtifacts: Array<{ path: string; artifactType: string }> = [];
       try {
         const artifactRows = adapter
           .prepare(
@@ -365,29 +576,53 @@ export async function checkEngineHealth(
              WHERE path != ''
              ORDER BY path`,
           )
-          .all() as Array<{
-            path: string;
-            artifact_type: string;
-            milestone_id: string | null;
-            slice_id: string | null;
-            task_id: string | null;
-          }>;
+          .all() as ArtifactRow[];
 
         for (const row of artifactRows) {
           if (artifactExistsOnDisk(basePath, row.path)) continue;
           const unitId = artifactUnitId(row);
+          const issuePath = artifactPathRelativeToGsd(row.path);
+          if (options?.repair && issuePath.startsWith("phases/") && hasPresentMilestonesReplacement(basePath, row, artifactRows)) {
+            // Route the write through the Single Writer owner (gsd-db.ts) instead
+            // of issuing raw DELETE SQL here — doctor is a read-only consumer and
+            // the single-writer invariant forbids write SQL outside the allowlist.
+            deleteArtifactByPath(row.path);
+            fixesApplied.push(`pruned stale flat-phase artifact row ${row.path}`);
+            continue;
+          }
+          if (isUserAuthoredArtifactType(row.artifact_type)) {
+            const artifactType = normalizedArtifactType(row.artifact_type);
+            missingUserContentArtifacts.push({ path: issuePath, artifactType });
+            issues.push({
+              severity: "warning",
+              code: "artifact_user_content_missing",
+              scope: artifactScope(row),
+              unitId,
+              message: userContentMissingMessage(issuePath, artifactType),
+              file: issuePath,
+              fixable: false,
+            });
+            continue;
+          }
           issues.push({
             severity: "error",
             code: "artifact_file_missing",
             scope: artifactScope(row),
             unitId,
-            message: `Artifact ${row.path} is recorded in the database as ${row.artifact_type || "UNKNOWN"} but no matching file exists on disk`,
-            file: row.path,
-            fixable: false,
+            message: `Artifact ${issuePath} is recorded in the database as ${row.artifact_type || "UNKNOWN"} but no matching file exists on disk`,
+            file: issuePath,
+            fixable: issuePath.startsWith("phases/") && hasPresentMilestonesReplacement(basePath, row, artifactRows),
           });
         }
       } catch {
         // Non-fatal — artifact file existence check failed
+      }
+      if (options?.repair) {
+        for (const artifact of missingUserContentArtifacts) {
+          fixesApplied.push(
+            `skipped user-authored ${artifact.artifactType} artifact ${artifact.path} (content cannot be regenerated from the database)`,
+          );
+        }
       }
 
       // g. Completion artifacts disagree with open DB hierarchy rows.
@@ -434,13 +669,29 @@ export async function checkEngineHealth(
               : row.milestone_id;
           if (seen.has(unitId)) continue;
           seen.add(unitId);
+          const fixable = artifactDbStatusDivergenceFixable(basePath, row);
+          let repairFailed = false;
+          if (options?.repair && fixable) {
+            try {
+              if (repairTaskArtifactDbStatusDivergence(basePath, row)) {
+                fixesApplied.push(`repaired task completion from SUMMARY artifact for ${unitId}`);
+                continue;
+              }
+            } catch {
+              repairFailed = true;
+            }
+          }
           issues.push({
             severity: "error",
             code: "artifact_db_status_divergence",
             scope: row.task_id ? "task" : row.slice_id ? "slice" : "milestone",
             unitId,
-            message: `Completion artifact ${row.path} exists while DB state for ${unitId} is still open or missing. Runtime will not import it silently; run explicit recovery/repair after review.`,
-            fixable: false,
+            message: repairFailed
+              ? `Completion artifact ${row.path} exists while DB state for ${unitId} is still open or missing. Doctor found valid SUMMARY completion evidence but could not repair the database state.`
+              : fixable
+              ? `Completion artifact ${row.path} exists while DB state for ${unitId} is still open or missing. Doctor can repair this from the SUMMARY completion evidence.`
+              : `Completion artifact ${row.path} exists while DB state for ${unitId} is still open or missing. Runtime will not import it silently; run explicit recovery/repair after review.`,
+            fixable,
           });
         }
       } catch {

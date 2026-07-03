@@ -15,12 +15,22 @@ engineStrict: true
 #   @mistralai/mistralai  pin to last known-good release (was in npm overrides).
 #   gaxios             pin to last audited release (was in npm overrides).
 #   c8>yargs           c8@11 pulls in yargs<18 which has a prototype-pollution vuln.
+#   discord.js/@discordjs/rest > undici  GHSA-vxpw-j846-p89q (WS DoS) +
+#                      GHSA-p88m-4jfj-68fv (header injection) etc. — both discord.js
+#                      and @discordjs/rest pin undici 6.24.1; 6.27.0 is the patched
+#                      last-of-6.x. Kept on the 6.x line (they expect 6.x); the safe
+#                      root undici@7.x is untouched.
+#   protobufjs         GHSA-f38q-mgvj-vph7 — schema-name prototype shadowing via
+#                      @google/genai; patched in 7.6.3.
 overrides:
   uuid: ^11.1.1
   postcss: ^8.5.10
   "@mistralai/mistralai": 2.2.1
   gaxios: 7.1.4
   "c8>yargs": "^18.0.0"
+  "discord.js>undici": "6.27.0"
+  "@discordjs/rest>undici": "6.27.0"
+  protobufjs: "^7.6.3"
 
 # npm registry rejects tarballs containing hard-linked files (E415). pnpm hard-links
 # by default; copy mode breaks those links so bundledDependencies pack cleanly.

@@ -20,6 +20,7 @@ import {
   clearPendingAutoStart,
   checkAutoStartAfterDiscuss,
 } from "../guided-flow.ts";
+import { closeDatabase, openDatabase } from "../gsd-db.ts";
 
 function pendingInput(basePath: string, milestoneId: string) {
   return {
@@ -34,6 +35,7 @@ function pendingInput(basePath: string, milestoneId: string) {
 
 describe("#2985 Bug 3 — concurrent discuss sessions must be independent", () => {
   beforeEach(() => {
+    closeDatabase();
     clearPendingAutoStart();
   });
 
@@ -75,6 +77,7 @@ describe("#2985 Bug 3 — concurrent discuss sessions must be independent", () =
 
 describe("#2985 Bug 4 — getDiscussionMilestoneId must be keyed by basePath", () => {
   beforeEach(() => {
+    closeDatabase();
     clearPendingAutoStart();
   });
 
@@ -110,6 +113,7 @@ describe("#2985 Bug 4 — getDiscussionMilestoneId must be keyed by basePath", (
 test("checkAutoStartAfterDiscuss ignores missing manifest for single-milestone discuss on established project", () => {
   const base = mkdtempSync(join(tmpdir(), "gsd-auto-start-manifest-"));
   try {
+    openDatabase(":memory:");
     const gsdDir = join(base, ".gsd");
     const milestoneDir = join(gsdDir, "milestones", "M001");
     mkdirSync(milestoneDir, { recursive: true });
@@ -132,6 +136,7 @@ test("checkAutoStartAfterDiscuss ignores missing manifest for single-milestone d
     const started = checkAutoStartAfterDiscuss();
     assert.equal(started, true, "project history alone should not require a manifest");
   } finally {
+    closeDatabase();
     clearPendingAutoStart();
     rmSync(base, { recursive: true, force: true });
   }
@@ -151,6 +156,7 @@ test("checkAutoStartAfterDiscuss(basePath) selects the matching pending entry wh
   }
 
   try {
+    openDatabase(":memory:");
     clearPendingAutoStart();
     writeReadyArtifacts(projectA, "M001");
     writeReadyArtifacts(projectB, "M002");
@@ -172,6 +178,7 @@ test("checkAutoStartAfterDiscuss(basePath) selects the matching pending entry wh
     assert.equal(getDiscussionMilestoneId(projectA), "M001", "projectA should remain pending");
     assert.equal(getDiscussionMilestoneId(projectB), null, "projectB should be cleared after start");
   } finally {
+    closeDatabase();
     clearPendingAutoStart();
     rmSync(projectA, { recursive: true, force: true });
     rmSync(projectB, { recursive: true, force: true });
@@ -183,6 +190,7 @@ test("checkAutoStartAfterDiscuss can accept context handoff without scheduling a
   let waitForIdleCalls = 0;
   const notifications: string[] = [];
   try {
+    openDatabase(":memory:");
     const gsdDir = join(base, ".gsd");
     const milestoneDir = join(gsdDir, "milestones", "M001");
     mkdirSync(milestoneDir, { recursive: true });
@@ -215,6 +223,7 @@ test("checkAutoStartAfterDiscuss can accept context handoff without scheduling a
     assert.equal(waitForIdleCalls, 0, "headless-owned auto start must not schedule guided-flow auto");
     assert.equal(getDiscussionMilestoneId(base), null, "accepted handoff should still be cleared");
   } finally {
+    closeDatabase();
     clearPendingAutoStart();
     rmSync(base, { recursive: true, force: true });
   }

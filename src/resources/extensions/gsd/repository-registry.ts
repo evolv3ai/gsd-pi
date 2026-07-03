@@ -23,6 +23,12 @@ export interface RepositoryRegistry {
 }
 
 export function defaultRepositoryTargets(registry: RepositoryRegistry): string[] {
+  // In parent mode, default to the declared child repositories so work is
+  // attributed to the repo it touches — not silently to the root "project".
+  if (registry.mode === "parent") {
+    return registry.repositories.filter((repo) => repo.id !== "project").map((repo) => repo.id);
+  }
+
   const project = registry.byId.get("project");
   if (project) return [project.id];
   const first = registry.repositories[0];
@@ -78,7 +84,7 @@ export function createRepositoryRegistry(
 ): RepositoryRegistry {
   const contract = resolveGsdPathContract(basePath);
   const projectRoot = contract.isWorktree
-    ? resolveGitWorkingTreeRoot(contract.workRoot) ?? contract.projectRoot
+    ? resolveGitWorkingTreeRoot(contract.workRoot) ?? contract.workRoot
     : contract.projectRoot;
   const mode = workspacePrefs?.mode ?? "project";
   const repoMap = new Map<string, RegisteredRepository>();

@@ -6,7 +6,9 @@ import {
   formatExecuteTaskRecoveryStatus,
   inspectExecuteTaskDurability,
   isInFlightRuntimePhase,
+  readUnitHarnessAbort,
   readUnitRuntimeRecord,
+  recordUnitHarnessAbort,
   writeUnitRuntimeRecord,
 } from "../unit-runtime.ts";
 import { closeDatabase, insertMilestone, insertSlice, insertTask, openDatabase } from "../gsd-db.ts";
@@ -39,6 +41,34 @@ console.log("\n=== runtime record write/read/update ===");
   const loaded = readUnitRuntimeRecord(base, "execute-task", "M100/S02/T09");
   assert.ok(loaded !== null, "record readable");
   assert.deepStrictEqual(loaded!.phase, "wrapup-warning-sent", "updated phase readable");
+}
+
+console.log("\n=== runtime harness abort preservation and explicit clear ===");
+{
+  const startedAt = 3000;
+  recordUnitHarnessAbort(base, "gate-evaluate", "M100/S02/gates+Q3", startedAt, {
+    kind: "tool-error",
+    reason: "Tool execution failed before the unit could complete its gate evaluation.",
+    toolName: "browser_click",
+  });
+
+  const preserved = writeUnitRuntimeRecord(base, "gate-evaluate", "M100/S02/gates+Q3", startedAt, {
+    phase: "wrapup-warning-sent",
+  });
+  assert.equal(preserved.harnessAbort?.kind, "tool-error", "ordinary same-run updates preserve harness abort");
+
+  const cleared = writeUnitRuntimeRecord(base, "gate-evaluate", "M100/S02/gates+Q3", startedAt, {
+    phase: "recovered",
+    harnessAbort: undefined,
+  });
+  assert.equal(cleared.harnessAbort, undefined, "explicit clear removes stale harness abort");
+  assert.equal(
+    readUnitHarnessAbort(base, "gate-evaluate", "M100/S02/gates+Q3", startedAt),
+    null,
+    "cleared harness abort no longer blocks result saves",
+  );
+
+  clearUnitRuntimeRecord(base, "gate-evaluate", "M100/S02/gates+Q3");
 }
 
 console.log("\n=== execute-task durability inspection ===");

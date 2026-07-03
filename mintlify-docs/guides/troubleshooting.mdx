@@ -165,6 +165,14 @@ This check is not auto-fixable. `/gsd doctor fix` will not rewrite either side b
     **Fix:** Close tools using `.gsd/worktrees/*`. Merge salvageable work with `/gsd worktree merge <MID>` or remove a stale worktree with `/gsd worktree remove <MID>`, then run `/gsd doctor fix` and retry `/gsd auto`. If fallback already succeeded, work continues on `milestone/<MID>` in the project root for that milestone.
   </Accordion>
 
+  <Accordion title="Startup fails during flat-phase migration">
+    **Symptoms:** GSD exits during startup with `flat-phase migration failed` or `flat-phase migration required but the workflow database could not be opened`.
+
+    **Cause:** The project still has the legacy nested `.gsd/milestones/` layout. Startup must migrate it to flat `.gsd/phases/` before path resolvers and state checks run. If the SQLite database cannot be opened, filesystem backup/rename/delete work fails, or the rendered projection cannot be verified, GSD stops instead of continuing against mixed disk state.
+
+    **Fix:** Start GSD from the project root and make sure `.gsd/gsd.db*`, `.gsd/`, and `.gsd-backups/` are readable and writable on local disk. Close editors, terminals, sync tools, antivirus/indexers, or other processes that may be locking `.gsd/milestones/`, `.gsd/milestones.migrating/`, `.gsd/phases/`, or `.gsd-backups/`. If the database is damaged or missing, restore it from backup when available; use `/gsd recover --confirm` only after database access is restored and markdown is the source you intentionally want to import. Retry by starting GSD again; interrupted migrations resume from `.gsd/milestones.migrating/`, and `.gsd-backups/migrate-*` snapshots should be kept until startup succeeds and `/gsd doctor` passes.
+  </Accordion>
+
   <Accordion title="Worktree isolation stopped working after upgrade to v2.45+">
     **Cause:** The default `git.isolation` mode changed from `worktree` to `none` in v2.45.0.
 

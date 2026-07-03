@@ -85,6 +85,7 @@ export type DoctorIssueCode =
   | "db_orphaned_slice"
   | "db_done_task_no_summary"
   | "artifact_file_missing"
+  | "artifact_user_content_missing"
   | "artifact_db_status_divergence"
   | "checkbox_db_status_divergence"
   | "completed_milestone_reopened"
@@ -94,7 +95,10 @@ export type DoctorIssueCode =
   | "projection_drift"
   // Milestone filesystem/DB drift (#4996)
   | "orphan_milestone_dir"
-  | "orphan_milestone_db";
+  | "orphan_milestone_db"
+  // Parent-workspace declared repository checks (#818)
+  | "workspace_repo_path_missing"
+  | "workspace_repo_not_a_repo";
 
 /**
  * Issue codes that represent global or completion-critical state.

@@ -1199,11 +1199,11 @@ export function teardownAutoWorktree(
   const branch = autoWorktreeBranch(milestoneId);
   const { preserveBranch = false, preserveWorktree = false } = opts;
   const previousCwd = safeCwd(originalBasePath);
+  let clearActiveWorkspace = true;
 
   // Wrap the entire teardown body in a single try/finally so activeWorkspace
-  // is ALWAYS cleared — even if process.chdir throws (e.g. originalBasePath
-  // was deleted before teardown ran). Previously the finally only covered
-  // removeWorktree, leaving the registry stale on a chdir failure (H3 fix).
+  // is cleared on completion or irrecoverable failure — even if process.chdir
+  // throws (e.g. originalBasePath was deleted before teardown ran).
   try {
     try {
       process.chdir(originalBasePath);
@@ -1245,18 +1245,28 @@ export function teardownAutoWorktree(
     // 3. Remove the worktree unless this exit path explicitly preserves it
     //    (slice-parallel dispatch stops the parent loop but keeps the parent
     //    milestone worktree for restart/re-entry).
+    let worktreeRemoved = preserveWorktree;
     if (!preserveWorktree) {
-      removeWorktree(originalBasePath, milestoneId, {
+      worktreeRemoved = removeWorktree(originalBasePath, milestoneId, {
         branch,
         deleteBranch: !preserveBranch,
       });
+      if (!worktreeRemoved) {
+        logWarning(
+          "worktree",
+          `Worktree removal aborted for ${milestoneId}; uncommitted work was preserved. ` +
+            `Manual quarantine recovery may be needed before retrying teardown.`,
+          { worktree: milestoneId },
+        );
+        clearActiveWorkspace = false;
+      }
     }
 
     // Verify cleanup succeeded — warn if the worktree directory is still on disk.
     // On Windows, bash-based cleanup can silently fail when paths contain
     // backslashes (#1436), leaving ~1 GB+ orphaned directories.
     const wtDir = worktreePath(originalBasePath, milestoneId);
-    if (!preserveWorktree && existsSync(wtDir)) {
+    if (!preserveWorktree && worktreeRemoved && existsSync(wtDir)) {
       logWarning(
         "reconcile",
         `Worktree directory still exists after teardown: ${wtDir}. ` +
@@ -1280,10 +1290,12 @@ export function teardownAutoWorktree(
       }
     }
   } finally {
-    // Clear module state unconditionally — regardless of which step above
-    // failed. A stale activeWorkspace causes getActiveAutoWorktreeContext()
-    // to return wrong data for subsequent operations.
-    setActiveWorkspace(null);
+    // Clear module state when teardown completed or failed irrecoverably.
+    // When removeWorktree returns false (quarantine failure), preserve the
+    // registry so recovery logic still sees the active milestone worktree.
+    if (clearActiveWorkspace) {
+      setActiveWorkspace(null);
+    }
   }
 }
 
@@ -1791,14 +1803,31 @@ export function mergeMilestoneToMain(
     } catch (err) {
       logWarning("worktree", `clearProjectRootStateFiles failed during already-merged cleanup: ${err instanceof Error ? err.message : String(err)}`);
     }
+    let worktreeRemoved = true;
     try {
-      removeWorktree(originalBasePath_, milestoneId, {
+      worktreeRemoved = removeWorktree(originalBasePath_, milestoneId, {
         branch: milestoneBranch,
         deleteBranch: false,
       });
     } catch (err) {
+      worktreeRemoved = false;
       logWarning("worktree", `worktree removal failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+
+    if (!worktreeRemoved) {
+      logWarning(
+        "worktree",
+        `Skipping milestone branch deletion for ${milestoneBranch}; worktree removal was aborted to preserve uncommitted milestone work.`,
+      );
+      nudgeGitBranchCache(previousCwd);
+      try {
+        process.chdir(originalBasePath_);
+      } catch (err) {
+        logWarning("worktree", `chdir to project root after already-merged cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return { commitMessage, pushed: false, prCreated: false, codeFilesChanged: true };
+    }
+
     try {
       nativeBranchDelete(originalBasePath_, milestoneBranch);
     } catch (err) {
@@ -2270,14 +2299,24 @@ export function mergeMilestoneToMain(
 
   const finalizeMilestoneCleanup = (): void => {
     // 12. Remove worktree directory first (must happen before branch deletion)
+    let worktreeRemoved = true;
     try {
-      removeWorktree(originalBasePath_, milestoneId, {
+      worktreeRemoved = removeWorktree(originalBasePath_, milestoneId, {
         branch: milestoneBranch,
         deleteBranch: false,
       });
     } catch (err) {
+      worktreeRemoved = false;
       // Best-effort -- worktree dir may already be gone
       logWarning("worktree", `worktree removal failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    if (!worktreeRemoved) {
+      logWarning(
+        "worktree",
+        `Skipping milestone branch deletion for ${milestoneBranch}; worktree removal was aborted to preserve uncommitted milestone work.`,
+      );
+      return;
     }
 
     // 13. Delete milestone branch (after worktree removal so ref is unlocked)

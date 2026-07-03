@@ -312,7 +312,7 @@ describe("#2945 Bug 3: mergeAndExit must teardown worktree after successful merg
       } as unknown as AutoSession;
 
       const deps = {
-        mergeMilestoneToMain: () => ({ pushed: false, codeFilesChanged: true }),
+        mergeMilestone: () => ({ pushed: false, codeFilesChanged: true }),
         worktreeProjection: new WorktreeStateProjection(),
         gitServiceFactory: () => ({}) as unknown as ReturnType<
           import("../worktree-lifecycle.js").WorktreeLifecycleDeps["gitServiceFactory"]

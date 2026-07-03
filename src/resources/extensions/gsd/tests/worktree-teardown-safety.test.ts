@@ -20,6 +20,7 @@ import {
   existsSync,
   realpathSync,
   readFileSync,
+  readdirSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -129,6 +130,37 @@ describe("worktree-teardown-safety", () => {
       readFileSync(join(externalDir, "state.json"), "utf-8"),
       '{"critical": true}',
       "external directory contents intact after teardown",
+    );
+  });
+
+  it("removeWorktree quarantines dirty worktree contents before forced cleanup", () => {
+    const tempDir = createTempRepo();
+    dirs.push(tempDir);
+
+    const wt = createWorktree(tempDir, "dirty-wt");
+    writeFileSync(join(wt.path, "generated-feature.ts"), "export const answer = 42;\n");
+    writeFileSync(join(wt.path, "README.md"), "# changed in worktree\n");
+
+    removeWorktree(tempDir, "dirty-wt", { deleteBranch: false });
+
+    assertTrue(!existsSync(wt.path), "original dirty worktree path removed after quarantine");
+    const quarantineRoot = join(tempDir, ".gsd", "quarantine", "worktrees");
+    const entries = readdirSync(quarantineRoot).filter((entry) => entry.startsWith("dirty-wt-"));
+    assertEq(entries.length, 1, "dirty worktree snapshot quarantined");
+    const quarantineDir = join(quarantineRoot, entries[0]!);
+    assertEq(
+      readFileSync(join(quarantineDir, "generated-feature.ts"), "utf-8"),
+      "export const answer = 42;\n",
+      "untracked source file survives in quarantine",
+    );
+    assertEq(
+      readFileSync(join(quarantineDir, "README.md"), "utf-8"),
+      "# changed in worktree\n",
+      "modified tracked file survives in quarantine",
+    );
+    assertTrue(
+      existsSync(join(quarantineDir, ".gsd-quarantine.json")),
+      "quarantine metadata written",
     );
   });
 

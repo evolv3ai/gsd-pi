@@ -23,10 +23,12 @@ an 875-line function that owns, in one implementation:
 - push when `prefs.auto_push` (`auto-worktree.ts:2261`)
 - PR creation when `prefs.auto_pr` (`auto-worktree.ts:2279`, shells `gh`)
 
-Above it, `auto/phases.ts` wraps the call with stash-restore choreography
-(`_runMilestoneMergeWithStashRestore`, phases.ts:606) invoked from **four**
-sites (1197, 1302, 1405, 3189). The stash discipline — part of the merge
-verb's own contract — lives in the caller.
+Above it, the auto closeout adapter still translates merge outcomes into loop
+policy, but the stash-restore choreography itself now enters the Worktree
+Lifecycle module through the `exitMilestone(..., { merge: true, guardedMerge })` interface.
+The lifecycle verb owns the preflight → merge → postflight ordering, including
+the invariant that a successful local merge is recorded before a postflight
+stash recovery stop.
 
 ### Two distinct concerns fused
 
@@ -42,12 +44,14 @@ ADR-032) can publish without dragging the merge machinery along.
 
 ### 1. The merge verb's full contract moves inside Worktree Lifecycle
 
-`exitMilestone({ merge: true })` absorbs the stash-restore choreography that
-`phases.ts` currently wraps around it. The four call sites collapse to plain
-`exitMilestone` calls; `_runMilestoneMergeWithStashRestore` is deleted. The
-merge implementation (dirty-commit, squash, conflict classification) moves
-out of `auto-worktree.ts` into the Worktree Lifecycle module, making the
-CONTEXT.md ownership statement true.
+The Worktree Lifecycle module absorbs the stash-restore choreography that the
+auto closeout path used to carry inline. The guarded path now enters through
+`exitMilestone(..., { merge: true, guardedMerge })`, so the merge verb owns preflight
+dirty/conflict checks, always-attempted postflight stash restore after an
+attempted merge, and typed merge/postflight results. The remaining end-state is
+to move the merge implementation (dirty-commit, squash, conflict
+classification) out of `auto-worktree.ts`, making the CONTEXT.md ownership
+statement true.
 
 Conflict outcomes remain typed results handed to Recovery Classification —
 the verb reports; it does not decide retry/stop.
@@ -83,27 +87,36 @@ network/credential stubs; publication tests stop needing merge fixtures.
 - **Locality:** merge bugs (stash, dirty-tree, conflict ordering — the #4704
   class) concentrate in the Worktree Lifecycle module; publication bugs
   (auth, remote, `gh` availability) concentrate in Publication.
-- **4 call sites → 1 verb.** `phases.ts` sheds ~100 lines of choreography it
-  never owned.
+- **Lifecycle-owned guard ordering.** The preflight/merge/postflight stash
+  discipline is now shared behind the Worktree Lifecycle seam instead of being
+  open-coded in auto closeout.
 - **`mergeMilestoneToMain` shrinks** from 875 lines to a merge core; the
   push/PR tail (~100 lines) moves behind `publish`.
 - **Interactive parity:** ADR-032's interactive adapter publishes through the
   same seam auto mode uses — `auto_push`/`auto_pr` stop being auto-only
   preferences in practice.
 - **Migration order:** extract Publication first (mechanical tail-split, low
-  blast radius), then move the stash choreography into `exitMilestone`, then
-  relocate the merge core. Each step is independently shippable and
-  behaviour-neutral.
+  blast radius), move the stash choreography behind the Lifecycle seam, fold it
+  into `exitMilestone`, then relocate the merge core. Each step is
+  independently shippable and behaviour-neutral.
 
 ## Implementation status (2026-06-10)
 
-**Shipped this pass:** step 1 of the migration — `publication.ts`
+**Shipped 2026-06-10:** step 1 of the migration — `publication.ts`
 (`publishMilestone`, `gitRemoteExists`) extracted from the tail of
 `mergeMilestoneToMain`, behaviour-neutral (same gating truth table, same
 non-fatal failure handling, same log messages). Tested against local bare-
 remote git fixtures (`tests/publication.test.ts`) — push, suppression under
 auto-PR, nothing-to-commit short-circuit, missing remote.
 
-**Remaining:** step 2 (absorb the stash-restore choreography from the four
-`auto/phases.ts` call sites into `exitMilestone`) and step 3 (relocate the
-merge core out of `auto-worktree.ts` into the Worktree Lifecycle module).
+**Shipped 2026-07-02:** the stash guard moved behind the Worktree Lifecycle
+seam. Auto closeout first consumed it through the internal
+`runGuardedMilestoneMerge` helper, then the guard was folded into the
+`exitMilestone(..., { merge: true, guardedMerge })` interface. Auto closeout now consumes
+the lifecycle verb's typed result instead of owning the merge transaction
+ordering directly, and marks the milestone merge complete before stopping for
+postflight stash recovery so a resume does not re-run an already completed
+merge.
+
+**Remaining:** relocate the merge core out of `auto-worktree.ts` into the
+Worktree Lifecycle module.

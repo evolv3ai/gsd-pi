@@ -40,6 +40,7 @@ for (const scopeDir of Object.values(scopeDirs)) {
 
 let linked = 0
 let copied = 0
+const failures = []
 for (const pkg of getLinkablePackages()) {
   const source = pkg.path
   const scopeDir = scopeDirs[pkg.scope]
@@ -79,8 +80,9 @@ for (const pkg of getLinkablePackages()) {
     try {
       cpSync(source, target, { recursive: true })
       copied++
-    } catch {
-      // Non-fatal — loader.ts will emit a clearer error if resolution still fails
+    } catch (err) {
+      // Both symlink and copy failed — this package will not resolve at runtime.
+      failures.push({ pkg: `${pkg.scope}/${pkg.name}`, reason: err && err.message ? err.message : String(err) })
     }
   }
 }
@@ -101,11 +103,19 @@ for (const name of ['pi-agent-core', 'pi-ai', 'pi-tui', 'pi-coding-agent']) {
     try {
       cpSync(source, target, { recursive: true })
       copied++
-    } catch {
-      // non-fatal
+    } catch (err) {
+      // Both symlink and copy failed — this package will not resolve at runtime.
+      failures.push({ pkg: `@earendil-works/${name}`, reason: err && err.message ? err.message : String(err) })
     }
   }
 }
 
 if (linked > 0) process.stderr.write(`  Linked ${linked} workspace package${linked !== 1 ? 's' : ''}\n`)
 if (copied > 0) process.stderr.write(`  Copied ${copied} workspace package${copied !== 1 ? 's' : ''} (symlinks unavailable)\n`)
+if (failures.length > 0) {
+  process.stderr.write(`  WARNING: ${failures.length} workspace package${failures.length !== 1 ? 's' : ''} could not be linked or copied:\n`)
+  for (const f of failures) {
+    process.stderr.write(`    - ${f.pkg}: ${f.reason}\n`)
+  }
+  process.stderr.write(`  gsd will fail to start until these resolve. On Windows, enable Developer Mode or run with admin rights. See https://github.com/open-gsd/gsd-pi\n`)
+}

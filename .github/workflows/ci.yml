@@ -60,7 +60,7 @@ jobs:
           git -c protocol.version=2 fetch --no-tags --prune origin \
             '+refs/heads/*:refs/remotes/origin/*' \
             '+refs/tags/*:refs/tags/*' \
-            "+${GITHUB_REF}:refs/checkout-ref"
+            "+${GITHUB_SHA}:refs/checkout-ref"
           git checkout --force --detach "$GITHUB_SHA"
 
       - name: Prepare diff base for scans
@@ -122,7 +122,7 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
           git -c protocol.version=2 fetch --no-tags --prune --depth="$FETCH_DEPTH" origin \
-            "+${GITHUB_REF}:refs/checkout-ref"
+            "+${GITHUB_SHA}:refs/checkout-ref"
           git checkout --force --detach "$GITHUB_SHA"
 
       - name: Setup pnpm
@@ -236,7 +236,7 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
           git -c protocol.version=2 fetch --no-tags --prune --depth="$FETCH_DEPTH" origin \
-            "+${GITHUB_REF}:refs/checkout-ref"
+            "+${GITHUB_SHA}:refs/checkout-ref"
           git checkout --force --detach "$GITHUB_SHA"
 
       - name: Setup pnpm
@@ -326,7 +326,7 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
           git -c protocol.version=2 fetch --no-tags --prune --depth="$FETCH_DEPTH" origin \
-            "+${GITHUB_REF}:refs/checkout-ref"
+            "+${GITHUB_SHA}:refs/checkout-ref"
           git checkout --force --detach "$GITHUB_SHA"
 
       - name: Setup pnpm

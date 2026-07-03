@@ -104,8 +104,9 @@ Extending ADR-016's fail-closed principle to completion: when the interactive
 adapter closes a milestone boundary and `git.isolation !== "none"`, it
 computes a **Closeout Git Verdict**:
 
-- Work already in a proven milestone worktree/branch → merge via
-  `exitMilestone({ merge: true })`, exactly as auto mode.
+- Work already in a proven milestone worktree/branch → merge via the
+  Worktree Lifecycle `exitMilestone` verb. Auto-mode closeout uses the same
+  verb with its guarded merge option for preflight/postflight stash discipline.
 - Work on the integration branch with uncommitted changes (the observed
   failure) → commit on the current branch, record the verdict as
   `isolation-bypassed`, and surface a **Needs Attention** notice naming the

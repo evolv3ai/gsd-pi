@@ -145,11 +145,25 @@ Auto mode was paused, stopped, or crashed mid-milestone, and the work is still o
 
 **Prevent recurrence:** If your milestones are large or sessions are frequently interrupted, consider setting `git.collapse_cadence: "slice"` in preferences — validated slices merge to main immediately, shrinking the orphan window from milestone-size to slice-size. See [Git & Worktrees](../configuration/git-settings.md#collapse-cadence).
 
+### Forced worktree removal created a quarantine
+
+When `/gsd worktree remove <MID> --force` finds uncommitted files, GSD preserves them under `.gsd/quarantine/worktrees/<name>-<timestamp>/` instead of deleting them. The quarantine contains a `.gsd-quarantine.json` file with the original worktree path, branch, timestamp, and `git status --porcelain` output.
+
+**Fix:** Inspect the quarantined files and copy or merge anything you still need. The milestone branch is preserved, so you can also recover from the branch if needed. Delete the quarantine directory only after you have confirmed there is nothing else to salvage.
+
 ### Milestone entry blocked by degraded worktree isolation
 
 Auto mode fails milestone entry with an isolation-degraded warning, often after a previous worktree cleanup or create problem on Windows.
 
 **Fix:** Close editors, terminals, antivirus tools, or Git clients that may be locking `.gsd/worktrees/*` paths. Merge salvageable work with `/gsd worktree merge <MID>` or remove a stale worktree with `/gsd worktree remove <MID>`, then run `/gsd doctor fix` and retry `/gsd auto`. If fallback already succeeded, work continues on `milestone/<MID>` in the project root for that milestone.
+
+### Startup fails during flat-phase migration
+
+GSD exits during startup with `flat-phase migration failed` or `flat-phase migration required but the workflow database could not be opened`.
+
+**Cause:** The project still has the legacy nested `.gsd/milestones/` layout. Startup must migrate it to flat `.gsd/phases/` before path resolvers and state checks run. If the SQLite database cannot be opened, filesystem backup/rename/delete work fails, or the rendered projection cannot be verified, GSD stops instead of continuing against mixed disk state.
+
+**Fix:** Start GSD from the project root and make sure `.gsd/gsd.db*`, `.gsd/`, and `.gsd-backups/` are readable and writable on local disk. Close editors, terminals, sync tools, antivirus/indexers, or other processes that may be locking `.gsd/milestones/`, `.gsd/milestones.migrating/`, `.gsd/phases/`, or `.gsd-backups/`. If the database is damaged or missing, restore it from backup when available; use `/gsd recover --confirm` only after database access is restored and markdown is the source you intentionally want to import. Retry by starting GSD again; interrupted migrations resume from `.gsd/milestones.migrating/`, and `.gsd-backups/migrate-*` snapshots should be kept until startup succeeds and `/gsd doctor` passes.
 
 ### `orphan_milestone_dir` doctor warning
 

@@ -13,7 +13,8 @@ export type KnownApi =
 	| "anthropic-vertex"
 	| "bedrock-converse-stream"
 	| "google-generative-ai"
-	| "google-vertex";
+	| "google-vertex"
+	| "cursor-stream-json";
 
 export type Api = KnownApi | (string & {});
 
@@ -54,7 +55,8 @@ export type KnownProvider =
 	| "xiaomi"
 	| "xiaomi-token-plan-cn"
 	| "xiaomi-token-plan-ams"
-	| "xiaomi-token-plan-sgp";
+	| "xiaomi-token-plan-sgp"
+	| "cursor-agent";
 export type Provider = KnownProvider | string;
 
 export type KnownImagesProvider = "openrouter";

@@ -315,8 +315,19 @@ async function handleRemove(args: string, ctx: ExtensionCommandContext): Promise
   }
 
   try {
-    removeWorktree(basePath, name, { deleteBranch: true });
-    ctx.ui.notify(`Removed worktree ${name}.`, "info");
+    const removed = removeWorktree(basePath, name, { deleteBranch: true });
+    if (removed) {
+      ctx.ui.notify(`Removed worktree ${name}.`, "info");
+    } else {
+      ctx.ui.notify(
+        [
+          `Worktree removal aborted for "${name}" to preserve uncommitted changes.`,
+          "",
+          "Manual quarantine recovery may be needed before retrying removal.",
+        ].join("\n"),
+        "warning",
+      );
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     ctx.ui.notify(

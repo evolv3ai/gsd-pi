@@ -722,3 +722,368 @@ test("ensureCodebaseMapFresh: uses TTL cache before enumerating files", () => {
     cleanup(base);
   }
 });
+
+// ─── Workspace-aware (parent mode) ───────────────────────────────────────
+
+/**
+ * Build a parent workspace: a parent git repo whose .gsd/PREFERENCES.md declares
+ * child repositories, each child being its own separate git repo nested inside.
+ */
+function makeTmpParentWorkspace(children: string[]): string {
+  const base = join(tmpdir(), `gsd-codebase-parent-${randomUUID()}`);
+  mkdirSync(join(base, ".gsd"), { recursive: true });
+  execSync("git init", { cwd: base, stdio: "ignore" });
+
+  const repoLines = children.map((id) => `    ${id}:\n      path: ${id}`).join("\n");
+  writeFileSync(
+    join(base, ".gsd", "PREFERENCES.md"),
+    `---\nversion: 1\nworkspace:\n  mode: parent\n  repositories:\n${repoLines}\n---\n`,
+    "utf-8",
+  );
+
+  for (const child of children) {
+    const childPath = join(base, child);
+    mkdirSync(childPath, { recursive: true });
+    execSync("git init", { cwd: childPath, stdio: "ignore" });
+  }
+  return base;
+}
+
+function addChildFile(base: string, child: string, path: string, content = ""): void {
+  const childRoot = join(base, child);
+  const fullPath = join(childRoot, path);
+  mkdirSync(join(fullPath, ".."), { recursive: true });
+  writeFileSync(fullPath, content || `// ${child}/${path}\n`, "utf-8");
+  execSync(`git add "${path}"`, { cwd: childRoot, stdio: "ignore" });
+}
+
+test("workspace-aware: parent mode enumerates each declared child repo under a repo heading", () => {
+  const base = makeTmpParentWorkspace(["frontend", "backend"]);
+  try {
+    addChildFile(base, "frontend", "src/App.tsx");
+    addChildFile(base, "backend", "src/server.ts");
+
+    const result = generateCodebaseMap(base);
+
+    // Both repos appear as labelled sections.
+    assert.match(result.content, /## \[frontend\]/);
+    assert.match(result.content, /## \[backend\]/);
+    // Child files are rewritten to workspace-relative paths.
+    assert.match(result.content, /`frontend\/src\/App\.tsx`/);
+    assert.match(result.content, /`backend\/src\/server\.ts`/);
+    assert.equal(result.fileCount, 2);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("workspace-aware: metadata records the repositories whose files appear in the map", () => {
+  const base = makeTmpParentWorkspace(["frontend", "backend"]);
+  try {
+    addChildFile(base, "frontend", "src/App.tsx");
+    addChildFile(base, "backend", "src/server.ts");
+
+    const result = generateCodebaseMap(base);
+    const metadata = parseCodebaseMapMetadata(result.content);
+
+    assert.ok(metadata, "metadata should be present");
+    assert.deepEqual(metadata?.repositories?.sort(), ["backend", "frontend"]);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("workspace-aware: parseCodebaseMap recovers descriptions across repo sections", () => {
+  const base = makeTmpParentWorkspace(["frontend", "backend"]);
+  try {
+    addChildFile(base, "frontend", "src/App.tsx");
+    addChildFile(base, "backend", "src/server.ts");
+
+    // Seed descriptions keyed by the workspace-relative paths.
+    const descriptions = new Map<string, string>([
+      ["frontend/src/App.tsx", "React entry"],
+      ["backend/src/server.ts", "Express API"],
+    ]);
+    const result = generateCodebaseMap(base, undefined, descriptions);
+    writeCodebaseMap(base, result.content);
+
+    const parsed = parseCodebaseMap(readCodebaseMap(base)!);
+    assert.equal(parsed.get("frontend/src/App.tsx"), "React entry");
+    assert.equal(parsed.get("backend/src/server.ts"), "Express API");
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("workspace-aware: project mode (no declared children) stays single-section", () => {
+  // A plain single repo with no workspace config must render exactly as before.
+  const base = makeTmpRepo();
+  try {
+    addFile(base, "src/main.ts");
+
+    const result = generateCodebaseMap(base);
+
+    assert.doesNotMatch(result.content, /## \[/);
+    assert.match(result.content, /`src\/main\.ts`/);
+    const metadata = parseCodebaseMapMetadata(result.content);
+    assert.equal(metadata?.repositories, undefined);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("workspace-aware: updateCodebaseMap tracks child-repo file additions", () => {
+  const base = makeTmpParentWorkspace(["frontend"]);
+  try {
+    addChildFile(base, "frontend", "src/App.tsx");
+    const first = updateCodebaseMap(base);
+    writeCodebaseMap(base, first.content);
+    assert.equal(first.added, 1);
+
+    addChildFile(base, "frontend", "src/index.tsx");
+    const second = updateCodebaseMap(base);
+    assert.equal(second.added, 1);
+    assert.equal(second.removed, 0);
+    assert.equal(second.fileCount, 2);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("workspace-aware: workspace-relative exclude patterns filter child-repo files", () => {
+  // Regression guard: exclude patterns like `frontend/` are workspace-relative,
+  // so they must be matched against the rewritten path, not the child-relative one.
+  const base = makeTmpParentWorkspace(["frontend", "backend"]);
+  try {
+    addChildFile(base, "frontend", "src/App.tsx");
+    addChildFile(base, "backend", "src/server.ts");
+
+    const result = generateCodebaseMap(base, { excludePatterns: ["frontend/"] });
+
+    assert.doesNotMatch(result.content, /frontend\/src\/App\.tsx/);
+    assert.match(result.content, /backend\/src\/server\.ts/);
+    assert.equal(result.fileCount, 1);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("workspace-aware: maxFiles cap does not starve child repos for the project repo", () => {
+  // The implicit project repo is enumerated alongside children; the cap must be
+  // applied fairly (round-robin) so a large project repo cannot crowd out children.
+  const base = makeTmpParentWorkspace(["frontend", "backend"]);
+  try {
+    addChildFile(base, "frontend", "a.ts");
+    addChildFile(base, "frontend", "b.ts");
+    addChildFile(base, "backend", "c.ts");
+
+    // Cap at 2 files — with fair distribution both repos should appear.
+    const result = generateCodebaseMap(base, { maxFiles: 2 });
+    const repoSections = (result.content.match(/^## \[.+\]/gm) ?? []).length;
+
+    assert.equal(result.fileCount, 2);
+    assert.ok(repoSections >= 2, "both child repos should be represented under a tight cap");
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("workspace-aware: overlapping paths dedupe without falsely reporting truncation", () => {
+  // Regression guard: a path tracked by both the implicit project repo and a child
+  // repo collapses to one workspace-relative entry. Deduplicated duplicates must not
+  // count toward the maxFiles cap, so the map must not be flagged as truncated.
+  const base = join(tmpdir(), `gsd-codebase-parent-${randomUUID()}`);
+  mkdirSync(join(base, ".gsd"), { recursive: true });
+  execSync("git init", { cwd: base, stdio: "ignore" });
+  writeFileSync(
+    join(base, ".gsd", "PREFERENCES.md"),
+    `---\nversion: 1\nworkspace:\n  mode: parent\n  repositories:\n    lib:\n      path: lib\n---\n`,
+    "utf-8",
+  );
+  try {
+    // The project repo tracks lib/util.ts before lib becomes its own repo; the child
+    // repo then tracks util.ts, so both resolve to the same workspace path lib/util.ts.
+    addFile(base, "lib/util.ts");
+    execSync("git init", { cwd: join(base, "lib"), stdio: "ignore" });
+    execSync("git add util.ts", { cwd: join(base, "lib"), stdio: "ignore" });
+
+    const result = generateCodebaseMap(base);
+
+    assert.equal(result.fileCount, 1);
+    assert.equal(result.truncated, false);
+    assert.equal((result.content.match(/`lib\/util\.ts`/g) ?? []).length, 1);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("workspace-aware: project directories interleaving child prefixes stay under one heading", () => {
+  // Regression guard: the implicit project repo has an empty prefix, so its
+  // root-level dirs (aaa/, zzz/) sort lexically around a child prefix (mmm/).
+  // Groups must be ordered per repo so `## [project]` is emitted exactly once.
+  const base = makeTmpParentWorkspace(["mmm"]);
+  try {
+    addFile(base, "aaa/x.ts"); // project repo, sorts before "mmm"
+    addFile(base, "zzz/y.ts"); // project repo, sorts after "mmm"
+    addChildFile(base, "mmm", "src/thing.ts");
+
+    const result = generateCodebaseMap(base);
+
+    const projectHeadings = (result.content.match(/^## \[project\]$/gm) ?? []).length;
+    const mmmHeadings = (result.content.match(/^## \[mmm\]$/gm) ?? []).length;
+    const allHeadings = (result.content.match(/^## \[.+\]$/gm) ?? []).length;
+
+    assert.equal(projectHeadings, 1, "project section must not be split across headings");
+    assert.equal(mmmHeadings, 1);
+    assert.equal(allHeadings, 2);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("workspace-aware: renaming a declared repo id invalidates map freshness", () => {
+  // Regression guard: repo identity is rendered into the map, so renaming a repo id
+  // (path unchanged → identical file paths) must be caught by the freshness
+  // fingerprint rather than leaving a stale `## [old-id]` heading in place.
+  const base = makeTmpParentWorkspace(["frontend"]);
+  try {
+    addChildFile(base, "frontend", "src/App.tsx");
+
+    ensureCodebaseMapFresh(base, undefined, { ttlMs: 0, force: true });
+    assert.match(readCodebaseMap(base)!, /^## \[frontend\]$/m);
+
+    // Rename the repo id to `web`; the path (and therefore the file paths) is unchanged.
+    writeFileSync(
+      join(base, ".gsd", "PREFERENCES.md"),
+      `---\nversion: 1\nworkspace:\n  mode: parent\n  repositories:\n    web:\n      path: frontend\n---\n`,
+      "utf-8",
+    );
+
+    const refreshed = ensureCodebaseMapFresh(base, undefined, { ttlMs: 0, force: true });
+    const written = readCodebaseMap(base)!;
+
+    assert.equal(refreshed.status, "updated");
+    assert.match(written, /^## \[web\]$/m);
+    assert.doesNotMatch(written, /^## \[frontend\]$/m);
+    assert.deepEqual(parseCodebaseMapMetadata(written)?.repositories, ["web"]);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("single-repo: directory order stays byte-identical code-unit sort (not locale-aware)", () => {
+  // Byte-identical single-repo invariant: pre-workspace output ordered
+  // directories with a bare `.sort()` (UTF-16 code-unit order), so uppercase
+  // sorts before lowercase ("Zoo" < "apple"). A locale-aware comparator inverts
+  // these and silently changes project-mode CODEBASE.md, so guard the ordering.
+  const base = makeTmpRepo();
+  try {
+    addFile(base, "Zoo/keeper.ts"); // 'Z' (0x5A) < 'a' (0x61) → sorts first
+    addFile(base, "apple/tree.ts");
+
+    const content = generateCodebaseMap(base).content;
+    const zooIdx = content.indexOf("### Zoo/");
+    const appleIdx = content.indexOf("### apple/");
+
+    assert.notEqual(zooIdx, -1);
+    assert.notEqual(appleIdx, -1);
+    assert.ok(zooIdx < appleIdx, "code-unit order must place Zoo/ before apple/");
+    // Project mode emits no repo partition heading.
+    assert.doesNotMatch(content, /^## \[.+\]$/m);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("workspace-aware: an invalid workspace registry surfaces an error instead of silently falling back", () => {
+  // Regression guard: a broken parent-mode config (here a child path escaping the
+  // project root) must propagate as an error. Swallowing it and falling back to a
+  // single-root map would silently drop every child repo from planning context.
+  const base = makeTmpRepo();
+  try {
+    addFile(base, "src/main.ts");
+    writeFileSync(
+      join(base, ".gsd", "PREFERENCES.md"),
+      `---\nversion: 1\nworkspace:\n  mode: parent\n  repositories:\n    frontend:\n      path: ../escapes-root\n---\n`,
+      "utf-8",
+    );
+
+    assert.throws(() => generateCodebaseMap(base), /resolves outside project root/);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("workspace-aware: files sharing a directory across repos keep their own repo heading", () => {
+  // Regression guard: the implicit project repo and a child repo can own different
+  // files under the same workspace-relative directory (lib/). Groups are keyed by
+  // (repo, dir), so each file must render under its own `## [repo-id]` heading
+  // instead of collapsing into one section labelled with a single (wrong) repo.
+  const base = join(tmpdir(), `gsd-codebase-parent-${randomUUID()}`);
+  mkdirSync(join(base, ".gsd"), { recursive: true });
+  execSync("git init", { cwd: base, stdio: "ignore" });
+  writeFileSync(
+    join(base, ".gsd", "PREFERENCES.md"),
+    `---\nversion: 1\nworkspace:\n  mode: parent\n  repositories:\n    lib:\n      path: lib\n---\n`,
+    "utf-8",
+  );
+  try {
+    // Project repo tracks lib/app.ts before lib becomes its own repo; the child
+    // repo then tracks helper.ts → workspace path lib/helper.ts. Different files,
+    // same directory, different repos.
+    addFile(base, "lib/app.ts");
+    execSync("git init", { cwd: join(base, "lib"), stdio: "ignore" });
+    writeFileSync(join(base, "lib", "helper.ts"), "// helper\n", "utf-8");
+    execSync("git add helper.ts", { cwd: join(base, "lib"), stdio: "ignore" });
+
+    const content = generateCodebaseMap(base).content;
+
+    // Both files present, each under its own repo section (not merged under one).
+    assert.match(content, /## \[project\]/);
+    assert.match(content, /## \[lib\]/);
+    const projectIdx = content.indexOf("## [project]");
+    const appIdx = content.indexOf("`lib/app.ts`");
+    const libIdx = content.indexOf("## [lib]");
+    const helperIdx = content.indexOf("`lib/helper.ts`");
+    assert.ok(
+      projectIdx < appIdx && appIdx < libIdx && libIdx < helperIdx,
+      "lib/app.ts must sit under [project] and lib/helper.ts under [lib]",
+    );
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("ensureCodebaseMapFresh: editing declared repos within the TTL window bypasses the cache", () => {
+  // Regression guard: the freshness TTL cache key folds in the workspace signature
+  // (mode + declared repos). Adding a child repo must miss the cache and re-enumerate
+  // rather than serve a stale map that omits the new repo until the TTL expires.
+  const base = makeTmpParentWorkspace(["frontend"]);
+  try {
+    addChildFile(base, "frontend", "src/App.tsx");
+
+    const initial = ensureCodebaseMapFresh(base, undefined, { ttlMs: 60_000 });
+    assert.equal(initial.status, "generated");
+    assert.doesNotMatch(readCodebaseMap(base)!, /## \[backend\]/);
+
+    // Declare a second child repo and back it with a real nested repo + file.
+    mkdirSync(join(base, "backend"), { recursive: true });
+    execSync("git init", { cwd: join(base, "backend"), stdio: "ignore" });
+    addChildFile(base, "backend", "src/server.ts");
+    writeFileSync(
+      join(base, ".gsd", "PREFERENCES.md"),
+      `---\nversion: 1\nworkspace:\n  mode: parent\n  repositories:\n    frontend:\n      path: frontend\n    backend:\n      path: backend\n---\n`,
+      "utf-8",
+    );
+
+    // Same TTL window, no force: the changed workspace signature must miss the cache.
+    const refreshed = ensureCodebaseMapFresh(base, undefined, { ttlMs: 60_000 });
+    const written = readCodebaseMap(base)!;
+
+    assert.equal(refreshed.status, "updated");
+    assert.match(written, /## \[backend\]/);
+    assert.match(written, /`backend\/src\/server\.ts`/);
+  } finally {
+    cleanup(base);
+  }
+});

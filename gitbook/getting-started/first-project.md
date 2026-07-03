@@ -108,18 +108,13 @@ GSD keeps authoritative runtime state in the project-root SQLite database and re
   DECISIONS.md        — projection of architectural decisions from memory store
   KNOWLEDGE.md        — manual Rules plus memory-backed Patterns/Lessons
   STATE.md            — quick-glance status rendered from the database
-  milestones/
-    M001/
-      M001-ROADMAP.md — slice plan with dependencies
-      M001-CONTEXT.md — scope and goals
-      slices/
-        S01/
-          S01-PLAN.md     — task decomposition
-          S01-SUMMARY.md  — what happened
-          S01-UAT.md      — test script
-          tasks/
-            T01-PLAN.md
-            T01-SUMMARY.md
+  phases/
+    01-foundation/
+      01-CONTEXT.md     — scope and goals
+      01-ROADMAP.md     — slice plan with dependencies
+      01-01-PLAN.md     — task decomposition for the first slice
+      01-01-SUMMARY.md  — what happened in the first slice
+      01-01-UAT.md      — test script
 ```
 
 GSD may also create sibling runtime directories next to `.gsd/`: `.gsd-worktrees/` for isolated milestone checkouts and `.gsd-backups/` for migration snapshots. Keep those directories local and gitignored; stale `.gsd-backups/migrate-*` snapshots are pruned after 30 days once the project has completed the flat-phase `.gsd/phases/` migration.

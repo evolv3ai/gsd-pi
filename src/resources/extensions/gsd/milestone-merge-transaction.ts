@@ -21,14 +21,14 @@ export type MilestoneMergeTransactionRunner = (
 ) => MilestoneMergeTransactionResult;
 
 export interface MilestoneMergeTransactionDeps {
-  mergeMilestoneToMain: MilestoneMergeTransactionRunner;
+  mergeMilestone: MilestoneMergeTransactionRunner;
 }
 
 export function runMilestoneMergeTransaction(
   deps: MilestoneMergeTransactionDeps,
   input: MilestoneMergeTransactionInput,
 ): MilestoneMergeTransactionResult {
-  return deps.mergeMilestoneToMain(
+  return deps.mergeMilestone(
     input.basePath,
     input.milestoneId,
     input.roadmapContent,
@@ -36,11 +36,11 @@ export function runMilestoneMergeTransaction(
 }
 
 export function createMilestoneMergeTransaction(
-  mergeMilestoneToMain: MilestoneMergeTransactionRunner,
+  mergeMilestone: MilestoneMergeTransactionRunner,
 ): MilestoneMergeTransactionRunner {
   return function mergeMilestoneTransaction(basePath, milestoneId, roadmapContent) {
     return runMilestoneMergeTransaction(
-      { mergeMilestoneToMain },
+      { mergeMilestone },
       { basePath, milestoneId, roadmapContent },
     );
   };

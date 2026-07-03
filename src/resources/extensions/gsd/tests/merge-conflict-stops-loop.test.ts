@@ -95,7 +95,7 @@ function makeDeps(
     isInAutoWorktree: () => true,
     shouldUseWorktreeIsolation: () => true,
     getIsolationMode: () => "worktree",
-    mergeMilestoneToMain: () => ({ pushed: false, codeFilesChanged: true }),
+    mergeMilestone: () => ({ pushed: false, codeFilesChanged: true }),
     syncWorktreeStateBack: () => ({ synced: [] }),
     teardownAutoWorktree: () => undefined,
     createAutoWorktree: () => "",
@@ -185,7 +185,7 @@ describe("WorktreeResolver.mergeAndExit re-throws MergeConflictError (#2330)", (
       resolveMilestoneFile: (_base: string, _mid: string, type: string) =>
         type === "ROADMAP" ? roadmapPath : null,
       readFileSync: () => "# M001\n",
-      mergeMilestoneToMain: () => {
+      mergeMilestone: () => {
         throw new MergeConflictError(conflicted, "squash", "worktree/M001", "main");
       },
     });
@@ -216,7 +216,7 @@ describe("WorktreeResolver.mergeAndExit re-throws MergeConflictError (#2330)", (
       resolveMilestoneFile: (_base: string, _mid: string, type: string) =>
         type === "ROADMAP" ? roadmapPath : null,
       readFileSync: () => "# M001\n",
-      mergeMilestoneToMain: () => {
+      mergeMilestone: () => {
         throw new FakePermError("EACCES: permission denied");
       },
     });
@@ -242,7 +242,7 @@ describe("WorktreeResolver.mergeAndExit re-throws MergeConflictError (#2330)", (
       resolveMilestoneFile: (_base: string, _mid: string, type: string) =>
         type === "ROADMAP" ? roadmapPath : null,
       readFileSync: () => "# M001\n",
-      mergeMilestoneToMain: () => ({ pushed: false, codeFilesChanged: true }),
+      mergeMilestone: () => ({ pushed: false, codeFilesChanged: true }),
     });
 
     const resolver = makeResolver(makeSession(baseDir), deps);

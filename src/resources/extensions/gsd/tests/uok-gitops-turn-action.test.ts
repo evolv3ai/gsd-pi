@@ -186,6 +186,58 @@ test("uok gitops turn action commit creates commit with unit trailer", () => {
   }
 });
 
+test("uok gitops turn action commit defaults to child repositories in parent mode", () => {
+  const root = mkdtempSync(join(tmpdir(), "gsd-uok-gitops-parent-commit-"));
+  try {
+    initRepo(root);
+    mkdirSync(join(root, ".gsd"), { recursive: true });
+    mkdirSync(join(root, "frontend"), { recursive: true });
+    mkdirSync(join(root, "backend"), { recursive: true });
+    initRepo(join(root, "frontend"));
+    initRepo(join(root, "backend"));
+    writeFileSync(join(root, ".gitignore"), "frontend/\nbackend/\n", "utf-8");
+    run("git add .gitignore", root);
+    run('git commit -m "chore: ignore nested repos"', root);
+    writeFileSync(join(root, ".gsd", "PREFERENCES.md"), `---
+version: 1
+workspace:
+  mode: parent
+  repositories:
+    frontend:
+      path: frontend
+    backend:
+      path: backend
+---
+`, "utf-8");
+    run("git add .gsd/PREFERENCES.md", root);
+    run('git commit -m "chore: configure parent workspace repos"', root);
+
+    const rootHeadBefore = run("git rev-parse HEAD", root);
+    writeFileSync(join(root, "frontend", "README.md"), "# frontend dirty\n", "utf-8");
+    writeFileSync(join(root, "backend", "README.md"), "# backend dirty\n", "utf-8");
+
+    const result = runTurnGitAction({
+      basePath: root,
+      action: "commit",
+      unitType: "execute-task",
+      unitId: "M001/S01/T-parent",
+    });
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.commitMessages?.project, undefined);
+    assert.equal(typeof result.commitMessages?.frontend, "string");
+    assert.equal(typeof result.commitMessages?.backend, "string");
+    assert.equal(result.commitMessage, result.commitMessages?.frontend);
+    assert.equal(run("git rev-parse HEAD", root), rootHeadBefore);
+    assert.equal(run("git status --porcelain", join(root, "frontend")), "");
+    assert.equal(run("git status --porcelain", join(root, "backend")), "");
+    assert.ok(run("git log -1 --pretty=%B", join(root, "frontend")).includes("GSD-Unit: M001/S01/T-parent"));
+    assert.ok(run("git log -1 --pretty=%B", join(root, "backend")).includes("GSD-Unit: M001/S01/T-parent"));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("uok gitops turn action commit reuses the collected dirty status", () => {
   const repo = makeRepo();
   const wrapperDir = mkdtempSync(join(tmpdir(), "gsd-uok-git-wrapper-"));

@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 
 import { migrateToExternalState, recoverFailedMigration } from "../migrate-external.ts";
+import { externalGsdRoot } from "../repo-identity.ts";
 
 function run(command: string, cwd: string): string {
   return execSync(command, {
@@ -115,6 +116,121 @@ describe("migrate-external worktree guard (#2970)", () => {
       assert.equal(result.migrated, true, "should migrate on main repo");
     } finally {
       rmSync(mainBase, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("migrateToExternalState rename fallback (#1179)", () => {
+  test("falls back to copy/delete when rename fails with EACCES", () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "gsd-migrate-eacces-")));
+    const stateDir = realpathSync(mkdtempSync(join(tmpdir(), "gsd-state-eacces-")));
+    const previousStateDir = process.env.GSD_STATE_DIR;
+    const previousProjectId = process.env.GSD_PROJECT_ID;
+    const originalRenameSync = fs.renameSync;
+    const localGsd = join(base, ".gsd");
+    const migratingPath = join(base, ".gsd.migrating");
+    let renameAttempts = 0;
+
+    process.env.GSD_STATE_DIR = stateDir;
+    process.env.GSD_PROJECT_ID = "rename-eacces";
+
+    try {
+      run("git init -b main", base);
+      mkdirSync(localGsd, { recursive: true });
+      writeFileSync(join(localGsd, "PREFERENCES.md"), "# prefs\n", "utf-8");
+
+      fs.renameSync = ((src, dst) => {
+        if (String(src) === localGsd && String(dst) === migratingPath) {
+          renameAttempts += 1;
+          const error = new Error("simulated WSL/DrvFs rename lock") as NodeJS.ErrnoException;
+          error.code = "EACCES";
+          throw error;
+        }
+        return originalRenameSync(src, dst);
+      }) as typeof fs.renameSync;
+      syncBuiltinESMExports();
+
+      const result = migrateToExternalState(base);
+
+      assert.equal(result.migrated, true, "EACCES rename failure should use copy/delete fallback");
+      assert.equal(result.error, undefined);
+      assert.equal(renameAttempts, 1, "should exercise the EACCES rename fallback once");
+      assert.equal(readFileSync(join(stateDir, "projects", "rename-eacces", "PREFERENCES.md"), "utf-8"), "# prefs\n");
+      assert.equal(readFileSync(join(base, ".gsd", "PREFERENCES.md"), "utf-8"), "# prefs\n");
+      assert.ok(!existsSync(migratingPath), "backup staging dir must be removed after successful migration");
+    } finally {
+      fs.renameSync = originalRenameSync;
+      syncBuiltinESMExports();
+      if (previousStateDir === undefined) {
+        delete process.env.GSD_STATE_DIR;
+      } else {
+        process.env.GSD_STATE_DIR = previousStateDir;
+      }
+      if (previousProjectId === undefined) {
+        delete process.env.GSD_PROJECT_ID;
+      } else {
+        process.env.GSD_PROJECT_ID = previousProjectId;
+      }
+      rmSync(base, { recursive: true, force: true });
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("migrateToExternalState already-migrated external state guard (#1178)", () => {
+  test("skips migration when external state already exists for a real local .gsd directory", () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "gsd-migrate-already-external-")));
+    const stateDir = realpathSync(mkdtempSync(join(tmpdir(), "gsd-state-already-external-")));
+    const previousStateDir = process.env.GSD_STATE_DIR;
+    const previousProjectId = process.env.GSD_PROJECT_ID;
+    process.env.GSD_STATE_DIR = stateDir;
+
+    try {
+      run("git init -b main", base);
+      run('git config user.name "Test"', base);
+      run('git config user.email "test@example.com"', base);
+      writeFileSync(join(base, "README.md"), "# Test\n", "utf-8");
+      run("git add README.md", base);
+      run('git commit -m "init"', base);
+
+      const externalPath = externalGsdRoot(base);
+      const identity = externalPath.split(/[\\/]/).pop();
+      assert.ok(identity, "external state path must include an identity segment");
+      mkdirSync(externalPath, { recursive: true });
+      writeFileSync(join(base, ".gsd-id"), `${identity}\n`, "utf-8");
+      writeFileSync(join(externalPath, "gsd.db"), "newer external state\n", "utf-8");
+
+      mkdirSync(join(base, ".gsd"), { recursive: true });
+      writeFileSync(join(base, ".gsd", "gsd.db"), "stale local state\n", "utf-8");
+
+      const result = migrateToExternalState(base);
+
+      assert.equal(result.migrated, false, "already-migrated project must not re-run migration");
+      assert.match(result.error ?? "", /external state already exists/i);
+      assert.equal(
+        readFileSync(join(externalPath, "gsd.db"), "utf-8"),
+        "newer external state\n",
+        "newer external gsd.db must not be overwritten by stale local state",
+      );
+      assert.equal(
+        readFileSync(join(base, ".gsd", "gsd.db"), "utf-8"),
+        "stale local state\n",
+        "local real .gsd directory should be left for explicit recovery",
+      );
+      assert.ok(!existsSync(join(base, ".gsd.migrating")), "migration staging dir must not be created");
+    } finally {
+      if (previousStateDir === undefined) {
+        delete process.env.GSD_STATE_DIR;
+      } else {
+        process.env.GSD_STATE_DIR = previousStateDir;
+      }
+      if (previousProjectId === undefined) {
+        delete process.env.GSD_PROJECT_ID;
+      } else {
+        process.env.GSD_PROJECT_ID = previousProjectId;
+      }
+      rmSync(base, { recursive: true, force: true });
+      rmSync(stateDir, { recursive: true, force: true });
     }
   });
 });

@@ -141,6 +141,26 @@ test("invalid value types produce errors and fall back to undefined", () => {
   }
 });
 
+test("remote_questions accepts object config and false disables without error", () => {
+  const disabled = validatePreferences({ remote_questions: false } as any);
+  assert.equal(disabled.errors.length, 0);
+  assert.equal(disabled.preferences.remote_questions, undefined);
+
+  const configured = validatePreferences({
+    remote_questions: { channel: "telegram", channel_id: "12345" },
+  });
+  assert.equal(configured.errors.length, 0);
+  assert.deepEqual(configured.preferences.remote_questions, {
+    channel: "telegram",
+    channel_id: "12345",
+  });
+
+  for (const value of ["telegram", 0]) {
+    const invalid = validatePreferences({ remote_questions: value } as any);
+    assert.ok(invalid.errors.includes("remote_questions must be an object"));
+  }
+});
+
 test("flat_rate_providers: accepts string array", () => {
   const { errors, preferences } = validatePreferences({
     flat_rate_providers: ["my-proxy", "private-cli"],
@@ -327,6 +347,136 @@ test("workspace.repositories duplicate path error includes both repository ids",
   );
 });
 
+test("workspace.mode parent with no repositories is rejected", () => {
+  const { errors } = validatePreferences({
+    workspace: {
+      mode: "parent",
+    },
+  });
+
+  assert.ok(
+    errors.some((e) =>
+      e.includes('workspace.mode "parent" requires at least one repository under workspace.repositories'),
+    ),
+  );
+});
+
+test("workspace.mode parent with empty repositories map is rejected", () => {
+  const { errors } = validatePreferences({
+    workspace: {
+      mode: "parent",
+      repositories: {},
+    },
+  });
+
+  assert.ok(
+    errors.some((e) =>
+      e.includes('workspace.mode "parent" requires at least one repository under workspace.repositories'),
+    ),
+  );
+});
+
+test("workspace.mode parent with declared repositories is valid", () => {
+  const { errors } = validatePreferences({
+    workspace: {
+      mode: "parent",
+      repositories: {
+        frontend: { path: "frontend" },
+      },
+    },
+  });
+
+  assert.equal(errors.length, 0);
+});
+
+test("mode:team + workspace.mode:parent warns about root-only push/PR", () => {
+  const { warnings } = validatePreferences({
+    mode: "team",
+    workspace: {
+      mode: "parent",
+      repositories: {
+        frontend: { path: "frontend" },
+      },
+    },
+  });
+  const crossAxisWarnings = warnings.filter((w) => w.includes("mode:team + workspace.mode:parent"));
+
+  assert.ok(
+    crossAxisWarnings.some((w) =>
+      w.includes("ADR-044"),
+    ),
+    "expected a cross-axis warning naming ADR-044",
+  );
+  assert.equal(crossAxisWarnings.length, 1, "expected exactly one cross-axis warning");
+});
+
+test("mode:team + workspace.mode:parent warns after global/project merge", (t) => {
+  const originalCwd = process.cwd();
+  const originalGsdHome = process.env.GSD_HOME;
+  const tempProject = mkdtempSync(join(tmpdir(), "gsd-prefs-cross-axis-project-"));
+  const tempGsdHome = mkdtempSync(join(tmpdir(), "gsd-prefs-cross-axis-home-"));
+
+  t.after(() => {
+    clearGSDPreferencesCache();
+    process.chdir(originalCwd);
+    if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = originalGsdHome;
+    rmSync(tempProject, { recursive: true, force: true });
+    rmSync(tempGsdHome, { recursive: true, force: true });
+  });
+
+  mkdirSync(join(tempProject, ".gsd"), { recursive: true });
+  process.env.GSD_HOME = tempGsdHome;
+  process.chdir(tempProject);
+  clearGSDPreferencesCache();
+
+  writeFileSync(getGlobalGSDPreferencesPath(), "---\nversion: 1\nmode: team\n---\n", "utf-8");
+  writeFileSync(
+    getProjectGSDPreferencesPath(tempProject),
+    [
+      "---",
+      "version: 1",
+      "workspace:",
+      "  mode: parent",
+      "  repositories:",
+      "    frontend:",
+      "      path: frontend",
+      "---",
+      "",
+    ].join("\n"),
+    "utf-8",
+  );
+
+  const rawGlobalWarnings = loadGlobalGSDPreferences()?.warnings ?? [];
+  const rawProjectWarnings = loadProjectGSDPreferences(tempProject)?.warnings ?? [];
+  assert.equal(rawGlobalWarnings.filter((w) => w.includes("workspace.mode:parent")).length, 0);
+  assert.equal(rawProjectWarnings.filter((w) => w.includes("mode:team + workspace.mode:parent")).length, 0);
+
+  const loaded = loadEffectiveGSDPreferences(tempProject);
+  assert.equal(loaded?.preferences.mode, "team");
+  assert.equal(loaded?.preferences.workspace?.mode, "parent");
+  assert.equal(
+    (loaded?.warnings ?? []).filter((w) => w.includes("mode:team + workspace.mode:parent")).length,
+    1,
+  );
+
+  const diagnostics = collectPreferenceDiagnostics(tempProject).filter((diagnostic) =>
+    diagnostic.message.includes("mode:team + workspace.mode:parent"),
+  );
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0]?.scope, "project");
+});
+
+test("mode:team without workspace.mode:parent does not warn about push", () => {
+  const { warnings } = validatePreferences({
+    mode: "team",
+  });
+
+  assert.ok(
+    !warnings.some((w) => w.includes("workspace.mode:parent")),
+    "team mode alone must not trigger the parent-workspace push warning",
+  );
+});
 
 test("workspace is a recognized preference key (no unknown warning)", () => {
   const { warnings } = validatePreferences({

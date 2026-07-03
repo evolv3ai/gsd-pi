@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -332,6 +332,34 @@ describe("RpcClient construction", () => {
 		try {
 			await client.start();
 			assert.equal((client as any).process.spawnfile, process.execPath);
+		} finally {
+			await client.stop();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("starts rpc mode exactly once before additional args", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "rpc-client-"));
+		const argvPath = join(dir, "argv.json");
+		const scriptPath = join(dir, "agent.js");
+		writeFileSync(
+			scriptPath,
+			`
+				const fs = require("node:fs");
+				fs.writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)));
+				setInterval(() => {}, 1000);
+			`,
+		);
+
+		const client = new RpcClient({
+			cliPath: scriptPath,
+			args: ["--model", "claude-sonnet", "--bare"],
+		});
+
+		try {
+			await client.start();
+			const argv = JSON.parse(readFileSync(argvPath, "utf8"));
+			assert.deepEqual(argv, ["--mode", "rpc", "--model", "claude-sonnet", "--bare"]);
 		} finally {
 			await client.stop();
 			rmSync(dir, { recursive: true, force: true });

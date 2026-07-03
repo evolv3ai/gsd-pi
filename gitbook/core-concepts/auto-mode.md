@@ -34,6 +34,8 @@ Milestone completion is safe to retry. If a `complete-milestone` unit is redispa
 
 The auto loop applies the same idempotency at terminal closeout: if another session is already stopping for completion, or the database already shows the milestone closed, the loop exits as complete without replaying merge, desktop notification, cmux notification, or stop side effects.
 
+If post-merge stash restore fails after a successful milestone merge, auto mode records the merge as complete before stopping for manual stash recovery. Resuming auto mode will not replay the completed merge.
+
 ## State Authority
 
 The GSD database is the runtime source of truth for milestones, slices, tasks, requirements, summaries, and completion status. Durable decisions and project knowledge use the same database through the `memories` table: decisions are stored as `architecture` memories, and KNOWLEDGE patterns/lessons are stored as `pattern`/`gotcha` memories.
@@ -128,6 +130,8 @@ You can also tune sandbox behavior with `context_mode.exec_timeout_ms`, `context
 ## Runtime Tool Policy
 
 Every auto-mode unit declares a `ToolsPolicy` in its `UnitContextManifest`, and GSD enforces it before tool calls run. Execution units use `all` mode and can edit project files, run shell commands, and dispatch subagents. Most planning and discussion units use `planning` mode: read tools are allowed, writes are limited to `.gsd/`, bash must be read-only, and subagent dispatch is blocked. Selected planning and closeout units use `planning-dispatch` mode, which keeps the same source-write and bash restrictions but allows `subagent` dispatch for isolated recon, planning, or review work. Documentation units use `docs` mode, which also allows writes to the manifest's documentation globs such as `docs/**`, top-level `README*.md`, `CHANGELOG.md`, and top-level `*.md`.
+
+`workflow-only` mode is stricter: read/list/search tools, GSD workflow tools, and manifest-declared read-only subagents are allowed, while generic `bash` and direct write/edit artifact tools are blocked. `validate-milestone` uses this mode so validation output must be persisted through `gsd_validate_milestone`; remediation changes must go through workflow tools such as `gsd_reassess_roadmap`, not manual `VALIDATION.md` or roadmap edits.
 
 The sidecar unit types now have distinct manifest behavior: `triage-captures` runs in `contextMode: triage` with `planning`-mode tools (read-heavy, `.gsd/`-scoped writes, no subagent dispatch), while `quick-task` runs in `contextMode: execution` with `all`-mode tools so it can apply and verify small inline fixes.
 

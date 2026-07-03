@@ -22,6 +22,8 @@ import {
   getMilestoneSlices,
   getSliceTasks,
   updateSliceStatus,
+  insertGateRow,
+  saveGateResult,
   _getAdapter,
 } from '../gsd-db.ts';
 import {
@@ -44,6 +46,7 @@ import {
   parseSummary,
   parseTaskPlanFile,
   clearParseCache,
+  extractSection,
 } from '../files.ts';
 import { clearPathCache, _clearGsdRootCache } from '../paths.ts';
 import { invalidateStateCache } from '../state.ts';
@@ -639,6 +642,125 @@ test('── markdown-renderer: slice plan summarizes task descriptions without 
 
     // Flat-phase: no per-task plan files — tasks are inside the slice plan's
     // <tasks> block. Skip per-task plan assertions.
+  } finally {
+    closeDatabase();
+    cleanupDir(tmpDir);
+  }
+});
+
+test('── markdown-renderer: renderPlanFromDb marks flagged slice gates ──', async () => {
+  const tmpDir = makeTmpDir();
+  const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
+  openDatabase(dbPath);
+  clearAllCaches();
+
+  try {
+    insertMilestone({ id: 'M001', title: 'Milestone', status: 'active' });
+    scaffoldDirs(tmpDir, 'M001', ['S01']);
+    insertSlice({
+      id: 'S01',
+      milestoneId: 'M001',
+      title: 'Risky slice',
+      status: 'pending',
+      demo: 'Reviewers can see flagged gates.',
+      planning: {
+        goal: 'Persist gate concern state.',
+        successCriteria: '- Flagged gates stay visible',
+      },
+    });
+    insertTask({
+      id: 'T01',
+      sliceId: 'S01',
+      milestoneId: 'M001',
+      title: 'Render gate state',
+      status: 'pending',
+    });
+    insertGateRow({ milestoneId: 'M001', sliceId: 'S01', gateId: 'Q3', scope: 'slice' });
+    insertGateRow({ milestoneId: 'M001', sliceId: 'S01', gateId: 'Q4', scope: 'slice' });
+
+    const findings = '- Shared gate findings.';
+    saveGateResult({
+      milestoneId: 'M001',
+      sliceId: 'S01',
+      gateId: 'Q3',
+      verdict: 'flag',
+      rationale: 'Concern recorded.',
+      findings,
+    });
+    saveGateResult({
+      milestoneId: 'M001',
+      sliceId: 'S01',
+      gateId: 'Q4',
+      verdict: 'pass',
+      rationale: 'No concern.',
+      findings,
+    });
+
+    const rendered = await renderPlanFromDb(tmpDir, 'M001', 'S01');
+    const threatSurface = extractSection(rendered.content, 'Threat Surface');
+    const requirementImpact = extractSection(rendered.content, 'Requirement Impact');
+
+    assert.ok(threatSurface?.includes('> **Warning:** Verdict: flag - concerns recorded below'));
+    assert.ok(threatSurface?.includes(findings));
+    assert.ok(!requirementImpact?.includes('Verdict: flag'), 'passing gate should not render a flag warning');
+    assert.ok(requirementImpact?.includes(findings), 'passing gate still renders findings');
+  } finally {
+    closeDatabase();
+    cleanupDir(tmpDir);
+  }
+});
+
+test('── markdown-renderer: renderTaskPlanFromDb marks flagged task gates ──', async () => {
+  const tmpDir = makeTmpDir();
+  const dbPath = path.join(tmpDir, '.gsd', 'gsd.db');
+  openDatabase(dbPath);
+  clearAllCaches();
+
+  try {
+    insertMilestone({ id: 'M001', title: 'Milestone', status: 'active' });
+    scaffoldDirs(tmpDir, 'M001', ['S01']);
+    insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Slice', status: 'pending' });
+    insertTask({
+      id: 'T01',
+      sliceId: 'S01',
+      milestoneId: 'M001',
+      title: 'Task gate render',
+      status: 'pending',
+      planning: {
+        description: 'Render task quality gates.',
+      },
+    });
+    insertGateRow({ milestoneId: 'M001', sliceId: 'S01', gateId: 'Q5', scope: 'task', taskId: 'T01' });
+    insertGateRow({ milestoneId: 'M001', sliceId: 'S01', gateId: 'Q6', scope: 'task', taskId: 'T01' });
+
+    const findings = '- Same task findings.';
+    saveGateResult({
+      milestoneId: 'M001',
+      sliceId: 'S01',
+      taskId: 'T01',
+      gateId: 'Q5',
+      verdict: 'flag',
+      rationale: 'Concern recorded.',
+      findings,
+    });
+    saveGateResult({
+      milestoneId: 'M001',
+      sliceId: 'S01',
+      taskId: 'T01',
+      gateId: 'Q6',
+      verdict: 'pass',
+      rationale: 'No concern.',
+      findings,
+    });
+
+    const rendered = await renderTaskPlanFromDb(tmpDir, 'M001', 'S01', 'T01');
+    const failureModes = extractSection(rendered.content, 'Failure Modes');
+    const loadProfile = extractSection(rendered.content, 'Load Profile');
+
+    assert.ok(failureModes?.includes('> **Warning:** Verdict: flag - concerns recorded below'));
+    assert.ok(failureModes?.includes(findings));
+    assert.ok(!loadProfile?.includes('Verdict: flag'), 'passing task gate should not render a flag warning');
+    assert.ok(loadProfile?.includes(findings), 'passing task gate still renders findings');
   } finally {
     closeDatabase();
     cleanupDir(tmpDir);

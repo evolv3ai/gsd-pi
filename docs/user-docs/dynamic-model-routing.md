@@ -46,23 +46,23 @@ dynamic_routing:
   cross_provider: true            # consider models from other providers (default: true)
   hooks: true                     # apply routing to post-unit hooks (default: true)
   capability_routing: true        # enable capability scoring within tier (default: true)
-  allow_flat_rate_providers: false # opt into routing for flat-rate providers (default: false)
+  allow_flat_rate_providers: false # optional: opt out for flat-rate providers
 ```
 
 ### `allow_flat_rate_providers`
 
-By default, dynamic routing is suppressed when the active provider is flat-rate (`claude-code`, GitHub Copilot, user-declared subscription proxies, or `externalCli` providers) because per-request cost is identical and downgrading only degrades quality.
+By default, an explicit `dynamic_routing.enabled: true` configuration is honored even when the active provider is flat-rate (`claude-code`, GitHub Copilot, user-declared subscription proxies, or `externalCli` providers).
 
-Set to `true` to opt into routing across a flat-rate subscription — useful when you want intelligent per-task selection (e.g. haiku for research, opus for architecture) within a single subscription's token budget:
+Set `allow_flat_rate_providers: false` only when you want to keep one-model dispatch on a flat-rate subscription because per-request cost is identical:
 
 ```yaml
 dynamic_routing:
   enabled: true
-  allow_flat_rate_providers: true
+  allow_flat_rate_providers: false
   cross_provider: false           # recommended: keep routing inside the subscription
 ```
 
-Keep `cross_provider: false` when enabling this flag unless every flat-rate provider you use exposes the full tier of models — otherwise the router may attempt to escape to a provider you haven't configured.
+Keep `cross_provider: false` when routing inside a flat-rate subscription unless every flat-rate provider you use exposes the full tier of models — otherwise the router may attempt to escape to a provider you haven't configured.
 
 ### `tier_models`
 

@@ -18,6 +18,7 @@ import { renderGsdPiLogo, GSD_PI_BRAND, GSD_WEBSITE } from './logo.js'
 import { agentDir } from './app-paths.js'
 import { isClaudeCliReady } from './claude-cli-check.js'
 import { isAntigravityCliReady, isGeminiCliReady } from './resources/extensions/google-cli/readiness.js'
+import { isCursorAgentReady } from './resources/extensions/cursor-cli/readiness.js'
 import {
   markOnboardingComplete,
   markStepCompleted,
@@ -410,6 +411,12 @@ export async function runLlmStep(p: ClackModule, pc: PicoModule, authStorage: Au
     )
   }
 
+  if (isCursorAgentReady()) {
+    authOptions.push(
+      { value: 'cursor-agent-cli', label: 'Use Cursor Agent', hint: 'uses your existing Cursor subscription' },
+    )
+  }
+
   if (isAntigravityCliReady()) {
     authOptions.push(
       { value: 'antigravity-cli', label: 'Use Antigravity CLI', hint: 'recommended — replaces Gemini CLI for individuals' },
@@ -446,6 +453,14 @@ export async function runLlmStep(p: ClackModule, pc: PicoModule, authStorage: Au
     authStorage.set('claude-code', { type: 'api_key', key: 'cli' })
     // Persist claude-code so startup does not keep users on anthropic direct API.
     persistDefaultProvider('claude-code')
+    return true
+  }
+
+  if (method === 'cursor-agent-cli') {
+    p.log.success('Cursor Agent detected — routing through local CLI')
+    p.log.info('Your Cursor subscription will be used for inference. No API key needed.')
+    authStorage.set('cursor-agent', { type: 'api_key', key: 'cli' })
+    persistDefaultProvider('cursor-agent')
     return true
   }
 

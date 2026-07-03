@@ -838,6 +838,60 @@ test("verifyExpectedArtifact plan-slice fails when a task plan file is missing (
   }
 });
 
+test("verifyExpectedArtifact accepts flat-phase plan-slice with embedded tasks and no task plan files", () => {
+  const base = join(tmpdir(), `gsd-test-${randomUUID()}`);
+  try {
+    const phaseDir = join(base, ".gsd", "phases", "01-test");
+    mkdirSync(join(phaseDir, "tasks"), { recursive: true });
+    writeFileSync(join(phaseDir, "01-01-PLAN.md"), [
+      "# S01: Test Slice",
+      "",
+      "<tasks>",
+      "- [ ] **T01**: Implement feature _(1h)_",
+      "  - Files: `src/index.ts`",
+      "  - Verify: pnpm test",
+      "- [ ] **T02**: Write tests _(1h)_",
+      "</tasks>",
+    ].join("\n"));
+
+    const result = verifyExpectedArtifact("plan-slice", "M001/S01", base);
+    assert.equal(result, true, "flat-phase embedded tasks should not require tasks/T##-PLAN.md files");
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("verifyExpectedArtifact plan-slice still verifies per-task files for legacy ## Tasks plan with a stray empty <tasks> block", () => {
+  const base = makeTmpBase();
+  try {
+    const tasksDir = join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks");
+    const planPath = join(base, ".gsd", "milestones", "M001", "slices", "S01", "S01-PLAN.md");
+    // Legacy layout: real tasks live in a "## Tasks" section with separate
+    // per-task PLAN files, but the plan also carries an empty <tasks></tasks>
+    // block. The empty block must NOT flip the plan into flat-phase mode and
+    // skip the per-task artifact checks.
+    const planContent = [
+      "# S01: Test Slice",
+      "",
+      "<tasks>",
+      "</tasks>",
+      "",
+      "## Tasks",
+      "",
+      "- [ ] **T01: First task** `est:1h`",
+      "- [ ] **T02: Second task** `est:2h`",
+    ].join("\n");
+    writeFileSync(planPath, planContent);
+    // Only T01-PLAN.md exists; T02's artifact is missing.
+    writeFileSync(join(tasksDir, "T01-PLAN.md"), "# T01 Plan\n\nDo the thing.");
+
+    const result = verifyExpectedArtifact("plan-slice", "M001/S01", base);
+    assert.equal(result, false, "a stray <tasks> block must not skip per-task file verification for a legacy ## Tasks plan");
+  } finally {
+    cleanup(base);
+  }
+});
+
 test("verifyExpectedArtifact plan-slice fails for plan with no tasks (#699)", () => {
   const base = makeTmpBase();
   try {

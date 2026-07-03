@@ -9,7 +9,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, renameSync, cpSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
-import { externalGsdRoot, isInsideWorktree } from "./repo-identity.js";
+import { externalGsdRoot, externalStateAlreadyExistsForProject, isInsideWorktree } from "./repo-identity.js";
 import { getErrorMessage } from "./error-utils.js";
 import { hasGitTrackedGsdFiles } from "./gitignore.js";
 import { GIT_NO_PROMPT_ENV } from "./git-constants.js";
@@ -85,6 +85,16 @@ export function migrateToExternalState(basePath: string): MigrationResult {
     }
   }
 
+  // If external state already contains project data, this is not a legacy
+  // migration source. It is likely an already-migrated project whose symlink
+  // was replaced by a real directory, so copying would risk data loss.
+  if (externalStateAlreadyExistsForProject(basePath)) {
+    return {
+      migrated: false,
+      error: "External state already exists for this project; leaving local .gsd directory untouched to avoid overwriting authoritative state",
+    };
+  }
+
   const externalPath = externalGsdRoot(basePath);
   const migratingPath = join(basePath, ".gsd.migrating");
 
@@ -94,12 +104,12 @@ export function migrateToExternalState(basePath: string): MigrationResult {
 
     // Rename .gsd -> .gsd.migrating (atomic lock).
     // On Windows, NTFS may reject rename with EPERM if file descriptors are
-    // open (VS Code watchers, antivirus on-access scan). Fall back to
-    // copy+delete (#1292).
+    // open (VS Code watchers, antivirus on-access scan). WSL/DrvFs can report
+    // the same transient lock as EACCES. Fall back to copy+delete (#1292).
     try {
       renameSync(localGsd, migratingPath);
     } catch (renameErr: any) {
-      if (renameErr?.code === "EPERM" || renameErr?.code === "EBUSY") {
+      if (renameErr?.code === "EPERM" || renameErr?.code === "EBUSY" || renameErr?.code === "EACCES") {
         try {
           cpSync(localGsd, migratingPath, { recursive: true, force: true });
           rmSync(localGsd, { recursive: true, force: true });
@@ -237,7 +247,7 @@ function isLocalGsdExternalStateJunction(basePath: string, localGsd: string): bo
  * Recover from a failed migration (`.gsd.migrating` exists).
  * Moves `.gsd.migrating` back to `.gsd` if `.gsd` doesn't exist, or removes an
  * orphaned staging directory when `.gsd` is already a verified external state
- * junction with intact current state.
+ * junction, or an intact real directory, with intact current state.
  */
 export function recoverFailedMigration(basePath: string): boolean {
   const localGsd = join(basePath, ".gsd");
@@ -245,8 +255,15 @@ export function recoverFailedMigration(basePath: string): boolean {
 
   if (!existsSync(migratingPath)) return false;
   if (existsSync(localGsd)) {
-    if (!isLocalGsdExternalStateJunction(basePath, localGsd)) return false;
     if (!isCurrentGsdStateIntactForMigratingCleanup(basePath)) return false;
+    if (!isLocalGsdExternalStateJunction(basePath, localGsd)) {
+      try {
+        const stat = lstatSync(localGsd);
+        if (!stat.isDirectory()) return false;
+      } catch {
+        return false;
+      }
+    }
     try {
       rmSync(migratingPath, { recursive: true, force: true });
       return true;

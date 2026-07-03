@@ -107,7 +107,7 @@ function makeDeps(
   // real `getAutoWorktreePath` / `createAutoWorktree` / etc. and the
   // success/existing/failure branches won't fire as expected.
   const deps: LegacyTestDeps = {
-    mergeMilestoneToMain: () => ({ pushed: false, codeFilesChanged: true }),
+    mergeMilestone: () => ({ pushed: false, codeFilesChanged: true }),
     worktreeProjection: new WorktreeStateProjection(),
     // ADR-016 phase 2 / C4 (#5627): GitServiceImpl constructor → factory.
     gitServiceFactory: () => ({}) as unknown as ReturnType<
@@ -283,7 +283,7 @@ describe("worktree journal events", () => {
 
     const s = makeSession({ basePath: wt, originalBasePath: tmp });
     const deps = makeDeps({
-      mergeMilestoneToMain: () => ({ pushed: false, codeFilesChanged: true }),
+      mergeMilestone: () => ({ pushed: false, codeFilesChanged: true }),
     });
     process.chdir(wt);
 
@@ -304,7 +304,7 @@ describe("worktree journal events", () => {
     const wt = setupMergeWorktree(tmp, "M001");
     const s = makeSession({ basePath: wt, originalBasePath: tmp });
     const deps = makeDeps({
-      mergeMilestoneToMain: () => { throw new Error("conflict in main"); },
+      mergeMilestone: () => { throw new Error("conflict in main"); },
     });
     // Since #4380, mergeAndExit re-throws all errors after emitting the journal
     // event and restoring state. Lifecycle now wraps that throw in a typed
@@ -347,7 +347,7 @@ describe("worktree journal events", () => {
     const s = makeSession({ basePath: wt, originalBasePath: tmp });
     let attempt = 0;
     const deps = makeDeps({
-      mergeMilestoneToMain: () => {
+      mergeMilestone: () => {
         attempt += 1;
         throw new MergeConflictError(
           attempt === 1 ? ["src/a.ts"] : ["src/b.ts", "src/c.ts"],

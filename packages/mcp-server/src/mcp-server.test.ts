@@ -12,7 +12,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -24,6 +24,7 @@ import {
   buildAskUserQuestionsElicitRequest,
   createMcpServer,
   formatAskUserQuestionsElicitResult,
+  isLocalElicitClientAbortError,
   isLocalElicitTimeoutError,
   withElicitTimeout,
 } from './server.js';
@@ -291,6 +292,68 @@ describe('SessionManager', () => {
     await sm.startSession('/tmp/test-cmd', { cliPath: '/usr/bin/gsd', command: '/gsd auto --resume' });
     assert.ok(sm.lastClient);
     assert.deepEqual(sm.lastClient.prompted, ['/gsd auto --resume']);
+  });
+
+  it('startSession delegates rpc mode to RpcClient exactly once', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'mcp-session-argv-'));
+    const argvPath = join(dir, 'argv.json');
+    const scriptPath = join(dir, 'agent.cjs');
+    writeFileSync(
+      scriptPath,
+      `
+        const fs = require('node:fs');
+        fs.writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)));
+        let buffer = '';
+        process.stdin.setEncoding('utf8');
+        process.stdin.on('data', (chunk) => {
+          buffer += chunk;
+          let idx;
+          while ((idx = buffer.indexOf('\\n')) >= 0) {
+            const line = buffer.slice(0, idx).trim();
+            buffer = buffer.slice(idx + 1);
+            if (!line) continue;
+            const msg = JSON.parse(line);
+            if (msg.type === 'init') {
+              process.stdout.write(JSON.stringify({
+                type: 'response',
+                id: msg.id,
+                success: true,
+                data: { protocolVersion: 2, sessionId: 'real-session', capabilities: {} },
+              }) + '\\n');
+            } else if (msg.id) {
+              process.stdout.write(JSON.stringify({
+                type: 'response',
+                id: msg.id,
+                success: true,
+                data: {},
+              }) + '\\n');
+            }
+          }
+        });
+        setInterval(() => {}, 1000);
+      `,
+    );
+    const manager = new SessionManager();
+
+    try {
+      const sessionId = await manager.startSession(dir, {
+        cliPath: scriptPath,
+        model: 'claude-sonnet',
+        bare: true,
+      });
+
+      assert.equal(sessionId, 'real-session');
+      assert.deepEqual(JSON.parse(readFileSync(argvPath, 'utf8')), [
+        '--mode',
+        'rpc',
+        '--model',
+        'claude-sonnet',
+        '--bare',
+      ]);
+    } finally {
+      await manager.cleanup();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('startSession rejects duplicate projectDir', async () => {
@@ -708,6 +771,44 @@ describe('createMcpServer tool registration', () => {
     assert.equal(typeof server.server.elicitInput, 'function');
     assert.ok(typeof server.connect === 'function');
     assert.ok(typeof server.close === 'function');
+  });
+
+  it('ask_user_questions passes the declared elicitation timeout and signal to the MCP SDK request', async () => {
+    const { server } = await createMcpServer(sm);
+    const askTool = (server as any)._registeredTools?.ask_user_questions;
+    assert.ok(askTool, 'ask_user_questions should be registered');
+
+    const questions = [
+      {
+        id: 'depth_verification_M001',
+        header: 'Depth Check',
+        question: 'Did I capture the depth right?',
+        options: [
+          { label: 'Yes, you got it (Recommended)', description: 'Continue with the current summary.' },
+          { label: 'Not quite', description: 'I need to clarify the depth further.' },
+        ],
+      },
+    ];
+    const signal = new AbortController().signal;
+    let receivedParams: unknown;
+    let receivedOptions: unknown;
+
+    server.server.elicitInput = async (params, options) => {
+      receivedParams = params;
+      receivedOptions = options;
+      return {
+        action: 'accept',
+        content: {
+          depth_verification_M001: 'Yes, you got it (Recommended)',
+        },
+      };
+    };
+
+    const result = await askTool.handler({ questions }, { signal });
+
+    assert.equal('isError' in result && result.isError, false);
+    assert.deepEqual(receivedParams, buildAskUserQuestionsElicitRequest(questions));
+    assert.deepEqual(receivedOptions, { timeout: 600000, signal });
   });
 
   it('advertises workflow aliases by default for external MCP clients', async () => {
@@ -1132,7 +1233,7 @@ describe('createMcpServer tool registration', () => {
       },
     ];
     let remoteCalls = 0;
-    const signal = AbortSignal.abort();
+    const signal = new AbortController().signal;
 
     const result = await askUserQuestionsHandler(questions, { signal }, {
       async elicitInput() {
@@ -1431,7 +1532,7 @@ describe('createMcpServer tool registration', () => {
 
     const result = await askUserQuestionsHandler(questions, undefined, {
       async elicitInput() {
-        // The Claude Agent SDK's internal ~60s timeout surfaces as this error.
+        // MCP SDK request deadline expiry surfaces as this error.
         throw new Error('MCP error -32001: Request timed out');
       },
       isRemoteConfigured() {
@@ -1514,6 +1615,44 @@ describe('createMcpServer tool registration', () => {
     assert.match(result.content[0]?.text ?? '', /Local elicitation failed/);
     assert.match(result.content[0]?.text ?? '', /remote transport failed/);
   });
+
+  it('ask_user_questions returns cancelled structuredContent (not isError) and does NOT fall through to remote when the client aborts', async () => {
+    const questions = [
+      {
+        id: 'depth_verification_M001',
+        header: 'Depth Check',
+        question: 'Did I capture the depth right?',
+        options: [
+          { label: 'Yes, you got it (Recommended)', description: 'Continue.' },
+          { label: 'Not quite', description: 'Clarify.' },
+        ],
+      },
+    ];
+    let remoteCalls = 0;
+
+    const result = await askUserQuestionsHandler(questions, undefined, {
+      async elicitInput() {
+        // withElicitTimeout rejects with this message when the tool-call
+        // AbortSignal fires (client tore down the request).
+        throw new Error('ask_user_questions cancelled by client');
+      },
+      isRemoteConfigured() {
+        return true;
+      },
+      async tryRemoteQuestions() {
+        remoteCalls++;
+        throw new Error('remote must not be called on client abort');
+      },
+    });
+
+    assert.equal(remoteCalls, 0, 'client abort must NOT fall through to remote');
+    assert.equal('isError' in result && result.isError, false, 'client abort is not an error result');
+    assert.deepEqual(
+      (result as { structuredContent?: unknown }).structuredContent,
+      { questions, response: null, cancelled: true },
+    );
+    assert.match(result.content[0]?.text ?? '', /cancelled by the client/i);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1521,7 +1660,7 @@ describe('createMcpServer tool registration', () => {
 // ---------------------------------------------------------------------------
 
 describe('isLocalElicitTimeoutError', () => {
-  it('recognizes the Claude Agent SDK -32001 timeout', () => {
+  it('recognizes the MCP SDK -32001 timeout', () => {
     assert.equal(
       isLocalElicitTimeoutError(new Error('MCP error -32001: Request timed out')),
       true,
@@ -1549,6 +1688,31 @@ describe('isLocalElicitTimeoutError', () => {
     assert.equal(isLocalElicitTimeoutError('timed out'), false);
     assert.equal(isLocalElicitTimeoutError(undefined), false);
     assert.equal(isLocalElicitTimeoutError(null), false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isLocalElicitClientAbortError
+// ---------------------------------------------------------------------------
+
+describe('isLocalElicitClientAbortError', () => {
+  it('recognizes the withElicitTimeout client-abort rejection', () => {
+    assert.equal(
+      isLocalElicitClientAbortError(new Error('ask_user_questions cancelled by client')),
+      true,
+    );
+  });
+
+  it('does not misclassify timeouts or other elicitation errors', () => {
+    assert.equal(isLocalElicitClientAbortError(new Error('ask_user_questions timed out after 10 minutes')), false);
+    assert.equal(isLocalElicitClientAbortError(new Error('MCP host does not support elicitation')), false);
+    assert.equal(isLocalElicitClientAbortError(new Error('MCP error -32001: Request timed out')), false);
+  });
+
+  it('does not misclassify non-Error values', () => {
+    assert.equal(isLocalElicitClientAbortError('cancelled by client'), false);
+    assert.equal(isLocalElicitClientAbortError(undefined), false);
+    assert.equal(isLocalElicitClientAbortError(null), false);
   });
 });
 

@@ -70,6 +70,7 @@ def test_progress_falls_back_to_mcp_when_cli_binary_is_missing() -> None:
         "gsd_progress",
         {"projectDir": "/tmp/p"},
         check_version=False,
+        project_dir="/tmp/p",
     )
 
 
@@ -90,6 +91,7 @@ def test_progress_falls_back_to_mcp_when_cli_version_is_unsupported() -> None:
         "gsd_progress",
         {"projectDir": "/tmp/p"},
         check_version=False,
+        project_dir="/tmp/p",
     )
 
 
@@ -117,4 +119,5 @@ def test_progress_falls_back_to_mcp_when_cli_json_has_unexpected_shape() -> None
         "gsd_progress",
         {"projectDir": "/tmp/p"},
         check_version=False,
+        project_dir="/tmp/p",
     )

@@ -17,6 +17,7 @@ export const UNIT_EXTENSION_GLOBS = new Set([
   'shared',
   'subagent',
   'claude-code-cli',
+  'cursor-cli',
   'github-sync',
   'universal-config',
   'visual-brief',

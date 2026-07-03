@@ -1849,8 +1849,9 @@ export async function bootstrapAutoSession(
       : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "default";
 
     // Flat-rate providers (e.g. GitHub Copilot, claude-code, user-declared
-    // subscription proxies, externalCli CLIs) suppress routing at dispatch
-    // time (#3453) — reflect that in the banner.  Thread the same
+    // subscription proxies, externalCli CLIs) suppress routing only when the
+    // user explicitly opts out with allow_flat_rate_providers: false. Reflect
+    // that in the banner. Thread the same
     // FlatRateContext used by selectAndApplyModel so user-declared
     // flat-rate providers and externalCli auto-detection are respected.
     const { isFlatRateProvider, buildFlatRateContext } = await import("./auto-model-selection.js");
@@ -1862,7 +1863,7 @@ export async function bootstrapAutoSession(
     )?.preferences;
     const effectiveProvider = s.autoModeStartModel?.provider ?? ctx.model?.provider;
     const effectivelyEnabled = routingConfig.enabled
-      && (routingConfig.allow_flat_rate_providers
+      && (routingConfig.allow_flat_rate_providers !== false
         || !(effectiveProvider && isFlatRateProvider(
           effectiveProvider,
           buildFlatRateContext(effectiveProvider, ctx, bannerPrefs),

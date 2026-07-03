@@ -413,6 +413,46 @@ export function getSlicesByMilestoneIds(milestoneIds: readonly string[]): Map<st
   return byMilestone;
 }
 
+/**
+ * Load tasks for many (milestone, slice) pairs in batched queries. Returns a Map
+ * keyed by `${milestone_id}\0${slice_id}`, preserving `ORDER BY sequence, id`
+ * within each bucket. Mirrors getSlicesByMilestoneIds to avoid an N+1 over tasks
+ * during full projection rebuilds.
+ */
+export function getTasksBySliceIds(
+  slices: ReadonlyArray<{ milestoneId: string; sliceId: string }>,
+): Map<string, TaskRow[]> {
+  const bySlice = new Map<string, TaskRow[]>();
+  const db = getDbOrNull();
+  if (!db || slices.length === 0) return bySlice;
+  // SQLite caps bound params (~999); 2 per pair, so chunk well under the limit.
+  const CHUNK = 400;
+  for (let start = 0; start < slices.length; start += CHUNK) {
+    const chunk = slices.slice(start, start + CHUNK);
+    const clauses: string[] = [];
+    const params: Record<string, unknown> = {};
+    chunk.forEach((s, i) => {
+      clauses.push(`(milestone_id = :m${i} AND slice_id = :s${i})`);
+      params[`:m${i}`] = s.milestoneId;
+      params[`:s${i}`] = s.sliceId;
+    });
+    const rows = db
+      .prepare(`SELECT * FROM tasks WHERE ${clauses.join(" OR ")} ORDER BY milestone_id, slice_id, sequence, id`)
+      .all(params) as Record<string, unknown>[];
+    for (const row of rows) {
+      const task = rowToTask(row);
+      const key = `${task.milestone_id}\0${task.slice_id}`;
+      const bucket = bySlice.get(key);
+      if (bucket) {
+        bucket.push(task);
+      } else {
+        bySlice.set(key, [task]);
+      }
+    }
+  }
+  return bySlice;
+}
+
 /** Dispatch-eligibility shape consumed by decision-path callers (ADR-017). */
 export interface MilestoneSliceSummary {
   id: string;

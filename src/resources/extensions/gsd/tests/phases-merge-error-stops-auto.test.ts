@@ -82,13 +82,57 @@ const ic = {
       return { ok: true, needsManualRecovery: false };
     },
     lifecycle: {
-      exitMilestone() {
+      // Mirror WorktreeLifecycle.exitMilestone's guarded-merge branch
+      // (preflight -> inner merge -> postflight). Since #1169 the closeout
+      // routes the guard through the lifecycle verb, so a non-conflict inner
+      // failure ("teardown-failed") is mapped to "merge-failed" here rather
+      // than by the caller.
+      exitMilestone(
+        milestoneId: string,
+        exitOpts: {
+          merge: boolean;
+          guardedMerge?: {
+            projectRoot: string;
+            preflightCleanRoot: (
+              basePath: string,
+              milestoneId: string,
+              notify: (message: string, level: "info" | "warning" | "error") => void,
+            ) => { blocked?: boolean; blockedReason?: string; stashPushed: boolean; stashMarker?: string };
+            postflightPopStash: (
+              basePath: string,
+              milestoneId: string,
+              stashMarker: string | undefined,
+              notify: (message: string, level: "info" | "warning" | "error") => void,
+            ) => { needsManualRecovery?: boolean };
+          };
+        },
+        exitCtx?: { notify: (message: string, level: "info" | "warning" | "error") => void },
+      ) {
+        const notify = exitCtx?.notify ?? (() => {});
+        const guarded = exitOpts.guardedMerge;
+        if (exitOpts.merge && guarded) {
+          const preflight = guarded.preflightCleanRoot(guarded.projectRoot, milestoneId, notify);
+          if (preflight.blocked) {
+            return {
+              ok: false,
+              reason: preflight.blockedReason?.startsWith("unmerged-conflicts")
+                ? "preflight-unmerged-conflicts"
+                : "preflight-dirty-overlap",
+            };
+          }
+          // Inner merge fails with a non-conflict error. The lifecycle still
+          // runs postflight stash restore on the failed-merge path, then maps
+          // the non-conflict failure to "merge-failed" (a MergeConflictError
+          // would instead map to "merge-conflict").
+          calls.push("merge");
+          const cause = new Error("remote rejected push");
+          if (preflight.stashPushed) {
+            guarded.postflightPopStash(guarded.projectRoot, milestoneId, preflight.stashMarker, notify);
+          }
+          return { ok: false, reason: "merge-failed", cause };
+        }
         calls.push("merge");
-        return {
-          ok: false,
-          reason: "teardown-failed",
-          cause: new Error("remote rejected push"),
-        };
+        return { ok: false, reason: "teardown-failed", cause: new Error("remote rejected push") };
       },
     },
     async stopAuto(_ctx: unknown, _pi: unknown, reason?: string) {

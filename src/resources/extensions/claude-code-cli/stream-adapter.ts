@@ -50,6 +50,7 @@ import { markToolStart, markToolEnd } from "../gsd/auto.js";
 import {
 	markInteractiveElicitationStart,
 	markInteractiveElicitationEnd,
+	isInteractiveElicitationInFlight,
 } from "../gsd/auto-tool-tracking.js";
 import {
 	discoverBrowserMcpServerName,
@@ -227,6 +228,36 @@ interface SDKInputUserMessage {
 const OTHER_OPTION_LABEL = "None of the above";
 /** Regex pattern that identifies field names and descriptions that should be treated as sensitive/secure inputs. */
 const SENSITIVE_FIELD_PATTERN = /(password|passphrase|secret|token|api[_\s-]*key|private[_\s-]*key|credential)/i;
+/** Mirrors @opengsd/mcp-server's ask_user_questions host elicitation timeout. */
+const WORKFLOW_ELICIT_TIMEOUT_MS = 10 * 60 * 1000;
+/** Close the local form just before the server drops the MCP elicitation request. */
+const WORKFLOW_ELICIT_TIMEOUT_SKEW_MS = 1_000;
+export const CLAUDE_CODE_INTERVIEW_FORM_TIMEOUT_MS = Math.max(
+	1,
+	WORKFLOW_ELICIT_TIMEOUT_MS - WORKFLOW_ELICIT_TIMEOUT_SKEW_MS,
+);
+const ELICITATION_EXPIRED_NOTICE =
+	"Question expired before you answered - the form was closed and no answers were sent.";
+const activeAskUserQuestionElicitationTimeoutAborters = new Set<() => void>();
+
+function isAskUserQuestionsToolName(toolName: string | undefined): boolean {
+	const name = String(toolName ?? "");
+	return name === "ask_user_questions" || name.endsWith("__ask_user_questions");
+}
+
+function isAskUserQuestionsTimedOutResult(
+	toolCall: Pick<ToolCall, "name">,
+	result: ExternalToolResultPayload,
+): boolean {
+	return isAskUserQuestionsToolName(toolCall.name) && result.details?.timed_out === true;
+}
+
+function abortActiveAskUserQuestionElicitationsForTimeout(): void {
+	if (!isInteractiveElicitationInFlight()) return;
+	for (const abort of [...activeAskUserQuestionElicitationTimeoutAborters]) {
+		abort();
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Stream factory
@@ -1566,12 +1597,32 @@ export function createClaudeCodeElicitationHandler(
 			// it does not tear down the very elicitation that IS the human boundary
 			// (#cc-elicitation-self-cancel). It clears in the finally on every exit.
 			const elicId = "cc-elicit-" + ((request as { id?: string | number }).id ?? `${Date.now()}-${nextElicitationSeq()}`);
+			const formAbortController = new AbortController();
+			let expiryNoticeShown = false;
+			const abortExpiredForm = (): void => {
+				if (formAbortController.signal.aborted) return;
+				formAbortController.abort();
+				if (!expiryNoticeShown) {
+					expiryNoticeShown = true;
+					ui.notify(ELICITATION_EXPIRED_NOTICE, "warning");
+				}
+			};
+			const forwardSdkAbort = (): void => {
+				if (!formAbortController.signal.aborted) formAbortController.abort();
+			};
+			if (signal.aborted) {
+				forwardSdkAbort();
+			} else {
+				signal.addEventListener("abort", forwardSdkAbort, { once: true });
+			}
+			const expiryTimer = setTimeout(abortExpiredForm, CLAUDE_CODE_INTERVIEW_FORM_TIMEOUT_MS);
 			markInteractiveElicitationStart();
 			markToolStart(elicId, "ask_user_questions");
+			activeAskUserQuestionElicitationTimeoutAborters.add(abortExpiredForm);
 			try {
 				const interviewResult = await showInterviewRound(
 					questions,
-					{ signal, overlay: true },
+					{ signal: formAbortController.signal, overlay: true },
 					{ ui } as any,
 				).catch(() => undefined);
 				if (interviewResult === undefined) {
@@ -1580,7 +1631,7 @@ export function createClaudeCodeElicitationHandler(
 					// `finally` runs the moment the promise is created and the fallback
 					// wait runs with zero in-flight tools — reintroducing the
 					// self-cancel on this path (Bugbot #1c00624d).
-					return await promptElicitationWithDialogs(request, questions, ui, signal);
+					return await promptElicitationWithDialogs(request, questions, ui, formAbortController.signal);
 				}
 				if (Object.keys(interviewResult.answers).length === 0) {
 					// A system/host teardown (compaction, session_switch, true
@@ -1596,6 +1647,9 @@ export function createClaudeCodeElicitationHandler(
 					content: roundResultToElicitationContent(questions, interviewResult),
 				};
 			} finally {
+				clearTimeout(expiryTimer);
+				signal.removeEventListener("abort", forwardSdkAbort);
+				activeAskUserQuestionElicitationTimeoutAborters.delete(abortExpiredForm);
 				markToolEnd(elicId);
 				markInteractiveElicitationEnd();
 			}
@@ -2199,6 +2253,8 @@ interface SdkAttemptMessageState {
 	builder: PartialMessageBuilder | null;
 	intermediateToolBlocks: AssistantMessage["content"];
 	toolResultsById: Map<string, ExternalToolResultPayload>;
+	toolCompletionTargetsById: Map<string, { partial: AssistantMessage; contentIndex: number }>;
+	emittedExternalToolResultIds: Set<string>;
 }
 
 function createSdkAttemptMessageState(): SdkAttemptMessageState {
@@ -2206,6 +2262,8 @@ function createSdkAttemptMessageState(): SdkAttemptMessageState {
 		builder: null,
 		intermediateToolBlocks: [],
 		toolResultsById: new Map<string, ExternalToolResultPayload>(),
+		toolCompletionTargetsById: new Map<string, { partial: AssistantMessage; contentIndex: number }>(),
+		emittedExternalToolResultIds: new Set<string>(),
 	};
 }
 
@@ -2341,7 +2399,13 @@ async function pumpSdkMessages(
 
 			sdkAttemptLoop:
 			for (let readinessAttempt = 0; ; readinessAttempt++) {
-				let { builder, intermediateToolBlocks, toolResultsById } = createSdkAttemptMessageState();
+				let {
+					builder,
+					intermediateToolBlocks,
+					toolResultsById,
+					toolCompletionTargetsById,
+					emittedExternalToolResultIds,
+				} = createSdkAttemptMessageState();
 				const controller = new AbortController();
 				const forwardAbort = (): void => controller.abort();
 				if (options?.signal) {
@@ -2475,7 +2539,7 @@ async function pumpSdkMessages(
 						case "user": {
 							// Capture content from the completed turn before resetting
 							if (builder) {
-								for (const block of builder.message.content) {
+								for (const [contentIndex, block] of builder.message.content.entries()) {
 									if (block.type === "text" && block.text) {
 										lastTextContent = block.text;
 									} else if (block.type === "thinking" && block.thinking) {
@@ -2483,6 +2547,10 @@ async function pumpSdkMessages(
 									} else if (block.type === "toolCall" || block.type === "serverToolUse") {
 										// Collect tool blocks for externalToolExecution rendering
 										intermediateToolBlocks.push(block);
+										toolCompletionTargetsById.set(block.id, {
+											partial: builder.message,
+											contentIndex,
+										});
 									}
 								}
 							}
@@ -2497,59 +2565,70 @@ async function pumpSdkMessages(
 							// Push a synthetic toolcall_end for each tool call from this turn
 							// so the TUI can render tool results in real-time during the SDK
 							// session instead of waiting until the entire session completes.
-							if (builder) {
-								for (const block of builder.message.content) {
-									const extResult = (block as ToolCallWithExternalResult).externalResult;
-									if (!extResult) continue;
-									const contentIndex = builder.message.content.indexOf(block);
-									if (contentIndex < 0) continue;
-									const suppressDuplicateUnavailable = shouldSuppressDuplicateToolUnavailableBlock(
-										block,
-										builder.message.content,
-									);
-									// Push synthetic completion events with result attached so the
-									// chat-controller can update pending ToolExecutionComponents.
-									if (block.type === "toolCall") {
-										if (suppressDuplicateUnavailable) {
-											delete (block as ToolCallWithExternalResult).externalResult;
-											stream.push({
-												type: "toolcall_end",
-												contentIndex,
-												toolCall: block,
-												partial: builder.message,
-											});
-											(block as ToolCallWithExternalResult).externalResult = extResult;
-											continue;
-										}
-										try {
-											await onExternalToolResult?.({
-												toolCall: block,
-												result: extResult,
-											});
-										} catch (error) {
-											console.warn("[claude-code] onExternalToolResult callback failed:", error);
-										}
+							for (const block of intermediateToolBlocks) {
+								if (block.type !== "toolCall" && block.type !== "serverToolUse") continue;
+								if (emittedExternalToolResultIds.has(block.id)) continue;
+								const target = toolCompletionTargetsById.get(block.id);
+								if (!target) continue;
+
+								const extResult = (block as ToolCallWithExternalResult).externalResult;
+								if (!extResult) continue;
+								const suppressDuplicateUnavailable = shouldSuppressDuplicateToolUnavailableBlock(
+									block,
+									target.partial.content,
+								);
+								// Push synthetic completion events with result attached so the
+								// chat-controller can update pending ToolExecutionComponents.
+								if (block.type === "toolCall") {
+									if (isAskUserQuestionsTimedOutResult(block, extResult)) {
+										abortActiveAskUserQuestionElicitationsForTimeout();
+									}
+									if (suppressDuplicateUnavailable) {
+										delete (block as ToolCallWithExternalResult).externalResult;
 										stream.push({
 											type: "toolcall_end",
-											contentIndex,
+											contentIndex: target.contentIndex,
 											toolCall: block,
-											partial: builder.message,
+											partial: target.partial,
 										});
-									} else if (block.type === "serverToolUse") {
-										try {
-											await onExternalToolResult?.({
-												toolCall: serverToolUseToToolCallLike(block),
-												result: extResult,
-											});
-										} catch (error) {
-											console.warn("[claude-code] onExternalToolResult callback failed:", error);
-										}
-										stream.push({
-											type: "server_tool_use",
-											contentIndex,
-											partial: builder.message,
-										});
+										(block as ToolCallWithExternalResult).externalResult = extResult;
+										emittedExternalToolResultIds.add(block.id);
+										continue;
 									}
+									try {
+										await onExternalToolResult?.({
+											toolCall: block,
+											result: extResult,
+										});
+									} catch (error) {
+										console.warn("[claude-code] onExternalToolResult callback failed:", error);
+									}
+									stream.push({
+										type: "toolcall_end",
+										contentIndex: target.contentIndex,
+										toolCall: block,
+										partial: target.partial,
+									});
+									emittedExternalToolResultIds.add(block.id);
+								} else if (block.type === "serverToolUse") {
+									const toolCall = serverToolUseToToolCallLike(block);
+									if (isAskUserQuestionsTimedOutResult(toolCall, extResult)) {
+										abortActiveAskUserQuestionElicitationsForTimeout();
+									}
+									try {
+										await onExternalToolResult?.({
+											toolCall,
+											result: extResult,
+										});
+									} catch (error) {
+										console.warn("[claude-code] onExternalToolResult callback failed:", error);
+									}
+									stream.push({
+										type: "server_tool_use",
+										contentIndex: target.contentIndex,
+										partial: target.partial,
+									});
+									emittedExternalToolResultIds.add(block.id);
 								}
 							}
 

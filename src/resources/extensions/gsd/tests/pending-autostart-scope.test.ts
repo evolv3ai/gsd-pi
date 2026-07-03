@@ -55,8 +55,8 @@ describe("pendingAutoStart scope pinning (C1)", () => {
     assert.ok(entry.scope, "entry.scope should be set");
     assert.equal(entry.scope.milestoneId, "M001");
 
-    const expectedContext = join(base, ".gsd", "milestones", "M001", "M001-CONTEXT.md");
-    const expectedRoadmap = join(base, ".gsd", "milestones", "M001", "M001-ROADMAP.md");
+    const expectedContext = join(base, ".gsd", "phases", "01-m001", "01-CONTEXT.md");
+    const expectedRoadmap = join(base, ".gsd", "phases", "01-m001", "01-ROADMAP.md");
     const expectedState = join(base, ".gsd", "STATE.md");
 
     assert.equal(entry.scope.contextFile(), expectedContext);

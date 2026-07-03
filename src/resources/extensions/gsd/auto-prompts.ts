@@ -20,14 +20,15 @@ import {
   relTaskFile, resolveGsdRootFile, relGsdRootFile, resolveRuntimeFile,
 } from "./paths.js";
 import { resolveInlineLevel, loadEffectiveGSDPreferences } from "./preferences.js";
+import { createRepositoryRegistryFromPreferences } from "./repository-registry.js";
 import { isContextModeEnabled } from "./preferences-types.js";
 import { parseRoadmap } from "./parsers-legacy.js";
 import type { GSDState, InlineLevel } from "./types.js";
 import type { GSDPreferences } from "./preferences.js";
-import { join, basename, relative } from "node:path";
+import { join, basename, relative, sep } from "node:path";
 import { existsSync } from "node:fs";
 import { computeBudgets, resolveExecutorContextWindow, truncateAtSectionBoundary, type MinimalModelRegistry } from "./context-budget.js";
-import { getPendingGates, getPendingGatesForTurn } from "./gsd-db.js";
+import { getGateResults, getPendingGates, getPendingGatesForTurn } from "./gsd-db.js";
 import {
   GATE_REGISTRY,
   assertGateCoverage,
@@ -390,6 +391,37 @@ function formatExecutorConstraints(
     `- Recommended task count for this slice: **${min}–${max} tasks**`,
     `- Each task gets ~${perTaskBudgetK}K chars of inline context (plans, code, decisions)`,
     `- Keep individual tasks completable within a single context window — if a task needs more context than fits, split it`,
+  ].join("\n");
+}
+
+/**
+ * Builds the Declared Repositories block for parent-workspace planners.
+ * Returns "" for single-repo projects so the common-case prompt is unchanged;
+ * only parent mode with declared child repos gets the registry list and the
+ * targetRepositories assignment instruction.
+ */
+export function buildRepoRegistryBlock(base: string): string {
+  let registry;
+  try {
+    registry = createRepositoryRegistryFromPreferences(base, loadEffectiveGSDPreferences(base)?.preferences);
+  } catch {
+    return "";
+  }
+  const hasChildRepo = registry.repositories.some((repo) => repo.id !== "project");
+  if (registry.mode !== "parent" || !hasChildRepo) return "";
+
+  const lines = registry.repositories.map((repo) => {
+    const relPath = relative(registry.projectRoot, repo.root).split(sep).join("/") || ".";
+    const role = repo.role ? ` — ${repo.role}` : "";
+    const root = repo.id === "project" ? " (root)" : ` (${relPath})`;
+    return `- \`${repo.id}\`${root}${role}`;
+  });
+  return [
+    "### Declared Repositories",
+    "",
+    ...lines,
+    "",
+    "This is a parent workspace. Assign each task's `targetRepositories` to the repository id(s) it touches (from the list above). Omit `targetRepositories` to inherit the slice-wide default from `gsd_plan_slice`; set it explicitly when a task differs (e.g. `[\"project\"]` for parent-root work).",
   ].join("\n");
 }
 
@@ -2504,6 +2536,7 @@ async function renderSlicePrompt(options: {
     inlinedContext,
     dependencySummaries: depContent,
     sourceFilePaths: buildSourceFilePaths(base, mid, sid),
+    repoRegistry: buildRepoRegistryBlock(base),
     executorContextConstraints,
     commitInstruction,
     skillActivation: buildSkillActivationBlock({
@@ -3360,6 +3393,44 @@ export async function buildValidateMilestonePrompt(
     const outstandingBlock = `### Outstanding Items (aggregated from slice summaries)\n\nThese follow-ups and known limitations were documented during slice completion but have not been resolved.\n\n${outstandingItems.join('\n')}`;
     inlined.push(outstandingBlock);
     trackPromptContext(contextTelemetry, "outstanding-items", "inline", outstandingBlock);
+  }
+
+  const persistedGateFlags: string[] = [];
+  try {
+    const gateLabels = {
+      Q3: "Threat Surface",
+      Q4: "Requirement Impact",
+    } as const;
+    for (const sid of seenValSlices) {
+      for (const gate of getGateResults(mid, sid, "slice")) {
+        if (gate.gate_id !== "Q3" && gate.gate_id !== "Q4") continue;
+        const findings = gate.findings.trim();
+        const rationale = gate.rationale.trim();
+        const verdict = gate.verdict ?? "";
+        const hasNonPassVerdict = verdict !== "" && verdict !== "pass" && verdict !== "omitted";
+        if (!findings && !hasNonPassVerdict) continue;
+
+        const displayVerdict = verdict || gate.status;
+        const detail = findings || rationale || "_No findings text recorded; reconcile the persisted non-pass verdict._";
+        persistedGateFlags.push(`- **${sid} / ${gate.gate_id} (${gateLabels[gate.gate_id]}) / ${displayVerdict}:** ${detail}`);
+        if (findings && rationale) persistedGateFlags.push(`  - Rationale: ${rationale}`);
+      }
+    }
+  } catch (err) {
+    logWarning("prompt", `buildValidateMilestonePrompt persisted gate flags lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (persistedGateFlags.length > 0) {
+    const persistedGateFlagsBlock = [
+      "### Persisted Slice-Level Gate Flags (from quality_gates)",
+      "",
+      "These slice gates recorded findings or non-pass verdicts during execution. Reconcile each against the milestone-level evidence before returning MV03/MV04 verdicts.",
+      "",
+      ...persistedGateFlags,
+    ].join("\n");
+    inlined.push(persistedGateFlagsBlock);
+    trackPromptContext(contextTelemetry, "persisted-slice-gate-flags", "inline", persistedGateFlagsBlock);
+  } else {
+    trackPromptContext(contextTelemetry, "persisted-slice-gate-flags", "skipped", null, "none");
   }
 
   // Inline existing VALIDATION file if this is a re-validation round

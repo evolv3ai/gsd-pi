@@ -34,6 +34,11 @@ import {
   clearPendingAutoStart,
   setPendingAutoStart,
 } from "../guided-flow.ts";
+import {
+  closeDatabase,
+  insertMilestone,
+  openDatabase,
+} from "../gsd-db.ts";
 
 // ─── Bug 2: this-binding regression ─────────────────────────────────────
 
@@ -89,6 +94,8 @@ test("checkAutoStartAfterDiscuss completes when discussion manifest is absent", 
     mkdirSync(milestoneDir, { recursive: true });
     writeFileSync(join(milestoneDir, "M001-CONTEXT.md"), "# Context\n", "utf-8");
     writeFileSync(join(base, ".gsd", "STATE.md"), "# State\n", "utf-8");
+    openDatabase(":memory:");
+    insertMilestone({ id: "M001", title: "M001", status: "queued" });
     setPendingAutoStart(base, {
       basePath: base,
       milestoneId: "M001",
@@ -110,6 +117,7 @@ test("checkAutoStartAfterDiscuss completes when discussion manifest is absent", 
       },
     ]);
   } finally {
+    closeDatabase();
     clearPendingAutoStart(base);
     rmSync(base, { recursive: true, force: true });
   }

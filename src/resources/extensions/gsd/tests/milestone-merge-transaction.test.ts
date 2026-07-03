@@ -13,7 +13,7 @@ test("runMilestoneMergeTransaction delegates to the supplied merge runner", () =
   const calls: unknown[][] = [];
   const result = runMilestoneMergeTransaction(
     {
-      mergeMilestoneToMain: (basePath, milestoneId, roadmapContent) => {
+      mergeMilestone: (basePath, milestoneId, roadmapContent) => {
         calls.push([basePath, milestoneId, roadmapContent]);
         return { pushed: true, codeFilesChanged: true, commitMessage: "merge M001" };
       },

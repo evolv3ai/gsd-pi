@@ -35,6 +35,14 @@ export function consumeAutoWakeup(
   return wakeup;
 }
 
+export function clearAutoWakeup(
+  basePath: string,
+  unitType: string,
+  unitId: string,
+): void {
+  pendingWakeups.delete(wakeupKey(basePath, unitType, unitId));
+}
+
 export function _resetAutoWakeupsForTest(): void {
   pendingWakeups.clear();
 }

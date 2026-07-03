@@ -383,13 +383,12 @@ Milestone  →  一个可交付版本（4-10 个 slice）
   DECISIONS.md        — 追加式架构决策记录
   KNOWLEDGE.md        — 手写 Rules，加上 memory 支撑的 Patterns/Lessons
   STATE.md            — 一眼可见的状态摘要
-  milestones/
-    M001/
-      M001-ROADMAP.md — 带依赖关系的 slice 计划
-      slices/
-        S01/
-          S01-PLAN.md     — task 拆解
-          S01-SUMMARY.md  — 实际发生了什么
+  phases/
+    01-foundation/
+      01-CONTEXT.md     — discussion 中形成的范围和目标
+      01-ROADMAP.md     — 带依赖关系的 slice 计划
+      01-01-PLAN.md     — 第一个 slice 的 task 拆解
+      01-01-SUMMARY.md  — 第一个 slice 实际发生了什么
 ```
 
 ---

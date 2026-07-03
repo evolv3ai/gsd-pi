@@ -100,6 +100,14 @@ export interface ExecuteTaskRecoveryStatus {
   mustHavesMentionedInSummary: number;
 }
 
+export interface UnitHarnessAbortRecord {
+  kind: "tool-loop-guard" | "tool-error" | "turn-abort";
+  reason: string;
+  toolName?: string;
+  count?: number;
+  recordedAt: number;
+}
+
 export interface AutoUnitRuntimeRecord {
   version: 1;
   unitType: string;
@@ -116,6 +124,7 @@ export interface AutoUnitRuntimeRecord {
   recovery?: ExecuteTaskRecoveryStatus;
   recoveryAttempts?: number;
   lastRecoveryReason?: "idle" | "hard";
+  harnessAbort?: UnitHarnessAbortRecord;
 }
 
 function runtimeDir(basePath: string): string {
@@ -138,6 +147,8 @@ export function writeUnitRuntimeRecord(
   const path = runtimePath(basePath, unitType, unitId);
   return withRecordLock(path, () => {
     const prev = readUnitRuntimeRecord(basePath, unitType, unitId);
+    const sameRun = prev?.startedAt === startedAt;
+    const updatesHarnessAbort = Object.prototype.hasOwnProperty.call(updates, "harnessAbort");
     const next: AutoUnitRuntimeRecord = {
       version: 1,
       unitType,
@@ -154,9 +165,29 @@ export function writeUnitRuntimeRecord(
       recovery: updates.recovery ?? prev?.recovery,
       recoveryAttempts: updates.recoveryAttempts ?? prev?.recoveryAttempts ?? 0,
       lastRecoveryReason: updates.lastRecoveryReason ?? prev?.lastRecoveryReason,
+      harnessAbort: updatesHarnessAbort
+        ? updates.harnessAbort
+        : (sameRun ? prev?.harnessAbort : undefined),
     };
     atomicWriteSync(path, JSON.stringify(next, null, 2) + "\n", "utf-8");
     return next;
+  });
+}
+
+export function recordUnitHarnessAbort(
+  basePath: string,
+  unitType: string,
+  unitId: string,
+  startedAt: number,
+  abort: Omit<UnitHarnessAbortRecord, "recordedAt"> & { recordedAt?: number },
+): AutoUnitRuntimeRecord {
+  return writeUnitRuntimeRecord(basePath, unitType, unitId, startedAt, {
+    harnessAbort: {
+      ...abort,
+      recordedAt: abort.recordedAt ?? Date.now(),
+    },
+    lastProgressAt: Date.now(),
+    lastProgressKind: `harness-abort:${abort.kind}`,
   });
 }
 
@@ -168,6 +199,17 @@ export function readUnitRuntimeRecord(basePath: string, unitType: string, unitId
   } catch {
     return null;
   }
+}
+
+export function readUnitHarnessAbort(
+  basePath: string,
+  unitType: string,
+  unitId: string,
+  startedAt: number,
+): UnitHarnessAbortRecord | null {
+  const record = readUnitRuntimeRecord(basePath, unitType, unitId);
+  if (!record || record.startedAt !== startedAt) return null;
+  return record.harnessAbort ?? null;
 }
 
 export function clearUnitRuntimeRecord(basePath: string, unitType: string, unitId: string): void {

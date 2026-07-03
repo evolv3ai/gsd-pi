@@ -39,7 +39,7 @@ import {
   type SkillDiscoveryMode,
   formatSkillRef,
 } from "./preferences-types.js";
-import { validatePreferences } from "./preferences-validation.js";
+import { crossAxisPreferenceWarnings, validatePreferences } from "./preferences-validation.js";
 import { gsdHome } from "./gsd-home.js";
 
 // ─── Re-exports: types ──────────────────────────────────────────────────────
@@ -270,6 +270,12 @@ export function normalizePreferencesShape(
 const EFFECTIVE_PREFERENCES_CACHE_MAX = 64;
 const effectivePreferencesCache = new Map<string, LoadedGSDPreferences | null>();
 
+type EffectivePreferencesLoadOptions = {
+  availableModelIds?: string[];
+  preferredModelId?: string;
+  skipProfileDefaults?: boolean;
+};
+
 export function clearGSDPreferencesCache(): void {
   effectivePreferencesCache.clear();
 }
@@ -301,7 +307,7 @@ function preferencesFileSignature(path: string): string {
 
 function effectivePreferencesCacheKey(
   basePath?: string,
-  opts?: { availableModelIds?: string[]; preferredModelId?: string },
+  opts?: EffectivePreferencesLoadOptions,
 ): string {
   return JSON.stringify({
     basePath: basePath ?? null,
@@ -309,6 +315,7 @@ function effectivePreferencesCacheKey(
     project: projectPreferencesCandidatePaths(basePath).map(preferencesFileSignature),
     availableModelIds: opts?.availableModelIds ?? null,
     preferredModelId: opts?.preferredModelId ?? null,
+    skipProfileDefaults: opts?.skipProfileDefaults === true,
   });
 }
 
@@ -338,7 +345,7 @@ export function loadProjectGSDPreferences(basePath?: string): LoadedGSDPreferenc
 
 export function loadEffectiveGSDPreferences(
   basePath?: string,
-  opts?: { availableModelIds?: string[]; preferredModelId?: string },
+  opts?: EffectivePreferencesLoadOptions,
 ): LoadedGSDPreferences | null {
   const cacheKey = effectivePreferencesCacheKey(basePath, opts);
   if (effectivePreferencesCache.has(cacheKey)) {
@@ -384,7 +391,7 @@ export function loadEffectiveGSDPreferences(
   } else {
     profileForDefaults = DEFAULT_TOKEN_PROFILE;
   }
-  if (profileForDefaults) {
+  if (profileForDefaults && !opts?.skipProfileDefaults) {
     const profileDefaults = _resolveProfileDefaults(
       profileForDefaults,
       opts?.availableModelIds,
@@ -409,9 +416,36 @@ export function loadEffectiveGSDPreferences(
   }
 
   result = stripInheritedPlanningDepth(result, projectHasPlanningDepth);
+  result = appendCrossAxisPreferenceWarnings(result);
 
   cacheEffectivePreferences(cacheKey, result);
   return result;
+}
+
+function appendCrossAxisPreferenceWarnings(loaded: LoadedGSDPreferences): LoadedGSDPreferences {
+  const crossWarnings = crossAxisPreferenceWarnings(loaded.preferences);
+  const existingMessages = new Set([
+    ...(loaded.warnings ?? []),
+    ...(loaded.diagnostics ?? []).map((diagnostic) => diagnostic.message),
+  ]);
+  const newWarnings = crossWarnings.filter((message) => !existingMessages.has(message));
+  if (newWarnings.length === 0) return loaded;
+
+  return {
+    ...loaded,
+    warnings: [...(loaded.warnings ?? []), ...newWarnings],
+    diagnostics: [
+      ...(loaded.diagnostics ?? []),
+      ...newWarnings.map((message): PreferenceDiagnostic => ({
+        path: loaded.path,
+        scope: loaded.scope,
+        severity: "warning",
+        kind: "validation",
+        message,
+        sanitized: true,
+      })),
+    ],
+  };
 }
 
 function withoutProfilePhaseDefaults(defaults: Partial<GSDPreferences>): Partial<GSDPreferences> {

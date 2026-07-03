@@ -25,6 +25,8 @@
 
 import { createHash } from "node:crypto";
 import { INHERENTLY_REPEATABLE_TOOL_SET } from "./core-session-tools.js";
+import { hasBrowserContractPrefix } from "../../shared/browser-contract.js";
+import { canonicalToolName } from "../engine-hook-contract.js";
 
 const MAX_CONSECUTIVE_IDENTICAL_CALLS = 4;
 
@@ -130,8 +132,16 @@ export function checkToolCallLoop(
   perToolLastMutationEpoch.set(toolName, mutationEpoch);
 
   // Read-only navigation tools are normal context gathering; Guard 1 still
-  // catches true reread loops with identical arguments.
-  if (PER_TOOL_CAP_EXEMPT_TOOLS.has(toolName)) {
+  // catches true reread loops with identical arguments. Browser Automation
+  // Contract tools (browser_*) are the same shape: a browser-backed UAT makes
+  // many distinct-arg calls (read a message, count edits, inspect a card, …),
+  // so the arg-independent per-tool cap misfires on legitimate verification;
+  // Guard 1's identical-signature streak still catches a genuinely stuck
+  // browser loop.
+  if (
+    PER_TOOL_CAP_EXEMPT_TOOLS.has(toolName) ||
+    hasBrowserContractPrefix(canonicalToolName(toolName))
+  ) {
     return { block: false, count: consecutiveCount };
   }
 

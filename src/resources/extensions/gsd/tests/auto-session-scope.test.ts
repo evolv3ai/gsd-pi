@@ -121,8 +121,8 @@ describe("AutoSession.scope — project mode (basePath equals originalBasePath)"
 
     assert.ok(s.scope, "scope should be set");
     const gsd = join(projectDir, ".gsd");
-    assert.equal(s.scope.contextFile(), join(gsd, "milestones", mid, `${mid}-CONTEXT.md`));
-    assert.equal(s.scope.roadmapFile(), join(gsd, "milestones", mid, `${mid}-ROADMAP.md`));
+    assert.equal(s.scope.contextFile(), join(gsd, "phases", "02-m002", "02-CONTEXT.md"));
+    assert.equal(s.scope.roadmapFile(), join(gsd, "phases", "02-m002", "02-ROADMAP.md"));
     assert.equal(s.scope.stateFile(), join(gsd, "STATE.md"));
   });
 });
@@ -236,8 +236,8 @@ describe("AutoSession.scope — milestoneId change rebuilds scope", () => {
     assert.ok(ctxM001, "M001 contextFile should be set");
     assert.ok(ctxM002, "M002 contextFile should be set");
     assert.notEqual(ctxM001, ctxM002, "contextFile must differ between milestone IDs");
-    assert.ok(ctxM001.includes("M001"), "M001 path should contain M001");
-    assert.ok(ctxM002.includes("M002"), "M002 path should contain M002");
+    assert.ok(ctxM001.includes("01-m001"), "M001 path should contain its phase directory");
+    assert.ok(ctxM002.includes("02-m002"), "M002 path should contain its phase directory");
   });
 });
 

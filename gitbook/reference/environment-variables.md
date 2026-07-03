@@ -16,6 +16,9 @@
 | `GSD_WORKFLOW_PROJECT_ROOT` | current working directory | Canonical project root for the packaged `gsd-workflow` MCP server. Used by workflow tools and by the stale-process registry key in `$GSD_HOME/mcp-instances.json`. |
 | `GSD_WORKFLOW_EXECUTORS_MODULE` | auto-discovered when possible | Optional absolute path or `file:` URL for the shared workflow executor module used by `gsd-workflow` mutation tools. |
 | `GSD_WORKFLOW_WRITE_GATE_MODULE` | auto-discovered when possible | Optional absolute path or `file:` URL for the shared write-gate module used by `gsd-workflow` mutation tools. |
+| `GSD_CURSOR_DISABLE` | (unset) | Set to literal `1` to disable the bundled `cursor-agent` model provider. |
+| `GSD_CURSOR_DEBUG` | (unset) | Set to any value to print Cursor Agent readiness probe diagnostics to stderr. |
+| `CURSOR_AGENT_BIN` | `cursor-agent` | Optional command or absolute path for the Cursor Agent CLI when it is not on `PATH`. |
 | `PI_DISABLE_SYNC_OUTPUT` | (unset) | Set to literal `1` to disable synchronized terminal output mode in the TUI on non-Windows platforms. By default synchronized output is enabled on macOS/Linux and always disabled on Windows. |
 | `PI_TUI_MOUSE` | (unset) | Set to literal `1` to enable terminal mouse reporting for TUI clicks and wheel events. Native drag selection is preserved by default; when mouse reporting is enabled, most terminals require Shift+drag to select text. |
 | `PI_TOKEN_AUDIT` | (unset) | Set to literal `1` to emit metadata-only provider-boundary prompt/tool audit JSONL on stderr. Other values are ignored. |
@@ -26,6 +29,7 @@
 | Variable | Provider |
 |----------|----------|
 | `ANTHROPIC_API_KEY` | Anthropic (Claude) |
+| `CURSOR_API_KEY` | Cursor Agent. The local `cursor-agent` CLI is still required because requests run through the CLI. |
 | `OPENAI_API_KEY` | OpenAI |
 | `GEMINI_API_KEY` | Google Gemini |
 | `OPENROUTER_API_KEY` | OpenRouter |

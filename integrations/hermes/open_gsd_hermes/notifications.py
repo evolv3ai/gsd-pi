@@ -52,11 +52,20 @@ class NotificationService:
 
     def notify_blocker(self, status: SessionStatus) -> None:
         blocker = status.pending_blocker or {}
-        q = blocker.get("question") or blocker.get("prompt") or "Action required"
+        q = (
+            blocker.get("question")
+            or blocker.get("prompt")
+            or blocker.get("title")
+            or blocker.get("message")
+            or "Action required"
+        )
         self.send(f"🚧 GSD blocker: {q}\nReply with `/gsd reply <your answer>`", kind="blocker")
 
     def notify_transition(self, message: str) -> None:
         self.send(f"📋 GSD: {message}", kind="transition")
+
+    def notify_milestone_complete(self, message: str) -> None:
+        self.send(message, kind="complete")
 
     def notify_terminal(self, status: str, error: str | None = None) -> None:
         normalized_status = status.lower()

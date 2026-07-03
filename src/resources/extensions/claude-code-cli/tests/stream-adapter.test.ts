@@ -1,5 +1,5 @@
 // gsd-pi - Claude Code stream adapter regression tests
-import { describe, test } from "node:test";
+import { describe, mock, test } from "node:test";
 import { clearGuidedUnitContext, setGuidedUnitContext } from "../../gsd/guided-unit-context.ts";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -46,6 +46,7 @@ import {
 	buildWorkflowMcpReadinessProgressMessage,
 	pushWorkflowMcpReadinessProgressEvent,
 	resolveWorkflowMcpPreflightServerConfig,
+	CLAUDE_CODE_INTERVIEW_FORM_TIMEOUT_MS,
 } from "../stream-adapter.ts";
 import { CLAUDE_CODE_MODELS } from "../models.ts";
 import type { AssistantMessage, Context, Message } from "@gsd/pi-ai";
@@ -106,6 +107,51 @@ function setWorkflowMcpEnv(
 		}
 	};
 }
+
+// ---------------------------------------------------------------------------
+// Shared MCP elicitation fixture — a representative ask_user_questions
+// elicitation request. Used both by the external-tool-results interview
+// lifecycle tests and by the MCP elicitation bridge tests, so it lives at
+// module scope.
+// ---------------------------------------------------------------------------
+
+const askUserQuestionsRequest = {
+	serverName: "gsd-workflow",
+	message: "Please answer the following question(s).",
+	mode: "form" as const,
+	requestedSchema: {
+		type: "object" as const,
+		properties: {
+			storage_scope: {
+				type: "string",
+				title: "Storage",
+				description: "Does this app need to sync across devices?",
+				oneOf: [
+					{ const: "Local-only (Recommended)", title: "Local-only (Recommended)" },
+					{ const: "Cloud-synced", title: "Cloud-synced" },
+					{ const: "None of the above", title: "None of the above" },
+				],
+			},
+			storage_scope__note: {
+				type: "string",
+				title: "Storage Note",
+				description: "Optional note for None of the above.",
+			},
+			platform: {
+				type: "array",
+				title: "Platform",
+				description: "Where should it run?",
+				items: {
+					anyOf: [
+						{ const: "Web", title: "Web" },
+						{ const: "Desktop", title: "Desktop" },
+						{ const: "Mobile", title: "Mobile" },
+					],
+				},
+			},
+		},
+	},
+};
 
 // ---------------------------------------------------------------------------
 // Existing tests — exhausted stream fallback (#2575)
@@ -661,6 +707,293 @@ describe("stream-adapter — no transcript fabrication (#4102)", () => {
 });
 
 describe("stream-adapter — Claude Code external tool results", () => {
+	test("emits one synthetic completion per tool when SDK sends consecutive user result messages (#1153)", async () => {
+		// Capture synthetic completions through onExternalToolResult, which the
+		// adapter invokes exactly once per tool at emission time. Filtering the
+		// collected toolcall_end events afterwards is unreliable here: the streaming
+		// toolcall_end (content_block_stop) and the synthetic completion reference
+		// the SAME tool-call block, and attachExternalResultsToToolBlocks mutates
+		// that block later, so a post-hoc `event.toolCall.externalResult` check also
+		// matches the earlier streaming ends and double-counts each tool.
+		const syntheticCompletions: Array<{ id: string; text: string | undefined }> = [];
+		const stream = streamViaClaudeCode(
+			{ id: "claude-sonnet-4-6" } as any,
+			{ messages: [{ role: "user", content: "Read and grep." } as Message] },
+			{
+				_skipWorkflowMcpPreflightForTest: true,
+				onExternalToolResult(event: {
+					toolCall: { id: string };
+					result: { content?: Array<{ text?: string }> };
+				}) {
+					syntheticCompletions.push({
+						id: event.toolCall.id,
+						text: event.result.content?.[0]?.text,
+					});
+				},
+				async *_sdkQueryForTest() {
+					yield {
+						type: "stream_event",
+						event: { type: "message_start", message: { model: "claude-sonnet-4-6" } },
+						parent_tool_use_id: null,
+						uuid: "partial-1",
+						session_id: "session-1",
+					};
+					yield {
+						type: "stream_event",
+						event: {
+							type: "content_block_start",
+							index: 0,
+							content_block: { type: "tool_use", id: "tool-read-1", name: "Read", input: {} },
+						},
+						parent_tool_use_id: null,
+						uuid: "partial-1",
+						session_id: "session-1",
+					};
+					yield {
+						type: "stream_event",
+						event: {
+							type: "content_block_delta",
+							index: 0,
+							delta: { type: "input_json_delta", partial_json: "{\"file_path\":\"a.txt\"}" },
+						},
+						parent_tool_use_id: null,
+						uuid: "partial-1",
+						session_id: "session-1",
+					};
+					yield {
+						type: "stream_event",
+						event: { type: "content_block_stop", index: 0 },
+						parent_tool_use_id: null,
+						uuid: "partial-1",
+						session_id: "session-1",
+					};
+					yield {
+						type: "stream_event",
+						event: {
+							type: "content_block_start",
+							index: 1,
+							content_block: { type: "tool_use", id: "tool-grep-1", name: "Grep", input: {} },
+						},
+						parent_tool_use_id: null,
+						uuid: "partial-1",
+						session_id: "session-1",
+					};
+					yield {
+						type: "stream_event",
+						event: {
+							type: "content_block_delta",
+							index: 1,
+							delta: { type: "input_json_delta", partial_json: "{\"pattern\":\"needle\"}" },
+						},
+						parent_tool_use_id: null,
+						uuid: "partial-1",
+						session_id: "session-1",
+					};
+					yield {
+						type: "stream_event",
+						event: { type: "content_block_stop", index: 1 },
+						parent_tool_use_id: null,
+						uuid: "partial-1",
+						session_id: "session-1",
+					};
+					yield {
+						type: "user",
+						uuid: "user-result-1",
+						session_id: "session-1",
+						parent_tool_use_id: "tool-read-1",
+						message: {
+							role: "user",
+							content: [{
+								type: "tool_result",
+								tool_use_id: "tool-read-1",
+								content: "read result",
+								is_error: false,
+							}],
+						},
+					};
+					yield {
+						type: "user",
+						uuid: "user-result-2",
+						session_id: "session-1",
+						parent_tool_use_id: "tool-grep-1",
+						message: {
+							role: "user",
+							content: [{
+								type: "tool_result",
+								tool_use_id: "tool-grep-1",
+								content: "grep result",
+								is_error: false,
+							}],
+						},
+					};
+					yield {
+						type: "result",
+						subtype: "success",
+						uuid: "result-1",
+						session_id: "session-1",
+						duration_ms: 1,
+						duration_api_ms: 1,
+						is_error: false,
+						num_turns: 1,
+						result: "done",
+						stop_reason: "end_turn",
+						total_cost_usd: 0,
+						usage: {
+							input_tokens: 0,
+							output_tokens: 0,
+							cache_read_input_tokens: 0,
+							cache_creation_input_tokens: 0,
+						},
+					};
+				},
+			} as any,
+		);
+
+		// Drain the stream so the adapter processes every SDK message and fires
+		// onExternalToolResult for each synthetic completion.
+		const events: any[] = [];
+		for await (const event of stream) {
+			events.push(event);
+		}
+
+		assert.deepEqual(
+			syntheticCompletions.map((completion) => completion.id),
+			["tool-read-1", "tool-grep-1"],
+		);
+		assert.deepEqual(
+			syntheticCompletions.map((completion) => completion.text),
+			["read result", "grep result"],
+		);
+	});
+
+	test("closes an in-flight interview when ask_user_questions reports timed_out first", async (t) => {
+		const notifications: Array<{ message: string; type?: string }> = [];
+		let elicitationPromise: Promise<unknown> | undefined;
+		let elicitationSignalController: AbortController | undefined;
+		let customOpened = false;
+		const ui = {
+			custom: async (factory: any) => new Promise((resolve) => {
+				customOpened = true;
+				factory({ requestRender() {} } as any, {} as any, {} as any, resolve);
+			}),
+			notify: (message: string, type?: string) => {
+				notifications.push({ message, type });
+			},
+		};
+		t.after(() => {
+			elicitationSignalController?.abort();
+		});
+
+		const stream = streamViaClaudeCode(
+			{ id: "claude-sonnet-4-6" } as any,
+			{ messages: [{ role: "user", content: "Ask me." } as Message] },
+			{
+				extensionUIContext: ui as any,
+				_skipWorkflowMcpPreflightForTest: true,
+				async *_sdkQueryForTest(args: {
+					prompt: string | AsyncIterable<unknown>;
+					options?: Record<string, unknown>;
+				}) {
+					const onElicitation = args.options?.onElicitation as
+						| ((request: unknown, options: { signal: AbortSignal }) => Promise<unknown>)
+						| undefined;
+					assert.equal(typeof onElicitation, "function");
+					elicitationSignalController = new AbortController();
+					elicitationPromise = onElicitation!(askUserQuestionsRequest, {
+						signal: elicitationSignalController.signal,
+					});
+					assert.equal(customOpened, true, "interview overlay should be open before the tool result arrives");
+
+					// The adapter only assembles tool-call blocks after a
+					// message_start has created the partial-message builder. Real
+					// SDK streams always emit it before a tool_use content block;
+					// without it the timed_out result is never matched to the
+					// in-flight ask_user_questions block, so the interview would
+					// never be closed.
+					yield {
+						type: "stream_event",
+						event: { type: "message_start", message: { model: "claude-sonnet-4-6" } },
+						parent_tool_use_id: null,
+						uuid: "partial-1",
+						session_id: "session-1",
+					};
+					yield {
+						type: "stream_event",
+						event: {
+							type: "content_block_start",
+							index: 0,
+							content_block: {
+								type: "tool_use",
+								id: "ask-1",
+								name: "mcp__gsd-workflow__ask_user_questions",
+								input: {},
+							},
+						},
+						parent_tool_use_id: null,
+						uuid: "partial-1",
+						session_id: "session-1",
+					};
+					yield {
+						type: "user",
+						uuid: "user-result-1",
+						session_id: "session-1",
+						parent_tool_use_id: "ask-1",
+						message: {
+							role: "user",
+							content: [{
+								type: "mcp_tool_result",
+								tool_use_id: "ask-1",
+								content: [{ type: "text", text: "timed out" }],
+								structuredContent: { timed_out: true },
+								is_error: false,
+							}],
+						},
+					};
+					yield {
+						type: "result",
+						subtype: "success",
+						uuid: "result-1",
+						session_id: "session-1",
+						duration_ms: 1,
+						duration_api_ms: 1,
+						is_error: false,
+						num_turns: 1,
+						result: "done",
+						stop_reason: "end_turn",
+						total_cost_usd: 0,
+						usage: {
+							input_tokens: 0,
+							output_tokens: 0,
+							cache_read_input_tokens: 0,
+							cache_creation_input_tokens: 0,
+						},
+					};
+				},
+			} as any,
+		);
+
+		await stream.result();
+		assert.ok(elicitationPromise);
+		let guard: ReturnType<typeof setTimeout> | undefined;
+		const elicitationResult = await Promise.race([
+			elicitationPromise,
+			new Promise<never>((_, reject) => {
+				guard = setTimeout(
+					() => reject(new Error("timed out waiting for in-flight interview to close")),
+					250,
+				);
+			}),
+		]).finally(() => {
+			if (guard) clearTimeout(guard);
+		});
+
+		assert.deepEqual(elicitationResult, { action: "decline" });
+		assert.deepEqual(notifications, [{
+			message: "Question expired before you answered - the form was closed and no answers were sent.",
+			type: "warning",
+		}]);
+	});
+
 	test("serverToolUseToToolCallLike preserves object input for extension tool_result routing", () => {
 		const toolCall = serverToolUseToToolCallLike({
 			id: "srv-1",
@@ -2436,44 +2769,6 @@ describe("stream-adapter — workflow MCP readiness", () => {
 });
 
 describe("stream-adapter — MCP elicitation bridge", () => {
-	const askUserQuestionsRequest = {
-		serverName: "gsd-workflow",
-		message: "Please answer the following question(s).",
-		mode: "form" as const,
-		requestedSchema: {
-			type: "object" as const,
-			properties: {
-				storage_scope: {
-					type: "string",
-					title: "Storage",
-					description: "Does this app need to sync across devices?",
-					oneOf: [
-						{ const: "Local-only (Recommended)", title: "Local-only (Recommended)" },
-						{ const: "Cloud-synced", title: "Cloud-synced" },
-						{ const: "None of the above", title: "None of the above" },
-					],
-				},
-				storage_scope__note: {
-					type: "string",
-					title: "Storage Note",
-					description: "Optional note for None of the above.",
-				},
-				platform: {
-					type: "array",
-					title: "Platform",
-					description: "Where should it run?",
-					items: {
-						anyOf: [
-							{ const: "Web", title: "Web" },
-							{ const: "Desktop", title: "Desktop" },
-							{ const: "Mobile", title: "Mobile" },
-						],
-					},
-				},
-			},
-		},
-	};
-
 	test("parseAskUserQuestionsElicitation rebuilds interview questions from the MCP schema", () => {
 		const questions = parseAskUserQuestionsElicitation(askUserQuestionsRequest);
 		assert.deepEqual(questions, [
@@ -2880,6 +3175,43 @@ describe("stream-adapter — MCP elicitation bridge", () => {
 
 		const result = await handler!(askUserQuestionsRequest, { signal: new AbortController().signal });
 		assert.deepEqual(result, { action: "decline" });
+	});
+
+	test("expires the interview overlay before the MCP elicitation response is dropped", async (t) => {
+		mock.timers.enable({ apis: ["setTimeout"] });
+		t.after(() => {
+			mock.timers.reset();
+		});
+
+		const notifications: Array<{ message: string; type?: string }> = [];
+		let customOpened = false;
+		const handler = createClaudeCodeElicitationHandler({
+			custom: async (factory: any) => new Promise((resolve) => {
+				customOpened = true;
+				factory({ requestRender() {} } as any, {} as any, {} as any, resolve);
+			}),
+			notify: (message: string, type?: string) => {
+				notifications.push({ message, type });
+			},
+			select: async () => {
+				throw new Error("expired interview must not re-open dialog fallback");
+			},
+		} as any);
+		assert.ok(handler);
+
+		const resultPromise = handler!(askUserQuestionsRequest, { signal: new AbortController().signal });
+		await Promise.resolve();
+		assert.equal(customOpened, true);
+
+		mock.timers.tick(CLAUDE_CODE_INTERVIEW_FORM_TIMEOUT_MS);
+		const result = await resultPromise;
+
+		assert.deepEqual(result, { action: "decline" });
+		assert.deepEqual(notifications, [{
+			message: "Question expired before you answered - the form was closed and no answers were sent.",
+			type: "warning",
+		}]);
+		assert.equal(isInteractiveElicitationInFlight(), false, "marker must clear after deadline expiry");
 	});
 
 	test("returns cancel (today's semantics) when the user genuinely dismisses", async () => {

@@ -53,11 +53,13 @@ import { loadEffectiveGSDPreferences } from "../preferences.js";
 import { parseProject } from "../schemas/parsers.js";
 import { autoSession, getAutoRuntimeSnapshot, isAutoActive } from "../auto-runtime-state.js";
 import { renderPlanFromDb } from "../markdown-renderer.js";
+import { readUnitHarnessAbort, type UnitHarnessAbortRecord } from "../unit-runtime.js";
 import {
   prepareUatRun,
   saveUatAttemptArtifact,
   type UatResultSaveParams,
 } from "../uat-run.js";
+import { appendNotification } from "../notification-store.js";
 import { registerAutoWorker, markWorkerStopping, getAutoWorker } from "../db/auto-workers.js";
 import {
   claimMilestoneLease,
@@ -112,6 +114,48 @@ function blockIfWrongAutoUnit(requiredUnitType: string, operation: string): Tool
   return {
     content: [{ type: "text", text: error }],
     details: { operation, error },
+    isError: true,
+  };
+}
+
+function blockIfHarnessAbortedUnit(operation: string, basePath: string): ToolExecutionResult | null {
+  const snapshot = getAutoRuntimeSnapshot();
+  if (!snapshot.active || !snapshot.currentUnit) return null;
+
+  const abort = readUnitHarnessAbort(
+    snapshot.basePath || basePath,
+    snapshot.currentUnit.type,
+    snapshot.currentUnit.id,
+    snapshot.currentUnit.startedAt,
+  );
+  if (!abort) return null;
+
+  return harnessAbortResult(operation, snapshot.currentUnit.type, snapshot.currentUnit.id, abort);
+}
+
+function harnessAbortResult(
+  operation: string,
+  unitType: string,
+  unitId: string,
+  abort: UnitHarnessAbortRecord,
+): ToolExecutionResult {
+  const toolText = abort.toolName ? ` while calling ${abort.toolName}` : "";
+  const message =
+    `Retryable harness abort: ${unitType} ${unitId} was truncated by ${abort.kind}${toolText}. ` +
+    "This gate result was not saved; leave the gate pending so auto-mode can rerun it.";
+  return {
+    content: [{ type: "text", text: message }],
+    details: {
+      operation,
+      error: "harness_aborted_needs_retry",
+      retryable: true,
+      unitType,
+      unitId,
+      harnessAbortKind: abort.kind,
+      harnessAbortReason: abort.reason,
+      harnessAbortToolName: abort.toolName,
+      harnessAbortCount: abort.count,
+    },
     isError: true,
   };
 }
@@ -1135,6 +1179,9 @@ export async function executeSaveGateResult(
   params: SaveGateResultParams,
   basePath: string = process.cwd(),
 ): Promise<ToolExecutionResult> {
+  const harnessAbort = blockIfHarnessAbortedUnit("save_gate_result", basePath);
+  if (harnessAbort) return harnessAbort;
+
   const dbAvailable = await ensureDbOpen(basePath);
   if (!dbAvailable) {
     return {
@@ -1206,6 +1253,9 @@ export async function executeUatResultSave(
   const unitGuard = blockIfWrongAutoUnit("run-uat", "save_uat_result");
   if (unitGuard) return unitGuard;
 
+  const harnessAbort = blockIfHarnessAbortedUnit("save_uat_result", basePath);
+  if (harnessAbort) return harnessAbort;
+
   const dbAvailable = await ensureDbOpen(basePath);
   if (!dbAvailable) return errorResult("save_uat_result", "GSD database is not available.", "db_unavailable");
 
@@ -1268,6 +1318,14 @@ export async function executeUatResultSave(
       evaluatedAt: run.evaluatedAt,
     });
     invalidateStateCache();
+    if (run.hasHuman) {
+      appendNotification(
+        `UAT for ${run.params.milestoneId}/${run.params.sliceId} has NEEDS-HUMAN checks awaiting human validation`,
+        "warning",
+        "notify",
+        { kind: "uat-needs-human", scope: `${run.params.milestoneId}/${run.params.sliceId}` },
+      );
+    }
     const savedText = `UAT result saved for ${run.params.milestoneId}/${run.params.sliceId}: ${run.params.verdict}`;
     return {
       content: [{

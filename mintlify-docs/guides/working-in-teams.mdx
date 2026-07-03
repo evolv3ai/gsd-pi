@@ -36,11 +36,13 @@ Share planning artifacts while keeping runtime files local:
 .gsd/journal/
 .gsd/doctor-history.jsonl
 .gsd/event-log.jsonl
+.gsd/phases/**/continue.md
+.gsd/phases/**/*-CONTINUE.md
 .gsd/milestones/**/continue.md
 .gsd/milestones/**/*-CONTINUE.md
 ```
 
-**Shared** (committed): preferences, PROJECT.md, REQUIREMENTS.md, DECISIONS.md, milestones.
+**Shared** (committed): preferences, PROJECT.md, REQUIREMENTS.md, DECISIONS.md, and flat-phase artifacts under `.gsd/phases/`. Legacy projects may still share `.gsd/milestones/` until migrated.
 
 **Local** (gitignored): metrics, state cache, worktrees, activity logs, database files, journals.
 
@@ -64,10 +66,9 @@ Adds `.gsd/` to `.gitignore` entirely. The developer gets structured planning wi
 
 ## Parallel development
 
-Multiple developers run auto mode simultaneously on different milestones. Each developer gets their own worktree and unique `milestone/<MID>` branch. Milestone dependencies can be declared:
+Multiple developers run auto mode simultaneously on different milestones. Each developer gets their own worktree and unique `milestone/<MID>` branch. Milestone dependencies can be declared in the phase context frontmatter:
 
 ```yaml
-# M00X-CONTEXT.md frontmatter
 ---
 depends_on: [M001-eh88as]
 ---

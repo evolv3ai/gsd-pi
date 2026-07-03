@@ -18,7 +18,7 @@ import { gsdRoot } from "./paths.js";
 import { GIT_NO_PROMPT_ENV } from "./git-constants.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 import { logWarning } from "./workflow-logger.js";
-import { createRepositoryRegistryFromPreferences } from "./repository-registry.js";
+import { createRepositoryRegistryFromPreferences, defaultRepositoryTargets } from "./repository-registry.js";
 import { isGsdGitignored } from "./gitignore.js";
 
 
@@ -1266,26 +1266,25 @@ export function handleTurnGitActionError(action: TurnGitActionMode, err: unknown
   };
 }
 
+export function isRepositoryDirty(repoRoot: string): boolean {
+  try {
+    return runGit(repoRoot, ["status", "--porcelain"]).length > 0;
+  } catch {
+    // Fallback preserves legacy behavior if explicit status probing fails.
+    return nativeHasChanges(repoRoot);
+  }
+}
+
 function collectRepositoryDirtyStatus(basePath: string): Record<string, boolean> {
   const preferences = loadEffectiveGSDPreferences(basePath)?.preferences;
   const registry = createRepositoryRegistryFromPreferences(basePath, preferences);
   const dirtyByRepository: Record<string, boolean> = {};
   const registeredRoots = new Set(registry.repositories.map((repo) => resolve(repo.root)));
   for (const repo of registry.repositories) {
-    try {
-      dirtyByRepository[repo.id] = runGit(repo.root, ["status", "--porcelain"]).length > 0;
-    } catch {
-      // Fallback preserves legacy behavior if explicit status probing fails.
-      dirtyByRepository[repo.id] = nativeHasChanges(repo.root);
-    }
+    dirtyByRepository[repo.id] = isRepositoryDirty(repo.root);
   }
   for (const repoRoot of findUndeclaredNestedGitRepositories(registry.projectRoot, registeredRoots)) {
-    let dirty = false;
-    try {
-      dirty = runGit(repoRoot, ["status", "--porcelain"]).length > 0;
-    } catch {
-      dirty = nativeHasChanges(repoRoot);
-    }
+    const dirty = isRepositoryDirty(repoRoot);
     if (!dirty) continue;
 
     const relPath = relative(registry.projectRoot, repoRoot).split(sep).join("/") || repoRoot;
@@ -1357,7 +1356,7 @@ function runPerRepositoryCommitAction(args: {
 } {
   const preferences = loadEffectiveGSDPreferences(args.basePath)?.preferences;
   const registry = createRepositoryRegistryFromPreferences(args.basePath, preferences);
-  const repoIds = args.targetRepositories?.length ? args.targetRepositories : ["project"];
+  const repoIds = args.targetRepositories?.length ? args.targetRepositories : defaultRepositoryTargets(registry);
   const gitPrefs = preferences?.git ?? {};
   const commitMessages: Record<string, string> = {};
   const commitErrors: Record<string, string> = {};
@@ -1445,9 +1444,7 @@ export function runTurnGitAction(args: {
       };
     }
 
-    const primaryMessage =
-      repoCommitResult.commitMessages[args.targetRepositories?.[0] ?? "project"]
-      ?? Object.values(repoCommitResult.commitMessages)[0];
+    const primaryMessage = Object.values(repoCommitResult.commitMessages)[0];
     return {
       action: args.action,
       status: "ok",

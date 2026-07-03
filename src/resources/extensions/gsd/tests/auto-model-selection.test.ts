@@ -63,6 +63,62 @@ test("resolvePreferredModelConfig synthesizes heavy routing ceiling when models 
   }
 });
 
+test("resolvePreferredModelConfig treats token-profile model defaults as synthesized routing", () => {
+  const originalCwd = process.cwd();
+  const originalGsdHome = process.env.GSD_HOME;
+  const tempProject = makeTempDir("gsd-routing-profile-project-");
+  const tempGsdHome = makeTempDir("gsd-routing-profile-home-");
+
+  try {
+    mkdirSync(join(tempProject, ".gsd"), { recursive: true });
+    writeFileSync(
+      join(tempProject, ".gsd", "PREFERENCES.md"),
+      [
+        "---",
+        "token_profile: quality",
+        "dynamic_routing:",
+        "  enabled: true",
+        "  tier_models:",
+        "    light: claude-haiku-4-5",
+        "    standard: claude-sonnet-4-6",
+        "    heavy: claude-opus-4-6",
+        "---",
+      ].join("\n"),
+      "utf-8",
+    );
+    process.env.GSD_HOME = tempGsdHome;
+    process.chdir(tempProject);
+
+    const config = resolvePreferredModelConfig(
+      "plan-slice",
+      {
+        provider: "anthropic",
+        id: "claude-sonnet-4-6",
+      },
+      true,
+      tempProject,
+      [
+        "anthropic/claude-haiku-4-5",
+        "anthropic/claude-sonnet-4-6",
+        "anthropic/claude-opus-4-6",
+      ],
+      "anthropic/claude-sonnet-4-6",
+    );
+
+    assert.deepEqual(config, {
+      primary: "claude-opus-4-6",
+      fallbacks: [],
+      source: "synthesized",
+    });
+  } finally {
+    process.chdir(originalCwd);
+    if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = originalGsdHome;
+    rmSync(tempProject, { recursive: true, force: true });
+    rmSync(tempGsdHome, { recursive: true, force: true });
+  }
+});
+
 test("resolvePreferredModelConfig falls back to auto start model when heavy tier is absent", () => {
   const originalCwd = process.cwd();
   const originalGsdHome = process.env.GSD_HOME;
@@ -143,6 +199,128 @@ test("resolvePreferredModelConfig keeps explicit phase models as the ceiling", (
       fallbacks: [],
       source: "explicit",
     });
+  } finally {
+    process.chdir(originalCwd);
+    if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = originalGsdHome;
+    rmSync(tempProject, { recursive: true, force: true });
+    rmSync(tempGsdHome, { recursive: true, force: true });
+  }
+});
+
+// #1115 regression: a token_profile with dynamic_routing enabled but NO
+// tier_models pins must still resolve the profile's per-phase model as a
+// synthesized routing ceiling. Before the fix, resolvePreferredModelConfig
+// bailed to undefined here (explicit detection skips profile defaults, and the
+// synthesis path required tier_models), so auto dispatch fell back to the
+// start model for every unit and silently discarded the profile.
+test("resolvePreferredModelConfig resolves profile per-phase models as synthesized when tier_models are absent", () => {
+  const originalCwd = process.cwd();
+  const originalGsdHome = process.env.GSD_HOME;
+  const tempProject = makeTempDir("gsd-routing-profile-notier-");
+  const tempGsdHome = makeTempDir("gsd-routing-profile-notier-home-");
+
+  try {
+    mkdirSync(join(tempProject, ".gsd"), { recursive: true });
+    writeFileSync(
+      join(tempProject, ".gsd", "PREFERENCES.md"),
+      [
+        "---",
+        "token_profile: budget",
+        "dynamic_routing:",
+        "  enabled: true",
+        "---",
+      ].join("\n"),
+      "utf-8",
+    );
+    process.env.GSD_HOME = tempGsdHome;
+    process.chdir(tempProject);
+
+    const availableModelIds = [
+      "anthropic/claude-haiku-4-5",
+      "anthropic/claude-sonnet-4-6",
+      "anthropic/claude-opus-4-6",
+    ];
+    const start = { provider: "anthropic", id: "claude-sonnet-4-6" };
+    // preferredModelId is intentionally left undefined so profile tier
+    // resolution is exercised rather than pinning every tier to the session
+    // model (a heavy session model can satisfy every tier).
+    const resolve = (unitType: string) =>
+      resolvePreferredModelConfig(unitType, start, true, tempProject, availableModelIds);
+
+    // budget profile: research=light, planning=standard, execution=standard,
+    // execution_simple=light, completion=light (PROFILE_TIER_MAP).
+    assert.deepEqual(resolve("research-milestone"), {
+      primary: "claude-haiku-4-5",
+      fallbacks: [],
+      source: "synthesized",
+    });
+    assert.deepEqual(resolve("plan-milestone"), {
+      primary: "claude-sonnet-4-6",
+      fallbacks: [],
+      source: "synthesized",
+    });
+    assert.deepEqual(resolve("execute-task"), {
+      primary: "claude-sonnet-4-6",
+      fallbacks: [],
+      source: "synthesized",
+    });
+    assert.deepEqual(resolve("execute-task-simple"), {
+      primary: "claude-haiku-4-5",
+      fallbacks: [],
+      source: "synthesized",
+    });
+    assert.deepEqual(resolve("complete-slice"), {
+      primary: "claude-haiku-4-5",
+      fallbacks: [],
+      source: "synthesized",
+    });
+  } finally {
+    process.chdir(originalCwd);
+    if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = originalGsdHome;
+    rmSync(tempProject, { recursive: true, force: true });
+    rmSync(tempGsdHome, { recursive: true, force: true });
+  }
+});
+
+// #1115 guard: the explicit flat-rate opt-out must suppress synthesized routing
+// even on the profile-derived (no tier_models) path — the opt-out moved ahead
+// of both synthesis branches, so a flat-rate start model with
+// allow_flat_rate_providers:false yields no config (start model is used as-is).
+test("resolvePreferredModelConfig honors flat-rate opt-out on the profile path (no tier_models)", () => {
+  const originalCwd = process.cwd();
+  const originalGsdHome = process.env.GSD_HOME;
+  const tempProject = makeTempDir("gsd-routing-flatrate-notier-");
+  const tempGsdHome = makeTempDir("gsd-routing-flatrate-notier-home-");
+
+  try {
+    mkdirSync(join(tempProject, ".gsd"), { recursive: true });
+    writeFileSync(
+      join(tempProject, ".gsd", "PREFERENCES.md"),
+      [
+        "---",
+        "token_profile: budget",
+        "dynamic_routing:",
+        "  enabled: true",
+        "  allow_flat_rate_providers: false",
+        "---",
+      ].join("\n"),
+      "utf-8",
+    );
+    process.env.GSD_HOME = tempGsdHome;
+    process.chdir(tempProject);
+
+    const config = resolvePreferredModelConfig(
+      "execute-task",
+      // claude-code is a built-in flat-rate provider.
+      { provider: "claude-code", id: "claude-opus-4-6" },
+      true,
+      tempProject,
+      ["anthropic/claude-haiku-4-5", "anthropic/claude-sonnet-4-6", "anthropic/claude-opus-4-6"],
+    );
+
+    assert.equal(config, undefined);
   } finally {
     process.chdir(originalCwd);
     if (originalGsdHome === undefined) delete process.env.GSD_HOME;

@@ -32,6 +32,12 @@ import {
   recordAutoToolSurfaceSnapshot,
   recordToolInvocationError,
 } from "../auto-runtime-state.js";
+import {
+  isDeterministicPolicyError,
+  isQueuedUserMessageSkip,
+  isToolInvocationError,
+  isToolUnavailableError,
+} from "../auto-tool-tracking.js";
 import { applyProviderPayloadPolicy } from "../provider-payload-policy.js";
 
 import { checkToolCallLoop, recordToolCallLoopMutation, resetToolCallLoopGuard } from "./tool-call-loop-guard.js";
@@ -77,8 +83,23 @@ import { clearPendingAutoStart } from "../pending-auto-start.js";
 import { resolveWorkflowToolBasePath } from "./dynamic-tools.js";
 import { getRequiredWorkflowToolsForUnit } from "../unit-tool-contracts.js";
 import { flushAllManifests } from "../workflow-manifest.js";
+import { recordUnitHarnessAbort, type UnitHarnessAbortRecord } from "../unit-runtime.js";
 
 let approvalQuestionAbortInFlight = false;
+
+function recordCurrentUnitHarnessAbort(
+  abort: Omit<UnitHarnessAbortRecord, "recordedAt"> & { recordedAt?: number },
+): void {
+  const dash = getAutoRuntimeSnapshot();
+  if (!dash.active || !dash.basePath || !dash.currentUnit) return;
+  recordUnitHarnessAbort(
+    dash.basePath,
+    dash.currentUnit.type,
+    dash.currentUnit.id,
+    dash.currentUnit.startedAt,
+    abort,
+  );
+}
 
 type WelcomeScreenModule = {
   buildWelcomeScreenLines(opts: { version: string; remoteChannel?: string; width?: number }): string[];
@@ -209,8 +230,24 @@ const WORKFLOW_GSD_TOOL_NAMES = [
   ...Object.values(AUTO_UNIT_SCOPED_TOOLS).flat(),
 ].filter(isGsdManagedTool);
 
+const WORKFLOW_ONLY_AUTO_BASE_TOOL_NAMES = [
+  "find",
+  "glob",
+  "grep",
+  "ls",
+  "read",
+  "subagent",
+] as const;
+
 function isGsdManagedTool(name: string): boolean {
   return name.startsWith("gsd_") || name === "memory_query" || name === "capture_thought" || name === "gsd_graph";
+}
+
+function autoBaseToolNamesForUnit(unitType: string | undefined): readonly string[] {
+  const manifest = unitType ? resolveManifest(unitType) : null;
+  return manifest?.tools.mode === "workflow-only"
+    ? WORKFLOW_ONLY_AUTO_BASE_TOOL_NAMES
+    : MINIMAL_AUTO_BASE_TOOL_NAMES;
 }
 
 /**
@@ -275,7 +312,7 @@ export function buildMinimalAutoGsdToolSet(
     return buildRunUatGsdToolSet(activeToolNames, registeredToolNames);
   }
   const unitTools = unitType ? AUTO_UNIT_SCOPED_TOOLS[unitType] ?? [] : [];
-  const autoBaseTools = new Set<string>(MINIMAL_AUTO_BASE_TOOL_NAMES);
+  const autoBaseTools = new Set<string>(autoBaseToolNamesForUnit(unitType));
   const availableBaseTools = registeredToolNames.filter((name) => autoBaseTools.has(name));
   const preserved = [...new Set([
     ...activeToolNames.filter((name) => autoBaseTools.has(name)),
@@ -599,6 +636,72 @@ function formatLoopGuardBlockReason(reason: string | undefined): string | undefi
   );
 }
 
+function isGateResultPersistenceTool(toolName: string): boolean {
+  return toolName === "gsd_save_gate_result" || toolName === "gsd_uat_result_save";
+}
+
+function resultDetails(result: unknown): Record<string, unknown> {
+  if (!result || typeof result !== "object") return {};
+  const details = (result as { details?: unknown }).details;
+  return details && typeof details === "object" ? details as Record<string, unknown> : {};
+}
+
+function isAbortedExecutionToolResult(toolName: string, result: unknown): boolean {
+  if (toolName !== "gsd_exec" && toolName !== "gsd_uat_exec") return false;
+  const details = resultDetails(result);
+  return details.aborted === true || details.force_resolved === true || details.timed_out === true;
+}
+
+function isRetryableHarnessToolError(toolName: string, result: unknown, errorText: string): boolean {
+  if (isGateResultPersistenceTool(toolName)) return false;
+  if (isDeterministicPolicyError(errorText)) return false;
+  if (toolName === "gsd_exec" || toolName === "gsd_uat_exec") {
+    if (isAbortedExecutionToolResult(toolName, result)) return true;
+    if (isToolUnavailableError(errorText)) return true;
+    if (isQueuedUserMessageSkip(errorText)) return true;
+    return isToolInvocationError(errorText);
+  }
+  if (isToolUnavailableError(errorText)) return true;
+  if (isQueuedUserMessageSkip(errorText)) return true;
+  return false;
+}
+
+function recordRetryableHarnessToolError(toolName: string, result: unknown, errorText: string): void {
+  if (!isRetryableHarnessToolError(toolName, result, errorText)) return;
+  recordCurrentUnitHarnessAbort({
+    kind: "tool-error",
+    reason: errorText || "Tool execution failed before the unit could complete its gate evaluation.",
+    toolName,
+  });
+}
+
+function recordRetryableTurnAbort(event: { abortOrigin?: unknown; messages?: unknown[] }): void {
+  const origin = typeof event.abortOrigin === "string" ? event.abortOrigin : undefined;
+  if (origin === "session-transition") return;
+
+  const messages = Array.isArray(event.messages) ? event.messages : [];
+  const lastMsg = messages[messages.length - 1];
+  const stopReason = lastMsg && typeof lastMsg === "object"
+    ? (lastMsg as { stopReason?: unknown }).stopReason
+    : undefined;
+  if (stopReason !== "aborted" && stopReason !== "error") return;
+
+  const errorMessage = lastMsg && typeof lastMsg === "object"
+    ? (lastMsg as { errorMessage?: unknown }).errorMessage
+    : undefined;
+  const reason = [
+    "Agent turn aborted before the unit could complete its gate evaluation.",
+    origin ? `origin=${origin}` : undefined,
+    typeof stopReason === "string" ? `stopReason=${stopReason}` : undefined,
+    typeof errorMessage === "string" && errorMessage.trim() ? `error=${errorMessage.trim()}` : undefined,
+  ].filter(Boolean).join(" ");
+
+  recordCurrentUnitHarnessAbort({
+    kind: "turn-abort",
+    reason,
+  });
+}
+
 function beginSourceObservationStoreForCurrentUnit(
   ctx?: { cwd?: string },
 ): ReturnType<typeof getSourceObservationStore> | null {
@@ -902,8 +1005,8 @@ export function registerHooks(
     await prepareWorkflowMcpForHookContext(ctx, basePath);
 
     // Migrate legacy .gsd/milestones/ to flat-phase .gsd/phases/ when detected.
-    // Best-effort — never blocks session startup. Skipped inside auto-worktrees
-    // (migration already ran on the project root before the worktree was created).
+    // Fail closed on migration errors: resolvers assume flat-phase paths after
+    // startup, so continuing with nested disk state corrupts later checks.
     try {
       const { isInAutoWorktree } = await import("../auto-worktree.js");
       if (!isInAutoWorktree(basePath)) {
@@ -917,11 +1020,21 @@ export function registerHooks(
           } else {
             safetyLogWarning(
               "bootstrap",
-              "flat-phase migration deferred: legacy .gsd/milestones/ layout detected but the workflow database could not be opened — will retry on next session",
+              "flat-phase migration required: legacy .gsd/milestones/ layout detected but the workflow database could not be opened — fix database access before starting GSD",
+            );
+            throw new Error(
+              "flat-phase migration required but the workflow database could not be opened; fix database access before starting GSD",
             );
           }
         }
       }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      safetyLogWarning("bootstrap", `flat-phase migration failed: ${message}`);
+      throw new Error(`flat-phase migration failed: ${message}`);
+    }
+
+    try {
       const projectRoot = resolveWorktreeProjectRoot(basePath);
       const { pruneStaleFlatPhaseBackups } = await import("../flat-phase-migration.js");
       const pruned = pruneStaleFlatPhaseBackups(projectRoot);
@@ -932,7 +1045,7 @@ export function registerHooks(
         );
       }
     } catch (err) {
-      safetyLogWarning("bootstrap", `flat-phase migration: ${err instanceof Error ? err.message : String(err)}`);
+      safetyLogWarning("bootstrap", `flat-phase backup pruning: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // Apply show_token_cost preference (#1515)
@@ -1090,6 +1203,7 @@ export function registerHooks(
 
   pi.on("agent_end", async (event, ctx: ExtensionContext) => {
     approvalQuestionAbortInFlight = false;
+    recordRetryableTurnAbort(event);
     resetToolCallLoopGuard();
     resetPendingGatePauseGuard();
     await resetAskUserQuestionsTurnCache();
@@ -1315,6 +1429,12 @@ export function registerHooks(
     // ── Loop guard: block repeated identical tool calls ──
     const loopCheck = checkToolCallLoop(toolName, event.input as Record<string, unknown>);
     if (loopCheck.block) {
+      recordCurrentUnitHarnessAbort({
+        kind: "tool-loop-guard",
+        reason: loopCheck.reason ?? "Tool-call loop guard blocked a repeated tool call.",
+        toolName,
+        count: loopCheck.count,
+      });
       return { block: true, reason: formatLoopGuardBlockReason(loopCheck.reason) };
     }
 
@@ -1603,6 +1723,7 @@ export function registerHooks(
       // Let recordToolInvocationError classify the failure so non-gsd_ harness
       // errors and deterministic policy rejections are handled consistently.
       recordToolInvocationError(event.toolName, errorText);
+      recordRetryableHarnessToolError(toolName, resultPayload, errorText);
     } else if (isAutoActive()) {
       clearToolInvocationError();
     }
@@ -1799,6 +1920,7 @@ export function registerHooks(
   // for every finalized tool call on every engine, so error classification
   // and evidence persistence here cover external engines that skip tool_result.
   pi.on("tool_execution_end", async (event) => {
+    const toolName = canonicalToolName(event.toolName);
     markToolEnd(event.toolCallId);
     // #2883/#4974: Capture deterministic invocation/policy errors
     // so postUnitPreVerification can break the retry loop instead of re-dispatching.
@@ -1809,6 +1931,7 @@ export function registerHooks(
       // Let recordToolInvocationError classify the failure so non-gsd_ harness
       // errors and deterministic policy rejections are handled consistently.
       recordToolInvocationError(event.toolName, errorText);
+      recordRetryableHarnessToolError(toolName, event.result, errorText);
     } else if (isAutoActive()) {
       clearToolInvocationError();
     }
