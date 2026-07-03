@@ -31,7 +31,7 @@ def test_read_message_times_out_waiting_for_headers() -> None:
         proc.kill()
 
 
-def test_read_message_times_out_waiting_for_body() -> None:
+def test_read_message_times_out_waiting_for_newline() -> None:
     client = GsdMcpClient(GsdConfig(mcp_read_timeout_seconds=0.05))
     proc = subprocess.Popen(
         [
@@ -39,7 +39,7 @@ def test_read_message_times_out_waiting_for_body() -> None:
             "-c",
             (
                 "import sys, time; "
-                "sys.stdout.buffer.write(b'Content-Length: 2\\r\\n\\r\\n{'); "
+                "sys.stdout.buffer.write(b'{\"jsonrpc\":\"2.0\"'); "
                 "sys.stdout.flush(); "
                 "time.sleep(10)"
             ),
@@ -59,7 +59,7 @@ def test_read_message_times_out_waiting_for_body() -> None:
         proc.kill()
 
 
-def test_read_message_fails_without_respawning_when_stdout_closes_mid_body(
+def test_read_message_fails_without_respawning_when_stdout_closes_mid_line(
     tmp_path,
 ) -> None:
     client = GsdMcpClient(GsdConfig(mcp_read_timeout_seconds=1))
@@ -69,7 +69,7 @@ def test_read_message_fails_without_respawning_when_stdout_closes_mid_body(
             "-c",
             (
                 "import sys; "
-                "sys.stdout.buffer.write(b'Content-Length: 20\\r\\n\\r\\n{'); "
+                "sys.stdout.buffer.write(b'{\"jsonrpc\":\"2.0\"'); "
                 "sys.stdout.flush()"
             ),
         ],
