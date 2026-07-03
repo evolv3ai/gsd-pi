@@ -36,7 +36,6 @@ import {
 } from "./milestone-closeout-proof.js";
 import {
   nativeAddAllWithExclusions,
-  nativeAddPaths,
   nativeBranchDelete,
   nativeCheckoutBranch,
   nativeCommit,
@@ -45,10 +44,8 @@ import {
   nativeDiffNumstat,
   nativeGetCurrentBranch,
   nativeIsAncestor,
-  nativeLsFiles,
   nativeMergeRegular,
   nativeMergeSquash,
-  nativeRmForce,
   nativeUpdateRef,
   nativeWorkingTreeStatus,
 } from "./native-git-bridge.js";
@@ -69,14 +66,10 @@ import {
 } from "./auto-worktree-session-registry.js";
 import { removeWorktree } from "./worktree-manager.js";
 import { nudgeGitBranchCache } from "./worktree.js";
+import { createPreMergeStash } from "./auto-worktree-merge-stash.js";
 import {
   cleanupConflictState,
-  gsdJsonlFilesWithConflictMarkers,
-  hasConflictMarkers,
-  popStashByRef,
   removeMergeStateFiles,
-  stashAlreadyExistsFilesFromError,
-  stashRefFromError,
 } from "./worktree-git-recovery.js";
 import { logError, logWarning } from "./workflow-logger.js";
 
@@ -508,54 +501,14 @@ export function mergeMilestoneToMain(
   );
 
   // 7a. Stash pre-existing dirty files so the squash merge is not blocked by
-  //     unrelated local changes (#2151). Includes untracked files to handle
-  //     locally-added files that conflict with tracked files on the milestone
-  //     branch. Passing NO pathspec lets git skip gitignored paths silently;
-  //     adding an explicit pathspec trips a `git add`-style fatal on ignored
-  //     entries (e.g. a gitignored `.gsd` symlink under ADR-002) (#4573).
-  //     Queued CONTEXT files under `.gsd/phases/*` (or legacy milestones/*)
-  //     are already sheltered in step 7 above, so they won't be swept into the stash.
-  // On Windows, SQLite holds mandatory file locks on the gsd.db WAL/SHM
-  // sidecars while the connection is open. `git stash --include-untracked`
-  // walks those files and fails with EBUSY (#4704). Close the DB before
-  // stashing so Windows releases the handles; reopen after. No-op on
-  // POSIX, where advisory locks don't block git.
-  const needsDbCycle = process.platform === "win32" && isDbAvailable();
-  const dbPathToReopen = needsDbCycle ? getWorkflowDatabasePath() : null;
-  if (needsDbCycle) {
-    try {
-      closeWorkflowDatabase();
-    } catch (err) {
-      logWarning("worktree", `pre-stash db close failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
-  let stashed = false;
-  // Embed a unique marker in the stash message so subsequent pop/drop targets
-  // the entry we created, not whatever happens to be at stash@{0} (concurrent
-  // milestone merges share the project-root stash list and can shift positions).
-  // (Issue #4980 HIGH-6)
-  let stashMarker: string | null = null;
-  try {
-    const status = execFileSync("git", ["status", "--porcelain"], {
-      cwd: originalBasePath_,
-      stdio: ["ignore", "pipe", "pipe"],
-      encoding: "utf-8",
-    }).trim();
-    if (status) {
-      stashMarker = `gsd-pre-merge:${milestoneId}:${process.pid}:${Date.now()}:${process.hrtime.bigint().toString(36)}`;
-      execFileSync(
-        "git",
-        ["stash", "push", "--include-untracked", "-m", `gsd: pre-merge stash for ${milestoneId} [${stashMarker}]`],
-        { cwd: originalBasePath_, stdio: ["ignore", "pipe", "pipe"], encoding: "utf-8" },
-      );
-      stashed = true;
-    }
-  } catch (err) {
-    // Stash failure is non-fatal — proceed without stash and let the merge
-    // report the dirty tree if it fails.
-    logWarning("worktree", `git stash failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  //     unrelated local changes (#2151). The stash module also owns Windows DB
+  //     handle cycling and later stash-pop conflict recovery.
+  const preMergeStash = createPreMergeStash(
+    originalBasePath_,
+    milestoneId,
+    process.platform === "win32" && isDbAvailable(),
+  );
+  preMergeStash.stash();
 
   // 7b. Clean up stale merge state before attempting the merge (#2912).
   // A leftover MERGE_HEAD (from a previous failed merge, libgit2 native path,
@@ -572,13 +525,7 @@ export function mergeMilestoneToMain(
   const mergeResult = effectiveStrategy === "merge"
     ? nativeMergeRegular(originalBasePath_, milestoneBranch)
     : nativeMergeSquash(originalBasePath_, milestoneBranch);
-  if (needsDbCycle && dbPathToReopen) {
-    try {
-      openWorkflowDatabasePath(dbPathToReopen);
-    } catch (err) {
-      logWarning("worktree", `post-merge db reopen failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
+  preMergeStash.reopenDbAfterMerge();
 
   if (!mergeResult.success) {
     // Dirty working tree — the merge was rejected before it started (e.g.
@@ -590,13 +537,7 @@ export function mergeMilestoneToMain(
       removeMergeStateFiles(originalBasePath_, "dirty-tree rejection");
 
       // Pop stash before throwing so local work is not lost.
-      if (stashed) {
-        try {
-          popStashByRef(originalBasePath_, stashMarker);
-        } catch (err) { /* stash pop conflict is non-fatal */
-          logWarning("worktree", `git stash pop failed: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
+      preMergeStash.restoreForMergeFailure();
       milestoneDirectoryShelter.restore();
       // Restore cwd so the caller is not stranded on the integration branch
       process.chdir(previousCwd);
@@ -636,13 +577,7 @@ export function mergeMilestoneToMain(
         cleanupConflictState(originalBasePath_);
 
         // Pop stash before throwing so local work is not lost (#2151).
-        if (stashed) {
-          try {
-            popStashByRef(originalBasePath_, stashMarker);
-          } catch (err) { /* stash pop conflict is non-fatal */
-            logWarning("worktree", `git stash pop failed: ${err instanceof Error ? err.message : String(err)}`);
-          }
-        }
+        preMergeStash.restoreForMergeFailure();
         milestoneDirectoryShelter.restore();
         // Restore cwd so the caller is not stranded on the integration branch.
         // Without this, the next mergeMilestoneToMain call in a parallel merge
@@ -674,123 +609,7 @@ export function mergeMilestoneToMain(
   removeMergeStateFiles(originalBasePath_, "post-commit");
 
   // 9a-ii. Restore stashed files now that the merge+commit is complete (#2151).
-  // Pop after commit so stashed changes do not interfere with the squash merge
-  // or the commit content.  Conflict on pop is non-fatal — the stash entry is
-  // preserved and the user can resolve manually with `git stash pop`.
-  if (stashed) {
-    let stashRefForDrop: string | null = null;
-    try {
-      stashRefForDrop = popStashByRef(originalBasePath_, stashMarker);
-    } catch (e) {
-      stashRefForDrop = stashRefFromError(e);
-      logWarning("worktree", `git stash pop failed, attempting conflict resolution: ${(e as Error).message}`);
-      // Stash pop after squash merge can conflict on .gsd/ state files that
-      // diverged between branches.  Left unresolved, these UU entries block
-      // every subsequent merge.  Auto-resolve them the same way we handle
-      // .gsd/ conflicts during the merge itself: accept HEAD (the just-committed
-      // version) and drop the now-applied stash.
-      const uu = nativeConflictFiles(originalBasePath_);
-      const gsdUU = uu.filter((f) => f.startsWith(".gsd/"));
-      const nonGsdUU = uu.filter((f) => !f.startsWith(".gsd/"));
-      const stashPopMessage = e instanceof Error ? e.message : String(e);
-      const isUntrackedRestoreFailure = stashPopMessage.includes("could not restore untracked files from stash");
-      const gsdContentConflicts: string[] = [];
-      const alreadyExists = stashAlreadyExistsFilesFromError(e);
-
-      // Untracked-file restore failures can leave marker conflicts in tracked
-      // .gsd JSONL files without producing `U` status entries.
-      if (isUntrackedRestoreFailure) {
-        gsdContentConflicts.push(...gsdJsonlFilesWithConflictMarkers(originalBasePath_));
-      }
-      const gsdConflictFiles = [...new Set([...gsdUU, ...gsdContentConflicts])];
-
-      if (gsdConflictFiles.length > 0) {
-        for (const f of gsdConflictFiles) {
-          try {
-            // Accept the committed (HEAD) version of the state file
-            execFileSync("git", ["checkout", "HEAD", "--", f], {
-              cwd: originalBasePath_,
-              stdio: ["ignore", "pipe", "pipe"],
-              encoding: "utf-8",
-            });
-            nativeAddPaths(originalBasePath_, [f]);
-          } catch (e) {
-            // Last resort: remove the conflicted state file
-            logWarning("worktree", `checkout HEAD failed for ${f}, removing: ${(e as Error).message}`);
-            nativeRmForce(originalBasePath_, [f]);
-          }
-        }
-      }
-
-      if (gsdConflictFiles.length > 0 && nonGsdUU.length === 0) {
-        // All detected conflicts were .gsd/ files. Before dropping, verify no
-        // unresolved non-.gsd conflict markers or unmerged entries remain.
-        const remainingUnmerged = nativeConflictFiles(originalBasePath_);
-        const nonGsdUnmerged = remainingUnmerged.filter((f) => !f.startsWith(".gsd/"));
-        const markerCandidates = Array.from(new Set([
-          ...nonGsdUnmerged,
-          ...nativeLsFiles(originalBasePath_, "."),
-        ])).filter((f) => !f.startsWith(".gsd/"));
-        const nonGsdMarkerConflicts = markerCandidates.filter((f) =>
-          hasConflictMarkers(join(originalBasePath_, f)),
-        );
-        const hasRemainingNonGsdConflicts = nonGsdUnmerged.length > 0 || nonGsdMarkerConflicts.length > 0;
-        if (hasRemainingNonGsdConflicts) {
-          const files = Array.from(new Set([...nonGsdUnmerged, ...nonGsdMarkerConflicts]));
-          logWarning("reconcile", "Leaving stash because non-.gsd conflicts remain after auto-resolution", {
-            files: files.join(", "),
-          });
-        }
-
-        // No non-.gsd conflicts remain — safe to drop the stash.
-        if (!hasRemainingNonGsdConflicts && stashRefForDrop) {
-          try {
-            execFileSync("git", ["stash", "drop", stashRefForDrop], {
-              cwd: originalBasePath_,
-              stdio: ["ignore", "pipe", "pipe"],
-              encoding: "utf-8",
-            });
-          } catch (err) { /* stash may already be consumed */
-            logWarning("worktree", `git stash drop failed: ${err instanceof Error ? err.message : String(err)}`);
-          }
-        } else if (!hasRemainingNonGsdConflicts) {
-          logWarning("worktree", "recorded stash entry could not be resolved; skipping automatic drop");
-        }
-      } else if (
-        gsdUU.length === 0 &&
-        nonGsdUU.length === 0 &&
-        alreadyExists.length > 0
-      ) {
-        // Untracked-file restore failure from stash pop where all collided paths
-        // already exist after merge (committed on target). Safe to drop the stash
-        // for the full alreadyExists set — they were untracked on source by
-        // definition of the "already exists, no checkout" failure.
-        if (stashRefForDrop) {
-          try {
-            execFileSync("git", ["stash", "drop", stashRefForDrop], {
-              cwd: originalBasePath_,
-              stdio: ["ignore", "pipe", "pipe"],
-              encoding: "utf-8",
-            });
-          } catch (err) { /* stash may already be consumed */
-            logWarning("worktree", `git stash drop failed: ${err instanceof Error ? err.message : String(err)}`);
-          }
-        } else {
-          logWarning("worktree", "recorded stash entry could not be resolved; skipping automatic drop");
-        }
-      } else if (nonGsdUU.length > 0) {
-        // Non-.gsd conflicts remain — leave stash for manual resolution
-        logWarning("reconcile", "Stash pop conflict on non-.gsd files after merge", {
-          files: nonGsdUU.join(", "),
-        });
-      } else {
-        logWarning(
-          "worktree",
-          "git stash pop failed without resolvable conflict files; leaving stash for manual recovery",
-        );
-      }
-    }
-  }
+  preMergeStash.restoreAfterCommit();
 
   // 9a-iii. Restore sheltered queued milestone directories (#2505).
   milestoneDirectoryShelter.restore();
