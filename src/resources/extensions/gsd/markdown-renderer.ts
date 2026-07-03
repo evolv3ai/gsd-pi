@@ -1299,9 +1299,21 @@ export async function renderAssessmentFromDb(
   sliceId: string,
   assessmentData: AssessmentData,
 ): Promise<{ assessmentPath: string; content: string }> {
-  // Flat-phase: assessment file lives in the phase dir
-  const slicePath = resolveSlicePath(basePath, milestoneId, sliceId)
-    ?? join(milestonesDir(basePath), canonicalPhaseDirName(milestoneId, getMilestone(milestoneId)?.title));
+  // Flat-phase: the assessment file lives in the phase dir, NOT in a slices/SID/
+  // subdir. resolveSlicePath() detects a slices/SID/ dir unconditionally, so a
+  // stray slices/SID/ created by an earlier planning step would send this write
+  // to a hybrid path (wrong dir, flat filename) that verification cannot find.
+  // Guard with the same legacy-base check relSlicePath() uses so flat-phase
+  // milestones always target the phase dir.
+  const mDir = resolveMilestonePath(basePath, milestoneId);
+  const legacyBase = legacyMilestonesDir(basePath);
+  const isLegacyLayout = mDir
+    ? mDir.startsWith(legacyBase + "/") || mDir.startsWith(legacyBase + "\\")
+    : false;
+  const fallbackDir = join(milestonesDir(basePath), canonicalPhaseDirName(milestoneId, getMilestone(milestoneId)?.title));
+  const slicePath = isLegacyLayout
+    ? (resolveSlicePath(basePath, milestoneId, sliceId) ?? fallbackDir)
+    : (mDir ?? fallbackDir);
   const phaseNum = milestoneIdToPhaseNum(milestoneId);
   const planNum = sliceIdToPlanNum(sliceId);
   const absPath = join(slicePath, planFileName(phaseNum, planNum, "ASSESSMENT"));
