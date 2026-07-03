@@ -18,6 +18,7 @@ import {
   getUnitDescriptor,
   getUnitPhaseChain,
   getUnitPromptTemplate,
+  getUnitPromptTemplates,
 } from "../unit-registry.ts";
 import {
   AUTO_UNIT_SCOPED_TOOLS,
@@ -123,12 +124,15 @@ const EXPECTED_DIRECT_PROMPT_TEMPLATES: Record<string, string> = {
 };
 
 const EXPECTED_UNDECLARED_PROMPT_TEMPLATE_TYPES = [
-  "discuss-milestone",
   "discuss-slice",
   "execute-task-simple",
   "triage-captures",
   "quick-task",
 ];
+
+const EXPECTED_CONDITIONAL_PROMPT_TEMPLATES: Record<string, string[]> = {
+  "discuss-milestone": ["discuss", "discuss-headless", "guided-discuss-milestone"],
+};
 
 // ─── Derived-view parity ──────────────────────────────────────────────────
 
@@ -187,6 +191,27 @@ test("direct prompt-template associations live on the Unit Registry", () => {
       undefined,
       `${unitType} prompt association is conditional or not verified yet`,
     );
+  }
+});
+
+test("conditional prompt-template associations live on the Unit Registry without pretending to be direct", () => {
+  for (const [unitType, promptTemplates] of Object.entries(EXPECTED_CONDITIONAL_PROMPT_TEMPLATES)) {
+    assert.equal(
+      getUnitPromptTemplate(unitType),
+      undefined,
+      `${unitType} must not expose a single direct prompt template`,
+    );
+    assert.deepEqual(
+      getUnitPromptTemplates(unitType),
+      promptTemplates,
+      `prompt templates for ${unitType}`,
+    );
+    for (const promptTemplate of promptTemplates) {
+      assert.ok(
+        existsSync(join(process.cwd(), "src/resources/extensions/gsd/prompts", `${promptTemplate}.md`)),
+        `prompt template file must exist for ${unitType}: ${promptTemplate}`,
+      );
+    }
   }
 });
 
