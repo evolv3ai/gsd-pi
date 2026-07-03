@@ -13,7 +13,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent";
 import { loadPrompt } from "./prompt-loader.js";
 import { autoCommitCurrentBranch, getMainBranch, resolveGitHeadPath, nudgeGitBranchCache } from "./worktree.js";
-import { runWorktreePostCreateHook } from "./auto-worktree.js";
+import { runWorktreePostCreateHook } from "./worktree-post-create-hook.js";
 import { showConfirm } from "../shared/tui.js";
 import { gsdRoot, milestonesDir, resolveGsdPathContract } from "./paths.js";
 import {

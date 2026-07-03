@@ -34,7 +34,8 @@ import {
   preDispatchHealthGate,
   recordHealthSnapshot,
 } from "../doctor-proactive.js";
-import { checkResourcesStale, autoWorktreeBranch } from "../auto-worktree.js";
+import { autoWorktreeBranch } from "../auto-worktree-branch-lifecycle.js";
+import { checkResourcesStale } from "../auto-worktree-resource-version.js";
 import { getSessionLockStatus } from "../session-lock.js";
 import { resolveUokFlags } from "../uok/flags.js";
 import { emitJournalEvent as _emitJournalEvent } from "../journal.js";

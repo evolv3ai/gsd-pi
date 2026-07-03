@@ -51,7 +51,7 @@ import { nativeAddAll, nativeCommit, nativeHasCommittedHead, nativeIsRepo, nativ
 import { isInheritedRepo } from "./repo-identity.js";
 import { ensureGitignore, ensurePreferences, untrackRuntimeFiles } from "./gitignore.js";
 import { getIsolationMode, loadEffectiveGSDPreferences } from "./preferences.js";
-import { getAutoWorktreePath } from "./auto-worktree.js";
+import { getAutoWorktreePath } from "./auto-worktree-path-resolution.js";
 import { resolveUokFlags } from "./uok/flags.js";
 import { ensurePlanV2Graph, isMissingFinalizedContextResult } from "./uok/plan-v2.js";
 import { detectProjectState, hasGsdBootstrapArtifacts } from "./detection.js";

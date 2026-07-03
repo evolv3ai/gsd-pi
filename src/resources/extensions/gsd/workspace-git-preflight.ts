@@ -3,8 +3,8 @@
 
 import { existsSync, realpathSync } from "node:fs";
 
-import { getAutoWorktreePath } from "./auto-worktree.js";
-import { isSafeToAutoResolve } from "./auto-worktree.js";
+import { isSafeToAutoResolve } from "./auto-worktree-conflict-auto-resolve.js";
+import { getAutoWorktreePath } from "./auto-worktree-path-resolution.js";
 import { ensureDbOpen } from "./bootstrap/dynamic-tools.js";
 import {
   listMergeStateBlockers,

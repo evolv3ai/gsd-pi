@@ -25,7 +25,7 @@ import {
   filterDoctorIssues,
 } from "./doctor.js";
 import { isAutoActive, checkRemoteAutoSession } from "./auto.js";
-import { getAutoWorktreePath } from "./auto-worktree.js";
+import { getAutoWorktreePath } from "./auto-worktree-path-resolution.js";
 import { currentDirectoryRoot, projectRoot } from "./commands/context.js";
 import { loadPrompt } from "./prompt-loader.js";
 import { buildClaudeRuntimeFloorAdvisory } from "../../shared/claude-runtime-floor.js";

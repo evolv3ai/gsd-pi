@@ -30,7 +30,7 @@ import { loadPrompt } from "./prompt-loader.js";
 import { gsdRoot } from "./paths.js";
 import { isDbAvailable, getHierarchyCompletionCounts } from "./gsd-db.js";
 import { formatDuration } from "../shared/format-utils.js";
-import { getAutoWorktreePath } from "./auto-worktree.js";
+import { getAutoWorktreePath } from "./auto-worktree-path-resolution.js";
 import { clearGSDPreferencesCache, loadEffectiveGSDPreferences, loadGlobalGSDPreferences, getGlobalGSDPreferencesPath } from "./preferences.js";
 import { showNextAction } from "../shared/tui.js";
 import {

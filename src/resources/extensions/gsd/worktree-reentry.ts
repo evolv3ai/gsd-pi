@@ -8,7 +8,8 @@
 
 import { readdirSync } from "node:fs";
 
-import { enterAutoWorktree, getAutoWorktreePath } from "./auto-worktree.js";
+import { enterAutoWorktree } from "./auto-worktree-entry.js";
+import { getAutoWorktreePath } from "./auto-worktree-path-resolution.js";
 import { getIsolationMode } from "./preferences.js";
 import { allWorktreesDirs } from "./worktree-manager.js";
 import { isGsdWorktreePath, resolveWorktreeProjectRoot } from "./worktree-root.js";

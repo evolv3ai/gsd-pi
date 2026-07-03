@@ -1,7 +1,7 @@
 // Project/App: gsd-pi
 // File Purpose: Milestone closeout settlement state across DB proof, artifacts, merge, and cleanup.
 
-import { isInAutoWorktree } from "./auto-worktree.js";
+import { isInAutoWorktree } from "./auto-worktree-entry.js";
 import {
   formatCloseoutProofBlock,
   proveMilestoneCloseout,

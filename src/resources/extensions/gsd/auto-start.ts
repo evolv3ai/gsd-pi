@@ -63,9 +63,11 @@ import {
   detectWorktreeName,
   setActiveMilestoneId,
 } from "./worktree.js";
-import { getAutoWorktreePath, isInAutoWorktree } from "./auto-worktree.js";
+import { isInAutoWorktree } from "./auto-worktree-entry.js";
+import { getAutoWorktreePath } from "./auto-worktree-path-resolution.js";
 import { checkoutBranchWithStashGuard } from "./worktree-git-recovery.js";
-import { readResourceVersion, cleanStaleRuntimeUnits } from "./auto-worktree.js";
+import { cleanStaleRuntimeUnits } from "./auto-worktree-runtime-cleanup.js";
+import { readResourceVersion } from "./auto-worktree-resource-version.js";
 import { worktreePath as getWorktreeDir, isInsideWorktreesDir } from "./worktree-manager.js";
 import { emitWorktreeOrphaned } from "./worktree-telemetry.js";
 import { queryJournal } from "./journal.js";

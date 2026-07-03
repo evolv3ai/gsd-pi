@@ -1,7 +1,7 @@
 // Project/App: gsd-pi
 // File Purpose: Process-level transaction wrapper for milestone merge closeout.
 
-import { mergeMilestoneToMain } from "./auto-worktree.js";
+import { mergeMilestoneToMain } from "./auto-worktree-merge.js";
 
 export interface MilestoneMergeTransactionResult {
   pushed: boolean;

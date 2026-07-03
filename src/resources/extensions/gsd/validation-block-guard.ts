@@ -3,7 +3,8 @@
 
 import { existsSync } from "node:fs";
 
-import { getAutoWorktreePath, isInAutoWorktree } from "./auto-worktree.js";
+import { isInAutoWorktree } from "./auto-worktree-entry.js";
+import { getAutoWorktreePath } from "./auto-worktree-path-resolution.js";
 import { ensureDbOpen } from "./bootstrap/dynamic-tools.js";
 import { refreshWorkflowDatabaseFromDisk } from "./db-workspace.js";
 import { getIsolationMode } from "./preferences.js";

@@ -177,20 +177,15 @@ import {
 import { GitServiceImpl } from "./git-service.js";
 import { nativeCheckoutBranch } from "./native-git-bridge.js";
 import { getPriorSliceCompletionBlocker } from "./dispatch-guard.js";
-import {
-  createAutoWorktree,
-  enterAutoWorktree,
-  enterBranchModeForMilestone,
-  teardownAutoWorktree,
-  isInAutoWorktree,
-  getAutoWorktreePath,
-  getAutoWorktreeOriginalBase,
-  autoWorktreeBranch,
-  syncWorktreeStateBack,
-  readResourceVersion,
-  checkResourcesStale,
-  escapeStaleWorktree,
-} from "./auto-worktree.js";
+import { autoWorktreeBranch, enterBranchModeForMilestone } from "./auto-worktree-branch-lifecycle.js";
+import { createAutoWorktree } from "./auto-worktree-creation.js";
+import { enterAutoWorktree, isInAutoWorktree } from "./auto-worktree-entry.js";
+import { getAutoWorktreePath } from "./auto-worktree-path-resolution.js";
+import { checkResourcesStale, readResourceVersion } from "./auto-worktree-resource-version.js";
+import { escapeStaleWorktree } from "./auto-worktree-runtime-cleanup.js";
+import { getAutoWorktreeOriginalBase } from "./auto-worktree-session-registry.js";
+import { syncWorktreeStateBack } from "./auto-worktree-sync.js";
+import { teardownAutoWorktree } from "./auto-worktree-teardown.js";
 import { pruneQueueOrder } from "./queue-order.js";
 import { startCommandPolling as _startCommandPolling, isRemoteConfigured } from "../remote-questions/manager.js";
 import { createDefaultMilestoneMergeTransaction } from "./milestone-merge-transaction.js";

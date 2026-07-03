@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { resolveGsdPathContract } from "./paths.js";
 import { worktreePathFor, worktreesDirs } from "./worktree-placement.js";
-import { getAutoWorktreePath } from "./auto-worktree.js";
+import { getAutoWorktreePath } from "./auto-worktree-path-resolution.js";
 import { buildWorktreeLifecycleDeps } from "./auto.js";
 import {
   mergeMilestoneStandalone,

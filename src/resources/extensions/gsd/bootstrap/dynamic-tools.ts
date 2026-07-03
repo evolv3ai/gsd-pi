@@ -14,7 +14,7 @@ import {
   type WorkflowDatabaseOpenResult,
   type WorkflowDatabaseStatus,
 } from "../db-workspace.js";
-import { getAutoWorktreePath } from "../auto-worktree.js";
+import { getAutoWorktreePath } from "../auto-worktree-path-resolution.js";
 import { resolveWorktreeProjectRoot } from "../worktree-root.js";
 import { worktreesDirs } from "../worktree-placement.js";
 
