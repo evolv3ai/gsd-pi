@@ -5,14 +5,8 @@
 // and safe teardown.
 
 import { execFileSync } from "node:child_process";
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  rmSync,
-} from "node:fs";
-import { basename, join } from "node:path";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 import { atomicWriteSync } from "./atomic-write.js";
 import { CLOSEOUT_CONSISTENCY_BLOCKED_REASON } from "./closeout-consistency-gate.js";
@@ -58,13 +52,7 @@ import {
   nativeUpdateRef,
   nativeWorkingTreeStatus,
 } from "./native-git-bridge.js";
-import {
-  canonicalPhaseDirName,
-  gsdRoot,
-  milestonesDir,
-  resolveGsdPathContract,
-  resolveMilestonePath,
-} from "./paths.js";
+import { resolveGsdPathContract } from "./paths.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 import { publishMilestone } from "./publication.js";
 import {
@@ -74,6 +62,7 @@ import {
   _shouldReconcileWorktreeDb,
   clearProjectRootStateFiles,
 } from "./auto-worktree-cleanup.js";
+import { createMilestoneDirectoryShelter } from "./auto-worktree-milestone-shelter.js";
 import {
   getActiveWorkspace,
   setActiveWorkspace,
@@ -91,6 +80,8 @@ import {
 } from "./worktree-git-recovery.js";
 import { logError, logWarning } from "./workflow-logger.js";
 
+export { _setRestoreEntryFnForTests } from "./auto-worktree-milestone-shelter.js";
+
 function stripGsdDisplayPrefix(value: string | undefined | null, id: string): string | undefined {
   const raw = String(value ?? "").trim();
   if (!raw) return undefined;
@@ -99,19 +90,6 @@ function stripGsdDisplayPrefix(value: string | undefined | null, id: string): st
   if (lower.startsWith(`${idLower}:`)) return raw.slice(id.length + 1).trim() || undefined;
   return raw;
 }
-
-// ─── Module State ──────────────────────────────────────────────────────────
-
-/**
- * Optional override for the shelter restore copy step (milestone merge #2505).
- * Production leaves this null so restoreShelter uses the real cpSync; tests
- * inject a throwing function to deterministically exercise the best-effort
- * failure path (auto-worktree.ts:1809) and the shelter-retention guarantee,
- * which is otherwise unreachable because shelter and restore run synchronously
- * in one mergeMilestoneToMain call (the filesystem cannot change between them).
- * @internal
- */
-let _restoreEntryFn: ((src: string, dest: string) => void) | null = null;
 
 function findRegularMergeChangedPaths(basePath: string, milestoneBranch: string, mainBranch: string): Set<string> {
   const changedPaths = new Set<string>();
@@ -161,22 +139,6 @@ function normalizeLocalBranchRef(branch: string): string {
   return branch.startsWith("refs/heads/")
     ? branch.slice("refs/heads/".length)
     : branch;
-}
-
-/**
- * Inject an override for the shelter restore copy step, returning a function
- * that restores the default (real cpSync) behavior. Used by tests to
- * deterministically exercise the best-effort restore-failure path
- * (auto-worktree.ts:1809) and the #2505 shelter-retention guarantee — which is
- * otherwise unreachable because shelter + restore run synchronously in one
- * mergeMilestoneToMain call. No production caller.
- * @internal
- */
-export function _setRestoreEntryFnForTests(
-  fn: ((src: string, dest: string) => void) | null,
-): () => void {
-  _restoreEntryFn = fn;
-  return () => { _restoreEntryFn = null; };
 }
 
 // ─── Merge Milestone -> Main ───────────────────────────────────────────────
@@ -537,106 +499,13 @@ export function mergeMilestoneToMain(
   }
 
   // 7. Shelter queued milestone directories before the squash merge (#2505).
-  // The milestone branch may contain copies of queued milestone dirs (via
-  // copyPlanningArtifacts), so `git merge --squash` rejects when those same
-  // files exist as untracked in the working tree. Temporarily move them to
-  // a backup location, then restore after the merge+commit.
-  //
-  // MUST run BEFORE the pre-merge stash (step 7a) so `--include-untracked`
-  // does not sweep queued CONTEXT files into the stash. If stash pop later
-  // fails, files trapped inside the stash are permanently lost (#2505).
-  const planningDir = milestonesDir(originalBasePath_);
-  const shelterDir = join(gsdRoot(originalBasePath_), ".milestone-shelter");
-  const shelteredDirs: string[] = [];
-  let shelterRestored = false;
-  const mergeDirNames = new Set<string>([milestoneId]);
-  const resolvedMergeDir = resolveMilestonePath(originalBasePath_, milestoneId);
-  if (resolvedMergeDir) {
-    mergeDirNames.add(basename(resolvedMergeDir));
-  } else {
-    mergeDirNames.add(
-      canonicalPhaseDirName(milestoneId, getMilestone(milestoneId)?.title),
-    );
-  }
-
-  // Helper: restore sheltered milestone directories (#2505).
-  // Called on both success and error paths to ensure queued CONTEXT files
-  // are never permanently lost. Idempotent — the error path may fire after
-  // the success path has already restored and removed the shelter dir; a
-  // second call is a no-op instead of logging a misleading "shelter restore
-  // failed: ENOENT" error for shelter sources that were cleaned up legitimately.
-  const restoreShelter = (): void => {
-    if (shelterRestored) return;
-    shelterRestored = true;
-    if (shelteredDirs.length === 0) return;
-    let restoreFailed = false;
-    for (const dirName of shelteredDirs) {
-      const src = join(shelterDir, dirName);
-      // If the shelter source is missing the restore cannot proceed for this
-      // entry. Distinguish "legitimately missing" (shelter dir removed by a
-      // prior successful restore or never copied) from a surprising ENOENT
-      // inside an otherwise-populated shelter.
-      if (!existsSync(src)) {
-        logWarning(
-          "worktree",
-          `shelter source missing for ${dirName}; skipping restore (shelter already cleaned or entry never staged)`,
-        );
-        continue;
-      }
-      try {
-        mkdirSync(planningDir, { recursive: true });
-        // Test seam: when _restoreEntryFn is injected, route the copy through it
-        // so the best-effort failure path (and shelter-retention guarantee) can
-        // be exercised deterministically. Production leaves it null → real cpSync.
-        const dest = join(planningDir, dirName);
-        if (_restoreEntryFn) {
-          _restoreEntryFn(src, dest);
-        } else {
-          cpSync(src, dest, { recursive: true, force: true });
-        }
-      } catch (err) { /* best-effort */
-        restoreFailed = true;
-        logError("worktree", `shelter restore failed (${dirName}): ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-    // Preserve the shelter if any per-entry restore failed — it is the only
-    // surviving copy of the queued milestone dirs (sources were deleted during
-    // shelter). Deleting it here would permanently lose those files (#2505).
-    if (restoreFailed) {
-      logWarning("worktree", `shelter retained at ${shelterDir} — manual recovery required for unrestored entries`);
-      return;
-    }
-    if (existsSync(shelterDir)) {
-      try { rmSync(shelterDir, { recursive: true, force: true }); } catch (err) { /* best-effort */
-        logWarning("worktree", `shelter cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-  };
-
-  try {
-    if (existsSync(planningDir)) {
-      const entries = readdirSync(planningDir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        // Only shelter directories that do NOT belong to the milestone being merged
-        if (mergeDirNames.has(entry.name)) continue;
-        const srcDir = join(planningDir, entry.name);
-        const dstDir = join(shelterDir, entry.name);
-        try {
-          mkdirSync(shelterDir, { recursive: true });
-          cpSync(srcDir, dstDir, { recursive: true, force: true });
-          rmSync(srcDir, { recursive: true, force: true });
-          shelteredDirs.push(entry.name);
-        } catch (err) {
-          // Non-fatal — if shelter fails, the merge may still succeed
-          logWarning("worktree", `milestone shelter failed (${entry.name}): ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-    }
-  } catch (err) {
-    // Non-fatal — proceed with merge; untracked files may block it
-    logWarning("worktree", `milestone shelter operation failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  // MUST run before the pre-merge stash so queued CONTEXT files are not swept
+  // into a stash that may later fail to pop and strand user work.
+  const milestoneDirectoryShelter = createMilestoneDirectoryShelter(
+    originalBasePath_,
+    milestoneId,
+    getMilestone(milestoneId)?.title,
+  );
 
   // 7a. Stash pre-existing dirty files so the squash merge is not blocked by
   //     unrelated local changes (#2151). Includes untracked files to handle
@@ -728,7 +597,7 @@ export function mergeMilestoneToMain(
           logWarning("worktree", `git stash pop failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
-      restoreShelter();
+      milestoneDirectoryShelter.restore();
       // Restore cwd so the caller is not stranded on the integration branch
       process.chdir(previousCwd);
       // Surface the actual dirty filenames from git stderr instead of
@@ -774,7 +643,7 @@ export function mergeMilestoneToMain(
             logWarning("worktree", `git stash pop failed: ${err instanceof Error ? err.message : String(err)}`);
           }
         }
-        restoreShelter();
+        milestoneDirectoryShelter.restore();
         // Restore cwd so the caller is not stranded on the integration branch.
         // Without this, the next mergeMilestoneToMain call in a parallel merge
         // sequence uses process.cwd() (now the project root) as worktreeCwd,
@@ -924,7 +793,7 @@ export function mergeMilestoneToMain(
   }
 
   // 9a-iii. Restore sheltered queued milestone directories (#2505).
-  restoreShelter();
+  milestoneDirectoryShelter.restore();
 
   // 9b. Safety check (#1792): if nothing was committed, verify the milestone
   // work is already on the integration branch before allowing teardown.
