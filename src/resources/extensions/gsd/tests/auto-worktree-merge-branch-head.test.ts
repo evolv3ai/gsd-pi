@@ -11,8 +11,10 @@ import { GSDError } from "../errors.js";
 import { reconcileMilestoneBranchHead } from "../auto-worktree-merge-branch-head.js";
 
 const cleanupPaths: string[] = [];
+const initialCwd = process.cwd();
 
 afterEach(() => {
+  process.chdir(initialCwd);
   for (const path of cleanupPaths.splice(0)) {
     rmSync(path, { recursive: true, force: true });
   }
@@ -36,7 +38,7 @@ function commitFile(cwd: string, file: string, content: string, message: string)
 function createRepoWithMilestoneWorktree(): { repo: string; worktree: string; branch: string } {
   const repo = mkdtempSync(join(tmpdir(), "gsd-branch-head-"));
   cleanupPaths.push(repo);
-  git(repo, ["init"]);
+  git(repo, ["init", "-b", "main"]);
   git(repo, ["config", "user.email", "test@example.invalid"]);
   git(repo, ["config", "user.name", "Test"]);
   commitFile(repo, "README.md", "base\n", "initial");
