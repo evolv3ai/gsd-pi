@@ -1,7 +1,7 @@
 // Project/App: gsd-pi
 // File Purpose: DB-backed GSD state derivation pipeline stage.
 
-import type { ActiveRef, GSDState, MilestoneRegistryEntry } from '../../types.js';
+import type { ActiveRef, GSDState, MilestoneRegistryEntry, Phase } from '../../types.js';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { isClosedStatus, isDeferredStatus } from '../../status-guards.js';
@@ -40,6 +40,57 @@ import {
 } from './db-open.js';
 
 const isStatusDone = isClosedStatus;
+
+type MilestoneProgress = { done: number; total: number };
+type SliceProgress = { done: number; total: number };
+type TaskProgress = { done: number; total: number };
+
+interface DerivedStateContext {
+  activeMilestone: ActiveRef | null;
+  activeSlice?: ActiveRef | null;
+  activeTask?: ActiveRef | null;
+  registry: MilestoneRegistryEntry[];
+  requirements: GSDState["requirements"];
+  milestoneProgress: MilestoneProgress;
+  sliceProgress?: SliceProgress;
+  taskProgress?: TaskProgress;
+}
+
+interface DerivedStateOptions {
+  blockers?: string[];
+  lastCompletedMilestone?: ActiveRef | null;
+}
+
+function buildProgress(context: DerivedStateContext): NonNullable<GSDState["progress"]> {
+  return {
+    milestones: context.milestoneProgress,
+    ...(context.sliceProgress ? { slices: context.sliceProgress } : {}),
+    ...(context.taskProgress ? { tasks: context.taskProgress } : {}),
+  };
+}
+
+function buildDerivedState(
+  context: DerivedStateContext,
+  phase: Phase,
+  nextAction: string,
+  options: DerivedStateOptions = {},
+): GSDState {
+  return {
+    activeMilestone: context.activeMilestone,
+    activeSlice: context.activeSlice ?? null,
+    activeTask: context.activeTask ?? null,
+    phase,
+    recentDecisions: [],
+    blockers: options.blockers ?? [],
+    nextAction,
+    ...(options.lastCompletedMilestone !== undefined
+      ? { lastCompletedMilestone: options.lastCompletedMilestone }
+      : {}),
+    registry: context.registry,
+    requirements: context.requirements,
+    progress: buildProgress(context),
+  };
+}
 
 function stripMilestonePrefix(title: string): string {
   return title.replace(/^M\d+(?:-[a-z0-9]{6})?[^:]*:\s*/, '') || title;
@@ -182,58 +233,47 @@ function handleNoActiveMilestone(
   const pendingEntries = registry.filter(e => e.status === 'pending');
   const parkedEntries = registry.filter(e => e.status === 'parked');
 
+  const context: DerivedStateContext = {
+    activeMilestone: null,
+    registry,
+    requirements,
+    milestoneProgress,
+  };
+
   if (pendingEntries.length > 0) {
     const blockerDetails = pendingEntries
       .filter(e => e.dependsOn && e.dependsOn.length > 0)
       .map(e => `${e.id} is waiting on unmet deps: ${e.dependsOn!.join(', ')}`);
-    return {
-      activeMilestone: null, activeSlice: null, activeTask: null,
-      phase: 'blocked',
-      recentDecisions: [], blockers: blockerDetails.length > 0
+    return buildDerivedState(context, 'blocked', 'Resolve milestone dependencies before proceeding.', {
+      blockers: blockerDetails.length > 0
         ? blockerDetails
         : ['All remaining milestones are dep-blocked but no deps listed — check CONTEXT.md files'],
-      nextAction: 'Resolve milestone dependencies before proceeding.',
-      registry, requirements,
-      progress: { milestones: milestoneProgress },
-    };
+    });
   }
 
   if (parkedEntries.length > 0) {
     const parkedIds = parkedEntries.map(e => e.id).join(', ');
-    return {
-      activeMilestone: null, activeSlice: null, activeTask: null,
-      phase: 'pre-planning',
-      recentDecisions: [], blockers: [],
-      nextAction: `All remaining milestones are parked (${parkedIds}). Run /gsd unpark <id> or create a new milestone.`,
-      registry, requirements,
-      progress: { milestones: milestoneProgress },
-    };
+    return buildDerivedState(
+      context,
+      'pre-planning',
+      `All remaining milestones are parked (${parkedIds}). Run /gsd unpark <id> or create a new milestone.`,
+    );
   }
 
   if (registry.length === 0) {
-    return {
-      activeMilestone: null, activeSlice: null, activeTask: null,
-      phase: 'pre-planning',
-      recentDecisions: [], blockers: [],
-      nextAction: 'No milestones found. Run /gsd to create one.',
-      registry: [], requirements,
-      progress: { milestones: { done: 0, total: 0 } },
-    };
+    return buildDerivedState(
+      { ...context, registry: [], milestoneProgress: { done: 0, total: 0 } },
+      'pre-planning',
+      'No milestones found. Run /gsd to create one.',
+    );
   }
 
   const lastEntry = registry[registry.length - 1];
   const unmappedActive = countUnmappedActiveRequirements();
   const completionNote = formatCompletePhaseNextAction(unmappedActive);
-  return {
-    activeMilestone: null,
+  return buildDerivedState(context, 'complete', completionNote, {
     lastCompletedMilestone: lastEntry ? { id: lastEntry.id, title: lastEntry.title } : null,
-    activeSlice: null, activeTask: null,
-    phase: 'complete',
-    recentDecisions: [], blockers: [],
-    nextAction: completionNote,
-    registry, requirements,
-    progress: { milestones: milestoneProgress },
-  };
+  });
 }
 
 async function handleAllSlicesDone(
@@ -248,52 +288,48 @@ async function handleAllSlicesDone(
   const verdict = typeof validation?.status === "string" ? validation.status : undefined;
   const validationTerminal = verdict != null && verdict !== "";
 
+  const context: DerivedStateContext = {
+    activeMilestone,
+    registry,
+    requirements,
+    milestoneProgress,
+    sliceProgress,
+  };
+
   if (!validationTerminal) {
-    return {
-      activeMilestone, activeSlice: null, activeTask: null,
-      phase: 'validating-milestone',
-      recentDecisions: [], blockers: [],
-      nextAction: `Validate milestone ${activeMilestone.id} before completion.`,
-      registry, requirements,
-      progress: { milestones: milestoneProgress, slices: sliceProgress },
-    };
+    return buildDerivedState(
+      context,
+      'validating-milestone',
+      `Validate milestone ${activeMilestone.id} before completion.`,
+    );
   }
 
   // All roadmap slices are done (enforced by caller) and verdict is
   // needs-remediation — remediation cannot progress without new slices.
   // Return blocked instead of re-dispatching validate-milestone (#4506).
   if (verdict === 'needs-attention') {
-    return {
-      activeMilestone, activeSlice: null, activeTask: null,
-      phase: 'blocked',
-      recentDecisions: [],
-      blockers: [formatNeedsAttentionBlocker(activeMilestone.id)],
-      nextAction: `Resolve ${activeMilestone.id} validation attention before proceeding.`,
-      registry, requirements,
-      progress: { milestones: milestoneProgress, slices: sliceProgress },
-    };
+    return buildDerivedState(
+      context,
+      'blocked',
+      `Resolve ${activeMilestone.id} validation attention before proceeding.`,
+      { blockers: [formatNeedsAttentionBlocker(activeMilestone.id)] },
+    );
   }
 
   if (verdict === 'needs-remediation') {
-    return {
-      activeMilestone, activeSlice: null, activeTask: null,
-      phase: 'blocked',
-      recentDecisions: [],
-      blockers: [formatNeedsRemediationBlocker(activeMilestone.id)],
-      nextAction: `Resolve ${activeMilestone.id} remediation before proceeding.`,
-      registry, requirements,
-      progress: { milestones: milestoneProgress, slices: sliceProgress },
-    };
+    return buildDerivedState(
+      context,
+      'blocked',
+      `Resolve ${activeMilestone.id} remediation before proceeding.`,
+      { blockers: [formatNeedsRemediationBlocker(activeMilestone.id)] },
+    );
   }
 
-  return {
-    activeMilestone, activeSlice: null, activeTask: null,
-    phase: 'completing-milestone',
-    recentDecisions: [], blockers: [],
-    nextAction: `All slices complete in ${activeMilestone.id}. Write milestone summary.`,
-    registry, requirements,
-    progress: { milestones: milestoneProgress, slices: sliceProgress },
-  };
+  return buildDerivedState(
+    context,
+    'completing-milestone',
+    `All slices complete in ${activeMilestone.id}. Write milestone summary.`,
+  );
 }
 
 function resolveSliceDependencies(activeMilestoneSlices: SliceRow[]): { activeSlice: ActiveRef | null, activeSliceRow: SliceRow | null } {
