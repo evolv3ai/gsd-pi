@@ -825,19 +825,28 @@ export function migrateHierarchyToDb(basePath: string): {
         const slicePath = resolveSlicePath(basePath, milestoneId, sliceEntry.id);
         let taskSummaryFile: string | null = null;
         let isLegacySlice = false;
+        // Legacy layout keeps per-task summaries under a tasks/ subdir. Its
+        // presence — not merely "is this a legacy slice" — is what makes a
+        // missing summary a downgrade signal. resolveTasksDir returns null when
+        // no such dir exists, so a legacy slice whose checkbox is the only
+        // completion signal (no tasks/ dir at all) is left complete on import.
+        let legacyTasksDir: string | null = null;
         if (slicePath) {
           isLegacySlice = basename(dirname(slicePath)) === 'slices';
-          const summaryDir = isLegacySlice
-            ? (resolveTasksDir(basePath, milestoneId, sliceEntry.id) ?? slicePath)
-            : slicePath;
+          legacyTasksDir = isLegacySlice
+            ? resolveTasksDir(basePath, milestoneId, sliceEntry.id)
+            : null;
+          const summaryDir = legacyTasksDir ?? slicePath;
           taskSummaryFile = join(summaryDir, `${taskEntry.id}-SUMMARY.md`);
         }
         const hasTaskSummary = taskSummaryFile !== null && existsSync(taskSummaryFile);
 
-        // Pre-migration consistency (legacy layout only): if a task is marked
-        // done but has no per-task SUMMARY.md, import it as pending so it gets
-        // re-executed rather than silently entering the DB as complete.
-        if (taskStatus === 'complete' && isLegacySlice && !hasTaskSummary) {
+        // Pre-migration consistency (legacy tasks/ layout only): if a task is
+        // marked done but its tasks/ dir has no per-task SUMMARY.md, import it
+        // as pending so it gets re-executed rather than silently entering the DB
+        // as complete. A legacy slice with no tasks/ dir (checkbox-only
+        // completion) and flat-phase layout are both left as-is here.
+        if (taskStatus === 'complete' && legacyTasksDir !== null && !hasTaskSummary) {
           taskStatus = 'pending';
           process.stderr.write(
             `gsd-migrate: ${milestoneId}/${sliceEntry.id}/${taskEntry.id} marked done but missing summary — importing as pending\n`,
