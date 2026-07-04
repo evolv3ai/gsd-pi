@@ -50,7 +50,7 @@ import { readSessionLockData, isSessionLockProcessAlive } from "./session-lock.j
 import { nativeAddAll, nativeCommit, nativeHasCommittedHead, nativeIsRepo, nativeInit } from "./native-git-bridge.js";
 import { isInheritedRepo } from "./repo-identity.js";
 import { ensureGitignore, ensurePreferences, untrackRuntimeFiles } from "./gitignore.js";
-import { getIsolationMode, loadEffectiveGSDPreferences } from "./preferences.js";
+import { getIsolationMode, loadEffectiveGSDPreferences, renderLanguageDirectiveForPrompt } from "./preferences.js";
 import { getAutoWorktreePath } from "./auto-worktree-path-resolution.js";
 import { resolveUokFlags } from "./uok/flags.js";
 import { ensurePlanV2Graph, isMissingFinalizedContextResult } from "./uok/plan-v2.js";
@@ -921,7 +921,7 @@ function resolveAvailableModel<T extends { id: string; provider: string }>(
  * Build the discuss-and-plan prompt for a new milestone.
  * Used by all three "new milestone" paths (first ever, no active, all complete).
  */
-function buildDiscussPrompt(nextId: string, preamble: string, _basePath: string, pi: ExtensionAPI, ctx: ExtensionCommandContext, preparationContext?: string): string {
+function buildDiscussPrompt(nextId: string, preamble: string, basePath: string, pi: ExtensionAPI, ctx: ExtensionCommandContext, preparationContext?: string): string {
   const milestoneRel = `.gsd/milestones/${nextId}`;
   const structuredQuestionsAvailable = getStructuredQuestionsAvailability(pi, ctx);
   const inlinedTemplates = [
@@ -931,7 +931,7 @@ function buildDiscussPrompt(nextId: string, preamble: string, _basePath: string,
     inlineTemplate("roadmap", "Roadmap"),
     inlineTemplate("decisions", "Decisions"),
   ].join("\n\n---\n\n");
-  return loadPrompt("discuss", {
+  return prependLanguageDirective(basePath, loadPrompt("discuss", {
     milestoneId: nextId,
     preamble,
     preparationContext: preparationContext ?? "",
@@ -941,14 +941,26 @@ function buildDiscussPrompt(nextId: string, preamble: string, _basePath: string,
     inlinedTemplates,
     commitInstruction: buildDocsCommitInstruction(`docs(${nextId}): context, requirements, and roadmap`),
     multiMilestoneCommitInstruction: buildDocsCommitInstruction("docs: project plan — N milestones"),
-  });
+  }));
+}
+
+/**
+ * Prepend the configured response-language directive to a dispatched discuss
+ * prompt so the discuss/QA conversation is held in the language set in
+ * PREFERENCES.md (#1210). No-op when no language is configured.
+ */
+function prependLanguageDirective(basePath: string, prompt: string): string {
+  const directive = renderLanguageDirectiveForPrompt(
+    loadEffectiveGSDPreferences(basePath)?.preferences,
+  );
+  return directive ? `${directive}\n\n${prompt}` : prompt;
 }
 
 /**
  * Build the discuss prompt for headless milestone creation.
  * Uses the discuss-headless prompt template with seed context injected.
  */
-function buildHeadlessDiscussPrompt(nextId: string, seedContext: string, _basePath: string): string {
+function buildHeadlessDiscussPrompt(nextId: string, seedContext: string, basePath: string): string {
   const milestoneRel = `.gsd/milestones/${nextId}`;
   const inlinedTemplates = [
     inlineTemplate("project", "Project"),
@@ -957,7 +969,7 @@ function buildHeadlessDiscussPrompt(nextId: string, seedContext: string, _basePa
     inlineTemplate("roadmap", "Roadmap"),
     inlineTemplate("decisions", "Decisions"),
   ].join("\n\n---\n\n");
-  return loadPrompt("discuss-headless", {
+  return prependLanguageDirective(basePath, loadPrompt("discuss-headless", {
     milestoneId: nextId,
     seedContext,
     contextPath: `${milestoneRel}/${nextId}-CONTEXT.md`,
@@ -965,7 +977,7 @@ function buildHeadlessDiscussPrompt(nextId: string, seedContext: string, _basePa
     inlinedTemplates,
     commitInstruction: buildDocsCommitInstruction(`docs(${nextId}): context, requirements, and roadmap`),
     multiMilestoneCommitInstruction: buildDocsCommitInstruction("docs: project plan — N milestones"),
-  });
+  }));
 }
 
 /**

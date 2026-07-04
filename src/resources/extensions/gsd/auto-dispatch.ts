@@ -14,6 +14,7 @@
 
 import type { GSDState, TaskIO } from "./types.js";
 import type { GSDPreferences } from "./preferences.js";
+import { renderLanguageDirectiveForPrompt } from "./preferences.js";
 import type { MinimalModelRegistry } from "./context-budget.js";
 import { loadFile, extractUatType, loadActiveOverrides } from "./files.js";
 import { getUatBrowserToolSupportError, type UatType } from "./uat-policy.js";
@@ -1834,6 +1835,21 @@ export const DISPATCH_RULES: DispatchRule[] = [
 
 import { getRegistry } from "./rule-registry.js";
 
+/**
+ * Prepend the configured response-language directive to a dispatched unit
+ * prompt so auto-execution units respond in the language set in PREFERENCES.md
+ * (#1210). No-op for non-dispatch actions or when no language is configured.
+ */
+function applyLanguageDirectiveToDispatch(
+  action: DispatchAction,
+  prefs: GSDPreferences | undefined,
+): DispatchAction {
+  if (action.action !== "dispatch" || !action.prompt) return action;
+  const directive = renderLanguageDirectiveForPrompt(prefs);
+  if (!directive) return action;
+  return { ...action, prompt: `${directive}\n\n${action.prompt}` };
+}
+
 // ─── Resolver ─────────────────────────────────────────────────────────────
 
 /**
@@ -1896,7 +1912,7 @@ export async function resolveDispatch(
         level: "error",
       };
     }
-    return action;
+    return applyLanguageDirectiveToDispatch(action, ctx.prefs);
   } catch (err) {
     // Registry not initialized — fall back to inline loop
     logWarning("dispatch", `registry dispatch failed, falling back to inline rules: ${err instanceof Error ? err.message : String(err)}`);
@@ -1918,7 +1934,7 @@ export async function resolveDispatch(
           matchedRule: rule.name,
         };
       }
-      return action;
+      return applyLanguageDirectiveToDispatch(action, ctx.prefs);
     }
   }
 
