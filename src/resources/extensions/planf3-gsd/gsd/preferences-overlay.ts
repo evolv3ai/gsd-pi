@@ -28,7 +28,7 @@ function splitPreferences(existing: string | null, sourceHtmlPath: string): Spli
       body: `\n# GSD Project Preferences\n\nManaged in part by planf3-gsd (source plan: ${sourceHtmlPath}). Hand-written sections are preserved.\n`,
     };
   }
-  if (existing.startsWith("---\n")) {
+  if (existing.startsWith("---\n") || existing.startsWith("---\r\n")) {
     const end = existing.indexOf("\n---", 4);
     if (end === -1) {
       throw new Error(".gsd/PREFERENCES.md frontmatter is missing its closing --- delimiter; not modifying it");

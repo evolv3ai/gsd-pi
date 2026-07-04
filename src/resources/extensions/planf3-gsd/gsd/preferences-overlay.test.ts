@@ -75,6 +75,31 @@ describe("mergePreferences", () => {
     assert.match(result.content, /Hand-written notes stay put\./);
   });
 
+  test("recognizes CRLF-encoded frontmatter delimiters", () => {
+    const existing = [
+      "---",
+      "version: 1",
+      "token_profile: quality",
+      "models:",
+      "  planning: anthropic/claude-opus-4-8",
+      "---",
+      "",
+      "# Notes",
+      "",
+      "Body line with CRLF.",
+    ].join("\r\n");
+    const result = mergePreferences(existing, INPUT);
+    assert.equal(result.changed, true);
+    assert.deepEqual(result.appliedModels, ["planning", "execution"]);
+    const fm = frontmatterOf(result.content);
+    assert.equal(fm.token_profile, "quality");
+    assert.deepEqual(fm.models, {
+      planning: "openrouter/anthropic/claude-opus-4.7",
+      execution: "openrouter/x-ai/grok-code-fast-1",
+    });
+    assert.deepEqual(fm.verification_commands, INPUT.verificationCommands);
+  });
+
   test("is a no-op when policy and commands are already present", () => {
     const first = mergePreferences(null, INPUT);
     const second = mergePreferences(first.content, INPUT);
