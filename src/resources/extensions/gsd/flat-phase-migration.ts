@@ -108,11 +108,30 @@ function rollbackPartialMigration(
       `rollback: could not remove partial ${LAYOUT_SEGMENTS.level1}/: ${(removeErr as Error).message}`,
     );
   }
+  // Only the standalone .gsd-backups/migrate-<ts>/ copy is disposable once the
+  // restore succeeds. When resuming an interrupted migration, backupDir IS the
+  // preserved migrating tree (the sole surviving data source) and must never be
+  // removed here. Deleting the backup after a successful rollback keeps the gate
+  // from leaking one .gsd-backups/migrate-<ts>/ per session_start.
+  const isDisposableBackup = Boolean(backupDir) && backupDir !== migratingPath;
+  const cleanupBackup = (): void => {
+    if (!isDisposableBackup || !existsSync(backupDir)) return;
+    try {
+      removePathWithRetries(backupDir);
+    } catch (cleanupErr) {
+      logWarning(
+        "migration",
+        `rollback: could not clean backup ${backupDir}: ${(cleanupErr as Error).message}`,
+      );
+    }
+  };
+
   // Restore milestones/ — prefer renaming the preserved migrating copy back.
   const milestonesPath = join(basePath, ".gsd", "milestones");
   try {
     if (migratingPath && existsSync(migratingPath) && !existsSync(milestonesPath)) {
       movePathWithCopyDeleteFallback(migratingPath, milestonesPath);
+      cleanupBackup();
       return;
     }
     if (existsSync(backupDir)) {
@@ -121,6 +140,7 @@ function rollbackPartialMigration(
     if (migratingPath && existsSync(migratingPath)) {
       removePathWithRetries(migratingPath);
     }
+    cleanupBackup();
   } catch (restoreErr) {
     logWarning(
       "migration",
