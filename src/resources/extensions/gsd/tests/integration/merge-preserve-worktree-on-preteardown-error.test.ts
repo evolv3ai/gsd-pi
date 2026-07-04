@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { GSDError } from "../../errors.js";
-import { mergeMilestoneToMain } from "../../auto-worktree.ts";
+import { mergeMilestoneToMain } from "../../auto-worktree-merge.ts";
 
 function run(cmd: string, cwd: string): string {
   return execSync(cmd, {

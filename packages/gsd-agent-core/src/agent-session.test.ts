@@ -1,6 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "@gsd/pi-coding-agent/core/session-manager.js";
+import { resolvePath } from "@gsd/pi-coding-agent/utils/paths.js";
 import { parseSkillBlock } from "./agent-session.ts";
 import { AgentSessionExtensionsModule } from "./session/agent-session-extensions.ts";
 import { AgentSessionNavigationModule } from "./session/agent-session-navigation.ts";
@@ -86,8 +87,11 @@ describe("AgentSessionExtensionsModule", () => {
 
 describe("AgentSessionNavigationModule", () => {
   test("records workspaceRoot as the new session header cwd", async () => {
-    const projectRoot = "/tmp/project-root";
-    const worktreeRoot = "/tmp/project-root/.gsd-worktrees/M001";
+    // Canonicalize with the same resolver the session code uses so the
+    // expected cwd matches on Windows too (a bare POSIX path like
+    // "/tmp/..." resolves to "C:\\tmp\\..." there). No-op on POSIX.
+    const projectRoot = resolvePath("/tmp/project-root");
+    const worktreeRoot = resolvePath("/tmp/project-root/.gsd-worktrees/M001");
     const sessionManager = SessionManager.inMemory(projectRoot);
     let rebuiltRuntime = false;
 

@@ -21,8 +21,8 @@
 // Not yet declared here (remaining ADR-033 steps): the manifest data
 // (`UNIT_MANIFESTS` stays in unit-context-manifest.ts, already type-enforced
 // against the registry's `UnitType`). Prompt-template association is declared
-// for direct one-template units; conditional/composite prompt selection stays
-// with the prompt builders until it has a richer registry shape.
+// for direct one-template units and verified conditional template sets;
+// composition logic stays with prompt builders.
 
 import type { CanonicalWorkflowToolName } from "@opengsd/contracts";
 import { BROWSER_CONTRACT_TOOL_NAMES } from "../shared/browser-contract.js";
@@ -68,6 +68,11 @@ export interface UnitDescriptor {
    * verified prompt associations.
    */
   readonly promptTemplate?: string;
+  /**
+   * Prompt template ids a conditional or composite builder may choose from.
+   * Omitted unless every listed association is verified against the builder.
+   */
+  readonly promptTemplates?: readonly string[];
   /** `null` = the unit has no scoped gsd-tool contract. */
   readonly toolContract: UnitToolSurfaceContract | null;
 }
@@ -137,6 +142,7 @@ export const UNIT_REGISTRY = {
     kind: "primary",
     scopeClass: "standard",
     phaseChain: ["discuss", "planning"],
+    promptTemplates: ["discuss", "discuss-headless", "guided-discuss-milestone"],
     toolContract: {
       allowedGsdTools: [
         "gsd_summary_save",
@@ -525,4 +531,12 @@ export function getUnitPhaseChain(unitType: string): readonly GSDModelPhaseKey[]
 /** Prompt template id for units with a direct one-template builder. */
 export function getUnitPromptTemplate(unitType: string): string | undefined {
   return getUnitDescriptor(unitType)?.promptTemplate;
+}
+
+/** Prompt template ids for any verified direct or conditional prompt builder. */
+export function getUnitPromptTemplates(unitType: string): readonly string[] {
+  const descriptor = getUnitDescriptor(unitType);
+  if (!descriptor) return [];
+  if (descriptor.promptTemplates) return descriptor.promptTemplates;
+  return descriptor.promptTemplate ? [descriptor.promptTemplate] : [];
 }

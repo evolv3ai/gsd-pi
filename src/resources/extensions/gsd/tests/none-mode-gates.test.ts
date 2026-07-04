@@ -18,7 +18,7 @@ import { execFileSync } from "node:child_process";
 
 import { shouldUseWorktreeIsolation } from "../auto.ts";
 import { getIsolationMode } from "../preferences.ts";
-import { getActiveAutoWorktreeContext } from "../auto-worktree.ts";
+import { getActiveAutoWorktreeContext } from "../auto-worktree-session-registry.ts";
 import { invalidateAllCaches } from "../cache.ts";
 import { describe, test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';

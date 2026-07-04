@@ -28,7 +28,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 
-import { mergeMilestoneToMain } from "../../auto-worktree.ts";
+import { mergeMilestoneToMain } from "../../auto-worktree-merge.ts";
 import { MergeConflictError } from "../../git-service.ts";
 
 function run(cmd: string, cwd: string): string {

@@ -5,6 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  createDefaultMilestoneMergeTransaction,
   createMilestoneMergeTransaction,
   runMilestoneMergeTransaction,
 } from "../milestone-merge-transaction.js";
@@ -43,4 +44,27 @@ test("createMilestoneMergeTransaction returns a lifecycle-compatible runner", ()
     pushed: false,
     codeFilesChanged: false,
   });
+});
+
+test("createDefaultMilestoneMergeTransaction hides the legacy merge adapter behind the transaction seam", () => {
+  const calls: unknown[][] = [];
+  const runner = createDefaultMilestoneMergeTransaction(
+    (basePath, milestoneId, roadmapContent) => {
+      calls.push([basePath, milestoneId, roadmapContent]);
+      return {
+        pushed: false,
+        codeFilesChanged: true,
+        commitMessage: "merge M003",
+        prCreated: false,
+      };
+    },
+  );
+
+  assert.deepEqual(runner("/repo", "M003", "# M003"), {
+    pushed: false,
+    codeFilesChanged: true,
+    commitMessage: "merge M003",
+    prCreated: false,
+  });
+  assert.deepEqual(calls, [["/repo", "M003", "# M003"]]);
 });

@@ -38,13 +38,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 
+import { createAutoWorktree } from "../auto-worktree-creation.ts";
 import {
-  createAutoWorktree,
-  teardownAutoWorktree,
-  getAutoWorktreeOriginalBase,
   getActiveAutoWorktreeContext,
+  getAutoWorktreeOriginalBase,
   _resetAutoWorktreeOriginalBaseForTests,
-} from "../auto-worktree.ts";
+} from "../auto-worktree-session-registry.ts";
+import { teardownAutoWorktree } from "../auto-worktree-teardown.ts";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

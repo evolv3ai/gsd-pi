@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { cleanStaleRuntimeUnits } from "../auto-worktree.ts";
+import { cleanStaleRuntimeUnits } from "../auto-worktree-runtime-cleanup.ts";
 
 function makeBase(): string {
   return join(tmpdir(), `gsd-clean-runtime-${randomUUID()}`);

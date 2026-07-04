@@ -6,7 +6,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSyn
 import { join } from "node:path";
 
 import { renderAllFromDb, renderRoadmapFromDb } from "./markdown-renderer.js";
-import { getAllMilestones, getMilestoneSlices } from "./gsd-db.js";
+import { deleteArtifactsByPathPrefix, getAllMilestones, getMilestoneSlices } from "./gsd-db.js";
 import { migrateFromMarkdown } from "./md-importer.js";
 import { countDbHierarchy } from "./migration-auto-check.js";
 import { logWarning } from "./workflow-logger.js";
@@ -195,7 +195,8 @@ export function pruneStaleFlatPhaseBackups(basePath: string): number {
  * 2. Rename .gsd/milestones/ aside so path resolvers target phases/
  * 3. Render flat-phase from the DB (which already has the data)
  * 4. Verify counts match
- * 5. Remove the renamed legacy tree
+ * 5. Prune legacy milestones/ artifact rows
+ * 6. Remove the renamed legacy tree
  *
  * Idempotent: if .gsd/milestones/ doesn't exist, returns immediately.
  */
@@ -313,7 +314,17 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
     throw new Error("flat-phase migration verification failed: no artifacts rendered");
   }
 
-  // 6. Verified — remove the renamed legacy tree (backup already on disk).
+  // 6. Verified — prune legacy artifact rows now that renderAllFromDb has
+  // re-inserted flat-phase rows for artifacts that still have files.
+  try {
+    deleteArtifactsByPathPrefix("milestones/");
+  } catch (err) {
+    logWarning("migration", `flat-phase migration could not prune legacy artifact rows: ${(err as Error).message}`);
+    rollbackPartialMigration(basePath, backupDir, migratingPath);
+    throw err;
+  }
+
+  // 7. Remove the renamed legacy tree (backup already on disk).
   try {
     removePathWithRetries(migratingPath);
   } catch (err) {

@@ -30,6 +30,33 @@ export interface ContextManagementConfig {
 }
 
 /**
+ * User-tunable thresholds for the tool-call loop guard (#1198). Keeps the two
+ * guards separately configurable: the identical-args guard (catches real
+ * infinite loops) and the repeated-tool-name cap (catches improvisation loops,
+ * more likely to false-positive on legitimate automation). All fields are
+ * optional; omitted fields fall back to the built-in defaults so existing
+ * installs keep their current behavior. Also overridable via GSD_TOOL_LOOP_*
+ * environment variables.
+ */
+export interface ToolCallLoopGuardConfig {
+  /** Master switch for both guards. Default: true. */
+  enabled?: boolean;
+  /** Identical-args sliding-window guard. */
+  identical_args?: {
+    enabled?: boolean;                    // default: true
+    max_consecutive_calls?: number;       // default: 4, min: 1
+  };
+  /** Per-tool-name cap, independent of args. */
+  repeated_tool?: {
+    enabled?: boolean;                    // default: true
+    default_cap?: number;                 // default: 6, min: 1
+    repeatable_cap?: number;              // default: 15, min: 1
+    /** Additional tool names exempt from the per-tool cap (merged with built-in defaults). */
+    exempt_tools?: string[];
+  };
+}
+
+/**
  * Opt-in tool-output sandboxing for sub-sessions. When enabled, the gsd_exec
  * MCP tool runs scripts in an isolated subprocess and returns only a short
  * digest to the calling agent's context window; capped stdout/stderr persist
@@ -139,6 +166,7 @@ export const KNOWN_PREFERENCE_KEYS = new Set<string>([
   "min_request_interval_ms",
   "stale_commit_threshold_minutes",
   "context_management",
+  "tool_call_loop_guard",
   "experimental",
   "codebase",
   "slice_parallel",
@@ -440,6 +468,8 @@ export interface GSDPreferences {
    */
   context_window_override?: number;
   context_management?: ContextManagementConfig;
+  /** User-tunable tool-call loop guard thresholds (#1198). */
+  tool_call_loop_guard?: ToolCallLoopGuardConfig;
   /**
    * Tool-output sandboxing via gsd_exec. Keeps sub-session context windows
    * clean by running scripts in a subprocess and only surfacing a short

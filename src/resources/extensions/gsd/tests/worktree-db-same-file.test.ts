@@ -18,9 +18,7 @@ import {
   reconcileWorktreeDb,
   insertDecision,
 } from "../gsd-db.ts";
-import {
-  _shouldReconcileWorktreeDb,
-} from "../auto-worktree.ts";
+import { _shouldReconcileWorktreeDb } from "../auto-worktree-sync.ts";
 import { isInfrastructureError } from "../auto/infra-errors.ts";
 
 describe("#2823: reconcileWorktreeDb same-file guard", () => {

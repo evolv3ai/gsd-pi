@@ -52,6 +52,7 @@ interface UnitDescriptor {
   scopeClass: "execute-task" | "section-close" | "standard";
   phaseChain: readonly Phase[] | null;  // model-routing fallback chain (ADR-026)
   promptTemplate?: string;              // direct one-template loadPrompt id
+  promptTemplates?: readonly string[];  // verified conditional/composite ids
   toolContract: UnitToolSurfaceContract | null;
 }
 
@@ -72,18 +73,19 @@ stable, implementations become lookups.
   the Unit, not maintained in a distant Set).
 - Unit→phase routing → `descriptor.phaseChain`, with `null` for labels that
   resolve against session defaults.
-- Direct prompt association → `descriptor.promptTemplate`, checked by the
-  registry parity test against files in `prompts/`. Conditional or composite
-  prompt selection stays in `auto-prompts.ts` until it has a richer registry
-  shape.
+- Prompt association → `descriptor.promptTemplate` for direct one-template
+  units, or `descriptor.promptTemplates` for verified conditional/composite
+  template sets. Composition and the runtime condition that selects a template
+  stay in `auto-prompts.ts`.
 
 ### 3. Parity becomes one table-driven test
 
-One test iterates the registry and asserts: direct prompt templates exist,
-tool contracts reference only registered tools, derived scope Sets match the
-registry, and every Unit maps to the expected Phase chain. The current
-possibility — a Unit type present in three tables and missing from the fourth
-— becomes unrepresentable as each derived view migrates to the registry.
+One test iterates the registry and asserts: direct and verified conditional
+prompt templates exist, tool contracts reference only registered tools,
+derived scope Sets match the registry, and every Unit maps to the expected
+Phase chain. The current possibility — a Unit type present in three tables and
+missing from the fourth — becomes unrepresentable as each derived view
+migrates to the registry.
 
 ### 4. What stays out
 
@@ -95,12 +97,13 @@ possibility — a Unit type present in three tables and missing from the fourth
 
 ## Consequences
 
-- **Interface shrinks:** for direct one-template Units, prompt association,
-  tool surface, scope membership, and routing live in one registry row.
-  Conditional/composite prompts and manifest data still require their existing
-  files.
-- **Locality:** a Unit's direct prompt, tool surface, scope membership, and
-  routing change in one diff, reviewable as one unit of meaning.
+- **Interface shrinks:** for direct one-template Units and verified conditional
+  template sets, prompt association, tool surface, scope membership, and routing
+  live in one registry row. Prompt composition and manifest data still require
+  their existing files.
+- **Locality:** a Unit's verified prompt association, tool surface, scope
+  membership, and routing change in one diff, reviewable as one unit of
+  meaning.
 - **Leverage for ADR-015:** the Tool Contract compiler reads one source;
   prompt/policy/schema parity tests collapse into the registry parity test.
 - **Migration:** mechanical — introduce the registry with entries copied from
@@ -113,7 +116,9 @@ possibility — a Unit type present in three tables and missing from the fourth
 `tests/unit-registry.test.ts`):
 
 - The registry owns `UnitType`/`KNOWN_UNIT_TYPES`, the tool contracts, the
-  scope-class Sets, direct one-template prompt associations, and the
+  scope-class Sets, direct one-template prompt associations, the verified
+  conditional `discuss-milestone` prompt-template set (`discuss`,
+  `discuss-headless`, `guided-discuss-milestone`), and the
   unit→phase chain (`phaseChainForUnit` now reads the descriptor;
   `worktree-merge` and `subagent/*` stay as non-Unit fallbacks).
 - Migration surfaced real drift the old tables had accumulated, preserved
@@ -128,5 +133,6 @@ possibility — a Unit type present in three tables and missing from the fourth
 - `UNIT_MANIFESTS` data stays in `unit-context-manifest.ts` — it is already
   type-enforced against the registry's `UnitType` (a missing/extra manifest
   is a compile error), so consolidation is locality-only and large.
-- Conditional/composite prompt-template association stays in `auto-prompts.ts`
-  until the registry has a shape that can express richer selection rules.
+- Additional conditional/composite prompt-template associations should move only
+  when each builder's template choices are verified. Runtime prompt composition
+  and selection conditions stay in `auto-prompts.ts`.

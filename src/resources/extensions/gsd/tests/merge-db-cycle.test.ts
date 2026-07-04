@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { execFileSync } from "node:child_process";
 
-import { mergeMilestoneToMain } from "../auto-worktree.ts";
+import { mergeMilestoneToMain } from "../auto-worktree-merge.ts";
 import { closeDatabase, insertAssessment, insertMilestone, insertSlice, openDatabase } from "../gsd-db.ts";
 import { GIT_NO_PROMPT_ENV } from "../git-constants.js";
 import { _clearGsdRootCache } from "../paths.ts";

@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { syncWorktreeStateBack } from "../auto-worktree.ts";
+import { syncGsdStateToWorktree, syncWorktreeStateBack } from "../auto-worktree-sync.ts";
 
 test("#2684: syncWorktreeStateBack does not overwrite project PREFERENCES.md", () => {
   const mainBase = mkdtempSync(join(tmpdir(), "gsd-wt-prefs-main-"));
@@ -58,8 +58,6 @@ test("syncGsdStateToWorktree copies canonical PREFERENCES.md", async () => {
       "---\nversion: 1\n---\n\npost_unit_hooks:\n  - name: notify\n    command: echo done\n",
     );
 
-    // Import and call syncGsdStateToWorktree
-    const { syncGsdStateToWorktree } = await import("../auto-worktree.ts");
     syncGsdStateToWorktree(srcBase, dstBase);
 
     // Verify PREFERENCES.md was copied
@@ -93,7 +91,6 @@ test("syncGsdStateToWorktree falls back to legacy lowercase preferences.md", asy
       "---\nversion: 1\n---\n\ngit:\n  auto_push: true\n",
     );
 
-    const { syncGsdStateToWorktree } = await import("../auto-worktree.ts");
     const result = syncGsdStateToWorktree(srcBase, dstBase);
 
     const copiedEntries = readdirSync(dstGsd)

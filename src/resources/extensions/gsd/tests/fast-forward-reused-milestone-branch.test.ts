@@ -13,7 +13,7 @@ import { basename, join } from "node:path";
 import {
   fastForwardReusedMilestoneBranchIfSafe,
   _isBranchCheckedOutElsewhere,
-} from "../auto-worktree.js";
+} from "../auto-worktree-branch-lifecycle.js";
 
 const NO_PROMPT_ENV = {
   ...process.env,

@@ -704,6 +704,59 @@ export function runGit(basePath: string, args: string[], options: { allowFailure
   }
 }
 
+/**
+ * Arguments for creating a task/workflow branch.
+ *
+ * When the current branch is a leftover GSD task branch (workflow template,
+ * quick task, or slice), the new branch starts from `baseBranch` — the
+ * caller's resolved integration branch, normally `GitServiceImpl.getMainBranch()`
+ * so `main_branch` preference, milestone integration branch, and worktree base
+ * all take priority over repo-default detection. Branching from HEAD there
+ * silently stacks consecutive workflow branches on top of each other, so every
+ * new gsd/* branch (and its eventual PR) drags along the previous workflow's
+ * commits.
+ *
+ * On any other branch (a user's feature branch, a worktree base, the main
+ * branch itself) the legacy branch-from-HEAD behavior is kept: basing new work
+ * on the branch the user chose to stand on is intentional there.
+ *
+ * Falls back to branch-from-HEAD, with a logged warning, when the base branch
+ * has no local ref or the working tree is still dirty (a start point that
+ * changes the tree would abort the checkout or strand in-flight changes).
+ * The base is the local ref — deliberately no fetch, so branch creation stays
+ * offline-safe even if the local base is behind its remote.
+ */
+export function taskBranchArgs(basePath: string, branchName: string, currentBranch: string, baseBranch: string): string[] {
+  const args = ["checkout", "-b", branchName];
+  const onTaskBranch =
+    WORKFLOW_BRANCH_RE.test(currentBranch) ||
+    QUICK_BRANCH_RE.test(currentBranch) ||
+    SLICE_BRANCH_RE.test(currentBranch);
+  if (!onTaskBranch || !baseBranch || baseBranch === currentBranch) return args;
+  try {
+    if (!nativeBranchExists(basePath, baseBranch)) {
+      logWarning(
+        "engine",
+        `taskBranchArgs: base branch "${baseBranch}" has no local ref — branching ${branchName} from HEAD (${currentBranch})`,
+        { file: "git-service.ts" },
+      );
+      return args;
+    }
+    if (nativeHasChanges(basePath)) {
+      logWarning(
+        "engine",
+        `taskBranchArgs: working tree still dirty after auto-commit — branching ${branchName} from HEAD (${currentBranch}) to preserve in-flight changes`,
+        { file: "git-service.ts" },
+      );
+      return args;
+    }
+  } catch {
+    return args;
+  }
+  args.push(baseBranch);
+  return args;
+}
+
 // ─── Commit Type Inference ─────────────────────────────────────────────────
 
 /**

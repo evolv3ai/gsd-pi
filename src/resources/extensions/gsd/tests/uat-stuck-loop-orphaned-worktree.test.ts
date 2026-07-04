@@ -30,7 +30,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 
-import { syncProjectRootToWorktree } from "../auto-worktree.ts";
+import { syncProjectRootToWorktree } from "../auto-worktree-sync.ts";
 import {
   createWorktree,
   removeWorktree,

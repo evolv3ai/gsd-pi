@@ -14,7 +14,15 @@ import {
 } from "./gsd-db.js";
 import { MEMORIES_FTS_REBUILT_KEY } from "./db-memory-fts-schema.js";
 import { isAfter, latestExplicitReopenAt } from "./milestone-reopen-events.js";
-import { gsdProjectionRoot, gsdRoot, resolveGsdPathContract, resolveMilestoneFile, resolveSliceFile } from "./paths.js";
+import {
+  buildTaskFileName,
+  gsdProjectionRoot,
+  gsdRoot,
+  resolveGsdPathContract,
+  resolveMilestoneFile,
+  resolveMilestonePath,
+  resolveSliceFile,
+} from "./paths.js";
 import { deriveState } from "./state.js";
 import { isClosedStatus } from "./status-guards.js";
 import { workflowEventLogPath } from "./workflow-event-ledger.js";
@@ -23,6 +31,7 @@ import { flushWorkflowProjections } from "./projection-flush.js";
 import { parseRoadmapSlices } from "./roadmap-slices.js";
 import { parsePlan } from "./parsers-legacy.js";
 import { parseSummary } from "./files.js";
+import { LAYOUT_SEGMENTS } from "./layout-policy.js";
 
 const USER_AUTHORED_ARTIFACT_TYPES = new Set(["CONTEXT", "RESEARCH"]);
 
@@ -160,11 +169,11 @@ function isClearedByMilestoneShellProjectionFlush(
   return issue.file === relativeFile(basePath, roadmapPath);
 }
 
-function artifactExistsOnDisk(basePath: string, artifactPath: string): boolean {
-  return resolveArtifactDiskPath(basePath, artifactPath) !== null;
+function artifactExistsOnDisk(basePath: string, artifactPath: string, row?: ArtifactRow): boolean {
+  return resolveArtifactDiskPath(basePath, artifactPath, row) !== null;
 }
 
-function resolveArtifactDiskPath(basePath: string, artifactPath: string): string | null {
+function resolveLiteralArtifactDiskPath(basePath: string, artifactPath: string): string | null {
   const relativeArtifactPath = artifactPathRelativeToGsd(artifactPath);
   if (isAbsolute(relativeArtifactPath)) {
     return existsSync(relativeArtifactPath) ? relativeArtifactPath : null;
@@ -174,6 +183,50 @@ function resolveArtifactDiskPath(basePath: string, artifactPath: string): string
     if (isPathInside(root, candidate) && existsSync(candidate)) return candidate;
   }
   return null;
+}
+
+function relativeToGsdRoot(basePath: string, diskPath: string): string | null {
+  for (const root of [gsdProjectionRoot(basePath), gsdRoot(basePath)]) {
+    if (!isPathInside(root, diskPath)) continue;
+    return relative(root, diskPath).split("\\").join("/");
+  }
+  return null;
+}
+
+function isFlatPhaseDiskPath(basePath: string, diskPath: string): boolean {
+  return relativeToGsdRoot(basePath, diskPath)?.startsWith(`${LAYOUT_SEGMENTS.level1}/`) ?? false;
+}
+
+function hasFlatPhaseLayout(basePath: string): boolean {
+  return existsSync(join(gsdProjectionRoot(basePath), LAYOUT_SEGMENTS.level1));
+}
+
+function resolveFlatPhaseArtifactDiskPath(basePath: string, row: ArtifactRow): string | null {
+  if (!hasFlatPhaseLayout(basePath)) return null;
+  if (!row.milestone_id) return null;
+  const artifactType = normalizedArtifactType(row.artifact_type);
+  if (!artifactType) return null;
+
+  if (row.slice_id && row.task_id) {
+    const phaseDir = resolveMilestonePath(basePath, row.milestone_id);
+    if (!phaseDir || !isFlatPhaseDiskPath(basePath, phaseDir)) return null;
+    const candidate = join(phaseDir, buildTaskFileName(row.task_id, artifactType));
+    return existsSync(candidate) ? candidate : null;
+  }
+
+  const candidate = row.slice_id
+    ? resolveSliceFile(basePath, row.milestone_id, row.slice_id, artifactType)
+    : resolveMilestoneFile(basePath, row.milestone_id, artifactType);
+
+  return candidate && isFlatPhaseDiskPath(basePath, candidate) ? candidate : null;
+}
+
+function resolveArtifactDiskPath(basePath: string, artifactPath: string, row?: ArtifactRow): string | null {
+  if (row && isMilestonesArtifactPath(row.path)) {
+    const flatPath = resolveFlatPhaseArtifactDiskPath(basePath, row);
+    if (flatPath) return flatPath;
+  }
+  return resolveLiteralArtifactDiskPath(basePath, artifactPath);
 }
 
 function taskExistsInPlan(basePath: string, milestoneId: string, sliceId: string, taskId: string): boolean {
@@ -228,7 +281,7 @@ function readTaskCompletionEvidenceFromSummary(
   if (!row.task_status && Number(row.task_count) > 0 && !taskExistsInPlan(basePath, row.milestone_id, row.slice_id, row.task_id)) {
     return null;
   }
-  const diskPath = resolveArtifactDiskPath(basePath, row.path);
+  const diskPath = resolveArtifactDiskPath(basePath, row.path, { ...row, artifact_type: "SUMMARY" });
   if (!diskPath) return null;
   try {
     const fullSummaryMd = readFileSync(diskPath, "utf-8");
@@ -262,6 +315,7 @@ function repairTaskArtifactDbStatusDivergence(
   basePath: string,
   row: {
     path: string;
+    artifact_type?: string;
     milestone_id: string;
     slice_id: string | null;
     task_id: string | null;
@@ -351,6 +405,49 @@ function hasPresentMilestonesReplacement(basePath: string, row: ArtifactRow, art
       sameArtifactIdentity(row, other) &&
       artifactExistsOnDisk(basePath, other.path),
   );
+}
+
+function hasPresentFlatPhaseReplacement(basePath: string, row: ArtifactRow, artifactRows: ArtifactRow[]): boolean {
+  if (resolveFlatPhaseArtifactDiskPath(basePath, row)) return true;
+
+  return artifactRows.some(
+    (other) =>
+      other.path !== row.path &&
+      !isMilestonesArtifactPath(other.path) &&
+      sameArtifactIdentity(row, other) &&
+      artifactExistsOnDisk(basePath, other.path, other),
+  );
+}
+
+function hasNoFlatPhaseFileEquivalent(row: ArtifactRow): boolean {
+  const artifactType = normalizedArtifactType(row.artifact_type);
+  if (row.slice_id && row.task_id) {
+    return artifactType === "PLAN" || artifactType === "SUMMARY";
+  }
+  return Boolean(row.slice_id && !row.task_id && artifactType === "SUMMARY");
+}
+
+function staleMilestonesArtifactRowFixable(basePath: string, row: ArtifactRow, artifactRows: ArtifactRow[]): boolean {
+  if (!isMilestonesArtifactPath(row.path)) return false;
+  if (!hasFlatPhaseLayout(basePath)) return false;
+  if (hasPresentFlatPhaseReplacement(basePath, row, artifactRows)) return true;
+  return hasNoFlatPhaseFileEquivalent(row) && !resolveLiteralArtifactDiskPath(basePath, row.path);
+}
+
+function stalePhasesArtifactRowFixable(basePath: string, row: ArtifactRow, artifactRows: ArtifactRow[]): boolean {
+  const issuePath = artifactPathRelativeToGsd(row.path);
+  return issuePath.startsWith(`${LAYOUT_SEGMENTS.level1}/`) && hasPresentMilestonesReplacement(basePath, row, artifactRows);
+}
+
+function staleArtifactRowFixable(basePath: string, row: ArtifactRow, artifactRows: ArtifactRow[]): boolean {
+  return staleMilestonesArtifactRowFixable(basePath, row, artifactRows) ||
+    stalePhasesArtifactRowFixable(basePath, row, artifactRows);
+}
+
+function staleArtifactPruneMessage(row: ArtifactRow): string {
+  return isMilestonesArtifactPath(row.path)
+    ? `pruned stale legacy artifact row ${row.path}`
+    : `pruned stale flat-phase artifact row ${row.path}`;
 }
 
 export async function checkEngineHealth(
@@ -579,17 +676,18 @@ export async function checkEngineHealth(
           .all() as ArtifactRow[];
 
         for (const row of artifactRows) {
-          if (artifactExistsOnDisk(basePath, row.path)) continue;
           const unitId = artifactUnitId(row);
           const issuePath = artifactPathRelativeToGsd(row.path);
-          if (options?.repair && issuePath.startsWith("phases/") && hasPresentMilestonesReplacement(basePath, row, artifactRows)) {
+          if (artifactExistsOnDisk(basePath, row.path)) continue;
+          if (options?.repair && staleArtifactRowFixable(basePath, row, artifactRows)) {
             // Route the write through the Single Writer owner (gsd-db.ts) instead
             // of issuing raw DELETE SQL here — doctor is a read-only consumer and
             // the single-writer invariant forbids write SQL outside the allowlist.
             deleteArtifactByPath(row.path);
-            fixesApplied.push(`pruned stale flat-phase artifact row ${row.path}`);
+            fixesApplied.push(staleArtifactPruneMessage(row));
             continue;
           }
+          if (artifactExistsOnDisk(basePath, row.path, row)) continue;
           if (isUserAuthoredArtifactType(row.artifact_type)) {
             const artifactType = normalizedArtifactType(row.artifact_type);
             missingUserContentArtifacts.push({ path: issuePath, artifactType });
@@ -611,7 +709,7 @@ export async function checkEngineHealth(
             unitId,
             message: `Artifact ${issuePath} is recorded in the database as ${row.artifact_type || "UNKNOWN"} but no matching file exists on disk`,
             file: issuePath,
-            fixable: issuePath.startsWith("phases/") && hasPresentMilestonesReplacement(basePath, row, artifactRows),
+            fixable: staleArtifactRowFixable(basePath, row, artifactRows),
           });
         }
       } catch {
@@ -643,6 +741,7 @@ export async function checkEngineHealth(
           )
           .all() as Array<{
             path: string;
+            artifact_type: string;
             milestone_id: string;
             slice_id: string | null;
             task_id: string | null;
@@ -654,7 +753,7 @@ export async function checkEngineHealth(
 
         const seen = new Set<string>();
         for (const row of rows) {
-          if (!artifactExistsOnDisk(basePath, row.path)) continue;
+          if (!artifactExistsOnDisk(basePath, row.path, row)) continue;
           const reopenAt = latestExplicitReopenAt(basePath, row.milestone_id);
           if (!isAfter(row.imported_at, reopenAt)) continue;
           const isSliceSummary = row.slice_id && !row.task_id && row.slice_status && !["complete", "done", "skipped", "closed"].includes(row.slice_status);

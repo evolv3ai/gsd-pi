@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 
-import { mergeMilestoneToMain } from "../auto-worktree.ts";
+import { mergeMilestoneToMain } from "../auto-worktree-merge.ts";
 import { checkCloseoutConsistencyGate } from "../closeout-consistency-gate.ts";
 import {
   closeDatabase,

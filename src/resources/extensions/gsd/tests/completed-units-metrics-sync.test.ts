@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, existsSync, cpSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { syncStateToProjectRoot } from "../auto-worktree.ts";
+import { syncStateToProjectRoot } from "../auto-worktree-sync.ts";
 
 test("#2313: syncStateToProjectRoot copies metrics and completed-units to the project root", () => {
   const root = mkdtempSync(join(tmpdir(), "gsd-sync-metrics-"));

@@ -23,7 +23,7 @@ import {
 } from "./workflow-templates.js";
 import { loadPrompt } from "./prompt-loader.js";
 import { gsdRoot } from "./paths.js";
-import { createGitService, runGit } from "./git-service.js";
+import { createGitService, runGit, taskBranchArgs } from "./git-service.js";
 import { isAutoActive, isAutoPaused } from "./auto.js";
 import { getErrorMessage } from "./error-utils.js";
 import { resolvePlugin, type WorkflowPlugin } from "./workflow-plugins.js";
@@ -464,7 +464,7 @@ export async function handleStart(
         try {
           git.autoCommit("workflow-template", templateId, []);
         } catch { /* nothing to commit */ }
-        runGit(basePath, ["checkout", "-b", branchName]);
+        runGit(basePath, taskBranchArgs(basePath, branchName, current, git.getMainBranch()));
         branchCreated = true;
       }
     } catch (err) {
@@ -636,7 +636,7 @@ export function dispatchMarkdownPhasePlugin(
       const current = git.getCurrentBranch();
       if (current !== branchName) {
         try { git.autoCommit("workflow-template", templateId, []); } catch { /* nothing to commit */ }
-        runGit(basePath, ["checkout", "-b", branchName]);
+        runGit(basePath, taskBranchArgs(basePath, branchName, current, git.getMainBranch()));
         branchCreated = true;
       }
     } catch (err) {

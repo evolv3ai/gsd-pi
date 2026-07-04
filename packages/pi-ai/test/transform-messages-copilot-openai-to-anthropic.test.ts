@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { transformMessages } from "../src/providers/transform-messages.ts";
+import { normalizeToolResultContent } from "../src/tool-result-content.ts";
 import type { AssistantMessage, Message, Model, ToolCall } from "../src/types.ts";
 
 // Normalize function matching what anthropic.ts uses
@@ -131,6 +132,52 @@ describe("OpenAI to Anthropic session migration for Copilot Claude", () => {
 		const toolCall = assistantMsg.content.find((b) => b.type === "toolCall") as ToolCall;
 
 		expect(toolCall.thoughtSignature).toBeUndefined();
+	});
+
+	it("hydrates missing tool result content before provider transforms", () => {
+		const model = makeCopilotClaudeModel();
+		const messages: Message[] = [
+			{
+				role: "toolResult",
+				toolCallId: "call_123",
+				toolName: "deathloop_run",
+				isError: false,
+				timestamp: Date.now(),
+			} as unknown as Message,
+		];
+
+		const result = transformMessages(messages, model, anthropicNormalizeToolCallId);
+		const toolResult = result[0];
+
+		expect(toolResult?.role).toBe("toolResult");
+		if (toolResult?.role === "toolResult") {
+			expect(toolResult.content).toEqual([{ type: "text", text: "" }]);
+		}
+	});
+
+	it("stringifies malformed non-json tool result content safely", () => {
+		expect(normalizeToolResultContent([])).toEqual([{ type: "text", text: "" }]);
+		expect(normalizeToolResultContent(["hello"])).toEqual([{ type: "text", text: "hello" }]);
+		const cyclicTextBlock = {
+			type: "text",
+			text: "ok",
+			cache_control: { type: "ephemeral" },
+		} as { type: "text"; text: string; cache_control: { type: "ephemeral" }; self?: unknown };
+		cyclicTextBlock.self = cyclicTextBlock;
+		expect(normalizeToolResultContent([cyclicTextBlock])).toEqual([
+			{ type: "text", text: "ok", cache_control: { type: "ephemeral" } },
+		]);
+		expect(normalizeToolResultContent(Symbol("bad"))).toEqual([{ type: "text", text: "Symbol(bad)" }]);
+		const functionContent = normalizeToolResultContent(() => undefined);
+		expect(functionContent[0]?.type).toBe("text");
+		expect(typeof functionContent[0]?.text).toBe("string");
+		expect(functionContent[0]?.text.length).toBeGreaterThan(0);
+
+		const unstringifiable = Object.create(null) as { self?: unknown };
+		unstringifiable.self = unstringifiable;
+		expect(normalizeToolResultContent(unstringifiable)).toEqual([
+			{ type: "text", text: "[unstringifiable tool result content]" },
+		]);
 	});
 
 	it("adds synthetic tool results for trailing orphaned tool calls", () => {

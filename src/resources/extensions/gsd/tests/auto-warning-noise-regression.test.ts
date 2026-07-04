@@ -28,7 +28,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { buildFlatRateContext } from "../auto-model-selection.ts";
-import { _isSamePath, _resetAutoWorktreeOriginalBaseForTests } from "../auto-worktree.ts";
+import { _resetAutoWorktreeOriginalBaseForTests } from "../auto-worktree-session-registry.ts";
+import { _isSamePath } from "../auto-worktree-path-utils.ts";
 import {
   checkAutoStartAfterDiscuss,
   clearPendingAutoStart,

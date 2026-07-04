@@ -18,7 +18,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { syncWorktreeStateBack } from "../auto-worktree.ts";
+import { syncWorktreeStateBack } from "../auto-worktree-sync.ts";
 
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), `gsd-sync-test-${prefix}-`));

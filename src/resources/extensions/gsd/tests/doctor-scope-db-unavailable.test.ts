@@ -428,6 +428,52 @@ test("checkEngineHealth repair prunes stale phases artifact rows with present mi
   assert.deepEqual(rows.map((row) => row.path), []);
 });
 
+test("checkEngineHealth repair keeps phases rows whose own file is still present", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-keep-present-phase-artifact-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  const livePath = "phases/01-m001/01-01-PLAN.md";
+  const replacementPath = "milestones/M001/slices/S01/S01-PLAN.md";
+  // Both the active phases/ file AND a legacy milestones/ copy exist on disk.
+  // The row is "fixable" (a milestones replacement is present), but its own
+  // file is present too — repair must not drop the live row.
+  mkdirSync(join(gsdDir, "phases", "01-m001"), { recursive: true });
+  writeFileSync(join(gsdDir, livePath), "# Plan\n", "utf-8");
+  mkdirSync(join(gsdDir, "milestones", "M001", "slices", "S01"), { recursive: true });
+  writeFileSync(join(gsdDir, replacementPath), "# Plan\n", "utf-8");
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertArtifact({
+    path: livePath,
+    artifact_type: "PLAN",
+    milestone_id: "M001",
+    slice_id: "S01",
+    task_id: null,
+    full_content: "# plan\n",
+  });
+
+  const issues: any[] = [];
+  const fixes: string[] = [];
+  await checkEngineHealth(base, issues, fixes, { repair: true });
+
+  assert.equal(
+    fixes.some((fix) => fix.includes(livePath)),
+    false,
+    "repair must not prune a row whose own file is present on disk",
+  );
+  assert.equal(
+    issues.some((issue) => issue.code === "artifact_file_missing" && issue.file === livePath),
+    false,
+    "a present artifact must not be reported missing",
+  );
+
+  const rows = _getAdapter()!
+    .prepare("SELECT path FROM artifacts ORDER BY path")
+    .all() as Array<{ path: string }>;
+  assert.deepEqual(rows.map((row) => row.path), [livePath]);
+});
+
 test("checkEngineHealth repair prunes stale phases task rows against tasks/<T>-<TYPE>.md replacements", async (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-doctor-prune-stale-task-phase-artifact-"));
   t.after(() => rmSync(base, { recursive: true, force: true }));
@@ -538,6 +584,134 @@ test("checkEngineHealth marks escaped phases rows fixable when a milestones repl
   assert.ok(issue, "escaped stale row should still be reported when repair is off");
   assert.equal(issue.file, "phases/01-m001/01-01-PLAN.md");
   assert.equal(issue.fixable, true, "escaped phases rows with a milestones replacement must be marked fixable");
+});
+
+test("checkEngineHealth resolves legacy milestones rows through flat-phase files", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-flat-fallback-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  const flatPath = "phases/01-foundation/01-01-PLAN.md";
+  const legacyPath = "milestones/M001/slices/S01/S01-PLAN.md";
+  mkdirSync(join(gsdDir, "phases", "01-foundation"), { recursive: true });
+  writeFileSync(join(gsdDir, flatPath), "# Plan\n", "utf-8");
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertArtifact({
+    path: legacyPath,
+    artifact_type: "PLAN",
+    milestone_id: "M001",
+    slice_id: "S01",
+    task_id: null,
+    full_content: "# legacy plan row\n",
+  });
+
+  const issues: any[] = [];
+  await checkEngineHealth(base, issues, []);
+
+  assert.equal(
+    issues.some((issue) => issue.code === "artifact_file_missing" && issue.file === legacyPath),
+    false,
+    "legacy milestones rows should not be reported missing when the flat-phase file exists",
+  );
+});
+
+test("checkEngineHealth repair prunes stale milestones rows with present flat-phase files", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-prune-stale-legacy-artifact-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  const flatPath = "phases/01-foundation/01-01-PLAN.md";
+  const stalePath = "milestones/M001/slices/S01/S01-PLAN.md";
+  mkdirSync(join(gsdDir, "phases", "01-foundation"), { recursive: true });
+  writeFileSync(join(gsdDir, flatPath), "# Plan\n", "utf-8");
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertArtifact({
+    path: stalePath,
+    artifact_type: "PLAN",
+    milestone_id: "M001",
+    slice_id: "S01",
+    task_id: null,
+    full_content: "# stale plan row\n",
+  });
+
+  const issues: any[] = [];
+  const fixes: string[] = [];
+  await checkEngineHealth(base, issues, fixes, { repair: true });
+
+  assert.equal(
+    issues.some((issue) => issue.code === "artifact_file_missing" && issue.file === stalePath),
+    false,
+    "repair should not report stale legacy rows it pruned",
+  );
+  assert.ok(fixes.includes(`pruned stale legacy artifact row ${stalePath}`));
+
+  const rows = _getAdapter()!
+    .prepare("SELECT path FROM artifacts ORDER BY path")
+    .all() as Array<{ path: string }>;
+  assert.deepEqual(rows.map((row) => row.path), []);
+});
+
+test("checkEngineHealth marks stale milestones task rows without flat files fixable", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-fixable-stale-legacy-task-artifact-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  const stalePath = "milestones/M001/slices/S01/tasks/T01-PLAN.md";
+  mkdirSync(join(gsdDir, "phases", "01-foundation"), { recursive: true });
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertArtifact({
+    path: stalePath,
+    artifact_type: "PLAN",
+    milestone_id: "M001",
+    slice_id: "S01",
+    task_id: "T01",
+    full_content: "# stale task plan row\n",
+  });
+
+  const issues: any[] = [];
+  await checkEngineHealth(base, issues, []);
+
+  const issue = issues.find((candidate) => candidate.code === "artifact_file_missing" && candidate.file === stalePath);
+  assert.ok(issue, "missing stale legacy task row should still be reported when repair is off");
+  assert.equal(issue.fixable, true, "stale legacy task rows without flat files should be fixable");
+});
+
+test("checkEngineHealth repair prunes stale milestones task rows without flat files", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-prune-stale-legacy-task-artifact-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  const stalePath = "milestones/M001/slices/S01/tasks/T01-PLAN.md";
+  mkdirSync(join(gsdDir, "phases", "01-foundation"), { recursive: true });
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertArtifact({
+    path: stalePath,
+    artifact_type: "PLAN",
+    milestone_id: "M001",
+    slice_id: "S01",
+    task_id: "T01",
+    full_content: "# stale task plan row\n",
+  });
+
+  const issues: any[] = [];
+  const fixes: string[] = [];
+  await checkEngineHealth(base, issues, fixes, { repair: true });
+
+  assert.equal(
+    issues.some((issue) => issue.code === "artifact_file_missing" && issue.file === stalePath),
+    false,
+    "repair should prune stale legacy task rows that have no flat file representation",
+  );
+  assert.ok(fixes.includes(`pruned stale legacy artifact row ${stalePath}`));
+
+  const rows = _getAdapter()!
+    .prepare("SELECT path FROM artifacts ORDER BY path")
+    .all() as Array<{ path: string }>;
+  assert.deepEqual(rows.map((row) => row.path), []);
 });
 
 function taskSummary(id: string, verificationResult = "passed"): string {

@@ -281,7 +281,7 @@ export function getMilestone(id: string): MilestoneRow | null {
 export function getActiveMilestoneFromDb(): MilestoneRow | null {
   if (!getDbOrNull()!) return null;
   const row = getDbOrNull()!.prepare(
-    "SELECT * FROM milestones WHERE status NOT IN ('complete', 'done', 'skipped', 'closed', 'parked') ORDER BY id LIMIT 1",
+    `SELECT * FROM milestones WHERE status NOT IN (${TERMINAL_STATUS_SQL}, 'parked') ORDER BY id LIMIT 1`,
   ).get();
   if (!row) return null;
   return rowToMilestone(row);
@@ -295,11 +295,11 @@ export function getActiveSliceFromDb(milestoneId: string): SliceRow | null {
   const row = getDbOrNull()!.prepare(
     `SELECT s.* FROM slices s
      WHERE s.milestone_id = :mid
-       AND s.status NOT IN ('complete', 'done', 'skipped')
+       AND s.status NOT IN (${TERMINAL_STATUS_SQL})
        AND NOT EXISTS (
          SELECT 1 FROM json_each(s.depends) AS dep
          WHERE dep.value NOT IN (
-           SELECT id FROM slices WHERE milestone_id = :mid AND status IN ('complete', 'done', 'skipped')
+           SELECT id FROM slices WHERE milestone_id = :mid AND status IN (${TERMINAL_STATUS_SQL})
          )
        )
      ORDER BY s.sequence, s.id
@@ -312,7 +312,7 @@ export function getActiveSliceFromDb(milestoneId: string): SliceRow | null {
 export function getActiveTaskFromDb(milestoneId: string, sliceId: string): TaskRow | null {
   if (!getDbOrNull()!) return null;
   const row = getDbOrNull()!.prepare(
-    "SELECT * FROM tasks WHERE milestone_id = :mid AND slice_id = :sid AND status NOT IN ('complete', 'done') ORDER BY sequence, id LIMIT 1",
+    `SELECT * FROM tasks WHERE milestone_id = :mid AND slice_id = :sid AND status NOT IN (${TERMINAL_STATUS_SQL}) ORDER BY sequence, id LIMIT 1`,
   ).get({ ":mid": milestoneId, ":sid": sliceId });
   if (!row) return null;
   return rowToTask(row);
@@ -339,7 +339,7 @@ export function getParallelMonitorSliceProgress(milestoneId: string): ParallelMo
        s.id AS id,
        s.status AS status,
        COUNT(t.id) AS total,
-       COALESCE(SUM(CASE WHEN t.status='complete' THEN 1 ELSE 0 END), 0) AS done
+       COALESCE(SUM(CASE WHEN t.status IN (${TERMINAL_STATUS_SQL}) THEN 1 ELSE 0 END), 0) AS done
      FROM slices s
      LEFT JOIN tasks t ON s.milestone_id=t.milestone_id AND s.id=t.slice_id
      WHERE s.milestone_id=:mid
@@ -518,7 +518,7 @@ export function getSliceScopedArtifacts(milestoneId: string, sliceId: string): A
 export function getActiveMilestoneIdFromDb(): IdStatusSummary | null {
   if (!getDbOrNull()!) return null;
   const row = getDbOrNull()!.prepare(
-    "SELECT id, status FROM milestones WHERE status NOT IN ('complete', 'done', 'skipped', 'closed', 'parked') ORDER BY id LIMIT 1",
+    `SELECT id, status FROM milestones WHERE status NOT IN (${TERMINAL_STATUS_SQL}, 'parked') ORDER BY id LIMIT 1`,
   ).get();
   if (!row) return null;
   return rowToIdStatusSummary(row);
@@ -536,7 +536,7 @@ export function getSliceStatusSummary(milestoneId: string): IdStatusSummary[] {
 export function getActiveTaskIdFromDb(milestoneId: string, sliceId: string): ActiveTaskSummary | null {
   if (!getDbOrNull()!) return null;
   const row = getDbOrNull()!.prepare(
-    "SELECT id, status, title FROM tasks WHERE milestone_id = :mid AND slice_id = :sid AND status NOT IN ('complete', 'done') ORDER BY sequence, id LIMIT 1",
+    `SELECT id, status, title FROM tasks WHERE milestone_id = :mid AND slice_id = :sid AND status NOT IN (${TERMINAL_STATUS_SQL}) ORDER BY sequence, id LIMIT 1`,
   ).get({ ":mid": milestoneId, ":sid": sliceId });
   if (!row) return null;
   return rowToActiveTaskSummary(row);
@@ -548,8 +548,8 @@ export function getSliceTaskCounts(milestoneId: string, sliceId: string): TaskSt
   const row = getDbOrNull()!.prepare(
     `SELECT
        COUNT(*) as total,
-       SUM(CASE WHEN status IN ('complete', 'done') THEN 1 ELSE 0 END) as done,
-       SUM(CASE WHEN status NOT IN ('complete', 'done') THEN 1 ELSE 0 END) as pending
+       SUM(CASE WHEN status IN (${TERMINAL_STATUS_SQL}) THEN 1 ELSE 0 END) as done,
+       SUM(CASE WHEN status NOT IN (${TERMINAL_STATUS_SQL}) THEN 1 ELSE 0 END) as pending
      FROM tasks WHERE milestone_id = :mid AND slice_id = :sid`,
   ).get({ ":mid": milestoneId, ":sid": sliceId });
   return rowToTaskStatusCounts(row);

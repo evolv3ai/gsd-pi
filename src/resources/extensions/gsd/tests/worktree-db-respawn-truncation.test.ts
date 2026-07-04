@@ -17,7 +17,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { syncProjectRootToWorktree } from '../auto-worktree.ts';
+import { syncProjectRootToWorktree } from '../auto-worktree-sync.ts';
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 

@@ -51,7 +51,7 @@ import { nativeAddAll, nativeCommit, nativeHasCommittedHead, nativeIsRepo, nativ
 import { isInheritedRepo } from "./repo-identity.js";
 import { ensureGitignore, ensurePreferences, untrackRuntimeFiles } from "./gitignore.js";
 import { getIsolationMode, loadEffectiveGSDPreferences } from "./preferences.js";
-import { getAutoWorktreePath } from "./auto-worktree.js";
+import { getAutoWorktreePath } from "./auto-worktree-path-resolution.js";
 import { resolveUokFlags } from "./uok/flags.js";
 import { ensurePlanV2Graph, isMissingFinalizedContextResult } from "./uok/plan-v2.js";
 import { detectProjectState, hasGsdBootstrapArtifacts } from "./detection.js";
@@ -94,7 +94,7 @@ import {
 import { probeCoversRequiredWorkflowTools } from "./tool-surface-readiness.js";
 import { getRequiredWorkflowToolsForUnit } from "./unit-tool-contracts.js";
 import { isWorkflowToolSurfaceName } from "./workflow-tool-surface.js";
-import { getUnitWorkflowDispatchReadinessError } from "./tool-contract.js";
+import { getUnitWorkflowDispatchReadinessErrorForModel } from "./tool-contract.js";
 import {
   runPreparation,
   formatCodebaseBrief,
@@ -613,7 +613,7 @@ interface DispatchWorkflowOptions {
   deps?: {
     loadPreferences?: typeof loadEffectiveGSDPreferences;
     selectModel?: typeof selectAndApplyModel;
-    getDispatchReadinessError?: typeof getUnitWorkflowDispatchReadinessError;
+    getDispatchReadinessError?: typeof getUnitWorkflowDispatchReadinessErrorForModel;
   };
 }
 
@@ -730,7 +730,7 @@ async function dispatchWorkflow(
   const loadPreferences = resolvedOptions.deps?.loadPreferences ?? loadEffectiveGSDPreferences;
   const selectModel = resolvedOptions.deps?.selectModel ?? selectAndApplyModel;
   const getDispatchReadinessError = resolvedOptions.deps?.getDispatchReadinessError
-    ?? getUnitWorkflowDispatchReadinessError;
+    ?? getUnitWorkflowDispatchReadinessErrorForModel;
 
   // Route through the dynamic routing pipeline (complexity classification,
   // tier downgrade, fallback chains) — same path as auto-mode dispatches (#2958).
@@ -750,16 +750,12 @@ async function dispatchWorkflow(
     }
 
     const compatibilityError = getDispatchReadinessError({
-      provider: result.appliedModel?.provider ?? ctx.model?.provider,
+      model: result.appliedModel,
+      fallbackModel: ctx.model,
+      getProviderAuthMode: (provider) => ctx.modelRegistry.getProviderAuthMode(provider),
       projectRoot,
       surface: "guided flow",
       unitType,
-      authMode: result.appliedModel?.provider
-        ? ctx.modelRegistry.getProviderAuthMode(result.appliedModel.provider)
-        : ctx.model?.provider
-          ? ctx.modelRegistry.getProviderAuthMode(ctx.model.provider)
-          : undefined,
-      baseUrl: result.appliedModel?.baseUrl ?? ctx.model?.baseUrl,
       // Guided flow starts the MCP workflow server as part of dispatch, so the
       // parent session's activeTools doesn't include MCP tools yet. The MCP
       // launch config check (detectWorkflowMcpLaunchConfig) is the right gate

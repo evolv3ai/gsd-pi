@@ -32,7 +32,7 @@ import { gsdRoot } from "../paths.ts";
 import {
   syncProjectRootToWorktree,
   syncStateToProjectRoot,
-} from "../auto-worktree.ts";
+} from "../auto-worktree-sync.ts";
 import { writeLock, readCrashLock, clearLock } from "../crash-recovery.ts";
 import { describe, test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";

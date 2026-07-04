@@ -13,7 +13,7 @@ import {
   needsFlatPhaseMigration,
   pruneStaleFlatPhaseBackups,
 } from "../flat-phase-migration.ts";
-import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask, getAllMilestones, getMilestoneSlices, getSliceTasks } from "../gsd-db.ts";
+import { openDatabase, closeDatabase, insertArtifact, insertMilestone, insertSlice, insertTask, getAllMilestones, getMilestoneSlices, getSliceTasks, _getAdapter } from "../gsd-db.ts";
 
 const tmpDirs: string[] = [];
 function makeTmp(options: { withTask?: boolean } = {}): string {
@@ -118,6 +118,49 @@ test("migrateToFlatPhase preserves milestone/slice/task counts in DB", async () 
   assert.equal(getAllMilestones().length, msBefore);
   assert.equal(getMilestoneSlices("M001").length, slicesBefore);
   assert.equal(getSliceTasks("M001", "S01").length, tasksBefore);
+});
+
+test("migrateToFlatPhase prunes legacy milestones artifact rows after flat render", async () => {
+  const base = makeTmp();
+  insertArtifact({
+    path: "milestones/M001/M001-ROADMAP.md",
+    artifact_type: "ROADMAP",
+    milestone_id: "M001",
+    slice_id: null,
+    task_id: null,
+    full_content: "# M001: Foundation\n",
+  });
+  insertArtifact({
+    path: "milestones/M001/slices/S01/S01-PLAN.md",
+    artifact_type: "PLAN",
+    milestone_id: "M001",
+    slice_id: "S01",
+    task_id: null,
+    full_content: "# Plan\n",
+  });
+  insertArtifact({
+    path: "milestones/M001/slices/S01/tasks/T01-PLAN.md",
+    artifact_type: "PLAN",
+    milestone_id: "M001",
+    slice_id: "S01",
+    task_id: "T01",
+    full_content: "# Task Plan\n",
+  });
+
+  await migrateToFlatPhase(base);
+
+  const rows = _getAdapter()!
+    .prepare("SELECT path FROM artifacts ORDER BY path")
+    .all() as Array<{ path: string }>;
+  assert.equal(
+    rows.some((row) => row.path.startsWith("milestones/")),
+    false,
+    "legacy milestones/ artifact rows should be pruned after successful flat migration",
+  );
+  assert.ok(
+    rows.some((row) => row.path.startsWith("phases/")),
+    "flat-phase render should leave replacement projection rows in the artifacts table",
+  );
 });
 
 test("migrateToFlatPhase is idempotent (second run is a no-op)", async () => {

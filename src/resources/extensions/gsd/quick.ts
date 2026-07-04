@@ -15,7 +15,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import { QUICK_BRANCH_RE } from "./branch-patterns.js";
 import { loadPrompt } from "./prompt-loader.js";
 import { gsdRoot } from "./paths.js";
-import { GitServiceImpl, runGit } from "./git-service.js";
+import { GitServiceImpl, runGit, taskBranchArgs } from "./git-service.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 import { nativeBranchExists, nativeDetectMainBranch, nativeDiffNumstat } from "./native-git-bridge.js";
 import { nativeHasStagedChanges } from "./native-git-bridge.js";
@@ -365,6 +365,7 @@ export async function handleQuick(
   const git = new GitServiceImpl(basePath, gitPrefs);
   const branchName = `gsd/quick/${taskNum}-${slug}`;
   let originalBranch = git.getCurrentBranch();
+  let returnBranch = originalBranch;
 
   const { getIsolationMode } = await import("./preferences.js");
   const usesBranch = getIsolationMode() !== "none" && isGitOpsEnabled();
@@ -381,7 +382,14 @@ export async function handleQuick(
           }
         } catch { /* nothing to commit — fine */ }
 
-        runGit(basePath, ["checkout", "-b", branchName]);
+        const branchArgs = taskBranchArgs(basePath, branchName, current, git.getMainBranch());
+        const startPoint = branchArgs[3];
+        // When the quick branch is redirected off a stale task branch, the
+        // squash-merge on closeout must return to the same base — merging a
+        // base-branch-rooted quick branch back into the stale task branch
+        // would drag the base's newer history into it.
+        if (startPoint) returnBranch = startPoint;
+        runGit(basePath, branchArgs);
         branchCreated = true;
       }
     } catch (err) {
@@ -395,7 +403,7 @@ export async function handleQuick(
   if (actualBranch === branchName && originalBranch !== branchName) {
     persistPendingReturn({
       basePath,
-      originalBranch,
+      originalBranch: returnBranch,
       quickBranch: branchName,
       taskNum,
       slug,

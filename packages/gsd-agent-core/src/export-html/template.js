@@ -894,15 +894,64 @@
         const isError = result?.isError || false;
         const statusClass = result ? (isError ? 'error' : 'success') : 'pending';
 
+        // This template runs as a standalone browser script in exported HTML,
+        // so it cannot import normalizeToolResultContent from @gsd/pi-ai.
+        // Keep these fallback semantics aligned with that helper.
+        const stringifyResultContent = (content) => {
+          try {
+            const value = JSON.stringify(content);
+            if (typeof value === 'string') return value;
+          } catch {
+            // Fall through to String(content). JSON.stringify can throw for cycles.
+          }
+
+          try {
+            return String(content);
+          } catch {
+            return '[unstringifiable tool result content]';
+          }
+        };
+
+        const serializableCacheControl = (block) => {
+          if (!block || typeof block !== 'object' || !('cache_control' in block)) return {};
+          try {
+            JSON.stringify(block.cache_control);
+            return { cache_control: block.cache_control };
+          } catch {
+            return {};
+          }
+        };
+
+        const normalizeResultContentBlock = (block) => {
+          if (typeof block === 'string') return { type: 'text', text: block };
+          if (block && typeof block === 'object') {
+            const cacheControl = serializableCacheControl(block);
+            if (block.type === 'text' && typeof block.text === 'string') return { type: 'text', text: block.text, ...cacheControl };
+            if (block.type === 'image' && typeof block.data === 'string' && typeof block.mimeType === 'string') {
+              return { type: 'image', data: block.data, mimeType: block.mimeType, ...cacheControl };
+            }
+          }
+          return { type: 'text', text: stringifyResultContent(block) };
+        };
+
+        const getResultContent = () => {
+          if (!result) return [];
+          if (Array.isArray(result.content)) {
+            const blocks = result.content.map(normalizeResultContentBlock);
+            return blocks.length > 0 ? blocks : [{ type: 'text', text: '' }];
+          }
+          if (typeof result.content === 'string') return [{ type: 'text', text: result.content }];
+          if (result.content == null) return [{ type: 'text', text: '' }];
+          return [{ type: 'text', text: stringifyResultContent(result.content) }];
+        };
+
         const getResultText = () => {
-          if (!result) return '';
-          const textBlocks = result.content.filter(c => c.type === 'text');
+          const textBlocks = getResultContent().filter(c => c.type === 'text');
           return textBlocks.map(c => c.text).join('\n');
         };
 
         const getResultImages = () => {
-          if (!result) return [];
-          return result.content.filter(c => c.type === 'image');
+          return getResultContent().filter(c => c.type === 'image');
         };
 
         const renderResultImages = () => {

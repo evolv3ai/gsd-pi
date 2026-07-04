@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import threading
 import time
@@ -62,7 +63,12 @@ class GsdMcpClient:
 
     def _env(self) -> dict[str, str]:
         env = os.environ.copy()
-        env["GSD_CLI_PATH"] = self._config.cli_path
+        # Resolve cli_path to an absolute path so the MCP server's
+        # resolveCLIPath() does not resolve a bare command name (e.g. "gsd")
+        # against the project directory, producing a non-existent
+        # project-relative path that hangs gsd_execute until timeout.
+        resolved = shutil.which(self._config.cli_path) or self._config.cli_path
+        env["GSD_CLI_PATH"] = resolved
         return env
 
     def ensure_version(self) -> None:
@@ -134,9 +140,11 @@ class GsdMcpClient:
     def _send(self, payload: dict[str, Any], *, project_dir: str | None = None) -> None:
         proc = self._ensure_process(project_dir)
         assert proc.stdin is not None
-        body = json.dumps(payload).encode("utf-8")
-        header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
-        proc.stdin.write(header + body)
+        # gsd-mcp-server uses the @modelcontextprotocol/sdk stdio transport,
+        # which is newline-delimited JSON (NDJSON), not the Content-Length
+        # framing from the LSP-style MCP spec. Emit one JSON object per line.
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8") + b"\n"
+        proc.stdin.write(data)
         proc.stdin.flush()
 
     def _read_stdout_chunk(self, deadline: float) -> None:
@@ -179,42 +187,23 @@ class GsdMcpClient:
             f"{self._config.mcp_read_timeout_seconds:g}s"
         )
 
-    def _read_header(self, deadline: float) -> bytes:
+    def _read_line(self, deadline: float) -> bytes:
         while True:
-            crlf_idx = self._stdout_buffer.find(b"\r\n\r\n")
-            lf_idx = self._stdout_buffer.find(b"\n\n")
-            candidates = [
-                (idx, sep_len)
-                for idx, sep_len in ((crlf_idx, 4), (lf_idx, 2))
-                if idx >= 0
-            ]
-            if candidates:
-                idx, sep_len = min(candidates)
-                header = self._stdout_buffer[:idx]
-                self._stdout_buffer = self._stdout_buffer[idx + sep_len :]
-                return header
+            idx = self._stdout_buffer.find(b"\n")
+            if idx >= 0:
+                raw = self._stdout_buffer[:idx]
+                self._stdout_buffer = self._stdout_buffer[idx + 1 :]
+                return raw.rstrip(b"\r")
             self._read_stdout_chunk(deadline)
-
-    def _read_exact(self, length: int, deadline: float) -> bytes:
-        while len(self._stdout_buffer) < length:
-            self._read_stdout_chunk(deadline)
-        body = self._stdout_buffer[:length]
-        self._stdout_buffer = self._stdout_buffer[length:]
-        return body
 
     def _read_message(self) -> dict[str, Any]:
         deadline = time.monotonic() + self._config.mcp_read_timeout_seconds
-        header = self._read_header(deadline)
-        headers: dict[str, str] = {}
-        for raw_line in header.splitlines():
-            decoded = raw_line.decode("utf-8").strip()
-            if not decoded:
-                continue
-            key, _, val = decoded.partition(":")
-            headers[key.strip().lower()] = val.strip()
-        length = int(headers.get("content-length", "0"))
-        body = self._read_exact(length, deadline)
-        return json.loads(body.decode("utf-8"))
+        # gsd-mcp-server emits newline-delimited JSON (NDJSON); each line is a
+        # complete JSON-RPC message. Skip blank keep-alive lines.
+        while True:
+            line = self._read_line(deadline)
+            if line.strip():
+                return json.loads(line.decode("utf-8"))
 
     def _initialize(self) -> None:
         self._request_id += 1

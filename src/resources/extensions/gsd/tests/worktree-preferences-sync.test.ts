@@ -26,7 +26,7 @@ import { tmpdir } from "node:os";
 import {
   syncGsdStateToWorktree,
   syncWorktreeStateBack,
-} from "../auto-worktree.ts";
+} from "../auto-worktree-sync.ts";
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 

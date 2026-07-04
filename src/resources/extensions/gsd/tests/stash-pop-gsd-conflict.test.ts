@@ -14,7 +14,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 
-import { createAutoWorktree, mergeMilestoneToMain } from "../auto-worktree.ts";
+import { createAutoWorktree } from "../auto-worktree-creation.ts";
+import { mergeMilestoneToMain } from "../auto-worktree-merge.ts";
 import { _resetServiceCache } from "../worktree.ts";
 import { _clearGsdRootCache } from "../paths.ts";
 

@@ -16,13 +16,11 @@ import { execSync } from "node:child_process";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import {
-  createAutoWorktree,
-  teardownAutoWorktree,
-  isInAutoWorktree,
-  getAutoWorktreeOriginalBase,
-  mergeMilestoneToMain,
-} from "../../auto-worktree.ts";
+import { createAutoWorktree } from "../../auto-worktree-creation.ts";
+import { isInAutoWorktree } from "../../auto-worktree-entry.ts";
+import { mergeMilestoneToMain } from "../../auto-worktree-merge.ts";
+import { getAutoWorktreeOriginalBase } from "../../auto-worktree-session-registry.ts";
+import { teardownAutoWorktree } from "../../auto-worktree-teardown.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

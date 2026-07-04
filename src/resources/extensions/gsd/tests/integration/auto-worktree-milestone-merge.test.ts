@@ -19,12 +19,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 
+import { createAutoWorktree } from "../../auto-worktree-creation.ts";
 import {
-  createAutoWorktree,
   mergeMilestoneToMain,
-  getAutoWorktreeOriginalBase,
   _setRestoreEntryFnForTests,
-} from "../../auto-worktree.ts";
+} from "../../auto-worktree-merge.ts";
+import { getAutoWorktreeOriginalBase } from "../../auto-worktree-session-registry.ts";
 import { getSliceBranchName } from "../../worktree.ts";
 import { nativeMergeSquash } from "../../native-git-bridge.ts";
 import { drainLogs, setStderrLoggingEnabled } from "../../workflow-logger.ts";

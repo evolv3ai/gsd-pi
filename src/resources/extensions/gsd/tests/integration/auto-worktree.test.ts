@@ -17,17 +17,16 @@ import {
   writeGsdMilestoneContext,
 } from "./gsd-integration-fixture.ts";
 
+import { createAutoWorktree } from "../../auto-worktree-creation.ts";
+import { enterAutoWorktree, isInAutoWorktree } from "../../auto-worktree-entry.ts";
+import { getAutoWorktreePath } from "../../auto-worktree-path-resolution.ts";
 import {
-  createAutoWorktree,
-  teardownAutoWorktree,
-  isInAutoWorktree,
-  getAutoWorktreePath,
-  enterAutoWorktree,
-  getAutoWorktreeOriginalBase,
   getActiveAutoWorktreeContext,
-  syncGsdStateToWorktree,
+  getAutoWorktreeOriginalBase,
   _resetAutoWorktreeOriginalBaseForTests,
-} from "../../auto-worktree.ts";
+} from "../../auto-worktree-session-registry.ts";
+import { syncGsdStateToWorktree } from "../../auto-worktree-sync.ts";
+import { teardownAutoWorktree } from "../../auto-worktree-teardown.ts";
 
 // Note: execSync is used intentionally in tests for git operations with
 // controlled, hardcoded inputs (no user input). This is safe and matches

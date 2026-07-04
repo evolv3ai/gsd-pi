@@ -1397,6 +1397,19 @@ export function deleteArtifactByPath(path: string): void {
   getDbOrNull()!.prepare("DELETE FROM artifacts WHERE path = :path").run({ ":path": path });
 }
 
+/** Delete artifact rows whose paths share a DB-relative prefix. */
+export function deleteArtifactsByPathPrefix(prefix: string): number {
+  if (!getDbOrNull()!) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  return transaction(() => {
+    const likePrefix = `${prefix}%`;
+    const countRow = getDbOrNull()!.prepare(
+      "SELECT COUNT(*) AS count FROM artifacts WHERE path LIKE :prefix",
+    ).get({ ":prefix": likePrefix });
+    getDbOrNull()!.prepare("DELETE FROM artifacts WHERE path LIKE :prefix").run({ ":prefix": likePrefix });
+    return Number(countRow?.["count"] ?? 0);
+  });
+}
+
 /**
  * Drop hierarchy rows in dependency order inside a transaction. Used by
  * `gsd recover --confirm` to rebuild engine state from markdown.

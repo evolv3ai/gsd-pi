@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 
-import { createAutoWorktree } from "../auto-worktree.ts";
+import { createAutoWorktree } from "../auto-worktree-creation.ts";
 import { worktreePath } from "../worktree-manager.ts";
 import {
   copyWorktreeDb,

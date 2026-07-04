@@ -440,7 +440,8 @@ export async function runPreDispatch(
       if (stop) return stop;
     }
 
-    // PR creation (auto_pr) is handled inside mergeMilestoneToMain (#2302)
+    // PR creation (auto_pr) is handled by the publication handoff in
+    // the milestone merge transaction (#2302).
 
     deps.invalidateAllCaches();
 
@@ -551,7 +552,8 @@ export async function runPreDispatch(
         // #2909 / #5538-followup: preflight stash + always-on postflight pop.
         const stop = await _runMilestoneMergeOnceWithStashRestore(ic, s.currentMilestoneId);
         if (stop) return stop;
-        // PR creation (auto_pr) is handled inside mergeMilestoneToMain (#2302)
+        // PR creation (auto_pr) is handled by the publication handoff in
+        // the milestone merge transaction (#2302).
       }
       const unmappedActive = countUnmappedActiveRequirements();
       const completionStopReason = formatCompletePhaseNextAction(unmappedActive);
@@ -654,7 +656,8 @@ export async function runPreDispatch(
       // #2909 / #5538-followup: preflight stash + always-on postflight pop.
       const stop = await _runMilestoneMergeOnceWithStashRestore(ic, s.currentMilestoneId);
       if (stop) return stop;
-      // PR creation (auto_pr) is handled inside mergeMilestoneToMain (#2302)
+      // PR creation (auto_pr) is handled by the publication handoff in
+      // the milestone merge transaction (#2302).
     }
     deps.sendDesktopNotification(
       "GSD",

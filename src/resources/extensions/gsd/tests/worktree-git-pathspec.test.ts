@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 
-import { _gitPathspecForWorktreePath } from "../auto-worktree.ts";
+import { _gitPathspecForWorktreePath } from "../auto-worktree-path-utils.ts";
 
 function run(cmd: string, args: string[], cwd: string): string {
   return execFileSync(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"], encoding: "utf-8" }).trim();

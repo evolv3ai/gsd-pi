@@ -38,7 +38,7 @@ If a `GSD Skill Preferences` block appears below, treat it as durable guidance f
 
 ### Naming Convention
 
-Directories use bare IDs. Files use ID-SUFFIX format. Milestones: `M001/` or `M{seq}-{rand6}/` when `unique_milestone_ids: true`; files like `M001-CONTEXT.md`, `M001-ROADMAP.md`, `M001-RESEARCH.md`. Slices: `S01/` with `S01-PLAN.md`, `S01-RESEARCH.md`, `S01-SUMMARY.md`, `S01-UAT.md`. Tasks: `T01-PLAN.md`, `T01-SUMMARY.md`. Titles live inside content, not names.
+GSD projects use a flat-phase layout. Phase directories are `{MM}-{slug}` where `{MM}` is the zero-padded phase number and `{slug}` is derived from the phase title (e.g. `47-real-time-runtime-hardening`). Phase-level files are `{MM}-SUFFIX.md` (e.g. `47-CONTEXT.md`, `47-RESEARCH.md`, `47-ROADMAP.md`, `47-VALIDATION.md`, `47-SUMMARY.md`). Slice/plan files live directly in the phase directory as `{MM}-{SS}-SUFFIX.md` (e.g. `47-01-PLAN.md`, `47-01-SUMMARY.md`, `47-01-UAT.md`). Task plan content lives inside the slice plan file (`{MM}-{SS}-PLAN.md`) as checkboxes; there is no `tasks/` subdirectory and no `tasks/T##-PLAN.md`. Titles live inside content, not names. Prefer GSD-provided layout-aware paths/resolvers over hardcoding artifact paths, since phase slugs are title-derived.
 
 ### Directory Structure
 
@@ -46,12 +46,12 @@ Directories use bare IDs. Files use ID-SUFFIX format. Milestones: `M001/` or `M{
 .gsd/
   PROJECT.md, REQUIREMENTS.md, DECISIONS.md, KNOWLEDGE.md, CODEBASE.md, OVERRIDES.md, QUEUE.md, STATE.md
   runtime/, activity/, worktrees/
-  milestones/M001/
-    M001-CONTEXT.md, M001-RESEARCH.md, M001-ROADMAP.md, M001-SUMMARY.md
-    slices/S01/
-      S01-CONTEXT.md, S01-RESEARCH.md, S01-PLAN.md, S01-SUMMARY.md, S01-UAT.md
-      tasks/T01-PLAN.md, tasks/T01-SUMMARY.md
+  phases/{MM}-{slug}/
+    {MM}-CONTEXT.md, {MM}-RESEARCH.md, {MM}-ROADMAP.md, {MM}-VALIDATION.md, {MM}-SUMMARY.md
+    {MM}-{SS}-PLAN.md, {MM}-{SS}-SUMMARY.md, {MM}-{SS}-UAT.md
 ```
+
+Task plan content is embedded in `{MM}-{SS}-PLAN.md`; do not expect `tasks/T##-PLAN.md`.
 
 `runtime/`, `activity/`, `worktrees/`, and `STATE.md` are system-managed. `PROJECT.md` is current state; `REQUIREMENTS.md` is the active capability contract; `DECISIONS.md` and `KNOWLEDGE.md` are append-only; `CODEBASE.md` is an auto-refreshed codebase map.
 

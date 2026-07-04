@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { syncWorktreeStateBack } from "../auto-worktree.ts";
+import { syncWorktreeStateBack } from "../auto-worktree-sync.ts";
 
 describe("syncWorktreeStateBack does not copy worktree milestone projections", () => {
   it("copies root diagnostics but leaves milestone markdown directories behind", () => {

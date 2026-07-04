@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { _resolveAutoWorktreeStartPoint } from "../auto-worktree.ts";
+import { _resolveAutoWorktreeStartPoint } from "../auto-worktree-branch-lifecycle.ts";
 
 test("auto-worktree start point prefers milestone integration branch", () => {
   const startPoint = _resolveAutoWorktreeStartPoint(

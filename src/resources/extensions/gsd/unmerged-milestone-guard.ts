@@ -9,7 +9,7 @@ import {
   nativeDiffNumstat,
   nativeIsAncestor,
 } from "./native-git-bridge.js";
-import { autoWorktreeBranch } from "./auto-worktree.js";
+import { autoWorktreeBranch } from "./auto-worktree-branch-lifecycle.js";
 import { ensureDbOpen } from "./bootstrap/dynamic-tools.js";
 import { getAllMilestones } from "./gsd-db.js";
 import { resolveMilestoneIntegrationBranch } from "./git-service.js";

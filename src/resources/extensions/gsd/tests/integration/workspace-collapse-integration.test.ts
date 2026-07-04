@@ -25,10 +25,8 @@ import {
   markDepthVerified,
   clearDiscussionFlowState,
 } from "../../bootstrap/write-gate.ts";
-import {
-  teardownAutoWorktree,
-  _resetAutoWorktreeOriginalBaseForTests,
-} from "../../auto-worktree.ts";
+import { _resetAutoWorktreeOriginalBaseForTests } from "../../auto-worktree-session-registry.ts";
+import { teardownAutoWorktree } from "../../auto-worktree-teardown.ts";
 import {
   openDatabaseByWorkspace,
   closeAllDatabases,

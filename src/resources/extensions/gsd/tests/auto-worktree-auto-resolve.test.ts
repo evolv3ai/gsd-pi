@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import {
   isSafeToAutoResolve,
   SAFE_AUTO_RESOLVE_PATTERNS,
-} from "../auto-worktree.ts";
+} from "../auto-worktree-conflict-auto-resolve.ts";
 
 describe("isSafeToAutoResolve", () => {
   // ─── .gsd/ state files ───────────────────────────────────────────────────

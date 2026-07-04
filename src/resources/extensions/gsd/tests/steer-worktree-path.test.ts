@@ -8,7 +8,7 @@ import { mkdtempSync, mkdirSync, existsSync, readFileSync, rmSync, writeFileSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { appendOverride, loadActiveOverrides } from "../files.ts";
-import { getAutoWorktreePath } from "../auto-worktree.ts";
+import { getAutoWorktreePath } from "../auto-worktree-path-resolution.ts";
 
 describe("steer worktree path resolution (#3476)", () => {
   let projectRoot: string;

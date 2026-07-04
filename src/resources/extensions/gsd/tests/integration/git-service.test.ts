@@ -15,6 +15,7 @@ import {
   RUNTIME_EXCLUSION_PATHS,
   VALID_BRANCH_NAME,
   runGit,
+  taskBranchArgs,
   readIntegrationBranch,
   resolveMilestoneIntegrationBranch,
   writeIntegrationBranch,
@@ -1118,6 +1119,81 @@ process.exit(result.status ?? 0);
 
     rmSync(repo, { recursive: true, force: true });
   }
+
+  // ─── taskBranchArgs ───────────────────────────────────────────────────
+
+  test('taskBranchArgs starts new workflow branches from the base branch, not from HEAD', () => {
+    const repo = initBranchTestRepo();
+
+    assert.deepStrictEqual(
+      taskBranchArgs(repo, "gsd/spike/first", "main", "main"),
+      ["checkout", "-b", "gsd/spike/first"],
+      "branching while on the base branch itself needs no explicit start point",
+    );
+
+    // Simulate a finished workflow left checked out with its own commit.
+    run("git checkout -b gsd/spike/first", repo);
+    createFile(repo, "first.txt", "first workflow output");
+    runGit(repo, ["add", "-A"]);
+    runGit(repo, ["commit", "-m", "first workflow work"]);
+    _resetHasChangesCache();
+
+    const args = taskBranchArgs(repo, "gsd/spike/second", "gsd/spike/first", "main");
+    assert.deepStrictEqual(
+      args,
+      ["checkout", "-b", "gsd/spike/second", "main"],
+      "next workflow branch starts from the base so workflows do not stack",
+    );
+
+    runGit(repo, args);
+    assert.deepStrictEqual(
+      run("git rev-parse HEAD", repo),
+      run("git rev-parse main", repo),
+      "second workflow branch points at the base, without the first workflow's commit",
+    );
+
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  test('taskBranchArgs keeps branch-from-HEAD on user branches and unsafe states', () => {
+    const repo = initBranchTestRepo();
+
+    // Manual feature branch: the user chose to stand here — new workflow
+    // branches base on it, never silently jump to main.
+    run("git checkout -b feature/login", repo);
+    createFile(repo, "feature.txt", "feature work");
+    runGit(repo, ["add", "-A"]);
+    runGit(repo, ["commit", "-m", "feature work"]);
+    _resetHasChangesCache();
+    assert.deepStrictEqual(
+      taskBranchArgs(repo, "gsd/spike/from-feature", "feature/login", "main"),
+      ["checkout", "-b", "gsd/spike/from-feature"],
+      "a manual feature branch is a deliberate base — no redirect to main",
+    );
+
+    // Base branch without a local ref (e.g. origin/HEAD names a branch that
+    // was never checked out locally): fall back to HEAD instead of failing.
+    run("git checkout -b gsd/spike/stale", repo);
+    _resetHasChangesCache();
+    assert.deepStrictEqual(
+      taskBranchArgs(repo, "gsd/spike/next", "gsd/spike/stale", "no-such-branch"),
+      ["checkout", "-b", "gsd/spike/next"],
+      "missing local base ref falls back to branch-from-HEAD",
+    );
+
+    // Dirty tree on a task branch: a tree-changing start point would abort
+    // the checkout or strand the changes — fall back to HEAD.
+    createFile(repo, "dirty.txt", "uncommitted");
+    runGit(repo, ["add", "-A"]);
+    _resetHasChangesCache();
+    assert.deepStrictEqual(
+      taskBranchArgs(repo, "gsd/spike/next", "gsd/spike/stale", "main"),
+      ["checkout", "-b", "gsd/spike/next"],
+      "dirty working tree falls back to branch-from-HEAD",
+    );
+
+    rmSync(repo, { recursive: true, force: true });
+  });
 
   // ═══════════════════════════════════════════════════════════════════════
   // S05: Enhanced features — snapshots, pre-merge checks

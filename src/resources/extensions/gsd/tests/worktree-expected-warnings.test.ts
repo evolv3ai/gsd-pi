@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
-import { _isExpectedWorktreeUnlinkError } from "../auto-worktree.ts";
+import { _isExpectedWorktreeUnlinkError } from "../auto-worktree-path-utils.ts";
 import { resolveGitDir } from "../worktree-manager.ts";
 
 describe("worktree expected-condition warning suppression (#3665)", () => {

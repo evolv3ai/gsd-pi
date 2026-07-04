@@ -1034,6 +1034,10 @@ describe('derive-state-db', async () => {
 
       assert.deepStrictEqual(dbState.phase, 'replanning-slice', 'replan-db: phase is replanning-slice');
       assert.deepStrictEqual(dbState.phase, fileState.phase, 'replan-db: phase matches filesystem');
+      assert.ok(
+        Object.hasOwn(dbState, 'activeWorkspace'),
+        'replan-db: state preserves explicit activeWorkspace field for auto-loop consumers',
+      );
 
       closeDatabase();
     } finally {

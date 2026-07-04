@@ -22,11 +22,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execSync } from "node:child_process";
 
-import {
-  createAutoWorktree,
-  mergeMilestoneToMain,
-  autoWorktreeBranch,
-} from "../../auto-worktree.ts";
+import { createAutoWorktree } from "../../auto-worktree-creation.ts";
+import { mergeMilestoneToMain } from "../../auto-worktree-merge.ts";
 import { captureIntegrationBranch, getSliceBranchName } from "../../worktree.ts";
 import { writeIntegrationBranch, readIntegrationBranch } from "../../git-service.ts";
 import { nextMilestoneId, generateMilestoneSuffix } from "../../guided-flow.ts";

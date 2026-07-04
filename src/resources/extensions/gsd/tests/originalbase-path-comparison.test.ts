@@ -26,12 +26,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 
+import { createAutoWorktree } from "../auto-worktree-creation.ts";
 import {
   getAutoWorktreeOriginalBase,
   _resetAutoWorktreeOriginalBaseForTests,
-  createAutoWorktree,
-  teardownAutoWorktree,
-} from "../auto-worktree.ts";
+} from "../auto-worktree-session-registry.ts";
+import { teardownAutoWorktree } from "../auto-worktree-teardown.ts";
 import { normalizeWorktreePathForCompare } from "../worktree-root.ts";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

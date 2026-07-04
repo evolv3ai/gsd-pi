@@ -13,7 +13,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 
-import { createAutoWorktree, _resetAutoWorktreeOriginalBaseForTests } from "../auto-worktree.ts";
+import { createAutoWorktree } from "../auto-worktree-creation.ts";
+import { _resetAutoWorktreeOriginalBaseForTests } from "../auto-worktree-session-registry.ts";
 import { reenterActiveWorktreeIfNeeded } from "../worktree-reentry.ts";
 
 // Safe: all inputs below are hardcoded test strings, not user input.
