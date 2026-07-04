@@ -881,6 +881,12 @@ export function migrateHierarchyToDb(basePath: string): {
             files: taskEntry.files ?? [],
             verify: taskEntry.verify ?? '',
           },
+          // #1222 (metadata half): re-import derives status from the plan/summary
+          // but has none of the execution prose gsd_task_complete wrote to the DB.
+          // Preserve the existing row's execution columns and completed_at so a
+          // re-import cannot blank a completed task's summary metadata or refresh
+          // its completion timestamp — the DB row is strictly richer than the plan.
+          preserveCompletionMetadata: true,
         });
         counts.tasks++;
       }

@@ -454,6 +454,14 @@ export function insertTask(t: {
   fullSummaryMd?: string;
   sequence?: number;
   planning?: Partial<TaskPlanningRecord>;
+  // #1222 (metadata half): when re-importing from markdown, the caller only
+  // knows the plan/status — not the execution prose that gsd_task_complete
+  // wrote to the DB. Setting this preserves the existing row's execution
+  // columns (and completed_at) whenever the incoming value is empty/default,
+  // so a re-import cannot silently blank a completed task's summary metadata
+  // or refresh its completion timestamp. Off by default: callers that own the
+  // execution metadata (gsd_task_complete, planning) keep overwrite semantics.
+  preserveCompletionMetadata?: boolean;
 }): void {
   if (!getDbOrNull()!) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
   getDbOrNull()!.prepare(
@@ -473,17 +481,17 @@ export function insertTask(t: {
     ON CONFLICT(milestone_id, slice_id, id) DO UPDATE SET
       title = CASE WHEN NULLIF(:title, '') IS NOT NULL THEN :title ELSE tasks.title END,
       status = :status,
-      one_liner = :one_liner,
-      narrative = :narrative,
-      verification_result = :verification_result,
-      duration = :duration,
-      completed_at = :completed_at,
-      blocker_discovered = :blocker_discovered,
-      deviations = :deviations,
-      known_issues = :known_issues,
-      key_files = :key_files,
-      key_decisions = :key_decisions,
-      full_summary_md = :full_summary_md,
+      one_liner = CASE WHEN :preserve_completion = 1 AND NULLIF(:one_liner, '') IS NULL THEN tasks.one_liner ELSE :one_liner END,
+      narrative = CASE WHEN :preserve_completion = 1 AND NULLIF(:narrative, '') IS NULL THEN tasks.narrative ELSE :narrative END,
+      verification_result = CASE WHEN :preserve_completion = 1 AND NULLIF(:verification_result, '') IS NULL THEN tasks.verification_result ELSE :verification_result END,
+      duration = CASE WHEN :preserve_completion = 1 AND NULLIF(:duration, '') IS NULL THEN tasks.duration ELSE :duration END,
+      completed_at = CASE WHEN :preserve_completion = 1 AND tasks.completed_at IS NOT NULL THEN tasks.completed_at ELSE :completed_at END,
+      blocker_discovered = CASE WHEN :preserve_completion = 1 AND :blocker_discovered = 0 THEN tasks.blocker_discovered ELSE :blocker_discovered END,
+      deviations = CASE WHEN :preserve_completion = 1 AND NULLIF(:deviations, '') IS NULL THEN tasks.deviations ELSE :deviations END,
+      known_issues = CASE WHEN :preserve_completion = 1 AND NULLIF(:known_issues, '') IS NULL THEN tasks.known_issues ELSE :known_issues END,
+      key_files = CASE WHEN :preserve_completion = 1 AND NULLIF(:key_files, '[]') IS NULL THEN tasks.key_files ELSE :key_files END,
+      key_decisions = CASE WHEN :preserve_completion = 1 AND NULLIF(:key_decisions, '[]') IS NULL THEN tasks.key_decisions ELSE :key_decisions END,
+      full_summary_md = CASE WHEN :preserve_completion = 1 AND NULLIF(:full_summary_md, '') IS NULL THEN tasks.full_summary_md ELSE :full_summary_md END,
       description = CASE WHEN NULLIF(:description, '') IS NOT NULL THEN :description ELSE tasks.description END,
       estimate = CASE WHEN NULLIF(:estimate, '') IS NOT NULL THEN :estimate ELSE tasks.estimate END,
       files = CASE WHEN NULLIF(:files, '[]') IS NOT NULL THEN :files ELSE tasks.files END,
@@ -523,6 +531,7 @@ export function insertTask(t: {
     ":observability_impact": t.planning?.observabilityImpact ?? "",
     ":full_plan_md": t.planning?.fullPlanMd ?? "",
     ":sequence": t.sequence ?? 0,
+    ":preserve_completion": t.preserveCompletionMetadata ? 1 : 0,
     ":target_repositories": JSON.stringify(t.planning?.targetRepositories ?? []),
     ":raw_target_repositories":
       t.planning && "targetRepositories" in t.planning
