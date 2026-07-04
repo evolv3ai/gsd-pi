@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -352,6 +352,85 @@ test("canonical worktree + project-root legacy dir produces legacy filename (#bu
       resolved,
       join(projectLegacyDir, "01-ROADMAP.md"),
       "must NOT produce flat-phase filename 01-ROADMAP.md for a legacy milestones/ dir",
+    );
+  } finally {
+    _clearGsdRootCache();
+    clearPathCache();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// ── cursor[bot] 3523932401: bare milestone id must not match a team-suffix ────
+//
+// A bare milestone id (M001, no team-mode suffix) resolves its phase dir by
+// scanning phases/NN-*. Before the guard (commit 8f45bf3),
+// phaseDirMatchesMilestoneId returned true for ANY same-number dir, so a
+// leftover team-mode projection (phases/01-<6char>-.../, from a prior
+// team-suffixed run) matched the bare id too. When that stale dir carried a
+// newer mtime, pickPreferredPhaseDir selected it over the real title dir and
+// resolved the ROADMAP into a directory that has no ROADMAP — the file-not-found
+// retry loop. The guard (slugLooksLikeTeamSuffixProjection) rejects
+// team-suffix-looking slugs for bare ids in the primary pass; the suffixed
+// projection stays available only as a fallback when the primary pass finds
+// nothing (#1195, guarded by the second test below).
+
+test("bare milestone id prefers the real title dir over a newer team-suffix projection (cursor 3523932401)", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "gsd-bare-teamsuffix-")));
+  try {
+    const phasesDir = join(root, ".gsd", "phases");
+    // Intended flat-phase dir for the bare id: 01-<title-slug>/ with the ROADMAP.
+    const intendedDir = join(phasesDir, "01-clean-continuation");
+    mkdirSync(intendedDir, { recursive: true });
+    writeFileSync(join(intendedDir, "01-ROADMAP.md"), "# roadmap\n");
+
+    // Leftover team-mode projection: 01-<6char>-.../ with NO ROADMAP, made
+    // NEWER so an mtime tiebreak would wrongly prefer it without the guard.
+    const staleDir = join(phasesDir, "01-re4q3k-old-team-projection");
+    mkdirSync(staleDir, { recursive: true });
+    const newer = new Date(Date.now() + 60_000);
+    const older = new Date(Date.now() - 60_000);
+    utimesSync(staleDir, newer, newer);
+    utimesSync(intendedDir, older, older);
+
+    _clearGsdRootCache();
+    clearPathCache();
+
+    const resolved = resolveExpectedArtifactPath("plan-milestone", "M001", root);
+    assert.equal(
+      resolved,
+      join(intendedDir, "01-ROADMAP.md"),
+      "bare id must resolve to the real title dir, not the newer team-suffix projection",
+    );
+    assert.notEqual(
+      resolved,
+      join(staleDir, "01-ROADMAP.md"),
+      "must NOT resolve into the team-suffix projection dir that has no ROADMAP",
+    );
+  } finally {
+    _clearGsdRootCache();
+    clearPathCache();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("bare milestone id still falls back to a lone team-suffix projection (#1195)", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "gsd-bare-teamsuffix-only-")));
+  try {
+    const phasesDir = join(root, ".gsd", "phases");
+    // The only on-disk dir for the bare id is a team-mode projection. With no
+    // non-suffixed candidate, the fallback pass must still resolve to it.
+    const onlyDir = join(phasesDir, "01-re4q3k-clean-continuation");
+    mkdirSync(onlyDir, { recursive: true });
+    writeFileSync(join(onlyDir, "01-ROADMAP.md"), "# roadmap\n");
+
+    _clearGsdRootCache();
+    clearPathCache();
+
+    const resolved = resolveExpectedArtifactPath("plan-milestone", "M001", root);
+    assert.equal(
+      resolved,
+      join(onlyDir, "01-ROADMAP.md"),
+      "with no non-suffixed dir, the team-suffix projection is the correct fallback",
     );
   } finally {
     _clearGsdRootCache();
