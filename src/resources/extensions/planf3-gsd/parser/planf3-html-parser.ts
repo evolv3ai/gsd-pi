@@ -1,6 +1,6 @@
 import { parse, type HTMLElement } from "node-html-parser";
-import type { ParsedPlan, PlanMetadata, PlanFile, PlanPhase, PlanTask, PlanChecklistItem, PlanAmendment, PlanStatus } from "./types.js";
-import { STATUS_FROM_MARKER } from "./types.js";
+import type { ParsedPlan, PlanMetadata, PlanFile, PlanPhase, PlanTask, PlanChecklistItem, PlanAmendment, PlanStatus, PlanTier } from "./types.js";
+import { STATUS_FROM_MARKER, TIER_FROM_MARKER } from "./types.js";
 
 const EMPTY_METADATA: PlanMetadata = {
   created: null,
@@ -78,6 +78,11 @@ function statusFromCode(code: HTMLElement | null): PlanStatus {
   return STATUS_FROM_MARKER[marker] ?? "todo";
 }
 
+function tierFromCode(code: HTMLElement | null): PlanTier | null {
+  const marker = code?.text.trim() ?? "";
+  return TIER_FROM_MARKER[marker] ?? null;
+}
+
 function parseChecklist(ul: HTMLElement | undefined): PlanChecklistItem[] {
   if (!ul) return [];
   return ul.querySelectorAll("li").map((li) => {
@@ -95,6 +100,9 @@ function parsePhase(div: HTMLElement): PlanPhase {
   const h3 = div.querySelector("h3");
   const phaseStatus = statusFromCode(h3?.querySelector("code.status") ?? null);
   h3?.querySelector("code.status")?.remove();
+  const phaseTierCode = h3?.querySelector("code.tier") ?? null;
+  const phaseTier = tierFromCode(phaseTierCode);
+  phaseTierCode?.remove();
   const title = (h3?.text ?? "").replace(/\s+/g, " ").trim();
 
   const description = div.querySelector("p")?.text.replace(/\s+/g, " ").trim() ?? "";
@@ -102,6 +110,9 @@ function parsePhase(div: HTMLElement): PlanPhase {
   const tasks: PlanTask[] = [];
   const headings = div.querySelectorAll("h4");
   for (const h4 of headings) {
+    const taskTierCode = h4.querySelector("code.tier");
+    const taskTier = tierFromCode(taskTierCode);
+    taskTierCode?.remove();
     const taskTitle = h4.text.replace(/\s+/g, " ").trim();
     let sib = h4.nextElementSibling;
     let ul: HTMLElement | undefined;
@@ -112,10 +123,10 @@ function parsePhase(div: HTMLElement): PlanPhase {
       }
       sib = sib.nextElementSibling;
     }
-    tasks.push({ title: taskTitle, checklist: parseChecklist(ul) });
+    tasks.push({ title: taskTitle, tier: taskTier, checklist: parseChecklist(ul) });
   }
 
-  return { title, status: phaseStatus, description, tasks };
+  return { title, status: phaseStatus, tier: phaseTier, description, tasks };
 }
 
 function parsePhases(root: HTMLElement): PlanPhase[] {

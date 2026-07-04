@@ -1,5 +1,13 @@
 export type PlanStatus = "todo" | "wip" | "done" | "failed";
 
+export type PlanTier = "mechanical" | "standard" | "complex";
+
+export const TIER_FROM_MARKER: Record<string, PlanTier> = {
+  "[mechanical]": "mechanical",
+  "[standard]": "standard",
+  "[complex]": "complex",
+};
+
 export interface PlanMetadata {
   created: string | null;
   modified: string[];
@@ -25,12 +33,14 @@ export interface PlanChecklistItem {
 
 export interface PlanTask {
   title: string;
+  tier: PlanTier | null;
   checklist: PlanChecklistItem[];
 }
 
 export interface PlanPhase {
   title: string;
   status: PlanStatus;
+  tier: PlanTier | null;
   description: string;
   tasks: PlanTask[];
 }

@@ -73,6 +73,18 @@ describe("parsePlanf3Html — phases", () => {
     assert.equal(p2.tasks[0].checklist[0].status, "failed");
   });
 
+  test("extracts optional tier chips from phase h3 and task h4, stripping them from titles", () => {
+    const plan = parsePlanf3Html(minimal);
+    const [p1, p2] = plan.phases;
+    assert.equal(p1.tier, "mechanical");
+    assert.equal(p1.title, "Phase 1: Setup");
+    assert.equal(p1.tasks[0].tier, "complex");
+    assert.equal(p1.tasks[0].title, "1. Scaffolding");
+    assert.equal(p1.tasks[1].tier, null);
+    assert.equal(p2.tier, null);
+    assert.equal(p2.tasks[0].tier, null);
+  });
+
   test("extracts bare validation commands, dropping the prose suffix", () => {
     const plan = parsePlanf3Html(minimal);
     assert.deepEqual(plan.validationCommands, [
@@ -98,6 +110,7 @@ describe("parsePlanf3Html — real fixture smoke", () => {
     for (const phase of plan.phases) {
       assert.ok(["todo", "wip", "done", "failed"].includes(phase.status));
       assert.ok(phase.title.length > 0);
+      assert.equal(phase.tier, null);
     }
   });
 });
