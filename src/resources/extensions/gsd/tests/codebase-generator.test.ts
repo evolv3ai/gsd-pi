@@ -697,6 +697,28 @@ test("ensureCodebaseMapFresh: does not rewrite expired metadata when fingerprint
   }
 });
 
+test("ensureCodebaseMapFresh: stays fresh when stored fileCount exceeds maxFiles", () => {
+  const base = makeTmpRepo();
+  try {
+    for (let i = 0; i < 10; i++) addFile(base, `file${i}.ts`);
+    ensureCodebaseMapFresh(base, { maxFiles: 5 }, { ttlMs: 0, force: true });
+
+    // Simulate a map written by an older version that recorded the full
+    // (untruncated) file count in its metadata rather than the capped count.
+    const original = readCodebaseMap(base);
+    assert.ok(original);
+    const fullCountContent = original.replace(/"fileCount":5\b/, '"fileCount":10');
+    writeCodebaseMap(base, fullCountContent);
+
+    const refreshed = ensureCodebaseMapFresh(base, { maxFiles: 5 }, { ttlMs: 0, force: true });
+    assert.equal(refreshed.status, "fresh");
+    // Timestamp must be preserved so the injected prompt stays byte-identical.
+    assert.equal(readCodebaseMap(base), fullCountContent);
+  } finally {
+    cleanup(base);
+  }
+});
+
 test("ensureCodebaseMapFresh: uses TTL cache before enumerating files", () => {
   const base = makeTmpRepo();
   try {
