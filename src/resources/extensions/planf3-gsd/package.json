@@ -5,6 +5,7 @@
   "type": "module",
   "pi": { "extensions": ["./index.ts"] },
   "dependencies": {
-    "node-html-parser": "^6.1.13"
+    "node-html-parser": "^6.1.13",
+    "yaml": "^2.8.2"
   }
 }
