@@ -150,6 +150,33 @@ test('handleReopenSlice: recovers a desynced slice (open status, completed tasks
   }
 });
 
+test('handleReopenSlice: rejects an in-flight slice with mixed task progress and preserves it — #1205', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+  try {
+    // Normal in-flight slice, NOT the #1205 desync: one task finished while
+    // another is still in progress. The desync guard must not treat a single
+    // completed task as reopenable, or a full reset would wipe live progress.
+    insertMilestone({ id: 'M001', title: 'Active', status: 'active' });
+    insertSlice({ id: 'S01', milestoneId: 'M001', status: 'in_progress' });
+    insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', status: 'complete' });
+    insertTask({ id: 'T02', sliceId: 'S01', milestoneId: 'M001', status: 'in_progress' });
+
+    const result = await handleReopenSlice({ milestoneId: 'M001', sliceId: 'S01' }, base);
+
+    assert.ok('error' in result, 'in-flight slice with unfinished tasks must be rejected');
+    assert.match(result.error, /not complete/);
+
+    // Progress must be untouched — nothing reset to pending.
+    const byId = Object.fromEntries(getSliceTasks('M001', 'S01').map(t => [t.id, t.status]));
+    assert.equal(byId['T01'], 'complete', 'completed task must stay complete');
+    assert.equal(byId['T02'], 'in_progress', 'in-progress task must stay in_progress');
+    assert.equal(getSlice('M001', 'S01')!.status, 'in_progress', 'slice status must be untouched');
+  } finally {
+    cleanup(base);
+  }
+});
+
 test('handleReopenSlice: rejects reopening a slice that is not complete', async () => {
   const base = makeTmpBase();
   openDatabase(join(base, '.gsd', 'gsd.db'));

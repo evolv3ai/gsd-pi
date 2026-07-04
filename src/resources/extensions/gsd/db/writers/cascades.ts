@@ -41,12 +41,14 @@ export type ReopenSliceOutcome =
  *
  * A closed slice is always reopenable. An open slice is only reopenable when it
  * carries a completed-task state desync (#1205): a UAT→planning fallback can
- * leave the slice "pending" while its tasks stay "complete", which deadlocks
- * every recovery path (plan-slice/replan-slice/complete-task all reject the
- * still-closed tasks, and slice_reopen historically rejected the still-open
- * slice). Resetting those tasks to pending gives the planner the clean slate it
- * needs. An open slice with nothing completed has nothing to reset and is still
- * rejected as "slice-not-complete".
+ * leave the slice "pending" while *all* its tasks stay "complete", which
+ * deadlocks every recovery path (plan-slice/replan-slice/complete-task all
+ * reject the still-closed tasks, and slice_reopen historically rejected the
+ * still-open slice). Resetting those tasks to pending gives the planner the
+ * clean slate it needs. An open slice that still has any unfinished
+ * (pending/in-progress) task is a normal in-flight slice, not the desync, and
+ * stays rejected as "slice-not-complete" so a full reset can't wipe its
+ * legitimate progress.
  */
 export function reopenSliceCascade(milestoneId: string, sliceId: string): ReopenSliceOutcome {
   requireDb();
@@ -59,7 +61,14 @@ export function reopenSliceCascade(milestoneId: string, sliceId: string): Reopen
     if (!slice) { outcome = { ok: false, reason: "slice-not-found" }; return; }
 
     const tasks = getSliceTasks(milestoneId, sliceId);
-    if (!isClosedStatus(slice.status) && !tasks.some((t) => isClosedStatus(t.status))) {
+    // A closed slice is always reopenable. An open slice is only the #1205
+    // desync when EVERY task is already closed (a UAT→planning fallback left the
+    // slice open with all tasks still "complete"). Requiring *all* tasks closed
+    // (not merely one) means a normal in-flight slice — which keeps at least one
+    // pending/in-progress task — is rejected, so a full reset can't wipe its
+    // legitimate progress.
+    const allTasksClosed = tasks.length > 0 && tasks.every((t) => isClosedStatus(t.status));
+    if (!isClosedStatus(slice.status) && !allTasksClosed) {
       outcome = { ok: false, reason: "slice-not-complete", status: slice.status };
       return;
     }
