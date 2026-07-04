@@ -124,6 +124,7 @@ function alignBareMarkdownIdsWithSuffixedDb(markdownScan: HierarchyScan, dbScan:
     replaceSetPrefix(markdownScan.milestones, bareId, dbId);
     replaceSetPrefix(markdownScan.slices, bareId, dbId);
     replaceSetPrefix(markdownScan.tasks, bareId, dbId);
+    replaceSetPrefix(markdownScan.milestonesWithoutRoadmap, bareId, dbId);
   }
 }
 
