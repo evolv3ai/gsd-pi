@@ -2272,10 +2272,11 @@ export class DefaultPackageManager implements PackageManager {
 		// first-loaded-wins collision resolution makes bundled GSD skills beat
 		// same-named Claude skills — protecting auto-mode dependencies. `agents`
 		// vs `pi` mode is derived from the kind (Claude skills parse identically
-		// to `.agents/skills`, so they reuse the `agents` mode). The loop is split
-		// into project-then-user passes to preserve resource-add ordering
-		// (project skills before project prompts/themes; user skills before user
-		// prompts/themes) so collision resolution matches the prior version.
+		// to `.agents/skills`, so they reuse the `agents` mode). Loading is split
+		// into two batches that follow taxonomy order: project + bundled GSD +
+		// claude-project before project prompts/themes; remaining user kinds before
+		// user prompts/themes. This keeps bundled `gsd-user` ahead of
+		// `claude-project` despite their different scopes.
 		const userAgentsSkillsResolved = resolve(userAgentsSkillsDir);
 		const allSkillEntries = getSkillDirectories({
 			cwd: this.cwd,
@@ -2289,14 +2290,14 @@ export class DefaultPackageManager implements PackageManager {
 				entry.kind === "claude-project" ||
 				entry.kind === "claude-user",
 		);
-		const addSkillEntries = (scope: "project" | "user"): void => {
-			const baseMetadata = scope === "project" ? projectMetadata : userMetadata;
-			const overrides = scope === "project" ? projectOverrides.skills : userOverrides.skills;
+		const addSkillEntries = (include: (entry: (typeof allSkillEntries)[number]) => boolean): void => {
 			for (const entry of allSkillEntries) {
-				if (entry.scope !== scope) continue;
+				if (!include(entry)) continue;
+				const baseMetadata = entry.scope === "project" ? projectMetadata : userMetadata;
+				const overrides = entry.scope === "project" ? projectOverrides.skills : userOverrides.skills;
 				// `~/.agents/skills` is excluded from the project (ancestor) walk
 				// so it only loads once, as a user-scope skill.
-				if (scope === "project" && resolve(entry.path) === userAgentsSkillsResolved) continue;
+				if (entry.scope === "project" && resolve(entry.path) === userAgentsSkillsResolved) continue;
 				// `pi` mode is only for `.gsd/skills` (root-level .md files);
 				// `.agents/skills` and `.claude/skills` use the `agents` mode.
 				const mode: SkillDiscoveryMode =
@@ -2309,8 +2310,8 @@ export class DefaultPackageManager implements PackageManager {
 			}
 		};
 
-		// Project skills from .gsd/skills then ancestor .agents/skills.
-		addSkillEntries("project");
+		// Project + bundled + claude-project skills in taxonomy order.
+		addSkillEntries((entry) => entry.kind !== "agents-user" && entry.kind !== "claude-user");
 
 		addResources(
 			"prompts",
@@ -2336,8 +2337,8 @@ export class DefaultPackageManager implements PackageManager {
 			globalBaseDir,
 		);
 
-		// User skills from ~/.gsd/agent/skills then ~/.agents/skills.
-		addSkillEntries("user");
+		// Remaining user skills (~/.agents/skills, ~/.claude/skills).
+		addSkillEntries((entry) => entry.kind === "agents-user" || entry.kind === "claude-user");
 
 		addResources(
 			"prompts",
