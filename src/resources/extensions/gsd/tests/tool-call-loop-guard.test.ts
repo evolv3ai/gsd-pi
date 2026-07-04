@@ -300,6 +300,52 @@ console.log('\n── Loop guard: failing exec loop (no progress recorded) still
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// bg_shell/async_bash false-success must not decay the per-tool cap (#783)
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Loop guard: bg_shell failed run/start does not decay the cap (#783) ──');
+
+{
+  resetToolCallLoopGuard();
+
+  for (let i = 1; i <= 15; i++) {
+    const result = checkToolCallLoop('bg_shell', { action: 'run', command: `try-missing-tool ${i}` });
+    assert.ok(result.block === false, `failing bg_shell run ${i} should be allowed up to the cap`);
+    recordToolCallLoopMutation('bg_shell', { action: 'run', exitCode: 1, timedOut: false });
+  }
+  const blocked = checkToolCallLoop('bg_shell', { action: 'run', command: 'try-missing-tool 16' });
+  assert.ok(blocked.block === true, '16th failing bg_shell run should be blocked by the per-tool cap');
+}
+
+{
+  resetToolCallLoopGuard();
+
+  for (let i = 1; i <= 15; i++) {
+    checkToolCallLoop('bg_shell', { action: 'start', command: `bad-server ${i}` });
+    recordToolCallLoopMutation('bg_shell', {
+      action: 'start',
+      process: { alive: false, exitCode: 1 },
+    });
+  }
+  const blocked = checkToolCallLoop('bg_shell', { action: 'start', command: 'bad-server 16' });
+  assert.ok(blocked.block === true, '16th dead bg_shell start should be blocked by the per-tool cap');
+}
+
+console.log('\n── Loop guard: async_bash job registration does not decay the cap (#783) ──');
+
+{
+  resetToolCallLoopGuard();
+
+  for (let i = 1; i <= 6; i++) {
+    const result = checkToolCallLoop('async_bash', { command: `try-missing-tool ${i}` });
+    assert.ok(result.block === false, `async_bash call ${i} should be allowed up to the cap`);
+    recordToolCallLoopMutation('async_bash');
+  }
+  const blocked = checkToolCallLoop('async_bash', { command: 'try-missing-tool 7' });
+  assert.ok(blocked.block === true, '7th async_bash call should be blocked by the per-tool cap');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Distinct read-only navigation calls are context gathering, not repeated-tool loops.
 // ═══════════════════════════════════════════════════════════════════════════
 

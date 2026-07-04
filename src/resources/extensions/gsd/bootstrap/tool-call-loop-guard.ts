@@ -59,17 +59,40 @@ const STATE_MUTATING_TOOL_SET = new Set(["edit", "write", "multi_edit", "noteboo
  * Only successful calls reach {@link recordToolCallLoopMutation}: the
  * tool_result hook skips `isError` results, and the bash tool throws on
  * non-zero exit, so a genuinely stuck improvisation loop of failing commands
- * (#783) never decays and still trips the cap.
+ * (#783) never decays and still trips the cap. `async_bash` is excluded
+ * because it only registers a background job; command success is reported
+ * later via `await_job`. `bg_shell` may return `isError: false` for failed
+ * `run`/`start` outcomes, so the hook passes `details` for validation.
  */
 const STATE_PROGRESSING_EXEC_TOOL_SET = new Set([
   "bash",
   "bg_shell",
-  "async_bash",
   "shell",
   "powershell",
   "gsd_exec",
   "gsd_uat_exec",
 ]);
+
+function isSuccessfulBgShellLoopProgress(details: unknown): boolean {
+  if (!details || typeof details !== "object") return false;
+  const record = details as Record<string, unknown>;
+  switch (record.action) {
+    case "run":
+      return record.exitCode === 0 && record.timedOut !== true;
+    case "start":
+    case "restart": {
+      const process = record.process;
+      if (!process || typeof process !== "object") return false;
+      return (process as Record<string, unknown>).alive === true;
+    }
+    case "wait_for_ready":
+      return record.ready === true;
+    case "send_and_wait":
+      return record.matched === true;
+    default:
+      return true;
+  }
+}
 
 /**
  * User-tunable configuration shape for the loop guard (#1198).
@@ -328,9 +351,14 @@ export function checkToolCallLoop(
  * only invokes this for non-error results, so failing improvisation loops
  * (#783) never decay and still trip the per-tool cap.
  */
-export function recordToolCallLoopMutation(toolName: string): void {
+export function recordToolCallLoopMutation(toolName: string, details?: unknown): void {
   if (!enabled) return;
-  if (!STATE_MUTATING_TOOL_SET.has(toolName) && !STATE_PROGRESSING_EXEC_TOOL_SET.has(toolName)) return;
+  if (STATE_MUTATING_TOOL_SET.has(toolName)) {
+    mutationEpoch++;
+    return;
+  }
+  if (!STATE_PROGRESSING_EXEC_TOOL_SET.has(toolName)) return;
+  if (toolName === "bg_shell" && details !== undefined && !isSuccessfulBgShellLoopProgress(details)) return;
   mutationEpoch++;
 }
 
