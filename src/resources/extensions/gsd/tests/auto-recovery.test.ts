@@ -330,6 +330,32 @@ test("refreshRecoveryDbForArtifact promotes an open execute-task DB row when art
   );
 });
 
+test("refreshRecoveryDbForArtifact still appends the recovery event when the plan checkbox sync throws after DB promotion (#1221)", () => {
+  const dir = makeTmpProject();
+  insertTask({
+    milestoneId: "M001",
+    sliceId: "S01",
+    id: "T01",
+    title: "Stuck Task",
+    status: "pending",
+  });
+  const sliceDir = join(dir, ".gsd", "milestones", "M001", "slices", "S01");
+  mkdirSync(sliceDir, { recursive: true });
+  // Make the expected plan path a directory so the best-effort checkbox
+  // rewrite (readFileSync) throws EISDIR after the DB row is already promoted.
+  mkdirSync(join(sliceDir, "S01-PLAN.md"), { recursive: true });
+
+  const result = refreshRecoveryDbForArtifact("execute-task", "M001/S01/T01", dir);
+
+  assert.deepEqual(result, { ok: true });
+  assert.equal(getTask("M001", "S01", "T01")?.status, "complete");
+  const events = readEvents(join(dir, ".gsd", "event-log.jsonl"));
+  assert.ok(
+    events.some((e) => e.cmd === "complete-task" && e.trigger_reason === "stuck-artifact-recovery"),
+    "recovery event must still be appended even when the plan checkbox sync fails",
+  );
+});
+
 test("refreshRecoveryDbForArtifact closes complete-milestone DB row when artifacts exist but DB is stale (#5568)", async () => {
   const base = mkdtempSync(join(tmpdir(), "auto-recovery-complete-ms-"));
   mkdirSync(join(base, ".gsd"), { recursive: true });

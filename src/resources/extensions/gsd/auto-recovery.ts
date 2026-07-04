@@ -245,8 +245,22 @@ export function refreshRecoveryDbForArtifact(
     // Mirrors the promotion pattern used by the context-exhaustion and
     // reactive-execute-blocker recovery paths.
     const ts = new Date().toISOString();
+    // Only the DB promotion is load-bearing: if it throws, nothing advanced
+    // and failing shut is correct. The plan checkbox rewrite and cache clears
+    // are best-effort follow-ups — a throw there must NOT abort recovery, or
+    // the DB is left complete without ever emitting the stuck-artifact-recovery
+    // event (#1221), stranding worktree reconciliation.
     try {
       updateTaskStatus(mid, sid, tid, "complete", ts);
+    } catch (e) {
+      return {
+        ok: false,
+        fatal: true,
+        reason: "execute-task-artifact-db-promote-failed",
+        message: `Stuck recovery found execute-task ${unitId} artifacts, but promoting the DB task status from '${task.status}' failed: ${getErrorMessage(e)}`,
+      };
+    }
+    try {
       const artifactBase = resolveArtifactVerificationBase(unitId, basePath);
       const planPath = resolveExpectedArtifactPath("plan-slice", `${mid}/${sid}`, artifactBase);
       if (planPath && existsSync(planPath)) {
@@ -262,12 +276,7 @@ export function refreshRecoveryDbForArtifact(
       clearPathCache();
       clearParseCache();
     } catch (e) {
-      return {
-        ok: false,
-        fatal: true,
-        reason: "execute-task-artifact-db-promote-failed",
-        message: `Stuck recovery found execute-task ${unitId} artifacts, but promoting the DB task status from '${task.status}' failed: ${getErrorMessage(e)}`,
-      };
+      logWarning("recovery", `stuck-artifact plan checkbox sync failed after DB promotion of ${unitId}: ${getErrorMessage(e)}`);
     }
     // Append event so worktree reconciliation can replay this recovery completion.
     try {
