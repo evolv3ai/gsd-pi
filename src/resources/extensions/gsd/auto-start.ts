@@ -1815,7 +1815,7 @@ export async function bootstrapAutoSession(
 
     // Snapshot installed skills
     if (resolveSkillDiscoveryMode(base) !== "off") {
-      snapshotSkills();
+      snapshotSkills({ cwd: base });
     }
 
     setAutoActiveStatus(ctx, s.stepMode ? "next" : "auto");

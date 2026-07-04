@@ -177,6 +177,14 @@ export {
 	type Skill,
 	type SkillFrontmatter,
 } from "./core/skills.js";
+export {
+	collectAncestorAgentsSkillDirs,
+	findGitRepoRoot,
+	getSkillDirectories,
+	type GetSkillDirectoriesOptions,
+	type SkillDirectoryEntry,
+	type SkillDirKind,
+} from "./core/skill-directories.js";
 export { createSyntheticSourceInfo } from "./core/source-info.js";
 // Tools
 export {

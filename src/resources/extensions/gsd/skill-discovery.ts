@@ -9,8 +9,8 @@
  */
 
 import { existsSync, readdirSync, readFileSync, type Dirent } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { getSkillDirectories } from "@gsd/pi-coding-agent";
 import { gsdHome } from "./gsd-home.js";
 import { getInstalledSkills, normalizeSkillName } from "./skills.js";
 
@@ -20,28 +20,47 @@ export interface DiscoveredSkill {
   location: string;
 }
 
-/** Snapshot of normalized skill names at auto-mode start */
-let baselineSkills: Set<string> | null = null;
+/**
+ * Snapshot state. `searchDirs` is captured at snapshot time so every detection
+ * pass during the session scans the same project + user dirs (the bug fix:
+ * previously only user dirs were scanned, so skills installed into the project
+ * mid-session were silently missed).
+ */
+interface SkillSnapshotState {
+  baselineNames: Set<string>;
+  searchDirs: string[];
+}
+
+let snapshot: SkillSnapshotState | null = null;
 
 /**
  * Snapshot the current installed skill catalog. Call at auto-mode start.
+ * `cwd` is the project base path; skills dropped into `<cwd>/.agents/skills/`,
+ * `<cwd>/.claude/skills/`, or `<cwd>/.gsd/skills/` mid-session are detected.
  */
-export function snapshotSkills(): void {
-  baselineSkills = snapshotCurrentSkillNames();
+export function snapshotSkills(options?: { cwd?: string }): void {
+  const searchDirs = getSkillDirectories({
+    cwd: options?.cwd ?? process.cwd(),
+    gsdHome: gsdHome(),
+  }).map((entry) => entry.path);
+  snapshot = {
+    baselineNames: snapshotCurrentSkillNames(),
+    searchDirs,
+  };
 }
 
 /**
  * Clear the snapshot. Call when auto-mode stops.
  */
 export function clearSkillSnapshot(): void {
-  baselineSkills = null;
+  snapshot = null;
 }
 
 /**
  * Check if a snapshot is active (auto-mode is running with discovery).
  */
 export function hasSkillSnapshot(): boolean {
-  return baselineSkills !== null;
+  return snapshot !== null;
 }
 
 /**
@@ -49,12 +68,12 @@ export function hasSkillSnapshot(): boolean {
  * Returns skill metadata for any new skills found in the loader catalog or on disk.
  */
 export function detectNewSkills(): DiscoveredSkill[] {
-  if (!baselineSkills) return [];
+  if (!snapshot) return [];
 
   const newSkills: DiscoveredSkill[] = [];
-  for (const skill of getCurrentSkillsForDiscovery()) {
+  for (const skill of getCurrentSkillsForDiscovery(snapshot.searchDirs)) {
     const normalized = normalizeSkillName(skill.name);
-    if (baselineSkills.has(normalized)) continue;
+    if (snapshot.baselineNames.has(normalized)) continue;
     newSkills.push(skill);
   }
 
@@ -84,7 +103,13 @@ export async function refreshCatalogForNewSkills(options?: {
     }
   }
 
-  snapshotSkills();
+  // Re-snapshot, preserving the search dirs captured at auto-mode start.
+  if (snapshot) {
+    snapshot = {
+      baselineNames: snapshotCurrentSkillNames(),
+      searchDirs: snapshot.searchDirs,
+    };
+  }
   const names = newSkills.map((skill) => skill.name).join(", ");
   options?.notify?.(`GSD: loaded new skills: ${names}`, "info");
   return newSkills;
@@ -132,19 +157,18 @@ function escapeXml(value: string): string {
   });
 }
 
-function skillSearchDirs(): string[] {
-  return [
-    join(gsdHome(), "agent", "skills"),
-    join(homedir(), ".agents", "skills"),
-    join(homedir(), ".claude", "skills"),
-  ];
-}
-
 function snapshotCurrentSkillNames(): Set<string> {
-  return new Set(getCurrentSkillsForDiscovery().map(skill => normalizeSkillName(skill.name)));
+  // Uses the snapshot's search dirs when active; falls back to user-only dirs
+  // (no project context) when called before a snapshot is taken.
+  const searchDirs = snapshot?.searchDirs ?? defaultSearchDirs();
+  return new Set(getCurrentSkillsForDiscovery(searchDirs).map(skill => normalizeSkillName(skill.name)));
 }
 
-function getCurrentSkillsForDiscovery(): DiscoveredSkill[] {
+function defaultSearchDirs(): string[] {
+  return getSkillDirectories({ cwd: process.cwd(), gsdHome: gsdHome() }).map((entry) => entry.path);
+}
+
+function getCurrentSkillsForDiscovery(searchDirs: string[]): DiscoveredSkill[] {
   const skills = new Map<string, DiscoveredSkill>();
   for (const skill of getInstalledSkills()) {
     const normalized = normalizeSkillName(skill.name);
@@ -155,7 +179,7 @@ function getCurrentSkillsForDiscovery(): DiscoveredSkill[] {
     });
   }
 
-  for (const skill of getDiskSkills()) {
+  for (const skill of getDiskSkills(searchDirs)) {
     const normalized = normalizeSkillName(skill.name);
     if (!skills.has(normalized)) skills.set(normalized, skill);
   }
@@ -163,9 +187,9 @@ function getCurrentSkillsForDiscovery(): DiscoveredSkill[] {
   return [...skills.values()];
 }
 
-function getDiskSkills(): DiscoveredSkill[] {
+function getDiskSkills(searchDirs: string[]): DiscoveredSkill[] {
   const skills = new Map<string, DiscoveredSkill>();
-  for (const dir of skillSearchDirs()) {
+  for (const dir of searchDirs) {
     if (!existsSync(dir)) continue;
     let entries: Dirent[];
     try {
