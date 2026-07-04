@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { parsePlanf3Html } from "./planf3-html-parser.js";
+import { GSD_MODEL_PHASE_KEYS as NATIVE_KEYS } from "../../gsd/preferences-types.js";
+import { GSD_MODEL_PHASE_KEYS } from "./types.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const minimal = readFileSync(join(here, "..", "fixtures", "minimal-plan.html"), "utf8");
@@ -123,5 +125,11 @@ describe("parsePlanf3Html — real fixture smoke", () => {
       assert.equal(phase.tier, null);
     }
     assert.deepEqual(plan.modelPolicy, {});
+  });
+});
+
+describe("bucket-key parity", () => {
+  test("GSD_MODEL_PHASE_KEYS matches the authoritative keys from gsd/preferences-types", () => {
+    assert.deepEqual([...GSD_MODEL_PHASE_KEYS], [...NATIVE_KEYS]);
   });
 });

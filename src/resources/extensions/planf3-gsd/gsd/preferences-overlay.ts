@@ -64,7 +64,7 @@ export function mergePreferences(existing: string | null, input: OverlayInput): 
   const existingCommands = Array.isArray(frontmatter.verification_commands)
     ? (frontmatter.verification_commands as unknown[]).filter((c): c is string => typeof c === "string")
     : [];
-  const appliedCommands = input.verificationCommands.filter((c) => !existingCommands.includes(c));
+  const appliedCommands = [...new Set(input.verificationCommands)].filter((c) => !existingCommands.includes(c));
   const commands = [...existingCommands, ...appliedCommands];
 
   const fm: Record<string, unknown> = { ...frontmatter };

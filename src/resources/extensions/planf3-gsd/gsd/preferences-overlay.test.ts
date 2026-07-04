@@ -122,6 +122,16 @@ describe("mergePreferences", () => {
       /missing its closing/,
     );
   });
+
+  test("dedupes verification commands within the input before applying", () => {
+    const result = mergePreferences(null, {
+      ...INPUT,
+      verificationCommands: ["pnpm test", "pnpm test", "pnpm run lint"],
+    });
+    assert.deepEqual(result.appliedCommands, ["pnpm test", "pnpm run lint"]);
+    const fm = frontmatterOf(result.content);
+    assert.deepEqual(fm.verification_commands, ["pnpm test", "pnpm run lint"]);
+  });
 });
 
 describe("applyPreferencesOverlay", () => {
