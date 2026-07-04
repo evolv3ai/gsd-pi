@@ -9,14 +9,20 @@ export function registerBuildCommand(pi: ExtensionAPI): void {
       const tokens = args.trim().split(/\s+/).filter(Boolean);
       const htmlPath = tokens[0];
       const auto = tokens.includes("--auto");
+      const applyPrefs = !tokens.includes("--no-prefs");
       if (!htmlPath) {
-        ctx.ui.notify("Usage: /planf3-gsd-build <path-to-plan.html> [--auto]", "error");
+        ctx.ui.notify("Usage: /planf3-gsd-build <path-to-plan.html> [--auto] [--no-prefs]", "error");
         return;
       }
       try {
-        const result = await runBuild(htmlPath, { auto });
+        const result = await runBuild(htmlPath, { auto, applyPrefs });
+        const prefsLine = result.prefs.warning
+          ? `prefs=skipped (${result.prefs.warning})`
+          : result.prefs.applied
+            ? `prefs=updated .gsd/PREFERENCES.md (models: ${result.prefs.models.join(", ") || "none"}; +${result.prefs.commands.length} verification commands)`
+            : "prefs=no changes";
         ctx.ui.notify(
-          `Built milestone ${result.milestoneId ?? "(unknown id)"}\nphase=${result.status.phase}\nspec=${result.specPath}\nmanifest=${result.manifestPath}`,
+          `Built milestone ${result.milestoneId ?? "(unknown id)"}\nphase=${result.status.phase}\n${prefsLine}\nspec=${result.specPath}\nmanifest=${result.manifestPath}`,
           "info",
         );
       } catch (err) {

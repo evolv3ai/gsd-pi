@@ -4,12 +4,15 @@ import { parsePlanf3Html } from "../parser/planf3-html-parser.js";
 import { exportGsdSpec } from "../export/gsd-spec-exporter.js";
 import { buildManifest } from "../export/manifest-exporter.js";
 import { friendlyError } from "./error-message.js";
+import type { GsdModelPhaseKey } from "../parser/types.js";
 
 export interface ExportResult {
   specPath: string;
   manifestPath: string;
   phaseCount: number;
   taskCount: number;
+  modelPolicy: Partial<Record<GsdModelPhaseKey, string>>;
+  validationCommands: string[];
 }
 
 export interface ExportOptions {
@@ -52,5 +55,12 @@ export async function runExport(htmlPath: string, opts: ExportOptions = {}): Pro
   await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
 
   const taskCount = plan.phases.reduce((acc, p) => acc + p.tasks.length, 0);
-  return { specPath, manifestPath, phaseCount: plan.phases.length, taskCount };
+  return {
+    specPath,
+    manifestPath,
+    phaseCount: plan.phases.length,
+    taskCount,
+    modelPolicy: plan.modelPolicy,
+    validationCommands: plan.validationCommands,
+  };
 }

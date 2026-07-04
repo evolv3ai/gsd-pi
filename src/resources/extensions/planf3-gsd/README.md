@@ -232,3 +232,22 @@ for the full PRD coverage map:
 - **Implementation plan + PRD coverage map:** `~/dev/planf3-gsd/docs/superpowers/plans/2026-06-22-planf3-gsd-mvp.md`
 - **SDD ledger + per-task reports:** `gsd-pi/.superpowers/sdd/`
 - **Compatibility / monitoring brief:** `~/dev/gsd-pi/CLAUDE.md` (Pointers → planf3-gsd entry, plus the dated smoke entry in Current state)
+
+## Model routing (v0.2.0)
+
+Planf3 plans may carry routing directives; the bridge enforces them at build time:
+
+- **Model Policy** (`<section id="model-policy">` in the plan): maps gsd model phase
+  buckets (research, planning, discuss, execution, execution_simple, completion,
+  validation, subagent, uat) to model IDs. Merged into `.gsd/PREFERENCES.md`
+  `models:` before the milestone is created. Plan wins per-bucket; all other
+  preference keys and the markdown body are preserved.
+- **Tier chips** (`<code class="tier">[mechanical|standard|complex]</code>` on phase
+  `<h3>`/task `<h4>`): advisory hints rendered into the exported spec and recorded in
+  the manifest (`mapping.phases[].tier`, `tasks[].tier`) for future per-unit routing.
+- **Validation commands**: the plan's global validation checklist is unioned into
+  `verification_commands` in `.gsd/PREFERENCES.md`, so GSD executes them as gates.
+- **Eval log**: every build appends a JSON line to `.gsd/planf3-gsd-evals.jsonl`
+  (phase, cost, progress, blockers, applied models).
+
+Skip all preference writes with `/planf3-gsd-build <plan.html> --no-prefs`.
