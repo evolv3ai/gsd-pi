@@ -2,6 +2,21 @@ export type PlanStatus = "todo" | "wip" | "done" | "failed";
 
 export type PlanTier = "mechanical" | "standard" | "complex";
 
+/** gsd-pi's nine model-routing phase buckets (preferences-types.ts GSD_MODEL_PHASE_KEYS). */
+export const GSD_MODEL_PHASE_KEYS = [
+  "research",
+  "planning",
+  "discuss",
+  "execution",
+  "execution_simple",
+  "completion",
+  "validation",
+  "subagent",
+  "uat",
+] as const;
+
+export type GsdModelPhaseKey = (typeof GSD_MODEL_PHASE_KEYS)[number];
+
 export const TIER_FROM_MARKER: Record<string, PlanTier> = {
   "[mechanical]": "mechanical",
   "[standard]": "standard",
@@ -65,6 +80,7 @@ export interface ParsedPlan {
   notes: string;
   amendments: PlanAmendment[];
   openDecisions: string[];
+  modelPolicy: Partial<Record<GsdModelPhaseKey, string>>;
 }
 
 export const STATUS_FROM_MARKER: Record<string, PlanStatus> = {

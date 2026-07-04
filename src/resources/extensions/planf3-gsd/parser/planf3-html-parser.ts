@@ -1,6 +1,6 @@
 import { parse, type HTMLElement } from "node-html-parser";
-import type { ParsedPlan, PlanMetadata, PlanFile, PlanPhase, PlanTask, PlanChecklistItem, PlanAmendment, PlanStatus, PlanTier } from "./types.js";
-import { STATUS_FROM_MARKER, TIER_FROM_MARKER } from "./types.js";
+import type { ParsedPlan, PlanMetadata, PlanFile, PlanPhase, PlanTask, PlanChecklistItem, PlanAmendment, PlanStatus, PlanTier, GsdModelPhaseKey } from "./types.js";
+import { STATUS_FROM_MARKER, TIER_FROM_MARKER, GSD_MODEL_PHASE_KEYS } from "./types.js";
 
 const EMPTY_METADATA: PlanMetadata = {
   created: null,
@@ -163,6 +163,26 @@ function parseOpenDecisions(root: HTMLElement): string[] {
   );
 }
 
+function parseModelPolicy(root: HTMLElement): Partial<Record<GsdModelPhaseKey, string>> {
+  const dl = root.querySelector("section#model-policy dl");
+  if (!dl) return {};
+  const policy: Partial<Record<GsdModelPhaseKey, string>> = {};
+  const children = dl.childNodes.filter((n) => n.nodeType === 1) as HTMLElement[];
+  for (let i = 0; i < children.length - 1; i++) {
+    const dt = children[i];
+    const dd = children[i + 1];
+    if (dt.tagName === "DT" && dd.tagName === "DD") {
+      const key = dt.text.trim().toLowerCase();
+      const value = dd.text.trim();
+      if ((GSD_MODEL_PHASE_KEYS as readonly string[]).includes(key) && value && value !== "—") {
+        policy[key as GsdModelPhaseKey] = value;
+      }
+      i++;
+    }
+  }
+  return policy;
+}
+
 export function parsePlanf3Html(html: string): ParsedPlan {
   const root = parse(html);
   const title = root.querySelector("header h1")?.text.trim() ?? "";
@@ -181,5 +201,6 @@ export function parsePlanf3Html(html: string): ParsedPlan {
     notes: sectionText(root, "notes"),
     amendments: parseAmendments(root),
     openDecisions: parseOpenDecisions(root),
+    modelPolicy: parseModelPolicy(root),
   };
 }

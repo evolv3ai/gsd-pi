@@ -101,6 +101,16 @@ describe("parsePlanf3Html — phases", () => {
   });
 });
 
+describe("parsePlanf3Html — model policy", () => {
+  test("extracts known gsd bucket keys and drops unknown ones", () => {
+    const plan = parsePlanf3Html(minimal);
+    assert.deepEqual(plan.modelPolicy, {
+      planning: "openrouter/anthropic/claude-opus-4.7",
+      execution: "openrouter/x-ai/grok-code-fast-1",
+    });
+  });
+});
+
 describe("parsePlanf3Html — real fixture smoke", () => {
   test("does not throw on pi-iroh-coms-net.html and finds 4 phases", () => {
     const real = readFileSync(join(here, "..", "fixtures", "pi-iroh-coms-net.html"), "utf8");
@@ -112,5 +122,6 @@ describe("parsePlanf3Html — real fixture smoke", () => {
       assert.ok(phase.title.length > 0);
       assert.equal(phase.tier, null);
     }
+    assert.deepEqual(plan.modelPolicy, {});
   });
 });
