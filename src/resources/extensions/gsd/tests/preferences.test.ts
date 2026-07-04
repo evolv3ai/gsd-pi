@@ -24,6 +24,7 @@ import {
   loadProjectGSDPreferences,
   parsePreferencesMarkdown,
   renderPreferencesForSystemPrompt,
+  renderLanguageDirectiveForPrompt,
   clearGSDPreferencesCache,
   _resetParseWarningFlag,
 } from "../preferences.ts";
@@ -1672,6 +1673,24 @@ test("language: renderPreferencesForSystemPrompt includes language instruction w
 test("language: renderPreferencesForSystemPrompt omits language line when not set", () => {
   const output = renderPreferencesForSystemPrompt({});
   assert.ok(!output.includes("Always respond in"), `expected no language line in output, got:\n${output}`);
+});
+
+test("language: renderLanguageDirectiveForPrompt emits directive when language set", () => {
+  const output = renderLanguageDirectiveForPrompt({ language: "Chinese" });
+  assert.ok(output.includes("## Response Language"), `expected language heading, got:\n${output}`);
+  assert.ok(output.includes("Always respond in Chinese"), `expected language instruction, got:\n${output}`);
+});
+
+test("language: renderLanguageDirectiveForPrompt returns empty when language unset", () => {
+  assert.equal(renderLanguageDirectiveForPrompt({}), "");
+  assert.equal(renderLanguageDirectiveForPrompt(undefined), "");
+});
+
+test("language: renderLanguageDirectiveForPrompt sanitizes newlines and caps length", () => {
+  const output = renderLanguageDirectiveForPrompt({ language: `Chinese\ninjected${"x".repeat(80)}` });
+  assert.ok(!output.includes("\ninjected"), `expected newlines stripped, got:\n${output}`);
+  // "Chinese injected" + padding, capped to 50 chars after newline replacement.
+  assert.ok(output.includes("Always respond in Chinese injected"), `got:\n${output}`);
 });
 
 test("language: parses from markdown frontmatter", () => {
