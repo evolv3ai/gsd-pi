@@ -675,10 +675,16 @@ export function ensureCodebaseMapFresh(
 
   const metadata = parseCodebaseMapMetadata(existing);
   const existingDescriptions = parseCodebaseMap(existing);
+  // Compare against the truncated count: when the repository has more tracked
+  // files than maxFiles, the map only lists the first maxFiles entries, so a
+  // stored fileCount above the cap (e.g. from an older map that recorded the
+  // full count) still matches the current truncated listing. Comparing raw
+  // values would flag "file-count-changed" on every turn, rewriting the
+  // timestamp and invalidating the provider KV cache prefix.
   const staleReason =
     !metadata ? "missing-metadata"
     : metadata.fingerprint !== fingerprint ? "files-changed"
-    : metadata.fileCount !== listed.files.length ? "file-count-changed"
+    : Math.min(metadata.fileCount, resolved.maxFiles) !== listed.files.length ? "file-count-changed"
     : metadata.truncated !== listed.truncated ? "truncation-changed"
     : undefined;
 

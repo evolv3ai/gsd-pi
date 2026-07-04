@@ -27,7 +27,7 @@ import {
   buildRunUatPrompt,
   buildReplanSlicePrompt,
 } from "./auto-prompts.js";
-import { loadEffectiveGSDPreferences } from "./preferences.js";
+import { loadEffectiveGSDPreferences, renderLanguageDirectiveForPrompt } from "./preferences.js";
 import type { MinimalModelRegistry } from "./context-budget.js";
 import { pauseAuto } from "./auto.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
@@ -286,8 +286,15 @@ export async function dispatchDirectPhase(
     ctx.ui.notify("Session creation cancelled.", "warning");
     return;
   }
+  // Inject the configured response language into the dispatched prompt content
+  // — the new session's system prompt does not carry the preferences block, so
+  // the language setting would otherwise never reach the unit (#1210).
+  const languageDirective = renderLanguageDirectiveForPrompt(
+    loadEffectiveGSDPreferences(dispatchBase)?.preferences,
+  );
+  const dispatchContent = languageDirective ? `${languageDirective}\n\n${prompt}` : prompt;
   pi.sendMessage(
-    { customType: "gsd-dispatch", content: prompt, display: false },
+    { customType: "gsd-dispatch", content: dispatchContent, display: false },
     { triggerTurn: true },
   );
 }

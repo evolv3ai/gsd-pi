@@ -109,6 +109,33 @@ test("migrateToFlatPhase creates a backup", async () => {
   assert.ok(backups.length >= 1, "at least one migrate-* backup dir should exist");
 });
 
+test("failed migration rolls back without leaking a .gsd-backups/migrate-* dir", async (t) => {
+  const base = makeTmp();
+  const milestonesPath = join(base, ".gsd", "milestones");
+  const phasesPath = join(base, ".gsd", "phases");
+
+  // Fail the pre-render clear of phases/ to drive the rollback path, which by
+  // this point has already created the .gsd-backups/migrate-<ts>/ backup.
+  const restoreFsOps = _setFlatPhaseMigrationFsOpsForTest({
+    rmSync(target, opts) {
+      if (target === phasesPath) {
+        throw Object.assign(new Error("simulated locked phases/"), { code: "EPERM" });
+      }
+      return rmSync(target, opts as never);
+    },
+  });
+  t.after(restoreFsOps);
+
+  await assert.rejects(migrateToFlatPhase(base), /simulated locked/);
+
+  assert.ok(existsSync(milestonesPath), "legacy milestones/ should be restored on rollback");
+  const backupRoot = join(base, ".gsd-backups");
+  const leaked = existsSync(backupRoot)
+    ? readdirSync(backupRoot).filter((d) => d.startsWith("migrate-"))
+    : [];
+  assert.equal(leaked.length, 0, "rollback must delete the migrate-* backup it created");
+});
+
 test("migrateToFlatPhase preserves milestone/slice/task counts in DB", async () => {
   const base = makeTmp();
   const msBefore = getAllMilestones().length;

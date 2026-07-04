@@ -253,6 +253,99 @@ console.log('\n── Loop guard: mutation progress decays per-tool counts (#109
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Successful shell/exec progress decays per-tool counts (#1206)
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Loop guard: successful shell/exec progress decays per-tool counts (#1206) ──');
+
+{
+  // A local model debugging a UAT scenario runs many varied bg_shell /
+  // gsd_uat_exec calls (restart server, npm install, curl an endpoint). Each
+  // successful call is state progression, so Guard 2 must decay and never
+  // block the productive turn — even past the repeatable cap.
+  for (const execTool of ['bg_shell', 'gsd_uat_exec', 'bash', 'gsd_exec']) {
+    resetToolCallLoopGuard();
+
+    for (let i = 1; i <= 20; i++) {
+      const result = checkToolCallLoop(execTool, { command: `step ${i}` });
+      assert.ok(result.block === false, `${execTool} call ${i} after exec progress should be allowed`);
+      assert.deepStrictEqual(getToolCallCountForTool(execTool), 1, `${execTool} count should decay before call ${i}`);
+
+      // A successful (non-error) exec call records progress, like a file mutation.
+      recordToolCallLoopMutation(execTool);
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Failing exec loops still trip the per-tool cap (#783 vs #1206)
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Loop guard: failing exec loop (no progress recorded) still trips the cap (#783) ──');
+
+{
+  resetToolCallLoopGuard();
+
+  // The improvisation loop from #783: the model retries a missing tool through
+  // varied bash commands. Those fail (non-zero exit → isError), so the caller
+  // never records progress and the per-tool cap must still trip.
+  for (let i = 1; i <= 15; i++) {
+    const result = checkToolCallLoop('bash', { command: `try-missing-tool ${i}` });
+    assert.ok(result.block === false, `failing bash call ${i} should be allowed up to the cap`);
+    // No recordToolCallLoopMutation — the command errored.
+  }
+  const blocked = checkToolCallLoop('bash', { command: 'try-missing-tool 16' });
+  assert.ok(blocked.block === true, '16th failing bash call should be blocked by the per-tool cap');
+  assert.ok(blocked.reason?.includes('repeated tool'), 'reason should identify the per-tool guard');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// bg_shell/async_bash false-success must not decay the per-tool cap (#783)
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Loop guard: bg_shell failed run/start does not decay the cap (#783) ──');
+
+{
+  resetToolCallLoopGuard();
+
+  for (let i = 1; i <= 15; i++) {
+    const result = checkToolCallLoop('bg_shell', { action: 'run', command: `try-missing-tool ${i}` });
+    assert.ok(result.block === false, `failing bg_shell run ${i} should be allowed up to the cap`);
+    recordToolCallLoopMutation('bg_shell', { action: 'run', exitCode: 1, timedOut: false });
+  }
+  const blocked = checkToolCallLoop('bg_shell', { action: 'run', command: 'try-missing-tool 16' });
+  assert.ok(blocked.block === true, '16th failing bg_shell run should be blocked by the per-tool cap');
+}
+
+{
+  resetToolCallLoopGuard();
+
+  for (let i = 1; i <= 15; i++) {
+    checkToolCallLoop('bg_shell', { action: 'start', command: `bad-server ${i}` });
+    recordToolCallLoopMutation('bg_shell', {
+      action: 'start',
+      process: { alive: false, exitCode: 1 },
+    });
+  }
+  const blocked = checkToolCallLoop('bg_shell', { action: 'start', command: 'bad-server 16' });
+  assert.ok(blocked.block === true, '16th dead bg_shell start should be blocked by the per-tool cap');
+}
+
+console.log('\n── Loop guard: async_bash job registration does not decay the cap (#783) ──');
+
+{
+  resetToolCallLoopGuard();
+
+  for (let i = 1; i <= 6; i++) {
+    const result = checkToolCallLoop('async_bash', { command: `try-missing-tool ${i}` });
+    assert.ok(result.block === false, `async_bash call ${i} should be allowed up to the cap`);
+    recordToolCallLoopMutation('async_bash');
+  }
+  const blocked = checkToolCallLoop('async_bash', { command: 'try-missing-tool 7' });
+  assert.ok(blocked.block === true, '7th async_bash call should be blocked by the per-tool cap');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Distinct read-only navigation calls are context gathering, not repeated-tool loops.
 // ═══════════════════════════════════════════════════════════════════════════
 

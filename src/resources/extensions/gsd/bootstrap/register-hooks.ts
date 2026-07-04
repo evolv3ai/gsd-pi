@@ -1725,7 +1725,7 @@ export function registerHooks(
       }
     }
     if (!event.isError) {
-      recordToolCallLoopMutation(toolName);
+      recordToolCallLoopMutation(toolName, event.details);
       refreshSourceObservationAfterMutation(toolName, event.input, ctx);
       clearSourceObservationsAfterShell(toolName);
     }

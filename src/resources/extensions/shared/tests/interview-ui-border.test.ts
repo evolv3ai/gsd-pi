@@ -16,6 +16,8 @@ import {
 const ANSI_PATTERN = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
 const ENTER = "\r";
 const ESC = "\x1b";
+const PAGE_DOWN = "\x1b[6~";
+const PAGE_UP = "\x1b[5~";
 
 before(() => { initTheme(); });
 
@@ -159,5 +161,35 @@ describe("interview-ui dialog borders", () => {
 	it("renders the wrap-up screen with a full border", async () => {
 		const widget = await captureWrapUpWidget();
 		assertFullOuterBorder(widget.render(80), 80);
+	});
+
+	it("makes an overflowing preview scrollable with PgUp/PgDn", async () => {
+		const longPreview = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`).join("\n");
+		const widget = await captureInterviewWidget([{
+			...questions[0],
+			options: [
+				{ label: "Web App", description: "Frontend or full-stack", preview: longPreview },
+			],
+		}]);
+
+		// Initial render: content overflows, so a bottom "more" indicator and the
+		// scroll hint are shown, and the border stays intact.
+		const initial = stripAnsi(widget.render(100).join("\n"));
+		assertFullOuterBorder(widget.render(100), 100);
+		assert.match(initial, /▼ \d+ more/, "bottom scroll indicator should appear when preview overflows");
+		assert.match(initial, /pgup\/pgdn scroll preview/, "footer should hint at preview scrolling");
+		assert.doesNotMatch(initial, /▲ \d+ more/, "top indicator should be absent before scrolling");
+
+		// Scroll down: content below is now revealed and a top indicator appears.
+		widget.handleInput(PAGE_DOWN);
+		const scrolled = stripAnsi(widget.render(100).join("\n"));
+		assertFullOuterBorder(widget.render(100), 100);
+		assert.match(scrolled, /▲ \d+ more/, "top scroll indicator should appear after scrolling down");
+		assert.ok(scrolled !== initial, "scrolling should change the rendered preview");
+
+		// Scroll back up returns to the original view.
+		widget.handleInput(PAGE_UP);
+		const back = stripAnsi(widget.render(100).join("\n"));
+		assert.doesNotMatch(back, /▲ \d+ more/, "top indicator should disappear after scrolling back to top");
 	});
 });

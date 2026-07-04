@@ -360,6 +360,95 @@ test("canonical worktree + project-root legacy dir produces legacy filename (#bu
   }
 });
 
+// ── #1208: flat-phase execute-task summaries resolve at the phase root ────────
+//
+// In flat-phase layout task summaries are written beside the plan files
+// (phases/<phase>/T##-SUMMARY.md), NOT under a tasks/ subdir. A tasks/ dir may
+// still exist to hold auxiliary task-scoped gate artifacts (e.g. T01-VERIFY.json).
+// Before the fix, the mere existence of that tasks/ dir redirected summary
+// verification into tasks/T##-SUMMARY.md — which never exists — trapping auto-mode
+// in a false verification retry that eventually paused after a successful task.
+
+test("flat-phase execute-task summary resolves at phase root when no tasks/ dir exists (#1208)", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "gsd-flat-task-summary-")));
+  try {
+    const gsd = join(root, ".gsd");
+    const phaseDir = join(gsd, "phases", "49-end-to-end-mandates");
+    mkdirSync(phaseDir, { recursive: true });
+    writeFileSync(join(phaseDir, "49-03-PLAN.md"), "# plan\n- [x] T02\n");
+
+    _clearGsdRootCache();
+    clearPathCache();
+
+    assert.equal(
+      resolveExpectedArtifactPath("execute-task", "M049/S03/T02", root),
+      join(phaseDir, "T02-SUMMARY.md"),
+    );
+  } finally {
+    _clearGsdRootCache();
+    clearPathCache();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("flat-phase execute-task summary resolves at phase root even when tasks/ dir holds gate artifacts (#1208)", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "gsd-flat-task-tasksdir-")));
+  try {
+    const gsd = join(root, ".gsd");
+    const phaseDir = join(gsd, "phases", "49-end-to-end-mandates");
+    mkdirSync(phaseDir, { recursive: true });
+    writeFileSync(join(phaseDir, "49-03-PLAN.md"), "# plan\n- [x] T02\n");
+    // Auxiliary task-scoped gate artifact — creates the tasks/ dir but must not
+    // redirect the T02 summary into tasks/.
+    const tasksDir = join(phaseDir, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeFileSync(join(tasksDir, "T01-VERIFY.json"), '{"ok":true}');
+
+    _clearGsdRootCache();
+    clearPathCache();
+
+    const resolved = resolveExpectedArtifactPath("execute-task", "M049/S03/T02", root);
+    assert.equal(
+      resolved,
+      join(phaseDir, "T02-SUMMARY.md"),
+      "flat-phase task summary must resolve at the phase root, not tasks/",
+    );
+    assert.notEqual(
+      resolved,
+      join(tasksDir, "T02-SUMMARY.md"),
+      "a tasks/ dir with gate artifacts must NOT redirect summary resolution into tasks/",
+    );
+  } finally {
+    _clearGsdRootCache();
+    clearPathCache();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("legacy execute-task summary still resolves under slices/<SID>/tasks/ (#1208 regression guard)", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "gsd-legacy-task-summary-")));
+  try {
+    const milestoneDir = join(root, ".gsd", "milestones", "M001");
+    const sliceDir = join(milestoneDir, "slices", "S01");
+    const tasksDir = join(sliceDir, "tasks");
+    mkdirSync(tasksDir, { recursive: true });
+    writeFileSync(join(milestoneDir, "M001-CONTEXT.md"), "# context\n");
+    writeFileSync(join(sliceDir, "S01-PLAN.md"), "# plan\n");
+
+    _clearGsdRootCache();
+    clearPathCache();
+
+    assert.equal(
+      resolveExpectedArtifactPath("execute-task", "M001/S01/T02", root),
+      join(tasksDir, "T02-SUMMARY.md"),
+    );
+  } finally {
+    _clearGsdRootCache();
+    clearPathCache();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // ── resolveSliceResearchLocation / resolveExistingSliceResearchPath ───────────
 //
 // Added in the code-quality consolidation PR as the shared dual-path resolver

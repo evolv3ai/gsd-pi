@@ -289,7 +289,7 @@ export default function AskUserQuestions(pi: ExtensionAPI) {
 			"For single-select: each question must have 2-3 options. Put the recommended option first with '(Recommended)' suffix. Do not include an 'Other' or 'None of the above' option - the client adds one automatically.",
 			"For multi-select: set allowMultiple: true. The user can pick any number of options. No 'None of the above' is added.",
 			"When options involve code patterns, config choices, or architecture decisions, add a 'preview' field with markdown content (code blocks, lists, headers, etc.). The preview renders in a side-by-side panel when the option is highlighted.",
-			"Preview content is rendered in a fixed-height panel (max ~20 lines visible). Keep previews concise — show the most relevant snippet, not exhaustive examples. Longer content is truncated with a '+N lines hidden' indicator.",
+			"Preview content is rendered in a fixed-height panel (max ~20 lines visible). Keep previews concise — show the most relevant snippet, not exhaustive examples. Longer content stays fully accessible: the user scrolls it with PgUp/PgDn, with '▲/▼ N more' indicators marking hidden rows.",
 		],
 		parameters: AskUserQuestionsParams,
 

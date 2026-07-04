@@ -244,6 +244,14 @@ export async function showInterviewRound(
 		let completed = false;
 		let removeAbortListener: (() => void) | undefined;
 
+		// Preview-panel scrolling. previewScroll is the first visible line of the
+		// side-by-side preview column; the viewport/total are captured on each
+		// render so PgUp/PgDn input can clamp against real bounds.
+		let previewScroll = 0;
+		let previewViewport = 0;
+		let previewTotal = 0;
+		function resetPreviewScroll() { previewScroll = 0; }
+
 		function finish(result: RoundResult) {
 			if (completed) return;
 			completed = true;
@@ -309,6 +317,7 @@ export async function showInterviewRound(
 			if (newIdx === currentIdx) return;
 			saveEditorToState();
 			currentIdx = newIdx;
+			resetPreviewScroll();
 			loadStateToEditor();
 			focusNotes = states[currentIdx].notesVisible && states[currentIdx].notes.length > 0;
 			refresh();
@@ -455,9 +464,20 @@ export async function showInterviewRound(
 				if (matchesKey(data, Key.right)) { switchQuestion((currentIdx + 1) % questions.length); return; }
 			}
 
+			// ── Preview scrolling ────────────────────────────────────────
+			if (matchesKey(data, Key.pageUp)) {
+				if (previewScroll > 0) { previewScroll = Math.max(0, previewScroll - previewViewport); refresh(); }
+				return;
+			}
+			if (matchesKey(data, Key.pageDown)) {
+				const maxScroll = Math.max(0, previewTotal - previewViewport);
+				if (previewScroll < maxScroll) { previewScroll = Math.min(maxScroll, previewScroll + previewViewport); refresh(); }
+				return;
+			}
+
 			// ── Cursor navigation ────────────────────────────────────────
-			if (matchesKey(data, Key.up)) { st.cursorIndex = (st.cursorIndex - 1 + optCount) % optCount; refresh(); return; }
-			if (matchesKey(data, Key.down)) { st.cursorIndex = (st.cursorIndex + 1) % optCount; refresh(); return; }
+			if (matchesKey(data, Key.up)) { st.cursorIndex = (st.cursorIndex - 1 + optCount) % optCount; resetPreviewScroll(); refresh(); return; }
+			if (matchesKey(data, Key.down)) { st.cursorIndex = (st.cursorIndex + 1) % optCount; resetPreviewScroll(); refresh(); return; }
 
 			if (multiSel) {
 				const doneI = noneOrDoneIdx(currentIdx);
@@ -561,6 +581,12 @@ export async function showInterviewRound(
 		}
 
 		// ── Preview helpers ──────────────────────────────────────────────
+
+		// Centered dim label between horizontal rules, used to mark hidden/scrollable rows.
+		function scrollIndicator(lbl: string, colWidth: number): string {
+			const d = "─".repeat(Math.max(0, Math.floor((colWidth - lbl.length - 2) / 2)));
+			return truncateToWidth(theme.fg("dim", ` ${d} ${lbl} ${d}`), colWidth);
+		}
 
 		let mdThemeCache: ReturnType<typeof getMarkdownTheme> | null = null;
 		let previewCache: { markdown: string; width: number; lines: string[] } | null = null;
@@ -666,6 +692,10 @@ export async function showInterviewRound(
 			const useSideBySide = questionHasAnyPreview()
 				&& contentWidth >= (MIN_OPTIONS_WIDTH + MIN_PREVIEW_WIDTH + DIVIDER_WIDTH);
 
+			// No scrollable preview unless the side-by-side path sets these below.
+			previewTotal = 0;
+			previewViewport = 0;
+
 			if (useSideBySide) {
 				// ── Preview path ──────────────────────────────────────
 				const ui = makeUI(theme, contentWidth);
@@ -707,19 +737,35 @@ export async function showInterviewRound(
 				const leftLines = fullLeft.slice(0, maxBody);
 				if (fullLeft.length > maxBody) {
 					const n = fullLeft.length - maxBody + 1;
-					const lbl = `+${n} lines hidden`;
-					const d = "─".repeat(Math.max(0, Math.floor((leftWidth - lbl.length - 2) / 2)));
-					leftLines[maxBody - 1] = truncateToWidth(theme.fg("dim", ` ${d} ${lbl} ${d}`), leftWidth);
+					leftLines[maxBody - 1] = scrollIndicator(`+${n} lines hidden`, leftWidth);
 				}
 
 				const preview = getCurrentPreview();
 				const fullRight = preview ? renderPreviewColumn(preview, previewWidth) : [];
-				const rightLines = fullRight.slice(0, maxBody);
-				if (fullRight.length > maxBody) {
-					const n = fullRight.length - maxBody + 1;
-					const lbl = `+${n} lines hidden`;
-					const d = "─".repeat(Math.max(0, Math.floor((previewWidth - lbl.length - 2) / 2)));
-					rightLines[maxBody - 1] = truncateToWidth(theme.fg("dim", ` ${d} ${lbl} ${d}`), previewWidth);
+				// The first two lines are the pinned "Preview" header; the body
+				// below them scrolls via PgUp/PgDn so no content is unreachable.
+				const headerRows = fullRight.length > 0 ? 2 : 0;
+				const previewBody = fullRight.slice(headerRows);
+				const bodyViewport = Math.max(1, maxBody - headerRows);
+				previewTotal = previewBody.length;
+				previewViewport = bodyViewport;
+				const maxScroll = Math.max(0, previewBody.length - bodyViewport);
+				if (previewScroll > maxScroll) previewScroll = maxScroll;
+
+				const rightLines = fullRight.slice(0, headerRows);
+				if (previewBody.length <= bodyViewport) {
+					rightLines.push(...previewBody);
+				} else {
+					rightLines.push(...previewBody.slice(previewScroll, previewScroll + bodyViewport));
+					const hiddenAbove = previewScroll;
+					const hiddenBelow = previewBody.length - (previewScroll + bodyViewport);
+					// Overwrite the top/bottom visible rows with scroll indicators.
+					if (hiddenAbove > 0) {
+						rightLines[headerRows] = scrollIndicator(`▲ ${hiddenAbove} more`, previewWidth);
+					}
+					if (hiddenBelow > 0) {
+						rightLines[rightLines.length - 1] = scrollIndicator(`▼ ${hiddenBelow} more · PgUp/PgDn`, previewWidth);
+					}
 				}
 
 				while (leftLines.length < maxBody) leftLines.push("");
@@ -744,6 +790,7 @@ export async function showInterviewRound(
 					if (isMultiQuestion) hints.push("←/→ navigate");
 					hints.push(isLast && allAnswered() ? "enter to review" : "enter to next");
 				}
+				if (previewTotal > previewViewport) hints.push("pgup/pgdn scroll preview");
 				hints.push("esc to exit");
 				const footer = ui.hints(hints)[0] ?? "";
 

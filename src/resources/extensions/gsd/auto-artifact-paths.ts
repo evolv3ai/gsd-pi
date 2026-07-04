@@ -22,7 +22,7 @@ import {
 } from "./paths.js";
 import { milestoneIdToPhaseNum } from "./layout-policy.js";
 import { parseUnitId } from "./unit-id.js";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { existsSync } from "node:fs";
 
 function resolveMilestoneArtifactPath(
@@ -221,8 +221,17 @@ export function resolveExpectedArtifactPath(
         ?? resolveProjectSlicePath(base, mid, sid!)
         ?? resolveSlicePath(base, mid, sid!);
       if (!slicePath || !tid) return null;
-      const tasksDir = resolveTasksDir(base, mid, sid!) ?? slicePath;
-      return join(tasksDir, buildTaskFileName(tid, "SUMMARY"));
+      // Legacy layout: slice dirs live under slices/<SID>/ and task summaries
+      // live in a tasks/ subdir. Flat-phase layout: slicePath IS the phase dir
+      // and task summaries live beside the plan files at the phase root. A
+      // tasks/ subdir may still exist in flat-phase for auxiliary task-scoped
+      // artifacts (e.g. T01-VERIFY.json gate outputs) — its mere existence must
+      // NOT redirect summary resolution into tasks/ (#1208).
+      const isLegacySlice = basename(dirname(slicePath)) === "slices";
+      const summaryDir = isLegacySlice
+        ? (resolveTasksDir(base, mid, sid!) ?? slicePath)
+        : slicePath;
+      return join(summaryDir, buildTaskFileName(tid, "SUMMARY"));
     }
     case "complete-slice": {
       return resolveSliceArtifactPath(base, mid, sid!, "SUMMARY");

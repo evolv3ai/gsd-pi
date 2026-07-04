@@ -1033,6 +1033,26 @@ export function renderPreferencesForSystemPrompt(
   return lines.join("\n");
 }
 
+/**
+ * Render a compact response-language directive for injection into dispatched
+ * prompt *content* (discuss/QA and auto-execution unit prompts).
+ *
+ * The main session's system prompt already carries the full GSD Skill
+ * Preferences block (including language) via `before_agent_start`, but
+ * discuss/QA turns and auto-execution units are dispatched as separate
+ * turns/sessions whose prompts are assembled here — without that block — so the
+ * configured language never reaches them (#1210). Injecting this directive into
+ * the dispatched prompt content makes the `language` preference effective across
+ * both guided and auto workflows.
+ *
+ * Returns "" when no language is configured.
+ */
+export function renderLanguageDirectiveForPrompt(preferences: GSDPreferences | undefined): string {
+  if (!preferences?.language) return "";
+  const safeLang = preferences.language.replace(/[\r\n]/g, " ").slice(0, 50);
+  return `## Response Language\n\nAlways respond in ${safeLang} — questions, explanations, and summaries.`;
+}
+
 // ─── Hook Resolution ──────────────────────────────────────────────────────────
 
 /**

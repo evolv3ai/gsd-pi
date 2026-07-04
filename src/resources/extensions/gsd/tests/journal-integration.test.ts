@@ -40,6 +40,7 @@ import { readUnitRuntimeRecord } from "../unit-runtime.js";
 import { ModelPolicyDispatchBlockedError } from "../auto-model-selection.js";
 import {
   closeDatabase,
+  getTask,
   insertMilestone,
   insertSlice,
   insertTask,
@@ -445,7 +446,7 @@ test("runDispatch retries when complete-milestone summary exists on disk and stu
   assert.equal(stopCalls, 0, "artifact-based recovery should not hard-stop the loop");
 });
 
-test("runDispatch pauses when execute-task artifacts exist but DB status is still open", async (t) => {
+test("runDispatch promotes execute-task DB status when artifacts exist but DB status is still open (#1204)", async (t) => {
   const capture = createEventCapture();
   let pauseCalls = 0;
   let stopCalls = 0;
@@ -522,16 +523,16 @@ test("runDispatch pauses when execute-task artifacts exist but DB status is stil
 
   const result = await runDispatch(ic, preData, loopState);
 
-  assert.equal(result.action, "break");
-  assert.equal((result as any).reason, "execute-task-artifact-db-mismatch");
-  assert.equal(pauseCalls, 1, "execute-task disk/db mismatch should pause auto-mode");
-  assert.equal(stopCalls, 0, "execute-task disk/db mismatch should not hard-stop the loop");
-  assert.equal(invalidateCalls, 0, "mismatch should not clear caches and continue toward redispatch");
-  assert.equal(loopState.recentUnits.length, 3, "mismatch should keep the stuck window intact");
-  assert.equal(loopState.stuckRecoveryAttempts, 1, "mismatch should not reset the recovery counter");
+  assert.equal(result.action, "continue");
+  assert.equal(pauseCalls, 0, "disk-verified promotion should not pause auto-mode");
+  assert.equal(stopCalls, 0, "disk-verified promotion should not hard-stop the loop");
+  assert.equal(invalidateCalls, 1, "successful promotion should invalidate caches before retrying");
+  assert.equal(loopState.recentUnits.length, 0, "successful promotion should clear the stuck window");
+  assert.equal(loopState.stuckRecoveryAttempts, 1, "Level 1 recovery increments the attempt counter");
+  assert.equal(getTask("M001", "S01", "T01")?.status, "complete", "the open DB task should be promoted to complete");
 });
 
-test("runDispatch pauses at Level 2 when execute-task artifacts exist but DB status is still open", async (t) => {
+test("runDispatch promotes execute-task DB status at Level 2 when artifacts exist but DB status is still open (#1204)", async (t) => {
   const capture = createEventCapture();
   let pauseCalls = 0;
   let stopCalls = 0;
@@ -601,13 +602,13 @@ test("runDispatch pauses at Level 2 when execute-task artifacts exist but DB sta
 
   const result = await runDispatch(ic, preData, loopState);
 
-  assert.equal(result.action, "break");
-  assert.equal((result as any).reason, "execute-task-artifact-db-mismatch");
-  assert.equal(pauseCalls, 1, "Level 2 execute-task disk/db mismatch should pause auto-mode");
-  assert.equal(stopCalls, 0, "Level 2 execute-task disk/db mismatch should not hard-stop the loop");
+  assert.equal(result.action, "continue");
+  assert.equal(pauseCalls, 0, "Level 2 disk-verified promotion should not pause auto-mode");
+  assert.equal(stopCalls, 0, "Level 2 disk-verified promotion should not hard-stop the loop");
   assert.equal(invalidateCalls, 1, "Level 2 should invalidate caches before the final artifact recheck");
-  assert.equal(loopState.recentUnits.length, 3, "Level 2 mismatch should keep the stuck window intact");
-  assert.equal(loopState.stuckRecoveryAttempts, 1, "Level 2 mismatch should not reset the recovery counter");
+  assert.equal(loopState.recentUnits.length, 0, "Level 2 successful promotion should clear the stuck window");
+  assert.equal(loopState.stuckRecoveryAttempts, 1, "Level 2 does not reset the recovery counter");
+  assert.equal(getTask("M001", "S01", "T01")?.status, "complete", "the open DB task should be promoted to complete");
 });
 
 test("runDispatch clears execute-task stuck state when artifacts and DB status are complete", async (t) => {

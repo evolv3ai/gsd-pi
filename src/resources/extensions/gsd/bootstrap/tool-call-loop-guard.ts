@@ -14,13 +14,16 @@
  * to stop tooling for the rest of that turn and answer in text.
  *
  * The per-tool-name check (#783 Brief C) tracks call counts within a
- * turn regardless of args, decaying after successful state-mutating tools.
+ * turn regardless of args, decaying after successful state-progressing tools.
  * This catches improvisation
  * loops where the model attempts the same missing workflow tool through
  * varied surfaces (bash → `node -e` → CLI), each with a different
  * signature, so the identical-args streak never trips, while allowing
- * tool-heavy turns that are making file-mutation progress. Whichever guard
- * trips first blocks.
+ * tool-heavy turns that are making progress. Progress means a successful file
+ * mutation (edit/write) or a successful shell/exec call (bg_shell,
+ * gsd_uat_exec, …) — so a local model running a legitimate iterative
+ * debugging loop (restart server, npm install, curl an endpoint) is not
+ * blocked as a false loop (#1206). Whichever guard trips first blocks.
  *
  * Thresholds, exempt tools, and enable flags are user-tunable (#1198) via the
  * `tool_call_loop_guard` key in `.gsd/PREFERENCES.md` and `GSD_TOOL_LOOP_*`
@@ -44,6 +47,52 @@ const STRICT_LOOP_TOOLS = new Set(["ask_user_questions"]);
 const MAX_CONSECUTIVE_STRICT = 1;
 
 const STATE_MUTATING_TOOL_SET = new Set(["edit", "write", "multi_edit", "notebook_edit"]);
+
+/**
+ * Successful shell/exec calls are state progression too (#1206), not just file
+ * mutations. A local model debugging a UAT scenario legitimately restarts
+ * servers, runs `npm install`, and curls endpoints via bg_shell / gsd_uat_exec
+ * with varied args — productive work that never touches a file, so Guard 2's
+ * per-tool cap would otherwise misfire as a false loop. Decaying on these
+ * successful calls keeps the guard from aborting a progressing turn.
+ *
+ * Only successful calls reach {@link recordToolCallLoopMutation}: the
+ * tool_result hook skips `isError` results, and the bash tool throws on
+ * non-zero exit, so a genuinely stuck improvisation loop of failing commands
+ * (#783) never decays and still trips the cap. `async_bash` is excluded
+ * because it only registers a background job; command success is reported
+ * later via `await_job`. `bg_shell` may return `isError: false` for failed
+ * `run`/`start` outcomes, so the hook passes `details` for validation.
+ */
+const STATE_PROGRESSING_EXEC_TOOL_SET = new Set([
+  "bash",
+  "bg_shell",
+  "shell",
+  "powershell",
+  "gsd_exec",
+  "gsd_uat_exec",
+]);
+
+function isSuccessfulBgShellLoopProgress(details: unknown): boolean {
+  if (!details || typeof details !== "object") return false;
+  const record = details as Record<string, unknown>;
+  switch (record.action) {
+    case "run":
+      return record.exitCode === 0 && record.timedOut !== true;
+    case "start":
+    case "restart": {
+      const process = record.process;
+      if (!process || typeof process !== "object") return false;
+      return (process as Record<string, unknown>).alive === true;
+    }
+    case "wait_for_ready":
+      return record.ready === true;
+    case "send_and_wait":
+      return record.matched === true;
+    default:
+      return true;
+  }
+}
 
 /**
  * User-tunable configuration shape for the loop guard (#1198).
@@ -295,10 +344,21 @@ export function checkToolCallLoop(
   return { block: false, count: consecutiveCount };
 }
 
-/** Record successful mutation progress so Guard 2 can decay on the next count. */
-export function recordToolCallLoopMutation(toolName: string): void {
+/**
+ * Record successful state progress so Guard 2 can decay on the next count.
+ * File mutations (edit/write/…) and successful shell/exec calls (bash,
+ * bg_shell, gsd_uat_exec, …) both count as progress (#1092, #1206). The caller
+ * only invokes this for non-error results, so failing improvisation loops
+ * (#783) never decay and still trip the per-tool cap.
+ */
+export function recordToolCallLoopMutation(toolName: string, details?: unknown): void {
   if (!enabled) return;
-  if (!STATE_MUTATING_TOOL_SET.has(toolName)) return;
+  if (STATE_MUTATING_TOOL_SET.has(toolName)) {
+    mutationEpoch++;
+    return;
+  }
+  if (!STATE_PROGRESSING_EXEC_TOOL_SET.has(toolName)) return;
+  if (toolName === "bg_shell" && details !== undefined && !isSuccessfulBgShellLoopProgress(details)) return;
   mutationEpoch++;
 }
 

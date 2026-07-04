@@ -5,6 +5,11 @@
  * tasks back to "pending". This is intentional — if you're reopening a
  * slice, you're re-doing the work. Partial resets create ambiguous state.
  *
+ * Also recovers a desynced slice (#1205): when a UAT→planning fallback leaves
+ * the slice open (e.g. "pending") but its tasks still "complete", this clears
+ * that state so the planner can re-plan without hitting "already complete"
+ * rejections.
+ *
  * The parent milestone must still be open (not complete).
  */
 
