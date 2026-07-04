@@ -41,6 +41,15 @@ describe("buildManifest", () => {
     assert.equal(mf.mapping.phases[0].tasks.length, 2);
     assert.equal(mf.mapping.phases[0].tasks[0].title, "1. Scaffolding");
     assert.equal(mf.mapping.phases[0].tasks[0].gsdTask, null);
+    assert.equal(mf.mapping.phases[0].tier, "mechanical");
+    assert.deepEqual(mf.mapping.phases[0].checks, ["pnpm test"]);
+    assert.equal(mf.mapping.phases[0].tasks[0].tier, "complex");
+    assert.equal(mf.mapping.phases[1].tier, null);
+    assert.deepEqual(mf.mapping.phases[1].checks, []);
+    assert.deepEqual(mf.routing.modelPolicy, {
+      planning: "openrouter/anthropic/claude-opus-4.7",
+      execution: "openrouter/x-ai/grok-code-fast-1",
+    });
 
     assert.deepEqual(mf.validation.commands, [
       "pnpm run verify:pr",
@@ -51,6 +60,6 @@ describe("buildManifest", () => {
 
     assert.equal(mf.provenance.userPrompt, "Test the bridge");
     assert.equal(mf.provenance.generator, "planf3-gsd-pi");
-    assert.equal(mf.provenance.generatorVersion, "0.1.0");
+    assert.equal(mf.provenance.generatorVersion, "0.2.0");
   });
 });
