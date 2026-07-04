@@ -299,6 +299,37 @@ test("refreshRecoveryDbForArtifact treats missing execute-task DB rows as fatal 
   });
 });
 
+test("refreshRecoveryDbForArtifact promotes an open execute-task DB row when artifacts are verified on disk (#1204)", () => {
+  const dir = makeTmpProject();
+  insertTask({
+    milestoneId: "M001",
+    sliceId: "S01",
+    id: "T01",
+    title: "Stuck Task",
+    status: "pending",
+  });
+  const sliceDir = join(dir, ".gsd", "milestones", "M001", "slices", "S01");
+  mkdirSync(sliceDir, { recursive: true });
+  writeFileSync(join(sliceDir, "S01-PLAN.md"), [
+    "# S01 Plan",
+    "",
+    "- [ ] **T01: Implement feature** `est:1h`",
+    "",
+  ].join("\n"));
+
+  const result = refreshRecoveryDbForArtifact("execute-task", "M001/S01/T01", dir);
+
+  assert.deepEqual(result, { ok: true });
+  assert.equal(getTask("M001", "S01", "T01")?.status, "complete");
+  const planContent = readFileSync(join(sliceDir, "S01-PLAN.md"), "utf-8");
+  assert.ok(planContent.includes("[x] **T01:"), "plan checkbox should be re-rendered to [x]");
+  const events = readEvents(join(dir, ".gsd", "event-log.jsonl"));
+  assert.ok(
+    events.some((e) => e.cmd === "complete-task" && e.trigger_reason === "stuck-artifact-recovery"),
+    "a complete-task recovery event should be appended",
+  );
+});
+
 test("refreshRecoveryDbForArtifact closes complete-milestone DB row when artifacts exist but DB is stale (#5568)", async () => {
   const base = mkdtempSync(join(tmpdir(), "auto-recovery-complete-ms-"));
   mkdirSync(join(base, ".gsd"), { recursive: true });

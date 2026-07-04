@@ -234,12 +234,47 @@ export function refreshRecoveryDbForArtifact(
   }
 
   if (!isClosedStatus(task.status)) {
-    return {
-      ok: false,
-      fatal: true,
-      reason: "execute-task-artifact-db-mismatch",
-      message: `Stuck recovery found execute-task ${unitId} artifacts, but the DB task status is still '${task.status}' after refresh.`,
-    };
+    // The artifact was already confirmed on disk by verifyExpectedArtifact
+    // upstream (Gate 1 accepts a checked disk checkbox as proof of completion),
+    // but the DB task row is still open. A bare refreshWorkflowDatabaseFromDisk
+    // never promotes the disk checkbox into task status (the checkbox is
+    // rendered *from* the DB, never *into* it), so this divergence can never
+    // self-heal. Promote the task to align the DB with disk instead of failing
+    // shut — otherwise the lowest-pending derivation re-picks the same task
+    // forever and execute-task hard-stops with "state did not advance" (#1204).
+    // Mirrors the promotion pattern used by the context-exhaustion and
+    // reactive-execute-blocker recovery paths.
+    const ts = new Date().toISOString();
+    try {
+      updateTaskStatus(mid, sid, tid, "complete", ts);
+      const artifactBase = resolveArtifactVerificationBase(unitId, basePath);
+      const planPath = resolveExpectedArtifactPath("plan-slice", `${mid}/${sid}`, artifactBase);
+      if (planPath && existsSync(planPath)) {
+        const planContent = readFileSync(planPath, "utf-8");
+        const updatedPlan = planContent.replace(
+          new RegExp(`^(\\s*-\\s+)\\[ \\]\\s+\\*\\*${tid}:`, "m"),
+          `$1[x] **${tid}:`,
+        );
+        if (updatedPlan !== planContent) {
+          atomicWriteSync(planPath, updatedPlan);
+        }
+      }
+      clearPathCache();
+      clearParseCache();
+    } catch (e) {
+      return {
+        ok: false,
+        fatal: true,
+        reason: "execute-task-artifact-db-promote-failed",
+        message: `Stuck recovery found execute-task ${unitId} artifacts, but promoting the DB task status from '${task.status}' failed: ${getErrorMessage(e)}`,
+      };
+    }
+    // Append event so worktree reconciliation can replay this recovery completion.
+    try {
+      appendEvent(basePath, { cmd: "complete-task", params: { milestoneId: mid, sliceId: sid, taskId: tid }, ts, actor: "system", trigger_reason: "stuck-artifact-recovery" });
+    } catch (e) {
+      logWarning("recovery", `appendEvent failed for stuck-artifact task promotion: ${getErrorMessage(e)}`);
+    }
   }
 
   return { ok: true };
