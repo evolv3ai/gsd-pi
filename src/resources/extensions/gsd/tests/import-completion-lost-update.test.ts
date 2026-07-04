@@ -7,7 +7,7 @@
 
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, mkdtempSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
+import { cpSync, mkdtempSync, rmSync, writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -75,6 +75,26 @@ test("re-import leaves an unchecked flat-phase task pending when no SUMMARY.md e
     taskStatus(base),
     "pending",
     "unchecked task without a SUMMARY.md must stay pending",
+  );
+});
+
+test("re-import keeps a flat-phase task complete even when an auxiliary tasks/ subdir exists (#1222)", () => {
+  const base = copyFixture();
+  // Flat-phase may keep a tasks/ subdir for gate artifacts (e.g. T01-VERIFY.json)
+  // while gsd_task_complete still writes TID-SUMMARY.md at the phase root. The
+  // tasks/ subdir must NOT shadow that real summary and downgrade the task.
+  mkdirSync(join(base, PHASE_DIR, "tasks"), { recursive: true });
+  writeFileSync(join(base, PHASE_DIR, "tasks", "T01-VERIFY.json"), "{}\n");
+  writeFileSync(join(base, SUMMARY_REL), "# T01 SUMMARY\n\nDone.\n");
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  migrateHierarchyToDb(base);
+  invalidateStateCache();
+
+  assert.equal(
+    taskStatus(base),
+    "complete",
+    "a phase-root SUMMARY.md must win even when a tasks/ subdir exists (no shadowing)",
   );
 });
 
