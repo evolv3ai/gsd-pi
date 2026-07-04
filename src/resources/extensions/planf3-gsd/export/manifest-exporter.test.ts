@@ -42,7 +42,10 @@ describe("buildManifest", () => {
     assert.equal(mf.mapping.phases[0].tasks[0].title, "1. Scaffolding");
     assert.equal(mf.mapping.phases[0].tasks[0].gsdTask, null);
 
-    assert.deepEqual(mf.validation.commands, ["pnpm run verify:pr"]);
+    assert.deepEqual(mf.validation.commands, [
+      "pnpm run verify:pr",
+      "pnpm run typecheck:extensions",
+    ]);
     assert.equal(mf.validation.lastSyncedAt, null);
     assert.equal(mf.validation.lastStatus, "planned");
 

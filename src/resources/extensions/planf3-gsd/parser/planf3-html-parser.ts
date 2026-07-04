@@ -81,11 +81,13 @@ function statusFromCode(code: HTMLElement | null): PlanStatus {
 function parseChecklist(ul: HTMLElement | undefined): PlanChecklistItem[] {
   if (!ul) return [];
   return ul.querySelectorAll("li").map((li) => {
-    const code = li.querySelector("code.status");
-    const status = statusFromCode(code);
-    code?.remove();
+    const statusCode = li.querySelector("code.status");
+    const status = statusFromCode(statusCode);
+    statusCode?.remove();
+    const commandCode = li.querySelector("code:not(.tier)");
+    const command = commandCode?.text.trim() || null;
     const text = li.text.replace(/\s+/g, " ").trim();
-    return { status, text };
+    return { status, text, command };
   });
 }
 
@@ -122,10 +124,15 @@ function parsePhases(root: HTMLElement): PlanPhase[] {
 
 function parseValidationCommands(root: HTMLElement): string[] {
   const items = root.querySelectorAll("section#validation ul.checklist li");
-  return items.map((li) => {
-    li.querySelector("code.status")?.remove();
-    return li.text.replace(/\s+/g, " ").trim();
-  }).filter((s) => s.length > 0);
+  return items
+    .map((li) => {
+      li.querySelector("code.status")?.remove();
+      const commandCode = li.querySelector("code");
+      return commandCode
+        ? commandCode.text.trim()
+        : li.text.replace(/\s+/g, " ").trim();
+    })
+    .filter((s) => s.length > 0);
 }
 
 function parseAmendments(root: HTMLElement): PlanAmendment[] {

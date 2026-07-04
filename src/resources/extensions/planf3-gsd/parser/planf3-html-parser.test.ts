@@ -61,21 +61,24 @@ describe("parsePlanf3Html — phases", () => {
     assert.equal(p1.tasks.length, 2);
     assert.equal(p1.tasks[0].title, "1. Scaffolding");
     assert.deepEqual(p1.tasks[0].checklist, [
-      { status: "done", text: "Create the dir." },
-      { status: "todo", text: "Add the file." },
+      { status: "done", text: "Create the dir.", command: null },
+      { status: "todo", text: "Add the file.", command: null },
     ]);
     assert.equal(p1.tasks[1].title, "2. Testing Strategy");
     assert.deepEqual(p1.tasks[1].checklist, [
-      { status: "todo", text: "pnpm test" },
+      { status: "todo", text: "pnpm test", command: "pnpm test" },
     ]);
 
     assert.equal(p2.status, "todo");
     assert.equal(p2.tasks[0].checklist[0].status, "failed");
   });
 
-  test("extracts validation commands", () => {
+  test("extracts bare validation commands, dropping the prose suffix", () => {
     const plan = parsePlanf3Html(minimal);
-    assert.deepEqual(plan.validationCommands, ["pnpm run verify:pr"]);
+    assert.deepEqual(plan.validationCommands, [
+      "pnpm run verify:pr",
+      "pnpm run typecheck:extensions",
+    ]);
   });
 
   test("extracts amendments", () => {

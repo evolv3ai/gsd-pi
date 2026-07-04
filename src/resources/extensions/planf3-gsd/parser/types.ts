@@ -19,6 +19,8 @@ export interface PlanFile {
 export interface PlanChecklistItem {
   status: PlanStatus;
   text: string;
+  /** Text of the first non-status <code> element — the executable command, when the item carries one. */
+  command: string | null;
 }
 
 export interface PlanTask {
