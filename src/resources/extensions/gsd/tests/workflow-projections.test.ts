@@ -344,14 +344,12 @@ test('workflow-projections: regenerateIfMissing SUMMARY is idempotent for flat-p
       milestoneId: 'M001',
       title: 'Completed task',
       status: 'complete',
-      summary: {
-        oneLiner: 'Completed the flat task.',
-        narrative: 'The task was completed through the DB-backed projection path.',
-        verificationResult: 'passed',
-        duration: '5m',
-        keyFiles: ['src/example.ts'],
-        keyDecisions: ['Use centralized task summary paths.'],
-      },
+      oneLiner: 'Completed the flat task.',
+      narrative: 'The task was completed through the DB-backed projection path.',
+      verificationResult: 'passed',
+      duration: '5m',
+      keyFiles: ['src/example.ts'],
+      keyDecisions: ['Use centralized task summary paths.'],
     });
 
     const summaryPath = join(phaseDir, 'T01-SUMMARY.md');
@@ -363,7 +361,7 @@ test('workflow-projections: regenerateIfMissing SUMMARY is idempotent for flat-p
     assert.equal(first, true, 'first call regenerates the missing task summary');
     assert.equal(second, false, 'second call sees the flat-phase task summary and does not rewrite it');
     assert.equal(normalizeRealPath(resolveTaskFile(base, 'M001', 'S01', 'T01', 'SUMMARY') ?? ''), normalizeRealPath(summaryPath));
-    assert.match(readFileSync(summaryPath, 'utf-8'), /# T01: Completed task/);
+    assert.match(readFileSync(summaryPath, 'utf-8'), /# T01: Completed the flat task\./);
   } finally {
     closeDatabase();
     rmSync(base, { recursive: true, force: true });
