@@ -298,7 +298,10 @@ export async function applySupervisorModelIfConfigured(
     if (isModelUnavailable(basePath, match.provider, match.id)) continue;
     try {
       if (await pi.setModel(match, { persist: false })) {
-        applyThinkingLevelForModel(pi, pi.getThinkingLevel(), match, ctx);
+        // Prefer the per-field `thinking` from `auto_supervisor.model`'s object
+        // form over the session level so a configured supervisor level actually
+        // applies (#1269).
+        applyThinkingLevelForModel(pi, modelConfig.thinking ?? pi.getThinkingLevel(), match, ctx);
         return;
       }
     } catch (err) {

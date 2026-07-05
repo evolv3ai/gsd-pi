@@ -116,7 +116,7 @@ import {
 } from "./auto-tool-tracking.js";
 import { closeoutUnit } from "./auto-unit-closeout.js";
 import { recoverTimedOutUnit } from "./auto-timeout-recovery.js";
-import { selectAndApplyModel, resolveModelId, clearToolBaseline, isModelUnavailable } from "./auto-model-selection.js";
+import { selectAndApplyModel, resolveModelId, clearToolBaseline, isModelUnavailable, applyThinkingLevelForModel } from "./auto-model-selection.js";
 import { resolveModelWithFallbacksForUnit } from "./preferences-models.js";
 import { resetRoutingHistory, recordOutcome } from "./routing-history.js";
 import {
@@ -3190,6 +3190,13 @@ export async function dispatchHookUnit(
       if (isModelUnavailable(targetBasePath, match.provider, match.id)) continue;
       try {
         if (await pi.setModel(match)) {
+          // The manual trigger path bypasses selectAndApplyModel, so apply the
+          // hook's per-field `thinking` (from `post_unit_hooks[].model`'s object
+          // form) here against the just-set model rather than leaving the hook at
+          // the session level (#1269). Absent → session level, unchanged.
+          if (hookModelConfig?.thinking) {
+            applyThinkingLevelForModel(pi, hookModelConfig.thinking, match, ctx);
+          }
           applied = true;
           break;
         }
