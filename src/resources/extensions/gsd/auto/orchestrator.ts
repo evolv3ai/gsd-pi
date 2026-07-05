@@ -1196,17 +1196,23 @@ export class AutoOrchestrator implements AutoOrchestrationModule {
         return skipped;
       }
 
-      // Stuck-loop detection: when the window is saturated with copies of
-      // `nextKey` (count >= STUCK_WINDOW_SIZE), consult the Dispatch History
-      // module's full detect-stuck rule set for the verdict instead of the old
-      // bare saturation count. This keeps the saturation threshold (the window
-      // deliberately records benign idempotent repeats, so earlier-firing
-      // rules would false-positive on pause/resume re-advances) while gaining
-      // retry-budget suppression and diagnosable rule reasons. A saturated
-      // window with no verdict means the dispatch ledger says we are inside
-      // the unit's retry-backoff budget — let the retry proceed.
-      const stuckVerdict =
-        matchingCount >= STUCK_WINDOW_SIZE ? this.dispatchHistory.detectStuck() : null;
+      // Stuck-loop detection: consult the Dispatch History module's full
+      // detect-stuck rule set once the window is *full* — not only when a
+      // single key saturates it. Gating on a single key's saturation count
+      // (matchingCount >= STUCK_WINDOW_SIZE) let two-unit oscillations slip
+      // through forever: an execute-task ↔ complete-slice loop (a slice gate
+      // that keeps reopening the same task, #1225) fills the window with two
+      // alternating keys, so neither key ever reaches the saturation count and
+      // detect-stuck's oscillation/repeat rules were never even invoked. Firing
+      // on window saturation instead covers both shapes. Consecutive same-key
+      // re-advances (the benign pause/resume churn the old count gate guarded
+      // against) are already short-circuited above by the idempotency skip, and
+      // legitimate retry backoff is still suppressed inside detect-stuck via the
+      // dispatch ledger — a saturated window with no verdict means we are inside
+      // the unit's retry-backoff budget, so let the retry proceed.
+      const windowSaturated =
+        this.dispatchHistory.getRecentWindow().length >= STUCK_WINDOW_SIZE;
+      const stuckVerdict = windowSaturated ? this.dispatchHistory.detectStuck() : null;
       if (stuckVerdict) {
         // #442: before declaring a stuck loop, verify the unit didn't actually
         // complete on disk (stale DB) and recover if so — legacy graduated
