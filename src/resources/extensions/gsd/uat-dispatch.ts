@@ -93,8 +93,14 @@ async function getDbCompletedSliceCandidates(
   if (!isDbAvailable()) return null;
 
   const slices = getMilestoneSlices(milestoneId);
+  // No DB slice rows for this milestone: the DB has no authoritative view, so
+  // return null to let the caller defer to the roadmap fallback.
   if (slices.length === 0) return null;
 
+  // The DB has slice rows and is therefore authoritative for this milestone.
+  // Return a (possibly empty) array rather than null: an empty result must NOT
+  // fall through to the roadmap fallback, because the DB, not stale roadmap
+  // checkboxes, is the source of truth for which slices are complete.
   return slices
     .filter((slice) => slice.status === "complete")
     .map((slice) => ({ sliceId: slice.id }))
@@ -123,6 +129,12 @@ export async function findRunUatDispatchFromCandidates(
  * Check if the most recently completed slice needs a UAT run.
  * Returns { sliceId, uatType } if UAT should be dispatched, null otherwise.
  *
+ * When the DB has slice rows for the milestone it is authoritative: only its
+ * completed slices are considered and the `fallbackCandidates` (roadmap-derived)
+ * are ignored, even when no DB slice is complete. The fallback candidates are
+ * only consulted when the DB has no slice rows for the milestone, is
+ * unavailable, or errors.
+ *
  * Skips when:
  * - No completed slices exist in DB or the caller-provided fallback candidates
  * - uat_dispatch is not enabled and the UAT spec does not require runtime/browser evidence
@@ -137,7 +149,10 @@ export async function checkNeedsRunUat(
 ): Promise<RunUatDispatch | null> {
   try {
     const dbCandidates = await getDbCompletedSliceCandidates(milestoneId);
-    if (dbCandidates) {
+    // A non-null result (including an empty array) means the DB is authoritative
+    // for this milestone; only fall through to the roadmap fallback when the DB
+    // has no slice rows at all (null).
+    if (dbCandidates !== null) {
       return findRunUatDispatchFromCandidates(
         base,
         milestoneId,
