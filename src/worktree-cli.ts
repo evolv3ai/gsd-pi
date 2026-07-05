@@ -23,9 +23,15 @@ import { bannerLines, name as styledName, warn } from './cli-style.js'
 import { createJiti } from '@mariozechner/jiti'
 import { fileURLToPath } from 'node:url'
 import { generateWorktreeName } from './worktree-name-gen.js'
-import { existsSync } from 'node:fs'
 import { resolveBundledGsdExtensionModule } from './bundled-resource-path.js'
 import { getJitiWorkspaceAliases } from './jiti-workspace-aliases.js'
+import {
+  getWorktreeStatus as calculateWorktreeStatus,
+  hasWorktreeChanges,
+  type WorktreeDiff,
+  type WorktreeStatus,
+  type WorktreeStatusDependencies,
+} from './worktree-cli-status.js'
 
 const jiti = createJiti(fileURLToPath(import.meta.url), {
   interopDefault: true,
@@ -58,12 +64,6 @@ interface ExtensionModules {
 interface MergeModules {
   inferCommitType: (name: string) => string
   autoCommitCurrentBranch: (wtPath: string, reason: string, name: string) => void
-}
-
-interface WorktreeDiff {
-  added: string[]
-  modified: string[]
-  removed: string[]
 }
 
 interface WorktreeManagerModule {
@@ -148,55 +148,20 @@ async function loadMergeModules(): Promise<MergeModules> {
   return _mergeExt
 }
 
-// ─── Types ──────────────────────────────────────────────────────────────────
-
-interface WorktreeStatus {
-  name: string
-  path: string
-  branch: string
-  exists: boolean
-  filesChanged: number
-  linesAdded: number
-  linesRemoved: number
-  uncommitted: boolean
-  commits: number
-}
-
 // ─── Status Helpers ─────────────────────────────────────────────────────────
 
 function getWorktreeStatus(ext: ExtensionModules, basePath: string, name: string, wtPath: string, branch: string): WorktreeStatus {
-  const diff = ext.diffWorktreeAll(basePath, name, branch)
-  const numstat = ext.diffWorktreeNumstat(basePath, name, branch)
-  const filesChanged = diff.added.length + diff.modified.length + diff.removed.length
-  let linesAdded = 0
-  let linesRemoved = 0
-  for (const s of numstat) { linesAdded += s.added; linesRemoved += s.removed }
+  return calculateWorktreeStatus(worktreeStatusDependencies(ext), basePath, name, wtPath, branch)
+}
 
-  let uncommitted = false
-  try {
-    uncommitted = existsSync(wtPath) && ext.nativeHasChanges(wtPath)
-  } catch (error) {
-    logDebugFailure('native worktree dirty check', error)
-  }
-
-  let commits = 0
-  try {
-    const mainBranch = ext.nativeDetectMainBranch(basePath)
-    commits = ext.nativeCommitCountBetween(basePath, mainBranch, branch)
-  } catch (error) {
-    logDebugFailure('native commit count', error)
-  }
-
+function worktreeStatusDependencies(ext: ExtensionModules): WorktreeStatusDependencies {
   return {
-    name,
-    path: wtPath,
-    branch,
-    exists: existsSync(wtPath),
-    filesChanged,
-    linesAdded,
-    linesRemoved,
-    uncommitted,
-    commits,
+    diffWorktreeAll: ext.diffWorktreeAll,
+    diffWorktreeNumstat: ext.diffWorktreeNumstat,
+    nativeHasChanges: ext.nativeHasChanges,
+    nativeDetectMainBranch: ext.nativeDetectMainBranch,
+    nativeCommitCountBetween: ext.nativeCommitCountBetween,
+    onDebugFailure: logDebugFailure,
   }
 }
 
@@ -378,8 +343,7 @@ async function handleStatusBanner(basePath: string): Promise<void> {
 
   const withChanges = worktrees.filter(wt => {
     try {
-      const diff = ext.diffWorktreeAll(basePath, wt.name, wt.branch)
-      return diff.added.length + diff.modified.length + diff.removed.length > 0
+      return hasWorktreeChanges(worktreeStatusDependencies(ext), basePath, wt.name, wt.branch)
     } catch (error) {
       logDebugFailure(`status scan for ${wt.name}`, error)
       return false
@@ -408,8 +372,7 @@ async function handleWorktreeFlag(worktreeFlag: boolean | string): Promise<void>
     const existing = ext.listWorktrees(basePath)
     const withChanges = existing.filter(wt => {
       try {
-        const diff = ext.diffWorktreeAll(basePath, wt.name, wt.branch)
-        return diff.added.length + diff.modified.length + diff.removed.length > 0
+        return hasWorktreeChanges(worktreeStatusDependencies(ext), basePath, wt.name, wt.branch)
       } catch (error) {
         logDebugFailure(`worktree -w scan for ${wt.name}`, error)
         return false
