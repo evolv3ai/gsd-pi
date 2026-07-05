@@ -587,4 +587,54 @@ describe("resolveHookArtifactPath", () => {
       rmSync(tempGsdHome, { recursive: true, force: true });
     }
   });
+
+  test("legacy: nested task artifact wins over a milestone-root file of the same name", () => {
+    const originalGsdHome = process.env.GSD_HOME;
+    const projectRoot = mkdtempSync(join(tmpdir(), "gsd-hook-legacy-root-"));
+    const tempGsdHome = mkdtempSync(join(tmpdir(), "gsd-hook-home-"));
+    try {
+      process.env.GSD_HOME = tempGsdHome;
+      const milestoneDir = join(projectRoot, ".gsd", "milestones", "M050");
+      const tasksDir = join(milestoneDir, "slices", "S02", "tasks");
+      mkdirSync(tasksDir, { recursive: true });
+      // The correct task-scoped artifact lives in the nested slices/tasks tree.
+      const nestedPath = join(tasksDir, "T01-REVIEW.md");
+      writeFileSync(nestedPath, "---\nverdict: pass\n---\n", "utf-8");
+      // A same-named decoy at the legacy milestone root must NOT win — before the
+      // fix, resolveMilestonePath returned the milestone root and it was probed
+      // ahead of the nested task path (#1264 Bugbot follow-up).
+      writeFileSync(join(milestoneDir, "REVIEW.md"), "---\nverdict: failed\n---\n", "utf-8");
+
+      const resolved = resolveHookArtifactPath(projectRoot, "M050/S02/T01", "REVIEW.md");
+      assert.equal(resolved, nestedPath, "task-scoped legacy path wins over the milestone-root file");
+    } finally {
+      if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+      else process.env.GSD_HOME = originalGsdHome;
+      rmSync(projectRoot, { recursive: true, force: true });
+      rmSync(tempGsdHome, { recursive: true, force: true });
+    }
+  });
+
+  test("legacy: missing-artifact fallback points at the nested task path, not the milestone root", () => {
+    const originalGsdHome = process.env.GSD_HOME;
+    const projectRoot = mkdtempSync(join(tmpdir(), "gsd-hook-legacy-miss-"));
+    const tempGsdHome = mkdtempSync(join(tmpdir(), "gsd-hook-home-"));
+    try {
+      process.env.GSD_HOME = tempGsdHome;
+      const milestoneDir = join(projectRoot, ".gsd", "milestones", "M050");
+      mkdirSync(milestoneDir, { recursive: true });
+      // Content-bearing legacy milestone dir (a non-META file) so resolveMilestonePath
+      // returns it, but the requested gate artifact does not exist anywhere.
+      writeFileSync(join(milestoneDir, "M050-ROADMAP.md"), "# roadmap\n", "utf-8");
+
+      const resolved = resolveHookArtifactPath(projectRoot, "M050/S02/T01", "REVIEW.md");
+      const expected = join(milestoneDir, "slices", "S02", "tasks", "T01-REVIEW.md");
+      assert.equal(resolved, expected, "diagnostic fallback uses the nested task path for a legacy task-scoped unit");
+    } finally {
+      if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+      else process.env.GSD_HOME = originalGsdHome;
+      rmSync(projectRoot, { recursive: true, force: true });
+      rmSync(tempGsdHome, { recursive: true, force: true });
+    }
+  });
 });
