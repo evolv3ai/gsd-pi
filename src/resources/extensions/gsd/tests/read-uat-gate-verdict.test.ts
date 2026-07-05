@@ -160,6 +160,60 @@ describe('readUatGateVerdict — DB fallback for orphaned ASSESSMENT', () => {
     assert.equal(result, null, 'roadmap-scoped assessments must not satisfy the UAT gate');
   });
 
+  test('a backfilled assessment does NOT satisfy the UAT gate (#1258)', async () => {
+    // The milestone-validation backfill fabricates a `verdict: PASS` ASSESSMENT
+    // for completed slices that never produced a real UAT result (e.g.
+    // artifact-driven UAT that was never dispatched). Filed under scope
+    // 'backfill', that placeholder must never be read as a genuine UAT sign-off —
+    // otherwise "never checked" is silently treated as "passed". Even with the
+    // fabricated file present on disk, the gate must fall through to the
+    // authoritative run-uat row (absent here) and return null.
+    const file = canonicalAssessmentPath(basePath);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, RUNTIME_PASS_BODY);
+    insertAssessment({
+      path: `.gsd/milestones/${MID}/slices/${SLICE}/${SLICE}-ASSESSMENT.md`,
+      milestoneId: MID,
+      sliceId: SLICE,
+      status: 'pass',
+      scope: 'backfill',
+      fullContent: RUNTIME_PASS_BODY,
+    });
+
+    const result = await readUatGateVerdict(basePath, MID, SLICE);
+
+    assert.equal(result, null, 'backfilled assessments must not satisfy the UAT gate');
+  });
+
+  test('a genuine run-uat row still resolves even when a backfilled file exists (#1258)', async () => {
+    // If a real UAT was later recorded, its authoritative run-uat row must win
+    // over the fabricated placeholder rather than being masked by it.
+    const file = canonicalAssessmentPath(basePath);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, RUNTIME_PASS_BODY);
+    insertAssessment({
+      path: `.gsd/milestones/${MID}/slices/${SLICE}/${SLICE}-ASSESSMENT.md`,
+      milestoneId: MID,
+      sliceId: SLICE,
+      status: 'pass',
+      scope: 'backfill',
+      fullContent: RUNTIME_PASS_BODY,
+    });
+    insertAssessment({
+      path: `.gsd/phases/01-some-feature/01-01-ASSESSMENT.md`,
+      milestoneId: MID,
+      sliceId: SLICE,
+      status: 'pass',
+      scope: 'run-uat',
+      fullContent: RUNTIME_PASS_BODY,
+    });
+
+    const result = await readUatGateVerdict(basePath, MID, SLICE);
+
+    assert.ok(result, 'a genuine run-uat sign-off must resolve');
+    assert.equal(result!.verdict, 'pass');
+  });
+
   test('returns null when no assessment and no file exist (fallback does not hallucinate)', async () => {
     const result = await readUatGateVerdict(basePath, MID, SLICE);
     assert.equal(result, null);

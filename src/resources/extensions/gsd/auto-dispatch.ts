@@ -308,12 +308,21 @@ export async function readUatGateVerdict(
       return null;
     }
 
-    const assessmentVerdict = extractVerdict(assessmentContent);
-    if (assessmentVerdict) {
-      return {
-        verdict: assessmentVerdict,
-        uatType: uatType ?? extractUatType(assessmentContent),
-      };
+    // Backfilled assessments (#1258) are placeholders created during milestone
+    // validation for completed slices that never produced a real UAT ASSESSMENT
+    // (e.g. artifact-driven UAT that was never dispatched). Their fabricated
+    // verdict must not be treated as a genuine UAT sign-off — otherwise "never
+    // checked" is silently read as "passed". Skip the placeholder and fall
+    // through to the authoritative run-uat DB row (which stays null unless a
+    // real UAT was actually recorded).
+    if (assessmentScope !== BACKFILL_ASSESSMENT_SCOPE) {
+      const assessmentVerdict = extractVerdict(assessmentContent);
+      if (assessmentVerdict) {
+        return {
+          verdict: assessmentVerdict,
+          uatType: uatType ?? extractUatType(assessmentContent),
+        };
+      }
     }
   }
 
@@ -489,17 +498,28 @@ function stripGsdPrefix(path: string): string {
   return path.startsWith(".gsd/") ? path.slice(".gsd/".length) : path;
 }
 
+// Scope marker for assessments fabricated by the milestone-validation backfill
+// (#1258). It keeps these placeholders distinguishable from genuine `run-uat`
+// sign-offs so `readUatGateVerdict` never mistakes "never checked" for "passed".
+const BACKFILL_ASSESSMENT_SCOPE = "backfill";
+
 function persistSliceAssessmentBackfill(
   assessmentRelPath: string,
   mid: string,
   sliceId: string,
   content: string,
+  fabricated: boolean,
 ): void {
   const artifactPath = stripGsdPrefix(assessmentRelPath);
   const existingAssessment =
     getAssessment(assessmentRelPath) ??
     getAssessment(artifactPath);
-  const scope = stringField(existingAssessment, "scope") ?? "run-uat";
+  // A newly fabricated placeholder is filed under a distinct scope; a pre-existing
+  // on-disk ASSESSMENT keeps its real scope (default `run-uat`) so genuine
+  // sign-offs are still honored.
+  const scope = fabricated
+    ? BACKFILL_ASSESSMENT_SCOPE
+    : stringField(existingAssessment, "scope") ?? "run-uat";
   const status = stringField(existingAssessment, "status") ??
     extractVerdict(content)?.toLowerCase() ??
     "unknown";
@@ -548,19 +568,25 @@ function backfillMissingAssessmentsFromSummaries(basePath: string, mid: string):
       "---",
       `sliceId: ${sliceId}`,
       "verdict: PASS",
+      // Distinguishing marker (#1258): this ASSESSMENT was fabricated to satisfy
+      // the per-slice artifact requirement, NOT produced by a real UAT run. It
+      // must not be read as a genuine UAT sign-off.
+      "backfilled: true",
+      "verified: false",
       `date: ${now}`,
       "---",
       "",
       `# Assessment — ${sliceId}`,
       "",
       "Auto-created during milestone validation because this completed slice had a SUMMARY but no ASSESSMENT artifact.",
+      "This is a placeholder: no UAT was executed for this slice, so its verdict is not an independent sign-off.",
       "No additional reassessment changes were detected in this backfill step.",
       "",
     ].join("\n") : readFileSync(assessmentPath, "utf-8");
 
     if (isDbAvailable()) {
       try {
-        persistSliceAssessmentBackfill(assessmentRelPath, mid, sliceId, content);
+        persistSliceAssessmentBackfill(assessmentRelPath, mid, sliceId, content, didCreateAssessment);
       } catch (err) {
         logWarning("dispatch", `failed to backfill assessment DB rows for ${mid}/${sliceId}: ${(err as Error).message}`);
       }
