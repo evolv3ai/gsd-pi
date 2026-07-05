@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -392,6 +392,54 @@ test('handleReassessRoadmap invalidates stale milestone-validation when roadmap 
   } finally {
     cleanup(base);
   }
+});
+
+test('handleReassessRoadmap deletes flat-phase compatibility validation files when roadmap changes (#2957)', async (t) => {
+  const base = makeTmpBase();
+  t.after(() => cleanup(base));
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  insertMilestone({ id: 'M001', title: 'Test Milestone', status: 'active' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Slice One', status: 'complete', demo: 'Demo' });
+
+  const legacyValidationPath = join(base, '.gsd', 'phases', '01-test', 'M001-VALIDATION.md');
+  const canonicalValidationPath = join(base, '.gsd', 'phases', '01-test', '01-VALIDATION.md');
+  const staleValidation = '---\nverdict: pass\n---\n\n# Stale validation\n';
+  writeFileSync(legacyValidationPath, staleValidation, 'utf-8');
+  writeFileSync(canonicalValidationPath, staleValidation, 'utf-8');
+  insertAssessment({
+    path: legacyValidationPath,
+    milestoneId: 'M001',
+    sliceId: null,
+    taskId: null,
+    status: 'pass',
+    scope: 'milestone-validation',
+    fullContent: staleValidation,
+  });
+
+  const result = await handleReassessRoadmap({
+    milestoneId: 'M001',
+    completedSliceId: 'S01',
+    verdict: 'confirmed',
+    assessment: 'S01 completed. Adding S02 changes roadmap structure.',
+    sliceChanges: {
+      modified: [],
+      added: [
+        {
+          sliceId: 'S02',
+          title: 'New Slice Two',
+          risk: 'low',
+          depends: ['S01'],
+          demo: 'Demo two.',
+        },
+      ],
+      removed: [],
+    },
+  }, base);
+
+  assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
+  assert.equal(existsSync(legacyValidationPath), false, 'stale compatibility validation artifact should be deleted');
+  assert.equal(existsSync(canonicalValidationPath), false, 'canonical validation artifact should not remain after reassess');
 });
 
 test('handleReassessRoadmap does NOT invalidate validation when no roadmap structural changes (#2957)', async () => {

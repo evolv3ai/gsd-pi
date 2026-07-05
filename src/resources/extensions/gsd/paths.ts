@@ -11,7 +11,7 @@
  */
 
 import { readdirSync, existsSync, realpathSync, statSync, Dirent } from "node:fs";
-import { join, dirname, normalize, resolve } from "node:path";
+import { join, dirname, normalize, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { nativeScanGsdTree, type GsdTreeEntry } from "./native-parser-bridge.js";
@@ -965,31 +965,41 @@ export function relMilestonePath(basePath: string, milestoneId: string, title?: 
 }
 
 /**
- * Build relative .gsd/ path to a milestone file.
- * Layout-aware: uses resolveMilestoneFile to find NN-SUFFIX.md (flat-phase)
- * or M001-SUFFIX.md (legacy). Falls back to a layout-appropriate canonical
- * name when the file doesn't exist yet.
+ * Build the canonical absolute write target for a milestone file.
+ * Existing compatibility filenames are intentionally ignored; readers that need
+ * to preserve an existing file should call resolveMilestoneFile first.
  */
-export function relMilestoneFile(
-  basePath: string, milestoneId: string, suffix: string
+export function targetMilestoneFile(
+  basePath: string, milestoneId: string, suffix: string, title?: string
 ): string {
-  const mRel = relMilestonePath(basePath, milestoneId);
-  // resolveMilestoneFile checks NN-SUFFIX.md (flat-phase) and MID-SUFFIX.md (legacy).
-  const absFile = resolveMilestoneFile(basePath, milestoneId, suffix);
-  if (absFile) {
-    const fileName = absFile.split(/[/\\]/).pop()!;
-    return `${mRel}/${fileName}`;
-  }
-  // File doesn't exist yet — use layout-aware fallback filename.
   const mDir = resolveMilestonePath(basePath, milestoneId);
   const legacyBase = legacyMilestonesDir(basePath);
   const isLegacy = mDir
     ? mDir.startsWith(legacyBase + "/") || mDir.startsWith(legacyBase + "\\")
-    : false;
+    : isLegacyMilestonesLayout(basePath);
+  const dir = mDir ?? join(
+    isLegacy ? legacyBase : milestonesDir(basePath),
+    isLegacy ? milestoneId : canonicalPhaseDirName(milestoneId, title),
+  );
   const fileName = isLegacy
     ? `${milestoneId}-${suffix}.md`
     : `${String(milestoneIdToPhaseNum(milestoneId)).padStart(2, "0")}-${suffix}.md`;
-  return `${mRel}/${fileName}`;
+  return join(dir, fileName);
+}
+
+/**
+ * Build relative .gsd/ path to a milestone file.
+ * Preserves an existing compatibility filename when present; otherwise falls
+ * back to the canonical write target.
+ */
+export function relMilestoneFile(
+  basePath: string, milestoneId: string, suffix: string, title?: string
+): string {
+  const rel = relative(
+    gsdProjectionRoot(basePath),
+    resolveMilestoneFile(basePath, milestoneId, suffix) ?? targetMilestoneFile(basePath, milestoneId, suffix, title),
+  ).replace(/\\/g, "/");
+  return `.gsd/${rel}`;
 }
 
 /**

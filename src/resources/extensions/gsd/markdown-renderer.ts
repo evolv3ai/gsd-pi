@@ -38,6 +38,7 @@ import {
   resolveSlicePath,
   resolveTaskFile,
   resolveTasksDir,
+  targetMilestoneFile,
   gsdProjectionRoot,
   gsdRoot,
   buildMilestoneFileName,
@@ -174,23 +175,6 @@ function sanitizeInlineRoadmapText(value: string | null | undefined): string {
     .replace(/[|`]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function resolveRoadmapProjectionPath(basePath: string, milestoneId: string): string {
-  const phaseNum = milestoneIdToPhaseNum(milestoneId);
-  const existing = resolveMilestonePath(basePath, milestoneId);
-  const legacyBase = legacyMilestonesDir(basePath);
-  const isLegacyLayout = existing
-    ? existing.startsWith(legacyBase + "/") || existing.startsWith(legacyBase + "\\")
-    : isLegacyMilestonesLayout(basePath);
-  const phaseDir = existing ?? join(
-    isLegacyLayout ? legacyBase : milestonesDir(basePath),
-    isLegacyLayout ? milestoneId : canonicalPhaseDirName(milestoneId, getMilestone(milestoneId)?.title),
-  );
-  const roadmapFileName = isLegacyLayout
-    ? `${milestoneId}-ROADMAP.md`
-    : `${String(phaseNum).padStart(2, "0")}-ROADMAP.md`;
-  return join(phaseDir, roadmapFileName);
 }
 
 function isMilestoneFlatPhaseLayout(basePath: string, milestoneId: string): boolean {
@@ -600,7 +584,7 @@ export async function renderRoadmapFromDb(
       "projection",
       `renderRoadmapFromDb skipped unplanned milestone ${milestoneId} (zero slices, empty vision) — refusing to write a stub ROADMAP`,
     );
-    const absPath = resolveRoadmapProjectionPath(basePath, milestoneId);
+    const absPath = targetMilestoneFile(basePath, milestoneId, "ROADMAP", milestone.title);
     if (existsSync(absPath)) {
       const artifactPath = toArtifactPath(absPath, basePath);
       unlinkSync(absPath);
@@ -614,7 +598,7 @@ export async function renderRoadmapFromDb(
     return { skipped: "unplanned-milestone" };
   }
 
-  const absPath = resolveRoadmapProjectionPath(basePath, milestoneId);
+  const absPath = targetMilestoneFile(basePath, milestoneId, "ROADMAP", milestone.title);
   const artifactPath = toArtifactPath(absPath, basePath);
   const content = renderRoadmapMarkdown(milestone, slices);
 
@@ -1080,7 +1064,7 @@ function detectStaleRendersImpl(basePath: string): StaleEntry[] {
     // TODO(flat-phase): roadmap checkbox parsing may not match flat-phase
     // roadmap format, causing false-positive drift loops. Skip during transition.
     /*
-    const roadmapPath = resolveRoadmapProjectionPath(basePath, milestone.id);
+    const roadmapPath = targetMilestoneFile(basePath, milestone.id, "ROADMAP", milestone.title);
     if (existsSync(roadmapPath)) {
       try {
         const parsed = parseProjectionByIdentity(roadmapPath, parseRoadmap) as ReturnType<typeof parseRoadmap>;
