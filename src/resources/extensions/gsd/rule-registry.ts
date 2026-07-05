@@ -21,7 +21,6 @@ import type {
   PostUnitHookOutcomeVerdict,
 } from "./types.js";
 import { resolvePostUnitHooks, resolvePreDispatchHooks } from "./preferences.js";
-import { normalizeModelFieldConfig } from "./preferences-models.js";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { parseUnitId } from "./unit-id.js";
@@ -1016,7 +1015,10 @@ export class RuleRegistry {
     return {
       hookName: hook.name,
       prompt,
-      model: normalizeModelFieldConfig(hook.model)?.primary,
+      // Model selection (including fallbacks[]) is resolved by dispatchHookUnit
+      // via resolveModelWithFallbacksForUnit for the `hook/<name>` unit type,
+      // matching the auto-mode path. Emitting the primary-only model here would
+      // discard the configured fallback chain (#1229).
       unitType: `hook/${hook.name}`,
       unitId,
     };

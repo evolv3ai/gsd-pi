@@ -454,4 +454,45 @@ test('triggerHookManually: with configured hook', () => {
   }
 });
 
+// ─── Hook dispatch results omit a primary-only model (#1229) ───────────────
+// Both the auto-mode (checkPostUnitHooks → _startHook) and manual
+// (triggerHookManually) dispatch paths must NOT carry a resolved primary model
+// on the dispatch result. Emitting the primary alone discards the configured
+// fallbacks[] chain: the auto path would re-apply it over a fallback already
+// selected by selectAndApplyModel, and the manual path (dispatchHookUnit) now
+// resolves the full chain itself. The dispatch result therefore leaves `model`
+// unset so downstream resolution honors fallbacks.
+test('Dispatch results omit primary-only model so fallbacks survive (#1229)', () => {
+  resetHookState();
+  const base = createFixtureBase();
+  try {
+    writeHookPreferences(base, `  - name: code-review
+    after:
+      - execute-task
+    prompt: Review the change
+    artifact: REVIEW-PASS.md
+    model:
+      model: primary-model
+      fallbacks:
+        - fallback-a
+        - fallback-b
+`);
+
+    const autoDispatch = checkPostUnitHooks("execute-task", "M001/S01/T01", base);
+    assert.ok(autoDispatch, "auto-mode dispatches the configured hook");
+    assert.equal(autoDispatch.unitType, "hook/code-review", "auto dispatch is hook-prefixed");
+    assert.equal(autoDispatch.model, undefined, "auto dispatch does not carry a primary-only model");
+
+    resetHookState();
+
+    const manualDispatch = triggerHookManually("code-review", "execute-task", "M001/S01/T01", base);
+    assert.ok(manualDispatch, "manual trigger dispatches the configured hook");
+    assert.equal(manualDispatch.unitType, "hook/code-review", "manual dispatch is hook-prefixed");
+    assert.equal(manualDispatch.model, undefined, "manual dispatch does not carry a primary-only model");
+  } finally {
+    resetHookState();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 });
