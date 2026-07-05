@@ -9,7 +9,55 @@ import { createRequire } from "node:module";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
-const { RELEASE_WORKSPACE_PACKAGE_DIRS, resolveEngineOptionalDependencyVersion, syncVersionSurfaces } = require("../lib/version-sync.cjs");
+const {
+  PLATFORM_PACKAGE_DIRS,
+  RELEASE_WORKSPACE_PACKAGE_DIRS,
+  resolveEngineOptionalDependencyVersion,
+  syncVersionSurfaces,
+  verifyVersionSync,
+} = require("../lib/version-sync.cjs");
+
+function writeJson(filePath, data) {
+  writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
+}
+
+function writeHermesVersionFiles(root, version) {
+  const hermesDir = join(root, "integrations", "hermes");
+  mkdirSync(join(hermesDir, "open_gsd_hermes"), { recursive: true });
+  writeFileSync(
+    join(hermesDir, "pyproject.toml"),
+    `[project]\nname = "open-gsd-hermes"\nversion = "${version}"\n`,
+  );
+  writeFileSync(
+    join(hermesDir, "open_gsd_hermes", "gsd_client.py"),
+    `payload = {"clientInfo": {"name": "open-gsd-hermes", "version": "${version}"}}\n`,
+  );
+}
+
+function createVersionSyncFixture(root, version) {
+  const optionalDependencies = Object.fromEntries(
+    PLATFORM_PACKAGE_DIRS.map((dir) => [
+      `@opengsd/engine-${dir.replace("native/npm/", "")}`,
+      version,
+    ]),
+  );
+
+  writeJson(join(root, "package.json"), {
+    name: "@opengsd/gsd-pi",
+    version,
+    optionalDependencies,
+  });
+
+  for (const packageDir of [...RELEASE_WORKSPACE_PACKAGE_DIRS, ...PLATFORM_PACKAGE_DIRS, "pkg"]) {
+    mkdirSync(join(root, packageDir), { recursive: true });
+    writeJson(join(root, packageDir, "package.json"), {
+      name: packageDir.replaceAll("/", "-"),
+      version,
+    });
+  }
+
+  writeFileSync(join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+}
 
 test("resolveEngineOptionalDependencyVersion keeps prerelease publishes on stable engine packages", () => {
   // dev and next channels both reuse the stable engine packages — neither
@@ -68,6 +116,67 @@ test("syncVersionSurfaces rewrites internal deps to the stamped prerelease versi
     assert.equal(mcpServer.version, devVersion);
     assert.equal(gateway.version, devVersion);
     assert.equal(gateway.dependencies["@opengsd/mcp-server"], "workspace:*");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("syncVersionSurfaces updates bundled open-gsd-hermes version files for stable releases", () => {
+  const root = mkdtempSync(join(tmpdir(), "gsd-hermes-version-sync-"));
+  const releaseVersion = "1.6.0";
+
+  try {
+    createVersionSyncFixture(root, "1.5.0");
+    writeHermesVersionFiles(root, "1.2.0");
+
+    syncVersionSurfaces(root, releaseVersion);
+
+    assert.match(
+      readFileSync(join(root, "integrations", "hermes", "pyproject.toml"), "utf8"),
+      /version = "1\.6\.0"/,
+    );
+    assert.match(
+      readFileSync(join(root, "integrations", "hermes", "open_gsd_hermes", "gsd_client.py"), "utf8"),
+      /"version": "1\.6\.0"/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("verifyVersionSync reports stale bundled open-gsd-hermes versions on stable releases", () => {
+  const root = mkdtempSync(join(tmpdir(), "gsd-hermes-version-verify-"));
+
+  try {
+    createVersionSyncFixture(root, "1.6.0");
+    writeHermesVersionFiles(root, "1.2.0");
+
+    assert.deepEqual(verifyVersionSync(root), [
+      "integrations/hermes/pyproject.toml version is 1.2.0, expected 1.6.0",
+      "integrations/hermes/open_gsd_hermes/gsd_client.py clientInfo version is 1.2.0, expected 1.6.0",
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("syncVersionSurfaces leaves open-gsd-hermes on stable Python metadata during prerelease stamps", () => {
+  const root = mkdtempSync(join(tmpdir(), "gsd-hermes-prerelease-sync-"));
+
+  try {
+    createVersionSyncFixture(root, "1.5.0");
+    writeHermesVersionFiles(root, "1.5.0");
+
+    syncVersionSurfaces(root, "1.6.0-dev.abc1234");
+
+    assert.match(
+      readFileSync(join(root, "integrations", "hermes", "pyproject.toml"), "utf8"),
+      /version = "1\.5\.0"/,
+    );
+    assert.match(
+      readFileSync(join(root, "integrations", "hermes", "open_gsd_hermes", "gsd_client.py"), "utf8"),
+      /"version": "1\.5\.0"/,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

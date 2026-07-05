@@ -489,7 +489,7 @@ jobs:
             echo "::error::Re-run NPM Publish so the release includes the latest main."
             exit 1
           fi
-          git add package.json pnpm-lock.yaml CHANGELOG.md README.md native/Cargo.toml native/Cargo.lock native/npm/*/package.json pkg/package.json packages/*/package.json extensions/google-search/package.json
+          git add package.json pnpm-lock.yaml CHANGELOG.md README.md native/Cargo.toml native/Cargo.lock native/npm/*/package.json pkg/package.json packages/*/package.json extensions/google-search/package.json integrations/hermes/pyproject.toml integrations/hermes/open_gsd_hermes/gsd_client.py
           git commit -m "release: v${RELEASE_VERSION}"
           git tag "v${RELEASE_VERSION}"
 

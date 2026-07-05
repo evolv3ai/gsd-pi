@@ -254,3 +254,12 @@ test("main package publish uses explicit prepack and disables npm lifecycle reru
   assert.match(prodPublish.run, /postpack-restore-workspace\.cjs/);
   assert.match(prodPublish.run, /npm publish --ignore-scripts --tag latest/);
 });
+
+test("production release stages bundled open-gsd-hermes version files", () => {
+  const steps = workflow.jobs["prod-release"].steps;
+  const commitRelease = steps.find((step) => step.name === "Commit and tag release");
+
+  assert.ok(commitRelease, "prod-release must create a release commit");
+  assert.match(commitRelease.run, /integrations\/hermes\/pyproject\.toml/);
+  assert.match(commitRelease.run, /integrations\/hermes\/open_gsd_hermes\/gsd_client\.py/);
+});

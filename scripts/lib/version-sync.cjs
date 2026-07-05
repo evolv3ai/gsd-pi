@@ -44,6 +44,10 @@ const INTERNAL_PACKAGE_NAMES = new Set([
 
 const NATIVE_CRATE_NAMES = new Set(["gsd-ast", "gsd-engine", "gsd-grep"]);
 
+const HERMES_PYPROJECT_PATH = "integrations/hermes/pyproject.toml";
+const HERMES_CLIENT_PATH = "integrations/hermes/open_gsd_hermes/gsd_client.py";
+const STABLE_SEMVER_PATTERN = /^\d+\.\d+\.\d+$/;
+
 /**
  * Prerelease publishes (dev AND next channels) reuse the stable
  * @opengsd/engine-* packages already on npm — the prerelease workflow does not
@@ -123,6 +127,81 @@ function syncNativeCargoVersion(root, version) {
   }
 }
 
+function isStableReleaseVersion(version) {
+  return STABLE_SEMVER_PATTERN.test(version);
+}
+
+function replaceRequired(content, pattern, replacement, filePath, description) {
+  if (!pattern.test(content)) {
+    throw new Error(`Could not find ${description} in ${filePath}`);
+  }
+  return content.replace(pattern, replacement);
+}
+
+function syncHermesVersion(root, version) {
+  if (!isStableReleaseVersion(version)) return;
+
+  const pyprojectPath = path.join(root, HERMES_PYPROJECT_PATH);
+  if (fs.existsSync(pyprojectPath)) {
+    const pyproject = fs.readFileSync(pyprojectPath, "utf8");
+    const nextPyproject = replaceRequired(
+      pyproject,
+      /(^version = )"[^"]+"/m,
+      `$1"${version}"`,
+      HERMES_PYPROJECT_PATH,
+      "open-gsd-hermes project version",
+    );
+    if (nextPyproject !== pyproject) {
+      fs.writeFileSync(pyprojectPath, nextPyproject);
+    }
+  }
+
+  const clientPath = path.join(root, HERMES_CLIENT_PATH);
+  if (fs.existsSync(clientPath)) {
+    const client = fs.readFileSync(clientPath, "utf8");
+    const nextClient = replaceRequired(
+      client,
+      /("clientInfo": \{"name": "open-gsd-hermes", "version": )"[^"]+"/,
+      `$1"${version}"`,
+      HERMES_CLIENT_PATH,
+      "open-gsd-hermes clientInfo version",
+    );
+    if (nextClient !== client) {
+      fs.writeFileSync(clientPath, nextClient);
+    }
+  }
+}
+
+function readHermesVersion(content, pattern) {
+  return content.match(pattern)?.[1];
+}
+
+function verifyHermesVersion(root, expectedVersion, issues) {
+  if (!isStableReleaseVersion(expectedVersion)) return;
+
+  const pyprojectPath = path.join(root, HERMES_PYPROJECT_PATH);
+  if (fs.existsSync(pyprojectPath)) {
+    const version = readHermesVersion(
+      fs.readFileSync(pyprojectPath, "utf8"),
+      /^version = "([^"]+)"/m,
+    );
+    if (version !== expectedVersion) {
+      issues.push(`${HERMES_PYPROJECT_PATH} version is ${version ?? "missing"}, expected ${expectedVersion}`);
+    }
+  }
+
+  const clientPath = path.join(root, HERMES_CLIENT_PATH);
+  if (fs.existsSync(clientPath)) {
+    const version = readHermesVersion(
+      fs.readFileSync(clientPath, "utf8"),
+      /"clientInfo": \{"name": "open-gsd-hermes", "version": "([^"]+)"/,
+    );
+    if (version !== expectedVersion) {
+      issues.push(`${HERMES_CLIENT_PATH} clientInfo version is ${version ?? "missing"}, expected ${expectedVersion}`);
+    }
+  }
+}
+
 function syncVersionSurfaces(root, version, options = {}) {
   if (options.updateRoot !== false) {
     const rootPkgPath = path.join(root, "package.json");
@@ -141,6 +220,7 @@ function syncVersionSurfaces(root, version, options = {}) {
 
   setPackageVersion(root, "pkg", version);
   syncNativeCargoVersion(root, version);
+  syncHermesVersion(root, version);
 }
 
 function getNativeCargoVersion(root) {
@@ -232,6 +312,7 @@ function verifyVersionSync(root) {
       issues.push(`native/Cargo.lock ${name} version is ${version}, expected ${expectedVersion}`);
     }
   }
+  verifyHermesVersion(root, expectedVersion, issues);
 
   return issues;
 }
