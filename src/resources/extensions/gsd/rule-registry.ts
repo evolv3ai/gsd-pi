@@ -538,14 +538,17 @@ export class RuleRegistry {
       // unit-end — its dispatch was lost/interrupted (pause/resume, crash
       // recovery). Refund that dispatch-consumed cycle exactly once so the gate
       // is re-dispatched at least once instead of hard-blocking on a hook that
-      // never actually ran. The redispatchedGateKeys flag bounds this to a
-      // single refund; a hook that repeatedly fails to produce its unit-end
-      // then consumes its budget and blocks normally.
+      // never actually ran. Only refund when the cycle budget would otherwise
+      // block rerun; below max_cycles, _rerunGateOrBlock already re-dispatches.
+      // The redispatchedGateKeys flag bounds this to a single refund; a hook
+      // that repeatedly fails to produce its unit-end then consumes its budget
+      // and blocks normally.
       const cycleKey = hookCycleKey(config, hook);
-      if (!this.redispatchedGateKeys.has(cycleKey)) {
+      const currentCycle = this.cycleCounts.get(cycleKey) ?? 0;
+      const maxCycles = hookMaxCycles(config);
+      if (!this.redispatchedGateKeys.has(cycleKey) && currentCycle >= maxCycles) {
         this.redispatchedGateKeys.add(cycleKey);
-        const currentCycle = this.cycleCounts.get(cycleKey);
-        if (typeof currentCycle === "number" && currentCycle > 0) {
+        if (currentCycle > 0) {
           this.cycleCounts.set(cycleKey, currentCycle - 1);
         }
       }
