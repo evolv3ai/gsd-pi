@@ -41,7 +41,6 @@ import {
   targetMilestoneFile,
   gsdProjectionRoot,
   gsdRoot,
-  buildMilestoneFileName,
   buildTaskFileName,
   buildSliceFileName,
 } from "./paths.js";
@@ -639,25 +638,20 @@ export async function renderMilestoneArtifactsFromDb(
   const artifacts = getMilestoneScopedArtifacts(milestoneId);
   if (artifacts.length === 0) return false;
 
-  const phaseDir = resolveMilestonePath(basePath, milestoneId) ??
-    join(
-      milestonesDir(basePath),
-      canonicalPhaseDirName(milestoneId, getMilestone(milestoneId)?.title),
-    );
-  mkdirSync(phaseDir, { recursive: true });
-
-  const legacyBase = legacyMilestonesDir(basePath);
-  const isLegacy = phaseDir.startsWith(legacyBase + "/") || phaseDir.startsWith(legacyBase + "\\");
+  const milestone = getMilestone(milestoneId);
 
   let wrote = false;
   for (const artifact of artifacts) {
     if (artifact.artifact_type === "ROADMAP") continue;
     if (!artifact.full_content.trim()) continue;
 
-    const fileName = isLegacy
-      ? `${milestoneId}-${artifact.artifact_type}.md`
-      : buildMilestoneFileName(milestoneId, artifact.artifact_type);
-    const absPath = join(phaseDir, fileName);
+    const absPath = targetMilestoneFile(
+      basePath,
+      milestoneId,
+      artifact.artifact_type,
+      milestone?.title,
+    );
+    mkdirSync(dirname(absPath), { recursive: true });
     const artifactPath = toArtifactPath(absPath, basePath);
     await writeAndStore(absPath, artifactPath, artifact.full_content, {
       artifact_type: artifact.artifact_type,
