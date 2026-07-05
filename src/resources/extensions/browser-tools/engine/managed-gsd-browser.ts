@@ -32,6 +32,18 @@ interface ManagedConnection {
   launch: GsdBrowserMcpLaunchConfig;
 }
 
+type ConnectManagedGsdBrowser = (
+  launch: GsdBrowserMcpLaunchConfig,
+  signal?: AbortSignal,
+) => Promise<ManagedConnection>;
+
+type CloseManagedGsdBrowserConnection = (connection: ManagedConnection) => Promise<void>;
+
+interface PendingManagedConnection {
+  promise: Promise<ManagedConnection>;
+  abortController: AbortController;
+}
+
 interface McpContentItem {
   type: string;
   text?: string;
@@ -69,8 +81,6 @@ interface ManagedBrowserToolSpec {
   compatibility?: { producesImages?: boolean };
 }
 
-const connections = new Map<string, ManagedConnection>();
-const pendingConnections = new Map<string, Promise<ManagedConnection>>();
 const DEFAULT_MAX_LINES = 2_000;
 const DEFAULT_MAX_BYTES = 50 * 1024;
 const MCP_CALL_TIMEOUT_MS = 60_000;
@@ -368,6 +378,120 @@ function buildConnectionKey(launch: GsdBrowserMcpLaunchConfig): string {
   });
 }
 
+function combineAbortSignals(
+  poolSignal: AbortSignal,
+  callerSignal?: AbortSignal,
+): AbortSignal {
+  if (!callerSignal) return poolSignal;
+  if (typeof AbortSignal.any === "function") {
+    return AbortSignal.any([poolSignal, callerSignal]);
+  }
+
+  const controller = new AbortController();
+  const abort = (): void => {
+    if (!controller.signal.aborted) controller.abort();
+  };
+  if (poolSignal.aborted || callerSignal.aborted) {
+    abort();
+  } else {
+    poolSignal.addEventListener("abort", abort, { once: true });
+    callerSignal.addEventListener("abort", abort, { once: true });
+  }
+  return controller.signal;
+}
+
+export class ManagedGsdBrowserConnectionPool {
+  private readonly connections = new Map<string, ManagedConnection>();
+  private readonly pendingConnections = new Map<string, PendingManagedConnection>();
+  private readonly connect: ConnectManagedGsdBrowser;
+  private readonly closeConnection: CloseManagedGsdBrowserConnection;
+  private generation = 0;
+  private closing = false;
+
+  constructor(
+    connect: ConnectManagedGsdBrowser,
+    closeConnection: CloseManagedGsdBrowserConnection,
+  ) {
+    this.connect = connect;
+    this.closeConnection = closeConnection;
+  }
+
+  get activeCount(): number {
+    return this.connections.size;
+  }
+
+  get pendingCount(): number {
+    return this.pendingConnections.size;
+  }
+
+  getOrConnect(
+    launch: GsdBrowserMcpLaunchConfig,
+    signal?: AbortSignal,
+  ): Promise<ManagedConnection> {
+    if (this.closing) {
+      return Promise.reject(new Error("gsd-browser connection pool is closing"));
+    }
+
+    const key = buildConnectionKey(launch);
+    const existing = this.connections.get(key);
+    if (existing) return Promise.resolve(existing);
+
+    const pending = this.pendingConnections.get(key);
+    if (pending) return pending.promise;
+
+    const generation = this.generation;
+    const abortController = new AbortController();
+    const connectionSignal = combineAbortSignals(abortController.signal, signal);
+    const connectionPromise = this.connect(launch, connectionSignal)
+      .then(async (connection) => {
+        if (this.closing || this.generation !== generation) {
+          await this.closeConnection(connection);
+          throw new Error("gsd-browser connection closed during startup");
+        }
+        this.connections.set(key, connection);
+        return connection;
+      })
+      .finally(() => {
+        if (this.pendingConnections.get(key)?.promise === connectionPromise) {
+          this.pendingConnections.delete(key);
+        }
+      });
+
+    this.pendingConnections.set(key, { promise: connectionPromise, abortController });
+    return connectionPromise;
+  }
+
+  async closeAll(): Promise<void> {
+    this.closing = true;
+    this.generation += 1;
+
+    const activeConnections = Array.from(this.connections.values());
+    const pendingConnections = Array.from(this.pendingConnections.values());
+    this.connections.clear();
+    this.pendingConnections.clear();
+    for (const pending of pendingConnections) {
+      pending.abortController.abort();
+    }
+
+    const closingActive = activeConnections.map((connection) => this.closeConnection(connection));
+    const closingPending = pendingConnections.map(async (pending) => {
+      try {
+        const connection = await pending.promise;
+        await this.closeConnection(connection);
+      } catch {
+        // Failed or invalidated connection attempts have already cleaned up.
+      }
+    });
+
+    try {
+      await Promise.allSettled([...closingActive, ...closingPending]);
+    } finally {
+      this.closing = false;
+      this.generation += 1;
+    }
+  }
+}
+
 async function connectManagedGsdBrowser(
   launch: GsdBrowserMcpLaunchConfig,
   signal?: AbortSignal,
@@ -399,6 +523,24 @@ async function connectManagedGsdBrowser(
   }
 }
 
+async function closeManagedGsdBrowserConnection(connection: ManagedConnection): Promise<void> {
+  try {
+    await connection.client.close();
+  } catch {
+    // Best-effort cleanup.
+  }
+  try {
+    await connection.transport.close();
+  } catch {
+    // Best-effort cleanup.
+  }
+}
+
+const connectionPool = new ManagedGsdBrowserConnectionPool(
+  connectManagedGsdBrowser,
+  closeManagedGsdBrowserConnection,
+);
+
 async function getOrConnectManagedGsdBrowser(
   ctx?: ExtensionContext,
   signal?: AbortSignal,
@@ -406,22 +548,7 @@ async function getOrConnectManagedGsdBrowser(
   const launch = resolveGsdBrowserMcpLaunchConfig(resolveProjectRoot(ctx), process.env, {
     sessionSuffix: resolveManagedSessionSuffix(ctx),
   });
-  const key = buildConnectionKey(launch);
-  const existing = connections.get(key);
-  if (existing) return existing;
-
-  const pending = pendingConnections.get(key);
-  if (pending) return pending;
-
-  const connectionPromise = connectManagedGsdBrowser(launch, signal);
-  pendingConnections.set(key, connectionPromise);
-  try {
-    const connection = await connectionPromise;
-    connections.set(key, connection);
-    return connection;
-  } finally {
-    pendingConnections.delete(key);
-  }
+  return connectionPool.getOrConnect(launch, signal);
 }
 
 function isUnknownMcpToolError(error: unknown): boolean {
@@ -743,21 +870,7 @@ export function registerManagedGsdBrowserTools(pi: ExtensionAPI): void {
 }
 
 export async function closeManagedGsdBrowser(): Promise<void> {
-  const closing = Array.from(connections.entries()).map(async ([key, connection]) => {
-    try {
-      await connection.client.close();
-    } catch {
-      // Best-effort cleanup.
-    }
-    try {
-      await connection.transport.close();
-    } catch {
-      // Best-effort cleanup.
-    }
-    connections.delete(key);
-  });
-  await Promise.allSettled(closing);
-  pendingConnections.clear();
+  await connectionPool.closeAll();
 }
 
 export async function _resetManagedGsdBrowserForTest(): Promise<void> {

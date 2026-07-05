@@ -16,6 +16,7 @@ import {
   runPreDispatchHooks,
   persistHookState,
   restoreHookState,
+  reconcileRestoredHookDispatch,
   clearPersistedHookState,
   getHookStatus,
   formatHookStatus,
@@ -218,6 +219,233 @@ test('Blocking hook restored from disk does not trust artifact without clean hoo
     const resumed = checkPostUnitHooks("execute-task", "M001/S01/T01", base);
     assert.ok(resumed, "persisted active gate reruns when clean hook completion was not observed");
     assert.equal(resumed.unitType, "hook/security-review");
+  } finally {
+    resetHookState();
+    invalidateAllCaches();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('Restore reconciliation re-enqueues the lost hook dispatch (#1246)', () => {
+  resetHookState();
+  const base = createFixtureBase();
+  try {
+    writeHookPreferences(base, `  - name: plan-review
+    after:
+      - plan-slice
+    prompt: Review the plan for {milestoneId}/{sliceId}
+    artifact: PLAN-REVIEW.md
+    criticality: blocking
+    max_cycles: 2
+`);
+    // Trigger unit completes: activeHook set + persisted, dispatch enqueued.
+    const dispatch = checkPostUnitHooks("plan-slice", "M002/S01", base);
+    assert.ok(dispatch, "gate dispatches on trigger unit completion");
+    assert.equal(dispatch.unitType, "hook/plan-review");
+    persistHookState(base);
+
+    // Pause/resume: activeHook restored, but the session-local sidecar queue is
+    // gone (never persisted).
+    resetHookState();
+    restoreHookState(base);
+    assert.ok(getActiveHook(), "activeHook restored from disk");
+
+    // Reconciliation re-enqueues the missing dispatch so the hook actually runs.
+    const sidecarQueue: any[] = [];
+    reconcileRestoredHookDispatch(base, sidecarQueue);
+    assert.equal(sidecarQueue.length, 1, "lost hook dispatch is re-enqueued");
+    assert.equal(sidecarQueue[0].kind, "hook");
+    assert.equal(sidecarQueue[0].unitType, "hook/plan-review");
+    assert.equal(sidecarQueue[0].unitId, "M002/S01");
+    assert.match(sidecarQueue[0].prompt, /Review the plan for M002\/S01/);
+  } finally {
+    resetHookState();
+    invalidateAllCaches();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('Restore reconciliation is a no-op when the dispatch is already queued (#1246)', () => {
+  resetHookState();
+  const base = createFixtureBase();
+  try {
+    writeHookPreferences(base, `  - name: plan-review
+    after:
+      - plan-slice
+    prompt: Review the plan
+    artifact: PLAN-REVIEW.md
+    criticality: blocking
+    max_cycles: 2
+`);
+    const dispatch = checkPostUnitHooks("plan-slice", "M002/S01", base);
+    assert.ok(dispatch, "gate dispatches on trigger unit completion");
+    persistHookState(base);
+    resetHookState();
+    restoreHookState(base);
+
+    const sidecarQueue: any[] = [
+      { kind: "hook", unitType: "hook/plan-review", unitId: "M002/S01", prompt: "already here" },
+    ];
+    reconcileRestoredHookDispatch(base, sidecarQueue);
+    assert.equal(sidecarQueue.length, 1, "does not duplicate an existing hook dispatch");
+    assert.equal(sidecarQueue[0].prompt, "already here");
+  } finally {
+    resetHookState();
+    invalidateAllCaches();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('Restore reconciliation is a no-op with no active hook (#1246)', () => {
+  resetHookState();
+  const base = createFixtureBase();
+  try {
+    const sidecarQueue: any[] = [];
+    reconcileRestoredHookDispatch(base, sidecarQueue);
+    assert.equal(sidecarQueue.length, 0, "nothing enqueued when no active hook");
+  } finally {
+    resetHookState();
+    invalidateAllCaches();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('Blocking hook re-dispatches once after a lost dispatch at default max_cycles', () => {
+  resetHookState();
+  const base = createFixtureBase();
+  try {
+    // Default max_cycles (1): a cycle is charged at dispatch time.
+    writeHookPreferences(base, `  - name: plan-review
+    after:
+      - plan-slice
+    prompt: Review plan
+    artifact: PLAN-REVIEW.md
+    criticality: blocking
+`);
+
+    const firstDispatch = checkPostUnitHooks("plan-slice", "M002/S01", base);
+    assert.ok(firstDispatch, "gate dispatches and consumes its cycle at dispatch");
+    assert.equal(firstDispatch.unitType, "hook/plan-review");
+    persistHookState(base);
+
+    // Simulate a lost dispatch: the hook never produced its own unit-end, the
+    // trigger unit resumes instead. The dispatch-consumed cycle is refunded once
+    // so the gate re-dispatches rather than hard-blocking on a hook that never ran.
+    resetHookState();
+    restoreHookState(base);
+    const redispatch = checkPostUnitHooks("plan-slice", "M002/S01", base);
+    assert.ok(redispatch, "lost dispatch re-dispatches the gate instead of blocking");
+    assert.equal(redispatch.unitType, "hook/plan-review");
+    assert.deepStrictEqual(consumeGateBlock(), null, "no gate block on the first lost dispatch");
+    persistHookState(base);
+
+    // A second lost dispatch consumes the budget and blocks — the refund is one-shot.
+    resetHookState();
+    restoreHookState(base);
+    const blocked = checkPostUnitHooks("plan-slice", "M002/S01", base);
+    assert.deepStrictEqual(blocked, null, "second lost dispatch exhausts the budget");
+    const block = consumeGateBlock();
+    assert.ok(block, "gate block recorded after the one-shot re-dispatch is used");
+    assert.equal(block.hookName, "plan-review");
+    assert.match(block.reason, /gate cycle budget exhausted/);
+  } finally {
+    resetHookState();
+    invalidateAllCaches();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('Blocking hook lost-dispatch refund is one-shot and bounded at max_cycles=2', () => {
+  resetHookState();
+  const base = createFixtureBase();
+  try {
+    writeHookPreferences(base, `  - name: plan-review
+    after:
+      - plan-slice
+    prompt: Review plan
+    artifact: PLAN-REVIEW.md
+    criticality: blocking
+    max_cycles: 2
+`);
+
+    // Simulate a lost dispatch: persist, drop in-memory state, restore, then the
+    // trigger unit resumes instead of the hook producing its own unit-end.
+    const lose = () => {
+      persistHookState(base);
+      resetHookState();
+      restoreHookState(base);
+      return checkPostUnitHooks("plan-slice", "M002/S01", base);
+    };
+
+    assert.ok(checkPostUnitHooks("plan-slice", "M002/S01", base), "initial dispatch");
+
+    // Refund is one-shot, but max_cycles=2 still has real budget, so lost#2 also
+    // re-dispatches by consuming a genuine cycle (not another refund).
+    assert.ok(lose(), "lost#1 re-dispatches (one-shot refund)");
+    assert.equal(consumeGateBlock(), null, "no block after lost#1");
+    assert.ok(lose(), "lost#2 re-dispatches from real budget");
+    assert.equal(consumeGateBlock(), null, "no block after lost#2");
+
+    // Total dispatches are bounded to max_cycles + 1 (the single forgiven loss),
+    // so the third lost dispatch blocks. redispatchedGateKeys guarantees this
+    // terminates rather than looping forever on repeated lost resumes.
+    assert.equal(lose(), null, "lost#3 exhausts the bounded budget");
+    const block = consumeGateBlock();
+    assert.ok(block, "gate block recorded on lost#3");
+    assert.match(block.reason, /gate cycle budget exhausted/);
+  } finally {
+    resetHookState();
+    invalidateAllCaches();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('Blocking hook lost dispatch does not steal a real-run cycle at max_cycles=2', () => {
+  resetHookState();
+  const base = createFixtureBase();
+  try {
+    writeHookPreferences(base, `  - name: plan-review
+    after:
+      - plan-slice
+    prompt: Review plan
+    artifact: PLAN-REVIEW.md
+    criticality: blocking
+    max_cycles: 2
+`);
+
+    // Dispatch, then lose it once (the one-shot refund is spent here).
+    assert.ok(checkPostUnitHooks("plan-slice", "M002/S01", base), "initial dispatch");
+    persistHookState(base);
+    resetHookState();
+    restoreHookState(base);
+    assert.ok(
+      checkPostUnitHooks("plan-slice", "M002/S01", base),
+      "lost dispatch re-dispatches (refund spent)",
+    );
+
+    // The hook now actually runs, each run reporting a failed verdict. Because a
+    // lost dispatch must not consume the hook's real-run budget, max_cycles=2
+    // still permits two genuine runs before the gate blocks — spending the
+    // refund early did not rob a later real cycle.
+    mkdirSync(join(base, ".gsd", "milestones", "M002", "slices", "S01"), { recursive: true });
+    writeFileSync(
+      resolveHookArtifactPath(base, "M002/S01", "PLAN-REVIEW.md"),
+      "---\nverdict: failed\n---\n\nRejected.\n",
+      "utf-8",
+    );
+    assert.ok(
+      checkPostUnitHooks("hook/plan-review", "M002/S01", base),
+      "real run #1 (failed verdict) re-dispatches",
+    );
+    assert.equal(consumeGateBlock(), null, "no block after the first real run");
+    assert.equal(
+      checkPostUnitHooks("hook/plan-review", "M002/S01", base),
+      null,
+      "real run #2 (failed verdict) exhausts the real budget",
+    );
+    const block = consumeGateBlock();
+    assert.ok(block, "gate block recorded only after two real runs");
+    assert.match(block.reason, /gate cycle budget exhausted/);
   } finally {
     resetHookState();
     invalidateAllCaches();
@@ -450,6 +678,47 @@ test('triggerHookManually: with configured hook', () => {
       assert.ok(typeof result.prompt === "string", "prompt is a string");
     }
   } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+// ─── Hook dispatch results omit a primary-only model (#1229) ───────────────
+// Both the auto-mode (checkPostUnitHooks → _startHook) and manual
+// (triggerHookManually) dispatch paths must NOT carry a resolved primary model
+// on the dispatch result. Emitting the primary alone discards the configured
+// fallbacks[] chain: the auto path would re-apply it over a fallback already
+// selected by selectAndApplyModel, and the manual path (dispatchHookUnit) now
+// resolves the full chain itself. The dispatch result therefore leaves `model`
+// unset so downstream resolution honors fallbacks.
+test('Dispatch results omit primary-only model so fallbacks survive (#1229)', () => {
+  resetHookState();
+  const base = createFixtureBase();
+  try {
+    writeHookPreferences(base, `  - name: code-review
+    after:
+      - execute-task
+    prompt: Review the change
+    artifact: REVIEW-PASS.md
+    model:
+      model: primary-model
+      fallbacks:
+        - fallback-a
+        - fallback-b
+`);
+
+    const autoDispatch = checkPostUnitHooks("execute-task", "M001/S01/T01", base);
+    assert.ok(autoDispatch, "auto-mode dispatches the configured hook");
+    assert.equal(autoDispatch.unitType, "hook/code-review", "auto dispatch is hook-prefixed");
+    assert.equal(autoDispatch.model, undefined, "auto dispatch does not carry a primary-only model");
+
+    resetHookState();
+
+    const manualDispatch = triggerHookManually("code-review", "execute-task", "M001/S01/T01", base);
+    assert.ok(manualDispatch, "manual trigger dispatches the configured hook");
+    assert.equal(manualDispatch.unitType, "hook/code-review", "manual dispatch is hook-prefixed");
+    assert.equal(manualDispatch.model, undefined, "manual dispatch does not carry a primary-only model");
+  } finally {
+    resetHookState();
     rmSync(base, { recursive: true, force: true });
   }
 });

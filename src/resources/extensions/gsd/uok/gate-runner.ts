@@ -1,6 +1,7 @@
 import type { FailureClass, GateResult } from "./contracts.js";
 import { insertGateRun } from "../gsd-db.js";
 import { buildAuditEnvelope, emitUokAuditEvent } from "./audit.js";
+import { isUnifiedAuditEnabled } from "./audit-toggle.js";
 
 export interface GateRunnerContext {
   basePath: string;
@@ -37,6 +38,29 @@ const RETRY_MATRIX: Record<FailureClass, number> = {
   "manual-attention": 0,
   unknown: 0,
 };
+
+function emitGateAuditIfEnabled(ctx: GateRunnerContext, result: GateResult): void {
+  if (!isUnifiedAuditEnabled(ctx.basePath)) return;
+
+  emitUokAuditEvent(
+    ctx.basePath,
+    buildAuditEnvelope({
+      traceId: ctx.traceId,
+      turnId: ctx.turnId,
+      category: "gate",
+      type: "gate-run",
+      payload: {
+        gateId: result.gateId,
+        gateType: result.gateType,
+        outcome: result.outcome,
+        failureClass: result.failureClass,
+        attempt: result.attempt,
+        maxAttempts: result.maxAttempts,
+        retryable: result.retryable,
+      },
+    }),
+  );
+}
 
 export class UokGateRunner {
   private readonly registry = new Map<string, GateExecutionInput>();
@@ -85,24 +109,7 @@ export class UokGateRunner {
         evaluatedAt: unknownResult.evaluatedAt,
       });
 
-      emitUokAuditEvent(
-        ctx.basePath,
-        buildAuditEnvelope({
-          traceId: ctx.traceId,
-          turnId: ctx.turnId,
-          category: "gate",
-          type: "gate-run",
-          payload: {
-            gateId: unknownResult.gateId,
-            gateType: unknownResult.gateType,
-            outcome: unknownResult.outcome,
-            failureClass: unknownResult.failureClass,
-            attempt: unknownResult.attempt,
-            maxAttempts: unknownResult.maxAttempts,
-            retryable: unknownResult.retryable,
-          },
-        }),
-      );
+      emitGateAuditIfEnabled(ctx, unknownResult);
 
       return unknownResult;
     }
@@ -170,24 +177,7 @@ export class UokGateRunner {
         evaluatedAt: final.evaluatedAt,
       });
 
-      emitUokAuditEvent(
-        ctx.basePath,
-        buildAuditEnvelope({
-          traceId: ctx.traceId,
-          turnId: ctx.turnId,
-          category: "gate",
-          type: "gate-run",
-          payload: {
-            gateId: final.gateId,
-            gateType: final.gateType,
-            outcome: final.outcome,
-            failureClass: final.failureClass,
-            attempt: final.attempt,
-            maxAttempts: final.maxAttempts,
-            retryable: final.retryable,
-          },
-        }),
-      );
+      emitGateAuditIfEnabled(ctx, final);
 
       if (!retryable) break;
     }

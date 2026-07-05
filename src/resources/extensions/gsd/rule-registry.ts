@@ -22,8 +22,9 @@ import type {
 } from "./types.js";
 import { resolvePostUnitHooks, resolvePreDispatchHooks } from "./preferences.js";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { parseUnitId } from "./unit-id.js";
+import { resolveMilestonePath } from "./paths.js";
 import { queryJournal, type JournalEntry } from "./journal.js";
 import { readUnitRuntimeRecord, type UnitRuntimePhase } from "./unit-runtime.js";
 import { extractFrontmatterVerdict } from "./verdict-parser.js";
@@ -32,13 +33,45 @@ import { extractFrontmatterVerdict } from "./verdict-parser.js";
 
 export function resolveHookArtifactPath(basePath: string, unitId: string, artifactName: string): string {
   const { milestone, slice, task } = parseUnitId(unitId);
+
+  // Prefer the active phase directory (flat-phase layout: .gsd/phases/<NN>-.../).
+  // Configured gate artifacts are canonical phase-level files (e.g.
+  // BROWSER-RUNTIME-EVIDENCE.md), so resolve the exact declared name first,
+  // then a task-prefixed variant for retry sentinels / rework briefs.
+  const candidates: string[] = [];
+  const phaseDir = resolveMilestonePath(basePath, milestone);
+  const isFlatPhaseDir = phaseDir !== null
+    && !(dirname(phaseDir).endsWith("/milestones") || dirname(phaseDir).endsWith("\\milestones"));
+  if (isFlatPhaseDir) {
+    candidates.push(join(phaseDir, artifactName));
+    if (task !== undefined) {
+      candidates.push(join(phaseDir, `${task}-${artifactName}`));
+    }
+  }
+
+  // Legacy nested layout fallbacks (.gsd/milestones/<M>/slices/<S>/tasks/...).
+  const legacyBase = join(basePath, ".gsd", "milestones", milestone);
+  let legacyDefault: string;
   if (task !== undefined && slice !== undefined) {
-    return join(basePath, ".gsd", "milestones", milestone, "slices", slice, "tasks", `${task}-${artifactName}`);
+    legacyDefault = join(legacyBase, "slices", slice, "tasks", `${task}-${artifactName}`);
+    candidates.push(legacyDefault);
+    candidates.push(join(legacyBase, "slices", slice, "tasks", artifactName));
+    candidates.push(join(legacyBase, "slices", slice, artifactName));
+  } else if (slice !== undefined) {
+    legacyDefault = join(legacyBase, "slices", slice, artifactName);
+    candidates.push(legacyDefault);
+  } else {
+    legacyDefault = join(legacyBase, artifactName);
   }
-  if (slice !== undefined) {
-    return join(basePath, ".gsd", "milestones", milestone, "slices", slice, artifactName);
-  }
-  return join(basePath, ".gsd", "milestones", milestone, artifactName);
+  candidates.push(join(legacyBase, artifactName));
+
+  const existing = candidates.find((candidate) => existsSync(candidate));
+  if (existing) return existing;
+
+  // Nothing on disk yet: prefer the active phase path when the phase dir is
+  // known, otherwise fall back to the legacy default (preserves pre-flat-phase
+  // behavior for missing-artifact diagnostics).
+  return isFlatPhaseDir ? join(phaseDir!, artifactName) : legacyDefault;
 }
 
 // ─── Dispatch Rule Conversion ──────────────────────────────────────────────
@@ -126,6 +159,13 @@ export class RuleRegistry {
     forceRun?: boolean;
   }> = [];
   cycleCounts: Map<string, number> = new Map();
+  /**
+   * Cycle keys that have already been granted a one-shot re-dispatch after a
+   * lost/interrupted dispatch (hook charged a cycle but never produced its own
+   * unit-end). Bounds the dispatch-cycle refund to exactly one per gate so a
+   * hook that repeatedly fails to complete cannot loop forever.
+   */
+  redispatchedGateKeys: Set<string> = new Set();
   retryPending: boolean = false;
   retryTrigger: { unitType: string; unitId: string; retryArtifact?: string } | null = null;
   hookFailure: HookFailureState | null = null;
@@ -364,6 +404,14 @@ export class RuleRegistry {
       pendingRetry: false,
     };
 
+    return this._buildHookDispatch(config, triggerUnitId);
+  }
+
+  /** Construct the sidecar dispatch for a hook without mutating registry state. */
+  private _buildHookDispatch(
+    config: PostUnitHookConfig,
+    triggerUnitId: string,
+  ): HookDispatchResult {
     const { milestone: mid, slice: sid, task: tid } = parseUnitId(triggerUnitId);
     let prompt = config.prompt
       .replace(/\{milestoneId\}/g, mid ?? "")
@@ -375,10 +423,27 @@ export class RuleRegistry {
     return {
       hookName: config.name,
       prompt,
-      model: config.model,
+      // Model selection (including fallbacks[]) is handled by
+      // resolveModelWithFallbacksForUnit for the `hook/<name>` unit type (#1229).
       unitType: `hook/${config.name}`,
       unitId: triggerUnitId,
     };
+  }
+
+  /**
+   * Reconstruct the in-flight hook's dispatch from the restored `activeHook`
+   * state, without mutating the registry. Used to reconcile a persisted
+   * `activeHook` whose session-local dispatch was lost across a pause/resume
+   * or crash-recovery, so the hook actually runs instead of being charged
+   * against the next unrelated unit's close-out (#1246).
+   */
+  getPendingHookDispatch(basePath: string): HookDispatchResult | null {
+    if (!this.activeHook) return null;
+    const config = resolvePostUnitHooks(basePath).find(
+      h => h.name === this.activeHook!.hookName,
+    );
+    if (!config) return null;
+    return this._buildHookDispatch(config, this.activeHook.triggerUnitId);
   }
 
   private _assessHookCompletion(
@@ -503,6 +568,30 @@ export class RuleRegistry {
     observedCleanExecution: boolean,
   ): HookDispatchResult | null {
     if (!observedCleanExecution) {
+      // The hook was charged a cycle at dispatch but never produced its own
+      // unit-end — its dispatch was lost/interrupted (pause/resume, crash
+      // recovery). Refund that dispatch-consumed cycle exactly once so the gate
+      // is re-dispatched at least once instead of hard-blocking on a hook that
+      // never actually ran.
+      //
+      // This refund is intentionally UNCONDITIONAL on the first lost dispatch —
+      // it must NOT be gated on `currentCycle >= max_cycles`. A lost dispatch is
+      // a non-run: charging its cycle at dispatch time must not consume the
+      // hook's real-run budget. Gating the refund on "budget already exhausted"
+      // lets a lost dispatch below max_cycles silently eat a genuine cycle, so
+      // the hook gets one fewer real run than configured — reintroducing #1244
+      // for max_cycles >= 2 (see the "does not steal a real-run cycle" test).
+      // The redispatchedGateKeys flag bounds this to a single refund per gate,
+      // so repeated lost dispatches still terminate (total dispatches never
+      // exceed max_cycles + 1) and a hook that keeps failing blocks normally.
+      const cycleKey = hookCycleKey(config, hook);
+      if (!this.redispatchedGateKeys.has(cycleKey)) {
+        this.redispatchedGateKeys.add(cycleKey);
+        const currentCycle = this.cycleCounts.get(cycleKey);
+        if (typeof currentCycle === "number" && currentCycle > 0) {
+          this.cycleCounts.set(cycleKey, currentCycle - 1);
+        }
+      }
       return this._rerunGateOrBlock(config, hook, basePath, {
         reason: `hook/${config.name} did not complete cleanly before the trigger unit resumed`,
       });
@@ -839,6 +928,7 @@ export class RuleRegistry {
     this.activeHook = null;
     this.hookQueue = [];
     this.cycleCounts.clear();
+    this.redispatchedGateKeys.clear();
     this.retryPending = false;
     this.retryTrigger = null;
     this.hookFailure = null;
@@ -855,6 +945,7 @@ export class RuleRegistry {
   persistState(basePath: string): void {
     const state: PersistedHookState = {
       cycleCounts: Object.fromEntries(this.cycleCounts),
+      redispatchedGateKeys: Array.from(this.redispatchedGateKeys),
       activeHook: this.activeHook ? { ...this.activeHook } : null,
       hookQueue: this.hookQueue.map(entry => ({
         hookName: entry.config.name,
@@ -888,6 +979,14 @@ export class RuleRegistry {
           }
         }
       }
+      this.redispatchedGateKeys.clear();
+      if (Array.isArray(state.redispatchedGateKeys)) {
+        for (const key of state.redispatchedGateKeys) {
+          if (typeof key === "string") {
+            this.redispatchedGateKeys.add(key);
+          }
+        }
+      }
       this.activeHook = state.activeHook && typeof state.activeHook === "object"
         ? { ...state.activeHook }
         : null;
@@ -918,7 +1017,7 @@ export class RuleRegistry {
       if (existsSync(filePath)) {
         writeFileSync(
           filePath,
-          JSON.stringify({ cycleCounts: {}, activeHook: null, hookQueue: [], savedAt: new Date().toISOString() }, null, 2),
+          JSON.stringify({ cycleCounts: {}, redispatchedGateKeys: [], activeHook: null, hookQueue: [], savedAt: new Date().toISOString() }, null, 2),
           "utf-8",
         );
       }
@@ -1014,7 +1113,10 @@ export class RuleRegistry {
     return {
       hookName: hook.name,
       prompt,
-      model: hook.model,
+      // Model selection (including fallbacks[]) is resolved by dispatchHookUnit
+      // via resolveModelWithFallbacksForUnit for the `hook/<name>` unit type,
+      // matching the auto-mode path. Emitting the primary-only model here would
+      // discard the configured fallback chain (#1229).
       unitType: `hook/${hook.name}`,
       unitId,
     };

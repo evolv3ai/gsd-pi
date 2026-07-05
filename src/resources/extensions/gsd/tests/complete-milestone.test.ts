@@ -423,5 +423,50 @@ console.log('\n=== complete-milestone: existing SUMMARY.md preserved (#4598) ===
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// complete-milestone: flat-phase compatibility SUMMARY.md is not hidden
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n=== complete-milestone: flat-phase legacy-named SUMMARY.md preserved (#4598) ===');
+{
+  const dbPath = tempDbPath();
+  openDatabase(dbPath);
+  const basePath = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-flat-complete-milestone-'));
+  const phaseDir = path.join(basePath, '.gsd', 'phases', '01-test-milestone');
+  fs.mkdirSync(path.join(phaseDir, 'slices', 'S01', 'tasks'), { recursive: true });
+  seedCompletedMilestone({ basePath, validationVerdict: 'pass' });
+
+  // Flat-phase projects may still contain legacy-named compatibility files.
+  // The no-overwrite guard must preserve those richer summaries instead of
+  // generating a canonical sibling that later readers would prefer.
+  const summaryPath = path.join(phaseDir, 'M001-SUMMARY.md');
+  const canonicalSummaryPath = path.join(phaseDir, '01-SUMMARY.md');
+  const sentinel = '# M001: Pre-existing flat-phase richer summary\n\nDO NOT OVERWRITE ME\n';
+  fs.writeFileSync(summaryPath, sentinel, 'utf-8');
+
+  const result = await handleCompleteMilestone(makeValidParams(), basePath);
+  assertTrue(!('error' in result), 'completion should still succeed when flat-phase compatibility SUMMARY.md exists');
+  if (!('error' in result)) {
+    assertEq(
+      result.summaryPath,
+      fs.realpathSync(summaryPath),
+      'completion should report the preserved existing SUMMARY path',
+    );
+    assertEq(
+      fs.readFileSync(summaryPath, 'utf-8'),
+      sentinel,
+      'flat-phase compatibility SUMMARY.md must be preserved, not hidden by a canonical rewrite',
+    );
+    assertTrue(
+      !fs.existsSync(canonicalSummaryPath),
+      'completion must not create a canonical sibling over an existing compatibility summary',
+    );
+    assertEq(getMilestone('M001')!.status, 'complete', 'milestone should still be marked complete in DB');
+  }
+
+  cleanupDir(basePath);
+  cleanup(dbPath);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 
 report();

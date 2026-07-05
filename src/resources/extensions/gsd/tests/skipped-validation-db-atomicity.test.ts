@@ -52,7 +52,12 @@ test("skipped validation dispatch persists the validation file and DB assessment
     const artifactPath = "milestones/M001/slices/S01/S01-ASSESSMENT.md";
     const assessmentPath = `.gsd/${artifactPath}`;
     assert.equal(getArtifact(artifactPath)?.artifact_type, "ASSESSMENT");
-    assert.equal(getAssessment(assessmentPath)?.scope, "run-uat");
+    // #1258: the per-slice ASSESSMENT fabricated by the pre-validation backfill
+    // is a placeholder (no UAT ever ran for this slice), so it is filed under the
+    // `backfill` scope — never `run-uat` — so `readUatGateVerdict` cannot mistake
+    // it for a genuine UAT sign-off. Its verdict body stays PASS to satisfy the
+    // MV02 artifact-existence requirement.
+    assert.equal(getAssessment(assessmentPath)?.scope, "backfill");
     assert.equal(getAssessment(assessmentPath)?.status, "pass");
     assert.equal(
       getLatestAssessmentByScope("M001", "milestone-validation")?.status,

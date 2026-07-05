@@ -19,6 +19,7 @@ import {
   resolveSlicePath,
   resolveTasksDir,
   dirIsMetaOnlyLegacyMilestone,
+  normalizeRealPath,
 } from "./paths.js";
 import { milestoneIdToPhaseNum } from "./layout-policy.js";
 import { parseUnitId } from "./unit-id.js";
@@ -354,7 +355,7 @@ export function resolveSliceResearchLocation(
   if (canonicalPath && existsSync(canonicalPath)) {
     return {
       absolutePath: canonicalPath,
-      relativePath: relative(basePath, canonicalPath),
+      relativePath: relative(normalizeRealPath(basePath), canonicalPath),
     };
   }
 

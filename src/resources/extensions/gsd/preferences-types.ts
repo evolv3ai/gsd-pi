@@ -317,7 +317,12 @@ export interface ResolvedModelConfig {
 export type SkillDiscoveryMode = "auto" | "suggest" | "off";
 
 export interface AutoSupervisorConfig {
-  model?: string;
+  /**
+   * Model ID for the supervisor process. Accepts a bare model ID or the
+   * extended `{ model, provider?, fallbacks? }` object form for parity with
+   * phase buckets (#1229). Resolution normalizes it to the primary model ID.
+   */
+  model?: string | GSDPhaseModelConfig;
   soft_timeout_minutes?: number;
   idle_timeout_minutes?: number;
   hard_timeout_minutes?: number;
@@ -330,6 +335,17 @@ export interface AutoSupervisorConfig {
    */
   stalled_tool_timeout_minutes?: number;
 }
+
+/**
+ * The supervisor config after resolution by `resolveAutoSupervisorConfig`.
+ * Identical to {@link AutoSupervisorConfig} except `model` is always the
+ * normalized primary model ID string and `modelFallbacks` carries the ordered
+ * fallback chain from the object form accepted in preferences (#1229).
+ */
+export type ResolvedAutoSupervisorConfig = Omit<AutoSupervisorConfig, "model"> & {
+  model?: string;
+  modelFallbacks?: string[];
+};
 
 export interface RemoteQuestionsConfig {
   channel: "slack" | "discord" | "telegram";

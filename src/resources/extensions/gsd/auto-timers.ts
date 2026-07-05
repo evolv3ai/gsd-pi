@@ -19,6 +19,7 @@ import {
   hasInteractiveToolInFlight,
 } from "./auto-tool-tracking.js";
 import { detectWorkingTreeActivity } from "./auto-supervisor.js";
+import { applySupervisorModelIfConfigured } from "./auto-model-selection.js";
 import { closeoutUnit, type CloseoutOptions } from "./auto-unit-closeout.js";
 import { saveActivityLog } from "./activity-log.js";
 import { recoverTimedOutUnit, type RecoveryContext } from "./auto-timeout-recovery.js";
@@ -158,7 +159,7 @@ export function startUnitSupervision(sctx: SupervisionContext): void {
       : idleTimeoutMs;
 
   // ── 1. Soft timeout warning ──
-  s.wrapupWarningHandle = setTimeout(() => {
+  s.wrapupWarningHandle = setTimeout(async () => {
     s.wrapupWarningHandle = null;
     if (!s.active || !s.currentUnit) return;
     writeUnitRuntimeRecord(s.basePath, unitType, unitId, s.currentUnit.startedAt, {
@@ -169,6 +170,9 @@ export function startUnitSupervision(sctx: SupervisionContext): void {
     // Triggering during active tool calls causes tool results to be skipped
     // with "Skipped due to queued user message", leading to provider errors (#3512).
     const softTrigger = getInFlightToolCount() === 0;
+    if (softTrigger) {
+      await applySupervisorModelIfConfigured(ctx, pi, s.basePath);
+    }
     pi.sendMessage(
       {
         customType: "gsd-auto-wrapup",
@@ -351,7 +355,7 @@ export function startUnitSupervision(sctx: SupervisionContext): void {
     ctx.model?.provider,
   );
   const continueHereThreshold = computeBudgets(executorContextWindow).continueThresholdPercent;
-  s.continueHereHandle = setInterval(() => {
+  s.continueHereHandle = setInterval(async () => {
     if (!s.active || !s.currentUnit || !s.cmdCtx) return;
     const runtime = readUnitRuntimeRecord(s.basePath, unitType, unitId);
     if (runtime?.continueHereFired) return;
@@ -382,6 +386,9 @@ export function startUnitSupervision(sctx: SupervisionContext): void {
 
     // Only trigger a new turn if no tools are currently in flight (#3512).
     const contextTrigger = getInFlightToolCount() === 0;
+    if (contextTrigger) {
+      await applySupervisorModelIfConfigured(ctx, pi, s.basePath);
+    }
     pi.sendMessage(
       {
         customType: "gsd-auto-wrapup",

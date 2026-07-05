@@ -3,14 +3,20 @@ import assert from "node:assert/strict";
 
 import { closeDatabase, openDatabase, _getAdapter } from "../gsd-db.ts";
 import { UokGateRunner } from "../uok/gate-runner.ts";
+import {
+  clearUnifiedAuditOverrideForTests,
+  setUnifiedAuditEnabled,
+} from "../uok/audit-toggle.ts";
 
 test.beforeEach(() => {
+  setUnifiedAuditEnabled(true);
   closeDatabase();
   const ok = openDatabase(":memory:");
   assert.equal(ok, true);
 });
 
 test.afterEach(() => {
+  clearUnifiedAuditOverrideForTests();
   closeDatabase();
 });
 
@@ -67,6 +73,39 @@ test("uok gate runner returns manual-attention for unknown gate id", async () =>
 
   assert.equal(result.outcome, "manual-attention");
   assert.equal(result.failureClass, "unknown");
+});
+
+test("uok gate runner emits audit by default for standalone callers", async () => {
+  clearUnifiedAuditOverrideForTests();
+  const runner = new UokGateRunner();
+  await runner.run("standalone-missing-gate", {
+    basePath: process.cwd(),
+    traceId: "trace-standalone",
+    turnId: "turn-standalone",
+  });
+
+  const adapter = _getAdapter();
+  const rows = adapter?.prepare(
+    "SELECT type FROM audit_events WHERE trace_id = 'trace-standalone'",
+  ).all() ?? [];
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.["type"], "gate-run");
+});
+
+test("uok gate runner skips audit when unified audit is explicitly disabled", async () => {
+  setUnifiedAuditEnabled(false);
+  const runner = new UokGateRunner();
+  await runner.run("disabled-audit-missing-gate", {
+    basePath: process.cwd(),
+    traceId: "trace-disabled-audit",
+    turnId: "turn-disabled-audit",
+  });
+
+  const adapter = _getAdapter();
+  const rows = adapter?.prepare(
+    "SELECT type FROM audit_events WHERE trace_id = 'trace-disabled-audit'",
+  ).all() ?? [];
+  assert.equal(rows.length, 0);
 });
 
 // Regression tests for #4950

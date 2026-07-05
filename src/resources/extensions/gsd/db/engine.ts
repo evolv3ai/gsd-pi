@@ -860,3 +860,39 @@ export function getDb(): DbAdapter {
 export function getDbOrNull(): DbAdapter | null {
   return currentDb;
 }
+
+export interface DbWritableProbeResult {
+  ok: boolean;
+  detail?: string;
+}
+
+/**
+ * Confirm the open handle can actually write, not just that it opened.
+ *
+ * A schema-current database performs zero writes during open, so a handle that
+ * opened successfully but is not writable (read-only file, WAL/SHM permission
+ * mismatch, or a stale/moved handle → SQLITE_READONLY_DBMOVED) otherwise passes
+ * the open-only availability check and only fails much later at the first real
+ * write. The probe forces a genuine page write by re-writing the current
+ * `PRAGMA user_version` value back inside an IMMEDIATE transaction: a bare
+ * `BEGIN IMMEDIATE; ROLLBACK` is not sufficient because a moved handle does not
+ * fail until a page is actually dirtied. The value is unchanged, so the probe
+ * is idempotent, and the transaction is rolled back so nothing persists.
+ */
+export function probeDbWritable(): DbWritableProbeResult {
+  const db = currentDb;
+  if (!db) return { ok: false, detail: "No database is open." };
+  try {
+    const row = db.prepare("PRAGMA user_version").get() as { user_version?: number } | undefined;
+    const current = typeof row?.user_version === "number" ? row.user_version : 0;
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.exec(`PRAGMA user_version = ${current}`);
+    } finally {
+      db.exec("ROLLBACK");
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, detail: (err as Error).message };
+  }
+}

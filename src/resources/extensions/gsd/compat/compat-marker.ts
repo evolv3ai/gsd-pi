@@ -148,6 +148,53 @@ export function writeCompatMarker(basePath: string, marker: CompatMarker): void 
   renameSync(tmp, path);
 }
 
+/**
+ * Remove projection entries whose backing file no longer exists on disk.
+ *
+ * gsd-pi never deletes marker entries on its own: both drift detectors skip
+ * files missing from disk (`if (!existsSync(abs)) continue;`) and the write-time
+ * flush only ever adds or refreshes entries. So when a phase directory is
+ * renamed or removed (e.g. `phases/29-new-milestone-m029/` →
+ * `phases/29-frontend-code-debt-cleanup/`), the old projection paths linger in
+ * `.compat.json` forever as phantom entries pointing at directories that no
+ * longer exist (#1257). They never reconcile, and `.compat.json` keeps drifting
+ * from disk reality so `git status` stops being a reliable proxy for "did the
+ * engine touch my plans?".
+ *
+ * This prunes those orphaned entries across the `.gsd/` projections and the
+ * `.planning/` projections/passthrough maps. It is safe: a missing-file entry is
+ * inert (every detector already ignores it), and if the file is later
+ * re-projected the write-time flush / unseeded-file detection re-seeds an
+ * accurate baseline.
+ *
+ * Returns the number of entries removed; when nothing is orphaned the marker is
+ * left untouched (no needless write, no `lastProjectedAt` churn).
+ */
+export function pruneOrphanedProjectionEntries(basePath: string): number {
+  if (!existsSync(compatMarkerPath(basePath))) return 0;
+
+  const marker = readCompatMarker(basePath);
+  let removed = 0;
+
+  const pruneMap = (map: Record<string, ProjectionEntry>, root: string): void => {
+    for (const relPath of Object.keys(map)) {
+      if (!existsSync(join(basePath, root, relPath))) {
+        delete map[relPath];
+        removed++;
+      }
+    }
+  };
+
+  pruneMap(marker.projections, ".gsd");
+  if (marker.planning) {
+    pruneMap(marker.planning.projections, ".planning");
+    pruneMap(marker.planning.passthrough, ".planning");
+  }
+
+  if (removed > 0) writeCompatMarker(basePath, marker);
+  return removed;
+}
+
 function quarantine(basePath: string, raw: string): void {
   const path = compatMarkerPath(basePath);
   const badPath = `${path}.bad-${Date.now()}`;

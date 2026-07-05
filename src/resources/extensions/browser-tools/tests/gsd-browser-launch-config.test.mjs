@@ -55,6 +55,31 @@ describe("resolveGsdBrowserMcpLaunchConfig identity flags", () => {
     assert.equal(args[1], "mcp");
   });
 
+  it("appends GSD_BROWSER_MCP_EXTRA_ARGS after the identity flags (string form)", () => {
+    const { args } = resolveGsdBrowserMcpLaunchConfig("/tmp/example-project", {
+      GSD_BROWSER_MCP_EXTRA_ARGS: "--stealth --browser-path /usr/bin/chromium",
+    });
+
+    // Managed flags stay intact and the extra flags trail them.
+    assert.ok(args.indexOf("--identity-project") >= 0);
+    assert.deepEqual(args.slice(-3), ["--stealth", "--browser-path", "/usr/bin/chromium"]);
+    assert.ok(args.indexOf("--stealth") > args.indexOf("--identity-project"));
+  });
+
+  it("accepts GSD_BROWSER_MCP_EXTRA_ARGS as a JSON array", () => {
+    const { args } = resolveGsdBrowserMcpLaunchConfig("/tmp/example-project", {
+      GSD_BROWSER_MCP_EXTRA_ARGS: '["--stealth"]',
+    });
+    assert.equal(args[args.length - 1], "--stealth");
+  });
+
+  it("forwards GSD_BROWSER_MCP_EXTRA_ARGS to the daemon-start invocation", () => {
+    const env = { GSD_BROWSER_MCP_EXTRA_ARGS: "--stealth" };
+    const daemon = resolveGsdBrowserDaemonStartInvocation("/tmp/example-project", env);
+    assert.equal(daemon.args[daemon.args.length - 1], "--stealth");
+    assert.ok(daemon.args.indexOf("daemon") >= 0 && daemon.args.indexOf("start") >= 0);
+  });
+
   it("uses a path-safe identity-project identifier", () => {
     const { args } = resolveGsdBrowserMcpLaunchConfig("/tmp/example/project", {});
     const projectId = args[args.indexOf("--identity-project") + 1];

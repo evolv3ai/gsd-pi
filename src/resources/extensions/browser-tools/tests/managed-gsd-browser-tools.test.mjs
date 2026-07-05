@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 const {
   MANAGED_BROWSER_TOOL_SPECS,
   MANAGED_GSD_BROWSER_TOOL_NAMES,
+  ManagedGsdBrowserConnectionPool,
   findMissingContractCoverage,
   normalizeManagedArgs,
   registerManagedGsdBrowserTools,
@@ -28,6 +29,17 @@ const GSD_BROWSER_SERVED_TOOLS = [
   "browser_batch",
   "browser_act",
 ];
+
+function makeLaunchConfig() {
+  return {
+    command: "gsd-browser",
+    args: ["mcp"],
+    cwd: "/tmp/example-project",
+    projectRoot: "/tmp/example-project",
+    serverName: "gsd-browser",
+    sessionName: "test-session",
+  };
+}
 
 describe("registerManagedGsdBrowserTools", () => {
   it("registers the curated Pi browser contract", () => {
@@ -69,6 +81,87 @@ describe("findMissingContractCoverage", () => {
   it("reports translated tools when a required MCP tool is missing", () => {
     const served = GSD_BROWSER_SERVED_TOOLS.filter((name) => name !== "browser_batch");
     assert.deepEqual(findMissingContractCoverage(served), ["browser_click", "browser_type", "browser_batch"]);
+  });
+});
+
+describe("ManagedGsdBrowserConnectionPool", () => {
+  it("closes a pending connection that resolves after the pool is closed", async () => {
+    const closed = [];
+    let resolveConnect;
+    const pool = new ManagedGsdBrowserConnectionPool(async () => {
+      return new Promise((resolve) => {
+        resolveConnect = resolve;
+      });
+    }, async (connection) => {
+      closed.push(connection.id);
+    });
+
+    const launch = makeLaunchConfig();
+
+    const pending = pool.getOrConnect(launch);
+    const closedPool = pool.closeAll();
+    resolveConnect({ id: "late-connection" });
+
+    await assert.rejects(
+      pending,
+      /closed during startup/,
+      "pending callers must not receive a reusable connection after close",
+    );
+    await closedPool;
+
+    assert.deepEqual(closed, ["late-connection"]);
+    assert.equal(pool.activeCount, 0);
+    assert.equal(pool.pendingCount, 0);
+  });
+
+  it("aborts pending connection attempts when the pool is closed", async () => {
+    let receivedSignal;
+    const pool = new ManagedGsdBrowserConnectionPool(async (_launch, signal) => {
+      receivedSignal = signal;
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(new Error("connect aborted")), { once: true });
+      });
+    }, async () => {});
+
+    const pending = pool.getOrConnect(makeLaunchConfig());
+    const closedPool = pool.closeAll();
+
+    await assert.rejects(pending, /connect aborted/);
+    await closedPool;
+
+    assert.equal(receivedSignal?.aborted, true);
+    assert.equal(pool.activeCount, 0);
+    assert.equal(pool.pendingCount, 0);
+  });
+
+  it("rejects new connection attempts started while the pool is closing", async () => {
+    let resolveConnect;
+    let connectCount = 0;
+    const pool = new ManagedGsdBrowserConnectionPool(async () => {
+      connectCount += 1;
+      return new Promise((resolve) => {
+        resolveConnect = resolve;
+      });
+    }, async () => {});
+
+    const pending = pool.getOrConnect(makeLaunchConfig());
+    const closedPool = pool.closeAll();
+
+    // A caller that arrives during the in-flight closeAll must not open a new
+    // connection that could survive shutdown.
+    await assert.rejects(
+      pool.getOrConnect(makeLaunchConfig()),
+      /closing/,
+      "getOrConnect must reject while the pool is closing",
+    );
+
+    resolveConnect({ id: "pending-connection" });
+    await assert.rejects(pending, /closed during startup/);
+    await closedPool;
+
+    assert.equal(connectCount, 1, "no second connection is started during shutdown");
+    assert.equal(pool.activeCount, 0);
+    assert.equal(pool.pendingCount, 0);
   });
 });
 

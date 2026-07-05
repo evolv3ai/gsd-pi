@@ -1,6 +1,7 @@
 import { isDbAvailable, upsertTurnGitTransaction } from "../gsd-db.js";
 import type { TurnCloseoutRecord } from "./contracts.js";
 import { buildAuditEnvelope, emitUokAuditEvent } from "./audit.js";
+import { isUnifiedAuditEnabled } from "./audit-toggle.js";
 
 export type TurnGitStage = "turn-start" | "stage" | "checkpoint" | "publish" | "record";
 
@@ -34,24 +35,26 @@ export function writeTurnGitTransaction(args: GitTxArgs): void {
     updatedAt: new Date().toISOString(),
   });
 
-  emitUokAuditEvent(
-    args.basePath,
-    buildAuditEnvelope({
-      traceId: args.traceId,
-      turnId: args.turnId,
-      category: "gitops",
-      type: `turn-git-${args.stage}`,
-      payload: {
-        unitType: args.unitType,
-        unitId: args.unitId,
-        action: args.action,
-        push: args.push,
-        status: args.status,
-        error: args.error,
-        ...(args.metadata ?? {}),
-      },
-    }),
-  );
+  if (isUnifiedAuditEnabled(args.basePath)) {
+    emitUokAuditEvent(
+      args.basePath,
+      buildAuditEnvelope({
+        traceId: args.traceId,
+        turnId: args.turnId,
+        category: "gitops",
+        type: `turn-git-${args.stage}`,
+        payload: {
+          unitType: args.unitType,
+          unitId: args.unitId,
+          action: args.action,
+          push: args.push,
+          status: args.status,
+          error: args.error,
+          ...(args.metadata ?? {}),
+        },
+      }),
+    );
+  }
 }
 
 export function writeTurnCloseoutGitRecord(

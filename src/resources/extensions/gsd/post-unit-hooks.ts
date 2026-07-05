@@ -11,6 +11,7 @@ import type {
   HookStatusEntry,
   PostUnitGateBlock,
 } from "./types.js";
+import type { SidecarItem } from "./auto/session.js";
 import { getOrCreateRegistry, resolveHookArtifactPath } from "./rule-registry.js";
 
 // Re-export resolveHookArtifactPath so existing importers still work.
@@ -73,6 +74,37 @@ export function persistHookState(basePath: string): void {
 
 export function restoreHookState(basePath: string): void {
   getOrCreateRegistry().restoreState(basePath);
+}
+
+/**
+ * Reconcile a restored `activeHook` against the session's sidecar queue.
+ *
+ * The registry persists `activeHook` to disk but the pending hook *dispatch*
+ * lives only on the non-persisted `s.sidecarQueue`. After a pause/resume or
+ * crash-recovery, `restoreHookState` re-hydrates `activeHook` while the dispatch
+ * is gone, so the registry believes a hook is in-flight but nothing will ever
+ * complete it — and the next unrelated unit's close-out is falsely charged
+ * against the stale hook and blocked. Re-enqueue the missing dispatch so the
+ * hook actually runs, restoring the invariant that a persisted `activeHook`
+ * always has a live dispatch (#1246).
+ */
+export function reconcileRestoredHookDispatch(
+  basePath: string,
+  sidecarQueue: SidecarItem[],
+): void {
+  const dispatch = getOrCreateRegistry().getPendingHookDispatch(basePath);
+  if (!dispatch) return;
+  const alreadyQueued = sidecarQueue.some(
+    item => item.kind === "hook" && item.unitType === dispatch.unitType,
+  );
+  if (alreadyQueued) return;
+  sidecarQueue.push({
+    kind: "hook",
+    unitType: dispatch.unitType,
+    unitId: dispatch.unitId,
+    prompt: dispatch.prompt,
+    model: dispatch.model,
+  });
 }
 
 export function clearPersistedHookState(basePath: string): void {

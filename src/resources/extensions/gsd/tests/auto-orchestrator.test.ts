@@ -797,9 +797,11 @@ test("stuck-loop: empty ring on a freshly constructed orchestrator advances norm
   assert.equal(result.kind, "advanced");
 });
 
-test("stuck-loop: partial fill of mixed units does not block", async (t) => {
+test("stuck-loop: distinct units making forward progress do not block", async (t) => {
+  // Healthy forward progress visits new units every advance — no key repeats,
+  // so no oscillation/repeat rule fires even once the window is full.
   let i = 0;
-  const sequence = ["M001/S01/A", "M001/S01/B", "M001/S01/A", "M001/S01/B", "M001/S01/A", "M001/S01/B"];
+  const sequence = ["M001/S01/A", "M001/S01/B", "M001/S01/C", "M001/S01/D", "M001/S01/E", "M001/S01/F"];
   const f = makeFixture({
     dispatch: () => ({ action: "dispatch", unitType: "execute-task", unitId: sequence[i++ % sequence.length], prompt: "p" }),
   });
@@ -809,6 +811,43 @@ test("stuck-loop: partial fill of mixed units does not block", async (t) => {
     const result = await f.orchestrator.advance();
     assert.equal(result.kind, "advanced", `round ${round} should advance, got ${result.kind}`);
   }
+});
+
+test("stuck-loop #1225: two-unit oscillation blocks once the window saturates", async (t) => {
+  // Reproduces the execute-task ↔ complete-slice loop: a slice gate keeps
+  // reopening the same task, so two keys alternate forever. Neither key ever
+  // saturates the window on its own, so the old matchingCount>=SIZE gate never
+  // consulted detect-stuck and the loop ran until an external kill. The window
+  // still fills, so detect-stuck's oscillation/repeat rules must now fire.
+  let i = 0;
+  const sequence: Array<{ unitType: string; unitId: string }> = [
+    { unitType: "execute-task", unitId: "M001/S01/T01" },
+    { unitType: "complete-slice", unitId: "M001/S01" },
+  ];
+  const f = makeFixture({
+    dispatch: () => {
+      const next = sequence[i++ % sequence.length];
+      return { action: "dispatch", unitType: next.unitType, unitId: next.unitId, prompt: "p" };
+    },
+  });
+  t.after(() => f.cleanup());
+
+  let blocked: Awaited<ReturnType<typeof f.orchestrator.advance>> | undefined;
+  for (let round = 0; round < STUCK_WINDOW_SIZE; round++) {
+    const result = await f.orchestrator.advance();
+    if (result.kind === "blocked") {
+      blocked = result;
+      break;
+    }
+  }
+
+  assert.ok(blocked, "oscillation must be detected once the window saturates");
+  if (!blocked || blocked.kind !== "blocked") return;
+  assert.equal(blocked.action, "stop");
+  assert.ok(
+    blocked.reason.startsWith("stuck-loop:"),
+    `expected stuck-loop verdict, got: ${blocked.reason}`,
+  );
 });
 
 test("stuck-loop: ring saturated with same unit blocks with action 'stop' and stuck-loop reason", async (t) => {

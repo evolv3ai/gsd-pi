@@ -116,7 +116,8 @@ import {
 } from "./auto-tool-tracking.js";
 import { closeoutUnit } from "./auto-unit-closeout.js";
 import { recoverTimedOutUnit } from "./auto-timeout-recovery.js";
-import { selectAndApplyModel, resolveModelId, clearToolBaseline } from "./auto-model-selection.js";
+import { selectAndApplyModel, resolveModelId, clearToolBaseline, isModelUnavailable } from "./auto-model-selection.js";
+import { resolveModelWithFallbacksForUnit } from "./preferences-models.js";
 import { resetRoutingHistory, recordOutcome } from "./routing-history.js";
 import {
   checkPostUnitHooks,
@@ -127,6 +128,7 @@ import {
   runPreDispatchHooks,
   persistHookState,
   restoreHookState,
+  reconcileRestoredHookDispatch,
   clearPersistedHookState,
 } from "./post-unit-hooks.js";
 import { runGSDDoctor, rebuildState } from "./doctor.js";
@@ -615,11 +617,27 @@ export function startAutoDetached(
     milestoneLock?: string | null;
   },
 ): void {
-  void withDetachedAutoKeepalive(startAuto(ctx, pi, base, verboseMode, options)).catch((err) => {
+  void withDetachedAutoKeepalive(startAuto(ctx, pi, base, verboseMode, options)).catch(async (err) => {
     const message = getErrorMessage(err);
     ctx.ui.notify(`Auto-start failed: ${message}`, "error");
     logWarning("engine", `auto start error: ${message}`, { file: "auto.ts" });
     debugLog("auto-start-failed", { error: message });
+    // Backstop cleanup (#1235): if startAuto threw after auto-mode was activated
+    // (e.g. an exception during bootstrap, before the loop's try/finally could
+    // run cleanupAfterLoopExit), s.active and the on-disk auto lock leak, so the
+    // re-entry guard silently no-ops every later /gsd auto until restart. Clear
+    // the leaked activation here so a failed start is always recoverable.
+    if (s.active) {
+      try {
+        await cleanupAfterLoopExit(ctx);
+      } catch (cleanupErr) {
+        logWarning(
+          "engine",
+          `auto start cleanup failed: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}`,
+          { file: "auto.ts" },
+        );
+      }
+    }
   });
 }
 
@@ -2827,6 +2845,10 @@ export async function startAuto(
       "info",
     );
     restoreHookState(s.basePath);
+    // A restored activeHook has no live dispatch (the sidecar queue is not
+    // persisted); re-enqueue it so the hook runs instead of blocking the next
+    // unrelated unit's close-out (#1246).
+    reconcileRestoredHookDispatch(s.basePath, s.sidecarQueue);
     // Re-sync managed resources on resume so long-lived auto sessions pick up
     // bundled extension updates before resume-time verification/state logic runs.
     // GSD_PKG_ROOT is set by loader.ts and points to the gsd-pi package root.
@@ -2895,15 +2917,18 @@ export async function startAuto(
       debugLog("resume-orchestration-resume", { error: err instanceof Error ? err.message : String(err) });
     }
     startAutoCommandPolling(s.basePath);
-    await runAutoLoopWithUok({
-      ctx,
-      pi,
-      s,
-      deps: loopDeps,
-      runKernelLoop: runUokKernelLoop,
-      runLegacyLoop: runLegacyAutoLoop,
-    });
-    await cleanupAfterLoopExit(ctx);
+    try {
+      await runAutoLoopWithUok({
+        ctx,
+        pi,
+        s,
+        deps: loopDeps,
+        runKernelLoop: runUokKernelLoop,
+        runLegacyLoop: runLegacyAutoLoop,
+      });
+    } finally {
+      await cleanupAfterLoopExit(ctx);
+    }
     return;
   }
 
@@ -2931,7 +2956,15 @@ export async function startAuto(
     bootstrapDeps,
     freshStartAssessment,
   );
-  if (!ready) return;
+  if (!ready) {
+    // bootstrapAutoSession sets s.active = true (auto-start.ts) before several
+    // post-activation bail-outs return false without a loop ever running (e.g.
+    // the SQLite-unavailable gate). Without this, s.active and the auto lock
+    // leak and every later /gsd auto silently no-ops via the re-entry guard
+    // (#1235). Run the canonical cleanup so a failed bootstrap stays recoverable.
+    if (s.active) await cleanupAfterLoopExit(ctx);
+    return;
+  }
 
   // Build scope after bootstrap has populated s.basePath / s.originalBasePath /
   // s.currentMilestoneId (including worktree setup inside bootstrapAutoSession).
@@ -2957,15 +2990,18 @@ export async function startAuto(
   startAutoCommandPolling(s.basePath);
 
   // Dispatch the first unit
-  await runAutoLoopWithUok({
-    ctx,
-    pi,
-    s,
-    deps: loopDeps,
-    runKernelLoop: runUokKernelLoop,
-    runLegacyLoop: runLegacyAutoLoop,
-  });
-  await cleanupAfterLoopExit(ctx);
+  try {
+    await runAutoLoopWithUok({
+      ctx,
+      pi,
+      s,
+      deps: loopDeps,
+      runKernelLoop: runUokKernelLoop,
+      runLegacyLoop: runLegacyAutoLoop,
+    });
+  } finally {
+    await cleanupAfterLoopExit(ctx);
+  }
 }
 
 // describeNextUnit is imported from auto-dashboard.ts and re-exported
@@ -3123,19 +3159,49 @@ export async function dispatchHookUnit(
     workspaceRoot: s.basePath,
   });
 
-  if (hookModel) {
-    const availableModels = ctx.modelRegistry.getAvailable();
-    const match = resolveModelId(hookModel, availableModels, ctx.model?.provider);
-    if (match) {
+  // Resolve the hook's model honoring the configured `fallbacks[]` chain
+  // (#1229). The manual trigger path bypasses selectAndApplyModel, so resolve
+  // the primary→fallbacks order here and apply the first candidate available in
+  // the registry — a blocked or unconfigured primary then transparently drops
+  // to a fallback instead of silently reverting to the session model.
+  const availableModels = ctx.modelRegistry.getAvailable();
+  const availableModelIds = availableModels.map(
+    (m: { provider: string; id: string }) => `${m.provider}/${m.id}`,
+  );
+  const hookModelConfig = resolveModelWithFallbacksForUnit(
+    hookUnitType,
+    targetBasePath,
+    availableModelIds,
+  );
+  const modelCandidates = hookModelConfig
+    ? [hookModelConfig.primary, ...hookModelConfig.fallbacks]
+    : hookModel
+      ? [hookModel]
+      : [];
+  if (modelCandidates.length > 0) {
+    let applied = false;
+    for (const candidate of modelCandidates) {
+      const match = resolveModelId(candidate, availableModels, ctx.model?.provider);
+      if (!match) continue;
+      // Skip models the runtime has marked blocked or temporarily unavailable
+      // (e.g. a primary that just tripped a provider limit) so the configured
+      // fallbacks[] chain actually engages — parity with auto-mode's
+      // selectAndApplyModel, which consults the same blocked-models store (#1229).
+      if (isModelUnavailable(targetBasePath, match.provider, match.id)) continue;
       try {
-        await pi.setModel(match);
+        if (await pi.setModel(match)) {
+          applied = true;
+          break;
+        }
       } catch (err) {
-        /* non-fatal */
-        logWarning("dispatch", `hook model set failed: ${err instanceof Error ? err.message : String(err)}`, { file: "auto.ts" });
+        /* non-fatal — try the next fallback */
+        logWarning("dispatch", `hook model set failed for ${candidate}: ${err instanceof Error ? err.message : String(err)}`, { file: "auto.ts" });
       }
-    } else {
+    }
+    if (!applied) {
       ctx.ui.notify(
-        `Hook model "${hookModel}" not found in available models. Falling back to current session model. ` +
+        `Hook model${modelCandidates.length > 1 ? "s" : ""} "${modelCandidates.join(", ")}" not available. ` +
+        `Falling back to current session model. ` +
         `Ensure the model is defined in models.json and has auth configured.`,
         "warning",
       );

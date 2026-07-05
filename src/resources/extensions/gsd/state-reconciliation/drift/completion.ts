@@ -20,11 +20,9 @@ import {
 } from "../../gsd-db.js";
 import {
   resolveMilestoneFile,
-  resolveMilestonePath,
   resolveSliceFile,
   resolveTaskFile,
 } from "../../paths.js";
-import { join } from "node:path";
 import type { GSDState } from "../../types.js";
 import type { DriftContext, DriftHandler, DriftRecord } from "../types.js";
 
@@ -105,23 +103,13 @@ function collectMilestoneCompletionDrift(
     for (const task of getSliceTasks(mid, slice.id)) {
       if (!COMPLETE_STATUSES.has(task.status)) continue;
       if (task.completed_at !== null) continue;
-      // Flat-phase: task summaries live in the phase dir as TID-SUMMARY.md.
-      // Legacy: resolveTaskFile returns the tasks/TID/TID-SUMMARY.md path.
-      let taskSummary = resolveTaskFile(
+      const taskSummary = resolveTaskFile(
         ctx.basePath,
         mid,
         slice.id,
         task.id,
         "SUMMARY",
       );
-      // Flat-phase fallback: check the phase dir directly
-      if (!taskSummary) {
-        const phaseDir = resolveMilestonePath(ctx.basePath, mid);
-        if (phaseDir) {
-          const flatSummary = join(phaseDir, `${task.id}-SUMMARY.md`);
-          if (existsSync(flatSummary)) taskSummary = flatSummary;
-        }
-      }
       if (taskSummary && existsSync(taskSummary)) {
         drifts.push({
           kind: "missing-completion-timestamp",
@@ -182,15 +170,7 @@ export function repairMissingCompletionTimestamp(
       task.completed_at !== null ||
       !COMPLETE_STATUSES.has(task.status)
     ) return;
-    // Flat-phase: task summaries live in the phase dir as TID-SUMMARY.md
-    let summary = resolveTaskFile(ctx.basePath, mid, sid, tid, "SUMMARY");
-    if (!summary) {
-      const phaseDir = resolveMilestonePath(ctx.basePath, mid);
-      if (phaseDir) {
-        const flatSummary = join(phaseDir, `${tid}-SUMMARY.md`);
-        if (existsSync(flatSummary)) summary = flatSummary;
-      }
-    }
+    const summary = resolveTaskFile(ctx.basePath, mid, sid, tid, "SUMMARY");
     const ts = summary ? summaryMtimeIso(summary) : null;
     if (!ts) return;
     updateTaskStatus(mid, sid, tid, task.status, ts);

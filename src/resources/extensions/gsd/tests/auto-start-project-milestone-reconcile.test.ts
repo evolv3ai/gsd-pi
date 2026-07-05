@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { closeDatabase, getAllMilestones, getMilestone, insertMilestone, isDbAvailable, openDatabase } from "../gsd-db.ts";
+import { _getAdapter, closeDatabase, getAllMilestones, getMilestone, insertMilestone, isDbAvailable, openDatabase } from "../gsd-db.ts";
 import { reconcileMergedMilestonesFromJournal, reconcileProjectMilestonesFromDisk } from "../auto-start.ts";
 import { emitWorktreeMerged } from "../worktree-telemetry.ts";
 
@@ -64,6 +64,34 @@ test("#5389: bootstrap reconciles PROJECT.md milestones that are missing from DB
     assert.equal(byId.get("M001")?.status, "complete");
     assert.equal(byId.get("M002")?.status, "queued");
     assert.equal(byId.get("M003")?.status, "queued");
+  } finally {
+    if (isDbAvailable()) closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("#1236: bootstrap merged-milestone reconciliation degrades to a warning instead of aborting when the DB is degraded", () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-merged-reconcile-degraded-"));
+  try {
+    mkdirSync(join(base, ".gsd"), { recursive: true });
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "M001", title: "Merged Milestone", status: "active" });
+
+    emitWorktreeMerged(base, "M001", { reason: "milestone-complete", conflict: false });
+
+    // Simulate a degraded DB: the connection stays "available" (isDbAvailable()
+    // remains true because the handle is non-null), but the milestones table is
+    // gone, so the reconciler's DB access throws partway through bootstrap.
+    _getAdapter()!.exec("DROP TABLE milestones");
+    assert.equal(isDbAvailable(), true);
+
+    // Regression (#1236): this reconciler was previously unguarded, so a
+    // degraded-DB failure threw and aborted the rest of `/gsd auto` bootstrap.
+    // It must now catch, warn, and return 0, matching its sibling
+    // reconcileProjectMilestonesFromDisk. Reaching the assertion proves it did
+    // not throw.
+    const closed = reconcileMergedMilestonesFromJournal(base);
+    assert.equal(closed, 0);
   } finally {
     if (isDbAvailable()) closeDatabase();
     rmSync(base, { recursive: true, force: true });

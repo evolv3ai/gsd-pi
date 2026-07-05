@@ -12,6 +12,7 @@ import {
   writeCompatMarker,
   normalizeForHash,
   computeProjectionSha,
+  pruneOrphanedProjectionEntries,
   EMPTY_MARKER,
   compatMarkerPath,
 } from "../compat/compat-marker.ts";
@@ -102,4 +103,88 @@ test("computeProjectionSha is stable for cosmetically different but equivalent c
 test("compatMarkerPath resolves under .gsd", () => {
   const base = makeTmpBase();
   assert.equal(compatMarkerPath(base), join(base, ".gsd", ".compat.json"));
+});
+
+test("pruneOrphanedProjectionEntries drops entries whose backing file is gone (#1257)", () => {
+  const base = makeTmpBase();
+  // Live projection: file exists on disk.
+  const liveRel = "phases/29-frontend-code-debt-cleanup/29-ROADMAP.md";
+  mkdirSync(join(base, ".gsd", "phases", "29-frontend-code-debt-cleanup"), { recursive: true });
+  writeFileSync(join(base, ".gsd", liveRel), "# M029\n", "utf-8");
+  // Phantom projection: directory was renamed, file no longer exists.
+  const ghostRel = "phases/29-new-milestone-m029/29-ROADMAP.md";
+
+  writeCompatMarker(base, {
+    schema: 2,
+    lastWriter: "gsd-pi",
+    lastProjectedAt: "2026-07-05T05:35:19.379Z",
+    projections: {
+      [liveRel]: { sha: "live000000000000", entities: ["M029"] },
+      [ghostRel]: { sha: "ghost00000000000", entities: ["M029"] },
+    },
+    piVersion: "1.4.0",
+  });
+
+  const removed = pruneOrphanedProjectionEntries(base);
+  assert.equal(removed, 1);
+
+  const marker = readCompatMarker(base);
+  assert.ok(marker.projections[liveRel], "live projection must survive");
+  assert.equal(marker.projections[ghostRel], undefined, "phantom projection must be pruned");
+});
+
+test("pruneOrphanedProjectionEntries also prunes .planning projections/passthrough", () => {
+  const base = makeTmpBase();
+  mkdirSync(join(base, ".planning"), { recursive: true });
+  writeFileSync(join(base, ".planning", "ROADMAP.md"), "# roadmap\n", "utf-8");
+
+  writeCompatMarker(base, {
+    schema: 2,
+    lastWriter: "gsd-pi",
+    lastProjectedAt: "2026-07-05T05:35:19.379Z",
+    projections: {},
+    planning: {
+      active: true,
+      layout: "flat-phases",
+      projections: {
+        "ROADMAP.md": { sha: "live000000000000", entities: [] },
+        "gone/PLAN.md": { sha: "ghost00000000000", entities: [] },
+      },
+      passthrough: {
+        "gone/PATTERNS.md": { sha: "ghost11111111111", entities: [] },
+      },
+    },
+    piVersion: "1.4.0",
+  });
+
+  const removed = pruneOrphanedProjectionEntries(base);
+  assert.equal(removed, 2);
+
+  const marker = readCompatMarker(base);
+  assert.ok(marker.planning!.projections["ROADMAP.md"], "live planning projection must survive");
+  assert.equal(marker.planning!.projections["gone/PLAN.md"], undefined);
+  assert.equal(marker.planning!.passthrough["gone/PATTERNS.md"], undefined);
+});
+
+test("pruneOrphanedProjectionEntries is a no-op when nothing is orphaned", () => {
+  const base = makeTmpBase();
+  const rel = "phases/01-phase/01-01-PLAN.md";
+  mkdirSync(join(base, ".gsd", "phases", "01-phase"), { recursive: true });
+  writeFileSync(join(base, ".gsd", rel), "# plan\n", "utf-8");
+  writeCompatMarker(base, {
+    schema: 2,
+    lastWriter: "gsd-pi",
+    lastProjectedAt: "2026-07-05T05:35:19.379Z",
+    projections: { [rel]: { sha: "abc000000000000", entities: ["M001"] } },
+    piVersion: "1.4.0",
+  });
+
+  assert.equal(pruneOrphanedProjectionEntries(base), 0);
+});
+
+test("pruneOrphanedProjectionEntries returns 0 and writes nothing when marker is missing", () => {
+  const base = makeTmpBase();
+  assert.equal(pruneOrphanedProjectionEntries(base), 0);
+  const files = readdirSync(join(base, ".gsd"));
+  assert.ok(!files.includes(".compat.json"), "must not create a marker where none existed");
 });

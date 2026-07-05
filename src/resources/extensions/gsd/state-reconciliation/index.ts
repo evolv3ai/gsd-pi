@@ -73,6 +73,20 @@ export async function reconcileBeforeDispatch(
   if (!deps.dryRun) {
     const { capturePlanningCompatIfNeeded } = await import("../compat/planning-compat.js");
     await capturePlanningCompatIfNeeded(basePath);
+
+    // Self-heal phantom projection entries (#1257): a renamed/removed phase
+    // directory leaves stale `.compat.json` projection paths that no detector
+    // ever prunes (they all skip missing files), so the marker drifts from disk
+    // reality permanently. Drop entries whose backing file is gone before the
+    // detect passes run. Gated on !dryRun to keep detection read-only.
+    const { pruneOrphanedProjectionEntries } = await import("../compat/compat-marker.js");
+    const prunedCount = pruneOrphanedProjectionEntries(basePath);
+    if (prunedCount > 0) {
+      logWarning(
+        "reconcile",
+        `pruned ${prunedCount} orphaned projection entr${prunedCount === 1 ? "y" : "ies"} from .compat.json (backing file no longer on disk)`,
+      );
+    }
   }
 
   for (let pass = 0; pass < MAX_PASSES; pass++) {

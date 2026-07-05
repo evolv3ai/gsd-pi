@@ -2,6 +2,11 @@
 // Types consumed by state derivation, file parsing, and status display.
 // Pure interfaces — no logic, no runtime dependencies.
 
+// Type-only import (erased at compile time — no runtime dependency): sibling
+// single-model fields share the phase-bucket object form so they honor
+// `fallbacks[]` (#1229).
+import type { GSDPhaseModelConfig } from "./preferences-types.js";
+
 // ─── Enums & Literal Unions ────────────────────────────────────────────────
 
 export type RiskLevel = "low" | "medium" | "high";
@@ -303,8 +308,13 @@ export interface PostUnitHookConfig {
   prompt: string;
   /** Max times this hook can fire for the same trigger unit. Default 1, max 10. */
   max_cycles?: number;
-  /** Model override for hook sessions. */
-  model?: string;
+  /**
+   * Model override for hook sessions. Accepts a bare model ID or the extended
+   * `{ model, provider?, fallbacks? }` object form so a transient trip of the
+   * primary provider falls back to the next entry instead of hard-failing the
+   * hook (#1229).
+   */
+  model?: string | GSDPhaseModelConfig;
   /** Expected output file name (relative to task/slice dir). Used for idempotency — skip if exists. */
   artifact?: string;
   /** Whether the hook is advisory or blocks unit advancement. Default advisory. */
@@ -505,6 +515,11 @@ export interface PreDispatchResult {
 export interface PersistedHookState {
   /** Cycle counts keyed as "hookName/triggerUnitType/triggerUnitId". */
   cycleCounts: Record<string, number>;
+  /**
+   * Cycle keys already granted a one-shot re-dispatch after a lost/interrupted
+   * dispatch, so the refund is bounded to one per gate across resumes.
+   */
+  redispatchedGateKeys?: string[];
   /** In-flight hook, persisted so blocking gates cannot be skipped after resume. */
   activeHook?: HookExecutionState | null;
   /** Remaining hook queue by hook name and trigger unit. */
@@ -607,8 +622,12 @@ export interface ReactiveExecutionConfig {
   max_parallel: number;
   /** Isolation mode for parallel tasks within a slice. Currently only "same-tree" is supported. */
   isolation_mode: "same-tree";
-  /** Optional model override for subagents spawned during parallel execution. */
-  subagent_model?: string;
+  /**
+   * Optional model override for subagents spawned during parallel execution.
+   * Accepts a bare model ID or the extended `{ model, provider?, fallbacks? }`
+   * object form for parity with phase buckets (#1229).
+   */
+  subagent_model?: string | GSDPhaseModelConfig;
 }
 
 /** Per-slice reactive execution runtime state, persisted to disk. */

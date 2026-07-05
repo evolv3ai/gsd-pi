@@ -73,10 +73,10 @@ import { emitWorktreeOrphaned } from "./worktree-telemetry.js";
 import { queryJournal } from "./journal.js";
 import { initMetrics } from "./metrics.js";
 import { initRoutingHistory } from "./routing-history.js";
-import { restoreHookState, resetHookState } from "./post-unit-hooks.js";
+import { restoreHookState, resetHookState, reconcileRestoredHookDispatch } from "./post-unit-hooks.js";
 import { resetProactiveHealing, setLevelChangeCallback } from "./doctor-proactive.js";
 import { snapshotSkills } from "./skill-discovery.js";
-import { isDbAvailable, getMilestone, getAllMilestones, insertMilestone, updateMilestoneStatus } from "./gsd-db.js";
+import { isDbAvailable, probeDbWritable, getMilestone, getAllMilestones, insertMilestone, updateMilestoneStatus } from "./gsd-db.js";
 import {
   getWorkflowDatabaseStatus,
   openExistingWorkflowDatabase,
@@ -205,35 +205,43 @@ export function reconcileProjectMilestonesFromDisk(basePath: string): number {
 export function reconcileMergedMilestonesFromJournal(basePath: string): number {
   if (!isDbAvailable()) return 0;
 
-  const mergedAtByMilestone = new Map<string, string>();
-  for (const entry of queryJournal(basePath, { eventType: "worktree-merged" })) {
-    const data = entry.data ?? {};
-    const milestoneId = typeof data.milestoneId === "string" ? data.milestoneId : null;
-    if (!milestoneId) continue;
-    if (data.conflict === true) continue;
+  try {
+    const mergedAtByMilestone = new Map<string, string>();
+    for (const entry of queryJournal(basePath, { eventType: "worktree-merged" })) {
+      const data = entry.data ?? {};
+      const milestoneId = typeof data.milestoneId === "string" ? data.milestoneId : null;
+      if (!milestoneId) continue;
+      if (data.conflict === true) continue;
 
-    const endedAt = typeof data.endedAt === "string" ? data.endedAt : entry.ts;
-    const previous = mergedAtByMilestone.get(milestoneId);
-    if (!previous || endedAt > previous) mergedAtByMilestone.set(milestoneId, endedAt);
-  }
-
-  let closed = 0;
-  for (const [milestoneId, completedAt] of mergedAtByMilestone) {
-    const existing = getMilestone(milestoneId);
-    if (!existing) {
-      insertMilestone({ id: milestoneId, title: milestoneId, status: "complete" });
-      updateMilestoneStatus(milestoneId, "complete", completedAt);
-      closed++;
-      continue;
+      const endedAt = typeof data.endedAt === "string" ? data.endedAt : entry.ts;
+      const previous = mergedAtByMilestone.get(milestoneId);
+      if (!previous || endedAt > previous) mergedAtByMilestone.set(milestoneId, endedAt);
     }
-    if (!isClosedStatus(existing.status)) {
-      updateMilestoneStatus(milestoneId, "complete", completedAt);
-      closed++;
-    }
-  }
 
-  if (closed > 0) invalidateAllCaches();
-  return closed;
+    let closed = 0;
+    for (const [milestoneId, completedAt] of mergedAtByMilestone) {
+      const existing = getMilestone(milestoneId);
+      if (!existing) {
+        insertMilestone({ id: milestoneId, title: milestoneId, status: "complete" });
+        updateMilestoneStatus(milestoneId, "complete", completedAt);
+        closed++;
+        continue;
+      }
+      if (!isClosedStatus(existing.status)) {
+        updateMilestoneStatus(milestoneId, "complete", completedAt);
+        closed++;
+      }
+    }
+
+    if (closed > 0) invalidateAllCaches();
+    return closed;
+  } catch (err) {
+    logWarning(
+      "bootstrap",
+      `merged-milestone journal reconciliation failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return 0;
+  }
 }
 
 /**
@@ -1624,6 +1632,10 @@ export async function bootstrapAutoSession(
     s.unitLifetimeDispatches.clear();
     resetHookState();
     restoreHookState(base);
+    // A restored activeHook has no live dispatch (the sidecar queue is not
+    // persisted); re-enqueue it so the hook runs instead of blocking the next
+    // unrelated unit's close-out (#1246).
+    reconcileRestoredHookDispatch(base, s.sidecarQueue);
     resetProactiveHealing();
     // Notify user on health level transitions (green→yellow→red and back)
     setLevelChangeCallback((_from, to, summary) => {
@@ -1776,6 +1788,23 @@ export async function bootstrapAutoSession(
         "error",
       );
       return releaseLockAndReturn();
+    }
+
+    // Gate: confirm the handle is actually writable, not just open. A
+    // schema-current DB does zero writes during open, so a read-only /
+    // DBMOVED handle otherwise passes the check above and only fails much
+    // later at the first authoritative write (the uok-kernel-enter audit)
+    // with an opaque "readonly database" error (#1234).
+    if (existsSync(gsdDbPath) && isDbAvailable()) {
+      const writable = probeDbWritable();
+      if (!writable.ok) {
+        const detail = writable.detail ? ` (${writable.detail})` : "";
+        ctx.ui.notify(
+          `SQLite database is not writable: ${gsdDbPath}.${detail} Check file/WAL permissions or reopen a stale handle before running auto-mode.`,
+          "error",
+        );
+        return releaseLockAndReturn();
+      }
     }
 
     // Initialize metrics

@@ -2,14 +2,11 @@
 
 import { dirname, join, resolve } from "node:path";
 import {
-  buildMilestoneFileName,
-  canonicalPhaseDirName,
-  isLegacyMilestonesLayout,
-  milestonesDir,
   type GsdPathContract,
   resolveGsdPathContract,
   resolveMilestoneFile,
   resolveMilestonePath,
+  targetMilestoneFile,
   normalizeRealPath,
 } from "./paths.js";
 import { isGsdWorktreePath, resolveWorktreeProjectRoot } from "./worktree-root.js";
@@ -41,27 +38,14 @@ function tryRealpath(p: string): string {
   return normalizeRealPath(p);
 }
 
-function isLegacyMilestoneDirectory(dir: string): boolean {
-  const parent = dirname(dir);
-  return parent.endsWith("/milestones") || parent.endsWith("\\milestones");
-}
-
 function scopeMilestoneDir(basePath: string, milestoneId: string): string {
-  return resolveMilestonePath(basePath, milestoneId) ?? join(
-    milestonesDir(basePath),
-    isLegacyMilestonesLayout(basePath) ? milestoneId : canonicalPhaseDirName(milestoneId),
-  );
+  return resolveMilestonePath(basePath, milestoneId)
+    ?? dirname(targetMilestoneFile(basePath, milestoneId, "ROADMAP"));
 }
 
 function scopeMilestoneFile(basePath: string, milestoneId: string, suffix: string): string {
-  const existing = resolveMilestoneFile(basePath, milestoneId, suffix);
-  if (existing) return existing;
-
-  const dir = scopeMilestoneDir(basePath, milestoneId);
-  const filename = isLegacyMilestoneDirectory(dir)
-    ? `${milestoneId}-${suffix}.md`
-    : buildMilestoneFileName(milestoneId, suffix);
-  return join(dir, filename);
+  return resolveMilestoneFile(basePath, milestoneId, suffix)
+    ?? targetMilestoneFile(basePath, milestoneId, suffix);
 }
 
 /**

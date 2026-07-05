@@ -138,7 +138,7 @@ Diagnostics record the file path, scope (global/project), severity (error/warnin
   - `off` — skill discovery is disabled entirely.
 
 - `auto_supervisor`: configures the auto-mode supervisor that monitors agent progress and enforces timeouts. Keys:
-  - `model`: model ID to use for the supervisor process (defaults to the currently active model).
+  - `model`: model to use for the supervisor process (defaults to the currently active model). Accepts a bare model ID **or** the same `{ model, provider?, fallbacks? }` object form as `models.<phase>`, so it honors `fallbacks[]` on a transient provider trip.
   - `soft_timeout_minutes`: minutes before the supervisor issues a soft warning (default: 20).
   - `idle_timeout_minutes`: minutes of inactivity before the supervisor intervenes (default: 10).
   - `hard_timeout_minutes`: minutes before the supervisor forces termination (default: 30).
@@ -228,7 +228,7 @@ In `"parent"` mode, slice/task `targetRepositories` default to the declared chil
   - `enabled`: boolean — set `false` to force sequential task execution. Default: `true`.
   - `max_parallel`: number — maximum tasks to dispatch in one batch, range `1`-`8`. Default: `2`.
   - `isolation_mode`: `"same-tree"` — currently the only supported value.
-  - `subagent_model`: string — optional model override for reactive task subagents. Falls back to the `models.subagent` routing when omitted.
+  - `subagent_model`: optional model override for reactive task subagents. Accepts a bare model ID **or** the `{ model, provider?, fallbacks? }` object form (parity with `models.<phase>`). Falls back to the `models.subagent` routing when omitted.
 
 - `remote_questions`: route interactive questions to Slack/Discord for headless auto-mode. Keys:
   - `channel`: `"slack"` or `"discord"` — channel type.
@@ -326,7 +326,7 @@ In `"parent"` mode, slice/task `targetRepositories` default to the declared chil
   - `after`: string[] — unit types that trigger this hook (e.g., `["execute-task"]`).
   - `prompt`: string — prompt sent to the LLM. Supports `{milestoneId}`, `{sliceId}`, `{taskId}` substitutions.
   - `max_cycles`: number — max times this hook fires per trigger (default: 1, max: 10).
-  - `model`: string — optional model override.
+  - `model`: optional model override. Accepts a bare model ID **or** the same `{ model, provider?, fallbacks? }` object form as `models.<phase>`. With `fallbacks[]`, a transient trip of the primary provider falls back to the next entry instead of hard-failing the hook — which, for a `blocking` hook with `on_block: { action: pause }`, would otherwise pause the whole run.
   - `artifact`: string — expected output file name (relative to task/slice dir). Hook is skipped if file already exists (idempotent).
   - `criticality`: `"advisory"` or `"blocking"` — advisory preserves current best-effort behavior; blocking requires clean hook completion plus a valid outcome verdict before auto-mode advances. Default: `"advisory"`.
   - `retry_on`: string — if this file is produced instead of the artifact, re-run the trigger unit then re-run hooks.

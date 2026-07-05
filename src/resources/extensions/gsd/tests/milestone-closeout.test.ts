@@ -13,6 +13,7 @@ import {
   isCompletedMilestoneTerminal,
   repairMissingMilestoneSummaryProjection,
 } from "../milestone-closeout.js";
+import { targetMilestoneFile } from "../paths.js";
 import type { DispatchContext } from "../auto-dispatch.js";
 
 /** Build a minimal DispatchContext for the dispatch-policy branches under test. */
@@ -196,7 +197,7 @@ test("repairMissingMilestoneSummaryProjection succeeds when milestone dir does n
   const repair = await repairMissingMilestoneSummaryProjection(base, "M042");
   assert.equal(repair.ok, true, "repair should report success when handler creates the SUMMARY");
   assert.ok(
-    existsSync(join(base, ".gsd", "phases", "42-m042", "42-SUMMARY.md")),
+    existsSync(targetMilestoneFile(base, "M042", "SUMMARY", "Done")),
     "repair should write the SUMMARY artifact to the canonical projection path",
   );
 });

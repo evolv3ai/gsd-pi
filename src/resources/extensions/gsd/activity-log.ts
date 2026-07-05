@@ -138,7 +138,7 @@ export function saveActivityLog(
     state.nextSeq += 1;
     state.lastSnapshotKeyByUnit.set(unitKey, key);
 
-    if (isUnifiedAuditEnabled()) {
+    if (isUnifiedAuditEnabled(basePath)) {
       emitUokAuditEvent(
         basePath,
         buildAuditEnvelope({

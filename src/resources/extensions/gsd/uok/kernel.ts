@@ -8,10 +8,16 @@ import type { AutoSession } from "../auto/session.js";
 import type { LoopDeps } from "../auto/loop-deps.js";
 import { gsdRoot } from "../paths.js";
 import { buildAuditEnvelope, emitUokAuditEvent } from "./audit.js";
-import { setUnifiedAuditEnabled } from "./audit-toggle.js";
-import { resolveUokFlags } from "./flags.js";
+import {
+  getUnifiedAuditOverride,
+  restoreUnifiedAuditOverride,
+  setUnifiedAuditEnabled,
+  setUnifiedAuditSuppressedForBasePath,
+} from "./audit-toggle.js";
+import { resolveUokFlags, type UokFlags } from "./flags.js";
 import { createTurnObserver } from "./loop-adapter.js";
 import { incrementLegacyTelemetry } from "../legacy-telemetry.js";
+import { logWarning } from "../workflow-logger.js";
 
 interface RunAutoLoopWithUokArgs {
   ctx: ExtensionContext;
@@ -45,80 +51,195 @@ function writeParityEvent(basePath: string, event: Record<string, unknown>): voi
   }
 }
 
+type UokKernelPathLabel = "uok-kernel" | "legacy-wrapper" | "legacy-fallback";
+
+interface UokKernelRunPlan {
+  flags: UokFlags;
+  pathLabel: UokKernelPathLabel;
+  traceId: string;
+  useKernel: boolean;
+}
+
 function resolveKernelPathLabel(
-  flags: ReturnType<typeof resolveUokFlags>,
-): "uok-kernel" | "legacy-wrapper" | "legacy-fallback" {
+  flags: UokFlags,
+): UokKernelPathLabel {
   if (flags.legacyFallback) return "legacy-fallback";
   return flags.enabled ? "uok-kernel" : "legacy-wrapper";
 }
 
-export async function runAutoLoopWithUok(args: RunAutoLoopWithUokArgs): Promise<void> {
-  const { ctx, pi, s, deps, runKernelLoop, runLegacyLoop } = args;
-  const prefs = deps.loadEffectiveGSDPreferences()?.preferences;
-  const flags = resolveUokFlags(prefs);
-  setUnifiedAuditEnabled(flags.auditUnified);
+function createUokKernelRunPlan(input: {
+  preferences: ReturnType<LoopDeps["loadEffectiveGSDPreferences"]> | undefined;
+  autoStartTime?: unknown;
+}): UokKernelRunPlan {
+  const flags = resolveUokFlags(input.preferences?.preferences);
   const pathLabel = resolveKernelPathLabel(flags);
-  if (pathLabel !== "uok-kernel") {
-    incrementLegacyTelemetry("legacy.uokFallbackUsed");
-  }
-
-  writeParityEvent(s.basePath, {
-    ts: new Date().toISOString(),
-    path: pathLabel,
+  return {
     flags,
-    phase: "enter",
-  });
+    pathLabel,
+    traceId: `session:${String(input.autoStartTime || Date.now())}`,
+    useKernel: flags.enabled,
+  };
+}
 
-  if (flags.auditUnified) {
+interface KernelAuditStateController {
+  apply(enabled: boolean): void;
+  restore(): void;
+}
+
+function createKernelAuditStateController(basePath: string): KernelAuditStateController {
+  const previousAuditOverride = getUnifiedAuditOverride();
+  return {
+    apply(enabled): void {
+      setUnifiedAuditSuppressedForBasePath(basePath, !enabled);
+      setUnifiedAuditEnabled(enabled);
+    },
+    restore(): void {
+      restoreUnifiedAuditOverride(previousAuditOverride);
+    },
+  };
+}
+
+function emitKernelEnterAudit(input: {
+  basePath: string;
+  plan: UokKernelRunPlan;
+  sessionId?: string;
+}): boolean {
+  if (!input.plan.flags.auditUnified) return true;
+
+  try {
     emitUokAuditEvent(
-      s.basePath,
+      input.basePath,
       buildAuditEnvelope({
-        traceId: `session:${String(s.autoStartTime || Date.now())}`,
+        traceId: input.plan.traceId,
         category: "orchestration",
         type: "uok-kernel-enter",
         payload: {
-          flags,
-          sessionId: ctx.sessionManager?.getSessionId?.(),
+          flags: input.plan.flags,
+          sessionId: input.sessionId,
         },
       }),
     );
+    return true;
+  } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    writeParityEvent(input.basePath, {
+      ts: new Date().toISOString(),
+      path: input.plan.pathLabel,
+      flags: input.plan.flags,
+      phase: "telemetry-error",
+      telemetry: "uok-kernel-enter",
+      error: errorMessage,
+    });
+    logWarning("db", `uok-kernel-enter audit emit failed (non-fatal): ${errorMessage}`);
+    return false;
   }
+}
 
-  const decoratedDeps: LoopDeps = flags.enabled
-    ? {
-        ...deps,
-        uokObserver: createTurnObserver({
-          basePath: s.basePath,
-          gitAction: flags.gitopsTurnAction,
-          gitPush: flags.gitopsTurnPush,
-          enableAudit: flags.auditUnified,
-          enableGitops: flags.gitops,
-        }),
-      }
-    : deps;
+function decorateLoopDepsForKernel(input: {
+  deps: LoopDeps;
+  basePath: string;
+  plan: UokKernelRunPlan;
+  auditHealthy: boolean;
+}): LoopDeps {
+  if (!input.plan.useKernel) return input.deps;
+
+  return {
+    ...input.deps,
+    uokObserver: createTurnObserver({
+      basePath: input.basePath,
+      gitAction: input.plan.flags.gitopsTurnAction,
+      gitPush: input.plan.flags.gitopsTurnPush,
+      enableAudit: input.plan.flags.auditUnified && input.auditHealthy,
+      enableGitops: input.plan.flags.gitops,
+    }),
+  };
+}
+
+async function executeKernelRunPlan(input: {
+  plan: UokKernelRunPlan;
+  ctx: ExtensionContext;
+  pi: ExtensionAPI;
+  s: AutoSession;
+  deps: LoopDeps;
+  kernelDeps: LoopDeps;
+  runKernelLoop: RunAutoLoopWithUokArgs["runKernelLoop"];
+  runLegacyLoop: RunAutoLoopWithUokArgs["runLegacyLoop"];
+}): Promise<void> {
+  if (input.plan.useKernel) {
+    await input.runKernelLoop(input.ctx, input.pi, input.s, input.kernelDeps);
+    return;
+  }
+  await input.runLegacyLoop(input.ctx, input.pi, input.s, input.deps);
+}
+
+export async function runAutoLoopWithUok(args: RunAutoLoopWithUokArgs): Promise<void> {
+  const { ctx, pi, s, deps, runKernelLoop, runLegacyLoop } = args;
+  const auditState = createKernelAuditStateController(s.basePath);
+  let plan: UokKernelRunPlan | null = null;
 
   try {
-    if (flags.enabled) {
-      await runKernelLoop(ctx, pi, s, decoratedDeps);
-    } else {
-      await runLegacyLoop(ctx, pi, s, deps);
+    plan = createUokKernelRunPlan({
+      preferences: deps.loadEffectiveGSDPreferences(),
+      autoStartTime: s.autoStartTime,
+    });
+    auditState.apply(plan.flags.auditUnified);
+
+    if (plan.pathLabel !== "uok-kernel") {
+      incrementLegacyTelemetry("legacy.uokFallbackUsed");
     }
+
     writeParityEvent(s.basePath, {
       ts: new Date().toISOString(),
-      path: pathLabel,
-      flags,
+      path: plan.pathLabel,
+      flags: plan.flags,
+      phase: "enter",
+    });
+
+    const auditHealthy = emitKernelEnterAudit({
+      basePath: s.basePath,
+      plan,
+      sessionId: ctx.sessionManager?.getSessionId?.(),
+    });
+    auditState.apply(plan.flags.auditUnified && auditHealthy);
+
+    const kernelDeps = decorateLoopDepsForKernel({
+      deps,
+      basePath: s.basePath,
+      plan,
+      auditHealthy,
+    });
+
+    await executeKernelRunPlan({
+      plan,
+      ctx,
+      pi,
+      s,
+      deps,
+      kernelDeps,
+      runKernelLoop,
+      runLegacyLoop,
+    });
+
+    writeParityEvent(s.basePath, {
+      ts: new Date().toISOString(),
+      path: plan.pathLabel,
+      flags: plan.flags,
       phase: "exit",
       status: "ok",
     });
   } catch (err) {
-    writeParityEvent(s.basePath, {
-      ts: new Date().toISOString(),
-      path: pathLabel,
-      flags,
-      phase: "exit",
-      status: "error",
-      error: err instanceof Error ? err.message : String(err),
-    });
+    if (plan) {
+      writeParityEvent(s.basePath, {
+        ts: new Date().toISOString(),
+        path: plan.pathLabel,
+        flags: plan.flags,
+        phase: "exit",
+        status: "error",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
     throw err;
+  } finally {
+    auditState.restore();
   }
 }

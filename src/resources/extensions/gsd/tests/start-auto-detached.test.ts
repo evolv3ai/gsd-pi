@@ -208,6 +208,38 @@ test("startAutoDetached reports failures asynchronously (#3733)", () => {
   );
 });
 
+test("failed auto-start always clears leaked s.active so later /gsd auto is not bricked (#1235)", () => {
+  const autoSrc = readGsdFile("auto.ts");
+
+  // 1. startAutoDetached is the single funnel for any exception thrown out of
+  //    startAuto — including a bootstrap throw that escapes before the loop's
+  //    try/finally could run cleanupAfterLoopExit. The failure handler must
+  //    clear leaked activation, or s.active + the on-disk auto lock persist and
+  //    the re-entry guard silently no-ops every later /gsd auto until restart.
+  const detachedIdx = autoSrc.indexOf("export function startAutoDetached");
+  assert.ok(detachedIdx > -1, "startAutoDetached should exist");
+  const detachedBody = autoSrc.slice(detachedIdx, autoSrc.indexOf("\n}", detachedIdx));
+  assert.ok(
+    detachedBody.includes("if (s.active)") &&
+      detachedBody.includes("cleanupAfterLoopExit(ctx)"),
+    "startAutoDetached failure handler must run cleanupAfterLoopExit when auto-mode is still active",
+  );
+
+  // 2. bootstrapAutoSession sets s.active = true before some bail-outs return
+  //    false (e.g. the SQLite-unavailable gate), so the fresh-start !ready path
+  //    must clear the leaked activation before returning.
+  const startAutoIdx = autoSrc.indexOf("export async function startAuto(");
+  assert.ok(startAutoIdx > -1, "startAuto should exist");
+  const startAutoBody = autoSrc.slice(startAutoIdx);
+  const notReadyIdx = startAutoBody.indexOf("if (!ready) {");
+  assert.ok(notReadyIdx > -1, "fresh start should guard on bootstrap readiness with a block body");
+  const notReadyBlock = startAutoBody.slice(notReadyIdx, notReadyIdx + 600);
+  assert.ok(
+    notReadyBlock.includes("if (s.active) await cleanupAfterLoopExit(ctx)"),
+    "fresh-start !ready bail-out must clear leaked auto activation before returning",
+  );
+});
+
 test("detached auto-start keeps a ref'ed handle until the run settles", async () => {
   const originalSetInterval = globalThis.setInterval;
   const originalClearInterval = globalThis.clearInterval;

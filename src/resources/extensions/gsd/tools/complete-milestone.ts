@@ -10,7 +10,6 @@
  * for recovery, and invalidates caches.
  */
 
-import { join } from "node:path";
 import { existsSync } from "node:fs";
 
 import {
@@ -21,7 +20,7 @@ import {
   getLatestAssessmentByScope,
   updateMilestoneStatus,
 } from "../gsd-db.js";
-import { gsdProjectionRoot, clearPathCache, relMilestoneFile } from "../paths.js";
+import { clearPathCache, resolveMilestoneFile, targetMilestoneFile } from "../paths.js";
 import { resolveCanonicalMilestoneRoot } from "../worktree-manager.js";
 import { isClosedStatus, isDeferredStatus } from "../status-guards.js";
 import { saveFile, clearParseCache } from "../files.js";
@@ -210,9 +209,14 @@ export async function handleCompleteMilestone(
   // ── Filesystem operations (outside transaction) ─────────────────────────
   const summaryMd = renderMilestoneSummaryMarkdown(params, completedAt);
 
-  // Layout-aware: flat-phase → phases/NN-slug/NN-SUMMARY.md;
-  // legacy → milestones/MID/MID-SUMMARY.md.
-  const summaryPath = join(artifactBasePath, relMilestoneFile(artifactBasePath, params.milestoneId, "SUMMARY"));
+  const summaryPath =
+    resolveMilestoneFile(artifactBasePath, params.milestoneId, "SUMMARY") ??
+    targetMilestoneFile(
+      artifactBasePath,
+      params.milestoneId,
+      "SUMMARY",
+      getMilestone(params.milestoneId)?.title,
+    );
 
   // Guard (#4598): if SUMMARY.md already exists on disk, do not overwrite it.
   // This handles re-dispatch scenarios (DB/disk state divergence) where a prior

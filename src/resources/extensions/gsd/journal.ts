@@ -142,7 +142,7 @@ export function emitJournalEvent(basePath: string, entry: JournalEntry): void {
     // Silent failure — journal must never break auto-mode
   }
 
-  if (!isUnifiedAuditEnabled()) return;
+  if (!isUnifiedAuditEnabled(basePath)) return;
   try {
     const causedBy = entry.causedBy
       ? `${entry.causedBy.flowId}:${entry.causedBy.seq}`

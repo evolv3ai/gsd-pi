@@ -23,7 +23,7 @@ import type {
   GSDModelPhaseKey,
   GSDThinkingConfig,
   ResolvedModelConfig,
-  AutoSupervisorConfig,
+  ResolvedAutoSupervisorConfig,
 } from "./preferences-types.js";
 import { clearGSDPreferencesCache, loadEffectiveGSDPreferences, getGlobalGSDPreferencesPath } from "./preferences.js";
 import { getUnitPhaseChain } from "./unit-registry.js";
@@ -87,12 +87,48 @@ function resolveWinningPhase(
 }
 
 /**
+ * Normalize a single model field into a {@link ResolvedModelConfig}.
+ *
+ * Accepts either the legacy bare-string form or the extended object form
+ * (`{ model, provider?, fallbacks? }`). This is the shared normalization used
+ * for phase buckets so sibling single-model fields — `post_unit_hooks[].model`,
+ * `auto_supervisor.model`, and `reactive_execution.subagent_model` — honor
+ * `fallbacks[]` identically rather than accepting a bare string only (#1229).
+ *
+ * Returns undefined for an unset, blank, or model-less field.
+ */
+export function normalizeModelFieldConfig(
+  field: string | GSDPhaseModelConfig | undefined,
+): ResolvedModelConfig | undefined {
+  if (!field) return undefined;
+  if (typeof field === "string") {
+    return field.trim() ? { primary: field, fallbacks: [] } : undefined;
+  }
+  if (!field.model) return undefined;
+  // When provider is explicitly set, prepend it to the model ID so the
+  // resolution code in auto.ts can do an explicit provider match.
+  const primary = field.provider && !field.model.includes("/")
+    ? `${field.provider}/${field.model}`
+    : field.model;
+  return { primary, fallbacks: field.fallbacks ?? [] };
+}
+
+/**
  * Resolve model and fallbacks for a given auto-mode unit type.
  * Returns the primary model and ordered fallbacks, or undefined if not configured.
  *
  * Supports both legacy string format and extended object format:
  * - Legacy: `planning: claude-opus-4-6`
  * - Extended: `planning: { model: claude-opus-4-6, fallbacks: [glm-5, minimax-m2.5] }`
+ *
+ * Hook unit types (`hook/<name>`) resolve against the matching
+ * `post_unit_hooks[]` entry's `model` field so hook sessions honor the same
+ * `fallbacks[]` chain as phase buckets — the recovery path can then switch to
+ * a fallback provider instead of hard-failing (and potentially pausing) the
+ * run on a transient provider trip (#1229).
+ *
+ * The synthetic `supervisor` unit type resolves against `auto_supervisor.model`
+ * for supervisor interventions (wrap-up warnings, timeout recovery).
  */
 export function resolveModelWithFallbacksForUnit(
   unitType: string,
@@ -107,27 +143,26 @@ export function resolveModelWithFallbacksForUnit(
     ...(skipProfileDefaults ? { skipProfileDefaults: true } : {}),
   };
   const prefs = loadEffectiveGSDPreferences(basePath, loadOpts);
+
+  // Supervisor interventions resolve against `auto_supervisor.model` (#1229).
+  if (unitType === "supervisor") {
+    return normalizeModelFieldConfig(prefs?.preferences?.auto_supervisor?.model);
+  }
+
+  // Hook sessions resolve against their own `post_unit_hooks[].model` field,
+  // which now shares the phase-bucket object form (#1229).
+  if (unitType.startsWith("hook/")) {
+    const hookName = unitType.slice("hook/".length);
+    const hooks = prefs?.preferences?.post_unit_hooks;
+    const hook = Array.isArray(hooks) ? hooks.find((h) => h.name === hookName) : undefined;
+    return normalizeModelFieldConfig(hook?.model);
+  }
+
   const chain = phaseChainForUnit(unitType);
   if (!chain) return undefined;
   const winner = resolveWinningPhase(prefs?.preferences?.models as GSDModelConfigV2 | undefined, chain);
   if (!winner) return undefined;
-  const phaseConfig = winner.config;
-
-  // Normalize: string -> { model, fallbacks: [] }
-  if (typeof phaseConfig === "string") {
-    return { primary: phaseConfig, fallbacks: [] };
-  }
-
-  // When provider is explicitly set, prepend it to the model ID so the
-  // resolution code in auto.ts can do an explicit provider match.
-  const primary = phaseConfig.provider && !phaseConfig.model.includes("/")
-    ? `${phaseConfig.provider}/${phaseConfig.model}`
-    : phaseConfig.model;
-
-  return {
-    primary,
-    fallbacks: phaseConfig.fallbacks ?? [],
-  };
+  return normalizeModelFieldConfig(winner.config);
 }
 
 /**
@@ -425,16 +460,20 @@ export function resolveDynamicRoutingConfig(): DynamicRoutingConfig {
   };
 }
 
-export function resolveAutoSupervisorConfig(): AutoSupervisorConfig {
+export function resolveAutoSupervisorConfig(): ResolvedAutoSupervisorConfig {
   const prefs = loadEffectiveGSDPreferences();
   const configured = prefs?.preferences.auto_supervisor ?? {};
+
+  const modelConfig = normalizeModelFieldConfig(configured.model);
 
   return {
     soft_timeout_minutes: configured.soft_timeout_minutes ?? 20,
     idle_timeout_minutes: configured.idle_timeout_minutes ?? 10,
     hard_timeout_minutes: configured.hard_timeout_minutes ?? 30,
     stalled_tool_timeout_minutes: configured.stalled_tool_timeout_minutes ?? 5,
-    ...(configured.model ? { model: configured.model } : {}),
+    ...(modelConfig
+      ? { model: modelConfig.primary, modelFallbacks: modelConfig.fallbacks }
+      : {}),
   };
 }
 

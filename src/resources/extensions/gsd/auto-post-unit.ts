@@ -30,6 +30,7 @@ import {
   relMilestoneFile,
   relSliceFile,
   relTaskFile,
+  normalizeRealPath,
 } from "./paths.js";
 import { invalidateAllCaches } from "./cache.js";
 import { rebuildState } from "./doctor.js";
@@ -960,7 +961,7 @@ function describeArtifactVerificationFailure(
   if (!artifactPath) {
     return `Artifact verification failed: ${unitType} "${unitId}" has no resolvable artifact path.`;
   }
-  const relPath = relative(basePath, artifactPath);
+  const relPath = relative(normalizeRealPath(basePath), artifactPath);
   if (!existsSync(artifactPath)) {
     const completionToolHint = unitType === "execute-task" && !hasTaskCompletionToolCall(agentEndMessages)
       ? " No completion tool call detected (`gsd_task_complete`/alias)."
@@ -2398,7 +2399,8 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
       const verdict = gateBlock.verdict ? ` verdict=${gateBlock.verdict};` : "";
       const artifact = gateBlock.artifact ? ` artifact=${gateBlock.artifact};` : "";
       const message =
-        `Post-unit gate "${gateBlock.hookName}" blocked ${gateBlock.triggerUnitType} ${gateBlock.triggerUnitId}:` +
+        `Post-unit gate "${gateBlock.hookName}" blocked ${gateBlock.triggerUnitType} ${gateBlock.triggerUnitId} ` +
+        `(detected on completion of ${s.currentUnit.type} ${s.currentUnit.id}):` +
         `${verdict}${artifact} ${gateBlock.reason}. Run /gsd status to inspect, then /gsd auto after recovery.`;
       ctx.ui.notify(message, "warning");
       await pauseAuto(ctx, pi);
