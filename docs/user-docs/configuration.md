@@ -160,6 +160,8 @@ If you prefer to maintain the MCP entry manually, add:
 
 `--identity-key` and `--identity-project` are stable project identifiers (not filesystem paths) — they may not contain path separators.
 
+Set `GSD_BROWSER_MCP_EXTRA_ARGS` to forward extra flags to the launched `gsd-browser` daemon without hand-editing `.mcp.json` args. It accepts a plain command-line string (`--stealth --browser-path /usr/bin/chromium`) or a JSON array (`["--stealth"]`), and the flags are appended after the managed session/identity flags for both the MCP server entry and the daemon-start warm-up. Use this in environments where Chrome needs extra launch flags — for example, containers with unprivileged user namespaces disabled (Ubuntu 23.10+, many CI runners), where Chrome's sandbox refuses to start; there, `GSD_BROWSER_MCP_EXTRA_ARGS=--stealth` supplies Chrome's `--no-sandbox`.
+
 Keep this in `.gsd/mcp.json` when browser paths, vault settings, or session state are machine-local. Use `.mcp.json` only when the team should share the same server entry. Set `GSD_BROWSER_MCP_ENABLED=0` only to skip writing the external MCP entry; it does not disable Pi browser tools. Browser-facing projects automatically prefer the managed `gsd-browser` engine when it is available and starts cleanly, falling back to Playwright otherwise. Use `GSD_BROWSER_ENGINE=gsd-browser` to force the managed engine, `GSD_BROWSER_ENGINE=playwright` (or `legacy`) to force the Playwright engine, or `GSD_BROWSER_ENGINE=off` to disable Pi browser tools.
 
 ### Example: HTTP server

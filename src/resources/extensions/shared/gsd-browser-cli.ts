@@ -66,6 +66,30 @@ function splitCommandLine(commandLine: string): string[] {
   });
 }
 
+/**
+ * Extra gsd-browser CLI flags to forward verbatim to the launched daemon, from
+ * GSD_BROWSER_MCP_EXTRA_ARGS. Unlike GSD_BROWSER_MCP_ARGS (a full args override),
+ * these are *appended* to the default `mcp`/`daemon start` invocation so callers
+ * keep the managed session/identity flags. Accepts a JSON array (e.g.
+ * `["--stealth"]`) or a plain, optionally-quoted command-line string
+ * (e.g. `--stealth --browser-path /usr/bin/chromium`). This is the config-level
+ * knob for environments where Chrome needs extra launch flags — e.g. containers
+ * without unprivileged user namespaces, where `--stealth` supplies Chrome's
+ * `--no-sandbox`.
+ */
+function resolveExtraGsdBrowserArgs(env: NodeJS.ProcessEnv): string[] {
+  const raw = env.GSD_BROWSER_MCP_EXTRA_ARGS?.trim();
+  if (!raw) return [];
+  if (raw.startsWith("[")) {
+    const parsed = parseJsonEnv<unknown>(env, "GSD_BROWSER_MCP_EXTRA_ARGS");
+    if (!Array.isArray(parsed)) {
+      throw new Error("GSD_BROWSER_MCP_EXTRA_ARGS JSON must be an array of strings");
+    }
+    return parsed.map(String);
+  }
+  return splitCommandLine(raw);
+}
+
 function buildPathGsdBrowserVersionInvocation(platform: NodeJS.Platform): { command: string; args: string[] } {
   if (platform === "win32") {
     return { command: "cmd", args: ["/d", "/s", "/c", "gsd-browser", "--version"] };
@@ -297,6 +321,10 @@ export function resolveGsdBrowserMcpLaunchConfig(
     || (preferPathCli ? "gsd-browser" : undefined)
     || (bundledCliPath ? process.execPath : undefined)
     || "gsd-browser";
+  // Appended after the managed session/identity flags so they survive the
+  // daemon-start transformation (which forwards everything after `mcp`), letting
+  // callers add extra Chrome/gsd-browser launch flags via one config knob.
+  const extraArgs = resolveExtraGsdBrowserArgs(env);
   const args = Array.isArray(explicitArgs) && explicitArgs.length > 0
     ? explicitArgs.map(String)
     : [
@@ -311,6 +339,7 @@ export function resolveGsdBrowserMcpLaunchConfig(
         identityKey,
         "--identity-project",
         identityProject,
+        ...extraArgs,
       ];
   const cwd = env.GSD_BROWSER_MCP_CWD?.trim() || resolvedProjectRoot;
 
