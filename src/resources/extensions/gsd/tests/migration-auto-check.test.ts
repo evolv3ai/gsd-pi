@@ -250,6 +250,73 @@ test("migration auto-check canonicalizes a legacy descriptor milestone dir (no f
   }
 });
 
+test("migration auto-check recognizes suffixed flat-phase projection directories", async () => {
+  const base = makeBase();
+  try {
+    await writeGSDDirectory({ projectContent: "# P\n", decisionsContent: "", requirements: [], milestones: [] }, base);
+    assert.equal(await ensureDbOpen(base), true);
+
+    insertMilestone({
+      id: "M001-re4q3k",
+      title: "Clean GSD Continuation Readiness",
+      status: "complete",
+      planning: { vision: "Keep continuation state readable." },
+    });
+    insertSlice({
+      id: "S01",
+      milestoneId: "M001-re4q3k",
+      title: "Readiness slice",
+      status: "complete",
+      risk: "low",
+      depends: [],
+      demo: "Readable continuation state.",
+      sequence: 1,
+    });
+    insertTask({
+      id: "T01",
+      sliceId: "S01",
+      milestoneId: "M001-re4q3k",
+      title: "Readiness task",
+      status: "complete",
+    });
+    insertMilestone({
+      id: "M002-a1rwmq",
+      title: "Support Command Policy Hardening",
+      status: "complete",
+      planning: { vision: "Harden support command policy." },
+    });
+    insertSlice({
+      id: "S01",
+      milestoneId: "M002-a1rwmq",
+      title: "Policy slice",
+      status: "complete",
+      risk: "low",
+      depends: [],
+      demo: "Policy is hardened.",
+      sequence: 1,
+    });
+    insertTask({
+      id: "T01",
+      sliceId: "S01",
+      milestoneId: "M002-a1rwmq",
+      title: "Policy task",
+      status: "complete",
+    });
+
+    const { rebuildMarkdownProjectionsFromDb } = await import("../commands-maintenance.ts");
+    const rebuild = await rebuildMarkdownProjectionsFromDb(base);
+    assert.ok(rebuild.rendered > 0, "expected flat-phase markdown projections to render");
+
+    const result = await checkMarkdownHierarchyAgainstDb(base);
+    assert.equal(result.action, "none");
+    assert.equal(result.reason, "in-sync");
+    assert.deepEqual(result.markdown, { milestones: 2, slices: 2, tasks: 2 });
+    assert.deepEqual(result.beforeDb, { milestones: 2, slices: 2, tasks: 2 });
+  } finally {
+    cleanup(base);
+  }
+});
+
 test("migration auto-check refreshes a stale open DB handle before comparing", async () => {
   const base = makeBase();
   try {
@@ -367,6 +434,30 @@ test("migration auto-check still compares a roadmapless milestone that HAS a DB 
     assert.equal(result.action, "none");
     assert.equal(result.reason, "in-sync");
     assert.deepEqual(result.markdown, { milestones: 1, slices: 0, tasks: 0 });
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("migration auto-check aligns a roadmapless milestone dir to its suffixed DB row (no false drift)", async () => {
+  const base = makeBase();
+  try {
+    await writeGSDDirectory({ projectContent: "# P\n", decisionsContent: "", requirements: [], milestones: [] }, base);
+    assert.equal(await ensureDbOpen(base), true);
+    // Team-mode suffixed milestone whose markdown dir has no ROADMAP yet (e.g. a
+    // freshly handed-off / zero-slice milestone). Markdown discovers the bare
+    // "M001"; the DB stores the authoritative suffixed "M001-re4q3k". The
+    // bare-to-suffixed alignment must rewrite EVERY markdown set, including the
+    // roadmapless subset, so the discussion-phase exclusion sees the DB row and
+    // does not decrement the milestone count into false drift.
+    insertMilestone({ id: "M001-re4q3k", title: "Suffixed milestone", status: "queued" });
+    writeScratchMilestoneDir(base, "M001", "M001-CONTEXT.md");
+
+    const result = await checkMarkdownHierarchyAgainstDb(base);
+    assert.equal(result.action, "none");
+    assert.equal(result.reason, "in-sync");
+    assert.deepEqual(result.markdown, { milestones: 1, slices: 0, tasks: 0 });
+    assert.deepEqual(result.beforeDb, { milestones: 1, slices: 0, tasks: 0 });
   } finally {
     cleanup(base);
   }

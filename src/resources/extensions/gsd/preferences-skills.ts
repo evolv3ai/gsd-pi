@@ -5,11 +5,11 @@
  * to absolute filesystem paths, plus skill discovery and staleness config.
  */
 
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { getSkillDirectories } from "@gsd/pi-coding-agent";
 import { gsdHome } from "./gsd-home.js";
-import { statSync } from "node:fs";
 
 import type {
   GSDPreferences,
@@ -25,26 +25,20 @@ export type { GSDSkillRule, SkillDiscoveryMode, SkillResolution, SkillResolution
 /**
  * Known skill directories for **preference reference resolution** (bare skill names).
  *
- * Search order (first match wins):
- * 1. ~/.gsd/agent/skills/ (GSD bundled)
- * 2. ~/.agents/skills/ (ecosystem global)
- * 3. .agents/skills/ (project ecosystem)
- * 4. ~/.claude/skills/ and .claude/skills/ (Claude Code compatibility)
+ * Sourced from the shared taxonomy (`@gsd/pi-coding-agent` `getSkillDirectories`)
+ * so preference resolution, mid-session discovery, and the PackageManager
+ * catalog all agree on which directories exist. The `method` is derived from
+ * each entry's scope.
  *
  * Note: the ResourceLoader catalog uses PackageManager precedence instead —
  * project `.gsd/skills` and `.agents/skills` can override bundled GSD skills
  * on name collision. See docs/dev/what-is-pi/09-the-customization-stack.md.
  */
 export function getSkillSearchDirs(cwd: string): Array<{ dir: string; method: SkillResolution["method"] }> {
-  const dirs: Array<{ dir: string; method: SkillResolution["method"] }> = [
-    { dir: join(gsdHome(), "agent", "skills"), method: "user-skill" },
-    { dir: join(homedir(), ".agents", "skills"), method: "user-skill" },
-    { dir: join(cwd, ".agents", "skills"), method: "project-skill" },
-    // Claude Code official skill directories
-    { dir: join(homedir(), ".claude", "skills"), method: "user-skill" },
-    { dir: join(cwd, ".claude", "skills"), method: "project-skill" },
-  ];
-  return dirs;
+  return getSkillDirectories({ cwd, gsdHome: gsdHome() }).map((entry) => ({
+    dir: entry.path,
+    method: entry.scope === "project" ? "project-skill" : "user-skill",
+  }));
 }
 
 /**

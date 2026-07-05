@@ -446,5 +446,28 @@ describe("skills", () => {
 			expect(skills[0].filePath).toContain("first");
 			expect(diagnostics.some((d: ResourceDiagnostic) => d.type === "collision")).toBe(true);
 		});
+
+		it("bundled GSD skill wins over a same-named Claude skill (load-order precedence)", () => {
+			// The taxonomy enumerates gsd-user (bundled) before claude-user, so
+			// PackageManager passes bundled paths before Claude paths and
+			// first-loaded-wins collision resolution keeps bundled. This test
+			// pins that contract at the loader boundary by passing them in
+			// taxonomy order: [bundled, claude].
+			const emptyAgentDir = resolve(__dirname, "fixtures/empty-agent");
+			const emptyCwd = resolve(__dirname, "fixtures/empty-cwd");
+			const bundledPath = join(collisionFixturesDir, "first");
+			const claudePath = join(collisionFixturesDir, "second");
+
+			const { skills, diagnostics } = loadSkills({
+				agentDir: emptyAgentDir,
+				cwd: emptyCwd,
+				skillPaths: [bundledPath, claudePath],
+				includeDefaults: false,
+			});
+
+			expect(skills).toHaveLength(1);
+			expect(skills[0].filePath).toContain("first");
+			expect(diagnostics.some((d: ResourceDiagnostic) => d.type === "collision")).toBe(true);
+		});
 	});
 });

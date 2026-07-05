@@ -696,7 +696,16 @@ function pickPreferredPhaseDir(phasesDir: string, matches: string[]): string {
   return best;
 }
 
-function phaseDirMatchesMilestoneId(dirName: string, milestoneId: string, phaseNum: number): boolean {
+function slugLooksLikeTeamSuffixProjection(slugPart: string): boolean {
+  return /^[a-z0-9]{6}(-|$)/.test(slugPart);
+}
+
+function phaseDirMatchesMilestoneId(
+  dirName: string,
+  milestoneId: string,
+  phaseNum: number,
+  allowTeamSuffixSlugs = false,
+): boolean {
   const numMatch = dirName.match(/^(\d+)-(.*)$/);
   if (!numMatch || parseInt(numMatch[1]!, 10) !== phaseNum) return false;
   const slugPart = numMatch[2]!;
@@ -704,8 +713,8 @@ function phaseDirMatchesMilestoneId(dirName: string, milestoneId: string, phaseN
   if (suffix) {
     return slugPart === suffix || slugPart.startsWith(`${suffix}-`);
   }
-  // Plain sequential IDs must not resolve to unique-suffix phase dirs.
-  return !/^[a-z0-9]{6}(-|$)/.test(slugPart);
+  if (slugLooksLikeTeamSuffixProjection(slugPart) && !allowTeamSuffixSlugs) return false;
+  return true;
 }
 
 function resolvePhaseDir(basePath: string, milestoneId: string): string | null {
@@ -724,6 +733,15 @@ function resolvePhaseDir(basePath: string, milestoneId: string): string | null {
         if (!entry.isDirectory()) continue;
         if (phaseDirMatchesMilestoneId(entry.name, milestoneId, phaseNum)) {
           matches.push(entry.name);
+        }
+      }
+      // Bare milestone ids may only have a suffixed team-mode projection on disk.
+      if (matches.length === 0 && !milestoneIdUniqueSuffix(milestoneId)) {
+        for (const entry of readdirSync(phasesDir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          if (phaseDirMatchesMilestoneId(entry.name, milestoneId, phaseNum, true)) {
+            matches.push(entry.name);
+          }
         }
       }
     } catch {

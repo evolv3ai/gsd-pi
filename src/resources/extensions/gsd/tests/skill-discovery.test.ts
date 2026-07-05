@@ -109,3 +109,49 @@ test("appendDiscoveredSkillsFallback does not duplicate skills already in the pr
     location: "/tmp/already-loaded/SKILL.md",
   }]), prompt);
 });
+
+test("snapshotSkills({cwd}) detects skills added to the project .agents/skills/ mid-session", async () => {
+  await withTempSkillHome(async (home) => {
+    // Use a project dir under the temp home so cwd is isolated.
+    const projectDir = join(home, "myproject");
+    const projectSkills = join(projectDir, ".agents", "skills");
+    snapshotSkills({ cwd: projectDir });
+
+    // Add a skill to the project skills dir after the snapshot.
+    writeDiskSkill(projectSkills, "project-disk-skill", "Project skill added mid-session.");
+    const detected = detectNewSkills();
+
+    assert.deepEqual(detected.map(skill => skill.name), ["project-disk-skill"]);
+    assert.equal(detected[0].location, join(projectSkills, "project-disk-skill", "SKILL.md"));
+  });
+});
+
+test("snapshotSkills({cwd}) detects skills added to the project .claude/skills/ mid-session", async () => {
+  await withTempSkillHome(async (home) => {
+    const projectDir = join(home, "claude-project");
+    const claudeSkills = join(projectDir, ".claude", "skills");
+    snapshotSkills({ cwd: projectDir });
+
+    writeDiskSkill(claudeSkills, "claude-project-skill", "Claude-format skill added mid-session.");
+    const detected = detectNewSkills();
+
+    assert.deepEqual(detected.map(skill => skill.name), ["claude-project-skill"]);
+  });
+});
+
+test("snapshotSkills({cwd}) treats skills already in the project dir as baseline, not newly discovered", async () => {
+  await withTempSkillHome(async (home) => {
+    // projectDir is intentionally NOT process.cwd(): mirrors auto-mode passing a
+    // base path that differs from cwd (e.g. after chdir into a worktree). The
+    // baseline must scan the passed cwd's dirs, so a skill present *before* the
+    // snapshot is part of the baseline and is never reported as newly discovered.
+    // Regresses the fix where snapshotCurrentSkillNames fell back to process.cwd().
+    const projectDir = join(home, "preexisting-project");
+    const projectSkills = join(projectDir, ".agents", "skills");
+    writeDiskSkill(projectSkills, "preexisting-project-skill");
+
+    snapshotSkills({ cwd: projectDir });
+
+    assert.deepEqual(detectNewSkills(), []);
+  });
+});

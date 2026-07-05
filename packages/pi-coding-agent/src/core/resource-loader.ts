@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import chalk from "chalk";
 import { CONFIG_DIR_NAME } from "../config.js";
 import { loadThemeFromPath, type Theme } from "../theme/theme.js";
@@ -17,7 +17,15 @@ import { loadPromptTemplates } from "./prompt-templates.js";
 import { SettingsManager } from "./settings-manager.js";
 import type { Skill } from "./skills.js";
 import { loadSkills } from "./skills.js";
+import { getSkillDirectories } from "./skill-directories.js";
 import { createSourceInfo, type SourceInfo } from "./source-info.js";
+
+/**
+ * Above this many Claude skills in the catalog, emit a warning diagnostic so
+ * users aren't blindsided by system-prompt context cost (each catalog entry
+ * costs tokens on every turn). Tunable later if needed.
+ */
+const CLAUDE_SKILL_WARN_THRESHOLD = 30;
 
 export interface ResourceExtensionPaths {
 	skillPaths?: Array<{ path: string; metadata: PathMetadata }>;
@@ -529,7 +537,34 @@ export class DefaultResourceLoader implements ResourceLoader {
 				skill.sourceInfo ??
 				this.getDefaultSourceInfoForPath(skill.filePath),
 		}));
-		this.skillDiagnostics = resolvedSkills.diagnostics;
+		this.skillDiagnostics = this.appendClaudeSkillCountWarning(resolvedSkills.skills, resolvedSkills.diagnostics);
+	}
+
+	/**
+	 * When the catalog loads an unusually large number of Claude skills, emit a
+	 * one-time warning so users can curate `~/.claude/skills/` to reduce
+	 * system-prompt context cost. Each catalog entry is sent on every turn.
+	 */
+	private appendClaudeSkillCountWarning(
+		skills: Skill[],
+		diagnostics: ResourceDiagnostic[],
+	): ResourceDiagnostic[] {
+		const claudeDirs = getSkillDirectories({ cwd: this.cwd, gsdHome: dirname(this.agentDir) })
+			.filter((e) => e.kind === "claude-project" || e.kind === "claude-user")
+			.map((e) => e.path + sep);
+		const claudeSkillCount = skills.filter((s) =>
+			claudeDirs.some((d) => s.filePath.startsWith(d)),
+		).length;
+		if (claudeSkillCount <= CLAUDE_SKILL_WARN_THRESHOLD) {
+			return diagnostics;
+		}
+		return [
+			...diagnostics,
+			{
+				type: "warning",
+				message: `Loaded ${claudeSkillCount} Claude skills into the prompt; consider curating ~/.claude/skills/ or removing unused skills to reduce context cost.`,
+			},
+		];
 	}
 
 	private updatePromptsFromPaths(promptPaths: string[], metadataByPath?: Map<string, PathMetadata>): void {

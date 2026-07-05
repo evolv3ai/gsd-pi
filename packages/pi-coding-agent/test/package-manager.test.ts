@@ -387,6 +387,74 @@ Content`,
 		});
 	});
 
+	describe("foreign (Claude / ~/.agents) skill precedence", () => {
+		// Regression: `toResolvedPaths` sorts skills by `resourcePrecedenceRank`,
+		// which re-groups purely by scope. Reordering the accumulator insertion is
+		// not enough — a project-scope `<cwd>/.claude/skills` skill (rank 1) still
+		// sorts AHEAD of a bundled user-scope `~/.gsd/agent/skills` skill (rank 3),
+		// shadowing a bundled auto-mode skill (handoff, decompose-into-slices, ...).
+		// Tagging foreign kinds ranks them below bundled GSD so bundled wins.
+		it("ranks a bundled gsd-user skill above a same-named <cwd>/.claude/skills skill", async () => {
+			const bundledSkill = join(agentDir, "skills", "handoff", "SKILL.md");
+			mkdirSync(join(agentDir, "skills", "handoff"), { recursive: true });
+			writeFileSync(bundledSkill, "---\nname: handoff\ndescription: bundled\n---\n");
+
+			const claudeProjectSkill = join(tempDir, ".claude", "skills", "handoff", "SKILL.md");
+			mkdirSync(join(tempDir, ".claude", "skills", "handoff"), { recursive: true });
+			writeFileSync(claudeProjectSkill, "---\nname: handoff\ndescription: claude\n---\n");
+
+			const result = await packageManager.resolve();
+
+			const bundledIdx = result.skills.findIndex((r) => r.path === bundledSkill);
+			const claudeIdx = result.skills.findIndex((r) => r.path === claudeProjectSkill);
+
+			expect(bundledIdx).toBeGreaterThanOrEqual(0);
+			expect(claudeIdx).toBeGreaterThanOrEqual(0);
+			// Bundled sorts first → loadSkills' first-wins keeps the bundled skill.
+			expect(bundledIdx).toBeLessThan(claudeIdx);
+			// The Claude skill keeps its project scope but is tagged foreign.
+			expect(result.skills[claudeIdx].metadata.scope).toBe("project");
+			expect(result.skills[claudeIdx].metadata.foreign).toBe(true);
+			// The bundled skill is user-scoped and not foreign.
+			expect(result.skills[bundledIdx].metadata.scope).toBe("user");
+			expect(result.skills[bundledIdx].metadata.foreign ?? false).toBe(false);
+		});
+
+		it("ranks a bundled gsd-user skill above a same-named ~/.claude/skills skill", async () => {
+			// Point HOME at a dir distinct from cwd so `~/.claude/skills` does not
+			// alias `<cwd>/.claude/skills` (they collapse to one path when equal).
+			const fakeHome = join(tempDir, "home");
+			mkdirSync(fakeHome, { recursive: true });
+			const previousHome = process.env.HOME;
+			process.env.HOME = fakeHome;
+			try {
+				const bundledSkill = join(agentDir, "skills", "handoff", "SKILL.md");
+				mkdirSync(join(agentDir, "skills", "handoff"), { recursive: true });
+				writeFileSync(bundledSkill, "---\nname: handoff\ndescription: bundled\n---\n");
+
+				const claudeUserSkill = join(fakeHome, ".claude", "skills", "handoff", "SKILL.md");
+				mkdirSync(join(fakeHome, ".claude", "skills", "handoff"), { recursive: true });
+				writeFileSync(claudeUserSkill, "---\nname: handoff\ndescription: claude user\n---\n");
+
+				const result = await packageManager.resolve();
+
+				const bundledIdx = result.skills.findIndex((r) => r.path === bundledSkill);
+				const claudeIdx = result.skills.findIndex((r) => r.path === claudeUserSkill);
+
+				expect(bundledIdx).toBeGreaterThanOrEqual(0);
+				expect(claudeIdx).toBeGreaterThanOrEqual(0);
+				expect(bundledIdx).toBeLessThan(claudeIdx);
+				expect(result.skills[claudeIdx].metadata.foreign).toBe(true);
+			} finally {
+				if (previousHome === undefined) {
+					delete process.env.HOME;
+				} else {
+					process.env.HOME = previousHome;
+				}
+			}
+		});
+	});
+
 	describe(".agents/skills auto-discovery", () => {
 		it("should scan .agents/skills from cwd up to git repo root", async () => {
 			const repoRoot = join(tempDir, "repo");

@@ -5,7 +5,7 @@
 // Exports: parseDecisionsTable, parseRequirementsSections, migrateFromMarkdown
 
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
-import { join, relative, basename } from 'node:path';
+import { join, relative, basename, dirname } from 'node:path';
 import type { Decision, Requirement } from './types.js';
 import {
   upsertDecision,
@@ -24,6 +24,7 @@ import {
   resolveGsdRootFile,
   resolveMilestoneFile,
   resolveSliceFile,
+  resolveSlicePath,
   resolveTasksDir,
   legacyMilestonesDir,
   gsdRoot,
@@ -33,7 +34,7 @@ import {
 import { findMilestoneIds } from './guided-flow.js';
 import { milestoneIdToPhaseNum } from './layout-policy.js';
 import { parseRoadmap, parsePlan } from './parsers-legacy.js';
-import { parseContextDependsOn } from './files.js';
+import { parseContextDependsOn, parseSummary } from './files.js';
 import { logWarning } from './workflow-logger.js';
 
 // ─── DECISIONS.md Parser ───────────────────────────────────────────────────
@@ -816,22 +817,67 @@ export function migrateHierarchyToDb(basePath: string): {
         // Per K002: use 'complete' not 'done'
         let taskStatus: string = taskEntry.done ? 'complete' : 'pending';
 
-        // Pre-migration consistency (legacy layout only): if a task is marked
-        // done but has no per-task SUMMARY.md, import it as pending so it gets
-        // re-executed rather than silently entering the DB as complete.
-        // Flat-phase has no per-task summary files by design — the checkbox
-        // state is the authoritative completion signal and is imported as-is.
-        if (taskStatus === 'complete') {
-          const tDir = resolveTasksDir(basePath, milestoneId, sliceEntry.id);
-          if (tDir) {
-            const summaryFile = join(tDir, `${taskEntry.id}-SUMMARY.md`);
-            if (!existsSync(summaryFile)) {
-              taskStatus = 'pending';
-              process.stderr.write(
-                `gsd-migrate: ${milestoneId}/${sliceEntry.id}/${taskEntry.id} marked done but missing summary — importing as pending\n`,
-              );
-            }
+        // Resolve the per-task SUMMARY.md. Legacy layout keeps summaries under
+        // a tasks/ subdir; flat-phase writes TID-SUMMARY.md directly in the
+        // phase dir (execute-task's gsd_task_complete writes it there). A tasks/
+        // subdir may still exist in flat-phase for auxiliary artifacts — its
+        // mere existence must NOT redirect summary resolution into tasks/ (#1208).
+        const slicePath = resolveSlicePath(basePath, milestoneId, sliceEntry.id);
+        let taskSummaryFile: string | null = null;
+        let isLegacySlice = false;
+        // Legacy layout keeps per-task summaries under a tasks/ subdir. Its
+        // presence — not merely "is this a legacy slice" — is what makes a
+        // missing summary a downgrade signal. resolveTasksDir returns null when
+        // no such dir exists, so a legacy slice whose checkbox is the only
+        // completion signal (no tasks/ dir at all) is left complete on import.
+        let legacyTasksDir: string | null = null;
+        if (slicePath) {
+          isLegacySlice = basename(dirname(slicePath)) === 'slices';
+          legacyTasksDir = isLegacySlice
+            ? resolveTasksDir(basePath, milestoneId, sliceEntry.id)
+            : null;
+          const summaryDir = legacyTasksDir ?? slicePath;
+          taskSummaryFile = join(summaryDir, `${taskEntry.id}-SUMMARY.md`);
+        }
+        const hasTaskSummary = taskSummaryFile !== null && existsSync(taskSummaryFile);
+
+        // Pre-migration consistency (legacy tasks/ layout only): if a task is
+        // marked done but its tasks/ dir has no per-task SUMMARY.md, import it
+        // as pending so it gets re-executed rather than silently entering the DB
+        // as complete. A legacy slice with no tasks/ dir (checkbox-only
+        // completion) and flat-phase layout are both left as-is here.
+        if (taskStatus === 'complete' && legacyTasksDir !== null && !hasTaskSummary) {
+          taskStatus = 'pending';
+          process.stderr.write(
+            `gsd-migrate: ${milestoneId}/${sliceEntry.id}/${taskEntry.id} marked done but missing summary — importing as pending\n`,
+          );
+        }
+
+        // Lost-update guard (#1222): a per-task SUMMARY.md is the durable
+        // completion attestation written by gsd_task_complete. When the plan
+        // checkbox is stale-unchecked but the SUMMARY exists on disk, a
+        // re-import must NOT downgrade the completed task back to pending — that
+        // silent revert is the lost-update that hard-stopped auto-mode after the
+        // first execute-task. The surviving SUMMARY wins over a stale checkbox.
+        // reopen-task removes the SUMMARY, so this never re-completes an
+        // intentionally reopened task.
+        // Flat-phase summaries are phase-scoped (T01-SUMMARY.md); when a milestone
+        // has multiple slices, require the summary parent frontmatter to match so
+        // one slice's completion does not attest a sibling's same-named task.
+        let summaryAttestsCompletion = hasTaskSummary;
+        if (summaryAttestsCompletion && !isLegacySlice && roadmap.slices.length > 1 && taskSummaryFile) {
+          try {
+            const summaryContent = readFileSync(taskSummaryFile, 'utf-8');
+            summaryAttestsCompletion = parseSummary(summaryContent).frontmatter.parent === sliceEntry.id;
+          } catch {
+            summaryAttestsCompletion = false;
           }
+        }
+        if (taskStatus === 'pending' && summaryAttestsCompletion) {
+          taskStatus = 'complete';
+          process.stderr.write(
+            `gsd-migrate: ${milestoneId}/${sliceEntry.id}/${taskEntry.id} unchecked in plan but SUMMARY.md present — importing as complete (#1222)\n`,
+          );
         }
 
         insertTask({
@@ -844,6 +890,12 @@ export function migrateHierarchyToDb(basePath: string): {
             files: taskEntry.files ?? [],
             verify: taskEntry.verify ?? '',
           },
+          // #1222 (metadata half): re-import derives status from the plan/summary
+          // but has none of the execution prose gsd_task_complete wrote to the DB.
+          // Preserve the existing row's execution columns and completed_at so a
+          // re-import cannot blank a completed task's summary metadata or refresh
+          // its completion timestamp — the DB row is strictly richer than the plan.
+          preserveCompletionMetadata: true,
         });
         counts.tasks++;
       }
@@ -857,12 +909,31 @@ export function migrateHierarchyToDb(basePath: string): {
       if (!sliceEntry.done) {
         const sliceSummaryPath = resolveSliceFile(basePath, milestoneId, sliceEntry.id, 'SUMMARY');
         const hasSliceSummary = sliceSummaryPath !== null && existsSync(sliceSummaryPath);
+        const slicePathForTasks = resolveSlicePath(basePath, milestoneId, sliceEntry.id);
+        const isLegacySliceLayout = slicePathForTasks !== null
+          && basename(dirname(slicePathForTasks)) === 'slices';
+        const taskSummaryDir = slicePathForTasks
+          ? (isLegacySliceLayout
+              ? (resolveTasksDir(basePath, milestoneId, sliceEntry.id) ?? slicePathForTasks)
+              : slicePathForTasks)
+          : null;
         const allTasksDone = plan.tasks.length > 0 && plan.tasks.every(t => {
-          if (!t.done) return false;
-          const tDir = resolveTasksDir(basePath, milestoneId, sliceEntry.id);
-          // Flat-phase has no per-task summary files — checkbox state is authoritative.
-          if (!tDir) return true;
-          return existsSync(join(tDir, `${t.id}-SUMMARY.md`));
+          const taskSummaryFile = taskSummaryDir !== null
+            ? join(taskSummaryDir, `${t.id}-SUMMARY.md`)
+            : null;
+          const hasTaskSummary = taskSummaryFile !== null && existsSync(taskSummaryFile);
+          let summaryAttestsCompletion = hasTaskSummary;
+          if (summaryAttestsCompletion && !isLegacySliceLayout && roadmap.slices.length > 1 && taskSummaryFile) {
+            try {
+              const summaryContent = readFileSync(taskSummaryFile, 'utf-8');
+              summaryAttestsCompletion = parseSummary(summaryContent).frontmatter.parent === sliceEntry.id;
+            } catch {
+              summaryAttestsCompletion = false;
+            }
+          }
+          // Match per-task import rules above: SUMMARY attestation wins over a stale
+          // checkbox (#1222); flat-phase checkboxes are authoritative without summary.
+          return summaryAttestsCompletion || (t.done && !isLegacySliceLayout);
         });
         if (allTasksDone && hasSliceSummary) {
           if (_getAdapter()) {

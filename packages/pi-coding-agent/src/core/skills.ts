@@ -395,7 +395,10 @@ export interface LoadSkillsOptions {
  * Returns skills and any validation diagnostics.
  *
  * Name collisions: the first skill loaded for a given name wins. When paths
- * come from PackageManager, project resources precede user/bundled paths.
+ * come from PackageManager they arrive pre-sorted by resource precedence
+ * (`resourcePrecedenceRank`): settings-entry before auto-discovered, project
+ * before user, and bundled GSD before foreign (Claude / `~/.agents`) skills, so
+ * bundled auto-mode skills win over same-named foreign skills.
  */
 export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 	const { agentDir, skillPaths, includeDefaults } = options;

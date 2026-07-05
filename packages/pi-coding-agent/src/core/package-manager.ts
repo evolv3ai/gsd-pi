@@ -31,6 +31,7 @@ import { CONFIG_DIR_NAME } from "../config.js";
 import { spawnProcess, spawnProcessSync } from "../utils/child-process.js";
 import { type GitSource, parseGitUrl } from "../utils/git.js";
 import { canonicalizePath, isLocalPath, markPathIgnoredByCloudSync, resolvePath } from "../utils/paths.js";
+import { getSkillDirectories } from "./skill-directories.js";
 import { isStdoutTakenOver } from "./output-guard.js";
 import type { PackageSource, SettingsManager } from "./settings-manager.js";
 
@@ -49,6 +50,15 @@ export interface PathMetadata {
 	scope: SourceScope;
 	origin: "package" | "top-level";
 	baseDir?: string;
+	/**
+	 * Marks a skill sourced from a foreign (non-GSD) ecosystem — the Claude
+	 * kinds (`~/.claude/skills`, `<cwd>/.claude/skills`) and user-global
+	 * `~/.agents/skills`. Foreign skills rank below bundled GSD user skills in
+	 * `resourcePrecedenceRank` so bundled auto-mode skills win same-name
+	 * collisions regardless of the foreign source's scope. Unset (falsy) for
+	 * every non-skill resource and for native GSD/project skills.
+	 */
+	foreign?: boolean;
 }
 
 export interface ResolvedResource {
@@ -168,10 +178,19 @@ interface ResourceAccumulator {
  *   1  project + auto-discovered (source: "auto", scope: "project")
  *   2  user + settings entry (source: "local", scope: "user")
  *   3  user + auto-discovered (source: "auto", scope: "user")
- *   4  package resource (origin: "package")
+ *   4  foreign skill source (metadata.foreign — Claude / ~/.agents)
+ *   5  package resource (origin: "package")
+ *
+ * Foreign skills are ranked below bundled GSD user skills (rank 3) so that
+ * bundled auto-mode dependencies (handoff, decompose-into-slices, ...) win
+ * same-name collisions against `<cwd>/.claude/skills`, `~/.claude/skills`, and
+ * `~/.agents/skills`. This is deliberately independent of the foreign source's
+ * project/user scope: a project-scope `<cwd>/.claude/skills` must NOT shadow a
+ * bundled user-scope skill, so `foreign` short-circuits the scope-based rank.
  */
 function resourcePrecedenceRank(m: PathMetadata): number {
-	if (m.origin === "package") return 4;
+	if (m.origin === "package") return 5;
+	if (m.foreign) return 4;
 	const scopeBase = m.scope === "project" ? 0 : 2;
 	return scopeBase + (m.source === "local" ? 0 : 1);
 }
@@ -432,41 +451,6 @@ function collectSkillEntries(
 
 function collectAutoSkillEntries(dir: string, mode: SkillDiscoveryMode): string[] {
 	return collectSkillEntries(dir, mode);
-}
-
-function findGitRepoRoot(startDir: string): string | null {
-	let dir = resolve(startDir);
-	while (true) {
-		if (existsSync(join(dir, ".git"))) {
-			return dir;
-		}
-		const parent = dirname(dir);
-		if (parent === dir) {
-			return null;
-		}
-		dir = parent;
-	}
-}
-
-function collectAncestorAgentsSkillDirs(startDir: string): string[] {
-	const skillDirs: string[] = [];
-	const resolvedStartDir = resolve(startDir);
-	const gitRepoRoot = findGitRepoRoot(resolvedStartDir);
-
-	let dir = resolvedStartDir;
-	while (true) {
-		skillDirs.push(join(dir, ".agents", "skills"));
-		if (gitRepoRoot && dir === gitRepoRoot) {
-			break;
-		}
-		const parent = dirname(dir);
-		if (parent === dir) {
-			break;
-		}
-		dir = parent;
-	}
-
-	return skillDirs;
 }
 
 function collectAutoPromptEntries(dir: string): string[] {
@@ -2276,9 +2260,6 @@ export class DefaultPackageManager implements PackageManager {
 			themes: join(projectBaseDir, "themes"),
 		};
 		const userAgentsSkillsDir = join(getHomeDir(), ".agents", "skills");
-		const projectAgentsSkillDirs = collectAncestorAgentsSkillDirs(this.cwd).filter(
-			(dir) => resolve(dir) !== resolve(userAgentsSkillsDir),
-		);
 
 		const addResources = (
 			resourceType: ResourceType,
@@ -2303,30 +2284,68 @@ export class DefaultPackageManager implements PackageManager {
 			projectBaseDir,
 		);
 
-		// Project skills from .pi/
-		addResources(
-			"skills",
-			collectAutoSkillEntries(projectDirs.skills, "pi"),
-			projectMetadata,
-			projectOverrides.skills,
-			projectBaseDir,
+		// Skills — sourced from the shared directory taxonomy (`./skill-directories.js`).
+		// All six kinds are eligible for the catalog. `agents` vs `pi` mode is
+		// derived from the kind (Claude skills parse identically to `.agents/skills`,
+		// so they reuse the `agents` mode).
+		//
+		// Collision precedence is decided by `resourcePrecedenceRank` when
+		// `toResolvedPaths` sorts the accumulated skills — NOT by taxonomy
+		// enumeration order or this insertion order. That sort re-groups purely by
+		// scope, so on its own it would float project-scope `<cwd>/.claude/skills`
+		// (rank 1) above bundled user-scope `~/.gsd/agent/skills` (rank 3) and let a
+		// stray project Claude skill shadow a bundled auto-mode skill. To prevent
+		// that, foreign kinds (the Claude dirs + user-global `~/.agents/skills`) are
+		// tagged `metadata.foreign`, which ranks them below bundled GSD so bundled
+		// skills win same-name collisions. The two batches below only preserve
+		// resource-add ordering relative to prompts/themes.
+		const userAgentsSkillsResolved = resolve(userAgentsSkillsDir);
+		const allSkillEntries = getSkillDirectories({
+			cwd: this.cwd,
+			gsdHome: dirname(globalBaseDir),
+		}).filter(
+			(entry) =>
+				entry.kind === "gsd-project" ||
+				entry.kind === "agents-project" ||
+				entry.kind === "gsd-user" ||
+				entry.kind === "agents-user" ||
+				entry.kind === "claude-project" ||
+				entry.kind === "claude-user",
 		);
+		const addSkillEntries = (include: (entry: (typeof allSkillEntries)[number]) => boolean): void => {
+			for (const entry of allSkillEntries) {
+				if (!include(entry)) continue;
+				const baseMetadata = entry.scope === "project" ? projectMetadata : userMetadata;
+				const overrides = entry.scope === "project" ? projectOverrides.skills : userOverrides.skills;
+				// `~/.agents/skills` is excluded from the project (ancestor) walk
+				// so it only loads once, as a user-scope skill.
+				if (entry.scope === "project" && resolve(entry.path) === userAgentsSkillsResolved) continue;
+				// `pi` mode is only for `.gsd/skills` (root-level .md files);
+				// `.agents/skills` and `.claude/skills` use the `agents` mode.
+				const mode: SkillDiscoveryMode =
+					entry.kind === "gsd-project" || entry.kind === "gsd-user" ? "pi" : "agents";
+				// Foreign (non-GSD) skill sources rank below bundled GSD so bundled
+				// auto-mode skills win same-name collisions. The Claude kinds and
+				// user-global `~/.agents/skills` are foreign; native GSD and
+				// ancestor-walked project `.agents/skills` are not.
+				const foreign =
+					entry.kind === "claude-project" || entry.kind === "claude-user" || entry.kind === "agents-user";
+				// Never mutate the shared base metadata object (reused by
+				// prompts/themes); allocate a fresh object when we must diverge.
+				let metadata: PathMetadata;
+				if (foreign) {
+					metadata = { ...baseMetadata, baseDir: entry.baseDir, foreign: true };
+				} else if (entry.baseDir === baseMetadata.baseDir) {
+					metadata = baseMetadata;
+				} else {
+					metadata = { ...baseMetadata, baseDir: entry.baseDir };
+				}
+				addResources("skills", collectAutoSkillEntries(entry.path, mode), metadata, overrides, entry.baseDir);
+			}
+		};
 
-		// Project skills from .agents/ (each with its own baseDir)
-		for (const agentsSkillsDir of projectAgentsSkillDirs) {
-			const agentsBaseDir = dirname(agentsSkillsDir); // the .agents directory
-			const agentsMetadata: PathMetadata = {
-				...projectMetadata,
-				baseDir: agentsBaseDir,
-			};
-			addResources(
-				"skills",
-				collectAutoSkillEntries(agentsSkillsDir, "agents"),
-				agentsMetadata,
-				projectOverrides.skills,
-				agentsBaseDir,
-			);
-		}
+		// Project + bundled + claude-project skills in taxonomy order.
+		addSkillEntries((entry) => entry.kind !== "agents-user" && entry.kind !== "claude-user");
 
 		addResources(
 			"prompts",
@@ -2352,28 +2371,8 @@ export class DefaultPackageManager implements PackageManager {
 			globalBaseDir,
 		);
 
-		// User skills from ~/.pi/agent/
-		addResources(
-			"skills",
-			collectAutoSkillEntries(userDirs.skills, "pi"),
-			userMetadata,
-			userOverrides.skills,
-			globalBaseDir,
-		);
-
-		// User skills from ~/.agents/ (with its own baseDir)
-		const userAgentsBaseDir = dirname(userAgentsSkillsDir);
-		const userAgentsMetadata: PathMetadata = {
-			...userMetadata,
-			baseDir: userAgentsBaseDir,
-		};
-		addResources(
-			"skills",
-			collectAutoSkillEntries(userAgentsSkillsDir, "agents"),
-			userAgentsMetadata,
-			userOverrides.skills,
-			userAgentsBaseDir,
-		);
+		// Remaining user skills (~/.agents/skills, ~/.claude/skills).
+		addSkillEntries((entry) => entry.kind === "agents-user" || entry.kind === "claude-user");
 
 		addResources(
 			"prompts",
