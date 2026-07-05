@@ -86,7 +86,7 @@ test("validatePreferences preserves reactive_execution.subagent_model object-for
 test("validatePreferences warns and strips an invalid object-form thinking level", () => {
   const { preferences, errors, warnings } = validatePreferences({
     auto_supervisor: { model: { model: "supervisor-model", thinking: "ludicrous" } },
-  });
+  } as never);
   // The model survives; only the bogus thinking is dropped, so a typo can never
   // reach the resolver and masquerade as explicit configuration.
   assert.equal(errors.length, 0);
