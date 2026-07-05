@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -9,6 +9,7 @@ import {
   gsdProjectionRoot,
   gsdRoot,
   milestonesDir,
+  resolveGsdPathContract,
   resolveSliceFile,
   resolveTaskFile,
   _clearGsdRootCache,
@@ -187,5 +188,69 @@ describe('paths', () => {
         "flat-phase TID-SUMMARY.md at phase root is found even when slices/S01/ exists",
       );
     } finally { cleanup(root); }
+  });
+
+  test('Case 10: resolveGsdPathContract canonicalizes a symlinked .gsd root (regression #1239)', () => {
+    // WSL / external-state shape: `<projectRoot>/.gsd` is a symlink pointing at a
+    // real directory on another volume. Before #1239 the DB path was built from
+    // the unresolved symlink, so the workflow SQLite handle opened through a
+    // move-prone path and could pick the wrong journal mode / SQLITE_READONLY_DBMOVED.
+    const root = tmp();
+    try {
+      const realState = join(root, "real-state"); // canonical symlink target
+      mkdirSync(join(realState, "milestones"), { recursive: true });
+      const projectRoot = join(root, "project");
+      mkdirSync(projectRoot, { recursive: true });
+      symlinkSync(realState, join(projectRoot, ".gsd"), "dir");
+
+      _clearGsdRootCache();
+      const contract = resolveGsdPathContract(projectRoot);
+
+      const canonicalGsd = realpathSync.native(join(projectRoot, ".gsd"));
+      assert.deepStrictEqual(contract.projectGsd, canonicalGsd,
+        "projectGsd is the realpath'd target, not the unresolved .gsd symlink");
+      assert.deepStrictEqual(contract.projectDb, join(canonicalGsd, "gsd.db"),
+        "projectDb is built from the canonical .gsd root");
+      assert.deepStrictEqual(contract.projectGsd, gsdProjectionRoot(projectRoot),
+        "projectGsd agrees with gsdProjectionRoot on the canonical root");
+      assert.notStrictEqual(contract.projectDb, join(projectRoot, ".gsd", "gsd.db"),
+        "regression #1239: DB must not open through the unresolved .gsd symlink");
+    } finally { cleanup(root); }
+  });
+
+  test('Case 11: resolveGsdPathContract canonicalizes the external-state worktree DB path through a symlinked store (regression #1239)', () => {
+    const root = tmp();
+    const originalStateDir = process.env.GSD_STATE_DIR;
+    try {
+      const stateDir = join(root, "state");
+      process.env.GSD_STATE_DIR = stateDir;
+
+      // The external-state project store `<state>/projects/<hash>` is itself a
+      // symlink to a real directory on another volume (the WSL `.gsd` shape).
+      const realProjectGsd = join(root, "real-projects", "abc123");
+      mkdirSync(realProjectGsd, { recursive: true });
+      mkdirSync(join(stateDir, "projects"), { recursive: true });
+      const storeSymlink = join(stateDir, "projects", "abc123");
+      symlinkSync(realProjectGsd, storeSymlink, "dir");
+
+      const wtRoot = join(storeSymlink, "worktrees", "M002");
+      mkdirSync(join(wtRoot, ".gsd"), { recursive: true });
+
+      _clearGsdRootCache();
+      const contract = resolveGsdPathContract(wtRoot);
+
+      const canonicalStore = realpathSync.native(storeSymlink);
+      assert.ok(contract.isWorktree, "recognized as an external-state worktree layout");
+      assert.deepStrictEqual(contract.projectGsd, canonicalStore,
+        "projectGsd is the realpath'd project store, not the unresolved symlink");
+      assert.deepStrictEqual(contract.projectDb, join(canonicalStore, "gsd.db"),
+        "projectDb is built from the canonical project store");
+      assert.notStrictEqual(contract.projectDb, join(storeSymlink, "gsd.db"),
+        "regression #1239: DB must not open through the unresolved external-state symlink");
+    } finally {
+      if (originalStateDir === undefined) delete process.env.GSD_STATE_DIR;
+      else process.env.GSD_STATE_DIR = originalStateDir;
+      cleanup(root);
+    }
   });
 });
