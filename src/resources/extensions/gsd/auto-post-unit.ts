@@ -30,6 +30,7 @@ import {
   relMilestoneFile,
   relSliceFile,
   relTaskFile,
+  normalizeRealPath,
 } from "./paths.js";
 import { invalidateAllCaches } from "./cache.js";
 import { rebuildState } from "./doctor.js";
@@ -960,7 +961,7 @@ function describeArtifactVerificationFailure(
   if (!artifactPath) {
     return `Artifact verification failed: ${unitType} "${unitId}" has no resolvable artifact path.`;
   }
-  const relPath = relative(basePath, artifactPath);
+  const relPath = relative(normalizeRealPath(basePath), artifactPath);
   if (!existsSync(artifactPath)) {
     const completionToolHint = unitType === "execute-task" && !hasTaskCompletionToolCall(agentEndMessages)
       ? " No completion tool call detected (`gsd_task_complete`/alias)."
