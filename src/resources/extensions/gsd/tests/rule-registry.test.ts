@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { test, describe, beforeEach } from "node:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { emitJournalEvent } from "../journal.ts";
@@ -542,5 +542,49 @@ describe("RuleRegistry", () => {
 
     assert.deepStrictEqual(result.action, "stop", "result is a stop action");
     assert.deepStrictEqual(result.matchedRule, "<no-match>", "matchedRule is '<no-match>' on fallback");
+  });
+});
+
+describe("resolveHookArtifactPath", () => {
+  test("resolves a phase-level artifact from the .gsd/phases layout", () => {
+    const originalGsdHome = process.env.GSD_HOME;
+    const projectRoot = mkdtempSync(join(tmpdir(), "gsd-hook-phase-"));
+    const tempGsdHome = mkdtempSync(join(tmpdir(), "gsd-hook-home-"));
+    try {
+      process.env.GSD_HOME = tempGsdHome;
+      const phaseDir = join(realpathSync(projectRoot), ".gsd", "phases", "50-some-phase");
+      mkdirSync(phaseDir, { recursive: true });
+      const artifactPath = join(phaseDir, "BROWSER-RUNTIME-EVIDENCE.md");
+      writeFileSync(artifactPath, "---\nverdict: advisory\n---\n", "utf-8");
+
+      const resolved = resolveHookArtifactPath(projectRoot, "M050/S02/T01", "BROWSER-RUNTIME-EVIDENCE.md");
+      assert.equal(resolved, artifactPath, "resolves the canonical phase-level artifact");
+    } finally {
+      if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+      else process.env.GSD_HOME = originalGsdHome;
+      rmSync(projectRoot, { recursive: true, force: true });
+      rmSync(tempGsdHome, { recursive: true, force: true });
+    }
+  });
+
+  test("falls back to the legacy milestones/slices/tasks layout", () => {
+    const originalGsdHome = process.env.GSD_HOME;
+    const projectRoot = mkdtempSync(join(tmpdir(), "gsd-hook-legacy-"));
+    const tempGsdHome = mkdtempSync(join(tmpdir(), "gsd-hook-home-"));
+    try {
+      process.env.GSD_HOME = tempGsdHome;
+      const tasksDir = join(projectRoot, ".gsd", "milestones", "M050", "slices", "S02", "tasks");
+      mkdirSync(tasksDir, { recursive: true });
+      const artifactPath = join(tasksDir, "T01-REVIEW.md");
+      writeFileSync(artifactPath, "---\nverdict: pass\n---\n", "utf-8");
+
+      const resolved = resolveHookArtifactPath(projectRoot, "M050/S02/T01", "REVIEW.md");
+      assert.equal(resolved, artifactPath, "resolves the task-prefixed legacy artifact");
+    } finally {
+      if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+      else process.env.GSD_HOME = originalGsdHome;
+      rmSync(projectRoot, { recursive: true, force: true });
+      rmSync(tempGsdHome, { recursive: true, force: true });
+    }
   });
 });

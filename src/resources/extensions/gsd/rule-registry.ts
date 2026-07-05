@@ -24,6 +24,7 @@ import { resolvePostUnitHooks, resolvePreDispatchHooks } from "./preferences.js"
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { parseUnitId } from "./unit-id.js";
+import { resolveMilestonePath } from "./paths.js";
 import { queryJournal, type JournalEntry } from "./journal.js";
 import { readUnitRuntimeRecord, type UnitRuntimePhase } from "./unit-runtime.js";
 import { extractFrontmatterVerdict } from "./verdict-parser.js";
@@ -32,13 +33,43 @@ import { extractFrontmatterVerdict } from "./verdict-parser.js";
 
 export function resolveHookArtifactPath(basePath: string, unitId: string, artifactName: string): string {
   const { milestone, slice, task } = parseUnitId(unitId);
+
+  // Prefer the active phase directory (flat-phase layout: .gsd/phases/<NN>-.../).
+  // Configured gate artifacts are canonical phase-level files (e.g.
+  // BROWSER-RUNTIME-EVIDENCE.md), so resolve the exact declared name first,
+  // then a task-prefixed variant for retry sentinels / rework briefs.
+  const candidates: string[] = [];
+  const phaseDir = resolveMilestonePath(basePath, milestone);
+  if (phaseDir) {
+    candidates.push(join(phaseDir, artifactName));
+    if (task !== undefined) {
+      candidates.push(join(phaseDir, `${task}-${artifactName}`));
+    }
+  }
+
+  // Legacy nested layout fallbacks (.gsd/milestones/<M>/slices/<S>/tasks/...).
+  const legacyBase = join(basePath, ".gsd", "milestones", milestone);
+  let legacyDefault: string;
   if (task !== undefined && slice !== undefined) {
-    return join(basePath, ".gsd", "milestones", milestone, "slices", slice, "tasks", `${task}-${artifactName}`);
+    legacyDefault = join(legacyBase, "slices", slice, "tasks", `${task}-${artifactName}`);
+    candidates.push(legacyDefault);
+    candidates.push(join(legacyBase, "slices", slice, "tasks", artifactName));
+    candidates.push(join(legacyBase, "slices", slice, artifactName));
+  } else if (slice !== undefined) {
+    legacyDefault = join(legacyBase, "slices", slice, artifactName);
+    candidates.push(legacyDefault);
+  } else {
+    legacyDefault = join(legacyBase, artifactName);
   }
-  if (slice !== undefined) {
-    return join(basePath, ".gsd", "milestones", milestone, "slices", slice, artifactName);
-  }
-  return join(basePath, ".gsd", "milestones", milestone, artifactName);
+  candidates.push(join(legacyBase, artifactName));
+
+  const existing = candidates.find((candidate) => existsSync(candidate));
+  if (existing) return existing;
+
+  // Nothing on disk yet: prefer the active phase path when the phase dir is
+  // known, otherwise fall back to the legacy default (preserves pre-flat-phase
+  // behavior for missing-artifact diagnostics).
+  return phaseDir ? join(phaseDir, artifactName) : legacyDefault;
 }
 
 // ─── Dispatch Rule Conversion ──────────────────────────────────────────────
