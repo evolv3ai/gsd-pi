@@ -297,8 +297,31 @@ describe('Orchestrator', () => {
 
       assert.equal(msg.sentMessages.length, 1);
       assert.equal(msg.sentMessages[0], 'Here are your projects');
-      // The tool was called (2 create calls: tool_use + end_turn)
       assert.equal(mockClient.createCallCount, 2);
+
+      const finalMessages = mockClient.lastCreateParams?.messages as Array<{ role: string; content: unknown }>;
+      const toolResultMessage = finalMessages.at(-1);
+      assert.equal(toolResultMessage?.role, 'user');
+
+      const toolResults = toolResultMessage?.content as Array<{
+        type: string;
+        tool_use_id: string;
+        content: string;
+      }>;
+      assert.equal(toolResults.length, 1);
+      assert.match(toolResults[0]!.tool_use_id, /^toolu_/);
+      assert.equal(toolResults[0]!.type, 'tool_result');
+      assert.equal(
+        toolResults[0]!.content,
+        JSON.stringify(
+          [
+            { name: 'alpha', path: '/home/user/alpha', markers: ['git', 'node', 'gsd'] },
+            { name: 'bravo', path: '/home/user/bravo', markers: ['git', 'rust'] },
+          ],
+          null,
+          2,
+        ),
+      );
     });
   });
 
