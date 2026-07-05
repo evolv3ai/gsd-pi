@@ -916,10 +916,13 @@ export function resolveTaskFile(
   basePath: string, milestoneId: string, sliceId: string,
   taskId: string, suffix: string
 ): string | null {
-  const slicePath = resolveSlicePath(basePath, milestoneId, sliceId);
   const phaseDir = resolveMilestonePath(basePath, milestoneId);
+  if (!phaseDir) return null;
 
-  if (suffix !== "PLAN" && slicePath && phaseDir && slicePath === phaseDir) {
+  const legacyBase = legacyMilestonesDir(basePath);
+  const isLegacy = phaseDir.startsWith(legacyBase + "/") || phaseDir.startsWith(legacyBase + "\\");
+
+  if (suffix !== "PLAN" && !isLegacy) {
     const flatPath = join(phaseDir, buildTaskFileName(taskId, suffix));
     return existsSync(flatPath) ? flatPath : null;
   }
