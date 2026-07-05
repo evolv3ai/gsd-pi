@@ -65,6 +65,9 @@ const ALLOWED_IMPORTERS = new Set([
   "gsd/visualizer-data.ts",
   // prompt context text (display strings injected into unit prompts)
   "gsd/auto-prompts.ts",
+  // run-uat discovery: reads DB slices first; parseRoadmap is a strict
+  // DB-unavailable fallback (extracted from auto-prompts.ts)
+  "gsd/uat-dispatch.ts",
   // cold-path maintenance command (branch cleanup messaging)
   "gsd/commands-maintenance.ts",
   // display-only GitHub issue/PR body sync
