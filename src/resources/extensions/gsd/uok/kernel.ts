@@ -12,6 +12,7 @@ import { setUnifiedAuditEnabled } from "./audit-toggle.js";
 import { resolveUokFlags } from "./flags.js";
 import { createTurnObserver } from "./loop-adapter.js";
 import { incrementLegacyTelemetry } from "../legacy-telemetry.js";
+import { logWarning } from "../workflow-logger.js";
 
 interface RunAutoLoopWithUokArgs {
   ctx: ExtensionContext;
@@ -70,18 +71,28 @@ export async function runAutoLoopWithUok(args: RunAutoLoopWithUokArgs): Promise<
   });
 
   if (flags.auditUnified) {
-    emitUokAuditEvent(
-      s.basePath,
-      buildAuditEnvelope({
-        traceId: `session:${String(s.autoStartTime || Date.now())}`,
-        category: "orchestration",
-        type: "uok-kernel-enter",
-        payload: {
-          flags,
-          sessionId: ctx.sessionManager?.getSessionId?.(),
-        },
-      }),
-    );
+    try {
+      emitUokAuditEvent(
+        s.basePath,
+        buildAuditEnvelope({
+          traceId: `session:${String(s.autoStartTime || Date.now())}`,
+          category: "orchestration",
+          type: "uok-kernel-enter",
+          payload: {
+            flags,
+            sessionId: ctx.sessionManager?.getSessionId?.(),
+          },
+        }),
+      );
+    } catch (err) {
+      // Telemetry/observability must never abort orchestration. Matches the
+      // best-effort semantics of the parity event above and the JSONL sink
+      // inside emitUokAuditEvent.
+      logWarning(
+        "db",
+        `uok-kernel-enter audit emit failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   const decoratedDeps: LoopDeps = flags.enabled
