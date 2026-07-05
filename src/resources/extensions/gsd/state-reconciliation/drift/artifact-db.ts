@@ -213,21 +213,13 @@ function detectArtifactDbStatusDriftForMilestone(
 
     for (const task of tasks) {
       if (isClosedStatus(task.status)) continue;
-      // Flat-phase: task summaries live in the phase dir as TID-SUMMARY.md
-      let diskTaskSummary = resolveTaskFile(
+      const diskTaskSummary = resolveTaskFile(
         basePath,
         milestoneId,
         slice.id,
         task.id,
         "SUMMARY",
       );
-      if (!diskTaskSummary) {
-        const phaseDir = resolveMilestonePath(basePath, milestoneId);
-        if (phaseDir) {
-          const flatSummary = join(phaseDir, `${task.id}-SUMMARY.md`);
-          if (existsSync(flatSummary)) diskTaskSummary = flatSummary;
-        }
-      }
       if (!diskTaskSummary || !existsSync(diskTaskSummary)) continue;
       addUniqueDrift(drifts, seen, {
         kind: "artifact-db-status-divergence",
