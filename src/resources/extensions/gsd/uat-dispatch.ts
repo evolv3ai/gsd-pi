@@ -2,9 +2,8 @@
 // File Purpose: Resolve whether a completed slice needs run-uat dispatch.
 
 import { loadFile } from "./files.js";
-import { parseRoadmap } from "./parsers-legacy.js";
 import type { GSDPreferences } from "./preferences.js";
-import { resolveMilestoneFile, resolveSliceFile } from "./paths.js";
+import { resolveSliceFile } from "./paths.js";
 import {
   classifyUatContentForRun,
   shouldDispatchUatForContent,
@@ -13,11 +12,11 @@ import {
 import { hasVerdict } from "./verdict-parser.js";
 import { logWarning } from "./workflow-logger.js";
 
-interface UatDispatchCandidate {
+export interface UatDispatchCandidate {
   sliceId: string;
 }
 
-type RunUatDispatch = { sliceId: string; uatType: UatType };
+export type RunUatDispatch = { sliceId: string; uatType: UatType };
 
 async function loadSliceFileContent(
   base: string,
@@ -93,31 +92,14 @@ async function getDbCompletedSliceCandidates(
   const { isDbAvailable, getMilestoneSlices } = await import("./gsd-db.js");
   if (!isDbAvailable()) return null;
 
-  const slices = getMilestoneSlices(milestoneId);
-  if (slices.length === 0) return null;
-  return slices
-    .filter((slice) => slice.status === "complete")
-    .map((slice) => ({ sliceId: slice.id }))
-    .reverse();
+  const completedSlices = getMilestoneSlices(milestoneId).filter(
+    (slice) => slice.status === "complete",
+  );
+  if (completedSlices.length === 0) return null;
+  return completedSlices.map((slice) => ({ sliceId: slice.id })).reverse();
 }
 
-async function getRoadmapCompletedSliceCandidates(
-  base: string,
-  milestoneId: string,
-): Promise<UatDispatchCandidate[]> {
-  const roadmapPath = resolveMilestoneFile(base, milestoneId, "ROADMAP");
-  if (!roadmapPath) return [];
-
-  const roadmapContent = await loadFile(roadmapPath);
-  if (!roadmapContent) return [];
-
-  return parseRoadmap(roadmapContent)
-    .slices.filter((slice) => slice.done)
-    .map((slice) => ({ sliceId: slice.id }))
-    .reverse();
-}
-
-async function findRunUatDispatchFromCandidates(
+export async function findRunUatDispatchFromCandidates(
   base: string,
   milestoneId: string,
   candidates: readonly UatDispatchCandidate[],
@@ -140,7 +122,7 @@ async function findRunUatDispatchFromCandidates(
  * Returns { sliceId, uatType } if UAT should be dispatched, null otherwise.
  *
  * Skips when:
- * - No completed slices exist in DB or roadmap fallback
+ * - No completed slices exist in DB or the caller-provided fallback candidates
  * - uat_dispatch is not enabled and the UAT spec does not require runtime/browser evidence
  * - No UAT file exists for the slice
  * - UAT result already exists in the UAT or ASSESSMENT file
@@ -149,6 +131,7 @@ export async function checkNeedsRunUat(
   base: string,
   milestoneId: string,
   prefs: GSDPreferences | undefined,
+  fallbackCandidates: readonly UatDispatchCandidate[] = [],
 ): Promise<RunUatDispatch | null> {
   try {
     const dbCandidates = await getDbCompletedSliceCandidates(milestoneId);
@@ -167,14 +150,10 @@ export async function checkNeedsRunUat(
     );
   }
 
-  const roadmapCandidates = await getRoadmapCompletedSliceCandidates(
-    base,
-    milestoneId,
-  );
   return findRunUatDispatchFromCandidates(
     base,
     milestoneId,
-    roadmapCandidates,
+    fallbackCandidates,
     prefs,
   );
 }

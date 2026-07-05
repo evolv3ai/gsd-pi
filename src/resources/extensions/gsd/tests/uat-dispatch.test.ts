@@ -80,7 +80,7 @@ test("checkNeedsRunUat resolves runtime harness dispatch from UAT plus summary c
     ].join("\n"),
   );
 
-  assert.deepEqual(await checkNeedsRunUat(base, "M001", { uat_dispatch: true }), {
+  assert.deepEqual(await checkNeedsRunUat(base, "M001", { uat_dispatch: true }, [{ sliceId: "S01" }]), {
     sliceId: "S01",
     uatType: "runtime-executable",
   });
@@ -105,7 +105,7 @@ test("checkNeedsRunUat skips slices that already have an ASSESSMENT verdict", as
   );
   writeSliceFile(base, "M001", "S01", "ASSESSMENT", "---\nverdict: PASS\n---\n# UAT Assessment\n");
 
-  assert.equal(await checkNeedsRunUat(base, "M001", { uat_dispatch: true }), null);
+  assert.equal(await checkNeedsRunUat(base, "M001", { uat_dispatch: true }, [{ sliceId: "S01" }]), null);
 });
 
 test("auto-prompts keeps the compatibility checkNeedsRunUat wrapper", async (t) => {

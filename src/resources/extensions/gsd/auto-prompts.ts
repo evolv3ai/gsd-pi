@@ -61,7 +61,7 @@ import { buildSkillActivationBlock, buildSkillDiscoveryVars } from "./skill-acti
 import { findMilestoneIds } from "./milestone-ids.js";
 import { buildRunUatPresentationForType, RUN_UAT_TOOL_PRESENTATION_PLAN_ID } from "./tool-presentation-plan.js";
 import { classifyUatContentForRun } from "./uat-policy.js";
-import { checkNeedsRunUat as resolveNeedsRunUat } from "./uat-dispatch.js";
+import { checkNeedsRunUat as resolveNeedsRunUat, type UatDispatchCandidate } from "./uat-dispatch.js";
 import { buildWebAppUatGuidanceBlock } from "./web-app-uat.js";
 
 export { buildSkillActivationBlock, buildSkillDiscoveryVars };
@@ -1511,6 +1511,26 @@ export async function checkNeedsReassessment(
   return { sliceId: lastDone };
 }
 
+
+export function getRoadmapCompletedSliceCandidates(
+  roadmapContent: string,
+): UatDispatchCandidate[] {
+  return parseRoadmap(roadmapContent)
+    .slices.filter((slice) => slice.done)
+    .map((slice) => ({ sliceId: slice.id }))
+    .reverse();
+}
+
+
+export async function loadRoadmapCompletedSliceCandidates(
+  base: string,
+  mid: string,
+): Promise<UatDispatchCandidate[]> {
+  const roadmapPath = resolveMilestoneFile(base, mid, "ROADMAP");
+  const roadmapContent = roadmapPath ? await loadFile(roadmapPath) : null;
+  return roadmapContent ? getRoadmapCompletedSliceCandidates(roadmapContent) : [];
+}
+
 /**
  * Back-compat wrapper for callers that import UAT dispatch checks from the
  * prompt module. UAT dispatch architecture lives in `uat-dispatch.ts`; the
@@ -1521,7 +1541,13 @@ export async function checkNeedsRunUat(
   base: string, mid: string, state: GSDState, prefs: GSDPreferences | undefined,
 ): Promise<Awaited<ReturnType<typeof resolveNeedsRunUat>>> {
   void state;
-  return resolveNeedsRunUat(base, mid, prefs);
+
+  return resolveNeedsRunUat(
+    base,
+    mid,
+    prefs,
+    await loadRoadmapCompletedSliceCandidates(base, mid),
+  );
 }
 
 // ─── Prompt Builders ──────────────────────────────────────────────────────

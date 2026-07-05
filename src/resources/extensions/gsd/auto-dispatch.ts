@@ -79,6 +79,7 @@ import {
   buildGateEvaluatePrompt,
   buildParallelResearchSlicesPrompt,
   checkNeedsReassessment,
+  loadRoadmapCompletedSliceCandidates,
 } from "./auto-prompts.js";
 import { checkNeedsRunUat } from "./uat-dispatch.js";
 import { normalizeModelFieldConfig, resolveModelWithFallbacksForUnit, resolveThinkingLevelForUnit } from "./preferences-models.js";
@@ -795,7 +796,12 @@ export const DISPATCH_RULES: DispatchRule[] = [
       registeredTools,
       sessionBaseUrl,
     }) => {
-      const needsRunUat = await checkNeedsRunUat(basePath, mid, prefs);
+      const needsRunUat = await checkNeedsRunUat(
+        basePath,
+        mid,
+        prefs,
+        await loadRoadmapCompletedSliceCandidates(basePath, mid),
+      );
       if (!needsRunUat) return null;
       const { sliceId, uatType } = needsRunUat;
 
