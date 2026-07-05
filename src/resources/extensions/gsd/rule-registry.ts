@@ -538,17 +538,23 @@ export class RuleRegistry {
       // unit-end — its dispatch was lost/interrupted (pause/resume, crash
       // recovery). Refund that dispatch-consumed cycle exactly once so the gate
       // is re-dispatched at least once instead of hard-blocking on a hook that
-      // never actually ran. Only refund when the cycle budget would otherwise
-      // block rerun; below max_cycles, _rerunGateOrBlock already re-dispatches.
-      // The redispatchedGateKeys flag bounds this to a single refund; a hook
-      // that repeatedly fails to produce its unit-end then consumes its budget
-      // and blocks normally.
+      // never actually ran.
+      //
+      // This refund is intentionally UNCONDITIONAL on the first lost dispatch —
+      // it must NOT be gated on `currentCycle >= max_cycles`. A lost dispatch is
+      // a non-run: charging its cycle at dispatch time must not consume the
+      // hook's real-run budget. Gating the refund on "budget already exhausted"
+      // lets a lost dispatch below max_cycles silently eat a genuine cycle, so
+      // the hook gets one fewer real run than configured — reintroducing #1244
+      // for max_cycles >= 2 (see the "does not steal a real-run cycle" test).
+      // The redispatchedGateKeys flag bounds this to a single refund per gate,
+      // so repeated lost dispatches still terminate (total dispatches never
+      // exceed max_cycles + 1) and a hook that keeps failing blocks normally.
       const cycleKey = hookCycleKey(config, hook);
-      const currentCycle = this.cycleCounts.get(cycleKey) ?? 0;
-      const maxCycles = hookMaxCycles(config);
-      if (!this.redispatchedGateKeys.has(cycleKey) && currentCycle >= maxCycles) {
+      if (!this.redispatchedGateKeys.has(cycleKey)) {
         this.redispatchedGateKeys.add(cycleKey);
-        if (currentCycle > 0) {
+        const currentCycle = this.cycleCounts.get(cycleKey);
+        if (typeof currentCycle === "number" && currentCycle > 0) {
           this.cycleCounts.set(cycleKey, currentCycle - 1);
         }
       }
