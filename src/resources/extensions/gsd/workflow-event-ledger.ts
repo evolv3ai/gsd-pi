@@ -105,7 +105,7 @@ export function writeWorktreeEventLog(
 }
 
 function emitWorkflowEventAudit(basePath: string, event: WorkflowEvent): void {
-  if (!isUnifiedAuditEnabled()) return;
+  if (!isUnifiedAuditEnabled(basePath)) return;
   try {
     const normalized = normalizeWorkflowEventCommand(event.cmd) ?? "unknown";
     emitUokAuditEvent(

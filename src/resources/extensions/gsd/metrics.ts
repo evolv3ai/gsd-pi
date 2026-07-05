@@ -265,7 +265,7 @@ export function snapshotUnitMetrics(
   }
   saveLedger(basePath, ledger);
 
-  if (isUnifiedAuditEnabled()) {
+  if (isUnifiedAuditEnabled(basePath)) {
     emitUokAuditEvent(
       basePath,
       buildAuditEnvelope({
@@ -458,7 +458,7 @@ export function snapshotUnitMetricsByScope(
   }
   saveLedger(base, scopedLedger);
 
-  if (isUnifiedAuditEnabled()) {
+  if (isUnifiedAuditEnabled(base)) {
     emitUokAuditEvent(
       base,
       buildAuditEnvelope({

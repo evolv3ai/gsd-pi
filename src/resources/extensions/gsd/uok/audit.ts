@@ -9,6 +9,7 @@ import { withFileLockSync } from "../file-lock.js";
 import { gsdRoot } from "../paths.js";
 import { isDbAvailable, insertAuditEvent } from "../gsd-db.js";
 import { CURRENT_UOK_CONTRACT_VERSION, validateAuditEvent, type AuditEventEnvelope } from "./contracts.js";
+import { isUnifiedAuditEnabled } from "./audit-toggle.js";
 
 function auditLogPath(basePath: string): string {
   return join(gsdRoot(basePath), "audit", "events.jsonl");
@@ -42,6 +43,7 @@ export function buildAuditEnvelope(args: {
 export function emitUokAuditEvent(basePath: string, event: AuditEventEnvelope): void {
   // Drop writes from a turn superseded by timeout recovery / cancellation.
   if (isStaleWrite("uok-audit")) return;
+  if (!isUnifiedAuditEnabled(basePath)) return;
   const validation = validateAuditEvent(event);
   if (!validation.ok) {
     throw new Error(`Invalid UOK audit event: ${validation.issues.map((issue) => `${issue.path}: ${issue.message}`).join("; ")}`);

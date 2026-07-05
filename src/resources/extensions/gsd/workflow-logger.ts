@@ -302,7 +302,7 @@ function _push(
     _buffer.shift();
   }
 
-  if (_auditBasePath && isUnifiedAuditEnabled()) {
+  if (_auditBasePath && isUnifiedAuditEnabled(_auditBasePath)) {
     try {
       emitUokAuditEvent(
         _auditBasePath,

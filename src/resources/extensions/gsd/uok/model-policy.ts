@@ -1,6 +1,7 @@
 import type { TaskMetadata } from "../complexity-classifier.js";
 import { computeTaskRequirements, filterToolsForProvider } from "../model-router.js";
 import { buildAuditEnvelope, emitUokAuditEvent } from "./audit.js";
+import { isUnifiedAuditEnabled } from "./audit-toggle.js";
 
 export interface ModelCandidate {
   id: string;
@@ -83,23 +84,25 @@ export function applyModelPolicyFilter<T extends ModelCandidate>(
     };
     decisions.push(decision);
 
-    emitUokAuditEvent(
-      options.basePath,
-      buildAuditEnvelope({
-        traceId: options.traceId,
-        turnId: options.turnId,
-        category: "model-policy",
-        type: allowed ? "model-policy-allow" : "model-policy-deny",
-        payload: {
-          modelId: model.id,
-          provider: model.provider,
-          api: model.api,
-          reason,
-          unitType: options.unitType,
-          requirements,
-        },
-      }),
-    );
+    if (isUnifiedAuditEnabled(options.basePath)) {
+      emitUokAuditEvent(
+        options.basePath,
+        buildAuditEnvelope({
+          traceId: options.traceId,
+          turnId: options.turnId,
+          category: "model-policy",
+          type: allowed ? "model-policy-allow" : "model-policy-deny",
+          payload: {
+            modelId: model.id,
+            provider: model.provider,
+            api: model.api,
+            reason,
+            unitType: options.unitType,
+            requirements,
+          },
+        }),
+      );
+    }
 
     if (allowed) eligible.push(model);
   }

@@ -12,8 +12,13 @@ import {
   registerToolCompatibility,
   resetToolCompatibilityRegistry,
 } from "@gsd/pi-coding-agent";
+import {
+  clearUnifiedAuditOverrideForTests,
+  setUnifiedAuditEnabled,
+} from "../uok/audit-toggle.ts";
 
 test.afterEach(() => {
+  clearUnifiedAuditOverrideForTests();
   resetToolCompatibilityRegistry();
 });
 
@@ -32,6 +37,7 @@ test("uok model policy builds requirement vectors from unit metadata", () => {
 test("uok model policy enforces provider/api/tool constraints and emits decision audit events", () => {
   const basePath = mkdtempSync(join(tmpdir(), "gsd-uok-model-policy-"));
   try {
+    setUnifiedAuditEnabled(true);
     mkdirSync(join(basePath, ".gsd"), { recursive: true });
     registerToolCompatibility("screenshot", { producesImages: true });
 
