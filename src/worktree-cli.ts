@@ -27,6 +27,7 @@ import { resolveBundledGsdExtensionModule } from './bundled-resource-path.js'
 import { getJitiWorkspaceAliases } from './jiti-workspace-aliases.js'
 import { formatMultipleWorktreesPrompt, formatStatus } from './worktree-cli-format.js'
 import { planWorktreeFlag } from './worktree-cli-plan.js'
+import { createAndEnterWorktree } from './worktree-cli-create.js'
 import { enterWorktreeSession } from './worktree-cli-session.js'
 import {
   getWorktreeStatus as calculateWorktreeStatus,
@@ -377,14 +378,7 @@ async function handleWorktreeFlag(worktreeFlag: boolean | string): Promise<void>
 
 async function createAndEnter(ext: ExtensionModules, basePath: string, name: string): Promise<void> {
   try {
-    const info = ext.createWorktree(basePath, name)
-
-    const hookError = ext.runWorktreePostCreateHook(basePath, info.path)
-    if (hookError) {
-      process.stderr.write(chalk.yellow(`[gsd] ${hookError}\n`))
-    }
-
-    enterWorktreeSession({ name, path: info.path, branch: info.branch }, basePath, 'Created')
+    createAndEnterWorktree(ext, basePath, name)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     process.stderr.write(chalk.red(`[gsd] Failed to create worktree: ${msg}\n`))
