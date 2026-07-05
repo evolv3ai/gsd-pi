@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 
-import { renderPlanFromDb, renderRoadmapFromDb, renderAssessmentFromDb } from "../markdown-renderer.ts";
+import { renderPlanFromDb, renderRoadmapFromDb, renderAssessmentFromDb, renderReplanFromDb } from "../markdown-renderer.ts";
 import { clearPathCache } from "../paths.ts";
 import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask } from "../gsd-db.ts";
 
@@ -81,6 +81,27 @@ test("renderPlanFromDb does NOT write per-task plan files", async () => {
   const result = await renderPlanFromDb(base, "M001", "S01");
   // taskPlanPaths should be empty — no per-task files written
   assert.equal(result.taskPlanPaths.length, 0);
+});
+
+
+// Replan uses the same slice-level target rules as assessment: flat-phase
+// writes must stay at the phase root even if an old slices/SID/ dir exists.
+test("renderReplanFromDb writes to the phase root even when a stray slices/SID/ dir exists", async () => {
+  const base = makeTmp();
+  const plan = await renderPlanFromDb(base, "M001", "S01");
+  const phaseDir = plan.planPath.slice(0, plan.planPath.lastIndexOf("01-01-PLAN.md"));
+  mkdirSync(join(phaseDir, "slices", "S01"), { recursive: true });
+  clearPathCache();
+
+  const result = await renderReplanFromDb(base, "M001", "S01", {
+    blockerTaskId: "T01",
+    blockerDescription: "Need a better path target.",
+    whatChanged: "Centralized slice writer path resolution.",
+  });
+
+  assert.match(result.replanPath, /phases[/\\]01-[^/\\]+[/\\]01-01-REPLAN\.md$/);
+  assert.ok(!result.replanPath.includes(join("slices", "S01")), "must not write under slices/S01/");
+  assert.ok(existsSync(result.replanPath), "replan file should exist at the phase root");
 });
 
 // Regression for #1190: a stray slices/SID/ subdir inside a flat-phase milestone
