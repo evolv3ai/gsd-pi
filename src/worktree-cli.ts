@@ -23,9 +23,18 @@ import { bannerLines, name as styledName, warn } from './cli-style.js'
 import { createJiti } from '@mariozechner/jiti'
 import { fileURLToPath } from 'node:url'
 import { generateWorktreeName } from './worktree-name-gen.js'
-import { existsSync } from 'node:fs'
 import { resolveBundledGsdExtensionModule } from './bundled-resource-path.js'
 import { getJitiWorkspaceAliases } from './jiti-workspace-aliases.js'
+import { formatMultipleWorktreesPrompt, formatStatus } from './worktree-cli-format.js'
+import { planWorktreeFlag } from './worktree-cli-plan.js'
+import { enterWorktreeSession } from './worktree-cli-session.js'
+import {
+  getWorktreeStatus as calculateWorktreeStatus,
+  hasWorktreeChanges,
+  type WorktreeDiff,
+  type WorktreeStatus,
+  type WorktreeStatusDependencies,
+} from './worktree-cli-status.js'
 
 const jiti = createJiti(fileURLToPath(import.meta.url), {
   interopDefault: true,
@@ -58,12 +67,6 @@ interface ExtensionModules {
 interface MergeModules {
   inferCommitType: (name: string) => string
   autoCommitCurrentBranch: (wtPath: string, reason: string, name: string) => void
-}
-
-interface WorktreeDiff {
-  added: string[]
-  modified: string[]
-  removed: string[]
 }
 
 interface WorktreeManagerModule {
@@ -148,77 +151,21 @@ async function loadMergeModules(): Promise<MergeModules> {
   return _mergeExt
 }
 
-// ─── Types ──────────────────────────────────────────────────────────────────
-
-interface WorktreeStatus {
-  name: string
-  path: string
-  branch: string
-  exists: boolean
-  filesChanged: number
-  linesAdded: number
-  linesRemoved: number
-  uncommitted: boolean
-  commits: number
-}
-
 // ─── Status Helpers ─────────────────────────────────────────────────────────
 
 function getWorktreeStatus(ext: ExtensionModules, basePath: string, name: string, wtPath: string, branch: string): WorktreeStatus {
-  const diff = ext.diffWorktreeAll(basePath, name, branch)
-  const numstat = ext.diffWorktreeNumstat(basePath, name, branch)
-  const filesChanged = diff.added.length + diff.modified.length + diff.removed.length
-  let linesAdded = 0
-  let linesRemoved = 0
-  for (const s of numstat) { linesAdded += s.added; linesRemoved += s.removed }
-
-  let uncommitted = false
-  try {
-    uncommitted = existsSync(wtPath) && ext.nativeHasChanges(wtPath)
-  } catch (error) {
-    logDebugFailure('native worktree dirty check', error)
-  }
-
-  let commits = 0
-  try {
-    const mainBranch = ext.nativeDetectMainBranch(basePath)
-    commits = ext.nativeCommitCountBetween(basePath, mainBranch, branch)
-  } catch (error) {
-    logDebugFailure('native commit count', error)
-  }
-
-  return {
-    name,
-    path: wtPath,
-    branch,
-    exists: existsSync(wtPath),
-    filesChanged,
-    linesAdded,
-    linesRemoved,
-    uncommitted,
-    commits,
-  }
+  return calculateWorktreeStatus(worktreeStatusDependencies(ext), basePath, name, wtPath, branch)
 }
 
-// ─── Formatters ─────────────────────────────────────────────────────────────
-
-function formatStatus(s: WorktreeStatus): string {
-  const lines: string[] = []
-  const badge = s.uncommitted
-    ? chalk.yellow(' (uncommitted)')
-    : s.filesChanged > 0
-      ? chalk.cyan(' (unmerged)')
-      : chalk.green(' (clean)')
-
-  lines.push(`  ${chalk.bold.cyan(s.name)}${badge}`)
-  lines.push(`    ${chalk.dim('branch')}  ${chalk.magenta(s.branch)}`)
-  lines.push(`    ${chalk.dim('path')}    ${chalk.dim(s.path)}`)
-
-  if (s.filesChanged > 0) {
-    lines.push(`    ${chalk.dim('diff')}    ${s.filesChanged} files, ${chalk.green(`+${s.linesAdded}`)} ${chalk.red(`-${s.linesRemoved}`)}, ${s.commits} commit${s.commits === 1 ? '' : 's'}`)
+function worktreeStatusDependencies(ext: ExtensionModules): WorktreeStatusDependencies {
+  return {
+    diffWorktreeAll: ext.diffWorktreeAll,
+    diffWorktreeNumstat: ext.diffWorktreeNumstat,
+    nativeHasChanges: ext.nativeHasChanges,
+    nativeDetectMainBranch: ext.nativeDetectMainBranch,
+    nativeCommitCountBetween: ext.nativeCommitCountBetween,
+    onDebugFailure: logDebugFailure,
   }
-
-  return lines.join('\n')
 }
 
 // ─── Subcommand: list ───────────────────────────────────────────────────────
@@ -378,8 +325,7 @@ async function handleStatusBanner(basePath: string): Promise<void> {
 
   const withChanges = worktrees.filter(wt => {
     try {
-      const diff = ext.diffWorktreeAll(basePath, wt.name, wt.branch)
-      return diff.added.length + diff.modified.length + diff.removed.length > 0
+      return hasWorktreeChanges(worktreeStatusDependencies(ext), basePath, wt.name, wt.branch)
     } catch (error) {
       logDebugFailure(`status scan for ${wt.name}`, error)
       return false
@@ -402,64 +348,31 @@ async function handleStatusBanner(basePath: string): Promise<void> {
 async function handleWorktreeFlag(worktreeFlag: boolean | string): Promise<void> {
   const ext = await loadExtensionModules()
   const basePath = ext.resolveWorktreeProjectRoot(process.cwd())
+  const existing = ext.listWorktrees(basePath)
+  const withChanges = worktreeFlag === true
+    ? existing.filter(wt => {
+        try {
+          return hasWorktreeChanges(worktreeStatusDependencies(ext), basePath, wt.name, wt.branch)
+        } catch (error) {
+          logDebugFailure(`worktree -w scan for ${wt.name}`, error)
+          return false
+        }
+      })
+    : []
 
-  // gsd -w (no name) — resume most recent worktree with changes, or create new
-  if (worktreeFlag === true) {
-    const existing = ext.listWorktrees(basePath)
-    const withChanges = existing.filter(wt => {
-      try {
-        const diff = ext.diffWorktreeAll(basePath, wt.name, wt.branch)
-        return diff.added.length + diff.modified.length + diff.removed.length > 0
-      } catch (error) {
-        logDebugFailure(`worktree -w scan for ${wt.name}`, error)
-        return false
-      }
-    })
-
-    if (withChanges.length === 1) {
-      // Single active worktree — resume it
-      const wt = withChanges[0]
-      process.chdir(wt.path)
-      process.env.GSD_CLI_WORKTREE = wt.name
-      process.env.GSD_CLI_WORKTREE_BASE = basePath
-      process.stderr.write(chalk.green(`✓ Resumed worktree ${chalk.bold(wt.name)}\n`))
-      process.stderr.write(chalk.dim(`  path   ${wt.path}\n`))
-      process.stderr.write(chalk.dim(`  branch ${wt.branch}\n\n`))
-      return
-    }
-
-    if (withChanges.length > 1) {
-      // Multiple active worktrees — show them and ask user to pick
-      process.stderr.write(chalk.yellow(`${withChanges.length} worktrees have unmerged changes:\n\n`))
-      for (const wt of withChanges) {
-        const status = getWorktreeStatus(ext, basePath, wt.name, wt.path, wt.branch)
-        process.stderr.write(formatStatus(status) + '\n\n')
-      }
-      process.stderr.write(chalk.dim('Specify which one: gsd -w <name>\n'))
-      process.exit(0)
-    }
-
-    // No active worktrees — create a new one
-    const name = generateWorktreeName()
-    await createAndEnter(ext, basePath, name)
+  const plan = planWorktreeFlag(worktreeFlag, existing, withChanges, generateWorktreeName)
+  if (plan.action === 'resume') {
+    enterWorktreeSession(plan.worktree, basePath, 'Resumed')
     return
   }
 
-  // gsd -w <name> — create or resume named worktree
-  const name = worktreeFlag as string
-  const existing = ext.listWorktrees(basePath)
-  const found = existing.find(wt => wt.name === name)
-
-  if (found) {
-    process.chdir(found.path)
-    process.env.GSD_CLI_WORKTREE = name
-    process.env.GSD_CLI_WORKTREE_BASE = basePath
-    process.stderr.write(chalk.green(`✓ Resumed worktree ${chalk.bold(name)}\n`))
-    process.stderr.write(chalk.dim(`  path   ${found.path}\n`))
-    process.stderr.write(chalk.dim(`  branch ${found.branch}\n\n`))
-  } else {
-    await createAndEnter(ext, basePath, name)
+  if (plan.action === 'show-multiple') {
+    const statuses = plan.worktrees.map((wt) => getWorktreeStatus(ext, basePath, wt.name, wt.path, wt.branch))
+    process.stderr.write(formatMultipleWorktreesPrompt(statuses))
+    process.exit(0)
   }
+
+  await createAndEnter(ext, basePath, plan.name)
 }
 
 async function createAndEnter(ext: ExtensionModules, basePath: string, name: string): Promise<void> {
@@ -471,12 +384,7 @@ async function createAndEnter(ext: ExtensionModules, basePath: string, name: str
       process.stderr.write(chalk.yellow(`[gsd] ${hookError}\n`))
     }
 
-    process.chdir(info.path)
-    process.env.GSD_CLI_WORKTREE = name
-    process.env.GSD_CLI_WORKTREE_BASE = basePath
-    process.stderr.write(chalk.green(`✓ Created worktree ${chalk.bold(name)}\n`))
-    process.stderr.write(chalk.dim(`  path   ${info.path}\n`))
-    process.stderr.write(chalk.dim(`  branch ${info.branch}\n\n`))
+    enterWorktreeSession({ name, path: info.path, branch: info.branch }, basePath, 'Created')
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     process.stderr.write(chalk.red(`[gsd] Failed to create worktree: ${msg}\n`))
