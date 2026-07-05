@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url'
 import { generateWorktreeName } from './worktree-name-gen.js'
 import { resolveBundledGsdExtensionModule } from './bundled-resource-path.js'
 import { getJitiWorkspaceAliases } from './jiti-workspace-aliases.js'
+import { enterWorktreeSession } from './worktree-cli-session.js'
 import {
   getWorktreeStatus as calculateWorktreeStatus,
   hasWorktreeChanges,
@@ -382,12 +383,7 @@ async function handleWorktreeFlag(worktreeFlag: boolean | string): Promise<void>
     if (withChanges.length === 1) {
       // Single active worktree — resume it
       const wt = withChanges[0]
-      process.chdir(wt.path)
-      process.env.GSD_CLI_WORKTREE = wt.name
-      process.env.GSD_CLI_WORKTREE_BASE = basePath
-      process.stderr.write(chalk.green(`✓ Resumed worktree ${chalk.bold(wt.name)}\n`))
-      process.stderr.write(chalk.dim(`  path   ${wt.path}\n`))
-      process.stderr.write(chalk.dim(`  branch ${wt.branch}\n\n`))
+      enterWorktreeSession(wt, basePath, 'Resumed')
       return
     }
 
@@ -414,12 +410,7 @@ async function handleWorktreeFlag(worktreeFlag: boolean | string): Promise<void>
   const found = existing.find(wt => wt.name === name)
 
   if (found) {
-    process.chdir(found.path)
-    process.env.GSD_CLI_WORKTREE = name
-    process.env.GSD_CLI_WORKTREE_BASE = basePath
-    process.stderr.write(chalk.green(`✓ Resumed worktree ${chalk.bold(name)}\n`))
-    process.stderr.write(chalk.dim(`  path   ${found.path}\n`))
-    process.stderr.write(chalk.dim(`  branch ${found.branch}\n\n`))
+    enterWorktreeSession(found, basePath, 'Resumed')
   } else {
     await createAndEnter(ext, basePath, name)
   }
@@ -434,12 +425,7 @@ async function createAndEnter(ext: ExtensionModules, basePath: string, name: str
       process.stderr.write(chalk.yellow(`[gsd] ${hookError}\n`))
     }
 
-    process.chdir(info.path)
-    process.env.GSD_CLI_WORKTREE = name
-    process.env.GSD_CLI_WORKTREE_BASE = basePath
-    process.stderr.write(chalk.green(`✓ Created worktree ${chalk.bold(name)}\n`))
-    process.stderr.write(chalk.dim(`  path   ${info.path}\n`))
-    process.stderr.write(chalk.dim(`  branch ${info.branch}\n\n`))
+    enterWorktreeSession({ name, path: info.path, branch: info.branch }, basePath, 'Created')
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     process.stderr.write(chalk.red(`[gsd] Failed to create worktree: ${msg}\n`))
