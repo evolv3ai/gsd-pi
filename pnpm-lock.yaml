@@ -198,20 +198,20 @@ importers:
         specifier: 0.3.6
         version: 0.3.6
       '@opengsd/engine-darwin-arm64':
-        specifier: 1.5.0
-        version: 1.5.0
+        specifier: 1.6.0
+        version: 1.6.0
       '@opengsd/engine-darwin-x64':
-        specifier: 1.5.0
-        version: 1.5.0
+        specifier: 1.6.0
+        version: 1.6.0
       '@opengsd/engine-linux-arm64-gnu':
-        specifier: 1.5.0
-        version: 1.5.0
+        specifier: 1.6.0
+        version: 1.6.0
       '@opengsd/engine-linux-x64-gnu':
-        specifier: 1.5.0
-        version: 1.5.0
+        specifier: 1.6.0
+        version: 1.6.0
       '@opengsd/engine-win32-x64-msvc':
-        specifier: 1.5.0
-        version: 1.5.0
+        specifier: 1.6.0
+        version: 1.6.0
       fsevents:
         specifier: ~2.3.3
         version: 2.3.3
@@ -1941,28 +1941,28 @@ packages:
     resolution: {integrity: sha512-nn5ozdjYQpUCZlWGuxcJY/KpxkWQs4DcbMCmKojjyrYDEAGy4Ce19NN4v5MduafTwJlbKc99UA8YhSVqq9yPZA==}
     engines: {node: '>=12.4.0'}
 
-  '@opengsd/engine-darwin-arm64@1.5.0':
-    resolution: {integrity: sha512-f/dXDYO9/wuzc9QG2Iheo+fh3jM/ekh46+hSGWp9tg53eHKt6MZlRSoPcZV2ffcA2iQUkFnAjqGJXzVhmSXqcQ==}
+  '@opengsd/engine-darwin-arm64@1.6.0':
+    resolution: {integrity: sha512-GM6tWC7/SU5r76zfAcn4BOxM0Xzruej5IvoSN6e+54NJLBepRtn+kz/j1tzuw020LDFfeMbNmFvjcXEDqc+SAQ==}
     cpu: [arm64]
     os: [darwin]
 
-  '@opengsd/engine-darwin-x64@1.5.0':
-    resolution: {integrity: sha512-s6Pg+awBM2xkdLKjk+v00nN9659SYY4q8x6jMIzvI4Bw/N8GCoT9FL2khx+2bjYBoxtYuxS+LG1hx/FdJvtmrA==}
+  '@opengsd/engine-darwin-x64@1.6.0':
+    resolution: {integrity: sha512-ejctVjoiRXowtdT9YRBcPqRKdlI7l514Rfe9k4SIXMziKfx2lkQ7vrcoEoCy0umSw0V5sWiOKWyyILZdk7iswQ==}
     cpu: [x64]
     os: [darwin]
 
-  '@opengsd/engine-linux-arm64-gnu@1.5.0':
-    resolution: {integrity: sha512-jq00mdfS0Wr7XShabbAlYgX4714DS7V+sWNijockF8rswZwrY/fVHu1gG3pHZhjQcRHAfkQ5LPYSyuPLYf4AWg==}
+  '@opengsd/engine-linux-arm64-gnu@1.6.0':
+    resolution: {integrity: sha512-8wnUkFv5jNSdO6JbT8dS1YHDrBULInVNQKgJQcdXpaE0TfuH72gNQxH+etWFaAodf9QYINJgYyFK86yz857mQA==}
     cpu: [arm64]
     os: [linux]
 
-  '@opengsd/engine-linux-x64-gnu@1.5.0':
-    resolution: {integrity: sha512-xHYXDzFXx+l4xtdHk0gHH2PxWJwVmyTVFbWRre4QXZZXn0gbMJpXL4SfhWcSg9pjKZdZU7yyKHkQUyp59pLwnQ==}
+  '@opengsd/engine-linux-x64-gnu@1.6.0':
+    resolution: {integrity: sha512-Y0F5Jp+IaImAGdEOwBctKP6L6SqtWkWg8PokIqYGEDjx1IcICg8r5ZQw8Tue1ImxvUHb8tj+4jkmWFgRnX8uKw==}
     cpu: [x64]
     os: [linux]
 
-  '@opengsd/engine-win32-x64-msvc@1.5.0':
-    resolution: {integrity: sha512-+h3FgOTkbUeWR+y1rdqTa5H1RWb/WdeQl+gDaUvaKRONs+cy3MEeyo1ml15ZheMdATlC9Zg6OFTrWefEAr7bYg==}
+  '@opengsd/engine-win32-x64-msvc@1.6.0':
+    resolution: {integrity: sha512-/WOPvksWEthjYKS8OIiDqTgnHiH5PE1ImoYe7q5CBLNf0GxfZtyAxrkvVJWDdA10nB/+RmgDXqJUIdEg2ntGaQ==}
     cpu: [x64]
     os: [win32]
 
@@ -7743,19 +7743,19 @@ snapshots:
 
   '@nolyfill/is-core-module@1.0.39': {}
 
-  '@opengsd/engine-darwin-arm64@1.5.0':
+  '@opengsd/engine-darwin-arm64@1.6.0':
     optional: true
 
-  '@opengsd/engine-darwin-x64@1.5.0':
+  '@opengsd/engine-darwin-x64@1.6.0':
     optional: true
 
-  '@opengsd/engine-linux-arm64-gnu@1.5.0':
+  '@opengsd/engine-linux-arm64-gnu@1.6.0':
     optional: true
 
-  '@opengsd/engine-linux-x64-gnu@1.5.0':
+  '@opengsd/engine-linux-x64-gnu@1.6.0':
     optional: true
 
-  '@opengsd/engine-win32-x64-msvc@1.5.0':
+  '@opengsd/engine-win32-x64-msvc@1.6.0':
     optional: true
 
   '@opengsd/gsd-browser@0.2.2': {}

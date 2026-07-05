@@ -28,16 +28,16 @@ See [CHANGELOG.md](./CHANGELOG.md) for release-by-release fixes and [Legacy Rele
 ## Latest Release Highlights
 
 <!-- release-highlights:start -->
-Latest release: **v1.5.0**
+Latest release: **v1.6.0**
 
-- **hermes:** Add /gsd new-milestone command for chat-driven milestone creation (#1162).
-- **gsd:** Make CODEBASE.md workspace-aware in parent mode.
-- **gsd:** Doctor probe + validation for parent-workspace repos.
-- **gsd:** Surface per-repo git health in /gsd status + document limits.
-- **gsd:** Wire repository assignment into slice/task planning.
-- **gsd:** Add parent-workspace discovery UX + document nested-only layout.
-- **provider:** Add Cursor Agent provider.
-- **gsd:** Make workspace.mode parent behavioral (mode contract).
+- **skills:** Load .claude/skills into the catalog (mirror Claude Code).
+- **gsd:** Extract uat dispatch discovery.
+- **daemon:** Split orchestrator agent loop.
+- **daemon:** Extract orchestrator tool execution.
+- **uok:** Scope audit degradation to kernel workspace.
+- **browser-tools:** Abort pending daemon starts on close.
+- **browser-tools:** Guard managed daemon connection lifecycle.
+- **worktree:** Centralize changed scan.
 
 <!-- release-highlights:end -->
 
