@@ -92,11 +92,13 @@ async function getDbCompletedSliceCandidates(
   const { isDbAvailable, getMilestoneSlices } = await import("./gsd-db.js");
   if (!isDbAvailable()) return null;
 
-  const completedSlices = getMilestoneSlices(milestoneId).filter(
-    (slice) => slice.status === "complete",
-  );
-  if (completedSlices.length === 0) return null;
-  return completedSlices.map((slice) => ({ sliceId: slice.id })).reverse();
+  const slices = getMilestoneSlices(milestoneId);
+  if (slices.length === 0) return null;
+
+  return slices
+    .filter((slice) => slice.status === "complete")
+    .map((slice) => ({ sliceId: slice.id }))
+    .reverse();
 }
 
 export async function findRunUatDispatchFromCandidates(
