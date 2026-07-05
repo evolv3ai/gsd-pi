@@ -916,10 +916,21 @@ export function resolveTaskFile(
   basePath: string, milestoneId: string, sliceId: string,
   taskId: string, suffix: string
 ): string | null {
+  const slicePath = resolveSlicePath(basePath, milestoneId, sliceId);
+  const phaseDir = resolveMilestonePath(basePath, milestoneId);
+
+  if (suffix !== "PLAN" && slicePath && phaseDir && slicePath === phaseDir) {
+    const flatPath = join(phaseDir, buildTaskFileName(taskId, suffix));
+    return existsSync(flatPath) ? flatPath : null;
+  }
+
   const tDir = resolveTasksDir(basePath, milestoneId, sliceId);
-  if (!tDir) return null;
-  const file = resolveFile(tDir, taskId, suffix);
-  return file ? join(tDir, file) : null;
+  if (tDir) {
+    const file = resolveFile(tDir, taskId, suffix);
+    if (file) return join(tDir, file);
+  }
+
+  return null;
 }
 
 // ─── Relative Path Builders (for prompts — .gsd/milestones/...) ────────────
@@ -1049,7 +1060,7 @@ export function relSliceFile(
  */
 export function relTaskFile(
   basePath: string, milestoneId: string, sliceId: string,
-  taskId: string, suffix: string
+  taskId: string, suffix: string, milestoneTitle?: string
 ): string {
   const sDir = resolveSlicePath(basePath, milestoneId, sliceId);
   const phaseDir = resolveMilestonePath(basePath, milestoneId);
@@ -1062,6 +1073,6 @@ export function relTaskFile(
   if (suffix === "PLAN") {
     return relSliceFile(basePath, milestoneId, sliceId, "PLAN");
   }
-  const relS = relSlicePath(basePath, milestoneId, sliceId);
+  const relS = relSlicePath(basePath, milestoneId, sliceId, milestoneTitle);
   return `${relS}/${buildTaskFileName(taskId, suffix)}`;
 }

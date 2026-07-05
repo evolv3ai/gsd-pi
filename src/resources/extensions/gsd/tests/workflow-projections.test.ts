@@ -6,10 +6,10 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { regenerateIfMissing, renderPlanContent, renderStateProjection } from '../workflow-projections.ts';
+import { regenerateIfMissing, renderPlanContent, renderStateProjection, renderSummaryProjection } from '../workflow-projections.ts';
 import type { SliceRow, TaskRow } from '../gsd-db.ts';
 import { closeDatabase, insertMilestone, insertSlice, insertTask, openDatabase } from '../gsd-db.ts';
-import { clearPathCache, _clearGsdRootCache } from '../paths.ts';
+import { clearPathCache, _clearGsdRootCache, normalizeRealPath, resolveTaskFile } from '../paths.ts';
 import { invalidateStateCache } from '../state.ts';
 import { clearParseCache } from '../files.ts';
 
@@ -237,6 +237,145 @@ test('workflow-projections: regenerateIfMissing PLAN restores slice plan and tas
     assert.equal(regenerated, true, 'regenerateIfMissing reports the PLAN was rebuilt');
     assert.ok(existsSync(slicePlanPath), 'slice PLAN restored on disk');
     // Flat-phase: tasks are checkboxes inside the plan file, not separate task plan files.
+  } finally {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('workflow-projections: regenerateIfMissing SUMMARY is idempotent for flat-phase task summaries', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'gsd-projections-flat-summary-'));
+  const dbPath = join(base, '.gsd', 'gsd.db');
+  const phaseDir = join(base, '.gsd', 'phases', '01-milestone');
+  mkdirSync(phaseDir, { recursive: true });
+  openDatabase(dbPath);
+  clearParseCache();
+  clearPathCache();
+  _clearGsdRootCache();
+  invalidateStateCache();
+
+  try {
+    insertMilestone({ id: 'M001', title: 'Milestone', status: 'active' });
+    insertSlice({
+      id: 'S01',
+      milestoneId: 'M001',
+      title: 'Flat slice',
+      status: 'complete',
+      demo: 'Summary regenerates once.',
+      planning: { goal: 'Recover flat-phase summaries from DB.' },
+    });
+    insertTask({
+      id: 'T01',
+      sliceId: 'S01',
+      milestoneId: 'M001',
+      title: 'Completed task',
+      status: 'complete',
+      summary: {
+        oneLiner: 'Completed the flat task.',
+        narrative: 'The task was completed through the DB-backed projection path.',
+        verificationResult: 'passed',
+        duration: '5m',
+        keyFiles: ['src/example.ts'],
+        keyDecisions: ['Use centralized task summary paths.'],
+      },
+    });
+
+    const summaryPath = join(phaseDir, 'T01-SUMMARY.md');
+    assert.ok(!existsSync(summaryPath), 'precondition: flat-phase task summary absent');
+
+    const first = await regenerateIfMissing(base, 'M001', 'S01', 'SUMMARY');
+    const second = await regenerateIfMissing(base, 'M001', 'S01', 'SUMMARY');
+
+    assert.equal(first, true, 'first call regenerates the missing task summary');
+    assert.equal(second, false, 'second call sees the flat-phase task summary and does not rewrite it');
+    assert.equal(normalizeRealPath(resolveTaskFile(base, 'M001', 'S01', 'T01', 'SUMMARY') ?? ''), normalizeRealPath(summaryPath));
+    assert.match(readFileSync(summaryPath, 'utf-8'), /# T01: Completed task/);
+  } finally {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('workflow-projections: flat-phase SUMMARY regeneration ignores stale nested task summaries', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'gsd-projections-flat-stale-nested-'));
+  const dbPath = join(base, '.gsd', 'gsd.db');
+  const phaseDir = join(base, '.gsd', 'phases', '01-milestone');
+  const nestedTasksDir = join(phaseDir, 'tasks');
+  mkdirSync(nestedTasksDir, { recursive: true });
+  writeFileSync(join(nestedTasksDir, 'T01-SUMMARY.md'), '# stale nested summary\n');
+  openDatabase(dbPath);
+  clearParseCache();
+  clearPathCache();
+  _clearGsdRootCache();
+  invalidateStateCache();
+
+  try {
+    insertMilestone({ id: 'M001', title: 'Milestone', status: 'active' });
+    insertSlice({
+      id: 'S01',
+      milestoneId: 'M001',
+      title: 'Flat slice',
+      status: 'complete',
+      demo: 'Summary regenerates at phase root.',
+      planning: { goal: 'Recover canonical flat-phase summaries from DB.' },
+    });
+    insertTask({
+      id: 'T01',
+      sliceId: 'S01',
+      milestoneId: 'M001',
+      title: 'Completed task',
+      status: 'complete',
+    });
+
+    const rootSummaryPath = join(phaseDir, 'T01-SUMMARY.md');
+    assert.ok(!existsSync(rootSummaryPath), 'precondition: canonical flat-phase task summary absent');
+
+    const regenerated = await regenerateIfMissing(base, 'M001', 'S01', 'SUMMARY');
+
+    assert.equal(regenerated, true, 'missing phase-root summary is regenerated despite stale nested summary');
+    assert.equal(normalizeRealPath(resolveTaskFile(base, 'M001', 'S01', 'T01', 'SUMMARY') ?? ''), normalizeRealPath(rootSummaryPath));
+    assert.match(readFileSync(rootSummaryPath, 'utf-8'), /# T01: Completed task/);
+    assert.equal(readFileSync(join(nestedTasksDir, 'T01-SUMMARY.md'), 'utf-8'), '# stale nested summary\n');
+  } finally {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('workflow-projections: renderSummaryProjection uses milestone title when creating fresh flat-phase dirs', async () => {
+  const base = mkdtempSync(join(tmpdir(), 'gsd-projections-fresh-summary-'));
+  const dbPath = join(base, '.gsd', 'gsd.db');
+  mkdirSync(join(base, '.gsd'), { recursive: true });
+  openDatabase(dbPath);
+  clearParseCache();
+  clearPathCache();
+  _clearGsdRootCache();
+  invalidateStateCache();
+
+  try {
+    insertMilestone({ id: 'M001', title: 'Milestone', status: 'active' });
+    insertSlice({
+      id: 'S01',
+      milestoneId: 'M001',
+      title: 'Flat slice',
+      status: 'complete',
+    });
+    insertTask({
+      id: 'T01',
+      sliceId: 'S01',
+      milestoneId: 'M001',
+      title: 'Completed task',
+      status: 'complete',
+    });
+
+    const titleSummaryPath = join(base, '.gsd', 'phases', '01-milestone', 'T01-SUMMARY.md');
+    const idSummaryPath = join(base, '.gsd', 'phases', '01-m001', 'T01-SUMMARY.md');
+
+    renderSummaryProjection(base, 'M001', 'S01', 'T01');
+
+    assert.ok(existsSync(titleSummaryPath), 'fresh summary projection uses the milestone title slug');
+    assert.equal(existsSync(idSummaryPath), false, 'fresh summary projection does not create an id-slug orphan dir');
+    assert.equal(normalizeRealPath(resolveTaskFile(base, 'M001', 'S01', 'T01', 'SUMMARY') ?? ''), normalizeRealPath(titleSummaryPath));
   } finally {
     closeDatabase();
     rmSync(base, { recursive: true, force: true });
