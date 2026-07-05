@@ -9,6 +9,7 @@ import { test } from "node:test";
 
 import { checkNeedsRunUat as checkNeedsRunUatFromPrompts } from "../auto-prompts.ts";
 import { checkNeedsRunUat } from "../uat-dispatch.ts";
+import type { GSDState } from "../types.ts";
 
 function createFixtureBase(): string {
   const base = mkdtempSync(join(tmpdir(), "gsd-uat-dispatch-test-"));
@@ -125,7 +126,7 @@ test("auto-prompts keeps the compatibility checkNeedsRunUat wrapper", async (t) 
     ].join("\n"),
   );
 
-  const legacyState = {
+  const legacyState: GSDState = {
     activeMilestone: { id: "M001", title: "UAT dispatch" },
     activeSlice: { id: "S02", title: "Next slice" },
     activeTask: null,
@@ -134,7 +135,7 @@ test("auto-prompts keeps the compatibility checkNeedsRunUat wrapper", async (t) 
     blockers: [],
     nextAction: "Plan S02",
     registry: [],
-  } as const;
+  };
 
   assert.deepEqual(
     await checkNeedsRunUatFromPrompts(base, "M001", legacyState, { uat_dispatch: true }),
