@@ -406,6 +406,7 @@ export class ManagedGsdBrowserConnectionPool {
   private readonly connect: ConnectManagedGsdBrowser;
   private readonly closeConnection: CloseManagedGsdBrowserConnection;
   private generation = 0;
+  private closing = false;
 
   constructor(
     connect: ConnectManagedGsdBrowser,
@@ -427,6 +428,10 @@ export class ManagedGsdBrowserConnectionPool {
     launch: GsdBrowserMcpLaunchConfig,
     signal?: AbortSignal,
   ): Promise<ManagedConnection> {
+    if (this.closing) {
+      return Promise.reject(new Error("gsd-browser connection pool is closing"));
+    }
+
     const key = buildConnectionKey(launch);
     const existing = this.connections.get(key);
     if (existing) return Promise.resolve(existing);
@@ -439,7 +444,7 @@ export class ManagedGsdBrowserConnectionPool {
     const connectionSignal = combineAbortSignals(abortController.signal, signal);
     const connectionPromise = this.connect(launch, connectionSignal)
       .then(async (connection) => {
-        if (this.generation !== generation) {
+        if (this.closing || this.generation !== generation) {
           await this.closeConnection(connection);
           throw new Error("gsd-browser connection closed during startup");
         }
@@ -457,6 +462,7 @@ export class ManagedGsdBrowserConnectionPool {
   }
 
   async closeAll(): Promise<void> {
+    this.closing = true;
     this.generation += 1;
 
     const activeConnections = Array.from(this.connections.values());
@@ -477,7 +483,12 @@ export class ManagedGsdBrowserConnectionPool {
       }
     });
 
-    await Promise.allSettled([...closingActive, ...closingPending]);
+    try {
+      await Promise.allSettled([...closingActive, ...closingPending]);
+    } finally {
+      this.closing = false;
+      this.generation += 1;
+    }
   }
 }
 
