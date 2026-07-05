@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url'
 import { generateWorktreeName } from './worktree-name-gen.js'
 import { resolveBundledGsdExtensionModule } from './bundled-resource-path.js'
 import { getJitiWorkspaceAliases } from './jiti-workspace-aliases.js'
+import { formatMultipleWorktreesPrompt, formatStatus } from './worktree-cli-format.js'
 import { planWorktreeFlag } from './worktree-cli-plan.js'
 import { enterWorktreeSession } from './worktree-cli-session.js'
 import {
@@ -165,27 +166,6 @@ function worktreeStatusDependencies(ext: ExtensionModules): WorktreeStatusDepend
     nativeCommitCountBetween: ext.nativeCommitCountBetween,
     onDebugFailure: logDebugFailure,
   }
-}
-
-// ─── Formatters ─────────────────────────────────────────────────────────────
-
-function formatStatus(s: WorktreeStatus): string {
-  const lines: string[] = []
-  const badge = s.uncommitted
-    ? chalk.yellow(' (uncommitted)')
-    : s.filesChanged > 0
-      ? chalk.cyan(' (unmerged)')
-      : chalk.green(' (clean)')
-
-  lines.push(`  ${chalk.bold.cyan(s.name)}${badge}`)
-  lines.push(`    ${chalk.dim('branch')}  ${chalk.magenta(s.branch)}`)
-  lines.push(`    ${chalk.dim('path')}    ${chalk.dim(s.path)}`)
-
-  if (s.filesChanged > 0) {
-    lines.push(`    ${chalk.dim('diff')}    ${s.filesChanged} files, ${chalk.green(`+${s.linesAdded}`)} ${chalk.red(`-${s.linesRemoved}`)}, ${s.commits} commit${s.commits === 1 ? '' : 's'}`)
-  }
-
-  return lines.join('\n')
 }
 
 // ─── Subcommand: list ───────────────────────────────────────────────────────
@@ -387,12 +367,8 @@ async function handleWorktreeFlag(worktreeFlag: boolean | string): Promise<void>
   }
 
   if (plan.action === 'show-multiple') {
-    process.stderr.write(chalk.yellow(`${plan.worktrees.length} worktrees have unmerged changes:\n\n`))
-    for (const wt of plan.worktrees) {
-      const status = getWorktreeStatus(ext, basePath, wt.name, wt.path, wt.branch)
-      process.stderr.write(formatStatus(status) + '\n\n')
-    }
-    process.stderr.write(chalk.dim('Specify which one: gsd -w <name>\n'))
+    const statuses = plan.worktrees.map((wt) => getWorktreeStatus(ext, basePath, wt.name, wt.path, wt.branch))
+    process.stderr.write(formatMultipleWorktreesPrompt(statuses))
     process.exit(0)
   }
 
