@@ -33,6 +33,45 @@ test("normalizeDbRows normalizes every row", () => {
   assert.deepEqual(normalizeDbRows([first, second]), [{ id: "S01" }, { id: "S02" }]);
 });
 
+test("createDbAdapter strips named-parameter key prefixes for provider compatibility", () => {
+  const received: unknown[][] = [];
+  const rawStatement = {
+    run: (...params: unknown[]) => {
+      received.push(params);
+      return { changes: 1 };
+    },
+    get: (...params: unknown[]) => {
+      received.push(params);
+      return undefined;
+    },
+    all: (...params: unknown[]) => {
+      received.push(params);
+      return [];
+    },
+  };
+  const rawDb = {
+    exec: () => {},
+    prepare: () => rawStatement,
+    close: () => {},
+  };
+  const adapter = createDbAdapter(rawDb);
+  const stmt = adapter.prepare("INSERT INTO t (version, applied_at) VALUES (:version, :applied_at)");
+
+  stmt.run({ ":version": 1, "@name": "a", "$flag": true, bare: "kept" });
+  assert.deepEqual(received.pop(), [{ version: 1, name: "a", flag: true, bare: "kept" }]);
+
+  // Non-binding params pass through untouched: positional scalars, arrays,
+  // and binary blobs must not be treated as named-binding objects.
+  const blob = new Uint8Array([1, 2, 3]);
+  stmt.get("T01", blob);
+  const passthrough = received.pop() as unknown[];
+  assert.equal(passthrough[0], "T01");
+  assert.equal(passthrough[1], blob);
+
+  stmt.all({ plain: "unchanged" });
+  assert.deepEqual(received.pop(), [{ plain: "unchanged" }]);
+});
+
 test("createDbAdapter caches prepared statements and clears cache on close", () => {
   const calls: unknown[] = [];
   const rawStatement = {

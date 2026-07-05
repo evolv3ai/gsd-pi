@@ -25,6 +25,32 @@ export function normalizeDbRows(rows: unknown[]): Record<string, unknown>[] {
   return rows.map((row) => normalizeDbRow(row)!);
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object") return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+// node:sqlite accepts binding-object keys with or without the ':'/'@'/'$'
+// prefix, but better-sqlite3 accepts only bare keys — strip the prefix so
+// call sites written against node:sqlite also work on the fallback provider.
+function normalizeBindParams(params: unknown[]): unknown[] {
+  return params.map((param) => {
+    if (!isPlainObject(param)) return param;
+    let changed = false;
+    const normalized: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(param)) {
+      if (key.length > 1 && (key[0] === ":" || key[0] === "@" || key[0] === "$")) {
+        normalized[key.slice(1)] = value;
+        changed = true;
+      } else {
+        normalized[key] = value;
+      }
+    }
+    return changed ? normalized : param;
+  });
+}
+
 export function createDbAdapter(rawDb: unknown): DbAdapter {
   const db = rawDb as {
     exec(sql: string): void;
@@ -45,13 +71,13 @@ export function createDbAdapter(rawDb: unknown): DbAdapter {
   }): DbStatement {
     return {
       run(...params: unknown[]): unknown {
-        return raw.run(...params);
+        return raw.run(...normalizeBindParams(params));
       },
       get(...params: unknown[]): Record<string, unknown> | undefined {
-        return normalizeDbRow(raw.get(...params));
+        return normalizeDbRow(raw.get(...normalizeBindParams(params)));
       },
       all(...params: unknown[]): Record<string, unknown>[] {
-        return normalizeDbRows(raw.all(...params));
+        return normalizeDbRows(raw.all(...normalizeBindParams(params)));
       },
     };
   }
