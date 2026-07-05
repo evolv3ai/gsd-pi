@@ -1,6 +1,6 @@
-import { join } from "node:path";
 import { existsSync, unlinkSync } from "node:fs";
-import { relSliceFile, relMilestoneFile } from "../paths.js";
+import { join } from "node:path";
+import { relSliceFile, resolveMilestoneFile, resolveMilestonePath, targetMilestoneFile } from "../paths.js";
 import { clearParseCache } from "../files.js";
 import { isClosedStatus } from "../status-guards.js";
 import { isNonEmptyString } from "../validation.js";
@@ -290,12 +290,23 @@ export async function handleReassessRoadmap(
       params.sliceChanges.removed.length > 0;
 
     if (hasStructuralChanges) {
-      // Layout-aware: flat-phase → phases/NN-slug/NN-VALIDATION.md; legacy → milestones/MID/MID-VALIDATION.md
-      const validationFile = join(basePath, relMilestoneFile(basePath, params.milestoneId, "VALIDATION"));
-      try {
-        if (existsSync(validationFile)) unlinkSync(validationFile);
-      } catch (e) {
-        logWarning("tool", `validation file cleanup failed: ${(e as Error).message}`);
+      const milestoneDir = resolveMilestonePath(basePath, params.milestoneId);
+      const validationFiles = new Set([
+        resolveMilestoneFile(basePath, params.milestoneId, "VALIDATION"),
+        targetMilestoneFile(
+          basePath,
+          params.milestoneId,
+          "VALIDATION",
+          getMilestone(params.milestoneId)?.title,
+        ),
+        milestoneDir ? join(milestoneDir, `${params.milestoneId}-VALIDATION.md`) : null,
+      ].filter((file): file is string => Boolean(file)));
+      for (const validationFile of validationFiles) {
+        try {
+          if (existsSync(validationFile)) unlinkSync(validationFile);
+        } catch (e) {
+          logWarning("tool", `validation file cleanup failed: ${(e as Error).message}`);
+        }
       }
     }
 

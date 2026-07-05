@@ -17,7 +17,7 @@ import type { MilestoneRow } from "./db-milestone-artifact-rows.js";
 import type { SliceRow, TaskRow } from "./db-task-slice-rows.js";
 import type { VerificationEvidenceRow } from "./db-verification-evidence-rows.js";
 import { atomicWriteSync } from "./atomic-write.js";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { mkdirSync, existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { logWarning } from "./workflow-logger.js";
@@ -26,7 +26,7 @@ import { deriveState } from "./state.js";
 import type { GSDState } from "./types.js";
 import { renderPlanFromDb, renderRoadmapFromDb } from "./markdown-renderer.js";
 import { readManifest } from "./workflow-manifest.js";
-import { gsdRoot, resolveSliceFile, resolveMilestonePath, resolveSlicePath, gsdProjectionRoot } from "./paths.js";
+import { gsdRoot, resolveMilestoneFile, resolveSliceFile, resolveTaskFile, relTaskFile } from "./paths.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -329,24 +329,10 @@ export function renderSummaryProjection(basePath: string, milestoneId: string, s
   const evidenceRows = getVerificationEvidence(milestoneId, sliceId, taskId);
   const content = renderSummaryContent(taskRow, sliceId, milestoneId, evidenceRows);
 
-  // Layout-aware: avoid creating a milestones/ directory as a side effect for
-  // flat-phase projects. If milestonesDir() sees a freshly-created milestones/
-  // dir it treats the project as legacy, breaking all subsequent path resolution.
-  const slicePath = resolveSlicePath(basePath, milestoneId, sliceId);
-  const phaseDir = resolveMilestonePath(basePath, milestoneId);
-  let dir: string;
-  if (slicePath && phaseDir && slicePath !== phaseDir) {
-    // Legacy layout: slice has its own slices/SID/ subdir → tasks/ subdir
-    dir = join(slicePath, "tasks");
-  } else if (phaseDir) {
-    // Flat-phase: task summaries go in the phase dir (no tasks/ subdir needed)
-    dir = phaseDir;
-  } else {
-    // Fallback: legacy hardcoded path (milestone dir not on disk yet)
-    dir = join(gsdProjectionRoot(basePath), "milestones", milestoneId, "slices", sliceId, "tasks");
-  }
-  mkdirSync(dir, { recursive: true });
-  atomicWriteSync(join(dir, `${taskId}-SUMMARY.md`), content);
+  const summaryPath = resolveTaskFile(basePath, milestoneId, sliceId, taskId, "SUMMARY")
+    ?? join(basePath, relTaskFile(basePath, milestoneId, sliceId, taskId, "SUMMARY", getMilestone(milestoneId)?.title));
+  mkdirSync(dirname(summaryPath), { recursive: true });
+  atomicWriteSync(summaryPath, content);
 }
 
 // ─── STATE.md Projection ────────────────────────────────────────────────
@@ -536,7 +522,7 @@ export async function regenerateIfMissing(
       filePath = resolveSliceFile(basePath, milestoneId, sliceId, "PLAN") ?? "";
       break;
     case "ROADMAP":
-      filePath = join(basePath, ".gsd", "milestones", milestoneId, `${milestoneId}-ROADMAP.md`);
+      filePath = resolveMilestoneFile(basePath, milestoneId, "ROADMAP") ?? "";
       break;
     case "SUMMARY":
       // For SUMMARY, we regenerate all task summaries in the slice
@@ -553,8 +539,7 @@ export async function regenerateIfMissing(
     const doneTasks = taskRows.filter(t => t.status === "done" || t.status === "complete");
     let regenerated = 0;
     for (const task of doneTasks) {
-      const summaryPath = join(basePath, ".gsd", "milestones", milestoneId, "slices", sliceId, "tasks", `${task.id}-SUMMARY.md`);
-      if (!existsSync(summaryPath)) {
+      if (!resolveTaskFile(basePath, milestoneId, sliceId, task.id, "SUMMARY")) {
         try {
           renderSummaryProjection(basePath, milestoneId, sliceId, task.id);
           regenerated++;
@@ -591,7 +576,7 @@ export async function regenerateIfMissing(
         return !!(resolveSliceFile(basePath, milestoneId, sliceId, "PLAN"));
       case "ROADMAP":
         await renderRoadmapFromDb(basePath, milestoneId);
-        return existsSync(filePath);
+        return !!resolveMilestoneFile(basePath, milestoneId, "ROADMAP");
       case "STATE":
         await renderStateProjection(basePath);
         return existsSync(filePath);

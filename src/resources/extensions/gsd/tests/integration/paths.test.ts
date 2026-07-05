@@ -166,4 +166,26 @@ describe('paths', () => {
       cleanup(root);
     }
   });
+
+  test('Case 9: flat-phase task SUMMARY resolves at phase root despite a stray slices/SID/ dir', () => {
+    const root = tmp();
+    try {
+      // Hybrid flat-phase milestone: phase dir holds flat TID-SUMMARY.md, but a
+      // stray slices/S01/ folder also exists on disk. resolveSlicePath then points
+      // under slices/, so layout (phases/ vs milestones/) — not slicePath===phaseDir
+      // — must decide the flat-phase task summary location.
+      const phaseDir = join(root, ".gsd", "phases", "01-foo");
+      mkdirSync(join(phaseDir, "slices", "S01"), { recursive: true });
+      const flatSummary = join(phaseDir, "T01-SUMMARY.md");
+      writeFileSync(flatSummary, "# task summary\n");
+
+      _clearGsdRootCache();
+
+      assert.deepStrictEqual(
+        resolveTaskFile(root, "M001", "S01", "T01", "SUMMARY"),
+        flatSummary,
+        "flat-phase TID-SUMMARY.md at phase root is found even when slices/S01/ exists",
+      );
+    } finally { cleanup(root); }
+  });
 });

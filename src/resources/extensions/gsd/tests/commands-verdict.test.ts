@@ -18,6 +18,7 @@ import { randomUUID } from "node:crypto";
 import { handleVerdict, parseValidationFile } from "../commands-verdict.ts";
 import { openDatabase, closeDatabase, _getAdapter, insertAssessment } from "../gsd-db.ts";
 import { invalidateStateCache } from "../state.ts";
+import { resolveMilestoneFile } from "../paths.ts";
 
 interface NotifyCall {
   message: string;
@@ -363,7 +364,8 @@ test("handleVerdict pass override works when validation only exists in DB", asyn
     const { ctx, calls } = makeMockCtx();
     await handleVerdict('pass --milestone M001 --rationale "reviewed and accepted"', ctx, base);
 
-    const validationPath = join(base, ".gsd", "phases", "01-m001", "01-VALIDATION.md");
+    const validationPath = resolveMilestoneFile(base, "M001", "VALIDATION");
+    assert.ok(validationPath, "DB-backed validation should be materialized to disk");
     const rewritten = readFileSync(validationPath, "utf-8");
     assert.match(rewritten, /^verdict: pass$/m, "DB-backed validation should be rewritten as pass");
     assert.match(rewritten, /reviewed and accepted/, "explicit rationale should be persisted");

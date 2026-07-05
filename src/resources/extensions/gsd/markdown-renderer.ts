@@ -38,9 +38,10 @@ import {
   resolveSlicePath,
   resolveTaskFile,
   resolveTasksDir,
+  targetMilestoneFile,
+  targetSliceFile,
   gsdProjectionRoot,
   gsdRoot,
-  buildMilestoneFileName,
   buildTaskFileName,
   buildSliceFileName,
 } from "./paths.js";
@@ -52,9 +53,6 @@ import { readCompatMarker, writeCompatMarker, computeProjectionSha } from "./com
 import type { RiskLevel } from "./types.js";
 import {
   phaseDirName,
-  planFileName,
-  milestoneIdToPhaseNum,
-  sliceIdToPlanNum,
   derivePhaseSlug,
 } from "./layout-policy.js";
 
@@ -174,23 +172,6 @@ function sanitizeInlineRoadmapText(value: string | null | undefined): string {
     .replace(/[|`]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function resolveRoadmapProjectionPath(basePath: string, milestoneId: string): string {
-  const phaseNum = milestoneIdToPhaseNum(milestoneId);
-  const existing = resolveMilestonePath(basePath, milestoneId);
-  const legacyBase = legacyMilestonesDir(basePath);
-  const isLegacyLayout = existing
-    ? existing.startsWith(legacyBase + "/") || existing.startsWith(legacyBase + "\\")
-    : isLegacyMilestonesLayout(basePath);
-  const phaseDir = existing ?? join(
-    isLegacyLayout ? legacyBase : milestonesDir(basePath),
-    isLegacyLayout ? milestoneId : canonicalPhaseDirName(milestoneId, getMilestone(milestoneId)?.title),
-  );
-  const roadmapFileName = isLegacyLayout
-    ? `${milestoneId}-ROADMAP.md`
-    : `${String(phaseNum).padStart(2, "0")}-ROADMAP.md`;
-  return join(phaseDir, roadmapFileName);
 }
 
 function isMilestoneFlatPhaseLayout(basePath: string, milestoneId: string): boolean {
@@ -600,7 +581,7 @@ export async function renderRoadmapFromDb(
       "projection",
       `renderRoadmapFromDb skipped unplanned milestone ${milestoneId} (zero slices, empty vision) — refusing to write a stub ROADMAP`,
     );
-    const absPath = resolveRoadmapProjectionPath(basePath, milestoneId);
+    const absPath = targetMilestoneFile(basePath, milestoneId, "ROADMAP", milestone.title);
     if (existsSync(absPath)) {
       const artifactPath = toArtifactPath(absPath, basePath);
       unlinkSync(absPath);
@@ -614,7 +595,7 @@ export async function renderRoadmapFromDb(
     return { skipped: "unplanned-milestone" };
   }
 
-  const absPath = resolveRoadmapProjectionPath(basePath, milestoneId);
+  const absPath = targetMilestoneFile(basePath, milestoneId, "ROADMAP", milestone.title);
   const artifactPath = toArtifactPath(absPath, basePath);
   const content = renderRoadmapMarkdown(milestone, slices);
 
@@ -655,25 +636,20 @@ export async function renderMilestoneArtifactsFromDb(
   const artifacts = getMilestoneScopedArtifacts(milestoneId);
   if (artifacts.length === 0) return false;
 
-  const phaseDir = resolveMilestonePath(basePath, milestoneId) ??
-    join(
-      milestonesDir(basePath),
-      canonicalPhaseDirName(milestoneId, getMilestone(milestoneId)?.title),
-    );
-  mkdirSync(phaseDir, { recursive: true });
-
-  const legacyBase = legacyMilestonesDir(basePath);
-  const isLegacy = phaseDir.startsWith(legacyBase + "/") || phaseDir.startsWith(legacyBase + "\\");
+  const milestone = getMilestone(milestoneId);
 
   let wrote = false;
   for (const artifact of artifacts) {
     if (artifact.artifact_type === "ROADMAP") continue;
     if (!artifact.full_content.trim()) continue;
 
-    const fileName = isLegacy
-      ? `${milestoneId}-${artifact.artifact_type}.md`
-      : buildMilestoneFileName(milestoneId, artifact.artifact_type);
-    const absPath = join(phaseDir, fileName);
+    const absPath = targetMilestoneFile(
+      basePath,
+      milestoneId,
+      artifact.artifact_type,
+      milestone?.title,
+    );
+    mkdirSync(dirname(absPath), { recursive: true });
     const artifactPath = toArtifactPath(absPath, basePath);
     await writeAndStore(absPath, artifactPath, artifact.full_content, {
       artifact_type: artifact.artifact_type,
@@ -824,22 +800,12 @@ export async function renderSliceSummary(
     return false; // No slice data — skip silently
   }
 
-  // Flat-phase: resolve or create the phase dir, since resolveSlicePath only
-  // finds existing dirs. In flat-phase the slice "path" is the phase dir.
-  let slicePath = resolveSlicePath(basePath, milestoneId, sliceId);
-  if (!slicePath) {
-    const mDir = milestonesDir(basePath);
-    const dirName = canonicalPhaseDirName(milestoneId, getMilestone(milestoneId)?.title);
-    slicePath = join(mDir, dirName);
-    mkdirSync(slicePath, { recursive: true });
-  }
-
+  const milestoneTitle = getMilestone(milestoneId)?.title;
   let wrote = false;
 
-  // Write SUMMARY — flat-phase: NN-MM-SUMMARY.md inside phase dir
   if (slice.full_summary_md) {
-    const summaryName = planFileName(milestoneIdToPhaseNum(milestoneId), sliceIdToPlanNum(sliceId), "SUMMARY");
-    const summaryAbs = join(slicePath, summaryName);
+    const summaryAbs = targetSliceFile(basePath, milestoneId, sliceId, "SUMMARY", milestoneTitle);
+    mkdirSync(dirname(summaryAbs), { recursive: true });
     const summaryArtifact = toArtifactPath(summaryAbs, basePath);
 
     await writeAndStore(summaryAbs, summaryArtifact, slice.full_summary_md, {
@@ -850,10 +816,9 @@ export async function renderSliceSummary(
     wrote = true;
   }
 
-  // Write UAT — flat-phase: NN-MM-UAT.md inside phase dir
   if (slice.full_uat_md) {
-    const uatName = planFileName(milestoneIdToPhaseNum(milestoneId), sliceIdToPlanNum(sliceId), "UAT");
-    const uatAbs = join(slicePath, uatName);
+    const uatAbs = targetSliceFile(basePath, milestoneId, sliceId, "UAT", milestoneTitle);
+    mkdirSync(dirname(uatAbs), { recursive: true });
     const uatArtifact = toArtifactPath(uatAbs, basePath);
 
     await writeAndStore(uatAbs, uatArtifact, slice.full_uat_md, {
@@ -1080,7 +1045,7 @@ function detectStaleRendersImpl(basePath: string): StaleEntry[] {
     // TODO(flat-phase): roadmap checkbox parsing may not match flat-phase
     // roadmap format, causing false-positive drift loops. Skip during transition.
     /*
-    const roadmapPath = resolveRoadmapProjectionPath(basePath, milestone.id);
+    const roadmapPath = targetMilestoneFile(basePath, milestone.id, "ROADMAP", milestone.title);
     if (existsSync(roadmapPath)) {
       try {
         const parsed = parseProjectionByIdentity(roadmapPath, parseRoadmap) as ReturnType<typeof parseRoadmap>;
@@ -1172,36 +1137,28 @@ function detectStaleRendersImpl(basePath: string): StaleEntry[] {
         }
       }
 
-      // Check missing slice summary/UAT files
+      // Check missing slice summary/UAT files. Use the same target helper as
+      // renderSliceSummary so detection and repair agree on flat-phase vs legacy
+      // output locations.
       const sliceRow = getSlice(milestone.id, slice.id);
       if (sliceRow && sliceRow.status === "complete") {
-        // Use the SAME path construction as renderSliceSummary (planFileName format)
-        // so the detector and repair always agree on the file location.
-        const slicePath = resolveSlicePath(basePath, milestone.id, slice.id);
-        if (slicePath) {
-          const phaseNum = milestoneIdToPhaseNum(milestone.id);
-          const planNum = sliceIdToPlanNum(slice.id);
-
-          if (sliceRow.full_summary_md) {
-            const summaryName = planFileName(phaseNum, planNum, "SUMMARY");
-            const summaryAbsPath = join(slicePath, summaryName);
-            if (!existsSync(summaryAbsPath)) {
-              stale.push({
-                path: summaryAbsPath,
-                reason: `${slice.id} is complete with summary in DB but SUMMARY.md missing on disk`,
-              });
-            }
+        if (sliceRow.full_summary_md) {
+          const summaryAbsPath = targetSliceFile(basePath, milestone.id, slice.id, "SUMMARY", milestone.title);
+          if (!existsSync(summaryAbsPath)) {
+            stale.push({
+              path: summaryAbsPath,
+              reason: `${slice.id} is complete with summary in DB but SUMMARY.md missing on disk`,
+            });
           }
+        }
 
-          if (sliceRow.full_uat_md) {
-            const uatName = planFileName(phaseNum, planNum, "UAT");
-            const uatAbsPath = join(slicePath, uatName);
-            if (!existsSync(uatAbsPath)) {
-              stale.push({
-                path: uatAbsPath,
-                reason: `${slice.id} is complete with UAT in DB but UAT.md missing on disk`,
-              });
-            }
+        if (sliceRow.full_uat_md) {
+          const uatAbsPath = targetSliceFile(basePath, milestone.id, slice.id, "UAT", milestone.title);
+          if (!existsSync(uatAbsPath)) {
+            stale.push({
+              path: uatAbsPath,
+              reason: `${slice.id} is complete with UAT in DB but UAT.md missing on disk`,
+            });
           }
         }
       }
@@ -1257,12 +1214,14 @@ export async function renderReplanFromDb(
   sliceId: string,
   replanData: ReplanData,
 ): Promise<{ replanPath: string; content: string }> {
-  // Flat-phase: replan file lives in the phase dir
-  const slicePath = resolveSlicePath(basePath, milestoneId, sliceId)
-    ?? join(milestonesDir(basePath), canonicalPhaseDirName(milestoneId, getMilestone(milestoneId)?.title));
-  const phaseNum = milestoneIdToPhaseNum(milestoneId);
-  const planNum = sliceIdToPlanNum(sliceId);
-  const absPath = join(slicePath, planFileName(phaseNum, planNum, "REPLAN"));
+  const absPath = targetSliceFile(
+    basePath,
+    milestoneId,
+    sliceId,
+    "REPLAN",
+    getMilestone(milestoneId)?.title,
+  );
+  mkdirSync(dirname(absPath), { recursive: true });
   const artifactPath = toArtifactPath(absPath, basePath);
 
   const lines: string[] = [];
@@ -1299,24 +1258,14 @@ export async function renderAssessmentFromDb(
   sliceId: string,
   assessmentData: AssessmentData,
 ): Promise<{ assessmentPath: string; content: string }> {
-  // Flat-phase: the assessment file lives in the phase dir, NOT in a slices/SID/
-  // subdir. resolveSlicePath() detects a slices/SID/ dir unconditionally, so a
-  // stray slices/SID/ created by an earlier planning step would send this write
-  // to a hybrid path (wrong dir, flat filename) that verification cannot find.
-  // Guard with the same legacy-base check relSlicePath() uses so flat-phase
-  // milestones always target the phase dir.
-  const mDir = resolveMilestonePath(basePath, milestoneId);
-  const legacyBase = legacyMilestonesDir(basePath);
-  const isLegacyLayout = mDir
-    ? mDir.startsWith(legacyBase + "/") || mDir.startsWith(legacyBase + "\\")
-    : false;
-  const fallbackDir = join(milestonesDir(basePath), canonicalPhaseDirName(milestoneId, getMilestone(milestoneId)?.title));
-  const slicePath = isLegacyLayout
-    ? (resolveSlicePath(basePath, milestoneId, sliceId) ?? fallbackDir)
-    : (mDir ?? fallbackDir);
-  const phaseNum = milestoneIdToPhaseNum(milestoneId);
-  const planNum = sliceIdToPlanNum(sliceId);
-  const absPath = join(slicePath, planFileName(phaseNum, planNum, "ASSESSMENT"));
+  const absPath = targetSliceFile(
+    basePath,
+    milestoneId,
+    sliceId,
+    "ASSESSMENT",
+    getMilestone(milestoneId)?.title,
+  );
+  mkdirSync(dirname(absPath), { recursive: true });
   const artifactPath = toArtifactPath(absPath, basePath);
 
   const lines: string[] = [];
