@@ -73,7 +73,7 @@ import { emitWorktreeOrphaned } from "./worktree-telemetry.js";
 import { queryJournal } from "./journal.js";
 import { initMetrics } from "./metrics.js";
 import { initRoutingHistory } from "./routing-history.js";
-import { restoreHookState, resetHookState } from "./post-unit-hooks.js";
+import { restoreHookState, resetHookState, reconcileRestoredHookDispatch } from "./post-unit-hooks.js";
 import { resetProactiveHealing, setLevelChangeCallback } from "./doctor-proactive.js";
 import { snapshotSkills } from "./skill-discovery.js";
 import { isDbAvailable, getMilestone, getAllMilestones, insertMilestone, updateMilestoneStatus } from "./gsd-db.js";
@@ -1624,6 +1624,10 @@ export async function bootstrapAutoSession(
     s.unitLifetimeDispatches.clear();
     resetHookState();
     restoreHookState(base);
+    // A restored activeHook has no live dispatch (the sidecar queue is not
+    // persisted); re-enqueue it so the hook runs instead of blocking the next
+    // unrelated unit's close-out (#1246).
+    reconcileRestoredHookDispatch(base, s.sidecarQueue);
     resetProactiveHealing();
     // Notify user on health level transitions (green→yellow→red and back)
     setLevelChangeCallback((_from, to, summary) => {

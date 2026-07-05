@@ -364,6 +364,14 @@ export class RuleRegistry {
       pendingRetry: false,
     };
 
+    return this._buildHookDispatch(config, triggerUnitId);
+  }
+
+  /** Construct the sidecar dispatch for a hook without mutating registry state. */
+  private _buildHookDispatch(
+    config: PostUnitHookConfig,
+    triggerUnitId: string,
+  ): HookDispatchResult {
     const { milestone: mid, slice: sid, task: tid } = parseUnitId(triggerUnitId);
     let prompt = config.prompt
       .replace(/\{milestoneId\}/g, mid ?? "")
@@ -379,6 +387,22 @@ export class RuleRegistry {
       unitType: `hook/${config.name}`,
       unitId: triggerUnitId,
     };
+  }
+
+  /**
+   * Reconstruct the in-flight hook's dispatch from the restored `activeHook`
+   * state, without mutating the registry. Used to reconcile a persisted
+   * `activeHook` whose session-local dispatch was lost across a pause/resume
+   * or crash-recovery, so the hook actually runs instead of being charged
+   * against the next unrelated unit's close-out (#1246).
+   */
+  getPendingHookDispatch(basePath: string): HookDispatchResult | null {
+    if (!this.activeHook) return null;
+    const config = resolvePostUnitHooks(basePath).find(
+      h => h.name === this.activeHook!.hookName,
+    );
+    if (!config) return null;
+    return this._buildHookDispatch(config, this.activeHook.triggerUnitId);
   }
 
   private _assessHookCompletion(

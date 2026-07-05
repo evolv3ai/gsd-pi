@@ -16,6 +16,7 @@ import {
   runPreDispatchHooks,
   persistHookState,
   restoreHookState,
+  reconcileRestoredHookDispatch,
   clearPersistedHookState,
   getHookStatus,
   formatHookStatus,
@@ -218,6 +219,90 @@ test('Blocking hook restored from disk does not trust artifact without clean hoo
     const resumed = checkPostUnitHooks("execute-task", "M001/S01/T01", base);
     assert.ok(resumed, "persisted active gate reruns when clean hook completion was not observed");
     assert.equal(resumed.unitType, "hook/security-review");
+  } finally {
+    resetHookState();
+    invalidateAllCaches();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('Restore reconciliation re-enqueues the lost hook dispatch (#1246)', () => {
+  resetHookState();
+  const base = createFixtureBase();
+  try {
+    writeHookPreferences(base, `  - name: plan-review
+    after:
+      - plan-slice
+    prompt: Review the plan for {milestoneId}/{sliceId}
+    artifact: PLAN-REVIEW.md
+    criticality: blocking
+    max_cycles: 2
+`);
+    // Trigger unit completes: activeHook set + persisted, dispatch enqueued.
+    const dispatch = checkPostUnitHooks("plan-slice", "M002/S01", base);
+    assert.ok(dispatch, "gate dispatches on trigger unit completion");
+    assert.equal(dispatch.unitType, "hook/plan-review");
+    persistHookState(base);
+
+    // Pause/resume: activeHook restored, but the session-local sidecar queue is
+    // gone (never persisted).
+    resetHookState();
+    restoreHookState(base);
+    assert.ok(getActiveHook(), "activeHook restored from disk");
+
+    // Reconciliation re-enqueues the missing dispatch so the hook actually runs.
+    const sidecarQueue: any[] = [];
+    reconcileRestoredHookDispatch(base, sidecarQueue);
+    assert.equal(sidecarQueue.length, 1, "lost hook dispatch is re-enqueued");
+    assert.equal(sidecarQueue[0].kind, "hook");
+    assert.equal(sidecarQueue[0].unitType, "hook/plan-review");
+    assert.equal(sidecarQueue[0].unitId, "M002/S01");
+    assert.match(sidecarQueue[0].prompt, /Review the plan for M002\/S01/);
+  } finally {
+    resetHookState();
+    invalidateAllCaches();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('Restore reconciliation is a no-op when the dispatch is already queued (#1246)', () => {
+  resetHookState();
+  const base = createFixtureBase();
+  try {
+    writeHookPreferences(base, `  - name: plan-review
+    after:
+      - plan-slice
+    prompt: Review the plan
+    artifact: PLAN-REVIEW.md
+    criticality: blocking
+    max_cycles: 2
+`);
+    const dispatch = checkPostUnitHooks("plan-slice", "M002/S01", base);
+    assert.ok(dispatch, "gate dispatches on trigger unit completion");
+    persistHookState(base);
+    resetHookState();
+    restoreHookState(base);
+
+    const sidecarQueue: any[] = [
+      { kind: "hook", unitType: "hook/plan-review", unitId: "M002/S01", prompt: "already here" },
+    ];
+    reconcileRestoredHookDispatch(base, sidecarQueue);
+    assert.equal(sidecarQueue.length, 1, "does not duplicate an existing hook dispatch");
+    assert.equal(sidecarQueue[0].prompt, "already here");
+  } finally {
+    resetHookState();
+    invalidateAllCaches();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('Restore reconciliation is a no-op with no active hook (#1246)', () => {
+  resetHookState();
+  const base = createFixtureBase();
+  try {
+    const sidecarQueue: any[] = [];
+    reconcileRestoredHookDispatch(base, sidecarQueue);
+    assert.equal(sidecarQueue.length, 0, "nothing enqueued when no active hook");
   } finally {
     resetHookState();
     invalidateAllCaches();

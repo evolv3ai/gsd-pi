@@ -127,6 +127,7 @@ import {
   runPreDispatchHooks,
   persistHookState,
   restoreHookState,
+  reconcileRestoredHookDispatch,
   clearPersistedHookState,
 } from "./post-unit-hooks.js";
 import { runGSDDoctor, rebuildState } from "./doctor.js";
@@ -2827,6 +2828,10 @@ export async function startAuto(
       "info",
     );
     restoreHookState(s.basePath);
+    // A restored activeHook has no live dispatch (the sidecar queue is not
+    // persisted); re-enqueue it so the hook runs instead of blocking the next
+    // unrelated unit's close-out (#1246).
+    reconcileRestoredHookDispatch(s.basePath, s.sidecarQueue);
     // Re-sync managed resources on resume so long-lived auto sessions pick up
     // bundled extension updates before resume-time verification/state logic runs.
     // GSD_PKG_ROOT is set by loader.ts and points to the gsd-pi package root.
