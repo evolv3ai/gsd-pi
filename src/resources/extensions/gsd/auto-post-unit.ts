@@ -2398,7 +2398,8 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
       const verdict = gateBlock.verdict ? ` verdict=${gateBlock.verdict};` : "";
       const artifact = gateBlock.artifact ? ` artifact=${gateBlock.artifact};` : "";
       const message =
-        `Post-unit gate "${gateBlock.hookName}" blocked ${gateBlock.triggerUnitType} ${gateBlock.triggerUnitId}:` +
+        `Post-unit gate "${gateBlock.hookName}" blocked ${gateBlock.triggerUnitType} ${gateBlock.triggerUnitId} ` +
+        `(detected on completion of ${s.currentUnit.type} ${s.currentUnit.id}):` +
         `${verdict}${artifact} ${gateBlock.reason}. Run /gsd status to inspect, then /gsd auto after recovery.`;
       ctx.ui.notify(message, "warning");
       await pauseAuto(ctx, pi);

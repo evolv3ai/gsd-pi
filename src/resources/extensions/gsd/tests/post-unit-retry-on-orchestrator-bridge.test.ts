@@ -260,7 +260,14 @@ test("post-unit blocking gate pauses auto-mode on needs-attention verdict", asyn
     const result = await postUnitPostVerification(pctx);
     assert.equal(result, "stopped");
     assert.equal(pauseAuto.mock.callCount(), 1);
-    assert.match(notifications.join("\n"), /Post-unit gate "review-arbiter" blocked execute-task M001\/S01\/T01/);
+    // Regression (#1245): the block message must name BOTH the hook's trigger
+    // unit (execute-task M001/S01/T01) and the just-completed unit that surfaced
+    // the block (s.currentUnit = hook/review-arbiter M001/S01/T01), so the pause
+    // is unambiguous to triage. The pre-fix message stopped at the trigger unit.
+    assert.match(
+      notifications.join("\n"),
+      /Post-unit gate "review-arbiter" blocked execute-task M001\/S01\/T01 \(detected on completion of hook\/review-arbiter M001\/S01\/T01\)/,
+    );
     assert.match(notifications.join("\n"), /\/gsd status/);
   } finally {
     process.chdir(originalCwd);
