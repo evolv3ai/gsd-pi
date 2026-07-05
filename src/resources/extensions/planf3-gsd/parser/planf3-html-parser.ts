@@ -1,6 +1,6 @@
 import { parse, type HTMLElement } from "node-html-parser";
-import type { ParsedPlan, PlanMetadata, PlanFile, PlanPhase, PlanTask, PlanChecklistItem, PlanAmendment, PlanStatus } from "./types.js";
-import { STATUS_FROM_MARKER } from "./types.js";
+import type { ParsedPlan, PlanMetadata, PlanFile, PlanPhase, PlanTask, PlanChecklistItem, PlanAmendment, PlanStatus, PlanTier, GsdModelPhaseKey } from "./types.js";
+import { STATUS_FROM_MARKER, TIER_FROM_MARKER, GSD_MODEL_PHASE_KEYS } from "./types.js";
 
 const EMPTY_METADATA: PlanMetadata = {
   created: null,
@@ -78,14 +78,21 @@ function statusFromCode(code: HTMLElement | null): PlanStatus {
   return STATUS_FROM_MARKER[marker] ?? "todo";
 }
 
+function tierFromCode(code: HTMLElement | null): PlanTier | null {
+  const marker = code?.text.trim() ?? "";
+  return TIER_FROM_MARKER[marker] ?? null;
+}
+
 function parseChecklist(ul: HTMLElement | undefined): PlanChecklistItem[] {
   if (!ul) return [];
   return ul.querySelectorAll("li").map((li) => {
-    const code = li.querySelector("code.status");
-    const status = statusFromCode(code);
-    code?.remove();
+    const statusCode = li.querySelector("code.status");
+    const status = statusFromCode(statusCode);
+    statusCode?.remove();
+    const commandCode = li.querySelector("code:not(.tier)");
+    const command = commandCode?.text.trim() || null;
     const text = li.text.replace(/\s+/g, " ").trim();
-    return { status, text };
+    return { status, text, command };
   });
 }
 
@@ -93,6 +100,9 @@ function parsePhase(div: HTMLElement): PlanPhase {
   const h3 = div.querySelector("h3");
   const phaseStatus = statusFromCode(h3?.querySelector("code.status") ?? null);
   h3?.querySelector("code.status")?.remove();
+  const phaseTierCode = h3?.querySelector("code.tier") ?? null;
+  const phaseTier = tierFromCode(phaseTierCode);
+  phaseTierCode?.remove();
   const title = (h3?.text ?? "").replace(/\s+/g, " ").trim();
 
   const description = div.querySelector("p")?.text.replace(/\s+/g, " ").trim() ?? "";
@@ -100,6 +110,9 @@ function parsePhase(div: HTMLElement): PlanPhase {
   const tasks: PlanTask[] = [];
   const headings = div.querySelectorAll("h4");
   for (const h4 of headings) {
+    const taskTierCode = h4.querySelector("code.tier");
+    const taskTier = tierFromCode(taskTierCode);
+    taskTierCode?.remove();
     const taskTitle = h4.text.replace(/\s+/g, " ").trim();
     let sib = h4.nextElementSibling;
     let ul: HTMLElement | undefined;
@@ -110,10 +123,10 @@ function parsePhase(div: HTMLElement): PlanPhase {
       }
       sib = sib.nextElementSibling;
     }
-    tasks.push({ title: taskTitle, checklist: parseChecklist(ul) });
+    tasks.push({ title: taskTitle, tier: taskTier, checklist: parseChecklist(ul) });
   }
 
-  return { title, status: phaseStatus, description, tasks };
+  return { title, status: phaseStatus, tier: phaseTier, description, tasks };
 }
 
 function parsePhases(root: HTMLElement): PlanPhase[] {
@@ -122,10 +135,15 @@ function parsePhases(root: HTMLElement): PlanPhase[] {
 
 function parseValidationCommands(root: HTMLElement): string[] {
   const items = root.querySelectorAll("section#validation ul.checklist li");
-  return items.map((li) => {
-    li.querySelector("code.status")?.remove();
-    return li.text.replace(/\s+/g, " ").trim();
-  }).filter((s) => s.length > 0);
+  return items
+    .map((li) => {
+      li.querySelector("code.status")?.remove();
+      const commandCode = li.querySelector("code");
+      return commandCode
+        ? commandCode.text.trim()
+        : li.text.replace(/\s+/g, " ").trim();
+    })
+    .filter((s) => s.length > 0);
 }
 
 function parseAmendments(root: HTMLElement): PlanAmendment[] {
@@ -143,6 +161,26 @@ function parseOpenDecisions(root: HTMLElement): string[] {
   return root.querySelectorAll("section#questionables details summary").map((s) =>
     s.text.replace(/\s+/g, " ").trim(),
   );
+}
+
+function parseModelPolicy(root: HTMLElement): Partial<Record<GsdModelPhaseKey, string>> {
+  const dl = root.querySelector("section#model-policy dl");
+  if (!dl) return {};
+  const policy: Partial<Record<GsdModelPhaseKey, string>> = {};
+  const children = dl.childNodes.filter((n) => n.nodeType === 1) as HTMLElement[];
+  for (let i = 0; i < children.length - 1; i++) {
+    const dt = children[i];
+    const dd = children[i + 1];
+    if (dt.tagName === "DT" && dd.tagName === "DD") {
+      const key = dt.text.trim().toLowerCase();
+      const value = dd.text.trim();
+      if ((GSD_MODEL_PHASE_KEYS as readonly string[]).includes(key) && value && value !== "—") {
+        policy[key as GsdModelPhaseKey] = value;
+      }
+      i++;
+    }
+  }
+  return policy;
 }
 
 export function parsePlanf3Html(html: string): ParsedPlan {
@@ -163,5 +201,6 @@ export function parsePlanf3Html(html: string): ParsedPlan {
     notes: sectionText(root, "notes"),
     amendments: parseAmendments(root),
     openDecisions: parseOpenDecisions(root),
+    modelPolicy: parseModelPolicy(root),
   };
 }

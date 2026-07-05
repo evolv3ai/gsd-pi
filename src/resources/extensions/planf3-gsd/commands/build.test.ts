@@ -1,6 +1,6 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, copyFile, readFile } from "node:fs/promises";
+import { mkdtemp, copyFile, readFile, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -118,5 +118,99 @@ describe("runBuild", () => {
     assert.ok(nmIdx !== -1, "new-milestone was called");
     assert.ok(qIdx !== -1, "query was called");
     assert.ok(nmIdx < qIdx, "new-milestone call precedes query call");
+  });
+
+  test("writes the preferences overlay before new-milestone and appends an eval row", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-prefs-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+
+    let prefsExistedAtMilestone = false;
+    const spawn: Spawner = async (_cmd, args) => {
+      if (args.includes("new-milestone")) {
+        try {
+          await readFile(join(tmp, ".gsd", "PREFERENCES.md"), "utf8");
+          prefsExistedAtMilestone = true;
+        } catch {
+          prefsExistedAtMilestone = false;
+        }
+        return { exitCode: 0, stdout: "{}", stderr: "" };
+      }
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ state: { phase: "ready", activeMilestone: { id: "M042", title: "Minimal Plan" } }, next: null, cost: { total: 0.5 } }),
+        stderr: "",
+      };
+    };
+
+    const result = await runBuild(htmlPath, {
+      auto: false,
+      binary: "gsd",
+      cwd: tmp,
+      spawn,
+      now: () => "2026-07-04T12:00:00Z",
+    });
+
+    assert.equal(prefsExistedAtMilestone, true, "overlay written before new-milestone");
+    assert.equal(result.prefs.applied, true);
+    assert.deepEqual(result.prefs.models, ["planning", "execution"]);
+    assert.equal(result.prefs.warning, null);
+
+    const prefs = await readFile(join(tmp, ".gsd", "PREFERENCES.md"), "utf8");
+    assert.match(prefs, /execution: openrouter\/x-ai\/grok-code-fast-1/);
+    assert.match(prefs, /pnpm run verify:pr/);
+
+    const evalLines = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n");
+    assert.equal(evalLines.length, 1);
+    const row = JSON.parse(evalLines[0]);
+    assert.equal(row.milestoneId, "M042");
+    assert.equal(row.loggedAt, "2026-07-04T12:00:00Z");
+    assert.equal(row.cost, 0.5);
+    assert.deepEqual(row.appliedModels, ["planning", "execution"]);
+  });
+
+  test("applyPrefs=false skips the overlay but still logs the eval row", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-noprefs-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+
+    const spawn: Spawner = async (_cmd, args) => {
+      if (args.includes("new-milestone")) return { exitCode: 0, stdout: "{}", stderr: "" };
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ state: { phase: "ready", activeMilestone: { id: "M1", title: "x" } }, next: null, cost: { total: 0 } }),
+        stderr: "",
+      };
+    };
+
+    const result = await runBuild(htmlPath, { auto: false, binary: "gsd", cwd: tmp, spawn, applyPrefs: false });
+    assert.equal(result.prefs.applied, false);
+    await assert.rejects(() => readFile(join(tmp, ".gsd", "PREFERENCES.md"), "utf8"));
+    const evalText = await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8");
+    assert.equal(evalText.trim().split("\n").length, 1);
+  });
+
+  test("a corrupt existing PREFERENCES.md yields a warning and does not block the build", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-badprefs-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+    await mkdir(join(tmp, ".gsd"), { recursive: true });
+    await writeFile(join(tmp, ".gsd", "PREFERENCES.md"), "---\nunclosed frontmatter\n", "utf8");
+
+    const spawn: Spawner = async (_cmd, args) => {
+      if (args.includes("new-milestone")) return { exitCode: 0, stdout: "{}", stderr: "" };
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ state: { phase: "ready", activeMilestone: { id: "M2", title: "x" } }, next: null, cost: { total: 0 } }),
+        stderr: "",
+      };
+    };
+
+    const result = await runBuild(htmlPath, { auto: false, binary: "gsd", cwd: tmp, spawn });
+    assert.equal(result.milestoneId, "M2");
+    assert.equal(result.prefs.applied, false);
+    assert.match(result.prefs.warning ?? "", /closing/);
+    const untouched = await readFile(join(tmp, ".gsd", "PREFERENCES.md"), "utf8");
+    assert.equal(untouched, "---\nunclosed frontmatter\n");
   });
 });

@@ -1,10 +1,11 @@
 {
   "name": "pi-extension-planf3-gsd",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "pi": { "extensions": ["./index.ts"] },
   "dependencies": {
-    "node-html-parser": "^6.1.13"
+    "node-html-parser": "^6.1.13",
+    "yaml": "^2.8.2"
   }
 }

@@ -1,5 +1,28 @@
 export type PlanStatus = "todo" | "wip" | "done" | "failed";
 
+export type PlanTier = "mechanical" | "standard" | "complex";
+
+/** gsd-pi's nine model-routing phase buckets (preferences-types.ts GSD_MODEL_PHASE_KEYS). */
+export const GSD_MODEL_PHASE_KEYS = [
+  "research",
+  "planning",
+  "discuss",
+  "execution",
+  "execution_simple",
+  "completion",
+  "validation",
+  "subagent",
+  "uat",
+] as const;
+
+export type GsdModelPhaseKey = (typeof GSD_MODEL_PHASE_KEYS)[number];
+
+export const TIER_FROM_MARKER: Record<string, PlanTier> = {
+  "[mechanical]": "mechanical",
+  "[standard]": "standard",
+  "[complex]": "complex",
+};
+
 export interface PlanMetadata {
   created: string | null;
   modified: string[];
@@ -19,16 +42,20 @@ export interface PlanFile {
 export interface PlanChecklistItem {
   status: PlanStatus;
   text: string;
+  /** Text of the first non-status <code> element — the executable command, when the item carries one. */
+  command: string | null;
 }
 
 export interface PlanTask {
   title: string;
+  tier: PlanTier | null;
   checklist: PlanChecklistItem[];
 }
 
 export interface PlanPhase {
   title: string;
   status: PlanStatus;
+  tier: PlanTier | null;
   description: string;
   tasks: PlanTask[];
 }
@@ -53,6 +80,7 @@ export interface ParsedPlan {
   notes: string;
   amendments: PlanAmendment[];
   openDecisions: string[];
+  modelPolicy: Partial<Record<GsdModelPhaseKey, string>>;
 }
 
 export const STATUS_FROM_MARKER: Record<string, PlanStatus> = {

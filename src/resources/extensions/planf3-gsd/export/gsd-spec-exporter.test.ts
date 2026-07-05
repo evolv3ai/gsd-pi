@@ -36,9 +36,19 @@ describe("exportGsdSpec", () => {
 
   test("emits implementation phases with task checklists", () => {
     const md = exportGsdSpec(parsePlanf3Html(minimal), CTX);
-    assert.match(md, /### Phase 1: Setup \[wip\]\n\nStand up the skeleton\./);
-    assert.match(md, /#### 1\. Scaffolding\n- \[x\] Create the dir\.\n- \[ \] Add the file\./);
+    assert.match(md, /### Phase 1: Setup \[wip\] \[tier: mechanical\]\n\nStand up the skeleton\./);
+    assert.match(md, /#### 1\. Scaffolding \[tier: complex\]\n- \[x\] Create the dir\.\n- \[ \] Add the file\./);
     assert.match(md, /### Phase 2: Wire-up \[ \]/);
+  });
+
+  test("emits a tier legend when any tier chip is present", () => {
+    const md = exportGsdSpec(parsePlanf3Html(minimal), CTX);
+    assert.match(md, /## Implementation Phases\n\n_Tier hints: \[tier: mechanical\] = simplest capable model/);
+  });
+
+  test("emits the Model Policy section from the plan's policy map", () => {
+    const md = exportGsdSpec(parsePlanf3Html(minimal), CTX);
+    assert.match(md, /## Model Policy\n\n_These routing directives are applied to \.gsd\/PREFERENCES\.md at build time\._\n- planning: `openrouter\/anthropic\/claude-opus-4\.7`\n- execution: `openrouter\/x-ai\/grok-code-fast-1`/);
   });
 
   test("emits validation commands", () => {

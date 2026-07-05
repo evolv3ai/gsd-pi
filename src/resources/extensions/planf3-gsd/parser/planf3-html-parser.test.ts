@@ -4,6 +4,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { parsePlanf3Html } from "./planf3-html-parser.js";
+import { GSD_MODEL_PHASE_KEYS as NATIVE_KEYS } from "../../gsd/preferences-types.js";
+import { GSD_MODEL_PHASE_KEYS } from "./types.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const minimal = readFileSync(join(here, "..", "fixtures", "minimal-plan.html"), "utf8");
@@ -61,21 +63,36 @@ describe("parsePlanf3Html — phases", () => {
     assert.equal(p1.tasks.length, 2);
     assert.equal(p1.tasks[0].title, "1. Scaffolding");
     assert.deepEqual(p1.tasks[0].checklist, [
-      { status: "done", text: "Create the dir." },
-      { status: "todo", text: "Add the file." },
+      { status: "done", text: "Create the dir.", command: null },
+      { status: "todo", text: "Add the file.", command: null },
     ]);
     assert.equal(p1.tasks[1].title, "2. Testing Strategy");
     assert.deepEqual(p1.tasks[1].checklist, [
-      { status: "todo", text: "pnpm test" },
+      { status: "todo", text: "pnpm test", command: "pnpm test" },
     ]);
 
     assert.equal(p2.status, "todo");
     assert.equal(p2.tasks[0].checklist[0].status, "failed");
   });
 
-  test("extracts validation commands", () => {
+  test("extracts optional tier chips from phase h3 and task h4, stripping them from titles", () => {
     const plan = parsePlanf3Html(minimal);
-    assert.deepEqual(plan.validationCommands, ["pnpm run verify:pr"]);
+    const [p1, p2] = plan.phases;
+    assert.equal(p1.tier, "mechanical");
+    assert.equal(p1.title, "Phase 1: Setup");
+    assert.equal(p1.tasks[0].tier, "complex");
+    assert.equal(p1.tasks[0].title, "1. Scaffolding");
+    assert.equal(p1.tasks[1].tier, null);
+    assert.equal(p2.tier, null);
+    assert.equal(p2.tasks[0].tier, null);
+  });
+
+  test("extracts bare validation commands, dropping the prose suffix", () => {
+    const plan = parsePlanf3Html(minimal);
+    assert.deepEqual(plan.validationCommands, [
+      "pnpm run verify:pr",
+      "pnpm run typecheck:extensions",
+    ]);
   });
 
   test("extracts amendments", () => {
@@ -83,6 +100,16 @@ describe("parsePlanf3Html — phases", () => {
     assert.equal(plan.amendments.length, 1);
     assert.equal(plan.amendments[0].iso, "2026-06-22T11:00:00-05:00");
     assert.equal(plan.amendments[0].summary, "Added phase 2.");
+  });
+});
+
+describe("parsePlanf3Html — model policy", () => {
+  test("extracts known gsd bucket keys and drops unknown ones", () => {
+    const plan = parsePlanf3Html(minimal);
+    assert.deepEqual(plan.modelPolicy, {
+      planning: "openrouter/anthropic/claude-opus-4.7",
+      execution: "openrouter/x-ai/grok-code-fast-1",
+    });
   });
 });
 
@@ -95,6 +122,14 @@ describe("parsePlanf3Html — real fixture smoke", () => {
     for (const phase of plan.phases) {
       assert.ok(["todo", "wip", "done", "failed"].includes(phase.status));
       assert.ok(phase.title.length > 0);
+      assert.equal(phase.tier, null);
     }
+    assert.deepEqual(plan.modelPolicy, {});
+  });
+});
+
+describe("bucket-key parity", () => {
+  test("GSD_MODEL_PHASE_KEYS matches the authoritative keys from gsd/preferences-types", () => {
+    assert.deepEqual([...GSD_MODEL_PHASE_KEYS], [...NATIVE_KEYS]);
   });
 });

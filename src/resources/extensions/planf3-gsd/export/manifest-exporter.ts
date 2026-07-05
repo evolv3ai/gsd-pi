@@ -1,9 +1,11 @@
-import type { ParsedPlan } from "../parser/types.js";
+import type { ParsedPlan, PlanPhase, PlanTier, GsdModelPhaseKey } from "../parser/types.js";
 
-export interface TaskMapping { title: string; gsdTask: string | null; }
+export interface TaskMapping { title: string; tier: PlanTier | null; gsdTask: string | null; }
 export interface PhaseMapping {
   planf3Selector: string;
   title: string;
+  tier: PlanTier | null;
+  checks: string[];
   gsdMilestone: string | null;
   gsdSlice: string | null;
   tasks: TaskMapping[];
@@ -20,8 +22,9 @@ export interface BridgeManifest {
     mode: "auto" | "step";
   };
   mapping: { phases: PhaseMapping[]; };
+  routing: { modelPolicy: Partial<Record<GsdModelPhaseKey, string>> };
   validation: { commands: string[]; lastSyncedAt: string | null; lastStatus: "planned" | "running" | "passed" | "failed" | "blocked"; };
-  provenance: { userPrompt: string | null; generator: "planf3-gsd-pi"; generatorVersion: "0.1.0"; };
+  provenance: { userPrompt: string | null; generator: "planf3-gsd-pi"; generatorVersion: "0.2.0"; };
 }
 
 export interface ManifestPaths {
@@ -33,6 +36,14 @@ export interface ManifestPaths {
 export interface ManifestProvenance {
   userPrompt: string | null;
   mode: "auto" | "step";
+}
+
+function phaseChecks(phase: PlanPhase): string[] {
+  const strategy = phase.tasks.find((t) => /testing strategy/i.test(t.title));
+  if (!strategy) return [];
+  return strategy.checklist
+    .map((item) => item.command)
+    .filter((c): c is string => c !== null && c.length > 0);
 }
 
 export function buildManifest(plan: ParsedPlan, paths: ManifestPaths, prov: ManifestProvenance): BridgeManifest {
@@ -55,11 +66,14 @@ export function buildManifest(plan: ParsedPlan, paths: ManifestPaths, prov: Mani
       phases: plan.phases.map((phase, i) => ({
         planf3Selector: `section#phases > div.phase:nth-of-type(${i + 1})`,
         title: phase.title,
+        tier: phase.tier,
+        checks: phaseChecks(phase),
         gsdMilestone: null,
         gsdSlice: null,
-        tasks: phase.tasks.map((t) => ({ title: t.title, gsdTask: null })),
+        tasks: phase.tasks.map((t) => ({ title: t.title, tier: t.tier, gsdTask: null })),
       })),
     },
+    routing: { modelPolicy: plan.modelPolicy },
     validation: {
       commands: plan.validationCommands,
       lastSyncedAt: null,
@@ -68,7 +82,7 @@ export function buildManifest(plan: ParsedPlan, paths: ManifestPaths, prov: Mani
     provenance: {
       userPrompt: prov.userPrompt,
       generator: "planf3-gsd-pi",
-      generatorVersion: "0.1.0",
+      generatorVersion: "0.2.0",
     },
   };
 }

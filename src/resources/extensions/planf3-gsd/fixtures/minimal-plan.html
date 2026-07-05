@@ -38,9 +38,9 @@
     <section id="phases">
       <h2>Implementation Phases</h2>
       <div class="phase">
-        <h3><code class="status">[wip]</code> Phase 1: Setup</h3>
+        <h3><code class="status">[wip]</code> <code class="tier">[mechanical]</code> Phase 1: Setup</h3>
         <p>Stand up the skeleton.</p>
-        <h4>1. Scaffolding</h4>
+        <h4><code class="tier">[complex]</code> 1. Scaffolding</h4>
         <ul class="checklist">
           <li><code class="status">[x]</code> Create the dir.</li>
           <li><code class="status">[]</code> Add the file.</li>
@@ -66,7 +66,17 @@
       <h2>Validation Commands</h2>
       <ul class="checklist">
         <li><code class="status">[]</code> <code>pnpm run verify:pr</code></li>
+        <li><code class="status">[]</code> <code>pnpm run typecheck:extensions</code> — proves the types hold.</li>
       </ul>
+    </section>
+
+    <section id="model-policy">
+      <h2>Model Policy</h2>
+      <dl>
+        <dt>planning</dt><dd>openrouter/anthropic/claude-opus-4.7</dd>
+        <dt>execution</dt><dd>openrouter/x-ai/grok-code-fast-1</dd>
+        <dt>bogus_bucket</dt><dd>ignored/model</dd>
+      </dl>
     </section>
 
     <section id="notes"><h2>Notes</h2><p>Test scaffolding only.</p></section>
