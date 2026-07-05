@@ -3154,9 +3154,10 @@ export async function dispatchHookUnit(
       // selectAndApplyModel, which consults the same blocked-models store (#1229).
       if (isModelUnavailable(targetBasePath, match.provider, match.id)) continue;
       try {
-        await pi.setModel(match);
-        applied = true;
-        break;
+        if (await pi.setModel(match)) {
+          applied = true;
+          break;
+        }
       } catch (err) {
         /* non-fatal — try the next fallback */
         logWarning("dispatch", `hook model set failed for ${candidate}: ${err instanceof Error ? err.message : String(err)}`, { file: "auto.ts" });
