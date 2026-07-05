@@ -383,7 +383,8 @@ export class RuleRegistry {
     return {
       hookName: config.name,
       prompt,
-      model: config.model,
+      // Model selection (including fallbacks[]) is handled by
+      // resolveModelWithFallbacksForUnit for the `hook/<name>` unit type (#1229).
       unitType: `hook/${config.name}`,
       unitId: triggerUnitId,
     };
@@ -1038,7 +1039,10 @@ export class RuleRegistry {
     return {
       hookName: hook.name,
       prompt,
-      model: hook.model,
+      // Model selection (including fallbacks[]) is resolved by dispatchHookUnit
+      // via resolveModelWithFallbacksForUnit for the `hook/<name>` unit type,
+      // matching the auto-mode path. Emitting the primary-only model here would
+      // discard the configured fallback chain (#1229).
       unitType: `hook/${hook.name}`,
       unitId,
     };

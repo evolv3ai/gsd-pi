@@ -22,6 +22,7 @@ import {
   SKILL_ACTIONS,
   type WorkflowMode,
   type GSDPreferences,
+  type GSDPhaseModelConfig,
   type GSDSkillRule,
   type GSDThinkingLevel,
 } from "./preferences-types.js";
@@ -41,6 +42,47 @@ const VALID_UOK_TURN_ACTIONS = new Set<"commit" | "snapshot" | "status-only">([
   "snapshot",
   "status-only",
 ]);
+/**
+ * Sanitize a single model field that accepts either a bare model ID or the
+ * extended `{ model, provider?, fallbacks? }` object form used by phase buckets
+ * (#1229). Returns the sanitized value, or undefined when unset/invalid (in
+ * which case an error describing `label` is pushed onto `errors`).
+ */
+function sanitizeModelField(
+  raw: unknown,
+  label: string,
+  errors: string[],
+): string | GSDPhaseModelConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      errors.push(`${label} must not be an empty string`);
+      return undefined;
+    }
+    return trimmed;
+  }
+  if (raw && typeof raw === "object") {
+    const obj = raw as Record<string, unknown>;
+    const model = typeof obj.model === "string" ? obj.model.trim() : "";
+    if (!model) {
+      errors.push(`${label} object form requires a non-empty "model"`);
+      return undefined;
+    }
+    const sanitized: GSDPhaseModelConfig = { model };
+    if (typeof obj.provider === "string" && obj.provider.trim()) {
+      sanitized.provider = obj.provider.trim();
+    }
+    if (obj.fallbacks !== undefined) {
+      const fallbacks = normalizeStringArray(obj.fallbacks);
+      if (fallbacks.length > 0) sanitized.fallbacks = fallbacks;
+    }
+    return sanitized;
+  }
+  errors.push(`${label} must be a string or an object with a "model" field`);
+  return undefined;
+}
+
 const VALID_POST_UNIT_HOOK_CRITICALITIES = new Set(["advisory", "blocking"]);
 const VALID_POST_UNIT_HOOK_ON_BLOCK_ACTIONS = new Set([
   "retry-unit",
@@ -476,7 +518,15 @@ export function validatePreferences(preferences: GSDPreferences): {
   // ─── Auto Supervisor ────────────────────────────────────────────────
   if (preferences.auto_supervisor !== undefined) {
     if (preferences.auto_supervisor && typeof preferences.auto_supervisor === "object") {
-      validated.auto_supervisor = preferences.auto_supervisor;
+      // Validate `model` through the shared sanitizer so the
+      // `{ model, provider?, fallbacks? }` object form is rejected on the same
+      // terms as its post_unit_hooks / reactive_execution siblings (#1229).
+      // Other supervisor fields pass through unchanged.
+      const supervisor = { ...preferences.auto_supervisor };
+      if (supervisor.model !== undefined) {
+        supervisor.model = sanitizeModelField(supervisor.model, "auto_supervisor.model", errors);
+      }
+      validated.auto_supervisor = supervisor;
     } else {
       errors.push("auto_supervisor must be an object");
     }
@@ -568,8 +618,9 @@ export function validatePreferences(preferences: GSDPreferences): {
         const mc = typeof hook.max_cycles === "number" ? hook.max_cycles : Number(hook.max_cycles);
         validHook.max_cycles = Number.isFinite(mc) ? Math.max(1, Math.min(10, Math.round(mc))) : 1;
       }
-      if (typeof hook.model === "string" && hook.model.trim()) {
-        validHook.model = hook.model.trim();
+      const hookModel = sanitizeModelField(hook.model, `post_unit_hooks "${name}" model`, errors);
+      if (hookModel !== undefined) {
+        validHook.model = hookModel;
       }
       if (typeof hook.artifact === "string" && hook.artifact.trim()) {
         validHook.artifact = hook.artifact.trim();
@@ -1021,12 +1072,13 @@ export function validatePreferences(preferences: GSDPreferences): {
         }
       }
 
-      if (re.subagent_model !== undefined) {
-        if (typeof re.subagent_model === "string" && re.subagent_model.length > 0) {
-          validRe.subagent_model = re.subagent_model;
-        } else {
-          errors.push("reactive_execution.subagent_model must be a non-empty string");
-        }
+      const subagentModel = sanitizeModelField(
+        re.subagent_model,
+        "reactive_execution.subagent_model",
+        errors,
+      );
+      if (subagentModel !== undefined) {
+        validRe.subagent_model = subagentModel;
       }
 
       const knownReKeys = new Set(["enabled", "max_parallel", "isolation_mode", "subagent_model"]);

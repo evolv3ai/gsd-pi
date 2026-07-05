@@ -150,7 +150,13 @@ function collectConfigSections(options?: CollectConfigOptions): ConfigSection[] 
   if (prefs?.auto_supervisor) {
     const sup = resolveAutoSupervisorConfig();
     const supRows: ConfigSection["rows"] = [];
-    if (sup.model) supRows.push({ label: "Model", value: sup.model });
+    if (sup.model) {
+      let modelVal = sup.model;
+      if (sup.modelFallbacks && sup.modelFallbacks.length > 0) {
+        modelVal += ` \u2192 ${sup.modelFallbacks.join(" \u2192 ")}`;
+      }
+      supRows.push({ label: "Model", value: modelVal });
+    }
     supRows.push({ label: "Soft timeout", value: `${sup.soft_timeout_minutes}m` });
     supRows.push({ label: "Idle timeout", value: `${sup.idle_timeout_minutes}m` });
     supRows.push({ label: "Stalled tool timeout", value: `${sup.stalled_tool_timeout_minutes}m` });

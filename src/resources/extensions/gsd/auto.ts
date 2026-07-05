@@ -116,7 +116,8 @@ import {
 } from "./auto-tool-tracking.js";
 import { closeoutUnit } from "./auto-unit-closeout.js";
 import { recoverTimedOutUnit } from "./auto-timeout-recovery.js";
-import { selectAndApplyModel, resolveModelId, clearToolBaseline } from "./auto-model-selection.js";
+import { selectAndApplyModel, resolveModelId, clearToolBaseline, isModelUnavailable } from "./auto-model-selection.js";
+import { resolveModelWithFallbacksForUnit } from "./preferences-models.js";
 import { resetRoutingHistory, recordOutcome } from "./routing-history.js";
 import {
   checkPostUnitHooks,
@@ -3158,19 +3159,49 @@ export async function dispatchHookUnit(
     workspaceRoot: s.basePath,
   });
 
-  if (hookModel) {
-    const availableModels = ctx.modelRegistry.getAvailable();
-    const match = resolveModelId(hookModel, availableModels, ctx.model?.provider);
-    if (match) {
+  // Resolve the hook's model honoring the configured `fallbacks[]` chain
+  // (#1229). The manual trigger path bypasses selectAndApplyModel, so resolve
+  // the primary→fallbacks order here and apply the first candidate available in
+  // the registry — a blocked or unconfigured primary then transparently drops
+  // to a fallback instead of silently reverting to the session model.
+  const availableModels = ctx.modelRegistry.getAvailable();
+  const availableModelIds = availableModels.map(
+    (m: { provider: string; id: string }) => `${m.provider}/${m.id}`,
+  );
+  const hookModelConfig = resolveModelWithFallbacksForUnit(
+    hookUnitType,
+    targetBasePath,
+    availableModelIds,
+  );
+  const modelCandidates = hookModelConfig
+    ? [hookModelConfig.primary, ...hookModelConfig.fallbacks]
+    : hookModel
+      ? [hookModel]
+      : [];
+  if (modelCandidates.length > 0) {
+    let applied = false;
+    for (const candidate of modelCandidates) {
+      const match = resolveModelId(candidate, availableModels, ctx.model?.provider);
+      if (!match) continue;
+      // Skip models the runtime has marked blocked or temporarily unavailable
+      // (e.g. a primary that just tripped a provider limit) so the configured
+      // fallbacks[] chain actually engages — parity with auto-mode's
+      // selectAndApplyModel, which consults the same blocked-models store (#1229).
+      if (isModelUnavailable(targetBasePath, match.provider, match.id)) continue;
       try {
-        await pi.setModel(match);
+        if (await pi.setModel(match)) {
+          applied = true;
+          break;
+        }
       } catch (err) {
-        /* non-fatal */
-        logWarning("dispatch", `hook model set failed: ${err instanceof Error ? err.message : String(err)}`, { file: "auto.ts" });
+        /* non-fatal — try the next fallback */
+        logWarning("dispatch", `hook model set failed for ${candidate}: ${err instanceof Error ? err.message : String(err)}`, { file: "auto.ts" });
       }
-    } else {
+    }
+    if (!applied) {
       ctx.ui.notify(
-        `Hook model "${hookModel}" not found in available models. Falling back to current session model. ` +
+        `Hook model${modelCandidates.length > 1 ? "s" : ""} "${modelCandidates.join(", ")}" not available. ` +
+        `Falling back to current session model. ` +
         `Ensure the model is defined in models.json and has auth configured.`,
         "warning",
       );

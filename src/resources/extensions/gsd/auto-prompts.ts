@@ -3909,9 +3909,15 @@ export async function buildReassessRoadmapPrompt(
  * that instructs the coordinator how to dispatch a `subagent` call. Either or
  * both may be absent (ADR-026 / #508).
  */
-function subagentCallSuffix(model?: string, thinking?: string): string {
+function subagentCallSuffix(model?: string, thinking?: string, fallbacks?: string[]): string {
   const parts: string[] = [];
-  if (model) parts.push(`model: "${model}"`);
+  if (model) {
+    let modelHint = `model: "${model}"`;
+    if (fallbacks && fallbacks.length > 0) {
+      modelHint += ` (fallbacks, in order: ${fallbacks.map((f) => `"${f}"`).join(", ")})`;
+    }
+    parts.push(modelHint);
+  }
   if (thinking) parts.push(`thinking: "${thinking}"`);
   return parts.length > 0 ? ` with ${parts.join(" and ")}` : "";
 }
@@ -3922,7 +3928,13 @@ export async function buildReactiveExecutePrompt(
   subagentModel?: string,
   // Reasoning effort travels inside opts here (not as a positional param) so
   // existing positional `opts` callers don't shift (#508).
-  opts?: { sessionContextWindow?: number; modelRegistry?: MinimalModelRegistry; sessionProvider?: string; subagentThinking?: string },
+  opts?: {
+    sessionContextWindow?: number;
+    modelRegistry?: MinimalModelRegistry;
+    sessionProvider?: string;
+    subagentThinking?: string;
+    subagentModelFallbacks?: string[];
+  },
 ): Promise<string> {
   const { loadSliceTaskIO, deriveTaskGraph, graphMetrics } = await import("./reactive-graph.js");
 
@@ -4019,7 +4031,11 @@ export async function buildReactiveExecutePrompt(
       `When done, say: "Task ${tid} complete."`,
     ].join("\n");
 
-    const modelSuffix = subagentCallSuffix(subagentModel, opts?.subagentThinking);
+    const modelSuffix = subagentCallSuffix(
+      subagentModel,
+      opts?.subagentThinking,
+      opts?.subagentModelFallbacks,
+    );
     subagentSections.push([
       `### ${tid}: ${tTitle}`,
       "",
