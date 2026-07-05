@@ -163,3 +163,21 @@ test("validatePreferences rejects a model-less object form", () => {
   } as never);
   assert.ok(errors.some((e) => e.includes('requires a non-empty "model"')));
 });
+
+test("validatePreferences accepts object-form auto_supervisor.model", () => {
+  const { preferences: validated, errors } = validatePreferences({
+    auto_supervisor: { model: { model: "sup-primary", fallbacks: ["sup-fb"] } },
+  } as never);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(validated.auto_supervisor?.model, { model: "sup-primary", fallbacks: ["sup-fb"] });
+});
+
+test("validatePreferences rejects a model-less auto_supervisor.model object", () => {
+  const { errors } = validatePreferences({
+    auto_supervisor: { model: { fallbacks: ["sup-fb"] } },
+  } as never);
+  assert.ok(
+    errors.some((e) => e.includes("auto_supervisor.model") && e.includes('requires a non-empty "model"')),
+    `expected supervisor model error, got: ${JSON.stringify(errors)}`,
+  );
+});
