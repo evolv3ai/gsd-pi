@@ -22,6 +22,7 @@ import { existsSync } from "node:fs";
 import { bumpAndResolveSynthetic } from "./auto/resolve.js";
 import { finalizeProjectResearchTimeout } from "./project-research-policy.js";
 import { applySupervisorModelIfConfigured } from "./auto-model-selection.js";
+import { getInFlightToolCount } from "./auto-tool-tracking.js";
 
 export interface RecoveryContext {
   basePath: string;
@@ -123,14 +124,17 @@ export async function recoverTimedOutUnit(
             "If full completion is impossible, write the partial artifact/state needed for recovery and make the blocker explicit.",
           ];
 
-      await applySupervisorModelIfConfigured(ctx, pi, basePath);
+      const recoveryTrigger = getInFlightToolCount() === 0;
+      if (recoveryTrigger) {
+        await applySupervisorModelIfConfigured(ctx, pi, basePath);
+      }
       pi.sendMessage(
         {
           customType: "gsd-auto-timeout-recovery",
           display: verbose,
           content: steeringLines.join("\n"),
         },
-        { triggerTurn: true, deliverAs: "steer" },
+        { triggerTurn: recoveryTrigger, deliverAs: "steer" },
       );
       ctx.ui.notify(
         `${reason === "idle" ? "Idle" : "Timeout"} recovery: steering ${unitType} ${unitId} to finish durable output (attempt ${attemptNumber}, session ${recoveryAttempts + 1}/${maxRecoveryAttempts}).`,
@@ -251,14 +255,17 @@ export async function recoverTimedOutUnit(
           "If blocked, write the partial artifact and explicitly record the blocker instead of going silent.",
         ];
 
-    await applySupervisorModelIfConfigured(ctx, pi, basePath);
+    const recoveryTrigger = getInFlightToolCount() === 0;
+    if (recoveryTrigger) {
+      await applySupervisorModelIfConfigured(ctx, pi, basePath);
+    }
     pi.sendMessage(
       {
         customType: "gsd-auto-timeout-recovery",
         display: verbose,
         content: steeringLines.join("\n"),
       },
-      { triggerTurn: true, deliverAs: "steer" },
+      { triggerTurn: recoveryTrigger, deliverAs: "steer" },
     );
     ctx.ui.notify(
       `${reason === "idle" ? "Idle" : "Timeout"} recovery: steering ${unitType} ${unitId} to produce ${expected} (attempt ${attemptNumber}, session ${recoveryAttempts + 1}/${maxRecoveryAttempts}).`,
