@@ -310,6 +310,149 @@ test('Restore reconciliation is a no-op with no active hook (#1246)', () => {
   }
 });
 
+test('Blocking hook re-dispatches once after a lost dispatch at default max_cycles', () => {
+  resetHookState();
+  const base = createFixtureBase();
+  try {
+    // Default max_cycles (1): a cycle is charged at dispatch time.
+    writeHookPreferences(base, `  - name: plan-review
+    after:
+      - plan-slice
+    prompt: Review plan
+    artifact: PLAN-REVIEW.md
+    criticality: blocking
+`);
+
+    const firstDispatch = checkPostUnitHooks("plan-slice", "M002/S01", base);
+    assert.ok(firstDispatch, "gate dispatches and consumes its cycle at dispatch");
+    assert.equal(firstDispatch.unitType, "hook/plan-review");
+    persistHookState(base);
+
+    // Simulate a lost dispatch: the hook never produced its own unit-end, the
+    // trigger unit resumes instead. The dispatch-consumed cycle is refunded once
+    // so the gate re-dispatches rather than hard-blocking on a hook that never ran.
+    resetHookState();
+    restoreHookState(base);
+    const redispatch = checkPostUnitHooks("plan-slice", "M002/S01", base);
+    assert.ok(redispatch, "lost dispatch re-dispatches the gate instead of blocking");
+    assert.equal(redispatch.unitType, "hook/plan-review");
+    assert.deepStrictEqual(consumeGateBlock(), null, "no gate block on the first lost dispatch");
+    persistHookState(base);
+
+    // A second lost dispatch consumes the budget and blocks — the refund is one-shot.
+    resetHookState();
+    restoreHookState(base);
+    const blocked = checkPostUnitHooks("plan-slice", "M002/S01", base);
+    assert.deepStrictEqual(blocked, null, "second lost dispatch exhausts the budget");
+    const block = consumeGateBlock();
+    assert.ok(block, "gate block recorded after the one-shot re-dispatch is used");
+    assert.equal(block.hookName, "plan-review");
+    assert.match(block.reason, /gate cycle budget exhausted/);
+  } finally {
+    resetHookState();
+    invalidateAllCaches();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('Blocking hook lost-dispatch refund is one-shot and bounded at max_cycles=2', () => {
+  resetHookState();
+  const base = createFixtureBase();
+  try {
+    writeHookPreferences(base, `  - name: plan-review
+    after:
+      - plan-slice
+    prompt: Review plan
+    artifact: PLAN-REVIEW.md
+    criticality: blocking
+    max_cycles: 2
+`);
+
+    // Simulate a lost dispatch: persist, drop in-memory state, restore, then the
+    // trigger unit resumes instead of the hook producing its own unit-end.
+    const lose = () => {
+      persistHookState(base);
+      resetHookState();
+      restoreHookState(base);
+      return checkPostUnitHooks("plan-slice", "M002/S01", base);
+    };
+
+    assert.ok(checkPostUnitHooks("plan-slice", "M002/S01", base), "initial dispatch");
+
+    // Refund is one-shot, but max_cycles=2 still has real budget, so lost#2 also
+    // re-dispatches by consuming a genuine cycle (not another refund).
+    assert.ok(lose(), "lost#1 re-dispatches (one-shot refund)");
+    assert.equal(consumeGateBlock(), null, "no block after lost#1");
+    assert.ok(lose(), "lost#2 re-dispatches from real budget");
+    assert.equal(consumeGateBlock(), null, "no block after lost#2");
+
+    // Total dispatches are bounded to max_cycles + 1 (the single forgiven loss),
+    // so the third lost dispatch blocks. redispatchedGateKeys guarantees this
+    // terminates rather than looping forever on repeated lost resumes.
+    assert.equal(lose(), null, "lost#3 exhausts the bounded budget");
+    const block = consumeGateBlock();
+    assert.ok(block, "gate block recorded on lost#3");
+    assert.match(block.reason, /gate cycle budget exhausted/);
+  } finally {
+    resetHookState();
+    invalidateAllCaches();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('Blocking hook lost dispatch does not steal a real-run cycle at max_cycles=2', () => {
+  resetHookState();
+  const base = createFixtureBase();
+  try {
+    writeHookPreferences(base, `  - name: plan-review
+    after:
+      - plan-slice
+    prompt: Review plan
+    artifact: PLAN-REVIEW.md
+    criticality: blocking
+    max_cycles: 2
+`);
+
+    // Dispatch, then lose it once (the one-shot refund is spent here).
+    assert.ok(checkPostUnitHooks("plan-slice", "M002/S01", base), "initial dispatch");
+    persistHookState(base);
+    resetHookState();
+    restoreHookState(base);
+    assert.ok(
+      checkPostUnitHooks("plan-slice", "M002/S01", base),
+      "lost dispatch re-dispatches (refund spent)",
+    );
+
+    // The hook now actually runs, each run reporting a failed verdict. Because a
+    // lost dispatch must not consume the hook's real-run budget, max_cycles=2
+    // still permits two genuine runs before the gate blocks — spending the
+    // refund early did not rob a later real cycle.
+    mkdirSync(join(base, ".gsd", "milestones", "M002", "slices", "S01"), { recursive: true });
+    writeFileSync(
+      resolveHookArtifactPath(base, "M002/S01", "PLAN-REVIEW.md"),
+      "---\nverdict: failed\n---\n\nRejected.\n",
+      "utf-8",
+    );
+    assert.ok(
+      checkPostUnitHooks("hook/plan-review", "M002/S01", base),
+      "real run #1 (failed verdict) re-dispatches",
+    );
+    assert.equal(consumeGateBlock(), null, "no block after the first real run");
+    assert.equal(
+      checkPostUnitHooks("hook/plan-review", "M002/S01", base),
+      null,
+      "real run #2 (failed verdict) exhausts the real budget",
+    );
+    const block = consumeGateBlock();
+    assert.ok(block, "gate block recorded only after two real runs");
+    assert.match(block.reason, /gate cycle budget exhausted/);
+  } finally {
+    resetHookState();
+    invalidateAllCaches();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test('Blocking hook needs-rework verdict requests trigger unit retry', () => {
   resetHookState();
   const base = createFixtureBase();

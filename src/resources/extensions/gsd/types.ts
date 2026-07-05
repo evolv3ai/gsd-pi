@@ -515,6 +515,11 @@ export interface PreDispatchResult {
 export interface PersistedHookState {
   /** Cycle counts keyed as "hookName/triggerUnitType/triggerUnitId". */
   cycleCounts: Record<string, number>;
+  /**
+   * Cycle keys already granted a one-shot re-dispatch after a lost/interrupted
+   * dispatch, so the refund is bounded to one per gate across resumes.
+   */
+  redispatchedGateKeys?: string[];
   /** In-flight hook, persisted so blocking gates cannot be skipped after resume. */
   activeHook?: HookExecutionState | null;
   /** Remaining hook queue by hook name and trigger unit. */

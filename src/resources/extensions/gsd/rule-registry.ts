@@ -126,6 +126,13 @@ export class RuleRegistry {
     forceRun?: boolean;
   }> = [];
   cycleCounts: Map<string, number> = new Map();
+  /**
+   * Cycle keys that have already been granted a one-shot re-dispatch after a
+   * lost/interrupted dispatch (hook charged a cycle but never produced its own
+   * unit-end). Bounds the dispatch-cycle refund to exactly one per gate so a
+   * hook that repeatedly fails to complete cannot loop forever.
+   */
+  redispatchedGateKeys: Set<string> = new Set();
   retryPending: boolean = false;
   retryTrigger: { unitType: string; unitId: string; retryArtifact?: string } | null = null;
   hookFailure: HookFailureState | null = null;
@@ -528,6 +535,30 @@ export class RuleRegistry {
     observedCleanExecution: boolean,
   ): HookDispatchResult | null {
     if (!observedCleanExecution) {
+      // The hook was charged a cycle at dispatch but never produced its own
+      // unit-end — its dispatch was lost/interrupted (pause/resume, crash
+      // recovery). Refund that dispatch-consumed cycle exactly once so the gate
+      // is re-dispatched at least once instead of hard-blocking on a hook that
+      // never actually ran.
+      //
+      // This refund is intentionally UNCONDITIONAL on the first lost dispatch —
+      // it must NOT be gated on `currentCycle >= max_cycles`. A lost dispatch is
+      // a non-run: charging its cycle at dispatch time must not consume the
+      // hook's real-run budget. Gating the refund on "budget already exhausted"
+      // lets a lost dispatch below max_cycles silently eat a genuine cycle, so
+      // the hook gets one fewer real run than configured — reintroducing #1244
+      // for max_cycles >= 2 (see the "does not steal a real-run cycle" test).
+      // The redispatchedGateKeys flag bounds this to a single refund per gate,
+      // so repeated lost dispatches still terminate (total dispatches never
+      // exceed max_cycles + 1) and a hook that keeps failing blocks normally.
+      const cycleKey = hookCycleKey(config, hook);
+      if (!this.redispatchedGateKeys.has(cycleKey)) {
+        this.redispatchedGateKeys.add(cycleKey);
+        const currentCycle = this.cycleCounts.get(cycleKey);
+        if (typeof currentCycle === "number" && currentCycle > 0) {
+          this.cycleCounts.set(cycleKey, currentCycle - 1);
+        }
+      }
       return this._rerunGateOrBlock(config, hook, basePath, {
         reason: `hook/${config.name} did not complete cleanly before the trigger unit resumed`,
       });
@@ -864,6 +895,7 @@ export class RuleRegistry {
     this.activeHook = null;
     this.hookQueue = [];
     this.cycleCounts.clear();
+    this.redispatchedGateKeys.clear();
     this.retryPending = false;
     this.retryTrigger = null;
     this.hookFailure = null;
@@ -880,6 +912,7 @@ export class RuleRegistry {
   persistState(basePath: string): void {
     const state: PersistedHookState = {
       cycleCounts: Object.fromEntries(this.cycleCounts),
+      redispatchedGateKeys: Array.from(this.redispatchedGateKeys),
       activeHook: this.activeHook ? { ...this.activeHook } : null,
       hookQueue: this.hookQueue.map(entry => ({
         hookName: entry.config.name,
@@ -913,6 +946,14 @@ export class RuleRegistry {
           }
         }
       }
+      this.redispatchedGateKeys.clear();
+      if (Array.isArray(state.redispatchedGateKeys)) {
+        for (const key of state.redispatchedGateKeys) {
+          if (typeof key === "string") {
+            this.redispatchedGateKeys.add(key);
+          }
+        }
+      }
       this.activeHook = state.activeHook && typeof state.activeHook === "object"
         ? { ...state.activeHook }
         : null;
@@ -943,7 +984,7 @@ export class RuleRegistry {
       if (existsSync(filePath)) {
         writeFileSync(
           filePath,
-          JSON.stringify({ cycleCounts: {}, activeHook: null, hookQueue: [], savedAt: new Date().toISOString() }, null, 2),
+          JSON.stringify({ cycleCounts: {}, redispatchedGateKeys: [], activeHook: null, hookQueue: [], savedAt: new Date().toISOString() }, null, 2),
           "utf-8",
         );
       }
