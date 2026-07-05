@@ -11,6 +11,11 @@ export interface WorktreeNumstat {
   removed: number
 }
 
+export interface WorktreeScanItem {
+  name: string
+  branch: string
+}
+
 export interface WorktreeStatusDependencies {
   diffWorktreeAll: (basePath: string, name: string, branch?: string) => WorktreeDiff
   diffWorktreeNumstat: (basePath: string, name: string, branch?: string) => WorktreeNumstat[]
@@ -40,6 +45,22 @@ export function hasWorktreeChanges(
 ): boolean {
   const diff = deps.diffWorktreeAll(basePath, name, branch)
   return diff.added.length + diff.modified.length + diff.removed.length > 0
+}
+
+export function findWorktreesWithChanges<T extends WorktreeScanItem>(
+  deps: WorktreeStatusDependencies,
+  basePath: string,
+  worktrees: T[],
+  debugScope: string,
+): T[] {
+  return worktrees.filter((wt) => {
+    try {
+      return hasWorktreeChanges(deps, basePath, wt.name, wt.branch)
+    } catch (error) {
+      deps.onDebugFailure?.(`${debugScope} for ${wt.name}`, error)
+      return false
+    }
+  })
 }
 
 export function getWorktreeStatus(

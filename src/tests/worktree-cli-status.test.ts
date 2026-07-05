@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   getWorktreeStatus,
   hasWorktreeChanges,
+  findWorktreesWithChanges,
   type WorktreeStatusDependencies,
 } from "../worktree-cli-status.ts";
 
@@ -83,4 +84,26 @@ test("hasWorktreeChanges checks changed files rather than uncommitted dirty stat
     ),
     false,
   );
+});
+
+test("findWorktreesWithChanges skips scan failures and reports debug scope", () => {
+  const failures: string[] = [];
+  const worktrees = [
+    { name: "alpha", path: "/repo/a", branch: "worktree/alpha" },
+    { name: "beta", path: "/repo/b", branch: "worktree/beta" },
+    { name: "gamma", path: "/repo/g", branch: "worktree/gamma" },
+  ];
+  const deps = makeDeps({
+    diffWorktreeAll: (_basePath, name) => {
+      if (name === "beta") throw new Error("diff failed");
+      if (name === "gamma") return { added: [], modified: [], removed: [] };
+      return { added: ["new.ts"], modified: [], removed: [] };
+    },
+    onDebugFailure: (scope, error) => {
+      failures.push(`${scope}: ${error instanceof Error ? error.message : String(error)}`);
+    },
+  });
+
+  assert.deepEqual(findWorktreesWithChanges(deps, "/repo", worktrees, "test scan"), [worktrees[0]]);
+  assert.deepEqual(failures, ["test scan for beta: diff failed"]);
 });
