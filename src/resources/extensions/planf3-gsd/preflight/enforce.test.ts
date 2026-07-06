@@ -35,6 +35,7 @@ function recordWith(overrides: Partial<NonNullable<PresetsRecord["approval"]>> =
         // The recorded bucket rows are the approval's rendered surface —
         // configDrift diffs current projection against THESE.
         buckets: [{ bucket: "planning", model: "claude-code/claude-fable-5", source: "plan", status: "configured" }],
+        verificationCommands: ["pnpm typecheck"],
       },
       exportStage: { generatorVersion: "0.3.0" },
       project: { root: ".", branch: null },
@@ -89,6 +90,27 @@ describe("computeVerdict — the three-distinction contract (spec §11.3)", () =
       probes: [{ target: "github", tier: "auth", verdict: "failed", detail: "gh auth status exit 1", checkedAt: "t1" }],
     });
     assert.equal(stillBroken.verdict, "ok");
+  });
+
+  test("verification-commands-only drift cites the approved list (polish #15)", () => {
+    const edited: ProjectionResult = { ...PROJECTION, verificationCommands: ["pnpm typecheck", "pnpm lint"] };
+    const v = computeVerdict(recordWith(), { projection: edited, planPath: "specs/minimal.html", probes: [] });
+    assert.equal(v.verdict, "drift");
+    assert.deepEqual(v.drift, [{
+      kind: "config", field: "verification_commands",
+      approved: "pnpm typecheck", current: "pnpm typecheck, pnpm lint",
+    }]);
+  });
+
+  test("legacy record without retained commands falls back to (as approved)", () => {
+    const legacy = recordWith();
+    delete legacy.stages.gsdBuild.verificationCommands;
+    const edited: ProjectionResult = { ...PROJECTION, verificationCommands: ["pnpm lint"] };
+    const v = computeVerdict(legacy, { projection: edited, planPath: "specs/minimal.html", probes: [] });
+    assert.deepEqual(v.drift, [{
+      kind: "config", field: "verification_commands",
+      approved: "(as approved)", current: "pnpm lint",
+    }]);
   });
 });
 

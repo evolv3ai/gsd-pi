@@ -78,7 +78,14 @@ export interface PresetsRecord {
   history: (Approval & { supersededAt: string })[];
   stages: {
     orchestrator: OrchestratorFacts | null;
-    gsdBuild: { binary: string; version: string | null; buckets: BucketRow[] };
+    gsdBuild: {
+      binary: string;
+      version: string | null;
+      buckets: BucketRow[];
+      /** Approved verification_commands surface, retained so command-only
+       *  drift rows can cite the recorded value. Absent on pre-0.3.1 records. */
+      verificationCommands?: string[];
+    };
     exportStage: { generatorVersion: string };
     project: { root: string; branch: string | null };
   };
@@ -90,7 +97,7 @@ export interface StageMap {
   orchestrator: OrchestratorFacts | null;
   planning: { skillAvailable: boolean | null; inheritsModel: string | null };
   exportStage: { generatorVersion: string };
-  gsdBuild: { binary: string; version: string | null; buckets: BucketRow[] };
+  gsdBuild: { binary: string; version: string | null; buckets: BucketRow[]; verificationCommands: string[] };
   project: { root: string; branch: string | null };
   product: ProductService[];
   probes: ProbeOutcome[];

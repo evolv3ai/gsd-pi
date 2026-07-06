@@ -28,7 +28,14 @@ function configDrift(current: ProjectionResult, record: PresetsRecord): DriftRow
   }
   if (rows.length === 0) {
     // Hash mismatch but bucket rows agree → verification_commands changed.
-    rows.push({ kind: "config", field: "verification_commands", approved: "(as approved)", current: current.verificationCommands.join(", ") });
+    const approved = record.stages.gsdBuild.verificationCommands;
+    rows.push({
+      kind: "config",
+      field: "verification_commands",
+      // Pre-0.3.1 records didn't retain the approved command list.
+      approved: approved === undefined ? "(as approved)" : approved.join(", ") || "(none)",
+      current: current.verificationCommands.join(", ") || "(none)",
+    });
   }
   return rows;
 }
