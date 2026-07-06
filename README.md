@@ -28,16 +28,12 @@ See [CHANGELOG.md](./CHANGELOG.md) for release-by-release fixes and [Legacy Rele
 ## Latest Release Highlights
 
 <!-- release-highlights:start -->
-Latest release: **v1.6.0**
+Latest release: **v1.7.0**
 
-- **skills:** Load .claude/skills into the catalog (mirror Claude Code).
-- **gsd:** Extract uat dispatch discovery.
-- **daemon:** Split orchestrator agent loop.
-- **daemon:** Extract orchestrator tool execution.
-- **uok:** Scope audit degradation to kernel workspace.
-- **browser-tools:** Abort pending daemon starts on close.
-- **browser-tools:** Guard managed daemon connection lifecycle.
-- **worktree:** Centralize changed scan.
+- **cloud:** Add device-flow login to daemon + @opengsd/gsd-cloud agent (#1278).
+- **issue:** [Bug]: Unattended `gsd headless auto` has no resumer for the parallel/slice_parallel worker pause signal → terminal exit 10 after the first unit.
+- **issue:** Complete-slice's reopen reason never reaches the re-dispatched execute-task (follow-up to #1225).
+- **issue:** [Feature Request]: gsd-browser daemon has no automatic teardown — orphaned Chrome process survives session/task completion.
 
 <!-- release-highlights:end -->
 

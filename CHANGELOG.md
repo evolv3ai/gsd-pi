@@ -8,6 +8,16 @@ This changelog starts from the `open-gsd/gsd-pi` ownership baseline. Earlier pro
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-07-06
+
+### Added
+- **cloud**: add device-flow login to daemon + @opengsd/gsd-cloud agent (#1278)
+
+### Fixed
+- **issue**: [Bug]: Unattended `gsd headless auto` has no resumer for the parallel/slice_parallel worker pause signal → terminal exit 10 after the first unit
+- **issue**: complete-slice's reopen reason never reaches the re-dispatched execute-task (follow-up to #1225)
+- **issue**: [Feature Request]: gsd-browser daemon has no automatic teardown — orphaned Chrome process survives session/task completion
+
 ## [1.6.0] - 2026-07-05
 
 ### Added

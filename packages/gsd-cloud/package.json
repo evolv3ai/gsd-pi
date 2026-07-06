@@ -1,6 +1,6 @@
 {
   "name": "@opengsd/gsd-cloud",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Thin CLI wrapper that connects a local GSD runtime to GSD Cloud (cloud.opengsd.net)",
   "license": "MIT",
   "repository": {
