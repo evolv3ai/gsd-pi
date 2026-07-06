@@ -1,5 +1,7 @@
 /** Shared types for the preflight/PRESETS feature (spec 2026-07-05, §4-§8). */
 
+export type { PlanIntegration } from "../parser/types.js";
+
 export type ProbeTier = "static" | "auth" | "ping";
 export type ProbeVerdict = "ok" | "failed" | "unreachable" | "skipped" | "unavailable";
 
@@ -91,9 +93,4 @@ export interface DriftRow {
   field: string;
   approved: string;
   current: string;
-}
-
-export interface PlanIntegration {
-  service: string;
-  envVars: string[];
 }

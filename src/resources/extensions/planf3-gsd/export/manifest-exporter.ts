@@ -24,6 +24,10 @@ export interface BridgeManifest {
   };
   mapping: { phases: PhaseMapping[]; };
   routing: { modelPolicy: Partial<Record<GsdModelPhaseKey, string>> };
+  product: { service: string; envVars: string[] }[];
+  /** Which signed-off configuration this export was generated under (spec §5.3).
+   *  approvalHash is an explicitly-dynamic field, like timestamps (NFR-1). */
+  presets: { path: string; approvalHash: string | null } | null;
   validation: { commands: string[]; lastSyncedAt: string | null; lastStatus: "planned" | "running" | "passed" | "failed" | "blocked"; };
   provenance: { userPrompt: string | null; generator: "planf3-gsd-pi"; generatorVersion: string; };
 }
@@ -47,7 +51,7 @@ function phaseChecks(phase: PlanPhase): string[] {
     .filter((c): c is string => c !== null && c.length > 0);
 }
 
-export function buildManifest(plan: ParsedPlan, paths: ManifestPaths, prov: ManifestProvenance): BridgeManifest {
+export function buildManifest(plan: ParsedPlan, paths: ManifestPaths, prov: ManifestProvenance, presets: { path: string; approvalHash: string | null } | null = null): BridgeManifest {
   return {
     schemaVersion: 1,
     planf3: {
@@ -75,6 +79,8 @@ export function buildManifest(plan: ParsedPlan, paths: ManifestPaths, prov: Mani
       })),
     },
     routing: { modelPolicy: plan.modelPolicy },
+    product: plan.integrations.map((i) => ({ service: i.service, envVars: i.envVars })),
+    presets,
     validation: {
       commands: plan.validationCommands,
       lastSyncedAt: null,

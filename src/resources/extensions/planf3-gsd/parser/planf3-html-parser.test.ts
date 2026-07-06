@@ -128,6 +128,21 @@ describe("parsePlanf3Html — real fixture smoke", () => {
   });
 });
 
+describe("parsePlanf3Html — integrations", () => {
+  test("extracts service + env var names from #integrations", () => {
+    const plan = parsePlanf3Html(minimal);
+    assert.deepEqual(plan.integrations, [
+      { service: "OpenRouter", envVars: ["OPENROUTER_API_KEY"] },
+      { service: "Neon", envVars: ["DATABASE_URL"] },
+    ]);
+  });
+
+  test("absent section → empty list", () => {
+    const plan = parsePlanf3Html("<html><body><header><h1>X</h1></header></body></html>");
+    assert.deepEqual(plan.integrations, []);
+  });
+});
+
 describe("bucket-key parity", () => {
   test("GSD_MODEL_PHASE_KEYS matches the authoritative keys from gsd/preferences-types", () => {
     assert.deepEqual([...GSD_MODEL_PHASE_KEYS], [...NATIVE_KEYS]);

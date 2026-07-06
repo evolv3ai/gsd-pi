@@ -1,5 +1,5 @@
 import { parse, type HTMLElement } from "node-html-parser";
-import type { ParsedPlan, PlanMetadata, PlanFile, PlanPhase, PlanTask, PlanChecklistItem, PlanAmendment, PlanStatus, PlanTier, GsdModelPhaseKey } from "./types.js";
+import type { ParsedPlan, PlanMetadata, PlanFile, PlanPhase, PlanTask, PlanChecklistItem, PlanAmendment, PlanStatus, PlanTier, GsdModelPhaseKey, PlanIntegration } from "./types.js";
 import { STATUS_FROM_MARKER, TIER_FROM_MARKER, GSD_MODEL_PHASE_KEYS } from "./types.js";
 
 const EMPTY_METADATA: PlanMetadata = {
@@ -183,6 +183,19 @@ function parseModelPolicy(root: HTMLElement): Partial<Record<GsdModelPhaseKey, s
   return policy;
 }
 
+const ENV_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
+
+function parseIntegrations(root: HTMLElement): PlanIntegration[] {
+  return root.querySelectorAll("section#integrations ul li").map((li) => {
+    const envVars = li.querySelectorAll("code")
+      .map((c) => c.text.trim())
+      .filter((t) => ENV_NAME_RE.test(t));
+    const strong = li.querySelector("strong");
+    const service = (strong?.text ?? li.text.split("—")[0] ?? "").replace(/\s+/g, " ").trim();
+    return { service, envVars };
+  }).filter((entry) => entry.service.length > 0);
+}
+
 export function parsePlanf3Html(html: string): ParsedPlan {
   const root = parse(html);
   const title = root.querySelector("header h1")?.text.trim() ?? "";
@@ -202,5 +215,6 @@ export function parsePlanf3Html(html: string): ParsedPlan {
     amendments: parseAmendments(root),
     openDecisions: parseOpenDecisions(root),
     modelPolicy: parseModelPolicy(root),
+    integrations: parseIntegrations(root),
   };
 }
