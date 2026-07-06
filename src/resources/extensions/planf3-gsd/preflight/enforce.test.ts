@@ -188,4 +188,13 @@ describe("checkPresetsGate (build-time, disk-only)", () => {
     assert.equal(forced.presetsHash, null);
     assert.equal(forced.refusal, null);
   });
+
+  test("corrupt GLOBAL PREFERENCES.md degrades to absent for the gate (symmetric to project-side)", async () => {
+    const tmp = await scaffold(true);
+    const html = join(tmp, "specs", "minimal.html");
+    const globalPrefs = join(tmp, "corrupt-global.md");
+    await writeFile(globalPrefs, "---\nunclosed frontmatter\n", "utf8");
+    const gate = await checkPresetsGate(tmp, html, { force: false, globalPrefsPath: globalPrefs });
+    assert.equal(gate.presets, "ok", "corrupt global prefs must degrade to absent, not crash or refuse");
+  });
 });
