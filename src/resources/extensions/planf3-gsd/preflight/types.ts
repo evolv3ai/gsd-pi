@@ -86,6 +86,18 @@ export interface PresetsRecord {
   probes: ProbeOutcome[];
 }
 
+export interface StageMap {
+  orchestrator: OrchestratorFacts | null;
+  planning: { skillAvailable: boolean | null; inheritsModel: string | null };
+  exportStage: { generatorVersion: string };
+  gsdBuild: { binary: string; version: string | null; buckets: BucketRow[] };
+  project: { root: string; branch: string | null };
+  product: ProductService[];
+  probes: ProbeOutcome[];
+  projection: ProjectionResult;
+  validationIssues: string[]; // rendered tier-0 issues, e.g. "dynamic_routing.tier_models.light: model id not found…"
+}
+
 export type Verdict = "ok" | "drift" | "unapproved" | "error";
 
 export interface DriftRow {
