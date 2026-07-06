@@ -65,4 +65,17 @@ describe("emit", () => {
       assert.deepEqual(written, []);
     });
   });
+  test("non-info mirrors carry a severity-qualified prefix", () => {
+    withEnv(CLEAN, () => {
+      const written: string[] = [];
+      emit(ctxWith({ hasUI: false }), "boom", "error", (chunk) => written.push(chunk));
+      emit(ctxWith({ hasUI: false }), "careful", "warning", (chunk) => written.push(chunk));
+      emit(ctxWith({ hasUI: false }), "done", "success", (chunk) => written.push(chunk));
+      assert.deepEqual(written, [
+        "[planf3-gsd:error] boom\n",
+        "[planf3-gsd:warning] careful\n",
+        "[planf3-gsd:success] done\n",
+      ]);
+    });
+  });
 });

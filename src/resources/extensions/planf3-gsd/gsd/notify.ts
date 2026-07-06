@@ -36,6 +36,10 @@ export function emit(
 ): void {
   ctx.ui.notify(message, type);
   if (shouldMirrorToStdout(ctx)) {
-    write(`[planf3-gsd] ${message}\n`);
+    // Severity-qualified prefix so a stdout scrape can tell error/success
+    // builds apart. info keeps the historical bare prefix; both shapes parse
+    // with /^\[planf3-gsd(?::\w+)?\] /.
+    const prefix = type === "info" ? "[planf3-gsd]" : `[planf3-gsd:${type}]`;
+    write(`${prefix} ${message}\n`);
   }
 }
