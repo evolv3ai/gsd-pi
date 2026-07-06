@@ -355,14 +355,16 @@ export function resolveGsdBrowserMcpLaunchConfig(
 }
 
 /**
- * CLI invocation that starts the gsd-browser session daemon with the same
- * session and identity flags as {@link resolveGsdBrowserMcpLaunchConfig}, so
- * browser UAT can warm Chrome/CDP before the first MCP navigation.
+ * CLI invocation that runs a `daemon <action>` command against the gsd-browser
+ * session daemon with the same session and identity flags as
+ * {@link resolveGsdBrowserMcpLaunchConfig}, so start (warm-up) and stop
+ * (teardown) address the exact same managed daemon.
  */
-export function resolveGsdBrowserDaemonStartInvocation(
+function resolveGsdBrowserDaemonInvocation(
+  action: "start" | "stop",
   projectRoot: string,
-  env: NodeJS.ProcessEnv = process.env,
-  options: GsdBrowserMcpLaunchOptions = {},
+  env: NodeJS.ProcessEnv,
+  options: GsdBrowserMcpLaunchOptions,
 ): Pick<GsdBrowserMcpLaunchConfig, "command" | "args" | "cwd" | "env"> {
   const launch = resolveGsdBrowserMcpLaunchConfig(projectRoot, env, options);
   const mcpIndex = launch.args.indexOf("mcp");
@@ -374,8 +376,34 @@ export function resolveGsdBrowserDaemonStartInvocation(
   const sessionFlags = launch.args.slice(mcpIndex + 1);
   return {
     command: launch.command,
-    args: [...prefix, "daemon", "start", ...sessionFlags],
+    args: [...prefix, "daemon", action, ...sessionFlags],
     cwd: launch.cwd,
     ...(launch.env ? { env: launch.env } : {}),
   };
+}
+
+/**
+ * CLI invocation that starts the gsd-browser session daemon with the same
+ * session and identity flags as {@link resolveGsdBrowserMcpLaunchConfig}, so
+ * browser UAT can warm Chrome/CDP before the first MCP navigation.
+ */
+export function resolveGsdBrowserDaemonStartInvocation(
+  projectRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+  options: GsdBrowserMcpLaunchOptions = {},
+): Pick<GsdBrowserMcpLaunchConfig, "command" | "args" | "cwd" | "env"> {
+  return resolveGsdBrowserDaemonInvocation("start", projectRoot, env, options);
+}
+
+/**
+ * CLI invocation that stops the gsd-browser session daemon warmed for browser
+ * UAT, so the Chrome process is torn down instead of lingering after the
+ * triggering task/session ends.
+ */
+export function resolveGsdBrowserDaemonStopInvocation(
+  projectRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+  options: GsdBrowserMcpLaunchOptions = {},
+): Pick<GsdBrowserMcpLaunchConfig, "command" | "args" | "cwd" | "env"> {
+  return resolveGsdBrowserDaemonInvocation("stop", projectRoot, env, options);
 }
