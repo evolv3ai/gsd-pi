@@ -10,10 +10,8 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent";
-import { existsSync, readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { existsSync } from "node:fs";
 import { gsdRoot } from "../paths.js";
-import { fileURLToPath } from "node:url";
 import { showNextAction } from "../../shared/tui.js";
 import {
   notifyMigrateNeedsInteractiveMenu,
@@ -26,6 +24,7 @@ import {
   generatePreview,
   writeGSDDirectory,
 } from "./index.js";
+import { buildMigrationPreviewSummary, buildReviewPrompt } from "./presentation.js";
 
 import type { MigrationPreview, WrittenFiles } from "./writer.js";
 import { ensureDbOpen } from "../bootstrap/dynamic-tools.js";
@@ -158,50 +157,14 @@ export async function executeMigrationWrite(
   }
 }
 
-/** Format preview stats for embedding in the review prompt. */
-function formatPreviewStats(preview: MigrationPreview): string {
-  const lines = [
-    `- Decisions: ${preview.decisions.total}`,
-    `- Milestones: ${preview.milestoneCount}`,
-    `- Slices: ${preview.totalSlices} (${preview.doneSlices} done — ${preview.sliceCompletionPct}%)`,
-    `- Tasks: ${preview.totalTasks} (${preview.doneTasks} done — ${preview.taskCompletionPct}%)`,
-  ];
-  if (preview.requirements.total > 0) {
-    lines.push(
-      `- Requirements: ${preview.requirements.total} (${preview.requirements.validated} validated, ${preview.requirements.active} active, ${preview.requirements.deferred} deferred, ${preview.requirements.outOfScope} out of scope)`,
-    );
-  }
-  if (preview.migrationInputs) {
-    lines.push(`- Legacy inputs: ${preview.migrationInputs.milestonePhaseDirs} milestone phase dir(s), ${preview.migrationInputs.decisions} decision file(s), ${preview.migrationInputs.seeds} seed file(s)`);
-  }
-  return lines.join("\n");
-}
 
-/** Load and interpolate the review-migration prompt template. */
-function buildReviewPrompt(
-  sourcePath: string,
-  gsdPath: string,
-  preview: MigrationPreview,
-): string {
-  const promptsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "prompts");
-  const templatePath = join(promptsDir, "review-migration.md");
-  let content = readFileSync(templatePath, "utf-8");
-
-  content = content.replaceAll("{{sourcePath}}", sourcePath);
-  content = content.replaceAll("{{gsdPath}}", gsdPath);
-  content = content.replaceAll("{{previewStats}}", formatPreviewStats(preview));
-
-  return content.trim();
-}
-
-/** Dispatch the review prompt to the agent. */
 function dispatchReview(
   pi: ExtensionAPI,
   sourcePath: string,
   gsdPath: string,
   preview: MigrationPreview,
 ): void {
-  const prompt = buildReviewPrompt(sourcePath, gsdPath, preview);
+  const prompt = buildReviewPrompt({ sourcePath, gsdPath, preview });
 
   pi.sendMessage(
     {
@@ -266,28 +229,7 @@ export async function handleMigrate(
   }
 
   // ── Build preview text ─────────────────────────────────────────────────────
-  const lines: string[] = [
-    `Decisions: ${preview.decisions.total}`,
-    `Milestones: ${preview.milestoneCount}`,
-    `Slices: ${preview.totalSlices} (${preview.doneSlices} done — ${preview.sliceCompletionPct}%)`,
-    `Tasks: ${preview.totalTasks} (${preview.doneTasks} done — ${preview.taskCompletionPct}%)`,
-  ];
-
-  if (preview.requirements.total > 0) {
-    lines.push(
-      `Requirements: ${preview.requirements.total} (${preview.requirements.validated} validated, ${preview.requirements.active} active, ${preview.requirements.deferred} deferred, ${preview.requirements.outOfScope} out of scope)`,
-    );
-  }
-  if (preview.migrationInputs) {
-    lines.push(`Legacy inputs: ${preview.migrationInputs.milestonePhaseDirs} milestone phase dir(s), ${preview.migrationInputs.decisions} decision file(s), ${preview.migrationInputs.seeds} seed file(s)`);
-  }
-
-  const targetGsdExists = existsSync(gsdRoot(targetRoot));
-  if (targetGsdExists) {
-    lines.push("");
-    lines.push(`⚠ A .gsd directory already exists at ${gsdRoot(targetRoot)}.`);
-    lines.push("It will be backed up, deleted, and rewritten fresh before DB import.");
-  }
+  const lines = buildMigrationPreviewSummary(preview, targetRoot);
 
   // ── Confirmation via showNextAction ────────────────────────────────────────
   if (requiresInteractiveMenu(ctx, false)) {
