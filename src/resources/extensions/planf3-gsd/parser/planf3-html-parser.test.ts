@@ -141,6 +141,14 @@ describe("parsePlanf3Html — integrations", () => {
     const plan = parsePlanf3Html("<html><body><header><h1>X</h1></header></body></html>");
     assert.deepEqual(plan.integrations, []);
   });
+
+  test("li without <strong> falls back to the pre-em-dash text for the service name", () => {
+    const html = `<html><body><header><h1>X</h1></header><section id="integrations"><ul>
+      <li>Stripe — <code>STRIPE_SECRET_KEY</code> — payments</li>
+    </ul></section></body></html>`;
+    const plan = parsePlanf3Html(html);
+    assert.deepEqual(plan.integrations, [{ service: "Stripe", envVars: ["STRIPE_SECRET_KEY"] }]);
+  });
 });
 
 describe("bucket-key parity", () => {

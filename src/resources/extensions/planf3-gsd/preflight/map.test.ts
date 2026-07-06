@@ -49,6 +49,20 @@ describe("assembleStageMap", () => {
     assert.equal(map.validationIssues.length, 1);
     assert.match(map.validationIssues[0], /tier_models\.light/);
   });
+
+  test("ping-ok promotes a bucket to probed-ok even when provider auth is not ok", () => {
+    const map = assembleStageMap({
+      ...BASE,
+      exercisedBuckets: [],
+      probes: [
+        { target: "openrouter", tier: "auth", verdict: "failed", detail: "auth rejected (HTTP 401)", checkedAt: "t" },
+        { target: "ping:execution", tier: "ping", verdict: "ok", detail: "1-token round trip", checkedAt: "t", cost: "≈$0.001" },
+      ],
+    });
+    const byBucket = Object.fromEntries(map.gsdBuild.buckets.map((b) => [b.bucket, b.status]));
+    assert.equal(byBucket.execution, "probed-ok");        // ping alone promotes (auth failed)
+    assert.equal(byBucket.execution_simple, "configured"); // no auth ok, no ping for this bucket
+  });
 });
 
 describe("renderMap", () => {
