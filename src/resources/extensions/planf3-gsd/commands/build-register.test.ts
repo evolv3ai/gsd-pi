@@ -21,6 +21,11 @@ describe("formatPrefsLine", () => {
     const line = formatPrefsLine({ ...base, commands });
     assert.equal(line, "prefs=updated .gsd/PREFERENCES.md (buckets: planning; verification commands: c1, c2, c3, c4, c5 +2 more)");
   });
+  test("exactly 5 commands: all listed, no +N more suffix (boundary)", () => {
+    const commands = ["c1", "c2", "c3", "c4", "c5"];
+    const line = formatPrefsLine({ ...base, commands });
+    assert.equal(line, "prefs=updated .gsd/PREFERENCES.md (buckets: planning; verification commands: c1, c2, c3, c4, c5)");
+  });
   test("no commands", () => {
     assert.equal(formatPrefsLine(base), "prefs=updated .gsd/PREFERENCES.md (buckets: planning; no verification commands)");
   });

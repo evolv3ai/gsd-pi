@@ -35,8 +35,9 @@ function recordWith(overrides: Partial<NonNullable<PresetsRecord["approval"]>> =
         // The recorded bucket rows are the approval's rendered surface —
         // configDrift diffs current projection against THESE.
         buckets: [{ bucket: "planning", model: "claude-code/claude-fable-5", source: "plan", status: "configured" }],
+        verificationCommands: ["pnpm typecheck"],
       },
-      exportStage: { generatorVersion: "0.3.0" },
+      exportStage: { generatorVersion: "0.0.0-test" },
       project: { root: ".", branch: null },
     },
     product: [],
@@ -89,6 +90,27 @@ describe("computeVerdict — the three-distinction contract (spec §11.3)", () =
       probes: [{ target: "github", tier: "auth", verdict: "failed", detail: "gh auth status exit 1", checkedAt: "t1" }],
     });
     assert.equal(stillBroken.verdict, "ok");
+  });
+
+  test("verification-commands-only drift cites the approved list (polish #15)", () => {
+    const edited: ProjectionResult = { ...PROJECTION, verificationCommands: ["pnpm typecheck", "pnpm lint"] };
+    const v = computeVerdict(recordWith(), { projection: edited, planPath: "specs/minimal.html", probes: [] });
+    assert.equal(v.verdict, "drift");
+    assert.deepEqual(v.drift, [{
+      kind: "config", field: "verification_commands",
+      approved: "pnpm typecheck", current: "pnpm typecheck, pnpm lint",
+    }]);
+  });
+
+  test("legacy record without retained commands falls back to (as approved)", () => {
+    const legacy = recordWith();
+    delete legacy.stages.gsdBuild.verificationCommands;
+    const edited: ProjectionResult = { ...PROJECTION, verificationCommands: ["pnpm lint"] };
+    const v = computeVerdict(legacy, { projection: edited, planPath: "specs/minimal.html", probes: [] });
+    assert.deepEqual(v.drift, [{
+      kind: "config", field: "verification_commands",
+      approved: "(as approved)", current: "pnpm lint",
+    }]);
   });
 });
 
@@ -151,5 +173,28 @@ describe("checkPresetsGate (build-time, disk-only)", () => {
     assert.equal(drifted.presets, "drift");
     assert.match(drifted.refusal ?? "", /buckets\.planning/);
     assert.match(drifted.refusal ?? "", /claude-code\/claude-fable-5 → claude-code\/claude-haiku-4-5/);
+  });
+
+  test("corrupt PRESETS.md: refusal names the file; --force proceeds with a null hash", async () => {
+    const tmp = await scaffold(false);
+    await writeFile(join(tmp, "specs", "PRESETS.md"), "not a presets file\n", "utf8");
+    const html = join(tmp, "specs", "minimal.html");
+    const gate = await checkPresetsGate(tmp, html, { force: false, globalPrefsPath: join(tmp, "nonexistent-global.md") });
+    assert.equal(gate.presets, "absent");
+    assert.match(gate.refusal ?? "", /PRESETS\.md is unreadable \(/);
+    assert.match(gate.refusal ?? "", /planf3-gsd-preflight/);
+    const forced = await checkPresetsGate(tmp, html, { force: true, globalPrefsPath: join(tmp, "nonexistent-global.md") });
+    assert.equal(forced.presets, "forced");
+    assert.equal(forced.presetsHash, null);
+    assert.equal(forced.refusal, null);
+  });
+
+  test("corrupt GLOBAL PREFERENCES.md degrades to absent for the gate (symmetric to project-side)", async () => {
+    const tmp = await scaffold(true);
+    const html = join(tmp, "specs", "minimal.html");
+    const globalPrefs = join(tmp, "corrupt-global.md");
+    await writeFile(globalPrefs, "---\nunclosed frontmatter\n", "utf8");
+    const gate = await checkPresetsGate(tmp, html, { force: false, globalPrefsPath: globalPrefs });
+    assert.equal(gate.presets, "ok", "corrupt global prefs must degrade to absent, not crash or refuse");
   });
 });

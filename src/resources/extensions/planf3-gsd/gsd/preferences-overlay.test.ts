@@ -26,7 +26,7 @@ describe("mergePreferences", () => {
   test("creates a fresh preferences file when none exists", () => {
     const result = mergePreferences(null, INPUT);
     assert.equal(result.changed, true);
-    assert.deepEqual(result.appliedModels, ["planning", "execution"]);
+    assert.deepEqual(result.appliedBucketKeys, ["planning", "execution"]);
     assert.deepEqual(result.appliedCommands, INPUT.verificationCommands);
     const fm = frontmatterOf(result.content);
     assert.equal(fm.version, 1);
@@ -58,7 +58,7 @@ describe("mergePreferences", () => {
     const result = mergePreferences(existing, INPUT);
     assert.equal(result.changed, true);
     // planning changes value, execution is new; research untouched
-    assert.deepEqual(result.appliedModels, ["planning", "execution"]);
+    assert.deepEqual(result.appliedBucketKeys, ["planning", "execution"]);
     // verify:pr already present, only typecheck is appended
     assert.deepEqual(result.appliedCommands, ["pnpm run typecheck:extensions"]);
     const fm = frontmatterOf(result.content);
@@ -90,7 +90,7 @@ describe("mergePreferences", () => {
     ].join("\r\n");
     const result = mergePreferences(existing, INPUT);
     assert.equal(result.changed, true);
-    assert.deepEqual(result.appliedModels, ["planning", "execution"]);
+    assert.deepEqual(result.appliedBucketKeys, ["planning", "execution"]);
     const fm = frontmatterOf(result.content);
     assert.equal(fm.token_profile, "quality");
     assert.deepEqual(fm.models, {
@@ -104,7 +104,7 @@ describe("mergePreferences", () => {
     const first = mergePreferences(null, INPUT);
     const second = mergePreferences(first.content, INPUT);
     assert.equal(second.changed, false);
-    assert.deepEqual(second.appliedModels, []);
+    assert.deepEqual(second.appliedBucketKeys, []);
     assert.deepEqual(second.appliedCommands, []);
   });
 

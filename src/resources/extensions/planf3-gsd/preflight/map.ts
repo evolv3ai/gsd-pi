@@ -45,7 +45,7 @@ export function assembleStageMap(inputs: MapInputs): StageMap {
       inheritsModel: inputs.orchestrator?.model ?? null,
     },
     exportStage: { generatorVersion: inputs.generatorVersion },
-    gsdBuild: { binary: inputs.gsdBinary, version: inputs.gsdVersion, buckets },
+    gsdBuild: { binary: inputs.gsdBinary, version: inputs.gsdVersion, buckets, verificationCommands: inputs.projection.verificationCommands },
     project: { root: inputs.projectRoot, branch: inputs.gitBranch },
     product: inputs.product,
     probes: inputs.probes,

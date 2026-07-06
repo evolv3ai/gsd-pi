@@ -63,6 +63,16 @@ export const STEP_MODE_HEADLESS_ERROR = [
   "  • or pass --step-unsafe to accept today's deadlock-prone behavior anyway.",
 ].join("\n");
 
+/** Every phase marker a failure/refusal eval row can carry. A typo at a call
+ *  site is now a compile error instead of a silently-new marker. */
+type FailureMarker =
+  | "failed:export"
+  | "failed:new-milestone"
+  | "failed:query"
+  | "failed:auto-relaunch"
+  | "preflight-refused:drift"
+  | "preflight-refused:absent";
+
 /** Best-effort failure eval row — never masks the original error. */
 async function logFailureRow(
   cwd: string,
@@ -71,7 +81,7 @@ async function logFailureRow(
     htmlPath: string;
     specPath: string;
     mode: "auto" | "step";
-    marker: string;
+    marker: FailureMarker;
     appliedBuckets: string[];
     appliedModels: Record<string, string>;
     presets?: "ok" | "forced" | "absent" | "drift";
@@ -99,10 +109,12 @@ async function logFailureRow(
   }
 }
 
+// Narrower than manifest.validation.lastStatus's schema ("failed" stays legal
+// there for other writers) — this derivation simply has no failed path today.
 function deriveLastStatus(
   status: BridgeStatus,
   autoChain: AutoChainOutcome,
-): "planned" | "running" | "passed" | "failed" | "blocked" {
+): "planned" | "running" | "passed" | "blocked" {
   if (status.blockers.length > 0) return "blocked";
   if (status.activeTask !== null || status.activeSlice !== null) return "running";
   if (autoChain === "chained" || autoChain === "relaunched") return "passed";
@@ -125,7 +137,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
   // (Task 10 review, finding #2) — it's the same failure domain runExport's
   // ENOENT mapping owns below, not a presets refusal, so it gets the exact
   // same failed:export marker + friendly message rather than a generic
-  // "preflight gate could not be computed" one.
+  // "specs/PRESETS.md is unreadable" one.
   let gate: PresetsGateResult;
   try {
     gate = await checkPresetsGate(cwd, htmlPath, {
@@ -168,7 +180,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
       });
       prefs = {
         applied: overlay.changed,
-        buckets: overlay.appliedModels,
+        buckets: overlay.appliedBucketKeys,
         models: overlay.appliedModelMap,
         commands: overlay.appliedCommands,
         warning: null,
@@ -222,6 +234,11 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
     s.lastCompletedMilestone !== null &&
     s.lastCompletedMilestone.id !== (baseline?.lastCompletedMilestone?.id ?? null);
 
+  // Completion drift or a visible dispatch — the only two signals that count
+  // as progress for the settle loop and auto-chain decisions.
+  const isVisiblyProgressing = (s: BridgeStatus): boolean =>
+    lastCompletedChanged(s) || s.activeTask !== null;
+
   // Settle loop (replaces the old A1 single-snapshot assumption). Re-keying
   // defense: this run's REAL A1 failure was a stub milestone (depth-gate
   // deadlock left stub M001, its id was written back, the real milestone
@@ -235,7 +252,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
     status = mapQuerySnapshot((await runner.query()).json);
     for (let attempt = 1; attempt < attempts; attempt++) {
       if (opts.auto) {
-        if (lastCompletedChanged(status) || status.activeTask !== null) break;
+        if (isVisiblyProgressing(status)) break;
       } else if (status.activeMilestone !== null) {
         break;
       }
@@ -271,7 +288,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
   //       Do not widen this predicate.
   let autoChain: AutoChainOutcome = "not-applicable";
   if (opts.auto) {
-    if (lastCompletedChanged(status) || status.activeTask !== null) {
+    if (isVisiblyProgressing(status)) {
       autoChain = "chained";
     } else if (
       nmExitCode === 0 &&
@@ -290,7 +307,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
         });
         throw new Error(friendlyError(err, opts.binary ?? "gsd"));
       }
-      autoChain = lastCompletedChanged(status) || status.activeTask !== null ? "relaunched" : "not-started";
+      autoChain = isVisiblyProgressing(status) ? "relaunched" : "not-started";
     } else {
       autoChain = "not-started";
     }

@@ -587,6 +587,24 @@ describe("runBuild", () => {
     assert.equal(typeof row.presetsHash, "string");
   });
 
+  test("corrupt PRESETS + --force: manifest presets stamp is type-honest null", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gate-corrupt-forced-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+    await mkdir(join(tmp, "specs"), { recursive: true });
+    await writeFile(join(tmp, "specs", "PRESETS.md"), "not a presets file\n", "utf8");
+    const spawn: Spawner = async (_cmd, args) => {
+      if (args.includes("new-milestone")) return { exitCode: 0, stdout: "{}", stderr: "" };
+      return { exitCode: 0, stdout: JSON.stringify({ state: { phase: "executing", activeMilestone: { id: "M1", title: "x" }, activeTask: { id: "T1", title: "t" } }, next: null, cost: { total: 0 } }), stderr: "" };
+    };
+    const result = await runBuild(htmlPath, { auto: true, force: true, binary: "gsd", cwd: tmp, spawn, globalPrefsPath: join(tmp, "no-global.md") });
+    assert.equal(result.presets, "forced");
+    const manifest = JSON.parse(await readFile(result.manifestPath, "utf8"));
+    assert.deepEqual(manifest.presets, { path: join("specs", "PRESETS.md"), approvalHash: null });
+    const rows = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(rows[rows.length - 1].presetsHash, null);
+  });
+
   test("signed-off record: gate passes, manifest re-stamped with the verified hash", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "planf3-gate-ok-"));
     const htmlPath = join(tmp, "minimal.html");

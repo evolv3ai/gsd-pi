@@ -26,7 +26,7 @@ const RECORD: PresetsRecord = {
         { bucket: "execution_simple", model: "claude-code/claude-haiku-4-5", source: "global", status: "configured" },
       ],
     },
-    exportStage: { generatorVersion: "0.3.0" },
+    exportStage: { generatorVersion: "0.0.0-test" },
     project: { root: ".", branch: "main" },
   },
   product: [{

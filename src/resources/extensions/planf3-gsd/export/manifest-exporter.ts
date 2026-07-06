@@ -25,8 +25,8 @@ export interface BridgeManifest {
   mapping: { phases: PhaseMapping[]; };
   routing: { modelPolicy: Partial<Record<GsdModelPhaseKey, string>> };
   product: { service: string; envVars: string[] }[];
-  /** Which signed-off configuration this export was generated under (spec §5.3).
-   *  approvalHash is an explicitly-dynamic field, like timestamps (NFR-1). */
+  /** Sign-off stamp. approvalHash is null when no approval existed at stamp
+   *  time (unapproved record, or --force past a missing/corrupt PRESETS). */
   presets: { path: string; approvalHash: string | null } | null;
   validation: { commands: string[]; lastSyncedAt: string | null; lastStatus: "planned" | "running" | "passed" | "failed" | "blocked"; };
   provenance: { userPrompt: string | null; generator: "planf3-gsd-pi"; generatorVersion: string; };

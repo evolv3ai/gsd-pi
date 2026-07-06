@@ -2,10 +2,10 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parsePlanf3Html } from "../parser/planf3-html-parser.js";
-import { splitPreferences } from "../gsd/preferences-overlay.js";
+import { splitPreferences, type SplitFile } from "../gsd/preferences-overlay.js";
 import { projectionHash } from "./hash.js";
 import { projectPreferences } from "./projection.js";
-import { readPresets } from "./presets-file.js";
+import { readPresets, PRESETS_RELATIVE_PATH } from "./presets-file.js";
 import type { DriftRow, OrchestratorFacts, PresetsRecord, ProbeOutcome, ProjectionResult, Verdict } from "./types.js";
 import type { ParsedPlan } from "../parser/types.js";
 
@@ -28,7 +28,14 @@ function configDrift(current: ProjectionResult, record: PresetsRecord): DriftRow
   }
   if (rows.length === 0) {
     // Hash mismatch but bucket rows agree → verification_commands changed.
-    rows.push({ kind: "config", field: "verification_commands", approved: "(as approved)", current: current.verificationCommands.join(", ") });
+    const approved = record.stages.gsdBuild.verificationCommands;
+    rows.push({
+      kind: "config",
+      field: "verification_commands",
+      // Pre-0.3.1 records didn't retain the approved command list.
+      approved: approved === undefined ? "(as approved)" : approved.join(", ") || "(none)",
+      current: current.verificationCommands.join(", ") || "(none)",
+    });
   }
   return rows;
 }
@@ -113,14 +120,13 @@ async function readOrNull(path: string): Promise<string | null> {
  * only — never a build-blocking refusal (Task 10 review, finding #1).
  * applyPreferencesOverlay independently re-parses the same on-disk file for
  * the real write later in runBuild and is where the user-facing warning
- * actually comes from; this just keeps the gate from crashing/refusing on
- * the same corruption first.
+ * actually comes from. Parses exactly once; the SplitFile flows straight
+ * into projectPreferences (polish #11).
  */
-function safeFrontmatterContent(content: string | null, sourceHtmlPath: string): string | null {
+function safeSplitPreferences(content: string | null, sourceHtmlPath: string): SplitFile | null {
   if (content === null) return null;
   try {
-    splitPreferences(content, sourceHtmlPath);
-    return content;
+    return splitPreferences(content, sourceHtmlPath);
   } catch {
     return null;
   }
@@ -135,8 +141,8 @@ async function readCurrentProjection(
   const globalRaw = await readOrNull(globalPrefsPath ?? join(homedir(), ".gsd", "PREFERENCES.md"));
   const projectRaw = await readOrNull(join(projectRoot, ".gsd", "PREFERENCES.md"));
   return projectPreferences({
-    globalContent: safeFrontmatterContent(globalRaw, htmlPath),
-    projectContent: safeFrontmatterContent(projectRaw, htmlPath),
+    globalContent: safeSplitPreferences(globalRaw, htmlPath),
+    projectContent: safeSplitPreferences(projectRaw, htmlPath),
     modelPolicy: plan.modelPolicy as Record<string, string>,
     validationCommands: plan.validationCommands,
     sourceHtmlPath: htmlPath,
@@ -169,7 +175,7 @@ export async function checkPresetsGate(
     record = await readPresets(projectRoot);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { presets: opts.force ? "forced" : "absent", presetsHash: null, drift: [], refusal: opts.force ? null : `preflight gate could not be computed (${msg}) — ${rerun}` };
+    return { presets: opts.force ? "forced" : "absent", presetsHash: null, drift: [], refusal: opts.force ? null : `preflight gate: ${PRESETS_RELATIVE_PATH} is unreadable (${msg}) — ${rerun}` };
   }
 
   // Plan html read/parse failures propagate uncaught — see docstring above.

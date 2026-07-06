@@ -51,7 +51,7 @@ async function readOrNull(path: string): Promise<string | null> {
 
 async function spawnLine(spawn: Spawner, cwd: string, cmd: string, args: string[]): Promise<string | null> {
   try {
-    const r = await spawn(cmd, args, { cwd } as never);
+    const r = await spawn(cmd, args, { cwd });
     const line = r.stdout.trim().split("\n")[0]?.trim();
     return r.exitCode === 0 && line ? line : null;
   } catch {
