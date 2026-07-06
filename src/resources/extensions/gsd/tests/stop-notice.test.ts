@@ -70,10 +70,10 @@ describe("emitter↔detector round-trip", () => {
     assert.ok(isInteractiveMenuUnavailableNotice(menuUnavailable));
     assert.ok(isBlockedNoticeMessage(menuUnavailable));
 
-    // Picker guidance may continue after notifying (e.g. headless queue add-work).
-    const pickerGuidance = "/gsd queue did not start: this session has no interactive menu";
-    assert.equal(isInteractiveMenuUnavailableNotice(pickerGuidance), false);
-    assert.equal(isBlockedNoticeMessage(pickerGuidance), false);
+    // Emitted by notifyPickerCommandNeedsInteractiveMenu (command-feedback.ts).
+    const pickerGuidance = "/gsd did not start: milestone menu needs an interactive session";
+    assert.ok(isInteractiveMenuUnavailableNotice(pickerGuidance));
+    assert.ok(isBlockedNoticeMessage(pickerGuidance));
 
     // Unrelated notices are not swept up.
     assert.equal(isInteractiveMenuUnavailableNotice("auto-mode complete"), false);

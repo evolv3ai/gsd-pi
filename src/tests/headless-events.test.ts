@@ -284,10 +284,10 @@ test('un-showable menu notifications are terminal and blocked (#1294)', () => {
   assert.equal(isTerminalNotification(menu), true)
   assert.equal(isBlockedNotification(menu), true)
 
-  // Queue hub picker guidance is non-terminal — add-work continues after the warning.
-  const queueHub = makeNotify('/gsd queue did not start: this session has no interactive menu')
-  assert.equal(isTerminalNotification(queueHub), false)
-  assert.equal(isBlockedNotification(queueHub), false)
+  // Picker-guidance shape from notifyPickerCommandNeedsInteractiveMenu.
+  const picker = makeNotify('/gsd did not start: milestone menu needs an interactive session')
+  assert.equal(isTerminalNotification(picker), true)
+  assert.equal(isBlockedNotification(picker), true)
 })
 
 test('isInteractiveHeadlessTool: ask_user_questions is interactive', () => {
