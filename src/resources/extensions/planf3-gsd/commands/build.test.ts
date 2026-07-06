@@ -213,4 +213,69 @@ describe("runBuild", () => {
     const untouched = await readFile(join(tmp, ".gsd", "PREFERENCES.md"), "utf8");
     assert.equal(untouched, "---\nunclosed frontmatter\n");
   });
+
+  // Failure eval rows — every throw path still logs a row (follow-up #1).
+  test("export failure logs a failed:export eval row and rethrows", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-failexport-"));
+    const spawn: Spawner = async () => ({ exitCode: 0, stdout: "{}", stderr: "" });
+
+    await assert.rejects(
+      () => runBuild(join(tmp, "missing.html"), { auto: true, binary: "gsd", cwd: tmp, spawn, now: () => "2026-07-05T00:00:00Z" }),
+      /Plan file not found/,
+    );
+
+    const lines = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n");
+    assert.equal(lines.length, 1);
+    const row = JSON.parse(lines[0]);
+    assert.equal(row.phase, "failed:export");
+    assert.equal(row.milestoneId, null);
+    assert.equal(row.specPath, "");
+    assert.equal(row.mode, "auto");
+    assert.equal(row.loggedAt, "2026-07-05T00:00:00Z");
+  });
+
+  test("new-milestone failure logs a failed:new-milestone eval row and rethrows", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-failnm-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+
+    const spawn: Spawner = async (_cmd, args) => {
+      if (args.includes("new-milestone")) return { exitCode: 2, stdout: "", stderr: "boom" };
+      return { exitCode: 0, stdout: "{}", stderr: "" };
+    };
+
+    await assert.rejects(
+      () => runBuild(htmlPath, { auto: true, binary: "gsd", cwd: tmp, spawn }),
+      /unexpected exit code 2/,
+    );
+
+    const lines = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n");
+    assert.equal(lines.length, 1);
+    const row = JSON.parse(lines[0]);
+    assert.equal(row.phase, "failed:new-milestone");
+    assert.equal(row.milestoneId, null);
+    assert.ok(row.specPath.endsWith(".gsd.md"));
+    // prefs were applied before the milestone attempt, so the row records them
+    assert.deepEqual(row.appliedModels, ["planning", "execution"]);
+  });
+
+  test("query failure logs a failed:query eval row and rethrows", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-failq-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+
+    const spawn: Spawner = async (_cmd, args) => {
+      if (args.includes("new-milestone")) return { exitCode: 0, stdout: "{}", stderr: "" };
+      return { exitCode: 2, stdout: "", stderr: "query broke" };
+    };
+
+    await assert.rejects(
+      () => runBuild(htmlPath, { auto: true, binary: "gsd", cwd: tmp, spawn }),
+      /unexpected exit code 2/,
+    );
+
+    const lines = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n");
+    assert.equal(lines.length, 1);
+    assert.equal(JSON.parse(lines[0]).phase, "failed:query");
+  });
 });

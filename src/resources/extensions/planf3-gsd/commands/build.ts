@@ -31,12 +31,45 @@ export interface BuildOptions {
   now?: () => string;
 }
 
+/** Best-effort failure eval row — never masks the original error. */
+async function logFailureRow(
+  cwd: string,
+  input: {
+    loggedAt: string;
+    htmlPath: string;
+    specPath: string;
+    mode: "auto" | "step";
+    marker: string;
+    appliedModels: string[];
+  },
+): Promise<void> {
+  try {
+    await appendEvalRow(
+      cwd,
+      buildEvalRow({
+        loggedAt: input.loggedAt,
+        htmlPath: input.htmlPath,
+        specPath: input.specPath,
+        milestoneId: null,
+        mode: input.mode,
+        status: { ...mapQuerySnapshot(null), phase: input.marker },
+        appliedModels: input.appliedModels,
+      }),
+    );
+  } catch {
+    // Eval logging is best-effort; never fail a build over it.
+  }
+}
+
 export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promise<BuildResult> {
   const cwd = opts.cwd ?? process.cwd();
+  const now = opts.now ?? (() => new Date().toISOString());
+  const mode: "auto" | "step" = opts.auto ? "auto" : "step";
   let exportResult: ExportResult;
   try {
-    exportResult = await runExport(htmlPath, { mode: opts.auto ? "auto" : "step", projectRoot: cwd });
+    exportResult = await runExport(htmlPath, { mode, projectRoot: cwd });
   } catch (err) {
+    await logFailureRow(cwd, { loggedAt: now(), htmlPath, specPath: "", mode, marker: "failed:export", appliedModels: [] });
     throw new Error(friendlyError(err));
   }
 
@@ -72,6 +105,10 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
   try {
     await runner.newMilestone(exportResult.specPath, { auto: opts.auto === true });
   } catch (err) {
+    await logFailureRow(cwd, {
+      loggedAt: now(), htmlPath, specPath: exportResult.specPath, mode,
+      marker: "failed:new-milestone", appliedModels: prefs.models,
+    });
     throw new Error(friendlyError(err, opts.binary ?? "gsd"));
   }
 
@@ -79,6 +116,10 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
   try {
     queryResult = await runner.query();
   } catch (err) {
+    await logFailureRow(cwd, {
+      loggedAt: now(), htmlPath, specPath: exportResult.specPath, mode,
+      marker: "failed:query", appliedModels: prefs.models,
+    });
     throw new Error(friendlyError(err, opts.binary ?? "gsd"));
   }
 
@@ -99,11 +140,11 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
     await appendEvalRow(
       cwd,
       buildEvalRow({
-        loggedAt: (opts.now ?? (() => new Date().toISOString()))(),
+        loggedAt: now(),
         htmlPath,
         specPath: exportResult.specPath,
         milestoneId,
-        mode: opts.auto ? "auto" : "step",
+        mode,
         status,
         appliedModels: prefs.models,
       }),
