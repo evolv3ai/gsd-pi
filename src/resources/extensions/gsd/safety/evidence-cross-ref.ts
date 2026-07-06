@@ -161,19 +161,30 @@ function findMatches(
 ): BashEvidence[] {
   const normalized = claimedCommand.trim();
 
-  // Strong matches first. Exact command evidence and script-wrapped evidence
-  // are equivalent for freshness purposes: a stale exact failure must not
-  // shadow a newer `cd ... && <command>` pass.
-  const strongMatches = bashCalls.filter((b) => {
+  const exact = bashCalls.filter((b) => b.command.trim() === normalized);
+
+  // When an exact run exists, also consider script-wrapped reruns (e.g.
+  // `cd ... && <command>`) so a newer pass is not shadowed by a stale exact
+  // failure. Exclude same-command extensions (e.g. `npm test --coverage`) so
+  // a later unrelated invocation cannot override a successful exact run.
+  const scriptWrapped = bashCalls.filter((b) => {
     const command = b.command.trim();
-    if (command.length === 0) return false;
-    return (
-      command === normalized ||
-      command.includes(normalized) ||
-      normalized.includes(command)
-    );
+    if (command.length === 0 || command === normalized) return false;
+    if (!command.includes(normalized)) return false;
+    return !isCommandExtension(command, normalized);
   });
-  if (strongMatches.length > 0) return strongMatches;
+  if (exact.length > 0) return [...exact, ...scriptWrapped];
+
+  // Substring match: claimed is contained in actual or actual in claimed.
+  // A claimed verification command typically appears verbatim inside a
+  // larger gsd_exec script body (cd prefix, multi-line scripts), so
+  // script-containing-claim is the common direction. Blank-command entries
+  // must be excluded — `"x".includes("")` is true, so they'd match anything.
+  const substring = bashCalls.filter(
+    (b) => b.command.trim().length > 0 &&
+      (b.command.includes(normalized) || normalized.includes(b.command)),
+  );
+  if (substring.length > 0) return substring;
 
   // Token match: split on whitespace and check significant overlap
   const claimedTokens = normalized.split(/\s+/).filter(t => t.length > 2);
@@ -200,4 +211,11 @@ function latestMatch(matches: readonly BashEvidence[]): BashEvidence {
   return matches.reduce((latest, match) => (
     match.timestamp >= latest.timestamp ? match : latest
   ));
+}
+
+/** True when `actual` is the same invocation as `claimed` with extra args. */
+function isCommandExtension(actual: string, claimed: string): boolean {
+  if (!actual.startsWith(claimed)) return false;
+  if (actual.length === claimed.length) return false;
+  return /^\s/.test(actual.slice(claimed.length));
 }
