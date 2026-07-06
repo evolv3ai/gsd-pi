@@ -4,6 +4,8 @@ import { realSpawner } from "../gsd/real-spawner.js";
 import { mapQuerySnapshot, type BridgeStatus } from "../gsd/status-mapper.js";
 import { applyPreferencesOverlay } from "../gsd/preferences-overlay.js";
 import { buildEvalRow, appendEvalRow } from "../gsd/eval-log.js";
+import { checkPresetsGate, type PresetsGateResult } from "../preflight/enforce.js";
+import { PRESETS_RELATIVE_PATH } from "../preflight/presets-file.js";
 import { runExport, type ExportResult } from "./export.js";
 import { friendlyError } from "./error-message.js";
 
@@ -24,6 +26,7 @@ export interface BuildResult {
   autoChain: AutoChainOutcome;
   status: BridgeStatus;
   prefs: PrefsSummary;
+  presets: PresetsGateResult["presets"];
 }
 
 export interface BuildOptions {
@@ -35,6 +38,8 @@ export interface BuildOptions {
   now?: () => string;
   settle?: SettleOptions;
   allowUnsafeStep?: boolean;
+  force?: boolean;
+  globalPrefsPath?: string;
 }
 
 export type AutoChainOutcome = "not-applicable" | "chained" | "relaunched" | "not-started";
@@ -69,6 +74,8 @@ async function logFailureRow(
     marker: string;
     appliedBuckets: string[];
     appliedModels: Record<string, string>;
+    presets?: "ok" | "forced" | "absent" | "drift";
+    presetsHash?: string | null;
   },
 ): Promise<void> {
   try {
@@ -83,6 +90,8 @@ async function logFailureRow(
         status: { ...mapQuerySnapshot(null), phase: input.marker },
         appliedBuckets: input.appliedBuckets,
         appliedModels: input.appliedModels,
+        presets: input.presets,
+        presetsHash: input.presetsHash,
       }),
     );
   } catch {
@@ -107,6 +116,24 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
   const cwd = opts.cwd ?? process.cwd();
   const now = opts.now ?? (() => new Date().toISOString());
   const mode: "auto" | "step" = opts.auto ? "auto" : "step";
+
+  // Enforced-lite preflight gate (spec §7): recomputed from disk alone, never
+  // probes. Refusals still log eval rows — otherwise "failed builds emit no
+  // eval row" is recreated one layer up.
+  const gate = await checkPresetsGate(cwd, htmlPath, {
+    force: opts.force === true,
+    ...(opts.globalPrefsPath !== undefined ? { globalPrefsPath: opts.globalPrefsPath } : {}),
+  });
+  if (gate.refusal !== null) {
+    await logFailureRow(cwd, {
+      loggedAt: now(), htmlPath, specPath: "", mode,
+      marker: gate.presets === "drift" ? "preflight-refused:drift" : "preflight-refused:absent",
+      appliedBuckets: [], appliedModels: {},
+      presets: gate.presets, presetsHash: gate.presetsHash,
+    });
+    throw new Error(gate.refusal);
+  }
+
   let exportResult: ExportResult;
   try {
     exportResult = await runExport(htmlPath, { mode, projectRoot: cwd });
@@ -269,6 +296,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
     if (status.sessionId !== null) manifest.gsd.headlessSessionId = status.sessionId;
     manifest.validation.lastSyncedAt = now();
     manifest.validation.lastStatus = deriveLastStatus(status, autoChain);
+    manifest.presets = { path: PRESETS_RELATIVE_PATH, approvalHash: gate.presetsHash };
     await writeFile(exportResult.manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
   }
 
@@ -284,6 +312,8 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
         status: { ...status, phase: evalPhase },
         appliedBuckets: prefs.buckets,
         appliedModels: prefs.models,
+        presets: gate.presets,
+        presetsHash: gate.presetsHash,
       }),
     );
   } catch {
@@ -297,5 +327,6 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
     autoChain,
     status,
     prefs,
+    presets: gate.presets,
   };
 }

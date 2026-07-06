@@ -23,12 +23,13 @@ export function registerBuildCommand(pi: ExtensionAPI): void {
       const auto = tokens.includes("--auto");
       const applyPrefs = !tokens.includes("--no-prefs");
       const allowUnsafeStep = tokens.includes("--step-unsafe");
+      const force = tokens.includes("--force");
       if (!htmlPath) {
-        emit(ctx, "Usage: /planf3-gsd-build <path-to-plan.html> [--auto] [--no-prefs] [--step-unsafe]", "error");
+        emit(ctx, "Usage: /planf3-gsd-build <path-to-plan.html> [--auto] [--no-prefs] [--step-unsafe] [--force]", "error");
         return;
       }
       try {
-        const result = await runBuild(htmlPath, { auto, applyPrefs, allowUnsafeStep });
+        const result = await runBuild(htmlPath, { auto, applyPrefs, allowUnsafeStep, force });
         const prefsLine = formatPrefsLine(result.prefs);
         const chainLine = result.autoChain === "not-applicable" ? "" : `\nauto=${result.autoChain}`;
         emit(

@@ -118,31 +118,35 @@ export async function checkPresetsGate(
   opts: { force: boolean; globalPrefsPath?: string },
 ): Promise<PresetsGateResult> {
   const rerun = `run /planf3-gsd-preflight ${htmlPath} and sign off, or pass --force to build anyway`;
-  let record: PresetsRecord | null;
+  // The whole disk-recomputation (PRESETS.md, the plan html, and the projection
+  // merge over .gsd/PREFERENCES.md) is one failure domain: any of those reads
+  // or parses can throw on real-world on-disk mess (corrupt frontmatter, a
+  // moved plan file, …), and none of that is the gate's business to crash
+  // on — it should refuse (or, under --force, proceed) exactly like an
+  // unreadable PRESETS.md does today.
   try {
-    record = await readPresets(projectRoot);
+    const record = await readPresets(projectRoot);
+    const html = await readFile(htmlPath, "utf8");
+    const plan = parsePlanf3Html(html);
+    const projection = projectPreferences({
+      globalContent: await readOrNull(opts.globalPrefsPath ?? join(homedir(), ".gsd", "PREFERENCES.md")),
+      projectContent: await readOrNull(join(projectRoot, ".gsd", "PREFERENCES.md")),
+      modelPolicy: plan.modelPolicy as Record<string, string>,
+      validationCommands: plan.validationCommands,
+      sourceHtmlPath: htmlPath,
+    });
+    const result = computeVerdict(record, { projection, planPath: htmlPath, probes: [] });
+    const hash = projectionHash(projection);
+
+    if (result.verdict === "ok") return { presets: "ok", presetsHash: hash, drift: [], refusal: null };
+    if (opts.force) return { presets: "forced", presetsHash: hash, drift: result.drift, refusal: null };
+    if (result.verdict === "unapproved") {
+      return { presets: "absent", presetsHash: hash, drift: [], refusal: `preflight gate: ${result.reason} — ${rerun}` };
+    }
+    const diffLines = result.drift.map((d) => `  ${d.field}: ${d.approved} → ${d.current}`).join("\n");
+    return { presets: "drift", presetsHash: hash, drift: result.drift, refusal: `preflight gate: configuration drifted since sign-off:\n${diffLines}\n${rerun}` };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { presets: opts.force ? "forced" : "absent", presetsHash: null, drift: [], refusal: opts.force ? null : `specs/PRESETS.md is unreadable (${msg}) — ${rerun}` };
+    return { presets: opts.force ? "forced" : "absent", presetsHash: null, drift: [], refusal: opts.force ? null : `preflight gate could not be computed (${msg}) — ${rerun}` };
   }
-
-  const html = await readFile(htmlPath, "utf8");
-  const plan = parsePlanf3Html(html);
-  const projection = projectPreferences({
-    globalContent: await readOrNull(opts.globalPrefsPath ?? join(homedir(), ".gsd", "PREFERENCES.md")),
-    projectContent: await readOrNull(join(projectRoot, ".gsd", "PREFERENCES.md")),
-    modelPolicy: plan.modelPolicy as Record<string, string>,
-    validationCommands: plan.validationCommands,
-    sourceHtmlPath: htmlPath,
-  });
-  const result = computeVerdict(record, { projection, planPath: htmlPath, probes: [] });
-  const hash = projectionHash(projection);
-
-  if (result.verdict === "ok") return { presets: "ok", presetsHash: hash, drift: [], refusal: null };
-  if (opts.force) return { presets: "forced", presetsHash: hash, drift: result.drift, refusal: null };
-  if (result.verdict === "unapproved") {
-    return { presets: "absent", presetsHash: hash, drift: [], refusal: `preflight gate: ${result.reason} — ${rerun}` };
-  }
-  const diffLines = result.drift.map((d) => `  ${d.field}: ${d.approved} → ${d.current}`).join("\n");
-  return { presets: "drift", presetsHash: hash, drift: result.drift, refusal: `preflight gate: configuration drifted since sign-off:\n${diffLines}\n${rerun}` };
 }

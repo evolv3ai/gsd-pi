@@ -19,6 +19,10 @@ export interface EvalRow {
   appliedBuckets: string[];
   /** bucket → model id for exactly those buckets. */
   appliedModels: Record<string, string>;
+  /** Enforced-lite outcome for build rows: ok | forced | absent | drift. */
+  presets?: "ok" | "forced" | "absent" | "drift";
+  /** projectionHash the build ran under (or was refused at). */
+  presetsHash?: string | null;
   generator: "planf3-gsd-pi";
   generatorVersion: string;
 }
@@ -33,6 +37,8 @@ export function buildEvalRow(input: {
   appliedBuckets: string[];
   appliedModels: Record<string, string>;
   event?: "build" | "status";
+  presets?: EvalRow["presets"];
+  presetsHash?: string | null;
 }): EvalRow {
   return {
     loggedAt: input.loggedAt,
@@ -47,6 +53,8 @@ export function buildEvalRow(input: {
     blockerCount: input.status.blockers.length,
     appliedBuckets: input.appliedBuckets,
     appliedModels: input.appliedModels,
+    ...(input.presets !== undefined ? { presets: input.presets } : {}),
+    ...(input.presetsHash !== undefined ? { presetsHash: input.presetsHash } : {}),
     generator: "planf3-gsd-pi",
     generatorVersion: GENERATOR_VERSION,
   };
