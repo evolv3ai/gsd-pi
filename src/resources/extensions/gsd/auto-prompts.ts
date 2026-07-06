@@ -11,7 +11,7 @@
 
 import { loadFile, parseContinue, parseSummary, loadActiveOverrides, formatOverridesSection, parseTaskPlanFile } from "./files.js";
 import type { Override } from "./files.js";
-import { hasVerdict, extractVerdict } from "./verdict-parser.js";
+import { extractVerdict } from "./verdict-parser.js";
 import { loadPrompt, inlineTemplate } from "./prompt-loader.js";
 import {
   resolveMilestoneFile, resolveSliceFile, resolveSlicePath,
@@ -60,11 +60,8 @@ import { debugLog } from "./debug-logger.js";
 import { buildSkillActivationBlock, buildSkillDiscoveryVars } from "./skill-activation.js";
 import { findMilestoneIds } from "./milestone-ids.js";
 import { buildRunUatPresentationForType, RUN_UAT_TOOL_PRESENTATION_PLAN_ID } from "./tool-presentation-plan.js";
-import {
-  classifyUatContentForRun,
-  shouldDispatchUatForContent,
-  type UatType,
-} from "./uat-policy.js";
+import { classifyUatContentForRun } from "./uat-policy.js";
+import { checkNeedsRunUat as resolveNeedsRunUat, type UatDispatchCandidate } from "./uat-dispatch.js";
 import { buildWebAppUatGuidanceBlock } from "./web-app-uat.js";
 
 export { buildSkillActivationBlock, buildSkillDiscoveryVars };
@@ -1514,116 +1511,43 @@ export async function checkNeedsReassessment(
   return { sliceId: lastDone };
 }
 
-/**
- * Check if the most recently completed slice needs a UAT run.
- * Returns { sliceId, uatType } if UAT should be dispatched, null otherwise.
- *
- * Skips when:
- * - No roadmap or no completed slices
- * - uat_dispatch is not enabled and the UAT spec does not require runtime/browser evidence
- * - No UAT file exists for the slice
- * - UAT result file already exists (idempotent — already ran)
- */
-/**
- * Resolve the effective UAT mode for the dispatch gate the same way
- * `buildRunUatPrompt` does: classify the UAT body with the slice's SUMMARY as
- * supplemental context, so a `browser-executable` UAT whose slice references a
- * self-contained harness (`npm run test:uat`, `search-uat.mjs`, `npx
- * playwright test`) is promoted to `runtime-executable` for the gate too.
- *
- * Without this, `checkNeedsRunUat` returns `browser-executable` while the
- * prompt instructs runtime-only execution, causing the dispatch gate to
- * require browser tools / warm up the browser daemon (or stop dispatch when
- * browser MCP is unavailable) for UAT runs that never touch the browser. See
- * cursor[bot] review on PR #696 for the M007/S01 regression.
- */
-async function resolveRunUatEffectiveType(
-  base: string,
-  mid: string,
-  sliceId: string,
-  uatContent: string,
-): Promise<UatType> {
-  let summaryContent = "";
-  try {
-    const summaryPath = resolveSliceFile(base, mid, sliceId, "SUMMARY");
-    if (summaryPath) {
-      summaryContent = (await loadFile(summaryPath)) ?? "";
-    }
-  } catch (err) {
-    logWarning(
-      "prompt",
-      `resolveRunUatEffectiveType SUMMARY load failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-  return classifyUatContentForRun(uatContent, summaryContent).effectiveType;
+
+export function getRoadmapCompletedSliceCandidates(
+  roadmapContent: string,
+): UatDispatchCandidate[] {
+  return parseRoadmap(roadmapContent)
+    .slices.filter((slice) => slice.done)
+    .map((slice) => ({ sliceId: slice.id }))
+    .reverse();
 }
 
+
+export async function loadRoadmapCompletedSliceCandidates(
+  base: string,
+  mid: string,
+): Promise<UatDispatchCandidate[]> {
+  const roadmapPath = resolveMilestoneFile(base, mid, "ROADMAP");
+  const roadmapContent = roadmapPath ? await loadFile(roadmapPath) : null;
+  return roadmapContent ? getRoadmapCompletedSliceCandidates(roadmapContent) : [];
+}
+
+/**
+ * Back-compat wrapper for callers that import UAT dispatch checks from the
+ * prompt module. UAT dispatch architecture lives in `uat-dispatch.ts`; the
+ * `state` parameter is intentionally ignored because DB/roadmap artifacts are
+ * the source of truth for completed-slice discovery.
+ */
 export async function checkNeedsRunUat(
   base: string, mid: string, state: GSDState, prefs: GSDPreferences | undefined,
-): Promise<{ sliceId: string; uatType: UatType } | null> {
-  // DB primary path — fall through to file-based when DB has no data for this milestone
-  try {
-    const { isDbAvailable, getMilestoneSlices } = await import("./gsd-db.js");
-    if (isDbAvailable()) {
-      const slices = getMilestoneSlices(mid);
-      if (slices.length > 0) {
-        const completedSlices = slices.filter(s => s.status === "complete");
-        if (completedSlices.length === 0) return null;
-        for (const completed of [...completedSlices].reverse()) {
-          const sid = completed.id;
-          const uatFile = resolveSliceFile(base, mid, sid, "UAT");
-          if (!uatFile) continue;
-          const uatContent = await loadFile(uatFile);
-          if (!uatContent) continue;
-          // If the UAT file already contains a verdict, UAT has been run — skip
-          if (hasVerdict(uatContent)) continue;
-          // Also check the ASSESSMENT file — the run-uat prompt writes the verdict
-          // there (via gsd_uat_result_save), not into the
-          // UAT spec file. Without this check the unit re-dispatches indefinitely.
-          const assessmentFile = resolveSliceFile(base, mid, sid, "ASSESSMENT");
-          if (assessmentFile) {
-            const assessmentContent = await loadFile(assessmentFile);
-            if (assessmentContent && hasVerdict(assessmentContent)) continue;
-          }
-          if (!shouldDispatchUatForContent(uatContent, prefs)) continue;
-          const uatType = await resolveRunUatEffectiveType(base, mid, sid, uatContent);
-          return { sliceId: sid, uatType };
-        }
-        return null;
-      }
-    }
-  } catch (err) {
-    logWarning("prompt", `checkNeedsRunUat DB lookup failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
+): Promise<Awaited<ReturnType<typeof resolveNeedsRunUat>>> {
+  void state;
 
-  // File-based fallback using roadmap checkboxes
-  const roadmapPath = resolveMilestoneFile(base, mid, "ROADMAP");
-  if (!roadmapPath) return null;
-  const roadmapContent = await loadFile(roadmapPath);
-  if (!roadmapContent) return null;
-  const parsed = parseRoadmap(roadmapContent);
-  const completedFileSlices = parsed.slices.filter(s => s.done);
-  if (completedFileSlices.length === 0) return null;
-  for (const completed of [...completedFileSlices].reverse()) {
-    const uatSid = completed.id;
-    const uatFileFb = resolveSliceFile(base, mid, uatSid, "UAT");
-    if (!uatFileFb) continue;
-    const uatContentFb = await loadFile(uatFileFb);
-    if (!uatContentFb) continue;
-    // If the UAT file already contains a verdict, UAT has been run — skip
-    if (hasVerdict(uatContentFb)) continue;
-    // Also check the ASSESSMENT file for the file-based fallback path (same
-    // reason as the DB path above — verdict lives in ASSESSMENT, not UAT).
-    const assessmentFileFb = resolveSliceFile(base, mid, uatSid, "ASSESSMENT");
-    if (assessmentFileFb) {
-      const assessmentContentFb = await loadFile(assessmentFileFb);
-      if (assessmentContentFb && hasVerdict(assessmentContentFb)) continue;
-    }
-    if (!shouldDispatchUatForContent(uatContentFb, prefs)) continue;
-    const uatType = await resolveRunUatEffectiveType(base, mid, uatSid, uatContentFb);
-    return { sliceId: uatSid, uatType };
-  }
-  return null;
+  return resolveNeedsRunUat(
+    base,
+    mid,
+    prefs,
+    await loadRoadmapCompletedSliceCandidates(base, mid),
+  );
 }
 
 // ─── Prompt Builders ──────────────────────────────────────────────────────
@@ -2800,6 +2724,26 @@ export async function buildExecuteTaskPrompt(
 
   let phaseAnchorSection = planAnchor ? formatAnchorForPrompt(planAnchor) : "";
   trackPromptContext(contextTelemetry, "plan-anchor", phaseAnchorSection ? "inline" : "skipped", phaseAnchorSection, phaseAnchorSection ? undefined : "missing");
+
+  // #1272: inject a pending reopen reason into this task's prompt. When a gate
+  // (e.g. complete-slice's full-suite run) reopened the task via gsd_task_reopen
+  // with a diagnosis, surface it here so the re-dispatched executor fixes the
+  // regression instead of re-running the original (green) scoped verify. Claim
+  // is one-shot (artifact deleted on read). Not feature-gated — a reopened task
+  // must always know why. Prepended so it sits above the plan anchor.
+  try {
+    const { claimReopenReasonForInjection } = await import("./reopen-reason.js");
+    const reopenClaimed = claimReopenReasonForInjection(base, mid, sid, tid);
+    if (reopenClaimed) {
+      const block = reopenClaimed.injectionBlock + "\n\n---\n\n";
+      phaseAnchorSection = phaseAnchorSection
+        ? `${block}${phaseAnchorSection}`
+        : block;
+      trackPromptContext(contextTelemetry, "reopen-reason", "inline", reopenClaimed.injectionBlock);
+    }
+  } catch (reopenErr) {
+    logWarning("prompt", `reopen reason injection failed: ${(reopenErr as Error).message}`);
+  }
 
   // ADR-011 Phase 2: inject any resolved-but-unapplied escalation override
   // into this task's prompt. Claim is atomic via DB UPDATE WHERE IS NULL, so

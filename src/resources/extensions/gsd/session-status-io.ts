@@ -48,6 +48,11 @@ const PARALLEL_DIR = "parallel";
 const STATUS_SUFFIX = ".status.json";
 const SIGNAL_SUFFIX = ".signal.json";
 const DEFAULT_STALE_TIMEOUT_MS = 30_000;
+// How long a paused worker waits for the coordinator to lift the pause before
+// it degrades to in-process serialization (#1273). Kept below the stale
+// timeout so the wait never races the coordinator's liveness detection.
+const DEFAULT_RESUME_WAIT_MS = 10_000;
+const DEFAULT_RESUME_POLL_MS = 250;
 
 function isSessionStatus(data: unknown): data is SessionStatus {
   return data !== null && typeof data === "object" && "milestoneId" in data && "pid" in data;
@@ -141,6 +146,35 @@ export function consumeSignal(basePath: string, milestoneId: string): SignalMess
     try { unlinkSync(p); } catch { /* non-fatal */ }
   }
   return msg;
+}
+
+/**
+ * Wait for a coordinator to lift a `pause` on a worker by sending `resume`
+ * (or `stop`). Polls the signal file until one of those arrives or the timeout
+ * elapses. Intervening `pause`/`rebase` signals are consumed and ignored so a
+ * repeated pause doesn't reset the wait.
+ *
+ * A worker's `pause` is only ever lifted by the interactive/dashboard resumer;
+ * unattended `gsd headless auto` owns no resumer, so callers use the `"timeout"`
+ * result to degrade to in-process serialization instead of stranding the worker
+ * at a terminal pause it cannot resume (#1273).
+ */
+export async function awaitWorkerResume(
+  basePath: string,
+  milestoneId: string,
+  opts: { timeoutMs?: number; pollMs?: number } = {},
+): Promise<"resume" | "stop" | "timeout"> {
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_RESUME_WAIT_MS;
+  const pollMs = opts.pollMs ?? DEFAULT_RESUME_POLL_MS;
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    const msg = consumeSignal(basePath, milestoneId);
+    if (msg?.signal === "resume") return "resume";
+    if (msg?.signal === "stop") return "stop";
+    if (Date.now() >= deadline) return "timeout";
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
 }
 
 // ─── Stale Detection ───────────────────────────────────────────────────────

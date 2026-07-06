@@ -56,7 +56,7 @@ import { normalizeWorktreePathForCompare } from "./worktree-root.js";
 import { isDbAvailable, getTask, getSlice, getMilestone, getMilestoneSlices, updateTaskStatus, _getAdapter, getVerificationEvidence } from "./gsd-db.js";
 import { getWorkflowDatabasePath, refreshWorkflowDatabaseFromDisk } from "./db-workspace.js";
 import { renderPlanCheckboxes, renderRoadmapFromDb, roadmapRenderMarksSliceDone } from "./markdown-renderer.js";
-import { consumeSignal } from "./session-status-io.js";
+import { awaitWorkerResume, consumeSignal } from "./session-status-io.js";
 import {
   checkPostUnitHooks,
   consumeHookFailure,
@@ -1279,8 +1279,27 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
         return "dispatched";
       }
       if (signal.signal === "pause") {
-        await pauseAuto(ctx, pi);
-        return "dispatched";
+        // A worker `pause` is a *temporary* coordination request: the docs
+        // contract (docs/user-docs/parallel-orchestration.md) is "finish current
+        // unit, wait" followed by a matching `resume`. Only the interactive
+        // dashboard runtime owns a resumer — unattended `gsd headless auto` does
+        // not — so a terminal pauseAuto() here strands the worker at exit 10
+        // (BLOCKED) after its first unit, with nothing able to lift it (#1273).
+        // Wait for the coordinator to resume (or stop) us instead. If no resumer
+        // lifts the pause within the window, degrade to in-process serialization
+        // and continue the dispatch loop rather than halting the run forever.
+        const resumeOutcome = await awaitWorkerResume(s.basePath, milestoneLock);
+        if (resumeOutcome === "stop") {
+          await stopAuto(ctx, pi);
+          return "dispatched";
+        }
+        if (resumeOutcome === "timeout") {
+          logWarning(
+            "parallel",
+            `pause signal for ${milestoneLock} was not resumed (no headless resumer, #1273); continuing dispatch`,
+          );
+        }
+        // "resume" or "timeout": fall through and continue post-unit processing.
       }
     }
   }

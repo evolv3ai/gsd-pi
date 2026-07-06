@@ -312,6 +312,13 @@ export interface GSDModelConfigV2 {
 export interface ResolvedModelConfig {
   primary: string;
   fallbacks: string[];
+  /**
+   * Per-field reasoning level carried from the object model form's `thinking`
+   * sub-field (e.g. `{ model, thinking: high }` on `post_unit_hooks[].model`,
+   * `auto_supervisor.model`, or `reactive_execution.subagent_model`). Applied at
+   * the dispatch site in preference to the session/floor level (#1269).
+   */
+  thinking?: GSDThinkingLevel;
 }
 
 export type SkillDiscoveryMode = "auto" | "suggest" | "off";

@@ -8,6 +8,149 @@ This changelog starts from the `open-gsd/gsd-pi` ownership baseline. Earlier pro
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-07-06
+
+### Added
+- **cloud**: add device-flow login to daemon + @opengsd/gsd-cloud agent (#1278)
+
+### Fixed
+- **issue**: [Bug]: Unattended `gsd headless auto` has no resumer for the parallel/slice_parallel worker pause signal → terminal exit 10 after the first unit
+- **issue**: complete-slice's reopen reason never reaches the re-dispatched execute-task (follow-up to #1225)
+- **issue**: [Feature Request]: gsd-browser daemon has no automatic teardown — orphaned Chrome process survives session/task completion
+
+## [1.6.0] - 2026-07-05
+
+### Added
+- **skills**: load .claude/skills into the catalog (mirror Claude Code)
+
+### Fixed
+- **gsd**: block roadmap UAT fallback when DB has non-complete slices
+- **issue**: [Bug]: hook / supervisor / reactive-subagent `model` object form silently ignores its `thinking` sub-field
+- **gsd**: preserve uat fallback outside dispatch core
+- **issue**: [Bug]: auto-mode declares "All milestones complete" despite FAIL UAT, an undispatched artifact-driven UAT backfilled as PASS, and a no-artifact validate-milestone (M030 forensics)
+- **issue**: [Bug]: auto-start's DB gate only checks that the database opened, not that it is writable, so a read-only handle passes and fails minutes later with an opaque error
+- **issue**: Post-unit hook gate ignores valid artifacts in .gsd/phases layout
+- **issue**: Forensics Report — Projection Sync Ghost-SHA in gsd-pi
+- **gsd**: keep lost-dispatch gate refund unconditional to preserve real-run budget
+- **gsd**: gate lost-dispatch refund only when cycle budget exhausted
+- **issue**: [Bug]: a blocking post-unit hook gate spends its retry cycle at dispatch, so a hook whose dispatch is lost on resume hard-blocks on the first miss with no retry
+- reclamp thinking level after supervisor model swap
+- **gsd**: guard timeout recovery supervisor swap on in-flight tools
+- **gsd**: log supervisor model-set failures instead of an empty catch
+- **gsd**: check setModel return in hook dispatch fallback loop
+- **gsd**: honor auto_supervisor.model fallbacks on supervisor interventions (#1229)
+- **gsd**: reject empty-string model fields in sanitizeModelField
+- **gsd**: honor blocked-model skips on manual hook path + validate supervisor model
+- **gsd**: narrow resolveAutoSupervisorConfig return type to normalized model
+- **gsd**: stop post-unit hook sidecar from overriding fallback model selection
+- **issue**: Hook and singleton model fields silently ignore fallbacks[] — a transient provider trip hard-fails (and can pause) an auto-mode run
+- **issue**: [Bug]: `resolveGsdPathContract` opens the workflow DB through an unresolved `.gsd` symlink, causing a wrong SQLite journal mode and `SQLITE_READONLY_DBMOVED` on WSL
+- **issue**: [Bug]: On WSL with a symlinked `.gsd`, artifact verification builds a broken `../../…/home/…` path and reports a false "artifact not found on disk"
+- **issue**: [Bug]: `reconcileMergedMilestonesFromJournal` runs unguarded DB writes during auto-start bootstrap while its sibling reconciler is wrapped and warns
+- **auto**: clear leaked s.active when auto-start fails before the loop
+- **issue**: [Bug]: post-unit gate block message names the hook's trigger unit, not the just-completed unit, making the block confusing to triage
+- **issue**: [Bug]: the pending post-unit hook dispatch is not persisted, so on pause/resume a restored active hook is charged against the next unrelated unit and blocks it
+- **gsd**: normalize named-parameter key prefixes in db adapter
+- **issue**: [Bug]: A telemetry-only `uok-kernel-enter` audit write aborts `/gsd auto` entirely when the DB handle is not writable
+- **issue**: [Bug]: an exception during auto-start bypasses `cleanupAfterLoopExit`, leaking `s.active` and the auto lock so every later `/gsd auto` silently no-ops until restart
+- **issue**: gsd-browser daemon has no way to pass extra Chrome launch flags (e.g. --no-sandbox), so it cannot start in containers without unprivileged user namespaces
+- **issue**: complete-slice's full-suite gate reopens a task without surfacing why, causing an infinite execute-task ↔ complete-slice loop
+- **gsd**: resolve flat-phase task summaries when stray slices dir exists
+- **gsd**: gate missing-summary downgrade on legacy tasks/ dir, not slice layout (#1222)
+- **gsd**: unify roadmapless ID realignment and lock it with a test
+- **gsd-db**: clear completion metadata when re-import sets pending status
+- **pi-coding-agent**: rank foreign skills below bundled GSD to stop shadowing
+- **gsd**: align roadmap exclusion and bare phase dir resolution
+- **gsd**: resolve flat-phase task summaries at phase root when tasks/ exists
+- **issue**: [Bug]: execute-task completion lost-update — gsd_task_complete succeeds but the tasks row reverts to pending; auto-mode hard-stops "state did not advance" after the first execute-task
+- **pi-coding-agent**: load bundled GSD skills before claude-project
+- **gsd**: align suffixed flat-phase projections
+- **issue**: fix(auto): stuck-artifact recovery declares checkbox↔DB task divergence fatal instead of promoting — execute-task hard-stops "state did not advance" forever
+- **issue**: [Bug]: CODEBASE.md timestamp rewritten continuously when file count > maxFiles
+- **issue**: ask_user_questions: overflow text shows +N lines hidden with no way to scroll/expand
+- **gsd**: require all tasks closed for open-slice reopen desync path
+- **issue**: PREFERENCES.md language setting not injected into agent system prompt
+- **issue**: [Bug]: Orchestrator state desync: Forced re-planning after UAT abort fails because previous tasks remain marked as "complete" in DB
+- clean up migrate backup immediately after cpSync restore
+- **issue**: Flat-phase migration leaks a .gsd-backups/migrate-<ts>/ on every session_start when verification fails (rollback does not clean the backup; gate re-fires unconditionally)
+- **issue**: Flat-phase task artifact verification incorrectly expects summaries under tasks/
+- **issue**: [Bug]: tool-loop-guard triggers false positives during productive iterative debugging (local models)
+- **issue**: Make tool-call loop guard thresholds configurable
+- **issue**: open-gsd-hermes plugin uses Content-Length MCP protocol but gsd-mcp-server expects NDJSON — gsd_execute hangs indefinitely
+- **issue**: [Bug]: GSD system prompt still injects legacy `.gsd/milestones/.../tasks/T##-PLAN.md` layout after flat-phase migration
+- **issue**: bug: renderAssessmentFromDb writes to slices/SID/ for flat-phase milestones, causing reassess-roadmap verification to fail
+- **issue**: open-gsd-hermes plugin /gsd auto times out — GSD_CLI_PATH=gsd resolves to non-existent project-relative path
+- skip stale-artifact repair when row path exists on disk
+- **bug-2**: Doctor stale-artifact repair uses the wrong layout direction doctor repair now prunes stale post-migration `milestones/` rows in the flat-phase direction.
+- **bug-1**: Flat-phase migration leaves legacy artifact rows orphaned flat-phase migration now prunes legacy `milestones/` artifact rows after successful flat render verification.
+- **gsd**: narrow projection rebuild dirty guard
+- **gsd**: unify milestone merge project root across guard and rebuild
+- **gsd**: satisfy catch diagnostics in projection guard
+- **gsd**: detect ignored restored projection edits
+- **gsd**: preserve restored projection edits after merge
+- **test**: make session header cwd test Windows-portable
+- **git**: gate branch redirection to leftover task branches, honor getMainBranch()
+- **git**: start workflow and quick-task branches from main, not HEAD
+
+### Changed
+- **gsd**: extract uat dispatch discovery
+- **daemon**: split orchestrator agent loop
+- **daemon**: extract orchestrator tool execution
+- **uok**: scope audit degradation to kernel workspace
+- **browser-tools**: abort pending daemon starts on close
+- **browser-tools**: guard managed daemon connection lifecycle
+- **worktree**: centralize changed scan
+- **worktree**: isolate CLI create entry
+- **worktree**: centralize changed scan
+- **worktree**: isolate CLI create entry
+- **worktree**: extract CLI status formatting
+- **worktree**: isolate CLI flag planning
+- **worktree**: centralize CLI session entry
+- **worktree**: extract CLI status calculations
+- **gsd**: route slice renderers through target paths
+- **gsd**: centralize slice projection targets
+- **gsd**: share milestone scope targets
+- **gsd**: reuse milestone artifact target helper
+- **gsd**: centralize milestone projection targets
+- **gsd**: use layout-aware roadmap regeneration paths
+- **gsd**: reuse task summary resolver in drift checks
+- **gsd**: centralize task summary projection paths
+- **release**: sync hermes plugin version
+- **skills**: unify skill-directory lists into shared taxonomy
+- **pkg**: sync vendored export-html template.js with its source
+- **gsd**: unify db state phase returns
+- **gsd**: centralize db state construction
+- **gsd**: extract already-merged merge cleanup
+- **gsd**: extract merge integration branch prep
+- **gsd**: extract merge db readiness
+- **gsd**: extract merge pre-teardown guard
+- **gsd**: extract milestone merge message
+- **gsd**: extract milestone branch head reconciliation
+- **gsd**: extract milestone merge cleanup
+- **gsd**: extract merge code-change safety
+- **gsd**: extract pre-merge stash handling
+- **gsd**: extract milestone directory shelter
+- **gsd**: extract auto-worktree merge module
+- **gsd**: extract auto-worktree runtime helpers
+- **gsd**: extract auto-worktree sync module
+- **gsd**: extract auto-worktree teardown module
+- **gsd**: extract auto-worktree creation module
+- **gsd**: extract auto-worktree entry path module
+- **gsd**: extract auto-worktree session registry
+- **gsd**: extract auto-worktree branch lifecycle
+- **gsd**: extract auto-worktree conflict policy
+- **gsd**: remove most runtime auto-worktree barrel imports
+- **gsd**: remove integration auto-worktree barrel imports
+- **gsd**: remove non-integration auto-worktree barrel imports
+- **gsd**: narrow auto-worktree utility test seams
+- **gsd**: narrow lifecycle helper test seams
+- **gsd**: narrow worktree sync test seams
+- **gsd**: narrow merge worktree test seams
+- **gsd**: centralize workflow readiness model context
+- **gsd**: align active db reads with status vocabulary
+- **gsd**: model conditional unit prompt templates
+- **gsd**: centralize merge transaction adapter
+
 ## [1.5.0] - 2026-07-02
 
 ### Added

@@ -52,6 +52,7 @@ function sanitizeModelField(
   raw: unknown,
   label: string,
   errors: string[],
+  warnings?: string[],
 ): string | GSDPhaseModelConfig | undefined {
   if (raw === undefined) return undefined;
   if (typeof raw === "string") {
@@ -76,6 +77,20 @@ function sanitizeModelField(
     if (obj.fallbacks !== undefined) {
       const fallbacks = normalizeStringArray(obj.fallbacks);
       if (fallbacks.length > 0) sanitized.fallbacks = fallbacks;
+    }
+    // Preserve the object form's `thinking` sub-field so the dispatch site can
+    // pin the hook/supervisor/subagent reasoning level (#1269). An illegal level
+    // is warned-and-stripped, mirroring inline per-phase thinking, so a typo can't
+    // reach the resolver and be treated as explicit configuration.
+    if (obj.thinking !== undefined) {
+      if (VALID_THINKING_LEVELS.has(obj.thinking as GSDThinkingLevel)) {
+        sanitized.thinking = obj.thinking as GSDThinkingLevel;
+      } else {
+        warnings?.push(
+          `${label} thinking "${String(obj.thinking)}" is not a valid thinking level ` +
+          `(off, minimal, low, medium, high, xhigh) — ignored`,
+        );
+      }
     }
     return sanitized;
   }
@@ -524,7 +539,7 @@ export function validatePreferences(preferences: GSDPreferences): {
       // Other supervisor fields pass through unchanged.
       const supervisor = { ...preferences.auto_supervisor };
       if (supervisor.model !== undefined) {
-        supervisor.model = sanitizeModelField(supervisor.model, "auto_supervisor.model", errors);
+        supervisor.model = sanitizeModelField(supervisor.model, "auto_supervisor.model", errors, warnings);
       }
       validated.auto_supervisor = supervisor;
     } else {
@@ -618,7 +633,7 @@ export function validatePreferences(preferences: GSDPreferences): {
         const mc = typeof hook.max_cycles === "number" ? hook.max_cycles : Number(hook.max_cycles);
         validHook.max_cycles = Number.isFinite(mc) ? Math.max(1, Math.min(10, Math.round(mc))) : 1;
       }
-      const hookModel = sanitizeModelField(hook.model, `post_unit_hooks "${name}" model`, errors);
+      const hookModel = sanitizeModelField(hook.model, `post_unit_hooks "${name}" model`, errors, warnings);
       if (hookModel !== undefined) {
         validHook.model = hookModel;
       }
@@ -1076,6 +1091,7 @@ export function validatePreferences(preferences: GSDPreferences): {
         re.subagent_model,
         "reactive_execution.subagent_model",
         errors,
+        warnings,
       );
       if (subagentModel !== undefined) {
         validRe.subagent_model = subagentModel;

@@ -79,8 +79,9 @@ import {
   buildGateEvaluatePrompt,
   buildParallelResearchSlicesPrompt,
   checkNeedsReassessment,
-  checkNeedsRunUat,
+  loadRoadmapCompletedSliceCandidates,
 } from "./auto-prompts.js";
+import { checkNeedsRunUat } from "./uat-dispatch.js";
 import { normalizeModelFieldConfig, resolveModelWithFallbacksForUnit, resolveThinkingLevelForUnit } from "./preferences-models.js";
 import { resolveUokFlags } from "./uok/flags.js";
 import { selectReactiveDispatchBatch } from "./uok/execution-graph.js";
@@ -795,7 +796,12 @@ export const DISPATCH_RULES: DispatchRule[] = [
       registeredTools,
       sessionBaseUrl,
     }) => {
-      const needsRunUat = await checkNeedsRunUat(basePath, mid, state, prefs);
+      const needsRunUat = await checkNeedsRunUat(
+        basePath,
+        mid,
+        prefs,
+        await loadRoadmapCompletedSliceCandidates(basePath, mid),
+      );
       if (!needsRunUat) return null;
       const { sliceId, uatType } = needsRunUat;
 
@@ -1460,7 +1466,9 @@ export const DISPATCH_RULES: DispatchRule[] = [
       const subagentModelConfig = normalizeModelFieldConfig(reactiveConfig?.subagent_model)
         ?? resolveModelWithFallbacksForUnit("subagent");
       const subagentModel = subagentModelConfig?.primary;
-      const subagentThinking = resolveThinkingLevelForUnit("subagent");
+      // Prefer the per-field `thinking` carried on `reactive_execution.subagent_model`'s
+      // object form over the phase-bucket `subagent` level (#1269).
+      const subagentThinking = subagentModelConfig?.thinking ?? resolveThinkingLevelForUnit("subagent");
       // Default-on safety threshold: only activate reactive dispatch when at
       // least N tasks are ready. Users who explicitly enabled reactive_execution
       // keep the legacy threshold of 2 (matches the prior "any parallelism is

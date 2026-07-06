@@ -110,7 +110,14 @@ export function normalizeModelFieldConfig(
   const primary = field.provider && !field.model.includes("/")
     ? `${field.provider}/${field.model}`
     : field.model;
-  return { primary, fallbacks: field.fallbacks ?? [] };
+  // Carry the per-field `thinking` sub-field through so the dispatch site can
+  // prefer it over the session/floor level, mirroring phase-inline thinking
+  // (#1269). `undefined` is preserved as absent so behavior is unchanged.
+  return {
+    primary,
+    fallbacks: field.fallbacks ?? [],
+    ...(field.thinking ? { thinking: field.thinking } : {}),
+  };
 }
 
 /**
@@ -192,6 +199,14 @@ export function resolveThinkingLevelForUnit(
   basePath?: string,
   availableModelIds?: string[],
 ): GSDThinkingLevel | undefined {
+  // Single-field configs — `auto_supervisor.model` and `post_unit_hooks[].model`
+  // — carry their own inline `thinking` on the object model form and have no
+  // phase-bucket chain, so the walk below never covers them. Resolve their
+  // per-field level directly (#1269).
+  if (unitType === "supervisor" || unitType.startsWith("hook/")) {
+    return resolveModelWithFallbacksForUnit(unitType, basePath, availableModelIds)?.thinking;
+  }
+
   const loadOpts = availableModelIds !== undefined ? { availableModelIds } : undefined;
   const prefs = loadEffectiveGSDPreferences(basePath, loadOpts)?.preferences;
   if (!prefs) return undefined;
