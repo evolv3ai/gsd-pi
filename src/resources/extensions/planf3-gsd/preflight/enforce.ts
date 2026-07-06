@@ -5,7 +5,7 @@ import { parsePlanf3Html } from "../parser/planf3-html-parser.js";
 import { splitPreferences, type SplitFile } from "../gsd/preferences-overlay.js";
 import { projectionHash } from "./hash.js";
 import { projectPreferences } from "./projection.js";
-import { readPresets } from "./presets-file.js";
+import { readPresets, PRESETS_RELATIVE_PATH } from "./presets-file.js";
 import type { DriftRow, OrchestratorFacts, PresetsRecord, ProbeOutcome, ProjectionResult, Verdict } from "./types.js";
 import type { ParsedPlan } from "../parser/types.js";
 
@@ -175,7 +175,7 @@ export async function checkPresetsGate(
     record = await readPresets(projectRoot);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { presets: opts.force ? "forced" : "absent", presetsHash: null, drift: [], refusal: opts.force ? null : `preflight gate could not be computed (${msg}) — ${rerun}` };
+    return { presets: opts.force ? "forced" : "absent", presetsHash: null, drift: [], refusal: opts.force ? null : `preflight gate: ${PRESETS_RELATIVE_PATH} is unreadable (${msg}) — ${rerun}` };
   }
 
   // Plan html read/parse failures propagate uncaught — see docstring above.

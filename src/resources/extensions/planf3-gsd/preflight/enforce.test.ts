@@ -174,4 +174,18 @@ describe("checkPresetsGate (build-time, disk-only)", () => {
     assert.match(drifted.refusal ?? "", /buckets\.planning/);
     assert.match(drifted.refusal ?? "", /claude-code\/claude-fable-5 → claude-code\/claude-haiku-4-5/);
   });
+
+  test("corrupt PRESETS.md: refusal names the file; --force proceeds with a null hash", async () => {
+    const tmp = await scaffold(false);
+    await writeFile(join(tmp, "specs", "PRESETS.md"), "not a presets file\n", "utf8");
+    const html = join(tmp, "specs", "minimal.html");
+    const gate = await checkPresetsGate(tmp, html, { force: false, globalPrefsPath: join(tmp, "nonexistent-global.md") });
+    assert.equal(gate.presets, "absent");
+    assert.match(gate.refusal ?? "", /PRESETS\.md is unreadable \(/);
+    assert.match(gate.refusal ?? "", /planf3-gsd-preflight/);
+    const forced = await checkPresetsGate(tmp, html, { force: true, globalPrefsPath: join(tmp, "nonexistent-global.md") });
+    assert.equal(forced.presets, "forced");
+    assert.equal(forced.presetsHash, null);
+    assert.equal(forced.refusal, null);
+  });
 });
