@@ -71,6 +71,31 @@ describe("GsdRunner.newMilestone", () => {
   });
 });
 
+describe("GsdRunner.auto", () => {
+  test("invokes headless auto with json output format", async () => {
+    const captured: { cmd: string; args: string[]; }[] = [];
+    const runner = new GsdRunner({ binary: "gsd", cwd: "/tmp", spawn: fakeSpawner({ exitCode: 0, stdout: "{}", stderr: "" }, captured) });
+    await runner.auto();
+    assert.deepEqual(captured[0].args, ["headless", "--output-format", "json", "auto"]);
+  });
+});
+
+describe("GsdRunner timeoutSeconds", () => {
+  test("inserts --timeout for new-milestone and auto, never for query", async () => {
+    const captured: { cmd: string; args: string[]; }[] = [];
+    const runner = new GsdRunner({ binary: "gsd", cwd: "/tmp", timeoutSeconds: 0, spawn: fakeSpawner({ exitCode: 0, stdout: "{}", stderr: "" }, captured) });
+
+    await runner.newMilestone("specs/x.gsd.md", { auto: true });
+    assert.deepEqual(captured[0].args, ["headless", "--output-format", "json", "--timeout", "0", "new-milestone", "--context", "specs/x.gsd.md", "--auto"]);
+
+    await runner.auto();
+    assert.deepEqual(captured[1].args, ["headless", "--output-format", "json", "--timeout", "0", "auto"]);
+
+    await runner.query();
+    assert.deepEqual(captured[2].args, ["headless", "--output-format", "json", "query"]);
+  });
+});
+
 describe("parseJsonLines", () => {
   // A2: parses N JSONL lines
   test("returns N parsed values for N-line JSONL stdout", () => {

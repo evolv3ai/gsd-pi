@@ -28,7 +28,8 @@ describe("buildEvalRow", () => {
       milestoneId: "M77",
       mode: "auto",
       status: STATUS,
-      appliedModels: ["planning", "execution"],
+      appliedBuckets: ["planning", "execution"],
+      appliedModels: { planning: "openrouter/anthropic/claude-opus-4.7", execution: "openrouter/x-ai/grok-code-fast-1" },
     });
     assert.deepEqual(row, {
       loggedAt: "2026-07-04T12:00:00Z",
@@ -41,7 +42,8 @@ describe("buildEvalRow", () => {
       cost: 1.23,
       progress: STATUS.progress,
       blockerCount: 1,
-      appliedModels: ["planning", "execution"],
+      appliedBuckets: ["planning", "execution"],
+      appliedModels: { planning: "openrouter/anthropic/claude-opus-4.7", execution: "openrouter/x-ai/grok-code-fast-1" },
       generator: "planf3-gsd-pi",
       generatorVersion: "0.2.0",
     });
@@ -58,7 +60,8 @@ describe("appendEvalRow", () => {
       milestoneId: null,
       mode: "step",
       status: STATUS,
-      appliedModels: [],
+      appliedBuckets: [],
+      appliedModels: {},
     });
     await appendEvalRow(tmp, row);
     await appendEvalRow(tmp, row);

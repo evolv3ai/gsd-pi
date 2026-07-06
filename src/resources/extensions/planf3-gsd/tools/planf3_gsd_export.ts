@@ -2,6 +2,7 @@ import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import { runExport } from "../commands/export.js";
 import { friendlyError } from "../commands/error-message.js";
+import { emit } from "../gsd/notify.js";
 
 export interface ExportToolDetails {
   phaseCount: number;
@@ -58,17 +59,18 @@ export function registerExportCommand(pi: ExtensionAPI): void {
     async handler(args, ctx) {
       const htmlPath = args.trim();
       if (!htmlPath) {
-        ctx.ui.notify("Usage: /planf3-gsd-export <path-to-plan.html>", "error");
+        emit(ctx, "Usage: /planf3-gsd-export <path-to-plan.html>", "error");
         return;
       }
       try {
         const result = await runExport(htmlPath);
-        ctx.ui.notify(
+        emit(
+          ctx,
           `Exported → ${result.specPath}\n             ${result.manifestPath}`,
           "info",
         );
       } catch (err) {
-        ctx.ui.notify(friendlyError(err), "error");
+        emit(ctx, friendlyError(err), "error");
       }
     },
   });

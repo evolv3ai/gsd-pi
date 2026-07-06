@@ -3,6 +3,7 @@ import type { ExtensionAPI } from "@gsd/pi-coding-agent";
 import { runStatus } from "../commands/status.js";
 import type { BridgeStatus } from "../gsd/status-mapper.js";
 import { friendlyError } from "../commands/error-message.js";
+import { emit } from "../gsd/notify.js";
 
 export type StatusToolDetails = BridgeStatus;
 
@@ -58,9 +59,9 @@ export function registerStatusCommand(pi: ExtensionAPI): void {
     async handler(_args, ctx) {
       try {
         const status = await runStatus();
-        ctx.ui.notify(format(status), "info");
+        emit(ctx, format(status), "info");
       } catch (err) {
-        ctx.ui.notify(friendlyError(err), "error");
+        emit(ctx, friendlyError(err), "error");
       }
     },
   });

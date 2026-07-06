@@ -1,10 +1,12 @@
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { BridgeStatus } from "./status-mapper.js";
+import { GENERATOR_VERSION } from "../version.js";
 
 export interface EvalRow {
   loggedAt: string;
-  event: "build";
+  /** "build" = how a build command ended; "status" = completion observed at status time. */
+  event: "build" | "status";
   htmlPath: string;
   specPath: string;
   milestoneId: string | null;
@@ -13,9 +15,12 @@ export interface EvalRow {
   cost: number;
   progress: BridgeStatus["progress"];
   blockerCount: number;
-  appliedModels: string[];
+  /** Bucket keys the build applied to .gsd/PREFERENCES.md (e.g. "planning"). */
+  appliedBuckets: string[];
+  /** bucket → model id for exactly those buckets. */
+  appliedModels: Record<string, string>;
   generator: "planf3-gsd-pi";
-  generatorVersion: "0.2.0";
+  generatorVersion: string;
 }
 
 export function buildEvalRow(input: {
@@ -25,11 +30,13 @@ export function buildEvalRow(input: {
   milestoneId: string | null;
   mode: "auto" | "step";
   status: BridgeStatus;
-  appliedModels: string[];
+  appliedBuckets: string[];
+  appliedModels: Record<string, string>;
+  event?: "build" | "status";
 }): EvalRow {
   return {
     loggedAt: input.loggedAt,
-    event: "build",
+    event: input.event ?? "build",
     htmlPath: input.htmlPath,
     specPath: input.specPath,
     milestoneId: input.milestoneId,
@@ -38,9 +45,10 @@ export function buildEvalRow(input: {
     cost: input.status.cost,
     progress: input.status.progress,
     blockerCount: input.status.blockers.length,
+    appliedBuckets: input.appliedBuckets,
     appliedModels: input.appliedModels,
     generator: "planf3-gsd-pi",
-    generatorVersion: "0.2.0",
+    generatorVersion: GENERATOR_VERSION,
   };
 }
 
@@ -48,4 +56,24 @@ export async function appendEvalRow(projectRoot: string, row: EvalRow): Promise<
   const dir = join(projectRoot, ".gsd");
   await mkdir(dir, { recursive: true });
   await appendFile(join(dir, "planf3-gsd-evals.jsonl"), JSON.stringify(row) + "\n", "utf8");
+}
+
+/** True when a completion ("status") row for this milestone already exists. */
+export async function hasStatusRowFor(projectRoot: string, milestoneId: string): Promise<boolean> {
+  let text: string;
+  try {
+    text = await readFile(join(projectRoot, ".gsd", "planf3-gsd-evals.jsonl"), "utf8");
+  } catch {
+    return false; // no log yet
+  }
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const row = JSON.parse(line) as { event?: string; milestoneId?: string | null };
+      if (row.event === "status" && row.milestoneId === milestoneId) return true;
+    } catch {
+      // skip malformed line
+    }
+  }
+  return false;
 }

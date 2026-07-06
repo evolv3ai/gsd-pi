@@ -6,7 +6,7 @@
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, type Dirent } from "node:fs";
 import { join, basename } from "node:path";
-import type { AuditWarning, RuntimeError, VerificationCheck, VerificationResult } from "./types.js";
+import type { AuditWarning, RuntimeError, SkippedCheck, VerificationCheck, VerificationResult } from "./types.js";
 import { DEFAULT_COMMAND_TIMEOUT_MS } from "./constants.js";
 import { rewriteCommandWithRtk } from "../shared/rtk.js";
 import { normalizePythonCommand } from "./python-resolver.js";
@@ -34,11 +34,38 @@ export interface DiscoverCommandsOptions {
 export interface DiscoveredCommands {
   commands: string[];
   source: VerificationResult["discoverySource"];
+  /** Commands removed pre-execution (progressive gating). Empty when nothing was skipped. */
+  skipped: SkippedCheck[];
 }
 
 /** Package.json script keys to probe, in order. */
 const PACKAGE_SCRIPT_KEYS = ["typecheck", "lint", "test"] as const;
 const INTERPRETER_PREFIX_RE = /^(bash|sh|zsh|node|python3?|ts-node|tsx):\s*/;
+
+/** Commands that run a test suite — gated on test files actually existing. */
+const TEST_SHAPED_COMMAND_RE = /\b(vitest|jest|node --test|pytest|npm (run )?test|pnpm (run )?test|yarn (run )?test)\b/;
+const TEST_FILE_RE = /(\.(test|spec)\.[cm]?[jt]sx?$)|(^test_.*\.py$)|(_test\.py$)/;
+const TEST_WALK_SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "coverage", ".next", "vendor", ".gsd"]);
+const TEST_WALK_MAX_DEPTH = 6;
+
+/** Bounded repo walk: does any test file exist under cwd? (skips vendored/build dirs) */
+export function hasDiscoverableTestFiles(cwd: string, depth = 0): boolean {
+  if (depth > TEST_WALK_MAX_DEPTH) return false;
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(cwd, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  for (const entry of entries) {
+    if (entry.isFile() && TEST_FILE_RE.test(entry.name)) return true;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || TEST_WALK_SKIP_DIRS.has(entry.name)) continue;
+    if (hasDiscoverableTestFiles(join(cwd, entry.name), depth + 1)) return true;
+  }
+  return false;
+}
 
 /**
  * Discover verification commands using the first-non-empty-wins strategy (D003):
@@ -75,17 +102,31 @@ export function discoverCommands(options: DiscoverCommandsOptions): DiscoveredCo
       }
     }
     if (commands.length > 0) {
-      return { commands, source: "task-plan" };
+      return { commands, source: "task-plan", skipped: [] };
     }
   }
 
-  // 2. Preference commands
+  // 2. Preference commands (test-shaped ones are gated on test files existing)
   if (options.preferenceCommands && options.preferenceCommands.length > 0) {
     const filtered = options.preferenceCommands
       .map(c => c.trim())
       .filter(Boolean);
     if (filtered.length > 0) {
-      return { commands: filtered, source: "preference" };
+      let testFilesPresent: boolean | null = null;
+      const testsExist = (): boolean => (testFilesPresent ??= hasDiscoverableTestFiles(options.cwd));
+      const runnable: string[] = [];
+      const skipped: SkippedCheck[] = [];
+      for (const command of filtered) {
+        if (TEST_SHAPED_COMMAND_RE.test(command) && !testsExist()) {
+          skipped.push({
+            command,
+            reason: "no test files discovered yet — test command deferred until the suite exists",
+          });
+        } else {
+          runnable.push(command);
+        }
+      }
+      return { commands: runnable, source: "preference", skipped };
     }
   }
 
@@ -103,7 +144,7 @@ export function discoverCommands(options: DiscoverCommandsOptions): DiscoveredCo
           }
         }
         if (commands.length > 0) {
-          return { commands, source: "package-json" };
+          return { commands, source: "package-json", skipped: [] };
         }
       }
     } catch {
@@ -113,20 +154,20 @@ export function discoverCommands(options: DiscoverCommandsOptions): DiscoveredCo
 
   const pythonCommand = discoverPythonPytestCommand(options.cwd);
   if (pythonCommand) {
-    return { commands: [pythonCommand], source: "python-project" };
+    return { commands: [pythonCommand], source: "python-project", skipped: [] };
   }
 
   const nodeTestCommand = discoverNodeTestFileCommand(options.cwd);
   if (nodeTestCommand) {
-    return { commands: [nodeTestCommand], source: "node-test-file" };
+    return { commands: [nodeTestCommand], source: "node-test-file", skipped: [] };
   }
 
   if (hasTaskPlanProse && !hasUnsafeTaskPlanCommand) {
-    return { commands: [], source: "task-plan-prose" };
+    return { commands: [], source: "task-plan-prose", skipped: [] };
   }
 
   // 6. Nothing found
-  return { commands: [], source: "none" };
+  return { commands: [], source: "none", skipped: [] };
 }
 
 function discoverNodeTestFileCommand(cwd: string): string | null {
@@ -523,7 +564,7 @@ function mergeDiscoverySource(
 export function runVerificationGate(options: RunVerificationGateOptions): VerificationResult {
   const timestamp = Date.now();
 
-  const { commands, source } = discoverCommands({
+  const { commands, source, skipped } = discoverCommands({
     preferenceCommands: options.preferenceCommands,
     taskPlanVerify: options.taskPlanVerify,
     cwd: options.cwd,
@@ -535,6 +576,7 @@ export function runVerificationGate(options: RunVerificationGateOptions): Verifi
       checks: [],
       discoverySource: source,
       timestamp,
+      ...(skipped.length > 0 ? { skippedChecks: skipped } : {}),
     };
   }
 
@@ -594,6 +636,7 @@ export function runVerificationGate(options: RunVerificationGateOptions): Verifi
     checks,
     discoverySource: source,
     timestamp,
+    ...(skipped.length > 0 ? { skippedChecks: skipped } : {}),
   };
 }
 
@@ -615,6 +658,7 @@ export function runVerificationGateForTargets(options: {
 
   const checks: VerificationCheck[] = [];
   const sources: VerificationResult["discoverySource"][] = [];
+  const skippedChecks: SkippedCheck[] = [];
   let passed = true;
 
   for (const target of options.targets) {
@@ -632,6 +676,12 @@ export function runVerificationGateForTargets(options: {
         command: target.id === "project" ? check.command : `[${target.id}] ${check.command}`,
       });
     }
+    for (const skip of result.skippedChecks ?? []) {
+      skippedChecks.push({
+        ...skip,
+        command: target.id === "project" ? skip.command : `[${target.id}] ${skip.command}`,
+      });
+    }
   }
 
   return {
@@ -639,6 +689,7 @@ export function runVerificationGateForTargets(options: {
     checks,
     discoverySource: mergeDiscoverySource(sources),
     timestamp,
+    ...(skippedChecks.length > 0 ? { skippedChecks } : {}),
   };
 }
 

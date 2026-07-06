@@ -108,6 +108,12 @@ export interface AuditWarning {
   fixAvailable: boolean;
 }
 
+/** A discovered command the gate skipped before execution (e.g. test tooling has nothing to run yet). */
+export interface SkippedCheck {
+  command: string;
+  reason: string;
+}
+
 /** Aggregate result from the verification gate */
 export interface VerificationResult {
   passed: boolean; // true if all checks passed (or no checks discovered)
@@ -116,6 +122,7 @@ export interface VerificationResult {
   timestamp: number; // Date.now() at gate start
   runtimeErrors?: RuntimeError[]; // optional — populated by captureRuntimeErrors()
   auditWarnings?: AuditWarning[]; // optional — populated by runDependencyAudit()
+  skippedChecks?: SkippedCheck[]; // optional — commands skipped pre-execution (progressive gating)
 }
 
 export interface SlicePlan {

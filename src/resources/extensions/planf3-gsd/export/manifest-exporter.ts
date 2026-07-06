@@ -1,4 +1,5 @@
 import type { ParsedPlan, PlanPhase, PlanTier, GsdModelPhaseKey } from "../parser/types.js";
+import { GENERATOR_VERSION } from "../version.js";
 
 export interface TaskMapping { title: string; tier: PlanTier | null; gsdTask: string | null; }
 export interface PhaseMapping {
@@ -24,7 +25,7 @@ export interface BridgeManifest {
   mapping: { phases: PhaseMapping[]; };
   routing: { modelPolicy: Partial<Record<GsdModelPhaseKey, string>> };
   validation: { commands: string[]; lastSyncedAt: string | null; lastStatus: "planned" | "running" | "passed" | "failed" | "blocked"; };
-  provenance: { userPrompt: string | null; generator: "planf3-gsd-pi"; generatorVersion: "0.2.0"; };
+  provenance: { userPrompt: string | null; generator: "planf3-gsd-pi"; generatorVersion: string; };
 }
 
 export interface ManifestPaths {
@@ -82,7 +83,7 @@ export function buildManifest(plan: ParsedPlan, paths: ManifestPaths, prov: Mani
     provenance: {
       userPrompt: prov.userPrompt,
       generator: "planf3-gsd-pi",
-      generatorVersion: "0.2.0",
+      generatorVersion: GENERATOR_VERSION,
     },
   };
 }
