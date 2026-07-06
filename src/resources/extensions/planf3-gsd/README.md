@@ -251,6 +251,9 @@ Planf3 plans may carry routing directives; the bridge enforces them at build tim
 - **Validation commands**: the plan's global validation checklist is unioned into
   `verification_commands` in `.gsd/PREFERENCES.md`, so GSD executes them as gates.
 - **Eval log**: every build appends a JSON line to `.gsd/planf3-gsd-evals.jsonl`
-  (phase, cost, progress, blockers, applied models).
+  (phase, cost, progress, blockers, applied models). Failed builds log a row too, with phase markers like failed:export / failed:new-milestone / failed:query / failed:auto-relaunch, plus auto-relaunched / auto-not-started for the auto-chain workaround.
 
 Skip all preference writes with `/planf3-gsd-build <plan.html> --no-prefs`.
+Note: `--no-prefs` skips only the `.gsd/PREFERENCES.md` writes — the build
+still appends its eval row to `.gsd/planf3-gsd-evals.jsonl` (pass nothing to
+the eval log to opt out; there is intentionally no flag for that).
