@@ -61,6 +61,7 @@ const ALLOWED_IMPORTERS = new Set([
   "gsd/artifact-verification.ts",
   // diagnostics-only surfaces: report on projections, make no dispatch decisions
   "gsd/doctor.ts",
+  "gsd/doctor-state-checks.ts",
   // diagnostics-only: compares PLAN.md task checkboxes against DB status
   "gsd/doctor-engine-checks.ts",
   // display/telemetry-only surfaces
