@@ -19,7 +19,7 @@ const BASE: MapInputs = {
   orchestrator: { host: "claude-code", model: "claude-code/claude-fable-5", authMode: "subscription", skills: ["planf3", "superpowers"] },
   gsdBinary: "gsd",
   gsdVersion: "1.6.0",
-  generatorVersion: "0.3.0",
+  generatorVersion: "0.3.1",
   projectRoot: "/tmp/x",
   gitBranch: "main",
   product: [],
