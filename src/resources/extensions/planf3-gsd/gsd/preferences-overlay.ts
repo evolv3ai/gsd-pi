@@ -19,12 +19,12 @@ export interface OverlayResult {
   changed: boolean;
 }
 
-interface SplitFile {
+export interface SplitFile {
   frontmatter: Record<string, unknown>;
   body: string;
 }
 
-function splitPreferences(existing: string | null, sourceHtmlPath: string): SplitFile {
+export function splitPreferences(existing: string | null, sourceHtmlPath: string): SplitFile {
   if (existing === null) {
     return {
       frontmatter: { version: 1 },
