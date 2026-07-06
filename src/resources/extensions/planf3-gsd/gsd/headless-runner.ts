@@ -18,6 +18,14 @@ export interface GsdRunnerOptions {
   binary?: string;
   cwd: string;
   spawn: Spawner;
+  /**
+   * When set, long-running subcommands (new-milestone, auto) pass
+   * `--timeout <n>` (0 = disabled). Belt-and-braces only — auto/new-milestone
+   * are multi-turn upstream and already exempt from the idle timeout; a 16+
+   * minute --print build completed cleanly without this. Regression insurance,
+   * not a fix for anything currently observed.
+   */
+  timeoutSeconds?: number;
 }
 
 function parseStdoutJson(stdout: string): unknown | null {
@@ -60,21 +68,34 @@ export class GsdRunner {
   private binary: string;
   private cwd: string;
   private spawn: Spawner;
+  private timeoutSeconds: number | undefined;
 
   constructor(opts: GsdRunnerOptions) {
     this.binary = opts.binary ?? "gsd";
     this.cwd = opts.cwd;
     this.spawn = opts.spawn;
+    this.timeoutSeconds = opts.timeoutSeconds;
   }
 
   async query(signal?: AbortSignal): Promise<GsdResult> {
     return this.run(["headless", "--output-format", "json", "query"], { signal });
   }
 
+  /** headless arg prefix for long-running subcommands (query stays untouched). */
+  private longRunArgs(): string[] {
+    const args = ["headless", "--output-format", "json"];
+    if (this.timeoutSeconds !== undefined) args.push("--timeout", String(this.timeoutSeconds));
+    return args;
+  }
+
   async newMilestone(specPath: string, opts: { auto?: boolean; signal?: AbortSignal } = {}): Promise<GsdResult> {
-    const args = ["headless", "--output-format", "json", "new-milestone", "--context", specPath];
+    const args = [...this.longRunArgs(), "new-milestone", "--context", specPath];
     if (opts.auto) args.push("--auto");
     return this.run(args, { signal: opts.signal });
+  }
+
+  async auto(opts: { signal?: AbortSignal } = {}): Promise<GsdResult> {
+    return this.run([...this.longRunArgs(), "auto"], { signal: opts.signal });
   }
 
   /**

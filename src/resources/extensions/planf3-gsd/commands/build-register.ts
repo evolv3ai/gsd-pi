@@ -21,8 +21,9 @@ export function registerBuildCommand(pi: ExtensionAPI): void {
           : result.prefs.applied
             ? `prefs=updated .gsd/PREFERENCES.md (models: ${result.prefs.models.join(", ") || "none"}; +${result.prefs.commands.length} verification commands)`
             : "prefs=no changes";
+        const chainLine = result.autoChain === "not-applicable" ? "" : `\nauto=${result.autoChain}`;
         ctx.ui.notify(
-          `Built milestone ${result.milestoneId ?? "(unknown id)"}\nphase=${result.status.phase}\n${prefsLine}\nspec=${result.specPath}\nmanifest=${result.manifestPath}`,
+          `Built milestone ${result.milestoneId ?? "(unknown id)"}\nphase=${result.status.phase}${chainLine}\n${prefsLine}\nspec=${result.specPath}\nmanifest=${result.manifestPath}`,
           "info",
         );
       } catch (err) {
