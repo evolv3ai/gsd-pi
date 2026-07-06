@@ -810,8 +810,13 @@ export function migrateHierarchyToDb(basePath: string): {
       }
       counts.slices++;
 
-      // Insert tasks from parsed plan
-      if (!plan) continue;
+      // Insert tasks from parsed plan.
+      // Sketch slices carry only a stub PLAN until refined; do not seed DB
+      // tasks from a placeholder <tasks> block (would falsely flip
+      // planning -> executing before the slice is decomposed). Once the
+      // `[sketch]` badge is removed by a real plan-slice, tasks import
+      // normally on the next pass. (#1286)
+      if (!plan || sliceEntry.isSketch) continue;
 
       for (const taskEntry of plan.tasks) {
         // Per K002: use 'complete' not 'done'

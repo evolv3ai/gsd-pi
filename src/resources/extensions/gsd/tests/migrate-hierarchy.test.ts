@@ -427,3 +427,56 @@ test('migrate-hier: demo text extracted', () => {
     }
 });
 
+  // ─── Test (i): Sketch slice stub tasks are not seeded (#1286) ─────────
+
+test('migrate-hier: sketch slice stub PLAN tasks are not imported', () => {
+    const base = createFixtureBase();
+    try {
+      // S01 is a sketch (badge before risk, per ADR-011 render); its PLAN is a
+      // stub with a placeholder <tasks> block. S02 is a real, refined slice.
+      const roadmap = `# M001: Test Milestone
+
+**Vision:** Sketch slices must not seed DB tasks.
+
+## Slices
+
+- [ ] **S01: Sketch Slice** \`[sketch]\` \`risk:low\` \`depends:[]\`
+  > After this: Sketch decomposed.
+
+- [ ] **S02: Real Slice** \`risk:low\` \`depends:[]\`
+  > After this: Real work done.
+`;
+      const sketchPlan = `# S01: Sketch Slice
+
+**Goal:** Placeholder.
+
+## Tasks
+
+- [ ] **T01: Plan 01**
+  Stub placeholder task.
+`;
+      writeFile(base, 'milestones/M001/M001-ROADMAP.md', roadmap);
+      writeFile(base, 'milestones/M001/slices/S01/S01-PLAN.md', sketchPlan);
+      writeFile(base, 'milestones/M001/slices/S02/S02-PLAN.md', PLAN_S02_1_TASK);
+
+      openDatabase(':memory:');
+      const counts = migrateHierarchyToDb(base);
+
+      const slices = getMilestoneSlices('M001');
+      assert.deepStrictEqual(slices.length, 2, 'sketch: 2 slices inserted');
+      assert.deepStrictEqual(slices[0]!.is_sketch, 1, 'sketch: S01 preserves is_sketch flag');
+
+      const s01Tasks = getSliceTasks('M001', 'S01');
+      assert.deepStrictEqual(s01Tasks.length, 0, 'sketch: no stub tasks seeded for sketch slice S01');
+
+      const s02Tasks = getSliceTasks('M001', 'S02');
+      assert.deepStrictEqual(s02Tasks.length, 1, 'sketch: real slice S02 still imports its task');
+      assert.deepStrictEqual(counts.tasks, 1, 'sketch: only the non-sketch slice contributes tasks');
+
+      closeDatabase();
+    } finally {
+      closeDatabase();
+      cleanup(base);
+    }
+});
+

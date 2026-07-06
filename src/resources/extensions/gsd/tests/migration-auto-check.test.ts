@@ -420,6 +420,59 @@ test("migration auto-check still reports real drift with scratch dirs excluded f
   }
 });
 
+test("migration auto-check excludes sketch slice stub tasks from the markdown scan (#1286)", () => {
+  const base = makeBase();
+  try {
+    // S01 is a sketch (`[sketch]` badge): its PLAN is a stub carrying a
+    // placeholder <tasks> block until refinement. migrateHierarchyToDb skips
+    // seeding those stub tasks, so the markdown scan must skip them too — else
+    // the stub inflates the markdown count and reports false drift against a DB
+    // that (correctly) holds zero tasks for the sketch slice.
+    const roadmap = `# M001: Test Milestone
+
+**Vision:** Sketch slices must not inflate markdown task counts.
+
+## Slices
+
+- [ ] **S01: Sketch Slice** \`[sketch]\` \`risk:low\` \`depends:[]\`
+  > After this: Sketch decomposed.
+
+- [ ] **S02: Real Slice** \`risk:low\` \`depends:[]\`
+  > After this: Real work done.
+`;
+    const sketchPlan = `# S01: Sketch Slice
+
+**Goal:** Placeholder.
+
+## Tasks
+
+- [ ] **T01: Plan 01**
+  Stub placeholder task.
+`;
+    const realPlan = `# S02: Real Slice
+
+**Goal:** Real work.
+
+## Tasks
+
+- [ ] **T01: Real Task**
+  Real work.
+`;
+    const milestoneDir = join(base, ".gsd", "milestones", "M001");
+    mkdirSync(join(milestoneDir, "slices", "S01"), { recursive: true });
+    mkdirSync(join(milestoneDir, "slices", "S02"), { recursive: true });
+    writeFileSync(join(milestoneDir, "M001-ROADMAP.md"), roadmap);
+    writeFileSync(join(milestoneDir, "slices", "S01", "S01-PLAN.md"), sketchPlan);
+    writeFileSync(join(milestoneDir, "slices", "S02", "S02-PLAN.md"), realPlan);
+
+    // Both slices count, but only the refined slice contributes a task; the
+    // sketch stub task is excluded, matching migrateHierarchyToDb.
+    assert.deepEqual(countMarkdownHierarchy(base), { milestones: 1, slices: 2, tasks: 1 });
+  } finally {
+    cleanup(base);
+  }
+});
+
 test("migration auto-check still compares a roadmapless milestone that HAS a DB row", async () => {
   const base = makeBase();
   try {
