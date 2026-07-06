@@ -9,7 +9,7 @@ GSD spec markdown + bridge manifest beside it, then shells out to
 
 - **Tier:** bundled (ships inside `@opengsd/gsd-pi`)
 - **Platform requirement:** `gsd-pi >= 2.29.0`
-- **Version:** 0.1.0 (M0+M1 MVP — see [Out of scope](#out-of-scope) for the road from here)
+- **Version:** 0.3.0 (M0+M1 MVP + M2-tier-0 preflight — see [Out of scope](#out-of-scope) for the road from here)
 
 ## Quickstart
 
@@ -57,7 +57,7 @@ Planf3 plan changes.
 
 Notification on success: `Exported → <specPath>\n             <manifestPath>`.
 
-### `/planf3-gsd-build <path-to-plan.html> [--auto] [--no-prefs] [--step-unsafe]`
+### `/planf3-gsd-build <path-to-plan.html> [--auto] [--no-prefs] [--step-unsafe] [--force]`
 
 Runs export (above), then `gsd headless new-milestone --context
 <specPath>` and `gsd headless query`. Writes the resulting milestone id
@@ -72,6 +72,7 @@ back into `<stem>.manifest.json` as `gsd.milestoneId`.
 - With `--auto`: creates the milestone and runs auto-mode until the
   milestone completes (or is blocked/cancelled). Manifest gets
   `mode: "auto"` and the last-completed milestone id.
+- `--force`: skip the preflight gate (records `presets: "forced"` in the eval row).
 
 Notification on success: `Built milestone <id>\nphase=<state>\nspec=<specPath>\nmanifest=<manifestPath>`.
 
@@ -97,6 +98,27 @@ blockers:        none | <count>
 `phase` is the GSD state-machine phase string (e.g. `pre-planning`,
 `planning`, `evaluating-gates`, `executing`, …) or `unknown` if the
 query payload lacked the expected shape.
+
+### `/planf3-gsd-preflight [specs/<plan>.html] [--offline] [--ping] [--check] [--json]`
+
+Maps every pipeline stage (orchestrator → planf3 → export → gsd buckets →
+product env) with provider/auth/model per stage. Tier 0 (static) validates every
+configured model id — including hand-written `dynamic_routing.tier_models` —
+against the model catalog; tier 1 (default) live-probes each provider the
+post-overlay projection actually uses (never any other credential on the
+machine); tier 2 (`--ping`, opt-in) makes one minimal model call per bucket.
+Product env vars are presence-checked across the vite `.env` set
+(`.env`, `.env.local`, `.env.<mode>`) and `process.env` — names only, never
+values; vars a scaffold injects at boot are disclaimed as not statically
+detectable. The signed-off record lives in `specs/PRESETS.md`.
+
+`--check` compares against the signed-off record: `ok` / `drift`
+(config drifted out-of-band, or a credential that probed ok at sign-off now
+fails) / `unapproved` (no record, or this plan's projection was never signed).
+Machine consumers: parse the LAST stdout line — `preflight: verdict=<v>` — or
+use the `planf3_gsd_preflight` tool's JSON. Exit codes (0 ok / 20 unapproved /
+21 drift / 1 error) are also set but the pi host currently clobbers them in
+`--print` mode; the last line is the contract.
 
 ## ExtensionAPI tools
 
@@ -164,6 +186,18 @@ The `gsd.*` and `mapping.phases[].gsd*` slots are write-once: the
 extension fills them in after the matching GSD operation succeeds. Hand
 edits to the manifest are clobbered by the next `/planf3-gsd-export`.
 
+## PRESETS worked example
+
+The status column is an evidence ladder, not decoration: `configured` (present
+in the projection, nothing verified), `probed-ok` (credential answered a live
+probe), `exercised` (a real build dispatched this bucket — only claimed when
+evidence is handed in). From the Editorial HN run: `planning: exercised`
+(Fable 5, transcript-proven), `execution: exercised` (Sonnet, three sessions),
+but `execution_simple: configured` — Haiku was configured all week and never
+dispatched once, and `dynamic_routing.tier_models.heavy` likewise never
+triggered. A typo in either would have been invisible; that is what tier-0
+validation and this ladder exist to say out loud.
+
 ## Status output
 
 The `BridgeStatus` shape returned by `planf3_gsd_status` and rendered by
@@ -201,6 +235,7 @@ extension's compatibility brief in `gsd-pi/CLAUDE.md` tracks this.
 | `gsd binary not found — is it on your PATH?` | The extension tried to spawn `gsd headless …` and got `ENOENT` | Ensure the `gsd` shim is on PATH (it normally is for any environment that ran the slash command — this fires when the env was sanitized between parent and child) |
 | `Built milestone (unknown id) phase=pre-planning` (notification, not an error) | `gsd headless new-milestone` exited 0 but no milestone was actually created (usually the LLM session errored — e.g. provider auth — and the headless run didn't push past pre-planning) | Check `~/.gsd/PREFERENCES.md` model config; inspect the latest session at `~/.gsd/agent/sessions/<project-slug>/` for the real error; the manifest's `milestoneId: null` is the authoritative signal |
 | `Refusing headless step mode: …` | You ran `/planf3-gsd-build` without `--auto` | Use `--auto`, drive the milestone interactively, or accept the risk with `--step-unsafe` |
+| `preflight gate: …` | No signed-off PRESETS record, or config drifted since sign-off | Run `/planf3-gsd-preflight <plan.html>`, review, sign off (via the preflight skill/tool) — or `--force` |
 
 ## Requirements
 
@@ -251,7 +286,7 @@ Planf3 plans may carry routing directives; the bridge enforces them at build tim
 - **Validation commands**: the plan's global validation checklist is unioned into
   `verification_commands` in `.gsd/PREFERENCES.md`, so GSD executes them as gates.
 - **Eval log**: every build appends a JSON line to `.gsd/planf3-gsd-evals.jsonl`
-  (phase, cost, progress, blockers, applied models). Failed builds log a row too, with phase markers like failed:export / failed:new-milestone / failed:query / failed:auto-relaunch, plus auto-relaunched / auto-not-started for the auto-chain workaround.
+  (phase, cost, progress, blockers, applied models, presets, presetsHash). Presets status is `ok|forced|absent|drift`; failed builds log a row too, with phase markers like failed:export / failed:new-milestone / failed:query / failed:auto-relaunch, plus auto-relaunched / auto-not-started for the auto-chain workaround, plus `preflight-refused:absent` / `preflight-refused:drift` for gated refusals.
 
 Skip all preference writes with `/planf3-gsd-build <plan.html> --no-prefs`.
 Note: `--no-prefs` skips only the `.gsd/PREFERENCES.md` writes — the build

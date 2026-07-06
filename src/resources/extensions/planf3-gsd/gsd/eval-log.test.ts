@@ -45,7 +45,7 @@ describe("buildEvalRow", () => {
       appliedBuckets: ["planning", "execution"],
       appliedModels: { planning: "openrouter/anthropic/claude-opus-4.7", execution: "openrouter/x-ai/grok-code-fast-1" },
       generator: "planf3-gsd-pi",
-      generatorVersion: "0.2.0",
+      generatorVersion: "0.3.0",
     });
   });
 });
