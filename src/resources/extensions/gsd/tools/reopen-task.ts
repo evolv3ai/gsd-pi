@@ -23,6 +23,7 @@ import { flushWorkflowProjections } from "../projection-flush.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning } from "../workflow-logger.js";
+import { writeReopenReason } from "../reopen-reason.js";
 import { existsSync, unlinkSync } from "node:fs";
 import { join, basename, dirname } from "node:path";
 import { resolveTasksDir, resolveSlicePath, clearPathCache } from "../paths.js";
@@ -124,6 +125,20 @@ export async function handleReopenTask(
     logWarning("tool", `reopen-task artifact cleanup warning: ${(cleanupErr as Error).message}`);
   }
   clearPathCache();
+
+  // ── Persist the reopen reason for the next execute-task dispatch (#1272) ──
+  // Without this, the re-dispatched executor receives the original task plan
+  // and verify command with zero signal that it was reopened — it re-runs the
+  // (still-green) scoped verify and re-completes the task, never touching the
+  // regression the gate actually caught. buildExecuteTaskPrompt claims this
+  // artifact and prepends the diagnosis to the next dispatch.
+  if (params.reason && params.reason.trim() !== "") {
+    try {
+      writeReopenReason(basePath, params.milestoneId, params.sliceId, params.taskId, params.reason);
+    } catch (reasonErr) {
+      logWarning("tool", `reopen-task reason persistence warning: ${(reasonErr as Error).message}`);
+    }
+  }
 
   // ── Post-mutation hook ───────────────────────────────────────────────────
   try {

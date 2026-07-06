@@ -2725,6 +2725,26 @@ export async function buildExecuteTaskPrompt(
   let phaseAnchorSection = planAnchor ? formatAnchorForPrompt(planAnchor) : "";
   trackPromptContext(contextTelemetry, "plan-anchor", phaseAnchorSection ? "inline" : "skipped", phaseAnchorSection, phaseAnchorSection ? undefined : "missing");
 
+  // #1272: inject a pending reopen reason into this task's prompt. When a gate
+  // (e.g. complete-slice's full-suite run) reopened the task via gsd_task_reopen
+  // with a diagnosis, surface it here so the re-dispatched executor fixes the
+  // regression instead of re-running the original (green) scoped verify. Claim
+  // is one-shot (artifact deleted on read). Not feature-gated — a reopened task
+  // must always know why. Prepended so it sits above the plan anchor.
+  try {
+    const { claimReopenReasonForInjection } = await import("./reopen-reason.js");
+    const reopenClaimed = claimReopenReasonForInjection(base, mid, sid, tid);
+    if (reopenClaimed) {
+      const block = reopenClaimed.injectionBlock + "\n\n---\n\n";
+      phaseAnchorSection = phaseAnchorSection
+        ? `${block}${phaseAnchorSection}`
+        : block;
+      trackPromptContext(contextTelemetry, "reopen-reason", "inline", reopenClaimed.injectionBlock);
+    }
+  } catch (reopenErr) {
+    logWarning("prompt", `reopen reason injection failed: ${(reopenErr as Error).message}`);
+  }
+
   // ADR-011 Phase 2: inject any resolved-but-unapplied escalation override
   // into this task's prompt. Claim is atomic via DB UPDATE WHERE IS NULL, so
   // if a parallel build already injected it, we skip. Feature-gated by
