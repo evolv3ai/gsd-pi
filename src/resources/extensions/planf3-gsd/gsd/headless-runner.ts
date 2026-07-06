@@ -11,7 +11,10 @@ export interface GsdResult {
 export interface SpawnOptions {
   cwd?: string;
   signal?: AbortSignal;
-  stdin?: string;
+  /** Piped to the child's stdin — except the literal sentinel "ignore", which
+   *  closes stdin instead (real-spawner discriminates on it) so interactive
+   *  CLIs fail fast rather than hanging on input. */
+  stdin?: "ignore" | (string & {});
   /** Hard wall-clock timeout in ms, passed through to child_process.spawn. */
   timeoutMs?: number;
   /** Explicit environment for the child process; defaults to inheriting the parent's. */

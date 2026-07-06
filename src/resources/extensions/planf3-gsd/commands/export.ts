@@ -37,11 +37,13 @@ export async function runExport(htmlPath: string, opts: ExportOptions = {}): Pro
   }
   const plan = parsePlanf3Html(html);
 
+  const projectRoot = opts.projectRoot ?? ".";
+
   // Stamp which signed-off configuration this export belongs to, when one exists.
   let presetsRef: { path: string; approvalHash: string | null } | null = null;
   try {
     const { readPresets, PRESETS_RELATIVE_PATH } = await import("../preflight/presets-file.js");
-    const record = await readPresets(opts.projectRoot ?? ".");
+    const record = await readPresets(projectRoot);
     if (record !== null) {
       presetsRef = { path: PRESETS_RELATIVE_PATH, approvalHash: record.approval?.approvalHash ?? null };
     }
@@ -59,7 +61,7 @@ export async function runExport(htmlPath: string, opts: ExportOptions = {}): Pro
   });
   const manifest = buildManifest(
     plan,
-    { htmlPath, specPath, projectRoot: opts.projectRoot ?? "." },
+    { htmlPath, specPath, projectRoot },
     { userPrompt: opts.userPrompt ?? null, mode: opts.mode ?? "step" },
     presetsRef,
   );
