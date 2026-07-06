@@ -4,6 +4,8 @@ import assert from "node:assert/strict";
 import {
   prepareBrowserDaemonForUat,
   shouldWarmBrowserDaemonForUat,
+  stopBrowserDaemon,
+  teardownWarmedBrowserDaemons,
 } from "../browser-daemon-auto-prep.ts";
 import { commitBrowserEngineResolution } from "../../browser-tools/engine/selection.ts";
 import { resolveGsdBrowserCliAvailability } from "../../shared/gsd-browser-cli.ts";
@@ -141,4 +143,28 @@ test("prepareBrowserDaemonForUat returns actionable error when daemon start fail
   });
 
   assert.match(error ?? "", /gsd-browser daemon failed to start/i);
+});
+
+test("stopBrowserDaemon reports failure when the gsd-browser CLI is missing", () => {
+  const result = stopBrowserDaemon("/tmp/example-project", {
+    env: { GSD_BROWSER_MCP_COMMAND: "/definitely/missing/gsd-browser" },
+  });
+
+  assert.equal(result.ok, false);
+});
+
+test("teardownWarmedBrowserDaemons is a no-op when nothing was warmed", () => {
+  // A failed warm-up must not register a project root for teardown.
+  prepareBrowserDaemonForUat({
+    uatType: "browser-executable",
+    sessionProvider: "claude-code",
+    sessionAuthMode: "externalCli",
+    projectRoot: "/tmp/example-project",
+    env: {
+      ...GSD_BROWSER_ENGINE,
+      GSD_BROWSER_MCP_COMMAND: "/definitely/missing/gsd-browser",
+    },
+  });
+
+  assert.deepEqual(teardownWarmedBrowserDaemons(), []);
 });

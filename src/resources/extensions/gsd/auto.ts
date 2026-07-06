@@ -185,6 +185,7 @@ import { enterAutoWorktree, isInAutoWorktree } from "./auto-worktree-entry.js";
 import { getAutoWorktreePath } from "./auto-worktree-path-resolution.js";
 import { checkResourcesStale, readResourceVersion } from "./auto-worktree-resource-version.js";
 import { escapeStaleWorktree } from "./auto-worktree-runtime-cleanup.js";
+import { teardownWarmedBrowserDaemons } from "./browser-daemon-auto-prep.js";
 import { getAutoWorktreeOriginalBase } from "./auto-worktree-session-registry.js";
 import { syncWorktreeStateBack } from "./auto-worktree-sync.js";
 import { teardownAutoWorktree } from "./auto-worktree-teardown.js";
@@ -1488,6 +1489,17 @@ export async function cleanupAfterLoopExit(ctx: ExtensionContext): Promise<void>
   } catch (err) {
     /* best-effort — mirror stopAuto cleanup */
     logWarning("session", `lock cleanup failed: ${err instanceof Error ? err.message : String(err)}`, { file: "auto.ts" });
+  }
+
+  // Symmetric teardown for the browser-UAT warm-up preflight (#1259): stop any
+  // gsd-browser daemon this session started so the Chrome process does not
+  // linger after the loop exits. Re-warms on the next browser-backed run-uat.
+  try {
+    for (const { projectRoot, error } of teardownWarmedBrowserDaemons()) {
+      logWarning("session", `gsd-browser daemon stop failed for ${projectRoot}: ${error}`, { file: "auto.ts" });
+    }
+  } catch (err) {
+    logWarning("session", `browser daemon teardown failed: ${err instanceof Error ? err.message : String(err)}`, { file: "auto.ts" });
   }
 
   // A transient provider-error pause intentionally leaves the paused badge

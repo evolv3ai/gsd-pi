@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 const {
   resolveBundledGsdBrowserCliPath,
   resolveGsdBrowserDaemonStartInvocation,
+  resolveGsdBrowserDaemonStopInvocation,
   resolveGsdBrowserMcpLaunchConfig,
 } = await import("../../shared/gsd-browser-cli.ts");
 
@@ -176,6 +177,24 @@ describe("resolveGsdBrowserDaemonStartInvocation", () => {
     assert.deepEqual(
       daemon.args.slice(0, daemon.args.indexOf("--session")),
       [...launch.args.slice(0, launch.args.indexOf("mcp")), "daemon", "start"],
+    );
+  });
+});
+
+describe("resolveGsdBrowserDaemonStopInvocation", () => {
+  it("mirrors MCP session and identity flags with daemon stop", () => {
+    const launch = resolveGsdBrowserMcpLaunchConfig("/tmp/example-project", {});
+    const daemon = resolveGsdBrowserDaemonStopInvocation("/tmp/example-project", {});
+
+    assert.equal(daemon.command, launch.command);
+    assert.equal(daemon.cwd, launch.cwd);
+    assert.deepEqual(
+      daemon.args.slice(daemon.args.indexOf("--session")),
+      launch.args.slice(launch.args.indexOf("--session")),
+    );
+    assert.deepEqual(
+      daemon.args.slice(0, daemon.args.indexOf("--session")),
+      [...launch.args.slice(0, launch.args.indexOf("mcp")), "daemon", "stop"],
     );
   });
 });
