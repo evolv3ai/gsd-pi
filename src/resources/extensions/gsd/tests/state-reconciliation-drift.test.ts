@@ -107,11 +107,11 @@ test("ADR-017 (#5700): sketch-flag drift detected and repaired end-to-end", asyn
     sketchScope: "limited",
   });
 
-  // Simulate the post-crash scenario: PLAN.md exists on disk but the
-  // is_sketch flag is still 1.
+  // Simulate the post-crash scenario: a *real* PLAN.md (a decomposed task)
+  // exists on disk but the is_sketch flag is still 1.
   writeFileSync(
     join(base, ".gsd", "phases", "01-test", "01-02-PLAN.md"),
-    "# S02 Plan\n",
+    makeStalePlanContent("S02", [{ id: "T01", title: "Build the feature", done: false }]),
   );
   assert.equal(getSlice("M001", "S02")?.is_sketch, 1, "pre: flagged as sketch");
 
@@ -129,6 +129,56 @@ test("ADR-017 (#5700): sketch-flag drift detected and repaired end-to-end", asyn
     assert.equal(result.repaired[0].mid, "M001");
     assert.equal(result.repaired[0].sid, "S02");
   }
+});
+
+test("#1287: stub/placeholder PLAN does NOT clear the sketch flag", async (t) => {
+  const base = makeFixtureBase();
+  t.after(() => cleanup(base));
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M001", title: "Test", status: "active" });
+  insertSlice({
+    id: "S02",
+    milestoneId: "M001",
+    title: "Feature",
+    status: "pending",
+    risk: "medium",
+    depends: [],
+    demo: "S02 demo.",
+    sequence: 1,
+    isSketch: true,
+    sketchScope: "limited",
+  });
+
+  const planPath = join(base, ".gsd", "phases", "01-test", "01-02-PLAN.md");
+
+  // A bare stub PLAN (no decomposed tasks) must not clear the flag.
+  writeFileSync(planPath, "# S02 Plan\n");
+  clearRendererCaches();
+  let state = makeState({ activeMilestone: { id: "M001", title: "Test" } });
+  let result = await reconcileBeforeDispatch(base, {
+    invalidateStateCache: () => {},
+    deriveState: async () => state,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(getSlice("M001", "S02")?.is_sketch, 1, "stub PLAN: flag stays set");
+  assert.equal(result.repaired.length, 0, "stub PLAN: no repair");
+
+  // A projection round-trip stub whose only task is a synthetic "Plan NN"
+  // placeholder (migrate/transformer.buildTaskTitle) must also not clear it.
+  writeFileSync(
+    planPath,
+    makeStalePlanContent("S02", [{ id: "T01", title: "Plan 01", done: false }]),
+  );
+  clearRendererCaches();
+  state = makeState({ activeMilestone: { id: "M001", title: "Test" } });
+  result = await reconcileBeforeDispatch(base, {
+    invalidateStateCache: () => {},
+    deriveState: async () => state,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(getSlice("M001", "S02")?.is_sketch, 1, "placeholder task: flag stays set");
+  assert.equal(result.repaired.length, 0, "placeholder task: no repair");
 });
 
 test("ADR-017 (#5700): repair failure throws ReconciliationFailedError with shape", async () => {
@@ -1977,7 +2027,7 @@ test("deriveState is pure: stale sketch healed only via reconcileBeforeDispatch"
   });
   writeFileSync(
     join(base, ".gsd", "phases", "01-test", "01-02-PLAN.md"),
-    "# S02 Plan\n",
+    makeStalePlanContent("S02", [{ id: "T01", title: "Build the feature", done: false }]),
   );
 
   const { deriveState } = await import("../state.ts");
