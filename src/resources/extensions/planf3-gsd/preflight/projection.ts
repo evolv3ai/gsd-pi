@@ -1,4 +1,4 @@
-import { mergePreferences, splitPreferences } from "../gsd/preferences-overlay.js";
+import { mergeSplitPreferences, splitPreferences, type SplitFile } from "../gsd/preferences-overlay.js";
 import type { ProjectionResult } from "./types.js";
 
 function modelsOf(frontmatter: Record<string, unknown>): Record<string, string> {
@@ -27,11 +27,18 @@ function tierModelsOf(frontmatter: Record<string, unknown>, into: { id: string; 
 }
 
 export interface ProjectionInput {
-  globalContent: string | null;
-  projectContent: string | null;
+  /** Raw content, a pre-parsed SplitFile (parse-once callers), or null when absent. */
+  globalContent: string | SplitFile | null;
+  projectContent: string | SplitFile | null;
   modelPolicy: Record<string, string>;
   validationCommands: string[];
   sourceHtmlPath: string;
+}
+
+function toSplit(content: string | SplitFile | null, sourceHtmlPath: string): SplitFile {
+  return typeof content === "object" && content !== null
+    ? content
+    : splitPreferences(content, sourceHtmlPath);
 }
 
 /**
@@ -42,21 +49,19 @@ export interface ProjectionInput {
  * dedup-union for verification_commands — GSD/preferences.ts:860).
  */
 export function projectPreferences(input: ProjectionInput): ProjectionResult {
-  const projected = mergePreferences(input.projectContent, {
+  const projectSplit = toSplit(input.projectContent, input.sourceHtmlPath);
+  const globalSplit = toSplit(input.globalContent, input.sourceHtmlPath);
+  const projected = mergeSplitPreferences(projectSplit, {
     modelPolicy: input.modelPolicy,
     verificationCommands: input.validationCommands,
     sourceHtmlPath: input.sourceHtmlPath,
   });
-  const projectFm = splitPreferences(projected.content, input.sourceHtmlPath).frontmatter;
-  const globalFm = input.globalContent === null
-    ? {}
-    : splitPreferences(input.globalContent, input.sourceHtmlPath).frontmatter;
+  const projectFm = projected.frontmatter;
+  const globalFm = globalSplit.frontmatter;
 
   const globalModels = modelsOf(globalFm);
   const projectModels = modelsOf(projectFm);
-  const rawProjectModels = modelsOf(
-    input.projectContent === null ? {} : splitPreferences(input.projectContent, input.sourceHtmlPath).frontmatter,
-  );
+  const rawProjectModels = modelsOf(projectSplit.frontmatter);
 
   const buckets: Record<string, string> = { ...globalModels, ...projectModels };
   const sources: ProjectionResult["sources"] = {};

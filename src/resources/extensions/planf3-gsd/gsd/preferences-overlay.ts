@@ -11,6 +11,9 @@ export interface OverlayInput {
 
 export interface OverlayResult {
   content: string;
+  /** The merged frontmatter object serialized into `content` — the parse-once
+   *  contract for preflight/projection.ts (never re-split the output). */
+  frontmatter: Record<string, unknown>;
   /** Bucket keys whose model changed this run (e.g. "planning"). */
   appliedBucketKeys: string[];
   /** bucket → model id for exactly those buckets. */
@@ -49,8 +52,11 @@ export function splitPreferences(existing: string | null, sourceHtmlPath: string
   return { frontmatter: { version: 1 }, body: existing };
 }
 
-export function mergePreferences(existing: string | null, input: OverlayInput): OverlayResult {
-  const { frontmatter, body } = splitPreferences(existing, input.sourceHtmlPath);
+/** Merge core over an already-split file. Never mutates `split` (models and
+ *  fm are copied before writes — required because callers reuse the split
+ *  for the raw pre-merge view). */
+export function mergeSplitPreferences(split: SplitFile, input: OverlayInput): OverlayResult {
+  const { frontmatter, body } = split;
 
   const models: Record<string, unknown> =
     frontmatter.models && typeof frontmatter.models === "object" && !Array.isArray(frontmatter.models)
@@ -79,7 +85,11 @@ export function mergePreferences(existing: string | null, input: OverlayInput): 
 
   const changed = appliedBucketKeys.length > 0 || appliedCommands.length > 0;
   const content = `---\n${stringifyYaml(fm)}---\n${body}`;
-  return { content, appliedBucketKeys, appliedModelMap, appliedCommands, changed };
+  return { content, frontmatter: fm, appliedBucketKeys, appliedModelMap, appliedCommands, changed };
+}
+
+export function mergePreferences(existing: string | null, input: OverlayInput): OverlayResult {
+  return mergeSplitPreferences(splitPreferences(existing, input.sourceHtmlPath), input);
 }
 
 export async function applyPreferencesOverlay(projectRoot: string, input: OverlayInput): Promise<OverlayResult> {

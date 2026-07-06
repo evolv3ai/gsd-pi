@@ -1,6 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { projectPreferences } from "./projection.js";
+import { splitPreferences } from "../gsd/preferences-overlay.js";
 
 const GLOBAL = `---
 version: 1
@@ -59,5 +60,18 @@ describe("projectPreferences", () => {
     assert.deepEqual(p.buckets, { planning: "m1" });
     assert.deepEqual(p.verificationCommands, ["c1"]);
     assert.deepEqual(p.sources, { planning: "plan" });
+  });
+
+  test("accepts pre-parsed SplitFile inputs (parse-once contract) with identical output", () => {
+    const project = "---\nversion: 1\nmodels:\n  planning: prov/a\n---\nbody\n";
+    const asString = projectPreferences({
+      globalContent: null, projectContent: project,
+      modelPolicy: {}, validationCommands: [], sourceHtmlPath: "p.html",
+    });
+    const asSplit = projectPreferences({
+      globalContent: null, projectContent: splitPreferences(project, "p.html"),
+      modelPolicy: {}, validationCommands: [], sourceHtmlPath: "p.html",
+    });
+    assert.deepEqual(asSplit, asString);
   });
 });
