@@ -9,7 +9,10 @@ import { friendlyError } from "./error-message.js";
 
 export interface PrefsSummary {
   applied: boolean;
-  models: string[];
+  /** Bucket keys applied this build (e.g. "planning"). */
+  buckets: string[];
+  /** bucket → model id for exactly those buckets. */
+  models: Record<string, string>;
   commands: string[];
   warning: string | null;
 }
@@ -64,7 +67,8 @@ async function logFailureRow(
     specPath: string;
     mode: "auto" | "step";
     marker: string;
-    appliedModels: string[];
+    appliedBuckets: string[];
+    appliedModels: Record<string, string>;
   },
 ): Promise<void> {
   try {
@@ -77,6 +81,7 @@ async function logFailureRow(
         milestoneId: null,
         mode: input.mode,
         status: { ...mapQuerySnapshot(null), phase: input.marker },
+        appliedBuckets: input.appliedBuckets,
         appliedModels: input.appliedModels,
       }),
     );
@@ -106,13 +111,13 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
   try {
     exportResult = await runExport(htmlPath, { mode, projectRoot: cwd });
   } catch (err) {
-    await logFailureRow(cwd, { loggedAt: now(), htmlPath, specPath: "", mode, marker: "failed:export", appliedModels: [] });
+    await logFailureRow(cwd, { loggedAt: now(), htmlPath, specPath: "", mode, marker: "failed:export", appliedBuckets: [], appliedModels: {} });
     throw new Error(friendlyError(err));
   }
 
   // Routing must land before the milestone is created so an --auto run
   // executes under the plan's model policy.
-  let prefs: PrefsSummary = { applied: false, models: [], commands: [], warning: null };
+  let prefs: PrefsSummary = { applied: false, buckets: [], models: {}, commands: [], warning: null };
   const hasDirectives =
     Object.keys(exportResult.modelPolicy).length > 0 || exportResult.validationCommands.length > 0;
   if (opts.applyPrefs !== false && hasDirectives) {
@@ -124,14 +129,16 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
       });
       prefs = {
         applied: overlay.changed,
-        models: overlay.appliedModels,
+        buckets: overlay.appliedModels,
+        models: overlay.appliedModelMap,
         commands: overlay.appliedCommands,
         warning: null,
       };
     } catch (err) {
       prefs = {
         applied: false,
-        models: [],
+        buckets: [],
+        models: {},
         commands: [],
         warning: err instanceof Error ? err.message : String(err),
       };
@@ -163,7 +170,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
   } catch (err) {
     await logFailureRow(cwd, {
       loggedAt: now(), htmlPath, specPath: exportResult.specPath, mode,
-      marker: "failed:new-milestone", appliedModels: prefs.models,
+      marker: "failed:new-milestone", appliedBuckets: prefs.buckets, appliedModels: prefs.models,
     });
     throw new Error(friendlyError(err, opts.binary ?? "gsd"));
   }
@@ -199,7 +206,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
   } catch (err) {
     await logFailureRow(cwd, {
       loggedAt: now(), htmlPath, specPath: exportResult.specPath, mode,
-      marker: "failed:query", appliedModels: prefs.models,
+      marker: "failed:query", appliedBuckets: prefs.buckets, appliedModels: prefs.models,
     });
     throw new Error(friendlyError(err, opts.binary ?? "gsd"));
   }
@@ -240,7 +247,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
       } catch (err) {
         await logFailureRow(cwd, {
           loggedAt: now(), htmlPath, specPath: exportResult.specPath, mode,
-          marker: "failed:auto-relaunch", appliedModels: prefs.models,
+          marker: "failed:auto-relaunch", appliedBuckets: prefs.buckets, appliedModels: prefs.models,
         });
         throw new Error(friendlyError(err, opts.binary ?? "gsd"));
       }
@@ -275,6 +282,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
         milestoneId,
         mode,
         status: { ...status, phase: evalPhase },
+        appliedBuckets: prefs.buckets,
         appliedModels: prefs.models,
       }),
     );

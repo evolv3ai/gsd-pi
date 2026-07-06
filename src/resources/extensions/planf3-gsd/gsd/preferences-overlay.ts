@@ -11,7 +11,10 @@ export interface OverlayInput {
 
 export interface OverlayResult {
   content: string;
+  /** Bucket keys whose model changed this run (name is historical). */
   appliedModels: string[];
+  /** bucket → model id for exactly those buckets. */
+  appliedModelMap: Record<string, string>;
   appliedCommands: string[];
   changed: boolean;
 }
@@ -54,10 +57,12 @@ export function mergePreferences(existing: string | null, input: OverlayInput): 
       ? { ...(frontmatter.models as Record<string, unknown>) }
       : {};
   const appliedModels: string[] = [];
+  const appliedModelMap: Record<string, string> = {};
   for (const [bucket, model] of Object.entries(input.modelPolicy)) {
     if (typeof model === "string" && models[bucket] !== model) {
       models[bucket] = model;
       appliedModels.push(bucket);
+      appliedModelMap[bucket] = model;
     }
   }
 
@@ -74,7 +79,7 @@ export function mergePreferences(existing: string | null, input: OverlayInput): 
 
   const changed = appliedModels.length > 0 || appliedCommands.length > 0;
   const content = `---\n${stringifyYaml(fm)}---\n${body}`;
-  return { content, appliedModels, appliedCommands, changed };
+  return { content, appliedModels, appliedModelMap, appliedCommands, changed };
 }
 
 export async function applyPreferencesOverlay(projectRoot: string, input: OverlayInput): Promise<OverlayResult> {

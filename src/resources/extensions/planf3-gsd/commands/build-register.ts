@@ -21,7 +21,7 @@ export function registerBuildCommand(pi: ExtensionAPI): void {
         const prefsLine = result.prefs.warning
           ? `prefs=skipped (${result.prefs.warning})`
           : result.prefs.applied
-            ? `prefs=updated .gsd/PREFERENCES.md (models: ${result.prefs.models.join(", ") || "none"}; +${result.prefs.commands.length} verification commands)`
+            ? `prefs=updated .gsd/PREFERENCES.md (buckets: ${result.prefs.buckets.join(", ") || "none"}; +${result.prefs.commands.length} verification commands)`
             : "prefs=no changes";
         const chainLine = result.autoChain === "not-applicable" ? "" : `\nauto=${result.autoChain}`;
         emit(

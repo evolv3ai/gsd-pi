@@ -104,7 +104,11 @@ describe("runBuild", () => {
 
     assert.equal(prefsExistedAtMilestone, true, "overlay written before new-milestone");
     assert.equal(result.prefs.applied, true);
-    assert.deepEqual(result.prefs.models, ["planning", "execution"]);
+    assert.deepEqual(result.prefs.buckets, ["planning", "execution"]);
+    assert.deepEqual(result.prefs.models, {
+      planning: "openrouter/anthropic/claude-opus-4.7",
+      execution: "openrouter/x-ai/grok-code-fast-1",
+    });
     assert.equal(result.prefs.warning, null);
 
     const prefs = await readFile(join(tmp, ".gsd", "PREFERENCES.md"), "utf8");
@@ -117,7 +121,11 @@ describe("runBuild", () => {
     assert.equal(row.milestoneId, "M042");
     assert.equal(row.loggedAt, "2026-07-04T12:00:00Z");
     assert.equal(row.cost, 0.5);
-    assert.deepEqual(row.appliedModels, ["planning", "execution"]);
+    assert.deepEqual(row.appliedBuckets, ["planning", "execution"]);
+    assert.deepEqual(row.appliedModels, {
+      planning: "openrouter/anthropic/claude-opus-4.7",
+      execution: "openrouter/x-ai/grok-code-fast-1",
+    });
   });
 
   test("applyPrefs=false skips the overlay but still logs the eval row", async () => {
@@ -207,7 +215,7 @@ describe("runBuild", () => {
     assert.equal(row.milestoneId, null);
     assert.ok(row.specPath.endsWith(".gsd.md"));
     // prefs were applied before the milestone attempt, so the row records them
-    assert.deepEqual(row.appliedModels, ["planning", "execution"]);
+    assert.deepEqual(row.appliedBuckets, ["planning", "execution"]);
   });
 
   test("query failure logs a failed:query eval row and rethrows", async () => {

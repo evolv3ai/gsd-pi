@@ -66,7 +66,8 @@ async function backfillCompletionRow(cwd: string, status: BridgeStatus, now: () 
         milestoneId: completed.id,
         mode: manifest.mode,
         status,
-        appliedModels: [],
+        appliedBuckets: [],
+        appliedModels: {},
         event: "status",
       }),
     );

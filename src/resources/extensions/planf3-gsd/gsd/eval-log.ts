@@ -1,9 +1,11 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { BridgeStatus } from "./status-mapper.js";
+import { GENERATOR_VERSION } from "../version.js";
 
 export interface EvalRow {
   loggedAt: string;
+  /** "build" = how a build command ended; "status" = completion observed at status time. */
   event: "build" | "status";
   htmlPath: string;
   specPath: string;
@@ -13,9 +15,12 @@ export interface EvalRow {
   cost: number;
   progress: BridgeStatus["progress"];
   blockerCount: number;
-  appliedModels: string[];
+  /** Bucket keys the build applied to .gsd/PREFERENCES.md (e.g. "planning"). */
+  appliedBuckets: string[];
+  /** bucket → model id for exactly those buckets. */
+  appliedModels: Record<string, string>;
   generator: "planf3-gsd-pi";
-  generatorVersion: "0.2.0";
+  generatorVersion: string;
 }
 
 export function buildEvalRow(input: {
@@ -25,7 +30,8 @@ export function buildEvalRow(input: {
   milestoneId: string | null;
   mode: "auto" | "step";
   status: BridgeStatus;
-  appliedModels: string[];
+  appliedBuckets: string[];
+  appliedModels: Record<string, string>;
   event?: "build" | "status";
 }): EvalRow {
   return {
@@ -39,9 +45,10 @@ export function buildEvalRow(input: {
     cost: input.status.cost,
     progress: input.status.progress,
     blockerCount: input.status.blockers.length,
+    appliedBuckets: input.appliedBuckets,
     appliedModels: input.appliedModels,
     generator: "planf3-gsd-pi",
-    generatorVersion: "0.2.0",
+    generatorVersion: GENERATOR_VERSION,
   };
 }
 
