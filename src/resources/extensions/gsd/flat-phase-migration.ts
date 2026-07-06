@@ -105,6 +105,7 @@ function existingMigrateBackup(basePath: string): string | null {
       try {
         const st = statSync(dirPath);
         if (!st.isDirectory()) continue;
+        if (!hasLegacyMilestoneSubdirs(dirPath)) continue;
         if (!latest || st.mtimeMs > latest.mtimeMs) latest = { path: dirPath, mtimeMs: st.mtimeMs };
       } catch {
         // Non-fatal: skip unreadable entries.
