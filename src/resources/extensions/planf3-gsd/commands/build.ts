@@ -31,6 +31,7 @@ export interface BuildOptions {
   applyPrefs?: boolean;
   now?: () => string;
   settle?: SettleOptions;
+  allowUnsafeStep?: boolean;
 }
 
 export type AutoChainOutcome = "not-applicable" | "chained" | "relaunched" | "not-started";
@@ -43,6 +44,16 @@ export interface SettleOptions {
   /** Injectable sleep for tests. */
   sleep?: (ms: number) => Promise<void>;
 }
+
+export const STEP_MODE_HEADLESS_ERROR = [
+  "Refusing headless step mode: `gsd headless new-milestone` (without --auto) parks on the",
+  "depth-verification gate, which cannot be answered in a headless session, and leaves a",
+  "stub milestone behind.",
+  "Options:",
+  "  • run with --auto (recommended — the gate is auto-verified in auto mode),",
+  "  • create the milestone interactively inside pi, then drive it with /gsd next,",
+  "  • or pass --step-unsafe to accept today's deadlock-prone behavior anyway.",
+].join("\n");
 
 /** Best-effort failure eval row — never masks the original error. */
 async function logFailureRow(
@@ -85,6 +96,9 @@ function deriveLastStatus(
 }
 
 export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promise<BuildResult> {
+  if (opts.auto !== true && opts.allowUnsafeStep !== true) {
+    throw new Error(STEP_MODE_HEADLESS_ERROR);
+  }
   const cwd = opts.cwd ?? process.cwd();
   const now = opts.now ?? (() => new Date().toISOString());
   const mode: "auto" | "step" = opts.auto ? "auto" : "step";

@@ -32,7 +32,7 @@ describe("runBuild", () => {
       return { exitCode: 1, stdout: "", stderr: "unexpected" };
     };
 
-    const result = await runBuild(htmlPath, { auto: false, binary: "gsd", cwd: tmp, spawn });
+    const result = await runBuild(htmlPath, { auto: false, allowUnsafeStep: true, binary: "gsd", cwd: tmp, spawn });
     assert.equal(result.milestoneId, "M042");
     assert.equal(result.status.phase, "ready");
 
@@ -95,6 +95,7 @@ describe("runBuild", () => {
 
     const result = await runBuild(htmlPath, {
       auto: false,
+      allowUnsafeStep: true,
       binary: "gsd",
       cwd: tmp,
       spawn,
@@ -133,7 +134,7 @@ describe("runBuild", () => {
       };
     };
 
-    const result = await runBuild(htmlPath, { auto: false, binary: "gsd", cwd: tmp, spawn, applyPrefs: false });
+    const result = await runBuild(htmlPath, { auto: false, allowUnsafeStep: true, binary: "gsd", cwd: tmp, spawn, applyPrefs: false });
     assert.equal(result.prefs.applied, false);
     await assert.rejects(() => readFile(join(tmp, ".gsd", "PREFERENCES.md"), "utf8"));
     const evalText = await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8");
@@ -156,7 +157,7 @@ describe("runBuild", () => {
       };
     };
 
-    const result = await runBuild(htmlPath, { auto: false, binary: "gsd", cwd: tmp, spawn });
+    const result = await runBuild(htmlPath, { auto: false, allowUnsafeStep: true, binary: "gsd", cwd: tmp, spawn });
     assert.equal(result.milestoneId, "M2");
     assert.equal(result.prefs.applied, false);
     assert.match(result.prefs.warning ?? "", /closing/);
@@ -409,5 +410,35 @@ describe("runBuild", () => {
     assert.equal(manifest.validation.lastStatus, "planned");
     const evalLines = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n");
     assert.equal(JSON.parse(evalLines[evalLines.length - 1]).phase, "auto-not-started");
+  });
+
+  // Step-mode guard: headless new-milestone deadlocks on the depth gate, so
+  // plain step mode must refuse fast (see STEP_MODE_HEADLESS_ERROR).
+  test("step mode without --step-unsafe fails fast before export", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-stepguard-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+
+    let spawned = false;
+    const spawn: Spawner = async () => { spawned = true; return { exitCode: 0, stdout: "{}", stderr: "" }; };
+
+    await assert.rejects(() => runBuild(htmlPath, { auto: false, binary: "gsd", cwd: tmp, spawn }), /depth-verification/);
+    assert.equal(spawned, false, "no gsd subprocess ran");
+    await assert.rejects(() => readFile(join(tmp, "minimal.gsd.md"), "utf8"), "no spec exported");
+  });
+
+  test("allowUnsafeStep restores step-mode behavior", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-stepunsafe-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+
+    const spawn: Spawner = async (_cmd, args) => {
+      if (args.includes("new-milestone")) return { exitCode: 0, stdout: "{}", stderr: "" };
+      return { exitCode: 0, stdout: JSON.stringify({ state: { phase: "ready", activeMilestone: { id: "M042", title: "Minimal Plan" } }, next: null, cost: { total: 0 } }), stderr: "" };
+    };
+
+    const result = await runBuild(htmlPath, { auto: false, allowUnsafeStep: true, binary: "gsd", cwd: tmp, spawn });
+    assert.equal(result.milestoneId, "M042");
+    assert.equal(result.autoChain, "not-applicable");
   });
 });

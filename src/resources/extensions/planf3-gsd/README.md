@@ -57,16 +57,18 @@ Planf3 plan changes.
 
 Notification on success: `Exported → <specPath>\n             <manifestPath>`.
 
-### `/planf3-gsd-build <path-to-plan.html> [--auto]`
+### `/planf3-gsd-build <path-to-plan.html> [--auto] [--no-prefs] [--step-unsafe]`
 
 Runs export (above), then `gsd headless new-milestone --context
 <specPath>` and `gsd headless query`. Writes the resulting milestone id
 back into `<stem>.manifest.json` as `gsd.milestoneId`.
 
-- Without `--auto` (**step mode**): creates the milestone and plans its
-  slices, then returns. You drive task execution yourself with normal
-  GSD commands. Manifest gets `mode: "step"` and the active milestone
-  id.
+- Without `--auto` (**step mode**): refused in headless contexts — the
+  spawned `gsd headless new-milestone` parks on the depth-verification
+  gate that nothing can answer, leaving a stub milestone. The command
+  fails fast with guidance. Pass `--step-unsafe` to restore the old
+  behavior anyway, or create the milestone interactively inside pi and
+  drive it with `/gsd next`.
 - With `--auto`: creates the milestone and runs auto-mode until the
   milestone completes (or is blocked/cancelled). Manifest gets
   `mode: "auto"` and the last-completed milestone id.
@@ -198,6 +200,7 @@ extension's compatibility brief in `gsd-pi/CLAUDE.md` tracks this.
 | `Plan file not found: <path>` | The HTML path you passed doesn't exist | Check the path; relative paths resolve against the workspace cwd |
 | `gsd binary not found — is it on your PATH?` | The extension tried to spawn `gsd headless …` and got `ENOENT` | Ensure the `gsd` shim is on PATH (it normally is for any environment that ran the slash command — this fires when the env was sanitized between parent and child) |
 | `Built milestone (unknown id) phase=pre-planning` (notification, not an error) | `gsd headless new-milestone` exited 0 but no milestone was actually created (usually the LLM session errored — e.g. provider auth — and the headless run didn't push past pre-planning) | Check `~/.gsd/PREFERENCES.md` model config; inspect the latest session at `~/.gsd/agent/sessions/<project-slug>/` for the real error; the manifest's `milestoneId: null` is the authoritative signal |
+| `Refusing headless step mode: …` | You ran `/planf3-gsd-build` without `--auto` | Use `--auto`, drive the milestone interactively, or accept the risk with `--step-unsafe` |
 
 ## Requirements
 

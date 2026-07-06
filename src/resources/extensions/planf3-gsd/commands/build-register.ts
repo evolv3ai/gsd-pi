@@ -10,12 +10,13 @@ export function registerBuildCommand(pi: ExtensionAPI): void {
       const htmlPath = tokens[0];
       const auto = tokens.includes("--auto");
       const applyPrefs = !tokens.includes("--no-prefs");
+      const allowUnsafeStep = tokens.includes("--step-unsafe");
       if (!htmlPath) {
-        ctx.ui.notify("Usage: /planf3-gsd-build <path-to-plan.html> [--auto] [--no-prefs]", "error");
+        ctx.ui.notify("Usage: /planf3-gsd-build <path-to-plan.html> [--auto] [--no-prefs] [--step-unsafe]", "error");
         return;
       }
       try {
-        const result = await runBuild(htmlPath, { auto, applyPrefs });
+        const result = await runBuild(htmlPath, { auto, applyPrefs, allowUnsafeStep });
         const prefsLine = result.prefs.warning
           ? `prefs=skipped (${result.prefs.warning})`
           : result.prefs.applied
