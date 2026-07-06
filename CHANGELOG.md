@@ -8,6 +8,18 @@ This changelog starts from the `open-gsd/gsd-pi` ownership baseline. Earlier pro
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-07-06
+
+### Fixed
+- **issue**: unregistered-milestone false positive: flat-phase ID extractor derives bare M### from descriptive slug, missing suffixed DB row (M###-abcdef) (#1282)
+- **issue**: [Bug] reconcile triggers mass re-projection of all historical PLAN.md files, resetting completed task checkboxes to unchecked (#1279)
+- **issue**: [Bug]: `migrateHierarchyToDb` imports a `[sketch]` slice's stub PLAN tasks as real DB rows, flipping planning→executing
+- **issue**: [Bug]: `sketchFlagHandler` clears `is_sketch` on mere PLAN-file existence, including a stub or leftover PLAN
+
+### Changed
+- **doctor**: extract state checks
+- **doctor**: extract history and workspace checks
+
 ## [1.7.0] - 2026-07-06
 
 ### Added

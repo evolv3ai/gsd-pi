@@ -198,20 +198,20 @@ importers:
         specifier: 0.3.6
         version: 0.3.6
       '@opengsd/engine-darwin-arm64':
-        specifier: 1.7.0
-        version: 1.7.0
+        specifier: 1.8.1
+        version: 1.8.1
       '@opengsd/engine-darwin-x64':
-        specifier: 1.7.0
-        version: 1.7.0
+        specifier: 1.8.1
+        version: 1.8.1
       '@opengsd/engine-linux-arm64-gnu':
-        specifier: 1.7.0
-        version: 1.7.0
+        specifier: 1.8.1
+        version: 1.8.1
       '@opengsd/engine-linux-x64-gnu':
-        specifier: 1.7.0
-        version: 1.7.0
+        specifier: 1.8.1
+        version: 1.8.1
       '@opengsd/engine-win32-x64-msvc':
-        specifier: 1.7.0
-        version: 1.7.0
+        specifier: 1.8.1
+        version: 1.8.1
       fsevents:
         specifier: ~2.3.3
         version: 2.3.3
@@ -415,16 +415,16 @@ importers:
     dependencies:
       '@anthropic-ai/sdk':
         specifier: 0.91.1
-        version: 0.91.1(zod@4.4.3)
+        version: 0.91.1(zod@3.25.76)
       '@anthropic-ai/vertex-sdk':
         specifier: 0.14.4
-        version: 0.14.4(zod@4.4.3)
+        version: 0.14.4(zod@3.25.76)
       '@aws-sdk/client-bedrock-runtime':
         specifier: 3.1048.0
         version: 3.1048.0
       '@google/genai':
         specifier: 1.52.0
-        version: 1.52.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))
+        version: 1.52.0(@modelcontextprotocol/sdk@1.29.0(zod@3.25.76))
       '@mistralai/mistralai':
         specifier: 2.2.1
         version: 2.2.1
@@ -439,7 +439,7 @@ importers:
         version: 7.0.6
       openai:
         specifier: 6.26.0
-        version: 6.26.0(ws@8.21.0)(zod@4.4.3)
+        version: 6.26.0(ws@8.21.0)(zod@3.25.76)
       partial-json:
         specifier: 0.1.7
         version: 0.1.7
@@ -1960,28 +1960,28 @@ packages:
     resolution: {integrity: sha512-nn5ozdjYQpUCZlWGuxcJY/KpxkWQs4DcbMCmKojjyrYDEAGy4Ce19NN4v5MduafTwJlbKc99UA8YhSVqq9yPZA==}
     engines: {node: '>=12.4.0'}
 
-  '@opengsd/engine-darwin-arm64@1.7.0':
-    resolution: {integrity: sha512-gCY1WhZGe1lossFXQtgrffT1jFbRYXgi3KIK2rqs2Q6xny1/XJOlPChNDjPnjxwpNEEDLJQzMaw5TYVOjsBTGA==}
+  '@opengsd/engine-darwin-arm64@1.8.1':
+    resolution: {integrity: sha512-4zi27lkoWUlU7AT/bQnnNMe/4fTxCDCVxigK1H6BoiARSceZjsnqdnyQnRUqwbFsfDk9bAJ8iLH5ANh/NIhZvQ==}
     cpu: [arm64]
     os: [darwin]
 
-  '@opengsd/engine-darwin-x64@1.7.0':
-    resolution: {integrity: sha512-Adyb55/U3id6Rn8ZZ/fLscDh3zvUV0PwV3wkTf0zbp8pm9BQE6em6CYB3V2KSZoFB6ySNkEtySzJDHLJM3GGzw==}
+  '@opengsd/engine-darwin-x64@1.8.1':
+    resolution: {integrity: sha512-xhJHZQq61h9c/xnaa8MX4yuimgsv8MCX7aSClqC0UmoTsMjImeMbTStAcMoBTe8F0bln4Dszj58OmPRs6Z0zKQ==}
     cpu: [x64]
     os: [darwin]
 
-  '@opengsd/engine-linux-arm64-gnu@1.7.0':
-    resolution: {integrity: sha512-2qRRvTyLos+LmW3BrhQbAPkVLNPSmLMryiP+a3piF/ZNgfb4DaI/TIjwIytyWseWQySKmhM7565l+eyIbjrUeg==}
+  '@opengsd/engine-linux-arm64-gnu@1.8.1':
+    resolution: {integrity: sha512-PLq9JRslcZnlGnNdzDWuftM7XuU9O8hfvcleLMa30L1ZOCfo00YyKHskuM6S17CdWJxitCNzi5NQ86pPL8cUIg==}
     cpu: [arm64]
     os: [linux]
 
-  '@opengsd/engine-linux-x64-gnu@1.7.0':
-    resolution: {integrity: sha512-m+/mV5o5NofGcCJ99igt/9RCymovEncD21LUPZYd2BShdFM9TOjsOpEpC127blMbQAvY5TFF79NAq0njBd3/8Q==}
+  '@opengsd/engine-linux-x64-gnu@1.8.1':
+    resolution: {integrity: sha512-+5iUjBrR45l5RWikpvHC/gvNtagZjgUkEr5kfkG+q+jt/Mb7dsu0nKv1nF+zzfeGkPi+c/zId4FXKzrUIXVGxw==}
     cpu: [x64]
     os: [linux]
 
-  '@opengsd/engine-win32-x64-msvc@1.7.0':
-    resolution: {integrity: sha512-iCqB+yxkh/dDkuxqanEUXaaYfWZrkeHYYA85QcDakjiUZHd9/YtHK6AAISiHVocNKy+4F1p77mUJJZyQGPqUYA==}
+  '@opengsd/engine-win32-x64-msvc@1.8.1':
+    resolution: {integrity: sha512-eq4VGBLMJKCzEM+r3hKgZuMD+XIXb9JzpHzTdnwXu7xHe45X8w6rwduvJ3+qsuFEiNI5qyttRYk/bGMqSvC/4g==}
     cpu: [x64]
     os: [win32]
 
@@ -6437,11 +6437,25 @@ snapshots:
 
   '@anthropic-ai/sdk@0.52.0': {}
 
+  '@anthropic-ai/sdk@0.91.1(zod@3.25.76)':
+    dependencies:
+      json-schema-to-ts: 3.1.1
+    optionalDependencies:
+      zod: 3.25.76
+
   '@anthropic-ai/sdk@0.91.1(zod@4.4.3)':
     dependencies:
       json-schema-to-ts: 3.1.1
     optionalDependencies:
       zod: 4.4.3
+
+  '@anthropic-ai/vertex-sdk@0.14.4(zod@3.25.76)':
+    dependencies:
+      '@anthropic-ai/sdk': 0.91.1(zod@3.25.76)
+      google-auth-library: 9.15.1
+    transitivePeerDependencies:
+      - supports-color
+      - zod
 
   '@anthropic-ai/vertex-sdk@0.14.4(zod@4.4.3)':
     dependencies:
@@ -7321,6 +7335,19 @@ snapshots:
 
   '@floating-ui/utils@0.2.11': {}
 
+  '@google/genai@1.52.0(@modelcontextprotocol/sdk@1.29.0(zod@3.25.76))':
+    dependencies:
+      google-auth-library: 10.6.2
+      p-retry: 4.6.2
+      protobufjs: 7.6.4
+      ws: 8.21.0
+    optionalDependencies:
+      '@modelcontextprotocol/sdk': 1.29.0(zod@3.25.76)
+    transitivePeerDependencies:
+      - bufferutil
+      - supports-color
+      - utf-8-validate
+
   '@google/genai@1.52.0(@modelcontextprotocol/sdk@1.29.0(zod@4.4.3))':
     dependencies:
       google-auth-library: 10.6.2
@@ -7637,6 +7664,29 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
+  '@modelcontextprotocol/sdk@1.29.0(zod@3.25.76)':
+    dependencies:
+      '@hono/node-server': 1.19.14(hono@4.12.23)
+      ajv: 8.20.0
+      ajv-formats: 3.0.1(ajv@8.20.0)
+      content-type: 1.0.5
+      cors: 2.8.6
+      cross-spawn: 7.0.6
+      eventsource: 3.0.7
+      eventsource-parser: 3.1.0
+      express: 5.2.1
+      express-rate-limit: 8.5.2(express@5.2.1)
+      hono: 4.12.23
+      jose: 6.2.3
+      json-schema-typed: 8.0.2
+      pkce-challenge: 5.0.1
+      raw-body: 3.0.2
+      zod: 3.25.76
+      zod-to-json-schema: 3.25.2(zod@3.25.76)
+    transitivePeerDependencies:
+      - supports-color
+    optional: true
+
   '@modelcontextprotocol/sdk@1.29.0(zod@4.4.3)':
     dependencies:
       '@hono/node-server': 1.19.14(hono@4.12.23)
@@ -7712,19 +7762,19 @@ snapshots:
 
   '@nolyfill/is-core-module@1.0.39': {}
 
-  '@opengsd/engine-darwin-arm64@1.7.0':
+  '@opengsd/engine-darwin-arm64@1.8.1':
     optional: true
 
-  '@opengsd/engine-darwin-x64@1.7.0':
+  '@opengsd/engine-darwin-x64@1.8.1':
     optional: true
 
-  '@opengsd/engine-linux-arm64-gnu@1.7.0':
+  '@opengsd/engine-linux-arm64-gnu@1.8.1':
     optional: true
 
-  '@opengsd/engine-linux-x64-gnu@1.7.0':
+  '@opengsd/engine-linux-x64-gnu@1.8.1':
     optional: true
 
-  '@opengsd/engine-win32-x64-msvc@1.7.0':
+  '@opengsd/engine-win32-x64-msvc@1.8.1':
     optional: true
 
   '@opengsd/gsd-browser@0.2.2': {}
@@ -11525,6 +11575,11 @@ snapshots:
       oniguruma-parser: 0.12.2
       regex: 6.1.0
       regex-recursion: 6.0.2
+
+  openai@6.26.0(ws@8.21.0)(zod@3.25.76):
+    optionalDependencies:
+      ws: 8.21.0
+      zod: 3.25.76
 
   openai@6.26.0(ws@8.21.0)(zod@4.4.3):
     optionalDependencies:

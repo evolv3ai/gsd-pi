@@ -28,12 +28,14 @@ See [CHANGELOG.md](./CHANGELOG.md) for release-by-release fixes and [Legacy Rele
 ## Latest Release Highlights
 
 <!-- release-highlights:start -->
-Latest release: **v1.7.0**
+Latest release: **v1.8.1**
 
-- **cloud:** Add device-flow login to daemon + @opengsd/gsd-cloud agent (#1278).
-- **issue:** [Bug]: Unattended `gsd headless auto` has no resumer for the parallel/slice_parallel worker pause signal → terminal exit 10 after the first unit.
-- **issue:** Complete-slice's reopen reason never reaches the re-dispatched execute-task (follow-up to #1225).
-- **issue:** [Feature Request]: gsd-browser daemon has no automatic teardown — orphaned Chrome process survives session/task completion.
+- **doctor:** Extract state checks.
+- **doctor:** Extract history and workspace checks.
+- **issue:** Unregistered-milestone false positive: flat-phase ID extractor derives bare M### from descriptive slug, missing suffixed DB row (M###-abcdef) (#1282).
+- **issue:** [Bug] reconcile triggers mass re-projection of all historical PLAN.md files, resetting completed task checkboxes to unchecked (#1279).
+- **issue:** [Bug]: `migrateHierarchyToDb` imports a `[sketch]` slice's stub PLAN tasks as real DB rows, flipping planning→executing.
+- **issue:** [Bug]: `sketchFlagHandler` clears `is_sketch` on mere PLAN-file existence, including a stub or leftover PLAN.
 
 <!-- release-highlights:end -->
 

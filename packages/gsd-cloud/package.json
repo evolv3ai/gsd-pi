@@ -1,6 +1,6 @@
 {
   "name": "@opengsd/gsd-cloud",
-  "version": "1.7.1",
+  "version": "1.8.1",
   "description": "Standalone CLI agent that connects a local GSD runtime to GSD Cloud (cloud.opengsd.net)",
   "license": "MIT",
   "repository": {
