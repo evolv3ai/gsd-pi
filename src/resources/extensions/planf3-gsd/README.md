@@ -252,13 +252,14 @@ extension's compatibility brief in `gsd-pi/CLAUDE.md` tracks this.
 
 ## Out of scope (deferred to later milestones)
 
-The current 0.1.0 release covers **M0 (parser + spec exporter)** and
-**M1 (manifest + headless bridge)**. The following slash commands and
+The current release covers **M0 (parser + spec exporter)**,
+**M1 (manifest + headless bridge)**, and **M2 tier-0 (the preflight/PRESETS
+enforced-lite gate)**. The following slash commands and
 features are intentionally not implemented yet — see
 `/home/wsladmin/dev/planf3-gsd/docs/superpowers/plans/2026-06-22-planf3-gsd-mvp.md`
 for the full PRD coverage map:
 
-- `/planf3-gsd plan` and `/run` — M2
+- `/planf3-gsd plan` and `/run` — rest of M2
 - `/sync` (push GSD state back into the Planf3 HTML) — M3
 - Steer / pause / stop + the blocker-flow UI — M4
 - Lore / RAC promotion — M5
@@ -287,6 +288,14 @@ Planf3 plans may carry routing directives; the bridge enforces them at build tim
   `verification_commands` in `.gsd/PREFERENCES.md`, so GSD executes them as gates.
 - **Eval log**: every build appends a JSON line to `.gsd/planf3-gsd-evals.jsonl`
   (phase, cost, progress, blockers, applied models, presets, presetsHash). Presets status is `ok|forced|absent|drift`; failed builds log a row too, with phase markers like failed:export / failed:new-milestone / failed:query / failed:auto-relaunch, plus auto-relaunched / auto-not-started for the auto-chain workaround, plus `preflight-refused:absent` / `preflight-refused:drift` for gated refusals.
+  Consumers must partition by `event` before counting: the `{event, phase}`
+  space overlaps by design — a settled `--auto` build writes a `build` row
+  whose phase is `auto-relaunched` or gsd's real phase (e.g. `done`), and a
+  later `/planf3-gsd-status` on the same milestone still appends one `status`
+  row (the `hasStatusRowFor` dedup only applies to `status` rows). One
+  deliberate gap: refusing headless step mode (the `STEP_MODE_HEADLESS_ERROR`
+  guard) throws before any state exists and writes **no** row, so eval-log
+  counts never include step-mode attempts.
 
 Skip all preference writes with `/planf3-gsd-build <plan.html> --no-prefs`.
 Note: `--no-prefs` skips only the `.gsd/PREFERENCES.md` writes — the build

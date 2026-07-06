@@ -137,7 +137,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
   // (Task 10 review, finding #2) — it's the same failure domain runExport's
   // ENOENT mapping owns below, not a presets refusal, so it gets the exact
   // same failed:export marker + friendly message rather than a generic
-  // "preflight gate could not be computed" one.
+  // "specs/PRESETS.md is unreadable" one.
   let gate: PresetsGateResult;
   try {
     gate = await checkPresetsGate(cwd, htmlPath, {
