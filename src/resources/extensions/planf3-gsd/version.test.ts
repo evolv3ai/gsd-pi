@@ -11,4 +11,10 @@ describe("GENERATOR_VERSION", () => {
     const pkg = JSON.parse(await readFile(join(here, "package.json"), "utf8"));
     assert.equal(GENERATOR_VERSION, pkg.version);
   });
+
+  test("matches extension-manifest.json version", async () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const manifest = JSON.parse(await readFile(join(here, "extension-manifest.json"), "utf8"));
+    assert.equal(GENERATOR_VERSION, manifest.version);
+  });
 });

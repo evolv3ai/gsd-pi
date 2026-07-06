@@ -37,7 +37,7 @@ function recordWith(overrides: Partial<NonNullable<PresetsRecord["approval"]>> =
         buckets: [{ bucket: "planning", model: "claude-code/claude-fable-5", source: "plan", status: "configured" }],
         verificationCommands: ["pnpm typecheck"],
       },
-      exportStage: { generatorVersion: "0.3.1" },
+      exportStage: { generatorVersion: "0.0.0-test" },
       project: { root: ".", branch: null },
     },
     product: [],
