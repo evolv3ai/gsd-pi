@@ -180,7 +180,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
       });
       prefs = {
         applied: overlay.changed,
-        buckets: overlay.appliedModels,
+        buckets: overlay.appliedBucketKeys,
         models: overlay.appliedModelMap,
         commands: overlay.appliedCommands,
         warning: null,
