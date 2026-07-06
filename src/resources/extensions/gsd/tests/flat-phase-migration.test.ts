@@ -219,6 +219,34 @@ test("re-fired migration reuses the existing backup instead of leaking a new mig
   assert.equal(existsSync(join(base, ".gsd", "milestones")), false, "legacy milestones/ removed again");
 });
 
+test("rollback after a re-fired migration preserves the reused migrate-* backup", async (t) => {
+  const base = makeTmp();
+  await migrateToFlatPhase(base);
+  const backupRoot = join(base, ".gsd-backups");
+  const firstBackups = readdirSync(backupRoot).filter((d) => d.startsWith("migrate-"));
+  assert.equal(firstBackups.length, 1, "first migration snapshots exactly one backup");
+
+  mkdirSync(join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01"), { recursive: true });
+  const milestonesPath = join(base, ".gsd", "milestones");
+  const phasesPath = join(base, ".gsd", "phases");
+
+  const restoreFsOps = _setFlatPhaseMigrationFsOpsForTest({
+    rmSync(target, opts) {
+      if (target === phasesPath) {
+        throw Object.assign(new Error("simulated locked phases/"), { code: "EPERM" });
+      }
+      return rmSync(target, opts as never);
+    },
+  });
+  t.after(restoreFsOps);
+
+  await assert.rejects(migrateToFlatPhase(base), /simulated locked/);
+
+  const afterBackups = readdirSync(backupRoot).filter((d) => d.startsWith("migrate-"));
+  assert.deepEqual(afterBackups, firstBackups, "rollback must preserve the reused backup");
+  assert.ok(existsSync(milestonesPath), "legacy milestones/ should be restored on rollback");
+});
+
 test("migrateToFlatPhase preserves slice sidecar artifacts and skips recovery placeholder PLAN", async () => {
   const base = makeTmp({ withTask: false });
   const legacySliceDir = join(base, ".gsd", "milestones", "M001", "slices", "S01");
