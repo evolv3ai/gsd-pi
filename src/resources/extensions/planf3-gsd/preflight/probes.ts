@@ -148,7 +148,7 @@ export async function runModelPings(buckets: Record<string, string>, deps: Probe
         const url = provider === "openrouter"
           ? "https://openrouter.ai/api/v1/chat/completions"
           : "https://api.anthropic.com/v1/messages";
-        const headers = provider === "openrouter"
+        const headers: Record<string, string> = provider === "openrouter"
           ? { Authorization: `Bearer ${key}`, "content-type": "application/json" }
           : { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" };
         const model = modelId.split("/").slice(1).join("/");
