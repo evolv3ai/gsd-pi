@@ -52,7 +52,11 @@ export function registerPreflightTool(pi: ExtensionAPI): void {
           details: { verdict: run.verdict, drift: run.drift, map: run.map },
         };
       } catch (err) {
-        return { content: [{ type: "text" as const, text: friendlyError(err) }], isError: true, details: undefined as unknown };
+        return {
+          content: [{ type: "text" as const, text: friendlyError(err) }],
+          isError: true,
+          details: { verdict: "error" as const, error: friendlyError(err) },
+        };
       }
     },
   });
