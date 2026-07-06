@@ -120,10 +120,22 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
   // Enforced-lite preflight gate (spec §7): recomputed from disk alone, never
   // probes. Refusals still log eval rows — otherwise "failed builds emit no
   // eval row" is recreated one layer up.
-  const gate = await checkPresetsGate(cwd, htmlPath, {
-    force: opts.force === true,
-    ...(opts.globalPrefsPath !== undefined ? { globalPrefsPath: opts.globalPrefsPath } : {}),
-  });
+  //
+  // A missing/moved plan html propagates uncaught out of checkPresetsGate
+  // (Task 10 review, finding #2) — it's the same failure domain runExport's
+  // ENOENT mapping owns below, not a presets refusal, so it gets the exact
+  // same failed:export marker + friendly message rather than a generic
+  // "preflight gate could not be computed" one.
+  let gate: PresetsGateResult;
+  try {
+    gate = await checkPresetsGate(cwd, htmlPath, {
+      force: opts.force === true,
+      ...(opts.globalPrefsPath !== undefined ? { globalPrefsPath: opts.globalPrefsPath } : {}),
+    });
+  } catch (err) {
+    await logFailureRow(cwd, { loggedAt: now(), htmlPath, specPath: "", mode, marker: "failed:export", appliedBuckets: [], appliedModels: {} });
+    throw new Error(friendlyError(err));
+  }
   if (gate.refusal !== null) {
     await logFailureRow(cwd, {
       loggedAt: now(), htmlPath, specPath: "", mode,

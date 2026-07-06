@@ -2,10 +2,12 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parsePlanf3Html } from "../parser/planf3-html-parser.js";
+import { splitPreferences } from "../gsd/preferences-overlay.js";
 import { projectionHash } from "./hash.js";
 import { projectPreferences } from "./projection.js";
 import { readPresets } from "./presets-file.js";
 import type { DriftRow, OrchestratorFacts, PresetsRecord, ProbeOutcome, ProjectionResult, Verdict } from "./types.js";
+import type { ParsedPlan } from "../parser/types.js";
 
 export interface VerdictResult {
   verdict: Verdict;
@@ -107,10 +109,53 @@ async function readOrNull(path: string): Promise<string | null> {
 }
 
 /**
+ * Corrupt frontmatter degrades to "as if absent" for THIS gate's projection
+ * only — never a build-blocking refusal (Task 10 review, finding #1).
+ * applyPreferencesOverlay independently re-parses the same on-disk file for
+ * the real write later in runBuild and is where the user-facing warning
+ * actually comes from; this just keeps the gate from crashing/refusing on
+ * the same corruption first.
+ */
+function safeFrontmatterContent(content: string | null, sourceHtmlPath: string): string | null {
+  if (content === null) return null;
+  try {
+    splitPreferences(content, sourceHtmlPath);
+    return content;
+  } catch {
+    return null;
+  }
+}
+
+async function readCurrentProjection(
+  projectRoot: string,
+  htmlPath: string,
+  plan: Pick<ParsedPlan, "modelPolicy" | "validationCommands">,
+  globalPrefsPath?: string,
+): Promise<ProjectionResult> {
+  const globalRaw = await readOrNull(globalPrefsPath ?? join(homedir(), ".gsd", "PREFERENCES.md"));
+  const projectRaw = await readOrNull(join(projectRoot, ".gsd", "PREFERENCES.md"));
+  return projectPreferences({
+    globalContent: safeFrontmatterContent(globalRaw, htmlPath),
+    projectContent: safeFrontmatterContent(projectRaw, htmlPath),
+    modelPolicy: plan.modelPolicy as Record<string, string>,
+    validationCommands: plan.validationCommands,
+    sourceHtmlPath: htmlPath,
+  });
+}
+
+/**
  * Enforced-lite build gate (spec §7). Recomputes the projection from disk alone
  * — PRESETS.md, global + project PREFERENCES.md, and the plan's #model-policy /
  * #validation — per the §5.1 disk-recomputable rule. Never probes (no network
  * before export); probe-drift belongs to --check.
+ *
+ * Failure-domain scope (Task 10 review, findings #1 + #2): only an unreadable
+ * or corrupt specs/PRESETS.md — the "no sign-off to trust" case this gate
+ * exists to enforce — resolves to absent/forced here. A missing/moved plan
+ * html propagates uncaught so runBuild's own failed:export handling (shared
+ * with runExport) attributes it correctly instead of a generic presets
+ * refusal; a corrupt PREFERENCES.md never throws in the first place (see
+ * readCurrentProjection) so it can never masquerade as one either.
  */
 export async function checkPresetsGate(
   projectRoot: string,
@@ -118,35 +163,27 @@ export async function checkPresetsGate(
   opts: { force: boolean; globalPrefsPath?: string },
 ): Promise<PresetsGateResult> {
   const rerun = `run /planf3-gsd-preflight ${htmlPath} and sign off, or pass --force to build anyway`;
-  // The whole disk-recomputation (PRESETS.md, the plan html, and the projection
-  // merge over .gsd/PREFERENCES.md) is one failure domain: any of those reads
-  // or parses can throw on real-world on-disk mess (corrupt frontmatter, a
-  // moved plan file, …), and none of that is the gate's business to crash
-  // on — it should refuse (or, under --force, proceed) exactly like an
-  // unreadable PRESETS.md does today.
-  try {
-    const record = await readPresets(projectRoot);
-    const html = await readFile(htmlPath, "utf8");
-    const plan = parsePlanf3Html(html);
-    const projection = projectPreferences({
-      globalContent: await readOrNull(opts.globalPrefsPath ?? join(homedir(), ".gsd", "PREFERENCES.md")),
-      projectContent: await readOrNull(join(projectRoot, ".gsd", "PREFERENCES.md")),
-      modelPolicy: plan.modelPolicy as Record<string, string>,
-      validationCommands: plan.validationCommands,
-      sourceHtmlPath: htmlPath,
-    });
-    const result = computeVerdict(record, { projection, planPath: htmlPath, probes: [] });
-    const hash = projectionHash(projection);
 
-    if (result.verdict === "ok") return { presets: "ok", presetsHash: hash, drift: [], refusal: null };
-    if (opts.force) return { presets: "forced", presetsHash: hash, drift: result.drift, refusal: null };
-    if (result.verdict === "unapproved") {
-      return { presets: "absent", presetsHash: hash, drift: [], refusal: `preflight gate: ${result.reason} — ${rerun}` };
-    }
-    const diffLines = result.drift.map((d) => `  ${d.field}: ${d.approved} → ${d.current}`).join("\n");
-    return { presets: "drift", presetsHash: hash, drift: result.drift, refusal: `preflight gate: configuration drifted since sign-off:\n${diffLines}\n${rerun}` };
+  let record: PresetsRecord | null;
+  try {
+    record = await readPresets(projectRoot);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { presets: opts.force ? "forced" : "absent", presetsHash: null, drift: [], refusal: opts.force ? null : `preflight gate could not be computed (${msg}) — ${rerun}` };
   }
+
+  // Plan html read/parse failures propagate uncaught — see docstring above.
+  const html = await readFile(htmlPath, "utf8");
+  const plan = parsePlanf3Html(html);
+  const projection = await readCurrentProjection(projectRoot, htmlPath, plan, opts.globalPrefsPath);
+  const result = computeVerdict(record, { projection, planPath: htmlPath, probes: [] });
+  const hash = projectionHash(projection);
+
+  if (result.verdict === "ok") return { presets: "ok", presetsHash: hash, drift: [], refusal: null };
+  if (opts.force) return { presets: "forced", presetsHash: hash, drift: result.drift, refusal: null };
+  if (result.verdict === "unapproved") {
+    return { presets: "absent", presetsHash: hash, drift: [], refusal: `preflight gate: ${result.reason} — ${rerun}` };
+  }
+  const diffLines = result.drift.map((d) => `  ${d.field}: ${d.approved} → ${d.current}`).join("\n");
+  return { presets: "drift", presetsHash: hash, drift: result.drift, refusal: `preflight gate: configuration drifted since sign-off:\n${diffLines}\n${rerun}` };
 }

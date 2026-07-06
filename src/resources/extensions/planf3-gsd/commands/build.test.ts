@@ -150,10 +150,15 @@ describe("runBuild", () => {
     assert.equal(evalText.trim().split("\n").length, 1);
   });
 
+  // writeRecordFor() is declared later in this describe block (function
+  // declarations hoist), signing off the fixture plan's projection so the
+  // gate passes without --force.
   test("a corrupt existing PREFERENCES.md yields a warning and does not block the build", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-badprefs-"));
     const htmlPath = join(tmp, "minimal.html");
     await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+    const globalPrefs = join(tmp, "no-global.md");
+    await writeRecordFor(tmp, htmlPath, globalPrefs);
     await mkdir(join(tmp, ".gsd"), { recursive: true });
     await writeFile(join(tmp, ".gsd", "PREFERENCES.md"), "---\nunclosed frontmatter\n", "utf8");
 
@@ -166,7 +171,9 @@ describe("runBuild", () => {
       };
     };
 
-    const result = await runBuild(htmlPath, { auto: false, allowUnsafeStep: true, binary: "gsd", cwd: tmp, spawn, force: true, globalPrefsPath: join(tmp, "no-global.md") });
+    // No force: true here — proving finding #1 is fixed (the preflight gate
+    // must not swallow this corruption into a build-blocking refusal).
+    const result = await runBuild(htmlPath, { auto: false, allowUnsafeStep: true, binary: "gsd", cwd: tmp, spawn, globalPrefsPath: globalPrefs });
     assert.equal(result.milestoneId, "M2");
     assert.equal(result.prefs.applied, false);
     assert.match(result.prefs.warning ?? "", /closing/);
@@ -174,13 +181,46 @@ describe("runBuild", () => {
     assert.equal(untouched, "---\nunclosed frontmatter\n");
   });
 
+  // Finding #1 (Task 10 review): checkPresetsGate's disk-recomputation must
+  // degrade a corrupt PREFERENCES.md the same way readOrNull degrades an
+  // unreadable one — never a presets refusal. applyPreferencesOverlay is
+  // independently where the user-facing warning comes from (unchanged).
+  test("corrupt PREFERENCES.md never surfaces as a presets refusal, even without --force (finding #1 regression)", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-badprefs-gate-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+    const globalPrefs = join(tmp, "no-global.md");
+    await writeRecordFor(tmp, htmlPath, globalPrefs);
+    await mkdir(join(tmp, ".gsd"), { recursive: true });
+    await writeFile(join(tmp, ".gsd", "PREFERENCES.md"), "---\nunclosed frontmatter\n", "utf8");
+
+    const spawn: Spawner = async (_cmd, args) => {
+      if (args.includes("new-milestone")) return { exitCode: 0, stdout: "{}", stderr: "" };
+      return { exitCode: 0, stdout: JSON.stringify({ state: { phase: "ready", activeMilestone: { id: "M3", title: "x" } }, next: null, cost: { total: 0 } }), stderr: "" };
+    };
+
+    const result = await runBuild(htmlPath, {
+      auto: false, allowUnsafeStep: true, binary: "gsd", cwd: tmp, spawn,
+      globalPrefsPath: globalPrefs, now: () => "2026-07-06T09:00:00Z",
+    });
+
+    assert.equal(result.presets, "ok", "the gate itself must not treat corrupt project prefs as unverifiable");
+    const lines = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n");
+    for (const line of lines) {
+      assert.doesNotMatch(JSON.parse(line).phase, /^preflight-refused/, "corrupt PREFERENCES.md must never log a presets refusal");
+    }
+    assert.match(result.prefs.warning ?? "", /closing/, "the SAME corruption still warns via applyPreferencesOverlay downstream");
+  });
+
   // Failure eval rows — every throw path still logs a row (follow-up #1).
   test("export failure logs a failed:export eval row and rethrows", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-failexport-"));
     const spawn: Spawner = async () => ({ exitCode: 0, stdout: "{}", stderr: "" });
 
+    // No force: true — a missing plan html throws before the gate can even
+    // read the (nonexistent) PRESETS record, so this needs no bypass.
     await assert.rejects(
-      () => runBuild(join(tmp, "missing.html"), { auto: true, binary: "gsd", cwd: tmp, spawn, now: () => "2026-07-05T00:00:00Z", force: true, globalPrefsPath: join(tmp, "no-global.md") }),
+      () => runBuild(join(tmp, "missing.html"), { auto: true, binary: "gsd", cwd: tmp, spawn, now: () => "2026-07-05T00:00:00Z" }),
       /Plan file not found/,
     );
 
@@ -192,6 +232,26 @@ describe("runBuild", () => {
     assert.equal(row.specPath, "");
     assert.equal(row.mode, "auto");
     assert.equal(row.loggedAt, "2026-07-05T00:00:00Z");
+  });
+
+  // Finding #2 (Task 10 review): a missing/moved plan html must be attributed
+  // to the SAME failed:export marker/message runExport's own ENOENT handling
+  // uses — never conflated with a presets refusal, and never a wrong phase in
+  // the eval-log taxonomy.
+  test("missing plan html without --force is attributed to failed:export, not a presets refusal (finding #2 regression)", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-missinghtml-gate-"));
+    const spawn: Spawner = async () => ({ exitCode: 0, stdout: "{}", stderr: "" });
+
+    await assert.rejects(
+      () => runBuild(join(tmp, "moved.html"), { auto: true, binary: "gsd", cwd: tmp, spawn, now: () => "2026-07-06T09:05:00Z" }),
+      /Plan file not found/,
+    );
+
+    const lines = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n");
+    assert.equal(lines.length, 1);
+    const row = JSON.parse(lines[0]);
+    assert.equal(row.phase, "failed:export", "must be attributed to the export/html-read failure, not the presets gate");
+    assert.notEqual(row.phase, "preflight-refused:absent");
   });
 
   test("new-milestone failure logs a failed:new-milestone eval row and rethrows", async () => {
