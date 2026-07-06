@@ -1,6 +1,5 @@
-import { existsSync, mkdirSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { loadFile, parseSummary, saveFile, parseTaskPlanMustHaves, countMustHavesMentionedInSummary } from "./files.js";
 import { parseRoadmap as parseLegacyRoadmap, parsePlan as parseLegacyPlan } from "./parsers-legacy.js";
@@ -11,14 +10,14 @@ import { findMilestoneIds } from "./milestone-ids.js";
 import { deriveState, isMilestoneComplete } from "./state.js";
 import { invalidateAllCaches } from "./cache.js";
 import { loadEffectiveGSDPreferences, type GSDPreferences } from "./preferences.js";
+import { appendDoctorHistory } from "./doctor-history.js";
+import { checkWorkspaceRepositoryHealth } from "./doctor-workspace-checks.js";
 import { collectPreferenceDiagnostics, formatPreferenceDiagnosticDetail } from "./preferences-diagnostics.js";
 import { isClosedStatus } from "./status-guards.js";
 
 import type { DoctorIssue, DoctorIssueCode, DoctorReport } from "./doctor-types.js";
 import { GLOBAL_STATE_CODES } from "./doctor-types.js";
 import type { RoadmapSliceEntry } from "./types.js";
-import { GIT_NO_PROMPT_ENV } from "./git-constants.js";
-import { createRepositoryRegistryFromPreferences } from "./repository-registry.js";
 import { checkGitHealth, checkRuntimeHealth, checkGlobalHealth, checkEngineHealth } from "./doctor-checks.js";
 import { checkEnvironmentHealth } from "./doctor-environment.js";
 import { runProviderChecks } from "./doctor-providers.js";
@@ -29,6 +28,7 @@ import { validateTitle } from "./validation.js";
 // so that existing imports from "./doctor.js" continue to work unchanged.
 export type { DoctorSeverity, DoctorIssueCode, DoctorIssue, DoctorReport, DoctorSummary } from "./doctor-types.js";
 export { summarizeDoctorIssues, filterDoctorIssues, formatDoctorReport, formatDoctorIssuesForPrompt, formatDoctorReportJson } from "./doctor-format.js";
+export { readDoctorHistory, type DoctorHistoryEntry } from "./doctor-history.js";
 export { runEnvironmentChecks, runFullEnvironmentChecks, formatEnvironmentReport, type EnvironmentCheckResult } from "./doctor-environment.js";
 export { computeProgressScore, computeProgressScoreWithContext, formatProgressLine, formatProgressReport, type ProgressScore, type ProgressLevel } from "./progress-score.js";
 
@@ -236,167 +236,6 @@ function detectCircularDependencies(slices: RoadmapSliceEntry[]): string[][] {
   }
   for (const s of slices) if (state.get(s.id) === "unvisited") dfs(s.id, []);
   return cycles;
-}
-
-// ── Helper: doctor run history ──────────────────────────────────────────────
-export interface DoctorHistoryEntry {
-  ts: string;
-  ok: boolean;
-  errors: number;
-  warnings: number;
-  fixes: number;
-  codes: string[];
-  /** Issue messages with severity and scope (added in Phase 2). */
-  issues?: Array<{ severity: string; code: string; message: string; unitId: string }>;
-  /** Fix descriptions applied during this run (added in Phase 2). */
-  fixDescriptions?: string[];
-  /** Milestone/slice scope this doctor run was scoped to (e.g. "M001/S02"). */
-  scope?: string;
-  /** Human-readable one-line summary of this doctor run. */
-  summary?: string;
-}
-
-async function appendDoctorHistory(basePath: string, report: DoctorReport): Promise<void> {
-  try {
-    const historyPath = join(gsdRoot(basePath), "doctor-history.jsonl");
-    const errorCount = report.issues.filter(i => i.severity === "error").length;
-    const warningCount = report.issues.filter(i => i.severity === "warning").length;
-    const issueDetails = report.issues
-      .filter(i => i.severity === "error" || i.severity === "warning")
-      .slice(0, 10) // cap to keep JSONL lines bounded
-      .map(i => ({ severity: i.severity, code: i.code, message: i.message, unitId: i.unitId }));
-
-    // Human-readable one-line summary
-    const summaryParts: string[] = [];
-    if (report.ok) {
-      summaryParts.push("Clean");
-    } else {
-      const counts: string[] = [];
-      if (errorCount > 0) counts.push(`${errorCount} error${errorCount > 1 ? "s" : ""}`);
-      if (warningCount > 0) counts.push(`${warningCount} warning${warningCount > 1 ? "s" : ""}`);
-      summaryParts.push(counts.join(", "));
-    }
-    if (report.fixesApplied.length > 0) {
-      summaryParts.push(`${report.fixesApplied.length} fixed`);
-    }
-    if (issueDetails.length > 0) {
-      const topIssue = issueDetails.find(i => i.severity === "error") ?? issueDetails[0]!;
-      summaryParts.push(topIssue.message);
-    }
-
-    const entry = JSON.stringify({
-      ts: new Date().toISOString(),
-      ok: report.ok,
-      errors: errorCount,
-      warnings: warningCount,
-      fixes: report.fixesApplied.length,
-      codes: [...new Set(report.issues.map(i => i.code))],
-      issues: issueDetails.length > 0 ? issueDetails : undefined,
-      fixDescriptions: report.fixesApplied.length > 0 ? report.fixesApplied : undefined,
-      scope: (report as any).scope as string | undefined,
-      summary: summaryParts.join(" · "),
-    } satisfies DoctorHistoryEntry);
-    const existing = existsSync(historyPath) ? readFileSync(historyPath, "utf-8") : "";
-    await saveFile(historyPath, existing + entry + "\n");
-  } catch { /* non-fatal */ }
-}
-
-/** Read the last N doctor history entries. Returns most-recent-first. */
-export async function readDoctorHistory(basePath: string, lastN = 50): Promise<DoctorHistoryEntry[]> {
-  try {
-    const historyPath = join(gsdRoot(basePath), "doctor-history.jsonl");
-    if (!existsSync(historyPath)) return [];
-    const lines = readFileSync(historyPath, "utf-8").split("\n").filter(l => l.trim());
-    return lines.slice(-lastN).reverse().map(l => JSON.parse(l) as DoctorHistoryEntry);
-  } catch { return []; }
-}
-
-/**
- * Resolve the git working-tree root for a path, or null if it is not a repo.
- * Used by the workspace-repository probe to check that a declared child path is
- * itself a git repository (not merely nested inside the parent's repo).
- */
-function resolveGitToplevel(cwd: string): string | null {
-  try {
-    const out = execFileSync("git", ["rev-parse", "--show-toplevel"], {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-      encoding: "utf-8",
-      env: GIT_NO_PROMPT_ENV,
-    }).trim();
-    return out ? resolve(out) : null;
-  } catch {
-    return null;
-  }
-}
-
-/** realpath that falls back to the resolved path if the link cannot be read. */
-function realpathSafe(p: string): string {
-  try {
-    return realpathSync(p);
-  } catch {
-    return resolve(p);
-  }
-}
-
-/**
- * Parent-workspace probe (#818): validate that every declared child repository
- * exists on disk and is a git repository at its own root. The registry only
- * checks paths stay inside the project root; it never checks existence or
- * git-ness, so a typo'd path (e.g. `frontned`) would otherwise build cleanly
- * and silently produce "no problems found." No-op for single-repo projects.
- */
-function checkWorkspaceRepositoryHealth(
-  basePath: string,
-  prefs: GSDPreferences | undefined,
-  issues: DoctorIssue[],
-): void {
-  if (prefs?.workspace?.mode !== "parent") return;
-  let registry;
-  try {
-    registry = createRepositoryRegistryFromPreferences(basePath, prefs);
-  } catch (err) {
-    issues.push({
-      severity: "error",
-      code: "invalid_preferences",
-      scope: "project",
-      unitId: "workspace",
-      message: `workspace registry failed to build: ${err instanceof Error ? err.message : String(err)}`,
-      fixable: false,
-    });
-    return;
-  }
-  for (const repo of registry.repositories) {
-    if (repo.id === "project") continue;
-    if (!existsSync(repo.root)) {
-      issues.push({
-        severity: "error",
-        code: "workspace_repo_path_missing",
-        scope: "project",
-        unitId: `workspace.repositories.${repo.id}`,
-        message: `declared repository "${repo.id}" path does not exist on disk: ${repo.root}`,
-        fixable: false,
-      });
-      continue;
-    }
-    // Must be a repo at its OWN root — a plain dir nested in the parent repo
-    // would otherwise pass a bare `nativeIsRepo` check via the enclosing
-    // parent's .git. Compare on realpath so symlinked temp roots (macOS
-    // /var vs /private/var) don't cause a false mismatch.
-    const toplevel = resolveGitToplevel(repo.root);
-    const declaredReal = realpathSafe(repo.root);
-    const toplevelReal = toplevel ? realpathSafe(toplevel) : null;
-    if (toplevelReal !== declaredReal) {
-      issues.push({
-        severity: "warning",
-        code: "workspace_repo_not_a_repo",
-        scope: "project",
-        unitId: `workspace.repositories.${repo.id}`,
-        message: `declared repository "${repo.id}" path is not a git repository at its own root: ${repo.root}`,
-        fixable: false,
-      });
-    }
-  }
 }
 
 export async function runGSDDoctor(basePath: string, options?: { fix?: boolean; dryRun?: boolean; scope?: string; fixLevel?: "task" | "all"; isolationMode?: "none" | "worktree" | "branch"; includeBuild?: boolean; includeTests?: boolean }): Promise<DoctorReport> {
