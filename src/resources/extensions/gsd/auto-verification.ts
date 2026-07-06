@@ -512,6 +512,12 @@ export async function runPostUnitVerification(
         ? prefs.verification_max_retries
         : 2;
 
+    if (result.skippedChecks && result.skippedChecks.length > 0) {
+      const skippedNames = result.skippedChecks.map((s) => s.command).join(", ");
+      ctx.ui.notify(formatPostUnitStatusCard("↷ Verification Gate", `deferred (no test files yet): ${skippedNames}`));
+      process.stderr.write(`verification-gate: deferred ${result.skippedChecks.length} command(s): ${skippedNames}\n`);
+    }
+
     if (result.checks.length > 0) {
       const passCount = result.checks.filter((c) => c.exitCode === 0).length;
       const total = result.checks.length;

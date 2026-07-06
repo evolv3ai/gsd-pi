@@ -22,7 +22,7 @@ import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { discoverCommands, runVerificationGate, runVerificationGateForTargets, formatFailureContext, captureRuntimeErrors, runDependencyAudit, isLikelyCommand, validateVerificationCommand } from "../verification-gate.ts";
+import { discoverCommands, runVerificationGate, runVerificationGateForTargets, formatFailureContext, captureRuntimeErrors, runDependencyAudit, isLikelyCommand, validateVerificationCommand, hasDiscoverableTestFiles } from "../verification-gate.ts";
 import type { CaptureRuntimeErrorsOptions, DependencyAuditOptions } from "../verification-gate.ts";
 import { validatePreferences } from "../preferences.ts";
 
@@ -57,6 +57,9 @@ describe("verification-gate: discovery", () => {
   afterEach(() => { rmSync(tmp, { recursive: true, force: true }); });
 
   test("discoverCommands from preference commands", () => {
+    // A test file must exist for the test-shaped "npm run test" command to
+    // survive progressive gating (see "progressive test-command gating" below).
+    writeFileSync(join(tmp, "sample.test.js"), "// test");
     const result = discoverCommands({
       preferenceCommands: ["npm run lint", "npm run test"],
       cwd: tmp,
@@ -1366,5 +1369,70 @@ describe("verification-gate: python normalization (#4416)", () => {
     assert.equal(typeof result.passed, "boolean");
     assert.equal(result.checks.length, 1);
     assert.ok(result.checks[0].durationMs >= 0);
+  });
+});
+
+describe("verification-gate: progressive test-command gating", () => {
+  test("skips test-shaped preference commands when no test files exist", () => {
+    const tmp = makeTempDir("gate-progressive-none");
+    const result = discoverCommands({ preferenceCommands: ["pnpm test", "pnpm typecheck"], cwd: tmp });
+    assert.deepEqual(result.commands, ["pnpm typecheck"]);
+    assert.equal(result.source, "preference");
+    assert.equal(result.skipped.length, 1);
+    assert.equal(result.skipped[0].command, "pnpm test");
+    assert.match(result.skipped[0].reason, /no test files/i);
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test("runs test-shaped preference commands once a test file exists (nested)", () => {
+    const tmp = makeTempDir("gate-progressive-nested");
+    mkdirSync(join(tmp, "src", "deep"), { recursive: true });
+    writeFileSync(join(tmp, "src", "deep", "thing.test.ts"), "// test");
+    const result = discoverCommands({ preferenceCommands: ["pnpm test", "pnpm typecheck"], cwd: tmp });
+    assert.deepEqual(result.commands, ["pnpm test", "pnpm typecheck"]);
+    assert.deepEqual(result.skipped, []);
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test("test files inside node_modules do not count", () => {
+    const tmp = makeTempDir("gate-progressive-nm");
+    mkdirSync(join(tmp, "node_modules", "dep"), { recursive: true });
+    writeFileSync(join(tmp, "node_modules", "dep", "x.test.js"), "// test");
+    assert.equal(hasDiscoverableTestFiles(tmp), false);
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test("pytest-shaped commands are gated on python test files", () => {
+    const tmp = makeTempDir("gate-progressive-py");
+    let result = discoverCommands({ preferenceCommands: ["pytest -q"], cwd: tmp });
+    assert.deepEqual(result.commands, []);
+    assert.equal(result.skipped.length, 1);
+    mkdirSync(join(tmp, "tests"), { recursive: true });
+    writeFileSync(join(tmp, "tests", "test_x.py"), "def test_x(): pass\n");
+    result = discoverCommands({ preferenceCommands: ["pytest -q"], cwd: tmp });
+    assert.deepEqual(result.commands, ["pytest -q"]);
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test("non-test commands are never probed; other sources unaffected", () => {
+    const tmp = makeTempDir("gate-progressive-other");
+    const pref = discoverCommands({ preferenceCommands: ["pnpm build", "eslint ."], cwd: tmp });
+    assert.deepEqual(pref.commands, ["pnpm build", "eslint ."]);
+    assert.deepEqual(pref.skipped, []);
+    const taskPlan = discoverCommands({ taskPlanVerify: "npm test", cwd: tmp });
+    assert.equal(taskPlan.source, "task-plan"); // task-plan source is not probed
+    assert.deepEqual(taskPlan.skipped, []);
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test("runVerificationGate surfaces skippedChecks and passes when everything was skipped", () => {
+    const tmp = makeTempDir("gate-progressive-run");
+    const result = withRtkDisabled(() => runVerificationGate({ cwd: tmp, preferenceCommands: ["vitest run"] }));
+    assert.equal(result.passed, true);
+    assert.deepEqual(result.checks, []);
+    assert.equal(result.discoverySource, "preference");
+    assert.equal(result.skippedChecks?.length, 1);
+    assert.equal(result.skippedChecks?.[0].command, "vitest run");
+    rmSync(tmp, { recursive: true, force: true });
   });
 });

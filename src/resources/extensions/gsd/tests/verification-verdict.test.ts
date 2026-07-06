@@ -1,7 +1,7 @@
 // Project/App: gsd-pi
 // File Purpose: Tests for host-owned auto-mode verification verdict policy.
 
-import test from "node:test";
+import test, { describe } from "node:test";
 import assert from "node:assert/strict";
 
 import { decideVerificationVerdict } from "../verification-verdict.ts";
@@ -88,4 +88,18 @@ test("execute-task passes when a discovered host check succeeds", () => {
 
   assert.equal(verdict.passed, true);
   assert.equal(verdict.reason, "passed");
+});
+
+describe("verdict: all preference commands skipped (progressive gating)", () => {
+  test("execute-task passes when the preference source yielded only skips", () => {
+    const verdict = decideVerificationVerdict("execute-task", {
+      passed: true,
+      checks: [],
+      discoverySource: "preference",
+      timestamp: 0,
+      skippedChecks: [{ command: "pnpm test", reason: "no test files discovered yet" }],
+    });
+    assert.equal(verdict.passed, true);
+    assert.equal(verdict.reason, "passed");
+  });
 });
