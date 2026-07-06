@@ -18,7 +18,10 @@ import {
   insertMilestone,
   insertSlice,
 } from "../resources/extensions/gsd/gsd-db.ts";
-import { isMilestoneExecutableInDb } from "../headless-milestone-readiness.ts";
+import {
+  captureMilestoneExecutionSnapshot,
+  isMilestoneExecutableInDb,
+} from "../headless-milestone-readiness.ts";
 
 function makeProject(): string {
   const base = mkdtempSync(join(tmpdir(), "gsd-milestone-readiness-"));
@@ -64,6 +67,50 @@ test("not executable when the only milestone is terminal", () => {
     closeDatabase();
 
     assert.equal(isMilestoneExecutableInDb(base), false);
+  } finally {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("changed-since fallback skips queued shells and sees a newly planned milestone", () => {
+  const base = makeProject();
+  try {
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "m1", title: "Leftover shell", status: "queued" });
+    closeDatabase();
+
+    const before = captureMilestoneExecutionSnapshot(base);
+    assert.ok(before);
+
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "m2", title: "New executable milestone", status: "active" });
+    insertSlice({ id: "S01", milestoneId: "m2", title: "Slice one" });
+    closeDatabase();
+
+    assert.equal(isMilestoneExecutableInDb(base, { changedSince: before }), true);
+  } finally {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("changed-since fallback does not reuse an older active milestone for a new shell", () => {
+  const base = makeProject();
+  try {
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "m1", title: "Existing active milestone", status: "active" });
+    insertSlice({ id: "S01", milestoneId: "m1", title: "Existing slice" });
+    closeDatabase();
+
+    const before = captureMilestoneExecutionSnapshot(base);
+    assert.ok(before);
+
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "m2", title: "New shell", status: "queued" });
+    closeDatabase();
+
+    assert.equal(isMilestoneExecutableInDb(base, { changedSince: before }), false);
   } finally {
     closeDatabase();
     rmSync(base, { recursive: true, force: true });

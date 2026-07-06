@@ -61,7 +61,10 @@ import {
   loadContext,
   bootstrapGsdProject,
 } from './headless-context.js'
-import { isMilestoneExecutableInDb } from './headless-milestone-readiness.js'
+import {
+  captureMilestoneExecutionSnapshot,
+  isMilestoneExecutableInDb,
+} from './headless-milestone-readiness.js'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -976,6 +979,10 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
     })
   }
 
+  const preRunMilestoneSnapshot = isNewMilestone && options.auto
+    ? captureMilestoneExecutionSnapshot(process.cwd())
+    : null
+
   // Send the command
   const command = buildHeadlessSlashCommand(options)
   if (!options.json) {
@@ -999,11 +1006,14 @@ async function runHeadlessOnce(options: HeadlessOptions, restartCount: number): 
   // string) is only a fast path — it fires on just one of several planning
   // success branches, so "planning succeeded" frequently does not imply the
   // "ready" text was emitted. When the fast path misses, fall back to querying
-  // the created milestone's readiness directly and chain if it is executable
+  // the milestone readiness changed by this command and chain if it is executable
   // (issue #1295).
+  const dbMilestoneReady = preRunMilestoneSnapshot
+    ? isMilestoneExecutableInDb(process.cwd(), { changedSince: preRunMilestoneSnapshot })
+    : false
   const shouldChainAuto =
     isNewMilestone && options.auto && !blocked && exitCode === EXIT_SUCCESS &&
-    (milestoneReady || isMilestoneExecutableInDb(process.cwd()))
+    (milestoneReady || dbMilestoneReady)
   if (shouldChainAuto) {
     if (!options.json) {
       process.stderr.write('[headless] Milestone ready — chaining into auto-mode...\n')
