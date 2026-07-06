@@ -17,6 +17,11 @@ export const GSD_MODEL_PHASE_KEYS = [
 
 export type GsdModelPhaseKey = (typeof GSD_MODEL_PHASE_KEYS)[number];
 
+export interface PlanIntegration {
+  service: string;
+  envVars: string[];
+}
+
 export const TIER_FROM_MARKER: Record<string, PlanTier> = {
   "[mechanical]": "mechanical",
   "[standard]": "standard",
@@ -81,6 +86,7 @@ export interface ParsedPlan {
   amendments: PlanAmendment[];
   openDecisions: string[];
   modelPolicy: Partial<Record<GsdModelPhaseKey, string>>;
+  integrations: PlanIntegration[];
 }
 
 export const STATUS_FROM_MARKER: Record<string, PlanStatus> = {

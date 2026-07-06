@@ -8,10 +8,20 @@ export interface GsdResult {
   json: unknown | null;
 }
 
+export interface SpawnOptions {
+  cwd?: string;
+  signal?: AbortSignal;
+  stdin?: string;
+  /** Hard wall-clock timeout in ms, passed through to child_process.spawn. */
+  timeoutMs?: number;
+  /** Explicit environment for the child process; defaults to inheriting the parent's. */
+  env?: NodeJS.ProcessEnv;
+}
+
 export type Spawner = (
   cmd: string,
   args: string[],
-  opts: { cwd?: string; signal?: AbortSignal; stdin?: string; },
+  opts: SpawnOptions,
 ) => Promise<{ exitCode: number; stdout: string; stderr: string; }>;
 
 export interface GsdRunnerOptions {

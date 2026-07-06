@@ -37,6 +37,18 @@ export async function runExport(htmlPath: string, opts: ExportOptions = {}): Pro
   }
   const plan = parsePlanf3Html(html);
 
+  // Stamp which signed-off configuration this export belongs to, when one exists.
+  let presetsRef: { path: string; approvalHash: string | null } | null = null;
+  try {
+    const { readPresets, PRESETS_RELATIVE_PATH } = await import("../preflight/presets-file.js");
+    const record = await readPresets(opts.projectRoot ?? ".");
+    if (record !== null) {
+      presetsRef = { path: PRESETS_RELATIVE_PATH, approvalHash: record.approval?.approvalHash ?? null };
+    }
+  } catch {
+    presetsRef = null; // corrupt PRESETS never blocks an export; preflight/build report it
+  }
+
   const specPath = siblingPath(htmlPath, ".gsd.md");
   const manifestPath = siblingPath(htmlPath, ".manifest.json");
 
@@ -49,6 +61,7 @@ export async function runExport(htmlPath: string, opts: ExportOptions = {}): Pro
     plan,
     { htmlPath, specPath, projectRoot: opts.projectRoot ?? "." },
     { userPrompt: opts.userPrompt ?? null, mode: opts.mode ?? "step" },
+    presetsRef,
   );
 
   await writeFile(specPath, spec, "utf8");

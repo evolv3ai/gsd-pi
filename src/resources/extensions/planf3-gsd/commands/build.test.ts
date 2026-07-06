@@ -32,7 +32,7 @@ describe("runBuild", () => {
       return { exitCode: 1, stdout: "", stderr: "unexpected" };
     };
 
-    const result = await runBuild(htmlPath, { auto: false, allowUnsafeStep: true, binary: "gsd", cwd: tmp, spawn });
+    const result = await runBuild(htmlPath, { auto: false, allowUnsafeStep: true, binary: "gsd", cwd: tmp, spawn, force: true, globalPrefsPath: join(tmp, "no-global.md") });
     assert.equal(result.milestoneId, "M042");
     assert.equal(result.status.phase, "ready");
 
@@ -65,7 +65,7 @@ describe("runBuild", () => {
       return { exitCode: 0, stdout: "{}", stderr: "" };
     };
 
-    const result = await runBuild(htmlPath, { auto: true, binary: "gsd", cwd: tmp, spawn });
+    const result = await runBuild(htmlPath, { auto: true, binary: "gsd", cwd: tmp, spawn, force: true, globalPrefsPath: join(tmp, "no-global.md") });
     assert.equal(sawAuto, true);
     assert.equal(result.milestoneId, "M9");
   });
@@ -100,6 +100,7 @@ describe("runBuild", () => {
       cwd: tmp,
       spawn,
       now: () => "2026-07-04T12:00:00Z",
+      force: true, globalPrefsPath: join(tmp, "no-global.md"),
     });
 
     assert.equal(prefsExistedAtMilestone, true, "overlay written before new-milestone");
@@ -142,17 +143,22 @@ describe("runBuild", () => {
       };
     };
 
-    const result = await runBuild(htmlPath, { auto: false, allowUnsafeStep: true, binary: "gsd", cwd: tmp, spawn, applyPrefs: false });
+    const result = await runBuild(htmlPath, { auto: false, allowUnsafeStep: true, binary: "gsd", cwd: tmp, spawn, applyPrefs: false, force: true, globalPrefsPath: join(tmp, "no-global.md") });
     assert.equal(result.prefs.applied, false);
     await assert.rejects(() => readFile(join(tmp, ".gsd", "PREFERENCES.md"), "utf8"));
     const evalText = await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8");
     assert.equal(evalText.trim().split("\n").length, 1);
   });
 
+  // writeRecordFor() is declared later in this describe block (function
+  // declarations hoist), signing off the fixture plan's projection so the
+  // gate passes without --force.
   test("a corrupt existing PREFERENCES.md yields a warning and does not block the build", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-badprefs-"));
     const htmlPath = join(tmp, "minimal.html");
     await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+    const globalPrefs = join(tmp, "no-global.md");
+    await writeRecordFor(tmp, htmlPath, globalPrefs);
     await mkdir(join(tmp, ".gsd"), { recursive: true });
     await writeFile(join(tmp, ".gsd", "PREFERENCES.md"), "---\nunclosed frontmatter\n", "utf8");
 
@@ -165,7 +171,9 @@ describe("runBuild", () => {
       };
     };
 
-    const result = await runBuild(htmlPath, { auto: false, allowUnsafeStep: true, binary: "gsd", cwd: tmp, spawn });
+    // No force: true here — proving finding #1 is fixed (the preflight gate
+    // must not swallow this corruption into a build-blocking refusal).
+    const result = await runBuild(htmlPath, { auto: false, allowUnsafeStep: true, binary: "gsd", cwd: tmp, spawn, globalPrefsPath: globalPrefs });
     assert.equal(result.milestoneId, "M2");
     assert.equal(result.prefs.applied, false);
     assert.match(result.prefs.warning ?? "", /closing/);
@@ -173,11 +181,44 @@ describe("runBuild", () => {
     assert.equal(untouched, "---\nunclosed frontmatter\n");
   });
 
+  // Finding #1 (Task 10 review): checkPresetsGate's disk-recomputation must
+  // degrade a corrupt PREFERENCES.md the same way readOrNull degrades an
+  // unreadable one — never a presets refusal. applyPreferencesOverlay is
+  // independently where the user-facing warning comes from (unchanged).
+  test("corrupt PREFERENCES.md never surfaces as a presets refusal, even without --force (finding #1 regression)", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-badprefs-gate-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+    const globalPrefs = join(tmp, "no-global.md");
+    await writeRecordFor(tmp, htmlPath, globalPrefs);
+    await mkdir(join(tmp, ".gsd"), { recursive: true });
+    await writeFile(join(tmp, ".gsd", "PREFERENCES.md"), "---\nunclosed frontmatter\n", "utf8");
+
+    const spawn: Spawner = async (_cmd, args) => {
+      if (args.includes("new-milestone")) return { exitCode: 0, stdout: "{}", stderr: "" };
+      return { exitCode: 0, stdout: JSON.stringify({ state: { phase: "ready", activeMilestone: { id: "M3", title: "x" } }, next: null, cost: { total: 0 } }), stderr: "" };
+    };
+
+    const result = await runBuild(htmlPath, {
+      auto: false, allowUnsafeStep: true, binary: "gsd", cwd: tmp, spawn,
+      globalPrefsPath: globalPrefs, now: () => "2026-07-06T09:00:00Z",
+    });
+
+    assert.equal(result.presets, "ok", "the gate itself must not treat corrupt project prefs as unverifiable");
+    const lines = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n");
+    for (const line of lines) {
+      assert.doesNotMatch(JSON.parse(line).phase, /^preflight-refused/, "corrupt PREFERENCES.md must never log a presets refusal");
+    }
+    assert.match(result.prefs.warning ?? "", /closing/, "the SAME corruption still warns via applyPreferencesOverlay downstream");
+  });
+
   // Failure eval rows — every throw path still logs a row (follow-up #1).
   test("export failure logs a failed:export eval row and rethrows", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-failexport-"));
     const spawn: Spawner = async () => ({ exitCode: 0, stdout: "{}", stderr: "" });
 
+    // No force: true — a missing plan html throws before the gate can even
+    // read the (nonexistent) PRESETS record, so this needs no bypass.
     await assert.rejects(
       () => runBuild(join(tmp, "missing.html"), { auto: true, binary: "gsd", cwd: tmp, spawn, now: () => "2026-07-05T00:00:00Z" }),
       /Plan file not found/,
@@ -193,6 +234,26 @@ describe("runBuild", () => {
     assert.equal(row.loggedAt, "2026-07-05T00:00:00Z");
   });
 
+  // Finding #2 (Task 10 review): a missing/moved plan html must be attributed
+  // to the SAME failed:export marker/message runExport's own ENOENT handling
+  // uses — never conflated with a presets refusal, and never a wrong phase in
+  // the eval-log taxonomy.
+  test("missing plan html without --force is attributed to failed:export, not a presets refusal (finding #2 regression)", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-missinghtml-gate-"));
+    const spawn: Spawner = async () => ({ exitCode: 0, stdout: "{}", stderr: "" });
+
+    await assert.rejects(
+      () => runBuild(join(tmp, "moved.html"), { auto: true, binary: "gsd", cwd: tmp, spawn, now: () => "2026-07-06T09:05:00Z" }),
+      /Plan file not found/,
+    );
+
+    const lines = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n");
+    assert.equal(lines.length, 1);
+    const row = JSON.parse(lines[0]);
+    assert.equal(row.phase, "failed:export", "must be attributed to the export/html-read failure, not the presets gate");
+    assert.notEqual(row.phase, "preflight-refused:absent");
+  });
+
   test("new-milestone failure logs a failed:new-milestone eval row and rethrows", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-failnm-"));
     const htmlPath = join(tmp, "minimal.html");
@@ -204,7 +265,7 @@ describe("runBuild", () => {
     };
 
     await assert.rejects(
-      () => runBuild(htmlPath, { auto: true, binary: "gsd", cwd: tmp, spawn }),
+      () => runBuild(htmlPath, { auto: true, binary: "gsd", cwd: tmp, spawn, force: true, globalPrefsPath: join(tmp, "no-global.md") }),
       /unexpected exit code 2/,
     );
 
@@ -229,7 +290,7 @@ describe("runBuild", () => {
     };
 
     await assert.rejects(
-      () => runBuild(htmlPath, { auto: true, binary: "gsd", cwd: tmp, spawn }),
+      () => runBuild(htmlPath, { auto: true, binary: "gsd", cwd: tmp, spawn, force: true, globalPrefsPath: join(tmp, "no-global.md") }),
       /unexpected exit code 2/,
     );
 
@@ -273,6 +334,7 @@ describe("runBuild", () => {
     const sleeps: number[] = [];
     const result = await runBuild(htmlPath, {
       auto: true, binary: "gsd", cwd: tmp, spawn, now: () => "2026-07-05T01:00:00Z",
+      force: true, globalPrefsPath: join(tmp, "no-global.md"),
       settle: { attempts: 3, delayMs: 7, sleep: async (ms) => { sleeps.push(ms); } },
     });
 
@@ -299,7 +361,7 @@ describe("runBuild", () => {
       { state: { phase: "done", activeMilestone: null, lastCompletedMilestone: { id: "M77", title: "Auto Plan" } }, next: null, cost: { total: 1.5 } },
     ], calls);
 
-    const result = await runBuild(htmlPath, { auto: true, binary: "gsd", cwd: tmp, spawn, settle: { ...NO_SLEEP, sleep: async () => {} } });
+    const result = await runBuild(htmlPath, { auto: true, binary: "gsd", cwd: tmp, spawn, force: true, globalPrefsPath: join(tmp, "no-global.md"), settle: { ...NO_SLEEP, sleep: async () => {} } });
 
     assert.equal(result.milestoneId, "M77");
     assert.equal(result.autoChain, "chained");
@@ -331,6 +393,7 @@ describe("runBuild", () => {
 
     const result = await runBuild(htmlPath, {
       auto: true, binary: "gsd", cwd: tmp, spawn, now: () => "2026-07-05T02:00:00Z",
+      force: true, globalPrefsPath: join(tmp, "no-global.md"),
       settle: { ...NO_SLEEP, sleep: async () => {} },
     });
 
@@ -359,6 +422,7 @@ describe("runBuild", () => {
 
     const result = await runBuild(htmlPath, {
       auto: true, binary: "gsd", cwd: tmp, spawn,
+      force: true, globalPrefsPath: join(tmp, "no-global.md"),
       settle: { attempts: 2, delayMs: 0, sleep: async () => {} },
     });
 
@@ -384,6 +448,7 @@ describe("runBuild", () => {
 
     const result = await runBuild(htmlPath, {
       auto: true, binary: "gsd", cwd: tmp, spawn,
+      force: true, globalPrefsPath: join(tmp, "no-global.md"),
       settle: { attempts: 1, delayMs: 0, sleep: async () => {} },
     });
 
@@ -407,6 +472,7 @@ describe("runBuild", () => {
 
     const result = await runBuild(htmlPath, {
       auto: true, binary: "gsd", cwd: tmp, spawn,
+      force: true, globalPrefsPath: join(tmp, "no-global.md"),
       settle: { attempts: 2, delayMs: 0, sleep: async () => {} },
     });
 
@@ -430,7 +496,7 @@ describe("runBuild", () => {
     let spawned = false;
     const spawn: Spawner = async () => { spawned = true; return { exitCode: 0, stdout: "{}", stderr: "" }; };
 
-    await assert.rejects(() => runBuild(htmlPath, { auto: false, binary: "gsd", cwd: tmp, spawn }), /depth-verification/);
+    await assert.rejects(() => runBuild(htmlPath, { auto: false, binary: "gsd", cwd: tmp, spawn, force: true, globalPrefsPath: join(tmp, "no-global.md") }), /depth-verification/);
     assert.equal(spawned, false, "no gsd subprocess ran");
     await assert.rejects(() => readFile(join(tmp, "minimal.gsd.md"), "utf8"), "no spec exported");
   });
@@ -445,8 +511,97 @@ describe("runBuild", () => {
       return { exitCode: 0, stdout: JSON.stringify({ state: { phase: "ready", activeMilestone: { id: "M042", title: "Minimal Plan" } }, next: null, cost: { total: 0 } }), stderr: "" };
     };
 
-    const result = await runBuild(htmlPath, { auto: false, allowUnsafeStep: true, binary: "gsd", cwd: tmp, spawn });
+    const result = await runBuild(htmlPath, { auto: false, allowUnsafeStep: true, binary: "gsd", cwd: tmp, spawn, force: true, globalPrefsPath: join(tmp, "no-global.md") });
     assert.equal(result.milestoneId, "M042");
     assert.equal(result.autoChain, "not-applicable");
+  });
+
+  // Enforced-lite gate (spec §7). writeRecord() signs off the fixture plan's
+  // projection so the gate passes; tests that want refusal skip it.
+  async function writeRecordFor(tmp: string, htmlPath: string, globalPrefsPath: string): Promise<string> {
+    const { signOffPreflight } = await import("../preflight/run.js");
+    const { approvalHash } = await signOffPreflight({
+      projectRoot: tmp, htmlPath, offline: true, ping: false,
+      catalog: { ids: () => [] },
+      orchestrator: { host: "test", model: "t/m", authMode: "none", skills: [] },
+      env: {}, now: () => "2026-07-06T08:00:00Z", globalPrefsPath,
+      spawn: async () => ({ exitCode: 1, stdout: "", stderr: "" }),
+    }, null);
+    return approvalHash;
+  }
+
+  test("no PRESETS record: refuses before export, logs preflight-refused:absent", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gate-absent-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+    let spawned = false;
+    const spawn: Spawner = async () => { spawned = true; return { exitCode: 0, stdout: "{}", stderr: "" }; };
+
+    await assert.rejects(
+      () => runBuild(htmlPath, { auto: true, binary: "gsd", cwd: tmp, spawn, globalPrefsPath: join(tmp, "no-global.md"), now: () => "2026-07-06T08:10:00Z" }),
+      /preflight gate: .*run \/planf3-gsd-preflight/s,
+    );
+    assert.equal(spawned, false, "refusal happens before any gsd subprocess");
+    await assert.rejects(() => readFile(join(tmp, "minimal.gsd.md"), "utf8"), "no spec exported");
+    const row = JSON.parse((await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim());
+    assert.equal(row.phase, "preflight-refused:absent");
+    assert.equal(row.presets, "absent");
+  });
+
+  test("drifted prefs: refuses with the field diff, logs preflight-refused:drift", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gate-drift-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+    const globalPrefs = join(tmp, "no-global.md");
+    await writeRecordFor(tmp, htmlPath, globalPrefs);
+    // Out-of-band edit AFTER sign-off. It must touch a bucket the fixture's
+    // #model-policy does NOT govern (the fixture sets planning + execution;
+    // the projection re-applies those and would mask an edit to them) —
+    // `validation` is plan-ungoverned, so it drifts.
+    await mkdir(join(tmp, ".gsd"), { recursive: true });
+    await writeFile(join(tmp, ".gsd", "PREFERENCES.md"), "---\nversion: 1\nmodels:\n  validation: claude-code/claude-haiku-4-5\n---\n", "utf8");
+
+    await assert.rejects(
+      () => runBuild(htmlPath, { auto: true, binary: "gsd", cwd: tmp, spawn: async () => ({ exitCode: 0, stdout: "{}", stderr: "" }), globalPrefsPath: globalPrefs }),
+      /configuration drifted since sign-off[\s\S]*buckets\.validation/,
+    );
+    const lines = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n");
+    const row = JSON.parse(lines[lines.length - 1]);
+    assert.equal(row.phase, "preflight-refused:drift");
+    assert.equal(row.presets, "drift");
+  });
+
+  test("--force proceeds past absence and records presets forced", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gate-forced-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+    const spawn: Spawner = async (_cmd, args) => {
+      if (args.includes("new-milestone")) return { exitCode: 0, stdout: "{}", stderr: "" };
+      return { exitCode: 0, stdout: JSON.stringify({ state: { phase: "executing", activeMilestone: { id: "M1", title: "x" }, activeTask: { id: "T1", title: "t" } }, next: null, cost: { total: 0 } }), stderr: "" };
+    };
+    const result = await runBuild(htmlPath, { auto: true, force: true, binary: "gsd", cwd: tmp, spawn, globalPrefsPath: join(tmp, "no-global.md") });
+    assert.equal(result.presets, "forced");
+    const lines = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n");
+    const row = JSON.parse(lines[lines.length - 1]);
+    assert.equal(row.presets, "forced");
+    assert.equal(typeof row.presetsHash, "string");
+  });
+
+  test("signed-off record: gate passes, manifest re-stamped with the verified hash", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gate-ok-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+    const globalPrefs = join(tmp, "no-global.md");
+    const approvalHash = await writeRecordFor(tmp, htmlPath, globalPrefs);
+    const spawn: Spawner = async (_cmd, args) => {
+      if (args.includes("new-milestone")) return { exitCode: 0, stdout: "{}", stderr: "" };
+      return { exitCode: 0, stdout: JSON.stringify({ state: { phase: "executing", activeMilestone: { id: "M1", title: "x" }, activeTask: { id: "T1", title: "t" } }, next: null, cost: { total: 0 } }), stderr: "" };
+    };
+    const result = await runBuild(htmlPath, { auto: true, binary: "gsd", cwd: tmp, spawn, globalPrefsPath: globalPrefs });
+    assert.equal(result.presets, "ok");
+    const manifest = JSON.parse(await readFile(result.manifestPath, "utf8"));
+    assert.deepEqual(manifest.presets, { path: join("specs", "PRESETS.md"), approvalHash });
+    const lines = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n");
+    assert.equal(JSON.parse(lines[lines.length - 1]).presets, "ok");
   });
 });

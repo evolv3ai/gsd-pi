@@ -812,7 +812,7 @@ function normalizeResolvedTierModelId(
   return MODEL_CAPABILITY_TIER[bareId] ? bareId : modelId;
 }
 
-function bareModelId(modelId: string): string {
+export function bareModelId(modelId: string): string {
   if (!modelId.includes("/")) return modelId;
   // .pop() never returns undefined on a non-empty string but ?? guards future
   // refactors and avoids the misleading non-null assertion.

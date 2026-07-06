@@ -50,6 +50,11 @@ describe("buildManifest", () => {
       planning: "openrouter/anthropic/claude-opus-4.7",
       execution: "openrouter/x-ai/grok-code-fast-1",
     });
+    assert.deepEqual(mf.product, [
+      { service: "OpenRouter", envVars: ["OPENROUTER_API_KEY"] },
+      { service: "Neon", envVars: ["DATABASE_URL"] },
+    ]);
+    assert.equal(mf.presets, null);
 
     assert.deepEqual(mf.validation.commands, [
       "pnpm run verify:pr",
@@ -60,6 +65,18 @@ describe("buildManifest", () => {
 
     assert.equal(mf.provenance.userPrompt, "Test the bridge");
     assert.equal(mf.provenance.generator, "planf3-gsd-pi");
-    assert.equal(mf.provenance.generatorVersion, "0.2.0");
+    assert.equal(mf.provenance.generatorVersion, "0.3.0");
+  });
+
+  test("presets block is stamped when provided", () => {
+    const plan = parsePlanf3Html(minimal);
+    const paths = {
+      htmlPath: "specs/minimal.html",
+      specPath: "specs/minimal.gsd.md",
+      projectRoot: ".",
+    };
+    const prov = { userPrompt: "Test the bridge", mode: "step" as const };
+    const manifest = buildManifest(plan, paths, prov, { path: "specs/PRESETS.md", approvalHash: "abc123" });
+    assert.deepEqual(manifest.presets, { path: "specs/PRESETS.md", approvalHash: "abc123" });
   });
 });

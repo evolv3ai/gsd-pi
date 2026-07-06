@@ -1,0 +1,101 @@
+import { describe, test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { runPreflight, signOffPreflight, type PreflightDeps } from "./run.js";
+import type { Spawner } from "../gsd/headless-runner.js";
+
+const PLAN_HTML = `<html><body><header><h1>P</h1></header>
+<section id="validation"><ul class="checklist"><li><code class="status">[]</code> <code>pnpm typecheck</code></li></ul></section>
+<section id="model-policy"><dl><dt>planning</dt><dd>claude-code/claude-fable-5</dd></dl></section>
+<section id="integrations"><ul><li><strong>Neon</strong> — <code>DATABASE_URL</code></li></ul></section>
+</body></html>`;
+
+async function scaffold(): Promise<{ tmp: string; html: string }> {
+  const tmp = await mkdtemp(join(tmpdir(), "planf3-run-"));
+  await mkdir(join(tmp, "specs"), { recursive: true });
+  const html = join(tmp, "specs", "p.html");
+  await writeFile(html, PLAN_HTML, "utf8");
+  await writeFile(join(tmp, "global-prefs.md"), "---\nversion: 1\nmodels:\n  execution: claude-code/claude-sonnet-4-6\n---\n", "utf8");
+  return { tmp, html };
+}
+
+function deps(tmp: string, html: string | null, spawnedOk = true): PreflightDeps {
+  const spawn: Spawner = async (cmd) => {
+    if (cmd === "claude") return { exitCode: 0, stdout: '{"loggedIn":true}', stderr: "" };
+    if (cmd === "gsd") return { exitCode: 0, stdout: "gsd 1.6.0", stderr: "" };
+    if (cmd === "git") return { exitCode: 0, stdout: "main\n", stderr: "" };
+    return { exitCode: spawnedOk ? 0 : 1, stdout: "", stderr: "" };
+  };
+  return {
+    projectRoot: tmp,
+    htmlPath: html,
+    offline: false,
+    ping: false,
+    catalog: { ids: () => ["claude-code/claude-fable-5", "claude-code/claude-sonnet-4-6"] },
+    orchestrator: { host: "claude-code", model: "claude-code/claude-fable-5", authMode: "subscription", skills: ["planf3"] },
+    spawn,
+    env: {},
+    now: () => "2026-07-06T07:00:00Z",
+    globalPrefsPath: join(tmp, "global-prefs.md"),
+  };
+}
+
+describe("runPreflight", () => {
+  test("assembles projection-scoped map; unapproved without a record; rendered ends with verdict line", async () => {
+    const { tmp, html } = await scaffold();
+    const run = await runPreflight(deps(tmp, html));
+    assert.equal(run.verdict, "unapproved");
+    assert.deepEqual(run.map.projection.buckets, {
+      planning: "claude-code/claude-fable-5",
+      execution: "claude-code/claude-sonnet-4-6",
+    });
+    // projection-scoped probing: only claude-code probed (both buckets resolve to it)
+    assert.deepEqual([...new Set(run.map.probes.map((p) => p.target))], ["claude-code"]);
+    assert.equal(run.map.product[0].service, "Neon");
+    assert.equal(run.map.product[0].envVars[0].name, "DATABASE_URL");
+    assert.equal(run.map.product[0].injectionDisclaimer, true);
+    // no .manifest.json exported yet → the wiring check says so (spec §6.1)
+    assert.ok(run.map.validationIssues.some((i) => i.includes("not exported yet")));
+    const lines = run.rendered.trimEnd().split("\n");
+    assert.equal(lines[lines.length - 1], "preflight: verdict=unapproved");
+  });
+
+  test("offline skips probes entirely", async () => {
+    const { tmp, html } = await scaffold();
+    const run = await runPreflight({ ...deps(tmp, html), offline: true });
+    assert.deepEqual(run.map.probes, []);
+  });
+
+  test("sign-off writes PRESETS.md; a re-run is then ok; an out-of-band edit drifts", async () => {
+    const { tmp, html } = await scaffold();
+    const d = deps(tmp, html);
+    const { path, approvalHash } = await signOffPreflight(d, "first approval");
+    assert.equal(path, join(tmp, "specs", "PRESETS.md"));
+    assert.match(await readFile(path, "utf8"), /first approval/);
+
+    const again = await runPreflight(d);
+    assert.equal(again.verdict, "ok");
+    assert.equal(again.approvalHash, approvalHash);
+
+    // Drift must touch a bucket the plan's OWN policy does NOT govern — the
+    // projection re-applies plan policy, so editing `planning` here would be
+    // masked (the plan sets planning). `execution` comes from global prefs.
+    await mkdir(join(tmp, ".gsd"), { recursive: true });
+    await writeFile(join(tmp, ".gsd", "PREFERENCES.md"), "---\nversion: 1\nmodels:\n  execution: claude-code/claude-haiku-4-5\n---\n", "utf8");
+    const drifted = await runPreflight(d);
+    assert.equal(drifted.verdict, "drift");
+    assert.deepEqual(drifted.drift[0], {
+      kind: "config", field: "buckets.execution",
+      approved: "claude-code/claude-sonnet-4-6", current: "claude-code/claude-haiku-4-5",
+    });
+  });
+});
+
+describe("exit-code contract (spec §11.10)", () => {
+  test("verdict → exit code mapping table", async () => {
+    const { EXIT_CODES } = await import("../commands/preflight-register.js");
+    assert.deepEqual(EXIT_CODES, { ok: 0, unapproved: 20, drift: 21, error: 1 });
+  });
+});
