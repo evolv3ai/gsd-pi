@@ -199,6 +199,26 @@ test("migrateToFlatPhase is idempotent (second run is a no-op)", async () => {
   assert.equal(backups.length, 1, "should only have one backup");
 });
 
+test("re-fired migration reuses the existing backup instead of leaking a new migrate-* dir (#1292)", async () => {
+  const base = makeTmp();
+  await migrateToFlatPhase(base);
+  const backupRoot = join(base, ".gsd-backups");
+  const firstBackups = readdirSync(backupRoot).filter((d) => d.startsWith("migrate-"));
+  assert.equal(firstBackups.length, 1, "first migration snapshots exactly one backup");
+
+  // Simulate the re-fire: the legacy .gsd/milestones/ layout reappears (e.g. a
+  // marker-key mismatch re-imports the whole tree). The DB rows still exist, so
+  // the migration gate proceeds again — it must not snapshot a second backup.
+  mkdirSync(join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01"), { recursive: true });
+  assert.equal(needsFlatPhaseMigration(base), true, "reappeared legacy layout re-triggers migration");
+
+  await migrateToFlatPhase(base);
+
+  const afterBackups = readdirSync(backupRoot).filter((d) => d.startsWith("migrate-"));
+  assert.deepEqual(afterBackups, firstBackups, "re-fire must not leak a second migrate-* backup");
+  assert.equal(existsSync(join(base, ".gsd", "milestones")), false, "legacy milestones/ removed again");
+});
+
 test("migrateToFlatPhase preserves slice sidecar artifacts and skips recovery placeholder PLAN", async () => {
   const base = makeTmp({ withTask: false });
   const legacySliceDir = join(base, ".gsd", "milestones", "M001", "slices", "S01");

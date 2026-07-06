@@ -83,6 +83,39 @@ function expectedPhaseDirs(basePath: string): string[] {
   );
 }
 
+/**
+ * Return the most-recent existing `.gsd-backups/migrate-<ts>/` snapshot, or null.
+ *
+ * The flat-phase migration can re-fire on later dispatches when the legacy
+ * `.gsd/milestones/` layout reappears (e.g. a marker-key mismatch re-triggers a
+ * whole-tree re-import — issue #1292). The DB was already reconciled from that
+ * tree before the backup step runs, so re-snapshotting an identical legacy tree
+ * on every dispatch only leaks a fresh `migrate-<ts>/` directory each time. When
+ * a prior snapshot already exists we reuse it as the rollback fallback instead
+ * of creating a duplicate, bounding the accumulation to one recovery copy.
+ */
+function existingMigrateBackup(basePath: string): string | null {
+  const backupRoot = join(basePath, ".gsd-backups");
+  if (!existsSync(backupRoot)) return null;
+  try {
+    let latest: { path: string; mtimeMs: number } | null = null;
+    for (const entry of readdirSync(backupRoot)) {
+      if (!entry.startsWith("migrate-")) continue;
+      const dirPath = join(backupRoot, entry);
+      try {
+        const st = statSync(dirPath);
+        if (!st.isDirectory()) continue;
+        if (!latest || st.mtimeMs > latest.mtimeMs) latest = { path: dirPath, mtimeMs: st.mtimeMs };
+      } catch {
+        // Non-fatal: skip unreadable entries.
+      }
+    }
+    return latest?.path ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function hasLegacyMilestoneSubdirs(dirPath: string): boolean {
   if (!existsSync(dirPath)) return false;
   try {
@@ -245,15 +278,31 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
 
   let backupDir = migratingPath;
   if (!resumingInterrupted) {
-    // 2. Backup (only reached when the DB has rows and migration will proceed)
-    const ts = Date.now();
-    backupDir = join(basePath, ".gsd-backups", `migrate-${ts}`);
-    try {
-      mkdirSync(join(basePath, ".gsd-backups"), { recursive: true });
-      cpSync(milestonesPath, backupDir, { recursive: true });
-    } catch (err) {
-      logWarning("migration", `flat-phase migration backup failed: ${(err as Error).message}`);
-      throw err;
+    // 2. Backup (only reached when the DB has rows and migration will proceed).
+    // migrateFromMarkdown above already reconciled the legacy tree into the DB,
+    // so its content is safely persisted. If a prior successful migration
+    // already snapshotted the legacy tree, a re-fire of this gate (issue #1292:
+    // marker-key mismatch re-importing the whole tree at dispatch boundaries)
+    // must not leak a fresh .gsd-backups/migrate-<ts>/ every dispatch. Treat it
+    // as a marker-refresh re-projection: reuse the existing snapshot as the
+    // rollback fallback instead of creating a duplicate.
+    const priorBackup = existingMigrateBackup(basePath);
+    if (priorBackup) {
+      backupDir = priorBackup;
+      logWarning(
+        "migration",
+        `flat-phase migration re-fired; reusing existing backup ${priorBackup} instead of re-snapshotting (issue #1292)`,
+      );
+    } else {
+      const ts = Date.now();
+      backupDir = join(basePath, ".gsd-backups", `migrate-${ts}`);
+      try {
+        mkdirSync(join(basePath, ".gsd-backups"), { recursive: true });
+        cpSync(milestonesPath, backupDir, { recursive: true });
+      } catch (err) {
+        logWarning("migration", `flat-phase migration backup failed: ${(err as Error).message}`);
+        throw err;
+      }
     }
 
     if (existsSync(migratingPath)) {
