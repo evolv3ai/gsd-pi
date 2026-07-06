@@ -9,11 +9,13 @@
     "commands": [
       "planf3-gsd-export",
       "planf3-gsd-build",
-      "planf3-gsd-status"
+      "planf3-gsd-status",
+      "planf3-gsd-preflight"
     ],
     "tools": [
       "planf3_gsd_export",
-      "planf3_gsd_status"
+      "planf3_gsd_status",
+      "planf3_gsd_preflight"
     ]
   }
 }
