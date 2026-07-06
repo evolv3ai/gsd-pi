@@ -202,6 +202,49 @@ test("#1287: stub/placeholder PLAN does NOT clear the sketch flag", async (t) =>
   assert.equal(result.repaired.length, 0, "phase/plan placeholder task: no repair");
 });
 
+test("#1288: real tasks shaped like `word + number` still clear the sketch flag", async (t) => {
+  const base = makeFixtureBase();
+  t.after(() => cleanup(base));
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M001", title: "Test", status: "active" });
+  insertSlice({
+    id: "S02",
+    milestoneId: "M001",
+    title: "Feature",
+    status: "pending",
+    risk: "medium",
+    depends: [],
+    demo: "S02 demo.",
+    sequence: 1,
+    isSketch: true,
+    sketchScope: "limited",
+  });
+
+  const planPath = join(base, ".gsd", "phases", "01-test", "01-02-PLAN.md");
+
+  // `Step 1` / `RFC 1234` match the loose `word + number` shape but are genuine
+  // decomposed tasks. buildTaskTitle only emits `${phase} ${plan}` with a
+  // digit-led phase, so these must NOT be read as placeholders (#1288): a real
+  // plan-slice like this must still clear the stale is_sketch flag.
+  writeFileSync(
+    planPath,
+    makeStalePlanContent("S02", [
+      { id: "T01", title: "Step 1", done: false },
+      { id: "T02", title: "RFC 1234", done: false },
+    ]),
+  );
+  clearRendererCaches();
+  const state = makeState({ activeMilestone: { id: "M001", title: "Test" } });
+  const result = await reconcileBeforeDispatch(base, {
+    invalidateStateCache: () => {},
+    deriveState: async () => state,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(getSlice("M001", "S02")?.is_sketch, 0, "real task titles: flag cleared");
+  assert.equal(result.repaired.length, 1, "real task titles: repaired once");
+});
+
 test("ADR-017 (#5700): repair failure throws ReconciliationFailedError with shape", async () => {
   const seenDrift: DriftRecord = { kind: "stale-sketch-flag", mid: "M001", sid: "S02" };
   const handler: DriftHandler = {
