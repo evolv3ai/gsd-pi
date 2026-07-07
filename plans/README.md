@@ -36,7 +36,7 @@ commit `58dc840f`. Plans 018–024 planned against commit `7cca07ae`.
 | 017 | Doc & DX quick fixes (ADR pointer, dev env-vars, fast-test path) | P3 | S | — | DONE |
 | 018 | Ship @opengsd/gsd-cloud built, tested, and guarded against empty publishes | P0 | M | — | DONE |
 | 019 | Refuse token-less web mode on non-loopback hosts | P1 | S | — | DONE |
-| 020 | Add request timeouts to cloud pairing HTTP helper (both copies) | P1 | S | — | TODO |
+| 020 | Add request timeouts to cloud pairing HTTP helper (both copies) | P1 | S | — | DONE |
 | 021 | Batch plan-v2 graph compile + skip unchanged writes (dispatch hot path) | P2 | S | — | DONE |
 | 022 | Test gsd-cloud device-flow polling and SSRF gateway guards | P2 | M | 018 | TODO |
 | 023 | ADR: decide the flat-phase layout migration completion path | P2 | M | — | TODO |

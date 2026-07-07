@@ -190,7 +190,13 @@ function writeConfigFile(configPath: string, contents: string): void {
   chmodSync(configPath, 0o600);
 }
 
-export function postJsonToValidatedGateway(url: URL, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+const GATEWAY_REQUEST_TIMEOUT_MS = 30_000;
+
+export function postJsonToValidatedGateway(
+  url: URL,
+  payload: Record<string, unknown>,
+  timeoutMs: number = GATEWAY_REQUEST_TIMEOUT_MS,
+): Promise<Record<string, unknown>> {
   validateGatewayNetworkTarget(url);
   const body = JSON.stringify(payload);
   const requestImpl = url.protocol === "https:" ? httpsRequest : httpRequest;
@@ -222,6 +228,9 @@ export function postJsonToValidatedGateway(url: URL, payload: Record<string, unk
       });
     });
 
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`Gateway request timed out after ${timeoutMs}ms`));
+    });
     req.on("error", reject);
     req.end(body);
   });
