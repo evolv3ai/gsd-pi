@@ -18,6 +18,7 @@ import {
   releaseMilestoneLease,
   refreshMilestoneLease,
   getMilestoneLease,
+  forceReleaseLeasesForWorker,
 } from "../db/milestone-leases.ts";
 
 function makeBase(): string {
@@ -161,6 +162,60 @@ test("refreshMilestoneLease only succeeds with the matching fencing token", (t) 
 
   // Stale token (e.g. claim.token - 1) refuses
   assert.equal(refreshMilestoneLease(w1, "M001", claim.token - 1), false);
+});
+
+test("forceReleaseLeasesForWorker frees only the dead worker's leases, not a live peer's", (t) => {
+  const base = makeBase();
+  t.after(() => cleanup(base));
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M001", title: "One", status: "active" });
+  insertMilestone({ id: "M002", title: "Two", status: "active" });
+
+  // Distinct project roots → distinct processes (not re-entrant peers).
+  const wA = registerAutoWorker({ projectRootRealpath: base });
+  const wB = registerAutoWorker({ projectRootRealpath: join(base, "peer") });
+  assert.equal(claimMilestoneLease(wA, "M001").ok, true);
+  assert.equal(claimMilestoneLease(wB, "M002").ok, true);
+
+  const freed = forceReleaseLeasesForWorker(wA);
+  assert.equal(freed, 1, "exactly A's one held lease is released");
+
+  assert.equal(getMilestoneLease("M001")!.status, "released", "A's M001 lease is released");
+  const m2 = getMilestoneLease("M002")!;
+  assert.equal(m2.status, "held", "B's M002 lease must stay held (no over-release)");
+  assert.equal(m2.worker_id, wB);
+});
+
+test("after force release a fresh claim on the freed milestone gets a larger fencing token", (t) => {
+  const base = makeBase();
+  t.after(() => cleanup(base));
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M001", title: "One", status: "active" });
+
+  const wA = registerAutoWorker({ projectRootRealpath: base });
+  const wB = registerAutoWorker({ projectRootRealpath: join(base, "peer") });
+  const first = claimMilestoneLease(wA, "M001");
+  assert.equal(first.ok, true);
+  const releasedToken = first.ok ? first.token : 0;
+
+  assert.equal(forceReleaseLeasesForWorker(wA), 1);
+
+  const takeover = claimMilestoneLease(wB, "M001");
+  assert.equal(takeover.ok, true);
+  if (takeover.ok) {
+    assert.ok(takeover.token > releasedToken, "takeover token must exceed the released lease's token");
+  }
+  assert.equal(getMilestoneLease("M001")!.worker_id, wB);
+});
+
+test("forceReleaseLeasesForWorker returns 0 for a worker holding no leases", (t) => {
+  const base = makeBase();
+  t.after(() => cleanup(base));
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M001", title: "One", status: "active" });
+
+  const wA = registerAutoWorker({ projectRootRealpath: base });
+  assert.equal(forceReleaseLeasesForWorker(wA), 0);
 });
 
 test("claimMilestoneLease rethrows foreign-key failures instead of treating them as lease contention", (t) => {

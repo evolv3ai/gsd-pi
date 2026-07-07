@@ -107,7 +107,7 @@ Each row = one prompt file. Columns show which DB tables it touches and how.
 
 | Prompt | DB Reads | DB Writes | Disk Artifact Written |
 |--------|----------|-----------|----------------------|
-| `gate-evaluate` | quality_gates | quality_gates (UPDATE), gate_runs (INSERT) | gate result per subagent |
+| `gate-evaluate` | quality_gates | quality_gates (UPDATE), gate_runs (INSERT, same transaction) | gate result per subagent |
 | `validate-milestone` | milestones, slices, tasks, quality_gates | assessments (INSERT VALIDATION) | VALIDATION.md |
 | `run-uat` | slices, assessments | assessments (INSERT ASSESSMENT) | S##-ASSESSMENT.md |
 
@@ -246,7 +246,7 @@ execute-task prompt fires
               completed_at, blocker_discovered
         └─► INSERT INTO verification_evidence (command, exit_code, verdict, duration_ms)
         └─► UPDATE quality_gates SET status='evaluated', verdict (if gate was open)
-        └─► INSERT INTO gate_runs (audit)
+        └─► INSERT INTO gate_runs (audit; same transaction as the gate verdict)
         └─► Write T##-SUMMARY.md to disk
         └─► Toggle checkbox in NN-MM-PLAN.md
         └─► If summary or plan projection write fails:
@@ -332,6 +332,7 @@ user cancels
 command broadcast
   └─► INSERT INTO command_queue (target_worker=NULL, command, args_json)  ← NULL = all workers
   └─► INSERT INTO command_queue (target_worker='w-123', command, args_json) ← targeted
+  └─► worker claims with BEGIN IMMEDIATE so read-then-write claim races serialize under WAL
 
 unit completes
   └─► UPDATE unit_dispatches SET status='done'|'failed', ended_at, exit_reason, error_summary
@@ -373,7 +374,7 @@ unit completes
 | Single-writer: all write SQL in the explicit single-writer allowlist (`db/engine.ts`, `db/writers/**`, `gsd-db.ts`, typed coordination/runtime writers `db/milestone-leases.ts`, `db/unit-dispatches.ts`, `db/auto-workers.ts`, `db/runtime-kv.ts`, `db/command-queue.ts`, schema/migration helpers `db-memory-fts-schema.ts`, `db-schema-metadata.ts`, `db-verification-evidence-schema.ts`, and ADR migration/backfill helper `memory-backfill.ts`); this is not permission for arbitrary writes under `db/`; `unit-ownership.ts` owns separate `.gsd/unit-claims.db`; `db/queries.ts` is read-only | structural test `single-writer-invariant.test.ts` (explicit allowlist) |
 | Cascade on slice complete: pending tasks → skipped | `gsd_slice_complete` transaction |
 | Cascade on milestone reopen: all slices → in_progress, tasks → pending | `gsd_milestone_reopen` transaction |
-| No nested write transactions: `transaction()` and `immediateTransaction()` share one depth counter | `db-transaction.test.ts` |
+| No nested write transactions: `transaction()` and `immediateTransaction()` share one depth counter; read-then-write claims use `immediateTransaction()` and gate verdict + ledger writes commit atomically | `db-transaction.test.ts`, `command-queue.test.ts`, `gate-storage.test.ts` |
 | Workspace isolation: one DB per project root, shared across worktrees via WAL | `db-connection-cache.ts` identityKey |
 | Coordination: one active dispatch per unit_id at a time | `idx_unit_dispatches_active_per_unit` unique partial index |
 | Memory FTS fallback: LIKE scan if FTS5 unavailable | `tryCreateMemoriesFtsSchema` onUnavailable callback |

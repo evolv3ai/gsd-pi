@@ -41,7 +41,7 @@ import {
 } from "./db-decision-requirement-rows.js";
 import { rowToGate } from "./db-gate-rows.js";
 import { rowToArtifact, rowToMilestone, type ArtifactRow, type MilestoneRow } from "./db-milestone-artifact-rows.js";
-import { isClosedStatus } from "./status-guards.js";
+import { isClosedStatus, toStatus } from "./status-guards.js";
 import { rowToSlice, rowToTask, type SliceRow, type TaskRow } from "./db-task-slice-rows.js";
 
 // Connection ownership, lifecycle, schema/migrations and transaction
@@ -464,6 +464,11 @@ export function insertTask(t: {
   preserveCompletionMetadata?: boolean;
 }): void {
   if (!getDbOrNull()!) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  // Stamp completed_at for every terminal-complete alias (complete/done/closed),
+  // not just two literals — a task imported as "closed" is completed and must
+  // carry a timestamp. NOT for "skipped": a skipped task was never completed
+  // (cascade writers set its completed_at = NULL).
+  const isCompleteAlias = t.status != null && toStatus(t.status) === "complete";
   getDbOrNull()!.prepare(
     `INSERT INTO tasks (
       milestone_id, slice_id, id, title, status, one_liner, narrative,
@@ -515,7 +520,7 @@ export function insertTask(t: {
     ":narrative": t.narrative ?? "",
     ":verification_result": t.verificationResult ?? "",
     ":duration": t.duration ?? "",
-    ":completed_at": t.status === "done" || t.status === "complete" ? new Date().toISOString() : null,
+    ":completed_at": isCompleteAlias ? new Date().toISOString() : null,
     ":blocker_discovered": t.blockerDiscovered ? 1 : 0,
     ":deviations": t.deviations ?? "",
     ":known_issues": t.knownIssues ?? "",
@@ -531,7 +536,7 @@ export function insertTask(t: {
     ":observability_impact": t.planning?.observabilityImpact ?? "",
     ":full_plan_md": t.planning?.fullPlanMd ?? "",
     ":sequence": t.sequence ?? 0,
-    ":preserve_completion": t.preserveCompletionMetadata && (t.status === "complete" || t.status === "done") ? 1 : 0,
+    ":preserve_completion": t.preserveCompletionMetadata && isCompleteAlias ? 1 : 0,
     ":target_repositories": JSON.stringify(t.planning?.targetRepositories ?? []),
     ":raw_target_repositories":
       t.planning && "targetRepositories" in t.planning
@@ -1084,52 +1089,59 @@ export function saveGateResult(g: {
 }): void {
   if (!getDbOrNull()!) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
   const evaluatedAt = new Date().toISOString();
-  const result = getDbOrNull()!.prepare(
-    `UPDATE quality_gates
-     SET status = 'complete', verdict = :verdict, rationale = :rationale,
-         findings = :findings, evaluated_at = :evaluated_at
-     WHERE milestone_id = :mid AND slice_id = :sid AND gate_id = :gid
-       AND (task_id = :tid OR (:tid = '' AND task_id IS NULL))`,
-  ).run({
-    ":mid": g.milestoneId,
-    ":sid": g.sliceId,
-    ":gid": g.gateId,
-    ":tid": g.taskId ?? "",
-    ":verdict": g.verdict,
-    ":rationale": g.rationale,
-    ":findings": g.findings,
-    ":evaluated_at": evaluatedAt,
-  }) as { changes?: number };
+  // Atomic: the gate verdict UPDATE and the gate_runs ledger INSERT must commit
+  // together. As two autocommits, a crash between them records a completed gate
+  // with no ledger row (the row Recovery Classification reads). transaction()
+  // is re-entrant, so callers already inside a transaction are safe. The
+  // throw-on-zero-changes stays inside so a missing gate row rolls back cleanly.
+  transaction(() => {
+    const result = getDbOrNull()!.prepare(
+      `UPDATE quality_gates
+       SET status = 'complete', verdict = :verdict, rationale = :rationale,
+           findings = :findings, evaluated_at = :evaluated_at
+       WHERE milestone_id = :mid AND slice_id = :sid AND gate_id = :gid
+         AND (task_id = :tid OR (:tid = '' AND task_id IS NULL))`,
+    ).run({
+      ":mid": g.milestoneId,
+      ":sid": g.sliceId,
+      ":gid": g.gateId,
+      ":tid": g.taskId ?? "",
+      ":verdict": g.verdict,
+      ":rationale": g.rationale,
+      ":findings": g.findings,
+      ":evaluated_at": evaluatedAt,
+    }) as { changes?: number };
 
-  if ((result.changes ?? 0) === 0) {
-    throw new GSDError(
-      GSD_STALE_STATE,
-      `quality gate row not found for ${g.milestoneId}/${g.sliceId}/${g.gateId}${g.taskId ? `/${g.taskId}` : ""}`,
-    );
-  }
+    if ((result.changes ?? 0) === 0) {
+      throw new GSDError(
+        GSD_STALE_STATE,
+        `quality gate row not found for ${g.milestoneId}/${g.sliceId}/${g.gateId}${g.taskId ? `/${g.taskId}` : ""}`,
+      );
+    }
 
-  const outcome =
-    g.verdict === "pass"
-      ? "pass"
-      : g.verdict === "omitted"
-        ? "manual-attention"
-        : "fail";
-  insertGateRun({
-    traceId: `quality-gate:${g.milestoneId}:${g.sliceId}`,
-    turnId: `gate:${g.gateId}:${g.taskId ?? "slice"}`,
-    gateId: g.gateId,
-    gateType: "quality-gate",
-    milestoneId: g.milestoneId,
-    sliceId: g.sliceId,
-    taskId: g.taskId ?? undefined,
-    outcome,
-    failureClass: outcome === "fail" ? "verification" : outcome === "manual-attention" ? "manual-attention" : "none",
-    rationale: g.rationale,
-    findings: g.findings,
-    attempt: 1,
-    maxAttempts: 1,
-    retryable: false,
-    evaluatedAt,
+    const outcome =
+      g.verdict === "pass"
+        ? "pass"
+        : g.verdict === "omitted"
+          ? "manual-attention"
+          : "fail";
+    insertGateRun({
+      traceId: `quality-gate:${g.milestoneId}:${g.sliceId}`,
+      turnId: `gate:${g.gateId}:${g.taskId ?? "slice"}`,
+      gateId: g.gateId,
+      gateType: "quality-gate",
+      milestoneId: g.milestoneId,
+      sliceId: g.sliceId,
+      taskId: g.taskId ?? undefined,
+      outcome,
+      failureClass: outcome === "fail" ? "verification" : outcome === "manual-attention" ? "manual-attention" : "none",
+      rationale: g.rationale,
+      findings: g.findings,
+      attempt: 1,
+      maxAttempts: 1,
+      retryable: false,
+      evaluatedAt,
+    });
   });
 }
 

@@ -15,6 +15,7 @@
 
 import {
   _getAdapter,
+  immediateTransaction,
   isDbAvailable,
   transaction,
 } from "../gsd-db.js";
@@ -75,7 +76,12 @@ export function claimNextCommand(workerId: string): CommandQueueRow | null {
   const now = new Date().toISOString();
   const db = _getAdapter()!;
 
-  return transaction((): CommandQueueRow | null => {
+  // BEGIN IMMEDIATE: this is a read-then-write claim. Under WAL, a deferred
+  // transaction that reads first and then upgrades to a writer can fail with
+  // SQLITE_BUSY_SNAPSHOT (not retried by busy_timeout) when two workers race;
+  // taking the write lock up front serializes claimants so the loser waits
+  // and then sees the row already claimed (changes !== 1 → null).
+  return immediateTransaction((): CommandQueueRow | null => {
     // Find the oldest unclaimed command targeted at this worker OR
     // broadcast. The partial index covers both via NULL-in-B-tree.
     const row = db.prepare(

@@ -19,7 +19,7 @@ import type {
   SessionMessageEntry,
 } from "@gsd/pi-coding-agent";
 
-import { deriveState } from "./state.js";
+import { deriveState, invalidateStateCache } from "./state.js";
 import {
   buildRequirementsBacklogSummaryLines,
   countUnmappedActiveRequirements,
@@ -443,6 +443,9 @@ function captureMilestoneLockEnv(milestoneId: string | null): void {
   } else {
     delete process.env.GSD_MILESTONE_LOCK;
   }
+  // The derive cache is keyed on basePath only; GSD_MILESTONE_LOCK changes
+  // what deriveState computes, so a lock flip must not serve a cached result.
+  invalidateStateCache();
 }
 
 function restoreMilestoneLockEnv(): void {
@@ -457,6 +460,7 @@ function restoreMilestoneLockEnv(): void {
   s.previousMilestoneLockEnv = null;
   s.hadMilestoneLockEnv = false;
   s.milestoneLockEnvCaptured = false;
+  invalidateStateCache();
 }
 
 /**

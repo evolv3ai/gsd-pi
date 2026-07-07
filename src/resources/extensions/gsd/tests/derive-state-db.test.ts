@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { deriveState, invalidateStateCache, _deriveStateImpl, deriveStateFromDb, isGhostMilestone } from '../state.ts';
+import { readCachedDeriveState, writeCachedDeriveState } from '../state/derive/cache.ts';
+import type { GSDState } from '../types.ts';
 import {
   openDatabase,
   closeDatabase,
@@ -579,6 +581,33 @@ describe('derive-state-db', async () => {
     } finally {
       closeDatabase();
       cleanup(base);
+    }
+  });
+
+  // ─── Test 7b: lock flip must not serve a basePath-keyed cache hit ─────
+  // The derive cache is keyed on basePath only, but deriveStateFromDb filters
+  // by GSD_MILESTONE_LOCK. auto.ts's capture/restoreMilestoneLockEnv call
+  // invalidateStateCache() on every flip; this guards that the cache is
+  // genuinely lock-blind (so that invalidate call is load-bearing, not
+  // redundant) and that invalidation defeats the stale read.
+  test('derive-state-db: a milestone-lock flip needs explicit cache invalidation', () => {
+    const prevLock = process.env.GSD_MILESTONE_LOCK;
+    try {
+      const base = '/tmp/gsd-lock-flip-fixture';
+      const stateA = { phase: 'planning' } as unknown as GSDState;
+      process.env.GSD_MILESTONE_LOCK = 'M001';
+      writeCachedDeriveState(base, stateA);
+
+      // Lock flips but basePath is unchanged → the cache still hits.
+      process.env.GSD_MILESTONE_LOCK = 'M002';
+      assert.strictEqual(readCachedDeriveState(base), stateA, 'basePath-only cache ignores the lock flip');
+
+      // What the lock-env functions do on flip:
+      invalidateStateCache();
+      assert.strictEqual(readCachedDeriveState(base), null, 'invalidation defeats the stale-lock read');
+    } finally {
+      if (prevLock === undefined) delete process.env.GSD_MILESTONE_LOCK;
+      else process.env.GSD_MILESTONE_LOCK = prevLock;
     }
   });
 

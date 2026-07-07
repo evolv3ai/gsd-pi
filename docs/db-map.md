@@ -58,7 +58,7 @@ After commit: regenerate markdown artifacts → write to disk → invalidate cac
 2. `better-sqlite3` (npm) — fallback if node:sqlite unavailable
 3. null → DB unavailable. Runtime `deriveState()` fails closed with an explicit blocker; markdown-only recovery is available only through explicit migration/recovery commands.
 
-**Runtime state derivation:** `deriveState()` opens the existing workflow DB through `state/derive/db-open.ts`, projects rows in `state/derive/from-db.ts`, and returns a DB-unavailable blocker instead of implicitly deriving runtime state from markdown projections. Markdown hierarchy import is explicit recovery/migration behavior, not the normal read path.
+**Runtime state derivation:** `deriveState()` opens the existing workflow DB through `state/derive/db-open.ts`, projects rows in `state/derive/from-db.ts`, and returns a DB-unavailable blocker instead of implicitly deriving runtime state from markdown projections. Markdown hierarchy import is explicit recovery/migration behavior, not the normal read path. When `GSD_MILESTONE_LOCK` changes, auto-mode invalidates the short-lived derive cache because the cache key is only the base path while the DB projection is lock-filtered.
 
 ---
 
@@ -220,7 +220,7 @@ PRIMARY KEY (milestone_id, id)
 FOREIGN KEY milestone_id → milestones(id)
 ```
 - Index: `idx_slices_active` (milestone_id, status)
-- Status values: `pending`, `in_progress`, `complete`, `skipped`
+- Status values: `pending`, `in_progress`, `complete`, `skipped` (legacy/imported `done` and `closed` are treated as closed aliases by `status-guards.ts`)
 
 ---
 
@@ -261,7 +261,7 @@ PRIMARY KEY (milestone_id, slice_id, id)
 FOREIGN KEY (milestone_id, slice_id) → slices(milestone_id, id)
 ```
 - Indexes: `idx_tasks_active` (milestone_id, slice_id, status), `idx_tasks_escalation_pending`
-- Status values: `pending`, `in_progress`, `complete`, `skipped`, `blocked`
+- Status values: `pending`, `in_progress`, `complete`, `skipped`, `blocked` (legacy/imported `done` and `closed` are treated as complete aliases; `insertTask` stamps `completed_at` for `complete`/`done`/`closed`, but not `skipped`)
 
 ---
 
@@ -615,6 +615,7 @@ completed_at TEXT
 result_json  TEXT
 ```
 - Index: `idx_command_queue_pending` (target_worker, claimed_at)
+- Claiming is a read-then-write path and uses `immediateTransaction()` so WAL workers serialize before selecting the pending row instead of failing a deferred write upgrade with `SQLITE_BUSY_SNAPSHOT`.
 
 ---
 
@@ -719,7 +720,7 @@ remain outside manifest restore.
 | `gsd_task_reopen` | tasks, slices, milestones | tasks | deletes T##-SUMMARY.md |
 | `gsd_slice_reopen` | slices, tasks, milestones | slices, tasks | deletes S##-SUMMARY.md, UAT, all T##-SUMMARY.md |
 | `gsd_milestone_reopen` | milestones, slices, tasks | milestones, slices, tasks | deletes all summaries |
-| `gsd_save_gate_result` | quality_gates | quality_gates, gate_runs | — |
+| `gsd_save_gate_result` | quality_gates | quality_gates, gate_runs (same transaction) | — |
 | `capture_thought` | memories | memories | KNOWLEDGE.md projection for Patterns/Lessons (both backfilled and newly captured) |
 | `memory_query` | memories, memories_fts, memory_embeddings | memories (hit_count++) | — |
 
@@ -760,15 +761,15 @@ remain outside manifest restore.
 
 1. **Single-writer rule**: all write SQL lives in the explicit single-writer *layer* — `db/engine.ts` for schema, migrations, lifecycle, and transaction primitives; `db/writers/**` for domain write subsystems; `gsd-db.ts` as the compatibility barrel and remaining mid-migration wrappers; the typed coordination/runtime writer modules `db/milestone-leases.ts`, `db/unit-dispatches.ts`, `db/auto-workers.ts`, `db/runtime-kv.ts`, and `db/command-queue.ts`; the schema/migration helpers `db-memory-fts-schema.ts`, `db-schema-metadata.ts`, and `db-verification-evidence-schema.ts`; and the ADR migration/backfill helper `memory-backfill.ts`. This is an allowlist, not permission for arbitrary raw writes under `db/`. `unit-ownership.ts` remains excluded because it owns a separate `.gsd/unit-claims.db`. `db/queries.ts` is the read-only Query Module and must contain no write SQL. No raw write SQL escapes to the adapter from anywhere else. Enforced by the structural `single-writer-invariant.test.ts`, which checks this allowlist.
 
-2. **Transaction wrapping**: every multi-table write uses `transaction()` or `immediateTransaction()` when it needs SQLite's reserved writer lock up front. Rollback on any error. Re-entrant: nested calls increment the shared depth counter; no nested `BEGIN`.
+2. **Transaction wrapping**: every multi-table write uses `transaction()` or `immediateTransaction()` when it needs SQLite's reserved writer lock up front. Rollback on any error. Re-entrant: nested calls increment the shared depth counter; no nested `BEGIN`. `gsd_save_gate_result` commits the `quality_gates` verdict update and matching `gate_runs` ledger insert together, so recovery never sees a completed gate without its audit row.
 
 3. **Cascade semantics**: hierarchy status cascades are named **Domain Write Operations** in `db/writers/cascades.ts`, each owning its own `transaction()` so the milestone/slice/task subtree transitions atomically (callers keep only projection/file-cleanup/event logic):
    - `gsd_slice_complete` (`completeSliceCascade`) cascades `pending` tasks → `skipped`
-   - `gsd_skip_slice` (`skipSliceCascade`) cascades `pending`/`active` tasks → `skipped`, preserves `complete`
+   - `gsd_skip_slice` (`skipSliceCascade`) rejects closed slices (`complete`/`done`/`closed`) without clearing `completed_at`, re-skips `skipped` slices as a no-op, cascades `pending`/`active` tasks → `skipped`, and preserves closed tasks
    - `gsd_milestone_reopen` (`reopenMilestoneCascade`) cascades all slices → `in_progress`, all tasks → `pending`
    - `gsd_slice_reopen` (`reopenSliceCascade`) and `undo`'s reset (`resetSliceCascade`) reopen a slice's subtree atomically
 
-4. **Conflict guards**: `insertSlice`, `insertTask` use `ON CONFLICT` to preserve existing completed status and non-empty fields. Fresh INSERT of an already-complete row is a no-op.
+4. **Conflict guards**: `insertSlice`, `insertTask` use `ON CONFLICT` to preserve existing completed status and non-empty fields. `insertTask` treats `complete`/`done`/`closed` as complete for `completed_at` stamping and preserves existing completion metadata when `preserveCompletionMetadata` is set; `skipped` stays terminal but does not get a completion timestamp.
 
 5. **FTS fallback**: if FTS5 unavailable, `memory_query` falls back to LIKE scan on `memories.content`.
 
