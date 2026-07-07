@@ -30,6 +30,7 @@ export const INTEGRATION_EXTENSION_GLOBS = new Set([
   'async-jobs',
   'ollama',
   'browser-tools',
+  'mac-tools',
   'search-the-web',
   'bg-shell',
   'slash-commands',

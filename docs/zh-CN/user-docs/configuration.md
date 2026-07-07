@@ -169,6 +169,8 @@ mcp_call(server="my-server", tool="<tool_name>", args={...})
 | `GSD_WORKFLOW_WRITE_GATE_MODULE` | 尽可能自动发现 | 可选的绝对路径或 `file:` URL，指向 `gsd-workflow` mutation tools 使用的共享 write-gate module。 |
 | `GSD_ALLOWED_COMMAND_PREFIXES` | （内置列表） | 允许用于 `!command` 值解析的命令前缀，逗号分隔。会覆盖 settings.json 中的 `allowedCommandPrefixes`。见 [自定义模型：命令允许列表](custom-models.md#command-allowlist)。 |
 | `GSD_FETCH_ALLOWED_URLS` | （无） | 对 `fetch_page` URL block 免检的 hostnames，逗号分隔。会覆盖 settings.json 中的 `fetchAllowedUrls`。见 [URL Blocking](#url-blocking-fetch_page)。 |
+| `SCREENSHOT_MAX_WIDTH` | `1568` | `browser_screenshot` 和 `mac_screenshot` 返回的 inline image payload 最大宽度（像素）。超出时会保持宽高比缩小；设为 `0` 可取消宽度限制并返回原始宽度。 |
+| `SCREENSHOT_MAX_HEIGHT` | `8000` | `browser_screenshot` 和 `mac_screenshot` 返回的 inline image payload 最大高度（像素）。超出时会保持宽高比缩小；设为 `0` 可取消高度限制并返回原始高度。 |
 
 ## 全部设置
 
