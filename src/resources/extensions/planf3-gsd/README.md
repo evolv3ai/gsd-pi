@@ -120,6 +120,22 @@ use the `planf3_gsd_preflight` tool's JSON. Exit codes (0 ok / 20 unapproved /
 21 drift / 1 error) are also set but the pi host currently clobbers them in
 `--print` mode; the last line is the contract.
 
+**What the approval hash covers.** The hash is a fingerprint of the
+**bridge-owned CONFIG**: the post-overlay bucket map + `verification_commands`
+(the spec §5.1 "disk-recomputable surface"). It **does not** cover plan text —
+adding a phase to a signed plan, rewording a task, or extending the plan body
+leaves `verdict=ok` on the next build. That's by design: the gate exists to
+catch bridge-owned config drift, not plan authorship.
+
+**Plan-governed buckets self-heal.** If a bucket's model is set by the plan's
+`<section id="model-policy">`, editing that model at the project level
+(`.gsd/PREFERENCES.md`) is invisible to the gate — the projection re-applies
+plan policy at gate time, so the current projection matches the recorded one.
+The next build's preferences overlay then rewrites the project file back to
+the plan value. To exercise a real config-drift refusal, edit a bucket the
+plan **does not** govern (typically an execution or research bucket sourced
+from `~/.gsd/PREFERENCES.md`).
+
 ## ExtensionAPI tools
 
 For agent/LLM callers (the LLM picks these up automatically from the
@@ -134,6 +150,29 @@ There is intentionally **no** `planf3_gsd_build` tool. `build` is a
 slash-command-only surface — agents that want to create a milestone
 should call `gsd headless new-milestone` directly after `planf3_gsd_export`
 to keep control over auto vs. step mode.
+
+### Direct-import workaround when the tool isn't discovered (`--print` mode)
+
+The `planf3_gsd_preflight` tool is registered in every activation, but a rare
+class of headless/print sessions may not expose the full tool catalog to the
+in-session agent. If an agent reports "the `planf3_gsd_preflight` tool isn't
+wired in," it can fall back to importing the extension module directly:
+
+```ts
+import { signOffPreflight } from ".../src/resources/extensions/planf3-gsd/preflight/run.js";
+await signOffPreflight({
+  projectRoot: "/abs/path", htmlPath: "specs/plan.html", // relative or absolute — both work as of v0.3.2
+  offline: false, ping: false,
+  catalog: { ids: () => yourModelIds },
+  orchestrator: null,
+}, "note-optional");
+```
+
+Prior to v0.3.2 the direct-import path had a landmine (path-identity bug F1):
+sign-off wrote projectedFrom verbatim and the subsequent gate raw-string
+`!==`'d it against the argv path, refusing valid projections when the two
+spellings differed. v0.3.2 resolves htmlPath against projectRoot at every
+deps boundary, so relative and absolute spellings are now equivalent.
 
 ## Bridge manifest schema
 
