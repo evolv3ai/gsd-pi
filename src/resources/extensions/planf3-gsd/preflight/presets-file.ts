@@ -29,6 +29,11 @@ function probeTable(probes: ProbeOutcome[]): string {
   return ["| target | tier | verdict | detail | checked |", "| --- | --- | --- | --- | --- |", ...rows].join("\n");
 }
 
+function verificationCommandsSection(commands: string[]): string {
+  if (commands.length === 0) return "_none approved_";
+  return commands.map((c) => `- ${c}`).join("\n");
+}
+
 /** The body is fully generated — hand edits are overwritten on the next sign-off. */
 function renderBody(record: PresetsRecord): string {
   const approval = record.approval;
@@ -53,6 +58,13 @@ function renderBody(record: PresetsRecord): string {
     "means a bridge-owned key changed (spec §5.1).",
     "",
     bucketTable(record.stages.gsdBuild.buckets),
+    "",
+    "## Verification commands",
+    "",
+    "The approval hash covers exactly the commands below plus the bucket map",
+    "above (spec §5.1 disk-recomputable surface).",
+    "",
+    verificationCommandsSection(record.stages.gsdBuild.verificationCommands ?? []),
     "",
     "## Product integrations",
     "",
