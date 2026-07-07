@@ -1095,10 +1095,11 @@ export const DISPATCH_RULES: DispatchRule[] = [
   },
   {
     name: "pre-planning (no context) → discuss-milestone",
-    match: async ({ state, mid, midTitle, basePath, prefs, structuredQuestionsAvailable }) => {
+    match: async ({ state, mid, midTitle, basePath, prefs, session, structuredQuestionsAvailable }) => {
       if (state.phase !== "pre-planning") return null;
       if (isRegistryMilestoneComplete(state, mid)) return null;
-      const contextFile = resolveMilestoneFile(basePath, mid, "CONTEXT");
+      const contextBasePath = resolveWorktreeProjectRoot(basePath, session?.originalBasePath);
+      const contextFile = resolveMilestoneFile(contextBasePath, mid, "CONTEXT");
       const hasContext = !!(contextFile && (await loadFile(contextFile)));
       if (hasContext) return null; // fall through to next rule
       if (prefs?.planning_depth === "deep") return null;
