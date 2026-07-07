@@ -1094,6 +1094,20 @@ function convertMessages(
 			}
 		} else if (msg.role === "assistant") {
 			const blocks: ContentBlockParam[] = [];
+			const pairedServerToolUseIds = new Set<string>();
+			const followingWebSearchResultIds = new Set<string>();
+
+			for (let j = msg.content.length - 1; j >= 0; j--) {
+				const block = msg.content[j];
+				if (block.type === "serverToolUse") {
+					if (followingWebSearchResultIds.has(block.id)) {
+						pairedServerToolUseIds.add(block.id);
+					}
+				} else if (block.type === "webSearchResult") {
+					followingWebSearchResultIds.add(block.toolUseId);
+				}
+			}
+			const emittedServerToolUseIds = new Set<string>();
 
 			for (const block of msg.content) {
 				if (block.type === "text") {
@@ -1135,6 +1149,8 @@ function convertMessages(
 						input: block.arguments ?? {},
 					});
 				} else if (block.type === "serverToolUse") {
+					if (!pairedServerToolUseIds.has(block.id)) continue;
+					emittedServerToolUseIds.add(block.id);
 					blocks.push({
 						type: "server_tool_use",
 						id: block.id,
@@ -1143,6 +1159,7 @@ function convertMessages(
 						...(block.caller ? { caller: block.caller } : {}),
 					} as ContentBlockParam);
 				} else if (block.type === "webSearchResult") {
+					if (!emittedServerToolUseIds.has(block.toolUseId)) continue;
 					blocks.push({
 						type: "web_search_tool_result",
 						tool_use_id: block.toolUseId,
