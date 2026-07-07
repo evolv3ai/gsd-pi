@@ -17,6 +17,10 @@ import { StringEnum, Type } from "@gsd/pi-ai";
 import { execFileSync } from "node:child_process";
 import { statSync, readdirSync } from "node:fs";
 import path from "node:path";
+import {
+	constrainScreenshot,
+	getScreenshotBufferDimensions,
+} from "../browser-tools/screenshot-constraints.js";
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -94,6 +98,45 @@ interface MacAgentResponse {
 	success: boolean;
 	data?: Record<string, any>;
 	error?: string;
+}
+
+interface MacScreenshotPayload {
+	imageData: string;
+	width: number;
+	height: number;
+	format: string;
+	mimeType: string;
+}
+
+function macScreenshotQualityToPercent(quality: number | undefined): number {
+	if (quality === undefined || !Number.isFinite(quality)) return 80;
+	return Math.min(100, Math.max(1, Math.round(quality * 100)));
+}
+
+export async function prepareMacScreenshotPayload(
+	data: Record<string, any>,
+	quality: number | undefined,
+): Promise<MacScreenshotPayload> {
+	const format = data.format as string;
+	const mimeType = format === "png" ? "image/png" : "image/jpeg";
+	const rawBuffer = Buffer.from(data.imageData as string, "base64");
+	const constrainedBuffer = await constrainScreenshot(
+		null as any,
+		rawBuffer,
+		mimeType,
+		macScreenshotQualityToPercent(quality),
+	);
+	const dimensions = constrainedBuffer === rawBuffer
+		? null
+		: await getScreenshotBufferDimensions(constrainedBuffer);
+
+	return {
+		imageData: constrainedBuffer.toString("base64"),
+		width: dimensions?.width ?? (data.width as number),
+		height: dimensions?.height ?? (data.height as number),
+		format,
+		mimeType,
+	};
 }
 
 /**
@@ -718,19 +761,19 @@ export default function (pi: ExtensionAPI) {
 				throw new Error("mac_screenshot: " + result.error);
 			}
 
-			const data = result.data!;
-			const imageData = data.imageData as string;
-			const format = data.format as string;
-			const width = data.width as number;
-			const height = data.height as number;
-			const mimeType = format === "png" ? "image/png" : "image/jpeg";
+			const screenshot = await prepareMacScreenshotPayload(result.data!, args.quality);
 
 			return {
 				content: [
-					{ type: "text" as const, text: `Screenshot: ${width}x${height} ${format}` },
-					{ type: "image" as const, data: imageData, mimeType },
+					{ type: "text" as const, text: `Screenshot: ${screenshot.width}x${screenshot.height} ${screenshot.format}` },
+					{ type: "image" as const, data: screenshot.imageData, mimeType: screenshot.mimeType },
 				],
-				details: { width, height, format, mimeType },
+				details: {
+					width: screenshot.width,
+					height: screenshot.height,
+					format: screenshot.format,
+					mimeType: screenshot.mimeType,
+				},
 			};
 		},
 	});
