@@ -265,8 +265,8 @@ importers:
   packages/daemon:
     dependencies:
       '@anthropic-ai/sdk':
-        specifier: ^0.52.0
-        version: 0.52.0
+        specifier: ^0.91.1
+        version: 0.91.1(zod@3.25.76)
       '@opengsd/contracts':
         specifier: workspace:*
         version: link:../contracts
@@ -846,10 +846,6 @@ packages:
     engines: {node: '>=18.0.0'}
     peerDependencies:
       zod: ^4.0.0
-
-  '@anthropic-ai/sdk@0.52.0':
-    resolution: {integrity: sha512-d4c+fg+xy9e46c8+YnrrgIQR45CZlAi7PwdzIfDXDM6ACxEZli1/fxhURsq30ZpMZy6LvSkr41jGq5aF5TD7rQ==}
-    hasBin: true
 
   '@anthropic-ai/sdk@0.91.1':
     resolution: {integrity: sha512-LAmu761tSN9r66ixvmciswUj/ZC+1Q4iAfpedTfSVLeswRwnY3n2Nb6Tsk+cLPP28aLOPWeMgIuTuCcMC6W/iw==}
@@ -6435,8 +6431,6 @@ snapshots:
       '@img/sharp-linuxmusl-x64': 0.34.5
       '@img/sharp-win32-arm64': 0.34.5
       '@img/sharp-win32-x64': 0.34.5
-
-  '@anthropic-ai/sdk@0.52.0': {}
 
   '@anthropic-ai/sdk@0.91.1(zod@3.25.76)':
     dependencies:
