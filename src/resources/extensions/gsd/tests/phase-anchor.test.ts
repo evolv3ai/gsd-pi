@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -9,11 +9,11 @@ import type { PhaseAnchor } from "../phase-anchor.js";
 
 function makeTempBase(): string {
   const tmp = mkdtempSync(join(tmpdir(), "gsd-anchor-test-"));
-  mkdirSync(join(tmp, ".gsd", "milestones", "M001", "anchors"), { recursive: true });
+  mkdirSync(join(tmp, ".gsd"), { recursive: true });
   return tmp;
 }
 
-test("writePhaseAnchor creates anchor file in correct location", () => {
+test("writePhaseAnchor creates anchor file under runtime state", () => {
   const base = makeTempBase();
   try {
     const anchor: PhaseAnchor = {
@@ -26,7 +26,35 @@ test("writePhaseAnchor creates anchor file in correct location", () => {
       nextSteps: ["Plan the implementation slices"],
     };
     writePhaseAnchor(base, "M001", anchor);
-    assert.ok(existsSync(join(base, ".gsd", "milestones", "M001", "anchors", "discuss.json")));
+    assert.ok(existsSync(join(base, ".gsd", "runtime", "anchors", "M001", "discuss.json")));
+    assert.equal(existsSync(join(base, ".gsd", "milestones", "M001", "anchors", "discuss.json")), false);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("readPhaseAnchor falls back to legacy anchor location", () => {
+  const base = makeTempBase();
+  try {
+    const legacyDir = join(base, ".gsd", "milestones", "M001", "anchors");
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(
+      join(legacyDir, "research-slice.json"),
+      JSON.stringify({
+        phase: "research-slice",
+        milestoneId: "M001",
+        generatedAt: "2026-07-07T00:00:00.000Z",
+        intent: "Keep reading old anchors during upgrade.",
+        decisions: [],
+        blockers: [],
+        nextSteps: [],
+      }),
+      "utf-8",
+    );
+
+    const read = readPhaseAnchor(base, "M001", "research-slice");
+    assert.ok(read);
+    assert.equal(read.intent, "Keep reading old anchors during upgrade.");
   } finally {
     rmSync(base, { recursive: true, force: true });
   }

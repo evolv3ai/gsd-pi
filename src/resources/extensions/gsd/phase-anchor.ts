@@ -19,11 +19,15 @@ export interface PhaseAnchor {
 }
 
 function anchorsDir(basePath: string, milestoneId: string): string {
-  return join(gsdRoot(basePath), "milestones", milestoneId, "anchors");
+  return join(gsdRoot(basePath), "runtime", "anchors", milestoneId);
 }
 
 function anchorPath(basePath: string, milestoneId: string, phase: string): string {
   return join(anchorsDir(basePath, milestoneId), `${phase}.json`);
+}
+
+function legacyAnchorPath(basePath: string, milestoneId: string, phase: string): string {
+  return join(gsdRoot(basePath), "milestones", milestoneId, "anchors", `${phase}.json`);
 }
 
 export function writePhaseAnchor(basePath: string, milestoneId: string, anchor: PhaseAnchor): void {
@@ -35,7 +39,9 @@ export function writePhaseAnchor(basePath: string, milestoneId: string, anchor: 
 }
 
 export function readPhaseAnchor(basePath: string, milestoneId: string, phase: string): PhaseAnchor | null {
-  const path = anchorPath(basePath, milestoneId, phase);
+  const path = existsSync(anchorPath(basePath, milestoneId, phase))
+    ? anchorPath(basePath, milestoneId, phase)
+    : legacyAnchorPath(basePath, milestoneId, phase);
   if (!existsSync(path)) return null;
   try {
     return JSON.parse(readFileSync(path, "utf-8")) as PhaseAnchor;
