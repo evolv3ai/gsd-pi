@@ -618,17 +618,20 @@ function legacyMilestonesHasSubdirs(basePath: string): boolean {
  * See the matching TODO in markdown-renderer.ts detectStaleRenders, which
  * disabled stale-render detection for the same reason.
  */
+const LEGACY_MILESTONE_RUNTIME_DIRS = new Set(["anchors"]);
+
 export function dirIsContentBearingLegacyMilestone(dir: string): boolean {
   try {
     const entries = readdirSync(dir, { withFileTypes: true });
     // 1. Any non-META regular file → real legacy content.
     if (entries.some(e => e.isFile() && !e.name.endsWith("-META.json"))) return true;
-    // 2. A non-empty subdirectory → real legacy content (e.g. slices/ with slice dirs).
+    // 2. A non-empty non-runtime subdirectory → real legacy content (e.g. slices/ with slice dirs).
     //    An *empty* subdir is treated as scaffolding (e.g. git-service.ts may create
     //    an empty slices/ alongside the integration META file) and must NOT flip the
     //    layout — that is the Bugbot finding this guard addresses.
     return entries.some(e => {
       if (!e.isDirectory()) return false;
+      if (LEGACY_MILESTONE_RUNTIME_DIRS.has(e.name)) return false;
       try { return readdirSync(join(dir, e.name)).length > 0; } catch { return false; }
     });
   } catch {

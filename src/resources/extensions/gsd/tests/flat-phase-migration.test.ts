@@ -57,6 +57,19 @@ test("needsFlatPhaseMigration returns false when no .gsd/milestones/", () => {
   assert.equal(needsFlatPhaseMigration(base), false);
 });
 
+test("needsFlatPhaseMigration ignores legacy anchor runtime scaffolding", () => {
+  const base = mkdtempSync(join(tmpdir(), `gsd-anchor-nomig-${randomUUID()}`));
+  mkdirSync(join(base, ".gsd", "phases"), { recursive: true });
+  mkdirSync(join(base, ".gsd", "milestones", "M001", "anchors"), { recursive: true });
+  writeFileSync(
+    join(base, ".gsd", "milestones", "M001", "anchors", "research-slice.json"),
+    "{}",
+    "utf-8",
+  );
+  tmpDirs.push(base);
+  assert.equal(needsFlatPhaseMigration(base), false);
+});
+
 test("migrateToFlatPhase moves content from milestones/ to phases/", async () => {
   const base = makeTmp();
   await migrateToFlatPhase(base);
@@ -107,6 +120,25 @@ test("migrateToFlatPhase creates a backup", async () => {
   assert.ok(existsSync(join(base, ".gsd-backups")), "backup should exist");
   const backups = readdirSync(join(base, ".gsd-backups")).filter(d => d.startsWith("migrate-"));
   assert.ok(backups.length >= 1, "at least one migrate-* backup dir should exist");
+});
+
+test("migrateToFlatPhase backs up existing phases projection before clearing it", async () => {
+  const base = makeTmp();
+  const reviewPath = join(base, ".gsd", "phases", "01-foundation", "PLAN-REVIEW.md");
+  mkdirSync(join(base, ".gsd", "phases", "01-foundation"), { recursive: true });
+  writeFileSync(reviewPath, "# Plan Review\n\nHand-authored review.", "utf-8");
+
+  await migrateToFlatPhase(base);
+
+  const backupRoot = join(base, ".gsd-backups");
+  const backups = readdirSync(backupRoot).filter(d => d.startsWith("migrate-"));
+  assert.equal(backups.length, 1, "one migrate backup should exist");
+  const backedUpReview = join(backupRoot, backups[0]!, "__phases", "01-foundation", "PLAN-REVIEW.md");
+  assert.equal(
+    readFileSync(backedUpReview, "utf-8"),
+    "# Plan Review\n\nHand-authored review.",
+    "pre-existing phases/ files should have a recovery copy",
+  );
 });
 
 test("failed migration rolls back without leaking a .gsd-backups/migrate-* dir", async (t) => {
@@ -187,6 +219,42 @@ test("migrateToFlatPhase prunes legacy milestones artifact rows after flat rende
   assert.ok(
     rows.some((row) => row.path.startsWith("phases/")),
     "flat-phase render should leave replacement projection rows in the artifacts table",
+  );
+});
+
+test("migrateToFlatPhase prunes stale flat-phase artifact rows that renderAll intentionally skips", async () => {
+  const base = makeTmp();
+  insertArtifact({
+    path: "phases/01-foundation/T01-PLAN.md",
+    artifact_type: "PLAN",
+    milestone_id: "M001",
+    slice_id: "S01",
+    task_id: "T01",
+    full_content: "# Legacy standalone task plan\n",
+  });
+  insertArtifact({
+    path: "phases/01-foundation/01-01-RESEARCH.md",
+    artifact_type: "RESEARCH",
+    milestone_id: "M001",
+    slice_id: "S01",
+    task_id: null,
+    full_content: "",
+  });
+
+  await migrateToFlatPhase(base);
+
+  const rows = _getAdapter()!
+    .prepare("SELECT path FROM artifacts ORDER BY path")
+    .all() as Array<{ path: string }>;
+  assert.equal(
+    rows.some((row) => row.path === "phases/01-foundation/T01-PLAN.md"),
+    false,
+    "standalone task PLAN rows should be pruned when the flat renderer does not recreate the file",
+  );
+  assert.equal(
+    rows.some((row) => row.path === "phases/01-foundation/01-01-RESEARCH.md"),
+    false,
+    "empty-content artifact rows should be pruned when the flat renderer skips the file",
   );
 });
 
