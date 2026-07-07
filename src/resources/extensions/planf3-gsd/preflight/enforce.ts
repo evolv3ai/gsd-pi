@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parsePlanf3Html } from "../parser/planf3-html-parser.js";
 import { splitPreferences, type SplitFile } from "../gsd/preferences-overlay.js";
 import { projectionHash } from "./hash.js";
@@ -105,6 +105,11 @@ export interface PresetsGateResult {
   presetsHash: string | null;
   refusal: string | null;
   drift: DriftRow[];
+  /** When presets === "absent": why. "no-record" = no signed-off PRESETS on
+   *  disk (or record.approval === null); "unsigned-projection" = a record
+   *  exists but was signed for a different projectedFrom. Undefined for other
+   *  verdicts. Consumer contract: failure eval rows split the marker on this. */
+  absenceReason?: "no-record" | "unsigned-projection";
 }
 
 async function readOrNull(path: string): Promise<string | null> {
@@ -168,27 +173,35 @@ export async function checkPresetsGate(
   htmlPath: string,
   opts: { force: boolean; globalPrefsPath?: string },
 ): Promise<PresetsGateResult> {
-  const rerun = `run /planf3-gsd-preflight ${htmlPath} and sign off, or pass --force to build anyway`;
+  const resolvedHtmlPath = resolve(projectRoot, htmlPath);
+  const rerun = `run /planf3-gsd-preflight ${resolvedHtmlPath} and sign off, or pass --force to build anyway`;
 
   let record: PresetsRecord | null;
   try {
     record = await readPresets(projectRoot);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { presets: opts.force ? "forced" : "absent", presetsHash: null, drift: [], refusal: opts.force ? null : `preflight gate: ${PRESETS_RELATIVE_PATH} is unreadable (${msg}) — ${rerun}` };
+    return { presets: opts.force ? "forced" : "absent", presetsHash: null, drift: [], refusal: opts.force ? null : `preflight gate: ${PRESETS_RELATIVE_PATH} is unreadable (${msg}) — ${rerun}`, ...(opts.force ? {} : { absenceReason: "no-record" as const }) };
   }
 
   // Plan html read/parse failures propagate uncaught — see docstring above.
-  const html = await readFile(htmlPath, "utf8");
+  const html = await readFile(resolvedHtmlPath, "utf8");
   const plan = parsePlanf3Html(html);
-  const projection = await readCurrentProjection(projectRoot, htmlPath, plan, opts.globalPrefsPath);
-  const result = computeVerdict(record, { projection, planPath: htmlPath, probes: [] });
+  const projection = await readCurrentProjection(projectRoot, resolvedHtmlPath, plan, opts.globalPrefsPath);
+  // F1: also normalize the RECORD side — pre-fix records may hold a relative
+  // projectedFrom. Compare after resolving both sides against projectRoot.
+  const normalizedRecord: PresetsRecord | null = record?.approval?.projectedFrom
+    ? { ...record, approval: { ...record.approval, projectedFrom: resolve(projectRoot, record.approval.projectedFrom) } }
+    : record;
+  const result = computeVerdict(normalizedRecord, { projection, planPath: resolvedHtmlPath, probes: [] });
   const hash = projectionHash(projection);
 
   if (result.verdict === "ok") return { presets: "ok", presetsHash: hash, drift: [], refusal: null };
   if (opts.force) return { presets: "forced", presetsHash: hash, drift: result.drift, refusal: null };
   if (result.verdict === "unapproved") {
-    return { presets: "absent", presetsHash: hash, drift: [], refusal: `preflight gate: ${result.reason} — ${rerun}` };
+    const absenceReason: "no-record" | "unsigned-projection" =
+      record === null || record.approval === null ? "no-record" : "unsigned-projection";
+    return { presets: "absent", presetsHash: hash, drift: [], refusal: `preflight gate: ${result.reason} — ${rerun}`, absenceReason };
   }
   const diffLines = result.drift.map((d) => `  ${d.field}: ${d.approved} → ${d.current}`).join("\n");
   return { presets: "drift", presetsHash: hash, drift: result.drift, refusal: `preflight gate: configuration drifted since sign-off:\n${diffLines}\n${rerun}` };

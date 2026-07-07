@@ -91,6 +91,19 @@ describe("runPreflight", () => {
       approved: "claude-code/claude-sonnet-4-6", current: "claude-code/claude-haiku-4-5",
     });
   });
+
+  test("F1: sign-off with absolute htmlPath is accepted on re-run with the equivalent relative path", async () => {
+    const { tmp, html } = await scaffold();
+    // Sign with the ABSOLUTE path (this is what the tool caller in the e2e did).
+    const dAbs = deps(tmp, html);
+    await signOffPreflight(dAbs, "signed with abs");
+
+    // Re-run with the EQUIVALENT RELATIVE path (the argv shape of a slash command).
+    const relative = join("specs", "p.html");
+    const dRel = deps(tmp, relative);
+    const again = await runPreflight(dRel);
+    assert.equal(again.verdict, "ok", "same file, resolved identically at the deps boundary");
+  });
 });
 
 describe("exit-code contract (spec §11.10)", () => {

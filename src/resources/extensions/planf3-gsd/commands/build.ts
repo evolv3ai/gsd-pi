@@ -40,9 +40,13 @@ export interface BuildOptions {
   allowUnsafeStep?: boolean;
   force?: boolean;
   globalPrefsPath?: string;
+  /** Kill `gsd headless {new-milestone,auto}` if no stdout arrives for this
+   *  long. Default 10 minutes. Set to 0 to disable. Guards against upstream
+   *  #1294 (smart-entry menu route hangs headless indefinitely). */
+  headlessIdleMs?: number;
 }
 
-export type AutoChainOutcome = "not-applicable" | "chained" | "relaunched" | "not-started";
+export type AutoChainOutcome = "not-applicable" | "chained" | "relaunched" | "not-started" | "stopped-at-pause";
 
 export interface SettleOptions {
   /** Max query attempts after new-milestone (default 5). */
@@ -70,8 +74,10 @@ type FailureMarker =
   | "failed:new-milestone"
   | "failed:query"
   | "failed:auto-relaunch"
+  | "failed:headless-idle"
   | "preflight-refused:drift"
-  | "preflight-refused:absent";
+  | "preflight-refused:absent"
+  | "preflight-refused:unsigned-projection";
 
 /** Best-effort failure eval row — never masks the original error. */
 async function logFailureRow(
@@ -121,6 +127,40 @@ function deriveLastStatus(
   return "planned";
 }
 
+const MENU_HANG_RE = /menu could not be shown in this session/;
+
+interface IdleGuard {
+  signal: AbortSignal;
+  onStdout: (chunk: string) => void;
+  wasAborted: () => boolean;
+  dispose: () => void;
+}
+
+function makeIdleGuard(idleMs: number): IdleGuard {
+  const controller = new AbortController();
+  if (idleMs === 0) {
+    return {
+      signal: controller.signal,
+      onStdout: () => {},
+      wasAborted: () => false,
+      dispose: () => {},
+    };
+  }
+  let timer: ReturnType<typeof setTimeout> = setTimeout(() => controller.abort(), idleMs);
+  const reset = () => { clearTimeout(timer); timer = setTimeout(() => controller.abort(), idleMs); };
+  return {
+    signal: controller.signal,
+    onStdout: (chunk) => {
+      reset();
+      if (MENU_HANG_RE.test(chunk)) controller.abort();
+    },
+    wasAborted: () => controller.signal.aborted,
+    dispose: () => { clearTimeout(timer); },
+  };
+}
+
+const HEADLESS_IDLE_MESSAGE = "gsd idled headless without progress (known upstream #1294) — killed the child";
+
 export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promise<BuildResult> {
   if (opts.auto !== true && opts.allowUnsafeStep !== true) {
     throw new Error(STEP_MODE_HEADLESS_ERROR);
@@ -149,9 +189,13 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
     throw new Error(friendlyError(err));
   }
   if (gate.refusal !== null) {
+    const marker: FailureMarker =
+      gate.presets === "drift" ? "preflight-refused:drift"
+      : gate.absenceReason === "unsigned-projection" ? "preflight-refused:unsigned-projection"
+      : "preflight-refused:absent";
     await logFailureRow(cwd, {
       loggedAt: now(), htmlPath, specPath: "", mode,
-      marker: gate.presets === "drift" ? "preflight-refused:drift" : "preflight-refused:absent",
+      marker,
       appliedBuckets: [], appliedModels: {},
       presets: gate.presets, presetsHash: gate.presetsHash,
     });
@@ -215,15 +259,37 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
     baseline = null; // best-effort; a failed baseline never blocks the build
   }
 
+  // F3: the final query at end-of-build can report cost.total: 0 (observed
+  // upstream gsd behavior at a stopped-at-pause state) even though earlier
+  // snapshots in this same run saw real spend. Track the max across every
+  // bridge-side query we take and use that for the eval row's cost.
+  let observedCost = baseline?.cost ?? 0;
+  const trackCost = (s: BridgeStatus): void => { if (s.cost > observedCost) observedCost = s.cost; };
+
+  const idleMs = opts.headlessIdleMs ?? 10 * 60 * 1000;
+
   let nmExitCode = -1;
-  try {
-    nmExitCode = (await runner.newMilestone(exportResult.specPath, { auto: opts.auto === true })).exitCode;
-  } catch (err) {
-    await logFailureRow(cwd, {
-      loggedAt: now(), htmlPath, specPath: exportResult.specPath, mode,
-      marker: "failed:new-milestone", appliedBuckets: prefs.buckets, appliedModels: prefs.models,
-    });
-    throw new Error(friendlyError(err, opts.binary ?? "gsd"));
+  {
+    const guard = makeIdleGuard(idleMs);
+    try {
+      nmExitCode = (await runner.newMilestone(exportResult.specPath, {
+        auto: opts.auto === true,
+        signal: guard.signal,
+        onStdout: guard.onStdout,
+      })).exitCode;
+    } catch (err) {
+      const marker: FailureMarker = guard.wasAborted() ? "failed:headless-idle" : "failed:new-milestone";
+      await logFailureRow(cwd, {
+        loggedAt: now(), htmlPath, specPath: exportResult.specPath, mode,
+        marker, appliedBuckets: prefs.buckets, appliedModels: prefs.models,
+      });
+      if (guard.wasAborted()) {
+        throw new Error(`[planf3-gsd:error] ${HEADLESS_IDLE_MESSAGE} (new-milestone)`);
+      }
+      throw new Error(friendlyError(err, opts.binary ?? "gsd"));
+    } finally {
+      guard.dispose();
+    }
   }
 
   const attempts = Math.max(1, opts.settle?.attempts ?? 5);
@@ -250,6 +316,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
   let status: BridgeStatus;
   try {
     status = mapQuerySnapshot((await runner.query()).json);
+    trackCost(status);
     for (let attempt = 1; attempt < attempts; attempt++) {
       if (opts.auto) {
         if (isVisiblyProgressing(status)) break;
@@ -258,6 +325,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
       }
       await sleep(delayMs);
       status = mapQuerySnapshot((await runner.query()).json);
+      trackCost(status);
     }
   } catch (err) {
     await logFailureRow(cwd, {
@@ -296,18 +364,35 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
       zeroExecutionDispatches(status) &&
       status.blockers.length === 0
     ) {
+      // Guard-wrapped relaunch — exact body from Task 3 Step 5's runner.auto
+      // wrap (idle guard, kills the child on hang, distinguishes failed:auto-
+      // relaunch from failed:headless-idle). This branch is otherwise unchanged
+      // from v0.3.1.
+      const guard = makeIdleGuard(idleMs);
       try {
-        await runner.auto();
+        await runner.auto({ signal: guard.signal, onStdout: guard.onStdout });
         status = mapQuerySnapshot((await runner.query()).json);
+        trackCost(status);
         milestoneId = status.activeMilestone?.id ?? status.lastCompletedMilestone?.id ?? milestoneId;
       } catch (err) {
+        const marker: FailureMarker = guard.wasAborted() ? "failed:headless-idle" : "failed:auto-relaunch";
         await logFailureRow(cwd, {
           loggedAt: now(), htmlPath, specPath: exportResult.specPath, mode,
-          marker: "failed:auto-relaunch", appliedBuckets: prefs.buckets, appliedModels: prefs.models,
+          marker, appliedBuckets: prefs.buckets, appliedModels: prefs.models,
         });
+        if (guard.wasAborted()) {
+          throw new Error(`[planf3-gsd:error] ${HEADLESS_IDLE_MESSAGE} (auto-chain)`);
+        }
         throw new Error(friendlyError(err, opts.binary ?? "gsd"));
+      } finally {
+        guard.dispose();
       }
       autoChain = isVisiblyProgressing(status) ? "relaunched" : "not-started";
+    } else if ((status.progress?.tasks.done ?? 0) > 0 || status.blockers.length > 0) {
+      // Execution DID happen (task completions or a live pause) but the loop
+      // didn't reach the current milestone's completion. F3: this is distinct
+      // from "nothing happened" — attribute honestly.
+      autoChain = "stopped-at-pause";
     } else {
       autoChain = "not-started";
     }
@@ -316,6 +401,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
   const evalPhase =
     autoChain === "relaunched" ? "auto-relaunched"
     : autoChain === "not-started" ? "auto-not-started"
+    : autoChain === "stopped-at-pause" ? "auto-stopped-at-pause"
     : status.phase;
 
   if (milestoneId !== null || status.sessionId !== null) {
@@ -338,7 +424,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
         specPath: exportResult.specPath,
         milestoneId,
         mode,
-        status: { ...status, phase: evalPhase },
+        status: { ...status, phase: evalPhase, cost: observedCost },
         appliedBuckets: prefs.buckets,
         appliedModels: prefs.models,
         presets: gate.presets,

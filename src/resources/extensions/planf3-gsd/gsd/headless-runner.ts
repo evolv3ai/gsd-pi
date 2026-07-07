@@ -19,6 +19,11 @@ export interface SpawnOptions {
   timeoutMs?: number;
   /** Explicit environment for the child process; defaults to inheriting the parent's. */
   env?: NodeJS.ProcessEnv;
+  /** Fired once per stdout data chunk, BEFORE the chunk is appended to the
+   *  buffered stdout string. Used by the bridge's inactivity guard (F4 / #1294)
+   *  to reset the idle timer on real progress and fast-path on the smart-entry
+   *  menu-notification signature. Absent onStdout: buffered behavior only. */
+  onStdout?: (chunk: string) => void;
 }
 
 export type Spawner = (
@@ -101,14 +106,14 @@ export class GsdRunner {
     return args;
   }
 
-  async newMilestone(specPath: string, opts: { auto?: boolean; signal?: AbortSignal } = {}): Promise<GsdResult> {
+  async newMilestone(specPath: string, opts: { auto?: boolean; signal?: AbortSignal; onStdout?: (chunk: string) => void } = {}): Promise<GsdResult> {
     const args = [...this.longRunArgs(), "new-milestone", "--context", specPath];
     if (opts.auto) args.push("--auto");
-    return this.run(args, { signal: opts.signal });
+    return this.run(args, { signal: opts.signal, onStdout: opts.onStdout });
   }
 
-  async auto(opts: { signal?: AbortSignal } = {}): Promise<GsdResult> {
-    return this.run([...this.longRunArgs(), "auto"], { signal: opts.signal });
+  async auto(opts: { signal?: AbortSignal; onStdout?: (chunk: string) => void } = {}): Promise<GsdResult> {
+    return this.run([...this.longRunArgs(), "auto"], { signal: opts.signal, onStdout: opts.onStdout });
   }
 
   /**
@@ -119,8 +124,11 @@ export class GsdRunner {
     return parseJsonLines(result.stdout);
   }
 
-  private async run(args: string[], opts: { signal?: AbortSignal }): Promise<GsdResult> {
-    const { exitCode, stdout, stderr } = await this.spawn(this.binary, args, { cwd: this.cwd, signal: opts.signal });
+  private async run(args: string[], opts: { signal?: AbortSignal; onStdout?: (chunk: string) => void }): Promise<GsdResult> {
+    const spawnOpts: SpawnOptions = { cwd: this.cwd };
+    if (opts.signal !== undefined) spawnOpts.signal = opts.signal;
+    if (opts.onStdout !== undefined) spawnOpts.onStdout = opts.onStdout;
+    const { exitCode, stdout, stderr } = await this.spawn(this.binary, args, spawnOpts);
     if (!VALID_EXIT_CODES.has(exitCode)) {
       throw new Error(`gsd headless ${args[args.length - 1]} unexpected exit code ${exitCode}; stderr=${stderr}`);
     }

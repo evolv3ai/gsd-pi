@@ -197,4 +197,29 @@ describe("checkPresetsGate (build-time, disk-only)", () => {
     const gate = await checkPresetsGate(tmp, html, { force: false, globalPrefsPath: globalPrefs });
     assert.equal(gate.presets, "ok", "corrupt global prefs must degrade to absent, not crash or refuse");
   });
+
+  test("F1b: absenceReason discriminates no-record vs unsigned-projection", async () => {
+    // No record on disk → absenceReason "no-record".
+    const tmpA = await scaffold(false);
+    const htmlA = join(tmpA, "specs", "minimal.html");
+    const noRecord = await checkPresetsGate(tmpA, htmlA, { force: false, globalPrefsPath: join(tmpA, "no-global.md") });
+    assert.equal(noRecord.presets, "absent");
+    assert.equal(noRecord.absenceReason, "no-record");
+
+    // Record exists but projectedFrom differs → absenceReason "unsigned-projection".
+    const tmpB = await scaffold(true);           // scaffold signs projectedFrom = join(tmpB, "specs", "minimal.html")
+    const otherHtml = join(tmpB, "specs", "other.html");
+    await writeFile(otherHtml, "<html><body><header><h1>O</h1></header></body></html>", "utf8");
+    const unsigned = await checkPresetsGate(tmpB, otherHtml, { force: false, globalPrefsPath: join(tmpB, "no-global.md") });
+    assert.equal(unsigned.presets, "absent");
+    assert.equal(unsigned.absenceReason, "unsigned-projection");
+  });
+
+  test("F1: gate accepts a relative htmlPath even when the record was signed with an absolute path", async () => {
+    const tmp = await scaffold(true);      // scaffold signs projectedFrom = ABSOLUTE join(tmp, "specs", "minimal.html")
+    const relative = join("specs", "minimal.html");
+    const gate = await checkPresetsGate(tmp, relative, { force: false, globalPrefsPath: join(tmp, "no-global.md") });
+    assert.equal(gate.presets, "ok", "same file, gate opens regardless of relative-vs-absolute spelling");
+    assert.equal(gate.absenceReason, undefined);
+  });
 });

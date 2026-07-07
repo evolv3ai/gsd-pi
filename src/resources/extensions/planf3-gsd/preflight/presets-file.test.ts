@@ -69,4 +69,53 @@ describe("presets-file round-trip", () => {
     assert.deepEqual(await readPresets(tmp), RECORD);
     assert.match(await readFile(path, "utf8"), /^---\n/);
   });
+
+  test("renders the approved verification_commands as a bulleted section", () => {
+    const rec: PresetsRecord = {
+      schemaVersion: 1,
+      approval: {
+        approvedAt: "2026-07-06T05:00:00Z",
+        approvedBy: { model: "m", authMode: "a" },
+        note: null,
+        approvalHash: "h",
+        projectedFrom: "/abs/specs/x.html",
+      },
+      history: [],
+      stages: {
+        orchestrator: null,
+        gsdBuild: {
+          binary: "gsd", version: null,
+          buckets: [{ bucket: "planning", model: "m", source: "plan", status: "configured" }],
+          verificationCommands: ["pnpm typecheck", "pnpm run test:unit"],
+        },
+        exportStage: { generatorVersion: "0.3.2" },
+        project: { root: ".", branch: null },
+      },
+      product: [],
+      probes: [],
+    };
+    const rendered = renderPresets(rec);
+    assert.match(rendered, /## Verification commands/);
+    assert.match(rendered, /- pnpm typecheck/);
+    assert.match(rendered, /- pnpm run test:unit/);
+  });
+
+  test("renders _none approved_ for empty verification_commands", () => {
+    const rec: PresetsRecord = {
+      schemaVersion: 1,
+      approval: null,
+      history: [],
+      stages: {
+        orchestrator: null,
+        gsdBuild: { binary: "gsd", version: null, buckets: [], verificationCommands: [] },
+        exportStage: { generatorVersion: "0.3.2" },
+        project: { root: ".", branch: null },
+      },
+      product: [],
+      probes: [],
+    };
+    const rendered = renderPresets(rec);
+    assert.match(rendered, /## Verification commands/);
+    assert.match(rendered, /_none approved_/);
+  });
 });

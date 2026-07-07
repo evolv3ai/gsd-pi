@@ -96,6 +96,37 @@ describe("GsdRunner timeoutSeconds", () => {
   });
 });
 
+describe("GsdRunner onStdout forwarding (F4 / #1294 guard)", () => {
+  test("newMilestone forwards onStdout to the spawner opts, invoked once per chunk", async () => {
+    const chunks: string[] = [];
+    const spawn: Spawner = async (_cmd, _args, opts) => {
+      opts.onStdout?.("chunk-a");
+      opts.onStdout?.("chunk-b");
+      return { exitCode: 0, stdout: "{}", stderr: "" };
+    };
+    const runner = new GsdRunner({ binary: "gsd", cwd: "/tmp", spawn });
+    await runner.newMilestone("specs/x.gsd.md", { onStdout: (c) => chunks.push(c) });
+    assert.deepEqual(chunks, ["chunk-a", "chunk-b"]);
+  });
+
+  test("auto forwards onStdout to the spawner opts", async () => {
+    const chunks: string[] = [];
+    const spawn: Spawner = async (_cmd, _args, opts) => {
+      opts.onStdout?.("progress\n");
+      return { exitCode: 0, stdout: "{}", stderr: "" };
+    };
+    const runner = new GsdRunner({ binary: "gsd", cwd: "/tmp", spawn });
+    await runner.auto({ onStdout: (c) => chunks.push(c) });
+    assert.deepEqual(chunks, ["progress\n"]);
+  });
+
+  test("absent onStdout does not throw — existing callers are unaffected", async () => {
+    const runner = new GsdRunner({ binary: "gsd", cwd: "/tmp", spawn: fakeSpawner({ exitCode: 0, stdout: "{}", stderr: "" }) });
+    await runner.newMilestone("specs/x.gsd.md");
+    await runner.auto();
+  });
+});
+
 describe("parseJsonLines", () => {
   // A2: parses N JSONL lines
   test("returns N parsed values for N-line JSONL stdout", () => {
