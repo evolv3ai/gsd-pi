@@ -109,7 +109,7 @@ Parallel to `external-markdown-edit` (PR #802). Added to the `DriftRecord` union
 ```
 
 Detect compares `.planning/` file shas to `marker.planning.projections`. Repair:
-- For modeled files: re-import via the existing parser + transformer.
+- For modeled files: re-import via the existing parser + transformer, then run the hierarchy importer with checkbox status authority scoped to the milestone ids recorded for the drifted file.
 - For passthrough files: no DB import (there's nothing to import into); just refresh the marker sha so the next detect treats it as current.
 
 ### 4.4 The projection writer: `writePlanningDirectory`

@@ -34,8 +34,10 @@ export interface PlanningMarker {
 
 /**
  * Per-file projection entry. `sha` is a normalized-content SHA-256; `entities`
- * is the list of DB entity ids (milestone/slice/task) that the file projects,
- * so repair can scope re-import rather than re-importing the whole tree.
+ * is the list of DB entity ids (milestone/slice/task) that the file projects.
+ * External-edit repair derives milestone ids from this list so markdown status
+ * authority is limited to the drifted projection's milestone scope while the
+ * importer still walks the whole tree.
  */
 export interface ProjectionEntry {
   sha: string;

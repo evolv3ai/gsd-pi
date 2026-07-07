@@ -3,9 +3,10 @@
 //
 // gsd-pi's DB is canonical, but .gsd/*.md is the inter-tool contract. When
 // gsd-core edits a projection file, this handler detects the sha drift vs the
-// recorded baseline in .gsd/.compat.json and re-imports the affected entities
-// into the DB. The next renderAllFromDb pass re-projects; the write-time
-// invalidation hook then refreshes the marker entry, closing the loop.
+// recorded baseline in .gsd/.compat.json and re-imports from markdown with
+// status authority scoped to the affected milestone ids. The next
+// renderAllFromDb pass re-projects; the write-time invalidation hook then
+// refreshes the marker entry, closing the loop.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -59,10 +60,11 @@ function detectExternalMarkdownEdit(
 }
 
 /**
- * Idempotent repair: re-import hierarchy for the affected entities from
- * markdown into the DB, then update the marker entry so the next detect pass
- * sees the file as expected. migrateHierarchyToDb is itself idempotent
- * (upsert), so re-running this repair after a successful one is a no-op.
+ * Idempotent repair: re-import the hierarchy from markdown while allowing
+ * markdown status authority only for milestones named by the drifted file's
+ * marker entities, then update the marker entry so the next detect pass sees
+ * the file as expected. migrateHierarchyToDb is itself idempotent (upsert), so
+ * re-running this repair after a successful one is a no-op.
  */
 async function repairExternalMarkdownEdit(
   record: ExternalMarkdownEditDrift,

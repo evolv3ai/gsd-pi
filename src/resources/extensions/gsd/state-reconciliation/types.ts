@@ -49,14 +49,14 @@ export type DriftRecord =
       projectionPath: string;       // relative to basePath, e.g. "m1/plan.md"
       expectedSha: string;          // sha recorded in .compat.json
       actualSha: string;            // freshly computed from disk
-      entities: string[];           // DB entity ids to re-import
+      entities: string[];           // DB entity ids used to scope status authority
     }
   | {
       kind: "external-planning-edit";
       projectionPath: string;       // relative to .planning/, e.g. "phases/01-foo/01-01-PLAN.md"
       expectedSha: string;
       actualSha: string;
-      entities: string[];
+      entities: string[];           // DB entity ids used to scope status authority
       passthrough: boolean;         // true = content-only, no re-import, just refresh sha
     };
 

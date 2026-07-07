@@ -3,7 +3,8 @@
 // Parallel to external-markdown-edit.ts. Detects sha drift between the compat
 // marker's planning.projections/passthrough and current .planning/ files.
 //
-// Modeled files (projections): re-imported via parsePlanningDirectory → DB.
+// Modeled files (projections): re-imported via parsePlanningDirectory → DB,
+// with markdown status authority scoped to their marker entity milestone ids.
 // Passthrough files (un-modeled docs): sha refreshed, content untouched.
 
 import { existsSync, readFileSync } from "node:fs";

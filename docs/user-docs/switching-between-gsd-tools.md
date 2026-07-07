@@ -4,7 +4,7 @@ Both `@opengsd/gsd-core` and `@opengsd/gsd-pi` read and write the same `.gsd/` d
 
 ## The shared contract
 
-`.gsd/*.md` files are the contract between the two tools. gsd-core treats them as the source of truth. gsd-pi uses a SQLite DB internally (faster queries, transactional state) but projects to the same `.md` files and imports any external edits on startup.
+`.gsd/*.md` files are the contract between the two tools. gsd-core treats them as the source of truth. gsd-pi uses a SQLite DB internally (faster queries, transactional state) but projects to the same `.md` files and imports external edits on startup. For status checkboxes, gsd-pi treats only the drifted file's recorded milestone entities as markdown-authoritative; unrelated stale projections keep the DB status.
 
 ## Recommended workflow: commit before switching
 
@@ -22,7 +22,7 @@ Then open the other tool. If anything goes wrong, `git reset --hard` restores th
 When you open a project in gsd-pi, it runs a reconciliation pass that:
 
 1. Compares every `.gsd/*.md` file against its recorded baseline in `.gsd/.compat.json`.
-2. Imports any file that changed since the last gsd-pi session (e.g., gsd-core edits).
+2. Imports any file that changed since the last gsd-pi session (e.g., gsd-core edits), with status changes scoped to the milestone entities recorded for that drifted file.
 3. Re-projects all markdown from the DB.
 4. Updates `.gsd/.compat.json` with the new baseline.
 
@@ -74,7 +74,7 @@ If your project uses gsd-core's `.planning/` layout (flat `phases/NN-name/` dire
 
 ## Conflicts: same entity edited in both
 
-If both tools edit the *same* entity (e.g., both change the status of slice `S01`) between syncs, the last writer wins after the next reconcile, and gsd-pi surfaces the resolution in the `/gsd sync` output. Git review remains the final safety net — that's why the "commit before switching" workflow matters.
+If both tools edit the *same* entity (e.g., both change the status of slice `S01`) between syncs, the last writer wins after the next reconcile, and gsd-pi surfaces the resolution in the `/gsd sync` output. If a different projection is stale but did not drift, its checkbox status is not allowed to reopen or close unrelated DB rows during the import. Git review remains the final safety net — that's why the "commit before switching" workflow matters.
 
 ## Troubleshooting
 
