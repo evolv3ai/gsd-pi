@@ -12,7 +12,8 @@
 | `GSD_FETCH_ALLOWED_URLS` | (none) | Comma-separated hostnames exempt from internal URL blocking. |
 | `GSD_ALLOWED_COMMAND_PREFIXES` | (built-in) | Comma-separated command prefixes allowed for value resolution. |
 | `GSD_WEB_PROJECT_CWD` | — | Default project path for `gsd --web` when `?project=` is not specified. |
-| `GSD_WEB_NO_AUTH` | (unset) | Set to `1` to disable the built-in web bearer token gate. Only use behind trusted external access control. |
+| `GSD_WEB_NO_AUTH` | (unset) | Set to `1` to disable the built-in web bearer token gate on loopback hosts. Non-loopback hosts are refused unless `GSD_WEB_ALLOW_UNAUTHENTICATED_LAN=1` is also set. |
+| `GSD_WEB_ALLOW_UNAUTHENTICATED_LAN` | (unset) | Set to `1` to explicitly allow unauthenticated web mode on non-loopback hosts. This exposes terminal and file APIs unless trusted external access control is in place. |
 | `GSD_WORKFLOW_PROJECT_ROOT` | current working directory | Canonical project root for the packaged `gsd-workflow` MCP server. Used by workflow tools and by the stale-process registry key in `$GSD_HOME/mcp-instances.json`. |
 | `GSD_WORKFLOW_EXECUTORS_MODULE` | auto-discovered when possible | Optional absolute path or `file:` URL for the shared workflow executor module used by `gsd-workflow` mutation tools. |
 | `GSD_WORKFLOW_WRITE_GATE_MODULE` | auto-discovered when possible | Optional absolute path or `file:` URL for the shared write-gate module used by `gsd-workflow` mutation tools. |

@@ -56,7 +56,9 @@
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--host` | `localhost` | Bind address |
+| `--host` | `127.0.0.1` | Bind address |
 | `--port` | `3000` | Port |
 | `--allowed-origins` | (none) | CORS origins |
 | `--no-auth` | disabled | Disable the built-in bearer token gate |
+
+`--no-auth` is refused on non-loopback hosts by default. To deliberately combine unauthenticated web mode with a LAN-facing bind such as `--host 0.0.0.0`, set `GSD_WEB_ALLOW_UNAUTHENTICATED_LAN=1`; this exposes terminal and file APIs unless trusted external access control is in place.
