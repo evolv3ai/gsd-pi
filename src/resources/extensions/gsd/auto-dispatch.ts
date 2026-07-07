@@ -467,7 +467,7 @@ function resolveEffectiveDispatchMilestoneId(
   scopedMilestone: { id: string; source: string } | null,
 ): string {
   if (scopedMilestone && isBareSuffixedMilestoneAlias(ctx.mid, scopedMilestone.id)) {
-    return scopedMilestone.id;
+    return dispatchMilestoneIdentity(scopedMilestone.id)?.hasSuffix ? scopedMilestone.id : ctx.mid;
   }
 
   const activeMid = ctx.state.activeMilestone?.id;
