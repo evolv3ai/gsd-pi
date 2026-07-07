@@ -763,7 +763,10 @@ export function migrateHierarchyToDb(basePath: string): {
     // see the drift when no SUMMARY file exists).
     if (IMPORT_COMPLETE_STATUSES.has(milestoneStatus)) {
       const summaryPath = resolveMilestoneFile(basePath, milestoneId, 'SUMMARY');
-      updateMilestoneStatus(milestoneId, milestoneStatus, importCompletionTimestamp(summaryPath));
+      // #1291: preserve an existing completion timestamp so a re-import backfills
+      // only rows that lack one, never re-stamping an already-complete milestone
+      // with the current import time. Same guard as the task path below.
+      updateMilestoneStatus(milestoneId, milestoneStatus, importCompletionTimestamp(summaryPath), true);
     }
     counts.milestones++;
 
@@ -801,11 +804,15 @@ export function migrateHierarchyToDb(basePath: string): {
       // complete (same rationale as milestones above).
       if (IMPORT_COMPLETE_STATUSES.has(sliceStatus)) {
         const sliceSummary = resolveSliceFile(basePath, milestoneId, sliceEntry.id, 'SUMMARY');
+        // #1291: preserve an existing completion timestamp so a re-import backfills
+        // only slices that lack one, never re-stamping an already-complete slice
+        // with the current import time. Same guard as the task path below.
         updateSliceStatus(
           milestoneId,
           sliceEntry.id,
           sliceStatus,
           importCompletionTimestamp(sliceSummary),
+          true,
         );
       }
       counts.slices++;
@@ -942,11 +949,14 @@ export function migrateHierarchyToDb(basePath: string): {
         });
         if (allTasksDone && hasSliceSummary) {
           if (_getAdapter()) {
+            // #1291: preserve an existing completion timestamp — this consistency
+            // upgrade sets a completion time only when the row lacks one.
             updateSliceStatus(
               milestoneId,
               sliceEntry.id,
               'complete',
               importCompletionTimestamp(sliceSummaryPath),
+              true,
             );
             process.stderr.write(
               `gsd-migrate: ${milestoneId}/${sliceEntry.id} all tasks + slice summary complete — upgrading slice to complete\n`,

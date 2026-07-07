@@ -19,11 +19,18 @@ import { getDbOrNull } from "../engine.js";
 import { GSDError, GSD_STALE_STATE } from "../../errors.js";
 import { isClosedStatus } from "../../status-guards.js";
 
-/** A single row-level status write, discriminated by entity (the faces' arity). */
+/**
+ * A single row-level status write, discriminated by entity (the faces' arity).
+ *
+ * preserveCompletion (#1291): when true, an existing non-null completed_at on the
+ * row is kept rather than overwritten. Mirrors the task upsert's guard so a
+ * markdown re-import cannot re-stamp an already-complete slice/milestone with the
+ * current import time — the DB row is strictly richer than the plan.
+ */
 export type StatusTransition =
-  | { entity: "task"; milestoneId: string; sliceId: string; taskId: string; status: string; completedAt?: string | null }
-  | { entity: "slice"; milestoneId: string; sliceId: string; status: string; completedAt?: string | null }
-  | { entity: "milestone"; milestoneId: string; status: string; completedAt?: string | null };
+  | { entity: "task"; milestoneId: string; sliceId: string; taskId: string; status: string; completedAt?: string | null; preserveCompletion?: boolean }
+  | { entity: "slice"; milestoneId: string; sliceId: string; status: string; completedAt?: string | null; preserveCompletion?: boolean }
+  | { entity: "milestone"; milestoneId: string; status: string; completedAt?: string | null; preserveCompletion?: boolean };
 
 function requireDb() {
   const db = getDbOrNull();
@@ -44,15 +51,19 @@ function requireDb() {
 export function applyStatusTransition(t: StatusTransition): void {
   const db = requireDb();
   const completedAt = t.completedAt ?? null;
+  const preserve = t.preserveCompletion ? 1 : 0;
 
   switch (t.entity) {
     case "task":
       db.prepare(
-        `UPDATE tasks SET status = :status, completed_at = :completed_at
+        `UPDATE tasks SET status = :status,
+           completed_at = CASE WHEN :preserve_completion = 1 AND tasks.completed_at IS NOT NULL
+                               THEN tasks.completed_at ELSE :completed_at END
          WHERE milestone_id = :milestone_id AND slice_id = :slice_id AND id = :id`,
       ).run({
         ":status": t.status,
         ":completed_at": completedAt,
+        ":preserve_completion": preserve,
         ":milestone_id": t.milestoneId,
         ":slice_id": t.sliceId,
         ":id": t.taskId,
@@ -61,11 +72,14 @@ export function applyStatusTransition(t: StatusTransition): void {
 
     case "slice":
       db.prepare(
-        `UPDATE slices SET status = :status, completed_at = :completed_at
+        `UPDATE slices SET status = :status,
+           completed_at = CASE WHEN :preserve_completion = 1 AND slices.completed_at IS NOT NULL
+                               THEN slices.completed_at ELSE :completed_at END
          WHERE milestone_id = :milestone_id AND id = :id`,
       ).run({
         ":status": t.status,
         ":completed_at": completedAt,
+        ":preserve_completion": preserve,
         ":milestone_id": t.milestoneId,
         ":id": t.sliceId,
       });
@@ -80,8 +94,11 @@ export function applyStatusTransition(t: StatusTransition): void {
         );
       }
       db.prepare(
-        `UPDATE milestones SET status = :status, completed_at = :completed_at WHERE id = :id`,
-      ).run({ ":status": t.status, ":completed_at": completedAt, ":id": t.milestoneId });
+        `UPDATE milestones SET status = :status,
+           completed_at = CASE WHEN :preserve_completion = 1 AND milestones.completed_at IS NOT NULL
+                               THEN milestones.completed_at ELSE :completed_at END
+         WHERE id = :id`,
+      ).run({ ":status": t.status, ":completed_at": completedAt, ":preserve_completion": preserve, ":id": t.milestoneId });
       return;
     }
   }

@@ -656,8 +656,8 @@ export function upsertTaskPlanning(milestoneId: string, sliceId: string, taskId:
 }
 
 
-export function updateSliceStatus(milestoneId: string, sliceId: string, status: string, completedAt?: string): void {
-  applyStatusTransition({ entity: "slice", milestoneId, sliceId, status, completedAt });
+export function updateSliceStatus(milestoneId: string, sliceId: string, status: string, completedAt?: string, preserveCompletion?: boolean): void {
+  applyStatusTransition({ entity: "slice", milestoneId, sliceId, status, completedAt, preserveCompletion });
 }
 
 export function setTaskSummaryMd(milestoneId: string, sliceId: string, taskId: string, md: string): void {
@@ -820,8 +820,8 @@ function writeMilestoneStatus(milestoneId: string, status: string, completedAt?:
  * advance planned milestones. They may not reopen a closed milestone; callers
  * must use reopenMilestoneStatus(), which is reserved for gsd_milestone_reopen.
  */
-export function updateMilestoneStatus(milestoneId: string, status: string, completedAt?: string | null): void {
-  applyStatusTransition({ entity: "milestone", milestoneId, status, completedAt });
+export function updateMilestoneStatus(milestoneId: string, status: string, completedAt?: string | null, preserveCompletion?: boolean): void {
+  applyStatusTransition({ entity: "milestone", milestoneId, status, completedAt, preserveCompletion });
 }
 
 /**
