@@ -330,6 +330,29 @@ test("dispatch: session milestone mismatch stops before missing-task-plan recove
   assert.match(result.reason, /context mid "M001" does not match session\.currentMilestoneId "M002"/);
 });
 
+test("dispatch: bare context milestone maps to suffixed active session milestone", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-suffixed-session-milestone-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  const worktreeRoot = join(tmp, ".gsd", "worktrees", "M003-vaz73w");
+  scaffoldLegacyMilestoneContext(worktreeRoot, "M003-vaz73w");
+  scaffoldLegacySlicePlan(worktreeRoot, "M003-vaz73w", "S01");
+  scaffoldLegacyTaskPlan(worktreeRoot, "M003-vaz73w", "S01", "T02");
+
+  const ctx = makeContextFor(tmp, "M003", "S01", "T02", {
+    basePath: worktreeRoot,
+    originalBasePath: tmp,
+    currentMilestoneId: "M003-vaz73w",
+  });
+  const result = await resolveDispatch(ctx);
+
+  assert.equal(result.action, "dispatch");
+  assert.ok(result.action === "dispatch" && result.unitType === "execute-task",
+    `unitType should be execute-task, got: ${result.action === "dispatch" ? result.unitType : "(stop)"}`);
+  assert.ok(result.action === "dispatch" && result.unitId === "M003-vaz73w/S01/T02",
+    `unitId should use suffixed milestone, got: ${result.action === "dispatch" ? result.unitId : "(stop)"}`);
+});
+
 test("dispatch: worktree path mismatch stops before planning a different milestone", async (t) => {
   const tmp = mkdtempSync(join(tmpdir(), "gsd-worktree-path-milestone-mismatch-"));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
