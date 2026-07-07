@@ -41,6 +41,7 @@ commit `58dc840f`. Plans 018–024 planned against commit `7cca07ae`.
 | 022 | Test gsd-cloud device-flow polling and SSRF gateway guards | P2 | M | 018 | TODO |
 | 023 | ADR: decide the flat-phase layout migration completion path | P2 | M | — | TODO |
 | 024 | Dependency & dead-code hygiene (hono, daemon SDK, ajv, chart.tsx) | P2 | S | — | TODO |
+| 026 | Refuse newer-schema DBs, harden version detection, close DB before migration restore | P1 | M | — | DONE |
 
 All of 009–017 implemented, tested, and committed on branch `chore/audit-fixes-009-017`
 (2026-07-01). Notable deviations recorded in the plan files: 009 skipped the

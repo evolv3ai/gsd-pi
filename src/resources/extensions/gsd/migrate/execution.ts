@@ -2,6 +2,7 @@
 // File Purpose: Write migrated .gsd files, import them into the DB, verify projection/readiness, and rollback on failure.
 
 import { ensureDbOpen } from "../bootstrap/dynamic-tools.js";
+import { closeWorkflowDatabase } from "../db-workspace.js";
 import { clearArtifacts, clearDecisions, clearEngineHierarchy, clearRequirements, transaction } from "../gsd-db.js";
 import { migrateFromMarkdown } from "../md-importer.js";
 import { deriveState, invalidateStateCache } from "../state.js";
@@ -125,6 +126,10 @@ export async function executeMigrationWrite(
 
     return { backup, written, imported, legacyArchive, verification, audit };
   } catch (error) {
+    // The import transaction may have committed and the process may hold an
+    // open handle to the target gsd.db; close before the restore replaces the
+    // file on disk, and leave closed so the next open rebinds to the restored file.
+    try { closeWorkflowDatabase(); } catch { /* best-effort: restore must proceed */ }
     restoreMigrationTarget(backup);
     throw error;
   }
