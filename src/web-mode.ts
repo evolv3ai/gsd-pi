@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { exec, execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
-import { createServer } from 'node:net'
+import { createServer, isIP } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -404,7 +404,7 @@ function isWebNoAuthEnabled(env: NodeJS.ProcessEnv): boolean {
 
 function isLoopbackHost(host: string): boolean {
   const h = host.trim().toLowerCase()
-  return h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '[::1]' || h.startsWith('127.')
+  return h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '[::1]' || (isIP(h) === 4 && h.startsWith('127.'))
 }
 
 function buildSpawnSpec(
