@@ -46,7 +46,7 @@ export interface BuildOptions {
   headlessIdleMs?: number;
 }
 
-export type AutoChainOutcome = "not-applicable" | "chained" | "relaunched" | "not-started";
+export type AutoChainOutcome = "not-applicable" | "chained" | "relaunched" | "not-started" | "stopped-at-pause";
 
 export interface SettleOptions {
   /** Max query attempts after new-milestone (default 5). */
@@ -259,6 +259,13 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
     baseline = null; // best-effort; a failed baseline never blocks the build
   }
 
+  // F3: the final query at end-of-build can report cost.total: 0 (observed
+  // upstream gsd behavior at a stopped-at-pause state) even though earlier
+  // snapshots in this same run saw real spend. Track the max across every
+  // bridge-side query we take and use that for the eval row's cost.
+  let observedCost = baseline?.cost ?? 0;
+  const trackCost = (s: BridgeStatus): void => { if (s.cost > observedCost) observedCost = s.cost; };
+
   const idleMs = opts.headlessIdleMs ?? 10 * 60 * 1000;
 
   let nmExitCode = -1;
@@ -309,6 +316,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
   let status: BridgeStatus;
   try {
     status = mapQuerySnapshot((await runner.query()).json);
+    trackCost(status);
     for (let attempt = 1; attempt < attempts; attempt++) {
       if (opts.auto) {
         if (isVisiblyProgressing(status)) break;
@@ -317,6 +325,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
       }
       await sleep(delayMs);
       status = mapQuerySnapshot((await runner.query()).json);
+      trackCost(status);
     }
   } catch (err) {
     await logFailureRow(cwd, {
@@ -355,10 +364,15 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
       zeroExecutionDispatches(status) &&
       status.blockers.length === 0
     ) {
+      // Guard-wrapped relaunch — exact body from Task 3 Step 5's runner.auto
+      // wrap (idle guard, kills the child on hang, distinguishes failed:auto-
+      // relaunch from failed:headless-idle). This branch is otherwise unchanged
+      // from v0.3.1.
       const guard = makeIdleGuard(idleMs);
       try {
         await runner.auto({ signal: guard.signal, onStdout: guard.onStdout });
         status = mapQuerySnapshot((await runner.query()).json);
+        trackCost(status);
         milestoneId = status.activeMilestone?.id ?? status.lastCompletedMilestone?.id ?? milestoneId;
       } catch (err) {
         const marker: FailureMarker = guard.wasAborted() ? "failed:headless-idle" : "failed:auto-relaunch";
@@ -374,6 +388,11 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
         guard.dispose();
       }
       autoChain = isVisiblyProgressing(status) ? "relaunched" : "not-started";
+    } else if ((status.progress?.tasks.done ?? 0) > 0 || status.blockers.length > 0) {
+      // Execution DID happen (task completions or a live pause) but the loop
+      // didn't reach the current milestone's completion. F3: this is distinct
+      // from "nothing happened" — attribute honestly.
+      autoChain = "stopped-at-pause";
     } else {
       autoChain = "not-started";
     }
@@ -382,6 +401,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
   const evalPhase =
     autoChain === "relaunched" ? "auto-relaunched"
     : autoChain === "not-started" ? "auto-not-started"
+    : autoChain === "stopped-at-pause" ? "auto-stopped-at-pause"
     : status.phase;
 
   if (milestoneId !== null || status.sessionId !== null) {
@@ -404,7 +424,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
         specPath: exportResult.specPath,
         milestoneId,
         mode,
-        status: { ...status, phase: evalPhase },
+        status: { ...status, phase: evalPhase, cost: observedCost },
         appliedBuckets: prefs.buckets,
         appliedModels: prefs.models,
         presets: gate.presets,

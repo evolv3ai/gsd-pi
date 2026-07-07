@@ -427,11 +427,70 @@ describe("runBuild", () => {
     });
 
     assert.equal(calls.filter(isAutoCall).length, 0, "no relaunch past a blocker/pause");
-    assert.equal(result.autoChain, "not-started");
+    // F3: a live pause (blockers present) is execution having happened, not
+    // "nothing started" — deriveLastStatus still dominates to "blocked" below
+    // regardless of this discrimination.
+    assert.equal(result.autoChain, "stopped-at-pause");
     assert.equal(result.milestoneId, "M9");
 
     const manifest = JSON.parse(await readFile(result.manifestPath, "utf8"));
     assert.equal(manifest.validation.lastStatus, "blocked");
+  });
+
+  test("stopped-at-pause: execution happened (progress.tasks.done > 0) but no completion → auto-stopped-at-pause, cost from observed max", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-stopped-at-pause-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+
+    // baseline: nothing yet. settle #1..#3: tasks progressed but no active
+    // task and no lastCompleted change (S01 completed inside a milestone, but
+    // the milestone itself hasn't). Final query: cost.total is 0 (upstream
+    // "forgetting" cost at this state — the exact T4 signature).
+    const settled = { state: { phase: "waiting", activeMilestone: { id: "M1", title: "t" }, activeSlice: null, activeTask: null, lastCompletedMilestone: null, progress: { milestones: { done: 0, total: 1 }, slices: { done: 1, total: 3 }, tasks: { done: 3, total: 9 } } }, next: null, cost: { total: 4.78 } };
+    const forgotten = { ...settled, cost: { total: 0 } };
+    const calls: string[][] = [];
+    const spawn = seqSpawner([
+      { state: { phase: "idle", lastCompletedMilestone: null }, next: null, cost: { total: 0 } },  // baseline
+      settled, settled, settled,                                                                    // settle attempts
+      forgotten,                                                                                    // after the else branch — no relaunch fires
+    ], calls);
+
+    const result = await runBuild(htmlPath, {
+      auto: true, binary: "gsd", cwd: tmp, spawn, now: () => "2026-07-07T07:00:00Z",
+      force: true, globalPrefsPath: join(tmp, "no-global.md"),
+      settle: { ...NO_SLEEP, sleep: async () => {} },
+    });
+
+    assert.equal(result.autoChain, "stopped-at-pause");
+    assert.equal(calls.filter(isAutoCall).length, 0, "no relaunch: not the zeroExecutionDispatches shape");
+
+    const rows = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+    const last = rows[rows.length - 1];
+    assert.equal(last.phase, "auto-stopped-at-pause");
+    assert.equal(last.cost, 4.78, "attribution: max observed cost across snapshots, not the final query's zero");
+  });
+
+  test("cost attribution: settle-loop max wins over both baseline and post-loop query", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-cost-max-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+
+    const calls: string[][] = [];
+    const spawn = seqSpawner([
+      { state: { phase: "idle", lastCompletedMilestone: null }, next: null, cost: { total: 0.10 } },   // baseline
+      { state: { phase: "planning" }, next: null, cost: { total: 1.25 } },                              // settle #1
+      { state: { phase: "executing", activeMilestone: { id: "M1", title: "x" }, activeTask: { id: "T1", title: "t" } }, next: null, cost: { total: 0.50 } }, // settle #2 (breaks the loop; final row will use MAX across all three)
+    ], calls);
+
+    const result = await runBuild(htmlPath, {
+      auto: true, binary: "gsd", cwd: tmp, spawn, now: () => "2026-07-07T07:05:00Z",
+      force: true, globalPrefsPath: join(tmp, "no-global.md"),
+      settle: { attempts: 3, delayMs: 0, sleep: async () => {} },
+    });
+    assert.equal(result.autoChain, "chained");
+
+    const rows = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(rows[rows.length - 1].cost, 1.25, "max across baseline (0.10), settle#1 (1.25), settle#2 (0.50)");
   });
 
   test("new-milestone exiting blocked (10) suppresses the relaunch", async () => {
