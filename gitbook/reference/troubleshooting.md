@@ -36,6 +36,32 @@ gsd --version
 
 If the old package was installed with `sudo npm install -g`, use `sudo npm uninstall -g gsd-pi` first. pnpm can only remove packages that pnpm installed.
 
+### Startup refuses a newer database schema
+
+GSD exits before startup with an error like:
+
+```text
+gsd.db schema is v30, newer than the v29 this gsd-pi supports. Update gsd-pi (npm i -g @opengsd/gsd-pi) before opening this project.
+```
+
+The version numbers may differ. This means `.gsd/gsd.db` was already opened or migrated by a newer `gsd-pi` binary, and the running binary is too old to safely read or write that database.
+
+**Fix:** Upgrade the `gsd` binary that will open this project, then retry from the project root:
+
+```bash
+npm install -g @opengsd/gsd-pi@latest
+gsd --version
+```
+
+If you use pnpm globals, run:
+
+```bash
+pnpm add -g @opengsd/gsd-pi@latest
+gsd --version
+```
+
+Do not delete `.gsd/gsd.db` to bypass this refusal. If `gsd --version` still shows an old version, check `command -v gsd` for a stale global install or PATH shadowing, then remove the old install as described above.
+
 ### pnpm global bin directory is not in PATH
 
 pnpm global commands fail with `The configured global bin directory ... is not in PATH`.
