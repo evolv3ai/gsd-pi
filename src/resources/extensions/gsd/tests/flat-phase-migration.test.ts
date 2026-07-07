@@ -141,6 +141,40 @@ test("migrateToFlatPhase backs up existing phases projection before clearing it"
   );
 });
 
+test("failed migration restores pre-existing phases projection from backup", async (t) => {
+  const base = makeTmp();
+  const phasesPath = join(base, ".gsd", "phases");
+  const reviewPath = join(phasesPath, "01-foundation", "PLAN-REVIEW.md");
+  mkdirSync(join(phasesPath, "01-foundation"), { recursive: true });
+  writeFileSync(reviewPath, "# Plan Review\n\nHand-authored review.", "utf-8");
+
+  let sabotagedClear = false;
+  const restoreFsOps = _setFlatPhaseMigrationFsOpsForTest({
+    rmSync(target, opts) {
+      rmSync(target, opts as never);
+      if (target === phasesPath && !sabotagedClear) {
+        sabotagedClear = true;
+        writeFileSync(phasesPath, "not a directory", "utf-8");
+      }
+    },
+  });
+  t.after(restoreFsOps);
+
+  await assert.rejects(migrateToFlatPhase(base), /flat-phase migration render failed/);
+
+  assert.equal(sabotagedClear, true, "test should force a post-clear render failure");
+  assert.equal(
+    readFileSync(reviewPath, "utf-8"),
+    "# Plan Review\n\nHand-authored review.",
+    "rollback should restore the pre-existing phases/ files",
+  );
+  const backupRoot = join(base, ".gsd-backups");
+  const leaked = existsSync(backupRoot)
+    ? readdirSync(backupRoot).filter((d) => d.startsWith("migrate-"))
+    : [];
+  assert.equal(leaked.length, 0, "rollback should still clean the backup it created");
+});
+
 test("failed migration rolls back without leaking a .gsd-backups/migrate-* dir", async (t) => {
   const base = makeTmp();
   const milestonesPath = join(base, ".gsd", "milestones");
@@ -166,6 +200,33 @@ test("failed migration rolls back without leaking a .gsd-backups/migrate-* dir",
     ? readdirSync(backupRoot).filter((d) => d.startsWith("migrate-"))
     : [];
   assert.equal(leaked.length, 0, "rollback must delete the migrate-* backup it created");
+});
+
+test("resumed migration stores phases backup in retained migrate snapshot", async () => {
+  const base = makeTmp();
+  const milestonesPath = join(base, ".gsd", "milestones");
+  const migratingPath = join(base, ".gsd", "milestones.migrating");
+  const reviewPath = join(base, ".gsd", "phases", "01-foundation", "PLAN-REVIEW.md");
+  mkdirSync(join(base, ".gsd", "phases", "01-foundation"), { recursive: true });
+  writeFileSync(reviewPath, "# Plan Review\n\nResume recovery copy.", "utf-8");
+  renameSync(milestonesPath, migratingPath);
+
+  await migrateToFlatPhase(base);
+
+  assert.equal(existsSync(migratingPath), false, "resume staging dir should be removed after success");
+  const backupRoot = join(base, ".gsd-backups");
+  const backups = readdirSync(backupRoot).filter((d) => d.startsWith("migrate-"));
+  assert.equal(backups.length, 1, "resumed migration should create one retained migrate backup");
+  assert.equal(
+    readFileSync(join(backupRoot, backups[0]!, "__phases", "01-foundation", "PLAN-REVIEW.md"), "utf-8"),
+    "# Plan Review\n\nResume recovery copy.",
+    "resume should retain the phases snapshot under .gsd-backups",
+  );
+  assert.equal(
+    existsSync(join(migratingPath, "__phases")),
+    false,
+    "resume should not store the phases snapshot inside the disposable migrating tree",
+  );
 });
 
 test("migrateToFlatPhase preserves milestone/slice/task counts in DB", async () => {
