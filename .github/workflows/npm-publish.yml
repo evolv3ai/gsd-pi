@@ -107,6 +107,12 @@ jobs:
       - name: Build core
         run: pnpm run build:core
 
+      # The main @opengsd/gsd-pi tarball bundles packages/*/dist via its `files`
+      # globs, so an unbuilt workspace package (e.g. gsd-cloud) ships broken
+      # inside this dev tarball too — guard the built dist before publishing.
+      - name: Verify workspace packages are built
+        run: node scripts/verify-workspace-dist.cjs
+
       - name: Build web host
         run: pnpm run build:web-host
 
@@ -641,6 +647,9 @@ jobs:
 
       - name: Validate package is installable
         run: pnpm run validate-pack
+
+      - name: Verify workspace packages are built
+        run: node scripts/verify-workspace-dist.cjs
 
       # Publish the @opengsd workspace packages (contracts, rpc-client, mcp-server,
       # cloud-mcp-gateway, daemon) BEFORE the main package and BEFORE cutting the
