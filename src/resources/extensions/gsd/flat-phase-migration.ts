@@ -6,7 +6,13 @@ import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSyn
 import { join } from "node:path";
 
 import { renderAllFromDb, renderRoadmapFromDb } from "./markdown-renderer.js";
-import { deleteArtifactsByPathPrefix, getAllMilestones, getMilestoneSlices } from "./gsd-db.js";
+import {
+  deleteArtifactByPath,
+  deleteArtifactsByPathPrefix,
+  getAllMilestones,
+  getArtifactsByPathPrefix,
+  getMilestoneSlices,
+} from "./gsd-db.js";
 import { migrateFromMarkdown } from "./md-importer.js";
 import { countDbHierarchy } from "./migration-auto-check.js";
 import { logWarning } from "./workflow-logger.js";
@@ -14,6 +20,7 @@ import { LAYOUT_SEGMENTS } from "./layout-policy.js";
 import {
   canonicalPhaseDirName,
   dirIsContentBearingLegacyMilestone,
+  gsdProjectionRoot,
   milestonesDir,
   resolveMilestonePath,
 } from "./paths.js";
@@ -128,6 +135,40 @@ function hasLegacyMilestoneSubdirs(dirPath: string): boolean {
   }
 }
 
+function backupFlatProjectionIfPresent(basePath: string, phasesPath: string, backupDir: string): void {
+  if (!existsSync(phasesPath)) return;
+  const phaseBackupDir = join(backupDir, "__phases");
+  try {
+    mkdirSync(backupDir, { recursive: true });
+    if (existsSync(phaseBackupDir)) {
+      removePathWithRetries(phaseBackupDir);
+    }
+    fsOps.cpSync(phasesPath, phaseBackupDir, { recursive: true, force: true });
+  } catch (err) {
+    logWarning("migration", `flat-phase projection backup failed: ${(err as Error).message}`);
+    throw err;
+  }
+}
+
+function isInsideFlatProjectionBackup(backupDir: string, src: string): boolean {
+  const phaseBackupDir = join(backupDir, "__phases");
+  return src === phaseBackupDir || src.startsWith(`${phaseBackupDir}/`) || src.startsWith(`${phaseBackupDir}\\`);
+}
+
+function pruneStaleFlatPhaseArtifactRows(basePath: string): number {
+  const projectionRoot = gsdProjectionRoot(basePath);
+  let pruned = 0;
+  for (const row of getArtifactsByPathPrefix(`${LAYOUT_SEGMENTS.level1}/`)) {
+    if (existsSync(join(projectionRoot, row.path))) continue;
+    const staleTaskPlan = row.artifact_type.toUpperCase() === "PLAN" && Boolean(row.task_id);
+    const skippedEmptyArtifact = row.full_content.trim() === "";
+    if (!staleTaskPlan && !skippedEmptyArtifact) continue;
+    deleteArtifactByPath(row.path);
+    pruned++;
+  }
+  return pruned;
+}
+
 function rollbackPartialMigration(
   basePath: string,
   backupDir: string,
@@ -171,7 +212,10 @@ function rollbackPartialMigration(
       return;
     }
     if (existsSync(backupDir)) {
-      cpSync(backupDir, milestonesPath, { recursive: true });
+      cpSync(backupDir, milestonesPath, {
+        recursive: true,
+        filter: (src) => !isInsideFlatProjectionBackup(backupDir, src),
+      });
       cleanupBackup();
     }
     if (migratingPath && existsSync(migratingPath)) {
@@ -328,6 +372,7 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
   // Clear any stale or partially-rendered flat projection before this run
   // writes. Verification below checks the current DB render, not leftovers.
   try {
+    backupFlatProjectionIfPresent(basePath, phasesPath, backupDir);
     removePathWithRetries(phasesPath);
   } catch (err) {
     logWarning("migration", `failed to clear stale phases/ before render: ${(err as Error).message}`);
@@ -389,9 +434,12 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
   }
 
   // 6. Verified — prune legacy artifact rows now that renderAllFromDb has
-  // re-inserted flat-phase rows for artifacts that still have files.
+  // re-inserted flat-phase rows for artifacts that still have files. Also
+  // prune flat-phase rows whose files the renderer intentionally no longer
+  // materializes, such as task PLAN files and empty-content artifacts.
   try {
     deleteArtifactsByPathPrefix("milestones/");
+    pruneStaleFlatPhaseArtifactRows(basePath);
   } catch (err) {
     logWarning("migration", `flat-phase migration could not prune legacy artifact rows: ${(err as Error).message}`);
     rollbackPartialMigration(basePath, backupDir, migratingPath, backupCreatedThisRun);
