@@ -31,7 +31,7 @@ describe("models.generated.ts", () => {
 		expect(MODELS.openrouter["anthropic/claude-fable-5"]).toBeDefined();
 	});
 
-	test("includes Claude Sonnet 5 across Anthropic providers with adaptive thinking", () => {
+	test("includes Claude Sonnet 5 across Anthropic-backed providers with adaptive thinking", () => {
 		const anthropic = MODELS.anthropic["claude-sonnet-5"];
 		expect(anthropic).toBeDefined();
 		expect(anthropic.api).toBe("anthropic-messages");
@@ -49,6 +49,20 @@ describe("models.generated.ts", () => {
 		expect(vertex.maxTokens).toBe(128_000);
 		expect(vertex.thinkingLevelMap).toMatchObject({ xhigh: "xhigh" });
 		expect(vertex.compat).toMatchObject({ forceAdaptiveThinking: true });
+
+		for (const [id, name] of [
+			["anthropic.claude-sonnet-5", "Claude Sonnet 5"],
+			["us.anthropic.claude-sonnet-5", "Claude Sonnet 5 (US)"],
+			["global.anthropic.claude-sonnet-5", "Claude Sonnet 5 (Global)"],
+		] as const) {
+			const bedrock = MODELS["amazon-bedrock"][id];
+			expect(bedrock).toBeDefined();
+			expect(bedrock.api).toBe("bedrock-converse-stream");
+			expect(bedrock.name).toBe(name);
+			expect(bedrock.contextWindow).toBe(1_000_000);
+			expect(bedrock.maxTokens).toBe(128_000);
+			expect(bedrock.thinkingLevelMap).toMatchObject({ xhigh: "xhigh" });
+		}
 	});
 
 	test("includes Anthropic Vertex models from the generated catalog", () => {

@@ -1415,6 +1415,33 @@ async function generateModels() {
 		});
 	}
 
+	// Add missing Claude Sonnet 5 Bedrock profiles until models.dev includes them.
+	for (const [bedrockId, regionLabel] of [
+		["anthropic.claude-sonnet-5", ""],
+		["us.anthropic.claude-sonnet-5", " (US)"],
+		["global.anthropic.claude-sonnet-5", " (Global)"],
+	] as const) {
+		if (!allModels.some(m => m.provider === "amazon-bedrock" && m.id === bedrockId)) {
+			allModels.push({
+				id: bedrockId,
+				name: `Claude Sonnet 5${regionLabel}`,
+				api: "bedrock-converse-stream",
+				baseUrl: getBedrockBaseUrl(bedrockId),
+				provider: "amazon-bedrock",
+				reasoning: true,
+				input: ["text", "image"],
+				cost: {
+					input: 3,
+					output: 15,
+					cacheRead: 0.3,
+					cacheWrite: 3.75,
+				},
+				contextWindow: 1000000,
+				maxTokens: 128000,
+			});
+		}
+	}
+
 	// Add missing Claude Fable 5 (direct Anthropic) until models.dev includes it.
 	if (!allModels.some(m => m.provider === "anthropic" && m.id === "claude-fable-5")) {
 		allModels.push({
