@@ -641,11 +641,6 @@ export async function launchWebMode(
 
   stderr.write(`[gsd] Starting web mode…\n`)
 
-  // Kill any stale server instance for this project before reserving a port.
-  // This prevents EADDRINUSE when the previous `gsd --web` was terminated
-  // without a clean shutdown (e.g. terminal closed, crash).
-  cleanupStaleInstance(options.cwd, stderr, deps.registryPath)
-
   const baseEnv = deps.env ?? process.env
   const noAuth = options.noAuth ?? isWebNoAuthEnabled(baseEnv)
   if (noAuth && !isLoopbackHost(host) && baseEnv.GSD_WEB_ALLOW_UNAUTHENTICATED_LAN !== '1') {
@@ -666,6 +661,11 @@ export async function launchWebMode(
     emitLaunchStatus(stderr, failure)
     return failure
   }
+
+  // Kill any stale server instance for this project before reserving a port.
+  // This prevents EADDRINUSE when the previous `gsd --web` was terminated
+  // without a clean shutdown (e.g. terminal closed, crash).
+  cleanupStaleInstance(options.cwd, stderr, deps.registryPath)
 
   const port = options.port ?? await (deps.resolvePort ?? reserveWebPort)(host)
   const authToken = noAuth ? null : randomBytes(32).toString('hex')
