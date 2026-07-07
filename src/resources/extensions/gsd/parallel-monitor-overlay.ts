@@ -72,6 +72,7 @@ interface WorkerView {
   totalSlices: number;
   doneSlices: number;
   slices: SliceProgress[];
+  completions: string[];
   errors: string[];
 }
 
@@ -143,14 +144,21 @@ function discoverWorkers(basePath: string): string[] {
   return [...mids].sort();
 }
 
-function querySliceProgress(basePath: string, mid: string, workRoot: string = worktreePathFor(basePath, mid)): SliceProgress[] {
+// Slice progress + recent completions share one DB connection per worker per
+// tick. Opening the isolated worker DB twice per refresh (once for each) was
+// pure churn on the 5s interval.
+function queryWorkerProgress(
+  basePath: string,
+  mid: string,
+  workRoot: string = worktreePathFor(basePath, mid),
+): { slices: SliceProgress[]; completions: string[] } {
   const dbPath = resolveGsdPathContract(workRoot, basePath).projectDb;
-  if (!existsSync(dbPath)) return [];
+  if (!existsSync(dbPath)) return { slices: [], completions: [] };
 
   const db = openWorkflowDatabaseIsolated(dbPath);
-  if (!db) return [];
+  if (!db) return { slices: [], completions: [] };
   try {
-    const rows = db.prepare(
+    const sliceRows = db.prepare(
       `SELECT
          s.id AS id,
          s.status AS status,
@@ -162,14 +170,32 @@ function querySliceProgress(basePath: string, mid: string, workRoot: string = wo
        GROUP BY s.id
        ORDER BY s.id`,
     ).all({ ":mid": mid });
-    return rows.map((row) => ({
+    const slices = sliceRows.map((row) => ({
       id: String(row["id"] ?? ""),
       status: String(row["status"] ?? ""),
       total: Number(row["total"] ?? 0),
       done: Number(row["done"] ?? 0),
     }));
+
+    const completionRows = db.prepare(
+      `SELECT id, slice_id, one_liner
+       FROM tasks
+       WHERE milestone_id=:mid
+         AND status='complete'
+         AND completed_at IS NOT NULL
+       ORDER BY completed_at DESC
+       LIMIT 5`,
+    ).all({ ":mid": mid });
+    const completions = completionRows.map((row) => {
+      const taskId = String(row["id"] ?? "");
+      const sliceId = String(row["slice_id"] ?? "");
+      const oneLiner = String(row["one_liner"] ?? "");
+      return `✓ ${mid}/${sliceId}/${taskId}${oneLiner ? ": " + oneLiner : ""}`;
+    });
+
+    return { slices, completions };
   } catch {
-    return [];
+    return { slices: [], completions: [] };
   } finally {
     try { db.close(); } catch { /* ignore */ }
   }
@@ -276,36 +302,6 @@ function extractCostFromNdjson(basePath: string, mid: string): number {
   }
 }
 
-function queryRecentCompletions(basePath: string, mid: string): string[] {
-  const workRoot = worktreePathFor(basePath, mid);
-  const dbPath = resolveGsdPathContract(workRoot, basePath).projectDb;
-  if (!existsSync(dbPath)) return [];
-
-  const db = openWorkflowDatabaseIsolated(dbPath);
-  if (!db) return [];
-  try {
-    const rows = db.prepare(
-      `SELECT id, slice_id, one_liner
-       FROM tasks
-       WHERE milestone_id=:mid
-         AND status='complete'
-         AND completed_at IS NOT NULL
-       ORDER BY completed_at DESC
-       LIMIT 5`,
-    ).all({ ":mid": mid });
-    return rows.map((row) => {
-      const taskId = String(row["id"] ?? "");
-      const sliceId = String(row["slice_id"] ?? "");
-      const oneLiner = String(row["one_liner"] ?? "");
-      return `✓ ${mid}/${sliceId}/${taskId}${oneLiner ? ": " + oneLiner : ""}`;
-    });
-  } catch {
-    return [];
-  } finally {
-    try { db.close(); } catch { /* ignore */ }
-  }
-}
-
 function collectWorkerData(basePath: string): WorkerView[] {
   const mids = discoverWorkers(basePath);
   const parallelDir = join(basePath, ".gsd", "parallel");
@@ -317,7 +313,7 @@ function collectWorkerData(basePath: string): WorkerView[] {
     const workRoot = worktreePathFor(basePath, mid);
     const status = readJsonSafe<StatusJson>(join(parallelDir, `${mid}.status.json`));
     const lock = readJsonSafe<AutoLock>(join(workRoot, ".gsd", "auto.lock"));
-    const slices = querySliceProgress(basePath, mid, workRoot);
+    const { slices, completions } = queryWorkerProgress(basePath, mid, workRoot);
 
     const pid = lock?.pid || status?.pid || 0;
     const alive = pid ? isPidAlive(pid) : false;
@@ -378,6 +374,7 @@ function collectWorkerData(basePath: string): WorkerView[] {
       totalSlices: slices.length,
       doneSlices,
       slices,
+      completions,
       errors,
     });
   }
@@ -443,10 +440,10 @@ export class ParallelMonitorOverlay {
     if (this.disposed) return;
     this.workers = collectWorkerData(this.basePath);
 
-    // Collect completion events
+    // Collect completion events (already read during collectWorkerData's single
+    // DB open per worker — no second connection here).
     for (const wk of this.workers) {
-      const completions = queryRecentCompletions(this.basePath, wk.mid);
-      for (const evt of completions) {
+      for (const evt of wk.completions) {
         if (!this.events.includes(evt)) this.events.push(evt);
       }
     }

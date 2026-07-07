@@ -8,7 +8,7 @@
 import { deriveState } from "./state.js";
 import { resolveMilestoneFile, resolveSliceFile } from "./paths.js";
 import { findMilestoneIds } from "./guided-flow.js";
-import { isDbAvailable, getMilestoneSlices, getSliceTasks } from "./gsd-db.js";
+import { isDbAvailable, getMilestoneSlices, getTasksBySliceIds } from "./gsd-db.js";
 import { openExistingWorkflowDatabase } from "./db-workspace.js";
 import type { MilestoneRegistryEntry } from "./types.js";
 
@@ -40,10 +40,11 @@ async function collectTouchedFiles(
   const files = new Set<string>();
 
   if (isDbAvailable()) {
-    // DB path: query slices and their tasks for file lists
+    // DB path: query slices and their tasks for file lists (one batched task
+    // query instead of one per slice; file order is irrelevant here — Set dedup)
     const slices = getMilestoneSlices(milestoneId);
-    for (const slice of slices) {
-      const tasks = getSliceTasks(milestoneId, slice.id);
+    const tasksBySlice = getTasksBySliceIds(slices.map((slice) => ({ milestoneId, sliceId: slice.id })));
+    for (const tasks of tasksBySlice.values()) {
       for (const task of tasks) {
         if (Array.isArray(task.files)) {
           for (const f of task.files) {
