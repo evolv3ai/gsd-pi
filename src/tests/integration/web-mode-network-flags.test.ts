@@ -278,6 +278,70 @@ test('launchWebMode does not fire interlock for IPv6 loopback ::1', async (t) =>
   if (!status.ok) assert.doesNotMatch(status.failureReason, /refusing to disable auth/)
 })
 
+test('launchWebMode fires interlock for a 127.-prefixed hostname that is not an IPv4 address', async (t) => {
+  const tmp = standaloneStub('gsd-web-interlock-127host-')
+  t.after(() => { rmSync(tmp, { recursive: true, force: true }) });
+
+  // A hostname like 127.example.com starts with "127." but is not a
+  // 127.0.0.0/8 address; it can resolve to a public IP, so it must NOT be
+  // treated as loopback and the no-auth interlock must fire.
+  const status = await webMode.launchWebMode(
+    {
+      cwd: '/tmp/project',
+      projectSessionsDir: '/tmp/.gsd/sessions',
+      agentDir: '/tmp/.gsd/agent',
+      packageRoot: tmp,
+      host: '127.example.com',
+      noAuth: true,
+    },
+    {
+      initResources: () => {},
+      resolvePort: async () => { throw new Error('resolvePort should not be reached') },
+      env: {},
+      spawn: () => { throw new Error('spawn should not be reached') },
+      waitForBootReady: async () => undefined,
+      openBrowser: () => {},
+      stderr: { write: () => true },
+    },
+  )
+
+  assert.equal(status.ok, false)
+  if (status.ok) throw new Error('expected failure')
+  assert.match(status.failureReason, /refusing to disable auth/)
+})
+
+test('launchWebMode does not fire interlock for a 127.0.0.0/8 IPv4 address', async (t) => {
+  const tmp = standaloneStub('gsd-web-interlock-127net-')
+  t.after(() => { rmSync(tmp, { recursive: true, force: true }) });
+
+  // A genuine 127.0.0.0/8 address (other than 127.0.0.1) is still loopback and
+  // keeps the warn-only no-auth behavior.
+  const status = await webMode.launchWebMode(
+    {
+      cwd: '/tmp/project',
+      projectSessionsDir: '/tmp/.gsd/sessions',
+      agentDir: '/tmp/.gsd/agent',
+      packageRoot: tmp,
+      host: '127.0.0.2',
+      noAuth: true,
+    },
+    {
+      initResources: () => {},
+      resolvePort: async () => 45000,
+      env: {},
+      spawn: (_command, _args, options) => {
+        void (options as { env: Record<string, string> }).env
+        return { pid: 99999, once: () => undefined, unref: () => {} } as any
+      },
+      waitForBootReady: async () => undefined,
+      openBrowser: () => {},
+      stderr: { write: () => true },
+    },
+  )
+
+  if (!status.ok) assert.doesNotMatch(status.failureReason, /refusing to disable auth/)
+})
+
 test('launchWebMode refusal does not clean up an existing instance (no side effects)', async (t) => {
   const tmp = standaloneStub('gsd-web-interlock-noside-')
   t.after(() => { rmSync(tmp, { recursive: true, force: true }) });
