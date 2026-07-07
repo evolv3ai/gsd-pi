@@ -786,14 +786,21 @@ export const DISPATCH_RULES: DispatchRule[] = [
     // Fire BEFORE the execution-entry phase rules so we redispatch to
     // `discuss-milestone` instead of hitting the plan-v2 gate.
     name: "execution-entry phase (no context) → discuss-milestone",
-    match: async ({ state, mid, midTitle, basePath, prefs, structuredQuestionsAvailable }) => {
+    match: async ({ state, mid, midTitle, basePath, session, prefs, structuredQuestionsAvailable }) => {
       if (!EXECUTION_ENTRY_PHASES.has(state.phase)) return null;
       if (!MILESTONE_ID_RE.test(mid)) return null;
       if (isRegistryMilestoneComplete(state, mid)) return null;
-      if (hasMilestonePassedDiscuss(basePath, mid)) return null;
+      // Resolve discuss/context artifacts against the active session worktree,
+      // mirroring the executing rules below. For a suffixed-worktree milestone
+      // the CONTEXT and slice plans live under the worktree, not the project
+      // root; checking the raw project-root basePath misreads the milestone as
+      // "never discussed" and re-dispatches discuss-milestone after task
+      // closeout instead of continuing execution (#1317).
+      const artifactBasePath = resolveArtifactBasePath(basePath, mid, session);
+      if (hasMilestonePassedDiscuss(artifactBasePath, mid)) return null;
       // Align with the plan-v2 gate's lookup semantics: whitespace-only counts
       // as missing, and an auto worktree may fall back to GSD_PROJECT_ROOT.
-      if (hasFinalizedMilestoneContext(basePath, mid)) return null;
+      if (hasFinalizedMilestoneContext(artifactBasePath, mid)) return null;
       // H6 fix (#4973): non-deep auto-mode has no human to answer the
       // depth-verification question, so pre-marking avoids a write-gate
       // deadlock. Deep planning is still user-driven even inside auto-mode,
