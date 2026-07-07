@@ -19,7 +19,7 @@ import {
   archiveLegacyPlanningDirectory,
   verifyMigrationProjection,
 } from "../migrate/audit.ts";
-import { assertMigrationDbReadiness, executeMigrationWrite, importWrittenMigrationToDb } from "../migrate/command.ts";
+import { assertMigrationDbReadiness, executeMigrationWrite, importWrittenMigrationToDb } from "../migrate/execution.ts";
 import { writeGSDDirectory } from "../migrate/writer.ts";
 import { closeDatabase, getArtifact } from "../gsd-db.ts";
 import type { GSDProject } from "../migrate/types.ts";
