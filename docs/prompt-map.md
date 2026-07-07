@@ -237,7 +237,7 @@ complete-milestone
 
 | Prompt | Purpose | Key Tools Called |
 |--------|---------|-----------------|
-| `complete-slice.md` | Close slice after tasks pass. Compress summary. | `gsd_slice_complete`, `gsd_requirement_update` |
+| `complete-slice.md` | Close slice after tasks pass. Compress summary; may reopen/replan pending task rework before closeout. | `gsd_slice_complete`, `gsd_task_reopen`, `gsd_replan_slice`, `gsd_replan_task`, `gsd_rework_brief_save`, `gsd_requirement_update` |
 | `reassess-roadmap.md` | Review roadmap post-slice. Validates success-criterion coverage. | `gsd_reassess_roadmap`, `gsd_requirement_update` |
 | `complete-milestone.md` | Close milestone. Persist to DB. | `gsd_complete_milestone`, `gsd_requirement_update`, `capture_thought` |
 
@@ -441,6 +441,8 @@ LLM sees: "load these skill files and follow their rules for this unit"
 | `gsd_validate_milestone` | milestones table (validation verdict) |
 | `gsd_reassess_roadmap` | slices table (reorder, add, remove) |
 | `gsd_replan_slice` | tasks table (replace incomplete tasks) |
+| `gsd_replan_task` | one pending task planning row; replan_history row |
+| `gsd_rework_brief_save` | rework_briefs and rework_brief_findings tables |
 | `gsd_skip_slice` | slices table (status = skipped) |
 | `gsd_requirement_save` | requirements table |
 | `gsd_requirement_update` | requirements table |
