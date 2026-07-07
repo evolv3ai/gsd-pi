@@ -233,6 +233,12 @@ export function parseHeadlessArgs(argv: string[]): HeadlessOptions {
         options.resumeSession = args[++i]
       } else if (arg === '--bare') {
         options.bare = true
+      } else {
+        // Unrecognized flag: pass it through to the slash command verbatim
+        // instead of silently dropping it. This lets subcommand flags such as
+        // `verdict pass --rationale "..."` reach the assembled slash command
+        // (#1297). Known headless flags above still win regardless of position.
+        options.commandArgs.push(arg)
       }
     } else if (options.command === 'auto') {
       options.command = arg
