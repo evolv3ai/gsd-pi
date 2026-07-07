@@ -38,7 +38,7 @@ commit `58dc840f`. Plans 018–024 planned against commit `7cca07ae`.
 | 019 | Refuse token-less web mode on non-loopback hosts | P1 | S | — | DONE |
 | 020 | Add request timeouts to cloud pairing HTTP helper (both copies) | P1 | S | — | DONE |
 | 021 | Batch plan-v2 graph compile + skip unchanged writes (dispatch hot path) | P2 | S | — | DONE |
-| 022 | Test gsd-cloud device-flow polling and SSRF gateway guards | P2 | M | 018 | TODO |
+| 022 | Test gsd-cloud device-flow polling and SSRF gateway guards | P2 | M | 018 | DONE |
 | 023 | ADR: decide the flat-phase layout migration completion path | P2 | M | — | TODO |
 | 024 | Dependency & dead-code hygiene (hono, daemon SDK, ajv, chart.tsx) | P2 | S | — | TODO |
 
