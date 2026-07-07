@@ -161,9 +161,18 @@ function findMatches(
 ): BashEvidence[] {
   const normalized = claimedCommand.trim();
 
-  // Exact matches first
-  const exact = bashCalls.filter(b => b.command.trim() === normalized);
-  if (exact.length > 0) return exact;
+  const exact = bashCalls.filter((b) => b.command.trim() === normalized);
+
+  // When an exact run exists, also consider wrapper-equivalent reruns (e.g.
+  // `cd ... && <command>`) so a newer pass is not shadowed by a stale exact
+  // failure. Do not merge arbitrary containing scripts: their exit code may
+  // belong to later work, not to the claimed verification command.
+  const scriptWrapped = bashCalls.filter((b) => {
+    const command = b.command.trim();
+    if (command.length === 0 || command === normalized) return false;
+    return isWrapperEquivalentCommand(command, normalized);
+  });
+  if (exact.length > 0) return [...exact, ...scriptWrapped];
 
   // Substring match: claimed is contained in actual or actual in claimed.
   // A claimed verification command typically appears verbatim inside a
@@ -171,7 +180,7 @@ function findMatches(
   // script-containing-claim is the common direction. Blank-command entries
   // must be excluded — `"x".includes("")` is true, so they'd match anything.
   const substring = bashCalls.filter(
-    b => b.command.trim().length > 0 &&
+    (b) => b.command.trim().length > 0 &&
       (b.command.includes(normalized) || normalized.includes(b.command)),
   );
   if (substring.length > 0) return substring;
@@ -199,6 +208,23 @@ function findMatches(
 
 function latestMatch(matches: readonly BashEvidence[]): BashEvidence {
   return matches.reduce((latest, match) => (
-    match.timestamp > latest.timestamp ? match : latest
+    match.timestamp >= latest.timestamp ? match : latest
   ));
+}
+
+/** True when `actual` is the same command with only shell wrapper noise. */
+function isWrapperEquivalentCommand(actual: string, claimed: string): boolean {
+  const claimIndex = actual.lastIndexOf(claimed);
+  if (claimIndex < 0) return false;
+
+  const prefix = actual.slice(0, claimIndex).trim();
+  if (prefix.length > 0 && !/^cd\s+.+\s+&&$/.test(prefix)) return false;
+
+  const suffix = actual.slice(claimIndex + claimed.length).trim();
+  return suffix.length === 0 || isBenignWrapperSuffix(suffix);
+}
+
+function isBenignWrapperSuffix(suffix: string): boolean {
+  if (/^;\s*echo\s+["']?[A-Z_]*EXIT=\$\?["']?$/.test(suffix)) return true;
+  return /^(?:(?:\d?>>?|&>)\s*\S+|\d?>&\d)(?:\s+(?:(?:\d?>>?|&>)\s*\S+|\d?>&\d))*$/.test(suffix);
 }
