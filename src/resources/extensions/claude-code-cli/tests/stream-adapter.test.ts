@@ -363,6 +363,53 @@ describe("stream-adapter — image prompt forwarding (#4183)", () => {
 		]);
 	});
 
+	test("extractImageBlocksFromContext deduplicates byte-identical image parts", () => {
+		const context: Context = {
+			messages: [
+				{
+					role: "user",
+					content: [
+						{
+							type: "image",
+							data: "data:image/png;base64,abc123",
+							mimeType: "image/png",
+						},
+						{
+							type: "image",
+							data: "abc123",
+							mimeType: "image/png",
+						},
+						{
+							type: "image",
+							data: "def456",
+							mimeType: "image/png",
+						},
+					],
+				} as Message,
+			],
+		};
+
+		const imageBlocks = extractImageBlocksFromContext(context);
+		assert.deepEqual(imageBlocks, [
+			{
+				type: "image",
+				source: {
+					type: "base64",
+					media_type: "image/png",
+					data: "abc123",
+				},
+			},
+			{
+				type: "image",
+				source: {
+					type: "base64",
+					media_type: "image/png",
+					data: "def456",
+				},
+			},
+		]);
+	});
+
 	test("buildSdkQueryPrompt returns plain string when no images exist in context", () => {
 		const context: Context = {
 			messages: [{ role: "user", content: "hello" } as Message],

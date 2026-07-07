@@ -22,6 +22,7 @@ import type {
 import type { ExtensionUIContext } from "@gsd/pi-coding-agent";
 import { EventStream } from "@gsd/pi-ai";
 import { execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { createRequire } from "node:module";
@@ -583,6 +584,7 @@ function inferMimeTypeFromDataUri(value: string): string | null {
 /** Collect all base64 image blocks from user messages in the context for inclusion in the SDK prompt. */
 export function extractImageBlocksFromContext(context: Context): SDKInputImageBlock[] {
 	const imageBlocks: SDKInputImageBlock[] = [];
+	const seenImageKeys = new Set<string>();
 
 	for (const msg of context.messages) {
 		if (msg.role !== "user" || !Array.isArray(msg.content)) continue;
@@ -597,12 +599,17 @@ export function extractImageBlocksFromContext(context: Context): SDKInputImageBl
 					: inferMimeTypeFromDataUri(block.data);
 			if (!mimeType) continue;
 
+			const data = stripDataUriPrefix(block.data);
+			const imageKey = `${mimeType}\0${createHash("sha1").update(data).digest("hex")}`;
+			if (seenImageKeys.has(imageKey)) continue;
+			seenImageKeys.add(imageKey);
+
 			imageBlocks.push({
 				type: "image",
 				source: {
 					type: "base64",
 					media_type: mimeType,
-					data: stripDataUriPrefix(block.data),
+					data,
 				},
 			});
 		}
