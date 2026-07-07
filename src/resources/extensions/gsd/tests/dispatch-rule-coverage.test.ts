@@ -146,6 +146,55 @@ test("dispatch-rule-coverage: pre-planning, no CONTEXT → discuss-milestone", a
   );
 });
 
+test("dispatch-rule-coverage: pre-planning worktree sees project-root CONTEXT", async (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-disp-cov-wt-context-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  const projectPhaseDir = join(tmp, ".gsd", "phases", "01-foundation");
+  mkdirSync(projectPhaseDir, { recursive: true });
+  writeFileSync(join(projectPhaseDir, "01-CONTEXT.md"), "# Context\n");
+
+  const worktree = join(tmp, ".gsd", "worktrees", "M001");
+  mkdirSync(join(worktree, ".gsd", "milestones", "M001"), { recursive: true });
+  writeFileSync(
+    join(worktree, ".gsd", "milestones", "M001", "M001-META.json"),
+    '{"branch":"milestone/M001"}',
+  );
+
+  const rule = DISPATCH_RULES.find(
+    (candidate) => candidate.name === "pre-planning (no context) → discuss-milestone",
+  );
+  assert.ok(rule, "pre-planning missing-context rule should exist");
+
+  const result = await rule.match(makeCtx(worktree, makeState({ phase: "pre-planning" })));
+  assert.equal(result, null, "project-root CONTEXT must prevent a second discuss-milestone dispatch");
+});
+
+test("dispatch-rule-coverage: pre-planning worktree sees worktree-only CONTEXT", async (t) => {
+  // Mirror image of the project-root test: discuss-milestone mirrors CONTEXT into
+  // the worktree's own .gsd, and it may not yet exist at the project root (the
+  // worktree→root sync deliberately does not flow markdown projections back).
+  // A project-root-only check would miss it and re-fire discuss-milestone.
+  const tmp = mkdtempSync(join(tmpdir(), "gsd-disp-cov-wt-only-context-"));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+
+  // No CONTEXT at the project root — only the milestone dir exists there.
+  mkdirSync(join(tmp, ".gsd", "phases"), { recursive: true });
+
+  const worktree = join(tmp, ".gsd", "worktrees", "M001");
+  const worktreePhaseDir = join(worktree, ".gsd", "phases", "01-foundation");
+  mkdirSync(worktreePhaseDir, { recursive: true });
+  writeFileSync(join(worktreePhaseDir, "01-CONTEXT.md"), "# WT Context\n");
+
+  const rule = DISPATCH_RULES.find(
+    (candidate) => candidate.name === "pre-planning (no context) → discuss-milestone",
+  );
+  assert.ok(rule, "pre-planning missing-context rule should exist");
+
+  const result = await rule.match(makeCtx(worktree, makeState({ phase: "pre-planning" })));
+  assert.equal(result, null, "worktree-only CONTEXT must prevent a second discuss-milestone dispatch");
+});
+
 test("dispatch-rule-coverage: pre-planning, has CONTEXT, no RESEARCH → research-milestone", async (t) => {
   const tmp = mkdtempSync(join(tmpdir(), "gsd-disp-cov-res-"));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
