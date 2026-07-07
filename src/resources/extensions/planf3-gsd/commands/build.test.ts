@@ -571,6 +571,32 @@ describe("runBuild", () => {
     assert.equal(row.presets, "drift");
   });
 
+  test("F1b: unsigned-projection refusal uses preflight-refused:unsigned-projection marker", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-unsigned-proj-"));
+    const htmlPath = join(tmp, "specs", "minimal.html");
+    const otherPath = join(tmp, "specs", "other.html");
+    await mkdir(join(tmp, "specs"), { recursive: true });
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), otherPath);
+    // Sign the record for `htmlPath` (absolute path lands in projectedFrom).
+    const { signOffPreflight } = await import("../preflight/run.js");
+    await signOffPreflight({
+      projectRoot: tmp, htmlPath, offline: true, ping: false,
+      catalog: { ids: () => [] }, orchestrator: null,
+    }, null);
+
+    const spawn: Spawner = async () => ({ exitCode: 0, stdout: "{}", stderr: "" });
+    await assert.rejects(
+      () => runBuild(otherPath, { auto: true, binary: "gsd", cwd: tmp, spawn, now: () => "2026-07-07T05:00:00Z" }),
+      /never signed/,
+    );
+
+    const rows = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(rows[rows.length - 1].phase, "preflight-refused:unsigned-projection");
+    assert.equal(rows[rows.length - 1].presets, "absent");
+    assert.ok(rows[rows.length - 1].presetsHash, "the projection was hashed even though the record didn't cover it");
+  });
+
   test("--force proceeds past absence and records presets forced", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "planf3-gate-forced-"));
     const htmlPath = join(tmp, "minimal.html");

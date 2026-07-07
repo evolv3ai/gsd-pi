@@ -71,7 +71,8 @@ type FailureMarker =
   | "failed:query"
   | "failed:auto-relaunch"
   | "preflight-refused:drift"
-  | "preflight-refused:absent";
+  | "preflight-refused:absent"
+  | "preflight-refused:unsigned-projection";
 
 /** Best-effort failure eval row — never masks the original error. */
 async function logFailureRow(
@@ -149,9 +150,13 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
     throw new Error(friendlyError(err));
   }
   if (gate.refusal !== null) {
+    const marker: FailureMarker =
+      gate.presets === "drift" ? "preflight-refused:drift"
+      : gate.absenceReason === "unsigned-projection" ? "preflight-refused:unsigned-projection"
+      : "preflight-refused:absent";
     await logFailureRow(cwd, {
       loggedAt: now(), htmlPath, specPath: "", mode,
-      marker: gate.presets === "drift" ? "preflight-refused:drift" : "preflight-refused:absent",
+      marker,
       appliedBuckets: [], appliedModels: {},
       presets: gate.presets, presetsHash: gate.presetsHash,
     });

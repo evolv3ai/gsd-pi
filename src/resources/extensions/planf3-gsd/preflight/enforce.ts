@@ -105,6 +105,11 @@ export interface PresetsGateResult {
   presetsHash: string | null;
   refusal: string | null;
   drift: DriftRow[];
+  /** When presets === "absent": why. "no-record" = no signed-off PRESETS on
+   *  disk (or record.approval === null); "unsigned-projection" = a record
+   *  exists but was signed for a different projectedFrom. Undefined for other
+   *  verdicts. Consumer contract: failure eval rows split the marker on this. */
+  absenceReason?: "no-record" | "unsigned-projection";
 }
 
 async function readOrNull(path: string): Promise<string | null> {
@@ -175,7 +180,7 @@ export async function checkPresetsGate(
     record = await readPresets(projectRoot);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    return { presets: opts.force ? "forced" : "absent", presetsHash: null, drift: [], refusal: opts.force ? null : `preflight gate: ${PRESETS_RELATIVE_PATH} is unreadable (${msg}) — ${rerun}` };
+    return { presets: opts.force ? "forced" : "absent", presetsHash: null, drift: [], refusal: opts.force ? null : `preflight gate: ${PRESETS_RELATIVE_PATH} is unreadable (${msg}) — ${rerun}`, ...(opts.force ? {} : { absenceReason: "no-record" as const }) };
   }
 
   // Plan html read/parse failures propagate uncaught — see docstring above.
@@ -188,7 +193,9 @@ export async function checkPresetsGate(
   if (result.verdict === "ok") return { presets: "ok", presetsHash: hash, drift: [], refusal: null };
   if (opts.force) return { presets: "forced", presetsHash: hash, drift: result.drift, refusal: null };
   if (result.verdict === "unapproved") {
-    return { presets: "absent", presetsHash: hash, drift: [], refusal: `preflight gate: ${result.reason} — ${rerun}` };
+    const absenceReason: "no-record" | "unsigned-projection" =
+      record === null || record.approval === null ? "no-record" : "unsigned-projection";
+    return { presets: "absent", presetsHash: hash, drift: [], refusal: `preflight gate: ${result.reason} — ${rerun}`, absenceReason };
   }
   const diffLines = result.drift.map((d) => `  ${d.field}: ${d.approved} → ${d.current}`).join("\n");
   return { presets: "drift", presetsHash: hash, drift: result.drift, refusal: `preflight gate: configuration drifted since sign-off:\n${diffLines}\n${rerun}` };
