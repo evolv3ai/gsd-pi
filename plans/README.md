@@ -43,6 +43,7 @@ commit `58dc840f`. Plans 018–024 planned against commit `7cca07ae`.
 | 024 | Dependency & dead-code hygiene (hono, daemon SDK, ajv, chart.tsx) | P2 | S | — | DONE |
 | 026 | Refuse newer-schema DBs, harden version detection, close DB before migration restore | P1 | M | — | DONE |
 | 027 | Scope external-edit drift repair status authority to drifted entities | P1 | M | — | DONE |
+| 028 | Six small state/DB correctness fixes (status aliases, gate atomicity, claim locking, derive-cache lock, lease test) | P1 | S | — | DONE |
 
 All of 009–017 implemented, tested, and committed on branch `chore/audit-fixes-009-017`
 (2026-07-01). Notable deviations recorded in the plan files: 009 skipped the
