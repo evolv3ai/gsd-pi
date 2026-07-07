@@ -22,6 +22,10 @@ engineStrict: true
 #                      root undici@7.x is untouched.
 #   protobufjs         GHSA-f38q-mgvj-vph7 — schema-name prototype shadowing via
 #                      @google/genai; patched in 7.6.3.
+#   hono               GHSA (middleware) — pulled via @modelcontextprotocol/sdk >
+#                      @hono/node-server; patched in 4.12.25. Not on an executed
+#                      path (gateway uses raw node:http) but clears the audit.
+#                      # remove when MCP SDK bumps its @hono/node-server floor >= 4.12.25
 overrides:
   uuid: ^11.1.1
   postcss: ^8.5.10
@@ -31,6 +35,7 @@ overrides:
   "discord.js>undici": "6.27.0"
   "@discordjs/rest>undici": "6.27.0"
   protobufjs: "^7.6.3"
+  hono: ">=4.12.25"
 
 # npm registry rejects tarballs containing hard-linked files (E415). pnpm hard-links
 # by default; copy mode breaks those links so bundledDependencies pack cleanly.
