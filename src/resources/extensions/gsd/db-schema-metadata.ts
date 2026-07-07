@@ -19,8 +19,11 @@ export function ensureColumn(db: DbAdapter, table: string, column: string, ddl: 
 }
 
 export function getCurrentSchemaVersion(db: DbAdapter): number {
+  // MAX(version) on an empty table returns a row whose value is NULL —
+  // treat that (and any non-numeric value) as version 0, not NULL-as-number.
   const row = db.prepare("SELECT MAX(version) as v FROM schema_version").get();
-  return row ? (row["v"] as number) : 0;
+  const v = row?.["v"];
+  return typeof v === "number" ? v : 0;
 }
 
 export function recordSchemaVersion(db: DbAdapter, version: number): void {
