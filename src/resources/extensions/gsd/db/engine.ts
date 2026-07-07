@@ -114,21 +114,37 @@ function initSchema(db: DbAdapter, fileBacked: boolean, dbPath: string | null): 
 
     const existing = db.prepare("SELECT count(*) as cnt FROM schema_version").get();
     if (existing && (existing["cnt"] as number) === 0) {
-      createCoordinationTablesV24(db);
-      createRuntimeKvTableV25(db);
+      // An empty schema_version table usually means a fresh install, but it can
+      // also be a legacy/truncated DB that already holds user data. Stamping
+      // that DB SCHEMA_VERSION without running migrations would mis-mark it as
+      // fully migrated and break at first query. Probe before stamping.
+      const hasData = ["milestones", "decisions", "memories"].some((t) => {
+        try {
+          const r = db.prepare(`SELECT count(*) as cnt FROM ${t}`).get();
+          return ((r?.["cnt"] as number) ?? 0) > 0;
+        } catch { /* table absent on a truly fresh DB — treat as no data */ return false; }
+      });
+      if (hasData) {
+        // Legacy DB with data but no version row: record the baseline so
+        // migrateSchema runs the full chain instead of stamping the current version.
+        recordSchemaVersion(db, 1);
+      } else {
+        createCoordinationTablesV24(db);
+        createRuntimeKvTableV25(db);
 
-      // Fresh install — all tables are created above with the full current schema,
-      // so it is safe to create all migration-specific indexes here.  For existing
-      // databases these indexes are created inside the individual migration guards
-      // in migrateSchema() after the corresponding columns have been added.
-      db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_escalation_pending ON tasks(milestone_id, slice_id, escalation_pending)");
-      db.exec("CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope)");
-      db.exec("CREATE INDEX IF NOT EXISTS idx_memory_sources_kind ON memory_sources(kind)");
-      db.exec("CREATE INDEX IF NOT EXISTS idx_memory_sources_scope ON memory_sources(scope)");
-      db.exec("CREATE INDEX IF NOT EXISTS idx_memory_relations_from ON memory_relations(from_id)");
-      db.exec("CREATE INDEX IF NOT EXISTS idx_memory_relations_to ON memory_relations(to_id)");
+        // Fresh install — all tables are created above with the full current schema,
+        // so it is safe to create all migration-specific indexes here.  For existing
+        // databases these indexes are created inside the individual migration guards
+        // in migrateSchema() after the corresponding columns have been added.
+        db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_escalation_pending ON tasks(milestone_id, slice_id, escalation_pending)");
+        db.exec("CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope)");
+        db.exec("CREATE INDEX IF NOT EXISTS idx_memory_sources_kind ON memory_sources(kind)");
+        db.exec("CREATE INDEX IF NOT EXISTS idx_memory_sources_scope ON memory_sources(scope)");
+        db.exec("CREATE INDEX IF NOT EXISTS idx_memory_relations_from ON memory_relations(from_id)");
+        db.exec("CREATE INDEX IF NOT EXISTS idx_memory_relations_to ON memory_relations(to_id)");
 
-      recordSchemaVersion(db, SCHEMA_VERSION);
+        recordSchemaVersion(db, SCHEMA_VERSION);
+      }
     }
 
     db.exec("COMMIT");
@@ -183,9 +199,19 @@ function copyQualityGateRowsToRepairedTable(db: DbAdapter): void {
   `);
 }
 
+let _migrationFaultForTest = false;
+/** Test-only: force migrateSchema to throw after applying its steps but before COMMIT. */
+export function _setMigrationFaultForTest(v: boolean): void { _migrationFaultForTest = v; }
+
 function migrateSchema(db: DbAdapter, dbPath: string | null): void {
   const currentVersion = getCurrentSchemaVersion(db);
-  if (currentVersion >= SCHEMA_VERSION) return;
+  if (currentVersion > SCHEMA_VERSION) {
+    throw new Error(
+      `gsd.db schema is v${currentVersion}, newer than the v${SCHEMA_VERSION} this gsd-pi supports. ` +
+      `Update gsd-pi (npm i -g @opengsd/gsd-pi) before opening this project.`,
+    );
+  }
+  if (currentVersion === SCHEMA_VERSION) return;
 
   backupDatabaseBeforeMigration(db, dbPath, currentVersion, {
     existsSync,
@@ -350,6 +376,8 @@ function migrateSchema(db: DbAdapter, dbPath: string | null): void {
       applyMigrationV29RepositoryTargets(db);
       recordSchemaVersion(db, 29);
     }
+
+    if (_migrationFaultForTest) throw new Error("migration fault injected for test");
 
     db.exec("COMMIT");
   } catch (err) {
