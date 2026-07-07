@@ -545,6 +545,39 @@ describe("runBuild", () => {
     assert.equal(JSON.parse(evalLines[evalLines.length - 1]).phase, "auto-not-started");
   });
 
+  test("relaunch that stops at a pause reports auto-stopped-at-pause, not not-started (twin-branch parity)", async () => {
+    // F3 fixed pause attribution on the no-relaunch path; the post-relaunch
+    // twin must discriminate the same way. A relaunched run that pauses on a
+    // blocker is execution having happened — not "nothing started".
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-relaunch-pause-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+
+    const calls: string[][] = [];
+    const stuck = { state: { phase: "ready", activeMilestone: { id: "M9", title: "x" }, activeTask: null, lastCompletedMilestone: null }, next: null, cost: { total: 0 } };
+    const pausedAfterRelaunch = { state: { phase: "paused", activeMilestone: { id: "M9", title: "x" }, activeTask: null, lastCompletedMilestone: null, blockers: [{ reason: "safety pause" }], progress: { milestones: { done: 0, total: 1 }, slices: { done: 0, total: 2 }, tasks: { done: 2, total: 6 } } }, next: null, cost: { total: 3.1 } };
+    const spawn = seqSpawner([
+      { state: { phase: "idle", lastCompletedMilestone: null }, next: null, cost: { total: 0 } },  // baseline
+      stuck, stuck,                                                                                 // settle attempts: planned, never executing
+      pausedAfterRelaunch,                                                                          // post-relaunch query: paused on a blocker
+    ], calls);
+
+    const result = await runBuild(htmlPath, {
+      auto: true, binary: "gsd", cwd: tmp, spawn, now: () => "2026-07-07T08:00:00Z",
+      force: true, globalPrefsPath: join(tmp, "no-global.md"),
+      settle: { attempts: 2, delayMs: 0, sleep: async () => {} },
+    });
+
+    assert.equal(calls.filter(isAutoCall).length, 1, "exactly one auto relaunch");
+    assert.equal(result.autoChain, "stopped-at-pause");
+    assert.equal(result.milestoneId, "M9");
+
+    const manifest = JSON.parse(await readFile(result.manifestPath, "utf8"));
+    assert.equal(manifest.validation.lastStatus, "blocked", "blockers dominate lastStatus regardless of autoChain");
+    const evalLines = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n");
+    assert.equal(JSON.parse(evalLines[evalLines.length - 1]).phase, "auto-stopped-at-pause");
+  });
+
   // Step-mode guard: headless new-milestone deadlocks on the depth gate, so
   // plain step mode must refuse fast (see STEP_MODE_HEADLESS_ERROR).
   test("step mode without --step-unsafe fails fast before export", async () => {

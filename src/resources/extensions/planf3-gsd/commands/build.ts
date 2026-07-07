@@ -342,6 +342,11 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
   const zeroExecutionDispatches = (s: BridgeStatus): boolean =>
     s.activeTask === null && s.activeSlice === null && (s.progress === null || s.progress.tasks.done === 0);
 
+  // F3 discrimination, shared by the relaunch and no-relaunch branches:
+  // task completions or a live pause mean execution DID happen.
+  const stoppedAtPause = (s: BridgeStatus): boolean =>
+    (s.progress?.tasks.done ?? 0) > 0 || s.blockers.length > 0;
+
   // Auto-chain workaround: `new-milestone --auto` can return after planning
   // without execution ever starting (upstream chain is suppressed when the
   // depth gate is pending or the readiness notification never fires).
@@ -387,8 +392,13 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
       } finally {
         guard.dispose();
       }
-      autoChain = isVisiblyProgressing(status) ? "relaunched" : "not-started";
-    } else if ((status.progress?.tasks.done ?? 0) > 0 || status.blockers.length > 0) {
+      // Twin-branch parity with the F3 discrimination below: a relaunched run
+      // that pauses (blocker) or completes tasks without finishing is
+      // execution having happened, not "nothing started".
+      autoChain = isVisiblyProgressing(status) ? "relaunched"
+        : stoppedAtPause(status) ? "stopped-at-pause"
+        : "not-started";
+    } else if (stoppedAtPause(status)) {
       // Execution DID happen (task completions or a live pause) but the loop
       // didn't reach the current milestone's completion. F3: this is distinct
       // from "nothing happened" — attribute honestly.
