@@ -10,6 +10,7 @@ import { loadJsonFileOrNull } from "../json-persistence.js";
 import { getIsolationMode } from "../preferences.js";
 import { compileSubagentPermissionContract, type ToolsPolicy } from "../unit-context-manifest.js";
 import { logWarning } from "../workflow-logger.js";
+import { acquireSyncLock, releaseSyncLock } from "../sync-lock.js";
 import { isGsdWorktreePath, resolveWorktreeProjectRoot } from "../worktree-root.js";
 import { worktreesDirs } from "../worktree-placement.js";
 import { bashReferencesProjectRootOutsideWorktree } from "../worktree-shell-guard.js";
@@ -364,12 +365,63 @@ export function refreshWriteGateStateFromDisk(basePath: string): WriteGateSnapsh
   return currentWriteGateSnapshot(basePath);
 }
 
+const WRITE_GATE_LOCK_NAME = "write-gate.lock";
+
+/**
+ * Test-only seam: fires once inside the held cross-process lock (after acquire,
+ * before the read-merge-write body) with the resolved lock root. Lets a
+ * regression test observe that a concurrent process is genuinely locked out of
+ * the critical section. Production leaves it null. Follows the repo's
+ * `_setGhAvailableForTest` naming convention.
+ */
+let interleaveHookForTest: ((lockRoot: string) => void) | null = null;
+export function _setWriteGateInterleaveHookForTest(fn: ((lockRoot: string) => void) | null): void {
+  interleaveHookForTest = fn;
+}
+
+/**
+ * Serialize the read-merge-write critical section across the two processes
+ * that share the snapshot file (extension host + workflow MCP child). Atomic
+ * rename prevents torn files but not lost updates: without this lock the host
+ * can read the snapshot, the child can arm a gate and persist, then the host's
+ * later persist overwrites `pendingGateId`/`activeQueuePhase` (last-writer-wins
+ * fields) and silently drops the armed HARD-BLOCK gate.
+ *
+ * Fail-OPEN by contract: if a live peer holds the lock we proceed WITHOUT it —
+ * exactly the racy-but-functional behavior that shipped before this lock — and
+ * log once. The lock shrinks the race window to ~zero; it must never block,
+ * throw, or refuse a gate mutation. The lock is skipped entirely when snapshot
+ * persistence is off (no disk file, no cross-process seam).
+ */
+function withWriteGateLock<T>(basePath: string, fn: () => T): T {
+  if (!shouldPersistWriteGateSnapshot()) return fn();
+  const lockRoot = resolveWriteGateSnapshotRoot(basePath);
+  // Materialize `.gsd/` (including a dangling external-state symlink target)
+  // before locking. acquireSyncLock's own mkdir does NOT follow a symlink to
+  // create its target, so without this the O_EXCL open lands on a missing
+  // parent and the lock silently fails open — leaving the seam unserialized
+  // for exactly the external-state projects that need it. This is the same
+  // directory the persist path ensures anyway.
+  try { ensureWriteGateSnapshotDirectory(basePath); } catch { /* best-effort; acquire fails-open below */ }
+  const { acquired } = acquireSyncLock(lockRoot, 0, WRITE_GATE_LOCK_NAME);
+  if (!acquired) {
+    logWarning("intercept", "write-gate: proceeding without cross-process lock (held by live peer)", { lockRoot });
+    return fn();
+  }
+  try {
+    interleaveHookForTest?.(lockRoot);
+    return fn();
+  } finally {
+    releaseSyncLock(lockRoot, WRITE_GATE_LOCK_NAME);
+  }
+}
+
 /**
  * Read-modify-write primitive for gate mutations. Reconciles the disk
  * snapshot into memory (union merge), applies the mutation on top, then
- * persists. The whole sequence is synchronous, so the reconcile read
- * doubles as the pre-persist merge of concurrent writes — there is no
- * version field; the read-merge-write is simply unconditional.
+ * persists — all under the cross-process lock (withWriteGateLock). The whole
+ * sequence is synchronous, so the reconcile read doubles as the pre-persist
+ * merge of concurrent writes; there is no version field.
  *
  * The mutate callback sees the already-reconciled state, so policy checks
  * (e.g. host setPending's verified-on-disk-wins guard) can live inside it
@@ -385,21 +437,23 @@ function mutateWriteGateState(
   opts?: { writer?: WriteGateWriter; reconcile?: boolean },
 ): boolean {
   const state = getWriteGateState(basePath);
-  if (shouldPersistWriteGateSnapshot() && (opts?.reconcile ?? true)) {
-    const disk = readDiskSnapshot(basePath);
-    if (disk) {
-      mergeSnapshotIntoState(state, disk);
-    } else {
-      // Missing OR unparseable on disk: treat as a full reset. Keeping
-      // stale in-memory state across a corrupt snapshot would persist it
-      // back on this very mutation and defeat the documented
-      // "delete the file to clear the HARD BLOCK gate" escape hatch.
-      replaceStateFromSnapshot(state, EMPTY_SNAPSHOT);
+  return withWriteGateLock(basePath, () => {
+    if (shouldPersistWriteGateSnapshot() && (opts?.reconcile ?? true)) {
+      const disk = readDiskSnapshot(basePath);
+      if (disk) {
+        mergeSnapshotIntoState(state, disk);
+      } else {
+        // Missing OR unparseable on disk: treat as a full reset. Keeping
+        // stale in-memory state across a corrupt snapshot would persist it
+        // back on this very mutation and defeat the documented
+        // "delete the file to clear the HARD BLOCK gate" escape hatch.
+        replaceStateFromSnapshot(state, EMPTY_SNAPSHOT);
+      }
     }
-  }
-  if (mutate(state) === false) return false;
-  persistWriteGateSnapshot(basePath, opts?.writer ?? defaultWriteGateWriter());
-  return true;
+    if (mutate(state) === false) return false;
+    persistWriteGateSnapshot(basePath, opts?.writer ?? defaultWriteGateWriter());
+    return true;
+  });
 }
 
 export function isDepthVerified(basePath: string = process.cwd()): boolean {
@@ -643,13 +697,15 @@ export const childWriteGateAdapter: WriteGateStateAdapter = {
 
 function childMutate(basePath: string, mutate: (state: InMemoryWriteGateState) => void): void {
   const state = getWriteGateState(basePath);
-  if (shouldPersistWriteGateSnapshot()) {
-    // Always-fresh: disk is the only truth for the child; discard any
-    // cross-turn in-memory residue before mutating.
-    replaceStateFromSnapshot(state, readDiskSnapshot(basePath) ?? EMPTY_SNAPSHOT);
-  }
-  mutate(state);
-  persistWriteGateSnapshot(basePath, "child");
+  withWriteGateLock(basePath, () => {
+    if (shouldPersistWriteGateSnapshot()) {
+      // Always-fresh: disk is the only truth for the child; discard any
+      // cross-turn in-memory residue before mutating.
+      replaceStateFromSnapshot(state, readDiskSnapshot(basePath) ?? EMPTY_SNAPSHOT);
+    }
+    mutate(state);
+    persistWriteGateSnapshot(basePath, "child");
+  });
 }
 
 /**

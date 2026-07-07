@@ -26,6 +26,7 @@ import { tmpdir } from "node:os";
 
 import { registerHooks } from "../bootstrap/register-hooks.ts";
 import {
+  _setWriteGateInterleaveHookForTest,
   childWriteGateAdapter,
   clearDiscussionFlowState,
   getPendingGate,
@@ -36,6 +37,9 @@ import {
   setPendingGate,
   type WriteGateSnapshot,
 } from "../bootstrap/write-gate.ts";
+import { acquireSyncLock, releaseSyncLock } from "../sync-lock.ts";
+
+const WRITE_GATE_LOCK_NAME = "write-gate.lock";
 
 function makeTempDir(prefix: string): string {
   const dir = join(
@@ -355,4 +359,52 @@ test("seam: mutateWriteGateState reset path drops stale pendingGateId on a corru
   const persisted = readDiskRaw(dir);
   assert.equal(persisted.pendingGateId, null, "stale pending id must not be persisted after a corrupt-snapshot reconcile");
   assert.deepEqual(persisted.verifiedDepthMilestones, ["M099"]);
+});
+
+// ── (f) cross-process lock closes the read-merge-write lost-update window ────
+
+test("seam: read-merge-write holds the write-gate lock across the whole critical section", (t) => {
+  const dir = makeTempDir("lock-held");
+  t.after(() => {
+    _setWriteGateInterleaveHookForTest(null);
+    cleanup(dir);
+  });
+
+  // Fire inside the host's critical section, standing in for the OTHER process
+  // attempting to enter its own read-merge-write. The lock must lock it out.
+  let peerAcquiredMidSection: boolean | null = null;
+  _setWriteGateInterleaveHookForTest((lockRoot) => {
+    const res = acquireSyncLock(lockRoot, 0, WRITE_GATE_LOCK_NAME);
+    peerAcquiredMidSection = res.acquired;
+    if (res.acquired) releaseSyncLock(lockRoot, WRITE_GATE_LOCK_NAME);
+  });
+
+  markDepthVerified("M001", dir);
+
+  assert.equal(
+    peerAcquiredMidSection,
+    false,
+    "a concurrent process must be locked out of the read-merge-write section — this is what prevents the lost-update",
+  );
+  // The lock is released after the mutation, and the mutation still took effect.
+  assert.ok(loadWriteGateSnapshot(dir).verifiedDepthMilestones.includes("M001"));
+  assert.equal(acquireSyncLock(dir, 0, WRITE_GATE_LOCK_NAME).acquired, true, "lock released after mutation");
+  releaseSyncLock(dir, WRITE_GATE_LOCK_NAME);
+});
+
+test("seam: gate mutation fails OPEN when a live peer holds the lock (never blocks/refuses)", (t) => {
+  const dir = makeTempDir("lock-fail-open");
+  t.after(() => cleanup(dir));
+
+  // A live peer holds the lock (its own PID → never stolen as stale).
+  assert.equal(acquireSyncLock(dir, 0, WRITE_GATE_LOCK_NAME).acquired, true);
+  try {
+    // Host arms a gate while contended: fail-open means it proceeds anyway.
+    const armed = setPendingGate(GATE, dir);
+    assert.equal(armed, true, "arm must succeed (fail-open) even though the lock is held");
+    assert.equal(getPendingGate(dir), GATE);
+    assert.equal(readDiskRaw(dir).pendingGateId, GATE, "fail-open still persists the mutation");
+  } finally {
+    releaseSyncLock(dir, WRITE_GATE_LOCK_NAME);
+  }
 });

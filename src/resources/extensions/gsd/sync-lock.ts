@@ -9,8 +9,10 @@ import { dirname, join } from "node:path";
 const STALE_THRESHOLD_MS = 60_000; // 60 seconds
 const DEFAULT_TIMEOUT_MS = 0;      // fail fast; sync waits block the JS event loop
 
-function lockFilePath(basePath: string): string {
-  return join(basePath, ".gsd", "sync.lock");
+const DEFAULT_LOCK_NAME = "sync.lock";
+
+function lockFilePath(basePath: string, lockName: string = DEFAULT_LOCK_NAME): string {
+  return join(basePath, ".gsd", lockName);
 }
 
 /** True if the given PID is alive in the current process namespace. */
@@ -74,8 +76,9 @@ function tryCreateLockFile(lp: string, payload: string): boolean {
 export function acquireSyncLock(
   basePath: string,
   _timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  lockName: string = DEFAULT_LOCK_NAME,
 ): { acquired: boolean } {
-  const lp = lockFilePath(basePath);
+  const lp = lockFilePath(basePath, lockName);
   const lockData = JSON.stringify(
     { pid: process.pid, acquired_at: new Date().toISOString() },
     null,
@@ -89,7 +92,12 @@ export function acquireSyncLock(
         return { acquired: true };
       }
     } catch {
-      /* unexpected — fall through to retry */
+      // tryCreateLockFile only throws for non-EEXIST errors — a persistently
+      // uncreatable lock path (dangling-symlink parent, ENOTDIR, read-only FS).
+      // Retrying would spin the loop forever with no progress condition,
+      // blocking the JS event loop. Fail open like a contended lock so callers
+      // proceed (racy but functional) instead of hanging.
+      return { acquired: false };
     }
 
     // File exists. Decide whether to steal (stale + owner dead) or skip.
@@ -131,8 +139,8 @@ export function acquireSyncLock(
 /**
  * Release the advisory sync lock. No-op if lock file does not exist.
  */
-export function releaseSyncLock(basePath: string): void {
-  const lp = lockFilePath(basePath);
+export function releaseSyncLock(basePath: string, lockName: string = DEFAULT_LOCK_NAME): void {
+  const lp = lockFilePath(basePath, lockName);
   try {
     if (existsSync(lp)) {
       unlinkSync(lp);
