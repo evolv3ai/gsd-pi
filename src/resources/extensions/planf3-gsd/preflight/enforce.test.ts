@@ -214,4 +214,12 @@ describe("checkPresetsGate (build-time, disk-only)", () => {
     assert.equal(unsigned.presets, "absent");
     assert.equal(unsigned.absenceReason, "unsigned-projection");
   });
+
+  test("F1: gate accepts a relative htmlPath even when the record was signed with an absolute path", async () => {
+    const tmp = await scaffold(true);      // scaffold signs projectedFrom = ABSOLUTE join(tmp, "specs", "minimal.html")
+    const relative = join("specs", "minimal.html");
+    const gate = await checkPresetsGate(tmp, relative, { force: false, globalPrefsPath: join(tmp, "no-global.md") });
+    assert.equal(gate.presets, "ok", "same file, gate opens regardless of relative-vs-absolute spelling");
+    assert.equal(gate.absenceReason, undefined);
+  });
 });

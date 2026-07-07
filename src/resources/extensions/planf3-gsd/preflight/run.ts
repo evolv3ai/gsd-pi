@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parsePlanf3Html } from "../parser/planf3-html-parser.js";
 import { realSpawner } from "../gsd/real-spawner.js";
 import type { Spawner } from "../gsd/headless-runner.js";
@@ -68,13 +68,19 @@ export async function runPreflight(deps: PreflightDeps): Promise<PreflightRun> {
   const spawn = deps.spawn ?? realSpawner;
   const globalPrefsPath = deps.globalPrefsPath ?? join(homedir(), ".gsd", "PREFERENCES.md");
 
+  // F1: resolve at the deps boundary so `specs/p.html` and `/root/specs/p.html`
+  // always compare equal in projectedFrom / planPath comparisons. The pure
+  // computeVerdict below still does a raw-string compare — the invariant is
+  // "callers always hand resolved paths in".
+  const htmlPath = deps.htmlPath !== null ? resolve(deps.projectRoot, deps.htmlPath) : null;
+
   // Plan-derived inputs (bare preflight: empty policy/commands/integrations).
   let modelPolicy: Record<string, string> = {};
   let validationCommands: string[] = [];
   let integrations: { service: string; envVars: string[] }[] = [];
   let planText = "";
-  if (deps.htmlPath !== null) {
-    planText = await readFile(deps.htmlPath, "utf8");
+  if (htmlPath !== null) {
+    planText = await readFile(htmlPath, "utf8");
     const plan = parsePlanf3Html(planText);
     modelPolicy = plan.modelPolicy as Record<string, string>;
     validationCommands = plan.validationCommands;
@@ -86,7 +92,7 @@ export async function runPreflight(deps: PreflightDeps): Promise<PreflightRun> {
     projectContent: await readOrNull(join(deps.projectRoot, ".gsd", "PREFERENCES.md")),
     modelPolicy,
     validationCommands,
-    sourceHtmlPath: deps.htmlPath ?? "(bare preflight)",
+    sourceHtmlPath: htmlPath ?? "(bare preflight)",
   });
 
   const modelIdIssues = validateModelIds(projection.allModelIds, deps.catalog);
@@ -138,12 +144,12 @@ export async function runPreflight(deps: PreflightDeps): Promise<PreflightRun> {
   });
 
   const record = await readPresets(deps.projectRoot);
-  const { verdict, drift } = computeVerdict(record, { projection, planPath: deps.htmlPath, probes });
+  const { verdict, drift } = computeVerdict(record, { projection, planPath: htmlPath, probes });
 
   // Manifest wiring check (spec §6.1/§10): does the plan's exported manifest
   // carry the current approval? (siblingPath convention from commands/export.ts)
-  if (deps.htmlPath !== null) {
-    const manifestPath = deps.htmlPath.replace(/\.html?$/i, ".manifest.json");
+  if (htmlPath !== null) {
+    const manifestPath = htmlPath.replace(/\.html?$/i, ".manifest.json");
     const manifestText = await readOrNull(manifestPath);
     if (manifestText === null) {
       map.validationIssues.push(`manifest: not exported yet (${manifestPath})`);
@@ -185,12 +191,13 @@ export async function runPreflight(deps: PreflightDeps): Promise<PreflightRun> {
 
 export async function signOffPreflight(deps: PreflightDeps, note: string | null): Promise<{ path: string; approvalHash: string }> {
   const run = await runPreflight(deps);
+  const projectedFrom = deps.htmlPath !== null ? resolve(deps.projectRoot, deps.htmlPath) : null;
   const signed = signOff({
     base: run.fresh,
     previous: run.record,
     facts: deps.orchestrator,
     note,
-    projectedFrom: deps.htmlPath,
+    projectedFrom,
     approvalHash: run.approvalHash,
     now: deps.now ?? (() => new Date().toISOString()),
   });

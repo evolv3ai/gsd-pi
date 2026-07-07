@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parsePlanf3Html } from "../parser/planf3-html-parser.js";
 import { splitPreferences, type SplitFile } from "../gsd/preferences-overlay.js";
 import { projectionHash } from "./hash.js";
@@ -173,7 +173,8 @@ export async function checkPresetsGate(
   htmlPath: string,
   opts: { force: boolean; globalPrefsPath?: string },
 ): Promise<PresetsGateResult> {
-  const rerun = `run /planf3-gsd-preflight ${htmlPath} and sign off, or pass --force to build anyway`;
+  const resolvedHtmlPath = resolve(projectRoot, htmlPath);
+  const rerun = `run /planf3-gsd-preflight ${resolvedHtmlPath} and sign off, or pass --force to build anyway`;
 
   let record: PresetsRecord | null;
   try {
@@ -184,10 +185,15 @@ export async function checkPresetsGate(
   }
 
   // Plan html read/parse failures propagate uncaught — see docstring above.
-  const html = await readFile(htmlPath, "utf8");
+  const html = await readFile(resolvedHtmlPath, "utf8");
   const plan = parsePlanf3Html(html);
-  const projection = await readCurrentProjection(projectRoot, htmlPath, plan, opts.globalPrefsPath);
-  const result = computeVerdict(record, { projection, planPath: htmlPath, probes: [] });
+  const projection = await readCurrentProjection(projectRoot, resolvedHtmlPath, plan, opts.globalPrefsPath);
+  // F1: also normalize the RECORD side — pre-fix records may hold a relative
+  // projectedFrom. Compare after resolving both sides against projectRoot.
+  const normalizedRecord: PresetsRecord | null = record?.approval?.projectedFrom
+    ? { ...record, approval: { ...record.approval, projectedFrom: resolve(projectRoot, record.approval.projectedFrom) } }
+    : record;
+  const result = computeVerdict(normalizedRecord, { projection, planPath: resolvedHtmlPath, probes: [] });
   const hash = projectionHash(projection);
 
   if (result.verdict === "ok") return { presets: "ok", presetsHash: hash, drift: [], refusal: null };
