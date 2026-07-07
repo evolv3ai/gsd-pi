@@ -232,7 +232,7 @@ export function recordToolCall(toolCallId: string, toolName: string, input: Reco
       toolCallId,
       // gsd_exec / gsd_uat_exec carry the script body in `script` (or `code`);
       // bash-style tools use `command`/`cmd`; gsd_exec_search uses `query`.
-      command: String(input.command ?? input.script ?? input.cmd ?? input.code ?? input.query ?? ""),
+      command: formatExecutionEvidenceCommand(toolName, input),
       exitCode: -1,
       outputSnippet: "",
       timestamp: Date.now(),
@@ -252,6 +252,33 @@ export function recordToolCall(toolCallId: string, toolName: string, input: Reco
       timestamp: Date.now(),
     });
   }
+}
+
+function pickString(input: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = input[key];
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return "";
+}
+
+function canonicalExecutionToolLabel(toolName: string): string {
+  const normalized = toolName.trim().toLowerCase();
+  const mcpMatch = normalized.match(/^mcp__.+__(gsd_(?:uat_)?exec(?:_search)?)$/);
+  return mcpMatch?.[1] ?? normalized;
+}
+
+function formatExecutionEvidenceCommand(toolName: string, input: Record<string, unknown>): string {
+  const body = pickString(input, "command", "script", "cmd", "code", "query");
+  const tool = canonicalExecutionToolLabel(toolName);
+  const purpose = pickString(input, "purpose");
+  const runtime = pickString(input, "runtime").toLowerCase();
+  const label = purpose && (tool === "gsd_exec" || tool === "gsd_uat_exec")
+    ? `${tool}${runtime ? ` ${runtime}` : ""}: ${purpose}`
+    : "";
+
+  if (label && body) return `${label}\n${body}`;
+  return body || label;
 }
 
 /**
