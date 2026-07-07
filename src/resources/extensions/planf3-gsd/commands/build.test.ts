@@ -649,3 +649,98 @@ describe("runBuild", () => {
     assert.equal(JSON.parse(lines[lines.length - 1]).presets, "ok");
   });
 });
+
+describe("runBuild — headless idle guard (F4 / upstream #1294)", () => {
+  test("hangs on newMilestone: idle guard aborts, logs failed:headless-idle, throws #1294-tagged error", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-idle-nm-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+
+    // baseline query fine; new-milestone hangs forever unless the signal aborts.
+    const spawn: Spawner = (_cmd, args, opts) => {
+      if (args.includes("new-milestone")) {
+        return new Promise((_resolve, reject) => {
+          opts.signal?.addEventListener("abort", () => {
+            reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          });
+          // never resolves otherwise
+        });
+      }
+      // baseline query
+      return Promise.resolve({ exitCode: 0, stdout: JSON.stringify({ state: { phase: "idle" }, next: null, cost: { total: 0 } }), stderr: "" });
+    };
+
+    await assert.rejects(
+      () => runBuild(htmlPath, {
+        auto: true, binary: "gsd", cwd: tmp, spawn,
+        force: true, globalPrefsPath: join(tmp, "no-global.md"),
+        headlessIdleMs: 50,       // 50ms so the test is fast
+        now: () => "2026-07-07T06:00:00Z",
+      }),
+      /gsd idled headless.*#1294/,
+    );
+
+    const rows = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(rows[rows.length - 1].phase, "failed:headless-idle");
+  });
+
+  test("periodic output resets the idle timer — a long-running-but-progressing child is NOT aborted", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-idle-progress-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+
+    // new-milestone emits three progress chunks 30ms apart, then finishes.
+    // Idle window is 100ms → this must NOT trigger.
+    const spawn: Spawner = (_cmd, args, opts) => {
+      if (args.includes("new-milestone")) {
+        return new Promise((resolve) => {
+          let i = 0;
+          const emit = () => {
+            if (i++ < 3) { opts.onStdout?.(`progress ${i}\n`); setTimeout(emit, 30); }
+            else resolve({ exitCode: 0, stdout: "{}", stderr: "" });
+          };
+          setTimeout(emit, 30);
+        });
+      }
+      if (args.includes("query")) {
+        return Promise.resolve({ exitCode: 0, stdout: JSON.stringify({ state: { phase: "executing", activeMilestone: { id: "M1", title: "t" }, activeTask: { id: "T1", title: "t" } }, next: null, cost: { total: 0 } }), stderr: "" });
+      }
+      return Promise.resolve({ exitCode: 0, stdout: "{}", stderr: "" });
+    };
+
+    const result = await runBuild(htmlPath, {
+      auto: true, binary: "gsd", cwd: tmp, spawn,
+      force: true, globalPrefsPath: join(tmp, "no-global.md"),
+      headlessIdleMs: 100, now: () => "2026-07-07T06:05:00Z",
+    });
+    assert.equal(result.milestoneId, "M1");
+  });
+
+  test("fast-path: 'menu could not be shown' substring aborts immediately (#1294 deterministic signature)", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-idle-menu-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+
+    const spawn: Spawner = (_cmd, args, opts) => {
+      if (args.includes("new-milestone")) {
+        return new Promise((_resolve, reject) => {
+          opts.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })));
+          setTimeout(() => opts.onStdout?.("GSD — M003: M003 menu could not be shown in this session.\n"), 10);
+        });
+      }
+      return Promise.resolve({ exitCode: 0, stdout: JSON.stringify({ state: { phase: "idle" }, next: null, cost: { total: 0 } }), stderr: "" });
+    };
+
+    const started = Date.now();
+    await assert.rejects(
+      () => runBuild(htmlPath, {
+        auto: true, binary: "gsd", cwd: tmp, spawn,
+        force: true, globalPrefsPath: join(tmp, "no-global.md"),
+        headlessIdleMs: 10_000,   // long window: only the fast-path can end this quickly
+        now: () => "2026-07-07T06:10:00Z",
+      }),
+      /#1294/,
+    );
+    assert.ok(Date.now() - started < 3_000, "fast-path aborted well before the 10s idle window");
+  });
+});

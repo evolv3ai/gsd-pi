@@ -14,7 +14,11 @@ export const realSpawner: Spawner = (cmd, args, opts) =>
     });
     let stdout = "";
     let stderr = "";
-    child.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); });
+    child.stdout?.on("data", (chunk: Buffer) => {
+      const str = chunk.toString("utf8");
+      opts.onStdout?.(str);
+      stdout += str;
+    });
     child.stderr?.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
     child.on("error", reject);
     child.on("close", (code) => resolve({ exitCode: code ?? -1, stdout, stderr }));
