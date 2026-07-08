@@ -1218,6 +1218,10 @@ test("hasImplementationArtifacts finds integration implementation-only commits w
 
     execFileSync("git", ["checkout", "-b", "milestone/M001"], { cwd: base, stdio: "ignore" });
     writeIntegrationBranch(base, "M001", "main");
+    // ADR-045: writeIntegrationBranch no longer creates milestones/<MID>/ as a
+    // side effect (META is now flat at .gsd/<MID>-META.json), so scaffold the
+    // legacy summary dir explicitly.
+    mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
     writeFileSync(join(base, ".gsd", "milestones", "M001", "M001-SUMMARY.md"), "# Milestone Summary\nDone.");
     execFileSync("git", ["add", "."], { cwd: base, stdio: "ignore" });
     execFileSync("git", ["commit", "-m", "chore: auto-commit after complete-milestone\n\nGSD-Unit: M001"], { cwd: base, stdio: "ignore" });

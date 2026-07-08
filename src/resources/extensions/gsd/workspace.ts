@@ -10,6 +10,7 @@ import {
   normalizeRealPath,
 } from "./paths.js";
 import { isGsdWorktreePath, resolveWorktreeProjectRoot } from "./worktree-root.js";
+import { milestoneMetaPath } from "./git-service.js";
 
 export type GsdWorkspaceMode = "project" | "worktree";
 
@@ -107,7 +108,7 @@ export function scopeMilestone(workspace: GsdWorkspace, milestoneId: string): Mi
     stateFile: () => join(gsd, "STATE.md"),
     dbPath: () => contract.projectDb,
     milestoneDir: () => scopeMilestoneDir(basePath, milestoneId),
-    metaJson: () => join(gsd, `${milestoneId}-META.json`),
+    metaJson: () => milestoneMetaPath(basePath, milestoneId),
   });
 
   return scope;

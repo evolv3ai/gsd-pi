@@ -46,6 +46,9 @@ commit `58dc840f`. Plans 018–024 planned against commit `7cca07ae`.
 | 028 | Six small state/DB correctness fixes (status aliases, gate atomicity, claim locking, derive-cache lock, lease test) | P1 | S | — | DONE |
 | 029 | Reject path-traversal keys in the compat marker before drift detectors read them | P1 | S | — | DONE |
 | 030 | Stop the write-gate's cross-process read-merge-write from losing an armed gate | P2 | M | — | DONE |
+| 032 | Relocate integration-branch META out of `milestones/<MID>/` so it can't poison layout detection | P1 | M | — | DONE |
+| 033 | Fixtures: zero false-positive stale-render drift for flat-phase (multi-slice + remediation, two cycles) | P2 | M | 032 | TODO |
+| 034 | Re-enable the stale-render drift detector for flat-phase projects | P2 | S | 032, 033 | TODO |
 
 All of 009–017 implemented, tested, and committed on branch `chore/audit-fixes-009-017`
 (2026-07-01). Notable deviations recorded in the plan files: 009 skipped the
@@ -60,6 +63,7 @@ previously-orphaned `message-batcher.test.js` into the daemon test script.
 - **022 depends on 018**: its new tests only run in CI once 018 wires the cloud packages' test scripts in. If 020 lands first, `postJsonToValidatedGateway` gains an optional `timeoutMs` param — harmless to 022.
 - **018 is P0** because every published `@opengsd/gsd-cloud` (1.7.0–1.8.1) is broken on npm today (`dist.fileCount = 3`, no build output); the next release republishes broken without it. 020 and 024 both touch `packages/daemon` (different files: `cloud-config.ts` vs `package.json`) — no conflict, but land 020's daemon test additions before 024's SDK bump to get the extra regression signal.
 - **023 is document-only** (ADR). The migration code work it proposes is NOT planned yet — it needs maintainer approval of the ADR first (CONTRIBUTING requires an RFC/ADR for this territory).
+- **032 → 033 → 034 are the ADR-045 Option B stage-1 code plans** (added 2026-07-08, planned against `897b3c90`, after the maintainer greenlit the "lean 3" path). Strict order: **032** removes the git-service META poisoning root cause (the precondition the detector TODO names); **033** adds fixtures proving zero false-positive stale-render drift across two reconcile cycles for the exact multi-slice/remediation scenarios that got the detector disabled (033 also exports `detectStaleRendersImpl`); **034** flips `detectStaleRenders` from its `return []` stub to the real impl, gated on 033's fixtures being green. 034 must not start before 033, and 033 not before 032. The ADR's Option B step 1 (route all 13 layout-detection sites through one authority) was **deliberately deferred** — see "considered and rejected" below.
 
 ## Findings surviving verification but NOT planned this round
 
@@ -99,7 +103,7 @@ larger/looser scope, or already partly mitigated. Recorded so they aren't lost.
 Grounded in repo evidence; each selected one becomes a design/spike plan, not a
 build-everything plan. Effort estimates are coarse.
 
-1. **Finish the flat-phase migration** — planned as the ADR in plan 023 (the drift alarm `detectStaleRenders` is still hard-disabled at 1.8.1 while the seam keeps shipping projection bugs: #1303/#1305/#1313/#1316 in six days).
+1. **Finish the flat-phase migration** — ADR-045 written (plan 023, DONE); Option B stage-1 now broken into code plans **032 → 033 → 034** (added 2026-07-08). Stage 2 / Option A (forced migration + legacy-branch deletion) remains release-gated and needs maintainer sign-off on ADR-045's open questions. The drift alarm `detectStaleRenders` is still hard-disabled at HEAD; 034 turns it back on once 032/033 land.
 2. **Team sharing + RBAC for GSD Cloud — build or formally defer**: promised twice in the product brief; zero backing code (`auth-store.ts`/`runtime-registry.ts` model single-user only; grep for team/org/rbac/tenant across gateway+gsd-cloud → 0 non-test hits). Multi-machine is delivered; multi-user is absent. Retrofitting authz late is the expensive path — a record-schema + gateway-ownership-seam ADR is the cheap first step. L (coarse).
 3. **Linux systemd service packaging for the daemon**: the brief requires macOS AND Linux service install; only `launchd.ts` exists (`packages/daemon/src/cli.ts` wires install/uninstall/status exclusively to launchd). A `systemd.ts` mirroring the launchd trio (user unit in `~/.config/systemd/user/`) + a platform switch is a bounded M. The cloud story leans on always-on daemons, which mostly run on Linux.
 4. **Bidirectional GitHub sync**: `github-sync` is export-only by design (all ops are `ghCreate*/ghClose*/ghAddComment`; zero inbound reads). Maintainers whose backlog lives in GitHub Issues must re-enter everything. Spike a read-only `github-sync import` preview (issues → milestone/task mapping) to surface the DB-single-writer conflict questions before committing to two-way. M–L (coarse).
@@ -108,6 +112,7 @@ build-everything plan. Effort estimates are coarse.
 
 ## Findings considered and rejected
 
+- **ADR-045 Option B step 1 — route all 13 layout-detection sites through one "single detection authority" module** (2026-07-08): deferred, not rejected. Plan 032 removes the *poisoning input* (git-service META), which is the concrete cause of the shipped bugs and the detector false positives; with poisoning gone, Plan 033's fixtures become the real safety gate for re-enabling the detector (034), so the 13-file refactor is not required to close this cluster. It is a large, churny change VISION discourages doing for its own sake. Revisit only if 033's fixtures surface actual cross-site disagreement (i.e. the detector and a resolved render target disagree even with reliable layout detection). Inventory is in ADR-045's appendix.
 - **Task/slice closed→open guard missing from Status Transition Core**: explicitly deferred by ADR-030 until sanctioned `reopenTaskStatus`/`reopenSliceStatus` faces exist; not planned independently.
 - **Log redaction regex misses lowercase secret key names**: the regex already carries the `i` flag, so lowercase keys are matched; no change needed.
 - **Static tool-contract gate sites not folded into one helper**: the four sites already share `getUnitWorkflowDispatchReadinessError` in `tool-contract.ts`; further unification is not a clean, bounded change.

@@ -10,6 +10,7 @@ import { existsSync, realpathSync, unlinkSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 
 import { gsdRoot } from "./paths.js";
+import { milestoneMetaPath } from "./git-service.js";
 import { logWarning } from "./workflow-logger.js";
 
 function isSamePath(a: string, b: string): boolean {
@@ -93,6 +94,9 @@ export function clearProjectRootStateFiles(
   // worth removing on teardown.
   const transientFiles = [
     join(gsdDir, "STATE.md"),
+    // Integration-branch META now lives flat at .gsd/<MID>-META.json (ADR-045).
+    milestoneMetaPath(basePath, milestoneId),
+    // Legacy location — still cleaned for pre-migration trees.
     join(gsdDir, "milestones", milestoneId, `${milestoneId}-META.json`),
   ];
 

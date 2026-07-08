@@ -103,12 +103,15 @@ function resolveProjectMilestonePath(base: string, mid: string): string | null {
   const milestonesDir = join(gsdRoot(base), "milestones");
   const dir = resolveDir(milestonesDir, mid);
   if (!dir) return null;
-  // git-service.ts creates milestones/<MID>/ for integration-branch metadata
-  // (<MID>-META.json) even in flat-phase projects. A dir that holds ONLY
-  // *-META.json files must not be treated as a real legacy milestone dir —
-  // otherwise this early-return resolves CONTEXT/ROADMAP/SUMMARY to the legacy
-  // path (milestones/<MID>/<MID>-<SUFFIX>.md) before the flat-phase fallback
-  // can run, trapping the unit in a finalize-retry loop (#852 follow-up).
+  // Historically git-service.ts wrote integration-branch metadata into
+  // milestones/<MID>/<MID>-META.json, which could create that dir in flat-phase
+  // projects and poison layout detection. As of ADR-045 that META lives flat at
+  // .gsd/<MID>-META.json and no longer poisons detection. A dir that holds ONLY
+  // *-META.json files (a pre-migration on-disk tree) must still not be treated
+  // as a real legacy milestone dir — otherwise this early-return resolves
+  // CONTEXT/ROADMAP/SUMMARY to the legacy path (milestones/<MID>/<MID>-<SUFFIX>.md)
+  // before the flat-phase fallback can run, trapping the unit in a
+  // finalize-retry loop (#852 follow-up).
   //
   // We use dirIsMetaOnlyLegacyMilestone rather than !dirIsContentBearingLegacyMilestone
   // so that an EMPTY dir (a new milestone before any content is written) is NOT
