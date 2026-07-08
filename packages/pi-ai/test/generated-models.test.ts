@@ -109,6 +109,28 @@ describe("models.generated.ts", () => {
 		}
 	});
 
+	test("includes Grok 4.5 as a first-class xAI model", () => {
+		const model = MODELS.xai["grok-4.5"];
+
+		expect(model).toMatchObject({
+			id: "grok-4.5",
+			name: "Grok 4.5",
+			api: "openai-completions",
+			provider: "xai",
+			baseUrl: "https://api.x.ai/v1",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 2,
+				output: 6,
+				cacheRead: 0.5,
+				cacheWrite: 0,
+			},
+			contextWindow: 500000,
+			maxTokens: 30000,
+		});
+	});
+
 	test("keeps GitHub Copilot Claude 4.6 context at Copilot's 200K limit", () => {
 		for (const id of ["claude-opus-4.6", "claude-sonnet-4.6"] as const) {
 			const model = MODELS["github-copilot"][id];

@@ -115,6 +115,7 @@ export const MODEL_CAPABILITY_TIER: Record<string, ComplexityTier> = {
   "o3": "heavy",
   "o4-mini": "heavy",
   "o4-mini-deep-research": "heavy",
+  "grok-4.5": "heavy",
 };
 
 // ─── Cost Table (per 1K input tokens, approximate USD) ───────────────────────
@@ -154,6 +155,7 @@ const MODEL_COST_PER_1K_INPUT: Record<string, number> = {
   "gemini-2.0-flash": 0.0001,
   "gemini-2.5-pro": 0.00125,
   "deepseek-chat": 0.00014,
+  "grok-4.5": 0.002,
 };
 
 // ─── Capability Profiles Data Table ──────────────────────────────────────────
@@ -212,6 +214,11 @@ export const MODEL_CAPABILITY_PROFILES: Record<string, ModelCapabilities> = {
 
   // ── DeepSeek ───────────────────────────────────────────────────────────────
   "deepseek-chat":                { coding: 75, debugging: 65, research: 55, reasoning: 70, speed: 70, longContext: 55, instruction: 65 },
+
+  // ── xAI ────────────────────────────────────────────────────────────────────
+  // Grok 4.5 (2026-07): Opus-class frontier model tuned for coding and agentic
+  // work; notably faster and more token-efficient than peer heavy models.
+  "grok-4.5":                     { coding: 95, debugging: 90, research: 82, reasoning: 93, speed: 55, longContext: 80, instruction: 90 },
 };
 
 // ─── Base Task Requirements Data Table ───────────────────────────────────────

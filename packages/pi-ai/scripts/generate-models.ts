@@ -1824,6 +1824,21 @@ async function generateModels() {
 
 	// Add missing Grok models
 	const missingGrokModels: Model<"openai-completions">[] = [
+		// Grok 4.5 — xAI's frontier model (launched 2026-07-09); hand-added
+		// until models.dev includes it. Specs from the xAI launch announcement:
+		// $2/M input, $0.50/M cached input, $6/M output, 500K context window.
+		{
+			id: "grok-4.5",
+			name: "Grok 4.5",
+			api: "openai-completions",
+			baseUrl: "https://api.x.ai/v1",
+			provider: "xai",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
+			contextWindow: 500000,
+			maxTokens: 30000,
+		},
 		{
 			id: "grok-3",
 			name: "Grok 3",
