@@ -39,9 +39,7 @@ import { isClosedStatus, isInactiveStatus } from "./status-guards.js";
 import {
   resolveSlicePath,
   resolveSliceFile,
-  resolveTasksDir,
-  resolveTaskFiles,
-  taskIdFromTaskFileName,
+  resolveTaskFile,
   relMilestoneFile,
   relSliceFile,
   buildSliceFileName,
@@ -325,15 +323,16 @@ export function writeReactiveExecuteBlocker(
   const slicePath = resolveSlicePath(base, mid, sid);
   if (!slicePath) return null;
 
-  const tasksDir = resolveTasksDir(base, mid, sid) ?? slicePath;
-  const existingSummaries = new Set(
-    resolveTaskFiles(tasksDir, "SUMMARY")
-      .map((f) => taskIdFromTaskFileName(f, "SUMMARY"))
-      .filter((tid): tid is string => tid !== null),
-  );
+  // Resolve each batch task's SUMMARY with slice-qualified paths so flat-phase
+  // slices that reuse a task id (e.g. two T03s in one phase) don't collide: a
+  // sibling slice's summary must never make this slice's task look complete.
+  const hasSummary = (tid: string): boolean => {
+    const summaryPath = resolveTaskFile(base, mid, sid, tid, "SUMMARY");
+    return summaryPath !== null && existsSync(summaryPath);
+  };
 
-  const summaryPresent = batchIds.filter((tid) => existingSummaries.has(tid.toUpperCase()));
-  const summaryMissing = batchIds.filter((tid) => !existingSummaries.has(tid.toUpperCase()));
+  const summaryPresent = batchIds.filter((tid) => hasSummary(tid));
+  const summaryMissing = batchIds.filter((tid) => !hasSummary(tid));
   const completedTaskIds: string[] = [];
   const skippedTaskIds: string[] = [];
   const unchangedTaskIds: string[] = [];
