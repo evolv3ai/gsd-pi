@@ -16,6 +16,7 @@ import { loadPrompt, inlineTemplate } from "./prompt-loader.js";
 import {
   resolveMilestoneFile, resolveSliceFile, resolveSlicePath,
   resolveTasksDir, resolveTaskFiles, resolveTaskFile,
+  taskIdFromTaskFileName,
   relMilestoneFile, relSliceFile, relSlicePath, relMilestonePath,
   relTaskFile, resolveGsdRootFile, relGsdRootFile, resolveRuntimeFile,
 } from "./paths.js";
@@ -1442,7 +1443,9 @@ export async function getPriorTaskSummaryPaths(
 
   return summaryFiles
     .filter(f => {
-      const num = parseInt(f.replace(/^T/, ""), 10);
+      const tid = taskIdFromTaskFileName(f, "SUMMARY");
+      if (!tid) return false;
+      const num = parseInt(tid.replace(/^T/, ""), 10);
       return num < currentNum;
     })
     .map(f => `${loc.relPrefix}/${f}`);
@@ -1475,8 +1478,8 @@ export async function getDependencyTaskSummaryPaths(
 
   return summaryFiles
     .filter((f) => {
-      // Extract task ID from filename: "T02-SUMMARY.md" → "T02"
-      const tid = f.replace(/-SUMMARY\.md$/i, "").toUpperCase();
+      const tid = taskIdFromTaskFileName(f, "SUMMARY");
+      if (!tid) return false;
       return depSet.has(tid);
     })
     .map((f) => `${loc.relPrefix}/${f}`);
@@ -2946,7 +2949,7 @@ export async function buildCompleteSlicePrompt(
         for (const file of summaryFiles) {
           const absPath = join(loc.dir, file);
           const relPath = `${loc.relPrefix}/${file}`;
-          const taskId = file.replace(/-SUMMARY\.md$/i, "");
+          const taskId = taskIdFromTaskFileName(file, "SUMMARY") ?? file.replace(/-SUMMARY\.md$/i, "");
           blocks.push(await buildTaskSummaryExcerpt(absPath, relPath, taskId));
         }
         const body = blocks.length > 0 ? blocks.join("\n\n---\n\n") : null;
@@ -3567,7 +3570,7 @@ export async function buildReplanSlicePrompt(
       const summary = parseSummary(content);
       const relPath = `${summaryLoc.relPrefix}/${file}`;
       if (summary.frontmatter.blocker_discovered) {
-        blockerTaskId = summary.frontmatter.id || file.replace(/-SUMMARY\.md$/i, "");
+        blockerTaskId = summary.frontmatter.id || taskIdFromTaskFileName(file, "SUMMARY") || file.replace(/-SUMMARY\.md$/i, "");
         inlined.push(await buildTaskSummaryExcerpt(absPath, relPath, blockerTaskId, { blocker: true }));
       }
     }

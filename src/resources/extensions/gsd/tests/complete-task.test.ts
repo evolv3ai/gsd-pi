@@ -23,6 +23,7 @@ import {
   SCHEMA_VERSION,
 } from '../gsd-db.ts';
 import { handleCompleteTask } from '../tools/complete-task.ts';
+import { resolveTaskFile } from '../paths.ts';
 
 const { assertEq, assertTrue, assertMatch, report } = createTestContext();
 
@@ -382,6 +383,80 @@ console.log('\n=== complete-task: handler happy path ===');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// complete-task: Flat-phase duplicate task IDs are slice-qualified
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n=== complete-task: flat-phase duplicate task IDs are slice-qualified ===');
+{
+  const dbPath = tempDbPath();
+  openDatabase(dbPath);
+
+  const basePath = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-flat-task-summary-'));
+  const phaseDir = path.join(basePath, '.gsd', 'phases', '01-test');
+  fs.mkdirSync(phaseDir, { recursive: true });
+  fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), `# S01: First Slice
+
+## Tasks
+
+- [ ] **T03: Shared task id** \`est:30m\`
+  - Do: Complete first slice task
+  - Verify: Run first check
+`);
+  fs.writeFileSync(path.join(phaseDir, '01-02-PLAN.md'), `# S02: Second Slice
+
+## Tasks
+
+- [ ] **T03: Shared task id** \`est:30m\`
+  - Do: Complete second slice task
+  - Verify: Run second check
+`);
+
+  insertMilestone({ id: 'M001', title: 'Test Milestone' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'First Slice', sequence: 1 });
+  insertSlice({ id: 'S02', milestoneId: 'M001', title: 'Second Slice', sequence: 2 });
+
+  const first = await handleCompleteTask({
+    ...makeValidParams(),
+    taskId: 'T03',
+    sliceId: 'S01',
+    oneLiner: 'Completed first slice T03',
+  }, basePath);
+  const second = await handleCompleteTask({
+    ...makeValidParams(),
+    taskId: 'T03',
+    sliceId: 'S02',
+    oneLiner: 'Completed second slice T03',
+  }, basePath);
+
+  assertTrue(!('error' in first), 'first duplicate task ID completion should succeed');
+  assertTrue(!('error' in second), 'second duplicate task ID completion should succeed');
+  if (!('error' in first) && !('error' in second)) {
+    const firstSummary = path.join(phaseDir, 'S01-T03-SUMMARY.md');
+    const secondSummary = path.join(phaseDir, 'S02-T03-SUMMARY.md');
+    const legacySummary = path.join(phaseDir, 'T03-SUMMARY.md');
+
+    assertEq(first.summaryPath, firstSummary, 'S01/T03 should write a slice-qualified summary path');
+    assertEq(second.summaryPath, secondSummary, 'S02/T03 should write a slice-qualified summary path');
+    assertTrue(fs.existsSync(firstSummary), 'S01/T03 summary should exist');
+    assertTrue(fs.existsSync(secondSummary), 'S02/T03 summary should exist');
+    assertTrue(!fs.existsSync(legacySummary), 'flat-phase completion should not create legacy T03-SUMMARY.md');
+
+    const firstContent = fs.readFileSync(firstSummary, 'utf-8');
+    const secondContent = fs.readFileSync(secondSummary, 'utf-8');
+    assertMatch(firstContent, /parent: S01/, 'S01/T03 summary should keep parent S01');
+    assertMatch(secondContent, /parent: S02/, 'S02/T03 summary should keep parent S02');
+    assertEq(resolveTaskFile(basePath, 'M001', 'S02', 'T03', 'SUMMARY'), secondSummary, 'resolver should prefer S02-specific summary');
+
+    const legacyFallback = path.join(phaseDir, 'T99-SUMMARY.md');
+    fs.writeFileSync(legacyFallback, '# Legacy task summary\n');
+    assertEq(resolveTaskFile(basePath, 'M001', 'S09', 'T99', 'SUMMARY'), legacyFallback, 'resolver should fall back to old flat summary names');
+  }
+
+  cleanupDir(basePath);
+  cleanup(dbPath);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // complete-task: Projection failure rolls DB completion back
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -416,7 +491,7 @@ console.log('\n=== complete-task: projection failure rolls DB completion back ==
   ).all();
   assertEq(evRows.length, 0, 'verification evidence should be deleted when projection rollback runs');
 
-  const summaryPath = path.join(path.dirname(planPath), 'T01-SUMMARY.md');
+  const summaryPath = path.join(path.dirname(planPath), 'S01-T01-SUMMARY.md');
   assertTrue(!fs.existsSync(summaryPath), 'SUMMARY.md should be removed so disk state stays pending');
 
   cleanupDir(basePath);

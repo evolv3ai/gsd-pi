@@ -31,6 +31,7 @@ import {
   legacyMilestonesDir,
   gsdRoot,
   resolveTaskFiles,
+  resolveTaskFile,
   resolveMilestonePath,
 } from './paths.js';
 import { findMilestoneIds } from './guided-flow.js';
@@ -925,8 +926,7 @@ export function migrateHierarchyToDb(
           legacyTasksDir = isLegacySlice
             ? resolveTasksDir(basePath, milestoneId, sliceEntry.id)
             : null;
-          const summaryDir = legacyTasksDir ?? slicePath;
-          taskSummaryFile = join(summaryDir, `${taskEntry.id}-SUMMARY.md`);
+          taskSummaryFile = resolveTaskFile(basePath, milestoneId, sliceEntry.id, taskEntry.id, 'SUMMARY');
         }
         const hasTaskSummary = taskSummaryFile !== null && existsSync(taskSummaryFile);
 
@@ -950,9 +950,9 @@ export function migrateHierarchyToDb(
         // first execute-task. The surviving SUMMARY wins over a stale checkbox.
         // reopen-task removes the SUMMARY, so this never re-completes an
         // intentionally reopened task.
-        // Flat-phase summaries are phase-scoped (T01-SUMMARY.md); when a milestone
-        // has multiple slices, require the summary parent frontmatter to match so
-        // one slice's completion does not attest a sibling's same-named task.
+        // Flat-phase summaries are phase-scoped; when a milestone has multiple
+        // slices, require the summary parent frontmatter to match so one slice's
+        // completion does not attest a sibling's same-named task.
         let summaryAttestsCompletion = hasTaskSummary;
         if (summaryAttestsCompletion && !isLegacySlice && roadmap.slices.length > 1 && taskSummaryFile) {
           try {

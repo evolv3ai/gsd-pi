@@ -27,7 +27,15 @@ import { appendEvent } from "../workflow-events.js";
 import { logWarning } from "../workflow-logger.js";
 import { existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { resolveTasksDir, resolveSlicePath, clearPathCache } from "../paths.js";
+import {
+  buildFlatTaskFileName,
+  buildTaskFileName,
+  legacyMilestonesDir,
+  resolveMilestonePath,
+  resolveTasksDir,
+  resolveSlicePath,
+  clearPathCache,
+} from "../paths.js";
 
 export interface ReopenSliceParams {
   milestoneId: string;
@@ -80,11 +88,23 @@ export async function handleReopenSlice(
   // Without this, the DB-filesystem reconciler sees SUMMARY.md files and
   // auto-corrects tasks back to "complete", making reopen a no-op (#3161).
   try {
+    const milestoneDir = resolveMilestonePath(basePath, params.milestoneId);
+    const legacyBase = legacyMilestonesDir(basePath);
+    const isLegacy = !!milestoneDir && (
+      milestoneDir.startsWith(legacyBase + "/") || milestoneDir.startsWith(legacyBase + "\\")
+    );
     const tasksDir = resolveTasksDir(basePath, params.milestoneId, params.sliceId);
-    if (tasksDir) {
-      const tasks = getSliceTasks(params.milestoneId, params.sliceId);
-      for (const task of tasks) {
-        const summaryPath = join(tasksDir, `${task.id}-SUMMARY.md`);
+    const tasks = getSliceTasks(params.milestoneId, params.sliceId);
+    for (const task of tasks) {
+      const summaryPaths = isLegacy
+        ? (tasksDir ? [join(tasksDir, buildTaskFileName(task.id, "SUMMARY"))] : [])
+        : milestoneDir
+          ? [
+            join(milestoneDir, buildFlatTaskFileName(params.sliceId, task.id, "SUMMARY")),
+            join(milestoneDir, buildTaskFileName(task.id, "SUMMARY")),
+          ]
+          : [];
+      for (const summaryPath of summaryPaths) {
         if (existsSync(summaryPath)) unlinkSync(summaryPath);
       }
     }

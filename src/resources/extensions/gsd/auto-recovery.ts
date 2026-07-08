@@ -41,6 +41,7 @@ import {
   resolveSliceFile,
   resolveTasksDir,
   resolveTaskFiles,
+  taskIdFromTaskFileName,
   relMilestoneFile,
   relSliceFile,
   buildSliceFileName,
@@ -326,7 +327,9 @@ export function writeReactiveExecuteBlocker(
 
   const tasksDir = resolveTasksDir(base, mid, sid) ?? slicePath;
   const existingSummaries = new Set(
-    resolveTaskFiles(tasksDir, "SUMMARY").map((f) => f.replace(/-SUMMARY\.md$/i, "").toUpperCase()),
+    resolveTaskFiles(tasksDir, "SUMMARY")
+      .map((f) => taskIdFromTaskFileName(f, "SUMMARY"))
+      .filter((tid): tid is string => tid !== null),
   );
 
   const summaryPresent = batchIds.filter((tid) => existingSummaries.has(tid.toUpperCase()));

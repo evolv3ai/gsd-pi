@@ -25,8 +25,16 @@ import { appendEvent } from "../workflow-events.js";
 import { logWarning } from "../workflow-logger.js";
 import { writeReopenReason } from "../reopen-reason.js";
 import { existsSync, unlinkSync } from "node:fs";
-import { join, basename, dirname } from "node:path";
-import { resolveTasksDir, resolveSlicePath, clearPathCache } from "../paths.js";
+import { join } from "node:path";
+import {
+  buildFlatTaskFileName,
+  buildTaskFileName,
+  legacyMilestonesDir,
+  resolveMilestonePath,
+  resolveTasksDir,
+  resolveSlicePath,
+  clearPathCache,
+} from "../paths.js";
 
 export interface ReopenTaskParams {
   milestoneId: string;
@@ -113,13 +121,19 @@ export async function handleReopenTask(
   // summary cleanup into tasks/ (#1208).
   try {
     const slicePath = resolveSlicePath(basePath, params.milestoneId, params.sliceId);
-    if (slicePath) {
-      const isLegacySlice = basename(dirname(slicePath)) === "slices";
-      const summaryDir = isLegacySlice
-        ? (resolveTasksDir(basePath, params.milestoneId, params.sliceId) ?? slicePath)
-        : slicePath;
-      const summaryPath = join(summaryDir, `${params.taskId}-SUMMARY.md`);
-      if (existsSync(summaryPath)) unlinkSync(summaryPath);
+    const milestonePath = resolveMilestonePath(basePath, params.milestoneId);
+    if (milestonePath) {
+      const legacyBase = legacyMilestonesDir(basePath);
+      const isLegacy = milestonePath.startsWith(legacyBase + "/") || milestonePath.startsWith(legacyBase + "\\");
+      const summaryPaths = isLegacy
+        ? [join(resolveTasksDir(basePath, params.milestoneId, params.sliceId) ?? slicePath ?? join(milestonePath, "slices", params.sliceId, "tasks"), buildTaskFileName(params.taskId, "SUMMARY"))]
+        : [
+          join(milestonePath, buildFlatTaskFileName(params.sliceId, params.taskId, "SUMMARY")),
+          join(milestonePath, buildTaskFileName(params.taskId, "SUMMARY")),
+        ];
+      for (const summaryPath of summaryPaths) {
+        if (existsSync(summaryPath)) unlinkSync(summaryPath);
+      }
     }
   } catch (cleanupErr) {
     logWarning("tool", `reopen-task artifact cleanup warning: ${(cleanupErr as Error).message}`);

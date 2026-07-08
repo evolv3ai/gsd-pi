@@ -26,7 +26,7 @@ import { deriveState } from "./state.js";
 import type { GSDState } from "./types.js";
 import { renderPlanFromDb, renderRoadmapFromDb } from "./markdown-renderer.js";
 import { readManifest } from "./workflow-manifest.js";
-import { gsdRoot, resolveMilestoneFile, resolveSliceFile, resolveTaskFile, relTaskFile } from "./paths.js";
+import { gsdRoot, resolveMilestoneFile, resolveSliceFile, resolveTaskFile, targetTaskFile } from "./paths.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -329,8 +329,7 @@ export function renderSummaryProjection(basePath: string, milestoneId: string, s
   const evidenceRows = getVerificationEvidence(milestoneId, sliceId, taskId);
   const content = renderSummaryContent(taskRow, sliceId, milestoneId, evidenceRows);
 
-  const summaryPath = resolveTaskFile(basePath, milestoneId, sliceId, taskId, "SUMMARY")
-    ?? join(basePath, relTaskFile(basePath, milestoneId, sliceId, taskId, "SUMMARY", getMilestone(milestoneId)?.title));
+  const summaryPath = targetTaskFile(basePath, milestoneId, sliceId, taskId, "SUMMARY", getMilestone(milestoneId)?.title);
   mkdirSync(dirname(summaryPath), { recursive: true });
   atomicWriteSync(summaryPath, content);
 }

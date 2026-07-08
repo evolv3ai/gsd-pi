@@ -352,7 +352,7 @@ test('workflow-projections: regenerateIfMissing SUMMARY is idempotent for flat-p
       keyDecisions: ['Use centralized task summary paths.'],
     });
 
-    const summaryPath = join(phaseDir, 'T01-SUMMARY.md');
+    const summaryPath = join(phaseDir, 'S01-T01-SUMMARY.md');
     assert.ok(!existsSync(summaryPath), 'precondition: flat-phase task summary absent');
 
     const first = await regenerateIfMissing(base, 'M001', 'S01', 'SUMMARY');
@@ -399,7 +399,7 @@ test('workflow-projections: flat-phase SUMMARY regeneration ignores stale nested
       status: 'complete',
     });
 
-    const rootSummaryPath = join(phaseDir, 'T01-SUMMARY.md');
+    const rootSummaryPath = join(phaseDir, 'S01-T01-SUMMARY.md');
     assert.ok(!existsSync(rootSummaryPath), 'precondition: canonical flat-phase task summary absent');
 
     const regenerated = await regenerateIfMissing(base, 'M001', 'S01', 'SUMMARY');
@@ -440,8 +440,8 @@ test('workflow-projections: renderSummaryProjection uses milestone title when cr
       status: 'complete',
     });
 
-    const titleSummaryPath = join(base, '.gsd', 'phases', '01-milestone', 'T01-SUMMARY.md');
-    const idSummaryPath = join(base, '.gsd', 'phases', '01-m001', 'T01-SUMMARY.md');
+    const titleSummaryPath = join(base, '.gsd', 'phases', '01-milestone', 'S01-T01-SUMMARY.md');
+    const idSummaryPath = join(base, '.gsd', 'phases', '01-m001', 'S01-T01-SUMMARY.md');
 
     renderSummaryProjection(base, 'M001', 'S01', 'T01');
 

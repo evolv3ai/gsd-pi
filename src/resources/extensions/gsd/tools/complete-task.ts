@@ -36,7 +36,15 @@ import {
 } from "../gsd-db.js";
 import { getWorkflowDatabasePath, ensureWorkflowDbAtPath } from "../db-workspace.js";
 import { getGatesForTurn } from "../gate-registry.js";
-import { gsdProjectionRoot, clearPathCache, resolveMilestonePath, resolveSlicePath } from "../paths.js";
+import {
+  buildFlatTaskFileName,
+  buildTaskFileName,
+  gsdProjectionRoot,
+  clearPathCache,
+  legacyMilestonesDir,
+  resolveMilestonePath,
+  resolveSlicePath,
+} from "../paths.js";
 import { resolveCanonicalMilestoneRoot } from "../worktree-manager.js";
 import { checkOwnership, taskUnitKey } from "../unit-ownership.js";
 import { saveFile, clearParseCache } from "../files.js";
@@ -89,13 +97,20 @@ function taskSummaryPath(
   // a legacy layout and breaks all subsequent path resolution for the session.
   const slicePath = resolveSlicePath(basePath, milestoneId, sliceId);
   const phaseDir = resolveMilestonePath(basePath, milestoneId);
-  if (slicePath && phaseDir && slicePath !== phaseDir) {
-    // Legacy layout: the slice has its own slices/SID/ subdir → tasks/ subdir
-    return join(slicePath, "tasks", `${taskId}-SUMMARY.md`);
+  const legacyBase = legacyMilestonesDir(basePath);
+  const isLegacy = phaseDir
+    ? phaseDir.startsWith(legacyBase + "/") || phaseDir.startsWith(legacyBase + "\\")
+    : false;
+  if (isLegacy && phaseDir) {
+    // Legacy layout: the slice has its own slices/SID/ subdir → tasks/ subdir.
+    const legacySlicePath = slicePath && slicePath !== phaseDir
+      ? slicePath
+      : join(phaseDir, "slices", sliceId);
+    return join(legacySlicePath, "tasks", buildTaskFileName(taskId, "SUMMARY"));
   }
   if (phaseDir) {
     // Flat-phase: task summaries go in the phase dir (no tasks/ subdir)
-    return join(phaseDir, `${taskId}-SUMMARY.md`);
+    return join(phaseDir, buildFlatTaskFileName(sliceId, taskId, "SUMMARY"));
   }
   // Fallback: legacy hardcoded path (milestone/slice dir not on disk yet)
   return join(

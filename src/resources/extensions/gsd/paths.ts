@@ -223,6 +223,26 @@ export function buildTaskFileName(taskId: string, suffix: string): string {
   return `${taskId}-${suffix}.md`;
 }
 
+/**
+ * Build a flat-phase task artifact file name.
+ * ("S06", "T03", "SUMMARY") → "S06-T03-SUMMARY.md"
+ */
+export function buildFlatTaskFileName(sliceId: string, taskId: string, suffix: string): string {
+  return `${sliceId}-${taskId}-${suffix}.md`;
+}
+
+/**
+ * Extract the task ID from a task artifact filename.
+ * Supports flat-phase S##-T##-SUFFIX.md plus legacy T##-SUFFIX.md and
+ * T##-DESCRIPTOR-SUFFIX.md names.
+ */
+export function taskIdFromTaskFileName(fileName: string, suffix: string): string | null {
+  const flat = new RegExp(`^S\\d+-(T\\d+)-${suffix}\\.md$`, "i").exec(fileName);
+  if (flat?.[1]) return flat[1].toUpperCase();
+  const legacy = new RegExp(`^(T\\d+)(?:-.*)?-${suffix}\\.md$`, "i").exec(fileName);
+  return legacy?.[1]?.toUpperCase() ?? null;
+}
+
 // ─── Resolvers ─────────────────────────────────────────────────────────────
 
 /**
@@ -284,18 +304,15 @@ export function resolveFile(dir: string, idPrefix: string, suffix: string): stri
 }
 
 /**
- * Find all task files matching a pattern in a tasks directory.
- * Returns sorted file names matching T##-SUFFIX.md or legacy T##-*-SUFFIX.md
+ * Find all task files matching a pattern in a tasks directory or flat phase dir.
+ * Returns sorted file names matching S##-T##-SUFFIX.md, T##-SUFFIX.md,
+ * or legacy T##-*-SUFFIX.md.
  */
 export function resolveTaskFiles(tasksDir: string, suffix: string): string[] {
   if (!existsSync(tasksDir)) return [];
   try {
-    // Current convention: T01-PLAN.md
-    const currentPattern = new RegExp(`^T\\d+-${suffix}\\.md$`, "i");
-    // Legacy convention: T01-INSTALL-PACKAGES-PLAN.md
-    const legacyPattern = new RegExp(`^T\\d+-.*-${suffix}\\.md$`, "i");
     return cachedReaddir(tasksDir)
-      .filter(f => currentPattern.test(f) || legacyPattern.test(f))
+      .filter(f => taskIdFromTaskFileName(f, suffix) !== null)
       .sort();
   } catch {
     return [];
@@ -931,8 +948,10 @@ export function resolveTaskFile(
   const isLegacy = phaseDir.startsWith(legacyBase + "/") || phaseDir.startsWith(legacyBase + "\\");
 
   if (suffix !== "PLAN" && !isLegacy) {
-    const flatPath = join(phaseDir, buildTaskFileName(taskId, suffix));
-    return existsSync(flatPath) ? flatPath : null;
+    const flatPath = join(phaseDir, buildFlatTaskFileName(sliceId, taskId, suffix));
+    if (existsSync(flatPath)) return flatPath;
+    const legacyFlatPath = join(phaseDir, buildTaskFileName(taskId, suffix));
+    return existsSync(legacyFlatPath) ? legacyFlatPath : null;
   }
 
   const tDir = resolveTasksDir(basePath, milestoneId, sliceId);
@@ -1067,6 +1086,35 @@ export function targetSliceFile(
 }
 
 /**
+ * Build the canonical absolute write target for a task file.
+ * Readers that need legacy flat-phase fallback should call resolveTaskFile.
+ */
+export function targetTaskFile(
+  basePath: string, milestoneId: string, sliceId: string,
+  taskId: string, suffix: string, milestoneTitle?: string
+): string {
+  if (suffix === "PLAN") {
+    return targetSliceFile(basePath, milestoneId, sliceId, "PLAN", milestoneTitle);
+  }
+
+  const mDir = resolveMilestonePath(basePath, milestoneId);
+  const legacyBase = legacyMilestonesDir(basePath);
+  const isLegacy = mDir
+    ? mDir.startsWith(legacyBase + "/") || mDir.startsWith(legacyBase + "\\")
+    : isLegacyMilestonesLayout(basePath);
+  const milestoneDir = mDir
+    ?? dirname(targetMilestoneFile(basePath, milestoneId, "ROADMAP", milestoneTitle));
+
+  if (isLegacy) {
+    const slicesDir = join(milestoneDir, "slices");
+    const sliceDir = join(slicesDir, resolveDir(slicesDir, sliceId) ?? sliceId);
+    return join(sliceDir, "tasks", buildTaskFileName(taskId, suffix));
+  }
+
+  return join(milestoneDir, buildFlatTaskFileName(sliceId, taskId, suffix));
+}
+
+/**
  * Build relative .gsd/ path to a slice file.
  * Preserves an existing compatibility filename when present; otherwise falls
  * back to the canonical write target.
@@ -1105,5 +1153,5 @@ export function relTaskFile(
     return relSliceFile(basePath, milestoneId, sliceId, "PLAN");
   }
   const relS = relSlicePath(basePath, milestoneId, sliceId, milestoneTitle);
-  return `${relS}/${buildTaskFileName(taskId, suffix)}`;
+  return `${relS}/${buildFlatTaskFileName(sliceId, taskId, suffix)}`;
 }

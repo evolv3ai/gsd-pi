@@ -1,6 +1,6 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -12,6 +12,8 @@ import {
   resolveGsdPathContract,
   resolveSliceFile,
   resolveTaskFile,
+  resolveTaskFiles,
+  taskIdFromTaskFileName,
   _clearGsdRootCache,
 } from "../../paths.ts";
 /** Create a tmp dir and resolve symlinks + 8.3 short names (macOS /var→/private/var, Windows RUNNER~1→runneradmin). */
@@ -171,21 +173,37 @@ describe('paths', () => {
   test('Case 9: flat-phase task SUMMARY resolves at phase root despite a stray slices/SID/ dir', () => {
     const root = tmp();
     try {
-      // Hybrid flat-phase milestone: phase dir holds flat TID-SUMMARY.md, but a
+      // Hybrid flat-phase milestone: phase dir holds flat task summaries, but a
       // stray slices/S01/ folder also exists on disk. resolveSlicePath then points
       // under slices/, so layout (phases/ vs milestones/) — not slicePath===phaseDir
       // — must decide the flat-phase task summary location.
       const phaseDir = join(root, ".gsd", "phases", "01-foo");
       mkdirSync(join(phaseDir, "slices", "S01"), { recursive: true });
-      const flatSummary = join(phaseDir, "T01-SUMMARY.md");
+      const flatSummary = join(phaseDir, "S01-T01-SUMMARY.md");
+      const legacyFlatSummary = join(phaseDir, "T01-SUMMARY.md");
       writeFileSync(flatSummary, "# task summary\n");
+      writeFileSync(legacyFlatSummary, "# legacy task summary\n");
 
       _clearGsdRootCache();
+
+      assert.deepStrictEqual(resolveTaskFiles(phaseDir, "SUMMARY").sort(), [
+        "S01-T01-SUMMARY.md",
+        "T01-SUMMARY.md",
+      ]);
+      assert.equal(taskIdFromTaskFileName("S01-T01-SUMMARY.md", "SUMMARY"), "T01");
+      assert.equal(taskIdFromTaskFileName("T01-SUMMARY.md", "SUMMARY"), "T01");
 
       assert.deepStrictEqual(
         resolveTaskFile(root, "M001", "S01", "T01", "SUMMARY"),
         flatSummary,
-        "flat-phase TID-SUMMARY.md at phase root is found even when slices/S01/ exists",
+        "flat-phase S01-T01-SUMMARY.md at phase root is preferred even when slices/S01/ exists",
+      );
+
+      unlinkSync(flatSummary);
+      assert.deepStrictEqual(
+        resolveTaskFile(root, "M001", "S01", "T01", "SUMMARY"),
+        legacyFlatSummary,
+        "legacy flat T01-SUMMARY.md is still found as a fallback",
       );
     } finally { cleanup(root); }
   });

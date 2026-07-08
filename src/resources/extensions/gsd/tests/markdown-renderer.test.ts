@@ -824,9 +824,9 @@ test('── markdown-renderer: renderTaskSummary round-trip ──', async () =
 
     // Verify file exists on disk
     const summaryPath = path.join(
-      tmpDir, '.gsd', 'phases', '01-test', 'T01-SUMMARY.md',
+      tmpDir, '.gsd', 'phases', '01-test', 'S01-T01-SUMMARY.md',
     );
-    assert.ok(fs.existsSync(summaryPath), 'T01-SUMMARY.md written to disk');
+    assert.ok(fs.existsSync(summaryPath), 'S01-T01-SUMMARY.md written to disk');
 
     // Parse and verify
     const rendered = fs.readFileSync(summaryPath, 'utf-8');
@@ -1020,7 +1020,7 @@ test('── markdown-renderer: renderAllFromDb produces all files ──', asyn
 
     // Verify task summary written
     const taskSummaryPath = path.join(
-      tmpDir, '.gsd', 'phases', '01-test', 'T01-SUMMARY.md',
+      tmpDir, '.gsd', 'phases', '01-test', 'S01-T01-SUMMARY.md',
     );
     assert.ok(fs.existsSync(taskSummaryPath), 'T01 summary written by renderAll');
   } finally {
@@ -1546,9 +1546,9 @@ test('── markdown-renderer: repairStaleRenders writes missing task summary �
 
     // Verify file written
     const summaryPath = path.join(
-      tmpDir, '.gsd', 'phases', '01-test', 'T01-SUMMARY.md',
+      tmpDir, '.gsd', 'phases', '01-test', 'S01-T01-SUMMARY.md',
     );
-    assert.ok(fs.existsSync(summaryPath), 'T01-SUMMARY.md should exist after repair');
+    assert.ok(fs.existsSync(summaryPath), 'S01-T01-SUMMARY.md should exist after repair');
 
     // Second detect should be empty
     clearAllCaches();

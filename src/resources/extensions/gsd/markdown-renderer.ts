@@ -40,6 +40,7 @@ import {
   resolveTasksDir,
   targetMilestoneFile,
   targetSliceFile,
+  targetTaskFile,
   gsdProjectionRoot,
   gsdRoot,
   buildTaskFileName,
@@ -756,20 +757,7 @@ export async function renderTaskSummary(
     return false; // No summary to render — skip silently
   }
 
-  // Resolve the tasks directory, creating path if needed
-  const slicePath = resolveSlicePath(basePath, milestoneId, sliceId);
-  if (!slicePath) {
-    process.stderr.write(
-      `markdown-renderer: cannot resolve slice path for ${milestoneId}/${sliceId}\n`,
-    );
-    return false;
-  }
-
-  // Use the tasks/ subdir when it exists (legacy layout), otherwise use the
-  // slice path directly (flat-phase: task summaries live alongside plan files).
-  const tasksDir = resolveTasksDir(basePath, milestoneId, sliceId) ?? slicePath;
-  const fileName = buildTaskFileName(taskId, "SUMMARY");
-  const absPath = join(tasksDir, fileName);
+  const absPath = targetTaskFile(basePath, milestoneId, sliceId, taskId, "SUMMARY", getMilestone(milestoneId)?.title);
   const artifactPath = toArtifactPath(absPath, basePath);
 
   await writeAndStore(absPath, artifactPath, task.full_summary_md, {

@@ -15,6 +15,7 @@ import {
   resolveSliceFile,
   relMilestoneFile,
   relSliceFile,
+  buildFlatTaskFileName,
   buildTaskFileName,
   resolveSlicePath,
   resolveTasksDir,
@@ -232,7 +233,10 @@ export function resolveExpectedArtifactPath(
       const summaryDir = isLegacySlice
         ? (resolveTasksDir(base, mid, sid!) ?? slicePath)
         : slicePath;
-      return join(summaryDir, buildTaskFileName(tid, "SUMMARY"));
+      const fileName = isLegacySlice
+        ? buildTaskFileName(tid, "SUMMARY")
+        : buildFlatTaskFileName(sid!, tid, "SUMMARY");
+      return join(summaryDir, fileName);
     }
     case "complete-slice": {
       return resolveSliceArtifactPath(base, mid, sid!, "SUMMARY");
