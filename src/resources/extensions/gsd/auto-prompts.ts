@@ -1432,6 +1432,18 @@ function resolveTaskSummariesLocation(
   return { dir: slicePath, relPrefix: sRel };
 }
 
+function summaryFileBelongsToSlice(
+  fileName: string,
+  base: string,
+  mid: string,
+  sid: string,
+): boolean {
+  const tid = taskIdFromTaskFileName(fileName, "SUMMARY");
+  if (!tid) return false;
+  const resolved = resolveTaskFile(base, mid, sid, tid, "SUMMARY");
+  return resolved !== null && basename(resolved) === fileName;
+}
+
 export async function getPriorTaskSummaryPaths(
   mid: string, sid: string, currentTid: string, base: string,
 ): Promise<string[]> {
@@ -1443,6 +1455,7 @@ export async function getPriorTaskSummaryPaths(
 
   return summaryFiles
     .filter(f => {
+      if (!summaryFileBelongsToSlice(f, base, mid, sid)) return false;
       const tid = taskIdFromTaskFileName(f, "SUMMARY");
       if (!tid) return false;
       const num = parseInt(tid.replace(/^T/, ""), 10);
@@ -1478,6 +1491,7 @@ export async function getDependencyTaskSummaryPaths(
 
   return summaryFiles
     .filter((f) => {
+      if (!summaryFileBelongsToSlice(f, base, mid, sid)) return false;
       const tid = taskIdFromTaskFileName(f, "SUMMARY");
       if (!tid) return false;
       return depSet.has(tid);
@@ -2944,7 +2958,9 @@ export async function buildCompleteSlicePrompt(
           trackPromptContext(contextTelemetry, "prior-task-summaries", "skipped", null, "missing tasks dir");
           return null;
         }
-        const summaryFiles = resolveTaskFiles(loc.dir, "SUMMARY").sort();
+        const summaryFiles = resolveTaskFiles(loc.dir, "SUMMARY")
+          .filter((file) => summaryFileBelongsToSlice(file, base, mid, sid))
+          .sort();
         const blocks: string[] = [];
         for (const file of summaryFiles) {
           const absPath = join(loc.dir, file);
