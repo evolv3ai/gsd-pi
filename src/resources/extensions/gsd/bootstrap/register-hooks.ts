@@ -51,7 +51,9 @@ import {
   confirmDestructiveCommand,
   consumeDestructiveConfirmation,
   isDestructiveConfirmGateId,
+  peekPendingDestructiveCommand,
   requestDestructiveConfirmation,
+  resetDestructiveConfirmation,
 } from "../safety/destructive-confirmation.js";
 import { logWarning as safetyLogWarning, setStderrLoggingEnabled } from "../workflow-logger.js";
 import { isUnitCloseoutTool, runInteractiveUnitCloseout } from "../unit-closeout.js";
@@ -187,6 +189,7 @@ function suppressWelcomeHeader(ctx: ExtensionContext): void {
  * are bounded — cleared on activation, session boundaries, and verification.
  */
 const deferredApprovalGates = new Map<string, string>();
+const deferredDestructiveConfirmationPauses = new Set<string>();
 
 export const MINIMAL_GSD_TOOL_NAMES = [
   "gsd_exec",
@@ -618,6 +621,23 @@ function clearDeferredApprovalGate(basePath?: string): void {
   }
 }
 
+function deferDestructiveConfirmationPause(basePath: string): void {
+  deferredDestructiveConfirmationPauses.add(basePath);
+}
+
+function clearDeferredDestructiveConfirmationPause(basePath?: string): void {
+  if (!basePath) {
+    deferredDestructiveConfirmationPauses.clear();
+  } else {
+    deferredDestructiveConfirmationPauses.delete(basePath);
+  }
+}
+
+function isDestructiveConfirmationBlocking(basePath: string): boolean {
+  return deferredDestructiveConfirmationPauses.has(basePath)
+    && Boolean(peekPendingDestructiveCommand(basePath));
+}
+
 function deferApprovalGate(gateId: string, basePath: string): void {
   // Verified-on-disk wins (same adapter policy as activation/re-arm): if the
   // workflow MCP child already verified this gate, deferring would block
@@ -1015,6 +1035,7 @@ export function registerHooks(
     await applyToolCallLoopGuardConfig(basePath);
     approvalQuestionAbortInFlight = false;
     clearDeferredApprovalGate();
+    clearDeferredDestructiveConfirmationPause();
     await resetAskUserQuestionsTurnCache();
     await syncServiceTierStatus(ctx);
     await applyDisabledModelProviderPolicy(ctx);
@@ -1106,6 +1127,7 @@ export function registerHooks(
     resetToolCallLoopGuard();
     await applyToolCallLoopGuardConfig(basePath);
     clearDeferredApprovalGate();
+    clearDeferredDestructiveConfirmationPause();
     await resetAskUserQuestionsTurnCache();
     clearDiscussionFlowState(basePath);
     // /clear or /new destroys the conversation holding a discuss interview, so
@@ -1157,6 +1179,7 @@ export function registerHooks(
       }
     }
     clearDeferredApprovalGate(beforeAgentBasePath);
+    clearDeferredDestructiveConfirmationPause(beforeAgentBasePath);
 
     // session_start can fire before the active provider has settled. By
     // before_agent_start, Claude Code CLI sessions should get the same
@@ -1244,11 +1267,19 @@ export function registerHooks(
       await handleAgentEnd(pi, event, ctx);
     } finally {
       activateDeferredApprovalGate(agentEndBasePath);
+      const destructiveConfirmationBlocking = isDestructiveConfirmationBlocking(agentEndBasePath);
+      clearDeferredDestructiveConfirmationPause(agentEndBasePath);
       await maybePauseAutoForApprovalGate(
         ctx,
         pi,
         isApprovalGateBlocking(agentEndBasePath),
         "Depth confirmation is waiting for your answer — pausing auto-mode.",
+      );
+      await maybePauseAutoForApprovalGate(
+        ctx,
+        pi,
+        destructiveConfirmationBlocking,
+        "Destructive-command confirmation is waiting for your answer — pausing auto-mode.",
       );
     }
   });
@@ -1685,6 +1716,7 @@ export function registerHooks(
         // Record the command as pending so an affirmative answer to a
         // destructive_confirm gate (handled in tool_result) can confirm it.
         requestDestructiveConfirmation(command, guardBasePath);
+        deferDestructiveConfirmationPause(guardBasePath);
         const reason = [
           "HARD BLOCK: destructive Bash command requires explicit human confirmation.",
           `Detected: ${classification.labels.join(", ")}`,
@@ -1695,14 +1727,6 @@ export function registerHooks(
         safetyLogWarning("safety", `destructive command: ${classification.labels.join(", ")}`, {
           command: String(command).slice(0, 200),
         });
-        if (ctx) {
-          await maybePauseAutoForApprovalGate(
-            ctx,
-            pi,
-            isAutoActive(),
-            "Destructive-command confirmation is waiting for your answer — pausing auto-mode.",
-          );
-        }
         return { block: true, reason };
       }
     }
@@ -1884,7 +1908,10 @@ export function registerHooks(
         const answer = details.response?.answers?.[question.id];
         if (isDepthConfirmationAnswer(answer?.selected, question.options)) {
           confirmDestructiveCommand(basePath);
+        } else {
+          resetDestructiveConfirmation(basePath);
         }
+        clearDeferredDestructiveConfirmationPause(basePath);
         break;
       }
     }
