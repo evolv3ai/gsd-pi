@@ -463,11 +463,20 @@ export async function handleCompleteTask(
       fullSummaryMd: summaryMd,
     });
 
-    if (reworkResolutions.length > 0) {
+    // Only persist resolutions that actually satisfy the evidence
+    // requirement. The guard above admits a finding as long as ONE satisfying
+    // entry exists, but applyReworkResolutions writes by findingId and lets the
+    // last entry win. Persisting every entry would let a later non-satisfying
+    // duplicate (empty evidence, or deferred-with-override without decisionRef)
+    // overwrite a valid resolution and leave the finding non-pending without
+    // acceptable evidence. Filtering with the same predicate the guard uses
+    // keeps the applied set and the gate consistent.
+    const resolutionsToApply = reworkResolutions.filter(satisfiesBlockingReworkFinding);
+    if (resolutionsToApply.length > 0) {
       // Snapshot the pre-resolution state of the findings we're about to
       // change so a compensating rollback can restore them exactly (see
       // revertAppliedReworkResolutions).
-      const resolvedFindingIdsForSnapshot = new Set(reworkResolutions.map((r) => r.findingId));
+      const resolvedFindingIdsForSnapshot = new Set(resolutionsToApply.map((r) => r.findingId));
       appliedReworkSnapshot = getBlockingReworkFindingsForTask(
         params.milestoneId,
         params.sliceId,
@@ -483,7 +492,7 @@ export async function handleCompleteTask(
           evidence: finding.evidence,
           decisionRef: finding.decision_ref,
         }));
-      applyReworkResolutions(reworkResolutions);
+      applyReworkResolutions(resolutionsToApply);
     }
 
     for (const evidence of (params.verificationEvidence ?? [])) {

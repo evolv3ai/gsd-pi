@@ -1035,6 +1035,95 @@ console.log('\n=== complete-task: accepts deferred blocking rework with decision
   cleanup(dbPath);
 }
 
+console.log('\n=== complete-task: invalid duplicate rework resolution cannot overwrite a valid one ===');
+{
+  const dbPath = tempDbPath();
+  openDatabase(dbPath);
+  const { basePath } = createTempProject();
+
+  insertMilestone({ id: 'M001', title: 'Test Milestone' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice' });
+  insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', title: 'Test task', status: 'pending' });
+  saveReworkBrief({
+    briefId: 'RB-001',
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    taskId: 'T01',
+    findings: [{
+      findingId: 'F1',
+      severity: 'blocking',
+      description: 'Compile regression',
+      requiredFix: 'Fix compile error',
+      verificationCommands: ['pnpm run typecheck:extensions'],
+    }],
+  });
+
+  // The guard admits F1 because a satisfying entry exists, but a later
+  // non-satisfying duplicate for the same finding must NOT overwrite the valid
+  // resolution and leave F1 resolved with no evidence.
+  const result = await handleCompleteTask({
+    ...makeValidParams(),
+    reworkResolution: [
+      { findingId: 'F1', status: 'resolved', evidence: 'Fixed compile error and reran pnpm run typecheck:extensions.' },
+      { findingId: 'F1', status: 'resolved', evidence: '' },
+    ],
+  }, basePath);
+
+  assertTrue(!('error' in result), 'completion should succeed on the valid resolution');
+  const finding = _getAdapter()!.prepare(
+    "SELECT status, evidence FROM rework_brief_findings WHERE brief_id = 'RB-001' AND finding_id = 'F1'"
+  ).get() as { status: string; evidence: string };
+  assertEq(finding.status, 'resolved', 'finding should remain resolved');
+  assertMatch(finding.evidence, /Fixed compile error/, 'valid evidence must survive the invalid duplicate');
+
+  cleanupDir(basePath);
+  cleanup(dbPath);
+}
+
+console.log('\n=== complete-task: invalid deferred duplicate cannot strip decisionRef ===');
+{
+  const dbPath = tempDbPath();
+  openDatabase(dbPath);
+  const { basePath } = createTempProject();
+
+  insertMilestone({ id: 'M001', title: 'Test Milestone' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice' });
+  insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', title: 'Test task', status: 'pending' });
+  saveReworkBrief({
+    briefId: 'RB-001',
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    taskId: 'T01',
+    findings: [{
+      findingId: 'F1',
+      severity: 'blocking',
+      description: 'Compile regression',
+      requiredFix: 'Fix compile error',
+      verificationCommands: ['pnpm run typecheck:extensions'],
+    }],
+  });
+
+  // A deferred-with-override duplicate that omits decisionRef is non-satisfying
+  // and must not overwrite the valid deferral.
+  const result = await handleCompleteTask({
+    ...makeValidParams(),
+    reworkResolution: [
+      { findingId: 'F1', status: 'deferred-with-override', evidence: 'Maintainer accepted temporary deferral.', decisionRef: 'DEC-2026-07-07-rework-deferral' },
+      { findingId: 'F1', status: 'deferred-with-override', evidence: 'Maintainer accepted temporary deferral.' },
+    ],
+  }, basePath);
+
+  assertTrue(!('error' in result), 'completion should succeed on the valid deferral');
+  const finding = _getAdapter()!.prepare(
+    "SELECT status, decision_ref FROM rework_brief_findings WHERE brief_id = 'RB-001' AND finding_id = 'F1'"
+  ).get() as { status: string; decision_ref: string };
+  assertEq(finding.status, 'deferred-with-override', 'finding should remain deferred-with-override');
+  assertEq(finding.decision_ref, 'DEC-2026-07-07-rework-deferral', 'valid decisionRef must survive the invalid duplicate');
+
+  cleanupDir(basePath);
+  cleanup(dbPath);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 
 report();
