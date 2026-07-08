@@ -29,6 +29,7 @@ test("destructive guard still detects direct and wrapper-prefixed recursive dele
     "find . -exec rm -rf {} \\;",
     "cat doomed.txt | xargs rm -rf /tmp/x",
     'rm -rf "/tmp/my build"',
+    "rm --recursive build",
   ];
 
   for (const command of destructiveCommands) {
@@ -36,6 +37,19 @@ test("destructive guard still detects direct and wrapper-prefixed recursive dele
       destructive: true,
       labels: ["recursive delete"],
     }, command);
+  }
+});
+
+test("destructive guard does not classify force-only rm as recursive delete", () => {
+  const nonRecursiveCommands = [
+    "rm -f single-file.md",
+    "rm -fv single-file.md",
+    "rm single-file.md -f",
+    "rm --force single-file.md",
+  ];
+
+  for (const command of nonRecursiveCommands) {
+    assert.deepEqual(classifyCommand(command), { destructive: false, labels: [] }, command);
   }
 });
 
