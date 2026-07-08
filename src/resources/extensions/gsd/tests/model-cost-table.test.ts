@@ -74,7 +74,7 @@ test("#2885: cost table includes openai-codex provider models", () => {
   const ids = BUNDLED_COST_TABLE.map(e => e.id);
   const codexModels = [
     "gpt-5.1", "gpt-5.1-codex-max", "gpt-5.1-codex-mini",
-    "gpt-5.2", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5",
+    "gpt-5.2", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6",
   ];
   for (const model of codexModels) {
     assert.ok(ids.includes(model), `cost table should include openai-codex model "${model}"`);
@@ -108,4 +108,12 @@ test("gpt-5.5 uses official OpenAI list pricing", () => {
   assert.equal(entry.inputPer1k, 0.005);
   assert.equal(entry.outputPer1k, 0.03);
   assert.equal(entry.updatedAt, "2026-04-23");
+});
+
+test("gpt-5.6 mirrors gpt-5.5 pricing until official pricing is published", () => {
+  const entry = lookupModelCost("gpt-5.6");
+  assert.ok(entry, "lookupModelCost should find gpt-5.6");
+  assert.equal(entry.inputPer1k, 0.005);
+  assert.equal(entry.outputPer1k, 0.03);
+  assert.equal(entry.updatedAt, "2026-07-08");
 });

@@ -62,6 +62,8 @@ export const BUNDLED_COST_TABLE: ModelCostEntry[] = [
   // GPT-5.5 API list price, also used for live Codex OAuth routing.
   // Source: https://openai.com/api/pricing/
   { id: "gpt-5.5", inputPer1k: 0.005, outputPer1k: 0.03, updatedAt: "2026-04-23" },
+  // Mirrors gpt-5.5 list pricing until OpenAI publishes official gpt-5.6 pricing.
+  { id: "gpt-5.6", inputPer1k: 0.005, outputPer1k: 0.03, updatedAt: "2026-07-08" },
 
   // Google
   { id: "gemini-2.0-flash", inputPer1k: 0.0001, outputPer1k: 0.0004, updatedAt: "2025-03-15" },

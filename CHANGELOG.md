@@ -8,6 +8,9 @@ This changelog starts from the `open-gsd/gsd-pi` ownership baseline. Earlier pro
 
 ## [Unreleased]
 
+### Added
+- **models**: add GPT-5.6 as a first-class model for the OpenAI and OpenAI Codex providers (catalog, xhigh reasoning, routing tiers, cost tables)
+
 ## [1.9.0] - 2026-07-08
 
 ### Added
