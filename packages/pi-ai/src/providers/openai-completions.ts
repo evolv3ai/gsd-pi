@@ -79,6 +79,85 @@ function isImageContentBlock(block: { type: string }): block is ImageContent {
 	return block.type === "image";
 }
 
+const ZAI_TEXT_TOOL_CALL_ARG_RE =
+	/<arg_key>([\s\S]*?)<\/arg_key>\s*<arg_value>([\s\S]*?)<\/arg_value>/gi;
+const ZAI_TEXT_TOOL_CALL_CLOSE_RE = /<\/tool_call>/i;
+
+function decodeXmlEntities(value: string): string {
+	return value.replace(/&(?:amp|lt|gt|quot|apos);|&#(?:x[0-9a-f]+|\d+);/gi, (entity) => {
+		switch (entity.toLowerCase()) {
+			case "&amp;":
+				return "&";
+			case "&lt;":
+				return "<";
+			case "&gt;":
+				return ">";
+			case "&quot;":
+				return '"';
+			case "&apos;":
+				return "'";
+			default: {
+				const numeric = entity.match(/^&#(x[0-9a-f]+|\d+);$/i);
+				if (!numeric) return entity;
+				const raw = numeric[1];
+				const codePoint = raw.toLowerCase().startsWith("x")
+					? Number.parseInt(raw.slice(1), 16)
+					: Number.parseInt(raw, 10);
+				return Number.isInteger(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
+					? String.fromCodePoint(codePoint)
+					: entity;
+			}
+		}
+	});
+}
+
+function parseTextSerializedZaiToolCall(text: string): ToolCall | null {
+	const closeMatch = ZAI_TEXT_TOOL_CALL_CLOSE_RE.exec(text);
+	if (!closeMatch) {
+		return null;
+	}
+
+	const closedEnd = closeMatch.index + closeMatch[0].length;
+	if (text.slice(closedEnd).trim().length > 0) {
+		return null;
+	}
+
+	const candidate = text.slice(0, closedEnd).trim();
+	const firstArgIndex = candidate.search(/<arg_key>/i);
+	if (firstArgIndex <= 0 || !/<arg_value>/i.test(candidate)) {
+		return null;
+	}
+
+	const toolName = candidate
+		.slice(0, firstArgIndex)
+		.replace(/^<tool_call[^>]*>/i, "")
+		.trim();
+	if (!/^[A-Za-z0-9_.:-]+$/.test(toolName)) {
+		return null;
+	}
+
+	const args: Record<string, string> = {};
+	ZAI_TEXT_TOOL_CALL_ARG_RE.lastIndex = 0;
+	for (const match of candidate.matchAll(ZAI_TEXT_TOOL_CALL_ARG_RE)) {
+		const key = decodeXmlEntities(match[1]).trim();
+		if (!key) {
+			return null;
+		}
+		args[key] = decodeXmlEntities(match[2]);
+	}
+
+	if (Object.keys(args).length === 0) {
+		return null;
+	}
+
+	return {
+		type: "toolCall",
+		id: "call_zai_text_0",
+		name: toolName,
+		arguments: args,
+	};
+}
+
 export interface OpenAICompletionsOptions extends StreamOptions {
 	toolChoice?: "auto" | "none" | "required" | { type: "function"; function: { name: string } };
 	reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -265,6 +344,40 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 				}
 				return block;
 			};
+			const convertTextSerializedToolCall = () => {
+				if (!textBlock || output.stopReason !== "stop" || blocks.some((block) => block.type === "toolCall")) {
+					return;
+				}
+				const toolCall = parseTextSerializedZaiToolCall(textBlock.text);
+				if (!toolCall) {
+					return;
+				}
+
+				const contentIndex = getContentIndex(textBlock);
+				if (contentIndex === -1) {
+					return;
+				}
+
+				const partialArgs = JSON.stringify(toolCall.arguments);
+				const block: StreamingToolCallBlock = {
+					...toolCall,
+					partialArgs,
+				};
+				blocks.splice(contentIndex, 1, block);
+				textBlock = null;
+				output.stopReason = "toolUse";
+				stream.push({
+					type: "toolcall_start",
+					contentIndex,
+					partial: output,
+				});
+				stream.push({
+					type: "toolcall_delta",
+					contentIndex,
+					delta: partialArgs,
+					partial: output,
+				});
+			};
 
 			for await (const chunk of openaiStream) {
 				if (!chunk || typeof chunk !== "object") continue;
@@ -388,6 +501,7 @@ export const streamOpenAICompletions: StreamFunction<"openai-completions", OpenA
 				}
 			}
 
+			convertTextSerializedToolCall();
 			for (const block of blocks) {
 				finishBlock(block);
 			}
