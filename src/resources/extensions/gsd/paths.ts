@@ -136,6 +136,14 @@ function cachedReaddir(dirPath: string): string[] {
   return entries;
 }
 
+function isExistingFile(path: string): boolean {
+  try {
+    return statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Clear the volatile directory listing caches.
  * Call after milestone transitions, file creation in planning directories,
@@ -284,7 +292,7 @@ export function resolveFile(dir: string, idPrefix: string, suffix: string): stri
   if (!existsSync(dir)) return null;
   const target = `${idPrefix}-${suffix}.md`.toUpperCase();
   try {
-    const entries = cachedReaddir(dir);
+    const entries = cachedReaddirWithTypes(dir).filter(e => e.isFile()).map(e => e.name);
     // Direct match: ID-SUFFIX.md
     const direct = entries.find(e => e.toUpperCase() === target);
     if (direct) return direct;
@@ -311,7 +319,9 @@ export function resolveFile(dir: string, idPrefix: string, suffix: string): stri
 export function resolveTaskFiles(tasksDir: string, suffix: string): string[] {
   if (!existsSync(tasksDir)) return [];
   try {
-    return cachedReaddir(tasksDir)
+    return cachedReaddirWithTypes(tasksDir)
+      .filter(e => e.isFile())
+      .map(e => e.name)
       .filter(f => taskIdFromTaskFileName(f, suffix) !== null)
       .sort();
   } catch {
@@ -860,7 +870,7 @@ export function resolveMilestoneFile(
   const prefix = `${String(phaseNum).padStart(2, "0")}`;
   const flatName = `${prefix}-${suffix}.md`;
   const flatPath = join(mDir, flatName);
-  if (existsSync(flatPath)) return flatPath;
+  if (isExistingFile(flatPath)) return flatPath;
   // Legacy fallback: M001-SUFFIX.md
   const file = resolveFile(mDir, milestoneId, suffix);
   return file ? join(mDir, file) : null;
@@ -895,11 +905,11 @@ export function resolveSliceFile(
   const planNum = sliceIdToPlanNum(sliceId);
   const flatName = planFileName(phaseNum, planNum, suffix);
   const flatPath = join(phaseDir, flatName);
-  if (existsSync(flatPath)) return flatPath;
+  if (isExistingFile(flatPath)) return flatPath;
   // Also check plan-number-only format MM-SUFFIX.md (written by buildSliceFileName)
   const planOnlyName = `${String(planNum).padStart(2, "0")}-${suffix}.md`;
   const planOnlyPath = join(phaseDir, planOnlyName);
-  if (existsSync(planOnlyPath)) return planOnlyPath;
+  if (isExistingFile(planOnlyPath)) return planOnlyPath;
   // Try prefix match for the phase+plan number (handles suffix variations)
   const planPrefix = `${String(phaseNum).padStart(2, "0")}-${String(planNum).padStart(2, "0")}-`;
   try {
@@ -949,9 +959,9 @@ export function resolveTaskFile(
 
   if (suffix !== "PLAN" && !isLegacy) {
     const flatPath = join(phaseDir, buildFlatTaskFileName(sliceId, taskId, suffix));
-    if (existsSync(flatPath)) return flatPath;
+    if (isExistingFile(flatPath)) return flatPath;
     const legacyFlatPath = join(phaseDir, buildTaskFileName(taskId, suffix));
-    return existsSync(legacyFlatPath) ? legacyFlatPath : null;
+    return isExistingFile(legacyFlatPath) ? legacyFlatPath : null;
   }
 
   const tDir = resolveTasksDir(basePath, milestoneId, sliceId);
