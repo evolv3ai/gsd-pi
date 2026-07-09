@@ -201,6 +201,7 @@ test("handleVerdict rejects missing verdict", async () => {
   const { ctx, calls } = makeMockCtx();
   await handleVerdict("", ctx, "/tmp/unused");
   assert.equal(calls.length, 1);
+  assert.match(calls[0].message, /^Verdict rejected:/);
   assert.match(calls[0].message, /Usage: \/gsd verdict/);
   assert.equal(calls[0].kind, "warning");
 });
@@ -209,6 +210,7 @@ test("handleVerdict rejects invalid verdict", async () => {
   const { ctx, calls } = makeMockCtx();
   await handleVerdict("yolo", ctx, "/tmp/unused");
   assert.equal(calls.length, 1);
+  assert.match(calls[0].message, /^Verdict rejected:/);
   assert.match(calls[0].message, /Invalid verdict "yolo"/);
   assert.equal(calls[0].kind, "warning");
 });
@@ -250,6 +252,10 @@ test("handleVerdict rejects when milestone validation is missing", async () => {
       calls.some((c) => /No milestone validation found/.test(c.message)),
       `expected missing-validation warning, got: ${JSON.stringify(calls)}`,
     );
+    assert.ok(
+      calls.some((c) => /^Verdict rejected:/.test(c.message)),
+      `expected terminal rejection prefix, got: ${JSON.stringify(calls)}`,
+    );
   } finally {
     closeDatabase();
     invalidateStateCache();
@@ -279,6 +285,10 @@ test("handleVerdict pass override flips verdict and preserves sections", async (
     assert.ok(
       calls.some((c) => c.kind === "success" && /needs-attention.*->.*pass/.test(c.message)),
       `expected success notification, got: ${JSON.stringify(calls)}`,
+    );
+    assert.ok(
+      calls.some((c) => c.kind === "success" && /^Verdict recorded:/.test(c.message)),
+      `expected terminal recorded prefix, got: ${JSON.stringify(calls)}`,
     );
   } finally {
     closeDatabase();

@@ -7,6 +7,8 @@ import assert from "node:assert/strict";
 
 import {
   formatStopNoticePrefix,
+  formatVerdictRecordedNotice,
+  formatVerdictRejectedNotice,
   isBlockedStopReason,
   stopNoticeDisplayReason,
   stopNoticeKind,
@@ -63,6 +65,17 @@ describe("emitter↔detector round-trip", () => {
     assert.ok(isBlockedNoticeMessage(message));
   });
 
+  test("verdict notices classify as terminal with rejected notices blocked", () => {
+    const recorded = formatVerdictRecordedNotice("Milestone M001 verdict: needs-attention -> pass").toLowerCase();
+    const rejected = formatVerdictRejectedNotice("No milestone validation found for M001.").toLowerCase();
+
+    assert.ok(isTerminalNotice(recorded));
+    assert.equal(isBlockedNoticeMessage(recorded), false);
+
+    assert.ok(isTerminalNotice(rejected));
+    assert.ok(isBlockedNoticeMessage(rejected));
+  });
+
   test("un-showable menu notices classify as blocked (#1294)", () => {
     // Emitted verbatim by notifyCommandMenuUnavailable (next-action-ui.ts / command-feedback.ts).
     const menuUnavailable =
@@ -80,7 +93,14 @@ describe("emitter↔detector round-trip", () => {
   });
 
   test("terminal prefixes cover the known stop vocabulary", () => {
-    for (const message of ["auto-mode stopped.", "auto-mode complete", "auto-mode idle", "no active milestone"]) {
+    for (const message of [
+      "auto-mode stopped.",
+      "auto-mode complete",
+      "auto-mode idle",
+      "no active milestone",
+      "verdict recorded: milestone m001 verdict: needs-attention -> pass",
+      "verdict rejected: unexpected argument: x",
+    ]) {
       assert.ok(TERMINAL_NOTICE_PREFIXES.some((prefix) => message.startsWith(prefix)), message);
     }
   });
