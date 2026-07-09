@@ -242,6 +242,31 @@ test("readCompatMarker preserves legitimate nested projection keys", () => {
   assert.equal(Object.keys(marker.projections).length, 2);
 });
 
+test("readCompatMarker heals invalid keys that canonicalize back under .gsd", () => {
+  const base = makeTmpBase();
+  const safeKey = "m1/roadmap.md";
+  mkdirSync(join(base, ".gsd", "m1"), { recursive: true });
+  writeFileSync(join(base, ".gsd", safeKey), "# Roadmap\n", "utf-8");
+  writeCompatMarker(base, {
+    schema: 2,
+    lastWriter: "gsd-pi",
+    lastProjectedAt: "2026-07-07T00:00:00.000Z",
+    projections: {
+      [`../.gsd/${safeKey}`]: { sha: "aaaaaaaaaaaaaaaa", entities: ["M001"] },
+    },
+    planning: { active: false, layout: null, projections: {}, passthrough: {} },
+    piVersion: "1.8.1",
+  });
+
+  const marker = readCompatMarker(base);
+  assert.ok(marker.projections[safeKey], "derivable traversal-form key must be rewritten");
+  assert.equal(marker.projections[`../.gsd/${safeKey}`], undefined);
+  assert.ok(
+    !readdirSync(join(base, ".gsd")).some((f: string) => f.startsWith(".compat.json.bad-")),
+    "healed marker must not be quarantined",
+  );
+});
+
 test("an escaping key in planning.passthrough also invalidates the whole marker", () => {
   const base = makeTmpBase();
   writeCompatMarker(base, {
