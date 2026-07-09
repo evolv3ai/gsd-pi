@@ -23,7 +23,10 @@ import {
 } from "../bootstrap/agent-end-recovery.ts";
 import { blockModelUntil, clearTemporaryModelBlocksForTest } from "../blocked-models.ts";
 import { _buildCancelledUnitStopReason } from "../auto/phase-helpers.ts";
-import { _classifyZeroToolProviderMessageForTest } from "../auto/unit-phase.ts";
+import {
+  _classifyZeroToolProviderMessageForTest,
+  _zeroToolPseudoToolCallSnippetForTest,
+} from "../auto/unit-phase.ts";
 import { autoSession } from "../auto-runtime-state.ts";
 import { getNextFallbackModel } from "../preferences.ts";
 import { clearGuidedUnitContext, getGuidedUnitContext, setGuidedUnitContext } from "../guided-unit-context.ts";
@@ -75,6 +78,21 @@ test("zero-tool provider classifier treats weekly limit wording as transient rat
   assert.ok(result, "weekly limit wording should be recognized");
   assert.ok(isTransient(result));
   assert.equal(result.kind, "rate-limit");
+});
+
+test("zero-tool pseudo tool-call detector identifies serialization drift", () => {
+  const snippet = _zeroToolPseudoToolCallSnippetForTest(
+    'bash<arg_key>command</arg_key><arg_value>ls -la /tmp && echo "---SRC---"</arg_value></tool_call>',
+  );
+  assert.ok(snippet, "pseudo tool-call text should be recognized");
+  assert.match(snippet, /bash<arg_key>command<\/arg_key>/);
+});
+
+test("zero-tool provider classifier does not treat pseudo tool-call text as an error class", () => {
+  const result = _classifyZeroToolProviderMessageForTest(
+    'bash<arg_key>command</arg_key><arg_value>ls -la /tmp && echo "---SRC---"</arg_value></tool_call>',
+  );
+  assert.equal(result, null, "pseudo tool-call text is drift, not a provider error");
 });
 
 test("classifyError treats extra-usage phrasing as transient rate-limit (#4397)", () => {
