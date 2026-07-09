@@ -7,7 +7,9 @@
  *      self-identify (Stream 2: actor identity passthrough).
  *
  *   2. The 3 reversibility handlers (reopen-task/slice/milestone) are
- *      registered as MCP tools with both canonical and alias names
+ *      registered as MCP tools under their canonical names, with the legacy
+ *      aliases available only under GSD_ADVERTISE_TOOL_ALIASES=1 since plan 035
+ *      made the model-facing surface canonical-only by default
  *      (Stream 3: reversibility tools).
  *
  *   3. The reopen tools accept the documented core params plus optional
@@ -78,7 +80,7 @@ for (const name of ACTOR_TOOLS) {
   });
 }
 
-// ─── Stream 3: reopen tools registered with canonical + alias names ─────────
+// ─── Stream 3: reopen tools registered canonically; aliases are opt-in ──────
 
 const REOPEN_TOOLS = [
   { canonical: "gsd_task_reopen", alias: "gsd_reopen_task" },
@@ -86,13 +88,35 @@ const REOPEN_TOOLS = [
   { canonical: "gsd_milestone_reopen", alias: "gsd_reopen_milestone" },
 ];
 
+// Register a second surface with alias advertisement opted in, to assert the
+// legacy aliases are still wired when GSD_ADVERTISE_TOOL_ALIASES=1 (plan 035).
+function registerWithAliasesEnabled(): Map<string, any> {
+  const previous = process.env.GSD_ADVERTISE_TOOL_ALIASES;
+  process.env.GSD_ADVERTISE_TOOL_ALIASES = "1";
+  try {
+    const aliasPi = makeMockPi();
+    registerDbTools(aliasPi);
+    return new Map(aliasPi.tools.map((t: any) => [t.name, t]));
+  } finally {
+    if (previous === undefined) delete process.env.GSD_ADVERTISE_TOOL_ALIASES;
+    else process.env.GSD_ADVERTISE_TOOL_ALIASES = previous;
+  }
+}
+
+const aliasSurface = registerWithAliasesEnabled();
+
 for (const { canonical, alias } of REOPEN_TOOLS) {
-  test(`${canonical} — registered with alias ${alias}`, () => {
+  test(`${canonical} — registered canonically; ${alias} is an opt-in alias`, () => {
     const canonicalTool = getTool(canonical);
-    const aliasTool = getTool(alias);
     assert.ok(canonicalTool, `${canonical} must be registered`);
-    assert.ok(aliasTool, `${alias} must be registered as alias`);
     assert.ok(typeof canonicalTool.execute === "function", `${canonical} must have an execute function`);
+
+    // Canonical-only by default: the alias must not be on the default model surface.
+    assert.ok(!getTool(alias), `${alias} must not be registered on the default canonical-only surface`);
+
+    // Opt-in: the alias is registered and executable under GSD_ADVERTISE_TOOL_ALIASES=1.
+    const aliasTool = aliasSurface.get(alias);
+    assert.ok(aliasTool, `${alias} must be registered as an alias under GSD_ADVERTISE_TOOL_ALIASES=1`);
     assert.ok(typeof aliasTool.execute === "function", `${alias} must have an execute function`);
   });
 }
