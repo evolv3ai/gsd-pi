@@ -29,11 +29,13 @@ import {
 
 const SKILL_NAME = "testskill";
 const COMPLETE_SLICE_SKILL_NAME = "complete-slice-policies";
-const SKILL_ACTIVATION_SUBSTRING = `Read the installed '${SKILL_NAME}' skill file from <available_skills>`;
-const COMPLETE_SLICE_SKILL_ACTIVATION_SUBSTRING = `Read the installed '${COMPLETE_SLICE_SKILL_NAME}' skill file from <available_skills>`;
 
 const tmpDirs: string[] = [];
 let savedCwd: string | undefined;
+
+function expectedSkillRead(base: string, name: string): string {
+  return `Read the skill file at \`${join(base, ".agents", "skills", name, "SKILL.md")}\``;
+}
 
 function setupProjectWithSkill(options: {
   skillName?: string;
@@ -139,7 +141,7 @@ test("worker prompt (buildResearchSlicePrompt) includes <skill_activation> from 
     "research-slice prompt should contain a <skill_activation> block",
   );
   assert.ok(
-    prompt.includes(SKILL_ACTIVATION_SUBSTRING),
+    prompt.includes(expectedSkillRead(base, SKILL_NAME)),
     `research-slice prompt should reference the always-used skill '${SKILL_NAME}'`,
   );
 });
@@ -164,7 +166,7 @@ test("complete-slice prompt includes <skill_activation> from unit-specific skill
     "complete-slice prompt should contain a <skill_activation> block",
   );
   assert.ok(
-    prompt.includes(COMPLETE_SLICE_SKILL_ACTIVATION_SUBSTRING),
+    prompt.includes(expectedSkillRead(base, COMPLETE_SLICE_SKILL_NAME)),
     `complete-slice prompt should reference the skill-rule skill '${COMPLETE_SLICE_SKILL_NAME}'`,
   );
 });
@@ -192,7 +194,7 @@ test("subagent dispatch prompt (buildParallelResearchSlicesPrompt) carries <skil
     `expected at least 2 <skill_activation> blocks (one per slice), got ${blockCount}`,
   );
   assert.ok(
-    prompt.includes(SKILL_ACTIVATION_SUBSTRING),
+    prompt.includes(expectedSkillRead(base, SKILL_NAME)),
     `parallel-research-slices prompt should reference the always-used skill '${SKILL_NAME}'`,
   );
   assert.ok(

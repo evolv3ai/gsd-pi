@@ -131,10 +131,23 @@ function resolvePreferredSkillNames(
  *  to prevent prompt injection via crafted directory names. */
 const SAFE_SKILL_NAME = /^[a-z0-9][a-z0-9-]*$/;
 
-function formatSkillActivationBlock(skillNames: string[]): string {
+function escapeXml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function formatSkillActivationBlock(skillNames: string[], skillPaths: Map<string, string>): string {
   const safe = skillNames.filter(name => SAFE_SKILL_NAME.test(name));
   if (safe.length === 0) return "";
-  const reads = safe.map(name => `Read the installed '${name}' skill file from <available_skills>`).join(". ");
+  const reads = safe.map(name => {
+    const path = skillPaths.get(name);
+    if (path) return `Read the skill file at \`${escapeXml(path)}\``;
+    return `Find '${name}' in <available_skills>, copy its <location> value, and pass that exact path to read`;
+  }).join(". ");
   return `<skill_activation>${reads}.</skill_activation>`;
 }
 
@@ -203,6 +216,7 @@ export function buildSkillActivationBlock(params: {
   const visibleSkills = loaded;
   const manifestScopedSkills = filterSkillsByManifest(visibleSkills, params.unitType);
   const installedNames = new Set(visibleSkills.map(skill => normalizeSkillReference(skill.name)));
+  const installedSkillPaths = new Map(visibleSkills.map(skill => [normalizeSkillReference(skill.name), skill.filePath]));
   warnIfManifestHasMissingSkills(params.unitType, installedNames);
   const avoided = new Set(resolvePreferenceSkillNames(prefs?.avoid_skills ?? [], params.base));
   const matched = new Set<string>();
@@ -252,7 +266,7 @@ export function buildSkillActivationBlock(params: {
   const ordered = [...matched]
     .filter(name => installedNames.has(name) && !avoided.has(name))
     .sort();
-  const activationBlock = formatSkillActivationBlock(ordered);
+  const activationBlock = formatSkillActivationBlock(ordered, installedSkillPaths);
 
   // Omit recommendations when the system catalog is manifest-scoped for this
   // unit — skill names are already listed in <available_skills>.
