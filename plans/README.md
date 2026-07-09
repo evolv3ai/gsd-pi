@@ -11,7 +11,19 @@ below unless dependencies say otherwise. Each executor: read the plan fully
 before starting, honor its STOP conditions, and update your row when done.
 
 Plans 001–008 planned against commit `2c63ab9d`. Plans 009–017 planned against
-commit `58dc840f`. Plans 018–024 planned against commit `7cca07ae`.
+commit `58dc840f`. Plans 018–024 planned against commit `7cca07ae`. Plans
+035–039 added 2026-07-08 from a deep focused audit on **LLM token usage and
+optimization** (8 surface-scoped finders — prompt caching, system-prompt
+assembly, compaction, dispatch prompts, MCP tool surface, tool-result
+payloads, daemon loops, token accounting — findings lead-verified against
+HEAD `43033bb9`; top 5 by leverage planned per the non-interactive rule).
+
+> **Note (2026-07-08)**: a working-tree clean during plan 035's execution
+> deleted all then-untracked `plans/*.md` files. 035–039 were restored from
+> the advisor session. The files for plans 018, 019, 021, 023, 024, 027,
+> 029–032 (all DONE) and **033, 034 (still TODO)** were lost and are NOT
+> recoverable from this session — 033/034 need re-planning before execution
+> (their scope summary survives in the 032→033→034 dependency note below).
 
 ## Execution order & status
 
@@ -50,6 +62,10 @@ commit `58dc840f`. Plans 018–024 planned against commit `7cca07ae`.
 | 033 | Fixtures: zero false-positive stale-render drift for flat-phase (multi-slice + remediation, two cycles) | P2 | M | 032 | TODO |
 | 034 | Re-enable the stale-render drift detector for flat-phase projects | P2 | S | 032, 033 | TODO |
 | 035 | Stop advertising duplicate alias tool schemas to the model | P1 | M | — | DONE |
+| 036 | Stabilize the prompt-cache prefix (quantize observation mask) + surface cacheRetention | P1 | M | — | DONE |
+| 037 | Keep only the latest GSD context injection in the model payload (memory-block dedupe) | P1 | M | 036 | TODO |
+| 038 | Stop spending reasoning tokens / double calls on compaction summaries | P2 | S | — | TODO |
+| 039 | Close prompt-budget enforcement gaps (execute-task cap, discuss-slice cap, provider ratio) | P2 | M | — | TODO |
 
 All of 009–017 implemented, tested, and committed on branch `chore/audit-fixes-009-017`
 (2026-07-01). Notable deviations recorded in the plan files: 009 skipped the
@@ -66,10 +82,43 @@ previously-orphaned `message-batcher.test.js` into the daemon test script.
 - **023 is document-only** (ADR). The migration code work it proposes is NOT planned yet — it needs maintainer approval of the ADR first (CONTRIBUTING requires an RFC/ADR for this territory).
 - **032 → 033 → 034 are the ADR-045 Option B stage-1 code plans** (added 2026-07-08, planned against `897b3c90`, after the maintainer greenlit the "lean 3" path). Strict order: **032** removes the git-service META poisoning root cause (the precondition the detector TODO names); **033** adds fixtures proving zero false-positive stale-render drift across two reconcile cycles for the exact multi-slice/remediation scenarios that got the detector disabled (033 also exports `detectStaleRendersImpl`); **034** flips `detectStaleRenders` from its `return []` stub to the real impl, gated on 033's fixtures being green. 034 must not start before 033, and 033 not before 032. The ADR's Option B step 1 (route all 13 layout-detection sites through one authority) was **deliberately deferred** — see "considered and rejected" below.
 
+- **035–039 dependency/conflict notes (2026-07-08 token audit)**: 037 depends
+  on 036 (both work the `provider-payload-policy.ts` / masking seam — land 036
+  first so the injection filter composes with the quantized mask and the
+  byte-stability regression test exists). 035 (DONE), 038, 039 are independent
+  of each other and of 036/037. 036 and 039 both read `context-budget.ts` but
+  039 only adds exports — no conflict expected. 035 changed the model-facing
+  tool surface: release notes must mention `GSD_MCP_ADVERTISE_ALIASES=1` /
+  `GSD_ADVERTISE_TOOL_ALIASES=1` for external clients on legacy alias names.
+  036 (DONE, `advisor/036-stabilize-prompt-cache-prefix`): step 4's actual
+  seam was `packages/pi-agent-core/src/agent.ts` (`Agent`/`AgentOptions`/
+  `createLoopConfig`), not the harness file the plan named — the harness
+  (`AgentHarness`) is unused by `gsd-agent-core`. `cacheRetention` ships as a
+  plain user setting (`SettingsManager.getCacheRetention`/`setCacheRetention`,
+  default unchanged); auto-mode-triggered "long" TTL was deferred because
+  auto-mode state isn't visible from `gsd-agent-core`'s session-construction
+  seam — noted as a deviation, not attempted.
+
 ## Findings surviving verification but NOT planned this round
 
 These were confirmed/adjusted by the audit but left unplanned — lower leverage,
 larger/looser scope, or already partly mitigated. Recorded so they aren't lost.
+
+### From the 2026-07-08 token-usage audit (verified at `43033bb9`)
+
+Confirmed but below the planning cut this round — batch opportunistically:
+
+- **Daemon orchestrator caching cluster** (`packages/daemon/src/orchestrator-agent.ts:105-161`, `orchestrator-tools.ts:111-176`): no `cache_control` on the static system prompt + 5 tool schemas; the tool loop re-sends the growing message array each iteration (quadratic in tool-call depth); tool results are pretty-printed JSON with up to 10 raw `SdkAgentEvent` objects. All S–M fixes; mitigating factors: the orchestrator already uses Haiku with `max_tokens` 1024 and a 30-turn history cap, so absolute dollar impact is modest. Fix as one small pass: add `cache_control` to system+last tool+latest turn, compact JSON, project events to summary fields.
+- **Unbounded MCP read-tool results**: argument-less `gsd_query` returns full STATE.md+PROJECT.md+REQUIREMENTS.md (`packages/mcp-server/src/server.ts:270-292`); `gsd_history` with no `limit` returns every metrics entry (`readers/metrics.ts:74-92`); `gsd_knowledge`/`gsd_roadmap` return full structures with 2-space-indented JSON (`readers/knowledge.ts:92-112`, `readers/roadmap.ts:184+`). Good bounded patterns to mirror already exist (`gsd_status` slice(-10), `gsd_journal_query` limit, `gsd_graph` budget-trim). S–M each.
+- **`gsd_journal_query` default 100 full pretty-printed entries** (`bootstrap/journal-tools.ts:44-55`) and **pretty-printed model-facing JSON** in `workflow-tool-executors.ts:1672` — drop `null, 2` and project fields; S. (`details` sidecars are TUI-only — verified not a model cost.)
+- **Tool-schema description verbosity** (MCPTOOLS-07): ~13.7K chars of descriptions + ~11.3K chars of `.describe()` strings in `workflow-tools.ts`; trimming needs a tool-selection accuracy eval first — do after 035 (DONE; aliases were the cheaper 2× on the same bytes).
+- **Compaction follow-ups**: threshold estimator counts full-size stored tool results while the payload hook truncates to 800 chars → premature compactions (`agent-session-compaction.ts:18-21` vs `provider-payload-policy.ts:103-115`); summary-of-summary lossy compounding (`compaction.ts:822-828`); turn-prefix summarization lacks the chunk budget (`compaction.ts:1020-1052`); user-branch image tokens uncounted (`compaction.ts:259-271`); observation masking is auto-mode-only (interactive sessions keep all tool results until compaction); dead `TOOL_RESULT_MAX_CHARS` constant (`pi-coding-agent/src/core/constants.ts:39`).
+- **Dispatch follow-ups**: no whole-prompt final size gate — per-section caps can sum past the window (DISPATCH-02); ~8-12K chars of byte-identical templates re-inlined per task in a slice (DISPATCH-04); carry-forward inlines ALL prior task summaries per task, quadratic per slice, cap ~128K chars rarely fires (DISPATCH-05, `auto-prompts.ts:2643,2732`); reactive-execute mega-prompt inlines full plans for all ready tasks uncapped (`auto-prompts.ts:3956-4029`); `verificationBudget` is advisory prose only (`prompts/execute-task.md:62`).
+- **Token-accounting follow-ups**: tiktoken probe sentence over-estimates chars/token for code content by ~20-40% (ECON-02, `context-budget.ts:138-143`); measured API usage (`metrics.ts:186-193`) never feeds back into budget calibration (ECON-03); cl100k used for Anthropic counting (ECON-04 — correction factor); hardcoded `MODEL_COST_PER_1K_INPUT` table gives off-table models `Infinity` and mis-ranks "cheapest" (`model-router.ts:124-157`, ECON-06); `execute-task` reasoning floor `medium` applies even to `light`-tier tasks (ECON-07 — investigate, LOW confidence).
+- **System-prompt follow-ups**: heavy GSD blocks (~8-9K tokens: system.md/knowledge/codebase) load for ANY session in a `.gsd` cwd, workflow or not (SYSPROMPT-02, `bootstrap/system-context.ts:303-416`); full tool surface stays model-facing in interactive sessions — scoping is auto-mode-only (SYSPROMPT-04, `register-hooks.ts:467-492`); dead `BUNDLED_SKILL_TRIGGERS` table (~4KB, no consumers — delete or wire, `system-context.ts:41-77`); unused `MANY_IMAGE_MAX_DIMENSION` + reactive-only image stripping (`image-overflow-recovery.ts:21`).
+- **Cache follow-ups**: second stable mid-conversation cache anchor unused (CACHE-05); active-tool-set churn may invalidate the tools-first prefix (CACHE-06, LOW confidence — measure `setActiveTools` change frequency first); Bedrock/OpenAI inherit the same prefix-stability fixes (CACHE-07).
+- **DB-inlined decisions/requirements have no per-section cap** (PAYLOAD-04, `auto-prompts.ts:1036-1084`): bounded only by the trailing global `capPreamble`, so an oversized register silently pushes later sections out. Scope to active milestone + top-N with a file pointer.
+- **`context-injector.ts:79-92`** caps each artifact at 10K chars but has no aggregate cap across artifacts (custom workflows only; low priority).
 
 ### From the 2026-07-07 deep audit (verified at `7cca07ae`)
 
@@ -128,6 +177,18 @@ build-everything plan. Effort estimates are coarse.
 - **Pre-merge-check shell-injection**: the tokenizer feeds `execFileSync(binary, args)` with no `shell:true`, so shell metacharacters are inert. Rejected.
 - **Per-message WebSocket auth / Hono CORS / Hono path-traversal advisories**: the gateway uses raw `http.createServer` (no Hono CORS/serve-static middleware reachable), and the WS connection is bearer-authenticated at connect over WSS; the specific exploit paths are unreachable. Rejected (undici DoS via discord.js is real and IS planned — see 016).
 - **Stale-render detection tests skipped / flat-phase migration "incomplete"**: `detectStaleRenders` is intentionally disabled during the shipping v1.4.0 flat-phase migration (documented design), not an accidental coverage hole. Tracked as direction (finish the migration), not a bug. *2026-07-07 update: still disabled three minor versions later with fresh bug fallout — escalated to plan 023 (ADR).*
+
+### Rejected / downgraded in the 2026-07-08 token-usage audit
+
+- **Source-context block strip-and-append breaks the cache tail** (CACHE-02): real but downgraded — `injectSourceContextBlockIntoPayload` removes only the previous turn's block, so the invalidation is bounded to roughly the final turn, not the whole prefix. Accepted cost; recorded in plan 036's out-of-scope. Revisit only if cache_read telemetry after 036 still shows poor hit rates.
+- **ContextualTips as cache-prefix poison**: false — `contextual-tips.ts` is consumed only by the TUI input path (`input-controller.ts:96-105` → `host.showTip`); tips never enter model context. Zero token cost.
+- **Daemon model choice / periodic LLM drain**: not findings — the orchestrator defaults to Haiku (`daemon.ts:91`), heartbeats are log-only timers, and `MessageBatcher` batches Discord sends, not LLM calls.
+- **Retry paths accumulating failure context unboundedly**: verified bounded — single `lastPreExecFailure` slot + 2-retry circuit breaker (`auto-dispatch.ts:1414-1436`); verification retries replace, not append (`auto-post-unit.ts:2237-2241`).
+- **Tool outputs entering history unbounded in the pi runtime**: false — Read/Bash/Grep are capped at 2000 lines / 50KB with disk spill (`pi-coding-agent/src/core/tools/truncate.ts:11-13`); compaction serialization caps blocks at 2000 chars; `gsd_exec`/`gsd_uat_exec` return bounded digests (exemplary pattern).
+- **`markdown-renderer.ts`/`visualizer-views.ts` renders as model payloads**: false — output goes to disk/HTML overlays; tool handlers return file paths, not bodies.
+- **`remote-questions.ts` payload bloat**: not a model-context cost — outbound chat notifications, already truncated (200/500 chars).
+- **Headless sessions growing unbounded without compaction**: false — headless drives the normal prompt loop → `checkCompaction` (`agent-session-prompt.ts:66,179`).
+- **Cross-worker prompt sharing for parallel orchestration** (DISPATCH-07): not worth solving directly — process isolation makes it architecturally invasive; fixing template re-inlining (DISPATCH-04) shrinks the payload for all workers instead.
 
 ### Rejected in the 2026-07-07 deep audit
 
