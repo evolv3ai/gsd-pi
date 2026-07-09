@@ -60,23 +60,24 @@ const ZERO_TOOL_PSEUDO_TOOL_CALL_RE =
   /<arg_key>[\s\S]*?<\/arg_key>\s*<arg_value>[\s\S]*?<\/arg_value>[\s\S]*?<\/tool_call>/i;
 const ZERO_TOOL_PSEUDO_TOOL_CALL_SNIPPET_CHARS = 200;
 
-type ZeroToolProviderMessageClass =
-  | ReturnType<typeof classifyError>
-  | { kind: "pseudo-tool-call"; snippet: string };
-
 function zeroToolMessageSnippet(message: string): string {
   const compact = message.trim().replace(/\s+/g, " ");
   if (compact.length <= ZERO_TOOL_PSEUDO_TOOL_CALL_SNIPPET_CHARS) return compact;
   return `${compact.slice(0, ZERO_TOOL_PSEUDO_TOOL_CALL_SNIPPET_CHARS - 3)}...`;
 }
 
-function classifyZeroToolProviderMessage(message: string): ZeroToolProviderMessageClass | null {
-  if (ZERO_TOOL_PSEUDO_TOOL_CALL_RE.test(message)) {
-    return {
-      kind: "pseudo-tool-call",
-      snippet: zeroToolMessageSnippet(message),
-    };
-  }
+// Provider serialization drift: the model emitted a tool call as plain assistant
+// text (`toolName<arg_key>…</arg_key><arg_value>…</arg_value></tool_call>`)
+// instead of a structured tool call. Returns an operator-visible snippet when
+// detected. Kept separate from error classification so a drift snippet is never
+// conflated with an ErrorClass (which would force a fragile union whose
+// narrowing the root and extensions tsconfigs disagree on).
+function zeroToolPseudoToolCallSnippet(message: string): string | null {
+  if (!ZERO_TOOL_PSEUDO_TOOL_CALL_RE.test(message)) return null;
+  return zeroToolMessageSnippet(message);
+}
+
+function classifyZeroToolProviderMessage(message: string): ReturnType<typeof classifyError> | null {
   const firstLine = message.trim().split(/\r?\n/, 1)[0]?.trim() ?? "";
   if (
     !firstLine ||
@@ -87,6 +88,7 @@ function classifyZeroToolProviderMessage(message: string): ZeroToolProviderMessa
 }
 
 export const _classifyZeroToolProviderMessageForTest = classifyZeroToolProviderMessage;
+export const _zeroToolPseudoToolCallSnippetForTest = zeroToolPseudoToolCallSnippet;
 
 export function resolveDispatchRecoveryAttempts(
   unitRecoveryCount: Map<string, number>,
@@ -786,29 +788,30 @@ export async function runUnitPhase(
       );
       if (lastUnit && lastUnit.toolCalls === 0) {
         const lastAssistantMessage = lastAssistantText(s.lastUnitAgentEndMessages);
-        const providerMessageClass = classifyZeroToolProviderMessage(lastAssistantMessage);
-        if (providerMessageClass?.kind === "pseudo-tool-call") {
+        const pseudoToolCallSnippet = zeroToolPseudoToolCallSnippet(lastAssistantMessage);
+        if (pseudoToolCallSnippet) {
           debugLog("runUnitPhase", {
             phase: "zero-tool-serialization-drift",
             unitType,
             unitId,
-            snippet: providerMessageClass.snippet,
+            snippet: pseudoToolCallSnippet,
           });
           ctx.ui.notify(
-            `${unitType} ${unitId} completed with 0 tool calls - provider serialization drift: model emitted pseudo-tool-call text. Snippet: ${providerMessageClass.snippet}`,
+            `${unitType} ${unitId} completed with 0 tool calls - provider serialization drift: model emitted pseudo-tool-call text. Snippet: ${pseudoToolCallSnippet}`,
             "error",
           );
           await deps.pauseAuto(ctx, pi);
           return { action: "break", reason: "zero-tool-serialization-drift" };
         }
-        if (providerMessageClass && isTransient(providerMessageClass)) {
-          const retryAfterMs = "retryAfterMs" in providerMessageClass ? providerMessageClass.retryAfterMs : 15_000;
+        const providerErrorClass = classifyZeroToolProviderMessage(lastAssistantMessage);
+        if (providerErrorClass && isTransient(providerErrorClass)) {
+          const retryAfterMs = "retryAfterMs" in providerErrorClass ? providerErrorClass.retryAfterMs : 15_000;
           await pauseAutoForProviderError(
             ctx.ui,
             ` for ${unitType} ${unitId}`,
             () => deps.pauseAuto(ctx, pi),
             {
-              isRateLimit: providerMessageClass.kind === "rate-limit",
+              isRateLimit: providerErrorClass.kind === "rate-limit",
               isTransient: true,
               retryAfterMs,
               resume: () => {
@@ -826,7 +829,7 @@ export async function runUnitPhase(
           });
           return {
             action: "break",
-            reason: providerMessageClass.kind === "rate-limit" ? "rate-limit" : "api-timeout",
+            reason: providerErrorClass.kind === "rate-limit" ? "rate-limit" : "api-timeout",
           };
         }
         if (USER_DRIVEN_DEEP_UNITS.has(unitType) && isAwaitingUserInput(s.lastUnitAgentEndMessages ?? undefined)) {
