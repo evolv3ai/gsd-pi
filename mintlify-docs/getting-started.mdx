@@ -144,10 +144,13 @@ All state lives on disk in `.gsd/`:
       01-CONTEXT.md     — scope and goals from discussion
       01-ROADMAP.md     — slice plan with risk levels and dependencies
       01-01-PLAN.md     — task decomposition for the first slice
+      S01-T01-SUMMARY.md — task summary for the first slice task
       01-01-SUMMARY.md  — what happened in the first slice
       01-01-UAT.md      — human test script
 ```
 </Accordion>
+
+Flat-phase task summaries use `S##-T##-SUMMARY.md` so identical task IDs in different slices do not collide. GSD still resolves older flat `T##-SUMMARY.md` task summaries when reading legacy projects.
 
 ## Resume a session
 

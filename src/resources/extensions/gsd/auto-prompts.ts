@@ -16,6 +16,7 @@ import { loadPrompt, inlineTemplate } from "./prompt-loader.js";
 import {
   resolveMilestoneFile, resolveSliceFile, resolveSlicePath,
   resolveTasksDir, resolveTaskFiles, resolveTaskFile,
+  taskIdFromTaskFileName,
   relMilestoneFile, relSliceFile, relSlicePath, relMilestonePath,
   relTaskFile, resolveGsdRootFile, relGsdRootFile, resolveRuntimeFile,
 } from "./paths.js";
@@ -28,7 +29,8 @@ import type { GSDPreferences } from "./preferences.js";
 import { join, basename, relative, sep } from "node:path";
 import { existsSync } from "node:fs";
 import { computeBudgets, resolveExecutorContextWindow, truncateAtSectionBoundary, type MinimalModelRegistry } from "./context-budget.js";
-import { getGateResults, getPendingGates, getPendingGatesForTurn } from "./gsd-db.js";
+import type { TokenProvider } from "./token-counter.js";
+import { getBlockingReworkFindingsForTask, getGateResults, getPendingGates, getPendingGatesForTurn } from "./gsd-db.js";
 import {
   GATE_REGISTRY,
   assertGateCoverage,
@@ -91,11 +93,27 @@ function resolvePromptBudgets(): ReturnType<typeof computeBudgets> {
     const prefs = loadEffectiveGSDPreferences();
     const sessionWindow = prefs?.preferences.context_window_override;
     const windowTokens = resolveExecutorContextWindow(undefined, prefs?.preferences, sessionWindow);
-    return computeBudgets(windowTokens);
+    return computeBudgets(windowTokens, resolveExecutionProvider(prefs?.preferences));
   } catch (e) {
     logWarning("prompt", `resolvePromptBudgets failed: ${(e as Error).message}`);
     return computeBudgets(200_000);
   }
+}
+
+/**
+ * Best-effort provider for the chars/token ratio: the executor's configured
+ * model profile is the only provider source reachable here (the runtime
+ * `sessionProvider` that reaches `formatExecutorConstraints` isn't threaded to
+ * `capPreamble`/summary callers). Undefined when no explicit provider is set —
+ * `computeBudgets` then uses the 4.0 default, i.e. today's behavior.
+ */
+function resolveExecutionProvider(prefs?: { models?: { execution?: unknown } }): TokenProvider | undefined {
+  const exec = prefs?.models?.execution;
+  if (exec && typeof exec === "object" && "provider" in exec) {
+    const provider = (exec as { provider?: unknown }).provider;
+    if (typeof provider === "string" && provider) return provider as TokenProvider;
+  }
+  return undefined;
 }
 
 /**
@@ -104,6 +122,34 @@ function resolvePromptBudgets(): ReturnType<typeof computeBudgets> {
  */
 function resolveSummaryBudgetChars(): number {
   return resolvePromptBudgets().summaryBudgetChars;
+}
+
+
+function renderBlockingReworkFindingsBlock(mid: string, sid: string, tid: string): string {
+  const findings = getBlockingReworkFindingsForTask(mid, sid, tid)
+    .filter((finding) => finding.status === "pending");
+  if (findings.length === 0) return "";
+
+  const lines = [
+    "## Blocking Rework Findings (non-optional)",
+    "",
+    "This task has structured blocking rework findings. Address every finding before calling `gsd_task_complete`. Include `reworkResolution` entries with each `findingId`, `status: \"resolved\"`, and concrete evidence. If deferring a finding, use `status: \"deferred-with-override\"` with concrete evidence and `decisionRef`.",
+    "",
+  ];
+  for (const finding of findings) {
+    lines.push(`### ${finding.finding_id} (${finding.severity})`);
+    lines.push(`- Status: ${finding.status}`);
+    lines.push(`- Finding: ${finding.description}`);
+    lines.push(`- Required fix: ${finding.required_fix}`);
+    if (finding.verification_commands.length > 0) {
+      lines.push("- Required verification:");
+      for (const command of finding.verification_commands) {
+        lines.push(`  - \`${command}\``);
+      }
+    }
+    lines.push("");
+  }
+  return lines.join("\n").trim();
 }
 
 function formatProjectClassificationForPlanning(classification: ProjectClassification): string {
@@ -208,7 +254,7 @@ function formatCloseoutReviewInstructions(validationContent: string | null, vali
   ].join("\n");
 }
 
-function capPreamble(preamble: string): string {
+export function capPreamble(preamble: string): string {
   // Cap inlined context at min(static ceiling, scaled inline budget).
   // The ceiling bounds repeated auto prompt payloads; the scaled
   // budget tightens the cap for small-window users whose true safe limit is
@@ -216,6 +262,41 @@ function capPreamble(preamble: string): string {
   const budget = Math.min(MAX_PREAMBLE_CHARS, resolvePromptBudgets().inlineContextBudgetChars);
   if (preamble.length <= budget) return preamble;
   return truncateAtSectionBoundary(preamble, budget).content;
+}
+
+/**
+ * Cap the execute-task inline blocks against one shared budget in priority
+ * order. Unlike `capPreamble` (single concatenated preamble), execute-task
+ * feeds these blocks into separate, non-contiguous template placeholders, so
+ * they can't be joined and re-split — the budget is spent block-by-block.
+ *
+ * The task plan is the authoritative execution contract: it is never truncated
+ * here (it consumes budget first, whole). Remaining budget flows to the slice
+ * excerpt, then templates, each truncated at section boundaries so the lowest-
+ * priority context drops whole trailing sections first. When the task plan
+ * alone meets or exceeds the budget, the trailing blocks are dropped rather
+ * than the task plan being cut.
+ */
+function capExecuteTaskInlineBlocks(
+  taskPlan: string,
+  slicePlan: string,
+  templates: string,
+  budgetChars: number,
+): { taskPlan: string; slicePlan: string; templates: string } {
+  let remaining = budgetChars - taskPlan.length;
+  if (remaining <= 0) {
+    return { taskPlan, slicePlan: "", templates: "" };
+  }
+  const cappedSlice = slicePlan.length <= remaining
+    ? slicePlan
+    : truncateAtSectionBoundary(slicePlan, remaining).content;
+  remaining -= cappedSlice.length;
+  const cappedTemplates = remaining <= 0
+    ? ""
+    : templates.length <= remaining
+      ? templates
+      : truncateAtSectionBoundary(templates, remaining).content;
+  return { taskPlan, slicePlan: cappedSlice, templates: cappedTemplates };
 }
 
 type PromptContextMode = "inline" | "excerpt" | "on-demand" | "skipped";
@@ -296,7 +377,7 @@ function prependContextModeToBlock(
   block: string,
   renderMode: ContextModeRenderMode = "standalone",
 ): string {
-  const toolSurface = composeToolSurfaceInstructions(unitType, { renderMode });
+  const toolSurface = composeToolSurfaceInstructions(unitType, { renderMode, basePath: base });
   const contextMode = renderContextModeBlockForPrompt(unitType, base, renderMode);
   const guidance = [toolSurface, contextMode].filter(Boolean).join("\n\n");
   if (!guidance) return block;
@@ -377,7 +458,7 @@ function formatExecutorConstraints(
     // so DEFAULT_CONTEXT_WINDOW stays the single source of truth.
     windowTokens = resolveExecutorContextWindow(undefined, undefined, sessionContextWindow, sessionProvider);
   }
-  const budgets = computeBudgets(windowTokens);
+  const budgets = computeBudgets(windowTokens, sessionProvider as TokenProvider | undefined);
   const { min, max } = budgets.taskCountRange;
   const execWindowK = Math.round(windowTokens / 1000);
   const perTaskBudgetK = Math.round(budgets.inlineContextBudgetChars / 1000);
@@ -1403,6 +1484,18 @@ function resolveTaskSummariesLocation(
   return { dir: slicePath, relPrefix: sRel };
 }
 
+function summaryFileBelongsToSlice(
+  fileName: string,
+  base: string,
+  mid: string,
+  sid: string,
+): boolean {
+  const tid = taskIdFromTaskFileName(fileName, "SUMMARY");
+  if (!tid) return false;
+  const resolved = resolveTaskFile(base, mid, sid, tid, "SUMMARY");
+  return resolved !== null && basename(resolved) === fileName;
+}
+
 export async function getPriorTaskSummaryPaths(
   mid: string, sid: string, currentTid: string, base: string,
 ): Promise<string[]> {
@@ -1414,7 +1507,10 @@ export async function getPriorTaskSummaryPaths(
 
   return summaryFiles
     .filter(f => {
-      const num = parseInt(f.replace(/^T/, ""), 10);
+      if (!summaryFileBelongsToSlice(f, base, mid, sid)) return false;
+      const tid = taskIdFromTaskFileName(f, "SUMMARY");
+      if (!tid) return false;
+      const num = parseInt(tid.replace(/^T/, ""), 10);
       return num < currentNum;
     })
     .map(f => `${loc.relPrefix}/${f}`);
@@ -1447,8 +1543,9 @@ export async function getDependencyTaskSummaryPaths(
 
   return summaryFiles
     .filter((f) => {
-      // Extract task ID from filename: "T02-SUMMARY.md" → "T02"
-      const tid = f.replace(/-SUMMARY\.md$/i, "").toUpperCase();
+      if (!summaryFileBelongsToSlice(f, base, mid, sid)) return false;
+      const tid = taskIdFromTaskFileName(f, "SUMMARY");
+      if (!tid) return false;
       return depSet.has(tid);
     })
     .map((f) => `${loc.relPrefix}/${f}`);
@@ -2697,7 +2794,7 @@ export async function buildExecuteTaskPrompt(
   // Compute verification budget for the executor's context window (issue #707)
   const prefs = loadEffectiveGSDPreferences();
   const contextWindow = resolveExecutorContextWindow(opts.modelRegistry, prefs?.preferences, opts.sessionContextWindow, opts.sessionProvider);
-  const budgets = computeBudgets(contextWindow);
+  const budgets = computeBudgets(contextWindow, opts.sessionProvider as TokenProvider | undefined);
   const verificationBudget = `~${Math.round(budgets.verificationBudgetChars / 1000)}K chars`;
 
   // Truncate carry-forward section when it exceeds 40% of inline context budget.
@@ -2743,6 +2840,15 @@ export async function buildExecuteTaskPrompt(
     }
   } catch (reopenErr) {
     logWarning("prompt", `reopen reason injection failed: ${(reopenErr as Error).message}`);
+  }
+
+  const reworkFindingsBlock = renderBlockingReworkFindingsBlock(mid, sid, tid);
+  if (reworkFindingsBlock) {
+    const block = reworkFindingsBlock + "\n\n---\n\n";
+    phaseAnchorSection = phaseAnchorSection
+      ? `${block}${phaseAnchorSection}`
+      : block;
+    trackPromptContext(contextTelemetry, "rework-findings", "inline", reworkFindingsBlock);
   }
 
   // ADR-011 Phase 2: inject any resolved-but-unapplied escalation override
@@ -2805,10 +2911,26 @@ export async function buildExecuteTaskPrompt(
       }
     },
   });
-  const taskPlanInline = requireComposedArtifactBlock(contractedContext.blocks, "execute-task", "task-plan");
-  const slicePlanExcerpt = requireComposedArtifactBlock(contractedContext.blocks, "execute-task", "slice-plan");
+  const rawTaskPlanInline = requireComposedArtifactBlock(contractedContext.blocks, "execute-task", "task-plan");
+  const rawSlicePlanExcerpt = requireComposedArtifactBlock(contractedContext.blocks, "execute-task", "slice-plan");
   const contractedCarryForward = requireComposedArtifactBlock(contractedContext.blocks, "execute-task", "prior-task-summaries");
-  const contractedTemplates = requireComposedArtifactBlock(contractedContext.blocks, "execute-task", "templates");
+  const rawContractedTemplates = requireComposedArtifactBlock(contractedContext.blocks, "execute-task", "templates");
+  // Cap the static inline blocks against one shared budget so a small-window
+  // executor can't overflow (the sibling builders cap via `capPreamble`;
+  // execute-task's blocks feed separate template slots, so they share a budget
+  // block-by-block). Carry-forward already has its own truncation above.
+  const inlineBudget = Math.min(MAX_PREAMBLE_CHARS, budgets.inlineContextBudgetChars);
+  const { taskPlan: taskPlanInline, slicePlan: slicePlanExcerpt, templates: contractedTemplates } =
+    capExecuteTaskInlineBlocks(rawTaskPlanInline, rawSlicePlanExcerpt, rawContractedTemplates, inlineBudget);
+  const inlineDropped = (rawTaskPlanInline.length + rawSlicePlanExcerpt.length + rawContractedTemplates.length)
+    - (taskPlanInline.length + slicePlanExcerpt.length + contractedTemplates.length);
+  trackPromptContext(
+    contextTelemetry,
+    "inline-cap",
+    inlineDropped > 0 ? "excerpt" : "skipped",
+    null,
+    inlineDropped > 0 ? `dropped ${inlineDropped} chars (budget ${inlineBudget})` : "within budget",
+  );
   const onDemandResult = renderExecuteTaskOnDemandContext(base, mid, sid, contractedContext.onDemand);
   const onDemandContext = onDemandResult.text;
   trackPromptContext(
@@ -2904,12 +3026,14 @@ export async function buildCompleteSlicePrompt(
           trackPromptContext(contextTelemetry, "prior-task-summaries", "skipped", null, "missing tasks dir");
           return null;
         }
-        const summaryFiles = resolveTaskFiles(loc.dir, "SUMMARY").sort();
+        const summaryFiles = resolveTaskFiles(loc.dir, "SUMMARY")
+          .filter((file) => summaryFileBelongsToSlice(file, base, mid, sid))
+          .sort();
         const blocks: string[] = [];
         for (const file of summaryFiles) {
           const absPath = join(loc.dir, file);
           const relPath = `${loc.relPrefix}/${file}`;
-          const taskId = file.replace(/-SUMMARY\.md$/i, "");
+          const taskId = taskIdFromTaskFileName(file, "SUMMARY") ?? file.replace(/-SUMMARY\.md$/i, "");
           blocks.push(await buildTaskSummaryExcerpt(absPath, relPath, taskId));
         }
         const body = blocks.length > 0 ? blocks.join("\n\n---\n\n") : null;
@@ -3522,7 +3646,9 @@ export async function buildReplanSlicePrompt(
   let blockerTaskId = "";
   const summaryLoc = resolveTaskSummariesLocation(base, mid, sid);
   if (summaryLoc) {
-    const summaryFiles = resolveTaskFiles(summaryLoc.dir, "SUMMARY").sort();
+    const summaryFiles = resolveTaskFiles(summaryLoc.dir, "SUMMARY")
+      .filter((file) => summaryFileBelongsToSlice(file, base, mid, sid))
+      .sort();
     for (const file of summaryFiles) {
       const absPath = join(summaryLoc.dir, file);
       const content = await loadFile(absPath);
@@ -3530,7 +3656,7 @@ export async function buildReplanSlicePrompt(
       const summary = parseSummary(content);
       const relPath = `${summaryLoc.relPrefix}/${file}`;
       if (summary.frontmatter.blocker_discovered) {
-        blockerTaskId = summary.frontmatter.id || file.replace(/-SUMMARY\.md$/i, "");
+        blockerTaskId = summary.frontmatter.id || taskIdFromTaskFileName(file, "SUMMARY") || file.replace(/-SUMMARY\.md$/i, "");
         inlined.push(await buildTaskSummaryExcerpt(absPath, relPath, blockerTaskId, { blocker: true }));
       }
     }

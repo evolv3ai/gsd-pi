@@ -85,9 +85,8 @@ Semi-static section
     └── Prior slice/milestone RESEARCH.md
 
 Dynamic section
-    ├── Active M##-CONTEXT.md
-    ├── Active S##-PLAN.md
-    ├── Active T##-PLAN.md
+    ├── Active NN-CONTEXT.md
+    ├── Active NN-MM-PLAN.md (slice plan + embedded task planning)
     ├── Task summary from prior run (resume)
     ├── Carry-forward captures
     └── Gate list to close
@@ -238,7 +237,7 @@ complete-milestone
 
 | Prompt | Purpose | Key Tools Called |
 |--------|---------|-----------------|
-| `complete-slice.md` | Close slice after tasks pass. Compress summary. | `gsd_slice_complete`, `gsd_requirement_update` |
+| `complete-slice.md` | Close slice after tasks pass. Compress summary; may reopen/replan pending task rework before closeout. | `gsd_slice_complete`, `gsd_task_reopen`, `gsd_replan_slice`, `gsd_replan_task`, `gsd_rework_brief_save`, `gsd_requirement_update` |
 | `reassess-roadmap.md` | Review roadmap post-slice. Validates success-criterion coverage. | `gsd_reassess_roadmap`, `gsd_requirement_update` |
 | `complete-milestone.md` | Close milestone. Persist to DB. | `gsd_complete_milestone`, `gsd_requirement_update`, `capture_thought` |
 
@@ -301,7 +300,7 @@ STATE.md
               │              │ writes M##-RESEARCH.md
               │              │
               ├── [ms]    plan-milestone
-              │              │ writes M##-ROADMAP.md + S##-PLAN sketches
+              │              │ writes NN-ROADMAP.md + optional first NN-MM-PLAN.md
               │              │
               ├── [sl]    parallel-research-slices ──► N× subagent (research-slice)
               │              │ writes S##-RESEARCH.md
@@ -310,13 +309,13 @@ STATE.md
               │              │ writes S##-CONTEXT.md
               │              │
               ├── [sl]    plan-slice / refine-slice
-              │              │ writes S##-PLAN.md + T##-PLAN.md
+              │              │ writes NN-MM-PLAN.md with embedded task planning
               │              │
               ├── [task]  reactive-execute ──────────► N× subagent (execute-task)
-              │    OR                                     │ writes T##-SUMMARY.md or S##-REACTIVE-BLOCKER.md
+              │    OR                                     │ writes S##-T##-SUMMARY.md or S##-REACTIVE-BLOCKER.md
               ├── [task]  execute-task                    │
-              │              │ reads T##-PLAN.md, S##-PLAN.md excerpt
-              │              │ writes T##-SUMMARY.md
+              │              │ reads DB task plan + NN-MM-PLAN.md excerpt
+              │              │ writes S##-T##-SUMMARY.md
               │              │
               ├── [gate]  gate-evaluate ────────────► N× subagent
               │              │ writes gate results
@@ -380,25 +379,25 @@ guided-workflow-preferences  →  .gsd/PREFERENCES.md
 guided-discuss-project       →  .gsd/PROJECT.md
 guided-discuss-requirements  →  .gsd/REQUIREMENTS.md
 guided-research-decision     →  .gsd/runtime/research-decision.json
-guided-research-project      →  .gsd/milestones/M##/M##-RESEARCH.md (×4 aspects)
+guided-research-project      →  .gsd/phases/<NN-slug>/<NN>-RESEARCH.md (×4 aspects)
 
-discuss / guided-discuss-milestone  →  .gsd/milestones/M##/M##-CONTEXT.md
-research-milestone           →  .gsd/milestones/M##/M##-RESEARCH.md
-plan-milestone               →  .gsd/milestones/M##/M##-ROADMAP.md
-                                 .gsd/milestones/M##/slices/S##/S##-PLAN.md (sketches)
+discuss / guided-discuss-milestone  →  .gsd/phases/<NN-slug>/<NN>-CONTEXT.md
+research-milestone           →  .gsd/phases/<NN-slug>/<NN>-RESEARCH.md
+plan-milestone               →  .gsd/phases/<NN-slug>/<NN>-ROADMAP.md
+                                 .gsd/phases/<NN-slug>/<NN>-<MM>-PLAN.md (single-slice fast path)
 
-research-slice               →  .gsd/milestones/M##/slices/S##/S##-RESEARCH.md
-guided-discuss-slice         →  .gsd/milestones/M##/slices/S##/S##-CONTEXT.md
-plan-slice / refine-slice    →  .gsd/milestones/M##/slices/S##/S##-PLAN.md
-                                 .gsd/milestones/M##/slices/S##/tasks/T##-PLAN.md
+research-slice               →  .gsd/phases/<NN-slug>/<NN>-<MM>-RESEARCH.md
+guided-discuss-slice         →  .gsd/phases/<NN-slug>/<NN>-<MM>-CONTEXT.md
+plan-slice / refine-slice    →  .gsd/phases/<NN-slug>/<NN>-<MM>-PLAN.md
+                                 (task planning is embedded; no separate task plan file)
 
-execute-task                 →  .gsd/milestones/M##/slices/S##/tasks/T##-SUMMARY.md
+execute-task                 →  .gsd/phases/<NN-slug>/S##-T##-SUMMARY.md
 gate-evaluate                →  gate results (DB + artifact)
-run-uat                      →  .gsd/milestones/M##/slices/S##/S##-ASSESSMENT.md
-complete-slice               →  .gsd/milestones/M##/slices/S##/S##-SUMMARY.md
-reassess-roadmap             →  updates M##-ROADMAP.md (slice statuses)
+run-uat                      →  .gsd/phases/<NN-slug>/<NN>-<MM>-ASSESSMENT.md
+complete-slice               →  .gsd/phases/<NN-slug>/<NN>-<MM>-SUMMARY.md
+reassess-roadmap             →  updates <NN>-ROADMAP.md (slice statuses)
 validate-milestone           →  validation verdict (DB)
-complete-milestone           →  .gsd/milestones/M##/M##-SUMMARY.md
+complete-milestone           →  .gsd/phases/<NN-slug>/<NN>-SUMMARY.md
 
 triage-captures              →  .gsd/CAPTURES.md (classification metadata)
 queue                        →  .gsd/QUEUE.md, updates PROJECT.md
@@ -435,13 +434,15 @@ LLM sees: "load these skill files and follow their rules for this unit"
 |------|------------|
 | `gsd_plan_milestone` | milestones table, slices table |
 | `gsd_plan_slice` | slices table; tasks table only when a non-empty `tasks` payload performs full replacement/update |
-| `gsd_plan_task` | one task planning row; task plan artifact and slice plan projection |
-| `gsd_task_complete` | tasks table, T##-SUMMARY.md |
+| `gsd_plan_task` | one task planning row; embedded task planning in the slice plan projection |
+| `gsd_task_complete` | tasks table, S##-T##-SUMMARY.md (legacy T##-SUMMARY.md readable) |
 | `gsd_slice_complete` | slices table, S##-SUMMARY.md |
 | `gsd_complete_milestone` | milestones table, M##-SUMMARY.md |
 | `gsd_validate_milestone` | milestones table (validation verdict) |
 | `gsd_reassess_roadmap` | slices table (reorder, add, remove) |
 | `gsd_replan_slice` | tasks table (replace incomplete tasks) |
+| `gsd_replan_task` | one pending task planning row; replan_history row |
+| `gsd_rework_brief_save` | rework_briefs and rework_brief_findings tables |
 | `gsd_skip_slice` | slices table (status = skipped) |
 | `gsd_requirement_save` | requirements table |
 | `gsd_requirement_update` | requirements table |

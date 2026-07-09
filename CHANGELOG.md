@@ -8,6 +8,92 @@ This changelog starts from the `open-gsd/gsd-pi` ownership baseline. Earlier pro
 
 ## [Unreleased]
 
+### Added
+- **models**: add GPT-5.6 as a first-class model for the OpenAI and OpenAI Codex providers (catalog, xhigh reasoning, routing tiers, cost tables)
+
+## [1.9.0] - 2026-07-08
+
+### Added
+- **gsd**: add task rework briefs
+
+### Fixed
+- **gsd**: only persist rework resolutions that satisfy the evidence gate
+- **gsd**: keep rework blocking gate intact on save and rollback
+- **gsd**: serialize write-gate snapshot read-merge-write across processes
+- **gsd**: reject path-traversal keys in compat marker projections
+- **issue**: [Bug]: claude-code provider re-sends byte-identical duplicate image blocks every turn (no dedup in `extractImageBlocksFromContext`), inflating the request
+- **gsd**: invalidate derive cache when milestone lock env flips
+- **gsd**: claim commands with BEGIN IMMEDIATE to avoid WAL snapshot race
+- **gsd-db**: make saveGateResult verdict and ledger write atomic
+- **gsd-db**: stamp completed_at for all complete-aliases in insertTask
+- **gsd**: recognize closed alias in skipSliceCascade guard
+- **deps**: keep ajv as a runtime dependency for browser_extract
+- **gsd**: preserve out-of-scope task status during scoped import
+- **gsd**: scope external-edit re-import status authority to drifted entities
+- **ci**: wire mac-tools screenshot test into integration suite and audit matrix
+- **gsd**: close workflow DB before migration restore replaces gsd.db
+- **gsd-db**: refuse newer-schema DBs and guard the fresh-install stamp
+- **gsd-db**: treat empty schema_version table as version 0
+- **issue**: [Bug]: `mac_screenshot` returns full-resolution image blocks with no downscale cap, unlike browser screenshots (≤1568px) and the read tool
+- **issue**: [Bug]: Interrupted web_search turn persists an orphaned server_tool_use → 400 "without a corresponding web_search_tool_result block" on replay
+- **cloud**: time out hung gateway requests in pairing and device flow
+- **web**: run no-auth interlock before stale instance cleanup
+- **web**: refuse --no-auth on non-loopback hosts without explicit override
+- **bug-1**: Collapsed milestone state warnings are not actionable replaced the collapsed “not discussable” warning with actionable missing, complete, and parked milestone messages.
+- **release**: build and test-align gsd-cloud in build:core
+- **dispatch**: resolve discuss/context checks against session worktree
+- **bug-4**: Flat-phase render leaves stale artifact rows stale flat-phase artifact rows are pruned and flat task planning renders slice PLAN only.
+- **bug-3**: Flat-phase migration deletes phases without backup migration backs up existing phases projection before deleting it.
+- **bug-2**: Legacy migration detection treats anchor dirs as content legacy migration detection ignores anchor runtime scaffolding.
+- **bug-1**: Anchors are written into legacy milestone directories phase anchors now write to runtime state instead of legacy milestone directories.
+- **bug-2**: Verification evidence lookup ignores gsd_exec tool runs evidence collection now matches `gsd_exec` runtime-purpose verification labels against sandboxed tool runs.
+- **bug-1**: Dispatch validation mismatches bare and suffixed milestone IDs dispatch now treats bare and suffixed milestone IDs for the same ordinal as one active session scope.
+- **issue**: bug: renderAssessmentFromDb writes flat-phase filename into legacy-layout slices/SID/ dir, breaking reassess-roadmap verification
+- check worktree and project root for pre-planning CONTEXT
+- **bug-2**: Worktree sync omits flat-phase discuss artifacts Worktree projection now copies flat-phase CONTEXT and DISCUSSION artifacts before dispatch.
+- **bug-1**: Dispatch checks missing worktree CONTEXT and re-interviews user Pre-planning dispatch now checks project-root CONTEXT before re-dispatching discuss-milestone.
+- **issue**: [Feature]: Claude Sonnet 5 missing from AWS Bedrock model registry (present for Anthropic-direct only)
+- **issue**: [Bug]: post-execution import check blocks task completion on Convex `_generated/` imports (generated code absent on disk), pausing auto-mode
+- **evidence-cross-ref**: exclude command extensions when exact matches exist
+- **issue**: [Bug]: evidence-xref safety pause fires between task-complete marking and the deferred commit, stranding finished work — resume then adopts it into an unattributed commit
+- **headless**: stop /gsd queue hub notice from tripping the blocked dead-end classifier
+- **issue**: [Bug]: marker-key mismatch triggers repeated whole-tree re-imports + leaked `.gsd-backups/migrate-*` dirs — reproduced on a real (non-symlinked) `.gsd`
+- **issue**: [Bug]: `new-milestone --auto` exits `Status: complete` after planning without chaining into execution
+- **issue**: [Bug]: md-importer re-import rewrites slice `completed_at` to import time — tasks are preserve-guarded (#1222/#1228), slices and milestones are not
+- **issue**: [Bug]: During `/gsd discuss`, the agent's clarifying/explanatory replies are dropped — the user sees only the elicitation popups
+- **issue**: [Bug]: `gsd headless verdict pass --rationale "..."` unusable — headless argv parser silently swallows unrecognized flags before slash-command assembly
+- **issue**: [Bug]: A task-less (sketch) slice acquires a phantom "Plan NN" task after a `.planning` projection round-trip, causing auto-mode to skip planning
+- **headless**: do not treat queue hub picker guidance as terminal
+- **issue**: [Bug]: `--print` mode discards `process.exitCode` set by commands/extensions — unconditional `process.exit(0)` after `runPrintMode`
+- **issue**: [Bug]: headless auto/next idles forever when a queued pre-planning milestone routes to an interactive menu
+
+### Changed
+- **web**: delete unused chart.tsx and recharts
+- **deps**: move ajv to devDependencies
+- **daemon**: dedupe @anthropic-ai/sdk to ^0.91.1
+- **deps**: override hono to >=4.12.25
+- **gsd**: batch plan-v2 task queries and skip unchanged graph writes
+- **gsd**: open the worker DB once per parallel-monitor tick
+- **gsd**: batch parallel-eligibility task queries
+- **gsd**: extract migrate execution service
+- **gsd**: extract migrate planning service
+- **gsd**: extract migrate presentation helpers
+
+### Removed
+- restore "did not start:" dead-end classifier (undo 68b6938b)
+
+## [1.8.1] - 2026-07-06
+
+### Fixed
+- **issue**: unregistered-milestone false positive: flat-phase ID extractor derives bare M### from descriptive slug, missing suffixed DB row (M###-abcdef) (#1282)
+- **issue**: [Bug] reconcile triggers mass re-projection of all historical PLAN.md files, resetting completed task checkboxes to unchecked (#1279)
+- **issue**: [Bug]: `migrateHierarchyToDb` imports a `[sketch]` slice's stub PLAN tasks as real DB rows, flipping planning→executing
+- **issue**: [Bug]: `sketchFlagHandler` clears `is_sketch` on mere PLAN-file existence, including a stub or leftover PLAN
+
+### Changed
+- **doctor**: extract state checks
+- **doctor**: extract history and workspace checks
+
 ## [1.7.0] - 2026-07-06
 
 ### Added

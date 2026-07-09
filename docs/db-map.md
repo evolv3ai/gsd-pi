@@ -58,13 +58,13 @@ After commit: regenerate markdown artifacts → write to disk → invalidate cac
 2. `better-sqlite3` (npm) — fallback if node:sqlite unavailable
 3. null → DB unavailable. Runtime `deriveState()` fails closed with an explicit blocker; markdown-only recovery is available only through explicit migration/recovery commands.
 
-**Runtime state derivation:** `deriveState()` opens the existing workflow DB through `state/derive/db-open.ts`, projects rows in `state/derive/from-db.ts`, and returns a DB-unavailable blocker instead of implicitly deriving runtime state from markdown projections. Markdown hierarchy import is explicit recovery/migration behavior, not the normal read path.
+**Runtime state derivation:** `deriveState()` opens the existing workflow DB through `state/derive/db-open.ts`, projects rows in `state/derive/from-db.ts`, and returns a DB-unavailable blocker instead of implicitly deriving runtime state from markdown projections. Markdown hierarchy import is explicit recovery/migration behavior, not the normal read path. When `GSD_MILESTONE_LOCK` changes, auto-mode invalidates the short-lived derive cache because the cache key is only the base path while the DB projection is lock-filtered.
 
 ---
 
 ## 2. Schema Version History
 
-Current version: **V29**
+Current version: **V30**
 
 | Version | What Changed |
 |---------|-------------|
@@ -97,6 +97,7 @@ Current version: **V29**
 | V27 | artifacts.content_hash (SHA-256 of full_content, computed on every insertArtifact) |
 | V28 | memories.last_hit_at; incrementMemoryHitCount sets it; queryMemoriesRanked applies time-decay (1.0 → 0.7 floor over 90 days) |
 | V29 | slices.target_repositories and tasks.target_repositories for multi-repository planning |
+| V30 | rework_briefs and rework_brief_findings for structured task rework gates |
 
 ---
 
@@ -220,7 +221,7 @@ PRIMARY KEY (milestone_id, id)
 FOREIGN KEY milestone_id → milestones(id)
 ```
 - Index: `idx_slices_active` (milestone_id, status)
-- Status values: `pending`, `in_progress`, `complete`, `skipped`
+- Status values: `pending`, `in_progress`, `complete`, `skipped` (legacy/imported `done` and `closed` are treated as closed aliases by `status-guards.ts`)
 
 ---
 
@@ -261,7 +262,7 @@ PRIMARY KEY (milestone_id, slice_id, id)
 FOREIGN KEY (milestone_id, slice_id) → slices(milestone_id, id)
 ```
 - Indexes: `idx_tasks_active` (milestone_id, slice_id, status), `idx_tasks_escalation_pending`
-- Status values: `pending`, `in_progress`, `complete`, `skipped`, `blocked`
+- Status values: `pending`, `in_progress`, `complete`, `skipped`, `blocked` (legacy/imported `done` and `closed` are treated as complete aliases; `insertTask` stamps `completed_at` for `complete`/`done`/`closed`, but not `skipped`)
 
 ---
 
@@ -294,6 +295,40 @@ replacement_artifact_path TEXT DEFAULT NULL
 created_at               TEXT NOT NULL DEFAULT ''
 FOREIGN KEY milestone_id → milestones(id)
 ```
+
+---
+
+#### `rework_briefs` (V30)
+```
+id            TEXT PRIMARY KEY
+milestone_id  TEXT NOT NULL DEFAULT ''
+slice_id      TEXT NOT NULL DEFAULT ''
+task_id       TEXT NOT NULL DEFAULT ''
+created_at    TEXT NOT NULL DEFAULT ''
+updated_at    TEXT NOT NULL DEFAULT ''
+```
+- Index: `idx_rework_briefs_task` (milestone_id, slice_id, task_id)
+- Default ID when omitted by the caller: `RB-<milestoneId>-<sliceId>-<taskId>`
+
+---
+
+#### `rework_brief_findings` (V30)
+```
+brief_id              TEXT NOT NULL
+finding_id            TEXT NOT NULL
+severity              TEXT NOT NULL DEFAULT 'blocking'
+description           TEXT NOT NULL DEFAULT ''
+required_fix          TEXT NOT NULL DEFAULT ''
+verification_commands TEXT NOT NULL DEFAULT '[]'
+status                TEXT NOT NULL DEFAULT 'pending'
+evidence              TEXT NOT NULL DEFAULT ''
+decision_ref          TEXT NOT NULL DEFAULT ''
+updated_at            TEXT NOT NULL DEFAULT ''
+PRIMARY KEY (brief_id, finding_id)
+FOREIGN KEY brief_id → rework_briefs(id)
+```
+- Index: `idx_rework_findings_status` (brief_id, severity, status)
+- `severity = 'blocking'` and `status = 'pending'` gates `gsd_task_complete` for the linked task until the finding is resolved or explicitly deferred with an override.
 
 ---
 
@@ -615,6 +650,7 @@ completed_at TEXT
 result_json  TEXT
 ```
 - Index: `idx_command_queue_pending` (target_worker, claimed_at)
+- Claiming is a read-then-write path and uses `immediateTransaction()` so WAL workers serialize before selecting the pending row instead of failing a deferred write upgrade with `SQLITE_BUSY_SNAPSHOT`.
 
 ---
 
@@ -706,24 +742,30 @@ remain outside manifest restore.
 | `gsd_summary_save` | milestones, slices, tasks | artifacts | M##/S##/T## artifact files |
 | `gsd_milestone_generate_id` | milestones | milestones (INSERT OR IGNORE, queued) | — |
 | `gsd_plan_milestone` | milestones, slices | milestones, slices | ROADMAP.md |
-| `gsd_plan_slice` | milestones, slices, tasks | slices metadata; tasks only when a non-empty `tasks` payload performs full replacement/update | S##-PLAN.md and task plans when tasks exist |
-| `gsd_plan_task` | slices, tasks | one task planning row, task gate seeds | T##-PLAN.md; re-renders S##-PLAN.md |
-| `gsd_task_complete` | tasks, slices | tasks, verification_evidence | T##-SUMMARY.md; toggles checkbox in S##-PLAN.md |
+| `gsd_plan_slice` | milestones, slices, tasks | slices metadata; tasks only when a non-empty `tasks` payload performs full replacement/update | NN-MM-PLAN.md with embedded task planning when tasks exist |
+| `gsd_plan_task` | slices, tasks | one task planning row, task gate seeds | re-renders NN-MM-PLAN.md; task PLAN paths resolve to the slice plan |
+| `gsd_task_complete` | tasks, slices, rework_briefs, rework_brief_findings | tasks, verification_evidence, rework_brief_findings | S##-T##-SUMMARY.md; toggles checkbox in NN-MM-PLAN.md; reads legacy T##-SUMMARY.md |
 | `gsd_slice_complete` | tasks, slices | slices, tasks (cascade skipped) | S##-SUMMARY.md, S##-UAT.md; toggles checkpoint in ROADMAP.md |
 | `gsd_uat_result_save` | slices, artifacts | artifacts, assessments, quality_gates, gate_runs | S##-ASSESSMENT.md; UAT attempt JSON |
 | `gsd_complete_milestone` | milestones, slices, tasks | milestones | M##-SUMMARY.md |
 | `gsd_validate_milestone` | milestones, slices, tasks | assessments, quality_gates, gate_runs | VALIDATION.md |
 | `gsd_reassess_roadmap` | milestones, slices | milestones, slices, assessments | ROADMAP.md, ASSESSMENT.md |
-| `gsd_replan_slice` | slices, tasks | slices, tasks, replan_history, quality_gates | S##-PLAN.md, S##-REPLAN.md |
+| `gsd_replan_slice` | slices, tasks | slices, tasks, replan_history, quality_gates | NN-MM-PLAN.md, NN-MM-REPLAN.md |
+| `gsd_replan_task` | slices, tasks | one pending task planning row, replan_history | re-renders the task/slice PLAN projection |
+| `gsd_rework_brief_save` | rework_briefs, rework_brief_findings | rework_briefs, rework_brief_findings | — |
 | `gsd_skip_slice` | slices, tasks | slices, tasks | STATE.md (via rebuildState) |
-| `gsd_task_reopen` | tasks, slices, milestones | tasks | deletes T##-SUMMARY.md |
-| `gsd_slice_reopen` | slices, tasks, milestones | slices, tasks | deletes S##-SUMMARY.md, UAT, all T##-SUMMARY.md |
+| `gsd_task_reopen` | tasks, slices, milestones | tasks | deletes S##-T##-SUMMARY.md and legacy T##-SUMMARY.md |
+| `gsd_slice_reopen` | slices, tasks, milestones | slices, tasks | deletes S##-SUMMARY.md, UAT, all S##-T##-SUMMARY.md and legacy T##-SUMMARY.md |
 | `gsd_milestone_reopen` | milestones, slices, tasks | milestones, slices, tasks | deletes all summaries |
-| `gsd_save_gate_result` | quality_gates | quality_gates, gate_runs | — |
+| `gsd_save_gate_result` | quality_gates | quality_gates, gate_runs (same transaction) | — |
 | `capture_thought` | memories | memories | KNOWLEDGE.md projection for Patterns/Lessons (both backfilled and newly captured) |
 | `memory_query` | memories, memories_fts, memory_embeddings | memories (hit_count++) | — |
 
-`gsd_task_complete` treats the task summary and slice plan projection as closeout-critical. If writing `T##-SUMMARY.md` or re-rendering `S##-PLAN.md` fails, the tool returns an error after deleting the task's verification evidence and reverting its task row to `pending`; it does not leave a committed `complete` task with a stale plan projection.
+`gsd_replan_task` updates exactly one existing pending task after rework. MCP callers may omit `projectDir`; the server defaults it to the current project/worktree root. Required fields are `milestoneId`, `sliceId`, `taskId`, `title`, `description`, `estimate`, `files`, `verify`, `inputs`, and `expectedOutput`; `reworkBriefRef` is optional and records the structured brief that triggered the replan. The handler rejects missing tasks and closed/completed tasks; completed tasks must be reopened with `gsd_task_reopen` before replanning.
+
+`gsd_rework_brief_save` persists structured findings for a task. MCP callers may omit `projectDir`; the server defaults it to the current project/worktree root. Required fields are `milestoneId`, `sliceId`, `taskId`, and non-empty `findings`. Each finding requires `findingId`, `severity` (`blocking` or `advisory`), `description`, `requiredFix`, and `verificationCommands`; optional fields are `status`, `evidence`, and `decisionRef`.
+
+`gsd_task_complete` treats the task summary and slice plan projection as closeout-critical. In flat-phase layout it writes `S##-T##-SUMMARY.md` at the phase root so duplicate task IDs in different slices cannot collide; readers still accept legacy flat `T##-SUMMARY.md` summaries. If writing the task summary or re-rendering `NN-MM-PLAN.md` fails, the tool returns an error after deleting the task's verification evidence and reverting its task row to `pending`; it does not leave a committed `complete` task with a stale plan projection. It also rejects completion when the task has pending blocking rework findings. To complete such a task, the caller must include `reworkResolution` entries with `findingId`, `status: "resolved"`, and non-empty `evidence`, or `status: "deferred-with-override"` with non-empty `evidence` and a `decisionRef`.
 
 ---
 
@@ -760,15 +802,15 @@ remain outside manifest restore.
 
 1. **Single-writer rule**: all write SQL lives in the explicit single-writer *layer* — `db/engine.ts` for schema, migrations, lifecycle, and transaction primitives; `db/writers/**` for domain write subsystems; `gsd-db.ts` as the compatibility barrel and remaining mid-migration wrappers; the typed coordination/runtime writer modules `db/milestone-leases.ts`, `db/unit-dispatches.ts`, `db/auto-workers.ts`, `db/runtime-kv.ts`, and `db/command-queue.ts`; the schema/migration helpers `db-memory-fts-schema.ts`, `db-schema-metadata.ts`, and `db-verification-evidence-schema.ts`; and the ADR migration/backfill helper `memory-backfill.ts`. This is an allowlist, not permission for arbitrary raw writes under `db/`. `unit-ownership.ts` remains excluded because it owns a separate `.gsd/unit-claims.db`. `db/queries.ts` is the read-only Query Module and must contain no write SQL. No raw write SQL escapes to the adapter from anywhere else. Enforced by the structural `single-writer-invariant.test.ts`, which checks this allowlist.
 
-2. **Transaction wrapping**: every multi-table write uses `transaction()` or `immediateTransaction()` when it needs SQLite's reserved writer lock up front. Rollback on any error. Re-entrant: nested calls increment the shared depth counter; no nested `BEGIN`.
+2. **Transaction wrapping**: every multi-table write uses `transaction()` or `immediateTransaction()` when it needs SQLite's reserved writer lock up front. Rollback on any error. Re-entrant: nested calls increment the shared depth counter; no nested `BEGIN`. `gsd_save_gate_result` commits the `quality_gates` verdict update and matching `gate_runs` ledger insert together, so recovery never sees a completed gate without its audit row.
 
 3. **Cascade semantics**: hierarchy status cascades are named **Domain Write Operations** in `db/writers/cascades.ts`, each owning its own `transaction()` so the milestone/slice/task subtree transitions atomically (callers keep only projection/file-cleanup/event logic):
    - `gsd_slice_complete` (`completeSliceCascade`) cascades `pending` tasks → `skipped`
-   - `gsd_skip_slice` (`skipSliceCascade`) cascades `pending`/`active` tasks → `skipped`, preserves `complete`
+   - `gsd_skip_slice` (`skipSliceCascade`) rejects closed slices (`complete`/`done`/`closed`) without clearing `completed_at`, re-skips `skipped` slices as a no-op, cascades `pending`/`active` tasks → `skipped`, and preserves closed tasks
    - `gsd_milestone_reopen` (`reopenMilestoneCascade`) cascades all slices → `in_progress`, all tasks → `pending`
    - `gsd_slice_reopen` (`reopenSliceCascade`) and `undo`'s reset (`resetSliceCascade`) reopen a slice's subtree atomically
 
-4. **Conflict guards**: `insertSlice`, `insertTask` use `ON CONFLICT` to preserve existing completed status and non-empty fields. Fresh INSERT of an already-complete row is a no-op.
+4. **Conflict guards**: `insertSlice`, `insertTask` use `ON CONFLICT` to preserve existing completed status and non-empty fields. `insertTask` treats `complete`/`done`/`closed` as complete for `completed_at` stamping and preserves existing completion metadata when `preserveCompletionMetadata` is set; `skipped` stays terminal but does not get a completion timestamp.
 
 5. **FTS fallback**: if FTS5 unavailable, `memory_query` falls back to LIKE scan on `memories.content`.
 

@@ -280,6 +280,31 @@ describe('gsd-db', () => {
     }
   });
 
+  test("gsd-db: insertTask stamps completed_at for every complete-alias but not for skipped", () => {
+    openDatabase(":memory:");
+
+    try {
+      insertMilestone({ id: "M001", title: "Completion stamp", status: "active" });
+      insertSlice({ id: "S01", milestoneId: "M001", title: "Slice", status: "active", sequence: 1 });
+      insertTask({ id: "T01", sliceId: "S01", milestoneId: "M001", title: "Closed", status: "closed", sequence: 1 });
+      insertTask({ id: "T02", sliceId: "S01", milestoneId: "M001", title: "Done", status: "done", sequence: 2 });
+      insertTask({ id: "T03", sliceId: "S01", milestoneId: "M001", title: "Skipped", status: "skipped", sequence: 3 });
+
+      assert.ok(
+        getTask("M001", "S01", "T01")?.completed_at,
+        "a task imported as 'closed' is terminal and must carry a completed_at",
+      );
+      assert.ok(getTask("M001", "S01", "T02")?.completed_at, "'done' alias must stamp completed_at");
+      assert.equal(
+        getTask("M001", "S01", "T03")?.completed_at,
+        null,
+        "a skipped task was never completed and must have null completed_at",
+      );
+    } finally {
+      closeDatabase();
+    }
+  });
+
   test('gsd-db: active_decisions view excludes superseded', () => {
     openDatabase(':memory:');
 

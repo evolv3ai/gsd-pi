@@ -81,7 +81,7 @@ Each row = one prompt file. Columns show which DB tables it touches and how.
 | `discuss` / `guided-discuss-milestone` | milestones, artifacts | artifacts (CONTEXT) | M##-CONTEXT.md |
 | `discuss-headless` | milestones, artifacts | milestones, slices, decisions, artifacts | M##-CONTEXT.md, DECISIONS.md |
 | `research-milestone` | milestones, artifacts | artifacts (RESEARCH) | M##-RESEARCH.md |
-| `plan-milestone` | milestones, slices | milestones (UPDATE planning), slices (INSERT), optional single-slice metadata via `gsd_plan_slice`, optional single-slice tasks via `gsd_plan_task`, decisions | ROADMAP.md; S##-PLAN.md/T##-PLAN.md for single-slice fast path |
+| `plan-milestone` | milestones, slices | milestones (UPDATE planning), slices (INSERT), optional single-slice metadata via `gsd_plan_slice`, optional single-slice tasks via `gsd_plan_task`, decisions | ROADMAP.md; NN-MM-PLAN.md with embedded tasks for single-slice fast path |
 | `queue` | milestones | milestones (INSERT queued), artifacts (CONTEXT) | PROJECT.md, QUEUE.md |
 
 ### Slice Planning Phase
@@ -91,23 +91,23 @@ Each row = one prompt file. Columns show which DB tables it touches and how.
 | `parallel-research-slices` | slices, artifacts | artifacts (RESEARCH per slice) | S##-RESEARCH.md × N |
 | `guided-discuss-slice` | slices, artifacts | artifacts (CONTEXT) | S##-CONTEXT.md |
 | `research-slice` / `guided-research-slice` | slices, memories | artifacts (RESEARCH), memories (hit_count++) | S##-RESEARCH.md |
-| `plan-slice` | slices, tasks, memories | slices metadata via `gsd_plan_slice`, per-task rows via `gsd_plan_task`, memories (hit_count++) | S##-PLAN.md, T##-PLAN.md |
-| `refine-slice` | slices (is_sketch=1), tasks | slices metadata and full task replacement/update via `gsd_plan_slice` | S##-PLAN.md |
+| `plan-slice` | slices, tasks, memories | slices metadata via `gsd_plan_slice`, per-task rows via `gsd_plan_task`, memories (hit_count++) | NN-MM-PLAN.md with embedded task planning |
+| `refine-slice` | slices (is_sketch=1), tasks | slices metadata and full task replacement/update via `gsd_plan_slice` | NN-MM-PLAN.md with embedded task planning |
 
 ### Execution Phase
 
 | Prompt | DB Reads | DB Writes | Disk Artifact Written |
 |--------|----------|-----------|----------------------|
-| `execute-task` | tasks, slices, milestones, memories, quality_gates | tasks (UPDATE status, narrative, summary), verification_evidence (INSERT), memories (hit_count++) | T##-SUMMARY.md; S##-PLAN.md checkbox |
-| `guided-resume-task` | tasks, slices | tasks (UPDATE status, summary), verification_evidence (INSERT) | T##-SUMMARY.md |
-| `reactive-execute` | tasks | tasks (via N× execute-task subagents; recovery may mark summary-present tasks complete and missing-summary tasks skipped) | T##-SUMMARY.md × N; S##-REACTIVE-BLOCKER.md when batch summaries remain missing after retries |
+| `execute-task` | tasks, slices, milestones, memories, quality_gates | tasks (UPDATE status, narrative, summary), verification_evidence (INSERT), memories (hit_count++) | S##-T##-SUMMARY.md; NN-MM-PLAN.md checkbox; legacy T##-SUMMARY.md readable |
+| `guided-resume-task` | tasks, slices | tasks (UPDATE status, summary), verification_evidence (INSERT) | S##-T##-SUMMARY.md; legacy T##-SUMMARY.md readable |
+| `reactive-execute` | tasks | tasks (via N× execute-task subagents; recovery may mark summary-present tasks complete and missing-summary tasks skipped) | S##-T##-SUMMARY.md × N; S##-REACTIVE-BLOCKER.md when batch summaries remain missing after retries |
 | `quick-task` | — | — (no DB; writes summaryPath directly) | {{summaryPath}} |
 
 ### Quality Gate Phase
 
 | Prompt | DB Reads | DB Writes | Disk Artifact Written |
 |--------|----------|-----------|----------------------|
-| `gate-evaluate` | quality_gates | quality_gates (UPDATE), gate_runs (INSERT) | gate result per subagent |
+| `gate-evaluate` | quality_gates | quality_gates (UPDATE), gate_runs (INSERT, same transaction) | gate result per subagent |
 | `validate-milestone` | milestones, slices, tasks, quality_gates | assessments (INSERT VALIDATION) | VALIDATION.md |
 | `run-uat` | slices, assessments | assessments (INSERT ASSESSMENT) | S##-ASSESSMENT.md |
 
@@ -123,9 +123,9 @@ Each row = one prompt file. Columns show which DB tables it touches and how.
 
 | Prompt | DB Reads | DB Writes | Disk Artifact Written |
 |--------|----------|-----------|----------------------|
-| `replan-slice` | slices, tasks | slices, tasks, replan_history, quality_gates | S##-PLAN.md, S##-REPLAN.md |
+| `replan-slice` | slices, tasks | slices, tasks, replan_history, quality_gates | NN-MM-PLAN.md, NN-MM-REPLAN.md |
 | `rethink` | milestones, slices, artifacts | slices (UPDATE status=skipped), milestones (UPDATE sequence; repaired from QUEUE-ORDER.json during state derivation) | QUEUE-ORDER.json, PARKED.md |
-| `rewrite-docs` | decisions, requirements, artifacts | decisions, requirements, artifacts | DECISIONS.md, REQUIREMENTS.md, task/slice plans |
+| `rewrite-docs` | decisions, requirements, artifacts | decisions, requirements, artifacts | DECISIONS.md, REQUIREMENTS.md, slice plans with embedded task planning |
 | `doctor-heal` | slices, tasks, artifacts | artifacts (repair CONTEXT/SUMMARY/UAT) | repairs existing artifacts |
 | `review-migration` | milestones, slices, tasks, artifacts, decisions, requirements | — (read-only audit) | — |
 | `scan` | — | — | STACK.md, INTEGRATIONS.md, ARCHITECTURE.md |
@@ -246,13 +246,13 @@ execute-task prompt fires
               completed_at, blocker_discovered
         └─► INSERT INTO verification_evidence (command, exit_code, verdict, duration_ms)
         └─► UPDATE quality_gates SET status='evaluated', verdict (if gate was open)
-        └─► INSERT INTO gate_runs (audit)
-        └─► Write T##-SUMMARY.md to disk
-        └─► Toggle checkbox in S##-PLAN.md
+        └─► INSERT INTO gate_runs (audit; same transaction as the gate verdict)
+        └─► Write S##-T##-SUMMARY.md to disk
+        └─► Toggle checkbox in NN-MM-PLAN.md
         └─► If summary or plan projection write fails:
               DELETE verification_evidence for the task
               UPDATE tasks SET status='pending'
-              remove attempted T##-SUMMARY.md
+              remove attempted S##-T##-SUMMARY.md
               return an error instead of a stale success
 
 complete-slice prompt fires (after all tasks complete)
@@ -332,6 +332,7 @@ user cancels
 command broadcast
   └─► INSERT INTO command_queue (target_worker=NULL, command, args_json)  ← NULL = all workers
   └─► INSERT INTO command_queue (target_worker='w-123', command, args_json) ← targeted
+  └─► worker claims with BEGIN IMMEDIATE so read-then-write claim races serialize under WAL
 
 unit completes
   └─► UPDATE unit_dispatches SET status='done'|'failed', ended_at, exit_reason, error_summary
@@ -373,7 +374,7 @@ unit completes
 | Single-writer: all write SQL in the explicit single-writer allowlist (`db/engine.ts`, `db/writers/**`, `gsd-db.ts`, typed coordination/runtime writers `db/milestone-leases.ts`, `db/unit-dispatches.ts`, `db/auto-workers.ts`, `db/runtime-kv.ts`, `db/command-queue.ts`, schema/migration helpers `db-memory-fts-schema.ts`, `db-schema-metadata.ts`, `db-verification-evidence-schema.ts`, and ADR migration/backfill helper `memory-backfill.ts`); this is not permission for arbitrary writes under `db/`; `unit-ownership.ts` owns separate `.gsd/unit-claims.db`; `db/queries.ts` is read-only | structural test `single-writer-invariant.test.ts` (explicit allowlist) |
 | Cascade on slice complete: pending tasks → skipped | `gsd_slice_complete` transaction |
 | Cascade on milestone reopen: all slices → in_progress, tasks → pending | `gsd_milestone_reopen` transaction |
-| No nested write transactions: `transaction()` and `immediateTransaction()` share one depth counter | `db-transaction.test.ts` |
+| No nested write transactions: `transaction()` and `immediateTransaction()` share one depth counter; read-then-write claims use `immediateTransaction()` and gate verdict + ledger writes commit atomically | `db-transaction.test.ts`, `command-queue.test.ts`, `gate-storage.test.ts` |
 | Workspace isolation: one DB per project root, shared across worktrees via WAL | `db-connection-cache.ts` identityKey |
 | Coordination: one active dispatch per unit_id at a time | `idx_unit_dispatches_active_per_unit` unique partial index |
 | Memory FTS fallback: LIKE scan if FTS5 unavailable | `tryCreateMemoriesFtsSchema` onUnavailable callback |

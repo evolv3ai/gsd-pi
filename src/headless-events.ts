@@ -13,6 +13,7 @@
 
 import {
   isBlockedNoticeMessage,
+  isInteractiveMenuUnavailableNotice,
   isManualResolutionNotice,
   isPauseNotice,
   isTerminalNotice,
@@ -74,7 +75,8 @@ export function mapStatusToExitCode(status: string): number {
  *   "Auto-mode paused..."
  *   "Step-mode paused..."
  * plus bootstrap-time manual-resolution failures that return before auto-mode
- * can emit a formal pause/stop notification.
+ * can emit a formal pause/stop notification, plus interactive menus that could
+ * not render headlessly (a dead-end that returns without dispatching). (#1294)
  *
  * Does NOT match progress notifications that happen to contain words like
  * "complete" or "stopped" (e.g., "Override resolved — rewrite-docs completed",
@@ -122,7 +124,16 @@ export function isTerminalNotification(event: Record<string, unknown>): boolean 
   if (isBlockingCommandBlock(event)) return true
   if (event.type !== 'extension_ui_request' || event.method !== 'notify') return false
   const message = String(event.message ?? '').toLowerCase()
-  return isTerminalNotice(message) || isPauseNotice(message) || isManualResolutionNotice(message)
+  // A menu that could not render headlessly is a terminal dead-end: the
+  // extension already returned without dispatching, so nothing else will fire.
+  // Resolve the run (as blocked, via isBlockedNotification) instead of idling
+  // forever waiting for a completion signal. (#1294)
+  return (
+    isTerminalNotice(message) ||
+    isPauseNotice(message) ||
+    isManualResolutionNotice(message) ||
+    isInteractiveMenuUnavailableNotice(message)
+  )
 }
 
 export function isBlockedNotification(event: Record<string, unknown>): boolean {

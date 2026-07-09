@@ -28,12 +28,16 @@ See [CHANGELOG.md](./CHANGELOG.md) for release-by-release fixes and [Legacy Rele
 ## Latest Release Highlights
 
 <!-- release-highlights:start -->
-Latest release: **v1.7.0**
+Latest release: **v1.9.0**
 
-- **cloud:** Add device-flow login to daemon + @opengsd/gsd-cloud agent (#1278).
-- **issue:** [Bug]: Unattended `gsd headless auto` has no resumer for the parallel/slice_parallel worker pause signal → terminal exit 10 after the first unit.
-- **issue:** Complete-slice's reopen reason never reaches the re-dispatched execute-task (follow-up to #1225).
-- **issue:** [Feature Request]: gsd-browser daemon has no automatic teardown — orphaned Chrome process survives session/task completion.
+- **gsd:** Add task rework briefs.
+- **web:** Delete unused chart.tsx and recharts.
+- **deps:** Move ajv to devDependencies.
+- **daemon:** Dedupe @anthropic-ai/sdk to ^0.91.1.
+- **deps:** Override hono to >=4.12.25.
+- **gsd:** Batch plan-v2 task queries and skip unchanged graph writes.
+- **gsd:** Open the worker DB once per parallel-monitor tick.
+- **gsd:** Batch parallel-eligibility task queries.
 
 <!-- release-highlights:end -->
 

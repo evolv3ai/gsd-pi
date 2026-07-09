@@ -1,6 +1,6 @@
 {
   "name": "@opengsd/cloud-mcp-gateway",
-  "version": "1.7.0",
+  "version": "1.9.0",
   "description": "Cloud MCP gateway for brokering remote MCP clients to local GSD runtimes",
   "license": "MIT",
   "repository": {

@@ -11,6 +11,7 @@ import {
   notifySmartEntryNeedsInteractiveMenu,
   requiresInteractiveMenu,
 } from "../command-feedback.js";
+import { isBlockedNoticeMessage, isInteractiveMenuUnavailableNotice } from "../stop-notice.js";
 import type { ExtensionCommandContext } from "@gsd/pi-coding-agent";
 
 function makeCtx(overrides: {
@@ -86,6 +87,17 @@ describe("notifyQueueHubNeedsInteractiveMenu", () => {
     const notes = (ctx as typeof ctx & { _notifications: Array<{ message: string }> })._notifications;
     assert.match(notes[0]!.message, /\/gsd queue/);
     assert.match(notes[0]!.message, /reorder/i);
+  });
+
+  // /gsd queue continues headless with the add-work flow after this notice, so
+  // it must NOT be classified as a blocked dead-end (would exit 10 early). (#1294)
+  it("emits a notice the headless host does not treat as a dead-end", () => {
+    const ctx = makeCtx({ hasUI: false });
+    notifyQueueHubNeedsInteractiveMenu(ctx, "this session has no interactive menu");
+    const notes = (ctx as typeof ctx & { _notifications: Array<{ message: string }> })._notifications;
+    const message = notes[0]!.message.toLowerCase();
+    assert.equal(isInteractiveMenuUnavailableNotice(message), false);
+    assert.equal(isBlockedNoticeMessage(message), false);
   });
 });
 

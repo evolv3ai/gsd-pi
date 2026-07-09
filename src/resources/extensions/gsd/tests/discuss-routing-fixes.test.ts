@@ -80,6 +80,43 @@ function makeDiscussCtx(notifications: Array<{ message: string; level?: string }
   };
 }
 
+async function runDiscussTargetFixture(
+  target: string,
+  milestones: Array<{ id: string; title?: string; status?: string }>,
+  writeArtifacts?: (base: string) => void,
+) {
+  const base = mkdtempSync(join(tmpdir(), "gsd-discuss-target-"));
+  const notifications: Array<{ message: string; level?: string }> = [];
+  const harness = makeDiscussPi();
+  try {
+    mkdirSync(join(base, ".gsd", "milestones"), { recursive: true });
+    writeArtifacts?.(base);
+    const dbPath = join(base, ".gsd", "gsd.db");
+    assert.equal(openDatabase(dbPath), true);
+    for (const milestone of milestones) {
+      insertMilestone(milestone);
+    }
+
+    await showDiscuss(
+      makeDiscussCtx(notifications) as any,
+      harness.pi as any,
+      base,
+      { target },
+    );
+
+    return {
+      notifications: [...notifications],
+      sent: [...harness.sent],
+    };
+  } finally {
+    harness.restore();
+    if (isDbAvailable()) closeDatabase();
+    invalidateStateCache();
+    clearGuidedUnitContext();
+    rmSync(base, { recursive: true, force: true });
+  }
+}
+
 describe("discuss target normalization", () => {
   test("canonicalizes milestone and slice casing", () => {
     assert.equal(normalizeDiscussTarget("m014"), "M014");
@@ -87,6 +124,92 @@ describe("discuss target normalization", () => {
     assert.equal(normalizeDiscussTarget("m014/s03"), "M014/S03");
     assert.equal(_parseDiscussArgsForTest("m014").target, "M014");
     assert.equal(_parseDiscussArgsForTest("--slice m014/s03").target, "M014/S03");
+  });
+});
+
+describe("showDiscuss targeted milestone guardrails (#1320)", () => {
+  test("missing, complete, and parked milestone targets get actionable messages", async () => {
+    const cases = [
+      {
+        target: "M006",
+        milestones: [{ id: "M005", title: "Current", status: "active" }],
+        level: "warning",
+        message: /Milestone M006 was not found in the roadmap\. Use \/gsd new-milestone to add it, or \/gsd status to see available milestones\./,
+      },
+      {
+        target: "M006/S01",
+        milestones: [{ id: "M005", title: "Current", status: "active" }],
+        level: "warning",
+        message: /Milestone M006 was not found in the roadmap\. Use \/gsd new-milestone to add it, or \/gsd status to see available milestones\./,
+      },
+      {
+        target: "M006",
+        milestones: [{ id: "M006", title: "Done", status: "complete" }],
+        level: "info",
+        message: /Milestone M006 is already complete\./,
+      },
+      {
+        target: "M006/S01",
+        milestones: [{ id: "M006", title: "Done", status: "complete" }],
+        level: "info",
+        message: /Milestone M006 is already complete\./,
+      },
+      {
+        target: "M006",
+        milestones: [{ id: "M006", title: "Deferred", status: "parked" }],
+        level: "warning",
+        message: /Milestone M006 is parked\. Run \/gsd unpark M006 to reactivate\./,
+      },
+      {
+        target: "M006/S01",
+        milestones: [{ id: "M006", title: "Deferred", status: "parked" }],
+        level: "warning",
+        message: /Milestone M006 is parked\. Run \/gsd unpark M006 to reactivate\./,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const result = await runDiscussTargetFixture(testCase.target, testCase.milestones);
+      assert.equal(result.sent.length, 0, `${testCase.target} must not dispatch`);
+      assert.equal(result.notifications.length, 1, `${testCase.target} must emit one notification`);
+      assert.equal(result.notifications[0]?.level, testCase.level);
+      assert.match(result.notifications[0]?.message ?? "", testCase.message);
+      assert.doesNotMatch(result.notifications[0]?.message ?? "", /not discussable/i);
+    }
+  });
+
+  test("bare milestone targets match unique-suffix milestone IDs", async () => {
+    const result = await runDiscussTargetFixture("M006", [
+      { id: "M006-abc123", title: "Unique milestone", status: "active" },
+    ]);
+
+    assert.equal(result.notifications.length, 0);
+    assert.equal(result.sent.length, 1, "bare ID must dispatch the suffixed milestone");
+    assert.match(String(result.sent[0]?.content), /M006-abc123|Unique milestone|guided-discuss-milestone/i);
+  });
+
+  test("bare slice targets match unique-suffix milestone IDs", async () => {
+    const result = await runDiscussTargetFixture(
+      "M006/S01",
+      [{ id: "M006-abc123", title: "Unique milestone", status: "active" }],
+      (base) => {
+        mkdirSync(join(base, ".gsd", "milestones", "M006-abc123"), { recursive: true });
+        writeFileSync(
+          join(base, ".gsd", "milestones", "M006-abc123", "M006-abc123-ROADMAP.md"),
+          `# M006-abc123 Roadmap
+
+## Slices
+- [ ] **S01: Unique slice** \`risk:medium\` \`depends:[]\`
+  > After this: the suffixed milestone slice can be discussed
+`,
+          "utf-8",
+        );
+      },
+    );
+
+    assert.equal(result.notifications.length, 0);
+    assert.equal(result.sent.length, 1, "bare ID slice target must dispatch through the suffixed milestone");
+    assert.match(String(result.sent[0]?.content), /M006-abc123|S01|Unique slice|guided-discuss-slice/i);
   });
 });
 

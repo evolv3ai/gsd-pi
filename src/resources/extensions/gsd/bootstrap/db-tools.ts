@@ -771,12 +771,12 @@ export function registerDbTools(pi: ExtensionAPI): void {
     name: "gsd_plan_task",
     label: "Plan Task",
     description:
-      "Write task planning state to the GSD database, render tasks/T##-PLAN.md from DB, and clear caches after a successful render.",
-    promptSnippet: "Plan a task via DB write + task PLAN render + cache invalidation",
+      "Write task planning state to the GSD database, render the slice PLAN from DB, and clear caches after a successful render.",
+    promptSnippet: "Plan a task via DB write + slice PLAN render + cache invalidation",
     promptGuidelines: [
-      "Use gsd_plan_task for task planning instead of writing tasks/T##-PLAN.md directly.",
+      "Use gsd_plan_task for task planning instead of writing task PLAN files directly.",
       "Keep parameters flat and provide the full task planning payload.",
-      "The tool validates input, requires an existing parent slice, writes task planning data, renders the task PLAN file from DB, and clears both state and parse caches after success.",
+      "The tool validates input, requires an existing parent slice, writes task planning data, renders the slice PLAN file from DB, and clears both state and parse caches after success.",
       "Use the canonical name gsd_plan_task; gsd_task_plan is only an alias.",
     ],
     parameters: Type.Object({
@@ -859,6 +859,15 @@ export function registerDbTools(pi: ExtensionAPI): void {
           durationMs: Type.Number({ description: "Duration of the command in milliseconds" }),
         }),
         { description: "Array of verification evidence entries (structured objects only)" },
+      )),
+      reworkResolution: Type.Optional(Type.Array(
+        Type.Object({
+          findingId: Type.String({ description: "Rework finding ID being resolved (e.g. F1)" }),
+          status: StringEnum(["resolved", "deferred-with-override"], { description: "Resolution status for this finding" }),
+          evidence: Type.String({ description: "Concrete evidence that the required fix was completed" }),
+          decisionRef: Type.Optional(Type.String({ description: "Decision reference required for deferred-with-override findings" })),
+        }),
+        { description: "Resolution evidence for structured rework findings linked to this task" },
       )),
       // Single-writer v3 audit trail (Stream 2): caller-provided actor identity + causation.
       actorName: Type.Optional(Type.String({ description: "Caller-provided actor identity for the audit trail (e.g. 'executor-01', 'gsd-orchestrator')" })),
@@ -1179,6 +1188,84 @@ export function registerDbTools(pi: ExtensionAPI): void {
   };
 
   registerWorkflowTool(pi, replanSliceTool);
+
+  // ─── gsd_replan_task ───────────────────────────────────────────────────
+
+  const replanTaskExecute = async (_toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
+    const { executeReplanTask } = await loadWorkflowExecutors();
+    return executeReplanTask(params, resolveWorkflowToolBasePath(_ctx, params));
+  };
+
+  const replanTaskTool = {
+    name: "gsd_replan_task",
+    label: "Replan Task",
+    description:
+      "Update one pending task's planning contract after rework without touching sibling tasks. " +
+      "Completed tasks are structurally protected. Re-renders the task/slice PLAN projection and records replan history.",
+    promptSnippet: "Replan one pending GSD task after rework",
+    promptGuidelines: [
+      "Use gsd_replan_task when a reopened pending task needs its title, description, files, verify, inputs, or expectedOutput updated for rework.",
+      "The task must already exist and be pending; completed tasks are rejected.",
+      "Set reworkBriefRef when a structured rework brief triggered the task replan.",
+    ],
+    parameters: Type.Object({
+      milestoneId: Type.String({ description: "Milestone ID (e.g. M001)" }),
+      sliceId: Type.String({ description: "Slice ID (e.g. S01)" }),
+      taskId: Type.String({ description: "Task ID (e.g. T01)" }),
+      title: Type.String({ description: "Updated task title" }),
+      description: Type.String({ description: "Updated task description incorporating rework scope" }),
+      estimate: Type.String({ description: "Updated task estimate string" }),
+      files: Type.Array(Type.String(), { description: "Updated files likely touched" }),
+      verify: Type.String({ description: "Updated verification command or block" }),
+      inputs: Type.Array(Type.String(), { description: "Updated input files or references" }),
+      expectedOutput: Type.Array(Type.String(), { description: "Updated files this task creates or overwrites" }),
+      reworkBriefRef: Type.Optional(Type.String({ description: "Rework brief ID/reference that triggered this task replan" })),
+      actorName: Type.Optional(Type.String({ description: "Caller-provided actor identity for the audit trail" })),
+      triggerReason: Type.Optional(Type.String({ description: "Caller-provided reason this action was triggered" })),
+    }),
+    execute: replanTaskExecute,
+  };
+
+  registerWorkflowTool(pi, replanTaskTool);
+
+  // ─── gsd_rework_brief_save ─────────────────────────────────────────────
+
+  const reworkBriefSaveExecute = async (_toolCallId: string, params: any, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) => {
+    const { executeReworkBriefSave } = await loadWorkflowExecutors();
+    return executeReworkBriefSave(params, resolveWorkflowToolBasePath(_ctx, params));
+  };
+
+  const reworkBriefSaveTool = {
+    name: "gsd_rework_brief_save",
+    label: "Save Rework Brief",
+    description:
+      "Persist a structured rework brief for a task. Blocking findings are enforced by gsd_task_complete until resolved with evidence.",
+    promptSnippet: "Persist structured task rework findings",
+    promptGuidelines: [
+      "Use gsd_rework_brief_save when post-unit checks produce task rework findings.",
+      "Use severity 'blocking' for findings that must be resolved before gsd_task_complete succeeds.",
+      "Each finding needs a stable findingId, requiredFix, and verificationCommands.",
+    ],
+    parameters: Type.Object({
+      briefId: Type.Optional(Type.String({ description: "Stable brief ID; omitted defaults to RB-<milestone>-<slice>-<task>" })),
+      milestoneId: Type.String({ description: "Milestone ID (e.g. M001)" }),
+      sliceId: Type.String({ description: "Slice ID (e.g. S01)" }),
+      taskId: Type.String({ description: "Task ID (e.g. T01)" }),
+      findings: Type.Array(Type.Object({
+        findingId: Type.String({ description: "Stable finding ID (e.g. F1)" }),
+        severity: StringEnum(["blocking", "advisory"], { description: "Whether this finding blocks task completion" }),
+        description: Type.String({ description: "What was found" }),
+        requiredFix: Type.String({ description: "What must change" }),
+        verificationCommands: Type.Array(Type.String(), { description: "Commands that must pass after the fix" }),
+        status: Type.Optional(StringEnum(["pending", "resolved", "deferred-with-override"], { description: "Finding status; defaults to pending" })),
+        evidence: Type.Optional(Type.String({ description: "Resolution evidence when already resolved" })),
+        decisionRef: Type.Optional(Type.String({ description: "Decision reference for deferred-with-override" })),
+      }), { description: "Structured rework findings for this task" }),
+    }),
+    execute: reworkBriefSaveExecute,
+  };
+
+  registerWorkflowTool(pi, reworkBriefSaveTool);
 
   // ─── gsd_reassess_roadmap (gsd_roadmap_reassess alias) ─────────────────
 

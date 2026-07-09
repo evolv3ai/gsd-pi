@@ -19,7 +19,7 @@ export const CAPABILITY_PATCHES: CapabilityPatch[] = [
 		caps: { supportsXhigh: true, supportsServiceTier: true },
 	},
 	{
-		match: (m) => m.id.includes("gpt-5.5"),
+		match: (m) => m.id.includes("gpt-5.5") || m.id.includes("gpt-5.6"),
 		caps: { supportsXhigh: true },
 	},
 	{

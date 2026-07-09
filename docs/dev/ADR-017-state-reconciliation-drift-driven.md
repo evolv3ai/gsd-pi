@@ -101,6 +101,7 @@ async function reconcileBeforeDispatch(
 - **All repairs must be idempotent.** Re-derive can re-trigger detection on transient state; repairs must be safe under retry.
 - **Failure throws.** `ReconciliationFailedError` is caught by the caller and routed to `classifyFailure({ error, failureKind: "reconciliation-drift" })`.
 - **Repair ordering is phase-based, not a single flat list.** Detection still uses the flattened `DRIFT_REGISTRY`, but repairs run through `RECONCILIATION_REPAIR_PHASES`: `import-external-edits` first, `normalize-db` second, and `re-project` last. This preserves external markdown/planning edits before any DB-authoritative renderer rewrites projections.
+- **External-edit status authority is scoped.** `external-markdown-edit` and `external-planning-edit` repairs may import the whole hierarchy for idempotent upserts, but checkbox status authority is limited to the milestone ids derived from the drifted file's marker `entities`. Existing rows outside that scope keep DB status; new rows still import from markdown. Entity-less records fail toward the DB and log a warning.
 
 ### Module home
 

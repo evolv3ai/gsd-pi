@@ -25,6 +25,7 @@ import {
   updateTaskStatus,
 } from "../gsd-db.ts";
 import { handleSkipSlice } from "../tools/skip-slice.ts";
+import { skipSliceCascade } from "../db/writers/cascades.ts";
 
 describe("handleSkipSlice cascades skip to tasks (#4375)", () => {
   let dir: string;
@@ -121,5 +122,25 @@ describe("handleSkipSlice cascades skip to tasks (#4375)", () => {
     assert.ok(result.error);
     assert.match(result.error!, /not found/i);
     assert.equal(result.errorCode, "slice_not_found");
+  });
+
+  test("skipSliceCascade rejects a slice in the legacy 'closed' status without nulling completed_at", () => {
+    const completedAt = "2026-01-01T00:00:00.000Z";
+    updateSliceStatus("M001", "S03", "closed", completedAt);
+
+    const outcome = skipSliceCascade("M001", "S03");
+    assert.deepEqual(outcome, { ok: false, reason: "slice-already-complete" });
+
+    const slice = getSlice("M001", "S03");
+    assert.equal(slice?.status, "closed", "closed slice must not be downgraded to skipped");
+    assert.equal(slice?.completed_at, completedAt, "completed_at must be preserved");
+  });
+
+  test("skipSliceCascade still re-skips an already-skipped slice (ok, wasAlreadySkipped)", () => {
+    updateSliceStatus("M001", "S03", "skipped");
+
+    const outcome = skipSliceCascade("M001", "S03");
+    assert.equal(outcome.ok, true);
+    if (outcome.ok) assert.equal(outcome.wasAlreadySkipped, true);
   });
 });

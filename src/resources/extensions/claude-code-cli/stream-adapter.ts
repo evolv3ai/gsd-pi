@@ -22,6 +22,7 @@ import type {
 import type { ExtensionUIContext } from "@gsd/pi-coding-agent";
 import { EventStream } from "@gsd/pi-ai";
 import { execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { createRequire } from "node:module";
@@ -583,6 +584,7 @@ function inferMimeTypeFromDataUri(value: string): string | null {
 /** Collect all base64 image blocks from user messages in the context for inclusion in the SDK prompt. */
 export function extractImageBlocksFromContext(context: Context): SDKInputImageBlock[] {
 	const imageBlocks: SDKInputImageBlock[] = [];
+	const seenImageKeys = new Set<string>();
 
 	for (const msg of context.messages) {
 		if (msg.role !== "user" || !Array.isArray(msg.content)) continue;
@@ -597,12 +599,17 @@ export function extractImageBlocksFromContext(context: Context): SDKInputImageBl
 					: inferMimeTypeFromDataUri(block.data);
 			if (!mimeType) continue;
 
+			const data = stripDataUriPrefix(block.data);
+			const imageKey = `${mimeType}\0${createHash("sha1").update(data).digest("hex")}`;
+			if (seenImageKeys.has(imageKey)) continue;
+			seenImageKeys.add(imageKey);
+
 			imageBlocks.push({
 				type: "image",
 				source: {
 					type: "base64",
 					media_type: mimeType,
-					data: stripDataUriPrefix(block.data),
+					data,
 				},
 			});
 		}
@@ -2252,6 +2259,7 @@ export function streamViaClaudeCode(
 interface SdkAttemptMessageState {
 	builder: PartialMessageBuilder | null;
 	intermediateToolBlocks: AssistantMessage["content"];
+	intermediateTextBlocks: AssistantMessage["content"];
 	toolResultsById: Map<string, ExternalToolResultPayload>;
 	toolCompletionTargetsById: Map<string, { partial: AssistantMessage; contentIndex: number }>;
 	emittedExternalToolResultIds: Set<string>;
@@ -2261,6 +2269,7 @@ function createSdkAttemptMessageState(): SdkAttemptMessageState {
 	return {
 		builder: null,
 		intermediateToolBlocks: [],
+		intermediateTextBlocks: [],
 		toolResultsById: new Map<string, ExternalToolResultPayload>(),
 		toolCompletionTargetsById: new Map<string, { partial: AssistantMessage; contentIndex: number }>(),
 		emittedExternalToolResultIds: new Set<string>(),
@@ -2402,6 +2411,7 @@ async function pumpSdkMessages(
 				let {
 					builder,
 					intermediateToolBlocks,
+					intermediateTextBlocks,
 					toolResultsById,
 					toolCompletionTargetsById,
 					emittedExternalToolResultIds,
@@ -2542,8 +2552,14 @@ async function pumpSdkMessages(
 								for (const [contentIndex, block] of builder.message.content.entries()) {
 									if (block.type === "text" && block.text) {
 										lastTextContent = block.text;
+										// Accumulate completed prose in order — a multi-question
+										// turn commits [prose][elicitation] segments across several
+										// synthetic-user boundaries, and overwriting a single
+										// scalar would drop every explanation but the last.
+										intermediateTextBlocks.push({ type: "text", text: block.text });
 									} else if (block.type === "thinking" && block.thinking) {
 										lastThinkingContent = block.thinking;
+										intermediateTextBlocks.push({ type: "thinking", thinking: block.thinking });
 									} else if (block.type === "toolCall" || block.type === "serverToolUse") {
 										// Collect tool blocks for externalToolExecution rendering
 										intermediateToolBlocks.push(block);
@@ -2641,6 +2657,7 @@ async function pumpSdkMessages(
 							const result = msg as SDKResultMessage;
 							const finalContent = buildFinalAssistantContent({
 								intermediateToolBlocks,
+								intermediateTextBlocks,
 								pendingContent: builder?.message.content,
 								toolResultsById,
 								lastThinkingContent,

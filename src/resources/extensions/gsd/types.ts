@@ -703,6 +703,17 @@ export interface CompleteTaskParams {
     durationMs: number;
   }>;
   /**
+   * Resolution evidence for structured rework findings linked to this task.
+   * All blocking findings must be resolved before completion is accepted.
+   * @optional
+   */
+  reworkResolution?: Array<{
+    findingId: string;
+    status: "resolved" | "deferred-with-override";
+    evidence: string;
+    decisionRef?: string;
+  }>;
+  /**
    * Q5 failure-modes section content (what breaks when dependencies fail).
    * Populated → `pass`; omitted/empty → `omitted`.
    * @optional

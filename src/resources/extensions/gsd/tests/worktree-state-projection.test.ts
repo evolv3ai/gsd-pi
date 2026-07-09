@@ -97,6 +97,42 @@ test("projectRootToWorktree forwards root PROJECT.md into isolated worktrees", (
   }
 });
 
+test("projectRootToWorktree projects flat-phase discuss artifacts before dispatch", () => {
+  const { dir, cleanup } = makeProjectRoot();
+  try {
+    const worktree = join(dir, ".gsd", "worktrees", "M001");
+    mkdirSync(join(worktree, ".gsd", "phases", "01-foundation"), { recursive: true });
+
+    const projectPhaseDir = join(dir, ".gsd", "phases", "01-foundation");
+    mkdirSync(projectPhaseDir, { recursive: true });
+    writeFileSync(join(projectPhaseDir, "01-CONTEXT.md"), "# M001 Context\n");
+    writeFileSync(join(projectPhaseDir, "01-DISCUSSION.md"), "# M001 Discussion\n");
+
+    const metaDir = join(dir, ".gsd", "milestones", "M001");
+    mkdirSync(metaDir, { recursive: true });
+    writeFileSync(join(metaDir, "M001-META.json"), '{"branch":"milestone/M001"}');
+
+    const workspace = createWorkspace(worktree);
+    const scope = scopeMilestone(workspace, "M001");
+    new WorktreeStateProjection().projectRootToWorktree(scope);
+
+    assert.ok(
+      existsSync(join(worktree, ".gsd", "milestones", "M001", "M001-META.json")),
+      "milestone metadata is projected into the worktree",
+    );
+    assert.ok(
+      existsSync(join(worktree, ".gsd", "phases", "01-foundation", "01-CONTEXT.md")),
+      "flat-phase CONTEXT.md is projected into the worktree",
+    );
+    assert.ok(
+      existsSync(join(worktree, ".gsd", "phases", "01-foundation", "01-DISCUSSION.md")),
+      "flat-phase DISCUSSION.md is projected into the worktree",
+    );
+  } finally {
+    cleanup();
+  }
+});
+
 test("projectRootToWorktree projects prior-milestone slice/task SUMMARY.md, not just top-level files", () => {
   // Regression: a worktree opened for the CURRENT milestone (M002) must also
   // receive the full subtree of OTHER, already-completed milestones (M001) so

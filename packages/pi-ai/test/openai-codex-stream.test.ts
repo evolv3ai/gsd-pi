@@ -522,7 +522,7 @@ describe("openai-codex streaming", () => {
 		expect(requestedReasoning).toEqual({ effort: "xhigh", summary: "auto" });
 	});
 
-	it.each(["gpt-5.3-codex", "gpt-5.4", "gpt-5.5"])("clamps %s minimal reasoning effort to low", async (modelId) => {
+	it.each(["gpt-5.3-codex", "gpt-5.4", "gpt-5.5", "gpt-5.6"])("clamps %s minimal reasoning effort to low", async (modelId) => {
 		const tempDir = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));
 		process.env.PI_CODING_AGENT_DIR = tempDir;
 
@@ -627,6 +627,8 @@ describe("openai-codex streaming", () => {
 		["gpt-5.1-codex", "priority", 2],
 		["gpt-5.5", "flex", 0.5],
 		["gpt-5.5", "priority", 2.5],
+		["gpt-5.6", "flex", 0.5],
+		["gpt-5.6", "priority", 2.5],
 	] as const)(
 		"uses the client-sent %s service tier for %s when Codex echoes default",
 		async (modelId, serviceTier, multiplier) => {
@@ -693,7 +695,7 @@ describe("openai-codex streaming", () => {
 
 			const model: Model<"openai-codex-responses"> = {
 				id: modelId,
-				name: modelId === "gpt-5.5" ? "GPT-5.5" : "GPT-5.1 Codex",
+				name: modelId.startsWith("gpt-5.5") || modelId.startsWith("gpt-5.6") ? modelId.toUpperCase() : "GPT-5.1 Codex",
 				api: "openai-codex-responses",
 				provider: "openai-codex",
 				baseUrl: "https://chatgpt.com/backend-api",

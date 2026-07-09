@@ -128,7 +128,7 @@ Diagnostics record the file path, scope (global/project), severity (error/warnin
   - Two equivalent ways to set it: inline as `models.<phase>.thinking`, or as a separate `thinking:` block keyed by phase. For the same phase, the inline value wins over the block; project preferences win over global; a phase that's unset inherits via the same sibling chain as `models` (e.g. `discuss → planning`).
   - If no thinking is configured for a phase, the session level (set via `/model`) is used, exactly as before — this is fully backward-compatible.
   - `execute-task` (code-writing) has a measured reasoning floor of `medium`: at lower levels models stop planning edits and thrash on file re-reads. The floor applies to the session/default path. An **explicit** `execution` thinking level bypasses the floor and is honored verbatim (with a one-time advisory) — set `execution: low` deliberately if you want it.
-  - Levels a model can't support are clamped to the nearest supported level at dispatch and never sent to the provider, so a model/level mismatch never fails a unit mid-run. `xhigh` is only honored by select model families.
+  - Levels a model can't support are clamped to the nearest supported level at dispatch and never sent to the provider, so a model/level mismatch never fails a unit mid-run. `xhigh` support is model-dependent; current examples include OpenAI Codex Max models and Claude Sonnet 5 on Amazon Bedrock.
 
 - `skill_staleness_days`: number — skills unused for this many days get deprioritized during discovery. Set to `0` to disable staleness tracking. Default: `60`.
 
@@ -357,6 +357,28 @@ In `"parent"` mode, slice/task `targetRepositories` default to the declared chil
   - `"replace"` requires `prompt`.
   - `"skip"` is valid with no additional fields.
 
+- `planning_subagents`: object — project-local widening for read-only planning subagent dispatch. Supported unit keys are `plan-milestone` and `plan-slice`; each has:
+  - `allowed`: string[] — additional planning-safe agents for that unit.
+
+  Agents must already be classified by GSD as read-only planning specialists: `mnemo`, `scout`, `planner`, `reviewer`, `security`, or `tester`. The write gate still blocks source writes outside `.gsd/**`, unrestricted bash, stale subagent calls without agent identities, agents outside the global read-only registry, and agents not listed for the active unit.
+
+  Example:
+
+  ```yaml
+  planning_subagents:
+    plan-milestone:
+      allowed:
+        - scout
+        - planner
+        - security
+    plan-slice:
+      allowed:
+        - scout
+        - planner
+        - reviewer
+        - security
+  ```
+
   **Known unit types for `before`/`after`:** `research-milestone`, `plan-milestone`, `research-slice`, `plan-slice`, `execute-task`, `complete-slice`, `replan-slice`, `reassess-roadmap`, `run-uat`.
 
 - `experimental`: opt-in experimental features. All features here are **off by default** — you must explicitly set each one to `true` to enable it. Features in this block may change or be removed without a deprecation cycle while in experimental status. Keys:
@@ -482,13 +504,13 @@ Inline form — thinking pinned alongside the model:
 version: 1
 models:
   planning:
-    model: openai-codex/gpt-5.4
+    model: bedrock/global.anthropic.claude-sonnet-5
     thinking: xhigh
   execution:
-    model: openai-codex/gpt-5.4
+    model: bedrock/global.anthropic.claude-sonnet-5
     thinking: low      # explicit → bypasses the execute-task medium floor
   validation:
-    model: openai-codex/gpt-5.4
+    model: bedrock/global.anthropic.claude-sonnet-5
     thinking: high
 ---
 ```

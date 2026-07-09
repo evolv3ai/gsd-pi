@@ -211,7 +211,11 @@ export function skipSliceCascade(milestoneId: string, sliceId: string): SkipSlic
   transaction(() => {
     const slice = getSlice(milestoneId, sliceId);
     if (!slice) { outcome = { ok: false, reason: "slice-not-found" }; return; }
-    if (slice.status === "complete" || slice.status === "done") {
+    // Reject any closed slice except "skipped" (which falls through to the
+    // wasAlreadySkipped no-op). isClosedStatus covers the "closed"/"done"
+    // aliases too — hand-picking literals here nulls a completed slice's
+    // completed_at on re-skip.
+    if (isClosedStatus(slice.status) && slice.status !== "skipped") {
       outcome = { ok: false, reason: "slice-already-complete" };
       return;
     }

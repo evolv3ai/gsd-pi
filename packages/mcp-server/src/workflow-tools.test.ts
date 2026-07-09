@@ -1459,6 +1459,8 @@ export const executeMilestoneStatus = noop;
 export const executePlanMilestone = noop;
 export const executePlanSlice = noop;
 export const executeReplanSlice = noop;
+export const executeReplanTask = noop;
+export const executeReworkBriefSave = noop;
 export const executeSliceComplete = noop;
 export const executeCompleteMilestone = noop;
 export const executeValidateMilestone = noop;
@@ -2099,11 +2101,16 @@ export const executeTaskComplete = async (params, projectDir) => {
       });
 
       assert.match((result as any).content[0].text as string, /Planned task T11/);
-      // Flat-phase: renderTaskPlanFromDb writes TID-PLAN.md into the phase dir (not a tasks/ subdir).
-      // M010 "Inline task planning DB reopen" → phases/10-inline-task-planning-db-reopen/T11-PLAN.md
+      const slicePlanPath = join(base, ".gsd", "phases", "10-inline-task-planning-db-reopen", "10-10-PLAN.md");
       assert.ok(
+        existsSync(slicePlanPath),
+        "slice plan should be written after reopening the DB",
+      );
+      assert.match(readFileSync(slicePlanPath, "utf-8"), /T11/);
+      assert.equal(
         existsSync(join(base, ".gsd", "phases", "10-inline-task-planning-db-reopen", "T11-PLAN.md")),
-        "T11 plan should be written after reopening the DB",
+        false,
+        "flat-phase task planning should not create standalone task PLAN files",
       );
     } finally {
       cleanup(base);

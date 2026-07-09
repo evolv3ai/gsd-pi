@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 
 import { writePlanningDirectory } from "../migrate/planning-writer.ts";
-import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask } from "../gsd-db.ts";
+import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask, updateTaskStatus } from "../gsd-db.ts";
 
 const tmpDirs: string[] = [];
 function makeTmp(): string {
@@ -65,6 +65,23 @@ test("writePlanningDirectory emits phase plan file with XML structure", async ()
   assert.match(plan, /<tasks>/);
 });
 
+test("writePlanningDirectory renders completed task checkboxes as [x] (#1276)", async () => {
+  const base = makeTmp();
+  updateTaskStatus("M001", "S01", "T01", "complete");
+  await writePlanningDirectory(base, "flat-phases");
+
+  const phaseDir = readdirSync(join(base, ".planning", "phases"), { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name)[0]!;
+  const planFile = readdirSync(join(base, ".planning", "phases", phaseDir))
+    .filter((f) => f.endsWith("PLAN.md"))[0]!;
+  const plan = readFileSync(join(base, ".planning", "phases", phaseDir, planFile), "utf-8");
+  assert.match(plan, /- \[x\] \*\*T01\*\*/, "completed task should project as [x], not [ ]");
+
+  const roadmap = readFileSync(join(base, ".planning", "ROADMAP.md"), "utf-8");
+  assert.match(roadmap, /- \[x\] 01 —/, "phase with all tasks complete should be [x] in ROADMAP");
+});
+
 test("writePlanningDirectory is idempotent: writing twice produces stable content", async () => {
   const base = makeTmp();
   await writePlanningDirectory(base, "flat-phases");
@@ -73,6 +90,35 @@ test("writePlanningDirectory is idempotent: writing twice produces stable conten
   await writePlanningDirectory(base, "flat-phases");
   const roadmap2 = snap(join(base, ".planning", "ROADMAP.md"));
   assert.equal(roadmap2, roadmap1);
+});
+
+test("writePlanningDirectory does not emit an ingestible PLAN.md for a task-less (sketch) slice", async () => {
+  // Regression for #1285: a milestone-level sketch slice has zero DB tasks.
+  // The projection must not write a placeholder NN-01-PLAN.md — the reverse
+  // transform maps one task per plan file, so a placeholder would materialize
+  // a phantom "Plan NN" task and make auto-mode skip planning.
+  const base = makeTmp();
+  insertSlice({
+    milestoneId: "M001", id: "S02", title: "Sketch slice", status: "pending",
+    risk: "medium", depends: ["S01"], demo: "designed", sequence: 2,
+  });
+  // S02 intentionally has no tasks.
+
+  await writePlanningDirectory(base, "flat-phases");
+
+  const phaseDirs = readdirSync(join(base, ".planning", "phases"), { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name);
+  const sketchDir = phaseDirs.find((d) => /^02-/.test(d));
+  assert.ok(sketchDir, `expected a 02- phase dir for the sketch slice, got ${JSON.stringify(phaseDirs)}`);
+
+  const planFiles = readdirSync(join(base, ".planning", "phases", sketchDir!))
+    .filter((f) => f.endsWith("PLAN.md"));
+  assert.equal(planFiles.length, 0, `sketch slice should have no PLAN.md, got ${JSON.stringify(planFiles)}`);
+
+  // The slice remains discoverable via ROADMAP.md.
+  const roadmap = readFileSync(join(base, ".planning", "ROADMAP.md"), "utf-8");
+  assert.match(roadmap, /Sketch slice/);
 });
 
 test("writePlanningDirectory throws for unsupported layouts", async () => {

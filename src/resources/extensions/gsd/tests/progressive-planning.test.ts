@@ -76,6 +76,21 @@ function writeS01Artifacts(base: string): void {
   writeFileSync(join(base, ".gsd", "milestones", "M001", "slices", "S01", "S01-SUMMARY.md"), "# S01 Summary\n");
 }
 
+// A *real* decomposed PLAN (>= 1 genuine task). #1287: the stale-sketch-flag
+// detector requires a real plan — not a bare stub — before clearing is_sketch.
+function realPlanContent(sliceId: string): string {
+  return [
+    `# ${sliceId}: Feature`,
+    "",
+    "**Goal:** Ship the feature",
+    "",
+    "## Tasks",
+    "",
+    "- [ ] **T01: Build the feature** `est:1h`",
+    "",
+  ].join("\n");
+}
+
 function cleanup(base: string, originalCwd: string): void {
   try { closeDatabase(); } catch { /* noop */ }
   process.chdir(originalCwd);
@@ -185,7 +200,7 @@ test("ADR-011: existing PLAN + stale sketch flag heals via reconcileBeforeDispat
   writePreferences(base, "phases:\n  progressive_planning: true");
   writeFileSync(
     join(base, ".gsd", "milestones", "M001", "slices", "S02", "S02-PLAN.md"),
-    "# S02 Plan\n",
+    realPlanContent("S02"),
   );
   process.chdir(base);
 
@@ -252,7 +267,7 @@ test("ADR-011: reconcileBeforeDispatch auto-heals stale sketch flag when PLAN ex
   // Simulate plan-slice completion where PLAN exists but is_sketch was not flipped.
   writeFileSync(
     join(base, ".gsd", "milestones", "M001", "slices", "S02", "S02-PLAN.md"),
-    "# S02 Plan\n",
+    realPlanContent("S02"),
   );
   process.chdir(base);
 
@@ -282,7 +297,7 @@ test("ADR-011: deriveState stays pure across worktree/canonical-root; healing be
   writePreferences(base, "phases:\n  skip_research: false");
   writeFileSync(
     join(base, ".gsd", "milestones", "M001", "slices", "S02", "S02-PLAN.md"),
-    "# S02 Plan\n",
+    realPlanContent("S02"),
   );
   const worktreePath = join(base, "worker");
   mkdirSync(worktreePath, { recursive: true });

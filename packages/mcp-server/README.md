@@ -87,6 +87,8 @@ The workflow MCP surface includes:
 - `gsd_plan_slice`
 - `gsd_plan_task`
 - `gsd_replan_slice`
+- `gsd_replan_task`
+- `gsd_rework_brief_save`
 - `gsd_slice_complete`
 - `gsd_skip_slice`
 - `gsd_complete_milestone`
@@ -115,6 +117,12 @@ These tools use the same GSD workflow handlers as the native in-process tool pat
 `gsd_decision_save` and its `gsd_save_decision` alias persist new decisions to the ADR-013 memory store, not to the legacy `decisions` table. The assigned `D###` ID is recorded in `memories.structured_fields.sourceDecisionId`, and `.gsd/DECISIONS.md` is refreshed as a projection from memory-backed decisions. The legacy table may still be read by compatibility and inspection paths during the cutover window, but it is no longer a write target.
 
 `gsd_summary_save` computes artifact paths from the supplied IDs. `milestone_id` is required for milestone-, slice-, and task-scoped artifact types (`SUMMARY`, `RESEARCH`, `CONTEXT`, `ASSESSMENT`, `CONTEXT-DRAFT`) and should be omitted only for root-level `PROJECT`, `PROJECT-DRAFT`, `REQUIREMENTS`, and `REQUIREMENTS-DRAFT` artifacts. The `content` field has a schema `maxLength` of 50,000 characters per save; callers that produce larger artifacts should save incrementally by writing a substantive draft, then re-save the enriched artifact as more detail is available. For final `REQUIREMENTS` saves, the tool renders content from active database requirement rows; callers must create those rows with `gsd_requirement_save` first.
+
+`gsd_replan_task` updates one existing pending task's planning contract after rework without replacing sibling tasks. `projectDir` is optional; when omitted, the server uses its current project or worktree root. Required parameters are `milestoneId`, `sliceId`, `taskId`, `title`, `description`, `estimate`, `files`, `verify`, `inputs`, and `expectedOutput`; `reworkBriefRef` is optional and records the brief that triggered the update. The tool rejects missing tasks and closed/completed tasks; reopen a completed task first with `gsd_task_reopen`.
+
+`gsd_rework_brief_save` persists structured rework findings for a task. `projectDir` is optional; required parameters are `milestoneId`, `sliceId`, `taskId`, and a non-empty `findings` array. Each finding requires `findingId`, `severity` (`blocking` or `advisory`), `description`, `requiredFix`, and `verificationCommands`; optional fields are `status`, `evidence`, and `decisionRef`.
+
+Blocking findings saved by `gsd_rework_brief_save` gate `gsd_task_complete`. To complete the task, the `gsd_task_complete` call must include a `reworkResolution` entry for each pending blocking `findingId` with `status: "resolved"` and non-empty `evidence`. Deferred findings must use `status: "deferred-with-override"` with non-empty `evidence` and a `decisionRef`.
 
 ### Interactive tools
 

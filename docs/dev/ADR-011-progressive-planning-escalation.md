@@ -92,7 +92,7 @@ Replace all-or-nothing milestone planning with two-tier slice specification:
 ```yaml
 refine — converts a sketch into a full plan using current codebase state
   inputs: sketch (from roadmap), prior slice summary, current codebase
-  outputs: PLAN.md, T##-PLAN.md files
+  outputs: PLAN.md with embedded task planning
   dependencies: prior slice completion
   gate: plan-gate (same as plan-slice)
 ```

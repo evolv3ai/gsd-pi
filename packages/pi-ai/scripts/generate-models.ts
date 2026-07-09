@@ -141,6 +141,7 @@ const OPENAI_RESPONSES_NONE_REASONING_MODELS = new Set([
 	"gpt-5.4-mini",
 	"gpt-5.4-nano",
 	"gpt-5.5",
+	"gpt-5.6",
 ]);
 
 function mergeThinkingLevelMap(model: Model<any>, map: NonNullable<Model<any>["thinkingLevelMap"]>): void {
@@ -171,7 +172,8 @@ function supportsOpenAiXhigh(modelId: string): boolean {
 		modelId.includes("gpt-5.2") ||
 		modelId.includes("gpt-5.3") ||
 		modelId.includes("gpt-5.4") ||
-		modelId.includes("gpt-5.5")
+		modelId.includes("gpt-5.5") ||
+		modelId.includes("gpt-5.6")
 	);
 }
 
@@ -1254,7 +1256,10 @@ async function generateModels() {
 			candidate.contextWindow = 272000;
 			candidate.maxTokens = 128000;
 		}
-		if (candidate.provider === "openai" && (candidate.id === "gpt-5.4" || candidate.id === "gpt-5.5")) {
+		if (
+			candidate.provider === "openai" &&
+			(candidate.id === "gpt-5.4" || candidate.id === "gpt-5.5" || candidate.id === "gpt-5.6")
+		) {
 			candidate.contextWindow = 272000;
 			candidate.maxTokens = 128000;
 		}
@@ -1413,6 +1418,33 @@ async function generateModels() {
 			contextWindow: 1000000,
 			maxTokens: 128000,
 		});
+	}
+
+	// Add missing Claude Sonnet 5 Bedrock profiles until models.dev includes them.
+	for (const [bedrockId, regionLabel] of [
+		["anthropic.claude-sonnet-5", ""],
+		["us.anthropic.claude-sonnet-5", " (US)"],
+		["global.anthropic.claude-sonnet-5", " (Global)"],
+	] as const) {
+		if (!allModels.some(m => m.provider === "amazon-bedrock" && m.id === bedrockId)) {
+			allModels.push({
+				id: bedrockId,
+				name: `Claude Sonnet 5${regionLabel}`,
+				api: "bedrock-converse-stream",
+				baseUrl: getBedrockBaseUrl(bedrockId),
+				provider: "amazon-bedrock",
+				reasoning: true,
+				input: ["text", "image"],
+				cost: {
+					input: 3,
+					output: 15,
+					cacheRead: 0.3,
+					cacheWrite: 3.75,
+				},
+				contextWindow: 1000000,
+				maxTokens: 128000,
+			});
+		}
 	}
 
 	// Add missing Claude Fable 5 (direct Anthropic) until models.dev includes it.
@@ -1621,6 +1653,28 @@ async function generateModels() {
 		});
 	}
 
+	// Add missing GPT-5.6 until models.dev includes it.
+	// Pricing mirrors GPT-5.5 until OpenAI publishes official list pricing.
+	if (!allModels.some((m) => m.provider === "openai" && m.id === "gpt-5.6")) {
+		allModels.push({
+			id: "gpt-5.6",
+			name: "GPT-5.6",
+			api: "openai-responses",
+			baseUrl: "https://api.openai.com/v1",
+			provider: "openai",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 5,
+				output: 30,
+				cacheRead: 0.5,
+				cacheWrite: 0,
+			},
+			contextWindow: 272000,
+			maxTokens: 128000,
+		});
+	}
+
 	const deepseekCompat: OpenAICompletionsCompat = {
 		requiresReasoningContentOnAssistantMessages: true,
 		thinkingFormat: "deepseek",
@@ -1792,11 +1846,38 @@ async function generateModels() {
 			contextWindow: CODEX_CONTEXT,
 			maxTokens: CODEX_MAX_TOKENS,
 		},
+		{
+			id: "gpt-5.6",
+			name: "GPT-5.6",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: CODEX_BASE_URL,
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
+			contextWindow: CODEX_CONTEXT,
+			maxTokens: CODEX_MAX_TOKENS,
+		},
 	];
 	allModels.push(...codexModels);
 
 	// Add missing Grok models
 	const missingGrokModels: Model<"openai-completions">[] = [
+		// Grok 4.5 — xAI's frontier model (launched 2026-07-09); hand-added
+		// until models.dev includes it. Specs from the xAI launch announcement:
+		// $2/M input, $0.50/M cached input, $6/M output, 500K context window.
+		{
+			id: "grok-4.5",
+			name: "Grok 4.5",
+			api: "openai-completions",
+			baseUrl: "https://api.x.ai/v1",
+			provider: "xai",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
+			contextWindow: 500000,
+			maxTokens: 30000,
+		},
 		{
 			id: "grok-3",
 			name: "Grok 3",

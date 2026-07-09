@@ -244,6 +244,7 @@ export function shouldSuppressDuplicateToolUnavailableBlock(
  */
 export function buildFinalAssistantContent(params: {
 	intermediateToolBlocks: AssistantMessage["content"];
+	intermediateTextBlocks?: AssistantMessage["content"];
 	pendingContent?: AssistantMessage["content"];
 	toolResultsById: ReadonlyMap<string, ExternalToolResultPayload>;
 	lastThinkingContent?: string;
@@ -259,6 +260,15 @@ export function buildFinalAssistantContent(params: {
 	const finalContent: AssistantMessage["content"] = mergedToolBlocks.filter(
 		(block) => !shouldSuppressDuplicateToolUnavailableBlock(block, mergedToolBlocks),
 	);
+	// Emit prose/thinking captured at earlier turn-boundaries (each successive
+	// `ask_user_questions` elicitation completes a turn) before the final
+	// segment. Capturing these in an ordered accumulator — symmetric with
+	// `intermediateToolBlocks` — is what keeps intermediate explanations from
+	// being collapsed to a single overwritten scalar and silently dropped.
+	const intermediateTextBlocks = params.intermediateTextBlocks ?? [];
+	for (const block of intermediateTextBlocks) {
+		finalContent.push(block);
+	}
 	if (params.pendingContent && params.pendingContent.length > 0) {
 		for (const block of params.pendingContent) {
 			if (block.type === "text" || block.type === "thinking") {
@@ -266,11 +276,29 @@ export function buildFinalAssistantContent(params: {
 			}
 		}
 	} else {
+		// No builder content survived to this turn boundary, so fall back to the
+		// last scalar thinking/text captured off the stream. When the turn ends
+		// on an elicitation these scalars just mirror the final intermediate
+		// block (they are overwritten at each synthetic-user boundary), so only
+		// emit them when they carry content not already accumulated — otherwise
+		// a non-streaming `assistant` message's prose/thinking is silently lost.
+		const lastBlockOfType = (type: "text" | "thinking") => {
+			for (let i = intermediateTextBlocks.length - 1; i >= 0; i--) {
+				if (intermediateTextBlocks[i].type === type) return intermediateTextBlocks[i];
+			}
+			return undefined;
+		};
 		if (params.lastThinkingContent) {
-			finalContent.push({ type: "thinking", thinking: params.lastThinkingContent });
+			const lastThinking = lastBlockOfType("thinking") as { thinking?: string } | undefined;
+			if (lastThinking?.thinking !== params.lastThinkingContent) {
+				finalContent.push({ type: "thinking", thinking: params.lastThinkingContent });
+			}
 		}
 		if (params.lastTextContent) {
-			finalContent.push({ type: "text", text: params.lastTextContent });
+			const lastText = lastBlockOfType("text") as { text?: string } | undefined;
+			if (lastText?.text !== params.lastTextContent) {
+				finalContent.push({ type: "text", text: params.lastTextContent });
+			}
 		}
 	}
 

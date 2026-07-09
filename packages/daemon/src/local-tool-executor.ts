@@ -181,6 +181,8 @@ export class LocalToolExecutor {
       case "gsd_task_plan": return this.invokeRegisteredWorkflowTool("gsd_task_plan", args);
       case "gsd_replan_slice": return this.invokeRegisteredWorkflowTool("gsd_replan_slice", args);
       case "gsd_slice_replan": return this.invokeRegisteredWorkflowTool("gsd_slice_replan", args);
+      case "gsd_replan_task": return this.invokeRegisteredWorkflowTool("gsd_replan_task", args);
+      case "gsd_rework_brief_save": return this.invokeRegisteredWorkflowTool("gsd_rework_brief_save", args);
       case "gsd_slice_complete": return this.invokeRegisteredWorkflowTool("gsd_slice_complete", args);
       case "gsd_complete_slice": return this.invokeRegisteredWorkflowTool("gsd_complete_slice", args);
       case "gsd_skip_slice": return this.invokeRegisteredWorkflowTool("gsd_skip_slice", args);

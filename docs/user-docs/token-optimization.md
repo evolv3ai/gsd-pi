@@ -314,7 +314,7 @@ Individual tool results that exceed `tool_result_max_chars` (default: 800) are t
 
 ## Phase Handoff Anchors
 
-When auto-mode transitions between phases (research → planning → execution), structured JSON anchors are written to `.gsd/milestones/<mid>/anchors/<phase>.json`. Downstream prompt builders inject these anchors so the next phase inherits intent, decisions, blockers, and next steps without re-inferring from artifact files.
+When auto-mode transitions between phases (research → planning → execution), structured JSON anchors are written to `.gsd/runtime/anchors/<mid>/<phase>.json`. Downstream prompt builders inject these anchors so the next phase inherits intent, decisions, blockers, and next steps without re-inferring from artifact files. Legacy milestone-scoped anchors are still read during upgrades, but new writes use the runtime directory.
 
 This reduces context drift — the 65% of enterprise agent failures caused by agents losing track of prior decisions across phase boundaries.
 

@@ -96,22 +96,29 @@ export function notifyDiscussNeedsInteractiveMenu(
   });
 }
 
-/** Hub picker for /gsd queue (reorder vs add) is unavailable. */
+/**
+ * Hub picker for /gsd queue (reorder vs add) is unavailable.
+ *
+ * Unlike the other picker-guidance notices, /gsd queue does NOT dead-end here:
+ * the caller falls through to the add-work flow, which runs headlessly. So this
+ * notice must avoid the "did not start:" picker-failure phrasing — the headless
+ * host classifies that as a blocked dead-end (see stop-notice.ts / #1294) and
+ * would exit 10 before the add-work run starts.
+ */
 export function notifyQueueHubNeedsInteractiveMenu(
   ctx: ExtensionCommandContext,
   reason: string,
 ): void {
-  notifyPickerCommandNeedsInteractiveMenu(ctx, {
-    command: "/gsd queue",
-    reason,
-    alternatives: [
-      "Add-work flow can run headless — continuing with queue discussion.",
-    ],
-    hints: [
-      "/gsd queue — run from the GSD TUI to reorder pending milestones",
-      "/gsd status — see milestone order and phase",
-    ],
-  });
+  ctx.ui.notify(
+    [
+      `/gsd queue reorder menu needs an interactive session (${reason}).`,
+      "Continuing headless with the add-work flow.",
+      "",
+      "  • /gsd queue — run from the GSD TUI to reorder pending milestones",
+      "  • /gsd status — see milestone order and phase",
+    ].join("\n"),
+    "warning",
+  );
 }
 
 /** /gsd, /gsd new-milestone, /gsd new-project wizard menus. */

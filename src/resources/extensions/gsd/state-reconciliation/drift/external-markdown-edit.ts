@@ -3,9 +3,10 @@
 //
 // gsd-pi's DB is canonical, but .gsd/*.md is the inter-tool contract. When
 // gsd-core edits a projection file, this handler detects the sha drift vs the
-// recorded baseline in .gsd/.compat.json and re-imports the affected entities
-// into the DB. The next renderAllFromDb pass re-projects; the write-time
-// invalidation hook then refreshes the marker entry, closing the loop.
+// recorded baseline in .gsd/.compat.json and re-imports from markdown with
+// status authority scoped to the affected milestone ids. The next
+// renderAllFromDb pass re-projects; the write-time invalidation hook then
+// refreshes the marker entry, closing the loop.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -59,10 +60,11 @@ function detectExternalMarkdownEdit(
 }
 
 /**
- * Idempotent repair: re-import hierarchy for the affected entities from
- * markdown into the DB, then update the marker entry so the next detect pass
- * sees the file as expected. migrateHierarchyToDb is itself idempotent
- * (upsert), so re-running this repair after a successful one is a no-op.
+ * Idempotent repair: re-import the hierarchy from markdown while allowing
+ * markdown status authority only for milestones named by the drifted file's
+ * marker entities, then update the marker entry so the next detect pass sees
+ * the file as expected. migrateHierarchyToDb is itself idempotent (upsert), so
+ * re-running this repair after a successful one is a no-op.
  */
 async function repairExternalMarkdownEdit(
   record: ExternalMarkdownEditDrift,
@@ -72,13 +74,28 @@ async function repairExternalMarkdownEdit(
     // Dynamic imports break a module-init cycle: this handler ← registry ←
     // state.ts ← guided-flow.ts ← md-importer.ts ← (this handler's old static
     // import). Deferring to repair time keeps module load cycle-free.
-    const { migrateHierarchyToDb } = await import("../../md-importer.js");
+    const { migrateHierarchyToDb, milestoneIdsFromEntities } = await import("../../md-importer.js");
     const { invalidateStateCache } = await import("../../state.js");
-    // Scoped re-import. migrateHierarchyToDb walks the whole tree but is a
-    // cheap upsert; per-entity scoping would require decomposing it, which is
-    // out of scope for v1. The cost is bounded by tree size and runs at most
-    // once per reconcile pass (MAX_PASSES=2).
-    migrateHierarchyToDb(ctx.basePath);
+    // #027: migrateHierarchyToDb walks the whole tree (a cheap upsert), so
+    // without scoping every projection rides along with markdown *status*
+    // authority. That lets an unrelated file that is stale from gsd-pi's own
+    // miss silently revert a reopened slice/milestone. Scope status authority to
+    // exactly the milestone(s) this drifted file projects.
+    //
+    // Step 1: the marker's `entities` are DB ids (`M001`, `M001/S01`,
+    // `M001/S01/T01`), so the milestone id is always the first `/`-segment —
+    // layout-independent (legacy `milestones/<MID>/…` and flat `phases/NN-slug/…`
+    // both resolve the same way), no projectionPath parsing needed. An empty set
+    // (no resolvable entities) preserves DB status everywhere: fail toward
+    // protecting the DB, not toward markdown authority.
+    const statusAuthoritativeMilestones = milestoneIdsFromEntities(record.entities);
+    if (statusAuthoritativeMilestones.size === 0) {
+      logWarning(
+        "reconcile",
+        `external-markdown-edit: no milestone scope resolved for ${record.projectionPath}; preserving DB status for all milestones`,
+      );
+    }
+    migrateHierarchyToDb(ctx.basePath, { statusAuthoritativeMilestones });
     invalidateStateCache();
   } catch (err) {
     logWarning(

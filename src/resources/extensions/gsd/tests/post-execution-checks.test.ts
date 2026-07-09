@@ -496,6 +496,28 @@ describe("checkImportResolution", () => {
     }
   });
 
+  test("ignores generated Convex _generated imports", () => {
+    tempDir = join(tmpdir(), `post-exec-test-${Date.now()}`);
+    mkdirSync(tempDir, { recursive: true });
+    mkdirSync(join(tempDir, "convex"), { recursive: true });
+    writeFileSync(
+      join(tempDir, "convex", "stagedLibraryEdits.ts"),
+      "import type { DataModel } from './_generated/dataModel';\nexport const model = {} as DataModel;"
+    );
+
+    try {
+      const task = createTask({
+        id: "T01",
+        key_files: ["convex/stagedLibraryEdits.ts"],
+      });
+
+      const results = checkImportResolution(task, [], tempDir);
+      assert.deepEqual(results, []);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test("fails when import doesn't resolve", () => {
     tempDir = join(tmpdir(), `post-exec-test-${Date.now()}`);
     mkdirSync(tempDir, { recursive: true });

@@ -608,3 +608,42 @@ test("getDependencyTaskSummaryPaths handles missing dependency summaries gracefu
     rmSync(repo, { recursive: true, force: true });
   }
 });
+
+test("#1343: getPriorTaskSummaryPaths excludes sibling-slice summaries in flat-phase", async () => {
+  const { getPriorTaskSummaryPaths } = await import("../auto-prompts.ts");
+  const repo = mkdtempSync(join(tmpdir(), "gsd-reactive-flat-prior-"));
+  try {
+    // Flat-phase: slices S01 and S02 share the phase dir and overlap task ids.
+    const phaseDir = join(repo, ".gsd", "phases", "01-test");
+    mkdirSync(phaseDir, { recursive: true });
+    writeFileSync(join(phaseDir, "S01-T01-SUMMARY.md"), "---\nid: T01\n---\n# S01 T01\n");
+    writeFileSync(join(phaseDir, "S02-T01-SUMMARY.md"), "---\nid: T01\n---\n# S02 T01\n");
+
+    // S02/T02 prior summaries must not pull the sibling S01-T01 summary.
+    const paths = await getPriorTaskSummaryPaths("M001", "S02", "T02", repo);
+    assert.equal(paths.length, 1, "Should only return the current slice's prior summary");
+    assert.ok(paths[0].includes("S02-T01-SUMMARY"), "Should include S02's T01");
+    assert.ok(!paths.some((p) => p.includes("S01-T01-SUMMARY")), "Should NOT include sibling S01's T01");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("#1343: getDependencyTaskSummaryPaths excludes sibling-slice summaries in flat-phase", async () => {
+  const { getDependencyTaskSummaryPaths } = await import("../auto-prompts.ts");
+  const repo = mkdtempSync(join(tmpdir(), "gsd-reactive-flat-dep-"));
+  try {
+    const phaseDir = join(repo, ".gsd", "phases", "01-test");
+    mkdirSync(phaseDir, { recursive: true });
+    writeFileSync(join(phaseDir, "S01-T01-SUMMARY.md"), "---\nid: T01\n---\n# S01 T01\n");
+    writeFileSync(join(phaseDir, "S02-T01-SUMMARY.md"), "---\nid: T01\n---\n# S02 T01\n");
+
+    // S02/T02 depends on T01 — must resolve S02's T01, not the sibling S01's.
+    const paths = await getDependencyTaskSummaryPaths("M001", "S02", "T02", ["T01"], repo);
+    assert.equal(paths.length, 1, "Should only return the current slice's dependency summary");
+    assert.ok(paths[0].includes("S02-T01-SUMMARY"), "Should include S02's T01");
+    assert.ok(!paths.some((p) => p.includes("S01-T01-SUMMARY")), "Should NOT include sibling S01's T01");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});

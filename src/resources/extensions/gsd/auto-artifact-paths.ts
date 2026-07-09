@@ -15,6 +15,7 @@ import {
   resolveSliceFile,
   relMilestoneFile,
   relSliceFile,
+  buildFlatTaskFileName,
   buildTaskFileName,
   resolveSlicePath,
   resolveTasksDir,
@@ -232,7 +233,10 @@ export function resolveExpectedArtifactPath(
       const summaryDir = isLegacySlice
         ? (resolveTasksDir(base, mid, sid!) ?? slicePath)
         : slicePath;
-      return join(summaryDir, buildTaskFileName(tid, "SUMMARY"));
+      const fileName = isLegacySlice
+        ? buildTaskFileName(tid, "SUMMARY")
+        : buildFlatTaskFileName(sid!, tid, "SUMMARY");
+      return join(summaryDir, fileName);
     }
     case "complete-slice": {
       return resolveSliceArtifactPath(base, mid, sid!, "SUMMARY");
@@ -297,9 +301,9 @@ export function diagnoseExpectedArtifact(
       }
       return `${relSliceFile(base, mid, sid!, "RESEARCH")} (slice research)`;
     case "plan-slice":
-      return `${relSliceFile(base, mid, sid!, "PLAN")} plus tasks/T##-PLAN.md files (slice plan and task plans)`;
+      return `${relSliceFile(base, mid, sid!, "PLAN")} with embedded task plans`;
     case "refine-slice":
-      return `${relSliceFile(base, mid, sid!, "PLAN")} plus tasks/T##-PLAN.md files (refined slice plan and task plans)`;
+      return `${relSliceFile(base, mid, sid!, "PLAN")} with embedded refined task plans`;
     case "execute-task": {
       return `Task ${tid} marked [x] in ${relSliceFile(base, mid, sid!, "PLAN")} + summary written`;
     }

@@ -142,6 +142,41 @@ type WorkflowToolExecutors = {
     },
     basePath?: string,
   ) => Promise<unknown>;
+  executeReplanTask: (
+    params: {
+      milestoneId: string;
+      sliceId: string;
+      taskId: string;
+      title: string;
+      description: string;
+      estimate: string;
+      files: string[];
+      verify: string;
+      inputs: string[];
+      expectedOutput: string[];
+      observabilityImpact?: string;
+      reworkBriefRef?: string;
+      replanReason?: string;
+      fullPlanMd?: string;
+    },
+    basePath?: string,
+  ) => Promise<unknown>;
+  executeReworkBriefSave: (
+    params: {
+      briefId?: string;
+      milestoneId: string;
+      sliceId: string;
+      taskId: string;
+      findings: Array<{
+        findingId: string;
+        severity: "blocking" | "advisory";
+        description: string;
+        requiredFix: string;
+        verificationCommands: string[];
+      }>;
+    },
+    basePath?: string,
+  ) => Promise<unknown>;
   executeSliceComplete: (
     params: {
       sliceId: string;
@@ -288,6 +323,12 @@ type WorkflowToolExecutors = {
       verificationEvidence?: Array<
         { command: string; exitCode: number; verdict: string; durationMs: number } | string
       >;
+      reworkResolution?: Array<{
+        findingId: string;
+        status: "resolved" | "deferred-with-override";
+        evidence: string;
+        decisionRef?: string;
+      }>;
     },
     basePath?: string,
   ) => Promise<unknown>;
@@ -581,6 +622,8 @@ function isWorkflowToolExecutors(value: unknown): value is WorkflowToolExecutors
     "executePlanMilestone",
     "executePlanSlice",
     "executeReplanSlice",
+    "executeReplanTask",
+    "executeReworkBriefSave",
     "executeSliceComplete",
     "executeCompleteMilestone",
     "executeValidateMilestone",
@@ -1070,6 +1113,30 @@ async function handleReplanSlice(
   const { projectDir: _projectDir, ...params } = args;
   return adaptExecutorResult(
     await runSerializedWorkflowOperation(() => executeReplanSlice(params, projectDir)),
+  );
+}
+
+async function handleReplanTask(
+  projectDir: string,
+  args: z.infer<typeof replanTaskSchema>,
+): Promise<unknown> {
+  await enforceWorkflowWriteGate("gsd_replan_task", projectDir, args.milestoneId);
+  const { executeReplanTask } = await getWorkflowToolExecutors();
+  const { projectDir: _projectDir, ...params } = args;
+  return adaptExecutorResult(
+    await runSerializedWorkflowOperation(() => executeReplanTask(params, projectDir)),
+  );
+}
+
+async function handleReworkBriefSave(
+  projectDir: string,
+  args: z.infer<typeof reworkBriefSaveSchema>,
+): Promise<unknown> {
+  await enforceWorkflowWriteGate("gsd_rework_brief_save", projectDir, args.milestoneId);
+  const { executeReworkBriefSave } = await getWorkflowToolExecutors();
+  const { projectDir: _projectDir, ...params } = args;
+  return adaptExecutorResult(
+    await runSerializedWorkflowOperation(() => executeReworkBriefSave(params, projectDir)),
   );
 }
 
@@ -1643,6 +1710,42 @@ const replanSliceParams = {
 };
 const replanSliceSchema = z.object(replanSliceParams);
 
+const replanTaskParams = {
+  projectDir: projectDirParam,
+  milestoneId: nonEmptyString("milestoneId").describe("Milestone ID (e.g. M001)"),
+  sliceId: nonEmptyString("sliceId").describe("Slice ID (e.g. S01)"),
+  taskId: nonEmptyString("taskId").describe("Task ID (e.g. T01)"),
+  title: nonEmptyString("title").describe("Updated task title"),
+  description: nonEmptyString("description").describe("Updated task description incorporating rework scope"),
+  estimate: nonEmptyString("estimate").describe("Updated task estimate"),
+  files: z.array(z.string()).describe("Updated files likely touched"),
+  verify: nonEmptyString("verify").describe("Updated verification command or block"),
+  inputs: z.array(z.string()).describe("Updated input files or references"),
+  expectedOutput: z.array(z.string()).describe("Updated files this task creates or overwrites"),
+  reworkBriefRef: z.string().optional().describe("Rework brief ID/reference that triggered this task replan"),
+};
+const replanTaskSchema = z.object(replanTaskParams);
+
+const reworkFindingSchema = z.object({
+  findingId: nonEmptyString("findingId"),
+  severity: z.enum(["blocking", "advisory"]),
+  description: nonEmptyString("description"),
+  requiredFix: nonEmptyString("requiredFix"),
+  verificationCommands: z.array(z.string()),
+  status: z.enum(["pending", "resolved", "deferred-with-override"]).optional(),
+  evidence: z.string().optional(),
+  decisionRef: z.string().optional(),
+});
+const reworkBriefSaveParams = {
+  projectDir: projectDirParam,
+  briefId: z.string().optional().describe("Stable brief ID"),
+  milestoneId: nonEmptyString("milestoneId").describe("Milestone ID (e.g. M001)"),
+  sliceId: nonEmptyString("sliceId").describe("Slice ID (e.g. S01)"),
+  taskId: nonEmptyString("taskId").describe("Task ID (e.g. T01)"),
+  findings: z.array(reworkFindingSchema).min(1).describe("Structured rework findings for this task"),
+};
+const reworkBriefSaveSchema = z.object(reworkBriefSaveParams);
+
 const sliceCompleteParams = {
   projectDir: projectDirParam,
   sliceId: nonEmptyString("sliceId").describe("Slice ID (e.g. S01)"),
@@ -1825,6 +1928,12 @@ const taskCompleteParams = {
     ),
   }).optional().describe("ADR-011 Phase 2: optional escalation payload. Only honored when phases.mid_execution_escalation is true."),
   verificationEvidence: z.array(verificationEvidenceItemSchema).optional().describe("Verification evidence entries"),
+  reworkResolution: z.array(z.object({
+    findingId: nonEmptyString("findingId"),
+    status: z.enum(["resolved", "deferred-with-override"]),
+    evidence: nonEmptyString("evidence"),
+    decisionRef: z.string().optional(),
+  })).optional().describe("Resolution evidence for structured rework findings linked to this task"),
 };
 const taskCompleteSchema = z.object(taskCompleteParams);
 
@@ -2235,7 +2344,7 @@ export function registerWorkflowTools(
 
   server.tool(
     "gsd_plan_task",
-    "Write task planning state to the GSD database and render tasks/T##-PLAN.md from DB.",
+    "Write task planning state to the GSD database and render the slice PLAN from DB.",
     planTaskParams,
     async (args: Record<string, unknown>) => {
       const parsed = parseWorkflowArgs(planTaskSchema, args);
@@ -2256,7 +2365,7 @@ export function registerWorkflowTools(
 
   server.tool(
     "gsd_task_plan",
-    "Alias for gsd_plan_task. Write task planning state to the GSD database and render tasks/T##-PLAN.md from DB.",
+    "Alias for gsd_plan_task. Write task planning state to the GSD database and render the slice PLAN from DB.",
     planTaskParams,
     async (args: Record<string, unknown>) => {
       logAliasUsage("gsd_task_plan", "gsd_plan_task");
@@ -2294,6 +2403,26 @@ export function registerWorkflowTools(
       logAliasUsage("gsd_slice_replan", "gsd_replan_slice");
       const parsed = parseWorkflowArgs(replanSliceSchema, args);
       return handleReplanSlice(parsed.projectDir, parsed);
+    },
+  );
+
+  server.tool(
+    "gsd_replan_task",
+    "Update one pending task's planning contract after rework without touching sibling tasks.",
+    replanTaskParams,
+    async (args: Record<string, unknown>) => {
+      const parsed = parseWorkflowArgs(replanTaskSchema, args);
+      return handleReplanTask(parsed.projectDir, parsed);
+    },
+  );
+
+  server.tool(
+    "gsd_rework_brief_save",
+    "Persist a structured task rework brief whose blocking findings gate gsd_task_complete.",
+    reworkBriefSaveParams,
+    async (args: Record<string, unknown>) => {
+      const parsed = parseWorkflowArgs(reworkBriefSaveSchema, args);
+      return handleReworkBriefSave(parsed.projectDir, parsed);
     },
   );
 

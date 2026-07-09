@@ -26,6 +26,7 @@ import {
   buildPlanMilestonePrompt,
   buildPlanSlicePrompt,
   buildSkillActivationBlock,
+  capPreamble,
 } from "./auto-prompts.js";
 import { deriveState, isGhostMilestone } from "./state.js";
 import { invalidateAllCaches } from "./cache.js";
@@ -864,6 +865,13 @@ export function getDiscussableFutureMilestones<T extends { id: string; status: s
   );
 }
 
+function findDiscussTargetMilestone(
+  registry: GSDState["registry"],
+  milestoneId: string,
+): GSDState["registry"][number] | undefined {
+  return registry.find((m) => m.id === milestoneId || m.id.startsWith(`${milestoneId}-`));
+}
+
 function getStructuredQuestionsAvailability(
   pi: ExtensionAPI,
   ctx: ExtensionContext | undefined,
@@ -1192,7 +1200,9 @@ function resolveDiscussSliceBasePath(basePath: string, milestoneId: string): str
  * slice summaries so the agent can ask grounded UX/behaviour questions
  * without wasting a turn reading files.
  */
-async function buildDiscussSlicePrompt(
+// Exported for tests (`prompt-budget-enforcement.test.ts`) — verifies the
+// inlined-context cap. Not part of the public flow surface otherwise.
+export async function buildDiscussSlicePrompt(
   mid: string,
   sid: string,
   sTitle: string,
@@ -1255,8 +1265,12 @@ async function buildDiscussSlicePrompt(
     }
   }
 
+  // Cap the inlined block: it grows unbounded with each completed slice's full
+  // SUMMARY. `capPreamble` truncates at `### ` section boundaries — roadmap and
+  // milestone context come first (survive), completed-slice summaries come last
+  // (dropped first) when the executor's window can't hold everything.
   const inlinedContext = inlined.length > 0
-    ? `## Inlined Context (preloaded — do not re-read these files)\n\n${inlined.join("\n\n---\n\n")}`
+    ? capPreamble(`## Inlined Context (preloaded — do not re-read these files)\n\n${inlined.join("\n\n---\n\n")}`)
     : `## Inlined Context\n\n_(no context files found yet — go in blind and ask broad questions)_`;
 
   const sliceDirPath = `.gsd/milestones/${mid}/slices/${sid}`;
@@ -1333,12 +1347,23 @@ export async function showDiscuss(
     if (slash > 0) {
       const mid = target.slice(0, slash);
       const sid = target.slice(slash + 1);
-      const targetMilestone = state.registry.find((m) => m.id === mid);
-      if (!targetMilestone || targetMilestone.status === "complete" || targetMilestone.status === "parked") {
-        ctx.ui.notify(`Milestone ${mid} is not discussable.`, "warning");
+      const targetMilestone = findDiscussTargetMilestone(state.registry, mid);
+      if (!targetMilestone) {
+        ctx.ui.notify(
+          `Milestone ${mid} was not found in the roadmap. Use /gsd new-milestone to add it, or /gsd status to see available milestones.`,
+          "warning",
+        );
         return;
       }
-      const slices = await loadDiscussNormSlices(basePath, mid);
+      if (targetMilestone.status === "complete") {
+        ctx.ui.notify(`Milestone ${targetMilestone.id} is already complete.`, "info");
+        return;
+      }
+      if (targetMilestone.status === "parked") {
+        ctx.ui.notify(`Milestone ${targetMilestone.id} is parked. Run /gsd unpark ${targetMilestone.id} to reactivate.`, "warning");
+        return;
+      }
+      const slices = await loadDiscussNormSlices(basePath, targetMilestone.id);
       const chosen = slices.find((s) => s.id.toUpperCase() === sid.toUpperCase());
       if (!chosen) {
         ctx.ui.notify(`Slice ${target} was not found in discussable slices.`, "warning");
@@ -1348,10 +1373,10 @@ export async function showDiscuss(
         ctx.ui.notify(`Slice ${target} is already complete; nothing to discuss.`, "info");
         return;
       }
-      const discussBasePath = resolveDiscussSliceBasePath(basePath, mid);
-      const contextFile = resolveSliceFile(discussBasePath, mid, sid, "CONTEXT");
+      const discussBasePath = resolveDiscussSliceBasePath(basePath, targetMilestone.id);
+      const contextFile = resolveSliceFile(discussBasePath, targetMilestone.id, sid, "CONTEXT");
       const sqAvail = getStructuredQuestionsAvailability(pi, ctx);
-      const prompt = await buildDiscussSlicePrompt(mid, sid, chosen.title, discussBasePath, {
+      const prompt = await buildDiscussSlicePrompt(targetMilestone.id, sid, chosen.title, discussBasePath, {
         rediscuss: !!contextFile,
         structuredQuestionsAvailable: sqAvail,
       });
@@ -1359,9 +1384,20 @@ export async function showDiscuss(
       return;
     }
 
-    const targetMilestone = state.registry.find((m) => m.id === target);
-    if (!targetMilestone || targetMilestone.status === "complete" || targetMilestone.status === "parked") {
-      ctx.ui.notify(`Milestone ${target} is not discussable.`, "warning");
+    const targetMilestone = findDiscussTargetMilestone(state.registry, target);
+    if (!targetMilestone) {
+      ctx.ui.notify(
+        `Milestone ${target} was not found in the roadmap. Use /gsd new-milestone to add it, or /gsd status to see available milestones.`,
+        "warning",
+      );
+      return;
+    }
+    if (targetMilestone.status === "complete") {
+      ctx.ui.notify(`Milestone ${targetMilestone.id} is already complete.`, "info");
+      return;
+    }
+    if (targetMilestone.status === "parked") {
+      ctx.ui.notify(`Milestone ${targetMilestone.id} is parked. Run /gsd unpark ${targetMilestone.id} to reactivate.`, "warning");
       return;
     }
     await dispatchDiscussForMilestone(ctx, pi, basePath, targetMilestone.id, targetMilestone.title, {});

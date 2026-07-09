@@ -113,9 +113,12 @@ GSD keeps authoritative runtime state in the project-root SQLite database and re
       01-CONTEXT.md     — scope and goals
       01-ROADMAP.md     — slice plan with dependencies
       01-01-PLAN.md     — task decomposition for the first slice
+      S01-T01-SUMMARY.md — task summary for the first slice task
       01-01-SUMMARY.md  — what happened in the first slice
       01-01-UAT.md      — test script
 ```
+
+Flat-phase task summaries use `S##-T##-SUMMARY.md` so identical task IDs in different slices do not collide. GSD still resolves older flat `T##-SUMMARY.md` task summaries when reading legacy projects.
 
 GSD may also create sibling runtime directories next to `.gsd/`: `.gsd-worktrees/` for isolated milestone checkouts and `.gsd-backups/` for migration snapshots. Keep those directories local and gitignored; stale `.gsd-backups/migrate-*` snapshots are pruned after 30 days once the project has completed the flat-phase `.gsd/phases/` migration.
 

@@ -116,7 +116,7 @@ A sliding-window analysis detects stuck loops — catching cycles like A→B→A
 
 ### Artifact verification retries
 
-After each unit, GSD verifies the expected artifact and retries missing artifacts with explicit failure context. `reactive-execute` batches use a terminal recovery after the retry cap: if dispatched tasks are still missing `T##-SUMMARY.md` files, GSD writes `S##-REACTIVE-BLOCKER.md`, marks summary-present tasks complete, marks missing-summary tasks skipped, and advances. Review skipped tasks before relying on downstream artifacts.
+After each unit, GSD verifies the expected artifact and retries missing artifacts with explicit failure context. `reactive-execute` batches use a terminal recovery after the retry cap: if dispatched tasks are still missing task summaries, GSD checks canonical flat-phase `S##-T##-SUMMARY.md` artifacts and accepts legacy `T##-SUMMARY.md` artifacts as a fallback, then writes `S##-REACTIVE-BLOCKER.md`, marks summary-present tasks complete, marks missing-summary tasks skipped, and advances. Review skipped tasks before relying on downstream artifacts.
 
 ### Consecutive dispatch blocker
 

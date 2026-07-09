@@ -111,10 +111,12 @@ export const MODEL_CAPABILITY_TIER: Record<string, ComplexityTier> = {
   "gpt-5.3-codex": "heavy",
   "gpt-5.4": "heavy",
   "gpt-5.5": "heavy",
+  "gpt-5.6": "heavy",
   "o1": "heavy",
   "o3": "heavy",
   "o4-mini": "heavy",
   "o4-mini-deep-research": "heavy",
+  "grok-4.5": "heavy",
 };
 
 // ─── Cost Table (per 1K input tokens, approximate USD) ───────────────────────
@@ -149,11 +151,13 @@ const MODEL_COST_PER_1K_INPUT: Record<string, number> = {
   "gpt-5.3-codex-spark": 0.0003,
   "gpt-5.4": 0.005,
   "gpt-5.5": 0.005,
+  "gpt-5.6": 0.005,
   "o4-mini": 0.005,
   "o4-mini-deep-research": 0.005,
   "gemini-2.0-flash": 0.0001,
   "gemini-2.5-pro": 0.00125,
   "deepseek-chat": 0.00014,
+  "grok-4.5": 0.002,
 };
 
 // ─── Capability Profiles Data Table ──────────────────────────────────────────
@@ -198,6 +202,9 @@ export const MODEL_CAPABILITY_PROFILES: Record<string, ModelCapabilities> = {
   // OpenAI's 2026-04-23 published eval deltas across coding, tool use, and long context.
   // Source: https://openai.com/index/introducing-gpt-5-5/
   "gpt-5.5":                      { coding: 96, debugging: 93, research: 89, reasoning: 95, speed: 42, longContext: 90, instruction: 93 },
+  // GPT-5.6 profile is provisional: a small uniform step over gpt-5.5, to be
+  // recalibrated once OpenAI publishes official eval results.
+  "gpt-5.6":                      { coding: 97, debugging: 94, research: 90, reasoning: 96, speed: 42, longContext: 91, instruction: 94 },
 
   // ── OpenAI o-series (reasoning-first) ──────────────────────────────────────
   "o1":                           { coding: 78, debugging: 82, research: 78, reasoning: 90, speed: 20, longContext: 65, instruction: 82 },
@@ -212,6 +219,11 @@ export const MODEL_CAPABILITY_PROFILES: Record<string, ModelCapabilities> = {
 
   // ── DeepSeek ───────────────────────────────────────────────────────────────
   "deepseek-chat":                { coding: 75, debugging: 65, research: 55, reasoning: 70, speed: 70, longContext: 55, instruction: 65 },
+
+  // ── xAI ────────────────────────────────────────────────────────────────────
+  // Grok 4.5 (2026-07): Opus-class frontier model tuned for coding and agentic
+  // work; notably faster and more token-efficient than peer heavy models.
+  "grok-4.5":                     { coding: 95, debugging: 90, research: 82, reasoning: 93, speed: 55, longContext: 80, instruction: 90 },
 };
 
 // ─── Base Task Requirements Data Table ───────────────────────────────────────

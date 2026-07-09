@@ -19,6 +19,11 @@ import {
   insertMilestone,
   insertSlice,
 } from "../gsd-db.ts";
+import { getDb } from "../db/engine.ts";
+
+function gateRunCount(gateId: string): number {
+  return (getDb().prepare("SELECT count(*) AS cnt FROM gate_runs WHERE gate_id = :gid").get({ ":gid": gateId }) as { cnt: number }).cnt;
+}
 
 describe("quality_gates CRUD", () => {
   let tmpDir: string;
@@ -81,6 +86,30 @@ describe("quality_gates CRUD", () => {
     assert.equal(results[0].verdict, "pass");
     assert.equal(results[0].rationale, "No auth surface");
     assert.ok(results[0].evaluated_at);
+  });
+
+  test("saveGateResult commits the verdict and the gate_runs ledger row together", () => {
+    insertGateRow({ milestoneId: "M001", sliceId: "S01", gateId: "Q3", scope: "slice" });
+    saveGateResult({
+      milestoneId: "M001", sliceId: "S01", gateId: "Q3",
+      verdict: "pass", rationale: "OK", findings: "",
+    });
+    assert.equal(getGateResults("M001", "S01")[0].status, "complete");
+    assert.equal(gateRunCount("Q3"), 1, "exactly one ledger row must accompany the verdict");
+  });
+
+  test("saveGateResult rolls back the verdict UPDATE if the ledger INSERT fails", () => {
+    insertGateRow({ milestoneId: "M001", sliceId: "S01", gateId: "Q3", scope: "slice" });
+    // Force the insertGateRun step to throw after the UPDATE by removing the
+    // ledger table. Atomicity means the gate row must stay pending.
+    getDb().exec("DROP TABLE gate_runs");
+    assert.throws(() => saveGateResult({
+      milestoneId: "M001", sliceId: "S01", gateId: "Q3",
+      verdict: "pass", rationale: "OK", findings: "",
+    }));
+    const gate = getGateResults("M001", "S01")[0];
+    assert.equal(gate.status, "pending", "gate verdict UPDATE must roll back when the ledger INSERT fails");
+    assert.equal(gate.verdict ?? "", "", "verdict must not persist after rollback");
   });
 
   test("saveGateResult throws when the gate row does not exist", () => {

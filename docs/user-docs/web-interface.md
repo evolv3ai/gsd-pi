@@ -18,12 +18,20 @@ gsd --web --host 0.0.0.0 --port 8080 --allowed-origins "https://example.com"
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--host` | `localhost` | Bind address for the web server |
+| `--host` | `127.0.0.1` | Bind address for the web server |
 | `--port` | `3000` | Port for the web server |
 | `--allowed-origins` | (none) | Comma-separated list of allowed CORS origins |
 | `--no-auth` | disabled | Disable the built-in bearer token gate |
 
-`--no-auth` leaves the web interface unprotected unless another layer controls access. Use it only behind trusted external authentication, such as a reverse proxy, VPN, or private network boundary.
+`--no-auth` leaves the web interface unprotected unless another layer controls access. By default, GSD only allows unauthenticated web mode on loopback hosts such as `127.0.0.1`, `localhost`, `::1`, or another `127.x.x.x` address. If you combine `--no-auth` or `GSD_WEB_NO_AUTH=1` with a non-loopback bind such as `--host 0.0.0.0`, startup is refused.
+
+To deliberately run unauthenticated web mode on a LAN-facing host, set `GSD_WEB_ALLOW_UNAUTHENTICATED_LAN=1` in the same environment:
+
+```bash
+GSD_WEB_ALLOW_UNAUTHENTICATED_LAN=1 gsd --web --host 0.0.0.0 --no-auth
+```
+
+This exposes terminal and file APIs to any client that can reach the server unless trusted external access control is already in place. Use the override only behind authentication you control, such as a reverse proxy, VPN, or private network boundary.
 
 ## Features
 
@@ -45,14 +53,15 @@ Key components:
 
 ## Configuration
 
-The web server binds to `localhost:3000` by default. Use `--host`, `--port`, and `--allowed-origins` to override (see CLI Flags above).
+The web server binds to `127.0.0.1:3000` by default. Use `--host`, `--port`, and `--allowed-origins` to override (see CLI Flags above).
 
 ### Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `GSD_WEB_PROJECT_CWD` | Default project path when `?project=` is not specified |
-| `GSD_WEB_NO_AUTH` | Set to `1` to disable the built-in web bearer token gate |
+| `GSD_WEB_NO_AUTH` | Set to `1` to disable the built-in web bearer token gate on loopback hosts |
+| `GSD_WEB_ALLOW_UNAUTHENTICATED_LAN` | Set to `1` to explicitly allow unauthenticated web mode on non-loopback hosts |
 
 ## Node v24 Compatibility
 

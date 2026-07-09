@@ -107,11 +107,11 @@ test("ADR-017 (#5700): sketch-flag drift detected and repaired end-to-end", asyn
     sketchScope: "limited",
   });
 
-  // Simulate the post-crash scenario: PLAN.md exists on disk but the
-  // is_sketch flag is still 1.
+  // Simulate the post-crash scenario: a *real* PLAN.md (a decomposed task)
+  // exists on disk but the is_sketch flag is still 1.
   writeFileSync(
     join(base, ".gsd", "phases", "01-test", "01-02-PLAN.md"),
-    "# S02 Plan\n",
+    makeStalePlanContent("S02", [{ id: "T01", title: "Build the feature", done: false }]),
   );
   assert.equal(getSlice("M001", "S02")?.is_sketch, 1, "pre: flagged as sketch");
 
@@ -129,6 +129,120 @@ test("ADR-017 (#5700): sketch-flag drift detected and repaired end-to-end", asyn
     assert.equal(result.repaired[0].mid, "M001");
     assert.equal(result.repaired[0].sid, "S02");
   }
+});
+
+test("#1287: stub/placeholder PLAN does NOT clear the sketch flag", async (t) => {
+  const base = makeFixtureBase();
+  t.after(() => cleanup(base));
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M001", title: "Test", status: "active" });
+  insertSlice({
+    id: "S02",
+    milestoneId: "M001",
+    title: "Feature",
+    status: "pending",
+    risk: "medium",
+    depends: [],
+    demo: "S02 demo.",
+    sequence: 1,
+    isSketch: true,
+    sketchScope: "limited",
+  });
+
+  const planPath = join(base, ".gsd", "phases", "01-test", "01-02-PLAN.md");
+
+  // A bare stub PLAN (no decomposed tasks) must not clear the flag.
+  writeFileSync(planPath, "# S02 Plan\n");
+  clearRendererCaches();
+  let state = makeState({ activeMilestone: { id: "M001", title: "Test" } });
+  let result = await reconcileBeforeDispatch(base, {
+    invalidateStateCache: () => {},
+    deriveState: async () => state,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(getSlice("M001", "S02")?.is_sketch, 1, "stub PLAN: flag stays set");
+  assert.equal(result.repaired.length, 0, "stub PLAN: no repair");
+
+  // A projection round-trip stub whose only task is a synthetic "Plan NN"
+  // placeholder (migrate/transformer.buildTaskTitle) must also not clear it.
+  writeFileSync(
+    planPath,
+    makeStalePlanContent("S02", [{ id: "T01", title: "Plan 01", done: false }]),
+  );
+  clearRendererCaches();
+  state = makeState({ activeMilestone: { id: "M001", title: "Test" } });
+  result = await reconcileBeforeDispatch(base, {
+    invalidateStateCache: () => {},
+    deriveState: async () => state,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(getSlice("M001", "S02")?.is_sketch, 1, "placeholder task: flag stays set");
+  assert.equal(result.repaired.length, 0, "placeholder task: no repair");
+
+  // buildTaskTitle also emits `${phase} ${plan}` (e.g. "00 01") when the plan
+  // frontmatter carries phase/plan. This projected placeholder must not clear
+  // the flag either.
+  writeFileSync(
+    planPath,
+    makeStalePlanContent("S02", [{ id: "T01", title: "00 01", done: false }]),
+  );
+  clearRendererCaches();
+  state = makeState({ activeMilestone: { id: "M001", title: "Test" } });
+  result = await reconcileBeforeDispatch(base, {
+    invalidateStateCache: () => {},
+    deriveState: async () => state,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(
+    getSlice("M001", "S02")?.is_sketch,
+    1,
+    "phase/plan placeholder task: flag stays set",
+  );
+  assert.equal(result.repaired.length, 0, "phase/plan placeholder task: no repair");
+});
+
+test("#1288: real tasks shaped like `word + number` still clear the sketch flag", async (t) => {
+  const base = makeFixtureBase();
+  t.after(() => cleanup(base));
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M001", title: "Test", status: "active" });
+  insertSlice({
+    id: "S02",
+    milestoneId: "M001",
+    title: "Feature",
+    status: "pending",
+    risk: "medium",
+    depends: [],
+    demo: "S02 demo.",
+    sequence: 1,
+    isSketch: true,
+    sketchScope: "limited",
+  });
+
+  const planPath = join(base, ".gsd", "phases", "01-test", "01-02-PLAN.md");
+
+  // `Step 1` / `RFC 1234` match the loose `word + number` shape but are genuine
+  // decomposed tasks. buildTaskTitle only emits `${phase} ${plan}` with a
+  // digit-led phase, so these must NOT be read as placeholders (#1288): a real
+  // plan-slice like this must still clear the stale is_sketch flag.
+  writeFileSync(
+    planPath,
+    makeStalePlanContent("S02", [
+      { id: "T01", title: "Step 1", done: false },
+      { id: "T02", title: "RFC 1234", done: false },
+    ]),
+  );
+  clearRendererCaches();
+  const state = makeState({ activeMilestone: { id: "M001", title: "Test" } });
+  const result = await reconcileBeforeDispatch(base, {
+    invalidateStateCache: () => {},
+    deriveState: async () => state,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(getSlice("M001", "S02")?.is_sketch, 0, "real task titles: flag cleared");
+  assert.equal(result.repaired.length, 1, "real task titles: repaired once");
 });
 
 test("ADR-017 (#5700): repair failure throws ReconciliationFailedError with shape", async () => {
@@ -1032,7 +1146,7 @@ test("ADR-017 (#5703): live worker lock is not cleared", async (t) => {
 
 // ─── #5704: unregistered-milestone drift ────────────────────────────────────
 
-test("ADR-017 (#5704): unregistered-milestone drift fails closed without importing markdown", async (t) => {
+test("ADR-017 (#5704/#1281): unregistered-milestone drift pauses with a hint instead of hard-escalating", async (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-adr017-projmd-"));
   const milestoneDir = join(base, ".gsd", "phases", "42-test");
   mkdirSync(milestoneDir, { recursive: true });
@@ -1059,27 +1173,65 @@ test("ADR-017 (#5704): unregistered-milestone drift fails closed without importi
   // Pre-condition: filesystem has the milestone, DB does NOT.
   assert.equal(getMilestone("M042"), null, "pre: DB has no row for M042");
 
-  await assert.rejects(
-    reconcileBeforeDispatch(base, {
-      invalidateStateCache: () => {},
-      deriveState: async () => makeState(),
-    }),
-    (err: unknown) => {
-      assert.ok(err instanceof ReconciliationFailedError);
-      assert.match(String(err.message), /unregistered-milestone/);
-      assert.equal(err.failures[0]?.drift.kind, "unregistered-milestone");
-      assert.match(String(err.failures[0]?.cause), /M042/);
-      assert.match(String(err.failures[0]?.cause), /markdown projection/);
-      // Hint leads with targeted, non-destructive actions (rename/discard)...
-      assert.match(String(err.failures[0]?.cause), /Rename/);
-      assert.match(String(err.failures[0]?.cause), /Discard/);
-      // ...and reframes recover as a destructive last resort, not the fix (#826).
-      assert.match(String(err.failures[0]?.cause), /\/gsd recover/);
-      assert.match(String(err.failures[0]?.cause), /last resort/i);
-      return true;
-    },
-  );
+  // #1281: the handler exposes a `blocker`, so reconciliation returns a
+  // non-fatal pause-with-hint (ok:true + blocker) rather than throwing.
+  const result = await reconcileBeforeDispatch(base, {
+    invalidateStateCache: () => {},
+    deriveState: async () => makeState(),
+  });
+  assert.equal(result.ok, true);
+  const blocker = result.blockers.find((b) => /M042/.test(b));
+  assert.ok(blocker, "expected an M042 unregistered-milestone blocker");
+  assert.match(blocker!, /markdown projection/);
+  // Hint leads with targeted, non-destructive actions (rename/discard)...
+  assert.match(blocker!, /Rename/);
+  assert.match(blocker!, /Discard/);
+  // ...and reframes recover as a destructive last resort, not the fix (#826).
+  assert.match(blocker!, /\/gsd recover/);
+  assert.match(blocker!, /last resort/i);
+  // Runtime never imports markdown into the DB.
   assert.equal(getMilestone("M042"), null, "post: DB still has no row for M042");
+});
+
+test("#1281: descriptive flat-phase dir registered under a suffixed id → no false-positive drift", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-1281-suffix-"));
+  // Descriptive slug the flat-phase extractor cannot recover the suffix from →
+  // it derives the bare `M007`, which has no DB row.
+  const milestoneDir = join(base, ".gsd", "phases", "07-v40fmq-m007-v40fmq-navigation-footer-system");
+  mkdirSync(milestoneDir, { recursive: true });
+  writeFileSync(
+    join(milestoneDir, "M007-v40fmq-ROADMAP.md"),
+    [
+      "# M007: Navigation Footer System",
+      "",
+      "**Vision:** Verify no false-positive unregistered-milestone drift",
+      "",
+      "## Slices",
+      "",
+      "- [ ] **S01: Foundation** `risk:medium` `depends:[]`",
+      "",
+    ].join("\n"),
+  );
+  t.after(() => {
+    try { closeDatabase(); } catch { /* noop */ }
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  // The milestone IS registered — under the unique_milestone_ids suffixed id.
+  insertMilestone({ id: "M007-v40fmq", title: "Navigation Footer System", status: "complete" });
+
+  const result = await reconcileBeforeDispatch(base, {
+    invalidateStateCache: () => {},
+    deriveState: async () => makeState(),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.blockers.some((b) => /unregistered/i.test(b) || /M007/.test(b)),
+    false,
+    "bare M007 derived from the slug must resolve to the registered M007-v40fmq row",
+  );
 });
 
 test("ADR-017 (#5704): registered milestone (DB row present) → no drift", async (t) => {
@@ -1977,7 +2129,7 @@ test("deriveState is pure: stale sketch healed only via reconcileBeforeDispatch"
   });
   writeFileSync(
     join(base, ".gsd", "phases", "01-test", "01-02-PLAN.md"),
-    "# S02 Plan\n",
+    makeStalePlanContent("S02", [{ id: "T01", title: "Build the feature", done: false }]),
   );
 
   const { deriveState } = await import("../state.ts");

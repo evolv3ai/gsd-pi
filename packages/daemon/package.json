@@ -1,6 +1,6 @@
 {
   "name": "@opengsd/daemon",
-  "version": "1.7.0",
+  "version": "1.9.0",
   "description": "GSD daemon — background process for project monitoring and Discord integration",
   "license": "MIT",
   "repository": {
@@ -27,10 +27,10 @@
   },
   "scripts": {
     "build": "node ../../scripts/clean-package-dist.cjs && tsc",
-    "test": "node --test dist/daemon.test.js dist/cloud-config.test.js dist/cloud-runtime.test.js dist/device-flow.test.js dist/local-tool-executor.test.js dist/mcp-cli.test.js dist/message-batcher.test.js"
+    "test": "pnpm run build && node --test dist/daemon.test.js dist/cloud-config.test.js dist/cloud-runtime.test.js dist/device-flow.test.js dist/local-tool-executor.test.js dist/mcp-cli.test.js dist/message-batcher.test.js"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.52.0",
+    "@anthropic-ai/sdk": "^0.91.1",
     "@opengsd/contracts": "workspace:*",
     "@opengsd/mcp-server": "workspace:*",
     "@opengsd/rpc-client": "workspace:*",

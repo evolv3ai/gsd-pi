@@ -58,9 +58,12 @@ The `.gsd/` directory looks like this:
       01-CONTEXT.md     — scope and goals from discussion phase
       01-ROADMAP.md     — slice plan with risk levels and dependencies
       01-01-PLAN.md     — task decomposition for the first slice
+      S01-T01-SUMMARY.md — task summary for the first slice task
       01-01-SUMMARY.md  — what was built and what changed
       01-01-UAT.md      — human test script
 ```
+
+Flat-phase task summaries use `S##-T##-SUMMARY.md` so identical task IDs in different slices do not collide. GSD still resolves older flat `T##-SUMMARY.md` task summaries when reading legacy projects.
 
 GSD may also create sibling runtime directories next to `.gsd/`. `.gsd-worktrees/` holds isolated milestone checkouts, and `.gsd-backups/` holds migration snapshots such as `.gsd-backups/migrate-*`. These sibling directories are local-only and gitignored; stale `migrate-*` backup snapshots are pruned after 30 days once the project has completed the flat-phase `.gsd/phases/` migration.
 

@@ -40,6 +40,7 @@ import {
   resolveTasksDir,
   targetMilestoneFile,
   targetSliceFile,
+  targetTaskFile,
   gsdProjectionRoot,
   gsdRoot,
   buildTaskFileName,
@@ -756,20 +757,7 @@ export async function renderTaskSummary(
     return false; // No summary to render — skip silently
   }
 
-  // Resolve the tasks directory, creating path if needed
-  const slicePath = resolveSlicePath(basePath, milestoneId, sliceId);
-  if (!slicePath) {
-    process.stderr.write(
-      `markdown-renderer: cannot resolve slice path for ${milestoneId}/${sliceId}\n`,
-    );
-    return false;
-  }
-
-  // Use the tasks/ subdir when it exists (legacy layout), otherwise use the
-  // slice path directly (flat-phase: task summaries live alongside plan files).
-  const tasksDir = resolveTasksDir(basePath, milestoneId, sliceId) ?? slicePath;
-  const fileName = buildTaskFileName(taskId, "SUMMARY");
-  const absPath = join(tasksDir, fileName);
+  const absPath = targetTaskFile(basePath, milestoneId, sliceId, taskId, "SUMMARY", getMilestone(milestoneId)?.title);
   const artifactPath = toArtifactPath(absPath, basePath);
 
   await writeAndStore(absPath, artifactPath, task.full_summary_md, {
@@ -1208,6 +1196,21 @@ export interface AssessmentData {
   completedSliceId?: string;
 }
 
+function existingLegacySliceAssessmentPath(
+  basePath: string,
+  milestoneId: string,
+  sliceId: string,
+): string | null {
+  if (!isLegacyMilestonesLayout(basePath)) return null;
+  const legacyBase = legacyMilestonesDir(basePath);
+  const milestoneDirName = resolveDir(legacyBase, milestoneId);
+  if (!milestoneDirName) return null;
+  const slicesDir = join(legacyBase, milestoneDirName, "slices");
+  const sliceDirName = resolveDir(slicesDir, sliceId);
+  if (!sliceDirName) return null;
+  return join(slicesDir, sliceDirName, `${sliceId}-ASSESSMENT.md`);
+}
+
 export async function renderReplanFromDb(
   basePath: string,
   milestoneId: string,
@@ -1258,13 +1261,14 @@ export async function renderAssessmentFromDb(
   sliceId: string,
   assessmentData: AssessmentData,
 ): Promise<{ assessmentPath: string; content: string }> {
-  const absPath = targetSliceFile(
-    basePath,
-    milestoneId,
-    sliceId,
-    "ASSESSMENT",
-    getMilestone(milestoneId)?.title,
-  );
+  const absPath = existingLegacySliceAssessmentPath(basePath, milestoneId, sliceId)
+    ?? targetSliceFile(
+      basePath,
+      milestoneId,
+      sliceId,
+      "ASSESSMENT",
+      getMilestone(milestoneId)?.title,
+    );
   mkdirSync(dirname(absPath), { recursive: true });
   const artifactPath = toArtifactPath(absPath, basePath);
 

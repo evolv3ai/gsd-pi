@@ -60,6 +60,28 @@ test("evidence-xref: verification run through gsd_exec script matches the claime
   assert.deepEqual(mismatches, [], "gsd_exec-executed verification must not be flagged as missing");
 });
 
+test("evidence-xref: gsd_exec runtime-purpose label matches the recorded sandbox run", () => {
+  resetEvidence();
+
+  recordToolCall("tc-exec-label", "gsd_exec", {
+    runtime: "node",
+    code: "const plan = 'T02-PLAN'; if (!plan.includes('T02')) process.exit(1);",
+    purpose: "validate T02-PLAN contains canonical Cargo command, state seam, d",
+  });
+  recordToolResult("tc-exec-label", "gsd_exec", gsdExecResult(0), false);
+
+  const mismatches = crossReferenceEvidence(
+    [{
+      command: "gsd_exec node: validate T02-PLAN contains canonical Cargo command, state seam, d",
+      exitCode: 0,
+      verdict: "passed",
+    }],
+    getEvidence(),
+  );
+
+  assert.deepEqual(mismatches, [], "gsd_exec purpose labels must match sandbox evidence");
+});
+
 test("evidence-xref: multi-line gsd_exec script matches claims for each embedded command", () => {
   resetEvidence();
 

@@ -46,6 +46,7 @@ import {
   type ToolsPolicy,
   type UnitContextManifest,
 } from "./unit-context-manifest.js";
+import { resolveEffectivePlanningToolsPolicy } from "./planning-subagent-policy.js";
 import { getUnitToolSurfaceContract } from "./unit-tool-contracts.js";
 import type { UnitPromptContextContract } from "./tool-contract.js";
 
@@ -207,6 +208,7 @@ export function composeContextModeInstructions(
 
 export interface ComposeToolSurfaceInstructionOptions {
   readonly renderMode: ContextModeRenderMode;
+  readonly basePath?: string;
 }
 
 const TOOL_SURFACE_GUIDANCE_BY_UNIT: Record<string, string> = {
@@ -226,15 +228,38 @@ const TOOL_SURFACE_GUIDANCE_BY_UNIT: Record<string, string> = {
     "Persist completion only through `gsd_complete_milestone` after verification passes. Do not query `.gsd/gsd.db` directly. Do not write `.gsd/PROJECT.md` or `.gsd/REQUIREMENTS.md` by hand — use `gsd_summary_save` and `gsd_requirement_update`.",
   "replan-slice":
     "Persist replans through `gsd_replan_slice` only. Do not edit `PLAN.md` or task plans directly.",
-  "plan-slice":
-    "Persist planning through `gsd_plan_slice` only. Dispatch subagents only to **scout** or **planner** for reconnaissance — not implementation agents. Do not edit user source files outside `.gsd/**`.",
-  "refine-slice":
-    "Persist refinements through `gsd_plan_slice` only. Dispatch subagents only to **scout** or **planner**. Do not edit user source files outside `.gsd/**`.",
-  "plan-milestone":
-    "Persist milestone planning through `gsd_plan_milestone` / `gsd_plan_slice`. Do not edit user source files outside `.gsd/**`.",
   "research-slice":
     "Dispatch subagents only to **scout** or **planner** for reconnaissance. Do not edit user source files outside `.gsd/**`.",
 };
+
+function formatAllowedAgents(agents: readonly string[]): string {
+  return agents.map((agent) => `**${agent}**`).join(", ");
+}
+
+function guidanceForUnitToolsPolicy(unitType: string, policy: ToolsPolicy): string | undefined {
+  if (unitType === "plan-slice") {
+    const dispatch = policy.mode === "planning-dispatch"
+      ? ` Dispatch subagents only to ${formatAllowedAgents(policy.allowedSubagents)} for reconnaissance — not implementation agents.`
+      : " Do not dispatch subagents.";
+    return `Persist planning through \`gsd_plan_slice\` only.${dispatch} Do not edit user source files outside \`.gsd/**\`.`;
+  }
+
+  if (unitType === "refine-slice") {
+    const dispatch = policy.mode === "planning-dispatch"
+      ? ` Dispatch subagents only to ${formatAllowedAgents(policy.allowedSubagents)}.`
+      : " Do not dispatch subagents.";
+    return `Persist refinements through \`gsd_plan_slice\` only.${dispatch} Do not edit user source files outside \`.gsd/**\`.`;
+  }
+
+  if (unitType === "plan-milestone") {
+    const dispatch = policy.mode === "planning-dispatch"
+      ? ` Dispatch subagents only to ${formatAllowedAgents(policy.allowedSubagents)}.`
+      : "";
+    return `Persist milestone planning through \`gsd_plan_milestone\` / \`gsd_plan_slice\`.${dispatch} Do not edit user source files outside \`.gsd/**\`.`;
+  }
+
+  return undefined;
+}
 
 function guidanceForToolsPolicy(policy: ToolsPolicy): string | null {
   switch (policy.mode) {
@@ -280,8 +305,9 @@ export function composeToolSurfaceInstructions(
   const manifest = resolveManifest(unitType);
   if (!manifest) return "";
 
-  const unitGuidance = TOOL_SURFACE_GUIDANCE_BY_UNIT[unitType];
-  const policyGuidance = unitGuidance ? null : guidanceForToolsPolicy(manifest.tools);
+  const effectiveTools = resolveEffectivePlanningToolsPolicy(unitType, manifest.tools, opts.basePath) ?? manifest.tools;
+  const unitGuidance = guidanceForUnitToolsPolicy(unitType, effectiveTools) ?? TOOL_SURFACE_GUIDANCE_BY_UNIT[unitType];
+  const policyGuidance = unitGuidance ? null : guidanceForToolsPolicy(effectiveTools);
   const forbiddenLine = formatForbiddenWorkflowToolsLine(unitType, unitGuidance);
   const parts = [unitGuidance, policyGuidance, forbiddenLine].filter(
     (part): part is string => typeof part === "string" && part.length > 0,

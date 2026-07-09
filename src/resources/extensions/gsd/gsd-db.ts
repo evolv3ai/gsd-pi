@@ -41,7 +41,7 @@ import {
 } from "./db-decision-requirement-rows.js";
 import { rowToGate } from "./db-gate-rows.js";
 import { rowToArtifact, rowToMilestone, type ArtifactRow, type MilestoneRow } from "./db-milestone-artifact-rows.js";
-import { isClosedStatus } from "./status-guards.js";
+import { isClosedStatus, toStatus } from "./status-guards.js";
 import { rowToSlice, rowToTask, type SliceRow, type TaskRow } from "./db-task-slice-rows.js";
 
 // Connection ownership, lifecycle, schema/migrations and transaction
@@ -464,6 +464,11 @@ export function insertTask(t: {
   preserveCompletionMetadata?: boolean;
 }): void {
   if (!getDbOrNull()!) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  // Stamp completed_at for every terminal-complete alias (complete/done/closed),
+  // not just two literals — a task imported as "closed" is completed and must
+  // carry a timestamp. NOT for "skipped": a skipped task was never completed
+  // (cascade writers set its completed_at = NULL).
+  const isCompleteAlias = t.status != null && toStatus(t.status) === "complete";
   getDbOrNull()!.prepare(
     `INSERT INTO tasks (
       milestone_id, slice_id, id, title, status, one_liner, narrative,
@@ -515,7 +520,7 @@ export function insertTask(t: {
     ":narrative": t.narrative ?? "",
     ":verification_result": t.verificationResult ?? "",
     ":duration": t.duration ?? "",
-    ":completed_at": t.status === "done" || t.status === "complete" ? new Date().toISOString() : null,
+    ":completed_at": isCompleteAlias ? new Date().toISOString() : null,
     ":blocker_discovered": t.blockerDiscovered ? 1 : 0,
     ":deviations": t.deviations ?? "",
     ":known_issues": t.knownIssues ?? "",
@@ -531,7 +536,7 @@ export function insertTask(t: {
     ":observability_impact": t.planning?.observabilityImpact ?? "",
     ":full_plan_md": t.planning?.fullPlanMd ?? "",
     ":sequence": t.sequence ?? 0,
-    ":preserve_completion": t.preserveCompletionMetadata && (t.status === "complete" || t.status === "done") ? 1 : 0,
+    ":preserve_completion": t.preserveCompletionMetadata && isCompleteAlias ? 1 : 0,
     ":target_repositories": JSON.stringify(t.planning?.targetRepositories ?? []),
     ":raw_target_repositories":
       t.planning && "targetRepositories" in t.planning
@@ -656,8 +661,8 @@ export function upsertTaskPlanning(milestoneId: string, sliceId: string, taskId:
 }
 
 
-export function updateSliceStatus(milestoneId: string, sliceId: string, status: string, completedAt?: string): void {
-  applyStatusTransition({ entity: "slice", milestoneId, sliceId, status, completedAt });
+export function updateSliceStatus(milestoneId: string, sliceId: string, status: string, completedAt?: string, preserveCompletion?: boolean): void {
+  applyStatusTransition({ entity: "slice", milestoneId, sliceId, status, completedAt, preserveCompletion });
 }
 
 export function setTaskSummaryMd(milestoneId: string, sliceId: string, taskId: string, md: string): void {
@@ -820,8 +825,8 @@ function writeMilestoneStatus(milestoneId: string, status: string, completedAt?:
  * advance planned milestones. They may not reopen a closed milestone; callers
  * must use reopenMilestoneStatus(), which is reserved for gsd_milestone_reopen.
  */
-export function updateMilestoneStatus(milestoneId: string, status: string, completedAt?: string | null): void {
-  applyStatusTransition({ entity: "milestone", milestoneId, status, completedAt });
+export function updateMilestoneStatus(milestoneId: string, status: string, completedAt?: string | null, preserveCompletion?: boolean): void {
+  applyStatusTransition({ entity: "milestone", milestoneId, status, completedAt, preserveCompletion });
 }
 
 /**
@@ -890,6 +895,188 @@ export function insertReplanHistory(entry: {
     ":previous_artifact_path": entry.previousArtifactPath ?? null,
     ":replacement_artifact_path": entry.replacementArtifactPath ?? null,
     ":created_at": new Date().toISOString(),
+  });
+}
+
+
+export type ReworkFindingSeverity = "blocking" | "advisory";
+export type ReworkFindingStatus = "pending" | "resolved" | "deferred-with-override";
+
+export interface ReworkBriefFindingInput {
+  findingId: string;
+  severity: ReworkFindingSeverity;
+  description: string;
+  requiredFix: string;
+  verificationCommands: string[];
+  status?: ReworkFindingStatus;
+  evidence?: string;
+  decisionRef?: string;
+}
+
+export interface ReworkBriefFindingRow {
+  brief_id: string;
+  finding_id: string;
+  severity: ReworkFindingSeverity;
+  description: string;
+  required_fix: string;
+  verification_commands: string[];
+  status: ReworkFindingStatus;
+  evidence: string;
+  decision_ref: string;
+}
+
+function reworkBriefIdFromTask(milestoneId: string, sliceId: string, taskId: string): string {
+  return `RB-${milestoneId}-${sliceId}-${taskId}`;
+}
+
+function normalizeReworkStatus(status: unknown): ReworkFindingStatus {
+  const normalized = String(status ?? "pending");
+  if (normalized === "resolved" || normalized === "deferred-with-override") {
+    return normalized;
+  }
+  return "pending";
+}
+
+function rowToReworkFinding(row: Record<string, unknown>): ReworkBriefFindingRow {
+  let verificationCommands: string[] = [];
+  try {
+    const parsed = JSON.parse(String(row["verification_commands"] ?? "[]"));
+    verificationCommands = Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    verificationCommands = [];
+  }
+  return {
+    brief_id: String(row["brief_id"] ?? ""),
+    finding_id: String(row["finding_id"] ?? ""),
+    severity: String(row["severity"] ?? "blocking") === "advisory" ? "advisory" : "blocking",
+    description: String(row["description"] ?? ""),
+    required_fix: String(row["required_fix"] ?? ""),
+    verification_commands: verificationCommands,
+    status: normalizeReworkStatus(row["status"]),
+    evidence: String(row["evidence"] ?? ""),
+    decision_ref: String(row["decision_ref"] ?? ""),
+  };
+}
+
+export function saveReworkBrief(entry: {
+  briefId?: string;
+  milestoneId: string;
+  sliceId: string;
+  taskId: string;
+  findings: ReworkBriefFindingInput[];
+}): { briefId: string } {
+  if (!getDbOrNull()!) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  const briefId = entry.briefId?.trim() || reworkBriefIdFromTask(entry.milestoneId, entry.sliceId, entry.taskId);
+  const now = new Date().toISOString();
+  transaction(() => {
+    getDbOrNull()!.prepare(
+      `INSERT INTO rework_briefs (id, milestone_id, slice_id, task_id, created_at, updated_at)
+       VALUES (:id, :mid, :sid, :tid, :created_at, :updated_at)
+       ON CONFLICT(id) DO UPDATE SET
+         milestone_id = :mid,
+         slice_id = :sid,
+         task_id = :tid,
+         updated_at = :updated_at`,
+    ).run({
+      ":id": briefId,
+      ":mid": entry.milestoneId,
+      ":sid": entry.sliceId,
+      ":tid": entry.taskId,
+      ":created_at": now,
+      ":updated_at": now,
+    });
+    getDbOrNull()!.prepare("DELETE FROM rework_brief_findings WHERE brief_id = :id").run({ ":id": briefId });
+    const stmt = getDbOrNull()!.prepare(
+      `INSERT INTO rework_brief_findings (
+         brief_id, finding_id, severity, description, required_fix, verification_commands,
+         status, evidence, decision_ref, updated_at
+       ) VALUES (
+         :brief_id, :finding_id, :severity, :description, :required_fix, :verification_commands,
+         :status, :evidence, :decision_ref, :updated_at
+       )`,
+    );
+    for (const finding of entry.findings) {
+      stmt.run({
+        ":brief_id": briefId,
+        ":finding_id": finding.findingId,
+        ":severity": finding.severity,
+        ":description": finding.description,
+        ":required_fix": finding.requiredFix,
+        ":verification_commands": JSON.stringify(finding.verificationCommands),
+        ":status": finding.status ?? "pending",
+        ":evidence": finding.evidence ?? "",
+        ":decision_ref": finding.decisionRef ?? "",
+        ":updated_at": now,
+      });
+    }
+  });
+  return { briefId };
+}
+
+export function getBlockingReworkFindingsForTask(
+  milestoneId: string,
+  sliceId: string,
+  taskId: string,
+): ReworkBriefFindingRow[] {
+  if (!getDbOrNull()!) return [];
+  const rows = getDbOrNull()!.prepare(
+    `SELECT f.*
+     FROM rework_brief_findings f
+     JOIN rework_briefs b ON b.id = f.brief_id
+     WHERE b.milestone_id = :mid
+       AND b.slice_id = :sid
+       AND b.task_id = :tid
+       AND f.severity = 'blocking'
+     ORDER BY b.created_at, f.finding_id`,
+  ).all({ ":mid": milestoneId, ":sid": sliceId, ":tid": taskId }) as Array<Record<string, unknown>>;
+  return rows.map(rowToReworkFinding);
+}
+
+export function getUnresolvedBlockingReworkFindingsForTask(
+  milestoneId: string,
+  sliceId: string,
+  taskId: string,
+): ReworkBriefFindingRow[] {
+  return getBlockingReworkFindingsForTask(milestoneId, sliceId, taskId)
+    .filter((finding) => finding.status === "pending");
+}
+
+export function applyReworkResolutions(resolutions: Array<{
+  milestoneId: string;
+  sliceId: string;
+  taskId: string;
+  findingId: string;
+  status: ReworkFindingStatus;
+  evidence: string;
+  decisionRef?: string;
+}>): void {
+  if (!getDbOrNull()!) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+  const now = new Date().toISOString();
+  const stmt = getDbOrNull()!.prepare(
+    `UPDATE rework_brief_findings
+     SET status = :status,
+         evidence = :evidence,
+         decision_ref = :decision_ref,
+         updated_at = :updated_at
+     WHERE finding_id = :finding_id
+       AND brief_id IN (
+         SELECT id FROM rework_briefs
+         WHERE milestone_id = :mid AND slice_id = :sid AND task_id = :tid
+       )`,
+  );
+  transaction(() => {
+    for (const resolution of resolutions) {
+      stmt.run({
+        ":status": resolution.status,
+        ":evidence": resolution.evidence,
+        ":decision_ref": resolution.decisionRef ?? "",
+        ":updated_at": now,
+        ":finding_id": resolution.findingId,
+        ":mid": resolution.milestoneId,
+        ":sid": resolution.sliceId,
+        ":tid": resolution.taskId,
+      });
+    }
   });
 }
 
@@ -1084,52 +1271,59 @@ export function saveGateResult(g: {
 }): void {
   if (!getDbOrNull()!) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
   const evaluatedAt = new Date().toISOString();
-  const result = getDbOrNull()!.prepare(
-    `UPDATE quality_gates
-     SET status = 'complete', verdict = :verdict, rationale = :rationale,
-         findings = :findings, evaluated_at = :evaluated_at
-     WHERE milestone_id = :mid AND slice_id = :sid AND gate_id = :gid
-       AND (task_id = :tid OR (:tid = '' AND task_id IS NULL))`,
-  ).run({
-    ":mid": g.milestoneId,
-    ":sid": g.sliceId,
-    ":gid": g.gateId,
-    ":tid": g.taskId ?? "",
-    ":verdict": g.verdict,
-    ":rationale": g.rationale,
-    ":findings": g.findings,
-    ":evaluated_at": evaluatedAt,
-  }) as { changes?: number };
+  // Atomic: the gate verdict UPDATE and the gate_runs ledger INSERT must commit
+  // together. As two autocommits, a crash between them records a completed gate
+  // with no ledger row (the row Recovery Classification reads). transaction()
+  // is re-entrant, so callers already inside a transaction are safe. The
+  // throw-on-zero-changes stays inside so a missing gate row rolls back cleanly.
+  transaction(() => {
+    const result = getDbOrNull()!.prepare(
+      `UPDATE quality_gates
+       SET status = 'complete', verdict = :verdict, rationale = :rationale,
+           findings = :findings, evaluated_at = :evaluated_at
+       WHERE milestone_id = :mid AND slice_id = :sid AND gate_id = :gid
+         AND (task_id = :tid OR (:tid = '' AND task_id IS NULL))`,
+    ).run({
+      ":mid": g.milestoneId,
+      ":sid": g.sliceId,
+      ":gid": g.gateId,
+      ":tid": g.taskId ?? "",
+      ":verdict": g.verdict,
+      ":rationale": g.rationale,
+      ":findings": g.findings,
+      ":evaluated_at": evaluatedAt,
+    }) as { changes?: number };
 
-  if ((result.changes ?? 0) === 0) {
-    throw new GSDError(
-      GSD_STALE_STATE,
-      `quality gate row not found for ${g.milestoneId}/${g.sliceId}/${g.gateId}${g.taskId ? `/${g.taskId}` : ""}`,
-    );
-  }
+    if ((result.changes ?? 0) === 0) {
+      throw new GSDError(
+        GSD_STALE_STATE,
+        `quality gate row not found for ${g.milestoneId}/${g.sliceId}/${g.gateId}${g.taskId ? `/${g.taskId}` : ""}`,
+      );
+    }
 
-  const outcome =
-    g.verdict === "pass"
-      ? "pass"
-      : g.verdict === "omitted"
-        ? "manual-attention"
-        : "fail";
-  insertGateRun({
-    traceId: `quality-gate:${g.milestoneId}:${g.sliceId}`,
-    turnId: `gate:${g.gateId}:${g.taskId ?? "slice"}`,
-    gateId: g.gateId,
-    gateType: "quality-gate",
-    milestoneId: g.milestoneId,
-    sliceId: g.sliceId,
-    taskId: g.taskId ?? undefined,
-    outcome,
-    failureClass: outcome === "fail" ? "verification" : outcome === "manual-attention" ? "manual-attention" : "none",
-    rationale: g.rationale,
-    findings: g.findings,
-    attempt: 1,
-    maxAttempts: 1,
-    retryable: false,
-    evaluatedAt,
+    const outcome =
+      g.verdict === "pass"
+        ? "pass"
+        : g.verdict === "omitted"
+          ? "manual-attention"
+          : "fail";
+    insertGateRun({
+      traceId: `quality-gate:${g.milestoneId}:${g.sliceId}`,
+      turnId: `gate:${g.gateId}:${g.taskId ?? "slice"}`,
+      gateId: g.gateId,
+      gateType: "quality-gate",
+      milestoneId: g.milestoneId,
+      sliceId: g.sliceId,
+      taskId: g.taskId ?? undefined,
+      outcome,
+      failureClass: outcome === "fail" ? "verification" : outcome === "manual-attention" ? "manual-attention" : "none",
+      rationale: g.rationale,
+      findings: g.findings,
+      attempt: 1,
+      maxAttempts: 1,
+      retryable: false,
+      evaluatedAt,
+    });
   });
 }
 
@@ -1417,6 +1611,15 @@ export function deleteArtifactsByPathPrefix(prefix: string): number {
     getDbOrNull()!.prepare("DELETE FROM artifacts WHERE path LIKE :prefix").run({ ":prefix": likePrefix });
     return Number(countRow?.["count"] ?? 0);
   });
+}
+
+/** List artifact rows whose paths share a DB-relative prefix. */
+export function getArtifactsByPathPrefix(prefix: string): ArtifactRow[] {
+  if (!getDbOrNull()!) return [];
+  const rows = getDbOrNull()!.prepare(
+    "SELECT * FROM artifacts WHERE path LIKE :prefix ORDER BY path",
+  ).all({ ":prefix": `${prefix}%` });
+  return rows.map(rowToArtifact);
 }
 
 /**

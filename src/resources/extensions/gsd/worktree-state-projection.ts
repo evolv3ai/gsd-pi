@@ -179,6 +179,14 @@ function syncOtherMilestoneArtifacts(
   }
 }
 
+function syncFlatPhaseArtifacts(prGsd: string, wtGsd: string): void {
+  safeCopyRecursive(
+    join(prGsd, "phases"),
+    join(wtGsd, "phases"),
+    { force: false },
+  );
+}
+
 /**
  * Root-level .gsd/ files copied from worktree back to project root for
  * post-merge diagnostics. Markdown projections are NOT in this list — DB
@@ -253,6 +261,10 @@ export function _projectRootToWorktreeImpl(
   // Root PROJECT/REQUIREMENTS/DECISIONS projections must be readable from a
   // worktree-bound unit; the project root remains authoritative.
   syncRootProjectionFilesToWorktree(prGsd, wtGsd);
+
+  // Flat-phase artifacts (phases/NN-slug/NN-CONTEXT.md, NN-DISCUSSION.md,
+  // ROADMAP, etc.) must be available before the first worktree dispatch.
+  syncFlatPhaseArtifacts(prGsd, wtGsd);
 
   // Copy milestone directory from project root to worktree — additive only.
   // force:false prevents cpSync from overwriting existing worktree files.

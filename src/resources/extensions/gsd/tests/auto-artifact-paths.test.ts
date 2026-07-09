@@ -442,11 +442,11 @@ test("bare milestone id still falls back to a lone team-suffix projection (#1195
 // ── #1208: flat-phase execute-task summaries resolve at the phase root ────────
 //
 // In flat-phase layout task summaries are written beside the plan files
-// (phases/<phase>/T##-SUMMARY.md), NOT under a tasks/ subdir. A tasks/ dir may
-// still exist to hold auxiliary task-scoped gate artifacts (e.g. T01-VERIFY.json).
+// (phases/<phase>/S##-T##-SUMMARY.md), NOT under a tasks/ subdir. A tasks/ dir
+// may still exist to hold auxiliary task-scoped gate artifacts (e.g. T01-VERIFY.json).
 // Before the fix, the mere existence of that tasks/ dir redirected summary
-// verification into tasks/T##-SUMMARY.md — which never exists — trapping auto-mode
-// in a false verification retry that eventually paused after a successful task.
+// verification into tasks/S##-T##-SUMMARY.md — which never exists — trapping
+// auto-mode in a false verification retry after a successful task.
 
 test("flat-phase execute-task summary resolves at phase root when no tasks/ dir exists (#1208)", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "gsd-flat-task-summary-")));
@@ -461,7 +461,7 @@ test("flat-phase execute-task summary resolves at phase root when no tasks/ dir 
 
     assert.equal(
       resolveExpectedArtifactPath("execute-task", "M049/S03/T02", root),
-      join(phaseDir, "T02-SUMMARY.md"),
+      join(phaseDir, "S03-T02-SUMMARY.md"),
     );
   } finally {
     _clearGsdRootCache();
@@ -489,12 +489,12 @@ test("flat-phase execute-task summary resolves at phase root even when tasks/ di
     const resolved = resolveExpectedArtifactPath("execute-task", "M049/S03/T02", root);
     assert.equal(
       resolved,
-      join(phaseDir, "T02-SUMMARY.md"),
+      join(phaseDir, "S03-T02-SUMMARY.md"),
       "flat-phase task summary must resolve at the phase root, not tasks/",
     );
     assert.notEqual(
       resolved,
-      join(tasksDir, "T02-SUMMARY.md"),
+      join(tasksDir, "S03-T02-SUMMARY.md"),
       "a tasks/ dir with gate artifacts must NOT redirect summary resolution into tasks/",
     );
   } finally {

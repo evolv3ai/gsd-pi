@@ -31,7 +31,7 @@ describe("models.generated.ts", () => {
 		expect(MODELS.openrouter["anthropic/claude-fable-5"]).toBeDefined();
 	});
 
-	test("includes Claude Sonnet 5 across Anthropic providers with adaptive thinking", () => {
+	test("includes Claude Sonnet 5 across Anthropic-backed providers with adaptive thinking", () => {
 		const anthropic = MODELS.anthropic["claude-sonnet-5"];
 		expect(anthropic).toBeDefined();
 		expect(anthropic.api).toBe("anthropic-messages");
@@ -49,6 +49,39 @@ describe("models.generated.ts", () => {
 		expect(vertex.maxTokens).toBe(128_000);
 		expect(vertex.thinkingLevelMap).toMatchObject({ xhigh: "xhigh" });
 		expect(vertex.compat).toMatchObject({ forceAdaptiveThinking: true });
+
+		for (const [id, name] of [
+			["anthropic.claude-sonnet-5", "Claude Sonnet 5"],
+			["us.anthropic.claude-sonnet-5", "Claude Sonnet 5 (US)"],
+			["global.anthropic.claude-sonnet-5", "Claude Sonnet 5 (Global)"],
+		] as const) {
+			const bedrock = MODELS["amazon-bedrock"][id];
+			expect(bedrock).toBeDefined();
+			expect(bedrock.api).toBe("bedrock-converse-stream");
+			expect(bedrock.name).toBe(name);
+			expect(bedrock.contextWindow).toBe(1_000_000);
+			expect(bedrock.maxTokens).toBe(128_000);
+			expect(bedrock.thinkingLevelMap).toMatchObject({ xhigh: "xhigh" });
+		}
+	});
+
+	test("includes GPT-5.6 for OpenAI and OpenAI Codex providers", () => {
+		const openai = MODELS.openai["gpt-5.6"];
+		expect(openai).toBeDefined();
+		expect(openai.api).toBe("openai-responses");
+		expect(openai.name).toBe("GPT-5.6");
+		expect(openai.contextWindow).toBe(272_000);
+		expect(openai.maxTokens).toBe(128_000);
+		expect(openai.thinkingLevelMap).toMatchObject({ off: "none", xhigh: "xhigh" });
+
+		const codex = MODELS["openai-codex"]["gpt-5.6"];
+		expect(codex).toBeDefined();
+		expect(codex.api).toBe("openai-codex-responses");
+		expect(codex.name).toBe("GPT-5.6");
+		expect(codex.baseUrl).toBe("https://chatgpt.com/backend-api");
+		expect(codex.contextWindow).toBe(272_000);
+		expect(codex.maxTokens).toBe(128_000);
+		expect(codex.thinkingLevelMap).toMatchObject({ xhigh: "xhigh", minimal: "low" });
 	});
 
 	test("includes Anthropic Vertex models from the generated catalog", () => {
@@ -93,6 +126,28 @@ describe("models.generated.ts", () => {
 				maxTokens: 131072,
 			});
 		}
+	});
+
+	test("includes Grok 4.5 as a first-class xAI model", () => {
+		const model = MODELS.xai["grok-4.5"];
+
+		expect(model).toMatchObject({
+			id: "grok-4.5",
+			name: "Grok 4.5",
+			api: "openai-completions",
+			provider: "xai",
+			baseUrl: "https://api.x.ai/v1",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 2,
+				output: 6,
+				cacheRead: 0.5,
+				cacheWrite: 0,
+			},
+			contextWindow: 500000,
+			maxTokens: 30000,
+		});
 	});
 
 	test("keeps GitHub Copilot Claude 4.6 context at Copilot's 200K limit", () => {

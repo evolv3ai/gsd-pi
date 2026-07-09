@@ -3,7 +3,8 @@
 // Parallel to external-markdown-edit.ts. Detects sha drift between the compat
 // marker's planning.projections/passthrough and current .planning/ files.
 //
-// Modeled files (projections): re-imported via parsePlanningDirectory → DB.
+// Modeled files (projections): re-imported via parsePlanningDirectory → DB,
+// with markdown status authority scoped to their marker entity milestone ids.
 // Passthrough files (un-modeled docs): sha refreshed, content untouched.
 
 import { existsSync, readFileSync } from "node:fs";
@@ -148,13 +149,25 @@ async function repairExternalPlanningEdit(
     const { parsePlanningDirectory } = await import("../../migrate/parser.js");
     const { transformToGSD } = await import("../../migrate/transformer.js");
     const { writeGSDDirectory } = await import("../../migrate/writer.js");
-    const { migrateHierarchyToDb } = await import("../../md-importer.js");
+    const { migrateHierarchyToDb, milestoneIdsFromEntities } = await import("../../md-importer.js");
     const { invalidateStateCache } = await import("../../state.js");
 
     const parsed = await parsePlanningDirectory(join(ctx.basePath, ".planning"));
     const gsdProject = transformToGSD(parsed);
     await writeGSDDirectory(gsdProject, ctx.basePath);
-    migrateHierarchyToDb(ctx.basePath);
+    // #027: scope status authority to the milestone(s) this drifted .planning/
+    // file projects (first `/`-segment of its DB entity ids), so a stale
+    // checkbox in an unrelated projection can't revert a reopened slice/milestone
+    // in the DB. Unseeded files carry no entities → empty set → preserve DB
+    // status everywhere (fail toward the DB, log the breadcrumb).
+    const statusAuthoritativeMilestones = milestoneIdsFromEntities(record.entities);
+    if (statusAuthoritativeMilestones.size === 0) {
+      logWarning(
+        "reconcile",
+        `external-planning-edit: no milestone scope resolved for ${record.projectionPath}; preserving DB status for all milestones`,
+      );
+    }
+    migrateHierarchyToDb(ctx.basePath, { statusAuthoritativeMilestones });
     invalidateStateCache();
   } catch (err) {
     logWarning(

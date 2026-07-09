@@ -47,6 +47,9 @@ const ALLOWED_IMPORTERS = new Set([
   "gsd/migration-auto-check.ts",
   // drift detection: compares markdown projection against DB by design
   "gsd/state-reconciliation/drift/roadmap.ts",
+  // drift detection: reads PLAN.md tasks to distinguish a real plan from a
+  // stub before clearing a stale is_sketch flag (#1287)
+  "gsd/state-reconciliation/drift/sketch-flag.ts",
   // stale-render detection + render verification helpers over rendered output
   "gsd/markdown-renderer.ts",
   // pre-migration fallback: deriveState must work before the DB exists
@@ -58,6 +61,7 @@ const ALLOWED_IMPORTERS = new Set([
   "gsd/artifact-verification.ts",
   // diagnostics-only surfaces: report on projections, make no dispatch decisions
   "gsd/doctor.ts",
+  "gsd/doctor-state-checks.ts",
   // diagnostics-only: compares PLAN.md task checkboxes against DB status
   "gsd/doctor-engine-checks.ts",
   // display/telemetry-only surfaces

@@ -393,7 +393,8 @@ function resolveArtifactBasePath(
 ): string {
   if (
     session?.basePath &&
-    session.currentMilestoneId === mid &&
+    session.currentMilestoneId &&
+    milestoneIdsDispatchCompatible(session.currentMilestoneId, mid) &&
     existsSync(session.basePath)
   ) {
     return session.basePath;
@@ -422,6 +423,28 @@ function normalizeMilestoneScope(value: string | null | undefined): string | nul
   return trimmed;
 }
 
+function dispatchMilestoneIdentity(value: string | null | undefined): { baseId: string; hasSuffix: boolean } | null {
+  const normalized = normalizeMilestoneScope(value);
+  const match = normalized?.match(/^(M\d{3})(?:-[a-z0-9]{6})?$/);
+  if (!match) return null;
+  return { baseId: match[1]!, hasSuffix: normalized !== match[1] };
+}
+
+function isBareSuffixedMilestoneAlias(left: string, right: string): boolean {
+  const leftId = dispatchMilestoneIdentity(left);
+  const rightId = dispatchMilestoneIdentity(right);
+  return Boolean(
+    leftId &&
+      rightId &&
+      leftId.baseId === rightId.baseId &&
+      leftId.hasSuffix !== rightId.hasSuffix,
+  );
+}
+
+function milestoneIdsDispatchCompatible(left: string, right: string): boolean {
+  return left === right || isBareSuffixedMilestoneAlias(left, right);
+}
+
 function resolveDispatchMilestoneScope(
   ctx: DispatchContext,
 ): { id: string; source: string } | null {
@@ -437,6 +460,37 @@ function resolveDispatchMilestoneScope(
   if (baseWorktree) return { id: baseWorktree, source: "basePath worktree" };
 
   return null;
+}
+
+function resolveEffectiveDispatchMilestoneId(
+  ctx: DispatchContext,
+  scopedMilestone: { id: string; source: string } | null,
+): string {
+  if (scopedMilestone && isBareSuffixedMilestoneAlias(ctx.mid, scopedMilestone.id)) {
+    return dispatchMilestoneIdentity(scopedMilestone.id)?.hasSuffix ? scopedMilestone.id : ctx.mid;
+  }
+
+  const activeMid = ctx.state.activeMilestone?.id;
+  if (activeMid && isBareSuffixedMilestoneAlias(ctx.mid, activeMid)) {
+    return dispatchMilestoneIdentity(activeMid)?.hasSuffix ? activeMid : ctx.mid;
+  }
+
+  return ctx.mid;
+}
+
+function withEffectiveDispatchMilestone(ctx: DispatchContext, effectiveMid: string): DispatchContext {
+  if (effectiveMid === ctx.mid) return ctx;
+  const activeMilestone = ctx.state.activeMilestone;
+  const state = activeMilestone && milestoneIdsDispatchCompatible(activeMilestone.id, effectiveMid)
+    ? {
+        ...ctx.state,
+        activeMilestone: {
+          ...activeMilestone,
+          id: effectiveMid,
+        },
+      }
+    : ctx.state;
+  return { ...ctx, mid: effectiveMid, state };
 }
 
 function hasMilestonePassedDiscuss(basePath: string, mid: string): boolean {
@@ -732,14 +786,21 @@ export const DISPATCH_RULES: DispatchRule[] = [
     // Fire BEFORE the execution-entry phase rules so we redispatch to
     // `discuss-milestone` instead of hitting the plan-v2 gate.
     name: "execution-entry phase (no context) → discuss-milestone",
-    match: async ({ state, mid, midTitle, basePath, prefs, structuredQuestionsAvailable }) => {
+    match: async ({ state, mid, midTitle, basePath, session, prefs, structuredQuestionsAvailable }) => {
       if (!EXECUTION_ENTRY_PHASES.has(state.phase)) return null;
       if (!MILESTONE_ID_RE.test(mid)) return null;
       if (isRegistryMilestoneComplete(state, mid)) return null;
-      if (hasMilestonePassedDiscuss(basePath, mid)) return null;
+      // Resolve discuss/context artifacts against the active session worktree,
+      // mirroring the executing rules below. For a suffixed-worktree milestone
+      // the CONTEXT and slice plans live under the worktree, not the project
+      // root; checking the raw project-root basePath misreads the milestone as
+      // "never discussed" and re-dispatches discuss-milestone after task
+      // closeout instead of continuing execution (#1317).
+      const artifactBasePath = resolveArtifactBasePath(basePath, mid, session);
+      if (hasMilestonePassedDiscuss(artifactBasePath, mid)) return null;
       // Align with the plan-v2 gate's lookup semantics: whitespace-only counts
       // as missing, and an auto worktree may fall back to GSD_PROJECT_ROOT.
-      if (hasFinalizedMilestoneContext(basePath, mid)) return null;
+      if (hasFinalizedMilestoneContext(artifactBasePath, mid)) return null;
       // H6 fix (#4973): non-deep auto-mode has no human to answer the
       // depth-verification question, so pre-marking avoids a write-gate
       // deadlock. Deep planning is still user-driven even inside auto-mode,
@@ -1095,10 +1156,13 @@ export const DISPATCH_RULES: DispatchRule[] = [
   },
   {
     name: "pre-planning (no context) → discuss-milestone",
-    match: async ({ state, mid, midTitle, basePath, prefs, structuredQuestionsAvailable }) => {
+    match: async ({ state, mid, midTitle, basePath, prefs, session, structuredQuestionsAvailable }) => {
       if (state.phase !== "pre-planning") return null;
       if (isRegistryMilestoneComplete(state, mid)) return null;
-      const contextFile = resolveMilestoneFile(basePath, mid, "CONTEXT");
+      const contextBasePath = resolveWorktreeProjectRoot(basePath, session?.originalBasePath);
+      const contextFile =
+        resolveMilestoneFile(basePath, mid, "CONTEXT") ??
+        (contextBasePath !== basePath ? resolveMilestoneFile(contextBasePath, mid, "CONTEXT") : null);
       const hasContext = !!(contextFile && (await loadFile(contextFile)));
       if (hasContext) return null; // fall through to next rule
       if (prefs?.planning_depth === "deep") return null;
@@ -1908,36 +1972,39 @@ function applyLanguageDirectiveToDispatch(
 export async function resolveDispatch(
   ctx: DispatchContext,
 ): Promise<DispatchAction> {
-  if (ctx.mid && isDbAvailable()) {
-    const milestone = getMilestone(ctx.mid);
+  const scopedMilestone = resolveDispatchMilestoneScope(ctx);
+  const effectiveMid = resolveEffectiveDispatchMilestoneId(ctx, scopedMilestone);
+  const dispatchCtx = withEffectiveDispatchMilestone(ctx, effectiveMid);
+
+  if (dispatchCtx.mid && isDbAvailable()) {
+    const milestone = getMilestone(dispatchCtx.mid);
     if (milestone && isClosedStatus(milestone.status)) {
       return {
         action: "stop",
         reason:
-          `Milestone ${ctx.mid} is closed (status: ${milestone.status}); auto-mode will not reopen or recover it implicitly. ` +
+          `Milestone ${dispatchCtx.mid} is closed (status: ${milestone.status}); auto-mode will not reopen or recover it implicitly. ` +
           "Use an explicit reopen command before planning or executing more work for this milestone.",
         level: "warning",
       };
     }
   }
 
-  const activeMid = ctx.state.activeMilestone?.id;
-  if (activeMid && ctx.mid !== activeMid) {
+  const activeMid = dispatchCtx.state.activeMilestone?.id;
+  if (activeMid && !milestoneIdsDispatchCompatible(dispatchCtx.mid, activeMid)) {
     return {
       action: "stop",
       reason:
-        `Dispatch milestone mismatch: context mid "${ctx.mid}" does not match active milestone "${activeMid}". ` +
+        `Dispatch milestone mismatch: context mid "${dispatchCtx.mid}" does not match active milestone "${activeMid}". ` +
         "This usually means a project-level deep setup pseudo-id leaked into milestone dispatch; rerun /gsd auto after setup state is reconciled.",
       level: "warning",
     };
   }
 
-  const scopedMilestone = resolveDispatchMilestoneScope(ctx);
-  if (scopedMilestone && ctx.mid !== scopedMilestone.id) {
+  if (scopedMilestone && !milestoneIdsDispatchCompatible(dispatchCtx.mid, scopedMilestone.id)) {
     return {
       action: "stop",
       reason:
-        `Dispatch milestone mismatch: context mid "${ctx.mid}" does not match ${scopedMilestone.source} "${scopedMilestone.id}". ` +
+        `Dispatch milestone mismatch: context mid "${dispatchCtx.mid}" does not match ${scopedMilestone.source} "${scopedMilestone.id}". ` +
         "The active worktree/session and derived project state disagree; recover, park, or discard the stranded milestone before continuing.",
       level: "warning",
     };
@@ -1946,10 +2013,10 @@ export async function resolveDispatch(
   // Delegate to registry when available
   try {
     const registry = getRegistry();
-    const action = annotateBackgroundable(await registry.evaluateDispatch(ctx));
+    const action = annotateBackgroundable(await registry.evaluateDispatch(dispatchCtx));
     if (
       action.action === "dispatch" &&
-      ctx.session?.exhaustedVerificationUnits?.has(`${action.unitType}:${action.unitId}`)
+      dispatchCtx.session?.exhaustedVerificationUnits?.has(`${action.unitType}:${action.unitId}`)
     ) {
       return {
         action: "stop",
@@ -1964,13 +2031,13 @@ export async function resolveDispatch(
   }
 
   for (const rule of DISPATCH_RULES) {
-    const result = await rule.match(ctx);
+    const result = await rule.match(dispatchCtx);
     if (result) {
       if (result.action !== "skip") result.matchedRule = rule.name;
       const action = annotateBackgroundable(result);
       if (
         action.action === "dispatch" &&
-        ctx.session?.exhaustedVerificationUnits?.has(`${action.unitType}:${action.unitId}`)
+        dispatchCtx.session?.exhaustedVerificationUnits?.has(`${action.unitType}:${action.unitId}`)
       ) {
         return {
           action: "stop",

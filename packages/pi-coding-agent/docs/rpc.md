@@ -287,7 +287,10 @@ Set the reasoning/thinking level for models that support it.
 
 Levels: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`
 
-Note: `"xhigh"` is only supported by OpenAI codex-max models.
+Note: `"xhigh"` support is model-dependent. Clients should use the active model's
+thinking-level metadata rather than assuming one provider family; current examples
+include OpenAI Codex Max models and Amazon Bedrock Claude Sonnet 5 models such as
+`global.anthropic.claude-sonnet-5`.
 
 Response:
 ```json

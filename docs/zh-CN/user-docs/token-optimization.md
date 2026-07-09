@@ -306,7 +306,7 @@ context_management:
 
 ## Phase Handoff Anchors
 
-当自动模式在 phases 之间切换（research → planning → execution）时，系统会把结构化 JSON anchors 写到 `.gsd/milestones/<mid>/anchors/<phase>.json`。下游 prompt builders 会自动注入这些 anchors，让下一阶段继承前一阶段的意图、决策、阻塞点和下一步，而不必重新从 artifact 文件里推断。
+当自动模式在 phases 之间切换（research → planning → execution）时，系统会把结构化 JSON anchors 写到 `.gsd/runtime/anchors/<mid>/<phase>.json`。下游 prompt builders 会自动注入这些 anchors，让下一阶段继承前一阶段的意图、决策、阻塞点和下一步，而不必重新从 artifact 文件里推断。升级期间系统仍会读取 legacy milestone-scoped anchors，但新的写入使用 runtime 目录。
 
 这能减少上下文漂移，也就是企业级 agent 失败案例中最常见的一类问题：agent 在 phase 边界上丢失了之前的决策脉络。
 

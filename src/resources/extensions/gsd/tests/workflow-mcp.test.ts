@@ -94,6 +94,8 @@ test("complete-slice requires status, closeout, and execution handoff tools", ()
     "gsd_slice_complete",
     "gsd_task_reopen",
     "gsd_replan_slice",
+    "gsd_replan_task",
+    "gsd_rework_brief_save",
     "gsd_requirement_update",
     "gsd_summary_save",
   ];

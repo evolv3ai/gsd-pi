@@ -17,11 +17,13 @@ import {
   insertVerificationEvidence,
   insertGateRow,
   getGateResults,
+  saveReworkBrief,
   updateMilestoneStatus,
   updateSliceStatus,
   SCHEMA_VERSION,
 } from '../gsd-db.ts';
 import { handleCompleteTask } from '../tools/complete-task.ts';
+import { resolveTaskFile } from '../paths.ts';
 
 const { assertEq, assertTrue, assertMatch, report } = createTestContext();
 
@@ -381,6 +383,80 @@ console.log('\n=== complete-task: handler happy path ===');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// complete-task: Flat-phase duplicate task IDs are slice-qualified
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n=== complete-task: flat-phase duplicate task IDs are slice-qualified ===');
+{
+  const dbPath = tempDbPath();
+  openDatabase(dbPath);
+
+  const basePath = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-flat-task-summary-'));
+  const phaseDir = path.join(basePath, '.gsd', 'phases', '01-test');
+  fs.mkdirSync(phaseDir, { recursive: true });
+  fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), `# S01: First Slice
+
+## Tasks
+
+- [ ] **T03: Shared task id** \`est:30m\`
+  - Do: Complete first slice task
+  - Verify: Run first check
+`);
+  fs.writeFileSync(path.join(phaseDir, '01-02-PLAN.md'), `# S02: Second Slice
+
+## Tasks
+
+- [ ] **T03: Shared task id** \`est:30m\`
+  - Do: Complete second slice task
+  - Verify: Run second check
+`);
+
+  insertMilestone({ id: 'M001', title: 'Test Milestone' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'First Slice', sequence: 1 });
+  insertSlice({ id: 'S02', milestoneId: 'M001', title: 'Second Slice', sequence: 2 });
+
+  const first = await handleCompleteTask({
+    ...makeValidParams(),
+    taskId: 'T03',
+    sliceId: 'S01',
+    oneLiner: 'Completed first slice T03',
+  }, basePath);
+  const second = await handleCompleteTask({
+    ...makeValidParams(),
+    taskId: 'T03',
+    sliceId: 'S02',
+    oneLiner: 'Completed second slice T03',
+  }, basePath);
+
+  assertTrue(!('error' in first), 'first duplicate task ID completion should succeed');
+  assertTrue(!('error' in second), 'second duplicate task ID completion should succeed');
+  if (!('error' in first) && !('error' in second)) {
+    const firstSummary = path.join(phaseDir, 'S01-T03-SUMMARY.md');
+    const secondSummary = path.join(phaseDir, 'S02-T03-SUMMARY.md');
+    const legacySummary = path.join(phaseDir, 'T03-SUMMARY.md');
+
+    assertEq(first.summaryPath, firstSummary, 'S01/T03 should write a slice-qualified summary path');
+    assertEq(second.summaryPath, secondSummary, 'S02/T03 should write a slice-qualified summary path');
+    assertTrue(fs.existsSync(firstSummary), 'S01/T03 summary should exist');
+    assertTrue(fs.existsSync(secondSummary), 'S02/T03 summary should exist');
+    assertTrue(!fs.existsSync(legacySummary), 'flat-phase completion should not create legacy T03-SUMMARY.md');
+
+    const firstContent = fs.readFileSync(firstSummary, 'utf-8');
+    const secondContent = fs.readFileSync(secondSummary, 'utf-8');
+    assertMatch(firstContent, /parent: S01/, 'S01/T03 summary should keep parent S01');
+    assertMatch(secondContent, /parent: S02/, 'S02/T03 summary should keep parent S02');
+    assertEq(resolveTaskFile(basePath, 'M001', 'S02', 'T03', 'SUMMARY'), secondSummary, 'resolver should prefer S02-specific summary');
+
+    const legacyFallback = path.join(phaseDir, 'T99-SUMMARY.md');
+    fs.writeFileSync(legacyFallback, '# Legacy task summary\n');
+    assertEq(resolveTaskFile(basePath, 'M001', 'S09', 'T99', 'SUMMARY'), legacyFallback, 'resolver should fall back to old flat summary names');
+  }
+
+  cleanupDir(basePath);
+  cleanup(dbPath);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // complete-task: Projection failure rolls DB completion back
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -415,7 +491,7 @@ console.log('\n=== complete-task: projection failure rolls DB completion back ==
   ).all();
   assertEq(evRows.length, 0, 'verification evidence should be deleted when projection rollback runs');
 
-  const summaryPath = path.join(path.dirname(planPath), 'T01-SUMMARY.md');
+  const summaryPath = path.join(path.dirname(planPath), 'S01-T01-SUMMARY.md');
   assertTrue(!fs.existsSync(summaryPath), 'SUMMARY.md should be removed so disk state stays pending');
 
   cleanupDir(basePath);
@@ -502,6 +578,77 @@ console.log('\n=== complete-task: disabled hard-blocker escalation rolls back co
     "SELECT * FROM verification_evidence WHERE task_id = 'T01' AND slice_id = 'S01' AND milestone_id = 'M001'"
   ).all();
   assertEq(evRows.length, 0, 'verification evidence should be deleted when completion rolls back');
+
+  cleanupDir(basePath);
+  cleanup(dbPath);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// complete-task: rollback reverts applied rework resolutions
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n=== complete-task: rollback reverts applied rework resolutions ===');
+{
+  const dbPath = tempDbPath();
+  openDatabase(dbPath);
+
+  const { basePath } = createTempProject();
+  writeProjectPreferences(basePath, 'phases:\n  mid_execution_escalation: false\n');
+
+  insertMilestone({ id: 'M001', title: 'Test Milestone' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice' });
+  insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', title: 'Test task', status: 'pending' });
+  saveReworkBrief({
+    briefId: 'RB-001',
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    taskId: 'T01',
+    findings: [{
+      findingId: 'F1',
+      severity: 'blocking',
+      description: 'Compile regression',
+      requiredFix: 'Fix compile error',
+      verificationCommands: ['pnpm run typecheck:extensions'],
+    }],
+  });
+
+  // Completion resolves the blocking finding but then rolls back because the
+  // hard-blocker escalation is disabled. The rollback must also revert the
+  // finding. Otherwise a retry would see no unresolved blocking findings and
+  // silently skip the blocking gate.
+  const result = await withWorkingDirectory(basePath, () => handleCompleteTask({
+    ...makeValidParams(),
+    blockerDiscovered: true,
+    reworkResolution: [{
+      findingId: 'F1',
+      status: 'resolved',
+      evidence: 'Fixed compile error and reran pnpm run typecheck:extensions.',
+    }],
+    escalation: {
+      question: 'Should execution pause for the hard blocker?',
+      options: makeEscalationOptions(),
+      recommendation: 'pause',
+      recommendationRationale: 'The blocker should not be silently advanced.',
+      continueWithDefault: false,
+    },
+  }, basePath));
+
+  assertTrue('error' in result, 'completion should roll back when hard-blocker escalation is disabled');
+  assertEq(getTask('M001', 'S01', 'T01')?.status, 'pending', 'task status should roll back to pending');
+
+  const finding = _getAdapter()!.prepare(
+    "SELECT status, evidence, decision_ref FROM rework_brief_findings WHERE brief_id = 'RB-001' AND finding_id = 'F1'"
+  ).get() as { status: string; evidence: string; decision_ref: string };
+  assertEq(finding.status, 'pending', 'rework finding should revert to pending after rollback');
+  assertEq(finding.evidence, '', 'rework finding evidence should be cleared after rollback');
+
+  // Retry-safety invariant: the blocking gate must fire again because the
+  // finding is unresolved once more.
+  const retry = await withWorkingDirectory(basePath, () => handleCompleteTask(makeValidParams(), basePath));
+  assertTrue('error' in retry, 'retry without reworkResolution should be blocked again');
+  if ('error' in retry) {
+    assertMatch(retry.error, /unresolved blocking rework finding/i, 'retry should re-trigger the blocking gate');
+  }
 
   cleanupDir(basePath);
   cleanup(dbPath);
@@ -833,6 +980,220 @@ console.log('\n=== complete-task: closes Q5/Q6/Q7 gates (pass vs omitted) ===');
   // No task-scoped gates remain pending for the loop to stall on.
   const stillPending = getGateResults('M001', 'S01', 'task').filter((g) => g.status === 'pending');
   assertEq(stillPending.length, 0, 'no task gates should remain pending after completion');
+
+  cleanupDir(basePath);
+  cleanup(dbPath);
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// complete-task: unresolved blocking rework findings reject completion
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n=== complete-task: rejects unresolved blocking rework findings ===');
+{
+  const dbPath = tempDbPath();
+  openDatabase(dbPath);
+  const { basePath } = createTempProject();
+
+  insertMilestone({ id: 'M001', title: 'Test Milestone' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice' });
+  insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', title: 'Test task', status: 'pending' });
+
+  saveReworkBrief({
+    briefId: 'RB-001',
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    taskId: 'T01',
+    findings: [{
+      findingId: 'F1',
+      severity: 'blocking',
+      description: 'Compile regression',
+      requiredFix: 'Fix compile error',
+      verificationCommands: ['pnpm run typecheck:extensions'],
+    }],
+  });
+
+  const result = await handleCompleteTask(makeValidParams(), basePath);
+  assertTrue('error' in result, 'completion should reject unresolved blocking rework findings');
+  if ('error' in result) {
+    assertMatch(result.error, /unresolved blocking rework finding/i, 'error should explain unresolved rework');
+    assertMatch(result.error, /F1/, 'error should name the unresolved finding id');
+  }
+
+  cleanupDir(basePath);
+  cleanup(dbPath);
+}
+
+
+console.log('\n=== complete-task: accepts resolved blocking rework evidence ===');
+{
+  const dbPath = tempDbPath();
+  openDatabase(dbPath);
+  const { basePath } = createTempProject();
+
+  insertMilestone({ id: 'M001', title: 'Test Milestone' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice' });
+  insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', title: 'Test task', status: 'pending' });
+  saveReworkBrief({
+    briefId: 'RB-001',
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    taskId: 'T01',
+    findings: [{
+      findingId: 'F1',
+      severity: 'blocking',
+      description: 'Compile regression',
+      requiredFix: 'Fix compile error',
+      verificationCommands: ['pnpm run typecheck:extensions'],
+    }],
+  });
+
+  const result = await handleCompleteTask({
+    ...makeValidParams(),
+    reworkResolution: [{
+      findingId: 'F1',
+      status: 'resolved',
+      evidence: 'Fixed compile error and reran pnpm run typecheck:extensions.',
+    }],
+  }, basePath);
+
+  assertTrue(!('error' in result), 'completion should accept resolved blocking rework evidence');
+  assertEq(getTask('M001', 'S01', 'T01')?.status, 'complete', 'task should complete after resolving rework');
+  const finding = _getAdapter()!.prepare("SELECT status, evidence FROM rework_brief_findings WHERE brief_id = 'RB-001' AND finding_id = 'F1'").get() as { status: string; evidence: string };
+  assertEq(finding.status, 'resolved', 'finding status should be updated');
+  assertMatch(finding.evidence, /Fixed compile error/, 'resolution evidence should be persisted');
+
+  cleanupDir(basePath);
+  cleanup(dbPath);
+}
+
+console.log('\n=== complete-task: accepts deferred blocking rework with decision reference ===');
+{
+  const dbPath = tempDbPath();
+  openDatabase(dbPath);
+  const { basePath } = createTempProject();
+
+  insertMilestone({ id: 'M001', title: 'Test Milestone' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice' });
+  insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', title: 'Test task', status: 'pending' });
+  saveReworkBrief({
+    briefId: 'RB-001',
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    taskId: 'T01',
+    findings: [{
+      findingId: 'F1',
+      severity: 'blocking',
+      description: 'Compile regression',
+      requiredFix: 'Fix compile error',
+      verificationCommands: ['pnpm run typecheck:extensions'],
+    }],
+  });
+
+  const result = await handleCompleteTask({
+    ...makeValidParams(),
+    reworkResolution: [{
+      findingId: 'F1',
+      status: 'deferred-with-override',
+      evidence: 'Maintainer accepted temporary deferral.',
+      decisionRef: 'DEC-2026-07-07-rework-deferral',
+    }],
+  }, basePath);
+
+  assertTrue(!('error' in result), 'completion should accept deferred blocking rework with decision reference');
+  const finding = _getAdapter()!.prepare("SELECT status, decision_ref FROM rework_brief_findings WHERE brief_id = 'RB-001' AND finding_id = 'F1'").get() as { status: string; decision_ref: string };
+  assertEq(finding.status, 'deferred-with-override', 'finding status should record the override');
+  assertEq(finding.decision_ref, 'DEC-2026-07-07-rework-deferral', 'decision reference should be persisted');
+
+  cleanupDir(basePath);
+  cleanup(dbPath);
+}
+
+console.log('\n=== complete-task: invalid duplicate rework resolution cannot overwrite a valid one ===');
+{
+  const dbPath = tempDbPath();
+  openDatabase(dbPath);
+  const { basePath } = createTempProject();
+
+  insertMilestone({ id: 'M001', title: 'Test Milestone' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice' });
+  insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', title: 'Test task', status: 'pending' });
+  saveReworkBrief({
+    briefId: 'RB-001',
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    taskId: 'T01',
+    findings: [{
+      findingId: 'F1',
+      severity: 'blocking',
+      description: 'Compile regression',
+      requiredFix: 'Fix compile error',
+      verificationCommands: ['pnpm run typecheck:extensions'],
+    }],
+  });
+
+  // The guard admits F1 because a satisfying entry exists, but a later
+  // non-satisfying duplicate for the same finding must NOT overwrite the valid
+  // resolution and leave F1 resolved with no evidence.
+  const result = await handleCompleteTask({
+    ...makeValidParams(),
+    reworkResolution: [
+      { findingId: 'F1', status: 'resolved', evidence: 'Fixed compile error and reran pnpm run typecheck:extensions.' },
+      { findingId: 'F1', status: 'resolved', evidence: '' },
+    ],
+  }, basePath);
+
+  assertTrue(!('error' in result), 'completion should succeed on the valid resolution');
+  const finding = _getAdapter()!.prepare(
+    "SELECT status, evidence FROM rework_brief_findings WHERE brief_id = 'RB-001' AND finding_id = 'F1'"
+  ).get() as { status: string; evidence: string };
+  assertEq(finding.status, 'resolved', 'finding should remain resolved');
+  assertMatch(finding.evidence, /Fixed compile error/, 'valid evidence must survive the invalid duplicate');
+
+  cleanupDir(basePath);
+  cleanup(dbPath);
+}
+
+console.log('\n=== complete-task: invalid deferred duplicate cannot strip decisionRef ===');
+{
+  const dbPath = tempDbPath();
+  openDatabase(dbPath);
+  const { basePath } = createTempProject();
+
+  insertMilestone({ id: 'M001', title: 'Test Milestone' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice' });
+  insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', title: 'Test task', status: 'pending' });
+  saveReworkBrief({
+    briefId: 'RB-001',
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    taskId: 'T01',
+    findings: [{
+      findingId: 'F1',
+      severity: 'blocking',
+      description: 'Compile regression',
+      requiredFix: 'Fix compile error',
+      verificationCommands: ['pnpm run typecheck:extensions'],
+    }],
+  });
+
+  // A deferred-with-override duplicate that omits decisionRef is non-satisfying
+  // and must not overwrite the valid deferral.
+  const result = await handleCompleteTask({
+    ...makeValidParams(),
+    reworkResolution: [
+      { findingId: 'F1', status: 'deferred-with-override', evidence: 'Maintainer accepted temporary deferral.', decisionRef: 'DEC-2026-07-07-rework-deferral' },
+      { findingId: 'F1', status: 'deferred-with-override', evidence: 'Maintainer accepted temporary deferral.' },
+    ],
+  }, basePath);
+
+  assertTrue(!('error' in result), 'completion should succeed on the valid deferral');
+  const finding = _getAdapter()!.prepare(
+    "SELECT status, decision_ref FROM rework_brief_findings WHERE brief_id = 'RB-001' AND finding_id = 'F1'"
+  ).get() as { status: string; decision_ref: string };
+  assertEq(finding.status, 'deferred-with-override', 'finding should remain deferred-with-override');
+  assertEq(finding.decision_ref, 'DEC-2026-07-07-rework-deferral', 'valid decisionRef must survive the invalid duplicate');
 
   cleanupDir(basePath);
   cleanup(dbPath);

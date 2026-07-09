@@ -363,6 +363,53 @@ describe("stream-adapter — image prompt forwarding (#4183)", () => {
 		]);
 	});
 
+	test("extractImageBlocksFromContext deduplicates byte-identical image parts", () => {
+		const context: Context = {
+			messages: [
+				{
+					role: "user",
+					content: [
+						{
+							type: "image",
+							data: "data:image/png;base64,abc123",
+							mimeType: "image/png",
+						},
+						{
+							type: "image",
+							data: "abc123",
+							mimeType: "image/png",
+						},
+						{
+							type: "image",
+							data: "def456",
+							mimeType: "image/png",
+						},
+					],
+				} as Message,
+			],
+		};
+
+		const imageBlocks = extractImageBlocksFromContext(context);
+		assert.deepEqual(imageBlocks, [
+			{
+				type: "image",
+				source: {
+					type: "base64",
+					media_type: "image/png",
+					data: "abc123",
+				},
+			},
+			{
+				type: "image",
+				source: {
+					type: "base64",
+					media_type: "image/png",
+					data: "def456",
+				},
+			},
+		]);
+	});
+
 	test("buildSdkQueryPrompt returns plain string when no images exist in context", () => {
 		const context: Context = {
 			messages: [{ role: "user", content: "hello" } as Message],
@@ -1364,6 +1411,67 @@ describe("stream-adapter — Claude Code external tool results", () => {
 			isError: false,
 		});
 		assert.deepEqual(finalContent[1], { type: "text", text: "Read complete." });
+	});
+
+	test("buildFinalAssistantContent keeps every prose segment across successive elicitation boundaries (#1284)", () => {
+		// A multi-question /gsd discuss turn: [prose A][Q1][prose B][Q2][prose C].
+		// Prose A and B are committed at synthetic-user boundaries (intermediate),
+		// prose C is still in the builder (pending) when `result` arrives.
+		const finalContent = buildFinalAssistantContent({
+			intermediateToolBlocks: [
+				{ type: "toolCall", id: "q1", name: "ask_user_questions", arguments: {} } as any,
+				{ type: "toolCall", id: "q2", name: "ask_user_questions", arguments: {} } as any,
+			],
+			intermediateTextBlocks: [
+				{ type: "text", text: "prose A" },
+				{ type: "text", text: "prose B" },
+			],
+			pendingContent: [{ type: "text", text: "prose C" }],
+			toolResultsById: new Map(),
+		});
+
+		const textBlocks = finalContent.filter((b) => b.type === "text").map((b) => (b as any).text);
+		assert.deepEqual(textBlocks, ["prose A", "prose B", "prose C"]);
+	});
+
+	test("buildFinalAssistantContent does not duplicate the last prose when the turn ends on an elicitation (#1284)", () => {
+		// [prose A][Q1][prose B][Q2] — builder was reset at the final boundary, so
+		// pendingContent is empty and lastTextContent still holds "prose B".
+		const finalContent = buildFinalAssistantContent({
+			intermediateToolBlocks: [
+				{ type: "toolCall", id: "q1", name: "ask_user_questions", arguments: {} } as any,
+				{ type: "toolCall", id: "q2", name: "ask_user_questions", arguments: {} } as any,
+			],
+			intermediateTextBlocks: [
+				{ type: "text", text: "prose A" },
+				{ type: "text", text: "prose B" },
+			],
+			toolResultsById: new Map(),
+			lastTextContent: "prose B",
+		});
+
+		const textBlocks = finalContent.filter((b) => b.type === "text").map((b) => (b as any).text);
+		assert.deepEqual(textBlocks, ["prose A", "prose B"]);
+	});
+
+	test("buildFinalAssistantContent emits scalar fallback prose/thinking not captured in the accumulator", () => {
+		// A non-streaming `assistant` SDK message sets lastText/lastThinkingContent
+		// only (never pushed to intermediateTextBlocks). With pendingContent empty
+		// and intermediate blocks present, the fallback must still be emitted.
+		const finalContent = buildFinalAssistantContent({
+			intermediateToolBlocks: [
+				{ type: "toolCall", id: "q1", name: "ask_user_questions", arguments: {} } as any,
+			],
+			intermediateTextBlocks: [{ type: "text", text: "prose A" }],
+			toolResultsById: new Map(),
+			lastThinkingContent: "final thinking",
+			lastTextContent: "final prose",
+		});
+
+		const textBlocks = finalContent.filter((b) => b.type === "text").map((b) => (b as any).text);
+		const thinkingBlocks = finalContent.filter((b) => b.type === "thinking").map((b) => (b as any).thinking);
+		assert.deepEqual(textBlocks, ["prose A", "final prose"]);
+		assert.deepEqual(thinkingBlocks, ["final thinking"]);
 	});
 });
 

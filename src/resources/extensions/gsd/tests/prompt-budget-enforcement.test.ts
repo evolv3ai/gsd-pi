@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { buildExecuteTaskPrompt, buildPlanSlicePrompt, buildReactiveExecutePrompt, buildResearchSlicePrompt, inlineDependencySummaries } from "../auto-prompts.js";
+import { buildDiscussSlicePrompt } from "../guided-flow.js";
 import { computeBudgets, truncateAtSectionBoundary } from "../context-budget.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -730,6 +731,71 @@ describe("prompt-budget: modelRegistry + sessionContextWindow behavior", () => {
       assert.match(small, /~51K chars/);
       assert.match(large, /~400K chars/);
       assert.notEqual(small, large);
+    } finally {
+      cleanup(base);
+    }
+  });
+});
+
+// ─── execute-task + discuss-slice inline caps (plan 039) ──────────────────────
+
+describe("prompt-budget: execute-task inline cap (039)", () => {
+  it("keeps the authoritative task plan whole but drops trailing templates when the plan alone exceeds the inline budget", async () => {
+    const base = createFixtureBase();
+    try {
+      const sliceDir = join(base, ".gsd", "milestones", "M001", "slices", "S01");
+      const taskDir = join(sliceDir, "tasks");
+      mkdirSync(taskDir, { recursive: true });
+      writeFileSync(join(base, ".gsd", "milestones", "M001", "M001-ROADMAP.md"), "# Roadmap\n");
+      writeFileSync(join(sliceDir, "S01-PLAN.md"), "# Slice Plan\n");
+      // Oversized task plan (~60K) — well past the 20K inline ceiling.
+      const bigPlan = "# Task Plan\n\nMARKER_TASKPLAN_HEAD\n\n" + Array.from({ length: 30 }, (_, i) =>
+        `### Step ${i}\n\n${"Implementation detail. ".repeat(90)}`
+      ).join("\n\n");
+      writeFileSync(join(taskDir, "T01-PLAN.md"), bigPlan);
+
+      const prompt = await buildExecuteTaskPrompt("M001", "S01", "Slice", "T01", "Task", base, {
+        level: "standard",
+        sessionContextWindow: 32_000,
+      });
+
+      // The task plan is the authoritative execution contract — never truncated;
+      // its content survives whole even when it alone exceeds the inline budget.
+      assert.match(prompt, /MARKER_TASKPLAN_HEAD/);
+      assert.match(prompt, /### Step 29/);
+      // Trailing lower-priority templates are dropped — the on-demand decisions
+      // template that "standard" normally inlines is gone because the task plan
+      // consumed the entire inline budget. (Baseline: the tiny-plan test above
+      // asserts this block IS present.)
+      assert.doesNotMatch(prompt, /### On-demand Decisions Template/);
+    } finally {
+      cleanup(base);
+    }
+  });
+});
+
+describe("prompt-budget: discuss-slice inline cap (039)", () => {
+  it("caps the inlined block — roadmap survives first, the trailing decisions register truncates", async () => {
+    const base = createFixtureBase();
+    try {
+      const msDir = join(base, ".gsd", "milestones", "M001");
+      mkdirSync(join(msDir, "slices", "S01"), { recursive: true });
+      writeFileSync(join(msDir, "M001-ROADMAP.md"), "# Roadmap\n\nMARKER_ROADMAP\n\n- [ ] **S01: Current** `risk:low`\n");
+      writeFileSync(join(msDir, "M001-CONTEXT.md"), "# Context\n\nMARKER_CONTEXT\n");
+      // Huge decisions register (~60K) — the unbounded-growth surface the cap bounds.
+      const bigDecisions = "# Decisions\n\n" + Array.from({ length: 40 }, (_, i) =>
+        `### D${String(i).padStart(3, "0")}\n\n${"Decision rationale detail. ".repeat(60)}`
+      ).join("\n\n");
+      writeFileSync(join(base, ".gsd", "DECISIONS.md"), bigDecisions);
+
+      const prompt = await buildDiscussSlicePrompt("M001", "S01", "Current", base);
+
+      // Roadmap is first in the inlined block → survives the cap.
+      assert.match(prompt, /MARKER_ROADMAP/);
+      // The cap fired (capPreamble ceiling is 20K; the block is ~60K).
+      assert.match(prompt, /\[\.\.\.truncated/);
+      // The last decision (trailing content) is dropped.
+      assert.doesNotMatch(prompt, /### D039/);
     } finally {
       cleanup(base);
     }

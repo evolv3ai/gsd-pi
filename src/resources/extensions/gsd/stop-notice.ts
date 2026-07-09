@@ -66,10 +66,27 @@ export function isNonBlockingPauseNotice(message: string): boolean {
   return message.includes("idempotent advance: unit already active");
 }
 
+/**
+ * A picker / next-action menu that could not render in a non-interactive
+ * (headless / RPC) session. Both wordings originate from the menu-unavailable
+ * helpers (`notifyCommandMenuUnavailable` and `notifyPickerCommandNeedsInteractiveMenu`
+ * in next-action-ui.ts / command-feedback.ts). Headless `auto`/`next` cannot
+ * answer such a menu, so the run has dead-ended and needs operator intervention.
+ * Classify it as blocked so the headless host exits 10 instead of idling
+ * forever waiting for a completion signal that never comes. (#1294)
+ */
+export function isInteractiveMenuUnavailableNotice(message: string): boolean {
+  return (
+    message.includes("menu could not be shown in this session") ||
+    message.includes("did not start:")
+  );
+}
+
 export function isBlockedNoticeMessage(message: string): boolean {
   return (
     message.includes("blocked:") ||
     (isPauseNotice(message) && !isNonBlockingPauseNotice(message)) ||
-    isManualResolutionNotice(message)
+    isManualResolutionNotice(message) ||
+    isInteractiveMenuUnavailableNotice(message)
   );
 }

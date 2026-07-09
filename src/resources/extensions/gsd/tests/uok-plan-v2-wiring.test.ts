@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -237,6 +237,98 @@ test("plan-v2 ensure rejects empty executable graph", () => {
   assert.equal(compiled.ok, false);
   assert.match(compiled.reason ?? "", /compiled graph is empty/i);
   assert.equal(isEmptyPlanV2GraphResult(compiled), true);
+});
+
+function seedMultiSliceRows(): void {
+  insertMilestone({ id: MILESTONE_ID, title: "Milestone", status: "active" });
+  const slices: Array<[string, number, Array<[string, number]>]> = [
+    ["S01", 1, [["T01", 1], ["T02", 2]]],
+    ["S02", 2, [["T03", 1], ["T04", 2]]],
+  ];
+  for (const [sid, sseq, tasks] of slices) {
+    insertSlice({ id: sid, milestoneId: MILESTONE_ID, title: `Slice ${sid}`, status: "in_progress", sequence: sseq });
+    for (const [tid, tseq] of tasks) {
+      insertTask({
+        id: tid,
+        milestoneId: MILESTONE_ID,
+        sliceId: sid,
+        title: `Task ${tid}`,
+        status: "pending",
+        keyFiles: [`src/${tid}.ts`],
+        sequence: tseq,
+      });
+    }
+  }
+}
+
+test("plan-v2 batched compile preserves node ids, order, and count", () => {
+  const basePath = createBasePath();
+  seedMultiSliceRows();
+  writeMilestoneFile(basePath, "CONTEXT", "Finalized context.");
+
+  const compiled = ensurePlanV2Graph(basePath, buildState("executing"));
+  assert.equal(compiled.ok, true);
+
+  const graph = JSON.parse(readFileSync(compiled.graphPath ?? "", "utf-8")) as {
+    nodes: Array<{ id: string }>;
+  };
+  assert.deepEqual(
+    graph.nodes.map((n) => n.id),
+    [
+      "execute-task:M001:S01:T01",
+      "execute-task:M001:S01:T02",
+      "complete-slice:M001:S01",
+      "execute-task:M001:S02:T03",
+      "execute-task:M001:S02:T04",
+      "complete-slice:M001:S02",
+    ],
+  );
+});
+
+test("plan-v2 skips the disk write when the graph is unchanged", () => {
+  const basePath = createBasePath();
+  seedMultiSliceRows();
+  writeMilestoneFile(basePath, "CONTEXT", "Finalized context.");
+
+  const first = ensurePlanV2Graph(basePath, buildState("executing"));
+  assert.equal(first.ok, true);
+  const graphPath = first.graphPath ?? "";
+  const before = readFileSync(graphPath, "utf-8");
+
+  // Backdate mtime so a rewrite is detectable even within the same millisecond.
+  utimesSync(graphPath, 1000, 1000);
+  const backdatedMtime = statSync(graphPath).mtimeMs;
+
+  const second = ensurePlanV2Graph(basePath, buildState("executing"));
+  assert.equal(second.ok, true);
+  assert.equal(statSync(graphPath).mtimeMs, backdatedMtime, "identical state must not rewrite the graph");
+  assert.equal(readFileSync(graphPath, "utf-8"), before);
+});
+
+test("plan-v2 rewrites the graph when it changes", () => {
+  const basePath = createBasePath();
+  seedMultiSliceRows();
+  writeMilestoneFile(basePath, "CONTEXT", "Finalized context.");
+
+  const first = ensurePlanV2Graph(basePath, buildState("executing"));
+  const graphPath = first.graphPath ?? "";
+  const before = readFileSync(graphPath, "utf-8");
+  utimesSync(graphPath, 1000, 1000);
+
+  insertTask({
+    id: "T05",
+    milestoneId: MILESTONE_ID,
+    sliceId: "S02",
+    title: "Added task",
+    status: "pending",
+    keyFiles: ["src/T05.ts"],
+    sequence: 3,
+  });
+
+  const second = ensurePlanV2Graph(basePath, buildState("executing"));
+  assert.equal(second.ok, true);
+  assert.notEqual(statSync(graphPath).mtimeMs, 1000000, "changed graph must rewrite");
+  assert.notEqual(readFileSync(graphPath, "utf-8"), before);
 });
 
 test("plan-v2 allows empty graph for milestone terminal phases", () => {

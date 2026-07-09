@@ -15,13 +15,13 @@ import {
 import { MEMORIES_FTS_REBUILT_KEY } from "./db-memory-fts-schema.js";
 import { isAfter, latestExplicitReopenAt } from "./milestone-reopen-events.js";
 import {
-  buildTaskFileName,
   gsdProjectionRoot,
   gsdRoot,
   resolveGsdPathContract,
   resolveMilestoneFile,
   resolveMilestonePath,
   resolveSliceFile,
+  resolveTaskFile,
 } from "./paths.js";
 import { deriveState } from "./state.js";
 import { isClosedStatus } from "./status-guards.js";
@@ -208,10 +208,8 @@ function resolveFlatPhaseArtifactDiskPath(basePath: string, row: ArtifactRow): s
   if (!artifactType) return null;
 
   if (row.slice_id && row.task_id) {
-    const phaseDir = resolveMilestonePath(basePath, row.milestone_id);
-    if (!phaseDir || !isFlatPhaseDiskPath(basePath, phaseDir)) return null;
-    const candidate = join(phaseDir, buildTaskFileName(row.task_id, artifactType));
-    return existsSync(candidate) ? candidate : null;
+    const candidate = resolveTaskFile(basePath, row.milestone_id, row.slice_id, row.task_id, artifactType);
+    return candidate && isFlatPhaseDiskPath(basePath, candidate) ? candidate : null;
   }
 
   const candidate = row.slice_id

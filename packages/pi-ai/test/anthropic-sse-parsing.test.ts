@@ -440,4 +440,81 @@ describe("Anthropic raw SSE parsing", () => {
 			],
 		});
 	});
+
+	it("drops unpaired native web search blocks from assistant history", async () => {
+		const model = getModel("anthropic", "claude-haiku-4-5");
+		const webSearchContent = [
+			{
+				type: "web_search_result",
+				title: "Example",
+				url: "https://example.com",
+				encrypted_content: "encrypted-result",
+			},
+		];
+		const context: Context = {
+			messages: [
+				{
+					role: "user",
+					content: "Search the web.",
+					timestamp: Date.now(),
+				},
+				{
+					role: "assistant",
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					content: [
+						{ type: "text", text: "Starting search." },
+						{ type: "serverToolUse", id: "srv_orphan", name: "web_search", input: { query: "orphaned" } },
+						{ type: "webSearchResult", toolUseId: "srv_stray", content: webSearchContent },
+						{ type: "webSearchResult", toolUseId: "srv_out_of_order", content: webSearchContent },
+						{ type: "serverToolUse", id: "srv_out_of_order", name: "web_search", input: { query: "late" } },
+						{ type: "serverToolUse", id: "srv_paired", name: "web_search", input: { query: "gsd" } },
+						{ type: "webSearchResult", toolUseId: "srv_paired", content: webSearchContent },
+						{ type: "text", text: "Found one result." },
+					],
+					usage: {
+						input: 1,
+						output: 1,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 2,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
+				},
+				{
+					role: "user",
+					content: "Continue.",
+					timestamp: Date.now(),
+				},
+			],
+		};
+		const capture: { params?: any } = {};
+		const stream = streamAnthropic(model, context, {
+			client: createCapturingAnthropicClient(createSseResponse(minimalAnthropicEvents), capture),
+		});
+
+		await stream.result();
+
+		expect(capture.params.messages[1]).toEqual({
+			role: "assistant",
+			content: [
+				{ type: "text", text: "Starting search." },
+				{
+					type: "server_tool_use",
+					id: "srv_paired",
+					name: "web_search",
+					input: { query: "gsd" },
+				},
+				{
+					type: "web_search_tool_result",
+					tool_use_id: "srv_paired",
+					content: webSearchContent,
+				},
+				{ type: "text", text: "Found one result." },
+			],
+		});
+	});
 });

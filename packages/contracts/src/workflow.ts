@@ -81,6 +81,22 @@ export const WORKFLOW_TOOL_CONTRACTS = [
 		auditEvent: "workflow.slice.replan",
 	},
 	{
+		canonicalName: "gsd_replan_task",
+		aliases: [],
+		schemaId: "workflow.task.replan",
+		executorId: "executeReplanTask",
+		writePolicy: "write",
+		auditEvent: "workflow.task.replan",
+	},
+	{
+		canonicalName: "gsd_rework_brief_save",
+		aliases: [],
+		schemaId: "workflow.rework_brief.save",
+		executorId: "executeReworkBriefSave",
+		writePolicy: "write",
+		auditEvent: "workflow.rework_brief.save",
+	},
+	{
 		canonicalName: "gsd_slice_complete",
 		aliases: ["gsd_complete_slice"],
 		schemaId: "workflow.slice.complete",

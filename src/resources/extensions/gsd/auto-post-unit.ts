@@ -1698,6 +1698,10 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
                     `Safety: task ${sTid} claimed passing verification that failed in recorded execution`,
                     "error",
                   );
+                  const gitActionResult = await runCloseoutGitAction(pctx, s.currentUnit);
+                  if (gitActionResult === "dispatched") {
+                    return "dispatched";
+                  }
                   await pauseAuto(ctx, pi);
                   return "dispatched";
                 }

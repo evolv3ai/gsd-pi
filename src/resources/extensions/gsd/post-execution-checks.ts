@@ -318,12 +318,12 @@ export function checkImportResolution(
     const imports = extractRelativeImports(source);
 
     for (const { importPath, lineNum } of imports) {
-      // Framework-generated type modules may not exist on disk during post-exec
-      // checks (typically generated during framework builds/typegen). Don't
-      // block task completion on these imports.
+      // Framework/codegen-generated modules may not exist on disk during
+      // post-exec checks. Don't block task completion on these imports.
       if (
         /^\.{1,2}\/\+types\//.test(importPath) ||
-        /^(?:\.{1,2}\/)+(?:[^/]+\/)*\$types(?:$|\/)/.test(importPath)
+        /^(?:\.{1,2}\/)+(?:[^/]+\/)*\$types(?:$|\/)/.test(importPath) ||
+        /^(?:\.{1,2}\/)+(?:[^/]+\/)*_generated(?:$|\/)/.test(importPath)
       ) {
         continue;
       }

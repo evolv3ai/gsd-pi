@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto'
 import { exec, execFile, spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
-import { createServer } from 'node:net'
+import { createServer, isIP } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -402,6 +402,11 @@ function isWebNoAuthEnabled(env: NodeJS.ProcessEnv): boolean {
   return env.GSD_WEB_NO_AUTH === '1'
 }
 
+function isLoopbackHost(host: string): boolean {
+  const h = host.trim().toLowerCase()
+  return h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '[::1]' || (isIP(h) === 4 && h.startsWith('127.'))
+}
+
 function buildSpawnSpec(
   resolution: ResolvedWebHostBootstrap,
   host: string,
@@ -636,14 +641,39 @@ export async function launchWebMode(
 
   stderr.write(`[gsd] Starting web mode…\n`)
 
+  const baseEnv = deps.env ?? process.env
+  const noAuth = options.noAuth ?? isWebNoAuthEnabled(baseEnv)
+  if (noAuth && !isLoopbackHost(host) && baseEnv.GSD_WEB_ALLOW_UNAUTHENTICATED_LAN !== '1') {
+    const failure: WebModeLaunchFailure = {
+      mode: 'web',
+      ok: false,
+      cwd: options.cwd,
+      projectSessionsDir: options.projectSessionsDir,
+      host,
+      port: null,
+      url: null,
+      hostKind: 'unresolved',
+      hostPath: null,
+      hostRoot: null,
+      failureReason: `refusing to disable auth on non-loopback host ${host}: this exposes terminal and file APIs to the network. Bind to 127.0.0.1, keep token auth on, or set GSD_WEB_ALLOW_UNAUTHENTICATED_LAN=1 to override.`,
+      candidates: [],
+    }
+    emitLaunchStatus(stderr, failure)
+    return failure
+  }
+
   // Kill any stale server instance for this project before reserving a port.
   // This prevents EADDRINUSE when the previous `gsd --web` was terminated
   // without a clean shutdown (e.g. terminal closed, crash).
+  //
+  // Keep this AFTER the no-auth interlock above: cleanup kills and unregisters
+  // the existing web server for this cwd, so running it before a refused launch
+  // would tear down a healthy server and leave the project with none. The
+  // interlock must have no side effects. (regression guard: see the "refusal
+  // does not clean up an existing instance" test)
   cleanupStaleInstance(options.cwd, stderr, deps.registryPath)
 
   const port = options.port ?? await (deps.resolvePort ?? reserveWebPort)(host)
-  const baseEnv = deps.env ?? process.env
-  const noAuth = options.noAuth ?? isWebNoAuthEnabled(baseEnv)
   const authToken = noAuth ? null : randomBytes(32).toString('hex')
   const url = `http://${host}:${port}`
   const env: NodeJS.ProcessEnv = {

@@ -78,7 +78,7 @@ A single small JSON file recording the last projection state. Lives under `.gsd/
 ```
 
 - **Hash-based, not mtime-based.** mtimes are unreliable across git checkouts, filesystems, and clocks. SHA-256 of normalized file content (trailing whitespace trimmed, CRLF→LF) avoids false positives on cosmetic differences.
-- **Per-file entity map.** When drift is detected on `m1/plan.md`, gsd-pi knows which DB entities (slices/tasks) to re-import rather than re-importing the whole tree.
+- **Per-file entity map.** When drift is detected on `m1/plan.md`, gsd-pi knows which DB entities (slices/tasks) the file projects. Current repair still runs an idempotent whole-tree import, but derives a milestone scope from these entities so only the drifted milestone(s) can contribute markdown checkbox status.
 - `lastWriter` is `"gsd-pi"` after every gsd-pi projection; gsd-core never writes it (it's oblivious), so a missing/stale marker is itself a signal: "the other tool may have written since my last projection."
 - `schema: 1` for forward compatibility of the marker format itself.
 
@@ -92,13 +92,13 @@ Added to the `DriftRecord` union in `state-reconciliation/types.ts`:
     projectionPath: string;       // relative to basePath, e.g. "m1/plan.md"
     expectedSha: string;          // from .compat.json
     actualSha: string;            // freshly computed
-    entities: string[];           // entity ids to re-import
+    entities: string[];           // entity ids used to scope status authority
   }
 ```
 
 Detection (`detect`) compares each projection's recorded sha against the current normalized file hash. Differences become `external-markdown-edit` records.
 
-Repair (`repair`) re-imports the named entities from markdown → DB via the existing `md-importer` entity-level upserts, then re-projects those files. Idempotent (re-running yields the same outcome, which is what the cap=2 reconcile loop requires).
+Repair (`repair`) re-imports markdown → DB through the existing `md-importer` whole-tree upsert path, with status authority scoped to the milestone ids in the drifted marker entry. That prevents a stale, unrelated projection from reverting DB status while keeping the repair idempotent (re-running yields the same outcome, which is what the cap=2 reconcile loop requires).
 
 ### 4.4 Startup reconcile flow
 
@@ -176,7 +176,7 @@ Everything else (drift detection, repair, rendering) stays in its existing modul
 
 1. gsd-pi starts; sync-lock acquired.
 2. `reconcileBeforeDispatch` runs; `external-markdown-edit` detector finds files where current sha ≠ `.compat.json` sha (or marker absent → treat all projection files as external).
-3. Repair re-imports affected entities → DB.
+3. Repair imports markdown → DB with status authority scoped to the drifted file's marker entities.
 4. `renderAllFromDb` re-projects everything.
 5. `.compat.json` rewritten with fresh shas, `lastWriter: "gsd-pi"`.
 6. Lock released; workflow-logger emits a structured diff of imported changes.

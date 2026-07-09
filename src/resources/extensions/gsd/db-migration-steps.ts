@@ -462,3 +462,35 @@ export function applyMigrationV22QualityGateRepair(db: DbAdapter, hooks: Migrati
   ensureColumn(db, "quality_gates", "scope", "ALTER TABLE quality_gates ADD COLUMN scope TEXT NOT NULL DEFAULT 'slice'");
   ensureColumn(db, "assessments", "scope", "ALTER TABLE assessments ADD COLUMN scope TEXT NOT NULL DEFAULT ''");
 }
+
+
+export function applyMigrationV30ReworkBriefs(db: DbAdapter): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS rework_briefs (
+      id TEXT PRIMARY KEY,
+      milestone_id TEXT NOT NULL DEFAULT '',
+      slice_id TEXT NOT NULL DEFAULT '',
+      task_id TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT ''
+    )
+  `);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS rework_brief_findings (
+      brief_id TEXT NOT NULL,
+      finding_id TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'blocking',
+      description TEXT NOT NULL DEFAULT '',
+      required_fix TEXT NOT NULL DEFAULT '',
+      verification_commands TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'pending',
+      evidence TEXT NOT NULL DEFAULT '',
+      decision_ref TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (brief_id, finding_id),
+      FOREIGN KEY (brief_id) REFERENCES rework_briefs(id)
+    )
+  `);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_rework_briefs_task ON rework_briefs(milestone_id, slice_id, task_id)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_rework_findings_status ON rework_brief_findings(brief_id, severity, status)");
+}

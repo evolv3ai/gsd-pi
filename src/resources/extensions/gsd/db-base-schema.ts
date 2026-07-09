@@ -246,6 +246,34 @@ export function createBaseSchemaObjects(db: DbAdapter, hooks: BaseSchemaHooks): 
   `);
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS rework_briefs (
+      id TEXT PRIMARY KEY,
+      milestone_id TEXT NOT NULL DEFAULT '',
+      slice_id TEXT NOT NULL DEFAULT '',
+      task_id TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT ''
+    )
+  `);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS rework_brief_findings (
+      brief_id TEXT NOT NULL,
+      finding_id TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'blocking',
+      description TEXT NOT NULL DEFAULT '',
+      required_fix TEXT NOT NULL DEFAULT '',
+      verification_commands TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'pending',
+      evidence TEXT NOT NULL DEFAULT '',
+      decision_ref TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (brief_id, finding_id),
+      FOREIGN KEY (brief_id) REFERENCES rework_briefs(id)
+    )
+  `);
+
+  db.exec(`
     CREATE TABLE IF NOT EXISTS assessments (
       path TEXT PRIMARY KEY,
       milestone_id TEXT NOT NULL DEFAULT '',
@@ -367,6 +395,8 @@ export function createBaseSchemaObjects(db: DbAdapter, hooks: BaseSchemaHooks): 
 
   db.exec("CREATE INDEX IF NOT EXISTS idx_memories_active ON memories(superseded_by)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_replan_history_milestone ON replan_history(milestone_id, created_at)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_rework_briefs_task ON rework_briefs(milestone_id, slice_id, task_id)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_rework_findings_status ON rework_brief_findings(brief_id, severity, status)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_active ON tasks(milestone_id, slice_id, status)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_slices_active ON slices(milestone_id, status)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_milestones_status ON milestones(status)");

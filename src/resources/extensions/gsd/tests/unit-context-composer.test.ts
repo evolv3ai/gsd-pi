@@ -43,7 +43,10 @@ import {
   insertMilestone,
   upsertMilestonePlanning,
   insertSlice,
+  insertTask,
+  saveReworkBrief,
 } from "../gsd-db.ts";
+import { clearGSDPreferencesCache, getProjectGSDPreferencesPath } from "../preferences.ts";
 
 // ─── Pure composer tests ──────────────────────────────────────────────────
 
@@ -416,6 +419,44 @@ test("Tool Surface composer: planning-dispatch lists allowed subagents", () => {
   assert.match(out, /\*\*planner\*\*/);
 });
 
+test("Tool Surface composer: planning_subagents updates plan-milestone dispatch guidance", (t) => {
+  const originalGsdHome = process.env.GSD_HOME;
+  const tempProject = mkdtempSync(join(tmpdir(), "gsd-tool-surface-planning-subagents-"));
+  const tempGsdHome = mkdtempSync(join(tmpdir(), "gsd-tool-surface-planning-subagents-home-"));
+
+  t.after(() => {
+    clearGSDPreferencesCache();
+    if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = originalGsdHome;
+    rmSync(tempProject, { recursive: true, force: true });
+    rmSync(tempGsdHome, { recursive: true, force: true });
+  });
+
+  process.env.GSD_HOME = tempGsdHome;
+  mkdirSync(join(tempProject, ".gsd"), { recursive: true });
+  clearGSDPreferencesCache();
+  writeFileSync(
+    getProjectGSDPreferencesPath(tempProject),
+    [
+      "---",
+      "version: 1",
+      "planning_subagents:",
+      "  plan-milestone:",
+      "    allowed: [security]",
+      "---",
+      "",
+    ].join("\n"),
+    "utf-8",
+  );
+
+  const out = composeToolSurfaceInstructions("plan-milestone", {
+    renderMode: "standalone",
+    basePath: tempProject,
+  });
+  assert.match(out, /Dispatch subagents only to \*\*security\*\*/);
+  assert.doesNotMatch(out, /Do not dispatch subagents/);
+});
+
 test("Tool Surface composer: execute-task warns against slice/milestone closeout tools", () => {
   const out = composeToolSurfaceInstructions("execute-task", { renderMode: "nested" });
   assert.match(out, /^Tool surface: /);
@@ -516,6 +557,38 @@ test("#4782 phase 2: buildReassessRoadmapPrompt emits composer-shaped context wi
   // Slice context is optional and not present in this fixture — must not
   // leave a stray empty section
   assert.ok(!prompt.includes("Slice Context (from discussion)"));
+});
+
+
+test("execute-task prompt injects unresolved blocking rework findings", async (t) => {
+  const base = makeFixtureBase();
+  t.after(() => cleanup(base));
+  invalidateAllCaches();
+
+  seed(base, "M001");
+  writeArtifacts(base);
+  insertTask({ id: "T01", sliceId: "S01", milestoneId: "M001", title: "Task", status: "pending" });
+  saveReworkBrief({
+    briefId: "RB-001",
+    milestoneId: "M001",
+    sliceId: "S01",
+    taskId: "T01",
+    findings: [{
+      findingId: "F1",
+      severity: "blocking",
+      description: "Compile regression",
+      requiredFix: "Restore typecheck",
+      verificationCommands: ["pnpm run typecheck:extensions"],
+    }],
+  });
+
+  const prompt = await buildExecuteTaskPrompt("M001", "S01", "First", "T01", "Task", base);
+
+  assert.match(prompt, /Blocking Rework Findings \(non-optional\)/);
+  assert.match(prompt, /F1/);
+  assert.match(prompt, /Compile regression/);
+  assert.match(prompt, /pnpm run typecheck:extensions/);
+  assert.match(prompt, /reworkResolution/);
 });
 
 test("execute-task prompt omits on-demand slice research when the artifact is absent", async (t) => {

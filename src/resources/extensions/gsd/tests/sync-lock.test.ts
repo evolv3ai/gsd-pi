@@ -174,3 +174,22 @@ test('sync-lock: contended fresh lock fails fast without honoring long sync time
     cleanupDir(base);
   }
 });
+
+test('sync-lock: uncreatable lock path fails open instead of spinning forever', () => {
+  const base = tempDir();
+  try {
+    // `.gsd` is a dangling symlink to a missing target: the O_EXCL open lands
+    // on a missing parent and throws non-EEXIST on every attempt. Without the
+    // fail-open guard the retry loop spins forever, blocking the event loop.
+    fs.symlinkSync(path.join(base, 'missing-external-state'), path.join(base, '.gsd'), 'junction');
+
+    const startedAt = performance.now();
+    const result = acquireSyncLock(base, 0, 'write-gate.lock');
+    const elapsedMs = performance.now() - startedAt;
+
+    assert.strictEqual(result.acquired, false, 'uncreatable lock path must fail open, not acquire');
+    assert.ok(elapsedMs < 250, `must return promptly, not spin; elapsed=${elapsedMs.toFixed(1)}ms`);
+  } finally {
+    cleanupDir(base);
+  }
+});

@@ -16,6 +16,9 @@ import {
   EMPTY_MARKER,
   compatMarkerPath,
 } from "../compat/compat-marker.ts";
+import { externalMarkdownEditHandler } from "../state-reconciliation/drift/external-markdown-edit.ts";
+import type { DriftContext } from "../state-reconciliation/types.ts";
+import type { GSDState } from "../types.ts";
 
 const tmpDirs: string[] = [];
 
@@ -187,4 +190,105 @@ test("pruneOrphanedProjectionEntries returns 0 and writes nothing when marker is
   assert.equal(pruneOrphanedProjectionEntries(base), 0);
   const files = readdirSync(join(base, ".gsd"));
   assert.ok(!files.includes(".compat.json"), "must not create a marker where none existed");
+});
+
+// --- Path-traversal containment (plan 029) ---------------------------------
+//
+// The marker is repo-controlled content whose projection-map keys are joined
+// with basePath and readFileSync'd by the drift detectors. A key that escapes
+// .gsd/ must invalidate the whole marker so readCompatMarker fails safe to the
+// empty marker (detectors see no entries → nothing outside the repo is read).
+
+for (const badKey of ["../outside.md", "/etc/hosts", "C:/x.md", "..\\x.md"]) {
+  test(`readCompatMarker rejects a projection key that escapes the root: ${JSON.stringify(badKey)}`, () => {
+    const base = makeTmpBase();
+    // Write the hostile marker directly (writeCompatMarker does not validate).
+    writeCompatMarker(base, {
+      schema: 2,
+      lastWriter: "gsd-pi",
+      lastProjectedAt: "2026-07-07T00:00:00.000Z",
+      projections: { [badKey]: { sha: "deadbeefdeadbeef", entities: ["m1"] } },
+      piVersion: "1.8.1",
+    });
+
+    const marker = readCompatMarker(base);
+    assert.equal(
+      Object.keys(marker.projections).length,
+      0,
+      "a marker with an escaping key must fall back to the empty marker",
+    );
+  });
+}
+
+test("readCompatMarker preserves legitimate nested projection keys", () => {
+  const base = makeTmpBase();
+  const roadmap = "milestones/M001/M001-ROADMAP.md";
+  const context = "phases/01-foo/01-CONTEXT.md";
+  writeCompatMarker(base, {
+    schema: 2,
+    lastWriter: "gsd-pi",
+    lastProjectedAt: "2026-07-07T00:00:00.000Z",
+    projections: {
+      [roadmap]: { sha: "aaaaaaaaaaaaaaaa", entities: ["M001"] },
+      [context]: { sha: "bbbbbbbbbbbbbbbb", entities: ["P01"] },
+    },
+    planning: { active: false, layout: null, projections: {}, passthrough: {} },
+    piVersion: "1.8.1",
+  });
+
+  const marker = readCompatMarker(base);
+  assert.ok(marker.projections[roadmap], "roadmap key must round-trip");
+  assert.ok(marker.projections[context], "nested phase key must round-trip");
+  assert.equal(Object.keys(marker.projections).length, 2);
+});
+
+test("an escaping key in planning.passthrough also invalidates the whole marker", () => {
+  const base = makeTmpBase();
+  writeCompatMarker(base, {
+    schema: 2,
+    lastWriter: "gsd-pi",
+    lastProjectedAt: "2026-07-07T00:00:00.000Z",
+    projections: {},
+    planning: {
+      active: true,
+      layout: "flat-phases",
+      projections: {},
+      passthrough: { "../../secret.md": { sha: "cccccccccccccccc", entities: [] } },
+    },
+    piVersion: "1.8.1",
+  });
+
+  const marker = readCompatMarker(base);
+  assert.equal(Object.keys(marker.projections).length, 0);
+  assert.equal(marker.planning!.active, false, "planning falls back to inactive default");
+});
+
+test("hostile marker makes the drift detector read nothing outside the project", async () => {
+  const base = makeTmpBase();
+  // Sentinel lives OUTSIDE the project dir; a `../` traversal from .gsd/ would
+  // reach it if the key were trusted.
+  const sentinelDir = mkdtempSync(join(tmpdir(), `gsd-sentinel-${randomUUID()}`));
+  tmpDirs.push(sentinelDir);
+  const sentinelName = "known_hosts";
+  writeFileSync(join(sentinelDir, sentinelName), "SECRET\n", "utf-8");
+  const escapeKey = `../../${sentinelName}`; // e.g. ../../known_hosts
+
+  writeCompatMarker(base, {
+    schema: 2,
+    lastWriter: "gsd-pi",
+    lastProjectedAt: "2026-07-07T00:00:00.000Z",
+    projections: { [escapeKey]: { sha: "0000000000000000", entities: ["m1"] } },
+    piVersion: "1.8.1",
+  });
+
+  const stubState = { phase: "idle" } as unknown as GSDState;
+  const ctx: DriftContext = { basePath: base, state: stubState };
+
+  // Must not throw and must not emit a record referencing the sentinel.
+  const drift = await externalMarkdownEditHandler.detect(stubState, ctx);
+  assert.equal(drift.length, 0, "no drift record from a rejected hostile marker");
+  assert.ok(
+    !drift.some((d) => d.projectionPath.includes(sentinelName)),
+    "detector must not reference the out-of-project sentinel",
+  );
 });

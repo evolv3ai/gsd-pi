@@ -5,7 +5,7 @@ import { getGateIdsForTurn } from "../gate-registry.js";
 import { transaction, getSlice, getTask, insertTask, upsertTaskPlanning, insertGateRow, setSliceSketchFlag } from "../gsd-db.js";
 import { invalidateStateCache } from "../state.js";
 import { renderTaskPlanFromDb, renderPlanFromDb } from "../markdown-renderer.js";
-import { resolveTasksDir } from "../paths.js";
+import { resolveMilestonePath, resolveSlicePath } from "../paths.js";
 import { flushWorkflowProjections } from "../projection-flush.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
@@ -255,21 +255,19 @@ export async function handlePlanTask(
   }
 
   try {
-    const renderResult = await renderTaskPlanFromDb(basePath, params.milestoneId, params.sliceId, params.taskId);
-
-    // Flat-phase: tasks live as checkboxes in the slice plan's <tasks> block,
-    // not as standalone TID-PLAN.md files. Re-render the slice plan so the
-    // new/updated task appears in the plan file that gsd-core reads.
-    // Guard: resolveTasksDir is null in flat-phase (no tasks/ subdir exists).
+    const milestonePath = resolveMilestonePath(basePath, params.milestoneId);
+    const slicePath = resolveSlicePath(basePath, params.milestoneId, params.sliceId);
+    const isLegacySliceLayout = Boolean(milestonePath && slicePath && slicePath !== milestonePath);
+    let renderedPath: string;
     let slicePlanSynced = false;
-    try {
-      const tDir = resolveTasksDir(basePath, params.milestoneId, params.sliceId);
-      if (!tDir) {
-        await renderPlanFromDb(basePath, params.milestoneId, params.sliceId);
-        slicePlanSynced = true;
-      }
-    } catch (syncErr) {
-      logWarning("tool", `plan-task: slice-plan sync failed: ${(syncErr as Error).message}`);
+
+    if (isLegacySliceLayout) {
+      const renderResult = await renderTaskPlanFromDb(basePath, params.milestoneId, params.sliceId, params.taskId);
+      renderedPath = renderResult.taskPlanPath;
+    } else {
+      const renderResult = await renderPlanFromDb(basePath, params.milestoneId, params.sliceId);
+      renderedPath = renderResult.planPath;
+      slicePlanSynced = true;
     }
 
     if (slicePlanSynced) {
@@ -299,7 +297,7 @@ export async function handlePlanTask(
       milestoneId: params.milestoneId,
       sliceId: params.sliceId,
       taskId: params.taskId,
-      taskPlanPath: renderResult.taskPlanPath,
+      taskPlanPath: renderedPath,
     };
   } catch (err) {
     return { error: `render failed: ${(err as Error).message}` };

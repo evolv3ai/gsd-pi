@@ -277,6 +277,19 @@ test('isBlockedNotification: avoids blocked text without blocked marker', () => 
   assert.equal(isBlockedNotification(makeNotify('The request was blocked by the firewall')), false)
 })
 
+test('un-showable menu notifications are terminal and blocked (#1294)', () => {
+  // Verbatim shape from notifyCommandMenuUnavailable — the pre-planning menu route
+  // that previously idled forever in headless auto/next.
+  const menu = makeNotify('GSD — M002: Editorial HN menu could not be shown in this session.\nRun /gsd when ready.')
+  assert.equal(isTerminalNotification(menu), true)
+  assert.equal(isBlockedNotification(menu), true)
+
+  // Picker-guidance shape from notifyPickerCommandNeedsInteractiveMenu.
+  const picker = makeNotify('/gsd did not start: milestone menu needs an interactive session')
+  assert.equal(isTerminalNotification(picker), true)
+  assert.equal(isBlockedNotification(picker), true)
+})
+
 test('isInteractiveHeadlessTool: ask_user_questions is interactive', () => {
   assert.equal(isInteractiveHeadlessTool('ask_user_questions'), true)
 })

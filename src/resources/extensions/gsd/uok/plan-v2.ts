@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import type { GSDState, Phase } from "../types.js";
 import { gsdRoot, resolveMilestoneFile, resolveSliceFile } from "../paths.js";
-import { isDbAvailable, getMilestoneSlices, getSliceTasks } from "../gsd-db.js";
+import { isDbAvailable, getMilestoneSlices, getTasksBySliceIds } from "../gsd-db.js";
 import type { SliceRow } from "../db-task-slice-rows.js";
 import type { UokGraphNode } from "./contracts.js";
 
@@ -37,6 +37,19 @@ export interface PlanV2CompileResult {
 
 function graphOutputPath(basePath: string): string {
   return join(gsdRoot(basePath), "runtime", "uok-plan-v2-graph.json");
+}
+
+// True when the on-disk graph matches `output` ignoring the volatile `compiledAt`
+// stamp, so redundant recompiles on the dispatch hot path skip the disk write.
+function graphBodyUnchanged(outPath: string, output: Record<string, unknown>): boolean {
+  try {
+    const existing = JSON.parse(readFileSync(outPath, "utf-8")) as Record<string, unknown>;
+    const { compiledAt: _existingStamp, ...existingBody } = existing;
+    const { compiledAt: _outputStamp, ...outputBody } = output;
+    return JSON.stringify(existingBody) === JSON.stringify(outputBody);
+  } catch {
+    return false; // Missing, unreadable, or corrupt — write.
+  }
 }
 
 function hasFileContent(path: string | null): boolean {
@@ -120,9 +133,11 @@ export function compileUnitGraphFromState(basePath: string, state: GSDState): Pl
     };
   }
 
+  const tasksBySlice = getTasksBySliceIds(slices.map((slice) => ({ milestoneId: mid, sliceId: slice.id })));
+
   for (const slice of slices) {
     const sid = slice.id;
-    const tasks = getSliceTasks(mid, sid)
+    const tasks = (tasksBySlice.get(`${mid}\0${sid}`) ?? [])
       .sort((a, b) => Number(a.sequence ?? 0) - Number(b.sequence ?? 0));
 
     let previousTaskNodeId: string | null = null;
@@ -174,7 +189,9 @@ export function compileUnitGraphFromState(basePath: string, state: GSDState): Pl
 
   const outPath = graphOutputPath(basePath);
   mkdirSync(join(gsdRoot(basePath), "runtime"), { recursive: true });
-  writeFileSync(outPath, JSON.stringify(output, null, 2) + "\n", "utf-8");
+  if (!graphBodyUnchanged(outPath, output)) {
+    writeFileSync(outPath, JSON.stringify(output, null, 2) + "\n", "utf-8");
+  }
 
   return {
     ok: true,

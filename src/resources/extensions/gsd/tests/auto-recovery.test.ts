@@ -2063,6 +2063,41 @@ test("#1088: writeReactiveExecuteBlocker preserves deferred batch task statuses"
   }
 });
 
+test("#1343: writeReactiveExecuteBlocker uses slice-qualified summaries in flat-phase (no cross-slice collision)", () => {
+  const base = join(tmpdir(), `gsd-test-${randomUUID()}`);
+  try {
+    // Flat-phase layout: slices S01 and S02 share the phase dir and reuse task
+    // id T03. Only the sibling slice S01 produced a summary.
+    const phaseDir = join(base, ".gsd", "phases", "01-test");
+    mkdirSync(phaseDir, { recursive: true });
+    writeFileSync(join(phaseDir, "01-01-PLAN.md"), "# S01: First\n", "utf-8");
+    writeFileSync(join(phaseDir, "01-02-PLAN.md"), "# S02: Second\n", "utf-8");
+    writeFileSync(join(phaseDir, "S01-T03-SUMMARY.md"), "# S01 T03 Summary\n", "utf-8");
+
+    openDatabase(join(base, ".gsd", "gsd.db"));
+    insertMilestone({ id: "M001", title: "Milestone", status: "active" });
+    insertSlice({ id: "S01", milestoneId: "M001", title: "First", status: "pending" });
+    insertSlice({ id: "S02", milestoneId: "M001", title: "Second", status: "pending" });
+    insertTask({ id: "T03", milestoneId: "M001", sliceId: "S02", title: "Shared id", status: "pending" });
+
+    const recovery = writeReactiveExecuteBlocker(
+      "M001/S02/reactive+T03",
+      base,
+      "verification retries exhausted",
+    );
+
+    assert.ok(recovery, "recovery should run with DB available");
+    // S02 never wrote S02-T03-SUMMARY.md; the sibling S01-T03-SUMMARY.md must
+    // NOT make S02/T03 look complete. It has to be skipped.
+    assert.deepEqual(recovery!.completedTaskIds, []);
+    assert.deepEqual(recovery!.skippedTaskIds, ["T03"]);
+    assert.equal(getTask("M001", "S02", "T03")?.status, "skipped");
+  } finally {
+    closeDatabase();
+    cleanup(base);
+  }
+});
+
 test("#4414: verifyExpectedArtifact parallel-research succeeds when all research-ready slices have RESEARCH", () => {
   const base = makeTmpBase();
   try {

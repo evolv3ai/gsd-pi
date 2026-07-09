@@ -10,198 +10,24 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@gsd/pi-coding-agent";
-import { existsSync, readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
 import { gsdRoot } from "../paths.js";
-import { fileURLToPath } from "node:url";
 import { showNextAction } from "../../shared/tui.js";
 import {
   notifyMigrateNeedsInteractiveMenu,
   requiresInteractiveMenu,
 } from "../command-feedback.js";
-import {
-  validatePlanningDirectory,
-  parsePlanningDirectory,
-  transformToGSD,
-  generatePreview,
-  writeGSDDirectory,
-} from "./index.js";
+import { executeMigrationWrite, type MigrationExecutionResult } from "./execution.js";
+import { createMigrationPlan } from "./plan.js";
+import { buildMigrationPreviewSummary, buildReviewPrompt } from "./presentation.js";
+import type { MigrationPreview } from "./writer.js";
 
-import type { MigrationPreview, WrittenFiles } from "./writer.js";
-import { ensureDbOpen } from "../bootstrap/dynamic-tools.js";
-import { clearArtifacts, clearDecisions, clearRequirements, clearEngineHierarchy, transaction } from "../gsd-db.js";
-import { migrateFromMarkdown } from "../md-importer.js";
-import { deriveState, invalidateStateCache } from "../state.js";
-import {
-  archiveLegacyPlanningDirectory,
-  verifyMigrationProjection,
-  writeMigrationAudit,
-  type LegacyArchiveResult,
-  type MigrationAuditResult,
-  type MigrationProjectionVerification,
-} from "./audit.js";
-import {
-  assertMigrationHasSlices,
-  assertMigrationTargetAvailable,
-  prepareMigrationTarget,
-  resolveMigrationPaths,
-  restoreMigrationTarget,
-  type MigrationBackup,
-} from "./safety.js";
-
-export type MigrationImportCounts = ReturnType<typeof migrateFromMarkdown>;
-
-export interface MigrationExecutionResult {
-  backup: MigrationBackup;
-  written: WrittenFiles;
-  imported: MigrationImportCounts;
-  legacyArchive: LegacyArchiveResult;
-  verification: MigrationProjectionVerification;
-  audit: MigrationAuditResult;
-}
-
-function assertMigrationImportMatchesPreview(imported: MigrationImportCounts, preview: MigrationPreview): void {
-  const mismatches: string[] = [];
-  if (imported.decisions !== preview.decisions.total) {
-    mismatches.push(`decisions ${imported.decisions}/${preview.decisions.total}`);
-  }
-  if (imported.hierarchy.milestones !== preview.milestoneCount) {
-    mismatches.push(`milestones ${imported.hierarchy.milestones}/${preview.milestoneCount}`);
-  }
-  if (imported.hierarchy.slices !== preview.totalSlices) {
-    mismatches.push(`slices ${imported.hierarchy.slices}/${preview.totalSlices}`);
-  }
-  if (imported.hierarchy.tasks !== preview.totalTasks) {
-    mismatches.push(`tasks ${imported.hierarchy.tasks}/${preview.totalTasks}`);
-  }
-  if (imported.requirements !== preview.requirements.total) {
-    mismatches.push(`requirements ${imported.requirements}/${preview.requirements.total}`);
-  }
-  if (mismatches.length > 0) {
-    throw new Error(`migration DB import verification failed: ${mismatches.join(", ")}`);
-  }
-}
-
-export async function importWrittenMigrationToDb(
-  basePath: string,
-  preview?: MigrationPreview,
-): Promise<MigrationImportCounts> {
-  const opened = await ensureDbOpen(basePath);
-  if (!opened) {
-    throw new Error(`failed to open or create the GSD database at ${basePath}`);
-  }
-
-  const counts = transaction(() => {
-    clearEngineHierarchy();
-    clearArtifacts();
-    clearDecisions();
-    clearRequirements();
-    const imported = migrateFromMarkdown(basePath);
-    if (preview) assertMigrationImportMatchesPreview(imported, preview);
-    return imported;
-  });
-  invalidateStateCache();
-  return counts;
-}
-
-export async function assertMigrationDbReadiness(
-  targetRoot: string,
-  preview: MigrationPreview,
-): Promise<{ phase: string; registry: number }> {
-  invalidateStateCache();
-  const state = await deriveState(targetRoot);
-  const dbUnavailable = state.blockers.some((blocker) => blocker.includes("DB unavailable"));
-  if (dbUnavailable) {
-    throw new Error(`migration DB readiness failed: ${state.blockers.join("; ")}`);
-  }
-  if (state.registry.length !== preview.milestoneCount) {
-    throw new Error(`migration DB readiness failed: registry ${state.registry.length}/${preview.milestoneCount}`);
-  }
-  return {
-    phase: state.phase,
-    registry: state.registry.length,
-  };
-}
-
-export async function executeMigrationWrite(
-  sourcePath: string,
-  targetRoot: string,
-  project: ReturnType<typeof transformToGSD>,
-  preview: MigrationPreview,
-  startedAt: string = new Date().toISOString(),
-): Promise<MigrationExecutionResult> {
-  const backup = prepareMigrationTarget(targetRoot);
-
-  try {
-    const written = await writeGSDDirectory(project, targetRoot);
-    const legacyArchive = await archiveLegacyPlanningDirectory(sourcePath, targetRoot);
-    const imported = await importWrittenMigrationToDb(targetRoot, preview);
-    const verification = await verifyMigrationProjection(targetRoot, preview);
-    verification.dbReadiness = await assertMigrationDbReadiness(targetRoot, preview);
-    const audit = await writeMigrationAudit({
-      sourcePath,
-      targetRoot,
-      backupPath: backup.backupPath,
-      preview,
-      written,
-      imported,
-      legacyArchive,
-      verification,
-      startedAt,
-      completedAt: new Date().toISOString(),
-    });
-
-    return { backup, written, imported, legacyArchive, verification, audit };
-  } catch (err) {
-    restoreMigrationTarget(backup);
-    throw err;
-  }
-}
-
-/** Format preview stats for embedding in the review prompt. */
-function formatPreviewStats(preview: MigrationPreview): string {
-  const lines = [
-    `- Decisions: ${preview.decisions.total}`,
-    `- Milestones: ${preview.milestoneCount}`,
-    `- Slices: ${preview.totalSlices} (${preview.doneSlices} done — ${preview.sliceCompletionPct}%)`,
-    `- Tasks: ${preview.totalTasks} (${preview.doneTasks} done — ${preview.taskCompletionPct}%)`,
-  ];
-  if (preview.requirements.total > 0) {
-    lines.push(
-      `- Requirements: ${preview.requirements.total} (${preview.requirements.validated} validated, ${preview.requirements.active} active, ${preview.requirements.deferred} deferred, ${preview.requirements.outOfScope} out of scope)`,
-    );
-  }
-  if (preview.migrationInputs) {
-    lines.push(`- Legacy inputs: ${preview.migrationInputs.milestonePhaseDirs} milestone phase dir(s), ${preview.migrationInputs.decisions} decision file(s), ${preview.migrationInputs.seeds} seed file(s)`);
-  }
-  return lines.join("\n");
-}
-
-/** Load and interpolate the review-migration prompt template. */
-function buildReviewPrompt(
-  sourcePath: string,
-  gsdPath: string,
-  preview: MigrationPreview,
-): string {
-  const promptsDir = join(dirname(fileURLToPath(import.meta.url)), "..", "prompts");
-  const templatePath = join(promptsDir, "review-migration.md");
-  let content = readFileSync(templatePath, "utf-8");
-
-  content = content.replaceAll("{{sourcePath}}", sourcePath);
-  content = content.replaceAll("{{gsdPath}}", gsdPath);
-  content = content.replaceAll("{{previewStats}}", formatPreviewStats(preview));
-
-  return content.trim();
-}
-
-/** Dispatch the review prompt to the agent. */
 function dispatchReview(
   pi: ExtensionAPI,
   sourcePath: string,
   gsdPath: string,
   preview: MigrationPreview,
 ): void {
-  const prompt = buildReviewPrompt(sourcePath, gsdPath, preview);
+  const prompt = buildReviewPrompt({ sourcePath, gsdPath, preview });
 
   pi.sendMessage(
     {
@@ -218,34 +44,28 @@ export async function handleMigrate(
   ctx: ExtensionCommandContext,
   pi: ExtensionAPI,
 ): Promise<void> {
-  // ── Resolve source path ────────────────────────────────────────────────────
-  const { sourcePath, targetRoot } = resolveMigrationPaths(args);
+  const plan = await createMigrationPlan(args);
+  const { sourcePath, targetRoot } = plan;
 
-  if (!existsSync(sourcePath)) {
+  if (plan.status === "missing-source") {
     ctx.ui.notify(
       `Directory not found: ${sourcePath}\n\n` +
-      'Migration converts a .planning/ directory (from older GSD versions) into .gsd/ format.\n' +
-      'If you are starting a new project, use /gsd:new-project instead.\n' +
-      'If migrating, ensure the path contains a .planning/ directory.',
+      "Migration converts a .planning/ directory (from older GSD versions) into .gsd/ format.\n" +
+      "If you are starting a new project, use /gsd:new-project instead.\n" +
+      "If migrating, ensure the path contains a .planning/ directory.",
       "error",
     );
     return;
   }
 
-  // ── Validate ───────────────────────────────────────────────────────────────
-  const validation = await validatePlanningDirectory(sourcePath);
-
-  const warnings = validation.issues.filter((i) => i.severity === "warning");
-  const fatals = validation.issues.filter((i) => i.severity === "fatal");
-
-  for (const w of warnings) {
-    ctx.ui.notify(`⚠ ${w.message} (${w.file})`, "warning");
+  for (const warning of plan.warnings) {
+    ctx.ui.notify(`⚠ ${warning.message} (${warning.file})`, "warning");
   }
-  for (const f of fatals) {
-    ctx.ui.notify(`✖ ${f.message} (${f.file})`, "error");
+  for (const fatal of plan.fatals) {
+    ctx.ui.notify(`✖ ${fatal.message} (${fatal.file})`, "error");
   }
 
-  if (!validation.valid) {
+  if (plan.status === "invalid") {
     ctx.ui.notify(
       "Migration blocked — fix the fatal issues above before retrying.",
       "error",
@@ -253,41 +73,15 @@ export async function handleMigrate(
     return;
   }
 
-  // ── Parse → Transform → Preview ───────────────────────────────────────────
-  const parsed = await parsePlanningDirectory(sourcePath);
-  const project = transformToGSD(parsed);
-  const preview = generatePreview(project);
-  try {
-    assertMigrationHasSlices(preview);
-    await assertMigrationTargetAvailable(targetRoot);
-  } catch (err) {
-    ctx.ui.notify((err as Error).message, "error");
+  if (plan.status === "blocked") {
+    ctx.ui.notify(plan.message, "error");
     return;
   }
 
+  const { project, preview } = plan;
+
   // ── Build preview text ─────────────────────────────────────────────────────
-  const lines: string[] = [
-    `Decisions: ${preview.decisions.total}`,
-    `Milestones: ${preview.milestoneCount}`,
-    `Slices: ${preview.totalSlices} (${preview.doneSlices} done — ${preview.sliceCompletionPct}%)`,
-    `Tasks: ${preview.totalTasks} (${preview.doneTasks} done — ${preview.taskCompletionPct}%)`,
-  ];
-
-  if (preview.requirements.total > 0) {
-    lines.push(
-      `Requirements: ${preview.requirements.total} (${preview.requirements.validated} validated, ${preview.requirements.active} active, ${preview.requirements.deferred} deferred, ${preview.requirements.outOfScope} out of scope)`,
-    );
-  }
-  if (preview.migrationInputs) {
-    lines.push(`Legacy inputs: ${preview.migrationInputs.milestonePhaseDirs} milestone phase dir(s), ${preview.migrationInputs.decisions} decision file(s), ${preview.migrationInputs.seeds} seed file(s)`);
-  }
-
-  const targetGsdExists = existsSync(gsdRoot(targetRoot));
-  if (targetGsdExists) {
-    lines.push("");
-    lines.push(`⚠ A .gsd directory already exists at ${gsdRoot(targetRoot)}.`);
-    lines.push("It will be backed up, deleted, and rewritten fresh before DB import.");
-  }
+  const lines = buildMigrationPreviewSummary(preview, targetRoot);
 
   // ── Confirmation via showNextAction ────────────────────────────────────────
   if (requiresInteractiveMenu(ctx, false)) {

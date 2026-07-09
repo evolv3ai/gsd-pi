@@ -7,7 +7,7 @@
 
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, isAbsolute, normalize } from "node:path";
 
 /** Current marker schema version. Bump on breaking format changes + migrate. */
 export const COMPAT_MARKER_SCHEMA = 2;
@@ -34,8 +34,10 @@ export interface PlanningMarker {
 
 /**
  * Per-file projection entry. `sha` is a normalized-content SHA-256; `entities`
- * is the list of DB entity ids (milestone/slice/task) that the file projects,
- * so repair can scope re-import rather than re-importing the whole tree.
+ * is the list of DB entity ids (milestone/slice/task) that the file projects.
+ * External-edit repair derives milestone ids from this list so markdown status
+ * authority is limited to the drifted projection's milestone scope while the
+ * importer still walks the whole tree.
  */
 export interface ProjectionEntry {
   sha: string;
@@ -220,9 +222,24 @@ function isValidProjectionEntry(x: unknown): x is ProjectionEntry {
   return true;
 }
 
+/**
+ * Projection-map keys are repo-relative paths under .gsd/ or .planning/.
+ * The marker is repo-controlled content, so a key must never escape its
+ * root: reject absolute paths, drive letters, backslashes, and any
+ * normalized form that starts with "..". Mirrors the write-side guard in
+ * db-writer.ts.
+ */
+function isSafeProjectionKey(key: string): boolean {
+  if (key.length === 0 || key.includes("\\") || key.includes("\0")) return false;
+  if (isAbsolute(key) || /^[A-Za-z]:/.test(key)) return false;
+  const norm = normalize(key);
+  return norm !== ".." && !norm.startsWith("../") && !isAbsolute(norm);
+}
+
 function isValidProjectionMap(x: unknown): boolean {
   if (typeof x !== "object" || x === null) return false;
-  for (const v of Object.values(x as Record<string, unknown>)) {
+  for (const [k, v] of Object.entries(x as Record<string, unknown>)) {
+    if (!isSafeProjectionKey(k)) return false;
     if (!isValidProjectionEntry(v)) return false;
   }
   return true;

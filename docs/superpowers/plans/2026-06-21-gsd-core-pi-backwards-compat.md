@@ -156,8 +156,9 @@ export const COMPAT_MARKER_SCHEMA = 1;
 
 /**
  * Per-file projection entry. `sha` is a normalized-content SHA-256; `entities`
- * is the list of DB entity ids (milestone/slice/task) that the file projects,
- * so repair can scope re-import rather than re-importing the whole tree.
+ * is the list of DB entity ids (milestone/slice/task) that the file projects.
+ * Current repair derives milestone ids from this list to scope markdown status
+ * authority while the importer still walks the whole tree.
  */
 export interface ProjectionEntry {
   sha: string;
@@ -331,7 +332,7 @@ In `src/resources/extensions/gsd/state-reconciliation/types.ts`, add this varian
       projectionPath: string;       // relative to basePath, e.g. "m1/plan.md"
       expectedSha: string;          // sha recorded in .compat.json
       actualSha: string;            // freshly computed from disk
-      entities: string[];           // DB entity ids to re-import
+      entities: string[];           // DB entity ids used to scope status authority
     };
 ```
 
@@ -485,9 +486,10 @@ Create `src/resources/extensions/gsd/state-reconciliation/drift/external-markdow
 //
 // gsd-pi's DB is canonical, but .gsd/*.md is the inter-tool contract. When
 // gsd-core edits a projection file, this handler detects the sha drift vs the
-// recorded baseline in .gsd/.compat.json and re-imports the affected entities
-// into the DB. The next renderAllFromDb pass re-projects; the write-time
-// invalidation hook then refreshes the marker entry, closing the loop.
+// recorded baseline in .gsd/.compat.json and re-imports from markdown with
+// status authority scoped to the affected milestone ids. The next
+// renderAllFromDb pass re-projects; the write-time invalidation hook then
+// refreshes the marker entry, closing the loop.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -497,7 +499,7 @@ import {
   readCompatMarker,
   writeCompatMarker,
 } from "../../compat/compat-marker.js";
-import { migrateHierarchyToDb } from "../../md-importer.js";
+import { migrateHierarchyToDb, milestoneIdsFromEntities } from "../../md-importer.js";
 import { invalidateStateCache } from "../../state.js";
 import { logWarning } from "../../workflow-logger.js";
 import type { GSDState } from "../../types.js";
@@ -543,21 +545,23 @@ function detectExternalMarkdownEdit(
 }
 
 /**
- * Idempotent repair: re-import hierarchy for the affected entities from
- * markdown into the DB, then update the marker entry so the next detect pass
- * sees the file as expected. migrateHierarchyToDb is itself idempotent
- * (upsert), so re-running this repair after a successful one is a no-op.
+ * Idempotent repair: re-import hierarchy from markdown while allowing
+ * markdown status authority only for milestones named by the drifted file's
+ * marker entities, then update the marker entry so the next detect pass sees
+ * the file as expected. migrateHierarchyToDb is itself idempotent (upsert), so
+ * re-running this repair after a successful one is a no-op.
  */
 async function repairExternalMarkdownEdit(
   record: ExternalMarkdownEditDrift,
   ctx: DriftContext,
 ): Promise<void> {
   try {
-    // Scoped re-import. migrateHierarchyToDb walks the whole tree but is a
-    // cheap upsert; per-entity scoping would require decomposing it, which is
-    // out of scope for v1. The cost is bounded by tree size and runs at most
-    // once per reconcile pass (MAX_PASSES=2).
-    migrateHierarchyToDb(ctx.basePath);
+    // The importer walks the whole tree as a cheap upsert, but repair derives
+    // a milestone scope from record.entities and passes it as
+    // statusAuthoritativeMilestones so only the drifted milestone(s) can close
+    // or reopen rows from markdown checkboxes.
+    const statusAuthoritativeMilestones = milestoneIdsFromEntities(record.entities);
+    migrateHierarchyToDb(ctx.basePath, { statusAuthoritativeMilestones });
     invalidateStateCache();
   } catch (err) {
     logWarning(
@@ -598,8 +602,9 @@ git add src/resources/extensions/gsd/state-reconciliation/types.ts \
 git commit -m "feat(compat): add external-markdown-edit drift handler
 
 Detects sha drift between .gsd/.compat.json and current projection files,
-re-imports affected entities via migrateHierarchyToDb, and refreshes the
-marker. Idempotent: re-running after a successful repair is a no-op."
+imports markdown via migrateHierarchyToDb with status authority scoped to the
+marker entities, and refreshes the marker. Idempotent: re-running after a
+successful repair is a no-op."
 ```
 
 ---

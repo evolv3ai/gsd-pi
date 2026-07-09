@@ -121,7 +121,7 @@ The boundary map is a **planning artifact** — not runnable code. It:
 - Enables deterministic verification that slices actually connect
 - Gets updated during slice planning if new interfaces emerge
 
-### `S##-PLAN.md` (slice-level)
+### `<NN>-<MM>-PLAN.md` (slice-level, with embedded task planning)
 
 ```markdown
 # S01: Slice Title
@@ -136,53 +136,22 @@ The boundary map is a **planning artifact** — not runnable code. It:
 ## Tasks
 
 - [ ] **T01: Task Title**
-  Description of what this task does.
-  
+  Why this task matters, what to change, and what "done" means.
+  - Files: `src/path/to/file.ts`
+  - Verify: `npm test`
+  - Must-haves:
+    - Observable behavior that must be true when this task is done
+    - Files or wiring that must exist with real implementation
+
 - [ ] **T02: Another Task**
-  Description.
+  Why / Do / Done-when detail for the next task.
 
 ## Files Likely Touched
 - path/to/file.ts
 - path/to/another.ts
 ```
 
-### `T##-PLAN.md` (task-level)
-
-```markdown
-# T01: Task Title
-
-**Slice:** S01
-**Milestone:** M001
-
-## Goal
-What this task accomplishes in one sentence.
-
-## Must-Haves
-
-### Truths
-Observable behaviors that must be true when this task is done:
-- "User can sign up with email and password"
-- "Login returns a JWT token"
-
-### Artifacts
-Files that must exist with real implementation (not stubs):
-- `src/lib/auth.ts` — JWT helpers (min 30 lines, exports: generateToken, verifyToken)
-- `src/app/api/auth/login/route.ts` — Login endpoint (exports: POST)
-
-### Key Links
-Critical wiring between artifacts:
-- `login/route.ts` → `auth.ts` via import of `generateToken`
-- `middleware.ts` → `auth.ts` via import of `verifyToken`
-
-## Steps
-1. First thing to do
-2. Second thing to do
-3. Third thing to do
-
-## Context
-- Relevant prior decisions or patterns to follow
-- Key files to read before starting
-```
+Task plan content lives inside the slice plan. There is no standalone task-level PLAN file in the flat-phase layout; layout-aware task PLAN paths resolve to the owning `<NN>-<MM>-PLAN.md`.
 
 **Must-haves are what make verification mechanically checkable.** Truths are checked by running commands or reading output. Artifacts are checked by confirming files exist with real content. Key links are checked by confirming imports/references actually connect the pieces.
 
@@ -322,7 +291,7 @@ The **Don't Hand-Roll** and **Common Pitfalls** sections prevent the most expens
 ### Phase 3: Plan
 
 **Purpose:** Decompose work into context-window-sized tasks with must-haves.
-**Produces:** `S##-PLAN.md` + individual `T01-PLAN.md` files.
+**Produces:** `<NN>-<MM>-PLAN.md` with task planning embedded in the slice plan.
 
 **For a milestone (roadmap):**
 1. Read `CONTEXT.md`, `M###-RESEARCH.md`, and `.gsd/DECISIONS.md` if they exist.
@@ -339,7 +308,7 @@ The **Don't Hand-Roll** and **Common Pitfalls** sections prevent the most expens
 5. Decompose into 1-7 tasks, each fitting one context window.
 6. Each task needs: title, description, steps (3-10), must-haves (observable verification criteria).
 7. Must-haves should reference boundary map contracts — e.g. "exports `generateToken()` as specified in boundary map S01→S02".
-8. Write `S##-PLAN.md` and individual `T##-PLAN.md` files.
+8. Write `<NN>-<MM>-PLAN.md` with the slice contract and embedded task planning. Do not write standalone task plan files.
 
 ### Phase 4: Execute
 
@@ -347,7 +316,7 @@ The **Don't Hand-Roll** and **Common Pitfalls** sections prevent the most expens
 **Produces:** Code changes + `[DONE:n]` markers.
 
 **How to do it manually:**
-1. Read the task's `T##-PLAN.md`.
+1. Read the active slice's `<NN>-<MM>-PLAN.md` and use the selected task entry as the task plan.
 2. Read relevant summaries from prior tasks (for context on what's already built).
 3. Execute each step. Mark progress with `[DONE:n]` in responses.
 4. If you made an architectural, pattern, or library decision, append it to `.gsd/DECISIONS.md`.
@@ -398,7 +367,7 @@ When verification finds gaps, include a **Gaps** section with what's missing, im
 ### Phase 6: Summarize
 
 **Purpose:** Record what happened for downstream tasks.
-**Produces:** `T##-SUMMARY.md`, and when slice completes, `S##-SUMMARY.md`.
+**Produces:** `S##-T##-SUMMARY.md` in flat-phase projects, and when slice completes, `S##-SUMMARY.md`. Legacy flat `T##-SUMMARY.md` task summaries are still readable.
 
 **Task summary format:**
 ```markdown
@@ -459,7 +428,7 @@ key_decisions: []
 **Purpose:** Mark work done and move to the next thing.
 
 **After a task completes:**
-1. Mark the task done in `S##-PLAN.md` (checkbox).
+1. Mark the task done in `<NN>-<MM>-PLAN.md` (checkbox).
 2. Check if there's a next task in the slice → execute it.
 3. If slice is complete → write slice summary, mark slice done in `ROADMAP.md`.
 
@@ -524,8 +493,8 @@ It is NOT the source of truth. It's a convenience dashboard.
 
 **Sources of truth:**
 - `ROADMAP.md` → which slices exist and which are done
-- `S##-PLAN.md` → which tasks exist within a slice
-- `T##-SUMMARY.md` → what happened during a task
+- `<NN>-<MM>-PLAN.md` → which tasks exist within a slice and what each task must do
+- `S##-T##-SUMMARY.md` → what happened during a task in flat-phase projects (legacy `T##-SUMMARY.md` is still readable)
 - `S##-SUMMARY.md` and `M###-SUMMARY.md` → compressed slice and milestone outcomes
 
 **Update `STATE.md`** after every significant action:
@@ -642,7 +611,7 @@ This methodology doc is generic. Project-specific guidance belongs in the milest
 1. Read `.gsd/STATE.md` — what's the next action?
 2. Check for `continue.md` in the active slice — is there interrupted work?
 3. If resuming: read `continue.md`, delete it, pick up from "Next Action".
-4. If starting fresh: read the active slice's `S##-PLAN.md`, find the next incomplete task.
+4. If starting fresh: read the active slice's `<NN>-<MM>-PLAN.md`, find the next incomplete task.
 5. If in a planning or research phase, read `.gsd/DECISIONS.md` — respect existing decisions.
 6. Read relevant summaries from prior tasks/slices for context.
 7. Do the work.

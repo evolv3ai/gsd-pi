@@ -1,6 +1,6 @@
 import { existsSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
-import { relSliceFile, resolveMilestoneFile, resolveMilestonePath, targetMilestoneFile } from "../paths.js";
+import { join, relative } from "node:path";
+import { gsdProjectionRoot, gsdRoot, resolveMilestoneFile, resolveMilestonePath, targetMilestoneFile } from "../paths.js";
 import { clearParseCache } from "../files.js";
 import { isClosedStatus } from "../status-guards.js";
 import { isNonEmptyString } from "../validation.js";
@@ -53,6 +53,14 @@ export interface ReassessRoadmapResult {
   roadmapPath: string;
 }
 
+function assessmentDbPathForRenderedFile(basePath: string, absPath: string): string {
+  const projectionRoot = gsdProjectionRoot(basePath);
+  const projectionRel = relative(projectionRoot, absPath);
+  const root = projectionRel && !projectionRel.startsWith("..") && !projectionRel.startsWith("/")
+    ? projectionRoot
+    : gsdRoot(basePath);
+  return `.gsd/${relative(root, absPath).replace(/\\/g, "/")}`;
+}
 
 function validateParams(params: ReassessRoadmapParams): ReassessRoadmapParams {
   if (!isNonEmptyString(params?.milestoneId)) throw new Error("milestoneId is required");
@@ -118,11 +126,6 @@ export async function handleReassessRoadmap(
   } catch (err) {
     return { error: `validation failed: ${(err as Error).message}` };
   }
-
-  // ── Compute assessment artifact path ──────────────────────────────
-  // Assessment lives in the completed slice's directory.
-  // Use relSliceFile so the path is layout-aware (flat-phase or legacy).
-  const assessmentRelPath = relSliceFile(basePath, params.milestoneId, params.completedSliceId, "ASSESSMENT");
 
   // ── Guards + DB writes inside a single transaction (prevents TOCTOU) ───
   // Guards must be inside the transaction so the state they check cannot
@@ -207,16 +210,6 @@ export async function handleReassessRoadmap(
         }
       }
 
-      // Record assessment
-      insertAssessment({
-        path: assessmentRelPath,
-        milestoneId: params.milestoneId,
-        sliceId: params.completedSliceId,
-        status: params.verdict,
-        scope: "roadmap",
-        fullContent: params.assessment,
-      });
-
       // Apply slice modifications
       for (const mod of params.sliceChanges.modified) {
         updateSliceFields(params.milestoneId, mod.sliceId, {
@@ -281,6 +274,14 @@ export async function handleReassessRoadmap(
       verdict: params.verdict,
       assessment: params.assessment,
       completedSliceId: params.completedSliceId,
+    });
+    insertAssessment({
+      path: assessmentDbPathForRenderedFile(basePath, assessmentResult.assessmentPath),
+      milestoneId: params.milestoneId,
+      sliceId: params.completedSliceId,
+      status: params.verdict,
+      scope: "roadmap",
+      fullContent: params.assessment,
     });
 
     // ── Remove stale VALIDATION file from disk (#2957) ────────────

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 
 import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask, getSlice, getTask, getSliceTasks, getGateResults } from '../gsd-db.ts';
 import { handlePlanTask } from '../tools/plan-task.ts';
-import { parseTaskPlanFile } from '../files.ts';
+import { parsePlan } from '../parsers-legacy.ts';
 
 function makeTmpBase(): string {
   const base = mkdtempSync(join(tmpdir(), 'gsd-plan-task-'));
@@ -60,7 +60,7 @@ function validParams() {
   };
 }
 
-test('handlePlanTask writes planning state and renders task plan', async () => {
+test('handlePlanTask writes planning state and renders the flat-phase slice plan', async () => {
   const base = makeTmpBase();
   openDatabase(join(base, '.gsd', 'gsd.db'));
 
@@ -75,11 +75,13 @@ test('handlePlanTask writes planning state and renders task plan', async () => {
     assert.equal(task?.description, 'Implement the DB-backed task planning handler.');
     assert.equal(task?.estimate, '30m');
 
-    const taskPlanPath = join(base, '.gsd', 'phases', '01-test', 'T02-PLAN.md');
-    assert.ok(existsSync(taskPlanPath), 'task plan should be rendered to disk');
-    const taskPlan = parseTaskPlanFile(readFileSync(taskPlanPath, 'utf-8'));
-    assert.equal(taskPlan.frontmatter.estimated_files, 1);
-    assert.deepEqual(taskPlan.frontmatter.skills_used, []);
+    const slicePlanPath = join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md');
+    assert.equal(result.taskPlanPath, slicePlanPath);
+    assert.ok(existsSync(slicePlanPath), 'slice plan should be rendered to disk');
+    assert.equal(existsSync(join(base, '.gsd', 'phases', '01-test', 'T02-PLAN.md')), false);
+    const slicePlan = parsePlan(readFileSync(slicePlanPath, 'utf-8'));
+    assert.equal(slicePlan.tasks[0]?.id, 'T02');
+    assert.equal(slicePlan.tasks[0]?.files?.[0], 'src/resources/extensions/gsd/tools/plan-task.ts');
   } finally {
     cleanup(base);
   }
@@ -215,17 +217,17 @@ test('handlePlanTask rejects missing parent slice', async () => {
   }
 });
 
-test('handlePlanTask surfaces render failures without changing parse-visible task plan state', async () => {
+test('handlePlanTask surfaces render failures without changing parse-visible slice plan state', async () => {
   const base = makeTmpBase();
   openDatabase(join(base, '.gsd', 'gsd.db'));
 
   try {
     seedParent();
     insertTask({ id: 'T02', sliceId: 'S02', milestoneId: 'M001', title: 'Cached task', status: 'pending' });
-    const taskPlanPath = join(base, '.gsd', 'phases', '01-test', 'T02-PLAN.md');
-    writeFileSync(taskPlanPath, '---\nestimated_steps: 1\nestimated_files: 1\nskills_used: []\n---\n\n# T02: Cached task\n', 'utf-8');
-    rmSync(taskPlanPath, { force: true });
-    mkdirSync(taskPlanPath, { recursive: true });
+    const slicePlanPath = join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md');
+    writeFileSync(slicePlanPath, '# S02: Cached slice\n\n<tasks>\n- [ ] **T02**: Cached task\n</tasks>\n', 'utf-8');
+    rmSync(slicePlanPath, { force: true });
+    mkdirSync(slicePlanPath, { recursive: true });
 
     const result = await handlePlanTask(validParams(), base);
     assert.ok('error' in result);
@@ -243,15 +245,16 @@ test('handlePlanTask keeps the sketch flag set when the flat-phase slice plan sy
     insertMilestone({ id: 'M001', title: 'Milestone', status: 'active' });
     insertSlice({ id: 'S02', milestoneId: 'M001', title: 'Planning slice', status: 'pending', demo: 'Rendered plans exist.', isSketch: true });
 
-    // The per-task render writes T02-PLAN.md and succeeds, but the flat-phase
-    // slice re-render (the canonical PLAN.md that embeds task checkboxes) targets
-    // phases/01-test/01-02-PLAN.md. Pre-creating that path as a directory forces
-    // EISDIR on the slice sync, so the canonical slice plan never reflects the
-    // task. The sketch flag must therefore stay set — the slice keeps refining —
-    // instead of leaving the slice out of refining over a stale plan.
+    // The flat-phase slice render targets phases/01-test/01-02-PLAN.md.
+    // Pre-creating that path as a directory forces EISDIR, so the canonical
+    // slice plan never reflects the task. The sketch flag must therefore stay
+    // set — the slice keeps refining — instead of leaving the slice out of
+    // refining over a stale plan.
     mkdirSync(join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md'), { recursive: true });
 
     const result = await handlePlanTask(validParams(), base);
+    assert.ok('error' in result);
+    assert.match(result.error, /render failed:/);
     assert.equal(getSlice('M001', 'S02')?.is_sketch, 1, 'sketch flag must stay set when the canonical slice plan could not sync');
     assert.ok(getTask('M001', 'S02', 'T02'), 'the task itself is still persisted so the slice can re-sync on retry');
   } finally {
@@ -265,8 +268,8 @@ test('handlePlanTask reruns idempotently and refreshes parse-visible state', asy
 
   try {
     seedParent();
-    const taskPlanPath = join(base, '.gsd', 'phases', '01-test', 'T02-PLAN.md');
-    writeFileSync(taskPlanPath, '---\nestimated_steps: 1\nestimated_files: 1\nskills_used: []\n---\n\n# T02: Cached task\n', 'utf-8');
+    const slicePlanPath = join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md');
+    writeFileSync(slicePlanPath, '# S02: Cached slice\n\n<tasks>\n- [ ] **T02**: Cached task\n</tasks>\n', 'utf-8');
 
     const first = await handlePlanTask(validParams(), base);
     assert.ok(!('error' in first));
@@ -282,9 +285,9 @@ test('handlePlanTask reruns idempotently and refreshes parse-visible state', asy
     assert.equal(task?.description, 'Updated task handler description.');
     assert.equal(task?.estimate, '1h');
 
-    const parsed = parseTaskPlanFile(readFileSync(taskPlanPath, 'utf-8'));
-    assert.equal(parsed.frontmatter.estimated_steps, 1);
-    assert.match(readFileSync(taskPlanPath, 'utf-8'), /Updated task handler description\./);
+    const parsed = parsePlan(readFileSync(slicePlanPath, 'utf-8'));
+    assert.equal(parsed.tasks[0]?.id, 'T02');
+    assert.match(readFileSync(slicePlanPath, 'utf-8'), /Updated task handler description\./);
   } finally {
     cleanup(base);
   }

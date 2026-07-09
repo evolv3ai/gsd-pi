@@ -17,6 +17,8 @@ import {
   transaction,
   updateMilestoneStatus,
   updateSliceStatus,
+  getMilestoneSlices,
+  getSliceTasks,
   _getAdapter,
 } from './gsd-db.js';
 import { openWorkflowDatabasePath } from './db-workspace.js';
@@ -29,6 +31,7 @@ import {
   legacyMilestonesDir,
   gsdRoot,
   resolveTaskFiles,
+  resolveTaskFile,
   resolveMilestonePath,
 } from './paths.js';
 import { findMilestoneIds } from './guided-flow.js';
@@ -42,6 +45,26 @@ import { logWarning } from './workflow-logger.js';
 const VALID_MADE_BY = new Set(['human', 'agent', 'collaborative']);
 
 const IMPORT_COMPLETE_STATUSES = new Set(['complete', 'done']);
+
+/**
+ * Derive the set of milestone ids a projection entry's `entities` touch. Marker
+ * entity ids are fully-qualified DB ids (`M001`, `M001/S01`, `M001/S01/T01`), so
+ * the milestone id is always the first `/`-segment — independent of the on-disk
+ * layout (legacy `milestones/<MID>/…` vs flat `phases/NN-slug/…`). The
+ * external-edit drift repairs (#027) feed this into
+ * `migrateHierarchyToDb(..., { statusAuthoritativeMilestones })` to scope status
+ * authority to exactly the milestone(s) a drifted file projects. Empty/blank
+ * entries are dropped, so an entity-less entry yields an empty set (repair then
+ * preserves DB status everywhere — fail toward the DB, not markdown).
+ */
+export function milestoneIdsFromEntities(entities: readonly string[]): Set<string> {
+  const ids = new Set<string>();
+  for (const e of entities) {
+    const milestoneId = e.split('/')[0];
+    if (milestoneId) ids.add(milestoneId);
+  }
+  return ids;
+}
 
 /**
  * Completion timestamp for an entity imported as complete: the SUMMARY.md mtime
@@ -676,15 +699,35 @@ function findFileByPrefixAndSuffix(dir: string, idPrefix: string, suffix: string
  * Uses INSERT OR IGNORE for idempotency. Insert order: milestones → slices → tasks.
  * Ghost milestones (dirs with no CONTEXT, ROADMAP, or SUMMARY) are skipped.
  *
+ * `opts.statusAuthoritativeMilestones` narrows *status* authority. It exists for
+ * the scoped external-edit drift repair: detection knows exactly which
+ * projection file drifted, but this import walks the whole tree. Without scoping,
+ * an unrelated file that is stale from gsd-pi's own miss (a forgotten render)
+ * rides along with markdown authority it was never granted and its stale checked
+ * checkbox silently reverts a reopened slice/milestone in the DB (#027).
+ *
+ * - opts absent → full markdown authority for every milestone (initial migration,
+ *   gsd-core full import, /gsd recover rebuild). Behavior is identical to before.
+ * - opts present → for a milestone NOT in the set whose DB row *already exists*,
+ *   the existing DB status is preserved: the slice upsert is fed the current DB
+ *   status (so a stale `complete` checkbox can't overwrite a reopened `pending`),
+ *   and the complete-status backfills are skipped. Milestone rows are already
+ *   protected by INSERT OR IGNORE. Rows that do not exist yet are inserted with
+ *   the parsed status regardless of scope (new content is new content).
+ *
  * Returns count of inserted hierarchy items.
  */
-export function migrateHierarchyToDb(basePath: string): {
+export function migrateHierarchyToDb(
+  basePath: string,
+  opts?: { statusAuthoritativeMilestones?: ReadonlySet<string> },
+): {
   milestones: number;
   slices: number;
   tasks: number;
 } {
   const counts = { milestones: 0, slices: 0, tasks: 0 };
   const milestoneIds = findMilestoneIds(basePath);
+  const statusScope = opts?.statusAuthoritativeMilestones;
 
   for (const milestoneId of milestoneIds) {
     // Check for ghost milestones — skip dirs with no meaningful content
@@ -745,8 +788,30 @@ export function migrateHierarchyToDb(basePath: string): {
       }
     }
 
-    // Insert milestone (FK parent — must come first)
-    insertMilestone({
+    // #027: when a status scope is supplied, a milestone outside it keeps DB
+    // status authority for rows that already exist — only the drifted file's
+    // milestone(s) may drive status closes from checkboxes. Absent scope, every
+    // milestone is authoritative (unchanged full-import behavior).
+    const milestoneStatusAuthoritative = !statusScope || statusScope.has(milestoneId);
+    // Snapshot existing slice statuses once (only needed when preserving DB
+    // authority for this milestone) so the upsert can echo them back instead of
+    // flipping an open slice closed from a stale checkbox.
+    const existingSliceStatus = new Map<string, string>();
+    const existingTaskStatus = new Map<string, string>();
+    if (!milestoneStatusAuthoritative) {
+      for (const s of getMilestoneSlices(milestoneId)) {
+        existingSliceStatus.set(s.id, s.status);
+        for (const t of getSliceTasks(milestoneId, s.id)) {
+          existingTaskStatus.set(`${s.id}/${t.id}`, t.status);
+        }
+      }
+    }
+
+    // Insert milestone (FK parent — must come first). INSERT OR IGNORE: an
+    // existing milestone row is never overwritten, so DB status is already
+    // preserved for out-of-scope milestones. `inserted` tells us whether this
+    // row is new (parsed status applies) vs pre-existing (backfill gated below).
+    const milestoneInserted = insertMilestone({
       id: milestoneId,
       title: milestoneTitle,
       status: milestoneStatus,
@@ -760,10 +825,14 @@ export function migrateHierarchyToDb(basePath: string): {
     // insertMilestone never sets completed_at; backfill it now for milestones
     // imported as complete so the DB is internally coherent immediately after
     // import (rather than relying on a later reconciliation pass that can't even
-    // see the drift when no SUMMARY file exists).
-    if (IMPORT_COMPLETE_STATUSES.has(milestoneStatus)) {
+    // see the drift when no SUMMARY file exists). #027: skip the backfill for an
+    // out-of-scope milestone that already existed — its DB status is authoritative.
+    if (IMPORT_COMPLETE_STATUSES.has(milestoneStatus) && (milestoneStatusAuthoritative || milestoneInserted)) {
       const summaryPath = resolveMilestoneFile(basePath, milestoneId, 'SUMMARY');
-      updateMilestoneStatus(milestoneId, milestoneStatus, importCompletionTimestamp(summaryPath));
+      // #1291: preserve an existing completion timestamp so a re-import backfills
+      // only rows that lack one, never re-stamping an already-complete milestone
+      // with the current import time. Same guard as the task path below.
+      updateMilestoneStatus(milestoneId, milestoneStatus, importCompletionTimestamp(summaryPath), true);
     }
     counts.milestones++;
 
@@ -783,11 +852,22 @@ export function migrateHierarchyToDb(basePath: string): {
         plan = parsePlan(planContent);
       }
 
+      // #027: for an out-of-scope milestone, echo the existing DB status of a
+      // slice that already exists so the upsert's `ELSE excluded.status` branch
+      // becomes a no-op instead of flipping a reopened `pending` slice back to
+      // `complete` from a stale checkbox. New slices (not yet in the DB) take the
+      // parsed status regardless of scope.
+      const sliceRowExists = existingSliceStatus.has(sliceEntry.id);
+      const sliceStatusAuthoritative = milestoneStatusAuthoritative || !sliceRowExists;
+      const effectiveSliceStatus = sliceStatusAuthoritative
+        ? sliceStatus
+        : existingSliceStatus.get(sliceEntry.id)!;
+
       insertSlice({
         id: sliceEntry.id,
         milestoneId: milestoneId,
         title: sliceEntry.title,
-        status: sliceStatus,
+        status: effectiveSliceStatus,
         risk: sliceEntry.risk,
         depends: (sliceEntry.depends ?? []).map(d => d.replace(/^\[|\]$/g, '')).filter(d => /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(d)),
         demo: sliceEntry.demo,
@@ -798,20 +878,30 @@ export function migrateHierarchyToDb(basePath: string): {
         },
       });
       // insertSlice never sets completed_at; backfill it for slices imported as
-      // complete (same rationale as milestones above).
-      if (IMPORT_COMPLETE_STATUSES.has(sliceStatus)) {
+      // complete (same rationale as milestones above). #027: skip when preserving
+      // an out-of-scope slice's existing DB status.
+      if (IMPORT_COMPLETE_STATUSES.has(sliceStatus) && sliceStatusAuthoritative) {
         const sliceSummary = resolveSliceFile(basePath, milestoneId, sliceEntry.id, 'SUMMARY');
+        // #1291: preserve an existing completion timestamp so a re-import backfills
+        // only slices that lack one, never re-stamping an already-complete slice
+        // with the current import time. Same guard as the task path below.
         updateSliceStatus(
           milestoneId,
           sliceEntry.id,
           sliceStatus,
           importCompletionTimestamp(sliceSummary),
+          true,
         );
       }
       counts.slices++;
 
-      // Insert tasks from parsed plan
-      if (!plan) continue;
+      // Insert tasks from parsed plan.
+      // Sketch slices carry only a stub PLAN until refined; do not seed DB
+      // tasks from a placeholder <tasks> block (would falsely flip
+      // planning -> executing before the slice is decomposed). Once the
+      // `[sketch]` badge is removed by a real plan-slice, tasks import
+      // normally on the next pass. (#1286)
+      if (!plan || sliceEntry.isSketch) continue;
 
       for (const taskEntry of plan.tasks) {
         // Per K002: use 'complete' not 'done'
@@ -836,8 +926,7 @@ export function migrateHierarchyToDb(basePath: string): {
           legacyTasksDir = isLegacySlice
             ? resolveTasksDir(basePath, milestoneId, sliceEntry.id)
             : null;
-          const summaryDir = legacyTasksDir ?? slicePath;
-          taskSummaryFile = join(summaryDir, `${taskEntry.id}-SUMMARY.md`);
+          taskSummaryFile = resolveTaskFile(basePath, milestoneId, sliceEntry.id, taskEntry.id, 'SUMMARY');
         }
         const hasTaskSummary = taskSummaryFile !== null && existsSync(taskSummaryFile);
 
@@ -861,9 +950,9 @@ export function migrateHierarchyToDb(basePath: string): {
         // first execute-task. The surviving SUMMARY wins over a stale checkbox.
         // reopen-task removes the SUMMARY, so this never re-completes an
         // intentionally reopened task.
-        // Flat-phase summaries are phase-scoped (T01-SUMMARY.md); when a milestone
-        // has multiple slices, require the summary parent frontmatter to match so
-        // one slice's completion does not attest a sibling's same-named task.
+        // Flat-phase summaries are phase-scoped; when a milestone has multiple
+        // slices, require the summary parent frontmatter to match so one slice's
+        // completion does not attest a sibling's same-named task.
         let summaryAttestsCompletion = hasTaskSummary;
         if (summaryAttestsCompletion && !isLegacySlice && roadmap.slices.length > 1 && taskSummaryFile) {
           try {
@@ -880,12 +969,20 @@ export function migrateHierarchyToDb(basePath: string): {
           );
         }
 
+        // #027: same scope guard as slices — out-of-scope milestones echo existing
+        // DB task status so stale plan checkboxes cannot re-complete reopened tasks.
+        const taskRowExists = existingTaskStatus.has(`${sliceEntry.id}/${taskEntry.id}`);
+        const taskStatusAuthoritative = milestoneStatusAuthoritative || !taskRowExists;
+        const effectiveTaskStatus = taskStatusAuthoritative
+          ? taskStatus
+          : existingTaskStatus.get(`${sliceEntry.id}/${taskEntry.id}`)!;
+
         insertTask({
           id: taskEntry.id,
           sliceId: sliceEntry.id,
           milestoneId: milestoneId,
           title: taskEntry.title,
-          status: taskStatus,
+          status: effectiveTaskStatus,
           planning: {
             files: taskEntry.files ?? [],
             verify: taskEntry.verify ?? '',
@@ -935,13 +1032,19 @@ export function migrateHierarchyToDb(basePath: string): {
           // checkbox (#1222); flat-phase checkboxes are authoritative without summary.
           return summaryAttestsCompletion || (t.done && !isLegacySliceLayout);
         });
-        if (allTasksDone && hasSliceSummary) {
+        // #027: the same close guard as the backfill above — a stale slice
+        // SUMMARY under an out-of-scope milestone must not upgrade a reopened
+        // slice to complete. New slices stay authoritative.
+        if (allTasksDone && hasSliceSummary && sliceStatusAuthoritative) {
           if (_getAdapter()) {
+            // #1291: preserve an existing completion timestamp — this consistency
+            // upgrade sets a completion time only when the row lacks one.
             updateSliceStatus(
               milestoneId,
               sliceEntry.id,
               'complete',
               importCompletionTimestamp(sliceSummaryPath),
+              true,
             );
             process.stderr.write(
               `gsd-migrate: ${milestoneId}/${sliceEntry.id} all tasks + slice summary complete — upgrading slice to complete\n`,

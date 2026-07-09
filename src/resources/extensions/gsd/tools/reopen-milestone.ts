@@ -22,7 +22,15 @@ import { logWarning } from "../workflow-logger.js";
 import { debugLog } from "../debug-logger.js";
 import { existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { resolveMilestonePath, resolveSlicePath, resolveTasksDir, clearPathCache } from "../paths.js";
+import {
+  buildFlatTaskFileName,
+  buildTaskFileName,
+  legacyMilestonesDir,
+  resolveMilestonePath,
+  resolveSlicePath,
+  resolveTasksDir,
+  clearPathCache,
+} from "../paths.js";
 
 export interface ReopenMilestoneParams {
   milestoneId: string;
@@ -69,6 +77,10 @@ export async function handleReopenMilestone(
   // auto-corrects entities back to "complete", making reopen a no-op (#3161).
   try {
     const milestoneDir = resolveMilestonePath(basePath, params.milestoneId);
+    const legacyBase = legacyMilestonesDir(basePath);
+    const isLegacy = !!milestoneDir && (
+      milestoneDir.startsWith(legacyBase + "/") || milestoneDir.startsWith(legacyBase + "\\")
+    );
     if (milestoneDir) {
       const milestoneSummary = join(milestoneDir, `${params.milestoneId}-SUMMARY.md`);
       if (existsSync(milestoneSummary)) unlinkSync(milestoneSummary);
@@ -85,10 +97,17 @@ export async function handleReopenMilestone(
       }
 
       const tasksDir = resolveTasksDir(basePath, params.milestoneId, slice.id);
-      if (tasksDir) {
-        const tasks = getSliceTasks(params.milestoneId, slice.id);
-        for (const task of tasks) {
-          const taskSummary = join(tasksDir, `${task.id}-SUMMARY.md`);
+      const tasks = getSliceTasks(params.milestoneId, slice.id);
+      for (const task of tasks) {
+        const taskSummaries = isLegacy
+          ? (tasksDir ? [join(tasksDir, buildTaskFileName(task.id, "SUMMARY"))] : [])
+          : milestoneDir
+            ? [
+              join(milestoneDir, buildFlatTaskFileName(slice.id, task.id, "SUMMARY")),
+              join(milestoneDir, buildTaskFileName(task.id, "SUMMARY")),
+            ]
+            : [];
+        for (const taskSummary of taskSummaries) {
           if (existsSync(taskSummary)) unlinkSync(taskSummary);
         }
       }

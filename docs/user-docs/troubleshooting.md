@@ -109,7 +109,7 @@ Replace the path with the exact global bin directory from your pnpm error messag
 
 **Symptoms:** A parallel `reactive-execute` batch finishes with a warning that GSD wrote a reactive blocker and advanced, with summary-present tasks marked complete and missing-summary tasks skipped.
 
-**Cause:** The batch exhausted artifact verification retries while one or more dispatched tasks were still missing `T##-SUMMARY.md`. Instead of pausing or re-dispatching the same parallel batch forever, GSD writes `S##-REACTIVE-BLOCKER.md`, reconciles any tasks that did write summaries as complete, marks missing-summary tasks skipped, and continues.
+**Cause:** The batch exhausted artifact verification retries while one or more dispatched tasks were still missing task summaries. In flat-phase projects, GSD expects `S##-T##-SUMMARY.md` and still accepts legacy `T##-SUMMARY.md` as a fallback. Instead of pausing or re-dispatching the same parallel batch forever, GSD writes `S##-REACTIVE-BLOCKER.md`, reconciles any tasks that did write summaries as complete, marks missing-summary tasks skipped, and continues.
 
 **Fix:** Inspect the blocker file and skipped task list. If skipped work is still required, reopen or re-plan those tasks before depending on later slice or milestone artifacts.
 
@@ -383,7 +383,7 @@ In these states GSD does not auto-stash and does not auto-fix; it stops so you c
 
 ### `/gsd doctor` reports `artifact_db_status_divergence`
 
-**Symptoms:** `/gsd doctor` shows an error with issue code `artifact_db_status_divergence` for a completion artifact such as `T01-SUMMARY.md`, while the database still shows that task as open or missing.
+**Symptoms:** `/gsd doctor` shows an error with issue code `artifact_db_status_divergence` for a completion artifact such as `S01-T01-SUMMARY.md` (or legacy `T01-SUMMARY.md` in older flat projects), while the database still shows that task as open or missing.
 
 **What it means:** A completion artifact exists on disk, but runtime will not silently trust it as task completion. `/gsd doctor fix` can repair task completion from a SUMMARY only when the SUMMARY frontmatter matches the task, has no blocker, has a valid `completed_at`, and its `verification_result` is passing.
 

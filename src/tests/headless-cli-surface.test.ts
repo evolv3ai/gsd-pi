@@ -106,6 +106,9 @@ function parseHeadlessArgs(argv: string[]): HeadlessOptions {
         options.resumeSession = args[++i]
       } else if (arg === '--bare') {
         options.bare = true
+      } else {
+        // Unrecognized flag: pass through to the slash command (#1297)
+        options.commandArgs.push(arg)
       }
     } else if (options.command === 'auto') {
       options.command = arg
@@ -422,4 +425,20 @@ test('--bare does not affect other flags', () => {
   assert.equal(opts.timeout, 60000)
   assert.equal(opts.resumeSession, 'sess-abc')
   assert.equal(opts.command, 'auto')
+})
+
+// ─── Unrecognized subcommand flags pass through (#1297) ────────────────────
+
+test('unknown subcommand flag passes through to commandArgs', () => {
+  const opts = parseHeadlessArgs([
+    'node', 'gsd', 'headless',
+    'verdict', 'pass',
+    '--rationale', 'key-gated live UAT unavailable',
+  ])
+  assert.equal(opts.command, 'verdict')
+  assert.deepEqual(opts.commandArgs, [
+    'pass',
+    '--rationale',
+    'key-gated live UAT unavailable',
+  ])
 })

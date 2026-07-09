@@ -37,6 +37,10 @@ import type { PlanSliceParams } from "./plan-slice.js";
 import { handlePlanSlice } from "./plan-slice.js";
 import type { ReplanSliceParams } from "./replan-slice.js";
 import { handleReplanSlice } from "./replan-slice.js";
+import type { ReplanTaskParams } from "./replan-task.js";
+import { handleReplanTask } from "./replan-task.js";
+import type { ReworkBriefSaveParams } from "./rework-brief.js";
+import { handleReworkBriefSave } from "./rework-brief.js";
 import type { ReopenMilestoneParams } from "./reopen-milestone.js";
 import { handleReopenMilestone } from "./reopen-milestone.js";
 import type { ReopenSliceParams } from "./reopen-slice.js";
@@ -696,6 +700,8 @@ export type SliceCompleteExecutorParams = CompleteSliceParams;
 export type PlanMilestoneExecutorParams = PlanMilestoneParams;
 export type PlanSliceExecutorParams = PlanSliceParams;
 export type ReplanSliceExecutorParams = ReplanSliceParams;
+export type ReplanTaskExecutorParams = ReplanTaskParams;
+export type ReworkBriefSaveExecutorParams = ReworkBriefSaveParams;
 export type ReopenTaskExecutorParams = ReopenTaskParams;
 export type ReopenSliceExecutorParams = ReopenSliceParams;
 export type ReopenMilestoneExecutorParams = ReopenMilestoneParams;
@@ -1487,6 +1493,92 @@ export async function executePlanSlice(
       details: { operation: "plan_slice", error: msg },
     isError: true,
       };
+  }
+}
+
+
+export async function executeReplanTask(
+  params: ReplanTaskExecutorParams,
+  basePath: string = process.cwd(),
+): Promise<ToolExecutionResult> {
+  const dbAvailable = await ensureDbOpen(basePath);
+  if (!dbAvailable) {
+    return {
+      content: [{ type: "text", text: "Error: GSD database is not available. Cannot replan task." }],
+      details: { operation: "replan_task", error: "db_unavailable" },
+      isError: true,
+    };
+  }
+  try {
+    const result = await handleReplanTask(params, basePath);
+    if ("error" in result) {
+      return {
+        content: [{ type: "text", text: `Error replanning task: ${result.error}` }],
+        details: { operation: "replan_task", error: result.error },
+        isError: true,
+      };
+    }
+    return {
+      content: [{ type: "text", text: `Replanned task ${result.taskId} (${result.sliceId}/${result.milestoneId})` }],
+      details: {
+        operation: "replan_task",
+        milestoneId: result.milestoneId,
+        sliceId: result.sliceId,
+        taskId: result.taskId,
+        taskPlanPath: result.taskPlanPath,
+      },
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logError("tool", `replan_task tool failed: ${msg}`, { tool: "gsd_replan_task", error: String(err) });
+    return {
+      content: [{ type: "text", text: `Error replanning task: ${msg}` }],
+      details: { operation: "replan_task", error: msg },
+      isError: true,
+    };
+  }
+}
+
+export async function executeReworkBriefSave(
+  params: ReworkBriefSaveExecutorParams,
+  basePath: string = process.cwd(),
+): Promise<ToolExecutionResult> {
+  const dbAvailable = await ensureDbOpen(basePath);
+  if (!dbAvailable) {
+    return {
+      content: [{ type: "text", text: "Error: GSD database is not available. Cannot save rework brief." }],
+      details: { operation: "rework_brief_save", error: "db_unavailable" },
+      isError: true,
+    };
+  }
+  try {
+    const result = await handleReworkBriefSave(params);
+    if ("error" in result) {
+      return {
+        content: [{ type: "text", text: `Error saving rework brief: ${result.error}` }],
+        details: { operation: "rework_brief_save", error: result.error },
+        isError: true,
+      };
+    }
+    return {
+      content: [{ type: "text", text: `Saved rework brief ${result.briefId} with ${result.findingCount} finding(s)` }],
+      details: {
+        operation: "rework_brief_save",
+        briefId: result.briefId,
+        milestoneId: result.milestoneId,
+        sliceId: result.sliceId,
+        taskId: result.taskId,
+        findingCount: result.findingCount,
+      },
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logError("tool", `rework_brief_save tool failed: ${msg}`, { tool: "gsd_rework_brief_save", error: String(err) });
+    return {
+      content: [{ type: "text", text: `Error saving rework brief: ${msg}` }],
+      details: { operation: "rework_brief_save", error: msg },
+      isError: true,
+    };
   }
 }
 

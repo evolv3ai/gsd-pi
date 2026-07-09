@@ -54,6 +54,87 @@ test("passing retry evidence is not invalidated by an earlier failed run of the 
   assert.deepEqual(mismatches, []);
 });
 
+test("newer script-wrapped pass is not shadowed by a stale exact failing run", () => {
+  const command = "npm test";
+  const mismatches = crossReferenceEvidence(
+    [{ command, exitCode: 0, verdict: "passed after retry" }],
+    [
+      {
+        kind: "bash",
+        toolCallId: "call-1",
+        command,
+        exitCode: 1,
+        outputSnippet: "failed",
+        timestamp: 1,
+      },
+      {
+        kind: "bash",
+        toolCallId: "call-2",
+        command: `cd /work && ${command}`,
+        exitCode: 0,
+        outputSnippet: "passed",
+        timestamp: 2,
+      },
+    ] as EvidenceEntry[],
+  );
+
+  assert.deepEqual(mismatches, []);
+});
+
+test("later containing script does not override an exact successful run", () => {
+  const command = "npm test";
+  const mismatches = crossReferenceEvidence(
+    [{ command, exitCode: 0, verdict: "passed" }],
+    [
+      {
+        kind: "bash",
+        toolCallId: "call-1",
+        command,
+        exitCode: 0,
+        outputSnippet: "passed",
+        timestamp: 1,
+      },
+      {
+        kind: "bash",
+        toolCallId: "call-2",
+        command: `cd /work && ${command} && npm run lint`,
+        exitCode: 1,
+        outputSnippet: "lint failed",
+        timestamp: 2,
+      },
+    ] as EvidenceEntry[],
+  );
+
+  assert.deepEqual(mismatches, []);
+});
+
+test("same-timestamp retry evidence prefers the later recorded run", () => {
+  const command = "npm test";
+  const mismatches = crossReferenceEvidence(
+    [{ command, exitCode: 0, verdict: "passed after retry" }],
+    [
+      {
+        kind: "bash",
+        toolCallId: "call-1",
+        command,
+        exitCode: 1,
+        outputSnippet: "failed",
+        timestamp: 1,
+      },
+      {
+        kind: "bash",
+        toolCallId: "call-2",
+        command,
+        exitCode: 0,
+        outputSnippet: "passed",
+        timestamp: 1,
+      },
+    ] as EvidenceEntry[],
+  );
+
+  assert.deepEqual(mismatches, []);
+});
+
 test("stale verification evidence batches are ignored when a newer completion batch exists", () => {
   const command = "node todo.js add 'Task A' && node todo.js add 'Task B' && node todo.js done 1";
   const resetCommand = `rm -f "$HOME/.config/todo/data.json" && ${command}`;

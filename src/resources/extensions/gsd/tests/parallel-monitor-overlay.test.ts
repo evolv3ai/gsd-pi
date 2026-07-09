@@ -108,6 +108,65 @@ describe("parallel-monitor-overlay", () => {
     }
   });
 
+  it("merged worker query renders slice progress and completions across multiple slices", async () => {
+    // Regression guard for the single-open merge: queryWorkerProgress now
+    // returns { slices, completions } from ONE connection per worker per tick.
+    // A worker spanning two slices, each with a completed task, must still
+    // surface every slice's progress AND both completions (previously two
+    // separate DB opens produced these).
+    const base = mkdtempSync(join(tmpdir(), "gsd-parallel-overlay-multi-"));
+
+    try {
+      mkdirSync(join(base, ".gsd", "parallel"), { recursive: true });
+      assert.equal(openDatabase(join(base, ".gsd", "gsd.db")), true);
+      insertMilestone({ id: "M001", title: "Multi-slice Fixture" });
+      insertSlice({ milestoneId: "M001", id: "S01", title: "First", status: "pending", sequence: 1 });
+      insertSlice({ milestoneId: "M001", id: "S02", title: "Second", status: "pending", sequence: 2 });
+      insertTask({ milestoneId: "M001", sliceId: "S01", id: "T01", status: "complete", oneLiner: "alpha done", sequence: 1 });
+      insertTask({ milestoneId: "M001", sliceId: "S01", id: "T02", status: "pending", sequence: 2 });
+      insertTask({ milestoneId: "M001", sliceId: "S02", id: "T01", status: "complete", oneLiner: "beta done", sequence: 1 });
+      insertTask({ milestoneId: "M001", sliceId: "S02", id: "T02", status: "pending", sequence: 2 });
+      closeDatabase();
+
+      writeFileSync(
+        join(base, ".gsd", "parallel", "M001.status.json"),
+        JSON.stringify({
+          milestoneId: "M001",
+          pid: process.pid,
+          state: "running",
+          cost: 0,
+          lastHeartbeat: Date.now(),
+          startedAt: Date.now() - 30_000,
+          worktreePath: join(base, ".gsd-worktrees", "M001"),
+        }),
+        "utf-8",
+      );
+
+      const mod = await import("../parallel-monitor-overlay.js");
+      const mockTui = { requestRender: () => {} };
+      const mockTheme = {
+        fg: (_color: string, text: string) => text,
+        bold: (text: string) => text,
+      };
+      const overlay = new mod.ParallelMonitorOverlay(mockTui, mockTheme as any, () => {}, base);
+
+      try {
+        const joined = overlay.render(120).join("\n");
+        // Both slices' progress must come from the single merged query.
+        assert.match(joined, /S01:1\/2/, "S01 progress should render from the merged query");
+        assert.match(joined, /S02:1\/2/, "S02 progress should render from the merged query");
+        // Completions for tasks in both slices ride along on the same DB open.
+        assert.match(joined, /S01\/T01: alpha done/, "S01 completion should render");
+        assert.match(joined, /S02\/T01: beta done/, "S02 completion should render");
+      } finally {
+        overlay.dispose();
+      }
+    } finally {
+      try { closeDatabase(); } catch { /* already closed */ }
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
   it("progressBar generates correct width", async () => {
     // Dynamic import to test the module loads cleanly
     const mod = await import("../parallel-monitor-overlay.js");

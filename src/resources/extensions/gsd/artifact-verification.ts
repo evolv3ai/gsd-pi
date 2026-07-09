@@ -22,6 +22,7 @@ import {
   resolveSliceFile,
   resolveTasksDir,
   resolveTaskFiles,
+  resolveTaskFile,
   relSliceFile,
   resolveMilestoneFile,
   clearPathCache,
@@ -223,15 +224,9 @@ export function verifyExpectedArtifact(
     const batchIds = batchPart.slice(plusIdx + 1).split(",").filter(Boolean);
     if (batchIds.length === 0) return false;
 
-    const tDir = resolveTasksDir(base, mid, sid) ?? slicePath;
-    const existingSummaries = new Set(
-      resolveTaskFiles(tDir, "SUMMARY").map((f) =>
-        f.replace(/-SUMMARY\.md$/i, "").toUpperCase(),
-      ),
-    );
-
     for (const tid of batchIds) {
-      if (!existingSummaries.has(tid.toUpperCase())) return false;
+      const summaryPath = resolveTaskFile(base, mid, sid, tid, "SUMMARY");
+      if (!summaryPath || !existsSync(summaryPath)) return false;
     }
     return true;
   }
