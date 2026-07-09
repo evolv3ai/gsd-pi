@@ -17,6 +17,13 @@ test("#2309: 'terminated' errors should be classified as transient", () => {
   assert.equal("retryAfterMs" in result && result.retryAfterMs, 15_000, "'terminated' should use 15s backoff");
 });
 
+test("#1364: provider abort stop reasons should be classified as transient", () => {
+  const result = classifyError("Unhandled stop reason: abort");
+  assert.equal(isTransient(result), true, "'abort' provider errors should be transient");
+  assert.equal(result.kind, "connection", "'abort' matches connection");
+  assert.equal("retryAfterMs" in result && result.retryAfterMs, 15_000, "'abort' should use 15s backoff");
+});
+
 test("#2309: 'connection reset by peer' errors should be classified as transient (network)", () => {
   const result = classifyError("connection reset by peer");
   assert.equal(isTransient(result), true, "'connection reset by peer' should be transient");
