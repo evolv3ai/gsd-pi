@@ -1,4 +1,4 @@
-import { GSD_CONTEXT_MESSAGE_SENTINEL } from "./bootstrap/system-context.js";
+import { GSD_CONTEXT_MESSAGE_SENTINEL } from "./constants.js";
 
 /**
  * Observation masking for GSD auto-mode sessions.
@@ -256,13 +256,20 @@ export function truncateResponsesInputResultItems(items: ResponsesInputItem[], m
 // see buildContextMessage in bootstrap/system-context.ts), marked with
 // GSD_CONTEXT_MESSAGE_SENTINEL. convertToLlm strips the distinguishing
 // customType before the payload reaches this hook, so detection is by content
-// prefix instead. Pre-sentinel session history uses the same leading lines
-// without the sentinel — match those too so resumed sessions dedupe correctly.
+// prefix instead. Pre-sentinel session history lacks the sentinel, so we also
+// match the stable *bracketed* GSD block labels those injections begin with,
+// letting resumed sessions dedupe older memory/guided blocks.
+//
+// Only GSD-specific bracketed markers belong here — never generic prose. A
+// message is dropped from the payload when it matches, so a natural-language
+// prefix (e.g. the forensics prompt "Debug GSD itself.") could silently delete
+// a real user message that happens to start the same way. Legacy forensics
+// injections without memory are therefore left un-deduped by design; those
+// with memory still match via the "[GSD Context Metadata]" wrapper.
 const LEGACY_GSD_CONTEXT_INJECTION_PREFIXES = [
   "[GSD Context Metadata]",
   "[MEMORY — Critical and prompt-relevant memories from the GSD memory store]",
   "[GSD Guided Execute Context]",
-  "Debug GSD itself.",
 ] as const;
 
 function isGsdContextInjectionText(text: string | undefined): boolean {

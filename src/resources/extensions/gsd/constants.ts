@@ -53,3 +53,15 @@ export const DISCUSS_TOOLS_ALLOWLIST: readonly string[] = [
   "gsd_requirement_save",
   "gsd_requirement_update",
 ];
+
+// ─── Context Injection ────────────────────────────────────────────────────────
+
+/**
+ * Leading marker stamped on every buildContextMessage() output
+ * (bootstrap/system-context.ts). Single source of truth for the producer and
+ * the consumer: the provider payload policy (filterSupersededContextInjections
+ * in context-masker.ts) matches this prefix to find and dedupe injected
+ * memory/guided/forensics messages after convertToLlm strips their customType.
+ * Both sides import it from here — do not inline the literal in either module.
+ */
+export const GSD_CONTEXT_MESSAGE_SENTINEL = "[GSD Context Injection]";

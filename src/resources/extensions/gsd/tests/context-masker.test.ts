@@ -292,6 +292,37 @@ test("filterSupersededContextInjections keeps the latest injection overall acros
   assert.match((survivors[0] as any).content[0].text, /GUIDED EXECUTE/);
 });
 
+test("filterSupersededContextInjections dedupes legacy pre-sentinel injections via bracketed GSD markers", () => {
+  // Sessions created before the sentinel existed carry the stable
+  // "[GSD Context Metadata]" / "[GSD Guided Execute Context]" labels but no
+  // sentinel prefix; resuming them must still collapse to the latest injection.
+  const legacyMemory1 = userMsg("[GSD Context Metadata]\n- Memory supplied: yes\n\n[MEMORY] turn=1");
+  const legacyMemory2 = userMsg("[GSD Context Metadata]\n- Memory supplied: yes\n\n[MEMORY] turn=2");
+  const messages = [userMsg("turn 1"), legacyMemory1, assistantMsg("r1"), userMsg("turn 2"), legacyMemory2];
+
+  const result = filterSupersededContextInjections(messages as any);
+
+  const survivors = result.filter((m: any) => (m.content?.[0]?.text ?? "").startsWith("[GSD Context Metadata]"));
+  assert.equal(survivors.length, 1);
+  assert.match((survivors[0] as any).content[0].text, /turn=2/);
+  assert.equal(result.length, messages.length - 1);
+});
+
+test("filterSupersededContextInjections never drops a real user message that starts with forensics prose", () => {
+  // "Debug GSD itself." is the forensics prompt text — generic prose, not a
+  // bracketed GSD marker. A user can legitimately type it; treating it as an
+  // injection would silently delete real user input. Only sentinel/bracketed
+  // injections may be superseded.
+  const userAsk = userMsg("Debug GSD itself. Why does resume hang after a crash?");
+  const injection = userMsg(`${GSD_CONTEXT_MESSAGE_SENTINEL}\n[GSD Context Metadata]\n- Memory supplied: yes\n\n[MEMORY]`);
+  const messages = [userAsk, assistantMsg("r1"), userMsg("turn 2"), injection];
+
+  const result = filterSupersededContextInjections(messages as any);
+
+  assert.ok(result.some((m: any) => (m.content?.[0]?.text ?? "").startsWith("Debug GSD itself.")));
+  assert.equal(result.length, messages.length);
+});
+
 test("filterSupersededContextInjections returns the array unchanged when no injections present", () => {
   const messages = [userMsg("hi"), assistantMsg("hello"), toolResult("data")];
   const result = filterSupersededContextInjections(messages as any);

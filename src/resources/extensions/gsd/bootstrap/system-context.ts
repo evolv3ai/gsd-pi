@@ -21,12 +21,14 @@ import { formatOverridesSection, formatShortcut, loadActiveOverrides, loadFile, 
 import { toPosixPath } from "../../shared/mod.js";
 import { autoEnableCmuxPreferences } from "../commands-cmux.js";
 import { gsdHome } from "../gsd-home.js";
+import { GSD_CONTEXT_MESSAGE_SENTINEL } from "../constants.js";
 
-// Leading marker on every buildContextMessage() output. Lets the provider
-// payload policy (filterSupersededContextInjections in context-masker.ts)
-// find and dedupe these messages after convertToLlm strips customType.
-// Adding a new customType here? Add its branch to the marker too.
-export const GSD_CONTEXT_MESSAGE_SENTINEL = "[GSD Context Injection]";
+// Single source of truth lives in ../constants.js; re-exported here because
+// buildContextMessage() stamps this marker on every context injection and the
+// provider payload policy (filterSupersededContextInjections in
+// context-masker.ts) matches it to dedupe. Adding a new context customType?
+// Ensure buildContextMessage still prepends this sentinel.
+export { GSD_CONTEXT_MESSAGE_SENTINEL };
 
 const DEFAULT_CONTEXT_MESSAGE_MAX_CHARS = 4_000;
 const DEFAULT_KNOWLEDGE_MAX_CHARS = 12_000;
