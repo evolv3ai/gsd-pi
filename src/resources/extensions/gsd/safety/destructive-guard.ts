@@ -14,7 +14,7 @@ interface DestructivePattern {
 }
 
 const DESTRUCTIVE_PATTERNS: readonly DestructivePattern[] = [
-  { pattern: /\brm\s+(-[^\s]*[rfRF][^\s]*\s+|.*\s+-[^\s]*[rfRF])/, label: "recursive delete" },
+  { pattern: /\brm\s+((?:-(?!-)[^\s]*[rR][^\s]*|--recursive)\s+|.*\s+(?:-(?!-)[^\s]*[rR][^\s]*|--recursive)(?:\s|$))/, label: "recursive delete" },
   { pattern: /\bgit\s+push\s+.*--force/, label: "force push" },
   { pattern: /\bgit\s+push\s+-f\b/, label: "force push" },
   { pattern: /\bgit\s+reset\s+--hard/, label: "hard reset" },

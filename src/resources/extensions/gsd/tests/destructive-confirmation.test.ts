@@ -18,6 +18,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { registerHooks } from "../bootstrap/register-hooks.ts";
+import { autoSession } from "../auto-runtime-state.ts";
 import { classifyCommand } from "../safety/destructive-guard.ts";
 import {
   DESTRUCTIVE_CONFIRM_GATE_MARKER,
@@ -230,6 +231,38 @@ test("integration: real hooks block a force push, then allow it once after confi
   // 4. One-shot: an immediate identical third attempt re-blocks.
   const thirdAttempt = await runBashGuard(handlers, FORCE_PUSH, ctx);
   assert.equal(thirdAttempt?.block, true, "second run of the same command re-blocks (one-shot)");
+});
+
+test("integration: auto-mode destructive block does not pause before confirmation can be asked", async (t) => {
+  const dir = "/tmp/gsd-destructive-confirm-int-auto-defer";
+  const notifications: string[] = [];
+  const ctx = {
+    cwd: dir,
+    isIdle: () => true,
+    sessionManager: { getSessionFile: () => null },
+    ui: { notify: (message: string) => notifications.push(message) },
+  } as any;
+  resetDestructiveConfirmation(dir);
+  autoSession.reset();
+  autoSession.active = true;
+  autoSession.basePath = dir;
+  t.after(() => {
+    resetDestructiveConfirmation(dir);
+    autoSession.reset();
+  });
+
+  const { handlers, pi } = makeHookHarness();
+  registerHooks(pi, []);
+
+  const block = await runBashGuard(handlers, FORCE_PUSH, ctx);
+
+  assert.equal(block?.block, true, "real guard blocks the first destructive attempt");
+  assert.equal(autoSession.active, true, "auto-mode must remain active so ask_user_questions can run");
+  assert.deepEqual(
+    notifications.filter((message) => message.includes("Destructive-command confirmation")),
+    [],
+    "destructive confirmation pause must not fire from the bash tool_call hook",
+  );
 });
 
 test("integration: declining the confirm gate leaves the command blocked", async (t) => {
