@@ -154,6 +154,7 @@ mcp_call(server="my-server", tool="<tool_name>", args={...})
 - 如果某个 server 是团队共享且适合提交到仓库，通常更适合放在 `.mcp.json`
 - 如果某个 server 依赖本机路径、个人服务或本地 secrets，更适合放在 `.gsd/mcp.json`
 - 对内置的 `gsd-workflow` server，如果是从 worktree 或 wrapper 启动，请把 `GSD_WORKFLOW_PROJECT_ROOT` 设为规范项目根目录。打包的 server 会用它定位 workflow 工具路径，并用它作为 `$GSD_HOME/mcp-instances.json` 中的单项目 stale-process registry key。
+- 打包的 `gsd-workflow` MCP server 默认只暴露 canonical workflow tool 名称。只有仍在调用旧 alias 名称的客户端才需要设置 `GSD_MCP_ADVERTISE_ALIASES=1`。原生进程内 GSD 工具使用 `GSD_ADVERTISE_TOOL_ALIASES=1`。
 - 需要 GSD workflow 工具的 Claude Code 会话是 fail-closed 的：如果启动时 `gsd-workflow` 不存在、仍为 pending、failed、disabled，或缺少必需工具，GSD 会在第一个 model turn 前中止该 unit 并重试，而不是允许工具调用落到不完整的 surface 上。
 
 ## 环境变量
@@ -167,6 +168,9 @@ mcp_call(server="my-server", tool="<tool_name>", args={...})
 | `GSD_WORKFLOW_PROJECT_ROOT` | 当前工作目录 | 打包的 `gsd-workflow` MCP server 使用的规范项目根目录。workflow 工具和 `$GSD_HOME/mcp-instances.json` 的 stale-process registry key 都会使用它。 |
 | `GSD_WORKFLOW_EXECUTORS_MODULE` | 尽可能自动发现 | 可选的绝对路径或 `file:` URL，指向 `gsd-workflow` mutation tools 使用的共享 workflow executor module。 |
 | `GSD_WORKFLOW_WRITE_GATE_MODULE` | 尽可能自动发现 | 可选的绝对路径或 `file:` URL，指向 `gsd-workflow` mutation tools 使用的共享 write-gate module。 |
+| `GSD_MCP_ADVERTISE_ALIASES` | （未设置） | 设为字面值 `1` 时，打包的 `gsd-workflow` MCP server 会在 `tools/list` 中包含旧 workflow aliases。默认未设置时只暴露 canonical MCP surface，以避免重复 schemas。 |
+| `GSD_MCP_HIDE_ALIASES` | （未设置） | 旧的强制隐藏开关。设为字面值 `1` 时，即使 `GSD_MCP_ADVERTISE_ALIASES=1`，打包 MCP aliases 也会保持隐藏。 |
+| `GSD_ADVERTISE_TOOL_ALIASES` | （未设置） | 设为字面值 `1` 时，在原生进程内 GSD tool surface 注册旧 workflow aliases，包括 `gsd --mode mcp`。这不会影响 `gsd-workflow`；打包 MCP server 请使用 `GSD_MCP_ADVERTISE_ALIASES`。 |
 | `GSD_ALLOWED_COMMAND_PREFIXES` | （内置列表） | 允许用于 `!command` 值解析的命令前缀，逗号分隔。会覆盖 settings.json 中的 `allowedCommandPrefixes`。见 [自定义模型：命令允许列表](custom-models.md#command-allowlist)。 |
 | `GSD_FETCH_ALLOWED_URLS` | （无） | 对 `fetch_page` URL block 免检的 hostnames，逗号分隔。会覆盖 settings.json 中的 `fetchAllowedUrls`。见 [URL Blocking](#url-blocking-fetch_page)。 |
 | `SCREENSHOT_MAX_WIDTH` | `1568` | `browser_screenshot` 和 `mac_screenshot` 返回的 inline image payload 最大宽度（像素）。超出时会保持宽高比缩小；设为 `0` 可取消宽度限制并返回原始宽度。 |

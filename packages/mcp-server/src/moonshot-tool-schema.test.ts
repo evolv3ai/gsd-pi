@@ -27,7 +27,15 @@ test("sanitizeSchemaForMoonshot flattens zod union workflow fields", () => {
 
 test("createMcpServer advertises Moonshot-safe inputSchema for every tool", async () => {
 	const sm = new SessionManager();
-	const { server } = await createMcpServer(sm);
+	// Aliases are hidden from the model-facing surface by default (plan 035);
+	// opt in so this test exercises the full (canonical + alias) schema surface.
+	const previousAdvertise = process.env.GSD_MCP_ADVERTISE_ALIASES;
+	process.env.GSD_MCP_ADVERTISE_ALIASES = "1";
+	const restoreAdvertise = () => {
+		if (previousAdvertise === undefined) delete process.env.GSD_MCP_ADVERTISE_ALIASES;
+		else process.env.GSD_MCP_ADVERTISE_ALIASES = previousAdvertise;
+	};
+	const { server } = await createMcpServer(sm).finally(restoreAdvertise);
 
 	const registeredTools =
 		(server as { _registeredTools?: Record<string, { enabled: boolean; inputSchema?: unknown }> })._registeredTools ??
@@ -52,8 +60,5 @@ test("createMcpServer advertises Moonshot-safe inputSchema for every tool", asyn
 		);
 	}
 
-	// Canonical-only by default since plan 035 (the 17 backwards-compat alias
-	// tools are no longer advertised); floor guards against a vacuous pass on an
-	// empty/near-empty surface, not an exact count.
-	assert.ok(toolCount >= 40, `expected broad MCP tool surface, got ${toolCount}`);
+	assert.ok(toolCount >= 50, `expected broad MCP tool surface, got ${toolCount}`);
 });
