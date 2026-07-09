@@ -1,3 +1,5 @@
+import { GSD_CONTEXT_MESSAGE_SENTINEL } from "./bootstrap/system-context.js";
+
 /**
  * Observation masking for GSD auto-mode sessions.
  *
@@ -251,13 +253,22 @@ export function truncateResponsesInputResultItems(items: ResponsesInputItem[], m
 }
 
 // GSD injects at most one context message per turn (memory/guided/forensics —
-// see buildContextMessage in bootstrap/system-context.ts), marked with this
-// sentinel. convertToLlm strips the distinguishing customType before the
-// payload reaches this hook, so detection is by content prefix instead.
-const GSD_CONTEXT_MESSAGE_SENTINEL = "[GSD Context Injection]";
+// see buildContextMessage in bootstrap/system-context.ts), marked with
+// GSD_CONTEXT_MESSAGE_SENTINEL. convertToLlm strips the distinguishing
+// customType before the payload reaches this hook, so detection is by content
+// prefix instead. Pre-sentinel session history uses the same leading lines
+// without the sentinel — match those too so resumed sessions dedupe correctly.
+const LEGACY_GSD_CONTEXT_INJECTION_PREFIXES = [
+  "[GSD Context Metadata]",
+  "[MEMORY — Critical and prompt-relevant memories from the GSD memory store]",
+  "[GSD Guided Execute Context]",
+  "Debug GSD itself.",
+] as const;
 
 function isGsdContextInjectionText(text: string | undefined): boolean {
-  return typeof text === "string" && text.startsWith(GSD_CONTEXT_MESSAGE_SENTINEL);
+  if (typeof text !== "string") return false;
+  if (text.startsWith(GSD_CONTEXT_MESSAGE_SENTINEL)) return true;
+  return LEGACY_GSD_CONTEXT_INJECTION_PREFIXES.some((prefix) => text.startsWith(prefix));
 }
 
 function isGsdContextInjectionMessage(m: MaskableMessage): boolean {
