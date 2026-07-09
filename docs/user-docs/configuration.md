@@ -1023,6 +1023,20 @@ pre_dispatch_hooks:
 
 All pre-dispatch hooks support `enabled: true/false` to toggle without removing.
 
+### `planning_subagents`
+
+Project-local allowlists for controlled read-only subagent dispatch during planning:
+
+```yaml
+planning_subagents:
+  plan-milestone:
+    allowed: [scout, planner, security]
+  plan-slice:
+    allowed: [scout, planner, reviewer, security]
+```
+
+Only `plan-milestone` and `plan-slice` are configurable. Agents must be GSD-classified read-only planning specialists (`mnemo`, `scout`, `planner`, `reviewer`, `security`, or `tester`). The write gate still blocks source writes outside `.gsd/**`, unsafe agents, and agents not listed for the active unit.
+
 ### `always_use_skills` / `prefer_skills` / `avoid_skills`
 
 Skill routing preferences:

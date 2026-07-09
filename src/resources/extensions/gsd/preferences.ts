@@ -817,6 +817,7 @@ function mergePreferences(base: GSDPreferences, override: GSDPreferences): GSDPr
       : undefined,
     post_unit_hooks: mergePostUnitHooks(base.post_unit_hooks, override.post_unit_hooks),
     pre_dispatch_hooks: mergePreDispatchHooks(base.pre_dispatch_hooks, override.pre_dispatch_hooks),
+    planning_subagents: mergePlanningSubagents(base.planning_subagents, override.planning_subagents),
     dynamic_routing: (base.dynamic_routing || override.dynamic_routing)
       ? { ...(base.dynamic_routing ?? {}), ...(override.dynamic_routing ?? {}) } as DynamicRoutingConfig
       : undefined,
@@ -941,6 +942,30 @@ function mergePreDispatchHooks(
     }
   }
   return merged.length > 0 ? merged : undefined;
+}
+
+function mergePlanningSubagents(
+  base?: GSDPreferences["planning_subagents"],
+  override?: GSDPreferences["planning_subagents"],
+): GSDPreferences["planning_subagents"] | undefined {
+  if (!base && !override) return undefined;
+  const merged: NonNullable<GSDPreferences["planning_subagents"]> = {};
+  const unitTypes = new Set([
+    ...Object.keys(base ?? {}),
+    ...Object.keys(override ?? {}),
+  ]);
+
+  for (const unitType of unitTypes) {
+    const allowed = mergeStringLists(
+      base?.[unitType as keyof NonNullable<GSDPreferences["planning_subagents"]>]?.allowed,
+      override?.[unitType as keyof NonNullable<GSDPreferences["planning_subagents"]>]?.allowed,
+    );
+    if (allowed?.length) {
+      merged[unitType as keyof NonNullable<GSDPreferences["planning_subagents"]>] = { allowed };
+    }
+  }
+
+  return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
 // ─── System Prompt Rendering ──────────────────────────────────────────────────

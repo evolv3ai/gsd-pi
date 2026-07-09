@@ -823,6 +823,90 @@ test("pre-dispatch hook action validation via validatePreferences", () => {
   assert.ok(e3.some(e => e.includes("invalid action")));
 });
 
+test("planning_subagents validation accepts configured read-only planning specialists", () => {
+  const { preferences, errors } = validatePreferences({
+    planning_subagents: {
+      "plan-milestone": { allowed: ["security", "reviewer"] },
+      "plan-slice": { allowed: ["scout", "security", "security"] },
+    },
+  } as any);
+
+  assert.equal(errors.length, 0);
+  assert.deepEqual(preferences.planning_subagents?.["plan-milestone"]?.allowed, ["security", "reviewer"]);
+  assert.deepEqual(preferences.planning_subagents?.["plan-slice"]?.allowed, ["scout", "security"]);
+});
+
+test("planning_subagents validation rejects unsupported units and unsafe agents", () => {
+  const { preferences, errors } = validatePreferences({
+    planning_subagents: {
+      "execute-task": { allowed: ["security"] },
+      "plan-slice": { allowed: ["worker"] },
+    },
+  } as any);
+
+  assert.equal(preferences.planning_subagents, undefined);
+  assert.ok(errors.some(e => e.includes("unsupported unit \"execute-task\"")));
+  assert.ok(errors.some(e => e.includes("\"worker\"") && e.includes("read-only planning specialist")));
+});
+
+test("loadEffectiveGSDPreferences merges planning_subagents allowlists", (t) => {
+  const originalCwd = process.cwd();
+  const originalGsdHome = process.env.GSD_HOME;
+  const tempProject = mkdtempSync(join(tmpdir(), "gsd-planning-subagents-project-"));
+  const tempGsdHome = mkdtempSync(join(tmpdir(), "gsd-planning-subagents-home-"));
+
+  t.after(() => {
+    clearGSDPreferencesCache();
+    process.chdir(originalCwd);
+    if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = originalGsdHome;
+    rmSync(tempProject, { recursive: true, force: true });
+    rmSync(tempGsdHome, { recursive: true, force: true });
+  });
+
+  mkdirSync(join(tempProject, ".gsd"), { recursive: true });
+  process.env.GSD_HOME = tempGsdHome;
+  process.chdir(tempProject);
+  clearGSDPreferencesCache();
+
+  writeFileSync(
+    getGlobalGSDPreferencesPath(),
+    [
+      "---",
+      "version: 1",
+      "planning_subagents:",
+      "  plan-slice:",
+      "    allowed: [scout, reviewer]",
+      "---",
+      "",
+    ].join("\n"),
+    "utf-8",
+  );
+  writeFileSync(
+    getProjectGSDPreferencesPath(tempProject),
+    [
+      "---",
+      "version: 1",
+      "planning_subagents:",
+      "  plan-slice:",
+      "    allowed: [security]",
+      "  plan-milestone:",
+      "    allowed: [planner]",
+      "---",
+      "",
+    ].join("\n"),
+    "utf-8",
+  );
+
+  const loaded = loadEffectiveGSDPreferences(tempProject);
+  assert.deepEqual(loaded?.preferences.planning_subagents?.["plan-slice"]?.allowed, [
+    "scout",
+    "reviewer",
+    "security",
+  ]);
+  assert.deepEqual(loaded?.preferences.planning_subagents?.["plan-milestone"]?.allowed, ["planner"]);
+});
+
 // ── Model config parsing ─────────────────────────────────────────────────────
 
 test("parses OpenRouter model config with org/model IDs and fallbacks", () => {

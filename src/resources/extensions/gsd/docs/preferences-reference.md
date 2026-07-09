@@ -357,6 +357,28 @@ In `"parent"` mode, slice/task `targetRepositories` default to the declared chil
   - `"replace"` requires `prompt`.
   - `"skip"` is valid with no additional fields.
 
+- `planning_subagents`: object — project-local widening for read-only planning subagent dispatch. Supported unit keys are `plan-milestone` and `plan-slice`; each has:
+  - `allowed`: string[] — additional planning-safe agents for that unit.
+
+  Agents must already be classified by GSD as read-only planning specialists: `mnemo`, `scout`, `planner`, `reviewer`, `security`, or `tester`. The write gate still blocks source writes outside `.gsd/**`, unrestricted bash, stale subagent calls without agent identities, agents outside the global read-only registry, and agents not listed for the active unit.
+
+  Example:
+
+  ```yaml
+  planning_subagents:
+    plan-milestone:
+      allowed:
+        - scout
+        - planner
+        - security
+    plan-slice:
+      allowed:
+        - scout
+        - planner
+        - reviewer
+        - security
+  ```
+
   **Known unit types for `before`/`after`:** `research-milestone`, `plan-milestone`, `research-slice`, `plan-slice`, `execute-task`, `complete-slice`, `replan-slice`, `reassess-roadmap`, `run-uat`.
 
 - `experimental`: opt-in experimental features. All features here are **off by default** — you must explicitly set each one to `true` to enable it. Features in this block may change or be removed without a deprecation cycle while in experimental status. Keys:

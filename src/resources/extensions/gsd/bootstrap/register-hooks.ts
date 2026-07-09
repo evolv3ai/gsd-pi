@@ -61,6 +61,7 @@ import { installNotifyInterceptor } from "./notify-interceptor.js";
 import { initNotificationStore } from "../notification-store.js";
 import { initNotificationWidget } from "../notification-widget.js";
 import { notifyPreferenceDiagnostics } from "../preferences-diagnostics.js";
+import { resolveEffectivePlanningToolsPolicy } from "../planning-subagent-policy.js";
 import { resolveWorktreeProjectRoot } from "../worktree-root.js";
 import { extractSubagentAgentClasses } from "./subagent-input.js";
 import {
@@ -1590,6 +1591,7 @@ export function registerHooks(
     const activeUnitType = dash.currentUnit?.type ?? guidedUnit?.unitType;
     if (activeUnitType) {
       const manifest = resolveManifest(activeUnitType);
+      const planningBasePath = dash.basePath || guidedUnit?.basePath || discussionBasePath;
       let planningInput = "";
       let agentClasses: string[] | undefined;
       if (isToolCallEventType("write", event)) {
@@ -1605,9 +1607,9 @@ export function registerHooks(
       const planningGuard = shouldBlockPlanningUnit(
         event.toolName,
         planningInput,
-        dash.basePath || guidedUnit?.basePath || discussionBasePath,
+        planningBasePath,
         activeUnitType,
-        manifest?.tools,
+        resolveEffectivePlanningToolsPolicy(activeUnitType, manifest?.tools, planningBasePath),
         agentClasses,
         (event as { input?: unknown }).input,
         dash.currentUnit?.id,

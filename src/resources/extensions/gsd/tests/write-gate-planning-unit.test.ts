@@ -13,6 +13,7 @@ import { GSD_PHASE_SCOPE_DISPLAY_REASON, GSD_SECTION_CLOSE_GATE_DISPLAY_REASON }
 import { ALLOWED_PLANNING_DISPATCH_AGENTS, shouldBlockPlanningUnit } from '../bootstrap/write-gate.ts';
 import { extractSubagentAgentClasses } from '../bootstrap/subagent-input.ts';
 import { isDeterministicPolicyError } from '../auto-tool-tracking.ts';
+import { applyPlanningSubagentPreferences } from '../planning-subagent-policy.ts';
 import type { ToolsPolicy } from '../unit-context-manifest.ts';
 
 const BASE = join('/tmp', 'fake-project');
@@ -333,6 +334,39 @@ test('planning-dispatch: still allows writes inside .gsd/', () => {
     PLANNING_DISPATCH,
   );
   assert.strictEqual(r.block, false);
+});
+
+test('planning_subagents: upgrades plan-milestone to controlled read-only dispatch', () => {
+  const policy = applyPlanningSubagentPreferences('plan-milestone', PLANNING, {
+    planning_subagents: {
+      'plan-milestone': { allowed: ['security'] },
+    },
+  });
+  const allowed = shouldBlockPlanningUnit('subagent', '', BASE, 'plan-milestone', policy, ['security']);
+  assert.strictEqual(allowed.block, false);
+
+  const blocked = shouldBlockPlanningUnit('subagent', '', BASE, 'plan-milestone', policy, ['reviewer']);
+  assert.strictEqual(blocked.block, true);
+  assert.match(blocked.reason!, /planning_subagents/);
+  assert.match(blocked.reason!, /permitted agents for this unit: security/);
+});
+
+test('planning_subagents: widens plan-slice manifest allowlist without allowing unsafe agents', () => {
+  const policy = applyPlanningSubagentPreferences('plan-slice', {
+    mode: 'planning-dispatch',
+    allowedSubagents: ['scout', 'planner'],
+  }, {
+    planning_subagents: {
+      'plan-slice': { allowed: ['security'] },
+    },
+  });
+
+  const added = shouldBlockPlanningUnit('subagent', '', BASE, 'plan-slice', policy, ['security']);
+  assert.strictEqual(added.block, false);
+
+  const unsafe = shouldBlockPlanningUnit('subagent', '', BASE, 'plan-slice', policy, ['worker']);
+  assert.strictEqual(unsafe.block, true);
+  assert.match(unsafe.reason!, /read-only specialists/);
 });
 
 // ─── planning mode: pass-through tools ────────────────────────────────────

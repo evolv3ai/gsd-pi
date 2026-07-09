@@ -9,6 +9,10 @@ import { canonicalToolName } from "../engine-hook-contract.js";
 import { loadJsonFileOrNull } from "../json-persistence.js";
 import { getIsolationMode } from "../preferences.js";
 import { compileSubagentPermissionContract, type ToolsPolicy } from "../unit-context-manifest.js";
+import {
+  allowedPlanningDispatchAgentsList,
+  isReadOnlyPlanningDispatchAgent,
+} from "../planning-subagent-registry.js";
 import { logWarning } from "../workflow-logger.js";
 import { acquireSyncLock, releaseSyncLock } from "../sync-lock.js";
 import { isGsdWorktreePath, resolveWorktreeProjectRoot } from "../worktree-root.js";
@@ -1191,35 +1195,9 @@ export function shouldBlockQueueExecutionInSnapshot(
 const PLANNING_WRITE_TOOLS = new Set(["write", "edit", "multi_edit", "notebook_edit"]);
 const PLANNING_SUBAGENT_TOOLS = new Set(["subagent", "task"]);
 
-/**
- * Canonical registry for agents that planning-dispatch may consider. Unit
- * manifests still declare per-unit subsets via ToolsPolicy.allowedSubagents.
- */
-const PLANNING_DISPATCH_AGENT_REGISTRY = {
-  mnemo: { readOnlySpecialist: true },
-  scout: { readOnlySpecialist: true },
-  planner: { readOnlySpecialist: true },
-  reviewer: { readOnlySpecialist: true },
-  security: { readOnlySpecialist: true },
-  tester: { readOnlySpecialist: true },
-} as const satisfies Record<string, { readonly readOnlySpecialist: boolean }>;
-
-export const ALLOWED_PLANNING_DISPATCH_AGENTS = new Set<string>(
-  Object.entries(PLANNING_DISPATCH_AGENT_REGISTRY)
-    .filter(([, metadata]) => metadata.readOnlySpecialist)
-    .map(([agentId]) => agentId),
-);
+export { ALLOWED_PLANNING_DISPATCH_AGENTS } from "../planning-subagent-registry.js";
 
 let warnedMissingControlledDispatchAgentClasses = false;
-
-function isReadOnlySpecialist(agentId: string): boolean {
-  const metadata = PLANNING_DISPATCH_AGENT_REGISTRY[agentId as keyof typeof PLANNING_DISPATCH_AGENT_REGISTRY];
-  return metadata?.readOnlySpecialist === true;
-}
-
-function allowedPlanningDispatchAgentsList(): string {
-  return [...ALLOWED_PLANNING_DISPATCH_AGENTS].join(", ");
-}
 
 function allowsControlledSubagentDispatch(
   policy: ToolsPolicy,
@@ -1393,7 +1371,7 @@ export function shouldBlockPlanningUnit(
       if (requested.length === 0) {
         return { block: false };
       }
-      const globallyDisallowed = requested.find(a => !isReadOnlySpecialist(a));
+      const globallyDisallowed = requested.find(a => !isReadOnlyPlanningDispatchAgent(a));
       if (globallyDisallowed) {
         return planningBlock(
           unitType,
@@ -1406,7 +1384,7 @@ export function shouldBlockPlanningUnit(
         return planningBlock(
           unitType,
           policy.mode,
-          `subagent dispatch of "${disallowedByPolicy}" not permitted by ToolsPolicy.allowedSubagents; permitted agents for this unit: ${allowedSubagents.join(", ")}`,
+          `subagent dispatch of "${disallowedByPolicy}" not permitted by unit allowlist (ToolsPolicy.allowedSubagents/planning_subagents); permitted agents for this unit: ${allowedSubagents.join(", ")}`,
         );
       }
       return { block: false };

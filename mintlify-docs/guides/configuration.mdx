@@ -242,6 +242,18 @@ pre_dispatch_hooks:
     prepend: "Follow our coding standards."
 ```
 
+### Planning subagents
+
+```yaml
+planning_subagents:
+  plan-milestone:
+    allowed: [scout, planner, security]
+  plan-slice:
+    allowed: [scout, planner, reviewer, security]
+```
+
+Only `plan-milestone` and `plan-slice` are configurable. Agents must be GSD-classified read-only planning specialists (`mnemo`, `scout`, `planner`, `reviewer`, `security`, or `tester`); the write gate still blocks unsafe or unlisted agents.
+
 ### Skill routing
 
 ```yaml

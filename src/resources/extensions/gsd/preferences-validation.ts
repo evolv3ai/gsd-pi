@@ -17,6 +17,7 @@ import { getGateIdsForTurn } from "./gate-registry.js";
 import {
   KNOWN_PREFERENCE_KEYS,
   KNOWN_UNIT_LABELS,
+  CONFIGURABLE_PLANNING_SUBAGENT_UNITS,
   GSD_MODEL_PHASE_KEYS,
 
   SKILL_ACTIONS,
@@ -26,6 +27,10 @@ import {
   type GSDSkillRule,
   type GSDThinkingLevel,
 } from "./preferences-types.js";
+import {
+  ALLOWED_PLANNING_DISPATCH_AGENTS,
+  allowedPlanningDispatchAgentsList,
+} from "./planning-subagent-registry.js";
 
 const VALID_TOKEN_PROFILES = new Set<TokenProfile>(["budget", "balanced", "quality", "burn-max"]);
 const VALID_THINKING_LEVELS = new Set<GSDThinkingLevel>([
@@ -744,6 +749,63 @@ export function validatePreferences(preferences: GSDPreferences): {
     }
     if (validPreHooks.length > 0) {
       validated.pre_dispatch_hooks = validPreHooks;
+    }
+  }
+
+  // ─── Planning Subagents ─────────────────────────────────────────────────
+  if (preferences.planning_subagents !== undefined) {
+    if (
+      !preferences.planning_subagents ||
+      typeof preferences.planning_subagents !== "object" ||
+      Array.isArray(preferences.planning_subagents)
+    ) {
+      errors.push("planning_subagents must be an object keyed by planning unit type");
+    } else {
+      const validUnits = new Set<string>(CONFIGURABLE_PLANNING_SUBAGENT_UNITS);
+      const validPlanningSubagents: NonNullable<GSDPreferences["planning_subagents"]> = {};
+
+      for (const [unitType, rawConfig] of Object.entries(preferences.planning_subagents as Record<string, unknown>)) {
+        if (!validUnits.has(unitType)) {
+          errors.push(
+            `planning_subagents unknown or unsupported unit "${unitType}" — supported units: ` +
+            `${CONFIGURABLE_PLANNING_SUBAGENT_UNITS.join(", ")}`,
+          );
+          continue;
+        }
+        if (!rawConfig || typeof rawConfig !== "object" || Array.isArray(rawConfig)) {
+          errors.push(`planning_subagents.${unitType} must be an object with an allowed array`);
+          continue;
+        }
+
+        const allowed = normalizeStringArray((rawConfig as Record<string, unknown>).allowed);
+        if (allowed.length === 0) {
+          errors.push(`planning_subagents.${unitType}.allowed must include at least one read-only planning specialist`);
+          continue;
+        }
+
+        const sanitizedAllowed: string[] = [];
+        for (const agentId of allowed) {
+          if (!ALLOWED_PLANNING_DISPATCH_AGENTS.has(agentId)) {
+            errors.push(
+              `planning_subagents.${unitType}.allowed includes "${agentId}", which is not classified as a ` +
+              `read-only planning specialist. Allowed agents: ${allowedPlanningDispatchAgentsList()}`,
+            );
+            continue;
+          }
+          sanitizedAllowed.push(agentId);
+        }
+
+        const dedupedAllowed = Array.from(new Set(sanitizedAllowed));
+        if (dedupedAllowed.length > 0) {
+          validPlanningSubagents[unitType as keyof NonNullable<GSDPreferences["planning_subagents"]>] = {
+            allowed: dedupedAllowed,
+          };
+        }
+      }
+
+      if (Object.keys(validPlanningSubagents).length > 0) {
+        validated.planning_subagents = validPlanningSubagents;
+      }
     }
   }
 

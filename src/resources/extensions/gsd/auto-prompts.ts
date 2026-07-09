@@ -325,7 +325,7 @@ function prependContextModeToBlock(
   block: string,
   renderMode: ContextModeRenderMode = "standalone",
 ): string {
-  const toolSurface = composeToolSurfaceInstructions(unitType, { renderMode });
+  const toolSurface = composeToolSurfaceInstructions(unitType, { renderMode, basePath: base });
   const contextMode = renderContextModeBlockForPrompt(unitType, base, renderMode);
   const guidance = [toolSurface, contextMode].filter(Boolean).join("\n\n");
   if (!guidance) return block;

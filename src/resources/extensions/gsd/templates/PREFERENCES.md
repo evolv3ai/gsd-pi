@@ -92,6 +92,11 @@ remote_questions:
 uat_dispatch:
 post_unit_hooks: []
 pre_dispatch_hooks: []
+# planning_subagents:
+#   plan-milestone:
+#     allowed: [scout, planner, security]
+#   plan-slice:
+#     allowed: [scout, planner, reviewer, security]
 # language:
 # experimental:
 #   rtk: false

@@ -46,6 +46,7 @@ import {
   insertTask,
   saveReworkBrief,
 } from "../gsd-db.ts";
+import { clearGSDPreferencesCache, getProjectGSDPreferencesPath } from "../preferences.ts";
 
 // ─── Pure composer tests ──────────────────────────────────────────────────
 
@@ -416,6 +417,44 @@ test("Tool Surface composer: planning-dispatch lists allowed subagents", () => {
   const out = composeToolSurfaceInstructions("plan-slice", { renderMode: "standalone" });
   assert.match(out, /\*\*scout\*\*/);
   assert.match(out, /\*\*planner\*\*/);
+});
+
+test("Tool Surface composer: planning_subagents updates plan-milestone dispatch guidance", (t) => {
+  const originalGsdHome = process.env.GSD_HOME;
+  const tempProject = mkdtempSync(join(tmpdir(), "gsd-tool-surface-planning-subagents-"));
+  const tempGsdHome = mkdtempSync(join(tmpdir(), "gsd-tool-surface-planning-subagents-home-"));
+
+  t.after(() => {
+    clearGSDPreferencesCache();
+    if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = originalGsdHome;
+    rmSync(tempProject, { recursive: true, force: true });
+    rmSync(tempGsdHome, { recursive: true, force: true });
+  });
+
+  process.env.GSD_HOME = tempGsdHome;
+  mkdirSync(join(tempProject, ".gsd"), { recursive: true });
+  clearGSDPreferencesCache();
+  writeFileSync(
+    getProjectGSDPreferencesPath(tempProject),
+    [
+      "---",
+      "version: 1",
+      "planning_subagents:",
+      "  plan-milestone:",
+      "    allowed: [security]",
+      "---",
+      "",
+    ].join("\n"),
+    "utf-8",
+  );
+
+  const out = composeToolSurfaceInstructions("plan-milestone", {
+    renderMode: "standalone",
+    basePath: tempProject,
+  });
+  assert.match(out, /Dispatch subagents only to \*\*security\*\*/);
+  assert.doesNotMatch(out, /Do not dispatch subagents/);
 });
 
 test("Tool Surface composer: execute-task warns against slice/milestone closeout tools", () => {

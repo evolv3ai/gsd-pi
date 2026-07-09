@@ -110,6 +110,20 @@ planning_depth: deep
 
 Enable deep mode with `/gsd new-project --deep`, `/gsd new-milestone --deep`, or by adding the setting to `.gsd/PREFERENCES.md`. The research decision is recorded in `.gsd/runtime/research-decision.json`; choosing research writes `.gsd/research/STACK.md`, `FEATURES.md`, `ARCHITECTURE.md`, and `PITFALLS.md`.
 
+### `planning_subagents`
+
+Project-local allowlists for controlled read-only subagent dispatch during planning:
+
+```yaml
+planning_subagents:
+  plan-milestone:
+    allowed: [scout, planner, security]
+  plan-slice:
+    allowed: [scout, planner, reviewer, security]
+```
+
+Only `plan-milestone` and `plan-slice` are configurable. Agents must be GSD-classified read-only planning specialists (`mnemo`, `scout`, `planner`, `reviewer`, `security`, or `tester`). The write gate still blocks unsafe or unlisted agents.
+
 ### `budget_ceiling`
 
 Maximum USD to spend during auto mode:
