@@ -27,15 +27,18 @@ test("sanitizeSchemaForMoonshot flattens zod union workflow fields", () => {
 
 test("createMcpServer advertises Moonshot-safe inputSchema for every tool", async () => {
 	const sm = new SessionManager();
-	// Aliases are hidden from the model-facing surface by default (plan 035);
-	// opt in so this test exercises the full (canonical + alias) schema surface.
+	// Plan 035 suppresses alias schemas by default; opt into the broad surface
+	// so this test verifies every tool (canonical AND alias) is Moonshot-safe.
 	const previousAdvertise = process.env.GSD_MCP_ADVERTISE_ALIASES;
+	const previousHide = process.env.GSD_MCP_HIDE_ALIASES;
 	process.env.GSD_MCP_ADVERTISE_ALIASES = "1";
-	const restoreAdvertise = () => {
+	delete process.env.GSD_MCP_HIDE_ALIASES;
+	const { server } = await createMcpServer(sm).finally(() => {
 		if (previousAdvertise === undefined) delete process.env.GSD_MCP_ADVERTISE_ALIASES;
 		else process.env.GSD_MCP_ADVERTISE_ALIASES = previousAdvertise;
-	};
-	const { server } = await createMcpServer(sm).finally(restoreAdvertise);
+		if (previousHide === undefined) delete process.env.GSD_MCP_HIDE_ALIASES;
+		else process.env.GSD_MCP_HIDE_ALIASES = previousHide;
+	});
 
 	const registeredTools =
 		(server as { _registeredTools?: Record<string, { enabled: boolean; inputSchema?: unknown }> })._registeredTools ??
