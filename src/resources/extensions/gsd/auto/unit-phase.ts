@@ -801,11 +801,7 @@ export async function runUnitPhase(
           await deps.pauseAuto(ctx, pi);
           return { action: "break", reason: "zero-tool-serialization-drift" };
         }
-        if (
-          providerMessageClass &&
-          providerMessageClass.kind !== "pseudo-tool-call" &&
-          isTransient(providerMessageClass)
-        ) {
+        if (providerMessageClass && isTransient(providerMessageClass)) {
           const retryAfterMs = "retryAfterMs" in providerMessageClass ? providerMessageClass.retryAfterMs : 15_000;
           await pauseAutoForProviderError(
             ctx.ui,
