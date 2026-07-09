@@ -192,4 +192,33 @@ describe("interview-ui dialog borders", () => {
 		const back = stripAnsi(widget.render(100).join("\n"));
 		assert.doesNotMatch(back, /▲ \d+ more/, "top indicator should disappear after scrolling back to top");
 	});
+
+	it("makes overflowing side-by-side options scrollable with PgUp/PgDn", async () => {
+		const overflowOptions = Array.from({ length: 8 }, (_, i) => ({
+			label: `Overflow Option ${i + 1}`,
+			description: `Detailed explanation for option ${i + 1} that is intentionally long enough to wrap in the options column and force vertical overflow.`,
+			...(i === 0 ? { preview: "Short preview" } : {}),
+		}));
+		const widget = await captureInterviewWidget([{
+			...questions[0],
+			options: overflowOptions,
+		}]);
+
+		const initial = stripAnsi(widget.render(100).join("\n"));
+		assertFullOuterBorder(widget.render(100), 100);
+		assert.match(initial, /▼ \d+ more/, "bottom scroll indicator should appear when options overflow");
+		assert.match(initial, /pgup\/pgdn scroll options/, "footer should hint at options scrolling");
+		assert.doesNotMatch(initial, /\+\d+ lines hidden/, "options overflow should not be a dead-end hidden-lines marker");
+		assert.doesNotMatch(initial, /▲ \d+ more/, "top indicator should be absent before scrolling");
+
+		widget.handleInput(PAGE_DOWN);
+		const scrolled = stripAnsi(widget.render(100).join("\n"));
+		assertFullOuterBorder(widget.render(100), 100);
+		assert.match(scrolled, /▲ \d+ more/, "top scroll indicator should appear after scrolling down");
+		assert.ok(scrolled !== initial, "scrolling should change the rendered options");
+
+		widget.handleInput(PAGE_UP);
+		const back = stripAnsi(widget.render(100).join("\n"));
+		assert.doesNotMatch(back, /▲ \d+ more/, "top indicator should disappear after scrolling back to top");
+	});
 });
