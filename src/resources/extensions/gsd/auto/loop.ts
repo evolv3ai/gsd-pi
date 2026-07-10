@@ -566,6 +566,14 @@ export async function autoLoop(
     });
     if (commandContextDecision.action === "stop" && commandContextDecision.reason === "missing-command-context") {
       debugLog("autoLoop", { phase: "exit", reason: "no-cmdCtx" });
+      if (s.currentUnit) {
+        await deps.autoCommitUnit?.(
+          s.basePath,
+          s.currentUnit.type,
+          s.currentUnit.id,
+          ctx,
+        );
+      }
       await deps.stopAuto(ctx, pi, commandContextDecision.message, { preserveWorktree: true });
       finishTurn("stopped", "manual-attention", commandContextDecision.reason);
       break;
