@@ -61,7 +61,11 @@ export function parseCloudGatewayUrl(value: string): URL {
   return url;
 }
 
-export function saveCloudConfig(configPath: string, nextCloud: NonNullable<DaemonConfig["cloud"]>): DaemonConfig {
+export function saveCloudConfig(
+  configPath: string,
+  nextCloud: NonNullable<DaemonConfig["cloud"]>,
+  projectDirs?: string[],
+): DaemonConfig {
   let raw: Record<string, unknown> = {};
   try {
     raw = parseYaml(readFileSync(configPath, "utf-8")) as Record<string, unknown> ?? {};
@@ -74,6 +78,12 @@ export function saveCloudConfig(configPath: string, nextCloud: NonNullable<Daemo
     gateway_url: parseCloudGatewayUrl(nextCloud.gateway_url).toString(),
     ...(deviceToken ? { device_token_encrypted: protectCloudDeviceToken(deviceToken) } : {}),
   };
+  if (projectDirs) {
+    const projects = raw.projects != null && typeof raw.projects === "object"
+      ? raw.projects as Record<string, unknown>
+      : {};
+    raw.projects = { ...projects, scan_roots: projectDirs };
+  }
   mkdirSync(dirname(configPath), { recursive: true });
   writeConfigFile(configPath, stringifyYaml(raw));
   return loadConfig(configPath);
