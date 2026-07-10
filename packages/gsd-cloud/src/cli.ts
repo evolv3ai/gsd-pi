@@ -102,7 +102,7 @@ export async function handleCloudCommand(argv: string[], opts: {
       });
       return;
     }
-    await startAndReportBackgroundRuntime(configPath, projectDirs, opts.binaryName);
+    await startAndReportBackgroundRuntime(configPath, projectDirs, opts.binaryName, values.verbose);
     return;
   }
 
@@ -141,7 +141,7 @@ export async function handleCloudCommand(argv: string[], opts: {
       });
       return;
     }
-    await startAndReportBackgroundRuntime(configPath, projectDirs, opts.binaryName);
+    await startAndReportBackgroundRuntime(configPath, projectDirs, opts.binaryName, values.verbose);
     return;
   }
 
@@ -218,10 +218,11 @@ async function startAndReportBackgroundRuntime(
   configPath: string,
   projectDirs: string[],
   binaryName: string,
+  verbose = false,
 ): Promise<void> {
   const binaryPath = process.argv[1];
   if (!binaryPath) throw new Error("could not resolve the gsd-cloud executable path");
-  const status = await startBackgroundRuntime({ binaryPath, configPath, projectDirs });
+  const status = await startBackgroundRuntime({ binaryPath, configPath, projectDirs, verbose });
   process.stdout.write(`${binaryName}: connected in the background (PID ${status.pid}).\n`);
   for (const project of projectDirs) process.stdout.write(`${binaryName}: project ${project}\n`);
   process.stdout.write(`${binaryName}: logs ${status.log_file}\n`);

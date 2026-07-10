@@ -7,6 +7,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -30,6 +31,7 @@ interface StartRuntimeOptions {
   configPath: string;
   projectDirs: string[];
   readyTimeoutMs?: number;
+  verbose?: boolean;
 }
 
 const PROCESS_STARTUP_GRACE_MS = 5_000;
@@ -41,49 +43,57 @@ export const BACKGROUND_RUNTIME_READY_TIMEOUT_MS =
   CLOUD_RUNTIME_INITIAL_CONNECT_WINDOW_MS + PROCESS_STARTUP_GRACE_MS;
 
 export async function startBackgroundRuntime(opts: StartRuntimeOptions): Promise<RuntimeProcessStatus> {
-  await stopBackgroundRuntime(opts.configPath);
-
-  const statePath = runtimeStatePath(opts.configPath);
-  const logFile = runtimeLogPath(opts.configPath);
-  mkdirSync(dirname(statePath), { recursive: true });
-  const logFd = openSync(logFile, "a", 0o600);
-  chmodSync(logFile, 0o600);
-  let child: ChildProcess;
+  await acquireRuntimeStartLock(opts.configPath);
   try {
-    child = spawn(process.execPath, [opts.binaryPath, "_run", "--config", opts.configPath], {
-      cwd: opts.projectDirs[0] ?? process.cwd(),
-      detached: true,
-      env: process.env,
-      stdio: ["ignore", logFd, logFd, "ipc"],
-    });
-  } finally {
-    closeSync(logFd);
-  }
+    await stopBackgroundRuntime(opts.configPath);
 
-  if (child.pid == null) {
-    child.kill();
-    throw new Error(`could not start the background runtime; see ${logFile}`);
-  }
-  const pid = child.pid;
+    const logFile = runtimeLogPath(opts.configPath);
+    mkdirSync(dirname(runtimeStatePath(opts.configPath)), { recursive: true });
+    const logFd = openSync(logFile, "a", 0o600);
+    chmodSync(logFile, 0o600);
+    const runArgs = [opts.binaryPath, "_run", "--config", opts.configPath];
+    if (opts.verbose) runArgs.push("--verbose");
+    let child: ChildProcess;
+    try {
+      child = spawn(process.execPath, runArgs, {
+        cwd: opts.projectDirs[0] ?? process.cwd(),
+        detached: true,
+        env: process.env,
+        stdio: ["ignore", logFd, logFd, "ipc"],
+      });
+    } finally {
+      closeSync(logFd);
+    }
 
-  try {
-    await waitUntilReady(child, opts.readyTimeoutMs ?? BACKGROUND_RUNTIME_READY_TIMEOUT_MS);
-  } catch (error) {
+    if (child.pid == null) {
+      child.kill();
+      throw new Error(`could not start the background runtime; see ${logFile}`);
+    }
+    const pid = child.pid;
+
+    writeRuntimeState(opts.configPath, pid, opts.projectDirs);
+
+    try {
+      await waitUntilReady(child, opts.readyTimeoutMs ?? BACKGROUND_RUNTIME_READY_TIMEOUT_MS);
+    } catch (error) {
+      if (child.connected) child.disconnect();
+      await terminateProcess(pid);
+      removeRuntimeState(opts.configPath);
+      throw error;
+    }
+
     if (child.connected) child.disconnect();
-    await terminateProcess(pid);
-    throw error;
+    child.unref();
+
+    return {
+      running: true,
+      pid,
+      projects: opts.projectDirs,
+      log_file: logFile,
+    };
+  } finally {
+    releaseRuntimeStartLock(opts.configPath);
   }
-
-  writeRuntimeState(opts.configPath, pid, opts.projectDirs);
-  if (child.connected) child.disconnect();
-  child.unref();
-
-  return {
-    running: true,
-    pid,
-    projects: opts.projectDirs,
-    log_file: logFile,
-  };
 }
 
 /**
@@ -171,6 +181,59 @@ function runtimeStatePath(configPath: string): string {
 
 function runtimeLogPath(configPath: string): string {
   return join(dirname(configPath), "cloud-runtime.log");
+}
+
+function runtimeStartLockPath(configPath: string): string {
+  return join(dirname(configPath), "cloud-runtime.start.lock");
+}
+
+async function acquireRuntimeStartLock(configPath: string): Promise<void> {
+  const lockPath = runtimeStartLockPath(configPath);
+  mkdirSync(dirname(lockPath), { recursive: true });
+  const deadline = Date.now() + BACKGROUND_RUNTIME_READY_TIMEOUT_MS + 10_000;
+  while (Date.now() < deadline) {
+    try {
+      const fd = openSync(lockPath, "wx");
+      writeFileSync(fd, `${process.pid}\n`, "utf8");
+      closeSync(fd);
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try {
+        const ownerPid = readRuntimeStartLockOwner(lockPath);
+        const incompleteLockIsStale = ownerPid === null
+          && Date.now() - statSync(lockPath).mtimeMs > 1_000;
+        if ((ownerPid !== null && !processIsRunning(ownerPid)) || incompleteLockIsStale) {
+          unlinkSync(lockPath);
+          continue;
+        }
+      } catch {
+        // Another process may have released the lock; retry.
+      }
+      await new Promise((resolve) => setTimeout(resolve, STOP_POLL_INTERVAL_MS));
+    }
+  }
+  throw new Error("timed out waiting for the background runtime start lock");
+}
+
+function releaseRuntimeStartLock(configPath: string): void {
+  const lockPath = runtimeStartLockPath(configPath);
+  if (readRuntimeStartLockOwner(lockPath) !== process.pid) return;
+  try {
+    unlinkSync(lockPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+function readRuntimeStartLockOwner(lockPath: string): number | null {
+  try {
+    const pid = Number.parseInt(readFileSync(lockPath, "utf8").trim(), 10);
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
 }
 
 function readRuntimeState(configPath: string): RuntimeProcessState | null {
