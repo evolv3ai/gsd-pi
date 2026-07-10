@@ -434,7 +434,9 @@ function staleMilestonesArtifactRowFixable(basePath: string, row: ArtifactRow, a
 
 function stalePhasesArtifactRowFixable(basePath: string, row: ArtifactRow, artifactRows: ArtifactRow[]): boolean {
   const issuePath = artifactPathRelativeToGsd(row.path);
-  return issuePath.startsWith(`${LAYOUT_SEGMENTS.level1}/`) && hasPresentMilestonesReplacement(basePath, row, artifactRows);
+  return issuePath.startsWith(`${LAYOUT_SEGMENTS.level1}/`) &&
+    (hasPresentFlatPhaseReplacement(basePath, row, artifactRows) ||
+      hasPresentMilestonesReplacement(basePath, row, artifactRows));
 }
 
 function staleArtifactRowFixable(basePath: string, row: ArtifactRow, artifactRows: ArtifactRow[]): boolean {

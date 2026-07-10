@@ -428,6 +428,50 @@ test("checkEngineHealth repair prunes stale phases artifact rows with present mi
   assert.deepEqual(rows.map((row) => row.path), []);
 });
 
+test("checkEngineHealth repair prunes stale phases artifact rows with renamed flat-phase files", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-prune-renamed-flat-phase-artifact-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  const stalePath = "phases/01-new-milestone-m001/01-01-PLAN.md";
+  const replacementPath = "phases/01-lokably-brand-foundation-and-welcome-pag/01-01-PLAN.md";
+  mkdirSync(join(gsdDir, "phases", "01-lokably-brand-foundation-and-welcome-pag"), { recursive: true });
+  writeFileSync(join(gsdDir, replacementPath), "# Plan\n", "utf-8");
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertArtifact({
+    path: stalePath,
+    artifact_type: "PLAN",
+    milestone_id: "M001",
+    slice_id: "S01",
+    task_id: null,
+    full_content: "# stale plan\n",
+  });
+
+  const beforeIssues: any[] = [];
+  await checkEngineHealth(base, beforeIssues, []);
+
+  const beforeIssue = beforeIssues.find((issue) => issue.code === "artifact_file_missing" && issue.file === stalePath);
+  assert.ok(beforeIssue, "stale renamed phases row should be reported when repair is off");
+  assert.equal(beforeIssue.fixable, true, "renamed phases rows with a flat replacement should be fixable");
+
+  const repairIssues: any[] = [];
+  const fixes: string[] = [];
+  await checkEngineHealth(base, repairIssues, fixes, { repair: true });
+
+  assert.equal(
+    repairIssues.some((issue) => issue.code === "artifact_file_missing" && issue.file === stalePath),
+    false,
+    "repair should not report stale rows it pruned",
+  );
+  assert.ok(fixes.includes(`pruned stale flat-phase artifact row ${stalePath}`));
+
+  const rows = _getAdapter()!
+    .prepare("SELECT path FROM artifacts ORDER BY path")
+    .all() as Array<{ path: string }>;
+  assert.deepEqual(rows.map((row) => row.path), []);
+});
+
 test("checkEngineHealth repair keeps phases rows whose own file is still present", async (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-doctor-keep-present-phase-artifact-"));
   t.after(() => rmSync(base, { recursive: true, force: true }));
