@@ -246,6 +246,66 @@ describe('worktree-sync-milestones', async () => {
     }
   }
 
+  // ─── 7b. flat-phase sync skips empty legacy milestones root ───────────
+  console.log('\n=== 7b. flat-phase sync skips empty legacy milestones root ===');
+  {
+    const mainBase = mkdtempSync(join(tmpdir(), 'gsd-wt-sync-flat-main-'));
+    const wtBase = mkdtempSync(join(tmpdir(), 'gsd-wt-sync-flat-wt-'));
+
+    try {
+      const phaseDir = join(mainBase, '.gsd', 'phases', '01-foundation');
+      mkdirSync(phaseDir, { recursive: true });
+      mkdirSync(join(mainBase, '.gsd', 'milestones'), { recursive: true });
+      mkdirSync(join(wtBase, '.gsd'), { recursive: true });
+      writeFileSync(join(phaseDir, '01-CONTEXT.md'), '# Foundation\n');
+
+      syncGsdStateToWorktree(mainBase, wtBase);
+
+      assert.ok(
+        existsSync(join(wtBase, '.gsd', 'phases', '01-foundation', '01-CONTEXT.md')),
+        'flat-phase artifact is synced to worktree',
+      );
+      assert.ok(
+        !existsSync(join(wtBase, '.gsd', 'milestones')),
+        'empty legacy milestones/ root is not recreated in worktree',
+      );
+    } finally {
+      rmSync(mainBase, { recursive: true, force: true });
+      rmSync(wtBase, { recursive: true, force: true });
+    }
+  }
+
+  // ─── 7c. flat-phase sync skips metadata-only legacy milestone dirs ────
+  console.log('\n=== 7c. flat-phase sync skips metadata-only legacy milestone dirs ===');
+  {
+    const mainBase = mkdtempSync(join(tmpdir(), 'gsd-wt-sync-flat-meta-main-'));
+    const wtBase = mkdtempSync(join(tmpdir(), 'gsd-wt-sync-flat-meta-wt-'));
+
+    try {
+      const phaseDir = join(mainBase, '.gsd', 'phases', '01-foundation');
+      const metaDir = join(mainBase, '.gsd', 'milestones', 'M001');
+      mkdirSync(phaseDir, { recursive: true });
+      mkdirSync(metaDir, { recursive: true });
+      mkdirSync(join(wtBase, '.gsd'), { recursive: true });
+      writeFileSync(join(phaseDir, '01-CONTEXT.md'), '# Foundation\n');
+      writeFileSync(join(metaDir, 'M001-META.json'), '{"integrationBranch":"main"}\n');
+
+      syncGsdStateToWorktree(mainBase, wtBase);
+
+      assert.ok(
+        existsSync(join(wtBase, '.gsd', 'phases', '01-foundation', '01-CONTEXT.md')),
+        'flat-phase artifact is synced to worktree',
+      );
+      assert.ok(
+        !existsSync(join(wtBase, '.gsd', 'milestones')),
+        'metadata-only legacy milestones/ scaffold is not recreated in worktree',
+      );
+    } finally {
+      rmSync(mainBase, { recursive: true, force: true });
+      rmSync(wtBase, { recursive: true, force: true });
+    }
+  }
+
   // ─── 8. syncWorktreeStateBack does not copy task projections ───────────
   console.log('\n=== 8. syncWorktreeStateBack leaves task projections in worktree ===');
   {

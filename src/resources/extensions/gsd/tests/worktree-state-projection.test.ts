@@ -117,8 +117,8 @@ test("projectRootToWorktree projects flat-phase discuss artifacts before dispatc
     new WorktreeStateProjection().projectRootToWorktree(scope);
 
     assert.ok(
-      existsSync(join(worktree, ".gsd", "milestones", "M001", "M001-META.json")),
-      "milestone metadata is projected into the worktree",
+      !existsSync(join(worktree, ".gsd", "milestones")),
+      "stale metadata-only legacy milestones/ scaffold is not projected into the worktree",
     );
     assert.ok(
       existsSync(join(worktree, ".gsd", "phases", "01-foundation", "01-CONTEXT.md")),
