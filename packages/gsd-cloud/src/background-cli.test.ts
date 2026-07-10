@@ -75,7 +75,7 @@ async function createTestGateway(deviceFlow = false): Promise<TestGateway> {
     if (req.url === "/api/device/token") {
       res.end(JSON.stringify({
         status: "approved",
-        token: "fixture-token",
+        token: "test",
         runtimeId: "fixture-runtime",
         gateway_url: baseUrl,
       }));
@@ -125,7 +125,7 @@ test("connect returns while a background runtime advertises the selected project
 
   saveCloudConfig(configPath, {
     gateway_url: gateway.baseUrl,
-    device_token: "fixture-token",
+    device_token: "test",
     runtime_id: "fixture-runtime",
     enabled: true,
   });
