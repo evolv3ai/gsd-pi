@@ -1,4 +1,5 @@
 import type { Readable, Writable } from 'node:stream';
+import { Worker } from 'node:worker_threads';
 
 import { SessionManager } from './session-manager.js';
 import { createMcpServer } from './server.js';
@@ -19,17 +20,57 @@ const STDIN_IDLE_CHECK_INTERVAL_MS = 60 * 1000;
 const CLEANUP_STEP_TIMEOUT_MS = 2 * 1000;
 
 /**
- * Cadence for the ref-held parent-liveness monitor.
+ * Cadence for the worker-thread parent-liveness monitor.
  *
- * Separate from the `.unref()`'d idle watchdog: a process already pegged at
- * ~100% CPU starves its event loop, so the watchdog timer may never fire and a
- * spinning orphan lingers until the next spawn sweeps it. This monitor is
- * ref-held (NOT `.unref()`'d) so the libuv loop keeps scheduling it under load,
- * and it exits the process itself the moment the parent is gone — independent
- * of the external PID-registry sweep that only runs on the next launch. See
- * #783.
+ * Separate from the main-thread idle watchdog: a process pegged at ~100% CPU
+ * can starve the JS event loop, preventing timers and signal handlers from
+ * dispatching. The worker has its own event loop and hard-kills this process
+ * when the parent is gone and stdin has been idle long enough. See #1384.
  */
 const ORPHAN_PARENT_LOSS_CHECK_INTERVAL_MS = 10 * 1000;
+
+const ORPHAN_MONITOR_WORKER_SOURCE = `
+const { parentPort, workerData } = require('node:worker_threads');
+const { writeSync } = require('node:fs');
+
+const lastActivityMs = new BigInt64Array(workerData.lastActivityMsBuffer);
+let stopped = false;
+
+function parentGone() {
+  if (process.ppid !== workerData.initialParentPid) return true;
+  try {
+    process.kill(workerData.initialParentPid, 0);
+    return false;
+  } catch (err) {
+    return err && err.code === 'ESRCH';
+  }
+}
+
+function check() {
+  if (stopped) return;
+  const last = Number(Atomics.load(lastActivityMs, 0));
+  if (Date.now() - last <= workerData.idleTimeoutMs) return;
+  if (!parentGone()) return;
+  try {
+    writeSync(2, '[gsd-mcp-server] Parent process is gone and stdin is idle; hard-killing orphaned server\\n');
+  } catch {}
+  try {
+    process.kill(workerData.targetPid, 'SIGKILL');
+  } catch {
+    process.exit(0);
+  }
+}
+
+const timer = setInterval(check, workerData.checkIntervalMs);
+parentPort?.on('message', (message) => {
+  if (message && message.type === 'stop') {
+    stopped = true;
+    clearInterval(timer);
+    process.exit(0);
+  }
+});
+check();
+`;
 
 interface SessionManagerLike {
   cleanup(): Promise<void>;
@@ -42,6 +83,10 @@ interface McpServerLike {
 
 interface StdioTransportConstructor {
   new(input?: Readable, output?: Writable): unknown;
+}
+
+interface OrphanMonitorHandle {
+  stop(): void;
 }
 
 export interface RunMcpServerCliOptions {
@@ -65,6 +110,9 @@ export interface RunMcpServerCliOptions {
   clearInterval?: typeof clearInterval;
   isOrphaned?: () => boolean;
   cleanupStepTimeoutMs?: number;
+  stdinIdleTimeoutMs?: number;
+  stdinIdleCheckIntervalMs?: number;
+  orphanParentLossCheckIntervalMs?: number;
 }
 
 function createDefaultIsOrphaned(initialParentPid: number): () => boolean {
@@ -76,6 +124,64 @@ function createDefaultIsOrphaned(initialParentPid: number): () => boolean {
     } catch (err) {
       return (err as NodeJS.ErrnoException).code === 'ESRCH';
     }
+  };
+}
+
+function startWorkerOrphanMonitor(options: {
+  initialParentPid: number;
+  targetPid: number;
+  lastActivityMsBuffer: SharedArrayBuffer;
+  idleTimeoutMs: number;
+  checkIntervalMs: number;
+  stderr: Writable;
+}): OrphanMonitorHandle {
+  const worker = new Worker(ORPHAN_MONITOR_WORKER_SOURCE, {
+    eval: true,
+    workerData: {
+      initialParentPid: options.initialParentPid,
+      targetPid: options.targetPid,
+      lastActivityMsBuffer: options.lastActivityMsBuffer,
+      idleTimeoutMs: options.idleTimeoutMs,
+      checkIntervalMs: options.checkIntervalMs,
+    },
+  });
+  worker.unref();
+  worker.on('error', (err) => {
+    options.stderr.write(
+      `[gsd-mcp-server] Orphan monitor failed: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  });
+  return {
+    stop() {
+      worker.postMessage({ type: 'stop' });
+      void worker.terminate();
+    },
+  };
+}
+
+function startMainThreadOrphanMonitor(options: {
+  startInterval: typeof setInterval;
+  stopInterval: typeof clearInterval;
+  isOrphaned: () => boolean;
+  idleMs: () => number;
+  idleTimeoutMs: number;
+  checkIntervalMs: number;
+  stderr: Writable;
+  cleanup: () => void;
+}): OrphanMonitorHandle {
+  const interval = options.startInterval(() => {
+    if (!options.isOrphaned()) return;
+    if (options.idleMs() <= options.idleTimeoutMs) return;
+    options.stderr.write(
+      `[gsd-mcp-server] Parent process is gone; shutting down to avoid orphan spin\n`,
+    );
+    options.cleanup();
+  }, options.checkIntervalMs);
+
+  return {
+    stop() {
+      options.stopInterval(interval);
+    },
   };
 }
 
@@ -94,8 +200,12 @@ export async function runMcpServerCli(options: RunMcpServerCliOptions = {}): Pro
   const now = options.now ?? (() => Date.now());
   const startInterval = options.setInterval ?? setInterval;
   const stopInterval = options.clearInterval ?? clearInterval;
-  const isOrphaned = options.isOrphaned ?? createDefaultIsOrphaned(process.ppid);
+  const initialParentPid = process.ppid;
+  const isOrphaned = options.isOrphaned ?? createDefaultIsOrphaned(initialParentPid);
   const cleanupStepTimeoutMs = options.cleanupStepTimeoutMs ?? CLEANUP_STEP_TIMEOUT_MS;
+  const stdinIdleTimeoutMs = options.stdinIdleTimeoutMs ?? STDIN_IDLE_TIMEOUT_MS;
+  const stdinIdleCheckIntervalMs = options.stdinIdleCheckIntervalMs ?? STDIN_IDLE_CHECK_INTERVAL_MS;
+  const orphanParentLossCheckIntervalMs = options.orphanParentLossCheckIntervalMs ?? ORPHAN_PARENT_LOSS_CHECK_INTERVAL_MS;
   const loadEnv = options.loadStoredCredentialEnvKeys ?? loadStoredCredentialEnvKeys;
   const registerInstance = options.registerMcpInstance ?? registerMcpInstance;
   const sweepOrphans = options.sweepProjectOrphanMcpServers ?? sweepProjectOrphanMcpServers;
@@ -114,7 +224,8 @@ export async function runMcpServerCli(options: RunMcpServerCliOptions = {}): Pro
   let registered = false;
   let cleaningUp = false;
   let idleWatchdog: ReturnType<typeof setInterval> | undefined;
-  let orphanMonitor: ReturnType<typeof setInterval> | undefined;
+  let orphanMonitor: OrphanMonitorHandle | undefined;
+  const lastActivityMs = new BigInt64Array(new SharedArrayBuffer(8));
   let trackedStdin: ActivityTrackingInput | undefined;
   let sessionManager: SessionManagerLike | undefined;
   let server: McpServerLike | undefined;
@@ -140,7 +251,7 @@ export async function runMcpServerCli(options: RunMcpServerCliOptions = {}): Pro
 
   async function stopRuntime(): Promise<void> {
     if (idleWatchdog) stopInterval(idleWatchdog);
-    if (orphanMonitor) stopInterval(orphanMonitor);
+    orphanMonitor?.stop();
     trackedStdin?.close();
     if (registered) unregisterInstance(projectDir);
     await runCleanupStep('session manager cleanup', () => sessionManager?.cleanup());
@@ -174,37 +285,42 @@ export async function runMcpServerCli(options: RunMcpServerCliOptions = {}): Pro
     ({ server } = await createServer(sessionManager));
 
     const { StdioServerTransport } = await importTransport();
-    trackedStdin = createActivityTrackingInput(stdin, now);
+    trackedStdin = createActivityTrackingInput(stdin, () => {
+      const current = now();
+      Atomics.store(lastActivityMs, 0, BigInt(Math.trunc(current)));
+      return current;
+    });
     const transport = new StdioServerTransport(trackedStdin.input, stdout);
 
     idleWatchdog = startInterval(() => {
-      if (trackedStdin && now() - trackedStdin.lastActivityAt() > STDIN_IDLE_TIMEOUT_MS && isOrphaned()) {
+      if (trackedStdin && now() - trackedStdin.lastActivityAt() > stdinIdleTimeoutMs && isOrphaned()) {
         stderr.write(
-          `[gsd-mcp-server] Idle stdin watchdog: no activity for ${STDIN_IDLE_TIMEOUT_MS / 1000}s and parent process is gone, shutting down\n`,
+          `[gsd-mcp-server] Idle stdin watchdog: no activity for ${stdinIdleTimeoutMs / 1000}s and parent process is gone, shutting down\n`,
         );
         void cleanup();
       }
-    }, STDIN_IDLE_CHECK_INTERVAL_MS);
+    }, stdinIdleCheckIntervalMs);
     idleWatchdog.unref();
 
-    // Ref-held parent-liveness monitor (#783). The idle watchdog above is
-    // `.unref()`'d, so a process pegged at ~100% CPU (e.g. a repeating throw
-    // against a dead stdio pipe) starves its event loop and the watchdog never
-    // fires — the orphan spins until the next launch sweeps it. This monitor is
-    // NOT unref'd: the loop keeps scheduling it under load, so parent loss is
-    // detected in seconds regardless of CPU state. It still requires the same
-    // idle gate as the watchdog so an active session whose parent briefly
-    // appears gone is not killed (#783 "stays alive when parent is gone but
-    // stdin is still active").
-    orphanMonitor = startInterval(() => {
-      if (!isOrphaned()) return;
-      const idleMs = trackedStdin ? now() - trackedStdin.lastActivityAt() : 0;
-      if (idleMs <= STDIN_IDLE_TIMEOUT_MS) return;
-      stderr.write(
-        `[gsd-mcp-server] Parent process is gone; shutting down to avoid orphan spin\n`,
-      );
-      void cleanup();
-    }, ORPHAN_PARENT_LOSS_CHECK_INTERVAL_MS);
+    orphanMonitor = options.isOrphaned === undefined
+      ? startWorkerOrphanMonitor({
+        initialParentPid,
+        targetPid: process.pid,
+        lastActivityMsBuffer: lastActivityMs.buffer as SharedArrayBuffer,
+        idleTimeoutMs: stdinIdleTimeoutMs,
+        checkIntervalMs: orphanParentLossCheckIntervalMs,
+        stderr,
+      })
+      : startMainThreadOrphanMonitor({
+        startInterval,
+        stopInterval,
+        isOrphaned,
+        idleMs: () => trackedStdin ? now() - trackedStdin.lastActivityAt() : 0,
+        idleTimeoutMs: stdinIdleTimeoutMs,
+        checkIntervalMs: orphanParentLossCheckIntervalMs,
+        stderr,
+        cleanup: () => void cleanup(),
+      });
 
     // Fail closed (ADR-036): warm the executor / write-gate bridges BEFORE
     // connecting the transport. If a bridge is broken we must not advertise the

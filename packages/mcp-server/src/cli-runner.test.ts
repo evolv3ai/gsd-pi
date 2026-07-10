@@ -55,6 +55,68 @@ function spawnMcpServer(projectDir: string, gsdHome: string): ChildProcessWithou
   });
 }
 
+function spawnBusyLoopingMcpServerParent(projectDir: string, gsdHome: string): ChildProcessWithoutNullStreams {
+  const runnerUrl = new URL('./cli-runner.js', import.meta.url).href;
+  const childCode = `
+    import { runMcpServerCli } from ${JSON.stringify(runnerUrl)};
+    await runMcpServerCli({
+      sweepProjectOrphanMcpServers() {},
+      stdinIdleTimeoutMs: 100,
+      orphanParentLossCheckIntervalMs: 25,
+      createMcpServer: async () => ({
+        server: {
+          connect: async () => {
+            process.stderr.write('BUSY_READY\\n');
+            while (true) {}
+          },
+          close: async () => {},
+        },
+      }),
+      importStdioServerTransport: async () => ({ StdioServerTransport: class {} }),
+      warmWorkflowToolBridges() {},
+    });
+  `;
+  const parentCode = `
+    import { spawn } from 'node:child_process';
+    const child = spawn(process.execPath, ['--input-type=module', '--eval', ${JSON.stringify(childCode)}], {
+      cwd: ${JSON.stringify(projectDir)},
+      env: { ...process.env, GSD_HOME: ${JSON.stringify(gsdHome)} },
+      stdio: ['pipe', 'ignore', 'pipe'],
+    });
+    if (!child.pid) throw new Error('missing child pid');
+    process.stdout.write(String(child.pid) + '\\n');
+    let done = false;
+    child.stderr.on('data', (chunk) => {
+      const text = String(chunk);
+      process.stderr.write(text);
+      if (!done && text.includes('BUSY_READY')) {
+        done = true;
+        process.exit(0);
+      }
+    });
+    child.once('exit', (code, signal) => {
+      if (done) return;
+      done = true;
+      process.stderr.write('busy child exited before parent loss: code=' + code + ' signal=' + signal + '\\n');
+      process.exit(1);
+    });
+    setTimeout(() => {
+      if (done) return;
+      done = true;
+      process.stderr.write('timed out waiting for busy child readiness\\n');
+      process.exit(2);
+    }, 5000);
+  `;
+  return spawn(process.execPath, ['--input-type=module', '--eval', parentCode], {
+    cwd: projectDir,
+    env: {
+      ...process.env,
+      GSD_HOME: gsdHome,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
 async function waitForRegistryPid(gsdHome: string, pid: number | undefined, timeoutMs = 5_000): Promise<void> {
   assert.ok(pid, 'spawned child must have a pid');
   const registryPath = join(gsdHome, 'mcp-instances.json');
@@ -67,6 +129,51 @@ async function waitForRegistryPid(gsdHome: string, pid: number | undefined, time
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(`timed out waiting for registry pid=${pid}`);
+}
+
+function readSpawnedPid(child: ChildProcessWithoutNullStreams): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let buffer = '';
+    let settled = false;
+    child.stdout.on('data', (chunk) => {
+      if (settled) return;
+      buffer += String(chunk);
+      const newline = buffer.indexOf('\n');
+      if (newline < 0) return;
+      settled = true;
+      const pid = Number(buffer.slice(0, newline));
+      if (Number.isSafeInteger(pid) && pid > 1) {
+        resolve(pid);
+      } else {
+        reject(new Error(`invalid pid line: ${JSON.stringify(buffer.slice(0, newline))}`));
+      }
+    });
+    child.once('exit', (code, signal) => {
+      if (!settled) reject(new Error(`process exited before pid line: code=${code} signal=${signal}`));
+    });
+  });
+}
+
+function pidIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return !(
+      err instanceof Error &&
+      'code' in err &&
+      (err as NodeJS.ErrnoException).code === 'ESRCH'
+    );
+  }
+}
+
+async function waitForPidExit(pid: number, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!pidIsAlive(pid)) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for pid=${pid} to exit`);
 }
 
 describe('runMcpServerCli', () => {
@@ -590,6 +697,40 @@ describe('runMcpServerCli', () => {
     assert.ok(calls.includes('cleanup-session-manager'));
     assert.ok(calls.includes('close-server'));
     assert.ok(calls.includes('exit:0'));
+  });
+
+  test('worker monitor hard-kills a busy-looped orphaned server (#1384)', {
+    skip: process.platform === 'win32'
+      ? 'real orphan/reparent timing is covered on POSIX; Windows orphan detection is unit-tested in pid-registry'
+      : false,
+  }, async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), 'mcp-busy-orphan-project-'));
+    const gsdHome = mkdtempSync(join(tmpdir(), 'mcp-busy-orphan-home-'));
+    let parent: ChildProcessWithoutNullStreams | undefined;
+    let childPid: number | undefined;
+    const stderrChunks: string[] = [];
+
+    try {
+      parent = spawnBusyLoopingMcpServerParent(projectDir, gsdHome);
+      parent.stderr.on('data', (chunk) => stderrChunks.push(String(chunk)));
+      childPid = await readSpawnedPid(parent);
+
+      const parentExit = await waitForChildExit(parent);
+      assert.equal(
+        parentExit.code,
+        0,
+        `parent should exit after child enters busy loop; stderr=${stderrChunks.join('')}`,
+      );
+
+      await waitForPidExit(childPid, 5_000);
+    } finally {
+      if (childPid && pidIsAlive(childPid)) {
+        try { process.kill(childPid, 'SIGKILL'); } catch {}
+      }
+      if (parent && !parent.killed && parent.exitCode === null) parent.kill('SIGKILL');
+      rmSync(projectDir, { recursive: true, force: true });
+      rmSync(gsdHome, { recursive: true, force: true });
+    }
   });
 
   test('exits shutdown when server close hangs', async () => {
