@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 
 import { externalMarkdownEditHandler } from "../state-reconciliation/drift/external-markdown-edit.ts";
-import { writeCompatMarker, computeProjectionSha } from "../compat/compat-marker.ts";
+import { readCompatMarker, writeCompatMarker, computeProjectionSha } from "../compat/compat-marker.ts";
+import { closeDatabase, insertArtifact, openDatabase } from "../gsd-db.ts";
 import type { DriftContext } from "../state-reconciliation/types.ts";
 import type { GSDState } from "../types.ts";
 
@@ -28,6 +29,11 @@ function ctx(base: string): DriftContext {
 }
 
 afterEach(() => {
+  try {
+    closeDatabase();
+  } catch {
+    /* noop */
+  }
   for (const dir of tmpDirs) {
     try { rmSync(dir, { recursive: true, force: true }); } catch { /* */ }
   }
@@ -69,6 +75,37 @@ test("detect returns drift when file content differs from marker", async () => {
   assert.equal(drift[0].kind, "external-markdown-edit");
   assert.equal(drift[0].projectionPath, rel);
   assert.deepEqual(drift[0].entities, ["m1"]);
+});
+
+test("detect refreshes stale marker when current file already matches DB artifact", async () => {
+  const base = makeTmpBase();
+  const rel = "milestones/M001/M001-ROADMAP.md";
+  const dbRel = "phases/01-alpha/01-ROADMAP.md";
+  const content = "# M001: Alpha\n\n## Slices\n\n- [ ] **S01: Work** `risk:low` `depends:[]`\n";
+  mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
+  writeFileSync(join(base, ".gsd", rel), content, "utf-8");
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertArtifact({
+    path: dbRel,
+    artifact_type: "ROADMAP",
+    milestone_id: "M001",
+    slice_id: null,
+    task_id: null,
+    full_content: content,
+  });
+  writeCompatMarker(base, {
+    schema: 2,
+    lastWriter: "gsd-pi",
+    lastProjectedAt: "2026-06-21T00:00:00.000Z",
+    projections: { [rel]: { sha: "stale000000000000", entities: ["M001"] } },
+    planning: { active: false, layout: null, projections: {}, passthrough: {} },
+    piVersion: "1.9.0",
+  });
+
+  const drift = await externalMarkdownEditHandler.detect(stubState, ctx(base));
+  assert.equal(drift.length, 0);
+  const marker = readCompatMarker(base);
+  assert.equal(marker.projections[rel]?.sha, computeProjectionSha(content));
 });
 
 test("detect treats missing marker as drift on every tracked projection file", async () => {

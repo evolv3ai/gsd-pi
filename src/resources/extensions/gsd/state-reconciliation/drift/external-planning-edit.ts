@@ -82,7 +82,10 @@ async function detectExternalPlanningEdit(
   _state: GSDState,
   ctx: DriftContext,
 ): Promise<ExternalPlanningEditDrift[]> {
-  const marker = readCompatMarker(ctx.basePath);
+  const marker = readCompatMarker(ctx.basePath, {
+    healInvalidKeys: !ctx.dryRun,
+    quarantineInvalid: !ctx.dryRun,
+  });
   if (!marker.planning?.active) {
     // Not yet activated. Activation (layout parse + DB import) is owned by
     // capturePlanningCompatIfNeeded, called from reconcileBeforeDispatch when
