@@ -355,7 +355,41 @@ async function enforceMinRequestInterval(s: AutoSession, prefs: IterationContext
   }
 }
 
-function closeOutCrashedUnit(s: AutoSession, iterData: IterationData, err: unknown): void {
+async function snapshotCrashedUnitWork(
+  ctx: ExtensionContext,
+  s: AutoSession,
+  deps: LoopDeps,
+  iterData: IterationData,
+): Promise<void> {
+  try {
+    const commitMsg = await deps.autoCommitUnit?.(
+      s.basePath,
+      iterData.unitType,
+      iterData.unitId,
+      ctx,
+    );
+    if (commitMsg) {
+      debugLog("autoLoop", {
+        phase: "crash-snapshot-commit",
+        unitType: iterData.unitType,
+        unitId: iterData.unitId,
+      });
+    }
+  } catch (snapshotErr) {
+    logWarning(
+      "dispatch",
+      `unit crash snapshot failed: ${snapshotErr instanceof Error ? snapshotErr.message : String(snapshotErr)}`,
+    );
+  }
+}
+
+async function closeOutCrashedUnit(
+  ctx: ExtensionContext,
+  s: AutoSession,
+  deps: LoopDeps,
+  iterData: IterationData,
+  err: unknown,
+): Promise<void> {
   const summary = formatDispatchExceptionSummary({ error: err });
   try {
     emitOpenUnitEndForUnit(
@@ -383,6 +417,7 @@ function closeOutCrashedUnit(s: AutoSession, iterData: IterationData, err: unkno
   } catch (closeoutErr) {
     logWarning("dispatch", `unit crash closeout failed: ${closeoutErr instanceof Error ? closeoutErr.message : String(closeoutErr)}`);
   }
+  await snapshotCrashedUnitWork(ctx, s, deps, iterData);
 }
 
 /**
@@ -526,11 +561,12 @@ export async function autoLoop(
       active: s.active,
       iteration,
       maxIterations: MAX_LOOP_ITERATIONS,
-      hasCommandContext: Boolean(s.cmdCtx),
+      hasCommandContext: typeof s.cmdCtx?.newSession === "function",
       sessionLockValid: true,
     });
     if (commandContextDecision.action === "stop" && commandContextDecision.reason === "missing-command-context") {
       debugLog("autoLoop", { phase: "exit", reason: "no-cmdCtx" });
+      await deps.stopAuto(ctx, pi, commandContextDecision.message, { preserveWorktree: true });
       finishTurn("stopped", "manual-attention", commandContextDecision.reason);
       break;
     }
@@ -730,7 +766,7 @@ export async function autoLoop(
           if (err instanceof ModelPolicyDispatchBlockedError) {
             throw err;
           }
-          closeOutCrashedUnit(s, iterData, err);
+          await closeOutCrashedUnit(ctx, s, deps, iterData, err);
           throw err;
         }
         if (unitPhaseResult.action === "next") {
@@ -1285,7 +1321,7 @@ export async function autoLoop(
         if (err instanceof ModelPolicyDispatchBlockedError) {
           throw err;
         }
-        closeOutCrashedUnit(s, iterData, err);
+        await closeOutCrashedUnit(ctx, s, deps, iterData, err);
         dispatchSettled = settleDispatchFailed(
           dispatchId,
           formatDispatchExceptionSummary({ error: err }),
