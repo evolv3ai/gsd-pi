@@ -87,6 +87,28 @@ test("guided milestone prompt builder preloads milestone planning context", asyn
   }
 });
 
+test("guided milestone prompt builder prepends configured response language", async () => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-guided-milestone-language-"));
+  const gsdHome = mkdtempSync(join(tmpdir(), "gsd-guided-milestone-language-home-"));
+  const previousGsdHome = process.env.GSD_HOME;
+  process.env.GSD_HOME = gsdHome;
+
+  try {
+    writeFileSync(join(gsdHome, "PREFERENCES.md"), "---\nversion: 1\nlanguage: 中文\n---\n", "utf-8");
+
+    const prompt = await buildDiscussMilestonePrompt("M001", "Language Preference", base, "true", {
+      includeContextMode: false,
+    });
+
+    assert.match(prompt, /^## Response Language\n\nAlways respond in 中文/);
+  } finally {
+    if (previousGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = previousGsdHome;
+    rmSync(base, { recursive: true, force: true });
+    rmSync(gsdHome, { recursive: true, force: true });
+  }
+});
+
 test("guided milestone prompt builder caps prior draft seed before interpolation", async () => {
   const base = mkdtempSync(join(tmpdir(), "gsd-guided-milestone-draft-cap-"));
   const previousGsdHome = process.env.GSD_HOME;

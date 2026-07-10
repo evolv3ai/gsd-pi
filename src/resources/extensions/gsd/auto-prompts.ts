@@ -20,7 +20,7 @@ import {
   relMilestoneFile, relSliceFile, relSlicePath, relMilestonePath,
   relTaskFile, resolveGsdRootFile, relGsdRootFile, resolveRuntimeFile,
 } from "./paths.js";
-import { resolveInlineLevel, loadEffectiveGSDPreferences } from "./preferences.js";
+import { resolveInlineLevel, loadEffectiveGSDPreferences, renderLanguageDirectiveForPrompt } from "./preferences.js";
 import { createRepositoryRegistryFromPreferences } from "./repository-registry.js";
 import { isContextModeEnabled } from "./preferences-types.js";
 import { parseRoadmap } from "./parsers-legacy.js";
@@ -77,6 +77,14 @@ export { buildSkillActivationBlock, buildSkillDiscoveryVars };
  * from their configured executor window.
  */
 const MAX_PREAMBLE_CHARS = 20_000;
+
+function prependLanguageDirectiveForBase(base: string, prompt: string): string {
+  const directive = renderLanguageDirectiveForPrompt(
+    loadEffectiveGSDPreferences(base)?.preferences,
+  );
+  if (!directive || prompt.startsWith(directive)) return prompt;
+  return `${directive}\n\n${prompt}`;
+}
 
 /**
  * Resolve prompt budgets from the configured executor context window.
@@ -1730,7 +1738,7 @@ export async function buildDiscussMilestonePrompt(
   if (headless) {
     const roadmapPath = resolveMilestoneFile(base, mid, "ROADMAP");
     const roadmapContent = roadmapPath ? await loadFile(roadmapPath) : null;
-    return loadPrompt("discuss-headless", {
+    const prompt = loadPrompt("discuss-headless", {
       seedContext: roadmapContent ?? "",
       inlinedTemplates: contextTemplate,
       workingDirectory: base,
@@ -1739,6 +1747,7 @@ export async function buildDiscussMilestonePrompt(
       commitInstruction: "Do not commit planning artifacts — .gsd/ is managed externally.",
       multiMilestoneCommitInstruction: "Do not commit planning artifacts — .gsd/ is managed externally.",
     });
+    return prependLanguageDirectiveForBase(base, prompt);
   }
 
   const rawInlinedContext = await buildDiscussMilestoneInlinedContext(mid, base);
@@ -1769,10 +1778,11 @@ export async function buildDiscussMilestonePrompt(
     const truncationNote = cappedDraftSeed !== draftSeed
       ? `\n\n_(Draft seed truncated; read the full draft at \`${draftRelPath}\` if needed.)_`
       : "";
-    return `${promptWithContextMode}\n\n## Prior Discussion (Draft Seed)\n\nThe following draft was captured from a prior multi-milestone discussion. Use it as seed material — the user has already provided this context. Start with a brief reflection on what the draft covers, then probe for any gaps or open questions before writing the full CONTEXT.md.\n\n${cappedDraftSeed}${truncationNote}`;
+    const promptWithDraftSeed = `${promptWithContextMode}\n\n## Prior Discussion (Draft Seed)\n\nThe following draft was captured from a prior multi-milestone discussion. Use it as seed material — the user has already provided this context. Start with a brief reflection on what the draft covers, then probe for any gaps or open questions before writing the full CONTEXT.md.\n\n${cappedDraftSeed}${truncationNote}`;
+    return prependLanguageDirectiveForBase(base, promptWithDraftSeed);
   }
 
-  return promptWithContextMode;
+  return prependLanguageDirectiveForBase(base, promptWithContextMode);
 }
 
 /**
