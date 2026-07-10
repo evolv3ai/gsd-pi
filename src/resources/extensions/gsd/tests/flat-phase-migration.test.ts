@@ -122,7 +122,7 @@ test("migrateToFlatPhase creates a backup", async () => {
   assert.ok(backups.length >= 1, "at least one migrate-* backup dir should exist");
 });
 
-test("migrateToFlatPhase backs up existing phases projection before clearing it", async () => {
+test("migrateToFlatPhase removes disposable phases snapshot after successful migration", async () => {
   const base = makeTmp();
   const reviewPath = join(base, ".gsd", "phases", "01-foundation", "PLAN-REVIEW.md");
   mkdirSync(join(base, ".gsd", "phases", "01-foundation"), { recursive: true });
@@ -133,11 +133,10 @@ test("migrateToFlatPhase backs up existing phases projection before clearing it"
   const backupRoot = join(base, ".gsd-backups");
   const backups = readdirSync(backupRoot).filter(d => d.startsWith("migrate-"));
   assert.equal(backups.length, 1, "one migrate backup should exist");
-  const backedUpReview = join(backupRoot, backups[0]!, "__phases", "01-foundation", "PLAN-REVIEW.md");
   assert.equal(
-    readFileSync(backedUpReview, "utf-8"),
-    "# Plan Review\n\nHand-authored review.",
-    "pre-existing phases/ files should have a recovery copy",
+    existsSync(join(backupRoot, backups[0]!, "__phases")),
+    false,
+    "temporary phases/ recovery snapshot should be removed after success",
   );
 });
 
@@ -202,7 +201,7 @@ test("failed migration rolls back without leaking a .gsd-backups/migrate-* dir",
   assert.equal(leaked.length, 0, "rollback must delete the migrate-* backup it created");
 });
 
-test("resumed migration stores phases backup in retained migrate snapshot", async () => {
+test("resumed migration removes disposable phases snapshot after success", async () => {
   const base = makeTmp();
   const milestonesPath = join(base, ".gsd", "milestones");
   const migratingPath = join(base, ".gsd", "milestones.migrating");
@@ -218,9 +217,9 @@ test("resumed migration stores phases backup in retained migrate snapshot", asyn
   const backups = readdirSync(backupRoot).filter((d) => d.startsWith("migrate-"));
   assert.equal(backups.length, 1, "resumed migration should create one retained migrate backup");
   assert.equal(
-    readFileSync(join(backupRoot, backups[0]!, "__phases", "01-foundation", "PLAN-REVIEW.md"), "utf-8"),
-    "# Plan Review\n\nResume recovery copy.",
-    "resume should retain the phases snapshot under .gsd-backups",
+    existsSync(join(backupRoot, backups[0]!, "__phases")),
+    false,
+    "temporary phases/ recovery snapshot should be removed after resumed success",
   );
   assert.equal(
     existsSync(join(migratingPath, "__phases")),
