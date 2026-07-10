@@ -118,6 +118,13 @@ describe("#2883: isToolInvocationError classification", () => {
     assert.equal(isToolInvocationError("Invalid arguments for tool gsd_slice_complete"), true);
   });
 
+  test("detects conditional required-field validation from external tools", () => {
+    assert.equal(
+      isToolInvocationError("`prompt` is required when `stop` is not true"),
+      true,
+    );
+  });
+
   test("detects 'No such tool available' error", () => {
     assert.equal(isToolInvocationError("No such tool available: mcp__gsd-workflow__memory_query"), true);
   });
