@@ -167,6 +167,45 @@ test("checkEngineHealth keeps PLAN checkbox divergence after stale projection fl
   assert.match(readFileSync(plan.planPath, "utf-8"), /- \[ \] \*\*T01\*\*:/);
 });
 
+test("checkEngineHealth ignores stale suffixed flat-phase duplicate when bare milestone exists", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-checkbox-flat-duplicate-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  mkdirSync(gsdDir, { recursive: true });
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertMilestone({ id: "M003", title: "M003-vaz73w: New milestone M003-vaz73w", status: "active" });
+  insertSlice({ id: "S01", milestoneId: "M003", title: "Slice", status: "pending", risk: "low", depends: [], sequence: 1 });
+  for (const taskId of ["T01", "T02", "T03"]) {
+    insertTask({ id: taskId, milestoneId: "M003", sliceId: "S01", title: taskId, status: "complete", sequence: Number(taskId.slice(1)) });
+  }
+
+  insertMilestone({ id: "M003-vaz73w", title: "New milestone M003-vaz73w", status: "active" });
+  insertSlice({ id: "S01", milestoneId: "M003-vaz73w", title: "Slice", status: "pending", risk: "low", depends: [], sequence: 1 });
+  for (const taskId of ["T01", "T02", "T03"]) {
+    insertTask({ id: taskId, milestoneId: "M003-vaz73w", sliceId: "S01", title: taskId, status: "complete", sequence: Number(taskId.slice(1)) });
+  }
+
+  const canonicalPlan = await renderPlanFromDb(base, "M003", "S01");
+  const staleDir = join(gsdDir, "phases", "03-vaz73w-new-milestone-m003-vaz73w");
+  mkdirSync(staleDir, { recursive: true });
+  writeFileSync(
+    join(staleDir, "03-01-PLAN.md"),
+    canonicalPlan.content.replace("- [x] **T03**:", "- [ ] **T03**:"),
+    "utf-8",
+  );
+
+  const issues: any[] = [];
+  await checkEngineHealth(base, issues, []);
+
+  assert.deepEqual(
+    issues.filter((issue) => issue.code === "checkbox_db_status_divergence").map((issue) => issue.unitId),
+    [],
+    "stale suffixed duplicate phase projection must not compete with the bare milestone projection",
+  );
+});
+
 test("checkEngineHealth reads task checkboxes from the <tasks> block, not a stray line above it", async (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-doctor-task-section-"));
   t.after(() => rmSync(base, { recursive: true, force: true }));
