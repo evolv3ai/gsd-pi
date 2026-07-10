@@ -3163,7 +3163,15 @@ export async function dispatchHookUnit(
     workspaceRoot: s.basePath,
   });
 
-  const result = await s.cmdCtx!.newSession({ workspaceRoot: s.basePath });
+  const cmdCtx = s.cmdCtx;
+  if (typeof cmdCtx?.newSession !== "function") {
+    const message = "Auto-mode has no command context for dispatch.";
+    ctx.ui.notify(message, "error");
+    await stopAuto(ctx, pi, message, { preserveWorktree: true });
+    return false;
+  }
+
+  const result = await cmdCtx.newSession({ workspaceRoot: s.basePath });
   if (result.cancelled) {
     await stopAuto(ctx, pi);
     return false;

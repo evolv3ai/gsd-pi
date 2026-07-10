@@ -91,6 +91,25 @@ export async function runUnit(
   // ── Session creation with timeout ──
   debugLog("runUnit", { phase: "session-create", unitType, unitId });
 
+  const cmdCtx = s.cmdCtx;
+  if (typeof cmdCtx?.newSession !== "function") {
+    const msg = "command context is missing newSession";
+    debugLog("runUnit", {
+      phase: "session-error",
+      unitType,
+      unitId,
+      error: msg,
+    });
+    return {
+      status: "cancelled",
+      errorContext: {
+        message: `Session creation failed: ${msg}`,
+        category: "session-failed",
+        isTransient: false,
+      },
+    };
+  }
+
   let sessionResult: { cancelled: boolean };
   let sessionTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const mySessionSwitchGeneration = ++sessionSwitchGeneration;
@@ -100,7 +119,7 @@ export async function runUnit(
   const sessionAbortController = new AbortController();
   _setSessionSwitchInFlight(true);
   try {
-    const sessionPromise = s.cmdCtx!.newSession({
+    const sessionPromise = cmdCtx.newSession({
       abortSignal: sessionAbortController.signal,
       workspaceRoot: s.basePath,
     }).finally(() => {
