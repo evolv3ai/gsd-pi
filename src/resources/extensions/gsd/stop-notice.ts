@@ -29,6 +29,14 @@ export function formatStopNoticePrefix(reason?: string | null): string {
   return displayReason ? `${prefix} — ${displayReason}` : prefix;
 }
 
+export function formatVerdictRecordedNotice(message: string): string {
+  return `Verdict recorded: ${message}`;
+}
+
+export function formatVerdictRejectedNotice(message: string): string {
+  return `Verdict rejected: ${message}`;
+}
+
 // ─── Classification (headless host side) ────────────────────────────────
 // The canonical lowercase prefixes the headless event loop recognizes in
 // notify messages. Emitters above and ad-hoc emitters elsewhere must start
@@ -42,6 +50,8 @@ export const TERMINAL_NOTICE_PREFIXES = [
   "auto-mode complete",
   "no active milestone",
   "auto-mode idle",
+  "verdict recorded",
+  "verdict rejected",
 ] as const;
 
 /** Manual-resolution notices emitted before auto-mode can formally pause/stop. */
@@ -85,6 +95,7 @@ export function isInteractiveMenuUnavailableNotice(message: string): boolean {
 export function isBlockedNoticeMessage(message: string): boolean {
   return (
     message.includes("blocked:") ||
+    message.startsWith("verdict rejected") ||
     (isPauseNotice(message) && !isNonBlockingPauseNotice(message)) ||
     isManualResolutionNotice(message) ||
     isInteractiveMenuUnavailableNotice(message)

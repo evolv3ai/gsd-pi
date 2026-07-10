@@ -97,7 +97,8 @@ export function buildHeadlessSlashCommand(options: Pick<HeadlessOptions, 'comman
   if (options.command === 'new-milestone' && options.auto && !commandArgs.includes(HEADLESS_CHAIN_AUTO_FLAG)) {
     commandArgs.push(HEADLESS_CHAIN_AUTO_FLAG)
   }
-  return `/gsd ${options.command}${commandArgs.length > 0 ? ' ' + commandArgs.join(' ') : ''}`
+  const serializedArgs = commandArgs.map(arg => /\s/.test(arg) ? JSON.stringify(arg) : arg)
+  return `/gsd ${options.command}${serializedArgs.length > 0 ? ' ' + serializedArgs.join(' ') : ''}`
 }
 
 /**

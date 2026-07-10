@@ -1,3 +1,5 @@
+import { GSD_CONTEXT_MESSAGE_SENTINEL } from "./constants.js";
+
 /**
  * Observation masking for GSD auto-mode sessions.
  *
@@ -75,6 +77,26 @@ function findTurnBoundary(messages: MaskableMessage[], keepRecentTurns: number):
   return 0;
 }
 
+function countRealUserTurns(messages: MaskableMessage[]): number {
+  let count = 0;
+  for (const m of messages) {
+    if (m.role === "user" && !isBashResultUserMessage(m)) count++;
+  }
+  return count;
+}
+
+/**
+ * Quantizes how many recent turns stay unmasked so the boundary only moves
+ * forward once per full block of `keepRecentTurns` new turns, instead of
+ * every turn. Keeps the masked prefix byte-stable within a block, which is
+ * what lets the LLM provider's prompt cache survive across turns.
+ */
+function quantizedKeepTurns(totalTurns: number, keepRecentTurns: number): number {
+  if (keepRecentTurns <= 0 || totalTurns < 2 * keepRecentTurns) return totalTurns;
+  const maskedTurns = Math.floor((totalTurns - keepRecentTurns) / keepRecentTurns) * keepRecentTurns;
+  return totalTurns - maskedTurns;
+}
+
 /**
  * Detect user messages that originated from bashExecution.
  * After convertToLlm, these are {role: "user", content: [{type:"text", text:"Ran `cmd`\n..."}]}.
@@ -95,7 +117,8 @@ function isMaskableMessage(m: MaskableMessage): boolean {
 
 export function createObservationMask(keepRecentTurns: number = 8) {
   return (messages: MaskableMessage[]): MaskableMessage[] => {
-    const boundary = findTurnBoundary(messages, keepRecentTurns);
+    const totalTurns = countRealUserTurns(messages);
+    const boundary = findTurnBoundary(messages, quantizedKeepTurns(totalTurns, keepRecentTurns));
     if (boundary === 0) return messages;
 
     return messages.map((m, i) => {
@@ -126,6 +149,14 @@ function findResponsesTurnBoundary(items: ResponsesInputItem[], keepRecentTurns:
   return 0;
 }
 
+function countResponsesRealUserTurns(items: ResponsesInputItem[]): number {
+  let count = 0;
+  for (const item of items) {
+    if (item.role === "user" && !isResponsesBashResultUserItem(item)) count++;
+  }
+  return count;
+}
+
 /**
  * Observation masking for OpenAI/Codex Responses API payloads.
  *
@@ -135,7 +166,8 @@ function findResponsesTurnBoundary(items: ResponsesInputItem[], keepRecentTurns:
  */
 export function createResponsesInputObservationMask(keepRecentTurns: number = 8) {
   return (items: ResponsesInputItem[]): ResponsesInputItem[] => {
-    const boundary = findResponsesTurnBoundary(items, keepRecentTurns);
+    const totalTurns = countResponsesRealUserTurns(items);
+    const boundary = findResponsesTurnBoundary(items, quantizedKeepTurns(totalTurns, keepRecentTurns));
     if (boundary === 0) return items;
 
     return items.map((item, i) => {
@@ -218,4 +250,68 @@ export function truncateResponsesInputResultItems(items: ResponsesInputItem[], m
     }
     return item;
   });
+}
+
+// GSD injects at most one context message per turn (memory/guided/forensics —
+// see buildContextMessage in bootstrap/system-context.ts), marked with
+// GSD_CONTEXT_MESSAGE_SENTINEL. convertToLlm strips the distinguishing
+// customType before the payload reaches this hook, so detection is by content
+// prefix instead. Pre-sentinel session history lacks the sentinel, so we also
+// match the stable *bracketed* GSD block labels those injections begin with,
+// letting resumed sessions dedupe older memory/guided blocks.
+//
+// Only GSD-specific bracketed markers belong here — never generic prose. A
+// message is dropped from the payload when it matches, so a natural-language
+// prefix (e.g. the forensics prompt "Debug GSD itself.") could silently delete
+// a real user message that happens to start the same way. Legacy forensics
+// injections without memory are therefore left un-deduped by design; those
+// with memory still match via the "[GSD Context Metadata]" wrapper.
+const LEGACY_GSD_CONTEXT_INJECTION_PREFIXES = [
+  "[GSD Context Metadata]",
+  "[MEMORY — Critical and prompt-relevant memories from the GSD memory store]",
+  "[GSD Guided Execute Context]",
+] as const;
+
+function isGsdContextInjectionText(text: string | undefined): boolean {
+  if (typeof text !== "string") return false;
+  if (text.startsWith(GSD_CONTEXT_MESSAGE_SENTINEL)) return true;
+  return LEGACY_GSD_CONTEXT_INJECTION_PREFIXES.some((prefix) => text.startsWith(prefix));
+}
+
+function isGsdContextInjectionMessage(m: MaskableMessage): boolean {
+  if (m.role !== "user") return false;
+  return isGsdContextInjectionText(firstTextFromContent(m.content));
+}
+
+/**
+ * Removes every GSD context-injection user message except the latest one.
+ * Each turn re-injects a near-identical memory/guided/forensics block; left
+ * in place they duplicate verbatim across an N-turn session. Removal (not
+ * masking) — an empty placeholder still costs tokens and shifts message
+ * positions, breaking cache byte-stability. Pure function: stored history is
+ * never mutated, only the outgoing payload array.
+ */
+export function filterSupersededContextInjections(messages: MaskableMessage[]): MaskableMessage[] {
+  let lastIndex = -1;
+  for (let i = 0; i < messages.length; i++) {
+    if (isGsdContextInjectionMessage(messages[i])) lastIndex = i;
+  }
+  if (lastIndex === -1) return messages;
+  return messages.filter((m, i) => i === lastIndex || !isGsdContextInjectionMessage(m));
+}
+
+function isResponsesGsdContextInjectionItem(item: ResponsesInputItem): boolean {
+  if (item.role !== "user") return false;
+  return isGsdContextInjectionText(firstTextFromContent(item.content));
+}
+
+export function filterSupersededResponsesContextInjections(
+  items: ResponsesInputItem[],
+): ResponsesInputItem[] {
+  let lastIndex = -1;
+  for (let i = 0; i < items.length; i++) {
+    if (isResponsesGsdContextInjectionItem(items[i])) lastIndex = i;
+  }
+  if (lastIndex === -1) return items;
+  return items.filter((item, i) => i === lastIndex || !isResponsesGsdContextInjectionItem(item));
 }

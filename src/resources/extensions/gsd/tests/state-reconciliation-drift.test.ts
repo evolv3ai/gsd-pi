@@ -1618,6 +1618,58 @@ test("ADR-017 (#5705): in-sync ROADMAP and DB → no roadmap-divergence drift", 
   );
 });
 
+test("ADR-017 (#1370): roadmap-divergence skips completed milestone sharing active worktree phase", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-adr017-roadmap-shared-phase-"));
+  const milestoneDir = join(base, ".gsd", "phases", "06-rlrbot-m006-rlrbot-tool-registry-and-command-sa");
+  const roadmapPath = join(milestoneDir, "06-ROADMAP.md");
+  mkdirSync(milestoneDir, { recursive: true });
+  mkdirSync(join(base, ".gsd", "milestones", "M006"), { recursive: true });
+  mkdirSync(join(base, ".gsd", "milestones", "M006-rlrbot"), { recursive: true });
+  writeFileSync(join(base, ".gsd", "milestones", "M006", "M006-META.json"), "{}\n");
+  writeFileSync(join(base, ".gsd", "milestones", "M006-rlrbot", "M006-rlrbot-META.json"), "{}\n");
+  const activeRoadmap = [
+    "# M006-rlrbot: Active worktree",
+    "",
+    "**Vision:** Keep the active worktree projection authoritative.",
+    "",
+    "## Slices",
+    "",
+    "- [ ] **S01: Shared slice** `risk:medium` `depends:[]`",
+    "  > After this: Active work remains pending.",
+    "",
+  ].join("\n");
+  writeFileSync(roadmapPath, activeRoadmap);
+  t.after(() => {
+    try { closeDatabase(); } catch { /* noop */ }
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M006", title: "Completed source", status: "complete" });
+  insertSlice({ id: "S01", milestoneId: "M006", title: "Shared slice", status: "complete", risk: "medium", depends: [], demo: "Completed.", sequence: 1 });
+  insertMilestone({
+    id: "M006-rlrbot",
+    title: "Active worktree",
+    status: "active",
+    planning: { vision: "Keep the active worktree projection authoritative." },
+  });
+  insertSlice({ id: "S01", milestoneId: "M006-rlrbot", title: "Shared slice", status: "pending", risk: "medium", depends: [], demo: "Active work remains pending.", sequence: 1 });
+  insertTask({ id: "T01", sliceId: "S01", milestoneId: "M006-rlrbot", title: "Plan active work", status: "pending" });
+
+  const result = await reconcileBeforeDispatch(base, {
+    invalidateStateCache: () => {},
+    deriveState: async () => makeState({ activeMilestone: { id: "M006-rlrbot", title: "Active worktree" } }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    result.repaired.some((d) => d.kind === "roadmap-divergence"),
+    false,
+    "completed milestone sharing the phase dir must not trigger roadmap-divergence repair",
+  );
+  assert.equal(readFileSync(roadmapPath, "utf-8"), activeRoadmap);
+});
+
 // ─── #5706: missing-completion-timestamp drift ──────────────────────────────
 
 test("ADR-017 (#5706): task with SUMMARY but null completed_at → backfilled", async (t) => {

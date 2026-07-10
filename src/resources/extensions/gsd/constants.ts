@@ -31,36 +31,37 @@ export const CACHE_MAX = 50;
  * By scoping tools to this allowlist during discuss dispatches, the grammar
  * sent to the provider stays well under provider limits.
  *
- * Included tools and why:
+ * Included tools and why (canonical names only — aliases are no longer
+ * advertised to models by default, see plan 035):
  *   - gsd_summary_save: writes CONTEXT.md artifacts (all discuss prompts)
- *   - gsd_save_summary: alias for above
  *   - gsd_decision_save: records decisions (discuss.md output phase)
- *   - gsd_save_decision: alias for above
  *   - gsd_plan_milestone: writes roadmap (discuss.md single/multi milestone)
- *   - gsd_milestone_plan: alias for above
  *   - gsd_milestone_generate_id: generates milestone IDs (discuss.md multi-milestone)
- *   - gsd_generate_milestone_id: alias for above
  *   - gsd_requirement_save: creates requirements during discuss
- *   - gsd_save_requirement: alias for above
  *   - gsd_requirement_update: updates requirements during discuss
- *   - gsd_update_requirement: alias for above
  */
 export const DISCUSS_TOOLS_ALLOWLIST: readonly string[] = [
   // Context / summary writing
   "gsd_summary_save",
-  "gsd_save_summary",
   // Decision recording
   "gsd_decision_save",
-  "gsd_save_decision",
   // Milestone planning (needed for discuss.md output phase)
   "gsd_plan_milestone",
-  "gsd_milestone_plan",
   // Milestone ID generation (multi-milestone flow)
   "gsd_milestone_generate_id",
-  "gsd_generate_milestone_id",
   // Requirement updates
   "gsd_requirement_save",
-  "gsd_save_requirement",
   "gsd_requirement_update",
-  "gsd_update_requirement",
 ];
+
+// ─── Context Injection ────────────────────────────────────────────────────────
+
+/**
+ * Leading marker stamped on every buildContextMessage() output
+ * (bootstrap/system-context.ts). Single source of truth for the producer and
+ * the consumer: the provider payload policy (filterSupersededContextInjections
+ * in context-masker.ts) matches this prefix to find and dedupe injected
+ * memory/guided/forensics messages after convertToLlm strips their customType.
+ * Both sides import it from here — do not inline the literal in either module.
+ */
+export const GSD_CONTEXT_MESSAGE_SENTINEL = "[GSD Context Injection]";

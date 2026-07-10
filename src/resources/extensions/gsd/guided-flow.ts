@@ -1282,7 +1282,7 @@ export async function buildDiscussSlicePrompt(
     : "";
 
   const inlinedTemplates = inlineTemplate("slice-context", "Slice Context");
-  return loadPrompt("guided-discuss-slice", {
+  return prependLanguageDirective(base, loadPrompt("guided-discuss-slice", {
     milestoneId: mid,
     sliceId: sid,
     sliceTitle: sTitle,
@@ -1293,7 +1293,7 @@ export async function buildDiscussSlicePrompt(
     inlinedTemplates,
     structuredQuestionsAvailable: options?.structuredQuestionsAvailable ?? "false",
     commitInstruction: buildDocsCommitInstruction(`docs(${mid}/${sid}): slice context from discuss`),
-  });
+  }));
 }
 
 /**

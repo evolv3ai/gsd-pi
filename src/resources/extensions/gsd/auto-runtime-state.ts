@@ -3,11 +3,10 @@ import { AutoSession } from "./auto/session.js";
 import type { CurrentUnit } from "./auto/session.js";
 import type { SourceObservationStore } from "./source-observations.js";
 import {
-  isDeterministicPolicyError,
-  isQueuedUserMessageSkip,
-  isToolInvocationError,
   markToolEnd as markTrackedToolEnd,
   markToolStart as markTrackedToolStart,
+  shouldClearToolInvocationErrorAfterSuccess,
+  updateToolInvocationError,
 } from "./auto-tool-tracking.js";
 // Re-exported as a pure pass-through. Must stay UNGATED (no autoSession.active
 // argument, unlike markToolStart at the bottom of this file) so it is true in
@@ -99,13 +98,19 @@ export function markToolEnd(toolCallId: string): void {
 
 export function recordToolInvocationError(toolName: string, errorMsg: string): void {
   if (!autoSession.active) return;
-  if (isToolInvocationError(errorMsg) || isQueuedUserMessageSkip(errorMsg) || isDeterministicPolicyError(errorMsg)) {
-    autoSession.lastToolInvocationError = `${toolName}: ${errorMsg}`;
-  }
+  autoSession.lastToolInvocationError = updateToolInvocationError(
+    autoSession.lastToolInvocationError,
+    toolName,
+    errorMsg,
+  );
 }
 
-export function clearToolInvocationError(): void {
+export function clearToolInvocationError(successfulToolName?: string): void {
   if (!autoSession.active) return;
+  if (!shouldClearToolInvocationErrorAfterSuccess(
+    autoSession.lastToolInvocationError,
+    successfulToolName,
+  )) return;
   autoSession.lastToolInvocationError = null;
 }
 

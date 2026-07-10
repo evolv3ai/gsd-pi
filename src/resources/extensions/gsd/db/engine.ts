@@ -10,7 +10,7 @@
 // writer layer.
 import { createRequire } from "node:module";
 import { existsSync, copyFileSync, mkdirSync, realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { GSDError, GSD_STALE_STATE } from "../errors.js";
 import type { GsdWorkspace, MilestoneScope } from "../workspace.js";
 import { logError, logWarning } from "../workflow-logger.js";
@@ -71,7 +71,10 @@ let _gsdRequire: ReturnType<typeof createRequire> | null | undefined;
 function getGsdRequire(): ReturnType<typeof createRequire> | null {
   if (_gsdRequire !== undefined) return _gsdRequire;
   try {
-    _gsdRequire = createRequire(import.meta.url);
+    // Next.js may emit this module into a CommonJS chunk. Avoid ESM-only module
+    // metadata syntax here; it is a hard parse error there.
+    const packageRoot = process.env.GSD_WEB_PACKAGE_ROOT || process.env.GSD_PKG_ROOT || process.cwd();
+    _gsdRequire = createRequire(resolve(packageRoot, "package.json"));
   } catch {
     _gsdRequire = null;
   }

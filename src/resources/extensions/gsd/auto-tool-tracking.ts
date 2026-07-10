@@ -132,6 +132,8 @@ export function clearInFlightTools(): void {
  */
 const TOOL_INVOCATION_ERROR_RE = /Validation failed for tool|Input validation error|Invalid arguments for tool|MCP error -32602|No such tool available|Expected ',' or '\}'(?: after property value)?(?: in JSON)?|Unexpected end of JSON|Unexpected token.*in JSON|does not provide an export named|Named export .* not found|Cannot find module|ERR_MODULE_NOT_FOUND|ERR_MODULE_NOT_EXPORTED|ERR_PACKAGE_PATH_NOT_EXPORTED/i;
 const DETERMINISTIC_POLICY_ERROR_RE = /(?:^|\b)(?:HARD BLOCK:|Blocked: \/gsd queue is a planning tool|Direct writes to \.gsd\/STATE\.md and \.gsd\/gsd\.db are blocked|This is a mechanical gate)/i;
+const SCHEDULE_WAKEUP_TOOL_NAME = "ScheduleWakeup";
+const SCHEDULE_WAKEUP_CONTINUATION_ERROR = "`prompt` is required when `stop` is not true";
 
 /**
  * Matches the runtime's "tool not registered" error. Unlike the deterministic
@@ -149,6 +151,60 @@ const TOOL_UNAVAILABLE_ERROR_RE = new RegExp(`No such tool available|${TOOL_SURF
 export function isToolInvocationError(errorMsg: string): boolean {
   if (!errorMsg) return false;
   return TOOL_INVOCATION_ERROR_RE.test(errorMsg) || isDeterministicPolicyError(errorMsg);
+}
+
+/**
+ * Claude Code validates its native ScheduleWakeup tool outside GSD's schema.
+ * Keep this exact and tool-scoped so similarly worded business validation from
+ * unrelated tools does not pause auto-mode.
+ */
+export function isScheduleWakeupContinuationError(toolName: string, errorMsg: string): boolean {
+  return stripMcpToolPrefix(toolName) === SCHEDULE_WAKEUP_TOOL_NAME
+    && errorMsg.trim() === SCHEDULE_WAKEUP_CONTINUATION_ERROR;
+}
+
+function shouldRecordToolInvocationError(toolName: string, errorMsg: string): boolean {
+  return isScheduleWakeupContinuationError(toolName, errorMsg)
+    || isToolInvocationError(errorMsg)
+    || isQueuedUserMessageSkip(errorMsg);
+}
+
+function isRecordedScheduleWakeupContinuationError(recordedError: string | null): boolean {
+  if (!recordedError) return false;
+
+  const separator = recordedError.indexOf(": ");
+  return separator >= 0 && isScheduleWakeupContinuationError(
+    recordedError.slice(0, separator),
+    recordedError.slice(separator + 2),
+  );
+}
+
+export function updateToolInvocationError(
+  recordedError: string | null,
+  toolName: string,
+  errorMsg: string,
+): string | null {
+  if (!shouldRecordToolInvocationError(toolName, errorMsg)) return recordedError;
+  if (
+    isRecordedScheduleWakeupContinuationError(recordedError)
+    && !isScheduleWakeupContinuationError(toolName, errorMsg)
+  ) return recordedError;
+
+  return `${toolName}: ${errorMsg}`;
+}
+
+/**
+ * A failed continuation must survive successful diagnostic/read calls in the
+ * same turn. Only a later successful ScheduleWakeup proves the continuation
+ * was armed; all other invocation errors retain their existing clear-on-success
+ * behavior.
+ */
+export function shouldClearToolInvocationErrorAfterSuccess(
+  recordedError: string | null,
+  successfulToolName?: string,
+): boolean {
+  return !isRecordedScheduleWakeupContinuationError(recordedError)
+    || stripMcpToolPrefix(successfulToolName ?? "") === SCHEDULE_WAKEUP_TOOL_NAME;
 }
 
 /**

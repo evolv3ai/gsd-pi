@@ -150,6 +150,30 @@ describe("models.generated.ts", () => {
 		});
 	});
 
+	test("includes Muse Spark 1.1 as a first-class Vercel AI Gateway model", () => {
+		const model = MODELS["vercel-ai-gateway"]["meta/muse-spark-1.1"];
+
+		expect(model).toMatchObject({
+			id: "meta/muse-spark-1.1",
+			name: "Muse Spark 1.1",
+			// The generator tags every Vercel AI Gateway model as anthropic-messages;
+			// the gateway serves an Anthropic-compatible endpoint across its catalog.
+			api: "anthropic-messages",
+			provider: "vercel-ai-gateway",
+			baseUrl: "https://ai-gateway.vercel.sh",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: {
+				input: 1.25,
+				output: 4.25,
+				cacheRead: 0.15,
+				cacheWrite: 0,
+			},
+			contextWindow: 1048576,
+			maxTokens: 1048576,
+		});
+	});
+
 	test("keeps GitHub Copilot Claude 4.6 context at Copilot's 200K limit", () => {
 		for (const id of ["claude-opus-4.6", "claude-sonnet-4.6"] as const) {
 			const model = MODELS["github-copilot"][id];

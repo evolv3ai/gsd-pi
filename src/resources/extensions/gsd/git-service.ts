@@ -385,10 +385,16 @@ const runtimeFilesCleanedUpRepos = new Set<string>();
 // ─── Integration Branch Metadata ───────────────────────────────────────────
 
 /**
- * Path to the milestone metadata file that stores the integration branch.
- * Format: .gsd/milestones/<MID>/<MID>-META.json
+ * Path to the milestone integration-branch metadata file.
+ * Format: .gsd/<MID>-META.json  (deliberately OUTSIDE milestones/<MID>/ so it
+ * cannot poison isLegacyMilestonesLayout — see ADR-045).
  */
-function milestoneMetaPath(basePath: string, milestoneId: string): string {
+export function milestoneMetaPath(basePath: string, milestoneId: string): string {
+  return join(gsdRoot(basePath), `${milestoneId}-META.json`);
+}
+
+/** Legacy location (pre-ADR-045). Read-only fallback for existing on-disk trees. */
+function legacyMilestoneMetaPath(basePath: string, milestoneId: string): string {
   return join(gsdRoot(basePath), "milestones", milestoneId, `${milestoneId}-META.json`);
 }
 
@@ -398,8 +404,12 @@ function milestoneMetaPath(basePath: string, milestoneId: string): string {
  */
 export function readIntegrationBranch(basePath: string, milestoneId: string): string | null {
   try {
-    const metaFile = milestoneMetaPath(basePath, milestoneId);
-    if (!existsSync(metaFile)) return null;
+    let metaFile = milestoneMetaPath(basePath, milestoneId);
+    if (!existsSync(metaFile)) {
+      const legacy = legacyMilestoneMetaPath(basePath, milestoneId);
+      if (!existsSync(legacy)) return null;
+      metaFile = legacy;
+    }
     const data = JSON.parse(readFileSync(metaFile, "utf-8"));
     const branch = data?.integrationBranch;
     if (typeof branch === "string" && branch.trim() !== "" && VALID_BRANCH_NAME.test(branch)) {
@@ -451,7 +461,10 @@ export function writeIntegrationBranch(
   if (existingBranch === branch) return;
 
   const metaFile = milestoneMetaPath(basePath, milestoneId);
-  mkdirSync(join(gsdRoot(basePath), "milestones", milestoneId), { recursive: true });
+  // Ensure the flat .gsd/ root exists (never milestones/<MID>/ — that would
+  // poison layout detection, ADR-045). In production .gsd/ already exists; this
+  // guards fresh trees so the write below can't ENOENT.
+  mkdirSync(gsdRoot(basePath), { recursive: true });
 
   // Merge with existing metadata if present
   let existing: Record<string, unknown> = {};

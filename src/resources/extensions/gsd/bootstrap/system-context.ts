@@ -21,6 +21,14 @@ import { formatOverridesSection, formatShortcut, loadActiveOverrides, loadFile, 
 import { toPosixPath } from "../../shared/mod.js";
 import { autoEnableCmuxPreferences } from "../commands-cmux.js";
 import { gsdHome } from "../gsd-home.js";
+import { GSD_CONTEXT_MESSAGE_SENTINEL } from "../constants.js";
+
+// Single source of truth lives in ../constants.js; re-exported here because
+// buildContextMessage() stamps this marker on every context injection and the
+// provider payload policy (filterSupersededContextInjections in
+// context-masker.ts) matches it to dedupe. Adding a new context customType?
+// Ensure buildContextMessage still prepends this sentinel.
+export { GSD_CONTEXT_MESSAGE_SENTINEL };
 
 const DEFAULT_CONTEXT_MESSAGE_MAX_CHARS = 4_000;
 const DEFAULT_KNOWLEDGE_MAX_CHARS = 12_000;
@@ -448,14 +456,14 @@ export function buildContextMessage(opts: {
   const memoryContent = markMemoryContextSupplied(opts.memoryBlock.trim());
   if (opts.injection) {
     const content = limitContextMessageContent(
-      memoryContent ? `${memoryContent}\n\n${opts.injection}` : opts.injection,
+      `${GSD_CONTEXT_MESSAGE_SENTINEL}\n${memoryContent ? `${memoryContent}\n\n${opts.injection}` : opts.injection}`,
       contextCharLimit,
     );
     return { customType: "gsd-guided-context", content, display: false as const };
   }
   if (opts.forensicsInjection) {
     const content = limitContextMessageContent(
-      memoryContent ? `${memoryContent}\n\n${opts.forensicsInjection}` : opts.forensicsInjection,
+      `${GSD_CONTEXT_MESSAGE_SENTINEL}\n${memoryContent ? `${memoryContent}\n\n${opts.forensicsInjection}` : opts.forensicsInjection}`,
       contextCharLimit,
     );
     return { customType: "gsd-forensics", content, display: false as const };
@@ -463,7 +471,7 @@ export function buildContextMessage(opts: {
   if (memoryContent) {
     return {
       customType: "gsd-memory",
-      content: limitContextMessageContent(memoryContent, contextCharLimit),
+      content: limitContextMessageContent(`${GSD_CONTEXT_MESSAGE_SENTINEL}\n${memoryContent}`, contextCharLimit),
       display: false as const,
     };
   }

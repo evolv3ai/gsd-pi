@@ -30,6 +30,7 @@ import {
 } from './server.js';
 import { MAX_EVENTS } from './types.js';
 import type { ManagedSession, CostAccumulator, PendingBlocker } from './types.js';
+import { WORKFLOW_TOOL_ALIAS_NAMES } from '@opengsd/contracts';
 
 describe('installGlobalErrorHandlers', () => {
   it('logs uncaught exceptions and unhandled rejections to stderr, then terminates (#783)', () => {
@@ -811,23 +812,51 @@ describe('createMcpServer tool registration', () => {
     assert.deepEqual(receivedOptions, { timeout: 600000, signal });
   });
 
-  it('advertises workflow aliases by default for external MCP clients', async () => {
-    const previous = process.env.GSD_MCP_HIDE_ALIASES;
+  it('hides workflow aliases by default for the model-facing surface', async () => {
+    const previousAdvertise = process.env.GSD_MCP_ADVERTISE_ALIASES;
+    const previousHide = process.env.GSD_MCP_HIDE_ALIASES;
+    delete process.env.GSD_MCP_ADVERTISE_ALIASES;
     delete process.env.GSD_MCP_HIDE_ALIASES;
     try {
       const { server } = await createMcpServer(sm);
       const registeredTools = (server as any)._registeredTools ?? {};
-      for (const alias of ['gsd_save_summary', 'gsd_milestone_plan', 'gsd_slice_plan']) {
-        assert.ok(registeredTools[alias], `${alias} should be advertised by default`);
+      for (const canonical of ['gsd_summary_save', 'gsd_plan_milestone', 'gsd_plan_slice']) {
+        assert.ok(registeredTools[canonical], `${canonical} should be advertised by default`);
       }
+      const registeredNames = new Set(Object.keys(registeredTools));
+      const hiddenAliases = WORKFLOW_TOOL_ALIAS_NAMES.filter((name) => !registeredNames.has(name));
+      assert.equal(
+        hiddenAliases.length,
+        WORKFLOW_TOOL_ALIAS_NAMES.length,
+        'all alias tools should be hidden by default',
+      );
     } finally {
-      if (previous === undefined) delete process.env.GSD_MCP_HIDE_ALIASES;
-      else process.env.GSD_MCP_HIDE_ALIASES = previous;
+      if (previousAdvertise === undefined) delete process.env.GSD_MCP_ADVERTISE_ALIASES;
+      else process.env.GSD_MCP_ADVERTISE_ALIASES = previousAdvertise;
+      if (previousHide === undefined) delete process.env.GSD_MCP_HIDE_ALIASES;
+      else process.env.GSD_MCP_HIDE_ALIASES = previousHide;
     }
   });
 
-  it('can hide workflow aliases when explicitly requested', async () => {
-    const previous = process.env.GSD_MCP_HIDE_ALIASES;
+  it('can restore workflow aliases when explicitly requested', async () => {
+    const previous = process.env.GSD_MCP_ADVERTISE_ALIASES;
+    process.env.GSD_MCP_ADVERTISE_ALIASES = '1';
+    try {
+      const { server } = await createMcpServer(sm);
+      const registeredTools = (server as any)._registeredTools ?? {};
+      for (const alias of ['gsd_save_summary', 'gsd_milestone_plan', 'gsd_slice_plan']) {
+        assert.ok(registeredTools[alias], `${alias} should be advertised when restored`);
+      }
+    } finally {
+      if (previous === undefined) delete process.env.GSD_MCP_ADVERTISE_ALIASES;
+      else process.env.GSD_MCP_ADVERTISE_ALIASES = previous;
+    }
+  });
+
+  it('GSD_MCP_HIDE_ALIASES=1 force-hides aliases even if advertise is set', async () => {
+    const previousAdvertise = process.env.GSD_MCP_ADVERTISE_ALIASES;
+    const previousHide = process.env.GSD_MCP_HIDE_ALIASES;
+    process.env.GSD_MCP_ADVERTISE_ALIASES = '1';
     process.env.GSD_MCP_HIDE_ALIASES = '1';
     try {
       const { server } = await createMcpServer(sm);
@@ -835,8 +864,10 @@ describe('createMcpServer tool registration', () => {
       assert.ok(registeredTools.gsd_summary_save, 'canonical tool should remain advertised');
       assert.equal(registeredTools.gsd_save_summary, undefined);
     } finally {
-      if (previous === undefined) delete process.env.GSD_MCP_HIDE_ALIASES;
-      else process.env.GSD_MCP_HIDE_ALIASES = previous;
+      if (previousAdvertise === undefined) delete process.env.GSD_MCP_ADVERTISE_ALIASES;
+      else process.env.GSD_MCP_ADVERTISE_ALIASES = previousAdvertise;
+      if (previousHide === undefined) delete process.env.GSD_MCP_HIDE_ALIASES;
+      else process.env.GSD_MCP_HIDE_ALIASES = previousHide;
     }
   });
 

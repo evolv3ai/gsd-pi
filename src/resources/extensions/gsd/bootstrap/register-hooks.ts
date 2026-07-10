@@ -1769,7 +1769,7 @@ export function registerHooks(
       recordToolInvocationError(event.toolName, errorText);
       recordRetryableHarnessToolError(toolName, resultPayload, errorText);
     } else if (isAutoActive()) {
-      clearToolInvocationError();
+      clearToolInvocationError(event.toolName);
     }
     // Interactive Closeout adapter (ADR-032): auto-mode owns closeout for its
     // own units; interactive completions get the durable git subset (commit +
@@ -1980,7 +1980,7 @@ export function registerHooks(
       recordToolInvocationError(event.toolName, errorText);
       recordRetryableHarnessToolError(toolName, event.result, errorText);
     } else if (isAutoActive()) {
-      clearToolInvocationError();
+      clearToolInvocationError(event.toolName);
     }
     // Safety harness: record tool execution results for evidence cross-referencing
     if (isAutoActive()) {

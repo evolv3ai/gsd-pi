@@ -326,6 +326,7 @@ try {
     'packages/cloud-mcp-gateway/bin/gsd-cloud-mcp-gateway.js',
     'packages/cloud-mcp-gateway/dist/cli.js',
     'scripts/link-workspace-packages.cjs',
+    'integrations/hermes/plugin.yaml',
     'dist/web/standalone/server.js',
   ];
 

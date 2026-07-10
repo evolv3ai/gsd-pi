@@ -12,7 +12,7 @@
 import { readFileSync, existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
 import { logWarning } from "./workflow-logger.js";
 import { isClosedStatus } from "./status-guards.js";
-import { dirname, join, relative } from "node:path";
+import { dirname, join } from "node:path";
 import {
   getAllMilestones,
   getMilestone,
@@ -50,7 +50,7 @@ import { saveFile, clearParseCache, registerCacheClearCallback } from "./files.j
 import { parseRoadmap, parsePlan } from "./parsers-legacy.js";
 import { invalidateStateCache } from "./state.js";
 import { clearPathCache, milestonesDir, legacyMilestonesDir, isLegacyMilestonesLayout, resolveMilestonePath, relSliceFile, canonicalPhaseDirName } from "./paths.js";
-import { readCompatMarker, writeCompatMarker, computeProjectionSha } from "./compat/compat-marker.js";
+import { readCompatMarker, writeCompatMarker, computeProjectionSha, deriveCompatProjectionKey } from "./compat/compat-marker.js";
 import type { RiskLevel } from "./types.js";
 import {
   phaseDirName,
@@ -109,13 +109,7 @@ function flushProjectionWritesToMarker(): void {
  */
 function toArtifactPath(absPath: string, basePath: string): string {
   const projectionRoot = gsdProjectionRoot(basePath);
-  const projectionRel = relative(projectionRoot, absPath);
-  const root = projectionRel && !projectionRel.startsWith("..") && !projectionRel.startsWith("/")
-    ? projectionRoot
-    : gsdRoot(basePath);
-  const rel = relative(root, absPath);
-  // Normalize to forward slashes for consistent DB keys
-  return rel.replace(/\\/g, "/");
+  return deriveCompatProjectionKey(absPath, [projectionRoot, gsdRoot(basePath)]);
 }
 
 /**

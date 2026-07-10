@@ -23,7 +23,10 @@ import {
 } from "../bootstrap/agent-end-recovery.ts";
 import { blockModelUntil, clearTemporaryModelBlocksForTest } from "../blocked-models.ts";
 import { _buildCancelledUnitStopReason } from "../auto/phase-helpers.ts";
-import { _classifyZeroToolProviderMessageForTest } from "../auto/unit-phase.ts";
+import {
+  _classifyZeroToolProviderMessageForTest,
+  _zeroToolPseudoToolCallSnippetForTest,
+} from "../auto/unit-phase.ts";
 import { autoSession } from "../auto-runtime-state.ts";
 import { getNextFallbackModel } from "../preferences.ts";
 import { clearGuidedUnitContext, getGuidedUnitContext, setGuidedUnitContext } from "../guided-unit-context.ts";
@@ -75,6 +78,21 @@ test("zero-tool provider classifier treats weekly limit wording as transient rat
   assert.ok(result, "weekly limit wording should be recognized");
   assert.ok(isTransient(result));
   assert.equal(result.kind, "rate-limit");
+});
+
+test("zero-tool pseudo tool-call detector identifies serialization drift", () => {
+  const snippet = _zeroToolPseudoToolCallSnippetForTest(
+    'bash<arg_key>command</arg_key><arg_value>ls -la /tmp && echo "---SRC---"</arg_value></tool_call>',
+  );
+  assert.ok(snippet, "pseudo tool-call text should be recognized");
+  assert.match(snippet, /bash<arg_key>command<\/arg_key>/);
+});
+
+test("zero-tool provider classifier does not treat pseudo tool-call text as an error class", () => {
+  const result = _classifyZeroToolProviderMessageForTest(
+    'bash<arg_key>command</arg_key><arg_value>ls -la /tmp && echo "---SRC---"</arg_value></tool_call>',
+  );
+  assert.equal(result, null, "pseudo tool-call text is drift, not a provider error");
 });
 
 test("classifyError treats extra-usage phrasing as transient rate-limit (#4397)", () => {
@@ -648,6 +666,108 @@ test("rate-limit agent_end walks past unavailable fallback models before pausing
     clearTemporaryModelBlocksForTest();
     autoSession.reset();
     rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("retry-exhausted abort/unknown provider stop reasons trigger model fallback (#1364)", async () => {
+  const originalCwd = process.cwd();
+  const originalSetTimeout = globalThis.setTimeout;
+
+  globalThis.setTimeout = ((fn: (...args: unknown[]) => void, delay?: number) => {
+    if ((delay ?? 0) === 0) {
+      fn();
+    }
+    return 0 as unknown as ReturnType<typeof setTimeout>;
+  }) as typeof setTimeout;
+
+  try {
+    for (const reason of ["abort", "unknown"]) {
+      const base = mkdtempSync(join(tmpdir(), `gsd-stop-reason-${reason}-`));
+      const notifications: Array<{ message: string; level?: string }> = [];
+      const setModelCalls: string[] = [];
+      const sendMessageCalls: unknown[][] = [];
+
+      try {
+        resetTransientRetryState();
+        clearTemporaryModelBlocksForTest();
+        autoSession.reset();
+        mkdirSync(join(base, ".gsd"), { recursive: true });
+        writeFileSync(
+          join(base, ".gsd", "PREFERENCES.md"),
+          [
+            "---",
+            "models:",
+            "  execution:",
+            "    model: gpt-5.5",
+            "    provider: openai-codex",
+            "    fallbacks:",
+            "      - anthropic/claude-sonnet-4-6",
+            "---",
+          ].join("\n"),
+          "utf-8",
+        );
+        process.chdir(base);
+
+        autoSession.active = true;
+        autoSession.basePath = base;
+        autoSession.currentUnit = { type: "execute-task", id: "M001/S01/T01", startedAt: Date.now() };
+        autoSession.autoModeStartModel = { provider: "openai-codex", id: "gpt-5.5" };
+
+        const availableModels = [
+          { id: "gpt-5.5", provider: "openai-codex", api: "responses" },
+          { id: "claude-sonnet-4-6", provider: "anthropic", api: "anthropic-messages" },
+        ];
+        const ctx = {
+          model: availableModels[0],
+          modelRegistry: { getAvailable: () => availableModels },
+          ui: {
+            notify(message: string, level?: "info" | "warning" | "error" | "success") {
+              notifications.push({ message, level });
+            },
+            setStatus: () => {},
+            setWidget: () => {},
+            setWorkingMessage: () => {},
+          },
+        } as any;
+        const pi = {
+          setModel: async (model: { provider: string; id: string }) => {
+            setModelCalls.push(`${model.provider}/${model.id}`);
+            return true;
+          },
+          sendMessage: (...args: unknown[]) => {
+            sendMessageCalls.push(args);
+          },
+        } as any;
+
+        await handleAgentEnd(pi, {
+          messages: [{
+            role: "assistant",
+            stopReason: "error",
+            errorMessage: `Retry failed after 3 attempts: Unhandled stop reason: ${reason}`,
+          }],
+        } as any, ctx);
+
+        assert.deepEqual(setModelCalls, ["anthropic/claude-sonnet-4-6"], `${reason} should switch to configured fallback`);
+        assert.equal(sendMessageCalls.length, 1, `${reason} fallback recovery must trigger a continuation turn`);
+        assert.deepEqual(sendMessageCalls[0][1], { triggerTurn: true });
+        assert.ok(
+          notifications.some((n) => n.message.includes("anthropic/claude-sonnet-4-6")),
+          `${reason} notification should name the selected fallback`,
+        );
+      } finally {
+        process.chdir(originalCwd);
+        clearTemporaryModelBlocksForTest();
+        resetTransientRetryState();
+        autoSession.reset();
+        rmSync(base, { recursive: true, force: true });
+      }
+    }
+  } finally {
+    globalThis.setTimeout = originalSetTimeout;
+    process.chdir(originalCwd);
+    clearTemporaryModelBlocksForTest();
+    resetTransientRetryState();
+    autoSession.reset();
   }
 });
 

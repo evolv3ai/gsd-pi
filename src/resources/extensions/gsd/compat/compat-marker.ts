@@ -6,8 +6,8 @@
 // (drift to import). gsd-core is oblivious to this file and ignores it.
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync, mkdirSync } from "node:fs";
-import { dirname, join, isAbsolute, normalize } from "node:path";
+import { existsSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync, mkdirSync } from "node:fs";
+import { dirname, join, isAbsolute, normalize, relative, resolve } from "node:path";
 
 /** Current marker schema version. Bump on breaking format changes + migrate. */
 export const COMPAT_MARKER_SCHEMA = 2;
@@ -54,6 +54,13 @@ export interface CompatMarker {
   piVersion: string;
 }
 
+export interface ReadCompatMarkerOptions {
+  /** Rewrite invalid-but-derivable marker keys back to safe root-relative keys. */
+  healInvalidKeys?: boolean;
+  /** Quarantine malformed/unsafe markers. Disable only for read-only previews. */
+  quarantineInvalid?: boolean;
+}
+
 /** Marker returned when no marker exists yet (fresh project, first gsd-pi run). */
 export const EMPTY_MARKER: CompatMarker = {
   schema: COMPAT_MARKER_SCHEMA,
@@ -81,6 +88,37 @@ export function computeProjectionSha(content: string): string {
   return createHash("sha256").update(normalizeForHash(content)).digest("hex").slice(0, 16);
 }
 
+function normalizeRealPath(p: string): string {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
+function rootRelativeKey(rootPath: string, absPath: string): string | null {
+  const root = normalizeRealPath(rootPath);
+  const abs = normalizeRealPath(absPath);
+  const rel = relative(root, abs);
+  if (!rel || rel === ".." || rel.startsWith(`..${sepForRelative(rel)}`) || isAbsolute(rel)) {
+    return null;
+  }
+  return rel.replace(/\\/g, "/");
+}
+
+function sepForRelative(rel: string): string {
+  return rel.includes("\\") ? "\\" : "/";
+}
+
+export function deriveCompatProjectionKey(absPath: string, roots: readonly string[]): string {
+  for (const root of roots) {
+    const key = rootRelativeKey(root, absPath);
+    if (key) return key;
+  }
+  const fallbackRoot = roots[roots.length - 1] ?? dirname(absPath);
+  return relative(fallbackRoot, absPath).replace(/\\/g, "/");
+}
+
 /**
  * Read & validate the marker. A missing marker → EMPTY_MARKER (treat every
  * projection as external on next reconcile). A malformed marker is quarantined
@@ -88,7 +126,12 @@ export function computeProjectionSha(content: string): string {
  * EMPTY_MARKER. A schema-mismatch returns EMPTY_MARKER (forward-compat: refuse
  * to act on a future format we don't understand).
  */
-export function readCompatMarker(basePath: string): CompatMarker {
+export function readCompatMarker(
+  basePath: string,
+  options: ReadCompatMarkerOptions = {},
+): CompatMarker {
+  const healInvalidKeys = options.healInvalidKeys ?? true;
+  const quarantineInvalid = options.quarantineInvalid ?? true;
   const path = compatMarkerPath(basePath);
   if (!existsSync(path)) return emptyMarker();
 
@@ -103,12 +146,16 @@ export function readCompatMarker(basePath: string): CompatMarker {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    quarantine(basePath, raw);
+    if (quarantineInvalid) quarantine(basePath, raw);
     return emptyMarker();
   }
 
+  if (healInvalidKeys && healMarkerProjectionKeys(basePath, parsed) && isValidMarker(parsed)) {
+    writeCompatMarker(basePath, parsed);
+  }
+
   if (!isValidMarker(parsed)) {
-    quarantine(basePath, raw);
+    if (quarantineInvalid) quarantine(basePath, raw);
     return emptyMarker();
   }
   // Promote older markers by defaulting absent fields. Schema 1 → 2 only adds
@@ -243,6 +290,53 @@ function isValidProjectionMap(x: unknown): boolean {
     if (!isValidProjectionEntry(v)) return false;
   }
   return true;
+}
+
+function healMarkerProjectionKeys(basePath: string, marker: unknown): marker is CompatMarker {
+  if (typeof marker !== "object" || marker === null) return false;
+  const m = marker as Record<string, unknown>;
+  let changed = false;
+
+  if (typeof m.projections === "object" && m.projections !== null) {
+    changed = healProjectionMapKeys(basePath, ".gsd", m.projections as Record<string, ProjectionEntry>) || changed;
+  }
+
+  const planning = m.planning;
+  if (typeof planning === "object" && planning !== null) {
+    const p = planning as Record<string, unknown>;
+    if (typeof p.projections === "object" && p.projections !== null) {
+      changed = healProjectionMapKeys(basePath, ".planning", p.projections as Record<string, ProjectionEntry>) || changed;
+    }
+    if (typeof p.passthrough === "object" && p.passthrough !== null) {
+      changed = healProjectionMapKeys(basePath, ".planning", p.passthrough as Record<string, ProjectionEntry>) || changed;
+    }
+  }
+
+  return changed;
+}
+
+function healProjectionMapKeys(
+  basePath: string,
+  rootName: ".gsd" | ".planning",
+  map: Record<string, ProjectionEntry>,
+): boolean {
+  let changed = false;
+  const root = join(basePath, rootName);
+
+  for (const key of Object.keys(map)) {
+    if (isSafeProjectionKey(key)) continue;
+    if (key.includes("\0") || isAbsolute(key) || /^[A-Za-z]:/.test(key)) continue;
+    const healedKey = rootRelativeKey(root, resolve(root, key));
+    if (!healedKey || !isSafeProjectionKey(healedKey)) continue;
+
+    if (!map[healedKey]) {
+      map[healedKey] = map[key]!;
+    }
+    delete map[key];
+    changed = true;
+  }
+
+  return changed;
 }
 
 function isValidPlanningMarker(x: unknown): x is PlanningMarker {

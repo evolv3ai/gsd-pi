@@ -111,6 +111,7 @@ export const EXEC_DEFAULTS = {
     "LOGNAME",
     "TMPDIR",
     "NODE_OPTIONS",
+    "NODE_PATH",
     "PYTHONPATH",
     "PYTHONIOENCODING",
   ] as const,

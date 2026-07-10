@@ -1541,12 +1541,13 @@ export async function createMcpServer(
     },
   );
 
-  // Advertise backwards-compatibility aliases by default so external clients
-  // (especially Claude Code CLI) can call every gsd_* tool name the native LLM
-  // path recognizes. Set GSD_MCP_HIDE_ALIASES=1 to trim duplicate schemas when
-  // a client is known to use only canonical names.
+  // Canonical-only model-facing surface: the 17 alias tools would add ~6.8K
+  // tokens/turn of duplicate schemas. Set GSD_MCP_ADVERTISE_ALIASES=1 to
+  // restore alias advertising for clients that still call legacy names.
+  // GSD_MCP_HIDE_ALIASES=1 (legacy var) is honored as a no-op force-hide.
   registerWorkflowTools(server, {
-    advertiseAliases: process.env.GSD_MCP_HIDE_ALIASES !== '1',
+    advertiseAliases:
+      process.env.GSD_MCP_ADVERTISE_ALIASES === '1' && process.env.GSD_MCP_HIDE_ALIASES !== '1',
   });
 
   installMoonshotCompatibleToolSchemas(server as unknown as Parameters<typeof installMoonshotCompatibleToolSchemas>[0]);

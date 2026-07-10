@@ -4,7 +4,13 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
 
-import { buildContextMessage, stripVolatileCodebaseMetadata } from "../bootstrap/system-context.ts";
+import {
+  buildContextMessage,
+  GSD_CONTEXT_MESSAGE_SENTINEL,
+  stripVolatileCodebaseMetadata,
+} from "../bootstrap/system-context.ts";
+
+const SENTINEL = `${GSD_CONTEXT_MESSAGE_SENTINEL}\n`;
 
 describe("stripVolatileCodebaseMetadata (#847 — KV cache stability)", () => {
   const map = [
@@ -63,7 +69,7 @@ describe("buildContextMessage (#5019 — memory routing)", () => {
     });
     assert.ok(result, "expected a context message");
     assert.equal(result.customType, "gsd-memory");
-    assert.equal(result.content, "[GSD Context Metadata]\n- Memory supplied: yes\n\n[MEMORY]\nrule one\nrule two");
+    assert.equal(result.content, `${SENTINEL}[GSD Context Metadata]\n- Memory supplied: yes\n\n[MEMORY]\nrule one\nrule two`);
     assert.equal(result.display, false);
   });
 
@@ -75,7 +81,7 @@ describe("buildContextMessage (#5019 — memory routing)", () => {
     });
     assert.ok(result);
     assert.equal(result.customType, "gsd-guided-context");
-    assert.equal(result.content, "[GUIDED]\nexecute T01");
+    assert.equal(result.content, `${SENTINEL}[GUIDED]\nexecute T01`);
   });
 
   test("forensics injection alone emits gsd-forensics", () => {
@@ -86,7 +92,7 @@ describe("buildContextMessage (#5019 — memory routing)", () => {
     });
     assert.ok(result);
     assert.equal(result.customType, "gsd-forensics");
-    assert.equal(result.content, "[FORENSICS]\ninvestigation context");
+    assert.equal(result.content, `${SENTINEL}[FORENSICS]\ninvestigation context`);
   });
 
   test("memory + guided injection: memory prepended, customType is gsd-guided-context", () => {
@@ -97,7 +103,7 @@ describe("buildContextMessage (#5019 — memory routing)", () => {
     });
     assert.ok(result);
     assert.equal(result.customType, "gsd-guided-context");
-    assert.equal(result.content, `${markedMemory}\n\n[GUIDED]\nexecute T01`);
+    assert.equal(result.content, `${SENTINEL}${markedMemory}\n\n[GUIDED]\nexecute T01`);
   });
 
   test("memory + forensics: memory prepended, customType is gsd-forensics", () => {
@@ -108,7 +114,7 @@ describe("buildContextMessage (#5019 — memory routing)", () => {
     });
     assert.ok(result);
     assert.equal(result.customType, "gsd-forensics");
-    assert.equal(result.content, `${markedMemory}\n\n[FORENSICS]\ninvestigation context`);
+    assert.equal(result.content, `${SENTINEL}${markedMemory}\n\n[FORENSICS]\ninvestigation context`);
   });
 
   test("guided takes precedence over forensics when both are somehow present", () => {
@@ -122,6 +128,6 @@ describe("buildContextMessage (#5019 — memory routing)", () => {
     });
     assert.ok(result);
     assert.equal(result.customType, "gsd-guided-context");
-    assert.equal(result.content, "[GUIDED]");
+    assert.equal(result.content, `${SENTINEL}[GUIDED]`);
   });
 });

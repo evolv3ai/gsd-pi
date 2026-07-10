@@ -58,6 +58,7 @@ function registerAlias(pi: ExtensionAPI, toolDef: any, aliasName: string, canoni
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- toolDef shape matches ToolDefinition but varies by schema
 function registerWorkflowTool(pi: ExtensionAPI, toolDef: any): void {
   pi.registerTool(toolDef);
+  if (process.env.GSD_ADVERTISE_TOOL_ALIASES !== "1") return; // canonical-only model surface (see plan 035)
   for (const alias of aliasesForWorkflowTool(toolDef.name)) {
     registerAlias(pi, toolDef, alias, toolDef.name);
   }

@@ -6,8 +6,10 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { autoSession } from "../auto-runtime-state.ts";
+import { postUnitPreVerification } from "../auto-post-unit.ts";
 import { registerHooks } from "../bootstrap/register-hooks.ts";
 import { resetToolCallLoopGuard } from "../bootstrap/tool-call-loop-guard.ts";
+import { closeDatabase, openDatabase } from "../gsd-db.ts";
 import { readUnitHarnessAbort } from "../unit-runtime.ts";
 
 type Handler = (event: any, ctx?: any) => Promise<any> | any;
@@ -164,6 +166,109 @@ test("register-hooks does not record normal product tool failures as harness abo
 
   const abort = readUnitHarnessAbort(base, "gate-evaluate", "M001/S01/gates+Q3", startedAt);
   assert.equal(abort, null);
+});
+
+test("tool_execution_end latches a failed ScheduleWakeup across unrelated tool success", async (t) => {
+  const base = makeRuntimeBase();
+  mkdirSync(join(base, ".gsd", "milestones", "M001"), { recursive: true });
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  autoSession.reset();
+  autoSession.active = true;
+  autoSession.basePath = base;
+  autoSession.currentUnit = { type: "discuss-milestone", id: "M001", startedAt: Date.now() };
+  t.after(() => {
+    closeDatabase();
+    autoSession.reset();
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  const { emitToolExecutionEnd } = makeHookHarness();
+  const error = "`prompt` is required when `stop` is not true";
+
+  await emitToolExecutionEnd({
+    toolName: "ScheduleWakeup",
+    isError: true,
+    result: error,
+  });
+  assert.equal(autoSession.lastToolInvocationError, `ScheduleWakeup: ${error}`);
+
+  await emitToolExecutionEnd({
+    toolName: "read",
+    isError: false,
+    result: "file contents",
+  });
+  assert.equal(
+    autoSession.lastToolInvocationError,
+    `ScheduleWakeup: ${error}`,
+    "an unrelated success must not erase a failed continuation before the unit boundary",
+  );
+
+  await emitToolExecutionEnd({
+    toolName: "parse_payload",
+    isError: true,
+    result: "Unexpected end of JSON input",
+  });
+  assert.equal(
+    autoSession.lastToolInvocationError,
+    `ScheduleWakeup: ${error}`,
+    "a later invocation error must not replace the failed continuation",
+  );
+
+  let pauseCalled = false;
+  const notifications: Array<{ message: string; severity?: string }> = [];
+  const result = await postUnitPreVerification(
+    {
+      s: autoSession,
+      ctx: {
+        ui: {
+          notify: (message: string, severity?: string) => notifications.push({ message, severity }),
+        },
+      } as any,
+      pi: {} as any,
+      buildSnapshotOpts: () => ({}) as any,
+      lockBase: () => base,
+      stopAuto: async () => {},
+      pauseAuto: async () => { pauseCalled = true; },
+      updateProgressWidget: () => {},
+    },
+    { skipSettleDelay: true, skipWorktreeSync: true },
+  );
+
+  assert.equal(result, "dispatched");
+  assert.equal(pauseCalled, true);
+  assert.equal(autoSession.pendingVerificationRetry, null);
+  assert.ok(
+    notifications.some(({ message, severity }) => severity === "error" && message.includes(error)),
+    "the unit boundary must surface the rejected continuation",
+  );
+  assert.equal(autoSession.lastToolInvocationError, null);
+
+  await emitToolExecutionEnd({
+    toolName: "ScheduleWakeup",
+    isError: true,
+    result: error,
+  });
+  await emitToolExecutionEnd({
+    toolName: "ScheduleWakeup",
+    isError: false,
+    result: "Wakeup scheduled",
+  });
+  assert.equal(autoSession.lastToolInvocationError, null);
+});
+
+test("tool_execution_end ignores ScheduleWakeup-shaped business validation from other tools", async (t) => {
+  autoSession.reset();
+  autoSession.active = true;
+  t.after(() => autoSession.reset());
+
+  const { emitToolExecutionEnd } = makeHookHarness();
+  await emitToolExecutionEnd({
+    toolName: "submit_review",
+    isError: true,
+    result: "`prompt` is required when `stop` is not true",
+  });
+
+  assert.equal(autoSession.lastToolInvocationError, null);
 });
 
 test("register-hooks does not classify normal gsd_uat_exec nonzero exits as harness aborts", async (t) => {

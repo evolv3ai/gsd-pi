@@ -11,6 +11,7 @@ import { executeValidateMilestone } from "./tools/workflow-tool-executors.js";
 import { ensureDbOpen } from "./bootstrap/dynamic-tools.js";
 import { getLatestAssessmentByScope } from "./gsd-db.js";
 import { checkpointWorkflowDatabase } from "./db-workspace.js";
+import { formatVerdictRecordedNotice, formatVerdictRejectedNotice } from "./stop-notice.js";
 import {
   VALIDATION_VERDICTS,
   extractVerdict,
@@ -165,17 +166,17 @@ export async function handleVerdict(
   basePath: string,
 ): Promise<void> {
   if (!rawArgs.trim()) {
-    ctx.ui.notify(USAGE, "warning");
+    ctx.ui.notify(formatVerdictRejectedNotice(USAGE), "warning");
     return;
   }
 
   const parsed = parseArgs(rawArgs);
   if ("error" in parsed) {
-    ctx.ui.notify(`${parsed.error}\n${USAGE}`, "warning");
+    ctx.ui.notify(formatVerdictRejectedNotice(`${parsed.error}\n${USAGE}`), "warning");
     return;
   }
   if (!parsed.verdict) {
-    ctx.ui.notify(USAGE, "warning");
+    ctx.ui.notify(formatVerdictRejectedNotice(USAGE), "warning");
     return;
   }
 
@@ -184,7 +185,7 @@ export async function handleVerdict(
     const state = await deriveState(basePath);
     if (!state.activeMilestone) {
       ctx.ui.notify(
-        "No active milestone — pass --milestone Mxxx to target a specific milestone.",
+        formatVerdictRejectedNotice("No active milestone — pass --milestone Mxxx to target a specific milestone."),
         "warning",
       );
       return;
@@ -195,7 +196,9 @@ export async function handleVerdict(
   const existingValidation = await loadExistingValidation(basePath, milestoneId);
   if (!existingValidation) {
     ctx.ui.notify(
-      `No milestone validation found for ${milestoneId}. Run /gsd auto to validate first, then retry /gsd verdict.`,
+      formatVerdictRejectedNotice(
+        `No milestone validation found for ${milestoneId}. Run /gsd auto to validate first, then retry /gsd verdict.`,
+      ),
       "warning",
     );
     return;
@@ -205,7 +208,7 @@ export async function handleVerdict(
 
   if (parsed.verdict !== "pass" && !parsed.rationale) {
     ctx.ui.notify(
-      `--rationale is required when overriding to ${parsed.verdict}.`,
+      formatVerdictRejectedNotice(`--rationale is required when overriding to ${parsed.verdict}.`),
       "warning",
     );
     return;
@@ -234,7 +237,7 @@ export async function handleVerdict(
   if (result.isError) {
     const msg =
       result.content[0]?.type === "text" ? result.content[0].text : "Unknown error";
-    ctx.ui.notify(msg, "error");
+    ctx.ui.notify(formatVerdictRejectedNotice(msg), "error");
     return;
   }
 
@@ -244,12 +247,16 @@ export async function handleVerdict(
   const effectiveVerdict = extractEffectiveVerdict(result.details, parsed.verdict);
   if (effectiveVerdict !== parsed.verdict) {
     ctx.ui.notify(
-      `Milestone ${milestoneId} verdict requested: ${parsed.verdict}, effective: ${effectiveVerdict} (${existingValidation.source})`,
+      formatVerdictRecordedNotice(
+        `Milestone ${milestoneId} verdict requested: ${parsed.verdict}, effective: ${effectiveVerdict} (${existingValidation.source})`,
+      ),
       "warning",
     );
   } else {
     ctx.ui.notify(
-      `Milestone ${milestoneId} verdict: ${prevVerdict} -> ${effectiveVerdict} (${existingValidation.source})`,
+      formatVerdictRecordedNotice(
+        `Milestone ${milestoneId} verdict: ${prevVerdict} -> ${effectiveVerdict} (${existingValidation.source})`,
+      ),
       "success",
     );
   }

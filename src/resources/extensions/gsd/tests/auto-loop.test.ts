@@ -5421,6 +5421,114 @@ test("runUnitPhase retries 0-tool units with ordinary network-related assistant 
   assert.equal(deps.callLog.includes("pauseAuto"), false);
 });
 
+test("runUnitPhase pauses 0-tool units with pseudo tool-call text as serialization drift", async (t) => {
+  _resetPendingResolve();
+
+  const basePath = makeLoopTestBase("gsd-zero-tool-pseudo-tool-");
+  t.after(() => {
+    rmSync(basePath, { recursive: true, force: true });
+  });
+
+  const notifications: string[] = [];
+  const ctx = {
+    ...makeMockCtx(),
+    ui: {
+      notify: (msg: string) => { notifications.push(msg); },
+      setStatus: () => {},
+      setWorkingMessage: () => {},
+    },
+    sessionManager: {
+      getEntries: () => [],
+    },
+    modelRegistry: {
+      getProviderAuthMode: () => undefined,
+      isProviderRequestReady: () => true,
+    },
+  } as any;
+  const pi = {
+    ...makeMockPi(),
+    sendMessage: () => {
+      queueMicrotask(() => resolveAgentEnd(makeEvent([
+        {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: 'bash<arg_key>command</arg_key><arg_value>ls -la /tmp && echo "---SRC---"</arg_value></tool_call>',
+            },
+          ],
+        },
+      ])));
+    },
+  } as any;
+  const s = makeLoopSession({
+    basePath,
+    canonicalProjectRoot: basePath,
+    originalBasePath: basePath,
+  });
+  const mockLedger = {
+    version: 1,
+    projectStartedAt: Date.now(),
+    units: [] as any[],
+  };
+  const deps = makeMockDeps({
+    closeoutUnit: async () => {
+      mockLedger.units.push({
+        type: "execute-task",
+        id: "M001/S01/T01",
+        startedAt: s.currentUnit?.startedAt ?? Date.now(),
+        toolCalls: 0,
+        assistantMessages: 1,
+        tokens: { input: 100, output: 20, total: 120, cacheRead: 0, cacheWrite: 0 },
+        cost: 0.01,
+      });
+    },
+    getLedger: () => mockLedger,
+  });
+  let seq = 0;
+
+  const result = await runUnitPhase(
+    { ctx, pi, s, deps, prefs: undefined, iteration: 1, flowId: "flow-zero-tool-pseudo-tool", nextSeq: () => ++seq },
+    {
+      unitType: "execute-task",
+      unitId: "M001/S01/T01",
+      prompt: "do work",
+      finalPrompt: "do work",
+      pauseAfterUatDispatch: false,
+      state: {
+        phase: "executing",
+        activeMilestone: { id: "M001", title: "Milestone" },
+        activeSlice: { id: "S01", title: "Slice" },
+        activeTask: { id: "T01", title: "Task" },
+        registry: [{ id: "M001", title: "Milestone", status: "active" }],
+        recentDecisions: [],
+        blockers: [],
+        nextAction: "",
+        progress: { milestones: { done: 0, total: 1 } },
+        requirements: { active: 0, validated: 0, deferred: 0, outOfScope: 0, blocked: 0, total: 0 },
+      } as any,
+      mid: "M001",
+      midTitle: "Milestone",
+      isRetry: false,
+      previousTier: undefined,
+    },
+    { recentUnits: [{ key: "execute-task/M001/S01/T01" }], stuckRecoveryAttempts: 0, consecutiveFinalizeTimeouts: 0 },
+  );
+
+  assert.equal(result.action, "break");
+  assert.equal((result as any).reason, "zero-tool-serialization-drift");
+  assert.equal(deps.callLog.includes("pauseAuto"), true);
+  assert.equal(s.zeroToolRetryCount.has("execute-task/M001/S01/T01"), false);
+  assert.ok(
+    notifications.some((msg) => msg.includes("serialization drift") && msg.includes("bash<arg_key>command")),
+    "serialization drift notification should include a snippet of the pseudo tool-call text",
+  );
+  assert.ok(
+    !notifications.some((msg) => msg.includes("context exhaustion")),
+    "pseudo tool-call text should not be labeled as context exhaustion",
+  );
+});
+
 test("runUnitPhase pauses auto-mode when zero-tool-call retry is exhausted", async (t) => {
   _resetPendingResolve();
 

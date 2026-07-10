@@ -614,7 +614,9 @@ function createSummarizationOptions(
 ): SimpleStreamOptions {
 	const options: SimpleStreamOptions = { maxTokens, signal, apiKey, headers };
 	if (model.reasoning && thinkingLevel && thinkingLevel !== "off") {
-		options.reasoning = thinkingLevel;
+		// Summarization is a mechanical template-fill; extended reasoning adds
+		// cost, not quality. Cap at "low" regardless of session thinking level.
+		options.reasoning = "low";
 	}
 	return options;
 }
@@ -743,10 +745,29 @@ export async function generateSummary(
 	}
 
 	let runningSummary = previousSummary;
+	let degenerateRetriesUsed = 0;
+	// Messages from earlier chunks whose summarization came back degenerate and
+	// were therefore never folded into runningSummary. They are carried into the
+	// next chunk's input (bounded by the per-chunk budget) so their content still
+	// reaches the briefing, instead of leaving a hole (silently dropping the
+	// segment) or breaking out of the loop early (dropping every later chunk).
+	let carriedForward: AgentMessage[] = [];
 	for (const chunk of chunks) {
+		// Prepend any carried-forward messages, dropping the oldest first if the
+		// combined input would exceed the per-chunk budget: an oversized segment
+		// that failed to summarize can't be merged forward without risking a
+		// context-length error on the summarizer call.
+		const chunkTokens = chunk.reduce((total, m) => total + estimateSerializedTokens(m), 0);
+		let carriedTokens = carriedForward.reduce((total, m) => total + estimateSerializedTokens(m), 0);
+		while (carriedForward.length > 0 && carriedTokens + chunkTokens > chunkBudget) {
+			carriedTokens -= estimateSerializedTokens(carriedForward[0]!);
+			carriedForward = carriedForward.slice(1);
+		}
+		const chunkInput = carriedForward.length > 0 ? [...carriedForward, ...chunk] : chunk;
+
 		const summaryBeforeChunk = runningSummary;
 		let chunkSummary = await summarizeOnce(
-			chunk,
+			chunkInput,
 			model,
 			completionOptions,
 			customInstructions,
@@ -755,9 +776,14 @@ export async function generateSummary(
 			completeFn,
 		);
 
-		if (isDegenerateSummary(chunkSummary)) {
+		// A tiny chunk legitimately yields a short summary — retrying won't help.
+		// Cap retries at one per compaction run (not per chunk) so a large,
+		// already-expensive chunked run can't double its cost per chunk.
+		const chunkInputSize = serializeConversation(convertToLlm(chunkInput)).length;
+		if (isDegenerateSummary(chunkSummary) && degenerateRetriesUsed < 1 && chunkInputSize >= 100) {
+			degenerateRetriesUsed++;
 			chunkSummary = await summarizeOnce(
-				chunk,
+				chunkInput,
 				model,
 				completionOptions,
 				customInstructions,
@@ -769,6 +795,12 @@ export async function generateSummary(
 
 		if (!isDegenerateSummary(chunkSummary)) {
 			runningSummary = chunkSummary;
+			carriedForward = [];
+		} else {
+			// Keep the prior running summary and carry this segment's messages
+			// into the next chunk so a later successful summarization folds them
+			// in rather than silently dropping them.
+			carriedForward = chunkInput;
 		}
 	}
 

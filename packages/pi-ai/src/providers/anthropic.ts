@@ -945,11 +945,16 @@ function buildParams(
 
 	// For OAuth tokens, we MUST include Claude Code identity
 	if (isOAuthToken) {
+		// The cache breakpoint only needs to go on the LAST system block — a prefix
+		// match still hits cache for the constant block above it. Putting it on
+		// both blocks wastes one of Anthropic's four cache breakpoints on a
+		// ~10-token constant string.
+		const hasSystemPrompt = Boolean(context.systemPrompt);
 		params.system = [
 			{
 				type: "text",
 				text: "You are Claude Code, Anthropic's official CLI for Claude.",
-				...(cacheControl ? { cache_control: cacheControl } : {}),
+				...(!hasSystemPrompt && cacheControl ? { cache_control: cacheControl } : {}),
 			},
 		];
 		if (context.systemPrompt) {

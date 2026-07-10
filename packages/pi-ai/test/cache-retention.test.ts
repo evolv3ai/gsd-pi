@@ -228,6 +228,58 @@ describe("Cache Retention (PI_CACHE_RETENTION)", () => {
 			expect(capturedPayload).not.toBeNull();
 			expect(capturedPayload.system[0].cache_control).toEqual({ type: "ephemeral", ttl: "1h" });
 		});
+
+		it("should put a single cache_control breakpoint on the system prompt block for OAuth + systemPrompt", async () => {
+			const baseModel = getModel("anthropic", "claude-haiku-4-5");
+			let capturedPayload: any = null;
+
+			try {
+				const s = streamAnthropic(baseModel, context, {
+					apiKey: "sk-ant-oat-fake-oauth-key",
+					onPayload: stopAfterPayload((payload) => {
+						capturedPayload = payload;
+					}),
+				});
+
+				for await (const event of s) {
+					if (event.type === "error") break;
+				}
+			} catch {
+				// Expected to fail
+			}
+
+			expect(capturedPayload).not.toBeNull();
+			expect(capturedPayload.system).toHaveLength(2);
+			expect(capturedPayload.system[0].cache_control).toBeUndefined();
+			expect(capturedPayload.system[1].cache_control).toEqual({ type: "ephemeral" });
+		});
+
+		it("should keep the cache_control breakpoint on the constant block for OAuth without systemPrompt", async () => {
+			const baseModel = getModel("anthropic", "claude-haiku-4-5");
+			const contextNoSystemPrompt: Context = {
+				messages: [{ role: "user", content: "Hello", timestamp: Date.now() }],
+			};
+			let capturedPayload: any = null;
+
+			try {
+				const s = streamAnthropic(baseModel, contextNoSystemPrompt, {
+					apiKey: "sk-ant-oat-fake-oauth-key",
+					onPayload: stopAfterPayload((payload) => {
+						capturedPayload = payload;
+					}),
+				});
+
+				for await (const event of s) {
+					if (event.type === "error") break;
+				}
+			} catch {
+				// Expected to fail
+			}
+
+			expect(capturedPayload).not.toBeNull();
+			expect(capturedPayload.system).toHaveLength(1);
+			expect(capturedPayload.system[0].cache_control).toEqual({ type: "ephemeral" });
+		});
 	});
 
 	describe("OpenAI Responses Provider", () => {

@@ -9,7 +9,7 @@ import { join } from "node:path";
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { normalizeRealPath, relMilestoneFile, relSliceFile, resolveMilestoneFile, targetMilestoneFile } from "../paths.ts";
+import { normalizeRealPath, relMilestoneFile, relSliceFile, resolveMilestoneFile, resolveSliceFile, targetMilestoneFile } from "../paths.ts";
 
 function makeFlatPhaseFixture(): { basePath: string; cleanup: () => void } {
   const basePath = mkdtempSync(join(tmpdir(), "flat-phase-validation-"));
@@ -97,6 +97,25 @@ test("flat-phase: resolveMilestoneFile finds the on-disk file", (t) => {
   assert.ok(abs, "resolveMilestoneFile must return a path for the flat-phase fixture");
   assert.equal(abs!.endsWith("/.gsd/phases/01-foo/01-VALIDATION.md"), true);
   assert.equal(existsSync(abs!), true);
+});
+
+test("flat-phase: file resolvers ignore directories with artifact-like names", (t) => {
+  const basePath = mkdtempSync(join(tmpdir(), "flat-phase-dir-artifacts-"));
+  t.after(() => rmSync(basePath, { recursive: true, force: true }));
+  const phaseDir = join(basePath, ".gsd", "phases", "03-match-capture-manual-entry");
+  mkdirSync(join(phaseDir, "03-VALIDATION.md"), { recursive: true });
+  mkdirSync(join(phaseDir, "03-01-SUMMARY.md"), { recursive: true });
+
+  assert.equal(
+    resolveMilestoneFile(basePath, "M003", "VALIDATION"),
+    null,
+    "milestone resolver must not return a directory as a validation file",
+  );
+  assert.equal(
+    resolveSliceFile(basePath, "M003", "S01", "SUMMARY"),
+    null,
+    "slice resolver must not return a directory as a summary file",
+  );
 });
 
 test("flat-phase: the legacy hardcoded path does NOT resolve (regression for #876)", (t) => {

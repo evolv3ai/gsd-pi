@@ -775,6 +775,27 @@ describe("prompt-budget: execute-task inline cap (039)", () => {
 });
 
 describe("prompt-budget: discuss-slice inline cap (039)", () => {
+  it("prepends the configured response language", async () => {
+    const base = createFixtureBase();
+    const gsdHome = mkdtempSync(join(tmpdir(), "gsd-discuss-slice-language-home-"));
+    const previousGsdHome = process.env.GSD_HOME;
+    process.env.GSD_HOME = gsdHome;
+
+    try {
+      writeFileSync(join(gsdHome, "PREFERENCES.md"), "---\nversion: 1\nlanguage: 中文\n---\n", "utf-8");
+      mkdirSync(join(base, ".gsd", "milestones", "M001", "slices", "S01"), { recursive: true });
+
+      const prompt = await buildDiscussSlicePrompt("M001", "S01", "Current", base);
+
+      assert.match(prompt, /^## Response Language\n\nAlways respond in 中文/);
+    } finally {
+      if (previousGsdHome === undefined) delete process.env.GSD_HOME;
+      else process.env.GSD_HOME = previousGsdHome;
+      cleanup(base);
+      cleanup(gsdHome);
+    }
+  });
+
   it("caps the inlined block — roadmap survives first, the trailing decisions register truncates", async () => {
     const base = createFixtureBase();
     try {

@@ -22,3 +22,10 @@ test("validate-milestone prompt routes verification class analysis into verifica
   assert.match(prompt, /If Reviewer C omitted a planned class, reconstruct the missing row/i);
   assert.match(prompt, /Do not call `gsd_validate_milestone` with a partial `verificationClasses` table/i);
 });
+
+test("validate-milestone prompt forbids reading phase directories as files", () => {
+  assert.match(prompt, /find \.gsd -type f/i);
+  assert.match(prompt, /\.gsd\/phases\/<NN>-<slug>\/` is a directory, not an artifact/i);
+  assert.match(prompt, /never pass a phase, slice, `tasks\/`, or `slices\/` directory/i);
+  assert.doesNotMatch(prompt, /Read a full SUMMARY under `\.gsd\/milestones\/\{\{milestoneId\}\}\/slices\/`/i);
+});

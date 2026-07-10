@@ -1,4 +1,5 @@
 import {
+	type CacheRetention,
 	type ImageContent,
 	type Message,
 	type Model,
@@ -116,6 +117,8 @@ export interface AgentOptions {
 	transport?: Transport;
 	maxRetryDelayMs?: number;
 	toolExecution?: ToolExecutionMode;
+	/** Prompt cache retention preference forwarded to the stream function. Default: "short". */
+	cacheRetention?: CacheRetention;
 }
 
 class PendingMessageQueue {
@@ -202,6 +205,8 @@ export class Agent {
 	public maxRetryDelayMs?: number;
 	/** Tool execution strategy for assistant messages that contain multiple tool calls. */
 	public toolExecution: ToolExecutionMode;
+	/** Prompt cache retention preference forwarded to the stream function. */
+	public cacheRetention?: CacheRetention;
 
 	constructor(options: AgentOptions = {}) {
 		this._state = createMutableAgentState(options.initialState);
@@ -222,6 +227,7 @@ export class Agent {
 		this.transport = options.transport ?? "auto";
 		this.maxRetryDelayMs = options.maxRetryDelayMs;
 		this.toolExecution = options.toolExecution ?? "parallel";
+		this.cacheRetention = options.cacheRetention;
 	}
 
 	/**
@@ -436,6 +442,7 @@ export class Agent {
 			transport: this.transport,
 			thinkingBudgets: this.thinkingBudgets,
 			maxRetryDelayMs: this.maxRetryDelayMs,
+			cacheRetention: this.cacheRetention,
 			toolExecution: this.toolExecution,
 			beforeToolCall: this.beforeToolCall,
 			afterToolCall: this.afterToolCall,

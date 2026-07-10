@@ -283,6 +283,23 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	describe("cacheRetention", () => {
+		it("should default to undefined (provider default 'short')", () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getCacheRetention()).toBeUndefined();
+		});
+
+		it("should persist and reload the cacheRetention setting", async () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+			manager.setCacheRetention("long");
+			expect(manager.getCacheRetention()).toBe("long");
+			await manager.flush();
+
+			const reloaded = SettingsManager.create(projectDir, agentDir);
+			expect(reloaded.getCacheRetention()).toBe("long");
+		});
+	});
+
 	describe("terminal.toolsExpanded", () => {
 		it("should default to expanded for fresh installs and projects", () => {
 			const manager = SettingsManager.create(projectDir, agentDir);

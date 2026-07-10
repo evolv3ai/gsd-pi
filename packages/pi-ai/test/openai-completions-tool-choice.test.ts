@@ -365,6 +365,74 @@ describe("openai-completions tool_choice", () => {
 		expect(params.tool_stream).toBeUndefined();
 	});
 
+	it("parses z.ai text-serialized tool calls emitted as assistant text", async () => {
+		mockState.chunks = [
+			{
+				id: "chatcmpl-zai-text-tool",
+				choices: [
+					{
+						delta: {
+							content:
+								'bash<arg_key>command</arg_key><arg_value>ls -la /tmp && echo "---SRC---"</arg_value></tool_call>',
+						},
+						finish_reason: null,
+					},
+				],
+			},
+			{
+				id: "chatcmpl-zai-text-tool",
+				choices: [{ delta: {}, finish_reason: "stop" }],
+				usage: {
+					prompt_tokens: 10,
+					completion_tokens: 6,
+					prompt_tokens_details: { cached_tokens: 0 },
+					completion_tokens_details: { reasoning_tokens: 0 },
+				},
+			},
+		];
+
+		const model = getModel("openrouter", "z-ai/glm-5")!;
+		const tool: Tool = {
+			name: "bash",
+			description: "Run a shell command",
+			parameters: Type.Object({
+				command: Type.String(),
+			}),
+		};
+		const s = streamSimple(
+			model,
+			{
+				messages: [
+					{
+						role: "user",
+						content: "List the project files",
+						timestamp: Date.now(),
+					},
+				],
+				tools: [tool],
+			},
+			{ apiKey: "test" },
+		);
+
+		const eventTypes: string[] = [];
+		for await (const event of s) {
+			eventTypes.push(event.type);
+		}
+
+		const response = await s.result();
+		expect(response.stopReason).toBe("toolUse");
+		expect(response.content).toEqual([
+			{
+				type: "toolCall",
+				id: "call_zai_text_0",
+				name: "bash",
+				arguments: { command: 'ls -la /tmp && echo "---SRC---"' },
+			},
+		]);
+		expect(eventTypes).toContain("toolcall_start");
+		expect(eventTypes).toContain("toolcall_end");
+	});
+
 	it("maps non-standard provider finish_reason values to stopReason error", async () => {
 		mockState.chunks = [
 			{

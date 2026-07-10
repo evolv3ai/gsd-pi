@@ -2126,11 +2126,12 @@ function wrapServerWithErrorHandler(realServer: McpToolServer): McpToolServer {
 
 export interface RegisterWorkflowToolsOptions {
   /**
-   * Whether to advertise the 14 backwards-compatibility alias tools in the
+   * Whether to advertise the 17 backwards-compatibility alias tools in the
    * server's tool list. Defaults to `true` so in-process callers (e.g. the
    * daemon's handler map) keep resolving alias names. The MCP subprocess
-   * passes `false` to drop ~5.6K tokens/turn of duplicate alias schemas from
-   * the model-facing surface; canonical names are always registered.
+   * passes `false` by default to drop ~6.8K tokens/turn of duplicate alias
+   * schemas from the model-facing surface; canonical names are always
+   * registered.
    */
   advertiseAliases?: boolean;
 }

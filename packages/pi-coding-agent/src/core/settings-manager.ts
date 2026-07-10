@@ -1,4 +1,4 @@
-import type { Transport } from "@gsd/pi-ai";
+import type { CacheRetention, Transport } from "@gsd/pi-ai";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
@@ -65,6 +65,14 @@ export interface WarningSettings {
 export type TransportSetting = Transport;
 
 /**
+ * Prompt cache TTL preference. "long" (1h) trades a higher cache-write price
+ * for cache survival across gaps longer than the default 5-minute TTL — it
+ * pays off for sessions (e.g. long-running auto-mode) with >5-minute gaps
+ * between turns. Default: "short".
+ */
+export type CacheRetentionSetting = CacheRetention;
+
+/**
  * Package source for npm/git packages.
  * - String form: load all resources from the package
  * - Object form: filter which resources to load
@@ -85,6 +93,7 @@ export interface Settings {
 	defaultModel?: string;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 	transport?: TransportSetting; // default: "auto"
+	cacheRetention?: CacheRetentionSetting; // default: "short"; "long" pays a higher cache-write price but survives >5-minute gaps
 	steeringMode?: "all" | "one-at-a-time";
 	followUpMode?: "all" | "one-at-a-time";
 	theme?: string;
@@ -690,6 +699,16 @@ export class SettingsManager {
 	setTransport(transport: TransportSetting): void {
 		this.globalSettings.transport = transport;
 		this.markModified("transport");
+		this.save();
+	}
+
+	getCacheRetention(): CacheRetentionSetting | undefined {
+		return this.settings.cacheRetention;
+	}
+
+	setCacheRetention(cacheRetention: CacheRetentionSetting): void {
+		this.globalSettings.cacheRetention = cacheRetention;
+		this.markModified("cacheRetention");
 		this.save();
 	}
 

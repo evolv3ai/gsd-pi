@@ -202,6 +202,7 @@ Recommended verification order:
 - If a server is team-shared and safe to commit, `.mcp.json` is usually the better home.
 - If a server depends on machine-local paths, personal services, or local-only secrets, prefer `.gsd/mcp.json`.
 - For the built-in `gsd-workflow` server, set `GSD_WORKFLOW_PROJECT_ROOT` to the canonical project root when launching from a worktree or wrapper. The packaged server uses it for workflow tool paths and the per-project stale-process registry at `$GSD_HOME/mcp-instances.json`.
+- The packaged `gsd-workflow` MCP server exposes canonical workflow tool names by default. Set `GSD_MCP_ADVERTISE_ALIASES=1` only for clients that still call legacy alias names. Native in-process GSD tools use `GSD_ADVERTISE_TOOL_ALIASES=1` instead.
 - Claude Code sessions that require GSD workflow tools are fail-closed: GSD preflights the same inline `mcpServers.gsd-workflow` entry passed to the Claude SDK, and if `gsd-workflow` is absent, still pending, failed, disabled, missing required tools at startup, or cannot be probed, GSD aborts the unit before the first model turn and retries instead of allowing tool calls against an incomplete surface. Timeout diagnostics include the last MCP probe error when available.
 
 ### Per-Model MCP Filtering
@@ -278,6 +279,9 @@ With this configuration, a Haiku-4-5 subagent sees only `gsd-workflow` and `goog
 | `GSD_WORKFLOW_PROJECT_ROOT` | current working directory | Canonical project root for the packaged `gsd-workflow` MCP server. Used by workflow tools and by the stale-process registry key in `$GSD_HOME/mcp-instances.json`. |
 | `GSD_WORKFLOW_EXECUTORS_MODULE` | auto-discovered when possible | Optional absolute path or `file:` URL for the shared workflow executor module used by `gsd-workflow` mutation tools. |
 | `GSD_WORKFLOW_WRITE_GATE_MODULE` | auto-discovered when possible | Optional absolute path or `file:` URL for the shared write-gate module used by `gsd-workflow` mutation tools. |
+| `GSD_MCP_ADVERTISE_ALIASES` | (unset) | Set to literal `1` to include legacy workflow aliases in the packaged `gsd-workflow` MCP server's `tools/list`. Unset keeps the MCP surface canonical-only to avoid duplicate schemas. |
+| `GSD_MCP_HIDE_ALIASES` | (unset) | Legacy force-hide switch. Set to literal `1` to keep packaged MCP aliases hidden even when `GSD_MCP_ADVERTISE_ALIASES=1`. |
+| `GSD_ADVERTISE_TOOL_ALIASES` | (unset) | Set to literal `1` to register legacy workflow aliases on the native in-process GSD tool surface, including `gsd --mode mcp`. This does not affect `gsd-workflow`; use `GSD_MCP_ADVERTISE_ALIASES` for the packaged MCP server. |
 | `GSD_CURSOR_DISABLE` | (unset) | Set to literal `1` to disable the bundled `cursor-agent` model provider. |
 | `GSD_CURSOR_DEBUG` | (unset) | Set to any value to print Cursor Agent readiness probe diagnostics to stderr. |
 | `CURSOR_AGENT_BIN` | `cursor-agent` | Optional command or absolute path for the Cursor Agent CLI when it is not on `PATH`. |

@@ -252,6 +252,11 @@ export async function showInterviewRound(
 		let previewTotal = 0;
 		function resetPreviewScroll() { previewScroll = 0; }
 
+		let optionsScroll = 0;
+		let optionsViewport = 0;
+		let optionsTotal = 0;
+		function resetOptionsScroll() { optionsScroll = 0; }
+
 		function finish(result: RoundResult) {
 			if (completed) return;
 			completed = true;
@@ -318,6 +323,7 @@ export async function showInterviewRound(
 			saveEditorToState();
 			currentIdx = newIdx;
 			resetPreviewScroll();
+			resetOptionsScroll();
 			loadStateToEditor();
 			focusNotes = states[currentIdx].notesVisible && states[currentIdx].notes.length > 0;
 			refresh();
@@ -464,20 +470,39 @@ export async function showInterviewRound(
 				if (matchesKey(data, Key.right)) { switchQuestion((currentIdx + 1) % questions.length); return; }
 			}
 
-			// ── Preview scrolling ────────────────────────────────────────
+			// ── Side-by-side panel scrolling ─────────────────────────────
 			if (matchesKey(data, Key.pageUp)) {
-				if (previewScroll > 0) { previewScroll = Math.max(0, previewScroll - previewViewport); refresh(); }
+				let didScroll = false;
+				if (optionsScroll > 0) {
+					optionsScroll = Math.max(0, optionsScroll - optionsViewport);
+					didScroll = true;
+				}
+				if (previewScroll > 0) {
+					previewScroll = Math.max(0, previewScroll - previewViewport);
+					didScroll = true;
+				}
+				if (didScroll) refresh();
 				return;
 			}
 			if (matchesKey(data, Key.pageDown)) {
+				let didScroll = false;
+				const maxOptionsScroll = Math.max(0, optionsTotal - optionsViewport);
+				if (optionsScroll < maxOptionsScroll) {
+					optionsScroll = Math.min(maxOptionsScroll, optionsScroll + optionsViewport);
+					didScroll = true;
+				}
 				const maxScroll = Math.max(0, previewTotal - previewViewport);
-				if (previewScroll < maxScroll) { previewScroll = Math.min(maxScroll, previewScroll + previewViewport); refresh(); }
+				if (previewScroll < maxScroll) {
+					previewScroll = Math.min(maxScroll, previewScroll + previewViewport);
+					didScroll = true;
+				}
+				if (didScroll) refresh();
 				return;
 			}
 
 			// ── Cursor navigation ────────────────────────────────────────
-			if (matchesKey(data, Key.up)) { st.cursorIndex = (st.cursorIndex - 1 + optCount) % optCount; resetPreviewScroll(); refresh(); return; }
-			if (matchesKey(data, Key.down)) { st.cursorIndex = (st.cursorIndex + 1) % optCount; resetPreviewScroll(); refresh(); return; }
+			if (matchesKey(data, Key.up)) { st.cursorIndex = (st.cursorIndex - 1 + optCount) % optCount; resetPreviewScroll(); resetOptionsScroll(); refresh(); return; }
+			if (matchesKey(data, Key.down)) { st.cursorIndex = (st.cursorIndex + 1) % optCount; resetPreviewScroll(); resetOptionsScroll(); refresh(); return; }
 
 			if (multiSel) {
 				const doneI = noneOrDoneIdx(currentIdx);
@@ -695,6 +720,8 @@ export async function showInterviewRound(
 			// No scrollable preview unless the side-by-side path sets these below.
 			previewTotal = 0;
 			previewViewport = 0;
+			optionsTotal = 0;
+			optionsViewport = 0;
 
 			if (useSideBySide) {
 				// ── Preview path ──────────────────────────────────────
@@ -734,10 +761,21 @@ export async function showInterviewRound(
 				const leftWidth = Math.max(MIN_OPTIONS_WIDTH, contentWidth - previewWidth - DIVIDER_WIDTH);
 
 				const fullLeft = renderOptionsColumn(leftWidth);
-				const leftLines = fullLeft.slice(0, maxBody);
+				optionsTotal = fullLeft.length;
+				optionsViewport = maxBody;
+				const maxOptionsScroll = Math.max(0, fullLeft.length - maxBody);
+				if (optionsScroll > maxOptionsScroll) optionsScroll = maxOptionsScroll;
+
+				const leftLines = fullLeft.slice(optionsScroll, optionsScroll + maxBody);
 				if (fullLeft.length > maxBody) {
-					const n = fullLeft.length - maxBody + 1;
-					leftLines[maxBody - 1] = scrollIndicator(`+${n} lines hidden`, leftWidth);
+					const hiddenAbove = optionsScroll;
+					const hiddenBelow = fullLeft.length - (optionsScroll + maxBody);
+					if (hiddenAbove > 0) {
+						leftLines[0] = scrollIndicator(`▲ ${hiddenAbove} more`, leftWidth);
+					}
+					if (hiddenBelow > 0) {
+						leftLines[leftLines.length - 1] = scrollIndicator(`▼ ${hiddenBelow} more · PgUp/PgDn`, leftWidth);
+					}
 				}
 
 				const preview = getCurrentPreview();
@@ -791,6 +829,7 @@ export async function showInterviewRound(
 					hints.push(isLast && allAnswered() ? "enter to review" : "enter to next");
 				}
 				if (previewTotal > previewViewport) hints.push("pgup/pgdn scroll preview");
+				if (optionsTotal > optionsViewport) hints.push("pgup/pgdn scroll options");
 				hints.push("esc to exit");
 				const footer = ui.hints(hints)[0] ?? "";
 

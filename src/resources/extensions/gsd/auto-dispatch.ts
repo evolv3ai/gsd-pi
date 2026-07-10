@@ -1956,6 +1956,7 @@ function applyLanguageDirectiveToDispatch(
   if (action.action !== "dispatch" || !action.prompt) return action;
   const directive = renderLanguageDirectiveForPrompt(prefs);
   if (!directive) return action;
+  if (action.prompt.startsWith(directive)) return action;
   return { ...action, prompt: `${directive}\n\n${action.prompt}` };
 }
 

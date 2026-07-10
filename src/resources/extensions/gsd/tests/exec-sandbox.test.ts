@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -147,6 +147,38 @@ test('runExecSandbox: node runtime executes JS', async () => {
     );
     assert.equal(result.exit_code, 0);
     assert.ok(result.digest.includes('node-ok:3'));
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('runExecSandbox: node runtime forwards NODE_PATH for GSD-installed dependencies', async () => {
+  const base = freshBase();
+  try {
+    const dependencyRoot = join(base, 'parent-node_modules');
+    const packageDir = join(dependencyRoot, 'fake-gsd-dep');
+    const worktree = join(base, 'project', '.gsd', 'worktrees', 'M003');
+    mkdirSync(packageDir, { recursive: true });
+    mkdirSync(worktree, { recursive: true });
+    writeFileSync(
+      join(packageDir, 'package.json'),
+      JSON.stringify({ name: 'fake-gsd-dep', version: '1.0.0', main: 'index.js' }),
+    );
+    writeFileSync(join(packageDir, 'index.js'), "module.exports = 'resolved-via-node-path';\n");
+
+    const result = await runExecSandbox(
+      { runtime: 'node', script: "console.log(require('fake-gsd-dep'))" },
+      baseOpts(worktree, {
+        env: {
+          PATH: '/usr/bin:/bin',
+          HOME: '/tmp',
+          NODE_PATH: dependencyRoot,
+        },
+      }),
+    );
+
+    assert.equal(result.exit_code, 0, readFileSync(result.stderr_path, 'utf-8'));
+    assert.ok(result.digest.includes('resolved-via-node-path'));
   } finally {
     cleanup(base);
   }

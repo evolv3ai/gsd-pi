@@ -25,8 +25,16 @@ function makeMockPi() {
 
 console.log('\n── Tool naming: registration count ──');
 
+// Aliases are hidden from the model-facing surface by default (plan 035);
+// opt in here so this file can keep exercising alias-registration behavior.
+const previousAdvertiseAliases = process.env.GSD_ADVERTISE_TOOL_ALIASES;
+process.env.GSD_ADVERTISE_TOOL_ALIASES = "1";
+
 const pi = makeMockPi();
 registerDbTools(pi);
+
+if (previousAdvertiseAliases === undefined) delete process.env.GSD_ADVERTISE_TOOL_ALIASES;
+else process.env.GSD_ADVERTISE_TOOL_ALIASES = previousAdvertiseAliases;
 const toolByName = new Map<string, any>(pi.tools.map((tool: any) => [tool.name, tool]));
 const registeredCanonicalNames = new Set<string>(
   WORKFLOW_TOOL_CONTRACTS

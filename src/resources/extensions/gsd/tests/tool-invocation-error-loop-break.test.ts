@@ -47,6 +47,7 @@ describe("#2883: tool invocation error tracking on AutoSession", () => {
 import {
   isDeterministicPolicyError,
   isPendingUserApprovalGateError,
+  isScheduleWakeupContinuationError,
   isToolInvocationError,
   isToolUnavailableError,
   isQueuedUserMessageSkip,
@@ -116,6 +117,24 @@ describe("#2883: isToolInvocationError classification", () => {
 
   test("detects 'Invalid arguments for tool' prefix", () => {
     assert.equal(isToolInvocationError("Invalid arguments for tool gsd_slice_complete"), true);
+  });
+
+  test("scopes conditional required-field validation to ScheduleWakeup", () => {
+    const error = "`prompt` is required when `stop` is not true";
+
+    assert.equal(isToolInvocationError(error), false);
+    assert.equal(
+      isScheduleWakeupContinuationError("ScheduleWakeup", error),
+      true,
+    );
+    assert.equal(isScheduleWakeupContinuationError("read", error), false);
+    assert.equal(
+      isScheduleWakeupContinuationError(
+        "ScheduleWakeup",
+        "`evidence` is required when `status` is blocking",
+      ),
+      false,
+    );
   });
 
   test("detects 'No such tool available' error", () => {

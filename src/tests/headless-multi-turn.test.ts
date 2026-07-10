@@ -60,3 +60,14 @@ test('new-milestone without --auto keeps the normal guided-flow auto handoff', (
     '/gsd new-milestone',
   )
 })
+
+test('headless slash command assembly preserves multi-word argv tokens (#1372)', () => {
+  assert.equal(
+    buildHeadlessSlashCommand({
+      command: 'verdict',
+      commandArgs: ['pass', '--rationale', '1297 regression check: flag must reach the slash command'],
+      auto: false,
+    }),
+    '/gsd verdict pass --rationale "1297 regression check: flag must reach the slash command"',
+  )
+})
