@@ -1653,6 +1653,54 @@ test("autoLoop stops before dispatch when command context lacks newSession", asy
   }
 });
 
+test("autoLoop commits open unit work when command context lacks newSession", async () => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  const pi = makeMockPi();
+  const s = makeLoopSession({
+    cmdCtx: {
+      getContextUsage: () => ({ percent: 10, tokens: 1000, limit: 10000 }),
+    },
+    currentUnit: { type: "execute-task", id: "T01", startedAt: Date.now() },
+  });
+  const outputPath = join(s.basePath, "executor-output.txt");
+  let autoCommitArgs: { unitType: string; unitId: string } | undefined;
+  let preserveWorktree: boolean | undefined;
+
+  try {
+    const deps = makeMockDeps({
+      autoCommitUnit: async (basePath, unitType, unitId) => {
+        autoCommitArgs = { unitType, unitId };
+        return autoCommitCurrentBranch(basePath, unitType, unitId);
+      },
+      stopAuto: async (_ctx, _pi, _reason, options) => {
+        preserveWorktree = options?.preserveWorktree;
+        s.active = false;
+      },
+      deriveState: async () => {
+        throw new Error("deriveState should not run without command session support");
+      },
+    });
+
+    writeFileSync(outputPath, "open unit work before stop\n", "utf-8");
+
+    await autoLoop(ctx, pi, s, deps);
+
+    assert.deepEqual(autoCommitArgs, { unitType: "execute-task", unitId: "T01" });
+    assert.equal(preserveWorktree, true);
+    const committed = execSync("git show HEAD:executor-output.txt", {
+      cwd: s.basePath,
+      encoding: "utf-8",
+    });
+    assert.equal(committed, "open unit work before stop\n");
+    assert.equal(pi.calls.length, 0);
+  } finally {
+    rmSync(s.basePath, { recursive: true, force: true });
+  }
+});
+
 test("autoLoop snapshots dirty work when unit dispatch crashes", async () => {
   _resetPendingResolve();
 
