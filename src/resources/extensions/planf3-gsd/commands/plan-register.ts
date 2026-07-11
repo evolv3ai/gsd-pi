@@ -6,7 +6,7 @@
  */
 
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
-import { runPlan } from "./plan.js";
+import { runPlan, type BuildChainFlags } from "./plan.js";
 import { friendlyError } from "./error-message.js";
 import { emit } from "../gsd/notify.js";
 
@@ -68,6 +68,49 @@ export function registerPlanCommand(pi: ExtensionAPI, deps: PlanCommandDeps = {}
         emit(
           ctx,
           `Queued a planf3 planning turn (skill: ${outcome.skillPath}).\nchain=planf3_gsd_export → specs/<name>.gsd.md + <name>.manifest.json, no milestone.\nFire-and-forget: watch the agent's reply, or /planf3-gsd-status.`,
+          "info",
+        );
+      } catch (err) {
+        emit(ctx, friendlyError(err), "error");
+      }
+    },
+  });
+}
+
+const RUN_USAGE = 'Usage: /planf3-gsd-run "<request>" [--step] [--questionable] [--no-prefs] [--force] [--step-unsafe]';
+const RUN_FLAGS = ["--questionable", "--step", "--no-prefs", "--force", "--step-unsafe"] as const;
+
+export function registerRunCommand(pi: ExtensionAPI, deps: PlanCommandDeps = {}): void {
+  pi.registerCommand("planf3-gsd-run", {
+    description: "End-to-end: plan with planf3, export, create the GSD milestone, and start GSD.",
+    async handler(args, ctx) {
+      try {
+        const { request, flags } = parseRequestArgs(args, RUN_FLAGS);
+        if (!request) {
+          emit(ctx, RUN_USAGE, "error");
+          return;
+        }
+        const buildFlags: BuildChainFlags = {
+          auto: !flags.has("--step"),
+          applyPrefs: !flags.has("--no-prefs"),
+          force: flags.has("--force"),
+          allowUnsafeStep: flags.has("--step-unsafe"),
+        };
+        const outcome = await runPlan({
+          cwd: deps.cwd ?? process.cwd(),
+          ...(deps.homeDir !== undefined ? { homeDir: deps.homeDir } : {}),
+          request,
+          questionable: flags.has("--questionable"),
+          chain: { target: "build", flags: buildFlags },
+        });
+        if (!outcome.ok) {
+          emit(ctx, outcome.guidance, "error");
+          return;
+        }
+        pi.sendUserMessage(outcome.prompt, { deliverAs: "followUp" });
+        emit(
+          ctx,
+          `Queued a planf3 plan+build turn (skill: ${outcome.skillPath}).\nchain=planf3_gsd_build auto=${buildFlags.auto} applyPrefs=${buildFlags.applyPrefs} force=${buildFlags.force} allowUnsafeStep=${buildFlags.allowUnsafeStep}\nFire-and-forget: watch the agent's reply, /planf3-gsd-status, and .gsd/planf3-gsd-evals.jsonl.`,
           "info",
         );
       } catch (err) {

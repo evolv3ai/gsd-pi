@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
-import { parseRequestArgs, registerPlanCommand } from "./plan-register.js";
+import { parseRequestArgs, registerPlanCommand, registerRunCommand } from "./plan-register.js";
 import { SKILL_MISSING_GUIDANCE } from "./plan.js";
 
 const RUN_FLAGS = ["--questionable", "--step", "--no-prefs", "--force", "--step-unsafe"];
@@ -150,5 +150,75 @@ describe("registerPlanCommand", () => {
     await handler("--questionable add dark mode", ctx);
     assert.ok(sent[0]!.content.includes("QUESTIONABLE: true"));
     assert.ok(sent[0]!.content.includes("USER_PROMPT: add dark mode"));
+  });
+});
+
+describe("registerRunCommand", () => {
+  async function setup(withSkill: boolean) {
+    const cwd = await mkdtemp(join(tmpdir(), "planf3-cwd-"));
+    const home = await mkdtemp(join(tmpdir(), "planf3-home-"));
+    const skillPath = withSkill ? await makeSkillDir(cwd) : null;
+    const fake = makeFakePi();
+    registerRunCommand(fake.pi, { cwd, homeDir: home });
+    const handler = fake.commands.get("planf3-gsd-run");
+    assert.ok(handler, "command registered");
+    return { ...fake, handler: handler!, skillPath };
+  }
+
+  test("empty request → usage error, no injection", async () => {
+    const { handler, sent } = await setup(true);
+    const { ctx, emitted } = makeCtx();
+    await handler("  --force  ", ctx);
+    assert.equal(sent.length, 0);
+    assert.equal(emitted[0]!.type, "error");
+    assert.match(emitted[0]!.message, /^Usage: \/planf3-gsd-run/);
+  });
+
+  test("missing skill → FR-1 guidance, sendUserMessage never called", async () => {
+    const { handler, sent } = await setup(false);
+    const { ctx, emitted } = makeCtx();
+    await handler("build me an app", ctx);
+    assert.equal(sent.length, 0);
+    assert.equal(emitted[0]!.message, SKILL_MISSING_GUIDANCE);
+  });
+
+  test("defaults: one followUp injection chaining the build tool with auto=true", async () => {
+    const { handler, sent, skillPath } = await setup(true);
+    const { ctx, emitted } = makeCtx();
+    await handler("build me an app", ctx);
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0]!.options, { deliverAs: "followUp" });
+    const prompt = sent[0]!.content;
+    assert.ok(prompt.includes(skillPath!));
+    assert.ok(prompt.includes("USER_PROMPT: build me an app"));
+    assert.ok(prompt.includes("planf3_gsd_build"));
+    assert.ok(!prompt.includes("planf3_gsd_export"));
+    assert.ok(prompt.includes("auto=true"));
+    assert.ok(prompt.includes("applyPrefs=true"));
+    assert.ok(prompt.includes("force=false"));
+    assert.ok(prompt.includes("allowUnsafeStep=false"));
+    assert.equal(emitted[0]!.type, "info");
+  });
+
+  test("flag mapping: --step --no-prefs --force --step-unsafe --questionable", async () => {
+    const { handler, sent } = await setup(true);
+    const { ctx } = makeCtx();
+    await handler("--step --no-prefs --force --step-unsafe --questionable rebuild the parser", ctx);
+    const prompt = sent[0]!.content;
+    assert.ok(prompt.includes("USER_PROMPT: rebuild the parser"));
+    assert.ok(prompt.includes("QUESTIONABLE: true"));
+    assert.ok(prompt.includes("auto=false"));
+    assert.ok(prompt.includes("applyPrefs=false"));
+    assert.ok(prompt.includes("force=true"));
+    assert.ok(prompt.includes("allowUnsafeStep=true"));
+  });
+
+  test("--step alone maps to auto=false with allowUnsafeStep=false (gate fires downstream)", async () => {
+    const { handler, sent } = await setup(true);
+    const { ctx } = makeCtx();
+    await handler("rebuild the parser --step", ctx);
+    const prompt = sent[0]!.content;
+    assert.ok(prompt.includes("auto=false"));
+    assert.ok(prompt.includes("allowUnsafeStep=false"));
   });
 });
