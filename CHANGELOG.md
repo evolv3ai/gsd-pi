@@ -17,6 +17,7 @@ This changelog starts from the `open-gsd/gsd-pi` ownership baseline. Earlier pro
 - **gsd**: add task rework briefs
 
 ### Fixed
+- **skills**: omit legacy gsd-core v1 skills without hiding unrelated installed skills
 - **gsd**: only persist rework resolutions that satisfy the evidence gate
 - **gsd**: keep rework blocking gate intact on save and rollback
 - **gsd**: serialize write-gate snapshot read-merge-write across processes

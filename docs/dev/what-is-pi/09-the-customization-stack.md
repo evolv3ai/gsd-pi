@@ -53,6 +53,11 @@ On-demand capability packages following the [Agent Skills standard](https://agen
 - `~/.agents/skills/` (global ecosystem)
 - `~/.claude/skills/` and `.claude/skills/` (Claude Code compatibility, lower precedence)
 
+The loader omits legacy `gsd-*` skills owned by the separate
+`@opengsd/gsd-core` runtime, whether discovered in a package checkout, a copied
+installer layout, or through a symlink. Other skills colocated with that runtime
+and independently authored `gsd-*` skills remain in the catalog.
+
 **Preference reference resolution** (bare skill names in `PREFERENCES.md`) scans
 `~/.gsd/agent/skills/` before ecosystem directories so bundled GSD skills win
 when resolving preference refs — even though a project-local skill with the same
