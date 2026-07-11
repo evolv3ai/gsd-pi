@@ -29,6 +29,12 @@ gsd /planf3-gsd-build my-plan.html --auto
 
 # 4. See where the build is at any time
 gsd /planf3-gsd-status
+
+# 5. No HTML yet? Plan from a request (agent runs planf3, then exports)
+gsd /planf3-gsd-plan "add dark mode to settings"
+
+# 6. End-to-end: plan, export, create milestone, start GSD auto mode
+gsd /planf3-gsd-run "add dark mode to settings"
 ```
 
 After `/planf3-gsd-build` the workspace contains:
@@ -56,6 +62,38 @@ it. Does not touch GSD state. Re-run to refresh both files after the
 Planf3 plan changes.
 
 Notification on success: `Exported → <specPath>\n             <manifestPath>`.
+
+### `/planf3-gsd-plan "<request>" [--questionable]`
+
+Validates preconditions (planf3 skill present — `./.claude/skills/planf3/SKILL.md`,
+then `~/.claude/skills/planf3/SKILL.md`; non-empty request), then queues a
+prompt into the **host pi session** (`deliverAs: "followUp"`) instructing the
+agent to: read the planf3 skill, produce the HTML plan under `specs/`, and
+chain into the `planf3_gsd_export` tool. Result: `specs/<name>.html` +
+`.gsd.md` + `.manifest.json`, **no milestone**.
+
+- `--questionable`: planf3's Q&A-section mode — assumptions land in the
+  document instead of interactive questions (recommended when you don't want
+  the queued turn to stall on questions).
+- **Fire-and-forget:** the command cannot await the agent's compliance. It
+  reports what was injected; observe progress via the agent's reply and
+  `/planf3-gsd-status`.
+- If the planf3 skill is missing, the command prints install guidance and
+  injects nothing. (The GSD/Pi bundled skill registry is not probed — planf3
+  is not bundled.)
+
+### `/planf3-gsd-run "<request>" [--step] [--questionable] [--no-prefs] [--force] [--step-unsafe]`
+
+Same planning turn as `/planf3-gsd-plan`, but the chain instruction targets
+the `planf3_gsd_build` tool (build subsumes export): the agent plans, then
+builds the milestone end-to-end. Flags map onto the build surface:
+`--step` → `auto=false`, `--no-prefs` → `applyPrefs=false`, `--force` and
+`--step-unsafe` pass through. `--step` without `--step-unsafe` will hit
+`runBuild`'s step-mode safety gate at tool time — by design.
+
+Same fire-and-forget contract; additionally observe
+`.gsd/planf3-gsd-evals.jsonl` (the chained build appends its usual eval row —
+the planning phase itself never logs rows).
 
 ### `/planf3-gsd-build <path-to-plan.html> [--auto] [--no-prefs] [--step-unsafe] [--force]`
 
@@ -145,11 +183,13 @@ tool catalog; they're not a separate user surface).
 | --- | --- | --- |
 | `planf3_gsd_export` | `htmlPath: string`, `mode?: "auto" \| "step"`, `userPrompt?: string` | `{ phaseCount, taskCount, specPath, manifestPath }` |
 | `planf3_gsd_status` | none | `BridgeStatus` (see [Status output](#status-output)) |
+| `planf3_gsd_build` | `htmlPath: string`, `auto?: boolean` (default true), `applyPrefs?: boolean` (default true), `force?: boolean`, `allowUnsafeStep?: boolean` | `{ milestoneId, phase, autoChain, specPath, manifestPath, presets }` |
 
-There is intentionally **no** `planf3_gsd_build` tool. `build` is a
-slash-command-only surface — agents that want to create a milestone
-should call `gsd headless new-milestone` directly after `planf3_gsd_export`
-to keep control over auto vs. step mode.
+`planf3_gsd_build` (new in v0.4.0) wraps the same `runBuild` path as the
+slash command — preflight/PRESETS gate, preferences overlay, eval rows, and
+the idle guard all apply identically. It exists primarily as the chain target
+for `/planf3-gsd-run`; `auto` defaults to `true`, and step mode still
+requires `allowUnsafeStep` just like the command.
 
 ### Direct-import workaround when the tool isn't discovered (`--print` mode)
 
@@ -292,13 +332,12 @@ extension's compatibility brief in `gsd-pi/CLAUDE.md` tracks this.
 ## Out of scope (deferred to later milestones)
 
 The current release covers **M0 (parser + spec exporter)**,
-**M1 (manifest + headless bridge)**, and **M2 tier-0 (the preflight/PRESETS
-enforced-lite gate)**. The following slash commands and
-features are intentionally not implemented yet — see
+**M1 (manifest + headless bridge)**, and **M2 (preflight + plan/run)**. The
+following slash commands and features are intentionally not implemented
+yet — see
 `/home/wsladmin/dev/planf3-gsd/docs/superpowers/plans/2026-06-22-planf3-gsd-mvp.md`
 for the full PRD coverage map:
 
-- `/planf3-gsd plan` and `/run` — rest of M2
 - `/sync` (push GSD state back into the Planf3 HTML) — M3
 - Steer / pause / stop + the blocker-flow UI — M4
 - Lore / RAC promotion — M5
