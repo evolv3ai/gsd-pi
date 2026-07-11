@@ -206,6 +206,38 @@ test("checkEngineHealth ignores stale suffixed flat-phase duplicate when bare mi
   );
 });
 
+test("checkEngineHealth reads task checkboxes from the canonical milestone worktree", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-checkbox-worktree-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  mkdirSync(gsdDir, { recursive: true });
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertMilestone({ id: "M003", title: "Milestone", status: "active" });
+  insertSlice({ id: "S01", milestoneId: "M003", title: "Slice", status: "pending", risk: "low", depends: [], sequence: 1 });
+  insertTask({ id: "T03", milestoneId: "M003", sliceId: "S01", title: "Task", status: "complete", sequence: 1 });
+
+  const plan = await renderPlanFromDb(base, "M003", "S01");
+  const checkedPlan = readFileSync(plan.planPath, "utf-8");
+  writeFileSync(plan.planPath, checkedPlan.replace("- [x] **T03**:", "- [ ] **T03**:"), "utf-8");
+
+  const worktree = join(base, ".gsd-worktrees", "M003");
+  const worktreePlan = join(worktree, ".gsd", "phases", "03-milestone", "03-01-PLAN.md");
+  mkdirSync(join(worktree, ".gsd", "phases", "03-milestone"), { recursive: true });
+  writeFileSync(join(worktree, ".git"), `gitdir: ${join(base, ".git", "worktrees", "M003")}\n`);
+  writeFileSync(worktreePlan, checkedPlan, "utf-8");
+
+  const issues: any[] = [];
+  await checkEngineHealth(base, issues, []);
+
+  assert.deepEqual(
+    issues.filter((issue) => issue.code === "checkbox_db_status_divergence").map((issue) => issue.unitId),
+    [],
+    "the stale project-root PLAN must not compete with the live milestone worktree projection",
+  );
+});
+
 test("checkEngineHealth reads task checkboxes from the <tasks> block, not a stray line above it", async (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-doctor-task-section-"));
   t.after(() => rmSync(base, { recursive: true, force: true }));

@@ -32,6 +32,7 @@ import { parseRoadmapSlices } from "./roadmap-slices.js";
 import { parsePlan } from "./parsers-legacy.js";
 import { parseSummary } from "./files.js";
 import { LAYOUT_SEGMENTS } from "./layout-policy.js";
+import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
 
 const USER_AUTHORED_ARTIFACT_TYPES = new Set(["CONTEXT", "RESEARCH"]);
 
@@ -116,7 +117,8 @@ function checkboxDbStatusMilestoneIds(basePath: string, milestoneIds: string[]):
 
 function checkProjectionCheckboxDbStatus(basePath: string, milestoneIds: string[], issues: DoctorIssue[]): void {
   for (const milestoneId of milestoneIds) {
-    const roadmapPath = resolveMilestoneFile(basePath, milestoneId, "ROADMAP");
+    const artifactBasePath = resolveCanonicalMilestoneRoot(basePath, milestoneId);
+    const roadmapPath = resolveMilestoneFile(artifactBasePath, milestoneId, "ROADMAP");
     const slices = getMilestoneSlices(milestoneId);
 
     if (roadmapPath && existsSync(roadmapPath)) {
@@ -142,7 +144,7 @@ function checkProjectionCheckboxDbStatus(basePath: string, milestoneIds: string[
     }
 
     for (const slice of slices) {
-      const planPath = resolveSliceFile(basePath, milestoneId, slice.id, "PLAN");
+      const planPath = resolveSliceFile(artifactBasePath, milestoneId, slice.id, "PLAN");
       if (!planPath || !existsSync(planPath)) continue;
       try {
         const plan = readFileSync(planPath, "utf-8");
