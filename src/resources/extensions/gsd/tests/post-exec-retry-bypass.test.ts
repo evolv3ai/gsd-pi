@@ -11,7 +11,7 @@
 import { describe, test, mock, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
-import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 import { runPostUnitVerification, type VerificationContext } from "../auto-verification.ts";
@@ -111,6 +111,15 @@ ${yamlLines.join("\n")}
   writeFileSync(join(tempDir, ".gsd", "PREFERENCES.md"), prefsContent);
   invalidateAllCaches();
   _clearGsdRootCache();
+}
+
+function useFlatPhaseLayout(): string {
+  rmSync(join(tempDir, ".gsd", "milestones"), { recursive: true, force: true });
+  const phaseDir = join(tempDir, ".gsd", "phases", "01-m001");
+  mkdirSync(phaseDir, { recursive: true });
+  invalidateAllCaches();
+  _clearGsdRootCache();
+  return phaseDir;
 }
 
 /**
@@ -459,6 +468,34 @@ describe("Post-execution blocking failure retry bypass", () => {
         "Post-execution checks failed: [import] src/broken.ts:1"
       )
     );
+  });
+
+  test("flat-phase post-unit evidence writes slice-task VERIFY.json at phase level", async () => {
+    const phaseDir = useFlatPhaseLayout();
+    createPostExecFailureTask();
+    writePreferences({
+      enhanced_verification: true,
+      enhanced_verification_post: true,
+      verification_auto_fix: true,
+      verification_max_retries: 3,
+    });
+
+    const ctx = makeMockCtx();
+    const pi = makeMockPi();
+    const pauseAutoMock = mock.fn(async () => {});
+    const s = makeMockSession(tempDir, { type: "execute-task", id: "M001/S01/T01" });
+
+    const result = await runPostUnitVerification({ s, ctx, pi }, pauseAutoMock);
+
+    assert.equal(result, "pause");
+    const evidencePath = join(phaseDir, "S01-T01-VERIFY.json");
+    const legacyEvidencePath = join(phaseDir, "tasks", "T01-VERIFY.json");
+    assert.ok(existsSync(evidencePath), "flat-phase evidence should be written at phase level");
+    assert.equal(existsSync(legacyEvidencePath), false, "flat-phase evidence should not create legacy tasks/ path");
+
+    const evidence = JSON.parse(readFileSync(evidencePath, "utf-8"));
+    assert.equal(evidence.passed, false);
+    assert.ok(Array.isArray(evidence.postExecutionChecks), "post-execution checks should be included in rewritten evidence");
   });
 
   test("strict post-exec warning pause includes warning details", async () => {

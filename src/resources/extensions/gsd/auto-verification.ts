@@ -15,7 +15,7 @@
 
 import type { ExtensionContext, ExtensionAPI } from "@gsd/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { gsdProjectionRoot, relMilestoneFile, resolveSliceFile, resolveSlicePath } from "./paths.js";
+import { gsdProjectionRoot, legacyMilestonesDir, relMilestoneFile, resolveMilestonePath, resolveSliceFile, resolveSlicePath } from "./paths.js";
 import { resolveMilestoneValidationVerdict } from "./milestone-validation-verdict.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
 import { parseUnitId } from "./unit-id.js";
@@ -61,6 +61,30 @@ export interface VerificationContext {
 
 export type VerificationResult = "continue" | "retry" | "pause";
 type PauseAutoFn = (ctx?: ExtensionContext, pi?: ExtensionAPI, errorContext?: ErrorContext) => Promise<void>;
+
+interface VerificationEvidenceLocation {
+  dir: string;
+  fileSliceId?: string;
+}
+
+function resolveVerificationEvidenceLocation(
+  basePath: string,
+  milestoneId: string,
+  sliceId: string,
+): VerificationEvidenceLocation | null {
+  const mDir = resolveMilestonePath(basePath, milestoneId);
+  if (!mDir) return null;
+
+  const legacyBase = legacyMilestonesDir(basePath);
+  const isLegacy = mDir.startsWith(legacyBase + "/") || mDir.startsWith(legacyBase + "\\");
+  if (!isLegacy) {
+    return { dir: mDir, fileSliceId: sliceId };
+  }
+
+  const sDir = resolveSlicePath(basePath, milestoneId, sliceId);
+  if (!sDir) return null;
+  return { dir: join(sDir, "tasks") };
+}
 
 function getCurrentUnitCostStats(unitId: string): { unitCostUsd: number; rollingAvgUsd: number } {
   const ledger = getLedger();
@@ -551,11 +575,18 @@ export async function runPostUnitVerification(
     const taskAlreadyComplete = taskRow?.status === "complete" || taskRow?.status === "done";
     if (mid && sid && tid) {
       try {
-        const sDir = resolveSlicePath(s.basePath, mid, sid);
-        if (sDir) {
-          const tasksDir = join(sDir, "tasks");
+        const evidenceLocation = resolveVerificationEvidenceLocation(s.basePath, mid, sid);
+        if (evidenceLocation) {
           if (result.passed) {
-            writeVerificationJSON(result, tasksDir, tid, s.currentUnit.id);
+            writeVerificationJSON(
+              result,
+              evidenceLocation.dir,
+              tid,
+              s.currentUnit.id,
+              undefined,
+              undefined,
+              evidenceLocation.fileSliceId,
+            );
           } else {
             const nextAttempt = attempt + 1;
             const includeRetryMetadata =
@@ -566,11 +597,12 @@ export async function runPostUnitVerification(
               nextAttempt <= maxRetries;
             writeVerificationJSON(
               result,
-              tasksDir,
+              evidenceLocation.dir,
               tid,
               s.currentUnit.id,
               includeRetryMetadata ? nextAttempt : undefined,
               includeRetryMetadata ? maxRetries : undefined,
+              evidenceLocation.fileSliceId,
             );
           }
         }
@@ -718,9 +750,8 @@ export async function runPostUnitVerification(
     // Re-write verification evidence JSON with post-execution checks
     if (postExecChecks && postExecChecks.length > 0 && mid && sid && tid) {
       try {
-        const sDir = resolveSlicePath(s.basePath, mid, sid);
-        if (sDir) {
-          const tasksDir = join(sDir, "tasks");
+        const evidenceLocation = resolveVerificationEvidenceLocation(s.basePath, mid, sid);
+        if (evidenceLocation) {
           // Add postExecutionChecks to the result for the JSON write
           const resultWithPostExec = {
             ...result,
@@ -730,12 +761,13 @@ export async function runPostUnitVerification(
           // Manually write with postExecutionChecks field
           writeVerificationJSONWithPostExec(
             resultWithPostExec,
-            tasksDir,
+            evidenceLocation.dir,
             tid,
             s.currentUnit.id,
             postExecChecks,
             postExecBlockingFailure ? attempt + 1 : undefined,
-            postExecBlockingFailure ? maxRetries : undefined
+            postExecBlockingFailure ? maxRetries : undefined,
+            evidenceLocation.fileSliceId,
           );
         }
       } catch (evidenceErr) {
@@ -940,6 +972,7 @@ function writeVerificationJSONWithPostExec(
   postExecutionChecks: PostExecutionCheckJSON[],
   retryAttempt?: number,
   maxRetries?: number,
+  sliceId?: string,
 ): void {
   mkdirSync(tasksDir, { recursive: true });
 
@@ -980,6 +1013,7 @@ function writeVerificationJSONWithPostExec(
     }));
   }
 
-  const filePath = join(tasksDir, `${taskId}-VERIFY.json`);
+  const fileName = sliceId ? `${sliceId}-${taskId}-VERIFY.json` : `${taskId}-VERIFY.json`;
+  const filePath = join(tasksDir, fileName);
   writeFileSync(filePath, JSON.stringify(evidence, null, 2) + "\n", "utf-8");
 }

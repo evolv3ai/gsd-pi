@@ -98,8 +98,9 @@ export interface EvidenceJSON {
 }
 
 /**
- * Write a T##-VERIFY.json artifact to the tasks directory.
+ * Write a T##-VERIFY.json artifact to the evidence directory.
  * Creates the directory with mkdirSync({ recursive: true }) if it doesn't exist.
+ * Flat-phase callers can pass sliceId to write S##-T##-VERIFY.json.
  *
  * stdout/stderr are excluded from the JSON — the full output lives in VerificationResult
  * in memory and is logged to stderr during the gate run.
@@ -111,6 +112,7 @@ export function writeVerificationJSON(
   unitId?: string,
   retryAttempt?: number,
   maxRetries?: number,
+  sliceId?: string,
 ): void {
   mkdirSync(tasksDir, { recursive: true });
 
@@ -150,7 +152,8 @@ export function writeVerificationJSON(
     }));
   }
 
-  const filePath = join(tasksDir, `${taskId}-VERIFY.json`);
+  const fileName = sliceId ? `${sliceId}-${taskId}-VERIFY.json` : `${taskId}-VERIFY.json`;
+  const filePath = join(tasksDir, fileName);
   writeFileSync(filePath, JSON.stringify(evidence, null, 2) + "\n", "utf-8");
 }
 
