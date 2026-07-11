@@ -493,6 +493,96 @@ describe("runBuild", () => {
     assert.equal(rows[rows.length - 1].cost, 1.25, "max across baseline (0.10), settle#1 (1.25), settle#2 (0.50)");
   });
 
+  test("M4: failed:new-milestone row carries the baseline cost", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-m4-nm-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+
+    const spawn: Spawner = async (_cmd, args) => {
+      if (args.includes("new-milestone")) return { exitCode: 7, stdout: "", stderr: "nm broke" };
+      if (args.includes("query")) {
+        return { exitCode: 0, stdout: JSON.stringify({ state: { phase: "idle" }, next: null, cost: { total: 0.8 } }), stderr: "" };
+      }
+      return { exitCode: 0, stdout: "{}", stderr: "" };
+    };
+
+    await assert.rejects(
+      () => runBuild(htmlPath, { auto: true, binary: "gsd", cwd: tmp, spawn, force: true, globalPrefsPath: join(tmp, "no-global.md") }),
+      /unexpected exit code 7/,
+    );
+
+    const lines = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n");
+    const row = JSON.parse(lines[lines.length - 1]);
+    assert.equal(row.phase, "failed:new-milestone");
+    assert.equal(row.cost, 0.8, "M4: baseline spend was observed before the failure — the row must carry it");
+  });
+
+  test("M4: failed:query row carries the baseline cost", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-m4-query-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+
+    let queryCount = 0;
+    const spawn: Spawner = async (_cmd, args) => {
+      if (args.includes("new-milestone")) return { exitCode: 0, stdout: "{}", stderr: "" };
+      if (args.includes("query")) {
+        queryCount += 1;
+        if (queryCount === 1) {
+          return { exitCode: 0, stdout: JSON.stringify({ state: { phase: "idle" }, next: null, cost: { total: 1.2 } }), stderr: "" };
+        }
+        return { exitCode: 2, stdout: "", stderr: "query broke" };
+      }
+      return { exitCode: 0, stdout: "{}", stderr: "" };
+    };
+
+    await assert.rejects(
+      () => runBuild(htmlPath, { auto: true, binary: "gsd", cwd: tmp, spawn, force: true, globalPrefsPath: join(tmp, "no-global.md") }),
+      /unexpected exit code 2/,
+    );
+
+    const lines = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n");
+    const row = JSON.parse(lines[lines.length - 1]);
+    assert.equal(row.phase, "failed:query");
+    assert.equal(row.cost, 1.2);
+  });
+
+  test("M4: failed:auto-relaunch row carries the max observed cost, not zero", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-m4-relaunch-"));
+    const htmlPath = join(tmp, "minimal.html");
+    await copyFile(join(here, "..", "fixtures", "minimal-plan.html"), htmlPath);
+
+    // Queued-but-never-executing milestone (no activeTask, no completion, no
+    // blockers) → the one-shot relaunch fires; the relaunch itself then fails.
+    const stuck = { state: { phase: "ready", activeMilestone: { id: "M9", title: "x" }, activeTask: null, lastCompletedMilestone: null }, next: null, cost: { total: 2.4 } };
+    let queryCount = 0;
+    const spawn: Spawner = async (_cmd, args) => {
+      if (args.includes("new-milestone")) return { exitCode: 0, stdout: "{}", stderr: "" };
+      if (args[args.length - 1] === "auto") return { exitCode: 7, stdout: "", stderr: "relaunch broke" };
+      if (args.includes("query")) {
+        queryCount += 1;
+        if (queryCount === 1) {
+          return { exitCode: 0, stdout: JSON.stringify({ state: { phase: "idle", lastCompletedMilestone: null }, next: null, cost: { total: 0.1 } }), stderr: "" };
+        }
+        return { exitCode: 0, stdout: JSON.stringify(stuck), stderr: "" };
+      }
+      return { exitCode: 0, stdout: "{}", stderr: "" };
+    };
+
+    await assert.rejects(
+      () => runBuild(htmlPath, {
+        auto: true, binary: "gsd", cwd: tmp, spawn,
+        force: true, globalPrefsPath: join(tmp, "no-global.md"),
+        settle: { attempts: 2, delayMs: 0, sleep: async () => {} },
+      }),
+      /unexpected exit code 7/,
+    );
+
+    const lines = (await readFile(join(tmp, ".gsd", "planf3-gsd-evals.jsonl"), "utf8")).trim().split("\n");
+    const row = JSON.parse(lines[lines.length - 1]);
+    assert.equal(row.phase, "failed:auto-relaunch");
+    assert.equal(row.cost, 2.4, "M4: settle-loop max (2.4) beats baseline (0.1); abort rows must not log 0");
+  });
+
   test("new-milestone exiting blocked (10) suppresses the relaunch", async () => {
     const tmp = await mkdtemp(join(tmpdir(), "planf3-gsd-nm10-"));
     const htmlPath = join(tmp, "minimal.html");

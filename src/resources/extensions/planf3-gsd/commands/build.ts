@@ -92,6 +92,10 @@ async function logFailureRow(
     appliedModels: Record<string, string>;
     presets?: "ok" | "forced" | "absent" | "drift";
     presetsHash?: string | null;
+    /** Max cost observed across bridge-side queries before the failure (M4) —
+     *  same cumulative semantics as the success row. Omitted on pre-query
+     *  paths (gate/export), where no spend was observable. */
+    observedCost?: number;
   },
 ): Promise<void> {
   try {
@@ -103,7 +107,7 @@ async function logFailureRow(
         specPath: input.specPath,
         milestoneId: null,
         mode: input.mode,
-        status: { ...mapQuerySnapshot(null), phase: input.marker },
+        status: { ...mapQuerySnapshot(null), phase: input.marker, cost: input.observedCost ?? 0 },
         appliedBuckets: input.appliedBuckets,
         appliedModels: input.appliedModels,
         presets: input.presets,
@@ -282,6 +286,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
       await logFailureRow(cwd, {
         loggedAt: now(), htmlPath, specPath: exportResult.specPath, mode,
         marker, appliedBuckets: prefs.buckets, appliedModels: prefs.models,
+        observedCost,
       });
       if (guard.wasAborted()) {
         throw new Error(`[planf3-gsd:error] ${HEADLESS_IDLE_MESSAGE} (new-milestone)`);
@@ -331,6 +336,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
     await logFailureRow(cwd, {
       loggedAt: now(), htmlPath, specPath: exportResult.specPath, mode,
       marker: "failed:query", appliedBuckets: prefs.buckets, appliedModels: prefs.models,
+      observedCost,
     });
     throw new Error(friendlyError(err, opts.binary ?? "gsd"));
   }
@@ -384,6 +390,7 @@ export async function runBuild(htmlPath: string, opts: BuildOptions = {}): Promi
         await logFailureRow(cwd, {
           loggedAt: now(), htmlPath, specPath: exportResult.specPath, mode,
           marker, appliedBuckets: prefs.buckets, appliedModels: prefs.models,
+          observedCost,
         });
         if (guard.wasAborted()) {
           throw new Error(`[planf3-gsd:error] ${HEADLESS_IDLE_MESSAGE} (auto-chain)`);
