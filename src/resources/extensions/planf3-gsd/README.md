@@ -360,6 +360,7 @@ extension's compatibility brief in `gsd-pi/CLAUDE.md` tracks this.
 
 ## Out of scope (deferred to later milestones)
 
+The current release covers **M0 (parser + spec exporter)**,
 **M1 (manifest + headless bridge)**, **M2 (preflight + plan/run)**, and
 **M3 (`/planf3-gsd-sync`)**. The following slash commands and
 features are intentionally not implemented yet — see
