@@ -2,6 +2,56 @@
 
 ## Domain glossary
 
+### Proposed ADR-046 vocabulary
+
+These terms describe the proposed database-authoritative lifecycle contract in
+[ADR-046](docs/dev/ADR-046-database-authoritative-workflow-lifecycle.md). They
+do not describe current runtime authority unless the ADR is accepted and the
+relevant cutover has completed.
+
+- **Project**: the complete body of work a user wants GSD to guide from discovery through delivery.
+- **Milestone**: a durable, resumable stage of a Project, including discovery, research, planning, or delivery work.
+- **Milestone Kind**: the purpose of a Milestone: discovery, research, requirements, roadmap, delivery, or remediation. Kind changes its expected outcomes, not its Lifecycle Status.
+- **Slice**: a coherent outcome within a Milestone, decomposed into Tasks and independently verifiable.
+- **Task**: the smallest planned piece of work whose completion produces evidence toward a Slice.
+- **Planning Horizon**: an advisory start, end, or review window for long-running work. A missed horizon prompts review and reforecasting; it is not a timeout, readiness gate, or failure.
+- **Open Question**: an unresolved choice scoped to work, carrying the current recommendation, rationale, alternatives, uncertainty, and a condition for revisiting it.
+- **Interaction Kind**: the interaction contract for an Open Question or update: open, choice, clarification, recap, consent, or subjective UAT. Kind determines whether an answer is required and whether affected work may pause.
+- **Nonblocking Recap**: a concise statement of decisions, assumptions, and uncertainty offered for correction while reversible work continues.
+- **Consent**: explicit authorization for an irreversible, public, paid, destructive, or account-level action. Silence, cancellation, and timeout are never Consent.
+- **Subjective UAT**: an acceptance check that requires a person's experiential judgment because tools cannot observe the result.
+- **Work Checkpoint**: a durable summary of confirmed context, unresolved questions, evidence, and suggested next work at a meaningful resume boundary.
+- **Lifecycle Status**: where a Milestone, Slice, or Task is in its durable progression: pending, ready, in progress, paused, completed, or cancelled.
+- **Attempt Result**: the immutable result of one execution attempt: succeeded, failed, or interrupted. An Attempt Result does not by itself complete or cancel the work.
+- **Requirement Disposition**: whether a requirement is unsatisfied, satisfied, or waived. Required Dependencies progress only from satisfied or explicitly waived requirements.
+- **Required Dependency**: a relationship that prevents downstream work from progressing until the upstream work is complete or explicitly waived.
+- **Waiver**: a recorded decision that releases a Required Dependency without claiming the upstream work was completed. Skipping work does not imply a Waiver.
+- **Blocker**: a durable impediment attached to affected work, with an owner and resolution state. A Blocker is not a Lifecycle Status or an Attempt Result.
+- **Database Authority**: the rule that workflow decisions and progress are derived only from canonical database state during normal operation. Missing database state is an error, not permission to infer truth from a Projection.
+- **Domain Operation**: one validated, atomic change to workflow state and its durable history.
+- **Projection**: a rebuildable human- or tool-readable representation of database state. A Projection never authorizes or reverses workflow progress.
+- **Projection Work**: durable work to bring a Projection to a specific database revision, including retry and visible staleness.
+- **Import Preview**: a read-only candidate interpretation and exact diff of legacy material before it may affect Database Authority.
+- **Import Application**: the explicitly authorized, backed-up, atomic application of an unchanged Import Preview.
+- **Failure Observation**: an immutable record of one failed Attempt, its normalized cause and evidence, and the Recovery Action selected under a named policy version.
+- **Recovery Action**: exactly one response to a Failure Observation: retry, repair, replan, remediate, clarify, pause, or abort.
+- **Verification Evidence**: an immutable, fresh observation tied to an acceptance criterion, Attempt, source revision, and execution environment.
+- **Technical Verdict**: a mechanically derived pass, fail, or inconclusive result from required Verification Evidence.
+- **Human Acceptance**: an explicit disposition of a required Subjective UAT check, separate from the Technical Verdict.
+- **Attempt**: one claimed execution of a Task or other executable work item against an observed database revision and lease token.
+- **Lifecycle Kernel**: the sole durable sequencer of an Attempt through advance, execute, verify, route, and closeout. It owns stage progression and normalized outcomes, not the mechanics behind each stage.
+- **Kernel Outcome**: the normalized result of one Lifecycle Kernel call: progressed, scheduled, needs interaction, waiting, closed, complete, or aborted.
+- **Closeout Plan**: durable proof that canonical completion requirements are satisfied, plus the host effects that still require settlement.
+- **Settlement Receipt**: the durable idempotency and completion record for one host effect from a Closeout Plan.
+- **Compatibility Window**: the bounded period when legacy sources remain available through explicit import/export, never as competing runtime authority.
+- **Authority Epoch**: the durable per-Project version of the authority contract. Advancing it prevents normal runtime from downgrading to an earlier authority source.
+- **Shadow Comparison**: a read-only comparison of normalized decisions from old and replacement paths without changing lifecycle truth.
+- **Cutover**: the recorded advancement of a Project to a new Authority Epoch after migration evidence passes.
+- **Forward Repair**: correction of current canonical state while preserving accepted post-migration work, preferred over restoring an older snapshot.
+- **Removal Gate**: an evidence requirement that must pass before a legacy runtime path can be deleted.
+
+### Current runtime vocabulary
+
 - **Auto Orchestration**: runtime coordination of GSD auto-mode units from start to completion, including dispatch and stop/resume behavior; unit-execution failure recovery is classified by the Recovery Classification module.
 - **Unit**: the smallest executable workflow step (e.g., plan slice, execute task, complete slice).
 - **Unit progression**: movement from one Unit to the next under orchestration rules.
