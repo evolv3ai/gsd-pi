@@ -9,7 +9,7 @@ GSD spec markdown + bridge manifest beside it, then shells out to
 
 - **Tier:** bundled (ships inside `@opengsd/gsd-pi`)
 - **Platform requirement:** `gsd-pi >= 2.29.0`
-- **Version:** 0.3.2 (M0+M1 MVP + M2-tier-0 preflight — see [Out of scope](#out-of-scope) for the road from here)
+- **Version:** 0.3.3 (M0+M1 MVP + M2-tier-0 preflight — see [Out of scope](#out-of-scope) for the road from here)
 
 ## Quickstart
 
