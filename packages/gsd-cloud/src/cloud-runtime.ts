@@ -4,6 +4,14 @@ import type { DaemonConfig } from "./types.js";
 import type { Executor } from "./executors/executor.js";
 import { createGatewayLookup, parseCloudGatewayUrl, validateGatewayNetworkTarget } from "./cloud-config.js";
 
+const INITIAL_CONNECT_ATTEMPTS = 5;
+const INITIAL_CONNECT_HANDSHAKE_TIMEOUT_MS = 30_000;
+const RECONNECT_DELAY_MS = 5_000;
+
+export const CLOUD_RUNTIME_INITIAL_CONNECT_WINDOW_MS =
+  INITIAL_CONNECT_ATTEMPTS * INITIAL_CONNECT_HANDSHAKE_TIMEOUT_MS
+  + (INITIAL_CONNECT_ATTEMPTS - 1) * RECONNECT_DELAY_MS;
+
 interface GatewayMessage {
   type: string;
   requestId?: string;
@@ -14,14 +22,11 @@ interface GatewayMessage {
 
 export class CloudRuntime {
   private static readonly MAX_OUTBOX = 200;
-  private static readonly RECONNECT_DELAY_MS = 5_000;
   // How many times to retry the initial connect before rejecting start(). A
   // transient handshake failure (gateway briefly unreachable, DNS hiccup) should
   // retry like the daemon's reconnect loop rather than kill the runtime; a
   // persistent failure (gateway down, session rejected) must eventually reject so
   // the CLI reports an error instead of hanging or exiting silently.
-  private static readonly MAX_INITIAL_CONNECT_ATTEMPTS = 5;
-  private static readonly INITIAL_CONNECT_HANDSHAKE_TIMEOUT_MS = 30_000;
   private socket: WebSocket | undefined;
   private heartbeat: ReturnType<typeof setInterval> | undefined;
   private reconnect: ReturnType<typeof setTimeout> | undefined;
@@ -81,7 +86,7 @@ export class CloudRuntime {
     const socket = new WebSocket(url, {
       headers: { Authorization: `Bearer ${this.cloud.device_token}` },
       lookup: createGatewayLookup(gatewayUrl),
-      handshakeTimeout: CloudRuntime.INITIAL_CONNECT_HANDSHAKE_TIMEOUT_MS,
+      handshakeTimeout: INITIAL_CONNECT_HANDSHAKE_TIMEOUT_MS,
     });
     const previousSocket = this.socket;
     this.socket = socket;
@@ -145,7 +150,7 @@ export class CloudRuntime {
       // start() once the bounded attempts are exhausted, so a brief blip does
       // not kill the runtime while a persistent outage still surfaces an error.
       this.initialConnectAttempts += 1;
-      if (this.initialConnectAttempts >= CloudRuntime.MAX_INITIAL_CONNECT_ATTEMPTS) {
+      if (this.initialConnectAttempts >= INITIAL_CONNECT_ATTEMPTS) {
         this.rejectFirstConnect(
           new Error(
             `cloud runtime connection failed after ${this.initialConnectAttempts} attempt(s)`,
@@ -155,13 +160,13 @@ export class CloudRuntime {
       }
       this.logger.warn("cloud runtime initial connect failed; retrying", {
         attempt: this.initialConnectAttempts,
-        max: CloudRuntime.MAX_INITIAL_CONNECT_ATTEMPTS,
+        max: INITIAL_CONNECT_ATTEMPTS,
       });
     } else {
       this.logger.warn("cloud runtime disconnected; reconnecting");
     }
     if (this.reconnect) clearTimeout(this.reconnect);
-    this.reconnect = setTimeout(() => this.connect(), CloudRuntime.RECONNECT_DELAY_MS);
+    this.reconnect = setTimeout(() => this.connect(), RECONNECT_DELAY_MS);
   }
 
   private handleSocketError(socket: WebSocket, err: Error): void {

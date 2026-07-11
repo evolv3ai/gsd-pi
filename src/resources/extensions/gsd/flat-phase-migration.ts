@@ -155,6 +155,19 @@ function isInsideFlatProjectionBackup(backupDir: string, src: string): boolean {
   return src === phaseBackupDir || src.startsWith(`${phaseBackupDir}/`) || src.startsWith(`${phaseBackupDir}\\`);
 }
 
+function removeFlatProjectionBackup(backupDir: string): void {
+  const phaseBackupDir = join(backupDir, "__phases");
+  if (!existsSync(phaseBackupDir)) return;
+  try {
+    removePathWithRetries(phaseBackupDir);
+  } catch (err) {
+    logWarning(
+      "migration",
+      `flat-phase migration succeeded but could not remove temporary ${LAYOUT_SEGMENTS.level1}/ backup: ${(err as Error).message}`,
+    );
+  }
+}
+
 function restoreFlatProjectionFromBackup(basePath: string, backupDir: string): void {
   const phaseBackupDir = join(backupDir, "__phases");
   if (!existsSync(phaseBackupDir)) return;
@@ -494,4 +507,5 @@ export async function migrateToFlatPhase(basePath: string): Promise<void> {
       `flat-phase migration succeeded but could not remove ${LEGACY_MIGRATING_SEGMENT}: ${(err as Error).message}`,
     );
   }
+  removeFlatProjectionBackup(backupDir);
 }

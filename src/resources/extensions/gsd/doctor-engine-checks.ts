@@ -95,6 +95,25 @@ function reportCheckboxDbStatusDivergence(
   });
 }
 
+function bareDuplicateMilestoneId(milestoneId: string): string | null {
+  const match = milestoneId.match(/^(M\d{3})-[a-z0-9]{6}$/i);
+  return match?.[1]?.toUpperCase() ?? null;
+}
+
+function checkboxDbStatusMilestoneIds(basePath: string, milestoneIds: string[]): string[] {
+  if (!hasFlatPhaseLayout(basePath)) return milestoneIds;
+
+  // Flat-phase directories are keyed by phase number. A restored
+  // M003-xxxxxx row alongside M003 is a stale duplicate for the same
+  // phases/03-* projection, so checking both can compare DB status against two
+  // competing PLAN files and report a persistent false divergence.
+  const allIds = new Set(milestoneIds.map((id) => id.toUpperCase()));
+  return milestoneIds.filter((milestoneId) => {
+    const bareId = bareDuplicateMilestoneId(milestoneId);
+    return !bareId || !allIds.has(bareId);
+  });
+}
+
 function checkProjectionCheckboxDbStatus(basePath: string, milestoneIds: string[], issues: DoctorIssue[]): void {
   for (const milestoneId of milestoneIds) {
     const roadmapPath = resolveMilestoneFile(basePath, milestoneId, "ROADMAP");
@@ -434,7 +453,9 @@ function staleMilestonesArtifactRowFixable(basePath: string, row: ArtifactRow, a
 
 function stalePhasesArtifactRowFixable(basePath: string, row: ArtifactRow, artifactRows: ArtifactRow[]): boolean {
   const issuePath = artifactPathRelativeToGsd(row.path);
-  return issuePath.startsWith(`${LAYOUT_SEGMENTS.level1}/`) && hasPresentMilestonesReplacement(basePath, row, artifactRows);
+  return issuePath.startsWith(`${LAYOUT_SEGMENTS.level1}/`) &&
+    (hasPresentFlatPhaseReplacement(basePath, row, artifactRows) ||
+      hasPresentMilestonesReplacement(basePath, row, artifactRows));
 }
 
 function staleArtifactRowFixable(basePath: string, row: ArtifactRow, artifactRows: ArtifactRow[]): boolean {
@@ -807,7 +828,11 @@ export async function checkEngineHealth(
   // block doctor.
   try {
     if (isDbAvailable()) {
-      checkProjectionCheckboxDbStatus(basePath, getAllMilestones().map((milestone) => milestone.id), issues);
+      checkProjectionCheckboxDbStatus(
+        basePath,
+        checkboxDbStatusMilestoneIds(basePath, getAllMilestones().map((milestone) => milestone.id)),
+        issues,
+      );
     }
   } catch {
     // Non-fatal: checkbox-vs-DB divergence check must never block doctor

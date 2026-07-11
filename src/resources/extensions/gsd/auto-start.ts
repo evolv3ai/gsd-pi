@@ -88,6 +88,7 @@ import { classifyMilestoneSummaryContent } from "./milestone-summary-classifier.
 import { extractVerdict } from "./verdict-parser.js";
 import { auditOrphanedPreflightStashes } from "./orphan-stash-audit.js";
 import { parseProject } from "./schemas/parsers.js";
+import { LAYOUT_SEGMENTS } from "./layout-policy.js";
 
 import {
   debugLog,
@@ -150,6 +151,33 @@ const MAX_CONSECUTIVE_COMPLETE_BOOTSTRAPS = 2;
 
 export function hasGitIndexLockForTest(basePath: string): boolean {
   return existsSync(join(basePath, ".git", "index.lock"));
+}
+
+function isEmptyDirectory(dirPath: string): boolean {
+  try {
+    return existsSync(dirPath) && readdirSync(dirPath).length === 0;
+  } catch {
+    return false;
+  }
+}
+
+export function reconcileFlatPhaseBootstrapLayout(basePath: string): boolean {
+  const gsdDir = join(basePath, ".gsd");
+  const phasesPath = join(gsdDir, LAYOUT_SEGMENTS.level1);
+  const milestonesPath = join(gsdDir, "milestones");
+
+  if (isEmptyDirectory(milestonesPath)) {
+    if (!existsSync(phasesPath)) mkdirSync(phasesPath, { recursive: true });
+    rmSync(milestonesPath, { recursive: true, force: true });
+    return true;
+  }
+
+  if (!existsSync(phasesPath) && !existsSync(milestonesPath)) {
+    mkdirSync(phasesPath, { recursive: true });
+    return true;
+  }
+
+  return false;
 }
 
 export function _shouldAbortBootstrapForUnavailableDbForTest(
@@ -1152,19 +1180,14 @@ export async function bootstrapAutoSession(
     ensureGitignore(base, { manageGitignore });
     if (manageGitignore !== false) untrackRuntimeFiles(base);
 
-    // Bootstrap milestones/ if it doesn't exist.
-    // Check milestones/ directly — ensureGsdSymlink above already created .gsd/,
-    // so checking .gsd/ existence would be dead code (#2942).
-    const gsdDir = join(base, ".gsd");
-    const milestonesPath = join(gsdDir, "milestones");
-    if (!existsSync(milestonesPath)) {
-      mkdirSync(milestonesPath, { recursive: true });
+    // Bootstrap the flat-phase projection root and clean empty legacy scaffolds.
+    if (reconcileFlatPhaseBootstrapLayout(base)) {
       try {
         nativeAddAll(base);
         nativeCommit(base, "chore: init gsd");
       } catch (err) {
         /* nothing to commit */
-        logWarning("engine", `mkdir failed: ${err instanceof Error ? err.message : String(err)}`);
+        logWarning("engine", `layout bootstrap commit failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 

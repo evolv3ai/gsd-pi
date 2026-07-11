@@ -40,6 +40,7 @@ const ALLOWLIST = new Set([
   join(ROOT, 'packages/pi-coding-agent/src/core/model-resolver.ts'),
   join(ROOT, 'packages/pi-coding-agent/src/core/package-commands.ts'),
   join(ROOT, 'packages/pi-coding-agent/src/core/skill-tool.test.ts'),
+  join(ROOT, 'packages/pi-coding-agent/src/core/skills.ts'),
   join(ROOT, 'packages/pi-coding-agent/src/tests/system-prompt-skill-filter.test.ts'),
   join(ROOT, 'packages/pi-coding-agent/src/tests/system-prompt-file-safety.test.ts'),
   join(ROOT, 'packages/pi-coding-agent/src/tests/system-prompt-cache-stability.test.ts'),

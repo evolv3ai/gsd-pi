@@ -37,6 +37,7 @@ Discovery rules:
 - In `~/.pi/agent/skills/` and `.pi/skills/`, direct root `.md` files are discovered as individual skills
 - In all skill locations, directories containing `SKILL.md` are discovered recursively
 - In `~/.agents/skills/` and project `.agents/skills/`, root `.md` files are ignored
+- Legacy `gsd-*` skills from the separate `@opengsd/gsd-core` runtime are omitted. Pi recognizes both package checkouts and copied installer layouts, follows symlinks, and retains unrelated skills from the same location. Independently authored `gsd-*` skills still load.
 
 Disable discovery with `--no-skills` (explicit `--skill` paths still load).
 

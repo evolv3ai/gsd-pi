@@ -41,6 +41,7 @@ import { claimMilestoneLease } from "../db/milestone-leases.js";
 import { recordDispatchClaim, markCanceled } from "../db/unit-dispatches.js";
 import { setRuntimeKv, getRuntimeKv } from "../db/runtime-kv.js";
 import { SourceObservationStore } from "../source-observations.js";
+import { autoCommitCurrentBranch } from "../worktree.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -832,6 +833,37 @@ test("runUnit returns cancelled when session creation fails", async () => {
   assert.equal(pi.calls.length, 0);
 });
 
+test("runUnit returns cancelled when command context lacks newSession", async () => {
+  _resetPendingResolve();
+
+  const ctx = {
+    ...makeMockCtx(),
+    ui: {
+      notify: () => {},
+      setStatus: () => {},
+      setWorkingMessage: () => {},
+    },
+    sessionManager: {
+      getEntries: () => [],
+    },
+    modelRegistry: {
+      getProviderAuthMode: () => undefined,
+      isProviderRequestReady: () => true,
+    },
+  } as any;
+  const pi = makeMockPi();
+  const s = makeMockSession();
+  s.cmdCtx = {} as any;
+
+  const result = await runUnit(ctx, pi, s, "task", "T01", "prompt");
+
+  assert.equal(result.status, "cancelled");
+  assert.equal(result.errorContext?.category, "session-failed");
+  assert.equal(result.errorContext?.isTransient, false);
+  assert.match(result.errorContext?.message ?? "", /missing newSession/);
+  assert.equal(pi.calls.length, 0);
+});
+
 test("runUnit: TypeError from newSession is classified as structural (isTransient: false)", async () => {
   // Regression for #572: a TypeError thrown from newSession (e.g. "something is
   // not a function") indicates a programming error, not a transient provider
@@ -1580,6 +1612,130 @@ test("autoLoop exits when s.active is set to false", async (t) => {
     !deps.callLog.includes("deriveState"),
     "loop should not have iterated",
   );
+});
+
+test("autoLoop stops before dispatch when command context lacks newSession", async () => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  const pi = makeMockPi();
+  const s = makeLoopSession({
+    cmdCtx: {
+      getContextUsage: () => ({ percent: 10, tokens: 1000, limit: 10000 }),
+    },
+  });
+  let stopReason: string | undefined;
+  let preserveWorktree: boolean | undefined;
+  let deriveCalled = false;
+
+  try {
+    const deps = makeMockDeps({
+      stopAuto: async (_ctx, _pi, reason, options) => {
+        stopReason = reason;
+        preserveWorktree = options?.preserveWorktree;
+        s.active = false;
+      },
+      deriveState: async () => {
+        deriveCalled = true;
+        throw new Error("deriveState should not run without command session support");
+      },
+    });
+
+    await autoLoop(ctx, pi, s, deps);
+
+    assert.equal(stopReason, "Auto-mode has no command context for dispatch.");
+    assert.equal(preserveWorktree, true);
+    assert.equal(deriveCalled, false);
+    assert.equal(pi.calls.length, 0);
+  } finally {
+    rmSync(s.basePath, { recursive: true, force: true });
+  }
+});
+
+test("autoLoop commits open unit work when command context lacks newSession", async () => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  const pi = makeMockPi();
+  const s = makeLoopSession({
+    cmdCtx: {
+      getContextUsage: () => ({ percent: 10, tokens: 1000, limit: 10000 }),
+    },
+    currentUnit: { type: "execute-task", id: "T01", startedAt: Date.now() },
+  });
+  const outputPath = join(s.basePath, "executor-output.txt");
+  let autoCommitArgs: { unitType: string; unitId: string } | undefined;
+  let preserveWorktree: boolean | undefined;
+
+  try {
+    const deps = makeMockDeps({
+      autoCommitUnit: async (basePath, unitType, unitId) => {
+        autoCommitArgs = { unitType, unitId };
+        return autoCommitCurrentBranch(basePath, unitType, unitId);
+      },
+      stopAuto: async (_ctx, _pi, _reason, options) => {
+        preserveWorktree = options?.preserveWorktree;
+        s.active = false;
+      },
+      deriveState: async () => {
+        throw new Error("deriveState should not run without command session support");
+      },
+    });
+
+    writeFileSync(outputPath, "open unit work before stop\n", "utf-8");
+
+    await autoLoop(ctx, pi, s, deps);
+
+    assert.deepEqual(autoCommitArgs, { unitType: "execute-task", unitId: "T01" });
+    assert.equal(preserveWorktree, true);
+    const committed = execSync("git show HEAD:executor-output.txt", {
+      cwd: s.basePath,
+      encoding: "utf-8",
+    });
+    assert.equal(committed, "open unit work before stop\n");
+    assert.equal(pi.calls.length, 0);
+  } finally {
+    rmSync(s.basePath, { recursive: true, force: true });
+  }
+});
+
+test("autoLoop snapshots dirty work when unit dispatch crashes", async () => {
+  _resetPendingResolve();
+
+  const ctx = makeMockCtx();
+  ctx.ui.setStatus = () => {};
+  const pi = makeMockPi();
+  const s = makeLoopSession();
+  const outputPath = join(s.basePath, "executor-output.txt");
+  let autoCommitCalls = 0;
+
+  try {
+    const deps = makeMockDeps({
+      ensurePreconditions: () => {
+        writeFileSync(outputPath, "saved before crash\n", "utf-8");
+        throw new Error("dispatch crash after file write");
+      },
+      autoCommitUnit: async (basePath, unitType, unitId) => {
+        autoCommitCalls++;
+        const commitMsg = autoCommitCurrentBranch(basePath, unitType, unitId);
+        s.active = false;
+        return commitMsg;
+      },
+    });
+
+    await autoLoop(ctx, pi, s, deps);
+
+    assert.equal(autoCommitCalls, 1);
+    const committed = execSync("git show HEAD:executor-output.txt", {
+      cwd: s.basePath,
+      encoding: "utf-8",
+    });
+    assert.equal(committed, "saved before crash\n");
+  } finally {
+    rmSync(s.basePath, { recursive: true, force: true });
+  }
 });
 
 test("autoLoop pauses visibly when Auto Orchestration Module is not wired", async () => {

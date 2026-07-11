@@ -46,6 +46,9 @@ import {
   tryCreateMemoriesFts,
   _isLikelyWslDrvFsPathForTest,
   _shouldAttemptVacuumRecoveryForTest,
+  insertArtifact,
+  getArtifact,
+  upsertMilestonePlanning,
 } from '../gsd-db.ts';
 import { MigrationBackupError } from '../db-migration-backup.ts';
 import { _resetLogs, peekLogs, setStderrLoggingEnabled } from '../workflow-logger.ts';
@@ -353,6 +356,35 @@ describe('gsd-db', () => {
     const d1 = getDecisionById('D001');
     assert.ok(d1 !== null, 'superseded decision still exists in raw table');
     assert.deepStrictEqual(d1?.superseded_by, 'D002', 'superseded_by is set');
+
+    closeDatabase();
+  });
+
+  test("gsd-db: upsertMilestonePlanning rewrites placeholder phase artifact paths to final title slug", () => {
+    openDatabase(":memory:");
+
+    const stalePath = "phases/01-new-milestone-m001/01-ROADMAP.md";
+    const finalPath = "phases/01-lokably-brand-foundation-and-welcome-pag/01-ROADMAP.md";
+    insertMilestone({ id: "M001", title: "New milestone M001", status: "active" });
+    insertArtifact({
+      path: stalePath,
+      artifact_type: "ROADMAP",
+      milestone_id: "M001",
+      slice_id: null,
+      task_id: null,
+      full_content: "# Placeholder roadmap\n",
+    });
+
+    upsertMilestonePlanning("M001", {
+      title: "Lokably brand foundation and welcome page rebuild",
+    });
+
+    assert.equal(getArtifact(stalePath), null, "placeholder-derived artifact row should be removed");
+    assert.equal(
+      getArtifact(finalPath)?.full_content,
+      "# Placeholder roadmap\n",
+      "artifact row should move to the final title-derived phase path",
+    );
 
     closeDatabase();
   });

@@ -8,6 +8,70 @@ This changelog starts from the `open-gsd/gsd-pi` ownership baseline. Earlier pro
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-07-11
+
+### Added
+- **pi-ai**: add Meta Muse Spark 1.1 to the model catalog
+- **gsd**: surface cacheRetention as a settable prompt-cache TTL preference
+- **models**: add GPT-5.6 as a first-class model
+- **models**: add Grok 4.5 as a first-class xAI model
+
+### Fixed
+- **ci**: allowlist skills loader boundary check
+- **skills**: ignore installed gsd-core skills
+- **bug-4**: Flat-phase migration keeps disposable __phases backups successful flat-phase migration now removes temporary `__phases` snapshots.
+- **bug-3**: Flat-phase projects recreate empty milestones folders auto-start now bootstraps `phases/` and removes empty legacy `milestones/` scaffolds.
+- **bug-2**: Doctor cannot fix stale renamed phases artifact rows doctor now treats renamed flat-phase files as repairable replacements.
+- **bug-1**: Artifact paths keep placeholder milestone slug reconciled same-milestone flat artifact rows after final milestone title is stored.
+- **issue**: GSD 1.9.0: persistent checkbox_db_status_divergence with duplicate bare/suffixed flat-phase projections
+- **issue**: [Bug]: Orphaned MCP servers busy-loop at ~100% CPU for hours (SIGTERM-proof) — orphan cleanup from #758/#783 can't fire because the event loop is blocked
+- **gsd-cloud**: cover runtime lock cleanup window
+- **bug-2**: Command-context guard accepts partial contexts tightened the loop guard to require cmdCtx.newSession.
+- **bug-1**: Re-entry command context can lack newSession guarded direct and hook session creation when cmdCtx lacks newSession.
+- **gsd-cloud**: serialize background runtime starts
+- **gsd-cloud**: canonicalize and track runtime state
+- **gsd-cloud**: harden background runtime lifecycle
+- **gsd-cloud**: keep project runtime connected in background
+- **issue**: Packaged standalone web host: CJS chunk uses import.meta.url, fails to load on every /api request
+- **gsd**: latch failed wakeup continuations
+- **gsd**: surface conditional tool schema failures
+- **issue**: [Bug]: compat marker-key mismatch still fires whole-tree re-import walks at every dispatch; writer/checker key derivation unshared, poisoned markers never healed (follow-up to #1292)
+- **issue**: ask_user_questions: options column is truncated with +N lines hidden and not scrollable (side-by-side preview path)
+- **issue**: `language` preference in PREFERENCES.md ignored on guided-flow discuss paths (discuss-milestone, discuss-slice)
+- **issue**: [Bug]: `gsd headless verdict` never detects its own completion — terminal notifies match no classifier prefix, so every invocation pays the full idle timeout (or hangs under `--timeout 0`)
+- **issue**: [Bug]: headless slash-command assembly loses argv quoting — multi-word flag values split into bare words, so `verdict pass --rationale "..."` still fails after #1301
+- **issue**: auto blocked by roadmap-divergence oscillation: completed + active milestones sharing same phase dir both enter reconciler
+- **issue**: [npm package bug] integrations/hermes/plugin.yaml is missing from npm package, breaking `gsd hermes install`
+- **bug-2**: Validation reads phase directory as a file File discovery now ignores directory entries and validate-milestone instructions forbid reading phase directories as files.
+- **bug-1**: Child dispatcher cannot resolve GSD dependencies Allowed `NODE_PATH` through the exec sandbox so child Node runtimes can resolve parent GSD dependencies.
+- **issue**: Model fallback not triggered for "abort" / "unknown" provider errors
+- **build**: split zero-tool pseudo-tool-call detection from error classification
+- **build**: drop redundant pseudo-tool-call comparison in zero-tool guard
+- **bug-2**: gsd zero-tool guard misdiagnoses pseudo-tool-call text labeled zero-tool pseudo-tool-call text as serialization drift with an operator-visible snippet.
+- **bug-1**: pi-ai does not handle GLM/Z.ai text-serialized tool calls parsed Z.ai text-serialized tool-call output into a real tool call.
+- **compaction**: carry degenerate chunk forward instead of breaking the loop
+- **compaction**: stop chunked summarization after a skipped middle chunk
+- **gsd**: stop treating forensics user prompt as context injection
+- **gsd**: guard legacy injection dedupe against false positives; share sentinel via constants
+- **gsd**: dedupe legacy context injections and import shared sentinel
+- **gsd**: store integration-branch META outside milestones/<MID>/ so it can't poison layout detection
+- **issue**: Allow projects to configure read-only subagent dispatch for planning units
+- **bug-2**: rm -f is incorrectly classified as recursive delete tightened recursive rm detection to require recursive flags, not force-only flags.
+- **bug-1**: Auto-mode pauses before destructive confirmation dialog appears deferred destructive confirmation pause so auto-mode can ask the user first.
+- **issue**: Skill loading instructions cause agents to construct paths instead of using <available_skills> location field
+- **gsd**: store integration-branch META outside milestones/<MID>/ so it can't poison layout detection
+- **gsd**: slice-qualify replan blocker summary scan + regression tests
+- **gsd**: slice-qualify reactive-execute recovery summary check
+- **issue**: Flat-phase task summaries collide across slices
+
+### Changed
+- **agent-core**: pin compaction summarization reasoning to low, bound degenerate-chunk retry
+- **gsd**: filter superseded context injections from provider payload
+- **gsd**: stop advertising alias tool schemas on model-facing surfaces
+- **gsd**: cap execute-task and discuss-slice inlined context; provider-aware budgets
+- **gsd**: quantize observation-mask boundary and drop wasted OAuth cache breakpoint
+- **gsd**: stop advertising alias tool schemas on model-facing surfaces
+
 ### Added
 - **models**: add GPT-5.6 as a first-class model for the OpenAI and OpenAI Codex providers (catalog, xhigh reasoning, routing tiers, cost tables)
 
@@ -17,6 +81,7 @@ This changelog starts from the `open-gsd/gsd-pi` ownership baseline. Earlier pro
 - **gsd**: add task rework briefs
 
 ### Fixed
+- **skills**: omit legacy gsd-core v1 skills without hiding unrelated installed skills
 - **gsd**: only persist rework resolutions that satisfy the evidence gate
 - **gsd**: keep rework blocking gate intact on save and rollback
 - **gsd**: serialize write-gate snapshot read-merge-write across processes

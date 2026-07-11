@@ -14,11 +14,64 @@ const MAX_NAME_LENGTH = 64;
 const MAX_DESCRIPTION_LENGTH = 1024;
 
 const IGNORE_FILE_NAMES = [".gitignore", ".ignore", ".fdignore"];
+const GSD_CORE_PACKAGE_NAME = "@opengsd/gsd-core";
+const GSD_CORE_MANIFEST_NAME = "gsd-file-manifest.json";
 
 type IgnoreMatcher = ReturnType<typeof ignore>;
+type GsdCoreRoot = "package" | Set<string> | null;
 
 function toPosixPath(p: string): string {
 	return p.split(sep).join("/");
+}
+
+function getGsdCoreRoot(root: string, cache: Map<string, GsdCoreRoot>): GsdCoreRoot {
+	if (cache.has(root)) {
+		return cache.get(root) ?? null;
+	}
+
+	try {
+		const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf-8")) as { name?: string };
+		if (packageJson.name === GSD_CORE_PACKAGE_NAME) {
+			cache.set(root, "package");
+			return "package";
+		}
+	} catch {}
+
+	try {
+		const manifest = JSON.parse(readFileSync(join(root, GSD_CORE_MANIFEST_NAME), "utf-8")) as {
+			files?: Record<string, unknown>;
+		};
+		const files = new Set(Object.keys(manifest.files ?? {}).map(toPosixPath));
+		cache.set(root, files);
+		return files;
+	} catch {
+		cache.set(root, null);
+		return null;
+	}
+}
+
+function isGsdCoreSkill(skill: Skill, rootCache: Map<string, GsdCoreRoot>): boolean {
+	if (!skill.name.startsWith("gsd-")) {
+		return false;
+	}
+
+	for (const filePath of new Set([skill.filePath, canonicalizePath(skill.filePath)])) {
+		const skillsDir = dirname(dirname(filePath));
+		if (basename(skillsDir) !== "skills") {
+			continue;
+		}
+
+		const root = dirname(skillsDir);
+		const gsdCoreRoot = getGsdCoreRoot(root, rootCache);
+		if (gsdCoreRoot === "package") {
+			return true;
+		}
+		if (gsdCoreRoot?.has(toPosixPath(relative(root, filePath)))) {
+			return true;
+		}
+	}
+
+	return false;
 }
 
 function prefixIgnorePattern(line: string, prefix: string): string | null {
@@ -399,6 +452,11 @@ export interface LoadSkillsOptions {
  * (`resourcePrecedenceRank`): settings-entry before auto-discovered, project
  * before user, and bundled GSD before foreign (Claude / `~/.agents`) skills, so
  * bundled auto-mode skills win over same-named foreign skills.
+ *
+ * Legacy `gsd-*` skills owned by an `@opengsd/gsd-core` package checkout or
+ * listed in a gsd-core installer manifest are omitted, including through
+ * symlinks. Other skills in those roots and independently authored `gsd-*`
+ * skills remain eligible for loading.
  */
 export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 	const { agentDir, skillPaths, includeDefaults } = options;
@@ -411,10 +469,15 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 	const realPathSet = new Set<string>();
 	const allDiagnostics: ResourceDiagnostic[] = [];
 	const collisionDiagnostics: ResourceDiagnostic[] = [];
+	const gsdCoreRootCache = new Map<string, GsdCoreRoot>();
 
 	function addSkills(result: LoadSkillsResult) {
 		allDiagnostics.push(...result.diagnostics);
 		for (const skill of result.skills) {
+			if (isGsdCoreSkill(skill, gsdCoreRootCache)) {
+				continue;
+			}
+
 			// Resolve symlinks to detect duplicate files
 			const realPath = canonicalizePath(skill.filePath);
 

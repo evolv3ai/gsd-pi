@@ -16,7 +16,7 @@ import {
   _isSamePath as isSamePath,
   _shouldReconcileWorktreeDb,
 } from "./auto-worktree-cleanup.js";
-import { resolveGsdPathContract } from "./paths.js";
+import { dirIsContentBearingLegacyMilestone, resolveGsdPathContract } from "./paths.js";
 import type { MilestoneScope } from "./workspace.js";
 import { WorktreeStateProjection } from "./worktree-state-projection.js";
 import { logWarning } from "./workflow-logger.js";
@@ -211,10 +211,17 @@ function syncMilestoneLayout(
   if (!existsSync(mainMilestonesDir)) return;
 
   try {
-    mkdirSync(wtMilestonesDir, { recursive: true });
     const mainMilestones = readdirSync(mainMilestonesDir, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name);
+      .map((entry) => entry.name)
+      .filter((name) =>
+        layoutSegment !== "milestones" ||
+        dirIsContentBearingLegacyMilestone(join(mainMilestonesDir, name)),
+      );
+
+    if (mainMilestones.length === 0) return;
+
+    mkdirSync(wtMilestonesDir, { recursive: true });
 
     for (const milestoneId of mainMilestones) {
       syncMilestoneDirectory(

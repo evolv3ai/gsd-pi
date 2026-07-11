@@ -20,6 +20,12 @@ Earlier entries take precedence when names collide. Bundled GSD skills win over 
 
 > **Bundled vs user skills:** GSD bundled skills are managed in `~/.gsd/agent/skills/`. Install your own shared skills into `~/.agents/skills/`, or commit project-specific skills under `.agents/skills/`.
 
+GSD omits legacy `gsd-*` skills supplied by the separate
+`@opengsd/gsd-core` v1 runtime. This applies to package checkouts and copied
+installer layouts, including skills reached through symlinks. Unrelated skills
+in the same location and independently authored `gsd-*` skills remain
+available.
+
 The managed `gsd-browser` skill is package-owned: on startup GSD installs it
 from the installed `@opengsd/gsd-browser` package, including referenced support
 files under `docs/`, `scripts/`, and `gsd-browser-skill/`. GSD refreshes stale

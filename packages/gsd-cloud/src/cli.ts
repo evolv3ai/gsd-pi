@@ -6,6 +6,8 @@
 // the WS relay client driving the local GSD runtime through the Executor seam.
 
 import { parseArgs } from "node:util";
+import { realpathSync } from "node:fs";
+import { delimiter, resolve } from "node:path";
 import { resolveConfigPath, loadConfig } from "./config.js";
 import { Logger } from "./logger.js";
 import {
@@ -17,6 +19,13 @@ import {
 import { runDeviceFlow } from "./device-flow.js";
 import { CloudRuntime } from "./cloud-runtime.js";
 import { selectExecutor } from "./executors/index.js";
+import {
+  backgroundRuntimeStatus,
+  clearRuntimeState,
+  startBackgroundRuntime,
+  stopBackgroundRuntime,
+  writeRuntimeState,
+} from "./runtime-process.js";
 import type { DaemonConfig } from "./types.js";
 
 export async function handleCloudCommand(argv: string[], opts: {
@@ -36,6 +45,7 @@ export async function handleCloudCommand(argv: string[], opts: {
       code: { type: "string" },
       "runtime-name": { type: "string" },
       verbose: { type: "boolean", short: "v", default: false },
+      foreground: { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
     strict: true,
@@ -49,13 +59,19 @@ export async function handleCloudCommand(argv: string[], opts: {
   const configPath = resolveConfigPath(values.config);
 
   if (command === "status") {
-    process.stdout.write(`${JSON.stringify(redactedCloudStatus(loadConfig(configPath)), null, 2)}\n`);
+    const config = loadConfig(configPath);
+    process.stdout.write(`${JSON.stringify({
+      ...redactedCloudStatus(config),
+      projects: config.projects.scan_roots,
+      background: backgroundRuntimeStatus(configPath),
+    }, null, 2)}\n`);
     return;
   }
 
   if (command === "disconnect") {
+    await stopBackgroundRuntime(configPath);
     clearCloudConfig(configPath);
-    process.stdout.write(`${opts.binaryName}: cloud runtime disconnected locally.\n`);
+    process.stdout.write(`${opts.binaryName}: background runtime stopped and cloud credentials removed.\n`);
     return;
   }
 
@@ -70,15 +86,23 @@ export async function handleCloudCommand(argv: string[], opts: {
       runtimeName,
       binaryName: opts.binaryName,
     });
+    const projectDirs = selectedProjectDirs([]);
     const config = saveCloudConfig(configPath, {
       gateway_url: gatewayUrl,
       device_token: deviceToken,
       runtime_id: runtimeId,
       ...(runtimeName ? { runtime_name: runtimeName } : {}),
       enabled: true,
-    });
+    }, projectDirs);
     process.stdout.write(`${opts.binaryName}: cloud runtime ${runtimeId} paired — connecting...\n`);
-    await runCloudRuntime(config, opts.binaryName, values.verbose);
+    if (values.foreground) {
+      await stopBackgroundRuntime(configPath);
+      await runCloudRuntime(config, opts.binaryName, values.verbose, projectDirs, {
+        registerConfigPath: configPath,
+      });
+      return;
+    }
+    await startAndReportBackgroundRuntime(configPath, projectDirs, opts.binaryName, values.verbose);
     return;
   }
 
@@ -104,11 +128,34 @@ export async function handleCloudCommand(argv: string[], opts: {
   }
 
   if (command === "connect") {
+    let config = loadConfig(configPath);
+    if (!config.cloud?.device_token || !config.cloud.runtime_id) {
+      throw new Error("cloud runtime is not paired; run `login` first");
+    }
+    const projectDirs = selectedProjectDirs(config.projects.scan_roots);
+    config = saveCloudConfig(configPath, config.cloud, projectDirs);
+    if (values.foreground) {
+      await stopBackgroundRuntime(configPath);
+      await runCloudRuntime(config, opts.binaryName, values.verbose, projectDirs, {
+        registerConfigPath: configPath,
+      });
+      return;
+    }
+    await startAndReportBackgroundRuntime(configPath, projectDirs, opts.binaryName, values.verbose);
+    return;
+  }
+
+  if (command === "_run") {
     const config = loadConfig(configPath);
     if (!config.cloud?.device_token || !config.cloud.runtime_id) {
       throw new Error("cloud runtime is not paired; run `login` first");
     }
-    await runCloudRuntime(config, opts.binaryName, values.verbose);
+    const projectDirs = selectedProjectDirs(config.projects.scan_roots);
+    await runCloudRuntime(config, opts.binaryName, values.verbose, projectDirs, {
+      onConnected: () => {
+        process.send?.({ type: "ready" });
+      },
+    });
     return;
   }
 
@@ -120,7 +167,13 @@ export async function handleCloudCommand(argv: string[], opts: {
  * "daemon" for the standalone agent: one CloudRuntime + one Executor, no Discord,
  * no scanner, no session-manager class.
  */
-async function runCloudRuntime(config: DaemonConfig, binaryName: string, verbose: boolean): Promise<void> {
+async function runCloudRuntime(
+  config: DaemonConfig,
+  binaryName: string,
+  verbose: boolean,
+  projectDirs: string[],
+  opts: { onConnected?: () => void; registerConfigPath?: string } = {},
+): Promise<void> {
   if (!config.cloud) throw new Error("cloud runtime is not configured");
   if (config.cloud.enabled === false) {
     throw new Error("cloud runtime is disabled in config; set cloud.enabled to true to connect");
@@ -130,13 +183,27 @@ async function runCloudRuntime(config: DaemonConfig, binaryName: string, verbose
     level: config.log.level,
     verbose,
   });
-  const executor = selectExecutor(logger);
+  const executor = selectExecutor(logger, { projectDirs });
   const runtime = new CloudRuntime(config.cloud, executor, logger);
-  await runtime.start();
+  // A foreground session owns the runtime itself, so it records its own PID in
+  // the shared state file. That lets a later `connect`/`disconnect` find and
+  // stop it, just like a detached background runtime. Background `_run` children
+  // do not register here; their launcher records the child PID instead.
+  if (opts.registerConfigPath) {
+    writeRuntimeState(opts.registerConfigPath, process.pid, projectDirs);
+  }
+  try {
+    await runtime.start();
+  } catch (error) {
+    if (opts.registerConfigPath) clearRuntimeState(opts.registerConfigPath);
+    throw error;
+  }
+  opts.onConnected?.();
   process.stdout.write(`${binaryName}: connected to ${config.cloud.gateway_url}. Press Ctrl+C to stop.\n`);
 
   await new Promise<void>((resolve) => {
     const shutdown = () => {
+      if (opts.registerConfigPath) clearRuntimeState(opts.registerConfigPath);
       runtime.stop();
       void Promise.resolve(executor.close?.()).finally(() => {
         void logger.close().finally(() => resolve());
@@ -147,21 +214,73 @@ async function runCloudRuntime(config: DaemonConfig, binaryName: string, verbose
   });
 }
 
+async function startAndReportBackgroundRuntime(
+  configPath: string,
+  projectDirs: string[],
+  binaryName: string,
+  verbose = false,
+): Promise<void> {
+  const binaryPath = process.argv[1];
+  if (!binaryPath) throw new Error("could not resolve the gsd-cloud executable path");
+  const status = await startBackgroundRuntime({ binaryPath, configPath, projectDirs, verbose });
+  process.stdout.write(`${binaryName}: connected in the background (PID ${status.pid}).\n`);
+  for (const project of projectDirs) process.stdout.write(`${binaryName}: project ${project}\n`);
+  process.stdout.write(`${binaryName}: logs ${status.log_file}\n`);
+}
+
+function selectedProjectDirs(savedProjectDirs: string[]): string[] {
+  const configured = process.env["GSD_CLOUD_PROJECTS"];
+  if (configured?.trim()) {
+    const configuredPaths = uniqueResolvedPaths(configured.split(delimiter));
+    if (configuredPaths.length > 0) return configuredPaths;
+  }
+  if (savedProjectDirs.length > 0) {
+    const savedPaths = uniqueResolvedPaths(savedProjectDirs);
+    if (savedPaths.length > 0) return savedPaths;
+  }
+  return [canonicalizePath(process.cwd())];
+}
+
+function uniqueResolvedPaths(paths: string[]): string[] {
+  const resolved = paths
+    .map((path) => path.trim())
+    .filter(Boolean)
+    .map((path) => canonicalizePath(path));
+  return [...new Set(resolved)];
+}
+
+/**
+ * Resolve a project path to its canonical, symlink-free absolute form. The
+ * executor advertises project paths via `resolve()` alone, so canonicalizing
+ * here keeps the saved `scan_roots` and the advertised hello paths identical to
+ * the real directory (e.g. when the cwd or GSD_CLOUD_PROJECTS points through a
+ * symlink). Falls back to the plain resolved path when the target does not yet
+ * exist on disk.
+ */
+function canonicalizePath(path: string): string {
+  const resolved = resolve(path);
+  try {
+    return realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
 export function formatUsage(binaryName: string): string {
-  return `Usage: ${binaryName} login [--gateway <url>] [--runtime-name <name>] [--config <path>]
+  return `Usage: ${binaryName} login [--gateway <url>] [--runtime-name <name>] [--config <path>] [--foreground]
        ${binaryName} status [--config <path>]
        ${binaryName} pair --gateway <url> --code <code> [--runtime-name <name>] [--config <path>]
-       ${binaryName} connect [--config <path>] [--verbose]
+       ${binaryName} connect [--config <path>] [--verbose] [--foreground]
        ${binaryName} disconnect [--config <path>]
 
 Commands:
-  login      (Recommended) Browser-based pairing — opens an approval URL in the
-             terminal, polls for authorization, then auto-connects. Defaults to
-             the public GSD Cloud gateway.
+  login      (Recommended) Browser-based pairing — opens an approval URL, then
+             connects the current project in the background. Defaults to the
+             public GSD Cloud gateway.
   status     Show current cloud runtime configuration and connection status.
   pair       Exchange a pairing code for a device token (headless/CI environments).
-  connect    Connect using a previously paired device token.
-  disconnect Remove cloud runtime configuration from the local config file.
+  connect    Start a background connection using saved credentials and projects.
+  disconnect Stop the background runtime and remove local cloud credentials.
 
 Options:
   --config <path>        Path to YAML config file (default: ~/.gsd/daemon.yaml)
@@ -169,6 +288,7 @@ Options:
   --code <code>          Pairing code from the gateway (pair only)
   --runtime-name <name>  Friendly name for this local GSD runtime
   --verbose              Print log entries to stderr in addition to the log file
+  --foreground           Keep login/connect attached to this terminal (debugging)
   --help                 Show this help message and exit
 
 Environment:

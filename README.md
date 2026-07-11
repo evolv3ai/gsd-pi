@@ -28,16 +28,16 @@ See [CHANGELOG.md](./CHANGELOG.md) for release-by-release fixes and [Legacy Rele
 ## Latest Release Highlights
 
 <!-- release-highlights:start -->
-Latest release: **v1.9.0**
+Latest release: **v1.10.0**
 
-- **gsd:** Add task rework briefs.
-- **web:** Delete unused chart.tsx and recharts.
-- **deps:** Move ajv to devDependencies.
-- **daemon:** Dedupe @anthropic-ai/sdk to ^0.91.1.
-- **deps:** Override hono to >=4.12.25.
-- **gsd:** Batch plan-v2 task queries and skip unchanged graph writes.
-- **gsd:** Open the worker DB once per parallel-monitor tick.
-- **gsd:** Batch parallel-eligibility task queries.
+- **pi-ai:** Add Meta Muse Spark 1.1 to the model catalog.
+- **gsd:** Surface cacheRetention as a settable prompt-cache TTL preference.
+- **models:** Add GPT-5.6 as a first-class model.
+- **models:** Add Grok 4.5 as a first-class xAI model.
+- **agent-core:** Pin compaction summarization reasoning to low, bound degenerate-chunk retry.
+- **gsd:** Filter superseded context injections from provider payload.
+- **gsd:** Stop advertising alias tool schemas on model-facing surfaces.
+- **gsd:** Cap execute-task and discuss-slice inlined context; provider-aware budgets.
 
 <!-- release-highlights:end -->
 

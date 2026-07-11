@@ -16,14 +16,15 @@ Requires the `gsd` CLI (from `@opengsd/gsd-pi`) to be installed and on your
 ## Usage
 
 ```bash
-# Browser-based pairing against GSD Cloud (recommended). Opens an approval URL,
-# polls for authorization, then auto-connects. No --gateway needed.
+# Browser-based pairing against GSD Cloud (recommended). Run this from the GSD
+# project directory to advertise. After approval, the connection continues in
+# the background and the terminal prompt returns. No --gateway needed.
 npx @opengsd/gsd-cloud login
 
 # Show current cloud runtime configuration and connection status.
 npx @opengsd/gsd-cloud status
 
-# Start the daemon using a previously paired device token.
+# Start or restart the background runtime using saved credentials and projects.
 npx @opengsd/gsd-cloud connect
 
 # Remove cloud runtime configuration from the local config file.
@@ -41,6 +42,11 @@ wins. The `status`, `connect`, and `disconnect` commands do not use a gateway.
 - `GSD_CLI_PATH` — path to the `gsd` binary (default: `gsd` on `PATH`).
 - `GSD_CLOUD_EXECUTOR` — backend adapter: `gsd-pi` (default). `codex` and
   `claude` adapters are stubbed for future use.
+
+The project directory used by `login` is persisted in `~/.gsd/daemon.yaml`.
+Set `GSD_CLOUD_PROJECTS` before `login` to advertise more than one project. Use
+`--foreground` with `login` or `connect` only when debugging the runtime in the
+current terminal.
 
 ## Requirements
 

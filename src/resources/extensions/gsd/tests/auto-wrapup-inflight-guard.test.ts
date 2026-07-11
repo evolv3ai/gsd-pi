@@ -3,7 +3,8 @@
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -95,6 +96,78 @@ describe("hook dispatch session workspace root", () => {
 
     assert.equal(dispatched, true);
     assert.deepEqual(newSessionOptions, { workspaceRoot: basePath });
+  });
+
+  test("dispatchHookUnit commits in-flight work when command context lacks newSession", async (t) => {
+    const originalCwd = process.cwd();
+    const basePath = realpathSync(mkdtempSync(join(tmpdir(), "gsd-hook-nosnap-")));
+    mkdirSync(join(basePath, ".gsd"), { recursive: true });
+    execSync("git init --initial-branch=main", { cwd: basePath, stdio: "ignore" });
+    execSync("git config user.email test@test.com", { cwd: basePath, stdio: "ignore" });
+    execSync("git config user.name Test", { cwd: basePath, stdio: "ignore" });
+    execSync("git commit --allow-empty -m init", { cwd: basePath, stdio: "ignore" });
+
+    autoSession.reset();
+    autoSession.active = true;
+    autoSession.basePath = basePath;
+    autoSession.originalBasePath = basePath;
+    // Simulate an in-flight unit whose executor already wrote files, then a hook
+    // fires with a command context missing newSession.
+    autoSession.currentUnit = {
+      type: "execute-task",
+      id: "M001/S01/T01",
+      startedAt: Date.now(),
+    };
+    t.after(() => {
+      try {
+        process.chdir(originalCwd);
+      } catch {
+        // best effort cleanup after cwd-sensitive dispatch tests
+      }
+      autoSession.reset();
+      rmSync(basePath, { recursive: true, force: true });
+    });
+
+    const outputPath = join(basePath, "executor-output.txt");
+    writeFileSync(outputPath, "in-flight executor work\n", "utf-8");
+
+    // Command context intentionally lacks newSession — the guard must snapshot
+    // the dirty work before stopping instead of discarding it.
+    const ctx = {
+      ui: {
+        notify: () => {},
+        setStatus: () => {},
+        setWidget: () => {},
+      },
+      modelRegistry: {
+        getAvailable: () => [],
+      },
+      sessionManager: {
+        getSessionFile: () => join(basePath, "session.jsonl"),
+      },
+    };
+    const pi = {
+      sendMessage: () => {},
+      setModel: async () => true,
+    };
+
+    const dispatched = await dispatchHookUnit(
+      ctx as any,
+      pi as any,
+      "review",
+      "execute-task",
+      "M001/S01/T01",
+      "review the completed unit",
+      undefined,
+      basePath,
+    );
+
+    assert.equal(dispatched, false);
+    const committed = execSync("git show HEAD:executor-output.txt", {
+      cwd: basePath,
+      encoding: "utf-8",
+    });
+    assert.equal(committed, "in-flight executor work\n");
   });
 });
 

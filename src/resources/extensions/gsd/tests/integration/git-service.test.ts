@@ -1428,6 +1428,19 @@ process.exit(result.status ?? 0);
     rmSync(repo, { recursive: true, force: true });
   });
 
+  test('Integration branch: write does not create legacy milestones scaffold', () => {
+    const repo = initBranchTestRepo();
+    mkdirSync(join(repo, ".gsd", "phases"), { recursive: true });
+
+    writeIntegrationBranch(repo, "M001", "f-123-new-thing");
+
+    assert.deepStrictEqual(readIntegrationBranch(repo, "M001"), "f-123-new-thing");
+    assert.ok(existsSync(join(repo, ".gsd", "M001-META.json")), "metadata is written at the flat .gsd root");
+    assert.ok(!existsSync(join(repo, ".gsd", "milestones")), "legacy milestones/ root is not created");
+
+    rmSync(repo, { recursive: true, force: true });
+  });
+
   // ─── writeIntegrationBranch: updates when branch changes (#300) ──────
 
   test('Integration branch: updates on branch change', () => {

@@ -67,6 +67,13 @@ export type { SliceRow, TaskRow } from "./db-task-slice-rows.js";
 
 import { TERMINAL_STATUS_SQL } from "./db/sql-constants.js";
 import { applyStatusTransition } from "./db/writers/status.js";
+import {
+  LAYOUT_SEGMENTS,
+  derivePhaseSlug,
+  milestoneIdToPhaseNum,
+  milestoneIdUniqueSuffix,
+  phaseDirName,
+} from "./layout-policy.js";
 
 export function insertDecision(d: Omit<Decision, "seq">): void {
   if (!getDbOrNull()!) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
@@ -206,6 +213,47 @@ export function insertArtifact(a: {
   });
 }
 
+function canonicalPhaseDirNameForDb(milestoneId: string, title: string): string {
+  const phaseNum = milestoneIdToPhaseNum(milestoneId);
+  const slug = derivePhaseSlug(title || milestoneId);
+  const suffix = milestoneIdUniqueSuffix(milestoneId);
+  return phaseDirName(phaseNum, suffix ? `${suffix}-${slug}` : slug);
+}
+
+function reconcileMilestonePhaseArtifactPaths(milestoneId: string, title: string): void {
+  const db = getDbOrNull()!;
+  const phaseNumPrefix = String(milestoneIdToPhaseNum(milestoneId)).padStart(2, "0");
+  const canonicalDir = canonicalPhaseDirNameForDb(milestoneId, title);
+  const staleRows = db.prepare(
+    `SELECT path
+       FROM artifacts
+      WHERE milestone_id = :milestone_id
+        AND path LIKE :phase_prefix`,
+  ).all({
+    ":milestone_id": milestoneId,
+    ":phase_prefix": `${LAYOUT_SEGMENTS.level1}/${phaseNumPrefix}-%/%`,
+  }) as Array<{ path: string }>;
+
+  const updatePath = db.prepare("UPDATE artifacts SET path = :new_path WHERE path = :old_path");
+  const deletePath = db.prepare("DELETE FROM artifacts WHERE path = :path");
+  const existingPath = db.prepare("SELECT 1 AS present FROM artifacts WHERE path = :path");
+
+  for (const row of staleRows) {
+    const parts = row.path.split("/");
+    if (parts.length < 3) continue;
+    if (parts[0] !== LAYOUT_SEGMENTS.level1) continue;
+    if (parts[1] === canonicalDir) continue;
+    if (!parts[1]?.startsWith(`${phaseNumPrefix}-`)) continue;
+
+    const newPath = [LAYOUT_SEGMENTS.level1, canonicalDir, ...parts.slice(2)].join("/");
+    if (existingPath.get({ ":path": newPath })) {
+      deletePath.run({ ":path": row.path });
+      continue;
+    }
+    updatePath.run({ ":new_path": newPath, ":old_path": row.path });
+  }
+}
+
 export interface MilestonePlanningRecord {
   vision: string;
   successCriteria: string[];
@@ -287,39 +335,43 @@ export function insertMilestone(m: {
 
 export function upsertMilestonePlanning(milestoneId: string, planning: Partial<MilestonePlanningRecord> & { title?: string; status?: string; depends_on?: string[] }): void {
   if (!getDbOrNull()!) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
-  getDbOrNull()!.prepare(
-    `UPDATE milestones SET
-      title = COALESCE(NULLIF(:title, ''), title),
-      status = COALESCE(NULLIF(:status, ''), status),
-      depends_on = COALESCE(:depends_on, depends_on),
-      vision = COALESCE(:vision, vision),
-      success_criteria = COALESCE(:success_criteria, success_criteria),
-      key_risks = COALESCE(:key_risks, key_risks),
-      proof_strategy = COALESCE(:proof_strategy, proof_strategy),
-      verification_contract = COALESCE(:verification_contract, verification_contract),
-      verification_integration = COALESCE(:verification_integration, verification_integration),
-      verification_operational = COALESCE(:verification_operational, verification_operational),
-      verification_uat = COALESCE(:verification_uat, verification_uat),
-      definition_of_done = COALESCE(:definition_of_done, definition_of_done),
-      requirement_coverage = COALESCE(:requirement_coverage, requirement_coverage),
-      boundary_map_markdown = COALESCE(:boundary_map_markdown, boundary_map_markdown)
-     WHERE id = :id`,
-  ).run({
-    ":id": milestoneId,
-    ":title": planning.title ?? "",
-    ":status": planning.status ?? "",
-    ":depends_on": planning.depends_on ? JSON.stringify(planning.depends_on) : null,
-    ":vision": planning.vision ?? null,
-    ":success_criteria": planning.successCriteria ? JSON.stringify(planning.successCriteria) : null,
-    ":key_risks": planning.keyRisks ? JSON.stringify(planning.keyRisks) : null,
-    ":proof_strategy": planning.proofStrategy ? JSON.stringify(planning.proofStrategy) : null,
-    ":verification_contract": planning.verificationContract ?? null,
-    ":verification_integration": planning.verificationIntegration ?? null,
-    ":verification_operational": planning.verificationOperational ?? null,
-    ":verification_uat": planning.verificationUat ?? null,
-    ":definition_of_done": planning.definitionOfDone ? JSON.stringify(planning.definitionOfDone) : null,
-    ":requirement_coverage": planning.requirementCoverage ?? null,
-    ":boundary_map_markdown": planning.boundaryMapMarkdown ?? null,
+  transaction(() => {
+    getDbOrNull()!.prepare(
+      `UPDATE milestones SET
+        title = COALESCE(NULLIF(:title, ''), title),
+        status = COALESCE(NULLIF(:status, ''), status),
+        depends_on = COALESCE(:depends_on, depends_on),
+        vision = COALESCE(:vision, vision),
+        success_criteria = COALESCE(:success_criteria, success_criteria),
+        key_risks = COALESCE(:key_risks, key_risks),
+        proof_strategy = COALESCE(:proof_strategy, proof_strategy),
+        verification_contract = COALESCE(:verification_contract, verification_contract),
+        verification_integration = COALESCE(:verification_integration, verification_integration),
+        verification_operational = COALESCE(:verification_operational, verification_operational),
+        verification_uat = COALESCE(:verification_uat, verification_uat),
+        definition_of_done = COALESCE(:definition_of_done, definition_of_done),
+        requirement_coverage = COALESCE(:requirement_coverage, requirement_coverage),
+        boundary_map_markdown = COALESCE(:boundary_map_markdown, boundary_map_markdown)
+       WHERE id = :id`,
+    ).run({
+      ":id": milestoneId,
+      ":title": planning.title ?? "",
+      ":status": planning.status ?? "",
+      ":depends_on": planning.depends_on ? JSON.stringify(planning.depends_on) : null,
+      ":vision": planning.vision ?? null,
+      ":success_criteria": planning.successCriteria ? JSON.stringify(planning.successCriteria) : null,
+      ":key_risks": planning.keyRisks ? JSON.stringify(planning.keyRisks) : null,
+      ":proof_strategy": planning.proofStrategy ? JSON.stringify(planning.proofStrategy) : null,
+      ":verification_contract": planning.verificationContract ?? null,
+      ":verification_integration": planning.verificationIntegration ?? null,
+      ":verification_operational": planning.verificationOperational ?? null,
+      ":verification_uat": planning.verificationUat ?? null,
+      ":definition_of_done": planning.definitionOfDone ? JSON.stringify(planning.definitionOfDone) : null,
+      ":requirement_coverage": planning.requirementCoverage ?? null,
+      ":boundary_map_markdown": planning.boundaryMapMarkdown ?? null,
+    });
+    const finalTitle = planning.title?.trim();
+    if (finalTitle) reconcileMilestonePhaseArtifactPaths(milestoneId, finalTitle);
   });
 }
 

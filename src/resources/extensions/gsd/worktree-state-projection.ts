@@ -32,7 +32,7 @@ import {
 import { join } from "node:path";
 
 import { reconcileWorktreeDb } from "./gsd-db.js";
-import { resolveGsdPathContract } from "./paths.js";
+import { dirIsContentBearingLegacyMilestone, resolveGsdPathContract } from "./paths.js";
 import { safeCopy, safeCopyRecursive } from "./safe-fs.js";
 import type { MilestoneScope } from "./workspace.js";
 import { logError, logWarning } from "./workflow-logger.js";
@@ -161,6 +161,7 @@ function syncOtherMilestoneArtifacts(
       // additive safeCopyRecursive; skip it here to avoid redundant work.
       if (milestoneEntry.name === currentMilestoneId) continue;
       const srcMilestoneDir = join(srcMilestonesDir, milestoneEntry.name);
+      if (!dirIsContentBearingLegacyMilestone(srcMilestoneDir)) continue;
       const dstMilestoneDir = join(dstMilestonesDir, milestoneEntry.name);
 
       // Additively project the entire milestone subtree (force:false), not just
@@ -271,35 +272,31 @@ export function _projectRootToWorktreeImpl(
   // Without this, worktree-local files (e.g. VALIDATION.md written
   // by validate-milestone) get clobbered by stale project root copies,
   // causing an infinite re-validation loop (#1886).
-  safeCopyRecursive(
-    join(prGsd, "milestones", milestoneId),
-    join(wtGsd, "milestones", milestoneId),
-    { force: false },
-  );
+  const prMilestoneDir = join(prGsd, "milestones", milestoneId);
+  const wtMilestoneDir = join(wtGsd, "milestones", milestoneId);
+  if (dirIsContentBearingLegacyMilestone(prMilestoneDir)) {
+    safeCopyRecursive(prMilestoneDir, wtMilestoneDir, { force: false });
 
-  // Additively project the full subtree of every OTHER milestone so
-  // worktree-bound units can read prior-milestone context artifacts and so
-  // completed milestones retain their per-slice/per-task SUMMARY.md and
-  // UAT.md on the worktree filesystem (otherwise the stale-render detector
-  // flags them as "complete in DB but missing on disk").
+    // Force-sync ASSESSMENT files that have a verdict from project root (#2821).
+    // The additive-only copy above preserves worktree-local files, but
+    // ASSESSMENT files are special: after run-uat writes a verdict and post-unit
+    // syncs it to the project root, the worktree may retain a stale copy (e.g.
+    // verdict:fail while the project root has verdict:pass from a retry). On
+    // session resume the DB is rebuilt from disk, and if the stale ASSESSMENT
+    // persists, checkNeedsRunUat finds no passing verdict → re-dispatches
+    // run-uat indefinitely (stuck-loop ×9).
+    forceOverwriteValidationWithVerdict(prMilestoneDir, wtMilestoneDir, milestoneId);
+    forceOverwriteAssessmentsWithVerdict(prMilestoneDir, wtMilestoneDir);
+  }
+
+  // Additively project the full subtree of every OTHER content-bearing legacy
+  // milestone so worktree-bound units can read prior-milestone context artifacts
+  // without recreating empty/meta-only milestones/ scaffolds in flat-phase projects.
   syncOtherMilestoneArtifacts(
     join(prGsd, "milestones"),
     join(wtGsd, "milestones"),
     milestoneId,
   );
-
-  // Force-sync ASSESSMENT files that have a verdict from project root (#2821).
-  // The additive-only copy above preserves worktree-local files, but
-  // ASSESSMENT files are special: after run-uat writes a verdict and post-unit
-  // syncs it to the project root, the worktree may retain a stale copy (e.g.
-  // verdict:fail while the project root has verdict:pass from a retry). On
-  // session resume the DB is rebuilt from disk, and if the stale ASSESSMENT
-  // persists, checkNeedsRunUat finds no passing verdict → re-dispatches
-  // run-uat indefinitely (stuck-loop ×9).
-  const prMilestoneDir = join(prGsd, "milestones", milestoneId);
-  const wtMilestoneDir = join(wtGsd, "milestones", milestoneId);
-  forceOverwriteValidationWithVerdict(prMilestoneDir, wtMilestoneDir, milestoneId);
-  forceOverwriteAssessmentsWithVerdict(prMilestoneDir, wtMilestoneDir);
 
   // Forward-sync completed-units.json from project root to worktree.
   // Project root is authoritative for completion state after crash recovery;
