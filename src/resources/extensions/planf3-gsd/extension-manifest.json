@@ -1,7 +1,7 @@
 {
   "id": "planf3-gsd",
   "name": "Planf3 GSD Bridge",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Bridges a Planf3 HTML plan into a GSD milestone via the headless CLI.",
   "tier": "bundled",
   "requires": { "platform": ">=2.29.0" },
@@ -12,13 +12,15 @@
       "planf3-gsd-plan",
       "planf3-gsd-run",
       "planf3-gsd-status",
-      "planf3-gsd-preflight"
+      "planf3-gsd-preflight",
+      "planf3-gsd-sync"
     ],
     "tools": [
       "planf3_gsd_export",
       "planf3_gsd_build",
       "planf3_gsd_status",
-      "planf3_gsd_preflight"
+      "planf3_gsd_preflight",
+      "planf3_gsd_sync"
     ]
   }
 }
