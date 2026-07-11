@@ -6,7 +6,7 @@
  * (the same directory commands/status.ts findBridgeManifest trusts); exactly one
  * wins, several means the caller must choose — never guess.
  */
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { dirname, basename, extname, join, isAbsolute, resolve } from "node:path";
 
 export interface SyncTarget { htmlPath: string; manifestPath: string; milestoneId: string }
@@ -45,7 +45,15 @@ export async function locateSyncTarget(cwd: string, htmlPathArg: string | null):
     const manifestPath = manifestPathFor(htmlPath);
     const manifest = await readManifest(manifestPath);
     if (manifest === null) {
-      return { ok: false, message: `no bridge manifest at ${manifestPath} — run /planf3-gsd-build first` };
+      // Distinguish missing file from corrupt JSON
+      try {
+        await stat(manifestPath);
+        // File exists but is unparseable
+        return { ok: false, message: `manifest ${manifestPath} is unreadable (corrupt JSON?) — re-run /planf3-gsd-build` };
+      } catch {
+        // File does not exist
+        return { ok: false, message: `no bridge manifest at ${manifestPath} — run /planf3-gsd-build first` };
+      }
     }
     const milestoneId = milestoneIdOf(manifest);
     if (milestoneId === null) {

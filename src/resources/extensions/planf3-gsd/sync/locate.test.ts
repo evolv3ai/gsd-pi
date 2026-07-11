@@ -53,6 +53,17 @@ describe("locateSyncTarget — explicit path", () => {
     if (r.ok) return;
     assert.match(r.message, /milestoneId/);
   });
+
+  test("corrupt manifest (invalid JSON) -> unreadable error, not missing error", async () => {
+    const tmp = await project();
+    const manifestPath = join(tmp, "specs", "plan.manifest.json");
+    await writeFile(manifestPath, "{not json", "utf8");
+    const r = await locateSyncTarget(tmp, "specs/plan.html");
+    assert.equal(r.ok, false);
+    if (r.ok) return;
+    assert.match(r.message, /unreadable/);
+    assert.doesNotMatch(r.message, /no bridge manifest/);
+  });
 });
 
 describe("locateSyncTarget — inference (no path)", () => {
