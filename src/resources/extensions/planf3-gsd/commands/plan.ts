@@ -35,3 +35,79 @@ export async function discoverPlanf3Skill(opts: DiscoverOptions): Promise<string
   }
   return null;
 }
+
+export interface BuildChainFlags {
+  auto: boolean;
+  applyPrefs: boolean;
+  force: boolean;
+  allowUnsafeStep: boolean;
+}
+
+export type ChainSpec =
+  | { target: "export" }
+  | { target: "build"; flags: BuildChainFlags };
+
+export interface PlanPromptOptions {
+  skillPath: string;
+  request: string;
+  questionable: boolean;
+  chain: ChainSpec;
+}
+
+/** The prompt injected into the host session (spec: six required elements).
+ *  The agent Reads the SKILL.md itself — the prompt does not inline it. */
+export function buildPlanPrompt(opts: PlanPromptOptions): string {
+  const lines = [
+    `Read the planf3 skill at ${opts.skillPath} and follow its workflow to produce a Planf3 HTML plan for the request below.`,
+    ``,
+    `USER_PROMPT: ${opts.request}`,
+    `QUESTIONABLE: ${opts.questionable}`,
+    ``,
+    `Requirements:`,
+    `- Write the plan HTML file into the specs/ directory, using the skill's own file-naming convention.`,
+    `- QUESTIONABLE=true means: record assumptions in the plan's Q&A section instead of asking interactive questions. QUESTIONABLE=false means the skill's default behavior.`,
+  ];
+  if (opts.chain.target === "export") {
+    lines.push(
+      `- When the HTML file is written, call the planf3_gsd_export tool with htmlPath set to that file's path.`,
+      `- When the tool returns, report back the plan HTML path and the spec/manifest paths from the tool result.`,
+    );
+  } else {
+    const f = opts.chain.flags;
+    lines.push(
+      `- When the HTML file is written, call the planf3_gsd_build tool with htmlPath set to that file's path and auto=${f.auto}, applyPrefs=${f.applyPrefs}, force=${f.force}, allowUnsafeStep=${f.allowUnsafeStep}.`,
+      `- When the tool returns, report back the plan HTML path, the milestone ID from the tool result, and the spec/manifest paths.`,
+    );
+  }
+  return lines.join("\n");
+}
+
+export type PlanOutcome =
+  | { ok: true; skillPath: string; prompt: string }
+  | { ok: false; guidance: string };
+
+export interface RunPlanOptions {
+  cwd: string;
+  homeDir?: string;
+  request: string;
+  questionable: boolean;
+  chain: ChainSpec;
+}
+
+export async function runPlan(opts: RunPlanOptions): Promise<PlanOutcome> {
+  const skillPath = await discoverPlanf3Skill({
+    cwd: opts.cwd,
+    ...(opts.homeDir !== undefined ? { homeDir: opts.homeDir } : {}),
+  });
+  if (skillPath === null) return { ok: false, guidance: SKILL_MISSING_GUIDANCE };
+  return {
+    ok: true,
+    skillPath,
+    prompt: buildPlanPrompt({
+      skillPath,
+      request: opts.request,
+      questionable: opts.questionable,
+      chain: opts.chain,
+    }),
+  };
+}
