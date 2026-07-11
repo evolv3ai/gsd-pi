@@ -3,7 +3,7 @@
  * Consumes ONLY the documented headless surface (gsd headless query) — never
  * .gsd/ internals. Compute-everything-then-write-once: no partial writes.
  */
-import { readFile, writeFile, rename } from "node:fs/promises";
+import { readFile, writeFile, rename, unlink } from "node:fs/promises";
 import { dirname, basename, join } from "node:path";
 import { parsePlanf3Html } from "../parser/planf3-html-parser.js";
 import { GsdRunner, type Spawner } from "../gsd/headless-runner.js";
@@ -99,10 +99,20 @@ export async function runSync(htmlPathArg: string | null, dryRun: boolean, opts:
   }
 
   // Atomic on the same filesystem: temp file in the same directory + rename.
-  // No backup file — plans live in git.
-  const tmpPath = join(dirname(htmlPath), `.${basename(htmlPath)}.sync-tmp`);
-  await writeFile(tmpPath, rewritten.html, "utf8");
-  await rename(tmpPath, htmlPath);
+  // No backup file — plans live in git. PID suffix avoids collisions between
+  // concurrent syncs; on failure the temp file is best-effort cleaned up.
+  const tmpPath = join(dirname(htmlPath), `.${basename(htmlPath)}.sync-tmp-${process.pid}`);
+  try {
+    await writeFile(tmpPath, rewritten.html, "utf8");
+    await rename(tmpPath, htmlPath);
+  } catch (err) {
+    try {
+      await unlink(tmpPath);
+    } catch {
+      // best-effort cleanup — ignore
+    }
+    throw err;
+  }
 
   return {
     kind: "synced",

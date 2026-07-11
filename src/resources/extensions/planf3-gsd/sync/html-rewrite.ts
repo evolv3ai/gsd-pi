@@ -7,6 +7,13 @@
  * Safety: the occurrence count is re-derived here from the raw text and must
  * equal what the parse predicted; any count or token disagreement aborts with
  * no output ("plan changed under us; re-run").
+ *
+ * Ordering assumption: occurrence indices are assigned by raw scan order, which
+ * assumes the document lays out `section#phases` before `section#validation`
+ * (the template's order); a template that reorders them would misalign
+ * occurrence indices while keeping the count equal — the abort net above
+ * cannot catch that, so revisit the convention if the template ever changes
+ * section order.
  */
 import type { MarkerUpdate } from "./marker-map.js";
 import { RANK } from "./marker-map.js";
@@ -105,7 +112,7 @@ export function rewriteHtml(
   if (occurrences.length !== expectedMarkerCount) {
     return {
       ok: false,
-      reason: `marker count mismatch: parse expects ${expectedMarkerCount}, raw document has ${occurrences.length} — plan changed under us; re-run`,
+      reason: `marker count mismatch: parse expects ${expectedMarkerCount}, raw document has ${occurrences.length} — plan changed under us (re-run), or the document has status markers outside phases/validation (fix the plan)`,
     };
   }
 

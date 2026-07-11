@@ -39,10 +39,20 @@ describe("locateSyncTarget — explicit path", () => {
 
   test("missing manifest -> build-first error", async () => {
     const tmp = await project();
+    await writeFile(join(tmp, "specs", "plan.html"), "<html></html>", "utf8");
     const r = await locateSyncTarget(tmp, "specs/plan.html");
     assert.equal(r.ok, false);
     if (r.ok) return;
     assert.match(r.message, /run \/planf3-gsd-build first/);
+  });
+
+  test("typo'd html path -> plan file not found, not build-first", async () => {
+    const tmp = await project();
+    const r = await locateSyncTarget(tmp, "specs/typo-plan.html");
+    assert.equal(r.ok, false);
+    if (r.ok) return;
+    assert.match(r.message, /plan file not found/);
+    assert.doesNotMatch(r.message, /planf3-gsd-build/);
   });
 
   test("null milestoneId -> build-first error", async () => {

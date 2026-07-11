@@ -51,7 +51,13 @@ export async function locateSyncTarget(cwd: string, htmlPathArg: string | null):
         // File exists but is unparseable
         return { ok: false, message: `manifest ${manifestPath} is unreadable (corrupt JSON?) — re-run /planf3-gsd-build` };
       } catch {
-        // File does not exist
+        // Manifest does not exist — distinguish a typo'd HTML path (nothing to
+        // build from) from the expected "run the build" case.
+        try {
+          await stat(htmlPath);
+        } catch {
+          return { ok: false, message: `plan file not found: ${htmlPath}` };
+        }
         return { ok: false, message: `no bridge manifest at ${manifestPath} — run /planf3-gsd-build first` };
       }
     }
