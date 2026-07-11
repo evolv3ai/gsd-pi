@@ -1,6 +1,11 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { parseRequestArgs } from "./plan-register.js";
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ExtensionAPI } from "@gsd/pi-coding-agent";
+import { parseRequestArgs, registerPlanCommand } from "./plan-register.js";
+import { SKILL_MISSING_GUIDANCE } from "./plan.js";
 
 const RUN_FLAGS = ["--questionable", "--step", "--no-prefs", "--force", "--step-unsafe"];
 
@@ -44,5 +49,106 @@ describe("parseRequestArgs", () => {
   test("empty and flags-only input → empty request", () => {
     assert.equal(parseRequestArgs("", RUN_FLAGS).request, "");
     assert.equal(parseRequestArgs("  --force  ", RUN_FLAGS).request, "");
+  });
+});
+
+interface Emitted { message: string; type?: string }
+interface Sent { content: string; options?: { deliverAs?: string } }
+
+interface FakePi {
+  pi: ExtensionAPI;
+  commands: Map<string, (args: string, ctx: unknown) => Promise<void>>;
+  sent: Sent[];
+}
+
+function makeFakePi(): FakePi {
+  const commands = new Map<string, (args: string, ctx: unknown) => Promise<void>>();
+  const sent: Sent[] = [];
+  const pi = {
+    registerCommand(name: string, options: { handler: (args: string, ctx: unknown) => Promise<void> }) {
+      commands.set(name, options.handler);
+    },
+    sendUserMessage(content: string, options?: { deliverAs?: string }) {
+      sent.push({ content, ...(options !== undefined ? { options } : {}) });
+    },
+  } as unknown as ExtensionAPI;
+  return { pi, commands, sent };
+}
+
+// hasUI: true so emit() does not mirror to stdout during tests.
+function makeCtx(): { ctx: unknown; emitted: Emitted[] } {
+  const emitted: Emitted[] = [];
+  const ctx = {
+    hasUI: true,
+    ui: {
+      notify(message: string, type?: string) {
+        emitted.push({ message, ...(type !== undefined ? { type } : {}) });
+      },
+    },
+  };
+  return { ctx, emitted };
+}
+
+async function makeSkillDir(root: string): Promise<string> {
+  const dir = join(root, ".claude", "skills", "planf3");
+  await mkdir(dir, { recursive: true });
+  const skillPath = join(dir, "SKILL.md");
+  await writeFile(skillPath, "# planf3\n", "utf8");
+  return skillPath;
+}
+
+describe("registerPlanCommand", () => {
+  async function setup(withSkill: boolean) {
+    const cwd = await mkdtemp(join(tmpdir(), "planf3-cwd-"));
+    const home = await mkdtemp(join(tmpdir(), "planf3-home-"));
+    const skillPath = withSkill ? await makeSkillDir(cwd) : null;
+    const fake = makeFakePi();
+    registerPlanCommand(fake.pi, { cwd, homeDir: home });
+    const handler = fake.commands.get("planf3-gsd-plan");
+    assert.ok(handler, "command registered");
+    return { ...fake, handler: handler!, skillPath };
+  }
+
+  test("empty request → usage error, no injection", async () => {
+    const { handler, sent } = await setup(true);
+    const { ctx, emitted } = makeCtx();
+    await handler("", ctx);
+    assert.equal(sent.length, 0);
+    assert.equal(emitted.length, 1);
+    assert.equal(emitted[0]!.type, "error");
+    assert.match(emitted[0]!.message, /^Usage: \/planf3-gsd-plan/);
+  });
+
+  test("missing skill → FR-1 guidance, sendUserMessage never called", async () => {
+    const { handler, sent } = await setup(false);
+    const { ctx, emitted } = makeCtx();
+    await handler("do a thing", ctx);
+    assert.equal(sent.length, 0);
+    assert.equal(emitted.length, 1);
+    assert.equal(emitted[0]!.type, "error");
+    assert.equal(emitted[0]!.message, SKILL_MISSING_GUIDANCE);
+  });
+
+  test("happy path → exactly one followUp injection chaining the export tool", async () => {
+    const { handler, sent, skillPath } = await setup(true);
+    const { ctx, emitted } = makeCtx();
+    await handler("add dark mode", ctx);
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0]!.options, { deliverAs: "followUp" });
+    assert.ok(sent[0]!.content.includes(skillPath!));
+    assert.ok(sent[0]!.content.includes("USER_PROMPT: add dark mode"));
+    assert.ok(sent[0]!.content.includes("QUESTIONABLE: false"));
+    assert.ok(sent[0]!.content.includes("planf3_gsd_export"));
+    assert.equal(emitted.length, 1);
+    assert.equal(emitted[0]!.type, "info");
+    assert.ok(emitted[0]!.message.includes(skillPath!));
+  });
+
+  test("--questionable flips QUESTIONABLE, before or after the request", async () => {
+    const { handler, sent } = await setup(true);
+    const { ctx } = makeCtx();
+    await handler("--questionable add dark mode", ctx);
+    assert.ok(sent[0]!.content.includes("QUESTIONABLE: true"));
+    assert.ok(sent[0]!.content.includes("USER_PROMPT: add dark mode"));
   });
 });
