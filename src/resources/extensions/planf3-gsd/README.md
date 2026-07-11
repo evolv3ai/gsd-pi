@@ -136,6 +136,34 @@ the plan value. To exercise a real config-drift refusal, edit a bucket the
 plan **does not** govern (typically an execution or research bucket sourced
 from `~/.gsd/PREFERENCES.md`).
 
+### `/planf3-gsd-sync [specs/<plan>.html] [--dry-run]`
+
+Pulls GSD runtime state back into the Planf3 HTML plan — the reverse
+direction of `export`/`build`. Reads `gsd headless query` (the documented
+surface only — never `.gsd/` internals), then rewrites the plan surgically:
+
+- **Status markers** (`[]` / `[wip]` / `[x]` / `[f]`) move **forward only**
+  (`todo < wip < failed < done`): re-running sync is a no-op, a hand-set
+  `[x]` survives a `[wip]` snapshot, and a previously-`[f]` unit is upgraded
+  to `[x]` by milestone completion. A completed milestone sweeps every
+  marker to `[x]`; an active one paints the matched phase/item `[wip]`
+  (or `[f]` when the snapshot reports blockers).
+- **Bridge metadata**: appends the sync timestamp to the `modified` list and
+  upserts `gsd milestone` / `gsd session` rows in the header `<dl>`.
+- Everything else — HTML, CSS, images, notes, amendments — is byte-identical
+  (string-level splices, no DOM re-serialization; atomic temp+rename write).
+
+With no path, the plan is inferred from `specs/*.manifest.json` (exactly one
+manifest wins; several → pass the path explicitly). The manifest supplies the
+milestone id; if the snapshot shows a different milestone, sync reports
+"not observable" and writes nothing. Active slice/task titles that can't be
+uniquely matched to a phase/item are listed as `unmatched:` and never painted.
+`--dry-run` prints every would-be change and writes nothing.
+
+Not synced yet (no documented headless source): commit SHAs and
+validation-evidence summaries — deferred until upstream exposes a
+ledger/artifact query.
+
 ## ExtensionAPI tools
 
 For agent/LLM callers (the LLM picks these up automatically from the
@@ -145,6 +173,7 @@ tool catalog; they're not a separate user surface).
 | --- | --- | --- |
 | `planf3_gsd_export` | `htmlPath: string`, `mode?: "auto" \| "step"`, `userPrompt?: string` | `{ phaseCount, taskCount, specPath, manifestPath }` |
 | `planf3_gsd_status` | none | `BridgeStatus` (see [Status output](#status-output)) |
+| `planf3_gsd_sync` | `htmlPath?: string`, `dryRun?: boolean` | `SyncOutcome` (`{ kind, message, applied, unmatched }`) |
 
 There is intentionally **no** `planf3_gsd_build` tool. `build` is a
 slash-command-only surface — agents that want to create a milestone
@@ -292,14 +321,15 @@ extension's compatibility brief in `gsd-pi/CLAUDE.md` tracks this.
 ## Out of scope (deferred to later milestones)
 
 The current release covers **M0 (parser + spec exporter)**,
-**M1 (manifest + headless bridge)**, and **M2 tier-0 (the preflight/PRESETS
-enforced-lite gate)**. The following slash commands and
+**M1 (manifest + headless bridge)**, **M2 tier-0 (the preflight/PRESETS
+enforced-lite gate)**, and **M3 (`/planf3-gsd-sync`)**. The following slash commands and
 features are intentionally not implemented yet — see
 `/home/wsladmin/dev/planf3-gsd/docs/superpowers/plans/2026-06-22-planf3-gsd-mvp.md`
 for the full PRD coverage map:
 
 - `/planf3-gsd plan` and `/run` — rest of M2
-- `/sync` (push GSD state back into the Planf3 HTML) — M3
+- Continuous sync during builds (FR-8's "after each completed GSD unit" loop) — M4, alongside steer/pause/stop
+- Commit-SHA list + validation-evidence in plan metadata — blocked on upstream exposing a ledger/artifact query
 - Steer / pause / stop + the blocker-flow UI — M4
 - Lore / RAC promotion — M5
 
