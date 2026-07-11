@@ -65,7 +65,7 @@ describe("buildManifest", () => {
 
     assert.equal(mf.provenance.userPrompt, "Test the bridge");
     assert.equal(mf.provenance.generator, "planf3-gsd-pi");
-    assert.equal(mf.provenance.generatorVersion, "0.3.3");
+    assert.equal(mf.provenance.generatorVersion, "0.4.0");
   });
 
   test("presets block is stamped when provided", () => {
