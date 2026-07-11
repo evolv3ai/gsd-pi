@@ -1,7 +1,7 @@
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { formatPrefsLine } from "./build-register.js";
-import type { PrefsSummary } from "./build.js";
+import { formatPrefsLine, formatBuildSummary } from "./build-register.js";
+import type { PrefsSummary, BuildResult } from "./build.js";
 
 const base: PrefsSummary = { applied: true, buckets: ["planning"], models: { planning: "m" }, commands: [], warning: null };
 
@@ -28,5 +28,45 @@ describe("formatPrefsLine", () => {
   });
   test("no commands", () => {
     assert.equal(formatPrefsLine(base), "prefs=updated .gsd/PREFERENCES.md (buckets: planning; no verification commands)");
+  });
+});
+
+function makeResult(overrides: Partial<BuildResult>): BuildResult {
+  return {
+    specPath: "/tmp/p.gsd.md",
+    manifestPath: "/tmp/p.manifest.json",
+    milestoneId: "M042",
+    autoChain: "not-applicable",
+    status: {
+      phase: "ready",
+      activeMilestone: null,
+      lastCompletedMilestone: null,
+      activeSlice: null,
+      activeTask: null,
+      progress: null,
+      cost: 0,
+      nextAction: null,
+      blockers: [],
+      sessionId: null,
+    },
+    prefs: { applied: false, buckets: [], models: {}, commands: [], warning: null },
+    presets: "ok",
+    ...overrides,
+  };
+}
+
+describe("formatBuildSummary", () => {
+  test("step-mode result (autoChain not-applicable) has no auto= line", () => {
+    assert.equal(
+      formatBuildSummary(makeResult({})),
+      "Built milestone M042\nphase=ready\nprefs=no changes\nspec=/tmp/p.gsd.md\nmanifest=/tmp/p.manifest.json",
+    );
+  });
+
+  test("auto result carries the auto= line and (unknown id) fallback", () => {
+    assert.equal(
+      formatBuildSummary(makeResult({ milestoneId: null, autoChain: "chained" })),
+      "Built milestone (unknown id)\nphase=ready\nauto=chained\nprefs=no changes\nspec=/tmp/p.gsd.md\nmanifest=/tmp/p.manifest.json",
+    );
   });
 });
