@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@gsd/pi-coding-agent";
-import { runBuild, type PrefsSummary } from "./build.js";
+import { runBuild, type PrefsSummary, type BuildResult } from "./build.js";
 import { friendlyError } from "./error-message.js";
 import { emit } from "../gsd/notify.js";
 
@@ -12,6 +12,14 @@ export function formatPrefsLine(prefs: PrefsSummary): string {
     ? "no verification commands"
     : `verification commands: ${shown}${extra}`;
   return `prefs=updated .gsd/PREFERENCES.md (buckets: ${prefs.buckets.join(", ") || "none"}; ${cmdPart})`;
+}
+
+/** The success summary shared verbatim by the /planf3-gsd-build command and
+ *  the planf3_gsd_build tool (spec: extract, don't duplicate). */
+export function formatBuildSummary(result: BuildResult): string {
+  const prefsLine = formatPrefsLine(result.prefs);
+  const chainLine = result.autoChain === "not-applicable" ? "" : `\nauto=${result.autoChain}`;
+  return `Built milestone ${result.milestoneId ?? "(unknown id)"}\nphase=${result.status.phase}${chainLine}\n${prefsLine}\nspec=${result.specPath}\nmanifest=${result.manifestPath}`;
 }
 
 export function registerBuildCommand(pi: ExtensionAPI): void {
@@ -30,13 +38,7 @@ export function registerBuildCommand(pi: ExtensionAPI): void {
       }
       try {
         const result = await runBuild(htmlPath, { auto, applyPrefs, allowUnsafeStep, force });
-        const prefsLine = formatPrefsLine(result.prefs);
-        const chainLine = result.autoChain === "not-applicable" ? "" : `\nauto=${result.autoChain}`;
-        emit(
-          ctx,
-          `Built milestone ${result.milestoneId ?? "(unknown id)"}\nphase=${result.status.phase}${chainLine}\n${prefsLine}\nspec=${result.specPath}\nmanifest=${result.manifestPath}`,
-          "info",
-        );
+        emit(ctx, formatBuildSummary(result), "info");
       } catch (err) {
         emit(ctx, friendlyError(err), "error");
       }
