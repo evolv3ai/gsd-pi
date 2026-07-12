@@ -1,7 +1,7 @@
 {
   "id": "planf3-gsd",
   "name": "Planf3 GSD Bridge",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Bridges a Planf3 HTML plan into a GSD milestone via the headless CLI.",
   "tier": "bundled",
   "requires": { "platform": ">=2.29.0" },
