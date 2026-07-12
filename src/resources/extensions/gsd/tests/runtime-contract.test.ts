@@ -14,7 +14,11 @@ import {
 import { closeDatabase, isDbAvailable } from "../gsd-db.ts";
 import { _clearGsdRootCache } from "../paths.ts";
 import { clearGSDPreferencesCache } from "../preferences.ts";
-import { renderRuntimeContractForSystemPrompt, resolveRuntimeContract } from "../runtime-contract.ts";
+import {
+  _resolveRuntimeContractWithReadHookForTest,
+  renderRuntimeContractForSystemPrompt,
+  resolveRuntimeContract,
+} from "../runtime-contract.ts";
 import { invalidateStateCache } from "../state.ts";
 
 function assertContainsPath(text: string, path: string): void {
@@ -179,10 +183,11 @@ test("discovers the repository runtime contract from a nested cwd", async () => 
   });
 });
 
-test("uses ctx.cwd for both preferences and runtime contract injection", async () => {
-  await withRuntimeProject(async (_base, ctx) => {
+test("uses ctx.cwd when the host cwd has no .gsd directory", async () => {
+  await withRuntimeProject(async (base, ctx) => {
     const activeRepo = realpathSync(mkdtempSync(join(tmpdir(), "gsd-runtime-active-")));
     try {
+      rmSync(join(base, ".gsd"), { recursive: true, force: true });
       mkdirSync(join(activeRepo, ".gsd"), { recursive: true });
       execFileSync("git", ["init", "-q"], { cwd: activeRepo, stdio: "ignore" });
       writeFileSync(
@@ -202,11 +207,34 @@ test("uses ctx.cwd for both preferences and runtime contract injection", async (
       );
       const systemPrompt = result?.systemPrompt ?? "";
 
+      assert.ok(result);
       assert.match(systemPrompt, /# Active repository rules/);
       assertContainsPath(systemPrompt, join(contractDir, "AGENT.md"));
     } finally {
       rmSync(activeRepo, { recursive: true, force: true });
     }
+  });
+});
+
+test("fails closed when the contract directory changes between file reads", async () => {
+  await withRuntimeProject(async (base) => {
+    const contractDir = join(base, "script", "local-runtime");
+    const originalContractDir = join(base, "script", "original-runtime");
+    const replacementContractDir = join(base, "script", "replacement-runtime");
+    mkdirSync(contractDir, { recursive: true });
+    mkdirSync(replacementContractDir, { recursive: true });
+    writeFileSync(join(contractDir, "AGENT.md"), "# Original agent rules\n", "utf-8");
+    writeFileSync(join(contractDir, "README.md"), "# Original documentation\n", "utf-8");
+    writeFileSync(join(replacementContractDir, "AGENT.md"), "# Replacement agent rules\n", "utf-8");
+    writeFileSync(join(replacementContractDir, "README.md"), "# Replacement documentation\n", "utf-8");
+
+    const contract = _resolveRuntimeContractWithReadHookForTest(base, (name) => {
+      if (name !== "AGENT.md") return;
+      renameSync(contractDir, originalContractDir);
+      renameSync(replacementContractDir, contractDir);
+    });
+
+    assert.equal(contract, null);
   });
 });
 

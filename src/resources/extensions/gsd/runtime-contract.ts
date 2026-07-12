@@ -34,6 +34,12 @@ export interface ResolvedRuntimeContract {
   entry?: RuntimeContractEntry;
 }
 
+interface OpenedContractDirectory {
+  fd: number;
+  path: string;
+  stats: ReturnType<typeof fstatSync>;
+}
+
 function isWithin(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel) && !win32.isAbsolute(rel));
@@ -55,6 +61,42 @@ function readOpenedFile(fd: number, byteLimit: number): Buffer {
     offset += bytesRead;
   }
   return buffer.subarray(0, offset);
+}
+
+function openValidatedContractDirectory(
+  projectRoot: string,
+  candidateDir: string,
+): OpenedContractDirectory | undefined {
+  let fd: number | undefined;
+  let retained = false;
+  try {
+    const path = realpathSync.native(candidateDir);
+    if (!isWithin(projectRoot, path)) return undefined;
+
+    fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const stats = fstatSync(fd);
+    if (!stats.isDirectory() || !sameFile(stats, statSync(path))) return undefined;
+    retained = true;
+    return { fd, path, stats };
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined && !retained) closeSync(fd);
+  }
+}
+
+function assertContractDirectoryIdentity(directory: OpenedContractDirectory): void {
+  const openedStats = fstatSync(directory.fd);
+  const currentPath = realpathSync.native(directory.path);
+  const currentStats = statSync(currentPath);
+  if (
+    currentPath !== directory.path ||
+    !openedStats.isDirectory() ||
+    !sameFile(directory.stats, openedStats) ||
+    !sameFile(directory.stats, currentStats)
+  ) {
+    throw new Error("Runtime contract directory changed during snapshot assembly");
+  }
 }
 
 function openValidatedFile(
@@ -119,6 +161,7 @@ function resolveContractEntry(
 function discoverRuntimeContract(
   basePath: string,
   preferences?: GSDPreferences,
+  afterFileRead?: (name: string) => void,
 ): ResolvedRuntimeContract | null {
   const repositoryRegistry = createRepositoryRegistryFromPreferences(basePath, preferences);
   const projectRoot = realpathSync.native(repositoryRegistry.projectRoot);
@@ -129,23 +172,58 @@ function discoverRuntimeContract(
   const candidateDir = resolve(projectRoot, contractPath);
   if (!isWithin(projectRoot, candidateDir)) return null;
 
-  const contractDir = realpathSync.native(candidateDir);
-  if (!isWithin(projectRoot, contractDir) || !statSync(contractDir).isDirectory()) return null;
+  const directory = openValidatedContractDirectory(projectRoot, candidateDir);
+  if (!directory) return null;
 
-  const agentInstructions = resolveContractDocument(projectRoot, contractDir, "AGENT.md");
-  const readme = resolveContractDocument(projectRoot, contractDir, "README.md");
-  const entryNames = configured?.entry ? [configured.entry] : DEFAULT_ENTRY_NAMES;
-  const entry = entryNames
-    .map((name) => resolveContractEntry(projectRoot, contractDir, name))
-    .find((file) => file !== undefined);
+  try {
+    const readFromContractDirectory = <T>(name: string, read: () => T): T => {
+      assertContractDirectoryIdentity(directory);
+      const result = read();
+      afterFileRead?.(name);
+      assertContractDirectoryIdentity(directory);
+      return result;
+    };
 
-  if (!agentInstructions && !readme && !entry) return null;
-  return {
-    directory: contractDir,
-    ...(agentInstructions ? { agentInstructions } : {}),
-    ...(readme ? { readme } : {}),
-    ...(entry ? { entry } : {}),
-  };
+    const agentInstructions = readFromContractDirectory(
+      "AGENT.md",
+      () => resolveContractDocument(projectRoot, directory.path, "AGENT.md"),
+    );
+    const readme = readFromContractDirectory(
+      "README.md",
+      () => resolveContractDocument(projectRoot, directory.path, "README.md"),
+    );
+    const entryNames = configured?.entry ? [configured.entry] : DEFAULT_ENTRY_NAMES;
+    let entry: RuntimeContractEntry | undefined;
+    for (const name of entryNames) {
+      entry = readFromContractDirectory(
+        name,
+        () => resolveContractEntry(projectRoot, directory.path, name),
+      );
+      if (entry) break;
+    }
+
+    if (!agentInstructions && !readme && !entry) return null;
+    return {
+      directory: directory.path,
+      ...(agentInstructions ? { agentInstructions } : {}),
+      ...(readme ? { readme } : {}),
+      ...(entry ? { entry } : {}),
+    };
+  } finally {
+    closeSync(directory.fd);
+  }
+}
+
+export function _resolveRuntimeContractWithReadHookForTest(
+  basePath: string,
+  afterFileRead: (name: string) => void,
+  preferences?: GSDPreferences,
+): ResolvedRuntimeContract | null {
+  try {
+    return discoverRuntimeContract(basePath, preferences, afterFileRead);
+  } catch {
+    return null;
+  }
 }
 
 export function resolveRuntimeContract(
