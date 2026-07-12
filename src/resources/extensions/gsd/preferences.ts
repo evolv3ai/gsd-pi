@@ -468,8 +468,10 @@ function mergePreferenceMetadata(
     ...(primary.diagnostics ?? []),
     ...(secondary?.diagnostics ?? []),
   ];
+  const projectRuntimeContract = primary.projectRuntimeContract ?? secondary?.projectRuntimeContract;
   return {
     ...primary,
+    ...(projectRuntimeContract ? { projectRuntimeContract } : {}),
     ...(mergedWarnings.length > 0 ? { warnings: mergedWarnings } : {}),
     ...(mergedDiagnostics.length > 0 ? { diagnostics: mergedDiagnostics } : {}),
   };
@@ -532,6 +534,16 @@ function loadPreferencesFile(path: string, scope: "global" | "project"): LoadedG
   const ignored = parsed.diagnostics.some((diagnostic) => diagnostic.ignored === true);
   const preferences = parsed.preferences ?? {};
   const validation = validatePreferences(preferences);
+  const rawRuntime = (preferences as Record<string, unknown>).runtime;
+  const hasConfiguredRuntimeContract = scope === "project"
+    && typeof rawRuntime === "object"
+    && rawRuntime !== null
+    && !Array.isArray(rawRuntime)
+    && Object.hasOwn(rawRuntime, "contract");
+  let projectRuntimeContract: LoadedGSDPreferences["projectRuntimeContract"];
+  if (hasConfiguredRuntimeContract) {
+    projectRuntimeContract = validation.preferences.runtime?.contract ? "valid" : "invalid";
+  }
   const allWarnings = [...validation.warnings, ...validation.errors];
   const diagnostics: PreferenceDiagnostic[] = [
     ...parsed.diagnostics.map((diagnostic) => ({ ...diagnostic, path, scope })),
@@ -557,6 +569,7 @@ function loadPreferencesFile(path: string, scope: "global" | "project"): LoadedG
     path,
     scope,
     preferences: validation.preferences,
+    ...(projectRuntimeContract ? { projectRuntimeContract } : {}),
     ...(ignored ? { ignored: true } : {}),
     ...(allWarnings.length > 0 ? { warnings: allWarnings } : {}),
     ...(diagnostics.length > 0 ? { diagnostics } : {}),

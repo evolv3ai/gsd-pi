@@ -12,6 +12,7 @@ import {
   buildBeforeAgentStartResult,
 } from "../bootstrap/system-context.ts";
 import { closeDatabase, isDbAvailable } from "../gsd-db.ts";
+import { writeForensicsMarker } from "../forensics.ts";
 import { _clearGsdRootCache } from "../paths.ts";
 import { clearGSDPreferencesCache } from "../preferences.ts";
 import {
@@ -210,6 +211,44 @@ test("blocks runtime operations when a discovered contract is invalid", async ()
   });
 });
 
+test("blocks malformed configured contracts instead of discovering the default", async () => {
+  await withRuntimeProject(async (base, ctx) => {
+    writeFileSync(
+      join(base, ".gsd", "PREFERENCES.md"),
+      ["---", "runtime:", "  contract:", "    path: ../outside", "---", ""].join("\n"),
+      "utf-8",
+    );
+    const contractDir = join(base, "script", "local-runtime");
+    mkdirSync(contractDir, { recursive: true });
+    writeFileSync(join(contractDir, "AGENT.md"), "# Default runtime rules\n", "utf-8");
+    clearGSDPreferencesCache();
+
+    const result = await buildBeforeAgentStartResult(
+      { prompt: "Start the application", systemPrompt: "base system prompt" },
+      ctx,
+    );
+    const systemPrompt = result?.systemPrompt ?? "";
+
+    assert.match(systemPrompt, /Invalid project-local runtime contract/);
+    assert.doesNotMatch(systemPrompt, /# Default runtime rules/);
+  });
+});
+
+test("blocks a configured contract whose nominated entry is missing", async () => {
+  await withRuntimeProject(async (base) => {
+    const contractDir = join(base, "ops", "runtime");
+    mkdirSync(contractDir, { recursive: true });
+    writeFileSync(join(contractDir, "AGENT.md"), "# Runtime rules\n", "utf-8");
+
+    const runtimeBlock = renderRuntimeContractForSystemPrompt(base, {
+      runtime: { contract: { path: "ops/runtime", entry: "missing.mjs" } },
+    });
+
+    assert.match(runtimeBlock, /Invalid project-local runtime contract/);
+    assert.doesNotMatch(runtimeBlock, /# Runtime rules/);
+  });
+});
+
 test("allows configured in-project paths whose names begin with dotdot", async () => {
   await withRuntimeProject(async (base) => {
     const contractDir = join(base, "..runtime");
@@ -275,6 +314,35 @@ test("uses ctx.cwd when the host cwd has no .gsd directory", async () => {
       assert.match(systemPrompt, /# Active repository rules/);
       assertContainsPath(systemPrompt, join(contractDir, "AGENT.md"));
     } finally {
+      rmSync(activeRepo, { recursive: true, force: true });
+    }
+  });
+});
+
+test("isolates all context assembly from a different host cwd", async () => {
+  await withRuntimeProject(async (hostRepo, ctx) => {
+    const activeRepo = realpathSync(mkdtempSync(join(tmpdir(), "gsd-runtime-isolated-")));
+    try {
+      mkdirSync(join(activeRepo, ".gsd"), { recursive: true });
+      execFileSync("git", ["init", "-q"], { cwd: activeRepo, stdio: "ignore" });
+      writeFileSync(join(hostRepo, ".gsd", "KNOWLEDGE.md"), "## Rules\n\n- HOST_ONLY_RULE\n", "utf-8");
+      writeFileSync(join(activeRepo, ".gsd", "KNOWLEDGE.md"), "## Rules\n\n- ACTIVE_ONLY_RULE\n", "utf-8");
+      writeForensicsMarker(hostRepo, "host-report.md", "HOST_ONLY_FORENSICS");
+      writeForensicsMarker(activeRepo, "active-report.md", "ACTIVE_ONLY_FORENSICS");
+
+      const activeCtx = { ...ctx, cwd: activeRepo } as ExtensionContext;
+      const result = await buildBeforeAgentStartResult(
+        { prompt: "continue", systemPrompt: "base system prompt" },
+        activeCtx,
+      );
+      const combinedContext = `${result?.systemPrompt ?? ""}\n${result?.message?.content ?? ""}`;
+
+      assert.match(combinedContext, /ACTIVE_ONLY_RULE/);
+      assert.match(combinedContext, /ACTIVE_ONLY_FORENSICS/);
+      assert.doesNotMatch(combinedContext, /HOST_ONLY_RULE/);
+      assert.doesNotMatch(combinedContext, /HOST_ONLY_FORENSICS/);
+    } finally {
+      await _flushDeferredContextMaintenanceForTest(activeRepo);
       rmSync(activeRepo, { recursive: true, force: true });
     }
   });

@@ -321,6 +321,7 @@ function discoverRuntimeContract(
     }
 
     assertContractMembersIdentity(members);
+    if (configured?.entry && !entry) return { status: "invalid" };
     if (!agentInstructions && !readme && !entry) {
       return { status: configured ? "invalid" : "absent" };
     }
@@ -389,7 +390,9 @@ function renderDocument(label: string, document: RuntimeContractDocument): strin
 export function renderRuntimeContractForSystemPrompt(
   basePath: string,
   preferences?: GSDPreferences,
+  projectRuntimeContract?: "valid" | "invalid",
 ): string {
+  if (projectRuntimeContract === "invalid") return INVALID_CONTRACT_BLOCK;
   const discovery = resolveRuntimeContractDiscovery(basePath, preferences);
   if (discovery.status === "absent") return "";
   if (discovery.status === "invalid") return INVALID_CONTRACT_BLOCK;

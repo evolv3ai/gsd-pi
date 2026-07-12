@@ -685,6 +685,7 @@ export interface LoadedGSDPreferences {
   path: string;
   scope: "global" | "project";
   preferences: GSDPreferences;
+  projectRuntimeContract?: "valid" | "invalid";
   /** True when the file exists but its contents were ignored before merging. */
   ignored?: boolean;
   /** Validation warnings (unknown keys, type mismatches, deprecations). Empty when preferences are clean. */
