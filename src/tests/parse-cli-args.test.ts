@@ -38,6 +38,14 @@ describe('buildHeadlessAutoArgs', () => {
     })
     assert.deepEqual(args, ['--model', 'claude-code/sonnet', 'auto', 'next'])
   })
+
+  test('forwards --thinking before auto positional args', () => {
+    const args = buildHeadlessAutoArgs({
+      thinking: 'medium',
+      messages: ['auto', 'next'],
+    })
+    assert.deepEqual(args, ['--thinking', 'medium', 'auto', 'next'])
+  })
 })
 
 describe('parseCliArgs — worktree flag', () => {
@@ -85,8 +93,39 @@ describe('parseCliArgs — short flags and basic options', () => {
     assert.equal(parse('--no-session').noSession, true)
   })
 
+  test('--session and --session-dir capture forked session paths', () => {
+    const flags = parse('--session', '/tmp/session.jsonl', '--session-dir', '/tmp/sessions')
+    assert.equal(flags.session, '/tmp/session.jsonl')
+    assert.equal(flags.sessionDir, '/tmp/sessions')
+  })
+
   test('--model captures model id', () => {
     assert.equal(parse('--model', 'claude-opus-4-6').model, 'claude-opus-4-6')
+  })
+
+  test('--thinking captures thinking level without treating it as a message', () => {
+    const flags = parse('--mode', 'json', '-p', '--thinking', 'medium', 'Task: evaluate gates')
+    assert.equal(flags.thinking, 'medium')
+    assert.deepEqual(flags.messages, ['Task: evaluate gates'])
+  })
+
+  test('--thinking rejects invalid levels', () => {
+    assert.throws(
+      () => parse('--thinking', 'ultra'),
+      /Invalid thinking level "ultra"/,
+    )
+  })
+
+  test('unknown options fail instead of turning their values into messages', () => {
+    assert.throws(
+      () => parse('--bogus', 'medium', 'Task: evaluate gates'),
+      /Unknown option: --bogus/,
+    )
+  })
+
+  test('subcommand-local options pass through to subcommand parsers', () => {
+    const flags = parse('headless', '--bare', 'auto')
+    assert.deepEqual(flags.messages, ['headless', '--bare', 'auto'])
   })
 })
 

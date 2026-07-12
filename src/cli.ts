@@ -167,7 +167,14 @@ async function reapplyValidatedModelOnFallback(
   }
 }
 
-const cliFlags = parseCliArgs(process.argv)
+let cliFlags: ReturnType<typeof parseCliArgs>
+try {
+  cliFlags = parseCliArgs(process.argv)
+} catch (err) {
+  const message = err instanceof Error ? err.message : String(err)
+  process.stderr.write(`[gsd] Error: ${message}\n`)
+  process.exit(1)
+}
 const isPrintMode = cliFlags.print || cliFlags.mode !== undefined
 
 // `gsd [subcommand] --help` / `-h` — print help before any subcommand runs.
@@ -682,7 +689,9 @@ if (isPrintMode) {
   await ensureRtkBootstrap()
   const sessionManager = cliFlags.noSession
     ? SessionManager.inMemory()
-    : SessionManager.create(process.cwd())
+    : cliFlags.session
+      ? SessionManager.open(cliFlags.session, cliFlags.sessionDir)
+      : SessionManager.create(process.cwd(), cliFlags.sessionDir)
 
   // Read --append-system-prompt file content (subagent writes agent system prompts to temp files)
   let appendSystemPrompt: string | undefined
@@ -738,6 +747,7 @@ if (isPrintMode) {
   printExtensionWarnings(extensionsResult.warnings)
 
   applyModelOverride(session, modelRegistry, cliFlags.model)
+  if (cliFlags.thinking) session.setThinkingLevel(cliFlags.thinking)
 
   const mode = cliFlags.mode || 'text'
 
@@ -819,9 +829,11 @@ migrateLegacyFlatSessions(sessionsDir, projectSessionsDir)
 
 const sessionManager = cliFlags._selectedSessionPath
   ? SessionManager.open(cliFlags._selectedSessionPath, projectSessionsDir)
-  : cliFlags.continue
-    ? SessionManager.continueRecent(cwd, projectSessionsDir)
-    : SessionManager.create(cwd, projectSessionsDir)
+  : cliFlags.session
+    ? SessionManager.open(cliFlags.session, cliFlags.sessionDir)
+    : cliFlags.continue
+      ? SessionManager.continueRecent(cwd, projectSessionsDir)
+      : SessionManager.create(cwd, cliFlags.sessionDir ?? projectSessionsDir)
 
 exitIfManagedResourcesAreNewer(agentDir)
 initResources(agentDir)
@@ -872,6 +884,7 @@ printExtensionErrors(extensionsResult.errors)
 printExtensionWarnings(extensionsResult.warnings)
 
 applyModelOverride(session, modelRegistry, cliFlags.model)
+if (cliFlags.thinking) session.setThinkingLevel(cliFlags.thinking)
 
 // Restore scoped models from settings on startup.
 // The upstream InteractiveMode reads enabledModels from settings when /scoped-models is opened,

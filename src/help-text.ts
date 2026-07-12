@@ -175,6 +175,7 @@ const SUBCOMMAND_HELP: Record<string, string> = {
     '  --bare                 Minimal context: skip CLAUDE.md, AGENTS.md, user settings, user skills',
     '  --resume <id>          Resume a prior headless session by ID',
     '  --model ID             Override model',
+    '  --thinking <level>     Override thinking level: off, minimal, low, medium, high, xhigh, max',
     '  --supervised           Forward interactive UI requests to orchestrator via stdout/stdin',
     '  --response-timeout N   Timeout (ms) for orchestrator response (default: 30000)',
     '  --answers <path>       Pre-supply answers and secrets (JSON file)',
@@ -231,6 +232,7 @@ export function printHelp(version: string): void {
   process.stdout.write('  --continue, -c           Resume the most recent session\n')
   process.stdout.write('  --worktree, -w [name]    Start in an isolated worktree (auto-named if omitted)\n')
   process.stdout.write('  --model <id>             Override model (e.g. provider/model-id)\n')
+  process.stdout.write('  --thinking <level>       Override thinking level\n')
   process.stdout.write('  --no-session             Disable session persistence\n')
   process.stdout.write('  --web [path]             Start browser-only web mode\n')
   process.stdout.write('  --host <host>            Web mode bind address\n')

@@ -29,7 +29,7 @@ describe("SubagentRunStore", () => {
 			mode: "single",
 			contextMode: "fresh",
 			cwd: "/repo",
-			children: [{ agent: "scout", trackingName: "clear-beacon", task: "inspect" }],
+			children: [{ agent: "scout", trackingName: "clear-beacon", task: "inspect", thinking: "medium" }],
 			now: "2026-01-01T00:00:00.000Z",
 		}));
 
@@ -48,6 +48,7 @@ describe("SubagentRunStore", () => {
 		const loaded = store.get("run-1");
 		assert.equal(loaded?.status, "succeeded");
 		assert.equal(loaded?.children[0]?.trackingName, "clear-beacon");
+		assert.equal(loaded?.children[0]?.thinking, "medium");
 		assert.equal(loaded?.children[0]?.output, "done");
 		assert.equal(store.list()[0]?.runId, "run-1");
 	});

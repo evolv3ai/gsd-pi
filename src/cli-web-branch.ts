@@ -8,9 +8,14 @@ export interface CliFlags {
   mode?: 'text' | 'json' | 'rpc' | 'mcp'
   print?: boolean
   continue?: boolean
+  help?: boolean
+  version?: boolean
   noSession?: boolean
+  session?: string
+  sessionDir?: string
   worktree?: boolean | string
   model?: string
+  thinking?: CliThinkingLevel
   listModels?: string | true
   extensions: string[]
   appendSystemPrompt?: string
@@ -32,7 +37,33 @@ export interface CliFlags {
   _selectedSessionPath?: string
 }
 
+export type CliThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
 type WritableLike = Pick<typeof process.stderr, 'write'>
+
+const VALID_THINKING_LEVELS = new Set<CliThinkingLevel>(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+
+const PASSTHROUGH_SUBCOMMANDS = new Set([
+  'auto',
+  'config',
+  'graph',
+  'headless',
+  'hermes',
+  'install',
+  'list',
+  'read',
+  'remove',
+  'sessions',
+  'update',
+  'upgrade',
+  'web',
+  'worktree',
+  'wt',
+])
+
+function isThinkingLevel(value: string): value is CliThinkingLevel {
+  return VALID_THINKING_LEVELS.has(value as CliThinkingLevel)
+}
 
 export interface RunWebCliBranchDeps {
   runWebMode?: typeof launchWebMode
@@ -56,8 +87,16 @@ export function parseCliArgs(argv: string[]): CliFlags {
       flags.print = true
     } else if (arg === '--continue' || arg === '-c') {
       flags.continue = true
+    } else if (arg === '--help' || arg === '-h') {
+      flags.help = true
+    } else if (arg === '--version' || arg === '-v') {
+      flags.version = true
     } else if (arg === '--no-session') {
       flags.noSession = true
+    } else if (arg === '--session' && i + 1 < args.length) {
+      flags.session = args[++i]
+    } else if (arg === '--session-dir' && i + 1 < args.length) {
+      flags.sessionDir = args[++i]
     } else if (arg === '--worktree' || arg === '-w') {
       // -w with no value → auto-generate name; -w <name> → use that name
       if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
@@ -86,6 +125,12 @@ export function parseCliArgs(argv: string[]): CliFlags {
       flags.webNoAuth = true
     } else if (arg === '--model' && i + 1 < args.length) {
       flags.model = args[++i]
+    } else if (arg === '--thinking' && i + 1 < args.length) {
+      const level = args[++i]
+      if (!isThinkingLevel(level)) {
+        throw new Error(`Invalid thinking level "${level}". Valid values: ${[...VALID_THINKING_LEVELS].join(', ')}`)
+      }
+      flags.thinking = level
     } else if (arg === '--extension' && i + 1 < args.length) {
       flags.extensions.push(args[++i])
     } else if (arg === '--append-system-prompt' && i + 1 < args.length) {
@@ -95,14 +140,24 @@ export function parseCliArgs(argv: string[]): CliFlags {
     } else if (arg === '--list-models') {
       flags.listModels = (i + 1 < args.length && !args[i + 1].startsWith('-')) ? args[++i] : true
     } else if (!arg.startsWith('--') && !arg.startsWith('-')) {
+      if (flags.messages.length === 0 && PASSTHROUGH_SUBCOMMANDS.has(arg) && !flags.print && flags.mode === undefined) {
+        flags.messages.push(arg, ...args.slice(i + 1))
+        break
+      }
       flags.messages.push(arg)
+    } else {
+      throw new Error(`Unknown option: ${arg}`)
     }
   }
   return flags
 }
 
-export function buildHeadlessAutoArgs(flags: Pick<CliFlags, 'messages' | 'model'>): string[] {
-  return flags.model ? ['--model', flags.model, ...flags.messages] : [...flags.messages]
+export function buildHeadlessAutoArgs(flags: Pick<CliFlags, 'messages' | 'model' | 'thinking'>): string[] {
+  const args: string[] = []
+  if (flags.model) args.push('--model', flags.model)
+  if (flags.thinking) args.push('--thinking', flags.thinking)
+  args.push(...flags.messages)
+  return args
 }
 
 export { getProjectSessionsDir } from './project-sessions.js'
