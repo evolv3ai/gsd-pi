@@ -9,7 +9,7 @@ GSD spec markdown + bridge manifest beside it, then shells out to
 
 - **Tier:** bundled (ships inside `@opengsd/gsd-pi`)
 - **Platform requirement:** `gsd-pi >= 2.29.0`
-- **Version:** 0.5.0 (M0+M1+M2 complete — plan/run/build/preflight; + M3 sync; see [Out of scope](#out-of-scope) for the road from here)
+- **Version:** 0.5.1 (M0+M1+M2 complete — plan/run/build/preflight; + M3 sync; + F-4.2 CLI-provider fallback; see [Out of scope](#out-of-scope) for the road from here)
 
 ## Quickstart
 
@@ -81,6 +81,12 @@ chain into the `planf3_gsd_export` tool. Result: `specs/<name>.html` +
 - If the planf3 skill is missing, the command prints install guidance and
   injects nothing. (The GSD/Pi bundled skill registry is not probed — planf3
   is not bundled.)
+- Under hosts that tunnel turns through an external CLI (`claude-code`,
+  `cursor-cli`), pi-session tools are not visible to the model; the injected
+  prompt therefore includes a Bash fallback via `gsd --print
+  '/planf3-gsd-export …'`. Note also: in fully headless `--print` sessions
+  the queued planning turn never executes at all (fire-and-forget contract —
+  the injection is only consumed by a live interactive session).
 
 ### `/planf3-gsd-run "<request>" [--step] [--questionable] [--no-prefs] [--force] [--step-unsafe]`
 
@@ -94,6 +100,13 @@ builds the milestone end-to-end. Flags map onto the build surface:
 Same fire-and-forget contract; additionally observe
 `.gsd/planf3-gsd-evals.jsonl` (the chained build appends its usual eval row —
 the planning phase itself never logs rows).
+
+Under hosts that tunnel turns through an external CLI (`claude-code`,
+`cursor-cli`), pi-session tools are not visible to the model; the injected
+prompt therefore includes a Bash fallback via `gsd --print
+'/planf3-gsd-build …'`. Note also: in fully headless `--print` sessions the
+queued planning turn never executes at all (fire-and-forget contract — the
+injection is only consumed by a live interactive session).
 
 ### `/planf3-gsd-build <path-to-plan.html> [--auto] [--no-prefs] [--step-unsafe] [--force]`
 

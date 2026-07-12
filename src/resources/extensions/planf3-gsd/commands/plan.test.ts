@@ -85,6 +85,38 @@ describe("buildPlanPrompt", () => {
     assert.ok(prompt.includes("force=false"));
     assert.ok(prompt.includes("allowUnsafeStep=false"));
   });
+
+  test("export chain: fallback line for hosts that don't surface pi-session tools", () => {
+    const prompt = buildPlanPrompt({ ...base, chain: { target: "export" } });
+    assert.ok(prompt.includes("gsd --print '/planf3-gsd-export"));
+    assert.ok(prompt.includes("planf3_gsd_export tool is not in your available tools"));
+  });
+
+  test("build chain: fallback command renders with only --auto for /run defaults", () => {
+    const prompt = buildPlanPrompt({
+      ...base,
+      chain: { target: "build", flags: { auto: true, applyPrefs: true, force: false, allowUnsafeStep: false } },
+    });
+    assert.ok(prompt.includes("gsd --print '/planf3-gsd-build <path-to-plan.html> --auto'"));
+    assert.ok(!prompt.includes("--no-prefs"));
+  });
+
+  test("build chain: fallback command includes --no-prefs --force --step-unsafe, not --auto", () => {
+    const prompt = buildPlanPrompt({
+      ...base,
+      chain: { target: "build", flags: { auto: false, applyPrefs: false, force: true, allowUnsafeStep: true } },
+    });
+    assert.ok(prompt.includes("--no-prefs --force --step-unsafe"));
+    assert.ok(!prompt.includes("'/planf3-gsd-build <path-to-plan.html> --auto"));
+  });
+
+  test("build chain: fallback command has no trailing space when all flags are off", () => {
+    const prompt = buildPlanPrompt({
+      ...base,
+      chain: { target: "build", flags: { auto: false, applyPrefs: true, force: false, allowUnsafeStep: false } },
+    });
+    assert.ok(prompt.includes("gsd --print '/planf3-gsd-build <path-to-plan.html>'"));
+  });
 });
 
 describe("runPlan", () => {
