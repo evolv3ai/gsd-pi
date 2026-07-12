@@ -171,6 +171,14 @@ let cliFlags: ReturnType<typeof parseCliArgs>
 try {
   cliFlags = parseCliArgs(process.argv)
 } catch (err) {
+  // `--help`/`-h` is a meta-request that must always resolve to help, even when
+  // another argument is an unrecognized flag (e.g. `gsd --foo --help`). This
+  // mirrors the includes()-based help handling below, which parseCliArgs would
+  // otherwise pre-empt by throwing on the unknown flag first.
+  if (process.argv.includes('--help') || process.argv.includes('-h')) {
+    printHelp(process.env.GSD_VERSION || '0.0.0')
+    process.exit(0)
+  }
   const message = err instanceof Error ? err.message : String(err)
   process.stderr.write(`[gsd] Error: ${message}\n`)
   process.exit(1)
