@@ -18,8 +18,18 @@ import {
 
 const require = createRequire(import.meta.url);
 const tempDirs = new Set<string>();
+const V34_TABLES = [
+  "workflow_remediation_links", "workflow_human_acceptances", "workflow_verification_evidence",
+  "workflow_technical_verdicts", "workflow_acceptance_criteria", "workflow_recovery_actions",
+  "workflow_recovery_budgets", "workflow_failure_observations",
+] as const;
+const V34_INDEXES = [
+  "idx_workflow_attempt_scope_v34", "idx_workflow_result_scope_v34",
+  "idx_workflow_blocker_scope_v34",
+] as const;
 
 interface RawDb {
+  readonly isOpen: boolean;
   exec(sql: string): void;
   prepare(sql: string): {
     run(...args: unknown[]): unknown;
@@ -46,6 +56,21 @@ function tableExists(db: RawDb, table: string): boolean {
   return Boolean(
     db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?").get(table),
   );
+}
+
+function indexExists(db: RawDb, index: string): boolean {
+  return Boolean(
+    db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'index' AND name = ?").get(index),
+  );
+}
+
+function assertV34Absent(db: RawDb): void {
+  for (const table of V34_TABLES) {
+    assert.equal(tableExists(db, table), false, `${table} should be absent`);
+  }
+  for (const index of V34_INDEXES) {
+    assert.equal(indexExists(db, index), false, `${index} should be absent`);
+  }
 }
 
 function maxSchemaVersion(db: RawDb): number {
@@ -314,6 +339,17 @@ function rewindToV32(dbPath: string): void {
   try {
     seedLegacyRows(db);
     db.exec(`
+      DROP TABLE IF EXISTS workflow_remediation_links;
+      DROP TABLE IF EXISTS workflow_human_acceptances;
+      DROP TABLE IF EXISTS workflow_verification_evidence;
+      DROP TABLE IF EXISTS workflow_technical_verdicts;
+      DROP TABLE IF EXISTS workflow_acceptance_criteria;
+      DROP TABLE IF EXISTS workflow_recovery_actions;
+      DROP TABLE IF EXISTS workflow_recovery_budgets;
+      DROP TABLE IF EXISTS workflow_failure_observations;
+      DROP INDEX IF EXISTS idx_workflow_attempt_scope_v34;
+      DROP INDEX IF EXISTS idx_workflow_result_scope_v34;
+      DROP INDEX IF EXISTS idx_workflow_blocker_scope_v34;
       DROP TABLE IF EXISTS workflow_work_checkpoints;
       DROP TABLE IF EXISTS workflow_decision_impacts;
       DROP TABLE IF EXISTS workflow_conversation_decisions;
@@ -340,7 +376,7 @@ afterEach(() => {
 });
 
 test("fresh v33 databases expose exact Milestone and Interaction Kind vocabularies", () => {
-  assert.equal(SCHEMA_VERSION, 33);
+  assert.ok(SCHEMA_VERSION >= 33);
   const { db } = openFreshFixture();
   try {
     for (const table of [
@@ -931,15 +967,21 @@ test("Work Checkpoints preserve a single restart-safe head without erasing histo
   );
 });
 
-test("v32 upgrade is additive, backed up, and does not reinterpret legacy rows", () => {
+test("v32 upgrade is additive, backed up, and does not reinterpret legacy rows", (t) => {
   const dbPath = createDatabasePath();
   rewindToV32(dbPath);
+  const beforeUpgrade = openRawDatabase(dbPath);
+  t.after(() => {
+    if (beforeUpgrade.isOpen) beforeUpgrade.close();
+  });
+  assertV34Absent(beforeUpgrade);
+  beforeUpgrade.close();
   assert.equal(openDatabase(dbPath), true);
   closeDatabase();
 
   const upgraded = openRawDatabase(dbPath);
   try {
-    assert.equal(maxSchemaVersion(upgraded), 33);
+    assert.equal(maxSchemaVersion(upgraded), SCHEMA_VERSION);
     assert.equal(upgraded.prepare("SELECT status FROM milestones WHERE id = 'M-DISC'").get()?.status, "active");
     assert.equal(upgraded.prepare("SELECT decision FROM decisions WHERE id = 'D-LEGACY'").get()?.decision, "Preserve me");
     for (const table of [
@@ -958,6 +1000,7 @@ test("v32 upgrade is additive, backed up, and does not reinterpret legacy rows",
   try {
     assert.equal(maxSchemaVersion(backup), 32);
     assert.equal(tableExists(backup, "workflow_open_questions"), false);
+    assertV34Absent(backup);
     assert.equal(backup.prepare("SELECT decision FROM decisions WHERE id = 'D-LEGACY'").get()?.decision, "Preserve me");
     assert.equal(backup.prepare("PRAGMA quick_check").get()?.quick_check, "ok");
   } finally {
@@ -970,7 +1013,7 @@ test("v32 upgrade is additive, backed up, and does not reinterpret legacy rows",
   closeDatabase();
   const restored = openRawDatabase(restoredPath);
   try {
-    assert.equal(maxSchemaVersion(restored), 33);
+    assert.equal(maxSchemaVersion(restored), SCHEMA_VERSION);
     assert.equal(restored.prepare("SELECT COUNT(*) AS count FROM workflow_open_questions").get()?.count, 0);
   } finally {
     restored.close();
@@ -1011,6 +1054,7 @@ test("faulted v32 migration rolls back all v33 state and retries cleanly", () =>
   const rolledBack = openRawDatabase(dbPath);
   try {
     assert.equal(maxSchemaVersion(rolledBack), 32);
+    assertV34Absent(rolledBack);
     for (const table of [
       "workflow_milestone_contexts", "workflow_open_questions", "workflow_question_dependencies",
       "workflow_interactions", "workflow_interaction_options", "workflow_answers",
@@ -1027,7 +1071,7 @@ test("faulted v32 migration rolls back all v33 state and retries cleanly", () =>
   closeDatabase();
   const retried = openRawDatabase(dbPath);
   try {
-    assert.equal(maxSchemaVersion(retried), 33);
+    assert.equal(maxSchemaVersion(retried), SCHEMA_VERSION);
     assert.equal(tableExists(retried, "workflow_work_checkpoints"), true);
     assert.equal(retried.prepare("SELECT COUNT(*) AS count FROM workflow_open_questions").get()?.count, 0);
   } finally {
