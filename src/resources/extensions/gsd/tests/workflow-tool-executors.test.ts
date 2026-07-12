@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, readFileSync, existsSync, writeFileSync, unlinkSync } from "node:fs";
+import { mkdirSync, rmSync, readFileSync, existsSync, symlinkSync, writeFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -26,10 +26,10 @@ import { recordUnitHarnessAbort } from "../unit-runtime.ts";
 import { markApprovalGateVerified, markDepthVerified, clearDiscussionFlowState, loadWriteGateSnapshot, setPendingGate } from "../bootstrap/write-gate.ts";
 import {
   executeCompleteMilestone,
-  executePlanMilestone,
-  executePlanSlice,
-  executeReplanSlice,
-  executeReassessRoadmap,
+  executePlanMilestone as executePlanMilestoneWithInvocation,
+  executePlanSlice as executePlanSliceWithInvocation,
+  executeReplanSlice as executeReplanSliceWithInvocation,
+  executeReassessRoadmap as executeReassessRoadmapWithInvocation,
   executeSaveGateResult,
   executeSummarySave,
   executeTaskComplete,
@@ -39,11 +39,40 @@ import {
   executeValidateMilestone,
   executeUatResultSave,
 } from "../tools/workflow-tool-executors.ts";
+import { internalPlanningInvocation } from "../planning-invocation.ts";
 import {
   initNotificationStore,
   readNotifications,
   _resetNotificationStore,
 } from "../notification-store.ts";
+
+function executePlanMilestone(
+  params: Parameters<typeof executePlanMilestoneWithInvocation>[0],
+  basePath: string,
+) {
+  return executePlanMilestoneWithInvocation(params, basePath, internalPlanningInvocation());
+}
+
+function executePlanSlice(
+  params: Parameters<typeof executePlanSliceWithInvocation>[0],
+  basePath: string,
+) {
+  return executePlanSliceWithInvocation(params, basePath, internalPlanningInvocation());
+}
+
+function executeReplanSlice(
+  params: Parameters<typeof executeReplanSliceWithInvocation>[0],
+  basePath: string,
+) {
+  return executeReplanSliceWithInvocation(params, basePath, internalPlanningInvocation());
+}
+
+function executeReassessRoadmap(
+  params: Parameters<typeof executeReassessRoadmapWithInvocation>[0],
+  basePath: string,
+) {
+  return executeReassessRoadmapWithInvocation(params, basePath, internalPlanningInvocation());
+}
 
 function makeTmpBase(): string {
   const base = join(tmpdir(), `gsd-workflow-executors-${randomUUID()}`);
@@ -56,7 +85,7 @@ function cleanup(base: string): void {
 }
 
 function openTestDb(base: string): void {
-  openDatabase(join(base, ".gsd", "gsd.db"));
+  openDatabase(join(normalizeRealPath(base), ".gsd", "gsd.db"));
 }
 
 async function inProjectDir<T>(dir: string, fn: () => Promise<T>): Promise<T> {
@@ -784,6 +813,45 @@ test("executePlanSlice writes task planning state and rendered plan artifacts", 
     assert.match(readFileSync(planPath, "utf-8"), /Persist slice plan over MCP/);
   } finally {
     closeDatabase();
+    cleanup(base);
+  }
+});
+
+test("executePlanSlice replay preserves public paths across project path aliases", async () => {
+  const base = makeTmpBase();
+  const alias = `${base}-alias`;
+  try {
+    symlinkSync(base, alias, process.platform === "win32" ? "junction" : "dir");
+    openTestDb(base);
+    await inProjectDir(alias, () => executePlanMilestone(validMilestonePlan(), alias));
+
+    const params = {
+      milestoneId: "M001",
+      sliceId: "S01",
+      goal: "Preserve exact replay responses.",
+      tasks: [
+        {
+          taskId: "T01",
+          title: "Keep replay paths stable",
+          description: "Return the same public paths for an exact retry.",
+          estimate: "15m",
+          files: ["src/resources/extensions/gsd/tools/plan-slice.ts"],
+          verify: "node --test",
+          inputs: [],
+          expectedOutput: ["src/replay-path-status.md"],
+        },
+      ],
+    };
+    const invocation = internalPlanningInvocation();
+    const first = await inProjectDir(alias, () =>
+      executePlanSliceWithInvocation(params, alias, invocation));
+    const replay = await inProjectDir(base, () =>
+      executePlanSliceWithInvocation(params, base, invocation));
+
+    assert.deepEqual(replay, first, "an exact replay must preserve its public response");
+  } finally {
+    closeDatabase();
+    try { unlinkSync(alias); } catch { /* swallow */ }
     cleanup(base);
   }
 });

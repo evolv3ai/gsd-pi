@@ -5,7 +5,15 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { openDatabase, closeDatabase } from '../gsd-db.ts';
-import { handlePlanMilestone } from '../tools/plan-milestone.ts';
+import { handlePlanMilestone as handlePlanMilestoneWithInvocation } from '../tools/plan-milestone.ts';
+import { internalPlanningInvocation } from '../planning-invocation.ts';
+
+function handlePlanMilestone(
+  params: Parameters<typeof handlePlanMilestoneWithInvocation>[0],
+  basePath: string,
+) {
+  return handlePlanMilestoneWithInvocation(params, basePath, internalPlanningInvocation());
+}
 
 const boundaryMap = [
   '| From | To | Produces | Consumes |',

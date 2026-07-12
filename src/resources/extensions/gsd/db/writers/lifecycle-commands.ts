@@ -11,6 +11,8 @@ import {
 import { getDb, isInTransaction } from "../engine.js";
 import {
   type CanonicalLifecycleStatus,
+  compareLifecycleShadow,
+  type LifecycleShadowComparison,
   normalizeCanonicalLifecycleStatus,
 } from "../lifecycle-shadow-comparison.js";
 export {
@@ -33,14 +35,20 @@ export interface DomainOperationFence {
   replay: boolean;
 }
 
-export interface LifecycleCommandInput {
+export interface LifecycleIdentity {
   itemKind: "milestone" | "slice" | "task";
   milestoneId: string;
   sliceId?: string;
   taskId?: string;
+}
+
+export interface LifecycleCommandInput extends LifecycleIdentity {
   lifecycleStatus: CanonicalLifecycleStatus;
+  adoptedFromStatus?: CanonicalLifecycleStatus;
   occurredAt?: string;
 }
+
+export interface LifecycleShadowRecord extends LifecycleIdentity, LifecycleShadowComparison {}
 
 export interface LifecycleCommandResult {
   lifecycleId: string;
@@ -102,7 +110,7 @@ export interface AppendKernelCheckpointResult {
 
 interface LifecycleRow {
   lifecycle_id: string;
-  lifecycle_status: string;
+  lifecycle_status: CanonicalLifecycleStatus;
   state_version: number;
   updated_at: string;
 }
@@ -166,6 +174,9 @@ function validateLifecycleIdentity(input: LifecycleCommandInput): void {
   if (normalizeCanonicalLifecycleStatus(input.lifecycleStatus) === null) {
     throw new Error(`invalid lifecycle status ${input.lifecycleStatus}`);
   }
+  if (input.adoptedFromStatus !== undefined && normalizeCanonicalLifecycleStatus(input.adoptedFromStatus) === null) {
+    throw new Error(`invalid adopted lifecycle status ${input.adoptedFromStatus}`);
+  }
   const hasSlice = typeof input.sliceId === "string" && input.sliceId.trim().length > 0;
   const hasTask = typeof input.taskId === "string" && input.taskId.trim().length > 0;
   if (input.itemKind === "milestone" && (input.sliceId !== undefined || input.taskId !== undefined)) {
@@ -177,6 +188,18 @@ function validateLifecycleIdentity(input: LifecycleCommandInput): void {
   if (input.itemKind === "task" && (!hasSlice || !hasTask)) {
     throw new Error("task lifecycle identity shape requires sliceId and taskId");
   }
+}
+
+function isValidLifecycleTransition(
+  from: CanonicalLifecycleStatus,
+  to: CanonicalLifecycleStatus,
+): boolean {
+  if (from === to) return true;
+  if (from === "pending") return to === "ready" || to === "cancelled";
+  if (from === "ready") return to === "in_progress" || to === "paused" || to === "cancelled";
+  if (from === "in_progress") return to === "paused" || to === "completed" || to === "cancelled";
+  if (from === "paused") return to === "ready" || to === "in_progress" || to === "cancelled";
+  return (from === "completed" || from === "cancelled") && to === "ready";
 }
 
 function requireHierarchyRow(input: LifecycleCommandInput): void {
@@ -220,6 +243,15 @@ function findLifecycle(context: Readonly<DomainOperationContext>, input: Lifecyc
     ":slice_id": input.sliceId ?? null,
     ":task_id": input.taskId ?? null,
   }) as unknown as LifecycleRow | undefined;
+}
+
+function existingLifecycleResult(existing: LifecycleRow): LifecycleCommandResult {
+  return {
+    lifecycleId: existing.lifecycle_id,
+    lifecycleStatus: existing.lifecycle_status,
+    stateVersion: existing.state_version,
+    adopted: false,
+  };
 }
 
 export function readDomainOperationFence(idempotencyKey?: string): DomainOperationFence {
@@ -269,6 +301,11 @@ export function adoptOrTransitionLifecycle(
   const existing = findLifecycle(context, input);
 
   if (!existing) {
+    const adoptedFromStatus = input.adoptedFromStatus ?? input.lifecycleStatus;
+    if (!isValidLifecycleTransition(adoptedFromStatus, input.lifecycleStatus)) {
+      throw new Error("invalid workflow lifecycle transition");
+    }
+    const stateVersion = adoptedFromStatus === input.lifecycleStatus ? 0 : 1;
     const lifecycleId = randomUUID();
     getDb().prepare(`
       INSERT INTO workflow_item_lifecycles (
@@ -277,7 +314,7 @@ export function adoptOrTransitionLifecycle(
         last_operation_id, last_project_revision, last_authority_epoch
       ) VALUES (
         :lifecycle_id, :project_id, :item_kind, :milestone_id, :slice_id, :task_id,
-        :lifecycle_status, 0, :created_at, :updated_at,
+        :lifecycle_status, :state_version, :created_at, :updated_at,
         :operation_id, :project_revision, :authority_epoch
       )
     `).run({
@@ -288,22 +325,18 @@ export function adoptOrTransitionLifecycle(
       ":slice_id": input.sliceId ?? null,
       ":task_id": input.taskId ?? null,
       ":lifecycle_status": input.lifecycleStatus,
+      ":state_version": stateVersion,
       ":created_at": now,
       ":updated_at": now,
       ":operation_id": context.operationId,
       ":project_revision": context.resultingRevision,
       ":authority_epoch": context.resultingAuthorityEpoch,
     });
-    return { lifecycleId, lifecycleStatus: input.lifecycleStatus, stateVersion: 0, adopted: true };
+    return { lifecycleId, lifecycleStatus: input.lifecycleStatus, stateVersion, adopted: true };
   }
 
   if (existing.lifecycle_status === input.lifecycleStatus) {
-    return {
-      lifecycleId: existing.lifecycle_id,
-      lifecycleStatus: existing.lifecycle_status,
-      stateVersion: existing.state_version,
-      adopted: false,
-    };
+    return existingLifecycleResult(existing);
   }
 
   const previousTimestamp = Date.parse(existing.updated_at);
@@ -339,6 +372,59 @@ export function adoptOrTransitionLifecycle(
     lifecycleStatus: input.lifecycleStatus,
     stateVersion: existing.state_version + 1,
     adopted: false,
+  };
+}
+
+export function adoptLifecycleIfMissing(
+  context: Readonly<DomainOperationContext>,
+  input: LifecycleCommandInput,
+): LifecycleCommandResult {
+  requireActiveContext(context);
+  validateLifecycleIdentity(input);
+  requireHierarchyRow(input);
+  if (input.occurredAt !== undefined) requireTimestamp(input.occurredAt, "occurredAt");
+
+  const existing = findLifecycle(context, input);
+  return existing
+    ? existingLifecycleResult(existing)
+    : adoptOrTransitionLifecycle(context, input);
+}
+
+export function readLifecycleShadowComparison(
+  context: Readonly<DomainOperationContext>,
+  identity: LifecycleIdentity,
+): LifecycleShadowRecord {
+  requireActiveContext(context);
+  const input: LifecycleCommandInput = { ...identity, lifecycleStatus: "pending" };
+  validateLifecycleIdentity(input);
+  requireHierarchyRow(input);
+  const db = getDb();
+  let hierarchy: Record<string, unknown> | undefined;
+  if (identity.itemKind === "milestone") {
+    hierarchy = db.prepare("SELECT status FROM milestones WHERE id = :milestone_id").get({
+      ":milestone_id": identity.milestoneId,
+    });
+  } else if (identity.itemKind === "slice") {
+    hierarchy = db.prepare(`
+      SELECT status FROM slices WHERE milestone_id = :milestone_id AND id = :slice_id
+    `).get({ ":milestone_id": identity.milestoneId, ":slice_id": identity.sliceId });
+  } else {
+    hierarchy = db.prepare(`
+      SELECT status FROM tasks
+      WHERE milestone_id = :milestone_id AND slice_id = :slice_id AND id = :task_id
+    `).get({
+      ":milestone_id": identity.milestoneId,
+      ":slice_id": identity.sliceId,
+      ":task_id": identity.taskId,
+    });
+  }
+  const lifecycle = findLifecycle(context, input);
+  return {
+    ...identity,
+    ...compareLifecycleShadow(
+      hierarchy ? String(hierarchy["status"]) : null,
+      lifecycle?.lifecycle_status ?? null,
+    ),
   };
 }
 

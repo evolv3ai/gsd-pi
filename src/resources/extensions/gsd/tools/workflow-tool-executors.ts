@@ -33,6 +33,7 @@ import type { CompleteSliceParams, EscalationOption } from "../types.js";
 import { handleCompleteSlice } from "./complete-slice.js";
 import type { PlanMilestoneParams } from "./plan-milestone.js";
 import { handlePlanMilestone } from "./plan-milestone.js";
+import type { PlanningInvocation } from "../planning-invocation.js";
 import type { PlanSliceParams } from "./plan-slice.js";
 import { handlePlanSlice } from "./plan-slice.js";
 import type { ReplanSliceParams } from "./replan-slice.js";
@@ -1141,7 +1142,8 @@ export async function executeValidateMilestone(
 
 export async function executeReassessRoadmap(
   params: ReassessRoadmapExecutorParams,
-  basePath: string = process.cwd(),
+  basePath: string,
+  invocation: PlanningInvocation,
 ): Promise<ToolExecutionResult> {
   const dbAvailable = await ensureDbOpen(basePath);
   if (!dbAvailable) {
@@ -1152,7 +1154,7 @@ export async function executeReassessRoadmap(
       };
   }
   try {
-    const result = await handleReassessRoadmap(params, basePath);
+    const result = await handleReassessRoadmap(params, basePath, invocation);
     if ("error" in result) {
       return {
         content: [{ type: "text", text: `Error reassessing roadmap: ${result.error}` }],
@@ -1364,7 +1366,8 @@ export async function executeUatResultSave(
 
 export async function executePlanMilestone(
   params: PlanMilestoneExecutorParams,
-  basePath: string = process.cwd(),
+  basePath: string,
+  invocation: PlanningInvocation,
 ): Promise<ToolExecutionResult> {
   const dbAvailable = await ensureDbOpen(basePath);
   if (!dbAvailable) {
@@ -1416,7 +1419,7 @@ export async function executePlanMilestone(
       }, leaseRefreshMs);
     }
 
-    const result = await handlePlanMilestone(params, basePath);
+    const result = await handlePlanMilestone(params, basePath, invocation);
     if ("error" in result) {
       return {
         content: [{ type: "text", text: `Error planning milestone: ${result.error}` }],
@@ -1456,7 +1459,8 @@ export async function executePlanMilestone(
 
 export async function executePlanSlice(
   params: PlanSliceExecutorParams,
-  basePath: string = process.cwd(),
+  basePath: string,
+  invocation: PlanningInvocation,
 ): Promise<ToolExecutionResult> {
   const dbAvailable = await ensureDbOpen(basePath);
   if (!dbAvailable) {
@@ -1467,7 +1471,7 @@ export async function executePlanSlice(
       };
   }
   try {
-    const result = await handlePlanSlice(params, basePath);
+    const result = await handlePlanSlice(params, basePath, invocation);
     if ("error" in result) {
       return {
         content: [{ type: "text", text: `Error planning slice: ${result.error}` }],
@@ -1499,7 +1503,8 @@ export async function executePlanSlice(
 
 export async function executeReplanTask(
   params: ReplanTaskExecutorParams,
-  basePath: string = process.cwd(),
+  basePath: string,
+  invocation: PlanningInvocation,
 ): Promise<ToolExecutionResult> {
   const dbAvailable = await ensureDbOpen(basePath);
   if (!dbAvailable) {
@@ -1510,7 +1515,7 @@ export async function executeReplanTask(
     };
   }
   try {
-    const result = await handleReplanTask(params, basePath);
+    const result = await handleReplanTask(params, basePath, invocation);
     if ("error" in result) {
       return {
         content: [{ type: "text", text: `Error replanning task: ${result.error}` }],
@@ -1584,7 +1589,8 @@ export async function executeReworkBriefSave(
 
 export async function executeReplanSlice(
   params: ReplanSliceExecutorParams,
-  basePath: string = process.cwd(),
+  basePath: string,
+  invocation: PlanningInvocation,
 ): Promise<ToolExecutionResult> {
   const dbAvailable = await ensureDbOpen(basePath);
   if (!dbAvailable) {
@@ -1595,7 +1601,7 @@ export async function executeReplanSlice(
       };
   }
   try {
-    const result = await handleReplanSlice(params, basePath);
+    const result = await handleReplanSlice(params, basePath, invocation);
     if ("error" in result) {
       return {
         content: [{ type: "text", text: `Error replanning slice: ${result.error}` }],

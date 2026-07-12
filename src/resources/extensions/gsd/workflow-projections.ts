@@ -27,6 +27,7 @@ import type { GSDState } from "./types.js";
 import { renderPlanFromDb, renderRoadmapFromDb } from "./markdown-renderer.js";
 import { readManifest } from "./workflow-manifest.js";
 import { gsdRoot, resolveMilestoneFile, resolveSliceFile, resolveTaskFile, targetTaskFile } from "./paths.js";
+import { removeOwnedPlanProjection } from "./projection-cleanup.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -104,14 +105,17 @@ export function renderPlanContent(sliceRow: SliceRow, taskRows: TaskRow[]): stri
 export function renderPlanProjection(basePath: string, milestoneId: string, sliceId: string): void {
   const sliceRows = getMilestoneSlices(milestoneId);
   const sliceRow = sliceRows.find(s => s.id === sliceId);
-  if (!sliceRow) return;
-
-  const taskRows = getSliceTasks(milestoneId, sliceId);
+  const planPath = join(basePath, ".gsd", "milestones", milestoneId, "slices", sliceId, `${sliceId}-PLAN.md`);
+  const taskRows = getSliceTasks(milestoneId, sliceId).filter((task) => task.status !== "skipped");
+  if (!sliceRow || sliceRow.status === "skipped" || taskRows.length === 0) {
+    removeOwnedPlanProjection(basePath, planPath);
+    return;
+  }
 
   const content = renderPlanContent(sliceRow, taskRows);
-  const dir = join(basePath, ".gsd", "milestones", milestoneId, "slices", sliceId);
+  const dir = dirname(planPath);
   mkdirSync(dir, { recursive: true });
-  atomicWriteSync(join(dir, `${sliceId}-PLAN.md`), content);
+  atomicWriteSync(planPath, content);
 }
 
 // ─── ROADMAP.md Projection ───────────────────────────────────────────────
@@ -163,7 +167,7 @@ export function renderRoadmapProjection(basePath: string, milestoneId: string): 
   const milestoneRow = getMilestone(milestoneId);
   if (!milestoneRow) return;
 
-  const sliceRows = getMilestoneSlices(milestoneId);
+  const sliceRows = getMilestoneSlices(milestoneId).filter((slice) => slice.status !== "skipped");
 
   const content = renderRoadmapContent(milestoneRow, sliceRows);
   const dir = join(basePath, ".gsd", "milestones", milestoneId);
@@ -559,7 +563,10 @@ export async function regenerateIfMissing(
   // skip cleanly here rather than logging a spurious failure. The PLAN.md will
   // be created once the slice is refined and its first task is written through
   // the single writer.
-  if (fileType === "PLAN" && getSliceTasks(milestoneId, sliceId).length === 0) {
+  if (
+    fileType === "PLAN" &&
+    !getSliceTasks(milestoneId, sliceId).some((task) => task.status !== "skipped")
+  ) {
     return false;
   }
 

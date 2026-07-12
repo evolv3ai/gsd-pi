@@ -5,8 +5,19 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask, getSlice, getTask, getSliceTasks, getGateResults } from '../gsd-db.ts';
-import { handlePlanTask } from '../tools/plan-task.ts';
+import { handlePlanTask as handlePlanTaskWithInvocation, type PlanTaskParams } from '../tools/plan-task.ts';
 import { parsePlan } from '../parsers-legacy.ts';
+
+let invocationSequence = 0;
+
+function handlePlanTask(params: PlanTaskParams, basePath: string) {
+  invocationSequence += 1;
+  return handlePlanTaskWithInvocation(params, basePath, {
+    idempotencyKey: `plan-task-test:${invocationSequence}`,
+    sourceTransport: 'internal',
+    actorType: 'agent',
+  });
+}
 
 function makeTmpBase(): string {
   const base = mkdtempSync(join(tmpdir(), 'gsd-plan-task-'));
@@ -115,6 +126,29 @@ test('handlePlanTask rejects invalid payloads', async () => {
     const result = await handlePlanTask({ ...validParams(), files: [''] }, base);
     assert.ok('error' in result);
     assert.match(result.error, /validation failed: files must contain only non-empty strings/);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanTask requires explicit reopen before planning a legacy deferred task', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParent();
+    insertTask({
+      id: 'T02',
+      milestoneId: 'M001',
+      sliceId: 'S02',
+      title: 'Deferred task',
+      status: 'deferred',
+    });
+
+    const result = await handlePlanTask(validParams(), base);
+    assert.ok('error' in result);
+    assert.match(result.error, /cancelled task T02.*reopen/i);
+    assert.equal(getTask('M001', 'S02', 'T02')?.title, 'Deferred task');
   } finally {
     cleanup(base);
   }
@@ -237,7 +271,7 @@ test('handlePlanTask surfaces render failures without changing parse-visible sli
   }
 });
 
-test('handlePlanTask keeps the sketch flag set when the flat-phase slice plan sync fails (#1083)', async () => {
+test('handlePlanTask commits sketch refinement even when the flat-phase projection fails', async () => {
   const base = makeTmpBase();
   openDatabase(join(base, '.gsd', 'gsd.db'));
 
@@ -246,16 +280,14 @@ test('handlePlanTask keeps the sketch flag set when the flat-phase slice plan sy
     insertSlice({ id: 'S02', milestoneId: 'M001', title: 'Planning slice', status: 'pending', demo: 'Rendered plans exist.', isSketch: true });
 
     // The flat-phase slice render targets phases/01-test/01-02-PLAN.md.
-    // Pre-creating that path as a directory forces EISDIR, so the canonical
-    // slice plan never reflects the task. The sketch flag must therefore stay
-    // set — the slice keeps refining — instead of leaving the slice out of
-    // refining over a stale plan.
+    // Pre-creating that path as a directory forces EISDIR. Planning authority
+    // still commits atomically; projection repair can retry independently.
     mkdirSync(join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md'), { recursive: true });
 
     const result = await handlePlanTask(validParams(), base);
     assert.ok('error' in result);
     assert.match(result.error, /render failed:/);
-    assert.equal(getSlice('M001', 'S02')?.is_sketch, 1, 'sketch flag must stay set when the canonical slice plan could not sync');
+    assert.equal(getSlice('M001', 'S02')?.is_sketch, 0, 'planning authority must not be compensated after projection failure');
     assert.ok(getTask('M001', 'S02', 'T02'), 'the task itself is still persisted so the slice can re-sync on retry');
   } finally {
     cleanup(base);

@@ -49,6 +49,7 @@ import { rowToSlice, rowToTask, type SliceRow, type TaskRow } from "./db-task-sl
 // existing `from "./gsd-db.js"` imports keep working.
 export * from "./db/engine.js";
 import { immediateTransaction, transaction, getDb, getDbOrNull } from "./db/engine.js";
+import { assertNoAdoptedLifecycleHistory } from "./db/writers/import-restore.js";
 
 // ─── Single Writer Layer re-exports ──────────────────────────────────────
 // Domain write subsystems live in db/writers/*; re-exported here so callers
@@ -1226,6 +1227,7 @@ export function deleteSlice(milestoneId: string, sliceId: string): void {
 export function deleteMilestone(milestoneId: string): void {
   if (!getDbOrNull()!) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
   transaction(() => {
+    assertNoAdoptedLifecycleHistory("deleteMilestone", [milestoneId]);
     getDbOrNull()!!.prepare(
       `DELETE FROM verification_evidence WHERE milestone_id = :mid`,
     ).run({ ":mid": milestoneId });
@@ -1691,7 +1693,8 @@ export function getArtifactsByPathPrefix(prefix: string): ArtifactRow[] {
  */
 export function clearEngineHierarchy(): void {
   if (!getDbOrNull()!) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
-  transaction(() => {
+  immediateTransaction(() => {
+    assertNoAdoptedLifecycleHistory("clearEngineHierarchy");
     getDbOrNull()!!.exec("DELETE FROM verification_evidence");
     getDbOrNull()!!.exec("DELETE FROM quality_gates");
     getDbOrNull()!!.exec("DELETE FROM slice_dependencies");

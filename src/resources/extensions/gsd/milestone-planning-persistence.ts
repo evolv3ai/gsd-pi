@@ -1,24 +1,33 @@
 // Project/App: gsd-pi
 // File Purpose: Persist planned milestone roadmaps and their DB-backed projections.
 
+import type { CanonicalLifecycleStatus } from "./db/writers/lifecycle-commands.js";
 import { clearParseCache } from "./files.js";
-import { isClosedStatus } from "./status-guards.js";
 import {
-  transaction,
+  adoptLifecycleIfMissing,
   getMilestone,
   getMilestoneSlices,
   getSlice,
   insertMilestone,
   insertSlice,
+  normalizeCanonicalLifecycleStatus,
+  normalizeLegacyLifecycleStatus,
   upsertMilestonePlanning,
   upsertSlicePlanning,
 } from "./gsd-db.js";
+import type { PlanningInvocation } from "./planning-invocation.js";
+import {
+  executePlanningDomainOperation,
+  PlanningGuardError,
+  planningOperationPayload,
+} from "./planning-domain-operation.js";
 import { invalidateStateCache } from "./state.js";
 import { renderRoadmapFromDb } from "./markdown-renderer.js";
 import { flushWorkflowProjections } from "./projection-flush.js";
 import { writeManifest } from "./workflow-manifest.js";
 import { appendEvent } from "./workflow-events.js";
 import { logWarning } from "./workflow-logger.js";
+import { isClosedStatus } from "./status-guards.js";
 
 export interface PersistMilestonePlanSlice {
   sliceId: string;
@@ -61,10 +70,34 @@ export interface PersistMilestonePlanResult {
   roadmapPath: string;
 }
 
-function validatePlanPromotion(params: PersistMilestonePlanParams): string | null {
+function validatePlanPromotion(
+  context: Parameters<typeof adoptLifecycleIfMissing>[0],
+  params: PersistMilestonePlanParams,
+): string | null {
+  const requestedLifecycleStatus = params.status
+    ? normalizeLegacyLifecycleStatus(params.status) ?? normalizeCanonicalLifecycleStatus(params.status)
+    : null;
+  if (requestedLifecycleStatus === "completed" || requestedLifecycleStatus === "cancelled") {
+    return `cannot plan milestone ${params.milestoneId} with terminal status ${params.status}`;
+  }
+
   const existingMilestone = getMilestone(params.milestoneId);
   if (existingMilestone && isClosedStatus(existingMilestone.status)) {
     return `cannot re-plan milestone ${params.milestoneId}: it is already complete`;
+  }
+  if (existingMilestone) {
+    const legacyLifecycleStatus = normalizeLegacyLifecycleStatus(existingMilestone.status);
+    const lifecycleStatus = legacyLifecycleStatus === "completed" || legacyLifecycleStatus === "cancelled"
+      ? legacyLifecycleStatus
+      : "ready";
+    const lifecycle = adoptLifecycleIfMissing(context, {
+      itemKind: "milestone",
+      milestoneId: params.milestoneId,
+      lifecycleStatus,
+    });
+    if (lifecycle.lifecycleStatus === "completed" || lifecycle.lifecycleStatus === "cancelled") {
+      return `cannot re-plan ${lifecycle.lifecycleStatus} milestone ${params.milestoneId} — use gsd_milestone_reopen first`;
+    }
   }
 
   // Guard: refuse to re-plan a milestone that would drop completed slices (#2960).
@@ -72,13 +105,36 @@ function validatePlanPromotion(params: PersistMilestonePlanParams): string | nul
   // incoming plan — their status is preserved below (#2558). Block only when
   // the new plan omits a completed slice, which could shadow completed work.
   const existingSlices = getMilestoneSlices(params.milestoneId);
-  const completedSlices = existingSlices.filter(s => isClosedStatus(s.status));
-  if (completedSlices.length > 0) {
-    const incomingSliceIds = new Set(params.slices.map(s => s.sliceId));
-    const droppedCompleted = completedSlices.filter(s => !incomingSliceIds.has(s.id));
-    if (droppedCompleted.length > 0) {
-      return `cannot re-plan milestone ${params.milestoneId}: ${droppedCompleted.length} completed slice(s) would be dropped (${droppedCompleted.map(s => s.id).join(", ")}). Use gsd_reassess_roadmap to modify the roadmap.`;
+  const incomingSliceById = new Map(params.slices.map((slice) => [slice.sliceId, slice]));
+  const existingSliceLifecycleById = new Map<string, CanonicalLifecycleStatus>();
+  for (const slice of existingSlices) {
+    const legacyLifecycleStatus = normalizeLegacyLifecycleStatus(slice.status);
+    const plannedLifecycleStatus = incomingSliceById.get(slice.id)?.isSketch === true
+      ? "pending"
+      : "ready";
+    const lifecycle = adoptLifecycleIfMissing(context, {
+      itemKind: "slice",
+      milestoneId: params.milestoneId,
+      sliceId: slice.id,
+      lifecycleStatus: legacyLifecycleStatus === "completed" || legacyLifecycleStatus === "cancelled"
+        ? legacyLifecycleStatus
+        : plannedLifecycleStatus,
+    });
+    existingSliceLifecycleById.set(slice.id, lifecycle.lifecycleStatus);
+    if (incomingSliceById.has(slice.id) && (lifecycle.lifecycleStatus === "completed" || lifecycle.lifecycleStatus === "cancelled")) {
+      return `cannot re-plan ${lifecycle.lifecycleStatus} slice ${slice.id} — use gsd_slice_reopen first`;
     }
+  }
+  const completedSlices = existingSlices.filter((slice) => existingSliceLifecycleById.get(slice.id) === "completed");
+  const droppedCompleted = completedSlices.filter((slice) => !incomingSliceById.has(slice.id));
+  if (droppedCompleted.length > 0) {
+    return `cannot re-plan milestone ${params.milestoneId}: ${droppedCompleted.length} completed slice(s) would be dropped (${droppedCompleted.map(s => s.id).join(", ")}). Use gsd_reassess_roadmap to modify the roadmap.`;
+  }
+  const droppedPending = existingSlices.find((slice) => (
+    !incomingSliceById.has(slice.id) && existingSliceLifecycleById.get(slice.id) !== "cancelled"
+  ));
+  if (droppedPending) {
+    return `cannot re-plan milestone ${params.milestoneId}: pending slice ${droppedPending.id} would be dropped. Use gsd_reassess_roadmap to remove it.`;
   }
 
   // Validate depends_on: all dependencies must exist and be complete
@@ -155,6 +211,66 @@ function writePlanRows(params: PersistMilestonePlanParams): void {
   }
 }
 
+function adoptPlanLifecycles(
+  context: Parameters<typeof adoptLifecycleIfMissing>[0],
+  params: PersistMilestonePlanParams,
+): void {
+  adoptLifecycleIfMissing(context, {
+    itemKind: "milestone",
+    milestoneId: params.milestoneId,
+    lifecycleStatus: "ready",
+  });
+  for (const slice of params.slices) {
+    adoptLifecycleIfMissing(context, {
+      itemKind: "slice",
+      milestoneId: params.milestoneId,
+      sliceId: slice.sliceId,
+      lifecycleStatus: slice.isSketch === true ? "pending" : "ready",
+    });
+  }
+}
+
+function persistPlanOperation(
+  params: PersistMilestonePlanParams,
+  invocation: PlanningInvocation,
+): ReturnType<typeof executePlanningDomainOperation> {
+  return executePlanningDomainOperation({
+    operationType: "workflow.milestone.plan",
+    invocation,
+    actorId: params.actorName,
+    payload: planningOperationPayload(params),
+    event: {
+      eventType: "workflow.milestone.planned",
+      entityType: "milestone",
+      entityId: params.milestoneId,
+      payload: {
+        milestoneId: params.milestoneId,
+        sliceIds: params.slices.map((slice) => slice.sliceId),
+      },
+      destinations: ["projection"],
+    },
+    projection: {
+      projectionKey: `planning/${params.milestoneId.toLowerCase()}`,
+      projectionKind: "markdown",
+      rendererVersion: "v1",
+    },
+    lifecycleItems: () => [
+      { itemKind: "milestone", milestoneId: params.milestoneId },
+      ...params.slices.map((slice) => ({
+        itemKind: "slice" as const,
+        milestoneId: params.milestoneId,
+        sliceId: slice.sliceId,
+      })),
+    ],
+    mutate(context) {
+      const guardError = validatePlanPromotion(context, params);
+      if (guardError) throw new PlanningGuardError(guardError);
+      writePlanRows(params);
+      adoptPlanLifecycles(context, params);
+    },
+  });
+}
+
 async function renderPlanArtifacts(
   basePath: string,
   params: PersistMilestonePlanParams,
@@ -177,18 +293,24 @@ async function renderPlanArtifacts(
   }
 }
 
-async function runPostPlanHooks(basePath: string, params: PersistMilestonePlanParams): Promise<void> {
+async function runPostPlanHooks(
+  basePath: string,
+  params: PersistMilestonePlanParams,
+  operationStatus: "committed" | "replayed",
+): Promise<void> {
   try {
     await flushWorkflowProjections(basePath, { milestoneId: params.milestoneId });
     writeManifest(basePath);
-    appendEvent(basePath, {
-      cmd: "plan-milestone",
-      params: { milestoneId: params.milestoneId },
-      ts: new Date().toISOString(),
-      actor: "agent",
-      actor_name: params.actorName,
-      trigger_reason: params.triggerReason,
-    });
+    if (operationStatus === "committed") {
+      appendEvent(basePath, {
+        cmd: "plan-milestone",
+        params: { milestoneId: params.milestoneId },
+        ts: new Date().toISOString(),
+        actor: "agent",
+        actor_name: params.actorName,
+        trigger_reason: params.triggerReason,
+      });
+    }
   } catch (hookErr) {
     logWarning("tool", `plan-milestone post-mutation hook warning: ${(hookErr as Error).message}`);
   }
@@ -197,24 +319,14 @@ async function runPostPlanHooks(basePath: string, params: PersistMilestonePlanPa
 export async function persistMilestonePlan(
   params: PersistMilestonePlanParams,
   basePath: string,
+  invocation: PlanningInvocation,
 ): Promise<PersistMilestonePlanResult | { error: string }> {
-  // ── Guards + DB writes inside a single transaction (prevents TOCTOU) ───
-  // Guards must be inside the transaction so the state they check cannot
-  // change between the read and the write (#2723).
-  let guardError: string | null = null;
-
+  let operationStatus: "committed" | "replayed";
   try {
-    transaction(() => {
-      guardError = validatePlanPromotion(params);
-      if (guardError) return;
-      writePlanRows(params);
-    });
+    operationStatus = persistPlanOperation(params, invocation).status;
   } catch (err) {
+    if (err instanceof PlanningGuardError) return { error: err.message };
     return { error: `db write failed: ${(err as Error).message}` };
-  }
-
-  if (guardError) {
-    return { error: guardError };
   }
 
   const roadmapPath = await renderPlanArtifacts(basePath, params);
@@ -223,7 +335,7 @@ export async function persistMilestonePlan(
   invalidateStateCache();
   clearParseCache();
 
-  await runPostPlanHooks(basePath, params);
+  await runPostPlanHooks(basePath, params, operationStatus);
 
   return {
     milestoneId: params.milestoneId,

@@ -7,9 +7,20 @@
 import { existsSync, copyFileSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
+import { GSDError, GSD_STALE_STATE } from "../../errors.js";
 import { logError, logWarning } from "../../workflow-logger.js";
 import { getDbOrNull, openDatabase } from "../engine.js";
 import { TERMINAL_STATUS_SQL } from "../sql-constants.js";
+
+export class CanonicalWorktreeDivergenceError extends GSDError {
+  constructor(surfaces: readonly string[]) {
+    super(
+      GSD_STALE_STATE,
+      `canonical worktree divergence prevents reconciliation: ${surfaces.join(", ")}`,
+    );
+    this.name = "CanonicalWorktreeDivergenceError";
+  }
+}
 
 /**
  * Optional override for the project-root DB open inside reconcileWorktreeDb.
@@ -119,6 +130,92 @@ export function reconcileWorktreeDb(
         return adapter.prepare(`PRAGMA wt.table_info('${tableName}')`).all() as Array<Record<string, unknown>>;
       }
 
+      function mainTableInfo(tableName: string): Array<Record<string, unknown>> {
+        return adapter.prepare(`PRAGMA main.table_info('${tableName}')`).all() as Array<Record<string, unknown>>;
+      }
+
+      function tableRowCount(schema: "main" | "wt", tableName: string): number {
+        const count = adapter.prepare(`SELECT COUNT(*) AS count FROM ${schema}.${tableName}`).get();
+        return Number(count?.["count"] ?? 0);
+      }
+
+      function worktreeRowsMissingFromMain(tableName: string): boolean {
+        const mainColumns = mainTableInfo(tableName).map((column) => String(column["name"]));
+        const worktreeColumns = wtTableInfo(tableName).map((column) => String(column["name"]));
+        if (worktreeColumns.length === 0) return false;
+        if (
+          mainColumns.length !== worktreeColumns.length ||
+          mainColumns.some((column, index) => column !== worktreeColumns[index])
+        ) {
+          return tableRowCount("wt", tableName) > 0;
+        }
+        const columns = mainColumns.map((column) => `"${column}"`).join(", ");
+        const difference = adapter.prepare(`
+          SELECT 1 AS divergent
+          WHERE EXISTS (
+            SELECT ${columns} FROM wt.${tableName}
+            EXCEPT
+            SELECT ${columns} FROM main.${tableName}
+          )
+        `).get();
+        return difference !== undefined;
+      }
+
+      function worktreeAuthorityIsAhead(): boolean {
+        if (wtTableInfo("project_authority").length === 0) return false;
+        const main = adapter.prepare(`
+          SELECT project_id, revision, authority_epoch FROM main.project_authority WHERE singleton = 1
+        `).get();
+        const worktree = adapter.prepare(`
+          SELECT project_id, revision, authority_epoch FROM wt.project_authority WHERE singleton = 1
+        `).get();
+        if (!worktree) return false;
+        if (!main || worktree["project_id"] !== main["project_id"]) return true;
+        return Number(worktree["revision"]) > Number(main["revision"])
+          || Number(worktree["authority_epoch"]) > Number(main["authority_epoch"]);
+      }
+
+      function worktreeLifecycleIsAheadOrMismatched(): boolean {
+        const mainColumns = mainTableInfo("workflow_item_lifecycles").map((column) => String(column["name"]));
+        const worktreeColumns = wtTableInfo("workflow_item_lifecycles").map((column) => String(column["name"]));
+        if (worktreeColumns.length === 0) return false;
+        if (
+          mainColumns.length !== worktreeColumns.length ||
+          mainColumns.some((column, index) => column !== worktreeColumns[index])
+        ) {
+          return tableRowCount("wt", "workflow_item_lifecycles") > 0;
+        }
+        const equalVersionDifferences = mainColumns
+          .filter((column) => column !== "state_version")
+          .map((column) => `w."${column}" IS NOT m."${column}"`)
+          .join(" OR ");
+        const difference = adapter.prepare(`
+          SELECT 1 AS divergent
+          FROM wt.workflow_item_lifecycles w
+          LEFT JOIN main.workflow_item_lifecycles m ON m.lifecycle_id = w.lifecycle_id
+          WHERE m.lifecycle_id IS NULL
+             OR w.state_version > m.state_version
+             OR (w.state_version = m.state_version AND (${equalVersionDifferences}))
+          LIMIT 1
+        `).get();
+        return difference !== undefined;
+      }
+
+      const authorityDiverged = worktreeAuthorityIsAhead();
+      const operationsDiverged = worktreeRowsMissingFromMain("workflow_operations");
+      const lifecyclesDiverged = worktreeLifecycleIsAheadOrMismatched();
+      // Legacy writers can advance project_authority without recording a
+      // canonical operation. Treat authority as corroborating evidence only;
+      // blocking on it alone would reject valid pre-adoption worktrees.
+      if (operationsDiverged || lifecyclesDiverged) {
+        const divergentSurfaces = [
+          authorityDiverged ? "authority" : null,
+          operationsDiverged ? "operations" : null,
+          lifecyclesDiverged ? "lifecycles" : null,
+        ].filter((surface): surface is string => surface !== null);
+        throw new CanonicalWorktreeDivergenceError(divergentSurfaces);
+      }
+
       const wtInfo = wtTableInfo("decisions");
       const hasWtDecisions = wtInfo.length > 0;
       const hasMadeBy = wtInfo.some((col) => col["name"] === "made_by");
@@ -159,6 +256,42 @@ export function reconcileWorktreeDb(
       const hasWtVerificationEvidence = wtTableInfo("verification_evidence").length > 0;
       const hasWtGateRuns = wtTableInfo("gate_runs").length > 0;
       const hasWtMilestoneCommitAttributions = wtTableInfo("milestone_commit_attributions").length > 0;
+      const hasWtLifecycles = wtTableInfo("workflow_item_lifecycles").length > 0;
+
+      function mainLifecycleIsNewer(itemKind: "milestone" | "slice" | "task"): string {
+        const identity = [
+          "main_lifecycle.project_id = worktree_lifecycle.project_id",
+          "main_lifecycle.item_kind = worktree_lifecycle.item_kind",
+          "main_lifecycle.milestone_id = worktree_lifecycle.milestone_id",
+          "main_lifecycle.slice_id IS worktree_lifecycle.slice_id",
+          "main_lifecycle.task_id IS worktree_lifecycle.task_id",
+        ].join(" AND ");
+        let hierarchyIdentity: string;
+        if (itemKind === "milestone") {
+          hierarchyIdentity = "main_lifecycle.milestone_id = w.id AND main_lifecycle.slice_id IS NULL AND main_lifecycle.task_id IS NULL";
+        } else if (itemKind === "slice") {
+          hierarchyIdentity = "main_lifecycle.milestone_id = w.milestone_id AND main_lifecycle.slice_id = w.id AND main_lifecycle.task_id IS NULL";
+        } else {
+          hierarchyIdentity = "main_lifecycle.milestone_id = w.milestone_id AND main_lifecycle.slice_id = w.slice_id AND main_lifecycle.task_id = w.id";
+        }
+        const newerThanWorktree = hasWtLifecycles
+          ? `AND NOT EXISTS (
+               SELECT 1 FROM wt.workflow_item_lifecycles worktree_lifecycle
+               WHERE ${identity}
+                 AND worktree_lifecycle.state_version >= main_lifecycle.state_version
+             )`
+          : "";
+        return `EXISTS (
+          SELECT 1 FROM main.workflow_item_lifecycles main_lifecycle
+          WHERE main_lifecycle.item_kind = '${itemKind}'
+            AND ${hierarchyIdentity}
+            ${newerThanWorktree}
+        )`;
+      }
+
+      const newerMilestoneLifecycle = mainLifecycleIsNewer("milestone");
+      const newerSliceLifecycle = mainLifecycleIsNewer("slice");
+      const newerTaskLifecycle = mainLifecycleIsNewer("task");
 
       if (hasWtDecisions) {
         const decConf = adapter.prepare(
@@ -284,7 +417,7 @@ export function reconcileWorktreeDb(
         // that the main DB has already marked 'complete'; preserve the higher status.
         if (hasWtMilestones) {
           merged.milestones = countChanges(adapter.prepare(`
-            INSERT OR REPLACE INTO milestones (
+            INSERT INTO milestones (
               id, title, status, depends_on, created_at, completed_at,
               vision, success_criteria, key_risks, proof_strategy,
               verification_contract, verification_integration, verification_operational, verification_uat,
@@ -292,15 +425,18 @@ export function reconcileWorktreeDb(
             )
             SELECT w.id, w.title,
                    CASE
+                     WHEN ${newerMilestoneLifecycle} THEN m.status
                      WHEN m.status IN (${TERMINAL_STATUS_SQL}) AND w.status NOT IN (${TERMINAL_STATUS_SQL})
                      THEN m.status ELSE w.status
                    END,
                    w.depends_on,
                    CASE
+                     WHEN ${newerMilestoneLifecycle} THEN m.created_at
                      WHEN m.status IN (${TERMINAL_STATUS_SQL}) AND w.status NOT IN (${TERMINAL_STATUS_SQL})
                      THEN m.created_at ELSE w.created_at
                    END,
                    CASE
+                     WHEN ${newerMilestoneLifecycle} THEN m.completed_at
                      WHEN m.status IN (${TERMINAL_STATUS_SQL}) AND w.status NOT IN (${TERMINAL_STATUS_SQL})
                      THEN m.completed_at ELSE w.completed_at
                    END,
@@ -310,6 +446,25 @@ export function reconcileWorktreeDb(
                    ${hasMilestoneSequence ? "COALESCE(w.sequence, 0)" : "COALESCE(m.sequence, 0)"}
             FROM wt.milestones w
             LEFT JOIN milestones m ON m.id = w.id
+            WHERE true
+            ON CONFLICT(id) DO UPDATE SET
+              title = excluded.title,
+              status = excluded.status,
+              depends_on = excluded.depends_on,
+              created_at = excluded.created_at,
+              completed_at = excluded.completed_at,
+              vision = excluded.vision,
+              success_criteria = excluded.success_criteria,
+              key_risks = excluded.key_risks,
+              proof_strategy = excluded.proof_strategy,
+              verification_contract = excluded.verification_contract,
+              verification_integration = excluded.verification_integration,
+              verification_operational = excluded.verification_operational,
+              verification_uat = excluded.verification_uat,
+              definition_of_done = excluded.definition_of_done,
+              requirement_coverage = excluded.requirement_coverage,
+              boundary_map_markdown = excluded.boundary_map_markdown,
+              sequence = excluded.sequence
           `).run());
         }
 
@@ -319,7 +474,7 @@ export function reconcileWorktreeDb(
         // fall back to the main DB's existing value rather than a literal 0/''.
         if (hasWtSlices) {
           merged.slices = countChanges(adapter.prepare(`
-            INSERT OR REPLACE INTO slices (
+            INSERT INTO slices (
               milestone_id, id, title, status, risk, depends, demo, created_at, completed_at,
               full_summary_md, full_uat_md, goal, success_criteria, proof_level,
               integration_closure, observability_impact, target_repositories, sequence, replan_triggered_at,
@@ -327,15 +482,19 @@ export function reconcileWorktreeDb(
             )
             SELECT w.milestone_id, w.id, w.title,
                    CASE
+                     WHEN ${newerSliceLifecycle} THEN m.status
                      WHEN m.status IN (${TERMINAL_STATUS_SQL}) AND w.status NOT IN (${TERMINAL_STATUS_SQL})
                      THEN m.status ELSE w.status
                    END,
                    w.risk, w.depends, w.demo, w.created_at,
                    CASE
+                     WHEN ${newerSliceLifecycle} THEN m.completed_at
                      WHEN m.status IN (${TERMINAL_STATUS_SQL}) AND w.status NOT IN (${TERMINAL_STATUS_SQL})
                      THEN m.completed_at ELSE w.completed_at
                    END,
-                   w.full_summary_md, w.full_uat_md, w.goal, w.success_criteria, w.proof_level,
+                   CASE WHEN ${newerSliceLifecycle} THEN m.full_summary_md ELSE w.full_summary_md END,
+                   CASE WHEN ${newerSliceLifecycle} THEN m.full_uat_md ELSE w.full_uat_md END,
+                   w.goal, w.success_criteria, w.proof_level,
                    w.integration_closure, w.observability_impact,
                    ${sliceTargetRepositoriesSql},
                    w.sequence, w.replan_triggered_at,
@@ -343,6 +502,27 @@ export function reconcileWorktreeDb(
                    ${hasSketchScope ? "w.sketch_scope" : "COALESCE(m.sketch_scope, '')"}
             FROM wt.slices w
             LEFT JOIN slices m ON m.milestone_id = w.milestone_id AND m.id = w.id
+            WHERE true
+            ON CONFLICT(milestone_id, id) DO UPDATE SET
+              title = excluded.title,
+              status = excluded.status,
+              risk = excluded.risk,
+              depends = excluded.depends,
+              demo = excluded.demo,
+              created_at = excluded.created_at,
+              completed_at = excluded.completed_at,
+              full_summary_md = excluded.full_summary_md,
+              full_uat_md = excluded.full_uat_md,
+              goal = excluded.goal,
+              success_criteria = excluded.success_criteria,
+              proof_level = excluded.proof_level,
+              integration_closure = excluded.integration_closure,
+              observability_impact = excluded.observability_impact,
+              target_repositories = excluded.target_repositories,
+              sequence = excluded.sequence,
+              replan_triggered_at = excluded.replan_triggered_at,
+              is_sketch = excluded.is_sketch,
+              sketch_scope = excluded.sketch_scope
           `).run());
         }
 
@@ -351,7 +531,7 @@ export function reconcileWorktreeDb(
         // doesn't silently clear escalation state back to defaults.
         if (hasWtTasks) {
           merged.tasks = countChanges(adapter.prepare(`
-            INSERT OR REPLACE INTO tasks (
+            INSERT INTO tasks (
               milestone_id, slice_id, id, title, status, one_liner, narrative,
               verification_result, duration, completed_at, blocker_discovered,
               deviations, known_issues, key_files, key_decisions, full_summary_md,
@@ -362,28 +542,66 @@ export function reconcileWorktreeDb(
             )
             SELECT w.milestone_id, w.slice_id, w.id, w.title,
                    CASE
+                     WHEN ${newerTaskLifecycle} THEN m.status
                      WHEN m.status IN (${TERMINAL_STATUS_SQL}) AND w.status NOT IN (${TERMINAL_STATUS_SQL})
                      THEN m.status ELSE w.status
                    END,
-                   w.one_liner, w.narrative,
-                   w.verification_result, w.duration,
+                   CASE WHEN ${newerTaskLifecycle} THEN m.one_liner ELSE w.one_liner END,
+                   CASE WHEN ${newerTaskLifecycle} THEN m.narrative ELSE w.narrative END,
+                   CASE WHEN ${newerTaskLifecycle} THEN m.verification_result ELSE w.verification_result END,
+                   CASE WHEN ${newerTaskLifecycle} THEN m.duration ELSE w.duration END,
                    CASE
+                     WHEN ${newerTaskLifecycle} THEN m.completed_at
                      WHEN m.status IN (${TERMINAL_STATUS_SQL}) AND w.status NOT IN (${TERMINAL_STATUS_SQL})
                      THEN m.completed_at ELSE w.completed_at
                    END,
-                   w.blocker_discovered,
-                   w.deviations, w.known_issues, w.key_files, w.key_decisions, w.full_summary_md,
+                   CASE WHEN ${newerTaskLifecycle} THEN m.blocker_discovered ELSE w.blocker_discovered END,
+                   CASE WHEN ${newerTaskLifecycle} THEN m.deviations ELSE w.deviations END,
+                   CASE WHEN ${newerTaskLifecycle} THEN m.known_issues ELSE w.known_issues END,
+                   CASE WHEN ${newerTaskLifecycle} THEN m.key_files ELSE w.key_files END,
+                   CASE WHEN ${newerTaskLifecycle} THEN m.key_decisions ELSE w.key_decisions END,
+                   CASE WHEN ${newerTaskLifecycle} THEN m.full_summary_md ELSE w.full_summary_md END,
                    w.description, w.estimate, w.files, w.verify, w.inputs, w.expected_output,
                    w.observability_impact, w.full_plan_md,
                    ${taskTargetRepositoriesSql},
                    w.sequence,
-                   ${hasBlockerSource ? "w.blocker_source" : "COALESCE(m.blocker_source, '')"},
-                   ${hasEscalationPending ? "w.escalation_pending" : "COALESCE(m.escalation_pending, 0)"},
-                   ${hasEscalationAwaiting ? "w.escalation_awaiting_review" : "COALESCE(m.escalation_awaiting_review, 0)"},
-                   ${hasEscalationArtifact ? "w.escalation_artifact_path" : "m.escalation_artifact_path"},
-                   ${hasEscalationOverride ? "w.escalation_override_applied_at" : "m.escalation_override_applied_at"}
+                   ${hasBlockerSource ? `CASE WHEN ${newerTaskLifecycle} THEN m.blocker_source ELSE w.blocker_source END` : "COALESCE(m.blocker_source, '')"},
+                   ${hasEscalationPending ? `CASE WHEN ${newerTaskLifecycle} THEN m.escalation_pending ELSE w.escalation_pending END` : "COALESCE(m.escalation_pending, 0)"},
+                   ${hasEscalationAwaiting ? `CASE WHEN ${newerTaskLifecycle} THEN m.escalation_awaiting_review ELSE w.escalation_awaiting_review END` : "COALESCE(m.escalation_awaiting_review, 0)"},
+                   ${hasEscalationArtifact ? `CASE WHEN ${newerTaskLifecycle} THEN m.escalation_artifact_path ELSE w.escalation_artifact_path END` : "m.escalation_artifact_path"},
+                   ${hasEscalationOverride ? `CASE WHEN ${newerTaskLifecycle} THEN m.escalation_override_applied_at ELSE w.escalation_override_applied_at END` : "m.escalation_override_applied_at"}
             FROM wt.tasks w
             LEFT JOIN tasks m ON m.milestone_id = w.milestone_id AND m.slice_id = w.slice_id AND m.id = w.id
+            WHERE true
+            ON CONFLICT(milestone_id, slice_id, id) DO UPDATE SET
+              title = excluded.title,
+              status = excluded.status,
+              one_liner = excluded.one_liner,
+              narrative = excluded.narrative,
+              verification_result = excluded.verification_result,
+              duration = excluded.duration,
+              completed_at = excluded.completed_at,
+              blocker_discovered = excluded.blocker_discovered,
+              deviations = excluded.deviations,
+              known_issues = excluded.known_issues,
+              key_files = excluded.key_files,
+              key_decisions = excluded.key_decisions,
+              full_summary_md = excluded.full_summary_md,
+              description = excluded.description,
+              estimate = excluded.estimate,
+              files = excluded.files,
+              verify = excluded.verify,
+              inputs = excluded.inputs,
+              expected_output = excluded.expected_output,
+              observability_impact = excluded.observability_impact,
+              full_plan_md = excluded.full_plan_md,
+              target_repositories = excluded.target_repositories,
+              sequence = excluded.sequence,
+              blocker_source = excluded.blocker_source,
+              escalation_pending = excluded.escalation_pending,
+              escalation_awaiting_review = excluded.escalation_awaiting_review,
+              escalation_artifact_path = excluded.escalation_artifact_path,
+              escalation_override_applied_at = excluded.escalation_override_applied_at
           `).run());
         }
 
@@ -514,10 +732,10 @@ export function reconcileWorktreeDb(
       try { adapter.exec("DETACH DATABASE wt"); } catch (e) { logWarning("db", `detach worktree DB failed: ${(e as Error).message}`); }
     }
   } catch (err) {
+    if (err instanceof CanonicalWorktreeDivergenceError) throw err;
     logError("db", "worktree DB reconciliation failed", { error: (err as Error).message });
     return { ...zero, conflicts };
   }
 }
 
 // ─── Replan & Assessment Helpers ──────────────────────────────────────────
-

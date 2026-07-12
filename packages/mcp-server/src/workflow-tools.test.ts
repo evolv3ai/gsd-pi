@@ -129,21 +129,35 @@ function writeWriteGateSnapshot(
 }
 
 function makeMockServer() {
+  type TestRequestExtra = {
+    signal?: AbortSignal;
+    requestId?: string | number;
+    sessionId?: string;
+    _meta?: Record<string, unknown>;
+  };
   const tools: Array<{
     name: string;
     description: string;
     params: Record<string, unknown>;
-    handler: (args: Record<string, unknown>, extra?: { signal?: AbortSignal }) => Promise<unknown>;
+    handler: (args: Record<string, unknown>, extra?: TestRequestExtra) => Promise<unknown>;
   }> = [];
+  let callSequence = 0;
   return {
     tools,
     tool(
       name: string,
       description: string,
       params: Record<string, unknown>,
-      handler: (args: Record<string, unknown>, extra?: { signal?: AbortSignal }) => Promise<unknown>,
+      handler: (args: Record<string, unknown>, extra?: TestRequestExtra) => Promise<unknown>,
     ) {
-      tools.push({ name, description, params, handler });
+      tools.push({
+        name,
+        description,
+        params,
+        handler: (args, extra) => handler(args, extra ?? {
+          _meta: { "io.opengsd/idempotency-key": `workflow-tools-test:${name}:${++callSequence}` },
+        }),
+      });
     },
   };
 }
@@ -1663,6 +1677,92 @@ export const executeTaskComplete = async (params, projectDir) => {
     }
   });
 
+  it("planning mutations reject requests without replay-stable private metadata", async () => {
+    const base = makeTmpBase();
+    try {
+      const server = makeMockServer();
+      registerWorkflowTools(server as any);
+      const milestoneTool = server.tools.find((tool) => tool.name === "gsd_plan_milestone");
+      assert.ok(milestoneTool, "milestone planning tool should be registered");
+
+      const result = await milestoneTool.handler({
+        projectDir: base,
+        milestoneId: "M001",
+        title: "Replay identity required",
+        vision: "Refuse planning that cannot converge after a lost response.",
+        slices: [{
+          sliceId: "S01",
+          title: "Identity boundary",
+          risk: "low",
+          depends: [],
+          demo: "The MCP boundary rejects an unsafe mutation.",
+          goal: "Require a stable private invocation key.",
+          successCriteria: "No planning state changes without replay identity.",
+          proofLevel: "integration",
+          integrationClosure: "The registered MCP handler enforces the boundary.",
+          observabilityImpact: "The rejection is returned before a Domain Operation starts.",
+        }],
+      }, { _meta: { "io.opengsd/idempotency-key": "   " } });
+      assertToolError(result, /replay-stable.*io\.opengsd\/idempotency-key/i);
+      assert.equal(existsSync(join(base, ".gsd", "gsd.db")), false);
+    } finally {
+      cleanup(base);
+    }
+  });
+
+  it("MCP canonical and alias retries share one explicit planning identity", async () => {
+    const base = makeTmpBase();
+    try {
+      const server = makeMockServer();
+      registerWorkflowTools(server as any);
+      const canonical = server.tools.find((tool) => tool.name === "gsd_plan_milestone");
+      const alias = server.tools.find((tool) => tool.name === "gsd_milestone_plan");
+      assert.ok(canonical);
+      assert.ok(alias);
+      const args = {
+        projectDir: base,
+        milestoneId: "M001",
+        title: "Stable MCP identity",
+        vision: "Replay canonical and alias calls as one Domain Operation.",
+        slices: [{
+          sliceId: "S01",
+          title: "MCP replay",
+          risk: "low",
+          depends: [],
+          demo: "Both names return the same committed plan.",
+          goal: "Normalize aliases before applying identity.",
+          successCriteria: "One operation is committed.",
+          proofLevel: "integration",
+          integrationClosure: "The MCP boundary passes the same private key.",
+          observabilityImpact: "The operation ledger proves one commit.",
+        }],
+      };
+      const metadata = {
+        requestId: "request-one",
+        sessionId: "session-one",
+        _meta: { "io.opengsd/idempotency-key": "stable-retry" },
+      };
+
+      const first = await canonical.handler(args, metadata);
+      const replay = await alias.handler(args, {
+        ...metadata,
+        requestId: "request-two",
+        sessionId: "session-two",
+      });
+
+      assert.deepEqual(replay, first);
+      const operations = _getAdapter()!.prepare(`
+        SELECT idempotency_key, source_transport FROM workflow_operations
+      `).all();
+      assert.deepEqual(operations, [{
+        idempotency_key: "mcp:gsd_plan_milestone:stable-retry",
+        source_transport: "workflow-mcp",
+      }]);
+    } finally {
+      cleanup(base);
+    }
+  });
+
   it("other workflow tools reject empty required strings at the schema layer", async () => {
     const base = makeTmpBase();
     try {
@@ -2256,9 +2356,9 @@ export const executeTaskComplete = async (params, projectDir) => {
         "updated plan should exist on disk",
       );
       const removedTask = _getAdapter()!.prepare(
-        "SELECT id FROM tasks WHERE milestone_id = ? AND slice_id = ? AND id = ?",
+        "SELECT id, status FROM tasks WHERE milestone_id = ? AND slice_id = ? AND id = ?",
       ).get("M099", "S09", "T11");
-      assert.equal(removedTask, undefined, "alias should remove the replanned task");
+      assert.deepEqual(removedTask, { id: "T11", status: "skipped" }, "alias should durably cancel the replanned task");
     } finally {
       cleanup(base);
     }

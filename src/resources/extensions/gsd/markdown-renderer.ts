@@ -452,6 +452,10 @@ function renderSlicePlanMarkdown(slice: SliceRow, tasks: TaskRow[], gates: GateR
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
+function getActivePlanTasks(milestoneId: string, sliceId: string): TaskRow[] {
+  return getSliceTasks(milestoneId, sliceId).filter((task) => task.status !== "skipped");
+}
+
 export async function renderPlanFromDb(
   basePath: string,
   milestoneId: string,
@@ -463,7 +467,7 @@ export async function renderPlanFromDb(
     throw new Error(`slice ${milestoneId}/${sliceId} not found`);
   }
 
-  const tasks = getSliceTasks(milestoneId, sliceId);
+  const tasks = getActivePlanTasks(milestoneId, sliceId);
   if (tasks.length === 0) {
     throw new Error(`no tasks found for ${milestoneId}/${sliceId}`);
   }
@@ -559,7 +563,7 @@ export async function renderRoadmapFromDb(
     throw new Error(`milestone ${milestoneId} not found`);
   }
 
-  const slices = getMilestoneSlices(milestoneId);
+  const slices = getMilestoneSlices(milestoneId).filter((slice) => slice.status !== "skipped");
 
   // Refuse to render a stub ROADMAP for an unplanned milestone (#852).
   // A milestone row created by gsd_milestone_generate_id / ensureMilestoneDbRow
@@ -717,7 +721,7 @@ export async function renderPlanCheckboxes(
   sliceId: string,
   outputPath?: string,
 ): Promise<boolean> {
-  const tasks = getSliceTasks(milestoneId, sliceId);
+  const tasks = getActivePlanTasks(milestoneId, sliceId);
   if (tasks.length === 0) {
     if (!isDbAvailable()) {
       throw new Error(`database unavailable while rendering plan checkboxes for ${milestoneId}/${sliceId}`);
@@ -1057,7 +1061,7 @@ function detectStaleRendersImpl(basePath: string): StaleEntry[] {
 
     // ── Check plan checkbox state and summaries for each slice ────────
     for (const slice of slices) {
-      const tasks = getSliceTasks(milestone.id, slice.id);
+      const tasks = getActivePlanTasks(milestone.id, slice.id);
 
       if (!isFlatPhase) {
         // Check plan checkboxes
@@ -1182,12 +1186,14 @@ export interface ReplanData {
   blockerTaskId: string;
   blockerDescription: string;
   whatChanged: string;
+  createdAt?: string;
 }
 
 export interface AssessmentData {
   verdict: string;
   assessment: string;
   completedSliceId?: string;
+  createdAt?: string;
 }
 
 function existingLegacySliceAssessmentPath(
@@ -1203,6 +1209,21 @@ function existingLegacySliceAssessmentPath(
   const sliceDirName = resolveDir(slicesDir, sliceId);
   if (!sliceDirName) return null;
   return join(slicesDir, sliceDirName, `${sliceId}-ASSESSMENT.md`);
+}
+
+export function resolveAssessmentProjectionPath(
+  basePath: string,
+  milestoneId: string,
+  sliceId: string,
+): string {
+  return existingLegacySliceAssessmentPath(basePath, milestoneId, sliceId)
+    ?? targetSliceFile(
+      basePath,
+      milestoneId,
+      sliceId,
+      "ASSESSMENT",
+      getMilestone(milestoneId)?.title,
+    );
 }
 
 export async function renderReplanFromDb(
@@ -1227,7 +1248,7 @@ export async function renderReplanFromDb(
   lines.push(`**Milestone:** ${milestoneId}`);
   lines.push(`**Slice:** ${sliceId}`);
   lines.push(`**Blocker Task:** ${replanData.blockerTaskId}`);
-  lines.push(`**Created:** ${new Date().toISOString()}`);
+  lines.push(`**Created:** ${replanData.createdAt ?? new Date().toISOString()}`);
   lines.push("");
   lines.push("## Blocker Description");
   lines.push("");
@@ -1255,14 +1276,7 @@ export async function renderAssessmentFromDb(
   sliceId: string,
   assessmentData: AssessmentData,
 ): Promise<{ assessmentPath: string; content: string }> {
-  const absPath = existingLegacySliceAssessmentPath(basePath, milestoneId, sliceId)
-    ?? targetSliceFile(
-      basePath,
-      milestoneId,
-      sliceId,
-      "ASSESSMENT",
-      getMilestone(milestoneId)?.title,
-    );
+  const absPath = resolveAssessmentProjectionPath(basePath, milestoneId, sliceId);
   mkdirSync(dirname(absPath), { recursive: true });
   const artifactPath = toArtifactPath(absPath, basePath);
 
@@ -1275,7 +1289,7 @@ export async function renderAssessmentFromDb(
     lines.push(`**Completed Slice:** ${assessmentData.completedSliceId}`);
   }
   lines.push(`**Verdict:** ${assessmentData.verdict}`);
-  lines.push(`**Created:** ${new Date().toISOString()}`);
+  lines.push(`**Created:** ${assessmentData.createdAt ?? new Date().toISOString()}`);
   lines.push("");
   lines.push("## Assessment");
   lines.push("");

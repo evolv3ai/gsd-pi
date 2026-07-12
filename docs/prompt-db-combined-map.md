@@ -58,22 +58,23 @@ See also:
 
 `QUEUE-ORDER.json` is the exception to the usual generated-artifact projection rule. `/gsd rethink` and related phase-management flows write it as the durable milestone reorder contract, and state derivation mirrors it into `milestones.sequence` before dispatch so stale DB sequence can be repaired without importing arbitrary markdown projections.
 
-`db/domain-operation.ts` now provides the additive future authoritative write
-seam: a project-scoped, revision- and Authority-Epoch-checked `BEGIN IMMEDIATE`
+`db/domain-operation.ts` provides the authoritative planning write seam: a
+project-scoped, revision- and Authority-Epoch-checked `BEGIN IMMEDIATE`
 transaction that atomically stores provenance, ordered events, outbox
 destinations, Projection Work, and the authority CAS. Exact retries return a
-durable receipt without rerunning mutation. The prompt/tool flow above is not
-routed through this seam yet, and file-derived readiness, completion, UAT, and
-reconciliation behavior remains unchanged.
+durable receipt without rerunning mutation. Milestone/slice/task planning,
+task/slice replanning, and roadmap reassessment route through this seam while
+preserving their legacy response shapes. File-derived completion and UAT remain
+outside the cutover.
 
-Dormant command primitives under `db/writers/lifecycle-commands.ts` can compose
+Command primitives under `db/writers/lifecycle-commands.ts` compose
 canonical lifecycle, Attempt, Result, and Kernel checkpoint facts inside that
 transaction. `readDomainOperationFence()` recovers either the current fence or
 an existing idempotency key's original expected fence, while
 `db/lifecycle-shadow-comparison.ts` compares normalized legacy and canonical
-statuses without discarding exact values. No production prompt or tool handler
-calls these primitives yet; Attempt integration remains blocked on proven
-lease-loss recovery.
+statuses without discarding exact values. Planning handlers use lifecycle
+adoption/transition and replay fences; Attempt integration remains blocked on
+proven lease-loss recovery.
 
 ---
 
@@ -98,7 +99,7 @@ Each row = one prompt file. Columns show which DB tables it touches and how.
 | `discuss` / `guided-discuss-milestone` | milestones, artifacts | artifacts (CONTEXT) | M##-CONTEXT.md |
 | `discuss-headless` | milestones, artifacts | milestones, slices, decisions, artifacts | M##-CONTEXT.md, DECISIONS.md |
 | `research-milestone` | milestones, artifacts | artifacts (RESEARCH) | M##-RESEARCH.md |
-| `plan-milestone` | milestones, slices | milestones (UPDATE planning), slices (INSERT), optional single-slice metadata via `gsd_plan_slice`, optional single-slice tasks via `gsd_plan_task`, decisions | ROADMAP.md; NN-MM-PLAN.md with embedded tasks for single-slice fast path |
+| `plan-milestone` | project_authority, workflow_operations, workflow_item_lifecycles, milestones, slices | project_authority, workflow_operations, workflow_domain_events, workflow_outbox, workflow_projection_work, workflow_item_lifecycles, milestones (UPDATE planning), slices (INSERT), optional single-slice metadata via `gsd_plan_slice`, optional single-slice tasks via `gsd_plan_task`, decisions | ROADMAP.md; NN-MM-PLAN.md with embedded tasks for single-slice fast path |
 | `queue` | milestones | milestones (INSERT queued), artifacts (CONTEXT) | PROJECT.md, QUEUE.md |
 
 ### Slice Planning Phase
@@ -108,8 +109,8 @@ Each row = one prompt file. Columns show which DB tables it touches and how.
 | `parallel-research-slices` | slices, artifacts | artifacts (RESEARCH per slice) | S##-RESEARCH.md × N |
 | `guided-discuss-slice` | slices, artifacts | artifacts (CONTEXT) | S##-CONTEXT.md |
 | `research-slice` / `guided-research-slice` | slices, memories | artifacts (RESEARCH), memories (hit_count++) | S##-RESEARCH.md |
-| `plan-slice` | slices, tasks, memories | slices metadata via `gsd_plan_slice`, per-task rows via `gsd_plan_task`, memories (hit_count++) | NN-MM-PLAN.md with embedded task planning |
-| `refine-slice` | slices (is_sketch=1), tasks | slices metadata and full task replacement/update via `gsd_plan_slice` | NN-MM-PLAN.md with embedded task planning |
+| `plan-slice` | project_authority, workflow_operations, workflow_item_lifecycles, slices, tasks, memories | project_authority, workflow_operations, workflow_domain_events, workflow_outbox, workflow_projection_work, workflow_item_lifecycles, slices metadata via `gsd_plan_slice`, per-task rows via `gsd_plan_task`, memories (hit_count++) | NN-MM-PLAN.md with embedded active task planning |
+| `refine-slice` | project_authority, workflow_operations, workflow_item_lifecycles, slices (is_sketch=1), tasks | project_authority, workflow_operations, workflow_domain_events, workflow_outbox, workflow_projection_work, workflow_item_lifecycles, slices metadata and full task replacement/update via `gsd_plan_slice`; removed pending tasks become `skipped` / `cancelled` | NN-MM-PLAN.md with embedded active task planning |
 
 ### Execution Phase
 
@@ -133,14 +134,14 @@ Each row = one prompt file. Columns show which DB tables it touches and how.
 | Prompt | DB Reads | DB Writes | Disk Artifact Written |
 |--------|----------|-----------|----------------------|
 | `complete-slice` | tasks, slices | slices (UPDATE status+summary), tasks (cascade skipped) | S##-SUMMARY.md, S##-UAT.md; ROADMAP.md checkpoint |
-| `reassess-roadmap` | milestones, slices | milestones (UPDATE), slices (INSERT/UPDATE/DELETE), assessments | ROADMAP.md, ASSESSMENT.md |
+| `reassess-roadmap` | project_authority, workflow_operations, workflow_item_lifecycles, milestones, slices | project_authority, workflow_operations, workflow_domain_events, workflow_outbox, workflow_projection_work, workflow_item_lifecycles, milestones (UPDATE), slices (INSERT/UPDATE; removed pending rows become `skipped` / `cancelled`), assessments | ROADMAP.md, ASSESSMENT.md |
 | `complete-milestone` | milestones, slices, tasks | milestones (UPDATE status=closed, completed_at) | M##-SUMMARY.md |
 
 ### Maintenance Phase
 
 | Prompt | DB Reads | DB Writes | Disk Artifact Written |
 |--------|----------|-----------|----------------------|
-| `replan-slice` | slices, tasks | slices, tasks, replan_history, quality_gates | NN-MM-PLAN.md, NN-MM-REPLAN.md |
+| `replan-slice` | project_authority, workflow_operations, workflow_item_lifecycles, slices, tasks | project_authority, workflow_operations, workflow_domain_events, workflow_outbox, workflow_projection_work, workflow_item_lifecycles, slices, tasks, replan_history, quality_gates; removed pending tasks become `skipped` / `cancelled` | NN-MM-PLAN.md, NN-MM-REPLAN.md |
 | `rethink` | milestones, slices, artifacts | slices (UPDATE status=skipped), milestones (UPDATE sequence; repaired from QUEUE-ORDER.json during state derivation) | QUEUE-ORDER.json, PARKED.md |
 | `rewrite-docs` | decisions, requirements, artifacts | decisions, requirements, artifacts | DECISIONS.md, REQUIREMENTS.md, slice plans with embedded task planning |
 | `doctor-heal` | slices, tasks, artifacts | artifacts (repair CONTEXT/SUMMARY/UAT) | repairs existing artifacts |
@@ -363,11 +364,11 @@ unit completes
 | Source File | Tables |
 |------------|--------|
 | `db-base-schema.ts` | schema_version, decisions, requirements, artifacts, memories, memory_processed_units, memory_sources, memory_embeddings, memory_relations, milestones, slices, tasks, verification_evidence, replan_history, assessments, quality_gates, slice_dependencies, gate_runs, turn_git_transactions, milestone_commit_attributions, audit_events, audit_turn_index + all indexes + active_decisions/active_requirements/active_memories views |
-| `db-canonical-foundation-schema.ts` | project_authority, workflow_operations, workflow_domain_events, workflow_outbox + domain-event immutability, durable-outbox deletion, safe-integer identity triggers, and canonical-foundation indexes (V31; production handlers are not runtime-routed yet) |
-| `db-lifecycle-foundation-schema.ts` | workflow_item_lifecycles, workflow_execution_attempts, workflow_attempt_results, workflow_blockers, workflow_waivers, workflow_requirement_dispositions + lifecycle, fencing, provenance, history, and vocabulary constraints (V32, additive and not runtime-routed yet) |
+| `db-canonical-foundation-schema.ts` | project_authority, workflow_operations, workflow_domain_events, workflow_outbox + domain-event immutability, durable-outbox deletion, safe-integer identity triggers, and canonical-foundation indexes (V31; planning handlers are runtime-routed) |
+| `db-lifecycle-foundation-schema.ts` | workflow_item_lifecycles, workflow_execution_attempts, workflow_attempt_results, workflow_blockers, workflow_waivers, workflow_requirement_dispositions + lifecycle, fencing, provenance, history, and vocabulary constraints (V32; planning adopts lifecycle heads, while Attempt and terminal lifecycle integration remain later work) |
 | `db-conversation-foundation-schema.ts` | workflow_milestone_contexts, workflow_open_questions, workflow_question_dependencies, workflow_interactions, workflow_interaction_options, workflow_answers, workflow_conversation_decisions, workflow_decision_impacts, workflow_work_checkpoints + recommendation-first, causal provenance, targeted revalidation, immutability, and single-head history constraints (V33, additive and not runtime-routed yet) |
 | `db-recovery-evidence-foundation-schema.ts` | workflow_failure_observations, workflow_recovery_budgets, workflow_recovery_actions, workflow_acceptance_criteria, workflow_technical_verdicts, workflow_verification_evidence, workflow_human_acceptances, workflow_remediation_links + explicit agent/user/external recovery ownership, immutable count budgets derived from linked Actions, requirement-scoped criterion lineage, verdict-owned objective evidence, separate subjective acceptance, and immutable rework/remediation routing (V34, additive and not runtime-routed yet) |
-| `db-projection-import-kernel-closeout-foundation-schema.ts` | workflow_projection_work, workflow_import_applications, workflow_kernel_checkpoints, workflow_closeout_plans, workflow_closeout_effects, workflow_settlement_receipts + per-key fenced projection delivery, import receipts carrying preview and verified-backup metadata, immutable kernel-stage lineage, versioned closeout plans, ordered idempotency-keyed effects, and success-only settlement receipts (V35, additive and not runtime-routed yet) |
+| `db-projection-import-kernel-closeout-foundation-schema.ts` | workflow_projection_work, workflow_import_applications, workflow_kernel_checkpoints, workflow_closeout_plans, workflow_closeout_effects, workflow_settlement_receipts + per-key fenced projection delivery, import receipts carrying preview and verified-backup metadata, immutable kernel-stage lineage, versioned closeout plans, ordered idempotency-keyed effects, and success-only settlement receipts (V35; planning enqueues Projection Work, while the remaining families are not runtime-routed yet) |
 | `db-coordination-schema.ts` | workers, milestone_leases, unit_dispatches, cancellation_requests, command_queue |
 | `db-memory-fts-schema.ts` | memories_fts (FTS5 virtual table), memories_ai/ad/au triggers |
 | `db-runtime-kv-schema.ts` | runtime_kv |
