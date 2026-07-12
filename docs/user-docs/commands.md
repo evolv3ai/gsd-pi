@@ -379,7 +379,10 @@ The following commands are sent directly in your **Telegram chat** to a configur
 |------|-------------|
 | `gsd` | Start a new interactive session |
 | `gsd --continue` (`-c`) | Resume the most recent session for the current directory |
+| `gsd --session <path\|id>` | Resume a specific session file or session ID |
+| `gsd --session-dir <dir>` | Store and look up sessions in a custom directory |
 | `gsd --model <id>` | Override the default model for this session |
+| `gsd --thinking <level>` | Override the thinking level for this session. Valid levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. |
 | `gsd --print "msg"` (`-p`) | Single-shot prompt mode (no TUI) |
 | `gsd --mode <text\|json\|rpc\|mcp>` | Output mode for non-interactive use |
 | `gsd --list-models [search]` | List available models and exit |
@@ -418,6 +421,9 @@ gsd headless query
 # With timeout for CI
 gsd headless --timeout 600000 auto
 
+# Auto shorthand with session-level model and thinking overrides
+gsd auto --model claude-code/sonnet --thinking medium
+
 # Force a specific phase
 gsd headless dispatch plan
 
@@ -437,6 +443,7 @@ echo "Build a CLI tool" | gsd headless new-milestone --context -
 | `--max-restarts N` | Auto-restart on crash with exponential backoff (default: 3). Set 0 to disable. Deterministic no-work failures are not restart-eligible. |
 | `--json` | Stream all events as JSONL to stdout |
 | `--model ID` | Override the model for the headless session |
+| `--thinking LEVEL` | Override the thinking level for the headless session. Valid levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. |
 | `--context <file>` | Context file for `new-milestone` (use `-` for stdin) |
 | `--context-text <text>` | Inline context text for `new-milestone` |
 | `--auto` | Chain into auto-mode after milestone creation |
