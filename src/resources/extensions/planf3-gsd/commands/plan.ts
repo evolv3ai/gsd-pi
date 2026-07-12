@@ -70,12 +70,20 @@ export function buildPlanPrompt(opts: PlanPromptOptions): string {
   if (opts.chain.target === "export") {
     lines.push(
       `- When the HTML file is written, call the planf3_gsd_export tool with htmlPath set to that file's path.`,
+      `- If the planf3_gsd_export tool is not in your available tools (some hosts, e.g. the Claude Code CLI, do not surface pi-session tools), run the equivalent command via Bash instead: gsd --print '/planf3-gsd-export <path-to-plan.html>' (substitute the real path). Same effect, deterministic, no extra model turns.`,
       `- When the tool returns, report back the plan HTML path and the spec/manifest paths from the tool result.`,
     );
   } else {
     const f = opts.chain.flags;
+    const cmdFlags = [
+      f.auto ? "--auto" : null,
+      f.applyPrefs ? null : "--no-prefs",
+      f.force ? "--force" : null,
+      f.allowUnsafeStep ? "--step-unsafe" : null,
+    ].filter((x): x is string => x !== null).join(" ");
     lines.push(
       `- When the HTML file is written, call the planf3_gsd_build tool with htmlPath set to that file's path and auto=${f.auto}, applyPrefs=${f.applyPrefs}, force=${f.force}, allowUnsafeStep=${f.allowUnsafeStep}.`,
+      `- If the planf3_gsd_build tool is not in your available tools, run the equivalent command via Bash instead: gsd --print '/planf3-gsd-build <path-to-plan.html>${cmdFlags ? " " + cmdFlags : ""}' (substitute the real path). This is the same build path (preflight gate, spec export, milestone creation) as the tool.`,
       `- When the tool returns, report back the plan HTML path, the milestone ID from the tool result, and the spec/manifest paths.`,
     );
   }
