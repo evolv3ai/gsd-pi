@@ -55,6 +55,7 @@ interface PathComponentSnapshot {
 
 interface RuntimeContractSnapshotHooks {
   afterPathComponentCapture?: () => void;
+  beforeContractDirectoryOpen?: () => void;
   afterMemberCapture?: (name: string) => void;
   beforeFileOpen?: (name: string) => void;
   afterFileRead?: (name: string) => void;
@@ -145,22 +146,30 @@ function openValidatedContractDirectory(
   projectRoot: string,
   candidateDir: string,
   afterPathComponentCapture?: () => void,
+  beforeContractDirectoryOpen?: () => void,
 ): OpenedContractDirectory | undefined {
   let fd: number | undefined;
   let retained = false;
   try {
-    const components = capturePathComponents(projectRoot, candidateDir).slice(0, -1);
+    const components = capturePathComponents(projectRoot, candidateDir);
+    const contractDirectoryComponent = components.at(-1)!;
+    const ancestorComponents = components.slice(0, -1);
     afterPathComponentCapture?.();
     assertPathComponentsIdentity(components);
+    beforeContractDirectoryOpen?.();
     const path = realpathSync.native(candidateDir);
     if (!isWithin(projectRoot, path)) return undefined;
 
     fd = openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     const stats = fstatSync(fd);
-    if (!stats.isDirectory() || !sameFile(stats, statSync(path))) return undefined;
+    if (
+      !stats.isDirectory() ||
+      !sameMember(contractDirectoryComponent.stats, stats) ||
+      !sameFile(stats, statSync(path))
+    ) return undefined;
     retained = true;
     assertPathComponentsIdentity(components);
-    return { fd, path, stats, components };
+    return { fd, path, stats, components: ancestorComponents };
   } catch {
     return undefined;
   } finally {
@@ -348,8 +357,41 @@ function resolveContractEntry(
   member: ContractMemberSnapshot,
   beforeOpen?: () => void,
 ): RuntimeContractEntry | undefined {
-  const file = openValidatedFile(projectRoot, contractDir, member, beforeOpen);
-  return file ? { path: file.path, size: file.size } : undefined;
+  if (!member.stats) return undefined;
+
+  let fd: number | undefined;
+  try {
+    assertNoSymlinkPathComponents(contractDir, member.path);
+    const pathStats = lstatSync(member.path);
+    if (pathStats.isSymbolicLink() || !pathStats.isFile() || !sameMember(member.stats, pathStats)) {
+      throw new Error("Runtime contract entry changed before opening");
+    }
+
+    beforeOpen?.();
+    assertNoSymlinkPathComponents(contractDir, member.path);
+    fd = openSync(member.path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const openedStats = fstatSync(fd);
+    if (!openedStats.isFile() || !sameMember(member.stats, openedStats)) {
+      throw new Error("Runtime contract entry changed while opening");
+    }
+    const path = realpathSync.native(member.path);
+    if (!isWithin(projectRoot, path) || !isWithin(contractDir, path)) {
+      throw new Error("Runtime contract entry escapes its directory");
+    }
+    if (!sameMember(member.stats, statSync(path))) {
+      throw new Error("Runtime contract entry path changed while opening");
+    }
+
+    const finalStats = fstatSync(fd);
+    assertNoSymlinkPathComponents(contractDir, member.path);
+    const finalPathStats = lstatSync(member.path);
+    if (!sameMember(member.stats, finalStats) || !sameMember(member.stats, finalPathStats)) {
+      throw new Error("Runtime contract entry changed during validation");
+    }
+    return { path, size: openedStats.size };
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 function discoverRuntimeContract(
@@ -378,6 +420,7 @@ function discoverRuntimeContract(
     projectRoot,
     candidateDir,
     hooks?.afterPathComponentCapture,
+    hooks?.beforeContractDirectoryOpen,
   );
   if (!directory) return { status: "invalid" };
 

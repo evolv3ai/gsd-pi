@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -781,6 +781,22 @@ test("fails closed when a contract ancestor changes after identity capture", asy
   });
 });
 
+test("fails closed when the contract directory changes after identity capture", async () => {
+  await withRuntimeProject(async (base) => {
+    const contractDir = join(base, "script", "local-runtime");
+    mkdirSync(contractDir, { recursive: true });
+    writeFileSync(join(contractDir, "AGENT.md"), "# Trusted runtime rules\n", "utf-8");
+
+    const contract = _resolveRuntimeContractWithSnapshotHooksForTest(base, {
+      beforeContractDirectoryOpen() {
+        chmodSync(contractDir, 0o700);
+      },
+    });
+
+    assert.equal(contract, null);
+  });
+});
+
 test("ignores symlinks in lower-priority default entry candidates", async () => {
   await withRuntimeProject(async (base) => {
     const contractDir = join(base, "script", "local-runtime");
@@ -833,7 +849,7 @@ test("fails closed when a higher-priority default entry appears during snapshot 
   });
 });
 
-for (const oversizedMember of ["AGENT.md", "README.md", "runtime.mjs"] as const) {
+for (const oversizedMember of ["AGENT.md", "README.md"] as const) {
   test(`fails closed when ${oversizedMember} exceeds the snapshot limit`, async () => {
     await withRuntimeProject(async (base) => {
       const contractDir = join(base, "script", "local-runtime");
@@ -852,6 +868,22 @@ for (const oversizedMember of ["AGENT.md", "README.md", "runtime.mjs"] as const)
     });
   });
 }
+
+test("accepts an entry larger than the authoritative document limit", async () => {
+  await withRuntimeProject(async (base) => {
+    const contractDir = join(base, "script", "local-runtime");
+    const entryContent = `export const payload = "${"a".repeat(8_000)}";\n`;
+    mkdirSync(contractDir, { recursive: true });
+    writeFileSync(join(contractDir, "AGENT.md"), "# Runtime rules\n", "utf-8");
+    writeFileSync(join(contractDir, "runtime.mjs"), entryContent, "utf-8");
+
+    const contract = resolveRuntimeContract(base);
+
+    assert.equal(contract?.entry?.path, join(contractDir, "runtime.mjs"));
+    assert.equal(contract?.entry?.size, Buffer.byteLength(entryContent));
+    assert.equal(contract?.agentInstructions?.content, "# Runtime rules\n");
+  });
+});
 
 test("cmux auto-enable preserves malformed runtime contract blocking", async () => {
   await withRuntimeProject(async (base, ctx) => {

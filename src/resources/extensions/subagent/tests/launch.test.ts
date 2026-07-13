@@ -1,7 +1,8 @@
 // gsd-pi + Subagent launch module regression tests.
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, afterEach } from "node:test";
@@ -83,9 +84,28 @@ describe("subagent launch module", () => {
 
 		assert.equal(plan.env[SUBAGENT_PROJECT_ROOT_ENV_VAR], "/workspace");
 		assert.deepEqual(buildShellEnvAssignments(plan.env), [
-			`${SUBAGENT_CHILD_ENV_VAR}="${SUBAGENT_CHILD_ENV_VALUE}"`,
-			`${SUBAGENT_PROJECT_ROOT_ENV_VAR}="/workspace"`,
+			`${SUBAGENT_CHILD_ENV_VAR}='${SUBAGENT_CHILD_ENV_VALUE}'`,
+			`${SUBAGENT_PROJECT_ROOT_ENV_VAR}='/workspace'`,
 		]);
+	});
+
+	it("shell-escapes cmux environment values without command execution", () => {
+		dir = mkdtempSync(join(tmpdir(), "gsd-subagent-shell-env-"));
+		const marker = join(dir, "injected");
+		const projectRoot = `space $HOME $(touch ${marker}) \`touch ${marker}\` 'quote'\nnext`;
+		const assignments = buildShellEnvAssignments({
+			[SUBAGENT_CHILD_ENV_VAR]: SUBAGENT_CHILD_ENV_VALUE,
+			[SUBAGENT_PROJECT_ROOT_ENV_VAR]: projectRoot,
+		});
+
+		const output = execFileSync(
+			"bash",
+			["-lc", `env ${assignments.join(" ")} printenv ${SUBAGENT_PROJECT_ROOT_ENV_VAR}`],
+			{ encoding: "utf-8" },
+		);
+
+		assert.equal(output, `${projectRoot}\n`);
+		assert.equal(existsSync(marker), false);
 	});
 
 	it("propagates explicit authority to an isolated child checkout", () => {

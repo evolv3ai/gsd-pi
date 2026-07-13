@@ -3,6 +3,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { SessionManager } from "@gsd/pi-coding-agent";
+import { shellEscape } from "../cmux/index.js";
 import type { AgentConfig } from "./agents.js";
 
 export const SUBAGENT_CHILD_ENV_VAR = "GSD_SUBAGENT_CHILD";
@@ -62,7 +63,7 @@ export function buildSubagentProcessEnv(
 
 export function buildShellEnvAssignments(env: NodeJS.ProcessEnv = process.env): string[] {
 	return [SUBAGENT_CHILD_ENV_VAR, SUBAGENT_PROJECT_ROOT_ENV_VAR]
-		.flatMap((name) => env[name] ? [`${name}=${JSON.stringify(env[name])}`] : []);
+		.flatMap((name) => env[name] ? [`${name}=${shellEscape(env[name])}`] : []);
 }
 
 function isWithin(root: string, candidate: string): boolean {
