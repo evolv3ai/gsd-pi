@@ -541,10 +541,9 @@ function loadPreferencesFile(path: string, scope: "global" | "project"): LoadedG
   const preferences = parsed.preferences ?? {};
   const validation = validatePreferences(preferences);
   const rawRuntime = (preferences as Record<string, unknown>).runtime;
-  const hasParsedRuntimeContract = typeof rawRuntime === "object"
-    && rawRuntime !== null
-    && !Array.isArray(rawRuntime)
-    && Object.hasOwn(rawRuntime, "contract");
+  const hasParsedRuntimeContract = Array.isArray(rawRuntime)
+    ? rawRuntime.some((item) => typeof item === "object" && item !== null && Object.hasOwn(item, "contract"))
+    : typeof rawRuntime === "object" && rawRuntime !== null && Object.hasOwn(rawRuntime, "contract");
   const hasConfiguredRuntimeContract = scope === "project"
     && (
       hasParsedRuntimeContract

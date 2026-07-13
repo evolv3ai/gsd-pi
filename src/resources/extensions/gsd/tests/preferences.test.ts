@@ -1475,6 +1475,47 @@ test("malformed heading-style runtime contract remains invalid", (t) => {
   assert.doesNotMatch(JSON.stringify(loaded?.diagnostics), /secret-runtime/);
 });
 
+test("heading-list runtime contract attempts remain invalid", (t) => {
+  const tempProject = mkdtempSync(join(tmpdir(), "gsd-prefs-heading-list-runtime-"));
+  t.after(() => {
+    rmSync(tempProject, { recursive: true, force: true });
+    clearGSDPreferencesCache();
+  });
+
+  mkdirSync(join(tempProject, ".gsd"), { recursive: true });
+  writeFileSync(
+    getProjectGSDPreferencesPath(tempProject),
+    "## Runtime\n- contract:\n    path: ../outside\n",
+    "utf-8",
+  );
+  clearGSDPreferencesCache();
+
+  const loaded = loadEffectiveGSDPreferences(tempProject);
+
+  assert.equal(loaded?.preferences.runtime, undefined);
+  assert.equal(loaded?.projectRuntimeContract, "invalid");
+});
+
+test("unrelated heading-list runtime content does not imply a contract", (t) => {
+  const tempProject = mkdtempSync(join(tmpdir(), "gsd-prefs-heading-list-control-"));
+  t.after(() => {
+    rmSync(tempProject, { recursive: true, force: true });
+    clearGSDPreferencesCache();
+  });
+
+  mkdirSync(join(tempProject, ".gsd"), { recursive: true });
+  writeFileSync(
+    getProjectGSDPreferencesPath(tempProject),
+    "## Runtime\n- note: contract documentation\n",
+    "utf-8",
+  );
+  clearGSDPreferencesCache();
+
+  const loaded = loadEffectiveGSDPreferences(tempProject);
+
+  assert.equal(loaded?.projectRuntimeContract, undefined);
+});
+
 test("malformed heading controls do not imply a runtime contract", (t) => {
   const tempProject = mkdtempSync(join(tmpdir(), "gsd-prefs-heading-controls-"));
   t.after(() => {
