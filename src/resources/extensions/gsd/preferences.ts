@@ -546,7 +546,11 @@ function loadPreferencesFile(path: string, scope: "global" | "project"): LoadedG
     && !Array.isArray(rawRuntime)
     && Object.hasOwn(rawRuntime, "contract");
   const hasConfiguredRuntimeContract = scope === "project"
-    && (hasParsedRuntimeContract || (ignored && containsRuntimeContractSetting(raw)));
+    && (
+      hasParsedRuntimeContract
+      || parsed.runtimeContractParseFailed
+      || (ignored && containsRuntimeContractSetting(raw))
+    );
   let projectRuntimeContract: LoadedGSDPreferences["projectRuntimeContract"];
   if (hasConfiguredRuntimeContract) {
     projectRuntimeContract = validation.preferences.runtime?.contract ? "valid" : "invalid";
@@ -617,6 +621,7 @@ type PreferenceParseDiagnostic = Omit<PreferenceDiagnostic, "path" | "scope">;
 interface PreferenceParseResult {
   preferences: GSDPreferences | null;
   diagnostics: PreferenceParseDiagnostic[];
+  runtimeContractParseFailed?: boolean;
 }
 
 function parsePreferencesMarkdownWithDiagnostics(content: string): PreferenceParseResult {
@@ -643,10 +648,7 @@ function parsePreferencesMarkdownWithDiagnostics(content: string): PreferencePar
   // Fallback: heading+list format (e.g. "## Git\n- isolation: none") (#2036)
   // GSD agents may write preferences files without frontmatter delimiters.
   if (/^##\s+\w/m.test(content)) {
-    return {
-      preferences: parseHeadingListFormat(content),
-      diagnostics: [],
-    };
+    return parseHeadingListFormat(content);
   }
 
   // Warn when a non-empty file exists but lacks frontmatter delimiters (#2036).
@@ -759,8 +761,10 @@ function normalizeParsedPreferences(preferences: GSDPreferences): GSDPreferences
  *   ## Models
  *   - planner: sonnet
  */
-function parseHeadingListFormat(content: string): GSDPreferences {
+function parseHeadingListFormat(content: string): PreferenceParseResult {
   const result: Record<string, string[]> = {};
+  const diagnostics: PreferenceParseDiagnostic[] = [];
+  let runtimeContractParseFailed = false;
   let currentSection: string | null = null;
 
   for (const rawLine of content.split('\n')) {
@@ -805,6 +809,15 @@ function parseHeadingListFormat(content: string): GSDPreferences {
 
       typed[targetSection] = value;
     } catch (e) {
+      if (section === "runtime" && parseDocument(yamlBlock).hasIn(["contract"])) {
+        runtimeContractParseFailed = true;
+        diagnostics.push({
+          severity: "error",
+          kind: "parse",
+          message: "preferences runtime contract section could not be parsed",
+          sanitized: true,
+        });
+      }
       if (!_warnedSectionParse) {
         _warnedSectionParse = true;
         logWarning("guided", `preferences section parse failed: ${(e as Error).message}`);
@@ -812,7 +825,11 @@ function parseHeadingListFormat(content: string): GSDPreferences {
     }
   }
 
-  return normalizeParsedPreferences(typed as GSDPreferences);
+  return {
+    preferences: normalizeParsedPreferences(typed as GSDPreferences),
+    diagnostics,
+    ...(runtimeContractParseFailed ? { runtimeContractParseFailed: true } : {}),
+  };
 }
 
 // ─── Merging ────────────────────────────────────────────────────────────────

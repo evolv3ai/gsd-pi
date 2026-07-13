@@ -244,6 +244,18 @@ function resolveContractEntry(
   return file ? { path: file.path, size: file.size } : undefined;
 }
 
+function selectDefaultEntryName(contractDir: string): string | undefined {
+  for (const name of DEFAULT_ENTRY_NAMES) {
+    try {
+      lstatSync(resolve(contractDir, name));
+      return name;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  return undefined;
+}
+
 function discoverRuntimeContract(
   basePath: string,
   preferences?: GSDPreferences,
@@ -270,10 +282,12 @@ function discoverRuntimeContract(
   if (!directory) return { status: "invalid" };
 
   try {
-    const entryNames = configured?.entry ? [configured.entry] : DEFAULT_ENTRY_NAMES;
+    assertContractDirectoryIdentity(directory);
+    const entryName = configured?.entry ?? selectDefaultEntryName(directory.path);
+    assertContractDirectoryIdentity(directory);
     const members = captureContractMembers(
       directory.path,
-      ["AGENT.md", "README.md", ...entryNames],
+      ["AGENT.md", "README.md", ...(entryName ? [entryName] : [])],
       hooks?.afterMemberCapture,
     );
     assertContractDirectoryIdentity(directory);
@@ -306,17 +320,16 @@ function discoverRuntimeContract(
       ),
     );
     let entry: RuntimeContractEntry | undefined;
-    for (const name of entryNames) {
+    if (entryName) {
       entry = readFromContractDirectory(
-        name,
+        entryName,
         () => resolveContractEntry(
           projectRoot,
           directory.path,
-          members.get(name)!,
-          () => hooks?.beforeFileOpen?.(name),
+          members.get(entryName)!,
+          () => hooks?.beforeFileOpen?.(entryName),
         ),
       );
-      if (entry) break;
     }
 
     assertContractMembersIdentity(members);

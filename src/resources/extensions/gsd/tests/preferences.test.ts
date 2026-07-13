@@ -1452,6 +1452,52 @@ test("malformed quoted runtime contract keys remain invalid", (t) => {
   assert.doesNotMatch(JSON.stringify(loaded?.diagnostics), /secret-runtime/);
 });
 
+test("malformed heading-style runtime contract remains invalid", (t) => {
+  const tempProject = mkdtempSync(join(tmpdir(), "gsd-prefs-heading-runtime-"));
+  t.after(() => {
+    rmSync(tempProject, { recursive: true, force: true });
+    clearGSDPreferencesCache();
+    _resetParseWarningFlag();
+    _resetLogs();
+  });
+
+  mkdirSync(join(tempProject, ".gsd"), { recursive: true });
+  writeFileSync(
+    getProjectGSDPreferencesPath(tempProject),
+    "## Runtime\ncontract:\n  path: [secret-runtime\n",
+    "utf-8",
+  );
+  clearGSDPreferencesCache();
+
+  const loaded = loadEffectiveGSDPreferences(tempProject);
+
+  assert.equal(loaded?.projectRuntimeContract, "invalid");
+  assert.doesNotMatch(JSON.stringify(loaded?.diagnostics), /secret-runtime/);
+});
+
+test("malformed heading controls do not imply a runtime contract", (t) => {
+  const tempProject = mkdtempSync(join(tmpdir(), "gsd-prefs-heading-controls-"));
+  t.after(() => {
+    rmSync(tempProject, { recursive: true, force: true });
+    clearGSDPreferencesCache();
+    _resetParseWarningFlag();
+    _resetLogs();
+  });
+
+  mkdirSync(join(tempProject, ".gsd"), { recursive: true });
+  for (const content of [
+    "## Models\nvalidation: [broken\n",
+    "## Runtime\nThis prose mentions contract: maybe\nbroken: [\n",
+  ]) {
+    writeFileSync(getProjectGSDPreferencesPath(tempProject), content, "utf-8");
+    clearGSDPreferencesCache();
+
+    const loaded = loadEffectiveGSDPreferences(tempProject);
+
+    assert.equal(loaded?.projectRuntimeContract, undefined);
+  }
+});
+
 test("malformed comments and scalar text do not imply a runtime contract", (t) => {
   const tempProject = mkdtempSync(join(tmpdir(), "gsd-prefs-runtime-text-control-"));
   t.after(() => {

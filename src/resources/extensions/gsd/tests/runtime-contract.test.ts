@@ -240,6 +240,30 @@ test("blocks malformed configured contracts instead of discovering the default",
   });
 });
 
+test("blocks malformed heading-style contracts instead of discovering the default", async () => {
+  await withRuntimeProject(async (base, ctx) => {
+    writeFileSync(
+      join(base, ".gsd", "PREFERENCES.md"),
+      "## Runtime\ncontract:\n  path: [secret-runtime\n",
+      "utf-8",
+    );
+    const contractDir = join(base, "script", "local-runtime");
+    mkdirSync(contractDir, { recursive: true });
+    writeFileSync(join(contractDir, "AGENT.md"), "# Default runtime rules\n", "utf-8");
+    clearGSDPreferencesCache();
+
+    const result = await buildBeforeAgentStartResult(
+      { prompt: "Start the application", systemPrompt: "base system prompt" },
+      ctx,
+    );
+    const systemPrompt = result?.systemPrompt ?? "";
+
+    assert.match(systemPrompt, /Invalid project-local runtime contract/);
+    assert.doesNotMatch(systemPrompt, /# Default runtime rules/);
+    assert.doesNotMatch(systemPrompt, /secret-runtime/);
+  });
+});
+
 test("blocks a configured contract whose nominated entry is missing", async () => {
   await withRuntimeProject(async (base) => {
     const contractDir = join(base, "ops", "runtime");
@@ -612,6 +636,40 @@ test("rejects contract file symlinks that stay within the contract directory", a
     symlinkSync("agent-rules.md", join(contractDir, "AGENT.md"));
 
     assert.equal(resolveRuntimeContract(base), null);
+  });
+});
+
+test("ignores symlinks in lower-priority default entry candidates", async () => {
+  await withRuntimeProject(async (base) => {
+    const contractDir = join(base, "script", "local-runtime");
+    mkdirSync(contractDir, { recursive: true });
+    writeFileSync(join(contractDir, "AGENT.md"), "# Runtime rules\n", "utf-8");
+    writeFileSync(join(contractDir, "runtime.mjs"), "export {};\n", "utf-8");
+    symlinkSync("missing-runtime.js", join(contractDir, "runtime.js"));
+
+    const contract = resolveRuntimeContract(base);
+
+    assert.equal(contract?.entry?.path, join(contractDir, "runtime.mjs"));
+    assert.equal(contract?.agentInstructions?.content, "# Runtime rules\n");
+  });
+});
+
+test("ignores changes to lower-priority default entry candidates", async () => {
+  await withRuntimeProject(async (base) => {
+    const contractDir = join(base, "script", "local-runtime");
+    mkdirSync(contractDir, { recursive: true });
+    writeFileSync(join(contractDir, "runtime.mjs"), "export {};\n", "utf-8");
+    writeFileSync(join(contractDir, "runtime.ts"), "export const generation = 1;\n", "utf-8");
+    const replacement = join(contractDir, "runtime.ts.replacement");
+    writeFileSync(replacement, "export const generation = 2;\n", "utf-8");
+
+    const contract = _resolveRuntimeContractWithSnapshotHooksForTest(base, {
+      afterMemberCapture(name) {
+        if (name === "runtime.ts") renameSync(replacement, join(contractDir, "runtime.ts"));
+      },
+    });
+
+    assert.equal(contract?.entry?.path, join(contractDir, "runtime.mjs"));
   });
 });
 
