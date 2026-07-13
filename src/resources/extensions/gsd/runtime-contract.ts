@@ -192,6 +192,24 @@ function captureStableContractMembers(
   return members;
 }
 
+function captureStableDefaultEntryCandidates(
+  directory: OpenedContractDirectory,
+): Map<string, ContractMemberSnapshot> {
+  const beforeCapture = fstatSync(directory.fd);
+  const members = new Map<string, ContractMemberSnapshot>();
+  for (const name of DEFAULT_ENTRY_NAMES) {
+    const member = captureContractMembers(directory.path, [name]).get(name)!;
+    members.set(name, member);
+    if (member.stats) break;
+  }
+  const afterCapture = fstatSync(directory.fd);
+  const currentPathStats = statSync(directory.path);
+  if (!sameMember(beforeCapture, afterCapture) || !sameMember(beforeCapture, currentPathStats)) {
+    throw new Error("Runtime contract directory changed during entry selection");
+  }
+  return members;
+}
+
 function assertContractMembersIdentity(
   contractDir: string,
   members: Map<string, ContractMemberSnapshot>,
@@ -282,18 +300,6 @@ function resolveContractEntry(
   return file ? { path: file.path, size: file.size } : undefined;
 }
 
-function selectDefaultEntryName(contractDir: string): string | undefined {
-  for (const name of DEFAULT_ENTRY_NAMES) {
-    try {
-      lstatSync(resolve(contractDir, name));
-      return name;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
-  return undefined;
-}
-
 function discoverRuntimeContract(
   basePath: string,
   preferences?: GSDPreferences,
@@ -321,9 +327,17 @@ function discoverRuntimeContract(
 
   try {
     assertContractDirectoryIdentity(directory);
-    const entryName = configured?.entry ?? selectDefaultEntryName(directory.path);
+    const defaultEntryMembers = configured
+      ? undefined
+      : captureStableDefaultEntryCandidates(directory);
+    const entryName = configured?.entry ?? DEFAULT_ENTRY_NAMES.find(
+      (name) => defaultEntryMembers?.get(name)?.stats,
+    );
     assertContractDirectoryIdentity(directory);
-    const memberNames = ["AGENT.md", "README.md", ...(entryName ? [entryName] : [])];
+    let entryMemberNames: string[] = [];
+    if (defaultEntryMembers) entryMemberNames = [...defaultEntryMembers.keys()];
+    else if (configured?.entry) entryMemberNames = [configured.entry];
+    const memberNames = ["AGENT.md", "README.md", ...entryMemberNames];
     const baselineMembers = captureStableContractMembers(directory, memberNames);
     const members = captureContractMembers(
       directory.path,
@@ -333,6 +347,7 @@ function discoverRuntimeContract(
     assertContractDirectoryIdentity(directory);
     assertContractMembersIdentity(directory.path, baselineMembers);
     assertContractMembersIdentity(directory.path, members);
+    if (defaultEntryMembers) assertContractMembersIdentity(directory.path, defaultEntryMembers);
 
     const readFromContractDirectory = <T>(name: string, read: () => T): T => {
       assertContractDirectoryIdentity(directory);
@@ -374,6 +389,7 @@ function discoverRuntimeContract(
     }
 
     assertContractMembersIdentity(directory.path, members);
+    if (defaultEntryMembers) assertContractMembersIdentity(directory.path, defaultEntryMembers);
     if (configured?.entry && !entry) return { status: "invalid" };
     if (!agentInstructions && !readme && !entry) {
       return { status: configured ? "invalid" : "absent" };

@@ -692,6 +692,24 @@ test("ignores changes to lower-priority default entry candidates", async () => {
   });
 });
 
+test("fails closed when a higher-priority default entry appears during snapshot assembly", async () => {
+  await withRuntimeProject(async (base) => {
+    const contractDir = join(base, "script", "local-runtime");
+    mkdirSync(contractDir, { recursive: true });
+    writeFileSync(join(contractDir, "runtime.js"), "export {}\n", "utf-8");
+    const pendingEntry = join(base, "runtime.mjs.pending");
+    writeFileSync(pendingEntry, "export {}\n", "utf-8");
+
+    const contract = _resolveRuntimeContractWithSnapshotHooksForTest(base, {
+      afterMemberCapture(name) {
+        if (name === "AGENT.md") renameSync(pendingEntry, join(contractDir, "runtime.mjs"));
+      },
+    });
+
+    assert.equal(contract, null);
+  });
+});
+
 for (const oversizedMember of ["AGENT.md", "README.md", "runtime.mjs"] as const) {
   test(`fails closed when ${oversizedMember} exceeds the snapshot limit`, async () => {
     await withRuntimeProject(async (base) => {
