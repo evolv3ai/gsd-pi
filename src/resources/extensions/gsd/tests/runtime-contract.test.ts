@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,6 +9,7 @@ import type { ExtensionContext } from "@gsd/pi-coding-agent";
 
 import {
   _flushDeferredContextMaintenanceForTest,
+  buildForensicsContextInjection,
   buildBeforeAgentStartResult,
 } from "../bootstrap/system-context.ts";
 import { closeDatabase, isDbAvailable } from "../gsd-db.ts";
@@ -283,6 +284,42 @@ test("discovers the repository runtime contract from a nested cwd", async () => 
 
     assert.equal(contract?.directory, contractDir);
     assert.equal(contract?.agentInstructions?.content, "# Root runtime rules\n");
+  });
+});
+
+test("refreshes the complete repository codebase map from a nested cwd", async () => {
+  await withRuntimeProject(async (base, ctx) => {
+    const nestedCwd = join(base, "packages", "web");
+    mkdirSync(nestedCwd, { recursive: true });
+    writeFileSync(join(base, "root-file.ts"), "export const root = true;\n", "utf-8");
+    writeFileSync(join(nestedCwd, "nested-file.ts"), "export const nested = true;\n", "utf-8");
+    execFileSync("git", ["add", "root-file.ts", "packages/web/nested-file.ts"], {
+      cwd: base,
+      stdio: "ignore",
+    });
+
+    const result = await buildBeforeAgentStartResult(
+      { prompt: "Inspect the repository", systemPrompt: "base system prompt" },
+      { ...ctx, cwd: nestedCwd } as ExtensionContext,
+    );
+    const systemPrompt = result?.systemPrompt ?? "";
+
+    assert.match(systemPrompt, /root-file\.ts/);
+    assert.match(systemPrompt, /packages[\\/]web[\\/]nested-file\.ts/);
+  });
+});
+
+test("clears the canonical forensics marker from a nested cwd", async () => {
+  await withRuntimeProject(async (base) => {
+    const nestedCwd = join(base, "packages", "web");
+    mkdirSync(nestedCwd, { recursive: true });
+    writeForensicsMarker(base, "report.md", "ACTIVE_FORENSICS");
+    const markerPath = join(base, ".gsd", "runtime", "active-forensics.json");
+
+    const injection = buildForensicsContextInjection(nestedCwd, "start something new");
+
+    assert.equal(injection, null);
+    assert.equal(existsSync(markerPath), false);
   });
 });
 

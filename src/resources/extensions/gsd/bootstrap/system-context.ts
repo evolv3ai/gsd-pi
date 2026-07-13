@@ -15,6 +15,7 @@ import { resolveModelWithFallbacksForUnit } from "../preferences-models.js";
 import { gsdRoot, resolveGsdRootFile, resolveSliceFile, resolveSlicePath, resolveTaskFile, resolveTaskFiles, resolveTasksDir, relSliceFile, relSlicePath, relTaskFile } from "../paths.js";
 import { extractIntroAndRules } from "../knowledge-parser.js";
 import { ensureCodebaseMapFresh, readCodebaseMap } from "../codebase-generator.js";
+import { createRepositoryRegistryFromPreferences } from "../repository-registry.js";
 import { getActiveAutoWorktreeContext } from "../auto-worktree-session-registry.js";
 import { getActiveWorktreeName, getWorktreeOriginalCwd } from "../worktree-session-state.js";
 import { deriveState } from "../state.js";
@@ -365,6 +366,10 @@ export async function buildBeforeAgentStartResult(
   }
 
   let codebaseBlock = "";
+  const codebaseBasePath = createRepositoryRegistryFromPreferences(
+    basePath,
+    loadedPreferences?.preferences,
+  ).projectRoot;
   try {
     const codebaseOptions = loadedPreferences?.preferences?.codebase
       ? {
@@ -373,13 +378,13 @@ export async function buildBeforeAgentStartResult(
           collapseThreshold: loadedPreferences.preferences.codebase.collapse_threshold,
         }
       : undefined;
-    ensureCodebaseMapFresh(basePath, codebaseOptions);
+    ensureCodebaseMapFresh(codebaseBasePath, codebaseOptions);
   } catch (e) {
     logWarning("bootstrap", `CODEBASE refresh failed: ${(e as Error).message}`);
   }
 
-  const codebasePath = resolveGsdRootFile(basePath, "CODEBASE");
-  const rawCodebase = readCodebaseMap(basePath);
+  const codebasePath = resolveGsdRootFile(codebaseBasePath, "CODEBASE");
+  const rawCodebase = readCodebaseMap(codebaseBasePath);
   if (existsSync(codebasePath) && rawCodebase) {
     try {
       // Strip the volatile `Generated: <timestamp>` header line and the
@@ -919,7 +924,7 @@ export function buildForensicsContextInjection(basePath: string, prompt: string)
  * is complete or the session expires.
  */
 export function clearForensicsMarker(basePath: string): void {
-  const markerPath = join(basePath, ".gsd", "runtime", "active-forensics.json");
+  const markerPath = join(gsdRoot(basePath), "runtime", "active-forensics.json");
   if (existsSync(markerPath)) {
     try {
       unlinkSync(markerPath);

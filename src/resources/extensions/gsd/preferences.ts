@@ -15,7 +15,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { gsdRoot } from "./paths.js";
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, parseDocument } from "yaml";
 import type { PostUnitHookConfig, PreDispatchHookConfig, TokenProfile } from "./types.js";
 import type { DynamicRoutingConfig } from "./model-router.js";
 import { normalizeStringArray } from "../shared/format-utils.js";
@@ -360,6 +360,11 @@ export function loadEffectiveGSDPreferences(
   const projectHasRuntimeContract = effectiveProjectPreferences?.preferences.runtime?.contract !== undefined;
 
   if (!effectiveGlobalPreferences && !effectiveProjectPreferences) {
+    if (projectPreferences?.projectRuntimeContract === "invalid") {
+      const result = { ...projectPreferences, preferences: {} };
+      cacheEffectivePreferences(cacheKey, result);
+      return result;
+    }
     cacheEffectivePreferences(cacheKey, null);
     return null;
   }
@@ -589,24 +594,7 @@ function containsRuntimeContractSetting(content: string): boolean {
   }
   const end = content.indexOf("\n---", start);
   const frontmatter = content.slice(start, end === -1 ? undefined : end);
-  const lines = frontmatter.split(/\r?\n/);
-
-  for (let index = 0; index < lines.length; index++) {
-    const runtime = /^(\s*)runtime\s*:\s*(.*)$/.exec(lines[index] ?? "");
-    if (!runtime) continue;
-    if (/^\{[^\n]*\bcontract\s*:/.test(runtime[2] ?? "")) return true;
-
-    const runtimeIndent = runtime[1]?.length ?? 0;
-    for (let childIndex = index + 1; childIndex < lines.length; childIndex++) {
-      const child = lines[childIndex] ?? "";
-      if (!child.trim() || /^\s*#/.test(child)) continue;
-      const childIndent = /^\s*/.exec(child)?.[0].length ?? 0;
-      if (childIndent <= runtimeIndent) break;
-      if (/^\s*contract\s*:/.test(child)) return true;
-    }
-  }
-
-  return false;
+  return parseDocument(frontmatter).hasIn(["runtime", "contract"]);
 }
 
 let _warnedUnrecognizedFormat = false;
