@@ -519,6 +519,7 @@
 | gsd/routing-history.ts | State Machine | History of routing decisions |
 | gsd/cache.ts | State Machine | Caching layer for performance |
 | gsd/model-router.ts | Model System | LLM model selection and routing logic |
+| gsd/runtime-contract.ts | GSD Workflow, Loader/Bootstrap | Validates and renders authoritative project-local runtime contract snapshots for agent context |
 | gsd/worktree.ts | Worktree | Worktree creation and management |
 | gsd/worktree-manager.ts | Worktree | Higher-level worktree orchestration |
 | gsd/worktree-resolver.ts | Worktree | Worktree path and reference resolution |
@@ -639,6 +640,7 @@
 | mcp-client/index.ts | MCP Server/Client | Model Context Protocol client integration |
 | subagent/index.ts | Subagent, Agent Core | Parallel/serial subagent delegation extension |
 | subagent/agents.ts | Subagent, Agent Core | Agent registry and discovery |
+| subagent/launch.ts | Subagent, Agent Core | Child-process launch planning, session arguments, and owning runtime-contract authority propagation |
 | subagent/isolation.ts | Subagent | Execution isolation and sandboxing |
 | subagent/worker-registry.ts | Subagent | Worker process management |
 | slash-commands/index.ts | Slash Commands, Commands | Command boilerplate generators extension |

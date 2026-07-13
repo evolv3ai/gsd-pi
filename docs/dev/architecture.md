@@ -212,6 +212,7 @@ Model routing (complexity classification, budget pressure, routing history, capa
 | `guidance.ts` | Single catalog mapping typed findings (recovery kinds, milestone blockers, doctor issue codes, crash unit classes) to user-facing remediation prose |
 | `stop-notice.ts` | Single owner of the auto/step-mode stop/pause notice vocabulary — formatters and headless exit-code classifiers stay in lockstep |
 | `preferences.ts` | Preference loading, merging, validation |
+| `runtime-contract.ts` | Safe project-local runtime contract discovery, snapshot validation, and system-context rendering |
 | `git-service.ts` | Git operations — commit, merge, worktree sync, completed-units cross-boundary sync |
 | `unit-id.ts` | Centralized `parseUnitId()` — milestone/slice/task extraction from unit IDs |
 | `error-utils.ts` | `getErrorMessage()` — unified error-to-string conversion |

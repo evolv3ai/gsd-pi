@@ -89,6 +89,8 @@ Once configured, parent mode changes four things — all of which default to sin
 - **Per-repository verification.** Each repo's `verification` commands run with that repo's directory as the working directory.
 - **Per-repository commits.** Closeout commits honor each repo's `commit_policy` — `auto` commits in that repo, `skip` plans and verifies but leaves the repo untouched.
 
+For runtime coordination, place a [project-local runtime contract](./local-runtime-contract.md) at the parent root. Subagents launched into nested child repositories inherit that authority, providing one documented startup and teardown path for the workspace.
+
 ## What is not yet supported
 
 Parent workspace mode is being completed incrementally. The following are tracked as separate pieces of work and are **not** yet wired:

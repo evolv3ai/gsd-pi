@@ -8,9 +8,11 @@ Create `script/local-runtime/` at the project root. GSD recognizes these files:
 
 - `AGENT.md` — rules agents must follow before changing runtime state.
 - `README.md` — human-readable startup, health, seed, and teardown instructions.
-- `runtime.mjs`, `runtime.js`, `runtime.ts`, or `runtime.sh` — the canonical entry point, discovered in that order.
+- `runtime.mjs`, `runtime.js`, `runtime.ts`, or `runtime.sh` — the canonical entry point, discovered in that priority order.
 
 When any recognized file exists, GSD safely opens and injects bounded snapshots of `AGENT.md` and `README.md`, plus validated entry-point metadata, into agent and subagent system context. GSD does not automatically execute the entry point or infer its actions.
+
+Default discovery selects the first entry point that exists. Snapshot validation rechecks the absence of every higher-priority candidate; once an entry is selected, lower-priority files do not affect that snapshot.
 
 ```text
 script/
@@ -46,6 +48,20 @@ Global preferences do not activate or override a runtime contract; each project 
 
 Both values must be relative paths that remain inside the project. Recognized contract members must be real regular files; symlinks are rejected even when their targets remain inside the contract directory.
 
-If a configured or discovered contract cannot be validated or safely snapshotted, GSD injects a blocking diagnostic instead of contract content. This includes an `AGENT.md` or `README.md` larger than the 8 KB per-file snapshot limit; authoritative instructions are never injected partially. Entry points are validated by stable metadata without reading their contents or applying the document limit. Agents must not start, restart, seed, stop, reset, or tear down the runtime until the contract is repaired. A project with no configured contract and no recognized files remains behavior-neutral.
+When `entry` is set, that exact file must exist and validate inside the contract directory. An invalid project override does not fall back to the default convention.
+
+## Project, worktree, and subagent scope
+
+Discovery starts at the repository root even when the active working directory is nested. In a GSD worktree, the active worktree root is authoritative, so agents read the contract version checked out in that worktree.
+
+Subagents launched from a parent project into a nested child repository inherit the parent's runtime contract while keeping other project context local to the child. Explicitly isolated subagents likewise inherit the contract from the checkout that owns the task, rather than treating the temporary isolated checkout as a new runtime authority.
 
 In a parent workspace, place the shared contract at the parent project root. Child-repository startup can then be coordinated through one documented entry point.
+
+## Validation and failure behavior
+
+If a configured or discovered contract cannot be validated or safely snapshotted, GSD injects a blocking diagnostic instead of contract content. A malformed project preference that attempts to set `runtime.contract` also fails closed and does not expose or fall back from the invalid value.
+
+Each authoritative document is limited to 8,000 bytes, and the complete rendered contract block is limited to 20,000 bytes. Authoritative instructions are never injected partially. Entry points are validated by stable identity and metadata without reading their contents or applying the document limit.
+
+Agents must not start, restart, seed, stop, reset, or tear down the runtime until the contract is repaired. A project with no configured contract and no recognized files remains behavior-neutral.

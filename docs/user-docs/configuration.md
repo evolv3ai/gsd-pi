@@ -60,10 +60,25 @@ planning_depth: deep
 
 Preference loading never throws. When a `PREFERENCES.md` file is malformed or contains invalid settings, GSD keeps running with safe defaults but attaches diagnostics so the problem is visible instead of silently ignored:
 
-- **Parse failures** (missing closing `---` delimiter, YAML syntax error, unrecognized format) cause the whole file to be ignored. GSD falls back to a valid global or legacy preferences file rather than blocking.
+- **Parse failures** (missing closing `---` delimiter, YAML syntax error, unrecognized format) cause the whole file to be ignored. GSD normally falls back to a valid global or legacy preferences file. If a malformed project file attempts to configure `runtime.contract`, runtime operations fail closed instead of falling back to another contract.
 - **Invalid settings** (unknown keys, type mismatches) are sanitized or dropped; the remaining valid settings in the file still apply.
 
 Diagnostics surface through session-start notifications, `/gsd doctor` (with file path and, for YAML errors, line and column), and auto-mode preflight. See [Troubleshooting](./troubleshooting.md#preferences-file-ignored-or-settings-not-taking-effect).
+
+## Project-local runtime contract
+
+Projects can publish authoritative local-runtime instructions at `script/local-runtime/`, or nominate another project-local path in `.gsd/PREFERENCES.md`:
+
+```yaml
+---
+runtime:
+  contract:
+    path: ops/dev
+    entry: run.mjs
+---
+```
+
+`path` is relative to the active project or worktree root. `entry` is relative to the contract directory. Both must remain within their respective roots, and this setting is project-only: a global `runtime.contract` is never inherited. See [Project-local runtime contract](./local-runtime-contract.md) for discovery priority, document limits, subagent propagation, and failure behavior.
 
 ## Global API Keys (`/gsd config`)
 
