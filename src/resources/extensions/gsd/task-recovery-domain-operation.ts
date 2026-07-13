@@ -1,0 +1,936 @@
+// Project/App: gsd-pi
+// File Purpose: Replay-safe semantic Domain Operations for Task recovery history.
+
+import {
+  canonicalDomainJson,
+  executeDomainOperation,
+  type DomainJsonValue,
+  type DomainOperationContext,
+  type DomainOperationMutation,
+  type DomainOperationRequest,
+  type DomainOperationResult,
+} from "./db/domain-operation.js";
+import { getDb } from "./db/engine.js";
+import {
+  appendRecoveryWorkCheckpoint,
+  createOrReadRecoveryBudget,
+  grantRecoveryWaiver,
+  openRecoveryBlocker,
+  recordFailureObservation,
+  recordRecoveryAction,
+  recordRequirementDisposition,
+  resolveRecoveryBlocker,
+  terminateRecoveryWaiver,
+  type AppendRecoveryWorkCheckpointInput,
+  type GrantRecoveryWaiverInput,
+  type RecordRequirementDispositionInput,
+} from "./db/writers/task-recovery.js";
+import { readDomainOperationFence } from "./db/writers/lifecycle-commands.js";
+import type { ExecutionInvocation } from "./execution-invocation.js";
+
+export {
+  cancelTask,
+  reopenTask,
+  type TaskLifecycleIdentity,
+  type TaskLifecycleReceipt,
+} from "./task-lifecycle-domain-operation.js";
+import {
+  normalizeFailureFingerprint,
+  selectRecoveryDecision,
+  type HumanBlockerKind,
+  type RecoveryDecision,
+  type RecoveryPolicyInput,
+  type TaskFailureKind,
+} from "./recovery-policy.js";
+
+type AgentClassification = Extract<RecoveryPolicyInput, { owner: "agent" }>["classification"];
+type ReceiptStatus = DomainOperationResult["status"];
+
+interface TaskScope {
+  lifecycleId: string;
+  milestoneId: string;
+  sliceId: string;
+  taskId: string;
+}
+
+interface FailedAttemptScope extends TaskScope {
+  attemptId: string;
+  resultId: string;
+  kernelCheckpointId: string;
+  boundaryStage: "execute" | "verify";
+}
+
+export type RouteFailureInput = {
+  invocation: ExecutionInvocation;
+  attemptId: string;
+  resultId: string;
+  summary: string;
+  evidence: DomainJsonValue;
+  rationale: string;
+  targetLifecycleId?: string;
+  supersedesResolvedBlockerId?: string;
+} & (
+  | { owner: "agent"; classification: AgentClassification }
+  | {
+      owner: "user" | "external";
+      classification: { failureKind: TaskFailureKind };
+      blocker: {
+        blockerKind: HumanBlockerKind;
+        description: string;
+        requestedAction: string;
+      };
+    }
+);
+
+export interface TaskRecoveryReceipt {
+  status: ReceiptStatus;
+  operationId: string;
+  resultingRevision: number;
+  lifecycleId: string;
+  attemptId: string;
+  resultId: string;
+  failureObservationId: string;
+  recoveryActionId: string;
+  action: RecoveryDecision["action"];
+  recoveryBudgetId?: string;
+  blockerId?: string;
+  workCheckpointId?: string;
+}
+
+export interface PendingTaskRecoveryContext {
+  action: Extract<RecoveryDecision["action"], "retry" | "repair" | "remediate" | "replan">;
+  recoveryActionId: string;
+  attemptId: string;
+  resultId: string;
+  failureKind: string;
+  summary: string;
+  evidence: DomainJsonValue;
+  rationale: string;
+  replanCompleted: boolean;
+  checkpoint: {
+    checkpointId: string;
+    confirmedContext: string;
+    unresolvedSummary: string;
+    evidenceSummary: string;
+    suggestedNextAction: string;
+  };
+}
+
+export interface BlockerResolutionReceipt {
+  status: ReceiptStatus;
+  operationId: string;
+  resultingRevision: number;
+  blockerId: string;
+  blockerStatus: "resolved" | "dismissed";
+  workCheckpointId: string;
+}
+
+export interface WaiverReceipt {
+  status: ReceiptStatus;
+  operationId: string;
+  resultingRevision: number;
+  waiverId: string;
+  waiverStatus: "active" | "revoked" | "expired";
+  dispositionId?: string;
+}
+
+export interface RequirementDispositionReceipt {
+  status: ReceiptStatus;
+  operationId: string;
+  resultingRevision: number;
+  dispositionId: string;
+  disposition: "unsatisfied" | "satisfied" | "waived";
+}
+
+export interface WorkCheckpointReceipt {
+  status: ReceiptStatus;
+  operationId: string;
+  resultingRevision: number;
+  workCheckpointId: string;
+  sequence: number;
+}
+
+export interface TaskRecoveryBlockerSnapshot {
+  blockerId: string;
+  blockerKind: HumanBlockerKind;
+  blockerStatus: "open" | "resolved" | "dismissed";
+  resolutionOwner: "user" | "external";
+  resolution: string;
+  recoveryAction: RecoveryDecision["action"];
+  resolvedOperationId?: string;
+  resolvedProjectRevision?: number;
+}
+
+export interface TaskRecoveryRouteSnapshot {
+  recoveryActionId: string;
+  action: RecoveryDecision["action"];
+  recoveryOwner: "agent" | "user" | "external";
+  failureKind: string;
+  blocker: TaskRecoveryBlockerSnapshot | null;
+}
+
+function taskRecoveryBlockerSnapshot(
+  stored: Record<string, unknown>,
+): TaskRecoveryBlockerSnapshot {
+  return {
+    blockerId: String(stored["blocker_id"]),
+    blockerKind: String(stored["blocker_kind"]) as HumanBlockerKind,
+    blockerStatus: String(stored["blocker_status"]) as TaskRecoveryBlockerSnapshot["blockerStatus"],
+    resolutionOwner: String(stored["resolution_owner"]) as TaskRecoveryBlockerSnapshot["resolutionOwner"],
+    resolution: String(stored["resolution"]),
+    recoveryAction: String(stored["action"]) as RecoveryDecision["action"],
+    ...(stored["resolved_operation_id"]
+      ? { resolvedOperationId: String(stored["resolved_operation_id"]) }
+      : {}),
+    ...(stored["resolved_project_revision"]
+      ? { resolvedProjectRevision: Number(stored["resolved_project_revision"]) }
+      : {}),
+  };
+}
+
+function operationRequest(
+  operationType: string,
+  invocation: ExecutionInvocation,
+  payload: DomainJsonValue,
+): DomainOperationRequest {
+  const fence = readDomainOperationFence(invocation.idempotencyKey);
+  return {
+    operationType,
+    idempotencyKey: invocation.idempotencyKey,
+    expectedRevision: fence.revision,
+    expectedAuthorityEpoch: fence.authorityEpoch,
+    actorType: invocation.actorType,
+    ...(invocation.actorId ? { actorId: invocation.actorId } : {}),
+    sourceTransport: invocation.sourceTransport,
+    ...(invocation.traceId ? { traceId: invocation.traceId } : {}),
+    ...(invocation.turnId ? { turnId: invocation.turnId } : {}),
+    payload,
+  };
+}
+
+function mutation(
+  eventType: string,
+  entityId: string,
+  payload: DomainJsonValue,
+): DomainOperationMutation {
+  return {
+    events: [{
+      eventType,
+      entityType: "task",
+      entityId,
+      payload,
+      destinations: ["projection"],
+    }],
+    projections: [{
+      projectionKey: `${eventType}/${entityId}`.toLowerCase(),
+      projectionKind: "task-recovery",
+      rendererVersion: "1",
+    }],
+  };
+}
+
+function taskEntity(scope: Pick<FailedAttemptScope, "milestoneId" | "sliceId" | "taskId">): string {
+  return `${scope.milestoneId}/${scope.sliceId}/${scope.taskId}`;
+}
+
+function checkpointScope(scope: Pick<FailedAttemptScope, "milestoneId" | "sliceId" | "taskId">): string {
+  return `task:${taskEntity(scope)}`.toLowerCase();
+}
+
+function suggestedAgentRecoveryAction(
+  action: Extract<RecoveryDecision, { owner: "agent" }>["action"],
+): string {
+  switch (action) {
+    case "retry":
+      return "Retry the Task using the preserved failure evidence.";
+    case "repair":
+      return "Repair the deterministic execution fault before continuing the Task.";
+    case "remediate":
+      return "Remediate the failed verification evidence, then rerun verification.";
+    case "replan":
+      return "Replan the Task before implementation, then execute the replacement plan.";
+    case "abort":
+      return "Stop automatic Task execution and preserve this failure for diagnosis.";
+  }
+}
+
+export function readPendingTaskRecoveryContext(
+  task: Pick<TaskScope, "milestoneId" | "sliceId" | "taskId">,
+): PendingTaskRecoveryContext | null {
+  const stored = getDb().prepare(`
+    SELECT action.action, action.recovery_action_id,
+           attempt.attempt_id, observation.result_id,
+           observation.failure_kind, observation.summary, observation.evidence_json,
+           action.rationale,
+           CASE WHEN EXISTS (
+             SELECT 1 FROM workflow_domain_events replan
+             WHERE replan.project_id = action.project_id
+               AND replan.event_type = 'workflow.task.replanned'
+               AND replan.entity_type = 'task'
+               AND replan.entity_id = lifecycle.milestone_id || '/' || lifecycle.slice_id || '/' || lifecycle.task_id
+               AND replan.project_revision > action.project_revision
+           ) THEN 1 ELSE 0 END AS replan_completed,
+           checkpoint.checkpoint_id, checkpoint.confirmed_context,
+           checkpoint.unresolved_summary, checkpoint.evidence_summary,
+           checkpoint.suggested_next_action
+    FROM workflow_item_lifecycles lifecycle
+    JOIN workflow_execution_attempts attempt
+      ON attempt.lifecycle_id = lifecycle.lifecycle_id
+     AND attempt.project_id = lifecycle.project_id
+    JOIN workflow_kernel_checkpoints kernel
+      ON kernel.lifecycle_id = lifecycle.lifecycle_id
+     AND kernel.attempt_id = attempt.attempt_id
+     AND kernel.project_id = lifecycle.project_id
+     AND kernel.next_stage = 'route'
+     AND NOT EXISTS (
+       SELECT 1 FROM workflow_kernel_checkpoints successor
+       WHERE successor.previous_kernel_checkpoint_id = kernel.kernel_checkpoint_id
+     )
+    JOIN workflow_failure_observations observation
+      ON observation.attempt_id = attempt.attempt_id
+     AND observation.lifecycle_id = lifecycle.lifecycle_id
+     AND observation.project_id = lifecycle.project_id
+    JOIN workflow_recovery_actions action
+      ON action.failure_observation_id = observation.failure_observation_id
+     AND action.lifecycle_id = lifecycle.lifecycle_id
+     AND action.project_id = lifecycle.project_id
+    JOIN workflow_work_checkpoints checkpoint
+      ON checkpoint.operation_id = action.operation_id
+     AND checkpoint.lifecycle_id = lifecycle.lifecycle_id
+     AND checkpoint.project_id = lifecycle.project_id
+    WHERE lifecycle.item_kind = 'task'
+      AND lifecycle.milestone_id = :milestone_id
+      AND lifecycle.slice_id = :slice_id
+      AND lifecycle.task_id = :task_id
+      AND action.action IN ('retry', 'repair', 'remediate', 'replan')
+      AND attempt.attempt_number = (
+        SELECT MAX(latest.attempt_number)
+        FROM workflow_execution_attempts latest
+        WHERE latest.lifecycle_id = lifecycle.lifecycle_id
+          AND latest.project_id = lifecycle.project_id
+      )
+  `).get({
+    ":milestone_id": task.milestoneId,
+    ":slice_id": task.sliceId,
+    ":task_id": task.taskId,
+  }) as Record<string, unknown> | undefined;
+  if (!stored) return null;
+  return {
+    action: String(stored["action"]) as PendingTaskRecoveryContext["action"],
+    recoveryActionId: String(stored["recovery_action_id"]),
+    attemptId: String(stored["attempt_id"]),
+    resultId: String(stored["result_id"]),
+    failureKind: String(stored["failure_kind"]),
+    summary: String(stored["summary"]),
+    evidence: JSON.parse(String(stored["evidence_json"])) as DomainJsonValue,
+    rationale: String(stored["rationale"]),
+    replanCompleted: Number(stored["replan_completed"]) === 1,
+    checkpoint: {
+      checkpointId: String(stored["checkpoint_id"]),
+      confirmedContext: String(stored["confirmed_context"]),
+      unresolvedSummary: String(stored["unresolved_summary"]),
+      evidenceSummary: String(stored["evidence_summary"]),
+      suggestedNextAction: String(stored["suggested_next_action"]),
+    },
+  };
+}
+
+function loadRoutedFailureScope(attemptId: string, resultId: string): FailedAttemptScope {
+  const scope = getDb().prepare(`
+    SELECT lifecycle.lifecycle_id, lifecycle.milestone_id, lifecycle.slice_id,
+           lifecycle.task_id, attempt.attempt_id, result.result_id,
+           checkpoint.kernel_checkpoint_id,
+           CASE WHEN result.outcome = 'succeeded' THEN 'verify' ELSE 'execute' END AS boundary_stage
+    FROM workflow_execution_attempts attempt
+    JOIN workflow_attempt_results result
+      ON result.attempt_id = attempt.attempt_id
+     AND result.project_id = attempt.project_id
+    JOIN workflow_item_lifecycles lifecycle
+      ON lifecycle.lifecycle_id = attempt.lifecycle_id
+     AND lifecycle.project_id = attempt.project_id
+    JOIN workflow_kernel_checkpoints checkpoint
+      ON checkpoint.lifecycle_id = lifecycle.lifecycle_id
+     AND checkpoint.attempt_id = attempt.attempt_id
+     AND checkpoint.project_id = lifecycle.project_id
+    WHERE attempt.attempt_id = :attempt_id
+      AND result.result_id = :result_id
+      AND attempt.attempt_state = 'settled'
+      AND (
+        result.outcome IN ('failed', 'interrupted') OR
+        (result.outcome = 'succeeded' AND EXISTS (
+          SELECT 1 FROM workflow_technical_verdicts verdict
+          WHERE verdict.project_id = result.project_id
+            AND verdict.lifecycle_id = result.lifecycle_id
+            AND verdict.attempt_id = result.attempt_id
+            AND verdict.verdict IN ('fail', 'inconclusive')
+        ))
+      )
+      AND checkpoint.next_stage = 'route'
+      AND NOT EXISTS (
+        SELECT 1 FROM workflow_kernel_checkpoints successor
+        WHERE successor.previous_kernel_checkpoint_id = checkpoint.kernel_checkpoint_id
+      )
+  `).get({ ":attempt_id": attemptId, ":result_id": resultId }) as Record<string, unknown> | undefined;
+  if (!scope) throw new Error("Task recovery requires a current execute or verification failure route head");
+  return {
+    lifecycleId: String(scope["lifecycle_id"]),
+    milestoneId: String(scope["milestone_id"]),
+    sliceId: String(scope["slice_id"]),
+    taskId: String(scope["task_id"]),
+    attemptId: String(scope["attempt_id"]),
+    resultId: String(scope["result_id"]),
+    kernelCheckpointId: String(scope["kernel_checkpoint_id"]),
+    boundaryStage: String(scope["boundary_stage"]) as "execute" | "verify",
+  };
+}
+
+function requireRoutableResult(resultId: string, supersedesResolvedBlockerId?: string): void {
+  const routed = getDb().prepare(`
+    SELECT action.recovery_action_id, action.action, action.blocker_id,
+           observation.recovery_owner, blocker.blocker_kind, blocker.blocker_status
+    FROM workflow_failure_observations observation
+    LEFT JOIN workflow_recovery_actions action
+      ON action.failure_observation_id = observation.failure_observation_id
+    LEFT JOIN workflow_blockers blocker ON blocker.blocker_id = action.blocker_id
+    WHERE observation.result_id = :result_id
+    ORDER BY observation.project_revision DESC
+    LIMIT 1
+  `).get({ ":result_id": resultId }) as Record<string, unknown> | undefined;
+  if (!routed) return;
+  const supersedesResolvedHumanReview = supersedesResolvedBlockerId &&
+    routed["blocker_id"] === supersedesResolvedBlockerId &&
+    routed["recovery_owner"] === "user" &&
+    routed["action"] === "clarify" &&
+    routed["blocker_kind"] === "subjective_uat" &&
+    routed["blocker_status"] === "resolved";
+  if (!supersedesResolvedHumanReview) {
+    throw new Error("Task Result already has a recovery observation");
+  }
+}
+
+function recoveryUseCounts(
+  lifecycleId: string,
+  failureKind: string,
+  fingerprint: string,
+  policyClass?: string,
+): { budgetUses: number; replanUses: number } {
+  const budgetUses = policyClass
+    ? Number((getDb().prepare(`
+        SELECT COUNT(*) AS count
+        FROM workflow_recovery_actions action
+        JOIN workflow_recovery_budgets budget
+          ON budget.recovery_budget_id = action.recovery_budget_id
+        WHERE budget.lifecycle_id = :lifecycle_id
+          AND budget.failure_kind = :failure_kind
+          AND budget.failure_fingerprint = :fingerprint
+          AND budget.policy_class = :policy_class
+      `).get({
+        ":lifecycle_id": lifecycleId,
+        ":failure_kind": failureKind,
+        ":fingerprint": fingerprint,
+        ":policy_class": policyClass,
+      }) as Record<string, unknown> | undefined)?.["count"] ?? 0)
+    : 0;
+  const replanUses = Number((getDb().prepare(`
+    SELECT COUNT(*) AS count
+    FROM workflow_recovery_actions action
+    JOIN workflow_failure_observations observation
+      ON observation.failure_observation_id = action.failure_observation_id
+    WHERE observation.lifecycle_id = :lifecycle_id
+      AND observation.failure_kind = :failure_kind
+      AND observation.failure_fingerprint = :fingerprint
+      AND action.action = 'replan'
+  `).get({
+    ":lifecycle_id": lifecycleId,
+    ":failure_kind": failureKind,
+    ":fingerprint": fingerprint,
+  }) as Record<string, unknown> | undefined)?.["count"] ?? 0);
+  return { budgetUses, replanUses };
+}
+
+function selectAgentDecision(
+  input: Extract<RouteFailureInput, { owner: "agent" }>,
+  scope: FailedAttemptScope,
+  failureKind: string,
+  fingerprint: string,
+): RecoveryDecision {
+  const preview = selectRecoveryDecision({
+    owner: "agent",
+    classification: input.classification,
+    budgetUses: 0,
+    replanUses: 0,
+  });
+  const counts = recoveryUseCounts(
+    scope.lifecycleId,
+    failureKind,
+    fingerprint,
+    preview.owner === "agent" ? preview.budget?.policyClass : undefined,
+  );
+  return selectRecoveryDecision({
+    owner: "agent",
+    classification: input.classification,
+    ...counts,
+  });
+}
+
+function loadTaskRecoveryReceipt(
+  operation: DomainOperationResult,
+): TaskRecoveryReceipt {
+  const stored = getDb().prepare(`
+    SELECT observation.lifecycle_id, observation.attempt_id, observation.result_id,
+           observation.failure_observation_id, action.recovery_action_id,
+           action.action, action.recovery_budget_id, action.blocker_id,
+           checkpoint.checkpoint_id
+    FROM workflow_recovery_actions action
+    JOIN workflow_failure_observations observation
+      ON observation.failure_observation_id = action.failure_observation_id
+    LEFT JOIN workflow_work_checkpoints checkpoint
+      ON checkpoint.operation_id = action.operation_id
+     AND checkpoint.lifecycle_id = observation.lifecycle_id
+    WHERE action.operation_id = :operation_id
+  `).get({ ":operation_id": operation.operationId }) as Record<string, unknown> | undefined;
+  if (!stored) throw new Error("Task recovery receipt is missing its Observation or Action");
+  return {
+    status: operation.status,
+    operationId: operation.operationId,
+    resultingRevision: operation.resultingRevision,
+    lifecycleId: String(stored["lifecycle_id"]),
+    attemptId: String(stored["attempt_id"]),
+    resultId: String(stored["result_id"]),
+    failureObservationId: String(stored["failure_observation_id"]),
+    recoveryActionId: String(stored["recovery_action_id"]),
+    action: String(stored["action"]) as RecoveryDecision["action"],
+    ...(stored["recovery_budget_id"]
+      ? { recoveryBudgetId: String(stored["recovery_budget_id"]) }
+      : {}),
+    ...(stored["blocker_id"] ? { blockerId: String(stored["blocker_id"]) } : {}),
+    ...(stored["checkpoint_id"]
+      ? { workCheckpointId: String(stored["checkpoint_id"]) }
+      : {}),
+  };
+}
+
+export function readTaskRecoveryRoute(attemptId: string): TaskRecoveryRouteSnapshot | null {
+  const stored = getDb().prepare(`
+    SELECT action.recovery_action_id, action.action,
+           observation.recovery_owner, observation.failure_kind,
+           blocker.blocker_id, blocker.blocker_kind, blocker.blocker_status,
+           blocker.resolution_owner, blocker.resolution,
+           blocker.resolved_operation_id, blocker.resolved_project_revision
+    FROM workflow_failure_observations observation
+    JOIN workflow_recovery_actions action
+      ON action.failure_observation_id = observation.failure_observation_id
+     AND action.project_id = observation.project_id
+    LEFT JOIN workflow_blockers blocker
+      ON blocker.blocker_id = action.blocker_id
+     AND blocker.project_id = action.project_id
+     AND blocker.lifecycle_id = action.lifecycle_id
+    WHERE observation.attempt_id = :attempt_id
+    ORDER BY action.project_revision DESC
+    LIMIT 1
+  `).get({ ":attempt_id": attemptId }) as Record<string, unknown> | undefined;
+  if (!stored) return null;
+  const blocker = stored["blocker_id"] ? taskRecoveryBlockerSnapshot(stored) : null;
+  return {
+    recoveryActionId: String(stored["recovery_action_id"]),
+    action: String(stored["action"]) as RecoveryDecision["action"],
+    recoveryOwner: String(stored["recovery_owner"]) as TaskRecoveryRouteSnapshot["recoveryOwner"],
+    failureKind: String(stored["failure_kind"]),
+    blocker,
+  };
+}
+
+export function readTaskRecoveryBlocker(attemptId: string): TaskRecoveryBlockerSnapshot | null {
+  return readTaskRecoveryRoute(attemptId)?.blocker ?? null;
+}
+
+export function readResolvedTaskHumanReviewBlocker(
+  attemptId: string,
+): TaskRecoveryBlockerSnapshot | null {
+  const stored = getDb().prepare(`
+    SELECT blocker.blocker_id, blocker.blocker_kind, blocker.blocker_status,
+           blocker.resolution_owner, blocker.resolution,
+           blocker.resolved_operation_id, blocker.resolved_project_revision,
+           action.action
+    FROM workflow_failure_observations observation
+    JOIN workflow_recovery_actions action
+      ON action.failure_observation_id = observation.failure_observation_id
+     AND action.project_id = observation.project_id
+    JOIN workflow_blockers blocker
+      ON blocker.blocker_id = action.blocker_id
+     AND blocker.project_id = action.project_id
+     AND blocker.lifecycle_id = action.lifecycle_id
+    WHERE observation.attempt_id = :attempt_id
+      AND blocker.blocker_kind = 'subjective_uat'
+      AND blocker.blocker_status = 'resolved'
+    ORDER BY action.project_revision DESC
+    LIMIT 1
+  `).get({ ":attempt_id": attemptId }) as Record<string, unknown> | undefined;
+  if (!stored) return null;
+  return taskRecoveryBlockerSnapshot(stored);
+}
+
+export function recordFailureAndSelectRecovery(
+  input: RouteFailureInput,
+): TaskRecoveryReceipt {
+  const operation = executeDomainOperation(operationRequest(
+    "attempt.route",
+    input.invocation,
+    {
+      attemptId: input.attemptId,
+      resultId: input.resultId,
+      owner: input.owner,
+      classification: input.classification,
+      summary: input.summary,
+      evidence: input.evidence,
+      rationale: input.rationale,
+      targetLifecycleId: input.targetLifecycleId ?? null,
+      supersedesResolvedBlockerId: input.supersedesResolvedBlockerId ?? null,
+      ...(input.owner === "agent" ? {} : { blocker: input.blocker }),
+    },
+  ), (context) => {
+    const scope = loadRoutedFailureScope(input.attemptId, input.resultId);
+    requireRoutableResult(input.resultId, input.supersedesResolvedBlockerId);
+    const failureKind = input.classification.failureKind.trim().toLowerCase();
+    const fingerprint = normalizeFailureFingerprint(input.classification);
+    const decision = input.owner === "agent"
+      ? selectAgentDecision(input, scope, failureKind, fingerprint)
+      : selectRecoveryDecision({ owner: input.owner, blockerKind: input.blocker.blockerKind });
+
+    let blockerId: string | undefined;
+    if (input.owner !== "agent") {
+      blockerId = openRecoveryBlocker(context, {
+        lifecycleId: scope.lifecycleId,
+        attemptId: scope.attemptId,
+        kernelCheckpointId: scope.kernelCheckpointId,
+        blockerKind: input.blocker.blockerKind,
+        resolutionOwner: input.owner,
+        description: input.blocker.description,
+        requestedAction: input.blocker.requestedAction,
+      }).blockerId;
+    }
+    const observation = recordFailureObservation(context, {
+      lifecycleId: scope.lifecycleId,
+      attemptId: scope.attemptId,
+      resultId: scope.resultId,
+      boundaryStage: scope.boundaryStage,
+      kernelCheckpointId: scope.kernelCheckpointId,
+      ...(blockerId ? { blockerId } : {}),
+      recoveryOwner: decision.owner,
+      failureKind,
+      failureFingerprint: fingerprint,
+      summary: input.summary,
+      evidence: input.evidence,
+    });
+    const budget = decision.owner === "agent" && decision.budget
+      ? createOrReadRecoveryBudget(context, {
+          lifecycleId: scope.lifecycleId,
+          failureKind,
+          failureFingerprint: fingerprint,
+          policyClass: decision.budget.policyClass,
+          maxUses: decision.budget.maxUses,
+          policyVersion: decision.policyVersion,
+        })
+      : undefined;
+    const targetLifecycleId = decision.owner === "agent" &&
+        ["retry", "repair", "replan", "remediate"].includes(decision.action)
+      ? input.targetLifecycleId ?? scope.lifecycleId
+      : undefined;
+    const action = recordRecoveryAction(context, {
+      lifecycleId: scope.lifecycleId,
+      failureObservationId: observation.failureObservationId,
+      action: decision.action,
+      ...(budget ? { recoveryBudgetId: budget.recoveryBudgetId } : {}),
+      ...(targetLifecycleId ? { targetLifecycleId } : {}),
+      ...(blockerId ? { blockerId } : {}),
+      rationale: input.rationale,
+      policyVersion: decision.policyVersion,
+    });
+    let workCheckpointId: string;
+    if (decision.owner === "agent") {
+      workCheckpointId = appendRecoveryWorkCheckpoint(context, {
+        lifecycleId: scope.lifecycleId,
+        scopeKey: checkpointScope(scope),
+        checkpointKind: "correction",
+        confirmedContext: input.summary,
+        unresolvedSummary: failureKind,
+        evidenceSummary: canonicalDomainJson(input.evidence),
+        suggestedNextAction: suggestedAgentRecoveryAction(decision.action),
+      }).checkpointId;
+    } else {
+      const humanInput = input as Extract<RouteFailureInput, { owner: "user" | "external" }>;
+      workCheckpointId = appendRecoveryWorkCheckpoint(context, {
+        lifecycleId: scope.lifecycleId,
+        scopeKey: checkpointScope(scope),
+        checkpointKind: "pause",
+        confirmedContext: input.summary,
+        unresolvedSummary: humanInput.blocker.description,
+        evidenceSummary: input.rationale,
+        suggestedNextAction: humanInput.blocker.requestedAction,
+      }).checkpointId;
+    }
+    return mutation("task.recovery.routed", taskEntity(scope), {
+      attemptId: scope.attemptId,
+      resultId: scope.resultId,
+      failureObservationId: observation.failureObservationId,
+      recoveryActionId: action.recoveryActionId,
+      action: decision.action,
+      workCheckpointId,
+    });
+  });
+  return loadTaskRecoveryReceipt(operation);
+}
+
+function loadTaskIdentity(lifecycleId: string): TaskScope {
+  const lifecycle = getDb().prepare(`
+    SELECT lifecycle_id, milestone_id, slice_id, task_id
+    FROM workflow_item_lifecycles
+    WHERE lifecycle_id = :lifecycle_id AND item_kind = 'task'
+  `).get({ ":lifecycle_id": lifecycleId }) as Record<string, unknown> | undefined;
+  if (!lifecycle) throw new Error("Task lifecycle is missing");
+  return {
+    lifecycleId: String(lifecycle["lifecycle_id"]),
+    milestoneId: String(lifecycle["milestone_id"]),
+    sliceId: String(lifecycle["slice_id"]),
+    taskId: String(lifecycle["task_id"]),
+  };
+}
+
+export function resolveTaskBlocker(input: {
+  invocation: ExecutionInvocation;
+  blockerId: string;
+  disposition: "resolved" | "dismissed";
+  resolution: string;
+  checkpoint: Omit<AppendRecoveryWorkCheckpointInput, "lifecycleId" | "scopeKey">;
+}): BlockerResolutionReceipt {
+  const operation = executeDomainOperation(operationRequest(
+    "task.blocker.resolve",
+    input.invocation,
+    {
+      blockerId: input.blockerId,
+      disposition: input.disposition,
+      resolution: input.resolution,
+      checkpoint: input.checkpoint,
+    },
+  ), (context) => {
+    const blocker = getDb().prepare(`
+      SELECT lifecycle_id, resolution_owner FROM workflow_blockers
+      WHERE blocker_id = :blocker_id AND blocker_status = 'open'
+    `).get({ ":blocker_id": input.blockerId }) as Record<string, unknown> | undefined;
+    if (!blocker) throw new Error("Recovery Blocker must be the current open Blocker");
+    if (input.invocation.actorType !== blocker["resolution_owner"]) {
+      throw new Error("Recovery Blocker may only be closed by its resolution owner");
+    }
+    const scope = loadTaskIdentity(String(blocker["lifecycle_id"]));
+    resolveRecoveryBlocker(context, {
+      blockerId: input.blockerId,
+      disposition: input.disposition,
+      resolution: input.resolution,
+    });
+    appendRecoveryWorkCheckpoint(context, {
+      ...input.checkpoint,
+      lifecycleId: scope.lifecycleId,
+      scopeKey: checkpointScope(scope),
+    });
+    return mutation("task.blocker.resolved", taskEntity(scope), {
+      blockerId: input.blockerId,
+      disposition: input.disposition,
+    });
+  });
+  const stored = getDb().prepare(`
+    SELECT blocker.blocker_id, blocker.blocker_status, checkpoint.checkpoint_id
+    FROM workflow_blockers blocker
+    JOIN workflow_work_checkpoints checkpoint
+      ON checkpoint.operation_id = blocker.resolved_operation_id
+     AND checkpoint.lifecycle_id = blocker.lifecycle_id
+    WHERE blocker.resolved_operation_id = :operation_id
+  `).get({ ":operation_id": operation.operationId }) as Record<string, unknown> | undefined;
+  if (!stored) throw new Error("Blocker resolution receipt is incomplete");
+  return {
+    status: operation.status,
+    operationId: operation.operationId,
+    resultingRevision: operation.resultingRevision,
+    blockerId: String(stored["blocker_id"]),
+    blockerStatus: String(stored["blocker_status"]) as "resolved" | "dismissed",
+    workCheckpointId: String(stored["checkpoint_id"]),
+  };
+}
+
+export function grantTaskWaiver(
+  input: { invocation: ExecutionInvocation } & GrantRecoveryWaiverInput,
+): WaiverReceipt {
+  const { invocation, ...waiver } = input;
+  if (waiver.grantedByActorType === "user" &&
+      (invocation.actorType !== "user" || invocation.actorId !== waiver.grantedByActorId)) {
+    throw new Error("A user-granted Waiver requires the matching user invocation identity");
+  }
+  if (waiver.grantedByActorType === "policy" &&
+      invocation.actorType !== "agent" && invocation.actorType !== "policy") {
+    throw new Error("A policy-granted Waiver requires an agent or policy invocation");
+  }
+  const operation = executeDomainOperation(operationRequest(
+    "task.waiver.grant",
+    invocation,
+    waiver as unknown as DomainJsonValue,
+  ), (context) => {
+    const stored = grantRecoveryWaiver(context, waiver);
+    const scope = loadTaskIdentity(waiver.lifecycleId);
+    return mutation("task.waiver.granted", taskEntity(scope), { waiverId: stored.waiverId });
+  });
+  const stored = getDb().prepare(`
+    SELECT waiver_id, waiver_status FROM workflow_waivers
+    WHERE operation_id = :operation_id
+  `).get({ ":operation_id": operation.operationId }) as Record<string, unknown> | undefined;
+  if (!stored) throw new Error("Waiver grant receipt is missing");
+  return {
+    status: operation.status,
+    operationId: operation.operationId,
+    resultingRevision: operation.resultingRevision,
+    waiverId: String(stored["waiver_id"]),
+    waiverStatus: "active",
+  };
+}
+
+export function recordTaskRequirementDisposition(
+  input: { invocation: ExecutionInvocation } & RecordRequirementDispositionInput,
+): RequirementDispositionReceipt {
+  const { invocation, ...disposition } = input;
+  const operation = executeDomainOperation(operationRequest(
+    "task.disposition.record",
+    invocation,
+    disposition as unknown as DomainJsonValue,
+  ), (context) => {
+    const stored = recordRequirementDisposition(context, disposition);
+    return mutation("task.requirement.disposition.recorded", disposition.requirementId, {
+      dispositionId: stored.dispositionId,
+      disposition: stored.disposition,
+    });
+  });
+  const stored = getDb().prepare(`
+    SELECT disposition_id, disposition
+    FROM workflow_requirement_dispositions
+    WHERE operation_id = :operation_id
+  `).get({ ":operation_id": operation.operationId }) as Record<string, unknown> | undefined;
+  if (!stored) throw new Error("Requirement Disposition receipt is missing");
+  return {
+    status: operation.status,
+    operationId: operation.operationId,
+    resultingRevision: operation.resultingRevision,
+    dispositionId: String(stored["disposition_id"]),
+    disposition: String(stored["disposition"]) as RequirementDispositionReceipt["disposition"],
+  };
+}
+
+export function terminateTaskWaiver(input: {
+  invocation: ExecutionInvocation;
+  waiverId: string;
+  requirementId: string;
+  disposition: "revoked" | "expired";
+  successorDisposition: "unsatisfied" | "satisfied";
+  supersedesDispositionId: string;
+  rationale: string;
+}): WaiverReceipt {
+  const operation = executeDomainOperation(operationRequest(
+    "task.waiver.terminate",
+    input.invocation,
+    {
+      waiverId: input.waiverId,
+      requirementId: input.requirementId,
+      disposition: input.disposition,
+      successorDisposition: input.successorDisposition,
+      supersedesDispositionId: input.supersedesDispositionId,
+      rationale: input.rationale,
+    },
+  ), (context) => {
+    const currentWaivedHead = getDb().prepare(`
+      SELECT disposition.disposition_id
+      FROM workflow_waivers waiver
+      JOIN workflow_requirement_dispositions disposition
+        ON disposition.waiver_id = waiver.waiver_id
+       AND disposition.requirement_id = waiver.requirement_id
+      WHERE waiver.waiver_id = :waiver_id
+        AND waiver.requirement_id = :requirement_id
+        AND waiver.waiver_status = 'active'
+        AND disposition.disposition_id = :disposition_id
+        AND disposition.disposition = 'waived'
+        AND NOT EXISTS (
+          SELECT 1 FROM workflow_requirement_dispositions successor
+          WHERE successor.supersedes_disposition_id = disposition.disposition_id
+        )
+    `).get({
+      ":waiver_id": input.waiverId,
+      ":requirement_id": input.requirementId,
+      ":disposition_id": input.supersedesDispositionId,
+    });
+    if (!currentWaivedHead) {
+      throw new Error("Waiver termination requires its matching current waived disposition head");
+    }
+    const successor = recordRequirementDisposition(context, {
+      requirementId: input.requirementId,
+      disposition: input.successorDisposition,
+      supersedesDispositionId: input.supersedesDispositionId,
+      rationale: input.rationale,
+    });
+    terminateRecoveryWaiver(context, {
+      waiverId: input.waiverId,
+      disposition: input.disposition,
+    });
+    return mutation("task.waiver.terminated", input.requirementId, {
+      waiverId: input.waiverId,
+      dispositionId: successor.dispositionId,
+      status: input.disposition,
+    });
+  });
+  const stored = getDb().prepare(`
+    SELECT waiver.waiver_id, waiver.waiver_status, disposition.disposition_id
+    FROM workflow_waivers waiver
+    JOIN workflow_requirement_dispositions disposition
+      ON disposition.operation_id = waiver.ended_operation_id
+     AND disposition.requirement_id = waiver.requirement_id
+    WHERE waiver.ended_operation_id = :operation_id
+  `).get({ ":operation_id": operation.operationId }) as Record<string, unknown> | undefined;
+  if (!stored) throw new Error("Waiver termination receipt is incomplete");
+  return {
+    status: operation.status,
+    operationId: operation.operationId,
+    resultingRevision: operation.resultingRevision,
+    waiverId: String(stored["waiver_id"]),
+    waiverStatus: String(stored["waiver_status"]) as "revoked" | "expired",
+    dispositionId: String(stored["disposition_id"]),
+  };
+}
+
+export function appendTaskWorkCheckpoint(input: {
+  invocation: ExecutionInvocation;
+  lifecycleId: string;
+} & Omit<AppendRecoveryWorkCheckpointInput, "lifecycleId" | "scopeKey">): WorkCheckpointReceipt {
+  const { invocation, lifecycleId, ...checkpoint } = input;
+  const operation = executeDomainOperation(operationRequest(
+    "task.checkpoint.append",
+    invocation,
+    { lifecycleId, ...checkpoint } as unknown as DomainJsonValue,
+  ), (context) => {
+    const scope = loadTaskIdentity(lifecycleId);
+    const stored = appendRecoveryWorkCheckpoint(context, {
+      ...checkpoint,
+      lifecycleId,
+      scopeKey: checkpointScope(scope),
+    });
+    return mutation("task.checkpoint.appended", taskEntity(scope), {
+      checkpointId: stored.checkpointId,
+      sequence: stored.sequence,
+    });
+  });
+  const stored = getDb().prepare(`
+    SELECT checkpoint_id, sequence FROM workflow_work_checkpoints
+    WHERE operation_id = :operation_id
+  `).get({ ":operation_id": operation.operationId }) as Record<string, unknown> | undefined;
+  if (!stored) throw new Error("Work Checkpoint receipt is missing");
+  return {
+    status: operation.status,
+    operationId: operation.operationId,
+    resultingRevision: operation.resultingRevision,
+    workCheckpointId: String(stored["checkpoint_id"]),
+    sequence: Number(stored["sequence"]),
+  };
+}
