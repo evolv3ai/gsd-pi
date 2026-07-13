@@ -28,6 +28,7 @@ import { createMemory } from "../../../src/resources/extensions/gsd/memory-store
 import { buildReassessRoadmapPrompt } from "../../../src/resources/extensions/gsd/auto-prompts.ts";
 import { invalidateAllCaches } from "../../../src/resources/extensions/gsd/cache.ts";
 import { resolveToolPresentationPlan } from "../../../src/resources/extensions/gsd/tool-presentation-plan.ts";
+import { claimTaskAttempt } from "../../../src/resources/extensions/gsd/task-execution-domain-operation.ts";
 import {
   _buildBridgeImportCandidates,
   _buildImportCandidates,
@@ -60,6 +61,81 @@ function cleanup(base: string): void {
   } catch {
     // swallow
   }
+}
+
+function claimCanonicalTaskAuthority(
+  base: string,
+  task: { milestoneId: string; sliceId: string; taskId: string },
+): void {
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  const db = _getAdapter();
+  assert.ok(db, "DB should be open before claiming canonical task authority");
+  const workerId = `mcp-fixture-${task.milestoneId}-${task.sliceId}-${task.taskId}`;
+  const unitId = `${task.milestoneId}/${task.sliceId}/${task.taskId}`;
+  const now = "2026-07-12T00:00:00.000Z";
+  db.prepare(`
+    INSERT OR IGNORE INTO milestones (id, title, status, created_at)
+    VALUES (?, 'MCP fixture milestone', 'active', ?)
+  `).run(task.milestoneId, now);
+  db.prepare(`
+    INSERT OR IGNORE INTO slices (milestone_id, id, title, status, created_at)
+    VALUES (?, ?, 'MCP fixture slice', 'active', ?)
+  `).run(task.milestoneId, task.sliceId, now);
+  db.prepare(`
+    INSERT OR IGNORE INTO tasks (milestone_id, slice_id, id, title, status, verify, sequence)
+    VALUES (?, ?, ?, 'MCP fixture task', 'in_progress', 'npm test', 1)
+  `).run(task.milestoneId, task.sliceId, task.taskId);
+  db.prepare(`
+    INSERT INTO workers (
+      worker_id, host, pid, started_at, version, last_heartbeat_at, status,
+      project_root_realpath
+    ) VALUES (?, 'test-host', 1, ?, 'test', ?, 'active', ?)
+  `).run(workerId, now, now, realpathSync(base));
+  db.prepare(`
+    INSERT INTO milestone_leases (
+      milestone_id, worker_id, fencing_token, acquired_at, expires_at, status
+    ) VALUES (?, ?, 7, ?, '2099-07-12T00:00:00.000Z', 'held')
+  `).run(task.milestoneId, workerId, now);
+  const dispatch = db.prepare(`
+    INSERT INTO unit_dispatches (
+      trace_id, turn_id, worker_id, milestone_lease_token,
+      milestone_id, slice_id, task_id, unit_type, unit_id,
+      status, attempt_n, started_at
+    ) VALUES ('fixture-trace', 'fixture-turn', ?, 7, ?, ?, ?, 'execute-task', ?, 'claimed', 1, ?)
+  `).run(workerId, task.milestoneId, task.sliceId, task.taskId, unitId, now);
+  claimTaskAttempt({
+    invocation: {
+      idempotencyKey: `fixture:mcp:claim:${unitId}`,
+      sourceTransport: "internal",
+      actorType: "agent",
+      actorId: workerId,
+    },
+    task,
+    workerId,
+    milestoneLeaseToken: 7,
+    coordinationDispatchId: Number(dispatch.lastInsertRowid),
+  });
+}
+
+function seedCompletedTaskState(task: {
+  milestoneId: string;
+  sliceId: string;
+  taskId: string;
+}): void {
+  const db = _getAdapter();
+  assert.ok(db, "DB should be open before seeding completed task state");
+  db.prepare(`
+    INSERT INTO tasks (
+      milestone_id, slice_id, id, title, status, completed_at, sequence
+    ) VALUES (?, ?, ?, 'Completed prerequisite', 'complete', ?, 1)
+    ON CONFLICT(milestone_id, slice_id, id) DO UPDATE SET
+      status = 'complete', completed_at = excluded.completed_at
+  `).run(
+    task.milestoneId,
+    task.sliceId,
+    task.taskId,
+    "2026-07-12T00:00:00.000Z",
+  );
 }
 
 function seedContextModeFixture(base: string): void {
@@ -1256,6 +1332,7 @@ describe("workflow MCP tools", () => {
         join(base, ".gsd", "milestones", "M001", "slices", "S01", "S01-PLAN.md"),
         "# S01\n\n- [ ] **T01: Demo** `est:5m`\n",
       );
+      claimCanonicalTaskAuthority(base, { milestoneId: "M001", sliceId: "S01", taskId: "T01" });
 
       const server = makeMockServer();
       registerWorkflowTools(server as any);
@@ -1274,7 +1351,7 @@ describe("workflow MCP tools", () => {
         verification: "npm test",
       });
 
-      assert.match((taskResult as any).content[0].text as string, /Completed task T01/);
+      assert.match((taskResult as any).content[0].text as string, /Staged task T01; awaiting host verification/);
       assert.ok(
         existsSync(join(base, ".gsd", "milestones", "M001", "slices", "S01", "tasks", "T01-SUMMARY.md")),
         "task summary should be written to disk",
@@ -1415,6 +1492,7 @@ describe("workflow MCP tools", () => {
         join(base, ".gsd", "milestones", "M001", "slices", "S01", "S01-PLAN.md"),
         "# S01\n\n- [ ] **T01: Demo** `est:5m`\n",
       );
+      claimCanonicalTaskAuthority(base, { milestoneId: "M001", sliceId: "S01", taskId: "T01" });
 
       const server = makeMockServer();
       registerWorkflowTools(server as any);
@@ -1433,13 +1511,40 @@ describe("workflow MCP tools", () => {
         ],
       });
 
-      assert.match((taskResult as any).content[0].text as string, /Completed task T01/);
+      assert.match((taskResult as any).content[0].text as string, /Staged task T01; awaiting host verification/);
       const db = _getAdapter();
       assert.ok(db, "DB should be open after tool completion");
       const row = db!.prepare(
         "SELECT verification_result FROM tasks WHERE milestone_id = ? AND slice_id = ? AND id = ?",
       ).get("M001", "S01", "T01") as Record<string, unknown> | undefined;
       assert.match(String(row?.verification_result), /`npm test` exited 0 \(pass\)/);
+    } finally {
+      cleanup(base);
+    }
+  });
+
+  it("gsd_task_complete rejects missing replay-stable private execution metadata", async () => {
+    const base = makeTmpBase();
+    try {
+      const server = makeMockServer();
+      registerWorkflowTools(server as any);
+      const taskTool = server.tools.find((tool) => tool.name === "gsd_task_complete");
+      assert.ok(taskTool);
+
+      const result = await taskTool.handler({
+        projectDir: base,
+        taskId: "T01",
+        sliceId: "S01",
+        milestoneId: "M001",
+        oneLiner: "Must not execute",
+        narrative: "Private replay identity is missing.",
+        verification: "npm test",
+      }, { _meta: { "io.opengsd/idempotency-key": "   " } });
+      assertToolError(
+        result,
+        /Task execution mutation gsd_task_complete requires replay-stable.*io\.opengsd\/idempotency-key/i,
+      );
+      assert.equal(existsSync(join(base, ".gsd", "gsd.db")), false);
     } finally {
       cleanup(base);
     }
@@ -1486,10 +1591,10 @@ export const executeTaskReopen = noop;
 export const executeSliceReopen = noop;
 export const executeMilestoneReopen = noop;
 
-export const executeTaskComplete = async (params, projectDir) => {
+export const executeTaskComplete = async (params, projectDir, invocation) => {
   const capturePath = process.env.GSD_TEST_TASK_COMPLETE_CAPTURE_PATH;
   if (capturePath) {
-    writeFileSync(capturePath, JSON.stringify({ params, projectDir }, null, 2));
+    writeFileSync(capturePath, JSON.stringify({ params, projectDir, invocation }, null, 2));
   }
   return {
     content: [{ type: "text", text: "mock task complete" }],
@@ -1509,7 +1614,9 @@ export const executeTaskComplete = async (params, projectDir) => {
       const server = makeMockServer();
       freshRegisterWorkflowTools(server as any);
       const taskTool = server.tools.find((t) => t.name === "gsd_task_complete");
+      const aliasTool = server.tools.find((t) => t.name === "gsd_complete_task");
       assert.ok(taskTool, "task tool should be registered");
+      assert.ok(aliasTool, "task completion alias should be registered");
 
       // Mirrors the ADR-011 escalation schema: question + 2-4 options
       // (each with id/label/tradeoffs) + recommendation + rationale +
@@ -1525,7 +1632,7 @@ export const executeTaskComplete = async (params, projectDir) => {
         continueWithDefault: true,
       };
 
-      await taskTool!.handler({
+      const taskArgs = {
         projectDir: base,
         taskId: "T01",
         sliceId: "S01",
@@ -1537,7 +1644,9 @@ export const executeTaskComplete = async (params, projectDir) => {
         verificationEvidence: [
           { command: "npm test", exitCode: 0, verdict: "pass", durationMs: 1234 },
         ],
-      });
+      };
+      const metadata = { _meta: { "io.opengsd/idempotency-key": "stable-task-retry" } };
+      await taskTool!.handler(taskArgs, metadata);
 
       assert.ok(existsSync(capturePath), "mock executor should have written captured args to disk");
       const captured = JSON.parse(readFileSync(capturePath, "utf-8"));
@@ -1566,6 +1675,20 @@ export const executeTaskComplete = async (params, projectDir) => {
         undefined,
         "projectDir must NOT appear in params — it's stripped via the spread destructure",
       );
+      assert.deepEqual(captured.invocation, {
+        idempotencyKey: "mcp:gsd_task_complete:stable-task-retry",
+        sourceTransport: "workflow-mcp",
+        actorType: "agent",
+        traceId: "stable-task-retry",
+      });
+
+      await aliasTool!.handler(taskArgs, metadata);
+      const aliasCapture = JSON.parse(readFileSync(capturePath, "utf-8"));
+      assert.deepEqual(
+        aliasCapture.invocation,
+        captured.invocation,
+        "canonical and alias task completion must share one private execution identity",
+      );
     } finally {
       if (prevModule === undefined) {
         delete process.env.GSD_WORKFLOW_EXECUTORS_MODULE;
@@ -1589,6 +1712,7 @@ export const executeTaskComplete = async (params, projectDir) => {
         join(base, ".gsd", "milestones", "M002", "slices", "S02", "S02-PLAN.md"),
         "# S02\n\n- [ ] **T02: Demo** `est:5m`\n",
       );
+      claimCanonicalTaskAuthority(base, { milestoneId: "M002", sliceId: "S02", taskId: "T02" });
 
       const server = makeMockServer();
       registerWorkflowTools(server as any);
@@ -1605,7 +1729,7 @@ export const executeTaskComplete = async (params, projectDir) => {
         verification: "npm test",
       });
 
-      assert.match((result as any).content[0].text as string, /Completed task T02/);
+      assert.match((result as any).content[0].text as string, /Staged task T02; awaiting host verification/);
       assert.ok(
         existsSync(join(base, ".gsd", "milestones", "M002", "slices", "S02", "tasks", "T02-SUMMARY.md")),
         "alias should write task summary to disk",
@@ -2224,12 +2348,10 @@ export const executeTaskComplete = async (params, projectDir) => {
       registerWorkflowTools(server as any);
       const milestoneTool = server.tools.find((t) => t.name === "gsd_plan_milestone");
       const sliceTool = server.tools.find((t) => t.name === "gsd_plan_slice");
-      const taskTool = server.tools.find((t) => t.name === "gsd_task_complete");
       const canonicalTool = server.tools.find((t) => t.name === "gsd_replan_slice");
       const aliasTool = server.tools.find((t) => t.name === "gsd_slice_replan");
       assert.ok(milestoneTool, "milestone planning tool should be registered");
       assert.ok(sliceTool, "slice planning tool should be registered");
-      assert.ok(taskTool, "task completion tool should be registered");
       assert.ok(canonicalTool, "slice replanning tool should be registered");
       assert.ok(aliasTool, "slice replanning alias should be registered");
 
@@ -2281,15 +2403,7 @@ export const executeTaskComplete = async (params, projectDir) => {
           },
         ],
       });
-      await taskTool!.handler({
-        projectDir: base,
-        milestoneId: "M099",
-        sliceId: "S09",
-        taskId: "T09",
-        oneLiner: "Completed blocker task",
-        narrative: "Prepared the slice for replanning.",
-        verification: "node --test",
-      });
+      seedCompletedTaskState({ milestoneId: "M099", sliceId: "S09", taskId: "T09" });
 
       const canonicalResult = await canonicalTool!.handler({
         projectDir: base,
@@ -2371,12 +2485,10 @@ export const executeTaskComplete = async (params, projectDir) => {
       registerWorkflowTools(server as any);
       const milestoneTool = server.tools.find((t) => t.name === "gsd_plan_milestone");
       const sliceTool = server.tools.find((t) => t.name === "gsd_plan_slice");
-      const taskTool = server.tools.find((t) => t.name === "gsd_task_complete");
       const canonicalTool = server.tools.find((t) => t.name === "gsd_slice_complete");
       const aliasTool = server.tools.find((t) => t.name === "gsd_complete_slice");
       assert.ok(milestoneTool, "milestone planning tool should be registered");
       assert.ok(sliceTool, "slice planning tool should be registered");
-      assert.ok(taskTool, "task completion tool should be registered");
       assert.ok(canonicalTool, "slice completion tool should be registered");
       assert.ok(aliasTool, "slice completion alias should be registered");
 
@@ -2418,15 +2530,7 @@ export const executeTaskComplete = async (params, projectDir) => {
           },
         ],
       });
-      await taskTool!.handler({
-        projectDir: base,
-        milestoneId: "M003",
-        sliceId: "S03",
-        taskId: "T03",
-        oneLiner: "Completed canonical task",
-        narrative: "Prepared the canonical slice for completion.",
-        verification: "node --test",
-      });
+      seedCompletedTaskState({ milestoneId: "M003", sliceId: "S03", taskId: "T03" });
 
       const canonicalResult = await canonicalTool!.handler({
         projectDir: base,
@@ -2478,15 +2582,7 @@ export const executeTaskComplete = async (params, projectDir) => {
           },
         ],
       });
-      await taskTool!.handler({
-        projectDir: base,
-        milestoneId: "M004",
-        sliceId: "S04",
-        taskId: "T04",
-        oneLiner: "Completed alias task",
-        narrative: "Prepared the alias slice for completion.",
-        verification: "node --test",
-      });
+      seedCompletedTaskState({ milestoneId: "M004", sliceId: "S04", taskId: "T04" });
 
       const aliasResult = await aliasTool!.handler({
         projectDir: base,
@@ -2533,13 +2629,11 @@ export const executeTaskComplete = async (params, projectDir) => {
       registerWorkflowTools(server as any);
       const milestoneTool = server.tools.find((t) => t.name === "gsd_plan_milestone");
       const sliceTool = server.tools.find((t) => t.name === "gsd_plan_slice");
-      const taskTool = server.tools.find((t) => t.name === "gsd_task_complete");
       const completeSliceTool = server.tools.find((t) => t.name === "gsd_slice_complete");
       const validateTool = server.tools.find((t) => t.name === "gsd_validate_milestone");
       const completeMilestoneAlias = server.tools.find((t) => t.name === "gsd_milestone_complete");
       assert.ok(milestoneTool, "milestone planning tool should be registered");
       assert.ok(sliceTool, "slice planning tool should be registered");
-      assert.ok(taskTool, "task completion tool should be registered");
       assert.ok(completeSliceTool, "slice completion tool should be registered");
       assert.ok(validateTool, "milestone validation tool should be registered");
       assert.ok(completeMilestoneAlias, "milestone completion alias should be registered");
@@ -2582,15 +2676,7 @@ export const executeTaskComplete = async (params, projectDir) => {
           },
         ],
       });
-      await taskTool!.handler({
-        projectDir: base,
-        milestoneId: "M005",
-        sliceId: "S05",
-        taskId: "T05",
-        oneLiner: "Completed lifecycle task",
-        narrative: "Prepared the milestone for closure.",
-        verification: "node --test",
-      });
+      seedCompletedTaskState({ milestoneId: "M005", sliceId: "S05", taskId: "T05" });
       await completeSliceTool!.handler({
         projectDir: base,
         milestoneId: "M005",
@@ -2644,14 +2730,12 @@ export const executeTaskComplete = async (params, projectDir) => {
       registerWorkflowTools(server as any);
       const milestoneTool = server.tools.find((t) => t.name === "gsd_plan_milestone");
       const sliceTool = server.tools.find((t) => t.name === "gsd_plan_slice");
-      const taskTool = server.tools.find((t) => t.name === "gsd_task_complete");
       const completeSliceTool = server.tools.find((t) => t.name === "gsd_slice_complete");
       const reassessTool = server.tools.find((t) => t.name === "gsd_reassess_roadmap");
       const reassessAlias = server.tools.find((t) => t.name === "gsd_roadmap_reassess");
       const gateTool = server.tools.find((t) => t.name === "gsd_save_gate_result");
       assert.ok(milestoneTool, "milestone planning tool should be registered");
       assert.ok(sliceTool, "slice planning tool should be registered");
-      assert.ok(taskTool, "task completion tool should be registered");
       assert.ok(completeSliceTool, "slice completion tool should be registered");
       assert.ok(reassessTool, "roadmap reassessment tool should be registered");
       assert.ok(reassessAlias, "roadmap reassessment alias should be registered");
@@ -2762,15 +2846,7 @@ export const executeTaskComplete = async (params, projectDir) => {
       assert.equal(inferredGateRows[0]["status"], "complete");
       assert.equal(inferredGateRows[0]["verdict"], "omitted");
 
-      await taskTool!.handler({
-        projectDir: base,
-        milestoneId: "M006",
-        sliceId: "S06",
-        taskId: "T06",
-        oneLiner: "Completed reassessment task",
-        narrative: "Prepared the slice for reassessment.",
-        verification: "node --test",
-      });
+      seedCompletedTaskState({ milestoneId: "M006", sliceId: "S06", taskId: "T06" });
       await completeSliceTool!.handler({
         projectDir: base,
         milestoneId: "M006",

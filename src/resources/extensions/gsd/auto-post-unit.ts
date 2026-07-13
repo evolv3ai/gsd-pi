@@ -103,6 +103,11 @@ import { saveCustomVerifyRetryCounts } from "./auto/custom-verify-retry-store.js
 import { getLedger } from "./metrics.js";
 import { getUnitCostSpikeAction, resolveUnitCostSpikeMultiplier } from "./auto-budget.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
+import {
+  isTaskAttemptAwaitingVerification,
+  readLatestTaskAttempt,
+} from "./task-execution-domain-operation.js";
+import { isTaskExecutionReadyForHostVerification } from "./auto/task-execution-cutover.js";
 
 // ─── Path Comparison Helper ───────────────────────────────────────────────
 /** Compare two paths for physical identity, tolerating trailing slashes and symlinks. */
@@ -1648,8 +1653,12 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
           try {
             const actual = getEvidence();
             if (sMid && sSid && sTid && isDbAvailable()) {
-              const taskRow = getTask(sMid, sSid, sTid);
-              if (taskRow?.status === "complete") {
+              const attempt = readLatestTaskAttempt({
+                milestoneId: sMid,
+                sliceId: sSid,
+                taskId: sTid,
+              });
+              if (isTaskAttemptAwaitingVerification(attempt)) {
                 const claimedEvidence: ClaimedEvidence[] = getVerificationEvidence(sMid, sSid, sTid)
                   .map((row) => ({
                     command: row.command,
@@ -1751,7 +1760,9 @@ export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreV
     let triggerArtifactVerified = false;
     if (!s.currentUnit.type.startsWith("hook/")) {
       try {
-        triggerArtifactVerified = verifyExpectedArtifact(s.currentUnit.type, s.currentUnit.id, verificationBasePath);
+        triggerArtifactVerified =
+          isTaskExecutionReadyForHostVerification(s.currentUnit.type, s.currentUnit.id) ||
+          verifyExpectedArtifact(s.currentUnit.type, s.currentUnit.id, verificationBasePath);
         if (triggerArtifactVerified) {
           invalidateAllCaches();
         }

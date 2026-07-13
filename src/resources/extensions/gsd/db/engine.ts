@@ -52,6 +52,7 @@ import {
   applyMigrationV33ConversationFoundation,
   applyMigrationV34RecoveryEvidenceFoundation,
   applyMigrationV35ProjectionImportKernelCloseoutFoundation,
+  applyMigrationV36AttemptRecovery,
 } from "../db-migration-steps.js";
 import {
   createCanonicalFoundationSchemaV31,
@@ -110,7 +111,7 @@ const providerLoader = createSqliteProviderLoader({
   nodeVersion: process.versions.node,
   writeStderr: (message: string) => process.stderr.write(message),
 });
-export const SCHEMA_VERSION = 35;
+export const SCHEMA_VERSION = 36;
 function initSchema(db: DbAdapter, fileBacked: boolean, dbPath: string | null): void {
   const conservativeFilePragmas = fileBacked && _isLikelyWslDrvFsPathForTest(dbPath);
   if (fileBacked) db.exec(conservativeFilePragmas ? "PRAGMA journal_mode=DELETE" : "PRAGMA journal_mode=WAL");
@@ -153,6 +154,7 @@ function initSchema(db: DbAdapter, fileBacked: boolean, dbPath: string | null): 
         createConversationFoundationSchemaV33(db);
         createRecoveryEvidenceFoundationSchemaV34(db);
         createProjectionImportKernelCloseoutFoundationSchemaV35(db);
+        applyMigrationV36AttemptRecovery(db);
 
         // Fresh install — all tables are created above with the full current schema,
         // so it is safe to create all migration-specific indexes here.  For existing
@@ -430,6 +432,15 @@ function migrateSchema(db: DbAdapter, dbPath: string | null): void {
     if (currentVersion < 35) {
       applyMigrationV35ProjectionImportKernelCloseoutFoundation(db);
       recordSchemaVersion(db, 35);
+    }
+
+    if (currentVersion < 36) {
+      // V36 triggers read the v24 coordination tables. Re-run their
+      // idempotent creator first so upgrades remain safe when older schema
+      // metadata exists but those prerequisite tables are missing.
+      createCoordinationTablesV24(db);
+      applyMigrationV36AttemptRecovery(db);
+      recordSchemaVersion(db, 36);
     }
 
     if (_migrationFaultForTest) throw new Error("migration fault injected for test");

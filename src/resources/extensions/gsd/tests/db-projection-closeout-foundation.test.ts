@@ -99,7 +99,7 @@ function seedHierarchy(db: RawDb): void {
 function insertOperation(
   db: RawDb,
   revision: number,
-  operationType = "test",
+  operationType = "attempt.settle",
   epoch = 0,
   requestHash = operationType === "import.apply" ? previewHash(revision) : `hash-op-${revision}`,
 ): void {
@@ -150,19 +150,21 @@ function insertSettledAttempt(
   claimRevision: number,
   settleRevision: number,
   retryOf: string | null = null,
+  outcome: "succeeded" | "failed" | "interrupted" = "succeeded",
 ): void {
   db.prepare(`
     INSERT INTO workflow_execution_attempts (
       attempt_id, project_id, lifecycle_id, attempt_number, retry_of_attempt_id,
-      attempt_state, claimed_at, ended_at,
+      attempt_state, claimed_at, ended_at, settle_outcome,
       claim_operation_id, claim_project_revision, claim_authority_epoch,
       settle_operation_id, settle_project_revision, settle_authority_epoch
-    ) VALUES (?, ?, 'life-closeout', ?, ?, 'settled', '', '', ?, ?, 0, ?, ?, 0)
+    ) VALUES (?, ?, 'life-closeout', ?, ?, 'settled', '', '', ?, ?, ?, 0, ?, ?, 0)
   `).run(
     attemptId,
     projectId(db),
     attemptNumber,
     retryOf,
+    outcome,
     `op-${claimRevision}`,
     claimRevision,
     `op-${settleRevision}`,
@@ -173,12 +175,13 @@ function insertSettledAttempt(
       result_id, project_id, lifecycle_id, attempt_id, outcome,
       failure_class, summary, output_json, created_at,
       operation_id, project_revision, authority_epoch
-    ) VALUES (?, ?, 'life-closeout', ?, 'succeeded', 'none',
+    ) VALUES (?, ?, 'life-closeout', ?, ?, 'none',
       'Attempt succeeded', '{}', '2026-07-12T00:00:00.000Z', ?, ?, 0)
   `).run(
     `result-${attemptId}`,
     projectId(db),
     attemptId,
+    outcome,
     `op-${settleRevision}`,
     settleRevision,
   );
@@ -222,6 +225,7 @@ function insertKernelCheckpoint(
     revision: number;
     attemptId: string;
     previous?: string | null;
+    operationId?: string;
   },
 ): void {
   db.prepare(`
@@ -238,7 +242,7 @@ function insertKernelCheckpoint(
     input.stage,
     input.sequence,
     input.previous ?? null,
-    `op-${input.revision}`,
+    input.operationId ?? `op-${input.revision}`,
     input.revision,
   );
 }
@@ -426,8 +430,8 @@ function rewindToV34(t: TestContext, dbPath: string): void {
   });
 }
 
-test("fresh v35 databases expose exactly the six projection and closeout tables and vocabularies", (t) => {
-  assert.equal(SCHEMA_VERSION, 35);
+test("fresh databases expose exactly the six v35 projection and closeout tables and vocabularies", (t) => {
+  assert.ok(SCHEMA_VERSION >= 35);
   const { db } = openFreshFixture(t);
   for (const table of V35_TABLES) assert.equal(tableExists(db, table), true, `${table} should exist`);
 
@@ -720,14 +724,14 @@ test("kernel checkpoint chain has one root and head and admits only v32 retry or
   insertOperations(db, 16);
   insertLifecycle(db);
   insertSettledAttempt(db, "attempt-1", 1, 2, 3);
-  insertSettledAttempt(db, "attempt-2", 2, 6, 7, "attempt-1");
+  insertSettledAttempt(db, "attempt-2", 2, 6, 7, "attempt-1", "failed");
   insertSettledAttempt(db, "attempt-3", 3, 11, 12, "attempt-2");
   insertSettledAttempt(db, "attempt-4", 4, 13, 14, "attempt-3");
   insertKernelCheckpoint(db, {
     id: "kernel-1", sequence: 1, stage: "execute", revision: 2, attemptId: "attempt-1",
   });
   insertKernelCheckpoint(db, {
-    id: "kernel-2", sequence: 2, stage: "verify", revision: 4,
+    id: "kernel-2", sequence: 2, stage: "verify", revision: 3,
     attemptId: "attempt-1", previous: "kernel-1",
   });
   insertKernelCheckpoint(db, {
@@ -735,7 +739,7 @@ test("kernel checkpoint chain has one root and head and admits only v32 retry or
     attemptId: "attempt-2", previous: "kernel-2",
   });
   insertKernelCheckpoint(db, {
-    id: "kernel-4", sequence: 4, stage: "settled", revision: 9,
+    id: "kernel-4", sequence: 4, stage: "route", revision: 7,
     attemptId: "attempt-2", previous: "kernel-3",
   });
   insertKernelCheckpoint(db, {
@@ -773,6 +777,49 @@ test("kernel checkpoint chain has one root and head and admits only v32 retry or
   assert.throws(() => reopened.exec(
     "DELETE FROM workflow_kernel_checkpoints WHERE kernel_checkpoint_id = 'kernel-5'",
   ));
+});
+
+test("one Domain Operation may append ordered Kernel stages without admitting equal-revision foreign operations", (t) => {
+  const { db } = openFreshFixture(t);
+  insertOperations(db, 3);
+  insertLifecycle(db);
+  insertSettledAttempt(db, "attempt-1", 1, 2, 3);
+  insertKernelCheckpoint(db, {
+    id: "kernel-1", sequence: 1, stage: "execute", revision: 2, attemptId: "attempt-1",
+  });
+  insertKernelCheckpoint(db, {
+    id: "kernel-2", sequence: 2, stage: "verify", revision: 3,
+    attemptId: "attempt-1", previous: "kernel-1",
+  });
+
+  assert.throws(() => insertKernelCheckpoint(db, {
+    id: "foreign-operation", sequence: 3, stage: "route", revision: 3,
+    operationId: "different-operation", attemptId: "attempt-1", previous: "kernel-2",
+  }), /kernel checkpoint must extend/i);
+
+  insertKernelCheckpoint(db, {
+    id: "kernel-3", sequence: 3, stage: "route", revision: 3,
+    attemptId: "attempt-1", previous: "kernel-2",
+  });
+  insertKernelCheckpoint(db, {
+    id: "kernel-4", sequence: 4, stage: "closeout", revision: 3,
+    attemptId: "attempt-1", previous: "kernel-3",
+  });
+  insertKernelCheckpoint(db, {
+    id: "kernel-5", sequence: 5, stage: "settled", revision: 3,
+    attemptId: "attempt-1", previous: "kernel-4",
+  });
+
+  assert.deepEqual(db.prepare(`
+    SELECT sequence, next_stage, operation_id, project_revision
+    FROM workflow_kernel_checkpoints ORDER BY sequence
+  `).all().map((checkpoint) => ({ ...checkpoint })), [
+    { sequence: 1, next_stage: "execute", operation_id: "op-2", project_revision: 2 },
+    { sequence: 2, next_stage: "verify", operation_id: "op-3", project_revision: 3 },
+    { sequence: 3, next_stage: "route", operation_id: "op-3", project_revision: 3 },
+    { sequence: 4, next_stage: "closeout", operation_id: "op-3", project_revision: 3 },
+    { sequence: 5, next_stage: "settled", operation_id: "op-3", project_revision: 3 },
+  ]);
 });
 
 test("closeout effects share plan provenance and idempotency is scoped per plan", (t) => {
@@ -865,8 +912,8 @@ test("settlement receipts are ordered, immutable, and reject superseded plans", 
   `).get()?.ordinal, 1);
 });
 
-test("v34 upgrade backs up, rolls back a fault, and retries v35 without losing legacy rows", (t) => {
-  assert.equal(SCHEMA_VERSION, 35);
+test("v34 upgrade backs up, rolls back a fault, and retries without losing legacy rows", (t) => {
+  assert.ok(SCHEMA_VERSION >= 35);
   const dbPath = createDatabasePath(t);
   rewindToV34(t, dbPath);
   const before = openRawDatabase(dbPath);
@@ -901,7 +948,7 @@ test("v34 upgrade backs up, rolls back a fault, and retries v35 without losing l
   closeDatabase();
   const upgraded = openRawDatabase(dbPath);
   t.after(() => { if (upgraded.isOpen) upgraded.close(); });
-  assert.equal(maxSchemaVersion(upgraded), 35);
+  assert.equal(maxSchemaVersion(upgraded), SCHEMA_VERSION);
   for (const table of V35_TABLES) {
     assert.equal(tableExists(upgraded, table), true);
     assert.equal(upgraded.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()?.count, 0);
@@ -916,7 +963,7 @@ test("v34 upgrade backs up, rolls back a fault, and retries v35 without losing l
   closeDatabase();
   const restored = openRawDatabase(restoredPath);
   t.after(() => { if (restored.isOpen) restored.close(); });
-  assert.equal(maxSchemaVersion(restored), 35);
+  assert.equal(maxSchemaVersion(restored), SCHEMA_VERSION);
   for (const table of V35_TABLES) {
     assert.equal(tableExists(restored, table), true);
     assert.equal(restored.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get()?.count, 0);
