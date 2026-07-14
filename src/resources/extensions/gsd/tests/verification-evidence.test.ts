@@ -99,6 +99,18 @@ test("verification-evidence: writeVerificationJSON creates directory if it doesn
   }
 });
 
+test("verification-evidence: writeVerificationJSON can write flat-phase slice-task filename", () => {
+  const tmp = makeTempDir("ve-flat-name");
+  try {
+    writeVerificationJSON(makeResult(), tmp, "T02", "M001/S03/T02", undefined, undefined, "S03");
+
+    assert.ok(existsSync(join(tmp, "S03-T02-VERIFY.json")), "flat-phase JSON file should exist");
+    assert.equal(existsSync(join(tmp, "T02-VERIFY.json")), false, "legacy JSON file should not be written");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("verification-evidence: writeVerificationJSON maps exitCode to verdict correctly", () => {
   const tmp = makeTempDir("ve-verdict");
   try {

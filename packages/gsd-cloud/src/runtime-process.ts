@@ -1,9 +1,11 @@
 // Project/App: Open GSD
 // File Purpose: Detached cloud runtime process lifecycle and status persistence.
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
+  linkSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -11,12 +13,24 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { CLOUD_RUNTIME_INITIAL_CONNECT_WINDOW_MS } from "./cloud-runtime.js";
+import { canonicalConfigPath, runtimeArtifactPath } from "./runtime-artifacts.js";
 
 interface RuntimeProcessState {
   pid: number;
   projects: string[];
+  process_start_identity?: string;
+}
+
+interface LocatedRuntimeProcessState {
+  path: string;
+  state: RuntimeProcessState;
+}
+
+interface RuntimeStartLockOwner {
+  pid: number;
+  process_start_identity?: string;
 }
 
 export interface RuntimeProcessStatus {
@@ -32,18 +46,23 @@ interface StartRuntimeOptions {
   projectDirs: string[];
   readyTimeoutMs?: number;
   verbose?: boolean;
+  processIdentityReader?: (pid: number) => string | null;
 }
 
 const PROCESS_STARTUP_GRACE_MS = 5_000;
 const FORCED_STOP_TIMEOUT_MS = 5_000;
 const STOP_GRACE_PERIOD_MS = 5_000;
 const STOP_POLL_INTERVAL_MS = 50;
+const MALFORMED_START_LOCK_GRACE_MS = 5_000;
 
 export const BACKGROUND_RUNTIME_READY_TIMEOUT_MS =
   CLOUD_RUNTIME_INITIAL_CONNECT_WINDOW_MS + PROCESS_STARTUP_GRACE_MS;
+const START_LOCK_TIMEOUT_MS = BACKGROUND_RUNTIME_READY_TIMEOUT_MS
+  + 2 * (STOP_GRACE_PERIOD_MS + FORCED_STOP_TIMEOUT_MS)
+  + STOP_POLL_INTERVAL_MS;
 
 export async function startBackgroundRuntime(opts: StartRuntimeOptions): Promise<RuntimeProcessStatus> {
-  await acquireRuntimeStartLock(opts.configPath);
+  const releaseStartLock = await acquireRuntimeStartLock(opts.configPath);
   try {
     await stopBackgroundRuntime(opts.configPath);
 
@@ -71,13 +90,33 @@ export async function startBackgroundRuntime(opts: StartRuntimeOptions): Promise
     }
     const pid = child.pid;
 
-    writeRuntimeState(opts.configPath, pid, opts.projectDirs);
+    let processStartIdentity: string | null = null;
+    try {
+      processStartIdentity = (opts.processIdentityReader ?? readProcessStartIdentity)(pid);
+      if (!processStartIdentity) {
+        throw new Error(`could not determine process identity for PID ${pid}`);
+      }
+      writeRuntimeStateWithIdentity(
+        opts.configPath,
+        pid,
+        opts.projectDirs,
+        processStartIdentity,
+      );
+    } catch (error) {
+      if (child.connected) child.disconnect();
+      if (processStartIdentity) {
+        await terminateProcess(pid, processStartIdentity);
+      } else {
+        await terminateKnownChild(child);
+      }
+      throw error;
+    }
 
     try {
       await waitUntilReady(child, opts.readyTimeoutMs ?? BACKGROUND_RUNTIME_READY_TIMEOUT_MS);
     } catch (error) {
       if (child.connected) child.disconnect();
-      await terminateProcess(pid);
+      await terminateProcess(pid, processStartIdentity);
       removeRuntimeState(opts.configPath);
       throw error;
     }
@@ -92,7 +131,7 @@ export async function startBackgroundRuntime(opts: StartRuntimeOptions): Promise
       log_file: logFile,
     };
   } finally {
-    releaseRuntimeStartLock(opts.configPath);
+    releaseStartLock();
   }
 }
 
@@ -103,9 +142,26 @@ export async function startBackgroundRuntime(opts: StartRuntimeOptions): Promise
  * same device token.
  */
 export function writeRuntimeState(configPath: string, pid: number, projects: string[]): void {
+  const processStartIdentity = readProcessStartIdentity(pid);
+  if (!processStartIdentity) {
+    throw new Error(`could not determine process identity for PID ${pid}`);
+  }
+  writeRuntimeStateWithIdentity(configPath, pid, projects, processStartIdentity);
+}
+
+function writeRuntimeStateWithIdentity(
+  configPath: string,
+  pid: number,
+  projects: string[],
+  processStartIdentity: string,
+): void {
   const statePath = runtimeStatePath(configPath);
   mkdirSync(dirname(statePath), { recursive: true });
-  writePrivateJson(statePath, { pid, projects } satisfies RuntimeProcessState);
+  writePrivateJson(statePath, {
+    pid,
+    projects,
+    process_start_identity: processStartIdentity,
+  } satisfies RuntimeProcessState);
 }
 
 export function clearRuntimeState(configPath: string): void {
@@ -113,31 +169,36 @@ export function clearRuntimeState(configPath: string): void {
 }
 
 export async function stopBackgroundRuntime(configPath: string): Promise<boolean> {
-  const state = readRuntimeState(configPath);
-  if (!state) return false;
-  await terminateProcess(state.pid);
-  removeRuntimeState(configPath);
+  const located = readRuntimeState(configPath);
+  if (!located) return false;
+  const processStartIdentity = located.state.process_start_identity;
+  if (!processStartIdentity || !runtimeProcessMatches(located.state)) {
+    removeRuntimeStateFile(located.path);
+    return false;
+  }
+  await terminateProcess(located.state.pid, processStartIdentity);
+  removeRuntimeStateFile(located.path);
   return true;
 }
 
 export function backgroundRuntimeStatus(configPath: string): RuntimeProcessStatus {
-  const state = readRuntimeState(configPath);
-  if (!state) {
+  const located = readRuntimeState(configPath);
+  if (!located) {
     return { running: false, pid: null, projects: [], log_file: runtimeLogPath(configPath) };
   }
-  if (!processIsRunning(state.pid)) {
-    removeRuntimeState(configPath);
+  if (!runtimeProcessMatches(located.state)) {
+    removeRuntimeStateFile(located.path);
     return {
       running: false,
       pid: null,
-      projects: state.projects,
+      projects: located.state.projects,
       log_file: runtimeLogPath(configPath),
     };
   }
   return {
     running: true,
-    pid: state.pid,
-    projects: state.projects,
+    pid: located.state.pid,
+    projects: located.state.projects,
     log_file: runtimeLogPath(configPath),
   };
 }
@@ -175,41 +236,48 @@ function waitUntilReady(child: ChildProcess, timeoutMs: number): Promise<void> {
   });
 }
 
-function runtimeStatePath(configPath: string): string {
-  return join(dirname(configPath), "cloud-runtime.json");
+export function runtimeStatePath(configPath: string): string {
+  return runtimeArtifactPath(configPath, "state");
 }
 
-function runtimeLogPath(configPath: string): string {
-  return join(dirname(configPath), "cloud-runtime.log");
+export function runtimeLogPath(configPath: string): string {
+  return runtimeArtifactPath(configPath, "log");
 }
 
 function runtimeStartLockPath(configPath: string): string {
-  return join(dirname(configPath), "cloud-runtime.start.lock");
+  return runtimeArtifactPath(configPath, "start.lock");
 }
 
-async function acquireRuntimeStartLock(configPath: string): Promise<void> {
+export async function acquireRuntimeStartLock(
+  configPath: string,
+  onRecoveryClaimed?: () => void,
+): Promise<() => void> {
   const lockPath = runtimeStartLockPath(configPath);
   mkdirSync(dirname(lockPath), { recursive: true });
+  const processStartIdentity = readProcessStartIdentity(process.pid);
+  if (!processStartIdentity) {
+    throw new Error(`could not determine process identity for PID ${process.pid}`);
+  }
+  const owner: RuntimeStartLockOwner = {
+    pid: process.pid,
+    process_start_identity: processStartIdentity,
+  };
   // Match worst-case `startBackgroundRuntime` hold time: stop prior runtime, wait for
   // ready, and tear down the child if ready fails, plus one poll interval.
-  const deadline = Date.now()
-    + BACKGROUND_RUNTIME_READY_TIMEOUT_MS
-    + 2 * (STOP_GRACE_PERIOD_MS + FORCED_STOP_TIMEOUT_MS)
-    + STOP_POLL_INTERVAL_MS;
+  const deadline = Date.now() + START_LOCK_TIMEOUT_MS;
   while (Date.now() < deadline) {
     try {
-      const fd = openSync(lockPath, "wx");
-      writeFileSync(fd, `${process.pid}\n`, "utf8");
-      closeSync(fd);
-      return;
+      createRuntimeStartLock(lockPath, owner);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        releaseRuntimeStartLock(lockPath, owner);
+      };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       try {
-        const ownerPid = readRuntimeStartLockOwner(lockPath);
-        const incompleteLockIsStale = ownerPid === null
-          && Date.now() - statSync(lockPath).mtimeMs > 1_000;
-        if ((ownerPid !== null && !processIsRunning(ownerPid)) || incompleteLockIsStale) {
-          unlinkSync(lockPath);
+        if (recoverRuntimeStartLock(lockPath, configPath, onRecoveryClaimed)) {
           continue;
         }
       } catch {
@@ -221,38 +289,343 @@ async function acquireRuntimeStartLock(configPath: string): Promise<void> {
   throw new Error("timed out waiting for the background runtime start lock");
 }
 
-function releaseRuntimeStartLock(configPath: string): void {
-  const lockPath = runtimeStartLockPath(configPath);
-  if (readRuntimeStartLockOwner(lockPath) !== process.pid) return;
+function createRuntimeStartLock(lockPath: string, owner: RuntimeStartLockOwner): void {
+  const temporaryPath = `${lockPath}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    unlinkSync(lockPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    writePrivateJson(temporaryPath, owner);
+    linkSync(temporaryPath, lockPath);
+  } finally {
+    removeRuntimeStateFile(temporaryPath);
   }
 }
 
-function readRuntimeStartLockOwner(lockPath: string): number | null {
+function releaseRuntimeStartLock(lockPath: string, owner: RuntimeStartLockOwner): void {
+  if (!runtimeStartLockOwnersEqual(readRuntimeStartLockOwner(lockPath), owner)) return;
+  removeRuntimeStateFile(lockPath);
+}
+
+function readRuntimeStartLockOwner(lockPath: string): RuntimeStartLockOwner | null {
   try {
-    const pid = Number.parseInt(readFileSync(lockPath, "utf8").trim(), 10);
-    return Number.isInteger(pid) && pid > 0 ? pid : null;
+    const text = readFileSync(lockPath, "utf8").trim();
+    if (/^\d+$/.test(text)) {
+      const pid = Number.parseInt(text, 10);
+      return pid > 0 ? { pid } : null;
+    }
+    const value = JSON.parse(text) as Partial<RuntimeStartLockOwner>;
+    if (!Number.isInteger(value.pid) || (value.pid ?? 0) <= 0) return null;
+    if (typeof value.process_start_identity !== "string") return null;
+    return { pid: value.pid!, process_start_identity: value.process_start_identity };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
+    return null;
   }
 }
 
-function readRuntimeState(configPath: string): RuntimeProcessState | null {
+function runtimeStartLockOwnerIsRunning(owner: RuntimeStartLockOwner): boolean {
+  if (!owner.process_start_identity) return processIsRunning(owner.pid);
+  return processMatchesIdentity(owner.pid, owner.process_start_identity);
+}
+
+function runtimeStartLockCanBeRecovered(lockPath: string, configPath: string): boolean {
+  const owner = readRuntimeStartLockOwner(lockPath);
+  if (owner?.process_start_identity) return !runtimeStartLockOwnerIsRunning(owner);
+  const age = Date.now() - statSync(lockPath).mtimeMs;
+  if (owner) {
+    if (!runtimeStartLockOwnerIsRunning(owner)) return true;
+    return age > START_LOCK_TIMEOUT_MS
+      && inspectProcessCommandConfig(owner.pid, configPath) === false;
+  }
+  return age > MALFORMED_START_LOCK_GRACE_MS;
+}
+
+function recoverRuntimeStartLock(
+  lockPath: string,
+  configPath: string,
+  onRecoveryClaimed?: () => void,
+): boolean {
+  const recoveryPath = `${lockPath}.recovery.${process.pid}.${randomUUID()}`;
   try {
-    const value = JSON.parse(readFileSync(runtimeStatePath(configPath), "utf8")) as Partial<RuntimeProcessState>;
+    linkSync(lockPath, recoveryPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+
+  try {
+    if (!runtimeStartLockCanBeRecovered(recoveryPath, configPath)) return false;
+    onRecoveryClaimed?.();
+    if (!pathsReferenceSameFile(lockPath, recoveryPath)) return false;
+    unlinkSync(lockPath);
+    return true;
+  } finally {
+    removeRuntimeStateFile(recoveryPath);
+  }
+}
+
+function pathsReferenceSameFile(firstPath: string, secondPath: string): boolean {
+  try {
+    const first = statSync(firstPath, { bigint: true });
+    const second = statSync(secondPath, { bigint: true });
+    return first.dev === second.dev && first.ino === second.ino;
+  } catch {
+    return false;
+  }
+}
+
+function runtimeStartLockOwnersEqual(
+  first: RuntimeStartLockOwner | null,
+  second: RuntimeStartLockOwner,
+): boolean {
+  return first?.pid === second.pid
+    && first.process_start_identity === second.process_start_identity;
+}
+
+function readRuntimeState(configPath: string): LocatedRuntimeProcessState | null {
+  const statePath = runtimeStatePath(configPath);
+  const current = readRuntimeStateFile(statePath);
+  if (current) {
+    if (typeof current.process_start_identity === "string"
+      && statePath !== legacyRuntimeStatePath(configPath)) {
+      return { path: statePath, state: current };
+    }
+    return migrateLegacyRuntimeState(configPath, statePath, current);
+  }
+  const legacyPath = legacyRuntimeStatePath(configPath);
+  if (legacyPath === statePath) return null;
+  const legacy = readRuntimeStateFile(legacyPath);
+  if (!legacy) return null;
+  return migrateLegacyRuntimeState(configPath, legacyPath, legacy);
+}
+
+function readRuntimeStateFile(path: string): RuntimeProcessState | null {
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8")) as Partial<RuntimeProcessState>;
     const pid = value.pid;
-    if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0 || !Array.isArray(value.projects)) return null;
+    if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0
+      || !Array.isArray(value.projects)) return null;
     return {
       pid,
       projects: value.projects.filter((project): project is string => typeof project === "string"),
+      process_start_identity: value.process_start_identity,
     };
   } catch {
     return null;
   }
+}
+
+function migrateLegacyRuntimeState(
+  configPath: string,
+  sourcePath: string,
+  state: RuntimeProcessState,
+): LocatedRuntimeProcessState | null {
+  const destinationPath = runtimeStatePath(configPath);
+  if (sourcePath === legacyRuntimeStatePath(configPath)
+    && !processCommandMatchesConfig(state.pid, configPath)) return null;
+  if (typeof state.process_start_identity === "string") {
+    if (sourcePath !== destinationPath) {
+      writeRuntimeStateWithIdentity(
+        configPath,
+        state.pid,
+        state.projects,
+        state.process_start_identity,
+      );
+      removeRuntimeStateFile(sourcePath);
+    }
+    return { path: destinationPath, state };
+  }
+  const processStartIdentity = readProcessStartIdentity(state.pid);
+  if (!processStartIdentity) return null;
+  writeRuntimeStateWithIdentity(configPath, state.pid, state.projects, processStartIdentity);
+  if (sourcePath !== destinationPath) removeRuntimeStateFile(sourcePath);
+  return {
+    path: destinationPath,
+    state: { ...state, process_start_identity: processStartIdentity },
+  };
+}
+
+function legacyRuntimeStatePath(configPath: string): string {
+  return runtimeArtifactPath(`${dirname(canonicalConfigPath(configPath))}/daemon.yaml`, "state");
+}
+
+function runtimeProcessMatches(state: RuntimeProcessState): boolean {
+  return typeof state.process_start_identity === "string"
+    && processIsRunning(state.pid)
+    && readProcessStartIdentity(state.pid) === state.process_start_identity;
+}
+
+function readProcessStartIdentity(pid: number): string | null {
+  try {
+    if (process.platform === "linux") {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      return fields[19] ?? null;
+    }
+    if (process.platform === "darwin" || process.platform === "freebsd") {
+      return execFileSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
+        encoding: "utf8",
+      }).trim() || null;
+    }
+    if (process.platform === "win32") {
+      return execFileSync("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().Ticks`,
+      ], { encoding: "utf8" }).trim() || null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function processCommandMatchesConfig(pid: number, configPath: string): boolean {
+  return inspectProcessCommandConfig(pid, configPath) === true;
+}
+
+function inspectProcessCommandConfig(pid: number, configPath: string): boolean | null {
+  const expectedConfigPath = canonicalConfigPath(configPath);
+  try {
+    if (process.platform === "linux") {
+      const args = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").filter(Boolean);
+      return commandArgsMatchConfig(args, expectedConfigPath);
+    }
+    if (process.platform === "darwin" || process.platform === "freebsd") {
+      const command = execFileSync("/bin/ps", ["-ww", "-o", "command=", "-p", String(pid)], {
+        encoding: "utf8",
+      }).trim();
+      return commandLineMatchesRuntimeConfig(command, expectedConfigPath, process.platform);
+    }
+    if (process.platform === "win32") {
+      const command = execFileSync("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `(Get-CimInstance Win32_Process -Filter \"ProcessId = ${pid}\").CommandLine`,
+      ], { encoding: "utf8" }).trim();
+      return commandLineMatchesRuntimeConfig(command, expectedConfigPath, process.platform);
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export function commandLineMatchesRuntimeConfig(
+  command: string,
+  configPath: string,
+  platform: NodeJS.Platform,
+): boolean {
+  if (platform === "win32") {
+    return commandArgsMatchConfig(splitWindowsCommandLine(command), canonicalConfigPath(configPath));
+  }
+  return commandStringMatchesConfig(command, canonicalConfigPath(configPath));
+}
+
+function splitWindowsCommandLine(command: string): string[] {
+  const args: string[] = [];
+  let index = 0;
+  while (index < command.length) {
+    while (/\s/.test(command[index] ?? "")) index += 1;
+    if (index >= command.length) break;
+    let argument = "";
+    let inQuotes = false;
+    while (index < command.length) {
+      if (!inQuotes && /\s/.test(command[index] ?? "")) break;
+      let backslashes = 0;
+      while (command[index] === "\\") {
+        backslashes += 1;
+        index += 1;
+      }
+      if (command[index] === '"') {
+        argument += "\\".repeat(Math.floor(backslashes / 2));
+        if (backslashes % 2 === 0) {
+          inQuotes = !inQuotes;
+        } else {
+          argument += '"';
+        }
+        index += 1;
+        continue;
+      }
+      argument += "\\".repeat(backslashes);
+      if (index < command.length) {
+        argument += command[index];
+        index += 1;
+      }
+    }
+    args.push(argument);
+  }
+  return args;
+}
+
+function commandStringMatchesConfig(command: string, configPath: string): boolean {
+  const runtimeCommand = findRuntimeCommand(command);
+  if (!runtimeCommand) return false;
+  const executablePrefix = command.slice(0, runtimeCommand.index);
+  if (!commandPrefixHasCloudRuntimeLauncher(executablePrefix)) return false;
+  if (runtimeCommand.command === "login"
+    && !/(?:^|\s)--foreground(?:\s|$)/.test(command.slice(runtimeCommand.index))) return false;
+  const match = command.slice(runtimeCommand.index).match(
+    /(?:^|\s)(?:--config|-c)(?:=|\s+)(.*?)(?=\s+-{1,2}[A-Za-z](?:[\w-]*)(?:=|\s|$)|$)/,
+  );
+  const configuredPath = match?.[1]?.trim().replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/, "$1$2");
+  return configuredPath !== undefined && canonicalConfigPath(configuredPath) === configPath;
+}
+
+function commandArgsMatchConfig(args: string[], configPath: string): boolean {
+  const runtimeCommand = findRuntimeCommandInArgs(args);
+  if (!runtimeCommand) return false;
+  if (!argsHaveCloudRuntimeLauncher(args.slice(0, runtimeCommand.index))) return false;
+  const runtimeArgs = args.slice(runtimeCommand.index + 1);
+  if (runtimeCommand.command === "login" && !runtimeArgs.includes("--foreground")) return false;
+  const configIndex = runtimeArgs.findIndex((arg) => arg === "--config" || arg === "-c");
+  const configuredPath = configIndex >= 0 ? runtimeArgs[configIndex + 1] : undefined;
+  const equalsArgument = runtimeArgs.find((arg) => arg.startsWith("--config=") || arg.startsWith("-c="))
+    ?.replace(/^(?:--config|-c)=/, "");
+  return [configuredPath, equalsArgument].some(
+    (value) => value !== undefined && canonicalConfigPath(value) === configPath,
+  );
+}
+
+function argsHaveCloudRuntimeLauncher(args: string[]): boolean {
+  if (args.length === 1) return isCloudRuntimeExecutable(args[0]!);
+  return args.length === 2
+    && isNodeExecutable(args[0]!)
+    && isCloudRuntimeExecutable(args[1]!);
+}
+
+function commandPrefixHasCloudRuntimeLauncher(prefix: string): boolean {
+  const args = splitFlattenedCommandPrefix(prefix);
+  return args !== null && argsHaveCloudRuntimeLauncher(args);
+}
+
+function splitFlattenedCommandPrefix(prefix: string): string[] | null {
+  const args: string[] = [];
+  const token = /\s*(?:"([^"]*)"|'([^']*)'|(\S+))/gy;
+  while (token.lastIndex < prefix.length) {
+    const match = token.exec(prefix);
+    if (!match) return null;
+    args.push(match[1] ?? match[2] ?? match[3]!);
+  }
+  return args;
+}
+
+function findRuntimeCommand(command: string): { command: string; index: number } | null {
+  const match = /(?:^|\s)(_run|connect|login)(?=\s|$)/.exec(command);
+  return match ? { command: match[1]!, index: match.index } : null;
+}
+
+function findRuntimeCommandInArgs(args: string[]): { command: string; index: number } | null {
+  const index = args.findIndex((arg) => arg === "_run" || arg === "connect" || arg === "login");
+  return index < 0 ? null : { command: args[index]!, index };
+}
+
+function isCloudRuntimeExecutable(argument: string): boolean {
+  return /(?:^|[\\/])gsd-cloud(?:\.[cm]?js)?$/.test(argument);
+}
+
+function isNodeExecutable(argument: string): boolean {
+  return /(?:^|[\\/])node(?:\.exe)?$/i.test(argument);
 }
 
 function processIsRunning(pid: number): boolean {
@@ -264,35 +637,75 @@ function processIsRunning(pid: number): boolean {
   }
 }
 
-async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
+async function waitForProcessExit(
+  pid: number,
+  expectedIdentity: string,
+  timeoutMs: number,
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
-  while (processIsRunning(pid)) {
+  while (processMatchesIdentity(pid, expectedIdentity)) {
     if (Date.now() >= deadline) return false;
     await new Promise((resolve) => setTimeout(resolve, STOP_POLL_INTERVAL_MS));
   }
   return true;
 }
 
-async function terminateProcess(pid: number): Promise<void> {
-  signalProcess(pid, "SIGTERM");
-  if (await waitForProcessExit(pid, STOP_GRACE_PERIOD_MS)) return;
-  signalProcess(pid, "SIGKILL");
-  if (!await waitForProcessExit(pid, FORCED_STOP_TIMEOUT_MS)) {
+async function terminateProcess(pid: number, expectedIdentity: string): Promise<void> {
+  if (!signalProcess(pid, expectedIdentity, "SIGTERM")) return;
+  if (await waitForProcessExit(pid, expectedIdentity, STOP_GRACE_PERIOD_MS)) return;
+  if (!signalProcess(pid, expectedIdentity, "SIGKILL")) return;
+  if (!await waitForProcessExit(pid, expectedIdentity, FORCED_STOP_TIMEOUT_MS)) {
     throw new Error(`background runtime PID ${pid} did not stop`);
   }
 }
 
-function signalProcess(pid: number, signal: NodeJS.Signals): void {
-  try {
-    process.kill(pid, signal);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+async function terminateKnownChild(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill("SIGTERM");
+  if (await waitForChildExit(child, STOP_GRACE_PERIOD_MS)) return;
+  child.kill("SIGKILL");
+  if (!await waitForChildExit(child, FORCED_STOP_TIMEOUT_MS)) {
+    throw new Error(`background runtime PID ${child.pid ?? "unknown"} did not stop`);
   }
 }
 
-function removeRuntimeState(configPath: string): void {
+function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const onExit = (): void => {
+      clearTimeout(timeout);
+      resolve(true);
+    };
+    const timeout = setTimeout(() => {
+      child.removeListener("exit", onExit);
+      resolve(false);
+    }, timeoutMs);
+    child.once("exit", onExit);
+  });
+}
+
+function signalProcess(pid: number, expectedIdentity: string, signal: NodeJS.Signals): boolean {
+  if (!processMatchesIdentity(pid, expectedIdentity)) return false;
   try {
-    unlinkSync(runtimeStatePath(configPath));
+    process.kill(pid, signal);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+function processMatchesIdentity(pid: number, expectedIdentity: string): boolean {
+  return processIsRunning(pid) && readProcessStartIdentity(pid) === expectedIdentity;
+}
+
+function removeRuntimeState(configPath: string): void {
+  removeRuntimeStateFile(runtimeStatePath(configPath));
+}
+
+function removeRuntimeStateFile(path: string): void {
+  try {
+    unlinkSync(path);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }

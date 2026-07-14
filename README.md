@@ -28,16 +28,16 @@ See [CHANGELOG.md](./CHANGELOG.md) for release-by-release fixes and [Legacy Rele
 ## Latest Release Highlights
 
 <!-- release-highlights:start -->
-Latest release: **v1.10.0**
+Latest release: **v1.11.0**
 
-- **pi-ai:** Add Meta Muse Spark 1.1 to the model catalog.
-- **gsd:** Surface cacheRetention as a settable prompt-cache TTL preference.
-- **models:** Add GPT-5.6 as a first-class model.
-- **models:** Add Grok 4.5 as a first-class xAI model.
-- **agent-core:** Pin compaction summarization reasoning to low, bound degenerate-chunk retry.
-- **gsd:** Filter superseded context injections from provider payload.
-- **gsd:** Stop advertising alias tool schemas on model-facing surfaces.
-- **gsd:** Cap execute-task and discuss-slice inlined context; provider-aware budgets.
+- **gsd:** Add canonical database foundation (#1426).
+- **gsd-cloud:** Add macOS cloud monitor app and runtime telemetry (#1399).
+- **Added:** Add workflow authority baseline gate (#1422).
+- **issue:** [Feature]: Support using pi-llama-cpp for local models (#1425).
+- **issue:** [Bug]: GPT-5.6 ships as the nonexistent bare `gpt-5.6` slug — the real routable models are gpt-5.6-sol/terra/luna (#1424).
+- **issue:** Fix(doctor): artifact_file_missing false positive for active-worktree artifacts; checkbox_db_status_divergence regression on plan-slice re-dispatch (#1420).
+- **issue:** Planning_subagents should support user-defined planning agents.
+- **issue:** Auto-verification.js writes VERIFY.json to legacy tasks/ subdir in flat-phase projects.
 
 <!-- release-highlights:end -->
 
@@ -194,6 +194,7 @@ Then use slash commands inside the GSD session:
 | --- | --- |
 | `src/` | Core runtime resources and bundled extensions |
 | `packages/` | Workspace packages used by the CLI, agent, TUI, RPC, and native bridge |
+| `apps/` | Standalone native apps, such as the GSD Cloud Monitor menu bar app |
 | `native/` | Native engine packaging and platform binaries |
 | `studio/` | Desktop studio app |
 | `web/` | Web UI and API surface |

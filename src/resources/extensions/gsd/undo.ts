@@ -1,9 +1,10 @@
 // GSD Extension — Undo Last Unit + Targeted State Reset
 // handleUndo: Rollback the most recent completed unit (revert git, remove state, uncheck plans).
-// handleUndoTask: Reset a single task's DB status to "pending" and re-render markdown.
+// handleUndoTask: Reopen one Task through canonical authority and re-render markdown.
 // handleResetSlice: Reset a slice and all its tasks, re-rendering plan + roadmap.
 
 import type { ExtensionCommandContext, ExtensionAPI } from "@gsd/pi-coding-agent";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, unlinkSync, readdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import { nativeRevertCommit, nativeRevertAbort } from "./native-git-bridge.js";
@@ -11,11 +12,127 @@ import { atomicWriteSync } from "./atomic-write.js";
 import { parseUnitId } from "./unit-id.js";
 import { deriveState } from "./state.js";
 import { invalidateAllCaches } from "./cache.js";
-import { gsdRoot, resolveTasksDir, resolveSlicePath, resolveSliceFile, resolveTaskFile, buildTaskFileName, buildSliceFileName } from "./paths.js";
+import { gsdRoot, resolveTasksDir, resolveSlicePath, resolveTaskFile, buildTaskFileName } from "./paths.js";
 import { sendDesktopNotification } from "./notifications.js";
-import { getTask, getSlice, getSliceTasks, updateTaskStatus, resetSliceCascade } from "./gsd-db.js";
-import { renderPlanCheckboxes, renderRoadmapCheckboxes } from "./markdown-renderer.js";
+import { getDb, getTask, getSlice, getSliceTasks } from "./gsd-db.js";
+import { renderPlanCheckboxes } from "./markdown-renderer.js";
 import { UNIT_REGISTRY } from "./unit-registry.js";
+import { reopenTask } from "./task-lifecycle-domain-operation.js";
+import { internalExecutionInvocation } from "./execution-invocation.js";
+import { normalizeLegacyLifecycleStatus } from "./db/lifecycle-shadow-comparison.js";
+import { executeSliceReopen } from "./tools/workflow-tool-executors.js";
+import { isCurrentSliceReopenOperation } from "./slice-lifecycle-domain-operation.js";
+
+const UNDO_TASK_REOPEN_REASON = "Task reopened by an explicit undo command";
+const RESET_SLICE_REOPEN_REASON = "Slice reopened by an explicit full-redo reset command";
+
+interface UndoTaskState {
+  legacyStatus: string;
+  completedAt: string | null;
+  lifecycleId: string | null;
+  lifecycleStatus: string | null;
+  lifecycleOperationId: string | null;
+}
+
+function readUndoTaskState(mid: string, sid: string, tid: string): UndoTaskState {
+  const entityId = `${mid}/${sid}/${tid}`;
+  const row = getDb().prepare(`
+    SELECT task.status AS legacy_status,
+           task.completed_at,
+           lifecycle.lifecycle_id,
+           lifecycle.lifecycle_status,
+           lifecycle.last_operation_id AS lifecycle_operation_id
+    FROM tasks task
+    LEFT JOIN workflow_item_lifecycles lifecycle
+      ON lifecycle.item_kind = 'task'
+     AND lifecycle.milestone_id = task.milestone_id
+     AND lifecycle.slice_id = task.slice_id
+     AND lifecycle.task_id = task.id
+    WHERE task.milestone_id = :milestone_id
+      AND task.slice_id = :slice_id
+      AND task.id = :task_id
+  `).get({
+    ":milestone_id": mid,
+    ":slice_id": sid,
+    ":task_id": tid,
+  }) as Record<string, unknown> | undefined;
+  if (!row) throw new Error(`Task ${entityId} not found in database.`);
+  return {
+    legacyStatus: String(row["legacy_status"]),
+    completedAt: row["completed_at"] ? String(row["completed_at"]) : null,
+    lifecycleId: row["lifecycle_id"] ? String(row["lifecycle_id"]) : null,
+    lifecycleStatus: row["lifecycle_status"] ? String(row["lifecycle_status"]) : null,
+    lifecycleOperationId: row["lifecycle_operation_id"]
+      ? String(row["lifecycle_operation_id"])
+      : null,
+  };
+}
+
+function taskStateDigest(
+  mid: string,
+  sid: string,
+  tid: string,
+  state: UndoTaskState,
+): string {
+  const completionIdentity = state.lifecycleOperationId ?? state.completedAt ?? `legacy:${state.legacyStatus}`;
+  return createHash("sha256")
+    .update(`${mid}/${sid}/${tid}\n${completionIdentity}`)
+    .digest("hex");
+}
+
+function undoTaskIdempotencyKey(mid: string, sid: string, tid: string, state: UndoTaskState): string {
+  return `internal:undo:task.reopen:${taskStateDigest(mid, sid, tid, state)}`;
+}
+
+function resolveResetSliceIdempotencyKey(mid: string, sid: string, status: string, completedAt: string | null): string {
+  const lifecycle = getDb().prepare(`
+    SELECT lifecycle.lifecycle_status, lifecycle.last_operation_id,
+           operation.operation_type, operation.idempotency_key, event.payload_json
+    FROM workflow_item_lifecycles lifecycle
+    LEFT JOIN workflow_operations operation
+      ON operation.operation_id = lifecycle.last_operation_id
+    LEFT JOIN workflow_domain_events event
+      ON event.operation_id = operation.operation_id
+     AND event.event_type = 'slice.reopened'
+    WHERE lifecycle.item_kind = 'slice'
+      AND lifecycle.milestone_id = :milestone_id
+      AND lifecycle.slice_id = :slice_id
+      AND lifecycle.task_id IS NULL
+  `).get({
+    ":milestone_id": mid,
+    ":slice_id": sid,
+  }) as Record<string, unknown> | undefined;
+  if (
+    lifecycle?.["lifecycle_status"] === "ready"
+    && lifecycle["operation_type"] === "slice.reopen"
+    && isCurrentSliceReopenOperation(String(lifecycle["last_operation_id"]), {
+      milestoneId: mid,
+      sliceId: sid,
+    })
+  ) {
+    const payload = JSON.parse(String(lifecycle["payload_json"])) as Record<string, unknown>;
+    if (payload["reason"] === RESET_SLICE_REOPEN_REASON) {
+      return String(lifecycle["idempotency_key"]);
+    }
+  }
+  const terminalIdentity = lifecycle?.["last_operation_id"] ?? completedAt ?? `legacy:${status}`;
+  const digest = createHash("sha256").update(`${mid}/${sid}\n${terminalIdentity}`).digest("hex");
+  return `internal:undo:slice.reopen:${digest}`;
+}
+
+function reopenTaskForUndo(mid: string, sid: string, tid: string): void {
+  const state = readUndoTaskState(mid, sid, tid);
+  const legacyStatus = normalizeLegacyLifecycleStatus(state.legacyStatus);
+  if (state.lifecycleStatus === "ready" && legacyStatus === "pending") return;
+  if (state.lifecycleStatus && state.lifecycleStatus !== legacyStatus) {
+    throw new Error("Task undo requires matching legacy and canonical lifecycle heads");
+  }
+  reopenTask({
+    invocation: internalExecutionInvocation(undoTaskIdempotencyKey(mid, sid, tid, state)),
+    task: { milestoneId: mid, sliceId: sid, taskId: tid },
+    reason: UNDO_TASK_REOPEN_REASON,
+  });
+}
 
 /**
  * Undo the last completed unit: revert git commits,
@@ -71,8 +188,14 @@ export async function handleUndo(args: string, ctx: ExtensionCommandContext, _pi
     return;
   }
 
-  // 1. Delete summary artifact
+  // 1. Reopen canonical Task authority before updating readable artifacts.
   const { milestone, slice, task } = parseUnitId(unitId);
+  if (unitType === "execute-task" && task !== undefined && slice !== undefined &&
+      getTask(milestone, slice, task)) {
+    reopenTaskForUndo(milestone, slice, task);
+  }
+
+  // 2. Delete summary artifact
   let summaryRemoved = false;
   if (task !== undefined && slice !== undefined) {
     // Task-level: M001/S01/T01
@@ -100,19 +223,18 @@ export async function handleUndo(args: string, ctx: ExtensionCommandContext, _pi
     }
   }
 
-  // 2. Uncheck task in PLAN if execute-task
+  // 3. Uncheck task in PLAN if execute-task
   let planUpdated = false;
   if (unitType === "execute-task" && task !== undefined && slice !== undefined) {
     const [mid, sid, tid] = [milestone, slice, task];
     planUpdated = uncheckTaskInPlan(basePath, mid, sid, tid);
     if (getTask(mid, sid, tid)) {
-      updateTaskStatus(mid, sid, tid, "pending");
       await renderPlanCheckboxes(basePath, mid, sid);
       planUpdated = true;
     }
   }
 
-  // 3. Try to revert git commits from activity log
+  // 4. Try to revert git commits from activity log
   let commitsReverted = 0;
   try {
     const commits = findCommitsForUnit(activityDir, unitType, unitId);
@@ -205,7 +327,7 @@ async function parseSliceId(
 
 /**
  * Reset a single task's completion state:
- * - Set DB status to "pending"
+ * - Reopen the canonical lifecycle to ready and its legacy shadow to pending
  * - Delete the task summary file
  * - Re-render plan checkboxes
  */
@@ -222,7 +344,7 @@ export async function handleUndoTask(
     ctx.ui.notify(
       "Usage: /gsd undo-task <taskId> [--force]\n\n" +
       "Accepts: T01, S01/T01, or M001/S01/T01\n" +
-      "Resets the task's DB status to pending and re-renders plan checkboxes.",
+      "Reopens the task for execution and re-renders plan checkboxes.",
       "warning",
     );
     return;
@@ -248,7 +370,7 @@ export async function handleUndoTask(
       `Will reset: task ${mid}/${sid}/${tid}\n` +
       `  Current status: ${task.status}\n` +
       `This will:\n` +
-      `  - Set task status to "pending" in DB\n` +
+      `  - Reopen task status to "ready" in DB\n` +
       `  - Delete task summary file (if exists)\n` +
       `  - Re-render plan checkboxes\n\n` +
       `Run /gsd undo-task ${rawId} --force to confirm.`,
@@ -257,15 +379,21 @@ export async function handleUndoTask(
     return;
   }
 
-  // Reset DB status
-  updateTaskStatus(mid, sid, tid, "pending");
+  reopenTaskForUndo(mid, sid, tid);
 
-  // Delete summary file
+  // Delete readable summaries after the authoritative reopen. Legacy layouts
+  // keep them under tasks/, while flat layouts resolve them beside the plan.
   let summaryDeleted = false;
-  const summaryPath = resolveTaskFile(basePath, mid, sid, tid, "SUMMARY");
-  if (summaryPath && existsSync(summaryPath)) {
-    unlinkSync(summaryPath);
-    summaryDeleted = true;
+  const summaryPaths = new Set<string>();
+  const resolvedSummary = resolveTaskFile(basePath, mid, sid, tid, "SUMMARY");
+  if (resolvedSummary) summaryPaths.add(resolvedSummary);
+  const tasksDir = resolveTasksDir(basePath, mid, sid);
+  if (tasksDir) summaryPaths.add(join(tasksDir, buildTaskFileName(tid, "SUMMARY")));
+  for (const summaryPath of summaryPaths) {
+    if (existsSync(summaryPath)) {
+      unlinkSync(summaryPath);
+      summaryDeleted = true;
+    }
   }
 
   // Re-render plan checkboxes
@@ -284,7 +412,7 @@ export async function handleUndoTask(
 /**
  * Reset a slice and all its tasks:
  * - Set all task DB statuses to "pending"
- * - Set slice DB status to "active"
+ * - Set slice DB status to "in_progress"
  * - Delete task summary files, slice summary, and UAT files
  * - Re-render plan + roadmap checkboxes
  */
@@ -331,7 +459,7 @@ export async function handleResetSlice(
       `  Tasks to reset: ${tasks.length}\n` +
       `This will:\n` +
       `  - Set all task statuses to "pending" in DB\n` +
-      `  - Set slice status to "active" in DB\n` +
+      `  - Set slice status to "in_progress" in DB\n` +
       `  - Delete task summary files, slice summary, and UAT files\n` +
       `  - Re-render plan + roadmap checkboxes\n\n` +
       `Run /gsd reset-slice ${rawId} --force to confirm.`,
@@ -340,51 +468,37 @@ export async function handleResetSlice(
     return;
   }
 
-  // Reset all task statuses to "pending" and the slice to "active" in one
-  // atomic commit (DB is source of truth). Previously a per-task updateTaskStatus
-  // loop + a separate updateSliceStatus, which could leave a partial reset if
-  // interrupted mid-loop.
-  resetSliceCascade(mid, sid);
-
-  // Delete task summary files — projection cleanup, separate from the DB reset.
-  const tasksReset = tasks.length;
-  let summariesDeleted = 0;
-  for (const t of tasks) {
-    const summaryPath = resolveTaskFile(basePath, mid, sid, t.id, "SUMMARY");
-    if (summaryPath && existsSync(summaryPath)) {
-      unlinkSync(summaryPath);
-      summariesDeleted++;
-    }
+  const result = await executeSliceReopen(
+    { milestoneId: mid, sliceId: sid, reason: RESET_SLICE_REOPEN_REASON },
+    basePath,
+    internalExecutionInvocation(resolveResetSliceIdempotencyKey(mid, sid, slice.status, slice.completed_at)),
+  );
+  if (result.isError) {
+    ctx.ui.notify(String(result.details["error"] ?? result.content[0]?.text ?? "Slice reset failed"), "error");
+    return;
   }
 
-  // Delete slice summary and UAT files
-  // Use resolveSliceFile so the legacy S01-SUMMARY.md filename is found even
-  // when buildSliceFileName now returns the flat-phase 01-SUMMARY.md format.
-  let sliceFilesDeleted = 0;
-  for (const suffix of ["SUMMARY", "UAT"] as const) {
-    const filePath = resolveSliceFile(basePath, mid, sid, suffix);
-    if (filePath && existsSync(filePath)) {
-      unlinkSync(filePath);
-      sliceFilesDeleted++;
-    }
+  const duplicate = result.details["duplicate"] === true;
+  const superseded = result.details["superseded"] === true;
+  const stale = result.details["stale"] === true;
+  if (superseded) {
+    ctx.ui.notify([
+      `Reset receipt for slice ${mid}/${sid} is no longer current.`,
+      `  - ${String(result.details["tasksReset"] ?? tasks.length)} historical task reset(s) recorded`,
+      "  - Slice projections were not refreshed",
+    ].join("\n"), "warning");
+    return;
   }
 
-  // Re-render plan + roadmap checkboxes
-  await renderPlanCheckboxes(basePath, mid, sid);
-  await renderRoadmapCheckboxes(basePath, mid);
-
-  // Invalidate caches
-  invalidateAllCaches();
-
-  const results: string[] = [
-    `Reset slice ${mid}/${sid} to "active".`,
-    `  - ${tasksReset} task(s) reset to "pending"`,
-  ];
-  if (summariesDeleted > 0) results.push(`  - ${summariesDeleted} task summary file(s) deleted`);
-  if (sliceFilesDeleted > 0) results.push(`  - ${sliceFilesDeleted} slice file(s) deleted (summary/UAT)`);
-  results.push("  - Plan + roadmap checkboxes re-rendered");
-
-  ctx.ui.notify(results.join("\n"), "success");
+  ctx.ui.notify([
+    duplicate
+      ? `Reused the current reset for slice ${mid}/${sid}.`
+      : `Reset slice ${mid}/${sid} to "in_progress".`,
+    `  - ${String(result.details["tasksReset"] ?? tasks.length)} task(s) reset to "pending"`,
+    stale
+      ? "  - Slice projection refresh is pending repair"
+      : "  - Slice projections refreshed",
+  ].join("\n"), stale ? "warning" : "success");
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

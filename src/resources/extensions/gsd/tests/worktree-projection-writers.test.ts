@@ -20,12 +20,27 @@ import { clearParseCache } from "../files.ts";
 import { clearPathCache } from "../paths.ts";
 import { invalidateStateCache } from "../state.ts";
 import { handleCompleteTask } from "../tools/complete-task.ts";
-import { handleCompleteSlice } from "../tools/complete-slice.ts";
+import { handleCompleteSlice as handleCompleteSliceWithInvocation } from "../tools/complete-slice.ts";
 import { handleCompleteMilestone } from "../tools/complete-milestone.ts";
 import { handleValidateMilestone } from "../tools/validate-milestone.ts";
+import { internalExecutionInvocation, type ExecutionInvocation } from "../execution-invocation.ts";
+import { seedSliceCompletionAuthority } from "./slice-completion-fixture.ts";
 
 const MID = "M001";
 const SID = "S01";
+let completionCall = 0;
+
+function handleCompleteSlice(
+  params: Parameters<typeof handleCompleteSliceWithInvocation>[0],
+  basePath: string,
+  invocation?: ExecutionInvocation,
+): ReturnType<typeof handleCompleteSliceWithInvocation> {
+  return handleCompleteSliceWithInvocation(
+    params,
+    basePath,
+    invocation ?? internalExecutionInvocation(`test:worktree-complete-slice:call:${++completionCall}`),
+  );
+}
 
 interface WorktreeFixture {
   projectRoot: string;
@@ -142,6 +157,11 @@ test("complete-slice writes SUMMARY and UAT under the active worktree projection
   const { projectRoot, worktreeRoot } = makeFixture(t);
   seedMilestoneAndSlice();
   insertTask({ id: "T01", sliceId: SID, milestoneId: MID, status: "complete", title: "Task" });
+  seedSliceCompletionAuthority({
+    milestoneId: MID,
+    sliceId: SID,
+    completedTaskIds: ["T01"],
+  });
 
   const result = await handleCompleteSlice(completeSliceParams(), worktreeRoot);
 

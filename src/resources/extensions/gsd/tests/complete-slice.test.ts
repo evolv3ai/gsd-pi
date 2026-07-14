@@ -5,7 +5,6 @@ import * as os from 'node:os';
 import {
   openDatabase,
   closeDatabase,
-  transaction,
   _getAdapter,
   insertMilestone,
   insertSlice,
@@ -14,17 +13,32 @@ import {
   getMilestone,
   updateSliceStatus,
   getSliceTasks,
-  setSliceSummaryMd,
   insertGateRow,
   getGateResults,
   updateMilestoneStatus,
   SCHEMA_VERSION,
 } from '../gsd-db.ts';
-import { handleCompleteSlice } from '../tools/complete-slice.ts';
+import { handleCompleteSlice as handleCompleteSliceWithInvocation } from '../tools/complete-slice.ts';
+import { reopenSlice } from '../slice-lifecycle-domain-operation.ts';
 import { parseRoadmap } from '../parsers-legacy.ts';
+import { internalExecutionInvocation, type ExecutionInvocation } from '../execution-invocation.ts';
 import type { CompleteSliceParams } from '../types.ts';
+import { seedSliceCompletionAuthority } from './slice-completion-fixture.ts';
 
 const { assertEq, assertTrue, assertMatch, report } = createTestContext();
+let completionCall = 0;
+
+function handleCompleteSlice(
+  params: CompleteSliceParams,
+  basePath: string,
+  invocation?: ExecutionInvocation,
+): ReturnType<typeof handleCompleteSliceWithInvocation> {
+  return handleCompleteSliceWithInvocation(
+    params,
+    basePath,
+    invocation ?? internalExecutionInvocation(`test:complete-slice:call:${++completionCall}`),
+  );
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -54,6 +68,17 @@ function cleanupDir(dirPath: string): void {
   } catch {
     // best effort
   }
+}
+
+function compatibilityEventCount(basePath: string, command: string): number {
+  const eventLogPath = path.join(basePath, '.gsd', 'event-log.jsonl');
+  return fs.readFileSync(eventLogPath, 'utf-8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line) as { cmd?: string })
+    .filter(event => event.cmd === command)
+    .length;
 }
 
 /**
@@ -119,6 +144,13 @@ Run the test suite and verify all assertions pass.
 2. Call handleCompleteSlice()
 3. **Expected:** SUMMARY.md + UAT.md written, roadmap checkbox toggled, DB updated`,
   };
+}
+
+function completionInvocation(id: string): ExecutionInvocation {
+  return internalExecutionInvocation(
+    `test:complete-slice:${id}`,
+    { actorId: 'complete-slice-test' },
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -204,6 +236,11 @@ console.log('\n=== complete-slice: handler happy path ===');
   insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', status: 'complete', title: 'Task 1' });
   insertTask({ id: 'T02', sliceId: 'S01', milestoneId: 'M001', status: 'complete', title: 'Task 2' });
   insertTask({ id: 'T99', sliceId: 'S02', milestoneId: 'M001', status: 'complete', title: 'Sibling Task' });
+  seedSliceCompletionAuthority({
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    completedTaskIds: ['T01', 'T02'],
+  });
   const siblingSummaryPath = path.join(path.dirname(roadmapPath), 'T99-SUMMARY.md');
   const siblingSummaryBefore = '# Existing sibling task summary\n\nDo not rewrite this file.\n';
   fs.writeFileSync(siblingSummaryPath, siblingSummaryBefore);
@@ -285,10 +322,10 @@ console.log('\n=== complete-slice: handler happy path ===');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// complete-slice: final slice promotes planned milestone before validation
+// complete-slice: final slice leaves milestone lifecycle to its owning phase
 // ═══════════════════════════════════════════════════════════════════════════
 
-console.log('\n=== complete-slice: final slice promotes planned milestone ===');
+console.log('\n=== complete-slice: final slice leaves planned milestone unchanged ===');
 {
   const dbPath = tempDbPath();
   openDatabase(dbPath);
@@ -298,13 +335,65 @@ console.log('\n=== complete-slice: final slice promotes planned milestone ===');
   insertMilestone({ id: 'M001', title: 'Test Milestone', status: 'planned' });
   insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice', risk: 'medium', sequence: 1 });
   insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', status: 'complete', title: 'Task 1' });
+  seedSliceCompletionAuthority({
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    completedTaskIds: ['T01'],
+  });
 
   const result = await handleCompleteSlice(makeValidSliceParams(), basePath);
 
   assertTrue(!('error' in result), 'final slice completion should succeed');
   const milestone = getMilestone('M001');
   assertTrue(milestone !== null, 'milestone should exist after completion');
-  assertEq(milestone!.status, 'active', 'final slice should transition a planned milestone to active');
+  assertEq(milestone!.status, 'planned', 'Slice completion must not transition Milestone lifecycle');
+
+  cleanupDir(basePath);
+  cleanup(dbPath);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// complete-slice: superseded delivery cannot rebuild completion projections
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n=== complete-slice: superseded delivery stays removed after reopen ===');
+{
+  const dbPath = tempDbPath();
+  openDatabase(dbPath);
+  const { basePath } = createTempProject();
+  insertMilestone({ id: 'M001', title: 'Test Milestone', status: 'active' });
+  insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice', status: 'pending' });
+  insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', status: 'complete', title: 'Task 1' });
+  seedSliceCompletionAuthority({
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    completedTaskIds: ['T01'],
+  });
+
+  const completion = handleCompleteSlice(
+    makeValidSliceParams(),
+    basePath,
+    completionInvocation('projection-race'),
+  );
+  assertEq(getSlice('M001', 'S01')?.status, 'complete', 'completion must commit before projection delivery');
+  reopenSlice({
+    invocation: internalExecutionInvocation('test:complete-slice:projection-race:reopen'),
+    slice: { milestoneId: 'M001', sliceId: 'S01' },
+    reason: 'Reopen while the prior completion projection is still being delivered.',
+  });
+
+  const result = await completion;
+  assertTrue(!('error' in result), 'superseded completion should return an outcome');
+  if (!('error' in result)) {
+    assertEq(result.superseded, true, 'completion should expose that its receipt was superseded');
+    assertEq(result.stale, true, 'superseded projection delivery should be stale');
+    assertEq(fs.existsSync(result.summaryPath), false, 'stale completion must not rebuild SUMMARY.md');
+    assertEq(fs.existsSync(result.uatPath), false, 'stale completion must not rebuild UAT.md');
+  }
+  const reopened = getSlice('M001', 'S01');
+  assertEq(reopened?.status, 'in_progress', 'reopen must remain authoritative');
+  assertEq(reopened?.full_summary_md, '', 'reopen must clear the compatibility summary projection');
+  assertEq(reopened?.full_uat_md, '', 'reopen must clear the compatibility UAT projection');
 
   cleanupDir(basePath);
   cleanup(dbPath);
@@ -324,13 +413,18 @@ console.log('\n=== complete-slice: handler rejects incomplete tasks ===');
   insertSlice({ id: 'S01', milestoneId: 'M001' });
   insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', status: 'complete', title: 'Task 1' });
   insertTask({ id: 'T02', sliceId: 'S01', milestoneId: 'M001', status: 'pending', title: 'Task 2' });
+  seedSliceCompletionAuthority({
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    completedTaskIds: ['T01'],
+  });
 
   const params = makeValidSliceParams();
   const result = await handleCompleteSlice(params, '/tmp/fake');
 
   assertTrue('error' in result, 'should return error when tasks are incomplete');
   if ('error' in result) {
-    assertMatch(result.error, /incomplete tasks/, 'error should mention incomplete tasks');
+    assertMatch(result.error, /not terminal/, 'error should explain that completion requires terminal Tasks');
     assertMatch(result.error, /T02/, 'error should mention the specific incomplete task ID');
   }
 
@@ -349,6 +443,7 @@ console.log('\n=== complete-slice: handler rejects no tasks ===');
   // Insert milestone and slice but NO tasks
   insertMilestone({ id: 'M001' });
   insertSlice({ id: 'S01', milestoneId: 'M001' });
+  seedSliceCompletionAuthority({ milestoneId: 'M001', sliceId: 'S01' });
 
   const params = makeValidSliceParams();
   const result = await handleCompleteSlice(params, '/tmp/fake');
@@ -404,11 +499,17 @@ console.log('\n=== complete-slice: handler idempotency ===');
   insertMilestone({ id: 'M001' });
   insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice', risk: 'medium', depends: [], demo: 'basic functionality works', sequence: 1 });
   insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', status: 'complete', title: 'Task 1' });
+  seedSliceCompletionAuthority({
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    completedTaskIds: ['T01'],
+  });
 
   const params = makeValidSliceParams();
+  const invocation = completionInvocation('exact-replay');
 
   // First call
-  const r1 = await handleCompleteSlice(params, basePath);
+  const r1 = await handleCompleteSlice(params, basePath, invocation);
   assertTrue(!('error' in r1), 'first call should succeed');
 
   if ('error' in r1) {
@@ -418,12 +519,9 @@ console.log('\n=== complete-slice: handler idempotency ===');
   }
   const summaryBefore = fs.readFileSync(r1.summaryPath, 'utf-8');
 
-  // Second call — healthy duplicates unwind as non-mutating success.
-  const r2 = await handleCompleteSlice(
-    { ...params, oneLiner: 'This duplicate payload should not rewrite completed history' },
-    basePath,
-  );
-  assertTrue(!('error' in r2), 'second call should return duplicate success');
+  // The same stable invocation replays without rewriting completed history.
+  const r2 = await handleCompleteSlice(params, basePath, invocation);
+  assertTrue(!('error' in r2), 'exact replay should return duplicate success');
   if (!('error' in r2)) {
     assertEq(r2.duplicate, true, 'second call should be marked duplicate');
     assertEq(
@@ -432,6 +530,29 @@ console.log('\n=== complete-slice: handler idempotency ===');
       'healthy duplicate should not rewrite the existing summary',
     );
   }
+  assertEq(
+    compatibilityEventCount(basePath, 'complete-slice'),
+    1,
+    'exact replay must not duplicate compatibility events',
+  );
+
+  let conflictThrown = false;
+  try {
+    await handleCompleteSlice(
+      { ...params, narrative: 'changed under the same invocation identity' },
+      basePath,
+      invocation,
+    );
+  } catch (error) {
+    conflictThrown = true;
+    assertMatch(String(error), /idempotency conflict/, 'changed payload reuse must conflict');
+  }
+  assertTrue(conflictThrown, 'changed payload reuse must throw an idempotency conflict');
+  assertEq(
+    compatibilityEventCount(basePath, 'complete-slice'),
+    1,
+    'changed payload conflict must not append compatibility events',
+  );
 
   // Verify only 1 slice row (not duplicated)
   const adapter = _getAdapter()!;
@@ -456,9 +577,15 @@ console.log('\n=== complete-slice: handler repairs stale duplicate roadmap ===')
   insertMilestone({ id: 'M001' });
   insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice', risk: 'medium', depends: [], demo: 'basic functionality works', sequence: 1 });
   insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', status: 'complete', title: 'Task 1' });
+  seedSliceCompletionAuthority({
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    completedTaskIds: ['T01'],
+  });
 
   const params = makeValidSliceParams();
-  const r1 = await handleCompleteSlice(params, basePath);
+  const invocation = completionInvocation('projection-repair');
+  const r1 = await handleCompleteSlice(params, basePath, invocation);
   assertTrue(!('error' in r1), 'first completion should succeed');
   if ('error' in r1) {
     cleanupDir(basePath);
@@ -474,7 +601,7 @@ console.log('\n=== complete-slice: handler repairs stale duplicate roadmap ===')
   const staleRoadmap = parseRoadmap(fs.readFileSync(roadmapPath, 'utf-8'));
   assertEq(staleRoadmap.slices.find(s => s.id === 'S01')?.done, false, 'fixture roadmap should be stale before repair');
 
-  const r2 = await handleCompleteSlice(params, basePath);
+  const r2 = await handleCompleteSlice(params, basePath, invocation);
   assertTrue(!('error' in r2), 'duplicate completion should repair stale artifacts instead of erroring');
   if (!('error' in r2)) {
     assertEq(r2.duplicate, true, 'repair result should be marked duplicate');
@@ -506,6 +633,11 @@ console.log('\n=== complete-slice: handler with missing roadmap ===');
   insertMilestone({ id: 'M001' });
   insertSlice({ id: 'S01', milestoneId: 'M001' });
   insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', status: 'complete', title: 'Task 1' });
+  seedSliceCompletionAuthority({
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    completedTaskIds: ['T01'],
+  });
 
   const params = makeValidSliceParams();
   const result = await handleCompleteSlice(params, basePath);
@@ -515,60 +647,6 @@ console.log('\n=== complete-slice: handler with missing roadmap ===');
   if (!('error' in result)) {
     assertTrue(fs.existsSync(result.summaryPath), 'summary should be written even without roadmap');
     assertTrue(fs.existsSync(result.uatPath), 'UAT should be written even without roadmap');
-  }
-
-  cleanupDir(basePath);
-  cleanup(dbPath);
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// complete-slice: backfills omitted requirements from rendered summary
-// ═══════════════════════════════════════════════════════════════════════════
-
-console.log('\n=== complete-slice: backfills omitted requirements from rendered summary ===');
-{
-  const dbPath = tempDbPath();
-  openDatabase(dbPath);
-
-  const { basePath } = createTempProject();
-
-  insertMilestone({ id: 'M001' });
-  insertSlice({ id: 'S01', milestoneId: 'M001' });
-  insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', status: 'complete', title: 'Task 1' });
-
-  const seedParams = makeValidSliceParams();
-  const seeded = await handleCompleteSlice(seedParams, basePath);
-  assertTrue(!('error' in seeded), 'seed completion should succeed');
-  if ('error' in seeded) {
-    cleanupDir(basePath);
-    cleanup(dbPath);
-    throw new Error('seed completion unexpectedly failed');
-  }
-
-  const seededSummary = fs.readFileSync(seeded.summaryPath, 'utf-8');
-  transaction(() => {
-    updateSliceStatus('M001', 'S01', 'pending', undefined);
-    setSliceSummaryMd('M001', 'S01', seededSummary, '');
-  });
-
-  const backfillParams = makeValidSliceParams();
-  delete (backfillParams as Partial<CompleteSliceParams>).requirementsAdvanced;
-  delete (backfillParams as Partial<CompleteSliceParams>).requirementsValidated;
-  delete (backfillParams as Partial<CompleteSliceParams>).requirementsInvalidated;
-  const backfilled = await handleCompleteSlice(backfillParams as CompleteSliceParams, basePath);
-  assertTrue(!('error' in backfilled), 'backfill completion should succeed');
-  if (!('error' in backfilled)) {
-    const summary = fs.readFileSync(backfilled.summaryPath, 'utf-8');
-    assertMatch(summary, /## Requirements Advanced/, 'summary should include advanced requirements heading');
-    assertMatch(summary, /- R001 — Handler validates task completion/, 'advanced requirement should be backfilled from summary markdown');
-
-    const sliceAfterBackfill = getSlice('M001', 'S01');
-    assertTrue(sliceAfterBackfill !== null, 'slice should exist after backfill');
-    assertMatch(
-      sliceAfterBackfill!.full_summary_md,
-      /- R001 — Handler validates task completion/,
-      'DB full_summary_md should persist the backfilled advanced requirement',
-    );
   }
 
   cleanupDir(basePath);
@@ -641,6 +719,11 @@ console.log('\n=== complete-slice: rejects completion in a closed milestone ==='
   insertMilestone({ id: 'M001' });
   insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice' });
   insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', status: 'complete', title: 'Task 1' });
+  seedSliceCompletionAuthority({
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    completedTaskIds: ['T01'],
+  });
   updateMilestoneStatus('M001', 'complete', new Date().toISOString());
 
   const result = await handleCompleteSlice(makeValidSliceParams(), basePath);
@@ -664,6 +747,11 @@ console.log('\n=== complete-slice: closes Q8 gate (pass when populated) ===');
   insertMilestone({ id: 'M001' });
   insertSlice({ id: 'S01', milestoneId: 'M001', title: 'Test Slice' });
   insertTask({ id: 'T01', sliceId: 'S01', milestoneId: 'M001', status: 'complete', title: 'Task 1' });
+  seedSliceCompletionAuthority({
+    milestoneId: 'M001',
+    sliceId: 'S01',
+    completedTaskIds: ['T01'],
+  });
 
   // Seed Q8 as a pending slice-scoped gate.
   insertGateRow({ milestoneId: 'M001', sliceId: 'S01', gateId: 'Q8', scope: 'slice' });

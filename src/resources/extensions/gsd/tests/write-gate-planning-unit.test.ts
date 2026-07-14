@@ -7,12 +7,15 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 
 import { GSD_PHASE_SCOPE_DISPLAY_REASON, GSD_SECTION_CLOSE_GATE_DISPLAY_REASON } from '../auto-unit-tool-scope.ts';
 import { ALLOWED_PLANNING_DISPATCH_AGENTS, shouldBlockPlanningUnit } from '../bootstrap/write-gate.ts';
 import { extractSubagentAgentClasses } from '../bootstrap/subagent-input.ts';
 import { isDeterministicPolicyError } from '../auto-tool-tracking.ts';
+import { clearGSDPreferencesCache, getProjectGSDPreferencesPath, loadEffectiveGSDPreferences } from '../preferences.ts';
 import { applyPlanningSubagentPreferences } from '../planning-subagent-policy.ts';
 import type { ToolsPolicy } from '../unit-context-manifest.ts';
 
@@ -367,6 +370,43 @@ test('planning_subagents: widens plan-slice manifest allowlist without allowing 
   const unsafe = shouldBlockPlanningUnit('subagent', '', BASE, 'plan-slice', policy, ['worker']);
   assert.strictEqual(unsafe.block, true);
   assert.match(unsafe.reason!, /read-only specialists/);
+});
+
+test('planning_subagents: registered custom planning agents pass runtime read-only registry', (t) => {
+  const tempProject = mkdtempSync(join(tmpdir(), 'gsd-custom-planning-agent-'));
+
+  t.after(() => {
+    clearGSDPreferencesCache();
+    rmSync(tempProject, { recursive: true, force: true });
+  });
+
+  mkdirSync(join(tempProject, '.gsd'), { recursive: true });
+  writeFileSync(
+    getProjectGSDPreferencesPath(tempProject),
+    [
+      '---',
+      'version: 1',
+      'planning_subagent_registry:',
+      '  my-custom-planner:',
+      '    read_only_specialist: true',
+      'planning_subagents:',
+      '  plan-slice:',
+      '    allowed: [my-custom-planner]',
+      '---',
+      '',
+    ].join('\n'),
+    'utf-8',
+  );
+  clearGSDPreferencesCache();
+
+  const preferences = loadEffectiveGSDPreferences(tempProject)?.preferences;
+  const policy = applyPlanningSubagentPreferences('plan-slice', PLANNING_DISPATCH, preferences);
+  const custom = shouldBlockPlanningUnit('subagent', '', tempProject, 'plan-slice', policy, ['my-custom-planner']);
+  assert.strictEqual(custom.block, false, custom.reason);
+
+  const unregistered = shouldBlockPlanningUnit('subagent', '', tempProject, 'plan-slice', policy, ['other-planner']);
+  assert.strictEqual(unregistered.block, true);
+  assert.match(unregistered.reason!, /read-only specialists/);
 });
 
 // ─── planning mode: pass-through tools ────────────────────────────────────

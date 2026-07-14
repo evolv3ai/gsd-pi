@@ -8,8 +8,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { handlePlanMilestone } from "../tools/plan-milestone.ts";
-import { handleReassessRoadmap } from "../tools/reassess-roadmap.ts";
+import { handlePlanMilestone as handlePlanMilestoneWithInvocation } from "../tools/plan-milestone.ts";
+import { internalPlanningInvocation } from "../planning-invocation.ts";
+import { handleReassessRoadmap as handleReassessRoadmapWithInvocation } from "../tools/reassess-roadmap.ts";
 import { migrateHierarchyToDb } from "../md-importer.ts";
 import {
   closeDatabase,
@@ -20,6 +21,20 @@ import {
 } from "../gsd-db.ts";
 
 let tempBase: string | null = null;
+
+function handlePlanMilestone(
+  params: Parameters<typeof handlePlanMilestoneWithInvocation>[0],
+  basePath: string,
+) {
+  return handlePlanMilestoneWithInvocation(params, basePath, internalPlanningInvocation());
+}
+
+function handleReassessRoadmap(
+  params: Parameters<typeof handleReassessRoadmapWithInvocation>[0],
+  basePath: string,
+) {
+  return handleReassessRoadmapWithInvocation(params, basePath, internalPlanningInvocation());
+}
 
 afterEach(() => {
   closeDatabase();

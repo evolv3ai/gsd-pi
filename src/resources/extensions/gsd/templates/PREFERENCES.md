@@ -92,6 +92,9 @@ remote_questions:
 uat_dispatch:
 post_unit_hooks: []
 pre_dispatch_hooks: []
+# planning_subagent_registry:
+#   my-custom-planner:
+#     read_only_specialist: true
 # planning_subagents:
 #   plan-milestone:
 #     allowed: [scout, planner, security]

@@ -141,6 +141,7 @@ export const KNOWN_PREFERENCE_KEYS = new Set<string>([
   "git",
   "post_unit_hooks",
   "pre_dispatch_hooks",
+  "planning_subagent_registry",
   "planning_subagents",
   "dynamic_routing",
   "disabled_model_providers",
@@ -232,6 +233,12 @@ export type PlanningSubagentsConfig = Partial<
   Record<ConfigurablePlanningSubagentUnit, PlanningSubagentUnitConfig>
 >;
 
+export interface PlanningSubagentRegistryEntry {
+  read_only_specialist?: boolean;
+}
+
+export type PlanningSubagentRegistryConfig = Record<string, PlanningSubagentRegistryEntry>;
+
 
 export const SKILL_ACTIONS = new Set(["use", "prefer", "avoid"]);
 
@@ -245,10 +252,10 @@ export interface GSDSkillRule {
 /**
  * Reasoning effort levels. Mirrors `ThinkingLevel` in `@gsd/pi-agent-core`;
  * declared locally so preference parsing/validation does not import the agent
- * core package. `xhigh` is only honored by models whose `thinkingLevelMap`
+ * core package. `xhigh` and `max` are only honored by models whose `thinkingLevelMap`
  * advertises it — unsupported levels are clamped at dispatch (ADR-026).
  */
-export type GSDThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type GSDThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /** The nine model-routing phase buckets. */
 export const GSD_MODEL_PHASE_KEYS = [
@@ -491,6 +498,7 @@ export interface GSDPreferences {
   git?: GitPreferences;
   post_unit_hooks?: PostUnitHookConfig[];
   pre_dispatch_hooks?: PreDispatchHookConfig[];
+  planning_subagent_registry?: PlanningSubagentRegistryConfig;
   planning_subagents?: PlanningSubagentsConfig;
   dynamic_routing?: DynamicRoutingConfig;
   /** Provider IDs to exclude from /model and automatic model routing while leaving tool auth intact. */

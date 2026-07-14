@@ -115,14 +115,18 @@ Enable deep mode with `/gsd new-project --deep`, `/gsd new-milestone --deep`, or
 Project-local allowlists for controlled read-only subagent dispatch during planning:
 
 ```yaml
+planning_subagent_registry:
+  my-custom-planner:
+    read_only_specialist: true
+
 planning_subagents:
   plan-milestone:
-    allowed: [scout, planner, security]
+    allowed: [scout, planner, my-custom-planner, security]
   plan-slice:
-    allowed: [scout, planner, reviewer, security]
+    allowed: [scout, planner, my-custom-planner, reviewer, security]
 ```
 
-Only `plan-milestone` and `plan-slice` are configurable. Agents must be GSD-classified read-only planning specialists (`mnemo`, `scout`, `planner`, `reviewer`, `security`, or `tester`). The write gate still blocks unsafe or unlisted agents.
+Only `plan-milestone` and `plan-slice` are configurable. Agents must be built-in read-only planning specialists (`mnemo`, `scout`, `planner`, `reviewer`, `security`, or `tester`) or registered in `planning_subagent_registry` with `read_only_specialist: true`. The write gate still blocks unsafe or unlisted agents.
 
 ### `budget_ceiling`
 

@@ -6,13 +6,18 @@
 // v1 supports flat-phases; multi-milestone and legacy-milestone-dir are stubbed
 // with a clear error until fixtures exist to validate them.
 
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { join, relative } from "node:path";
 
 import { getAllMilestones, getMilestoneSlices, getSliceTasks } from "../gsd-db.js";
 import { saveFile } from "../files.js";
 import { isClosedStatus } from "../status-guards.js";
-import type { PlanningLayout } from "../compat/compat-marker.js";
+import {
+  computeProjectionSha,
+  readCompatMarker,
+  type PlanningLayout,
+  writeCompatMarker,
+} from "../compat/compat-marker.js";
 import {
   applyPlanningProjectionWrites,
   type PlanningProjectionWrite,
@@ -25,6 +30,29 @@ export interface PlanningWrittenFiles {
 
 function planningRoot(basePath: string): string {
   return join(basePath, ".planning");
+}
+
+function removeObsoletePlanningProjections(
+  basePath: string,
+  desiredRelPaths: Set<string>,
+): void {
+  const marker = readCompatMarker(basePath);
+  if (!marker.planning) return;
+
+  let changed = false;
+  for (const relPath of Object.keys(marker.planning.projections)) {
+    if (desiredRelPaths.has(relPath) || !/-PLAN\.md$/i.test(relPath)) continue;
+    const projection = marker.planning.projections[relPath]!;
+    const absPath = join(planningRoot(basePath), relPath);
+    if (existsSync(absPath)) {
+      const currentSha = computeProjectionSha(readFileSync(absPath, "utf8"));
+      if (currentSha !== projection.sha) continue;
+      unlinkSync(absPath);
+    }
+    delete marker.planning.projections[relPath];
+    changed = true;
+  }
+  if (changed) writeCompatMarker(basePath, marker);
 }
 
 function slugify(title: string, fallback: string): string {
@@ -168,7 +196,7 @@ export async function writePlanningDirectory(
   const roadmapEntries: Array<{ number: number; title: string; done: boolean }> = [];
 
   for (const milestone of milestones) {
-    const slices = getMilestoneSlices(milestone.id);
+    const slices = getMilestoneSlices(milestone.id).filter((slice) => slice.status !== "skipped");
     for (const slice of slices) {
       phaseNum++;
       const phaseSlug = slugify(slice.title || slice.id, slice.id.toLowerCase());
@@ -176,7 +204,7 @@ export async function writePlanningDirectory(
       const phaseDir = join(root, "phases", phaseDirName);
       mkdirSync(phaseDir, { recursive: true });
 
-      const tasks = getSliceTasks(milestone.id, slice.id);
+      const tasks = getSliceTasks(milestone.id, slice.id).filter((task) => task.status !== "skipped");
       const isDone =
         tasks.length > 0 && tasks.every((t) => isClosedStatus(t.status));
       roadmapEntries.push({
@@ -252,6 +280,10 @@ export async function writePlanningDirectory(
   paths.push(projectPath);
   projectionWrites.push({ relPath: toPlanningRel(projectPath), entities: [milestones[0]!.id] });
 
+  removeObsoletePlanningProjections(
+    basePath,
+    new Set(projectionWrites.map((write) => write.relPath)),
+  );
   applyPlanningProjectionWrites(basePath, projectionWrites);
   return { paths, layout };
 }

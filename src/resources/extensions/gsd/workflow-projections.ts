@@ -27,6 +27,7 @@ import type { GSDState } from "./types.js";
 import { renderPlanFromDb, renderRoadmapFromDb } from "./markdown-renderer.js";
 import { readManifest } from "./workflow-manifest.js";
 import { gsdRoot, resolveMilestoneFile, resolveSliceFile, resolveTaskFile, targetTaskFile } from "./paths.js";
+import { removeOwnedPlanProjection } from "./projection-cleanup.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -104,14 +105,17 @@ export function renderPlanContent(sliceRow: SliceRow, taskRows: TaskRow[]): stri
 export function renderPlanProjection(basePath: string, milestoneId: string, sliceId: string): void {
   const sliceRows = getMilestoneSlices(milestoneId);
   const sliceRow = sliceRows.find(s => s.id === sliceId);
-  if (!sliceRow) return;
-
-  const taskRows = getSliceTasks(milestoneId, sliceId);
+  const planPath = join(basePath, ".gsd", "milestones", milestoneId, "slices", sliceId, `${sliceId}-PLAN.md`);
+  const taskRows = getSliceTasks(milestoneId, sliceId).filter((task) => task.status !== "skipped");
+  if (!sliceRow || sliceRow.status === "skipped" || taskRows.length === 0) {
+    removeOwnedPlanProjection(basePath, planPath);
+    return;
+  }
 
   const content = renderPlanContent(sliceRow, taskRows);
-  const dir = join(basePath, ".gsd", "milestones", milestoneId, "slices", sliceId);
+  const dir = dirname(planPath);
   mkdirSync(dir, { recursive: true });
-  atomicWriteSync(join(dir, `${sliceId}-PLAN.md`), content);
+  atomicWriteSync(planPath, content);
 }
 
 // ─── ROADMAP.md Projection ───────────────────────────────────────────────
@@ -163,7 +167,7 @@ export function renderRoadmapProjection(basePath: string, milestoneId: string): 
   const milestoneRow = getMilestone(milestoneId);
   if (!milestoneRow) return;
 
-  const sliceRows = getMilestoneSlices(milestoneId);
+  const sliceRows = getMilestoneSlices(milestoneId).filter((slice) => slice.status !== "skipped");
 
   const content = renderRoadmapContent(milestoneRow, sliceRows);
   const dir = join(basePath, ".gsd", "milestones", milestoneId);
@@ -398,19 +402,19 @@ export function renderStateContent(state: GSDState): string {
  * Render STATE.md projection to disk.
  * Derives state from DB, renders content, writes via atomicWriteSync.
  */
-export async function renderStateProjection(basePath: string): Promise<void> {
+export async function renderStateProjection(basePath: string): Promise<{ stale: boolean }> {
   try {
-    if (!isDbAvailable()) return;
+    if (!isDbAvailable()) return { stale: true };
     // Probe DB handle — adapter may be set but underlying handle closed
     const adapter = _getAdapter();
-    if (!adapter) return;
+    if (!adapter) return { stale: true };
     try {
       adapter.prepare("SELECT 1").get();
     } catch (err) {
       logWarning("projection", "renderStateProjection: DB handle probe failed, skipping render", {
         error: (err as Error).message,
       });
-      return;
+      return { stale: true };
     }
     const state = await deriveState(basePath);
     const content = renderStateContent(state);
@@ -423,7 +427,7 @@ export async function renderStateProjection(basePath: string): Promise<void> {
         const existingContent = (await readFile(statePath, "utf-8")).trim();
         if (Array.isArray(manifest?.milestones) && manifest.milestones.length > 0 && existingContent.length > 0) {
           logWarning("projection", "renderStateProjection: refusing to overwrite non-empty STATE.md with empty state while manifest has milestones");
-          return;
+          return { stale: true };
         }
       } catch (err) {
         logWarning("projection", `renderStateProjection: unable to inspect existing STATE.md guard, proceeding with write: ${(err as Error).message}`);
@@ -431,8 +435,10 @@ export async function renderStateProjection(basePath: string): Promise<void> {
     }
     mkdirSync(dir, { recursive: true });
     atomicWriteSync(statePath, content);
+    return { stale: false };
   } catch (err) {
     logWarning("projection", `renderStateProjection failed: ${(err as Error).message}`);
+    return { stale: true };
   }
 }
 
@@ -443,27 +449,37 @@ export async function renderStateProjection(basePath: string): Promise<void> {
  * Does not touch slice PLAN.md or task SUMMARY.md — those have authoritative
  * renderers in plan-slice / complete-task.
  */
-export async function renderMilestoneShellProjections(basePath: string, milestoneId: string): Promise<void> {
+export async function renderMilestoneShellProjections(
+  basePath: string,
+  milestoneId: string,
+): Promise<{ stale: boolean }> {
+  let stale = false;
   try {
     await renderRoadmapFromDb(basePath, milestoneId);
   } catch (err) {
+    stale = true;
     logWarning("projection", `renderRoadmapFromDb failed for ${milestoneId}: ${(err as Error).message}`);
   }
   try {
     renderTopLevelRoadmapFromDb(basePath);
   } catch (err) {
+    stale = true;
     logWarning("projection", `renderTopLevelRoadmapFromDb failed: ${(err as Error).message}`);
   }
   try {
     renderTopLevelQueueFromDb(basePath);
   } catch (err) {
+    stale = true;
     logWarning("projection", `renderTopLevelQueueFromDb failed: ${(err as Error).message}`);
   }
   try {
-    await renderStateProjection(basePath);
+    const rendered = await renderStateProjection(basePath);
+    stale ||= rendered.stale;
   } catch (err) {
+    stale = true;
     logWarning("projection", `renderStateProjection failed: ${(err as Error).message}`);
   }
+  return { stale };
 }
 
 // ─── renderAllProjections ───────────────────────────────────────────────
@@ -472,8 +488,12 @@ export async function renderMilestoneShellProjections(basePath: string, mileston
  * Regenerate all projection files for a milestone from DB state.
  * All calls are wrapped in try/catch — projection failure is non-fatal per D-02.
  */
-export async function renderAllProjections(basePath: string, milestoneId: string): Promise<void> {
-  await renderMilestoneShellProjections(basePath, milestoneId);
+export async function renderAllProjections(
+  basePath: string,
+  milestoneId: string,
+): Promise<{ stale: boolean }> {
+  const shell = await renderMilestoneShellProjections(basePath, milestoneId);
+  let stale = shell.stale;
 
   // Query all slices for this milestone
   const sliceRows = getMilestoneSlices(milestoneId);
@@ -492,10 +512,12 @@ export async function renderAllProjections(basePath: string, milestoneId: string
       try {
         renderSummaryProjection(basePath, milestoneId, slice.id, task.id);
       } catch (err) {
+        stale = true;
         logWarning("projection", `renderSummaryProjection failed for ${milestoneId}/${slice.id}/${task.id}: ${(err as Error).message}`);
       }
     }
   }
+  return { stale };
 }
 
 // ─── regenerateIfMissing ────────────────────────────────────────────────
@@ -559,7 +581,10 @@ export async function regenerateIfMissing(
   // skip cleanly here rather than logging a spurious failure. The PLAN.md will
   // be created once the slice is refined and its first task is written through
   // the single writer.
-  if (fileType === "PLAN" && getSliceTasks(milestoneId, sliceId).length === 0) {
+  if (
+    fileType === "PLAN" &&
+    !getSliceTasks(milestoneId, sliceId).some((task) => task.status !== "skipped")
+  ) {
     return false;
   }
 

@@ -9,7 +9,10 @@ import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 import { GSDError, GSD_IO_ERROR } from "./errors.js";
-import { reconcileWorktreeDb, isDbAvailable } from "./gsd-db.js";
+import {
+  CanonicalWorktreeDivergenceError,
+  reconcileWorktreeDb,
+} from "./gsd-db.js";
 import { resolveGsdPathContract } from "./paths.js";
 import {
   removeWorktree,
@@ -77,24 +80,26 @@ export function teardownAutoWorktree(
     }
 
     // 2. Reconcile worktree-local gsd.db into project root DB if both exist.
-    //    Non-fatal — handles legacy worktrees that have a local copy.
-    if (isDbAvailable()) {
-      try {
-        const contract = resolveGsdPathContract(previousCwd, originalBasePath);
-        const worktreeDbPath = join(
-          contract.worktreeGsd ?? join(previousCwd, ".gsd"),
-          "gsd.db",
-        );
-        const mainDbPath = contract.projectDb;
-        if (_shouldReconcileWorktreeDb(worktreeDbPath, mainDbPath)) {
-          reconcileWorktreeDb(mainDbPath, worktreeDbPath);
-        }
-      } catch (err) {
-        /* non-fatal */
-        logError(
-          "worktree",
-          `DB reconciliation failed during teardown: ${err instanceof Error ? err.message : String(err)}`,
-        );
+    //    Ordinary legacy reconcile failures stay non-fatal. Canonical history
+    //    divergence preserves the worktree because deleting it would lose work.
+    try {
+      const contract = resolveGsdPathContract(previousCwd, originalBasePath);
+      const worktreeDbPath = join(
+        contract.worktreeGsd ?? join(previousCwd, ".gsd"),
+        "gsd.db",
+      );
+      const mainDbPath = contract.projectDb;
+      if (_shouldReconcileWorktreeDb(worktreeDbPath, mainDbPath)) {
+        reconcileWorktreeDb(mainDbPath, worktreeDbPath);
+      }
+    } catch (err) {
+      logError(
+        "worktree",
+        `DB reconciliation failed during teardown: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      if (err instanceof CanonicalWorktreeDivergenceError) {
+        clearActiveWorkspace = false;
+        return;
       }
     }
 

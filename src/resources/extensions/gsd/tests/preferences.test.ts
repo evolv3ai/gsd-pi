@@ -836,6 +836,31 @@ test("planning_subagents validation accepts configured read-only planning specia
   assert.deepEqual(preferences.planning_subagents?.["plan-slice"]?.allowed, ["scout", "security"]);
 });
 
+test("planning_subagents validation accepts custom agents registered as read-only planning specialists", () => {
+  const { preferences, errors } = validatePreferences({
+    planning_subagent_registry: {
+      "my-custom-planner": { read_only_specialist: true },
+    },
+    planning_subagents: {
+      "plan-milestone": { allowed: ["planner", "my-custom-planner"] },
+      "plan-slice": { allowed: ["scout", "my-custom-planner"] },
+    },
+  } as any);
+
+  assert.equal(errors.length, 0);
+  assert.deepEqual(preferences.planning_subagent_registry?.["my-custom-planner"], {
+    read_only_specialist: true,
+  });
+  assert.deepEqual(preferences.planning_subagents?.["plan-milestone"]?.allowed, [
+    "planner",
+    "my-custom-planner",
+  ]);
+  assert.deepEqual(preferences.planning_subagents?.["plan-slice"]?.allowed, [
+    "scout",
+    "my-custom-planner",
+  ]);
+});
+
 test("planning_subagents validation rejects unsupported units and unsafe agents", () => {
   const { preferences, errors } = validatePreferences({
     planning_subagents: {
@@ -847,6 +872,33 @@ test("planning_subagents validation rejects unsupported units and unsafe agents"
   assert.equal(preferences.planning_subagents, undefined);
   assert.ok(errors.some(e => e.includes("unsupported unit \"execute-task\"")));
   assert.ok(errors.some(e => e.includes("\"worker\"") && e.includes("read-only planning specialist")));
+});
+
+test("planning_subagents validation explains how to register custom planning agents", () => {
+  const { preferences, errors } = validatePreferences({
+    planning_subagents: {
+      "plan-slice": { allowed: ["my-custom-planner"] },
+    },
+  } as any);
+
+  assert.equal(preferences.planning_subagents, undefined);
+  assert.ok(errors.some(e =>
+    e.includes("my-custom-planner") &&
+    e.includes("planning_subagent_registry.my-custom-planner.read_only_specialist: true")
+  ));
+});
+
+test("planning_subagent_registry validation requires explicit read_only_specialist true", () => {
+  const { preferences, errors } = validatePreferences({
+    planning_subagent_registry: {
+      "write-capable-agent": { read_only_specialist: false },
+    },
+  } as any);
+
+  assert.equal(preferences.planning_subagent_registry, undefined);
+  assert.ok(errors.some(e =>
+    e.includes("planning_subagent_registry.write-capable-agent.read_only_specialist must be true")
+  ));
 });
 
 test("loadEffectiveGSDPreferences merges planning_subagents allowlists", (t) => {
@@ -874,9 +926,12 @@ test("loadEffectiveGSDPreferences merges planning_subagents allowlists", (t) => 
     [
       "---",
       "version: 1",
+      "planning_subagent_registry:",
+      "  global-custom-planner:",
+      "    read_only_specialist: true",
       "planning_subagents:",
       "  plan-slice:",
-      "    allowed: [scout, reviewer]",
+      "    allowed: [scout, reviewer, global-custom-planner]",
       "---",
       "",
     ].join("\n"),
@@ -887,11 +942,14 @@ test("loadEffectiveGSDPreferences merges planning_subagents allowlists", (t) => 
     [
       "---",
       "version: 1",
+      "planning_subagent_registry:",
+      "  project-custom-planner:",
+      "    read_only_specialist: true",
       "planning_subagents:",
       "  plan-slice:",
-      "    allowed: [security]",
+      "    allowed: [security, project-custom-planner]",
       "  plan-milestone:",
-      "    allowed: [planner]",
+      "    allowed: [planner, project-custom-planner]",
       "---",
       "",
     ].join("\n"),
@@ -899,12 +957,21 @@ test("loadEffectiveGSDPreferences merges planning_subagents allowlists", (t) => 
   );
 
   const loaded = loadEffectiveGSDPreferences(tempProject);
+  assert.deepEqual(loaded?.preferences.planning_subagent_registry, {
+    "global-custom-planner": { read_only_specialist: true },
+    "project-custom-planner": { read_only_specialist: true },
+  });
   assert.deepEqual(loaded?.preferences.planning_subagents?.["plan-slice"]?.allowed, [
     "scout",
     "reviewer",
+    "global-custom-planner",
     "security",
+    "project-custom-planner",
   ]);
-  assert.deepEqual(loaded?.preferences.planning_subagents?.["plan-milestone"]?.allowed, ["planner"]);
+  assert.deepEqual(loaded?.preferences.planning_subagents?.["plan-milestone"]?.allowed, [
+    "planner",
+    "project-custom-planner",
+  ]);
 });
 
 // ── Model config parsing ─────────────────────────────────────────────────────

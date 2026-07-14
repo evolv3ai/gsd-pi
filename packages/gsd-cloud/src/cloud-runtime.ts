@@ -1,8 +1,12 @@
 import WebSocket from "ws";
 import type { Logger } from "./logger.js";
 import type { DaemonConfig } from "./types.js";
-import type { Executor } from "./executors/executor.js";
+import type { AdvertisedProject, Executor } from "./executors/executor.js";
 import { createGatewayLookup, parseCloudGatewayUrl, validateGatewayNetworkTarget } from "./cloud-config.js";
+import {
+  noopRuntimeTelemetry,
+  type RuntimeTelemetryReporter,
+} from "./runtime-telemetry.js";
 
 const INITIAL_CONNECT_ATTEMPTS = 5;
 const INITIAL_CONNECT_HANDSHAKE_TIMEOUT_MS = 30_000;
@@ -20,6 +24,16 @@ interface GatewayMessage {
   projectAlias?: string;
 }
 
+interface QueuedFrame {
+  text: string;
+  projectPath?: string;
+}
+
+interface InFlightRequest {
+  message: GatewayMessage;
+  routingKey?: string;
+}
+
 export class CloudRuntime {
   private static readonly MAX_OUTBOX = 200;
   // How many times to retry the initial connect before rejecting start(). A
@@ -30,8 +44,9 @@ export class CloudRuntime {
   private socket: WebSocket | undefined;
   private heartbeat: ReturnType<typeof setInterval> | undefined;
   private reconnect: ReturnType<typeof setTimeout> | undefined;
-  private readonly inFlight = new Map<string, GatewayMessage>();
-  private outbox: string[] = [];
+  private readonly inFlight = new Map<string, InFlightRequest>();
+  private outbox: QueuedFrame[] = [];
+  private advertisedProjects: AdvertisedProject[] = [];
   private stopped = false;
   private firstConnectDeferred: PromiseWithResolvers<void> | undefined;
   private initialConnectAttempts = 0;
@@ -40,18 +55,32 @@ export class CloudRuntime {
     private readonly cloud: NonNullable<DaemonConfig["cloud"]>,
     private readonly executor: Executor,
     private readonly logger: Logger,
+    private readonly telemetry: RuntimeTelemetryReporter = noopRuntimeTelemetry,
   ) {}
 
   start(): Promise<void> {
     this.stopped = false;
     this.initialConnectAttempts = 0;
-    this.firstConnectDeferred = Promise.withResolvers<void>();
-    this.connect();
-    return this.firstConnectDeferred.promise;
+    const firstConnect = Promise.withResolvers<void>();
+    this.firstConnectDeferred = firstConnect;
+    const result = firstConnect.promise.catch(async (error: unknown) => {
+      this.telemetry.failed?.();
+      await this.telemetry.flush?.();
+      throw error;
+    });
+    try {
+      this.connect();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.telemetry.socketError(message);
+      this.rejectFirstConnect(error instanceof Error ? error : new Error(message));
+    }
+    return result;
   }
 
   stop(): void {
     this.stopped = true;
+    this.telemetry.stopped();
     this.rejectFirstConnect(new Error("cloud runtime stopped"));
     if (this.reconnect) clearTimeout(this.reconnect);
     this.reconnect = undefined;
@@ -67,9 +96,12 @@ export class CloudRuntime {
   private connect(): void {
     if (this.reconnect) clearTimeout(this.reconnect);
     this.reconnect = undefined;
+    this.telemetry.connecting();
     if (!this.cloud.device_token || !this.cloud.runtime_id) {
+      const message = "cloud runtime missing device token or runtime id";
       this.logger.warn("cloud runtime skipped — missing device token or runtime id");
-      this.rejectFirstConnect(new Error("cloud runtime missing device token or runtime id"));
+      this.telemetry.socketError(message);
+      this.rejectFirstConnect(new Error(message));
       return;
     }
     const gatewayUrl = parseCloudGatewayUrl(this.cloud.gateway_url);
@@ -78,6 +110,7 @@ export class CloudRuntime {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn("cloud runtime skipped unsafe gateway URL", { error: message });
+      this.telemetry.socketError(message);
       this.rejectFirstConnect(new Error(`cloud runtime unsafe gateway URL: ${message}`));
       return;
     }
@@ -116,6 +149,7 @@ export class CloudRuntime {
 
   private handleSocketOpen(socket: WebSocket): void {
     if (socket !== this.socket) return;
+    this.telemetry.connected();
     this.resolveFirstConnect();
     this.logger.info("cloud runtime connected", { gateway_url: this.cloud.gateway_url, runtime_id: this.cloud.runtime_id });
     // Re-advertise projects (async: the hello is sent on a later microtask), then
@@ -125,9 +159,12 @@ export class CloudRuntime {
     void this.advertiseProjects();
     const pending = this.outbox;
     this.outbox = [];
-    for (const text of pending) {
-      if (this.socket?.readyState === WebSocket.OPEN) this.socket.send(text);
-      else this.outbox.push(text);
+    for (const frame of pending) {
+      if (this.socket?.readyState === WebSocket.OPEN) {
+        this.socket.send(frame.text);
+        this.telemetry.sent(frame.text, frame.projectPath);
+      }
+      else this.outbox.push(frame);
     }
     if (this.heartbeat) clearInterval(this.heartbeat);
     this.heartbeat = setInterval(() => this.send({ type: "heartbeat", at: Date.now() }), 30_000);
@@ -135,6 +172,7 @@ export class CloudRuntime {
 
   private async handleSocketMessage(socket: WebSocket, text: string): Promise<void> {
     if (socket !== this.socket) return;
+    this.telemetry.received(text);
     await this.handleMessage(text);
   }
 
@@ -144,6 +182,7 @@ export class CloudRuntime {
     this.heartbeat = undefined;
     this.socket = undefined;
     if (this.stopped) return;
+    this.telemetry.disconnected();
     if (this.firstConnectDeferred) {
       // Still trying to establish the first connection: retry transient
       // handshake failures (like the daemon's reconnect loop) and only reject
@@ -151,11 +190,11 @@ export class CloudRuntime {
       // not kill the runtime while a persistent outage still surfaces an error.
       this.initialConnectAttempts += 1;
       if (this.initialConnectAttempts >= INITIAL_CONNECT_ATTEMPTS) {
-        this.rejectFirstConnect(
-          new Error(
-            `cloud runtime connection failed after ${this.initialConnectAttempts} attempt(s)`,
-          ),
+        const error = new Error(
+          `cloud runtime connection failed after ${this.initialConnectAttempts} attempt(s)`,
         );
+        this.telemetry.socketError(error.message);
+        this.rejectFirstConnect(error);
         return;
       }
       this.logger.warn("cloud runtime initial connect failed; retrying", {
@@ -172,10 +211,13 @@ export class CloudRuntime {
   private handleSocketError(socket: WebSocket, err: Error): void {
     if (socket !== this.socket) return;
     this.logger.warn("cloud runtime socket error", { error: err.message });
+    this.telemetry.socketError(err.message);
   }
 
   private async advertiseProjects(): Promise<void> {
     const projects = await this.executor.advertisedProjects();
+    this.advertisedProjects = projects;
+    this.telemetry.projectsAdvertised(projects);
     this.send({
       type: "hello",
       runtimeId: this.cloud.runtime_id,
@@ -196,21 +238,73 @@ export class CloudRuntime {
       return;
     }
     if (message.type !== "tool_call" || !message.requestId || !message.toolName) return;
-    this.inFlight.set(message.requestId, message);
+    const routingKey = this.resolveRoutingKey(message);
+    const project = this.resolveProject(routingKey);
+    const projectAlias = project?.alias;
+    const projectPath = project?.path;
+    const startedAt = Date.now();
+    const receivedBytes = Buffer.byteLength(text);
+    this.inFlight.set(message.requestId, {
+      message,
+      ...(routingKey !== undefined ? { routingKey } : {}),
+    });
+    this.telemetry.requestStarted({
+      requestId: message.requestId,
+      ...(projectAlias ? { projectAlias } : {}),
+      ...(projectPath ? { projectPath } : {}),
+      toolName: message.toolName,
+      receivedBytes,
+    });
+    let outcome: "success" | "error" | "cancelled" = "success";
+    let errorMessage: string | undefined;
     try {
-      const result = await this.executor.execute(message.toolName, message.args ?? {}, message.projectAlias);
-      if (!this.inFlight.has(message.requestId)) return;
-      this.send({ type: "tool_result", requestId: message.requestId, result });
+      const result = await this.executor.execute(message.toolName, message.args ?? {}, routingKey);
+      if (!this.inFlight.has(message.requestId)) {
+        outcome = "cancelled";
+        return;
+      }
+      this.send({ type: "tool_result", requestId: message.requestId, result }, projectPath);
     } catch (err) {
-      if (!this.inFlight.has(message.requestId)) return;
+      if (!this.inFlight.has(message.requestId)) {
+        outcome = "cancelled";
+        return;
+      }
+      outcome = "error";
+      errorMessage = err instanceof Error ? err.message : String(err);
       this.send({
         type: "tool_result",
         requestId: message.requestId,
-        error: err instanceof Error ? err.message : String(err),
-      });
+        error: errorMessage,
+      }, projectPath);
     } finally {
       this.inFlight.delete(message.requestId);
+      this.telemetry.requestFinished({
+        requestId: message.requestId,
+        ...(projectAlias ? { projectAlias } : {}),
+        ...(projectPath ? { projectPath } : {}),
+        toolName: message.toolName,
+        durationMs: Date.now() - startedAt,
+        outcome,
+        ...(errorMessage ? { error: errorMessage } : {}),
+      });
     }
+  }
+
+  private resolveRoutingKey(message: GatewayMessage): string | undefined {
+    return message.projectAlias
+      ?? (typeof message.args?.projectDir === "string" ? message.args.projectDir : undefined)
+      ?? (typeof message.args?.projectAlias === "string" ? message.args.projectAlias : undefined);
+  }
+
+  private resolveProject(routingKey?: string): AdvertisedProject | undefined {
+    if (routingKey !== undefined) {
+      const exact = this.advertisedProjects.find((project) => project.path === routingKey);
+      if (exact) return exact;
+      const matches = this.advertisedProjects.filter((project) => project.alias === routingKey);
+      return matches.length === 1 ? matches[0] : undefined;
+    }
+    if (this.advertisedProjects.length === 1) return this.advertisedProjects[0];
+    return undefined;
   }
 
   private async cancelInFlight(requestId: string): Promise<void> {
@@ -218,13 +312,20 @@ export class CloudRuntime {
     if (!pending) return;
     this.inFlight.delete(requestId);
     try {
-      if (typeof pending.args?.sessionId === "string") {
-        await this.executor.execute("gsd_cancel", { sessionId: pending.args.sessionId }, pending.projectAlias);
+      if (typeof pending.message.args?.sessionId === "string") {
+        await this.executor.execute(
+          "gsd_cancel",
+          { sessionId: pending.message.args.sessionId },
+          pending.routingKey,
+        );
         return;
       }
-      const projectDir = typeof pending.args?.projectDir === "string" ? pending.args.projectDir : pending.projectAlias;
-      if (projectDir) {
-        await this.executor.execute("gsd_cancel", { projectDir });
+      if (pending.routingKey !== undefined) {
+        await this.executor.execute(
+          "gsd_cancel",
+          { projectDir: pending.routingKey },
+          pending.routingKey,
+        );
       }
     } catch (err) {
       this.logger.warn("cloud runtime cancel failed", {
@@ -248,16 +349,17 @@ export class CloudRuntime {
     deferred.reject(err);
   }
 
-  private send(message: unknown): void {
+  private send(message: unknown, projectPath?: string): void {
     const text = JSON.stringify(message);
     if (this.socket?.readyState === WebSocket.OPEN) {
       this.socket.send(text);
+      this.telemetry.sent(text, projectPath);
       return;
     }
     // Buffer while disconnected; flushed on reconnect in handleSocketOpen. Bounded
     // so a long outage cannot grow memory without limit — a stale heartbeat is
     // worth less than a fresh tool_result, so drop oldest first.
-    this.outbox.push(text);
+    this.outbox.push({ text, ...(projectPath ? { projectPath } : {}) });
     if (this.outbox.length > CloudRuntime.MAX_OUTBOX) {
       this.outbox.shift();
     }

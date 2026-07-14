@@ -2,7 +2,17 @@ import { clearParseCache } from "../files.js";
 import { isClosedStatus } from "../status-guards.js";
 import { isNonEmptyString, validateStringArray } from "../validation.js";
 import { getGateIdsForTurn } from "../gate-registry.js";
-import { transaction, getSlice, getTask, insertTask, upsertTaskPlanning, insertGateRow, setSliceSketchFlag } from "../gsd-db.js";
+import {
+  adoptLifecycleIfMissing,
+  adoptOrTransitionLifecycle,
+  getSlice,
+  getTask,
+  insertGateRow,
+  insertTask,
+  normalizeLegacyLifecycleStatus,
+  setSliceSketchFlag,
+  upsertTaskPlanning,
+} from "../gsd-db.js";
 import { invalidateStateCache } from "../state.js";
 import { renderTaskPlanFromDb, renderPlanFromDb } from "../markdown-renderer.js";
 import { resolveMilestonePath, resolveSlicePath } from "../paths.js";
@@ -14,6 +24,12 @@ import { loadEffectiveGSDPreferences } from "../preferences.js";
 import { validatePathOnlyPlanningFields, validatePlanningPathScope } from "../planning-path-scope.js";
 import { createRepositoryRegistryFromPreferences, defaultRepositoryTargets, type RepositoryRegistry } from "../repository-registry.js";
 import type { GateId } from "../types.js";
+import {
+  executePlanningDomainOperation,
+  PlanningGuardError,
+  planningOperationPayload,
+} from "../planning-domain-operation.js";
+import type { PlanningInvocation } from "../planning-invocation.js";
 
 export interface PlanTaskParams {
   milestoneId: string;
@@ -132,6 +148,7 @@ function resolveTaskGates(basePath: string): GateId[] {
 export async function handlePlanTask(
   rawParams: PlanTaskParams,
   basePath: string,
+  invocation: PlanningInvocation,
 ): Promise<PlanTaskResult | { error: string }> {
   let params: PlanTaskParams;
   try {
@@ -160,98 +177,171 @@ export async function handlePlanTask(
 
   const defaultTargets = defaultRepositoryTargets(repositoryRegistry);
 
-  // ── Guards + DB writes inside a single transaction (prevents TOCTOU) ───
-  // Guards must be inside the transaction so the state they check cannot
-  // change between the read and the write (#2723).
-  let guardError: string | null = null;
-
+  let operationStatus: "committed" | "replayed";
   try {
-    transaction(() => {
-      const parentSlice = getSlice(params.milestoneId, params.sliceId);
-      if (!parentSlice) {
-        guardError = `missing parent slice: ${params.milestoneId}/${params.sliceId}`;
-        return;
-      }
-      if (isClosedStatus(parentSlice.status)) {
-        guardError = `cannot plan task in a closed slice: ${params.sliceId} (status: ${parentSlice.status})`;
-        return;
-      }
-
-      const existingTask = getTask(params.milestoneId, params.sliceId, params.taskId);
-      if (existingTask && isClosedStatus(existingTask.status)) {
-        guardError = `cannot re-plan task ${params.taskId}: it is already complete — use gsd_task_reopen first`;
-        return;
-      }
-
-      let effectiveTargetRepositories = resolveEffectiveTargetRepositories(
-        params.targetRepositories,
-        parentSlice.target_repositories,
-        defaultTargets,
-      );
-      const repoValidationError = validateReferencedRepositories(effectiveTargetRepositories, repositoryRegistry);
-      if (repoValidationError) {
-        guardError = `validation failed: ${repoValidationError}`;
-        return;
-      }
-
-      let pathScopeError = validatePathScopeForTargetRepositories(
-        params,
-        basePath,
-        repositoryRegistry,
-        effectiveTargetRepositories,
-      );
-      const storedTaskTargets = existingTask?.target_repositories?.length
-        ? existingTask.target_repositories
-        : undefined;
-      // Omitted targetRepositories inherit the current slice default first.
-      // Fall back to the stored task target only when that inherited scope
-      // rejects the replan paths, preserving explicit per-task parent-root work.
-      if (pathScopeError && params.targetRepositories === undefined && storedTaskTargets) {
-        const storedRepoValidationError = validateReferencedRepositories(storedTaskTargets, repositoryRegistry);
-        const storedPathScopeError = storedRepoValidationError
-          ? storedRepoValidationError
-          : validatePathScopeForTargetRepositories(params, basePath, repositoryRegistry, storedTaskTargets);
-        if (!storedPathScopeError) {
-          effectiveTargetRepositories = storedTaskTargets;
-          pathScopeError = null;
-        }
-      }
-      if (pathScopeError) {
-        guardError = `validation failed: ${pathScopeError}`;
-        return;
-      }
-
-      if (!existingTask) {
-        insertTask({
-          id: params.taskId,
-          sliceId: params.sliceId,
+    const receipt = executePlanningDomainOperation({
+      operationType: "workflow.task.plan",
+      invocation,
+      actorId: params.actorName,
+      payload: planningOperationPayload(params),
+      event: {
+        eventType: "workflow.task.planned",
+        entityType: "task",
+        entityId: `${params.milestoneId}/${params.sliceId}/${params.taskId}`,
+        payload: {
           milestoneId: params.milestoneId,
-          title: params.title,
-          status: "pending",
+          sliceId: params.sliceId,
+          taskId: params.taskId,
+        },
+        destinations: ["projection"],
+      },
+      projection: {
+        projectionKey: `planning/${params.milestoneId}/${params.sliceId}/${params.taskId}`.toLowerCase(),
+        projectionKind: "markdown",
+        rendererVersion: "v1",
+      },
+      lifecycleItems: () => [
+        { itemKind: "slice", milestoneId: params.milestoneId, sliceId: params.sliceId },
+        { itemKind: "task", milestoneId: params.milestoneId, sliceId: params.sliceId, taskId: params.taskId },
+      ],
+      mutate(context) {
+        const parentSlice = getSlice(params.milestoneId, params.sliceId);
+        if (!parentSlice) {
+          throw new PlanningGuardError(`missing parent slice: ${params.milestoneId}/${params.sliceId}`);
+        }
+        if (isClosedStatus(parentSlice.status)) {
+          throw new PlanningGuardError(`cannot plan task in a closed slice: ${params.sliceId} (status: ${parentSlice.status})`);
+        }
+        const legacyParentLifecycle = normalizeLegacyLifecycleStatus(parentSlice.status);
+        let parentLifecycleStatus: "ready" | "completed" | "cancelled" = "ready";
+        if (legacyParentLifecycle === "completed" || legacyParentLifecycle === "cancelled") {
+          parentLifecycleStatus = legacyParentLifecycle;
+        }
+        const parentLifecycle = adoptLifecycleIfMissing(context, {
+          itemKind: "slice",
+          milestoneId: params.milestoneId,
+          sliceId: params.sliceId,
+          lifecycleStatus: parentLifecycleStatus,
         });
-      }
-      upsertTaskPlanning(params.milestoneId, params.sliceId, params.taskId, {
-        title: params.title,
-        description: params.description,
-        estimate: params.estimate,
-        files: params.files,
-        verify: params.verify,
-        inputs: params.inputs,
-        expectedOutput: params.expectedOutput,
-        observabilityImpact: params.observabilityImpact ?? "",
-        fullPlanMd: params.fullPlanMd,
-        targetRepositories: effectiveTargetRepositories,
-      });
-      for (const gid of taskGates) {
-        insertGateRow({ milestoneId: params.milestoneId, sliceId: params.sliceId, gateId: gid, scope: "task", taskId: params.taskId });
-      }
-    });
-  } catch (err) {
-    return { error: `db write failed: ${(err as Error).message}` };
-  }
+        if (parentLifecycle.lifecycleStatus === "completed" || parentLifecycle.lifecycleStatus === "cancelled") {
+          throw new PlanningGuardError(
+            `cannot plan task in ${parentLifecycle.lifecycleStatus} slice ${params.sliceId} — use gsd_slice_reopen first`,
+          );
+        }
 
-  if (guardError) {
-    return { error: guardError };
+        const existingTask = getTask(params.milestoneId, params.sliceId, params.taskId);
+        if (existingTask && isClosedStatus(existingTask.status)) {
+          throw new PlanningGuardError(`cannot re-plan task ${params.taskId}: it is already complete — use gsd_task_reopen first`);
+        }
+        let existingLifecycle: ReturnType<typeof adoptLifecycleIfMissing> | null = null;
+        if (existingTask) {
+          const legacyTaskLifecycle = normalizeLegacyLifecycleStatus(existingTask.status);
+          let taskLifecycleStatus: "ready" | "completed" | "cancelled" = "ready";
+          if (legacyTaskLifecycle === "completed" || legacyTaskLifecycle === "cancelled") {
+            taskLifecycleStatus = legacyTaskLifecycle;
+          }
+          existingLifecycle = adoptLifecycleIfMissing(context, {
+            itemKind: "task",
+            milestoneId: params.milestoneId,
+            sliceId: params.sliceId,
+            taskId: params.taskId,
+            lifecycleStatus: taskLifecycleStatus,
+          });
+        }
+        if (existingLifecycle?.lifecycleStatus === "completed" || existingLifecycle?.lifecycleStatus === "cancelled") {
+          throw new PlanningGuardError(
+            `cannot re-plan ${existingLifecycle.lifecycleStatus} task ${params.taskId} — use gsd_task_reopen first`,
+          );
+        }
+
+        let effectiveTargetRepositories = resolveEffectiveTargetRepositories(
+          params.targetRepositories,
+          parentSlice.target_repositories,
+          defaultTargets,
+        );
+        const repoValidationError = validateReferencedRepositories(effectiveTargetRepositories, repositoryRegistry);
+        if (repoValidationError) {
+          throw new PlanningGuardError(`validation failed: ${repoValidationError}`);
+        }
+
+        let pathScopeError = validatePathScopeForTargetRepositories(
+          params,
+          basePath,
+          repositoryRegistry,
+          effectiveTargetRepositories,
+        );
+        const storedTaskTargets = existingTask?.target_repositories?.length
+          ? existingTask.target_repositories
+          : undefined;
+        if (pathScopeError && params.targetRepositories === undefined && storedTaskTargets) {
+          const storedRepoValidationError = validateReferencedRepositories(storedTaskTargets, repositoryRegistry);
+          const storedPathScopeError = storedRepoValidationError
+            ? storedRepoValidationError
+            : validatePathScopeForTargetRepositories(params, basePath, repositoryRegistry, storedTaskTargets);
+          if (!storedPathScopeError) {
+            effectiveTargetRepositories = storedTaskTargets;
+            pathScopeError = null;
+          }
+        }
+        if (pathScopeError) {
+          throw new PlanningGuardError(`validation failed: ${pathScopeError}`);
+        }
+
+        if (!existingTask) {
+          insertTask({
+            id: params.taskId,
+            sliceId: params.sliceId,
+            milestoneId: params.milestoneId,
+            title: params.title,
+            status: "pending",
+          });
+        }
+        upsertTaskPlanning(params.milestoneId, params.sliceId, params.taskId, {
+          title: params.title,
+          description: params.description,
+          estimate: params.estimate,
+          files: params.files,
+          verify: params.verify,
+          inputs: params.inputs,
+          expectedOutput: params.expectedOutput,
+          observabilityImpact: params.observabilityImpact ?? "",
+          fullPlanMd: params.fullPlanMd,
+          targetRepositories: effectiveTargetRepositories,
+        });
+        for (const gid of taskGates) {
+          insertGateRow({ milestoneId: params.milestoneId, sliceId: params.sliceId, gateId: gid, scope: "task", taskId: params.taskId });
+        }
+        setSliceSketchFlag(params.milestoneId, params.sliceId, false);
+        const taskLifecycle = existingLifecycle ?? adoptLifecycleIfMissing(context, {
+            itemKind: "task",
+            milestoneId: params.milestoneId,
+            sliceId: params.sliceId,
+            taskId: params.taskId,
+            lifecycleStatus: "ready",
+          });
+        if (taskLifecycle.lifecycleStatus === "pending") {
+          adoptOrTransitionLifecycle(context, {
+            itemKind: "task",
+            milestoneId: params.milestoneId,
+            sliceId: params.sliceId,
+            taskId: params.taskId,
+            lifecycleStatus: "ready",
+          });
+        }
+        if (parentLifecycle.lifecycleStatus === "pending") {
+          adoptOrTransitionLifecycle(context, {
+            itemKind: "slice",
+            milestoneId: params.milestoneId,
+            sliceId: params.sliceId,
+            lifecycleStatus: "ready",
+          });
+        }
+      },
+    });
+    operationStatus = receipt.status;
+  } catch (err) {
+    if (err instanceof PlanningGuardError) return { error: err.message };
+    return { error: `db write failed: ${(err as Error).message}` };
   }
 
   try {
@@ -259,7 +349,6 @@ export async function handlePlanTask(
     const slicePath = resolveSlicePath(basePath, params.milestoneId, params.sliceId);
     const isLegacySliceLayout = Boolean(milestonePath && slicePath && slicePath !== milestonePath);
     let renderedPath: string;
-    let slicePlanSynced = false;
 
     if (isLegacySliceLayout) {
       const renderResult = await renderTaskPlanFromDb(basePath, params.milestoneId, params.sliceId, params.taskId);
@@ -267,11 +356,6 @@ export async function handlePlanTask(
     } else {
       const renderResult = await renderPlanFromDb(basePath, params.milestoneId, params.sliceId);
       renderedPath = renderResult.planPath;
-      slicePlanSynced = true;
-    }
-
-    if (slicePlanSynced) {
-      setSliceSketchFlag(params.milestoneId, params.sliceId, false);
     }
 
     invalidateStateCache();
@@ -281,14 +365,16 @@ export async function handlePlanTask(
     try {
       await flushWorkflowProjections(basePath, { milestoneId: params.milestoneId });
       writeManifest(basePath);
-      appendEvent(basePath, {
-        cmd: "plan-task",
-        params: { milestoneId: params.milestoneId, sliceId: params.sliceId, taskId: params.taskId },
-        ts: new Date().toISOString(),
-        actor: "agent",
-        actor_name: params.actorName,
-        trigger_reason: params.triggerReason,
-      });
+      if (operationStatus === "committed") {
+        appendEvent(basePath, {
+          cmd: "plan-task",
+          params: { milestoneId: params.milestoneId, sliceId: params.sliceId, taskId: params.taskId },
+          ts: new Date().toISOString(),
+          actor: "agent",
+          actor_name: params.actorName,
+          trigger_reason: params.triggerReason,
+        });
+      }
     } catch (hookErr) {
       logWarning("tool", `plan-task post-mutation hook warning: ${(hookErr as Error).message}`);
     }

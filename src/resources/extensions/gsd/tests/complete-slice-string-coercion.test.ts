@@ -12,10 +12,25 @@ import {
   insertSlice,
   insertTask,
 } from "../gsd-db.ts";
-import { handleCompleteSlice } from "../tools/complete-slice.ts";
+import {
+  handleCompleteSlice as handleCompleteSliceWithInvocation,
+} from "../tools/complete-slice.ts";
+import { internalExecutionInvocation } from "../execution-invocation.ts";
 import type { CompleteSliceParams } from "../types.ts";
+import { seedSliceCompletionAuthority } from "./slice-completion-fixture.ts";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
+
+let completeSliceInvocationSequence = 0;
+function handleCompleteSlice(
+  params: Parameters<typeof handleCompleteSliceWithInvocation>[0],
+  basePath: string,
+  invocation = internalExecutionInvocation(
+    `test/complete-slice-string-coercion/${++completeSliceInvocationSequence}`,
+  ),
+) {
+  return handleCompleteSliceWithInvocation(params, basePath, invocation);
+}
 
 /**
  * The splitPair coercion logic extracted from db-tools.ts sliceCompleteExecute.
@@ -193,6 +208,11 @@ describe("handleCompleteSlice with coerced string arrays (#3565)", () => {
     insertMilestone({ id: "M001" });
     insertSlice({ id: "S01", milestoneId: "M001" });
     insertTask({ id: "T01", sliceId: "S01", milestoneId: "M001", status: "complete", title: "Task 1" });
+    seedSliceCompletionAuthority({
+      milestoneId: "M001",
+      sliceId: "S01",
+      completedTaskIds: ["T01"],
+    });
   });
 
   afterEach(() => {

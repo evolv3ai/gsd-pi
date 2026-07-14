@@ -89,9 +89,9 @@ The same unit dispatches repeatedly.
 
 ### Reactive execute writes `S##-REACTIVE-BLOCKER.md`
 
-A parallel `reactive-execute` batch exhausted artifact retries while one or more dispatched tasks were still missing task summaries. In flat-phase projects, GSD expects `S##-T##-SUMMARY.md` and still accepts legacy `T##-SUMMARY.md` as a fallback.
+A parallel `reactive-execute` batch exhausted artifact retries while one or more dispatched tasks were still missing task summaries. GSD writes `S##-REACTIVE-BLOCKER.md` as a diagnostic that records summary-present and summary-missing tasks.
 
-**Fix:** Inspect `S##-REACTIVE-BLOCKER.md` and the skipped task list. GSD marks tasks with summaries complete, marks missing-summary tasks skipped, and advances instead of pausing or re-dispatching the same batch.
+**Fix:** Inspect `S##-REACTIVE-BLOCKER.md` and `/gsd status`. The blocker prevents another reactive batch for that slice, but task statuses stay under canonical database Attempt/recovery control; use the appropriate explicit retry, reopen, or replan path for any remaining work.
 
 ### Auto mode stops with "Loop detected"
 
@@ -189,7 +189,7 @@ GSD exits during startup with `flat-phase migration failed` or `flat-phase migra
 
 **Cause:** The project still has the legacy nested `.gsd/milestones/` layout. Startup must migrate it to flat `.gsd/phases/` before path resolvers and state checks run. If the SQLite database cannot be opened, filesystem backup/rename/delete work fails, or the rendered projection cannot be verified, GSD stops instead of continuing against mixed disk state.
 
-**Fix:** Start GSD from the project root and make sure `.gsd/gsd.db*`, `.gsd/`, and `.gsd-backups/` are readable and writable on local disk. Close editors, terminals, sync tools, antivirus/indexers, or other processes that may be locking `.gsd/milestones/`, `.gsd/milestones.migrating/`, `.gsd/phases/`, or `.gsd-backups/`. If the database is damaged or missing, restore it from backup when available; use `/gsd recover --confirm` only after database access is restored and markdown is the source you intentionally want to import. Retry by starting GSD again; interrupted migrations resume from `.gsd/milestones.migrating/`, and `.gsd-backups/migrate-*` snapshots should be kept until startup succeeds and `/gsd doctor` passes.
+**Fix:** Start GSD from the project root and make sure `.gsd/gsd.db*`, `.gsd/`, and `.gsd-backups/` are readable and writable on local disk. Close editors, terminals, sync tools, antivirus/indexers, or other processes that may be locking `.gsd/milestones/`, `.gsd/milestones.migrating/`, `.gsd/phases/`, or `.gsd-backups/`. If the database is damaged or missing, restore it from backup when available; use `/gsd recover --confirm` only after database access is restored, no adopted canonical lifecycle history remains, and markdown is the source you intentionally want to import. Retry by starting GSD again; interrupted migrations resume from `.gsd/milestones.migrating/`, and `.gsd-backups/migrate-*` snapshots should be kept until startup succeeds and `/gsd doctor` passes.
 
 ### `orphan_milestone_dir` doctor warning
 
@@ -258,7 +258,7 @@ Use this only when the database is missing, damaged, or known to be stale but th
 /gsd recover --confirm
 ```
 
-`/gsd recover --confirm` clears and reconstructs the database hierarchy tables from markdown, then derives state again to verify the result. Normal runtime does not silently import markdown projections, and worktree markdown is not synced back as authoritative state.
+`/gsd recover --confirm` first checks that the database contains no adopted canonical lifecycle history. If adoption exists, it fails before clearing anything because Markdown cannot reconstruct that history; restore a verified database backup instead. Otherwise it clears and reconstructs the legacy hierarchy tables from markdown, then derives state again to verify the result. Normal runtime does not silently import markdown projections, and worktree markdown is not synced back as authoritative state.
 
 ## Getting Help
 

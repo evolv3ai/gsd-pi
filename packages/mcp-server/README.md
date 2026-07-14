@@ -98,6 +98,7 @@ The workflow MCP surface includes:
 - `gsd_summary_save`
 - `gsd_task_complete`
 - `gsd_task_reopen`
+- `gsd_task_recovery_resume`
 - `gsd_slice_reopen`
 - `gsd_milestone_reopen`
 - `gsd_milestone_status`
@@ -114,17 +115,27 @@ By default, the packaged MCP server advertises only the canonical workflow tool 
 
 These tools use the same GSD workflow handlers as the native in-process tool path wherever a shared handler exists.
 
+Durable workflow mutations are atomic and replay-safe where they cross the canonical lifecycle boundary. Planning mutations (`gsd_plan_milestone`, `gsd_plan_slice`, `gsd_plan_task`, `gsd_replan_slice`, `gsd_replan_task`, and `gsd_reassess_roadmap`), task execution completion (`gsd_task_complete` / `gsd_complete_task`), and repaired-abort resumption (`gsd_task_recovery_resume`) prefer a nonblank private `_meta["io.opengsd/idempotency-key"]` value. A retry must resend the same value across requests and server processes. Claude Code clients may instead rely on the private `_meta["claudecode/toolUseId"]` value that Claude Code preserves across its MCP session-recovery retry; the server places that value in a reserved transport namespace. An explicit OpenGSD key takes precedence, and a malformed explicit key fails closed instead of falling back. Requests without either replay-stable identity fail before mutation. This metadata is not a tool parameter and does not change the public tool schema or response. Canonical names and compatibility aliases resolve to the same operation identity.
+
+`gsd_task_recovery_resume` is a control-plane repair command, not an ordinary dispatched-unit tool. It requires the exact current abort `recoveryActionId`, a plain-language `repairSummary`, and non-empty structured `evidence`. It appends an immutable repair checkpoint and authorizes one lineage-linked Task Attempt; it does not delete the abort, reset its budget, mark the Task skipped, or authorize later Attempts.
+
 **Opt-in aliases (kept for backwards compatibility — prefer the canonical name above):** `gsd_save_decision`, `gsd_update_requirement`, `gsd_save_requirement`, `gsd_save_summary`, `gsd_generate_milestone_id`, `gsd_milestone_plan`, `gsd_slice_plan`, `gsd_task_plan`, `gsd_slice_replan`, `gsd_complete_task`, `gsd_complete_slice`, `gsd_milestone_validate`, `gsd_milestone_complete`, `gsd_roadmap_reassess`, `gsd_reopen_task`, `gsd_reopen_slice`, `gsd_reopen_milestone`.
 
 `gsd_decision_save` persists new decisions to the ADR-013 memory store, not to the legacy `decisions` table. If alias advertising is enabled, `gsd_save_decision` delegates to the same behavior. The assigned `D###` ID is recorded in `memories.structured_fields.sourceDecisionId`, and `.gsd/DECISIONS.md` is refreshed as a projection from memory-backed decisions. The legacy table may still be read by compatibility and inspection paths during the cutover window, but it is no longer a write target.
 
 `gsd_summary_save` computes artifact paths from the supplied IDs. `milestone_id` is required for milestone-, slice-, and task-scoped artifact types (`SUMMARY`, `RESEARCH`, `CONTEXT`, `ASSESSMENT`, `CONTEXT-DRAFT`) and should be omitted only for root-level `PROJECT`, `PROJECT-DRAFT`, `REQUIREMENTS`, and `REQUIREMENTS-DRAFT` artifacts. The `content` field has a schema `maxLength` of 50,000 characters per save; callers that produce larger artifacts should save incrementally by writing a substantive draft, then re-save the enriched artifact as more detail is available. For final `REQUIREMENTS` saves, the tool renders content from active database requirement rows; callers must create those rows with `gsd_requirement_save` first.
 
-`gsd_replan_task` updates one existing pending task's planning contract after rework without replacing sibling tasks. `projectDir` is optional; when omitted, the server uses its current project or worktree root. Required parameters are `milestoneId`, `sliceId`, `taskId`, `title`, `description`, `estimate`, `files`, `verify`, `inputs`, and `expectedOutput`; `reworkBriefRef` is optional and records the brief that triggered the update. The tool rejects missing tasks and closed/completed tasks; reopen a completed task first with `gsd_task_reopen`.
+`gsd_replan_task` updates one existing pending task's planning contract after rework without replacing sibling tasks. `projectDir` is optional; when omitted, the server uses its current project or worktree root. Required parameters are `milestoneId`, `sliceId`, `taskId`, `title`, `description`, `estimate`, `files`, `verify`, `inputs`, and `expectedOutput`; `reworkBriefRef` is optional and records the brief that triggered the update. The tool rejects missing tasks and legacy-closed or canonically completed/cancelled tasks; use `gsd_task_reopen` before replanning terminal work.
+
+Planning and replanning never physically delete adopted work. Tasks removed by `gsd_plan_slice` or `gsd_replan_slice`, and slices removed by `gsd_reassess_roadmap`, are retained as cancelled history and omitted from active plan/roadmap projections. Reusing one of those IDs requires the corresponding `gsd_task_reopen` or `gsd_slice_reopen` call first.
+
+`gsd_plan_milestone` cannot remove an existing slice. Use `gsd_reassess_roadmap` for an intentional pending-slice removal; completed slices remain protected.
 
 `gsd_rework_brief_save` persists structured rework findings for a task. `projectDir` is optional; required parameters are `milestoneId`, `sliceId`, `taskId`, and a non-empty `findings` array. Each finding requires `findingId`, `severity` (`blocking` or `advisory`), `description`, `requiredFix`, and `verificationCommands`; optional fields are `status`, `evidence`, and `decisionRef`.
 
 Blocking findings saved by `gsd_rework_brief_save` gate `gsd_task_complete`. To complete the task, the `gsd_task_complete` call must include a `reworkResolution` entry for each pending blocking `findingId` with `status: "resolved"` and non-empty `evidence`. Deferred findings must use `status: "deferred-with-override"` with non-empty `evidence` and a `decisionRef`.
+
+For canonical auto-mode task execution, `gsd_task_complete` stages the executor result for the running Attempt instead of publishing task completion immediately. A successful call returns `details.attemptId`, `details.resultId`, `details.summaryPath`, and `details.nextStage`; `nextStage: "verify"` means the host must still run technical verification before completion is published, while `nextStage: "route"` means the executor reported a blocker or failed result that should be routed for recovery. After host verification records a passing Technical Verdict for the same source revision, auto mode publishes the task completion and refreshes the summary and plan projections. MCP clients should call this tool only for the active task Attempt they are executing; calls without a running or replay-matched canonical Attempt fail instead of falling back to legacy completion.
 
 ### Interactive tools
 

@@ -54,6 +54,9 @@ const PREF_SAMPLE_VALUES: Record<string, unknown> = {
   },
   post_unit_hooks: [{ command: "npm test" }],
   pre_dispatch_hooks: [{ command: "npm run lint" }],
+  planning_subagent_registry: {
+    "custom-planner": { read_only_specialist: true },
+  },
   planning_subagents: {
     "plan-milestone": { allowed: ["scout", "planner"] },
     "plan-slice": { allowed: ["scout"] },

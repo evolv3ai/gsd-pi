@@ -347,6 +347,10 @@ export interface HookExecutionState {
   cycle: number;
   /** Whether the hook completed with a retry signal (retry_on artifact found). */
   pendingRetry: boolean;
+  /** Canonical operation that completed an execute-task trigger. */
+  completionOperationId?: string;
+  /** Legacy completion timestamp when no canonical lifecycle row exists. */
+  legacyCompletedAt?: string;
 }
 
 export interface HookDispatchResult {
@@ -535,7 +539,18 @@ export interface PersistedHookState {
     triggerUnitType: string;
     triggerUnitId: string;
     forceRun?: boolean;
+    completionOperationId?: string;
+    legacyCompletedAt?: string;
   }>;
+  /** Retry request retained until canonical reopen and orchestration both succeed. */
+  retryPending?: boolean;
+  retryTrigger?: {
+    unitType: string;
+    unitId: string;
+    retryArtifact?: string;
+    completionOperationId?: string;
+    legacyCompletedAt?: string;
+  } | null;
   /** Timestamp of last state save. */
   savedAt: string;
 }

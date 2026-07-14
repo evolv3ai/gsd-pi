@@ -42,9 +42,17 @@ The GSD database is the runtime source of truth for milestones, slices, tasks, r
 
 Markdown files in `.gsd/` are rendered projections for review, prompts, and git-friendly history. `.gsd/DECISIONS.md` is projected from architecture memories, and the Patterns/Lessons sections of `.gsd/KNOWLEDGE.md` are projected from memory rows; editing those projections does not override the database unless a GSD command imports or saves the change. The Rules section of `KNOWLEDGE.md` remains manually authored and is preserved separately.
 
-Task completion only succeeds after its closeout-critical projections are on disk. `gsd_task_complete` writes the database completion and verification evidence first, then writes the task summary and re-renders the slice plan. In flat-phase projects, the canonical task summary is `S##-T##-SUMMARY.md` at the phase root, such as `S01-T03-SUMMARY.md`; older flat projects with `T##-SUMMARY.md` are still read as a legacy fallback. If the summary or plan projection write fails, the tool returns an error, deletes that task's verification evidence, restores the task to `pending`, and removes the attempted summary file instead of leaving the database complete with a stale plan projection.
+Milestone, slice, and task planning, task and slice replanning, and roadmap reassessment commit through replay-safe domain operations. Retries reuse the original durable result instead of applying hierarchy changes twice. Removed pending slices and tasks retain their identity as cancelled history and are omitted from active roadmap and plan projections; explicitly reopen them before reusing their IDs.
 
-In worktree mode, the project-root database and project-root `.gsd/` state remain authoritative. Worktree markdown projections are diagnostics, not state to sync back. Runtime state derivation does not silently rebuild from markdown when the database is unavailable. The legacy markdown fallback is only enabled with `GSD_ALLOW_MARKDOWN_DERIVE_FALLBACK=1` for tests and explicit recovery work.
+The detailed Attempt, Result, host-verification, recovery, blocker, and one-use
+resume contracts are maintained in the authoritative
+[Auto Mode guide](../../docs/user-docs/auto-mode.md#state-authority).
+
+In worktree mode, the project-root database remains authoritative. Project-root
+and worktree markdown projections are diagnostics, not state to sync back.
+Runtime state derivation does not silently rebuild from markdown when the
+database is unavailable. The legacy markdown fallback is only enabled with
+`GSD_ALLOW_MARKDOWN_DERIVE_FALLBACK=1` for tests and explicit recovery work.
 
 ## Deep Planning Mode
 
@@ -225,11 +233,11 @@ verification_auto_fix: true    # auto-retry on failure
 verification_max_retries: 2    # max retry attempts
 ```
 
-If verification fails, the AI sees the output and attempts to fix the issues before advancing. This ensures quality gates are enforced mechanically.
+If verification fails, the failed host Technical Verdict is recorded against the Attempt and the AI sees the output before a bounded retry. The task does not publish completion or unlock downstream work until host verification records a passing verdict for the same source revision.
 
 Commands must be directly runnable checks such as `npm run lint`, `npm run test`, or `python3 -m pytest`. GSD supports single shell pipelines with `|`, so commands like `python3 -m pytest | tail -5` are valid. Logical OR fallbacks (`||`) are rejected, and GSD also rejects redirects (`>` and `<`), semicolons, backticks, and command substitution because verification is run as a controlled command list, not as an arbitrary shell program.
 
-If no verification commands are configured and the task plan does not provide a `verify` command, GSD attempts project discovery. It checks `package.json` scripts first, then Python pytest markers through the `python-project` discovery source: a `tests/` directory containing files that match `test_*.py` or `*_test.py` at any nested depth, `pytest.ini`, or pytest configuration sections in `pyproject.toml` such as `[tool.pytest.ini_options]`; equivalent pytest markers under `[tool.pytest]`, `[tool.pytest.*]`, `[pytest]`, or `[tool:pytest]` are also treated as explicit pytest evidence.
+If no verification commands are configured and the task plan does not provide a `verify` command, GSD attempts project discovery. It checks `package.json` scripts first, then Python pytest markers through the `python-project` discovery source: a `tests/` directory containing files that match `test_*.py` or `*_test.py` at any nested depth, `pytest.ini`, or pytest configuration sections in `pyproject.toml` such as `[tool.pytest.ini_options]`; equivalent pytest markers under `[tool.pytest]`, `[tool.pytest.*]`, `[pytest]`, or `[tool:pytest]` are also treated as explicit pytest evidence. Browser-facing tasks with no runnable host command can continue to slice UAT only after the canonical executor Result succeeds and no blocking runtime errors are found.
 
 ## Slice Discussion Gate
 
@@ -247,7 +255,7 @@ GSD uses sliding-window analysis to detect stuck loops — not just "same unit d
 
 ## Artifact Verification Retries
 
-After each unit, GSD verifies the expected artifact and retries missing artifacts with explicit failure context. `reactive-execute` batches use a terminal recovery after the retry cap: if dispatched tasks are still missing task summaries, GSD checks canonical flat-phase `S##-T##-SUMMARY.md` artifacts and accepts legacy `T##-SUMMARY.md` artifacts as a fallback, then writes `S##-REACTIVE-BLOCKER.md`, marks summary-present tasks complete, marks missing-summary tasks skipped, and advances. Review skipped tasks before relying on downstream artifacts.
+After each unit, GSD verifies the expected artifact and retries missing artifacts with explicit failure context. `reactive-execute` batches use a diagnostic blocker after the retry cap: if dispatched tasks are still missing task summaries, GSD writes `S##-REACTIVE-BLOCKER.md` with the summary-present and summary-missing lists. The blocker prevents another reactive batch for that slice, but it is not lifecycle authority; task statuses stay under canonical database Attempt/recovery control, not summary-file presence.
 
 ## Cost Tracking
 

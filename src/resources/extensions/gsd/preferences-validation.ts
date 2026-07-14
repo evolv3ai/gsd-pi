@@ -28,8 +28,8 @@ import {
   type GSDThinkingLevel,
 } from "./preferences-types.js";
 import {
-  ALLOWED_PLANNING_DISPATCH_AGENTS,
   allowedPlanningDispatchAgentsList,
+  isReadOnlyPlanningDispatchAgent,
 } from "./planning-subagent-registry.js";
 
 const VALID_TOKEN_PROFILES = new Set<TokenProfile>(["budget", "balanced", "quality", "burn-max"]);
@@ -40,6 +40,7 @@ const VALID_THINKING_LEVELS = new Set<GSDThinkingLevel>([
   "medium",
   "high",
   "xhigh",
+  "max",
 ]);
 const KNOWN_MODEL_PHASE_KEYS = new Set<string>(GSD_MODEL_PHASE_KEYS);
 const VALID_UOK_TURN_ACTIONS = new Set<"commit" | "snapshot" | "status-only">([
@@ -93,7 +94,7 @@ function sanitizeModelField(
       } else {
         warnings?.push(
           `${label} thinking "${String(obj.thinking)}" is not a valid thinking level ` +
-          `(off, minimal, low, medium, high, xhigh) — ignored`,
+          `(off, minimal, low, medium, high, xhigh, max) — ignored`,
         );
       }
     }
@@ -486,7 +487,7 @@ export function validatePreferences(preferences: GSDPreferences): {
           if (level !== undefined && !VALID_THINKING_LEVELS.has(level as GSDThinkingLevel)) {
             warnings.push(
               `models.${phase}.thinking "${String(level)}" is not a valid thinking level ` +
-              `(off, minimal, low, medium, high, xhigh) — ignored`,
+              `(off, minimal, low, medium, high, xhigh, max) — ignored`,
             );
             const { thinking: _ignored, ...rest } = entry as Record<string, unknown>;
             // If stripping the bad thinking leaves no usable model, drop the
@@ -521,7 +522,7 @@ export function validatePreferences(preferences: GSDPreferences): {
         if (!VALID_THINKING_LEVELS.has(level as GSDThinkingLevel)) {
           warnings.push(
             `thinking.${phase} "${String(level)}" is not a valid thinking level ` +
-            `(off, minimal, low, medium, high, xhigh) — ignored`,
+            `(off, minimal, low, medium, high, xhigh, max) — ignored`,
           );
           continue;
         }
@@ -752,6 +753,46 @@ export function validatePreferences(preferences: GSDPreferences): {
     }
   }
 
+  // ─── Planning Subagent Registry ──────────────────────────────────────────
+  if (preferences.planning_subagent_registry !== undefined) {
+    if (
+      !preferences.planning_subagent_registry ||
+      typeof preferences.planning_subagent_registry !== "object" ||
+      Array.isArray(preferences.planning_subagent_registry)
+    ) {
+      errors.push("planning_subagent_registry must be an object keyed by agent id");
+    } else {
+      const validRegistry: NonNullable<GSDPreferences["planning_subagent_registry"]> = {};
+
+      for (const [rawAgentId, rawConfig] of Object.entries(preferences.planning_subagent_registry as Record<string, unknown>)) {
+        const agentId = rawAgentId.trim();
+        if (!agentId) {
+          errors.push("planning_subagent_registry includes an empty agent id");
+          continue;
+        }
+        if (!rawConfig || typeof rawConfig !== "object" || Array.isArray(rawConfig)) {
+          errors.push(`planning_subagent_registry.${agentId} must be an object with read_only_specialist: true`);
+          continue;
+        }
+
+        const readOnlySpecialist = (rawConfig as Record<string, unknown>).read_only_specialist;
+        if (readOnlySpecialist !== true) {
+          errors.push(
+            `planning_subagent_registry.${agentId}.read_only_specialist must be true to classify ` +
+            `"${agentId}" as a read-only planning specialist`,
+          );
+          continue;
+        }
+
+        validRegistry[agentId] = { read_only_specialist: true };
+      }
+
+      if (Object.keys(validRegistry).length > 0) {
+        validated.planning_subagent_registry = validRegistry;
+      }
+    }
+  }
+
   // ─── Planning Subagents ─────────────────────────────────────────────────
   if (preferences.planning_subagents !== undefined) {
     if (
@@ -785,10 +826,12 @@ export function validatePreferences(preferences: GSDPreferences): {
 
         const sanitizedAllowed: string[] = [];
         for (const agentId of allowed) {
-          if (!ALLOWED_PLANNING_DISPATCH_AGENTS.has(agentId)) {
+          if (!isReadOnlyPlanningDispatchAgent(agentId, validated.planning_subagent_registry)) {
             errors.push(
               `planning_subagents.${unitType}.allowed includes "${agentId}", which is not classified as a ` +
-              `read-only planning specialist. Allowed agents: ${allowedPlanningDispatchAgentsList()}`,
+              `read-only planning specialist. Allowed agents: ` +
+              `${allowedPlanningDispatchAgentsList(validated.planning_subagent_registry)}. ` +
+              `For custom planning agents, add planning_subagent_registry.${agentId}.read_only_specialist: true`,
             );
             continue;
           }

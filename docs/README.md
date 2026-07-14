@@ -15,6 +15,7 @@ Simplified Chinese translation: [`zh-CN/`](./zh-CN/).
 | [Commands Reference](./user-docs/commands.md) | All commands, keyboard shortcuts, and CLI flags |
 | [Remote Questions](./user-docs/remote-questions.md) | Discord and Slack integration for headless auto-mode |
 | [Cloud MCP Gateway](./user-docs/cloud-mcp-gateway.md) | Run a gateway, pair a local runtime, and connect remote MCP clients |
+| [GSD Cloud Monitor](../apps/gsd-cloud-monitor/README.md) | macOS menu bar app for monitoring and controlling the standalone `gsd-cloud` agent |
 | [Configuration](./user-docs/configuration.md) | Preferences, model selection, git settings, and token profiles |
 | [Provider Setup](./user-docs/providers.md) | Step-by-step setup for OpenRouter, Ollama, LM Studio, vLLM, and all supported providers |
 | [Claude Code Subscription Setup](./user-docs/claude-code-subscription.md) | Install Claude Code, sign in with `/login`, and use a Claude subscription with GSD |
@@ -50,6 +51,10 @@ Design documents, ADRs, and internal references. Located in [`dev/`](./dev/).
 | [ADR-007: Model Catalog Split](./dev/ADR-007-model-catalog-split.md) | Separate model metadata from routing logic for extensibility |
 | [ADR-008: GSD Tools over MCP](./dev/ADR-008-gsd-tools-over-mcp-for-provider-parity.md) | Native tools over MCP for provider parity |
 | [ADR-008: Implementation Plan](./dev/ADR-008-IMPLEMENTATION-PLAN.md) | Implementation plan for ADR-008 |
+| [ADR-046: Database-Authoritative Workflow Lifecycle](./dev/ADR-046-database-authoritative-workflow-lifecycle.md) | Accepted database-authoritative lifecycle and migration contract |
+| [RFC: Database-Authoritative Workflow Refactor](./dev/proposals/rfc-database-authoritative-workflow-refactor.md) | Accepted implementation direction, gates, and milestone program |
+| [Domain Operation Runbook](./dev/refactor-foundation-runbook.md) | Revision-checked transaction boundary, focused tests, and no-cutover guardrails |
+| [Lifecycle Command Integration Runbook](./dev/lifecycle-command-integration-runbook.md) | Canonical writer boundary, downstream entry gates, and verification loop |
 | [Context Optimization Opportunities](./dev/pi-context-optimization-opportunities.md) | Analysis of context window usage and optimization strategies |
 | [File System Map](./dev/FILE-SYSTEM-MAP.md) | Complete file system reference |
 | [CI/CD Pipeline](./dev/ci-cd-pipeline.md) | Continuous integration and deployment pipeline |

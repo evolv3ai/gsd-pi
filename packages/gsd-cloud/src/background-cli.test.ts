@@ -1,7 +1,7 @@
 // Project/App: Open GSD
 // File Purpose: Acceptance coverage for the detached gsd-cloud runtime lifecycle.
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -10,6 +10,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WebSocketServer } from "ws";
 import { saveCloudConfig } from "./cloud-config.js";
+import { runtimeArtifactPath } from "./runtime-artifacts.js";
+import { startBackgroundRuntime, stopBackgroundRuntime } from "./runtime-process.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = join(packageRoot, "bin", "gsd-cloud.js");
@@ -138,7 +140,7 @@ async function createTestGateway(deviceFlow = false): Promise<TestGateway> {
   };
 }
 
-test("connect returns while a background runtime advertises the selected project", async () => {
+test("connect returns while a background runtime advertises the selected project", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "gsd-cloud-background-"));
   const projectDir = join(root, "project");
   const expectedProjectDir = join(realpathSync(root), "project");
@@ -146,6 +148,11 @@ test("connect returns while a background runtime advertises the selected project
   mkdirSync(join(projectDir, ".gsd"), { recursive: true });
 
   const gateway = await createTestGateway();
+  t.after(async () => {
+    await runCli(["disconnect", "--config", configPath], projectDir).catch(() => undefined);
+    await gateway.close();
+    rmSync(root, { recursive: true, force: true });
+  });
 
   saveCloudConfig(configPath, {
     gateway_url: gateway.baseUrl,
@@ -154,8 +161,7 @@ test("connect returns while a background runtime advertises the selected project
     enabled: true,
   });
 
-  try {
-    const connect = await runCli(["connect", "--config", configPath], projectDir);
+  const connect = await runCli(["connect", "--config", configPath], projectDir);
     assert.equal(connect.code, 0, connect.stderr);
     assert.match(connect.stdout, /connected in the background/i);
 
@@ -173,24 +179,63 @@ test("connect returns while a background runtime advertises the selected project
     };
     assert.equal(statusBody.background?.running, true);
     assert.equal(typeof statusBody.background?.pid, "number");
-    assert.deepEqual(statusBody.projects, [expectedProjectDir]);
-  } finally {
+  assert.deepEqual(statusBody.projects, [expectedProjectDir]);
+});
+
+test("stop terminates the background runtime without removing pairing", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "gsd-cloud-stop-command-"));
+  const projectDir = join(root, "project");
+  const configPath = join(root, "daemon.yaml");
+  mkdirSync(join(projectDir, ".gsd"), { recursive: true });
+  const gateway = await createTestGateway();
+  t.after(async () => {
     await runCli(["disconnect", "--config", configPath], projectDir).catch(() => undefined);
     await gateway.close();
     rmSync(root, { recursive: true, force: true });
-  }
+  });
+
+  saveCloudConfig(configPath, {
+    gateway_url: gateway.baseUrl,
+    device_token: "test",
+    runtime_id: "fixture-runtime",
+    enabled: true,
+  });
+
+  const connect = await runCli(["connect", "--config", configPath], projectDir);
+    assert.equal(connect.code, 0, connect.stderr);
+    await gateway.hello;
+
+    const stop = await runCli(["stop", "--config", configPath], projectDir);
+    assert.equal(stop.code, 0, stop.stderr);
+    assert.match(stop.stdout, /background runtime stopped/i);
+
+    const status = await runCli(["status", "--config", configPath], projectDir);
+    const body = JSON.parse(status.stdout) as {
+      configured?: boolean;
+      runtime_id?: string;
+      background?: { running?: boolean };
+      telemetry?: unknown;
+    };
+    assert.equal(body.configured, true);
+    assert.equal(body.runtime_id, "fixture-runtime");
+    assert.equal(body.background?.running, false);
+  assert.notEqual(body.telemetry, null);
 });
 
-test("login returns after approval and keeps the selected project connected", async () => {
+test("login returns after approval and keeps the selected project connected", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "gsd-cloud-login-background-"));
   const projectDir = join(root, "project");
   const expectedProjectDir = join(realpathSync(root), "project");
   const configPath = join(root, "daemon.yaml");
   mkdirSync(join(projectDir, ".gsd"), { recursive: true });
   const gateway = await createTestGateway(true);
+  t.after(async () => {
+    await runCli(["disconnect", "--config", configPath], projectDir).catch(() => undefined);
+    await gateway.close();
+    rmSync(root, { recursive: true, force: true });
+  });
 
-  try {
-    const login = await runCli([
+  const login = await runCli([
       "login",
       "--gateway", gateway.baseUrl,
       "--config", configPath,
@@ -209,17 +254,14 @@ test("login returns after approval and keeps the selected project connected", as
     const statusBody = JSON.parse(status.stdout) as {
       configured?: boolean;
       background?: { running?: boolean };
+      telemetry?: unknown;
     };
     assert.equal(statusBody.configured, false);
     assert.equal(statusBody.background?.running, false);
-  } finally {
-    await runCli(["disconnect", "--config", configPath], projectDir).catch(() => undefined);
-    await gateway.close();
-    rmSync(root, { recursive: true, force: true });
-  }
+  assert.equal(statusBody.telemetry, null);
 });
 
-test("advertised project paths are canonicalized through symlinks", async () => {
+test("advertised project paths are canonicalized through symlinks", async (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "gsd-cloud-symlink-")));
   const realProject = join(root, "real-project");
   mkdirSync(join(realProject, ".gsd"), { recursive: true });
@@ -227,6 +269,11 @@ test("advertised project paths are canonicalized through symlinks", async () => 
   symlinkSync(realProject, linkProject);
   const configPath = join(root, "daemon.yaml");
   const gateway = await createTestGateway();
+  t.after(async () => {
+    await runCli(["disconnect", "--config", configPath], realProject).catch(() => undefined);
+    await gateway.close();
+    rmSync(root, { recursive: true, force: true });
+  });
 
   saveCloudConfig(configPath, {
     gateway_url: gateway.baseUrl,
@@ -235,8 +282,7 @@ test("advertised project paths are canonicalized through symlinks", async () => 
     enabled: true,
   });
 
-  try {
-    // Point the runtime at the symlink; the advertised path must be the real dir.
+  // Point the runtime at the symlink; the advertised path must be the real dir.
     const connect = await runCli(
       ["connect", "--config", configPath],
       realProject,
@@ -252,15 +298,10 @@ test("advertised project paths are canonicalized through symlinks", async () => 
 
     const status = await runCli(["status", "--config", configPath], realProject);
     const statusBody = JSON.parse(status.stdout) as { projects?: string[] };
-    assert.deepEqual(statusBody.projects, [realProject]);
-  } finally {
-    await runCli(["disconnect", "--config", configPath], realProject).catch(() => undefined);
-    await gateway.close();
-    rmSync(root, { recursive: true, force: true });
-  }
+  assert.deepEqual(statusBody.projects, [realProject]);
 });
 
-test("a foreground runtime registers its PID so disconnect can stop it", async () => {
+test("a foreground runtime registers its PID so disconnect can stop it", async (t) => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "gsd-cloud-foreground-")));
   const projectDir = join(root, "project");
   const configPath = join(root, "daemon.yaml");
@@ -275,8 +316,13 @@ test("a foreground runtime registers its PID so disconnect can stop it", async (
   });
 
   const foreground = spawnForegroundCli(["connect", "--foreground", "--config", configPath], projectDir);
-  try {
-    // Once the foreground runtime advertises its project it is fully connected.
+  t.after(async () => {
+    foreground.child.kill("SIGKILL");
+    await gateway.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  // Once the foreground runtime advertises its project it is fully connected.
     await gateway.hello;
 
     // The foreground session must record its own PID in the shared runtime state
@@ -297,10 +343,62 @@ test("a foreground runtime registers its PID so disconnect can stop it", async (
 
     const afterStatus = await runCli(["status", "--config", configPath], projectDir);
     const afterBody = JSON.parse(afterStatus.stdout) as { background?: { running?: boolean } };
-    assert.equal(afterBody.background?.running, false);
-  } finally {
+  assert.equal(afterBody.background?.running, false);
+});
+
+test("foreground connect waits for an in-progress background start", { timeout: 10_000 }, async (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "gsd-cloud-foreground-lock-")));
+  const projectDir = join(root, "project");
+  const configPath = join(root, "daemon.yaml");
+  const delayedRuntimePath = join(root, "delayed-runtime.mjs");
+  mkdirSync(join(projectDir, ".gsd"), { recursive: true });
+  writeFileSync(delayedRuntimePath, [
+    'process.on("SIGTERM", () => process.exit(0));',
+    'setTimeout(() => process.send?.({ type: "ready" }), 3_000);',
+    'setInterval(() => undefined, 1_000);',
+  ].join("\n"));
+  const gateway = await createTestGateway();
+
+  saveCloudConfig(configPath, {
+    gateway_url: gateway.baseUrl,
+    device_token: "test",
+    runtime_id: "fixture-runtime",
+    enabled: true,
+  });
+
+  const backgroundStart = startBackgroundRuntime({
+    binaryPath: delayedRuntimePath,
+    configPath,
+    projectDirs: [projectDir],
+  });
+  await waitForCondition(() => existsSync(runtimeArtifactPath(configPath, "start.lock")));
+  await waitForCondition(() => existsSync(runtimeArtifactPath(configPath, "state")));
+  const foreground = spawnForegroundCli(["connect", "--foreground", "--config", configPath], projectDir);
+  t.after(async () => {
     foreground.child.kill("SIGKILL");
+    await stopBackgroundRuntime(configPath).catch(() => undefined);
     await gateway.close();
     rmSync(root, { recursive: true, force: true });
-  }
+  });
+
+  const connectedBeforeBackgroundStartFinished = await Promise.race([
+    gateway.hello.then(() => true),
+    new Promise<false>((resolveDelay) => setTimeout(() => resolveDelay(false), 500)),
+  ]);
+  assert.equal(connectedBeforeBackgroundStartFinished, false);
+  const background = await backgroundStart;
+  assert.equal(background.running, true);
+  await gateway.hello;
+
+  const disconnect = await runCli(["disconnect", "--config", configPath], projectDir);
+  assert.equal(disconnect.code, 0, disconnect.stderr);
+  assert.equal(await foreground.exited, 0);
 });
+
+async function waitForCondition(condition: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error("timed out waiting for test condition");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}

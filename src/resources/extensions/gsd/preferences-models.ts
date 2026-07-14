@@ -9,6 +9,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getProviders } from "@gsd/pi-ai";
 import { gsdHome } from "./gsd-home.js";
 import type { DynamicRoutingConfig } from "./model-router.js";
 import { canonicalModelForTier, defaultRoutingConfig, resolveModelForTier } from "./model-router.js";
@@ -30,6 +31,33 @@ import { getUnitPhaseChain } from "./unit-registry.js";
 
 // Re-export types so existing consumers of ./preferences-models.js keep working
 export type { GSDPhaseModelConfig, GSDModelConfig, GSDModelConfigV2, ResolvedModelConfig } from "./preferences-types.js";
+
+type ProviderModelRegistry = {
+  getAll?: () => ReadonlyArray<{ provider: string }>;
+  getAvailable?: () => ReadonlyArray<{ provider: string }>;
+  getAllWithDiscovered?: () => ReadonlyArray<{ provider: string }>;
+};
+
+/**
+ * First-party providers shipped as bundled extensions that delegate to a
+ * vendor CLI (`authMode: "externalCli"`). They are registered into the live
+ * model registry at runtime, so they are absent from the generated `@gsd/pi-ai`
+ * catalog (`getProviders()`), but they are NOT custom: `PREFERENCES.md` can
+ * route to them, so they must defer to `PREFERENCES.md` like any other built-in
+ * provider. Without this exclusion the registry check below would classify the
+ * default `claude-code` provider (and the other CLI providers) as custom and
+ * silently skip `PREFERENCES.md` in auto-mode (#801, extends #4122).
+ *
+ * Kept in sync with the `registerProvider(...)` calls in the bundled CLI
+ * extensions (claude-code-cli, cursor-cli, google-cli). Names are lowercase for
+ * direct comparison against normalized provider ids.
+ */
+const BUILTIN_EXTENSION_PROVIDERS: ReadonlySet<string> = new Set([
+  "claude-code",
+  "cursor-agent",
+  "google-gemini-cli",
+  "google-antigravity",
+]);
 
 /**
  * Resolve which model ID to use for a given auto-mode unit type.
@@ -321,9 +349,8 @@ export function resolveDefaultSessionModel(
 }
 
 /**
- * Returns true if `provider` is defined as a custom provider in the user's
- * `~/.gsd/agent/models.json` (Ollama, vLLM, LM Studio, OpenAI-compatible
- * proxies, etc.).
+ * Returns true if `provider` is a custom provider. Custom providers may be
+ * declared in `models.json` or registered dynamically by a Pi extension.
  *
  * Used by auto-mode bootstrap to decide whether the session model
  * (set via `/gsd model`) should override `PREFERENCES.md`.  Custom providers
@@ -332,13 +359,16 @@ export function resolveDefaultSessionModel(
  * priority — otherwise auto-mode tries to start the built-in provider from
  * PREFERENCES.md and fails with "Not logged in · Please run /login" (#4122).
  *
- * Reads models.json directly with a lightweight JSON parse to avoid
- * pulling in the full model-registry at this call site.  Falls back to
- * `~/.pi/agent/models.json` for parity with `resolveModelsJsonPath()`.
- * Any read or parse error yields `false` (treat as not-custom) so a
- * malformed models.json never breaks the session bootstrap.
+ * Reads models.json directly with a lightweight JSON parse, then checks the
+ * live model registry for extension-registered providers that are not in the
+ * generated built-in provider catalog (`getProviders()`) and not one of the
+ * bundled external-CLI providers (`BUILTIN_EXTENSION_PROVIDERS`, e.g.
+ * `claude-code`), which register at runtime but are still built-in.  Falls back
+ * to `~/.pi/agent/models.json` for parity with `resolveModelsJsonPath()`. Any
+ * read, parse, or registry error yields `false` (treat as not-custom) so
+ * bootstrap stays non-fatal.
  */
-export function isCustomProvider(provider: string | undefined): boolean {
+export function isCustomProvider(provider: string | undefined, registry?: ProviderModelRegistry): boolean {
   if (!provider) return false;
   const candidates = [
     join(gsdHome(), "agent", "models.json"),
@@ -356,7 +386,21 @@ export function isCustomProvider(provider: string | undefined): boolean {
       // Ignore — malformed models.json must not break bootstrap.
     }
   }
-  return false;
+  try {
+    const normalizedProvider = provider.trim().toLowerCase();
+    if (!normalizedProvider) return false;
+    if (BUILTIN_EXTENSION_PROVIDERS.has(normalizedProvider)) return false;
+    const builtInProviders = new Set(getProviders().map((p) => p.toLowerCase()));
+    if (builtInProviders.has(normalizedProvider)) return false;
+    const registryModels =
+      registry?.getAllWithDiscovered?.()
+      ?? registry?.getAll?.()
+      ?? registry?.getAvailable?.()
+      ?? [];
+    return registryModels.some((m) => m.provider.toLowerCase() === normalizedProvider);
+  } catch {
+    return false;
+  }
 }
 
 /**

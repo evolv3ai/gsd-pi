@@ -817,6 +817,10 @@ function mergePreferences(base: GSDPreferences, override: GSDPreferences): GSDPr
       : undefined,
     post_unit_hooks: mergePostUnitHooks(base.post_unit_hooks, override.post_unit_hooks),
     pre_dispatch_hooks: mergePreDispatchHooks(base.pre_dispatch_hooks, override.pre_dispatch_hooks),
+    planning_subagent_registry: mergePlanningSubagentRegistry(
+      base.planning_subagent_registry,
+      override.planning_subagent_registry,
+    ),
     planning_subagents: mergePlanningSubagents(base.planning_subagents, override.planning_subagents),
     dynamic_routing: (base.dynamic_routing || override.dynamic_routing)
       ? { ...(base.dynamic_routing ?? {}), ...(override.dynamic_routing ?? {}) } as DynamicRoutingConfig
@@ -965,6 +969,15 @@ function mergePlanningSubagents(
     }
   }
 
+  return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+function mergePlanningSubagentRegistry(
+  base?: GSDPreferences["planning_subagent_registry"],
+  override?: GSDPreferences["planning_subagent_registry"],
+): GSDPreferences["planning_subagent_registry"] | undefined {
+  if (!base && !override) return undefined;
+  const merged = { ...(base ?? {}), ...(override ?? {}) };
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
 

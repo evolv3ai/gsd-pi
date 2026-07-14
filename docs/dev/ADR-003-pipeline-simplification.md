@@ -1,5 +1,7 @@
 # ADR-003: Auto-Mode Pipeline Simplification
 
+> **Disposition under [ADR-046](ADR-046-database-authoritative-workflow-lifecycle.md): Superseded before adoption.** Research remains first-class, resumable Milestone work rather than being folded into planning or reduced to optional artifacts. The goal of reducing ceremony remains valid through the shared Lifecycle Kernel, automated verification, and durable closeout.
+
 **Status:** Proposed
 **Date:** 2026-03-18
 **Deciders:** Open GSD
@@ -221,14 +223,14 @@ For the same 4-slice, 3-task milestone:
 
 **New:** The system mechanically aggregates verification results from all tasks and slices. The canonical verification data sources are:
 
-1. **`T##-VERIFY.json`** files (written by `writeVerificationJSON()` in `verification-evidence.ts`) — machine-readable per-task verification results with command, exit code, verdict, duration, and blocking status.
+1. **Task verification JSON** files (written by `writeVerificationJSON()` in `verification-evidence.ts`) — machine-readable per-task verification results with command, exit code, verdict, duration, and blocking status. Flat-phase projects write `S##-T##-VERIFY.json` at the phase root; legacy milestone/slice layouts keep `T##-VERIFY.json` under `slices/S##/tasks/`.
 2. **`S##-UAT-RESULT.md`** files (when `uat_dispatch` is enabled) — human or artifact-driven UAT outcomes.
 3. **Task summary frontmatter** `verification_result` field — a human-readable pass/fail string (not structured, used as a secondary signal).
 
-The aggregator reads `T##-VERIFY.json` as the primary source of truth, supplements with UAT-RESULT artifacts, and produces a deterministic VALIDATION.md.
+The aggregator reads task verification JSON as the primary source of truth, supplements with UAT-RESULT artifacts, and produces a deterministic VALIDATION.md.
 
 **What changes:**
-- A new `aggregateMilestoneVerification()` function collects `T##-VERIFY.json` files and `S##-UAT-RESULT.md` files across all slices.
+- A new `aggregateMilestoneVerification()` function collects flat-phase `S##-T##-VERIFY.json` files, legacy `T##-VERIFY.json` files, and `S##-UAT-RESULT.md` files across all slices.
 - The function produces a VALIDATION.md with per-task and per-slice pass/fail status, UAT evidence, and an overall verdict.
 - The LLM-driven validate-milestone session is removed from the default pipeline.
 - The validate-milestone template is retained for explicit dispatch (users who want LLM-driven validation can run `/gsd dispatch validate`).
@@ -241,16 +243,13 @@ async function aggregateMilestoneVerification(base: string, mid: string): Promis
   const uatResults: { sliceId: string; content: string }[] = [];
 
   for (const slice of roadmap.slices) {
-    // Primary source: T##-VERIFY.json files (machine-readable, written by verification-gate.ts)
-    const tDir = resolveTasksDir(base, mid, slice.id);
-    if (tDir) {
-      const verifyFiles = resolveTaskFiles(tDir, "VERIFY");
-      for (const file of verifyFiles) {
-        const content = await loadFile(join(tDir, file));
-        if (content) {
-          const evidence: EvidenceJSON = JSON.parse(content);
-          checks.push(...evidence.checks);
-        }
+    // Primary source: task verification JSON (machine-readable, written by verification-gate.ts)
+    const verifyFiles = resolveVerificationEvidenceFiles(base, mid, slice.id);
+    for (const file of verifyFiles) {
+      const content = await loadFile(file);
+      if (content) {
+        const evidence: EvidenceJSON = JSON.parse(content);
+        checks.push(...evidence.checks);
       }
     }
 
@@ -272,7 +271,7 @@ async function aggregateMilestoneVerification(base: string, mid: string): Promis
 
 **Token savings:** 1 session × 12–37K tokens. This session is one of the most context-heavy — it inlines the ROADMAP + all slice summaries + all UAT results.
 
-**Quality impact:** Positive. Mechanical verification is deterministic and complete. LLM validation is subjective and can miss things. The verification gate and UAT system already do the hard work — the validate session was a redundant re-check. The `T##-VERIFY.json` artifacts are the canonical machine-readable source, not task summary frontmatter.
+**Quality impact:** Positive. Mechanical verification is deterministic and complete. LLM validation is subjective and can miss things. The verification gate and UAT system already do the hard work — the validate session was a redundant re-check. The task verification JSON artifacts are the canonical machine-readable source, not task summary frontmatter.
 
 #### 6. Replace complete-milestone with mechanical completion
 
@@ -476,7 +475,7 @@ async function mechanicalSliceCompletion(base: string, mid: string, sid: string)
 
 #### Mechanical milestone validation
 
-See `aggregateMilestoneVerification()` above (Section 5). Reads `T##-VERIFY.json` and `S##-UAT-RESULT.md` as canonical sources.
+See `aggregateMilestoneVerification()` above (Section 5). Reads task verification JSON (`S##-T##-VERIFY.json` at flat phase roots, `T##-VERIFY.json` under legacy `tasks/`) and `S##-UAT-RESULT.md` as canonical sources.
 
 #### Mechanical milestone summary
 
@@ -547,7 +546,7 @@ At current Opus pricing ($15/MTok input, $75/MTok output — as of March 2026), 
 | `auto-prompts.ts` — plan-milestone exploration | ~30 | Research instructions merged in |
 | `auto-prompts.ts` — plan-slice reassessment + exploration | ~25 | Reassessment + exploration preamble |
 | `auto-post-unit.ts` — `mechanicalSliceCompletion()` | ~80 | Structured frontmatter aggregation, UAT generation, artifact writes |
-| `auto-verification.ts` — `aggregateMilestoneVerification()` | ~60 | T##-VERIFY.json + UAT-RESULT aggregation |
+| `auto-verification.ts` — `aggregateMilestoneVerification()` | ~60 | Task verification JSON + UAT-RESULT aggregation |
 | `auto-unit-closeout.ts` — `generateMilestoneSummary()` | ~60 | Mechanical summary generation |
 | **Total added** | **~255** | |
 
@@ -694,7 +693,7 @@ The mechanical summary quality might be insufficient for complex slices.
 13. Implement `mechanicalRequirementsUpdate()` and `appendNewDecisions()`
 
 ### Phase 3: Mechanical milestone validation + completion
-14. Implement `aggregateMilestoneVerification()` reading `T##-VERIFY.json` and `S##-UAT-RESULT.md`
+14. Implement `aggregateMilestoneVerification()` reading task verification JSON and `S##-UAT-RESULT.md`
 15. Implement `generateMilestoneSummary()` from slice summary aggregation
 16. Wire into post-unit processing: after last slice completion, run mechanical validation + summary
 17. Make reassess-roadmap opt-in via `reassess_after_slice` preference (default: false)
@@ -723,14 +722,14 @@ The mechanical summary quality might be insufficient for complex slices.
 3. ✅ Token savings double-counting (eliminated sessions + re-ingestion) — **fixed**: removed overlap, noted savings are not additive
 4. ✅ Context inlining change (file paths vs inline) underanalyzed — **fixed**: expanded to dedicated risk section with enforcement strategy, phased rollout, and interaction with budget engine
 5. ✅ Budget engine interaction not discussed — **fixed**: addressed in context inlining section
-6. ✅ `aggregateMilestoneVerification()` reads wrong data source — **fixed**: now reads `T##-VERIFY.json` as primary source, supplemented by `S##-UAT-RESULT.md`
+6. ✅ `aggregateMilestoneVerification()` reads wrong data source — **fixed**: now reads task verification JSON as primary source, supplemented by `S##-UAT-RESULT.md`
 7. ✅ Phase ordering creates heavy intermediate state (Phase 1 without Phase 4) — **fixed**: Phase 1 now includes targeted inlining reduction for planning sessions
 8. ✅ ADR number conflict — **fixed**: confirmed no ADR-003 exists in `docs/` (the referenced file doesn't exist in current git)
 
 **OpenAI Codex** identified 6 issues:
 1. ✅ HIGH: Folding completion into execute-task breaks verification-retry model — **fixed**: moved completion to post-gate mechanical processing instead of executor prompt. Added Alternative D explaining why.
-2. ✅ HIGH: Mechanical validation reads nonexistent `verification_evidence` frontmatter — **fixed**: now reads `T##-VERIFY.json` (canonical machine-readable source from `verification-evidence.ts`)
-3. ✅ HIGH: Replacement validation drops UAT evidence — **fixed**: aggregator now reads both `T##-VERIFY.json` and `S##-UAT-RESULT.md`
+2. ✅ HIGH: Mechanical validation reads nonexistent `verification_evidence` frontmatter — **fixed**: now reads task verification JSON (canonical machine-readable source from `verification-evidence.ts`)
+3. ✅ HIGH: Replacement validation drops UAT evidence — **fixed**: aggregator now reads both task verification JSON and `S##-UAT-RESULT.md`
 4. ✅ HIGH: "State derivation stays unchanged" is false — **fixed**: explicitly documented that `deriveState()` phases are preserved, mechanical processing resolves them synchronously, fallback dispatch rules handle failures
 5. ✅ MEDIUM: Folded completion omits REQUIREMENTS.md and KNOWLEDGE.md updates — **fixed**: mechanical completion handles REQUIREMENTS.md and DECISIONS.md; KNOWLEDGE.md addressed in Risk 5
 6. ✅ MEDIUM: Session and token math inconsistent — **fixed**: complete rederivation with per-slice breakdown, corrected to 30 baseline sessions, noted profile variations

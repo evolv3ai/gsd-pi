@@ -26,6 +26,7 @@ import {
   setTaskBlockerDiscovered,
   insertOrIgnoreSlice,
   insertOrIgnoreTask,
+  getDb,
 } from "./gsd-db.js";
 import { openWorkflowDatabasePath } from "./db-workspace.js";
 import { isClosedStatus } from "./status-guards.js";
@@ -35,6 +36,38 @@ import { clearParseCache } from "./files.js";
 import { writeManifest } from "./workflow-manifest.js";
 import { atomicWriteSync } from "./atomic-write.js";
 import { acquireSyncLock, releaseSyncLock } from "./sync-lock.js";
+
+const TASK_STATE_EVENT_COMMANDS = new Set([
+  "complete_task",
+  "start_task",
+  "skip_task",
+  "report_blocker",
+]);
+
+const SLICE_STATE_EVENT_COMMANDS = new Set(["complete_slice"]);
+
+function hasAdoptedLifecycle(
+  itemKind: "task" | "slice",
+  params: Record<string, unknown>,
+): boolean {
+  return Boolean(getDb().prepare(`
+    SELECT 1 AS present
+    FROM workflow_item_lifecycles
+    WHERE item_kind = :item_kind
+      AND milestone_id = :milestone_id
+      AND slice_id = :slice_id
+      AND (
+        (:task_id IS NULL AND task_id IS NULL)
+        OR task_id = :task_id
+      )
+    LIMIT 1
+  `).get({
+    ":item_kind": itemKind,
+    ":milestone_id": params["milestoneId"],
+    ":slice_id": params["sliceId"],
+    ":task_id": itemKind === "task" ? params["taskId"] : null,
+  }));
+}
 
 // ─── Replay Helpers ──────────────────────────────────────────────────────────
 
@@ -95,6 +128,17 @@ function replayEvents(events: WorkflowEvent[]): void {
     const cmd = normalizeWorkflowEventCommand(event.cmd);
     if (!cmd) {
       logWarning("reconcile", `Event with non-string cmd skipped: ${JSON.stringify(event.cmd)}`);
+      continue;
+    }
+    let itemKind: "task" | "slice" | null = null;
+    if (TASK_STATE_EVENT_COMMANDS.has(cmd)) itemKind = "task";
+    else if (SLICE_STATE_EVENT_COMMANDS.has(cmd)) itemKind = "slice";
+    if (itemKind && hasAdoptedLifecycle(itemKind, p)) {
+      const taskSuffix = itemKind === "task" ? `/${p["taskId"]}` : "";
+      logWarning(
+        "reconcile",
+        `Ignoring legacy ${cmd} replay for canonically adopted ${itemKind} ${p["milestoneId"]}/${p["sliceId"]}${taskSuffix}`,
+      );
       continue;
     }
     switch (cmd) {

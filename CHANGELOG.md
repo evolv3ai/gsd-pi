@@ -8,6 +8,22 @@ This changelog starts from the `open-gsd/gsd-pi` ownership baseline. Earlier pro
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-07-12
+
+### Added
+- **gsd**: add canonical database foundation (#1426)
+- **gsd-cloud**: add macOS cloud monitor app and runtime telemetry (#1399)
+- add workflow authority baseline gate (#1422)
+
+### Fixed
+- **issue**: [Feature]: Support using pi-llama-cpp for local models (#1425)
+- **issue**: [Bug]: GPT-5.6 ships as the nonexistent bare `gpt-5.6` slug — the real routable models are gpt-5.6-sol/terra/luna (#1424)
+- **issue**: fix(doctor): artifact_file_missing false positive for active-worktree artifacts; checkbox_db_status_divergence regression on plan-slice re-dispatch (#1420)
+- **issue**: planning_subagents should support user-defined planning agents
+- **issue**: auto-verification.js writes VERIFY.json to legacy tasks/ subdir in flat-phase projects
+- **deps**: add missing @opengsd/engine-win32-x64-msvc to lockfile
+- **gsd**: read doctor checkboxes from worktrees
+
 ## [1.10.0] - 2026-07-11
 
 ### Added

@@ -30,8 +30,10 @@ import {
   _getAdapter,
 } from "../../../src/resources/extensions/gsd/gsd-db.ts";
 import { registerDbTools } from "../../../src/resources/extensions/gsd/bootstrap/db-tools.ts";
+import { claimTaskAttempt } from "../../../src/resources/extensions/gsd/task-execution-domain-operation.ts";
+import { seedSliceCompletionAuthority } from "../../../src/resources/extensions/gsd/tests/slice-completion-fixture.ts";
+import { createWorkflowAuthorityFixture } from "../../../src/resources/extensions/gsd/tests/workflow-authority-fixture.ts";
 import {
-  executeTaskComplete,
   executeSummarySave,
   executeMilestoneStatus,
 } from "../../../src/resources/extensions/gsd/tools/workflow-tool-executors.ts";
@@ -52,6 +54,59 @@ function seedMilestoneAndSlice(base: string): void {
   );
 }
 
+function claimCanonicalTaskAuthority(base: string): void {
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  const db = _getAdapter();
+  assert.ok(db, "DB should be open before claiming canonical task authority");
+  const now = "2026-07-12T00:00:00.000Z";
+  db.prepare(`
+    INSERT OR IGNORE INTO milestones (id, title, status, created_at)
+    VALUES ('M001', 'Parity milestone', 'active', ?)
+  `).run(now);
+  db.prepare(`
+    INSERT OR IGNORE INTO slices (milestone_id, id, title, status, created_at)
+    VALUES ('M001', 'S01', 'Parity slice', 'active', ?)
+  `).run(now);
+  db.prepare(`
+    INSERT OR IGNORE INTO tasks (milestone_id, slice_id, id, title, status, verify, sequence)
+    VALUES ('M001', 'S01', 'T01', 'Demo', 'in_progress', 'npm test', 1)
+  `).run();
+  db.prepare(`
+    INSERT INTO workers (
+      worker_id, host, pid, started_at, version, last_heartbeat_at, status,
+      project_root_realpath
+    ) VALUES ('parity-worker', 'test-host', 1, ?, 'test', ?, 'active', ?)
+  `).run(now, now, base);
+  db.prepare(`
+    INSERT INTO milestone_leases (
+      milestone_id, worker_id, fencing_token, acquired_at, expires_at, status
+    ) VALUES ('M001', 'parity-worker', 7, ?, '2099-07-12T00:00:00.000Z', 'held')
+  `).run(now);
+  const dispatch = db.prepare(`
+    INSERT INTO unit_dispatches (
+      trace_id, turn_id, worker_id, milestone_lease_token,
+      milestone_id, slice_id, task_id, unit_type, unit_id,
+      status, attempt_n, started_at
+    ) VALUES (
+      'fixture-trace', 'fixture-turn', 'parity-worker', 7,
+      'M001', 'S01', 'T01', 'execute-task', 'M001/S01/T01',
+      'claimed', 1, ?
+    )
+  `).run(now);
+  claimTaskAttempt({
+    invocation: {
+      idempotencyKey: "fixture:mcp-parity:claim:M001/S01/T01",
+      sourceTransport: "internal",
+      actorType: "agent",
+      actorId: "parity-worker",
+    },
+    task: { milestoneId: "M001", sliceId: "S01", taskId: "T01" },
+    workerId: "parity-worker",
+    milestoneLeaseToken: 7,
+    coordinationDispatchId: Number(dispatch.lastInsertRowid),
+  });
+}
+
 function cleanup(base: string): void {
   try {
     closeDatabase();
@@ -66,9 +121,10 @@ function cleanup(base: string): void {
 }
 
 function makeMockServer() {
+  type TestRequestExtra = { _meta?: Record<string, unknown> };
   const tools: Array<{
     name: string;
-    handler: (args: Record<string, unknown>) => Promise<unknown>;
+    handler: (args: Record<string, unknown>, extra?: TestRequestExtra) => Promise<unknown>;
   }> = [];
   return {
     tools,
@@ -76,9 +132,14 @@ function makeMockServer() {
       name: string,
       _description: string,
       _params: Record<string, unknown>,
-      handler: (args: Record<string, unknown>) => Promise<unknown>,
+      handler: (args: Record<string, unknown>, extra?: TestRequestExtra) => Promise<unknown>,
     ) {
-      tools.push({ name, handler });
+      tools.push({
+        name,
+        handler: (args, extra) => handler(args, extra ?? {
+          _meta: { "io.opengsd/idempotency-key": `mcp-parity:${name}` },
+        }),
+      });
     },
   };
 }
@@ -208,7 +269,7 @@ function snapshotState(base: string, milestoneId: string, sliceId: string, taskI
   // string field `full_summary_md`). Recursive normalization is simpler and
   // more robust than maintaining an elision list.
   const taskRow = normalizeParams(row as Record<string, unknown>);
-  assert.equal(taskRow.status, "complete", "task status must be 'complete' after completion");
+  assert.equal(taskRow.status, "in_progress", "staged Task must remain in progress until host verification");
 
   const journalPath = join(base, ".gsd", "event-log.jsonl");
   const journalEvents: SnapshotShape["journalEvents"] = [];
@@ -262,21 +323,15 @@ process.env.GSD_WORKFLOW_WRITE_GATE_MODULE ??= fileURLToPath(new URL(
 ));
 
 describe("ADR-008 parity: gsd_task_complete native vs MCP", () => {
-  it("native and MCP produce equivalent DB row, summary, and journal event", async () => {
+  it("native and MCP produce equivalent staged DB row, summary, and journal event", async () => {
     let baseNative = "";
     let baseMcp = "";
     try {
       // ─── Native path ─────────────────────────────────────────────────
-      // The native wrapper in db-tools.ts:670-674 is:
-      //   const taskCompleteExecute = async (_tcid, params, ...) => {
-      //     const { executeTaskComplete } = await loadWorkflowExecutors();
-      //     return executeTaskComplete(params, resolveCtxCwd(_ctx));
-      //   };
-      // Calling executeTaskComplete directly with a basePath is the same
-      // post-resolution call shape.
       baseNative = makeTmpBase();
       seedMilestoneAndSlice(baseNative);
-      const nativeResult = await executeTaskComplete(COMPLETION_ARGS, baseNative);
+      claimCanonicalTaskAuthority(baseNative);
+      const nativeResult = await runNativeDbTool(baseNative, "gsd_task_complete", COMPLETION_ARGS);
       assert.ok(!nativeResult.isError, "native completion must succeed");
 
       const snapshotNative = snapshotState(baseNative, "M001", "S01", "T01");
@@ -285,6 +340,7 @@ describe("ADR-008 parity: gsd_task_complete native vs MCP", () => {
       // ─── MCP path ────────────────────────────────────────────────────
       baseMcp = makeTmpBase();
       seedMilestoneAndSlice(baseMcp);
+      claimCanonicalTaskAuthority(baseMcp);
 
       const server = makeMockServer();
       registerWorkflowTools(server as Parameters<typeof registerWorkflowTools>[0]);
@@ -292,7 +348,7 @@ describe("ADR-008 parity: gsd_task_complete native vs MCP", () => {
       assert.ok(taskTool, "gsd_task_complete must be registered on the MCP surface");
 
       const mcpResult = await taskTool.handler({ projectDir: baseMcp, ...COMPLETION_ARGS });
-      assert.ok(!mcpResult.isError, "mcp completion must succeed");
+      assert.ok(!mcpResult.isError, `mcp completion must succeed: ${JSON.stringify(mcpResult)}`);
 
       const snapshotMcp = snapshotState(baseMcp, "M001", "S01", "T01");
 
@@ -421,5 +477,200 @@ describe("ADR-008 parity: shared workflow write tools native vs MCP", () => {
         );
       },
     });
+  });
+});
+
+const SLICE_LIFECYCLE_CASES = [
+  {
+    canonicalName: "gsd_slice_complete",
+    retryName: "gsd_complete_slice",
+    operationType: "slice.complete",
+    eventType: "slice.completed",
+    stableKey: "slice-lifecycle-complete",
+    args: {
+      milestoneId: "M001",
+      sliceId: "S02",
+      sliceTitle: "Ready dependent slice",
+      oneLiner: "Persistent lifecycle parity is complete",
+      narrative: "Pi and MCP preserve one canonical Slice completion across a restart.",
+      verification: "Focused persistent-database parity test passed.",
+      uatContent: "## UAT\n\nPASS",
+    },
+  },
+  {
+    canonicalName: "gsd_slice_reopen",
+    retryName: "gsd_reopen_slice",
+    operationType: "slice.reopen",
+    eventType: "slice.reopened",
+    stableKey: "slice-lifecycle-reopen",
+    args: {
+      milestoneId: "M001",
+      sliceId: "S02",
+      reason: "Reopen the completed Slice for retry parity.",
+    },
+  },
+  {
+    canonicalName: "gsd_skip_slice",
+    retryName: "gsd_skip_slice",
+    operationType: "slice.cancel",
+    eventType: "slice.cancelled",
+    stableKey: "slice-lifecycle-cancel",
+    args: {
+      milestoneId: "M001",
+      sliceId: "S02",
+      reason: "Cancel the reopened Slice for retry parity.",
+    },
+  },
+] as const;
+
+function normalizeLifecycleToolResult(result: unknown, base: string): Record<string, unknown> {
+  const serialized = JSON.stringify(result);
+  // On Windows, JSON.stringify escapes path separators ("\\"), so the raw `base`
+  // (single backslashes) never matches the serialized paths and the workspace
+  // prefix survives, breaking the cross-transport comparison. Replace the
+  // JSON-escaped form of the base exactly as it appears in the serialized string;
+  // JSON.stringify(base) sans quotes yields that form and equals `base` verbatim
+  // on POSIX, so this stays correct on both platforms.
+  const escapedBase = JSON.stringify(base).slice(1, -1);
+  const record = JSON.parse(serialized.replaceAll(escapedBase, "<PROJECT>")) as Record<string, unknown>;
+  const details = record.structuredContent ?? record.details;
+  return {
+    content: record.content,
+    details,
+    isError: record.isError ?? false,
+  };
+}
+
+function assertSingleSliceLifecycleLineage(
+  operationType: string,
+  eventType: string,
+  expectedIdempotencyKey: string,
+  expectedTransport: "pi-tool" | "workflow-mcp",
+): void {
+  const db = _getAdapter();
+  assert.ok(db, "persistent Slice lifecycle database must be open");
+  const operations = db.prepare(`
+    SELECT idempotency_key, source_transport
+    FROM workflow_operations
+    WHERE operation_type = ?
+  `).all(operationType);
+  assert.deepEqual(operations, [{
+    idempotency_key: expectedIdempotencyKey,
+    source_transport: expectedTransport,
+  }]);
+  assert.equal(Number(db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM workflow_domain_events
+    WHERE event_type = ?
+  `).get(eventType)?.count), 1, `${eventType} must have one durable event`);
+}
+
+async function callMcpLifecycleTool(
+  base: string,
+  name: string,
+  args: Record<string, unknown>,
+  stableKey: string,
+): Promise<unknown> {
+  const server = makeMockServer();
+  registerWorkflowTools(server as Parameters<typeof registerWorkflowTools>[0]);
+  const tool = server.tools.find((entry) => entry.name === name);
+  assert.ok(tool, `${name} must be registered on a fresh MCP server`);
+  return tool.handler({ projectDir: base, ...args }, {
+    _meta: { "io.opengsd/idempotency-key": stableKey },
+  });
+}
+
+async function runPersistentSliceLifecycleMatrix(
+  transport: "pi" | "mcp",
+): Promise<Record<string, Record<string, unknown>>> {
+  const fixture = await createWorkflowAuthorityFixture();
+  const responses: Record<string, Record<string, unknown>> = {};
+  try {
+    seedSliceCompletionAuthority({
+      milestoneId: "M001",
+      sliceId: "S02",
+      completedTaskIds: ["T01"],
+      runId: `${transport}-persistent-parity`,
+    });
+
+    for (const lifecycleCase of SLICE_LIFECYCLE_CASES) {
+      const first = transport === "pi"
+        ? await runNativeDbTool(fixture.root, lifecycleCase.canonicalName, lifecycleCase.args)
+        : await callMcpLifecycleTool(
+            fixture.root,
+            lifecycleCase.canonicalName,
+            lifecycleCase.args,
+            lifecycleCase.stableKey,
+          );
+      assert.ok(!(first as { isError?: boolean }).isError, `${transport} canonical call must succeed`);
+
+      closeDatabase();
+
+      const retry = transport === "pi"
+        ? await runNativeDbTool(fixture.root, lifecycleCase.retryName, lifecycleCase.args)
+        : await callMcpLifecycleTool(
+            fixture.root,
+            lifecycleCase.retryName,
+            lifecycleCase.args,
+            lifecycleCase.stableKey,
+          );
+      assert.ok(!(retry as { isError?: boolean }).isError, `${transport} retry must succeed after DB reopen`);
+
+      const firstContract = normalizeLifecycleToolResult(first, fixture.root);
+      const retryContract = normalizeLifecycleToolResult(retry, fixture.root);
+      const retryDetails = retryContract.details as Record<string, unknown>;
+      assert.equal(retryDetails.duplicate, true, "an exact retry must identify its durable replay");
+      delete retryDetails.duplicate;
+      assert.deepEqual(
+        retryContract,
+        firstContract,
+        `${transport} ${lifecycleCase.retryName} retry must preserve canonical response semantics`,
+      );
+      responses[lifecycleCase.operationType] = firstContract;
+
+      const canonicalName = lifecycleCase.canonicalName;
+      const expectedIdempotencyKey = transport === "pi"
+        ? `pi:${canonicalName}:parity-call`
+        : `mcp:${canonicalName}:${lifecycleCase.stableKey}`;
+      assertSingleSliceLifecycleLineage(
+        lifecycleCase.operationType,
+        lifecycleCase.eventType,
+        expectedIdempotencyKey,
+        transport === "pi" ? "pi-tool" : "workflow-mcp",
+      );
+    }
+
+    const db = _getAdapter();
+    assert.ok(db);
+    assert.equal(Number(db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM workflow_item_lifecycles
+      WHERE item_kind = 'slice' AND milestone_id = 'M001' AND slice_id = 'S02'
+    `).get()?.count), 1, "retries must not duplicate the canonical Slice lifecycle row");
+    assert.equal(Number(db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM workflow_item_lifecycles
+      WHERE item_kind = 'task' AND milestone_id = 'M001' AND slice_id = 'S02' AND task_id = 'T01'
+    `).get()?.count), 1, "retries must not duplicate the canonical Task lifecycle row");
+    return responses;
+  } finally {
+    fixture.cleanup();
+  }
+}
+
+describe("Slice lifecycle persistent retry parity", () => {
+  it("Pi and MCP preserve canonical-first complete, reopen, and cancel across fresh retry registrations", async (t) => {
+    const previousAliasSetting = process.env.GSD_ADVERTISE_TOOL_ALIASES;
+    t.after(() => {
+      if (previousAliasSetting === undefined) {
+        delete process.env.GSD_ADVERTISE_TOOL_ALIASES;
+      } else {
+        process.env.GSD_ADVERTISE_TOOL_ALIASES = previousAliasSetting;
+      }
+    });
+    process.env.GSD_ADVERTISE_TOOL_ALIASES = "1";
+    const piResponses = await runPersistentSliceLifecycleMatrix("pi");
+    const mcpResponses = await runPersistentSliceLifecycleMatrix("mcp");
+    assert.deepEqual(mcpResponses, piResponses, "Pi and MCP lifecycle response contracts must match");
   });
 });

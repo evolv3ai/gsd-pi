@@ -245,14 +245,18 @@ pre_dispatch_hooks:
 ### Planning subagents
 
 ```yaml
+planning_subagent_registry:
+  my-custom-planner:
+    read_only_specialist: true
+
 planning_subagents:
   plan-milestone:
-    allowed: [scout, planner, security]
+    allowed: [scout, planner, my-custom-planner, security]
   plan-slice:
-    allowed: [scout, planner, reviewer, security]
+    allowed: [scout, planner, my-custom-planner, reviewer, security]
 ```
 
-Only `plan-milestone` and `plan-slice` are configurable. Agents must be GSD-classified read-only planning specialists (`mnemo`, `scout`, `planner`, `reviewer`, `security`, or `tester`); the write gate still blocks unsafe or unlisted agents.
+Only `plan-milestone` and `plan-slice` are configurable. Agents must be built-in read-only planning specialists (`mnemo`, `scout`, `planner`, `reviewer`, `security`, or `tester`) or registered in `planning_subagent_registry` with `read_only_specialist: true`; the write gate still blocks unsafe or unlisted agents.
 
 ### Skill routing
 

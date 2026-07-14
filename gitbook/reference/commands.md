@@ -53,7 +53,7 @@
 | `/gsd skill-health` | Skill lifecycle dashboard |
 | `/gsd hooks` | Show configured hooks |
 | `/gsd migrate` | Migrate v1 `.planning` to DB-backed `.gsd` with backup and audit |
-| `/gsd recover --confirm` | Explicitly reconstruct database hierarchy state from rendered markdown after database loss or corruption |
+| `/gsd recover --confirm` | Reconstruct legacy hierarchy state from rendered markdown; refuses to replace adopted canonical lifecycle history |
 | `/gsd rebuild markdown` | Rebuild markdown projections from the canonical database; stale completion projections are quarantined, not imported |
 | `/gsd rebuild database` | Reserved for DB-native rebuilds; does not import markdown projections |
 | `/gsd codebase [generate\|update\|stats]` | Manage `.gsd/CODEBASE.md`; parent workspaces include declared child repositories under repo-labeled sections |
@@ -66,8 +66,8 @@
 | `/gsd new-milestone [--deep]` | Create a new milestone; `--deep` opts the project into deep planning mode |
 | `/gsd skip` | Prevent a unit from auto-mode dispatch |
 | `/gsd undo` | Revert last completed unit |
-| `/gsd undo-task` | Reset a specific task's completion state |
-| `/gsd reset-slice` | Reset a slice and all its tasks |
+| `/gsd undo-task` | Reopen a terminal task through canonical DB recovery authority |
+| `/gsd reset-slice` | Set a slice active and reopen eligible terminal tasks through guarded DB operations |
 | `/gsd park` | Park a milestone (skip without deleting) |
 | `/gsd unpark` | Reactivate a parked milestone |
 

@@ -20,10 +20,23 @@ import {
   insertMilestone,
   insertSlice,
   insertTask,
-  setSliceSummaryMd,
 } from '../gsd-db.ts';
-import { handleCompleteSlice } from '../tools/complete-slice.ts';
+import {
+  handleCompleteSlice as handleCompleteSliceWithInvocation,
+} from '../tools/complete-slice.ts';
+import { internalExecutionInvocation } from '../execution-invocation.ts';
 import type { CompleteSliceParams } from '../types.ts';
+
+let completeSliceInvocationSequence = 0;
+function handleCompleteSlice(
+  params: Parameters<typeof handleCompleteSliceWithInvocation>[0],
+  basePath: string,
+  invocation = internalExecutionInvocation(
+    `test/complete-slice-verification-gate/${++completeSliceInvocationSequence}`,
+  ),
+) {
+  return handleCompleteSliceWithInvocation(params, basePath, invocation);
+}
 
 function tempDbPath(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-blocked-gate-'));
@@ -313,46 +326,5 @@ describe('complete-slice verification gate (#3580)', () => {
         `mixed UAT must pass the browser gate, got: ${result.error}`,
       );
     }
-  });
-
-  test('backfills prior verification narrative when verification is omitted on re-completion', async () => {
-    // Seed full_summary_md with a prior verification narrative (simulates a
-    // previous completion where the verification text was recorded).
-    const priorVerification = 'All 12 API integration tests pass — zero regressions detected.';
-    const priorSummary = [
-      '---',
-      'verification_result: passed',
-      '---',
-      '',
-      '# S01: Test Slice',
-      '',
-      '## What Happened',
-      '',
-      'narrative goes here',
-      '',
-      '## Verification',
-      '',
-      priorVerification,
-      '',
-      '## Requirements Advanced',
-      '',
-    ].join('\n');
-    setSliceSummaryMd('M001', 'S01', priorSummary, '');
-
-    // Complete slice without providing verification — handler must backfill
-    // from the existing summary rather than writing an empty section.
-    const result = await handleCompleteSlice(
-      makeParams({ verification: undefined }),
-      basePath,
-    );
-
-    assert.ok(!('error' in result), `expected success, got: ${'error' in result ? (result as { error: string }).error : ''}`);
-
-    const { summaryPath } = result as { summaryPath: string };
-    const written = fs.readFileSync(summaryPath, 'utf8');
-    assert.ok(
-      written.includes(priorVerification),
-      `prior verification narrative must be preserved when verification is omitted; got:\n${written}`,
-    );
   });
 });

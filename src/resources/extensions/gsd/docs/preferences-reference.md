@@ -124,11 +124,11 @@ Diagnostics record the file path, scope (global/project), severity (error/warnin
   - `validation` — used for gate evaluation, roadmap reassessment, milestone validation, and doc rewrites. Falls back to `planning` if unset.
   - `uat` — used for UAT runs. Falls back to `completion` if unset.
 
-- `thinking`: per-phase reasoning effort (ADR-026), separate from `models`. Same phase keys as `models`. Values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. Thinking travels with the model — model choice and reasoning effort are independent controls, so you can run one model across phases at different reasoning levels.
+- `thinking`: per-phase reasoning effort (ADR-026), separate from `models`. Same phase keys as `models`. Values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Thinking travels with the model — model choice and reasoning effort are independent controls, so you can run one model across phases at different reasoning levels.
   - Two equivalent ways to set it: inline as `models.<phase>.thinking`, or as a separate `thinking:` block keyed by phase. For the same phase, the inline value wins over the block; project preferences win over global; a phase that's unset inherits via the same sibling chain as `models` (e.g. `discuss → planning`).
   - If no thinking is configured for a phase, the session level (set via `/model`) is used, exactly as before — this is fully backward-compatible.
   - `execute-task` (code-writing) has a measured reasoning floor of `medium`: at lower levels models stop planning edits and thrash on file re-reads. The floor applies to the session/default path. An **explicit** `execution` thinking level bypasses the floor and is honored verbatim (with a one-time advisory) — set `execution: low` deliberately if you want it.
-  - Levels a model can't support are clamped to the nearest supported level at dispatch and never sent to the provider, so a model/level mismatch never fails a unit mid-run. `xhigh` support is model-dependent; current examples include OpenAI Codex Max models and Claude Sonnet 5 on Amazon Bedrock.
+  - Levels a model can't support are clamped to the nearest supported level at dispatch and never sent to the provider, so a model/level mismatch never fails a unit mid-run. `xhigh` and `max` support are model-dependent; current examples include `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`, which advertise both.
 
 - `skill_staleness_days`: number — skills unused for this many days get deprioritized during discovery. Set to `0` to disable staleness tracking. Default: `60`.
 
@@ -311,15 +311,30 @@ In `"parent"` mode, slice/task `targetRepositories` default to the declared chil
   - Values must match declared repository IDs or the implicit `project`; omitted plan/task `targetRepositories` defaults to `["project"]`.
   - `/gsd codebase` is workspace-aware in parent mode with declared child repositories: generated `.gsd/CODEBASE.md` uses workspace-relative paths, groups files under `## [repo-id]` headings, and refreshes when repository registry metadata changes.
 
-- `verification_commands`: string[] — shell commands to run as verification after task execution (e.g., `["npm test", "npm run lint"]`). Commands run in order; if any fails, the task is marked as needing fixes.
+- `verification_commands`: string[] — shell commands to run as host-owned verification after task execution (e.g., `["npm test", "npm run lint"]`). Commands run in order; if any fails, GSD records a failing Technical Verdict for the task Attempt and routes the task to retry or pause instead of publishing completion.
 
-- `verification_auto_fix`: boolean — when `true`, automatically attempt to fix verification failures instead of just reporting them. Default: `false`.
+- `verification_auto_fix`: boolean — when `true`, automatically attempt to fix verification failures instead of just reporting them. Default: `true`; set to `false` to pause on the first failed or inconclusive host verdict.
 
-- `verification_max_retries`: number — maximum number of fix-and-retry cycles for verification failures. Default: `0` (no retries).
+- `verification_max_retries`: number — maximum number of fix-and-retry cycles for verification failures. Default: `2`.
 
 - `per_unit_cost_cap_usd`: number — per-unit retry cost ceiling in USD for verification retries. Must be a positive finite number when set; invalid values are rejected during preference validation. Default: `5.0`. During auto-verification and artifact-retry flows, auto-mode pauses when the current unit reaches this cap or when current unit cost spikes to at least `3.0x` the rolling average.
 
-- `uat_dispatch`: boolean — when `true`, enables UAT (User Acceptance Testing) dispatch mode. Default: `false`.
+- `uat_dispatch`: boolean — when `true`, dispatches routine artifact-driven UAT in addition to UAT that requires runtime or browser evidence. Runtime/browser-required UAT dispatches by default even when this is `false`. Deep planning sets it to `true` when the preference is absent and preserves an explicit `false`. Default: `false`.
+
+  Recommended for long autonomous runs:
+
+  ```yaml
+  verification_auto_fix: true
+  verification_max_retries: 2
+  uat_dispatch: true
+  ```
+
+  These settings control how verification is attempted; they do not grant
+  lifecycle authority. Failures are repaired and retried within the configured
+  limits. A pause should mean the agent exhausted its available repair path,
+  needs external access or a dependency, or genuinely needs a user decision.
+  No preference or Markdown UAT result can bypass canonical Task proof or
+  complete a Slice.
 
 - `post_unit_hooks`: array — hooks that fire after a unit completes. Each entry has:
   - `name`: string — unique hook identifier.
@@ -339,6 +354,10 @@ In `"parent"` mode, slice/task `targetRepositories` default to the declared chil
   Blocking hook artifacts must begin with YAML frontmatter containing either `verdict` or `outcome.verdict`.
   Supported verdicts are `pass`, `advisory`, `needs-rework`, `needs-remediation`, and `needs-attention`.
   `pass` and `advisory` continue; `needs-rework` retries the trigger unit when routed with `retry-unit`/`retry-task`; `needs-remediation` and `needs-attention` pause with recovery guidance.
+  Hook artifacts are compatibility inputs to hook routing, not lifecycle
+  authority. Any resulting Task or Slice retry, cancellation, completion, or
+  reopen still commits through the canonical database operation; editing a hook
+  artifact cannot directly change lifecycle state.
 
 - `pre_dispatch_hooks`: array — hooks that fire before a unit is dispatched. Each entry has:
   - `name`: string — unique hook identifier.
@@ -357,24 +376,33 @@ In `"parent"` mode, slice/task `targetRepositories` default to the declared chil
   - `"replace"` requires `prompt`.
   - `"skip"` is valid with no additional fields.
 
+- `planning_subagent_registry`: object — optional classification for custom planning agents. Each key is an agent id and must set:
+  - `read_only_specialist`: boolean — set to `true` to classify the custom agent as safe for planning dispatch.
+
 - `planning_subagents`: object — project-local widening for read-only planning subagent dispatch. Supported unit keys are `plan-milestone` and `plan-slice`; each has:
   - `allowed`: string[] — additional planning-safe agents for that unit.
 
-  Agents must already be classified by GSD as read-only planning specialists: `mnemo`, `scout`, `planner`, `reviewer`, `security`, or `tester`. The write gate still blocks source writes outside `.gsd/**`, unrestricted bash, stale subagent calls without agent identities, agents outside the global read-only registry, and agents not listed for the active unit.
+  Agents must be built-in read-only planning specialists (`mnemo`, `scout`, `planner`, `reviewer`, `security`, or `tester`) or registered in `planning_subagent_registry` with `read_only_specialist: true`. The write gate still blocks source writes outside `.gsd/**`, unrestricted bash, stale subagent calls without agent identities, agents outside the read-only registry, and agents not listed for the active unit.
 
   Example:
 
   ```yaml
+  planning_subagent_registry:
+    my-custom-planner:
+      read_only_specialist: true
+
   planning_subagents:
     plan-milestone:
       allowed:
         - scout
         - planner
+        - my-custom-planner
         - security
     plan-slice:
       allowed:
         - scout
         - planner
+        - my-custom-planner
         - reviewer
         - security
   ```

@@ -10,8 +10,8 @@ import {
   getTask,
   openDatabase,
 } from "../gsd-db.ts";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { filterDoctorIssues } from "../doctor-format.ts";
 import { checkEngineHealth } from "../doctor-engine-checks.ts";
@@ -99,6 +99,28 @@ test("checkEngineHealth reports memories_fts without the rebuild marker", async 
   assert.equal(ftsIssue.fixable, false);
 });
 
+test("checkEngineHealth does not advertise orphaned Tasks as automatically fixable", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-orphaned-task-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  mkdirSync(join(base, ".gsd"), { recursive: true });
+  openDatabase(join(base, ".gsd", "gsd.db"));
+  insertMilestone({ id: "M001", title: "Milestone", status: "active" });
+  const adapter = _getAdapter()!;
+  adapter.exec("PRAGMA foreign_keys = OFF");
+  adapter.prepare(`
+    INSERT INTO tasks (milestone_id, slice_id, id, title, status, sequence)
+    VALUES ('M001', 'S99', 'T01', 'Orphaned Task', 'pending', 1)
+  `).run();
+  adapter.exec("PRAGMA foreign_keys = ON");
+
+  const issues: any[] = [];
+  await checkEngineHealth(base, issues, []);
+
+  const orphan = issues.find((issue) => issue.code === "db_orphaned_task");
+  assert.ok(orphan);
+  assert.equal(orphan.fixable, false);
+});
+
 test("checkEngineHealth reports checkbox divergence against DB status", async (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-doctor-checkbox-drift-"));
   t.after(() => rmSync(base, { recursive: true, force: true }));
@@ -167,6 +189,53 @@ test("checkEngineHealth keeps PLAN checkbox divergence after stale projection fl
   assert.match(readFileSync(plan.planPath, "utf-8"), /- \[ \] \*\*T01\*\*:/);
 });
 
+test("checkEngineHealth retains ROADMAP divergence when projection repair remains stale", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-roadmap-repair-stale-"));
+  const gsdDir = join(base, ".gsd");
+  mkdirSync(gsdDir, { recursive: true });
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertMilestone({ id: "M001", title: "Foundation", status: "active" });
+  insertSlice({
+    id: "S01",
+    milestoneId: "M001",
+    title: "Slice",
+    status: "pending",
+    risk: "low",
+    depends: [],
+    sequence: 1,
+  });
+  const roadmap = await renderRoadmapFromDb(base, "M001");
+  if ("skipped" in roadmap) assert.fail("planned milestone should render a roadmap");
+  writeFileSync(
+    roadmap.roadmapPath,
+    readFileSync(roadmap.roadmapPath, "utf-8").replace("- [ ] **S01:", "- [x] **S01:"),
+    "utf-8",
+  );
+  appendEvent(base, {
+    cmd: "complete-slice",
+    params: { milestoneId: "M001", sliceId: "S01" },
+    ts: "2999-01-01T00:00:00.000Z",
+    actor: "agent",
+  });
+
+  const roadmapDir = dirname(roadmap.roadmapPath);
+  chmodSync(roadmapDir, 0o555);
+  t.after(() => {
+    chmodSync(roadmapDir, 0o755);
+    rmSync(base, { recursive: true, force: true });
+  });
+
+  const issues: any[] = [];
+  const fixes: string[] = [];
+  await checkEngineHealth(base, issues, fixes);
+
+  assert.deepEqual(
+    issues.filter((issue) => issue.code === "checkbox_db_status_divergence").map((issue) => issue.unitId),
+    ["M001/S01"],
+  );
+  assert.equal(fixes.includes("re-rendered stale projections for M001"), false);
+});
+
 test("checkEngineHealth ignores stale suffixed flat-phase duplicate when bare milestone exists", async (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-doctor-checkbox-flat-duplicate-"));
   t.after(() => rmSync(base, { recursive: true, force: true }));
@@ -203,6 +272,38 @@ test("checkEngineHealth ignores stale suffixed flat-phase duplicate when bare mi
     issues.filter((issue) => issue.code === "checkbox_db_status_divergence").map((issue) => issue.unitId),
     [],
     "stale suffixed duplicate phase projection must not compete with the bare milestone projection",
+  );
+});
+
+test("checkEngineHealth reads task checkboxes from the canonical milestone worktree", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-checkbox-worktree-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  mkdirSync(gsdDir, { recursive: true });
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertMilestone({ id: "M003", title: "Milestone", status: "active" });
+  insertSlice({ id: "S01", milestoneId: "M003", title: "Slice", status: "pending", risk: "low", depends: [], sequence: 1 });
+  insertTask({ id: "T03", milestoneId: "M003", sliceId: "S01", title: "Task", status: "complete", sequence: 1 });
+
+  const plan = await renderPlanFromDb(base, "M003", "S01");
+  const checkedPlan = readFileSync(plan.planPath, "utf-8");
+  writeFileSync(plan.planPath, checkedPlan.replace("- [x] **T03**:", "- [ ] **T03**:"), "utf-8");
+
+  const worktree = join(base, ".gsd-worktrees", "M003");
+  const worktreePlan = join(worktree, ".gsd", "phases", "03-milestone", "03-01-PLAN.md");
+  mkdirSync(join(worktree, ".gsd", "phases", "03-milestone"), { recursive: true });
+  writeFileSync(join(worktree, ".git"), `gitdir: ${join(base, ".git", "worktrees", "M003")}\n`);
+  writeFileSync(worktreePlan, checkedPlan, "utf-8");
+
+  const issues: any[] = [];
+  await checkEngineHealth(base, issues, []);
+
+  assert.deepEqual(
+    issues.filter((issue) => issue.code === "checkbox_db_status_divergence").map((issue) => issue.unitId),
+    [],
+    "the stale project-root PLAN must not compete with the live milestone worktree projection",
   );
 });
 
@@ -373,6 +474,38 @@ test("checkEngineHealth reports artifact rows whose files are missing on disk", 
   assert.ok(missing, "missing artifact rows should be reported");
   assert.equal(missing.unitId, "M001");
   assert.equal(missing.fixable, false);
+});
+
+test("checkEngineHealth resolves artifact rows through the canonical milestone worktree", async (t) => {
+  const base = mkdtempSync(join(tmpdir(), "gsd-doctor-artifact-worktree-"));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+
+  const gsdDir = join(base, ".gsd");
+  const artifactPath = "phases/03-milestone/03-01-PLAN.md";
+  const worktree = join(base, ".gsd-worktrees", "M003");
+  mkdirSync(gsdDir, { recursive: true });
+  mkdirSync(join(worktree, ".gsd", "phases", "03-milestone"), { recursive: true });
+  writeFileSync(join(worktree, ".git"), `gitdir: ${join(base, ".git", "worktrees", "M003")}\n`);
+  writeFileSync(join(worktree, ".gsd", artifactPath), "# Plan\n", "utf-8");
+
+  openDatabase(join(gsdDir, "gsd.db"));
+  insertArtifact({
+    path: artifactPath,
+    artifact_type: "PLAN",
+    milestone_id: "M003",
+    slice_id: "S01",
+    task_id: null,
+    full_content: "# Plan\n",
+  });
+
+  const issues: any[] = [];
+  await checkEngineHealth(base, issues, []);
+
+  assert.equal(
+    issues.some((issue) => issue.code === "artifact_file_missing" && issue.file === artifactPath),
+    false,
+    "worktree-local artifact rows must not be reported missing from the project root",
+  );
 });
 
 test("checkEngineHealth resolves escaped .gsd artifact rows against the project .gsd directory", async (t) => {
@@ -832,7 +965,7 @@ function taskSummary(id: string, verificationResult = "passed"): string {
   ].join("\n");
 }
 
-test("checkEngineHealth marks valid task artifact DB divergence fixable and repairs it", async (t) => {
+test("checkEngineHealth never repairs Task completion from a valid SUMMARY projection", async (t) => {
   const base = mkdtempSync(join(tmpdir(), "gsd-doctor-artifact-db-repair-"));
   t.after(() => rmSync(base, { recursive: true, force: true }));
 
@@ -862,27 +995,24 @@ test("checkEngineHealth marks valid task artifact DB divergence fixable and repa
 
   const divergence = detectIssues.find((issue) => issue.code === "artifact_db_status_divergence" && issue.unitId === "M001/S01/T01");
   assert.ok(divergence, "doctor should report the artifact/DB divergence");
-  assert.equal(divergence.fixable, true);
+  assert.equal(divergence.fixable, false);
 
   const repairIssues: any[] = [];
   const fixes: string[] = [];
   await checkEngineHealth(base, repairIssues, fixes, { repair: true });
 
-  assert.ok(
-    fixes.includes("repaired task completion from SUMMARY artifact for M001/S01/T01"),
-    "repair mode should report the task completion repair",
-  );
+  assert.equal(fixes.some((fix) => fix.includes("task completion")), false);
   assert.equal(
     repairIssues.some((issue) => issue.code === "artifact_db_status_divergence" && issue.unitId === "M001/S01/T01"),
-    false,
-    "repaired divergence should not be reported in the same doctor run",
+    true,
+    "repair mode must preserve the diagnostic until canonical execution resolves it",
   );
 
   const task = getTask("M001", "S01", "T01");
-  assert.equal(task?.status, "complete");
-  assert.equal(task?.completed_at, "2026-01-01T00:00:00.000Z");
-  assert.equal(task?.verification_result, "passed");
-  assert.match(task?.full_summary_md ?? "", /# T01: Done/);
+  assert.equal(task?.status, "pending");
+  assert.equal(task?.completed_at, null);
+  assert.equal(task?.verification_result, "");
+  assert.equal(task?.full_summary_md, "");
 });
 
 test("checkEngineHealth keeps failed and negated-pass summaries non-fixable", async (t) => {

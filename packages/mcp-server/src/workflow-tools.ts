@@ -95,7 +95,8 @@ type WorkflowToolExecutors = {
       requirementCoverage?: string;
       boundaryMapMarkdown?: string;
     },
-    basePath?: string,
+    basePath: string,
+    invocation: PlanningInvocation,
   ) => Promise<unknown>;
   executePlanSlice: (
     params: {
@@ -118,7 +119,8 @@ type WorkflowToolExecutors = {
       integrationClosure?: string;
       observabilityImpact?: string;
     },
-    basePath?: string,
+    basePath: string,
+    invocation: PlanningInvocation,
   ) => Promise<unknown>;
   executeReplanSlice: (
     params: {
@@ -140,7 +142,8 @@ type WorkflowToolExecutors = {
       }>;
       removedTaskIds: string[];
     },
-    basePath?: string,
+    basePath: string,
+    invocation: PlanningInvocation,
   ) => Promise<unknown>;
   executeReplanTask: (
     params: {
@@ -159,7 +162,8 @@ type WorkflowToolExecutors = {
       replanReason?: string;
       fullPlanMd?: string;
     },
-    basePath?: string,
+    basePath: string,
+    invocation: PlanningInvocation,
   ) => Promise<unknown>;
   executeReworkBriefSave: (
     params: {
@@ -202,8 +206,11 @@ type WorkflowToolExecutors = {
       requirementsInvalidated?: Array<{ id: string; what: string } | string>;
       filesModified?: Array<{ path: string; description: string } | string>;
       requires?: Array<{ slice: string; provides: string } | string>;
+      actorName?: string;
+      triggerReason?: string;
     },
-    basePath?: string,
+    basePath: string,
+    invocation: ExecutionInvocation,
   ) => Promise<unknown>;
   executeCompleteMilestone: (
     params: {
@@ -262,7 +269,8 @@ type WorkflowToolExecutors = {
         removed: string[];
       };
     },
-    basePath?: string,
+    basePath: string,
+    invocation: PlanningInvocation,
   ) => Promise<unknown>;
   executeSaveGateResult: (
     params: {
@@ -330,7 +338,8 @@ type WorkflowToolExecutors = {
         decisionRef?: string;
       }>;
     },
-    basePath?: string,
+    basePath: string,
+    invocation: ExecutionInvocation,
   ) => Promise<unknown>;
   executeTaskReopen: (
     params: {
@@ -341,7 +350,17 @@ type WorkflowToolExecutors = {
       actorName?: string;
       triggerReason?: string;
     },
-    basePath?: string,
+    basePath: string,
+    invocation: ExecutionInvocation,
+  ) => Promise<unknown>;
+  executeTaskRecoveryResume: (
+    params: {
+      recoveryActionId: string;
+      repairSummary: string;
+      evidence: Record<string, unknown>;
+    },
+    basePath: string,
+    invocation: ExecutionInvocation,
   ) => Promise<unknown>;
   executeSliceReopen: (
     params: {
@@ -351,7 +370,17 @@ type WorkflowToolExecutors = {
       actorName?: string;
       triggerReason?: string;
     },
-    basePath?: string,
+    basePath: string,
+    invocation: ExecutionInvocation,
+  ) => Promise<unknown>;
+  executeSkipSlice: (
+    params: {
+      sliceId: string;
+      milestoneId: string;
+      reason?: string;
+    },
+    basePath: string,
+    invocation: ExecutionInvocation,
   ) => Promise<unknown>;
   executeMilestoneReopen: (
     params: {
@@ -552,6 +581,32 @@ function resolveSoleActiveWorktree(projectRoot: string): string | null {
   return live[0];
 }
 
+async function bridgeRecoveryActionMilestoneId(
+  projectDir: string,
+  recoveryActionId: string,
+): Promise<string | null> {
+  const bridge = await importBridgeModule();
+  if (!await bridge.ensureDbOpen(projectDir)) return null;
+  const row = bridge.getDb().prepare(`
+    SELECT lifecycle.milestone_id
+    FROM workflow_recovery_actions action
+    JOIN workflow_item_lifecycles lifecycle
+      ON lifecycle.project_id = action.project_id
+     AND lifecycle.lifecycle_id = action.lifecycle_id
+    WHERE action.recovery_action_id = :recovery_action_id
+  `).get({ ":recovery_action_id": recoveryActionId });
+  return typeof row?.milestone_id === "string" ? row.milestone_id : null;
+}
+
+export async function resolveRecoveryActionProjectDir(
+  projectRoot: string,
+  recoveryActionId: string,
+  resolveMilestoneId: (projectDir: string, recoveryActionId: string) => Promise<string | null> = bridgeRecoveryActionMilestoneId,
+): Promise<string> {
+  const milestoneId = await resolveMilestoneId(projectRoot, recoveryActionId);
+  return resolveActiveWorktreeBasePath(projectRoot, milestoneId) ?? projectRoot;
+}
+
 function isHomeDirectory(candidate: string): boolean {
   let resolvedHome: string;
   try {
@@ -633,7 +688,9 @@ function isWorkflowToolExecutors(value: unknown): value is WorkflowToolExecutors
     "executeUatResultSave",
     "executeTaskComplete",
     "executeTaskReopen",
+    "executeTaskRecoveryResume",
     "executeSliceReopen",
+    "executeSkipSlice",
     "executeMilestoneReopen",
   ];
 
@@ -878,13 +935,92 @@ async function getWorkflowWriteGateModule(): Promise<WorkflowWriteGateModule> {
   return workflowWriteGatePromise;
 }
 
+interface PlanningInvocation {
+  idempotencyKey: string;
+  sourceTransport: "internal" | "pi-tool" | "workflow-mcp";
+  actorType: string;
+  actorId?: string;
+  traceId?: string;
+  turnId?: string;
+}
+
+type ExecutionInvocation = PlanningInvocation;
+
+interface WorkflowMcpRequestExtra {
+  signal?: AbortSignal;
+  requestId?: string | number;
+  sessionId?: string;
+  _meta?: Record<string, unknown>;
+}
+
 interface McpToolServer {
   tool(
     name: string,
     description: string,
     params: Record<string, unknown>,
-    handler: (args: Record<string, unknown>, extra?: { signal?: AbortSignal }) => Promise<unknown>,
+    handler: (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => Promise<unknown>,
   ): unknown;
+}
+
+const MCP_IDEMPOTENCY_META_KEY = "io.opengsd/idempotency-key";
+const CLAUDE_CODE_TOOL_USE_META_KEY = "claudecode/toolUseId";
+const CLAUDE_CODE_IDEMPOTENCY_PREFIX = "transport:claude-code:";
+
+function mcpInvocation(
+  canonicalToolName: string,
+  mutationKind: "Planning mutation" | "Task execution mutation" | "Workflow execution mutation",
+  extra?: WorkflowMcpRequestExtra,
+): ExecutionInvocation {
+  const explicitKey = extra?._meta?.[MCP_IDEMPOTENCY_META_KEY];
+  const stableExplicitKey = typeof explicitKey === "string" && explicitKey.trim()
+    ? explicitKey.trim()
+    : undefined;
+  const claudeCodeToolUseId = extra?._meta?.[CLAUDE_CODE_TOOL_USE_META_KEY];
+  const stableClaudeCodeToolUseId = typeof claudeCodeToolUseId === "string" && claudeCodeToolUseId.trim()
+    ? claudeCodeToolUseId.trim()
+    : undefined;
+  if (stableExplicitKey?.startsWith(CLAUDE_CODE_IDEMPOTENCY_PREFIX)) {
+    throw new Error(
+      `${mutationKind} ${canonicalToolName} cannot use the reserved Claude Code transport identity namespace`,
+    );
+  }
+  const stableKey = explicitKey === undefined && stableClaudeCodeToolUseId
+    ? `${CLAUDE_CODE_IDEMPOTENCY_PREFIX}${stableClaudeCodeToolUseId}`
+    : stableExplicitKey;
+  if (!stableKey) {
+    throw new Error(
+      `${mutationKind} ${canonicalToolName} requires replay-stable private request metadata ` +
+      `_meta["${MCP_IDEMPOTENCY_META_KEY}"] or _meta["${CLAUDE_CODE_TOOL_USE_META_KEY}"]. ` +
+      `Retry with the same nonblank value.`,
+    );
+  }
+  return {
+    idempotencyKey: `mcp:${canonicalToolName}:${stableKey}`,
+    sourceTransport: "workflow-mcp",
+    actorType: "agent",
+    traceId: stableKey,
+  };
+}
+
+function mcpPlanningInvocation(
+  canonicalToolName: string,
+  extra?: WorkflowMcpRequestExtra,
+): PlanningInvocation {
+  return mcpInvocation(canonicalToolName, "Planning mutation", extra);
+}
+
+function mcpExecutionInvocation(
+  canonicalToolName: string,
+  extra?: WorkflowMcpRequestExtra,
+): ExecutionInvocation {
+  return mcpInvocation(canonicalToolName, "Task execution mutation", extra);
+}
+
+function mcpWorkflowExecutionInvocation(
+  canonicalToolName: string,
+  extra?: WorkflowMcpRequestExtra,
+): ExecutionInvocation {
+  return mcpInvocation(canonicalToolName, "Workflow execution mutation", extra);
 }
 
 export const WORKFLOW_TOOL_NAMES = CONTRACT_WORKFLOW_TOOL_NAMES;
@@ -1045,6 +1181,7 @@ async function enforceWorkflowWriteGate(
 async function handleTaskComplete(
   projectDir: string,
   args: Omit<z.infer<typeof taskCompleteSchema>, "projectDir">,
+  invocation: ExecutionInvocation,
 ): Promise<unknown> {
   await enforceWorkflowWriteGate("gsd_task_complete", projectDir, args.milestoneId);
   const { executeTaskComplete } = await getWorkflowToolExecutors();
@@ -1055,29 +1192,46 @@ async function handleTaskComplete(
   // class; matching the spread shape used by sibling handlers (handleSliceComplete,
   // handleReplanSlice) eliminates the recurrence risk by construction.
   return adaptExecutorResult(
-    await runSerializedWorkflowOperation(() => executeTaskComplete(args, projectDir)),
+    await runSerializedWorkflowOperation(() => executeTaskComplete(args, projectDir, invocation)),
   );
 }
 
 async function handleTaskReopen(
   projectDir: string,
   args: Omit<z.infer<typeof taskReopenSchema>, "projectDir">,
+  invocation: ExecutionInvocation,
 ): Promise<unknown> {
   await enforceWorkflowWriteGate("gsd_task_reopen", projectDir, args.milestoneId);
   const { executeTaskReopen } = await getWorkflowToolExecutors();
   return adaptExecutorResult(
-    await runSerializedWorkflowOperation(() => executeTaskReopen(args, projectDir)),
+    await runSerializedWorkflowOperation(() => executeTaskReopen(args, projectDir, invocation)),
+  );
+}
+
+async function handleTaskRecoveryResume(
+  projectDir: string,
+  args: Omit<z.infer<typeof taskRecoveryResumeSchema>, "projectDir">,
+  invocation: ExecutionInvocation,
+): Promise<unknown> {
+  return adaptExecutorResult(
+    await runSerializedWorkflowOperation(async () => {
+      const resolvedProjectDir = await resolveRecoveryActionProjectDir(projectDir, args.recoveryActionId);
+      await enforceWorkflowWriteGate("gsd_task_recovery_resume", resolvedProjectDir);
+      const { executeTaskRecoveryResume } = await getWorkflowToolExecutors();
+      return executeTaskRecoveryResume(args, resolvedProjectDir, invocation);
+    }),
   );
 }
 
 async function handleSliceReopen(
   projectDir: string,
   args: Omit<z.infer<typeof sliceReopenSchema>, "projectDir">,
+  invocation: ExecutionInvocation,
 ): Promise<unknown> {
   await enforceWorkflowWriteGate("gsd_slice_reopen", projectDir, args.milestoneId);
   const { executeSliceReopen } = await getWorkflowToolExecutors();
   return adaptExecutorResult(
-    await runSerializedWorkflowOperation(() => executeSliceReopen(args, projectDir)),
+    await runSerializedWorkflowOperation(() => executeSliceReopen(args, projectDir, invocation)),
   );
 }
 
@@ -1095,36 +1249,52 @@ async function handleMilestoneReopen(
 async function handleSliceComplete(
   projectDir: string,
   args: z.infer<typeof sliceCompleteSchema>,
+  invocation: ExecutionInvocation,
 ): Promise<unknown> {
   await enforceWorkflowWriteGate("gsd_slice_complete", projectDir, args.milestoneId);
   const { executeSliceComplete } = await getWorkflowToolExecutors();
   const { projectDir: _projectDir, ...params } = args;
   return adaptExecutorResult(
-    await runSerializedWorkflowOperation(() => executeSliceComplete(params, projectDir)),
+    await runSerializedWorkflowOperation(() => executeSliceComplete(params, projectDir, invocation)),
+  );
+}
+
+async function handleSkipSlice(
+  projectDir: string,
+  args: z.infer<typeof skipSliceSchema>,
+  invocation: ExecutionInvocation,
+): Promise<unknown> {
+  await enforceWorkflowWriteGate("gsd_skip_slice", projectDir, args.milestoneId);
+  const { executeSkipSlice } = await getWorkflowToolExecutors();
+  const { projectDir: _projectDir, ...params } = args;
+  return adaptExecutorResult(
+    await runSerializedWorkflowOperation(() => executeSkipSlice(params, projectDir, invocation)),
   );
 }
 
 async function handleReplanSlice(
   projectDir: string,
   args: z.infer<typeof replanSliceSchema>,
+  invocation: PlanningInvocation,
 ): Promise<unknown> {
   await enforceWorkflowWriteGate("gsd_replan_slice", projectDir, args.milestoneId);
   const { executeReplanSlice } = await getWorkflowToolExecutors();
   const { projectDir: _projectDir, ...params } = args;
   return adaptExecutorResult(
-    await runSerializedWorkflowOperation(() => executeReplanSlice(params, projectDir)),
+    await runSerializedWorkflowOperation(() => executeReplanSlice(params, projectDir, invocation)),
   );
 }
 
 async function handleReplanTask(
   projectDir: string,
   args: z.infer<typeof replanTaskSchema>,
+  invocation: PlanningInvocation,
 ): Promise<unknown> {
   await enforceWorkflowWriteGate("gsd_replan_task", projectDir, args.milestoneId);
   const { executeReplanTask } = await getWorkflowToolExecutors();
   const { projectDir: _projectDir, ...params } = args;
   return adaptExecutorResult(
-    await runSerializedWorkflowOperation(() => executeReplanTask(params, projectDir)),
+    await runSerializedWorkflowOperation(() => executeReplanTask(params, projectDir, invocation)),
   );
 }
 
@@ -1167,12 +1337,13 @@ async function handleValidateMilestone(
 async function handleReassessRoadmap(
   projectDir: string,
   args: z.infer<typeof reassessRoadmapSchema>,
+  invocation: PlanningInvocation,
 ): Promise<unknown> {
   await enforceWorkflowWriteGate("gsd_reassess_roadmap", projectDir, args.milestoneId);
   const { executeReassessRoadmap } = await getWorkflowToolExecutors();
   const { projectDir: _projectDir, ...params } = args;
   return adaptExecutorResult(
-    await runSerializedWorkflowOperation(() => executeReassessRoadmap(params, projectDir)),
+    await runSerializedWorkflowOperation(() => executeReassessRoadmap(params, projectDir, invocation)),
   );
 }
 
@@ -1753,7 +1924,7 @@ const sliceCompleteParams = {
   sliceTitle: z.string().describe("Title of the slice"),
   oneLiner: z.string().describe("One-line summary of what the slice accomplished"),
   narrative: z.string().describe("Detailed narrative of what happened across all tasks"),
-  verification: z.string().optional().describe("What was verified across all tasks — if omitted, summary records verification as passed without detail."),
+  verification: z.string().optional().describe("Optional closeout prose describing verification. Durable Task proof is read from SQLite and cannot be supplied by this field."),
   uatContent: z.string().describe("UAT test content (markdown body)"),
   deviations: z.string().optional(),
   knownLimitations: z.string().optional(),
@@ -1801,6 +1972,8 @@ const sliceCompleteParams = {
       return { slice, provides };
     },
   ),
+  actorName: z.string().optional().describe("Caller-provided actor identity for the audit trail"),
+  triggerReason: z.string().optional().describe("Caller-provided reason this action was triggered"),
 };
 const sliceCompleteSchema = z.object(sliceCompleteParams);
 export const _sliceCompleteSchemaForTest = sliceCompleteSchema;
@@ -1947,6 +2120,17 @@ const taskReopenParams = {
   triggerReason: z.string().optional().describe("Caller-provided reason this action was triggered"),
 };
 const taskReopenSchema = z.object(taskReopenParams);
+
+const taskRecoveryResumeParams = {
+  projectDir: projectDirParam,
+  recoveryActionId: nonEmptyString("recoveryActionId").describe("Exact current abort Recovery Action ID"),
+  repairSummary: nonEmptyString("repairSummary").describe("What was repaired and why retry is now safe"),
+  evidence: unknownRecord.refine(
+    (value) => Object.keys(value).length > 0,
+    "evidence must be a non-empty object",
+  ).describe("Structured evidence proving the repair"),
+};
+const taskRecoveryResumeSchema = z.object(taskRecoveryResumeParams);
 
 const sliceReopenParams = {
   projectDir: projectDirParam,
@@ -2285,13 +2469,17 @@ export function registerWorkflowTools(
     "gsd_plan_milestone",
     "Write milestone planning state to the GSD database and render ROADMAP.md from DB.",
     planMilestoneParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const parsed = parseWorkflowArgs(planMilestoneSchema, args);
       const { projectDir, ...params } = parsed;
       await enforceWorkflowWriteGate("gsd_plan_milestone", projectDir, params.milestoneId);
       const { executePlanMilestone } = await getWorkflowToolExecutors();
       return adaptExecutorResult(
-        await runSerializedWorkflowOperation(() => executePlanMilestone(params, projectDir)),
+        await runSerializedWorkflowOperation(() => executePlanMilestone(
+          params,
+          projectDir,
+          mcpPlanningInvocation("gsd_plan_milestone", extra),
+        )),
       );
     },
   );
@@ -2300,14 +2488,18 @@ export function registerWorkflowTools(
     "gsd_milestone_plan",
     "Alias for gsd_plan_milestone. Write milestone planning state to the GSD database and render ROADMAP.md from DB.",
     planMilestoneParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       logAliasUsage("gsd_milestone_plan", "gsd_plan_milestone");
       const parsed = parseWorkflowArgs(planMilestoneSchema, args);
       const { projectDir, ...params } = parsed;
       await enforceWorkflowWriteGate("gsd_plan_milestone", projectDir, params.milestoneId);
       const { executePlanMilestone } = await getWorkflowToolExecutors();
       return adaptExecutorResult(
-        await runSerializedWorkflowOperation(() => executePlanMilestone(params, projectDir)),
+        await runSerializedWorkflowOperation(() => executePlanMilestone(
+          params,
+          projectDir,
+          mcpPlanningInvocation("gsd_plan_milestone", extra),
+        )),
       );
     },
   );
@@ -2316,13 +2508,17 @@ export function registerWorkflowTools(
     "gsd_plan_slice",
     "Write slice/task planning state to the GSD database and render plan artifacts from DB.",
     planSliceParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const parsed = parseWorkflowArgs(planSliceSchema, args);
       const { projectDir, ...params } = parsed;
       await enforceWorkflowWriteGate("gsd_plan_slice", projectDir, params.milestoneId);
       const { executePlanSlice } = await getWorkflowToolExecutors();
       return adaptExecutorResult(
-        await runSerializedWorkflowOperation(() => executePlanSlice(params, projectDir)),
+        await runSerializedWorkflowOperation(() => executePlanSlice(
+          params,
+          projectDir,
+          mcpPlanningInvocation("gsd_plan_slice", extra),
+        )),
       );
     },
   );
@@ -2331,14 +2527,18 @@ export function registerWorkflowTools(
     "gsd_slice_plan",
     "Alias for gsd_plan_slice. Write slice/task planning state to the GSD database and render plan artifacts from DB.",
     planSliceParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       logAliasUsage("gsd_slice_plan", "gsd_plan_slice");
       const parsed = parseWorkflowArgs(planSliceSchema, args);
       const { projectDir, ...params } = parsed;
       await enforceWorkflowWriteGate("gsd_plan_slice", projectDir, params.milestoneId);
       const { executePlanSlice } = await getWorkflowToolExecutors();
       return adaptExecutorResult(
-        await runSerializedWorkflowOperation(() => executePlanSlice(params, projectDir)),
+        await runSerializedWorkflowOperation(() => executePlanSlice(
+          params,
+          projectDir,
+          mcpPlanningInvocation("gsd_plan_slice", extra),
+        )),
       );
     },
   );
@@ -2347,13 +2547,17 @@ export function registerWorkflowTools(
     "gsd_plan_task",
     "Write task planning state to the GSD database and render the slice PLAN from DB.",
     planTaskParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const parsed = parseWorkflowArgs(planTaskSchema, args);
       const { projectDir, ...params } = parsed;
       await enforceWorkflowWriteGate("gsd_plan_task", projectDir, params.milestoneId);
       const result = await runSerializedWorkflowDbOperation(projectDir, async () => {
         const { handlePlanTask } = await importLocalModule<any>("../../../src/resources/extensions/gsd/tools/plan-task.js");
-        return handlePlanTask(params, projectDir);
+        return handlePlanTask(
+          params,
+          projectDir,
+          mcpPlanningInvocation("gsd_plan_task", extra),
+        );
       });
       if ("error" in result) {
         throw new Error(result.error);
@@ -2368,14 +2572,18 @@ export function registerWorkflowTools(
     "gsd_task_plan",
     "Alias for gsd_plan_task. Write task planning state to the GSD database and render the slice PLAN from DB.",
     planTaskParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       logAliasUsage("gsd_task_plan", "gsd_plan_task");
       const parsed = parseWorkflowArgs(planTaskSchema, args);
       const { projectDir, ...params } = parsed;
       await enforceWorkflowWriteGate("gsd_plan_task", projectDir, params.milestoneId);
       const result = await runSerializedWorkflowDbOperation(projectDir, async () => {
         const { handlePlanTask } = await importLocalModule<any>("../../../src/resources/extensions/gsd/tools/plan-task.js");
-        return handlePlanTask(params, projectDir);
+        return handlePlanTask(
+          params,
+          projectDir,
+          mcpPlanningInvocation("gsd_plan_task", extra),
+        );
       });
       if ("error" in result) {
         throw new Error(result.error);
@@ -2390,9 +2598,13 @@ export function registerWorkflowTools(
     "gsd_replan_slice",
     "Replan a slice after a blocker is discovered, preserving completed tasks and re-rendering PLAN.md + REPLAN.md.",
     replanSliceParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const parsed = parseWorkflowArgs(replanSliceSchema, args);
-      return handleReplanSlice(parsed.projectDir, parsed);
+      return handleReplanSlice(
+        parsed.projectDir,
+        parsed,
+        mcpPlanningInvocation("gsd_replan_slice", extra),
+      );
     },
   );
 
@@ -2400,10 +2612,14 @@ export function registerWorkflowTools(
     "gsd_slice_replan",
     "Alias for gsd_replan_slice. Replan a slice after a blocker is discovered.",
     replanSliceParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       logAliasUsage("gsd_slice_replan", "gsd_replan_slice");
       const parsed = parseWorkflowArgs(replanSliceSchema, args);
-      return handleReplanSlice(parsed.projectDir, parsed);
+      return handleReplanSlice(
+        parsed.projectDir,
+        parsed,
+        mcpPlanningInvocation("gsd_replan_slice", extra),
+      );
     },
   );
 
@@ -2411,9 +2627,13 @@ export function registerWorkflowTools(
     "gsd_replan_task",
     "Update one pending task's planning contract after rework without touching sibling tasks.",
     replanTaskParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const parsed = parseWorkflowArgs(replanTaskSchema, args);
-      return handleReplanTask(parsed.projectDir, parsed);
+      return handleReplanTask(
+        parsed.projectDir,
+        parsed,
+        mcpPlanningInvocation("gsd_replan_task", extra),
+      );
     },
   );
 
@@ -2429,46 +2649,44 @@ export function registerWorkflowTools(
 
   server.tool(
     "gsd_slice_complete",
-    "Record a completed slice to the GSD database, render SUMMARY.md + UAT.md, and update roadmap projection.",
+    "Commit evidence-backed Slice completion in one revision- and Authority-Epoch-fenced SQLite operation, then refresh readable projections; projection failure is reported as stale.",
     sliceCompleteParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const parsed = parseWorkflowArgs(sliceCompleteSchema, args);
-      return handleSliceComplete(parsed.projectDir, parsed);
+      return handleSliceComplete(
+        parsed.projectDir,
+        parsed,
+        mcpWorkflowExecutionInvocation("gsd_slice_complete", extra),
+      );
     },
   );
 
   server.tool(
     "gsd_complete_slice",
-    "Alias for gsd_slice_complete. Record a completed slice to the GSD database and render summary/UAT artifacts.",
+    "Alias for gsd_slice_complete. Commit evidence-backed Slice completion in SQLite, then refresh readable projections.",
     sliceCompleteParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       logAliasUsage("gsd_complete_slice", "gsd_slice_complete");
       const parsed = parseWorkflowArgs(sliceCompleteSchema, args);
-      return handleSliceComplete(parsed.projectDir, parsed);
+      return handleSliceComplete(
+        parsed.projectDir,
+        parsed,
+        mcpWorkflowExecutionInvocation("gsd_slice_complete", extra),
+      );
     },
   );
 
   server.tool(
     "gsd_skip_slice",
-    "Mark a slice as skipped so auto-mode advances past it without executing.",
+    "Cancel a Slice atomically in SQLite, preserve completed work, interrupt running Attempts, and grant a current Slice-scoped dependency Waiver before refreshing projections.",
     skipSliceParams,
-    async (args: Record<string, unknown>) => {
-      const { projectDir, milestoneId, sliceId, reason } = parseWorkflowArgs(skipSliceSchema, args);
-      await enforceWorkflowWriteGate("gsd_skip_slice", projectDir, milestoneId);
-      await runSerializedWorkflowDbOperation(projectDir, async () => {
-        const { handleSkipSlice } = await importLocalModule<any>("../../../src/resources/extensions/gsd/tools/skip-slice.js");
-        const bridge = await importBridgeModule();
-        const result = handleSkipSlice({ milestoneId, sliceId, reason });
-        if (result.error) {
-          throw new Error(result.error);
-        }
-
-        bridge.invalidateStateCache();
-        await bridge.rebuildState(projectDir);
-      });
-      return {
-        content: [{ type: "text" as const, text: `Skipped slice ${sliceId} (${milestoneId}). Reason: ${reason ?? "User-directed skip"}.` }],
-      };
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
+      const parsed = parseWorkflowArgs(skipSliceSchema, args);
+      return handleSkipSlice(
+        parsed.projectDir,
+        parsed,
+        mcpWorkflowExecutionInvocation("gsd_skip_slice", extra),
+      );
     },
   );
 
@@ -2518,9 +2736,13 @@ export function registerWorkflowTools(
     "gsd_reassess_roadmap",
     "Reassess a milestone roadmap after a slice completes, writing ASSESSMENT.md and re-rendering ROADMAP.md.",
     reassessRoadmapParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const parsed = parseWorkflowArgs(reassessRoadmapSchema, args);
-      return handleReassessRoadmap(parsed.projectDir, parsed);
+      return handleReassessRoadmap(
+        parsed.projectDir,
+        parsed,
+        mcpPlanningInvocation("gsd_reassess_roadmap", extra),
+      );
     },
   );
 
@@ -2528,10 +2750,14 @@ export function registerWorkflowTools(
     "gsd_roadmap_reassess",
     "Alias for gsd_reassess_roadmap. Reassess a roadmap after slice completion.",
     reassessRoadmapParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       logAliasUsage("gsd_roadmap_reassess", "gsd_reassess_roadmap");
       const parsed = parseWorkflowArgs(reassessRoadmapSchema, args);
-      return handleReassessRoadmap(parsed.projectDir, parsed);
+      return handleReassessRoadmap(
+        parsed.projectDir,
+        parsed,
+        mcpPlanningInvocation("gsd_reassess_roadmap", extra),
+      );
     },
   );
 
@@ -2621,24 +2847,32 @@ export function registerWorkflowTools(
 
   server.tool(
     "gsd_task_complete",
-    "Record a completed task to the GSD database and render its SUMMARY.md.",
+    "Record a Task execution result in SQLite; canonical Tasks advance to host verification or recovery, while legacy Tasks complete directly and refresh readable projections.",
     taskCompleteParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const parsed = parseWorkflowArgs(taskCompleteSchema, args);
       const { projectDir, ...taskArgs } = parsed;
-      return handleTaskComplete(projectDir, taskArgs);
+      return handleTaskComplete(
+        projectDir,
+        taskArgs,
+        mcpExecutionInvocation("gsd_task_complete", extra),
+      );
     },
   );
 
   server.tool(
     "gsd_complete_task",
-    "Alias for gsd_task_complete. Record a completed task to the GSD database and render its SUMMARY.md.",
+    "Alias for gsd_task_complete. Record a Task result and advance canonical host verification/recovery or legacy completion.",
     taskCompleteParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       logAliasUsage("gsd_complete_task", "gsd_task_complete");
       const parsed = parseWorkflowArgs(taskCompleteSchema, args);
       const { projectDir, ...taskArgs } = parsed;
-      return handleTaskComplete(projectDir, taskArgs);
+      return handleTaskComplete(
+        projectDir,
+        taskArgs,
+        mcpExecutionInvocation("gsd_task_complete", extra),
+      );
     },
   );
 
@@ -2646,10 +2880,14 @@ export function registerWorkflowTools(
     "gsd_task_reopen",
     "Reset a completed task back to pending so it can be re-done.",
     taskReopenParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const parsed = parseWorkflowArgs(taskReopenSchema, args);
       const { projectDir, ...taskArgs } = parsed;
-      return handleTaskReopen(projectDir, taskArgs);
+      return handleTaskReopen(
+        projectDir,
+        taskArgs,
+        mcpExecutionInvocation("gsd_task_reopen", extra),
+      );
     },
   );
 
@@ -2657,34 +2895,61 @@ export function registerWorkflowTools(
     "gsd_reopen_task",
     "Alias for gsd_task_reopen. Reset a completed task back to pending so it can be re-done.",
     taskReopenParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       logAliasUsage("gsd_reopen_task", "gsd_task_reopen");
       const parsed = parseWorkflowArgs(taskReopenSchema, args);
       const { projectDir, ...taskArgs } = parsed;
-      return handleTaskReopen(projectDir, taskArgs);
+      return handleTaskReopen(
+        projectDir,
+        taskArgs,
+        mcpExecutionInvocation("gsd_task_reopen", extra),
+      );
+    },
+  );
+
+  server.tool(
+    "gsd_task_recovery_resume",
+    "Authorize one new Task Attempt after the current durable abort cause has been repaired.",
+    taskRecoveryResumeParams,
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
+      const parsed = parseWorkflowArgs(taskRecoveryResumeSchema, args);
+      const { projectDir, ...resumeArgs } = parsed;
+      return handleTaskRecoveryResume(
+        projectDir,
+        resumeArgs,
+        mcpExecutionInvocation("gsd_task_recovery_resume", extra),
+      );
     },
   );
 
   server.tool(
     "gsd_slice_reopen",
-    "Reset a completed slice back to in_progress and reset its tasks to pending.",
+    "Reopen a terminal Slice and all Tasks atomically in SQLite while preserving immutable history, revoking cancellation Waivers, and blocking progressed downstream Slices.",
     sliceReopenParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       const parsed = parseWorkflowArgs(sliceReopenSchema, args);
       const { projectDir, ...sliceArgs } = parsed;
-      return handleSliceReopen(projectDir, sliceArgs);
+      return handleSliceReopen(
+        projectDir,
+        sliceArgs,
+        mcpWorkflowExecutionInvocation("gsd_slice_reopen", extra),
+      );
     },
   );
 
   server.tool(
     "gsd_reopen_slice",
-    "Alias for gsd_slice_reopen. Reset a completed slice back to in_progress and reset its tasks to pending.",
+    "Alias for gsd_slice_reopen. Reopen a terminal Slice and all Tasks atomically in SQLite while preserving immutable history and enforcing downstream guards.",
     sliceReopenParams,
-    async (args: Record<string, unknown>) => {
+    async (args: Record<string, unknown>, extra?: WorkflowMcpRequestExtra) => {
       logAliasUsage("gsd_reopen_slice", "gsd_slice_reopen");
       const parsed = parseWorkflowArgs(sliceReopenSchema, args);
       const { projectDir, ...sliceArgs } = parsed;
-      return handleSliceReopen(projectDir, sliceArgs);
+      return handleSliceReopen(
+        projectDir,
+        sliceArgs,
+        mcpWorkflowExecutionInvocation("gsd_slice_reopen", extra),
+      );
     },
   );
 

@@ -47,7 +47,26 @@ import {
   applyMigrationV28MemoryLastHitAt,
   applyMigrationV29RepositoryTargets,
   applyMigrationV30ReworkBriefs,
+  applyMigrationV31CanonicalFoundation,
+  applyMigrationV32LifecycleFoundation,
+  applyMigrationV33ConversationFoundation,
+  applyMigrationV34RecoveryEvidenceFoundation,
+  applyMigrationV35ProjectionImportKernelCloseoutFoundation,
+  applyMigrationV36AttemptRecovery,
+  applyMigrationV37TaskCancellation,
+  applyMigrationV38TaskVerificationRecovery,
+  applyMigrationV39TaskRecoveryCurrentHead,
+  applyMigrationV40SliceCancellation,
+  applyMigrationV41SliceCompletion,
 } from "../db-migration-steps.js";
+import {
+  createCanonicalFoundationSchemaV31,
+  ensureCanonicalOutboxInvariantsV31,
+} from "../db-canonical-foundation-schema.js";
+import { createConversationFoundationSchemaV33 } from "../db-conversation-foundation-schema.js";
+import { createLifecycleFoundationSchemaV32 } from "../db-lifecycle-foundation-schema.js";
+import { createProjectionImportKernelCloseoutFoundationSchemaV35 } from "../db-projection-import-kernel-closeout-foundation-schema.js";
+import { createRecoveryEvidenceFoundationSchemaV34 } from "../db-recovery-evidence-foundation-schema.js";
 import {
   isMemoriesFtsAvailableSchema,
   rebuildMemoriesFtsSchemaOnce,
@@ -97,7 +116,7 @@ const providerLoader = createSqliteProviderLoader({
   nodeVersion: process.versions.node,
   writeStderr: (message: string) => process.stderr.write(message),
 });
-export const SCHEMA_VERSION = 30;
+export const SCHEMA_VERSION = 41;
 function initSchema(db: DbAdapter, fileBacked: boolean, dbPath: string | null): void {
   const conservativeFilePragmas = fileBacked && _isLikelyWslDrvFsPathForTest(dbPath);
   if (fileBacked) db.exec(conservativeFilePragmas ? "PRAGMA journal_mode=DELETE" : "PRAGMA journal_mode=WAL");
@@ -135,6 +154,17 @@ function initSchema(db: DbAdapter, fileBacked: boolean, dbPath: string | null): 
       } else {
         createCoordinationTablesV24(db);
         createRuntimeKvTableV25(db);
+        createCanonicalFoundationSchemaV31(db);
+        createLifecycleFoundationSchemaV32(db);
+        createConversationFoundationSchemaV33(db);
+        createRecoveryEvidenceFoundationSchemaV34(db);
+        createProjectionImportKernelCloseoutFoundationSchemaV35(db);
+        applyMigrationV36AttemptRecovery(db);
+        applyMigrationV37TaskCancellation(db);
+        applyMigrationV38TaskVerificationRecovery(db);
+        applyMigrationV39TaskRecoveryCurrentHead(db);
+        applyMigrationV40SliceCancellation(db);
+        applyMigrationV41SliceCompletion(db);
 
         // Fresh install — all tables are created above with the full current schema,
         // so it is safe to create all migration-specific indexes here.  For existing
@@ -160,6 +190,7 @@ function initSchema(db: DbAdapter, fileBacked: boolean, dbPath: string | null): 
   }
 
   migrateSchema(db, dbPath);
+  ensureCanonicalOutboxInvariantsV31(db);
   rebuildMemoriesFtsSchemaOnce(db, {
     onRebuildFailed: (message) => logWarning("db", message),
   });
@@ -386,6 +417,65 @@ function migrateSchema(db: DbAdapter, dbPath: string | null): void {
     if (currentVersion < 30) {
       applyMigrationV30ReworkBriefs(db);
       recordSchemaVersion(db, 30);
+    }
+
+    if (currentVersion < 31) {
+      applyMigrationV31CanonicalFoundation(db);
+      recordSchemaVersion(db, 31);
+    }
+
+    if (currentVersion < 32) {
+      applyMigrationV32LifecycleFoundation(db);
+      recordSchemaVersion(db, 32);
+    }
+
+    if (currentVersion < 33) {
+      applyMigrationV33ConversationFoundation(db);
+      recordSchemaVersion(db, 33);
+    }
+
+    if (currentVersion < 34) {
+      applyMigrationV34RecoveryEvidenceFoundation(db);
+      recordSchemaVersion(db, 34);
+    }
+
+    if (currentVersion < 35) {
+      applyMigrationV35ProjectionImportKernelCloseoutFoundation(db);
+      recordSchemaVersion(db, 35);
+    }
+
+    if (currentVersion < 36) {
+      // V36 triggers read the v24 coordination tables. Re-run their
+      // idempotent creator first so upgrades remain safe when older schema
+      // metadata exists but those prerequisite tables are missing.
+      createCoordinationTablesV24(db);
+      applyMigrationV36AttemptRecovery(db);
+      recordSchemaVersion(db, 36);
+    }
+
+    if (currentVersion < 37) {
+      applyMigrationV37TaskCancellation(db);
+      recordSchemaVersion(db, 37);
+    }
+
+    if (currentVersion < 38) {
+      applyMigrationV38TaskVerificationRecovery(db);
+      recordSchemaVersion(db, 38);
+    }
+
+    if (currentVersion < 39) {
+      applyMigrationV39TaskRecoveryCurrentHead(db);
+      recordSchemaVersion(db, 39);
+    }
+
+    if (currentVersion < 40) {
+      applyMigrationV40SliceCancellation(db);
+      recordSchemaVersion(db, 40);
+    }
+
+    if (currentVersion < 41) {
+      applyMigrationV41SliceCompletion(db);
+      recordSchemaVersion(db, 41);
     }
 
     if (_migrationFaultForTest) throw new Error("migration fault injected for test");

@@ -4,36 +4,34 @@
 /**
  * complete-slice handler — the core operation behind gsd_slice_complete.
  *
- * Validates inputs, checks all tasks are complete, writes slice row to DB in
- * a transaction, then (outside the transaction) renders SUMMARY.md + UAT.md
- * to disk, regenerates the roadmap, stores rendered markdown in DB for
- * D004 recovery, and invalidates caches. Projection write failures are stale
- * projection diagnostics and do not roll back committed DB state.
+ * Normalizes transport input, publishes evidence-backed Slice lifecycle and
+ * closeout facts in one Domain Operation, then renders Markdown projections
+ * from the durable receipt. Projection failures never roll back authority.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { unlink } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { CompleteSliceParams } from "../types.js";
-import {
-  completeSliceCascade,
-  setSliceSummaryMd,
-  saveGateResult,
-  getPendingGatesForTurn,
-} from "../gsd-db.js";
-import { getGatesForTurn } from "../gate-registry.js";
-import { gsdProjectionRoot, clearPathCache, resolveMilestoneFile, relSliceFile } from "../paths.js";
+import { getDb } from "../gsd-db.js";
+import { clearPathCache, relSliceFile } from "../paths.js";
 import { resolveCanonicalMilestoneRoot } from "../worktree-manager.js";
 import { checkOwnership, sliceUnitKey } from "../unit-ownership.js";
-import { saveFile, clearParseCache } from "../files.js";
+import { loadFile, saveFile, clearParseCache } from "../files.js";
 import { classifyUatContent, escalatesArtifactUatToBrowser } from "../uat-policy.js";
 import { invalidateStateCache } from "../state.js";
-import { renderRoadmapFromDb, roadmapRenderMarksSliceDone } from "../markdown-renderer.js";
-import { isStaleWrite } from "../auto/turn-epoch.js";
 import { renderMilestoneShellProjections } from "../workflow-projections.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
-import { logWarning, logError } from "../workflow-logger.js";
+import { logWarning } from "../workflow-logger.js";
+import type { ExecutionInvocation } from "../execution-invocation.js";
+import {
+  completeSlice,
+  isCurrentSliceCompletionOperation,
+  SliceLifecycleValidationError,
+  type SliceCompletionCloseout,
+} from "../slice-lifecycle-domain-operation.js";
+import { setSliceCompletionSummaryProjectionIfCurrent } from "../db/writers/slice-lifecycle.js";
 
 export interface CompleteSliceResult {
   sliceId: string;
@@ -41,29 +39,12 @@ export interface CompleteSliceResult {
   summaryPath: string;
   uatPath: string;
   /**
-   * True when this call reached an already-closed slice. Healthy duplicates
-   * and superseded stale turns return without mutation; current unhealthy
-   * duplicates repair missing/stale projections before returning.
+   * True when this exact invocation replayed its durable operation receipt.
    */
   duplicate?: boolean;
+  /** True when the receipt is no longer the current Slice lifecycle head. */
+  superseded?: boolean;
   stale?: boolean;
-}
-
-/**
- * Map a complete-slice-owned gate id to the CompleteSliceParams field
- * whose presence drives `pass` vs. `omitted`. Keep this in lockstep with
- * the gates declared in gate-registry.ts under ownerTurn "complete-slice".
- */
-function sliceGateFieldForId(
-  id: string,
-  params: CompleteSliceParams,
-): string | undefined {
-  switch (id) {
-    case "Q8":
-      return params.operationalReadiness;
-    default:
-      return undefined;
-  }
 }
 
 function sliceSummaryPath(basePath: string, milestoneId: string, sliceId: string): string {
@@ -74,26 +55,12 @@ function sliceSummaryPath(basePath: string, milestoneId: string, sliceId: string
   return join(basePath, relSliceFile(basePath, milestoneId, sliceId, "SUMMARY"));
 }
 
-function hasCompleteSliceArtifactContract(basePath: string, milestoneId: string, sliceId: string): boolean {
-  clearPathCache();
-  clearParseCache();
-
-  const summaryPath = sliceSummaryPath(basePath, milestoneId, sliceId);
-  if (!existsSync(summaryPath)) return false;
-  const uatPath = summaryPath.replace(/-SUMMARY\.md$/, "-UAT.md");
-  if (!existsSync(uatPath)) return false;
-
-  const roadmapPath = resolveMilestoneFile(basePath, milestoneId, "ROADMAP") ??
-    join(gsdProjectionRoot(basePath), "milestones", milestoneId, `${milestoneId}-ROADMAP.md`);
-  if (!existsSync(roadmapPath)) return false;
-
-  // Projection-completeness check (ADR-017): the DB has already recorded the
-  // duplicate completion; this only verifies the rendered markdown artifacts
-  // exist and reflect it, deciding whether re-rendering is needed.
+async function removeOwnedProjection(path: string, content: string): Promise<void> {
+  if (await loadFile(path) !== content) return;
   try {
-    return roadmapRenderMarksSliceDone(readFileSync(roadmapPath, "utf-8"), sliceId);
-  } catch {
-    return false;
+    await unlink(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
 }
 
@@ -101,8 +68,7 @@ function hasCompleteSliceArtifactContract(basePath: string, milestoneId: string,
  * Render slice summary markdown matching the template format.
  * YAML frontmatter uses snake_case keys for parseSummary() compatibility.
  */
-function renderSliceSummaryMarkdown(params: CompleteSliceParams): string {
-  const now = new Date().toISOString();
+function renderSliceSummaryMarkdown(params: CompleteSliceParams, completedAt: string): string {
 
   // Apply defaults for optional enrichment arrays (#2771)
   const provides = params.provides ?? [];
@@ -193,7 +159,7 @@ drill_down_paths:
 ${drillDownYaml}
 duration: ""
 verification_result: passed
-completed_at: ${now}
+completed_at: ${completedAt}
 blocker_discovered: false
 ---
 
@@ -250,58 +216,85 @@ ${filesMod}
 /**
  * Render UAT markdown matching the template format.
  */
-function renderUatMarkdown(params: CompleteSliceParams): string {
+function renderUatMarkdown(params: CompleteSliceParams, completedAt: string): string {
   return `# ${params.sliceId}: ${params.sliceTitle} — UAT
 
 **Milestone:** ${params.milestoneId}
-**Written:** ${new Date().toISOString()}
+**Written:** ${completedAt}
 
 ${params.uatContent}
 `;
 }
 
-function parseRequirementSection(
-  summaryMd: string,
-  heading: "Requirements Advanced" | "Requirements Validated" | "Requirements Invalidated or Re-scoped",
-  field: "how" | "proof" | "what",
-): Array<{ id: string; how?: string; proof?: string; what?: string }> {
-  const headingLine = `## ${heading}\n\n`;
-  const start = summaryMd.indexOf(headingLine);
-  if (start === -1) return [];
-  const contentStart = start + headingLine.length;
-  const nextHeading = summaryMd.indexOf("\n\n## ", contentStart);
-  const content = nextHeading === -1
-    ? summaryMd.slice(contentStart)
-    : summaryMd.slice(contentStart, nextHeading);
-  return content
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith("- "))
-    .map((line) => line.slice(2).trim())
-    .map((line) => {
-      const pair = line.match(/^(.+?)\s*(?:—|-)\s+(.+)$/);
-      const id = pair ? pair[1].trim() : line.trim();
-      const detail = pair ? pair[2].trim() : "";
-      if (!id || !detail) return null;
-      return { id, [field]: detail };
-    })
-    .filter((entry): entry is { id: string; how?: string; proof?: string; what?: string } => entry !== null);
+function readPriorCloseout(
+  params: Pick<CompleteSliceParams, "milestoneId" | "sliceId">,
+  invocation: ExecutionInvocation,
+): SliceCompletionCloseout | undefined {
+  const query = (where: string, bindings: Record<string, string>) => getDb().prepare(`
+    SELECT event.payload_json
+    FROM workflow_domain_events event
+    JOIN workflow_operations operation ON operation.operation_id = event.operation_id
+    WHERE event.event_type = 'slice.completed'
+      AND event.entity_type = 'slice'
+      AND event.entity_id = :entity_id
+      AND ${where}
+    ORDER BY event.project_revision DESC
+    LIMIT 1
+  `).get({
+    ":entity_id": `${params.milestoneId}/${params.sliceId}`,
+    ...bindings,
+  }) as Record<string, unknown> | undefined;
+  const row = query(
+    "operation.idempotency_key = :idempotency_key",
+    { ":idempotency_key": invocation.idempotencyKey },
+  ) ?? query("1 = 1", {});
+  if (!row) return undefined;
+  const payload = JSON.parse(String(row["payload_json"])) as { closeout?: SliceCompletionCloseout };
+  return payload.closeout;
+}
+
+function normalizeCloseout(
+  params: CompleteSliceParams,
+  prior?: SliceCompletionCloseout,
+): SliceCompletionCloseout {
+  return {
+    sliceTitle: params.sliceTitle,
+    oneLiner: params.oneLiner,
+    narrative: params.narrative,
+    verification: params.verification ?? "",
+    uatContent: params.uatContent,
+    operationalReadiness: params.operationalReadiness ?? "",
+    deviations: params.deviations ?? "None.",
+    knownLimitations: params.knownLimitations ?? "None.",
+    followUps: params.followUps ?? "None.",
+    provides: params.provides ?? prior?.provides ?? [],
+    requires: params.requires ?? prior?.requires ?? [],
+    affects: params.affects ?? prior?.affects ?? [],
+    keyFiles: params.keyFiles ?? prior?.keyFiles ?? [],
+    keyDecisions: params.keyDecisions ?? prior?.keyDecisions ?? [],
+    patternsEstablished: params.patternsEstablished ?? prior?.patternsEstablished ?? [],
+    observabilitySurfaces: params.observabilitySurfaces ?? prior?.observabilitySurfaces ?? [],
+    drillDownPaths: params.drillDownPaths ?? prior?.drillDownPaths ?? [],
+    requirementsAdvanced: params.requirementsAdvanced ?? prior?.requirementsAdvanced ?? [],
+    requirementsValidated: params.requirementsValidated ?? prior?.requirementsValidated ?? [],
+    requirementsSurfaced: params.requirementsSurfaced ?? prior?.requirementsSurfaced ?? [],
+    requirementsInvalidated: params.requirementsInvalidated ?? prior?.requirementsInvalidated ?? [],
+    filesModified: params.filesModified ?? prior?.filesModified ?? [],
+  };
 }
 
 /**
  * Handle the complete_slice operation end-to-end.
  *
  * 1. Validate required fields
- * 2. Verify all tasks are complete
- * 3. Write DB in a transaction (milestone, slice upsert, status update)
- * 4. Render SUMMARY.md + UAT.md to disk
- * 5. Toggle roadmap checkbox
- * 6. Store rendered markdown back in DB (for D004 recovery)
- * 7. Invalidate caches
+ * 2. Normalize closeout facts
+ * 3. Publish evidence-backed Slice completion atomically
+ * 4. Render SUMMARY.md, UAT.md, roadmap, and state after commit
  */
 export async function handleCompleteSlice(
   params: CompleteSliceParams,
   basePath: string,
+  invocation: ExecutionInvocation,
 ): Promise<CompleteSliceResult | { error: string }> {
   // ── Validate required fields ────────────────────────────────────────────
   if (!params.sliceId || typeof params.sliceId !== "string" || params.sliceId.trim() === "") {
@@ -368,167 +361,78 @@ export async function handleCompleteSlice(
     };
   }
 
-  // ── Atomic completion cascade (guards + writes in one transaction) ───────
-  const completedAt = new Date().toISOString();
-  let guardError: string | null = null;
-  let existingSummaryMd = "";
-  let duplicateComplete = false;
-
-  const outcome = completeSliceCascade(params.milestoneId, params.sliceId, {
-    sliceTitle: params.sliceTitle,
-    completedAt,
-  });
-  if (outcome.ok) {
-    existingSummaryMd = outcome.existingSummaryMd;
-    duplicateComplete = outcome.duplicate;
-  } else {
-    switch (outcome.reason) {
-      case "milestone-closed":
-        guardError = `cannot complete slice in a closed milestone: ${params.milestoneId} (status: ${outcome.status})`;
-        break;
-      case "no-tasks":
-        guardError = `no tasks found for slice ${params.sliceId} in milestone ${params.milestoneId}`;
-        break;
-      case "incomplete-tasks": {
-        const incompleteIds = outcome.incomplete.map((t) => `${t.id} (status: ${t.status})`).join(", ");
-        guardError = `incomplete tasks: ${incompleteIds}`;
-        break;
-      }
-    }
+  const closeout = normalizeCloseout(params, readPriorCloseout(params, invocation));
+  let completion: ReturnType<typeof completeSlice>;
+  try {
+    completion = completeSlice({
+      invocation,
+      slice: { milestoneId: params.milestoneId, sliceId: params.sliceId },
+      closeout,
+      audit: { actorName: params.actorName, triggerReason: params.triggerReason },
+    });
+  } catch (error) {
+    if (!(error instanceof SliceLifecycleValidationError)) throw error;
+    return { error: error.message };
   }
 
-  if (duplicateComplete) {
-    const staleSummaryPath = sliceSummaryPath(
-      artifactBasePath,
-      params.milestoneId,
-      params.sliceId,
-    );
-    const duplicateIsStale = isStaleWrite("complete-slice");
-    if (
-      duplicateIsStale ||
-      hasCompleteSliceArtifactContract(artifactBasePath, params.milestoneId, params.sliceId)
-    ) {
-      return {
-        sliceId: params.sliceId,
-        milestoneId: params.milestoneId,
-        summaryPath: staleSummaryPath,
-        uatPath: staleSummaryPath.replace(/-SUMMARY\.md$/, "-UAT.md"),
-        duplicate: true,
-        ...(duplicateIsStale ? { stale: true } : {}),
-      };
-    }
-  }
-
-  if (guardError) {
-    return { error: guardError };
-  }
-
-  const effectiveParams: CompleteSliceParams = { ...params };
-  if (existingSummaryMd) {
-    // Keep these heading names in lock-step with renderSliceSummaryMarkdown's
-    // section titles so omitted CompleteSliceParams requirement fields can be
-    // backfilled from previously rendered summary markdown.
-    if (effectiveParams.requirementsAdvanced === undefined) {
-      const parsed = parseRequirementSection(existingSummaryMd, "Requirements Advanced", "how");
-      if (parsed.length > 0) effectiveParams.requirementsAdvanced = parsed as Array<{ id: string; how: string }>;
-    }
-    if (effectiveParams.requirementsValidated === undefined) {
-      const parsed = parseRequirementSection(existingSummaryMd, "Requirements Validated", "proof");
-      if (parsed.length > 0) effectiveParams.requirementsValidated = parsed as Array<{ id: string; proof: string }>;
-    }
-    if (effectiveParams.requirementsInvalidated === undefined) {
-      const parsed = parseRequirementSection(existingSummaryMd, "Requirements Invalidated or Re-scoped", "what");
-      if (parsed.length > 0) effectiveParams.requirementsInvalidated = parsed as Array<{ id: string; what: string }>;
-    }
-    if (effectiveParams.verification === undefined) {
-      const headingLine = "## Verification\n\n";
-      const start = existingSummaryMd.indexOf(headingLine);
-      if (start !== -1) {
-        const contentStart = start + headingLine.length;
-        const nextHeading = existingSummaryMd.indexOf("\n\n## ", contentStart);
-        const prior = nextHeading === -1
-          ? existingSummaryMd.slice(contentStart)
-          : existingSummaryMd.slice(contentStart, nextHeading);
-        const trimmed = prior.trim();
-        if (trimmed) effectiveParams.verification = trimmed;
-      }
-    }
-  }
-
-  // Render summary markdown
-  const summaryMd = renderSliceSummaryMarkdown(effectiveParams);
-
-  // Resolve and write summary to disk
+  const duplicateComplete = completion.status === "replayed";
   const summaryPath = sliceSummaryPath(
     artifactBasePath,
     params.milestoneId,
     params.sliceId,
   );
-
-  const uatMd = renderUatMarkdown(effectiveParams);
   const uatPath = summaryPath.replace(/-SUMMARY\.md$/, "-UAT.md");
-  setSliceSummaryMd(params.milestoneId, params.sliceId, summaryMd, uatMd);
+  if (!completion.isCurrent) {
+    return {
+      sliceId: params.sliceId,
+      milestoneId: params.milestoneId,
+      summaryPath,
+      uatPath,
+      ...(duplicateComplete ? { duplicate: true } : {}),
+      superseded: true,
+    };
+  }
+  const effectiveParams: CompleteSliceParams = {
+    ...completion.closeout,
+    milestoneId: params.milestoneId,
+    sliceId: params.sliceId,
+  };
+  const summaryMd = renderSliceSummaryMarkdown(effectiveParams, completion.completedAt);
+
+  // Resolve and write summary to disk
+  const uatMd = renderUatMarkdown(effectiveParams, completion.completedAt);
   let projectionStale = false;
+  let superseded = false;
+  const slice = { milestoneId: params.milestoneId, sliceId: params.sliceId };
+  function isCurrent(): boolean {
+    return isCurrentSliceCompletionOperation(completion.operationId, slice);
+  }
 
   try {
-    await saveFile(summaryPath, summaryMd);
-    await saveFile(uatPath, uatMd);
-
-    const roadmap = await renderRoadmapFromDb(artifactBasePath, params.milestoneId);
-    clearParseCache();
-    // complete-slice runs after a slice is committed in the DB, so the milestone
-    // always has ≥1 slice — the skipped (unplanned) branch is unreachable. Guard
-    // for type-safety so a future invariant surfaces a clear error.
-    if ("skipped" in roadmap) {
-      throw new Error(`roadmap render skipped: milestone ${params.milestoneId} has no planned slices`);
-    }
-    // Render verification (ADR-017): confirms the just-written projection
-    // reflects the DB completion; the DB row is already committed.
-    if (!roadmapRenderMarksSliceDone(roadmap.content, params.sliceId)) {
-      throw new Error(`roadmap render did not mark ${params.milestoneId}/${params.sliceId} complete`);
+    if (!setSliceCompletionSummaryProjectionIfCurrent({
+      milestoneId: params.milestoneId,
+      sliceId: params.sliceId,
+      operationId: completion.operationId,
+      summaryMd,
+      uatMd,
+    })) {
+      superseded = true;
+      projectionStale = true;
+    } else {
+      await saveFile(summaryPath, summaryMd);
+      if (isCurrent()) {
+        await saveFile(uatPath, uatMd);
+      }
+      if (!isCurrent()) {
+        superseded = true;
+        projectionStale = true;
+        await removeOwnedProjection(summaryPath, summaryMd);
+        await removeOwnedProjection(uatPath, uatMd);
+      }
     }
   } catch (renderErr) {
     projectionStale = true;
     logWarning("projection", `complete_slice projection write failed for ${params.milestoneId}/${params.sliceId}; DB completion remains committed`, { error: (renderErr as Error).message });
-  }
-
-  // ── Close gates owned by complete-slice (Q8) ───────────────────────────
-  // Each owned gate maps to a specific summary section via the registry.
-  // If the caller populated the corresponding field, record `pass`; if the
-  // field is empty, record `omitted`. Without this loop, Q8 would stay
-  // pending forever and block future state derivation (see gate-registry).
-  try {
-    const pendingGates = getPendingGatesForTurn(
-      params.milestoneId,
-      params.sliceId,
-      "complete-slice",
-    );
-    if (pendingGates.length > 0) {
-      const ownedDefs = new Map(getGatesForTurn("complete-slice").map((g) => [g.id, g] as const));
-      for (const row of pendingGates) {
-        const def = ownedDefs.get(row.gate_id);
-        if (!def) continue;
-        // Map gate id → param field it maps to. Keep the map local so
-        // adding a new complete-slice gate is a single place change.
-        const field = sliceGateFieldForId(def.id, params);
-        const hasContent = typeof field === "string" && field.trim().length > 0;
-        saveGateResult({
-          milestoneId: params.milestoneId,
-          sliceId: params.sliceId,
-          gateId: def.id,
-          verdict: hasContent ? "pass" : "omitted",
-          rationale: hasContent
-            ? `${def.promptSection} section populated in slice summary`
-            : `${def.promptSection} section left empty — recorded as omitted`,
-          findings: hasContent ? (field as string).trim() : "",
-        });
-      }
-    }
-  } catch (gateErr) {
-    logWarning(
-      "tool",
-      `complete-slice gate close warning for ${params.milestoneId}/${params.sliceId}: ${(gateErr as Error).message}`,
-    );
   }
 
   // Invalidate all caches
@@ -540,53 +444,81 @@ export async function handleCompleteSlice(
   // Separate try/catch per step so a projection failure doesn't prevent
   // the event log entry (critical for worktree reconciliation).
   try {
-    await renderMilestoneShellProjections(artifactBasePath, params.milestoneId);
+    if (superseded || !isCurrent()) {
+      superseded = true;
+      projectionStale = true;
+    } else {
+      const rendered = await renderMilestoneShellProjections(artifactBasePath, params.milestoneId);
+      projectionStale ||= rendered.stale;
+      if (!isCurrent()) {
+        superseded = true;
+        projectionStale = true;
+      }
+    }
   } catch (projErr) {
+    projectionStale = true;
     logWarning("tool", `complete-slice projection warning for ${params.milestoneId}/${params.sliceId}: ${(projErr as Error).message}`);
   }
-  try {
-    writeManifest(artifactBasePath);
-  } catch (mfErr) {
-    logWarning("tool", `complete-slice manifest warning: ${(mfErr as Error).message}`);
+  if (!superseded) {
+    try {
+      writeManifest(artifactBasePath);
+    } catch (mfErr) {
+      logWarning("tool", `complete-slice manifest warning: ${(mfErr as Error).message}`);
+    }
   }
-  try {
-    appendEvent(artifactBasePath, {
-      cmd: "complete-slice",
-      params: { milestoneId: params.milestoneId, sliceId: params.sliceId },
-      ts: new Date().toISOString(),
-      actor: "agent",
-      actor_name: params.actorName,
-      trigger_reason: params.triggerReason,
-    });
-  } catch (eventErr) {
-    logError("tool", `complete-slice event log FAILED — completion invisible to reconciliation`, { error: (eventErr as Error).message });
+  if (completion.status === "committed") {
+    try {
+      appendEvent(artifactBasePath, {
+        cmd: "complete-slice",
+        params: { milestoneId: params.milestoneId, sliceId: params.sliceId },
+        ts: completion.completedAt,
+        actor: "agent",
+        actor_name: params.actorName,
+        trigger_reason: params.triggerReason,
+      });
+    } catch (eventErr) {
+      logWarning("tool", "complete-slice compatibility event warning", { error: (eventErr as Error).message });
+    }
+  }
+
+  if (!isCurrent()) {
+    superseded = true;
+    projectionStale = true;
+    try {
+      await removeOwnedProjection(summaryPath, summaryMd);
+      await removeOwnedProjection(uatPath, uatMd);
+    } catch (cleanupErr) {
+      logWarning("projection", `complete_slice stale projection cleanup failed for ${params.milestoneId}/${params.sliceId}`, { error: (cleanupErr as Error).message });
+    }
   }
 
   // Fire-and-forget graph rebuild — must NOT await, must NOT crash slice completion.
   // Dynamic import of the package name (not a relative path) so it resolves
   // correctly via package.json#exports in both development and production.
   // eslint-disable-next-line @typescript-eslint/no-floating-promises
-  (async () => {
-    try {
-      const graphMod = await import("@opengsd/mcp-server") as unknown as Partial<{
-        buildGraph: (dir: string) => Promise<{ nodes: unknown[]; edges: unknown[]; builtAt: string }>;
-        writeGraph: (gsdRoot: string, graph: unknown) => Promise<void>;
-        resolveGsdRoot: (basePath: string) => string;
-      }>;
-      if (
-        typeof graphMod.buildGraph !== "function"
-        || typeof graphMod.writeGraph !== "function"
-        || typeof graphMod.resolveGsdRoot !== "function"
-      ) {
-        throw new Error("graph helpers unavailable from @opengsd/mcp-server");
+  if (!superseded) {
+    (async () => {
+      try {
+        const graphMod = await import("@opengsd/mcp-server") as unknown as Partial<{
+          buildGraph: (dir: string) => Promise<{ nodes: unknown[]; edges: unknown[]; builtAt: string }>;
+          writeGraph: (gsdRoot: string, graph: unknown) => Promise<void>;
+          resolveGsdRoot: (basePath: string) => string;
+        }>;
+        if (
+          typeof graphMod.buildGraph !== "function"
+          || typeof graphMod.writeGraph !== "function"
+          || typeof graphMod.resolveGsdRoot !== "function"
+        ) {
+          throw new Error("graph helpers unavailable from @opengsd/mcp-server");
+        }
+        const g = await graphMod.buildGraph(artifactBasePath);
+        await graphMod.writeGraph(graphMod.resolveGsdRoot(artifactBasePath), g);
+      } catch (graphErr) {
+        // Graph rebuild is best-effort — log at warning level but never propagate
+        logWarning("tool", `complete-slice graph rebuild failed (non-fatal): ${(graphErr as Error).message ?? String(graphErr)}`);
       }
-      const g = await graphMod.buildGraph(artifactBasePath);
-      await graphMod.writeGraph(graphMod.resolveGsdRoot(artifactBasePath), g);
-    } catch (graphErr) {
-      // Graph rebuild is best-effort — log at warning level but never propagate
-      logWarning("tool", `complete-slice graph rebuild failed (non-fatal): ${(graphErr as Error).message ?? String(graphErr)}`);
-    }
-  })();
+    })();
+  }
 
   return {
     sliceId: params.sliceId,
@@ -594,6 +526,7 @@ export async function handleCompleteSlice(
     summaryPath,
     uatPath,
     ...(duplicateComplete ? { duplicate: true } : {}),
+    ...(superseded ? { superseded: true } : {}),
     ...(projectionStale ? { stale: true } : {}),
   };
 }

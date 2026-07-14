@@ -7,18 +7,46 @@ import test from "node:test";
 import {
   settleDispatchCompleted,
   settleDispatchFailed,
+  settleDispatchIfNeeded,
 } from "../auto/workflow-dispatch-ledger.ts";
+
+test("canonical settlement suppresses later legacy completion and finalize-failure writes", () => {
+  const calls: string[] = [];
+
+  assert.equal(settleDispatchIfNeeded(true, () => {
+    calls.push("completed");
+    return true;
+  }), true);
+  assert.equal(settleDispatchIfNeeded(true, () => {
+    calls.push("finalize-failed");
+    return true;
+  }), true);
+
+  assert.deepEqual(calls, []);
+});
 
 test("settleDispatchFailed writes failures and reports settled state", () => {
   const calls: Array<{ dispatchId: number; errorSummary: string }> = [];
 
   const settled = settleDispatchFailed(42, "unit-break", {
-    markFailed: (dispatchId, details) => calls.push({ dispatchId, ...details }),
+    markFailed: (dispatchId, details) => {
+      calls.push({ dispatchId, ...details });
+      return true;
+    },
     logWriteFailure: () => assert.fail("logWriteFailure should not be called"),
   });
 
   assert.equal(settled, true);
   assert.deepEqual(calls, [{ dispatchId: 42, errorSummary: "unit-break" }]);
+});
+
+test("settleDispatchFailed reports a no-op failure write as unsettled", () => {
+  const settled = settleDispatchFailed(42, "unit-break", {
+    markFailed: () => false,
+    logWriteFailure: () => assert.fail("logWriteFailure should not be called"),
+  });
+
+  assert.equal(settled, false);
 });
 
 test("settleDispatchFailed skips null dispatch ids", () => {

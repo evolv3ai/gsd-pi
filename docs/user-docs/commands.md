@@ -100,7 +100,7 @@ After writing the file, GSD attempts to open it in a browser using the local pla
 | `/gsd hooks` | Show configured post-unit and pre-dispatch hooks |
 | `/gsd run-hook` | Manually trigger a specific hook |
 | `/gsd migrate` | Migrate a v1 `.planning` directory to `.gsd` format |
-| `/gsd recover --confirm` | Explicitly reset database hierarchy plus persisted validation and quality-gate state, then reconstruct from rendered markdown after database loss or corruption |
+| `/gsd recover --confirm` | Explicitly reset legacy hierarchy plus persisted validation and quality-gate state, then reconstruct from rendered markdown; refuses to replace adopted canonical lifecycle history |
 | `/gsd rebuild markdown` | Rebuild markdown projections from the canonical database; stale completion projections are quarantined, not imported |
 | `/gsd rebuild database` | Reserved for DB-native rebuilds; does not import markdown projections |
 | `/gsd language <language\|off\|clear>` | Set or clear the global response language |
@@ -113,14 +113,31 @@ After writing the file, GSD attempts to open it in a browser using the local pla
 | `/gsd new-milestone [--deep]` | Create a new milestone; `--deep` opts the project into deep planning mode |
 | `/gsd skip` | Prevent a unit from auto-mode dispatch |
 | `/gsd undo` | Revert last completed unit |
-| `/gsd undo-task` | Reset a specific task's completion state (DB + markdown) |
-| `/gsd reset-slice` | Reset a slice and all its tasks (DB + markdown) |
+| `/gsd undo-task` | Reopen a terminal task through canonical DB recovery authority, then refresh projections |
+| `/gsd reset-slice` | Reopen the full terminal slice and every terminal task in one guarded database operation, preserve prior execution history, then refresh readable status |
 | `/gsd park` | Park a milestone — skip without deleting |
 | `/gsd unpark` | Reactivate a parked milestone |
-| `/gsd rethink` | Conversational project reorganization — reorder, park, discard, or add milestones |
-| Discard milestone | Available via `/gsd` wizard → "Milestone actions" → "Discard" |
+| `/gsd rethink` | Conversational project reorganization — reorder, park, discard unadopted work, or add milestones |
+| Discard milestone | Available via `/gsd` wizard → "Milestone actions" → "Discard"; milestones with adopted canonical lifecycle history must be parked instead |
 
 Milestone and slice titles created during planning must not contain forward slash (`/`), en dash, or em dash characters. GSD reserves those characters as state-document delimiters, so `plan-milestone` rejects titles that include them.
+
+### Lifecycle safety
+
+Slice completion succeeds only after every Task has durable proof. Skip preserves
+completed work, safely stops unfinished work, and records the decision to treat
+the skipped Slice as a satisfied dependency. Reset revokes that decision, is
+intentionally all-or-nothing, and keeps prior
+Attempts, verification, and dispatch history. If later Slices have already
+started or completed, reset those downstream Slices first.
+
+If GSD says the readable status update is pending repair, the database change
+succeeded but a SUMMARY, UAT, PLAN, ROADMAP, or STATE file could not be
+refreshed. Repair the filesystem obstruction, then run `/gsd doctor fix` or
+`/gsd rebuild markdown`; do not edit Markdown to change status. Hosts that
+preserve the original private invocation identity may instead perform an exact
+retry. Milestone completion and reopen do not yet have
+the same receipt guarantees; that is the next lifecycle cutover.
 
 ## Parallel Orchestration
 
@@ -449,7 +466,7 @@ Any `/gsd` subcommand works as a positional argument — `gsd headless status`, 
 
 ### `gsd headless recover`
 
-Non-TTY equivalent of `/gsd recover --confirm` — resets the DB hierarchy plus persisted validation and quality-gate state, then reconstructs from rendered markdown. Designed for CI, cron, and any environment where the interactive recover prompt cannot run.
+Non-TTY equivalent of `/gsd recover --confirm` — resets the legacy DB hierarchy plus persisted validation and quality-gate state, then reconstructs from rendered markdown. It refuses to replace adopted canonical lifecycle history. Designed for CI, cron, and any environment where the interactive recover prompt cannot run.
 
 ```bash
 gsd headless recover

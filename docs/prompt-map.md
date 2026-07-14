@@ -10,7 +10,7 @@
 User / gsd auto
       │
       ▼
- auto.ts  ──── reads STATE.md ──► GSDState
+ auto.ts  ──── derives GSDState from SQLite
       │
       ▼
  auto-dispatch.ts
@@ -31,7 +31,7 @@ User / gsd auto
  Pi SDK session.run(prompt)
       │
       ▼
- LLM executes → calls gsd_* tools → writes artifacts → STATE.md updated
+ LLM executes → calls gsd_* tools → commits SQLite → projections refresh
       │
       ▼
  Loop back to auto.ts
@@ -196,7 +196,7 @@ guided-resume-task  (if task was interrupted)
 | Prompt | Purpose | Key Tools Called |
 |--------|---------|-----------------|
 | `execute-task.md` | Execute a single task. Inlines full context stack. | `memory_query`, `gsd_task_complete` |
-| `reactive-execute.md` | Dispatch all ready tasks in parallel subagents. When batch summaries remain missing after retries, writes a slice blocker and reconciles summary-present tasks complete while marking missing-summary tasks skipped. | `subagent` × N |
+| `reactive-execute.md` | Dispatch all ready tasks in parallel subagents. When batch summaries remain missing after retries, writes a diagnostic slice blocker; task lifecycle still follows DB Attempt/recovery authority, not summary-file presence. | `subagent` × N |
 | `guided-resume-task.md` | Resume interrupted task. Reads `{{sliceId}}-CONTINUE.md` for continuation context. | `gsd_task_complete` |
 | `quick-task.md` | Lightweight task outside milestone structure. No DB tools. | writes `{{summaryPath}}` directly |
 
@@ -246,7 +246,7 @@ complete-milestone
 | Prompt | Purpose | Key Tools Called |
 |--------|---------|-----------------|
 | `replan-slice.md` | Replan after blocker discovered mid-slice. Preserves completed tasks. | `gsd_replan_slice` |
-| `rethink.md` | Reorder, park, unpark, skip, or discard milestones. | `gsd_skip_slice`, writes `QUEUE-ORDER.json` as the durable reorder contract; state derivation mirrors it into DB sequence |
+| `rethink.md` | Reorder, park, unpark, skip, or discard milestones that have no adopted canonical lifecycle history. Adopted milestones must be parked instead. | `gsd_skip_slice`, writes `QUEUE-ORDER.json` as the durable reorder contract; state derivation mirrors it into DB sequence |
 | `worktree-merge.md` | Merge a worktree branch into a target branch from the main tree. | git merge (main tree CWD) |
 | `reassess-roadmap.md` | *(see Completion Flow above)* | — |
 | `rewrite-docs.md` | Apply OVERRIDES.md changes across all planning docs. | — |
@@ -430,28 +430,10 @@ LLM sees: "load these skill files and follow their rules for this unit"
 
 ## 9. Tool → DB Write Map
 
-| Tool | Persists To |
-|------|------------|
-| `gsd_plan_milestone` | milestones table, slices table |
-| `gsd_plan_slice` | slices table; tasks table only when a non-empty `tasks` payload performs full replacement/update |
-| `gsd_plan_task` | one task planning row; embedded task planning in the slice plan projection |
-| `gsd_task_complete` | tasks table, S##-T##-SUMMARY.md (legacy T##-SUMMARY.md readable) |
-| `gsd_slice_complete` | slices table, S##-SUMMARY.md |
-| `gsd_complete_milestone` | milestones table, M##-SUMMARY.md |
-| `gsd_validate_milestone` | milestones table (validation verdict) |
-| `gsd_reassess_roadmap` | slices table (reorder, add, remove) |
-| `gsd_replan_slice` | tasks table (replace incomplete tasks) |
-| `gsd_replan_task` | one pending task planning row; replan_history row |
-| `gsd_rework_brief_save` | rework_briefs and rework_brief_findings tables |
-| `gsd_skip_slice` | slices table (status = skipped) |
-| `gsd_requirement_save` | requirements table |
-| `gsd_requirement_update` | requirements table |
-| `gsd_summary_save` | artifact files + DB reference |
-| `gsd_decision_save` | memories table (`architecture` rows) + DECISIONS.md projection |
-| `capture_thought` | memories table; KNOWLEDGE.md projection for Patterns/Lessons |
-| `memory_query` | READ — queries memories / memory indexes |
-| `ask_user_questions` | blocks until user responds; no DB write |
-| `subagent` | spins up child Pi session with given prompt |
+The authoritative tool read/write/projection inventory is in the
+[database map](./db-map.md). Lifecycle atomicity, replay, and
+projection-delivery contracts are owned by the
+[lifecycle command integration runbook](./dev/lifecycle-command-integration-runbook.md).
 
 ---
 

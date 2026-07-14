@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,6 +14,7 @@ import {
   uncheckTaskInPlan,
 } from "../undo.ts";
 import {
+  _getAdapter,
   openDatabase,
   closeDatabase,
   insertMilestone,
@@ -22,8 +23,13 @@ import {
   getTask,
   getSlice,
 } from "../gsd-db.ts";
+import { executeDomainOperation } from "../db/domain-operation.ts";
+import {
+  adoptOrTransitionLifecycle,
+  readDomainOperationFence,
+  type LifecycleIdentity,
+} from "../db/writers/lifecycle-commands.ts";
 import { invalidateAllCaches } from "../cache.ts";
-import { existsSync } from "node:fs";
 
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), `${prefix}-`));
@@ -79,11 +85,17 @@ test("handleUndo execute-task with --force reopens the task row and re-renders p
       "utf-8",
     );
 
+    const before = canonicalTaskHistory();
     const { notifications, ctx } = makeCtx();
     await handleUndo("--force", ctx, {} as any, base);
 
     const task = getTask("M001", "S01", "T01");
     assert.equal(task?.status, "pending");
+    const after = canonicalTaskHistory();
+    assert.equal(after.lifecycleId, before.lifecycleId);
+    assert.equal(after.lifecycleStatus, "ready");
+    assert.deepEqual(after.events, ["test.undo.task.completed", "task.reopened"]);
+    assert.equal(after.reopenOperations, 1);
 
     const planContent = readFileSync(
       join(base, ".gsd", "phases", "01-test", "01-01-PLAN.md"),
@@ -275,7 +287,76 @@ function setupTaskFixture(base: string): void {
   insertSlice({ id: "S01", milestoneId: "M001", title: "Test Slice", status: "active", risk: "low", depends: [] });
   insertTask({ id: "T01", sliceId: "S01", milestoneId: "M001", title: "First task", status: "complete" });
   insertTask({ id: "T02", sliceId: "S01", milestoneId: "M001", title: "Second task", status: "pending" });
+  const fence = readDomainOperationFence();
+  executeDomainOperation({
+    operationType: "test.undo.task.completed",
+    idempotencyKey: "test:undo:fixture:task-completed",
+    expectedRevision: fence.revision,
+    expectedAuthorityEpoch: fence.authorityEpoch,
+    actorType: "test",
+    sourceTransport: "test",
+    payload: { taskId: "T01" },
+  }, (context) => {
+    adoptOrTransitionLifecycle(context, {
+      itemKind: "task",
+      milestoneId: "M001",
+      sliceId: "S01",
+      taskId: "T01",
+      lifecycleStatus: "completed",
+      adoptedFromStatus: "completed",
+    });
+    return {
+      events: [{
+        eventType: "test.undo.task.completed",
+        entityType: "task",
+        entityId: "M001/S01/T01",
+        payload: {},
+        destinations: ["test"],
+      }],
+      projections: [{
+        projectionKey: "test/undo/task/completed",
+        projectionKind: "test",
+        rendererVersion: "1",
+      }],
+    };
+  });
   invalidateAllCaches();
+}
+
+function canonicalTaskHistory(): {
+  lifecycleId: string;
+  lifecycleStatus: string;
+  events: string[];
+  reopenOperations: number;
+} {
+  const db = _getAdapter();
+  assert.ok(db);
+  const lifecycle = db.prepare(`
+    SELECT lifecycle_id, lifecycle_status
+    FROM workflow_item_lifecycles
+    WHERE item_kind = 'task'
+      AND milestone_id = 'M001'
+      AND slice_id = 'S01'
+      AND task_id = 'T01'
+  `).get() as Record<string, unknown> | undefined;
+  assert.ok(lifecycle);
+  const events = db.prepare(`
+    SELECT event_type
+    FROM workflow_domain_events
+    WHERE entity_type = 'task' AND entity_id = 'M001/S01/T01'
+    ORDER BY project_revision, event_index
+  `).all() as Array<Record<string, unknown>>;
+  const reopenOperations = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM workflow_operations
+    WHERE operation_type = 'task.reopen'
+  `).get() as Record<string, unknown> | undefined;
+  return {
+    lifecycleId: String(lifecycle["lifecycle_id"]),
+    lifecycleStatus: String(lifecycle["lifecycle_status"]),
+    events: events.map((event) => String(event["event_type"])),
+    reopenOperations: Number(reopenOperations?.["count"] ?? 0),
+  };
 }
 
 test("handleUndoTask without args shows usage", async () => {
@@ -313,15 +394,22 @@ test("handleUndoTask with --force resets task and re-renders plan", async () => 
   const base = makeTempDir("gsd-undo-task-force");
   try {
     setupTaskFixture(base);
+    const before = canonicalTaskHistory();
     const { notifications, ctx } = makeCtx();
+    await handleUndoTask("M001/S01/T01 --force", ctx, {} as any, base);
     await handleUndoTask("M001/S01/T01 --force", ctx, {} as any, base);
 
     // DB status reset
     const task = getTask("M001", "S01", "T01");
     assert.equal(task?.status, "pending");
+    const after = canonicalTaskHistory();
+    assert.equal(after.lifecycleId, before.lifecycleId);
+    assert.equal(after.lifecycleStatus, "ready");
+    assert.deepEqual(after.events, ["test.undo.task.completed", "task.reopened"]);
+    assert.equal(after.reopenOperations, 1, "replaying undo must reuse the completion-scoped command");
 
     // Summary file deleted
-    const summaryPath = join(base, ".gsd", "phases", "01-test", "T01-SUMMARY.md");
+    const summaryPath = join(base, ".gsd", "phases", "01-test", "tasks", "T01-SUMMARY.md");
     assert.equal(existsSync(summaryPath), false);
 
     // Plan checkbox unchecked — renderPlanCheckboxes re-renders to the flat-phase path
@@ -335,6 +423,62 @@ test("handleUndoTask with --force resets task and re-renders plan", async () => 
     // Success notification
     assert.equal(notifications[0]?.level, "success");
     assert.match(notifications[0]?.message ?? "", /Reset task M001\/S01\/T01/);
+  } finally {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("handleUndoTask keeps the canonical reopen when summary cleanup fails", async () => {
+  const base = makeTempDir("gsd-undo-task-cleanup-failure");
+  try {
+    setupTaskFixture(base);
+    const summaryPath = join(base, ".gsd", "phases", "01-test", "tasks", "T01-SUMMARY.md");
+    rmSync(summaryPath);
+    mkdirSync(summaryPath);
+
+    const { ctx } = makeCtx();
+    await assert.rejects(
+      handleUndoTask("M001/S01/T01 --force", ctx, {} as any, base),
+      /directory|operation not permitted|EISDIR/i,
+    );
+
+    assert.equal(getTask("M001", "S01", "T01")?.status, "pending");
+    const afterFailure = canonicalTaskHistory();
+    assert.equal(afterFailure.lifecycleStatus, "ready");
+    assert.deepEqual(afterFailure.events, ["test.undo.task.completed", "task.reopened"]);
+    assert.equal(afterFailure.reopenOperations, 1);
+
+    rmSync(summaryPath, { recursive: true });
+    await handleUndoTask("M001/S01/T01 --force", ctx, {} as any, base);
+    assert.equal(canonicalTaskHistory().reopenOperations, 1);
+  } finally {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("handleUndoTask rejects inconsistent legacy and canonical heads", async () => {
+  const base = makeTempDir("gsd-undo-task-inconsistent-heads");
+  try {
+    setupTaskFixture(base);
+    const db = _getAdapter();
+    assert.ok(db);
+    db.prepare(`
+      UPDATE tasks SET status = 'pending', completed_at = NULL
+      WHERE milestone_id = 'M001' AND slice_id = 'S01' AND id = 'T01'
+    `).run();
+
+    const { ctx } = makeCtx();
+    await assert.rejects(
+      handleUndoTask("M001/S01/T01 --force", ctx, {} as any, base),
+      /matching legacy and canonical lifecycle heads/i,
+    );
+
+    const history = canonicalTaskHistory();
+    assert.equal(history.lifecycleStatus, "completed");
+    assert.deepEqual(history.events, ["test.undo.task.completed"]);
+    assert.equal(history.reopenOperations, 0);
   } finally {
     closeDatabase();
     rmSync(base, { recursive: true, force: true });
@@ -392,7 +536,7 @@ test("handleUndoTask accepts partial ID (T01) and resolves from state", async ()
 
 // ─── handleResetSlice tests ──────────────────────────────────────────────────
 
-function setupSliceFixture(base: string): void {
+function setupSliceFixture(base: string, secondTaskStatus = "complete"): void {
   const mDir = join(base, ".gsd", "phases", "01-test");
   // Flat-phase: no slices/ or tasks/ subdirs — everything is in the phase dir
   mkdirSync(mDir, { recursive: true });
@@ -434,13 +578,50 @@ function setupSliceFixture(base: string): void {
   writeFileSync(join(mDir, "01-01-UAT.md"), "# UAT\nPassed.", "utf-8");
 
   // Set up DB
-  openDatabase(":memory:");
+  openDatabase(join(base, ".gsd", "gsd.db"));
   insertMilestone({ id: "M001", title: "Test", status: "active" });
   insertSlice({ id: "S01", milestoneId: "M001", title: "Test Slice", status: "complete", risk: "low", depends: [] });
   insertSlice({ id: "S02", milestoneId: "M001", title: "Next Slice", status: "pending", risk: "low", depends: ["S01"] });
   insertTask({ id: "T01", sliceId: "S01", milestoneId: "M001", title: "First task", status: "complete" });
-  insertTask({ id: "T02", sliceId: "S01", milestoneId: "M001", title: "Second task", status: "complete" });
+  insertTask({ id: "T02", sliceId: "S01", milestoneId: "M001", title: "Second task", status: secondTaskStatus });
   invalidateAllCaches();
+}
+
+function adoptCompletedLifecycle(identity: LifecycleIdentity): void {
+  const entityId = [identity.milestoneId, identity.sliceId, identity.taskId]
+    .filter(Boolean)
+    .join("/");
+  const operationType = `test.reset-slice.${identity.itemKind}-adopted`;
+  const fence = readDomainOperationFence();
+  executeDomainOperation({
+    operationType,
+    idempotencyKey: `${operationType}:${entityId}`,
+    expectedRevision: fence.revision,
+    expectedAuthorityEpoch: fence.authorityEpoch,
+    actorType: "test",
+    sourceTransport: "test",
+    payload: { entityId },
+  }, (context) => {
+    adoptOrTransitionLifecycle(context, {
+      ...identity,
+      lifecycleStatus: "completed",
+      adoptedFromStatus: "completed",
+    });
+    return {
+      events: [{
+        eventType: operationType,
+        entityType: identity.itemKind,
+        entityId,
+        payload: {},
+        destinations: ["test"],
+      }],
+      projections: [{
+        projectionKey: `test/reset-slice/${identity.itemKind}-adopted`,
+        projectionKind: "test",
+        rendererVersion: "1",
+      }],
+    };
+  });
 }
 
 test("handleResetSlice without args shows usage", async () => {
@@ -482,7 +663,7 @@ test("handleResetSlice with --force resets slice and all tasks", async () => {
 
     // DB status reset
     const slice = getSlice("M001", "S01");
-    assert.equal(slice?.status, "active");
+    assert.equal(slice?.status, "in_progress");
     const t1 = getTask("M001", "S01", "T01");
     assert.equal(t1?.status, "pending");
     const t2 = getTask("M001", "S01", "T02");
@@ -515,6 +696,132 @@ test("handleResetSlice with --force resets slice and all tasks", async () => {
     // Success notification
     assert.equal(notifications[0]?.level, "success");
     assert.match(notifications[0]?.message ?? "", /Reset slice M001\/S01/);
+
+    await handleResetSlice("M001/S01 --force", ctx, {} as any, base);
+    assert.equal(notifications[1]?.level, "success");
+    assert.match(notifications[1]?.message ?? "", /reused|replayed|already current|duplicate/i);
+  } finally {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("handleResetSlice warns when readable projections remain stale", async () => {
+  const base = makeTempDir("gsd-reset-slice-stale-projection");
+  try {
+    setupSliceFixture(base);
+    adoptCompletedLifecycle({ itemKind: "slice", milestoneId: "M001", sliceId: "S01" });
+    const summaryPath = join(base, ".gsd", "phases", "01-test", "01-01-SUMMARY.md");
+    rmSync(summaryPath, { force: true });
+    mkdirSync(summaryPath);
+
+    const { notifications, ctx } = makeCtx();
+    await handleResetSlice("M001/S01 --force", ctx, {} as any, base);
+
+    assert.equal(notifications.at(-1)?.level, "warning");
+    assert.match(notifications.at(-1)?.message ?? "", /pending repair|stale/i);
+    assert.doesNotMatch(notifications.at(-1)?.message ?? "", /projections refreshed/i);
+  } finally {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("handleResetSlice atomically reopens an adopted canonical slice", async () => {
+  const base = makeTempDir("gsd-reset-slice-adopted");
+  try {
+    setupSliceFixture(base);
+    adoptCompletedLifecycle({ itemKind: "slice", milestoneId: "M001", sliceId: "S01" });
+
+    const { notifications, ctx } = makeCtx();
+    await handleResetSlice("M001/S01 --force", ctx, {} as any, base);
+
+    assert.equal(notifications.at(-1)?.level, "success");
+    assert.equal(getSlice("M001", "S01")?.status, "in_progress");
+    assert.equal(getTask("M001", "S01", "T01")?.status, "pending");
+    assert.equal(getTask("M001", "S01", "T02")?.status, "pending");
+    assert.equal(
+      _getAdapter()!.prepare(`
+        SELECT lifecycle_status FROM workflow_item_lifecycles
+        WHERE item_kind = 'slice' AND milestone_id = 'M001' AND slice_id = 'S01'
+      `).get()?.lifecycle_status,
+      "ready",
+    );
+  } finally {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("handleResetSlice validates every task before changing slice or task state", async () => {
+  const base = makeTempDir("gsd-reset-slice-preflight");
+  try {
+    setupSliceFixture(base, "in_progress");
+    adoptCompletedLifecycle({
+      itemKind: "task",
+      milestoneId: "M001",
+      sliceId: "S01",
+      taskId: "T01",
+    });
+    const { notifications, ctx } = makeCtx();
+    await handleResetSlice("M001/S01 --force", ctx, {} as any, base);
+
+    assert.equal(notifications[0]?.level, "error");
+    assert.match(notifications[0]?.message ?? "", /not complete.*T02|T02.*not terminal/i);
+    assert.equal(getSlice("M001", "S01")?.status, "complete");
+    assert.equal(getTask("M001", "S01", "T01")?.status, "complete");
+    assert.equal(getTask("M001", "S01", "T02")?.status, "in_progress");
+    assert.equal(
+      _getAdapter()!.prepare(`
+        SELECT lifecycle_status FROM workflow_item_lifecycles
+        WHERE item_kind = 'task' AND milestone_id = 'M001' AND slice_id = 'S01' AND task_id = 'T01'
+      `).get()?.lifecycle_status,
+      "completed",
+    );
+  } finally {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("handleResetSlice fails closed before mutating a slice in a closed milestone", async () => {
+  const base = makeTempDir("gsd-reset-slice-closed-milestone");
+  try {
+    setupSliceFixture(base);
+    _getAdapter()!.prepare(`
+      UPDATE milestones
+      SET status = 'complete', completed_at = datetime('now')
+      WHERE id = 'M001'
+    `).run();
+
+    const { notifications, ctx } = makeCtx();
+    await handleResetSlice("M001/S01 --force", ctx, {} as any, base);
+
+    assert.equal(notifications[0]?.level, "error");
+    assert.match(notifications[0]?.message ?? "", /closed milestone/i);
+    assert.equal(getSlice("M001", "S01")?.status, "complete");
+    assert.equal(getTask("M001", "S01", "T01")?.status, "complete");
+    assert.equal(getTask("M001", "S01", "T02")?.status, "complete");
+  } finally {
+    closeDatabase();
+    rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test("handleResetSlice fails closed under a terminal canonical milestone", async () => {
+  const base = makeTempDir("gsd-reset-slice-canonical-milestone");
+  try {
+    setupSliceFixture(base);
+    adoptCompletedLifecycle({ itemKind: "milestone", milestoneId: "M001" });
+
+    const { notifications, ctx } = makeCtx();
+    await handleResetSlice("M001/S01 --force", ctx, {} as any, base);
+
+    assert.equal(notifications[0]?.level, "error");
+    assert.match(notifications[0]?.message ?? "", /terminal canonical milestone/i);
+    assert.equal(getSlice("M001", "S01")?.status, "complete");
+    assert.equal(getTask("M001", "S01", "T01")?.status, "complete");
+    assert.equal(getTask("M001", "S01", "T02")?.status, "complete");
   } finally {
     closeDatabase();
     rmSync(base, { recursive: true, force: true });
@@ -524,7 +831,8 @@ test("handleResetSlice with --force resets slice and all tasks", async () => {
 test("handleResetSlice with non-existent slice returns error", async () => {
   const base = makeTempDir("gsd-reset-slice-notfound");
   try {
-    openDatabase(":memory:");
+    mkdirSync(join(base, ".gsd"), { recursive: true });
+    openDatabase(join(base, ".gsd", "gsd.db"));
     insertMilestone({ id: "M001", title: "Test", status: "active" });
 
     const { notifications, ctx } = makeCtx();

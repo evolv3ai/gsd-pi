@@ -6,14 +6,29 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask, getSlice, getSliceTasks, getTask, getGateResults, updateTaskStatus } from '../gsd-db.ts';
-import { handlePlanSlice } from '../tools/plan-slice.ts';
-import { handlePlanTask } from '../tools/plan-task.ts';
+import { _getAdapter, openDatabase, closeDatabase, insertMilestone, insertSlice, insertTask, getSlice, getSliceTasks, getTask, getGateResults, updateTaskStatus } from '../gsd-db.ts';
+import { handlePlanSlice as handlePlanSliceWithInvocation } from '../tools/plan-slice.ts';
+import { handlePlanTask as handlePlanTaskWithInvocation } from '../tools/plan-task.ts';
+import { internalPlanningInvocation } from '../planning-invocation.ts';
 import { parsePlan } from '../parsers-legacy.ts';
 import { deriveState, invalidateStateCache } from '../state.ts';
 
+function handlePlanSlice(
+  params: Parameters<typeof handlePlanSliceWithInvocation>[0],
+  basePath: string,
+) {
+  return handlePlanSliceWithInvocation(params, basePath, internalPlanningInvocation());
+}
+
+function handlePlanTask(
+  params: Parameters<typeof handlePlanTaskWithInvocation>[0],
+  basePath: string,
+) {
+  return handlePlanTaskWithInvocation(params, basePath, internalPlanningInvocation());
+}
+
 function makeTmpBase(): string {
-  const base = mkdtempSync(join(tmpdir(), 'gsd-plan-slice-'));
+  const base = realpathSync(mkdtempSync(join(tmpdir(), 'gsd-plan-slice-')));
   mkdirSync(join(base, '.gsd', 'phases', '01-test'), { recursive: true });
   mkdirSync(join(base, 'src', 'resources', 'extensions', 'gsd', 'tools'), { recursive: true });
   writeFileSync(join(base, 'src', 'resources', 'extensions', 'gsd', 'tools', 'plan-milestone.ts'), '// fixture\n', 'utf-8');
@@ -99,6 +114,30 @@ test('handlePlanSlice writes slice/task planning state and renders plan artifact
     assert.equal(parsedPlan.tasks[0]?.id, 'T01');
 
     // Flat-phase: no per-task plan files — tasks are checkboxes inside the slice plan.
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanSlice re-dispatch preserves completed task checkboxes', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParentSlice();
+
+    const first = await handlePlanSlice(validParams(), base);
+    assert.ok(!('error' in first), `unexpected error: ${'error' in first ? first.error : ''}`);
+
+    updateTaskStatus('M001', 'S02', 'T01', 'complete', '2026-07-11T00:00:00.000Z');
+
+    const second = await handlePlanSlice(validParams(), base);
+    assert.ok(!('error' in second), `unexpected error: ${'error' in second ? second.error : ''}`);
+
+    const planPath = join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md');
+    const parsedPlan = parsePlan(readFileSync(planPath, 'utf-8'));
+    assert.equal(parsedPlan.tasks.find((task) => task.id === 'T01')?.done, true);
+    assert.equal(parsedPlan.tasks.find((task) => task.id === 'T02')?.done, false);
   } finally {
     cleanup(base);
   }
@@ -311,6 +350,44 @@ test('handlePlanSlice rejects relative traversal outside declared target reposit
   }
 });
 
+test('handlePlanSlice exact invocation replay preserves its public result and changed reuse conflicts', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+  try {
+    seedParentSlice();
+    const invocation = {
+      idempotencyKey: 'plan-slice/convergence-replay',
+      sourceTransport: 'pi-tool' as const,
+      actorType: 'agent',
+      traceId: 'plan-slice/convergence-replay',
+    };
+    const first = await handlePlanSliceWithInvocation(validParams(), base, invocation);
+    assert.ok(!('error' in first), `unexpected error: ${'error' in first ? first.error : ''}`);
+    assert.deepEqual(Object.keys(first).sort(), ['milestoneId', 'planPath', 'sliceId', 'taskPlanPaths']);
+
+    const replay = await handlePlanSliceWithInvocation(validParams(), base, invocation);
+    assert.deepEqual(replay, first);
+    const adapter = _getAdapter();
+    assert.ok(adapter);
+    assert.equal(adapter.prepare(
+      "SELECT COUNT(*) AS count FROM workflow_operations WHERE idempotency_key = ?",
+    ).get(invocation.idempotencyKey)?.count, 1);
+
+    const conflict = await handlePlanSliceWithInvocation(
+      { ...validParams(), goal: 'Changed semantics under the same key.' },
+      base,
+      invocation,
+    );
+    assert.ok('error' in conflict);
+    assert.match(conflict.error, /idempotency conflict/i);
+    assert.equal(adapter.prepare(
+      "SELECT COUNT(*) AS count FROM workflow_operations WHERE idempotency_key = ?",
+    ).get(invocation.idempotencyKey)?.count, 1);
+  } finally {
+    cleanup(base);
+  }
+});
+
 test('handlePlanSlice renders plan artifacts under worktree-local .gsd while using project DB', async () => {
   const base = makeTmpBase();
   const worktree = join(base, '.gsd', 'worktrees', 'M001');
@@ -369,7 +446,7 @@ test('handlePlanSlice does not regenerate unrelated completed-task summaries dur
   }
 });
 
-test('handlePlanSlice preserves completed task closeout state when replanning the same task', async () => {
+test('handlePlanSlice requires explicit reopen before replanning a completed task', async () => {
   const base = makeTmpBase();
   openDatabase(join(base, '.gsd', 'gsd.db'));
 
@@ -393,15 +470,31 @@ test('handlePlanSlice preserves completed task closeout state when replanning th
     assert.equal(before?.full_summary_md, '# T01 Summary\n\nAlready finished.\n');
 
     const result = await handlePlanSlice(validParams(), base);
-    assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
+    assert.ok('error' in result);
+    assert.match(result.error, /completed task T01.*reopen/i);
 
     const after = getTask('M001', 'S02', 'T01');
-    assert.equal(after?.status, 'complete', 'replanning must not reset completed task status to pending');
-    assert.equal(after?.completed_at, before?.completed_at, 'replanning must not clear completed_at');
-    assert.equal(after?.full_summary_md, before?.full_summary_md, 'replanning must not clear task summary content');
-    assert.equal(after?.verification_result, 'passed', 'replanning must not clear closeout verification');
-    assert.equal(after?.description, 'Implement the slice planning handler.', 'planning fields should still refresh');
-    assert.equal(getTask('M001', 'S02', 'T02')?.status, 'pending', 'new tasks are still inserted as pending');
+    assert.deepEqual(after, before, 'rejected replanning must preserve completed task closeout state');
+    assert.equal(getTask('M001', 'S02', 'T02'), null, 'rejected replanning must leave no partial task inserts');
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanSlice requires explicit reopen before planning in a legacy deferred milestone', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    insertMilestone({ id: 'M001', title: 'Deferred milestone', status: 'deferred' });
+    insertSlice({ id: 'S02', milestoneId: 'M001', title: 'Planning slice', status: 'pending', demo: 'Rendered plans exist.' });
+
+    const result = await handlePlanSlice(validParams(), base);
+
+    assert.ok('error' in result);
+    assert.match(result.error, /cancelled milestone M001.*reopen/i);
+    assert.equal(getSlice('M001', 'S02')?.goal, '');
+    assert.deepEqual(getSliceTasks('M001', 'S02'), []);
   } finally {
     cleanup(base);
   }
@@ -457,7 +550,7 @@ test('handlePlanSlice clears sketch flag so DB-derived state leaves refining', a
   }
 });
 
-test('handlePlanSlice preserves sketch flag when render fails before artifacts exist', async () => {
+test('handlePlanSlice commits sketch refinement when render fails before artifacts exist', async () => {
   const base = makeTmpBase();
   openDatabase(join(base, '.gsd', 'gsd.db'));
 
@@ -467,13 +560,14 @@ test('handlePlanSlice preserves sketch flag when render fails before artifacts e
 
     // Block the rendered plan path by creating a directory where the file would go.
     // The renderer resolves M001/S02 → phases/01-test/01-02-PLAN.md; creating that
-    // path as a directory causes EISDIR on write → render fails → sketch flag preserved.
+    // path as a directory causes EISDIR on write. Authority still commits and
+    // projection repair can retry independently.
     mkdirSync(join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md'), { recursive: true });
 
     const result = await handlePlanSlice(validParams(), base);
     assert.ok('error' in result);
     assert.match(result.error, /render failed:/);
-    assert.equal(getSlice('M001', 'S02')?.is_sketch, 1, 'sketch flag must stay set when plan artifacts could not render');
+    assert.equal(getSlice('M001', 'S02')?.is_sketch, 0, 'projection failure must not compensate committed planning authority');
   } finally {
     cleanup(base);
   }
@@ -790,7 +884,7 @@ test('handlePlanSlice surfaces render failures without changing parse-visible ta
   }
 });
 
-test('handlePlanSlice reactivates a deferred parent slice to pending', async (t) => {
+test('handlePlanSlice requires explicit reopen before planning a legacy deferred slice', async (t) => {
   const base = makeTmpBase();
   t.after(() => cleanup(base));
   openDatabase(join(base, '.gsd', 'gsd.db'));
@@ -799,12 +893,13 @@ test('handlePlanSlice reactivates a deferred parent slice to pending', async (t)
   insertSlice({ id: 'S02', milestoneId: 'M001', title: 'Planning slice', status: 'deferred', demo: 'Rendered plans exist.' });
 
   const result = await handlePlanSlice(validParams(), base);
-  assert.ok(!('error' in result), `unexpected error: ${'error' in result ? result.error : ''}`);
+  assert.ok('error' in result);
+  assert.match(result.error, /cancelled slice S02.*reopen/i);
 
   const slice = getSlice('M001', 'S02');
   assert.ok(slice);
-  assert.equal(slice?.status, 'pending', 'deferred slice must be reactivated to pending so auto-mode can dispatch it');
-  assert.equal(slice?.goal, 'Persist slice planning through the DB.');
+  assert.equal(slice?.status, 'deferred');
+  assert.equal(slice?.goal, '');
 });
 
 test('handlePlanSlice reruns idempotently and refreshes parse-visible state', async () => {
@@ -837,7 +932,7 @@ test('handlePlanSlice reruns idempotently and refreshes parse-visible state', as
   }
 });
 
-test('handlePlanSlice removes omitted pending tasks when replanning a smaller task set', async () => {
+test('handlePlanSlice durably cancels omitted pending tasks when replanning a smaller task set', async () => {
   const base = makeTmpBase();
   openDatabase(join(base, '.gsd', 'gsd.db'));
 
@@ -854,6 +949,7 @@ test('handlePlanSlice removes omitted pending tasks when replanning a smaller ta
 
     const first = await handlePlanSlice(fourTaskPlan, base);
     assert.ok(!('error' in first), `unexpected error: ${'error' in first ? first.error : ''}`);
+    insertTask({ id: 'T05', sliceId: 'S02', milestoneId: 'M001', title: 'Legacy-only stale task', status: 'pending' });
     // In flat-phase mode tasks are checkboxes in the slice plan; no per-task plan files.
     const slicePlanPath = join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md');
     assert.ok(existsSync(slicePlanPath), 'initial plan should exist');
@@ -865,9 +961,47 @@ test('handlePlanSlice removes omitted pending tasks when replanning a smaller ta
     }, base);
     assert.ok(!('error' in second), `unexpected error: ${'error' in second ? second.error : ''}`);
 
-    assert.deepEqual(getSliceTasks('M001', 'S02').map((task) => task.id), ['T01', 'T02', 'T03']);
-    assert.equal(getGateResults('M001', 'S02', 'task').some((gate) => gate.task_id === 'T04'), false);
+    assert.deepEqual(getSliceTasks('M001', 'S02').map((task) => [task.id, task.status]), [
+      ['T01', 'pending'],
+      ['T02', 'pending'],
+      ['T03', 'pending'],
+      ['T04', 'skipped'],
+      ['T05', 'skipped'],
+    ]);
+    assert.equal(getGateResults('M001', 'S02', 'task').some((gate) => gate.task_id === 'T04'), true, 'cancelled task gates remain durable history');
+    const adapter = _getAdapter();
+    assert.ok(adapter);
+    assert.deepEqual(adapter.prepare(`
+      SELECT lifecycle_status, state_version
+      FROM workflow_item_lifecycles
+      WHERE item_kind = 'task' AND milestone_id = 'M001' AND slice_id = 'S02' AND task_id = 'T04'
+    `).get(), { lifecycle_status: 'cancelled', state_version: 1 });
+    assert.deepEqual(adapter.prepare(`
+      SELECT lifecycle_status, state_version
+      FROM workflow_item_lifecycles
+      WHERE item_kind = 'task' AND milestone_id = 'M001' AND slice_id = 'S02' AND task_id = 'T05'
+    `).get(), { lifecycle_status: 'cancelled', state_version: 1 });
     assert.doesNotMatch(readFileSync(slicePlanPath, 'utf-8'), /T04/, 'omitted T04 should be removed from plan');
+
+    const beforeReopenAttempt = {
+      tasks: getSliceTasks('M001', 'S02'),
+      operations: adapter.prepare('SELECT operation_id FROM workflow_operations ORDER BY resulting_revision').all(),
+      lifecycles: adapter.prepare(`
+        SELECT lifecycle_id, lifecycle_status, state_version, last_operation_id, last_project_revision
+        FROM workflow_item_lifecycles ORDER BY item_kind, task_id
+      `).all(),
+    };
+    const rejectedReinclude = await handlePlanSlice(fourTaskPlan, base);
+    assert.ok('error' in rejectedReinclude);
+    assert.match(rejectedReinclude.error, /cancelled task T04.*reopen/i);
+    assert.deepEqual({
+      tasks: getSliceTasks('M001', 'S02'),
+      operations: adapter.prepare('SELECT operation_id FROM workflow_operations ORDER BY resulting_revision').all(),
+      lifecycles: adapter.prepare(`
+        SELECT lifecycle_id, lifecycle_status, state_version, last_operation_id, last_project_revision
+        FROM workflow_item_lifecycles ORDER BY item_kind, task_id
+      `).all(),
+    }, beforeReopenAttempt, 'reusing a cancelled task identity must leave no operation or hierarchy residue');
   } finally {
     cleanup(base);
   }
@@ -910,6 +1044,35 @@ test('handlePlanSlice rejects omitted completed tasks without changing slice or 
     assert.deepEqual(getSliceTasks('M001', 'S02'), tasksBefore);
     assert.deepEqual(getGateResults('M001', 'S02', 'task'), gatesBefore);
     assert.match(readFileSync(slicePlanPathR, 'utf-8'), /T04/, 'completed task T04 should remain in plan after rejected replan');
+  } finally {
+    cleanup(base);
+  }
+});
+
+test('handlePlanSlice preserves an unowned combined PLAN when only cancelled tasks remain', async () => {
+  const base = makeTmpBase();
+  openDatabase(join(base, '.gsd', 'gsd.db'));
+
+  try {
+    seedParentSlice();
+    insertTask({ id: 'T99', sliceId: 'S02', milestoneId: 'M001', title: 'Cancelled task', status: 'skipped' });
+    const planPath = join(base, '.gsd', 'phases', '01-test', '01-02-PLAN.md');
+    writeFileSync(planPath, '# S02: Stale\n\n<tasks>\n- [ ] **T99**: Cancelled task\n</tasks>\n', 'utf8');
+
+    const result = await handlePlanSlice({
+      milestoneId: 'M001',
+      sliceId: 'S02',
+      goal: 'Keep cancellation history without active work.',
+    }, base);
+
+    assert.deepEqual(result, {
+      milestoneId: 'M001',
+      sliceId: 'S02',
+      planPath: '',
+      taskPlanPaths: [],
+    });
+    assert.equal(existsSync(planPath), true, 'manual PLAN must not be removed without writer provenance');
+    assert.equal(getTask('M001', 'S02', 'T99')?.status, 'skipped', 'projection cleanup must retain task authority');
   } finally {
     cleanup(base);
   }

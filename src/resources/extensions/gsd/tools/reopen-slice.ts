@@ -1,16 +1,20 @@
 /**
  * reopen-slice handler — the core operation behind gsd_slice_reopen.
  *
- * Resets a completed slice back to "in_progress" and resets ALL of its
- * tasks back to "pending". This is intentional — if you're reopening a
- * slice, you're re-doing the work. Partial resets create ambiguous state.
+ * Reopens a completed or cancelled Slice and all terminal Tasks in one
+ * revision- and Authority-Epoch-fenced Domain Operation. Prior Attempts,
+ * Results, evidence, and dispatch history remain immutable. Reopen revokes
+ * current cancellation Waivers and rejects progressed transitive downstream
+ * Slices before moving the current lifecycle heads back to ready/pending.
  *
- * Also recovers a desynced slice (#1205): when a UAT→planning fallback leaves
- * the slice open (e.g. "pending") but its tasks still "complete", this clears
- * that state so the planner can re-plan without hitting "already complete"
- * rejections.
+ * Also recovers a legacy, unadopted desync (#1205): when a UAT→planning
+ * fallback leaves the Slice open but all Tasks terminal, this clears that
+ * state so the planner can re-plan. An adopted canonical open Slice fails
+ * closed instead of using this compatibility escape.
  *
- * The parent milestone must still be open (not complete).
+ * The parent Milestone must still be open. Projection cleanup happens after
+ * commit and checks the current operation before removing completion output,
+ * so a stale reopen cannot erase projections from a newer completion.
  */
 
 // GSD — reopen-slice tool handler
@@ -18,14 +22,20 @@
 
 import {
   getSliceTasks,
-  reopenSliceCascade,
 } from "../gsd-db.js";
+import {
+  isCurrentSliceReopenOperation,
+  reopenSlice,
+  SliceLifecycleValidationError,
+} from "../slice-lifecycle-domain-operation.js";
+import type { ExecutionInvocation } from "../execution-invocation.js";
 import { invalidateStateCache } from "../state.js";
 import { flushWorkflowProjections } from "../projection-flush.js";
+import { renderPlanCheckboxes } from "../markdown-renderer.js";
 import { writeManifest } from "../workflow-manifest.js";
 import { appendEvent } from "../workflow-events.js";
 import { logWarning } from "../workflow-logger.js";
-import { existsSync, unlinkSync } from "node:fs";
+import { constants, copyFileSync, existsSync, lstatSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import {
   buildFlatTaskFileName,
@@ -33,7 +43,9 @@ import {
   legacyMilestonesDir,
   resolveMilestonePath,
   resolveTasksDir,
+  resolveSliceFile,
   resolveSlicePath,
+  targetSliceFile,
   clearPathCache,
 } from "../paths.js";
 
@@ -51,11 +63,69 @@ export interface ReopenSliceResult {
   milestoneId: string;
   sliceId: string;
   tasksReset: number;
+  duplicate?: boolean;
+  superseded?: boolean;
+  stale?: boolean;
+}
+
+let cleanupInterleaveForTest: (() => void) | null = null;
+
+export function _setReopenSliceCleanupInterleaveForTest(hook: (() => void) | null): void {
+  cleanupInterleaveForTest = hook;
+}
+
+function restoreTombstone(tombstonePath: string, artifactPath: string): void {
+  try {
+    copyFileSync(tombstonePath, artifactPath, constants.COPYFILE_EXCL);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  try {
+    unlinkSync(tombstonePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
+function removeReopenProjectionIfCurrent(
+  artifactPath: string,
+  operationId: string,
+  slice: { milestoneId: string; sliceId: string },
+): boolean {
+  const tombstonePath = `${artifactPath}.reopen-${operationId}.pending`;
+  if (existsSync(tombstonePath)) {
+    if (!isCurrentSliceReopenOperation(operationId, slice)) {
+      restoreTombstone(tombstonePath, artifactPath);
+      return false;
+    }
+    unlinkSync(tombstonePath);
+  }
+  if (!isCurrentSliceReopenOperation(operationId, slice)) return false;
+  if (!existsSync(artifactPath)) return true;
+  if (lstatSync(artifactPath).isDirectory()) {
+    throw new Error(`reopen projection cleanup path is a directory: ${artifactPath}`);
+  }
+  cleanupInterleaveForTest?.();
+  try {
+    renameSync(artifactPath, tombstonePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return isCurrentSliceReopenOperation(operationId, slice);
+    }
+    throw error;
+  }
+  if (!isCurrentSliceReopenOperation(operationId, slice)) {
+    restoreTombstone(tombstonePath, artifactPath);
+    return false;
+  }
+  unlinkSync(tombstonePath);
+  return true;
 }
 
 export async function handleReopenSlice(
   params: ReopenSliceParams,
   basePath: string,
+  invocation: ExecutionInvocation,
 ): Promise<ReopenSliceResult | { error: string }> {
   // ── Validate required fields ────────────────────────────────────────────
   if (!params.sliceId || typeof params.sliceId !== "string" || params.sliceId.trim() === "") {
@@ -65,21 +135,33 @@ export async function handleReopenSlice(
     return { error: "milestoneId is required and must be a non-empty string" };
   }
 
-  // ── Atomic reopen cascade (guards + writes in one transaction) ───────────
-  const outcome = reopenSliceCascade(params.milestoneId, params.sliceId);
-  if (!outcome.ok) {
-    switch (outcome.reason) {
-      case "milestone-not-found":
-        return { error: `milestone not found: ${params.milestoneId}` };
-      case "milestone-closed":
-        return { error: `cannot reopen slice in a closed milestone: ${params.milestoneId} (status: ${outcome.status})` };
-      case "slice-not-found":
-        return { error: `slice not found: ${params.milestoneId}/${params.sliceId}` };
-      case "slice-not-complete":
-        return { error: `slice ${params.sliceId} is not complete (status: ${outcome.status}) — nothing to reopen` };
+  let tasksResetCount: number;
+  let operationStatus: "committed" | "replayed";
+  let operationId: string;
+  let projectionStale = false;
+  try {
+    const receipt = reopenSlice({
+      invocation,
+      slice: { milestoneId: params.milestoneId, sliceId: params.sliceId },
+      reason: params.reason?.trim() || "User-directed full Slice redo",
+      audit: { actorName: params.actorName, triggerReason: params.triggerReason },
+    });
+    tasksResetCount = receipt.tasksReset;
+    operationStatus = receipt.status;
+    operationId = receipt.operationId;
+    if (receipt.status === "replayed" && !receipt.isCurrent) {
+      return {
+        milestoneId: params.milestoneId,
+        sliceId: params.sliceId,
+        tasksReset: tasksResetCount,
+        duplicate: true,
+        superseded: true,
+      };
     }
+  } catch (error) {
+    if (!(error instanceof SliceLifecycleValidationError)) throw error;
+    return { error: error.message };
   }
-  const tasksResetCount = outcome.tasksReset;
 
   // ── Invalidate caches ────────────────────────────────────────────────────
   invalidateStateCache();
@@ -88,6 +170,7 @@ export async function handleReopenSlice(
   // Without this, the DB-filesystem reconciler sees SUMMARY.md files and
   // auto-corrects tasks back to "complete", making reopen a no-op (#3161).
   try {
+    const slice = { milestoneId: params.milestoneId, sliceId: params.sliceId };
     const milestoneDir = resolveMilestonePath(basePath, params.milestoneId);
     const legacyBase = legacyMilestonesDir(basePath);
     const isLegacy = !!milestoneDir && (
@@ -95,7 +178,7 @@ export async function handleReopenSlice(
     );
     const tasksDir = resolveTasksDir(basePath, params.milestoneId, params.sliceId);
     const tasks = getSliceTasks(params.milestoneId, params.sliceId);
-    for (const task of tasks) {
+    cleanup: for (const task of tasks) {
       const summaryPaths = isLegacy
         ? (tasksDir ? [join(tasksDir, buildTaskFileName(task.id, "SUMMARY"))] : [])
         : milestoneDir
@@ -105,39 +188,65 @@ export async function handleReopenSlice(
           ]
           : [];
       for (const summaryPath of summaryPaths) {
-        if (existsSync(summaryPath)) unlinkSync(summaryPath);
+        if (!removeReopenProjectionIfCurrent(summaryPath, operationId, slice)) {
+          projectionStale = true;
+          break cleanup;
+        }
       }
     }
-    const sliceDir = resolveSlicePath(basePath, params.milestoneId, params.sliceId);
+    const sliceDir = projectionStale ? null : resolveSlicePath(basePath, params.milestoneId, params.sliceId);
     if (sliceDir) {
-      const sliceSummary = join(sliceDir, `${params.sliceId}-SUMMARY.md`);
-      if (existsSync(sliceSummary)) unlinkSync(sliceSummary);
-      const sliceUat = join(sliceDir, `${params.sliceId}-UAT.md`);
-      if (existsSync(sliceUat)) unlinkSync(sliceUat);
+      const sliceArtifacts = new Set([
+        targetSliceFile(basePath, params.milestoneId, params.sliceId, "SUMMARY"),
+        targetSliceFile(basePath, params.milestoneId, params.sliceId, "UAT"),
+        join(sliceDir, `${params.sliceId}-SUMMARY.md`),
+        join(sliceDir, `${params.sliceId}-UAT.md`),
+      ]);
+      const existingSummary = resolveSliceFile(basePath, params.milestoneId, params.sliceId, "SUMMARY");
+      const existingUat = resolveSliceFile(basePath, params.milestoneId, params.sliceId, "UAT");
+      if (existingSummary) sliceArtifacts.add(existingSummary);
+      if (existingUat) sliceArtifacts.add(existingUat);
+      for (const artifactPath of sliceArtifacts) {
+        if (!removeReopenProjectionIfCurrent(artifactPath, operationId, slice)) {
+          projectionStale = true;
+          break;
+        }
+      }
     }
   } catch (cleanupErr) {
+    projectionStale = true;
     logWarning("tool", `reopen-slice artifact cleanup warning: ${(cleanupErr as Error).message}`);
   }
   clearPathCache();
 
   // ── Post-mutation hook ───────────────────────────────────────────────────
   try {
-    await flushWorkflowProjections(basePath, { milestoneId: params.milestoneId });
-    writeManifest(basePath);
-    appendEvent(basePath, {
-      cmd: "reopen-slice",
-      params: {
-        milestoneId: params.milestoneId,
-        sliceId: params.sliceId,
-        reason: params.reason ?? null,
-        tasksReset: tasksResetCount,
-      },
-      ts: new Date().toISOString(),
-      actor: "agent",
-      actor_name: params.actorName,
-      trigger_reason: params.triggerReason,
-    });
+    const slice = { milestoneId: params.milestoneId, sliceId: params.sliceId };
+    if (isCurrentSliceReopenOperation(operationId, slice)) {
+      await renderPlanCheckboxes(basePath, params.milestoneId, params.sliceId);
+      const flushed = await flushWorkflowProjections(basePath, { milestoneId: params.milestoneId });
+      projectionStale ||= flushed.stale;
+      writeManifest(basePath);
+    } else {
+      projectionStale = true;
+    }
+    if (operationStatus === "committed") {
+      appendEvent(basePath, {
+        cmd: "reopen-slice",
+        params: {
+          milestoneId: params.milestoneId,
+          sliceId: params.sliceId,
+          reason: params.reason ?? null,
+          tasksReset: tasksResetCount,
+        },
+        ts: new Date().toISOString(),
+        actor: "agent",
+        actor_name: params.actorName,
+        trigger_reason: params.triggerReason,
+      });
+    }
   } catch (hookErr) {
+    projectionStale = true;
     logWarning("tool", `reopen-slice post-mutation hook warning: ${(hookErr as Error).message}`);
   }
 
@@ -145,5 +254,7 @@ export async function handleReopenSlice(
     milestoneId: params.milestoneId,
     sliceId: params.sliceId,
     tasksReset: tasksResetCount,
+    ...(operationStatus === "replayed" ? { duplicate: true } : {}),
+    ...(projectionStale ? { stale: true } : {}),
   };
 }

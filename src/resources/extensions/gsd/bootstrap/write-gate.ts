@@ -7,7 +7,7 @@ import { minimatch } from "minimatch";
 import { GSD_PHASE_SCOPE_DISPLAY_REASON, shouldBlockAutoUnitToolCall } from "../auto-unit-tool-scope.js";
 import { canonicalToolName } from "../engine-hook-contract.js";
 import { loadJsonFileOrNull } from "../json-persistence.js";
-import { getIsolationMode } from "../preferences.js";
+import { getIsolationMode, loadEffectiveGSDPreferences } from "../preferences.js";
 import { compileSubagentPermissionContract, type ToolsPolicy } from "../unit-context-manifest.js";
 import {
   allowedPlanningDispatchAgentsList,
@@ -1354,6 +1354,7 @@ export function shouldBlockPlanningUnit(
       const dispatchContract = compileSubagentPermissionContract(policy);
       const allowedSubagents = dispatchContract.allowedSubagents;
       const allowed = new Set(allowedSubagents);
+      const planningSubagentRegistry = loadEffectiveGSDPreferences(basePath)?.preferences.planning_subagent_registry;
       // When agentClasses is undefined, the caller has not been updated to extract
       // agent identities yet. Block and warn so stale callers surface in telemetry
       // instead of silently bypassing the gate.
@@ -1371,12 +1372,12 @@ export function shouldBlockPlanningUnit(
       if (requested.length === 0) {
         return { block: false };
       }
-      const globallyDisallowed = requested.find(a => !isReadOnlyPlanningDispatchAgent(a));
+      const globallyDisallowed = requested.find(a => !isReadOnlyPlanningDispatchAgent(a, planningSubagentRegistry));
       if (globallyDisallowed) {
         return planningBlock(
           unitType,
           policy.mode,
-          `subagent dispatch of "${globallyDisallowed}" not permitted; only read-only specialists (${allowedPlanningDispatchAgentsList()}) may be dispatched from ${policy.mode} units`,
+          `subagent dispatch of "${globallyDisallowed}" not permitted; only read-only specialists (${allowedPlanningDispatchAgentsList(planningSubagentRegistry)}) may be dispatched from ${policy.mode} units`,
         );
       }
       const disallowedByPolicy = requested.find(a => !allowed.has(a));

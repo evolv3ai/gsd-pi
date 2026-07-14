@@ -6,6 +6,8 @@
  * preference validation before any configured planning allowlist takes effect.
  */
 
+import type { PlanningSubagentRegistryConfig } from "./preferences-types.js";
+
 const PLANNING_DISPATCH_AGENT_REGISTRY = {
   mnemo: { readOnlySpecialist: true },
   scout: { readOnlySpecialist: true },
@@ -21,11 +23,23 @@ export const ALLOWED_PLANNING_DISPATCH_AGENTS = new Set<string>(
     .map(([agentId]) => agentId),
 );
 
-export function isReadOnlyPlanningDispatchAgent(agentId: string): boolean {
-  const metadata = PLANNING_DISPATCH_AGENT_REGISTRY[agentId as keyof typeof PLANNING_DISPATCH_AGENT_REGISTRY];
-  return metadata?.readOnlySpecialist === true;
+function configuredPlanningDispatchAgents(registry?: PlanningSubagentRegistryConfig): string[] {
+  return Object.entries(registry ?? {})
+    .filter(([, metadata]) => metadata.read_only_specialist === true)
+    .map(([agentId]) => agentId);
 }
 
-export function allowedPlanningDispatchAgentsList(): string {
-  return [...ALLOWED_PLANNING_DISPATCH_AGENTS].join(", ");
+export function isReadOnlyPlanningDispatchAgent(
+  agentId: string,
+  registry?: PlanningSubagentRegistryConfig,
+): boolean {
+  const metadata = PLANNING_DISPATCH_AGENT_REGISTRY[agentId as keyof typeof PLANNING_DISPATCH_AGENT_REGISTRY];
+  return metadata?.readOnlySpecialist === true || registry?.[agentId]?.read_only_specialist === true;
+}
+
+export function allowedPlanningDispatchAgentsList(registry?: PlanningSubagentRegistryConfig): string {
+  return Array.from(new Set([
+    ...ALLOWED_PLANNING_DISPATCH_AGENTS,
+    ...configuredPlanningDispatchAgents(registry),
+  ])).join(", ");
 }

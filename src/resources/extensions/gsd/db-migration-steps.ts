@@ -2,6 +2,17 @@
 // File Purpose: Schema migration DDL steps for the GSD database facade.
 
 import type { DbAdapter } from "./db-adapter.js";
+import { createAttemptRecoverySchemaV36 } from "./db-attempt-recovery-schema.js";
+import { createTaskCancellationSchemaV37 } from "./db-task-cancellation-schema.js";
+import { createTaskVerificationRecoverySchemaV38 } from "./db-task-verification-recovery-schema.js";
+import { createTaskRecoveryCurrentHeadSchemaV39 } from "./db-task-recovery-current-head-schema.js";
+import { createSliceCancellationSchemaV40 } from "./db-slice-cancellation-schema.js";
+import { createSliceCompletionSchemaV41 } from "./db-slice-completion-schema.js";
+import { createCanonicalFoundationSchemaV31 } from "./db-canonical-foundation-schema.js";
+import { createConversationFoundationSchemaV33 } from "./db-conversation-foundation-schema.js";
+import { createLifecycleFoundationSchemaV32 } from "./db-lifecycle-foundation-schema.js";
+import { createProjectionImportKernelCloseoutFoundationSchemaV35 } from "./db-projection-import-kernel-closeout-foundation-schema.js";
+import { createRecoveryEvidenceFoundationSchemaV34 } from "./db-recovery-evidence-foundation-schema.js";
 import { ensureColumn } from "./db-schema-metadata.js";
 
 export function applyMigrationV2Artifacts(db: DbAdapter): void {
@@ -493,4 +504,48 @@ export function applyMigrationV30ReworkBriefs(db: DbAdapter): void {
   `);
   db.exec("CREATE INDEX IF NOT EXISTS idx_rework_briefs_task ON rework_briefs(milestone_id, slice_id, task_id)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_rework_findings_status ON rework_brief_findings(brief_id, severity, status)");
+}
+
+export function applyMigrationV31CanonicalFoundation(db: DbAdapter): void {
+  createCanonicalFoundationSchemaV31(db);
+}
+
+export function applyMigrationV32LifecycleFoundation(db: DbAdapter): void {
+  createLifecycleFoundationSchemaV32(db);
+}
+
+export function applyMigrationV33ConversationFoundation(db: DbAdapter): void {
+  createConversationFoundationSchemaV33(db);
+}
+
+export function applyMigrationV34RecoveryEvidenceFoundation(db: DbAdapter): void {
+  createRecoveryEvidenceFoundationSchemaV34(db);
+}
+
+export function applyMigrationV35ProjectionImportKernelCloseoutFoundation(db: DbAdapter): void {
+  createProjectionImportKernelCloseoutFoundationSchemaV35(db);
+}
+
+export function applyMigrationV36AttemptRecovery(db: DbAdapter): void {
+  createAttemptRecoverySchemaV36(db);
+}
+
+export function applyMigrationV37TaskCancellation(db: DbAdapter): void {
+  createTaskCancellationSchemaV37(db);
+}
+
+export function applyMigrationV38TaskVerificationRecovery(db: DbAdapter): void {
+  createTaskVerificationRecoverySchemaV38(db);
+}
+
+export function applyMigrationV39TaskRecoveryCurrentHead(db: DbAdapter): void {
+  createTaskRecoveryCurrentHeadSchemaV39(db);
+}
+
+export function applyMigrationV40SliceCancellation(db: DbAdapter): void {
+  createSliceCancellationSchemaV40(db);
+}
+
+export function applyMigrationV41SliceCompletion(db: DbAdapter): void {
+  createSliceCompletionSchemaV41(db);
 }
