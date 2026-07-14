@@ -7,6 +7,7 @@ import type { GSDPreferences } from "../preferences-types.js";
 import {
   isTaskAttemptAwaitingVerification,
   readLatestTaskAttempt,
+  readTaskAttempt,
   type TaskExecutionAttemptSnapshot,
 } from "../task-execution-domain-operation.js";
 import {
@@ -17,7 +18,6 @@ import {
   resolveTaskBlocker,
 } from "../task-recovery-domain-operation.js";
 import {
-  confirmResolvedTaskHumanReview,
   invalidateTaskTechnicalPass,
   isPendingTaskHumanReviewVerdict,
   readTaskTechnicalVerdict,
@@ -135,7 +135,7 @@ export async function resolvePendingCustomTaskHumanReview(
         `Trace ${identity.traceId}; turn ${identity.turnId}; actor ${identity.actorId}.`,
       ].join(" "),
       suggestedNextAction: approved
-        ? "Publish the verified Task."
+        ? "Reroute through bounded agent recovery, then execute and verify one fresh successor Task Attempt."
         : "Stop before Task publication.",
     },
   });
@@ -151,7 +151,15 @@ function recordVerdict(input: {
   endedAt: string;
   before?: VerificationSourceSnapshot;
   after?: VerificationSourceSnapshot;
-  verificationPolicy?: "custom-engine" | "custom-engine-human-review";
+  verificationPolicy?:
+    | "custom-engine"
+    | "custom-engine-human-review"
+    | "custom-engine-human-review-approval";
+  humanReviewApproval?: {
+    predecessorAttemptId: string;
+    blockerId: string;
+    approvalOperationId: string;
+  };
 }): TaskTechnicalVerdictReceipt {
   const targetSourceRevisions = Object.fromEntries(
     (input.before?.targets ?? []).map((target) => [target.targetId, target.revision]),
@@ -180,9 +188,40 @@ function recordVerdict(input: {
         verificationPolicy: input.verificationPolicy ?? "custom-engine",
         targetSourceRevisions,
         sourceRevisionAfter: input.after?.aggregateRevision ?? "unavailable",
+        ...(input.humanReviewApproval
+          ? { humanReviewApproval: input.humanReviewApproval }
+          : {}),
       },
     },
   });
+}
+
+function approvedHumanReviewForSuccessor(
+  attempt: TaskExecutionAttemptSnapshot,
+  testedSourceRevision: string,
+): {
+  predecessorAttemptId: string;
+  blockerId: string;
+  approvalOperationId: string;
+} | null {
+  if (!attempt.retryOfAttemptId) return null;
+  const predecessor = readTaskAttempt(attempt.retryOfAttemptId);
+  if (predecessor?.state !== "settled" || predecessor.outcome !== "succeeded") return null;
+
+  const blocker = readResolvedTaskHumanReviewBlocker(predecessor.attemptId);
+  const recovery = readTaskRecoveryRoute(predecessor.attemptId);
+  const verdict = readTaskTechnicalVerdict(predecessor.attemptId);
+  if (!blocker?.resolvedOperationId || recovery?.recoveryOwner !== "agent" ||
+      !["retry", "repair", "remediate", "replan"].includes(recovery.action) ||
+      !verdict || verdict.testedSourceRevision !== testedSourceRevision ||
+      !isPendingTaskHumanReviewVerdict(predecessor.attemptId, verdict.verdictId)) {
+    return null;
+  }
+  return {
+    predecessorAttemptId: predecessor.attemptId,
+    blockerId: blocker.blockerId,
+    approvalOperationId: blocker.resolvedOperationId,
+  };
 }
 
 interface FailedVerdictIdentity {
@@ -198,10 +237,13 @@ function routeFailedVerification(
   supersedesResolvedBlockerId?: string,
 ): VerificationOutcome {
   if (!attempt.resultId) throw new Error("Custom Task host verification Result is missing");
+  const routeIdentity = supersedesResolvedBlockerId
+    ? `${attempt.resultId}:resolved-blocker:${supersedesResolvedBlockerId}`
+    : attempt.resultId;
   const recovery = recordFailureAndSelectRecovery({
     invocation: internalExecutionInvocation(failureKind === "verification-drift"
       ? `internal:auto:attempt.route:${attempt.resultId}:verification-drift:${verdict.verdictId}`
-      : `internal:auto:attempt.route:${attempt.resultId}`),
+      : `internal:auto:attempt.route:${routeIdentity}`),
     attemptId: attempt.attemptId,
     resultId: attempt.resultId,
     owner: "agent",
@@ -290,32 +332,11 @@ async function runCustomTaskHostVerification(
           verdict: existing.verdict,
         }, "verification-drift", blocker.blockerId);
       }
-      const now = new Date().toISOString();
-      confirmResolvedTaskHumanReview({
-        invocation: internalExecutionInvocation(`internal:auto:attempt.verify-human:${blocker.blockerId}`),
-        attemptId: attempt.attemptId,
-        blockerId: blocker.blockerId,
-        testedSourceRevision: existing.testedSourceRevision,
-        rationale: "The required human review blocker was resolved and the reviewed source is unchanged.",
-        evidence: {
-          evidenceClass: "command",
-          commandOrTool: "gsd-task-human-review-resolution",
-          workingDirectory: input.basePath,
-          startedAt: now,
-          endedAt: now,
-          exitCode: 0,
-          observation: "passed",
-          durableOutputRef: `db://workflow-blockers/${blocker.blockerId}`,
-          environment: {
-            node: process.version,
-            platform: process.platform,
-            verificationPolicy: "human-review",
-            blockerResolutionOperationId: blocker.resolvedOperationId ?? "unavailable",
-            blockerResolutionProjectRevision: blocker.resolvedProjectRevision ?? 0,
-          },
-        },
-      });
-      return "continue";
+      return routeFailedVerification(attempt, {
+        verdictId: existing.verdictId,
+        evidenceId: existing.evidenceId,
+        verdict: existing.verdict,
+      }, "verification-failed", blocker.blockerId);
     }
     if (!recovery && isPendingTaskHumanReviewVerdict(attempt.attemptId, existing.verdictId)) {
       return routeHumanReview(attempt, {
@@ -327,9 +348,7 @@ async function runCustomTaskHostVerification(
     const failureKind = recovery?.failureKind === "verification-drift" || existing.supersedesVerdictId
       ? "verification-drift"
       : "verification-failed";
-    const supersededBlockerId = failureKind === "verification-drift"
-      ? readResolvedTaskHumanReviewBlocker(attempt.attemptId)?.blockerId
-      : undefined;
+    const supersededBlockerId = readResolvedTaskHumanReviewBlocker(attempt.attemptId)?.blockerId;
     return routeFailedVerification(attempt, {
       verdictId: existing.verdictId,
       evidenceId: existing.evidenceId,
@@ -394,6 +413,27 @@ async function runCustomTaskHostVerification(
       endedAt: new Date().toISOString(),
     });
     return routeFailedVerification(attempt, { ...recorded, verdict: "inconclusive" });
+  }
+
+  const humanReviewApproval = approvedHumanReviewForSuccessor(
+    attempt,
+    before.snapshot.aggregateRevision,
+  );
+  if (humanReviewApproval) {
+    const now = new Date().toISOString();
+    recordVerdict({
+      basePath: input.basePath,
+      attemptId: attempt.attemptId,
+      verdict: "pass",
+      rationale: "Resolved human review approved this unchanged source for one fresh successor Attempt.",
+      startedAt,
+      endedAt: now,
+      before: before.snapshot,
+      after: before.snapshot,
+      verificationPolicy: "custom-engine-human-review-approval",
+      humanReviewApproval,
+    });
+    return "continue";
   }
 
   let policyResult: VerificationOutcome;

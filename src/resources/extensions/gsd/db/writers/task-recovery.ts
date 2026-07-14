@@ -15,6 +15,7 @@ import {
   type DomainOperationContext,
 } from "../domain-operation.js";
 import { getDb } from "../engine.js";
+import { CURRENT_EVIDENCE_BACKED_FAILURE_VERDICT_SQL } from "../sql-constants.js";
 import { requireActiveDomainOperationContext } from "./lifecycle-commands.js";
 
 export type RecoveryAction = RecoveryDecision["action"];
@@ -161,13 +162,7 @@ function requireCurrentRouteHead(
     resultGuard = input.boundaryStage === "verify"
       ? `AND result.result_id = :result_id
          AND result.outcome = 'succeeded'
-         AND EXISTS (
-           SELECT 1 FROM workflow_technical_verdicts verdict
-           WHERE verdict.project_id = result.project_id
-             AND verdict.lifecycle_id = result.lifecycle_id
-             AND verdict.attempt_id = result.attempt_id
-             AND verdict.verdict IN ('fail', 'inconclusive')
-         )`
+         AND ${CURRENT_EVIDENCE_BACKED_FAILURE_VERDICT_SQL}`
       : "AND result.result_id = :result_id AND result.outcome IN ('failed', 'interrupted')";
   }
   const parameters: Record<string, unknown> = {

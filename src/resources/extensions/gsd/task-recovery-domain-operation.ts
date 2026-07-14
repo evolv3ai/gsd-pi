@@ -12,6 +12,10 @@ import {
 } from "./db/domain-operation.js";
 import { getDb } from "./db/engine.js";
 import {
+  CURRENT_EVIDENCE_BACKED_FAILURE_VERDICT_SQL,
+  CURRENT_TASK_RECOVERY_CAUSAL_AUTHORITY_SQL,
+} from "./db/sql-constants.js";
+import {
   appendRecoveryWorkCheckpoint,
   createOrReadRecoveryBudget,
   grantRecoveryWaiver,
@@ -325,6 +329,11 @@ export function readPendingTaskRecoveryContext(
       ON observation.attempt_id = attempt.attempt_id
      AND observation.lifecycle_id = lifecycle.lifecycle_id
      AND observation.project_id = lifecycle.project_id
+    JOIN workflow_attempt_results result
+      ON result.result_id = observation.result_id
+     AND result.attempt_id = observation.attempt_id
+     AND result.lifecycle_id = observation.lifecycle_id
+     AND result.project_id = observation.project_id
     JOIN workflow_recovery_actions action
       ON action.failure_observation_id = observation.failure_observation_id
      AND action.lifecycle_id = lifecycle.lifecycle_id
@@ -338,6 +347,7 @@ export function readPendingTaskRecoveryContext(
       AND lifecycle.slice_id = :slice_id
       AND lifecycle.task_id = :task_id
       AND action.action IN ('retry', 'repair', 'remediate', 'replan', 'abort')
+      AND ${CURRENT_TASK_RECOVERY_CAUSAL_AUTHORITY_SQL}
       AND attempt.attempt_number = (
         SELECT MAX(latest.attempt_number)
         FROM workflow_execution_attempts latest
@@ -422,13 +432,7 @@ function loadRoutedFailureScope(attemptId: string, resultId: string): FailedAtte
       AND attempt.attempt_state = 'settled'
       AND (
         result.outcome IN ('failed', 'interrupted') OR
-        (result.outcome = 'succeeded' AND EXISTS (
-          SELECT 1 FROM workflow_technical_verdicts verdict
-          WHERE verdict.project_id = result.project_id
-            AND verdict.lifecycle_id = result.lifecycle_id
-            AND verdict.attempt_id = result.attempt_id
-            AND verdict.verdict IN ('fail', 'inconclusive')
-        ))
+        (result.outcome = 'succeeded' AND ${CURRENT_EVIDENCE_BACKED_FAILURE_VERDICT_SQL})
       )
       AND checkpoint.next_stage = 'route'
       AND NOT EXISTS (
@@ -449,10 +453,14 @@ function loadRoutedFailureScope(attemptId: string, resultId: string): FailedAtte
   };
 }
 
-function requireRoutableResult(resultId: string, supersedesResolvedBlockerId?: string): void {
+function requireRoutableResult(
+  resultId: string,
+  newOwner: RouteFailureInput["owner"],
+  supersedesResolvedBlockerId?: string,
+): void {
   const routed = getDb().prepare(`
     SELECT action.recovery_action_id, action.action, action.blocker_id,
-           observation.recovery_owner, blocker.blocker_kind, blocker.blocker_status
+           observation.recovery_owner, blocker.blocker_status
     FROM workflow_failure_observations observation
     LEFT JOIN workflow_recovery_actions action
       ON action.failure_observation_id = observation.failure_observation_id
@@ -462,13 +470,13 @@ function requireRoutableResult(resultId: string, supersedesResolvedBlockerId?: s
     LIMIT 1
   `).get({ ":result_id": resultId }) as Record<string, unknown> | undefined;
   if (!routed) return;
-  const supersedesResolvedHumanReview = supersedesResolvedBlockerId &&
+  const supersedesResolvedBlocker = supersedesResolvedBlockerId &&
+    newOwner === "agent" &&
     routed["blocker_id"] === supersedesResolvedBlockerId &&
-    routed["recovery_owner"] === "user" &&
-    routed["action"] === "clarify" &&
-    routed["blocker_kind"] === "subjective_uat" &&
-    routed["blocker_status"] === "resolved";
-  if (!supersedesResolvedHumanReview) {
+    ["user", "external"].includes(String(routed["recovery_owner"])) &&
+    ["clarify", "pause"].includes(String(routed["action"])) &&
+    ["resolved", "dismissed"].includes(String(routed["blocker_status"]));
+  if (!supersedesResolvedBlocker) {
     throw new Error("Task Result already has a recovery observation");
   }
 }
@@ -764,7 +772,7 @@ export function recordFailureAndSelectRecovery(
     },
   ), (context) => {
     const scope = loadRoutedFailureScope(input.attemptId, input.resultId);
-    requireRoutableResult(input.resultId, input.supersedesResolvedBlockerId);
+    requireRoutableResult(input.resultId, input.owner, input.supersedesResolvedBlockerId);
     const failureKind = input.classification.failureKind.trim().toLowerCase();
     const fingerprint = normalizeFailureFingerprint(input.classification);
     const decision = input.owner === "agent"

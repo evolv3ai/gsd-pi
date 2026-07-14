@@ -18,6 +18,10 @@ import {
 } from "../db/writers/lifecycle-commands.ts";
 import { recordFailureObservation } from "../db/writers/task-recovery.ts";
 import {
+  currentHostTechnicalCriterionId,
+  insertHostTechnicalVerdict,
+} from "../db/writers/task-verification.ts";
+import {
   appendTaskWorkCheckpoint,
   cancelTask,
   grantTaskWaiver,
@@ -580,6 +584,270 @@ function seedReadyTask(): { lifecycleId: string; dispatchId: number } {
   return { lifecycleId, dispatchId: Number(row("SELECT id FROM unit_dispatches").id) };
 }
 
+interface VerificationFailureScope {
+  lifecycleId: string;
+  attemptId: string;
+  resultId: string;
+  kernelCheckpointId: string;
+  verdictId: string;
+}
+
+function seedSucceededVerificationFailure(
+  technicalVerdict: "fail" | "inconclusive" = "fail",
+): VerificationFailureScope {
+  const seeded = seedReadyTask();
+  const claim = claimTaskAttempt({
+    invocation: invocation("current-head/claim"),
+    task: { milestoneId: "M001", sliceId: "S01", taskId: "T01" },
+    workerId: "worker-1",
+    milestoneLeaseToken: 7,
+    coordinationDispatchId: seeded.dispatchId,
+  });
+  const settled = settleTaskAttempt({
+    invocation: invocation("current-head/settle"),
+    attemptId: claim.attemptId,
+    outcome: "succeeded",
+    failureClass: "none",
+    summary: "executor produced its result",
+    output: { changedFiles: ["src/task.ts"] },
+  });
+  const verdict = recordTaskTechnicalVerdict({
+    invocation: invocation("current-head/verdict"),
+    attemptId: claim.attemptId,
+    testedSourceRevision: "git:current-head",
+    verdict: technicalVerdict,
+    rationale: "Host test failed after successful execution.",
+    evidence: {
+      evidenceClass: "command",
+      commandOrTool: "npm test",
+      workingDirectory: "/tmp/project",
+      startedAt: "2026-07-13T01:00:00.000Z",
+      endedAt: "2026-07-13T01:00:01.000Z",
+      exitCode: 1,
+      observation: technicalVerdict === "fail" ? "failed" : "inconclusive",
+      durableOutputRef: "db://host-verification/current-head",
+      environment: { runner: "node-test", platform: "test" },
+    },
+  });
+  const checkpoint = row(`
+    SELECT kernel_checkpoint_id
+    FROM workflow_kernel_checkpoints
+    WHERE attempt_id = :attempt_id AND next_stage = 'route'
+      AND NOT EXISTS (
+        SELECT 1 FROM workflow_kernel_checkpoints successor
+        WHERE successor.previous_kernel_checkpoint_id = workflow_kernel_checkpoints.kernel_checkpoint_id
+      )
+  `, { ":attempt_id": claim.attemptId });
+  return {
+    lifecycleId: seeded.lifecycleId,
+    attemptId: claim.attemptId,
+    resultId: settled.resultId,
+    kernelCheckpointId: String(checkpoint.kernel_checkpoint_id),
+    verdictId: verdict.verdictId,
+  };
+}
+
+function supersedeFailedVerdict(scope: VerificationFailureScope): void {
+  const fence = readDomainOperationFence();
+  executeDomainOperation({
+    operationType: "attempt.verify",
+    idempotencyKey: "current-head/supersede-verdict",
+    expectedRevision: fence.revision,
+    expectedAuthorityEpoch: fence.authorityEpoch,
+    actorType: "user",
+    sourceTransport: "internal",
+    payload: { attemptId: scope.attemptId, supersedesVerdictId: scope.verdictId },
+  }, (context) => {
+    const criterionId = currentHostTechnicalCriterionId(context.projectId, scope.lifecycleId);
+    assert.ok(criterionId);
+    const attempt = row(`
+      SELECT settle_project_revision FROM workflow_execution_attempts WHERE attempt_id = :attempt_id
+    `, { ":attempt_id": scope.attemptId });
+    insertHostTechnicalVerdict(context, {
+      scope: {
+        projectId: context.projectId,
+        lifecycleId: scope.lifecycleId,
+        attemptId: scope.attemptId,
+        settleProjectRevision: Number(attempt.settle_project_revision),
+      },
+      criterionId,
+      testedSourceRevision: "git:current-head",
+      verdict: "pass",
+      rationale: "Human review confirmed the delivered behavior.",
+      evidence: {
+        evidenceClass: "command",
+        commandOrTool: "human review",
+        workingDirectory: "/tmp/project",
+        startedAt: "2026-07-13T01:00:02.000Z",
+        endedAt: "2026-07-13T01:00:03.000Z",
+        exitCode: 0,
+        observation: "passed",
+        durableOutputRef: "db://host-verification/current-head/pass",
+        environment: { reviewer: "user-1" },
+      },
+      createdAt: "2026-07-13T01:00:03.000Z",
+      supersedesVerdictId: scope.verdictId,
+    });
+    return {
+      events: [{ eventType: "test.verdict.superseded", entityType: "task", entityId: "M001/S01/T01", payload: {}, destinations: ["test"] }],
+      projections: [{ projectionKey: "test/verdict/superseded", projectionKind: "test", rendererVersion: "1" }],
+    };
+  });
+}
+
+function recordNewerSourcePass(scope: VerificationFailureScope): void {
+  const fence = readDomainOperationFence();
+  executeDomainOperation({
+    operationType: "attempt.verify",
+    idempotencyKey: "current-head/newer-source-pass",
+    expectedRevision: fence.revision,
+    expectedAuthorityEpoch: fence.authorityEpoch,
+    actorType: "user",
+    sourceTransport: "internal",
+    payload: { attemptId: scope.attemptId, testedSourceRevision: "git:newer-source" },
+  }, (context) => {
+    const criterionId = currentHostTechnicalCriterionId(context.projectId, scope.lifecycleId);
+    assert.ok(criterionId);
+    const attempt = row(`
+      SELECT settle_project_revision FROM workflow_execution_attempts WHERE attempt_id = :attempt_id
+    `, { ":attempt_id": scope.attemptId });
+    insertHostTechnicalVerdict(context, {
+      scope: {
+        projectId: context.projectId,
+        lifecycleId: scope.lifecycleId,
+        attemptId: scope.attemptId,
+        settleProjectRevision: Number(attempt.settle_project_revision),
+      },
+      criterionId,
+      testedSourceRevision: "git:newer-source",
+      verdict: "pass",
+      rationale: "The newer source revision passed verification.",
+      evidence: {
+        evidenceClass: "command",
+        commandOrTool: "npm test",
+        workingDirectory: "/tmp/project",
+        startedAt: "2026-07-13T01:00:02.000Z",
+        endedAt: "2026-07-13T01:00:03.000Z",
+        exitCode: 0,
+        observation: "passed",
+        durableOutputRef: "db://host-verification/newer-source/pass",
+        environment: { runner: "node-test" },
+      },
+      createdAt: "2026-07-13T01:00:03.000Z",
+    });
+    return {
+      events: [{ eventType: "test.verdict.newer-source", entityType: "task", entityId: "M001/S01/T01", payload: {}, destinations: ["test"] }],
+      projections: [{ projectionKey: "test/verdict/newer-source", projectionKind: "test", rendererVersion: "1" }],
+    };
+  });
+}
+
+function recordNewerSourcePassWithoutEvidence(scope: VerificationFailureScope): void {
+  const fence = readDomainOperationFence();
+  executeDomainOperation({
+    operationType: "attempt.verify",
+    idempotencyKey: "current-head/newer-source-pass-without-evidence",
+    expectedRevision: fence.revision,
+    expectedAuthorityEpoch: fence.authorityEpoch,
+    actorType: "user",
+    sourceTransport: "internal",
+    payload: { attemptId: scope.attemptId, testedSourceRevision: "git:newer-source" },
+  }, (context) => {
+    const criterionId = currentHostTechnicalCriterionId(context.projectId, scope.lifecycleId);
+    assert.ok(criterionId);
+    db().prepare(`
+      INSERT INTO workflow_technical_verdicts (
+        verdict_id, project_id, criterion_id, lifecycle_id, attempt_id,
+        tested_source_revision, verdict, policy_id, policy_version, rationale,
+        created_at, operation_id, project_revision, authority_epoch
+      ) VALUES (
+        'verdict-newer-without-evidence', :project_id, :criterion_id, :lifecycle_id, :attempt_id,
+        'git:newer-source', 'pass', 'gsd-host-verification', '1', 'Orphan newer verdict',
+        :created_at, :operation_id, :project_revision, :authority_epoch
+      )
+    `).run({
+      ":project_id": context.projectId,
+      ":criterion_id": criterionId,
+      ":lifecycle_id": scope.lifecycleId,
+      ":attempt_id": scope.attemptId,
+      ":created_at": "2026-07-13T01:00:03.000Z",
+      ":operation_id": context.operationId,
+      ":project_revision": context.resultingRevision,
+      ":authority_epoch": context.resultingAuthorityEpoch,
+    });
+    return {
+      events: [{ eventType: "test.verdict.orphan", entityType: "task", entityId: "M001/S01/T01", payload: {}, destinations: ["test"] }],
+      projections: [{ projectionKey: "test/verdict/orphan", projectionKind: "test", rendererVersion: "1" }],
+    };
+  });
+}
+
+function removeVerificationEvidence(verdictId: string): void {
+  db().exec("DROP TRIGGER trg_workflow_evidence_immutable_delete");
+  db().prepare(`
+    DELETE FROM workflow_verification_evidence WHERE verdict_id = :verdict_id
+  `).run({ ":verdict_id": verdictId });
+}
+
+function supersedeHostCriterion(scope: VerificationFailureScope): void {
+  const fence = readDomainOperationFence();
+  executeDomainOperation({
+    operationType: "test.criterion.supersede",
+    idempotencyKey: "current-head/supersede-criterion",
+    expectedRevision: fence.revision,
+    expectedAuthorityEpoch: fence.authorityEpoch,
+    actorType: "test",
+    sourceTransport: "test",
+    payload: { lifecycleId: scope.lifecycleId },
+  }, (context) => {
+    const result = db().prepare(`
+      INSERT INTO workflow_acceptance_criteria (
+        criterion_id, criterion_key, project_id, lifecycle_id,
+        criterion_kind, evidence_class, required, description,
+        supersedes_criterion_id, created_at, operation_id, project_revision, authority_epoch
+      )
+      SELECT 'criterion-current-head-successor', criterion_key, project_id, lifecycle_id,
+             criterion_kind, evidence_class, required, 'Updated host verification criterion',
+             criterion_id, :created_at, :operation_id, :project_revision, :authority_epoch
+      FROM workflow_acceptance_criteria criterion
+      WHERE criterion.project_id = :project_id
+        AND criterion.lifecycle_id = :lifecycle_id
+        AND NOT EXISTS (
+          SELECT 1 FROM workflow_acceptance_criteria successor
+          WHERE successor.supersedes_criterion_id = criterion.criterion_id
+        )
+    `).run({
+      ":created_at": "2026-07-13T01:00:02.000Z",
+      ":operation_id": context.operationId,
+      ":project_revision": context.resultingRevision,
+      ":authority_epoch": context.resultingAuthorityEpoch,
+      ":project_id": context.projectId,
+      ":lifecycle_id": scope.lifecycleId,
+    });
+    assert.equal(Number((result as { changes?: number }).changes ?? 0), 1);
+    return {
+      events: [{ eventType: "test.criterion.superseded", entityType: "task", entityId: "M001/S01/T01", payload: {}, destinations: ["test"] }],
+      projections: [{ projectionKey: "test/criterion/superseded", projectionKind: "test", rendererVersion: "1" }],
+    };
+  });
+}
+
+function recoveryInput(
+  scope: VerificationFailureScope,
+  key: string,
+): Parameters<typeof recordFailureAndSelectRecovery>[0] {
+  return {
+    invocation: invocation(key),
+    attemptId: scope.attemptId,
+    resultId: scope.resultId,
+    owner: "agent" as const,
+    classification: { failureKind: "verification-failed" as const },
+    summary: "host verification failed after successful execution",
+    evidence: { verdict: "fail", testedSourceRevision: "git:current-head" },
+    rationale: "must use only the current verification head",
+  };
+}
+
 function completeTaskWithHistory(): { lifecycleId: string; attemptId: string } {
   const seeded = seedReadyTask();
   const claim = claimTaskAttempt({
@@ -736,6 +1004,104 @@ test("durable budget use survives retries and exhausts to agent abort", async ()
   assert.equal(replayed.status, "replayed");
   assert.equal(replayed.operationId, resumed.operationId);
   assert.equal(resumed.recoveryActionId, third.recoveryActionId);
+
+  const resumeOperation = row(`
+    SELECT project_id, resulting_revision, resulting_authority_epoch
+    FROM workflow_operations WHERE operation_id = :operation_id
+  `, { ":operation_id": resumed.operationId });
+  db().exec(`
+    INSERT INTO tasks (milestone_id, slice_id, id, title, status)
+    VALUES ('M001', 'S01', 'T02', 'Unrelated recovery', 'pending');
+  `);
+  db().prepare(`
+    INSERT INTO workflow_item_lifecycles (
+      lifecycle_id, project_id, item_kind, milestone_id, slice_id, task_id,
+      lifecycle_status, created_at, updated_at,
+      last_operation_id, last_project_revision, last_authority_epoch
+    ) VALUES (
+      'life-unrelated-resume', :project_id, 'task', 'M001', 'S01', 'T02',
+      'ready', '', '', :operation_id, :project_revision, :authority_epoch
+    )
+  `).run({
+    ":project_id": resumeOperation.project_id,
+    ":operation_id": resumed.operationId,
+    ":project_revision": resumeOperation.resulting_revision,
+    ":authority_epoch": resumeOperation.resulting_authority_epoch,
+  });
+  db().prepare(`
+    INSERT INTO workflow_work_checkpoints (
+      checkpoint_id, project_id, scope_key, lifecycle_id,
+      checkpoint_kind, sequence, confirmed_context, created_at,
+      operation_id, project_revision, authority_epoch
+    ) VALUES (
+      'checkpoint-unrelated-resume', :project_id, 'task:m001/s01/t02',
+      'life-unrelated-resume', 'correction', 1, 'Unrelated repair', '',
+      :operation_id, :project_revision, :authority_epoch
+    )
+  `).run({
+    ":project_id": resumeOperation.project_id,
+    ":operation_id": resumed.operationId,
+    ":project_revision": resumeOperation.resulting_revision,
+    ":authority_epoch": resumeOperation.resulting_authority_epoch,
+  });
+  const resumeEvent = row(`
+    SELECT event_id, payload_json FROM workflow_domain_events
+    WHERE operation_id = :operation_id AND event_type = 'task.recovery.resumed'
+  `, { ":operation_id": resumed.operationId });
+  db().exec("DROP TRIGGER trg_workflow_domain_events_immutable_update");
+  db().prepare(`
+    UPDATE workflow_domain_events
+    SET payload_json = json_set(payload_json, '$.workCheckpointId', 'checkpoint-unrelated-resume')
+    WHERE event_id = :event_id
+  `).run({ ":event_id": resumeEvent.event_id });
+  const crossLifecycleFence = readDomainOperationFence();
+  assert.throws(() => executeDomainOperation({
+    operationType: "attempt.claim",
+    idempotencyKey: "recovery/resume/cross-lifecycle-checkpoint",
+    expectedRevision: crossLifecycleFence.revision,
+    expectedAuthorityEpoch: crossLifecycleFence.authorityEpoch,
+    actorType: "test",
+    sourceTransport: "test",
+    payload: { retryOfAttemptId: thirdFailure.attemptId },
+  }, (context) => {
+    db().prepare(`
+      INSERT INTO workflow_execution_attempts (
+        attempt_id, project_id, lifecycle_id, attempt_number,
+        retry_of_attempt_id, attempt_state, claimed_at,
+        claim_operation_id, claim_project_revision, claim_authority_epoch
+      ) VALUES (
+        'attempt-cross-lifecycle-resume', :project_id, :lifecycle_id, 4,
+        :retry_of_attempt_id, 'claimed', '',
+        :operation_id, :project_revision, :authority_epoch
+      )
+    `).run({
+      ":project_id": context.projectId,
+      ":lifecycle_id": resumed.lifecycleId,
+      ":retry_of_attempt_id": thirdFailure.attemptId,
+      ":operation_id": context.operationId,
+      ":project_revision": context.resultingRevision,
+      ":authority_epoch": context.resultingAuthorityEpoch,
+    });
+    return {
+      events: [{
+        eventType: "test.recovery.cross-lifecycle-claim",
+        entityType: "task",
+        entityId: "M001/S01/T01",
+        payload: {},
+        destinations: ["test"],
+      }],
+      projections: [{
+        projectionKey: "test/recovery/cross-lifecycle-claim",
+        projectionKind: "test",
+        rendererVersion: "1",
+      }],
+    };
+  }), /current causal recovery authority/i);
+  assert.equal(readTaskRecoveryRoute(thirdFailure.attemptId)?.resumeAuthorized, false);
+  db().prepare(`
+    UPDATE workflow_domain_events SET payload_json = :payload_json WHERE event_id = :event_id
+  `).run({ ":payload_json": resumeEvent.payload_json, ":event_id": resumeEvent.event_id });
+
   assert.equal(readTaskRecoveryRoute(thirdFailure.attemptId)?.resumeAuthorized, true);
   assert.equal(
     route("recovery/budget/3", thirdFailure, summaries[2]).resumeAuthorized,
@@ -914,50 +1280,8 @@ test("recordFailureAndSelectRecovery atomically selects and replays one bounded 
 });
 
 test("failed Technical Verdict routes one durable recovery action for a succeeded Attempt and replays", () => {
-  const seeded = seedReadyTask();
-  const claim = claimTaskAttempt({
-    invocation: invocation("verification-recovery/claim"),
-    task: { milestoneId: "M001", sliceId: "S01", taskId: "T01" },
-    workerId: "worker-1",
-    milestoneLeaseToken: 7,
-    coordinationDispatchId: seeded.dispatchId,
-  });
-  const settled = settleTaskAttempt({
-    invocation: invocation("verification-recovery/settle"),
-    attemptId: claim.attemptId,
-    outcome: "succeeded",
-    failureClass: "none",
-    summary: "executor produced its result",
-    output: { changedFiles: ["src/task.ts"] },
-  });
-  recordTaskTechnicalVerdict({
-    invocation: invocation("verification-recovery/verdict"),
-    attemptId: claim.attemptId,
-    testedSourceRevision: "git:verification-recovery",
-    verdict: "fail",
-    rationale: "Host test failed after successful execution.",
-    evidence: {
-      evidenceClass: "command",
-      commandOrTool: "npm test",
-      workingDirectory: "/tmp/project",
-      startedAt: "2026-07-13T01:00:00.000Z",
-      endedAt: "2026-07-13T01:00:01.000Z",
-      exitCode: 1,
-      observation: "failed",
-      durableOutputRef: "db://host-verification/verification-recovery",
-      environment: { runner: "node-test", platform: "test" },
-    },
-  });
-  const input = {
-    invocation: invocation("verification-recovery/route"),
-    attemptId: claim.attemptId,
-    resultId: settled.resultId,
-    owner: "agent" as const,
-    classification: { failureKind: "verification-failed" as const },
-    summary: "host verification failed after successful execution",
-    evidence: { verdict: "fail", testedSourceRevision: "git:verification-recovery" },
-    rationale: "remediate the durable verification failure",
-  };
+  const scope = seedSucceededVerificationFailure();
+  const input = recoveryInput(scope, "verification-recovery/route");
 
   const committed = recordFailureAndSelectRecovery(input);
   const replayed = recordFailureAndSelectRecovery(input);
@@ -974,7 +1298,217 @@ test("failed Technical Verdict routes one durable recovery action for a succeede
     JOIN workflow_kernel_checkpoints checkpoint ON checkpoint.attempt_id = result.attempt_id
     WHERE result.result_id = :result_id
     ORDER BY checkpoint.sequence DESC LIMIT 1
-  `, { ":result_id": settled.resultId }), { outcome: "succeeded", next_stage: "route" });
+  `, { ":result_id": scope.resultId }), { outcome: "succeeded", next_stage: "route" });
+});
+
+test("successor claim revalidates a retained route when its verification authority becomes stale", () => {
+  const scope = seedSucceededVerificationFailure();
+  const routed = recordFailureAndSelectRecovery(recoveryInput(scope, "current-head/claim/route"));
+  assert.equal(routed.action, "remediate");
+  supersedeFailedVerdict(scope);
+  assert.equal(readPendingTaskRecoveryContext({
+    milestoneId: "M001",
+    sliceId: "S01",
+    taskId: "T01",
+  }), null);
+  const dispatchId = insertClaimedDispatch(2);
+  db().exec("DROP TRIGGER IF EXISTS trg_workflow_attempt_route_authority_v39");
+  const revision = Number(row("SELECT revision FROM project_authority WHERE singleton = 1").revision);
+  const operationCount = count("workflow_operations");
+  const eventCount = count("workflow_domain_events");
+  const checkpointCount = count("workflow_kernel_checkpoints");
+
+  assert.throws(() => claimTaskAttempt({
+    invocation: invocation("current-head/claim/stale-route"),
+    task: { milestoneId: "M001", sliceId: "S01", taskId: "T01" },
+    workerId: "worker-1",
+    milestoneLeaseToken: 7,
+    coordinationDispatchId: dispatchId,
+    retryOfAttemptId: scope.attemptId,
+  }), /current causal recovery authority/i);
+
+  assert.equal(Number(row("SELECT revision FROM project_authority WHERE singleton = 1").revision), revision);
+  assert.equal(count("workflow_operations"), operationCount);
+  assert.equal(count("workflow_domain_events"), eventCount);
+  assert.equal(count("workflow_kernel_checkpoints"), checkpointCount);
+  assert.equal(count("workflow_execution_attempts"), 1);
+  assert.equal(row(`SELECT status FROM unit_dispatches WHERE id = ${dispatchId}`).status, "claimed");
+  assert.equal(count("workflow_failure_observations"), 1);
+  assert.equal(count("workflow_recovery_actions"), 1);
+});
+
+test("recovery Domain Operation rejects a superseded failed Technical Verdict", () => {
+  const scope = seedSucceededVerificationFailure();
+  supersedeFailedVerdict(scope);
+
+  assert.throws(
+    () => recordFailureAndSelectRecovery(recoveryInput(scope, "current-head/route/superseded-verdict")),
+    /current execute or verification failure route head/,
+  );
+  assert.equal(count("workflow_failure_observations"), 0);
+});
+
+for (const verdict of ["fail", "inconclusive"] as const) {
+  test(`recovery Domain Operation rejects an evidence-less ${verdict} Technical Verdict`, () => {
+    const scope = seedSucceededVerificationFailure(verdict);
+    removeVerificationEvidence(scope.verdictId);
+
+    assert.throws(
+      () => recordFailureAndSelectRecovery(recoveryInput(scope, `current-head/route/evidence-less-${verdict}`)),
+      /current execute or verification failure route head/,
+    );
+    assert.equal(count("workflow_failure_observations"), 0);
+  });
+}
+
+test("recovery Domain Operation ignores an evidence-less newer verdict", () => {
+  const scope = seedSucceededVerificationFailure();
+  recordNewerSourcePassWithoutEvidence(scope);
+
+  const routed = recordFailureAndSelectRecovery(
+    recoveryInput(scope, "current-head/route/evidence-less-newer"),
+  );
+
+  assert.equal(routed.action, "remediate");
+  assert.equal(count("workflow_failure_observations"), 1);
+});
+
+test("recovery Domain Operation rejects a failed verdict on a superseded criterion", () => {
+  const scope = seedSucceededVerificationFailure();
+  supersedeHostCriterion(scope);
+
+  assert.throws(
+    () => recordFailureAndSelectRecovery(recoveryInput(scope, "current-head/route/superseded-criterion")),
+    /current execute or verification failure route head/,
+  );
+  assert.equal(count("workflow_failure_observations"), 0);
+});
+
+test("recovery Domain Operation rejects an older failed verdict after a newer source passes", () => {
+  const scope = seedSucceededVerificationFailure();
+  recordNewerSourcePass(scope);
+  // Schema enforcement has its own tests; isolate the Domain Operation lookup.
+  db().exec("DROP TRIGGER trg_workflow_failure_result_scope");
+
+  assert.throws(
+    () => recordFailureAndSelectRecovery(recoveryInput(scope, "current-head/route/newer-source-pass")),
+    /current execute or verification failure route head/,
+  );
+  assert.equal(count("workflow_failure_observations"), 0);
+});
+
+for (const staleHead of [
+  { label: "superseded verdict", prepare: supersedeFailedVerdict },
+  { label: "superseded criterion", prepare: supersedeHostCriterion },
+  { label: "stale verdict for another source revision", prepare: recordNewerSourcePass },
+] as const) {
+  test(`recovery writer rejects a ${staleHead.label} as route authority`, () => {
+    const scope = seedSucceededVerificationFailure();
+    staleHead.prepare(scope);
+    // Schema current-head enforcement has its own tests; isolate this writer guard.
+    db().exec("DROP TRIGGER trg_workflow_failure_result_scope");
+    const fence = readDomainOperationFence();
+
+    assert.throws(() => executeDomainOperation({
+      operationType: "attempt.route",
+      idempotencyKey: `current-head/writer/${staleHead.label.replace(" ", "-")}`,
+      expectedRevision: fence.revision,
+      expectedAuthorityEpoch: fence.authorityEpoch,
+      actorType: "test",
+      sourceTransport: "test",
+      payload: { attemptId: scope.attemptId, resultId: scope.resultId },
+    }, (context) => {
+      recordFailureObservation(context, {
+        lifecycleId: scope.lifecycleId,
+        attemptId: scope.attemptId,
+        resultId: scope.resultId,
+        kernelCheckpointId: scope.kernelCheckpointId,
+        boundaryStage: "verify",
+        recoveryOwner: "agent",
+        failureKind: "verification-failed",
+        failureFingerprint: "verification-failed:current-head",
+        summary: "stale verification must not authorize recovery",
+        evidence: {},
+      });
+      return {
+        events: [{ eventType: "test.recovery.stale", entityType: "task", entityId: "M001/S01/T01", payload: {}, destinations: ["test"] }],
+        projections: [{ projectionKey: "test/recovery/stale", projectionKind: "test", rendererVersion: "1" }],
+      };
+    }), /current route head/);
+    assert.equal(count("workflow_failure_observations"), 0);
+  });
+}
+
+for (const verdict of ["fail", "inconclusive"] as const) {
+  test(`recovery writer rejects an evidence-less ${verdict} Technical Verdict`, () => {
+    const scope = seedSucceededVerificationFailure(verdict);
+    removeVerificationEvidence(scope.verdictId);
+    db().exec("DROP TRIGGER trg_workflow_failure_result_scope");
+    const fence = readDomainOperationFence();
+
+    assert.throws(() => executeDomainOperation({
+      operationType: "attempt.route",
+      idempotencyKey: `current-head/writer/evidence-less-${verdict}`,
+      expectedRevision: fence.revision,
+      expectedAuthorityEpoch: fence.authorityEpoch,
+      actorType: "test",
+      sourceTransport: "test",
+      payload: { attemptId: scope.attemptId, resultId: scope.resultId },
+    }, (context) => {
+      recordFailureObservation(context, {
+        lifecycleId: scope.lifecycleId,
+        attemptId: scope.attemptId,
+        resultId: scope.resultId,
+        kernelCheckpointId: scope.kernelCheckpointId,
+        boundaryStage: "verify",
+        recoveryOwner: "agent",
+        failureKind: "verification-failed",
+        failureFingerprint: "verification-failed:current-head",
+        summary: "evidence-less verification must not authorize recovery",
+        evidence: {},
+      });
+      return {
+        events: [{ eventType: "test.recovery.evidence-less", entityType: "task", entityId: "M001/S01/T01", payload: {}, destinations: ["test"] }],
+        projections: [{ projectionKey: "test/recovery/evidence-less", projectionKind: "test", rendererVersion: "1" }],
+      };
+    }), /current route head/);
+    assert.equal(count("workflow_failure_observations"), 0);
+  });
+}
+
+test("recovery writer ignores an evidence-less newer verdict", () => {
+  const scope = seedSucceededVerificationFailure();
+  recordNewerSourcePassWithoutEvidence(scope);
+  db().exec("DROP TRIGGER trg_workflow_failure_result_scope");
+  const fence = readDomainOperationFence();
+
+  executeDomainOperation({
+    operationType: "attempt.route",
+    idempotencyKey: "current-head/writer/evidence-less-newer",
+    expectedRevision: fence.revision,
+    expectedAuthorityEpoch: fence.authorityEpoch,
+    actorType: "test",
+    sourceTransport: "test",
+    payload: { attemptId: scope.attemptId, resultId: scope.resultId },
+  }, (context) => {
+    recordFailureObservation(context, {
+      lifecycleId: scope.lifecycleId,
+      attemptId: scope.attemptId,
+      resultId: scope.resultId,
+      kernelCheckpointId: scope.kernelCheckpointId,
+      boundaryStage: "verify",
+      recoveryOwner: "agent",
+      failureKind: "verification-failed",
+      failureFingerprint: "verification-failed:current-head",
+      summary: "the older evidence-backed failure remains current",
+      evidence: {},
+    });
+    return {
+      events: [{ eventType: "test.recovery.evidence-backed", entityType: "task", entityId: "M001/S01/T01", payload: {}, destinations: ["test"] }],
+      projections: [{ projectionKey: "test/recovery/evidence-backed", projectionKind: "test", rendererVersion: "1" }],
+    };
+  });
+  assert.equal(count("workflow_failure_observations"), 1);
 });
 
 test("an orphan observation prevents a second recovery bundle for the same Result", () => {
@@ -1092,6 +1626,85 @@ test("genuine user recovery opens one Blocker and resolution appends a checkpoin
   assert.equal(replay.status, "replayed");
   assert.equal(count("workflow_work_checkpoints"), 2);
   assert.equal(row(`SELECT blocker_status FROM workflow_blockers`).blocker_status, "resolved");
+
+  assert.throws(() => recordFailureAndSelectRecovery({
+    invocation: invocation("recovery/user/chain"),
+    attemptId: scope.attemptId,
+    resultId: scope.resultId,
+    owner: "user",
+    supersedesResolvedBlockerId: routed.blockerId,
+    blocker: {
+      blockerKind: "missing_access",
+      description: "must not replace a closed pause with another pause",
+      requestedAction: "Provide access again",
+    },
+    classification: { failureKind: "provider" },
+    summary: "must not chain user-owned recovery on one Result",
+    evidence: { provider: "deployment" },
+    rationale: "only the agent policy may resume after blocker closure",
+  }), /already has a recovery observation/);
+
+  const rerouted = recordFailureAndSelectRecovery({
+    invocation: invocation("recovery/user/reroute"),
+    attemptId: scope.attemptId,
+    resultId: scope.resultId,
+    owner: "agent",
+    supersedesResolvedBlockerId: routed.blockerId,
+    classification: { failureKind: "tool-unavailable" },
+    summary: "deployment access is available now",
+    evidence: { blockerId: routed.blockerId, accessCheck: "passed" },
+    rationale: "resume through the bounded agent recovery policy",
+  });
+  assert.equal(rerouted.action, "retry");
+});
+
+test("a dismissed external blocker may be superseded only by agent recovery", () => {
+  const scope = seedFailedAttempt();
+  const paused = recordFailureAndSelectRecovery({
+    invocation: invocation("recovery/external/pause"),
+    attemptId: scope.attemptId,
+    resultId: scope.resultId,
+    owner: "external",
+    blocker: {
+      blockerKind: "external_dependency",
+      description: "the external deployment gate is unavailable",
+      requestedAction: "Restore the gate or approve the local route",
+    },
+    classification: { failureKind: "tool-unavailable" },
+    summary: "the external deployment gate cannot be reached",
+    evidence: { provider: "deployment" },
+    rationale: "the dependency owner must select the next route",
+  });
+  assert.equal(paused.action, "pause");
+  const blockerId = paused.blockerId;
+  assert.ok(blockerId);
+
+  resolveTaskBlocker({
+    invocation: invocation("recovery/external/dismiss", "external"),
+    blockerId,
+    disposition: "dismissed",
+    resolution: "the accepted local route does not require the external gate",
+    checkpoint: {
+      checkpointKind: "correction",
+      confirmedContext: "the local route is authoritative",
+      unresolvedSummary: "",
+      evidenceSummary: "the dependency owner dismissed the obsolete gate",
+      suggestedNextAction: "reroute through agent recovery",
+    },
+  });
+
+  const rerouted = recordFailureAndSelectRecovery({
+    invocation: invocation("recovery/external/reroute"),
+    attemptId: scope.attemptId,
+    resultId: scope.resultId,
+    owner: "agent",
+    supersedesResolvedBlockerId: blockerId,
+    classification: { failureKind: "tool-unavailable" },
+    summary: "the accepted local route is now available",
+    evidence: { blockerId, route: "local" },
+    rationale: "resume through the bounded agent recovery policy",
+  });
+  assert.equal(rerouted.action, "retry");
 });
 
 test("waiver operations preserve grant, disposition, and termination revision ordering", () => {

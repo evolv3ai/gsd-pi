@@ -28,11 +28,9 @@ gsd-db.ts  ← compatibility barrel over the explicit single-writer allowlist
        ├── db/writers/*.ts  ← the Single Writer Layer (one write subsystem per file)
        ├── db/{milestone-leases,unit-dispatches,auto-workers,runtime-kv,command-queue}.ts
        │                    ← typed coordination/runtime writers
-       ├── db-canonical-foundation-schema.ts, db-lifecycle-foundation-schema.ts,
-       │   db-conversation-foundation-schema.ts, db-recovery-evidence-foundation-schema.ts,
-       │   db-projection-import-kernel-closeout-foundation-schema.ts,
-       │   db-memory-fts-schema.ts, db-schema-metadata.ts, db-verification-evidence-schema.ts
-       │                    ← allowlisted schema/migration helpers
+       ├── schema/migration helper modules
+       │                    ← write-capable helpers are explicitly listed by
+       │                       SCHEMA_DB_WRITER_FILES in single-writer-invariant.test.ts
        ├── memory-backfill.ts
        │                    ← allowlisted ADR migration/backfill helper
        ├── db/queries.ts    ← the Query Module (read-only SELECT wrappers)
@@ -71,7 +69,8 @@ After commit: regenerate markdown artifacts → write to disk → invalidate cac
 
 ## 2. Schema Version History
 
-Current version: **V35**
+The current version is defined by `SCHEMA_VERSION` in `db/engine.ts`; the
+history below explains each migration without duplicating that live value.
 
 | Version | What Changed |
 |---------|-------------|
@@ -106,10 +105,14 @@ Current version: **V35**
 | V29 | slices.target_repositories and tasks.target_repositories for multi-repository planning |
 | V30 | rework_briefs and rework_brief_findings for structured task rework gates |
 | V31 | **Additive canonical foundation**: singleton project authority with revision and Authority Epoch, workflow operation provenance/idempotency receipts, immutable revision-linked domain events, and a durable event outbox |
-| V32 | **Additive lifecycle foundation**: canonical lifecycle state, fenced execution Attempts, immutable Attempt Results, human-only Blockers, authorized Waivers, and immutable Requirement Disposition history |
+| V32 | **Additive lifecycle foundation**: canonical lifecycle state, fenced execution Attempts, immutable Attempt Results, user- or external-owned Blockers, authorized Waivers, and immutable Requirement Disposition history |
 | V33 | **Additive guided-conversation foundation**: milestone context and advisory horizons, focused recommendation-first interactions, immutable verbatim Answers and correction-safe Decisions, dependency-targeted impacts, and restart-safe Work Checkpoints |
 | V34 | **Additive recovery and evidence foundation**: immutable Failure Observations and Recovery Actions, immutable count budgets whose use is derived from linked Actions, versioned acceptance criteria, verdict-owned objective evidence, separate subjective Human Acceptance, and immutable remediation routing |
 | V35 | **Additive projection, import, kernel, and closeout foundation**: durable per-target projection delivery, immutable import application receipts, restart-safe kernel checkpoint chains, versioned closeout plans with ordered effects, and success-only settlement receipts |
+| V36 | **Attempt recovery fencing**: explicit settlement outcomes, replacement-worker lease identity, dispatch-scoped transitions, and the Kernel stage/state transition matrix |
+| V37 | **Task cancellation authorization**: permits `task.cancel` to interrupt and settle an active Attempt without weakening ordinary lease fencing |
+| V38 | **Verification-caused recovery**: permits a succeeded Result with a failed or inconclusive host Technical Verdict to cause a verification-stage Failure Observation |
+| V39 | **Verification recovery current-head enforcement**: only the current non-superseded criterion and latest non-superseded evidence-backed failure verdict across tested source revisions may authorize recovery or a route-head successor claim, including routes retained from V38 |
 
 ---
 
@@ -1233,8 +1236,8 @@ before runtime cutover.
 ### 3h. Additive Recovery And Evidence Foundation (V34)
 
 V34 adds eight canonical shadow tables. It deliberately reuses V32 Lifecycles,
-Attempts, Attempt Results, and human-only Blockers instead of creating another
-execution, UAT-run, or blocker model. It does not backfill or reinterpret legacy
+Attempts, Attempt Results, and user- or external-owned Blockers instead of
+creating another execution, UAT-run, or blocker model. It does not backfill or reinterpret legacy
 verification evidence, assessments, quality gates, gate runs, UAT files, rework
 briefs, dispatch retry fields, runtime JSON, or process-local counters. Those
 surfaces retain their existing compatibility meaning until the explicit
@@ -1265,9 +1268,11 @@ authority_epoch         INTEGER NOT NULL
   classifier can persist a new normalized kind without a schema migration.
 - An `execute` observation requires the matching V32 Attempt and its immutable
   `failed` or `interrupted` Attempt Result. Result provenance must be causally
-  older than the observation. Any Result attached at another boundary stage is
-  subject to the same failed/interrupted and causal-scope checks. Updates and
-  deletes fail.
+  older than the observation. A `verify` observation instead requires a
+  `succeeded` Result plus the current non-superseded criterion and latest
+  non-superseded evidence-backed `fail` or `inconclusive` Technical Verdict
+  across tested source revisions. A Result cannot be attached at another
+  boundary stage. Updates and deletes fail.
 - Recovery owner is an explicit `agent | user | external` classification and
   is not inferred from the extensible failure kind. Agent-owned failures cannot
   carry a Blocker. User/external failures must own the exact open V32 Blocker
@@ -1329,8 +1334,8 @@ authority_epoch        INTEGER NOT NULL
   Repair and remediate also require matching unexhausted budgets and a target
   lifecycle; remediation targets actionable Task work. Replan requires a target
   lifecycle without a budget. Clarify and pause require the existing open V32
-  human-only Blocker owned by the Failure Observation. Abort has no budget,
-  target, or blocker.
+  user- or external-owned Blocker owned by the Failure Observation. Abort has
+  no budget, target, or blocker.
 - Budget policy classes constrain the selected Action: retry accepts
   `transient-execution | schema-correction | objective-uat`, repair accepts
   `deterministic-repair | schema-correction`, and remediate accepts only
@@ -1390,6 +1395,10 @@ authority_epoch        INTEGER NOT NULL
   receive a verdict. PASS additionally requires the Attempt Result to be
   `succeeded`. Supersession must advance the project revision without decreasing
   the Authority Epoch, and forks from a non-head verdict are rejected.
+- Verification-caused recovery additionally selects the current non-superseded
+  criterion and latest non-superseded verdict with Verification Evidence across
+  tested source revisions. Superseded, older-source, and evidence-less verdicts
+  cannot authorize a Failure Observation or Recovery Action.
 
 #### `workflow_verification_evidence`
 ```
@@ -1894,7 +1903,7 @@ active projections omit it, and explicit reopen is required before reuse.
 
 `gsd_task_complete` treats the task summary and slice plan projection as retryable delivery work after authoritative completion commits. In flat-phase layout it writes `S##-T##-SUMMARY.md` at the phase root so duplicate task IDs in different slices cannot collide; readers still accept legacy flat `T##-SUMMARY.md` summaries. If writing the task summary or re-rendering `NN-MM-PLAN.md` fails after the database transaction commits, the tool returns a visible projection error while leaving the committed task completion, Attempt Result, verification evidence, and lifecycle state intact for projection repair on retry. It also rejects completion when the task has pending blocking rework findings. To complete such a task, the caller must include `reworkResolution` entries with `findingId`, `status: "resolved"`, and non-empty `evidence`, or `status: "deferred-with-override"` with non-empty `evidence` and a `decisionRef`.
 
-`gsd_task_recovery_resume` appends a correction Work Checkpoint and `task.recovery.resumed` event for the exact current agent-owned abort after receiving a nonblank repair summary and non-empty structured evidence. The failed Attempt, Result, Recovery Action, and recovery budget remain unchanged. The event authorizes only the immediate lineage successor Attempt; stale or duplicate actions, open blockers, and actions superseded by a later Attempt fail closed.
+`gsd_task_recovery_resume` appends a correction Work Checkpoint and `task.recovery.resumed` event for the exact current agent-owned abort after receiving a nonblank repair summary and non-empty structured evidence. The predecessor Attempt, its Result, the Recovery Action, and recovery budget remain unchanged. The event authorizes only the immediate lineage successor Attempt; stale or duplicate actions, open blockers, and actions superseded by a later Attempt fail closed.
 
 ---
 
@@ -1929,7 +1938,7 @@ active projections omit it, and explicit reopen is required before reuse.
 
 ## 7. Write Path Invariants
 
-1. **Single-writer rule**: all write SQL lives in the explicit single-writer *layer* — `db/engine.ts` for schema, migrations, lifecycle, and transaction primitives; `db/domain-operation.ts` for revision-checked authoritative transactions; `db/writers/**` for domain write subsystems; `gsd-db.ts` as the compatibility barrel and remaining mid-migration wrappers; the typed coordination/runtime writer modules `db/milestone-leases.ts`, `db/unit-dispatches.ts`, `db/auto-workers.ts`, `db/runtime-kv.ts`, and `db/command-queue.ts`; the schema/migration helpers `db-canonical-foundation-schema.ts`, `db-lifecycle-foundation-schema.ts`, `db-conversation-foundation-schema.ts`, `db-recovery-evidence-foundation-schema.ts`, `db-projection-import-kernel-closeout-foundation-schema.ts`, `db-memory-fts-schema.ts`, `db-schema-metadata.ts`, and `db-verification-evidence-schema.ts`; and the ADR migration/backfill helper `memory-backfill.ts`. This is an allowlist, not permission for arbitrary raw writes under `db/`. `unit-ownership.ts` remains excluded because it owns a separate `.gsd/unit-claims.db`. `db/queries.ts` is the read-only Query Module and must contain no write SQL. No raw write SQL escapes to the adapter from anywhere else. Enforced by the structural `single-writer-invariant.test.ts`, which checks this allowlist.
+1. **Single-writer rule**: all write SQL lives in the explicit single-writer *layer*. The authoritative allowlists are `TYPED_DB_WRITER_FILES`, `SCHEMA_DB_WRITER_FILES`, and `MIGRATION_BACKFILL_WRITER_FILES` in `single-writer-invariant.test.ts`; `db/engine.ts`, `db/writers/**`, `gsd-db.ts`, and the separate `unit-ownership.ts` database have the named exceptions documented there. This is not permission for arbitrary raw writes under `db/`; `db/queries.ts` remains read-only. The structural test rejects every unlisted write site.
 
 2. **Transaction wrapping**: every multi-table write uses `transaction()` or `immediateTransaction()` when it needs SQLite's reserved writer lock up front. Rollback on any error. Re-entrant callers normally increment the shared depth counter with no nested `BEGIN`; `executeDomainOperation()` is the exception and rejects an existing outer transaction so it owns the reserved-writer boundary. `gsd_save_gate_result` commits the `quality_gates` verdict update and matching `gate_runs` ledger insert together, so recovery never sees a completed gate without its audit row.
 
