@@ -18,7 +18,7 @@ import type {
 } from "@gsd/pi-coding-agent";
 import type { GSDState } from "./types.js";
 import { getActiveHook } from "./post-unit-hooks.js";
-import { getLedger, getProjectTotals } from "./metrics.js";
+import { filterUnitsForMilestone, getLedger, getProjectTotals } from "./metrics.js";
 import { getErrorMessage } from "./error-utils.js";
 import { nativeIsRepo } from "./native-git-bridge.js";
 import {
@@ -371,7 +371,7 @@ export function estimateTimeRemaining(): string | null {
   if (remainingSlices <= 0) return null;
 
   // Compute average duration per completed slice from the ledger
-  const completedSliceUnits = ledger.units.filter(
+  const completedSliceUnits = filterUnitsForMilestone(ledger.units, sliceProgress.milestoneId).filter(
     u => u.finishedAt > 0 && u.startedAt > 0,
   );
   if (completedSliceUnits.length < 2) return null;
@@ -461,7 +461,7 @@ export function updateSliceProgressCache(base: string, mid: string, activeSid?: 
   }
 }
 
-export function getRoadmapSlicesSync(): { done: number; total: number; activeSliceTasks: { done: number; total: number } | null; taskDetails: CachedTaskDetail[] | null } | null {
+export function getRoadmapSlicesSync(): { done: number; total: number; milestoneId: string; activeSliceTasks: { done: number; total: number } | null; taskDetails: CachedTaskDetail[] | null } | null {
   return cachedSliceProgress;
 }
 
