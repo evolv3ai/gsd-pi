@@ -21,6 +21,7 @@ import {
   setCompletionProgressWidget,
   getRoadmapSlicesSync,
   clearSliceProgressCache,
+  updateSliceProgressCache,
   getWidgetMode,
   cycleWidgetMode,
   setWidgetMode,
