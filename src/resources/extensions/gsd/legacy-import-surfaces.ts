@@ -1,0 +1,273 @@
+// Project/App: gsd-pi
+// File Purpose: Authoritative registry of source, target, and action surfaces supported by legacy import.
+
+import type { LegacyImportSourceOutcome } from "./legacy-import-contract.js";
+
+export const LEGACY_IMPORT_SURFACE_FAMILIES = [
+  "change-action",
+  "custom-workflow",
+  "database-target",
+  "gsd-hierarchy",
+  "gsd-registry",
+  "gsd-truth",
+  "jsonl-history",
+  "knowledge-graph",
+  "planning",
+  "workflow-graph",
+  "worktree",
+] as const;
+
+export type LegacyImportSurfaceFamily = (typeof LEGACY_IMPORT_SURFACE_FAMILIES)[number];
+export type LegacyImportSurfaceKind = "source" | "target" | "change-matrix";
+
+export interface LegacyImportSurfaceInterpreter {
+  id: string;
+  version: number;
+  implementations: readonly string[];
+}
+
+export interface LegacyImportSurface {
+  id: string;
+  family: LegacyImportSurfaceFamily;
+  kind: LegacyImportSurfaceKind;
+  description: string;
+  pathPatterns: readonly string[];
+  sourceKinds: readonly string[];
+  aliases: readonly string[];
+  requiredScenarios: readonly string[];
+  expectedDispositions: readonly LegacyImportSourceOutcome[];
+  interpreter: LegacyImportSurfaceInterpreter;
+}
+
+export const SUPPORTED_LEGACY_SURFACES = [
+  {
+    id: "database-targets",
+    family: "database-target",
+    kind: "target",
+    description: "SQLite import targets and sidecars across supported schema boundaries.",
+    pathPatterns: [".gsd/gsd.db", ".gsd/gsd.db-wal", ".gsd/gsd.db-shm", "$GSD_STATE_DIR/projects/*/gsd.db"],
+    sourceKinds: ["sqlite-database", "sqlite-wal", "sqlite-shm"],
+    aliases: ["unversioned populated database", "external state database"],
+    requiredScenarios: ["schema-v44", "historical-schema", "unversioned-populated", "future-schema", "corrupt", "wal-present"],
+    expectedDispositions: ["mapped", "preserved", "unparsed"],
+    interpreter: { id: "gsd-sqlite-target", version: 1, implementations: ["sqlite"] },
+  },
+  {
+    id: "gsd-assessment-truth",
+    family: "gsd-truth",
+    kind: "source",
+    description: "Assessment, UAT, validation, and manifest evidence that may disagree about outcome truth.",
+    pathPatterns: [".gsd/phases/*-ASSESSMENT.md", ".gsd/phases/*-UAT.md", ".gsd/phases/*-VALIDATION.md", ".gsd/state-manifest.json", ".gsd/milestones/**/*-ASSESSMENT.md"],
+    sourceKinds: ["markdown", "json"],
+    aliases: ["ASSESSMENT.md", "UAT.md", "VALIDATION.md"],
+    requiredScenarios: ["pass", "fail", "partial", "verdict-omitted", "malformed", "structured-versus-artifact"],
+    expectedDispositions: ["mapped", "preserved", "unparsed"],
+    interpreter: { id: "gsd-assessment-truth", version: 1, implementations: ["typescript"] },
+  },
+  {
+    id: "gsd-decisions-registry",
+    family: "gsd-registry",
+    kind: "source",
+    description: "Canonical decision tables and unsupported freeform decision content.",
+    pathPatterns: [".gsd/DECISIONS.md", ".gsd/decisions.md"],
+    sourceKinds: ["markdown"],
+    aliases: ["lowercase root filename", "seven-column table", "eight-column table"],
+    requiredScenarios: ["canonical-table", "amendment", "made-by-default", "freeform", "malformed-row"],
+    expectedDispositions: ["mapped", "unparsed", "ignored-with-reason"],
+    interpreter: { id: "gsd-decisions-table", version: 1, implementations: ["typescript"] },
+  },
+  {
+    id: "gsd-flat-hierarchy",
+    family: "gsd-hierarchy",
+    kind: "source",
+    description: "Flat phase directories with milestone, slice, and task artifacts encoded in filenames.",
+    pathPatterns: [".gsd/phases/NN-slug/NN-SUFFIX.md", ".gsd/phases/NN-slug/NN-MM-SUFFIX.md", ".gsd/phases/NN-slug/S##-T##-SUFFIX.md"],
+    sourceKinds: ["markdown", "directory-topology"],
+    aliases: ["bare numeric milestone", "M-prefixed milestone", "team-suffixed milestone", "descriptor directory"],
+    requiredScenarios: ["padded-id", "bare-numeric-id", "team-id", "descriptor", "task-parent-frontmatter", "summary-attestation"],
+    expectedDispositions: ["mapped", "preserved", "unparsed", "ignored-with-reason"],
+    interpreter: { id: "gsd-flat-hierarchy", version: 1, implementations: ["native", "typescript"] },
+  },
+  {
+    id: "gsd-hierarchy-artifacts",
+    family: "gsd-hierarchy",
+    kind: "source",
+    description: "Recognized root, milestone, slice, and task artifact suffixes attached to either hierarchy layout.",
+    pathPatterns: [".gsd/{PROJECT,QUEUE,SECRETS-MANIFEST}.md", ".gsd/**/*-{ROADMAP,CONTEXT,RESEARCH,ASSESSMENT,SUMMARY,VALIDATION,PLAN,UAT,CONTINUE}.md"],
+    sourceKinds: ["markdown"],
+    aliases: ["bare suffix filename", "ID-prefixed filename", "descriptor-prefixed filename", "lowercase root filename"],
+    requiredScenarios: ["root-artifact", "milestone-artifact", "slice-artifact", "task-artifact", "parked-marker", "unknown-suffix"],
+    expectedDispositions: ["mapped", "preserved", "unparsed", "ignored-with-reason"],
+    interpreter: { id: "gsd-artifact-classifier", version: 1, implementations: ["typescript"] },
+  },
+  {
+    id: "gsd-hybrid-hierarchy",
+    family: "gsd-hierarchy",
+    kind: "source",
+    description: "Partially migrated projects containing both nested milestones and flat phases.",
+    pathPatterns: [".gsd/milestones/**", ".gsd/phases/**"],
+    sourceKinds: ["markdown", "directory-topology"],
+    aliases: ["partial flat migration", "coexisting layout"],
+    requiredScenarios: ["non-overlapping-units", "duplicate-logical-unit", "conflicting-status", "conflicting-content", "ambiguous-path"],
+    expectedDispositions: ["mapped", "preserved", "unparsed", "ignored-with-reason"],
+    interpreter: { id: "gsd-hybrid-hierarchy", version: 1, implementations: ["typescript"] },
+  },
+  {
+    id: "gsd-lifecycle-truth",
+    family: "gsd-truth",
+    kind: "source",
+    description: "Competing checkbox, summary, state, event, marker, and manifest lifecycle signals.",
+    pathPatterns: [".gsd/STATE.md", ".gsd/state-manifest.json", ".gsd/**/*-{PLAN,SUMMARY,PARKED}.md", ".gsd/event-log*.jsonl*"],
+    sourceKinds: ["markdown", "json", "jsonl"],
+    aliases: ["checked task", "summary attestation", "parked marker", "legacy status field"],
+    requiredScenarios: ["pending", "active", "complete", "cancelled", "skipped", "placeholder", "conflicting-evidence", "incomplete-success-signal"],
+    expectedDispositions: ["mapped", "preserved", "unparsed", "ignored-with-reason"],
+    interpreter: { id: "gsd-lifecycle-truth", version: 1, implementations: ["typescript"] },
+  },
+  {
+    id: "gsd-nested-hierarchy",
+    family: "gsd-hierarchy",
+    kind: "source",
+    description: "Legacy milestone, slice, and task directory hierarchy.",
+    pathPatterns: [".gsd/milestones/M###*/slices/S##*/tasks/**"],
+    sourceKinds: ["markdown", "directory-topology"],
+    aliases: ["descriptor directory", "bare task suffix", "task subdirectory", "flat task file within slice"],
+    requiredScenarios: ["roadmap-checklist", "roadmap-table", "roadmap-prose", "roadmap-range", "checkbox-plan", "heading-plan", "xml-tasks", "ghost-milestone", "sketch-placeholder"],
+    expectedDispositions: ["mapped", "preserved", "unparsed", "ignored-with-reason"],
+    interpreter: { id: "gsd-nested-hierarchy", version: 1, implementations: ["native", "typescript"] },
+  },
+  {
+    id: "gsd-requirements-registry",
+    family: "gsd-registry",
+    kind: "source",
+    description: "Requirements sections, statuses, identifiers, ownership aliases, and validation proof.",
+    pathPatterns: [".gsd/REQUIREMENTS.md", ".gsd/requirements.md"],
+    sourceKinds: ["markdown"],
+    aliases: ["primary owning slice", "primary owner", "primary_owner", "supporting_slices", "validated by"],
+    requiredScenarios: ["active", "validated", "deferred", "out-of-scope", "categorical-id", "duplicate-id", "invalid-id"],
+    expectedDispositions: ["mapped", "preserved", "unparsed", "ignored-with-reason"],
+    interpreter: { id: "gsd-requirements-sections", version: 1, implementations: ["typescript"] },
+  },
+  {
+    id: "import-action-matrix",
+    family: "change-action",
+    kind: "change-matrix",
+    description: "Canonical classification of proposed changes against the fingerprinted database base.",
+    pathPatterns: ["preview.changes[*]"],
+    sourceKinds: ["canonical-row-comparison"],
+    aliases: [],
+    requiredScenarios: ["create", "update", "delete", "preserve"],
+    expectedDispositions: ["mapped", "preserved"],
+    interpreter: { id: "legacy-import-change-classifier", version: 1, implementations: ["deterministic"] },
+  },
+  {
+    id: "jsonl-workflow-history",
+    family: "jsonl-history",
+    kind: "source",
+    description: "Project, archived, and worktree JSONL workflow event ledgers treated as history rather than current authority.",
+    pathPatterns: [".gsd/event-log.jsonl", ".gsd/event-log-M*.jsonl.archived", ".gsd/worktrees/*/event-log.jsonl"],
+    sourceKinds: ["jsonl"],
+    aliases: ["v1 event without version", "v2 event", "hyphen command", "underscore command"],
+    requiredScenarios: ["valid-v1", "valid-v2", "corrupt-line", "unknown-command", "duplicate", "out-of-order", "fork", "adopted-versus-unadopted"],
+    expectedDispositions: ["preserved", "unparsed", "ignored-with-reason"],
+    interpreter: { id: "gsd-workflow-events", version: 2, implementations: ["typescript"] },
+  },
+  {
+    id: "knowledge-graph-projection",
+    family: "knowledge-graph",
+    kind: "source",
+    description: "Derived knowledge graph snapshots and their Markdown projection inputs.",
+    pathPatterns: [".gsd/graphs/graph.json", ".gsd/KNOWLEDGE.md", ".gsd/**/*-LEARNINGS.md"],
+    sourceKinds: ["json", "markdown"],
+    aliases: ["derived graph", "knowledge snapshot", "legacy learnings"],
+    requiredScenarios: ["valid-snapshot", "malformed-snapshot", "graph-versus-source-conflict", "missing-input", "legacy-nested-only-reader"],
+    expectedDispositions: ["preserved", "unparsed", "ignored-with-reason"],
+    interpreter: { id: "gsd-knowledge-graph", version: 1, implementations: ["typescript"] },
+  },
+  {
+    id: "planning-flat-phases",
+    family: "planning",
+    kind: "source",
+    description: "Flat .planning phase directories, plans, summaries, roadmap, requirements, state, and configuration.",
+    pathPatterns: [".planning/{PROJECT,ROADMAP,REQUIREMENTS,STATE}.md", ".planning/config.json", ".planning/phases/**"],
+    sourceKinds: ["markdown", "json", "yaml-frontmatter", "xml-in-markdown", "directory-topology"],
+    aliases: ["NN-NN-PLAN", "NN-PLAN", "letter plan number", "decimal phase number"],
+    requiredScenarios: ["flat-roadmap", "yaml-xml-plan", "summary-frontmatter", "letter-plan", "decimal-phase", "duplicate-phase", "orphan-summary"],
+    expectedDispositions: ["mapped", "preserved", "unparsed", "ignored-with-reason"],
+    interpreter: { id: "planning-parser", version: 1, implementations: ["typescript"] },
+  },
+  {
+    id: "planning-milestone-directories",
+    family: "planning",
+    kind: "source",
+    description: "Legacy .planning milestone phase directories and milestone-scoped companion files.",
+    pathPatterns: [".planning/milestones/*-phases/**", ".planning/milestones/*-{ROADMAP,REQUIREMENTS,SUMMARY}.md"],
+    sourceKinds: ["markdown", "yaml-frontmatter", "xml-in-markdown", "directory-topology"],
+    aliases: ["milestone phase directory", "milestone companion file"],
+    requiredScenarios: ["milestone-roadmap", "milestone-requirements", "milestone-summary", "extra-file", "duplicate-phase-number"],
+    expectedDispositions: ["mapped", "preserved", "unparsed", "ignored-with-reason"],
+    interpreter: { id: "planning-milestone-directory-parser", version: 1, implementations: ["typescript"] },
+  },
+  {
+    id: "planning-multi-milestone",
+    family: "planning",
+    kind: "source",
+    description: "Multi-milestone roadmap grammars embedded in .planning/ROADMAP.md.",
+    pathPatterns: [".planning/ROADMAP.md"],
+    sourceKinds: ["markdown"],
+    aliases: ["heading sections", "details blocks", "milestone summary table", "emoji phase range"],
+    requiredScenarios: ["heading-section", "details-section", "milestones-summary", "completed-range", "emoji-range", "ambiguous-membership"],
+    expectedDispositions: ["mapped", "unparsed"],
+    interpreter: { id: "planning-roadmap-parser", version: 1, implementations: ["typescript"] },
+  },
+  {
+    id: "planning-supplemental",
+    family: "planning",
+    kind: "source",
+    description: "Recognized .planning inputs that current transformation preserves, archives, or omits rather than modeling.",
+    pathPatterns: [".planning/quick/**", ".planning/research/**", ".planning/decisions/**", ".planning/seeds/**", ".planning/phases/**/*{RESEARCH,VERIFICATION}*", ".planning/.archive/**"],
+    sourceKinds: ["markdown", "json", "directory-topology"],
+    aliases: ["quick task", "seed", "phase extra", "passthrough research", "archived phase"],
+    requiredScenarios: ["quick", "seed", "decision", "research", "verification", "extra", "archive", "state-config-loss"],
+    expectedDispositions: ["mapped", "preserved", "unparsed", "ignored-with-reason"],
+    interpreter: { id: "planning-supplemental-classifier", version: 1, implementations: ["typescript"] },
+  },
+  {
+    id: "workflow-definitions",
+    family: "custom-workflow",
+    kind: "source",
+    description: "Bundled, global, current-project, and legacy-project workflow definitions with precedence.",
+    pathPatterns: [".gsd/workflow-defs/*.{yaml,yml}", ".gsd/workflows/*.{yaml,yml,md}", "~/.gsd/workflows/*.{yaml,yml,md}"],
+    sourceKinds: ["yaml", "markdown"],
+    aliases: ["requires", "depends_on", "template_meta", "phases"],
+    requiredScenarios: ["legacy-project", "current-project", "global", "bundled", "precedence-collision", "unknown-field", "malformed-definition"],
+    expectedDispositions: ["preserved", "unparsed", "ignored-with-reason"],
+    interpreter: { id: "gsd-workflow-definition", version: 1, implementations: ["typescript"] },
+  },
+  {
+    id: "workflow-run-graphs",
+    family: "workflow-graph",
+    kind: "source",
+    description: "Disk-authoritative custom workflow run definitions, graphs, and parameters.",
+    pathPatterns: [".gsd/workflow-runs/*/*/DEFINITION.yaml", ".gsd/workflow-runs/*/*/GRAPH.yaml", ".gsd/workflow-runs/*/*/PARAMS.json"],
+    sourceKinds: ["yaml", "json"],
+    aliases: ["pending", "active", "complete", "expanded"],
+    requiredScenarios: ["complete-run", "partial-run", "missing-graph", "malformed-graph", "unknown-status", "definition-drift"],
+    expectedDispositions: ["preserved", "unparsed", "ignored-with-reason"],
+    interpreter: { id: "gsd-workflow-run-graph", version: 1, implementations: ["typescript"] },
+  },
+  {
+    id: "worktree-topologies",
+    family: "worktree",
+    kind: "source",
+    description: "Canonical, legacy, external, symlinked, and interrupted worktree state locations.",
+    pathPatterns: [".gsd-worktrees/*", ".gsd/worktrees/*", "$GSD_STATE_DIR/projects/*/worktrees/*", ".gsd.migrating"],
+    sourceKinds: ["directory-topology", "symlink", "physical-identity"],
+    aliases: ["canonical ledger", "legacy worktree", "external worktree", "symlinked project state"],
+    requiredScenarios: ["canonical", "legacy", "external", "symlink", "duplicate-physical-identity", "root-conflict", "interrupted-migration", "active-worktree-guard"],
+    expectedDispositions: ["preserved", "unparsed", "ignored-with-reason"],
+    interpreter: { id: "gsd-worktree-topology", version: 1, implementations: ["filesystem"] },
+  },
+] as const satisfies readonly LegacyImportSurface[];
+
+export type SupportedLegacySurfaceId = (typeof SUPPORTED_LEGACY_SURFACES)[number]["id"];
