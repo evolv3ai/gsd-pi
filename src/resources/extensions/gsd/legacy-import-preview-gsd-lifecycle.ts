@@ -1,13 +1,18 @@
 // Project/App: gsd-pi
 // File Purpose: Pure lifecycle truth reconciliation from retained GSD projections and DB observations.
 
-import type { LegacyImportTarget, LegacyImportValue } from "./legacy-import-contract.js";
+import type {
+  LegacyImportRawValue,
+  LegacyImportTarget,
+  LegacyImportValue,
+} from "./legacy-import-contract.js";
 import type { LegacyImportGsdDatabaseEvidence, LegacyImportGsdDatabaseObservation } from "./legacy-import-preview-gsd.js";
 import {
   addLegacyImportCandidate,
   addLegacyImportDiagnosis,
   type LegacyImportDecodedSourceFile,
   type LegacyImportPendingCandidate,
+  type LegacyImportPendingCompleteRowSet,
   type LegacyImportPendingDiagnosis,
   type LegacyImportSourceLine,
 } from "./legacy-import-preview-interpretation.js";
@@ -19,15 +24,38 @@ type SourceLine = LegacyImportSourceLine;
 type PendingCandidate = LegacyImportPendingCandidate;
 type PendingDiagnosis = LegacyImportPendingDiagnosis;
 type JsonRecord = Record<string, LegacyImportValue>;
+type HierarchyRowSet = "milestones" | "slices" | "tasks";
+
+export type LegacyImportDelegatedHierarchyMembers = Readonly<
+  Record<HierarchyRowSet, readonly string[]>
+>;
 
 interface ManifestRecord {
   index: number;
   value: JsonRecord;
 }
 
+interface VersionedManifestRecords {
+  decisions: readonly ManifestRecord[];
+  milestones: readonly ManifestRecord[];
+  slices: readonly ManifestRecord[];
+  tasks: readonly ManifestRecord[];
+  requirements?: readonly ManifestRecord[];
+  artifacts?: readonly ManifestRecord[];
+  assessments?: readonly ManifestRecord[];
+}
+
 interface ManifestState {
   file: SourceFile;
   document: LegacyImportJsonDocument;
+  versioned?: {
+    delegatedMembers: LegacyImportDelegatedHierarchyMembers;
+    delegateAssessments: boolean;
+    decisions: readonly ManifestRecord[];
+    requirements?: readonly ManifestRecord[];
+    artifacts?: readonly ManifestRecord[];
+    assessments?: readonly ManifestRecord[];
+  };
   milestones: readonly ManifestRecord[];
   slices: readonly ManifestRecord[];
   tasks: readonly ManifestRecord[];
@@ -61,6 +89,102 @@ const MANIFEST_PATH = ".gsd/state-manifest.json";
 const MILESTONE_ID = "M\\d+(?:-[a-z0-9]+)?";
 const SLICE_ID = "S\\d+";
 const TASK_ID = "T\\d+";
+const DECISION_ID = /^D\d+$/u;
+const MILESTONE_ID_PATTERN = new RegExp(`^${MILESTONE_ID}$`, "u");
+const SLICE_ID_PATTERN = new RegExp(`^${SLICE_ID}$`, "u");
+const TASK_ID_PATTERN = new RegExp(`^${TASK_ID}$`, "u");
+const STATE_MANIFEST_REQUIRED_ARRAYS = [
+  "milestones",
+  "slices",
+  "tasks",
+  "decisions",
+  "verification_evidence",
+] as const;
+const STATE_MANIFEST_DECISION_KEYS = [
+  "seq",
+  "id",
+  "when_context",
+  "scope",
+  "decision",
+  "choice",
+  "rationale",
+  "revisable",
+  "made_by",
+  "source",
+  "superseded_by",
+] as const;
+const STATE_MANIFEST_KEYS = [
+  "version",
+  "exported_at",
+  "requirements",
+  "artifacts",
+  "milestones",
+  "slices",
+  "tasks",
+  "decisions",
+  "replan_history",
+  "assessments",
+  "quality_gates",
+  "verification_evidence",
+  "milestone_commit_attributions",
+] as const;
+
+type ValueValidator = (value: LegacyImportValue | undefined) => boolean;
+
+const stringValue: ValueValidator = (value) => typeof value === "string";
+const nonblankString: ValueValidator = (value) => typeof value === "string" && value.length > 0;
+const nullableString: ValueValidator = (value) => value === null || typeof value === "string";
+const safeInteger: ValueValidator = (value) => (
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+);
+const binaryInteger: ValueValidator = (value) => value === 0 || value === 1;
+const booleanValue: ValueValidator = (value) => typeof value === "boolean";
+const stringArray: ValueValidator = (value) => (
+  Array.isArray(value) && value.every((entry) => typeof entry === "string")
+);
+const nullableContentHash: ValueValidator = (value) => value === null || typeof value === "string";
+
+function exactKeys(
+  value: JsonRecord,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): boolean {
+  const keys = Object.keys(value);
+  const allowed = new Set([...required, ...optional]);
+  return required.every((key) => key in value)
+    && keys.every((key) => allowed.has(key));
+}
+
+function exactSchema(
+  value: JsonRecord,
+  schema: Readonly<Record<string, ValueValidator>>,
+  optional: readonly string[] = [],
+): boolean {
+  const required = Object.keys(schema).filter((key) => !optional.includes(key));
+  return exactKeys(value, required, optional)
+    && Object.entries(schema).every(([key, validate]) => (
+      !(key in value) || validate(value[key])
+    ));
+}
+
+function exactStringRecord(
+  value: LegacyImportValue,
+  keys: readonly string[],
+): boolean {
+  const record = asRecord(value);
+  return record !== undefined
+    && exactKeys(record, keys)
+    && keys.every((key) => typeof record[key] === "string");
+}
+
+const riskArray: ValueValidator = (value) => (
+  Array.isArray(value)
+  && value.every((entry) => exactStringRecord(entry, ["risk", "whyItMatters"]))
+);
+const proofArray: ValueValidator = (value) => (
+  Array.isArray(value)
+  && value.every((entry) => exactStringRecord(entry, ["riskOrUnknown", "retireIn", "whatWillBeProven"]))
+);
 
 function asRecord(value: LegacyImportValue | undefined): JsonRecord | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -74,6 +198,179 @@ function records(value: LegacyImportValue | undefined): ManifestRecord[] {
     const record = asRecord(entry);
     return record === undefined ? [] : [{ index, value: record }];
   });
+}
+
+function manifestMilestoneKey(record: ManifestRecord): string {
+  return String(record.value.id);
+}
+
+function manifestSliceKey(record: ManifestRecord): string {
+  return `${String(record.value.milestone_id)}/${String(record.value.id)}`;
+}
+
+function manifestTaskKey(record: ManifestRecord): string {
+  return `${String(record.value.milestone_id)}/${String(record.value.slice_id)}/${String(record.value.id)}`;
+}
+
+function manifestAssessmentKey(record: ManifestRecord): string {
+  return [record.value.milestone_id, record.value.slice_id, record.value.task_id, record.value.scope]
+    .filter((part) => part !== null)
+    .join("/");
+}
+
+const MILESTONE_SCHEMA = {
+  id: nonblankString,
+  title: stringValue,
+  status: nonblankString,
+  depends_on: stringArray,
+  created_at: stringValue,
+  completed_at: nullableString,
+  vision: stringValue,
+  success_criteria: stringArray,
+  key_risks: riskArray,
+  proof_strategy: proofArray,
+  verification_contract: stringValue,
+  verification_integration: stringValue,
+  verification_operational: stringValue,
+  verification_uat: stringValue,
+  definition_of_done: stringArray,
+  requirement_coverage: stringValue,
+  boundary_map_markdown: stringValue,
+  sequence: safeInteger,
+} as const;
+
+const SLICE_SCHEMA = {
+  milestone_id: nonblankString,
+  id: nonblankString,
+  title: stringValue,
+  status: nonblankString,
+  risk: stringValue,
+  depends: stringArray,
+  demo: stringValue,
+  created_at: stringValue,
+  completed_at: nullableString,
+  full_summary_md: stringValue,
+  full_uat_md: stringValue,
+  goal: stringValue,
+  success_criteria: stringValue,
+  proof_level: stringValue,
+  integration_closure: stringValue,
+  observability_impact: stringValue,
+  target_repositories: stringArray,
+  sequence: safeInteger,
+  replan_triggered_at: nullableString,
+  is_sketch: binaryInteger,
+  sketch_scope: stringValue,
+} as const;
+
+const TASK_SCHEMA = {
+  milestone_id: nonblankString,
+  slice_id: nonblankString,
+  id: nonblankString,
+  title: stringValue,
+  status: nonblankString,
+  one_liner: stringValue,
+  narrative: stringValue,
+  verification_result: stringValue,
+  duration: stringValue,
+  completed_at: nullableString,
+  blocker_discovered: booleanValue,
+  deviations: stringValue,
+  known_issues: stringValue,
+  key_files: stringArray,
+  key_decisions: stringArray,
+  full_summary_md: stringValue,
+  description: stringValue,
+  estimate: stringValue,
+  files: stringArray,
+  verify: stringValue,
+  inputs: stringArray,
+  expected_output: stringArray,
+  observability_impact: stringValue,
+  full_plan_md: stringValue,
+  target_repositories: stringArray,
+  sequence: safeInteger,
+  blocker_source: stringValue,
+  escalation_pending: binaryInteger,
+  escalation_awaiting_review: binaryInteger,
+  escalation_artifact_path: nullableString,
+  escalation_override_applied_at: nullableString,
+} as const;
+
+const REQUIREMENT_SCHEMA = {
+  id: nonblankString,
+  class: stringValue,
+  status: stringValue,
+  description: stringValue,
+  why: stringValue,
+  source: stringValue,
+  primary_owner: stringValue,
+  supporting_slices: stringValue,
+  validation: stringValue,
+  notes: stringValue,
+  full_content: stringValue,
+  superseded_by: nullableString,
+} as const;
+
+const ARTIFACT_SCHEMA = {
+  path: nonblankString,
+  artifact_type: stringValue,
+  milestone_id: nullableString,
+  slice_id: nullableString,
+  task_id: nullableString,
+  full_content: stringValue,
+  imported_at: stringValue,
+  content_hash: nullableContentHash,
+} as const;
+
+const ASSESSMENT_SCHEMA = {
+  path: nonblankString,
+  milestone_id: nonblankString,
+  slice_id: nullableString,
+  task_id: nullableString,
+  status: stringValue,
+  scope: nonblankString,
+  full_content: stringValue,
+  created_at: stringValue,
+} as const;
+
+function validMilestoneRecord(record: ManifestRecord): boolean {
+  return exactSchema(record.value, MILESTONE_SCHEMA)
+    && MILESTONE_ID_PATTERN.test(record.value.id as string);
+}
+
+function validSliceRecord(record: ManifestRecord): boolean {
+  return exactSchema(record.value, SLICE_SCHEMA, ["target_repositories"])
+    && MILESTONE_ID_PATTERN.test(record.value.milestone_id as string)
+    && SLICE_ID_PATTERN.test(record.value.id as string);
+}
+
+function validTaskRecord(record: ManifestRecord): boolean {
+  return exactSchema(record.value, TASK_SCHEMA, ["target_repositories"])
+    && MILESTONE_ID_PATTERN.test(record.value.milestone_id as string)
+    && SLICE_ID_PATTERN.test(record.value.slice_id as string)
+    && TASK_ID_PATTERN.test(record.value.id as string);
+}
+
+function validRequirementRecord(record: ManifestRecord): boolean {
+  return exactSchema(record.value, REQUIREMENT_SCHEMA);
+}
+
+function validArtifactRecord(record: ManifestRecord): boolean {
+  return exactSchema(record.value, ARTIFACT_SCHEMA)
+    && (record.value.milestone_id === null || MILESTONE_ID_PATTERN.test(record.value.milestone_id as string))
+    && (record.value.slice_id === null || SLICE_ID_PATTERN.test(record.value.slice_id as string))
+    && (record.value.task_id === null || TASK_ID_PATTERN.test(record.value.task_id as string))
+    && (record.value.slice_id === null || record.value.milestone_id !== null)
+    && (record.value.task_id === null || record.value.slice_id !== null);
+}
+
+function validAssessmentRecord(record: ManifestRecord): boolean {
+  return exactSchema(record.value, ASSESSMENT_SCHEMA)
+    && MILESTONE_ID_PATTERN.test(record.value.milestone_id as string)
+    && (record.value.slice_id === null || SLICE_ID_PATTERN.test(record.value.slice_id as string))
+    && (record.value.task_id === null || TASK_ID_PATTERN.test(record.value.task_id as string))
+    && (record.value.task_id === null || record.value.slice_id !== null);
 }
 
 function lifecycleIdentity(
@@ -177,21 +474,10 @@ function addJsonCandidate(
   reason: string,
   classification: "compare" | "preserve" = "compare",
 ): void {
-  const token = state.document.locate(pointer);
   candidates.push({
     classification,
     target,
-    raw: {
-      source_id: state.file.entry.source_id,
-      locator: {
-        start_byte: token.start_byte,
-        end_byte: token.end_byte,
-        line: jsonLine(state.file, token.start_byte),
-        json_pointer: pointer,
-      },
-      value: token.value,
-      sha256: hashLegacyImportBytes(state.file.bytes.subarray(token.start_byte, token.end_byte)),
-    },
+    raw: rawJsonValue(state, pointer),
     normalized,
     provenance: {
       source_id: state.file.entry.source_id,
@@ -215,7 +501,191 @@ function rejectManifestSchema(file: SourceFile, diagnoses: PendingDiagnosis[]): 
   return undefined;
 }
 
-function parseManifest(files: readonly SourceFile[], diagnoses: PendingDiagnosis[]): ManifestState | undefined {
+function rejectVersionedManifest(
+  file: SourceFile,
+  diagnoses: PendingDiagnosis[],
+  decisionsInvalid: boolean,
+): undefined {
+  file.parserId = "gsd-lifecycle-truth";
+  file.kind = "json";
+  file.outcome = "unparsed";
+  addLegacyImportDiagnosis(
+    diagnoses,
+    file,
+    decisionsInvalid
+      ? "invalid-state-manifest-decision-snapshot"
+      : "invalid-state-manifest-schema",
+    "blocker",
+    decisionsInvalid
+      ? "The versioned state manifest has an incomplete or invalid decision snapshot and cannot contribute truth."
+      : "The versioned state manifest has an incomplete, unknown, or invalid row and cannot contribute partial truth.",
+    "requires-user",
+  );
+  return undefined;
+}
+
+function validDecisionRecord(value: JsonRecord): boolean {
+  if (!exactKeys(value, STATE_MANIFEST_DECISION_KEYS)) return false;
+  if (
+    typeof value.seq !== "number"
+    || !Number.isSafeInteger(value.seq)
+    || value.seq < 0
+    || typeof value.id !== "string"
+    || !DECISION_ID.test(value.id)
+  ) {
+    return false;
+  }
+  for (const field of [
+    "when_context",
+    "scope",
+    "decision",
+    "choice",
+    "rationale",
+    "revisable",
+    "source",
+  ] as const) {
+    if (typeof value[field] !== "string") return false;
+  }
+  if (
+    value.made_by !== "agent"
+    && value.made_by !== "human"
+    && value.made_by !== "collaborative"
+  ) {
+    return false;
+  }
+  return value.superseded_by === null
+    || (typeof value.superseded_by === "string" && DECISION_ID.test(value.superseded_by));
+}
+
+function uniqueRecords(
+  value: LegacyImportValue | undefined,
+  validate: (record: ManifestRecord) => boolean,
+  identity: (record: ManifestRecord) => string,
+): ManifestRecord[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const parsed = records(value);
+  if (parsed.length !== value.length || parsed.some((record) => !validate(record))) return undefined;
+  const identities = parsed.map(identity);
+  return new Set(identities).size === identities.length ? parsed : undefined;
+}
+
+function validDecisionRecords(root: JsonRecord): ManifestRecord[] | undefined {
+  const decisions = uniqueRecords(
+    root.decisions,
+    (record) => validDecisionRecord(record.value),
+    (record) => record.value.id as string,
+  );
+  if (decisions === undefined) return undefined;
+  const sequences = decisions.map((record) => record.value.seq as number);
+  return new Set(sequences).size === sequences.length ? decisions : undefined;
+}
+
+function optionalRecords(
+  root: JsonRecord,
+  field: "requirements" | "artifacts" | "assessments",
+  validate: (record: ManifestRecord) => boolean,
+  identity: (record: ManifestRecord) => string,
+): ManifestRecord[] | undefined | false {
+  return field in root ? uniqueRecords(root[field], validate, identity) ?? false : undefined;
+}
+
+function completeVersionedManifest(
+  root: JsonRecord,
+  allowIndependentHierarchy: boolean,
+): VersionedManifestRecords | undefined {
+  const allowedKeys = new Set<string>(STATE_MANIFEST_KEYS);
+  const auxiliaryArrays = [
+    "replan_history",
+    "quality_gates",
+    "milestone_commit_attributions",
+  ] as const;
+  if (
+    root.version !== 1
+    || typeof root.exported_at !== "string"
+    || Object.keys(root).some((key) => !allowedKeys.has(key))
+    || STATE_MANIFEST_REQUIRED_ARRAYS.some((field) => !Array.isArray(root[field]))
+    || auxiliaryArrays.some((field) => field in root && !Array.isArray(root[field]))
+  ) {
+    return undefined;
+  }
+  const milestones = uniqueRecords(root.milestones, validMilestoneRecord, manifestMilestoneKey);
+  const slices = uniqueRecords(root.slices, validSliceRecord, manifestSliceKey);
+  const tasks = uniqueRecords(root.tasks, validTaskRecord, manifestTaskKey);
+  const decisions = validDecisionRecords(root);
+  const requirements = optionalRecords(
+    root,
+    "requirements",
+    validRequirementRecord,
+    (record) => record.value.id as string,
+  );
+  const artifacts = optionalRecords(
+    root,
+    "artifacts",
+    validArtifactRecord,
+    (record) => record.value.path as string,
+  );
+  const assessments = optionalRecords(
+    root,
+    "assessments",
+    validAssessmentRecord,
+    manifestAssessmentKey,
+  );
+  if (
+    milestones === undefined
+    || slices === undefined
+    || tasks === undefined
+    || decisions === undefined
+    || requirements === false
+    || artifacts === false
+    || assessments === false
+  ) {
+    return undefined;
+  }
+  const milestoneIds = new Set(milestones.map(manifestMilestoneKey));
+  const sliceIds = new Set(slices.map(manifestSliceKey));
+  const taskIds = new Set(tasks.map(manifestTaskKey));
+  if (
+    slices.some((record) => !milestoneIds.has(record.value.milestone_id as string))
+    || tasks.some((record) => !sliceIds.has(`${String(record.value.milestone_id)}/${String(record.value.slice_id)}`))
+  ) {
+    return undefined;
+  }
+  if (!allowIndependentHierarchy) {
+    if ((artifacts ?? []).some((record) => {
+      const milestoneId = record.value.milestone_id as string | null;
+      const sliceId = record.value.slice_id as string | null;
+      const taskId = record.value.task_id as string | null;
+      return (milestoneId !== null && !milestoneIds.has(milestoneId))
+        || (sliceId !== null && !sliceIds.has(`${milestoneId}/${sliceId}`))
+        || (taskId !== null && !taskIds.has(`${milestoneId}/${sliceId}/${taskId}`));
+    })) return undefined;
+    if ((assessments ?? []).some((record) => {
+      const milestoneId = record.value.milestone_id as string;
+      const sliceId = record.value.slice_id as string | null;
+      const taskId = record.value.task_id as string | null;
+      return !milestoneIds.has(milestoneId)
+        || (sliceId !== null && !sliceIds.has(`${milestoneId}/${sliceId}`))
+        || (taskId !== null && !taskIds.has(`${milestoneId}/${sliceId}/${taskId}`));
+    })) return undefined;
+  }
+  return {
+    milestones,
+    slices,
+    tasks,
+    decisions,
+    ...(requirements === undefined ? {} : { requirements }),
+    ...(artifacts === undefined ? {} : { artifacts }),
+    ...(assessments === undefined ? {} : { assessments }),
+  };
+}
+
+function parseManifest(
+  files: readonly SourceFile[],
+  diagnoses: PendingDiagnosis[],
+  delegatedHierarchyMembers?: LegacyImportDelegatedHierarchyMembers,
+  allowExternalHierarchyReferences = false,
+  delegateAssessments = false,
+): ManifestState | undefined {
   const file = files.find((candidate) => candidate.entry.logical_path.toLowerCase() === MANIFEST_PATH);
   if (file === undefined || file.outcome === "unparsed" || file.encoding !== "utf-8") return undefined;
   let document: LegacyImportJsonDocument;
@@ -226,36 +696,43 @@ function parseManifest(files: readonly SourceFile[], diagnoses: PendingDiagnosis
   }
   const root = asRecord(document.value);
   if (root === undefined) return rejectManifestSchema(file, diagnoses);
+  let versioned: VersionedManifestRecords | undefined;
+  if ("version" in root) {
+    const hasDelegatedHierarchy = delegatedHierarchyMembers !== undefined
+      && Object.values(delegatedHierarchyMembers).some((members) => members.length > 0);
+    versioned = completeVersionedManifest(root, hasDelegatedHierarchy || allowExternalHierarchyReferences);
+    if (versioned === undefined) {
+      return rejectVersionedManifest(file, diagnoses, validDecisionRecords(root) === undefined);
+    }
+  }
   const lifecycleFields = ["milestones", "slices", "tasks"] as const;
-  if (!lifecycleFields.some((field) => field in root)) return undefined;
-  if (lifecycleFields.some((field) => (
+  if (versioned === undefined && !lifecycleFields.some((field) => field in root)) return undefined;
+  if (versioned === undefined && lifecycleFields.some((field) => (
     root[field] !== undefined
     && (!Array.isArray(root[field]) || root[field].some((entry) => asRecord(entry) === undefined))
   ))) {
     return rejectManifestSchema(file, diagnoses);
   }
-  const milestones = records(root.milestones);
-  const slices = records(root.slices);
-  const tasks = records(root.tasks);
-  const milestoneIds = uniqueLifecycleIdentities(milestones, ["id"], [new RegExp(`^${MILESTONE_ID}$`, "u")]);
-  const sliceIds = uniqueLifecycleIdentities(
-    slices,
-    ["milestone_id", "id"],
-    [new RegExp(`^${MILESTONE_ID}$`, "u"), new RegExp(`^${SLICE_ID}$`, "u")],
-  );
-  const taskIds = uniqueLifecycleIdentities(
-    tasks,
-    ["milestone_id", "slice_id", "id"],
-    [new RegExp(`^${MILESTONE_ID}$`, "u"), new RegExp(`^${SLICE_ID}$`, "u"), new RegExp(`^${TASK_ID}$`, "u")],
-  );
-  if (
-    milestoneIds === undefined
-    || sliceIds === undefined
-    || taskIds === undefined
-    || [...sliceIds].some((identity) => !milestoneIds.has(identity.split("/")[0]))
-    || [...taskIds].some((identity) => !sliceIds.has(identity.split("/").slice(0, 2).join("/")))
-  ) {
-    return rejectManifestSchema(file, diagnoses);
+  const milestones = versioned?.milestones ?? records(root.milestones);
+  const slices = versioned?.slices ?? records(root.slices);
+  const tasks = versioned?.tasks ?? records(root.tasks);
+  if (versioned === undefined) {
+    const milestoneIds = uniqueLifecycleIdentities(milestones, ["id"], [MILESTONE_ID_PATTERN]);
+    const sliceIds = uniqueLifecycleIdentities(slices, ["milestone_id", "id"], [MILESTONE_ID_PATTERN, SLICE_ID_PATTERN]);
+    const taskIds = uniqueLifecycleIdentities(
+      tasks,
+      ["milestone_id", "slice_id", "id"],
+      [MILESTONE_ID_PATTERN, SLICE_ID_PATTERN, TASK_ID_PATTERN],
+    );
+    if (
+      milestoneIds === undefined
+      || sliceIds === undefined
+      || taskIds === undefined
+      || [...sliceIds].some((identity) => !milestoneIds.has(identity.split("/")[0]))
+      || [...taskIds].some((identity) => !sliceIds.has(identity.split("/").slice(0, 2).join("/")))
+    ) {
+      return rejectManifestSchema(file, diagnoses);
+    }
   }
   file.parserId = "gsd-lifecycle-truth";
   file.kind = "json";
@@ -263,17 +740,182 @@ function parseManifest(files: readonly SourceFile[], diagnoses: PendingDiagnosis
   return {
     file,
     document,
+    ...(versioned === undefined ? {} : {
+      versioned: {
+        delegatedMembers: delegatedHierarchyMembers ?? { milestones: [], slices: [], tasks: [] },
+        delegateAssessments,
+        decisions: versioned.decisions,
+        ...(versioned.requirements === undefined ? {} : { requirements: versioned.requirements }),
+        ...(versioned.artifacts === undefined ? {} : { artifacts: versioned.artifacts }),
+        ...(versioned.assessments === undefined ? {} : { assessments: versioned.assessments }),
+      },
+    }),
     milestones,
     slices,
     tasks,
   };
 }
 
+function rawJsonValue(state: ManifestState, pointer: string): LegacyImportRawValue {
+  const token = state.document.locate(pointer);
+  return {
+    source_id: state.file.entry.source_id,
+    locator: {
+      start_byte: token.start_byte,
+      end_byte: token.end_byte,
+      line: jsonLine(state.file, token.start_byte),
+      json_pointer: pointer,
+    },
+    value: token.value,
+    sha256: hashLegacyImportBytes(state.file.bytes.subarray(token.start_byte, token.end_byte)),
+  };
+}
+
+function withoutFields(record: JsonRecord, fields: readonly string[]): JsonRecord {
+  return Object.fromEntries(Object.entries(record).filter(([field]) => !fields.includes(field)));
+}
+
+function withRepositoryDefault(record: JsonRecord): JsonRecord {
+  return "target_repositories" in record ? record : { ...record, target_repositories: [] };
+}
+
+function addManifestCollectionCandidates(
+  state: ManifestState,
+  candidates: PendingCandidate[],
+  property: "milestones" | "slices" | "tasks" | "requirements" | "artifacts" | "assessments" | "decisions",
+  targetKind: string,
+  collection: readonly ManifestRecord[],
+  keyFor: (record: ManifestRecord) => string,
+  normalizedFor: (record: ManifestRecord) => JsonRecord,
+): void {
+  for (const record of collection) {
+    const key = keyFor(record);
+    addJsonCandidate(
+      candidates,
+      state,
+      `/${property}/${record.index}`,
+      { kind: targetKind, key },
+      normalizedFor(record),
+      `state-manifest-${targetKind}-row`,
+    );
+  }
+}
+
+function addCompleteManifestCollection(
+  state: ManifestState,
+  candidates: PendingCandidate[],
+  completeRowSets: LegacyImportPendingCompleteRowSet[],
+  property: "milestones" | "slices" | "tasks" | "requirements" | "artifacts" | "assessments" | "decisions",
+  rowSet: LegacyImportPendingCompleteRowSet["row_set"],
+  targetKind: string,
+  collection: readonly ManifestRecord[],
+  keyFor: (record: ManifestRecord) => string,
+  normalizedFor: (record: ManifestRecord) => JsonRecord,
+): void {
+  addManifestCollectionCandidates(state, candidates, property, targetKind, collection, keyFor, normalizedFor);
+  completeRowSets.push({
+    row_set: rowSet,
+    target_kind: targetKind,
+    member_keys: collection.map(keyFor),
+    raw: rawJsonValue(state, `/${property}`),
+    provenance: {
+      source_id: state.file.entry.source_id,
+      parser_id: state.file.parserId,
+      parser_version: state.file.parserVersion,
+    },
+  });
+}
+
+function addManifestHierarchyCollection(
+  state: ManifestState,
+  candidates: PendingCandidate[],
+  completeRowSets: LegacyImportPendingCompleteRowSet[],
+  property: HierarchyRowSet,
+  targetKind: "milestone" | "slice" | "task",
+  collection: readonly ManifestRecord[],
+  keyFor: (record: ManifestRecord) => string,
+  normalizedFor: (record: ManifestRecord) => JsonRecord,
+): void {
+  const projectedMembers = state.versioned?.delegatedMembers[property] ?? [];
+  if (collection.length === 0 && projectedMembers.length > 0) return;
+  addCompleteManifestCollection(
+    state, candidates, completeRowSets, property, property, targetKind, collection, keyFor, normalizedFor,
+  );
+}
+
+function interpretVersionedManifestRows(
+  state: ManifestState,
+  candidates: PendingCandidate[],
+  completeRowSets: LegacyImportPendingCompleteRowSet[],
+): void {
+  const versioned = state.versioned;
+  if (versioned === undefined) return;
+  addCompleteManifestCollection(
+    state,
+    candidates,
+    completeRowSets,
+    "decisions",
+    "decisions",
+    "decision",
+    versioned.decisions,
+    (record) => record.value.id as string,
+    (record) => record.value,
+  );
+  const hasScopedHierarchy = state.milestones.length > 0 || state.slices.length > 0 || state.tasks.length > 0;
+  if (hasScopedHierarchy) {
+    addManifestHierarchyCollection(
+      state, candidates, completeRowSets, "milestones", "milestone", state.milestones,
+      manifestMilestoneKey,
+      (record) => withoutFields(record.value, ["created_at"]),
+    );
+    addManifestHierarchyCollection(
+      state, candidates, completeRowSets, "slices", "slice", state.slices,
+      manifestSliceKey,
+      (record) => withRepositoryDefault(withoutFields(record.value, ["created_at"])),
+    );
+    addManifestHierarchyCollection(
+      state, candidates, completeRowSets, "tasks", "task", state.tasks,
+      manifestTaskKey,
+      (record) => withRepositoryDefault(record.value),
+    );
+  }
+  if (versioned.requirements !== undefined) {
+    addCompleteManifestCollection(
+      state, candidates, completeRowSets, "requirements", "requirements", "requirement", versioned.requirements,
+      (record) => record.value.id as string,
+      (record) => record.value,
+    );
+  }
+  if (versioned.artifacts !== undefined) {
+    addCompleteManifestCollection(
+      state, candidates, completeRowSets, "artifacts", "artifacts", "artifact", versioned.artifacts,
+      (record) => record.value.path as string,
+      (record) => withoutFields(record.value, ["imported_at"]),
+    );
+  }
+  if (versioned.assessments !== undefined && !versioned.delegateAssessments) {
+    addCompleteManifestCollection(
+      state, candidates, completeRowSets, "assessments", "assessments", "assessment", versioned.assessments,
+      manifestAssessmentKey,
+      (record) => withoutFields(record.value, ["created_at"]),
+    );
+  }
+}
+
 export function validateLegacyGsdLifecycleManifest(
   files: readonly SourceFile[],
   diagnoses: PendingDiagnosis[],
+  delegatedHierarchyMembers?: LegacyImportDelegatedHierarchyMembers,
+  allowExternalHierarchyReferences = false,
+  delegateAssessments = false,
 ): void {
-  parseManifest(files, diagnoses);
+  parseManifest(
+    files,
+    diagnoses,
+    delegatedHierarchyMembers,
+    allowExternalHierarchyReferences,
+    delegateAssessments,
+  );
 }
 
 function artifactFor(file: SourceFile): LifecycleArtifact | undefined {
@@ -317,6 +959,10 @@ function artifactFor(file: SourceFile): LifecycleArtifact | undefined {
   };
 }
 
+export function hasModeledLegacyGsdLifecycleSource(files: readonly SourceFile[]): boolean {
+  return files.some((file) => artifactFor(file) !== undefined);
+}
+
 function artifactKey(artifact: LifecycleArtifact): string {
   return [artifact.milestoneId, artifact.sliceId, artifact.taskId, artifact.role]
     .filter((value) => value !== undefined)
@@ -341,6 +987,7 @@ function artifactAt(
 
 function markArtifacts(artifacts: readonly LifecycleArtifact[]): void {
   for (const artifact of artifacts) {
+    if (artifact.file.parserId.endsWith("-hierarchy")) continue;
     artifact.file.parserId = "gsd-lifecycle-truth";
     artifact.file.kind = "markdown";
     artifact.file.outcome = "mapped";
@@ -409,7 +1056,7 @@ function interpretManifest(
         conflict ? "preserve" : "compare",
       );
     }
-    if (slice.value.is_sketch === true || slice.value.is_sketch === 1) {
+    if (state.versioned === undefined && (slice.value.is_sketch === true || slice.value.is_sketch === 1)) {
       const taskCount = state.tasks.filter((task) => (
         textField(task.value, "milestone_id") === milestoneId
         && textField(task.value, "slice_id") === sliceId
@@ -857,10 +1504,21 @@ export function interpretLegacyGsdLifecycle(
   databaseEvidence: readonly LegacyImportGsdDatabaseEvidence[],
   candidates: PendingCandidate[],
   diagnoses: PendingDiagnosis[],
+  completeRowSets: LegacyImportPendingCompleteRowSet[],
+  delegatedHierarchyMembers?: LegacyImportDelegatedHierarchyMembers,
+  allowExternalHierarchyReferences = false,
+  delegateAssessments = false,
 ): void {
   interpretDatabaseConflicts(files, databaseEvidence, candidates, diagnoses);
-  const state = parseManifest(files, diagnoses);
+  const state = parseManifest(
+    files,
+    diagnoses,
+    delegatedHierarchyMembers,
+    allowExternalHierarchyReferences,
+    delegateAssessments,
+  );
   if (state === undefined) return;
+  interpretVersionedManifestRows(state, candidates, completeRowSets);
   const artifacts = files.flatMap((file) => artifactFor(file) ?? []);
   if (state.milestones.length === 0 && state.slices.length === 0 && state.tasks.length === 0) return;
   markArtifacts(artifacts);

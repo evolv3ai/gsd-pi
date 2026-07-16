@@ -14,17 +14,24 @@ import {
   type LegacyImportInterpretation,
   type LegacyImportInterpretationCandidate,
   type LegacyImportPendingCandidate,
+  type LegacyImportPendingCompleteRowSet,
   type LegacyImportPendingDiagnosis,
 } from "./legacy-import-preview-interpretation.js";
 import type { LegacyImportSourceCapture } from "./legacy-import-preview-source.js";
 import { hashLegacyImportBytes, hashLegacyImportValue } from "./legacy-import-preview.js";
 import {
+  hasModeledLegacyGsdAssessmentSource,
   interpretLegacyGsdAssessments,
   validateLegacyGsdAssessmentManifest,
 } from "./legacy-import-preview-gsd-assessments.js";
-import { interpretLegacyGsdHierarchyFiles } from "./legacy-import-preview-gsd-hierarchy.js";
 import {
+  hasModeledLegacyGsdHierarchySource,
+  interpretLegacyGsdHierarchyFiles,
+} from "./legacy-import-preview-gsd-hierarchy.js";
+import {
+  hasModeledLegacyGsdLifecycleSource,
   interpretLegacyGsdLifecycle,
+  type LegacyImportDelegatedHierarchyMembers,
   validateLegacyGsdLifecycleManifest,
 } from "./legacy-import-preview-gsd-lifecycle.js";
 import { interpretLegacyGsdRegistries } from "./legacy-import-preview-gsd-registries.js";
@@ -258,12 +265,36 @@ function preserveUnhandledSources(
   }
 }
 
-function hasIndependentHierarchy(files: readonly LegacyImportDecodedSourceFile[]): boolean {
-  const hasRoadmap = files.some((file) => (
+function delegatedHierarchyMembers(
+  candidates: readonly LegacyImportPendingCandidate[],
+): LegacyImportDelegatedHierarchyMembers {
+  const members = {
+    milestones: new Set<string>(),
+    slices: new Set<string>(),
+    tasks: new Set<string>(),
+  };
+  for (const candidate of candidates) {
+    if (candidate.classification !== "compare" || candidate.target.field !== undefined) continue;
+    if (candidate.target.kind === "milestone") members.milestones.add(candidate.target.key);
+    else if (candidate.target.kind === "slice") members.slices.add(candidate.target.key);
+    else if (candidate.target.kind === "task") members.tasks.add(candidate.target.key);
+  }
+  return {
+    milestones: [...members.milestones].sort(),
+    slices: [...members.slices].sort(),
+    tasks: [...members.tasks].sort(),
+  };
+}
+
+function hasHierarchyRoadmapPath(files: readonly LegacyImportDecodedSourceFile[]): boolean {
+  return files.some((file) => (
     /\/milestones\/[^/]+\/(?:M[^/]+)-ROADMAP\.md$/u.test(file.entry.logical_path)
     || /\/phases\/[^/]+\/(?:M?\d+)-ROADMAP\.md$/u.test(file.entry.logical_path)
   ));
-  if (!hasRoadmap) return false;
+}
+
+function hasIndependentHierarchy(files: readonly LegacyImportDecodedSourceFile[]): boolean {
+  if (!hasHierarchyRoadmapPath(files)) return false;
   const manifest = files.find((file) => (
     file.entry.logical_path.toLowerCase() === ".gsd/state-manifest.json" && file.outcome !== "unparsed"
   ));
@@ -273,6 +304,17 @@ function hasIndependentHierarchy(files: readonly LegacyImportDecodedSourceFile[]
   const record = value as Readonly<Record<string, LegacyImportValue>>;
   return (!Array.isArray(record.slices) || record.slices.length === 0)
     && (!Array.isArray(record.tasks) || record.tasks.length === 0);
+}
+
+function hasCleanModeledHierarchy(files: readonly LegacyImportDecodedSourceFile[]): boolean {
+  const candidates: LegacyImportPendingCandidate[] = [];
+  const diagnoses: LegacyImportPendingDiagnosis[] = [];
+  interpretLegacyGsdHierarchyFiles(structuredClone(files), candidates, diagnoses);
+  return candidates.some((candidate) => (
+    candidate.classification === "compare"
+    && candidate.target.field === undefined
+    && (candidate.target.kind === "milestone" || candidate.target.kind === "slice" || candidate.target.kind === "task")
+  )) && !diagnoses.some((diagnosis) => diagnosis.severity === "blocker");
 }
 
 function rejectUnsupportedSources(
@@ -343,16 +385,41 @@ export function interpretLegacyGsdCapture(
     parserVersion: "1",
   });
   const candidates: LegacyImportPendingCandidate[] = [];
+  const completeRowSets: LegacyImportPendingCompleteRowSet[] = [];
   const diagnoses: LegacyImportPendingDiagnosis[] = [];
   validateDatabaseEvidence(capture, files, databaseEvidence, diagnoses);
   rejectUnsupportedSources(files, diagnoses, databaseEvidence);
   rejectMalformedManifests(files, diagnoses);
-  validateLegacyGsdLifecycleManifest(files, diagnoses);
+  const hierarchyCandidates: LegacyImportPendingCandidate[] = [];
+  if (hasIndependentHierarchy(files) || hasCleanModeledHierarchy(files)) {
+    interpretLegacyGsdHierarchyFiles(files, hierarchyCandidates, diagnoses);
+  }
+  const delegatedHierarchy = delegatedHierarchyMembers(hierarchyCandidates);
+  const delegateAssessments = hasModeledLegacyGsdAssessmentSource(files);
+  const hasExternalHierarchyReferences = hasModeledLegacyGsdHierarchySource(files)
+    || hasModeledLegacyGsdLifecycleSource(files)
+    || delegateAssessments;
+  candidates.push(...hierarchyCandidates);
+  validateLegacyGsdLifecycleManifest(
+    files,
+    diagnoses,
+    delegatedHierarchy,
+    hasExternalHierarchyReferences,
+    delegateAssessments,
+  );
   validateLegacyGsdAssessmentManifest(files, diagnoses);
-  if (hasIndependentHierarchy(files)) interpretLegacyGsdHierarchyFiles(files, candidates, diagnoses);
-  interpretLegacyGsdLifecycle(files, databaseEvidence, candidates, diagnoses);
-  interpretLegacyGsdAssessments(files, candidates, diagnoses);
+  interpretLegacyGsdLifecycle(
+    files,
+    databaseEvidence,
+    candidates,
+    diagnoses,
+    completeRowSets,
+    delegatedHierarchy,
+    hasExternalHierarchyReferences,
+    delegateAssessments,
+  );
+  interpretLegacyGsdAssessments(files, candidates, diagnoses, !delegateAssessments);
   interpretLegacyGsdRegistries(files, candidates, diagnoses);
   preserveUnhandledSources(files, candidates, diagnoses);
-  return finalizeLegacyImportInterpretation(files, candidates, diagnoses);
+  return finalizeLegacyImportInterpretation(files, candidates, diagnoses, completeRowSets);
 }

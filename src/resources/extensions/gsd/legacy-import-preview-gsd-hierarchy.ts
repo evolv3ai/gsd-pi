@@ -151,6 +151,10 @@ function claimFor(file: SourceFile): HierarchyClaim | undefined {
   };
 }
 
+export function hasModeledLegacyGsdHierarchySource(files: readonly SourceFile[]): boolean {
+  return files.some((file) => file.outcome !== "unparsed" && claimFor(file) !== undefined);
+}
+
 function addCandidate(
   candidates: PendingCandidate[],
   file: SourceFile,

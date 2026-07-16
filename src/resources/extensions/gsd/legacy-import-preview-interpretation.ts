@@ -13,6 +13,7 @@ import type {
   LegacyImportTarget,
   LegacyImportValue,
 } from "./legacy-import-contract.js";
+import type { LegacyImportBaseRowSet } from "./legacy-import-preview-base.js";
 import type {
   LegacyImportSourceCapture,
   LegacyImportSourceEntry,
@@ -36,9 +37,24 @@ export interface LegacyImportInterpretationCandidate {
   reason_code: string;
 }
 
+export interface LegacyImportCompleteRowSet {
+  complete_set_id: LegacyImportSha256;
+  row_set: LegacyImportBaseRowSet;
+  target_kind: string;
+  member_keys: readonly string[];
+  raw: LegacyImportRawValue;
+  provenance: LegacyImportProvenance;
+}
+
+export type LegacyImportPendingCompleteRowSet = Omit<
+  LegacyImportCompleteRowSet,
+  "complete_set_id"
+>;
+
 export interface LegacyImportInterpretation {
   sources: readonly LegacyImportPreviewSource[];
   candidates: readonly LegacyImportInterpretationCandidate[];
+  complete_row_sets: readonly LegacyImportCompleteRowSet[];
   diagnoses: readonly LegacyImportPreviewDiagnosis[];
   resolutions: readonly LegacyImportPreviewResolution[];
 }
@@ -102,6 +118,54 @@ function candidateOrderValue(candidate: LegacyImportPendingCandidate): LegacyImp
     candidate.reason_code,
     candidate.classification,
   ];
+}
+
+function completeRowSetOrderValue(rowSet: LegacyImportCompleteRowSet): LegacyImportValue {
+  return [
+    rowSet.row_set,
+    rowSet.target_kind,
+    rowSet.raw.source_id,
+    rowSet.raw.locator.start_byte,
+    rowSet.complete_set_id,
+  ];
+}
+
+function finalizeCompleteRowSets(
+  pendingRowSets: readonly LegacyImportPendingCompleteRowSet[],
+): LegacyImportCompleteRowSet[] {
+  const claims = new Set<string>();
+  return pendingRowSets.map((pending) => {
+    if (pending.target_kind.trim().length === 0) {
+      throw new Error("legacy import complete row-set target kind must not be blank");
+    }
+    if (pending.raw.source_id !== pending.provenance.source_id) {
+      throw new Error("legacy import complete row-set provenance must match its raw source");
+    }
+    const memberKeys = [...pending.member_keys].sort(compareText);
+    if (
+      memberKeys.some((key) => key.trim().length === 0)
+      || new Set(memberKeys).size !== memberKeys.length
+    ) {
+      throw new Error("legacy import complete row-set member keys must be unique non-blank values");
+    }
+    const claim = canonicalLegacyImportJson([
+      pending.row_set,
+      pending.target_kind,
+      pending.raw.source_id,
+    ]);
+    if (claims.has(claim)) {
+      throw new Error("legacy import complete row-set claim is duplicated");
+    }
+    claims.add(claim);
+    const identity: LegacyImportPendingCompleteRowSet = {
+      ...pending,
+      member_keys: memberKeys,
+    };
+    return { complete_set_id: hashLegacyImportValue(identity), ...identity };
+  }).sort((left, right) => compareText(
+    canonicalLegacyImportJson(completeRowSetOrderValue(left)),
+    canonicalLegacyImportJson(completeRowSetOrderValue(right)),
+  ));
 }
 
 function deepFreeze<T>(value: T, seen = new Set<object>()): T {
@@ -387,6 +451,7 @@ export function finalizeLegacyImportInterpretation(
   files: readonly LegacyImportDecodedSourceFile[],
   candidates: LegacyImportPendingCandidate[],
   diagnoses: LegacyImportPendingDiagnosis[],
+  completeRowSets: readonly LegacyImportPendingCompleteRowSet[] = [],
 ): LegacyImportInterpretation {
   const orderedPending = candidates.sort((left, right) => compareText(
     canonicalLegacyImportJson(candidateOrderValue(left)),
@@ -410,6 +475,7 @@ export function finalizeLegacyImportInterpretation(
   return deepFreeze({
     sources: files.map(sourceRecord),
     candidates: finalizedCandidates,
+    complete_row_sets: finalizeCompleteRowSets(completeRowSets),
     diagnoses: finalizedDiagnoses,
     resolutions,
   });

@@ -398,6 +398,31 @@ describe("legacy preview planning", () => {
     }
   });
 
+  test("legacy preview planning recognizes arbitrary sealed milestone roadmaps", (t) => {
+    const valid = interpretLegacyPlanningCapture(captureFiles(t, {
+      "ROADMAP.md": "# Roadmap\n\n## Milestone M842: Human-language discovery\n\n- Phase 7: Validate conversations\n",
+    }));
+    assert.deepEqual(
+      valid.candidates.filter((candidate) => candidate.reason_code === "capstone-clean-planning-milestone")
+        .map((candidate) => [candidate.target, candidate.normalized]),
+      [[
+        { kind: "milestone", key: "M842" },
+        { id: "M842", layout: "planning", status: "pending", title: "Human-language discovery" },
+      ]],
+    );
+
+    const malformed = [
+      "# Roadmap\n\n## Milestone M842: One\n\n## Milestone M843: Two\n\n- Phase 7: Work\n",
+      "# Roadmap\n\n## Milestone M842: Missing phase\n",
+      "# Roadmap\n\n## Milestone M842: Extra prose\n\n- Phase 7: Work\n\nUnexpected line.\n",
+    ];
+    for (const roadmap of malformed) {
+      const result = interpretLegacyPlanningCapture(captureFiles(t, { "ROADMAP.md": roadmap }));
+      assert.deepEqual(result.candidates.filter((candidate) => candidate.classification === "compare"), []);
+      assert.deepEqual(result.diagnoses.map((diagnosis) => diagnosis.code), ["malformed-roadmap-grammar"]);
+    }
+  });
+
   test("legacy preview planning pairs a summary with its exact flat task", (t) => {
     const capture = captureFiles(t, {
       "ROADMAP.md": "# Roadmap\n\n- [ ] 01 — First\n- [ ] 02 — Second\n",

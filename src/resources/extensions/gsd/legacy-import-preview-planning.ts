@@ -532,6 +532,44 @@ function interpretFlatRoadmap(
   }
 }
 
+function interpretPlanningMilestoneRoadmap(
+  file: SourceFile,
+  candidates: PendingCandidate[],
+  diagnoses: PendingDiagnosis[],
+): boolean {
+  const nonblankLines = file.lines.filter((line) => line.text.trim().length > 0);
+  const milestoneHeadings = nonblankLines.flatMap((line) => {
+    const match = /^##\s+Milestone\s+(M\d+):\s+(.+)$/u.exec(line.text);
+    return match === null ? [] : [{ line, match }];
+  });
+  const phaseRows = nonblankLines.flatMap((line) => {
+    const match = /^-\s+Phase\s+(\d+):\s+(.+)$/u.exec(line.text);
+    return match === null ? [] : [{ line, match }];
+  });
+  const hasPlanningMilestoneGrammar = nonblankLines.some((line) => (
+    /^##\s+Milestone\b/iu.test(line.text) || /^-\s+Phase\b/iu.test(line.text)
+  ));
+  if (!hasPlanningMilestoneGrammar) return false;
+
+  const completeGrammar = nonblankLines[0]?.text === "# Roadmap"
+    && milestoneHeadings.length === 1
+    && milestoneHeadings[0].match[2].trim().length > 0
+    && phaseRows.length === 1
+    && phaseRows[0].match[2].trim().length > 0
+    && nonblankLines.length === 3;
+  if (!completeGrammar) return malformedRoadmap(file, candidates, diagnoses);
+
+  const { line, match } = milestoneHeadings[0];
+  const id = match[1];
+  addCandidate(candidates, file, { kind: "milestone", key: id }, {
+    id,
+    layout: "planning",
+    status: "pending",
+    title: match[2].trim(),
+  }, "capstone-clean-planning-milestone", line.start, line.end);
+  return true;
+}
+
 function interpretFlatPlan(
   file: SourceFile,
   candidates: PendingCandidate[],
@@ -958,7 +996,12 @@ function interpretRemaining(
   if (path === ".planning/PROJECT.md") return interpretProject(file, candidates);
   if (path === ".planning/REQUIREMENTS.md") return interpretRequirements(file, candidates, diagnoses);
   if (path === ".planning/ROADMAP.md") {
-    if (!interpretMultiRoadmap(file, candidates, diagnoses)) interpretFlatRoadmap(file, candidates, diagnoses, files);
+    if (
+      !interpretMultiRoadmap(file, candidates, diagnoses)
+      && !interpretPlanningMilestoneRoadmap(file, candidates, diagnoses)
+    ) {
+      interpretFlatRoadmap(file, candidates, diagnoses, files);
+    }
     return;
   }
   if (path.endsWith("-PLAN.md")) return interpretFlatPlan(file, candidates, diagnoses, aliases, membership);

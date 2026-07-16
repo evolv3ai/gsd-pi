@@ -2,20 +2,41 @@
 // File Purpose: Preview identity and atomic current-authority base snapshot tests.
 
 import assert from "node:assert/strict";
+import { cpSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import { describe, test } from "node:test";
 
 import {
   LEGACY_IMPORT_PREVIEW_TOP_LEVEL_KEYS,
   type LegacyImportPreviewEnvelope,
   type LegacyImportSha256,
+  type LegacyImportValue,
 } from "../legacy-import-contract.ts";
 import {
   LEGACY_IMPORT_BASE_ROW_SETS,
   LegacyImportBaseSnapshotError,
   captureLegacyImportBaseSnapshot,
   captureCurrentLegacyImportBaseSnapshot,
+  type LegacyImportBaseSnapshot,
   type LegacyImportBaseSnapshotSource,
 } from "../legacy-import-preview-base.ts";
+import { classifyLegacyImportChanges } from "../legacy-import-preview-classifier.ts";
+import {
+  collectLegacyImportDatabaseTargetEvidence,
+} from "../legacy-import-preview-database-target.ts";
+import { inspectLegacyImportDatabaseTarget } from "../legacy-import-database-target-inspector.ts";
+import { interpretLegacyGsdCapture } from "../legacy-import-preview-gsd.ts";
+import type { LegacyImportInterpretation } from "../legacy-import-preview-interpretation.ts";
+import { interpretLegacyPlanningCapture } from "../legacy-import-preview-planning.ts";
+import {
+  captureLegacyImportSourceSet,
+  type LegacyImportSourceCapture,
+  type LegacyImportSourceRoot,
+} from "../legacy-import-preview-source.ts";
+import { interpretLegacySupplementalCapture } from "../legacy-import-preview-supplemental.ts";
 import {
   canonicalLegacyImportJson,
   hashLegacyImportValue,
@@ -23,9 +44,17 @@ import {
   type LegacyImportPreviewSealInput,
 } from "../legacy-import-preview.ts";
 import { _getAdapter, closeDatabase, openDatabase } from "../gsd-db.ts";
+import {
+  assertStableClassificationHashes,
+  classificationBase,
+  classificationCandidate,
+  classificationInterpretation,
+  classificationSource,
+} from "./legacy-import-preview-classification-fixtures.ts";
 
 const ONE_HASH = `sha256:${"1".repeat(64)}` as LegacyImportSha256;
 const EMPTY_HASH = hashLegacyImportValue([]);
+const LEGACY_CORPUS_ROOT = new URL("./__fixtures__/legacy-import-corpus/v1/", import.meta.url);
 const EXPECTED_BASE_ROW_SETS = [
   "milestones",
   "slices",
@@ -701,5 +730,254 @@ describe("legacy preview base snapshot", () => {
     } finally {
       closeDatabase();
     }
+  });
+});
+
+function temporaryLegacyCorpusDirectory(t: { after(fn: () => void): void }): string {
+  const path = mkdtempSync(join(tmpdir(), "gsd-preview-classification-"));
+  t.after(() => rmSync(path, { recursive: true, force: true }));
+  return path;
+}
+
+function captureLegacyCorpusPaths(
+  t: { after(fn: () => void): void },
+  caseName: string,
+  paths: readonly string[],
+  roots: readonly { logical: string; kind: LegacyImportSourceRoot["kind"] }[],
+): LegacyImportSourceCapture {
+  const source = join(temporaryLegacyCorpusDirectory(t), "source");
+  const fixture = fileURLToPath(new URL(`./${caseName}/source/`, LEGACY_CORPUS_ROOT));
+  for (const path of paths) {
+    const destination = join(source, path);
+    mkdirSync(dirname(destination), { recursive: true });
+    cpSync(join(fixture, path), destination, { dereference: false, verbatimSymlinks: true });
+  }
+  return captureLegacyImportSourceSet({
+    roots: roots.map((root, index) => ({
+      id: `classification-source-${index + 1}`,
+      kind: root.kind,
+      physical_path: join(source, root.logical),
+      logical_path: root.logical,
+      presence: "required",
+    })),
+  });
+}
+
+function actionMatrixBaseSnapshot(): LegacyImportBaseSnapshot {
+  const path = fileURLToPath(new URL(
+    "./action-matrix/source/.gsd/gsd.db",
+    LEGACY_CORPUS_ROOT,
+  ));
+  const database = new DatabaseSync(path, { readOnly: true });
+  try {
+    database.exec("PRAGMA query_only=ON");
+    const schema = database.prepare("SELECT max(version) AS version FROM schema_version").get();
+    assert.equal(schema?.version, 44);
+    const rawAuthority = database.prepare(`
+      SELECT singleton, project_id, project_root_realpath, revision, authority_epoch,
+             created_at, updated_at
+      FROM project_authority
+    `).get();
+    assert.ok(rawAuthority);
+    assert.equal(rawAuthority.singleton, 1);
+    const authority = {
+      singleton: 1 as const,
+      project_id: String(rawAuthority.project_id),
+      project_root_realpath: String(rawAuthority.project_root_realpath),
+      revision: Number(rawAuthority.revision),
+      authority_epoch: Number(rawAuthority.authority_epoch),
+      created_at: String(rawAuthority.created_at),
+      updated_at: String(rawAuthority.updated_at),
+    };
+    const rows: LegacyImportBaseSnapshot["rows"][number][] = database.prepare(`
+      SELECT id, when_context, scope, decision, choice, rationale, revisable,
+             made_by, source, superseded_by
+      FROM decisions ORDER BY id
+    `).all().map((rawRow) => {
+      const value = { ...rawRow } as Readonly<Record<string, LegacyImportValue>>;
+      return {
+        row_set: "decisions",
+        identity: canonicalLegacyImportJson({ id: String(value.id) }),
+        value,
+      };
+    });
+    return {
+      snapshot_schema_version: 1,
+      database_schema_version: 44,
+      authority,
+      rows,
+      relevant_rows_hash: hashLegacyImportValue(rows),
+    };
+  } finally {
+    database.close();
+  }
+}
+
+function composeLegacyInterpretations(
+  interpretations: readonly LegacyImportInterpretation[],
+): LegacyImportInterpretation {
+  const candidates = interpretations.flatMap((interpretation) => interpretation.candidates)
+    .sort((left, right) => left.candidate_id.localeCompare(right.candidate_id))
+    .map((candidate, index) => ({ ...candidate, ordinal: index + 1 }));
+  return {
+    sources: interpretations.flatMap((interpretation) => interpretation.sources),
+    candidates,
+    complete_row_sets: interpretations.flatMap((interpretation) => interpretation.complete_row_sets),
+    diagnoses: interpretations.flatMap((interpretation) => interpretation.diagnoses),
+    resolutions: interpretations.flatMap((interpretation) => interpretation.resolutions),
+  };
+}
+
+describe("legacy preview task classification", () => {
+  test("legacy preview action matrix classification against a captured v44 fixture", (t) => {
+    const capture = captureLegacyCorpusPaths(
+      t,
+      "action-matrix",
+      [".gsd/STATE.md", ".gsd/state-manifest.json"],
+      [{ logical: ".gsd", kind: "project" }],
+    );
+    const interpretation = interpretLegacyGsdCapture(capture);
+    const result = classifyLegacyImportChanges(actionMatrixBaseSnapshot(), interpretation);
+
+    assert.equal(result.applicable, true);
+    assert.deepEqual(
+      result.changes.map((change) => [change.action, change.target.key]).sort(),
+      [
+        ["create", "D001"],
+        ["delete", "D003"],
+        ["preserve", ".gsd/STATE.md"],
+        ["update", "D002"],
+      ].sort(),
+    );
+    assert.deepEqual(result.counts, {
+      create: 1, update: 1, delete: 1, preserve: 1, unparsed: 0, unresolved: 0,
+    });
+    assert.equal(result.changes.some((change) => change.target.key === "D004"), false);
+    assert.deepEqual(
+      interpretation.complete_row_sets.map((candidate) => candidate.row_set).sort(),
+      ["artifacts", "assessments", "decisions", "requirements"],
+    );
+    const complete = interpretation.complete_row_sets.find((candidate) => candidate.row_set === "decisions");
+    assert.ok(complete);
+    assert.equal(complete.row_set, "decisions");
+    assert.equal(complete.target_kind, "decision");
+    assert.deepEqual(complete.member_keys, ["D001", "D002", "D004"]);
+    assert.equal(complete.raw.locator.json_pointer, "/decisions");
+    assert.deepEqual(
+      result.changes.find((change) => change.target.key === "D003")?.raw,
+      complete.raw,
+    );
+    assertStableClassificationHashes(result);
+
+    const replay = classifyLegacyImportChanges(actionMatrixBaseSnapshot(), interpretation);
+    assert.equal(replay.source_set_hash, result.source_set_hash);
+    assert.equal(replay.change_set_hash, result.change_set_hash);
+    assert.deepEqual(replay.changes, result.changes);
+  });
+
+  test("legacy preview ambiguity classification", () => {
+    const routeA = classificationSource("route-a", ".gsd/routes/a.json");
+    const routeB = classificationSource("route-b", ".gsd/routes/b.json");
+    const target = { kind: "milestone", key: "M007" } as const;
+    const result = classifyLegacyImportChanges(
+      classificationBase(),
+      classificationInterpretation([routeA, routeB], [
+        classificationCandidate(routeA, target, { id: "M007", title: "Route A" }),
+        classificationCandidate(routeB, target, { id: "M007", title: "Route B" }, { ordinal: 2 }),
+      ]),
+    );
+
+    assert.equal(result.applicable, false);
+    assert.deepEqual(result.changes, []);
+    assert.equal(result.counts.unresolved, 1);
+    assert.equal(result.diagnoses.length, 1);
+    assert.equal(result.resolutions.length, 1);
+    assert.equal(result.diagnoses[0].code, "conflicting-legacy-import-target");
+    assert.equal(result.diagnoses[0].severity, "blocker");
+    assert.equal(result.resolutions[0].diagnosis_id, result.diagnoses[0].diagnosis_id);
+    assert.equal(result.resolutions[0].disposition, "requires-user");
+    assertStableClassificationHashes(result);
+  });
+
+  test("legacy preview composite classification from the real producer seam", (t) => {
+    const planningCapture = captureLegacyCorpusPaths(
+      t,
+      "composite-capstone",
+      [".planning/ROADMAP.md"],
+      [{ logical: ".planning", kind: "project" }],
+    );
+    const gsdCapture = captureLegacyCorpusPaths(
+      t,
+      "composite-capstone",
+      [
+        ".gsd/DECISIONS.md",
+        ".gsd/REQUIREMENTS.md",
+        ".gsd/milestones/M007-capstone-alpha/M007-ROADMAP.md",
+        ".gsd/milestones/M702-clean/M702-ROADMAP.md",
+        ".gsd/phases/07-capstone-beta/07-ROADMAP.md",
+        ".gsd/state-manifest.json",
+      ],
+      [{ logical: ".gsd", kind: "project" }],
+    );
+    const supplementalCapture = captureLegacyCorpusPaths(
+      t,
+      "composite-capstone",
+      [
+        ".gsd-worktrees/M008/git-marker.txt",
+        ".gsd/KNOWLEDGE.md",
+        ".gsd/event-log.jsonl",
+        ".gsd/gsd.db",
+        ".gsd/workflow-runs/capstone/run-001/GRAPH.yaml",
+        ".gsd/workflows/capstone.yaml",
+      ],
+      [
+        { logical: ".gsd", kind: "project" },
+        { logical: ".gsd-worktrees", kind: "worktree" },
+      ],
+    );
+    const interpretation = composeLegacyInterpretations([
+      interpretLegacyPlanningCapture(planningCapture),
+      interpretLegacyGsdCapture(gsdCapture),
+      interpretLegacySupplementalCapture(supplementalCapture, {
+        databaseTargetEvidence: collectLegacyImportDatabaseTargetEvidence(
+          supplementalCapture,
+          inspectLegacyImportDatabaseTarget,
+        ),
+      }),
+    ]);
+    const result = classifyLegacyImportChanges(classificationBase(), interpretation);
+
+    assert.equal(result.applicable, false);
+    assert.deepEqual(
+      result.diagnoses.map((diagnosis) => diagnosis.code).sort(),
+      [
+        "conflicting-legacy-import-completeness",
+        "conflicting-legacy-import-completeness",
+        "duplicate-logical-milestone",
+        "hybrid-conflicting-content",
+        "unsupported-database-schema",
+      ],
+    );
+    assert.deepEqual(
+      result.changes.map((change) => [change.action, change.target.kind, change.target.key]).sort(),
+      [
+        ["create", "assessment", "M702/S01/run-uat"],
+        ["create", "milestone", "M702"],
+        ["create", "milestone-status", "M702"],
+        ["create", "requirement", "R701"],
+        ["create", "slice", "M702/S01"],
+        ["preserve", "legacy-knowledge-source", ".gsd/KNOWLEDGE.md"],
+        ["preserve", "legacy-workflow-definition", ".gsd/workflows/capstone.yaml"],
+        ["preserve", "legacy-workflow-event", ".gsd/event-log.jsonl#L001"],
+        ["preserve", "legacy-workflow-run-artifact", ".gsd/workflow-runs/capstone/run-001/GRAPH.yaml"],
+        ["preserve", "legacy-worktree-topology", "canonical/M008"],
+      ].sort(),
+    );
+    assert.deepEqual(result.counts, {
+      create: 5, update: 0, delete: 0, preserve: 5, unparsed: 3, unresolved: 5,
+    });
+    assert.equal(result.changes.some((change) => change.target.key.includes("M007")), false);
+    assert.equal(result.changes.some((change) => change.target.key === "M701"), false);
+    assertStableClassificationHashes(result);
   });
 });

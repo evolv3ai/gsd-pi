@@ -2,7 +2,7 @@
 // File Purpose: Exact semantic corpus tests for pure legacy .gsd interpretation.
 
 import assert from "node:assert/strict";
-import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +17,7 @@ import type {
   LegacyImportPreviewSource,
   LegacyImportSha256,
 } from "../legacy-import-contract.ts";
+import { classifyLegacyImportChanges } from "../legacy-import-preview-classifier.ts";
 import {
   interpretLegacyGsdCapture,
   type LegacyImportGsdCandidate,
@@ -34,6 +35,10 @@ import {
   hashLegacyImportBytes,
   hashLegacyImportValue,
 } from "../legacy-import-preview.ts";
+import {
+  classificationBase,
+  classificationBaseRow,
+} from "./legacy-import-preview-classification-fixtures.ts";
 import { loadLegacyImportCorpusCase } from "./helpers/legacy-import-corpus.ts";
 
 const CORPUS_ROOT = new URL("./__fixtures__/legacy-import-corpus/v1/", import.meta.url);
@@ -357,10 +362,22 @@ function assertRuntimeIdentity(
 function assertOracleSemantics(captured: CapturedCase, interpretation: LegacyImportGsdInterpretation): void {
   const runtimePaths = sourcePathsById(interpretation.sources);
   const oraclePaths = sourcePathsById(captured.oracle.sources);
+  const manifestRows = interpretation.candidates.filter((candidate) => (
+    candidate.reason_code.startsWith("state-manifest-")
+    && candidate.reason_code.endsWith("-row")
+  ));
+  const manifestRowTargets = new Set(manifestRows.map((candidate) => canonicalLegacyImportJson([
+    candidate.target,
+    runtimePaths.get(candidate.raw.source_id),
+  ])));
+  const runtimeCandidates = interpretation.candidates.filter((candidate) => !manifestRows.includes(candidate));
+  const oracleCandidates = captured.oracle.changes.filter((candidate) => !manifestRowTargets.has(
+    canonicalLegacyImportJson([candidate.target, oraclePaths.get(candidate.raw.source_id)]),
+  ));
   assert.deepEqual(normalizedSources(interpretation.sources), normalizedSources(captured.oracle.sources));
   assert.deepEqual(
-    normalizedCandidates(interpretation.candidates, runtimePaths),
-    normalizedCandidates(captured.oracle.changes, oraclePaths),
+    normalizedCandidates(runtimeCandidates, runtimePaths),
+    normalizedCandidates(oracleCandidates, oraclePaths),
   );
   assert.deepEqual(
     normalizedDiagnoses(interpretation.diagnoses, runtimePaths),
@@ -381,6 +398,145 @@ function rehashEvidence(
   const { evidence_hash: _oldHash, ...oldValue } = evidence;
   const value = { ...oldValue, ...changes };
   return { ...value, evidence_hash: hashLegacyImportValue(value) } as LegacyImportGsdDatabaseEvidence;
+}
+
+function completeStateManifestV1() {
+  return {
+    version: 1,
+    exported_at: "2026-07-16T12:00:00.000Z",
+    requirements: [{
+      id: "R001",
+      class: "functional",
+      status: "active",
+      description: "Retain one database authority.",
+      why: "Prevent projection drift.",
+      source: "M001",
+      primary_owner: "S01",
+      supporting_slices: "",
+      validation: "Compare the imported row.",
+      notes: "",
+      full_content: "# R001\n\nRetain one database authority.",
+      superseded_by: null,
+    }],
+    artifacts: [{
+      path: "milestones/M001/slices/S01/tasks/T01-SUMMARY.md",
+      artifact_type: "SUMMARY",
+      milestone_id: "M001",
+      slice_id: "S01",
+      task_id: "T01",
+      full_content: "# T01 Summary\n",
+      imported_at: "2026-07-16T12:01:00.000Z",
+      content_hash: "sha256:artifact-content",
+    }],
+    milestones: [{
+      id: "M001",
+      title: "Adopt canonical authority",
+      status: "active",
+      depends_on: [],
+      created_at: "2026-07-16T12:00:00.000Z",
+      completed_at: null,
+      vision: "The database is authoritative.",
+      success_criteria: ["No projection drift"],
+      key_risks: [{ risk: "Data loss", whyItMatters: "Legacy truth must survive." }],
+      proof_strategy: [{
+        riskOrUnknown: "Manifest fidelity",
+        retireIn: "S01",
+        whatWillBeProven: "Every supported row is compared exactly.",
+      }],
+      verification_contract: "Run focused import tests.",
+      verification_integration: "Classify against a frozen base.",
+      verification_operational: "Replay deterministically.",
+      verification_uat: "No manual step for exact rows.",
+      definition_of_done: ["All rows retained"],
+      requirement_coverage: "R001",
+      boundary_map_markdown: "manifest -> preview",
+      sequence: 1,
+    }],
+    slices: [{
+      milestone_id: "M001",
+      id: "S01",
+      title: "Interpret the manifest",
+      status: "active",
+      risk: "medium",
+      depends: [],
+      demo: "Show exact candidates.",
+      created_at: "2026-07-16T12:00:00.000Z",
+      completed_at: null,
+      full_summary_md: "",
+      full_uat_md: "",
+      goal: "Preserve complete authority.",
+      success_criteria: "All row sets are explicit.",
+      proof_level: "integration",
+      integration_closure: "Classifier consumes the same identities.",
+      observability_impact: "Preview exposes provenance.",
+      target_repositories: ["open-gsd/gsd-pi"],
+      sequence: 1,
+      replan_triggered_at: null,
+      is_sketch: 0,
+      sketch_scope: "",
+    }],
+    tasks: [{
+      milestone_id: "M001",
+      slice_id: "S01",
+      id: "T01",
+      title: "Emit canonical rows",
+      status: "active",
+      one_liner: "Map each complete row.",
+      narrative: "The manifest is the structured source.",
+      verification_result: "",
+      duration: "",
+      completed_at: null,
+      blocker_discovered: false,
+      deviations: "",
+      known_issues: "",
+      key_files: [".gsd/state-manifest.json"],
+      key_decisions: ["D001"],
+      full_summary_md: "",
+      description: "Emit one full-row candidate.",
+      estimate: "1h",
+      files: ["src/import.ts"],
+      verify: "node --test",
+      inputs: ["state manifest"],
+      expected_output: ["canonical candidate"],
+      observability_impact: "Raw pointers remain inspectable.",
+      full_plan_md: "# T01 Plan\n",
+      target_repositories: ["open-gsd/gsd-pi"],
+      sequence: 1,
+      blocker_source: "",
+      escalation_pending: 0,
+      escalation_awaiting_review: 0,
+      escalation_artifact_path: null,
+      escalation_override_applied_at: null,
+    }],
+    decisions: [{
+      seq: 1,
+      id: "D001",
+      when_context: "Before import",
+      scope: "global",
+      decision: "Use one authority",
+      choice: "database",
+      rationale: "Avoid drift.",
+      revisable: "yes",
+      made_by: "human",
+      source: "discussion",
+      superseded_by: null,
+    }],
+    assessments: [{
+      path: "milestones/M001/slices/S01/T01-ASSESSMENT.md",
+      milestone_id: "M001",
+      slice_id: "S01",
+      task_id: "T01",
+      status: "pass",
+      scope: "run-uat",
+      full_content: "**Verdict:** PASS",
+      created_at: "2026-07-16T12:02:00.000Z",
+    }],
+    verification_evidence: [],
+  };
+}
+
+function clonedStateManifestV1(): ReturnType<typeof completeStateManifestV1> {
+  return JSON.parse(JSON.stringify(completeStateManifestV1())) as ReturnType<typeof completeStateManifestV1>;
 }
 
 describe("legacy .gsd captured-byte interpretation", () => {
@@ -409,6 +565,547 @@ describe("legacy .gsd captured-byte interpretation", () => {
   test("composes the filtered T04 capstone without interpreter drift", (t) => {
     const captured = captureCompositeT04(t);
     assertOracleSemantics(captured, interpretLegacyGsdCapture(captured.capture));
+  });
+
+  test("emits action-matrix decision candidates and complete anchors for present collections", (t) => {
+    const base = temporaryDirectory(t);
+    const physicalRoot = join(base, ".gsd");
+    cpSync(
+      fileURLToPath(new URL("./action-matrix/source/.gsd", CORPUS_ROOT)),
+      physicalRoot,
+      { recursive: true, dereference: false },
+    );
+    const capture = captureLegacyImportSourceSet({
+      roots: [{
+        id: "gsd",
+        kind: "project",
+        physical_path: physicalRoot,
+        logical_path: ".gsd",
+        presence: "required",
+      }],
+    });
+    const interpretation = interpretLegacyGsdCapture(capture);
+    const manifestBytes = payloadBytes(capture, ".gsd/state-manifest.json");
+    const manifest = JSON.parse(manifestBytes.toString("utf8")) as {
+      decisions: readonly Record<string, unknown>[];
+    };
+    const decisionCandidates = interpretation.candidates
+      .filter((candidate) => candidate.target.kind === "decision")
+      .sort((left, right) => left.target.key.localeCompare(right.target.key));
+
+    assert.deepEqual(
+      decisionCandidates.map((candidate) => ({
+        classification: candidate.classification,
+        key: candidate.target.key,
+        pointer: candidate.raw.locator.json_pointer,
+        normalized: candidate.normalized,
+      })),
+      manifest.decisions.map((decision, index) => ({
+        classification: "compare",
+        key: decision.id,
+        pointer: `/decisions/${index}`,
+        normalized: decision,
+      })),
+    );
+    assert.deepEqual(
+      interpretation.complete_row_sets.map((candidate) => candidate.row_set).sort(),
+      ["artifacts", "assessments", "decisions", "requirements"],
+    );
+    const complete = interpretation.complete_row_sets.find((candidate) => candidate.row_set === "decisions");
+    assert.ok(complete);
+    assert.equal(complete.row_set, "decisions");
+    assert.equal(complete.target_kind, "decision");
+    assert.deepEqual(complete.member_keys, ["D001", "D002", "D004"]);
+    assert.equal(complete.raw.locator.json_pointer, "/decisions");
+    assert.deepEqual(complete.raw.value, manifest.decisions);
+    assert.equal(complete.raw.source_id, capturedSourceId(capture, ".gsd/state-manifest.json"));
+    assert.equal(complete.provenance.source_id, complete.raw.source_id);
+    assert.equal(complete.provenance.parser_id, "gsd-lifecycle-truth");
+    assert.equal(
+      complete.raw.sha256,
+      hashLegacyImportBytes(assertLocator(manifestBytes, complete.raw.locator, complete.complete_set_id)),
+    );
+    const { complete_set_id: _completeSetId, ...identity } = complete;
+    assert.equal(complete.complete_set_id, hashLegacyImportValue(identity));
+    assertDeepFrozen(interpretation);
+  });
+
+  test("emits canonical full-row candidates and complete anchors for every present StateManifest v1 row set", (t) => {
+    const manifest = completeStateManifestV1();
+    const capture = captureFiles(t, {
+      "state-manifest.json": JSON.stringify(manifest, null, 2),
+    });
+    const interpretation = interpretLegacyGsdCapture(capture);
+    const manifestBytes = payloadBytes(capture, ".gsd/state-manifest.json");
+    const sourceId = capturedSourceId(capture, ".gsd/state-manifest.json");
+    const [{ created_at: _milestoneCreatedAt, ...milestone }] = manifest.milestones;
+    const [{ created_at: _sliceCreatedAt, ...slice }] = manifest.slices;
+    const [task] = manifest.tasks;
+    const [requirement] = manifest.requirements;
+    const [{ imported_at: _artifactImportedAt, ...artifact }] = manifest.artifacts;
+    const [{ created_at: _assessmentCreatedAt, ...assessment }] = manifest.assessments;
+    const expectedRows = [
+      { property: "milestones", kind: "milestone", key: "M001", normalized: milestone },
+      { property: "slices", kind: "slice", key: "M001/S01", normalized: slice },
+      { property: "tasks", kind: "task", key: "M001/S01/T01", normalized: task },
+      { property: "requirements", kind: "requirement", key: "R001", normalized: requirement },
+      {
+        property: "artifacts",
+        kind: "artifact",
+        key: "milestones/M001/slices/S01/tasks/T01-SUMMARY.md",
+        normalized: artifact,
+      },
+      {
+        property: "assessments",
+        kind: "assessment",
+        key: "M001/S01/T01/run-uat",
+        normalized: assessment,
+      },
+    ] as const;
+
+    for (const expected of expectedRows) {
+      const pointer = `/${expected.property}/0`;
+      const matching = interpretation.candidates.filter((candidate) => (
+        candidate.target.kind === expected.kind
+        && candidate.target.key === expected.key
+        && candidate.target.field === undefined
+      ));
+      assert.equal(matching.length, 1, `${expected.property}: one authoritative full-row candidate`);
+      const candidate = matching[0];
+      assert.ok(candidate);
+      assert.equal(candidate.classification, "compare", expected.property);
+      assert.deepEqual(candidate.normalized, expected.normalized, `${expected.property}: canonical base row`);
+      assert.equal(candidate.raw.locator.json_pointer, pointer, expected.property);
+      assert.deepEqual(
+        candidate.raw.value,
+        manifest[expected.property][0],
+        `${expected.property}: exact manifest member evidence`,
+      );
+      assert.equal(candidate.raw.source_id, sourceId, expected.property);
+      assert.deepEqual(candidate.provenance, {
+        source_id: sourceId,
+        parser_id: "gsd-lifecycle-truth",
+        parser_version: "1",
+      }, expected.property);
+      assert.equal(
+        candidate.raw.sha256,
+        hashLegacyImportBytes(assertLocator(manifestBytes, candidate.raw.locator, candidate.candidate_id)),
+        expected.property,
+      );
+    }
+
+    const completeByRowSet = new Map(interpretation.complete_row_sets.map((complete) => [complete.row_set, complete]));
+    const expectedComplete = [
+      { property: "milestones", rowSet: "milestones", kind: "milestone", members: ["M001"] },
+      { property: "slices", rowSet: "slices", kind: "slice", members: ["M001/S01"] },
+      { property: "tasks", rowSet: "tasks", kind: "task", members: ["M001/S01/T01"] },
+      { property: "requirements", rowSet: "requirements", kind: "requirement", members: ["R001"] },
+      {
+        property: "artifacts",
+        rowSet: "artifacts",
+        kind: "artifact",
+        members: ["milestones/M001/slices/S01/tasks/T01-SUMMARY.md"],
+      },
+      {
+        property: "assessments",
+        rowSet: "assessments",
+        kind: "assessment",
+        members: ["M001/S01/T01/run-uat"],
+      },
+      { property: "decisions", rowSet: "decisions", kind: "decision", members: ["D001"] },
+    ] as const;
+    assert.equal(completeByRowSet.size, expectedComplete.length);
+    for (const expected of expectedComplete) {
+      const complete = completeByRowSet.get(expected.rowSet);
+      assert.ok(complete, `${expected.rowSet}: complete authority`);
+      assert.equal(complete.target_kind, expected.kind, expected.rowSet);
+      assert.deepEqual(complete.member_keys, expected.members, expected.rowSet);
+      assert.equal(complete.raw.locator.json_pointer, `/${expected.property}`, expected.rowSet);
+      assert.deepEqual(complete.raw.value, manifest[expected.property], expected.rowSet);
+      assert.equal(complete.raw.source_id, sourceId, expected.rowSet);
+      assert.deepEqual(complete.provenance, {
+        source_id: sourceId,
+        parser_id: "gsd-lifecycle-truth",
+        parser_version: "1",
+      }, expected.rowSet);
+      assert.equal(
+        complete.raw.sha256,
+        hashLegacyImportBytes(assertLocator(manifestBytes, complete.raw.locator, complete.complete_set_id)),
+        expected.rowSet,
+      );
+    }
+    assert.equal(interpretation.sources[0]?.outcome, "mapped");
+    assertDeepFrozen(interpretation);
+  });
+
+  test("classifies every self-contained StateManifest v1 row without duplicate assessment ownership", (t) => {
+    const interpretation = interpretLegacyGsdCapture(captureFiles(t, {
+      "state-manifest.json": JSON.stringify(completeStateManifestV1(), null, 2),
+    }));
+
+    assert.deepEqual(
+      interpretation.candidates.filter((candidate) => (
+        candidate.classification === "compare" && candidate.target.kind === "assessment"
+      )).map((candidate) => candidate.target.key),
+      ["M001/S01/T01/run-uat"],
+    );
+
+    const result = classifyLegacyImportChanges(classificationBase(), interpretation);
+    const rowKinds = new Set([
+      "milestone", "slice", "task", "requirement", "artifact", "assessment", "decision",
+    ]);
+    assert.equal(result.applicable, true);
+    assert.deepEqual(
+      result.changes.filter((change) => rowKinds.has(change.target.kind)).map((change) => (
+        [change.action, change.target.kind, change.target.key]
+      )).sort(),
+      [
+        ["create", "artifact", "milestones/M001/slices/S01/tasks/T01-SUMMARY.md"],
+        ["create", "assessment", "M001/S01/T01/run-uat"],
+        ["create", "decision", "D001"],
+        ["create", "milestone", "M001"],
+        ["create", "requirement", "R001"],
+        ["create", "slice", "M001/S01"],
+        ["create", "task", "M001/S01/T01"],
+      ].sort(),
+    );
+  });
+
+  test("retains complete manifest rows beside a compatible recognized projection", (t) => {
+    const manifest = completeStateManifestV1();
+    manifest.milestones[0].status = "pending";
+    manifest.slices[0].status = "pending";
+    manifest.milestones.push({
+      ...structuredClone(manifest.milestones[0]),
+      id: "M002",
+      title: "Manifest-only milestone",
+      vision: "This enrichment must survive projection delegation.",
+      sequence: 2,
+    });
+    manifest.slices.push({
+      ...structuredClone(manifest.slices[0]),
+      milestone_id: "M002",
+      id: "S02",
+      title: "Manifest-only slice",
+      risk: "high",
+      sequence: 2,
+    });
+    const interpretation = interpretLegacyGsdCapture(captureFiles(t, {
+      "state-manifest.json": JSON.stringify(manifest, null, 2),
+      "milestones/M001/M001-ROADMAP.md": [
+        "# M001: Adopt canonical authority",
+        "",
+        "- [ ] S01 Interpret the manifest",
+        "",
+      ].join("\n"),
+    }));
+
+    assert.deepEqual(
+      interpretation.complete_row_sets.map((complete) => complete.row_set).sort(),
+      ["artifacts", "assessments", "decisions", "milestones", "requirements", "slices", "tasks"],
+    );
+    assert.deepEqual(
+      interpretation.candidates.filter((candidate) => (
+        candidate.reason_code.startsWith("state-manifest-")
+        && candidate.reason_code.endsWith("-row")
+      )).map((candidate) => candidate.target.kind).sort(),
+      ["artifact", "assessment", "decision", "milestone", "milestone", "requirement", "slice", "slice", "task"],
+    );
+    assert.ok(interpretation.candidates.some((candidate) => (
+      candidate.target.kind === "milestone" && candidate.target.key === "M001"
+      && candidate.raw.locator.line === 1
+    )));
+    assert.ok(interpretation.candidates.some((candidate) => (
+      candidate.target.kind === "slice" && candidate.target.key === "M001/S01"
+    )));
+    const result = classifyLegacyImportChanges(classificationBase(), interpretation);
+    assert.equal(result.applicable, true);
+    assert.equal(
+      (result.changes.find((change) => change.target.key === "M002")?.normalized as Record<string, unknown>).vision,
+      "This enrichment must survive projection delegation.",
+    );
+    assert.equal(
+      (result.changes.find((change) => change.target.key === "M002/S02")?.normalized as Record<string, unknown>).risk,
+      "high",
+    );
+  });
+
+  test("does not duplicate a versioned manifest sketch row with derived evidence", (t) => {
+    const manifest = completeStateManifestV1();
+    manifest.slices[0].is_sketch = 1;
+    manifest.tasks = [];
+    manifest.artifacts = [];
+    manifest.assessments = [];
+    const interpretation = interpretLegacyGsdCapture(captureFiles(t, {
+      "state-manifest.json": JSON.stringify(manifest, null, 2),
+    }));
+
+    assert.equal(
+      interpretation.candidates.filter((candidate) => (
+        candidate.classification === "compare"
+        && candidate.target.kind === "slice"
+        && candidate.target.key === "M001/S01"
+      )).length,
+      1,
+    );
+    assert.doesNotThrow(() => classifyLegacyImportChanges(classificationBase(), interpretation));
+  });
+
+  test("keeps present empty optional collections authoritative without granting empty hierarchy authority", (t) => {
+    const manifest = completeStateManifestV1();
+    const [requirement] = manifest.requirements;
+    const [artifact] = manifest.artifacts;
+    const [assessment] = manifest.assessments;
+    manifest.milestones = [];
+    manifest.slices = [];
+    manifest.tasks = [];
+    manifest.requirements = [];
+    manifest.artifacts = [];
+    manifest.assessments = [];
+    const interpretation = interpretLegacyGsdCapture(captureFiles(t, {
+      "state-manifest.json": JSON.stringify(manifest, null, 2),
+    }));
+    const completeByRowSet = new Map(interpretation.complete_row_sets.map((complete) => [complete.row_set, complete]));
+
+    assert.deepEqual([...completeByRowSet.keys()].sort(), [
+      "artifacts", "assessments", "decisions", "requirements",
+    ]);
+    for (const rowSet of ["requirements", "artifacts", "assessments"] as const) {
+      const complete = completeByRowSet.get(rowSet);
+      assert.ok(complete, `${rowSet}: present empty collection is authoritative`);
+      assert.deepEqual(complete.member_keys, [], rowSet);
+      assert.deepEqual(complete.raw.value, [], rowSet);
+      assert.equal(complete.raw.locator.json_pointer, `/${rowSet}`, rowSet);
+    }
+
+    const result = classifyLegacyImportChanges(classificationBase([
+      classificationBaseRow("requirements", { id: requirement.id }, requirement),
+      classificationBaseRow("artifacts", { path: artifact.path }, artifact),
+      classificationBaseRow("assessments", {
+        milestone_id: assessment.milestone_id,
+        slice_id: assessment.slice_id,
+        task_id: assessment.task_id,
+        scope: assessment.scope,
+      }, assessment),
+    ]), interpretation);
+    assert.deepEqual(
+      result.changes.filter((change) => change.action === "delete").map((change) => (
+        [change.target.kind, change.target.key, change.raw.value]
+      )).sort(),
+      [
+        ["artifact", artifact.path, []],
+        ["assessment", "M001/S01/T01/run-uat", []],
+        ["requirement", requirement.id, []],
+      ].sort(),
+    );
+  });
+
+  test("accepts categorical nonblank requirement identities from StateManifest v1", (t) => {
+    const manifest = completeStateManifestV1();
+    manifest.requirements[0].id = "NET-01";
+    const interpretation = interpretLegacyGsdCapture(captureFiles(t, {
+      "state-manifest.json": JSON.stringify(manifest),
+    }));
+    const source = interpretation.sources.find((candidate) => candidate.path === ".gsd/state-manifest.json");
+    const complete = interpretation.complete_row_sets.find((candidate) => candidate.row_set === "requirements");
+
+    assert.equal(source?.outcome, "mapped");
+    assert.deepEqual(complete?.member_keys, ["NET-01"]);
+    assert.ok(interpretation.candidates.some((candidate) => (
+      candidate.target.kind === "requirement" && candidate.target.key === "NET-01"
+    )));
+  });
+
+  test("treats omitted optional StateManifest v1 collections as non-authoritative", (t) => {
+    const manifest = completeStateManifestV1();
+    const { requirements: _requirements, artifacts: _artifacts, assessments: _assessments, ...requiredOnly } = manifest;
+    const interpretation = interpretLegacyGsdCapture(captureFiles(t, {
+      "state-manifest.json": JSON.stringify(requiredOnly),
+    }));
+
+    assert.deepEqual(
+      interpretation.complete_row_sets.map((complete) => complete.row_set).sort(),
+      ["decisions", "milestones", "slices", "tasks"],
+    );
+    assert.ok(!interpretation.candidates.some((candidate) => (
+      candidate.target.kind === "requirement"
+      || candidate.target.kind === "artifact"
+      || candidate.target.kind === "assessment"
+    )));
+  });
+
+  test("keeps a complete StateManifest authoritative beside non-owning sibling evidence", (t) => {
+    const database = readFileSync(fileURLToPath(new URL(
+      "./action-matrix/source/.gsd/gsd.db",
+      CORPUS_ROOT,
+    )));
+    const variants = [
+      { name: "operator STATE narrative", path: "STATE.md", content: "# State\n\nOperator narrative.\n", preserved: true },
+      { name: "captured gsd.db", path: "gsd.db", content: database, preserved: false },
+      {
+        name: "milestone context artifact",
+        path: "milestones/M001/M001-CONTEXT.md",
+        content: "# Context\n\nProjection-only planning notes.\n",
+        preserved: true,
+      },
+    ] as const;
+    const expectedRowSets = [
+      "artifacts", "assessments", "decisions", "milestones", "requirements", "slices", "tasks",
+    ];
+
+    const observed = variants.map((variant) => {
+      const interpretation = interpretLegacyGsdCapture(captureFiles(t, {
+        "state-manifest.json": JSON.stringify(completeStateManifestV1()),
+        [variant.path]: variant.content,
+      }));
+      return {
+        name: variant.name,
+        complete_row_sets: interpretation.complete_row_sets.map((complete) => complete.row_set).sort(),
+        full_row_kinds: interpretation.candidates.filter((candidate) => (
+          candidate.reason_code.startsWith("state-manifest-")
+          && candidate.reason_code.endsWith("-row")
+        )).map((candidate) => candidate.target.kind).sort(),
+        sibling_preserved: interpretation.candidates.some((candidate) => (
+          candidate.classification === "preserve" && candidate.target.key === `.gsd/${variant.path}`
+        )),
+      };
+    });
+
+    assert.deepEqual(observed, variants.map((variant) => ({
+      name: variant.name,
+      complete_row_sets: expectedRowSets,
+      full_row_kinds: ["artifact", "assessment", "decision", "milestone", "requirement", "slice", "task"],
+      sibling_preserved: variant.preserved,
+    })));
+  });
+
+  test("fails an invalid StateManifest v1 member closed before any collection contributes truth", (t) => {
+    const invalidScenarios: ReadonlyArray<readonly [
+      string,
+      (manifest: ReturnType<typeof completeStateManifestV1>) => void,
+    ]> = [
+      ["unknown milestone field", (manifest) => {
+        (manifest.milestones[0] as unknown as Record<string, unknown>)["future_field"] = "not-v1";
+      }],
+      ["invalid slice field type", (manifest) => {
+        (manifest.slices[0] as unknown as Record<string, unknown>)["risk"] = 7;
+      }],
+      ["invalid task field type", (manifest) => {
+        (manifest.tasks[0] as unknown as Record<string, unknown>)["blocker_discovered"] = 1;
+      }],
+      ["invalid requirement identity", (manifest) => {
+        (manifest.requirements[0] as unknown as Record<string, unknown>)["id"] = "";
+      }],
+      ["non-string requirement identity", (manifest) => {
+        (manifest.requirements[0] as unknown as Record<string, unknown>)["id"] = 7;
+      }],
+      ["invalid artifact field type", (manifest) => {
+        (manifest.artifacts[0] as unknown as Record<string, unknown>)["content_hash"] = 7;
+      }],
+      ["invalid assessment hierarchy", (manifest) => {
+        (manifest.assessments[0] as unknown as Record<string, unknown>)["task_id"] = 7;
+      }],
+      ["orphan slice identity", (manifest) => {
+        manifest.slices[0].milestone_id = "M999";
+      }],
+    ];
+
+    const outcomes = invalidScenarios.map(([name, mutate]) => {
+      const manifest = clonedStateManifestV1();
+      mutate(manifest);
+      const interpretation = interpretLegacyGsdCapture(captureFiles(t, {
+        "state-manifest.json": JSON.stringify(manifest),
+      }));
+      const source = interpretation.sources.find((candidate) => (
+        candidate.path === ".gsd/state-manifest.json"
+      ));
+      const blocker = interpretation.diagnoses.find((diagnosis) => (
+        diagnosis.source_id === source?.source_id && diagnosis.severity === "blocker"
+      ));
+      return {
+        name,
+        outcome: source?.outcome,
+        candidate_count: interpretation.candidates.length,
+        complete_set_count: interpretation.complete_row_sets.length,
+        blocker: blocker !== undefined,
+        disposition: blocker === undefined ? undefined : interpretation.resolutions.find((resolution) => (
+          resolution.diagnosis_id === blocker.diagnosis_id
+        ))?.disposition,
+      };
+    });
+    assert.deepEqual(outcomes, invalidScenarios.map(([name]) => ({
+      name,
+      outcome: "unparsed",
+      candidate_count: 0,
+      complete_set_count: 0,
+      blocker: true,
+      disposition: "requires-user",
+    })));
+  });
+
+  test("fails closed on partial or invalid StateManifest decision snapshots", (t) => {
+    const validDecision = {
+      seq: 1,
+      id: "D001",
+      when_context: "Before import",
+      scope: "global",
+      decision: "Keep one authority",
+      choice: "database",
+      rationale: "Avoid drift.",
+      revisable: "yes",
+      made_by: "human",
+      source: "discussion",
+      superseded_by: null,
+    };
+    const manifest = {
+      version: 1,
+      exported_at: "2026-01-01T00:00:00.000Z",
+      milestones: [],
+      slices: [],
+      tasks: [],
+      verification_evidence: [],
+    };
+    const scenarios = {
+      "missing decisions": manifest,
+      "non-object decision": { ...manifest, decisions: [null] },
+      "missing decision property": {
+        ...manifest,
+        decisions: [{ ...validDecision, source: undefined }],
+      },
+      "duplicate decision identity": {
+        ...manifest,
+        decisions: [validDecision, { ...validDecision, seq: 2 }],
+      },
+    };
+
+    for (const [name, value] of Object.entries(scenarios)) {
+      const interpretation = interpretLegacyGsdCapture(captureFiles(t, {
+        "state-manifest.json": JSON.stringify(value),
+      }));
+      assert.deepEqual(
+        interpretation.candidates.filter((candidate) => candidate.target.kind === "decision"),
+        [],
+        name,
+      );
+      assert.deepEqual(interpretation.complete_row_sets, [], name);
+      const source = interpretation.sources.find((candidate) => (
+        candidate.path === ".gsd/state-manifest.json"
+      ));
+      assert.equal(source?.outcome, "unparsed", name);
+      const diagnosis = interpretation.diagnoses.find((candidate) => (
+        candidate.source_id === source?.source_id
+        && candidate.code === "invalid-state-manifest-decision-snapshot"
+      ));
+      assert.ok(diagnosis, name);
+      assert.equal(diagnosis.severity, "blocker", name);
+      assert.equal(
+        interpretation.resolutions.find((resolution) => (
+          resolution.diagnosis_id === diagnosis.diagnosis_id
+        ))?.disposition,
+        "requires-user",
+        name,
+      );
+    }
   });
 
   test("preserves registry semantics across canonical and lowercase filenames", (t) => {
@@ -711,12 +1408,21 @@ describe("legacy .gsd captured-byte interpretation", () => {
     const interpretation = interpretLegacyGsdCapture(captured.capture);
     const roadmapMilestone = interpretation.candidates.find((candidate) => (
       candidate.target.kind === "milestone" && candidate.target.key === "M702"
+      && candidate.reason_code === "hybrid-non-overlap"
     ));
     assert.deepEqual(roadmapMilestone?.normalized, {
       id: "M702",
       layout: "nested",
       title: "Clean database adoption",
     });
+    const manifestMilestone = interpretation.candidates.find((candidate) => (
+      candidate.target.kind === "milestone" && candidate.target.key === "M702"
+      && candidate.reason_code === "state-manifest-milestone-row"
+    ));
+    assert.equal(
+      (manifestMilestone?.normalized as Record<string, unknown>).vision,
+      "Classify legacy evidence without mutation.",
+    );
     const manifestStatus = interpretation.candidates.find((candidate) => (
       candidate.target.kind === "milestone-status" && candidate.target.key === "M702"
     ));

@@ -24,6 +24,7 @@ interface AssessmentManifest {
   file: LegacyImportDecodedSourceFile;
   document: LegacyImportJsonDocument;
   assessments: readonly ManifestAssessment[];
+  versioned: boolean;
 }
 
 interface ArtifactVerdict {
@@ -107,10 +108,10 @@ function readAssessmentManifest(
       "The structured assessment manifest has an unsupported, duplicate, or malformed assessment entry.",
       "requires-user",
     );
-    return { file, document, assessments: [] };
+    return { file, document, assessments: [], versioned: document.value.version === 1 };
   }
   file.outcome = "mapped";
-  return { file, document, assessments };
+  return { file, document, assessments, versioned: document.value.version === 1 };
 }
 
 export function validateLegacyGsdAssessmentManifest(
@@ -184,6 +185,14 @@ function artifact(file: LegacyImportDecodedSourceFile): ArtifactVerdict | undefi
   };
 }
 
+export function hasModeledLegacyGsdAssessmentSource(
+  files: readonly LegacyImportDecodedSourceFile[],
+): boolean {
+  return files.some((file) => (
+    file.encoding === "utf-8" && file.outcome !== "unparsed" && artifact(file) !== undefined
+  ));
+}
+
 function preserveArtifact(
   candidates: LegacyImportPendingCandidate[],
   value: ArtifactVerdict,
@@ -200,6 +209,7 @@ export function interpretLegacyGsdAssessments(
   files: readonly LegacyImportDecodedSourceFile[],
   candidates: LegacyImportPendingCandidate[],
   diagnoses: LegacyImportPendingDiagnosis[],
+  versionedRowsOwnedByLifecycle = false,
 ): void {
   const manifestFile = files.find((file) => file.entry.logical_path.toLowerCase() === ".gsd/state-manifest.json");
   const manifest = manifestFile === undefined ? undefined : readAssessmentManifest(manifestFile, diagnoses);
@@ -297,6 +307,7 @@ export function interpretLegacyGsdAssessments(
   }
 
   for (const [index, assessment] of (manifest?.assessments ?? []).entries()) {
+    if (manifest?.versioned === true && versionedRowsOwnedByLifecycle) continue;
     const key = assessment.slice_id === null
       ? `${assessment.milestone_id}/${assessment.scope}`
       : `${assessment.milestone_id}/${assessment.slice_id}/${assessment.scope}`;
