@@ -1,0 +1,240 @@
+{
+  "preview_schema_version": 1,
+  "preview_id": "knowledge-graph",
+  "import_kind": "legacy-corpus",
+  "importer_version": "v1-test",
+  "base_project_revision": 0,
+  "base_authority_epoch": 0,
+  "base_database_schema_version": 44,
+  "source_set_hash": "sha256:a7f5713ba6aff3f6aa8ee258d0743a1a3e58a6100235d55bb88e2de41da9c737",
+  "change_set_hash": "sha256:b598ab41be378fbb1915df3bb03a99509cb3bc318f4cc452d47b6b034a6f7836",
+  "counts": {
+    "create": 0,
+    "update": 0,
+    "delete": 0,
+    "preserve": 3,
+    "unparsed": 1,
+    "unresolved": 0
+  },
+  "sources": [
+    {
+      "source_id": "knowledge-root",
+      "path": ".gsd/KNOWLEDGE.md",
+      "kind": "markdown",
+      "byte_size": 557,
+      "sha256": "sha256:f8470a4b3549b050697452307c0c6465a2e325ce8fca5635e91beca4ab24c97d",
+      "parser_id": "gsd-knowledge-graph",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "knowledge-malformed-snapshot",
+      "path": ".gsd/graphs/.last-build-snapshot.json",
+      "kind": "json",
+      "byte_size": 25,
+      "sha256": "sha256:dcad3e32c90752b50e1a709a022a8ec63e7d8d4d9ced194dd83c0c16591c04e7",
+      "parser_id": "gsd-knowledge-graph",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "unparsed"
+    },
+    {
+      "source_id": "knowledge-derived-graph",
+      "path": ".gsd/graphs/graph.json",
+      "kind": "json",
+      "byte_size": 1003,
+      "sha256": "sha256:84f5c26f226986658bced2eb4c30c16940608d0e740d3616dedc43339378c5c7",
+      "parser_id": "gsd-knowledge-graph",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "knowledge-nested-learnings",
+      "path": ".gsd/milestones/M001/M001-LEARNINGS.md",
+      "kind": "markdown",
+      "byte_size": 346,
+      "sha256": "sha256:81c03e887d4dd78034929b3075fd4a982bb0e02eae2953e59b665319b61138b6",
+      "parser_id": "gsd-knowledge-graph",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "knowledge-flat-learnings",
+      "path": ".gsd/phases/02-legacy/02-LEARNINGS.md",
+      "kind": "markdown",
+      "byte_size": 140,
+      "sha256": "sha256:d7ced899aa350b87b1cbf5c1ef08fb900db8d815fa2fc860da0cf682f626ca1b",
+      "parser_id": "gsd-knowledge-graph",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "ignored-with-reason"
+    }
+  ],
+  "changes": [
+    {
+      "change_id": "change-knowledge-derived-graph",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-knowledge-graph-snapshot",
+        "key": ".gsd/graphs/graph.json"
+      },
+      "raw": {
+        "source_id": "knowledge-derived-graph",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 1003,
+          "line": 1
+        },
+        "value": "{\n  \"nodes\": [\n    {\n      \"id\": \"milestone:M001\",\n      \"label\": \"M001: Authority\",\n      \"type\": \"milestone\",\n      \"confidence\": \"EXTRACTED\",\n      \"sourceFile\": \"milestones/M001/M001-LEARNINGS.md\"\n    },\n    {\n      \"id\": \"rule:K001\",\n      \"label\": \"K001\",\n      \"type\": \"rule\",\n      \"description\": \"Use file authority.\",\n      \"confidence\": \"EXTRACTED\",\n      \"sourceFile\": \"KNOWLEDGE.md\"\n    },\n    {\n      \"id\": \"lesson:M001:1\",\n      \"label\": \"Keep derived state replaceable.\",\n      \"type\": \"lesson\",\n      \"confidence\": \"EXTRACTED\",\n      \"sourceFile\": \"milestones/M001/M001-LEARNINGS.md\"\n    },\n    {\n      \"id\": \"lesson:M404:1\",\n      \"label\": \"Missing source evidence.\",\n      \"type\": \"lesson\",\n      \"confidence\": \"EXTRACTED\",\n      \"sourceFile\": \"milestones/M404/M404-LEARNINGS.md\"\n    }\n  ],\n  \"edges\": [\n    {\n      \"from\": \"milestone:M001\",\n      \"to\": \"lesson:M001:1\",\n      \"type\": \"relates_to\",\n      \"confidence\": \"EXTRACTED\"\n    }\n  ],\n  \"builtAt\": \"2026-01-01T00:00:00.000Z\"\n}\n",
+        "sha256": "sha256:84f5c26f226986658bced2eb4c30c16940608d0e740d3616dedc43339378c5c7"
+      },
+      "normalized": {
+        "role": "derived-snapshot",
+        "node_count": 4,
+        "edge_count": 1,
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "knowledge-derived-graph",
+        "parser_id": "gsd-knowledge-graph",
+        "parser_version": "1"
+      },
+      "reason_code": "derived-graph-preserved-without-rebuild"
+    },
+    {
+      "change_id": "change-knowledge-nested-learnings",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-knowledge-source",
+        "key": "M001-LEARNINGS"
+      },
+      "raw": {
+        "source_id": "knowledge-nested-learnings",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 346,
+          "line": 1
+        },
+        "value": "---\nphase: \"M001\"\nphase_name: \"Authority\"\nproject: \"legacy-corpus\"\ngenerated: \"2026-01-01T00:00:00.000Z\"\ncounts:\n  decisions: 0\n  lessons: 1\n  patterns: 0\n  surprises: 0\nmissing_artifacts: []\n---\n\n# Learnings: Authority\n\n## Decisions\n\n## Lessons\n- Keep derived state replaceable.\n  Source: M001-SUMMARY.md/Verification\n\n## Patterns\n\n## Surprises\n",
+        "sha256": "sha256:81c03e887d4dd78034929b3075fd4a982bb0e02eae2953e59b665319b61138b6"
+      },
+      "normalized": {
+        "layout": "nested",
+        "milestone_id": "M001",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "knowledge-nested-learnings",
+        "parser_id": "gsd-knowledge-graph",
+        "parser_version": "1"
+      },
+      "reason_code": "nested-learnings-preserved"
+    },
+    {
+      "change_id": "change-knowledge-root",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-knowledge-source",
+        "key": ".gsd/KNOWLEDGE.md"
+      },
+      "raw": {
+        "source_id": "knowledge-root",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 557,
+          "line": 1
+        },
+        "value": "# Project Knowledge\n\n## Rules\n\n| # | Scope | Rule | Why | Added |\n|---|-------|------|-----|-------|\n| K001 | authority | Use database authority. | Prevent projection drift. | M001 |\n\n## Patterns\n\n| # | Pattern | Where | Notes |\n|---|---------|-------|-------|\n| P001 | Derived views are replaceable | projections | Rebuild only outside import. |\n\n## Lessons Learned\n\n| # | What Happened | Root Cause | Fix | Scope |\n|---|--------------|------------|-----|-------|\n| L001 | A snapshot drifted | It was treated as truth | Preserve source evidence | import |\n",
+        "sha256": "sha256:f8470a4b3549b050697452307c0c6465a2e325ce8fca5635e91beca4ab24c97d"
+      },
+      "normalized": {
+        "role": "projection-input",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "knowledge-root",
+        "parser_id": "gsd-knowledge-graph",
+        "parser_version": "1"
+      },
+      "reason_code": "knowledge-markdown-preserved"
+    }
+  ],
+  "diagnoses": [
+    {
+      "diagnosis_id": "diagnosis-derived-graph-source-conflict",
+      "code": "derived-graph-source-conflict",
+      "severity": "warning",
+      "source_id": "knowledge-derived-graph",
+      "locator": {
+        "start_byte": 306,
+        "end_byte": 325,
+        "line": 14
+      },
+      "raw_value": "Use file authority.",
+      "message": "The derived graph disagrees with its Markdown input; both are preserved and neither is promoted to authority."
+    },
+    {
+      "diagnosis_id": "diagnosis-graph-source-missing",
+      "code": "graph-source-missing",
+      "severity": "warning",
+      "source_id": "knowledge-derived-graph",
+      "locator": {
+        "start_byte": 764,
+        "end_byte": 797,
+        "line": 30
+      },
+      "raw_value": "milestones/M404/M404-LEARNINGS.md",
+      "message": "A derived graph node references a source artifact that is absent from the corpus."
+    },
+    {
+      "diagnosis_id": "diagnosis-legacy-flat-learnings-not-read",
+      "code": "legacy-flat-learnings-not-read",
+      "severity": "info",
+      "source_id": "knowledge-flat-learnings",
+      "locator": {
+        "start_byte": 107,
+        "end_byte": 138,
+        "line": 4
+      },
+      "raw_value": {
+        "redacted": true,
+        "sha256": "sha256:455f388f3e984d71fc88e51ad58b1cf3279152c43a33022b483e6403a778e260"
+      },
+      "message": "A flat-layout learnings artifact is outside the nested-only production graph reader and is preserved without rebuilding."
+    },
+    {
+      "diagnosis_id": "diagnosis-malformed-graph-snapshot",
+      "code": "malformed-graph-snapshot",
+      "severity": "warning",
+      "source_id": "knowledge-malformed-snapshot",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 25,
+        "line": 1
+      },
+      "raw_value": "{\"nodes\":[{\"id\":\"broken\"\n",
+      "message": "The prior graph snapshot is malformed and remains preserved as raw evidence."
+    }
+  ],
+  "resolutions": [
+    {
+      "diagnosis_id": "diagnosis-derived-graph-source-conflict",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "diagnosis-graph-source-missing",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "diagnosis-legacy-flat-learnings-not-read",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "diagnosis-malformed-graph-snapshot",
+      "disposition": "preserved"
+    }
+  ]
+}

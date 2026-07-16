@@ -1,0 +1,11 @@
+version: 1
+name: complete
+steps:
+  - id: collect
+    name: Collect
+    prompt: Collect evidence.
+  - id: iterate
+    name: Iterate
+    prompt: Iterate over evidence.
+    requires:
+      - collect

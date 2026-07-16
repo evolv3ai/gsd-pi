@@ -1,0 +1,6 @@
+version: 1
+name: missing-graph
+steps:
+  - id: inspect
+    name: Inspect
+    prompt: Inspect missing graph evidence.

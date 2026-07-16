@@ -1,0 +1,22 @@
+steps:
+  - id: collect
+    title: Collect
+    status: complete
+    prompt: Collect for imported-project.
+    finished_at: 2026-01-03T00:01:00.000Z
+  - id: analyze
+    title: Analyze
+    status: active
+    prompt: Analyze for imported-project.
+    depends_on:
+      - collect
+    started_at: 2026-01-03T00:02:00.000Z
+  - id: report
+    title: Report
+    status: pending
+    prompt: Report for imported-project.
+    depends_on:
+      - analyze
+metadata:
+  name: partial
+  created_at: 2026-01-03T00:00:00.000Z

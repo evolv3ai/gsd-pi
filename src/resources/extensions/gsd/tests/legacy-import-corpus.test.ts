@@ -4,18 +4,26 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
+  cpSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
+import { graphQuery } from "../../../../../packages/mcp-server/src/readers/graph.ts";
+import { loadDefinitionFromFile } from "../definition-loader.ts";
+import { readGraph } from "../graph.ts";
+import { parseKnowledgeRows } from "../knowledge-parser.ts";
 import {
   LEGACY_IMPORT_BASE_DATABASE_SCHEMA_VERSION,
   LEGACY_IMPORT_CHANGE_ACTIONS,
@@ -41,7 +49,32 @@ import {
   type LegacyImportSurface,
 } from "../legacy-import-surfaces.ts";
 import { SCHEMA_VERSION } from "../gsd-db.ts";
+import { redactSecrets } from "../redact-secrets.ts";
+import { listRuns } from "../run-manager.ts";
+import {
+  readWorktreeEventLogPath,
+  resolveWorkflowEventLedgerLocation,
+} from "../workflow-event-ledger.ts";
+import {
+  normalizeWorkflowEventCommand,
+  workflowEventEntityKey,
+} from "../workflow-event-vocabulary.ts";
+import { findForkPoint, readEvents } from "../workflow-events.ts";
 import { readManifest } from "../workflow-manifest.ts";
+import { discoverPlugins } from "../workflow-plugins.ts";
+import {
+  canonicalWorktreesDir,
+  legacyWorktreesDir,
+  worktreePathFor,
+  worktreesDirs,
+} from "../worktree-placement.ts";
+import {
+  isGsdWorktreePath,
+  normalizeWorktreePathForCompare,
+  projectRootFromWorktreePath,
+  resolveExternalStateProjectGsdFromWorktreePath,
+  resolveExternalStateProjectIdentityFromWorktreePath,
+} from "../worktree-root.ts";
 import {
   legacyImportCorpusHash,
   loadLegacyImportCorpusCase,
@@ -1445,4 +1478,443 @@ test("legacy corpus gsd truth preserves hierarchy evidence and refuses competing
       "gsd-sqlite-target",
     ],
   );
+});
+
+test("legacy corpus supplemental preserves evidence without replay or filesystem mutation", async () => {
+  const corpusRoot = new URL("./__fixtures__/legacy-import-corpus/v1/", import.meta.url);
+  const caseNames = [
+    "jsonl-history",
+    "custom-workflow",
+    "knowledge-graph",
+    "worktree-topology",
+  ] as const;
+  const cases = caseNames.map((caseName) => loadLegacyImportCorpusCase(corpusRoot, caseName));
+  for (const corpusCase of cases) validateLegacyImportCorpusCase(corpusCase);
+
+  const byName = new Map(cases.map((corpusCase) => [corpusCase.name, corpusCase.oracle]));
+  const oracle = (caseName: (typeof caseNames)[number]) => {
+    const result = byName.get(caseName);
+    assert.ok(result, `missing ${caseName}`);
+    return result;
+  };
+  const sourceRows = (caseName: (typeof caseNames)[number]) =>
+    oracle(caseName).sources.map((source) => [source.path, source.parser_id, source.outcome]);
+  const changeRows = (caseName: (typeof caseNames)[number]) =>
+    oracle(caseName).changes.map((change) => [
+      change.change_id,
+      change.action,
+      change.target.kind,
+      change.target.key,
+      change.target.field ?? null,
+      change.reason_code,
+    ]);
+  const diagnosisRows = (caseName: (typeof caseNames)[number]) =>
+    oracle(caseName).diagnoses.map((diagnosis) => [
+      diagnosis.diagnosis_id,
+      diagnosis.code,
+      diagnosis.severity,
+      diagnosis.source_id,
+    ]);
+  const semanticHash = (caseName: (typeof caseNames)[number]) => legacyImportCorpusHash(
+    oracle(caseName).changes.map((change) => ({
+      action: change.action,
+      target: change.target,
+      normalized: change.normalized,
+      reason: change.reason_code,
+    })),
+  );
+  const fingerprints = () => caseNames.flatMap((caseName) => {
+    const corpusCase = loadLegacyImportCorpusCase(corpusRoot, caseName);
+    return corpusCase.files.map((file) => [caseName, file.path, file.entryKind, file.sha256]);
+  });
+  const before = fingerprints();
+
+  assert.deepEqual(sourceRows("jsonl-history"), [
+    ["$GSD_STATE_DIR/projects/project-a/worktrees/M004/.gsd/event-log.jsonl", "gsd-workflow-events", "preserved"],
+    [".gsd-worktrees/M002/.gsd/event-log.jsonl", "gsd-workflow-events", "preserved"],
+    [".gsd-worktrees/M005/.gsd/event-log.jsonl", "gsd-workflow-events", "ignored-with-reason"],
+    [".gsd/doctor-history.jsonl", "legacy-jsonl-exclusion", "ignored-with-reason"],
+    [".gsd/event-log-M001.jsonl.archived", "gsd-workflow-events", "preserved"],
+    [".gsd/event-log-M999.jsonl.archived", "gsd-workflow-events", "unparsed"],
+    [".gsd/event-log.jsonl", "gsd-workflow-events", "preserved"],
+    [".gsd/worktrees/M003/.gsd/event-log.jsonl", "gsd-workflow-events", "preserved"],
+  ]);
+  assert.deepEqual(changeRows("jsonl-history"), [
+    ["history-active-001", "preserve", "legacy-workflow-event", ".gsd/event-log.jsonl#L001", null, "history-evidence-only"],
+    ["history-active-002", "preserve", "legacy-workflow-event", ".gsd/event-log.jsonl#L002", null, "history-evidence-only"],
+    ["history-active-003", "preserve", "legacy-workflow-event", ".gsd/event-log.jsonl#L003", null, "adopted-history-evidence-only"],
+    ["history-active-004", "preserve", "legacy-workflow-event", ".gsd/event-log.jsonl#L004", null, "unadopted-history-evidence-only"],
+    ["history-active-005", "preserve", "legacy-workflow-event", ".gsd/event-log.jsonl#L005", null, "duplicate-history-evidence-preserved"],
+    ["history-active-006", "preserve", "legacy-workflow-event", ".gsd/event-log.jsonl#L006", null, "out-of-order-history-evidence-preserved"],
+    ["history-active-007", "preserve", "legacy-workflow-event", ".gsd/event-log.jsonl#L007", null, "unknown-history-event-preserved"],
+    ["history-archive-001", "preserve", "legacy-workflow-event", ".gsd/event-log-M001.jsonl.archived#L001", null, "archived-history-evidence-only"],
+    ["history-archive-002", "preserve", "legacy-workflow-event", ".gsd/event-log-M001.jsonl.archived#L002", null, "archived-history-evidence-only"],
+    ["history-canonical-worktree-001", "preserve", "legacy-workflow-event", ".gsd-worktrees/M002/.gsd/event-log.jsonl#L001", null, "fork-base-history-preserved"],
+    ["history-canonical-worktree-002", "preserve", "legacy-workflow-event", ".gsd-worktrees/M002/.gsd/event-log.jsonl#L002", null, "fork-branch-history-preserved"],
+    ["history-external-worktree-001", "preserve", "legacy-workflow-event", "$GSD_STATE_DIR/projects/project-a/worktrees/M004/.gsd/event-log.jsonl#L001", null, "external-worktree-history-evidence-only"],
+    ["history-legacy-worktree-001", "preserve", "legacy-workflow-event", ".gsd/worktrees/M003/.gsd/event-log.jsonl#L001", null, "fork-base-history-preserved"],
+    ["history-legacy-worktree-002", "preserve", "legacy-workflow-event", ".gsd/worktrees/M003/.gsd/event-log.jsonl#L002", null, "fork-branch-history-preserved"],
+  ]);
+  assert.deepEqual(diagnosisRows("jsonl-history"), [
+    ["diagnosis-corrupt-line", "corrupt-jsonl-line", "warning", "history-corrupt-m999"],
+    ["diagnosis-duplicate-event", "duplicate-event-hash", "info", "history-active"],
+    ["diagnosis-empty-worktree-ledger", "empty-worktree-ledger-excluded", "info", "history-empty-m005"],
+    ["diagnosis-history-fork-canonical", "history-fork-preserved", "info", "history-canonical-m002"],
+    ["diagnosis-history-fork-legacy", "history-fork-preserved", "info", "history-legacy-m003"],
+    ["diagnosis-non-workflow-jsonl", "non-workflow-jsonl-excluded", "info", "history-doctor-exclusion"],
+    ["diagnosis-out-of-order-event", "out-of-order-event", "warning", "history-active"],
+    ["diagnosis-secret-shaped-history", "secret-shaped-history-evidence", "warning", "history-active"],
+    ["diagnosis-unknown-command", "unknown-workflow-command", "warning", "history-active"],
+  ]);
+
+  assert.deepEqual(sourceRows("custom-workflow"), [
+    [".gsd/workflow-defs/collision.yaml", "gsd-workflow-definition", "ignored-with-reason"],
+    [".gsd/workflow-defs/legacy-alias.yaml", "gsd-workflow-definition", "preserved"],
+    [".gsd/workflow-runs/complete/2026-01-01T00-00-00/DEFINITION.yaml", "gsd-workflow-run-graph", "preserved"],
+    [".gsd/workflow-runs/complete/2026-01-01T00-00-00/GRAPH.yaml", "gsd-workflow-run-graph", "preserved"],
+    [".gsd/workflow-runs/drift/2026-01-02T00-00-00/DEFINITION.yaml", "gsd-workflow-run-graph", "preserved"],
+    [".gsd/workflow-runs/drift/2026-01-02T00-00-00/GRAPH.yaml", "gsd-workflow-run-graph", "preserved"],
+    [".gsd/workflow-runs/malformed/2026-01-05T00-00-00/DEFINITION.yaml", "gsd-workflow-run-graph", "preserved"],
+    [".gsd/workflow-runs/malformed/2026-01-05T00-00-00/GRAPH.yaml", "gsd-workflow-run-graph", "unparsed"],
+    [".gsd/workflow-runs/missing/2026-01-04T00-00-00/DEFINITION.yaml", "gsd-workflow-run-graph", "preserved"],
+    [".gsd/workflow-runs/missing/2026-01-04T00-00-00/PARAMS.json", "gsd-workflow-run-graph", "preserved"],
+    [".gsd/workflow-runs/partial/2026-01-03T00-00-00/DEFINITION.yaml", "gsd-workflow-run-graph", "preserved"],
+    [".gsd/workflow-runs/partial/2026-01-03T00-00-00/GRAPH.yaml", "gsd-workflow-run-graph", "preserved"],
+    [".gsd/workflow-runs/partial/2026-01-03T00-00-00/PARAMS.json", "gsd-workflow-run-graph", "preserved"],
+    [".gsd/workflow-runs/unknown/2026-01-06T00-00-00/DEFINITION.yaml", "gsd-workflow-run-graph", "preserved"],
+    [".gsd/workflow-runs/unknown/2026-01-06T00-00-00/GRAPH.yaml", "gsd-workflow-run-graph", "unparsed"],
+    [".gsd/workflows/bugfix.md", "gsd-workflow-definition", "preserved"],
+    [".gsd/workflows/collision.yaml", "gsd-workflow-definition", "preserved"],
+    [".gsd/workflows/drift.yaml", "gsd-workflow-definition", "preserved"],
+    [".gsd/workflows/malformed.yaml", "gsd-workflow-definition", "unparsed"],
+    [".gsd/workflows/phased.md", "gsd-workflow-definition", "preserved"],
+    [".gsd/workflows/schema-invalid.yaml", "gsd-workflow-definition", "unparsed"],
+    [".gsd/workflows/unknown-field.yml", "gsd-workflow-definition", "preserved"],
+    ["gsd-home/workflows/collision.yaml", "gsd-workflow-definition", "ignored-with-reason"],
+    ["gsd-home/workflows/global-only.yaml", "gsd-workflow-definition", "preserved"],
+  ]);
+  assert.deepEqual(changeRows("custom-workflow").map((row) => row[3]), [
+    "gsd-home/workflows/global-only.yaml",
+    ".gsd/workflow-defs/legacy-alias.yaml",
+    ".gsd/workflow-runs/complete/2026-01-01T00-00-00/DEFINITION.yaml",
+    ".gsd/workflow-runs/complete/2026-01-01T00-00-00/GRAPH.yaml",
+    ".gsd/workflow-runs/drift/2026-01-02T00-00-00/DEFINITION.yaml",
+    ".gsd/workflow-runs/drift/2026-01-02T00-00-00/GRAPH.yaml",
+    ".gsd/workflow-runs/malformed/2026-01-05T00-00-00/DEFINITION.yaml",
+    ".gsd/workflow-runs/missing/2026-01-04T00-00-00/DEFINITION.yaml",
+    ".gsd/workflow-runs/missing/2026-01-04T00-00-00/PARAMS.json",
+    ".gsd/workflow-runs/partial/2026-01-03T00-00-00/DEFINITION.yaml",
+    ".gsd/workflow-runs/partial/2026-01-03T00-00-00/GRAPH.yaml",
+    ".gsd/workflow-runs/partial/2026-01-03T00-00-00/PARAMS.json",
+    ".gsd/workflow-runs/unknown/2026-01-06T00-00-00/DEFINITION.yaml",
+    ".gsd/workflows/bugfix.md",
+    ".gsd/workflows/collision.yaml",
+    ".gsd/workflows/drift.yaml",
+    ".gsd/workflows/phased.md",
+    ".gsd/workflows/unknown-field.yml",
+  ]);
+  assert.deepEqual(diagnosisRows("custom-workflow").map((row) => row.slice(0, 3)), [
+    ["definition-bundled-shadowed", "lower-precedence-workflow-shadowed", "info"],
+    ["definition-global-collision-ignored", "lower-precedence-workflow-ignored", "info"],
+    ["definition-legacy-collision-ignored", "lower-precedence-workflow-ignored", "info"],
+    ["definition-malformed", "malformed-workflow-definition", "warning"],
+    ["definition-schema-invalid", "unsupported-workflow-definition-version", "warning"],
+    ["run-definition-drift", "workflow-definition-drift", "warning"],
+    ["run-malformed-graph", "malformed-workflow-graph", "warning"],
+    ["run-missing-graph", "missing-workflow-graph", "warning"],
+    ["run-secret-parameter-redacted", "sensitive-workflow-parameter", "warning"],
+    ["run-unknown-status", "unknown-workflow-step-status", "warning"],
+  ]);
+
+  assert.deepEqual(sourceRows("knowledge-graph"), [
+    [".gsd/KNOWLEDGE.md", "gsd-knowledge-graph", "preserved"],
+    [".gsd/graphs/.last-build-snapshot.json", "gsd-knowledge-graph", "unparsed"],
+    [".gsd/graphs/graph.json", "gsd-knowledge-graph", "preserved"],
+    [".gsd/milestones/M001/M001-LEARNINGS.md", "gsd-knowledge-graph", "preserved"],
+    [".gsd/phases/02-legacy/02-LEARNINGS.md", "gsd-knowledge-graph", "ignored-with-reason"],
+  ]);
+  assert.deepEqual(changeRows("knowledge-graph"), [
+    ["change-knowledge-derived-graph", "preserve", "legacy-knowledge-graph-snapshot", ".gsd/graphs/graph.json", null, "derived-graph-preserved-without-rebuild"],
+    ["change-knowledge-nested-learnings", "preserve", "legacy-knowledge-source", "M001-LEARNINGS", null, "nested-learnings-preserved"],
+    ["change-knowledge-root", "preserve", "legacy-knowledge-source", ".gsd/KNOWLEDGE.md", null, "knowledge-markdown-preserved"],
+  ]);
+  assert.deepEqual(diagnosisRows("knowledge-graph").map((row) => row.slice(0, 3)), [
+    ["diagnosis-derived-graph-source-conflict", "derived-graph-source-conflict", "warning"],
+    ["diagnosis-graph-source-missing", "graph-source-missing", "warning"],
+    ["diagnosis-legacy-flat-learnings-not-read", "legacy-flat-learnings-not-read", "info"],
+    ["diagnosis-malformed-graph-snapshot", "malformed-graph-snapshot", "warning"],
+  ]);
+
+  assert.deepEqual(sourceRows("worktree-topology"), [
+    ["active-guard/project/.gsd/PREFERENCES.md", "gsd-worktree-topology", "preserved"],
+    ["active-guard/project/.gsd/worktrees/M006/git-marker.txt", "gsd-worktree-topology", "preserved"],
+    ["canonical/project/.gsd-worktrees/M001/git-marker.txt", "gsd-worktree-topology", "preserved"],
+    ["duplicate-identity/project/.gsd-worktrees/M005", "gsd-worktree-topology", "preserved"],
+    ["duplicate-identity/project/.gsd/worktrees/M005", "gsd-worktree-topology", "ignored-with-reason"],
+    ["duplicate-identity/shared/M005/git-marker.txt", "gsd-worktree-topology", "preserved"],
+    ["external/project/.gsd", "gsd-worktree-topology", "preserved"],
+    ["external/state/projects/project-hash/worktrees/M003/git-marker.txt", "gsd-worktree-topology", "preserved"],
+    ["interrupted-conflict/project/.gsd.migrating/PREFERENCES.md", "gsd-worktree-topology", "preserved"],
+    ["interrupted-conflict/project/.gsd/PREFERENCES.md", "gsd-worktree-topology", "preserved"],
+    ["interrupted/project/.gsd.migrating/PREFERENCES.md", "gsd-worktree-topology", "preserved"],
+    ["legacy/project/.gsd/worktrees/M002/git-marker.txt", "gsd-worktree-topology", "preserved"],
+    ["malformed/project/.gsd-worktrees/M008/git-marker.txt", "gsd-worktree-topology", "unparsed"],
+    ["root-conflict/project/.gsd-worktrees/M004/git-marker.txt", "gsd-worktree-topology", "preserved"],
+    ["root-conflict/project/.gsd/worktrees/M004/git-marker.txt", "gsd-worktree-topology", "preserved"],
+    ["stale-canonical/project/.gsd-worktrees/M007/README.txt", "gsd-worktree-topology", "ignored-with-reason"],
+    ["stale-canonical/project/.gsd/worktrees/M007/git-marker.txt", "gsd-worktree-topology", "preserved"],
+  ]);
+  assert.deepEqual(changeRows("worktree-topology").map((row) => row[3]), [
+    "active-guard/project-state",
+    "active-guard/M006",
+    "canonical/M001",
+    "duplicate-identity/M005/canonical",
+    "duplicate-identity/M005/physical",
+    "external/M003",
+    "external/project-state-link",
+    "interrupted-conflict/current",
+    "interrupted-conflict/staging",
+    "interrupted/staging",
+    "legacy/M002",
+    "root-conflict/M004/canonical",
+    "root-conflict/M004/legacy",
+    "stale-canonical/M007/legacy",
+  ]);
+  assert.deepEqual(diagnosisRows("worktree-topology").map((row) => row.slice(0, 3)), [
+    ["diagnosis-active-worktree-guard", "active-worktree-migration-guard", "info"],
+    ["diagnosis-duplicate-physical-identity", "duplicate-physical-identity", "info"],
+    ["diagnosis-interrupted-migration", "interrupted-migration", "warning"],
+    ["diagnosis-interrupted-root-conflict", "interrupted-migration-root-conflict", "blocker"],
+    ["diagnosis-malformed-git-marker", "malformed-git-marker", "warning"],
+    ["diagnosis-root-conflict", "canonical-legacy-root-conflict", "blocker"],
+    ["diagnosis-stale-canonical", "stale-canonical-does-not-shadow-legacy", "info"],
+  ]);
+
+  assert.deepEqual(caseNames.map((caseName) => semanticHash(caseName)), [
+    "sha256:7a8577e612620e2fd48d3d5f6b7b78a0c4fcc057f43481e32eb32668212c7ae5",
+    "sha256:4c5e58c6769ba8a0df6164d991afc5d8d36b4c0d29e32fc7b07f9c385288ab66",
+    "sha256:618e2fffe915053eb829179e87af1081517f1d2bfb4c8ce36d8f910f1a323565",
+    "sha256:3955cc04bb609320fbc33beaec578a8fe2ae2bf333aa1b8116fe3d2fb7ebb2a7",
+  ]);
+  assert.deepEqual(
+    caseNames.map((caseName) => {
+      const value = oracle(caseName);
+      return [
+        legacyImportCorpusHash(value.sources),
+        legacyImportCorpusHash(value.changes),
+        legacyImportCorpusHash(value.diagnoses),
+        legacyImportCorpusHash(value.resolutions),
+      ];
+    }),
+    [
+      [
+        "sha256:95ab8976c4896dac47664994ebfda28ee7c0f6ccdc42cb093c9cb2c76c03a9d8",
+        "sha256:16f75c063fffe96c74e098b2d99b370c793a43790f062c9fcefdfb7d14df6b69",
+        "sha256:8e396672b2cc6ede21635cec6070909e96b76bef76dbba0cba53bc055669912b",
+        "sha256:523d9537cc0c4564ee1a664c85b61c45b972c23f49bc7a587a3f084b48319ccc",
+      ],
+      [
+        "sha256:5c516e6aa1b1e2d023d4e102d8ef2c9d9c46a07eec9d35c793170d4c55eeeb30",
+        "sha256:1b9d8acf8df1c380596c2b68bb2a6bd446d12e78be98f4a1d7b2236189edb133",
+        "sha256:c6deda53f479696cf617c300656e040e03fe89da85e35220eac89f7796694572",
+        "sha256:5dc7bd17d903e37b156b6f4926d2a07bf735aff550ec2734330f35000ada3ba6",
+      ],
+      [
+        "sha256:a7f5713ba6aff3f6aa8ee258d0743a1a3e58a6100235d55bb88e2de41da9c737",
+        "sha256:b598ab41be378fbb1915df3bb03a99509cb3bc318f4cc452d47b6b034a6f7836",
+        "sha256:bb489fd7b29f5a93ded05daaab99408de0774c7ad26971a8d91199aac8c1b621",
+        "sha256:c4dd8e9335bdf8a11826b62bb9c7eca7b5bb74be966cf77af716b52890952f2b",
+      ],
+      [
+        "sha256:88642e5dc3ae5e526aae037b739720f4d88b8a17710d3e79112d3b0d10fe80d5",
+        "sha256:9da47ec6f3d6bf6302e57b0d0fe6402c59cd538b86da4d44dbd2ff01364e76d8",
+        "sha256:aa8ca91795efd53982a0f2e2529555efa2fe81238e2145dae5edb623d85159d4",
+        "sha256:b213d8d4b795372bb36178514a906098c7f62b7eda13532786097fc2ed62fb13",
+      ],
+    ],
+  );
+  assert.ok(cases.every((corpusCase) => corpusCase.oracle.changes.every((change) => change.action === "preserve")));
+  assert.ok(cases.every((corpusCase) => corpusCase.oracle.sources.every((source) => source.outcome !== "mapped")));
+  assert.ok(oracle("jsonl-history").changes.every(
+    (change) => (change.normalized as Record<string, unknown>).replay_policy === "evidence-only",
+  ));
+  const sensitiveDiagnoses = [
+    oracle("jsonl-history").diagnoses.find(
+      (diagnosis) => diagnosis.diagnosis_id === "diagnosis-secret-shaped-history",
+    ),
+    oracle("custom-workflow").diagnoses.find(
+      (diagnosis) => diagnosis.diagnosis_id === "run-secret-parameter-redacted",
+    ),
+  ];
+  assert.deepEqual(sensitiveDiagnoses.map((diagnosis) => diagnosis?.raw_value), [
+    {
+      redacted: true,
+      sha256: "sha256:3e2b17e2fb31af768f6807d754d8b428322d736f6f1bdaff961a7886ba9337e5",
+    },
+    {
+      redacted: true,
+      sha256: "sha256:ec356b4f7535bfb167550cba8c333a5fd3ab93bfd4cc7821236840aec193bcd0",
+    },
+  ]);
+  assert.ok(sensitiveDiagnoses.every((diagnosis) => diagnosis !== undefined));
+  assert.ok(!sensitiveDiagnoses[0]!.message.includes("fixture-token-1234"));
+  assert.ok(!sensitiveDiagnoses[1]!.message.includes("synthetic-token-workflow-2026"));
+  assert.deepEqual(
+    oracle("worktree-topology").resolutions,
+    [
+      { diagnosis_id: "diagnosis-active-worktree-guard", disposition: "preserved" },
+      {
+        diagnosis_id: "diagnosis-duplicate-physical-identity",
+        disposition: "mapped",
+        target: { kind: "legacy-worktree-topology", key: "duplicate-identity/M005/canonical" },
+      },
+      { diagnosis_id: "diagnosis-interrupted-migration", disposition: "preserved" },
+      { diagnosis_id: "diagnosis-interrupted-root-conflict", disposition: "requires-user" },
+      { diagnosis_id: "diagnosis-malformed-git-marker", disposition: "preserved" },
+      { diagnosis_id: "diagnosis-root-conflict", disposition: "requires-user" },
+      {
+        diagnosis_id: "diagnosis-stale-canonical",
+        disposition: "mapped",
+        target: { kind: "legacy-worktree-topology", key: "stale-canonical/M007/legacy" },
+      },
+    ],
+  );
+  const unresolved = cases.flatMap((corpusCase) => corpusCase.oracle.resolutions.filter(
+    (resolution) => resolution.disposition === "requires-user",
+  ));
+  assert.deepEqual(unresolved.map((resolution) => resolution.diagnosis_id), [
+    "diagnosis-interrupted-root-conflict",
+    "diagnosis-root-conflict",
+  ]);
+  assert.ok(unresolved.every((resolution) => !("target" in resolution)));
+
+  const corpusPath = fileURLToPath(corpusRoot);
+  const historyRoot = join(corpusPath, "jsonl-history", "source");
+  const activeHistory = readEvents(join(historyRoot, ".gsd", "event-log.jsonl"));
+  const canonicalHistory = readEvents(join(historyRoot, ".gsd-worktrees", "M002", ".gsd", "event-log.jsonl"));
+  const legacyHistory = readEvents(join(historyRoot, ".gsd", "worktrees", "M003", ".gsd", "event-log.jsonl"));
+  assert.equal(activeHistory.length, 8);
+  assert.equal(readEvents(join(historyRoot, ".gsd", "event-log-M999.jsonl.archived")).length, 0);
+  assert.equal(findForkPoint(activeHistory, canonicalHistory), 0);
+  assert.equal(findForkPoint(activeHistory, legacyHistory), 0);
+  assert.equal(normalizeWorkflowEventCommand(activeHistory[0]?.cmd), "plan_milestone");
+  assert.deepEqual(workflowEventEntityKey(activeHistory[0]!), { type: "milestone", id: "M001" });
+  assert.equal(workflowEventEntityKey(activeHistory[6]!), null);
+  assert.ok(!redactSecrets(JSON.stringify(activeHistory[7])).includes("fixture-token-1234"));
+  assert.equal(
+    resolveWorkflowEventLedgerLocation(join(historyRoot, ".gsd-worktrees", "M002")).isWorktree,
+    true,
+  );
+  assert.equal(
+    readWorktreeEventLogPath(join(historyRoot, ".gsd", "worktrees", "M003")),
+    join(historyRoot, ".gsd", "worktrees", "M003", ".gsd", "event-log.jsonl"),
+  );
+
+  const workflowRoot = join(corpusPath, "custom-workflow", "source");
+  const originalGsdHome = process.env.GSD_HOME;
+  process.env.GSD_HOME = join(workflowRoot, "gsd-home");
+  try {
+    const plugins = discoverPlugins(workflowRoot);
+    assert.deepEqual(
+      ["bugfix", "collision", "global-only", "legacy-alias", "phased", "unknown-field"]
+        .map((name) => {
+          const plugin = plugins.get(name);
+          assert.ok(plugin, `missing production plugin ${name}`);
+          return [name, plugin.source, plugin.format, plugin.meta.displayName, plugin.meta.phases];
+        }),
+      [
+        ["bugfix", "project", "md", "Project Bugfix Override", ["project-triage", "project-verify"]],
+        ["collision", "project", "yaml", "collision-current-project", ["current"]],
+        ["global-only", "global", "yaml", "global-only", ["global"]],
+        ["legacy-alias", "project", "yaml", "legacy-alias", ["inspect", "report"]],
+        ["phased", "project", "md", "Conversational Review", ["ask", "recommend", "validate"]],
+        ["unknown-field", "project", "yaml", "unknown-field", ["preserve"]],
+      ],
+    );
+  } finally {
+    if (originalGsdHome === undefined) delete process.env.GSD_HOME;
+    else process.env.GSD_HOME = originalGsdHome;
+  }
+  const legacyDefinition = loadDefinitionFromFile(
+    join(workflowRoot, ".gsd", "workflow-defs", "legacy-alias.yaml"),
+  );
+  assert.deepEqual(legacyDefinition.steps.map((step) => [step.id, step.requires]), [
+    ["inspect", []],
+    ["report", ["inspect"]],
+  ]);
+  assert.deepEqual(
+    readGraph(join(workflowRoot, ".gsd", "workflow-runs", "complete", "2026-01-01T00-00-00"))
+      .steps.map((step) => [step.id, step.status]),
+    [["collect", "complete"], ["iterate", "expanded"]],
+  );
+  assert.deepEqual(listRuns(workflowRoot).map((run) => [run.name, run.status, run.steps]), [
+    ["complete", "complete", { total: 2, completed: 1, pending: 0, active: 0 }],
+    ["drift", "pending", { total: 2, completed: 0, pending: 2, active: 0 }],
+    ["partial", "running", { total: 3, completed: 1, pending: 1, active: 1 }],
+    ["unknown", "pending", { total: 1, completed: 0, pending: 0, active: 0 }],
+  ]);
+
+  const knowledgeRoot = join(corpusPath, "knowledge-graph", "source");
+  assert.deepEqual(
+    parseKnowledgeRows(readFileSync(join(knowledgeRoot, ".gsd", "KNOWLEDGE.md"), "utf8"))
+      .map((row) => [row.table, row.id]),
+    [["rules", "K001"], ["patterns", "P001"], ["lessons", "L001"]],
+  );
+  const graph = await graphQuery(knowledgeRoot, "Authority");
+  assert.deepEqual(graph.nodes.map((node) => node.id), ["milestone:M001", "rule:K001", "lesson:M001:1"]);
+  assert.deepEqual(graph.edges.map((edge) => [edge.from, edge.to, edge.type]), [
+    ["milestone:M001", "lesson:M001:1", "relates_to"],
+  ]);
+
+  const topologySource = join(corpusPath, "worktree-topology", "source");
+  const topologyRoot = mkdtempSync(join(tmpdir(), "gsd-t05-topology-"));
+  try {
+    cpSync(topologySource, topologyRoot, { recursive: true, verbatimSymlinks: true });
+    for (const source of oracle("worktree-topology").sources) {
+      if (!source.path.endsWith("/git-marker.txt")) continue;
+      const descriptor = join(topologyRoot, source.path);
+      renameSync(descriptor, join(dirname(descriptor), ".git"));
+    }
+
+    const canonicalProject = join(topologyRoot, "canonical", "project");
+    const legacyProject = join(topologyRoot, "legacy", "project");
+    const staleProject = join(topologyRoot, "stale-canonical", "project");
+    const duplicateProject = join(topologyRoot, "duplicate-identity", "project");
+    assert.deepEqual(worktreesDirs(canonicalProject), [
+      canonicalWorktreesDir(canonicalProject),
+      legacyWorktreesDir(canonicalProject),
+    ]);
+    assert.equal(worktreePathFor(canonicalProject, "M001"), join(canonicalProject, ".gsd-worktrees", "M001"));
+    assert.equal(worktreePathFor(legacyProject, "M002"), join(legacyProject, ".gsd", "worktrees", "M002"));
+    assert.equal(worktreePathFor(staleProject, "M007"), join(staleProject, ".gsd", "worktrees", "M007"));
+    assert.equal(worktreePathFor(duplicateProject, "M005"), join(duplicateProject, ".gsd-worktrees", "M005"));
+    assert.equal(
+      normalizeWorktreePathForCompare(join(duplicateProject, ".gsd-worktrees", "M005")),
+      normalizeWorktreePathForCompare(join(duplicateProject, ".gsd", "worktrees", "M005")),
+    );
+    assert.equal(
+      realpathSync(join(duplicateProject, ".gsd-worktrees", "M005")),
+      realpathSync(join(duplicateProject, ".gsd", "worktrees", "M005")),
+    );
+
+    const externalWorktree = join(topologyRoot, "external", "state", "projects", "project-hash", "worktrees", "M003");
+    const originalStateDir = process.env.GSD_STATE_DIR;
+    process.env.GSD_STATE_DIR = join(topologyRoot, "external", "state");
+    try {
+      assert.equal(isGsdWorktreePath(externalWorktree), true);
+      assert.equal(projectRootFromWorktreePath(externalWorktree), join(topologyRoot, "external", "state", "projects", "project-hash"));
+      assert.equal(
+        resolveExternalStateProjectGsdFromWorktreePath(externalWorktree),
+        join(topologyRoot, "external", "state", "projects", "project-hash"),
+      );
+      assert.equal(resolveExternalStateProjectIdentityFromWorktreePath(externalWorktree), "project-hash");
+    } finally {
+      if (originalStateDir === undefined) delete process.env.GSD_STATE_DIR;
+      else process.env.GSD_STATE_DIR = originalStateDir;
+    }
+  } finally {
+    rmSync(topologyRoot, { recursive: true, force: true });
+  }
+
+  assert.deepEqual(fingerprints(), before, "read-only production checks must not mutate corpus bytes");
 });

@@ -1,0 +1,2 @@
+{"cmd":"complete_slice","params":{"milestoneId":"M001","sliceId":"S01"},"ts":"2025-01-02T00:00:00.000Z","hash":"df4603cdbff173ce","actor":"agent","session_id":"fixture-session"}
+{"v":2,"cmd":"complete-milestone","params":{"milestoneId":"M001"},"ts":"2025-01-02T00:01:00.000Z","hash":"c877176040436ab9","actor":"system","session_id":"fixture-session"}

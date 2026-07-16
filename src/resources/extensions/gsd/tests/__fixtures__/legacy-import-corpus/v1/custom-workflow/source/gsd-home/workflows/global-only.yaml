@@ -1,0 +1,7 @@
+version: 1
+name: global-only
+description: Global definition without a project collision.
+steps:
+  - id: global
+    name: Global only
+    prompt: Preserve the global workflow definition.

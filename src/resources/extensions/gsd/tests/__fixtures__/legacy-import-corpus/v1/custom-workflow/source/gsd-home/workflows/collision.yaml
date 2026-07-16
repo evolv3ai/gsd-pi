@@ -1,0 +1,6 @@
+version: 1
+name: collision-global
+steps:
+  - id: global
+    name: Global collision
+    prompt: Global definition loses to project definitions.

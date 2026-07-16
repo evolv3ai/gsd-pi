@@ -1,0 +1,12 @@
+version: 1
+name: drift
+description: Current definition after a run was created.
+steps:
+  - id: inspect
+    name: Inspect current
+    prompt: Inspect with the revised prompt.
+  - id: publish
+    name: Publish current
+    prompt: Publish the revised report.
+    requires:
+      - inspect

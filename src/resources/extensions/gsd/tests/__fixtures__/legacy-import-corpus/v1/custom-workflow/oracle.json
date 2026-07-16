@@ -1,0 +1,959 @@
+{
+  "preview_schema_version": 1,
+  "preview_id": "custom-workflow",
+  "import_kind": "legacy-corpus",
+  "importer_version": "v1-test",
+  "base_project_revision": 0,
+  "base_authority_epoch": 0,
+  "base_database_schema_version": 44,
+  "source_set_hash": "sha256:5c516e6aa1b1e2d023d4e102d8ef2c9d9c46a07eec9d35c793170d4c55eeeb30",
+  "change_set_hash": "sha256:1b9d8acf8df1c380596c2b68bb2a6bd446d12e78be98f4a1d7b2236189edb133",
+  "counts": {
+    "create": 0,
+    "update": 0,
+    "delete": 0,
+    "preserve": 18,
+    "unparsed": 4,
+    "unresolved": 0
+  },
+  "sources": [
+    {
+      "source_id": "workflow-gsd-workflow-defs-collision-yaml",
+      "path": ".gsd/workflow-defs/collision.yaml",
+      "kind": "yaml",
+      "byte_size": 163,
+      "sha256": "sha256:b6d6bed6e93913ffc4f0f82583300e34df36b98b639202c2c6641d9d7c60c6b9",
+      "parser_id": "gsd-workflow-definition",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "ignored-with-reason"
+    },
+    {
+      "source_id": "workflow-gsd-workflow-defs-legacy-alias-yaml",
+      "path": ".gsd/workflow-defs/legacy-alias.yaml",
+      "kind": "yaml",
+      "byte_size": 255,
+      "sha256": "sha256:2fa77b5ff84a8425e38f5a730941b67496bc43e184ba95aec35a841c7fb01956",
+      "parser_id": "gsd-workflow-definition",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "workflow-gsd-workflow-runs-complete-2026-01-01t00-00-00-definition-yaml",
+      "path": ".gsd/workflow-runs/complete/2026-01-01T00-00-00/DEFINITION.yaml",
+      "kind": "yaml",
+      "byte_size": 196,
+      "sha256": "sha256:228ab3ccb003c278be372f5d34dbfa88a645ca74af9d46fc19b9271d3eeaf0b9",
+      "parser_id": "gsd-workflow-run-graph",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "workflow-gsd-workflow-runs-complete-2026-01-01t00-00-00-graph-yaml",
+      "path": ".gsd/workflow-runs/complete/2026-01-01T00-00-00/GRAPH.yaml",
+      "kind": "yaml",
+      "byte_size": 324,
+      "sha256": "sha256:cfe7137fdaa14d72d8e4c2d139185bd4d4f3e6da0e16c7384503ddba35a59af1",
+      "parser_id": "gsd-workflow-run-graph",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "workflow-gsd-workflow-runs-drift-2026-01-02t00-00-00-definition-yaml",
+      "path": ".gsd/workflow-runs/drift/2026-01-02T00-00-00/DEFINITION.yaml",
+      "kind": "yaml",
+      "byte_size": 286,
+      "sha256": "sha256:0cd98326e5040ef36abde7b74f8deb6366585825535cf2dd1214c080cfb8ca96",
+      "parser_id": "gsd-workflow-run-graph",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "workflow-gsd-workflow-runs-drift-2026-01-02t00-00-00-graph-yaml",
+      "path": ".gsd/workflow-runs/drift/2026-01-02T00-00-00/GRAPH.yaml",
+      "kind": "yaml",
+      "byte_size": 313,
+      "sha256": "sha256:23c887437b7a2d901a9227cc3915ce6b88951827595a494117bca3596501b193",
+      "parser_id": "gsd-workflow-run-graph",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "workflow-gsd-workflow-runs-malformed-2026-01-05t00-00-00-definition-yaml",
+      "path": ".gsd/workflow-runs/malformed/2026-01-05T00-00-00/DEFINITION.yaml",
+      "kind": "yaml",
+      "byte_size": 109,
+      "sha256": "sha256:a6ddccb1fd57f0897f09fd9b128cfef0fd413694f7c516c36f90317f9ed3ea24",
+      "parser_id": "gsd-workflow-run-graph",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "workflow-gsd-workflow-runs-malformed-2026-01-05t00-00-00-graph-yaml",
+      "path": ".gsd/workflow-runs/malformed/2026-01-05T00-00-00/GRAPH.yaml",
+      "kind": "yaml",
+      "byte_size": 9,
+      "sha256": "sha256:053645f40e8bbf3532c592d252541ac71d397d9adeb67515f73d931ae2d19288",
+      "parser_id": "gsd-workflow-run-graph",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "unparsed"
+    },
+    {
+      "source_id": "workflow-gsd-workflow-runs-missing-2026-01-04t00-00-00-definition-yaml",
+      "path": ".gsd/workflow-runs/missing/2026-01-04T00-00-00/DEFINITION.yaml",
+      "kind": "yaml",
+      "byte_size": 116,
+      "sha256": "sha256:b8d3a20784675d84f00d84a73f193bab964b2a4d44b944a223b427e3d0edafe3",
+      "parser_id": "gsd-workflow-run-graph",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "workflow-gsd-workflow-runs-missing-2026-01-04t00-00-00-params-json",
+      "path": ".gsd/workflow-runs/missing/2026-01-04T00-00-00/PARAMS.json",
+      "kind": "json",
+      "byte_size": 31,
+      "sha256": "sha256:23076b6edd1a81db604b457fb12c099895cf0dc4d5af76ef76dac55933ee70ac",
+      "parser_id": "gsd-workflow-run-graph",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "workflow-gsd-workflow-runs-partial-2026-01-03t00-00-00-definition-yaml",
+      "path": ".gsd/workflow-runs/partial/2026-01-03T00-00-00/DEFINITION.yaml",
+      "kind": "yaml",
+      "byte_size": 325,
+      "sha256": "sha256:105400ab99170cce76dda857053d46d46061a603596546cbf400f8e046fa908d",
+      "parser_id": "gsd-workflow-run-graph",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "workflow-gsd-workflow-runs-partial-2026-01-03t00-00-00-graph-yaml",
+      "path": ".gsd/workflow-runs/partial/2026-01-03T00-00-00/GRAPH.yaml",
+      "kind": "yaml",
+      "byte_size": 507,
+      "sha256": "sha256:c4eebb3b037a03f064a43101e2f0c1cdebb9b44034d4de4b8efca6f19f3fc723",
+      "parser_id": "gsd-workflow-run-graph",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "workflow-gsd-workflow-runs-partial-2026-01-03t00-00-00-params-json",
+      "path": ".gsd/workflow-runs/partial/2026-01-03T00-00-00/PARAMS.json",
+      "kind": "json",
+      "byte_size": 83,
+      "sha256": "sha256:6c2216547d75fca9615dbe51587cf19b88ad2f7561818a9e49b66f2b5e148e4c",
+      "parser_id": "gsd-workflow-run-graph",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "workflow-gsd-workflow-runs-unknown-2026-01-06t00-00-00-definition-yaml",
+      "path": ".gsd/workflow-runs/unknown/2026-01-06T00-00-00/DEFINITION.yaml",
+      "kind": "yaml",
+      "byte_size": 118,
+      "sha256": "sha256:45deb7158efd2f95f832423969a2be865ba88ca77db113f5e210a4159fa8a94b",
+      "parser_id": "gsd-workflow-run-graph",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "workflow-gsd-workflow-runs-unknown-2026-01-06t00-00-00-graph-yaml",
+      "path": ".gsd/workflow-runs/unknown/2026-01-06T00-00-00/GRAPH.yaml",
+      "kind": "yaml",
+      "byte_size": 178,
+      "sha256": "sha256:ee3deb584ef3e7c5a7ee82ab59f90c24b0942cb16bf31ab5978ee4e4f9771521",
+      "parser_id": "gsd-workflow-run-graph",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "unparsed"
+    },
+    {
+      "source_id": "workflow-gsd-workflows-bugfix-md",
+      "path": ".gsd/workflows/bugfix.md",
+      "kind": "markdown",
+      "byte_size": 236,
+      "sha256": "sha256:812764879d929f5e27e0a1fc7a34e7dc4e97b8046d95675d7f7e92fb678efa97",
+      "parser_id": "gsd-workflow-definition",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "workflow-gsd-workflows-collision-yaml",
+      "path": ".gsd/workflows/collision.yaml",
+      "kind": "yaml",
+      "byte_size": 219,
+      "sha256": "sha256:070b99b169f77dbcc69fdea704309e78fff6df7284ccb3a58f992cd4c689ef3c",
+      "parser_id": "gsd-workflow-definition",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "workflow-gsd-workflows-drift-yaml",
+      "path": ".gsd/workflows/drift.yaml",
+      "kind": "yaml",
+      "byte_size": 286,
+      "sha256": "sha256:de0329b7a4a83d4833f13ec6865dc661b52c70232735674107f98a658852a76d",
+      "parser_id": "gsd-workflow-definition",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "workflow-gsd-workflows-malformed-yaml",
+      "path": ".gsd/workflows/malformed.yaml",
+      "kind": "yaml",
+      "byte_size": 36,
+      "sha256": "sha256:3a49cba21c68f9ac570f93461ec67fac380aa0ecfd7f700c3b37b5a2df9384bc",
+      "parser_id": "gsd-workflow-definition",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "unparsed"
+    },
+    {
+      "source_id": "workflow-gsd-workflows-phased-md",
+      "path": ".gsd/workflows/phased.md",
+      "kind": "markdown",
+      "byte_size": 259,
+      "sha256": "sha256:65c3a77c26276eb782221ece90a4543982629f1350fa73e8e1cde23225a955db",
+      "parser_id": "gsd-workflow-definition",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "workflow-gsd-workflows-schema-invalid-yaml",
+      "path": ".gsd/workflows/schema-invalid.yaml",
+      "kind": "yaml",
+      "byte_size": 141,
+      "sha256": "sha256:9783406233eeea71a5e9ee300e448f64db58be99cf5b040d44940221bfe6d351",
+      "parser_id": "gsd-workflow-definition",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "unparsed"
+    },
+    {
+      "source_id": "workflow-gsd-workflows-unknown-field-yml",
+      "path": ".gsd/workflows/unknown-field.yml",
+      "kind": "yaml",
+      "byte_size": 230,
+      "sha256": "sha256:cf674c2330887183f27f8f5a50443900ca16df992b7ccc1406443d034a1f7da0",
+      "parser_id": "gsd-workflow-definition",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    },
+    {
+      "source_id": "workflow-gsd-home-workflows-collision-yaml",
+      "path": "gsd-home/workflows/collision.yaml",
+      "kind": "yaml",
+      "byte_size": 143,
+      "sha256": "sha256:e07615ce9a51156a9e563a77233c9f32ad70a4ddb672b9d85295dcc1bbf93505",
+      "parser_id": "gsd-workflow-definition",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "ignored-with-reason"
+    },
+    {
+      "source_id": "workflow-gsd-home-workflows-global-only-yaml",
+      "path": "gsd-home/workflows/global-only.yaml",
+      "kind": "yaml",
+      "byte_size": 186,
+      "sha256": "sha256:dfe59d855c09807c613b7675714768d339b02245ae25eb0f611e300c0d16a941",
+      "parser_id": "gsd-workflow-definition",
+      "parser_version": "1",
+      "encoding": "utf-8",
+      "outcome": "preserved"
+    }
+  ],
+  "changes": [
+    {
+      "change_id": "preserve-gsd-home-workflows-global-only-yaml",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-workflow-definition",
+        "key": "gsd-home/workflows/global-only.yaml"
+      },
+      "raw": {
+        "source_id": "workflow-gsd-home-workflows-global-only-yaml",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 186,
+          "line": 1
+        },
+        "value": "version: 1\nname: global-only\ndescription: Global definition without a project collision.\nsteps:\n  - id: global\n    name: Global only\n    prompt: Preserve the global workflow definition.\n",
+        "sha256": "sha256:dfe59d855c09807c613b7675714768d339b02245ae25eb0f611e300c0d16a941"
+      },
+      "normalized": {
+        "path": "gsd-home/workflows/global-only.yaml",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "workflow-gsd-home-workflows-global-only-yaml",
+        "parser_id": "gsd-workflow-definition",
+        "parser_version": "1"
+      },
+      "reason_code": "workflow-definition-is-evidence-only"
+    },
+    {
+      "change_id": "preserve-gsd-workflow-defs-legacy-alias-yaml",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-workflow-definition",
+        "key": ".gsd/workflow-defs/legacy-alias.yaml"
+      },
+      "raw": {
+        "source_id": "workflow-gsd-workflow-defs-legacy-alias-yaml",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 255,
+          "line": 1
+        },
+        "value": "version: 1\nname: legacy-alias\ndescription: Legacy definition using depends_on.\nsteps:\n  - id: inspect\n    name: Inspect\n    prompt: Inspect the legacy input.\n  - id: report\n    name: Report\n    prompt: Report the findings.\n    depends_on:\n      - inspect\n",
+        "sha256": "sha256:2fa77b5ff84a8425e38f5a730941b67496bc43e184ba95aec35a841c7fb01956"
+      },
+      "normalized": {
+        "path": ".gsd/workflow-defs/legacy-alias.yaml",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "workflow-gsd-workflow-defs-legacy-alias-yaml",
+        "parser_id": "gsd-workflow-definition",
+        "parser_version": "1"
+      },
+      "reason_code": "workflow-definition-is-evidence-only"
+    },
+    {
+      "change_id": "preserve-gsd-workflow-runs-complete-2026-01-01t00-00-00-definition-yaml",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-workflow-run-artifact",
+        "key": ".gsd/workflow-runs/complete/2026-01-01T00-00-00/DEFINITION.yaml"
+      },
+      "raw": {
+        "source_id": "workflow-gsd-workflow-runs-complete-2026-01-01t00-00-00-definition-yaml",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 196,
+          "line": 1
+        },
+        "value": "version: 1\nname: complete\nsteps:\n  - id: collect\n    name: Collect\n    prompt: Collect evidence.\n  - id: iterate\n    name: Iterate\n    prompt: Iterate over evidence.\n    requires:\n      - collect\n",
+        "sha256": "sha256:228ab3ccb003c278be372f5d34dbfa88a645ca74af9d46fc19b9271d3eeaf0b9"
+      },
+      "normalized": {
+        "path": ".gsd/workflow-runs/complete/2026-01-01T00-00-00/DEFINITION.yaml",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "workflow-gsd-workflow-runs-complete-2026-01-01t00-00-00-definition-yaml",
+        "parser_id": "gsd-workflow-run-graph",
+        "parser_version": "1"
+      },
+      "reason_code": "workflow-run-is-evidence-only"
+    },
+    {
+      "change_id": "preserve-gsd-workflow-runs-complete-2026-01-01t00-00-00-graph-yaml",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-workflow-run-artifact",
+        "key": ".gsd/workflow-runs/complete/2026-01-01T00-00-00/GRAPH.yaml"
+      },
+      "raw": {
+        "source_id": "workflow-gsd-workflow-runs-complete-2026-01-01t00-00-00-graph-yaml",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 324,
+          "line": 1
+        },
+        "value": "steps:\n  - id: collect\n    title: Collect\n    status: complete\n    prompt: Collect evidence.\n    finished_at: 2026-01-01T00:01:00.000Z\n  - id: iterate\n    title: Iterate\n    status: expanded\n    prompt: Iterate over evidence.\n    depends_on:\n      - collect\nmetadata:\n  name: complete\n  created_at: 2026-01-01T00:00:00.000Z\n",
+        "sha256": "sha256:cfe7137fdaa14d72d8e4c2d139185bd4d4f3e6da0e16c7384503ddba35a59af1"
+      },
+      "normalized": {
+        "path": ".gsd/workflow-runs/complete/2026-01-01T00-00-00/GRAPH.yaml",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "workflow-gsd-workflow-runs-complete-2026-01-01t00-00-00-graph-yaml",
+        "parser_id": "gsd-workflow-run-graph",
+        "parser_version": "1"
+      },
+      "reason_code": "workflow-run-is-evidence-only"
+    },
+    {
+      "change_id": "preserve-gsd-workflow-runs-drift-2026-01-02t00-00-00-definition-yaml",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-workflow-run-artifact",
+        "key": ".gsd/workflow-runs/drift/2026-01-02T00-00-00/DEFINITION.yaml"
+      },
+      "raw": {
+        "source_id": "workflow-gsd-workflow-runs-drift-2026-01-02t00-00-00-definition-yaml",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 286,
+          "line": 1
+        },
+        "value": "version: 1\nname: drift\ndescription: Frozen definition when the run was created.\nsteps:\n  - id: inspect\n    name: Inspect frozen\n    prompt: Inspect with the original prompt.\n  - id: publish\n    name: Publish frozen\n    prompt: Publish the original report.\n    requires:\n      - inspect\n",
+        "sha256": "sha256:0cd98326e5040ef36abde7b74f8deb6366585825535cf2dd1214c080cfb8ca96"
+      },
+      "normalized": {
+        "path": ".gsd/workflow-runs/drift/2026-01-02T00-00-00/DEFINITION.yaml",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "workflow-gsd-workflow-runs-drift-2026-01-02t00-00-00-definition-yaml",
+        "parser_id": "gsd-workflow-run-graph",
+        "parser_version": "1"
+      },
+      "reason_code": "workflow-run-is-evidence-only"
+    },
+    {
+      "change_id": "preserve-gsd-workflow-runs-drift-2026-01-02t00-00-00-graph-yaml",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-workflow-run-artifact",
+        "key": ".gsd/workflow-runs/drift/2026-01-02T00-00-00/GRAPH.yaml"
+      },
+      "raw": {
+        "source_id": "workflow-gsd-workflow-runs-drift-2026-01-02t00-00-00-graph-yaml",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 313,
+          "line": 1
+        },
+        "value": "steps:\n  - id: inspect\n    title: Inspect frozen\n    status: pending\n    prompt: Inspect with the original prompt.\n  - id: publish\n    title: Publish frozen\n    status: pending\n    prompt: Publish the original report.\n    depends_on:\n      - inspect\nmetadata:\n  name: drift\n  created_at: 2026-01-02T00:00:00.000Z\n",
+        "sha256": "sha256:23c887437b7a2d901a9227cc3915ce6b88951827595a494117bca3596501b193"
+      },
+      "normalized": {
+        "path": ".gsd/workflow-runs/drift/2026-01-02T00-00-00/GRAPH.yaml",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "workflow-gsd-workflow-runs-drift-2026-01-02t00-00-00-graph-yaml",
+        "parser_id": "gsd-workflow-run-graph",
+        "parser_version": "1"
+      },
+      "reason_code": "workflow-run-is-evidence-only"
+    },
+    {
+      "change_id": "preserve-gsd-workflow-runs-malformed-2026-01-05t00-00-00-definition-yaml",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-workflow-run-artifact",
+        "key": ".gsd/workflow-runs/malformed/2026-01-05T00-00-00/DEFINITION.yaml"
+      },
+      "raw": {
+        "source_id": "workflow-gsd-workflow-runs-malformed-2026-01-05t00-00-00-definition-yaml",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 109,
+          "line": 1
+        },
+        "value": "version: 1\nname: malformed-run\nsteps:\n  - id: inspect\n    name: Inspect\n    prompt: Inspect malformed state.\n",
+        "sha256": "sha256:a6ddccb1fd57f0897f09fd9b128cfef0fd413694f7c516c36f90317f9ed3ea24"
+      },
+      "normalized": {
+        "path": ".gsd/workflow-runs/malformed/2026-01-05T00-00-00/DEFINITION.yaml",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "workflow-gsd-workflow-runs-malformed-2026-01-05t00-00-00-definition-yaml",
+        "parser_id": "gsd-workflow-run-graph",
+        "parser_version": "1"
+      },
+      "reason_code": "workflow-run-is-evidence-only"
+    },
+    {
+      "change_id": "preserve-gsd-workflow-runs-missing-2026-01-04t00-00-00-definition-yaml",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-workflow-run-artifact",
+        "key": ".gsd/workflow-runs/missing/2026-01-04T00-00-00/DEFINITION.yaml"
+      },
+      "raw": {
+        "source_id": "workflow-gsd-workflow-runs-missing-2026-01-04t00-00-00-definition-yaml",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 116,
+          "line": 1
+        },
+        "value": "version: 1\nname: missing-graph\nsteps:\n  - id: inspect\n    name: Inspect\n    prompt: Inspect missing graph evidence.\n",
+        "sha256": "sha256:b8d3a20784675d84f00d84a73f193bab964b2a4d44b944a223b427e3d0edafe3"
+      },
+      "normalized": {
+        "path": ".gsd/workflow-runs/missing/2026-01-04T00-00-00/DEFINITION.yaml",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "workflow-gsd-workflow-runs-missing-2026-01-04t00-00-00-definition-yaml",
+        "parser_id": "gsd-workflow-run-graph",
+        "parser_version": "1"
+      },
+      "reason_code": "workflow-run-is-evidence-only"
+    },
+    {
+      "change_id": "preserve-gsd-workflow-runs-missing-2026-01-04t00-00-00-params-json",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-workflow-run-artifact",
+        "key": ".gsd/workflow-runs/missing/2026-01-04T00-00-00/PARAMS.json"
+      },
+      "raw": {
+        "source_id": "workflow-gsd-workflow-runs-missing-2026-01-04t00-00-00-params-json",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 31,
+          "line": 1
+        },
+        "value": "{\n  \"scope\": \"missing-graph\"\n}\n",
+        "sha256": "sha256:23076b6edd1a81db604b457fb12c099895cf0dc4d5af76ef76dac55933ee70ac"
+      },
+      "normalized": {
+        "path": ".gsd/workflow-runs/missing/2026-01-04T00-00-00/PARAMS.json",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "workflow-gsd-workflow-runs-missing-2026-01-04t00-00-00-params-json",
+        "parser_id": "gsd-workflow-run-graph",
+        "parser_version": "1"
+      },
+      "reason_code": "workflow-run-is-evidence-only"
+    },
+    {
+      "change_id": "preserve-gsd-workflow-runs-partial-2026-01-03t00-00-00-definition-yaml",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-workflow-run-artifact",
+        "key": ".gsd/workflow-runs/partial/2026-01-03T00-00-00/DEFINITION.yaml"
+      },
+      "raw": {
+        "source_id": "workflow-gsd-workflow-runs-partial-2026-01-03t00-00-00-definition-yaml",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 325,
+          "line": 1
+        },
+        "value": "version: 1\nname: partial\nparams:\n  target: default\nsteps:\n  - id: collect\n    name: Collect\n    prompt: Collect for {{target}}.\n  - id: analyze\n    name: Analyze\n    prompt: Analyze for {{target}}.\n    requires:\n      - collect\n  - id: report\n    name: Report\n    prompt: Report for {{target}}.\n    requires:\n      - analyze\n",
+        "sha256": "sha256:105400ab99170cce76dda857053d46d46061a603596546cbf400f8e046fa908d"
+      },
+      "normalized": {
+        "path": ".gsd/workflow-runs/partial/2026-01-03T00-00-00/DEFINITION.yaml",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "workflow-gsd-workflow-runs-partial-2026-01-03t00-00-00-definition-yaml",
+        "parser_id": "gsd-workflow-run-graph",
+        "parser_version": "1"
+      },
+      "reason_code": "workflow-run-is-evidence-only"
+    },
+    {
+      "change_id": "preserve-gsd-workflow-runs-partial-2026-01-03t00-00-00-graph-yaml",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-workflow-run-artifact",
+        "key": ".gsd/workflow-runs/partial/2026-01-03T00-00-00/GRAPH.yaml"
+      },
+      "raw": {
+        "source_id": "workflow-gsd-workflow-runs-partial-2026-01-03t00-00-00-graph-yaml",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 507,
+          "line": 1
+        },
+        "value": "steps:\n  - id: collect\n    title: Collect\n    status: complete\n    prompt: Collect for imported-project.\n    finished_at: 2026-01-03T00:01:00.000Z\n  - id: analyze\n    title: Analyze\n    status: active\n    prompt: Analyze for imported-project.\n    depends_on:\n      - collect\n    started_at: 2026-01-03T00:02:00.000Z\n  - id: report\n    title: Report\n    status: pending\n    prompt: Report for imported-project.\n    depends_on:\n      - analyze\nmetadata:\n  name: partial\n  created_at: 2026-01-03T00:00:00.000Z\n",
+        "sha256": "sha256:c4eebb3b037a03f064a43101e2f0c1cdebb9b44034d4de4b8efca6f19f3fc723"
+      },
+      "normalized": {
+        "path": ".gsd/workflow-runs/partial/2026-01-03T00-00-00/GRAPH.yaml",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "workflow-gsd-workflow-runs-partial-2026-01-03t00-00-00-graph-yaml",
+        "parser_id": "gsd-workflow-run-graph",
+        "parser_version": "1"
+      },
+      "reason_code": "workflow-run-is-evidence-only"
+    },
+    {
+      "change_id": "preserve-gsd-workflow-runs-partial-2026-01-03t00-00-00-params-json",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-workflow-run-artifact",
+        "key": ".gsd/workflow-runs/partial/2026-01-03T00-00-00/PARAMS.json"
+      },
+      "raw": {
+        "source_id": "workflow-gsd-workflow-runs-partial-2026-01-03t00-00-00-params-json",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 83,
+          "line": 1
+        },
+        "value": "{\n  \"target\": \"imported-project\",\n  \"api_token\": \"synthetic-token-workflow-2026\"\n}\n",
+        "sha256": "sha256:6c2216547d75fca9615dbe51587cf19b88ad2f7561818a9e49b66f2b5e148e4c"
+      },
+      "normalized": {
+        "path": ".gsd/workflow-runs/partial/2026-01-03T00-00-00/PARAMS.json",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "workflow-gsd-workflow-runs-partial-2026-01-03t00-00-00-params-json",
+        "parser_id": "gsd-workflow-run-graph",
+        "parser_version": "1"
+      },
+      "reason_code": "workflow-run-is-evidence-only"
+    },
+    {
+      "change_id": "preserve-gsd-workflow-runs-unknown-2026-01-06t00-00-00-definition-yaml",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-workflow-run-artifact",
+        "key": ".gsd/workflow-runs/unknown/2026-01-06T00-00-00/DEFINITION.yaml"
+      },
+      "raw": {
+        "source_id": "workflow-gsd-workflow-runs-unknown-2026-01-06t00-00-00-definition-yaml",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 118,
+          "line": 1
+        },
+        "value": "version: 1\nname: unknown-status\nsteps:\n  - id: inspect\n    name: Inspect\n    prompt: Inspect unknown status evidence.\n",
+        "sha256": "sha256:45deb7158efd2f95f832423969a2be865ba88ca77db113f5e210a4159fa8a94b"
+      },
+      "normalized": {
+        "path": ".gsd/workflow-runs/unknown/2026-01-06T00-00-00/DEFINITION.yaml",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "workflow-gsd-workflow-runs-unknown-2026-01-06t00-00-00-definition-yaml",
+        "parser_id": "gsd-workflow-run-graph",
+        "parser_version": "1"
+      },
+      "reason_code": "workflow-run-is-evidence-only"
+    },
+    {
+      "change_id": "preserve-gsd-workflows-bugfix-md",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-workflow-definition",
+        "key": ".gsd/workflows/bugfix.md"
+      },
+      "raw": {
+        "source_id": "workflow-gsd-workflows-bugfix-md",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 236,
+          "line": 1
+        },
+        "value": "# Project Bugfix Override\n\n<template_meta>\nname: Project Bugfix Override\nmode: markdown-phase\ndescription: Project definition shadows the bundled bugfix workflow.\n</template_meta>\n\n<phases>\n1. project-triage\n2. project-verify\n</phases>\n",
+        "sha256": "sha256:812764879d929f5e27e0a1fc7a34e7dc4e97b8046d95675d7f7e92fb678efa97"
+      },
+      "normalized": {
+        "path": ".gsd/workflows/bugfix.md",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "workflow-gsd-workflows-bugfix-md",
+        "parser_id": "gsd-workflow-definition",
+        "parser_version": "1"
+      },
+      "reason_code": "workflow-definition-is-evidence-only"
+    },
+    {
+      "change_id": "preserve-gsd-workflows-collision-yaml",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-workflow-definition",
+        "key": ".gsd/workflows/collision.yaml"
+      },
+      "raw": {
+        "source_id": "workflow-gsd-workflows-collision-yaml",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 219,
+          "line": 1
+        },
+        "value": "version: 1\nname: collision-current-project\ndescription: Current project definition wins every collision.\nsteps:\n  - id: current\n    name: Current project\n    prompt: Use the current project definition.\n    requires: []\n",
+        "sha256": "sha256:070b99b169f77dbcc69fdea704309e78fff6df7284ccb3a58f992cd4c689ef3c"
+      },
+      "normalized": {
+        "path": ".gsd/workflows/collision.yaml",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "workflow-gsd-workflows-collision-yaml",
+        "parser_id": "gsd-workflow-definition",
+        "parser_version": "1"
+      },
+      "reason_code": "workflow-definition-is-evidence-only"
+    },
+    {
+      "change_id": "preserve-gsd-workflows-drift-yaml",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-workflow-definition",
+        "key": ".gsd/workflows/drift.yaml"
+      },
+      "raw": {
+        "source_id": "workflow-gsd-workflows-drift-yaml",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 286,
+          "line": 1
+        },
+        "value": "version: 1\nname: drift\ndescription: Current definition after a run was created.\nsteps:\n  - id: inspect\n    name: Inspect current\n    prompt: Inspect with the revised prompt.\n  - id: publish\n    name: Publish current\n    prompt: Publish the revised report.\n    requires:\n      - inspect\n",
+        "sha256": "sha256:de0329b7a4a83d4833f13ec6865dc661b52c70232735674107f98a658852a76d"
+      },
+      "normalized": {
+        "path": ".gsd/workflows/drift.yaml",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "workflow-gsd-workflows-drift-yaml",
+        "parser_id": "gsd-workflow-definition",
+        "parser_version": "1"
+      },
+      "reason_code": "workflow-definition-is-evidence-only"
+    },
+    {
+      "change_id": "preserve-gsd-workflows-phased-md",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-workflow-definition",
+        "key": ".gsd/workflows/phased.md"
+      },
+      "raw": {
+        "source_id": "workflow-gsd-workflows-phased-md",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 259,
+          "line": 1
+        },
+        "value": "# Conversational Review\n\n<template_meta>\nname: Conversational Review\nmode: markdown-phase\ndescription: Markdown metadata and phase aliases.\ntriggers: review, validate\nrequires_project: true\n</template_meta>\n\n<phases>\n1. ask\n2. recommend\n3. validate\n</phases>\n",
+        "sha256": "sha256:65c3a77c26276eb782221ece90a4543982629f1350fa73e8e1cde23225a955db"
+      },
+      "normalized": {
+        "path": ".gsd/workflows/phased.md",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "workflow-gsd-workflows-phased-md",
+        "parser_id": "gsd-workflow-definition",
+        "parser_version": "1"
+      },
+      "reason_code": "workflow-definition-is-evidence-only"
+    },
+    {
+      "change_id": "preserve-gsd-workflows-unknown-field-yml",
+      "action": "preserve",
+      "target": {
+        "kind": "legacy-workflow-definition",
+        "key": ".gsd/workflows/unknown-field.yml"
+      },
+      "raw": {
+        "source_id": "workflow-gsd-workflows-unknown-field-yml",
+        "locator": {
+          "start_byte": 0,
+          "end_byte": 230,
+          "line": 1
+        },
+        "value": "version: 1\nname: unknown-field\ndescription: Forward-compatible unknown fields are retained.\nfuture_mode: patient\nsteps:\n  - id: preserve\n    name: Preserve\n    prompt: Preserve unknown fields as evidence.\n    future_hint: keep-me\n",
+        "sha256": "sha256:cf674c2330887183f27f8f5a50443900ca16df992b7ccc1406443d034a1f7da0"
+      },
+      "normalized": {
+        "path": ".gsd/workflows/unknown-field.yml",
+        "preservation": "verbatim"
+      },
+      "provenance": {
+        "source_id": "workflow-gsd-workflows-unknown-field-yml",
+        "parser_id": "gsd-workflow-definition",
+        "parser_version": "1"
+      },
+      "reason_code": "workflow-definition-is-evidence-only"
+    }
+  ],
+  "diagnoses": [
+    {
+      "diagnosis_id": "definition-bundled-shadowed",
+      "code": "lower-precedence-workflow-shadowed",
+      "severity": "info",
+      "source_id": "workflow-gsd-workflows-bugfix-md",
+      "locator": {
+        "start_byte": 2,
+        "end_byte": 25
+      },
+      "raw_value": "Project Bugfix Override",
+      "message": "The project workflow deterministically shadows the bundled workflow with the same name."
+    },
+    {
+      "diagnosis_id": "definition-global-collision-ignored",
+      "code": "lower-precedence-workflow-ignored",
+      "severity": "info",
+      "source_id": "workflow-gsd-home-workflows-collision-yaml",
+      "locator": {
+        "start_byte": 17,
+        "end_byte": 33
+      },
+      "raw_value": "collision-global",
+      "message": "The global workflow is excluded because a project workflow with the same filename has higher precedence."
+    },
+    {
+      "diagnosis_id": "definition-legacy-collision-ignored",
+      "code": "lower-precedence-workflow-ignored",
+      "severity": "info",
+      "source_id": "workflow-gsd-workflow-defs-collision-yaml",
+      "locator": {
+        "start_byte": 17,
+        "end_byte": 40
+      },
+      "raw_value": "collision-global-legacy",
+      "message": "The legacy project definition is excluded because the current project workflow directory has higher precedence."
+    },
+    {
+      "diagnosis_id": "definition-malformed",
+      "code": "malformed-workflow-definition",
+      "severity": "warning",
+      "source_id": "workflow-gsd-workflows-malformed-yaml",
+      "locator": {
+        "start_byte": 27,
+        "end_byte": 36
+      },
+      "raw_value": "steps: [\n",
+      "message": "The workflow definition is preserved as bytes but cannot be parsed as YAML."
+    },
+    {
+      "diagnosis_id": "definition-schema-invalid",
+      "code": "unsupported-workflow-definition-version",
+      "severity": "warning",
+      "source_id": "workflow-gsd-workflows-schema-invalid-yaml",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 10
+      },
+      "raw_value": "version: 2",
+      "message": "The YAML parses, but the workflow definition is not valid under the V1 schema."
+    },
+    {
+      "diagnosis_id": "run-definition-drift",
+      "code": "workflow-definition-drift",
+      "severity": "warning",
+      "source_id": "workflow-gsd-workflow-runs-drift-2026-01-02t00-00-00-definition-yaml",
+      "locator": {
+        "start_byte": 140,
+        "end_byte": 173
+      },
+      "raw_value": "Inspect with the original prompt.",
+      "message": "The frozen run definition differs from the current workflow definition; both are retained without choosing a resume path."
+    },
+    {
+      "diagnosis_id": "run-malformed-graph",
+      "code": "malformed-workflow-graph",
+      "severity": "warning",
+      "source_id": "workflow-gsd-workflow-runs-malformed-2026-01-05t00-00-00-graph-yaml",
+      "locator": {
+        "start_byte": 0,
+        "end_byte": 9
+      },
+      "raw_value": "steps: [\n",
+      "message": "The run graph is malformed and is retained without replay or repair."
+    },
+    {
+      "diagnosis_id": "run-missing-graph",
+      "code": "missing-workflow-graph",
+      "severity": "warning",
+      "source_id": "workflow-gsd-workflow-runs-missing-2026-01-04t00-00-00-definition-yaml",
+      "locator": {
+        "start_byte": 11,
+        "end_byte": 30
+      },
+      "raw_value": "name: missing-graph",
+      "message": "The run has a frozen definition but no GRAPH.yaml; it remains evidence-only."
+    },
+    {
+      "diagnosis_id": "run-secret-parameter-redacted",
+      "code": "sensitive-workflow-parameter",
+      "severity": "warning",
+      "source_id": "workflow-gsd-workflow-runs-partial-2026-01-03t00-00-00-params-json",
+      "locator": {
+        "start_byte": 49,
+        "end_byte": 80,
+        "json_pointer": "/api_token"
+      },
+      "raw_value": {
+        "redacted": true,
+        "sha256": "sha256:ec356b4f7535bfb167550cba8c333a5fd3ab93bfd4cc7821236840aec193bcd0"
+      },
+      "message": "A synthetic secret-like workflow parameter is fingerprinted exactly and omitted from diagnostic text."
+    },
+    {
+      "diagnosis_id": "run-unknown-status",
+      "code": "unknown-workflow-step-status",
+      "severity": "warning",
+      "source_id": "workflow-gsd-workflow-runs-unknown-2026-01-06t00-00-00-graph-yaml",
+      "locator": {
+        "start_byte": 54,
+        "end_byte": 60
+      },
+      "raw_value": "paused",
+      "message": "The graph contains an unsupported step status and is retained without resuming the run."
+    }
+  ],
+  "resolutions": [
+    {
+      "diagnosis_id": "definition-bundled-shadowed",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "definition-global-collision-ignored",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "definition-legacy-collision-ignored",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "definition-malformed",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "definition-schema-invalid",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "run-definition-drift",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "run-malformed-graph",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "run-missing-graph",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "run-secret-parameter-redacted",
+      "disposition": "preserved"
+    },
+    {
+      "diagnosis_id": "run-unknown-status",
+      "disposition": "preserved"
+    }
+  ]
+}

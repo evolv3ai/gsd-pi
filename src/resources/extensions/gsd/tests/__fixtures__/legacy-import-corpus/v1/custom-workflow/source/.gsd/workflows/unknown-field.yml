@@ -1,0 +1,9 @@
+version: 1
+name: unknown-field
+description: Forward-compatible unknown fields are retained.
+future_mode: patient
+steps:
+  - id: preserve
+    name: Preserve
+    prompt: Preserve unknown fields as evidence.
+    future_hint: keep-me

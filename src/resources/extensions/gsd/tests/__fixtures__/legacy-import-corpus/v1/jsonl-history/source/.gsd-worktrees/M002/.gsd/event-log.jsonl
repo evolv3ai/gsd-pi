@@ -1,0 +1,2 @@
+{"cmd":"plan_milestone","params":{"milestoneId":"M001","title":"Legacy foundation"},"ts":"2025-01-01T00:00:00.000Z","hash":"5c10a99963e2d4f3","actor":"agent","session_id":"fixture-session"}
+{"v":2,"cmd":"complete-task","params":{"milestoneId":"M002","sliceId":"S01","taskId":"T01"},"ts":"2025-01-01T00:07:00.000Z","hash":"59aebe24d8f53b7a","actor":"agent","session_id":"fixture-session"}

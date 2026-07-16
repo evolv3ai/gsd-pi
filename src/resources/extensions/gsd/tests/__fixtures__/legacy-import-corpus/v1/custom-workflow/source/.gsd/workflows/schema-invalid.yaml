@@ -1,0 +1,6 @@
+version: 2
+name: schema-invalid
+steps:
+  - id: invalid
+    name: Invalid version
+    prompt: This parses as YAML but is not a V1 definition.

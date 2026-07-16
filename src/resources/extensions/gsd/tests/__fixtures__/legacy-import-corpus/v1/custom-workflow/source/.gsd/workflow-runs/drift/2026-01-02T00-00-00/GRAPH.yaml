@@ -1,0 +1,14 @@
+steps:
+  - id: inspect
+    title: Inspect frozen
+    status: pending
+    prompt: Inspect with the original prompt.
+  - id: publish
+    title: Publish frozen
+    status: pending
+    prompt: Publish the original report.
+    depends_on:
+      - inspect
+metadata:
+  name: drift
+  created_at: 2026-01-02T00:00:00.000Z

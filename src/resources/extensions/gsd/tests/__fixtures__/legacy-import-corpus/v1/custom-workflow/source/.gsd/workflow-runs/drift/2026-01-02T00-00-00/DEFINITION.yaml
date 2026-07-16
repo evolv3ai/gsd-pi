@@ -1,0 +1,12 @@
+version: 1
+name: drift
+description: Frozen definition when the run was created.
+steps:
+  - id: inspect
+    name: Inspect frozen
+    prompt: Inspect with the original prompt.
+  - id: publish
+    name: Publish frozen
+    prompt: Publish the original report.
+    requires:
+      - inspect

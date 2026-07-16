@@ -1,0 +1,6 @@
+version: 1
+name: collision-global-legacy
+steps:
+  - id: legacy
+    name: Legacy collision
+    prompt: Legacy project definition loses to current project workflow.

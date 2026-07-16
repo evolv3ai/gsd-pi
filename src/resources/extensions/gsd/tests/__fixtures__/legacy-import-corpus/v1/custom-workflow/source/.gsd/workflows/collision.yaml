@@ -1,0 +1,8 @@
+version: 1
+name: collision-current-project
+description: Current project definition wins every collision.
+steps:
+  - id: current
+    name: Current project
+    prompt: Use the current project definition.
+    requires: []

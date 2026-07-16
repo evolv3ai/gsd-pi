@@ -1,0 +1,8 @@
+{"cmd":"plan_milestone","params":{"milestoneId":"M001","title":"Legacy foundation"},"ts":"2025-01-01T00:00:00.000Z","hash":"5c10a99963e2d4f3","actor":"agent","session_id":"fixture-session"}
+{"v":2,"cmd":"plan-milestone","params":{"milestoneId":"M002","title":"Current delivery"},"ts":"2025-01-01T00:01:00.000Z","hash":"fd8deea9f8ec53b9","actor":"system","session_id":"fixture-session"}
+{"v":2,"cmd":"complete-task","params":{"milestoneId":"M001","sliceId":"S01","taskId":"T01","authorityContext":"adopted"},"ts":"2025-01-01T00:02:00.000Z","hash":"b9e231eff8f9ba3e","actor":"agent","session_id":"fixture-session"}
+{"v":2,"cmd":"complete_task","params":{"milestoneId":"M099","sliceId":"S01","taskId":"T01","authorityContext":"legacy-only"},"ts":"2025-01-01T00:04:00.000Z","hash":"24fc684e3554bed4","actor":"agent","session_id":"fixture-session"}
+{"v":2,"cmd":"complete_task","params":{"milestoneId":"M099","sliceId":"S01","taskId":"T01","authorityContext":"legacy-only"},"ts":"2025-01-01T00:04:00.000Z","hash":"24fc684e3554bed4","actor":"agent","session_id":"fixture-session"}
+{"v":2,"cmd":"start-task","params":{"milestoneId":"M099","sliceId":"S01","taskId":"T02"},"ts":"2025-01-01T00:03:00.000Z","hash":"4dbb643c33853022","actor":"agent","session_id":"fixture-session"}
+{"v":2,"cmd":"future-command","params":{"milestoneId":"M099","payload":"retain me"},"ts":"2025-01-01T00:05:00.000Z","hash":"034a47466486e269","actor":"agent","session_id":"fixture-session"}
+{"v":2,"cmd":"report-blocker","params":{"milestoneId":"M099","sliceId":"S01","taskId":"T03","note":"Authorization: Bearer fixture-token-1234"},"ts":"2025-01-01T00:06:00.000Z","hash":"bd466c684f7d8238","actor":"agent","session_id":"fixture-session"}
