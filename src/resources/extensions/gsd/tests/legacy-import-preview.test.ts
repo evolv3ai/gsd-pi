@@ -1,0 +1,705 @@
+// Project/App: gsd-pi
+// File Purpose: Preview identity and atomic current-authority base snapshot tests.
+
+import assert from "node:assert/strict";
+import { describe, test } from "node:test";
+
+import {
+  LEGACY_IMPORT_PREVIEW_TOP_LEVEL_KEYS,
+  type LegacyImportPreviewEnvelope,
+  type LegacyImportSha256,
+} from "../legacy-import-contract.ts";
+import {
+  LEGACY_IMPORT_BASE_ROW_SETS,
+  LegacyImportBaseSnapshotError,
+  captureLegacyImportBaseSnapshot,
+  captureCurrentLegacyImportBaseSnapshot,
+  type LegacyImportBaseSnapshotSource,
+} from "../legacy-import-preview-base.ts";
+import {
+  canonicalLegacyImportJson,
+  hashLegacyImportValue,
+  sealLegacyImportPreview,
+  type LegacyImportPreviewSealInput,
+} from "../legacy-import-preview.ts";
+import { _getAdapter, closeDatabase, openDatabase } from "../gsd-db.ts";
+
+const ONE_HASH = `sha256:${"1".repeat(64)}` as LegacyImportSha256;
+const EMPTY_HASH = hashLegacyImportValue([]);
+const EXPECTED_BASE_ROW_SETS = [
+  "milestones",
+  "slices",
+  "tasks",
+  "slice_dependencies",
+  "requirements",
+  "artifacts",
+  "assessments",
+  "decisions",
+  "decision_memories",
+  "item_lifecycles",
+] as const;
+const EXPECTED_BASE_ROW_KEYS: Record<(typeof EXPECTED_BASE_ROW_SETS)[number], readonly string[]> = {
+  milestones: [
+    "id", "title", "status", "depends_on", "completed_at", "vision", "success_criteria",
+    "key_risks", "proof_strategy", "verification_contract", "verification_integration",
+    "verification_operational", "verification_uat", "definition_of_done",
+    "requirement_coverage", "boundary_map_markdown", "sequence",
+  ],
+  slices: [
+    "milestone_id", "id", "title", "status", "risk", "depends", "demo", "completed_at",
+    "full_summary_md", "full_uat_md", "goal", "success_criteria", "proof_level",
+    "integration_closure", "observability_impact", "target_repositories", "sequence",
+    "replan_triggered_at", "is_sketch", "sketch_scope",
+  ],
+  tasks: [
+    "milestone_id", "slice_id", "id", "title", "status", "one_liner", "narrative",
+    "verification_result", "duration", "completed_at", "blocker_discovered", "blocker_source",
+    "escalation_pending", "escalation_awaiting_review", "escalation_artifact_path",
+    "escalation_override_applied_at", "deviations", "known_issues", "key_files", "key_decisions",
+    "full_summary_md", "description", "estimate", "files", "verify", "inputs", "expected_output",
+    "observability_impact", "full_plan_md", "target_repositories", "sequence",
+  ],
+  slice_dependencies: ["milestone_id", "slice_id", "depends_on_slice_id"],
+  requirements: [
+    "id", "class", "status", "description", "why", "source", "primary_owner",
+    "supporting_slices", "validation", "notes", "full_content", "superseded_by",
+  ],
+  artifacts: ["path", "artifact_type", "milestone_id", "slice_id", "task_id", "full_content", "content_hash"],
+  assessments: ["path", "milestone_id", "slice_id", "task_id", "status", "scope", "full_content"],
+  decisions: [
+    "id", "when_context", "scope", "decision", "choice", "rationale", "revisable",
+    "made_by", "source", "superseded_by",
+  ],
+  decision_memories: ["source_decision_id", "structured_fields"],
+  item_lifecycles: ["project_id", "item_kind", "milestone_id", "slice_id", "task_id", "lifecycle_status"],
+};
+
+function previewSource() {
+  return {
+    source_id: "source-1",
+    path: ".gsd/STATE.md",
+    kind: "markdown",
+    byte_size: 4,
+    sha256: ONE_HASH,
+    parser_id: "state",
+    parser_version: "1",
+    encoding: "utf-8" as const,
+    outcome: "preserved" as const,
+  };
+}
+
+function previewChange() {
+  return {
+    change_id: "change-1",
+    action: "preserve" as const,
+    target: { kind: "legacy-artifact", key: ".gsd/STATE.md" },
+    raw: {
+      source_id: "source-1",
+      locator: { start_byte: 0, end_byte: 4, line: 1 },
+      value: "raw",
+      sha256: ONE_HASH,
+    },
+    normalized: { value: "raw" },
+    provenance: { source_id: "source-1", parser_id: "state", parser_version: "1" },
+    reason_code: "preserve-state",
+  };
+}
+
+function sealInput(): LegacyImportPreviewSealInput {
+  return {
+    import_kind: "legacy-markdown",
+    importer_version: "1",
+    base: {
+      snapshot_schema_version: 1,
+      database_schema_version: 44,
+      authority: {
+        singleton: 1,
+        project_id: "project-1",
+        project_root_realpath: "",
+        revision: 7,
+        authority_epoch: 2,
+        created_at: "",
+        updated_at: "",
+      },
+      rows: [],
+      relevant_rows_hash: EMPTY_HASH,
+    },
+    source_set_hash: EMPTY_HASH,
+    change_set_hash: EMPTY_HASH,
+    counts: { create: 0, update: 0, delete: 0, preserve: 0, unparsed: 0, unresolved: 0 },
+    sources: [],
+    changes: [],
+    diagnoses: [],
+    resolutions: [],
+  };
+}
+
+function sealInputWithEvidence(): LegacyImportPreviewSealInput {
+  const input = sealInput();
+  input.sources = [previewSource()];
+  input.changes = [previewChange()];
+  input.diagnoses = [{
+    diagnosis_id: "diagnosis-1",
+    code: "ambiguous-state",
+    severity: "blocker",
+    source_id: "source-1",
+    locator: { start_byte: 0, end_byte: 4, line: 1 },
+    raw_value: "raw",
+    message: "State is ambiguous.",
+  }];
+  input.resolutions = [{ diagnosis_id: "diagnosis-1", disposition: "requires-user" }];
+  input.counts = { ...input.counts, preserve: 1, unresolved: 1 };
+  input.source_set_hash = hashLegacyImportValue(input.sources);
+  input.change_set_hash = hashLegacyImportValue(input.changes);
+  return input;
+}
+
+function sealInputWithAllCounts(): LegacyImportPreviewSealInput {
+  const input = sealInput();
+  input.sources = [
+    previewSource(),
+    { ...previewSource(), source_id: "source-2", path: ".gsd/UNKNOWN.md", outcome: "unparsed" },
+  ];
+  input.changes = (["create", "update", "delete", "preserve"] as const).map((action, index) => ({
+    ...previewChange(),
+    change_id: `change-${index + 1}`,
+    action,
+    target: { kind: "milestone", key: `M00${index + 1}` },
+  }));
+  input.diagnoses = [
+    { diagnosis_id: "diagnosis-1", code: "ambiguous", severity: "blocker", source_id: "source-1", locator: { start_byte: 0, end_byte: 4 }, raw_value: "raw", message: "Ambiguous." },
+    { diagnosis_id: "diagnosis-2", code: "unsupported", severity: "blocker", source_id: "source-2", locator: { start_byte: 0, end_byte: 4 }, raw_value: "raw", message: "Unsupported." },
+  ];
+  input.resolutions = [
+    { diagnosis_id: "diagnosis-1", disposition: "requires-user" },
+    { diagnosis_id: "diagnosis-2", disposition: "unsupported" },
+  ];
+  input.counts = { create: 1, update: 1, delete: 1, preserve: 1, unparsed: 1, unresolved: 2 };
+  input.source_set_hash = hashLegacyImportValue(input.sources);
+  input.change_set_hash = hashLegacyImportValue(input.changes);
+  return input;
+}
+
+describe("legacy preview identity", () => {
+  test("legacy preview identity canonicalizes objects but preserves arrays and exact values", () => {
+    const left = { nested: { beta: 2, alpha: 1 }, values: ["a", "b"] };
+    const reordered = { values: ["a", "b"], nested: { alpha: 1, beta: 2 } };
+
+    assert.equal(canonicalLegacyImportJson(left), canonicalLegacyImportJson(reordered));
+    assert.equal(hashLegacyImportValue(left), hashLegacyImportValue(reordered));
+    assert.equal(
+      hashLegacyImportValue({ b: 2, a: 1 }),
+      "sha256:43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777",
+    );
+    assert.notEqual(hashLegacyImportValue(left), hashLegacyImportValue({ ...left, values: ["b", "a"] }));
+    assert.notEqual(hashLegacyImportValue("é"), hashLegacyImportValue("e"));
+  });
+
+  test("legacy preview identity rejects values outside strict JSON", () => {
+    for (const value of [undefined, Number.NaN, Number.POSITIVE_INFINITY, () => undefined, new Date(0)]) {
+      assert.throws(
+        () => canonicalLegacyImportJson(value as never),
+        /legacy import identity requires (strict JSON|plain JSON objects)/,
+      );
+    }
+    assert.throws(() => canonicalLegacyImportJson(Array(1)), /dense JSON arrays/);
+    const extended = ["value"] as string[] & { extra?: string };
+    extended.extra = "not-json";
+    assert.throws(() => canonicalLegacyImportJson(extended), /dense JSON arrays/);
+  });
+
+  test("legacy preview identity seals the exact envelope in a two-field artifact", () => {
+    const first = sealLegacyImportPreview(sealInput());
+    const second = sealLegacyImportPreview(sealInput());
+
+    assert.deepEqual(first, second);
+    assert.deepEqual(Object.keys(first), ["preview", "preview_hash"]);
+    assert.deepEqual(Object.keys(first.preview), LEGACY_IMPORT_PREVIEW_TOP_LEVEL_KEYS);
+    assert.equal("preview_hash" in first.preview, false);
+    assert.match(first.preview.preview_id, /^sha256:[0-9a-f]{64}$/);
+    assert.match(first.preview_hash, /^sha256:[0-9a-f]{64}$/);
+    assert.equal(first.preview_hash, hashLegacyImportValue(first.preview as never));
+    assert.equal(Object.isFrozen(first), true);
+    assert.equal(Object.isFrozen(first.preview), true);
+  });
+
+  test("legacy preview identity changes for every approval-relevant base component", () => {
+    const original = sealInput();
+    const originalArtifact = sealLegacyImportPreview(original);
+    const mutations: Array<[string, (input: LegacyImportPreviewSealInput) => void]> = [
+      ["importer version", (input) => { input.importer_version = "2"; }],
+      ["import kind", (input) => { input.import_kind = "legacy-gsd"; }],
+      ["revision", (input) => { input.base = { ...input.base, authority: { ...input.base.authority, revision: 8 } }; }],
+      ["epoch", (input) => { input.base = { ...input.base, authority: { ...input.base.authority, authority_epoch: 3 } }; }],
+      ["project", (input) => { input.base = { ...input.base, authority: { ...input.base.authority, project_id: "project-2" } }; }],
+      ["root", (input) => { input.base = { ...input.base, authority: { ...input.base.authority, project_root_realpath: "/repo" } }; }],
+    ];
+
+    for (const [label, mutate] of mutations) {
+      const changed = structuredClone(original);
+      mutate(changed);
+      const artifact = sealLegacyImportPreview(changed);
+      assert.notEqual(artifact.preview.preview_id, originalArtifact.preview.preview_id, label);
+      assert.notEqual(artifact.preview_hash, originalArtifact.preview_hash, label);
+    }
+  });
+
+  test("legacy preview identity binds source, change, and relevant base-row evidence", () => {
+    const original = sealInput();
+    const originalArtifact = sealLegacyImportPreview(original);
+
+    const sourceChanged = structuredClone(original);
+    sourceChanged.sources = [previewSource()];
+    sourceChanged.source_set_hash = hashLegacyImportValue(sourceChanged.sources);
+    const sourceArtifact = sealLegacyImportPreview(sourceChanged);
+    assert.notEqual(sourceArtifact.preview.preview_id, originalArtifact.preview.preview_id);
+
+    const changeChanged = structuredClone(sourceChanged);
+    changeChanged.changes = [previewChange()];
+    changeChanged.counts = { ...changeChanged.counts, preserve: 1 };
+    changeChanged.change_set_hash = hashLegacyImportValue(changeChanged.changes);
+    const changeArtifact = sealLegacyImportPreview(changeChanged);
+    assert.notEqual(changeArtifact.preview.preview_id, sourceArtifact.preview.preview_id);
+
+    const baseChanged = structuredClone(original);
+    baseChanged.base = {
+      ...baseChanged.base,
+      rows: [{
+        row_set: "milestones",
+        identity: '{"id":"M001"}',
+        value: { id: "M001", title: "Foundation" },
+      }],
+    };
+    baseChanged.base = {
+      ...baseChanged.base,
+      relevant_rows_hash: hashLegacyImportValue(baseChanged.base.rows),
+    };
+    const baseArtifact = sealLegacyImportPreview(baseChanged);
+    assert.notEqual(baseArtifact.preview.preview_id, originalArtifact.preview.preview_id);
+  });
+
+  test("legacy preview identity rejects an unsupported database schema", () => {
+    const input = sealInput();
+    input.base = { ...input.base, database_schema_version: 43 as 44 };
+    assert.throws(() => sealLegacyImportPreview(input), /database schema 44/);
+  });
+
+  test("legacy preview identity rejects import kinds the application receipt cannot store", () => {
+    for (const importKind of ["Legacy-Markdown", " legacy-markdown", "legacy-markdown "]) {
+      const input = sealInput();
+      input.import_kind = importKind;
+      assert.throws(() => sealLegacyImportPreview(input), /trimmed lowercase/, importKind);
+    }
+  });
+
+  test("legacy preview identity rejects stale evidence hashes and counts", () => {
+    const staleHashes: Array<[string, (input: LegacyImportPreviewSealInput) => void, RegExp]> = [
+      ["base", (input) => { input.base = { ...input.base, relevant_rows_hash: ONE_HASH }; }, /base rows/],
+      ["sources", (input) => { input.source_set_hash = ONE_HASH; }, /Preview sources/],
+      ["changes", (input) => { input.change_set_hash = ONE_HASH; }, /Preview changes/],
+    ];
+    for (const [label, mutate, message] of staleHashes) {
+      const input = sealInput();
+      mutate(input);
+      assert.throws(() => sealLegacyImportPreview(input), message, label);
+    }
+
+    const wrongCounts = sealInput();
+    wrongCounts.counts = { ...wrongCounts.counts, create: 1 };
+    assert.throws(() => sealLegacyImportPreview(wrongCounts), /counts do not match evidence/);
+  });
+
+  test("legacy preview identity retains ambiguity evidence in the sealed hash", () => {
+    const input = sealInputWithEvidence();
+    const artifact = sealLegacyImportPreview(input);
+    assert.deepEqual(artifact.preview, {
+      preview_schema_version: 1,
+      preview_id: artifact.preview.preview_id,
+      import_kind: input.import_kind,
+      importer_version: input.importer_version,
+      base_project_revision: input.base.authority.revision,
+      base_authority_epoch: input.base.authority.authority_epoch,
+      base_database_schema_version: input.base.database_schema_version,
+      source_set_hash: input.source_set_hash,
+      change_set_hash: input.change_set_hash,
+      counts: input.counts,
+      sources: input.sources,
+      changes: input.changes,
+      diagnoses: input.diagnoses,
+      resolutions: input.resolutions,
+    });
+
+    const withoutAmbiguity = structuredClone(artifact.preview);
+    withoutAmbiguity.diagnoses = [];
+    withoutAmbiguity.resolutions = [];
+    assert.notEqual(hashLegacyImportValue(withoutAmbiguity), artifact.preview_hash);
+  });
+
+  test("legacy preview identity is deeply immutable and detached from caller input", () => {
+    const input = sealInputWithEvidence();
+    const artifact = sealLegacyImportPreview(input);
+    const normalized = input.changes[0].normalized as Record<string, string>;
+    normalized["value"] = "mutated";
+    input.diagnoses[0].message = "Mutated after approval.";
+
+    assert.deepEqual(artifact.preview.changes[0].normalized, { value: "raw" });
+    assert.equal(artifact.preview.diagnoses[0].message, "State is ambiguous.");
+    assert.equal(Object.isFrozen(artifact.preview.changes), true);
+    assert.equal(Object.isFrozen(artifact.preview.changes[0]), true);
+    assert.equal(Object.isFrozen(artifact.preview.changes[0].normalized), true);
+    assert.equal(Object.isFrozen(artifact.preview.diagnoses[0]), true);
+  });
+
+  test("legacy preview identity snapshots getter-backed input before validation", () => {
+    const input = sealInput();
+    let reads = 0;
+    Object.defineProperty(input, "sources", {
+      enumerable: true,
+      get() {
+        reads += 1;
+        return reads === 1 ? [] : [previewSource()];
+      },
+    });
+
+    const artifact = sealLegacyImportPreview(input);
+    assert.equal(reads, 1);
+    assert.deepEqual(artifact.preview.sources, []);
+    assert.equal(artifact.preview.source_set_hash, hashLegacyImportValue(artifact.preview.sources));
+  });
+
+  test("legacy preview identity derives and rejects drift in every count", () => {
+    const input = sealInputWithAllCounts();
+    assert.doesNotThrow(() => sealLegacyImportPreview(input));
+    for (const field of ["create", "update", "delete", "preserve", "unparsed", "unresolved"] as const) {
+      const changed = structuredClone(input);
+      changed.counts = { ...changed.counts, [field]: changed.counts[field] + 1 };
+      assert.throws(() => sealLegacyImportPreview(changed), /counts do not match evidence/, field);
+    }
+  });
+
+  test("legacy preview identity rejects blank importer and unsupported snapshot schema", () => {
+    const blankImporter = sealInput();
+    blankImporter.importer_version = " ";
+    assert.throws(() => sealLegacyImportPreview(blankImporter), /importer_version must not be blank/);
+
+    const wrongSnapshotSchema = sealInput();
+    wrongSnapshotSchema.base = { ...wrongSnapshotSchema.base, snapshot_schema_version: 2 as 1 };
+    assert.throws(() => sealLegacyImportPreview(wrongSnapshotSchema), /snapshot schema 1/);
+  });
+
+  test("legacy preview identity full-envelope hash catches non-identity evidence drift", () => {
+    const artifact = sealLegacyImportPreview(sealInput());
+    const changed = structuredClone(artifact.preview) as LegacyImportPreviewEnvelope;
+    changed.counts = { ...changed.counts, unparsed: 1 };
+
+    assert.equal(changed.preview_id, artifact.preview.preview_id);
+    assert.notEqual(hashLegacyImportValue(changed as never), artifact.preview_hash);
+  });
+});
+
+function sourceFixture(overrides: Partial<LegacyImportBaseSnapshotSource> = {}) {
+  let inTransaction = false;
+  const calls: string[] = [];
+  const rows = new Map<string, readonly Record<string, unknown>[]>([
+    ["milestones", [
+      { id: "M002", title: "Second", status: "pending" },
+      { id: "M001", title: "First", status: "active" },
+    ]],
+    ["slices", [{ milestone_id: "M001", id: "S01", title: "Slice" }]],
+    ["tasks", [{ milestone_id: "M001", slice_id: "S01", id: "T01", title: "Task" }]],
+    ["slice_dependencies", [{ milestone_id: "M001", slice_id: "S02", depends_on_slice_id: "S01" }]],
+    ["requirements", [{ id: "R001", description: "Requirement" }]],
+    ["artifacts", [{ path: ".gsd/PROJECT.md", full_content: "Project" }]],
+    ["assessments", [{
+      path: ".gsd/M001-ASSESSMENT.md",
+      milestone_id: "M001",
+      slice_id: null,
+      task_id: null,
+      scope: "roadmap",
+      status: "pass",
+    }]],
+    ["decisions", [{ id: "D001", decision: "Decision" }]],
+    ["decision_memories", [{ source_decision_id: "D002", structured_fields: '{"sourceDecisionId":"D002"}' }]],
+    ["item_lifecycles", [{
+      project_id: "project-1",
+      item_kind: "milestone",
+      milestone_id: "M001",
+      slice_id: null,
+      task_id: null,
+      lifecycle_status: "pending",
+    }]],
+  ]);
+  const assertInside = (name: string) => {
+    assert.equal(inTransaction, true, `${name} must run inside readTransaction`);
+    calls.push(name);
+  };
+  const source: LegacyImportBaseSnapshotSource = {
+    readSchemaVersion() {
+      assertInside("schema");
+      return 44;
+    },
+    readAuthorityRows() {
+      assertInside("authority");
+      return [{
+        singleton: 1,
+        project_id: "project-1",
+        project_root_realpath: "",
+        revision: 9,
+        authority_epoch: 3,
+        created_at: "created",
+        updated_at: "updated",
+      }];
+    },
+    readRows(rowSet) {
+      assertInside(rowSet);
+      return rows.get(rowSet) ?? [];
+    },
+    ...overrides,
+  };
+  return {
+    source,
+    calls,
+    rows,
+    readTransaction<T>(fn: () => T): T {
+      assert.equal(inTransaction, false);
+      inTransaction = true;
+      try {
+        return fn();
+      } finally {
+        inTransaction = false;
+      }
+    },
+  };
+}
+
+describe("legacy preview base snapshot", () => {
+  test("legacy preview base snapshot captures every relevant row set in one transaction", () => {
+    const fixture = sourceFixture();
+    let transactionCalls = 0;
+    const snapshot = captureLegacyImportBaseSnapshot({
+      source: fixture.source,
+      readTransaction<T>(fn: () => T): T {
+        transactionCalls += 1;
+        return fixture.readTransaction(fn);
+      },
+    });
+
+    assert.equal(transactionCalls, 1);
+    assert.deepEqual(LEGACY_IMPORT_BASE_ROW_SETS, EXPECTED_BASE_ROW_SETS);
+    assert.deepEqual(fixture.calls, ["schema", "authority", ...EXPECTED_BASE_ROW_SETS]);
+    assert.deepEqual(snapshot.rows.map((row) => row.row_set), [
+      "milestones",
+      "milestones",
+      ...EXPECTED_BASE_ROW_SETS.slice(1),
+    ]);
+    assert.equal(snapshot.rows[0].identity, '{"id":"M001"}');
+    assert.equal(snapshot.relevant_rows_hash, hashLegacyImportValue(snapshot.rows));
+    const changedRows = structuredClone(snapshot.rows);
+    (changedRows[0].value as Record<string, unknown>)["title"] = "Changed";
+    assert.notEqual(hashLegacyImportValue(changedRows), snapshot.relevant_rows_hash);
+    assert.equal(Object.isFrozen(snapshot), true);
+    assert.equal(Object.isFrozen(snapshot.rows), true);
+  });
+
+  test("legacy preview base snapshot is stable when a reader returns rows in another order", () => {
+    const first = sourceFixture();
+    const second = sourceFixture();
+    second.rows.set("milestones", [...second.rows.get("milestones")!].reverse());
+
+    const left = captureLegacyImportBaseSnapshot(first);
+    const right = captureLegacyImportBaseSnapshot(second);
+    assert.deepEqual(left, right);
+  });
+
+  test("legacy preview base snapshot propagates transaction failures without retry", () => {
+    const sentinel = new Error("read snapshot failed");
+    let calls = 0;
+    assert.throws(
+      () => captureLegacyImportBaseSnapshot({
+        source: sourceFixture().source,
+        readTransaction() {
+          calls += 1;
+          throw sentinel;
+        },
+      }),
+      (error) => error === sentinel,
+    );
+    assert.equal(calls, 1);
+  });
+
+  test("legacy preview base snapshot fails loudly on malformed authority state", () => {
+    const cases: Array<[string, Partial<LegacyImportBaseSnapshotSource>, string]> = [
+      ["missing", { readAuthorityRows: () => [] }, "LEGACY_IMPORT_BASE_AUTHORITY_MISSING"],
+      ["duplicate", { readAuthorityRows: () => [{}, {}] }, "LEGACY_IMPORT_BASE_AUTHORITY_DUPLICATE"],
+      ["unsupported schema", { readSchemaVersion: () => 43 }, "LEGACY_IMPORT_BASE_UNSUPPORTED_SCHEMA"],
+      ["blank project", { readAuthorityRows: () => [{ singleton: 1, project_id: "", project_root_realpath: "", revision: 0, authority_epoch: 0, created_at: "", updated_at: "" }] }, "LEGACY_IMPORT_BASE_AUTHORITY_INVALID"],
+      ["unsafe revision", { readAuthorityRows: () => [{ singleton: 1, project_id: "p", project_root_realpath: "", revision: Number.MAX_SAFE_INTEGER + 1, authority_epoch: 0, created_at: "", updated_at: "" }] }, "LEGACY_IMPORT_BASE_AUTHORITY_INVALID"],
+    ];
+
+    for (const [label, override, code] of cases) {
+      const fixture = sourceFixture(override);
+      assert.throws(
+        () => captureLegacyImportBaseSnapshot(fixture),
+        (error) => error instanceof LegacyImportBaseSnapshotError && error.code === code,
+        label,
+      );
+    }
+  });
+
+  test("legacy preview base snapshot rejects duplicate logical row identity", () => {
+    const fixture = sourceFixture({
+      readRows(rowSet) {
+        if (rowSet !== "milestones") return [];
+        return [
+          { id: "M001", title: "one" },
+          { id: "M001", title: "conflict" },
+        ];
+      },
+    });
+
+    assert.throws(
+      () => captureLegacyImportBaseSnapshot(fixture),
+      (error) => error instanceof LegacyImportBaseSnapshotError
+        && error.code === "LEGACY_IMPORT_BASE_ROW_DUPLICATE"
+        && error.context.row_set === "milestones",
+    );
+
+    const memoryFixture = sourceFixture({
+      readRows(rowSet) {
+        if (rowSet !== "decision_memories") return [];
+        return [
+          { source_decision_id: "D001", structured_fields: '{"sourceDecisionId":"D001","choice":"one"}' },
+          { source_decision_id: "D001", structured_fields: '{"sourceDecisionId":"D001","choice":"two"}' },
+        ];
+      },
+    });
+    assert.throws(
+      () => captureLegacyImportBaseSnapshot(memoryFixture),
+      (error) => error instanceof LegacyImportBaseSnapshotError
+        && error.code === "LEGACY_IMPORT_BASE_ROW_DUPLICATE"
+        && error.context.row_set === "decision_memories"
+        && error.context.identity === '{"source_decision_id":"D001"}',
+    );
+  });
+
+  test("legacy preview base snapshot rejects integers that cannot be hashed exactly", () => {
+    const fixture = sourceFixture({
+      readRows(rowSet) {
+        return rowSet === "milestones"
+          ? [{ id: "M001", sequence: Number.MAX_SAFE_INTEGER + 1 }]
+          : [];
+      },
+    });
+    assert.throws(
+      () => captureLegacyImportBaseSnapshot(fixture),
+      (error) => error instanceof LegacyImportBaseSnapshotError
+        && error.code === "LEGACY_IMPORT_BASE_ROW_INVALID"
+        && error.context.column === "sequence",
+    );
+  });
+
+  test("legacy preview base snapshot reads the already-open v44 database without writes", () => {
+    assert.equal(openDatabase(":memory:"), true);
+    try {
+      const db = _getAdapter();
+      assert.ok(db);
+      db.exec(`
+        INSERT INTO milestones (id, title) VALUES ('M001', 'Foundation');
+        INSERT INTO slices (milestone_id, id, title) VALUES ('M001', 'S01', 'First');
+        INSERT INTO slices (milestone_id, id, title) VALUES ('M001', 'S02', 'Second');
+        INSERT INTO tasks (milestone_id, slice_id, id, title) VALUES ('M001', 'S01', 'T01', 'Task');
+        INSERT INTO slice_dependencies (milestone_id, slice_id, depends_on_slice_id)
+          VALUES ('M001', 'S02', 'S01');
+        INSERT INTO requirements (id, description) VALUES ('R001', 'Requirement');
+        INSERT INTO artifacts (path, artifact_type, milestone_id, full_content)
+          VALUES ('.gsd/PROJECT.md', 'project', 'M001', 'Project');
+        INSERT INTO assessments (path, milestone_id, status, scope)
+          VALUES ('.gsd/M001-ASSESSMENT.md', 'M001', 'pass', 'roadmap');
+        INSERT INTO decisions (id, decision) VALUES ('D001', 'Decision');
+        INSERT INTO memories (
+          id, category, content, created_at, updated_at, structured_fields
+        ) VALUES (
+          'memory-1', 'architecture', 'Decision memory', 'created', 'updated',
+          '{ "choice": "Memory choice", "sourceDecisionId": "D002" }'
+        );
+      `);
+      const projectId = String(db.prepare(
+        "SELECT project_id FROM project_authority WHERE singleton = 1",
+      ).get()?.["project_id"]);
+      db.prepare(`
+        INSERT INTO workflow_operations (
+          operation_id, project_id, operation_type, idempotency_key,
+          expected_revision, resulting_revision,
+          expected_authority_epoch, resulting_authority_epoch,
+          actor_type, source_transport, request_hash, created_at
+        ) VALUES ('operation-1', ?, 'test', 'test-1', 0, 1, 0, 0, 'test', 'test', 'hash', 'created')
+      `).run(projectId);
+      db.prepare(`
+        INSERT INTO workflow_item_lifecycles (
+          lifecycle_id, project_id, item_kind, milestone_id, lifecycle_status,
+          created_at, updated_at, last_operation_id, last_project_revision, last_authority_epoch
+        ) VALUES ('lifecycle-1', ?, 'milestone', 'M001', 'pending',
+          'created', 'created', 'operation-1', 1, 0)
+      `).run(projectId);
+      const before = db.prepare("SELECT total_changes() AS count").get()?.["count"];
+
+      const snapshot = captureCurrentLegacyImportBaseSnapshot();
+
+      const after = db.prepare("SELECT total_changes() AS count").get()?.["count"];
+      assert.equal(after, before);
+      assert.equal(snapshot.database_schema_version, 44);
+      assert.deepEqual([...new Set(snapshot.rows.map((row) => row.row_set))], EXPECTED_BASE_ROW_SETS);
+      const rows = new Map(snapshot.rows.map((row) => [row.row_set, row.value]));
+      for (const rowSet of EXPECTED_BASE_ROW_SETS) {
+        assert.deepEqual(Object.keys(rows.get(rowSet)!), EXPECTED_BASE_ROW_KEYS[rowSet], rowSet);
+      }
+      assert.equal(rows.get("milestones")?.["title"], "Foundation");
+      assert.equal(rows.get("slices")?.["title"], "Second");
+      assert.equal(rows.get("tasks")?.["title"], "Task");
+      assert.equal(rows.get("slice_dependencies")?.["depends_on_slice_id"], "S01");
+      assert.equal(rows.get("requirements")?.["description"], "Requirement");
+      assert.equal(rows.get("artifacts")?.["full_content"], "Project");
+      assert.equal(rows.get("assessments")?.["scope"], "roadmap");
+      assert.equal(rows.get("decisions")?.["decision"], "Decision");
+      assert.equal(rows.get("decision_memories")?.["source_decision_id"], "D002");
+      assert.equal(rows.get("item_lifecycles")?.["lifecycle_status"], "pending");
+
+      db.exec(`
+        UPDATE artifacts SET imported_at = 'later' WHERE path = '.gsd/PROJECT.md';
+        UPDATE memories SET hit_count = 9, last_hit_at = 'later', updated_at = 'later'
+          WHERE id = 'memory-1';
+      `);
+      const afterOperationalActivity = captureCurrentLegacyImportBaseSnapshot();
+      assert.equal(afterOperationalActivity.relevant_rows_hash, snapshot.relevant_rows_hash);
+
+      db.prepare("UPDATE artifacts SET full_content = 'Changed' WHERE path = '.gsd/PROJECT.md'").run();
+      const afterSemanticChange = captureCurrentLegacyImportBaseSnapshot();
+      assert.notEqual(afterSemanticChange.relevant_rows_hash, snapshot.relevant_rows_hash);
+
+      db.prepare(`INSERT INTO memories (
+        id, category, content, created_at, updated_at, structured_fields
+      ) VALUES ('memory-malformed', 'architecture', 'Bad', 'created', 'updated',
+        '{"sourceDecisionId":"D003"')`).run();
+      assert.throws(
+        () => captureCurrentLegacyImportBaseSnapshot(),
+        (error) => error instanceof LegacyImportBaseSnapshotError
+          && error.code === "LEGACY_IMPORT_BASE_ROW_INVALID"
+          && error.context.row_set === "decision_memories",
+      );
+      db.prepare("DELETE FROM memories WHERE id = 'memory-malformed'").run();
+
+      db.prepare(`INSERT INTO memories (
+        id, category, content, created_at, updated_at, structured_fields
+      ) VALUES ('memory-nested', 'architecture', 'Nested', 'created', 'updated',
+        '{"nested":{"sourceDecisionId":"D004"}}')`).run();
+      assert.throws(
+        () => captureCurrentLegacyImportBaseSnapshot(),
+        (error) => error instanceof LegacyImportBaseSnapshotError
+          && error.code === "LEGACY_IMPORT_BASE_ROW_INVALID"
+          && error.context.row_set === "decision_memories",
+      );
+    } finally {
+      closeDatabase();
+    }
+  });
+});
