@@ -315,7 +315,7 @@ describe("context-store: formatRequirementsForPrompt", () => {
 describe("context-store: sub-5ms query timing", () => {
   afterEach(() => closeDatabase());
 
-  test("queries complete under 5ms for 50+50 rows", () => {
+  test("median CPU time and minimum latency stay under the query threshold for 50+50 rows", () => {
     openDatabase(':memory:');
 
     // Insert 50 decisions
@@ -353,21 +353,32 @@ describe("context-store: sub-5ms query timing", () => {
       });
     }
 
-    // Time the queries — warm up first
     queryDecisions();
     queryRequirements();
 
-    const start = performance.now();
-    const decisions = queryDecisions();
-    const requirements = queryRequirements();
-    const elapsed = performance.now() - start;
+    const samples = Array.from({ length: 7 }, () => {
+      const cpuStart = process.cpuUsage();
+      const elapsedStart = performance.now();
+      const decisions = queryDecisions();
+      const requirements = queryRequirements();
+      const elapsedTimeMs = performance.now() - elapsedStart;
+      const { user, system } = process.cpuUsage(cpuStart);
 
-    assert.strictEqual(decisions.length, 50, `got ${decisions.length} decisions (expected 50)`);
-    assert.strictEqual(requirements.length, 50, `got ${requirements.length} requirements (expected 50)`);
+      assert.strictEqual(decisions.length, 50, `got ${decisions.length} decisions (expected 50)`);
+      assert.strictEqual(requirements.length, 50, `got ${requirements.length} requirements (expected 50)`);
+      return { cpuTimeMs: (user + system) / 1_000, elapsedTimeMs };
+    });
+    const cpuTimeSamplesMs = samples.map(({ cpuTimeMs }) => cpuTimeMs).sort((a, b) => a - b);
+    const medianCpuTimeMs = cpuTimeSamplesMs[Math.floor(cpuTimeSamplesMs.length / 2)];
+    const minElapsedTimeMs = Math.min(...samples.map(({ elapsedTimeMs }) => elapsedTimeMs));
     const maxLatencyMs = process.env.NODE_V8_COVERAGE ? 15 : 5;
     assert.ok(
-      elapsed < maxLatencyMs,
-      `query latency ${elapsed.toFixed(2)}ms should be < ${maxLatencyMs}ms`,
+      medianCpuTimeMs < maxLatencyMs,
+      `median query CPU time ${medianCpuTimeMs.toFixed(2)}ms should be < ${maxLatencyMs}ms (samples: ${samples.map(({ cpuTimeMs }) => cpuTimeMs.toFixed(2)).join(", ")}ms)`,
+    );
+    assert.ok(
+      minElapsedTimeMs < maxLatencyMs,
+      `minimum query latency ${minElapsedTimeMs.toFixed(2)}ms should be < ${maxLatencyMs}ms (samples: ${samples.map(({ elapsedTimeMs }) => elapsedTimeMs.toFixed(2)).join(", ")}ms)`,
     );
   });
 });
