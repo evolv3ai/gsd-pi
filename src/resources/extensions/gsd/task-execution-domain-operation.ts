@@ -20,6 +20,8 @@ import {
 import {
   activateTaskExecutionDispatch,
   terminalizeTaskExecutionDispatch,
+  type StagedTaskCompletionWriteInput,
+  writeStagedTaskCompletion,
 } from "./db/writers/task-execution.js";
 import type { ExecutionInvocation } from "./execution-invocation.js";
 import { ensureHostTechnicalCriterion } from "./task-verification-domain-operation.js";
@@ -64,7 +66,10 @@ export interface SettleTaskAttemptInput {
     workerId: string;
     milestoneLeaseToken: number;
   };
+  stagedTaskCompletion?: StagedTaskCompletionMutation;
 }
+
+export type StagedTaskCompletionMutation = StagedTaskCompletionWriteInput;
 
 export interface SettleTaskAttemptReceipt {
   status: "committed" | "replayed";
@@ -243,6 +248,25 @@ function loadSettledResult(operationId: string): SettledResultRow {
   return result;
 }
 
+function stagedTaskCompletionPayload(
+  completion: StagedTaskCompletionMutation | undefined,
+): DomainJsonValue {
+  if (!completion) return null;
+  return {
+    task: completion.task,
+    oneLiner: completion.oneLiner,
+    narrative: completion.narrative,
+    verificationResult: completion.verificationResult,
+    blockerDiscovered: completion.blockerDiscovered,
+    deviations: completion.deviations,
+    knownIssues: completion.knownIssues,
+    keyFiles: completion.keyFiles,
+    keyDecisions: completion.keyDecisions,
+    fullSummaryMd: completion.fullSummaryMd,
+    verificationEvidence: completion.verificationEvidence.map((evidence) => ({ ...evidence })),
+  };
+}
+
 function nextStage(outcome: SettleTaskAttemptInput["outcome"]): "verify" | "route" {
   return outcome === "succeeded" ? "verify" : "route";
 }
@@ -386,6 +410,9 @@ export function claimTaskAttempt(input: ClaimTaskAttemptInput): ClaimTaskAttempt
 }
 
 export function settleTaskAttempt(input: SettleTaskAttemptInput): SettleTaskAttemptReceipt {
+  if (input.recovery && input.stagedTaskCompletion) {
+    throw new Error("Staged Task completion belongs only to attempt.settle");
+  }
   const fence = readDomainOperationFence(input.invocation.idempotencyKey);
   let settledResultId: string | undefined;
   const operation = executeDomainOperation({
@@ -405,9 +432,19 @@ export function settleTaskAttempt(input: SettleTaskAttemptInput): SettleTaskAtte
       summary: input.summary,
       output: input.output,
       recovery: input.recovery ?? null,
+      ...(input.stagedTaskCompletion
+        ? { stagedTaskCompletion: stagedTaskCompletionPayload(input.stagedTaskCompletion) }
+        : {}),
     },
   }, (context) => {
     const attempt = loadAttemptExecution(input.attemptId);
+    if (input.stagedTaskCompletion) {
+      writeStagedTaskCompletion(context, {
+        milestoneId: attempt.milestone_id,
+        sliceId: attempt.slice_id,
+        taskId: attempt.task_id,
+      }, input.stagedTaskCompletion);
+    }
     const settled = settleAttemptWithResult(context, input);
     terminalizeTaskExecutionDispatch(context, {
       dispatchId: attempt.coordination_dispatch_id,

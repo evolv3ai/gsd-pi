@@ -57,6 +57,49 @@ function spawnMcpServer(projectDir: string, gsdHome: string): ChildProcessWithou
   });
 }
 
+function spawnObservationMcpServer(
+  projectDir: string,
+  gsdHome: string,
+  token: string,
+): { child: ChildProcessWithoutNullStreams; ready: Promise<void> } {
+  const runnerUrl = new URL('./cli-runner.js', import.meta.url).href;
+  const code = `
+    import { runMcpServerCli } from ${JSON.stringify(runnerUrl)};
+    await runMcpServerCli({
+      sweepProjectOrphanMcpServers() {},
+      resolveMilestoneStatusObservationTokenState() { return 'active'; },
+      createMcpServer: async () => ({ server: {
+        connect: async () => { process.stderr.write('EPHEMERAL_READY\\n'); },
+        close: async () => {},
+      } }),
+      importStdioServerTransport: async () => ({ StdioServerTransport: class {} }),
+      warmWorkflowToolBridges() {},
+    });
+  `;
+  const child = spawn(process.execPath, ['--input-type=module', '--eval', code], {
+    cwd: projectDir,
+    env: {
+      ...process.env,
+      GSD_HOME: gsdHome,
+      GSD_MILESTONE_STATUS_OBSERVATION_TOKEN: token,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const ready = new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out waiting for ephemeral pid=${child.pid}`)), 5_000);
+    child.stderr.on('data', (chunk) => {
+      if (!String(chunk).includes('EPHEMERAL_READY')) return;
+      clearTimeout(timer);
+      resolve();
+    });
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer);
+      reject(new Error(`ephemeral MCP exited before readiness: code=${code} signal=${signal}`));
+    });
+  });
+  return { child, ready };
+}
+
 function spawnBusyLoopingMcpServerParent(projectDir: string, gsdHome: string): ChildProcessWithReadableOutput {
   const runnerUrl = new URL('./cli-runner.js', import.meta.url).href;
   const childCode = `
@@ -306,6 +349,250 @@ describe('runMcpServerCli', () => {
       'create-server',
       'cleanup-session-manager',
     ]);
+  });
+
+  test('only skips singleton PID registration for active observation turns', async () => {
+    for (const tokenState of ['active', 'inactive'] as const) {
+      const calls: string[] = [];
+      const stderr = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
+
+      await assert.rejects(
+        runMcpServerCli({
+          cwd: () => '/workspace/project',
+          env: { GSD_MILESTONE_STATUS_OBSERVATION_TOKEN: 'opaque-pump-token' },
+          exit(code) {
+            throw new ExitError(code);
+          },
+          loadStoredCredentialEnvKeys() {
+            calls.push('load-env');
+          },
+          resolveMilestoneStatusObservationTokenState(projectDir, token) {
+            calls.push(`validate:${projectDir}:${token}`);
+            return tokenState;
+          },
+          registerMcpInstance(projectDir) {
+            calls.push(`register:${projectDir}`);
+          },
+          sweepProjectOrphanMcpServers(projectDir) {
+            calls.push(`sweep:${projectDir}`);
+          },
+          unregisterMcpInstance(projectDir) {
+            calls.push(`unregister:${projectDir}`);
+          },
+          createSessionManager() {
+            calls.push('create-session-manager');
+            return {
+              async cleanup() {
+                calls.push('cleanup-session-manager');
+              },
+            };
+          },
+          async createMcpServer() {
+            calls.push('create-server');
+            throw new Error('create failed');
+          },
+          async importStdioServerTransport() {
+            throw new Error('should not import transport');
+          },
+          warmWorkflowToolBridges() {
+            throw new Error('should not warm bridges');
+          },
+          stdin: new PassThrough(),
+          stdout: new PassThrough(),
+          stderr,
+          onSignal() {},
+          now: () => 0,
+          setInterval() {
+            throw new Error('should not start interval');
+          },
+          clearInterval() {},
+          isOrphaned: () => false,
+        }),
+        (error) => error instanceof ExitError && error.code === 1,
+      );
+
+      const expected = [
+        'load-env',
+        'validate:/workspace/project:opaque-pump-token',
+        ...(tokenState === 'active' ? [] : [
+          'sweep:/workspace/project',
+          'register:/workspace/project',
+        ]),
+        'create-session-manager',
+        'create-server',
+        ...(tokenState === 'inactive' ? ['unregister:/workspace/project'] : []),
+        'cleanup-session-manager',
+      ];
+      assert.deepEqual(calls, expected);
+    }
+  });
+
+  test('fails before PID mutation when observation-token authority is unavailable', async () => {
+    const calls: string[] = [];
+    const stderr = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
+
+    await assert.rejects(
+      runMcpServerCli({
+        cwd: () => '/workspace/project',
+        env: { GSD_MILESTONE_STATUS_OBSERVATION_TOKEN: 'opaque-pump-token' },
+        exit(code) {
+          throw new ExitError(code);
+        },
+        loadStoredCredentialEnvKeys() {
+          calls.push('load-env');
+        },
+        resolveMilestoneStatusObservationTokenState() {
+          return 'unavailable';
+        },
+        registerMcpInstance() {
+          calls.push('register');
+        },
+        sweepProjectOrphanMcpServers() {
+          calls.push('sweep');
+        },
+        createSessionManager() {
+          calls.push('create-session-manager');
+          return { async cleanup() {} };
+        },
+        async createMcpServer() {
+          calls.push('create-server');
+          throw new Error('should not create server');
+        },
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+        stderr,
+        onSignal() {},
+        setInterval() {
+          throw new Error('should not start interval');
+        },
+        clearInterval() {},
+        isOrphaned: () => false,
+      }),
+      (error) => error instanceof ExitError && error.code === 1,
+    );
+
+    assert.deepEqual(calls, ['load-env']);
+  });
+
+  test('does not start when stdin is already closed before token validation', async () => {
+    const calls: string[] = [];
+    const stdin = new PassThrough();
+    stdin.destroy();
+    await new Promise<void>((resolve) => stdin.once('close', resolve));
+
+    await runMcpServerCli({
+      cwd: () => '/workspace/project',
+      env: { GSD_MILESTONE_STATUS_OBSERVATION_TOKEN: 'opaque-pump-token' },
+      exit(code) {
+        calls.push(`exit:${code}`);
+        return undefined as never;
+      },
+      loadStoredCredentialEnvKeys() {
+        calls.push('load-env');
+      },
+      resolveMilestoneStatusObservationTokenState() {
+        calls.push('validate');
+        return 'active';
+      },
+      registerMcpInstance() {
+        calls.push('register');
+      },
+      sweepProjectOrphanMcpServers() {
+        calls.push('sweep');
+      },
+      createSessionManager() {
+        calls.push('create-session-manager');
+        return { async cleanup() {} };
+      },
+      async createMcpServer() {
+        calls.push('create-server');
+        return {
+          server: {
+            async connect() {
+              calls.push('connect');
+            },
+            async close() {},
+          },
+        };
+      },
+      async importStdioServerTransport() {
+        return { StdioServerTransport: class {} };
+      },
+      warmWorkflowToolBridges() {},
+      stdin,
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      onSignal() {},
+      setInterval() {
+        return { unref() {} } as ReturnType<typeof setInterval>;
+      },
+      clearInterval() {},
+      isOrphaned: () => false,
+    });
+
+    assert.deepEqual(calls, ['load-env', 'exit:0']);
+  });
+
+  test('honors stdin closure while token validation is pending', async () => {
+    const calls: string[] = [];
+    const stdin = new PassThrough();
+    let validationStarted!: () => void;
+    let releaseValidation!: (state: 'active') => void;
+    let exitObserved!: () => void;
+    const started = new Promise<void>((resolve) => { validationStarted = resolve; });
+    const validation = new Promise<'active'>((resolve) => { releaseValidation = resolve; });
+    const exited = new Promise<void>((resolve) => { exitObserved = resolve; });
+
+    const run = runMcpServerCli({
+      cwd: () => '/workspace/project',
+      env: { GSD_MILESTONE_STATUS_OBSERVATION_TOKEN: 'opaque-pump-token' },
+      exit(code) {
+        calls.push(`exit:${code}`);
+        exitObserved();
+        return undefined as never;
+      },
+      loadStoredCredentialEnvKeys() {
+        calls.push('load-env');
+      },
+      resolveMilestoneStatusObservationTokenState() {
+        calls.push('validate');
+        validationStarted();
+        return validation;
+      },
+      registerMcpInstance() {
+        calls.push('register');
+      },
+      sweepProjectOrphanMcpServers() {
+        calls.push('sweep');
+      },
+      createSessionManager() {
+        calls.push('create-session-manager');
+        return { async cleanup() {} };
+      },
+      async createMcpServer() {
+        calls.push('create-server');
+        throw new Error('should not create server');
+      },
+      stdin,
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      onSignal() {},
+      setInterval() {
+        throw new Error('should not start interval');
+      },
+      clearInterval() {},
+      isOrphaned: () => false,
+    });
+
+    await started;
+    const closed = new Promise<void>((resolve) => stdin.once('close', resolve));
+    stdin.destroy();
+    await closed;
+    await exited;
+    releaseValidation('active');
+    await run;
+
+    assert.deepEqual(calls, ['load-env', 'validate', 'exit:0']);
   });
 
   test('fails closed and never connects when workflow bridge warm-up fails', async () => {
@@ -851,6 +1138,36 @@ describe('runMcpServerCli', () => {
       assert.equal((await secondExit).code, 0);
     } finally {
       for (const child of [first, second]) {
+        if (child && !child.killed && child.exitCode === null) child.kill('SIGKILL');
+      }
+      rmSync(projectDir, { recursive: true, force: true });
+      rmSync(gsdHome, { recursive: true, force: true });
+    }
+  });
+
+  test('two real pump-scoped MCP sessions for one project remain alive together', async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), 'mcp-observation-overlap-project-'));
+    const gsdHome = mkdtempSync(join(tmpdir(), 'mcp-observation-overlap-home-'));
+    let first: ReturnType<typeof spawnObservationMcpServer> | undefined;
+    let second: ReturnType<typeof spawnObservationMcpServer> | undefined;
+
+    try {
+      first = spawnObservationMcpServer(projectDir, gsdHome, 'observation-token-a');
+      await first.ready;
+      second = spawnObservationMcpServer(projectDir, gsdHome, 'observation-token-b');
+      await second.ready;
+
+      assert.equal(first.child.exitCode, null, 'second pump must not replace the first pump');
+      assert.equal(first.child.signalCode, null, 'first pump must remain unsignalled');
+      assert.equal(second.child.exitCode, null, 'second pump must remain alive');
+
+      const exits = [waitForChildExit(first.child), waitForChildExit(second.child)];
+      first.child.stdin.end();
+      second.child.stdin.end();
+      assert.deepEqual((await Promise.all(exits)).map((entry) => entry.code), [0, 0]);
+    } finally {
+      for (const session of [first, second]) {
+        const child = session?.child;
         if (child && !child.killed && child.exitCode === null) child.kill('SIGKILL');
       }
       rmSync(projectDir, { recursive: true, force: true });

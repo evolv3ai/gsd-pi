@@ -46,7 +46,7 @@ import {
 } from "../gsd/workflow-mcp.js";
 import { resolveWorkflowQuestionToolSurface } from "../gsd/question-transport.js";
 import { buildProjectGsdMcpServers, ensureProjectWorkflowMcpConfig } from "../gsd/mcp-project-config.js";
-import { loadProjectGSDPreferences } from "../gsd/preferences.js";
+import { loadEffectiveGSDPreferences, loadProjectGSDPreferences } from "../gsd/preferences.js";
 import { markToolStart, markToolEnd } from "../gsd/auto.js";
 import {
 	markInteractiveElicitationStart,
@@ -76,7 +76,15 @@ import {
 	endWorkflowMcpSdkSession,
 } from "../gsd/workflow-mcp-readiness-cache.js";
 import { getGuidedUnitContext } from "../gsd/guided-unit-context.js";
-import { getActiveAutoUnitType, isAutoActive } from "../gsd/auto-runtime-state.js";
+import { autoSession, getActiveAutoUnitType, isAutoActive } from "../gsd/auto-runtime-state.js";
+import {
+	beginMilestoneStatusObservationTurn,
+	classifyMilestoneStatusRuntimeMode,
+	clearMilestoneStatusObservationTurn,
+	MILESTONE_STATUS_OBSERVATION_TOKEN_ENV,
+	MILESTONE_STATUS_OBSERVATION_PENDING_SOURCE_REVISION,
+} from "../gsd/milestone-status-observation-context.js";
+import { resolveUokFlags } from "../gsd/uok/flags.js";
 import { hasBrowserContractPrefix } from "../shared/browser-contract.js";
 import { showInterviewRound, type Question, type RoundResult } from "../shared/tui.js";
 import type {
@@ -2276,6 +2284,65 @@ function createSdkAttemptMessageState(): SdkAttemptMessageState {
 	};
 }
 
+function beginClaudeCodeMilestoneStatusObservation(
+	projectRoot: string,
+): string | null {
+	let contextError: "unavailable" | undefined;
+	let guidedActive = false;
+	let uok: ReturnType<typeof resolveUokFlags> | undefined;
+	try {
+		const guided = getGuidedUnitContext(projectRoot) ?? getGuidedUnitContext();
+		guidedActive = Boolean(
+			guided && resolveWorkflowMcpProjectRoot(guided.basePath) === projectRoot,
+		);
+		const preferences = loadEffectiveGSDPreferences(projectRoot)?.preferences;
+		uok = resolveUokFlags(preferences);
+	} catch {
+		contextError = "unavailable";
+	}
+	const autoActive = autoSession.active && [autoSession.originalBasePath, autoSession.basePath]
+		.some((candidate) => candidate && resolveWorkflowMcpProjectRoot(candidate) === projectRoot);
+
+	return beginMilestoneStatusObservationTurn(projectRoot, {
+		mode: classifyMilestoneStatusRuntimeMode({
+			autoActive,
+			activeEngineId: autoActive ? autoSession.activeEngineId : null,
+			uokEnabled: uok?.enabled,
+			uokLegacyFallback: uok?.legacyFallback,
+			guidedActive,
+		}),
+		sourceRevision: MILESTONE_STATUS_OBSERVATION_PENDING_SOURCE_REVISION,
+		...(autoActive && autoSession.currentTraceId ? { traceId: autoSession.currentTraceId } : {}),
+		...(autoActive && autoSession.currentTurnId ? { turnId: autoSession.currentTurnId } : {}),
+		...(contextError ? { contextError } : {}),
+	});
+}
+
+function injectMilestoneStatusObservationToken(
+	sdkOptions: Record<string, unknown>,
+	workflowServerName: string | undefined,
+	token: string | null,
+): void {
+	const childEnv = { ...process.env };
+	delete childEnv[MILESTONE_STATUS_OBSERVATION_TOKEN_ENV];
+	if (token) childEnv[MILESTONE_STATUS_OBSERVATION_TOKEN_ENV] = token;
+	sdkOptions.env = childEnv;
+
+	if (!workflowServerName || !isRecord(sdkOptions.mcpServers)) return;
+	const workflowServer = sdkOptions.mcpServers[workflowServerName];
+	if (!isRecord(workflowServer) || typeof workflowServer.command !== "string") return;
+	const serverEnv = { ...(isStringRecord(workflowServer.env) ? workflowServer.env : {}) };
+	delete serverEnv[MILESTONE_STATUS_OBSERVATION_TOKEN_ENV];
+	if (token) serverEnv[MILESTONE_STATUS_OBSERVATION_TOKEN_ENV] = token;
+	sdkOptions.mcpServers = {
+		...sdkOptions.mcpServers,
+		[workflowServerName]: {
+			...workflowServer,
+			env: serverEnv,
+		},
+	};
+}
+
 /** Async pump that drives the Claude Agent SDK's async-iterable message stream and pushes events into `stream`. */
 async function pumpSdkMessages(
 	model: Model<any>,
@@ -2287,6 +2354,19 @@ async function pumpSdkMessages(
 	/** Track the last text content seen across all assistant turns for the final message. */
 	let lastTextContent = "";
 	let lastThinkingContent = "";
+	let milestoneStatusObservationRoot: string | undefined;
+	let milestoneStatusObservationToken: string | null = null;
+	const clearMilestoneStatusObservation = (): void => {
+		if (!milestoneStatusObservationRoot || !milestoneStatusObservationToken) return;
+		const cleared = clearMilestoneStatusObservationTurn(
+			milestoneStatusObservationRoot,
+			milestoneStatusObservationToken,
+		);
+		if (cleared) {
+			milestoneStatusObservationRoot = undefined;
+			milestoneStatusObservationToken = null;
+		}
+	};
 
 	try {
 		const permissionMode = await resolveClaudePermissionMode();
@@ -2331,6 +2411,22 @@ async function pumpSdkMessages(
 			},
 		);
 		const workflowMcpServerName = workflowMcpServerNameFromAllowedTools(sdkOpts.allowedTools);
+		const allowedTools = Array.isArray(sdkOpts.allowedTools) ? sdkOpts.allowedTools : [];
+		const milestoneStatusAvailable = workflowMcpServerName && allowedTools.some((tool) =>
+			tool === `mcp__${workflowMcpServerName}__gsd_milestone_status`
+			|| tool === `mcp__${workflowMcpServerName}__*`
+		);
+		if (milestoneStatusAvailable) {
+			milestoneStatusObservationRoot = projectRoot;
+			milestoneStatusObservationToken = beginClaudeCodeMilestoneStatusObservation(
+				projectRoot,
+			);
+		}
+		injectMilestoneStatusObservationToken(
+			sdkOpts,
+			workflowMcpServerName,
+			milestoneStatusObservationToken,
+		);
 		const allowPendingToolSearchHydration =
 			Boolean(workflowMcpServerName && gsdPhase)
 			&& !(sdkOpts.disallowedTools as string[] | undefined)?.includes("ToolSearch");
@@ -2390,6 +2486,7 @@ async function pumpSdkMessages(
 						signal: options?.signal,
 					});
 					if (preflightError) {
+						clearMilestoneStatusObservation();
 						stream.push({
 							type: "error",
 							reason: "error",
@@ -2436,6 +2533,7 @@ async function pumpSdkMessages(
 						// User-initiated cancel — emit an aborted error so the agent
 						// loop classifies this as a deliberate stop, not a transient
 						// provider failure that should be retried.
+						clearMilestoneStatusObservation();
 						stream.push({
 							type: "error",
 							reason: "aborted",
@@ -2494,6 +2592,7 @@ async function pumpSdkMessages(
 										continue sdkAttemptLoop;
 									}
 									controller.abort();
+									clearMilestoneStatusObservation();
 									stream.push({
 										type: "error",
 										reason: "error",
@@ -2677,6 +2776,7 @@ async function pumpSdkMessages(
 								timestamp: Date.now(),
 							};
 
+							clearMilestoneStatusObservation();
 							if (result.is_error) {
 								finalMessage.errorMessage = getResultErrorMessage(result);
 								stream.push({ type: "error", reason: "error", error: finalMessage });
@@ -2710,11 +2810,13 @@ async function pumpSdkMessages(
 		// not a successful completion. Emitting an error lets GSD classify it as a
 		// transient provider failure instead of advancing auto-mode state.
 		const fallback = makeStreamExhaustedErrorMessage(modelId, lastTextContent);
+		clearMilestoneStatusObservation();
 		stream.push({ type: "error", reason: "error", error: fallback });
 	} catch (err) {
 		const errorMsg = err instanceof Error ? err.message : String(err);
 		if (options?.signal?.aborted || isClaudeCodeAbortErrorMessage(errorMsg)) {
 			const abortedText = resolveClaudeCodeAbortedMessageText(errorMsg, lastTextContent);
+			clearMilestoneStatusObservation();
 			stream.push({
 				type: "error",
 				reason: "aborted",
@@ -2722,10 +2824,13 @@ async function pumpSdkMessages(
 			});
 			return;
 		}
+		clearMilestoneStatusObservation();
 		stream.push({
 			type: "error",
 			reason: "error",
 			error: makeErrorMessage(modelId, errorMsg),
 		});
+	} finally {
+		clearMilestoneStatusObservation();
 	}
 }

@@ -19,10 +19,20 @@ import {
   refreshWorkflowDatabaseFromDisk,
 } from "./db-workspace.js";
 import { isClosedStatus, isDeferredStatus } from "./status-guards.js";
-import { closeQualityGatesFromEvidence } from "./quality-gate-closure.js";
+import {
+  closeQualityGatesFromEvidence,
+  inspectQualityGatesFromEvidence,
+  type QualityGateClosureOptions,
+} from "./quality-gate-closure.js";
 import { insertMilestoneValidationGates } from "./milestone-validation-gates.js";
 import { relMilestoneFile, resolveSliceFile } from "./paths.js";
 import { invalidateAllCaches } from "./cache.js";
+import {
+  isMilestoneLifecycleAdopted,
+  readMilestoneCloseoutAuthorization,
+} from "./db/milestone-closeout-readiness.js";
+import { loadEffectiveGSDPreferences } from "./preferences.js";
+import { captureMilestoneVerificationSourceRevision } from "./verification-source-integrity.js";
 
 export const CLOSEOUT_CONSISTENCY_BLOCKED_REASON = "closeout-consistency-blocked";
 
@@ -185,11 +195,14 @@ export function checkCloseoutConsistencyGate(
     );
   }
 
-  let validation = milestone.status === "skipped"
-    ? null
-    : getLatestAssessmentByScope(milestoneId, "milestone-validation");
+  const adoptedMilestone = isMilestoneLifecycleAdopted(milestoneId);
+  const validationRequired = adoptedMilestone || milestone.status !== "skipped";
+  let validation = validationRequired && !adoptedMilestone
+    ? getLatestAssessmentByScope(milestoneId, "milestone-validation")
+    : null;
   if (
-    milestone.status !== "skipped" &&
+    validationRequired &&
+    !adoptedMilestone &&
     validation?.status !== "pass" &&
     options.allowPassThroughValidation &&
     recordCloseoutPassThroughValidationIfReady(
@@ -199,8 +212,39 @@ export function checkCloseoutConsistencyGate(
   ) {
     validation = getLatestAssessmentByScope(milestoneId, "milestone-validation");
   }
-  if (milestone.status !== "skipped") {
-    if (validation?.status !== "pass") {
+  let canonicalAuthorization = null;
+  if (adoptedMilestone) {
+    const artifactBasePath = options.artifactBasePath ?? artifactBasePathFromDb();
+    if (!artifactBasePath) {
+      return blocked(
+        "validation-not-pass",
+        `Closeout consistency blocked for ${milestoneId}: canonical verification source root is unavailable.`,
+      );
+    }
+    const source = captureMilestoneVerificationSourceRevision(
+      artifactBasePath,
+      loadEffectiveGSDPreferences(artifactBasePath)?.preferences,
+    );
+    if (!source.ok) {
+      return blocked(
+        "validation-not-pass",
+        `Closeout consistency blocked for ${milestoneId}: ${source.error}`,
+      );
+    }
+    canonicalAuthorization = readMilestoneCloseoutAuthorization({
+      milestoneId,
+      sourceRevision: source.sourceRevision,
+    });
+  }
+  if (validationRequired) {
+    if (canonicalAuthorization) {
+      if (!canonicalAuthorization.authorized) {
+        return blocked(
+          "validation-not-pass",
+          `Closeout consistency blocked for ${milestoneId}: canonical milestone validation authorization is not current.`,
+        );
+      }
+    } else if (validation?.status !== "pass") {
       const validationStatus = validation?.status ?? "absent";
       const recovery =
         validationStatus === "absent"
@@ -221,12 +265,18 @@ export function checkCloseoutConsistencyGate(
     );
   }
 
-  if (milestone.status !== "skipped") {
-    closeQualityGatesFromEvidence(milestoneId, {
-      artifactBasePath: options.artifactBasePath ?? artifactBasePathFromDb(),
-      milestoneValidationPassed: validation?.status === "pass",
-    });
+  let gateClosureOptions: QualityGateClosureOptions | null = null;
+  if (validationRequired) {
+    gateClosureOptions = canonicalAuthorization?.authorized
+      ? { milestoneValidationAuthorization: canonicalAuthorization }
+      : {
+          artifactBasePath: options.artifactBasePath ?? artifactBasePathFromDb(),
+          milestoneValidationPassed: validation?.status === "pass",
+        };
   }
+  const plannedGateClosure = gateClosureOptions
+    ? inspectQualityGatesFromEvidence(milestoneId, gateClosureOptions)
+    : { repaired: [], unresolved: [] };
 
   for (const slice of slices) {
     if (isDeferredStatus(slice.status)) continue;
@@ -246,13 +296,23 @@ export function checkCloseoutConsistencyGate(
       }
     }
 
-    const pendingGate = getPendingGates(milestoneId, slice.id)[0];
+    const pendingGate = getPendingGates(milestoneId, slice.id).find((gate) =>
+      !plannedGateClosure.repaired.some((repair) =>
+        repair.gateId === gate.gate_id
+        && repair.sliceId === gate.slice_id
+        && (repair.taskId ?? "") === gate.task_id
+      )
+    );
     if (pendingGate) {
       return blocked(
         "quality-gate-pending",
         `Closeout consistency blocked for ${milestoneId}: quality gate ${pendingGate.gate_id} is still pending for ${slice.id}.`,
       );
     }
+  }
+
+  if (!adoptedMilestone && gateClosureOptions) {
+    closeQualityGatesFromEvidence(milestoneId, gateClosureOptions);
   }
 
   return { ok: true };

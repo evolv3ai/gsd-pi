@@ -2,12 +2,15 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 
-import { registerQueryTools } from "../bootstrap/query-tools.ts";
+import {
+  clearNativeMilestoneStatusSourceRevisions,
+  registerQueryTools,
+} from "../bootstrap/query-tools.ts";
 import {
   openDatabase,
   closeDatabase,
@@ -31,6 +34,7 @@ function makeTmpBase(): string {
 }
 
 function cleanup(base: string): void {
+  clearNativeMilestoneStatusSourceRevisions();
   try { rmSync(base, { recursive: true, force: true }); } catch { /* swallow */ }
 }
 
@@ -42,7 +46,10 @@ async function executeToolInDir(tool: any, params: Record<string, unknown>, dir:
   const originalCwd = process.cwd();
   try {
     process.chdir(dir);
-    return await tool.execute("test-call-id", params, undefined, undefined, undefined);
+    return await tool.execute("test-call-id", params, undefined, undefined, {
+      cwd: dir,
+      sessionManager: { getSessionId: () => "test-session" },
+    });
   } finally {
     process.chdir(originalCwd);
   }
@@ -107,12 +114,38 @@ test("gsd_milestone_status returns milestone metadata and slice statuses", async
     seedTask("M001", "S01", "T02", "done");
     seedTask("M001", "S02", "T01", "pending");
 
+    const expectedText = JSON.stringify({
+      milestoneId: "M001",
+      title: "Test Milestone",
+      status: "active",
+      createdAt: _getAdapter()!.prepare("SELECT created_at FROM milestones WHERE id = 'M001'").get()!["created_at"],
+      completedAt: null,
+      sliceCount: 2,
+      slices: [
+        { id: "S01", status: "complete", taskCounts: { total: 2, done: 2, pending: 0 } },
+        { id: "S02", status: "active", taskCounts: { total: 1, done: 0, pending: 1 } },
+      ],
+    }, null, 2);
+
+    let captures = 0;
     const pi = makeMockPi();
-    registerQueryTools(pi);
+    registerQueryTools(pi, {
+      captureMilestoneVerificationSourceRevision: () => {
+        captures += 1;
+        return { ok: true, sourceRevision: "sha256:turn-bound-source" };
+      },
+    });
     const tool = pi.tools[0];
 
+    assert.equal(captures, 0, "registering an unused status tool must not capture source");
+
     const result = await executeToolInDir(tool, { milestoneId: "M001" }, base);
+    const repeated = await executeToolInDir(tool, { milestoneId: "M001" }, base);
     const parsed = JSON.parse(result.content[0].text);
+
+    assert.equal(result.content[0].text, expectedText, "observation must preserve the byte-level native Pi response");
+    assert.equal(repeated.content[0].text, expectedText, "repeated reads must preserve the native Pi response");
+    assert.deepEqual(result.details, { operation: "milestone_status", ...JSON.parse(expectedText) });
 
     assert.equal(parsed.milestoneId, "M001");
     assert.equal(parsed.title, "Test Milestone");
@@ -130,6 +163,17 @@ test("gsd_milestone_status returns milestone metadata and slice statuses", async
     assert.ok(s02, "S02 should be in slices");
     assert.equal(s02.status, "active");
     assert.equal(s02.taskCounts.pending, 1);
+    const audit = _getAdapter()!.prepare(`
+      SELECT payload_json FROM audit_events WHERE type = 'lifecycle-shadow-observed'
+    `).get();
+    assert.ok(audit, "native Pi status reads must persist the mandatory observation with honest defaults");
+    const payload = JSON.parse(String(audit["payload_json"]));
+    assert.equal(payload.mode, "interactive");
+    assert.equal(payload.transport, "native_pi");
+    assert.equal(captures, 1, "the first status read captures source once and later reads reuse it");
+    assert.equal(payload.sourceRevision, "sha256:turn-bound-source");
+    assert.equal(payload.traceId, "test-call-id");
+    assert.equal(payload.turnId, "test-session");
   } finally {
     closeDatabase();
     cleanup(base);
@@ -193,8 +237,21 @@ test("gsd_milestone_status handles missing DB gracefully", async () => {
     const tool = pi.tools[0];
 
     const result = await executeToolInDir(tool, { milestoneId: "M001" }, base);
-    assert.match(result.content[0].text, /GSD database is not available/);
-    assert.equal(result.details.error, "db_unavailable");
+    assert.deepEqual(result, {
+      content: [{ type: "text", text: "Error: GSD database is not available. Cannot read milestone status." }],
+      details: { operation: "milestone_status", error: "db_unavailable" },
+    });
+    const events = readFileSync(join(base, ".gsd", "audit", "events.jsonl"), "utf-8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(events.length, 1);
+    assert.equal(events[0].type, "lifecycle-shadow-observation-loss");
+    assert.equal(events[0].payload.observationLossAccounting.lossCount, 3);
+    assert.deepEqual(
+      events[0].payload.observationLossAccounting.causes.map((cause: { reason: string }) => cause.reason),
+      ["context_resolution_failed", "shadow_query_failed", "primary_sink_failed"],
+    );
   } finally {
     closeDatabase();
     cleanup(base);

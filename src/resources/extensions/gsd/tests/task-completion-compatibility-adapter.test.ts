@@ -56,6 +56,9 @@ interface StageTaskCompletionInput {
     verification: string;
     deviations: string;
     knownIssues: string;
+    failureModes?: string;
+    loadProfile?: string;
+    negativeTests?: string;
     keyFiles: string[];
     keyDecisions: string[];
     blockerDiscovered: boolean;
@@ -95,6 +98,8 @@ interface TaskCompletionCompatibilityAdapter {
 }
 
 const TASK: TaskIdentity = { milestoneId: "M001", sliceId: "S01", taskId: "T01" };
+const DOSSIER_HASH = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+const CAPSTONE_HASH = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
 const tempDirs = new Set<string>();
 
 async function subject(): Promise<TaskCompletionCompatibilityAdapter> {
@@ -109,6 +114,10 @@ function db() {
 
 function row(sql: string): Record<string, unknown> {
   return db().prepare(sql).get() ?? {};
+}
+
+function rows(sql: string): Record<string, unknown>[] {
+  return db().prepare(sql).all().map((entry) => ({ ...entry }));
 }
 
 function count(table: string): number {
@@ -166,6 +175,122 @@ function recordFailingHostVerdict(basePath: string, attemptId: string): void {
       observation: "failed",
       durableOutputRef: `db://host-verification/${attemptId}`,
       environment: { runner: "node-test", platform: "test" },
+    },
+  });
+}
+
+function activateExactMergedClosure(basePath: string): string {
+  const dossierDir = join(basePath, "docs", "dev");
+  mkdirSync(dossierDir, { recursive: true });
+  writeFileSync(join(dossierDir, "m003-s07-cutover-dossier.json"), JSON.stringify({
+    milestoneId: TASK.milestoneId,
+    sliceId: TASK.sliceId,
+    canonicalClosure: {
+      blockedEntities: [`${TASK.milestoneId}/${TASK.sliceId}/${TASK.taskId}`],
+      requiredEvidence: {
+        automatedUatVerdict: "pass",
+        durableVerdictReceipt: "required",
+        sourceBinding: "exact_merged_revision",
+      },
+    },
+    hashes: {
+      dossierHash: DOSSIER_HASH,
+      capstoneEvidenceHash: CAPSTONE_HASH,
+    },
+  }, null, 2));
+  execFileSync("git", ["add", "docs/dev/m003-s07-cutover-dossier.json"], { cwd: basePath });
+  execFileSync("git", ["commit", "-qm", "exact merge fixture"], { cwd: basePath });
+  return execFileSync("git", ["rev-parse", "HEAD"], { cwd: basePath, encoding: "utf8" }).trim();
+}
+
+function recordExactMergedUatVerdict(basePath: string, attemptId: string, mergeCommit: string): void {
+  const evidenceId = "exact-merged-uat";
+  const runId = "uat:M001:S01:attempt-2";
+  const source = captureVerificationSourceSnapshot([{ id: "project", cwd: basePath }]);
+  assert.equal(source.ok, true, source.ok ? undefined : source.error);
+  const environment = {
+    dossierHash: DOSSIER_HASH,
+    capstoneEvidenceHash: CAPSTONE_HASH,
+    authorityBaseline: "4/4",
+    localMergeCommit: mergeCommit,
+    sourceContentRevision: source.snapshot.aggregateRevision,
+  };
+  const assessment = [
+    "---",
+    "sliceId: S01",
+    "uatType: runtime-executable",
+    "verdict: PASS",
+    "attempt: 2",
+    `runId: ${runId}`,
+    "---",
+    "",
+    `gsd_uat_exec:${evidenceId}`,
+    mergeCommit,
+    source.snapshot.aggregateRevision,
+    DOSSIER_HASH,
+    CAPSTONE_HASH,
+    "",
+  ].join("\n");
+  const execDir = join(basePath, ".gsd", "exec");
+  mkdirSync(execDir, { recursive: true });
+  writeFileSync(join(execDir, `${evidenceId}.meta.json`), JSON.stringify({
+    id: evidenceId,
+    exit_code: 0,
+    signal: null,
+    timed_out: false,
+    aborted: false,
+    metadata: {
+      kind: "uat_exec",
+      milestoneId: TASK.milestoneId,
+      sliceId: TASK.sliceId,
+      checkId: "exact-merge-capstone",
+      intent: "uat-runtime-check",
+    },
+  }));
+  db().prepare(`
+    INSERT INTO assessments (
+      path, milestone_id, slice_id, status, scope, full_content, created_at
+    ) VALUES (
+      '.gsd/phases/01-test/01-01-ASSESSMENT.md', 'M001', 'S01',
+      'pass', 'run-uat', :full_content, '2026-07-12T00:03:00.000Z'
+    )
+  `).run({ ":full_content": assessment });
+  db().prepare(`
+    INSERT INTO quality_gates (
+      milestone_id, slice_id, gate_id, scope, task_id,
+      status, verdict, rationale, findings, evaluated_at
+    ) VALUES (
+      'M001', 'S01', 'UAT', 'slice', '', 'complete', 'pass',
+      'Exact-merged UAT passed.', :findings, '2026-07-12T00:03:00.000Z'
+    )
+  `).run({ ":findings": assessment });
+  db().prepare(`
+    INSERT INTO gate_runs (
+      trace_id, turn_id, gate_id, gate_type, unit_type, unit_id,
+      milestone_id, slice_id, outcome, failure_class, rationale,
+      findings, attempt, max_attempts, retryable, evaluated_at
+    ) VALUES (
+      'uat:M001:S01', :run_id, 'UAT', 'uat', 'run-uat', 'run-uat:M001/S01',
+      'M001', 'S01', 'pass', 'none', 'Exact-merged UAT passed.',
+      :findings, 2, 2, 0, '2026-07-12T00:03:00.000Z'
+    )
+  `).run({ ":run_id": runId, ":findings": assessment });
+  recordTaskTechnicalVerdict({
+    invocation: invocation(`pi:exact-merged-verification:${attemptId}`),
+    attemptId,
+    testedSourceRevision: source.snapshot.aggregateRevision,
+    verdict: "pass",
+    rationale: "Exact-merged UAT passed.",
+    evidence: {
+      evidenceClass: "command",
+      commandOrTool: "gsd_uat_exec",
+      workingDirectory: basePath,
+      startedAt: "2026-07-12T00:02:00.000Z",
+      endedAt: "2026-07-12T00:02:01.000Z",
+      exitCode: 0,
+      observation: "passed",
+      durableOutputRef: evidenceId,
+      environment,
     },
   });
 }
@@ -262,6 +387,19 @@ function stageInput(basePath: string): StageTaskCompletionInput {
   };
 }
 
+function seedTaskQualityGates(...taskIds: string[]): void {
+  const insert = db().prepare(`
+    INSERT INTO quality_gates (
+      milestone_id, slice_id, gate_id, scope, task_id, status
+    ) VALUES ('M001', 'S01', :gate_id, 'task', :task_id, 'pending')
+  `);
+  for (const taskId of taskIds) {
+    for (const gateId of ["Q5", "Q6", "Q7"]) {
+      insert.run({ ":gate_id": gateId, ":task_id": taskId });
+    }
+  }
+}
+
 function publishInput(basePath: string, attemptId: string): PublishVerifiedTaskCompletionInput {
   return {
     invocation: invocation("task-completion/publish"),
@@ -276,6 +414,27 @@ function taskState(): Record<string, unknown> {
     SELECT status, completed_at, one_liner, narrative, full_summary_md
     FROM tasks WHERE milestone_id = 'M001' AND slice_id = 'S01' AND id = 'T01'
   `);
+}
+
+function settlementState(): Record<string, unknown> {
+  return {
+    authority: row("SELECT revision, authority_epoch FROM project_authority"),
+    task: row(`
+      SELECT status, completed_at, one_liner, narrative, verification_result,
+             blocker_discovered, deviations, known_issues, key_files,
+             key_decisions, full_summary_md
+      FROM tasks WHERE milestone_id = 'M001' AND slice_id = 'S01' AND id = 'T01'
+    `),
+    evidence: rows("SELECT * FROM verification_evidence ORDER BY id"),
+    attempts: rows("SELECT * FROM workflow_execution_attempts ORDER BY attempt_number"),
+    results: rows("SELECT * FROM workflow_attempt_results ORDER BY created_at"),
+    operations: rows("SELECT * FROM workflow_operations ORDER BY resulting_revision"),
+    events: rows("SELECT * FROM workflow_domain_events ORDER BY project_revision, event_index"),
+    outbox: rows("SELECT * FROM workflow_outbox ORDER BY outbox_id"),
+    projections: rows("SELECT * FROM workflow_projection_work ORDER BY source_project_revision"),
+    dispatches: rows("SELECT * FROM unit_dispatches ORDER BY id"),
+    checkpoints: rows("SELECT * FROM workflow_kernel_checkpoints ORDER BY sequence"),
+  };
 }
 
 afterEach(() => {
@@ -313,6 +472,73 @@ test("staging settles the canonical Attempt but leaves legacy completion and its
   assert.match(readFileSync(staged.summaryPath, "utf8"), /host verification is still required/i);
   assert.match(readFileSync(planPath, "utf8"), /\[ \][^\n]*\*\*T01/);
   assert.equal(count("verification_evidence"), 1);
+});
+
+test("staging normalizes a pending legacy Task and clears its stale completion timestamp", async () => {
+  const { stageTaskCompletion } = await subject();
+  const { basePath } = createFixture();
+  db().prepare(`
+    UPDATE tasks
+    SET status = 'pending', completed_at = '2026-07-12T00:05:00.000Z'
+    WHERE milestone_id = 'M001' AND slice_id = 'S01' AND id = 'T01'
+  `).run();
+
+  const staged = await stageTaskCompletion(stageInput(basePath));
+
+  assert.equal(staged.status, "committed");
+  assert.deepEqual(
+    row("SELECT status, completed_at FROM tasks WHERE id = 'T01'"),
+    { status: "in_progress", completed_at: null },
+  );
+  assert.equal(existsSync(staged.summaryPath), true);
+  assert.match(readFileSync(staged.summaryPath, "utf8"), /Implemented the compatibility seam/);
+});
+
+for (const fault of [
+  "after-operation",
+  "after-mutation",
+  "after-events",
+  "after-outbox",
+  "after-projections",
+  "before-cas",
+] as const) {
+  test(`stage ${fault} fault restores the exact pre-settlement snapshot`, async () => {
+    const { stageTaskCompletion } = await subject();
+    const { basePath } = createFixture();
+    db().prepare(`
+      UPDATE tasks
+      SET status = 'pending', completed_at = '2026-07-12T00:05:00.000Z'
+      WHERE milestone_id = 'M001' AND slice_id = 'S01' AND id = 'T01'
+    `).run();
+    const before = settlementState();
+    _setDomainOperationFaultForTest(fault);
+
+    await assert.rejects(
+      stageTaskCompletion(stageInput(basePath)),
+      new RegExp(`domain operation fault: ${fault}`, "i"),
+    );
+
+    assert.deepEqual(settlementState(), before);
+  });
+}
+
+test("changed stage replay payload conflicts without restaging Task metadata or evidence", async () => {
+  const { stageTaskCompletion } = await subject();
+  const { basePath } = createFixture();
+  await stageTaskCompletion(stageInput(basePath));
+  const before = settlementState();
+  const changed = stageInput(basePath);
+  changed.completion.narrative = "A different candidate narrative must not overwrite committed staging.";
+  changed.completion.verificationEvidence = [{
+    command: "npm run changed-verification",
+    exitCode: 0,
+    verdict: "pass",
+    durationMs: 50,
+  }];
+
+  await assert.rejects(stageTaskCompletion(changed), /idempotency|payload|request|conflict/i);
+
+  assert.deepEqual(settlementState(), before);
 });
 
 test("a summary projection failure leaves the immutable Result and staged legacy state intact for replay repair", async (t) => {
@@ -418,6 +644,111 @@ test("verified publication alone completes the legacy Task and checks its projec
       { sequence: 5, next_stage: "settled" },
     ],
   );
+});
+
+test("ordinary verification and milestone validation cannot bypass exact-merged UAT closure", async () => {
+  const { publishVerifiedTaskCompletion, stageTaskCompletion } = await subject();
+  const { basePath, attemptId } = createFixture();
+  activateExactMergedClosure(basePath);
+  await stageTaskCompletion(stageInput(basePath));
+  recordPassingHostVerdict(basePath, attemptId);
+  db().prepare(`
+    INSERT INTO assessments (
+      path, milestone_id, status, scope, full_content, created_at
+    ) VALUES (
+      '.gsd/milestones/M001/M001-VALIDATION.md', 'M001', 'pass',
+      'milestone-validation', 'Milestone validation passed.', '2026-07-12T00:03:00.000Z'
+    )
+  `).run();
+
+  await assert.rejects(
+    publishVerifiedTaskCompletion(publishInput(basePath, attemptId)),
+    /exact-merged|gsd_uat_exec|closure dossier/i,
+  );
+
+  assert.equal(taskState().status, "in_progress");
+  assert.equal(row("SELECT lifecycle_status FROM workflow_item_lifecycles").lifecycle_status, "in_progress");
+});
+
+test("exact-merged UAT evidence authorizes dossier task publication", async () => {
+  const { publishVerifiedTaskCompletion, stageTaskCompletion } = await subject();
+  const { basePath, attemptId } = createFixture();
+  const mergeCommit = activateExactMergedClosure(basePath);
+  await stageTaskCompletion(stageInput(basePath));
+  recordExactMergedUatVerdict(basePath, attemptId, mergeCommit);
+
+  const published = await publishVerifiedTaskCompletion(publishInput(basePath, attemptId));
+
+  assert.equal(published.status, "committed");
+  assert.equal(taskState().status, "complete");
+  assert.equal(row("SELECT lifecycle_status FROM workflow_item_lifecycles").lifecycle_status, "completed");
+});
+
+test("verified publication atomically closes only its task gates from durable Attempt evidence", async () => {
+  const { publishVerifiedTaskCompletion, stageTaskCompletion } = await subject();
+  const { basePath, attemptId } = createFixture();
+  db().prepare(`
+    INSERT INTO tasks (milestone_id, slice_id, id, title, status, verify, sequence)
+    VALUES ('M001', 'S01', 'T02', 'Sibling task', 'pending', 'npm test', 2)
+  `).run();
+  seedTaskQualityGates("T01", "T02");
+  const completion = stageInput(basePath);
+  completion.completion.failureModes = "  Dependency loss returns a retryable error.  ";
+  completion.completion.loadProfile = "";
+  completion.completion.negativeTests = "Malformed input and timeout paths are covered.";
+
+  await stageTaskCompletion(completion);
+  const durableOutput = JSON.parse(String(
+    row("SELECT output_json FROM workflow_attempt_results").output_json,
+  )) as Record<string, unknown>;
+  assert.equal(durableOutput.failureModes, "  Dependency loss returns a retryable error.  ");
+  assert.equal(durableOutput.loadProfile, "");
+  assert.equal(durableOutput.negativeTests, "Malformed input and timeout paths are covered.");
+  recordPassingHostVerdict(basePath, attemptId);
+
+  const published = await publishVerifiedTaskCompletion(publishInput(basePath, attemptId));
+
+  assert.equal(published.status, "committed");
+  assert.deepEqual(rows(`
+    SELECT gate_id, status, verdict, findings
+    FROM quality_gates
+    WHERE task_id = 'T01'
+    ORDER BY gate_id
+  `), [
+    {
+      gate_id: "Q5",
+      status: "complete",
+      verdict: "pass",
+      findings: "Dependency loss returns a retryable error.",
+    },
+    { gate_id: "Q6", status: "complete", verdict: "omitted", findings: "" },
+    {
+      gate_id: "Q7",
+      status: "complete",
+      verdict: "pass",
+      findings: "Malformed input and timeout paths are covered.",
+    },
+  ]);
+  assert.deepEqual(
+    rows(`SELECT gate_id, status FROM quality_gates WHERE task_id = 'T02' ORDER BY gate_id`),
+    [
+      { gate_id: "Q5", status: "pending" },
+      { gate_id: "Q6", status: "pending" },
+      { gate_id: "Q7", status: "pending" },
+    ],
+  );
+  assert.equal(count("gate_runs"), 3);
+  const beforeReplay = {
+    gates: rows("SELECT * FROM quality_gates ORDER BY task_id, gate_id"),
+    gateRuns: rows("SELECT * FROM gate_runs ORDER BY id"),
+  };
+
+  const replayed = await publishVerifiedTaskCompletion(publishInput(basePath, attemptId));
+  assert.equal(replayed.status, "replayed");
+  assert.deepEqual({
+    gates: rows("SELECT * FROM quality_gates ORDER BY task_id, gate_id"),
+    gateRuns: rows("SELECT * FROM gate_runs ORDER BY id"),
+  }, beforeReplay);
 });
 
 for (const mutation of ["tracked", "untracked"] as const) {
@@ -580,6 +911,7 @@ test("superseding the host criterion invalidates its old passing verdict for pub
 test("a publish fault rolls canonical closeout and legacy completion back together", async () => {
   const { publishVerifiedTaskCompletion, stageTaskCompletion } = await subject();
   const { basePath, attemptId } = createFixture();
+  seedTaskQualityGates("T01");
   await stageTaskCompletion(stageInput(basePath));
   recordPassingHostVerdict(basePath, attemptId);
   _setDomainOperationFaultForTest("after-mutation");
@@ -603,11 +935,21 @@ test("a publish fault rolls canonical closeout and legacy completion back togeth
       { sequence: 2, next_stage: "verify" },
     ],
   );
+  assert.deepEqual(
+    rows("SELECT gate_id, status FROM quality_gates ORDER BY gate_id"),
+    [
+      { gate_id: "Q5", status: "pending" },
+      { gate_id: "Q6", status: "pending" },
+      { gate_id: "Q7", status: "pending" },
+    ],
+  );
+  assert.equal(count("gate_runs"), 0);
 
   _setDomainOperationFaultForTest(null);
   const published = await publishVerifiedTaskCompletion(publishInput(basePath, attemptId));
   assert.equal(published.status, "committed");
   assert.equal(taskState().status, "complete");
+  assert.equal(count("gate_runs"), 3);
 });
 
 test("exact stage and publication replay repair projections without duplicate facts", async () => {

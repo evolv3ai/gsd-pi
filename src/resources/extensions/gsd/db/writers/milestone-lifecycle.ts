@@ -3,7 +3,7 @@
 
 import type { DomainOperationContext } from "../domain-operation.js";
 import {
-  readMilestoneCloseoutReadiness,
+  readMilestoneCloseoutAuthorization,
   type MilestoneCloseoutBlocker,
 } from "../milestone-closeout-readiness.js";
 import {
@@ -110,6 +110,33 @@ function requireOperationTimestamp(context: Readonly<DomainOperationContext>): s
     throw new Error("Milestone lifecycle operation timestamp is missing or invalid");
   }
   return completedAt;
+}
+
+/**
+ * Operation timestamp advanced past every existing lifecycle timestamp in the
+ * Milestone hierarchy. A Domain Operation's created_at is only wall-clock
+ * millisecond precise, so a complete/reopen that lands in the same millisecond
+ * as the operation that last touched a lifecycle row would otherwise fail the
+ * strict-monotonicity guard in adoptOrTransitionLifecycle. Advancing past the
+ * newest existing timestamp mirrors the distinctTimestamp() idiom already used
+ * for subjective-UAT writes and keeps lifecycle timestamps strictly increasing.
+ */
+function monotonicOperationTimestamp(
+  context: Readonly<DomainOperationContext>,
+  milestoneId: string,
+): string {
+  const operationTimestamp = requireOperationTimestamp(context);
+  const row = getDb().prepare(`
+    SELECT MAX(updated_at) AS latest
+    FROM workflow_item_lifecycles
+    WHERE project_id = :project_id AND milestone_id = :milestone_id
+  `).get({
+    ":project_id": context.projectId,
+    ":milestone_id": milestoneId,
+  }) as Record<string, unknown> | undefined;
+  const latest = Date.parse(String(row?.["latest"] ?? ""));
+  if (!Number.isFinite(latest)) return operationTimestamp;
+  return new Date(Math.max(Date.parse(operationTimestamp), latest + 1)).toISOString();
 }
 
 function blockerSummary(blockers: MilestoneCloseoutBlocker[]): string {
@@ -519,7 +546,7 @@ export function completeMilestoneHierarchy(
   }
   const milestoneId = requireText(input.milestoneId, "milestoneId");
   const sourceRevision = requireText(input.sourceRevision, "sourceRevision");
-  const completedAt = requireOperationTimestamp(context);
+  const completedAt = monotonicOperationTimestamp(context, milestoneId);
   const milestone = loadMilestone(context, milestoneId);
   requireMatchingShadow(milestone, `Milestone ${milestoneId}`);
   const milestoneStatus = normalizeLegacyLifecycleStatus(milestone.legacyStatus);
@@ -534,10 +561,10 @@ export function completeMilestoneHierarchy(
     );
   }
 
-  const readiness = readMilestoneCloseoutReadiness({ milestoneId, sourceRevision });
-  if (!readiness.ready) {
+  const authorization = readMilestoneCloseoutAuthorization({ milestoneId, sourceRevision });
+  if (!authorization.authorized) {
     throw new MilestoneLifecycleValidationError(
-      `Milestone ${milestoneId} canonical validation is not current (${blockerSummary(readiness.blockers)})`,
+      `Milestone ${milestoneId} canonical validation is not current (${blockerSummary(authorization.blockers)})`,
     );
   }
 
@@ -616,8 +643,8 @@ export function completeMilestoneHierarchy(
   return {
     milestoneLifecycleId: lifecycle.lifecycleId,
     completedAt,
-    validationEventId: readiness.validationEventId,
-    validationRevision: readiness.validationRevision,
+    validationEventId: authorization.eventId,
+    validationRevision: authorization.revision,
     completedSliceIds,
     cancelledSliceIds,
     completedTaskIds,
@@ -638,7 +665,7 @@ export function reopenMilestoneHierarchy(
   }
   const milestoneId = requireText(input.milestoneId, "milestoneId");
   const reason = requireText(input.reason, "reason");
-  const reopenedAt = requireOperationTimestamp(context);
+  const reopenedAt = monotonicOperationTimestamp(context, milestoneId);
   const milestone = loadMilestone(context, milestoneId);
   requireTerminalState(milestone, `Milestone ${milestoneId}`);
   const slices = loadSlices(context, milestoneId);

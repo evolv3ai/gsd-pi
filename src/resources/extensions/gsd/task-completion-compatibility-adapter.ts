@@ -11,16 +11,21 @@ import {
   readDomainOperationFence,
 } from "./db/writers/lifecycle-commands.js";
 import type { ExecutionInvocation } from "./execution-invocation.js";
+import { requireExactMergedUatClosureEvidence } from "./exact-merged-uat-closure.js";
 import {
   getTask,
   getSlice,
-  insertTask,
-  insertVerificationEvidence,
-  transaction,
 } from "./gsd-db.js";
 import { renderPlanCheckboxes, renderTaskSummary } from "./markdown-renderer.js";
 import { clearPathCache, resolveTaskFile } from "./paths.js";
-import { settleTaskAttempt } from "./task-execution-domain-operation.js";
+import {
+  closeTaskQualityGates,
+  type TaskQualityGateContent,
+} from "./quality-gate-closure.js";
+import {
+  settleTaskAttempt,
+  type StagedTaskCompletionMutation,
+} from "./task-execution-domain-operation.js";
 import { readTaskTechnicalVerdict } from "./task-verification-domain-operation.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 import {
@@ -52,6 +57,9 @@ export interface StageTaskCompletionInput {
     verification: string;
     deviations: string;
     knownIssues: string;
+    failureModes?: string;
+    loadProfile?: string;
+    negativeTests?: string;
     keyFiles: string[];
     keyDecisions: string[];
     blockerDiscovered: boolean;
@@ -85,6 +93,7 @@ interface AttemptRow {
   lifecycle_id: string;
   kernel_checkpoint_id: string;
   next_stage: "verify" | "route";
+  output_json: string;
 }
 
 export type TaskCompletionAuthority = "canonical" | "legacy";
@@ -192,14 +201,26 @@ function runningAttemptId(task: TaskCompletionIdentity): string {
   return String(attempt["attempt_id"]);
 }
 
-function stageLegacyTask(input: StageTaskCompletionInput): void {
-  const existing = requireTask(input.task);
-  const values = {
-    id: input.task.taskId,
-    sliceId: input.task.sliceId,
-    milestoneId: input.task.milestoneId,
-    title: existing.title,
+function buildStagedTaskCompletion(
+  input: StageTaskCompletionInput,
+  existing: TaskRow,
+): StagedTaskCompletionMutation {
+  const staged = {
+    ...existing,
     status: "in_progress",
+    completed_at: null,
+    one_liner: input.completion.oneLiner,
+    narrative: input.completion.narrative,
+    verification_result: input.completion.verification,
+    blocker_discovered: input.completion.blockerDiscovered,
+    deviations: input.completion.deviations,
+    known_issues: input.completion.knownIssues,
+    key_files: input.completion.keyFiles,
+    key_decisions: input.completion.keyDecisions,
+    full_summary_md: "",
+  } satisfies TaskRow;
+  return {
+    task: input.task,
     oneLiner: input.completion.oneLiner,
     narrative: input.completion.narrative,
     verificationResult: input.completion.verification,
@@ -208,23 +229,14 @@ function stageLegacyTask(input: StageTaskCompletionInput): void {
     knownIssues: input.completion.knownIssues,
     keyFiles: input.completion.keyFiles,
     keyDecisions: input.completion.keyDecisions,
-    sequence: existing.sequence,
-  };
-
-  transaction(() => {
-    insertTask(values);
-    const staged = requireTask(input.task);
-    const summary = renderSummaryContent(
+    fullSummaryMd: renderSummaryContent(
       staged,
       input.task.sliceId,
       input.task.milestoneId,
       input.completion.verificationEvidence,
-    );
-    insertTask({ ...values, fullSummaryMd: summary });
-    for (const evidence of input.completion.verificationEvidence) {
-      insertVerificationEvidence({ ...input.task, ...evidence });
-    }
-  });
+    ),
+    verificationEvidence: input.completion.verificationEvidence,
+  };
 }
 
 async function renderTaskSummaryProjection(
@@ -274,15 +286,12 @@ export async function stageTaskCompletion(
 ): Promise<StagedTaskCompletionReceipt> {
   const replayAttempt = replayAttemptId(input.invocation.idempotencyKey, input.task);
   const task = requireTask(input.task);
-  const legacyClosed = task.status === "complete" || task.status === "done";
+  const legacyClosed = ["complete", "done", "closed"].includes(task.status);
   if (legacyClosed && !replayAttempt) {
     throw new Error("A newly committed Task settlement cannot target an already-complete legacy Task");
   }
   const attemptId = replayAttempt ?? runningAttemptId(input.task);
   const blocked = input.completion.blockerDiscovered;
-  if (!legacyClosed) {
-    stageLegacyTask(input);
-  }
   const settlement = settleTaskAttempt({
     invocation: input.invocation,
     attemptId,
@@ -301,9 +310,13 @@ export async function stageTaskCompletion(
       blockerDiscovered: input.completion.blockerDiscovered,
       deviations: input.completion.deviations,
       knownIssues: input.completion.knownIssues,
+      failureModes: input.completion.failureModes ?? "",
+      loadProfile: input.completion.loadProfile ?? "",
+      negativeTests: input.completion.negativeTests ?? "",
       keyFiles: input.completion.keyFiles,
       keyDecisions: input.completion.keyDecisions,
     },
+    stagedTaskCompletion: buildStagedTaskCompletion(input, task),
   });
 
   const summaryPath = await renderTaskSummaryProjection(input.basePath, input.task);
@@ -319,7 +332,7 @@ export async function stageTaskCompletion(
 function loadSucceededAttempt(input: PublishVerifiedTaskCompletionInput): AttemptRow {
   const attempt = getDb().prepare(`
     SELECT attempt.attempt_id, attempt.lifecycle_id, checkpoint.kernel_checkpoint_id,
-           checkpoint.next_stage
+           checkpoint.next_stage, result.output_json
     FROM workflow_execution_attempts attempt
     JOIN workflow_attempt_results result
       ON result.attempt_id = attempt.attempt_id
@@ -379,6 +392,32 @@ function loadSucceededAttempt(input: PublishVerifiedTaskCompletionInput): Attemp
   return attempt;
 }
 
+function taskQualityGateContent(attempt: AttemptRow): TaskQualityGateContent {
+  let output: unknown;
+  try {
+    output = JSON.parse(attempt.output_json);
+  } catch {
+    throw new Error("Verified Task publication requires a valid durable Attempt result");
+  }
+  if (!output || typeof output !== "object" || Array.isArray(output)) {
+    throw new Error("Verified Task publication requires an object-shaped durable Attempt result");
+  }
+  const record = output as Record<string, unknown>;
+  const readField = (key: keyof TaskQualityGateContent): string => {
+    const value = record[key];
+    if (value === undefined) return "";
+    if (typeof value !== "string") {
+      throw new Error(`Verified Task publication found invalid ${key} in durable Attempt result`);
+    }
+    return value;
+  };
+  return {
+    failureModes: readField("failureModes"),
+    loadProfile: readField("loadProfile"),
+    negativeTests: readField("negativeTests"),
+  };
+}
+
 function publishCanonicalCompletion(
   input: PublishVerifiedTaskCompletionInput,
 ): "committed" | "replayed" {
@@ -424,6 +463,7 @@ function publishCanonicalCompletion(
     }
 
     completeLegacyTaskForVerifiedAttempt(context, input.task);
+    closeTaskQualityGates(input.task, taskQualityGateContent(attempt));
 
     const entityId = `${input.task.milestoneId}/${input.task.sliceId}/${input.task.taskId}`;
     return {
@@ -466,6 +506,11 @@ function requireCurrentVerifiedSource(input: PublishVerifiedTaskCompletionInput)
   if (source.snapshot.aggregateRevision !== verdict.testedSourceRevision) {
     throw new Error("Verified Task publication source no longer matches its host verification evidence");
   }
+  requireExactMergedUatClosureEvidence({
+    basePath: input.basePath,
+    task: input.task,
+    verdict,
+  });
 }
 
 export async function publishVerifiedTaskCompletion(

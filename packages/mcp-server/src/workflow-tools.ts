@@ -19,6 +19,8 @@ import {
 
 import { logAliasUsage } from "./alias-telemetry.js";
 
+export type MilestoneStatusObservationTokenState = "active" | "inactive" | "unavailable";
+
 /** Local mirror of src/resources/extensions/gsd/mcp-bridge.ts.
  *  Kept here so packages/mcp-server/tsconfig.json rootDir boundary is not crossed.
  */
@@ -62,7 +64,34 @@ async function importBridgeModule(): Promise<GsdMcpBridge> {
 
 type WorkflowToolExecutors = {
   SUPPORTED_SUMMARY_ARTIFACT_TYPES: readonly string[];
-  executeMilestoneStatus: (params: { milestoneId: string }, basePath?: string) => Promise<unknown>;
+  MILESTONE_STATUS_OBSERVATION_TOKEN_ENV?: string;
+  resolveMilestoneStatusObservationTokenState?: (
+    basePath: string,
+    token: string,
+  ) => MilestoneStatusObservationTokenState;
+  resolveMilestoneStatusObservationContext?: (
+    basePath: string,
+    transport: "native_pi" | "workflow_mcp",
+    token?: string,
+  ) => {
+    mode: "auto" | "interactive" | "guided" | "uok" | "custom" | "legacy";
+    transport: "native_pi" | "workflow_mcp";
+    sourceRevision: string;
+    traceId?: string;
+    turnId?: string;
+    contextError?: "unavailable" | "invalid";
+  };
+  executeMilestoneStatus: (
+    params: { milestoneId: string },
+    basePath?: string,
+    observationContext?: {
+      mode: "auto" | "interactive" | "guided" | "uok" | "custom" | "legacy";
+      transport: "native_pi" | "workflow_mcp";
+      sourceRevision: string;
+      traceId?: string;
+      turnId?: string;
+    },
+  ) => Promise<unknown>;
   executePlanMilestone: (
     params: {
       milestoneId: string;
@@ -953,6 +982,22 @@ async function getWorkflowToolExecutors(): Promise<WorkflowToolExecutors> {
 export async function warmWorkflowToolBridges(): Promise<void> {
   await getWorkflowToolExecutors();
   await getWorkflowWriteGateModule();
+}
+
+export async function resolveMilestoneStatusObservationTokenState(
+  projectDir: string,
+  token: string,
+): Promise<MilestoneStatusObservationTokenState> {
+  if (!token.trim()) return "inactive";
+  try {
+    const executors = await getWorkflowToolExecutors();
+    const state = executors.resolveMilestoneStatusObservationTokenState?.(projectDir, token);
+    return state === "active" || state === "inactive" || state === "unavailable"
+      ? state
+      : "unavailable";
+  } catch {
+    return "unavailable";
+  }
 }
 
 async function getWorkflowWriteGateModule(): Promise<WorkflowWriteGateModule> {
@@ -2230,6 +2275,9 @@ const taskCompleteParams = {
   verification: z.string().optional().describe("What was verified and how. If omitted, the executor derives this from verificationEvidence when possible."),
   deviations: z.string().optional().describe("Deviations from the task plan"),
   knownIssues: z.string().optional().describe("Known issues discovered but not fixed"),
+  failureModes: z.string().optional().describe("Q5: what breaks when dependencies fail; omit only when genuinely not applicable"),
+  loadProfile: z.string().optional().describe("Q6: expected load, 10x breakpoint, and protection; omit only when genuinely not applicable"),
+  negativeTests: z.string().optional().describe("Q7: malformed inputs, error paths, and boundary tests; omit only when genuinely not applicable"),
   keyFiles: z.array(z.string()).optional().describe("List of key files created or modified"),
   keyDecisions: z.array(z.string()).optional().describe("List of key decisions made during this task"),
   blockerDiscovered: z.boolean().optional().describe("Whether a plan-invalidating blocker was discovered"),
@@ -3184,9 +3232,25 @@ export function registerWorkflowTools(
       // does not apply the write-gate; MCP must match to avoid blocking reads
       // during pending-gate or queue-mode states.
       const { projectDir, milestoneId } = parseWorkflowArgs(milestoneStatusSchema, args);
-      const { executeMilestoneStatus } = await getWorkflowToolExecutors();
+      const executors = await getWorkflowToolExecutors();
+      const tokenEnv = executors.MILESTONE_STATUS_OBSERVATION_TOKEN_ENV
+        ?? "GSD_MILESTONE_STATUS_OBSERVATION_TOKEN";
+      const observationContext = executors.resolveMilestoneStatusObservationContext?.(
+        projectDir,
+        "workflow_mcp",
+        process.env[tokenEnv],
+      ) ?? {
+        mode: "legacy" as const,
+        transport: "workflow_mcp" as const,
+        sourceRevision: "unavailable",
+        contextError: "unavailable" as const,
+      };
       return adaptExecutorResult(
-        await runSerializedWorkflowOperation(() => executeMilestoneStatus({ milestoneId }, projectDir)),
+        await runSerializedWorkflowOperation(() => executors.executeMilestoneStatus(
+          { milestoneId },
+          projectDir,
+          observationContext,
+        )),
       );
     },
   );

@@ -8,6 +8,7 @@ import {
   getActiveRequirements,
   getAllMilestones,
   getMilestone,
+  getMilestoneLifecycleShadowSnapshot,
   getSliceStatusSummary,
   getSliceTaskCounts,
   insertMilestone,
@@ -18,6 +19,17 @@ import {
   upsertMilestonePlanning,
   upsertQualityGate,
 } from "../gsd-db.js";
+import {
+  buildLifecycleShadowObservation,
+  type MilestoneStatusObservationContext,
+} from "../lifecycle-shadow-observation.js";
+export {
+  MILESTONE_STATUS_OBSERVATION_TOKEN_ENV,
+  readMilestoneStatusObservationTurn,
+  resolveMilestoneStatusObservationContext,
+  resolveMilestoneStatusObservationTokenState,
+} from "../milestone-status-observation-context.js";
+import { emitLifecycleShadowObservation } from "../uok/audit.js";
 import { extractMilestoneSeq } from "../milestone-ids.js";
 import { readMilestoneMergeObservation } from "../db/milestone-closeout-readiness.js";
 import { immediateTransaction } from "../db/engine.js";
@@ -725,6 +737,9 @@ export interface TaskCompleteParams {
   verification?: string;
   deviations?: string;
   knownIssues?: string;
+  failureModes?: string;
+  loadProfile?: string;
+  negativeTests?: string;
   keyFiles?: string[];
   keyDecisions?: string[];
   blockerDiscovered?: boolean;
@@ -865,6 +880,9 @@ export async function executeTaskComplete(
           verification: String(coerced.verification),
           deviations: params.deviations ?? "None.",
           knownIssues: params.knownIssues ?? "None.",
+          failureModes: params.failureModes ?? "",
+          loadProfile: params.loadProfile ?? "",
+          negativeTests: params.negativeTests ?? "",
           keyFiles: params.keyFiles ?? [],
           keyDecisions: params.keyDecisions ?? [],
           blockerDiscovered: params.blockerDiscovered ?? false,
@@ -2046,26 +2064,56 @@ export interface MilestoneStatusParams {
   milestoneId: string;
 }
 
+type MilestoneStatusReadInterleave = () => void;
+
+let milestoneStatusReadInterleaveForTest: MilestoneStatusReadInterleave | null = null;
+
+export function _setMilestoneStatusReadInterleaveForTest(
+  hook: MilestoneStatusReadInterleave | null,
+): void {
+  milestoneStatusReadInterleaveForTest = hook;
+}
+
 export async function executeMilestoneStatus(
   params: MilestoneStatusParams,
   basePath: string = process.cwd(),
+  observationContext?: MilestoneStatusObservationContext,
 ): Promise<ToolExecutionResult> {
   try {
     const dbAvailable = await ensureDbOpen(basePath);
     if (!dbAvailable) {
-      return {
-        content: [{ type: "text", text: "Error: GSD database is not available." }],
+      const response = {
+        content: [{ type: "text" as const, text: "Error: GSD database is not available." }],
         details: { operation: "milestone_status", error: "db_unavailable" },
-      isError: true,
+        isError: true,
       };
+      emitLifecycleShadowObservation(
+        basePath,
+        buildLifecycleShadowObservation(
+          params.milestoneId,
+          {
+            projectRevision: 0,
+            authorityEpoch: 0,
+            items: [],
+            queryError: new Error("GSD database is not available"),
+          },
+          observationContext,
+        ),
+      );
+      return response;
     }
 
-    return readTransaction(() => {
+    const observedRead = readTransaction(() => {
       const milestone = getMilestone(params.milestoneId);
       if (!milestone) {
-        return {
-          content: [{ type: "text", text: `Milestone ${params.milestoneId} not found in database.` }],
+        const response = {
+          content: [{ type: "text" as const, text: `Milestone ${params.milestoneId} not found in database.` }],
           details: { operation: "milestone_status", milestoneId: params.milestoneId, found: false },
+        };
+        milestoneStatusReadInterleaveForTest?.();
+        return {
+          response,
+          shadowSnapshot: getMilestoneLifecycleShadowSnapshot(params.milestoneId),
         };
       }
 
@@ -2086,18 +2134,43 @@ export async function executeMilestoneStatus(
         slices,
       };
 
+      milestoneStatusReadInterleaveForTest?.();
+
       return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-        details: { operation: "milestone_status", ...result },
+        response: {
+          content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+          details: { operation: "milestone_status", ...result },
+        },
+        shadowSnapshot: getMilestoneLifecycleShadowSnapshot(params.milestoneId),
       };
     });
+    const observation = buildLifecycleShadowObservation(
+      params.milestoneId,
+      observedRead.shadowSnapshot,
+      observationContext,
+    );
+    emitLifecycleShadowObservation(basePath, observation);
+    return observedRead.response;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logWarning("tool", `gsd_milestone_status tool failed: ${msg}`);
+    emitLifecycleShadowObservation(
+      basePath,
+      buildLifecycleShadowObservation(
+        params.milestoneId,
+        {
+          projectRevision: 0,
+          authorityEpoch: 0,
+          items: [],
+          queryError: err,
+        },
+        observationContext,
+      ),
+    );
     return {
       content: [{ type: "text", text: `Error querying milestone status: ${msg}` }],
       details: { operation: "milestone_status", error: msg },
-    isError: true,
-      };
+      isError: true,
+    };
   }
 }

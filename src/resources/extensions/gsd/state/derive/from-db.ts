@@ -38,7 +38,6 @@ import {
   getRequestedMilestoneLock,
 } from './db-open.js';
 import { resolveMilestoneValidationVerdict } from '../../milestone-validation-verdict.js';
-import { isMilestoneLifecycleAdopted } from '../../db/milestone-closeout-readiness.js';
 
 const isStatusDone = isClosedStatus;
 
@@ -288,7 +287,6 @@ async function handleAllSlicesDone(
   sliceProgress: { done: number, total: number }
 ): Promise<GSDState> {
   const verdict = await resolveMilestoneValidationVerdict(basePath, activeMilestone.id);
-  const validationTerminal = verdict !== undefined;
 
   const context: DerivedStateContext = {
     activeMilestone,
@@ -298,7 +296,7 @@ async function handleAllSlicesDone(
     sliceProgress,
   };
 
-  if (!validationTerminal) {
+  if (verdict === undefined) {
     return buildDerivedState(
       context,
       'validating-milestone',
@@ -310,22 +308,20 @@ async function handleAllSlicesDone(
   // needs-remediation — remediation cannot progress without new slices.
   // Return blocked instead of re-dispatching validate-milestone (#4506).
   if (verdict === 'needs-attention') {
-    const allowLegacyOverride = !isMilestoneLifecycleAdopted(activeMilestone.id);
     return buildDerivedState(
       context,
       'blocked',
       `Resolve ${activeMilestone.id} validation attention before proceeding.`,
-      { blockers: [formatNeedsAttentionBlocker(activeMilestone.id, allowLegacyOverride)] },
+      { blockers: [formatNeedsAttentionBlocker(activeMilestone.id)] },
     );
   }
 
   if (verdict === 'needs-remediation') {
-    const allowLegacyOverride = !isMilestoneLifecycleAdopted(activeMilestone.id);
     return buildDerivedState(
       context,
       'blocked',
       `Resolve ${activeMilestone.id} remediation before proceeding.`,
-      { blockers: [formatNeedsRemediationBlocker(activeMilestone.id, allowLegacyOverride)] },
+      { blockers: [formatNeedsRemediationBlocker(activeMilestone.id)] },
     );
   }
 

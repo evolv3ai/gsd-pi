@@ -52,7 +52,7 @@ import {
   gsdProjectionRoot,
 } from "./paths.js";
 import { validateArtifact } from "./schemas/validate.js";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { logWarning, logError } from "./workflow-logger.js";
 import { dirname, join, sep } from "node:path";
 import { hasImplementationArtifacts } from "./milestone-implementation-evidence.js";
@@ -114,6 +114,15 @@ import { nativeHasChanges, nativeIsRepo, _resetHasChangesCache } from "./native-
 import { debugLog, isDebugEnabled } from "./debug-logger.js";
 import { resolveCanonicalMilestoneRoot } from "./worktree-manager.js";
 import { resolveWorktreeProjectRoot } from "./worktree-root.js";
+import {
+  captureMilestoneVerificationSourceRevision,
+} from "./verification-source-integrity.js";
+import { internalExecutionInvocation } from "./execution-invocation.js";
+import { isMilestoneLifecycleAdopted } from "./db/milestone-closeout-readiness.js";
+import {
+  grantMilestoneValidationWaiver,
+  type MilestoneValidationWaiverReason,
+} from "./milestone-validation-waiver-domain-operation.js";
 import { detectWorktreeName } from "./worktree.js";
 import { probeGitConflictState } from "./git-conflict-state.js";
 import { runTurnGitAction } from "./git-service.js";
@@ -496,31 +505,11 @@ function withEffectiveDispatchMilestone(ctx: DispatchContext, effectiveMid: stri
 }
 
 function hasMilestonePassedDiscuss(basePath: string, mid: string): boolean {
-  if (isDbAvailable()) {
-    try {
-      const slices = getMilestoneSlices(mid);
-      for (const slice of slices) {
-        const planPath = resolveSliceFile(basePath, mid, slice.id, "PLAN");
-        if (planPath && existsSync(planPath)) return true;
-      }
-    } catch (err) {
-      // Fall through to filesystem checks when DB access is degraded.
-      logWarning(
-        "dispatch",
-        `discuss-progress DB check failed for ${mid}, falling back to filesystem: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
-  const milestonePath = resolveMilestonePath(basePath, mid);
-  if (milestonePath) {
-    const slicesDir = join(milestonePath, "slices");
-    if (existsSync(slicesDir)) {
-      for (const sliceEntry of readdirSync(slicesDir, { withFileTypes: true })) {
-        if (!sliceEntry.isDirectory()) continue;
-        const planPath = join(slicesDir, sliceEntry.name, `${sliceEntry.name}-PLAN.md`);
-        if (existsSync(planPath)) return true;
-      }
-    }
+  if (!isDbAvailable()) return false;
+  const slices = getMilestoneSlices(mid);
+  for (const slice of slices) {
+    const planPath = resolveSliceFile(basePath, mid, slice.id, "PLAN");
+    if (planPath && existsSync(planPath)) return true;
   }
   return hasImplementationArtifacts(basePath, mid) === "present";
 }
@@ -654,6 +643,57 @@ function backfillMissingAssessmentsFromSummaries(basePath: string, mid: string):
       writeFileSync(assessmentPath, content, "utf-8");
     }
   }
+}
+
+function recordAdoptedMilestoneValidationWaiver(
+  basePath: string,
+  milestoneId: string,
+  reason: MilestoneValidationWaiverReason,
+  prefs: GSDPreferences | undefined,
+): { ok: true } | { ok: false; error: string } {
+  const artifactBasePath = resolveCanonicalMilestoneRoot(basePath, milestoneId);
+  const source = captureMilestoneVerificationSourceRevision(artifactBasePath, prefs);
+  if (!source.ok) return source;
+  const receipt = grantMilestoneValidationWaiver({
+    invocation: internalExecutionInvocation(
+      `internal:auto:milestone.validation.waive:${milestoneId}:${reason}:${source.sourceRevision}`,
+      { actorId: "gsd-auto" },
+    ),
+    milestoneId,
+    testedSourceRevision: source.sourceRevision,
+    reason,
+    policyId: "milestone-validation-waiver",
+    policyVersion: "1",
+  });
+  const validationPath = join(
+    artifactBasePath,
+    relMilestoneFile(artifactBasePath, milestoneId, "VALIDATION"),
+  );
+  const content = [
+    "---",
+    "authorization: waived",
+    "outcome: omitted",
+    "skip_validation: true",
+    `skip_validation_reason: ${reason}`,
+    `source_revision: ${receipt.testedSourceRevision}`,
+    "---",
+    "",
+    "# Milestone Validation (waived)",
+    "",
+    `Milestone validation was waived by the ${reason} policy.`,
+    "",
+  ].join("\n");
+  try {
+    mkdirSync(dirname(validationPath), { recursive: true });
+    writeFileSync(validationPath, content, "utf-8");
+  } catch (error) {
+    logWarning(
+      "projection",
+      `Milestone validation waiver projection failed for ${milestoneId}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  invalidateAllCaches();
+  return { ok: true };
 }
 
 // ─── Rewrite Circuit Breaker ──────────────────────────────────────────────
@@ -1819,33 +1859,57 @@ export const DISPATCH_RULES: DispatchRule[] = [
   },
   {
     name: "validating-milestone → validate-milestone",
-    match: async ({ state, mid, midTitle, basePath, prefs, session }) => {
+    match: async (ctx) => {
+      const { state, mid, midTitle, basePath, prefs, session } = ctx;
       if (state.phase !== "validating-milestone") return null;
 
-      // Safety guard (#1368): verify all roadmap slices have SUMMARY files before
-      // allowing milestone validation.
-      const missingSlices = findMissingSummaries(basePath, mid);
-      if (missingSlices.length > 0) {
-        return {
-          action: "stop",
-          reason: `Cannot validate milestone ${mid}: slices ${missingSlices.join(", ")} are missing SUMMARY files. These slices may have been skipped.`,
-          level: "error",
-        };
+      const adoptedMilestone = isMilestoneLifecycleAdopted(mid);
+
+      // Legacy validation still consumes SUMMARY projections. Adopted validation
+      // reads canonical evidence and cannot be blocked by a missing projection.
+      if (!adoptedMilestone) {
+        const missingSlices = findMissingSummaries(basePath, mid);
+        if (missingSlices.length > 0) {
+          return {
+            action: "stop",
+            reason: `Cannot validate milestone ${mid}: slices ${missingSlices.join(", ")} are missing SUMMARY files. These slices may have been skipped.`,
+            level: "error",
+          };
+        }
       }
 
       // #6225: validation requires per-slice ASSESSMENT artifacts (MV02), but
       // the default auto path can complete all slices without creating them.
       // Backfill no-change assessments for completed slices that already have
       // SUMMARY evidence before dispatching validate-milestone.
-      backfillMissingAssessmentsFromSummaries(basePath, mid);
+      if (!adoptedMilestone) backfillMissingAssessmentsFromSummaries(basePath, mid);
 
       // #4781 phase 2: trivial-scope milestones skip the dedicated validate
       // unit — complete-milestone's own verification steps (3/4/5 in the
       // closer prompt) are sufficient proof for contained deliverables.
       const trivialVariant = await getMilestonePipelineVariant(mid) === "trivial";
 
-      // Skip preference OR trivial scope: write a minimal pass-through VALIDATION file.
+      // Adopted skips commit a canonical Waiver; legacy skips retain their
+      // compatibility PASS assessment and projection.
       if (prefs?.phases?.skip_milestone_validation || trivialVariant) {
+        const skipReason = trivialVariant ? "trivial-scope" : "preference";
+        if (adoptedMilestone) {
+          const waiver = recordAdoptedMilestoneValidationWaiver(
+            basePath,
+            mid,
+            skipReason,
+            prefs,
+          );
+          if (!waiver.ok) {
+            return {
+              action: "stop",
+              reason: `Cannot waive milestone validation for ${mid}: ${waiver.error}`,
+              level: "warning",
+            };
+          }
+          const { evaluateGuardedCompleteMilestoneDispatch } = await import("./milestone-closeout.js");
+          return evaluateGuardedCompleteMilestoneDispatch(ctx);
+        }
         const artifactBasePath = resolveArtifactBasePath(basePath, mid, session);
         const projectRoot = resolveWorktreeProjectRoot(basePath, session?.originalBasePath);
         const mDir = resolveMilestonePath(artifactBasePath, mid) ??
@@ -1868,7 +1932,7 @@ export const DISPATCH_RULES: DispatchRule[] = [
         const skipSource = trivialVariant
           ? "trivial-scope pipeline variant"
           : "`skip_milestone_validation` preference";
-        const skipValidationReason = trivialVariant ? "trivial-scope" : "preference";
+        const skipValidationReason = skipReason;
         const content = [
           "---",
           "verdict: pass",
@@ -2007,20 +2071,15 @@ export async function resolveDispatch(
   const effectiveMid = resolveEffectiveDispatchMilestoneId(ctx, scopedMilestone);
   const dispatchCtx = withEffectiveDispatchMilestone(ctx, effectiveMid);
 
-  if (dispatchCtx.mid && isDbAvailable()) {
-    const milestone = getMilestone(dispatchCtx.mid);
-    if (milestone && isClosedStatus(milestone.status)) {
-      return {
-        action: "stop",
-        reason:
-          `Milestone ${dispatchCtx.mid} is closed (status: ${milestone.status}); auto-mode will not reopen or recover it implicitly. ` +
-          "Use an explicit reopen command before planning or executing more work for this milestone.",
-        level: "warning",
-      };
-    }
-  }
-
   const activeMid = dispatchCtx.state.activeMilestone?.id;
+  const isProjectSetupDispatch =
+    dispatchCtx.mid === "PROJECT" &&
+    !activeMid &&
+    (
+      dispatchCtx.state.phase === "pre-planning" ||
+      dispatchCtx.state.phase === "needs-discussion" ||
+      dispatchCtx.state.phase === "planning"
+    );
   if (activeMid && !milestoneIdsDispatchCompatible(dispatchCtx.mid, activeMid)) {
     return {
       action: "stop",
@@ -2031,7 +2090,11 @@ export async function resolveDispatch(
     };
   }
 
-  if (scopedMilestone && !milestoneIdsDispatchCompatible(dispatchCtx.mid, scopedMilestone.id)) {
+  if (
+    !isProjectSetupDispatch &&
+    scopedMilestone &&
+    !milestoneIdsDispatchCompatible(dispatchCtx.mid, scopedMilestone.id)
+  ) {
     return {
       action: "stop",
       reason:
@@ -2041,9 +2104,41 @@ export async function resolveDispatch(
     };
   }
 
-  // Delegate to registry when available
+  if (MILESTONE_ID_RE.test(dispatchCtx.mid)) {
+    if (!isDbAvailable()) {
+      return {
+        action: "stop",
+        reason: `Cannot dispatch milestone ${dispatchCtx.mid}: workflow DB is unavailable.`,
+        level: "error",
+      };
+    }
+    const milestone = getMilestone(dispatchCtx.mid);
+    if (!milestone) {
+      return {
+        action: "stop",
+        reason: `Cannot dispatch milestone ${dispatchCtx.mid}: milestone is missing from the workflow DB.`,
+        level: "error",
+      };
+    }
+    if (isClosedStatus(milestone.status)) {
+      return {
+        action: "stop",
+        reason:
+          `Milestone ${dispatchCtx.mid} is closed (status: ${milestone.status}); auto-mode will not reopen or recover it implicitly. ` +
+          "Use an explicit reopen command before planning or executing more work for this milestone.",
+        level: "warning",
+      };
+    }
+  }
+
+  let registry = null;
   try {
-    const registry = getRegistry();
+    registry = getRegistry();
+  } catch (err) {
+    // Direct tests and pre-registry compatibility callers use inline rules.
+    logWarning("dispatch", `registry dispatch failed, falling back to inline rules: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (registry) {
     const action = annotateBackgroundable(await registry.evaluateDispatch(dispatchCtx));
     if (
       action.action === "dispatch" &&
@@ -2056,9 +2151,6 @@ export async function resolveDispatch(
       };
     }
     return applyLanguageDirectiveToDispatch(action, ctx.prefs);
-  } catch (err) {
-    // Registry not initialized — fall back to inline loop
-    logWarning("dispatch", `registry dispatch failed, falling back to inline rules: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   for (const rule of DISPATCH_RULES) {
